@@ -618,7 +618,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: core::T&) {
     t.run("HTTP/2 :path with absolute URL MUST be rejected (RFC 9113 Section 8.3.1 & Go #78762)") { sub =>
         var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -629,7 +629,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: core::T&) {
     t.run("HTTP/2 :path empty MUST be rejected") { sub =>
         var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };

@@ -215,10 +215,10 @@ fn main() {
     var dt_dec = internal::new_dynamic_table(4096);
     var hpack_wire: u8[>..] = [];
 
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", true, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", true, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", true, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", true, true);
+    internal::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", internal::HpackIndexing.Incremental, true);
+    internal::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", internal::HpackIndexing.Incremental, true);
+    internal::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", internal::HpackIndexing.Incremental, true);
+    internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", internal::HpackIndexing.Incremental, true);
     print("  HPACK Encoded Bytes: ", hpack_wire.len, "\n");
 
     var decoded_headers = internal::DecodedH2HeaderList { .. };

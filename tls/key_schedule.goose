@@ -10,17 +10,17 @@ import core from "..";
 
 // ---- 1. Constants and Supported Cipher Suites -------------------------------
 
-const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
-const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
+const TLS_AES_128_GCM_SHA256:       u16 = 0x1301;
+const TLS_AES_256_GCM_SHA384:       u16 = 0x1302;
 const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
 
 const HASH_SHA256: u8 = 1;
 const HASH_SHA384: u8 = 2;
 
-const KS_STAGE_UNINIT: u8 = 0;
-const KS_STAGE_EARLY: u8 = 1;
-const KS_STAGE_HANDSHAKE: u8 = 2;
-const KS_STAGE_MASTER: u8 = 3;
+const KS_STAGE_UNINIT:     u8 = 0;
+const KS_STAGE_EARLY:      u8 = 1;
+const KS_STAGE_HANDSHAKE:  u8 = 2;
+const KS_STAGE_MASTER:     u8 = 3;
 const KS_STAGE_RESUMPTION: u8 = 4;
 
 // ---- 2. HKDF-Expand-Label and Derive-Secret (RFC 8446 Section 7.1) ----------
@@ -40,11 +40,11 @@ fn is_all_zero_slice(data: const u8[:]) -> bool {
 
 fn hkdf_expand_label(
     hash_id: u8,
-    secret: const u8[:],
-    label: const u8[:],
+    secret:  const u8[:],
+    label:   const u8[:],
     context: const u8[:],
-    length: u16,
-    out: u8[:],
+    length:  u16,
+    out:     u8[:],
 ) -> bool {
     let full_label_len = 6 + label.len;
     guard full_label_len >= 7 && full_label_len <= 255 else { return false; }
@@ -88,12 +88,12 @@ fn hkdf_expand_label(
 // Derive-Secret(Secret, Label, Messages) = HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.length)
 // When messages are empty (""), context is Hash("").
 fn derive_secret(
-    hash_id: u8,
-    hash_len: u8,
-    secret: const u8[:],
-    label: const u8[:],
+    hash_id:         u8,
+    hash_len:        u8,
+    secret:          const u8[:],
+    label:           const u8[:],
     transcript_hash: const u8[:],
-    out: u8[:],
+    out:             u8[:],
 ) -> bool {
     guard out.len >= hash_len else { return false; }
     guard secret.len >= hash_len else { return false; }
@@ -116,19 +116,19 @@ fn derive_secret(
 // ---- 3. KeySchedule Struct and Lifecycle Transitions ------------------------
 
 struct KeySchedule {
-    cipher_suite: u16 = 0,
-    hash_id: u8 = 1,
-    hash_len: u8 = 32,
-    stage: u8 = 0,
-    current_secret: u8[48] = [0; 48],
+    cipher_suite:         u16    = 0,
+    hash_id:              u8     = 1,
+    hash_len:             u8     = 32,
+    stage:                u8     = 0,
+    current_secret:       u8[48] = [0; 48],
     client_early_traffic: u8[48] = [0; 48],
-    client_hs_traffic: u8[48] = [0; 48],
-    server_hs_traffic: u8[48] = [0; 48],
-    client_ap_traffic: u8[48] = [0; 48],
-    server_ap_traffic: u8[48] = [0; 48],
-    exporter_secret: u8[48] = [0; 48],
-    resumption_secret: u8[48] = [0; 48],
-    binder_key: u8[48] = [0; 48],
+    client_hs_traffic:    u8[48] = [0; 48],
+    server_hs_traffic:    u8[48] = [0; 48],
+    client_ap_traffic:    u8[48] = [0; 48],
+    server_ap_traffic:    u8[48] = [0; 48],
+    exporter_secret:      u8[48] = [0; 48],
+    resumption_secret:    u8[48] = [0; 48],
+    binder_key:           u8[48] = [0; 48],
 }
 
 fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
@@ -341,11 +341,11 @@ fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8
 // Context value is bounded to <= 255 bytes (RFC 8446 §7.5).
 // When context is empty (""), Hash("") is used.
 fn ks_export_keying_material(
-    ks: const KeySchedule&,
-    label: const u8[:],
-    context: const u8[:],
+    ks:         const KeySchedule&,
+    label:      const u8[:],
+    context:    const u8[:],
     key_length: u16,
-    out: u8[:],
+    out:        u8[:],
 ) -> bool {
     guard ks.stage >= KS_STAGE_MASTER else { return false; }
     guard label.len > 0 && label.len <= 245 else { return false; }
@@ -390,12 +390,13 @@ fn ks_export_keying_material(
     return ok;
 }
 
-// Derives the resumption PSK for a NewSessionTicket from the resumption_master_secret and ticket_nonce (RFC 8446 §4.6.1).
+// Derives the resumption PSK for a NewSessionTicket from resumption_master_secret
+// and ticket_nonce (RFC 8446 §4.6.1).
 // PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
 fn ks_derive_resumption_psk(
-    ks: const KeySchedule&,
+    ks:           const KeySchedule&,
     ticket_nonce: const u8[:],
-    out_psk: u8[:],
+    out_psk:      u8[:],
 ) -> bool {
     guard ks.stage == KS_STAGE_RESUMPTION else { return false; }
     guard ticket_nonce.len <= 255 else { return false; }
@@ -413,10 +414,10 @@ fn ks_derive_resumption_psk(
 // Derives symmetric AEAD key and 12-byte IV from traffic secret (RFC 8446 Section 7.3).
 fn ks_derive_key_iv(
     hash_id: u8,
-    secret: const u8[:],
+    secret:  const u8[:],
     key_len: u16,
     out_key: u8[:],
-    out_iv: u8[12]&,
+    out_iv:  u8[12]&,
 ) -> bool {
     let ok_k = hkdf_expand_label(hash_id, secret, "key", [], key_len, out_key);
     let ok_iv = hkdf_expand_label(hash_id, secret, "iv", [], 12, out_iv[..]);
@@ -425,8 +426,8 @@ fn ks_derive_key_iv(
 
 // Derives QUIC Header Protection key (RFC 9001 Section 5.4).
 fn ks_derive_quic_hp_key(
-    hash_id: u8,
-    secret: const u8[:],
+    hash_id:    u8,
+    secret:     const u8[:],
     hp_key_len: u16,
     out_hp_key: u8[:],
 ) -> bool {
@@ -435,9 +436,9 @@ fn ks_derive_quic_hp_key(
 
 // Computes Finished verify_data = HMAC(finished_key, Transcript-Hash) (RFC 8446 Section 4.4.4).
 fn ks_compute_finished_verify_data(
-    hash_id: u8,
-    hash_len: u8,
-    base_key: const u8[:],
+    hash_id:         u8,
+    hash_len:        u8,
+    base_key:        const u8[:],
     transcript_hash: const u8[:],
     out_verify_data: u8[:],
 ) -> bool {
@@ -501,10 +502,10 @@ fn ks_zeroize(ks: KeySchedule&) {
 
 // Verifies PSK binder tag on truncated ClientHello in constant time.
 fn verify_psk_binder(
-    hash_id: u8,
-    hash_len: u8,
-    binder_key: const u8[:],
-    truncated_ch: const u8[:],
+    hash_id:         u8,
+    hash_len:        u8,
+    binder_key:      const u8[:],
+    truncated_ch:    const u8[:],
     expected_binder: const u8[:],
 ) -> bool {
     guard expected_binder.len == hash_len else { return false; }
@@ -535,20 +536,20 @@ fn verify_psk_binder(
 // ---- 5. ZeroRttStrikeRegister: Two-Epoch Bloom Filter Anti-Replay -----------
 
 struct ZeroRttStrikeRegister {
-    epoch_window_ms: i64 = 10000,
-    max_age_tolerance_ms: i64 = 2000,
-    current_epoch: i64 = 0,
-    bitmap_current: u64[64] = [0; 64],
-    bitmap_previous: u64[64] = [0; 64],
+    epoch_window_ms:      i64     = 10000,
+    max_age_tolerance_ms: i64     = 2000,
+    current_epoch:        i64     = 0,
+    bitmap_current:       u64[64] = [0; 64],
+    bitmap_previous:      u64[64] = [0; 64],
 }
 
 fn strike_register_init(epoch_window_ms: i64 = 10000, max_age_tolerance_ms: i64 = 2000) -> ZeroRttStrikeRegister {
     return ZeroRttStrikeRegister {
-        epoch_window_ms: epoch_window_ms,
+        epoch_window_ms:      epoch_window_ms,
         max_age_tolerance_ms: max_age_tolerance_ms,
-        current_epoch: 0,
-        bitmap_current: [0; 64],
-        bitmap_previous: [0; 64],
+        current_epoch:        0,
+        bitmap_current:       [0; 64],
+        bitmap_previous:      [0; 64],
     };
 }
 
@@ -631,9 +632,9 @@ const MAX_TICKET_LIFETIME_MS: i64 = 604800000; // 7 days (RFC 8446 §4.6.1)
 // Validates ticket age freshness according to RFC 8446 Section 4.2.10 and 4.6.1.
 fn validate_ticket_age(
     obfuscated_ticket_age: u32,
-    ticket_age_add: u32,
-    expected_age_ms: i64,
-    tolerance_ms: i64,
+    ticket_age_add:        u32,
+    expected_age_ms:       i64,
+    tolerance_ms:          i64,
 ) -> bool {
     guard expected_age_ms >= 0 && tolerance_ms >= 0 else { return false; }
     guard expected_age_ms <= MAX_TICKET_LIFETIME_MS else { return false; }

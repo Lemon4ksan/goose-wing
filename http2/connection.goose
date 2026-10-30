@@ -12,31 +12,31 @@ import .hpack;
 
 // ---- 1. session constants & limits ------------------------------------------
 
-const MAX_INITIAL_WINDOW_SIZE: i64 = 0x7FFFFFFF; // 2^31 - 1
-const DEFAULT_WINDOW_SIZE: i64 = 65535;
-const DEFAULT_RESET_BURST: u64 = 1000;            // nghttp2 v1.57.0 reference (CVE-2023-44487)
-const DEFAULT_RESET_RATE: u64 = 33;               // Tokens per second
-const MAX_CONT_FRAMES_LIMIT: u32 = 16;            // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
-const MAX_HEADER_BLOCK_SIZE_LIMIT: u32 = 65536;   // Hard 64 KB ceiling for any CONTINUATION / HEADERS block
-const MAX_EMPTY_FRAME_STREAK: u32 = 8;            // Empty Frame Flooding defense (CVE-2019-9518)
-const MAX_PENDING_CTRL_FRAMES: u32 = 64;          // PING / SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
-const MAX_CONCURRENCY_VIOLATIONS: u32 = 5;        // Rapid Reset non-cancelling variant defense
+const MAX_INITIAL_WINDOW_SIZE:              i64 = 0x7FFFFFFF; // 2^31 - 1
+const DEFAULT_WINDOW_SIZE:                  i64 = 65535;
+const DEFAULT_RESET_BURST:                  u64 = 1000;  // nghttp2 v1.57.0 reference (CVE-2023-44487)
+const DEFAULT_RESET_RATE:                   u64 = 33;    // Tokens per second
+const MAX_CONT_FRAMES_LIMIT:                u32 = 16;    // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
+const MAX_HEADER_BLOCK_SIZE_LIMIT:          u32 = 65536; // Hard 64 KB ceiling for any CONTINUATION / HEADERS block
+const MAX_EMPTY_FRAME_STREAK:               u32 = 8;     // Empty Frame Flooding defense (CVE-2019-9518)
+const MAX_PENDING_CTRL_FRAMES:              u32 = 64;    // PING/SETTINGS Flood defense (CVE-2019-9512 / CVE-2019-9515)
+const MAX_CONCURRENCY_VIOLATIONS:           u32 = 5;     // Rapid Reset non-cancelling variant defense
 const DEFAULT_MAX_HEADER_BLOCK_DURATION_MS: u64 = 10000; // Slow-Drip CONTINUATION memory retention defense
 
 // ---- 2. token bucket rate limiter (rapid reset cve-2023-44487) -------------
 
 struct TokenBucket {
-    tokens: u64 = 1000,
-    burst: u64 = 1000,
-    rate_per_sec: u64 = 33,
+    tokens:         u64 = 1000,
+    burst:          u64 = 1000,
+    rate_per_sec:   u64 = 33,
     last_refill_ms: u64 = 0,
 }
 
 fn new_h2_token_bucket(burst: u64 = 1000, rate_per_sec: u64 = 33, now_ms: u64 = 0) -> TokenBucket {
     return TokenBucket {
-        tokens: burst,
-        burst: burst,
-        rate_per_sec: rate_per_sec,
+        tokens:         burst,
+        burst:          burst,
+        rate_per_sec:   rate_per_sec,
         last_refill_ms: now_ms,
     };
 }
@@ -78,91 +78,91 @@ enum H2StreamState {
 }
 
 struct H2Stream {
-    stream_id: u32 = 0,
-    state: H2StreamState = H2StreamState.Idle,
-    send_window: i64 = 65535, // Signed 64-bit integer to support negative deltas
-    recv_window: i64 = 65535,
-    priority: wing::PriorityParam = wing::PriorityParam { .. },
-    pending_send_bytes: u32 = 0,
-    declared_content_length: i64 = -1,
-    received_data_bytes: i64 = 0,
-    headers_received: bool = false,
-    trailers_received: bool = false,
-    status_code: i32 = 0,
-    active: bool = false,
+    stream_id:               u32                 = 0,
+    state:                   H2StreamState       = H2StreamState.Idle,
+    send_window:             i64                 = 65535, // Signed 64-bit integer to support negative deltas
+    recv_window:             i64                 = 65535,
+    priority:                wing::PriorityParam = wing::PriorityParam { .. },
+    pending_send_bytes:      u32                 = 0,
+    declared_content_length: i64                 = -1,
+    received_data_bytes:     i64                 = 0,
+    headers_received:        bool                = false,
+    trailers_received:       bool                = false,
+    status_code:             i32                 = 0,
+    active:                  bool                = false,
 }
 
 // ---- 4. http/2 connection state & coordinator -------------------------------
 
 struct H2Connection {
-    hpack_dec: DynamicTable = DynamicTable { .. },
-    conn_send_window: i64 = 65535,
-    conn_recv_window: i64 = 65535,
-    peer_initial_window_size: i64 = 65535,
-    local_initial_window_size: i64 = 65535,
-    local_max_frame_size: u32 = 16384,
-    peer_max_frame_size: u32 = 16384,
-    max_header_list_size: u32 = 8192,
-    max_concurrent_streams: u32 = 128,
-    active_stream_count: u32 = 0,
-    last_peer_stream_id: u32 = 0,
+    hpack_dec:                 DynamicTable = DynamicTable { .. },
+    conn_send_window:          i64          = 65535,
+    conn_recv_window:          i64          = 65535,
+    peer_initial_window_size:  i64          = 65535,
+    local_initial_window_size: i64          = 65535,
+    local_max_frame_size:      u32          = 16384,
+    peer_max_frame_size:       u32          = 16384,
+    max_header_list_size:      u32          = 8192,
+    max_concurrent_streams:    u32          = 128,
+    active_stream_count:       u32          = 0,
+    last_peer_stream_id:       u32          = 0,
 
     // Active streams table (bounded inline storage)
     streams: H2Stream[..128] = [],
 
     // Exclusive CONTINUATION lock (0 if not expecting CONTINUATION)
-    continuation_stream_id: u32 = 0,
-    continuation_frames_cnt: u32 = 0,
-    accumulated_header_size: u32 = 0,
-    continuation_start_ms: u64 = 0,
+    continuation_stream_id:       u32 = 0,
+    continuation_frames_cnt:      u32 = 0,
+    accumulated_header_size:      u32 = 0,
+    continuation_start_ms:        u64 = 0,
     max_header_block_duration_ms: u64 = 10000,
 
     // Anti-DoS resource limiters
-    reset_limiter: TokenBucket = TokenBucket { .. },
-    empty_frame_streak: u32 = 0,
-    pending_control_frames: u32 = 0,
-    concurrency_violations: u32 = 0,
-    initial_window_update_count: u32 = 0,
+    reset_limiter:               TokenBucket = TokenBucket { .. },
+    empty_frame_streak:          u32         = 0,
+    pending_control_frames:      u32         = 0,
+    concurrency_violations:      u32         = 0,
+    initial_window_update_count: u32         = 0,
 
     // RFC 9218 prioritization flags
-    client_sent_priority: bool = false,
+    client_sent_priority:  bool = false,
     no_rfc7540_priorities: bool = false,
-    peer_no_rfc7540_set: bool = false,
-    is_behind_proxy: bool = false,
+    peer_no_rfc7540_set:   bool = false,
+    is_behind_proxy:       bool = false,
 
     // Starvation toggle per urgency bucket (0..7) between incremental and non-incremental
     bucket_prefer_incremental: bool[8] = [false; 8],
-    bucket_last_inc_idx: i32[8] = [-1; 8],
-    urgency_streak_count: u32 = 0,
+    bucket_last_inc_idx:       i32[8]  = [-1; 8],
+    urgency_streak_count:      u32     = 0,
 
     // Shutdown / GOAWAY tracking
-    goaway_sent: bool = false,
-    goaway_received: bool = false,
-    goaway_last_stream_id: u32 = 0,
-    goaway_error_code: u32 = 0,
+    goaway_sent:           bool = false,
+    goaway_received:       bool = false,
+    goaway_last_stream_id: u32  = 0,
+    goaway_error_code:     u32  = 0,
 }
 
 type SessionState = H2Connection;
 
 // Returns a default-initialized H2Connection with RFC 9113 & RFC 9218 baseline invariants.
 fn new_h2_connection(
-    now_ms: u64 = 0,
-    max_header_list: u32 = 8192,
-    behind_proxy: bool = false,
+    now_ms:          u64  = 0,
+    max_header_list: u32  = 8192,
+    behind_proxy:    bool = false,
 ) -> H2Connection {
     return H2Connection {
-        hpack_dec: new_dynamic_table(HPACK_DEFAULT_MAX_DYN_SIZE),
-        reset_limiter: new_h2_token_bucket(DEFAULT_RESET_BURST, DEFAULT_RESET_RATE, now_ms),
+        hpack_dec:            new_dynamic_table(HPACK_DEFAULT_MAX_DYN_SIZE),
+        reset_limiter:        new_h2_token_bucket(DEFAULT_RESET_BURST, DEFAULT_RESET_RATE, now_ms),
         max_header_list_size: max_header_list,
-        is_behind_proxy: behind_proxy,
+        is_behind_proxy:      behind_proxy,
         ..
     };
 }
 
 inline fn new_session_state(
-    now_ms: u64 = 0,
-    max_header_list: u32 = 8192,
-    behind_proxy: bool = false,
+    now_ms:          u64  = 0,
+    max_header_list: u32  = 8192,
+    behind_proxy:    bool = false,
 ) -> H2Connection {
     return new_h2_connection(now_ms, max_header_list, behind_proxy);
 }
@@ -179,8 +179,9 @@ fn find_h2_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
     return -1, false;
 }
 
-inline fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
-    return find_h2_stream_idx(s, stream_id);
+fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
+    let idx, ok = find_h2_stream_idx(s, stream_id);
+    return idx, ok;
 }
 
 // ---- 5. frame ingress coordinator & anti-dos barriers -----------------------
@@ -194,13 +195,13 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
     };
 
     var new_stream = H2Stream {
-        stream_id: stream_id,
-        state: if end_stream { H2StreamState.HalfClosedRemote } else { H2StreamState.Open },
-        send_window: s.peer_initial_window_size,
-        recv_window: s.local_initial_window_size,
-        priority: def_prio,
+        stream_id:        stream_id,
+        state:            if end_stream { H2StreamState.HalfClosedRemote } else { H2StreamState.Open },
+        send_window:      s.peer_initial_window_size,
+        recv_window:      s.local_initial_window_size,
+        priority:         def_prio,
         headers_received: true,
-        active: true,
+        active:           true,
         ..
     };
 
@@ -212,7 +213,8 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
             break;
         }
     }
-    if !placed && s.streams.len < s.streams.cap {
+    if !placed {
+        guard s.streams.len < s.streams.cap else { return; }
         s.streams.push(new_stream);
     }
     s.active_stream_count++;
@@ -283,7 +285,8 @@ fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now
         }
 
         s.accumulated_header_size += hdr.length;
-        if s.accumulated_header_size > s.max_header_list_size || s.accumulated_header_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
+        if s.accumulated_header_size > s.max_header_list_size
+            || s.accumulated_header_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
             return ERR_ENHANCE_YOUR_CALM, true;
         }
 
@@ -639,8 +642,8 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
 const MAX_HIGH_URGENCY_STREAK: u32 = 16; // Max consecutive frames before lower-urgency credit yield
 
 inline fn commit_stream_send_quota(
-    s: H2Connection&,
-    chosen_idx: i32,
+    s:             H2Connection&,
+    chosen_idx:    i32,
     max_frame_len: u32,
 ) -> u32, u32, bool {
     let target_stream_id = s.streams[chosen_idx].stream_id;
@@ -673,6 +676,84 @@ inline fn commit_stream_send_quota(
     return target_stream_id, send_len, true;
 }
 
+fn has_lower_urgency_ready(s: const H2Connection&) -> bool {
+    var chk: i32 = 0;
+    let stream_count = s.streams.len as i32;
+    while chk < stream_count {
+        if s.streams[chk].active && s.streams[chk].pending_send_bytes > 0
+            && s.streams[chk].send_window > 0 && s.streams[chk].priority.urgency >= 3 {
+            return true;
+        }
+        chk++;
+    }
+    return false;
+}
+
+fn find_non_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
+    var idx: i32 = 0;
+    let stream_count = s.streams.len as i32;
+    while idx < stream_count {
+        if s.streams[idx].active && s.streams[idx].pending_send_bytes > 0
+            && s.streams[idx].send_window > 0 && s.streams[idx].priority.urgency == u
+            && !s.streams[idx].priority.incremental {
+            return idx;
+        }
+        idx++;
+    }
+    return -1;
+}
+
+fn find_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
+    let u_idx = u as i64;
+    let stream_count = s.streams.len as i32;
+    guard stream_count > 0 else { return -1; }
+
+    let last_inc = s.bucket_last_inc_idx[u_idx];
+    var step: i32 = 1;
+    while step <= stream_count {
+        let candidate = if last_inc < 0 { step - 1 } else { (last_inc + step) % stream_count };
+        if candidate >= 0 && candidate < stream_count {
+            if s.streams[candidate].active && s.streams[candidate].pending_send_bytes > 0
+                && s.streams[candidate].send_window > 0 && s.streams[candidate].priority.urgency == u
+                && s.streams[candidate].priority.incremental {
+                return candidate;
+            }
+        }
+        step++;
+    }
+    return -1;
+}
+
+fn select_and_commit_stream(
+    s:             H2Connection&,
+    u:             u8,
+    max_frame_len: u32,
+) -> u32, u32, bool {
+    let non_inc_idx = find_non_incremental_candidate(s, u);
+    let inc_idx = find_incremental_candidate(s, u);
+    let u_idx = u as i64;
+
+    var chosen_idx: i32 = -1;
+    if non_inc_idx >= 0 && inc_idx >= 0 {
+        if s.bucket_prefer_incremental[u_idx] {
+            chosen_idx = inc_idx;
+            s.bucket_last_inc_idx[u_idx] = inc_idx;
+            s.bucket_prefer_incremental[u_idx] = false;
+        } else {
+            chosen_idx = non_inc_idx;
+            s.bucket_prefer_incremental[u_idx] = true;
+        }
+    } else if non_inc_idx >= 0 {
+        chosen_idx = non_inc_idx;
+    } else if inc_idx >= 0 {
+        chosen_idx = inc_idx;
+        s.bucket_last_inc_idx[u_idx] = inc_idx;
+    }
+
+    guard chosen_idx >= 0 else { return 0, 0, false; }
+    return commit_stream_send_quota(s, chosen_idx, max_frame_len);
+}
+
 // Schedules next stream for DATA frame transmission according to RFC 9218 urgency 0..7.
 // Alternates between incremental and non-incremental streams to prevent starvation.
 // Implements Round-Robin fair interleaving among concurrent incremental streams within a bucket.
@@ -684,94 +765,23 @@ fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
     // Check if anti-starvation yield is triggered for lower-urgency streams
     var force_yield = false;
     if s.urgency_streak_count >= MAX_HIGH_URGENCY_STREAK {
-        // Check if there is any ready stream in lower urgency (u >= 3)
-        var has_lower_ready = false;
-        var chk: i32 = 0;
-        while chk < (s.streams.len as i32) {
-            if s.streams[chk].active &&
-               s.streams[chk].pending_send_bytes > 0 &&
-               s.streams[chk].send_window > 0 &&
-               s.streams[chk].priority.urgency >= 3 {
-                has_lower_ready = true;
-                break;
-            }
-            chk++;
-        }
-        if has_lower_ready {
+        if has_lower_urgency_ready(s) {
             force_yield = true;
         } else {
             s.urgency_streak_count = 0; // No lower streams waiting, reset streak
         }
     }
 
-    var start_u: u8 = if force_yield { 3 } else { 0 };
-    var pass: i32 = 0;
+    var start_u: u8  = if force_yield { 3 } else { 0 };
+    var pass:    i32 = 0;
 
     while pass < 2 {
         var u = start_u;
         while u <= 7 {
-            let u_idx = u as i64;
-            let stream_count = s.streams.len as i32;
-
-            // Collect non-incremental candidate (sequential)
-            var non_inc_idx: i32 = -1;
-            var idx: i32 = 0;
-            while idx < stream_count {
-                if s.streams[idx].active &&
-                   s.streams[idx].pending_send_bytes > 0 &&
-                   s.streams[idx].send_window > 0 &&
-                   s.streams[idx].priority.urgency == u &&
-                   !s.streams[idx].priority.incremental {
-                    non_inc_idx = idx;
-                    break;
-                }
-                idx++;
+            let target_stream_id, send_len, ok = select_and_commit_stream(s, u, max_frame_len);
+            if ok {
+                return target_stream_id, send_len, true;
             }
-
-            // Collect incremental candidate using Round-Robin starting after bucket_last_inc_idx[u]
-            var inc_idx: i32 = -1;
-            let last_inc = s.bucket_last_inc_idx[u_idx];
-            var step: i32 = 1;
-            while step <= stream_count {
-                let candidate = if last_inc < 0 { step - 1 } else { (last_inc + step) % stream_count };
-                if candidate >= 0 && candidate < stream_count {
-                    if s.streams[candidate].active &&
-                       s.streams[candidate].pending_send_bytes > 0 &&
-                       s.streams[candidate].send_window > 0 &&
-                       s.streams[candidate].priority.urgency == u &&
-                       s.streams[candidate].priority.incremental {
-                        inc_idx = candidate;
-                        break;
-                    }
-                }
-                step++;
-            }
-
-            var chosen_idx: i32 = -1;
-            if non_inc_idx >= 0 && inc_idx >= 0 {
-                // Both stream types present in bucket: alternate turn
-                if s.bucket_prefer_incremental[u_idx] {
-                    chosen_idx = inc_idx;
-                    s.bucket_last_inc_idx[u_idx] = inc_idx;
-                    s.bucket_prefer_incremental[u_idx] = false;
-                } else {
-                    chosen_idx = non_inc_idx;
-                    s.bucket_prefer_incremental[u_idx] = true;
-                }
-            } else if non_inc_idx >= 0 {
-                chosen_idx = non_inc_idx;
-            } else if inc_idx >= 0 {
-                chosen_idx = inc_idx;
-                s.bucket_last_inc_idx[u_idx] = inc_idx;
-            }
-
-            if chosen_idx >= 0 {
-                let target_stream_id, send_len, ok = commit_stream_send_quota(s, chosen_idx, max_frame_len);
-                if ok {
-                    return target_stream_id, send_len, true;
-                }
-            }
-
             u++;
         }
 

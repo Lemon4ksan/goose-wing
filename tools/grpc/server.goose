@@ -78,14 +78,14 @@ fn emit_grpc_h2_headers<B>(
 ) {
     var hpack_block: u8[..4096] = [];
     var status_buf:  u8[..16]   = "200";
-    internal::encode_hpack_field(hpack_enc, hpack_block, ":status", status_buf[..], true, false);
-    internal::encode_hpack_field(hpack_enc, hpack_block, "content-type", "application/grpc", true, false);
+    internal::encode_hpack_field(hpack_enc, hpack_block, ":status", status_buf[..], internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(hpack_enc, hpack_block, "content-type", "application/grpc", internal::HpackIndexing.Incremental, false);
 
     for &hdr in res.headers {
         let n = hdr.name[..];
         let v = hdr.value[..];
         if !core::eq_ascii_fold(n, "content-type") && !core::starts_with_fold(n, ":") {
-            internal::encode_hpack_field(hpack_enc, hpack_block, n, v, true, false);
+            internal::encode_hpack_field(hpack_enc, hpack_block, n, v, internal::HpackIndexing.Incremental, false);
         }
     }
 
@@ -134,7 +134,7 @@ fn emit_grpc_h2_trailers<B>(
 ) {
     var hpack_block: u8[..4096] = [];
     for &t in trailers {
-        internal::encode_hpack_field(hpack_enc, hpack_block, t.name[..], t.value[..], true, false);
+        internal::encode_hpack_field(hpack_enc, hpack_block, t.name[..], t.value[..], internal::HpackIndexing.Incremental, false);
     }
 
     let flags: u8 = 4 | 1; // FLAG_END_HEADERS | FLAG_END_STREAM
@@ -345,9 +345,9 @@ fn main() {
             }
 
             // 2. HTTP/1.1 gRPC-Web Check
-            let hdr_end = find(in_buf[..], "\r\n\r\n");
+            let hdr_end = core::index_of_slice(in_buf[..], "\r\n\r\n");
             if hdr_end >= 0 {
-                if find(in_buf[..], "GET /shutdown") >= 0 {
+                if core::index_of_slice(in_buf[..], "GET /shutdown") >= 0 {
                     let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
                     wing::tcp_send(conn, resp);
                     is_running = false;
@@ -356,7 +356,7 @@ fn main() {
 
                 // Check Content-Length to ensure entire body has been received
                 var req_complete = true;
-                let cl_pos = find(in_buf[..hdr_end], "Content-Length:");
+                let cl_pos = core::index_of_slice(in_buf[..hdr_end], "Content-Length:");
                 if cl_pos >= 0 {
                     let cl_line = in_buf[(cl_pos + 15)..hdr_end];
                     var cl_val: i64 = 0;

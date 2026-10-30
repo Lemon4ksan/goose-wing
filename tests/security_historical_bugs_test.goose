@@ -67,10 +67,10 @@ fn test_http2_content_length_overflow_defense(t: core::T&) {
     t.run("RFC 9113 & Go #81115: HTTP/2 Content-Length > 19 digits MUST be rejected as PROTOCOL_ERROR") { sub =>
         var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -81,10 +81,10 @@ fn test_http2_content_length_overflow_defense(t: core::T&) {
     t.run("Valid Content-Length in HTTP/2 is parsed correctly") { sub =>
         var dt_enc = internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", false, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", false, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
@@ -376,7 +376,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_bad_fin, ok_bad_fin = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             wing::HS_MSG_FINISHED,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_bad_fin, "Finished before Certificate/CV in full handshake MUST be rejected");
@@ -386,7 +386,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_psk_fin, ok_psk_fin = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             wing::HS_MSG_FINISHED,
-            true,
+            wing::HandshakeMode.Psk,
             false,
         );
         sub.assert_true(ok_psk_fin, "Finished accepted in PSK mode");
@@ -396,7 +396,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_cert, ok_cert = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCert,
             wing::HS_MSG_CERTIFICATE,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_cert, "Certificate accepted in ClientWaitCert");
@@ -406,7 +406,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_hash, ok_hash = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitSH,
             wing::HS_MSG_MESSAGE_HASH,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_hash, "Synthetic message_hash on wire MUST be rejected");
@@ -415,7 +415,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_ticket, ok_ticket = wing::validate_client_handshake_transition(
             wing::HsState.Connected,
             wing::HS_MSG_NEW_SESSION_TICKET,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_ticket, "NewSessionTicket accepted post-handshake");
@@ -424,7 +424,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: core::T&) {
         let st_rehandshake, ok_rehandshake = wing::validate_client_handshake_transition(
             wing::HsState.Connected,
             wing::HS_MSG_SERVER_HELLO,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_rehandshake, "ServerHello received while Connected MUST be rejected (renegotiation banned)");

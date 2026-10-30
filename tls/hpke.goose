@@ -13,21 +13,21 @@ import core from "..";
 const HPKE_MODE_BASE: u8 = 0;
 
 const HPKE_KEM_DHKEM_X25519_HKDF_SHA256: u16 = 0x0020;
-const HPKE_KDF_HKDF_SHA256: u16 = 0x0001;
+const HPKE_KDF_HKDF_SHA256:              u16 = 0x0001;
 
-const HPKE_AEAD_AES_128_GCM: u16 = 0x0001;
-const HPKE_AEAD_AES_256_GCM: u16 = 0x0002;
+const HPKE_AEAD_AES_128_GCM:       u16 = 0x0001;
+const HPKE_AEAD_AES_256_GCM:       u16 = 0x0002;
 const HPKE_AEAD_CHACHA20_POLY1305: u16 = 0x0003;
 
 // Active encryption/decryption context for HPKE sender or recipient.
 struct HpkeContext {
-    key: u8[32] = [0; 32],
-    base_nonce: u8[12] = [0; 12],
-    seq: u64 = 0,
+    key:             u8[32] = [0; 32],
+    base_nonce:      u8[12] = [0; 12],
+    seq:             u64    = 0,
     exporter_secret: u8[32] = [0; 32],
-    aead_id: u16 = HPKE_AEAD_AES_128_GCM,
-    key_len: u16 = 16,
-    nonce_len: u16 = 12,
+    aead_id:         u16    = HPKE_AEAD_AES_128_GCM,
+    key_len:         u16    = 16,
+    nonce_len:       u16    = 12,
 }
 
 // ---- 2. Labeled KDF Primitives (RFC 9180 Section 4) -------------------------
@@ -35,9 +35,9 @@ struct HpkeContext {
 // Computes LabeledExtract(salt, label, ikm) = HKDF-Extract(salt, "HPKE-v1" || suite_id || label || ikm)
 fn hpke_labeled_extract(
     suite_id: const u8[:],
-    salt: const u8[:],
-    label: const u8[:],
-    ikm: const u8[:],
+    salt:     const u8[:],
+    label:    const u8[:],
+    ikm:      const u8[:],
 ) -> u8[32] {
     var labeled_ikm: u8[..256] = [];
     labeled_ikm.append("HPKE-v1");
@@ -48,14 +48,15 @@ fn hpke_labeled_extract(
     return core::hkdf_extract(salt, labeled_ikm[..]);
 }
 
-// Computes LabeledExpand(prk, label, info, L) = HKDF-Expand(prk, I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info, L)
+// Computes LabeledExpand(prk, label, info, L) =
+// HKDF-Expand(prk, I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info, L)
 fn hpke_labeled_expand(
     suite_id: const u8[:],
-    prk: const u8[:],
-    label: const u8[:],
-    info: const u8[:],
-    length: u16,
-    out: u8[:],
+    prk:      const u8[:],
+    label:    const u8[:],
+    info:     const u8[:],
+    length:   u16,
+    out:      u8[:],
 ) -> bool {
     var labeled_info: u8[..256] = [];
     labeled_info.push(((length >> 8) & 0xFF) as u8);
@@ -71,10 +72,10 @@ fn hpke_labeled_expand(
 // ---- 3. DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
 
 fn derive_kem_shared_secret(
-    kem_suite_id: const u8[:],
-    dh: const u8[32]&,
-    enc: const u8[32]&,
-    pkR: const u8[32]&,
+    kem_suite_id:      const u8[:],
+    dh:                const u8[32]&,
+    enc:               const u8[32]&,
+    pkR:               const u8[32]&,
     out_shared_secret: u8[32]&,
 ) -> bool {
     var kem_context: u8[64] = [0; 64];
@@ -88,9 +89,9 @@ fn derive_kem_shared_secret(
 
 // Performs DHKEM Key Encapsulation: computes shared_secret and encapsulated key (enc).
 fn dhkem_x25519_encap(
-    pkR: const u8[32]&,
-    ephemeral_sk: const u8[32]&,
-    out_enc: u8[32]&,
+    pkR:               const u8[32]&,
+    ephemeral_sk:      const u8[32]&,
+    out_enc:           u8[32]&,
     out_shared_secret: u8[32]&,
 ) -> bool {
     out_enc = core::x25519_base_scalarmult(ephemeral_sk);
@@ -101,9 +102,9 @@ fn dhkem_x25519_encap(
 
 // Performs DHKEM Key Decapsulation: reconstructs shared_secret from enc using recipient skR.
 fn dhkem_x25519_decap(
-    enc: const u8[32]&,
-    skR: const u8[32]&,
-    pkR: const u8[32]&,
+    enc:               const u8[32]&,
+    skR:               const u8[32]&,
+    pkR:               const u8[32]&,
     out_shared_secret: u8[32]&,
 ) -> bool {
     let dh = core::x25519_scalarmult(skR, enc);
@@ -115,14 +116,14 @@ fn dhkem_x25519_decap(
 
 // Sets up a base-mode sender context (SetupBaseS).
 fn hpke_setup_base_s(
-    pkR: const u8[32]&,
-    info: const u8[:],
-    kem_id: u16,
-    kdf_id: u16,
-    aead_id: u16,
+    pkR:          const u8[32]&,
+    info:         const u8[:],
+    kem_id:       u16,
+    kdf_id:       u16,
+    aead_id:      u16,
     ephemeral_sk: const u8[32]&,
-    out_enc: u8[32]&,
-    out_ctx: HpkeContext&,
+    out_enc:      u8[32]&,
+    out_ctx:      HpkeContext&,
 ) -> bool {
     guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
@@ -147,10 +148,8 @@ fn hpke_setup_base_s(
     // key_schedule_context = mode (1B) || psk_id_hash (32B) || info_hash (32B)
     var ks_context: u8[65] = [0; 65];
     ks_context[0] = HPKE_MODE_BASE;
-    for i in 32 {
-        ks_context[1 + i] = psk_id_hash[i];
-        ks_context[33 + i] = info_hash[i];
-    }
+    core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
+    core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
     // secret = LabeledExtract(shared_secret, "secret", "")
     let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
@@ -167,20 +166,47 @@ fn hpke_setup_base_s(
     out_ctx.nonce_len = nonce_len;
     out_ctx.seq = 0;
 
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "key", ks_context[..], key_len, out_ctx.key[..key_len]) else { return false; }
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "base_nonce", ks_context[..], nonce_len, out_ctx.base_nonce[..nonce_len]) else { return false; }
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "exp", ks_context[..], 32, out_ctx.exporter_secret[..]) else { return false; }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "key",
+        ks_context[..],
+        key_len,
+        out_ctx.key[..key_len],
+    ) else {
+        return false;
+    }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "base_nonce",
+        ks_context[..],
+        nonce_len,
+        out_ctx.base_nonce[..nonce_len],
+    ) else {
+        return false;
+    }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "exp",
+        ks_context[..],
+        32,
+        out_ctx.exporter_secret[..],
+    ) else {
+        return false;
+    }
 
     return true;
 }
 
 // Sets up a base-mode recipient context (SetupBaseR).
 fn hpke_setup_base_r(
-    enc: const u8[32]&,
-    skR: const u8[32]&,
-    info: const u8[:],
-    kem_id: u16,
-    kdf_id: u16,
+    enc:     const u8[32]&,
+    skR:     const u8[32]&,
+    info:    const u8[:],
+    kem_id:  u16,
+    kdf_id:  u16,
     aead_id: u16,
     out_ctx: HpkeContext&,
 ) -> bool {
@@ -203,10 +229,8 @@ fn hpke_setup_base_r(
 
     var ks_context: u8[65] = [0; 65];
     ks_context[0] = HPKE_MODE_BASE;
-    for i in 32 {
-        ks_context[1 + i] = psk_id_hash[i];
-        ks_context[33 + i] = info_hash[i];
-    }
+    core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
+    core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
     let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
 
@@ -221,9 +245,36 @@ fn hpke_setup_base_r(
     out_ctx.nonce_len = nonce_len;
     out_ctx.seq = 0;
 
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "key", ks_context[..], key_len, out_ctx.key[..key_len]) else { return false; }
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "base_nonce", ks_context[..], nonce_len, out_ctx.base_nonce[..nonce_len]) else { return false; }
-    guard hpke_labeled_expand(hpke_suite_id[..], secret[..], "exp", ks_context[..], 32, out_ctx.exporter_secret[..]) else { return false; }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "key",
+        ks_context[..],
+        key_len,
+        out_ctx.key[..key_len],
+    ) else {
+        return false;
+    }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "base_nonce",
+        ks_context[..],
+        nonce_len,
+        out_ctx.base_nonce[..nonce_len],
+    ) else {
+        return false;
+    }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..],
+        secret[..],
+        "exp",
+        ks_context[..],
+        32,
+        out_ctx.exporter_secret[..],
+    ) else {
+        return false;
+    }
 
     return true;
 }
@@ -243,9 +294,9 @@ fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
 
 // Encrypts plaintext with current context key/nonce, increments seq, and appends ciphertext + 16B tag.
 fn hpke_seal(
-    ctx: HpkeContext&,
-    aad: const u8[:],
-    pt: const u8[:],
+    ctx:    HpkeContext&,
+    aad:    const u8[:],
+    pt:     const u8[:],
     out_ct: u8[>..]&,
 ) -> bool {
     let nonce = hpke_compute_nonce(ctx);
@@ -271,10 +322,10 @@ fn hpke_seal(
 
 // Decrypts ciphertext + 16B tag with current context key/nonce, increments seq.
 fn hpke_open(
-    ctx: HpkeContext&,
-    aad: const u8[:],
+    ctx:         HpkeContext&,
+    aad:         const u8[:],
     ct_with_tag: const u8[:],
-    out_pt: u8[>..]&,
+    out_pt:      u8[>..]&,
 ) -> bool {
     guard ct_with_tag.len >= 16 else { return false; }
     let ct_len = ct_with_tag.len - 16;
@@ -300,14 +351,14 @@ fn hpke_open(
 
 // Single-shot seal for ECH: generates ephemeral keys, encapsulates, and seals in one pass.
 fn hpke_seal_base(
-    pkR: const u8[32]&,
-    info: const u8[:],
-    aad: const u8[:],
-    pt: const u8[:],
+    pkR:          const u8[32]&,
+    info:         const u8[:],
+    aad:          const u8[:],
+    pt:           const u8[:],
     ephemeral_sk: const u8[32]&,
-    aead_id: u16,
-    out_enc: u8[32]&,
-    out_ct: u8[>..]&,
+    aead_id:      u16,
+    out_enc:      u8[32]&,
+    out_ct:       u8[>..]&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_s(
@@ -327,13 +378,13 @@ fn hpke_seal_base(
 
 // Single-shot open for ECH recipient.
 fn hpke_open_base(
-    enc: const u8[32]&,
-    skR: const u8[32]&,
-    info: const u8[:],
-    aad: const u8[:],
+    enc:         const u8[32]&,
+    skR:         const u8[32]&,
+    info:        const u8[:],
+    aad:         const u8[:],
     ct_with_tag: const u8[:],
-    aead_id: u16,
-    out_pt: u8[>..]&,
+    aead_id:     u16,
+    out_pt:      u8[>..]&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_r(

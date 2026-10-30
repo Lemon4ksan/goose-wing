@@ -13,25 +13,25 @@ import core from "../..";
 import wing from "../..";
 
 fn encode_client_h2_request<B>(
-    dt: internal::DynamicTable&,
+    dt:        internal::DynamicTable&,
     stream_id: u32,
-    method: const u8[:],
-    path: const u8[:],
-    scheme: const u8[:],
+    method:    const u8[:],
+    path:      const u8[:],
+    scheme:    const u8[:],
     authority: const u8[:],
-    out: B&,
+    out:       B&,
 ) {
     var hpack_block: u8[..512] = [];
-    internal::encode_hpack_field(dt, hpack_block, ":method", method, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":path", path, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":authority", authority, true, false);
+    internal::encode_hpack_field(dt, hpack_block, ":method", method, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":path", path, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
 
     let hdr = internal::FrameHeader {
-        length: hpack_block.len as u32,
+        length:     hpack_block.len as u32,
         frame_type: internal::FRAME_HEADERS,
-        flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-        stream_id: stream_id,
+        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
@@ -49,10 +49,10 @@ fn test_h2_capacity_lifecycle() {
     var init_wire: u8[..64] = [];
     init_wire.append(internal::H2_CLIENT_PREFACE[..]);
     let set_hdr = internal::FrameHeader {
-        length: 0,
+        length:     0,
         frame_type: internal::FRAME_SETTINGS,
-        flags: 0,
-        stream_id: 0,
+        flags:      0,
+        stream_id:  0,
     };
     internal::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..4096] = [];
@@ -86,9 +86,9 @@ fn test_h2_capacity_lifecycle() {
 fn test_h3_capacity_lifecycle() {
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
-        max_field_section_size: 65536,
-        qpack_blocked_streams: 16,
-        enable_connect_protocol: 1,
+        max_field_section_size:   65536,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
     };
     var server_conn = internal::new_h3_server_connection(settings);
 

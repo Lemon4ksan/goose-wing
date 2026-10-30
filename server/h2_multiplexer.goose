@@ -226,17 +226,19 @@ fn emit_response_headers<B>(
 
     var status_buf: u8[..16] = [];
     format(status_buf, res.status_code as i64);
-    encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], true, false);
+    encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], HpackIndexing.Incremental, false);
 
     if sess.server_name.len > 0 {
-        encode_hpack_field(sess.hpack_enc, hpack_block, "server", sess.server_name[..], true, false);
+        encode_hpack_field(
+            sess.hpack_enc, hpack_block, "server", sess.server_name[..], HpackIndexing.Incremental, false,
+        );
     }
 
     let is_grpc = starts_with_fold(res.header("content-type"), "application/grpc");
     if !is_grpc && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
         format(cl_buf, res.body.len);
-        encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], true, false);
+        encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], HpackIndexing.Incremental, false);
     }
 
     for &hdr in res.headers {
@@ -254,7 +256,9 @@ fn emit_response_headers<B>(
                 let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
                 lower_name.push(lc);
             }
-            encode_hpack_field(sess.hpack_enc, hpack_block, lower_name[..], val_slice, true, false);
+            encode_hpack_field(
+                sess.hpack_enc, hpack_block, lower_name[..], val_slice, HpackIndexing.Incremental, false,
+            );
         }
     }
 
@@ -331,7 +335,9 @@ fn emit_response_trailers<B>(
                 let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
                 lower_name.push(lc);
             }
-            encode_hpack_field(sess.hpack_enc, hpack_block, lower_name[..], val_slice, true, false);
+            encode_hpack_field(
+                sess.hpack_enc, hpack_block, lower_name[..], val_slice, HpackIndexing.Incremental, false,
+            );
         }
     }
 

@@ -54,18 +54,18 @@ fn test_h2_socket_drip() {
     assert(ok_init);
 
     // Prepare complete HEADERS frame for stream 1
-    var full_req: u8[..256] = [];
+    var full_req:    u8[..256] = [];
     var hpack_block: u8[..128] = [];
-    internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", true, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", true, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", true, false);
+    internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
 
     let req_hdr = internal::FrameHeader {
-        length: hpack_block.len as u32,
+        length:     hpack_block.len as u32,
         frame_type: internal::FRAME_HEADERS,
-        flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-        stream_id: 1,
+        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        stream_id:  1,
     };
     internal::encode_frame_header_to(req_hdr, full_req);
     full_req.append(hpack_block[..]);

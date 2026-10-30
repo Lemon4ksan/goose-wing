@@ -114,6 +114,10 @@ fn u8_to_tls_alert(code: u8) -> TlsAlert, bool {
 // - Alert records MUST be exactly 2 bytes (level + description).
 // - Alert level MUST be 1 (warning) or 2 (fatal).
 // - In TLS 1.3, warning alerts other than close_notify (0) and user_canceled (90) MUST be treated as fatal.
+//
+// Example:
+//   data = [0x02, 0x31] (fatal, decode_error)
+//   returns: level = 2, alert = TlsAlert.DecodeError, is_fatal = true, ok = true
 fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
     guard data.len == 2 else {
         return 0, TlsAlert.DecodeError, true, false;
@@ -150,6 +154,7 @@ inline fn cursor_from(buf: const u8[:]) -> ByteCursor {
 }
 
 inline fn cursor_len(c: const ByteCursor&) -> i64 {
+    guard c.buf.len >= 0 else { return 0; }
     return c.buf.len;
 }
 
@@ -231,7 +236,7 @@ fn get_last_u8(c: ByteCursor&, out: u8&) -> bool {
 
 struct ByteBuilder {
     offsets: i64[..8] = [],
-    buf: u8[>..] = [],
+    buf:     u8[>..]  = [],
 }
 
 fn builder_init() -> ByteBuilder {
@@ -341,23 +346,23 @@ fn finish_u24_prefix(b: ByteBuilder&) -> bool {
 
 // ---- 3. TLS Record Layer Framing & Invariants (RFC 8446 Section 5) ---------
 
-const RECORD_BUFSIZE_IN: i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
-const RECORD_BUFSIZE_OUT: i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
-const MAX_RECORD_PLAINTEXT_LEN: i64 = 16384;
+const RECORD_BUFSIZE_IN:         i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
+const RECORD_BUFSIZE_OUT:        i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
+const MAX_RECORD_PLAINTEXT_LEN:  i64 = 16384;
 const MAX_RECORD_CIPHERTEXT_LEN: i64 = 16640; // 2^14 + 256
-const MAX_INNER_PLAINTEXT_LEN: i64 = 16624; // 16640 - 16 (AEAD tag) per RFC 8446 §5.1 & §5.4
-const TLS_RECORD_HEADER_LEN: i64 = 5;
+const MAX_INNER_PLAINTEXT_LEN:   i64 = 16624; // 16640 - 16 (AEAD tag) per RFC 8446 §5.1 & §5.4
+const TLS_RECORD_HEADER_LEN:     i64 = 5;
 
-const MAX_EMPTY_RECORDS: i32 = 32; // BoringSSL kMaxEmptyRecords DoS defense
+const MAX_EMPTY_RECORDS:      i32 = 32; // BoringSSL kMaxEmptyRecords DoS defense
 const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
 
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC: u8 = 0x14;
-const CONTENT_TYPE_ALERT: u8 = 0x15;
-const CONTENT_TYPE_HANDSHAKE: u8 = 0x16;
-const CONTENT_TYPE_APPLICATION_DATA: u8 = 0x17;
+const CONTENT_TYPE_ALERT:              u8 = 0x15;
+const CONTENT_TYPE_HANDSHAKE:          u8 = 0x16;
+const CONTENT_TYPE_APPLICATION_DATA:   u8 = 0x17;
 
 const LEGACY_RECORD_VERSION_TLS12: u16 = 0x0303;
-const TLS13_VERSION: u16 = 0x0304;
+const TLS13_VERSION:               u16 = 0x0304;
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
@@ -400,7 +405,7 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
 
-    var inner_type: u8 = 0;
+    var inner_type:  u8  = 0;
     var content_len: i64 = 0;
     var found = false;
 
@@ -458,12 +463,12 @@ fn secure_wipe_buffer(buf: u8[:]) {
 //    - Tag verification failure -> BadRecordMac.
 // 2. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
 fn tls_record_decrypt_aes128_gcm(
-    key: const u8[16]&,
-    iv: const u8[12]&,
-    seq_num: u64,
-    record_header: const u8[:],
+    key:            const u8[16]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    record_header:  const u8[:],
     record_payload: const u8[:],
-    out_plaintext: u8[>..]&,
+    out_plaintext:  u8[>..]&,
 ) -> u8, TlsAlert {
     out_plaintext.clear();
     guard record_header.len == 5 else {
@@ -509,9 +514,9 @@ fn tls_record_decrypt_aes128_gcm(
 
 // DoS filter tracking consecutive empty records, early data skipped volume, and CCS records.
 struct RecordFilterState {
-    empty_records_count: i32 = 0,
+    empty_records_count:      i32 = 0,
     early_data_skipped_bytes: i64 = 0,
-    ccs_count: i32 = 0,
+    ccs_count:                i32 = 0,
 }
 
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
@@ -561,6 +566,10 @@ fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u1
 }
 
 // Parses 5-byte record header and validates RFC 8446 length bounds and legacy version.
+//
+// Example:
+//   hdr_bytes = [0x17, 0x03, 0x03, 0x00, 0x10]
+//   returns: content_type = 23, version = 0x0303, length = 16, alert = TlsAlert.CloseNotify, ok = true
 fn parse_tls_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, TlsAlert, bool {
     guard hdr_bytes.len >= 5 else {
         return 0, 0, 0, TlsAlert.DecodeError, false;
@@ -602,8 +611,8 @@ const MAX_CCS_RECORDS: i32 = 1;
 //    Any subsequent CCS record triggers UnexpectedMessage.
 // 3. Payload must be exactly 1 byte of value 0x01. If wrong length -> DecodeError; wrong value -> UnexpectedMessage.
 fn check_change_cipher_spec_record(
-    state: RecordFilterState&,
-    payload: const u8[:],
+    state:            RecordFilterState&,
+    payload:          const u8[:],
     handshake_active: bool,
 ) -> TlsAlert {
     guard handshake_active else {
@@ -661,16 +670,16 @@ fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool
 
 // Connection container for QUIC Crypto state machine isolation.
 struct QuicCryptoConn {
-    read_level: QuicEncryptionLevel = QuicEncryptionLevel.Initial,
-    write_level: QuicEncryptionLevel = QuicEncryptionLevel.Initial,
-    events: QuicOutputEvent[..8] = [],
+    read_level:  QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    write_level: QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    events:      QuicOutputEvent[..8] = [],
 }
 
 fn new_quic_crypto_conn() -> QuicCryptoConn {
     return QuicCryptoConn {
-        read_level: QuicEncryptionLevel.Initial,
+        read_level:  QuicEncryptionLevel.Initial,
         write_level: QuicEncryptionLevel.Initial,
-        events: [],
+        events:      [],
     };
 }
 
@@ -694,14 +703,14 @@ fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: co
 const MAX_QUIC_CRYPTO_BUFFER_LEN: i64 = 16384; // 16KB max handshake flight per encryption level
 
 struct QuicCryptoStream {
-    consumed_offset: u64 = 0,
-    buf: u8[..16384] = [],
+    consumed_offset: u64         = 0,
+    buf:             u8[..16384] = [],
 }
 
 fn new_quic_crypto_stream() -> QuicCryptoStream {
     return QuicCryptoStream {
         consumed_offset: 0,
-        buf: [],
+        buf:             [],
     };
 }
 
@@ -717,7 +726,7 @@ const MAX_QUIC_VARINT: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 §16 & §
 fn quic_crypto_stream_ingest(
     stream: QuicCryptoStream&,
     offset: u64,
-    data: const u8[:],
+    data:   const u8[:],
 ) -> bool, i64 {
     // 1. Integer overflow check: offset + data.len must not wrap around u64 or exceed 2^62 - 1
     guard offset <= MAX_QUIC_VARINT else { return false, 0; }

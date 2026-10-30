@@ -136,7 +136,7 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 // - Redundant leading zeros in long form (e.g. 0x82 0x00 0x80) are strictly FORBIDDEN.
 // - Reserved initial octet 0xFF (11111111_2) is strictly FORBIDDEN (X.690 §8.1.3.5(c)).
 // - Enforces non-negative 31-bit bounds (0..0x7FFFFFFF) to prevent integer overflows.
-fn parse_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
+fn read_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     var length: i64 = 0;
     var i:      i64 = 0;
@@ -165,7 +165,7 @@ fn get_asn1_length(c: ByteCursor&, out_len: i64&) -> bool {
     let num_bytes = (b0 & 0x7F) as i64;
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     guard cursor_len(c) >= num_bytes else { return false; }
-    return parse_asn1_long_length(c, num_bytes, out_len);
+    return read_asn1_long_length(c, num_bytes, out_len);
 }
 
 // Consumes any ASN.1 TLV element, returning tag and value cursor.
@@ -264,6 +264,11 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
 
 // ---- 3. Date & Time Parser (UTCTime & GeneralizedTime) -----------------------
 
+// Parses a 2-digit decimal integer from a slice at the given offset.
+//
+// Example:
+//   buf = "20261028", off = 2
+//   returns: val = 26, ok = true
 fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
     guard off >= 0 && off <= buf.len - 2 else { return 0, false; }
     let c1 = buf[off];
@@ -284,7 +289,14 @@ fn validate_time_fields(year: i64, month: i64, day: i64, hour: i64, min: i64, se
     return true;
 }
 
-fn civil_to_epoch_seconds(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64, bool {
+fn civil_to_epoch_seconds(
+    year:  i64,
+    month: i64,
+    day:   i64,
+    hour:  i64,
+    min:   i64,
+    sec:   i64,
+) -> i64, bool {
     guard validate_time_fields(year, month, day, hour, min, sec) else { return 0, false; }
     let days = core::civil_to_days(year, month, day);
     let total_secs = days * 86400 + hour * 3600 + min * 60 + sec;
@@ -296,6 +308,9 @@ fn civil_to_epoch_seconds(year: i64, month: i64, day: i64, hour: i64, min: i64, 
 // - Conforming systems MUST interpret YY >= 50 as 19YY (1950..1999) and YY < 50 as 20YY (2000..2049).
 // - Dates in the year 2050 or later MUST NOT be encoded in UTCTime.
 // - Full date and leap-year validation.
+// Example:
+//   time_bytes = "261028000000Z"
+//   returns: epoch_secs = 1793145600, ok = true
 fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 13 && time_bytes[12] == 'Z' else { return 0, false; }
     let y2, ok_y = parse_2digit(time_bytes, 0);
@@ -322,6 +337,9 @@ fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
 // - Must be exactly 15 bytes ending with 'Z'.
 // - Fractional seconds are strictly FORBIDDEN.
 // - Full date and leap-year validation.
+// Example:
+//   time_bytes = "20261028000000Z"
+//   returns: epoch_secs = 1793145600, ok = true
 fn parse_generalized_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 15 && time_bytes[14] == 'Z' else { return 0, false; }
     let y1, ok_y1 = parse_2digit(time_bytes, 0);
@@ -345,6 +363,9 @@ fn parse_generalized_time(time_bytes: const u8[:]) -> i64, bool {
 }
 
 // Parses UTCTime ("YYMMDDHHMMSSZ") or GeneralizedTime ("YYYYMMDDHHMMSSZ") to Unix timestamp seconds.
+// Example:
+//   time_tag = ASN1_TAG_UTC_TIME, time_bytes = "261028000000Z"
+//   returns: epoch_secs = 1793145600, ok = true
 fn parse_asn1_time(time_tag: u8, time_bytes: const u8[:]) -> i64, bool {
     if time_tag == ASN1_TAG_UTC_TIME {
         return parse_utc_time(time_bytes);
@@ -415,7 +436,7 @@ struct ParsedCert {
     signature_value:                  Span16 = Span16 { offset: 0, length: 0 },
 }
 
-fn parse_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var serial = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_INTEGER, serial) { return false; }
     if !validate_asn1_integer(serial.buf, true) { return false; }
@@ -423,7 +444,7 @@ fn parse_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert
     return true;
 }
 
-fn parse_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var sig_alg = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, sig_alg) { return false; }
     var sig_oid = cursor_from(raw_cert[..0]);
@@ -432,7 +453,7 @@ fn parse_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
     return true;
 }
 
-fn parse_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var validity = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, validity) { return false; }
     var nb_val = cursor_from(raw_cert[..0]);
@@ -454,7 +475,7 @@ fn parse_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCe
     return true;
 }
 
-fn parse_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var spki = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, spki) { return false; }
     out.spki_raw = make_span(raw_cert, spki.buf);
@@ -472,7 +493,7 @@ fn parse_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&)
     return true;
 }
 
-fn parse_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) {
+fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) {
     while cursor_len(tbs_seq) > 0 {
         var ext_container = cursor_from(raw_cert[..0]);
         var ext_tag: u8 = 0;
@@ -481,7 +502,7 @@ fn parse_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: Parsed
             var ext_seq = cursor_from(raw_cert[..0]);
             if get_asn1_element(ext_container, ASN1_TAG_SEQUENCE, ext_seq) {
                 out.extensions_raw = make_span(raw_cert, ext_seq.buf);
-                parse_cert_extensions(raw_cert, ext_seq, out);
+                read_cert_extensions(raw_cert, ext_seq, out);
             }
         }
     }
@@ -521,9 +542,9 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
 
 fn x509_read_tbs_components(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     guard x509_skip_tbs_version(tbs_seq) else { return false; }
-    if !parse_tbs_serial(raw_cert, tbs_seq, out) { return false; }
-    if !parse_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
-    return parse_tbs_identity(raw_cert, tbs_seq, out);
+    if !read_tbs_serial(raw_cert, tbs_seq, out) { return false; }
+    if !read_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
+    return read_tbs_identity(raw_cert, tbs_seq, out);
 }
 
 fn x509_read_outer_signature(raw_cert: const u8[:], cert_seq: ByteCursor&, out: ParsedCert&) -> bool {
@@ -556,19 +577,19 @@ fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
     return true;
 }
 
-fn parse_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
     var issuer = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, issuer) { return false; }
     out.issuer_raw = make_span(raw_cert, issuer.buf);
 
-    if !parse_tbs_validity(raw_cert, tbs_seq, out) { return false; }
+    if !read_tbs_validity(raw_cert, tbs_seq, out) { return false; }
 
     var subject = cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, ASN1_TAG_SEQUENCE, subject) { return false; }
     out.subject_raw = make_span(raw_cert, subject.buf);
 
-    if !parse_tbs_spki(raw_cert, tbs_seq, out) { return false; }
-    parse_tbs_extensions(raw_cert, tbs_seq, out);
+    if !read_tbs_spki(raw_cert, tbs_seq, out) { return false; }
+    read_tbs_extensions(raw_cert, tbs_seq, out);
     return true;
 }
 
@@ -730,7 +751,7 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
-fn parse_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: ParsedCert&) {
+fn read_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: ParsedCert&) {
     while cursor_len(ext_seq) > 0 {
         var single_ext = cursor_from(ext_seq.buf[..0]);
         if !get_asn1_element(ext_seq, ASN1_TAG_SEQUENCE, single_ext) { break; }
@@ -912,7 +933,13 @@ struct SanEntry {
     val:      const u8[:] = [],
 }
 
-fn x509_process_ipv4_char(b: u8, octet_idx: i64&, current: u32&, digits: i64&, out_ip: u8[4]&) -> bool {
+fn x509_process_ipv4_char(
+    b:         u8,
+    octet_idx: i64&,
+    current:   u32&,
+    digits:    i64&,
+    out_ip:    u8[4]&,
+) -> bool {
     if b == '.' {
         guard digits > 0 && current <= 255 && octet_idx < 3 else { return false; }
         out_ip[octet_idx] = current as u8;
@@ -928,6 +955,9 @@ fn x509_process_ipv4_char(b: u8, octet_idx: i64&, current: u32&, digits: i64&, o
 }
 
 // Parses decimal IPv4 octets into u8[4]
+// Example:
+//   str = "192.168.1.1"
+//   returns: ok = true, out_ip = [192, 168, 1, 1]
 fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
     var octet_idx: i64 = 0;
     var current:   u32 = 0;
@@ -1016,6 +1046,27 @@ fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanTy
 // - SEQUENCE SIZE (1..MAX) OF GeneralName: empty SAN sequence is strictly FORBIDDEN.
 // - iPAddress MUST be exactly 4 octets (IPv4) or 16 octets (IPv6).
 // - dNSName MUST be valid preferred name syntax.
+// Example:
+fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> bool {
+    var tag: u8 = 0;
+    var elem = cursor_from(names_seq.buf[..0]);
+    guard get_any_asn1_element(names_seq, tag, elem) else { return false; }
+
+    let tag_num = tag & 0x1F;
+    var st = SanType.Other;
+    guard x509_classify_san_element(tag_num, elem.buf, st) else { return false; }
+
+    guard out_sans.len < out_sans.cap else { return false; }
+    out_sans.push(SanEntry {
+        san_type: st,
+        val:      elem.buf,
+    });
+    return true;
+}
+
+// Example:
+//   san_der = 0x30 0x0E 0x82 0x0C "example.com"
+//   returns: ok = true, out_sans contains SanType.Dns "example.com"
 fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool {
     var c = cursor_from(san_der);
     var names_seq = cursor_from(san_der[..0]);
@@ -1025,20 +1076,7 @@ fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool 
 
     var count: i64 = 0;
     while cursor_len(names_seq) > 0 {
-        var tag: u8 = 0;
-        var elem = cursor_from(names_seq.buf[..0]);
-        if !get_any_asn1_element(names_seq, tag, elem) { return false; }
-
-        let tag_num = tag & 0x1F;
-        var st = SanType.Other;
-        guard x509_classify_san_element(tag_num, elem.buf, st) else { return false; }
-
-        if out_sans.len < out_sans.cap {
-            out_sans.push(SanEntry {
-                san_type: st,
-                val:      elem.buf,
-            });
-        }
+        guard x509_parse_single_san(names_seq, out_sans) else { return false; }
         count++;
     }
     return count > 0;
@@ -1174,7 +1212,9 @@ fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]
 // Candidate IP is 4 octets (IPv4) or 16 octets (IPv6).
 // Constraint MUST be 8 octets (IPv4) or 32 octets (IPv6): IP || Subnet Mask.
 fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) -> bool {
-    guard (candidate_ip.len == 4 && constraint.len == 8) || (candidate_ip.len == 16 && constraint.len == 32) else { return false; }
+    let is_ipv4 = candidate_ip.len == 4 && constraint.len == 8;
+    let is_ipv6 = candidate_ip.len == 16 && constraint.len == 32;
+    guard is_ipv4 || is_ipv6 else { return false; }
     let half = candidate_ip.len;
     let subnet_ip = constraint[..half];
     let mask = constraint[half..];
@@ -1318,14 +1358,13 @@ fn x509_parse_general_subtree(
     guard x509_parse_general_subtree_base(subtree, st, base_elem) else { return false; }
     guard x509_parse_general_subtree_bounds(subtree) else { return false; }
 
-    if out_constraints.len < out_constraints.cap {
-        let span = make_span(nc_der, base_elem.buf);
-        out_constraints.push(NameConstraintEntry {
-            san_type:    st,
-            is_excluded: is_excluded,
-            val:         span_slice(nc_der, span),
-        });
-    }
+    guard out_constraints.len < out_constraints.cap else { return false; }
+    let span = make_span(nc_der, base_elem.buf);
+    out_constraints.push(NameConstraintEntry {
+        san_type:    st,
+        is_excluded: is_excluded,
+        val:         span_slice(nc_der, span),
+    });
     return true;
 }
 
@@ -1355,6 +1394,9 @@ fn x509_parse_subtrees_sequence(
 
 // Parses NameConstraints extension (RFC 5280 §4.2.1.10) into bounded stack storage.
 // Enforces that empty NameConstraints, non-contiguous masks, non-zero minimums, or present maximums are rejected.
+// Example:
+//   nc_der = 0x30 ... (DER encoded NameConstraints sequence)
+//   returns: ok = true, out_constraints filled with permitted/excluded subtrees
 fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEntry[..16]&) -> bool {
     var c = cursor_from(nc_der);
     var nc_seq = cursor_from(nc_der[..0]);
@@ -1372,7 +1414,9 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
         let is_permitted = (tag == 0xA0);
         guard is_excluded || is_permitted else { return false; }
 
-        guard x509_parse_subtrees_sequence(nc_der, subtrees_elem, is_excluded, out_constraints, count) else { return false; }
+        guard x509_parse_subtrees_sequence(
+            nc_der, subtrees_elem, is_excluded, out_constraints, count,
+        ) else { return false; }
     }
     return count > 0;
 }
@@ -1427,7 +1471,12 @@ fn check_name_constraints(
     return !has_permitted || matched_permitted;
 }
 
-fn x509_is_cert_duplicate(raw_j: const u8[:], cert_j: const ParsedCert&, raw_k: const u8[:], cert_k: const ParsedCert&) -> bool {
+fn x509_is_cert_duplicate(
+    raw_j:  const u8[:],
+    cert_j: const ParsedCert&,
+    raw_k:  const u8[:],
+    cert_k: const ParsedCert&,
+) -> bool {
     let s_j = span_slice(raw_j, cert_j.subject_raw);
     let spki_j = span_slice(raw_j, cert_j.spki_raw);
     let s_k = span_slice(raw_k, cert_k.subject_raw);
@@ -1606,7 +1655,8 @@ fn verify_certificate_chain(
         return TlsAlert.BadCertificate;
     }
 
-    let is_direct_trust_anchor = (chain_certs.len == 1 && matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]));
+    let is_direct_trust_anchor = chain_certs.len == 1 &&
+        matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]);
 
     for i in chain_certs.len {
         let cert_alert = x509_validate_single_chain_cert(
@@ -1811,6 +1861,9 @@ fn x509_parse_ocsp_basic_response(
 }
 
 // Parses an OCSPResponse (RFC 6960 §4.2.1) with zero dynamic allocation.
+// Example:
+//   raw_ocsp = 0x30 ... (DER encoded OCSPResponse)
+//   returns: ok = true, out filled with status and cert status
 fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
     var c = cursor_from(raw_ocsp);
     var ocsp_seq = cursor_from(raw_ocsp[..0]);

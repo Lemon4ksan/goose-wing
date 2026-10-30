@@ -888,10 +888,10 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
         // HEADERS frame on stream 1 with END_STREAM set, but Content-Length: 10!
         var hpack_block: u8[>..] = [];
         var dt = internal::new_dynamic_table(4096);
-        internal::encode_hpack_field(dt, hpack_block, ":method", "POST", true, false);
-        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
-        internal::encode_hpack_field(dt, hpack_block, ":path", "/api", true, false);
-        internal::encode_hpack_field(dt, hpack_block, "content-length", "10", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hpack_block, ":path", "/api", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hpack_block, "content-length", "10", internal::HpackIndexing.Incremental, false);
 
         let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
@@ -939,7 +939,7 @@ fn test_h2_multiplexer_rfc9113_invariants(t: core::T&) {
         // HEADERS frame missing :path and :scheme
         var hpack_block: u8[>..] = [];
         var dt = internal::new_dynamic_table(4096);
-        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
 
         let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
@@ -1203,9 +1203,9 @@ fn test_h2_multiplexer_trailers(t: core::T&) {
         // Client request on stream 1
         var hpack_block: u8[>..] = [];
         var dt = internal::new_dynamic_table(4096);
-        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", true, false);
-        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", true, false);
-        internal::encode_hpack_field(dt, hpack_block, ":path", "/test", true, false);
+        internal::encode_hpack_field(dt, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hpack_block, ":path", "/test", internal::HpackIndexing.Incremental, false);
 
         let req_hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,

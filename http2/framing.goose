@@ -10,55 +10,55 @@ import core from "..";
 
 // ---- 1. frame types (rfc 9113 section 6 & rfc 9218 section 7.1) -------------
 
-const FRAME_DATA: u8 = 0x00;
-const FRAME_HEADERS: u8 = 0x01;
-const FRAME_PRIORITY: u8 = 0x02;
-const FRAME_RST_STREAM: u8 = 0x03;
-const FRAME_SETTINGS: u8 = 0x04;
-const FRAME_PUSH_PROMISE: u8 = 0x05;
-const FRAME_PING: u8 = 0x06;
-const FRAME_GOAWAY: u8 = 0x07;
-const FRAME_WINDOW_UPDATE: u8 = 0x08;
-const FRAME_CONTINUATION: u8 = 0x09;
-const FRAME_ALTSVC: u8 = 0x0A;          // RFC 7838 Section 4
-const FRAME_ORIGIN: u8 = 0x0C;          // RFC 8336 Section 2
+const FRAME_DATA:            u8 = 0x00;
+const FRAME_HEADERS:         u8 = 0x01;
+const FRAME_PRIORITY:        u8 = 0x02;
+const FRAME_RST_STREAM:      u8 = 0x03;
+const FRAME_SETTINGS:        u8 = 0x04;
+const FRAME_PUSH_PROMISE:    u8 = 0x05;
+const FRAME_PING:            u8 = 0x06;
+const FRAME_GOAWAY:          u8 = 0x07;
+const FRAME_WINDOW_UPDATE:   u8 = 0x08;
+const FRAME_CONTINUATION:    u8 = 0x09;
+const FRAME_ALTSVC:          u8 = 0x0A; // RFC 7838 Section 4
+const FRAME_ORIGIN:          u8 = 0x0C; // RFC 8336 Section 2
 const FRAME_PRIORITY_UPDATE: u8 = 0x10; // RFC 9218 Section 7.1
 
 // ---- 2. frame flags (rfc 9113 section 4.1) ----------------------------------
 
-const FLAG_END_STREAM: u8 = 0x01;
-const FLAG_ACK: u8 = 0x01;
+const FLAG_END_STREAM:  u8 = 0x01;
+const FLAG_ACK:         u8 = 0x01;
 const FLAG_END_HEADERS: u8 = 0x04;
-const FLAG_PADDED: u8 = 0x08;
-const FLAG_PRIORITY: u8 = 0x20;
+const FLAG_PADDED:      u8 = 0x08;
+const FLAG_PRIORITY:    u8 = 0x20;
 
 // ---- 3. error codes (rfc 9113 section 7) ------------------------------------
 
-const ERR_NO_ERROR: u32 = 0x00;
-const ERR_PROTOCOL_ERROR: u32 = 0x01;
-const ERR_INTERNAL_ERROR: u32 = 0x02;
-const ERR_FLOW_CONTROL_ERROR: u32 = 0x03;
-const ERR_SETTINGS_TIMEOUT: u32 = 0x04;
-const ERR_STREAM_CLOSED: u32 = 0x05;
-const ERR_FRAME_SIZE_ERROR: u32 = 0x06;
-const ERR_REFUSED_STREAM: u32 = 0x07;
-const ERR_CANCEL: u32 = 0x08;
-const ERR_COMPRESSION_ERROR: u32 = 0x09;
-const ERR_CONNECT_ERROR: u32 = 0x0A;
-const ERR_ENHANCE_YOUR_CALM: u32 = 0x0B;
+const ERR_NO_ERROR:            u32 = 0x00;
+const ERR_PROTOCOL_ERROR:      u32 = 0x01;
+const ERR_INTERNAL_ERROR:      u32 = 0x02;
+const ERR_FLOW_CONTROL_ERROR:  u32 = 0x03;
+const ERR_SETTINGS_TIMEOUT:    u32 = 0x04;
+const ERR_STREAM_CLOSED:       u32 = 0x05;
+const ERR_FRAME_SIZE_ERROR:    u32 = 0x06;
+const ERR_REFUSED_STREAM:      u32 = 0x07;
+const ERR_CANCEL:              u32 = 0x08;
+const ERR_COMPRESSION_ERROR:   u32 = 0x09;
+const ERR_CONNECT_ERROR:       u32 = 0x0A;
+const ERR_ENHANCE_YOUR_CALM:   u32 = 0x0B;
 const ERR_INADEQUATE_SECURITY: u32 = 0x0C;
-const ERR_HTTP_1_1_REQUIRED: u32 = 0x0D;
+const ERR_HTTP_1_1_REQUIRED:   u32 = 0x0D;
 
 // ---- 4. settings identifiers (rfc 9113 section 6.5.2 & rfc 9218) -----------
 
-const SETTING_HEADER_TABLE_SIZE: u16 = 0x01;      // default 4096
-const SETTING_ENABLE_PUSH: u16 = 0x02;            // default 1
+const SETTING_HEADER_TABLE_SIZE:      u16 = 0x01; // default 4096
+const SETTING_ENABLE_PUSH:            u16 = 0x02; // default 1
 const SETTING_MAX_CONCURRENT_STREAMS: u16 = 0x03; // unlimited
-const SETTING_INITIAL_WINDOW_SIZE: u16 = 0x04;    // default 65535
-const SETTING_MAX_FRAME_SIZE: u16 = 0x05;         // default 16384
-const SETTING_MAX_HEADER_LIST_SIZE: u16 = 0x06;   // unlimited
-const SETTING_ENABLE_CONNECT_PROTO: u16 = 0x08;   // RFC 8441
-const SETTING_NO_RFC7540_PRIORITIES: u16 = 0x09;  // RFC 9218 Section 5.1
+const SETTING_INITIAL_WINDOW_SIZE:    u16 = 0x04; // default 65535
+const SETTING_MAX_FRAME_SIZE:         u16 = 0x05; // default 16384
+const SETTING_MAX_HEADER_LIST_SIZE:   u16 = 0x06; // unlimited
+const SETTING_ENABLE_CONNECT_PROTO:   u16 = 0x08; // RFC 8441
+const SETTING_NO_RFC7540_PRIORITIES:  u16 = 0x09; // RFC 9218 Section 5.1
 
 // Client connection preface (RFC 9113 Section 3.4)
 let H2_CLIENT_PREFACE: const u8[24] = [
@@ -69,14 +69,18 @@ let H2_CLIENT_PREFACE: const u8[24] = [
 // ---- 5. 9-byte frame header -------------------------------------------------
 
 struct FrameHeader {
-    length: u32 = 0,      // 24-bit big-endian unsigned
-    frame_type: u8 = 0,  // 8-bit wire frame type code
-    flags: u8 = 0,       // 8-bit type-specific bitmask
-    stream_id: u32 = 0,   // 31-bit stream identifier (R bit masked)
+    length:     u32 = 0,  // 24-bit big-endian unsigned
+    frame_type: u8  = 0, // 8-bit wire frame type code
+    flags:      u8  = 0, // 8-bit type-specific bitmask
+    stream_id:  u32 = 0,  // 31-bit stream identifier (R bit masked)
 }
 
 // Parses a 9-byte HTTP/2 binary frame header (RFC 9113 Section 4.1).
 // Masks out the reserved high bit (R) of the stream identifier.
+//
+// Example:
+//   buf = [0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]
+//   returns: FrameHeader { length: 4, frame_type: 0, flags: 1, stream_id: 1 }, ERR_NO_ERROR
 fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHeader, u32 {
     var hdr = FrameHeader { .. };
     guard buf.len >= 9 else {
@@ -203,6 +207,10 @@ fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -
 // ---- 6. payload extractors & padding validation ----------------------------
 
 // Strips PADDED flag length byte and trailing padding octets from frame payload.
+//
+// Example:
+//   hdr = FrameHeader { flags: FLAG_PADDED, length: 6 }, payload = [0x02, 'd', 'a', 't', 0x00, 0x00]
+//   returns: "dat", ERR_NO_ERROR
 fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -> const u8[:], u32 {
     if (hdr.flags & FLAG_PADDED) == 0 {
         return payload, ERR_NO_ERROR;
@@ -223,9 +231,13 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
 
 // Strips PADDED and PRIORITY fields from HEADERS frame payload.
 // Returns the raw HPACK header block fragment.
+//
+// Example:
+//   hdr = FrameHeader { flags: 0, length: 4 }, payload = [0x82, 0x86, 0x84, 0x41]
+//   returns: [0x82, 0x86, 0x84, 0x41], ERR_NO_ERROR
 fn extract_headers_frame_payload(
-    hdr: const FrameHeader&,
-    payload: const u8[:],
+    hdr:                   const FrameHeader&,
+    payload:               const u8[:],
     no_rfc7540_priorities: bool = true,
 ) -> const u8[:], u32 {
     let has_pad = (hdr.flags & FLAG_PADDED) != 0;
@@ -300,8 +312,12 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
 
 // Parses PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
 // Returns (prioritized_stream_id, PriorityParam, error_code).
+//
+// Example:
+//   payload = [0x00, 0x00, 0x00, 0x03, 'u', '=', '5']
+//   returns: 3, PriorityParam { urgency: 5, incremental: false }, ERR_NO_ERROR
 fn parse_priority_update_payload(
-    payload: const u8[:],
+    payload:             const u8[:],
     default_incremental: bool = false,
 ) -> u32, wing::PriorityParam, u32 {
     var p = wing::priority_default(default_incremental);

@@ -30,10 +30,10 @@ fn test_h2_padded_data_and_overflow() {
     // Encode via HPACK
     var dt = internal::new_dynamic_table(4096);
     var hdr_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, hdr_block, ":method", "POST", true, false);
-    internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, hdr_block, ":path", "/echo", true, false);
-    internal::encode_hpack_field(dt, hdr_block, "content-length", "5", true, false);
+    internal::encode_hpack_field(dt, hdr_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, ":path", "/echo", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, "content-length", "5", internal::HpackIndexing.Incremental, false);
 
     // Frame header for HEADERS on stream 1 with END_HEADERS (flags 0x04)
     var h1_frame: u8[>..] = [];
@@ -67,10 +67,10 @@ fn test_h2_padded_data_and_overflow() {
 
     // 4. Stream 3: Content-length overflow isolation test (RFC 9113 §8.1.2)
     var h3_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h3_block, ":method", "POST", true, false);
-    internal::encode_hpack_field(dt, h3_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, h3_block, ":path", "/test", true, false);
-    internal::encode_hpack_field(dt, h3_block, "content-length", "4", true, false);
+    internal::encode_hpack_field(dt, h3_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h3_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h3_block, ":path", "/test", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h3_block, "content-length", "4", internal::HpackIndexing.Incremental, false);
 
     var h3_frame: u8[>..] = [];
     let h3_len = h3_block.len as u32;

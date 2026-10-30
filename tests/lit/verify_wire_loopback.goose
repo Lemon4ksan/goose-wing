@@ -15,30 +15,30 @@ import wing from "../..";
 
 // Helper to encode a complete client HEADERS frame using HPACK
 fn encode_client_request_headers<B>(
-    dt: internal::DynamicTable&,
-    stream_id: u32,
-    method: const u8[:],
-    path: const u8[:],
-    scheme: const u8[:],
-    authority: const u8[:],
+    dt:         internal::DynamicTable&,
+    stream_id:  u32,
+    method:     const u8[:],
+    path:       const u8[:],
+    scheme:     const u8[:],
+    authority:  const u8[:],
     end_stream: bool,
-    out: B&,
+    out:        B&,
 ) {
     var hpack_block: u8[..512] = [];
-    internal::encode_hpack_field(dt, hpack_block, ":method", method, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":path", path, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, true, false);
-    internal::encode_hpack_field(dt, hpack_block, ":authority", authority, true, false);
+    internal::encode_hpack_field(dt, hpack_block, ":method", method, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":path", path, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hpack_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
 
     var flags: u8 = internal::FLAG_END_HEADERS;
     if end_stream {
         flags |= internal::FLAG_END_STREAM;
     }
     let hdr = internal::FrameHeader {
-        length: hpack_block.len as u32,
+        length:     hpack_block.len as u32,
         frame_type: internal::FRAME_HEADERS,
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
@@ -59,10 +59,10 @@ fn test_h2_wire_loopback() {
 
     // Client empty SETTINGS frame
     let set_hdr = internal::FrameHeader {
-        length: 0,
+        length:     0,
         frame_type: internal::FRAME_SETTINGS,
-        flags: 0,
-        stream_id: 0,
+        flags:      0,
+        stream_id:  0,
     };
     internal::encode_frame_header_to(set_hdr, client_to_server);
 
@@ -157,9 +157,9 @@ fn test_quic_wire_loopback() {
 fn test_h3_wire_loopback() {
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
-        max_field_section_size: 65536,
-        qpack_blocked_streams: 16,
-        enable_connect_protocol: 1,
+        max_field_section_size:   65536,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
     };
     var server_conn = internal::new_h3_server_connection(settings);
 

@@ -32,7 +32,7 @@ fn scan_frames(wire: const u8[:]) -> bool, bool, u32 {
     var has_rst = false;
     var has_goaway = false;
     var rst_sid: u32 = 0;
-    var p: i64 = 0;
+    var p:       i64 = 0;
     while p + 9 <= wire.len {
         let f_len = ((wire[p] as u32) << 16) | ((wire[p + 1] as u32) << 8) | wire[p + 2];
         let f_type = wire[p + 3];
@@ -90,8 +90,8 @@ fn test_missing_mandatory_pseudo_headers() {
     // Request missing :path (only :method and :scheme provided)
     var dt = internal::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h_block, ":method", "GET", true, false);
-    internal::encode_hpack_field(dt, h_block, ":scheme", "https", true, false);
+    internal::encode_hpack_field(dt, h_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1); // HEADERS + END_STREAM | END_HEADERS
@@ -121,10 +121,10 @@ fn test_content_length_end_stream_headers() {
     // HEADERS with END_STREAM but content-length: 10
     var dt = internal::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h_block, ":method", "GET", true, false);
-    internal::encode_hpack_field(dt, h_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, h_block, ":path", "/", true, false);
-    internal::encode_hpack_field(dt, h_block, "content-length", "10", true, false);
+    internal::encode_hpack_field(dt, h_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":path", "/", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, "content-length", "10", internal::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1); // HEADERS + END_STREAM | END_HEADERS
@@ -154,10 +154,10 @@ fn test_content_length_mismatch_data() {
     // HEADERS with content-length: 10, but NO END_STREAM
     var dt = internal::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h_block, ":method", "POST", true, false);
-    internal::encode_hpack_field(dt, h_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, h_block, ":path", "/post", true, false);
-    internal::encode_hpack_field(dt, h_block, "content-length", "10", true, false);
+    internal::encode_hpack_field(dt, h_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":path", "/post", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, "content-length", "10", internal::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     build_frame_header(h_frame, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS (no END_STREAM)
@@ -193,10 +193,10 @@ fn test_stream_slot_reclamation_on_error() {
     // Send HEADERS with invalid uppercase field name (RFC 9113 §8.2.1)
     var dt = internal::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h_block, ":method", "GET", true, false);
-    internal::encode_hpack_field(dt, h_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, h_block, ":path", "/", true, false);
-    internal::encode_hpack_field(dt, h_block, "Custom-Upper", "val", true, false);
+    internal::encode_hpack_field(dt, h_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, ":path", "/", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, h_block, "Custom-Upper", "val", internal::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1);

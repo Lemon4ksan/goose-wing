@@ -148,7 +148,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
         sub.assert_true(dt.count > 0, "entries successfully inserted");
         // Verify lookup still returns valid headers after arena usage
         var name_buf: u8[..32] = [];
-        var val_buf: u8[..64] = [];
+        var val_buf:  u8[..64] = [];
         let ok = internal::get_indexed_header(dt, 62, name_buf, val_buf);
         sub.assert_true(ok, "lookup after high-volume insertion succeeds");
         sub.assert_eq(name_buf[..], "x-header-key", "header name intact");
@@ -282,10 +282,10 @@ fn test_hpack_dynamic_table_and_header_blocks(t: core::T&) {
 fn test_binary_framing_and_rfc9218(t: core::T&) {
     t.run("FRAME-01: 9-Byte Frame Header Codec Roundtrip") { sub =>
         let orig_hdr = internal::FrameHeader {
-            length: 16384,
+            length:     16384,
             frame_type: internal::FRAME_DATA,
-            flags: internal::FLAG_END_STREAM,
-            stream_id: 101,
+            flags:      internal::FLAG_END_STREAM,
+            stream_id:  101,
         };
 
         var buf: u8[9] = [0; 9];
@@ -302,10 +302,10 @@ fn test_binary_framing_and_rfc9218(t: core::T&) {
 
     t.run("FRAME-02: PADDED Payload Extraction") { sub =>
         let hdr = internal::FrameHeader {
-            length: 12,
+            length:     12,
             frame_type: internal::FRAME_DATA,
-            flags: internal::FLAG_PADDED,
-            stream_id: 1,
+            flags:      internal::FLAG_PADDED,
+            stream_id:  1,
         };
         // Payload: 1 byte pad length (3), 8 bytes data, 3 bytes padding
         let payload: u8[12] = [
@@ -386,10 +386,10 @@ fn test_flow_control_and_session_state(t: core::T&) {
 
         // 1. Open stream 1
         let hdr_open = internal::FrameHeader {
-            length: 10,
+            length:     10,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         let err_open = internal::on_ingress_frame_header(sess, hdr_open, 0);
         sub.assert_eq(err_open, internal::ERR_NO_ERROR, "open stream 1");
@@ -725,19 +725,19 @@ fn test_anti_dos_mitigations(t: core::T&) {
 
 // Helper to encode a client request HEADERS frame
 fn encode_client_headers<B>(
-    dt: internal::DynamicTable&,
-    stream_id: u32,
-    method: const u8[:],
-    path: const u8[:],
-    authority: const u8[:],
+    dt:         internal::DynamicTable&,
+    stream_id:  u32,
+    method:     const u8[:],
+    path:       const u8[:],
+    authority:  const u8[:],
     end_stream: bool,
-    out: B&,
+    out:        B&,
 ) {
     var hdr_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, hdr_block, ":method", method, true, false);
-    internal::encode_hpack_field(dt, hdr_block, ":path", path, true, false);
-    internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
-    internal::encode_hpack_field(dt, hdr_block, ":authority", authority, true, false);
+    internal::encode_hpack_field(dt, hdr_block, ":method", method, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, ":path", path, internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+    internal::encode_hpack_field(dt, hdr_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
 
     var flags: u8 = internal::FLAG_END_HEADERS;
     if end_stream {
@@ -745,10 +745,10 @@ fn encode_client_headers<B>(
     }
 
     let hdr = internal::FrameHeader {
-        length: hdr_block.len as u32,
+        length:     hdr_block.len as u32,
         frame_type: internal::FRAME_HEADERS,
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hdr_block[..]);
@@ -758,10 +758,10 @@ fn encode_client_headers<B>(
 fn encode_client_data<B>(stream_id: u32, payload: const u8[:], end_stream: bool, out: B&) {
     let flags: u8 = if end_stream { internal::FLAG_END_STREAM } else { 0 };
     let hdr = internal::FrameHeader {
-        length: payload.len as u32,
+        length:     payload.len as u32,
         frame_type: internal::FRAME_DATA,
-        flags: flags,
-        stream_id: stream_id,
+        flags:      flags,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(payload);
@@ -769,19 +769,19 @@ fn encode_client_data<B>(stream_id: u32, payload: const u8[:], end_stream: bool,
 
 // Helper to encode client trailers in a HEADERS frame
 fn encode_client_trailers<B>(
-    dt: internal::DynamicTable&,
+    dt:        internal::DynamicTable&,
     stream_id: u32,
-    name: const u8[:],
-    value: const u8[:],
-    out: B&,
+    name:      const u8[:],
+    value:     const u8[:],
+    out:       B&,
 ) {
     var hdr_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, hdr_block, name, value, true, false);
+    internal::encode_hpack_field(dt, hdr_block, name, value, internal::HpackIndexing.Incremental, false);
     let hdr = internal::FrameHeader {
-        length: hdr_block.len as u32,
+        length:     hdr_block.len as u32,
         frame_type: internal::FRAME_HEADERS,
-        flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-        stream_id: stream_id,
+        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
     out.append(hdr_block[..]);
@@ -822,19 +822,19 @@ fn test_h2_handshake_and_settings(t: core::T&) {
 
         // Client SETTINGS (empty)
         let s_hdr = internal::FrameHeader {
-            length: 0,
+            length:     0,
             frame_type: internal::FRAME_SETTINGS,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(s_hdr, wire);
 
         // Client PING with 8-byte opaque data
         let p_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(p_hdr, wire);
         let ping_data: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
@@ -875,10 +875,10 @@ fn test_h2_handshake_and_settings(t: core::T&) {
         wire.append(internal::H2_CLIENT_PREFACE[..]);
 
         let p_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(p_hdr, wire);
         let ping_data: u8[8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
@@ -1056,10 +1056,10 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 
         // Encode full header block
         var hdr_block: u8[..512] = [];
-        internal::encode_hpack_field(client_hpack, hdr_block, ":method", "GET", true, false);
-        internal::encode_hpack_field(client_hpack, hdr_block, ":path", "/split/headers", true, false);
-        internal::encode_hpack_field(client_hpack, hdr_block, ":scheme", "https", true, false);
-        internal::encode_hpack_field(client_hpack, hdr_block, ":authority", "localhost", true, false);
+        internal::encode_hpack_field(client_hpack, hdr_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_hpack, hdr_block, ":path", "/split/headers", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_hpack, hdr_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_hpack, hdr_block, ":authority", "localhost", internal::HpackIndexing.Incremental, false);
 
         sub.assert_gt(hdr_block.len, 10, "Header block non-empty");
 
@@ -1069,20 +1069,20 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
         let part2 = hdr_block[10..];
 
         let h_hdr = internal::FrameHeader {
-            length: part1.len as u32,
+            length:     part1.len as u32,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_STREAM, // No FLAG_END_HEADERS!
-            stream_id: 1,
+            flags:      internal::FLAG_END_STREAM, // No FLAG_END_HEADERS!
+            stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
         wire.append(part1);
 
         // Frame 2: CONTINUATION (remaining bytes, flags: END_HEADERS)
         let c_hdr = internal::FrameHeader {
-            length: part2.len as u32,
+            length:     part2.len as u32,
             frame_type: internal::FRAME_CONTINUATION,
-            flags: internal::FLAG_END_HEADERS, // Terminal CONTINUATION frame
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS, // Terminal CONTINUATION frame
+            stream_id:  1,
         };
         internal::encode_frame_header_to(c_hdr, wire);
         wire.append(part2);
@@ -1110,10 +1110,10 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 
         // Frame 1: HEADERS without END_HEADERS
         let h_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_HEADERS,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
         let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
@@ -1121,10 +1121,10 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 
         // Frame 2: Zero-length non-terminal CONTINUATION frame (CVE-2024-2758 exploit attempt)
         let c_hdr = internal::FrameHeader {
-            length: 0,
+            length:     0,
             frame_type: internal::FRAME_CONTINUATION,
-            flags: 0, // No END_HEADERS!
-            stream_id: 1,
+            flags:      0, // No END_HEADERS!
+            stream_id:  1,
         };
         internal::encode_frame_header_to(c_hdr, wire);
 
@@ -1154,10 +1154,10 @@ fn test_h2_continuation_and_anti_dos(t: core::T&) {
 
         // Frame 2: Immediate RST_STREAM stream 1 (Rapid Reset attack pattern)
         let rst_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_RST_STREAM,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(rst_hdr, wire);
         let err_code: u8[4] = [0x00, 0x00, 0x00, 0x08]; // CANCEL (0x8)
@@ -1294,10 +1294,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wire);
 
         let wu_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_WINDOW_UPDATE,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(wu_hdr, wire);
         let zeros: u8[4] = [0, 0, 0, 0];
@@ -1328,10 +1328,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         var wire_ok: u8[>..] = [];
         wire_ok.append(internal::H2_CLIENT_PREFACE[..]);
         let s_hdr = internal::FrameHeader {
-            length: 6,
+            length:     6,
             frame_type: internal::FRAME_SETTINGS,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(s_hdr, wire_ok);
         core::append_u16_be(wire_ok, internal::SETTING_ENABLE_PUSH);
@@ -1389,10 +1389,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         var wire: u8[>..] = [];
         wire.append(internal::H2_CLIENT_PREFACE[..]);
         let prio_hdr = internal::FrameHeader {
-            length: 5,
+            length:     5,
             frame_type: internal::FRAME_PRIORITY,
-            flags: 0,
-            stream_id: 3,
+            flags:      0,
+            stream_id:  3,
         };
         internal::encode_frame_header_to(prio_hdr, wire);
         let prio_payload: u8[5] = [0x00, 0x00, 0x00, 0x03, 0x10];
@@ -1466,10 +1466,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         // Frame 1: HEADERS stream 1 WITHOUT FLAG_END_HEADERS
         let h_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_HEADERS,
-            flags: 0, // No END_HEADERS!
-            stream_id: 1,
+            flags:      0, // No END_HEADERS!
+            stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
         let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
@@ -1477,10 +1477,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         // Frame 2: Interleaved PING frame before END_HEADERS
         let ping_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(ping_hdr, wire);
         let ping_opaque: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -1508,10 +1508,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         // Unprompted CONTINUATION frame without preceding HEADERS
         let c_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_CONTINUATION,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(c_hdr, wire);
         let dummy: u8[4] = [0x82, 0x84, 0x86, 0x87];
@@ -1539,10 +1539,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         // Client sends PUSH_PROMISE (promised stream id = 2, dummy header fragment)
         let pp_hdr = internal::FrameHeader {
-            length: 5,
+            length:     5,
             frame_type: internal::FRAME_PUSH_PROMISE,
-            flags: internal::FLAG_END_HEADERS,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(pp_hdr, wire);
         let pp_payload: u8[5] = [0x00, 0x00, 0x00, 0x02, 0x82];
@@ -1570,10 +1570,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         // Frame 1: Valid SETTINGS ACK for server initial settings
         let ack_hdr1 = internal::FrameHeader {
-            length: 0,
+            length:     0,
             frame_type: internal::FRAME_SETTINGS,
-            flags: internal::FLAG_ACK,
-            stream_id: 0,
+            flags:      internal::FLAG_ACK,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(ack_hdr1, wire);
 
@@ -1609,10 +1609,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         // Send 65 PING frames in a single batch (exceeding MAX_PENDING_CTRL_FRAMES = 64)
         for i in 65 {
             let ping_hdr = internal::FrameHeader {
-                length: 8,
+                length:     8,
                 frame_type: internal::FRAME_PING,
-                flags: 0,
-                stream_id: 0,
+                flags:      0,
+                stream_id:  0,
             };
             internal::encode_frame_header_to(ping_hdr, wire);
             let ping_payload: u8[8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, (i & 0xFF) as u8];
@@ -1651,10 +1651,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         wire.append(internal::H2_CLIENT_PREFACE[..]);
 
         let h_hdr = internal::FrameHeader {
-            length: 2,
+            length:     2,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
         wire.push(0x82); // Indexed header: :method: GET (sets updates_allowed = false)
@@ -1681,10 +1681,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         wire.append(internal::H2_CLIENT_PREFACE[..]);
 
         let h_hdr = internal::FrameHeader {
-            length: 1,
+            length:     1,
             frame_type: internal::FRAME_HEADERS,
-            flags: internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
-            stream_id: 1,
+            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
         wire.push(0xBE); // 0x80 | 62: Indexed header lookup for index 62 when dynamic table is empty
@@ -1710,10 +1710,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         var wireA: u8[>..] = [];
         wireA.append(internal::H2_CLIENT_PREFACE[..]);
         let pu_hdrA = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_PRIORITY_UPDATE,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(pu_hdrA, wireA);
         let zeros: u8[4] = [0, 0, 0, 0]; // Prioritized stream 0
@@ -1731,10 +1731,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         var wireB: u8[>..] = [];
         wireB.append(internal::H2_CLIENT_PREFACE[..]);
         let pu_hdrB = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_PRIORITY_UPDATE,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(pu_hdrB, wireB);
         let stream2: u8[4] = [0, 0, 0, 2]; // Even stream ID
@@ -1756,10 +1756,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
 
         let pu_val: const u8[:] = "u=0, i";
         let pu_hdrC = internal::FrameHeader {
-            length: (4 + pu_val.len) as u32,
+            length:     (4 + pu_val.len) as u32,
             frame_type: internal::FRAME_PRIORITY_UPDATE,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(pu_hdrC, wireC);
         let stream1: u8[4] = [0, 0, 0, 1];
@@ -1790,10 +1790,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
             let s_id: u32 = ((i * 2) + 1) as u32;
             encode_client_headers(client_hpack, s_id, "GET", "/fast/reset", "localhost", true, wire);
             let rst_hdr = internal::FrameHeader {
-                length: 4,
+                length:     4,
                 frame_type: internal::FRAME_RST_STREAM,
-                flags: 0,
-                stream_id: s_id,
+                flags:      0,
+                stream_id:  s_id,
             };
             internal::encode_frame_header_to(rst_hdr, wire);
             let err_code: u8[4] = [0x00, 0x00, 0x00, 0x08]; // CANCEL (0x8)
@@ -1827,10 +1827,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         // Now stream 1 is closed. Send WINDOW_UPDATE on stream 1
         var wire2: u8[>..] = [];
         let wu_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_WINDOW_UPDATE,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         internal::encode_frame_header_to(wu_hdr, wire2);
         core::append_u32_be(wire2, 1024);
@@ -1853,10 +1853,10 @@ fn test_h2_protocol_invariants(t: core::T&) {
         // Send WINDOW_UPDATE on stream 0 with increment 0x7FFFFFFF (2^31 - 1)
         // 65535 + 2147483647 exceeds 2^31 - 1 -> FLOW_CONTROL_ERROR
         let wu_hdr = internal::FrameHeader {
-            length: 4,
+            length:     4,
             frame_type: internal::FRAME_WINDOW_UPDATE,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         internal::encode_frame_header_to(wu_hdr, wire);
         core::append_u32_be(wire, 0x7FFFFFFF);
@@ -1884,11 +1884,11 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         // 1. Initial HEADERS frame on stream 1 without END_HEADERS
         let h_hdr = internal::H2FrameHeader {
             payload_len: 100,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: 0x0, // No END_HEADERS
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       0x0, // No END_HEADERS
+            stream_id:   1,
+            valid:       true,
         };
         let err0 = internal::process_incoming_frame(framer, h_hdr);
         sub.assert_eq(err0, internal::H2ErrorCode.NoError);
@@ -1898,11 +1898,11 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         for _ in 5 {
             let cont_hdr = internal::H2FrameHeader {
                 payload_len: 100,
-                frame_type: internal::H2FrameType.Continuation,
-                raw_type: 0x9,
-                flags: 0x0, // Not finished yet
-                stream_id: 1,
-                valid: true,
+                frame_type:  internal::H2FrameType.Continuation,
+                raw_type:    0x9,
+                flags:       0x0, // Not finished yet
+                stream_id:   1,
+                valid:       true,
             };
             let err_cont = internal::process_incoming_frame(framer, cont_hdr);
             sub.assert_eq(err_cont, internal::H2ErrorCode.NoError);
@@ -1911,11 +1911,11 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         // 3. 6th CONTINUATION frame (exceeds max_continuation_frames = 5) -> EnhanceYourCalm (DDoS mitigation)
         let flood_hdr = internal::H2FrameHeader {
             payload_len: 100,
-            frame_type: internal::H2FrameType.Continuation,
-            raw_type: 0x9,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Continuation,
+            raw_type:    0x9,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         let err_flood = internal::process_incoming_frame(framer, flood_hdr);
         sub.assert_eq(err_flood, internal::H2ErrorCode.EnhanceYourCalm, "CONTINUATION flood must be rejected with EnhanceYourCalm");
@@ -1928,22 +1928,22 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         // HEADERS on stream 1 without END_HEADERS
         let h_hdr = internal::H2FrameHeader {
             payload_len: 50,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         internal::process_incoming_frame(framer, h_hdr);
 
         // Interleaved DATA frame on stream 1 (Illegal while expecting CONTINUATION)
         let data_hdr = internal::H2FrameHeader {
             payload_len: 10,
-            frame_type: internal::H2FrameType.Data,
-            raw_type: 0x0,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Data,
+            raw_type:    0x0,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         let err1 = internal::process_incoming_frame(framer, data_hdr);
         sub.assert_eq(err1, internal::H2ErrorCode.ProtocolError, "Non-CONTINUATION frame interleaved must trigger ProtocolError");
@@ -1954,11 +1954,11 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
 
         let cont_other_stream = internal::H2FrameHeader {
             payload_len: 50,
-            frame_type: internal::H2FrameType.Continuation,
-            raw_type: 0x9,
-            flags: 0x0,
-            stream_id: 3, // Different stream!
-            valid: true,
+            frame_type:  internal::H2FrameType.Continuation,
+            raw_type:    0x9,
+            flags:       0x0,
+            stream_id:   3, // Different stream!
+            valid:       true,
         };
         let err2 = internal::process_incoming_frame(framer2, cont_other_stream);
         sub.assert_eq(err2, internal::H2ErrorCode.ProtocolError, "CONTINUATION on different stream must trigger ProtocolError");
@@ -1970,22 +1970,22 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
         // HEADERS with 4000 bytes
         let h_hdr = internal::H2FrameHeader {
             payload_len: 4000,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         internal::process_incoming_frame(framer, h_hdr);
 
         // CONTINUATION with 5000 bytes (total 9000 > max_header_block_bytes 8192)
         let cont_bomb = internal::H2FrameHeader {
             payload_len: 5000,
-            frame_type: internal::H2FrameType.Continuation,
-            raw_type: 0x9,
-            flags: 0x4, // END_HEADERS
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Continuation,
+            raw_type:    0x9,
+            flags:       0x4, // END_HEADERS
+            stream_id:   1,
+            valid:       true,
         };
         let err = internal::process_incoming_frame(framer, cont_bomb);
         sub.assert_eq(err, internal::H2ErrorCode.EnhanceYourCalm, "Cumulative header block > 8KB must be rejected with EnhanceYourCalm");
@@ -1996,21 +1996,21 @@ fn test_continuation_flood_and_interleaving(t: core::T&) {
 
         let h_hdr = internal::H2FrameHeader {
             payload_len: 200,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, h_hdr), internal::H2ErrorCode.NoError);
 
         let cont_final = internal::H2FrameHeader {
             payload_len: 300,
-            frame_type: internal::H2FrameType.Continuation,
-            raw_type: 0x9,
-            flags: internal::H2_FLAG_END_HEADERS,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.Continuation,
+            raw_type:    0x9,
+            flags:       internal::H2_FLAG_END_HEADERS,
+            stream_id:   1,
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, cont_final), internal::H2ErrorCode.NoError);
         sub.assert_true(framer.state == internal::H2ConnState.Idle, "State returned to Idle on END_HEADERS");
@@ -2025,11 +2025,11 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
         for _ in 100 {
             let rst = internal::H2FrameHeader {
                 payload_len: 4,
-                frame_type: internal::H2FrameType.RstStream,
-                raw_type: 0x3,
-                flags: 0x0,
-                stream_id: 1,
-                valid: true,
+                frame_type:  internal::H2FrameType.RstStream,
+                raw_type:    0x3,
+                flags:       0x0,
+                stream_id:   1,
+                valid:       true,
             };
             let err = internal::process_incoming_frame(framer, rst);
             sub.assert_eq(err, internal::H2ErrorCode.NoError);
@@ -2038,11 +2038,11 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
         // 101st RST_STREAM frame (exceeds max_rapid_resets = 100) -> EnhanceYourCalm
         let rst_flood = internal::H2FrameHeader {
             payload_len: 4,
-            frame_type: internal::H2FrameType.RstStream,
-            raw_type: 0x3,
-            flags: 0x0,
-            stream_id: 1,
-            valid: true,
+            frame_type:  internal::H2FrameType.RstStream,
+            raw_type:    0x3,
+            flags:       0x0,
+            stream_id:   1,
+            valid:       true,
         };
         let err_flood = internal::process_incoming_frame(framer, rst_flood);
         sub.assert_eq(err_flood, internal::H2ErrorCode.EnhanceYourCalm, "Rapid reset flood must trigger EnhanceYourCalm");
@@ -2056,11 +2056,11 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
         for _ in 10 {
             let ping = internal::H2FrameHeader {
                 payload_len: 8,
-                frame_type: internal::H2FrameType.Ping,
-                raw_type: 0x6,
-                flags: 0x0, // Not an ACK
-                stream_id: 0,
-                valid: true,
+                frame_type:  internal::H2FrameType.Ping,
+                raw_type:    0x6,
+                flags:       0x0, // Not an ACK
+                stream_id:   0,
+                valid:       true,
             };
             sub.assert_eq(internal::process_incoming_frame(framer, ping), internal::H2ErrorCode.NoError);
         }
@@ -2068,11 +2068,11 @@ fn test_rapid_reset_and_dos_floods(t: core::T&) {
         // 11th unacknowledged PING -> EnhanceYourCalm
         let ping_flood = internal::H2FrameHeader {
             payload_len: 8,
-            frame_type: internal::H2FrameType.Ping,
-            raw_type: 0x6,
-            flags: 0x0,
-            stream_id: 0,
-            valid: true,
+            frame_type:  internal::H2FrameType.Ping,
+            raw_type:    0x6,
+            flags:       0x0,
+            stream_id:   0,
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, ping_flood), internal::H2ErrorCode.EnhanceYourCalm);
     };
@@ -2107,33 +2107,33 @@ fn test_settings_and_stream_id_invariants(t: core::T&) {
         // 1. Client HEADERS on even stream (stream 2) -> ProtocolError
         let even_hdr = internal::H2FrameHeader {
             payload_len: 20,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: internal::H2_FLAG_END_HEADERS,
-            stream_id: 2, // Even stream
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       internal::H2_FLAG_END_HEADERS,
+            stream_id:   2, // Even stream
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, even_hdr), internal::H2ErrorCode.ProtocolError, "Client HEADERS on even stream must fail");
 
         // 2. Client HEADERS on stream 0 -> ProtocolError
         let stream0_hdr = internal::H2FrameHeader {
             payload_len: 20,
-            frame_type: internal::H2FrameType.Headers,
-            raw_type: 0x1,
-            flags: internal::H2_FLAG_END_HEADERS,
-            stream_id: 0,
-            valid: true,
+            frame_type:  internal::H2FrameType.Headers,
+            raw_type:    0x1,
+            flags:       internal::H2_FLAG_END_HEADERS,
+            stream_id:   0,
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, stream0_hdr), internal::H2ErrorCode.ProtocolError, "HEADERS on stream 0 must fail");
 
         // 3. SETTINGS on stream > 0 -> ProtocolError
         let s_hdr = internal::H2FrameHeader {
             payload_len: 6,
-            frame_type: internal::H2FrameType.Settings,
-            raw_type: 0x4,
-            flags: 0x0,
-            stream_id: 1, // Must be stream 0!
-            valid: true,
+            frame_type:  internal::H2FrameType.Settings,
+            raw_type:    0x4,
+            flags:       0x0,
+            stream_id:   1, // Must be stream 0!
+            valid:       true,
         };
         sub.assert_eq(internal::process_incoming_frame(framer, s_hdr), internal::H2ErrorCode.ProtocolError, "SETTINGS on stream 1 must fail");
     };
@@ -2200,10 +2200,10 @@ fn test_h2_settings_and_ping_invariants(t: core::T&) {
     t.run("H2-SEC-01: SETTINGS ACK with Non-Zero Length must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
-            length: 6, // Length != 0 with ACK is illegal per RFC 9113 §6.5
+            length:     6, // Length != 0 with ACK is illegal per RFC 9113 §6.5
             frame_type: internal::FRAME_SETTINGS,
-            flags: internal::FLAG_ACK,
-            stream_id: 0,
+            flags:      internal::FLAG_ACK,
+            stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
         sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "SETTINGS with ACK and length > 0 must trigger FRAME_SIZE_ERROR");
@@ -2212,10 +2212,10 @@ fn test_h2_settings_and_ping_invariants(t: core::T&) {
     t.run("H2-SEC-02: SETTINGS with Length not multiple of 6 must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
-            length: 5, // Not multiple of 6
+            length:     5, // Not multiple of 6
             frame_type: internal::FRAME_SETTINGS,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
         sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "SETTINGS length not multiple of 6 must trigger FRAME_SIZE_ERROR");
@@ -2226,20 +2226,20 @@ fn test_h2_settings_and_ping_invariants(t: core::T&) {
 
         // SETTINGS on stream 1
         let hdr_set = internal::FrameHeader {
-            length: 6,
+            length:     6,
             frame_type: internal::FRAME_SETTINGS,
-            flags: 0,
-            stream_id: 1, // Illegal: MUST be stream 0 per RFC 9113 §6.5
+            flags:      0,
+            stream_id:  1, // Illegal: MUST be stream 0 per RFC 9113 §6.5
         };
         let err_set = internal::on_ingress_frame_header(conn, hdr_set, 0);
         sub.assert_eq(err_set, internal::ERR_PROTOCOL_ERROR, "SETTINGS on stream != 0 must trigger PROTOCOL_ERROR");
 
         // PING on stream 1
         let hdr_ping = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 1, // Illegal: MUST be stream 0 per RFC 9113 §6.7
+            flags:      0,
+            stream_id:  1, // Illegal: MUST be stream 0 per RFC 9113 §6.7
         };
         let err_ping = internal::on_ingress_frame_header(conn, hdr_ping, 0);
         sub.assert_eq(err_ping, internal::ERR_PROTOCOL_ERROR, "PING on stream != 0 must trigger PROTOCOL_ERROR");
@@ -2248,10 +2248,10 @@ fn test_h2_settings_and_ping_invariants(t: core::T&) {
     t.run("H2-SEC-04: PING with Length != 8 must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
-            length: 7, // Illegal: MUST be exactly 8 per RFC 9113 §6.7
+            length:     7, // Illegal: MUST be exactly 8 per RFC 9113 §6.7
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
         sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "PING with length != 8 must trigger FRAME_SIZE_ERROR");
@@ -2296,10 +2296,10 @@ fn test_h2_continuation_flood_and_interleaving(t: core::T&) {
 
         // 1. Initial HEADERS frame on stream 1 without END_HEADERS flag
         let h_hdr = internal::FrameHeader {
-            length: 100,
+            length:     100,
             frame_type: internal::FRAME_HEADERS,
-            flags: 0, // FLAG_END_HEADERS not set
-            stream_id: 1,
+            flags:      0, // FLAG_END_HEADERS not set
+            stream_id:  1,
         };
         let err_h = internal::on_ingress_frame_header(conn, h_hdr, 0);
         sub.assert_eq(err_h, internal::ERR_NO_ERROR, "HEADERS frame enters continuation state cleanly");
@@ -2307,20 +2307,20 @@ fn test_h2_continuation_flood_and_interleaving(t: core::T&) {
 
         // 2. Interleaved PING frame on stream 0 arrives before CONTINUATION
         let ping_hdr = internal::FrameHeader {
-            length: 8,
+            length:     8,
             frame_type: internal::FRAME_PING,
-            flags: 0,
-            stream_id: 0,
+            flags:      0,
+            stream_id:  0,
         };
         let err_ping = internal::on_ingress_frame_header(conn, ping_hdr, 0);
         sub.assert_eq(err_ping, internal::ERR_PROTOCOL_ERROR, "Interleaved PING during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
 
         // 3. Interleaved DATA on stream 1 arrives before CONTINUATION
         let data_hdr = internal::FrameHeader {
-            length: 50,
+            length:     50,
             frame_type: internal::FRAME_DATA,
-            flags: 0,
-            stream_id: 1,
+            flags:      0,
+            stream_id:  1,
         };
         let err_data = internal::on_ingress_frame_header(conn, data_hdr, 0);
         sub.assert_eq(err_data, internal::ERR_PROTOCOL_ERROR, "Interleaved DATA during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
@@ -2331,19 +2331,19 @@ fn test_h2_continuation_flood_and_interleaving(t: core::T&) {
 
         // HEADERS on stream 3 without END_HEADERS
         let h_hdr = internal::FrameHeader {
-            length: 50,
+            length:     50,
             frame_type: internal::FRAME_HEADERS,
-            flags: 0,
-            stream_id: 3,
+            flags:      0,
+            stream_id:  3,
         };
         let _ = internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // CONTINUATION arrives on stream 5 instead of 3
         let cont_hdr = internal::FrameHeader {
-            length: 50,
+            length:     50,
             frame_type: internal::FRAME_CONTINUATION,
-            flags: 0,
-            stream_id: 5,
+            flags:      0,
+            stream_id:  5,
         };
         let err_cont = internal::on_ingress_frame_header(conn, cont_hdr, 0);
         sub.assert_eq(err_cont, internal::ERR_PROTOCOL_ERROR, "CONTINUATION on different stream ID must trigger PROTOCOL_ERROR per RFC 9113 §6.10");
@@ -2729,6 +2729,7 @@ fn test_h3_priority_update_integration(t: core::T&) {
     t.run("HTTP/3 PRIORITY_UPDATE Control Frame (RFC 9218 §7.2)") { sub =>
         // Create an H3Connection with a request stream
         var conn = internal::H3Connection { .. };
+        conn.role = internal::H3ConnRole.Server;
         conn.state = internal::H3ConnState.Active;
         let req_id, ok_req = internal::open_request_stream(conn);
         sub.assert_true(ok_req, "Created request stream");
@@ -2800,10 +2801,10 @@ fn test_h2_extension_frames(t: core::T&) {
         sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "ORIGIN frame on stream 1 returns PROTOCOL_ERROR");
 
         let bad_hdr = internal::FrameHeader {
-            length: 10,
+            length:     10,
             frame_type: internal::FRAME_ORIGIN,
-            flags: 0,
-            stream_id: 3,
+            flags:      0,
+            stream_id:  3,
         };
         let rule_err = internal::validate_frame_header_rules(bad_hdr);
         sub.assert_eq(rule_err, internal::ERR_PROTOCOL_ERROR, "validate_frame_header_rules rejects ORIGIN on stream 3");

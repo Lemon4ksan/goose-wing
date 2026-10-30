@@ -14,18 +14,18 @@ import core from "..";
 // ---- 1. RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
 // RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
-const GROUP_SECP256R1_MLKEM768: u16 = 0x11EB;      // RFC 10024 Section 7.2: SecP256r1MLKEM768
-const GROUP_X25519_MLKEM768: u16 = 0x11EC;         // RFC 10024 Section 7.1: X25519MLKEM768
-const GROUP_SECP384R1_MLKEM1024: u16 = 0x11ED;     // RFC 10024 Section 7.3: SecP384r1MLKEM1024
+const GROUP_SECP256R1_MLKEM768:      u16 = 0x11EB; // RFC 10024 Section 7.2: SecP256r1MLKEM768
+const GROUP_X25519_MLKEM768:         u16 = 0x11EC; // RFC 10024 Section 7.1: X25519MLKEM768
+const GROUP_SECP384R1_MLKEM1024:     u16 = 0x11ED; // RFC 10024 Section 7.3: SecP384r1MLKEM1024
 const GROUP_X25519_KYBER768_DRAFT00: u16 = 0x6399; // Chrome 124-130 draft group
 
 // RFC 10024 Section 3: Key Exchange Messages - Traditional and Post-Quantum Key Dimensions
-const X25519_KEY_LEN: i64 = 32;
-const SECP256R1_POINT_LEN: i64 = 65; // uncompressed point (0x04 || X || Y)
-const SECP384R1_POINT_LEN: i64 = 97; // uncompressed point (0x04 || X || Y)
-const MLKEM768_PUBLIC_LEN: i64 = 1152;
-const MLKEM768_CIPHERTEXT_LEN: i64 = 1088;
-const MLKEM1024_PUBLIC_LEN: i64 = 1568;
+const X25519_KEY_LEN:           i64 = 32;
+const SECP256R1_POINT_LEN:      i64 = 65; // uncompressed point (0x04 || X || Y)
+const SECP384R1_POINT_LEN:      i64 = 97; // uncompressed point (0x04 || X || Y)
+const MLKEM768_PUBLIC_LEN:      i64 = 1152;
+const MLKEM768_CIPHERTEXT_LEN:  i64 = 1088;
+const MLKEM1024_PUBLIC_LEN:     i64 = 1568;
 const MLKEM1024_CIPHERTEXT_LEN: i64 = 1568;
 
 const HYBRID_CLIENT_SHARE_LEN: i64 = 32 + 1152; // 1184 bytes (X25519+MLKEM768)
@@ -72,38 +72,38 @@ fn pq_hybrid_server_share_len(group: u16) -> i64 {
 // ---- 2. Hybrid Key Share Models ---------------------------------------------
 
 struct PostQuantumKeyShare {
-    group: u16 = GROUP_X25519_MLKEM768,
-    x25519_public: u8[32] = [0; 32],
+    group:           u16      = GROUP_X25519_MLKEM768,
+    x25519_public:   u8[32]   = [0; 32],
     mlkem768_public: u8[1152] = [0; 1152],
 }
 
 struct PostQuantumServerShare {
-    group: u16 = GROUP_X25519_MLKEM768,
-    x25519_public: u8[32] = [0; 32],
+    group:               u16      = GROUP_X25519_MLKEM768,
+    x25519_public:       u8[32]   = [0; 32],
     mlkem768_ciphertext: u8[1088] = [0; 1088],
 }
 
 struct SecP256r1MLKEM768KeyShare {
-    group: u16 = GROUP_SECP256R1_MLKEM768,
-    secp256r1_public: u8[65] = [0; 65],
-    mlkem768_public: u8[1152] = [0; 1152],
+    group:            u16      = GROUP_SECP256R1_MLKEM768,
+    secp256r1_public: u8[65]   = [0; 65],
+    mlkem768_public:  u8[1152] = [0; 1152],
 }
 
 struct SecP256r1MLKEM768ServerShare {
-    group: u16 = GROUP_SECP256R1_MLKEM768,
-    secp256r1_public: u8[65] = [0; 65],
+    group:               u16      = GROUP_SECP256R1_MLKEM768,
+    secp256r1_public:    u8[65]   = [0; 65],
     mlkem768_ciphertext: u8[1088] = [0; 1088],
 }
 
 struct SecP384r1MLKEM1024KeyShare {
-    group: u16 = GROUP_SECP384R1_MLKEM1024,
-    secp384r1_public: u8[97] = [0; 97],
+    group:            u16      = GROUP_SECP384R1_MLKEM1024,
+    secp384r1_public: u8[97]   = [0; 97],
     mlkem1024_public: u8[1568] = [0; 1568],
 }
 
 struct SecP384r1MLKEM1024ServerShare {
-    group: u16 = GROUP_SECP384R1_MLKEM1024,
-    secp384r1_public: u8[97] = [0; 97],
+    group:                u16      = GROUP_SECP384R1_MLKEM1024,
+    secp384r1_public:     u8[97]   = [0; 97],
     mlkem1024_ciphertext: u8[1568] = [0; 1568],
 }
 
@@ -127,6 +127,10 @@ fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
 
 // Parses a hybrid ClientHello KeyShareEntry from raw bytes.
 // Enforces exact RFC 10024 wire length (1188 bytes) to prevent smuggling trailing data.
+//
+// Example:
+//   raw = [0x11, 0xEC, 0x04, 0x90, ...], share = PostQuantumKeyShare { .. }
+//   returns: ok = true, share populated with group and public keys
 fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + HYBRID_CLIENT_SHARE_LEN else { return false; }
 
@@ -165,6 +169,10 @@ fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: 
 
 // Parses a hybrid ServerHello KeyShareEntry from raw bytes.
 // Enforces exact RFC 10024 wire length (1124 bytes) to prevent smuggling trailing data.
+//
+// Example:
+//   raw = [0x11, 0xEC, 0x04, 0x50, ...], share = PostQuantumServerShare { .. }
+//   returns: ok = true, share populated with group, ciphertext, and public key
 fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + HYBRID_SERVER_SHARE_LEN else { return false; }
 
@@ -311,7 +319,7 @@ fn parse_secp384r1_mlkem1024_server_share(share: SecP384r1MLKEM1024ServerShare&,
 // Combines 32-byte ECDH x-coordinate and 32-byte ML-KEM-768 shared secret into SHA-256 digest
 fn derive_secp256r1_mlkem768_shared_secret(
     classical_ss: const u8[32]&,
-    pq_ss: const u8[32]&,
+    pq_ss:        const u8[32]&,
 ) -> u8[32] {
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], classical_ss[..]);
@@ -323,7 +331,7 @@ fn derive_secp256r1_mlkem768_shared_secret(
 // Combines 48-byte ECDH x-coordinate and 32-byte ML-KEM-1024 shared secret into SHA-384 digest
 fn derive_secp384r1_mlkem1024_shared_secret(
     classical_ss: const u8[48]&,
-    pq_ss: const u8[32]&,
+    pq_ss:        const u8[32]&,
 ) -> u8[48] {
     var combined: u8[80] = [0; 80];
     core::ct_copy_bytes(combined[0..48], classical_ss[..]);
@@ -335,7 +343,7 @@ fn derive_secp384r1_mlkem1024_shared_secret(
 // Combines post-quantum and classical shared secrets: SHA-256(ss_pq || ss_classical)
 fn derive_x25519_mlkem768_shared_secret(
     classical_ss: const u8[32]&,
-    pq_ss: const u8[32]&,
+    pq_ss:        const u8[32]&,
 ) -> u8[32] {
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], pq_ss[..]);
@@ -346,8 +354,8 @@ fn derive_x25519_mlkem768_shared_secret(
 // Validates non-zero entropy and derives X25519+ML-KEM-768 shared secret (PQ || Classical).
 fn derive_x25519_mlkem768_shared_secret_checked(
     classical_ss: const u8[:],
-    pq_ss: const u8[:],
-    out: u8[:],
+    pq_ss:        const u8[:],
+    out:          u8[:],
 ) -> bool {
     guard classical_ss.len == 32 && pq_ss.len == 32 else { return false; }
     guard out.len >= 32 else { return false; }
@@ -376,7 +384,7 @@ fn derive_x25519_mlkem768_shared_secret_checked(
 // shared_secret = SHA-256(ss_classical || ss_pq)
 fn derive_hybrid_shared_secret(
     classical_ss: const u8[32]&,
-    pq_ss: const u8[32]&,
+    pq_ss:        const u8[32]&,
 ) -> u8[32] {
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], classical_ss[..]);
@@ -388,8 +396,8 @@ fn derive_hybrid_shared_secret(
 // Rejects all-zero classical ECDH (low-order point attack) and all-zero ML-KEM secret.
 fn derive_hybrid_shared_secret_checked(
     classical_ss: const u8[:],
-    pq_ss: const u8[:],
-    out: u8[:],
+    pq_ss:        const u8[:],
+    out:          u8[:],
 ) -> bool {
     guard classical_ss.len == 32 && pq_ss.len == 32 else { return false; }
     guard out.len >= 32 else { return false; }
@@ -418,8 +426,8 @@ fn derive_hybrid_shared_secret_checked(
 
 // ML-KEM-768 Decapsulation Private Key Container (FIPS 203 Section 7.2).
 struct MLKEM768PrivateKey {
-    z: u8[32] = [0; 32],                // Implicit rejection seed z (FIPS 203 §7.2)
-    public_key: u8[1152] = [0; 1152],   // ML-KEM-768 public encapsulation key
+    z:           u8[32]   = [0; 32],    // Implicit rejection seed z (FIPS 203 §7.2)
+    public_key:  u8[1152] = [0; 1152],  // ML-KEM-768 public encapsulation key
     private_key: u8[1152] = [0; 1152],  // ML-KEM-768 private key
 }
 
@@ -427,9 +435,9 @@ struct MLKEM768PrivateKey {
 // When decapsulation encounters an invalid, corrupted, or all-zero ciphertext, it must return
 // a pseudorandom shared key deterministically derived from z and c without failing or panicking.
 fn mlkem768_compute_implicit_rejection(
-    z: const u8[32]&,
+    z:          const u8[32]&,
     ciphertext: const u8[:],
-    out_ss: u8[:],
+    out_ss:     u8[:],
 ) -> bool {
     guard out_ss.len >= 32 else { return false; }
     guard ciphertext.len == MLKEM768_CIPHERTEXT_LEN else { return false; }
@@ -446,9 +454,9 @@ fn mlkem768_compute_implicit_rejection(
 //   they deterministically produce the implicit rejection secret K_bar derived from rejection seed z.
 // - Returns (is_implicit_rejection: bool, ok: bool).
 fn mlkem768_decapsulate_with_implicit_rejection(
-    sk: const MLKEM768PrivateKey&,
+    sk:         const MLKEM768PrivateKey&,
     ciphertext: const u8[:],
-    out_ss: u8[:],
+    out_ss:     u8[:],
 ) -> bool, bool {
     guard out_ss.len >= 32 else { return false, false; }
     guard ciphertext.len == MLKEM768_CIPHERTEXT_LEN else { return false, false; }

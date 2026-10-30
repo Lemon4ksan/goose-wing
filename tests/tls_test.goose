@@ -334,9 +334,9 @@ fn test_record_layer_and_dos(t: core::T&) {
         sub.assert_false(wing::ct_compare_tag16(tag1, tag_diff), "differing tags reject");
 
         // 2. Encrypt authentic record payload with AES-128-GCM
-        let key: u8[16] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00];
-        let iv: u8[12] = [0x01; 12];
-        let seq_num: u64 = 42;
+        let key:     u8[16] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00];
+        let iv:      u8[12] = [0x01; 12];
+        let seq_num: u64    = 42;
         let nonce, _ = wing::compute_record_nonce(iv, seq_num);
 
         // Header: ContentType ApplicationData (0x17), TLS 1.2 legacy version (0x0303), length = 8 + 1 (type) + 16 (tag) = 25
@@ -493,8 +493,8 @@ fn test_key_schedule_and_derivations(t: core::T&) {
         sub.assert_false(all_zero, "derived key is non-zero");
 
         // Info capacity test with large context (exceeding original 128-byte buffer limit)
-        var large_ctx: u8[200] = [0x5A; 200];
-        var out_expanded: u8[32] = [0; 32];
+        var large_ctx:    u8[200] = [0x5A; 200];
+        var out_expanded: u8[32]  = [0; 32];
         let ok_large = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "large_test", large_ctx[..], 32, out_expanded[..]);
         sub.assert_true(ok_large, "hkdf_expand_label handles large context (> 128 bytes) safely");
 
@@ -561,7 +561,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
 
         // Derive key and IV from application traffic secret
         var app_key: u8[16] = [0; 16];
-        var app_iv: u8[12] = [0; 12];
+        var app_iv:  u8[12] = [0; 12];
         let ok_kiv = internal::ks_derive_key_iv(
             sched.hash_id,
             sched.client_ap_traffic[..32],
@@ -707,7 +707,7 @@ fn test_key_schedule_and_derivations(t: core::T&) {
 
         // Ticket nonce > 255 bytes rejected
         var long_nonce: u8[256] = [0x01; 256];
-        var psk_fail: u8[32] = [0; 32];
+        var psk_fail:   u8[32]  = [0; 32];
         let ok_long_nonce = internal::ks_derive_resumption_psk(sched_res, long_nonce[..], psk_fail[..]);
         sub.assert_false(ok_long_nonce, "ticket nonce > 255 bytes rejected");
     };
@@ -756,9 +756,9 @@ fn test_anti_replay_and_psk(t: core::T&) {
     };
 
     t.run("TLS-14: Obfuscated Ticket Age Validation") { sub =>
-        let ticket_age_add: u32 = 100000;
+        let ticket_age_add:  u32 = 100000;
         let expected_age_ms: i64 = 5000;
-        let tolerance_ms: i64 = 1000;
+        let tolerance_ms:    i64 = 1000;
 
         // Exact match: obfuscated = ticket_age_add + 5000 = 105000
         let ok1 = internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, tolerance_ms);
@@ -792,7 +792,7 @@ fn test_anti_replay_and_psk(t: core::T&) {
     };
 
     t.run("TLS-15: PSK Binder Constant-Time Verification") { sub =>
-        let binder_key: u8[32] = [0x33; 32];
+        let binder_key:   u8[32] = [0x33; 32];
         let truncated_ch: u8[16] = [0x55; 16];
 
         // Derive true expected binder
@@ -1099,7 +1099,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
     t.run("TLS-24: Trust Anchor Matching & RFC 5280 Chain Rules") { sub =>
         var store = wing::TrustAnchorStore { anchors: [] };
         let root_subject: u8[10] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
-        let root_spki: u8[8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
+        let root_spki:    u8[8]  = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
 
         sub.assert_true(wing::add_trust_anchor(store, root_subject[..], root_spki[..]), "add root trust anchor");
         sub.assert_eq(store.anchors.len, 1, "trust anchor count is 1");
@@ -1110,23 +1110,23 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         for i in 8 { raw_root[10 + i] = root_spki[i]; }
 
         var cert = wing::ParsedCert {
-            raw_len: 30,
-            tbs_cert: wing::Span16 { offset: 0, length: 30 },
-            serial_number: wing::Span16 { offset: 0, length: 1 },
-            sig_alg_oid: wing::Span16 { offset: 0, length: 1 },
-            issuer_raw: wing::Span16 { offset: 0, length: 10 },
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 0, length: 10 },
-            spki_raw: wing::Span16 { offset: 10, length: 8 },
-            spki_alg_oid: wing::Span16 { offset: 10, length: 1 },
-            spki_pubkey: wing::Span16 { offset: 10, length: 7 },
-            extensions_raw: wing::Span16 { offset: 0, length: 0 },
-            is_ca: true,
+            raw_len:               30,
+            tbs_cert:              wing::Span16 { offset: 0, length: 30 },
+            serial_number:         wing::Span16 { offset: 0, length: 1 },
+            sig_alg_oid:           wing::Span16 { offset: 0, length: 1 },
+            issuer_raw:            wing::Span16 { offset: 0, length: 10 },
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 0, length: 10 },
+            spki_raw:              wing::Span16 { offset: 10, length: 8 },
+            spki_alg_oid:          wing::Span16 { offset: 10, length: 1 },
+            spki_pubkey:           wing::Span16 { offset: 10, length: 7 },
+            extensions_raw:        wing::Span16 { offset: 0, length: 0 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: -1,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   -1,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
 
         sub.assert_true(wing::matches_trust_anchor(store, cert, raw_root[..]), "root cert matches trusted anchor");
@@ -1403,12 +1403,12 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         // 1. Inverted validity in ParsedCert (notBefore > notAfter)
         var cert_inv = wing::ParsedCert {
             validity_not_before: 5000,
-            validity_not_after: 1000,
+            validity_not_after:  1000,
         };
         let alert_inv = wing::validate_chain_cert_validity(cert_inv, 3000);
         sub.assert_eq(wing::tls_alert_to_u8(alert_inv), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "inverted validity returns BadCertificate");
 
-        // 2. parse_tbs_validity rejects DER sequence with notBefore > notAfter
+        // 2. read_tbs_validity rejects DER sequence with notBefore > notAfter
         // SEQUENCE { UTCTime "261028000000Z", UTCTime "251028000000Z" }
         // 261028000000Z (2026-10-28) > 251028000000Z (2025-10-28)
         var b_inv = wing::builder_init();
@@ -1426,7 +1426,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_inv = wing::cursor_from(b_inv.buf[..]);
         var dummy_cert = wing::ParsedCert {};
-        sub.assert_false(wing::parse_tbs_validity(b_inv.buf[..], c_inv, dummy_cert), "parse_tbs_validity rejects inverted time");
+        sub.assert_false(wing::read_tbs_validity(b_inv.buf[..], c_inv, dummy_cert), "read_tbs_validity rejects inverted time");
 
         // 3. Valid validity sequence parses correctly
         var b_val = wing::builder_init();
@@ -1444,13 +1444,13 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_val = wing::cursor_from(b_val.buf[..]);
         var out_cert = wing::ParsedCert {};
-        sub.assert_true(wing::parse_tbs_validity(b_val.buf[..], c_val, out_cert), "parse_tbs_validity accepts valid time");
+        sub.assert_true(wing::read_tbs_validity(b_val.buf[..], c_val, out_cert), "read_tbs_validity accepts valid time");
         sub.assert_true(out_cert.validity_not_before < out_cert.validity_not_after, "notBefore < notAfter");
 
         // 4. Temporal expiration & not-yet-valid alerts
         var cert_exp = wing::ParsedCert {
             validity_not_before: 1000,
-            validity_not_after: 2000,
+            validity_not_after:  2000,
         };
         let alert_expired = wing::validate_chain_cert_validity(cert_exp, 2500);
         sub.assert_eq(wing::tls_alert_to_u8(alert_expired), wing::tls_alert_to_u8(wing::TlsAlert.CertificateExpired), "now > notAfter returns CertificateExpired");
@@ -1465,7 +1465,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
     t.run("TLS-31: CS-07 End-Entity vs Intermediate CA KeyUsage & CA Flag Enforcement") { sub =>
         // 1. End-entity MUST NOT assert CA: TRUE
         var ee_ca = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
         };
         let alert_ee_ca = wing::validate_end_entity_constraints(ee_ca);
@@ -1473,8 +1473,8 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 2. End-entity MUST NOT assert keyCertSign
         var ee_sign = wing::ParsedCert {
-            is_ca: false,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
+            is_ca:         false,
+            key_usage:     wing::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage: true,
         };
         let alert_ee_sign = wing::validate_end_entity_constraints(ee_sign);
@@ -1482,8 +1482,8 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 3. Valid end-entity (digitalSignature, not CA)
         var ee_valid = wing::ParsedCert {
-            is_ca: false,
-            key_usage: wing::KEY_USAGE_DIGITAL_SIGNATURE,
+            is_ca:         false,
+            key_usage:     wing::KEY_USAGE_DIGITAL_SIGNATURE,
             has_key_usage: true,
         };
         let alert_ee_ok = wing::validate_end_entity_constraints(ee_valid);
@@ -1491,14 +1491,14 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 4. Intermediate CA MUST assert BasicConstraints with is_ca: TRUE
         var ca_no_bc = wing::ParsedCert {
-            is_ca: false,
+            is_ca:                 false,
             has_basic_constraints: false,
         };
         let alert_ca_no_bc = wing::validate_intermediate_ca_constraints(ca_no_bc, 1);
         sub.assert_eq(wing::tls_alert_to_u8(alert_ca_no_bc), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "intermediate without BC returns BadCertificate");
 
         var ca_false = wing::ParsedCert {
-            is_ca: false,
+            is_ca:                 false,
             has_basic_constraints: true,
         };
         let alert_ca_false = wing::validate_intermediate_ca_constraints(ca_false, 1);
@@ -1506,28 +1506,28 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 5. Intermediate CA MUST assert keyCertSign if KeyUsage is present
         var ca_no_sign = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
+            has_key_usage:         true,
         };
         let alert_ca_no_sign = wing::validate_intermediate_ca_constraints(ca_no_sign, 1);
         sub.assert_eq(wing::tls_alert_to_u8(alert_ca_no_sign), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedCertificate), "intermediate without keyCertSign returns UnsupportedCertificate");
 
         // 6. Valid Intermediate CA
         var ca_valid = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: -1,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   -1,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         let alert_ca_ok = wing::validate_intermediate_ca_constraints(ca_valid, 1);
         sub.assert_eq(wing::tls_alert_to_u8(alert_ca_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid intermediate CA returns CloseNotify");
     };
 
     t.run("TLS-32: CS-08 BasicConstraints pathLenConstraint Invariants & Decrementation") { sub =>
-        // 1. parse_cert_extensions DER parsing:
+        // 1. read_cert_extensions DER parsing:
         // BasicConstraints SEQUENCE { cA: FALSE (omitted), pathLenConstraint: 2 }
         // RFC 5280 §4.2.1.9: pathLenConstraint is meaningful ONLY if cA is TRUE.
         var b_bc_ee = wing::builder_init();
@@ -1549,7 +1549,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_bc_ee = wing::cursor_from(b_bc_ee.buf[..]);
         var cert_parsed_ee = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_bc_ee.buf[..], c_bc_ee, cert_parsed_ee);
+        wing::read_cert_extensions(b_bc_ee.buf[..], c_bc_ee, cert_parsed_ee);
         sub.assert_true(cert_parsed_ee.has_basic_constraints, "has BC");
         sub.assert_false(cert_parsed_ee.is_ca, "is_ca is false");
         sub.assert_eq(cert_parsed_ee.path_len_constraint, -1, "pathLen ignored when is_ca is false");
@@ -1577,7 +1577,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_bc_ca = wing::cursor_from(b_bc_ca.buf[..]);
         var cert_parsed_ca = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_bc_ca.buf[..], c_bc_ca, cert_parsed_ca);
+        wing::read_cert_extensions(b_bc_ca.buf[..], c_bc_ca, cert_parsed_ca);
         sub.assert_true(cert_parsed_ca.has_basic_constraints, "has BC");
         sub.assert_true(cert_parsed_ca.is_ca, "is_ca is true");
         sub.assert_eq(cert_parsed_ca.path_len_constraint, 2, "pathLen parsed as 2 when is_ca is true");
@@ -1585,33 +1585,33 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         // 3. Path length decrementation and enforcement across chain depth:
         // Intermediate CA at depth 1 with pathLen = 0 (issuing EE at depth 0) -> allowed (0 intermediate certs follow)
         var ca_depth1 = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: 0,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   0,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         let alert_d1 = wing::validate_intermediate_ca_constraints(ca_depth1, 1);
         sub.assert_eq(wing::tls_alert_to_u8(alert_d1), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "intermediate at depth 1 with pathLen=0 succeeds");
 
         // Intermediate CA at depth 2 with pathLen = 0 (1 intermediate cert follows it) -> violated!
         var ca_depth2 = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: 0,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   0,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         let alert_d2 = wing::validate_intermediate_ca_constraints(ca_depth2, 2);
         sub.assert_eq(wing::tls_alert_to_u8(alert_d2), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "intermediate at depth 2 with pathLen=0 returns BadCertificate");
 
         // Intermediate CA at depth 2 with pathLen = 1 -> allowed (1 <= 1)
         var ca_depth2_ok = wing::ParsedCert {
-            is_ca: true,
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: 1,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   1,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         let alert_d2_ok = wing::validate_intermediate_ca_constraints(ca_depth2_ok, 2);
         sub.assert_eq(wing::tls_alert_to_u8(alert_d2_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "intermediate at depth 2 with pathLen=1 succeeds");
@@ -1649,7 +1649,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 4. verify_certificate_chain rejects cert signed with forbidden algorithm
         var store = wing::TrustAnchorStore { anchors: [] };
-        let root_sub: u8[4] = [1, 2, 3, 4];
+        let root_sub:  u8[4] = [1, 2, 3, 4];
         let root_spki: u8[4] = [5, 6, 7, 8];
         sub.assert_true(wing::add_trust_anchor(store, root_sub[..], root_spki[..]), "add anchor");
 
@@ -1658,11 +1658,11 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         for i in 9 { bad_sig_raw[10 + i] = wing::OID_SIG_SHA1_RSA[i]; }
 
         var bad_cert = wing::ParsedCert {
-            sig_alg_oid: wing::Span16 { offset: 10, length: 9 },
+            sig_alg_oid:         wing::Span16 { offset: 10, length: 9 },
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 0, length: 4 },
-            spki_raw: wing::Span16 { offset: 4, length: 4 },
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 0, length: 4 },
+            spki_raw:            wing::Span16 { offset: 4, length: 4 },
         };
         var chain_bad: wing::ParsedCert[..8] = [];
         chain_bad.push(bad_cert);
@@ -1675,7 +1675,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
     t.run("TLS-34: CS-10 Certificate Chain Cycle Detection & Depth Limits") { sub =>
         var store = wing::TrustAnchorStore { anchors: [] };
-        let root_dn: u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
+        let root_dn:   u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
         let root_spki: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
         sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "anchor added");
 
@@ -1690,22 +1690,22 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 1. Cycle detection: Duplicate Subject DN between two certs in chain
         var cert_ee_dup_sub = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 8, length: 2 },
+            issuer_raw:          wing::Span16 { offset: 8, length: 2 },
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },  // EE DN
-            spki_raw: wing::Span16 { offset: 10, length: 2 },
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 8, length: 2 }, // EE DN
+            spki_raw:            wing::Span16 { offset: 10, length: 2 },
         };
         var cert_ca_dup_sub = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },  // DUPLICATE EE DN!
-            spki_raw: wing::Span16 { offset: 14, length: 2 },
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 },
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 8, length: 2 }, // DUPLICATE EE DN!
+            spki_raw:              wing::Span16 { offset: 14, length: 2 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         var chain_dup_sub: wing::ParsedCert[..8] = [];
         chain_dup_sub.push(cert_ee_dup_sub);
@@ -1719,22 +1719,22 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 2. Cycle detection: Duplicate SPKI (public key reuse loop)
         var cert_ee_dup_spki = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 12, length: 2 },
+            issuer_raw:          wing::Span16 { offset: 12, length: 2 },
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },
-            spki_raw: wing::Span16 { offset: 10, length: 2 },    // EE SPKI
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 8, length: 2 },
+            spki_raw:            wing::Span16 { offset: 10, length: 2 }, // EE SPKI
         };
         var cert_ca_dup_spki = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 12, length: 2 },
-            spki_raw: wing::Span16 { offset: 10, length: 2 },   // DUPLICATE EE SPKI!
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 },
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 12, length: 2 },
+            spki_raw:              wing::Span16 { offset: 10, length: 2 }, // DUPLICATE EE SPKI!
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         var chain_dup_spki: wing::ParsedCert[..8] = [];
         chain_dup_spki.push(cert_ee_dup_spki);
@@ -1748,33 +1748,33 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 3. Valid multi-cert chain (EE -> Intermediate -> Root Anchor)
         var cert_ee_good = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 12, length: 2 }, // Issued by CA
+            issuer_raw:          wing::Span16 { offset: 12, length: 2 }, // Issued by CA
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },
-            spki_raw: wing::Span16 { offset: 10, length: 2 },
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 8, length: 2 },
+            spki_raw:            wing::Span16 { offset: 10, length: 2 },
         };
         var cert_ca_good = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },  // Issued by Root
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 12, length: 2 },
-            spki_raw: wing::Span16 { offset: 14, length: 2 },
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 }, // Issued by Root
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 12, length: 2 },
+            spki_raw:              wing::Span16 { offset: 14, length: 2 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
         var cert_root_good = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 0, length: 4 },
-            spki_raw: wing::Span16 { offset: 4, length: 4 },
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 },
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 0, length: 4 },
+            spki_raw:              wing::Span16 { offset: 4, length: 4 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
 
         var chain_3: wing::ParsedCert[..8] = [];
@@ -1791,7 +1791,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 4. Empty chain rejection
         var chain_empty: wing::ParsedCert[..8] = [];
-        var raw_empty: const u8[:][..8] = [];
+        var raw_empty:   const u8[:][..8]      = [];
         let alert_empty = wing::verify_certificate_chain(chain_empty, raw_empty, store, 2000);
         sub.assert_eq(wing::tls_alert_to_u8(alert_empty), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "empty chain returns BadCertificate");
     };
@@ -1844,7 +1844,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         // 3. IP Name Constraint matching (RFC 5280 §4.2.1.10)
         // Subnet 192.168.1.0/24 (8 octets: 192.168.1.0 || 255.255.255.0)
         let ip_constraint: u8[8] = [192, 168, 1, 0, 255, 255, 255, 0];
-        let cand_in_sub: u8[4] = [192, 168, 1, 100];
+        let cand_in_sub:   u8[4] = [192, 168, 1, 100];
         sub.assert_true(wing::match_ip_name_constraint(cand_in_sub[..], ip_constraint[..]), "matches IPv4 in subnet");
         let cand_out_sub: u8[4] = [192, 168, 2, 100];
         sub.assert_false(wing::match_ip_name_constraint(cand_out_sub[..], ip_constraint[..]), "rejects IPv4 outside subnet");
@@ -1890,16 +1890,16 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_crit = wing::cursor_from(b_crit.buf[..]);
         var cert_crit = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_crit.buf[..], c_crit, cert_crit);
+        wing::read_cert_extensions(b_crit.buf[..], c_crit, cert_crit);
         sub.assert_true(cert_crit.has_unsupported_critical, "unrecognized critical extension detected");
 
         // 2. Chain verification rejects cert with unrecognized critical extension
         var store = wing::TrustAnchorStore { anchors: [] };
-        let root_dn: u8[4] = [1, 2, 3, 4];
+        let root_dn:   u8[4] = [1, 2, 3, 4];
         let root_spki: u8[4] = [5, 6, 7, 8];
         sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
 
-        var raw_cert_buf: u8[20] = [0; 20];
+        var raw_cert_buf:    u8[20]                = [0; 20];
         var cert_chain_crit: wing::ParsedCert[..8] = [];
         cert_chain_crit.push(cert_crit);
         var raw_chain_crit: const u8[:][..8] = [];
@@ -1925,7 +1925,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_noncrit = wing::cursor_from(b_noncrit.buf[..]);
         var cert_noncrit = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_noncrit.buf[..], c_noncrit, cert_noncrit);
+        wing::read_cert_extensions(b_noncrit.buf[..], c_noncrit, cert_noncrit);
         sub.assert_false(cert_noncrit.has_unsupported_critical, "unrecognized non-critical extension ignored");
     };
 
@@ -1947,7 +1947,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_skid = wing::cursor_from(b_skid.buf[..]);
         var cert_parsed_skid = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_skid.buf[..], c_skid, cert_parsed_skid);
+        wing::read_cert_extensions(b_skid.buf[..], c_skid, cert_parsed_skid);
         sub.assert_true(cert_parsed_skid.has_skid, "has SKID");
         let skid_slice = wing::span_slice(b_skid.buf[..], cert_parsed_skid.skid_key_id);
         sub.assert_eq(skid_slice, "\x11\x22\x33\x44", "SKID key ID matches");
@@ -1972,14 +1972,14 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_akid = wing::cursor_from(b_akid.buf[..]);
         var cert_parsed_akid = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_akid.buf[..], c_akid, cert_parsed_akid);
+        wing::read_cert_extensions(b_akid.buf[..], c_akid, cert_parsed_akid);
         sub.assert_true(cert_parsed_akid.has_akid, "has AKID");
         let akid_slice = wing::span_slice(b_akid.buf[..], cert_parsed_akid.akid_key_id);
         sub.assert_eq(akid_slice, "\x11\x22\x33\x44", "AKID key ID matches");
 
         // 3. Chain Linking with AKID / SKID: Matching key IDs
         var store = wing::TrustAnchorStore { anchors: [] };
-        let root_dn: u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
+        let root_dn:   u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
         let root_spki: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
         sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
 
@@ -1997,37 +1997,37 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         raw_buf[24] = 0x4B; raw_buf[25] = 0x49; raw_buf[26] = 0x44; raw_buf[27] = 0x32;
 
         var cert_ee_match = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 12, length: 2 }, // Issued by CA
+            issuer_raw:          wing::Span16 { offset: 12, length: 2 }, // Issued by CA
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },
-            spki_raw: wing::Span16 { offset: 10, length: 2 },
-            akid_key_id: wing::Span16 { offset: 20, length: 4 }, // AKID = KID1
-            has_akid: true,
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 8, length: 2 },
+            spki_raw:            wing::Span16 { offset: 10, length: 2 },
+            akid_key_id:         wing::Span16 { offset: 20, length: 4 }, // AKID = KID1
+            has_akid:            true,
         };
         var cert_ca_match = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },  // Issued by Root
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 12, length: 2 },
-            spki_raw: wing::Span16 { offset: 14, length: 2 },
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 }, // Issued by Root
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 12, length: 2 },
+            spki_raw:              wing::Span16 { offset: 14, length: 2 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
-            skid_key_id: wing::Span16 { offset: 20, length: 4 }, // SKID = KID1
-            has_skid: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
+            skid_key_id:           wing::Span16 { offset: 20, length: 4 }, // SKID = KID1
+            has_skid:              true,
         };
         var cert_root = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 0, length: 4 },
-            validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 0, length: 4 },
-            spki_raw: wing::Span16 { offset: 4, length: 4 },
-            is_ca: true,
+            issuer_raw:            wing::Span16 { offset: 0, length: 4 },
+            validity_not_before:   1000,
+            validity_not_after:    5000,
+            subject_raw:           wing::Span16 { offset: 0, length: 4 },
+            spki_raw:              wing::Span16 { offset: 4, length: 4 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
 
         var chain_match: wing::ParsedCert[..8] = [];
@@ -2044,13 +2044,13 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         // 4. Chain Linking with AKID / SKID: Mismatched key IDs
         var cert_ee_mismatch = wing::ParsedCert {
-            issuer_raw: wing::Span16 { offset: 12, length: 2 },
+            issuer_raw:          wing::Span16 { offset: 12, length: 2 },
             validity_not_before: 1000,
-            validity_not_after: 5000,
-            subject_raw: wing::Span16 { offset: 8, length: 2 },
-            spki_raw: wing::Span16 { offset: 10, length: 2 },
-            akid_key_id: wing::Span16 { offset: 24, length: 4 }, // AKID = KID2 != KID1
-            has_akid: true,
+            validity_not_after:  5000,
+            subject_raw:         wing::Span16 { offset: 8, length: 2 },
+            spki_raw:            wing::Span16 { offset: 10, length: 2 },
+            akid_key_id:         wing::Span16 { offset: 24, length: 4 }, // AKID = KID2 != KID1
+            has_akid:            true,
         };
         var chain_mismatch: wing::ParsedCert[..8] = [];
         chain_mismatch.push(cert_ee_mismatch);
@@ -2078,7 +2078,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_pc_empty = wing::cursor_from(b_pc_empty.buf[..]);
         var cert_pc_empty = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_pc_empty.buf[..], c_pc_empty, cert_pc_empty);
+        wing::read_cert_extensions(b_pc_empty.buf[..], c_pc_empty, cert_pc_empty);
         sub.assert_true(cert_pc_empty.has_malformed_policy_constraints, "empty PolicyConstraints flagged as malformed");
 
         // 2. PolicyConstraints with negative SkipCerts integer
@@ -2101,7 +2101,7 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_pc_neg = wing::cursor_from(b_pc_neg.buf[..]);
         var cert_pc_neg = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_pc_neg.buf[..], c_pc_neg, cert_pc_neg);
+        wing::read_cert_extensions(b_pc_neg.buf[..], c_pc_neg, cert_pc_neg);
         sub.assert_true(cert_pc_neg.has_malformed_policy_constraints, "negative SkipCerts flagged as malformed");
 
         // 3. InhibitAnyPolicy (2.5.29.54) with negative integer
@@ -2121,16 +2121,16 @@ fn test_asn1_x509_and_verify(t: core::T&) {
 
         var c_iap_neg = wing::cursor_from(b_iap_neg.buf[..]);
         var cert_iap_neg = wing::ParsedCert {};
-        wing::parse_cert_extensions(b_iap_neg.buf[..], c_iap_neg, cert_iap_neg);
+        wing::read_cert_extensions(b_iap_neg.buf[..], c_iap_neg, cert_iap_neg);
         sub.assert_true(cert_iap_neg.has_malformed_policy_constraints, "negative InhibitAnyPolicy flagged as malformed");
 
         // 4. Chain verification rejects cert with malformed policy constraints
         var store = wing::TrustAnchorStore { anchors: [] };
-        let root_dn: u8[4] = [1, 2, 3, 4];
+        let root_dn:   u8[4] = [1, 2, 3, 4];
         let root_spki: u8[4] = [5, 6, 7, 8];
         sub.assert_true(wing::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
 
-        var raw_buf: u8[20] = [0; 20];
+        var raw_buf:       u8[20]                = [0; 20];
         var cert_chain_pc: wing::ParsedCert[..8] = [];
         cert_chain_pc.push(cert_pc_neg);
         var raw_chain_pc: const u8[:][..8] = [];
@@ -2386,22 +2386,22 @@ fn test_asn1_x509_and_verify(t: core::T&) {
         raw_root.append(root_kp.public_key[..]);
 
         var parsed_root = wing::ParsedCert {
-            raw_len: raw_root.len as u32,
-            tbs_cert: wing::Span16 { offset: 0, length: raw_root.len as u16 },
-            serial_number: wing::Span16 { offset: 0, length: 1 },
-            sig_alg_oid: wing::Span16 { offset: 0, length: 1 },
-            issuer_raw: wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
-            validity_not_before: 1704067200,
-            validity_not_after: 1767225600,
-            subject_raw: wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
-            spki_raw: wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
-            spki_pubkey: wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
-            extensions_raw: wing::Span16 { offset: 0, length: 0 },
-            is_ca: true,
+            raw_len:               raw_root.len as u32,
+            tbs_cert:              wing::Span16 { offset: 0, length: raw_root.len as u16 },
+            serial_number:         wing::Span16 { offset: 0, length: 1 },
+            sig_alg_oid:           wing::Span16 { offset: 0, length: 1 },
+            issuer_raw:            wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
+            validity_not_before:   1704067200,
+            validity_not_after:    1767225600,
+            subject_raw:           wing::Span16 { offset: 0, length: leaf_issuer.len as u16 },
+            spki_raw:              wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
+            spki_pubkey:           wing::Span16 { offset: leaf_issuer.len as u16, length: 32 },
+            extensions_raw:        wing::Span16 { offset: 0, length: 0 },
+            is_ca:                 true,
             has_basic_constraints: true,
-            path_len_constraint: -1,
-            key_usage: wing::KEY_USAGE_KEY_CERT_SIGN,
-            has_key_usage: true,
+            path_len_constraint:   -1,
+            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            has_key_usage:         true,
         };
 
         var store = wing::TrustAnchorStore { anchors: [] };
@@ -2504,7 +2504,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 
     t.run("TLS-26: Hybrid Shared Secret Combiner & All-Zero Contributory Defense") { sub =>
         let classical_ss: u8[32] = [0x11; 32];
-        let pq_ss: u8[32] = [0x22; 32];
+        let pq_ss:        u8[32] = [0x22; 32];
         var out_secret: u8[32] = [0; 32];
 
         // Valid derivation succeeds
@@ -2542,7 +2542,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 
         // 1. Valid ciphertext decapsulation
         var valid_ct: u8[1088] = [0xAA; 1088];
-        var ss_valid: u8[32] = [0; 32];
+        var ss_valid: u8[32]   = [0; 32];
         let is_rej_valid, ok_valid = internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
         sub.assert_true(ok_valid, "valid ciphertext decapsulation succeeds");
         sub.assert_false(is_rej_valid, "valid ciphertext does NOT trigger implicit rejection");
@@ -2556,7 +2556,7 @@ fn test_post_quantum_hybrid_exchange(t: core::T&) {
 
         // 2. All-zero ciphertext (1088 bytes) MUST trigger deterministic implicit rejection (FIPS 203 §7.2)
         var zero_ct: u8[1088] = [0x00; 1088];
-        var ss_zero: u8[32] = [0; 32];
+        var ss_zero: u8[32]   = [0; 32];
         let is_rej_zero, ok_zero = internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
         sub.assert_true(ok_zero, "all-zero ciphertext decapsulation succeeds via implicit rejection");
         sub.assert_true(is_rej_zero, "all-zero ciphertext triggers implicit rejection");
@@ -3087,7 +3087,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         let st_bad, ok_bad = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             wing::HS_MSG_FINISHED,
-            false, // non-PSK (Certificate required!)
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_bad, "Finished received before Certificate/CertificateVerify strictly rejected");
@@ -3101,16 +3101,16 @@ fn test_handshake_r2_invariants(t: core::T&) {
         let st_psk, ok_psk = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             wing::HS_MSG_FINISHED,
-            true, // PSK mode
+            wing::HandshakeMode.Psk,
             false,
         );
         sub.assert_true(ok_psk, "PSK mode accepts Finished after EncryptedExtensions");
         sub.assert_true(st_psk == wing::HsState.Connected, "PSK handshake transitions to Connected");
 
         // 3. EncryptedExtensions outside slot rejected
-        let _, ok_ee_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_ENCRYPTED_EXTENSIONS, false, false);
+        let _, ok_ee_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
         sub.assert_false(ok_ee_sh, "EE in ClientWaitSH rejected");
-        let _, ok_ee_cert = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCert, wing::HS_MSG_ENCRYPTED_EXTENSIONS, false, false);
+        let _, ok_ee_cert = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCert, wing::HS_MSG_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
         sub.assert_false(ok_ee_cert, "EE in ClientWaitCert rejected");
 
         // 4. Post-handshake: client sending messages other than KeyUpdate rejected by server
@@ -3155,7 +3155,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         let st_hrr, ok_hrr = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitSH,
             wing::HS_MSG_SERVER_HELLO,
-            false,
+            wing::HandshakeMode.Full,
             true, // is_hrr
         );
         sub.assert_true(ok_hrr, "HRR transition valid");
@@ -3191,7 +3191,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         // 2. HRR selected_group validation:
         // Client supported: X25519 (0x001D), SecP256r1 (0x0017)
         // Client initial key_shares: X25519 (0x001D)
-        let supp_groups: u16[2] = [0x001D, 0x0017];
+        let supp_groups:    u16[2] = [0x001D, 0x0017];
         let initial_shares: u16[1] = [0x001D];
 
         // Server requests SecP256r1 (0x0017) -> supported and NOT in initial shares -> VALID!
@@ -3343,8 +3343,8 @@ fn test_handshake_r2_invariants(t: core::T&) {
 
         // 4. ECH FSM progression on HRR and ServerHello
         var fsm = wing::EchFsm {
-            mode: wing::EchHandshakeMode.Offered,
-            has_hrr: false,
+            mode:              wing::EchHandshakeMode.Offered,
+            has_hrr:           false,
             offered_config_id: 1,
         };
 
@@ -3352,7 +3352,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         var dummy_rc = wing::EchConfigList { .. };
         let ok_fsm_hrr = wing::ech_fsm_on_server_hello(
             fsm,
-            true, // is_hrr
+            wing::EchServerHelloType.HelloRetryRequest,
             true, // has_ech_ext
             b_list.buf[..],
             expected_confirm,
@@ -3364,7 +3364,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         // Second HRR strictly rejected!
         let ok_fsm_hrr2 = wing::ech_fsm_on_server_hello(
             fsm,
-            true,
+            wing::EchServerHelloType.HelloRetryRequest,
             true,
             b_list.buf[..],
             expected_confirm,
@@ -3374,13 +3374,13 @@ fn test_handshake_r2_invariants(t: core::T&) {
 
         // Fresh FSM: ECH accepted in ServerHello
         var fsm_accept = wing::EchFsm {
-            mode: wing::EchHandshakeMode.Offered,
-            has_hrr: false,
+            mode:              wing::EchHandshakeMode.Offered,
+            has_hrr:           false,
             offered_config_id: 1,
         };
         let ok_fsm_sh = wing::ech_fsm_on_server_hello(
             fsm_accept,
-            false, // is_hrr == false
+            wing::EchServerHelloType.ServerHello,
             true,  // has_ech_ext
             expected_confirm[..],
             expected_confirm,
@@ -3393,14 +3393,14 @@ fn test_handshake_r2_invariants(t: core::T&) {
         // If HRR accepted ECH (has_ech_ext == false), ServerHello MUST confirm acceptance.
         // ServerHello omitting ECH extension MUST NOT silently downgrade to Bypassed; it MUST be rejected!
         var fsm_hrr_accept = wing::EchFsm {
-            mode: wing::EchHandshakeMode.Offered,
-            has_hrr: false,
+            mode:              wing::EchHandshakeMode.Offered,
+            has_hrr:           false,
             offered_config_id: 1,
         };
         // HRR accepts ECH
         let ok_hrr_acc = wing::ech_fsm_on_server_hello(
             fsm_hrr_accept,
-            true,  // is_hrr
+            wing::EchServerHelloType.HelloRetryRequest,
             false, // has_ech_ext == false -> ECH accepted for HRR flight
             corrupted_rc[..0],
             expected_confirm,
@@ -3413,7 +3413,7 @@ fn test_handshake_r2_invariants(t: core::T&) {
         // Attacker strips ECH confirmation from ServerHello2 (has_ech_ext == false)
         let ok_sh_strip = wing::ech_fsm_on_server_hello(
             fsm_hrr_accept,
-            false, // regular ServerHello
+            wing::EchServerHelloType.ServerHello,
             false, // ECH extension missing / stripped!
             corrupted_rc[..0],
             expected_confirm,
@@ -3530,7 +3530,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         for i in 10 {
             var t_item = wing::NewSessionTicketMsg {
                 ticket_lifetime: (1000 + i * 100) as u32,
-                ticket_age_add: i as u32,
+                ticket_age_add:  i as u32,
                 ..
             };
             sub.assert_true(
@@ -3690,7 +3690,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let next_st, ok_tr = wing::validate_server_handshake_transition_auth(
             st,
             wing::HS_MSG_CERTIFICATE,
-            true, // client_auth_requested
+            wing::ClientAuthMode.Requested,
             true, // client_cert_is_empty
         );
         sub.assert_true(ok_tr, "empty certificate accepted in ServerWaitCert");
@@ -3700,7 +3700,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let final_st, ok_fin = wing::validate_server_handshake_transition_auth(
             next_st,
             wing::HS_MSG_FINISHED,
-            true,
+            wing::ClientAuthMode.Requested,
             true,
         );
         sub.assert_true(ok_fin, "Finished accepted after empty certificate");
@@ -3710,7 +3710,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let _, ok_bad_cv = wing::validate_server_handshake_transition_auth(
             wing::HsState.ServerWaitCV,
             wing::HS_MSG_CERTIFICATE_VERIFY,
-            true,
+            wing::ClientAuthMode.Requested,
             true, // client_cert_is_empty = true
         );
         sub.assert_false(ok_bad_cv, "CertificateVerify strictly rejected when client cert is empty");
@@ -3719,7 +3719,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let next_full, ok_full = wing::validate_server_handshake_transition_auth(
             wing::HsState.ServerWaitCert,
             wing::HS_MSG_CERTIFICATE,
-            true,
+            wing::ClientAuthMode.Requested,
             false, // client_cert_is_empty = false
         );
         sub.assert_true(ok_full, "full certificate accepted");
@@ -3732,7 +3732,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
     t.run("TLS-41: 0-RTT Early Data Acceptance, Rejection Recovery & ECH Placement") { sub =>
         // 1. Early data accepted by server
         var ctrl_accept = wing::EarlyDataController {
-            state: wing::EarlyDataState.Offered,
+            state:               wing::EarlyDataState.Offered,
             max_early_data_size: 16384,
             ..
         };
@@ -3745,7 +3745,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
 
         // 2. Early data rejected by server (recovery mode)
         var ctrl_reject = wing::EarlyDataController {
-            state: wing::EarlyDataState.Offered,
+            state:               wing::EarlyDataState.Offered,
             max_early_data_size: 16384,
             ..
         };
@@ -3759,7 +3759,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
 
         // 3. Early data record size bounds
         var ctrl_send = wing::EarlyDataController {
-            state: wing::EarlyDataState.Offered,
+            state:               wing::EarlyDataState.Offered,
             max_early_data_size: 100,
             ..
         };
@@ -3769,15 +3769,15 @@ fn test_handshake_r3_invariants(t: core::T&) {
 
         // 4. RFC 9460 Section 6: SVCB-Compatible RR Types - ECH early_data placement rules
         sub.assert_true(
-            wing::validate_ech_early_data_placement(true, true),
+            wing::validate_ech_early_data_placement(wing::EchClientHelloType.Inner, true),
             "early_data in ClientHelloInner permitted",
         );
         sub.assert_false(
-            wing::validate_ech_early_data_placement(false, true),
+            wing::validate_ech_early_data_placement(wing::EchClientHelloType.Outer, true),
             "early_data in ClientHelloOuter strictly forbidden",
         );
         sub.assert_true(
-            wing::validate_ech_early_data_placement(false, false),
+            wing::validate_ech_early_data_placement(wing::EchClientHelloType.Outer, false),
             "no early_data in ClientHelloOuter permitted",
         );
 
@@ -3798,9 +3798,9 @@ fn test_handshake_r3_invariants(t: core::T&) {
 
         // Case B: client controller aborts early data when server sends ee_has_early_data on cipher mismatch
         var ctrl_mismatch = wing::EarlyDataController {
-            state: wing::EarlyDataState.Offered,
-            max_early_data_size: 16384,
-            psk_cipher_suite: wing::TLS_CIPHER_AES_128_CCM_SHA256,
+            state:                   wing::EarlyDataState.Offered,
+            max_early_data_size:     16384,
+            psk_cipher_suite:        wing::TLS_CIPHER_AES_128_CCM_SHA256,
             negotiated_cipher_suite: wing::TLS_CIPHER_AES_128_CCM_8_SHA256,
             ..
         };
@@ -3857,7 +3857,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let next_cc_cr, ok_cc_cr = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             wing::HS_MSG_COMPRESSED_CERTIFICATE,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_cc_cr, "CompressedCertificate accepted in ClientWaitCertCr");
@@ -3866,7 +3866,7 @@ fn test_handshake_r3_invariants(t: core::T&) {
         let next_cc, ok_cc = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCert,
             wing::HS_MSG_COMPRESSED_CERTIFICATE,
-            false,
+            wing::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_cc, "CompressedCertificate accepted in ClientWaitCert");
@@ -3895,13 +3895,13 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         let ok_c = core::brotli_compress(cert_plaintext, compressed_data, 0);
         sub.assert_true(ok_c, "Brotli level 0 compression of certificate succeeds");
 
-        var decomp2: u8[>..] = [];
+        var decomp2:     u8[>..] = [];
         var decomp_zlib: u8[>..] = [];
         var decomp_zstd: u8[>..] = [];
 
         var test_cert_msg = internal::CompressedCertificate {
-            algorithm: internal::CERT_COMPRESSION_BROTLI,
-            uncompressed_length: cert_plaintext.len as u32,
+            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: compressed_data[..],
         };
 
@@ -3944,8 +3944,8 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         sub.assert_true(ok_zcomp, "zlib compression succeeds");
 
         var zlib_msg = internal::CompressedCertificate {
-            algorithm: internal::CERT_COMPRESSION_ZLIB,
-            uncompressed_length: cert_plaintext.len as u32,
+            algorithm:                      internal::CERT_COMPRESSION_ZLIB,
+            uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zlib_comp[..],
         };
         let ok_zdecomp = internal::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
@@ -3957,8 +3957,8 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         let ok_zstd_comp = core::zstd_compress(cert_plaintext, zstd_comp);
         sub.assert_true(ok_zstd_comp, "zstd compression succeeds");
         var zstd_msg = internal::CompressedCertificate {
-            algorithm: internal::CERT_COMPRESSION_ZSTD_IANA,
-            uncompressed_length: cert_plaintext.len as u32,
+            algorithm:                      internal::CERT_COMPRESSION_ZSTD_IANA,
+            uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zstd_comp[..],
         };
         let ok_zstd_decomp = internal::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
@@ -3969,8 +3969,8 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
     t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>
         // 1. Decompression bomb: uncompressed_length exceeds caller's max buffer ceiling
         var bomb_msg = internal::CompressedCertificate {
-            algorithm: internal::CERT_COMPRESSION_BROTLI,
-            uncompressed_length: 50000,
+            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            uncompressed_length:            50000,
             compressed_certificate_message: "abc",
         };
         var out_sink: u8[>..] = [];
@@ -4001,8 +4001,8 @@ fn test_rfc8879_brotli_cert_compression(t: core::T&) {
         // 5. Corrupted compressed payload
         let corrupt_payload: u8[10] = [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66];
         var corrupt_msg = internal::CompressedCertificate {
-            algorithm: internal::CERT_COMPRESSION_BROTLI,
-            uncompressed_length: 10,
+            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            uncompressed_length:            10,
             compressed_certificate_message: corrupt_payload[..],
         };
         var out_corrupt: u8[>..] = [];

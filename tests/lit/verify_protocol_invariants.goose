@@ -30,9 +30,9 @@ fn test_h2_stream_progression() {
 
     for sid in stream_ids {
         var hdr_block: u8[>..] = [];
-        internal::encode_hpack_field(dt, hdr_block, ":method", "GET", true, false);
-        internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", true, false);
-        internal::encode_hpack_field(dt, hdr_block, ":path", "/", true, false);
+        internal::encode_hpack_field(dt, hdr_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(dt, hdr_block, ":path", "/", internal::HpackIndexing.Incremental, false);
 
         var h_frame: u8[>..] = [];
         let h_len = hdr_block.len as u32;
@@ -57,7 +57,7 @@ fn test_quic_pn_and_window_math() {
     print("=== QUIC_PN_MATH ===");
 
     // Simulate packet numbers 500, 501, 502 with payload size 1200
-    let start_pn: u64 = 500;
+    let start_pn:    u64 = 500;
     let payload_len: u64 = 1200;
 
     print("QUIC_TX pn=", start_pn, " len=", payload_len, " flags=0x01");
