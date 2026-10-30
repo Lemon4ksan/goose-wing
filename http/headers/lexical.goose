@@ -87,26 +87,17 @@ fn track_header_presence(
     }
 
     if eq_ascii_fold(name, "content-length") {
+        var parsed_val: i64 = 0;
+        guard validate_content_length_value(val, parsed_val) else { return false; }
         if (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0 {
             tracker.has_duplicate_cl = true;
-            // Check identical duplicate
-            var parsed_val: i64 = 0;
-            if validate_content_length_value(val, parsed_val) {
-                if tracker.parsed_cl >= 0 && tracker.parsed_cl != parsed_val {
-                    return false; // Conflicting Content-Length values -> smuggling
-                }
-            } else {
-                return false;
+            guard tracker.parsed_cl < 0 || tracker.parsed_cl == parsed_val else {
+                return false; // Conflicting Content-Length values -> smuggling
             }
         } else {
             tracker.mask |= HDR_PRESENCE_CONTENT_LENGTH;
             tracker.cl_idx = hdr_idx;
-            var parsed_val: i64 = 0;
-            if validate_content_length_value(val, parsed_val) {
-                tracker.parsed_cl = parsed_val;
-            } else {
-                return false;
-            }
+            tracker.parsed_cl = parsed_val;
         }
         if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
             tracker.has_smuggling_conflict = true;
@@ -192,6 +183,10 @@ fn is_valid_header_value(val: const u8[:]) -> bool {
 }
 
 // RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
+//
+// Example:
+//   s = "1024"
+//   returns: true, out_val = 1024
 fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
     for b in s {
         guard b >= '0' && b <= '9' else { return false; }

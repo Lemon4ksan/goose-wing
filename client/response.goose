@@ -101,7 +101,8 @@ fn status(res: const Response&) -> i32 {
     return res.status_code;
 }
 
-// Returns true if the HTTP response status code indicates a redirect (301, 302, 303, 307, or 308) (RFC 9110 Section 15.4).
+// Returns true if the HTTP response status code indicates a redirect (RFC 9110 Section 15.4):
+// 301, 302, 303, 307, or 308.
 fn is_redirect(res: const Response&) -> bool {
     return res.status_code == 301 || res.status_code == 302 || res.status_code == 303 ||
            res.status_code == 307 || res.status_code == 308;
@@ -171,6 +172,10 @@ fn clear_decompressed_headers(res: Response&) {
 // Automatically decompresses response.body if Content-Encoding is gzip or deflate.
 // Replaces res.body in-place with decompressed bytes and clears the Content-Encoding header.
 // Returns true if body was successfully decompressed or if uncompressed; false on corrupted stream.
+//
+// Example:
+//   res.headers = [("content-encoding", "gzip")], res.body = <gzip_bytes>
+//   returns: true, res.body = <decompressed_bytes>
 fn decode_body(res: Response&) -> bool {
     let enc = header(res, "content-encoding");
     if eq_ascii_fold(enc, "zstd") {
@@ -227,10 +232,14 @@ fn decode_body(res: Response&) -> bool {
 
 // Automatically decompresses response.body, supporting standard encodings (gzip, deflate, zstd)
 // as well as Chrome 123+ shared dictionary compression (dcz) using the client's dictionary cache.
+//
+// Example:
+//   res.headers = [("content-encoding", "dcz")], res.body = <dcz_payload>
+//   returns: true, res.body = <decompressed_bytes>
 fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache&) -> bool {
     let enc = header(res, "content-encoding");
     if eq_ascii_fold(enc, "dcz") {
-        var dict_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
 
@@ -251,7 +260,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
         clear_decompressed_headers(res);
         return true;
     } else if eq_ascii_fold(enc, "dcb") {
-        var dict_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
 
@@ -323,6 +332,11 @@ fn json<T>(res: const Response&, out: T&) -> Error {
     return Error { .. };
 }
 
+// Decodes JSON response body into target struct T.
+//
+// Example:
+//   res.body = "{\"status\":\"ok\"}"
+//   returns: out = T { status = "ok" }, err.code = 0
 fn decode_json<T>(res: const Response&) -> T, Error {
     var out = T { .. };
     let err = json(res, out);

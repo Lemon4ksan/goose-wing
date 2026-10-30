@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Goose-Wing HTTP/2 Frames: ORIGIN and ALTSVC Extensions
 // RFC 8336 (ORIGIN Frame), RFC 7838 (ALTSVC Frame)
 // Zero-allocation, wire-bounded codecs for HTTP/2 extension frames.

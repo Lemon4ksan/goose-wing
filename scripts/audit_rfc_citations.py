@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 # scripts/audit_rfc_citations.py
 # Static citation and hallucination scanner for goose-wing against canonical RFC corpus.
 

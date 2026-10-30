@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 # scripts/fetch_missing_rfcs.py
 # Batch downloader for missing normative RFC specifications from rfc-editor.org.
 

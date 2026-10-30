@@ -186,10 +186,6 @@ fn bearer(req: Request&, token: const u8[:]) {
     sensitive_header(req, "Authorization", val[..]);
 }
 
-fn set_bearer(req: Request&, token: const u8[:]) {
-    bearer(req, token);
-}
-
 // Invariant 13: Strict capacity overflow error propagation.
 // Rejects when query parameters capacity is reached or key/value length exceeds bounds.
 fn query(req: Request&, key: const u8[:], value: const u8[:]) -> bool {

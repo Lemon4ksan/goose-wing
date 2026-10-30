@@ -410,9 +410,18 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     return true, total_consumed;
 }
 
+// RFC 9110 §8.6: Returns true if status code prohibits a message body (204, 304, 1xx).
+fn is_empty_body_status(code: i32) -> bool {
+    return code == 204 || code == 304 || (code >= 100 && code < 200);
+}
+
 // Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Returns (ok, total_bytes_consumed).
+//
+// Example:
+//   wire = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+//   returns: true, consumed = 42
 fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64 {
     guard wire.len >= 4 else { return false, 0; }
 
@@ -513,7 +522,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         }
     }
 
-    let is_empty_status = out_res.status_code == 204 || out_res.status_code == 304 || (out_res.status_code >= 100 && out_res.status_code < 200);
+    let is_empty_status = is_empty_body_status(out_res.status_code);
 
     // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
     // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
@@ -683,10 +692,11 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
         out_wire.append(get_cached_http_date_header());
     }
 
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+    let is_empty_status = is_empty_body_status(res.status_code);
 
     if !is_empty_status {
-        // uWS #1855 / RFC 9110 §8.6: Do not emit automatic Content-Length if already specified in res.headers (e.g. HEAD)
+        // uWS #1855 / RFC 9110 §8.6: Do not emit automatic Content-Length
+        // if already specified in res.headers (e.g. HEAD)
         if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
             if res.body.len == 0 {
                 out_wire.append("Content-Length: 0\r\n");
@@ -701,8 +711,10 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
 
     for &hdr in res.headers {
-        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length and Transfer-Encoding from 204 No Content, 304 Not Modified, and 1xx Informational
-        if is_empty_status && (eq_ascii_fold(hdr.name[..], "content-length") || eq_ascii_fold(hdr.name[..], "transfer-encoding")) {
+        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length and Transfer-Encoding on empty body
+        let is_suppressed_hdr = eq_ascii_fold(hdr.name[..], "content-length")
+            || eq_ascii_fold(hdr.name[..], "transfer-encoding");
+        if is_empty_status && is_suppressed_hdr {
             continue;
         }
 
@@ -722,7 +734,7 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
 fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+    let is_empty_status = is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
     if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
         serialize_http1_chunked_response(res, server_name, 4096, out_wire);
@@ -738,10 +750,10 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
 }
 
 // Sends an HTTP/1.1 response over a TCP socket using zero-copy Vectored I/O (tcp_send2 / WSASend / writev).
-// Headers are serialized into wire_headers, and res.body is transmitted directly without being copied into wire_headers.
+// Headers are serialized into wire_headers, and res.body is transmitted directly without copying into headers.
 fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], wire_headers: B&) -> i32 {
     wire_headers.clear();
-    let is_empty_status = res.status_code == 204 || res.status_code == 304 || (res.status_code >= 100 && res.status_code < 200);
+    let is_empty_status = is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
     if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
         serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
@@ -757,7 +769,13 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
 
 // Sends an HTTP/1.1 response where the payload is provided as an IoVecArray of up to 15 chunks,
 // prepending wire headers zero-copy via tcp_sendv (WSASend / writev).
-fn send_http1_response_iov<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], body_iov: const core::IoVecArray&, wire_headers: B&) -> i32 {
+fn send_http1_response_iov<Res, B>(
+    fd: i64,
+    res: const Res&,
+    server_name: const u8[:],
+    body_iov: const core::IoVecArray&,
+    wire_headers: B&,
+) -> i32 {
     wire_headers.clear();
     serialize_http1_headers(res, server_name, wire_headers);
     guard fd > 0 else { return 0; }
@@ -1263,19 +1281,39 @@ fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[
     return find_subscribers(server.topic_tree, topic, out_fds);
 }
 
-fn subscribe_ex(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:], out_old: i32&, out_new: i32&) -> bool {
+fn subscribe_ex(
+    server: HttpServer&,
+    sock_fd: i64,
+    topic_pattern: const u8[:],
+    out_old: i32&,
+    out_new: i32&,
+) -> bool {
     return subscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
 }
 
-fn unsubscribe_ex(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:], out_old: i32&, out_new: i32&) -> bool {
+fn unsubscribe_ex(
+    server: HttpServer&,
+    sock_fd: i64,
+    topic_pattern: const u8[:],
+    out_old: i32&,
+    out_new: i32&,
+) -> bool {
     return unsubscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
 }
 
-fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
+    server: HttpServer&,
+    sock_fd: i64,
+    topic_pattern: const u8[:],
+) -> bool {
     return subscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
 }
 
-fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
+fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
+    server: HttpServer&,
+    sock_fd: i64,
+    topic_pattern: const u8[:],
+) -> bool {
     return unsubscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
 }
 
@@ -1514,11 +1552,8 @@ fn handle_connection_wire<B>(
         // WebSocket Upgrade Interception on Fast-Path
         if is_websocket_upgrade_request(req) {
             let ws_idx = find_ws_route(server, req.url[..]);
-            if ws_idx >= 0 {
-                let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
-                if ok_upg {
-                    return PipelineOutcome.Handled, true;
-                }
+            if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
+                return PipelineOutcome.Handled, true;
             }
         }
 
@@ -1580,11 +1615,8 @@ fn handle_connection_wire<B>(
     // WebSocket Upgrade Interception (uWebSockets app.ws pattern)
     if is_websocket_upgrade_request(req) {
         let ws_idx = find_ws_route(server, req.url[..]);
-        if ws_idx >= 0 {
-            let ok_upg = complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
-            if ok_upg {
-                return PipelineOutcome.Handled, true;
-            }
+        if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
+            return PipelineOutcome.Handled, true;
         }
     }
 
@@ -1870,20 +1902,16 @@ fn handle_connection_pipe<B>(
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
         if !ok_parse || consumed <= 0 {
-            // Check if headers are complete via fast scanner
+            // Incomplete frame / chunk: examine all currently readable bytes without consuming
             let hdr_end = core::fast_find_crlfcrlf(stream);
-            if hdr_end >= 0 {
-                // Headers are complete but parsing failed -> fatal syntax / smuggling error!
-                if total_handled == 0 {
-                    serialize_bad_request_error(server.server_name[..], wire_out);
-                }
-                core::advance_to(pipe, 0, pipe.readable_len());
-                return total_handled, false;
-            } else {
-                // Incomplete frame / chunk: examine all currently readable bytes without consuming
-                core::advance_to(pipe, 0, pipe.readable_len());
-                break;
+            core::advance_to(pipe, 0, pipe.readable_len());
+            guard hdr_end >= 0 else { break; }
+
+            // Headers are complete but parsing failed -> fatal syntax / smuggling error!
+            if total_handled == 0 {
+                serialize_bad_request_error(server.server_name[..], wire_out);
             }
+            return total_handled, false;
         }
 
         reset_response(res);
@@ -1965,17 +1993,13 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
             let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
             let should_close = !ok || core::contains_fold(core::cork_as_slice(cork), "connection: close");
             if !ok {
-                if cork.cork_pending() > 0 {
-                    tcp_flush_cork(conn, cork);
-                }
+                if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
                 break;
             }
 
             if cork.cork_pending() > 0 {
                 let sent = tcp_flush_cork(conn, cork);
-                if sent <= 0 || should_close {
-                    break;
-                }
+                if sent <= 0 || should_close { break; }
             } else if should_close {
                 break;
             }
