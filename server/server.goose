@@ -106,11 +106,97 @@ fn collect_transfer_encoding_headers<H>(headers: const H&, out_te: u8[..64]&) ->
     return true;
 }
 
+const METHOD_GET_U32:     u32 = 0x20544547;       // "GET "
+const METHOD_PUT_U32:     u32 = 0x20545550;       // "PUT "
+const METHOD_POST_U64:    u64 = 0x2054534F50;     // "POST "
+const METHOD_HEAD_U64:    u64 = 0x2044414548;     // "HEAD "
+const METHOD_DELETE_U64:  u64 = 0x00204554454C4544; // "DELETE "
+const METHOD_OPTIONS_U64: u64 = 0x20534E4F4954504F; // "OPTIONS "
+const METHOD_CONNECT_U64: u64 = 0x205443454E4E4F43; // "CONNECT "
+const METHOD_PATCH_U64:   u64 = 0x204843544150;     // "PATCH "
+const METHOD_TRACE_U64:   u64 = 0x204543415254;     // "TRACE "
+
+const HTTP_VERSION_1_1_U64: u64 = 0x312E312F50545448; // RFC 9112 §2.3 ("HTTP/1.1")
+const HTTP_VERSION_1_0_U64: u64 = 0x302E312F50545448; // RFC 9112 §2.3 ("HTTP/1.0")
+
+// Scans slice for the first space delimiter (' ') starting at `start` offset using 64-bit SWAR.
+// Returns the index of the first space, or -1 if none found.
+//
+// Example:
+//   s = "/index.html HTTP/1.1", start = 0
+//   returns: 11
+fn swar_find_space(s: const u8[:], start: i64) -> i64 {
+    var i: i64 = start;
+    let limit = s.len - 8;
+    while i <= limit {
+        let w = core::read_le_u64(s, i);
+        let x = w ^ 0x2020202020202020;
+        let zero_match = (x - 0x0101010101010101) & (~x) & 0x8080808080808080;
+        if zero_match != 0 {
+            return i + (ctz(zero_match) >> 3);
+        }
+        i += 8;
+    }
+    while i < s.len {
+        if s[i] == ' ' { return i; }
+        i++;
+    }
+    return -1;
+}
+
+// Validates that request-target contains only visible ASCII characters (0x21..0x7E) per RFC 9112 §3.2.
 fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
     for b in path_slice {
         guard b >= 0x21 && b <= 0x7E else { return false; }
     }
     return true;
+}
+
+// Scans and recognizes standard HTTP methods using 64-bit SWAR word matching.
+// Returns consumed method length (without trailing space) and method name slice.
+// If not a standard method, returns 0 and "".
+//
+// Example:
+//   w0 = 0x20544547 ("GET ")
+//   returns: 3, "GET"
+inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
+    let w0_32 = (w0 & 0xFFFFFFFF) as u32;
+    if w0_32 == METHOD_GET_U32 {
+        return 3, "GET";
+    }
+    if (w0 & 0xFFFFFFFFFF) == METHOD_POST_U64 {
+        return 4, "POST";
+    }
+    if (w0 & 0xFFFFFFFFFF) == METHOD_HEAD_U64 {
+        return 4, "HEAD";
+    }
+    if w0_32 == METHOD_PUT_U32 {
+        return 3, "PUT";
+    }
+    if (w0 & 0xFFFFFFFFFFFFFF) == METHOD_DELETE_U64 {
+        return 6, "DELETE";
+    }
+    if w0 == METHOD_OPTIONS_U64 {
+        return 7, "OPTIONS";
+    }
+    if w0 == METHOD_CONNECT_U64 {
+        return 7, "CONNECT";
+    }
+    if (w0 & 0xFFFFFFFFFFFF) == METHOD_PATCH_U64 {
+        return 5, "PATCH";
+    }
+    if (w0 & 0xFFFFFFFFFFFF) == METHOD_TRACE_U64 {
+        return 5, "TRACE";
+    }
+    return 0, "";
+}
+
+// RFC 9112 §3.2.3: Validates authority-form request target for CONNECT method (host:port).
+inline fn validate_connect_authority(target: const u8[:]) -> bool {
+    let col = core::index_of_byte(target, ':');
+    guard col > 0 && col + 1 < target.len else { return false; }
+    let port_num, port_ok = core::parse_port_number(target[(col + 1)..]);
+    return port_ok && port_num > 0;
 }
 
 // Parses the HTTP/1.x request line (Method SP Request-URI SP HTTP-Version).
@@ -122,38 +208,53 @@ fn parse_http1_request_line<Req>(
     req_line: const u8[:],
     out_req:  Req&,
 ) -> bool {
-    let sp1 = core::index_of_byte(req_line, ' ');
-    guard sp1 > 0 else { return false; }
-    let method_slice = req_line[..sp1];
-    guard is_valid_header_name(method_slice) && method_slice.len <= out_req.method.cap else { return false; }
-    out_req.method.clear();
-    out_req.method.append(method_slice);
+    guard req_line.len >= 14 else { return false; }
 
-    let rest = req_line[(sp1 + 1)..];
-    let sp2_rel = core::index_of_byte(rest, ' ');
-    guard sp2_rel > 0 else { return false; }
-    let path_slice = rest[..sp2_rel];
-    guard path_slice.len > 0 && path_slice.len <= out_req.url.cap else { return false; }
+    let w0 = core::read_le_u64(req_line, 0);
+    let m_len, m_slice = match_swar_method(w0);
+    var sp1:        i64  = m_len;
+    var is_connect: bool = false;
+    var is_options: bool = false;
+
+    if m_len > 0 {
+        out_req.method.clear();
+        out_req.method.append(m_slice);
+        is_connect = (w0 == METHOD_CONNECT_U64);
+        is_options = (w0 == METHOD_OPTIONS_U64);
+    } else {
+        sp1 = swar_find_space(req_line, 0);
+        guard sp1 > 0 && sp1 <= out_req.method.cap else { return false; }
+        let custom_method = req_line[..sp1];
+        guard is_valid_header_name(custom_method) else { return false; }
+        out_req.method.clear();
+        out_req.method.append(custom_method);
+        is_connect = (custom_method == "CONNECT");
+        is_options = (custom_method == "OPTIONS");
+    }
+
+    let sp2 = swar_find_space(req_line, sp1 + 1);
+    guard sp2 > sp1 + 1 else { return false; }
+    let path_slice = req_line[(sp1 + 1)..sp2];
+    guard path_slice.len <= out_req.url.cap else { return false; }
     guard validate_request_target_chars(path_slice) else { return false; }
 
-    if method_slice == "CONNECT" {
-        guard path_slice != "*" && path_slice[0] != '/' else { return false; }
-        let col = core::index_of_byte(path_slice, ':');
-        guard col > 0 && col + 1 < path_slice.len else { return false; }
-        let port_num, port_ok = core::parse_port_number(path_slice[(col + 1)..]);
-        guard port_ok && port_num > 0 else { return false; }
-    } else if path_slice == "*" {
-        guard method_slice == "OPTIONS" else { return false; }
+    if path_slice[0] == '/' {
+        guard !is_connect else { return false; }
+    } else if path_slice.len == 1 && path_slice[0] == '*' {
+        guard is_options else { return false; }
+    } else if is_connect {
+        guard validate_connect_authority(path_slice) else { return false; }
     } else {
-        guard path_slice[0] == '/' else { return false; }
+        return false;
     }
 
     out_req.url.clear();
     out_req.url.append(path_slice);
 
-    let proto_slice = rest[(sp2_rel + 1)..];
-    guard proto_slice == "HTTP/1.1" || proto_slice == "HTTP/1.0" else { return false; }
-    out_req.is_http10 = (proto_slice == "HTTP/1.0");
+    guard req_line.len - (sp2 + 1) == 8 else { return false; }
+    let proto_u64 = core::read_le_u64(req_line, sp2 + 1);
+    guard proto_u64 == HTTP_VERSION_1_1_U64 || proto_u64 == HTTP_VERSION_1_0_U64 else { return false; }
+    out_req.is_http10 = (proto_u64 == HTTP_VERSION_1_0_U64);
     return true;
 }
 
