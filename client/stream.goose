@@ -10,6 +10,7 @@ import client.profile;
 import client.request;
 import client.response;
 import http.headers;
+import http.headers.chunked_fsm;
 
 // ---- RFC 9112 Chunked Transfer Framing -----------------------------------
 
@@ -495,4 +496,42 @@ fn stream_progress(reader: const StreamReader&) -> StreamProgress {
         if p.percent > 100.0 { p.percent = 100.0; }
     }
     return p;
+}
+
+// ---- 4. Push-Streaming Sinks & Monomorphized Decorators ---------------------
+
+// Zero-allocation push sink appending directly into caller-owned byte buffer.
+struct ArenaSink {
+    max_bytes: i64 = 16777216,
+}
+
+inline fn emit<B>(sink: ArenaSink, chunk: const u8[:], out: B&) -> bool {
+    guard out.len + chunk.len <= sink.max_bytes else { return false; }
+    out.append(chunk);
+    return true;
+}
+
+// Feeds incoming wire slice through 64-bit ChunkFsmDecoder and emits clean slices into sink.
+fn pump_chunk_fsm<Sink, B>(
+    dec:  internal::ChunkFsmDecoder&,
+    wire: const u8[:],
+    sink: Sink,
+    out:  B&,
+) -> internal::ChunkFsmStatus, i64 {
+    var total_consumed: i64 = 0;
+    var cursor:         i64 = 0;
+    while cursor < wire.len {
+        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
+        cursor += consumed;
+        total_consumed += consumed;
+        if chunk.len > 0 {
+            guard sink.emit(chunk, out) else {
+                return internal::ChunkFsmStatus.Error, total_consumed;
+            }
+        }
+        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
+            return st, total_consumed;
+        }
+    }
+    return internal::ChunkFsmStatus.NeedMore, total_consumed;
 }

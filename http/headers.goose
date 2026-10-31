@@ -36,6 +36,22 @@ struct HeaderSpan {
     id:       u8  = 0,
 }
 
+// Extracts zero-copy header name slice from backing buffer.
+inline fn name_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
+    let start: i64 = s.name_pos;
+    let end:   i64 = start + s.name_len;
+    guard end <= raw.len else { return ""; }
+    return raw[start..end];
+}
+
+// Extracts zero-copy header value slice from backing buffer.
+inline fn val_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
+    let start: i64 = s.val_pos;
+    let end:   i64 = start + s.val_len;
+    guard end <= raw.len else { return ""; }
+    return raw[start..end];
+}
+
 // Whether name is a credential or session header that should be stripped on
 // cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {

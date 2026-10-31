@@ -30,6 +30,7 @@ import client.interceptor;
 import client.stream;
 import client.session.ssrf;
 import client.session.mock;
+import net.pool;
 
 // ---- client configuration and state ----------------------------------------
 
@@ -107,6 +108,9 @@ struct Client {
     hsts:        HstsCache = HstsCache { .. },
     enable_hsts: bool      = true,
 
+    // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
+    pool: StreamPool = StreamPool { .. },
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -130,6 +134,7 @@ fn new_client() -> Client {
         pipeline:                InterceptorPipeline { .. },
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
+        pool:                    new_stream_pool(),
         jar:                     CanonicalCookieJar { .. },
         ..
     };
@@ -156,6 +161,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         pipeline:                InterceptorPipeline { .. },
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
+        pool:                    new_stream_pool(),
         jar:                     CanonicalCookieJar { .. },
         ..
     };

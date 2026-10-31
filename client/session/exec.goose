@@ -28,6 +28,8 @@ import client.session.ssrf;
 import client.session.mock;
 import client.client;
 import client.session.cookie_bridge;
+import client.session.h1_exchange;
+import net.pool;
 import net.retry;
 
 // ---- url resolution helpers ------------------------------------------------
@@ -490,8 +492,58 @@ fn try_match_mock_route(
 
 fn copy_sent_headers(headers: const HeaderItem[..32]&, sent_headers: HeaderItem[..32]&) {
     for &sent_h in headers {
+        guard sent_headers.len < sent_headers.cap else { break; }
         sent_headers.push(copy(sent_h));
     }
+}
+
+fn dispatch_pooled_h1_hop(
+    session:     Session&,
+    conn_id:     i32,
+    curr_method: const u8[:],
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    is_https:    bool,
+    origin_buf:  const u8[:],
+    curr_path:   const u8[:],
+    now_sec:     i64,
+    now_ns:      i64,
+    resp:        Response&,
+) -> bool {
+    let c_idx = session.pool.find_connection_index(conn_id);
+    guard c_idx >= 0 else { return false; }
+
+    var hop_req = Request { .. };
+    hop_req.method.append(curr_method);
+    for &h in ctx.headers {
+        guard hop_req.headers.len < hop_req.headers.cap else { return false; }
+        hop_req.headers.push(copy(h));
+    }
+    hop_req.body.append(ctx.body[..]);
+
+    let ok_ex, keep_alive = execute_h1_exchange(
+        session.pool.conns[c_idx],
+        hop_req,
+        current_url,
+        resp,
+        session.timeout_ms as u32,
+    );
+    guard ok_ex else {
+        session.pool.close_pooled_connection(conn_id);
+        return false;
+    }
+
+    resp.effective_url = copy(current_url.href);
+    copy_sent_headers(ctx.headers, resp.sent_headers);
+    ingest_transport_response_headers(
+        session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
+    );
+    if keep_alive {
+        session.pool.release_connection(conn_id, now_ns);
+    } else {
+        session.pool.close_pooled_connection(conn_id);
+    }
+    return true;
 }
 
 // Executes a mock or echo response hop, verifying IP addresses against SSRF policies.
@@ -547,6 +599,42 @@ fn execute_mock_or_echo_hop(
     );
     if matched {
         return resp;
+    }
+
+    // Attempt live pooled network transaction when no mock routes are registered
+    if session.mock_routes.len == 0 {
+        let now_ns = session.virtual_clock_us * 1000;
+        let scheme_val = if is_https { PoolScheme.Https } else { PoolScheme.Http };
+        let host_str = core::hostname(current_url);
+        let port_num = core::effective_port(current_url) as u16;
+        let pool_key = new_pool_key(
+            scheme_val,
+            host_str,
+            port_num,
+            new_direct_proxy_chain(),
+            new_network_anonymization_key(host_str),
+            TlsAndDnsPolicy { .. },
+        );
+
+        var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, "", now_ns);
+        if !has_pooled {
+            let sock = native_tcp_connect(host_str, port_num, session.timeout_ms as u32);
+            if sock > 0 {
+                let t = Transport.Tcp { fd: sock };
+                conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
+                has_pooled = (conn_id > 0);
+            }
+        }
+
+        if has_pooled {
+            let ok_hop = dispatch_pooled_h1_hop(
+                session, conn_id, curr_method, ctx, current_url, is_https,
+                origin_buf[..], curr_path, now_sec, now_ns, resp,
+            );
+            if ok_hop {
+                return resp;
+            }
+        }
     }
 
     // Default mock response

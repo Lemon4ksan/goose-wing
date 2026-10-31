@@ -44,6 +44,24 @@ import http.incremental;
 import http.forwarded;
 import http.problem;
 
+// ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
+
+import net.proxy;
+import net.tcp;
+import net.transport;
+import net.pool;
+import net.happy_eyeballs;
+import net.proxy_protocol_internal;
+import net.proxy_protocol;
+import net.retry;
+import net.dns;
+import net.masque;
+import net.tick_timer;
+import net.isolation;
+import net.sockopt;
+import net.driver;
+import net.poller;
+
 // ---- client session and application layer ----------------------------------
 
 import client.profile;
@@ -55,6 +73,7 @@ import client.session.mock;
 import client.client;
 import client.session.cookie_bridge;
 import client.session.exec;
+import client.session.h1_exchange;
 import client.session.verbs;
 import client.policy;
 import client.replay_guard;
@@ -142,24 +161,6 @@ import server.server;
 import server.h2_multiplexer;
 import server.soa_timer;
 import server.profiler;
-
-// ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
-
-import net.proxy;
-import net.pool;
-import net.happy_eyeballs;
-import net.proxy_protocol_internal;
-import net.proxy_protocol;
-import net.retry;
-import net.dns;
-import net.masque;
-import net.tcp;
-import net.tick_timer;
-import net.isolation;
-
-import net.sockopt;
-import net.driver;
-import net.poller;
 
 // ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
 

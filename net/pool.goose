@@ -8,6 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 import .proxy;
+import .transport;
 
 // ---- pool key dimensions & enums ----------------------------------------
 
@@ -334,6 +335,8 @@ struct PooledConnection {
     conn_id:                i32                = -1,
     key:                    PoolKey            = PoolKey { .. },
     protocol:               NegotiatedProtocol = NegotiatedProtocol.Http11,
+    transport:              Transport          = Transport.Disconnected,
+    rx_buf:                 u8[..8192]         = [],
     resolved_ip:            u8[..64]           = [],
     san_hosts:              u8[..128][..8]     = [],
     cert_valid:             bool               = true,
@@ -586,6 +589,8 @@ fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
     for &c in pool.conns {
         if c.conn_id == conn_id && !c.closed {
             group_record_closed(pool, c.key, c.active_allocations > 0);
+            c.transport.close();
+            c.rx_buf.clear();
             c.closed = true;
             c.no_new_exchanges = true;
             c.active_allocations = 0;
@@ -611,6 +616,8 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
 
     if oldest_idx >= 0 {
         group_record_closed(pool, pool.conns[oldest_idx].key, false);
+        pool.conns[oldest_idx].transport.close();
+        pool.conns[oldest_idx].rx_buf.clear();
         pool.conns[oldest_idx].closed = true;
         pool.conns[oldest_idx].no_new_exchanges = true;
         return true;
@@ -721,6 +728,37 @@ fn register_connection(
         pool.groups[grp_idx].active_conns++;
     }
 
+    return cid;
+}
+
+// Finds the index of an active pooled connection by ID.
+fn find_connection_index(pool: const StreamPool&, conn_id: i32) -> i32 {
+    for &c, idx in pool.conns {
+        if c.conn_id == conn_id && !c.closed {
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
+// Registers a newly established transport into the pool.
+fn register_connection(
+    pool:           StreamPool&,
+    key:            const PoolKey&,
+    proto:          NegotiatedProtocol,
+    t:              Transport,
+    resolved_ip:    const u8[:],
+    max_streams:    i32,
+    now_ns:         i64,
+    respect_limits: RespectLimits = RespectLimits.Enabled,
+) -> i32 {
+    let cid = register_connection(pool, key, proto, resolved_ip, max_streams, now_ns, respect_limits);
+    if cid > 0 {
+        let idx = pool.find_connection_index(cid);
+        if idx >= 0 {
+            pool.conns[idx].transport = t;
+        }
+    }
     return cid;
 }
 

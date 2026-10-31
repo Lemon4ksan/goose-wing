@@ -48,6 +48,8 @@ struct Response {
     status_code:    i32              = 0,
     effective_url:  u8[..2048]       = [],
     headers:        HeaderItem[..32] = [],
+    raw_headers:    u8[..4096]       = [],
+    spans:          HeaderSpan[..32] = [],
     trailers:       HeaderItem[..16] = [],
     presence_mask:  u16              = 0,
     redirect_count: i64              = 0,
@@ -63,6 +65,8 @@ fn reset_response(res: Response&) {
     res.status_code = 200;
     res.effective_url.clear();
     res.headers.clear();
+    res.raw_headers.clear();
+    res.spans.clear();
     res.trailers.clear();
     res.presence_mask = 0;
     res.redirect_count = 0;
@@ -109,10 +113,26 @@ fn is_redirect(res: const Response&) -> bool {
 }
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
+    if res.spans.len > 0 && res.raw_headers.len > 0 {
+        for &s in res.spans {
+            let n = s.name_slice(res.raw_headers[..]);
+            if eq_ascii_fold(n, name) {
+                return s.val_slice(res.raw_headers[..]);
+            }
+        }
+    }
     return find_header(res.headers[..], name);
 }
 
 fn has_header(res: const Response&, name: const u8[:]) -> bool {
+    if res.spans.len > 0 && res.raw_headers.len > 0 {
+        for &s in res.spans {
+            let n = s.name_slice(res.raw_headers[..]);
+            if eq_ascii_fold(n, name) {
+                return true;
+            }
+        }
+    }
     return has_header(res.headers[..], name);
 }
 

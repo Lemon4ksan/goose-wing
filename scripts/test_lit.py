@@ -11,6 +11,7 @@ Supports parallel execution, filtering, verbose tracing, and clean exit status.
 
 import argparse
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -58,6 +59,11 @@ def main() -> int:
     pattern = args.opt_pattern or args.pattern
     root = Path(__file__).resolve().parent.parent
     lit_dir = root / "tests" / "lit"
+
+    if platform.system() == "Windows":
+        gcc_noavx = root / "tools" / "gcc_noavx.cmd"
+        if gcc_noavx.exists():
+            os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
 
     if not lit_dir.exists():
         print_colored(f"ERROR: LIT tests directory not found at {lit_dir}", "red")

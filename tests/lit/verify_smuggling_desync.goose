@@ -4,7 +4,7 @@
 // tests/lit/verify_smuggling_desync.goose
 // Verification of HTTP/1.1 Request Smuggling (CL.TE, TE.CL), Desync, and Chunked FSM Defenses.
 //
-// RUN: goose build --cc gcc -O2 -o %t.exe %s
+// RUN: goose build -O2 -o %t.exe %s
 // RUN: %t.exe | %FileCheck %s
 
 import std;
