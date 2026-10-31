@@ -137,10 +137,6 @@ fn compute_dpop_ath<B>(access_token: const u8[:], out: B&) {
 
 // Validates DPoP-Nonce syntax per RFC 9449 §8 (NQCHAR: ASCII 0x21, 0x23..0x5B, 0x5D..0x7E).
 // Rejects double quotes ('"'), backslashes ('\\'), spaces, and control characters.
-//
-// Example:
-//   nonce = "server_nonce_abc123"
-//   returns: true
 fn is_valid_dpop_nonce(nonce: const u8[:]) -> bool {
     guard nonce.len > 0 && nonce.len <= 128 else { return false; }
     for b in nonce {

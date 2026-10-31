@@ -777,10 +777,6 @@ inline fn record_session_stream(entry: WebTransportSessionEntry&) {
 }
 
 // Routes incoming data chunks to an existing open WebTransport stream.
-//
-// Example:
-//   wire = "chunk", fin = false
-//   returns: true, out.payload = "chunk", out.fin = false
 fn route_existing_stream(
     demuxer:   WebTransportDemuxer&,
     route_idx: i64,
@@ -821,10 +817,6 @@ fn route_existing_stream(
 }
 
 // Demuxes stream header and routes a new WebTransport stream.
-//
-// Example:
-//   stream_id = 4, wire = [0x40, 0x64, 'a', 'b', 'c'], fin = false
-//   returns: true, out.session_id = 100, out.payload = "abc"
 fn route_new_stream(
     demuxer:   WebTransportDemuxer&,
     stream_id: u64,

@@ -434,10 +434,6 @@ fn validate_h3_pseudo_headers(
 }
 
 // Handles the opening of an HTTP/3 unidirectional Push Stream (RFC 9114 §6.2.2 & §4.6).
-//
-// Example:
-//   conn.role = Server, stype = H3_STREAM_PUSH
-//   returns: H3_ERR_STREAM_CREATION (0x0103)
 fn handle_push_stream_open(
     conn:      H3Connection&,
     stream_id: u64,

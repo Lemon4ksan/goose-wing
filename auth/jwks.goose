@@ -621,10 +621,6 @@ inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
 
 // Evaluates whether a remote JWKS URL is safe for network retrieval (RFC 8725 §3.12).
 // Defends against SSRF, internal network scanning, cloud metadata exfiltration, and credential leaks.
-//
-// Example:
-//   raw_url = "https://auth.example.com/.well-known/jwks.json"
-//   returns: true
 fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
     guard raw_url.len > 0 && raw_url.len <= 2048 else { return false; }
     let view, err = core::parse_url_view(raw_url);

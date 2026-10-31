@@ -137,10 +137,6 @@ inline fn ring_advance_cursor(current_pos: u64, delta: u64, ring_cap: u32) -> u6
 }
 
 // Writes bytes into the page-mirrored ring buffer without boundary wrapping logic.
-//
-// Example:
-//   pr.count = 0, pr.tail = 65530, src = "hello world" (11 bytes)
-//   returns: written = 11, err = IoError.None (tail wraps to 5, contiguous in virtual memory)
 fn page_ring_write(pr: PageRingBuffer&, src: const u8[:]) -> i64, IoError {
     guard pr.is_open else { return 0, IoError.Closed; }
     let avail = page_ring_available(pr);

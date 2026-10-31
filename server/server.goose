@@ -56,10 +56,6 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
 // ---- 2. HTTP/1.1 Wire Request Parser ---------------------------------------
 
 // RFC 3986 §3.2.2 & RFC 9112 §3.2: Validates structural host header integrity.
-//
-// Example:
-//   host_val = "[::1]:8080"
-//   returns: true
 fn validate_host_header_structure(host_val: const u8[:]) -> bool {
     guard host_val.len > 0 else { return true; }
     if host_val[0] != '[' {
@@ -811,10 +807,6 @@ fn send_http1_response_iov<Res, B>(
 // Ends the response without emitting a body payload (RFC 9110 §9.3.2 / §15.4.5 & uWebSockets endWithoutBody pattern).
 // Serializes headers with an optional reported Content-Length (e.g. for HEAD requests or 304 Not Modified).
 // If `close_connection` is true, sets Connection: close.
-//
-// Example:
-//   res.status_code = 200, reported_content_length = 1048576, close_connection = false
-//   out_wire populated with "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n"
 fn end_without_body<Res, B>(
     res:                     Res&,
     server_name:             const u8[:],
@@ -904,10 +896,6 @@ struct HttpStreamConsumer {
 
 // Parses request headers and prepares a streaming body reader without buffering the entire body.
 // Returns (ok, header_end_offset).
-//
-// Example:
-//   wire = "POST /upload HTTP/1.1\r\nHost: api\r\nContent-Length: 1048576\r\n\r\n<data>"
-//   returns: ok = true, header_end_idx = points to start of body, consumer.content_length = 1048576
 fn begin_http_stream_request<Req>(
     wire:     const u8[:],
     out_req:  Req&,
@@ -950,10 +938,6 @@ fn begin_http_stream_request<Req>(
 // Feeds incoming wire slice chunks to an onData callback (uWebSockets onData(chunk, is_last) pattern).
 // Invokes `Callback(chunk, is_last)` as data arrives across packet boundaries.
 // Returns (consumed_bytes, is_last, ok).
-//
-// Example:
-//   consumer initialized with content_length = 10, chunk = "0123456789"
-//   calls Callback("0123456789", true), returns: 10, true, true
 fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
     consumer: HttpStreamConsumer&,
     incoming: const u8[:],
@@ -1148,10 +1132,6 @@ fn find_ws_route(server: const HttpServer&, path: const u8[:]) -> i32 {
 // Matches a hostname against an SNI domain pattern (RFC 6125 §6.4.3 & uWebSockets pattern).
 // Supports exact domains ("example.com") and wildcard patterns ("*.example.com").
 // Case-insensitive.
-//
-// Example:
-//   pattern = "*.example.com", hostname = "api.example.com"
-//   returns: true
 fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
     guard pattern.len > 0 && hostname.len > 0 else { return false; }
     if eq_ascii_fold(pattern, hostname) {
@@ -1495,10 +1475,6 @@ fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res
 
 // Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
-//
-// Example:
-//   req header "connection: close"
-//   returns: true (res has "Connection: close")
 fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
     guard res.status_code != 101 else { return false; }
     let req_conn = header(req, "connection");

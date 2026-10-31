@@ -713,14 +713,6 @@ fn new_ws_behavior(handler_id: i32 = -1) -> WsBehavior {
 }
 
 // Detects Safari 15.0 - 15.3 user-agents with broken permessage-deflate implementations (uWebSockets #1347).
-//
-// Example:
-//   ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/15.2 Safari/605.1.15"
-//   returns: true
-//
-// Example:
-//   ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/15.4 Safari/605.1.15"
-//   returns: false
 fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
     let marker = " Version/15.";
     let pos = find(user_agent, marker);

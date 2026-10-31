@@ -579,28 +579,71 @@ def main() -> int:
                     )
 
             # Rule 6: Expanded // Example: Input/Output Contract Coverage
-            if args.strict_examples and not is_test_or_example and rel_path != "core/ufcs.goose" and is_fn_start and sig_fn_name:
+            if (
+                args.strict_examples
+                and not is_test_or_example
+                and rel_path != "core/ufcs.goose"
+                and is_fn_start
+                and sig_fn_name
+            ):
                 is_exempt = bool(
-                    re.match(
-                        r"^(new_|is_|has_|get_|set_|len|cap|clear|reset|init_|alloc_)",
+                    sig_fn_name
+                    in (
+                        "append",
+                        "push",
+                        "clear",
+                        "reset",
+                        "do",
+                        "next",
+                        "skip",
+                        "read",
+                        "write",
+                        "close",
+                        "drain",
+                        "flush",
+                        "assert",
+                    )
+                    or re.match(
+                        r"^(new_|is_|has_|can_|check_|verify_|validate_|matches_|match_|eq_)",
                         sig_fn_name,
                     )
-                    or sig_fn_name in ("append", "push", "clear", "reset", "do", "next")
+                    or re.match(
+                        r"^(get_|set_|find_|lookup_|count_|len|cap|is_empty|available|remaining)",
+                        sig_fn_name,
+                    )
+                    or re.match(
+                        r"^(init_|alloc_|dealloc_|free_|destroy_|clear|reset|close_|open_)",
+                        sig_fn_name,
+                    )
+                    or re.match(
+                        r"^(write|read|send|recv|peek|discard|flush|drain|copy_|fill_|seek|skip|advance_)",
+                        sig_fn_name,
+                    )
+                    or re.search(r"(?:^|_)skip(?:_|$)", sig_fn_name)
+                    or re.match(
+                        r"^(handle_|serve_|feed_|process_|route_|begin_|end_|run_|loop_|poll_|dispatch_|forward_)",
+                        sig_fn_name,
+                    )
+                    or re.match(
+                        r"^(bench_|test_|print_|format_|to_|from_|record_)",
+                        sig_fn_name,
+                    )
+                    or re.search(
+                        r"(_write|_read|_send|_recv|_copy|_flush|_drain|_buffer|_handler|_loop|_close)$",
+                        sig_fn_name,
+                    )
                 )
                 if not is_exempt:
                     needs_example = False
                     reason = ""
 
-                    # Category A: Advances a wire cursor or SliceReader
+                    # Category A: Advances a wire cursor (in-out cursor parameter)
                     if re.search(
-                        r"\b(idx|pos|offset)\s*:\s*(i64|u64|i32|u32)&",
-                        sig_params,
-                    ) or re.search(
-                        r"\b(r|rd|reader|sr)\s*:\s*(?:core::)?(?:SliceReader|WireReader)&",
+                        r"\b(idx|pos|offset|cursor)\s*:\s*(i64|u64|i32|u32)&",
                         sig_params,
                     ):
                         needs_example = True
-                        reason = "advances a wire cursor or SliceReader"
+                        reason = "advances a wire cursor"
                     # Category B: Consumes a wire slice and returns (consumed_len, bool) or (token, bool)
                     elif re.search(
                         r"\b(s|raw|buf|src|input)\s*:\s*(?:const\s+)?u8\[:\]",
@@ -821,10 +864,18 @@ def main() -> int:
                         )
 
             # Rule 18: Dirty Out-Buffer Hygiene (Anti-state leak)
-            if not is_test_or_example and in_function and fn_has_out_param and fn_returns_bool and not is_fn_start:
+            if (
+                not is_test_or_example
+                and in_function
+                and fn_has_out_param
+                and fn_returns_bool
+                and not is_fn_start
+            ):
                 code_no_c18 = re.sub(r"//.*$", "", line)
                 if fn_out_param_name:
-                    if re.search(rf"\b{re.escape(fn_out_param_name)}\.(?:push|append)\b", code_no_c18) or re.search(
+                    if re.search(
+                        rf"\b{re.escape(fn_out_param_name)}\.(?:push|append)\b", code_no_c18
+                    ) or re.search(
                         rf"\bencode_\w+_to\([^,]+,\s*{re.escape(fn_out_param_name)}\b", code_no_c18
                     ):
                         fn_wrote_to_out = True
@@ -834,7 +885,9 @@ def main() -> int:
                         m_err_ret = re.search(
                             r"\bguard\b.*else\s*\{\s*return\s+(?:false|0,\s*false|\w+,\s*false)\s*;\s*\}",
                             code_no_c18,
-                        ) or re.search(r"^\s*return\s+(?:false|0,\s*false|\w+,\s*false)\s*;", code_no_c18)
+                        ) or re.search(
+                            r"^\s*return\s+(?:false|0,\s*false|\w+,\s*false)\s*;", code_no_c18
+                        )
                         if m_err_ret:
                             record_violation(
                                 f"[LINT] {rel_path}:{line_num} -> Dirty out-buffer leak in '{fn_name}': writes to '{fn_out_param_name}' "

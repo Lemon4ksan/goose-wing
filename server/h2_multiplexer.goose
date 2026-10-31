@@ -874,10 +874,6 @@ fn process_ingress_data<B>(
 // Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline.
 // Returns (total_bytes_consumed, success)
 // Scans wire frames in batch to record stream IDs cancelled by RST_STREAM (CVE-2023-44487).
-//
-// Example:
-//   wire = [RST_STREAM stream_id=3], offset = 0
-//   cancelled_streams contains [3]
 fn collect_cancelled_streams(
     sess:              const H2ServerSession&,
     wire:              const u8[:],
@@ -1068,10 +1064,6 @@ inline fn validate_continuation_boundary(sess: const H2ServerSession&, hdr: cons
 }
 
 // Handles frame header ingress errors, emitting stream resets and advancing offset.
-//
-// Example:
-//   err = ERR_STREAM_CLOSED, total_frame_len = 15, offset = 0
-//   returns: true, offset = 15
 fn handle_ingress_header_error<B>(
     sess:            H2ServerSession&,
     hdr:             const FrameHeader&,

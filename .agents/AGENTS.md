@@ -177,7 +177,7 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - **Domain-named leaf primitives over mechanical names**: When isolating a depth-0 arithmetic invariant for G-CRAP proof (`inline fn calc_amplification_limit`), name the function after the protocol domain rule, never after the raw operator (`add_one`, `sub_one`, `mul_by_three`).
 2. **Input/output examples (`// Example:`) where genuinely useful**:
    - **Compulsory function archetypes**:
-     - *Cursor mutators*: Any function advancing an in-out wire cursor (`idx: i64&`, `pos: i64&`, `offset: u64&`, `r: SliceReader&`, `rd: WireReader&`).
+     - *Cursor mutators*: Any function advancing an in-out wire cursor (`idx: i64&`, `pos: i64&`, `offset: u64&`, `cursor: i64&`).
      - *Stream/slice-consuming parsers*: Any function consuming wire bytes and returning consumed byte length or parsed tokens (`-> (i64|u64|i32), bool` or `-> const u8[:], bool`), e.g. `fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool`.
      - *Prefix-assumption parsers*: Any routine assuming a non-zero start or expecting leading delimiters (`"` or `[`).
      - *RFC grammar parsers and decoders*: Functions named `parse_*`, `decode_*`, `extract_*`, or `scan_*` handling wire frames or header tokens.
@@ -201,7 +201,7 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
      //   s = "\"hello \\\"world\\\"\", next=1"
      //   returns: consumed = 17, ok = true, out_val = "hello \"world\""
      ```
-   - **Omit on trivial functions (Anti-noise)**: Do not add examples to simple getters, setters, constructors (`new_*`), state resets, pure 1-line arithmetic leaves, or self-evident boolean predicates.
+   - **Omit on trivial functions (Anti-noise)**: Do not add examples to simple getters, setters, constructors (`new_*`), state resets, pure 1-line arithmetic leaves, self-evident boolean predicates, block memory/buffer I/O operations (`read`, `write`, `copy`, `drain`), or server/protocol event handlers.
 3. **No boolean trap signatures**:
    - Do not declare functions with consecutive raw `bool` parameters (`fn configure(a: bool, b: bool)`). Use explicit `enum` types (`QuicRole.Server`, `VerifyMode.Strict`) or configuration structs with named fields.
 4. **Zero heap allocation in hot loops**:

@@ -1326,10 +1326,6 @@ fn init_dict_hash_table(
 }
 
 // Emits a greedy match token or literal token and advances pos.
-//
-// Example:
-//   pos = 10, cur_len = 3, cur_dist = 5
-//   advances: pos = 13
 fn process_greedy_token(
     cur_len:    i32,
     cur_dist:   i32,
@@ -1356,10 +1352,6 @@ fn process_greedy_token(
 }
 
 // Evaluates lazy match candidate when a previous match is available.
-//
-// Example:
-//   pos = 10, cur_len = 4, prev_len = 3
-//   advances: pos = 11, match_available = true
 fn process_lazy_match_available(
     cfg:             DeflateConfig,
     cur_len:         i32,
@@ -1407,10 +1399,6 @@ fn process_lazy_match_available(
 }
 
 // Evaluates initial match candidate when no previous match is pending.
-//
-// Example:
-//   pos = 10, cur_len = 4
-//   advances: pos = 11, match_available = true
 fn process_lazy_match_unavailable(
     cfg:             DeflateConfig,
     cur_len:         i32,

@@ -366,10 +366,6 @@ fn tcp_send_fastopen(fd: i64, data: const u8[:]) -> i32 {
 }
 
 // RFC 3168 Section 5: The ECN Field in IP - Extracts 2-bit ECN codepoint from IP TOS octet
-//
-// Example:
-//   tos = 0x02
-//   returns: ECN_ECT_0 (0x02)
 inline fn ecn_from_tos(tos: u8) -> u8 {
     return tos & ECN_MASK;
 }
@@ -948,10 +944,6 @@ fn clear_backpressure_slot(bp: BackpressureSlot&) {
 
 // Buffers unsent payload bytes when socket send() cannot complete immediately.
 // Returns true if buffered, false if unsent data exceeds 16384 buffer capacity.
-//
-// Example:
-//   unsent = "HTTP/1.1 200 OK\r\n\r\nHello"
-//   returns: ok = true, bp.len = 24, bp.is_active = true
 fn buffer_backpressure(bp: BackpressureSlot&, unsent: const u8[:]) -> bool {
     guard unsent.len > 0 && unsent.len <= 16384 else { return false; }
     for i in unsent.len {
@@ -965,10 +957,6 @@ fn buffer_backpressure(bp: BackpressureSlot&, unsent: const u8[:]) -> bool {
 
 // Drains pending backpressure bytes to sock_fd.
 // Returns (bytes_written, is_fully_drained).
-//
-// Example:
-//   bp.len = 24, bp.offset = 0, sock_fd = 4
-//   returns: bytes_written = 24, ok = true (fully drained)
 fn drain_backpressure(bp: BackpressureSlot&, sock_fd: i64) -> i64, bool {
     guard bp.is_active else { return 0, true; }
     guard bp.offset < bp.len && bp.len <= 16384 else {

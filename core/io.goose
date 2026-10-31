@@ -26,10 +26,6 @@ import core.io.page_ring;
 import core.io.page_mem;
 
 // Copies bytes from reader to writer up to capacity or EOF.
-//
-// Example:
-//   r = SliceReader("hello"), w = SliceWriter(cap=5)
-//   returns: copied = 5, err = IoError.None
 fn copy_reader_to_writer(r: SliceReader&, w: SliceWriter&) -> i64, IoError {
     let avail = available(w);
     let rem = remaining(r);
@@ -47,10 +43,6 @@ fn copy_reader_to_writer(r: SliceReader&, w: SliceWriter&) -> i64, IoError {
 }
 
 // Copies all remaining bytes from reader into an appendable buffer (like u8[>..]).
-//
-// Example:
-//   r = SliceReader("world"), out = []
-//   returns: copied = 5, err = IoError.None, out = "world"
 fn copy_reader_all<B>(r: SliceReader&, out: B&) -> i64, IoError {
     let rem = remaining(r);
     guard rem > 0 else { return 0, IoError.None; }
@@ -63,10 +55,6 @@ fn copy_reader_all<B>(r: SliceReader&, out: B&) -> i64, IoError {
 }
 
 // Copies exact count bytes from reader into an appendable buffer.
-//
-// Example:
-//   r = SliceReader("header payload"), count = 6, out = []
-//   returns: copied = 6, err = IoError.None, out = "header"
 fn copy_reader_n<B>(r: SliceReader&, out: B&, count: i64) -> i64, IoError {
     guard count >= 0 else { return 0, IoError.InvalidArgument; }
     guard remaining(r) >= count else { return 0, IoError.UnexpectedEof; }

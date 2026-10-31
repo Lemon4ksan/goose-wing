@@ -139,10 +139,6 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
 }
 
 // Records a setting identifier into the seen list, ensuring uniqueness (RFC 9114 §7.2.4).
-//
-// Example:
-//   seen = [0x01], id = 0x06
-//   returns: true, seen = [0x01, 0x06]
 fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
     var i: i64 = 0;
     while i < seen.len {

@@ -129,10 +129,6 @@ fn guarded_arena_close(arena: GuardedArena&) {
 }
 
 // Appends bytes from `src` to `arena` starting at current `arena.used`.
-//
-// Example:
-//   arena.used = 16, src = "GET / HTTP/1.1\r\n" (len = 16)
-//   returns: written = 16, ok = true (arena.used becomes 32)
 fn guarded_arena_write(arena: GuardedArena&, src: const u8[:]) -> i64, bool {
     guard arena.handle != 0 && src.len > 0 else {
         return 0, false;
@@ -313,10 +309,6 @@ fn pinned_buffer_close(pb: PinnedBuffer&) {
 }
 
 // Writes data to pinned buffer at `offset`.
-//
-// Example:
-//   offset = 0, src = "DMA_HEADER" (len = 10)
-//   returns: written = 10, ok = true
 fn pinned_buffer_write(pb: PinnedBuffer&, offset: u64, src: const u8[:]) -> i64, bool {
     guard pb.handle != 0 && src.len > 0 else {
         return 0, false;
