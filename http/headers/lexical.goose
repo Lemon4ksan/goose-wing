@@ -76,63 +76,59 @@ fn track_header_presence(
     val:     const u8[:],
     hdr_idx: i16,
 ) -> bool {
-    if eq_ascii_fold(name, "host") {
-        if (tracker.mask & HDR_PRESENCE_HOST) != 0 {
-            tracker.has_duplicate_host = true;
-            return false; // RFC 9112 Section 3.2: Duplicate Host MUST be rejected immediately!
-        }
-        tracker.mask |= HDR_PRESENCE_HOST;
-        tracker.host_idx = hdr_idx;
-        return true;
-    }
-
-    if eq_ascii_fold(name, "content-length") {
-        var parsed_val: i64 = 0;
-        guard validate_content_length_value(val, parsed_val) else { return false; }
-        if (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0 {
-            tracker.has_duplicate_cl = true;
-            guard tracker.parsed_cl < 0 || tracker.parsed_cl == parsed_val else {
-                return false; // Conflicting Content-Length values -> smuggling
+    let id = identify_known_header(name);
+    return match id {
+        Host => {
+            if (tracker.mask & HDR_PRESENCE_HOST) != 0 {
+                tracker.has_duplicate_host = true;
+                return false; // RFC 9112 Section 3.2: Duplicate Host MUST be rejected immediately!
             }
-        } else {
-            tracker.mask |= HDR_PRESENCE_CONTENT_LENGTH;
-            tracker.cl_idx = hdr_idx;
-            tracker.parsed_cl = parsed_val;
-        }
-        if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
-            tracker.has_smuggling_conflict = true;
-            return false;
-        }
-        return true;
-    }
-
-    if eq_ascii_fold(name, "transfer-encoding") {
-        if (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
-            tracker.has_duplicate_te = true;
-            return false;
-        }
-        tracker.mask |= HDR_PRESENCE_TRANSFER_ENCODING;
-        tracker.te_idx = hdr_idx;
-        if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
-            tracker.has_smuggling_conflict = true;
-            return false;
-        }
-        return true;
-    }
-
-    if eq_ascii_fold(name, "connection") {
-        tracker.mask |= HDR_PRESENCE_CONNECTION;
-        tracker.conn_idx = hdr_idx;
-        return true;
-    }
-
-    if eq_ascii_fold(name, "upgrade") {
-        tracker.mask |= HDR_PRESENCE_UPGRADE;
-        tracker.upgrade_idx = hdr_idx;
-        return true;
-    }
-
-    return true;
+            tracker.mask |= HDR_PRESENCE_HOST;
+            tracker.host_idx = hdr_idx;
+            true
+        },
+        ContentLength => {
+            var parsed_val: i64 = 0;
+            guard validate_content_length_value(val, parsed_val) else { return false; }
+            if (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0 {
+                tracker.has_duplicate_cl = true;
+                guard tracker.parsed_cl < 0 || tracker.parsed_cl == parsed_val else { return false; }
+            } else {
+                tracker.mask |= HDR_PRESENCE_CONTENT_LENGTH;
+                tracker.cl_idx = hdr_idx;
+                tracker.parsed_cl = parsed_val;
+            }
+            if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
+                tracker.has_smuggling_conflict = true;
+                return false;
+            }
+            true
+        },
+        TransferEncoding => {
+            if (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
+                tracker.has_duplicate_te = true;
+                return false;
+            }
+            tracker.mask |= HDR_PRESENCE_TRANSFER_ENCODING;
+            tracker.te_idx = hdr_idx;
+            if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {
+                tracker.has_smuggling_conflict = true;
+                return false;
+            }
+            true
+        },
+        Connection => {
+            tracker.mask |= HDR_PRESENCE_CONNECTION;
+            tracker.conn_idx = hdr_idx;
+            true
+        },
+        Upgrade => {
+            tracker.mask |= HDR_PRESENCE_UPGRADE;
+            tracker.upgrade_idx = hdr_idx;
+            true
+        },
+        _ => true,
+    };
 }
 
 fn is_tchar(b: u8) -> bool {

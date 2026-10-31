@@ -166,6 +166,120 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     return true;
 }
 
+inline fn count_leading_lws(s: const u8[:]) -> i64 {
+    for i in s.len {
+        let b = s[i];
+        if b != ' ' && b != '\t' {
+            return i;
+        }
+    }
+    return s.len;
+}
+
+fn validate_span_host_header(
+    wire:     const u8[:],
+    spans:    const HeaderSpan[:],
+    host_idx: i16,
+) -> bool {
+    let idx = host_idx as i64;
+    guard idx >= 0 && idx < spans.len else { return false; }
+    let span = spans[idx];
+    let start = span.val_pos as i64;
+    let end = start + span.val_len;
+    guard end <= wire.len else { return false; }
+    let host_val = wire[start..end];
+    guard host_val.len > 0 && validate_host_header_chars(host_val) else { return false; }
+    guard validate_host_header_structure(host_val) else { return false; }
+    return true;
+}
+
+fn validate_span_te_header(
+    wire:   const u8[:],
+    spans:  const HeaderSpan[:],
+    te_idx: i16,
+) -> bool {
+    let idx = te_idx as i64;
+    guard idx >= 0 && idx < spans.len else { return false; }
+    let span = spans[idx];
+    let start = span.val_pos as i64;
+    let end = start + span.val_len;
+    guard end <= wire.len else { return false; }
+    let te_val = wire[start..end];
+    guard validate_transfer_encoding_value(te_val) else { return false; }
+    return true;
+}
+
+inline fn make_header_span(
+    cursor:   i64,
+    name_len: i64,
+    lead_ws:  i64,
+    val_len:  i64,
+    id_tag:   u8,
+) -> HeaderSpan {
+    let v_pos = cursor + name_len + 1 + lead_ws;
+    return HeaderSpan {
+        name_pos: cursor as u16,
+        name_len: name_len as u16,
+        val_pos:  v_pos as u16,
+        val_len:  val_len as u16,
+        id:       id_tag,
+    };
+}
+
+inline fn calc_header_line_advance(name_len: i64, val_len: i64, crlf_len: i64) -> i64 {
+    return name_len + 1 + val_len + crlf_len;
+}
+
+inline fn push_header_item(
+    headers: HeaderItem[..32]&,
+    name:    const u8[:],
+    val:     const u8[:],
+) -> bool {
+    guard headers.len < headers.cap else { return false; }
+    var item = HeaderItem { .. };
+    guard name.len <= item.name.cap && val.len <= item.value.cap else { return false; }
+    item.name.append(name);
+    item.value.append(val);
+    headers.push(item);
+    return true;
+}
+
+inline fn clear_request_headers_state<Req>(req: Req&) {
+    req.headers.clear();
+    req.spans.clear();
+    req.presence_mask = 0;
+}
+
+inline fn calc_header_span_base_offset(req_offset: i64, line_end: i64) -> i64 {
+    return req_offset + line_end + 2;
+}
+
+inline fn calc_body_start_index(req_offset: i64, header_end_idx: i64) -> i64 {
+    return req_offset + header_end_idx;
+}
+
+inline fn has_smuggling_conflict(mask: u32) -> bool {
+    let both = HDR_PRESENCE_TRANSFER_ENCODING | HDR_PRESENCE_CONTENT_LENGTH;
+    return (mask & both) == both;
+}
+
+fn validate_request_host_presence<Req>(
+    wire:             const u8[:],
+    out_req:          const Req&,
+    presence_tracker: const HeaderPresenceTracker&,
+) -> bool {
+    let has_host = (presence_tracker.mask & HDR_PRESENCE_HOST) != 0;
+    if !out_req.is_http10 {
+        guard has_host else { return false; }
+    }
+    if has_host {
+        guard validate_span_host_header(wire, out_req.spans[..], presence_tracker.host_idx) else {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Parses a single wire header line using single-pass SWAR scanning and tchar validation.
 // Advances `cursor` past the trailing CRLF delimiter.
 //
@@ -177,6 +291,7 @@ fn parse_http1_wire_header_line<Req>(
     cursor:           i64&,
     presence_tracker: HeaderPresenceTracker&,
     out_req:          Req&,
+    base_offset:      i64 = 0,
 ) -> bool {
     // Single-pass SWAR header name scanning & RFC 9110 tchar validation
     let name_len, ok_name = scan_header_field_name_swar(rest_headers[cursor..]);
@@ -190,23 +305,23 @@ fn parse_http1_wire_header_line<Req>(
     let hval = trim_lws(val_slice[..val_len]);
 
     // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
-    let cur_hdr_idx = out_req.headers.len as i16;
+    let cur_hdr_idx = out_req.spans.len as i16;
     guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
         return false;
     }
 
-    var item = HeaderItem { .. };
-    guard hname.len <= item.name.cap && hval.len <= item.value.cap else {
+    let lead_ws = count_leading_lws(val_slice[..val_len]);
+    let known_id = identify_known_header(hname);
+    let span = make_header_span(base_offset + cursor, name_len, lead_ws, hval.len, header_id_to_u8(known_id));
+    guard out_req.spans.len < out_req.spans.cap else {
         return false;
     }
-    item.name.append(hname);
-    item.value.append(hval);
-    guard out_req.headers.len < out_req.headers.cap else {
+    out_req.spans.push(span);
+    out_req.presence_mask |= header_id_to_bit(known_id);
+    guard push_header_item(out_req.headers, hname, hval) else {
         return false;
     }
-    out_req.headers.push(item);
-    add_header(out_req.bloom_filter, hname);
-    cursor += name_len + 1 + val_len + crlf_len;
+    cursor += calc_header_line_advance(name_len, val_len, crlf_len);
     return true;
 }
 
@@ -220,6 +335,7 @@ fn parse_http1_headers_stream<Req>(
     rest_headers:     const u8[:],
     out_req:          Req&,
     presence_tracker: HeaderPresenceTracker&,
+    base_offset:      i64 = 0,
 ) -> bool {
     var cursor: i64 = 0;
     while cursor < rest_headers.len {
@@ -231,7 +347,7 @@ fn parse_http1_headers_stream<Req>(
             break;
         }
 
-        guard parse_http1_wire_header_line(rest_headers, cursor, presence_tracker, out_req) else {
+        guard parse_http1_wire_header_line(rest_headers, cursor, presence_tracker, out_req, base_offset) else {
             return false;
         }
     }
@@ -287,11 +403,12 @@ fn parse_http1_request_headers<Req>(
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
-    out_req.headers.clear();
+    clear_request_headers_state(out_req);
     clear(out_req.bloom_filter);
     presence_tracker = HeaderPresenceTracker { .. };
-    guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker) else {
-        out_req.headers.clear();
+    let base_offset = calc_header_span_base_offset(req_offset, line_end);
+    guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker, base_offset) else {
+        clear_request_headers_state(out_req);
         return false;
     }
 
@@ -299,45 +416,19 @@ fn parse_http1_request_headers<Req>(
     out_req.body.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
-    if !out_req.is_http10 {
-        // Must have exactly one Host header in HTTP/1.1 (verified via bitmask presence)
-        guard (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 else {
-            out_req.headers.clear();
-            return false;
-        }
-    }
-    if (presence_tracker.mask & HDR_PRESENCE_HOST) != 0 {
-        let host_idx = presence_tracker.host_idx as i64;
-        guard host_idx >= 0 && host_idx < out_req.headers.len else {
-            out_req.headers.clear();
-            return false;
-        }
-
-        let host_val = out_req.headers[host_idx].value[..];
-        guard host_val.len > 0 && validate_host_header_chars(host_val) else {
-            out_req.headers.clear();
-            return false;
-        }
-
-        // Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Structural IP-literal Host validation
-        guard validate_host_header_structure(host_val) else {
-            out_req.headers.clear();
-            return false;
-        }
-    }
-
-    // Check for Transfer-Encoding and Content-Length using bitmask presence
-    let has_te = (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
-    let has_cl = (presence_tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
-
-    // RFC 9112 Section 6.1 Smuggling Protection:
-    // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
-    if has_te && has_cl {
-        out_req.headers.clear();
+    guard validate_request_host_presence(wire, out_req, presence_tracker) else {
+        clear_request_headers_state(out_req);
         return false;
     }
 
-    body_start_idx = req_offset + header_end_idx;
+    // RFC 9112 Section 6.1 Smuggling Protection:
+    // If both Transfer-Encoding and Content-Length are present, reject as smuggling attempt.
+    if has_smuggling_conflict(presence_tracker.mask) {
+        clear_request_headers_state(out_req);
+        return false;
+    }
+
+    body_start_idx = calc_body_start_index(req_offset, header_end_idx);
     return true;
 }
 
@@ -364,18 +455,11 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         cl_len = presence_tracker.parsed_cl;
     }
 
-    var te_buf: u8[..64] = [];
     if has_te {
-        guard collect_transfer_encoding_headers(out_req.headers, te_buf) else {
+        guard validate_span_te_header(wire, out_req.spans[..], presence_tracker.te_idx) else {
             out_req.headers.clear();
-            return false, 0;
-        }
-    }
-
-    if has_te {
-        // Must validate transfer encoding value per RFC 9112 Section 6.3 & 7.1
-        guard validate_transfer_encoding_value(te_buf[..]) else {
-            out_req.headers.clear();
+            out_req.spans.clear();
+            out_req.presence_mask = 0;
             return false, 0;
         }
 
@@ -387,6 +471,8 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         if dec_err != ChunkedDecodeError.None {
             if dec_err != ChunkedDecodeError.UnexpectedEof {
                 out_req.headers.clear();
+                out_req.spans.clear();
+                out_req.presence_mask = 0;
             }
             return false, 0;
         }

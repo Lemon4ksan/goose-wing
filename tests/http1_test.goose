@@ -700,6 +700,34 @@ fn test_httpserver_chunked_ingress(t: lit::T&) {
         let ok3, _ = wing::parse_http1_wire_request(wire3, req3);
         sub.assert_false(ok3, "Transfer-Encoding: chunked, gzip must be rejected");
     };
+
+    t.run("Zero-Copy Header Spans and Wire Extraction") { sub =>
+        let wire = "GET /api/v1/resource HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: Bearer test_secret_token_12345\r\nX-Custom-Tag: wing-fast\r\n\r\n";
+        var req = wing::new_request("", "");
+        let ok_parse, consumed = wing::parse_http1_wire_request(wire, req);
+        sub.assert_true(ok_parse, "Parse succeeded");
+        sub.assert_true(req.spans.len == 3, "Captured 3 header spans");
+
+        let host_val = wing::header_from_wire(req, wire, "Host");
+        sub.assert_bytes_eq(host_val, "api.example.com", "Extracted Host via zero-copy span");
+
+        let auth_val = wing::header_from_wire(req, wire, "Authorization");
+        sub.assert_bytes_eq(auth_val, "Bearer test_secret_token_12345", "Extracted Authorization via zero-copy span");
+
+        let custom_val = wing::header_from_wire(req, wire, "X-Custom-Tag");
+        sub.assert_bytes_eq(custom_val, "wing-fast", "Extracted custom header via zero-copy span");
+
+        var empty_req = wing::new_request("", "");
+        wing::materialize_headers(empty_req, wire);
+        sub.assert_true(empty_req.headers.len == 0, "No spans to materialize");
+
+        var span_req = wing::new_request("", "");
+        span_req.spans.append(req.spans[..]);
+        wing::materialize_headers(span_req, wire);
+        sub.assert_true(span_req.headers.len == 3, "Materialized 3 headers from spans");
+        sub.assert_bytes_eq(span_req.headers[0].name[..], "Host", "First header name matches");
+        sub.assert_bytes_eq(span_req.headers[0].value[..], "api.example.com", "First header value matches");
+    };
 }
 
 // ----------------------------------------------------------------------------

@@ -13,32 +13,34 @@ import http.priority;
 // ---- request & query item models -------------------------------------------
 
 struct QueryItem {
-    key: u8[..64] = [],
+    key:   u8[..64]  = [],
     value: u8[..256] = [],
 }
 
 struct Request {
-    method: u8[..16] = "GET",
-    url: u8[..2048] = [],
-    timeout: i64 = 0,
-    headers: HeaderItem[..32] = [],
-    bloom_filter: HeaderBloomFilter = HeaderBloomFilter { .. },
-    trailers: HeaderItem[..16] = [],
-    query_params: QueryItem[..16] = [],
-    rewind_buf: u8[..4096] = [],
-    rewindable: bool = true,
-    body_consumed: bool = false,
-    cors_mode: bool = false,
-    tainted_origin: bool = false,
-    is_main_frame: bool = true,
-    is_reload: bool = false,
-    initiator: core::Origin = core::Origin { .. },
-    has_initiator: bool = false,
-    site_for_cookies: SiteForCookies = SiteForCookies { .. },
-    has_site_for_cookies: bool = false,
-    first_party_policy: FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
-    is_http10: bool = false,
-    body: u8[>..] = [],
+    method:               u8[..16]            = "GET",
+    url:                  u8[..2048]          = [],
+    timeout:              i64                 = 0,
+    headers:              HeaderItem[..32]    = [],
+    spans:                HeaderSpan[..32]    = [],
+    presence_mask:        u32                 = 0,
+    bloom_filter:         HeaderBloomFilter   = HeaderBloomFilter { .. },
+    trailers:             HeaderItem[..16]    = [],
+    query_params:         QueryItem[..16]     = [],
+    rewind_buf:           u8[..4096]          = [],
+    rewindable:           bool                = true,
+    body_consumed:        bool                = false,
+    cors_mode:            bool                = false,
+    tainted_origin:       bool                = false,
+    is_main_frame:        bool                = true,
+    is_reload:            bool                = false,
+    initiator:            core::Origin        = core::Origin { .. },
+    has_initiator:        bool                = false,
+    site_for_cookies:     SiteForCookies      = SiteForCookies { .. },
+    has_site_for_cookies: bool                = false,
+    first_party_policy:   FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+    is_http10:            bool                = false,
+    body:                 u8[>..]             = [],
 }
 
 // ---- json reflection writers -----------------------------------------------
@@ -70,6 +72,8 @@ fn reset_request(req: Request&) {
     req.method.append("GET");
     req.url.clear();
     req.headers.clear();
+    req.spans.clear();
+    req.presence_mask = 0;
     req.bloom_filter.clear();
     req.trailers.clear();
     req.query_params.clear();
@@ -132,19 +136,92 @@ fn new_query<F: fn(Request&)>(url: const u8[:], body: const u8[:], content_type:
     return req;
 }
 
-// Returns the value of a request header by name (case-insensitive lookup with 256-bit Bloom filter)
+// Returns the header value slice for a HeaderSpan from wire.
+inline fn header_span_value(span: HeaderSpan, wire: const u8[:]) -> const u8[:] {
+    let start = span.val_pos as i64;
+    let end = start + span.val_len;
+    guard end <= wire.len else { return ""; }
+    return wire[start..end];
+}
+
+// Returns the header name slice for a HeaderSpan from wire.
+inline fn header_span_name(span: HeaderSpan, wire: const u8[:]) -> const u8[:] {
+    let start = span.name_pos as i64;
+    let end = start + span.name_len;
+    guard end <= wire.len else { return ""; }
+    return wire[start..end];
+}
+
+// Materializes HeaderItem entries from HeaderSpan when legacy iteration is required.
+fn materialize_headers(req: Request&, wire: const u8[:]) {
+    guard req.headers.len == 0 && req.spans.len > 0 else { return; }
+    for i in req.spans.len {
+        guard req.headers.len < req.headers.cap else { break; }
+        let span = req.spans[i];
+        let n_start = span.name_pos as i64;
+        let n_end = n_start + span.name_len;
+        let v_start = span.val_pos as i64;
+        let v_end = v_start + span.val_len;
+        guard n_end <= wire.len && v_end <= wire.len else { continue; }
+        var item = HeaderItem { .. };
+        guard span.name_len <= item.name.cap && span.val_len <= item.value.cap else { continue; }
+        item.name.append(wire[n_start..n_end]);
+        item.value.append(wire[v_start..v_end]);
+        req.headers.push(item);
+        add_header(req.bloom_filter, item.name[..]);
+    }
+}
+
+// Returns the value of a request header by name (O(1) MPH bitmask check with Bloom filter fallback).
 fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
-    if !might_have_header(req.bloom_filter, name) {
-        return "";
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        let bit = header_id_to_bit(known_id);
+        guard (req.presence_mask & bit) != 0 else {
+            return "";
+        }
+    } else if !is_empty(req.bloom_filter) {
+        guard might_have_header(req.bloom_filter, name) else {
+            return "";
+        }
     }
     return find_header(req.headers[..], name);
 }
 
 fn has_header(req: const Request&, name: const u8[:]) -> bool {
-    if !might_have_header(req.bloom_filter, name) {
-        return false;
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        let bit = header_id_to_bit(known_id);
+        return (req.presence_mask & bit) != 0;
+    }
+    if !is_empty(req.bloom_filter) {
+        guard might_have_header(req.bloom_filter, name) else {
+            return false;
+        }
     }
     return has_header(req.headers[..], name);
+}
+
+// Extracts a header value directly from wire bytes using zero-copy spans and O(1) bitmask.
+fn header_from_wire(req: const Request&, wire: const u8[:], name: const u8[:]) -> const u8[:] {
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        let bit = header_id_to_bit(known_id);
+        guard (req.presence_mask & bit) != 0 else { return ""; }
+        let target_id = header_id_to_u8(known_id);
+        for i in req.spans.len {
+            if req.spans[i].id == target_id {
+                return header_span_value(req.spans[i], wire);
+            }
+        }
+        return "";
+    }
+    for i in req.spans.len {
+        if core::eq_ascii_fold(header_span_name(req.spans[i], wire), name) {
+            return header_span_value(req.spans[i], wire);
+        }
+    }
+    return "";
 }
 
 // Returns the value of a request trailer by name (case-insensitive lookup)
@@ -166,6 +243,10 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
     add_header(req.bloom_filter, name);
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        req.presence_mask |= header_id_to_bit(known_id);
+    }
     set_header(req.headers, name, value, true);
 }
 
@@ -173,10 +254,18 @@ fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
 // drops control characters, and marks credential headers sensitive.
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     add_header(req.bloom_filter, name);
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        req.presence_mask |= header_id_to_bit(known_id);
+    }
     set_header(req.headers, name, value, false);
 }
 
 fn remove_header(req: Request&, name: const u8[:]) -> bool {
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        req.presence_mask &= ~header_id_to_bit(known_id);
+    }
     return remove_header_by_name(req.headers, name);
 }
 

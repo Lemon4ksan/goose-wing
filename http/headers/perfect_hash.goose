@@ -23,6 +23,52 @@ enum KnownHeaderId {
     Authorization,
     TransferEncoding,
     SecWebSocketKey,
+    Upgrade,
+    Expect,
+}
+
+// Converts a KnownHeaderId to a bit flag for 32-bit presence masks.
+inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
+    return match id {
+        Host => 0x0002,
+        Date => 0x0004,
+        Accept => 0x0008,
+        Cookie => 0x0010,
+        Origin => 0x0020,
+        Server => 0x0040,
+        Connection => 0x0080,
+        UserAgent => 0x0100,
+        ContentType => 0x0200,
+        ContentLength => 0x0400,
+        Authorization => 0x0800,
+        TransferEncoding => 0x1000,
+        SecWebSocketKey => 0x2000,
+        Upgrade => 0x4000,
+        Expect => 0x8000,
+        _ => 0,
+    };
+}
+
+// Converts a KnownHeaderId to a compact 1-byte integer tag.
+inline fn header_id_to_u8(id: KnownHeaderId) -> u8 {
+    return match id {
+        Host => 1,
+        Date => 2,
+        Accept => 3,
+        Cookie => 4,
+        Origin => 5,
+        Server => 6,
+        Connection => 7,
+        UserAgent => 8,
+        ContentType => 9,
+        ContentLength => 10,
+        Authorization => 11,
+        TransferEncoding => 12,
+        SecWebSocketKey => 13,
+        Upgrade => 14,
+        Expect => 15,
+        _ => 0,
+    };
 }
 
 // Converts an uppercase ASCII character to lowercase.
@@ -65,10 +111,12 @@ fn identify_known_header(name: const u8[:]) -> KnownHeaderId {
         6 => match first {
             'a' => check_header(name, "accept", KnownHeaderId.Accept),
             'c' => check_header(name, "cookie", KnownHeaderId.Cookie),
+            'e' => check_header(name, "expect", KnownHeaderId.Expect),
             'o' => check_header(name, "origin", KnownHeaderId.Origin),
             's' => check_header(name, "server", KnownHeaderId.Server),
             _ => KnownHeaderId.Unknown,
         },
+        7 => check_header(name, "upgrade", KnownHeaderId.Upgrade),
         10 => match first {
             'c' => check_header(name, "connection", KnownHeaderId.Connection),
             'u' => check_header(name, "user-agent", KnownHeaderId.UserAgent),

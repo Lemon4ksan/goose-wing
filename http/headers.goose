@@ -27,6 +27,15 @@ struct HeaderItem {
     is_sensitive: bool      = false,
 }
 
+// Zero-copy view into parsed wire HTTP header offsets.
+struct HeaderSpan {
+    name_pos: u16 = 0,
+    name_len: u16 = 0,
+    val_pos:  u16 = 0,
+    val_len:  u16 = 0,
+    id:       u8  = 0,
+}
+
 // Whether name is a credential or session header that should be stripped on
 // cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
@@ -106,6 +115,10 @@ fn clear(bf: HeaderBloomFilter&) {
     bf.bits[1] = 0;
     bf.bits[2] = 0;
     bf.bits[3] = 0;
+}
+
+inline fn is_empty(bf: const HeaderBloomFilter&) -> bool {
+    return bf.bits[0] == 0 && bf.bits[1] == 0 && bf.bits[2] == 0 && bf.bits[3] == 0;
 }
 
 fn to_lower_ascii_byte(b: u8) -> u32 {
