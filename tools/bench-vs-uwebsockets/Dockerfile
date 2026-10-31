@@ -46,7 +46,7 @@ RUN g++ -O3 -flto -march=native -std=c++17 \
 # 5. Compile server_goose_wing.c (standalone C generated from Goose) with GCC -O3 and Link Time Optimization (LTO)
 RUN gcc -O3 -flto -march=native -std=c11 -D_GNU_SOURCE \
         -I/app -I/app/shim \
-        /app/server_goose_wing.c /app/shim/tcp.c /app/shim/simd.c \
+        /app/server_goose_wing.c /app/shim/*.c \
         -lpthread \
         -o /app/bin/server_goose_wing && \
     gcc -O3 -march=native /app/bench_burst.c -lpthread -o /app/bin/bench_burst && \

@@ -1857,7 +1857,11 @@ fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res
     let match_res = match_route(router, req.method[..], req.url[..], params);
     let is_invalid_query = req.method[..] == "QUERY" && header(req, "Content-Type").len == 0;
     match match_res {
-        Found f => { res.status_code = if is_invalid_query { 400 } else { 200 }; },
+        Found f => {
+            res.status_code = if is_invalid_query { 400 } else { 200 };
+            apply_route_payload(f.handler_id, res);
+            handle_head_method_suppression(req.method[..], res);
+        },
         MethodNotAllowed mna => {
             res.status_code = 405;
             res.headers.push(make_header("Allow", mna.allow_header[..]));

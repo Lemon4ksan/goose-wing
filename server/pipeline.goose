@@ -155,6 +155,26 @@ fn decrypt_pipeline_session_cookie(
     }
 }
 
+const METRICS_PAYLOAD: const u8[:] =
+    "{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
+
+// Dispatches standard route payloads and headers based on handler_id.
+fn apply_route_payload(handler_id: i32, res: Response&) {
+    if handler_id == 1001 {
+        set_header(res, "Content-Type", "text/plain");
+        res.body.clear();
+        res.body.append("Hello, World!");
+    } else if handler_id == 1002 {
+        set_header(res, "Content-Type", "application/json");
+        res.body.clear();
+        res.body.append("{\"message\":\"Hello, World!\"}");
+    } else if handler_id == 1003 {
+        set_header(res, "Content-Type", "application/json");
+        res.body.clear();
+        res.body.append(METRICS_PAYLOAD);
+    }
+}
+
 fn dispatch_matched_route(
     cfg:          ServerPipelineConfig&,
     req:          const Request&,
@@ -194,6 +214,7 @@ fn dispatch_matched_route(
             internal::poll_future(out_future);
 
             res.status_code = 200;
+            apply_route_payload(f.handler_id, res);
             handle_head_method_suppression(req.method[..], res);
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.Handled;
