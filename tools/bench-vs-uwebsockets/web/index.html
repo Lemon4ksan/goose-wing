@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>goose-wing vs uWebSockets Benchmark Harness</title>
+  <title>goose-wing vs uWebSockets benchmark</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
           <span class="tag-vs">vs</span>
           <span class="tag-uws">uWebSockets</span>
         </h1>
-        <p class="project-desc">Systems Networking Benchmark &amp; Resource Utilization Harness</p>
+        <p class="project-desc">Throughput, latency, and memory comparison</p>
       </div>
       <div class="header-right">
         <div class="system-pill" id="system-info" style="display: none;">
@@ -44,26 +44,26 @@
 
     <!-- Offline Notice -->
     <div class="alert-box" id="offline-notice" style="display: none;">
-      <strong>Target Daemons Offline:</strong> Neither <code>:3001</code> (goose-wing) nor <code>:3002</code> (uWebSockets) are responding.
-      Start both servers via <code>docker compose up</code> inside <code>tools/bench-vs-uwebsockets</code>, or click <em>Load Archived Reference</em> below to inspect calibrated hardware runs.
+      <strong>Target daemons offline:</strong> Neither <code>:3001</code> (goose-wing) nor <code>:3002</code> (uWebSockets) responded.
+      Start both servers with <code>docker compose up</code>, or click <em>Load reference</em> below.
     </div>
 
     <!-- Test Configuration -->
     <section class="card">
       <div class="card-header">
-        <span class="card-title">Test Configuration</span>
+        <span class="card-title">Test configuration</span>
       </div>
       <div class="config-body">
         <div class="config-grid">
           <div class="field-group field-scenario">
-            <label for="select-scenario">Benchmark Scenario</label>
+            <label for="select-scenario">Benchmark scenario</label>
             <select id="select-scenario" onchange="onScenarioChange()">
-              <option value="multi_core_1m" selected>Peak 1M Target: 6 Workers (wrk 128x Pipeline, 512 Conns)</option>
-              <option value="unbounded_burst">Unbounded Line-Rate Burst (Native C: 26.8M req/s)</option>
-              <option value="pipelined">HTTP/1.1 Pipelined (Depth 32, Zero-Heap CorkBuffer Batch)</option>
-              <option value="plaintext">HTTP/1.1 Plaintext Ping-Pong (Roundtrip Latency)</option>
-              <option value="json">HTTP/1.1 JSON Serialization</option>
-              <option value="all">⚡ Full Docker Suite (All 4 Phases: 1, 4, 6, 8 Cores + Burst)</option>
+              <option value="multi_core_1m" selected>6 workers, 128x pipeline, 512 conns</option>
+              <option value="unbounded_burst">Burst generator (native C, 6 workers)</option>
+              <option value="pipelined">HTTP/1.1 pipelined (depth 32)</option>
+              <option value="plaintext">HTTP/1.1 plaintext ping-pong</option>
+              <option value="json">HTTP/1.1 JSON serialization</option>
+              <option value="all">Full suite (phases 1, 4, 6, 8 cores and burst)</option>
             </select>
           </div>
 
@@ -78,13 +78,13 @@
           </div>
 
           <div class="field-group field-param" id="group-pipeline">
-            <label for="input-pipeline">Pipeline Depth</label>
+            <label for="input-pipeline">Pipeline depth</label>
             <input type="number" id="input-pipeline" min="1" max="128" value="32">
           </div>
 
           <div class="actions-row">
-            <button class="btn btn-primary" id="btn-run" onclick="startStreamCli()">▶ Run Benchmark</button>
-            <button class="btn btn-secondary" onclick="loadReferenceData()">Load Reference</button>
+            <button class="btn btn-primary" id="btn-run" onclick="startStreamCli()">Run benchmark</button>
+            <button class="btn btn-secondary" onclick="loadReferenceData()">Load reference</button>
             <button class="btn btn-secondary" onclick="resetToEmpty()">Reset</button>
           </div>
         </div>
@@ -94,14 +94,14 @@
     <!-- Benchmark Results -->
     <section class="card">
       <div class="card-header">
-        <span class="card-title">Benchmark Results</span>
-        <span class="active-status" id="active-scenario-label">Ready (No active test)</span>
+        <span class="card-title">Benchmark results</span>
+        <span class="active-status" id="active-scenario-label">Ready (no active test)</span>
       </div>
 
       <!-- Empty state placeholder -->
       <div class="empty-state" id="empty-state">
-        <div class="empty-prompt">No benchmark run recorded for this session</div>
-        <div class="empty-sub">Select a scenario above and click <strong>Run Benchmark</strong> for live sockets, or <strong>Load Reference</strong> to view calibrated baselines.</div>
+        <div class="empty-prompt">No benchmark run recorded.</div>
+        <div class="empty-sub">Select a scenario above and click <strong>Run benchmark</strong>, or click <strong>Load reference</strong>.</div>
       </div>
 
       <!-- Results Container -->
@@ -114,7 +114,7 @@
                 <th class="col-metric">Metric</th>
                 <th class="col-num">goose-wing</th>
                 <th class="col-num">uWebSockets</th>
-                <th class="col-delta-head">Delta / Comparison</th>
+                <th class="col-delta-head">Delta</th>
               </tr>
             </thead>
             <tbody>
@@ -122,67 +122,67 @@
                 <td colspan="4">Throughput</td>
               </tr>
               <tr>
-                <td class="metric-name">Throughput (RPS)</td>
+                <td class="metric-name">Throughput (req/s)</td>
                 <td class="num col-gw" id="val-gw-rps">—</td>
                 <td class="num col-uws" id="val-uws-rps">—</td>
                 <td class="num" id="val-delta-rps">—</td>
               </tr>
               <tr class="section-row">
-                <td colspan="4">Latency Percentiles</td>
+                <td colspan="4">Latency percentiles</td>
               </tr>
               <tr>
-                <td class="metric-name">Min Latency</td>
+                <td class="metric-name">Min latency</td>
                 <td class="num col-gw" id="val-gw-min">—</td>
                 <td class="num col-uws" id="val-uws-min">—</td>
                 <td class="num" id="val-delta-min">—</td>
               </tr>
               <tr>
-                <td class="metric-name">Average (Mean)</td>
+                <td class="metric-name">Average latency</td>
                 <td class="num col-gw" id="val-gw-avg">—</td>
                 <td class="num col-uws" id="val-uws-avg">—</td>
                 <td class="num" id="val-delta-avg">—</td>
               </tr>
               <tr>
-                <td class="metric-name">p50 (Median)</td>
+                <td class="metric-name">p50 latency</td>
                 <td class="num col-gw" id="val-gw-p50">—</td>
                 <td class="num col-uws" id="val-uws-p50">—</td>
                 <td class="num" id="val-delta-p50">—</td>
               </tr>
               <tr>
-                <td class="metric-name">p90</td>
+                <td class="metric-name">p90 latency</td>
                 <td class="num col-gw" id="val-gw-p90">—</td>
                 <td class="num col-uws" id="val-uws-p90">—</td>
                 <td class="num" id="val-delta-p90">—</td>
               </tr>
               <tr>
-                <td class="metric-name">p99 (Tail Latency)</td>
+                <td class="metric-name">p99 latency</td>
                 <td class="num col-gw" id="val-gw-p99">—</td>
                 <td class="num col-uws" id="val-uws-p99">—</td>
                 <td class="num" id="val-delta-p99">—</td>
               </tr>
               <tr>
-                <td class="metric-name">p99.9</td>
+                <td class="metric-name">p99.9 latency</td>
                 <td class="num col-gw" id="val-gw-p999">—</td>
                 <td class="num col-uws" id="val-uws-p999">—</td>
                 <td class="num" id="val-delta-p999">—</td>
               </tr>
               <tr>
-                <td class="metric-name">Max Latency</td>
+                <td class="metric-name">Max latency</td>
                 <td class="num col-gw" id="val-gw-max">—</td>
                 <td class="num col-uws" id="val-uws-max">—</td>
                 <td class="num" id="val-delta-max">—</td>
               </tr>
               <tr class="section-row">
-                <td colspan="4">Memory &amp; Allocations</td>
+                <td colspan="4">Memory and allocations</td>
               </tr>
               <tr>
-                <td class="metric-name">Heap Allocations / Req</td>
+                <td class="metric-name">Heap allocations per request</td>
                 <td class="num col-gw" id="val-gw-allocs">0 B (0 mallocs)</td>
                 <td class="num col-uws" id="val-uws-allocs">Dynamic (glibc)</td>
-                <td class="num"><span class="delta-badge win">Zero-Heap Invariant</span></td>
+                <td class="num"><span class="delta-badge neutral">0 B mallocs</span></td>
               </tr>
               <tr>
-                <td class="metric-name">Process RSS Memory</td>
+                <td class="metric-name">Process RSS memory</td>
                 <td class="num col-gw" id="val-gw-rss">—</td>
                 <td class="num col-uws" id="val-uws-rss">—</td>
                 <td class="num" id="val-delta-rss">—</td>
@@ -196,10 +196,10 @@
     <!-- Execution Console -->
     <section class="card console-card">
       <div class="card-header">
-        <span class="card-title">Execution Console</span>
+        <span class="card-title">Execution console</span>
         <div class="console-actions">
           <span class="log-count" id="log-count">0 lines</span>
-          <button class="btn btn-secondary btn-sm" onclick="copyConsoleLog()">Copy Log</button>
+          <button class="btn btn-secondary btn-sm" onclick="copyConsoleLog()">Copy log</button>
           <button class="btn btn-secondary btn-sm" onclick="clearConsole()">Clear</button>
         </div>
       </div>

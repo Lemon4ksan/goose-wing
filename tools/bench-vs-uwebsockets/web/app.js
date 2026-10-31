@@ -1,42 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// app.js - Scientific Benchmark Orchestration
+// app.js - Benchmark metrics runner
 const REFERENCE_DATA = {
   pipelined: {
-    label: "Standard wrk (1 core, 32x pipeline)",
+    label: "1 core, 32x pipeline",
     gw: { rps: 168923, min: 0.18, avg: 0.38, p50: 0.353, p90: 0.49, p99: 0.62, p999: 0.88, max: 2.40, allocs: "0 B (0 mallocs)", rss: 2.1 },
     uws: { rps: 123340, min: 0.28, avg: 0.52, p50: 0.485, p90: 0.72, p99: 0.98, p999: 1.85, max: 6.20, allocs: "Dynamic (glibc)", rss: 16.4 }
   },
   multi_core_1m: {
-    label: "Standard wrk (8 workers, 64x pipeline)",
-    gw: { rps: 876381, min: 0.45, avg: 1.82, p50: 1.25, p90: 2.45, p99: 3.10, p999: 4.80, max: 12.50, allocs: "0 B (0 mallocs)", rss: 3.1 },
-    uws: { rps: 721664, min: 0.65, avg: 2.65, p50: 1.95, p90: 4.10, p99: 5.58, p999: 9.20, max: 24.80, allocs: "Dynamic (glibc)", rss: 18.2 }
+    label: "6 workers, 128x pipeline, 512 conns",
+    gw: { rps: 795818, min: 0.45, avg: 1.82, p50: 1.25, p90: 2.45, p99: 3.10, p999: 4.80, max: 12.50, allocs: "0 B (0 mallocs)", rss: 17.7 },
+    uws: { rps: 842811, min: 0.65, avg: 2.65, p50: 1.95, p90: 4.10, p99: 5.58, p999: 9.20, max: 24.80, allocs: "Dynamic (glibc)", rss: 4.3 }
   },
   unbounded_burst: {
-    label: "Unbounded Line-Rate Burst (Native C: 26.8M req/s)",
-    gw: { rps: 26803444, min: 0.05, avg: 0.12, p50: 0.10, p90: 0.25, p99: 0.45, p999: 0.85, max: 2.10, allocs: "0 B (0 mallocs)", rss: 3.1 },
-    uws: { rps: 8057592, min: 0.12, avg: 0.45, p50: 0.38, p90: 0.82, p99: 1.45, p999: 2.90, max: 8.50, allocs: "Dynamic (glibc)", rss: 18.2 }
+    label: "Burst generator (native C, 6 workers)",
+    gw: { rps: 26388361, min: 0.05, avg: 0.12, p50: 0.10, p90: 0.25, p99: 0.45, p999: 0.85, max: 2.10, allocs: "0 B (0 mallocs)", rss: 17.7 },
+    uws: { rps: 7898559, min: 0.12, avg: 0.45, p50: 0.38, p90: 0.82, p99: 1.45, p999: 2.90, max: 8.50, allocs: "Dynamic (glibc)", rss: 4.3 }
   },
   plaintext: {
-    label: "HTTP/1.1 Plaintext Ping-Pong (Roundtrip)",
-    gw: { rps: 31613, min: 18.4, avg: 31.2, p50: 29.8, p90: 36.4, p99: 31.6, p999: 42.1, max: 58.0, allocs: "0 B (0 mallocs)", rss: 2.1 },
-    uws: { rps: 23195, min: 24.2, avg: 41.5, p50: 39.2, p90: 48.7, p99: 43.1, p999: 64.2, max: 92.5, allocs: "Dynamic (glibc)", rss: 14.8 }
+    label: "HTTP/1.1 plaintext ping-pong",
+    gw: { rps: 169411, min: 18.4, avg: 31.2, p50: 29.8, p90: 36.4, p99: 31.6, p999: 42.1, max: 58.0, allocs: "0 B (0 mallocs)", rss: 3.1 },
+    uws: { rps: 134007, min: 24.2, avg: 41.5, p50: 39.2, p90: 48.7, p99: 43.1, p999: 64.2, max: 92.5, allocs: "Dynamic (glibc)", rss: 4.3 }
   },
   json: {
-    label: "HTTP/1.1 JSON Serialization",
+    label: "HTTP/1.1 JSON serialization",
     gw: { rps: 1145200, min: 0.26, avg: 0.56, p50: 0.51, p90: 0.72, p99: 0.86, p999: 1.25, max: 5.10, allocs: "0 B (0 mallocs)", rss: 2.1 },
     uws: { rps: 921000, min: 0.45, avg: 1.02, p50: 0.94, p90: 1.45, p99: 1.95, p999: 3.80, max: 21.40, allocs: "Dynamic (glibc)", rss: 17.2 }
-  },
-  high_concurrency: {
-    label: "High Concurrency (1,000 Connections Keep-Alive)",
-    gw: { rps: 948000, min: 0.32, avg: 0.68, p50: 0.61, p90: 0.89, p99: 1.05, p999: 1.48, max: 7.10, allocs: "0 B (0 mallocs)", rss: 3.4 },
-    uws: { rps: 712000, min: 0.58, avg: 1.82, p50: 1.45, p90: 2.60, p99: 3.80, p999: 6.20, max: 38.50, allocs: "Dynamic (glibc)", rss: 34.6 }
-  },
-  memory_stress: {
-    label: "Zero-Heap Memory Stability (50,000 Reqs)",
-    gw: { rps: 1198000, min: 0.25, avg: 0.53, p50: 0.49, p90: 0.69, p99: 0.82, p999: 1.15, max: 4.90, allocs: "0 B (0 mallocs)", rss: 2.1 },
-    uws: { rps: 940000, min: 0.44, avg: 1.05, p50: 0.92, p90: 1.55, p99: 2.10, p999: 4.10, max: 22.00, allocs: "Dynamic (glibc)", rss: 28.2 }
   }
 };
 
@@ -114,8 +104,8 @@ function onScenarioChange() {
 function resetToEmpty() {
   document.getElementById("results-container").style.display = "none";
   document.getElementById("empty-state").style.display = "block";
-  document.getElementById("active-scenario-label").textContent = "Ready (No active test)";
-  log("Reset results table to initial state.");
+  document.getElementById("active-scenario-label").textContent = "Ready (no active test)";
+  log("[state] reset");
 }
 
 async function checkStatus() {
@@ -133,7 +123,7 @@ async function checkStatus() {
     const data = await res.json();
 
     if (data.system && sysPill && sysEnv) {
-      sysEnv.textContent = `${data.system.os || "Linux"} · ${data.system.cores || 12} Cores`;
+      sysEnv.textContent = `${data.system.os || "Linux"} · ${data.system.cores || 12} cores`;
       sysPill.style.display = "inline-flex";
     }
 
@@ -155,14 +145,14 @@ async function checkStatus() {
 
     const anyOffline = (!data.gw_online || !data.uws_online);
     notice.style.display = anyOffline ? "block" : "none";
-    log(`[health] goose-wing (:3001) is ${data.gw_online ? "ONLINE" : "OFFLINE"}, uWebSockets (:3002) is ${data.uws_online ? "ONLINE" : "OFFLINE"}`);
+    log(`[health] goose-wing:3001 (${data.gw_online ? "online" : "offline"}), uWebSockets:3002 (${data.uws_online ? "online" : "offline"})`);
   } catch (err) {
     nodeGw.className = "endpoint-pill offline";
     stateGw.textContent = "offline";
     nodeUws.className = "endpoint-pill offline";
     stateUws.textContent = "offline";
     notice.style.display = "block";
-    log(`[health] Daemon probe failed: ${err.message}`);
+    log(`[health] probe failed: ${err.message}`);
   }
 }
 
@@ -192,15 +182,13 @@ function renderTableData(data, sourceLabel) {
   
   const elDeltaRps = document.getElementById("val-delta-rps");
   const rpsDiff = (((gw.rps - uws.rps) / Math.max(uws.rps, 1)) * 100);
-  const rpsRatio = (gw.rps / Math.max(uws.rps, 1)).toFixed(2);
   
   if (Math.abs(rpsDiff) < 0.05 || Math.abs(gw.rps - uws.rps) < 1) {
-    elDeltaRps.innerHTML = `<span class="delta-badge neutral">~0.0% (parity)</span>`;
+    elDeltaRps.innerHTML = `<span class="delta-badge neutral">0.0%</span>`;
   } else if (rpsDiff > 0) {
-    elDeltaRps.innerHTML = `<span class="delta-badge win">+${rpsDiff.toFixed(1)}% (${rpsRatio}×)</span>`;
+    elDeltaRps.innerHTML = `<span class="delta-badge win">+${rpsDiff.toFixed(1)}%</span>`;
   } else {
-    const lossRatio = (uws.rps / Math.max(gw.rps, 1)).toFixed(2);
-    elDeltaRps.innerHTML = `<span class="delta-badge loss">${rpsDiff.toFixed(1)}% (${lossRatio}× lower)</span>`;
+    elDeltaRps.innerHTML = `<span class="delta-badge loss">${rpsDiff.toFixed(1)}%</span>`;
   }
 
   // 2. Latencies
@@ -220,20 +208,16 @@ function renderTableData(data, sourceLabel) {
       const pct = (Math.abs(diff) / Math.max(valUws, 0.001)) * 100;
 
       if (pct < 0.05 || Math.abs(diff) < 0.01) {
-        elDelta.innerHTML = `<span class="delta-badge neutral">parity</span>`;
+        elDelta.innerHTML = `<span class="delta-badge neutral">0.0%</span>`;
       } else if (valGw < valUws) {
-        // goose-wing is faster (lower latency)
-        const speedup = (valUws / Math.max(valGw, 0.001)).toFixed(2);
-        elDelta.innerHTML = `<span class="delta-badge win">−${pct.toFixed(1)}% (${speedup}× faster)</span>`;
+        elDelta.innerHTML = `<span class="delta-badge win">−${pct.toFixed(1)}%</span>`;
       } else {
-        // goose-wing is slower (higher latency)
-        const slowdown = (valGw / Math.max(valUws, 0.001)).toFixed(2);
-        elDelta.innerHTML = `<span class="delta-badge loss">+${pct.toFixed(1)}% (${slowdown}× higher)</span>`;
+        elDelta.innerHTML = `<span class="delta-badge loss">+${pct.toFixed(1)}%</span>`;
       }
     }
   });
 
-  // 3. Allocations & Memory
+  // 3. Allocations and Memory
   document.getElementById("val-gw-allocs").textContent = gw.allocs || "0 B (0 mallocs)";
   document.getElementById("val-uws-allocs").textContent = uws.allocs || "Dynamic (glibc)";
 
@@ -247,15 +231,12 @@ function renderTableData(data, sourceLabel) {
   if (isNaN(valGwRss) || isNaN(valUwsRss)) {
     elDeltaRss.textContent = "—";
   } else if (Math.abs(valGwRss - valUwsRss) < 0.1) {
-    elDeltaRss.innerHTML = `<span class="delta-badge neutral">parity</span>`;
-  } else if (valGwRss < valUwsRss) {
-    const diffPct = (((valUwsRss - valGwRss) / valUwsRss) * 100).toFixed(0);
-    const ratio = (valUwsRss / Math.max(valGwRss, 0.1)).toFixed(1);
-    elDeltaRss.innerHTML = `<span class="delta-badge win">−${diffPct}% (${ratio}× smaller)</span>`;
+    elDeltaRss.innerHTML = `<span class="delta-badge neutral">0 MB</span>`;
   } else {
-    const diffPct = (((valGwRss - valUwsRss) / valUwsRss) * 100).toFixed(0);
-    const ratio = (valGwRss / Math.max(valUwsRss, 0.1)).toFixed(1);
-    elDeltaRss.innerHTML = `<span class="delta-badge loss">+${diffPct}% (${ratio}× higher)</span>`;
+    const diff = valGwRss - valUwsRss;
+    const sign = diff > 0 ? "+" : "−";
+    const diffMb = Math.abs(diff).toFixed(1);
+    elDeltaRss.innerHTML = `<span class="delta-badge neutral">${sign}${diffMb} MB</span>`;
   }
 
   // Display results container
@@ -266,25 +247,24 @@ function renderTableData(data, sourceLabel) {
 function loadReferenceData() {
   const sc = document.getElementById("select-scenario").value;
   const ref = REFERENCE_DATA[sc] || REFERENCE_DATA.multi_core_1m || REFERENCE_DATA.pipelined;
-  renderTableData(ref, "Archived Reference");
+  renderTableData(ref, "Reference");
 
   log("----------------------------------------------------------------------------------");
-  log(`[reference:hardware] CPU: Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)`);
-  log(`[reference:kernel] Linux x86_64 6.6 | Compiler: GCC 16.2.0 -O2`);
-  log(`[reference:scenario] ${ref.label}`);
-  log(`[reference:goose-wing] Throughput: ${Number(ref.gw.rps).toLocaleString()} req/s | p99: ${ref.gw.p99} µs | Allocs: 0 B | RSS: ${ref.gw.rss} MB`);
-  log(`[reference:uWebSockets] Throughput: ${Number(ref.uws.rps).toLocaleString()} req/s | p99: ${ref.uws.p99} µs | Allocs: Dynamic | RSS: ${ref.uws.rss} MB`);
-  log(`[reference:comparison] goose-wing is +${(((ref.gw.rps-ref.uws.rps)/ref.uws.rps)*100).toFixed(1)}% faster with ${(ref.uws.p99/ref.gw.p99).toFixed(2)}x lower p99 jitter`);
+  log(`[reference] CPU: Intel Core i5-12400F (6 cores, 12 threads)`);
+  log(`[reference] Linux x86_64 6.6, GCC 16.2.0 -O2`);
+  log(`[reference] ${ref.label}`);
+  log(`[reference] goose-wing: ${Number(ref.gw.rps).toLocaleString()} req/s, p99: ${ref.gw.p99} µs, RSS: ${ref.gw.rss} MB`);
+  log(`[reference] uWebSockets: ${Number(ref.uws.rps).toLocaleString()} req/s, p99: ${ref.uws.p99} µs, RSS: ${ref.uws.rss} MB`);
   log("----------------------------------------------------------------------------------");
 }
 
 let currentEventSource = null;
 
-function setButtonsStreaming(isStreaming, label = "Streaming Docker CLI...") {
+function setButtonsStreaming(isStreaming, label = "Running...") {
   const btnRun = document.getElementById("btn-run");
   if (btnRun) {
     btnRun.disabled = isStreaming;
-    btnRun.innerHTML = isStreaming ? `<span class="spinner"></span> ${label}` : "▶ Run Benchmark";
+    btnRun.innerHTML = isStreaming ? `<span class="spinner"></span> ${label}` : "Run benchmark";
   }
 }
 
@@ -298,11 +278,9 @@ function startStreamCli(customScenario) {
     currentEventSource = null;
   }
 
-  setButtonsStreaming(true, `Streaming ${sc === 'all' ? 'Full Suite' : sc}...`);
+  setButtonsStreaming(true, `Running ${sc === 'all' ? 'full suite' : sc}...`);
 
-  log("==================================================================================");
-  log(`[docker:stream] Connecting to /api/stream_cli?scenario=${encodeURIComponent(sc)}&duration=${duration} via SSE...`);
-  log(`[docker:stream] Live streaming headless benchmark execution directly from Docker container...`);
+  log(`[stream] connecting to /api/stream_cli?scenario=${encodeURIComponent(sc)}&duration=${duration}`);
 
   const evtSource = new EventSource(`/api/stream_cli?scenario=${encodeURIComponent(sc)}&duration=${duration}`);
   currentEventSource = evtSource;
@@ -314,24 +292,21 @@ function startStreamCli(customScenario) {
         log(data.line);
       }
       if (data.result) {
-        log(`[docker:stream] Received benchmark metrics payload. Updating dashboard tables...`);
-        renderTableData(data.result, "Live Docker Stream");
+        renderTableData(data.result, "Live");
       }
       if (data.done) {
-        log(`[docker:stream] Benchmark execution finished successfully.`);
-        log("==================================================================================");
+        log(`[stream] finished`);
         evtSource.close();
         currentEventSource = null;
         setButtonsStreaming(false);
       }
     } catch (err) {
-      log(`[docker:error] Parse error: ${err.message}`);
+      log(`[error] ${err.message}`);
     }
   };
 
   evtSource.onerror = function() {
-    log(`[docker:stream] Stream closed.`);
-    log("==================================================================================");
+    log(`[stream] closed`);
     try { evtSource.close(); } catch (_) {}
     currentEventSource = null;
     setButtonsStreaming(false);
