@@ -9,6 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 import .headers.lexical;
+import .headers.perfect_hash;
 
 const HEADER_ACCEPT_QUERY:        const u8[:] = "Accept-Query"; // RFC 10008 Section 3
 const HEADER_FORWARDED:           const u8[:] = "Forwarded"; // RFC 7239 Section 4

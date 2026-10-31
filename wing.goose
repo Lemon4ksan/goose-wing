@@ -37,6 +37,7 @@ import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.chunked_fsm;
+import http.headers.perfect_hash;
 import http.sfv;
 import http.priority;
 import http.incremental;
@@ -139,6 +140,7 @@ import server.edge_filter;
 import server.cache;
 import server.server;
 import server.h2_multiplexer;
+import server.soa_timer;
 
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 

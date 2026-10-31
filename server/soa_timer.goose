@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
+// Structure-of-Arrays (SoA) High-Density Connection Table & Fast Timeout Sweeper.
+// Eliminates cache pollution during 1-second timeout sweeps by decoupling
+// 1-byte timeout ticks and 8-byte file descriptors from large 1024-byte payload buffers.
+// Allows scanning 4,096 connection deadlines entirely within L1D CPU cache (4 KB).
+namespace wing;
+
+import std;
+import core from "..";
+import net.tick_timer;
+
+const SOA_TABLE_CAP:    i64 = 1024;
+const SOA_INVALID_FD:   i64 = -1;
+const SOA_INVALID_TICK: u8  = 255;
+
+// Structure-of-Arrays connection state table.
+struct SoAConnTable {
+    fds:           i64[1024] = [-1; 1024],
+    timeout_ticks: u8[1024]  = [255; 1024],
+    leftover_lens: u16[1024] = [0; 1024],
+    count:         i64       = 0,
+}
+
+// Advances high-water mark for allocated connection slots.
+inline fn advance_high_water_mark(current_limit: i64, slot: i64) -> i64 {
+    let next_slot = slot + 1;
+    return if next_slot > current_limit { next_slot } else { current_limit };
+}
+
+// Records an expired connection slot into output array and returns incremented count.
+inline fn record_expired_conn(dst: i64[:], current_count: i64, slot: i64) -> i64 {
+    dst[current_count] = slot;
+    return current_count + 1;
+}
+
+// Allocates an active connection slot in the SoA table.
+fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
+    guard fd > 0 else { return SOA_INVALID_FD; }
+    for i in table.fds.len {
+        if table.fds[i] < 0 {
+            table.fds[i] = fd;
+            table.timeout_ticks[i] = timeout_tick;
+            table.leftover_lens[i] = 0;
+            table.count = advance_high_water_mark(table.count, i);
+            return i;
+        }
+    }
+    return SOA_INVALID_FD;
+}
+
+// Releases a connection slot in the SoA table.
+fn soa_table_free(table: SoAConnTable&, slot: i64) {
+    guard slot >= 0 && slot < table.fds.len else { return; }
+    table.fds[slot] = SOA_INVALID_FD;
+    table.timeout_ticks[slot] = SOA_INVALID_TICK;
+    table.leftover_lens[slot] = 0;
+}
+
+// Updates the timeout tick for an active connection slot (activity refresh).
+inline fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8) {
+    guard slot >= 0 && slot < table.fds.len else { return; }
+    table.timeout_ticks[slot] = new_tick;
+}
+
+// Sweeps active connection deadlines with minimal memory bandwidth consumption.
+// Scans tightly-packed 1-byte timeout ticks; returns count of expired connections found.
+fn soa_table_sweep_expired(
+    table:       SoAConnTable&,
+    timer_wheel: const TickTimerWheel&,
+    out_expired: i64[:],
+) -> i64 {
+    var expired_n: i64 = 0;
+    let limit = table.count;
+
+    for s in limit {
+        let tick = table.timeout_ticks[s];
+        guard tick != SOA_INVALID_TICK && tick_timer_is_expired(timer_wheel, tick) else { continue; }
+        guard table.fds[s] > 0 else { continue; }
+        guard expired_n < out_expired.len else { break; }
+        expired_n = record_expired_conn(out_expired, expired_n, s);
+    }
+
+    return expired_n;
+}

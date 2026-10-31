@@ -84,3 +84,16 @@ fn fence_wire_slice(buf: u8[:], length: i64) -> bool {
     buf[length + 1] = 'a';
     return true;
 }
+
+extern fn native_prefetch_t0(s: const u8[:]) = "wing_prefetch_t0";
+extern fn native_prefetch_nta(s: const u8[:]) = "wing_prefetch_nta";
+
+// Prefetches slice memory into L1 Data Cache.
+inline fn prefetch_t0(s: const u8[:]) {
+    native_prefetch_t0(s);
+}
+
+// Prefetches slice memory using non-temporal streaming hint (minimizes cache pollution).
+inline fn prefetch_nta(s: const u8[:]) {
+    native_prefetch_nta(s);
+}

@@ -586,3 +586,36 @@ int32_t wing_swar_eq_ascii_fold(wing_bytes_ro a, wing_bytes_ro b) {
     }
     return 1;
 }
+
+// ---------------------------------------------------------------------------
+// Software Prefetch Primitives for Cache-Line Acceleration
+// ---------------------------------------------------------------------------
+
+// Software prefetch to L1 Data Cache (temporal hint _MM_HINT_T0).
+void wing_prefetch_t0(wing_bytes_ro slice) {
+    if (!slice.data || slice.len <= 0) return;
+    const char *p = (const char *)slice.data;
+    size_t len = (size_t)slice.len;
+    for (size_t i = 0; i < len; i += 64) {
+#if defined(_MSC_VER)
+        _mm_prefetch(p + i, _MM_HINT_T0);
+#elif defined(__GNUC__) || defined(__clang__)
+        __builtin_prefetch(p + i, 0, 3);
+#endif
+    }
+}
+
+// Non-temporal software prefetch for streaming one-pass reads (minimizes cache pollution).
+void wing_prefetch_nta(wing_bytes_ro slice) {
+    if (!slice.data || slice.len <= 0) return;
+    const char *p = (const char *)slice.data;
+    size_t len = (size_t)slice.len;
+    for (size_t i = 0; i < len; i += 64) {
+#if defined(_MSC_VER)
+        _mm_prefetch(p + i, _MM_HINT_NTA);
+#elif defined(__GNUC__) || defined(__clang__)
+        __builtin_prefetch(p + i, 0, 0);
+#endif
+    }
+}
+
