@@ -2018,10 +2018,55 @@ fn adopt_socket(server: HttpServer&, raw_fd: i64) -> i64 {
     return adopt_socket(raw_fd);
 }
 
-// Executes a live TCP accept and dispatch loop.
-// Uses pipelined ingestion and automatic CorkBuffer batching.
-fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
-    guard listener_fd > 0 else { return 0; }
+// Executes a live TCP accept and dispatch loop using hardware page-mirrored ring buffer (PageRingBuffer).
+fn serve_page_ring_loop(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    max_connections: i64,
+    ring:            core::PageRingBuffer&,
+) -> i64 {
+    var cork = core::new_cork_buffer();
+    var total_served: i64 = 0;
+
+    while max_connections == 0 || total_served < max_connections {
+        let conn = tcp_accept(listener_fd, 0);
+        if conn <= 0 {
+            continue;
+        }
+        defer tcp_close(conn);
+
+        core::page_ring_clear(ring);
+        cork.cork_reset();
+
+        while true {
+            let recvd = core::page_ring_recv(ring, conn, 65536, 5000);
+            if recvd <= 0 {
+                break;
+            }
+
+            let now_ns = core::as_nanos(core::monotonic_now());
+            let count, ok_handle = handle_connection_page_ring(server, "127.0.0.1", ring, now_ns, cork);
+            let should_close = !ok_handle || core::contains_fold(core::cork_as_slice(cork), "connection: close");
+            if !ok_handle {
+                if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
+                break;
+            }
+
+            if cork.cork_pending() > 0 {
+                let sent = tcp_flush_cork(conn, cork);
+                if sent <= 0 || should_close { break; }
+            } else if should_close {
+                break;
+            }
+        }
+        total_served++;
+    }
+
+    return total_served;
+}
+
+// Executes a live TCP accept and dispatch loop using standard PipeBuffer.
+fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
     var total_served: i64 = 0;
@@ -2062,6 +2107,22 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
     }
 
     return total_served;
+}
+
+// Executes a live TCP accept and dispatch loop.
+// Transparently uses high-performance hardware page-mirrored ring buffer (PageRingBuffer)
+// with seamless fallback to PipeBuffer for restricted environments.
+fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+
+    var ring = core::PageRingBuffer { .. };
+    let ok_ring = core::page_ring_init(ring, 65536);
+    if ok_ring {
+        defer core::page_ring_close(ring);
+        return serve_page_ring_loop(server, listener_fd, max_connections, ring);
+    }
+
+    return serve_pipe_loop(server, listener_fd, max_connections);
 }
 
 const REACTOR_LEFTOVER_CAP: i64 = 1024;
@@ -2322,4 +2383,130 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
     }
 
     return total_served;
+}
+
+// ---------------------------------------------------------------------------
+// Hardware Virtual Memory Page Pipeline Handlers
+// ---------------------------------------------------------------------------
+
+// Incremental Sans-IO pipeline handler using hardware page-mirrored ring buffer (PageRingBuffer).
+// Eliminates buffer wraparound splitting and memmove compaction during streaming request processing.
+fn handle_connection_page_ring<B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    ring:      core::PageRingBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+) -> i64, bool {
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    guard ring.count > 0 else { return 0, true; }
+
+    var peek_buf: u8[8192] = [0; 8192];
+    var req = new_request("GET", "");
+    var res = Response { .. };
+    var total_handled: i64 = 0;
+
+    while ring.count > 0 {
+        let peek_n = core::page_ring_peek(ring, peek_buf[..]);
+        guard peek_n > 0 else { break; }
+
+        reset_request(req);
+        let ok_parse, consumed = parse_http1_wire_request(peek_buf[..peek_n], req);
+
+        if !ok_parse || consumed <= 0 {
+            let hdr_end = core::page_ring_find_crlfcrlf(ring);
+            guard hdr_end >= 0 else {
+                // Incomplete HTTP headers; wait for next network packet
+                return total_handled, true;
+            }
+
+            if total_handled == 0 {
+                serialize_bad_request_error(server.server_name[..], wire_out);
+            }
+            return total_handled, false;
+        }
+
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+        total_handled++;
+        core::page_ring_discard(ring, consumed);
+
+        if req.method[..] == "CONNECT" || wants_close {
+            core::page_ring_clear(ring);
+            break;
+        }
+    }
+
+    return total_handled, true;
+}
+
+// Executes a live TCP accept and dispatch loop explicitly using PageRingBuffer.
+fn serve_page_ring(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+    var ring = core::PageRingBuffer { .. };
+    let ok = core::page_ring_init(ring, 65536);
+    guard ok else { return 0; }
+    defer core::page_ring_close(ring);
+    return serve_page_ring_loop(server, listener_fd, max_connections, ring);
+}
+
+// Serves a static file using memory-mapped pages directly to the wire response buffer.
+fn serve_static_mmap_file<B>(
+    path:         const u8[:],
+    content_type: const u8[:],
+    wire_out:     B&,
+) -> bool {
+    var mf, ok = core::mmap_file_open(path);
+    guard ok else { return false; }
+    defer core::mmap_file_close(mf);
+
+    var hdr_buf: u8[..512] = [];
+    hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
+    hdr_buf.append(content_type);
+    hdr_buf.append("\r\nContent-Length: ");
+    var num_buf: u8[..32] = [];
+    core::fast_u64toa(mf.size, num_buf);
+    hdr_buf.append(num_buf[..]);
+    hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
+
+    wire_out.append(hdr_buf[..]);
+
+    var chunk_buf: u8[4096] = [0; 4096];
+    var offset:    u64      = 0;
+    while offset < mf.size {
+        let n, r_ok = core::mmap_file_read(mf, offset, chunk_buf[..]);
+        guard r_ok && n > 0 else { break; }
+        wire_out.append(chunk_buf[..n]);
+        offset = offset + (n as u64);
+    }
+    return true;
+}
+
+// Sends a static file directly from kernel memory-mapped pages to a socket with zero user-space copying.
+fn send_static_mmap_file(
+    sock_fd:      i64,
+    path:         const u8[:],
+    content_type: const u8[:],
+) -> bool {
+    guard sock_fd > 0 else { return false; }
+    var mf, ok = core::mmap_file_open(path);
+    guard ok else { return false; }
+    defer core::mmap_file_close(mf);
+
+    var hdr_buf: u8[..512] = [];
+    hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
+    hdr_buf.append(content_type);
+    hdr_buf.append("\r\nContent-Length: ");
+    var num_buf: u8[..32] = [];
+    core::fast_u64toa(mf.size, num_buf);
+    hdr_buf.append(num_buf[..]);
+    hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
+
+    let sent_hdr = native_tcp_send(sock_fd, hdr_buf[..]);
+    guard sent_hdr >= 0 else { return false; }
+
+    guard mf.size > 0 else { return true; }
+    let sent_body, body_ok = core::mmap_file_send(mf, 0, mf.size as u32, sock_fd);
+    return body_ok;
 }

@@ -22,6 +22,8 @@ import core.io.ring;
 import core.io.pipe;
 import core.io.cork;
 import core.io.vec;
+import core.io.page_ring;
+import core.io.page_mem;
 
 // Copies bytes from reader to writer up to capacity or EOF.
 //
