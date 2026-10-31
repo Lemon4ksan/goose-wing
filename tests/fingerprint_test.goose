@@ -1,9 +1,10 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Verification Suite for Client Fingerprinting: JA4/JA4H, Akamai HTTP/2, and p0f v3.
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

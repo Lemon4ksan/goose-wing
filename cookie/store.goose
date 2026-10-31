@@ -201,12 +201,18 @@ fn flush_store_batch<B>(
 // ---- outgoing header value formatting & ingestion --------------------------
 
 // Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
+// Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
 fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
+    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for cookie_idx in cookies.len {
-        if cookie_idx > 0 {
+        let cookie_val = cookies[cookie_idx];
+        let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
+        if out.len + delim_len + cookie_val.name.len + 1 + cookie_val.value.len > MAX_COOKIE_HEADER_LEN {
+            return;
+        }
+        if delim_len > 0 {
             out.append("; ");
         }
-        let cookie_val = cookies[cookie_idx];
         out.append(cookie_val.name[..]);
         out.push('=');
         out.append(cookie_val.value[..]);

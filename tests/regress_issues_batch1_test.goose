@@ -1,16 +1,16 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Issue Regression Suite Batch 1 (Phases 1-5)
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-// --- Component: regress_issues_batch01 ---
-// Red test suite verifying uncovered edge cases and vulnerabilities from:
+// Issues covered:
 //   1. Go #78948 (CVE-2026-39825): Query parameter count truncation & smuggling in parse_query_params.
 //   2. Go #82350: Preserving stale Request.Host across cross-origin / scheme-relative redirects.
 //   3. Go #82343: RFC 2231 extended boundary parameter (boundary*=) and boundary validation in MediaType.

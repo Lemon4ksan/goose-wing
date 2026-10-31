@@ -1,11 +1,12 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // tests/grpc_server_test.goose
 // Verification suite for gRPC Server Dispatcher over HTTP/2, gRPC-Web (binary and text),
 // Unary RPCs, Server-Streaming, Client-Streaming, and RFC Error Invariants.
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

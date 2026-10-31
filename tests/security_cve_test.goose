@@ -1,5 +1,3 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -10,6 +8,9 @@
 //   4. CVE-2022-27776 & CVE-2023-43804: Port-change Credential Leaks, Signature Stripping & Conditional Headers.
 //   5. CVE-2023-27534 & CVE-2022-35252: Cookie URL Userinfo/Fragment/Path Discrepancies and Query-Hash Ordering.
 //   6. CVE-2016-8616: PSL Supercookie and CTL Injection via Netscape Cookie Import.
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

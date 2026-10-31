@@ -1,18 +1,15 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Issue Regression Suite Batch 2 (Phases 6-10)
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-// --- Component: regress_issues_batch06 ---
-// Phase 6 RED test suite based on .gemini issue trackers and RFC specifications.
-// Verifies protocol flaws, RFC non-conformances, and edge cases that are CURRENTLY UNFIXED in goose-wing.
-//
 // Issues covered:
 // 1. RFC 9113 §8.2.1: HTTP/2 Field Value CTL Characters (Reject 0x01..0x08, 0x0B, 0x0C, 0x0E..0x1F, 0x7F)
 // 2. RFC 9113 §8.3: Undefined Pseudo-Headers MUST Return PROTOCOL_ERROR

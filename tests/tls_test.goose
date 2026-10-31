@@ -1,11 +1,12 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // tests/tls_test.goose
 // Deterministic test suite for TLS 1.3 and X.509 PKI in Goose.
 // Validates RFC 8446, RFC 9001 (QUIC Crypto), RFC 5280, RFC 6125, and zero-allocation invariants.
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

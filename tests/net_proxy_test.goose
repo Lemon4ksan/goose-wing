@@ -1,9 +1,10 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

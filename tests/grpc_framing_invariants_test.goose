@@ -1,5 +1,3 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
@@ -8,6 +6,9 @@
 // 2. Reserved flag bits validation (only compressed 0x01 and gRPC-Web trailers 0x80 allowed).
 // 3. Streaming parser reassembly bounds and memory safety.
 // 4. gRPC-Web trailers parsing and status code extraction.
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";

@@ -1,9 +1,10 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";

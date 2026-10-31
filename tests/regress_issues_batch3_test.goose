@@ -1,18 +1,16 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Issue Regression Suite Batch 3 (Phases 11-15)
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-// --- Component: regress_issues_batch11 ---
-// Phase 11 RED test suite: Fixed-Capacity Truncation Smuggling, Protocol Limits & Defer Lifecycle
-// Tests bounds aborts, silent drops, and RFC protocol non-conformances:
-//
+// Issues covered:
 // 1. SFV string & display string truncation vs syntax rejection (http/mime.goose)
 // 2. SFV parameter & list/dict capacity smuggling (http/mime.goose)
 // 3. RFC 9111 Vary header > 16 fields cache poisoning defense (http/cache/validators.goose)

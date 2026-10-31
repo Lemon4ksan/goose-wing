@@ -1,18 +1,16 @@
-// RUN: goose build -o %t.exe %s
-// RUN: %t.exe
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
 // Consolidated Verification Suite: Issue Regression Suite Batch 4 (Phases 16-19 & Stress)
+//
+// RUN: goose build -o %t.exe %s
+// RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
-// --- Component: regress_issues_batch16 ---
-// Phase 16 RED test suite: RFC Protocol Invariants, Authority/Host Smuggling Defenses,
-// Name Constraint Bounds, Frame State Sequences, and Empty-Status Bodyless Wire Formats.
-//
+// Issues covered:
 // 1. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix (tls/x509.goose)
 // 2. HTTP/1.1 Wire Response Parser 204/304/1xx Chunked Desync & Header Block Cap (server/server.goose)
 // 3. HTTP/1.1 Response Serializer Empty-Status Chunked Bodyless Enforcement (server/server.goose)
