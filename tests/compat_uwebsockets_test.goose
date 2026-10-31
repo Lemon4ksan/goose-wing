@@ -676,19 +676,33 @@ fn test_server_cork_buffer(t: lit::T&) {
         wing::server_cork_write(cork, "alpha;");
         wing::server_cork_write(cork, "beta;");
         wing::server_cork_write(cork, "gamma;");
+        wing::server_cork_write2(cork, "delta;", "epsilon;");
 
-        // 3 writes are coalesced into the 16 KB buffer without network transmission
-        sub.assert_eq(core::cork_pending(cork.buffer), 17, "17 bytes buffered in cork");
+        // 4 writes (5 items) are coalesced into the 16 KB buffer without network transmission
+        sub.assert_eq(core::cork_pending(cork.buffer), 31, "31 bytes buffered in cork");
 
         // Flush cork buffer in 1 syscall
         let flushed = wing::server_cork_flush(cork);
-        sub.assert_eq(flushed, 17, "17 bytes flushed to socket in 1 syscall");
+        sub.assert_eq(flushed, 31, "31 bytes flushed to socket in 1 syscall");
         sub.assert_eq(core::cork_pending(cork.buffer), 0, "Cork buffer is empty after flush");
 
         var recv_storage: u8[128] = [0; 128];
         let recvd = wing::tcp_recv_slice(client, recv_storage[..], 2000);
-        sub.assert_eq(recvd, 17, "Client received all coalesced bytes at once");
-        sub.assert_bytes_eq(recv_storage[..recvd], "alpha;beta;gamma;", "Coalesced data verified");
+        sub.assert_eq(recvd, 31, "Client received all coalesced bytes at once");
+        sub.assert_bytes_eq(recv_storage[..recvd], "alpha;beta;gamma;delta;epsilon;", "Coalesced data verified");
+
+        // Test server_cork_write_response (zero-copy headers + body)
+        var res = wing::Response { .. };
+        res.status_code = 200;
+        res.body.append("cork body test");
+        let wr_res = wing::server_cork_write_response(cork, res, "goose-wing");
+        sub.assert_gt(wr_res, 0, "Response written to cork");
+        wing::server_cork_flush(cork);
+        var resp_buf: u8[512] = [0; 512];
+        let recvd_res = wing::tcp_recv_slice(client, resp_buf[..], 2000);
+        sub.assert_gt(recvd_res, 0, "Client received response");
+        sub.assert_true(find(resp_buf[..recvd_res], "HTTP/1.1 200 OK") >= 0, "Status line 200 present");
+        sub.assert_true(find(resp_buf[..recvd_res], "cork body test") >= 0, "Body present");
 
         wing::tcp_close(client);
         wing::tcp_close(srv_sock);

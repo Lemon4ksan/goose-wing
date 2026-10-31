@@ -51,18 +51,20 @@ fn cork_as_slice(cb: const CorkBuffer&) -> const u8[:] {
     return cb.storage[..end];
 }
 
+extern fn native_fast_cork_append(
+    conn:     i64,
+    cork_buf: u8[:],
+    cork_len: i64,
+    resp:     const u8[:],
+) -> i64 = "wing_fast_cork_append";
+
 // Writes a slice into the cork buffer. Returns (bytes_written, IoError).
 fn cork_write(cb: CorkBuffer&, src: const u8[:]) -> i64, IoError {
     guard src.len > 0 else { return 0, IoError.None; }
     let avail = cork_available(cb);
-    if avail == 0 {
-        return 0, IoError.BufferFull;
-    }
+    guard avail > 0 else { return 0, IoError.BufferFull; }
     let to_copy = if src.len < avail { src.len } else { avail };
-    for i in to_copy {
-        cb.storage[cb.len + i] = src[i];
-    }
-    cb.len += to_copy;
+    cb.len = native_fast_cork_append(0, cb.storage[..], cb.len, src[..to_copy]);
     return to_copy, if to_copy < src.len { IoError.ShortWrite } else { IoError.None };
 }
 
@@ -71,10 +73,9 @@ fn cork_write_exact(cb: CorkBuffer&, src: const u8[:]) -> IoError {
     guard cork_available(cb) >= src.len else {
         return IoError.BufferFull;
     }
-    for i in src.len {
-        cb.storage[cb.len + i] = src[i];
+    if src.len > 0 {
+        cb.len = native_fast_cork_append(0, cb.storage[..], cb.len, src);
     }
-    cb.len += src.len;
     return IoError.None;
 }
 

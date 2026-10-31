@@ -595,6 +595,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
 // RFC 9110 §8.6: Returns true if status code prohibits a message body (204, 304, 1xx).
 fn is_empty_body_status(code: i32) -> bool {
+    guard code != 200 else { return false; }
     return code == 204 || code == 304 || (code >= 100 && code < 200);
 }
 
@@ -768,40 +769,102 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 // ---- 3. HTTP/1.1 Wire Response Serializer -----------------------------------
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
+const HTTP1_STATUS_200: const u8[:] = "HTTP/1.1 200 OK\r\n";
+const HTTP1_STATUS_204: const u8[:] = "HTTP/1.1 204 No Content\r\n";
+const HTTP1_STATUS_301: const u8[:] = "HTTP/1.1 301 Moved Permanently\r\n";
+const HTTP1_STATUS_302: const u8[:] = "HTTP/1.1 302 Found\r\n";
+const HTTP1_STATUS_304: const u8[:] = "HTTP/1.1 304 Not Modified\r\n";
+const HTTP1_STATUS_400: const u8[:] = "HTTP/1.1 400 Bad Request\r\n";
+const HTTP1_STATUS_401: const u8[:] = "HTTP/1.1 401 Unauthorized\r\n";
+const HTTP1_STATUS_403: const u8[:] = "HTTP/1.1 403 Forbidden\r\n";
+const HTTP1_STATUS_404: const u8[:] = "HTTP/1.1 404 Not Found\r\n";
+const HTTP1_STATUS_405: const u8[:] = "HTTP/1.1 405 Method Not Allowed\r\n";
+const HTTP1_STATUS_500: const u8[:] = "HTTP/1.1 500 Internal Server Error\r\n";
+const HTTP1_STATUS_502: const u8[:] = "HTTP/1.1 502 Bad Gateway\r\n";
+const HTTP1_STATUS_503: const u8[:] = "HTTP/1.1 503 Service Unavailable\r\n";
+const HTTP1_STATUS_101: const u8[:] = "HTTP/1.1 101 Switching Protocols\r\n";
+
 fn serialize_status_line<B>(status_code: i32, out: B&) {
-    if status_code == 101 {
-        out.append("HTTP/1.1 101 Switching Protocols\r\n");
-        return;
-    }
     if status_code == 200 {
-        out.append("HTTP/1.1 200 OK\r\n");
+        out.append(HTTP1_STATUS_200);
         return;
     }
     if status_code == 404 {
-        out.append("HTTP/1.1 404 Not Found\r\n");
+        out.append(HTTP1_STATUS_404);
         return;
     }
     if status_code == 400 {
-        out.append("HTTP/1.1 400 Bad Request\r\n");
+        out.append(HTTP1_STATUS_400);
         return;
     }
     if status_code == 500 {
-        out.append("HTTP/1.1 500 Internal Server Error\r\n");
+        out.append(HTTP1_STATUS_500);
+        return;
+    }
+    if status_code == 204 {
+        out.append(HTTP1_STATUS_204);
+        return;
+    }
+    if status_code == 304 {
+        out.append(HTTP1_STATUS_304);
+        return;
+    }
+    if status_code == 301 {
+        out.append(HTTP1_STATUS_301);
+        return;
+    }
+    if status_code == 302 {
+        out.append(HTTP1_STATUS_302);
+        return;
+    }
+    if status_code == 401 {
+        out.append(HTTP1_STATUS_401);
+        return;
+    }
+    if status_code == 403 {
+        out.append(HTTP1_STATUS_403);
+        return;
+    }
+    if status_code == 405 {
+        out.append(HTTP1_STATUS_405);
+        return;
+    }
+    if status_code == 502 {
+        out.append(HTTP1_STATUS_502);
+        return;
+    }
+    if status_code == 503 {
+        out.append(HTTP1_STATUS_503);
+        return;
+    }
+    if status_code == 101 {
+        out.append(HTTP1_STATUS_101);
         return;
     }
     out.append("HTTP/1.1 ");
-    core::format_i64_dec(status_code as i64, out);
+    var code_buf: u8[16] = [0; 16];
+    let n = core::fast_u64toa(status_code as u64, code_buf[..]);
+    if n > 0 {
+        out.append(code_buf[..n]);
+    } else {
+        core::format_i64_dec(status_code as i64, out);
+    }
     out.push(' ');
     out.append(http_status_reason_phrase(status_code));
     out.append("\r\n");
 }
 
+const DEFAULT_SERVER_HEADER: const u8[:] = "Server: goose-wing\r\n";
+
 fn serialize_server_header<B>(server_name: const u8[:], out: B&) {
-    if server_name.len > 0 {
-        out.append("Server: ");
-        out.append(server_name);
-        out.append("\r\n");
+    guard server_name.len > 0 else { return; }
+    if server_name == "goose-wing" {
+        out.append(DEFAULT_SERVER_HEADER);
+        return;
     }
+    out.append("Server: ");
+    out.append(server_name);
+    out.append("\r\n");
 }
 
 fn serialize_http1_chunked_response<Res, B>(
@@ -850,41 +913,145 @@ fn serialize_http1_chunked_response<Res, B>(
 struct CachedHttpDate {
     header_str: u8[..64] = [],
     last_sec:   i64      = 0,
+    last_tsc:   u64      = 0,
 }
 
 var g_cached_http_date: CachedHttpDate = CachedHttpDate { .. };
 
-fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
-    let eff_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
-    if g_cached_http_date.last_sec != eff_sec || g_cached_http_date.header_str.len == 0 {
-        g_cached_http_date.last_sec = eff_sec;
-        g_cached_http_date.header_str.clear();
-        g_cached_http_date.header_str.append("Date: ");
-        core::format_http(g_cached_http_date.header_str, core::unix(eff_sec, 0));
-        g_cached_http_date.header_str.append("\r\n");
+fn format_date_header_string(sec: i64) {
+    g_cached_http_date.last_sec = sec;
+    g_cached_http_date.last_tsc = prof_rdtsc();
+    g_cached_http_date.header_str.clear();
+    g_cached_http_date.header_str.append("Date: ");
+    core::format_http(g_cached_http_date.header_str, core::unix(sec, 0));
+    g_cached_http_date.header_str.append("\r\n");
+}
+
+fn should_refresh_cached_date(now_sec: i64) -> bool {
+    if now_sec > 0 {
+        return g_cached_http_date.last_sec != now_sec || g_cached_http_date.header_str.len == 0;
     }
+    guard g_cached_http_date.header_str.len > 0 else { return true; }
+    let tsc = prof_rdtsc();
+    return tsc - g_cached_http_date.last_tsc >= 2000000000;
+}
+
+fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
+    guard should_refresh_cached_date(now_sec) else {
+        return g_cached_http_date.header_str[..];
+    }
+    let eff_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+    format_date_header_string(eff_sec);
     return g_cached_http_date.header_str[..];
 }
+
+// Formats Content-Length decimal header fast without divisions for common lengths.
+const CL_HEADER_PREFIX: const u8[:] = "Content-Length: ";
+
+fn serialize_content_length_header<B>(body_len: i64, out: B&) {
+    if body_len == 0 {
+        out.append("Content-Length: 0\r\n");
+        return;
+    }
+    if body_len == 13 {
+        out.append("Content-Length: 13\r\n");
+        return;
+    }
+    if body_len == 27 {
+        out.append("Content-Length: 27\r\n");
+        return;
+    }
+    var buf: u8[48] = [0; 48];
+    for i in 16 {
+        buf[i] = CL_HEADER_PREFIX[i];
+    }
+    var pos: i64 = 16;
+    if body_len > 0 && body_len < 10 {
+        buf[pos] = ('0' + (body_len as u8));
+        pos += 1;
+    } else if body_len >= 10 && body_len < 100 {
+        buf[pos] = ('0' + ((body_len / 10) as u8));
+        buf[pos + 1] = ('0' + ((body_len % 10) as u8));
+        pos += 2;
+    } else {
+        let n = core::fast_u64toa(body_len as u64, buf[pos..]);
+        pos += n;
+    }
+    buf[pos] = '\r';
+    buf[pos + 1] = '\n';
+    pos += 2;
+    out.append(buf[..pos]);
+}
+
+fn detect_response_presence_mask(headers: const HeaderItem[:]) -> u16 {
+    var mask: u16 = 0;
+    for &hdr in headers {
+        let nlen = hdr.name.len;
+        if nlen == 4 {
+            if (hdr.name[0] == 'd' || hdr.name[0] == 'D') && eq_ascii_fold(hdr.name[..], "date") {
+                mask = mask | RES_PRESENCE_DATE;
+            }
+        } else if nlen == 10 {
+            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "connection") {
+                mask = mask | RES_PRESENCE_CONNECTION;
+            }
+        } else if nlen == 14 {
+            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-length") {
+                mask = mask | RES_PRESENCE_CONTENT_LENGTH;
+            }
+        } else if nlen == 17 {
+            if (hdr.name[0] == 't' || hdr.name[0] == 'T') && eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+                mask = mask | RES_PRESENCE_TRANSFER_ENCODING;
+            }
+        }
+    }
+    return mask;
+}
+
+fn serialize_response_headers_list<B>(headers: const HeaderItem[:], is_empty_status: bool, out: B&) {
+    for &hdr in headers {
+        let nlen = hdr.name.len;
+        if is_empty_status {
+            let is_suppressed = (nlen == 14 && eq_ascii_fold(hdr.name[..], "content-length"))
+                || (nlen == 17 && eq_ascii_fold(hdr.name[..], "transfer-encoding"));
+            if is_suppressed {
+                continue;
+            }
+        }
+
+        if nlen == 12 && (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-type") {
+            if hdr.value == "text/plain" {
+                out.append("Content-Type: text/plain\r\n");
+                continue;
+            }
+            if hdr.value == "application/json" {
+                out.append("Content-Type: application/json\r\n");
+                continue;
+            }
+        }
+
+        out.append(hdr.name[..]);
+        out.append(": ");
+        out.append(hdr.value[..]);
+        out.append("\r\n");
+    }
+}
+
+const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
 
 // Serializes only the HTTP/1.1 response status line and headers into out_wire,
 // omitting the body. Used for zero-copy vectored transmission via tcp_send2.
 fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
-    serialize_status_line(res.status_code, out_wire);
-    serialize_server_header(server_name, out_wire);
+    if res.status_code == 200 && server_name == "goose-wing" {
+        out_wire.append(HTTP1_200_SERVER_GOOSE);
+    } else {
+        serialize_status_line(res.status_code, out_wire);
+        serialize_server_header(server_name, out_wire);
+    }
 
     var mask = res.presence_mask;
     if mask == 0 && res.headers.len > 0 {
-        for &hdr in res.headers {
-            if eq_ascii_fold(hdr.name[..], "date") {
-                mask = mask | RES_PRESENCE_DATE;
-            } else if eq_ascii_fold(hdr.name[..], "content-length") {
-                mask = mask | RES_PRESENCE_CONTENT_LENGTH;
-            } else if eq_ascii_fold(hdr.name[..], "connection") {
-                mask = mask | RES_PRESENCE_CONNECTION;
-            } else if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
-                mask = mask | RES_PRESENCE_TRANSFER_ENCODING;
-            }
-        }
+        mask = detect_response_presence_mask(res.headers[..]);
     }
 
     // Emit cached RFC 7231 Date header if not explicitly overridden by response
@@ -893,52 +1060,39 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
     }
 
     let is_empty_status = is_empty_body_status(res.status_code);
-
     if !is_empty_status {
-        // uWS #1855 / RFC 9110 §8.6: Do not emit automatic Content-Length
-        // if already specified in res.headers (e.g. HEAD)
         if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
-            if res.body.len == 0 {
-                out_wire.append("Content-Length: 0\r\n");
-            } else {
-                out_wire.append("Content-Length: ");
-                core::format_i64_dec(res.body.len, out_wire);
-                out_wire.append("\r\n");
-            }
+            serialize_content_length_header(res.body.len, out_wire);
         }
     }
+
+    serialize_response_headers_list(res.headers[..], is_empty_status, out_wire);
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
-
-    for &hdr in res.headers {
-        // RFC 9110 §8.6 & uWS #1370: Suppress Content-Length and Transfer-Encoding on empty body
-        let is_suppressed_hdr = eq_ascii_fold(hdr.name[..], "content-length")
-            || eq_ascii_fold(hdr.name[..], "transfer-encoding");
-        if is_empty_status && is_suppressed_hdr {
-            continue;
-        }
-
-        out_wire.append(hdr.name[..]);
-        out_wire.append(": ");
-        out_wire.append(hdr.value[..]);
+    if !has_conn {
+        out_wire.append("Connection: keep-alive\r\n\r\n");
+    } else {
         out_wire.append("\r\n");
     }
-
-    if !has_conn {
-        out_wire.append("Connection: keep-alive\r\n");
-    }
-
-    out_wire.append("\r\n");
 }
 
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
 fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
     let is_empty_status = is_empty_body_status(res.status_code);
-    let te = header(res, "transfer-encoding");
-    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
-        serialize_http1_chunked_response(res, server_name, 4096, out_wire);
-        return;
+    if !is_empty_status {
+        let has_te = if res.presence_mask != 0 {
+            (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else {
+            res.headers.len > 0
+        };
+        if has_te || res.trailers.len > 0 {
+            let te = header(res, "transfer-encoding");
+            if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+                serialize_http1_chunked_response(res, server_name, 4096, out_wire);
+                return;
+            }
+        }
     }
 
     serialize_http1_headers(res, server_name, out_wire);
@@ -1049,8 +1203,8 @@ fn server_cork_write(sc: ServerCork&, data: const u8[:]) -> i32 {
     guard sc.sock_fd > 0 && data.len > 0 else { return 0; }
     let avail = core::cork_available(sc.buffer);
     if data.len <= avail {
-        core::append(sc.buffer, data);
-        return data.len as i32;
+        let written, _ = core::cork_write(sc.buffer, data);
+        return written as i32;
     }
 
     // Buffer would overflow: flush current pending bytes first
@@ -1061,8 +1215,60 @@ fn server_cork_write(sc: ServerCork&, data: const u8[:]) -> i32 {
         return tcp_send(sc.sock_fd, data);
     }
 
-    core::append(sc.buffer, data);
-    return data.len as i32;
+    let written, _ = core::cork_write(sc.buffer, data);
+    return written as i32;
+}
+
+// Writes two contiguous slices (e.g. headers and body) directly into the cork buffer
+// without combining them into an intermediate buffer first (zero-copy vectored buffering).
+fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> i32 {
+    guard sc.sock_fd > 0 else { return 0; }
+    let total_len = head.len + body.len;
+    guard total_len > 0 else { return 0; }
+
+    let avail = core::cork_available(sc.buffer);
+    if total_len <= avail {
+        if head.len > 0 { let _ = core::cork_write(sc.buffer, head); }
+        if body.len > 0 { let _ = core::cork_write(sc.buffer, body); }
+        return total_len as i32;
+    }
+
+    server_cork_flush(sc);
+
+    if total_len >= core::CORK_BUFFER_CAP {
+        if head.len > 0 && body.len > 0 {
+            return tcp_send2(sc.sock_fd, head, body);
+        }
+        if head.len > 0 {
+            return tcp_send(sc.sock_fd, head);
+        }
+        return tcp_send(sc.sock_fd, body);
+    }
+
+    if head.len > 0 { let _ = core::cork_write(sc.buffer, head); }
+    if body.len > 0 { let _ = core::cork_write(sc.buffer, body); }
+    return total_len as i32;
+}
+
+// Serializes and writes an HTTP/1.1 response into the cork buffer.
+// Zero-copy: formats headers in a small stack buffer and writes headers + body
+// directly into the cork buffer or socket via vectored I/O without intermediate body copies.
+fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name: const u8[:]) -> i32 {
+    guard sc.sock_fd > 0 else { return 0; }
+    let is_empty_status = is_empty_body_status(res.status_code);
+    let te = header(res, "transfer-encoding");
+    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
+        var wire_out: u8[..4096] = [];
+        serialize_http1_chunked_response(res, server_name, 4096, wire_out);
+        return server_cork_write(sc, wire_out[..]);
+    }
+
+    var hdr_buf: u8[..512] = [];
+    serialize_http1_headers(res, server_name, hdr_buf);
+    if res.body.len == 0 || is_empty_status {
+        return server_cork_write(sc, hdr_buf[..]);
+    }
+    return server_cork_write2(sc, hdr_buf[..], res.body[..]);
 }
 
 // Flushes all pending data in the cork buffer to the socket in a single syscall.
