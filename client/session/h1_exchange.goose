@@ -106,7 +106,7 @@ fn serialize_h1_request(
 
 // ---- 3. Response Status and Header Parsing ----------------------------------
 
-// Parses 3-digit ASCII status code string into numeric integer (RFC 9112 §3.1.2).
+// Parses 3-digit ASCII status code string into numeric integer (RFC 9112 §4, RFC 9110 §15).
 //
 // Example:
 //   status_str = "200"
@@ -118,7 +118,7 @@ fn parse_h1_status_code(status_str: const u8[:]) -> i32 {
     return val as i32;
 }
 
-// Parses HTTP/1.1 status line: `HTTP/1.1 <status> <reason>\r\n` (RFC 9112 §3.1.2).
+// Parses HTTP/1.1 status line: `HTTP/1.1 <status> <reason>\r\n` (RFC 9112 §4).
 // Populates resp.protocol and resp.status_code.
 //
 // Example:

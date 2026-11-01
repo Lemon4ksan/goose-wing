@@ -370,7 +370,7 @@ fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
 fn set_priority(req: Request&, urgency: i32, incremental: bool = false) {
     let u: u8 = if urgency >= 0 && urgency <= 7 { urgency as u8 } else { PRIORITY_URGENCY_DEFAULT };
     var p = HttpPriority { urgency: u, incremental: incremental };
-    var wire_val: u8[>..] = [];
+    var wire_val: u8[..32] = [];
     serialize_http_priority(p, wire_val);
     set_header(req, "priority", wire_val[..]);
 }
