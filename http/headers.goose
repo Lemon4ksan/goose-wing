@@ -1807,8 +1807,8 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     return found;
 }
 
-// RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers!
-fn get_combined(map: const HeaderMap&, name: const u8[:], out: u8[>..]&) -> bool {
+// RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.
+fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&) -> bool {
     let wk_id = classify_well_known_header(name);
     let flags = well_known_header_flags(wk_id, name);
     guard (flags & HEADER_FLAG_NO_COMMA_FOLD) == 0 else {

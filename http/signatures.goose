@@ -357,7 +357,7 @@ fn sign_http_request(
     params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
-    var sig_base: u8[>..] = [];
+    var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else {
         return false;
     }
@@ -379,7 +379,7 @@ fn verify_http_signature(
 ) -> bool {
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
-    var sig_base: u8[>..] = [];
+    var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
     let sig_header_val = req.header(HEADER_SIGNATURE);
@@ -388,7 +388,7 @@ fn verify_http_signature(
     let received_b64, ok = extract_signature_value(sig_header_val, label);
     guard ok else { return false; }
 
-    var received_sig: u8[>..] = [];
+    var received_sig: u8[..128] = [];
     guard core::base64_decode(received_b64, received_sig) else { return false; }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
@@ -403,7 +403,7 @@ fn sign_http_response(
     params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
-    var sig_base: u8[>..] = [];
+    var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else {
         return false;
     }
@@ -426,7 +426,7 @@ fn verify_http_response_signature(
 ) -> bool {
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
-    var sig_base: u8[>..] = [];
+    var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
     let sig_header_val = res.header(HEADER_SIGNATURE);
@@ -435,7 +435,7 @@ fn verify_http_response_signature(
     let received_b64, ok = extract_signature_value(sig_header_val, label);
     guard ok else { return false; }
 
-    var received_sig: u8[>..] = [];
+    var received_sig: u8[..128] = [];
     guard core::base64_decode(received_b64, received_sig) else { return false; }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
