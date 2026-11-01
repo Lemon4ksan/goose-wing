@@ -144,8 +144,8 @@ fn is_tchar(b: u8) -> bool {
     if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
         return true;
     }
-    return b == '!' || b == '#' || b == '$' || b == '%' || b == '&' || b == '\'' ||
-           b == '*' || b == '+' || b == '-' || b == '.' || b == '^' || b == '_' ||
+    return b == '-' || b == '_' || b == '.' || b == '!' || b == '#' || b == '$' ||
+           b == '%' || b == '&' || b == '\'' || b == '*' || b == '+' || b == '^' ||
            b == '`' || b == '|' || b == '~';
 }
 
@@ -349,27 +349,30 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
 
 // 64-bit SWAR Little-Endian pack
 fn swar_pack_u64_le(buf: const u8[:], offset: i64) -> u64 {
-    var w: u64 = 0;
-    for i in 8 {
-        let b = buf[offset + i] as u64;
-        w |= (b << ((i * 8) as u64));
-    }
-    return w;
+    let s = buf[offset..offset + 8];
+    return (s[0]) |
+           ((s[1] as u64) << 8) |
+           ((s[2] as u64) << 16) |
+           ((s[3] as u64) << 24) |
+           ((s[4] as u64) << 32) |
+           ((s[5] as u64) << 40) |
+           ((s[6] as u64) << 48) |
+           ((s[7] as u64) << 56);
 }
 
 // 64-bit SWAR zero byte check
-fn swar_has_zero_byte(w: u64) -> bool {
+inline fn swar_has_zero_byte(w: u64) -> bool {
     return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
 }
 
 // 64-bit SWAR byte search
-fn swar_has_byte(w: u64, b: u8) -> bool {
+inline fn swar_has_byte(w: u64, b: u8) -> bool {
     let mask = 0x0101010101010101 * (b as u64);
     return swar_has_zero_byte(w ^ mask);
 }
 
 // 64-bit SWAR control character check (< 0x20 or == 0x7F)
-fn swar_has_ctl_or_del(w: u64) -> bool {
+inline fn swar_has_ctl_or_del(w: u64) -> bool {
     // Check if any byte is < 0x20
     let sub = w - 0x2020202020202020;
     let has_under_20 = (sub & (~w) & 0x8080808080808080) != 0;
@@ -459,7 +462,7 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     var i: i64 = 0;
     while i + 8 <= src.len {
         let w = swar_pack_u64_le(src, i);
-        if swar_has_byte(w, '\r') || swar_has_byte(w, '\n') || swar_has_ctl_or_del(w) {
+        if swar_has_ctl_or_del(w) {
             break;
         }
         i += 8;

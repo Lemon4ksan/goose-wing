@@ -1006,6 +1006,10 @@ fn detect_response_presence_mask(headers: const HeaderItem[:]) -> u16 {
             if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "connection") {
                 mask = mask | RES_PRESENCE_CONNECTION;
             }
+        } else if nlen == 12 {
+            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-type") {
+                mask = mask | RES_PRESENCE_CONTENT_TYPE;
+            }
         } else if nlen == 14 {
             if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-length") {
                 mask = mask | RES_PRESENCE_CONTENT_LENGTH;
@@ -1118,14 +1122,20 @@ fn serialize_http1_response<Res, B>(
 ) {
     let is_empty_status = is_empty_body_status(res.status_code);
     if !is_empty_status {
+        if res.trailers.len > 0 {
+            serialize_http1_chunked_response(res, server_name, 4096, out_wire);
+            return;
+        }
         let has_te = if res.presence_mask != 0 {
             (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else if res.headers.len > 0 {
+            (detect_response_presence_mask(res.headers[..]) & RES_PRESENCE_TRANSFER_ENCODING) != 0
         } else {
-            res.headers.len > 0
+            false
         };
-        if has_te || res.trailers.len > 0 {
+        if has_te {
             let te = header(res, "transfer-encoding");
-            if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+            if eq_ascii_fold(te, "chunked") {
                 serialize_http1_chunked_response(res, server_name, 4096, out_wire);
                 return;
             }
@@ -1145,10 +1155,21 @@ fn serialize_http1_response<Res, B>(
 fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], wire_headers: B&) -> i32 {
     wire_headers.clear();
     let is_empty_status = is_empty_body_status(res.status_code);
-    let te = header(res, "transfer-encoding");
-    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
-        serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
-        return tcp_send(fd, wire_headers[..]);
+    if !is_empty_status {
+        let has_te = if res.presence_mask != 0 {
+            (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else if res.headers.len > 0 {
+            (detect_response_presence_mask(res.headers[..]) & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else {
+            false
+        };
+        if has_te || res.trailers.len > 0 {
+            let te = header(res, "transfer-encoding");
+            if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+                serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
+                return tcp_send(fd, wire_headers[..]);
+            }
+        }
     }
 
     serialize_http1_headers(res, server_name, wire_headers);

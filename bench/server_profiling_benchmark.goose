@@ -129,6 +129,7 @@ fn profile_isolated_stages(server: wing::HttpServer&, req_wire: const u8[:], ite
         hdr.name.append("Content-Type");
         hdr.value.append("text/plain");
         res.headers.push(hdr);
+        res.presence_mask |= wing::RES_PRESENCE_CONTENT_TYPE;
         let t1 = wing::prof_rdtsc();
         wing::prof_record(wing::PROF_STAGE_HANDLER, t1 - t0);
     }
