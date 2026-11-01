@@ -1378,7 +1378,12 @@ int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
 
 int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (!ctx || ctx->count <= 0 || out_fds.data == NULL || out_fds.len <= 0) return 0;
+    if (!ctx || ctx->count <= 0) return 0;
+    int limit = (out_udata.data != NULL && out_udata.len > 0) ? (int)out_udata.len : 0;
+    if (out_fds.data != NULL && out_fds.len > 0 && (limit == 0 || (int)out_fds.len < limit)) {
+        limit = (int)out_fds.len;
+    }
+    if (limit <= 0) return 0;
 
 #ifdef _WIN32
     WSAPOLLFD pfd[WING_MAX_POLL_FDS];
@@ -1392,9 +1397,11 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
     if (res <= 0) return 0;
 
     int ready = 0;
-    for (int i = 0; i < count && ready < (int)out_fds.len; i++) {
+    for (int i = 0; i < count && ready < limit; i++) {
         if (pfd[i].revents != 0) {
-            out_fds.data[ready] = (int64_t)pfd[i].fd;
+            if (out_fds.data != NULL && ready < (int)out_fds.len) {
+                out_fds.data[ready] = (int64_t)pfd[i].fd;
+            }
             if (out_udata.data != NULL && ready < (int)out_udata.len) {
                 out_udata.data[ready] = ctx->udata[i];
             }

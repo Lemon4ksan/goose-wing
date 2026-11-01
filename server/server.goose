@@ -422,6 +422,15 @@ fn parse_http1_wire_header_line<Req>(
     }
     out_req.spans.push(span);
     out_req.presence_mask |= header_id_to_bit(known_id);
+
+    if out_req.headers.len < out_req.headers.cap && hname.len <= 64 && hval.len <= 384 {
+        var it = HeaderItem { is_sensitive: false, .. };
+        it.name.append(hname);
+        it.value.append(hval);
+        out_req.headers.push(it);
+        add_header(out_req.bloom_filter, hname);
+    }
+
     cursor += calc_header_line_advance(name_len, val_len, crlf_len);
     return true;
 }
@@ -1961,7 +1970,7 @@ fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
 fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
     guard res.status_code != 101 else { return false; }
-    let has_conn_hdr = (req.presence_mask & HDR_PRESENCE_CONNECTION) != 0 ||
+    let has_conn_hdr = has_header(req, "connection") ||
         (res.presence_mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn_hdr && !req.is_http10 && req.method[0] != 'C' {
         return false;
@@ -3280,7 +3289,7 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
     }
 
-    var empty_fds:    i64[0]            = [];
+    var ready_fds:    i64[1024]         = [0; 1024];
     var ready_udata:  u64[1024]         = [0; 1024];
     var cork_wire:    u8[..65536]       = [];
     var chunk:        ReactorIngressBuf = ReactorIngressBuf { .. };
@@ -3302,7 +3311,7 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         }
 
         let epoll_timeout = reactor_epoll_timeout(server.worker_ring);
-        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], epoll_timeout);
+        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], epoll_timeout);
 
         turn_counter++;
         reactor_poll_sweep(

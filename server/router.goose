@@ -647,8 +647,13 @@ fn match_catch_all_child(
     return RouteMatchResult.NotFound;
 }
 
+inline fn has_non_root_trailing_slash(path: const u8[:]) -> bool {
+    return path.len > 1 && path[path.len - 1] == '/';
+}
+
 inline fn is_already_canonical_route_path(path: const u8[:]) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
+    guard !has_non_root_trailing_slash(path) else { return false; }
     for i in path.len {
         let b = path[i];
         if b == '.' || b == '?' || b == '#' || b == '%' { return false; }
