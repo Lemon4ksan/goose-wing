@@ -14,7 +14,7 @@ import .h2_multiplexer;
 import .soa_timer;
 import realtime.topic_tree;
 
-// ---- 1. Reason Phrases for HTTP/1.1 Status Line -----------------------------
+// ---- Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
 fn http_status_reason_phrase(code: i32) -> const u8[:] {
     return match code {
@@ -54,7 +54,7 @@ fn http_status_reason_phrase(code: i32) -> const u8[:] {
     };
 }
 
-// ---- 2. HTTP/1.1 Wire Request Parser ---------------------------------------
+// ---- HTTP/1.1 Wire Request Parser ---------------------------------------
 
 // RFC 3986 §3.2.2 & RFC 9112 §3.2: Validates structural host header integrity.
 fn validate_host_header_structure(host_val: const u8[:]) -> bool {
@@ -268,14 +268,16 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     return true;
 }
 
-inline fn count_leading_lws(s: const u8[:]) -> i64 {
-    for i in s.len {
-        let b = s[i];
-        if b != ' ' && b != '\t' {
-            return i;
-        }
+inline fn trim_header_value_bounds(slice: const u8[:]) -> i64, i64 {
+    var start: i64 = 0;
+    while start < slice.len && (slice[start] == ' ' || slice[start] == '\t') {
+        start++;
     }
-    return s.len;
+    var end_pos: i64 = slice.len;
+    while end_pos > start && (slice[end_pos - 1] == ' ' || slice[end_pos - 1] == '\t') {
+        end_pos--;
+    }
+    return start, end_pos;
 }
 
 fn validate_span_host_header(
@@ -404,25 +406,22 @@ fn parse_http1_wire_header_line<Req>(
     let val_slice = rest_headers[(cursor + name_len + 1)..];
     let val_len, crlf_len, ok_val = scan_header_field_value_swar(val_slice);
     guard ok_val else { return false; }
-    let hval = trim_lws(val_slice[..val_len]);
+    let lead_ws, end_ws = trim_header_value_bounds(val_slice[..val_len]);
+    let hval = val_slice[lead_ws..end_ws];
 
     // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
     let cur_hdr_idx = out_req.spans.len as i16;
-    guard track_header_presence(presence_tracker, hname, hval, cur_hdr_idx) else {
+    let known_id = identify_known_header(hname);
+    guard track_known_header_presence(presence_tracker, known_id, hval, cur_hdr_idx) else {
         return false;
     }
 
-    let lead_ws = count_leading_lws(val_slice[..val_len]);
-    let known_id = identify_known_header(hname);
     let span = make_header_span(base_offset + cursor, name_len, lead_ws, hval.len, header_id_to_u8(known_id));
     guard out_req.spans.len < out_req.spans.cap else {
         return false;
     }
     out_req.spans.push(span);
     out_req.presence_mask |= header_id_to_bit(known_id);
-    guard push_header_item(out_req.headers, hname, hval) else {
-        return false;
-    }
     cursor += calc_header_line_advance(name_len, val_len, crlf_len);
     return true;
 }
@@ -769,7 +768,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     return true, wire.len;
 }
 
-// ---- 3. HTTP/1.1 Wire Response Serializer -----------------------------------
+// ---- HTTP/1.1 Wire Response Serializer -----------------------------------
 
 // Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
 const HTTP1_STATUS_200: const u8[:] = "HTTP/1.1 200 OK\r\n";
@@ -1058,10 +1057,10 @@ fn serialize_http1_headers<Res, B>(
     now_sec:     i64 = 0,
 ) {
     if res.status_code == 200 && server_name == "goose-wing" {
-        out_wire.append(HTTP1_200_SERVER_GOOSE);
         let mask = res.presence_mask;
         if (mask == RES_PRESENCE_CONTENT_TYPE || mask == 0) && res.headers.len == 1 && res.trailers.len == 0 {
-            out_wire.append(get_cached_http_date_header(now_sec));
+            let _ = get_cached_http_date_header(now_sec);
+            out_wire.append(g_cached_http_date.fast_prefix[..]);
             serialize_content_length_header(res.body.len, out_wire);
             if res.headers[0].value == "text/plain" {
                 out_wire.append(HTTP1_CT_TEXT_PLAIN);
@@ -1076,6 +1075,7 @@ fn serialize_http1_headers<Res, B>(
             out_wire.append(HTTP1_CONN_KEEP_ALIVE);
             return;
         }
+        out_wire.append(HTTP1_200_SERVER_GOOSE);
     } else {
         serialize_status_line(res.status_code, out_wire);
         serialize_server_header(server_name, out_wire);
@@ -1433,7 +1433,7 @@ fn notify_socket_writable<Callback: fn(i64, u64, u64) -> bool>(
     return ok;
 }
 
-// ---- 4. HttpServer Container and Session Coordinator -----------------------
+// ---- HttpServer Container and Session Coordinator -----------------------
 
 // Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
 struct SniCertEntry {

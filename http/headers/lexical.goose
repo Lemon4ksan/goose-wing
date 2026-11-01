@@ -70,13 +70,12 @@ struct HeaderPresenceTracker {
 }
 
 // Tracks header presence and detects duplicates/smuggling in O(1) via bitmask (uWebSockets pattern)
-fn track_header_presence(
+fn track_known_header_presence(
     tracker: HeaderPresenceTracker&,
-    name:    const u8[:],
+    id:      KnownHeaderId,
     val:     const u8[:],
     hdr_idx: i16,
 ) -> bool {
-    let id = identify_known_header(name);
     return match id {
         Host => {
             if (tracker.mask & HDR_PRESENCE_HOST) != 0 {
@@ -129,6 +128,16 @@ fn track_header_presence(
         },
         _ => true,
     };
+}
+
+inline fn track_header_presence(
+    tracker: HeaderPresenceTracker&,
+    name:    const u8[:],
+    val:     const u8[:],
+    hdr_idx: i16,
+) -> bool {
+    let id = identify_known_header(name);
+    return track_known_header_presence(tracker, id, val, hdr_idx);
 }
 
 fn is_tchar(b: u8) -> bool {

@@ -573,6 +573,25 @@ fn match_catch_all_child(
     return RouteMatchResult.NotFound;
 }
 
+inline fn is_already_canonical_route_path(path: const u8[:]) -> bool {
+    guard path.len > 0 && path[0] == '/' else { return false; }
+    for i in path.len {
+        let b = path[i];
+        if b == '.' || b == '?' || b == '#' || b == '%' { return false; }
+        if b == '/' && i > 0 && path[i - 1] == '/' { return false; }
+    }
+    return true;
+}
+
+inline fn resolve_effective_route_path<B>(path: const u8[:], out: B&) -> const u8[:], bool {
+    if is_already_canonical_route_path(path) {
+        return path, true;
+    }
+    out.clear();
+    guard canonicalize_route_path(path, out) else { return "", false; }
+    return out[..], true;
+}
+
 // Matches path against the RadixTree, recording parameter spans into params.
 fn match_path<B>(
     tree:           const RadixTree&,
@@ -580,11 +599,8 @@ fn match_path<B>(
     params:         ZeroAllocParams&,
     out_canon_path: B&,
 ) -> RouteMatchResult {
-    out_canon_path.clear();
-    guard canonicalize_route_path(path, out_canon_path) else { return RouteMatchResult.NotFound; }
-    let eff_path = out_canon_path[..];
-
-    guard tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
+    let eff_path, ok_path = resolve_effective_route_path(path, out_canon_path);
+    guard ok_path && tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
     params.clear();
 
     var cur_idx = tree.root_idx;
@@ -768,6 +784,9 @@ fn match_route<B>(
         }
         if m == "GET" {
             get_tree_idx = idx as i32;
+        }
+        if target_tree_idx >= 0 && (method == "GET" || get_tree_idx >= 0) {
+            break;
         }
     }
 

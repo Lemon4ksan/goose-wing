@@ -21,10 +21,13 @@ let SHA256_K: const u32[64] = [
 ];
 
 struct Sha256Ctx {
-    h: u32[8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19],
-    buf: u8[64] = [0; 64],
-    buf_len: i64 = 0,
-    total_len: u64 = 0,
+    h: u32[8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ],
+    buf:       u8[64] = [0; 64],
+    buf_len:   i64    = 0,
+    total_len: u64    = 0,
 }
 
 fn sha256_transform(ctx: Sha256Ctx&, chunk: const u8[:]) {
@@ -279,9 +282,9 @@ struct Sha384Ctx {
         0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
         0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4,
     ],
-    buf: u8[128] = [0; 128],
-    buf_len: i64 = 0,
-    total_len: u64 = 0,
+    buf:       u8[128] = [0; 128],
+    buf_len:   i64     = 0,
+    total_len: u64     = 0,
 }
 
 fn sha384_update(ctx: Sha384Ctx&, data: const u8[:]) {
@@ -351,9 +354,9 @@ struct Sha512Ctx {
         0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
         0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
     ],
-    buf: u8[128] = [0; 128],
-    buf_len: i64 = 0,
-    total_len: u64 = 0,
+    buf:       u8[128] = [0; 128],
+    buf_len:   i64     = 0,
+    total_len: u64     = 0,
 }
 
 fn sha512_update(ctx: Sha512Ctx&, data: const u8[:]) {
@@ -423,9 +426,9 @@ struct Sha512_256Ctx {
         0x22312194fc2bf72c, 0x9f555fa3c84c64c2, 0x2393b86b6f53b151, 0x963877195940eabd,
         0x96283ee2a88effe3, 0xbe5e1e2553863992, 0x2b0199fc2c85b8aa, 0x0eb72ddc81c52ca2,
     ],
-    buf: u8[128] = [0; 128],
-    buf_len: i64 = 0,
-    total_len: u64 = 0,
+    buf:       u8[128] = [0; 128],
+    buf_len:   i64     = 0,
+    total_len: u64     = 0,
 }
 
 fn sha512_256_update(ctx: Sha512_256Ctx&, data: const u8[:]) {
@@ -561,9 +564,9 @@ fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
 fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     var n: i64 = (length + 31) / 32;
     guard n <= 255 && out.len >= length else { return false; }
-    var t: u8[32] = [0; 32];
-    var out_off: i64 = 0;
-    var msg: u8[>..] = [];
+    var t:       u8[32]  = [0; 32];
+    var out_off: i64     = 0;
+    var msg:     u8[>..] = [];
 
     for i in 1..n + 1 {
         msg.clear();
@@ -585,9 +588,9 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
 fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     var n: i64 = (length + 47) / 48;
     guard n <= 255 && out.len >= length else { return false; }
-    var t: u8[48] = [0; 48];
-    var out_off: i64 = 0;
-    var msg: u8[>..] = [];
+    var t:       u8[48]  = [0; 48];
+    var out_off: i64     = 0;
+    var msg:     u8[>..] = [];
 
     for i in 1..n + 1 {
         msg.clear();
