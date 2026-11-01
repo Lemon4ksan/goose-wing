@@ -506,7 +506,9 @@ fn parse_http1_request_headers<Req>(
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
     clear_request_headers_state(out_req);
-    clear(out_req.bloom_filter);
+    if !is_empty(out_req.bloom_filter) {
+        clear(out_req.bloom_filter);
+    }
     presence_tracker = HeaderPresenceTracker { .. };
     let base_offset = calc_header_span_base_offset(req_offset, line_end);
     guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker, base_offset) else {
@@ -1039,12 +1041,37 @@ fn serialize_response_headers_list<B>(headers: const HeaderItem[:], is_empty_sta
 }
 
 const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
+const HTTP1_CT_TEXT_PLAIN:    const u8[:] = "Content-Type: text/plain\r\n";
+const HTTP1_CT_APP_JSON:      const u8[:] = "Content-Type: application/json\r\n";
+const HTTP1_CONN_KEEP_ALIVE:  const u8[:] = "Connection: keep-alive\r\n\r\n";
 
 // Serializes only the HTTP/1.1 response status line and headers into out_wire,
 // omitting the body. Used for zero-copy vectored transmission via tcp_send2.
-fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
+fn serialize_http1_headers<Res, B>(
+    res:         const Res&,
+    server_name: const u8[:],
+    out_wire:    B&,
+    now_sec:     i64 = 0,
+) {
     if res.status_code == 200 && server_name == "goose-wing" {
         out_wire.append(HTTP1_200_SERVER_GOOSE);
+        let mask = res.presence_mask;
+        if (mask == RES_PRESENCE_CONTENT_TYPE || mask == 0) && res.headers.len == 1 && res.trailers.len == 0 {
+            out_wire.append(get_cached_http_date_header(now_sec));
+            serialize_content_length_header(res.body.len, out_wire);
+            if res.headers[0].value == "text/plain" {
+                out_wire.append(HTTP1_CT_TEXT_PLAIN);
+            } else if res.headers[0].value == "application/json" {
+                out_wire.append(HTTP1_CT_APP_JSON);
+            } else {
+                out_wire.append(res.headers[0].name[..]);
+                out_wire.append(": ");
+                out_wire.append(res.headers[0].value[..]);
+                out_wire.append("\r\n");
+            }
+            out_wire.append(HTTP1_CONN_KEEP_ALIVE);
+            return;
+        }
     } else {
         serialize_status_line(res.status_code, out_wire);
         serialize_server_header(server_name, out_wire);
@@ -1057,7 +1084,7 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
 
     // Emit cached RFC 7231 Date header if not explicitly overridden by response
     if (mask & RES_PRESENCE_DATE) == 0 {
-        out_wire.append(get_cached_http_date_header());
+        out_wire.append(get_cached_http_date_header(now_sec));
     }
 
     let is_empty_status = is_empty_body_status(res.status_code);
@@ -1071,7 +1098,7 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn {
-        out_wire.append("Connection: keep-alive\r\n\r\n");
+        out_wire.append(HTTP1_CONN_KEEP_ALIVE);
     } else {
         out_wire.append("\r\n");
     }
@@ -1079,7 +1106,12 @@ fn serialize_http1_headers<Res, B>(res: const Res&, server_name: const u8[:], ou
 
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
-fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], out_wire: B&) {
+fn serialize_http1_response<Res, B>(
+    res:         const Res&,
+    server_name: const u8[:],
+    out_wire:    B&,
+    now_sec:     i64 = 0,
+) {
     let is_empty_status = is_empty_body_status(res.status_code);
     if !is_empty_status {
         let has_te = if res.presence_mask != 0 {
@@ -1096,7 +1128,7 @@ fn serialize_http1_response<Res, B>(res: const Res&, server_name: const u8[:], o
         }
     }
 
-    serialize_http1_headers(res, server_name, out_wire);
+    serialize_http1_headers(res, server_name, out_wire, now_sec);
 
     // RFC 9110 §8.6 & Go #81642 / uWS #1370: Status 204, 304, and 1xx MUST NOT emit a message body on wire
     if res.body.len > 0 && !is_empty_status {
@@ -1876,6 +1908,11 @@ fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
 fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
     guard res.status_code != 101 else { return false; }
+    let has_conn_hdr = (req.presence_mask & HDR_PRESENCE_CONNECTION) != 0 ||
+        (res.presence_mask & RES_PRESENCE_CONNECTION) != 0;
+    if !has_conn_hdr && !req.is_http10 && req.method[0] != 'C' {
+        return false;
+    }
     let req_conn = header(req, "connection");
     let res_conn = header(res, "connection");
     let wants_close = req.method[..] == "CONNECT" ||
@@ -2155,17 +2192,117 @@ fn try_handle_pipelined_websocket<B>(
     return complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
 }
 
+struct StreamRouteCache {
+    method:     u8[..16]  = [],
+    url:        u8[..128] = [],
+    handler_id: i32       = -1,
+}
+
+inline fn try_match_stream_route_cache(
+    cache:  const StreamRouteCache&,
+    method: const u8[:],
+    url:    const u8[:],
+) -> i32 {
+    guard cache.handler_id >= 0 else { return -1; }
+    if method == cache.method[..] && url == cache.url[..] {
+        return cache.handler_id;
+    }
+    return -1;
+}
+
+inline fn update_stream_route_cache(
+    cache:      StreamRouteCache&,
+    method:     const u8[:],
+    url:        const u8[:],
+    handler_id: i32,
+) {
+    guard url.len <= 128 && method.len <= 16 else { return; }
+    cache.method.clear();
+    cache.method.append(method);
+    cache.url.clear();
+    cache.url.append(url);
+    cache.handler_id = handler_id;
+}
+
+inline fn reset_server_response_fast(res: Response&) {
+    res.status_code = 200;
+    res.presence_mask = 0;
+    res.headers.clear();
+    res.trailers.clear();
+    res.body.clear();
+}
+
+inline fn reset_server_request_fast(req: Request&) {
+    req.method.clear();
+    req.url.clear();
+    req.presence_mask = 0;
+    req.headers.clear();
+    req.spans.clear();
+    req.trailers.clear();
+    req.query_params.clear();
+    req.body.clear();
+    req.is_http10 = false;
+    if !is_empty(req.bloom_filter) {
+        clear(req.bloom_filter);
+    }
+}
+
+fn dispatch_fast_path_matched(
+    server:      HttpServer&,
+    req:         Request&,
+    res:         Response&,
+    route_cache: StreamRouteCache&,
+) {
+    var params = ZeroAllocParams { .. };
+    let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
+    let is_invalid_query = req.method[..] == "QUERY" && header(req, "Content-Type").len == 0;
+    match match_res {
+        Found f => {
+            res.status_code = if is_invalid_query { 400 } else { 200 };
+            apply_route_payload(f.handler_id, res);
+            handle_head_method_suppression(req.method[..], res);
+            if params.len == 0 && !is_invalid_query {
+                update_stream_route_cache(route_cache, req.method[..], req.url[..], f.handler_id);
+            }
+        },
+        MethodNotAllowed mna => {
+            res.status_code = 405;
+            res.headers.push(make_header("Allow", mna.allow_header[..]));
+        },
+        NotFound => {
+            res.status_code = 404;
+        },
+    };
+}
+
+inline fn dispatch_cached_route(
+    server:      HttpServer&,
+    req:         Request&,
+    res:         Response&,
+    route_cache: StreamRouteCache&,
+) {
+    let cached_id = try_match_stream_route_cache(route_cache, req.method[..], req.url[..]);
+    if cached_id >= 0 {
+        res.status_code = 200;
+        apply_route_payload(cached_id, res);
+        handle_head_method_suppression(req.method[..], res);
+        return;
+    }
+    dispatch_fast_path_matched(server, req, res, route_cache);
+}
+
 fn dispatch_pipelined_request<B>(
-    server:    HttpServer&,
-    client_ip: const u8[:],
-    req:       Request&,
-    res:       Response&,
-    now_ns:    u64,
-    wire_out:  B&,
+    server:      HttpServer&,
+    client_ip:   const u8[:],
+    req:         Request&,
+    res:         Response&,
+    now_ns:      u64,
+    route_cache: StreamRouteCache&,
+    wire_out:    B&,
 ) -> bool {
-    reset_response(res);
+    reset_server_response_fast(res);
     if server.fast_path {
-        dispatch_fast_path_route(server.pipeline.router, req, res);
+        dispatch_cached_route(server, req, res, route_cache);
     } else {
         var future = internal::new_inline_handler_future(0);
         let _ = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
@@ -2184,11 +2321,12 @@ fn process_pipelined_pipe_step<B>(
     req:           Request&,
     res:           Response&,
     now_ns:        u64,
+    route_cache:   StreamRouteCache&,
     total_handled: i64&,
     wire_out:      B&,
 ) -> PipeStepResult {
     let stream = core::readable_slice(pipe);
-    reset_request(req);
+    reset_server_request_fast(req);
     let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
     if !ok_parse || consumed <= 0 {
@@ -2202,7 +2340,7 @@ fn process_pipelined_pipe_step<B>(
         return PipeStepResult.Error;
     }
 
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
     total_handled++;
     core::advance_to(pipe, consumed, consumed);
 
@@ -2233,12 +2371,13 @@ fn handle_connection_wire_pipelined_stream<B>(
 
     var req = new_request("GET", "");
     var res = Response { .. };
+    var route_cache = StreamRouteCache { .. };
 
     while stream.len > 0 {
         stream = strip_pipelined_crlf(stream, total_consumed);
         if stream.len == 0 { break; }
 
-        reset_request(req);
+        reset_server_request_fast(req);
         let ok_parse, consumed = parse_http1_wire_request(stream, req);
         guard ok_parse && consumed > 0 else {
             var keep_stream = false;
@@ -2253,25 +2392,16 @@ fn handle_connection_wire_pipelined_stream<B>(
         }
 
         if try_handle_pipelined_websocket(server, req, wire_out) {
-            total_handled++;
-            total_consumed += consumed;
-            return total_handled, total_consumed, true, false;
+            return total_handled + 1, total_consumed + consumed, true, false;
         }
 
-        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
-        if wants_close {
-            conn_wants_close = true;
-        }
-
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
         total_handled++;
         total_consumed += consumed;
 
-        if req.method[..] == "CONNECT" {
-            total_consumed = wire_in.len;
+        if wants_close || req.method[..] == "CONNECT" {
             conn_wants_close = true;
-            break;
-        }
-        if wants_close {
+            if req.method[..] == "CONNECT" { total_consumed = wire_in.len; }
             break;
         }
 
@@ -2356,9 +2486,12 @@ fn handle_connection_pipe<B>(
 
     var req = new_request("GET", "");
     var res = Response { .. };
+    var route_cache = StreamRouteCache { .. };
 
     while pipe.readable_len() > 0 {
-        let res_step = process_pipelined_pipe_step(server, client_ip, pipe, req, res, now_ns, total_handled, wire_out);
+        let res_step = process_pipelined_pipe_step(
+            server, client_ip, pipe, req, res, now_ns, route_cache, total_handled, wire_out,
+        );
         if res_step == PipeStepResult.Error {
             return total_handled, false;
         } else if res_step == PipeStepResult.Stop {
@@ -2506,6 +2639,11 @@ struct ReactorLeftoverBuf {
     bytes: u8[1024] = [0; 1024],
 }
 
+struct ReactorIngressBuf {
+    bytes: u8[65536] = [0; 65536],
+    len:   i64       = 0,
+}
+
 // Cleans up a connection slot, removes from epoll, closes fd, and returns slot to free stack.
 fn reactor_cleanup_slot(
     epfd:       i64,
@@ -2637,14 +2775,24 @@ fn reactor_drain_worker_ring(
     }
 }
 
+inline fn reactor_read_single_turn(conn: i64, chunk: ReactorIngressBuf&, available: i64) -> i32 {
+    let offset = chunk.len;
+    guard offset >= 0 && offset + available <= 65536 else { return -2; }
+    let recvd = tcp_recv_nonblocking_slice(conn, chunk.bytes[offset..(offset + available)]);
+    if recvd > 0 {
+        chunk.len += recvd;
+    }
+    return recvd;
+}
+
 // Drains up to 4 turns of non-blocking TCP ingress into chunk buffer.
 // Returns (any_recvd, is_closed).
-fn reactor_read_bounded_turns(conn: i64, chunk: u8[..65536]&) -> bool, bool {
+fn reactor_read_bounded_turns(conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
     var any_recvd = false;
     for turn in 4 {
-        let available = chunk.cap - chunk.len;
+        let available = 65536 - chunk.len;
         guard available > 0 else { break; }
-        let recvd = tcp_recv_nonblocking(conn, chunk);
+        let recvd = reactor_read_single_turn(conn, chunk, available);
         if recvd == 0 || recvd == -1 {
             return false, true;
         }
@@ -2664,13 +2812,14 @@ fn reactor_load_leftover(
     table:    SoAConnTable&,
     leftover: const ReactorLeftoverBuf&,
     slot:     i64,
-    chunk:    u8[..65536]&,
+    chunk:    ReactorIngressBuf&,
 ) {
     let prev_len = table.leftover_lens[slot] as i64;
     guard prev_len > 0 && prev_len <= REACTOR_LEFTOVER_CAP else { return; }
     for p in prev_len {
-        chunk.push(leftover.bytes[p]);
+        chunk.bytes[p] = leftover.bytes[p];
     }
+    chunk.len = prev_len;
     table.leftover_lens[slot] = 0;
 }
 
@@ -2699,7 +2848,7 @@ fn reactor_handle_ingress(
     free_slots:   FreeSlotStack&,
     timer_wheel:  TickTimerWheel&,
     now_ns:       u64,
-    chunk:        u8[..65536]&,
+    chunk:        ReactorIngressBuf&,
     cork_wire:    u8[..16384]&,
     total_served: i64&,
 ) {
@@ -2707,7 +2856,7 @@ fn reactor_handle_ingress(
     let prev_len = table.leftover_lens[slot] as i64;
     table.timeout_ticks[slot] = tick_timer_arm(timer_wheel, 15);
 
-    chunk.clear();
+    chunk.len = 0;
     reactor_load_leftover(table, leftovers[slot], slot, chunk);
 
     let any_recvd, is_closed = reactor_read_bounded_turns(conn, chunk);
@@ -2722,7 +2871,7 @@ fn reactor_handle_ingress(
 
     cork_wire.clear();
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
-        server, "127.0.0.1", chunk[..], now_ns, cork_wire,
+        server, "127.0.0.1", chunk.bytes[..chunk.len], now_ns, cork_wire,
     );
 
     let should_close = !ok || wants_close;
@@ -2742,7 +2891,7 @@ fn reactor_handle_ingress(
 
     // Preserve unconsumed bytes for the next epoll turn
     if consumed < chunk.len {
-        if !reactor_save_leftover(table, leftovers[slot], slot, chunk[consumed..]) {
+        if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed..chunk.len]) {
             reactor_cleanup_slot(epfd, table, slot, free_slots);
             total_served++;
         }
@@ -2760,7 +2909,7 @@ fn reactor_dispatch_events(
     timer_wheel:  TickTimerWheel&,
     ready_udata:  const u64[:],
     now_ns:       u64,
-    chunk:        u8[..65536]&,
+    chunk:        ReactorIngressBuf&,
     cork_wire:    u8[..16384]&,
     total_served: i64&,
 ) {
@@ -2821,11 +2970,11 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
     }
 
-    var ready_fds:    i64[256]    = [0; 256];
-    var ready_udata:  u64[256]    = [0; 256];
-    var cork_wire:    u8[..16384] = [];
-    var chunk:        u8[..65536] = [];
-    var total_served: i64         = 0;
+    var ready_fds:    i64[256]          = [0; 256];
+    var ready_udata:  u64[256]          = [0; 256];
+    var cork_wire:    u8[..16384]       = [];
+    var chunk:        ReactorIngressBuf = ReactorIngressBuf { .. };
+    var total_served: i64               = 0;
 
     var table = SoAConnTable { .. };
     var leftovers: ReactorLeftoverBuf[256] = [ReactorLeftoverBuf { .. }; 256];
@@ -2883,13 +3032,14 @@ fn handle_connection_page_ring<B>(
     var peek_buf: u8[8192] = [0; 8192];
     var req = new_request("GET", "");
     var res = Response { .. };
+    var route_cache = StreamRouteCache { .. };
     var total_handled: i64 = 0;
 
     while ring.count > 0 {
         let peek_n = core::page_ring_peek(ring, peek_buf[..]);
         guard peek_n > 0 else { break; }
 
-        reset_request(req);
+        reset_server_request_fast(req);
         let ok_parse, consumed = parse_http1_wire_request(peek_buf[..peek_n], req);
 
         if !ok_parse || consumed <= 0 {
@@ -2905,7 +3055,7 @@ fn handle_connection_page_ring<B>(
             return total_handled, false;
         }
 
-        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
         total_handled++;
         core::page_ring_discard(ring, consumed);
 
