@@ -596,7 +596,9 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
 
     // 5. Check Deadline Expiration
     if is_deadline_exceeded(ctx, now_mono_ns) {
-        build_grpc_trailers_only_response(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res,
+        );
         return true;
     }
 
@@ -604,7 +606,9 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     var wire_bytes: u8[>..] = [];
     if ctx.is_web_text {
         guard decode_grpc_web_text(req.body[..], wire_bytes) else {
-            build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Invalid Base64 gRPC-Web-Text payload", ctx, res);
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.InvalidArgument, "Invalid Base64 gRPC-Web-Text payload", ctx, res,
+            );
             return true;
         }
     } else {
@@ -625,12 +629,16 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     }
 
     if (req_payload.len as u32) > d.max_message_size {
-        build_grpc_trailers_only_response(GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
+        );
         return true;
     }
 
     if is_compressed {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res,
+        );
         return true;
     }
 
@@ -706,7 +714,9 @@ fn dispatch_grpc_server_streaming<
     }
 
     if is_deadline_exceeded(ctx, now_mono_ns) {
-        build_grpc_trailers_only_response(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res,
+        );
         return true;
     }
 
@@ -714,7 +724,9 @@ fn dispatch_grpc_server_streaming<
     var wire_bytes: u8[>..] = [];
     if ctx.is_web_text {
         guard decode_grpc_web_text(req.body[..], wire_bytes) else {
-            build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Invalid Base64 gRPC-Web-Text payload", ctx, res);
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.InvalidArgument, "Invalid Base64 gRPC-Web-Text payload", ctx, res,
+            );
             return true;
         }
     } else {
@@ -735,12 +747,16 @@ fn dispatch_grpc_server_streaming<
     }
 
     if (req_payload.len as u32) > d.max_message_size {
-        build_grpc_trailers_only_response(GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
+        );
         return true;
     }
 
     if is_compressed {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res,
+        );
         return true;
     }
 
@@ -833,7 +849,9 @@ fn dispatch_grpc_client_streaming<
     }
 
     if is_deadline_exceeded(ctx, now_mono_ns) {
-        build_grpc_trailers_only_response(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res);
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res,
+        );
         return true;
     }
 
