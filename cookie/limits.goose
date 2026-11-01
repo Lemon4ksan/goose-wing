@@ -8,6 +8,7 @@ import std;
 
 // Maximum cookie lifetime (400 days).
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
+let K_MAX_COOKIE_AGE_SEC:  i64 = 576000 * 60;            // 34,560,000 seconds
 let K_MAX_COOKIE_AGE_US:   i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 us
 
 // Payload and attribute length limits (RFC 6265bis Section 5.5).

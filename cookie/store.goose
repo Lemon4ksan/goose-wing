@@ -108,7 +108,7 @@ struct PendingStoreOp {
 // with queue coalescing and threshold-based transaction committing.
 struct WriteBackBatcher {
     max_batch_size:      i64 = internal::K_COMMIT_AFTER_BATCH_SIZE,  // 512
-    commit_interval_ms:  i64 = internal::K_COMMIT_INTERVAL_MS,        // 30000
+    commit_interval_ms:  i64 = internal::K_COMMIT_INTERVAL_MS,       // 30000
     last_commit_ms:      i64 = 0,
     total_committed_ops: i64 = 0,
     total_coalesced_ops: i64 = 0,
@@ -671,13 +671,19 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
 }
 
 fn read_canonical_cookie_json_object(json_reader: json::Reader&, parsed_cookie: CanonicalCookie&) {
+    var scratch: u8[>..] = [];
     json::each_member(json_reader) { key =>
-        read_json_cookie_member(json_reader, key, parsed_cookie);
+        read_json_cookie_member(json_reader, key, parsed_cookie, scratch);
     };
 }
 
-fn read_json_cookie_member(json_reader: json::Reader&, key: const u8[:], cookie_ref: CanonicalCookie&) {
-    var scratch: u8[>..] = [];
+fn read_json_cookie_member(
+    json_reader: json::Reader&,
+    key:         const u8[:],
+    cookie_ref:  CanonicalCookie&,
+    scratch:     u8[>..]&,
+) {
+    scratch.clear();
     if key == "name" {
         let s = json::read_string(json_reader, scratch);
         guard s.len <= cookie_ref.name.cap else { return; }
