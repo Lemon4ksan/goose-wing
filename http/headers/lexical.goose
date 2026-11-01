@@ -141,10 +141,10 @@ inline fn track_header_presence(
 }
 
 fn is_tchar(b: u8) -> bool {
-    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' {
         return true;
     }
-    return b == '-' || b == '_' || b == '.' || b == '!' || b == '#' || b == '$' ||
+    return b == '_' || b == '.' || b == '!' || b == '#' || b == '$' ||
            b == '%' || b == '&' || b == '\'' || b == '*' || b == '+' || b == '^' ||
            b == '`' || b == '|' || b == '~';
 }
@@ -347,19 +347,6 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
     return true;
 }
 
-// 64-bit SWAR Little-Endian pack
-fn swar_pack_u64_le(buf: const u8[:], offset: i64) -> u64 {
-    let s = buf[offset..offset + 8];
-    return (s[0]) |
-           ((s[1] as u64) << 8) |
-           ((s[2] as u64) << 16) |
-           ((s[3] as u64) << 24) |
-           ((s[4] as u64) << 32) |
-           ((s[5] as u64) << 40) |
-           ((s[6] as u64) << 48) |
-           ((s[7] as u64) << 56);
-}
-
 // 64-bit SWAR zero byte check
 inline fn swar_has_zero_byte(w: u64) -> bool {
     return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
@@ -431,12 +418,9 @@ fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
     guard src.len > 0 else { return 0, false; }
     var i: i64 = 0;
     while i + 8 <= src.len {
-        let w = swar_pack_u64_le(src, i);
+        let w = core::read_le_u64(src, i);
         if swar_has_byte(w, ':') || swar_has_ctl_or_del(w) || swar_has_byte(w, ' ') {
             break;
-        }
-        for k in 8 {
-            guard is_tchar(src[i + k]) else { return 0, false; }
         }
         i += 8;
     }
@@ -461,8 +445,8 @@ fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
 fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     var i: i64 = 0;
     while i + 8 <= src.len {
-        let w = swar_pack_u64_le(src, i);
-        if swar_has_ctl_or_del(w) {
+        let w = core::read_le_u64(src, i);
+        if swar_has_ctl_or_del(w) || swar_has_byte(w, '\r') || swar_has_byte(w, '\n') {
             break;
         }
         i += 8;

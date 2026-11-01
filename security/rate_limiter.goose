@@ -208,6 +208,15 @@ fn format_gcra_key(key_str: const u8[:], out: u8[..64]&) {
     }
 }
 
+inline fn find_existing_slot(slots: const KeyedGcraSlot[..16]&, key_str: const u8[:]) -> i32 {
+    for idx in slots.len {
+        if slots[idx].active && slots[idx].key[..] == key_str {
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
 fn check_rate_limit(
     limiter: ShardedGcraLimiter&,
@@ -215,14 +224,23 @@ fn check_rate_limit(
     cost_n:  u64,
     now_ns:  u64,
 ) -> RateLimitDecision {
-    var eff_key: u8[..64] = [];
-    format_gcra_key(key_str, eff_key);
     let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
 
-    // Find existing slot
-    for idx in limiter.shards[shard_idx].slots.len {
-        if limiter.shards[shard_idx].slots[idx].active && limiter.shards[shard_idx].slots[idx].key[..] == eff_key[..] {
-            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[idx].cell, cost_n, now_ns);
+    // Fast-path lookup without buffer copying for common keys (IPs / client IDs <= 64 bytes)
+    if key_str.len <= 64 {
+        let existing = find_existing_slot(limiter.shards[shard_idx].slots, key_str);
+        if existing >= 0 {
+            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
+        }
+    }
+
+    var eff_key: u8[..64] = [];
+    format_gcra_key(key_str, eff_key);
+
+    if key_str.len > 64 {
+        let existing = find_existing_slot(limiter.shards[shard_idx].slots, eff_key[..]);
+        if existing >= 0 {
+            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
         }
     }
 

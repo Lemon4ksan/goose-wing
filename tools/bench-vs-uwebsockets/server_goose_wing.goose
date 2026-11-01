@@ -27,9 +27,15 @@ fn run_server_reactor(port: u16, worker_id: i64) {
     app.server_name.append("goose-wing");
     app.fast_path = true;
 
-    wing::add_get_route(app, "/plaintext", 1001);
-    wing::add_get_route(app, "/json", 1002);
-    wing::add_get_route(app, "/metrics", 1003);
+    wing::add_static_get_route(app, "/plaintext", "text/plain", "Hello, World!", 1001);
+    wing::add_static_get_route(app, "/json", "application/json", "{\"message\":\"Hello, World!\"}", 1002);
+    wing::add_static_get_route(
+        app,
+        "/metrics",
+        "application/json",
+        "{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}",
+        1003,
+    );
 
     var ws_b = wing::new_ws_behavior(1004);
     wing::add_ws_route(app, "/ws", ws_b);

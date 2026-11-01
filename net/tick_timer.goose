@@ -55,7 +55,8 @@ inline fn is_slot_in_elapsed_range(slot: u8, prev: u8, elapsed: u32) -> bool {
     guard elapsed < m else { return true; }
     let s = slot as u32;
     let p = prev as u32;
-    let dist = (s + m - p) % m;
+    let raw = s + m - p;
+    let dist = if raw >= m { raw - m } else { raw };
     return dist > 0 && dist <= elapsed;
 }
 

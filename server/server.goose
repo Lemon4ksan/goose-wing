@@ -1499,6 +1499,23 @@ struct HttpServer {
     shared_compressor:     SharedWsCompressor        = SharedWsCompressor { .. },
     sni_registry:          SniRegistry               = SniRegistry { .. },
     worker_ring:           core::SpscRing            = core::SpscRing { .. },
+    cached_date:           CachedHttpDate            = CachedHttpDate { .. },
+}
+
+inline fn refresh_http_server_date(server: HttpServer&, now_sec: i64) {
+    if server.cached_date.header_str.len == 0 || (now_sec > 0 && server.cached_date.last_sec != now_sec) {
+        server.cached_date.last_sec = now_sec;
+        server.cached_date.last_tsc = prof_rdtsc();
+        let wall_sec = core::now().wall_sec;
+        server.cached_date.header_str.clear();
+        server.cached_date.header_str.append("Date: ");
+        core::format_http(server.cached_date.header_str, core::unix(wall_sec, 0));
+        server.cached_date.header_str.append("\r\n");
+
+        server.cached_date.fast_prefix.clear();
+        server.cached_date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
+        server.cached_date.fast_prefix.append(server.cached_date.header_str[..]);
+    }
 }
 
 fn new_http_server(
@@ -1539,6 +1556,17 @@ fn new_http_server_with_quota<Q>(
 // Registers routing handlers on the server instance
 fn add_get_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
     add_route(server.pipeline.router, "GET", path, handler_id);
+}
+
+// Registers a pre-rendered static GET route for zero-copy line-rate delivery
+fn add_static_get_route(
+    server:       HttpServer&,
+    path:         const u8[:],
+    content_type: const u8[:],
+    body:         const u8[:],
+    handler_id:   i32 = 0,
+) {
+    let _ = add_static_route(server.pipeline.router, "GET", path, content_type, body, handler_id);
 }
 
 fn add_post_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
@@ -2376,40 +2404,106 @@ fn process_pipelined_pipe_step<B>(
     return PipeStepResult.Continue;
 }
 
-const FAST_RESP_PLAINTEXT: const u8[:] =
-    "Content-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!";
-const FAST_RESP_PLAINTEXT_CLOSE: const u8[:] =
-    "Content-Length: 13\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nHello, World!";
+inline fn has_ascii_case_byte(s: const u8[:], lower_c: u8) -> bool {
+    let upper_c = lower_c - 32;
+    for b in s {
+        if b == lower_c || b == upper_c { return true; }
+    }
+    return false;
+}
 
-const FAST_RESP_JSON: const u8[:] =
-    "Content-Length: 27\r\nContent-Type: application/json\r\n\r\n{\"message\":\"Hello, World!\"}";
-const FAST_RESP_JSON_CLOSE: const u8[:] =
-    "Content-Length: 27\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"message\":\"Hello, World!\"}";
+inline fn fast_find_crlfcrlf_inline(stream: const u8[:]) -> i64 {
+    guard stream.len >= 4 else { return -1; }
+    let limit = stream.len - 3;
+    var i: i64 = 0;
+    while i < limit {
+        if stream[i] == '\r' {
+            if stream[i + 1] == '\n' && stream[i + 2] == '\r' && stream[i + 3] == '\n' {
+                return i;
+            }
+        }
+        i++;
+    }
+    return -1;
+}
 
-inline fn serialize_fast_path_payload<B>(
-    handler_id:  i32,
-    is_close:    bool,
-    server_name: const u8[:],
-    wire_out:    B&,
-    now_sec:     i64 = 0,
+// Extracts request target path from a GET request line (RFC 9112 §3).
+//
+// Example:
+//   stream = "GET /plaintext HTTP/1.1\r\n"
+//   returns: "/plaintext", ok = true
+inline fn parse_fast_path_request_line(stream: const u8[:]) -> const u8[:], bool {
+    guard stream.len >= 14 else { return "", false; }
+    guard stream[0] == 'G' && stream[1] == 'E' && stream[2] == 'T' && stream[3] == ' ' else { return "", false; }
+    let rest = stream[4..];
+    var path_len = 0;
+    while path_len < rest.len && path_len < 64 && rest[path_len] != ' ' {
+        path_len++;
+    }
+    guard path_len > 0 && path_len < rest.len && rest[path_len] == ' ' else { return "", false; }
+    let ver_rem = rest[path_len + 1..];
+    guard ver_rem.len >= 10 && ver_rem[..10] == "HTTP/1.1\r\n" else { return "", false; }
+    return rest[..path_len], true;
+}
+
+inline fn find_static_route_slot(tree: const RadixTree&, path: const u8[:]) -> i32 {
+    for i in tree.static_slots.len {
+        if tree.static_slots[i].path_str[..] == path && tree.static_slots[i].payload_keep.len > 0 {
+            return i as i32;
+        }
+    }
+    return -1;
+}
+
+inline fn match_fast_path_slot(server: const HttpServer&, stream: const u8[:]) -> i32 {
+    guard server.fast_path && server.pipeline.router.trees.len > 0 else { return -1; }
+    let path, ok_path = parse_fast_path_request_line(stream);
+    guard ok_path else { return -1; }
+    return find_static_route_slot(server.pipeline.router.trees[0].tree, path);
+}
+
+// Validates fast-path header block against request smuggling (RFC 9112 §6) and mandates Host (RFC 9112 §3.2).
+inline fn validate_fast_path_headers(hdr_block: const u8[:], is_close: bool&) -> bool {
+    // Mandate Host header presence for HTTP/1.1 (RFC 9112 §3.2).
+    guard has_ascii_case_byte(hdr_block, 'h') && core::contains_fold(hdr_block, "host:") else { return false; }
+
+    // Reject request smuggling: GET requests with Content-Length or Transfer-Encoding (CWE-444).
+    if has_ascii_case_byte(hdr_block, 'l') {
+        guard !core::contains_fold(hdr_block, "content-length") else { return false; }
+    }
+    if has_ascii_case_byte(hdr_block, 't') {
+        guard !core::contains_fold(hdr_block, "transfer-encoding") else { return false; }
+    }
+
+    if has_ascii_case_byte(hdr_block, 'u') {
+        guard !core::contains_fold(hdr_block, "upgrade") else { return false; }
+    }
+    if has_ascii_case_byte(hdr_block, 'c') {
+        is_close = core::contains_fold(hdr_block, "close");
+    }
+    return true;
+}
+
+inline fn append_fast_path_response<B>(
+    server:   HttpServer&,
+    slot:     const StaticRouteSlot&,
+    is_close: bool,
+    now_sec:  i64,
+    wire_out: B&,
 ) {
-    if server_name == "goose-wing" {
-        let _ = get_cached_http_date_header(now_sec);
-        wire_out.append(g_cached_http_date.fast_prefix[..]);
+    refresh_http_server_date(server, now_sec);
+    if server.server_name == "goose-wing" {
+        wire_out.append(server.cached_date.fast_prefix[..]);
     } else {
         wire_out.append("HTTP/1.1 200 OK\r\nServer: ");
-        wire_out.append(server_name);
+        wire_out.append(server.server_name[..]);
         wire_out.append("\r\n");
-        wire_out.append(get_cached_http_date_header(now_sec));
+        wire_out.append(server.cached_date.header_str[..]);
     }
-    if handler_id == 1001 {
-        wire_out.append(if is_close { FAST_RESP_PLAINTEXT_CLOSE } else { FAST_RESP_PLAINTEXT });
-    } else if handler_id == 1002 {
-        wire_out.append(if is_close { FAST_RESP_JSON_CLOSE } else { FAST_RESP_JSON });
-    } else if handler_id == 1003 {
-        wire_out.append("Content-Length: 104\r\nContent-Type: application/json\r\n");
-        wire_out.append(if is_close { "Connection: close\r\n\r\n" } else { "\r\n" });
-        wire_out.append(METRICS_PAYLOAD);
+    if is_close {
+        wire_out.append(slot.payload_close[..]);
+    } else {
+        wire_out.append(slot.payload_keep[..]);
     }
 }
 
@@ -2421,37 +2515,17 @@ inline fn try_fast_path_pipeline_step<B>(
     wants_close: bool&,
     now_sec:     i64,
 ) -> bool {
-    guard server.fast_path && stream.len >= 16 else { return false; }
-    guard stream[0] == 'G' && stream[1] == 'E' && stream[2] == 'T' && stream[3] == ' ' else { return false; }
+    let slot_idx = match_fast_path_slot(server, stream);
+    guard slot_idx >= 0 else { return false; }
 
-    var handler_id: i32 = -1;
-    let rest = stream[4..];
-    if core::starts_with(rest, "/plaintext HTTP/1.1\r\n") {
-        handler_id = 1001;
-    } else if core::starts_with(rest, "/json HTTP/1.1\r\n") {
-        handler_id = 1002;
-    } else if core::starts_with(rest, "/metrics HTTP/1.1\r\n") {
-        handler_id = 1003;
-    } else if core::starts_with(rest, "/plaintext ") {
-        handler_id = 1001;
-    } else if core::starts_with(rest, "/json ") {
-        handler_id = 1002;
-    } else if core::starts_with(rest, "/metrics ") {
-        handler_id = 1003;
-    }
-    guard handler_id > 0 else { return false; }
-
-    let hdr_end = core::fast_find_crlfcrlf(stream);
+    let hdr_end = fast_find_crlfcrlf_inline(stream);
     guard hdr_end >= 0 && hdr_end <= 8192 else { return false; }
 
     var is_close = false;
-    let hdr_block = stream[..hdr_end];
-    if hdr_block.len >= 56 {
-        guard !core::contains_fold(hdr_block, "upgrade") else { return false; }
-        is_close = core::contains_fold(hdr_block, "close");
-    }
+    guard validate_fast_path_headers(stream[..hdr_end], is_close) else { return false; }
 
-    serialize_fast_path_payload(handler_id, is_close, server.server_name[..], wire_out, now_sec);
+    let slot = server.pipeline.router.trees[0].tree.static_slots[slot_idx as i64];
+    append_fast_path_response(server, slot, is_close, now_sec, wire_out);
     server.requests_processed++;
 
     consumed = hdr_end + 4;
@@ -3043,6 +3117,17 @@ fn reactor_save_leftover(
     return true;
 }
 
+// Flushes cork aggregation buffer to connection via bounded non-blocking send loop.
+inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
+    var sent_total: i64 = 0;
+    while sent_total < wire.len {
+        let sent = tcp_send(conn, wire[sent_total..]);
+        if sent <= 0 { return false; }
+        sent_total += sent;
+    }
+    return true;
+}
+
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
 fn reactor_handle_ingress(
     server:       HttpServer&,
@@ -3081,8 +3166,7 @@ fn reactor_handle_ingress(
 
     let should_close = !ok || wants_close;
     if cork_wire.len > 0 {
-        let sent = tcp_send(conn, cork_wire[..]);
-        if sent <= 0 || should_close {
+        if !reactor_drain_cork_wire(conn, cork_wire[..]) || should_close {
             reactor_cleanup_slot(epfd, table, slot, free_slots);
             total_served++;
             return;

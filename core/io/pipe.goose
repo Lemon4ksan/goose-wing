@@ -116,8 +116,12 @@ fn advance_to(p: PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> IoErr
         p.examined = p.consumed;
     }
 
-    // Auto-compact if consumed space is significant or tail space is low
-    if p.consumed > 0 && (p.consumed >= 32768 || write_space(p) < 4096) {
+    // If all bytes have been consumed, reset cursors instantly without copying
+    if p.consumed == p.written {
+        p.consumed = 0;
+        p.written = 0;
+        p.examined = 0;
+    } else if p.consumed > 0 && (p.consumed >= 32768 || write_space(p) < 4096) {
         compact_pipe(p);
     }
 
