@@ -87,7 +87,8 @@ struct WsFrameHeader {
 }
 
 // In-place SWAR 64-bit/32-bit XOR masking loop (RFC 6455 Section 5.3)
-// Vectorizes payload masking in pure Goose using 64-bit word iterations without heap allocations or out-of-bounds reads.
+// Vectorizes payload masking in pure Goose using 64-bit word iterations without heap allocations
+// or out-of-bounds reads.
 fn apply_mask_in_place(data: u8[:], mask_key: const u8[4]&) {
     let n = data.len;
     guard n > 0 else { return; }
@@ -1050,7 +1051,12 @@ fn build_handshake_request<B>(
 ) {
     // RFC 6455 §4.1 & RFC 9112 §3.2.1 & Go #76635: If path is empty, default to '/'
     let eff_path = if path.len > 0 { path } else { "/" };
-    format(out, "GET ", eff_path, " HTTP/1.1\r\nHost: ", host, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ", client_key);
+    format(out, "GET ", eff_path, " HTTP/1.1\r\nHost: ", host);
+    format(
+        out,
+        "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ",
+        client_key,
+    );
     if ws.subprotocol.len > 0 {
         format(out, "\r\nSec-WebSocket-Protocol: ", ws.subprotocol[..]);
     }
@@ -1334,7 +1340,10 @@ fn receive_view_into<B, F>(
         let rsv3_bit = (b0 & 0x10) != 0;
         let rsv1_allowed = ws.permessage_deflate && (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY);
         if (rsv1_bit && !rsv1_allowed) || rsv2_bit || rsv3_bit {
-            close(ws, WS_STATUS_PROTOCOL_ERROR, "RSV bits set without extension or on non-initial data frame", out_reply);
+            close(
+                ws, WS_STATUS_PROTOCOL_ERROR,
+                "RSV bits set without extension or on non-initial data frame", out_reply,
+            );
             ws.is_closed = true;
             ws.close_code = WS_STATUS_PROTOCOL_ERROR;
             return true, out_view;
