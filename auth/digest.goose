@@ -308,7 +308,7 @@ fn calculate_digest_ha1(
     nonce:    const u8[:],
     cnonce:   const u8[:],
 ) -> u8[..64] {
-    var a1: u8[>..] = [];
+    var a1: u8[..768] = [];
     a1.append(username);
     a1.push(':');
     a1.append(realm);
@@ -320,7 +320,7 @@ fn calculate_digest_ha1(
     if eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
         || eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
         || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS) {
-        var a1_sess: u8[>..] = [];
+        var a1_sess: u8[..512] = [];
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
         a1_sess.append(nonce);
@@ -343,7 +343,7 @@ fn calculate_digest_ha2(
     is_auth_int: bool,
     body:        const u8[:],
 ) -> u8[..64] {
-    var a2: u8[>..] = [];
+    var a2: u8[..2048] = [];
     a2.append(method);
     a2.push(':');
     a2.append(uri);
@@ -371,7 +371,7 @@ fn calculate_digest_response(
     active_qop: const u8[:],
     ha2_hex:    const u8[:],
 ) -> u8[..64] {
-    var a3: u8[>..] = [];
+    var a3: u8[..512] = [];
     a3.append(ha1_hex);
     a3.push(':');
     a3.append(nonce);
@@ -532,7 +532,7 @@ fn serialize_digest_auth<B>(
 }
 
 fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..64] {
-    var user_realm: u8[>..] = [];
+    var user_realm: u8[..384] = [];
     user_realm.append(username);
     user_realm.push(':');
     user_realm.append(realm);

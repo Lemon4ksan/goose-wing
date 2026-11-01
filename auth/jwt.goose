@@ -936,9 +936,7 @@ fn build_jwt_signing_input<B>(
 
     var clm_json: u8[>..] = [];
     serialize_jwt_claims(claims, clm_json);
-    var clm_b64: u8[>..] = [];
-    core::base64url_encode(clm_json[..], clm_b64);
-    out_token.append(clm_b64[..]);
+    core::base64url_encode(clm_json[..], out_token);
 }
 
 fn append_jwt_hmac_signature<B>(
@@ -1106,7 +1104,7 @@ fn validate_jwt_claims_rules(
 //   hdr_b64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 //   returns: JwtError.None, out_header.alg = JwtAlg.HS256
 fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
-    var hdr_json: u8[>..] = [];
+    var hdr_json: u8[..1024] = [];
     guard core::base64url_decode(hdr_b64, hdr_json) else {
         return JwtError.InvalidBase64;
     }
@@ -1122,7 +1120,7 @@ fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
 //   clm_b64 = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
 //   returns: JwtError.None, out_claims.sub = "1234567890"
 fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
-    var clm_json: u8[>..] = [];
+    var clm_json: u8[..4096] = [];
     guard core::base64url_decode(clm_b64, clm_json) else {
         return JwtError.InvalidBase64;
     }
@@ -1258,7 +1256,7 @@ fn verify_jwt_hmac(
     let hdr_rule_err = verify_jwt_header_rules(out_header, options);
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
-    var sig_bytes: u8[>..] = [];
+    var sig_bytes: u8[..128] = [];
     guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
@@ -1312,7 +1310,7 @@ fn verify_jwt_eddsa(
         return JwtError.AlgorithmMismatch;
     }
 
-    var sig_bytes: u8[>..] = [];
+    var sig_bytes: u8[..128] = [];
     guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }

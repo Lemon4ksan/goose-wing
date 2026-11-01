@@ -83,34 +83,49 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain"
     return false;
 }
 
+// Encodes caller-provided entropy bytes into a base64url PKCE verifier (RFC 7636 §4.1).
+inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
+    let max_raw = if entropy.len > 96 { 96 } else { entropy.len };
+    core::base64url_encode(entropy[..max_raw], out);
+    return is_valid_code_verifier(out[..]);
+}
+
+inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
+    var seed: u8[32] = [0; 32];
+    var w = core::new_slice_writer(seed[..]);
+    core::write_u64_le(w, now_ns);
+    core::write_u64_le(w, counter);
+    core::write_u64_le(w, now_ns ^ 0xa0761d6478bd642f);
+    core::write_u64_le(w, counter * 0xe7037ed1a0b428db);
+    return seed;
+}
+
+inline fn generate_derived_verifier<B>(out: B&) -> bool {
+    g_pkce_entropy_counter = g_pkce_entropy_counter + 1;
+    let seed = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
+    let raw_entropy = core::sha256(seed[..]);
+    core::base64url_encode(raw_entropy[..], out);
+    return is_valid_code_verifier(out[..]);
+}
+
 // Generates a valid PKCE code verifier (43..128 characters) into out (RFC 7636 §4.1).
 // If entropy bytes (>= 32 bytes) are provided, encodes them into URL-safe characters.
 // If empty, derives high-entropy dynamic bytes by mixing monotonic clock (clock_ns),
 // global monotonic counter, and multi-round SHA-256 cryptographic expansion (FINDING-R5-SEC-07).
 // Returns false if entropy is non-empty but less than 32 bytes (256 bits).
+//
+// Example:
+//   entropy = "", out = []
+//   returns: ok = true, out = "..." (43 URL-safe unreserved characters)
 fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
     out.clear();
     guard entropy.len == 0 || entropy.len >= 32 else {
         return false; // RFC 7636 §4.1: Minimum 256 bits (32 bytes) of entropy required
     }
     if entropy.len >= 32 {
-        let max_raw = if entropy.len > 96 { 96 } else { entropy.len };
-        core::base64url_encode(entropy[..max_raw], out);
-        return is_valid_code_verifier(out[..]);
+        return encode_external_entropy(entropy, out);
     }
-
-    g_pkce_entropy_counter = g_pkce_entropy_counter + 1;
-    let now_ns = clock_ns() as u64;
-    var entropy_seed: u8[32] = [0; 32];
-    for i in 8 {
-        entropy_seed[i] = ((now_ns >> (i * 8)) & 0xFF) as u8;
-        entropy_seed[8 + i] = ((g_pkce_entropy_counter >> (i * 8)) & 0xFF) as u8;
-        entropy_seed[16 + i] = (((now_ns ^ 0xa0761d6478bd642f) >> (i * 8)) & 0xFF) as u8;
-        entropy_seed[24 + i] = (((g_pkce_entropy_counter * 0xe7037ed1a0b428db) >> (i * 8)) & 0xFF) as u8;
-    }
-    let raw_entropy = core::sha256(entropy_seed[..]);
-    core::base64url_encode(raw_entropy[..], out);
-    return is_valid_code_verifier(out[..]);
+    return generate_derived_verifier(out);
 }
 
 // Computes code_challenge from code_verifier using S256 or plain (RFC 7636 Section 4.2).

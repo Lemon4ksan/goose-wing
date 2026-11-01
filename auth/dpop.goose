@@ -294,7 +294,7 @@ fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> b
         }
     };
     guard jwk_info.valid && jwk_info.x.len > 0 else { return false; }
-    var decoded_x: u8[>..] = [];
+    var decoded_x: u8[..64] = [];
     guard core::base64url_decode(jwk_info.x[..], decoded_x) else { return false; }
     guard decoded_x.len == 32 else { return false; }
     for i in 32 { out_pub[i] = decoded_x[i]; }
@@ -434,7 +434,7 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
 }
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], pub_key: const u8[32]) -> bool {
-    var sig_bytes: u8[>..] = [];
+    var sig_bytes: u8[..128] = [];
     guard core::base64url_decode(sig_b64, sig_bytes) else { return false; }
     guard sig_bytes.len == 64 else { return false; }
     var sig_arr: u8[64] = [0; 64];
@@ -702,7 +702,7 @@ fn verify_dpop_proof(
     let sig_b64 = jwt[(dot2 + 1)..];
     let signing_input = jwt[..dot2];
 
-    var header_json: u8[>..] = [];
+    var header_json: u8[..1024] = [];
     guard core::base64url_decode(header_b64, header_json) else { return false; }
     guard verify_dpop_header(header_json[..], expected_alg) else { return false; }
 
@@ -721,7 +721,7 @@ fn verify_dpop_proof(
 
     guard verify_dpop_signature(signing_input, sig_b64, jwk_pub) else { return false; }
 
-    var claims_json: u8[>..] = [];
+    var claims_json: u8[..2048] = [];
     guard core::base64url_decode(claims_b64, claims_json) else { return false; }
 
     var claims = DPoPClaims { .. };
@@ -866,7 +866,7 @@ fn verify_dpop_proof_with_replay_cache(
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
-    var claims_json: u8[>..] = [];
+    var claims_json: u8[..2048] = [];
     guard core::base64url_decode(jwt[(dot1 + 1)..dot2], claims_json) else { return false; }
     guard parse_dpop_claims(claims_json[..], claims) else { return false; }
 
