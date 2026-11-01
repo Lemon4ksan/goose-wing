@@ -76,6 +76,4 @@ fn main() {
     wing::mask_websocket_payload(unmasked_payload[..], parsed_header.mask_key);
 
     print("    Recovered Text: ", unmasked_payload[..]);
-
-    print("\nRealtime Demo Complete (100% Zero-Allocation / Bounded Stack)\n");
 }

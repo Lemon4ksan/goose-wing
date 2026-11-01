@@ -141,8 +141,5 @@ fn main() {
 
     let res_digest_valid = wing::verify_response_content_digest(res);
     assert(res_digest_valid);
-    print("    Server Response Digest:    PASSED.\n");
-
-    print("============================================================");
-    print("Pipeline Execution Completed Successfully: 100% Zero-Heap.");
+    print("    Server Response Digest:    PASSED.");
 }

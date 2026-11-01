@@ -80,6 +80,4 @@ fn main() {
     print("\n[5] Gateway Summary:");
     print("    Total Requests Forwarded: ", proxy.total_forwarded);
     print("    Total Requests Dropped: ", proxy.total_dropped);
-    print("    Dynamic Allocations: 0 malloc calls");
-    print("============================================================");
 }

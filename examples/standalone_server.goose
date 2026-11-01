@@ -44,6 +44,4 @@ fn main() {
 
     print("\n[4] Server Lifecycle Summary:");
     print("    Total Requests Processed: ", server.requests_processed);
-    print("    Memory Allocations: 0 malloc calls (100% Zero-Heap / Bounded Stack)");
-    print("============================================================");
 }

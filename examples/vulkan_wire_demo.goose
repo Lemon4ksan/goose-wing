@@ -27,7 +27,7 @@ fn main() {
     print("    IP TTL:           128");
 
     // ---- Command Buffer Recording (Explicit Framing) ---------------------
-    print("\n[2] Recording Protocol Frames into Zero-Heap Command Buffer:");
+    print("\n[2] Recording Protocol Frames into Wire Command Buffer:");
     var cmd = wire::new_command_buffer();
 
     // Command 1: Write HTTP/2 Client Connection Preface (24 bytes)
@@ -70,7 +70,6 @@ fn main() {
     print("\n[3] Command Buffer Assembly Complete:");
     print("    Total Wire Bytes Recorded: ", total_bytes, " bytes");
     print("    Fault State:               ", cmd.has_error);
-    print("    Heap Allocations:          0 malloc calls (100% stack)");
 
     // ---- Ingress Wire Frame Parsing Verification -------------------------
     print("\n[4] Demuxing Stream with Zero-Copy WireH2FrameReader:");
@@ -91,6 +90,5 @@ fn main() {
     }
 
     assert(frame_count == 5);
-    print("\n[5] All 5 recorded HTTP/2 frames parsed and verified with 100% fidelity.");
-    print("============================================================");
+    print("\n[5] All 5 recorded HTTP/2 frames parsed and verified.");
 }

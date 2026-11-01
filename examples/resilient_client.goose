@@ -91,6 +91,4 @@ fn main() {
     let future_mono_ns = now_mono_ns + (retry_after_ms * 1000000) + 1000;
     let recovered_status = wing::is_host_circuit_broken(breaker, target_host, future_mono_ns);
     print("    After 30s Expiry -> Host Automatically Recovered: ", !recovered_status);
-
-    print("\nFault-Tolerance Demo Complete (100% Zero-Allocation)\n");
 }

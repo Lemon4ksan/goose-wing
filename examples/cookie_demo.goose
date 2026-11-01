@@ -252,8 +252,4 @@ fn main() {
     let imported_down = json_test_jar.import_json(json_downgrade, now_us);
     assert(imported_down == 1, "Non-secure cookie with source_scheme:secure imported without channel rejection");
     assert(json_test_jar.get("sid_downgrade") == "tok123", "Retrieved imported cookie");
-
-    print("\n------------------------------------------------------------------");
-    print("  IDIOMATIC GOOSE ADAPTATION VERIFIED WITH 100% SUCCESS!          ");
-    print("------------------------------------------------------------------");
 }

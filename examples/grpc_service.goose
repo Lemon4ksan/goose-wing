@@ -106,6 +106,4 @@ fn main() {
     print("    HTTP Status: ", res2.status_code);
     print("    Header grpc-status: ", err_status, " (Code 16: Unauthenticated)");
     print("    Header grpc-message: ", err_msg);
-
-    print("\ngRPC Microservices Demo Complete (100% Zero-Allocation)\n");
 }
