@@ -89,6 +89,7 @@ fn parse_callback_params<B1, B2>(
     let q_pos = core::index_of_byte(target, '?');
     guard q_pos >= 0 else { return false; }
     let params = core::parse_query_params(target[q_pos..]);
+    guard !params.overflow else { return false; }
     let code = core::get_query_param(params, "code");
     let state = core::get_query_param(params, "state");
     guard code.len > 0 && code.len <= out_code.cap else { return false; }
@@ -112,7 +113,7 @@ fn build_token_request_body<B>(
     guard code.len > 0 && code.len <= 256 else { return false; }
     guard code_verifier.len >= 43 && code_verifier.len <= 128 else { return false; }
     guard redirect_uri.len > 0 && redirect_uri.len <= 128 else { return false; }
-    guard out.cap >= 1024 else { return false; }
+    guard out.cap >= 1152 else { return false; }
 
     out.clear();
     out.append("grant_type=authorization_code&client_id=");
@@ -173,14 +174,30 @@ fn accept_live_callback<B1, B2>(
         return false;
     }
 
-    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 48\r\nConnection: close\r\n\r\n<html><body>Authorization received.</body></html>";
+    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 49\r\nConnection: close\r\n\r\n<html><body>Authorization received.</body></html>";
     let _ = wing::tcp_send(client_fd, resp);
     wing::tcp_close(client_fd);
     return true;
 }
 
+fn format_callback_target(csrf_state: const u8[:], out: u8[..256]&) -> bool {
+    guard csrf_state.len > 0 && csrf_state.len <= 64 else { return false; }
+    out.clear();
+    out.append("/callback?code=4/0AY0e-g7ExampleGoogleAuthCode12345&state=");
+    out.append(csrf_state);
+    return true;
+}
+
+fn format_callback_wire_request(csrf_state: const u8[:], out: u8[..512]&) -> bool {
+    guard csrf_state.len > 0 && csrf_state.len <= 64 else { return false; }
+    out.clear();
+    out.append("GET /callback?code=4/0AY0e-g7ExampleGoogleAuthCode12345&state=");
+    out.append(csrf_state);
+    out.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    return true;
+}
+
 fn simulate_wire_callback(port: u16, csrf_state: const u8[:]) -> i64 {
-    guard csrf_state.len > 0 && csrf_state.len <= 64 else { return 0; }
     var srv = wing::new_http_server("127.0.0.1", port);
     wing::add_static_get_route(
         srv,
@@ -191,11 +208,9 @@ fn simulate_wire_callback(port: u16, csrf_state: const u8[:]) -> i64 {
     );
 
     var wire_req: u8[..512] = [];
-    wire_req.append("GET /callback?code=4/0AY0e-g7ExampleGoogleAuthCode12345&state=");
-    wire_req.append(csrf_state);
-    wire_req.append(" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    guard format_callback_wire_request(csrf_state, wire_req) else { return 0; }
 
-    var wire_resp: u8[..1024] = [];
+    var wire_resp: u8[>..] = [];
     let outcome, ok_wire = wing::handle_connection_wire(srv, "127.0.0.1", wire_req[..], 1000000000, wire_resp);
     guard ok_wire && outcome == wing::PipelineOutcome.Handled else { return 0; }
     return wire_resp.len;
@@ -247,9 +262,9 @@ fn main() {
         print("\n[3] Intercepted Authorization Callback (Simulated Wire):");
         let resp_len = simulate_wire_callback(eff_port, csrf_state[..]);
         print("    Callback Route Handled: 200 OK (", resp_len, " bytes response)");
+
         var sample_target: u8[..256] = [];
-        sample_target.append("/callback?code=4/0AY0e-g7ExampleGoogleAuthCode12345&state=");
-        sample_target.append(csrf_state[..]);
+        assert(format_callback_target(csrf_state[..], sample_target));
         assert(parse_callback_params(sample_target[..], received_code, received_state));
     }
 
@@ -260,7 +275,7 @@ fn main() {
     print("    Authorization Code: ", received_code[..]);
 
     // 6. Build Token Exchange POST Request
-    var token_body: u8[..1024] = [];
+    var token_body: u8[..1152] = [];
     assert(build_token_request_body(
         client_id,
         "",
