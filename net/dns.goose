@@ -481,12 +481,6 @@ struct DohResolver {
     use_post: bool      = true,
 }
 
-fn new_doh_resolver(endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) -> DohResolver {
-    var r = DohResolver { use_post: use_post, .. };
-    r.endpoint.append(endpoint);
-    return r;
-}
-
 // ---- DNS Cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861) -
 
 enum DnsCacheStatus {

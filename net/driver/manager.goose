@@ -183,7 +183,8 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             if res.available {
                 res.capabilities = CAP_ZERO_COPY | CAP_NIC_TLS_OFFLOAD;
                 res.reason.clear();
-                res.reason.append("SmartNIC hardware kTLS offload active (Mellanox ConnectX / BlueField / Windows Chimney)");
+                res.reason.append("SmartNIC hardware kTLS offload active ");
+                res.reason.append("(Mellanox ConnectX / BlueField / Windows Chimney)");
             } else {
                 res.capabilities = CAP_NONE;
                 res.reason.clear();

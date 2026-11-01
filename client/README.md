@@ -1,4 +1,4 @@
-# HTTP Client Subsystem (client)
+# `client`
 
 ## Overview
 High-performance HTTP client engine providing zero-allocation request/response representation, automatic content decompression (gzip, brotli, zstd, dcz/dcb), OkHttp-style application/network interceptor chains, resilient connection pooling, and client fingerprint emulation (JA4).

@@ -1,4 +1,4 @@
-# Client Session Subsystem (client/session)
+# `client/session`
 
 ## Overview
 Stateful HTTP session execution engine orchestrating the 6-phase pipeline (Interceptors -> Cache -> Redirects -> L4/L7 Transport -> Cookies -> Response), RFC 6265bis cookie jar integration, convenience HTTP verbs, and SSRF security perimeter.

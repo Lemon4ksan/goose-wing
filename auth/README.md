@@ -1,4 +1,4 @@
-# Authentication Subsystem (auth)
+# `auth`
 
 ## Overview
 RFC-compliant implementations of core HTTP and OAuth authentication protocols. Provides zero-allocation wire framing, cryptographic token signing and verification, JSON Web Key Sets (JWKS), and Application-Layer Proof-of-Possession (DPoP).
