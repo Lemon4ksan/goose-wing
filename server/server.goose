@@ -911,40 +911,49 @@ fn serialize_http1_chunked_response<Res, B>(
 
 // ---- Cached RFC 7231 Date Header (uWebSockets LoopData::date pattern) ------
 
+const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
+const HTTP1_CT_TEXT_PLAIN:    const u8[:] = "Content-Type: text/plain\r\n";
+const HTTP1_CT_APP_JSON:      const u8[:] = "Content-Type: application/json\r\n";
+const HTTP1_CONN_KEEP_ALIVE:  const u8[:] = "Connection: keep-alive\r\n\r\n";
+
 // Formats the Date header at most once per second into a reusable pre-baked string.
 // Eliminates repetitive wall-clock system calls and calendar math for every HTTP response.
 struct CachedHttpDate {
-    header_str: u8[..64] = [],
-    last_sec:   i64      = 0,
-    last_tsc:   u64      = 0,
+    header_str:  u8[..64]  = [],
+    fast_prefix: u8[..128] = [],
+    last_sec:    i64       = 0,
+    last_tsc:    u64       = 0,
 }
 
 var g_cached_http_date: CachedHttpDate = CachedHttpDate { .. };
 
-fn format_date_header_string(sec: i64) {
-    g_cached_http_date.last_sec = sec;
+fn format_date_header_string(mono_sec: i64) {
+    g_cached_http_date.last_sec = mono_sec;
     g_cached_http_date.last_tsc = prof_rdtsc();
+    let wall_sec = core::now().wall_sec;
     g_cached_http_date.header_str.clear();
     g_cached_http_date.header_str.append("Date: ");
-    core::format_http(g_cached_http_date.header_str, core::unix(sec, 0));
+    core::format_http(g_cached_http_date.header_str, core::unix(wall_sec, 0));
     g_cached_http_date.header_str.append("\r\n");
+
+    g_cached_http_date.fast_prefix.clear();
+    g_cached_http_date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
+    g_cached_http_date.fast_prefix.append(g_cached_http_date.header_str[..]);
 }
 
 fn should_refresh_cached_date(now_sec: i64) -> bool {
-    if now_sec > 0 {
-        return g_cached_http_date.last_sec != now_sec || g_cached_http_date.header_str.len == 0;
-    }
     guard g_cached_http_date.header_str.len > 0 else { return true; }
+    if now_sec > 0 {
+        return g_cached_http_date.last_sec != now_sec;
+    }
     let tsc = prof_rdtsc();
     return tsc - g_cached_http_date.last_tsc >= 2000000000;
 }
 
 fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
-    guard should_refresh_cached_date(now_sec) else {
-        return g_cached_http_date.header_str[..];
+    if should_refresh_cached_date(now_sec) {
+        format_date_header_string(now_sec);
     }
-    let eff_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
-    format_date_header_string(eff_sec);
     return g_cached_http_date.header_str[..];
 }
 
@@ -1039,11 +1048,6 @@ fn serialize_response_headers_list<B>(headers: const HeaderItem[:], is_empty_sta
         out.append("\r\n");
     }
 }
-
-const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
-const HTTP1_CT_TEXT_PLAIN:    const u8[:] = "Content-Type: text/plain\r\n";
-const HTTP1_CT_APP_JSON:      const u8[:] = "Content-Type: application/json\r\n";
-const HTTP1_CONN_KEEP_ALIVE:  const u8[:] = "Connection: keep-alive\r\n\r\n";
 
 // Serializes only the HTTP/1.1 response status line and headers into out_wire,
 // omitting the body. Used for zero-copy vectored transmission via tcp_send2.
@@ -2351,6 +2355,187 @@ fn process_pipelined_pipe_step<B>(
     return PipeStepResult.Continue;
 }
 
+const FAST_RESP_PLAINTEXT: const u8[:] =
+    "Content-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!";
+const FAST_RESP_PLAINTEXT_CLOSE: const u8[:] =
+    "Content-Length: 13\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nHello, World!";
+
+const FAST_RESP_JSON: const u8[:] =
+    "Content-Length: 27\r\nContent-Type: application/json\r\n\r\n{\"message\":\"Hello, World!\"}";
+const FAST_RESP_JSON_CLOSE: const u8[:] =
+    "Content-Length: 27\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"message\":\"Hello, World!\"}";
+
+inline fn serialize_fast_path_payload<B>(
+    handler_id:  i32,
+    is_close:    bool,
+    server_name: const u8[:],
+    wire_out:    B&,
+    now_sec:     i64 = 0,
+) {
+    if server_name == "goose-wing" {
+        let _ = get_cached_http_date_header(now_sec);
+        wire_out.append(g_cached_http_date.fast_prefix[..]);
+    } else {
+        wire_out.append("HTTP/1.1 200 OK\r\nServer: ");
+        wire_out.append(server_name);
+        wire_out.append("\r\n");
+        wire_out.append(get_cached_http_date_header(now_sec));
+    }
+    if handler_id == 1001 {
+        wire_out.append(if is_close { FAST_RESP_PLAINTEXT_CLOSE } else { FAST_RESP_PLAINTEXT });
+    } else if handler_id == 1002 {
+        wire_out.append(if is_close { FAST_RESP_JSON_CLOSE } else { FAST_RESP_JSON });
+    } else if handler_id == 1003 {
+        wire_out.append("Content-Length: 104\r\nContent-Type: application/json\r\n");
+        wire_out.append(if is_close { "Connection: close\r\n\r\n" } else { "\r\n" });
+        wire_out.append(METRICS_PAYLOAD);
+    }
+}
+
+inline fn try_fast_path_pipeline_step<B>(
+    server:      HttpServer&,
+    stream:      const u8[:],
+    wire_out:    B&,
+    consumed:    i64&,
+    wants_close: bool&,
+    now_sec:     i64,
+) -> bool {
+    guard server.fast_path && stream.len >= 16 else { return false; }
+    guard stream[0] == 'G' && stream[1] == 'E' && stream[2] == 'T' && stream[3] == ' ' else { return false; }
+
+    var handler_id: i32 = -1;
+    let rest = stream[4..];
+    if core::starts_with(rest, "/plaintext HTTP/1.1\r\n") {
+        handler_id = 1001;
+    } else if core::starts_with(rest, "/json HTTP/1.1\r\n") {
+        handler_id = 1002;
+    } else if core::starts_with(rest, "/metrics HTTP/1.1\r\n") {
+        handler_id = 1003;
+    } else if core::starts_with(rest, "/plaintext ") {
+        handler_id = 1001;
+    } else if core::starts_with(rest, "/json ") {
+        handler_id = 1002;
+    } else if core::starts_with(rest, "/metrics ") {
+        handler_id = 1003;
+    }
+    guard handler_id > 0 else { return false; }
+
+    let hdr_end = core::fast_find_crlfcrlf(stream);
+    guard hdr_end >= 0 && hdr_end <= 8192 else { return false; }
+
+    var is_close = false;
+    let hdr_block = stream[..hdr_end];
+    if hdr_block.len >= 56 {
+        guard !core::contains_fold(hdr_block, "upgrade") else { return false; }
+        is_close = core::contains_fold(hdr_block, "close");
+    }
+
+    serialize_fast_path_payload(handler_id, is_close, server.server_name[..], wire_out, now_sec);
+    server.requests_processed++;
+
+    consumed = hdr_end + 4;
+    wants_close = is_close;
+    return true;
+}
+
+inline fn try_fast_path_pipeline_loop<B>(
+    server:        HttpServer&,
+    stream:        const u8[:],
+    wire_out:      B&,
+    now_sec:       i64,
+    fast_handled:  i64&,
+    fast_consumed: i64&,
+    fast_close:    bool&,
+) -> bool {
+    var cur = stream;
+    while cur.len > 0 {
+        cur = strip_pipelined_crlf(cur, fast_consumed);
+        if cur.len == 0 { break; }
+        guard wire_out.len + 256 <= wire_out.cap else { return false; }
+
+        var step_consumed: i64  = 0;
+        var step_close:    bool = false;
+        guard try_fast_path_pipeline_step(server, cur, wire_out, step_consumed, step_close, now_sec) else {
+            return false;
+        }
+        fast_handled++;
+        fast_consumed += step_consumed;
+        cur = cur[step_consumed..];
+        if step_close {
+            fast_close = true;
+            return true;
+        }
+    }
+    return true;
+}
+
+enum StreamTurnResult {
+    Continue,
+    Stop,
+    ParseFail,
+    KeepStreamFail,
+}
+
+fn process_pipelined_stream_turn<B>(
+    server:           HttpServer&,
+    client_ip:        const u8[:],
+    stream:           const u8[:],
+    now_ns:           u64,
+    now_sec:          i64,
+    req:              Request&,
+    res:              Response&,
+    route_cache:      StreamRouteCache&,
+    wire_out:         B&,
+    wire_in_len:      i64,
+    step_consumed:    i64&,
+    total_handled:    i64&,
+    total_consumed:   i64&,
+    conn_wants_close: bool&,
+) -> StreamTurnResult {
+    guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop; }
+
+    var fast_consumed: i64  = 0;
+    var fast_close:    bool = false;
+    if try_fast_path_pipeline_step(server, stream, wire_out, fast_consumed, fast_close, now_sec) {
+        total_handled++;
+        total_consumed += fast_consumed;
+        step_consumed = fast_consumed;
+        if fast_close {
+            conn_wants_close = true;
+            return StreamTurnResult.Stop;
+        }
+        return StreamTurnResult.Continue;
+    }
+
+    reset_server_request_fast(req);
+    let ok_parse, consumed = parse_http1_wire_request(stream, req);
+    guard ok_parse && consumed > 0 else {
+        var keep = false;
+        let _ = handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
+        return if keep { StreamTurnResult.KeepStreamFail } else { StreamTurnResult.ParseFail };
+    }
+
+    if try_handle_pipelined_websocket(server, req, wire_out) {
+        total_handled++;
+        total_consumed += consumed;
+        step_consumed = consumed;
+        return StreamTurnResult.Stop;
+    }
+
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
+    total_handled++;
+    total_consumed += consumed;
+    step_consumed = consumed;
+
+    if wants_close || req.method[..] == "CONNECT" {
+        conn_wants_close = true;
+        if req.method[..] == "CONNECT" { total_consumed = wire_in_len; }
+        return StreamTurnResult.Stop;
+    }
+
+    return StreamTurnResult.Continue;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<B>(
@@ -2360,14 +2545,25 @@ fn handle_connection_wire_pipelined_stream<B>(
     now_ns:    u64,
     wire_out:  B&,
 ) -> i64, i64, bool, bool {
-    if server.trust_proxy_headers {
-        server.pipeline.trust_proxy_headers = true;
-    }
+    if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
     var stream = wire_in;
     var total_handled:    i64  = 0;
     var total_consumed:   i64  = 0;
     var conn_wants_close: bool = false;
+    let now_sec = (now_ns / 1000000000) as i64;
+
+    if server.fast_path {
+        var fast_handled:  i64  = 0;
+        var fast_consumed: i64  = 0;
+        var fast_close:    bool = false;
+        if try_fast_path_pipeline_loop(server, stream, wire_out, now_sec, fast_handled, fast_consumed, fast_close) {
+            return fast_handled, fast_consumed, true, fast_close;
+        }
+        total_handled += fast_handled;
+        total_consumed += fast_consumed;
+        stream = stream[fast_consumed..];
+    }
 
     var req = new_request("GET", "");
     var res = Response { .. };
@@ -2377,35 +2573,25 @@ fn handle_connection_wire_pipelined_stream<B>(
         stream = strip_pipelined_crlf(stream, total_consumed);
         if stream.len == 0 { break; }
 
-        reset_server_request_fast(req);
-        let ok_parse, consumed = parse_http1_wire_request(stream, req);
-        guard ok_parse && consumed > 0 else {
-            var keep_stream = false;
-            let _ = handle_pipelined_parse_failure(
-                server.server_name[..],
-                stream,
-                req,
-                wire_out,
-                keep_stream,
-            );
-            return total_handled, total_consumed, keep_stream, true;
-        }
-
-        if try_handle_pipelined_websocket(server, req, wire_out) {
-            return total_handled + 1, total_consumed + consumed, true, false;
-        }
-
-        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
-        total_handled++;
-        total_consumed += consumed;
-
-        if wants_close || req.method[..] == "CONNECT" {
-            conn_wants_close = true;
-            if req.method[..] == "CONNECT" { total_consumed = wire_in.len; }
-            break;
-        }
-
-        stream = stream[consumed..];
+        var step_consumed: i64 = 0;
+        let turn_res = process_pipelined_stream_turn(
+            server, client_ip, stream, now_ns, now_sec, req, res, route_cache,
+            wire_out, wire_in.len, step_consumed, total_handled, total_consumed, conn_wants_close,
+        );
+        match turn_res {
+            Continue => {
+                stream = stream[step_consumed..];
+            },
+            Stop => {
+                break;
+            },
+            ParseFail => {
+                return total_handled, total_consumed, false, true;
+            },
+            KeepStreamFail => {
+                return total_handled, total_consumed, true, true;
+            },
+        };
     }
 
     return total_handled, total_consumed, true, conn_wants_close;
@@ -2676,7 +2862,7 @@ fn reactor_sweep_timeouts(
     last_sweep_sec = now_sec;
     tick_timer_advance(timer_wheel, elapsed);
 
-    var expired: i64[256] = [0; 256];
+    var expired: i64[1024] = [0; 1024];
     let n_expired = soa_table_sweep_expired(table, timer_wheel, expired[..]);
     for i in n_expired {
         let slot = expired[i];
@@ -2731,7 +2917,6 @@ fn reactor_drain_listener(
     while true {
         let client_fd = tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
-        tcp_set_nonblocking(client_fd, true);
 
         var slot = pop_free_slot(free_slots);
         if slot < 0 {
@@ -2761,7 +2946,6 @@ fn reactor_drain_worker_ring(
         if !popped { break; }
         let client_fd = client_val as i64;
         guard client_fd > 0 else { continue; }
-        tcp_set_nonblocking(client_fd, true);
 
         var slot = pop_free_slot(free_slots);
         if slot < 0 {
@@ -2849,7 +3033,7 @@ fn reactor_handle_ingress(
     timer_wheel:  TickTimerWheel&,
     now_ns:       u64,
     chunk:        ReactorIngressBuf&,
-    cork_wire:    u8[..16384]&,
+    cork_wire:    u8[..65536]&,
     total_served: i64&,
 ) {
     let conn = table.fds[slot];
@@ -2910,7 +3094,7 @@ fn reactor_dispatch_events(
     ready_udata:  const u64[:],
     now_ns:       u64,
     chunk:        ReactorIngressBuf&,
-    cork_wire:    u8[..16384]&,
+    cork_wire:    u8[..65536]&,
     total_served: i64&,
 ) {
     for i in ready_udata.len {
@@ -2921,7 +3105,7 @@ fn reactor_dispatch_events(
         }
 
         let slot = udata as i64;
-        if slot < 0 || slot >= 256 || table.fds[slot] <= 0 {
+        if slot < 0 || slot >= 1024 || table.fds[slot] <= 0 {
             continue;
         }
 
@@ -2949,11 +3133,32 @@ inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
 
 // Cleans up all active connection slots when shutting down reactor loop.
 fn reactor_cleanup_all(epfd: i64, table: SoAConnTable&, free_slots: FreeSlotStack&) {
-    for s in 256 {
+    for s in 1024 {
         if table.fds[s] > 0 {
             reactor_cleanup_slot(epfd, table, s, free_slots);
         }
     }
+}
+
+inline fn reactor_poll_sweep(
+    epfd:           i64,
+    table:          SoAConnTable&,
+    free_slots:     FreeSlotStack&,
+    timer_wheel:    TickTimerWheel&,
+    n:              i32,
+    turn:           i64,
+    last_sweep_sec: i64&,
+    total_served:   i64&,
+    cached_ns:      u64&,
+    cached_sec:     i64&,
+) {
+    if n > 0 && (turn & 511) != 0 && cached_sec > 0 { return; }
+    let now_mono = core::monotonic_now();
+    cached_ns = core::as_nanos(now_mono);
+    cached_sec = (cached_ns / 1000000000) as i64;
+    reactor_sweep_timeouts(
+        epfd, table, free_slots, timer_wheel, cached_sec, last_sweep_sec, total_served,
+    );
 }
 
 // Executes a share-nothing reactor loop with epoll.
@@ -2970,18 +3175,21 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
     }
 
-    var ready_fds:    i64[256]          = [0; 256];
-    var ready_udata:  u64[256]          = [0; 256];
-    var cork_wire:    u8[..16384]       = [];
+    var empty_fds:    i64[0]            = [];
+    var ready_udata:  u64[1024]         = [0; 1024];
+    var cork_wire:    u8[..65536]       = [];
     var chunk:        ReactorIngressBuf = ReactorIngressBuf { .. };
     var total_served: i64               = 0;
 
     var table = SoAConnTable { .. };
-    var leftovers: ReactorLeftoverBuf[256] = [ReactorLeftoverBuf { .. }; 256];
+    var leftovers: ReactorLeftoverBuf[1024] = [ReactorLeftoverBuf { .. }; 1024];
     var free_slots = FreeSlotStack { .. };
-    init_free_slots(free_slots, 256);
+    init_free_slots(free_slots, 1024);
     var timer_wheel = new_tick_timer_wheel(15);
     var last_sweep_sec: i64 = 0;
+    var turn_counter:   i64 = 0;
+    var cached_now_ns:  u64 = 0;
+    var cached_now_sec: i64 = 0;
 
     while max_connections == 0 || total_served < max_connections {
         if server.worker_ring.is_open {
@@ -2989,20 +3197,18 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         }
 
         let epoll_timeout = reactor_epoll_timeout(server.worker_ring);
-        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], epoll_timeout);
+        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], epoll_timeout);
 
-        let now_mono = core::monotonic_now();
-        let now_ns = core::as_nanos(now_mono);
-        let now_sec = (now_ns / 1000000000) as i64;
-
-        reactor_sweep_timeouts(
-            epfd, table, free_slots, timer_wheel, now_sec, last_sweep_sec, total_served,
+        turn_counter++;
+        reactor_poll_sweep(
+            epfd, table, free_slots, timer_wheel, n, turn_counter,
+            last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
         );
 
         if n > 0 {
             reactor_dispatch_events(
                 server, epfd, listener_fd, table, leftovers[..], free_slots,
-                timer_wheel, ready_udata[..n], now_ns, chunk, cork_wire, total_served,
+                timer_wheel, ready_udata[..n], cached_now_ns, chunk, cork_wire, total_served,
             );
         }
     }

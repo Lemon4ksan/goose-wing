@@ -623,15 +623,6 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
-    int bufsize = 262144;
-    setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
-    setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
-
-#if defined(__linux__) && defined(TCP_QUICKACK)
-    int qack = 1;
-    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &qack, sizeof(qack));
-#endif
-
     return (int64_t)client_sock;
 }
 
@@ -1225,15 +1216,6 @@ int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
 
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
-
-    int bufsize = 262144;
-    setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof(bufsize));
-    setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof(bufsize));
-
-#if defined(__linux__) && defined(TCP_QUICKACK)
-    int qack = 1;
-    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &qack, sizeof(qack));
-#endif
 
     return (int64_t)client_sock;
 }
