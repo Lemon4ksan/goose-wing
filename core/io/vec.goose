@@ -22,7 +22,7 @@ struct IoVecArray {
     total_bytes: i64         = 0,
 }
 
-// ---- 1. Safe Arithmetic Helpers ---------------------------------------------
+// ---- Safe Arithmetic Helpers ---------------------------------------------
 
 fn iovec_next_i32(v: i32) -> i32 {
     return v + 1;
@@ -44,7 +44,7 @@ fn iovec_min_i64(a: i64, b: i64) -> i64 {
     return if a < b { a } else { b };
 }
 
-// ---- 2. Lifecycle & Inspection ----------------------------------------------
+// ---- Lifecycle & Inspection ----------------------------------------------
 
 fn new_iovec_array() -> IoVecArray {
     return IoVecArray {
@@ -76,7 +76,7 @@ fn iovec_count(arr: const IoVecArray&) -> i32 {
     return if raw_count > 0 { raw_count } else { 0 };
 }
 
-// ---- 3. Compaction and Insertion --------------------------------------------
+// ---- Compaction and Insertion --------------------------------------------
 
 fn iovec_compact(arr: IoVecArray&) {
     guard arr.head > 0 else { return; }
@@ -110,7 +110,7 @@ fn iovec_push(arr: IoVecArray&, chunk: const u8[:]) -> bool {
     return true;
 }
 
-// ---- 4. Slice Access & Serialization ----------------------------------------
+// ---- Slice Access & Serialization ----------------------------------------
 
 fn iovec_get(arr: const IoVecArray&, index: i32) -> const u8[:] {
     let eff_idx = arr.head + index;
@@ -156,7 +156,7 @@ fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
     return dst_off;
 }
 
-// ---- 5. Partial Write Consumption -------------------------------------------
+// ---- Partial Write Consumption -------------------------------------------
 
 fn iovec_consume_head(arr: IoVecArray&, avail: i64, needed: i64) -> i64 {
     if needed < avail {

@@ -8,7 +8,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. Constants and Supported Cipher Suites -------------------------------
+// ---- Constants and Supported Cipher Suites -------------------------------
 
 const TLS_AES_128_GCM_SHA256:       u16 = 0x1301;
 const TLS_AES_256_GCM_SHA384:       u16 = 0x1302;
@@ -23,7 +23,7 @@ const KS_STAGE_HANDSHAKE:  u8 = 2;
 const KS_STAGE_MASTER:     u8 = 3;
 const KS_STAGE_RESUMPTION: u8 = 4;
 
-// ---- 2. HKDF-Expand-Label and Derive-Secret (RFC 8446 Section 7.1) ----------
+// ---- HKDF-Expand-Label and Derive-Secret (RFC 8446 Section 7.1) ----------
 
 // Encodes HkdfLabel structure:
 // struct {
@@ -113,7 +113,7 @@ fn derive_secret(
     return hkdf_expand_label(hash_id, secret, label, transcript_hash, hash_len, out);
 }
 
-// ---- 3. KeySchedule Struct and Lifecycle Transitions ------------------------
+// ---- KeySchedule Struct and Lifecycle Transitions ------------------------
 
 struct KeySchedule {
     cipher_suite:         u16    = 0,
@@ -498,7 +498,7 @@ fn ks_zeroize(ks: KeySchedule&) {
     ks.stage = KS_STAGE_UNINIT;
 }
 
-// ---- 4. PSK Binders Verification (RFC 8446 Section 4.2.11.2) ----------------
+// ---- PSK Binders Verification (RFC 8446 Section 4.2.11.2) ----------------
 
 // Verifies PSK binder tag on truncated ClientHello in constant time.
 fn verify_psk_binder(
@@ -533,7 +533,7 @@ fn verify_psk_binder(
     return false;
 }
 
-// ---- 5. ZeroRttStrikeRegister: Two-Epoch Bloom Filter Anti-Replay -----------
+// ---- ZeroRttStrikeRegister: Two-Epoch Bloom Filter Anti-Replay -----------
 
 struct ZeroRttStrikeRegister {
     epoch_window_ms:      i64     = 10000,

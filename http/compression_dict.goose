@@ -14,7 +14,7 @@ import std;
 import core from "..";
 import http.headers;
 
-// ---- 1. Normative Constants & Wire Magics (RFC 9842) ------------------------
+// ---- Normative Constants & Wire Magics (RFC 9842) ------------------------
 
 // 4-byte magic headers per RFC 9842 Section 4 (DCB) and Section 5 (DCZ):
 // DCZ: 0xFF, 'D', 'C', 'Z' (0xFF, 0x44, 0x43, 0x5A)
@@ -35,7 +35,7 @@ const HEADER_DICTIONARY_ID:        const u8[:] = "dictionary-id"; // RFC 9842 Se
 const ENCODING_DCZ:                const u8[:] = "dcz";
 const ENCODING_DCB:                const u8[:] = "dcb";
 
-// ---- 2. Dictionary Models & Cache ------------------------------------------
+// ---- Dictionary Models & Cache ------------------------------------------
 
 struct DictionaryParams {
     match_pattern: u8[..128] = [],
@@ -64,7 +64,7 @@ struct DictionaryCache {
     entries: DictionaryEntry[..8] = [],
 }
 
-// ---- 3. URL Pattern Matching (draft Section 2.1) ---------------------------
+// ---- URL Pattern Matching (draft Section 2.1) ---------------------------
 
 // Matches path against pattern (e.g. `/assets/*` or `/api/*`) per RFC 9842 Section 2.1
 fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
@@ -78,7 +78,7 @@ fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
     return path == pattern;
 }
 
-// ---- 4. Header Parsers & Serializers ---------------------------------------
+// ---- Header Parsers & Serializers ---------------------------------------
 
 fn find_dict_item_end(s: const u8[:]) -> i64 {
     var in_quotes = false;
@@ -174,7 +174,7 @@ fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
     out.push('"');
 }
 
-// ---- 5. DCZ / DCB Wire Format Codec (draft Section 7) -----------------------
+// ---- DCZ / DCB Wire Format Codec (draft Section 7) -----------------------
 
 // Encodes a DCZ (Dictionary-Compressed Zstandard) frame:
 // [0xFF, 'D', 'C', 'Z'] || [32-byte Dictionary SHA-256] || [Compressed Zstandard Payload]
@@ -241,7 +241,7 @@ fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
     return wire[36..], true;
 }
 
-// ---- 6. Dictionary Cache Operations -----------------------------------------
+// ---- Dictionary Cache Operations -----------------------------------------
 
 fn find_matching_dict_entry_index(
     cache:         const DictionaryCache&,

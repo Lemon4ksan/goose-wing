@@ -10,7 +10,7 @@ import core from "..";
 import .framing;
 import .hpack;
 
-// ---- 1. session constants & limits ------------------------------------------
+// ---- session constants & limits ------------------------------------------
 
 const MAX_INITIAL_WINDOW_SIZE:              i64 = 0x7FFFFFFF; // 2^31 - 1
 const DEFAULT_WINDOW_SIZE:                  i64 = 65535;
@@ -23,7 +23,7 @@ const MAX_PENDING_CTRL_FRAMES:              u32 = 64;    // PING/SETTINGS Flood 
 const MAX_CONCURRENCY_VIOLATIONS:           u32 = 5;     // Rapid Reset non-cancelling variant defense
 const DEFAULT_MAX_HEADER_BLOCK_DURATION_MS: u64 = 10000; // Slow-Drip CONTINUATION memory retention defense
 
-// ---- 2. token bucket rate limiter (rapid reset cve-2023-44487) -------------
+// ---- token bucket rate limiter (rapid reset cve-2023-44487) -------------
 
 struct TokenBucket {
     tokens:         u64 = 1000,
@@ -65,7 +65,7 @@ fn consume_token(tb: TokenBucket&, now_ms: u64) -> bool {
     return true;
 }
 
-// ---- 3. stream state machine & stream descriptors (rfc 9113 section 5.1) ---
+// ---- stream state machine & stream descriptors (rfc 9113 section 5.1) ---
 
 enum H2StreamState {
     Idle,
@@ -92,7 +92,7 @@ struct H2Stream {
     active:                  bool                = false,
 }
 
-// ---- 4. http/2 connection state & coordinator -------------------------------
+// ---- http/2 connection state & coordinator -------------------------------
 
 struct H2Connection {
     hpack_dec:                 DynamicTable = DynamicTable { .. },
@@ -184,7 +184,7 @@ fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool 
     return idx, ok;
 }
 
-// ---- 5. frame ingress coordinator & anti-dos barriers -----------------------
+// ---- frame ingress coordinator & anti-dos barriers -----------------------
 
 // Opens a new stream descriptor with default RFC 9218 priority.
 fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
@@ -481,7 +481,7 @@ fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u6
     return validate_frame_header_rules(hdr, s.local_max_frame_size);
 }
 
-// ---- 6. two-level flow control & signed window deltas (inv-flow-01) ----------
+// ---- two-level flow control & signed window deltas (inv-flow-01) ----------
 
 // Dynamically updates stream send windows upon receiving SETTINGS_INITIAL_WINDOW_SIZE.
 // Computes signed delta = int64(new_init_win) - int64(old_init_win).
@@ -644,7 +644,7 @@ fn ack_control_frame_flushed(s: H2Connection&) {
     }
 }
 
-// ---- 7. rfc 9218 extensible write scheduler ---------------------------------
+// ---- rfc 9218 extensible write scheduler ---------------------------------
 
 // Applies dynamic priority update (from PRIORITY_UPDATE frame or Priority header).
 fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {

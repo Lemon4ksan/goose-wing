@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Data Types & Enums --------------------------------------------------
+// ---- Data Types & Enums --------------------------------------------------
 
 enum SfType {
     Integer,
@@ -48,7 +48,7 @@ struct SfDictEntry {
     inner_items:   SfItem[..8]      = [],
 }
 
-// ---- 2. Safe Arithmetic & Index Helpers -------------------------------------
+// ---- Safe Arithmetic & Index Helpers -------------------------------------
 
 inline fn sf_next(pos: i64) -> i64 {
     return pos + 1;
@@ -94,7 +94,7 @@ inline fn sf_fadd(a: i64, b: f64) -> f64 {
     return a + b;
 }
 
-// ---- 3. Character Classes ---------------------------------------------------
+// ---- Character Classes ---------------------------------------------------
 
 inline fn is_sf_whitespace(b: u8) -> bool {
     return b == ' ' || b == '\t';
@@ -121,7 +121,7 @@ inline fn is_sf_key_char(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || is_sf_digit(b) || b == '_' || b == '-' || b == '.' || b == '*';
 }
 
-// ---- 4. Whitespace & Index Scanners -----------------------------------------
+// ---- Whitespace & Index Scanners -----------------------------------------
 
 fn sf_skip_ws(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
@@ -144,7 +144,7 @@ fn sf_skip_ws_and_commas(src: const u8[:], pos: i64) -> i64 {
     return p;
 }
 
-// ---- 5. Primitive Parsers ---------------------------------------------------
+// ---- Primitive Parsers ---------------------------------------------------
 
 // Parses an RFC 8941 Boolean: ?0 or ?1
 fn sf_parse_boolean(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
@@ -462,7 +462,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
     return true;
 }
 
-// ---- 6. Item, List, & Dictionary High-Level Parsers -------------------------
+// ---- Item, List, & Dictionary High-Level Parsers -------------------------
 
 // Parses a standalone parameterized item (RFC 8941 Section 3.3).
 //
@@ -665,7 +665,7 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
     return true;
 }
 
-// ---- 7. Zero-Alloc Fast Dictionary Accessors --------------------------------
+// ---- Zero-Alloc Fast Dictionary Accessors --------------------------------
 
 // Extracts integer value for key from an RFC 8941 dictionary without heap allocations.
 fn sf_dict_get_int(dict_str: const u8[:], key: const u8[:], default_val: i64 = 0) -> i64 {
@@ -726,7 +726,7 @@ fn sf_dict_has_key(dict_str: const u8[:], key: const u8[:]) -> bool {
     return false;
 }
 
-// ---- 8. Serialization Helpers -----------------------------------------------
+// ---- Serialization Helpers -----------------------------------------------
 
 fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
     if item.kind == SfType.Integer {

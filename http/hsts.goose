@@ -13,7 +13,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. HSTS Directive Model ------------------------------------------------
+// ---- HSTS Directive Model ------------------------------------------------
 
 struct HstsDirective {
     max_age_sec:        i64  = 0,
@@ -22,7 +22,7 @@ struct HstsDirective {
     valid:              bool = false,
 }
 
-// ---- 2. Header Parsing (RFC 6797 Section 6.1) -------------------------------
+// ---- Header Parsing (RFC 6797 Section 6.1) -------------------------------
 
 // Parses delta-seconds from max-age directive, supporting optional quotes.
 //
@@ -83,7 +83,7 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     return d, d.valid;
 }
 
-// ---- 3. HSTS Cache & Preload List -------------------------------------------
+// ---- HSTS Cache & Preload List -------------------------------------------
 
 struct HstsEntry {
     host:               u8[..256] = [],
@@ -254,7 +254,7 @@ fn hsts_cache_update(
     return true;
 }
 
-// ---- 4. Automated URL Upgrade Engine (RFC 6797 Section 8.3) ------------------
+// ---- Automated URL Upgrade Engine (RFC 6797 Section 8.3) ------------------
 
 fn find_authority_end(url: const u8[:]) -> i64 {
     for i in 7..url.len {

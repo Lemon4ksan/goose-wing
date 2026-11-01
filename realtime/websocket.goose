@@ -12,7 +12,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Opcodes and Protocol Constants (RFC 6455 Section 5.2) --------------
+// ---- Opcodes and Protocol Constants (RFC 6455 Section 5.2) --------------
 
 const WS_OPCODE_CONTINUATION: u8 = 0x0;
 const WS_OPCODE_TEXT:         u8 = 0x1;
@@ -72,7 +72,7 @@ fn is_valid_ws_opcode(opcode: u8) -> bool {
            opcode == WS_OPCODE_PONG;
 }
 
-// ---- 2. Frame Header Structure and Invariants ------------------------------
+// ---- Frame Header Structure and Invariants ------------------------------
 
 struct WsFrameHeader {
     fin:         bool  = true,
@@ -534,7 +534,7 @@ fn encode_ws_frame_compressed<B>(
     }
 }
 
-// ---- 3. Handshake Engine (RFC 6455 Section 4.2.2 & RFC 8441) ---------------
+// ---- Handshake Engine (RFC 6455 Section 4.2.2 & RFC 8441) ---------------
 
 // Fast-path template blocks for 24-byte RFC 6455 client key hashing (uWebSockets WebSocketHandshake pattern).
 // Block 1: 24 bytes client key + 36 bytes GUID + 0x80 padding + 3 zero bytes = 64 bytes.
@@ -626,7 +626,7 @@ fn generate_websocket_key<B>(random_16: const u8[16]&, out: B&) {
     core::base64_encode(random_16[..], out);
 }
 
-// ---- 4. Close Frame Helpers (RFC 6455 Section 5.5.1) -----------------------
+// ---- Close Frame Helpers (RFC 6455 Section 5.5.1) -----------------------
 
 // Encodes a Close frame payload (2-byte status code + optional UTF-8 reason)
 fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
@@ -684,7 +684,7 @@ fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     return status_code, reason, true;
 }
 
-// ---- 5. High-Level Ergonomic WebSocket Client Session -----------------------
+// ---- High-Level Ergonomic WebSocket Client Session -----------------------
 
 // Backpressure and Send Status Codes (uWebSockets pattern)
 enum WsSendStatus {
@@ -1216,7 +1216,7 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
     ws.frag_buffer.clear();
 }
 
-// ---- 6. High-Level Message Dispatcher & Server Upgrade ---------------------
+// ---- High-Level Message Dispatcher & Server Upgrade ---------------------
 
 struct WsMessage {
     opcode:       u8          = WS_OPCODE_TEXT,
@@ -1844,7 +1844,7 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     return true;
 }
 
-// ---- 7. Bootstrapping WebSockets with HTTP/2 (RFC 8441) ---------------------
+// ---- Bootstrapping WebSockets with HTTP/2 (RFC 8441) ---------------------
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 8441 WebSocket Extended CONNECT request
 fn is_h2_websocket_request(req: const Request&) -> bool {
@@ -1950,7 +1950,7 @@ fn is_h2_websocket_response(res: const Response&) -> bool {
     return res.status_code == 200;
 }
 
-// ---- 12. RFC 9220 Bootstrapping WebSockets with HTTP/3 ---------------------
+// ---- RFC 9220 Bootstrapping WebSockets with HTTP/3 ---------------------
 
 // Formats an outbound RFC 9220 WebSocket Extended CONNECT Request for HTTP/3
 fn format_h3_websocket_request(

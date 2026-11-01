@@ -20,7 +20,7 @@ const HMAC_SHA512_MAC_LEN: i64 = 64;
 // Default claim validation clock skew leeway (seconds)
 const DEFAULT_JWT_LEEWAY_SECONDS: i64 = 60;
 
-// ---- 1. JWT / JWS Algorithm & Error Models ----------------------------------
+// ---- JWT / JWS Algorithm & Error Models ----------------------------------
 
 enum JwtAlg {
     Unspecified, // Omitted in key/options (RFC 7517 §4.4)
@@ -98,7 +98,7 @@ fn jwt_error_to_string(err: JwtError) -> const u8[:] {
     };
 }
 
-// ---- 2. JWT Header Model & Parser -------------------------------------------
+// ---- JWT Header Model & Parser -------------------------------------------
 
 struct CritParam {
     name: u8[..32] = [],
@@ -326,7 +326,7 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
     return json::finish(reader) && !had_error && seen_alg;
 }
 
-// ---- 3. JWT Claims Model & Parser -------------------------------------------
+// ---- JWT Claims Model & Parser -------------------------------------------
 
 struct JwtClaimItem {
     key:      u8[..64]  = [],
@@ -880,7 +880,7 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     return json::finish(reader) && !had_error;
 }
 
-// ---- 4. JWT Validation Options ----------------------------------------------
+// ---- JWT Validation Options ----------------------------------------------
 
 struct JwtValidationOptions {
     expected_alg:      JwtAlg         = JwtAlg.HS256,
@@ -921,7 +921,7 @@ fn add_supported_crit(opts: JwtValidationOptions&, name: const u8[:]) -> bool {
     return true;
 }
 
-// ---- 5. JWS Signing Pipeline (HMAC & Ed25519) -------------------------------
+// ---- JWS Signing Pipeline (HMAC & Ed25519) -------------------------------
 
 // Serializes Header and Claims into Base64URL-encoded signing input: `<hdr_b64>.<clm_b64>`
 fn build_jwt_signing_input<B>(
@@ -1005,7 +1005,7 @@ fn sign_jwt_eddsa<B>(
     return true;
 }
 
-// ---- 6. JWT Verification & Claim Validation ---------------------------------
+// ---- JWT Verification & Claim Validation ---------------------------------
 
 // Hard bounds on raw token and component sizes to prevent parser DoS and memory exhaustion
 const MAX_JWT_TOKEN_LEN:       i64 = 8192;

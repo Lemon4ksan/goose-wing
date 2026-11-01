@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. RFC 9211 Cache-Status Model -----------------------------------------
+// ---- RFC 9211 Cache-Status Model -----------------------------------------
 
 struct CacheStatusEntry {
     cache_name: u8[..64]  = [],
@@ -23,7 +23,7 @@ struct CacheStatusEntry {
     detail:     u8[..128] = [],
 }
 
-// ---- 2. RFC 9209 Proxy-Status Model -----------------------------------------
+// ---- RFC 9209 Proxy-Status Model -----------------------------------------
 
 struct ProxyStatusEntry {
     proxy_name:      u8[..64]  = [],
@@ -33,7 +33,7 @@ struct ProxyStatusEntry {
     received_status: i32       = 0,
 }
 
-// ---- 3. Diagnostics Parser Helpers ------------------------------------------
+// ---- Diagnostics Parser Helpers ------------------------------------------
 
 // Skips leading whitespace and comma delimiters.
 // Advances `idx` past the skipped bytes.
@@ -171,7 +171,7 @@ fn read_status_param(raw: const u8[:], idx: i64&) -> const u8[:], const u8[:], b
     return param_name, param_val, true;
 }
 
-// ---- 4. RFC 9211 Cache-Status Parser and Formatter --------------------------
+// ---- RFC 9211 Cache-Status Parser and Formatter --------------------------
 
 fn apply_cache_status_flags(entry: CacheStatusEntry&, name: const u8[:]) -> bool {
     if core::eq_ascii_fold(name, "hit") {
@@ -294,7 +294,7 @@ fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
     format_cache_status_meta(entry, out);
 }
 
-// ---- 5. RFC 9209 Proxy-Status Parser and Formatter --------------------------
+// ---- RFC 9209 Proxy-Status Parser and Formatter --------------------------
 
 fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: const u8[:]) {
     if core::eq_ascii_fold(name, "error") {

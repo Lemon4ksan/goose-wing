@@ -8,7 +8,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. frame types (rfc 9113 section 6 & rfc 9218 section 7.1) -------------
+// ---- frame types (rfc 9113 section 6 & rfc 9218 section 7.1) -------------
 
 const FRAME_DATA:            u8 = 0x00;
 const FRAME_HEADERS:         u8 = 0x01;
@@ -24,7 +24,7 @@ const FRAME_ALTSVC:          u8 = 0x0A; // RFC 7838 Section 4
 const FRAME_ORIGIN:          u8 = 0x0C; // RFC 8336 Section 2
 const FRAME_PRIORITY_UPDATE: u8 = 0x10; // RFC 9218 Section 7.1
 
-// ---- 2. frame flags (rfc 9113 section 4.1) ----------------------------------
+// ---- frame flags (rfc 9113 section 4.1) ----------------------------------
 
 const FLAG_END_STREAM:  u8 = 0x01;
 const FLAG_ACK:         u8 = 0x01;
@@ -32,7 +32,7 @@ const FLAG_END_HEADERS: u8 = 0x04;
 const FLAG_PADDED:      u8 = 0x08;
 const FLAG_PRIORITY:    u8 = 0x20;
 
-// ---- 3. error codes (rfc 9113 section 7) ------------------------------------
+// ---- error codes (rfc 9113 section 7) ------------------------------------
 
 const ERR_NO_ERROR:            u32 = 0x00;
 const ERR_PROTOCOL_ERROR:      u32 = 0x01;
@@ -49,7 +49,7 @@ const ERR_ENHANCE_YOUR_CALM:   u32 = 0x0B;
 const ERR_INADEQUATE_SECURITY: u32 = 0x0C;
 const ERR_HTTP_1_1_REQUIRED:   u32 = 0x0D;
 
-// ---- 4. settings identifiers (rfc 9113 section 6.5.2 & rfc 9218) -----------
+// ---- settings identifiers (rfc 9113 section 6.5.2 & rfc 9218) -----------
 
 const SETTING_HEADER_TABLE_SIZE:      u16 = 0x01; // default 4096
 const SETTING_ENABLE_PUSH:            u16 = 0x02; // default 1
@@ -66,7 +66,7 @@ let H2_CLIENT_PREFACE: const u8[24] = [
     '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n',
 ];
 
-// ---- 5. 9-byte frame header -------------------------------------------------
+// ---- 9-byte frame header -------------------------------------------------
 
 struct FrameHeader {
     length:     u32 = 0,  // 24-bit big-endian unsigned
@@ -204,7 +204,7 @@ fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -
     }
 }
 
-// ---- 6. payload extractors & padding validation ----------------------------
+// ---- payload extractors & padding validation ----------------------------
 
 // Strips PADDED flag length byte and trailing padding octets from frame payload.
 //
@@ -279,7 +279,7 @@ fn extract_headers_frame_payload(
     return raw, ERR_NO_ERROR;
 }
 
-// ---- 7. settings parameter validation --------------------------------------
+// ---- settings parameter validation --------------------------------------
 
 // Validates an HTTP/2 SETTINGS parameter bounds (RFC 9113 Section 6.5.2 & RFC 9218 Section 5.1).
 fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool = false) -> u32 {
@@ -308,7 +308,7 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
     return ERR_NO_ERROR;
 }
 
-// ---- 8. rfc 9218 extensible prioritization (urgency & incremental) ---------
+// ---- rfc 9218 extensible prioritization (urgency & incremental) ---------
 
 // Parses PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
 // Returns (prioritized_stream_id, PriorityParam, error_code).

@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. PKCE Constants -------------------------------------------------------
+// ---- PKCE Constants -------------------------------------------------------
 
 const PKCE_METHOD_S256:  const u8[:] = "S256";
 const PKCE_METHOD_PLAIN: const u8[:] = "plain";
@@ -16,7 +16,7 @@ const PKCE_METHOD_PLAIN: const u8[:] = "plain";
 const PKCE_MIN_VERIFIER_LEN: i64 = 43;
 const PKCE_MAX_VERIFIER_LEN: i64 = 128;
 
-// ---- 2. PKCE Challenge Pair Model -------------------------------------------
+// ---- PKCE Challenge Pair Model -------------------------------------------
 
 struct PkcePair {
     verifier:  u8[..128] = [],
@@ -170,7 +170,7 @@ fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> 
     return pair, true;
 }
 
-// ---- 3. OAuth 2.1 & RFC 9700 Security BCP Enforcement -----------------------
+// ---- OAuth 2.1 & RFC 9700 Security BCP Enforcement -----------------------
 
 // Validates whether code_challenge conforms to OAuth 2.1 Section 7.6.1 and RFC 9700 Section 2.1.1.
 // Strictly mandates S256 and forbids the legacy plain transformation.

@@ -10,7 +10,7 @@ import core from "..";
 import .record;
 import .hpke;
 
-// ---- 1. ECH Constants & Identifiers -----------------------------------------
+// ---- ECH Constants & Identifiers -----------------------------------------
 
 const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9460 & ECH draft-13/14+
 
@@ -20,7 +20,7 @@ const ECH_CLIENT_INNER: u8 = 1;
 // Supported ECH version (draft-ietf-tls-esni-13 / RFC 9460)
 const ECH_VERSION_DRAFT13: u16 = 0xFE0D;
 
-// ---- 2. Data Structures ----------------------------------------------------
+// ---- Data Structures ----------------------------------------------------
 
 struct EchCipherSuite {
     kdf_id:  u16 = HPKE_KDF_HKDF_SHA256,
@@ -53,7 +53,7 @@ struct EchClientState {
     retry_configs:   u8[..512]      = [],
 }
 
-// ---- 3. ECHConfig Parser (RFC 9460 Section 4) ------------------------------
+// ---- ECHConfig Parser (RFC 9460 Section 4) ------------------------------
 
 // Reads cipher suites list from ECH contents cursor.
 //
@@ -217,7 +217,7 @@ fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
     return cs.aead_id == HPKE_AEAD_AES_128_GCM || cs.aead_id == HPKE_AEAD_CHACHA20_POLY1305;
 }
 
-// ---- 4. Selection and Matching ----------------------------------------------
+// ---- Selection and Matching ----------------------------------------------
 
 // Selects the first compatible ECHConfig and cipher suite supporting X25519 & HKDF-SHA256.
 fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: EchCipherSuite&) -> bool {
@@ -241,7 +241,7 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
     return false;
 }
 
-// ---- 5. ClientHelloInner Padding & Encryption ------------------------------
+// ---- ClientHelloInner Padding & Encryption ------------------------------
 
 // Computes RFC 9460 / ECH draft-13 padding for ClientHelloInner.
 // Pads inner ClientHello to hide exact length of real SNI and extensions.

@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. TLS 1.3 Alert Codes (RFC 8446 Section 6) ---------------------------
+// ---- TLS 1.3 Alert Codes (RFC 8446 Section 6) ---------------------------
 
 enum TlsAlert {
     CloseNotify,
@@ -143,7 +143,7 @@ fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
     return level, alert, is_fatal, true;
 }
 
-// ---- 2. Zero-Copy Parsers (ByteCursor & ByteBuilder) -------------------------
+// ---- Zero-Copy Parsers (ByteCursor & ByteBuilder) -------------------------
 
 struct ByteCursor {
     buf: const u8[:] = [],
@@ -344,7 +344,7 @@ fn finish_u24_prefix(b: ByteBuilder&) -> bool {
     return true;
 }
 
-// ---- 3. TLS Record Layer Framing & Invariants (RFC 8446 Section 5) ---------
+// ---- TLS Record Layer Framing & Invariants (RFC 8446 Section 5) ---------
 
 const RECORD_BUFSIZE_IN:         i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
 const RECORD_BUFSIZE_OUT:        i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
@@ -629,7 +629,7 @@ fn check_change_cipher_spec_record(
     return TlsAlert.CloseNotify;
 }
 
-// ---- 4. QUIC Crypto Gateway & Header Protection (RFC 9001) ------------------
+// ---- QUIC Crypto Gateway & Header Protection (RFC 9001) ------------------
 
 enum QuicEncryptionLevel {
     Initial,     // ssl_encryption_initial (0)

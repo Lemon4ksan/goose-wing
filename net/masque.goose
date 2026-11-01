@@ -7,7 +7,7 @@ namespace wing;
 
 import std;
 
-// ---- 1. Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
+// ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
 const CAPSULE_DATAGRAM:            u64 = 0x00;        // RFC 9297 Section 3.5 (DATAGRAM Capsule)
 const CAPSULE_ADDRESS_ASSIGN:      u64 = 0x01;        // RFC 9484 Section 4.7.1 & 12.4
@@ -34,7 +34,7 @@ struct HttpCapsule {
     header_len:   u64         = 0,
 }
 
-// ---- 2. Capsule Codec (RFC 9297 Section 3.1) -------------------------------
+// ---- Capsule Codec (RFC 9297 Section 3.1) -------------------------------
 
 // Parses an HTTP Capsule header and value from wire stream (RFC 9297 §3.1).
 // Capsule format: Type (VarInt) || Length (VarInt) || Value (bytes)
@@ -96,7 +96,7 @@ fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
     return is_capsule_protocol_negotiated(val);
 }
 
-// ---- 3. HTTP Datagrams (RFC 9297 Section 2) --------------------------------
+// ---- HTTP Datagrams (RFC 9297 Section 2) --------------------------------
 
 // Encodes an HTTP Datagram payload for QUIC DATAGRAM frame (RFC 9297 Section 2.1):
 // Format: Quarter Stream ID (VarInt) || Context ID (VarInt) || HTTP Datagram Payload
@@ -123,7 +123,7 @@ fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
     return q_id, ctx_id, payload, true;
 }
 
-// ---- 4. MASQUE CONNECT-UDP (RFC 9298) --------------------------------------
+// ---- MASQUE CONNECT-UDP (RFC 9298) --------------------------------------
 
 // Formats a MASQUE URI template path for target host and port (RFC 9298 Section 2):
 // e.g. `/.well-known/masque/udp/1.1.1.1/53/`
@@ -195,7 +195,7 @@ fn parse_connect_udp_datagram(capsule_payload: const u8[:]) -> u64, const u8[:],
     return context_id, packet, true;
 }
 
-// ---- 5. MASQUE CONNECT-IP (RFC 9484) ---------------------------------------
+// ---- MASQUE CONNECT-IP (RFC 9484) ---------------------------------------
 
 struct IpAddressRequest {
     request_id:   u64      = 0,
@@ -382,7 +382,7 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     return route, false;
 }
 
-// ---- 6. MASQUE Tunnel Session Manager ---------------------------------------
+// ---- MASQUE Tunnel Session Manager ---------------------------------------
 
 enum MasqueTunnelState {
     Idle,

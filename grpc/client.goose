@@ -15,7 +15,7 @@ import client.request;
 import client.response;
 import client.client;
 
-// ---- 1. gRPC Request & Response Models -------------------------------------
+// ---- gRPC Request & Response Models -------------------------------------
 
 struct GrpcCallConfig {
     service:         u8[..128]          = [],
@@ -46,7 +46,7 @@ fn is_grpc_success(res: const GrpcResponse&) -> bool {
     return res.status == GrpcStatusCode.Ok;
 }
 
-// ---- 2. Header and Request Builders ----------------------------------------
+// ---- Header and Request Builders ----------------------------------------
 
 // Builds a low-level HeaderMap for native HTTP/2 or HTTP/3 framing.
 fn build_grpc_request_headers(
@@ -153,7 +153,7 @@ fn build_grpc_http_request(
     }
 }
 
-// ---- 3. Unary Response Parser ----------------------------------------------
+// ---- Unary Response Parser ----------------------------------------------
 
 // Parses a unary gRPC or gRPC-Web response from headers, trailers, and body bytes.
 //
@@ -225,7 +225,7 @@ fn parse_grpc_unary_response(
     return false;
 }
 
-// ---- 4. High-Level RPC Invocation via Client -------------------------------
+// ---- High-Level RPC Invocation via Client -------------------------------
 
 // Parses a numeric gRPC status code from string.
 //
@@ -327,7 +327,7 @@ fn grpc_unary_call(
     return true;
 }
 
-// ---- 5. Streaming RPC Client Session (Bidi & Server Streaming) --------------
+// ---- Streaming RPC Client Session (Bidi & Server Streaming) --------------
 
 struct GrpcClientStreamOptions {
     is_web:          bool = false,

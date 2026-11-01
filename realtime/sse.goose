@@ -13,7 +13,7 @@ import std;
 import client.request;
 import client.response;
 
-// ---- 1. SSE Event Model ----------------------------------------------------
+// ---- SSE Event Model ----------------------------------------------------
 
 struct SseEvent {
     event:    u8[..64]   = [],  // Event type, default "message"
@@ -34,7 +34,7 @@ struct SseParser {
     bom_checked:   bool       = false,
 }
 
-// ---- 2. Line Dispatch and Event Dispatch (W3C Section 6) -------------------
+// ---- Line Dispatch and Event Dispatch (W3C Section 6) -------------------
 
 // Parses an SSE retry milliseconds field value.
 //
@@ -191,7 +191,7 @@ fn sse_flush<E>(p: SseParser&, out_events: E&) {
     sse_process_line(p, out_events);
 }
 
-// ---- 3. SSE Serializer -----------------------------------------------------
+// ---- SSE Serializer -----------------------------------------------------
 
 fn sse_clean_token_len(s: const u8[:]) -> i64 {
     for i in s.len {
@@ -260,7 +260,7 @@ fn sse_format_event<B>(
     out.push('\n');
 }
 
-// ---- 4. High-Level Ergonomic SSE Subscription ------------------------------
+// ---- High-Level Ergonomic SSE Subscription ------------------------------
 
 struct SseSubscription {
     parser:    SseParser = SseParser { .. },

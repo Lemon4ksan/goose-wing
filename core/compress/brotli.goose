@@ -17,7 +17,7 @@ import std;
 import core.compress.deflate;
 import core.compress.brotli_dict;
 
-// ---- 1. RFC 7932 Constants and Lookups ---------------------------------------
+// ---- RFC 7932 Constants and Lookups ---------------------------------------
 
 const BROTLI_MIN_WINDOW_BITS: u32 = 10;
 const BROTLI_MAX_WINDOW_BITS: u32 = 24;
@@ -72,7 +72,7 @@ const CL_CODE_SYMBOLS: u8[6] = [0, 4, 3, 2, 1, 5];
 const CL_CODE_LENS:    u8[6] = [2, 2, 2, 3, 4, 4];
 const CL_CODE_BITS:    u8[6] = [0, 1, 2, 3, 7, 15]; // LSB-first values
 
-// ---- 2. Zero-Heap Bit Reader and Bit Writer ----------------------------------
+// ---- Zero-Heap Bit Reader and Bit Writer ----------------------------------
 
 struct BrotliBitReader {
     src:       const u8[:] = "",
@@ -160,7 +160,7 @@ fn brotli_write_byte_align<B>(w: BrotliBitWriter&, out: B&) {
     }
 }
 
-// ---- 3. Canonical Huffman Table with Fast 8-bit Lookahead -------------------
+// ---- Canonical Huffman Table with Fast 8-bit Lookahead -------------------
 
 struct BrotliHuffmanTable {
     count:         i32[16]  = [0; 16],
@@ -537,7 +537,7 @@ fn read_brotli_prefix_code(
     return read_complex_prefix_code(r, hskip, alphabet_size, table);
 }
 
-// ---- 4. Distance Calculation (RFC 7932 Section 4) ----------------------------
+// ---- Distance Calculation (RFC 7932 Section 4) ----------------------------
 
 // Decodes a Brotli distance code using distance parameters and ring buffer.
 //
@@ -617,7 +617,7 @@ fn decode_brotli_distance(
     return dist;
 }
 
-// ---- 5. Level 0 and Level 1 Brotli Encoders ----------------------------------
+// ---- Level 0 and Level 1 Brotli Encoders ----------------------------------
 
 // Emits an authentic RFC 7932 uncompressed stream.
 fn emit_brotli_stream_header<B>(w: BrotliBitWriter&, out: B&) {
@@ -678,7 +678,7 @@ fn brotli_compress<B>(src: const u8[:], out: B&, level: i32 = 0) -> bool {
     return true;
 }
 
-// ---- 6. Main RFC 7932 Brotli Decompressor -----------------------------------
+// ---- Main RFC 7932 Brotli Decompressor -----------------------------------
 
 // Decodes a variable-length unsigned 8-bit integer from the bitstream.
 //

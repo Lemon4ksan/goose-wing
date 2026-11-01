@@ -9,14 +9,14 @@ namespace internal;
 
 import std;
 
-// ---- 1. integer math helpers & cube root ------------------------------------
+// ---- integer math helpers & cube root ------------------------------------
 
 // Computes floor(cbrt(val)) using integer binary search up to 2,642,245.
 fn int_cbrt(val: u64) -> u64 {
     guard val > 0 else { return 0; }
-    var low: u64 = 1;
+    var low:  u64 = 1;
     var high: u64 = 2642245; // 2_642_245^3 = 18_446_742_000_000_000_000 <= u64::MAX
-    var ans: u64 = 1;
+    var ans:  u64 = 1;
 
     while low <= high {
         let mid = (low + high) / 2;
@@ -31,13 +31,13 @@ fn int_cbrt(val: u64) -> u64 {
     return ans;
 }
 
-// ---- 2. user-space leaky bucket pacer (picoquic model) ----------------------
+// ---- user-space leaky bucket pacer (picoquic model) ----------------------
 
 struct Pacer {
-    pacing_rate_bps: u64 = 10000000, // 10 Mbps initial default
-    bucket_balance_us: i64 = 0,
+    pacing_rate_bps:     u64 = 10000000, // 10 Mbps initial default
+    bucket_balance_us:   i64 = 0,
     last_pacing_time_us: u64 = 0,
-    burst_allowance_us: i64 = 20000,     // 20 ms max burst allowance
+    burst_allowance_us:  i64 = 20000,    // 20 ms max burst allowance
 }
 
 fn new_pacer(initial_rate_bps: u64 = 10000000) -> Pacer {
@@ -77,7 +77,7 @@ fn pacer_can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> bool, u64 {
     return false, delay_us;
 }
 
-// ---- 3. bbrv2 / bbrv3 state machine (draft-ietf-ccwg-bbr-06) ----------------
+// ---- bbrv2 / bbrv3 state machine (draft-ietf-ccwg-bbr-06) ----------------
 
 enum BbrMode {
     Startup,
@@ -89,25 +89,25 @@ enum BbrMode {
     ProbeRtt,
 }
 
-const BBR_BETA_NUM: u64 = 70;    // 0.7 inflight reduction on congestion
-const BBR_BETA_DENOM: u64 = 100;
+const BBR_BETA_NUM:       u64 = 70; // 0.7 inflight reduction on congestion
+const BBR_BETA_DENOM:     u64 = 100;
 const BBR_MIN_CWND_BYTES: u64 = 4 * 1200; // 4 * MSS
 
 struct BbrState {
-    mode: BbrMode = BbrMode.Startup,
-    pacer: Pacer = Pacer {},
-    cwnd_bytes: u64 = 10 * 1200, // Initial cwnd (RFC 9002 Sec 7.2)
-    bw_hi_bps: u64 = 0,
-    bw_lo_bps: u64 = 0,
-    inflight_hi_bytes: u64 = 0xFFFFFFFFFFFFFFFF,
-    inflight_lo_bytes: u64 = 0xFFFFFFFFFFFFFFFF,
-    min_rtt_us: u64 = 0xFFFFFFFFFFFFFFFF,
-    min_rtt_stamp_us: u64 = 0,
-    probe_rtt_done_stamp_us: u64 = 0,
-    probe_rtt_round_done: bool = false,
-    cycle_index: u8 = 0,
-    ecn_alpha_scaled: u64 = 0, // EWMA scaled by 1024
-    app_limited: bool = false,
+    mode:                    BbrMode = BbrMode.Startup,
+    pacer:                   Pacer   = Pacer {},
+    cwnd_bytes:              u64     = 10 * 1200, // Initial cwnd (RFC 9002 Sec 7.2)
+    bw_hi_bps:               u64     = 0,
+    bw_lo_bps:               u64     = 0,
+    inflight_hi_bytes:       u64     = 0xFFFFFFFFFFFFFFFF,
+    inflight_lo_bytes:       u64     = 0xFFFFFFFFFFFFFFFF,
+    min_rtt_us:              u64     = 0xFFFFFFFFFFFFFFFF,
+    min_rtt_stamp_us:        u64     = 0,
+    probe_rtt_done_stamp_us: u64     = 0,
+    probe_rtt_round_done:    bool    = false,
+    cycle_index:             u8      = 0,
+    ecn_alpha_scaled:        u64     = 0, // EWMA scaled by 1024
+    app_limited:             bool    = false,
 }
 
 fn new_bbr_state() -> BbrState {
@@ -152,7 +152,7 @@ fn bbr_check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
 // Updates pacing rate and cwnd according to active BBR state.
 fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
     let eff_bw = if bbr.bw_hi_bps > 0 { bbr.bw_hi_bps } else { 10000000 };
-    var gain_num: u64 = 1000;
+    var gain_num:   u64 = 1000;
     var gain_denom: u64 = 1000;
 
     match bbr.mode {
@@ -203,11 +203,11 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
 
 // Handles packet loss (> 2%) and DCTCP/L4S ECN congestion signals.
 fn bbr_on_congestion_signal(
-    bbr: BbrState&,
-    bytes_in_flight: u64,
-    loss_bytes: u64,
+    bbr:               BbrState&,
+    bytes_in_flight:   u64,
+    loss_bytes:        u64,
     total_acked_bytes: u64,
-    ecn_ce_count: u64,
+    ecn_ce_count:      u64,
     new_acked_packets: u64,
 ) {
     var has_loss_signal = false;
@@ -262,15 +262,15 @@ fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
     bbr_update_pacing_and_cwnd(bbr);
 }
 
-// ---- 4. cubic congestion control (rfc 9438) & app-limited freeze -------------
+// ---- cubic congestion control (rfc 9438) & app-limited freeze -------------
 
 struct CubicState {
-    cwnd_segments: u64 = 10,
-    w_max_segments: u64 = 10,
-    epoch_start_us: u64 = 0,
-    k_ms: u64 = 0,
-    app_limited: bool = false,
-    last_update_us: u64 = 0,
+    cwnd_segments:  u64  = 10,
+    w_max_segments: u64  = 10,
+    epoch_start_us: u64  = 0,
+    k_ms:           u64  = 0,
+    app_limited:    bool = false,
+    last_update_us: u64  = 0,
 }
 
 // Computes K = cbrt(w_max * beta / C) in milliseconds (RFC 9438 Section 4.1).
@@ -283,11 +283,11 @@ fn cubic_compute_k(w_max: u64) -> u64 {
 
 // Updates CUBIC window with app-limited freeze (draft-ietf-ccwg-ratelimited-increase-11).
 fn cubic_on_ack(
-    cubic: CubicState&,
-    now_us: u64,
-    rtt_us: u64,
+    cubic:           CubicState&,
+    now_us:          u64,
+    rtt_us:          u64,
     bytes_in_flight: u64,
-    mss_bytes: u64 = 1200,
+    mss_bytes:       u64 = 1200,
 ) -> u64 {
     let cur_cwnd_bytes = cubic.cwnd_segments * mss_bytes;
     // App-limited check: pipe utilization < 75%

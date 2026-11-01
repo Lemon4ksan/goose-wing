@@ -12,7 +12,7 @@ import std;
 import client.request;
 import http.headers;
 
-// ---- 1. Interceptor Scope & Kinds -------------------------------------------
+// ---- Interceptor Scope & Kinds -------------------------------------------
 
 enum InterceptorScope {
     Application,
@@ -37,7 +37,7 @@ enum LogLevel {
     Body,    // Headers + Body preview
 }
 
-// ---- 2. Configuration Models ------------------------------------------------
+// ---- Configuration Models ------------------------------------------------
 
 struct InterceptorEntry {
     scope:        InterceptorScope = InterceptorScope.Application,
@@ -69,7 +69,7 @@ struct InterceptorPipeline {
     record_logs: bool                  = true,
 }
 
-// ---- 3. Pipeline Builders ---------------------------------------------------
+// ---- Pipeline Builders ---------------------------------------------------
 
 fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> bool {
     guard pipeline.entries.len < pipeline.entries.cap else { return false; }
@@ -173,7 +173,7 @@ fn find_retry_policy(pipeline: const InterceptorPipeline&, out_retries: i32&, ou
     return false;
 }
 
-// ---- 4. Formatting Utilities ------------------------------------------------
+// ---- Formatting Utilities ------------------------------------------------
 
 // W3C TraceContext traceparent generator:
 // Format: 00-{32 hex trace_id}-{16 hex parent_id}-{2 hex flags}
@@ -270,7 +270,7 @@ fn log_network_interceptor_request(
     }
 }
 
-// ---- 5. Application Interceptor Hooks ---------------------------------------
+// ---- Application Interceptor Hooks ---------------------------------------
 
 fn apply_app_interceptors_request(
     pipeline: InterceptorPipeline&,
@@ -329,7 +329,7 @@ fn apply_app_interceptors_response(
     }
 }
 
-// ---- 6. Network Interceptor Hooks ------------------------------------------
+// ---- Network Interceptor Hooks ------------------------------------------
 
 fn apply_network_interceptors_request(
     pipeline:   InterceptorPipeline&,

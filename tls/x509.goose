@@ -10,7 +10,7 @@ import std;
 import core from "..";
 import .record;
 
-// ---- 1. ASN.1 Universal Tags and OIDs ---------------------------------------
+// ---- ASN.1 Universal Tags and OIDs ---------------------------------------
 
 const ASN1_TAG_BOOLEAN:          u8 = 0x01;
 const ASN1_TAG_INTEGER:          u8 = 0x02;
@@ -126,7 +126,7 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
     return false;
 }
 
-// ---- 2. Strict Canonical ASN.1 DER Parser -----------------------------------
+// ---- Strict Canonical ASN.1 DER Parser -----------------------------------
 
 // Parses ASN.1 length field with canonical DER rules (X.690 Section 10.1):
 // - Short form: 0..127 (1 byte)
@@ -262,7 +262,7 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
     return true;
 }
 
-// ---- 3. Date & Time Parser (UTCTime & GeneralizedTime) -----------------------
+// ---- Date & Time Parser (UTCTime & GeneralizedTime) -----------------------
 
 // Parses a 2-digit decimal integer from a slice at the given offset.
 //
@@ -375,7 +375,7 @@ fn parse_asn1_time(time_tag: u8, time_bytes: const u8[:]) -> i64, bool {
     return 0, false;
 }
 
-// ---- 4. Span16 and ParsedCert Descriptor (Zero Heap Allocations) ------------
+// ---- Span16 and ParsedCert Descriptor (Zero Heap Allocations) ------------
 
 struct Span16 {
     offset: u16 = 0,
@@ -759,7 +759,7 @@ fn read_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: Parse
     }
 }
 
-// ---- 5. Trust Anchors and RFC 5280 Verification -----------------------------
+// ---- Trust Anchors and RFC 5280 Verification -----------------------------
 
 struct TrustAnchor {
     subject_dn_sha256: u8[32] = [0; 32],
@@ -843,7 +843,7 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
     return TlsAlert.CloseNotify;
 }
 
-// ---- 6. RFC 6125 SAN (Subject Alternative Name) DNS Wildcard Matching ------
+// ---- RFC 6125 SAN (Subject Alternative Name) DNS Wildcard Matching ------
 
 // Matches a single DNS hostname against a SAN entry (RFC 6125 Section 6.4.3).
 // - Wildcard '*' is only permitted in the leftmost label.
@@ -1943,7 +1943,7 @@ fn unwrap_tls_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool {
     return c.buf, true;
 }
 
-// ---- 7. RFC 8446 Section 4.4.3 CertificateVerify Format & Curve Binding -----
+// ---- RFC 8446 Section 4.4.3 CertificateVerify Format & Curve Binding -----
 
 // Verifies that signature scheme is strictly bound to the public key curve/algorithm.
 // Enforces that legacy PKCS#1 v1.5 RSA schemes are rejected in TLS 1.3.

@@ -16,7 +16,7 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // Vary matching, CVE-2026-93750 & CVE-2026-93748 defenses, 304 header merge,
 // request collapsing, and unsafe method cascade invalidation.
 
-// ---- 1. Cache-Control Parsing & Delta-Seconds Clamping ----------------------
+// ---- Cache-Control Parsing & Delta-Seconds Clamping ----------------------
 
 fn test_cache_control_parsing_and_overflow(t: lit::T&) {
     t.run("Standard Boolean Directives & Bitmask Compression") { sub =>
@@ -131,7 +131,7 @@ fn test_cache_control_parsing_and_overflow(t: lit::T&) {
     };
 }
 
-// ---- 2. Mathematical Freshness Model & Clock Skew ---------------------------
+// ---- Mathematical Freshness Model & Clock Skew ---------------------------
 
 fn test_freshness_math_and_clock_skew(t: lit::T&) {
     t.run("RFC 9111 §4.2.3 Age Calculations") { sub =>
@@ -237,7 +237,7 @@ fn test_freshness_math_and_clock_skew(t: lit::T&) {
     };
 }
 
-// ---- 3. EntityTag (ETag) Validators -----------------------------------------
+// ---- EntityTag (ETag) Validators -----------------------------------------
 
 fn test_etag_validators(t: lit::T&) {
     t.run("ETag Parsing and Weak/Strong Comparisons") { sub =>
@@ -286,7 +286,7 @@ fn test_etag_validators(t: lit::T&) {
     };
 }
 
-// ---- 4. Vary Normalization & CVE-2026-93750 Defense -------------------------
+// ---- Vary Normalization & CVE-2026-93750 Defense -------------------------
 
 fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
     t.run("CVE-2026-93750: Vary: * Unconditional Hard Rejection") { sub =>
@@ -329,7 +329,7 @@ fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
     };
 }
 
-// ---- 5. CVE-2026-93748 Defense & Security Zeroing --------------------------
+// ---- CVE-2026-93748 Defense & Security Zeroing --------------------------
 
 fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
     t.run("CVE-2026-93748: Blocking max-stale on must-revalidate / s-maxage / security-zeroed") { sub =>
@@ -387,7 +387,7 @@ fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
     };
 }
 
-// ---- 6. Cache Transaction Lifecycle, 304 Merge & Sanitization ---------------
+// ---- Cache Transaction Lifecycle, 304 Merge & Sanitization ---------------
 
 fn test_cache_transaction_and_304_merge(t: lit::T&) {
     t.run("Lookup Miss -> Store -> Hit Lifecycle with Age Header") { sub =>
@@ -511,7 +511,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
     };
 }
 
-// ---- 7. RFC 9111 Special Behaviors & Cascade Invalidation -------------------
+// ---- RFC 9111 Special Behaviors & Cascade Invalidation -------------------
 
 fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     t.run("only-if-cached Returns 504 on Cache Miss and Stale") { sub =>
@@ -739,7 +739,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     };
 }
 
-// ---- 8. Single-Flight / Request Collapsing ---------------------------------
+// ---- Single-Flight / Request Collapsing ---------------------------------
 
 fn test_request_collapsing(t: lit::T&) {
     t.run("Single-Flight Writers Collapsing Concurrent Requests") { sub =>

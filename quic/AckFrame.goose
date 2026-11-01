@@ -10,7 +10,7 @@ import std;
 import core from "..";
 import .packet;
 
-// ---- 1. packet number spaces and data types (rfc 9002 section 6.2.1) -------
+// ---- packet number spaces and data types (rfc 9002 section 6.2.1) -------
 
 enum PnSpaceId {
     Initial,
@@ -77,7 +77,7 @@ const QUIC_LOSS_TIME_NUMERATOR:   u64 = 9;    // 9/8 kTimeThreshold (RFC 9002 Se
 const QUIC_LOSS_TIME_DENOMINATOR: u64 = 8;
 const QUIC_TIMER_GRANULARITY_US:  u64 = 1000; // 1 ms kGranularity
 
-// ---- 2. ack frame encoder & decoder (rfc 9000 section 19.3) -----------------
+// ---- ack frame encoder & decoder (rfc 9000 section 19.3) -----------------
 
 // Encodes an ACK or ACK_ECN frame into wire VarInt format.
 fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
@@ -230,7 +230,7 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
     return ack, true;
 }
 
-// ---- 3. optimistic ack (oack) validation & interval extraction ---------------
+// ---- optimistic ack (oack) validation & interval extraction ---------------
 
 // Validates ACK against sent state to defeat Optimistic ACK attacks (ANRW 2025).
 // Checks for forward-dated packet numbers, underflow, and descending consistency.
@@ -304,7 +304,7 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
     return true;
 }
 
-// ---- 4. rtt estimation (rfc 9002 section 5.3) --------------------------------
+// ---- rtt estimation (rfc 9002 section 5.3) --------------------------------
 
 inline fn rtt_abs_diff(a: u64, b: u64) -> u64 {
     return if a >= b { a - b } else { b - a };
@@ -347,7 +347,7 @@ fn update_rtt(
     rtt.smoothed_rtt_us = (7 * rtt.smoothed_rtt_us + adjusted_rtt) / 8;
 }
 
-// ---- 5. packet & time threshold loss detection (rfc 9002 section 6.1) -------
+// ---- packet & time threshold loss detection (rfc 9002 section 6.1) -------
 
 // Detects and removes lost packets in pn_space using packet and time thresholds.
 fn detect_lost_packets(
@@ -396,7 +396,7 @@ fn detect_lost_packets(
     return true;
 }
 
-// ---- 6. 5-priority probe timeout (pto) state machine (rfc 9002 a.8/a.9) -----
+// ---- 5-priority probe timeout (pto) state machine (rfc 9002 a.8/a.9) -----
 
 enum PtoTimerMode {
     None,

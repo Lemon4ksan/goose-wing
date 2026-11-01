@@ -9,7 +9,7 @@ import std;
 import grpc.constants;
 import http.headers;
 
-// ---- 1. Hex Helpers & Percent Codec for grpc-message ------------------------
+// ---- Hex Helpers & Percent Codec for grpc-message ------------------------
 
 inline fn grpc_hex_val(c: u8) -> i32 {
     if c >= '0' && c <= '9' { return c - '0'; }
@@ -59,7 +59,7 @@ fn decode_grpc_message<B>(encoded: const u8[:], out: B&) {
     }
 }
 
-// ---- 2. grpc-timeout Codec (Units: H, M, S, m, u, n) -----------------------
+// ---- grpc-timeout Codec (Units: H, M, S, m, u, n) -----------------------
 
 // Formats millisecond duration into standard gRPC timeout string.
 fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
@@ -119,7 +119,7 @@ fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
     return num * multiplier, true;
 }
 
-// ---- 3. Status Extraction from Headers & Trailers --------------------------
+// ---- Status Extraction from Headers & Trailers --------------------------
 
 // Extracts gRPC status and message from trailers (or headers in Trailers-Only responses).
 // Returns true if a wire grpc-status header was explicitly found.

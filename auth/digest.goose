@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. RFC 7616 & RFC 2617 Protocol Constants ------------------------------
+// ---- RFC 7616 & RFC 2617 Protocol Constants ------------------------------
 
 const DIGEST_ALGO_MD5:             const u8[:] = "MD5";
 const DIGEST_ALGO_MD5_SESS:        const u8[:] = "MD5-sess";
@@ -31,7 +31,7 @@ inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
         || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
 }
 
-// ---- 2. Digest Models -------------------------------------------------------
+// ---- Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
     realm:     u8[..128] = [],
@@ -50,7 +50,7 @@ struct DigestCredentials {
     password: u8[..128] = [],
 }
 
-// ---- 3. Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
+// ---- Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
 
 inline fn is_digest_key_char(b: u8) -> bool {
     return b != '=' && b != ' ' && b != '\t' && b != ',' && b != '\r' && b != '\n' && b != '"';
@@ -265,7 +265,7 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
     return chal, chal.valid;
 }
 
-// ---- 4. Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
+// ---- Digest Calculation (RFC 7616 Section 3.4 & 3.5) ---------------------
 
 // Computes MD5, SHA-256, or SHA-512-256 digest and returns formatted hexadecimal string.
 //

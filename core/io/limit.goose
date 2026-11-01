@@ -10,18 +10,18 @@ import core.io.types;
 import core.io.reader;
 
 struct LimitReader {
-    reader: SliceReader = SliceReader { .. },
-    limit_remaining: i64 = 0,
-    bytes_consumed: i64 = 0,
-    exceeded: bool = false,
+    reader:          SliceReader = SliceReader { .. },
+    limit_remaining: i64         = 0,
+    bytes_consumed:  i64         = 0,
+    exceeded:        bool        = false,
 }
 
 fn new_limit_reader(src: const u8[:], max_bytes: i64) -> LimitReader {
     return LimitReader {
-        reader: new_slice_reader(src),
+        reader:          new_slice_reader(src),
         limit_remaining: if max_bytes > 0 { max_bytes } else { 0 },
-        bytes_consumed: 0,
-        exceeded: false,
+        bytes_consumed:  0,
+        exceeded:        false,
     };
 }
 

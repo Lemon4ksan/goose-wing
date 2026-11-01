@@ -9,9 +9,9 @@ import core.math.bits;
 import core.math.arithmetic;
 
 const FNV1A_32_OFFSET: u32 = 0x811C9DC5;
-const FNV1A_32_PRIME: u32 = 0x01000193;
+const FNV1A_32_PRIME:  u32 = 0x01000193;
 const FNV1A_64_OFFSET: u64 = 0xCBF29CE484222325;
-const FNV1A_64_PRIME: u64 = 0x00000100000001B3;
+const FNV1A_64_PRIME:  u64 = 0x00000100000001B3;
 
 // Computes 32-bit FNV-1a hash over byte slice.
 inline fn fnv1a_32(data: const u8[:]) -> u32 {

@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. RFC 8305 and HEv3 normative constants ------------------------------
+// ---- RFC 8305 and HEv3 normative constants ------------------------------
 
 const HE_RESOLUTION_DELAY_MS:            i64 = 50;   // 50 ms DNS resolution delay (RD)
 const HE_FIRST_ADDRESS_FAMILY_COUNT:     i32 = 1;    // Step for address family interleaving
@@ -37,7 +37,7 @@ fn compute_effective_cad_ms(
     return core::ct_max_i64(clamped, HE_ABSOLUTE_FLOOR_CAD_MS);
 }
 
-// ---- 2. DNS query models and candidate classification ----------------------
+// ---- DNS query models and candidate classification ----------------------
 
 enum AddressFamily {
     IPv6,
@@ -102,7 +102,7 @@ fn new_dns_candidate(
     return c;
 }
 
-// ---- 3. RFC 6724 sorting & address interleaving ----------------------------
+// ---- RFC 6724 sorting & address interleaving ----------------------------
 
 // Interleaves candidate addresses enforcing First Address Family Count = 1 (IPv6_1 -> IPv4_1 -> IPv6_2 -> IPv4_2).
 fn interleave_candidates_he(
@@ -155,7 +155,7 @@ fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidat
     }
 }
 
-// ---- 4. Phase 1: DNS race task & 50 ms Resolution Delay (RD) ---------------
+// ---- Phase 1: DNS race task & 50 ms Resolution Delay (RD) ---------------
 
 struct DnsRaceTask {
     aaaa_status:      DnsQueryStatus             = DnsQueryStatus.Pending,
@@ -249,7 +249,7 @@ fn inject_late_dns_candidates(
     }
 }
 
-// ---- 5. Phase 3 & 4: AttemptManager, JobController & Last Resort -----------
+// ---- Phase 3 & 4: AttemptManager, JobController & Last Resort -----------
 
 enum AttemptState {
     Queued,

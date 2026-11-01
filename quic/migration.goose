@@ -11,7 +11,7 @@ import core from "..";
 import .packet;
 import .frames;
 
-// ---- 1. Path Validation States & Endpoint Representation -------------------
+// ---- Path Validation States & Endpoint Representation -------------------
 
 // RFC 9000 Section 8.2: Path Validation - States of path validation
 enum PathValidationState {
@@ -41,7 +41,7 @@ fn quic_endpoint_addr_eq(a: const QuicEndpointAddr&, b: const QuicEndpointAddr&)
     return a.port == b.port && a.ip[..] == b.ip[..];
 }
 
-// ---- 2. Path State Model ----------------------------------------------------
+// ---- Path State Model ----------------------------------------------------
 
 // RFC 9000 Section 9: Connection Migration - Single network path tracking structure
 struct QuicPath {
@@ -74,7 +74,7 @@ fn new_quic_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigr
     };
 }
 
-// ---- 3. Anti-Amplification Budget (RFC 9000 Section 8.1 & Section 9.3) -----
+// ---- Anti-Amplification Budget (RFC 9000 Section 8.1 & Section 9.3) -----
 
 // RFC 9000 Section 8.1: Address Validation during Connection Initiation - 3x anti-amplification budget
 inline fn path_amplification_limit(rx: u64) -> u64 {
@@ -90,7 +90,7 @@ fn path_can_send(path: const QuicPath&, bytes_to_send: u64) -> bool {
     return (path.bytes_sent + bytes_to_send) <= limit;
 }
 
-// ---- 4. Token Generation & Constant-Time Verification ----------------------
+// ---- Token Generation & Constant-Time Verification ----------------------
 
 // RFC 9000 Section 8.2.1: Initiating Path Validation - Generation of 8-byte unpredictable challenge token
 fn generate_path_challenge_token(rng_seed: u64&) -> u8[8] {
@@ -108,7 +108,7 @@ fn verify_path_response_token(expected: const u8[8]&, received: const u8[:]) -> 
     return core::ct_eq_bytes(expected[..], received);
 }
 
-// ---- 5. Migration State Machine Transitions (RFC 9000 Section 9) -----------
+// ---- Migration State Machine Transitions (RFC 9000 Section 9) -----------
 
 // RFC 9000 Section 9.1: Probing a New Path - Initiates path validation toward candidate address
 fn quic_migration_start_probing(

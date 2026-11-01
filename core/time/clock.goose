@@ -64,8 +64,8 @@ fn restart(watch: Stopwatch&) -> Duration {
 // - Anti-Overflow: deadline_after safely saturates at i64.max if dur would overflow clock_ns() + dur.
 // - Zero Timer Heap: expired() evaluates via a single CPU register comparison against clock_ns().
 struct Deadline {
-    target_mono_ns: i64 = 0,
-    has_deadline: bool = false,
+    target_mono_ns: i64  = 0,
+    has_deadline:   bool = false,
 }
 
 fn deadline_after(dur: Duration) -> Deadline {

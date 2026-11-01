@@ -13,7 +13,7 @@ import client.profile;
 import client.request;
 import client.response;
 
-// ---- 1. WebTransport & RFC 9221 Constants (draft-16) -------------------------
+// ---- WebTransport & RFC 9221 Constants (draft-16) -------------------------
 
 const WEBTRANSPORT_PROTOCOL:              const u8[:] = "webtransport";
 const SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64         = 0x2b603742;
@@ -30,7 +30,7 @@ const WEBTRANSPORT_BIDI_SIGNAL: u64 = 0x41;
 const WEBTRANSPORT_ERROR_FIRST: u64 = 0x52e4a40fa8db;
 const WEBTRANSPORT_ERROR_LAST:  u64 = 0x52e5ac983162;
 
-// ---- 2. WebTransport Models -------------------------------------------------
+// ---- WebTransport Models -------------------------------------------------
 
 struct WebTransportSession {
     session_id:        u64        = 0,
@@ -72,7 +72,7 @@ struct WebTransportStreamStopSending {
     error_code: u32 = 0,
 }
 
-// ---- 3. Varint Helper (RFC 9000 Section 16) ---------------------------------
+// ---- Varint Helper (RFC 9000 Section 16) ---------------------------------
 
 fn write_varint<B>(out: B&, val: u64) {
     if val <= 63 {
@@ -136,7 +136,7 @@ fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
     }
 }
 
-// ---- 4. Session Initiation (Extended CONNECT :protocol = webtransport) ------
+// ---- Session Initiation (Extended CONNECT :protocol = webtransport) ------
 
 // Formats an HTTP/3 Extended CONNECT request to open a WebTransport session
 fn format_webtransport_connect_request(
@@ -179,7 +179,7 @@ fn handle_webtransport_response(res: const Response&, session: WebTransportSessi
     return true;
 }
 
-// ---- 5. Stream Framing (draft-16 Section 4.1 & Section 4.2) -----------------
+// ---- Stream Framing (draft-16 Section 4.1 & Section 4.2) -----------------
 
 // Encodes a WebTransport unidirectional stream header:
 // Stream Type (0x54) || Session ID (varint)
@@ -247,7 +247,7 @@ fn decode_webtransport_bidi_stream_header(
     return true;
 }
 
-// ---- 6. Datagram Framing (draft-16 Section 5 & RFC 9221) ---------------------
+// ---- Datagram Framing (draft-16 Section 5 & RFC 9221) ---------------------
 
 // Encodes a WebTransport datagram (RFC 9297 / draft-ietf-webtrans-http3 §5):
 // Quarter Stream ID (varint = session_id / 4) || Context ID (varint = 0) || Datagram Payload
@@ -329,7 +329,7 @@ fn decode_quic_datagram_frame(
     return false;
 }
 
-// ---- 7. HTTP/3 Error Code Mapping (draft-16 Section 4.3) ---------------------
+// ---- HTTP/3 Error Code Mapping (draft-16 Section 4.3) ---------------------
 
 // Maps a 32-bit WebTransport application error code to HTTP/3 error code space,
 // skipping HTTP/3 GREASE code points (0x1f * N + 0x21).
@@ -351,7 +351,7 @@ fn http_code_to_webtransport_code(h3_err: u64) -> u32, bool {
     return app_err as u32, true;
 }
 
-// ---- 8. WebTransport Capsule Codecs (draft-16 Section 8 & RFC 9297) ----------
+// ---- WebTransport Capsule Codecs (draft-16 Section 8 & RFC 9297) ----------
 
 // Encodes a CLOSE_WEBTRANSPORT_SESSION capsule:
 // Capsule Type (varint 0x2843) || Length (varint: 4 + reason.len) || Error Code (4B BE) || Reason
@@ -489,7 +489,7 @@ fn decode_webtransport_stop_sending(
     return true;
 }
 
-// ---- 9. Session State Management --------------------------------------------
+// ---- Session State Management --------------------------------------------
 
 fn close_webtransport_session(session: WebTransportSession&, code: u32, reason: const u8[:]) {
     session.is_active = false;
@@ -507,7 +507,7 @@ fn is_webtransport_session_open(session: const WebTransportSession&) -> bool {
     return session.is_active && !session.is_draining;
 }
 
-// ---- 10. WebTransport Stream Demuxing & Session Routing ---------------------
+// ---- WebTransport Stream Demuxing & Session Routing ---------------------
 
 enum WebTransportStreamKind {
     Bidirectional,

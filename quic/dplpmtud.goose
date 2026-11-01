@@ -11,7 +11,7 @@ import core from "..";
 import .packet;
 import .frames;
 
-// ---- 1. PMTU Constants & Discovery State Enum (RFC 8899 Section 5.1) -------
+// ---- PMTU Constants & Discovery State Enum (RFC 8899 Section 5.1) -------
 
 // RFC 8899 Section 5.1: State Machine - DPLPMTUD state machine states
 enum DplpmtudState {
@@ -54,7 +54,7 @@ inline fn get_candidate_pmtu(idx: u32) -> u32 {
     return PMTU_ETHERNET;
 }
 
-// ---- 2. Probe Frame Generators (RFC 8899 Section 3) ------------------------
+// ---- Probe Frame Generators (RFC 8899 Section 3) ------------------------
 
 // RFC 8899 Section 3: Probe Packets - Generates padded PING probe frame
 //
@@ -80,7 +80,7 @@ fn generate_path_challenge_probe<B>(out: B&, data: const u8[8]&, target_size: u3
     return encode_padding_frame(out, pad_count);
 }
 
-// ---- 3. DPLPMTUD Controller & State Machine (RFC 8899 Section 5) -----------
+// ---- DPLPMTUD Controller & State Machine (RFC 8899 Section 5) -----------
 
 // RFC 8899 Section 5.2: Timers and Counters - DPLPMTUD discovery controller
 struct Dplpmtud {
@@ -88,11 +88,11 @@ struct Dplpmtud {
     // RFC 8899 Section 5.1: State Machine - Confirmed PMTU for current path
     current_pmtu: u32 = PMTU_BASE,
     // RFC 8899 Section 5.1: State Machine - Target size for next probe packet
-    probed_size: u32 = PMTU_BASE,
-    probe_idx: u32 = 0,
-    probe_count: u32 = 0,
-    max_probes: u32 = 3,
-    search_timer_ms: u64 = 0,
+    probed_size:        u32 = PMTU_BASE,
+    probe_idx:          u32 = 0,
+    probe_count:        u32 = 0,
+    max_probes:         u32 = 3,
+    search_timer_ms:    u64 = 0,
     search_interval_ms: u64 = 60000,
 }
 

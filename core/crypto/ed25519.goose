@@ -9,7 +9,7 @@ namespace core;
 
 import std;
 
-// ---- 1. Mathematical Constants & Base Point --------------------------------
+// ---- Mathematical Constants & Base Point --------------------------------
 
 // Twisted Edwards constant d = -121665 / 121666 (mod 2^255 - 19)
 let ED25519_D: const Fe10 = Fe10 {
@@ -41,7 +41,7 @@ let ED25519_L_WORDS: const u64[4] = [
     0x1000000000000000,
 ];
 
-// ---- 2. Extended Point Representation (X : Y : Z : T) -----------------------
+// ---- Extended Point Representation (X : Y : Z : T) -----------------------
 // Represents an affine point (X / Z, Y / Z) where X * Y = Z * T.
 // Neutral identity element is (0 : 1 : 1 : 0).
 
@@ -77,7 +77,7 @@ fn ed25519_base_point() -> EdPoint {
     };
 }
 
-// ---- 3. Field Arithmetic Modulo 2^255 - 19 ----------------------------------
+// ---- Field Arithmetic Modulo 2^255 - 19 ----------------------------------
 
 inline fn fe_one() -> Fe10 {
     return Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
@@ -146,7 +146,7 @@ fn fe_pow22523(z: Fe10) -> Fe10 {
     return fe_mul(t10, z);
 }
 
-// ---- 4. Extended Twisted Edwards Point Operations ---------------------------
+// ---- Extended Twisted Edwards Point Operations ---------------------------
 
 // Point Doubling: 2 * P1 on extended Edwards curve (4S + 4M).
 fn ed25519_point_double(p: EdPoint) -> EdPoint {
@@ -316,7 +316,7 @@ fn ed25519_scalarmult_base(scalar: const u8[32]&) -> EdPoint {
     return ed25519_scalarmult_ct(b, scalar);
 }
 
-// ---- 5. Scalar Arithmetic Modulo Group Order L -----------------------------
+// ---- Scalar Arithmetic Modulo Group Order L -----------------------------
 
 // Checks whether scalar S is >= group order L.
 fn sc_is_ge_l(s: const u8[32]&) -> bool {
@@ -415,7 +415,7 @@ fn sc_muladd(k: const u8[32]&, s: const u8[32]&, r: const u8[32]&) -> u8[32] {
     }
 
     // Carry propagation across 16-bit boundaries
-    var carry: u64 = 0;
+    var carry:     u64     = 0;
     var out_words: u16[32] = [0; 32];
     for i in 32 {
         let cur = acc[i] + carry;
@@ -435,10 +435,10 @@ fn sc_muladd(k: const u8[32]&, s: const u8[32]&, r: const u8[32]&) -> u8[32] {
     return sc_reduce(b64);
 }
 
-// ---- 6. Ed25519 Public API (RFC 8032) ---------------------------------------
+// ---- Ed25519 Public API (RFC 8032) ---------------------------------------
 
 struct Ed25519KeyPair {
-    seed: u8[32] = [0; 32],
+    seed:       u8[32] = [0; 32],
     public_key: u8[32] = [0; 32],
 }
 
@@ -460,7 +460,7 @@ fn ed25519_public_key(seed: const u8[32]&) -> u8[32] {
 fn ed25519_keypair(seed: const u8[32]&) -> Ed25519KeyPair {
     let pub_key = ed25519_public_key(seed);
     return Ed25519KeyPair {
-        seed: seed,
+        seed:       seed,
         public_key: pub_key,
     };
 }
@@ -470,7 +470,7 @@ fn ed25519_keypair(seed: const u8[32]&) -> Ed25519KeyPair {
 fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     let h = sha512(seed[..]);
 
-    var s: u8[32] = [0; 32];
+    var s:      u8[32] = [0; 32];
     var prefix: u8[32] = [0; 32];
     for i in 32 {
         s[i] = h[i];

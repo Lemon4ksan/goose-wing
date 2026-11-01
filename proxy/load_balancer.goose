@@ -23,32 +23,32 @@ enum UpstreamHealthState {
 }
 
 struct UpstreamTarget {
-    host: u8[..64] = [],
-    port: u16 = 80,
-    active_conns: i32 = 0,
-    weight: u16 = 1,
-    is_healthy: bool = true,
-    health_state: UpstreamHealthState = UpstreamHealthState.Up,
-    fails: i32 = 0,
-    successes: i32 = 0,
-    healthy_threshold: i32 = 2,
-    unhealthy_threshold: i32 = 3,
-    total_requests: u64 = 0,
+    host:                u8[..64]            = [],
+    port:                u16                 = 80,
+    active_conns:        i32                 = 0,
+    weight:              u16                 = 1,
+    is_healthy:          bool                = true,
+    health_state:        UpstreamHealthState = UpstreamHealthState.Up,
+    fails:               i32                 = 0,
+    successes:           i32                 = 0,
+    healthy_threshold:   i32                 = 2,
+    unhealthy_threshold: i32                 = 3,
+    total_requests:      u64                 = 0,
 }
 
 struct UpstreamCluster {
-    targets: UpstreamTarget[..16] = [],
-    policy: LbPolicy = LbPolicy.RoundRobin,
-    rr_index: i32 = 0,
-    max_fails: i32 = 3,
-    circuit_open: bool = false,
-    rng_state: u64 = 0x123456789abcdef0,
+    targets:      UpstreamTarget[..16] = [],
+    policy:       LbPolicy             = LbPolicy.RoundRobin,
+    rr_index:     i32                  = 0,
+    max_fails:    i32                  = 3,
+    circuit_open: bool                 = false,
+    rng_state:    u64                  = 0x123456789abcdef0,
 }
 
 fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 = 3) -> UpstreamCluster {
     return UpstreamCluster {
-        policy: policy,
-        max_fails: max_fails,
+        policy:       policy,
+        max_fails:    max_fails,
         circuit_open: false,
         ..
     };
@@ -59,8 +59,8 @@ fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, 
     guard host.len <= 64 else { return false; }
 
     var target = UpstreamTarget {
-        port: port,
-        weight: if weight > 0 { weight } else { 1 },
+        port:       port,
+        weight:     if weight > 0 { weight } else { 1 },
         is_healthy: true,
         ..
     };
@@ -114,7 +114,7 @@ fn select_round_robin(cluster: UpstreamCluster&, n: i32) -> i32, bool {
 
 // Finds healthy target with least active connections.
 fn find_least_conn_target(cluster: const UpstreamCluster&, n: i32) -> i32 {
-    var best_idx: i32 = NO_UPSTREAM_TARGET;
+    var best_idx:  i32 = NO_UPSTREAM_TARGET;
     var min_conns: i32 = 2147483647;
 
     for i in n {
@@ -291,9 +291,9 @@ fn set_upstream_probing(cluster: UpstreamCluster&, target_idx: i32) -> bool {
 
 // Configures target-specific consecutive healthy and unhealthy thresholds.
 fn set_target_health_thresholds(
-    cluster: UpstreamCluster&,
-    target_idx: i32,
-    healthy_thresh: i32,
+    cluster:          UpstreamCluster&,
+    target_idx:       i32,
+    healthy_thresh:   i32,
     unhealthy_thresh: i32,
 ) -> bool {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }

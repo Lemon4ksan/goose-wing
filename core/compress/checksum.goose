@@ -690,7 +690,7 @@ simd fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
 
         let blocks = s.len >> 4;
         if blocks > 0 {
-            var c: u32[16] = [0; 16];
+            var c:  u32[16] = [0; 16];
             var ps: u32[16] = [0; 16];
 
             while s.len >= 16 {
@@ -701,8 +701,8 @@ simd fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
                 s = s[16..];
             }
 
-            var sum_c: u64 = 0;
-            var sum_ps: u64 = 0;
+            var sum_c:      u64 = 0;
+            var sum_ps:     u64 = 0;
             var weighted_c: u64 = 0;
             for j in 16 {
                 sum_c += c[j];
@@ -772,7 +772,7 @@ inline fn xxh64_avalanche(hash: u64) -> u64 {
 // Computes standard 64-bit XXH64 hash with optional seed (default 0).
 fn xxh64(buf: const u8[:], seed: u64 = 0) -> u64 {
     let len = buf.len;
-    var h64: u64 = 0;
+    var h64:    u64 = 0;
     var offset: i64 = 0;
 
     if len >= 32 {

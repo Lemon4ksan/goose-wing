@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Policy Enumerations -------------------------------------------------
+// ---- Policy Enumerations -------------------------------------------------
 
 enum CoopPolicy {
     Unknown,
@@ -33,7 +33,7 @@ enum CorpPolicy {
     CrossOrigin,
 }
 
-// ---- 2. Context Model -------------------------------------------------------
+// ---- Context Model -------------------------------------------------------
 
 struct CrossOriginIsolationContext {
     coop:                     CoopPolicy = CoopPolicy.UnsafeNone,
@@ -42,7 +42,7 @@ struct CrossOriginIsolationContext {
     document_origin:          u8[..128]  = [],
 }
 
-// ---- 3. Policy Parsers ------------------------------------------------------
+// ---- Policy Parsers ------------------------------------------------------
 
 // Parses Cross-Origin-Opener-Policy header value (W3C HTML §7.2).
 //
@@ -116,7 +116,7 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     return s;
 }
 
-// ---- 4. Context Lifecycle & Subresource Verification ------------------------
+// ---- Context Lifecycle & Subresource Verification ------------------------
 
 // Updates isolation context from document response headers and computes crossOriginIsolated status
 fn update_isolation_context(

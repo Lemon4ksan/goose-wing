@@ -11,7 +11,7 @@ import client.request;
 import client.response;
 import http.headers;
 
-// ---- 1. RFC 9112 Chunked Transfer Framing -----------------------------------
+// ---- RFC 9112 Chunked Transfer Framing -----------------------------------
 
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
 fn encode_chunk<B>(data: const u8[:], out: B&) {
@@ -73,7 +73,7 @@ fn encode_chunked_payload<B>(
     }
 }
 
-// ---- 2. Chunk Stream Writer (for Chunked Uploads) ---------------------------
+// ---- Chunk Stream Writer (for Chunked Uploads) ---------------------------
 
 struct ChunkWriter {
     trailers: HeaderItem[..16] = [],
@@ -346,7 +346,7 @@ fn feed_chunked_stream<B>(
     return true, cursor;
 }
 
-// ---- 3. Incremental Stream Reader & Progress Tracking -----------------------
+// ---- Incremental Stream Reader & Progress Tracking -----------------------
 
 struct StreamProgress {
     bytes_processed: u64  = 0,

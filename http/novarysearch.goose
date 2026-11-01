@@ -10,7 +10,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. No-Vary-Search Model -----------------------------------------------
+// ---- No-Vary-Search Model -----------------------------------------------
 
 struct NoVarySearch {
     ignore_all_params: bool           = false, // `params` without argument
@@ -25,7 +25,7 @@ struct QueryParam {
     val: u8[..256] = [],
 }
 
-// ---- 2. Header Parser ------------------------------------------------------
+// ---- Header Parser ------------------------------------------------------
 
 // Reads a Structured Field item or inner list value for No-Vary-Search.
 // Advances `cursor` past the consumed value slice.
@@ -199,7 +199,7 @@ fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
     return true;
 }
 
-// ---- 3. Query Parameter Filter & Normalizer --------------------------------
+// ---- Query Parameter Filter & Normalizer --------------------------------
 
 fn is_param_ignored(nvs: const NoVarySearch&, key: const u8[:]) -> bool {
     // 1. If key is in except_params, it is NEVER ignored

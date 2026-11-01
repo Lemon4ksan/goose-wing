@@ -12,7 +12,7 @@ import .router;
 import .pool;
 import .pipeline;
 
-// ---- 1. Server Stream Descriptor --------------------------------------------
+// ---- Server Stream Descriptor --------------------------------------------
 
 struct H2ServerStream {
     stream_id:               u32                    = 0,
@@ -46,7 +46,7 @@ fn reset_server_stream(st: H2ServerStream&) {
     st.declared_content_length = -1;
 }
 
-// ---- 2. Server Connection Session -------------------------------------------
+// ---- Server Connection Session -------------------------------------------
 
 struct H2ServerSession {
     conn:                    H2Connection         = H2Connection { .. },
@@ -127,7 +127,7 @@ fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
     return -1, false;
 }
 
-// ---- 3. Protocol Frame Serialization Helpers --------------------------------
+// ---- Protocol Frame Serialization Helpers --------------------------------
 
 // Emits the server's initial SETTINGS frame (RFC 9113 Section 6.5)
 fn emit_server_settings<B>(out: B&) {
@@ -869,7 +869,7 @@ fn process_ingress_data<B>(
     return true;
 }
 
-// ---- 4. Complete Ingress Frame Processing & Pipeline Dispatch ---------------
+// ---- Complete Ingress Frame Processing & Pipeline Dispatch ---------------
 
 // Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline.
 // Returns (total_bytes_consumed, success)

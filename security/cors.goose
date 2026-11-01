@@ -16,12 +16,12 @@ enum CorsResult {
 }
 
 struct CorsPolicy {
-    allow_credentials: bool = false,
-    allowed_origins: u8[..128][..16] = [],
-    allowed_methods: u8[..128] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, QUERY",
-    allowed_headers: u8[..256] = "Content-Type, Authorization, X-Requested-With, X-API-Key",
-    expose_headers: u8[..256] = "Content-Length, X-Trace-Id, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset",
-    max_age_sec: i64 = 86400, // 24 hours preflight cache
+    allow_credentials: bool            = false,
+    allowed_origins:   u8[..128][..16] = [],
+    allowed_methods:   u8[..128]       = "GET, POST, PUT, DELETE, PATCH, OPTIONS, QUERY",
+    allowed_headers:   u8[..256]       = "Content-Type, Authorization, X-Requested-With, X-API-Key",
+    expose_headers:    u8[..256]       = "Content-Length, X-Trace-Id, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset",
+    max_age_sec:       i64             = 86400, // 24 hours preflight cache
 }
 
 // Creates a default CORS policy.

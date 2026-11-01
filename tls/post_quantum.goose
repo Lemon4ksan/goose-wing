@@ -11,7 +11,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. RFC 10024 & IANA NamedGroup Identifiers -----------------------------
+// ---- RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
 // RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
 const GROUP_SECP256R1_MLKEM768:      u16 = 0x11EB; // RFC 10024 Section 7.2: SecP256r1MLKEM768
@@ -69,7 +69,7 @@ fn pq_hybrid_server_share_len(group: u16) -> i64 {
     return 0;
 }
 
-// ---- 2. Hybrid Key Share Models ---------------------------------------------
+// ---- Hybrid Key Share Models ---------------------------------------------
 
 struct PostQuantumKeyShare {
     group:           u16      = GROUP_X25519_MLKEM768,
@@ -107,7 +107,7 @@ struct SecP384r1MLKEM1024ServerShare {
     mlkem1024_ciphertext: u8[1568] = [0; 1568],
 }
 
-// ---- 3. Wire Formatting and Parsing (RFC 10024 §3) ---------------------------
+// ---- Wire Formatting and Parsing (RFC 10024 §3) ---------------------------
 
 // Formats a KeyShareEntry for ClientHello:
 // For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1152B) || Classical (32B).
@@ -313,7 +313,7 @@ fn parse_secp384r1_mlkem1024_server_share(share: SecP384r1MLKEM1024ServerShare&,
     return true;
 }
 
-// ---- 4. Hybrid Secret Combiner (RFC 10024 §4) --------------------------------
+// ---- Hybrid Secret Combiner (RFC 10024 §4) --------------------------------
 
 // RFC 10024 Section 4.3: Shared Secret - SecP256r1 + ML-KEM-768 Shared Secret Combiner
 // Combines 32-byte ECDH x-coordinate and 32-byte ML-KEM-768 shared secret into SHA-256 digest
@@ -422,7 +422,7 @@ fn derive_hybrid_shared_secret_checked(
     return true;
 }
 
-// ---- 5. ML-KEM-768 Decapsulation & FIPS 203 Section 7.2 Implicit Rejection ----
+// ---- ML-KEM-768 Decapsulation & FIPS 203 Section 7.2 Implicit Rejection ----
 
 // ML-KEM-768 Decapsulation Private Key Container (FIPS 203 Section 7.2).
 struct MLKEM768PrivateKey {

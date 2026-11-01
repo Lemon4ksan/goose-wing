@@ -9,45 +9,45 @@ import std;
 import net.driver.types;
 
 struct DpdkPortConfig {
-    port_id: u16 = 0,
-    rx_queues: u16 = 1,
-    tx_queues: u16 = 1,
-    rx_ring_size: u16 = 1024,
-    tx_ring_size: u16 = 1024,
-    promiscuous: bool = true,
+    port_id:      u16  = 0,
+    rx_queues:    u16  = 1,
+    tx_queues:    u16  = 1,
+    rx_ring_size: u16  = 1024,
+    tx_ring_size: u16  = 1024,
+    promiscuous:  bool = true,
 }
 
 struct DpdkMempool {
-    n_elements: u32 = 8192,
-    element_size: u32 = 2048,
-    socket_id: i32 = 0,
-    is_created: bool = false,
+    n_elements:   u32  = 8192,
+    element_size: u32  = 2048,
+    socket_id:    i32  = 0,
+    is_created:   bool = false,
 }
 
 struct DpdkDevice {
-    port_id: u16 = 0,
+    port_id:        u16  = 0,
     is_initialized: bool = false,
-    is_started: bool = false,
-    rx_burst_size: u32 = 32,
-    tx_burst_size: u32 = 32,
+    is_started:     bool = false,
+    rx_burst_size:  u32  = 32,
+    tx_burst_size:  u32  = 32,
 }
 
 fn new_dpdk_device(port_id: u16 = 0) -> DpdkDevice {
     return DpdkDevice {
-        port_id: port_id,
+        port_id:        port_id,
         is_initialized: false,
-        is_started: false,
-        rx_burst_size: 32,
-        tx_burst_size: 32,
+        is_started:     false,
+        rx_burst_size:  32,
+        tx_burst_size:  32,
     };
 }
 
 fn dpdk_create_mempool(n_elements: u32 = 8192, element_size: u32 = 2048) -> DpdkMempool {
     return DpdkMempool {
-        n_elements: n_elements,
+        n_elements:   n_elements,
         element_size: element_size,
-        socket_id: 0,
-        is_created: true,
+        socket_id:    0,
+        is_created:   true,
     };
 }
 

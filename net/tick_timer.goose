@@ -13,20 +13,20 @@ namespace wing;
 import std;
 
 const TICK_TIMER_DISARMED: u8 = 255;
-const TICK_TIMER_MODULO: u8 = 240;
+const TICK_TIMER_MODULO:   u8 = 240;
 
 struct TickTimerWheel {
-    current_tick: u8 = 0,
-    prev_tick: u8 = 0,
-    last_elapsed: u32 = 0,
-    idle_timeout_sec: u8 = 10,
+    current_tick:     u8  = 0,
+    prev_tick:        u8  = 0,
+    last_elapsed:     u32 = 0,
+    idle_timeout_sec: u8  = 10,
 }
 
 fn new_tick_timer_wheel(idle_timeout_sec: u8 = 10) -> TickTimerWheel {
     return TickTimerWheel {
-        current_tick: 0,
-        prev_tick: 0,
-        last_elapsed: 0,
+        current_tick:     0,
+        prev_tick:        0,
+        last_elapsed:     0,
         idle_timeout_sec: idle_timeout_sec,
     };
 }

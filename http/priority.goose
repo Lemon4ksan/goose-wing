@@ -10,7 +10,7 @@ import std;
 import core from "..";
 import .sfv;
 
-// ---- 1. Urgency Constants & Model -------------------------------------------
+// ---- Urgency Constants & Model -------------------------------------------
 
 const PRIORITY_URGENCY_HIGHEST: u8 = 0;
 const PRIORITY_URGENCY_HIGH:    u8 = 1;
@@ -57,7 +57,7 @@ fn urgency_to_ascii(u: u8) -> u8 {
     }
 }
 
-// ---- 2. RFC 9218 Structured Field Parser ------------------------------------
+// ---- RFC 9218 Structured Field Parser ------------------------------------
 
 fn apply_priority_u(dict_str: const u8[:], p: HttpPriority&) -> bool {
     let u_val = sf_dict_get_int(dict_str, "u", -1);
@@ -96,7 +96,7 @@ fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> H
     return p, ok_u || ok_i;
 }
 
-// ---- 3. RFC 9218 Structured Field Serializer --------------------------------
+// ---- RFC 9218 Structured Field Serializer --------------------------------
 
 // Writes RFC 9218 Priority header value: e.g. "u=3", "u=0, i".
 fn serialize_http_priority<B>(prio: const HttpPriority&, out: B&) {

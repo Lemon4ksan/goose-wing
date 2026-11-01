@@ -11,7 +11,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Alt-Svc Models & Constants -----------------------------------------
+// ---- Alt-Svc Models & Constants -----------------------------------------
 
 struct AltSvcEndpoint {
     proto:       u8[..16]  = [],    // e.g. "h3", "h2"
@@ -44,7 +44,7 @@ fn find_origin_entry_idx(cache: const AltSvcCache&, origin: const u8[:]) -> i64 
     return -1;
 }
 
-// ---- 2. RFC 7838 Header Parser ---------------------------------------------
+// ---- RFC 7838 Header Parser ---------------------------------------------
 
 // Parses single parameter token: e.g. `ma=86400` or `persist=1`.
 //
@@ -187,7 +187,7 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
     return true, false;
 }
 
-// ---- 3. Alt-Svc Cache Operations -------------------------------------------
+// ---- Alt-Svc Cache Operations -------------------------------------------
 
 fn update_altsvc_entry(
     entry:     AltSvcOriginEntry&,
@@ -335,7 +335,7 @@ fn failed_attempts(cache: const AltSvcCache&, origin: const u8[:]) -> u8 {
     return cache.entries[idx].failed_attempts;
 }
 
-// ---- 4. Server-Side Serializer ---------------------------------------------
+// ---- Server-Side Serializer ---------------------------------------------
 
 // Formats standard Alt-Svc header string: e.g. `h3=":443"; ma=86400; persist=1`
 fn format_altsvc_header<B>(

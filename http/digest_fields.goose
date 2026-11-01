@@ -12,7 +12,7 @@ import client.request;
 import client.response;
 import .sfv;
 
-// ---- 1. RFC 9530 Constants --------------------------------------------------
+// ---- RFC 9530 Constants --------------------------------------------------
 
 const HEADER_CONTENT_DIGEST:      const u8[:] = "Content-Digest";
 const HEADER_REPR_DIGEST:         const u8[:] = "Repr-Digest";
@@ -22,7 +22,7 @@ const HEADER_WANT_REPR_DIGEST:    const u8[:] = "Want-Repr-Digest"; // RFC 9530 
 const DIGEST_ALG_SHA256: const u8[:] = "sha-256";
 const DIGEST_ALG_SHA512: const u8[:] = "sha-512";
 
-// ---- 2. Digest Computation --------------------------------------------------
+// ---- Digest Computation --------------------------------------------------
 
 inline fn compute_sha256_digest(data: const u8[:]) -> u8[..64] {
     var out: u8[..64] = [];
@@ -70,7 +70,7 @@ fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) ->
     return true;
 }
 
-// ---- 3. Content-Digest & Repr-Digest Generators -----------------------------
+// ---- Content-Digest & Repr-Digest Generators -----------------------------
 
 // Computes and attaches RFC 9530 Content-Digest header to Request.
 fn set_content_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
@@ -123,7 +123,7 @@ fn set_response_repr_digest(res: Response&, alg: const u8[:] = "sha-256") -> boo
     return true;
 }
 
-// ---- 4. Verification Logic --------------------------------------------------
+// ---- Verification Logic --------------------------------------------------
 
 fn check_digest_match(expected_b64: const u8[:], alg: const u8[:], data: const u8[:]) -> bool {
     var expected_hash: u8[>..] = [];

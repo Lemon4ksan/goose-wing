@@ -11,13 +11,13 @@ import core.io.reader;
 import core.io.writer;
 
 struct TeeReader {
-    reader: SliceReader = SliceReader { .. },
-    intercepted_total: i64 = 0,
+    reader:            SliceReader = SliceReader { .. },
+    intercepted_total: i64         = 0,
 }
 
 fn new_tee_reader(src: const u8[:]) -> TeeReader {
     return TeeReader {
-        reader: new_slice_reader(src),
+        reader:            new_slice_reader(src),
         intercepted_total: 0,
     };
 }

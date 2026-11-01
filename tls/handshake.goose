@@ -13,7 +13,7 @@ import .x509;
 import .post_quantum;
 import .cert_compression;
 
-// ---- 1. Handshake Message Types (RFC 8446 Section 4) ------------------------
+// ---- Handshake Message Types (RFC 8446 Section 4) ------------------------
 
 const HS_MSG_CLIENT_HELLO:           u8 = 1;
 const HS_MSG_SERVER_HELLO:           u8 = 2;
@@ -28,7 +28,7 @@ const HS_MSG_KEY_UPDATE:             u8 = 24;
 const HS_MSG_COMPRESSED_CERTIFICATE: u8 = 25; // RFC 8879 Section 4
 const HS_MSG_MESSAGE_HASH:           u8 = 254; // 0xFE synthetic HRR message
 
-// ---- 2. Extension Type Identifiers ------------------------------------------
+// ---- Extension Type Identifiers ------------------------------------------
 
 const EXT_SERVER_NAME:               u16 = 0; // RFC 6066
 const EXT_STATUS_REQUEST:            u16 = 5; // OCSP stapling
@@ -45,7 +45,7 @@ const EXT_CERTIFICATE_AUTHORITIES:   u16 = 47; // RFC 8446 Section 4.2.4
 const EXT_KEY_SHARE:                 u16 = 51;
 const EXT_QUIC_TRANSPORT_PARAMETERS: u16 = 0x39; // RFC 9001 Section 8.2
 
-// ---- 3. Handshake State ADT and Transitions ---------------------------------
+// ---- Handshake State ADT and Transitions ---------------------------------
 
 enum HandshakeMode {
     Full,
@@ -276,7 +276,7 @@ fn can_server_transition(current: HsState, incoming_msg_type: u8) -> HsState, bo
     return validate_server_handshake_transition(current, incoming_msg_type, false);
 }
 
-// ---- 4. Framing: Handshake Message Header -----------------------------------
+// ---- Framing: Handshake Message Header -----------------------------------
 
 // Handshake message header is 4 bytes: [msg_type: 1 byte] || [msg_len: 3 bytes (u24)].
 const MAX_HANDSHAKE_MSG_LEN: u32 = 16777215; // 2^24 - 1 (RFC 8446 Section 5.1)
@@ -320,7 +320,7 @@ fn encode_handshake_header(msg_type: u8, msg_len: u32, out: u8[4]&) -> bool {
     return true;
 }
 
-// ---- 5. HelloRetryRequest & Synthetic message_hash Compression --------------
+// ---- HelloRetryRequest & Synthetic message_hash Compression --------------
 
 // RFC 8446 Section 4.1.3 HelloRetryRequest special random value:
 // CF 21 AD 74 7E 00 7E 27 9F 7F 07 E0 EB 10 DC 03 BE 3D 68 A8 63 FE 95 D6 53 0E 32 30 79 28 8A 2D
@@ -472,7 +472,7 @@ fn validate_server_cipher_suite(
     return client_offered_suites.contains(selected_cs);
 }
 
-// ---- 6. SNI Extension Parser (RFC 6066 Section 3) ---------------------------
+// ---- SNI Extension Parser (RFC 6066 Section 3) ---------------------------
 
 // Parses server_name extension:
 // struct {
@@ -557,7 +557,7 @@ fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
     return found_host_name;
 }
 
-// ---- 7. ALPN Negotiation (RFC 7301) -----------------------------------------
+// ---- ALPN Negotiation (RFC 7301) -----------------------------------------
 
 enum NegotiatedAlpn {
     None,
@@ -721,7 +721,7 @@ fn validate_certificate_authorities_extension(ext_bytes: const u8[:]) -> bool {
     return cursor_len(auth_cursor) == 0;
 }
 
-// ---- 8. Extensions Parser Combinator ----------------------------------------
+// ---- Extensions Parser Combinator ----------------------------------------
 
 struct TlsExtensionEntry {
     ext_type: u16         = 0,
@@ -850,7 +850,7 @@ fn parse_server_supported_versions(ext_bytes: const u8[:]) -> u16, bool {
     return selected_ver, true;
 }
 
-// ---- 9. RFC 8879 Certificate Compression & ClientHello Fragmentation --------
+// ---- RFC 8879 Certificate Compression & ClientHello Fragmentation --------
 
 const CERT_COMPRESS_ZLIB:   u16 = 1;
 const CERT_COMPRESS_BROTLI: u16 = 2;
@@ -1076,7 +1076,7 @@ fn fragment_client_hello<B>(
     return true;
 }
 
-// ---- 10. Post-Handshake NewSessionTicket (RFC 8446 Section 4.6.1) -----------
+// ---- Post-Handshake NewSessionTicket (RFC 8446 Section 4.6.1) -----------
 
 const MAX_TICKET_LIFETIME_SECS: u32 = 604800; // 7 days (RFC 8446 Section 4.6.1)
 
@@ -1297,7 +1297,7 @@ fn encode_new_session_ticket<B>(
     return true;
 }
 
-// ---- 11. KeyUpdate Handshake Protocol (RFC 8446 Section 4.6.3) ---------------
+// ---- KeyUpdate Handshake Protocol (RFC 8446 Section 4.6.3) ---------------
 
 const KEY_UPDATE_NOT_REQUESTED:    u8  = 0;
 const KEY_UPDATE_REQUESTED:        u8  = 1;
@@ -1364,7 +1364,7 @@ fn encode_key_update<B>(out: B&, request_update: u8) -> bool {
     return true;
 }
 
-// ---- 12. CertificateRequest & Client Authentication (RFC 8446 Section 4.3.2) -
+// ---- CertificateRequest & Client Authentication (RFC 8446 Section 4.3.2) -
 
 struct CertificateRequestMsg {
     context:                  u8[..32]  = [],
@@ -1474,7 +1474,7 @@ fn parse_certificate_header_is_empty(payload: const u8[:]) -> bool, bool {
     return list_len == 0, true;
 }
 
-// ---- 13. 0-RTT Early Data State Machine & Recovery (RFC 8446 Section 4.2.10) --
+// ---- 0-RTT Early Data State Machine & Recovery (RFC 8446 Section 4.2.10) --
 
 enum EarlyDataState {
     None,
@@ -1539,7 +1539,7 @@ fn early_data_record_sent(ctrl: EarlyDataController&, record_len: u32) -> bool {
     return true;
 }
 
-// ---- 14. Mutual TLS (mTLS) Client Authentication (RFC 8446 Section 4.4.2) ---
+// ---- Mutual TLS (mTLS) Client Authentication (RFC 8446 Section 4.4.2) ---
 
 fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
     core::append_u16_be(out, EXT_SIGNATURE_ALGORITHMS);

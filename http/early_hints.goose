@@ -11,7 +11,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Early Hints Models -------------------------------------------------
+// ---- Early Hints Models -------------------------------------------------
 
 const STATUS_EARLY_HINTS: u16 = 103;
 
@@ -27,7 +27,7 @@ struct EarlyHintsResponse {
     is_valid: bool               = false,
 }
 
-// ---- 2. RFC 8288 / RFC 8297 Link Header Parser -----------------------------
+// ---- RFC 8288 / RFC 8297 Link Header Parser -----------------------------
 
 // Parses single Link parameter: e.g. `rel=preload` or `as=style` (RFC 8288 §3).
 //

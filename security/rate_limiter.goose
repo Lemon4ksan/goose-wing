@@ -11,10 +11,10 @@ import core from "..";
 
 struct GcraQuota {
     emission_interval_ns: u64 = 1000000000, // T = period / limit
-    delay_tolerance_ns: u64 = 0,            // tau = T * burst
-    limit: u64 = 1,
-    period_ns: u64 = 1000000000,
-    burst: u64 = 0,
+    delay_tolerance_ns:   u64 = 0,          // tau = T * burst
+    limit:                u64 = 1,
+    period_ns:            u64 = 1000000000,
+    burst:                u64 = 0,
 }
 
 // Calculates GCRA quota parameters from sustained limit, period, and burst tolerance.
@@ -28,10 +28,10 @@ fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> Gcr
 
     return GcraQuota {
         emission_interval_ns: t_ns,
-        delay_tolerance_ns: tau_ns,
-        limit: l,
-        period_ns: p_ns,
-        burst: burst,
+        delay_tolerance_ns:   tau_ns,
+        limit:                l,
+        period_ns:            p_ns,
+        burst:                burst,
     };
 }
 
@@ -105,18 +105,18 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
 
     return RateLimitDecision.Allowed {
         remaining_burst: rem,
-        new_tat_ns: tat_new,
-        reset_after_ns: reset_after,
+        new_tat_ns:      tat_new,
+        reset_after_ns:  reset_after,
     };
 }
 
 // Reserves cell capacity in advance up to max_wait_ns for multi-cost requests.
 // Returns Reserved if the caller can wait, Allowed if immediate, or Rejected if wait exceeds max_wait_ns.
 fn gcra_reserve_n(
-    quota: const GcraQuota&,
-    cell: GcraCell&,
-    cost_n: u64,
-    now_ns: u64,
+    quota:       const GcraQuota&,
+    cell:        GcraCell&,
+    cost_n:      u64,
+    now_ns:      u64,
     max_wait_ns: u64,
 ) -> RateLimitDecision {
     let t = quota.emission_interval_ns;
@@ -150,8 +150,8 @@ fn gcra_reserve_n(
 
         return RateLimitDecision.Allowed {
             remaining_burst: rem,
-            new_tat_ns: tat_new,
-            reset_after_ns: reset_after,
+            new_tat_ns:      tat_new,
+            reset_after_ns:  reset_after,
         };
     }
 
@@ -160,7 +160,7 @@ fn gcra_reserve_n(
         // Reserve the slot ahead of concurrent lighter requests
         cell.tat_ns = tat_new;
         return RateLimitDecision.Reserved {
-            wait_ns: wait_time,
+            wait_ns:    wait_time,
             new_tat_ns: tat_new,
         };
     }
@@ -174,9 +174,9 @@ fn gcra_reserve_n(
 // ---- 256-micro-shard keyed table -------------------------------------------
 
 struct KeyedGcraSlot {
-    key: u8[..64] = [],
-    cell: GcraCell = GcraCell { .. },
-    active: bool = false,
+    key:    u8[..64] = [],
+    cell:   GcraCell = GcraCell { .. },
+    active: bool     = false,
 }
 
 struct GcraShard {
@@ -184,7 +184,7 @@ struct GcraShard {
 }
 
 struct ShardedGcraLimiter {
-    quota: GcraQuota = GcraQuota { .. },
+    quota:  GcraQuota      = GcraQuota { .. },
     shards: GcraShard[256] = [GcraShard { .. }; 256],
 }
 
@@ -212,8 +212,8 @@ fn format_gcra_key(key_str: const u8[:], out: u8[..64]&) {
 fn check_rate_limit(
     limiter: ShardedGcraLimiter&,
     key_str: const u8[:],
-    cost_n: u64,
-    now_ns: u64,
+    cost_n:  u64,
+    now_ns:  u64,
 ) -> RateLimitDecision {
     var eff_key: u8[..64] = [];
     format_gcra_key(key_str, eff_key);
@@ -267,18 +267,18 @@ fn check_rate_limit(
 // ---- probabilistic sampled gcra -------------------------------------------
 
 struct ProbabilisticGcra {
-    quota: GcraQuota = GcraQuota { .. },
-    cell: GcraCell = GcraCell { .. },
-    sample_rate: u64 = 20, // 5% sampling
-    rng_state: u64 = 0x853c49e6748fea9b,
+    quota:       GcraQuota = GcraQuota { .. },
+    cell:        GcraCell  = GcraCell { .. },
+    sample_rate: u64       = 20, // 5% sampling
+    rng_state:   u64       = 0x853c49e6748fea9b,
 }
 
 fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> ProbabilisticGcra {
     return ProbabilisticGcra {
-        quota: quota,
-        cell: GcraCell { .. },
+        quota:       quota,
+        cell:        GcraCell { .. },
         sample_rate: if sample_rate > 0 { sample_rate } else { 20 },
-        rng_state: 0x853c49e6748fea9b,
+        rng_state:   0x853c49e6748fea9b,
     };
 }
 
@@ -302,8 +302,8 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         let reset_after = if tat_curr > now_ns { core::sub_sat_u64(tat_curr, now_ns) } else { 0 };
         return RateLimitDecision.Allowed {
             remaining_burst: rem,
-            new_tat_ns: tat_curr,
-            reset_after_ns: reset_after,
+            new_tat_ns:      tat_curr,
+            reset_after_ns:  reset_after,
         };
     }
 

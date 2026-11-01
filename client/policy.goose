@@ -11,15 +11,15 @@ import std;
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
     base_ns: i64 = 100 * core::MILLISECOND, // Base initial retry delay in nanoseconds.
-    max_ns: i64 = 10 * core::SECOND,        // Upper bound cap for retry delay in nanoseconds.
-    factor: f64 = 2.0,                // Multiplier applied per failed attempt.
+    max_ns:  i64 = 10 * core::SECOND,       // Upper bound cap for retry delay in nanoseconds.
+    factor:  f64 = 2.0,               // Multiplier applied per failed attempt.
 }
 
 fn new_backoff(base: core::Duration, max_delay: core::Duration, factor: f64 = 2.0) -> Backoff {
     return Backoff {
         base_ns: base.nanos,
-        max_ns: max_delay.nanos,
-        factor: factor,
+        max_ns:  max_delay.nanos,
+        factor:  factor,
     };
 }
 
@@ -41,18 +41,18 @@ fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
 
 // Token bucket rate limiter for pacing requests.
 struct RateLimiter {
-    rate_per_sec: f64 = 1.0,         // Tokens replenished per second.
-    burst_capacity: f64 = 1.0,       // Maximum token capacity (allowed burst size).
-    tokens: f64 = 1.0,               // Current available token balance.
+    rate_per_sec:        f64 = 1.0,  // Tokens replenished per second.
+    burst_capacity:      f64 = 1.0,  // Maximum token capacity (allowed burst size).
+    tokens:              f64 = 1.0,  // Current available token balance.
     last_update_mono_ns: i64 = 0,    // Monotonic timestamp of the last token balance update.
 }
 
 fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
     let capacity = if burst > 0 { burst as f64 } else { 1.0 };
     return RateLimiter {
-        rate_per_sec: rate_per_sec,
-        burst_capacity: capacity,
-        tokens: capacity,
+        rate_per_sec:        rate_per_sec,
+        burst_capacity:      capacity,
+        tokens:              capacity,
         last_update_mono_ns: clock_ns(),
     };
 }

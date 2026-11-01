@@ -9,7 +9,7 @@ import std;
 import core from "..";
 import .proxy;
 
-// ---- 1. pool key dimensions & enums ----------------------------------------
+// ---- pool key dimensions & enums ----------------------------------------
 
 // Transport scheme classification for connection grouping.
 enum PoolScheme {
@@ -224,7 +224,7 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
     return h;
 }
 
-// ---- 2. two-slice want_conn_queue (Go transport wantConnQueue parity) ------
+// ---- two-slice want_conn_queue (Go transport wantConnQueue parity) ------
 
 struct WantConn {
     req_id:           u64     = 0,
@@ -321,7 +321,7 @@ fn cancel_want(q: WantQueue&, req_id: u64) -> bool {
     return false;
 }
 
-// ---- 3. pooled connection & liveness checks --------------------------------
+// ---- pooled connection & liveness checks --------------------------------
 
 enum NegotiatedProtocol {
     Http11,
@@ -464,7 +464,7 @@ fn can_coalesce_h2_connection(
     return false, true;
 }
 
-// ---- 4. stream pool and connection group management ------------------------
+// ---- stream pool and connection group management ------------------------
 
 enum RespectLimits {
     Enabled,

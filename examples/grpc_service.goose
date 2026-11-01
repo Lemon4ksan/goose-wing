@@ -9,11 +9,11 @@ import core from "..";
 import wing from "..";
 
 fn service_unary_handler(
-    handler_id: u16,
-    ctx: wing::GrpcServerContext&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-    out_status: wing::GrpcStatusCode&,
+    out_status:  wing::GrpcStatusCode&,
     out_message: u8[..256]&,
 ) {
     if handler_id == 1 {

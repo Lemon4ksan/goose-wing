@@ -19,21 +19,21 @@ enum CacheLookup {
 }
 
 struct HttpRouteCache {
-    created_ms: u64 = 0,
-    lower_expiry_ms: u64 = 1000,
-    upper_expiry_ms: u64 = 5000,
-    wire: u8[..8192] = [],
-    is_valid: bool = false,
-    is_updating: bool = false,
+    created_ms:      u64        = 0,
+    lower_expiry_ms: u64        = 1000,
+    upper_expiry_ms: u64        = 5000,
+    wire:            u8[..8192] = [],
+    is_valid:        bool       = false,
+    is_updating:     bool       = false,
 }
 
 fn new_http_route_cache(lower_expiry_ms: u64 = 1000, upper_expiry_ms: u64 = 5000) -> HttpRouteCache {
     return HttpRouteCache {
         lower_expiry_ms: lower_expiry_ms,
         upper_expiry_ms: upper_expiry_ms,
-        created_ms: 0,
-        is_valid: false,
-        is_updating: false,
+        created_ms:      0,
+        is_valid:        false,
+        is_updating:     false,
         ..
     };
 }

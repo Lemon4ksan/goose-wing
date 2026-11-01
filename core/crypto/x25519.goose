@@ -7,7 +7,7 @@ namespace core;
 
 import std;
 
-// ---- 1. Field Element (10 limbs, alternating 26 and 25 bits) ----------------
+// ---- Field Element (10 limbs, alternating 26 and 25 bits) ----------------
 
 struct Fe10 {
     v: i64[10] = [0; 10],
@@ -265,7 +265,7 @@ inline fn fe_cswap(swap: u8, a: Fe10&, b: Fe10&) {
     }
 }
 
-// ---- 2. Montgomery Ladder Scalar Multiplication (RFC 7748 Section 5) ---------
+// ---- Montgomery Ladder Scalar Multiplication (RFC 7748 Section 5) ---------
 
 fn clamp_scalar_rfc7748(scalar: const u8[32]&) -> u8[32] {
     var clamped: u8[32] = scalar;

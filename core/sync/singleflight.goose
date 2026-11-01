@@ -8,20 +8,20 @@ import std;
 import core.math.hash;
 
 struct FlightEntry {
-    key: u8[..64] = [],
-    key_hash: u64 = 0,
-    is_in_flight: bool = false,
-    is_done: bool = false,
-    has_failed: bool = false,
-    val: i64 = 0,
-    waiter_count: i32 = 0,
-    shared: bool = false,
+    key:          u8[..64] = [],
+    key_hash:     u64      = 0,
+    is_in_flight: bool     = false,
+    is_done:      bool     = false,
+    has_failed:   bool     = false,
+    val:          i64      = 0,
+    waiter_count: i32      = 0,
+    shared:       bool     = false,
 }
 
 struct SingleflightGroup {
-    entries: FlightEntry[..32] = [],
-    total_leader_calls: i64 = 0,
-    total_shared_calls: i64 = 0,
+    entries:            FlightEntry[..32] = [],
+    total_leader_calls: i64               = 0,
+    total_shared_calls: i64               = 0,
 }
 
 // Finds the index of an entry by key and precomputed hash, or returns -1.
@@ -56,7 +56,7 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
 
     if g.entries.len < g.entries.cap {
         var new_entry = FlightEntry {
-            key_hash: kh,
+            key_hash:     kh,
             is_in_flight: true,
             ..
         };

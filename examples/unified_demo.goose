@@ -7,16 +7,16 @@ import core from "..";
 import wing from "..";
 
 struct CreateOrderReq {
-    symbol: const u8[:] = "",
-    side: const u8[:] = "BUY",
-    quantity: i64 = 1,
-    urgent: bool = false,
+    symbol:   const u8[:] = "",
+    side:     const u8[:] = "BUY",
+    quantity: i64         = 1,
+    urgent:   bool        = false,
 }
 
 struct OrderConfirmation {
-    id: i64 = 0,
+    id:     i64      = 0,
     status: u8[..64] = [],
-    ok: bool = false,
+    ok:     bool     = false,
 }
 
 fn main() {
@@ -29,10 +29,10 @@ fn main() {
     };
 
     let order_payload = CreateOrderReq {
-        symbol: "BTC-USDT",
-        side: "BUY",
+        symbol:   "BTC-USDT",
+        side:     "BUY",
         quantity: 5,
-        urgent: true,
+        urgent:   true,
     };
 
     let res1, err1 = session.post("/v1/orders") { req =>

@@ -14,9 +14,9 @@ extern fn native_udp_sendto_ip4(sock_fd: i64, data: const u8[:], peer_ip4: u32, 
 extern fn native_udp_recvfrom(sock_fd: i64, buf: u8[:], timeout_ms: u32, peer_ip: u32&, peer_port: u16&) -> i32 = "wing_udp_recvfrom";
 
 fn send_h3_connection_close(
-    sock: i64,
-    err_code: u64,
-    peer_ip: u32,
+    sock:      i64,
+    err_code:  u64,
+    peer_ip:   u32,
     peer_port: u16,
 ) {
     var close_pkt: u8[..32] = [];
@@ -41,9 +41,9 @@ fn validate_h3_request_pseudo_headers(req_fields: const internal::HeaderField[>.
 }
 
 fn handle_h3_settings(
-    sock: i64,
-    payload: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    payload:   const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) {
     var set_in = wing::H3Settings { .. };
@@ -66,9 +66,9 @@ fn send_h3_success_response(sock: i64, peer_ip: u32, peer_port: u16) {
 }
 
 fn handle_h3_headers(
-    sock: i64,
-    payload: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    payload:   const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) {
     let tbl = internal::QpackTable { .. };
@@ -88,10 +88,10 @@ fn handle_h3_headers(
 }
 
 fn dispatch_h3_frame_type(
-    sock: i64,
-    ftype: u64,
-    payload: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    ftype:     u64,
+    payload:   const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) -> bool {
     if ftype == internal::H3_FRAME_SETTINGS {
@@ -116,9 +116,9 @@ inline fn extract_h3_payload(datagram: const u8[:], hdr: const internal::H3Frame
 }
 
 fn handle_h3_frame(
-    sock: i64,
-    datagram: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    datagram:  const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) -> bool {
     let hdr, ok_hdr = internal::parse_h3_frame_header(datagram, 0);
@@ -127,9 +127,9 @@ fn handle_h3_frame(
 }
 
 fn handle_quic_version_negotiation(
-    sock: i64,
-    hdr: const internal::QuicHeader&,
-    peer_ip: u32,
+    sock:      i64,
+    hdr:       const internal::QuicHeader&,
+    peer_ip:   u32,
     peer_port: u16,
 ) {
     var vn_pkt: u8[>..] = [];
@@ -144,9 +144,9 @@ fn handle_quic_version_negotiation(
 }
 
 fn handle_quic_initial(
-    sock: i64,
-    hdr: const internal::QuicHeader&,
-    peer_ip: u32,
+    sock:      i64,
+    hdr:       const internal::QuicHeader&,
+    peer_ip:   u32,
     peer_port: u16,
 ) {
     var resp_pkt: u8[>..] = [];
@@ -163,9 +163,9 @@ fn handle_quic_initial(
     internal::quic_encode_varint(h3_ctrl, internal::H3_STREAM_CONTROL);
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
-        max_field_section_size: 65536,
-        qpack_blocked_streams: 16,
-        enable_connect_protocol: 1,
+        max_field_section_size:   65536,
+        qpack_blocked_streams:    16,
+        enable_connect_protocol:  1,
     };
     internal::encode_h3_settings_frame(h3_ctrl, settings);
     internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
@@ -179,9 +179,9 @@ fn handle_quic_initial(
 }
 
 fn handle_quic_packet(
-    sock: i64,
-    datagram: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    datagram:  const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) -> bool {
     let quic_hdr, ok_qhdr = internal::parse_quic_header(datagram);
@@ -201,9 +201,9 @@ fn handle_quic_packet(
 }
 
 fn dispatch_incoming_datagram(
-    sock: i64,
-    datagram: const u8[:],
-    peer_ip: u32,
+    sock:      i64,
+    datagram:  const u8[:],
+    peer_ip:   u32,
     peer_port: u16,
 ) -> bool {
     if datagram.len >= 8 && datagram[..8] == "SHUTDOWN" {
@@ -232,7 +232,7 @@ inline fn is_recv_valid(recvd: i32, max_len: i64) -> bool {
 
 fn poll_and_dispatch_datagram(sock: i64, in_buf: u8[:]) -> bool {
     var peer_port: u16 = 0;
-    var peer_ip: u32 = 0;
+    var peer_ip:   u32 = 0;
     let recvd = native_udp_recvfrom(sock, in_buf, 500, peer_ip, peer_port);
     if is_recv_timeout(recvd) {
         return true;

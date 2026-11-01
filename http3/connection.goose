@@ -11,7 +11,7 @@ import quic.packet;
 import http3.qpack;
 import http3.framing;
 
-// ---- 1. Stream Kinds, States and Structures --------------------------------
+// ---- Stream Kinds, States and Structures --------------------------------
 
 const MAX_H3_EMPTY_FRAME_STREAK: u32 = 32;
 
@@ -127,7 +127,7 @@ fn send_max_push_id<B>(conn: H3Connection&, max_push_id: u64, out: B&) -> bool {
     return true;
 }
 
-// ---- 2. Preamble & Unidirectional Stream Creation ---------------------------
+// ---- Preamble & Unidirectional Stream Creation ---------------------------
 
 // Encodes client preambles for control, QPACK encoder, and QPACK decoder streams.
 fn encode_client_preambles<B1, B2, B3>(
@@ -150,7 +150,7 @@ fn encode_client_preambles<B1, B2, B3>(
     return true;
 }
 
-// ---- 3. Request Stream Lifecycle --------------------------------------------
+// ---- Request Stream Lifecycle --------------------------------------------
 
 // Finds an existing stream or returns false.
 fn find_h3_stream_idx(conn: const H3Connection&, stream_id: u64) -> i32, bool {
@@ -279,7 +279,7 @@ fn send_request_data<B>(
     return true;
 }
 
-// ---- 4. Inbound Frame and Stream Processing ---------------------------------
+// ---- Inbound Frame and Stream Processing ---------------------------------
 
 // Handles frames received on the peer control stream.
 fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
@@ -1127,7 +1127,7 @@ fn handle_stream_data(
     return H3_ERR_NO_ERROR;
 }
 
-// ---- 5. Stream Inspection Accessors ----------------------------------------
+// ---- Stream Inspection Accessors ----------------------------------------
 
 fn get_status_code(conn: const H3Connection&, stream_id: u64) -> i32, bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);

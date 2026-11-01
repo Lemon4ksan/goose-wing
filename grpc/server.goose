@@ -17,7 +17,7 @@ import core from "..";
 // Wire protocol constants
 const HTTP_STATUS_OK: i32 = 200;
 
-// ---- 1. Protocol Detection and Content-Type Helpers -------------------------
+// ---- Protocol Detection and Content-Type Helpers -------------------------
 
 inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
     guard starts_with_fold(ct, prefix) else { return false; }
@@ -91,7 +91,7 @@ fn parse_grpc_path(
     return true;
 }
 
-// ---- 2. Server Invocation Context ------------------------------------------
+// ---- Server Invocation Context ------------------------------------------
 
 struct GrpcServerContext {
     service:           u8[..64]           = [],
@@ -140,7 +140,7 @@ fn is_deadline_exceeded(ctx: const GrpcServerContext&, now_mono_ns: u64) -> bool
     return false;
 }
 
-// ---- 3. Service & Method Registry ------------------------------------------
+// ---- Service & Method Registry ------------------------------------------
 
 enum GrpcMethodType {
     Unary,
@@ -250,7 +250,7 @@ fn find_method_by_name(d: const GrpcServerDispatcher&, service: const u8[:], met
     return -1;
 }
 
-// ---- 4. Wire Response Builders ---------------------------------------------
+// ---- Wire Response Builders ---------------------------------------------
 
 // Appends gRPC metadata entries into a response header or trailer list.
 fn append_grpc_metadata_headers<H>(target: H&, metadata: const GrpcMetadata[:]) {
@@ -388,7 +388,7 @@ fn build_grpc_wire_response(
     }
 }
 
-// ---- 5. Request Ingress Context Extraction ----------------------------------
+// ---- Request Ingress Context Extraction ----------------------------------
 
 inline fn compute_safe_grpc_deadline(base_ns: u64, ms: u64) -> u64 {
     guard base_ns > 0 && ms > 0 else { return 0; }
@@ -456,7 +456,7 @@ fn extract_grpc_server_context(
     return true;
 }
 
-// ---- 6. Streaming Primitives -----------------------------------------------
+// ---- Streaming Primitives -----------------------------------------------
 
 struct GrpcMessageSpan {
     offset:     u32  = 0,
@@ -539,7 +539,7 @@ fn write_stream_message(
     writer.message_count += 1;
 }
 
-// ---- 7. Core Dispatch Execution --------------------------------------------
+// ---- Core Dispatch Execution --------------------------------------------
 
 // Unary RPC Dispatcher:
 // Executes a single Request-Response RPC cycle conforming to RFC gRPC over HTTP/2 and gRPC-Web.

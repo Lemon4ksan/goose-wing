@@ -13,7 +13,7 @@ import client.profile;
 import core from "..";
 import http2.framing;
 
-// ---- 1. Data Structures -----------------------------------------------------
+// ---- Data Structures -----------------------------------------------------
 
 // Single HTTP/2 parameter within the initial SETTINGS frame.
 struct AkamaiSetting {
@@ -57,7 +57,7 @@ enum AkamaiAnomaly {
     BotPattern,
 }
 
-// ---- 2. Formatting & Serialization ------------------------------------------
+// ---- Formatting & Serialization ------------------------------------------
 
 // Formats SETTINGS section: `ID:Value;ID:Value;...`
 fn format_akamai_settings<B>(settings: const AkamaiSetting[:], out: B&) {
@@ -141,7 +141,7 @@ fn akamai_fingerprint_hash(fp: const AkamaiFingerprint&) -> u8[..32] {
     return out;
 }
 
-// ---- 3. Standard Presets ----------------------------------------------------
+// ---- Standard Presets ----------------------------------------------------
 
 // Chrome 124+ / Chromium / Edge preset:
 // Settings: 1:65536;2:0;4:6291456;6:262144
@@ -252,7 +252,7 @@ fn akamai_curl_preset() -> AkamaiFingerprint {
     return fp;
 }
 
-// ---- 4. Fingerprint Parsing -------------------------------------------------
+// ---- Fingerprint Parsing -------------------------------------------------
 
 // Checks whether two byte slices are identical in length and content.
 fn bytes_eq(a: const u8[:], b: const u8[:]) -> bool {
@@ -434,7 +434,7 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
     return fp, true;
 }
 
-// ---- 5. Matching & Classification -------------------------------------------
+// ---- Matching & Classification -------------------------------------------
 
 // Checks whether two Akamai fingerprints match exactly across all four vectors.
 fn match_akamai_fingerprints(a: const AkamaiFingerprint&, b: const AkamaiFingerprint&) -> bool {
@@ -577,7 +577,7 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
     return AkamaiAnomaly.None, "Consistent profile";
 }
 
-// ---- 6. Wire Framing Ingress Extractor ---------------------------------------
+// ---- Wire Framing Ingress Extractor ---------------------------------------
 
 fn process_akamai_settings_frame(
     hdr:     const internal::FrameHeader&,
@@ -691,7 +691,7 @@ fn extract_akamai_from_wire(
     return fp, true;
 }
 
-// ---- 7. Wire Framing Egress Generator ---------------------------------------
+// ---- Wire Framing Egress Generator ---------------------------------------
 
 // Serializes the exact HTTP/2 wire frames corresponding to this Akamai fingerprint.
 fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
@@ -755,7 +755,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     }
 }
 
-// ---- 8. Pseudo-Header Ordering Helper ---------------------------------------
+// ---- Pseudo-Header Ordering Helper ---------------------------------------
 
 // Orders the 4 standard HTTP/2 pseudo-headers in the exact sequence specified by the fingerprint.
 fn order_pseudo_headers(

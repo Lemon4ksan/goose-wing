@@ -8,7 +8,7 @@ namespace internal;
 
 import std;
 
-// ---- 1. constants, error codes and limits -----------------------------------
+// ---- constants, error codes and limits -----------------------------------
 
 const QPACK_STATIC_TABLE_SIZE:   u64 = 99;
 const QPACK_ENTRY_OVERHEAD:      u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
@@ -119,7 +119,7 @@ fn qpack_entry_cost(name_len: u64, val_len: u64) -> u64 {
     return name_len + val_len + QPACK_ENTRY_OVERHEAD;
 }
 
-// ---- 2. rfc 9204 appendix a static table -----------------------------------
+// ---- rfc 9204 appendix a static table -----------------------------------
 
 struct QpackStaticEntry {
     name: const u8[:] = "",
@@ -258,7 +258,7 @@ fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
     return matched_name_idx, false;
 }
 
-// ---- 3. prefix integer codec (ric and base) --------------------------------
+// ---- prefix integer codec (ric and base) --------------------------------
 
 const QPACK_MAX_INT_VAL: u64 = 0x3FFFFFFFFFFFFFFF; // 62 bits (RFC 9204 Section 4.1.1)
 
@@ -404,7 +404,7 @@ fn encode_base(base: u64, ric: u64) -> u8, u64 {
     return 1, ric - base - 1;
 }
 
-// ---- 4. dynamic table management & eviction --------------------------------
+// ---- dynamic table management & eviction --------------------------------
 
 fn new_qpack_table(
     max_capacity:     u64 = 4096,
@@ -727,7 +727,7 @@ fn qpack_unblock_stream(tbl: QpackTable&, stream_id: u64) -> bool {
     return false;
 }
 
-// ---- 5. encoder / decoder instruction dispatch ------------------------------
+// ---- encoder / decoder instruction dispatch ------------------------------
 
 // Decodes string literal with Huffman or raw octets (RFC 9204 Section 4.1.2).
 //
@@ -855,7 +855,7 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
     return offset, QpackError.DecoderStreamError;
 }
 
-// ---- 6. incremental field emission & header accordion protection ------------
+// ---- incremental field emission & header accordion protection ------------
 
 inline fn is_qpack_token_char(c: u8) -> bool {
     if c >= 'a' && c <= 'z' { return true; }

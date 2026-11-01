@@ -11,7 +11,7 @@ import json;
 import core from "..";
 import .jwt;
 
-// ---- 1. JWK / JWKS Key Models -----------------------------------------------
+// ---- JWK / JWKS Key Models -----------------------------------------------
 
 enum JwkKeyType {
     Unknown,
@@ -111,7 +111,7 @@ fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
     return -1;
 }
 
-// ---- 2. JWK Canonicalization & Thumbprint (RFC 7638 / RFC 8037) -------------
+// ---- JWK Canonicalization & Thumbprint (RFC 7638 / RFC 8037) -------------
 
 // Computes RFC 7638 / RFC 8037 Canonical JSON representation of a JWK:
 // - Lexicographically sorted required members only
@@ -154,7 +154,7 @@ fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
     return true;
 }
 
-// ---- 3. JWKS Serialization & Parsing (RFC 7517) ------------------------------
+// ---- JWKS Serialization & Parsing (RFC 7517) ------------------------------
 
 fn serialize_jwk_key<B>(k: const JwksKey&, out: B&) {
     out.append("{\"kty\":");
@@ -448,7 +448,7 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
     return json::finish(reader) && out_jwks.keys.len > 0;
 }
 
-// ---- 3. Integrated JWKS JWT Verification -------------------------------------
+// ---- Integrated JWKS JWT Verification -------------------------------------
 
 fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
     if kid.len > 0 {
@@ -582,7 +582,7 @@ fn zeroize_jwks(jwks: Jwks&) {
     jwks.keys.clear();
 }
 
-// ---- 6. SSRF Protection for Remote JWKS & OIDC Discovery (RFC 8725 §3.12) --
+// ---- SSRF Protection for Remote JWKS & OIDC Discovery (RFC 8725 §3.12) --
 
 inline fn is_private_or_loopback_ipv4(host: const u8[:]) -> bool {
     if core::starts_with(host, "127.") { return true; }

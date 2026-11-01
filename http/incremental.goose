@@ -11,7 +11,7 @@ import core from "..";
 import .headers;
 import client.response;
 
-// ---- 1. RFC 10036 Constants --------------------------------------------------
+// ---- RFC 10036 Constants --------------------------------------------------
 
 const HEADER_INCREMENTAL: const u8[:] = "Incremental";
 
@@ -19,7 +19,7 @@ const HEADER_INCREMENTAL: const u8[:] = "Incremental";
 const PROXY_ERROR_INCREMENTAL_REFUSED:      const u8[:] = "incremental_refused";
 const PROXY_ERROR_CONNECTION_LIMIT_REACHED: const u8[:] = "connection_limit_reached";
 
-// ---- 2. Header Parsing & Serialization ---------------------------------------
+// ---- Header Parsing & Serialization ---------------------------------------
 
 // Parses an RFC 10036 Incremental header field value.
 // Per RFC 10036 Section 2:
@@ -58,7 +58,7 @@ fn append_incremental_header(out_headers: HeaderMap&, incremental: bool) -> bool
     return append_header(out_headers, HEADER_INCREMENTAL, if incremental { "?1" } else { "?0" });
 }
 
-// ---- 3. Intermediary Error Handling (RFC 10036 Section 3) --------------------
+// ---- Intermediary Error Handling (RFC 10036 Section 3) --------------------
 
 // Formats a 501 Not Implemented response with `incremental_refused` Proxy-Status
 // when an intermediary cannot forward incrementally due to policy/security constraints.

@@ -12,7 +12,7 @@ import json;
 import core from "..";
 import .jwt;
 
-// ---- 1. RFC 9449 Constants & Identifiers ------------------------------------
+// ---- RFC 9449 Constants & Identifiers ------------------------------------
 
 const DPOP_HEADER:       const u8[:] = "DPoP";
 const DPOP_NONCE_HEADER: const u8[:] = "DPoP-Nonce";
@@ -23,7 +23,7 @@ const DPOP_ERR_INVALID_PROOF: const u8[:] = "invalid_dpop_proof";
 const DPOP_ERR_INVALID_TOKEN: const u8[:] = "invalid_token";
 const DPOP_ERR_USE_NONCE:     const u8[:] = "use_dpop_nonce";
 
-// ---- 2. DPoP Models ---------------------------------------------------------
+// ---- DPoP Models ---------------------------------------------------------
 
 struct DPoPClaims {
     jti:     u8[..128] = [],
@@ -43,7 +43,7 @@ struct DPoPConfig {
     enabled: bool      = false,
 }
 
-// ---- 3. Helper Functions: URI Normalization & Access Token Hash -------------
+// ---- Helper Functions: URI Normalization & Access Token Hash -------------
 
 // Scans URI delimiter boundaries for RFC 9449 normalization.
 //
@@ -171,7 +171,7 @@ fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
     }
 }
 
-// ---- 4. DPoP Proof JWT Generation -------------------------------------------
+// ---- DPoP Proof JWT Generation -------------------------------------------
 
 // Serializes DPoP claims JSON payload (RFC 9449 §4.2).
 inline fn build_dpop_claims_json<B>(
@@ -364,7 +364,7 @@ fn create_dpop_proof<B>(
     return true;
 }
 
-// ---- 5. DPoP Proof Verification ---------------------------------------------
+// ---- DPoP Proof Verification ---------------------------------------------
 
 // RFC 9449 §4.3 & §6.2: Rejects 'none' and symmetric HMAC algorithms (HS256, HS384, HS512).
 // Asymmetric digital signature algorithms (e.g. EdDSA, ES256, RS256) are strictly required.
@@ -740,7 +740,7 @@ fn verify_dpop_proof(
     );
 }
 
-// ---- 6. Client Header Integration ------------------------------------------
+// ---- Client Header Integration ------------------------------------------
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
@@ -779,7 +779,7 @@ fn extract_dpop_nonce<H, B>(headers: const H[:], out_nonce: B&) -> bool {
     return out_nonce.try_append(nonce);
 }
 
-// ---- 7. DPoP Replay Cache (RFC 9449 §4.3 Rule 4) ---------------------------
+// ---- DPoP Replay Cache (RFC 9449 §4.3 Rule 4) ---------------------------
 
 struct DPoPJtiEntry {
     jti:            u8[..64] = [],

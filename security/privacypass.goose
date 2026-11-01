@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Privacy Pass Constants & Token Types --------------------------------
+// ---- Privacy Pass Constants & Token Types --------------------------------
 
 const SCHEME_PRIVATE_TOKEN:           const u8[:] = "PrivateToken";
 const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
@@ -29,7 +29,7 @@ fn is_grease_token_type(t: u16) -> bool {
     return false;
 }
 
-// ---- 2. Data Structures -----------------------------------------------------
+// ---- Data Structures -----------------------------------------------------
 
 struct TokenChallenge {
     token_type:         u16       = TOKEN_TYPE_BLIND_RSA,
@@ -67,7 +67,7 @@ struct PrivateTokenCache {
     entries: CachedToken[..16] = [],
 }
 
-// ---- 3. Wire Binary Marshaling & Unmarshaling (RFC 9577 §2.1.1 & §2.2.1) ----
+// ---- Wire Binary Marshaling & Unmarshaling (RFC 9577 §2.1.1 & §2.2.1) ----
 
 // Marshals TokenChallenge into RFC 9577 §2.1.1 wire presentation format:
 // token_type(2) + issuer_len(2) + issuer + ctx_len(1) + ctx + origin_len(2) + origin
@@ -180,7 +180,7 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
     return true;
 }
 
-// ---- 4. HTTP Authentication Header Parsing & Formatting (RFC 9577 §2.1 & §2.2)
+// ---- HTTP Authentication Header Parsing & Formatting (RFC 9577 §2.1 & §2.2)
 
 // Extracts parameter value from key-value parameter string.
 //
@@ -340,7 +340,7 @@ fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) {
     core::base64url_encode(token_bytes, out);
 }
 
-// ---- 5. Private Token Cache & Redemption Management -------------------------
+// ---- Private Token Cache & Redemption Management -------------------------
 
 fn find_free_token_slot(cache: const PrivateTokenCache&, now_sec: i64) -> i64 {
     for i in cache.entries.len {

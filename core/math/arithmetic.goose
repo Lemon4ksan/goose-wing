@@ -8,17 +8,17 @@ import std;
 import core.math.ct;
 
 struct CheckedU32 {
-    value: u32 = 0,
+    value:    u32  = 0,
     overflow: bool = false,
 }
 
 struct CheckedU64 {
-    value: u64 = 0,
+    value:    u64  = 0,
     overflow: bool = false,
 }
 
 struct CheckedI64 {
-    value: i64 = 0,
+    value:    i64  = 0,
     overflow: bool = false,
 }
 
@@ -123,7 +123,7 @@ inline fn sub_sat_i64(a: i64, b: i64) -> i64 {
 inline fn add_checked_u32(a: u32, b: u32) -> CheckedU32 {
     let sum = a + b;
     return CheckedU32 {
-        value: sum,
+        value:    sum,
         overflow: ct_lt_u32(sum, a) == 1,
     };
 }
@@ -132,7 +132,7 @@ inline fn add_checked_u32(a: u32, b: u32) -> CheckedU32 {
 inline fn add_checked_u64(a: u64, b: u64) -> CheckedU64 {
     let sum = a + b;
     return CheckedU64 {
-        value: sum,
+        value:    sum,
         overflow: ct_lt_u64(sum, a) == 1,
     };
 }
@@ -152,7 +152,7 @@ fn mul_checked_i64(a: i64, b: i64) -> CheckedI64 {
 
     let prod_val = if sign_bit == 1 { 0 - (lo as! i64) } else { lo as! i64 };
     return CheckedI64 {
-        value: prod_val,
+        value:    prod_val,
         overflow: ovf,
     };
 }

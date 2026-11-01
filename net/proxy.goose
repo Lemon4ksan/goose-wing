@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
+// ---- SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
 
 enum ProxyScheme {
     Direct,
@@ -64,7 +64,7 @@ enum Socks5Error {
     BufferTruncated,
 }
 
-// ---- 2. SOCKS5 frame builders & parsers ------------------------------------
+// ---- SOCKS5 frame builders & parsers ------------------------------------
 
 // Options for SOCKS5 greeting negotiation.
 struct Socks5GreetingOptions {
@@ -248,7 +248,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     return res, socks5_rep_to_error(rep);
 }
 
-// ---- 3. HTTP CONNECT tunnel & TLS buffer hygiene ---------------------------
+// ---- HTTP CONNECT tunnel & TLS buffer hygiene ---------------------------
 
 enum ConnectTunnelError {
     None,
@@ -373,7 +373,7 @@ fn should_close_connection_on_connect_error(err: ConnectTunnelError) -> bool {
     return err != ConnectTunnelError.None;
 }
 
-// ---- 4. 4-tier Slowloris and Reverse-Slowloris tarpit defenses --------------
+// ---- 4-tier Slowloris and Reverse-Slowloris tarpit defenses --------------
 
 enum SlowlorisViolation {
     None,

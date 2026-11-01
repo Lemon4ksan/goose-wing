@@ -113,20 +113,20 @@ fn secure_zeroize_vec(buf: u8[>..]&) {
 
 // KeySlot encapsulates a 256-bit cryptographic master key with rotation metadata.
 struct KeySlot {
-    key_id: u32 = 0,
-    master_key: u8[32] = [0; 32],
-    created_at_sec: i64 = 0,
-    expires_at_sec: i64 = 0,
-    revoked: bool = false,
+    key_id:         u32    = 0,
+    master_key:     u8[32] = [0; 32],
+    created_at_sec: i64    = 0,
+    expires_at_sec: i64    = 0,
+    revoked:        bool   = false,
 }
 
 fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expires_at_sec: i64 = 0) -> KeySlot {
     var slot = KeySlot {
-        key_id: key_id,
-        master_key: [0; 32],
+        key_id:         key_id,
+        master_key:     [0; 32],
         created_at_sec: created_at_sec,
         expires_at_sec: expires_at_sec,
-        revoked: false,
+        revoked:        false,
     };
     let copy_len = if raw_key.len < 32 { raw_key.len } else { 32 };
     for idx in copy_len {
@@ -158,13 +158,13 @@ fn display_redacted<B>(slot: const KeySlot&, out: B&) {
 // Online Welford accumulator for two timing classes with OS preemption outlier cropping.
 struct DudectContext {
     crop_threshold_ns: f64 = 2000.0,
-    n0: i64 = 0,
-    n1: i64 = 0,
-    mean0: f64 = 0.0,
-    mean1: f64 = 0.0,
-    m2_0: f64 = 0.0,
-    m2_1: f64 = 0.0,
-    cropped_outliers: i64 = 0,
+    n0:                i64 = 0,
+    n1:                i64 = 0,
+    mean0:             f64 = 0.0,
+    mean1:             f64 = 0.0,
+    m2_0:              f64 = 0.0,
+    m2_1:              f64 = 0.0,
+    cropped_outliers:  i64 = 0,
 }
 
 fn new_dudect_context(crop_threshold_ns: f64 = 2000.0) -> DudectContext {

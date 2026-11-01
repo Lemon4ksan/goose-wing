@@ -9,13 +9,13 @@ import std;
 import core.io.types;
 
 struct SliceWriter {
-    buf: u8[:] = [],
-    cursor: i64 = 0,
+    buf:    u8[:] = [],
+    cursor: i64   = 0,
 }
 
 fn new_slice_writer(dest: u8[:]) -> SliceWriter {
     return SliceWriter {
-        buf: dest,
+        buf:    dest,
         cursor: 0,
     };
 }

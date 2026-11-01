@@ -11,7 +11,7 @@ import grpc.constants;
 import grpc.status;
 import http.mime;
 
-// ---- 1. Length-Prefixed Message (LPM) Framing ------------------------------
+// ---- Length-Prefixed Message (LPM) Framing ------------------------------
 
 // Encodes a payload into a 5-byte Length-Prefixed Message (LPM):
 // [1-byte Flag] [4-byte Big-Endian Length] [Payload]
@@ -60,7 +60,7 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
     return true, consumed;
 }
 
-// ---- 2. Incremental Streaming LPM Parser -----------------------------------
+// ---- Incremental Streaming LPM Parser -----------------------------------
 
 // Reassembles LPM messages arriving across fragmented HTTP/2 or HTTP/3 DATA chunks.
 struct GrpcStreamParser {
@@ -114,7 +114,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     return true;
 }
 
-// ---- 3. gRPC-Web Framing (Trailers-in-Body) ---------------------------------
+// ---- gRPC-Web Framing (Trailers-in-Body) ---------------------------------
 
 // Encodes gRPC-Web trailers frame into body payload with flag 0x80.
 // Trailer format: "grpc-status: <status>\r\ngrpc-message: <message>\r\n[custom-trailers]\r\n"
@@ -259,7 +259,7 @@ fn parse_grpc_web_trailers(
     return found_status;
 }
 
-// ---- 4. gRPC-Web Text Base64 Codec -----------------------------------------
+// ---- gRPC-Web Text Base64 Codec -----------------------------------------
 
 // Encodes binary LPM wire stream into standard Base64 for application/grpc-web-text.
 fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {

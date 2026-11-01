@@ -10,20 +10,20 @@ import client.redirect;
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
 
 struct SsrfGuardPolicy {
-    enabled: bool = false,
-    https_only: bool = false,
-    deny_local_network: bool = true,
-    allowed_ports: i32[..16] = [],
-    denied_ports: i32[..16] = [],
+    enabled:            bool      = false,
+    https_only:         bool      = false,
+    deny_local_network: bool      = true,
+    allowed_ports:      i32[..16] = [],
+    denied_ports:       i32[..16] = [],
 }
 
 fn new_ssrf_guard_policy() -> SsrfGuardPolicy {
     return SsrfGuardPolicy {
-        enabled: true,
-        https_only: false,
+        enabled:            true,
+        https_only:         false,
         deny_local_network: true,
-        allowed_ports: [],
-        denied_ports: [],
+        allowed_ports:      [],
+        denied_ports:       [],
     };
 }
 
@@ -94,7 +94,7 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
 fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
     guard clean_ip.len > 0 else { return false; }
     var parts: u8[..32][..4] = [];
-    var cur: u8[..32] = [];
+    var cur:   u8[..32]      = [];
     for b in clean_ip {
         if b == '.' {
             guard parts.len < 4 && cur.len > 0 else { return false; }

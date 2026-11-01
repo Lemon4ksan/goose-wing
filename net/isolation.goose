@@ -10,13 +10,13 @@ namespace wing;
 
 import std;
 
-// ---- 1. Network Isolation Key (NIK) Model -----------------------------------
+// ---- Network Isolation Key (NIK) Model -----------------------------------
 
 struct NetworkIsolationKey {
     top_level_site: u8[..128] = [], // e.g. "https://site-a.com"
-    frame_site: u8[..128] = [],     // e.g. "https://site-b.com"
-    is_cross_site: bool = false,
-    is_empty: bool = true,
+    frame_site:     u8[..128] = [], // e.g. "https://site-b.com"
+    is_cross_site:  bool      = false,
+    is_empty:       bool      = true,
 }
 
 // Constructs a clean NetworkIsolationKey

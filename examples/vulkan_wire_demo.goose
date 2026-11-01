@@ -9,7 +9,7 @@ import wing from "..";
 fn main() {
     print("=== goose-wing Vulkan-Style Wire API Reference Pipeline ===\n");
 
-    // ---- 1. Device and Transport Configuration ------------------------------
+    // ---- Device and Transport Configuration ------------------------------
     print("[1] Configuring Physical Wire Device Parameters:");
     var dev_cfg = wire::WireDeviceConfig {
         driver:            wire::WireDriverKind.Standard,
@@ -26,7 +26,7 @@ fn main() {
     print("    TCP_NODELAY:      true (Nagle disabled)");
     print("    IP TTL:           128");
 
-    // ---- 2. Command Buffer Recording (Explicit Framing) ---------------------
+    // ---- Command Buffer Recording (Explicit Framing) ---------------------
     print("\n[2] Recording Protocol Frames into Zero-Heap Command Buffer:");
     var cmd = wire::new_command_buffer();
 
@@ -72,7 +72,7 @@ fn main() {
     print("    Fault State:               ", cmd.has_error);
     print("    Heap Allocations:          0 malloc calls (100% stack)");
 
-    // ---- 3. Ingress Wire Frame Parsing Verification -------------------------
+    // ---- Ingress Wire Frame Parsing Verification -------------------------
     print("\n[4] Demuxing Stream with Zero-Copy WireH2FrameReader:");
     let wire_bytes = cmd.buf[..];
 

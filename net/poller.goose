@@ -24,7 +24,7 @@ const CONNECTION_BUFFER_CAP:    i64 = 4096;
 const COARSE_TIMEOUT_GRANULARITY_NS: u64 = 4000000000; // 4 seconds per tick
 const COARSE_TIMEOUT_DISABLED:       u8  = 255;
 
-// ---- 1. Readiness Event Flags & Types --------------------------------------
+// ---- Readiness Event Flags & Types --------------------------------------
 
 const POLL_NONE:   u32 = 0;
 const POLL_READ:   u32 = 1 << 0;  // Ready to read / incoming connection ready to accept
@@ -54,7 +54,7 @@ struct PollReadyEvent {
     is_timer:        bool = false,
 }
 
-// ---- 2. Socket Registration & Simulated State ------------------------------
+// ---- Socket Registration & Simulated State ------------------------------
 
 // Simulated readiness state for in-memory and testing multiplexing
 struct SimulatedReadyState {
@@ -74,7 +74,7 @@ struct SocketRegistration {
     sim:           SimulatedReadyState = SimulatedReadyState { .. },
 }
 
-// ---- 3. High-Resolution Timer Wheel ----------------------------------------
+// ---- High-Resolution Timer Wheel ----------------------------------------
 
 struct PollerTimer {
     timer_id:    u64  = 0,
@@ -84,7 +84,7 @@ struct PollerTimer {
     active:      bool = false,
 }
 
-// ---- 4. Poller Structure ---------------------------------------------------
+// ---- Poller Structure ---------------------------------------------------
 
 struct Poller {
     driver_cfg:              internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
@@ -161,7 +161,7 @@ fn close_poller(p: Poller&) {
     p.is_open = false;
 }
 
-// ---- 5. Registration Management --------------------------------------------
+// ---- Registration Management --------------------------------------------
 
 fn find_registration(p: const Poller&, fd: i32) -> i64 {
     for i in p.registrations.len {
@@ -242,7 +242,7 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     return true;
 }
 
-// ---- 6. High-Resolution Timer Management -----------------------------------
+// ---- High-Resolution Timer Management -----------------------------------
 
 fn add_timer(
     p:        Poller&,
@@ -406,7 +406,7 @@ fn check_coarse_timeouts(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..6
     return fired;
 }
 
-// ---- 7. Simulated Events (Testing & In-Memory Multiplexing) -----------------
+// ---- Simulated Events (Testing & In-Memory Multiplexing) -----------------
 
 fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
@@ -438,7 +438,7 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
     return true;
 }
 
-// ---- 8. Polling Execution --------------------------------------------------
+// ---- Polling Execution --------------------------------------------------
 
 // Gathers readiness events and expired timers into out_events without heap allocations.
 // Returns total number of ready events harvested.
@@ -506,7 +506,7 @@ fn poll_events(
     return out_events.len as i32;
 }
 
-// ---- 9. Connection Buffers & Non-blocking Event Loop -----------------------
+// ---- Connection Buffers & Non-blocking Event Loop -----------------------
 
 enum LoopState {
     Created,

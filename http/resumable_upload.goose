@@ -10,14 +10,14 @@ import std;
 import client.request;
 import client.response;
 
-// ---- 1. Resumable Uploads Constants (draft-14) -------------------------------
+// ---- Resumable Uploads Constants (draft-14) -------------------------------
 
 const HEADER_UPLOAD_OFFSET:       const u8[:] = "Upload-Offset";
 const HEADER_UPLOAD_COMPLETE:     const u8[:] = "Upload-Complete";
 const MIME_PARTIAL_UPLOAD:        const u8[:] = "application/partial-upload";
 const STATUS_RESUMABLE_SUPPORTED: i32         = 104;
 
-// ---- 2. Resumable Upload Session State ---------------------------------------
+// ---- Resumable Upload Session State ---------------------------------------
 
 struct ResumableUploadState {
     upload_url: u8[..512] = [],
@@ -38,7 +38,7 @@ fn init_resumable_upload(total_size: i64, chunk_size: i64 = 65536) -> ResumableU
     };
 }
 
-// ---- 3. Header Formatting and Parsing Helpers -------------------------------
+// ---- Header Formatting and Parsing Helpers -------------------------------
 
 // Parses an integer from header value (returns 0 and false if invalid or negative).
 //
@@ -73,7 +73,7 @@ fn parse_upload_boolean(val: const u8[:]) -> bool, bool {
     return false, false;
 }
 
-// ---- 4. Request Formatting (draft-ietf-httpbis-resumable-upload-14) ---------
+// ---- Request Formatting (draft-ietf-httpbis-resumable-upload-14) ---------
 
 // Formats a POST request to initiate a resumable upload resource
 fn format_upload_creation_request(

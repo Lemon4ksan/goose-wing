@@ -6,7 +6,7 @@ namespace wire;
 
 import std;
 
-// ---- 1. Transport Driver Kinds & Capabilities -------------------------------
+// ---- Transport Driver Kinds & Capabilities -------------------------------
 
 enum WireDriverKind {
     Standard,
@@ -30,7 +30,7 @@ struct WireDeviceConfig {
     mss:               i32            = 1460,
 }
 
-// ---- 2. HTTP/2 Wire Frame Types (RFC 9113 §6 & RFC 9218 §7.1) ----------------
+// ---- HTTP/2 Wire Frame Types (RFC 9113 §6 & RFC 9218 §7.1) ----------------
 
 const H2_FRAME_DATA:            u8 = 0x00;
 const H2_FRAME_HEADERS:         u8 = 0x01;
@@ -44,7 +44,7 @@ const H2_FRAME_WINDOW_UPDATE:   u8 = 0x08;
 const H2_FRAME_CONTINUATION:    u8 = 0x09;
 const H2_FRAME_PRIORITY_UPDATE: u8 = 0x10; // RFC 9218 Section 7.1
 
-// ---- 3. HTTP/2 Wire Flags (RFC 9113 §4.1) -----------------------------------
+// ---- HTTP/2 Wire Flags (RFC 9113 §4.1) -----------------------------------
 
 const H2_FLAG_NONE:        u8 = 0x00;
 const H2_FLAG_END_STREAM:  u8 = 0x01;
@@ -53,7 +53,7 @@ const H2_FLAG_END_HEADERS: u8 = 0x04;
 const H2_FLAG_PADDED:      u8 = 0x08;
 const H2_FLAG_PRIORITY:    u8 = 0x20;
 
-// ---- 4. HTTP/2 Setting Identifiers (RFC 9113 §6.5.2 & RFC 9218 §5.1) --------
+// ---- HTTP/2 Setting Identifiers (RFC 9113 §6.5.2 & RFC 9218 §5.1) --------
 
 const H2_SETTING_HEADER_TABLE_SIZE:      u16 = 0x01; // default 4096
 const H2_SETTING_ENABLE_PUSH:            u16 = 0x02; // default 1

@@ -14,7 +14,7 @@ import wing from "..";
 fn main() {
     print("=== goose-wing Secure Microservice Reference Pipeline ===\n");
 
-    // ---- 1. Cryptographic Setup (Ed25519 Keys) ------------------------------
+    // ---- Cryptographic Setup (Ed25519 Keys) ------------------------------
     // Client Ed25519 keypair
     let client_seed: u8[32] = [
         0x9d, 0x61, 0xb1, 0x9c, 0x4f, 0x61, 0x97, 0xf8,
@@ -33,7 +33,7 @@ fn main() {
     ];
     let server_pub = core::ed25519_public_key(server_seed);
 
-    // ---- 2. TLS 1.3 Mutual Authentication (mTLS) Handshake ------------------
+    // ---- TLS 1.3 Mutual Authentication (mTLS) Handshake ------------------
     print("[1] Negotiating TLS 1.3 Mutual Authentication (mTLS):");
 
     // Server requests client certificate with Ed25519 signature algorithm
@@ -56,13 +56,13 @@ fn main() {
     assert(hs_ok && next_hs_state == wing::HsState.ServerWaitCV);
     print("    mTLS Handshake verified: Client identity 'CN=PaymentWorkerNode01' authenticated.\n");
 
-    // ---- 3. Client Prepares Authenticated Request ---------------------------
+    // ---- Client Prepares Authenticated Request ---------------------------
     print("[2] Client Constructing Authenticated Request:");
     let req_payload = "{\"account_id\": \"ACC-9921\", \"amount\": 50000, \"currency\": \"USD\"}";
 
     var req = wing::Request {
         method: "POST",
-        url: "https://payments.internal.mesh/v2/settlement?priority=high",
+        url:    "https://payments.internal.mesh/v2/settlement?priority=high",
         ..
     };
     req.body.append(req_payload);
@@ -83,7 +83,7 @@ fn main() {
     print("    Applied RFC 9421 Signature:  ", wing::header(req, "Signature"));
     print("    Signature Input Parameters:  ", wing::header(req, "Signature-Input"), "\n");
 
-    // ---- 4. Server Ingestion & Verification ---------------------------------
+    // ---- Server Ingestion & Verification ---------------------------------
     print("[3] Server Ingestion & Boundary Verification:");
 
     // 1. Verify RFC 9530 Content-Digest
@@ -102,7 +102,7 @@ fn main() {
     assert(ok_prio);
     print("    RFC 9218 Parsed Urgency:  ", prio_param.urgency, " (incremental = ", prio_param.incremental, ")\n");
 
-    // ---- 5. Server Response & Zero-Copy Scatter/Gather Dispatch ------------
+    // ---- Server Response & Zero-Copy Scatter/Gather Dispatch ------------
     print("[4] Server Constructing Signed Response with IoVec Dispatch:");
     let resp_chunk1 = "{\"status\": \"settled\", \"transaction_id\": \"TXN-40192\", ";
     let resp_chunk2 = "\"timestamp\": 1730198000, \"cleared\": true}";
@@ -133,7 +133,7 @@ fn main() {
     print("    Vectorized payload chunks:        ", core::iovec_count(iov), " segments (total ", core::iovec_total_bytes(iov), " bytes)");
     print("    Total wire transmission:          ", wire_headers.len + core::iovec_total_bytes(iov), " bytes (0 heap allocations)\n");
 
-    // ---- 6. Client Verification of Server Response --------------------------
+    // ---- Client Verification of Server Response --------------------------
     print("[5] Client Response Validation:");
     let res_sig_valid = wing::verify_response_ed25519(res, req, "server-gateway-01", server_pub[..]);
     assert(res_sig_valid);

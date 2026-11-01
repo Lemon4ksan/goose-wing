@@ -7,7 +7,7 @@ namespace internal;
 
 import std;
 
-// ---- 1. Frame Headers and Settings Structures -------------------------------
+// ---- Frame Headers and Settings Structures -------------------------------
 
 struct H3FrameHeader {
     frame_type:  u64 = 0,
@@ -50,7 +50,7 @@ fn is_allowed_on_request_stream(frame_type: u64) -> bool {
     return true;
 }
 
-// ---- 2. Frame Header Encoding & Decoding -----------------------------------
+// ---- Frame Header Encoding & Decoding -----------------------------------
 
 // Parses an HTTP/3 frame header (Type: VarInt, Length: VarInt).
 //
@@ -78,7 +78,7 @@ fn encode_h3_frame_header<B>(out: B&, frame_type: u64, payload_len: u64) -> bool
     return ok_t && ok_l;
 }
 
-// ---- 3. DATA & HEADERS Frames (RFC 9114 Sections 7.2.1 and 7.2.2) -----------
+// ---- DATA & HEADERS Frames (RFC 9114 Sections 7.2.1 and 7.2.2) -----------
 
 // Encodes a DATA frame (Type 0x00).
 fn encode_h3_data_frame<B>(out: B&, data: const u8[:]) -> bool {
@@ -107,7 +107,7 @@ fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u
     return true;
 }
 
-// ---- 4. SETTINGS Frame (RFC 9114 Section 7.2.4 & RFC 9204 Section 5) --------
+// ---- SETTINGS Frame (RFC 9114 Section 7.2.4 & RFC 9204 Section 5) --------
 
 // Encodes a SETTINGS frame (Type 0x04).
 fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
@@ -205,7 +205,7 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
     return H3_ERR_NO_ERROR;
 }
 
-// ---- 5. GOAWAY, CANCEL_PUSH, and MAX_PUSH_ID Frames ------------------------
+// ---- GOAWAY, CANCEL_PUSH, and MAX_PUSH_ID Frames ------------------------
 
 // Encodes a GOAWAY frame (Type 0x07).
 fn encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
@@ -270,7 +270,7 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
     return push_id, true;
 }
 
-// ---- 6. RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
+// ---- RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
 
 // Encodes a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2, Type 0xF0700).
 fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {

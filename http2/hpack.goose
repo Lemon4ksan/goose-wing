@@ -10,7 +10,7 @@ import std;
 import core from "..";
 import .framing;
 
-// ---- 1. hpack constants & limits --------------------------------------------
+// ---- hpack constants & limits --------------------------------------------
 
 const HPACK_STATIC_TABLE_ENTRIES: u64 = 61;
 const HPACK_ENTRY_OVERHEAD:       u64 = 32; // RFC 7541 Section 4.1 (+32 bytes per entry)
@@ -26,7 +26,7 @@ const HUFF_FAIL:     u8 = 0x04; // Transition hit EOS (256) or invalid code
 const HPACK_MAX_INT_SHIFT: u32 = 28; // Max bit shift for integer decoding
 const HPACK_MAX_INT_VAL:   u64 = 0x7FFFFFFF;
 
-// ---- 2. 256-state huffman fsm tables ----------------------------------------
+// ---- 256-state huffman fsm tables ----------------------------------------
 
 // Packed table: 256 states * 16 nibbles = 4096 u32 entries (exactly 16 KiB in L1d cache).
 // Byte 0: fstate (0..255 next state)
@@ -602,7 +602,7 @@ const HUFF_SYM_LENS: u8[256] = [
     26, 27, 26, 26, 27, 27, 27, 27, 27, 28, 27, 27, 27, 27, 27, 26,
 ];
 
-// ---- 3. huffman codec primitives -------------------------------------------
+// ---- huffman codec primitives -------------------------------------------
 
 struct HuffDecode {
     fstate: u8 = 0,
@@ -754,7 +754,7 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
     return true;
 }
 
-// ---- 4. integer codec with shift overflow protection -----------------------
+// ---- integer codec with shift overflow protection -----------------------
 
 // Decodes an HPACK integer with N-bit prefix (RFC 7541 Section 5.1).
 // Guards against shift overflow (shift >= 28) and integer overflow (Trail of Bits FIND-401).
@@ -826,7 +826,7 @@ fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> b
     return true;
 }
 
-// ---- 5. static table (rfc 7541 appendix a) ---------------------------------
+// ---- static table (rfc 7541 appendix a) ---------------------------------
 
 struct HpackStaticField {
     name: const u8[:] = "",
@@ -1029,7 +1029,7 @@ fn find_hpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
     return 0, false;
 }
 
-// ---- 6. zero-allocation dynamic table (rfc 7541 section 4) ------------------
+// ---- zero-allocation dynamic table (rfc 7541 section 4) ------------------
 
 struct HpackHeaderField {
     name_off:    u32  = 0,
@@ -1241,7 +1241,7 @@ fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
     return true;
 }
 
-// ---- 7. full hpack block decoder & rfc 9113 header validator ----------------
+// ---- full hpack block decoder & rfc 9113 header validator ----------------
 
 struct DecodedH2Header {
     name:        u8[..256]  = [],

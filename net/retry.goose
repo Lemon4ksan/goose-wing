@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
+// ---- Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 
 let ERR_QUIC_PROTOCOL_ERROR: i32 = -356; // Chromium net error code parity
 
@@ -85,7 +85,7 @@ fn evaluate_tier1_retry<Req>(
     };
 }
 
-// ---- 2. Tier 2: Exponential Backoff & 3 Jitter Strategies ------------------
+// ---- Tier 2: Exponential Backoff & 3 Jitter Strategies ------------------
 
 enum JitterStrategy {
     None,
@@ -165,7 +165,7 @@ fn compute_backoff_jitter_ms(
     };
 }
 
-// ---- 3. RFC 9110 Retry-After parser & Circuit Breaker ----------------------
+// ---- RFC 9110 Retry-After parser & Circuit Breaker ----------------------
 
 fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool {
     var all_digits = true;
@@ -297,7 +297,7 @@ fn is_host_circuit_broken(
     return false;
 }
 
-// ---- 4. Adaptive Retry Budget (Google SRE) ---------------------------------
+// ---- Adaptive Retry Budget (Google SRE) ---------------------------------
 
 // Rate-limiting container capping retry traffic as a fixed percentage of total requests.
 struct AdaptiveRetryBudget {

@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. traceparent model & invariants -------------------------------------
+// ---- traceparent model & invariants -------------------------------------
 
 struct Traceparent {
     version:     u8     = 0,
@@ -144,7 +144,7 @@ inline fn traceparent_is_sampled(tp: const Traceparent&) -> bool {
     return (tp.trace_flags & TRACE_FLAG_SAMPLED) != 0;
 }
 
-// ---- 2. tracestate model & parsing -----------------------------------------
+// ---- tracestate model & parsing -----------------------------------------
 
 struct TracestateMember {
     key: u8[..256] = [],

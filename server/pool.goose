@@ -9,18 +9,18 @@ import .router;
 
 // ---- extractor bitmasks ----------------------------------------------------
 
-let ENTRY_NONE: u32 = 0;
-let ENTRY_CONN: u32 = 1 << 0;
-let ENTRY_PARAMS: u32 = 1 << 1;
-let ENTRY_COOKIES: u32 = 1 << 2;
+let ENTRY_NONE:     u32 = 0;
+let ENTRY_CONN:     u32 = 1 << 0;
+let ENTRY_PARAMS:   u32 = 1 << 1;
+let ENTRY_COOKIES:  u32 = 1 << 2;
 let ENTRY_SECURITY: u32 = 1 << 3;
-let ENTRY_ALL: u32 = 0x0F;
+let ENTRY_ALL:      u32 = 0x0F;
 
 // ---- header map pool -------------------------------------------------------
 
 struct PooledHeaderMap {
     headers: wing::HeaderItem[..32] = [],
-    in_use: bool = false,
+    in_use:  bool                   = false,
 }
 
 struct HeaderMapPool {
@@ -47,15 +47,15 @@ fn release_header_map(pool: HeaderMapPool&, idx: i32) {
 // ---- extensions pool -------------------------------------------------------
 
 struct RequestExtensions {
-    peer_ip: u8[..48] = [],
-    matched_route: u8[..64] = [],
-    conn_id: u64 = 0,
-    request_seq: u64 = 0,
-    params: wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
-    session_data: u8[..512] = [],
-    canon_url: u8[..512] = [],
-    populated_entries: u32 = 0,
-    in_use: bool = false,
+    peer_ip:           u8[..48]              = [],
+    matched_route:     u8[..64]              = [],
+    conn_id:           u64                   = 0,
+    request_seq:       u64                   = 0,
+    params:            wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
+    session_data:      u8[..512]             = [],
+    canon_url:         u8[..512]             = [],
+    populated_entries: u32                   = 0,
+    in_use:            bool                  = false,
 }
 
 struct ExtensionsPool {
@@ -95,7 +95,7 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
 
 struct SyncHeadRelease {
     head_buffer_released: bool = false,
-    bytes_consumed: i64 = 0,
+    bytes_consumed:       i64  = 0,
 }
 
 fn new_sync_head_release() -> SyncHeadRelease {
@@ -110,9 +110,9 @@ fn mark_head_released(shr: SyncHeadRelease&, consumed: i64) {
 // ---- inline handler future -------------------------------------------------
 
 struct InlineHandlerFuture {
-    vtable_tag: u16 = 0,
-    state_len: u8 = 0,
-    completed: bool = false,
+    vtable_tag:   u16    = 0,
+    state_len:    u8     = 0,
+    completed:    bool   = false,
     inline_state: u8[48] = [0; 48],
 }
 
@@ -137,23 +137,23 @@ fn poll_future(fut: InlineHandlerFuture&) -> bool {
 // ---- connection timer ------------------------------------------------------
 
 struct ConnectionTimer {
-    active_req_seq: u64 = 0,
-    last_observed_seq: u64 = 0,
+    active_req_seq:    u64  = 0,
+    last_observed_seq: u64  = 0,
     in_flight_handler: bool = false,
-    half_deadline_ns: u64 = 15000000000, // 15 seconds (for 30s deadline)
-    last_tick_mono_ns: u64 = 0,
-    missed_ticks: u8 = 0,
+    half_deadline_ns:  u64  = 15000000000, // 15 seconds (for 30s deadline)
+    last_tick_mono_ns: u64  = 0,
+    missed_ticks:      u8   = 0,
 }
 
 fn new_connection_timer(deadline_ns: u64, now_ns: u64) -> ConnectionTimer {
     let half_ns = if deadline_ns == 0 { 15000000000 } else { deadline_ns >> 1 };
     return ConnectionTimer {
-        active_req_seq: 0,
+        active_req_seq:    0,
         last_observed_seq: 0,
         in_flight_handler: false,
-        half_deadline_ns: half_ns,
+        half_deadline_ns:  half_ns,
         last_tick_mono_ns: now_ns,
-        missed_ticks: 0,
+        missed_ticks:      0,
     };
 }
 

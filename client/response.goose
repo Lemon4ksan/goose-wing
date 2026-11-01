@@ -12,8 +12,8 @@ import http.headers;
 // ---- error model & diagnostics ---------------------------------------------
 
 struct Error {
-    code: i32 = 0,
-    stage: u8[..64] = [],
+    code:    i32       = 0,
+    stage:   u8[..64]  = [],
     message: u8[..256] = [],
 }
 
@@ -37,26 +37,26 @@ fn validate_informational_response_count(count: i32, max_limit: i32 = 5) -> bool
 
 // ---- response model & inspectors -------------------------------------------
 
-const RES_PRESENCE_DATE: u16 = 1 << 0;
-const RES_PRESENCE_CONTENT_LENGTH: u16 = 1 << 1;
-const RES_PRESENCE_CONTENT_TYPE: u16 = 1 << 2;
-const RES_PRESENCE_CONNECTION: u16 = 1 << 3;
+const RES_PRESENCE_DATE:              u16 = 1 << 0;
+const RES_PRESENCE_CONTENT_LENGTH:    u16 = 1 << 1;
+const RES_PRESENCE_CONTENT_TYPE:      u16 = 1 << 2;
+const RES_PRESENCE_CONNECTION:        u16 = 1 << 3;
 const RES_PRESENCE_TRANSFER_ENCODING: u16 = 1 << 4;
-const RES_PRESENCE_SERVER: u16 = 1 << 5;
+const RES_PRESENCE_SERVER:            u16 = 1 << 5;
 
 struct Response {
-    status_code: i32 = 0,
-    effective_url: u8[..2048] = [],
-    headers: HeaderItem[..32] = [],
-    trailers: HeaderItem[..16] = [],
-    presence_mask: u16 = 0,
-    redirect_count: i64 = 0,
-    url_chain: u8[..256][..16] = [],
-    final_method: u8[..16] = "GET",
-    protocol: u8[..16] = "HTTP/1.1",
-    sent_headers: HeaderItem[..32] = [],
-    set_cookies: u8[..256][..16] = [],
-    body: u8[>..] = [],
+    status_code:    i32              = 0,
+    effective_url:  u8[..2048]       = [],
+    headers:        HeaderItem[..32] = [],
+    trailers:       HeaderItem[..16] = [],
+    presence_mask:  u16              = 0,
+    redirect_count: i64              = 0,
+    url_chain:      u8[..256][..16]  = [],
+    final_method:   u8[..16]         = "GET",
+    protocol:       u8[..16]         = "HTTP/1.1",
+    sent_headers:   HeaderItem[..32] = [],
+    set_cookies:    u8[..256][..16]  = [],
+    body:           u8[>..]          = [],
 }
 
 fn reset_response(res: Response&) {

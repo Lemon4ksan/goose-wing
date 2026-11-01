@@ -9,15 +9,15 @@ namespace wing;
 import std;
 import json;
 
-// ---- 1. Waterfall Timing Model ---------------------------------------------
+// ---- Waterfall Timing Model ---------------------------------------------
 
 struct RequestTimings {
     blocked_us: i64 = 0, // Queue wait time
-    dns_us: i64 = 0,     // DNS lookup duration
+    dns_us:     i64 = 0, // DNS lookup duration
     connect_us: i64 = 0, // TCP / UDP socket connect duration
-    ssl_us: i64 = 0,     // TLS 1.3 handshake duration
-    send_us: i64 = 0,    // Wire transmission duration
-    wait_us: i64 = 0,    // TTFB (Time to First Byte)
+    ssl_us:     i64 = 0, // TLS 1.3 handshake duration
+    send_us:    i64 = 0, // Wire transmission duration
+    wait_us:    i64 = 0, // TTFB (Time to First Byte)
     receive_us: i64 = 0, // Body download duration
 }
 
@@ -48,18 +48,18 @@ fn format_us_as_ms<B>(us: i64, out: B&) {
     format(out, frac);
 }
 
-// ---- 2. HAR 1.2 Entry Serialization ----------------------------------------
+// ---- HAR 1.2 Entry Serialization ----------------------------------------
 
 struct HarEntry {
-    started_iso8601: u8[..32] = [],
-    method: u8[..16] = [],
-    url: u8[..256] = [],
-    http_version: u8[..16] = [],
-    status: u16 = 200,
-    status_text: u8[..32] = [],
-    request_bytes: i64 = 0,
-    response_bytes: i64 = 0,
-    timings: RequestTimings = RequestTimings { .. },
+    started_iso8601: u8[..32]       = [],
+    method:          u8[..16]       = [],
+    url:             u8[..256]      = [],
+    http_version:    u8[..16]       = [],
+    status:          u16            = 200,
+    status_text:     u8[..32]       = [],
+    request_bytes:   i64            = 0,
+    response_bytes:  i64            = 0,
+    timings:         RequestTimings = RequestTimings { .. },
 }
 
 // Serializes a single entry object conforming to HTTP Archive (HAR 1.2) specification

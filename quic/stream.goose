@@ -12,7 +12,7 @@ import .packet;
 import .frames;
 import .connection;
 
-// ---- 1. Stream Directionality & Classification (RFC 9000 Section 2.1) -------
+// ---- Stream Directionality & Classification (RFC 9000 Section 2.1) -------
 
 enum QuicStreamType {
     ClientBidi, // 0b00: 0, 4, 8...
@@ -47,7 +47,7 @@ inline fn quic_stream_can_recv(id: u64, role: QuicRole) -> bool {
     return t == 2; // Server can receive on ClientUni
 }
 
-// ---- 2. Sending & Receiving Stream States (RFC 9000 Section 3) --------------
+// ---- Sending & Receiving Stream States (RFC 9000 Section 3) --------------
 
 enum QuicSendState {
     Ready,      // Opened, can send STREAM or STREAM_DATA_BLOCKED
@@ -103,7 +103,7 @@ fn new_quic_stream(stream_id: u64, max_recv_flow: u64 = 65536) -> QuicStream {
     };
 }
 
-// ---- 3. Arithmetic Safety Subroutines ---------------------------------------
+// ---- Arithmetic Safety Subroutines ---------------------------------------
 
 inline fn calc_sum_u64(a: u64, b: u64) -> u64 {
     return a + b;
@@ -119,7 +119,7 @@ inline fn calc_max_u64(a: u64, b: u64) -> u64 {
     return if a >= b { a } else { b };
 }
 
-// ---- 4. Sending Stream State Machine (RFC 9000 Section 3.1) -----------------
+// ---- Sending Stream State Machine (RFC 9000 Section 3.1) -----------------
 
 // Records transmission of stream data and updates sender state.
 fn quic_stream_on_send_data(
@@ -185,7 +185,7 @@ fn quic_stream_on_send_ack(s: QuicStream&, all_data_acked: bool) -> bool {
     return false;
 }
 
-// ---- 5. Receiving Stream State Machine (RFC 9000 Section 3.2) ---------------
+// ---- Receiving Stream State Machine (RFC 9000 Section 3.2) ---------------
 
 // Validates final size invariants upon receiving FIN or RESET_STREAM (RFC 9000 Section 4.5).
 inline fn validate_recv_final_size(
@@ -336,7 +336,7 @@ fn quic_stream_on_app_read_reset(s: QuicStream&) -> bool {
     return false;
 }
 
-// ---- 6. Stream Flow Control Updates (RFC 9000 Section 4) --------------------
+// ---- Stream Flow Control Updates (RFC 9000 Section 4) --------------------
 
 // Updates peer-advertised send window limit (MAX_STREAM_DATA cannot decrease).
 inline fn quic_stream_update_send_max(s: QuicStream&, limit: u64) {
@@ -352,7 +352,7 @@ inline fn quic_stream_update_recv_max(s: QuicStream&, limit: u64) {
     }
 }
 
-// ---- 7. Terminal State Evaluation ------------------------------------------
+// ---- Terminal State Evaluation ------------------------------------------
 
 inline fn quic_stream_is_send_closed(s: const QuicStream&) -> bool {
     return s.send_state == QuicSendState.DataRecvd || s.send_state == QuicSendState.ResetRecvd;
@@ -376,7 +376,7 @@ fn quic_stream_is_terminal(s: const QuicStream&, role: QuicRole) -> bool {
     return true;
 }
 
-// ---- 8. Zero-Allocation Stream Table ----------------------------------------
+// ---- Zero-Allocation Stream Table ----------------------------------------
 
 struct QuicStreamTable {
     streams:            QuicStream[..128] = [],

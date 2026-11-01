@@ -12,14 +12,14 @@ import core from "..";
 
 // Maximum clock drift and backward NTP jump tolerance before clamping TAT
 const GATEWAY_GCRA_MAX_DRIFT_NS: u64 = 5000000000; // 5.0 seconds
-const GATEWAY_LIMITER_NONE: i32 = -1;
+const GATEWAY_LIMITER_NONE:      i32 = -1;
 
 // Quota configuration specifying cell spacing (T) and burst headroom (tau)
 struct GcraConfig {
     emission_interval_ns: u64 = 1000000, // T: time increment per cell (ns)
-    tau_ns: u64 = 5000000,               // tau: burst tolerance delay (ns)
-    max_burst: u64 = 5,                  // max allowable burst tokens
-    limit_window_ns: u64 = 6000000,      // tau + T (precalculated window)
+    tau_ns:               u64 = 5000000, // tau: burst tolerance delay (ns)
+    max_burst:            u64 = 5,       // max allowable burst tokens
+    limit_window_ns:      u64 = 6000000, // tau + T (precalculated window)
 }
 
 inline fn clamp_pos_u64(x: u64) -> u64 {
@@ -66,9 +66,9 @@ fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
 
     return GcraConfig {
         emission_interval_ns: t_ns,
-        tau_ns: tau_ns,
-        max_burst: burst_capacity,
-        limit_window_ns: win_ns,
+        tau_ns:               tau_ns,
+        max_burst:            burst_capacity,
+        limit_window_ns:      win_ns,
     };
 }
 
@@ -79,9 +79,9 @@ fn new_gcra_config_interval(interval_ns: u64, tau_ns: u64, max_burst: u64) -> Gc
 
     return GcraConfig {
         emission_interval_ns: t_ns,
-        tau_ns: tau_ns,
-        max_burst: max_burst,
-        limit_window_ns: win_ns,
+        tau_ns:               tau_ns,
+        max_burst:            max_burst,
+        limit_window_ns:      win_ns,
     };
 }
 
@@ -92,11 +92,11 @@ struct GcraTatCell {
 
 // Result of a GCRA rate check
 struct GcraDecision {
-    allowed: bool = false,
-    remaining_burst: u64 = 0,
-    retry_after_ns: u64 = 0,
-    reset_after_ns: u64 = 0,
-    tat_ns: u64 = 0,
+    allowed:         bool = false,
+    remaining_burst: u64  = 0,
+    retry_after_ns:  u64  = 0,
+    reset_after_ns:  u64  = 0,
+    tat_ns:          u64  = 0,
 }
 
 // Clamps TAT if system clock drifted or jumped backward into the past.
@@ -134,11 +134,11 @@ fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: 
 
     guard now_ns >= t_allow else {
         return GcraDecision {
-            allowed: false,
+            allowed:         false,
             remaining_burst: 0,
-            retry_after_ns: retry_after,
-            reset_after_ns: retry_after,
-            tat_ns: tat_old,
+            retry_after_ns:  retry_after,
+            reset_after_ns:  retry_after,
+            tat_ns:          tat_old,
         };
     }
 
@@ -147,11 +147,11 @@ fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: 
     let reset_after = core::sub_sat_u64(tat_new, now_ns);
 
     return GcraDecision {
-        allowed: true,
+        allowed:         true,
         remaining_burst: rem,
-        retry_after_ns: 0,
-        reset_after_ns: reset_after,
-        tat_ns: tat_new,
+        retry_after_ns:  0,
+        reset_after_ns:  reset_after,
+        tat_ns:          tat_new,
     };
 }
 
@@ -170,11 +170,11 @@ fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now
 
     guard now_ns >= t_allow else {
         return GcraDecision {
-            allowed: false,
+            allowed:         false,
             remaining_burst: 0,
-            retry_after_ns: retry_after,
-            reset_after_ns: retry_after,
-            tat_ns: tat_old,
+            retry_after_ns:  retry_after,
+            reset_after_ns:  retry_after,
+            tat_ns:          tat_old,
         };
     }
 
@@ -182,11 +182,11 @@ fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now
     let reset_after = core::sub_sat_u64(tat_new, now_ns);
 
     return GcraDecision {
-        allowed: true,
+        allowed:         true,
         remaining_burst: rem,
-        retry_after_ns: 0,
-        reset_after_ns: reset_after,
-        tat_ns: tat_new,
+        retry_after_ns:  0,
+        reset_after_ns:  reset_after,
+        tat_ns:          tat_new,
     };
 }
 
@@ -207,18 +207,18 @@ fn gcra_reset(cell: GcraTatCell&) {
 // ---- Bounded Multi-Client Gateway Rate Limiter -----------------------------
 
 struct GatewayClientEntry {
-    client_id: u8[..64] = [],
-    cell: GcraTatCell = GcraTatCell { .. },
-    last_seen_ns: u64 = 0,
-    consecutive_rejects: u32 = 0,
-    in_use: bool = false,
+    client_id:           u8[..64]    = [],
+    cell:                GcraTatCell = GcraTatCell { .. },
+    last_seen_ns:        u64         = 0,
+    consecutive_rejects: u32         = 0,
+    in_use:              bool        = false,
 }
 
 struct GatewayRateLimiter {
-    config: GcraConfig = GcraConfig { .. },
-    entries: GatewayClientEntry[..64] = [],
-    total_allowed: u64 = 0,
-    total_rejected: u64 = 0,
+    config:         GcraConfig               = GcraConfig { .. },
+    entries:        GatewayClientEntry[..64] = [],
+    total_allowed:  u64                      = 0,
+    total_rejected: u64                      = 0,
 }
 
 inline fn inc_limiter_allowed(limiter: GatewayRateLimiter&) {
@@ -263,7 +263,7 @@ fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) 
 // Finds an inactive or expired slot, or oldest active slot for replacement.
 fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> i32 {
     let n = limiter.entries.len as i32;
-    var oldest_idx: i32 = GATEWAY_LIMITER_NONE;
+    var oldest_idx:  i32 = GATEWAY_LIMITER_NONE;
     var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
 
     for i in n {
@@ -334,10 +334,10 @@ inline fn record_fallback_admission(limiter: GatewayRateLimiter&, dec: const Gcr
 
 // Checks and updates rate limit for a client ID in the gateway limiter.
 fn check_gateway_rate_limit(
-    limiter: GatewayRateLimiter&,
+    limiter:   GatewayRateLimiter&,
     client_id: const u8[:],
-    cost: u64,
-    now_ns: u64,
+    cost:      u64,
+    now_ns:    u64,
 ) -> GcraDecision {
     let slot = allocate_client_entry(limiter, client_id, now_ns);
     if slot >= 0 && slot < limiter.entries.len {
@@ -355,10 +355,10 @@ fn check_gateway_rate_limit(
 
 // Applies penalty delay to a specific client entry.
 fn penalize_gateway_client(
-    limiter: GatewayRateLimiter&,
-    client_id: const u8[:],
+    limiter:    GatewayRateLimiter&,
+    client_id:  const u8[:],
     penalty_ns: u64,
-    now_ns: u64,
+    now_ns:     u64,
 ) {
     let slot = find_client_slot(limiter, client_id);
     guard slot >= 0 && slot < limiter.entries.len else { return; }

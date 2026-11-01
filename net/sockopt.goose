@@ -9,46 +9,46 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. OS-Level Socket Constants ------------------------------------------
+// ---- OS-Level Socket Constants ------------------------------------------
 
 // Protocol Levels
-const IPPROTO_IP: i32 = 0;
+const IPPROTO_IP:  i32 = 0;
 const IPPROTO_TCP: i32 = 6;
 
 // Socket Level Constants
-const SOL_SOCKET_WIN: i32 = 0xFFFF;
+const SOL_SOCKET_WIN:   i32 = 0xFFFF;
 const SOL_SOCKET_POSIX: i32 = 1;
 
 // Socket Option Names (Universal / Windows / Linux)
-const SO_RCVBUF_OPT: i32 = 0x1002;    // Windows SO_RCVBUF (or 8 on Linux)
-const SO_SNDBUF_OPT: i32 = 0x1001;    // Windows SO_SNDBUF (or 7 on Linux)
+const SO_RCVBUF_OPT:    i32 = 0x1002; // Windows SO_RCVBUF (or 8 on Linux)
+const SO_SNDBUF_OPT:    i32 = 0x1001; // Windows SO_SNDBUF (or 7 on Linux)
 const SO_KEEPALIVE_OPT: i32 = 0x0008; // SO_KEEPALIVE
-const TCP_NODELAY_OPT: i32 = 0x0001;  // TCP_NODELAY
-const SO_LINGER_OPT: i32 = 0x0080;    // SO_LINGER
+const TCP_NODELAY_OPT:  i32 = 0x0001; // TCP_NODELAY
+const SO_LINGER_OPT:    i32 = 0x0080; // SO_LINGER
 const SO_REUSEADDR_OPT: i32 = 0x0004; // SO_REUSEADDR
 const SO_REUSEPORT_OPT: i32 = 0x0200; // SO_REUSEPORT
 
 // Channel shutdown modes
-const SHUT_RD: i32 = 0;
-const SHUT_WR: i32 = 1;
+const SHUT_RD:   i32 = 0;
+const SHUT_WR:   i32 = 1;
 const SHUT_RDWR: i32 = 2;
 
 // IP Level Option Names
-const IP_TTL_OPT: i32 = 4;             // IP_TTL
-const IP_DONTFRAG_WIN: i32 = 14;       // Windows IP_DONTFRAGMENT
+const IP_TTL_OPT:            i32 = 4;  // IP_TTL
+const IP_DONTFRAG_WIN:       i32 = 14; // Windows IP_DONTFRAGMENT
 const IP_MTU_DISCOVER_LINUX: i32 = 10; // Linux IP_MTU_DISCOVER (PMTUDISC_DO = 2)
 
-// ---- 2. Socket p0f Profile Configuration -----------------------------------
+// ---- Socket p0f Profile Configuration -----------------------------------
 
 struct SocketP0fProfile {
-    ttl: i32 = 64,
-    window_size: i32 = 65535,
-    has_dont_fragment: bool = true,
-    tcp_nodelay: bool = true,
-    tcp_keepalive: bool = true,
-    mss: i32 = 1460,
-    wscale: i32 = 8,
-    os_name: u8[..32] = "Universal/POSIX",
+    ttl:               i32      = 64,
+    window_size:       i32      = 65535,
+    has_dont_fragment: bool     = true,
+    tcp_nodelay:       bool     = true,
+    tcp_keepalive:     bool     = true,
+    mss:               i32      = 1460,
+    wscale:            i32      = 8,
+    os_name:           u8[..32] = "Universal/POSIX",
 }
 
 // Generates the socket option profile from an active Profile enum

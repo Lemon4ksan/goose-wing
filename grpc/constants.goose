@@ -7,7 +7,7 @@ namespace wing;
 
 import std;
 
-// ---- 1. Framing Constants (LPM: Length-Prefixed Message) -------------------
+// ---- Framing Constants (LPM: Length-Prefixed Message) -------------------
 
 // 5-byte LPM Header: 1-byte compression flag + 4-byte big-endian uint32 payload length.
 const GRPC_LPM_HEADER_LEN: u32 = 5;
@@ -22,7 +22,7 @@ const GRPC_WEB_FLAG_TRAILERS: u8 = 0x80;
 // Maximum allowed single gRPC message payload size (default 4MB, bounded for zero-heap stack)
 const GRPC_DEFAULT_MAX_MESSAGE_SIZE: u32 = 4194304;
 
-// ---- 2. Canonical gRPC Status Codes (RFC / gRPC Core) ----------------------
+// ---- Canonical gRPC Status Codes (RFC / gRPC Core) ----------------------
 
 enum GrpcStatusCode {
     Ok,
@@ -139,25 +139,25 @@ fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
 }
 
 struct GrpcMetadata {
-    key: u8[..64] = [],
+    key:   u8[..64]  = [],
     value: u8[..256] = [],
 }
 
-// ---- 3. Well-Known gRPC Headers and Content Types --------------------------
+// ---- Well-Known gRPC Headers and Content Types --------------------------
 
-let GRPC_CONTENT_TYPE: const u8[:] = "application/grpc";
+let GRPC_CONTENT_TYPE:       const u8[:] = "application/grpc";
 let GRPC_CONTENT_TYPE_PROTO: const u8[:] = "application/grpc+proto";
-let GRPC_CONTENT_TYPE_JSON: const u8[:] = "application/grpc+json";
+let GRPC_CONTENT_TYPE_JSON:  const u8[:] = "application/grpc+json";
 
-let GRPC_WEB_CONTENT_TYPE: const u8[:] = "application/grpc-web";
+let GRPC_WEB_CONTENT_TYPE:       const u8[:] = "application/grpc-web";
 let GRPC_WEB_CONTENT_TYPE_PROTO: const u8[:] = "application/grpc-web+proto";
-let GRPC_WEB_CONTENT_TYPE_JSON: const u8[:] = "application/grpc-web+json";
-let GRPC_WEB_TEXT_CONTENT_TYPE: const u8[:] = "application/grpc-web-text";
-let GRPC_WEB_TEXT_PROTO: const u8[:] = "application/grpc-web-text+proto";
+let GRPC_WEB_CONTENT_TYPE_JSON:  const u8[:] = "application/grpc-web+json";
+let GRPC_WEB_TEXT_CONTENT_TYPE:  const u8[:] = "application/grpc-web-text";
+let GRPC_WEB_TEXT_PROTO:         const u8[:] = "application/grpc-web-text+proto";
 
-let HEADER_GRPC_STATUS: const u8[:] = "grpc-status";
-let HEADER_GRPC_MESSAGE: const u8[:] = "grpc-message";
-let HEADER_GRPC_TIMEOUT: const u8[:] = "grpc-timeout";
-let HEADER_GRPC_ENCODING: const u8[:] = "grpc-encoding";
-let HEADER_GRPC_ACCEPT_ENCODING: const u8[:] = "grpc-accept-encoding";
+let HEADER_GRPC_STATUS:             const u8[:] = "grpc-status";
+let HEADER_GRPC_MESSAGE:            const u8[:] = "grpc-message";
+let HEADER_GRPC_TIMEOUT:            const u8[:] = "grpc-timeout";
+let HEADER_GRPC_ENCODING:           const u8[:] = "grpc-encoding";
+let HEADER_GRPC_ACCEPT_ENCODING:    const u8[:] = "grpc-accept-encoding";
 let HEADER_GRPC_STATUS_DETAILS_BIN: const u8[:] = "grpc-status-details-bin";

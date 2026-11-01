@@ -16,7 +16,7 @@ import core from "../..";
 import wing from "../..";
 import wire_kit from ".";
 
-// ---- 1. WebSocket Control Frames (RFC 6455 В§5.5) ---------------------------
+// ---- WebSocket Control Frames (RFC 6455 В§5.5) ---------------------------
 
 fn test_ws_control_frame_invariants() {
     print("--- 1. WS Control Frames (RFC 6455 Section 5.5) ---\n");
@@ -65,7 +65,7 @@ fn test_ws_control_frame_invariants() {
     // CHECK: PARSE_CLOSE_OVER_125: ok=false
 }
 
-// ---- 2. WebSocket RSV Bits (RFC 6455 В§5.2) ---------------------------------
+// ---- WebSocket RSV Bits (RFC 6455 В§5.2) ---------------------------------
 
 fn test_ws_rsv_bit_invariants() {
     print("--- 2. WS RSV Bits (RFC 6455 Section 5.2) ---\n");
@@ -116,7 +116,7 @@ fn test_ws_rsv_bit_invariants() {
     // CHECK: RSV1_ON_PING: closed=true code=1002
 }
 
-// ---- 3. WebSocket Close Code Validation (RFC 6455 В§7.4) --------------------
+// ---- WebSocket Close Code Validation (RFC 6455 В§7.4) --------------------
 
 fn test_ws_close_code_invariants() {
     print("--- 3. WS Close Codes (RFC 6455 Section 7.4) ---\n");
@@ -170,7 +170,7 @@ fn test_ws_close_code_invariants() {
     // CHECK: RECV_CLOSE_5000: closed=true code=1002
 }
 
-// ---- 4. Cookie Syntax and Prefixes (RFC 6265bis В§4.1.3 & RFC 6265 В§4.1.1) --
+// ---- Cookie Syntax and Prefixes (RFC 6265bis В§4.1.3 & RFC 6265 В§4.1.1) --
 
 fn test_cookie_syntax_and_prefix_invariants() {
     print("--- 4. Cookie Syntax and Prefixes (RFC 6265bis / RFC 6265) ---\n");

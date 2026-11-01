@@ -9,7 +9,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. constants and error codes (rfc 9000 section 20) ---------------------
+// ---- constants and error codes (rfc 9000 section 20) ---------------------
 
 const QUIC_VERSION_1:                u32 = 0x00000001;
 const QUIC_VERSION_NEGOTIATION:      u32 = 0x00000000;
@@ -63,7 +63,7 @@ const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
 const QUIC_FRAME_DATAGRAM:             u64 = 0x30; // RFC 9221 Section 3: DATAGRAM without Length
 const QUIC_FRAME_DATAGRAM_LEN:         u64 = 0x31; // RFC 9221 Section 3: DATAGRAM with Length
 
-// ---- 2. variable-length integer codec (rfc 9000 section 16) ----------------
+// ---- variable-length integer codec (rfc 9000 section 16) ----------------
 
 // Returns byte length (1, 2, 4, 8) indicated by 2-bit prefix.
 inline fn quic_varint_len(first_byte: u8) -> u8 {
@@ -150,7 +150,7 @@ inline fn quic_is_server_stream(id: u64) -> bool { return (id & 0x01) != 0; }
 inline fn quic_is_bidi_stream(id: u64) -> bool { return (id & 0x02) == 0; }
 inline fn quic_is_uni_stream(id: u64) -> bool { return (id & 0x02) != 0; }
 
-// ---- 3. packet header parsing & formatting (rfc 9000 section 17) ------------
+// ---- packet header parsing & formatting (rfc 9000 section 17) ------------
 
 enum QuicHeaderType {
     Initial,
@@ -407,7 +407,7 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     return true;
 }
 
-// ---- 4. header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
+// ---- header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
 
 // Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
 fn aes128_header_protect_mask(hp_key: const u8[16]&, sample: const u8[16]&) -> u8[5] {
@@ -547,7 +547,7 @@ fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) ->
     return pn;
 }
 
-// ---- 5. path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
+// ---- path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
 
 struct PathState {
     remote_ip:      u8[16] = [0; 16],
@@ -591,7 +591,7 @@ fn validate_path(path: PathState&) {
     path.is_validated = true;
 }
 
-// ---- 6. stream / crypto interval reassembly buffer --------------------------
+// ---- stream / crypto interval reassembly buffer --------------------------
 
 struct Interval {
     start: u64 = 0,
@@ -716,7 +716,7 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
     return take_bytes as u64;
 }
 
-// ---- 6. unreliable datagram extension (rfc 9221) ----------------------------
+// ---- unreliable datagram extension (rfc 9221) ----------------------------
 
 // Encodes an RFC 9221 QUIC DATAGRAM frame into buffer.
 // If with_length is true (default), encodes frame type 0x31 with VarInt length prefix.

@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. RFC 9180 Identifiers and Code Points --------------------------------
+// ---- RFC 9180 Identifiers and Code Points --------------------------------
 
 const HPKE_MODE_BASE: u8 = 0;
 
@@ -30,7 +30,7 @@ struct HpkeContext {
     nonce_len:       u16    = 12,
 }
 
-// ---- 2. Labeled KDF Primitives (RFC 9180 Section 4) -------------------------
+// ---- Labeled KDF Primitives (RFC 9180 Section 4) -------------------------
 
 // Computes LabeledExtract(salt, label, ikm) = HKDF-Extract(salt, "HPKE-v1" || suite_id || label || ikm)
 fn hpke_labeled_extract(
@@ -69,7 +69,7 @@ fn hpke_labeled_expand(
     return core::hkdf_expand_bytes_256(prk, labeled_info[..], length, out);
 }
 
-// ---- 3. DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
+// ---- DHKEM(X25519, HKDF-SHA256) (RFC 9180 Section 4.1) ------------------
 
 fn derive_kem_shared_secret(
     kem_suite_id:      const u8[:],
@@ -112,7 +112,7 @@ fn dhkem_x25519_decap(
     return derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
 }
 
-// ---- 4. HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------
+// ---- HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------
 
 // Sets up a base-mode sender context (SetupBaseS).
 fn hpke_setup_base_s(
@@ -290,7 +290,7 @@ fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
     return nonce;
 }
 
-// ---- 5. HPKE Seal and Open (RFC 9180 Section 5.2) ---------------------------
+// ---- HPKE Seal and Open (RFC 9180 Section 5.2) ---------------------------
 
 // Encrypts plaintext with current context key/nonce, increments seq, and appends ciphertext + 16B tag.
 fn hpke_seal(

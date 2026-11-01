@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. Data Structures -----------------------------------------------------
+// ---- Data Structures -----------------------------------------------------
 
 enum ProxyProtocolVersion {
     None,
@@ -66,7 +66,7 @@ struct ProxyHeader {
     ssl:        ProxySslInfo           = ProxySslInfo { .. },
 }
 
-// ---- 3. Helper Codecs -------------------------------------------------------
+// ---- Helper Codecs -------------------------------------------------------
 
 // Formats an IPv4 address into dotted decimal string notation (e.g. "192.168.0.1")
 fn format_ipv4<B>(ip: const u8[4]&, out: B&) {
@@ -266,7 +266,7 @@ fn parse_ipv6_hex(str: const u8[:], out_ip: u8[16]&) -> bool {
     return true;
 }
 
-// ---- 4. PROXY Protocol v1 Parser & Serializer (Text) ------------------------
+// ---- PROXY Protocol v1 Parser & Serializer (Text) ------------------------
 
 struct ProxyTokenSpan {
     offset: u16 = 0,
@@ -433,7 +433,7 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     return true;
 }
 
-// ---- 5. PROXY Protocol v2 Parser & Serializer (Binary) ----------------------
+// ---- PROXY Protocol v2 Parser & Serializer (Binary) ----------------------
 
 // Parses an incoming PROXY v2 binary header:
 // 12-byte preamble + ver_cmd(1B) + fam_trans(1B) + len(2B) + addr_block + TLVs
@@ -819,7 +819,7 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     return true;
 }
 
-// ---- 6. Auto-Detection and Stream Stripping ----------------------------------
+// ---- Auto-Detection and Stream Stripping ----------------------------------
 
 // Detects whether an incoming wire buffer starts with a PROXY protocol header
 fn detect_proxy_protocol(wire: const u8[:]) -> ProxyProtocolVersion {

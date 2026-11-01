@@ -12,19 +12,19 @@ import core.io.types;
 const PIPE_BUFFER_CAP: i64 = 65536; // 64 KB bounded inline storage
 
 struct PipeBuffer {
-    storage: u8[65536] = [0; 65536],
-    consumed: i64 = 0, // Absolute offset of fully consumed bytes
-    examined: i64 = 0, // Absolute offset of inspected bytes (monotonically non-decreasing)
-    written: i64 = 0,  // Absolute offset of bytes written into the buffer
-    is_completed: bool = false,
+    storage:      u8[65536] = [0; 65536],
+    consumed:     i64       = 0, // Absolute offset of fully consumed bytes
+    examined:     i64       = 0, // Absolute offset of inspected bytes (monotonically non-decreasing)
+    written:      i64       = 0, // Absolute offset of bytes written into the buffer
+    is_completed: bool      = false,
 }
 
 fn new_pipe_buffer() -> PipeBuffer {
     return PipeBuffer {
-        storage: [0; 65536],
-        consumed: 0,
-        examined: 0,
-        written: 0,
+        storage:      [0; 65536],
+        consumed:     0,
+        examined:     0,
+        written:      0,
         is_completed: false,
     };
 }

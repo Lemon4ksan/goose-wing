@@ -8,7 +8,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- 1. RFC 8879 Compression Algorithm Identifiers -------------------------
+// ---- RFC 8879 Compression Algorithm Identifiers -------------------------
 
 // RFC 8879 Section 3: Negotiating Certificate Compression - Compression Algorithm Identifiers
 const CERT_COMPRESSION_ZLIB:      u16 = 1; // RFC 8879 Section 3 (zlib)
@@ -35,7 +35,7 @@ fn is_valid_compression_algorithm(algo: u16) -> bool {
         || algo == CERT_COMPRESSION_ZLIB;
 }
 
-// ---- 2. CompressedCertificate Message Model ---------------------------------
+// ---- CompressedCertificate Message Model ---------------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Structure
 struct CompressedCertificate {
@@ -44,7 +44,7 @@ struct CompressedCertificate {
     compressed_certificate_message: const u8[:] = "",
 }
 
-// ---- 3. Wire Encoding and Decoding (RFC 8879 §4) -----------------------------
+// ---- Wire Encoding and Decoding (RFC 8879 §4) -----------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Serializer
 fn encode_compressed_certificate<B>(
@@ -101,7 +101,7 @@ fn parse_compressed_certificate_msg(
     return true;
 }
 
-// ---- 4. Safe Decompression Engine (RFC 8879 §4) ------------------------------
+// ---- Safe Decompression Engine (RFC 8879 §4) ------------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Safe Decompression Handler
 // Verifies uncompressed size against maximum buffer bound and prevents decompression bombs.

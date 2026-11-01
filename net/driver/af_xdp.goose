@@ -31,57 +31,57 @@ fn native_af_xdp_close(fd: i64) { wing_af_xdp_close(fd); }
 
 // AF_XDP packet descriptor (matches Linux struct xdp_desc)
 struct XdpDesc {
-    addr: u64 = 0,
-    len: u32 = 0,
+    addr:    u64 = 0,
+    len:     u32 = 0,
     options: u32 = 0,
 }
 
 // Userspace Memory (UMEM) registration configuration
 struct AfXdpUmem {
-    addr: u64 = 0,
-    len: u64 = 0,
-    chunk_size: u32 = 2048,
-    headroom: u32 = 0,
+    addr:          u64  = 0,
+    len:           u64  = 0,
+    chunk_size:    u32  = 2048,
+    headroom:      u32  = 0,
     is_registered: bool = false,
 }
 
 // AF_XDP Zero-Copy Socket
 struct AfXdpSocket {
-    fd: i64 = -1,
-    ifindex: u32 = 0,
-    queue_id: u32 = 0,
-    umem: AfXdpUmem = AfXdpUmem { .. },
-    is_bound: bool = false,
-    zero_copy_mode: bool = true,
+    fd:             i64       = -1,
+    ifindex:        u32       = 0,
+    queue_id:       u32       = 0,
+    umem:           AfXdpUmem = AfXdpUmem { .. },
+    is_bound:       bool      = false,
+    zero_copy_mode: bool      = true,
 }
 
-const XSK_RING_RX: i32 = 2;
-const XSK_RING_TX: i32 = 3;
-const XSK_RING_FILL: i32 = 5;
+const XSK_RING_RX:         i32 = 2;
+const XSK_RING_TX:         i32 = 3;
+const XSK_RING_FILL:       i32 = 5;
 const XSK_RING_COMPLETION: i32 = 6;
 
 const XDP_FLAGS_ZEROCOPY: u32 = 1 << 2;
-const XDP_FLAGS_COPY: u32 = 1 << 1;
+const XDP_FLAGS_COPY:     u32 = 1 << 1;
 
 fn new_af_xdp_socket() -> AfXdpSocket {
     return AfXdpSocket {
-        fd: -1,
-        ifindex: 0,
-        queue_id: 0,
-        umem: AfXdpUmem { .. },
-        is_bound: false,
+        fd:             -1,
+        ifindex:        0,
+        queue_id:       0,
+        umem:           AfXdpUmem { .. },
+        is_bound:       false,
         zero_copy_mode: true,
     };
 }
 
 // Creates and registers an AF_XDP kernel-bypass socket with UMEM memory pool.
 fn af_xdp_open_socket(
-    ifindex: u32,
-    queue_id: u32,
-    umem_addr: u64,
-    umem_len: u64,
-    chunk_size: u32 = 2048,
-    zero_copy: bool = true,
+    ifindex:    u32,
+    queue_id:   u32,
+    umem_addr:  u64,
+    umem_len:   u64,
+    chunk_size: u32  = 2048,
+    zero_copy:  bool = true,
 ) -> AfXdpSocket, i32 {
     let fd = native_af_xdp_create_socket();
     if fd < 0 {
@@ -89,10 +89,10 @@ fn af_xdp_open_socket(
     }
 
     var umem = AfXdpUmem {
-        addr: umem_addr,
-        len: umem_len,
-        chunk_size: chunk_size,
-        headroom: 0,
+        addr:          umem_addr,
+        len:           umem_len,
+        chunk_size:    chunk_size,
+        headroom:      0,
         is_registered: false,
     };
 
@@ -117,11 +117,11 @@ fn af_xdp_open_socket(
     }
 
     return AfXdpSocket {
-        fd: fd,
-        ifindex: ifindex,
-        queue_id: queue_id,
-        umem: umem,
-        is_bound: true,
+        fd:             fd,
+        ifindex:        ifindex,
+        queue_id:       queue_id,
+        umem:           umem,
+        is_bound:       true,
         zero_copy_mode: zero_copy,
     }, 0;
 }

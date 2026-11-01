@@ -13,7 +13,7 @@ import client.request;
 import client.response;
 import .sfv;
 
-// ---- 1. RFC 9421 Constants --------------------------------------------------
+// ---- RFC 9421 Constants --------------------------------------------------
 
 const HEADER_SIGNATURE_INPUT: const u8[:] = "Signature-Input";
 const HEADER_SIGNATURE:       const u8[:] = "Signature";
@@ -21,7 +21,7 @@ const HEADER_SIGNATURE:       const u8[:] = "Signature";
 const SIG_ALG_HMAC_SHA256: const u8[:] = "hmac-sha256";
 const SIG_ALG_ED25519:     const u8[:] = "ed25519";
 
-// ---- 2. Signature Models ----------------------------------------------------
+// ---- Signature Models ----------------------------------------------------
 
 struct HttpSignatureParams {
     label:      u8[..32]       = "sig1",
@@ -33,7 +33,7 @@ struct HttpSignatureParams {
     components: u8[..32][..16] = [],
 }
 
-// ---- 3. Helper Functions & Proven Skew Arithmetic ---------------------------
+// ---- Helper Functions & Proven Skew Arithmetic ---------------------------
 
 fn sig_add_skew(t: i64) -> i64 {
     return t + 60;
@@ -185,7 +185,7 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
     }
 }
 
-// ---- 4. Signature Base Generation (RFC 9421 Section 2.5) --------------------
+// ---- Signature Base Generation (RFC 9421 Section 2.5) --------------------
 
 fn build_signature_base<B>(
     req:    const Request&,
@@ -236,7 +236,7 @@ fn build_response_signature_base<B>(
     return true;
 }
 
-// ---- 5. Cryptographic Engine (HMAC-SHA256 & Ed25519) ------------------------
+// ---- Cryptographic Engine (HMAC-SHA256 & Ed25519) ------------------------
 
 fn compute_signature_b64(
     alg:        const u8[:],
@@ -349,7 +349,7 @@ fn attach_response_signature_headers(res: Response&, params: const HttpSignature
     res.set_header(HEADER_SIGNATURE, sig_hdr[..]);
 }
 
-// ---- 6. Request Signing & Verification --------------------------------------
+// ---- Request Signing & Verification --------------------------------------
 
 // Signs an HTTP request according to RFC 9421 and attaches Signature-Input and Signature headers.
 fn sign_http_request(
@@ -394,7 +394,7 @@ fn verify_http_signature(
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
 }
 
-// ---- 7. Response Signing & Verification -------------------------------------
+// ---- Response Signing & Verification -------------------------------------
 
 // Signs an HTTP response according to RFC 9421.
 fn sign_http_response(
@@ -441,7 +441,7 @@ fn verify_http_response_signature(
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
 }
 
-// ---- 8. High-Level Convenience Helpers --------------------------------------
+// ---- High-Level Convenience Helpers --------------------------------------
 
 // Signs request with RFC 9421 HTTP Message Signatures using Ed25519.
 // Automatically configures standard component identifiers (@method, @authority, @path, @query).

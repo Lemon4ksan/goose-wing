@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- 1. DNS Wire Constants & Record Types -----------------------------------
+// ---- DNS Wire Constants & Record Types -----------------------------------
 
 const DNS_QTYPE_A:     u16 = 1;
 const DNS_QTYPE_AAAA:  u16 = 28;
@@ -32,7 +32,7 @@ const SVC_PARAM_IPV4HINT:        u16 = 4;
 const SVC_PARAM_ECH:             u16 = 5; // Encrypted Client Hello ECHConfigList
 const SVC_PARAM_IPV6HINT:        u16 = 6;
 
-// ---- 2. Data Structures ----------------------------------------------------
+// ---- Data Structures ----------------------------------------------------
 
 struct HttpsRecord {
     priority:        u16           = 0, // 0 = AliasMode, >0 = ServiceMode
@@ -58,7 +58,7 @@ struct DnsResponse {
     min_ttl_sec:    u32              = 0,
 }
 
-// ---- 3. DNS Name Encoding and Compression Decoding (RFC 1035) --------------
+// ---- DNS Name Encoding and Compression Decoding (RFC 1035) --------------
 
 // CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--".
 // Per RFC 3492 / RFC 5891 §4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
@@ -242,7 +242,7 @@ fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i
     return false;
 }
 
-// ---- 4. Query Builder ------------------------------------------------------
+// ---- Query Builder ------------------------------------------------------
 
 fn serialize_dns_header<B>(tx_id: u16, qd_count: u16, flags: u16, out: B&) {
     out.push(((tx_id >> 8) & 0xFF) as u8);
@@ -271,7 +271,7 @@ fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> b
     return serialize_dns_question(domain, qtype, 1, out);
 }
 
-// ---- 5. RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------
+// ---- RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------
 
 // Extracts ALPN parameter tokens into HttpsRecord (RFC 9460 §7.1).
 //
@@ -362,7 +362,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
     return true;
 }
 
-// ---- 6. Response Parser ----------------------------------------------------
+// ---- Response Parser ----------------------------------------------------
 
 // Parses a single DNS Resource Record RDATA into DnsResponse.
 //
@@ -457,7 +457,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
     return true;
 }
 
-// ---- 7. DNS over HTTPS (DoH RFC 8484) Wire Helpers --------------------------
+// ---- DNS over HTTPS (DoH RFC 8484) Wire Helpers --------------------------
 
 // Formats a DoH POST application/dns-message body for querying `domain` with `qtype`.
 fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out_body: B&) -> bool {
@@ -487,7 +487,7 @@ fn new_doh_resolver(endpoint: const u8[:] = "https://cloudflare-dns.com/dns-quer
     return r;
 }
 
-// ---- 8. DNS Cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861) -
+// ---- DNS Cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861) -
 
 enum DnsCacheStatus {
     Fresh,   // Within TTL
