@@ -3771,7 +3771,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(wing::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
         sub.assert_false(wing::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
 
-        // 4. RFC 9849 - ECH early_data placement rules
+        // 4. ECH early_data placement rules (stricter than RFC 9849 §6.1 step 7)
         sub.assert_true(
             wing::validate_ech_early_data_placement(wing::EchClientHelloType.Inner, true),
             "early_data in ClientHelloInner permitted",

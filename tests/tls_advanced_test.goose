@@ -681,7 +681,7 @@ fn test_ech_rfc9849_citations(t: lit::T&) {
     t.run("RFC 9849 ECH constants match corpus") { sub =>
         // rfc9849.txt: encrypted_client_hello(0xfe0d) extension and ECHConfig case 0xfe0d
         sub.assert_eq(wing::ECH_VERSION_RFC9849, 0xFE0D, "ECH_VERSION_RFC9849 == 0xFE0D");
-        sub.assert_eq(wing::EXT_ENCRYPTED_CLIENT_HELLO, 0xFE0D, "EXT_ENCRYPTED_CLIENT_HELLO == 0xFE0D");
+        sub.assert_eq(wing::EXT_ENCRYPTED_CLIENT_HELLO, 0xFE0D, "ext type == 0xFE0D");
         sub.assert_eq(wing::ECH_VERSION_RFC9849, wing::EXT_ENCRYPTED_CLIENT_HELLO, "version == ext type");
     };
 }

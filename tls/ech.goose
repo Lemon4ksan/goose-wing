@@ -447,9 +447,11 @@ fn ech_fsm_on_server_hello(
     }
 }
 
-// When ECH is used with 0-RTT (RFC 9849),
+// When ECH is used with 0-RTT,
 // early_data MUST be in ClientHelloInner, and MUST NOT appear in ClientHelloOuter.
 // A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
+// NOTE: This implementation is stricter than RFC 9849 §6.1 step 7 (which requires
+// early_data in BOTH Inner and Outer); reconciliation is slated for follow-up.
 fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data: bool) -> bool {
     if ch_type == EchClientHelloType.Outer && has_early_data {
         return false;
@@ -457,7 +459,7 @@ fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data
     return true;
 }
 
-// RFC 9849: ECH Outer ALPN Separation (OpenSSL #33428)
+// ECH Outer ALPN Separation (rule from OpenSSL #33428; ECH context per RFC 9849)
 // When ECH is accepted, the selected ALPN must match the inner ALPN offer.
 // When ECH is bypassed or rejected, the selected ALPN must match the outer ALPN offer.
 // An outer connection MUST NOT accept a negotiated ALPN that was only offered in the inner list.
