@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Deterministic zero-allocation Encrypted Client Hello (ECH, RFC 9460 & draft-ietf-tls-esni-13+).
+// Deterministic zero-allocation Encrypted Client Hello (ECH, RFC 9849).
 // Provides privacy-preserving SNI encryption via HPKE (RFC 9180) and DNS HTTPS RR (Type 65).
 namespace wing;
 
@@ -12,13 +12,13 @@ import .hpke;
 
 // ---- ECH Constants & Identifiers -----------------------------------------
 
-const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9460 & ECH draft-13/14+
+const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9849
 
 const ECH_CLIENT_OUTER: u8 = 0;
 const ECH_CLIENT_INNER: u8 = 1;
 
-// Supported ECH version (draft-ietf-tls-esni-13 / RFC 9460)
-const ECH_VERSION_DRAFT13: u16 = 0xFE0D;
+// Supported ECH version (RFC 9849)
+const ECH_VERSION_RFC9849: u16 = 0xFE0D;
 
 // ---- Data Structures ----------------------------------------------------
 
@@ -28,7 +28,7 @@ struct EchCipherSuite {
 }
 
 struct EchConfig {
-    version:             u16                 = ECH_VERSION_DRAFT13,
+    version:             u16                 = ECH_VERSION_RFC9849,
     length:              u16                 = 0,
     config_id:           u8                  = 0,
     kem_id:              u16                 = HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
@@ -53,7 +53,7 @@ struct EchClientState {
     retry_configs:   u8[..512]      = [],
 }
 
-// ---- ECHConfig Parser (RFC 9460 Section 4) ------------------------------
+// ---- ECHConfig Parser (RFC 9849 Section 4) ------------------------------
 
 // Reads cipher suites list from ECH contents cursor.
 //
@@ -143,7 +143,7 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     guard raw.len >= 4 else { return false; }
     var c = cursor_from(raw);
 
-    guard get_u16(c, out.version) && out.version == ECH_VERSION_DRAFT13 else { return false; }
+    guard get_u16(c, out.version) && out.version == ECH_VERSION_RFC9849 else { return false; }
     guard get_u16(c, out.length) && out.length <= cursor_len(c) else { return false; }
 
     let total_len = 4 + (out.length as i64);
@@ -178,7 +178,7 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
     let total_entry = 4 + (elen as i64);
     guard total_entry <= cursor_len(list_cursor) else { return false; }
 
-    if ver == ECH_VERSION_DRAFT13 {
+    if ver == ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
         guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
         guard out.configs.len < out.configs.cap else { return false; }
@@ -189,7 +189,7 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
 }
 
 // Parses an ECHConfigList: opaque<2..2^16-1> sequence of ECHConfig.
-// RFC 9460 Section 4: Clients MUST ignore any ECHConfig with an unsupported version.
+// RFC 9849 Section 4: Clients MUST ignore any ECHConfig with an unsupported version.
 // Rejects trailing unparsed bytes, empty lists, and truncated records.
 //
 // Example:
@@ -225,7 +225,7 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
     for i in cfg_count {
         guard i < list.configs.len else { break; }
         let cfg = list.configs[i];
-        guard cfg.version == ECH_VERSION_DRAFT13 && cfg.kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
+        guard cfg.version == ECH_VERSION_RFC9849 && cfg.kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
 
         let cs_count = cfg.cipher_suites.len;
         for j in cs_count {
@@ -243,7 +243,7 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
 
 // ---- ClientHelloInner Padding & Encryption ------------------------------
 
-// Computes RFC 9460 / ECH draft-13 padding for ClientHelloInner.
+// Computes RFC 9849 Section 6.1.3 padding for ClientHelloInner.
 // Pads inner ClientHello to hide exact length of real SNI and extensions.
 fn pad_ech_inner<B>(inner_bytes: const u8[:], max_name_len: u8, real_sni_len: i64, out_padded: B&) -> bool {
     guard inner_bytes.len > 0 else { return false; }
@@ -299,7 +299,7 @@ fn build_ech_outer_extension<B>(
     return true;
 }
 
-// RFC 9460 Section 6: SVCB-Compatible RR Types - Builds the ECH extension wire bytes for ClientHelloInner.
+// RFC 9849 Section 5: Builds the ECH extension wire bytes for ClientHelloInner.
 // Type = 0x01 (inner), empty payload.
 fn build_ech_inner_extension<B>(out: B&) {
     out.push(ECH_CLIENT_INNER);
@@ -335,7 +335,7 @@ fn seal_ech_inner(
     );
 }
 
-// Parses and validates retry_configs from Server HelloRetryRequest ECH extension (RFC 9460 Section 5).
+// Parses and validates retry_configs from Server HelloRetryRequest ECH extension (RFC 9849 Section 5).
 // Must contain a valid, parseable ECHConfigList.
 //
 // Example:
@@ -350,7 +350,7 @@ fn parse_and_validate_ech_retry_configs(
 }
 
 // Parses retry_configs from Server HelloRetryRequest ECH extension.
-// Enforces that the payload is a valid RFC 9460 ECHConfigList before copying.
+// Enforces that the payload is a valid RFC 9849 ECHConfigList before copying.
 //
 // Example:
 //   ext_data = [0x00, 0x24, 0xFE, 0x0D, ...], out_configs = []
@@ -364,7 +364,7 @@ fn parse_ech_hrr_retry_configs(ext_data: const u8[:], out_configs: u8[>..]&) -> 
     return true;
 }
 
-// Verifies the 8-byte ECH acceptance confirmation in ServerHello (RFC 9460 Section 7.2).
+// Verifies the 8-byte ECH acceptance confirmation in ServerHello (RFC 9849 Section 7.2).
 // Constant-time comparison against expected confirmation derived from transcript.
 fn verify_ech_acceptance_confirmation(
     ext_data:              const u8[:],
@@ -402,7 +402,7 @@ struct EchFsm {
     offered_config_id: u8               = 0,
 }
 
-// Handles ECH state machine progression on receiving ServerHello or HRR (RFC 9460 Section 6 & 7).
+// Handles ECH state machine progression on receiving ServerHello or HRR (RFC 9849 Section 6 & 7).
 fn ech_fsm_on_server_hello(
     fsm:               EchFsm&,
     sh_type:           EchServerHelloType,
@@ -438,7 +438,7 @@ fn ech_fsm_on_server_hello(
             return true;
         } else {
             // ECH rejected / bypassed by server
-            // RFC 9460 Section 7.2: If ECH was accepted in HRR, server MUST confirm ECH acceptance in ServerHello.
+            // RFC 9849 Section 7.2: If ECH was accepted in HRR, server MUST confirm ECH acceptance in ServerHello.
             // ServerHello omitting ECH extension when fsm.has_hrr is true is a fatal protocol violation!
             guard !fsm.has_hrr else { return false; }
             fsm.mode = EchHandshakeMode.Bypassed;
@@ -447,7 +447,7 @@ fn ech_fsm_on_server_hello(
     }
 }
 
-// RFC 9460 Section 6: SVCB-Compatible RR Types - When ECH is used with 0-RTT,
+// When ECH is used with 0-RTT (RFC 9849),
 // early_data MUST be in ClientHelloInner, and MUST NOT appear in ClientHelloOuter.
 // A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
 fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data: bool) -> bool {
@@ -457,7 +457,7 @@ fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data
     return true;
 }
 
-// RFC 9460 Section 6: SVCB-Compatible RR Types - ECH Outer ALPN Separation (OpenSSL #33428)
+// RFC 9849: ECH Outer ALPN Separation (OpenSSL #33428)
 // When ECH is accepted, the selected ALPN must match the inner ALPN offer.
 // When ECH is bypassed or rejected, the selected ALPN must match the outer ALPN offer.
 // An outer connection MUST NOT accept a negotiated ALPN that was only offered in the inner list.

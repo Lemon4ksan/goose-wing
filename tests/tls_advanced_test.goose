@@ -499,7 +499,7 @@ fn test_dns_and_https_rr(t: lit::T&) {
 fn test_ech_protocol(t: lit::T&) {
     t.run("ECH-01: ECHConfig & ECHConfigList Parsing") { sub =>
         // Construct a realistic synthetic ECHConfig wire buffer:
-        // version: 0xFE0D (draft-13)
+        // version: 0xFE0D (RFC 9849)
         // length: u16
         // KeyConfig:
         //   config_id: 42
@@ -582,7 +582,7 @@ fn test_ech_protocol(t: lit::T&) {
         let server_pk = core::x25519_base_scalarmult(server_sk);
 
         var config = wing::EchConfig { .. };
-        config.version = wing::ECH_VERSION_DRAFT13;
+        config.version = wing::ECH_VERSION_RFC9849;
         config.config_id = 7;
         config.kem_id = wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256;
         config.maximum_name_length = 64;
@@ -673,6 +673,16 @@ fn test_ech_protocol(t: lit::T&) {
             }
         }
         sub.assert_true(decrypted_sni_matches, "recovered inner ClientHello matches authentic payload");
+    };
+}
+
+// RFC 9849 ECH wire constants: extension type and ECHConfig.version share 0xFE0D.
+fn test_ech_rfc9849_citations(t: lit::T&) {
+    t.run("RFC 9849 ECH constants match corpus") { sub =>
+        // rfc9849.txt: encrypted_client_hello(0xfe0d) extension and ECHConfig case 0xfe0d
+        sub.assert_eq(wing::ECH_VERSION_RFC9849, 0xFE0D, "ECH_VERSION_RFC9849 == 0xFE0D");
+        sub.assert_eq(wing::EXT_ENCRYPTED_CLIENT_HELLO, 0xFE0D, "EXT_ENCRYPTED_CLIENT_HELLO == 0xFE0D");
+        sub.assert_eq(wing::ECH_VERSION_RFC9849, wing::EXT_ENCRYPTED_CLIENT_HELLO, "version == ext type");
     };
 }
 
@@ -1684,6 +1694,7 @@ fn main() {
     lit::run_case(runner, "23. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
     lit::run_case(runner, "24. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
     lit::run_case(runner, "25. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
+    lit::run_case(runner, "26. RFC 9849 ECH constants", test_ech_rfc9849_citations);
 
     let ok = lit::finish(runner);
     assert(ok);

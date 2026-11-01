@@ -2952,10 +2952,10 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_false(ok_bnd_synth, "synthetic message_hash (254) strictly rejected in validate_handshake_record_boundary");
     };
 
-    t.run("TLS-30: RFC 9460 & draft-13 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
-        // Helper to build a valid draft-13 ECHConfig wire payload
+    t.run("TLS-30: RFC 9849 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
+        // Helper to build a valid RFC 9849 ECHConfig wire payload
         var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, wing::ECH_VERSION_DRAFT13); // version 0xFE0D
+        wing::put_u16(b_cfg, wing::ECH_VERSION_RFC9849); // version 0xFE0D
         wing::start_u16_prefix(b_cfg); // length prefix for contents
 
         wing::put_u8(b_cfg, 0x01); // config_id
@@ -2988,8 +2988,8 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         // 1. Parsing genuine ECHConfig succeeds
         var cfg = wing::EchConfig { .. };
         let ok_cfg = wing::parse_ech_config(b_cfg.buf[..], cfg);
-        sub.assert_true(ok_cfg, "valid draft-13 ECHConfig parsed");
-        sub.assert_eq(cfg.version, wing::ECH_VERSION_DRAFT13, "version is 0xFE0D");
+        sub.assert_true(ok_cfg, "valid RFC 9849 ECHConfig parsed");
+        sub.assert_eq(cfg.version, wing::ECH_VERSION_RFC9849, "version is 0xFE0D");
         sub.assert_eq(cfg.config_id, 0x01, "config_id is 1");
         sub.assert_eq(cfg.cipher_suites.len, 1, "1 cipher suite parsed");
         sub.assert_bytes_eq(cfg.public_name[..], "public.cloudflare.com", "public_name matches");
@@ -3003,9 +3003,9 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let ok_badver = wing::parse_ech_config(b_badver.buf[..], cfg_bad);
         sub.assert_false(ok_badver, "unsupported ECHConfig version strictly rejected in parse_ech_config");
 
-        // 3. ECHConfig with empty public_name (RFC 9460 public_name<1..255>) rejected
+        // 3. ECHConfig with empty public_name (RFC 9849 public_name<1..255>) rejected
         var b_emptypub = wing::builder_init();
-        wing::put_u16(b_emptypub, wing::ECH_VERSION_DRAFT13);
+        wing::put_u16(b_emptypub, wing::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_emptypub);
         wing::put_u8(b_emptypub, 0x01);
         wing::put_u16(b_emptypub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
@@ -3027,7 +3027,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         // 4. ECHConfig with IP literal public_name rejected
         var b_ippub = wing::builder_init();
-        wing::put_u16(b_ippub, wing::ECH_VERSION_DRAFT13);
+        wing::put_u16(b_ippub, wing::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_ippub);
         wing::put_u8(b_ippub, 0x01);
         wing::put_u16(b_ippub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
@@ -3049,15 +3049,15 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let ok_ippub = wing::parse_ech_config(b_ippub.buf[..], cfg_bad);
         sub.assert_false(ok_ippub, "IP literal in ECHConfig public_name rejected");
 
-        // 5. ECHConfigList containing an unsupported version entry before a draft-13 entry:
-        // RFC 9460 §4: Client MUST ignore unsupported versions and successfully parse supported versions.
+        // 5. ECHConfigList containing an unsupported version entry before an RFC 9849 entry:
+        // RFC 9849 §4: Client MUST ignore unsupported versions and successfully parse supported versions.
         var b_list = wing::builder_init();
         wing::start_u16_prefix(b_list); // list length
         // Entry 1: unsupported version 0x9999 (len 6)
         wing::put_u16(b_list, 0x9999);
         wing::put_u16(b_list, 6);
         wing::put_bytes(b_list, "ignore");
-        // Entry 2: valid draft-13 config
+        // Entry 2: valid RFC 9849 config
         wing::put_bytes(b_list, b_cfg.buf[..]);
         wing::finish_u16_prefix(b_list);
 
@@ -3065,7 +3065,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let ok_list = wing::parse_ech_config_list(b_list.buf[..], cfg_list);
         sub.assert_true(ok_list, "ECHConfigList with unsupported version skipped and valid entry parsed");
         sub.assert_eq(cfg_list.configs.len, 1, "1 valid config in list");
-        sub.assert_eq(cfg_list.configs[0].version, wing::ECH_VERSION_DRAFT13, "parsed entry is draft-13");
+        sub.assert_eq(cfg_list.configs[0].version, wing::ECH_VERSION_RFC9849, "parsed entry is RFC 9849");
 
         // 6. ECHConfigList with truncated trailing bytes rejected
         var b_trunc = wing::builder_init();
@@ -3276,7 +3276,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         sub.assert_false(wing::validate_server_cipher_suite(0xC02F, client_ciphers[..]), "legacy suite 0xC02F rejected");
     };
 
-    t.run("TLS-36: RFC 9460 §§5-7 ECH HRR Handling, RetryConfigs & Acceptance Confirmation") { sub =>
+    t.run("TLS-36: RFC 9849 §§5-7 ECH HRR Handling, RetryConfigs & Acceptance Confirmation") { sub =>
         // 1. Acceptance confirmation verification in ServerHello (8 bytes)
         let expected_confirm: u8[8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         sub.assert_true(
@@ -3299,7 +3299,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         // 2. Validate parse_and_validate_ech_retry_configs
         var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, wing::ECH_VERSION_DRAFT13);
+        wing::put_u16(b_cfg, wing::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_cfg);
         wing::put_u8(b_cfg, 0x02); // config_id
         wing::put_u16(b_cfg, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
@@ -3393,7 +3393,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         sub.assert_true(ok_fsm_sh, "fsm handles SH with valid confirmation");
         sub.assert_true(fsm_accept.mode == wing::EchHandshakeMode.Accepted, "mode is Accepted");
 
-        // 5. Post-HRR ECH Acceptance Downgrade / Stripping Attack Defense (RFC 9460 §7.2)
+        // 5. Post-HRR ECH Acceptance Downgrade / Stripping Attack Defense (RFC 9849 §7.2)
         // If HRR accepted ECH (has_ech_ext == false), ServerHello MUST confirm acceptance.
         // ServerHello omitting ECH extension MUST NOT silently downgrade to Bypassed; it MUST be rejected!
         var fsm_hrr_accept = wing::EchFsm {
@@ -3423,9 +3423,9 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             expected_confirm,
             dummy_rc,
         );
-        sub.assert_false(ok_sh_strip, "RFC 9460 §7.2: ServerHello omitting ECH confirmation after HRR acceptance MUST abort");
+        sub.assert_false(ok_sh_strip, "RFC 9849 §7.2: ServerHello omitting ECH confirmation after HRR acceptance MUST abort");
 
-        // 6. ECH Outer ALPN Separation (RFC 9460 Section 6: SVCB-Compatible RR Types - OpenSSL Issue #33428 ALPN separation)
+        // 6. ECH Outer ALPN Separation (RFC 9849 - OpenSSL Issue #33428 ALPN separation)
         let inner_alpn = "h2";
         let outer_alpn = "http/1.1";
 
@@ -3731,7 +3731,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
     };
 
     // ------------------------------------------------------------------------
-    // TLS-41: 0-RTT Early Data State Machine & Recovery (RFC 8446 §4.2.10, RFC 9460 Section 6: SVCB-Compatible RR Types)
+    // TLS-41: 0-RTT Early Data State Machine & Recovery (RFC 8446 §4.2.10, RFC 9849)
     // ------------------------------------------------------------------------
     t.run("TLS-41: 0-RTT Early Data Acceptance, Rejection Recovery & ECH Placement") { sub =>
         // 1. Early data accepted by server
@@ -3771,7 +3771,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(wing::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
         sub.assert_false(wing::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
 
-        // 4. RFC 9460 Section 6: SVCB-Compatible RR Types - ECH early_data placement rules
+        // 4. RFC 9849 - ECH early_data placement rules
         sub.assert_true(
             wing::validate_ech_early_data_placement(wing::EchClientHelloType.Inner, true),
             "early_data in ClientHelloInner permitted",
