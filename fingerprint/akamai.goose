@@ -510,6 +510,15 @@ fn identify_akamai_family(fp: const AkamaiFingerprint&) -> AkamaiBrowserFamily {
     return AkamaiBrowserFamily.Unknown;
 }
 
+inline fn has_setting_value(settings: const AkamaiSetting[:], id: u16, val: u32) -> bool {
+    for &s in settings {
+        if s.id == id && s.val == val {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Detects passive fingerprint anomalies between User-Agent declarations and HTTP/2 wire profile.
 fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) -> AkamaiAnomaly, const u8[:] {
     guard fp.pseudo_headers.len == 4 else {
@@ -527,22 +536,18 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
     if is_chrome {
         // Pseudo header ordering: must be m,a,s,p
         if fp.pseudo_headers[..] != "masp" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch, "User-Agent claims Chrome but pseudo-headers exhibit non-Chromium ordering";
+            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
+                "User-Agent claims Chrome but pseudo-headers exhibit non-Chromium ordering";
         }
         // Window update: Chrome always sends window update 15663105
         if fp.window_update == 0 {
-            return AkamaiAnomaly.WindowUpdateAnomaly, "User-Agent claims Chrome but connection WINDOW_UPDATE is omitted (bot signature)";
+            return AkamaiAnomaly.WindowUpdateAnomaly,
+                "User-Agent claims Chrome but connection WINDOW_UPDATE is omitted (bot signature)";
         }
         // Settings: Chrome requires initial window size 6291456
-        var has_win_setting = false;
-        for &s in fp.settings {
-            if s.id == 4 && s.val == 6291456 {
-                has_win_setting = true;
-                break;
-            }
-        }
-        if !has_win_setting {
-            return AkamaiAnomaly.SettingsMismatch, "User-Agent claims Chrome but SETTINGS_INITIAL_WINDOW_SIZE does not match 6291456";
+        if !has_setting_value(fp.settings[..], 4, 6291456) {
+            return AkamaiAnomaly.SettingsMismatch,
+                "User-Agent claims Chrome but SETTINGS_INITIAL_WINDOW_SIZE does not match 6291456";
         }
         return AkamaiAnomaly.None, "Authentic Chrome profile";
     }
@@ -550,10 +555,12 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
     // Firefox validation rules:
     if is_firefox {
         if fp.pseudo_headers[..] != "mpas" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch, "User-Agent claims Firefox but pseudo-headers exhibit non-Gecko ordering";
+            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
+                "User-Agent claims Firefox but pseudo-headers exhibit non-Gecko ordering";
         }
         if fp.window_update == 0 {
-            return AkamaiAnomaly.WindowUpdateAnomaly, "User-Agent claims Firefox but connection WINDOW_UPDATE is omitted";
+            return AkamaiAnomaly.WindowUpdateAnomaly,
+                "User-Agent claims Firefox but connection WINDOW_UPDATE is omitted";
         }
         return AkamaiAnomaly.None, "Authentic Firefox profile";
     }
@@ -561,7 +568,8 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
     // Safari validation rules:
     if is_safari {
         if fp.pseudo_headers[..] != "msap" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch, "User-Agent claims Safari but pseudo-headers exhibit non-WebKit ordering";
+            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
+                "User-Agent claims Safari but pseudo-headers exhibit non-WebKit ordering";
         }
         return AkamaiAnomaly.None, "Authentic Safari profile";
     }
