@@ -17,6 +17,7 @@ __pycache__/
 
 # Agentic stuff
 .gemini/
+.mimocode/
 .superpowers/
 scratch/
 vendor/
