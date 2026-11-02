@@ -47,8 +47,8 @@ def section_exists_in_rfc(rfc_text, section_str):
     sec_clean = section_str.rstrip(".")
     escaped_sec = re.escape(sec_clean)
 
-    # 1. Section at line start followed by optional dot, spaces, and capital letter title
-    pattern1 = re.compile(r"^\s*" + escaped_sec + r"\.?\s+[A-Z]", re.MULTILINE)
+    # 1. Section at line start followed by optional dot, spaces, and alphanumeric title (e.g. status code or word)
+    pattern1 = re.compile(r"^\s*" + escaped_sec + r"\.?\s+[A-Za-z0-9]", re.MULTILINE)
     m1 = pattern1.search(rfc_text)
     if m1:
         return True
