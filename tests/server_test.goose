@@ -385,6 +385,45 @@ fn test_unified_server_pipeline(t: lit::T&) {
         sub.assert_true(out2 == wing::PipelineOutcome.ExpectationFailed, "unknown Expect rejected with ExpectationFailed");
         sub.assert_eq(res2.status_code, 417, "RFC 9110 status code 417 Expectation Failed");
     };
+
+    t.run("Pipeline Bitmask PSO Fast-Path Probe & Egress Headers") { sub =>
+        let quota = wing::new_gcra_quota(1, core::secs(1), 0); // strictly 1 req/s
+        var cfg = wing::new_server_pipeline_config("example.com", quota);
+
+        // Fast-path bypass route (pso_mask = 0)
+        wing::add_route_pso(cfg.router, "GET", "/healthz", 1001, 0);
+
+        // Route with security egress headers
+        wing::add_route_pso(cfg.router, "GET", "/secure", 1002, wing::STAGE_EGRESS_SECURITY_HEADERS);
+
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+
+        // Request 1 to /healthz: even with invalid Expect header, passes via fast-path bypass
+        var req1 = wing::new_request("GET", "/healthz");
+        req1.headers.push(wing::make_header("Expect", "invalid-expectation"));
+        var res1 = wing::Response { .. };
+        var fut1 = internal::new_inline_handler_future(0);
+        let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req1, 1000000000, res1, fut1);
+        sub.assert_true(out1 == wing::PipelineOutcome.Handled, "fast-path /healthz handled");
+        sub.assert_eq(res1.status_code, 200, "status code 200");
+        sub.assert_bytes_eq(res1.body[..], "Hello, World!", "fast path body dispatched");
+
+        // Request 2 to /healthz at same nanosecond: not rate limited because rate limiter is bypassed
+        var res2 = wing::Response { .. };
+        var fut2 = internal::new_inline_handler_future(0);
+        let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req1, 1000000000, res2, fut2);
+        sub.assert_true(out2 == wing::PipelineOutcome.Handled, "second /healthz handled without rate limiting");
+
+        // Request to /secure: gets egress security headers
+        var req_sec = wing::new_request("GET", "/secure");
+        req_sec.headers.push(wing::make_header("Host", "example.com"));
+        var res_sec = wing::Response { .. };
+        var fut_sec = internal::new_inline_handler_future(0);
+        let out_sec = wing::execute_pipeline(cfg, timer, "10.0.0.1", req_sec, 1000000000, res_sec, fut_sec);
+        sub.assert_true(out_sec == wing::PipelineOutcome.Handled, "secure route handled");
+        sub.assert_true(res_sec.has_header("Strict-Transport-Security"), "HSTS header present");
+        sub.assert_true(res_sec.has_header("Vary"), "Vary header present");
+    };
 }
 
 // ----------------------------------------------------------------------------

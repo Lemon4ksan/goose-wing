@@ -54,6 +54,11 @@ struct RequestExtensions {
     params:            wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
     session_data:      u8[..512]             = [],
     canon_url:         u8[..512]             = [],
+    cors_origin:       u8[..128]             = [],
+    auth_subject:      u8[..64]              = [],
+    auth_scopes:       u64                   = 0,
+    start_time_ns:     u64                   = 0,
+    effective_pso:     u64                   = 0,
     populated_entries: u32                   = 0,
     in_use:            bool                  = false,
 }
@@ -71,6 +76,11 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
             pool.slots[idx].params.clear();
             pool.slots[idx].session_data.clear();
             pool.slots[idx].canon_url.clear();
+            pool.slots[idx].cors_origin.clear();
+            pool.slots[idx].auth_subject.clear();
+            pool.slots[idx].auth_scopes = 0;
+            pool.slots[idx].start_time_ns = 0;
+            pool.slots[idx].effective_pso = 0;
             pool.slots[idx].populated_entries = 0;
             return idx as i32;
         }
@@ -87,6 +97,11 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].params.clear();
     pool.slots[s_idx].session_data.clear();
     pool.slots[s_idx].canon_url.clear();
+    pool.slots[s_idx].cors_origin.clear();
+    pool.slots[s_idx].auth_subject.clear();
+    pool.slots[s_idx].auth_scopes = 0;
+    pool.slots[s_idx].start_time_ns = 0;
+    pool.slots[s_idx].effective_pso = 0;
     pool.slots[s_idx].populated_entries = 0;
     pool.slots[s_idx].in_use = false;
 }

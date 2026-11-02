@@ -41,11 +41,11 @@ fn handle_connection_wire<B>(
 
 ### 2. Radix Tree Routing (`server/router.goose`)
 
-Zero-allocation method-isolated radix routing table with parameter extraction and RFC 3986 path canonicalization.
+Zero-allocation method-isolated radix routing table with parameter extraction, Pre-Baked Route Pipeline State Objects (PSOs), and RFC 3986 path canonicalization.
 
 ```goose
 enum RouteMatchResult {
-    Found { handler_id: i32, entries_mask: u32 },
+    Found { handler_id: i32, entries_mask: u32, pso_mask: u64 },
     NotFound,
     MethodNotAllowed { allow_header: u8[..64] },
 }
@@ -66,6 +66,16 @@ fn add_route(
     path:         const u8[:],
     handler_id:   i32,
     entries_mask: u32 = 0,
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+) -> bool;
+
+// Registers route with an explicit Pre-Baked Pipeline State Object (PSO) bitmask
+fn add_route_pso(
+    router:     RadixRouter&,
+    method:     const u8[:],
+    path:       const u8[:],
+    handler_id: i32,
+    pso_mask:   u64,
 ) -> bool;
 
 fn add_static_route(
@@ -92,21 +102,50 @@ fn param_by_name(params: const ZeroAllocParams&, name: const u8[:], req_path: co
 
 ### 3. Server Pipeline & Security Defense (`server/pipeline.goose`)
 
-Multi-stage defense-in-depth pipeline defending against Slowloris, DoS bursts, CORS/CSRF attacks, and request smuggling.
+Register-based bitmask pipeline (Pre-Baked Route PSOs & Macro-Fused Bit-Test) defending against Slowloris, DoS bursts, CORS/CSRF attacks, and request smuggling. Inbound filtering (Bits 0..31) and outbound transformations (Bits 32..63) execute in 2–3 CPU cycles per check with zero dynamic allocations and complete zero-overhead fast-path bypass for `pso_mask = 0`.
 
 ```goose
 enum PipelineOutcome {
     Handled,
     RateLimited,
-    Rejected,
-    ExpectFailed,
+    CsrfRejected,
+    CorsPreflight,
+    MethodNotAllowed,
+    RouteNotFound,
+    SlowlorisClosed,
+    ExpectationFailed,
 }
 
 struct ServerPipelineConfig {
-    target_host:           u8[..256]   = [],
-    enable_slowloris_timer: bool       = true,
-    enable_rate_limiter:   bool        = false,
-    enable_cors_defense:   bool        = false,
+    limiter:                 ShardedGcraLimiter       = ShardedGcraLimiter { .. },
+    csrf_guard:              CrossOriginGuard         = CrossOriginGuard { .. },
+    cors_policy:             CorsPolicy               = CorsPolicy { .. },
+    router:                  RadixRouter              = RadixRouter { .. },
+    private_jar:             PrivateJar               = PrivateJar { .. },
+    header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
+    ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
+    target_host:             u8[..128]                = "example.com",
+    deadline_ns:             u64                      = 30000000000,
+    enable_rate_limiter:     bool                     = true,
+    enable_csrf_guard:       bool                     = true,
+    enable_cors:             bool                     = true,
+    enable_slowloris_timer:  bool                     = true,
+    trust_proxy_headers:     bool                     = false,
+    server_pso_capabilities: u64                      = 0xFFFFFFFFFFFFFFFF,
+}
+
+fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig;
+fn validate_pipeline_expect_header(req: const Request&) -> bool;
+fn execute_pipeline(
+    cfg:        ServerPipelineConfig&,
+    conn_timer: internal::ConnectionTimer&,
+    client_ip:  const u8[:],
+    req:        const Request&,
+    now_ns:     u64,
+    res:        Response&,
+    out_future: internal::InlineHandlerFuture&,
+) -> PipelineOutcome;
+```
     enable_csrf_defense:   bool        = false,
     trust_proxy_headers:   bool        = false,
     router:                RadixRouter = RadixRouter { .. },

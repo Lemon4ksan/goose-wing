@@ -6,6 +6,38 @@ namespace wing;
 
 import std;
 
+// ---- pipeline stage bitmask constants (64-bit register layout) --------------
+
+// Ingress Stages (Bits 0..31): Inbound filters executed prior to route handler
+const STAGE_INGRESS_SLOWLORIS:       u64 = (1 as u64) << 0; // RFC 9112 Connection liveliness timeout
+const STAGE_INGRESS_EXPECT_100:      u64 = (1 as u64) << 1; // RFC 9110 Section 10.1.1: Expect validation
+const STAGE_INGRESS_IP_RATELIMIT:    u64 = (1 as u64) << 2; // Global GCRA IP rate limiter
+const STAGE_INGRESS_CORS_PREFLIGHT:  u64 = (1 as u64) << 3; // W3C CORS preflight and header application
+const STAGE_INGRESS_FETCH_CSRF:      u64 = (1 as u64) << 4; // W3C Sec-Fetch-* isolation check
+const STAGE_INGRESS_AUTH_COOKIE:     u64 = (1 as u64) << 5; // PrivateJar cookie decryption
+const STAGE_INGRESS_AUTH_JWT:        u64 = (1 as u64) << 6; // RFC 7519 / RFC 9449 DPoP JWT validation
+const STAGE_INGRESS_ROUTE_RATELIMIT: u64 = (1 as u64) << 7; // Per-route GCRA quota check
+
+// Egress Stages (Bits 32..63): Outbound response transformations
+const STAGE_EGRESS_COMPRESS_BROTLI:  u64 = (1 as u64) << 32; // RFC 7932 Brotli body compression
+const STAGE_EGRESS_COMPRESS_ZSTD:    u64 = (1 as u64) << 33; // RFC 8878 Zstandard body compression
+const STAGE_EGRESS_COMPRESS_GZIP:    u64 = (1 as u64) << 34; // RFC 1952 Gzip body compression
+const STAGE_EGRESS_ETAG:             u64 = (1 as u64) << 35; // RFC 9110 Section 8.8.3: Entity Tag calculation
+const STAGE_EGRESS_SECURITY_HEADERS: u64 = (1 as u64) << 36; // HSTS, CSP, X-Content-Type-Options
+const STAGE_EGRESS_METRICS:          u64 = (1 as u64) << 37; // Microsecond latency and status recording
+const STAGE_EGRESS_ACCESS_LOG:       u64 = (1 as u64) << 38; // Zero-allocation access log sink
+
+const STAGE_INGRESS_ALL: u64 = 0x00000000FFFFFFFF;
+const STAGE_EGRESS_ALL:  u64 = 0xFFFFFFFF00000000;
+
+const DEFAULT_ROUTE_PSO_MASK: u64 =
+    STAGE_INGRESS_SLOWLORIS |
+    STAGE_INGRESS_EXPECT_100 |
+    STAGE_INGRESS_IP_RATELIMIT |
+    STAGE_INGRESS_CORS_PREFLIGHT |
+    STAGE_INGRESS_FETCH_CSRF |
+    STAGE_INGRESS_AUTH_COOKIE;
+
 enum NodeType {
     Root,
     Static,
@@ -130,6 +162,7 @@ struct RadixNode {
     node_type:       NodeType  = NodeType.Static,
     handler_id:      i32       = -1,
     entries_mask:    u32       = 0,
+    pso_mask:        u64       = 0,
     param_name:      u8[..32]  = [],
     static_suffix:   u8[..32]  = [],
 }
@@ -138,6 +171,7 @@ struct StaticRouteSlot {
     path_str:      u8[..64]  = [],
     handler_id:    i32       = -1,
     entries_mask:  u32       = 0,
+    pso_mask:      u64       = 0,
     payload_keep:  u8[..512] = [],
     payload_close: u8[..512] = [],
 }
@@ -204,6 +238,7 @@ fn split_radix_node(
     tree.nodes[s_idx].catch_all_child = tree.nodes[c_idx].catch_all_child;
     tree.nodes[s_idx].handler_id = tree.nodes[c_idx].handler_id;
     tree.nodes[s_idx].entries_mask = tree.nodes[c_idx].entries_mask;
+    tree.nodes[s_idx].pso_mask = tree.nodes[c_idx].pso_mask;
     tree.nodes[s_idx].priority = tree.nodes[c_idx].priority - 1;
 
     let first_split_byte = tree.nodes[s_idx].prefix[0];
@@ -216,6 +251,8 @@ fn split_radix_node(
     tree.nodes[c_idx].param_child = -1;
     tree.nodes[c_idx].catch_all_child = -1;
     tree.nodes[c_idx].handler_id = -1;
+    tree.nodes[c_idx].entries_mask = 0;
+    tree.nodes[c_idx].pso_mask = 0;
     return true;
 }
 
@@ -299,6 +336,7 @@ fn insert_catch_all_child(
     name:         const u8[:],
     handler_id:   i32,
     entries_mask: u32,
+    pso_mask:     u64 = 0,
 ) -> bool {
     let ca_idx = alloc_node(tree, NodeType.CatchAll);
     guard ca_idx >= 0 else { return false; }
@@ -307,6 +345,7 @@ fn insert_catch_all_child(
     tree.nodes[ca].param_name.append(name);
     tree.nodes[ca].handler_id = handler_id;
     tree.nodes[ca].entries_mask = entries_mask;
+    tree.nodes[ca].pso_mask = pso_mask;
 
     tree.nodes[cur].catch_all_child = ca_idx;
     tree.nodes[cur].wild_child = true;
@@ -344,9 +383,15 @@ inline fn try_register_static_slot(
     path:         const u8[:],
     handler_id:   i32,
     entries_mask: u32,
+    pso_mask:     u64 = 0,
 ) {
     guard path.len <= 64 && tree.static_slots.len < tree.static_slots.cap else { return; }
-    var slot = StaticRouteSlot { handler_id: handler_id, entries_mask: entries_mask, .. };
+    var slot = StaticRouteSlot {
+        handler_id:   handler_id,
+        entries_mask: entries_mask,
+        pso_mask:     pso_mask,
+        ..
+    };
     slot.path_str.append(path);
     tree.static_slots.push(slot);
 }
@@ -414,6 +459,7 @@ fn insert_route(
     path:         const u8[:],
     handler_id:   i32,
     entries_mask: u32 = 0,
+    pso_mask:     u64 = 0,
 ) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
     guard tree.root_idx >= 0 else { return false; }
@@ -434,8 +480,9 @@ fn insert_route(
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
             tree.nodes[cur_idx as i64].handler_id = handler_id;
             tree.nodes[cur_idx as i64].entries_mask = entries_mask;
+            tree.nodes[cur_idx as i64].pso_mask = pso_mask;
             if is_root_pure_static {
-                try_register_static_slot(tree, path, handler_id, entries_mask);
+                try_register_static_slot(tree, path, handler_id, entries_mask, pso_mask);
             }
             return true;
         }
@@ -451,7 +498,7 @@ fn insert_route(
         let suffix_after = rem[param_end + 1..];
 
         if is_catchall {
-            return insert_catch_all_child(tree, cur_idx, name, handler_id, entries_mask);
+            return insert_catch_all_child(tree, cur_idx, name, handler_id, entries_mask, pso_mask);
         }
 
         var param_node_idx: i32 = -1;
@@ -465,6 +512,7 @@ fn insert_route(
         } else {
             tree.nodes[param_node_idx as i64].handler_id = handler_id;
             tree.nodes[param_node_idx as i64].entries_mask = entries_mask;
+            tree.nodes[param_node_idx as i64].pso_mask = pso_mask;
             return true;
         }
     }
@@ -570,7 +618,7 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
 // ---- route matching --------------------------------------------------------
 
 enum RouteMatchResult {
-    Found { handler_id: i32, entries_mask: u32 },
+    Found { handler_id: i32, entries_mask: u32, pso_mask: u64 },
     NotFound,
     MethodNotAllowed { allow_header: u8[..64] },
 }
@@ -642,6 +690,7 @@ fn match_catch_all_child(
         return RouteMatchResult.Found {
             handler_id:   hid,
             entries_mask: tree.nodes[ca_idx as i64].entries_mask,
+            pso_mask:     tree.nodes[ca_idx as i64].pso_mask,
         };
     }
     return RouteMatchResult.NotFound;
@@ -675,7 +724,11 @@ inline fn try_match_static_slot(tree: const RadixTree&, path: const u8[:]) -> Ro
     for s_idx in tree.static_slots.len {
         let slot = &tree.static_slots[s_idx];
         if slot.path_str[..] == path {
-            return RouteMatchResult.Found { handler_id: slot.handler_id, entries_mask: slot.entries_mask };
+            return RouteMatchResult.Found {
+                handler_id:   slot.handler_id,
+                entries_mask: slot.entries_mask,
+                pso_mask:     slot.pso_mask,
+            };
         }
     }
     return RouteMatchResult.NotFound;
@@ -712,7 +765,12 @@ fn match_path<B>(
             let hid = tree.nodes[cur_idx as i64].handler_id;
             guard hid >= 0 else { return RouteMatchResult.NotFound; }
             let mask = tree.nodes[cur_idx as i64].entries_mask;
-            return RouteMatchResult.Found { handler_id: hid, entries_mask: mask };
+            let pso = tree.nodes[cur_idx as i64].pso_mask;
+            return RouteMatchResult.Found {
+                handler_id:   hid,
+                entries_mask: mask,
+                pso_mask:     pso,
+            };
         }
 
         // Try static children first (O(1) index lookup)
@@ -787,15 +845,27 @@ fn add_route(
     path:         const u8[:],
     handler_id:   i32,
     entries_mask: u32 = 0,
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
 ) -> bool {
     var canon_path: u8[..512] = [];
     guard canonicalize_route_path(path, canon_path) else { return false; }
     for idx in router.trees.len {
         if router.trees[idx].method[..] == method {
-            return insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask);
+            return insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask, pso_mask);
         }
     }
     return false;
+}
+
+// Registers a route pattern with an explicit Pre-Baked Pipeline State Object (PSO) mask.
+fn add_route_pso(
+    router:     RadixRouter&,
+    method:     const u8[:],
+    path:       const u8[:],
+    handler_id: i32,
+    pso_mask:   u64,
+) -> bool {
+    return add_route(router, method, path, handler_id, 0, pso_mask);
 }
 
 fn add_static_route(

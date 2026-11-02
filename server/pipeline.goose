@@ -10,34 +10,36 @@ import .router;
 import .pool;
 
 struct ServerPipelineConfig {
-    limiter:                ShardedGcraLimiter       = ShardedGcraLimiter { .. },
-    csrf_guard:             CrossOriginGuard         = CrossOriginGuard { .. },
-    cors_policy:            CorsPolicy               = CorsPolicy { .. },
-    router:                 RadixRouter              = RadixRouter { .. },
-    private_jar:            PrivateJar               = PrivateJar { .. },
-    header_pool:            internal::HeaderMapPool  = internal::HeaderMapPool { .. },
-    ext_pool:               internal::ExtensionsPool = internal::ExtensionsPool { .. },
-    target_host:            u8[..128]                = "example.com",
-    deadline_ns:            u64                      = 30000000000, // 30s
-    enable_rate_limiter:    bool                     = true,
-    enable_csrf_guard:      bool                     = true,
-    enable_cors:            bool                     = true,
-    enable_slowloris_timer: bool                     = true,
-    trust_proxy_headers:    bool                     = false,
+    limiter:                 ShardedGcraLimiter       = ShardedGcraLimiter { .. },
+    csrf_guard:              CrossOriginGuard         = CrossOriginGuard { .. },
+    cors_policy:             CorsPolicy               = CorsPolicy { .. },
+    router:                  RadixRouter              = RadixRouter { .. },
+    private_jar:             PrivateJar               = PrivateJar { .. },
+    header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
+    ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
+    target_host:             u8[..128]                = "example.com",
+    deadline_ns:             u64                      = 30000000000, // 30s
+    enable_rate_limiter:     bool                     = true,
+    enable_csrf_guard:       bool                     = true,
+    enable_cors:             bool                     = true,
+    enable_slowloris_timer:  bool                     = true,
+    trust_proxy_headers:     bool                     = false,
+    server_pso_capabilities: u64                      = 0xFFFFFFFFFFFFFFFF,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
     var cfg = ServerPipelineConfig {
-        limiter:             new_sharded_limiter(quota),
-        csrf_guard:          CrossOriginGuard { .. },
-        cors_policy:         CorsPolicy { .. },
-        router:              new_radix_router(),
-        private_jar:         new_private_jar(KeyStore { .. }),
-        header_pool:         internal::HeaderMapPool { .. },
-        ext_pool:            internal::ExtensionsPool { .. },
-        target_host:         [],
-        deadline_ns:         30000000000,
-        trust_proxy_headers: false,
+        limiter:                 new_sharded_limiter(quota),
+        csrf_guard:              CrossOriginGuard { .. },
+        cors_policy:             CorsPolicy { .. },
+        router:                  new_radix_router(),
+        private_jar:             new_private_jar(KeyStore { .. }),
+        header_pool:             internal::HeaderMapPool { .. },
+        ext_pool:                internal::ExtensionsPool { .. },
+        target_host:             [],
+        deadline_ns:             30000000000,
+        trust_proxy_headers:     false,
+        server_pso_capabilities: 0xFFFFFFFFFFFFFFFF,
     };
     cfg.target_host.append(target_host);
     return cfg;
@@ -99,7 +101,61 @@ fn evaluate_pipeline_cors_and_csrf(
     return PipelineOutcome.Handled, false;
 }
 
-// Extracts value of session cookie parameter (RFC 6265 §4.2.1).
+// Executes pre-handler ingress stages matching the effective PSO mask.
+// Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
+fn dispatch_ingress_pipeline(
+    cfg:    ServerPipelineConfig&,
+    req:    const Request&,
+    res:    Response&,
+    ext:    internal::RequestExtensions&,
+    mask:   u64,
+    now_ns: u64,
+) -> PipelineOutcome, bool {
+    // Stage: Expect 100-continue validation (RFC 9110 Section 10.1.1)
+    if (mask & STAGE_INGRESS_EXPECT_100) != 0 {
+        guard validate_pipeline_expect_header(req) else {
+            res.status_code = 417; // Expectation Failed
+            return PipelineOutcome.ExpectationFailed, true;
+        }
+    }
+
+    // Stage: Global GCRA IP rate limiter
+    if (mask & STAGE_INGRESS_IP_RATELIMIT) != 0 && cfg.enable_rate_limiter {
+        let rl_decision = check_rate_limit(cfg.limiter, ext.peer_ip[..], 1, now_ns);
+        apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
+        guard is_allowed(rl_decision) else {
+            return PipelineOutcome.RateLimited, true;
+        }
+    }
+
+    // Stage: CORS preflight and Fetch Metadata CSRF isolation
+    let has_cors_csrf = (mask & (STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF)) != 0;
+    if has_cors_csrf && (cfg.enable_cors || cfg.enable_csrf_guard) {
+        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res);
+        guard !is_term else { return sec_outcome, true; }
+    }
+
+    // Stage: Authenticated session cookie decryption
+    if (mask & STAGE_INGRESS_AUTH_COOKIE) != 0 {
+        decrypt_pipeline_session_cookie(cfg, req, ext, now_ns);
+    }
+
+    return PipelineOutcome.Handled, false;
+}
+
+// Executes post-handler egress stages matching the effective PSO mask.
+fn dispatch_egress_pipeline(
+    _cfg: ServerPipelineConfig&,
+    _req: const Request&,
+    res:  Response&,
+    mask: u64,
+) {
+    if (mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 {
+        apply_isolation_headers(res);
+    }
+}
+
+// RFC 6265 Section 4.2.1: Syntax - Extracts value of session cookie parameter.
 //
 // Example:
 //   cookie_hdr = "id=123; session=abc456; theme=dark"
@@ -118,15 +174,9 @@ fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
         if pos < cookie_hdr.len && cookie_hdr[pos] == ';' {
             pos++;
         }
-        var eq_idx = -1;
-        for i in pair.len {
-            if pair[i] == '=' {
-                eq_idx = i;
-                break;
-            }
-        }
+        let eq_idx = core::index_of_byte(pair, '=');
         if eq_idx > 0 && core::trim_lws(pair[..eq_idx]) == "session" {
-            return core::trim_lws(pair[eq_idx + 1..]);
+            return core::trim_lws(pair[(eq_idx + 1)..]);
         }
     }
     return "";
@@ -201,8 +251,10 @@ fn dispatch_matched_route(
                 return PipelineOutcome.Handled;
             }
 
-            // Stage 6: Cookie decryption & handler dispatch
-            if (f.entries_mask & internal::ENTRY_COOKIES) != 0 {
+            // Authenticated session cookie decryption (if requested and not yet decrypted)
+            let wants_cookie = (f.entries_mask & internal::ENTRY_COOKIES) != 0;
+            let cookie_unpopulated = (cfg.ext_pool.slots[e_idx].populated_entries & internal::ENTRY_COOKIES) == 0;
+            if wants_cookie && cookie_unpopulated {
                 decrypt_pipeline_session_cookie(cfg, req, cfg.ext_pool.slots[e_idx], now_ns);
             }
 
@@ -218,7 +270,7 @@ fn dispatch_matched_route(
     };
 }
 
-// RFC 9110 §9.3.2: Suppress body for HEAD requests while preserving Content-Length.
+// RFC 9110 Section 9.3.2: HEAD - Suppress body for HEAD requests while preserving Content-Length.
 fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
     guard req_method == "HEAD" else { return; }
     if header(res, "content-length").len == 0 && res.body.len > 0 {
@@ -330,15 +382,29 @@ fn extract_effective_client_ip(
     return client_ip;
 }
 
+// Resolves the effective pipeline mask from route match result and server capabilities.
+inline fn resolve_route_effective_pso(res: RouteMatchResult, caps: u64) -> u64 {
+    return match res {
+        Found f => f.pso_mask & caps,
+        _ => caps,
+    };
+}
+
+// Finalizes slowloris request lifecycle tracking.
+inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: internal::ConnectionTimer&) {
+    if timer_enabled {
+        internal::notify_request_end(timer);
+    }
+}
+
 // Executes an incoming request through the configured pipeline stages.
 //
 // Pipeline stages:
 // 1. Connection liveliness / timeout check (Slowloris defense)
-// 2. Expect header validation (RFC 9110 Section 10.1.1)
-// 3. GCRA rate limiter check & header application
-// 4. CORS preflight and Fetch Metadata CSRF isolation
-// 5. Radix trie route matching & extension acquisition
-// 6. Authenticated session cookie decryption & inline handler dispatch
+// 2. Radix trie route matching & extension acquisition
+// 3. Ingress PSO dispatch (Expect header, Rate limiting, CORS/CSRF, Cookie decryption)
+// 4. Handler execution & response generation
+// 5. Egress PSO dispatch (Security headers, transformations)
 fn execute_pipeline(
     cfg:        ServerPipelineConfig&,
     conn_timer: internal::ConnectionTimer&,
@@ -361,36 +427,10 @@ fn execute_pipeline(
         }
     }
 
-    // Stage 2: Expect header validation (RFC 9110 Section 10.1.1)
-    guard validate_pipeline_expect_header(req) else {
-        if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-        res.status_code = 417; // Expectation Failed
-        return PipelineOutcome.ExpectationFailed;
-    }
-
-    // Stage 3: Rate limiter check
-    if cfg.enable_rate_limiter {
-        let rl_decision = check_rate_limit(cfg.limiter, eff_ip, 1, now_ns);
-        apply_rate_limit_headers(res, cfg.limiter.quota, rl_decision);
-        if !is_allowed(rl_decision) {
-            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-            return PipelineOutcome.RateLimited;
-        }
-    }
-
-    // Stage 4: CORS and Fetch Metadata isolation check
-    if cfg.enable_cors || cfg.enable_csrf_guard {
-        let security_outcome, is_terminal = evaluate_pipeline_cors_and_csrf(cfg, req, res);
-        if is_terminal {
-            if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
-            return security_outcome;
-        }
-    }
-
-    // Stage 5: Radix trie route matching
+    // Acquire request extensions from pool
     let ext_slot_idx = internal::acquire_extensions(cfg.ext_pool);
     guard ext_slot_idx >= 0 else {
-        if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+        notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
         res.status_code = 503; // Service Unavailable / Pool Exhausted
         return PipelineOutcome.RateLimited;
     }
@@ -406,8 +446,32 @@ fn execute_pipeline(
         cfg.ext_pool.slots[e_idx].canon_url,
     );
 
+    let effective_pso = resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);
+    cfg.ext_pool.slots[e_idx].effective_pso = effective_pso;
+
+    if effective_pso != 0 {
+        let ingress_outcome, is_terminal = dispatch_ingress_pipeline(
+            cfg,
+            req,
+            res,
+            cfg.ext_pool.slots[e_idx],
+            effective_pso,
+            now_ns,
+        );
+        if is_terminal {
+            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
+            return ingress_outcome;
+        }
+    }
+
     let outcome = dispatch_matched_route(cfg, req, now_ns, res, out_future, match_res, ext_slot_idx);
-    if cfg.enable_slowloris_timer { internal::notify_request_end(conn_timer); }
+
+    if outcome == PipelineOutcome.Handled {
+        dispatch_egress_pipeline(cfg, req, res, effective_pso);
+    }
+
+    notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
     if req.method[..] == "HEAD" {
         res.body.clear();
     }

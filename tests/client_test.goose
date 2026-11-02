@@ -631,6 +631,12 @@ fn test_application_interceptors(t: lit::T&) {
         wing::add_app_request_id(client, "track-");
         wing::add_app_traceparent(client, "01");
 
+        // Assert 64-bit register bitmask flags are actively set
+        sub.assert_true((client.pipeline.active_mask & wing::INTERCEPTOR_APP_AUTH_BEARER) != 0, "active_mask has bearer auth bit");
+        sub.assert_true((client.pipeline.active_mask & wing::INTERCEPTOR_APP_HEADER) != 0, "active_mask has header bit");
+        sub.assert_true((client.pipeline.active_mask & wing::INTERCEPTOR_APP_REQUEST_ID) != 0, "active_mask has request id bit");
+        sub.assert_true((client.pipeline.active_mask & wing::INTERCEPTOR_APP_TRACEPARENT) != 0, "active_mask has traceparent bit");
+
         wing::mock_route(client, "GET", "https://api.site.com/profile", 200, "{\"user\":\"alice\"}");
 
         let resp1, err1 = wing::get(client, "https://api.site.com/profile");

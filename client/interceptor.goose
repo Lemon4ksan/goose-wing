@@ -12,6 +12,22 @@ import std;
 import client.request;
 import http.headers;
 
+// ---- Interceptor Bitmask Constants (64-bit register layout) --------------
+
+const INTERCEPTOR_APP_LOGGING:     u64 = (1 as u64) << 0;
+const INTERCEPTOR_APP_AUTH_BEARER: u64 = (1 as u64) << 1;
+const INTERCEPTOR_APP_HEADER:      u64 = (1 as u64) << 2;
+const INTERCEPTOR_APP_REQUEST_ID:  u64 = (1 as u64) << 3;
+const INTERCEPTOR_APP_TRACEPARENT: u64 = (1 as u64) << 4;
+const INTERCEPTOR_APP_RETRY:       u64 = (1 as u64) << 5;
+
+const INTERCEPTOR_NET_LOGGING: u64 = (1 as u64) << 16;
+const INTERCEPTOR_NET_HEADER:  u64 = (1 as u64) << 17;
+const INTERCEPTOR_NET_METRICS: u64 = (1 as u64) << 18;
+
+const INTERCEPTOR_APP_ALL: u64 = 0x000000000000FFFF;
+const INTERCEPTOR_NET_ALL: u64 = 0x00000000FFFF0000;
+
 // ---- Interceptor Scope & Kinds -------------------------------------------
 
 enum InterceptorScope {
@@ -62,113 +78,183 @@ struct NetworkMetrics {
     last_hop_duration_us:     i64 = 0,
 }
 
+// Compact InterceptorPipeline with 64-bit register dispatch.
+// Replaces 3.5 KB entry array on the stack with a 64-bit bitmask and flat parameters.
 struct InterceptorPipeline {
-    entries:     InterceptorEntry[..8] = [],
-    metrics:     NetworkMetrics        = NetworkMetrics { .. },
-    log_entries: u8[..128][..32]       = [],
-    record_logs: bool                  = true,
+    active_mask:         u64            = 0,
+    bearer_token:        u8[..128]      = [],
+    app_header_name:     u8[..64]       = [],
+    app_header_val:      u8[..128]      = [],
+    net_header_name:     u8[..64]       = [],
+    net_header_val:      u8[..128]      = [],
+    req_id_prefix:       u8[..32]       = [],
+    req_id_counter:      u64            = 1,
+    traceparent_flag:    u8[..2]        = [],
+    traceparent_counter: u64            = 1,
+    app_log_level:       LogLevel       = LogLevel.Basic,
+    net_log_level:       LogLevel       = LogLevel.Basic,
+    max_retries:         i32            = 0,
+    retry_on_5xx:        bool           = true,
+    metrics:             NetworkMetrics = NetworkMetrics { .. },
+    log_entries:         u8[..128][..8] = [],
+    record_logs:         bool           = true,
 }
 
 // ---- Pipeline Builders ---------------------------------------------------
 
 fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> bool {
-    guard pipeline.entries.len < pipeline.entries.cap else { return false; }
-    pipeline.entries.push(entry);
-    return true;
+    guard entry.enabled else { return true; }
+    match entry.scope {
+        Application => match entry.kind {
+            Logging => {
+                pipeline.active_mask |= INTERCEPTOR_APP_LOGGING;
+                pipeline.app_log_level = entry.log_level;
+                return true;
+            },
+            AuthBearer => {
+                pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
+                pipeline.bearer_token.clear();
+                pipeline.bearer_token.append(entry.header_val[..]);
+                return true;
+            },
+            Header => {
+                pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
+                pipeline.app_header_name.clear();
+                pipeline.app_header_name.append(entry.header_name[..]);
+                pipeline.app_header_val.clear();
+                pipeline.app_header_val.append(entry.header_val[..]);
+                return true;
+            },
+            RequestId => {
+                pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
+                pipeline.req_id_prefix.clear();
+                pipeline.req_id_prefix.append(entry.prefix[..]);
+                pipeline.req_id_counter = entry.counter;
+                return true;
+            },
+            Traceparent => {
+                pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
+                pipeline.traceparent_flag.clear();
+                pipeline.traceparent_flag.append(entry.prefix[..]);
+                pipeline.traceparent_counter = entry.counter;
+                return true;
+            },
+            RetryPolicy => {
+                pipeline.active_mask |= INTERCEPTOR_APP_RETRY;
+                pipeline.max_retries = entry.max_retries;
+                pipeline.retry_on_5xx = entry.retry_on_5xx;
+                return true;
+            },
+            _ => {
+                return false;
+            },
+        },
+        Network => match entry.kind {
+            Logging => {
+                pipeline.active_mask |= INTERCEPTOR_NET_LOGGING;
+                pipeline.net_log_level = entry.log_level;
+                return true;
+            },
+            Header => {
+                pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
+                pipeline.net_header_name.clear();
+                pipeline.net_header_name.append(entry.header_name[..]);
+                pipeline.net_header_val.clear();
+                pipeline.net_header_val.append(entry.header_val[..]);
+                return true;
+            },
+            Metrics => {
+                pipeline.active_mask |= INTERCEPTOR_NET_METRICS;
+                return true;
+            },
+            _ => {
+                return false;
+            },
+        },
+    };
+    return false;
 }
 
 fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: LogLevel) -> bool {
-    let entry = InterceptorEntry {
-        scope:     scope,
-        kind:      InterceptorKind.Logging,
-        log_level: level,
-        enabled:   true,
-        ..
+    match scope {
+        Application => {
+            pipeline.active_mask |= INTERCEPTOR_APP_LOGGING;
+            pipeline.app_log_level = level;
+            return true;
+        },
+        Network => {
+            pipeline.active_mask |= INTERCEPTOR_NET_LOGGING;
+            pipeline.net_log_level = level;
+            return true;
+        },
     };
-    return add_interceptor(pipeline, entry);
+    return false;
 }
 
 fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
-    var entry = InterceptorEntry {
-        scope:   InterceptorScope.Application,
-        kind:    InterceptorKind.AuthBearer,
-        enabled: true,
-        ..
-    };
-    entry.header_name.append("Authorization");
-    entry.header_val.append("Bearer ");
-    entry.header_val.append(token);
-    return add_interceptor(pipeline, entry);
+    pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
+    pipeline.bearer_token.clear();
+    pipeline.bearer_token.append("Bearer ");
+    pipeline.bearer_token.append(token);
+    return true;
 }
 
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
-    var entry = InterceptorEntry {
-        scope:   scope,
-        kind:    InterceptorKind.Header,
-        enabled: true,
-        ..
+    match scope {
+        Application => {
+            pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
+            pipeline.app_header_name.clear();
+            pipeline.app_header_name.append(name);
+            pipeline.app_header_val.clear();
+            pipeline.app_header_val.append(val);
+            return true;
+        },
+        Network => {
+            pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
+            pipeline.net_header_name.clear();
+            pipeline.net_header_name.append(name);
+            pipeline.net_header_val.clear();
+            pipeline.net_header_val.append(val);
+            return true;
+        },
     };
-    entry.header_name.append(name);
-    entry.header_val.append(val);
-    return add_interceptor(pipeline, entry);
+    return false;
 }
 
 fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
-    var entry = InterceptorEntry {
-        scope:   InterceptorScope.Application,
-        kind:    InterceptorKind.RequestId,
-        enabled: true,
-        ..
-    };
-    entry.header_name.append("X-Request-ID");
-    entry.prefix.append(prefix);
-    entry.counter = 1;
-    return add_interceptor(pipeline, entry);
+    pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
+    pipeline.req_id_prefix.clear();
+    pipeline.req_id_prefix.append(prefix);
+    pipeline.req_id_counter = 1;
+    return true;
 }
 
 fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
-    var entry = InterceptorEntry {
-        scope:   InterceptorScope.Application,
-        kind:    InterceptorKind.Traceparent,
-        enabled: true,
-        ..
-    };
-    entry.header_name.append("traceparent");
-    entry.prefix.append(sample_flag);
-    entry.counter = 1;
-    return add_interceptor(pipeline, entry);
+    pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
+    pipeline.traceparent_flag.clear();
+    pipeline.traceparent_flag.append(sample_flag);
+    pipeline.traceparent_counter = 1;
+    return true;
 }
 
 fn add_retry(pipeline: InterceptorPipeline&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
-    let entry = InterceptorEntry {
-        scope:        InterceptorScope.Application,
-        kind:         InterceptorKind.RetryPolicy,
-        max_retries:  max_retries,
-        retry_on_5xx: retry_on_5xx,
-        enabled:      true,
-        ..
-    };
-    return add_interceptor(pipeline, entry);
+    pipeline.active_mask |= INTERCEPTOR_APP_RETRY;
+    pipeline.max_retries = max_retries;
+    pipeline.retry_on_5xx = retry_on_5xx;
+    return true;
 }
 
 fn add_metrics(pipeline: InterceptorPipeline&) -> bool {
-    let entry = InterceptorEntry {
-        scope:   InterceptorScope.Network,
-        kind:    InterceptorKind.Metrics,
-        enabled: true,
-        ..
-    };
-    return add_interceptor(pipeline, entry);
+    pipeline.active_mask |= INTERCEPTOR_NET_METRICS;
+    return true;
 }
 
 // Queries if an application retry policy is configured
 fn find_retry_policy(pipeline: const InterceptorPipeline&, out_retries: i32&, out_retry_5xx: bool&) -> bool {
-    for &entry in pipeline.entries {
-        if entry.enabled && entry.kind == InterceptorKind.RetryPolicy {
-            out_retries = entry.max_retries;
-            out_retry_5xx = entry.retry_on_5xx;
-            return true;
-        }
+    if (pipeline.active_mask & INTERCEPTOR_APP_RETRY) != 0 {
+        out_retries = pipeline.max_retries;
+        out_retry_5xx = pipeline.retry_on_5xx;
+        return true;
     }
     return false;
 }
@@ -277,42 +363,46 @@ fn apply_app_interceptors_request(
     req:      Request&,
     clock_us: i64,
 ) {
-    for &entry in pipeline.entries {
-        guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
+    let mask = pipeline.active_mask;
+    if (mask & INTERCEPTOR_APP_ALL) == 0 {
+        return;
+    }
 
-        if entry.kind == InterceptorKind.AuthBearer {
-            // Only add if not already present, updating Bloom filter and sensitivity flag
-            if header(req, "Authorization").len == 0 {
-                sensitive_header(req, "Authorization", entry.header_val[..]);
-            }
-        } else if entry.kind == InterceptorKind.Header {
-            let h_name = entry.header_name[..];
-            if header(req, h_name).len == 0 {
-                set_header(req, h_name, entry.header_val[..]);
-            }
-        } else if entry.kind == InterceptorKind.RequestId {
-            if header(req, "X-Request-ID").len == 0 {
-                var val_buf: u8[..64] = [];
-                format(val_buf, entry.prefix[..], entry.counter);
-                entry.counter += 1;
-                set_header(req, "X-Request-ID", val_buf[..]);
-            }
-        } else if entry.kind == InterceptorKind.Traceparent {
-            if header(req, "traceparent").len == 0 {
-                var tp_buf: u8[..64] = [];
-                generate_traceparent(entry.counter, clock_us, entry.prefix[..], tp_buf);
-                entry.counter += 1;
-                set_header(req, "traceparent", tp_buf[..]);
-            }
-        } else if entry.kind == InterceptorKind.Logging {
-            log_interceptor_request(pipeline, req, entry.log_level);
+    if (mask & INTERCEPTOR_APP_AUTH_BEARER) != 0 {
+        if header(req, "Authorization").len == 0 {
+            sensitive_header(req, "Authorization", pipeline.bearer_token[..]);
         }
+    }
+    if (mask & INTERCEPTOR_APP_HEADER) != 0 {
+        let h_name = pipeline.app_header_name[..];
+        if header(req, h_name).len == 0 {
+            set_header(req, h_name, pipeline.app_header_val[..]);
+        }
+    }
+    if (mask & INTERCEPTOR_APP_REQUEST_ID) != 0 {
+        if header(req, "X-Request-ID").len == 0 {
+            var val_buf: u8[..64] = [];
+            format(val_buf, pipeline.req_id_prefix[..], pipeline.req_id_counter);
+            pipeline.req_id_counter += 1;
+            set_header(req, "X-Request-ID", val_buf[..]);
+        }
+    }
+    if (mask & INTERCEPTOR_APP_TRACEPARENT) != 0 {
+        if header(req, "traceparent").len == 0 {
+            var tp_buf: u8[..64] = [];
+            generate_traceparent(pipeline.traceparent_counter, clock_us, pipeline.traceparent_flag[..], tp_buf);
+            pipeline.traceparent_counter += 1;
+            set_header(req, "traceparent", tp_buf[..]);
+        }
+    }
+    if (mask & INTERCEPTOR_APP_LOGGING) != 0 {
+        log_interceptor_request(pipeline, req, pipeline.app_log_level);
     }
 }
 
 fn apply_app_interceptors_response(
     pipeline:    InterceptorPipeline&,
-    req:         const Request&,
+    _req:        const Request&,
     resp:        Response&,
     err:         const Error&,
     duration_us: i64,
@@ -320,12 +410,8 @@ fn apply_app_interceptors_response(
     pipeline.metrics.total_requests += 1;
     pipeline.metrics.last_request_duration_us = duration_us;
 
-    for &entry in pipeline.entries {
-        guard entry.enabled && entry.scope == InterceptorScope.Application else { continue; }
-
-        if entry.kind == InterceptorKind.Logging {
-            log_interceptor_response(pipeline, resp, err, entry.log_level, duration_us);
-        }
+    if (pipeline.active_mask & INTERCEPTOR_APP_LOGGING) != 0 {
+        log_interceptor_response(pipeline, resp, err, pipeline.app_log_level, duration_us);
     }
 }
 
@@ -344,25 +430,27 @@ fn apply_network_interceptors_request(
         pipeline.metrics.total_bytes_sent += body_len as! u64;
     }
 
-    for &entry in pipeline.entries {
-        guard entry.enabled && entry.scope == InterceptorScope.Network else { continue; }
+    let mask = pipeline.active_mask;
+    if (mask & INTERCEPTOR_NET_ALL) == 0 {
+        return;
+    }
 
-        if entry.kind == InterceptorKind.Header {
-            let h_name = entry.header_name[..];
-            if !has_header(headers[..], h_name) {
-                guard headers.len < headers.cap else { continue; }
-                headers.push(make_header(h_name, entry.header_val[..]));
-            }
-        } else if entry.kind == InterceptorKind.Logging {
-            log_network_interceptor_request(
-                pipeline,
-                headers,
-                target_url,
-                method,
-                hop_index,
-                entry.log_level,
-            );
+    if (mask & INTERCEPTOR_NET_HEADER) != 0 {
+        let h_name = pipeline.net_header_name[..];
+        if !has_header(headers[..], h_name) {
+            guard headers.len < headers.cap else { return; }
+            headers.push(make_header(h_name, pipeline.net_header_val[..]));
         }
+    }
+    if (mask & INTERCEPTOR_NET_LOGGING) != 0 {
+        log_network_interceptor_request(
+            pipeline,
+            headers,
+            target_url,
+            method,
+            hop_index,
+            pipeline.net_log_level,
+        );
     }
 }
 
@@ -375,16 +463,12 @@ fn apply_network_interceptors_response(
     pipeline.metrics.last_hop_duration_us = hop_duration_us;
     pipeline.metrics.total_bytes_received += resp.body.len as! u64;
 
-    for &entry in pipeline.entries {
-        guard entry.enabled && entry.scope == InterceptorScope.Network else { continue; }
-
-        if entry.kind == InterceptorKind.Logging {
-            let lvl = entry.log_level;
-            if lvl != LogLevel.None {
-                var line: u8[..256] = [];
-                format(line, "<-- (net hop ", hop_index, ") ", resp.status_code, " (", hop_duration_us, " us)");
-                push_log(pipeline, line[..]);
-            }
+    if (pipeline.active_mask & INTERCEPTOR_NET_LOGGING) != 0 {
+        let lvl = pipeline.net_log_level;
+        if lvl != LogLevel.None {
+            var line: u8[..256] = [];
+            format(line, "<-- (net hop ", hop_index, ") ", resp.status_code, " (", hop_duration_us, " us)");
+            push_log(pipeline, line[..]);
         }
     }
 }
