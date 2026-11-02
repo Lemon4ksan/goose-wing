@@ -354,14 +354,6 @@ inline fn clear_request_headers_state<Req>(req: Req&) {
     req.presence_mask = 0;
 }
 
-inline fn calc_header_span_base_offset(req_offset: i64, line_end: i64) -> i64 {
-    return req_offset + line_end + 2;
-}
-
-inline fn calc_body_start_index(req_offset: i64, header_end_idx: i64) -> i64 {
-    return req_offset + header_end_idx;
-}
-
 inline fn has_smuggling_conflict(mask: u32) -> bool {
     let both = HDR_PRESENCE_TRANSFER_ENCODING | HDR_PRESENCE_CONTENT_LENGTH;
     return (mask & both) == both;
@@ -518,7 +510,7 @@ fn parse_http1_request_headers<Req>(
         clear(out_req.bloom_filter);
     }
     presence_tracker = HeaderPresenceTracker { .. };
-    let base_offset = calc_header_span_base_offset(req_offset, line_end);
+    let base_offset = req_offset + line_end + 2;
     guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker, base_offset) else {
         clear_request_headers_state(out_req);
         return false;
@@ -540,7 +532,7 @@ fn parse_http1_request_headers<Req>(
         return false;
     }
 
-    body_start_idx = calc_body_start_index(req_offset, header_end_idx);
+    body_start_idx = req_offset + header_end_idx;
     return true;
 }
 

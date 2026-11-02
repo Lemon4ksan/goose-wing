@@ -198,14 +198,6 @@ fn has_next(r: const WireH2FrameReader&) -> bool {
     return r.cursor + 9 <= r.src.len;
 }
 
-inline fn calc_frame_total_size(payload_len: i64) -> i64 {
-    return payload_len + 9;
-}
-
-inline fn advance_reader_cursor(cursor: i64, step: i64) -> i64 {
-    return cursor + step;
-}
-
 // Parses the next HTTP/2 frame and slices its payload without memory allocations.
 //
 // Example:
@@ -226,7 +218,7 @@ fn next_frame(r: WireH2FrameReader&) -> WireFrameHeader, const u8[:], bool {
         return WireFrameHeader { .. }, "", false;
     }
     let payload = body[..flen];
-    let total_size = calc_frame_total_size(flen);
-    r.cursor = advance_reader_cursor(r.cursor, total_size);
+    let total_size = (flen + 9);
+    r.cursor = r.cursor + total_size;
     return hdr, payload, true;
 }

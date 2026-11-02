@@ -50,50 +50,6 @@ struct SfDictEntry {
 
 // ---- Safe Arithmetic & Index Helpers -------------------------------------
 
-inline fn sf_next(pos: i64) -> i64 {
-    return pos + 1;
-}
-
-inline fn sf_next_i32(val: i32) -> i32 {
-    return val + 1;
-}
-
-inline fn sf_step(pos: i64, delta: i64) -> i64 {
-    return pos + delta;
-}
-
-inline fn sf_sub(a: i64, b: i64) -> i64 {
-    return a - b;
-}
-
-inline fn sf_digit_val(ch: u8) -> i64 {
-    return ch - '0';
-}
-
-inline fn sf_mul10(accum: i64) -> i64 {
-    return accum * 10;
-}
-
-inline fn sf_add_digit(accum: i64, digit: i64) -> i64 {
-    return accum + digit;
-}
-
-inline fn sf_neg_i64(val: i64) -> i64 {
-    return 0 - val;
-}
-
-inline fn sf_neg_f64(val: f64) -> f64 {
-    return 0.0 - val;
-}
-
-inline fn sf_fmul(num: i64, factor: f64) -> f64 {
-    return num * factor;
-}
-
-inline fn sf_fadd(a: i64, b: f64) -> f64 {
-    return a + b;
-}
-
 // ---- Character Classes ---------------------------------------------------
 
 inline fn is_sf_whitespace(b: u8) -> bool {
@@ -126,7 +82,7 @@ inline fn is_sf_key_char(b: u8) -> bool {
 fn sf_skip_ws(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
     while p < src.len && is_sf_whitespace(src[p]) {
-        p = sf_next(p);
+        p = p + 1;
     }
     return p;
 }
@@ -136,7 +92,7 @@ fn sf_skip_ws_and_commas(src: const u8[:], pos: i64) -> i64 {
     while p < src.len {
         let ch = src[p];
         if is_sf_whitespace(ch) || ch == ',' {
-            p = sf_next(p);
+            p = p + 1;
         } else {
             break;
         }
@@ -148,12 +104,12 @@ fn sf_skip_ws_and_commas(src: const u8[:], pos: i64) -> i64 {
 
 // Parses an RFC 8941 Boolean: ?0 or ?1
 fn sf_parse_boolean(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
-    let p_plus_1 = sf_next(pos);
+    let p_plus_1 = pos + 1;
     if p_plus_1 >= src.len || src[pos] != '?' {
         return false;
     }
     let b = src[p_plus_1];
-    let next_idx = sf_step(pos, 2);
+    let next_idx = pos + 2;
     if b == '1' {
         out_item.kind = SfType.Boolean;
         out_item.bool_val = true;
@@ -174,25 +130,25 @@ fn sf_parse_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     if pos >= src.len || src[pos] != '"' {
         return false;
     }
-    let start = sf_next(pos);
-    var p = sf_next(pos);
+    let start = pos + 1;
+    var p = pos + 1;
     while p < src.len {
         let ch = src[p];
         if ch == '\\' {
-            let p_esc = sf_next(p);
+            let p_esc = p + 1;
             if p_esc >= src.len {
                 return false;
             }
-            p = sf_step(p, 2);
+            p = p + 2;
         } else if ch == '"' {
             out_item.kind = SfType.String;
             out_item.str_val = src[start..p];
-            out_next = sf_next(p);
+            out_next = p + 1;
             return true;
         } else if ch < 0x20 || ch >= 0x7f {
             return false;
         } else {
-            p = sf_next(p);
+            p = p + 1;
         }
     }
     return false;
@@ -203,17 +159,17 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     if pos >= src.len || src[pos] != ':' {
         return false;
     }
-    let start = sf_next(pos);
-    var p = sf_next(pos);
+    let start = pos + 1;
+    var p = pos + 1;
     while p < src.len {
         let ch = src[p];
         if ch == ':' {
             out_item.kind = SfType.Binary;
             out_item.str_val = src[start..p];
-            out_next = sf_next(p);
+            out_next = p + 1;
             return true;
         }
-        p = sf_next(p);
+        p = p + 1;
     }
     return false;
 }
@@ -228,11 +184,11 @@ fn sf_parse_token(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&)
         return false;
     }
     let start = pos;
-    var p = sf_next(start);
+    var p = start + 1;
     while p < src.len {
         let ch = src[p];
         if is_sf_tchar(ch) || ch == ':' || ch == '/' {
-            p = sf_next(p);
+            p = p + 1;
         } else {
             break;
         }
@@ -256,10 +212,10 @@ fn sf_scan_digits(
     var accum: i64 = 0;
     var count: i32 = 0;
     while p < src.len && is_sf_digit(src[p]) {
-        let digit = sf_digit_val(src[p]);
-        accum = sf_add_digit(sf_mul10(accum), digit);
-        count = sf_next_i32(count);
-        p = sf_next(p);
+        let digit = (src[p] - '0') as i64;
+        accum = accum * 10 + digit;
+        count = count + 1;
+        p = p + 1;
         if count > max_digits {
             return false;
         }
@@ -282,7 +238,7 @@ fn sf_parse_fraction(
     var frac_accum: i64 = 0;
     var frac_count: i32 = 0;
     var frac_end:   i64 = 0;
-    let next_p = sf_next(dot_pos);
+    let next_p = dot_pos + 1;
     let ok = sf_scan_digits(src, next_p, 3, frac_accum, frac_count, frac_end);
     if !ok {
         return false;
@@ -292,10 +248,10 @@ fn sf_parse_fraction(
     if frac_count == 2 { factor = 0.01; }
     if frac_count == 3 { factor = 0.001; }
 
-    let frac_f = sf_fmul(frac_accum, factor);
-    var total_f = sf_fadd(int_accum, frac_f);
+    let frac_f = (frac_accum as f64) * factor;
+    var total_f = (int_accum as f64) + frac_f;
     if is_neg {
-        total_f = sf_neg_f64(total_f);
+        total_f = -total_f;
     }
     out_item.kind = SfType.Decimal;
     out_item.dec_val = total_f;
@@ -312,7 +268,7 @@ fn sf_parse_number(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     var is_neg = false;
     if src[p] == '-' {
         is_neg = true;
-        p = sf_next(p);
+        p = p + 1;
         if p >= src.len || !is_sf_digit(src[p]) {
             return false;
         }
@@ -334,7 +290,7 @@ fn sf_parse_number(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     }
 
     out_item.kind = SfType.Integer;
-    out_item.int_val = if is_neg { sf_neg_i64(int_accum) } else { int_accum };
+    out_item.int_val = if is_neg { -int_accum } else { int_accum };
     out_next = p;
     return true;
 }
@@ -346,7 +302,7 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) 
     }
     var num_item = SfItem { .. };
     var n_next: i64 = 0;
-    let next_p = sf_next(pos);
+    let next_p = pos + 1;
     if !sf_parse_number(src, next_p, num_item, n_next) || num_item.kind != SfType.Integer {
         return false;
     }
@@ -359,16 +315,16 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) 
 // Parses an RFC 9651 Section 3.3.4 Display String: %"..."
 fn sf_parse_display_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
     guard pos + 1 < src.len && src[pos] == '%' && src[pos + 1] == '"' else { return false; }
-    var p = sf_step(pos, 2);
+    var p = pos + 2;
     while p < src.len {
         let ch = src[p];
         if ch == '"' {
             out_item.kind = SfType.DisplayString;
-            out_item.str_val = src[sf_step(pos, 2)..p];
-            out_next = sf_next(p);
+            out_item.str_val = src[pos + 2..p];
+            out_next = p + 1;
             return true;
         }
-        p = sf_next(p);
+        p = p + 1;
     }
     return false;
 }
@@ -417,9 +373,9 @@ fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
         return "", pos, false;
     }
     let start = pos;
-    var p = sf_next(start);
+    var p = start + 1;
     while p < src.len && is_sf_key_char(src[p]) {
-        p = sf_next(p);
+        p = p + 1;
     }
     return src[start..p], p, true;
 }
@@ -432,7 +388,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
         if p >= src.len || src[p] != ';' {
             break;
         }
-        p = sf_next(p); // skip ';'
+        p = p + 1; // skip ';'
         p = sf_skip_ws(src, p);
 
         let key, k_next, ok_k = sf_parse_key(src, p);
@@ -443,7 +399,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
 
         var val_item = SfItem { kind: SfType.Boolean, bool_val: true };
         if p < src.len && src[p] == '=' {
-            p = sf_next(p); // skip '='
+            p = p + 1; // skip '='
             var v_next: i64 = 0;
             if !sf_parse_bare_item(src, p, val_item, v_next) {
                 return false;
@@ -498,7 +454,7 @@ fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
 // Helper: parses inner list contents (item1 item2 ...)
 fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next: i64&) -> bool {
     entry.is_inner_list = true;
-    var p = sf_next(pos); // skip '('
+    var p = pos + 1; // skip '('
     while p < src.len && src[p] != ')' {
         p = sf_skip_ws(src, p);
         if p < src.len && src[p] == ')' {
@@ -517,7 +473,7 @@ fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next
     if p >= src.len || src[p] != ')' {
         return false;
     }
-    out_next = sf_next(p); // skip ')'
+    out_next = p + 1; // skip ')'
     return true;
 }
 
@@ -525,7 +481,7 @@ fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next
 fn sf_parse_dict_entry_value(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next: i64&) -> bool {
     var p = pos;
     if p < src.len && src[p] == '=' {
-        p = sf_next(p); // skip '='
+        p = p + 1; // skip '='
         if p < src.len && src[p] == '(' {
             var in_next: i64 = 0;
             if !sf_parse_inner_list(src, p, entry, in_next) {
@@ -602,7 +558,7 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
             if trimmed[p] != ',' {
                 return false;
             }
-            p = sf_next(p); // skip ','
+            p = p + 1; // skip ','
         }
     }
     return true;
@@ -659,7 +615,7 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
             if trimmed[p] != ',' {
                 return false;
             }
-            p = sf_next(p); // skip ','
+            p = p + 1; // skip ','
         }
     }
     return true;

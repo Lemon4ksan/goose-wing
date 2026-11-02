@@ -105,10 +105,6 @@ fn new_quic_stream(stream_id: u64, max_recv_flow: u64 = 65536) -> QuicStream {
 
 // ---- Arithmetic Safety Subroutines ---------------------------------------
 
-inline fn calc_sum_u64(a: u64, b: u64) -> u64 {
-    return a + b;
-}
-
 inline fn is_within_limit(offset: u64, len: u64, limit: u64) -> bool {
     if offset > limit { return false; }
     let rem = limit - offset;
@@ -116,7 +112,8 @@ inline fn is_within_limit(offset: u64, len: u64, limit: u64) -> bool {
 }
 
 inline fn calc_max_u64(a: u64, b: u64) -> u64 {
-    return if a >= b { a } else { b };
+    if a >= b { return a; }
+    return b;
 }
 
 // ---- Sending Stream State Machine (RFC 9000 Section 3.1) -----------------
@@ -135,7 +132,7 @@ fn quic_stream_on_send_data(
         return false, QUIC_ERR_FLOW_CONTROL;
     }
 
-    let end_offset = calc_sum_u64(offset, len);
+    let end_offset = offset + len;
     s.bytes_sent = calc_max_u64(s.bytes_sent, end_offset);
 
     if fin {
@@ -210,7 +207,7 @@ fn quic_stream_on_recv_stream_frame(
     len:    u64,
     fin:    bool,
 ) -> bool, u64 {
-    let end_offset = calc_sum_u64(offset, len);
+    let end_offset = offset + len;
 
     // RFC 9000 §4.5: Data exceeding established final size MUST trigger FINAL_SIZE_ERROR
     if s.has_recv_final_size {
@@ -319,7 +316,7 @@ fn quic_stream_on_recv_stop_sending(
 
 // Consumes contiguous stream bytes by application, advancing to DataRead terminal state.
 fn quic_stream_on_app_read(s: QuicStream&, bytes: u64) -> bool {
-    s.recv_consumed = calc_sum_u64(s.recv_consumed, bytes);
+    s.recv_consumed = s.recv_consumed + bytes;
     if s.recv_state == QuicRecvState.DataRecvd && s.recv_consumed >= s.recv_final_size {
         s.recv_state = QuicRecvState.DataRead;
         return true;
@@ -479,11 +476,11 @@ fn quic_table_get_or_open_stream(
 inline fn advance_stream_counter(tbl: QuicStreamTable&, is_bidi: bool) -> u64 {
     if is_bidi {
         let sid = tbl.next_local_bidi_id;
-        tbl.next_local_bidi_id = calc_sum_u64(sid, 4);
+        tbl.next_local_bidi_id = sid + 4;
         return sid;
     }
     let sid = tbl.next_local_uni_id;
-    tbl.next_local_uni_id = calc_sum_u64(sid, 4);
+    tbl.next_local_uni_id = sid + 4;
     return sid;
 }
 

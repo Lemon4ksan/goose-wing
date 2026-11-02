@@ -22,28 +22,6 @@ struct IoVecArray {
     total_bytes: i64         = 0,
 }
 
-// ---- Safe Arithmetic Helpers ---------------------------------------------
-
-fn iovec_next_i32(v: i32) -> i32 {
-    return v + 1;
-}
-
-fn iovec_next_i64(v: i64) -> i64 {
-    return v + 1;
-}
-
-fn iovec_add_i64(a: i64, b: i64) -> i64 {
-    return a + b;
-}
-
-fn iovec_sub_i64(a: i64, b: i64) -> i64 {
-    return a - b;
-}
-
-fn iovec_min_i64(a: i64, b: i64) -> i64 {
-    return if a < b { a } else { b };
-}
-
 // ---- Lifecycle & Inspection ----------------------------------------------
 
 fn new_iovec_array() -> IoVecArray {
@@ -89,8 +67,8 @@ fn iovec_compact(arr: IoVecArray&) {
         } else {
             arr.entries[write_idx] = arr.entries[read_idx];
         }
-        write_idx = iovec_next_i32(write_idx);
-        read_idx = iovec_next_i32(read_idx);
+        write_idx += 1;
+        read_idx += 1;
     }
     while (arr.entries.len as i32) > write_idx {
         arr.entries.pop();
@@ -106,7 +84,7 @@ fn iovec_push(arr: IoVecArray&, chunk: const u8[:]) -> bool {
     }
     guard arr.entries.len < 16 else { return false; }
     arr.entries.push(IoVec { base: chunk });
-    arr.total_bytes = iovec_add_i64(arr.total_bytes, chunk.len);
+    arr.total_bytes += chunk.len;
     return true;
 }
 
@@ -128,16 +106,16 @@ fn iovec_flatten<B>(arr: const IoVecArray&, out: B&) {
     while i < n {
         let chunk = iovec_get(arr, i);
         out.append(chunk);
-        i = iovec_next_i32(i);
+        i += 1;
     }
 }
 
 fn iovec_copy_chunk(chunk: const u8[:], count: i64, dst: u8[:], dst_offset: i64) {
     var k: i64 = 0;
     while k < count {
-        let dst_pos = iovec_add_i64(dst_offset, k);
+        let dst_pos = dst_offset + k;
         dst[dst_pos] = chunk[k];
-        k = iovec_next_i64(k);
+        k += 1;
     }
 }
 
@@ -147,11 +125,11 @@ fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
     let n = iovec_count(arr);
     while i < n && dst_off < dst.len {
         let chunk = iovec_get(arr, i);
-        let rem_dst = iovec_sub_i64(dst.len, dst_off);
-        let to_copy = iovec_min_i64(chunk.len, rem_dst);
+        let rem_dst = dst.len - dst_off;
+        let to_copy = if chunk.len < rem_dst { chunk.len } else { rem_dst };
         iovec_copy_chunk(chunk, to_copy, dst, dst_off);
-        dst_off = iovec_add_i64(dst_off, to_copy);
-        i = iovec_next_i32(i);
+        dst_off += to_copy;
+        i += 1;
     }
     return dst_off;
 }
@@ -160,12 +138,12 @@ fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
 
 fn iovec_consume_head(arr: IoVecArray&, avail: i64, needed: i64) -> i64 {
     if needed < avail {
-        arr.head_offset = iovec_add_i64(arr.head_offset, needed);
-        arr.total_bytes = iovec_sub_i64(arr.total_bytes, needed);
+        arr.head_offset += needed;
+        arr.total_bytes -= needed;
         return needed;
     }
-    arr.total_bytes = iovec_sub_i64(arr.total_bytes, avail);
-    arr.head = iovec_next_i32(arr.head);
+    arr.total_bytes -= avail;
+    arr.head += 1;
     arr.head_offset = 0;
     return avail;
 }
@@ -178,8 +156,8 @@ fn iovec_consume(arr: IoVecArray&, bytes_to_consume: i64) -> i64 {
         let head_chunk = iovec_get(arr, 0);
         let avail = head_chunk.len;
         let consumed = iovec_consume_head(arr, avail, rem);
-        consumed_total = iovec_add_i64(consumed_total, consumed);
-        rem = iovec_sub_i64(rem, consumed);
+        consumed_total += consumed;
+        rem -= consumed;
     }
     return consumed_total;
 }

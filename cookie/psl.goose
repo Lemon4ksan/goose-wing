@@ -70,18 +70,6 @@ fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     return true;
 }
 
-fn psl_offset_add(base: i64, delta: i64) -> i64 {
-    return base + delta;
-}
-
-fn psl_offset_sub(base: i64, delta: i64) -> i64 {
-    return base - delta;
-}
-
-fn psl_labels_count(dots: i32, offset: i32) -> i32 {
-    return dots + offset;
-}
-
 fn psl_match_exception(rule: const PslRule&, norm: const u8[:]) -> const u8[:] {
     if rule.rule_type != PslRuleType.Exception {
         return "";
@@ -94,7 +82,7 @@ fn psl_match_exception(rule: const PslRule&, norm: const u8[:]) -> const u8[:] {
     if first_dot < 0 {
         return pat;
     }
-    let start = psl_offset_add(first_dot, 1);
+    let start = first_dot + 1;
     if start >= pat.len {
         return pat;
     }
@@ -105,7 +93,7 @@ fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_la
     let pat_len = pat.len;
     let norm_len = norm.len;
     let dots = core::count_byte(pat, '.') as i32;
-    let num_labels = psl_labels_count(dots, 1);
+    let num_labels = dots + 1;
     if norm == pat {
         out_start = 0;
         out_labels = num_labels;
@@ -117,7 +105,7 @@ fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_la
     if norm_len < pat_len {
         return false;
     }
-    let suffix_start = psl_offset_sub(norm_len, pat_len);
+    let suffix_start = norm_len - pat_len;
     out_start = suffix_start;
     out_labels = num_labels;
     return true;
@@ -127,7 +115,7 @@ fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_
     let dots = core::count_byte(pat, '.') as i32;
     if norm == pat {
         out_start = 0;
-        out_labels = psl_labels_count(dots, 1);
+        out_labels = dots + 1;
         return true;
     }
     if !core::ends_with_dot_suffix(norm, pat) {
@@ -138,20 +126,20 @@ fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_
     if n_len <= p_len {
         return false;
     }
-    let rem_len = psl_offset_sub(n_len, p_len);
-    let prefix_len = psl_offset_sub(rem_len, 1);
+    let rem_len = n_len - p_len;
+    let prefix_len = rem_len - 1;
     if prefix_len < 0 || prefix_len > n_len {
         return false;
     }
     let prefix = norm[..prefix_len];
     let last_dot = core::last_index_of_byte(prefix, '.');
-    let next_dot = psl_offset_add(last_dot, 1);
+    let next_dot = last_dot + 1;
     var start: i64 = 0;
     if last_dot >= 0 {
         start = next_dot;
     }
     let dots = core::count_byte(pat, '.') as i32;
-    let num_labels = psl_labels_count(dots, 2);
+    let num_labels = dots + 2;
     out_start = start;
     out_labels = num_labels;
     return true;
@@ -226,7 +214,7 @@ fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -
 
     // 3. Fallback rule: if no rules match, the default rule is * (highest-level TLD)
     let last_dot = core::last_index_of_byte(norm, '.');
-    let next_dot = psl_offset_add(last_dot, 1);
+    let next_dot = last_dot + 1;
     var tld_start: i64 = 0;
     if last_dot >= 0 {
         tld_start = next_dot;
@@ -260,17 +248,17 @@ fn is_public_suffix(db: const PslDatabase&, domain: const u8[:], is_icann_only: 
 
 fn psl_find_registrable_start(clean_host: const u8[:], suffix_len: i64) -> i64 {
     let host_len = clean_host.len;
-    let min_needed = psl_offset_add(suffix_len, 1);
+    let min_needed = suffix_len + 1;
     if host_len <= min_needed {
         return 0;
     }
-    let prefix_len = psl_offset_sub(host_len, min_needed);
+    let prefix_len = host_len - min_needed;
     if prefix_len < 0 || prefix_len > host_len {
         return 0;
     }
     let prefix = clean_host[..prefix_len];
     let last_dot = core::last_index_of_byte(prefix, '.');
-    let next_pos = psl_offset_add(last_dot, 1);
+    let next_pos = last_dot + 1;
     if last_dot >= 0 {
         return next_pos;
     }

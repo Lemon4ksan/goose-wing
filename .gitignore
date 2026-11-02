@@ -28,7 +28,7 @@ reports/
 tools/bench-vs-uwebsockets/server_goose_wing.c
 tests/wasm_runner.c
 
-# goose-crap build artifacts and test binaries
+# goose-lit build artifacts and test binaries
 *.gcrap-cov
 *.gcrap-cov.raw
 *.gcrap_bak

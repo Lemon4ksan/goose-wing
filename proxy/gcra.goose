@@ -237,10 +237,6 @@ inline fn clear_client_rejects(entry: GatewayClientEntry&) {
     entry.consecutive_rejects = 0;
 }
 
-inline fn sub_one_i32(x: i32) -> i32 {
-    return x - 1;
-}
-
 // Instantiates a new zero-allocation GatewayRateLimiter.
 fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRateLimiter {
     return GatewayRateLimiter {
@@ -293,7 +289,7 @@ inline fn push_new_client_slot(limiter: GatewayRateLimiter&, client_id: const u8
     populate_entry(new_entry, client_id, now_ns);
     limiter.entries.push(new_entry);
     let n = limiter.entries.len as i32;
-    return sub_one_i32(n);
+    return n - 1;
 }
 
 // Allocates or retrieves an existing entry slot in the bounded table.

@@ -12,29 +12,17 @@ import .frames;
 import .stream;
 
 // Computes stream offset end position (RFC 9000 §4.1).
-inline fn calc_stream_end_offset(offset: u64, len: u64) -> u64 {
-    return offset + len;
-}
-
 // Computes committed credit growth beyond current high watermark (RFC 9000 §4.1).
-inline fn calc_consumed_credit_growth(new_offset: u64, current_mark: u64) -> u64 {
-    return new_offset - current_mark;
-}
-
 // Computes projected connection usage allowance (RFC 9000 §4.1).
-inline fn calc_projected_conn_usage(current_total: u64, additional: u64) -> u64 {
-    return current_total + additional;
-}
-
 // Computes unspent flow control allowance safely guarding against underflow (RFC 9000 §4.1).
 inline fn calc_unspent_credit(limit: u64, consumed: u64) -> u64 {
     guard limit > consumed else { return 0; }
-    return calc_consumed_credit_growth(limit, consumed);
+    return limit - consumed;
 }
 
 // Calculates candidate window credit advertisement clamped to 2^62 - 1 (RFC 9000 §4.2).
 inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
-    let candidate = calc_projected_conn_usage(base, window_size);
+    let candidate = base + window_size;
     if candidate < base || candidate > QUIC_VARINT_MAX {
         return QUIC_VARINT_MAX;
     }
@@ -56,7 +44,7 @@ inline fn calc_window_renewal_threshold(window_size: u64) -> u64 {
 
 // Safely advances consumed byte counter with arithmetic wrap protection (RFC 9000 §4.1).
 inline fn calc_safe_accumulate_bytes(current: u64, delta: u64) -> u64 {
-    let next = calc_projected_conn_usage(current, delta);
+    let next = current + delta;
     if next < current {
         return current;
     }
@@ -112,7 +100,7 @@ fn quic_fc_can_send(
     guard quic_valid_offset_len(offset, len) else {
         return false, true, true;
     }
-    let end_offset = calc_stream_end_offset(offset, len);
+    let end_offset = offset + len;
 
     // Check stream-level flow control
     let stream_ok = end_offset <= s.send_max_data;
@@ -120,9 +108,9 @@ fn quic_fc_can_send(
     // Check connection-level flow control
     var additional_conn_bytes: u64 = 0;
     if end_offset > s.bytes_sent {
-        additional_conn_bytes = calc_consumed_credit_growth(end_offset, s.bytes_sent);
+        additional_conn_bytes = end_offset - s.bytes_sent;
     }
-    let projected_conn_total = calc_projected_conn_usage(fc.bytes_sent_total, additional_conn_bytes);
+    let projected_conn_total = fc.bytes_sent_total + additional_conn_bytes;
     let conn_ok = projected_conn_total <= fc.max_data_remote;
 
     let can_send = stream_ok && conn_ok;
@@ -142,16 +130,16 @@ fn quic_fc_record_send(
     guard quic_valid_offset_len(offset, len) else {
         return false;
     }
-    let end_offset = calc_stream_end_offset(offset, len);
+    let end_offset = offset + len;
     guard end_offset <= s.send_max_data else {
         return false;
     }
 
     var additional_conn_bytes: u64 = 0;
     if end_offset > s.bytes_sent {
-        additional_conn_bytes = calc_consumed_credit_growth(end_offset, s.bytes_sent);
+        additional_conn_bytes = end_offset - s.bytes_sent;
     }
-    let projected_conn_total = calc_projected_conn_usage(fc.bytes_sent_total, additional_conn_bytes);
+    let projected_conn_total = fc.bytes_sent_total + additional_conn_bytes;
     guard projected_conn_total <= fc.max_data_remote else {
         fc.is_data_blocked = true;
         return false;
@@ -178,7 +166,7 @@ fn quic_fc_record_recv_stream(
     guard quic_valid_offset_len(offset, len) else {
         return false, QUIC_ERR_FLOW_CONTROL;
     }
-    let end_offset = calc_stream_end_offset(offset, len);
+    let end_offset = offset + len;
 
     // RFC 9000 §4.1: Stream-level flow control check
     guard end_offset <= s.recv_max_data else {
@@ -188,9 +176,9 @@ fn quic_fc_record_recv_stream(
     // RFC 9000 §4.1: Connection-level flow control check
     var additional_bytes: u64 = 0;
     if end_offset > s.bytes_recv {
-        additional_bytes = calc_consumed_credit_growth(end_offset, s.bytes_recv);
+        additional_bytes = end_offset - s.bytes_recv;
     }
-    let projected_conn_recv = calc_projected_conn_usage(fc.bytes_recv_total, additional_bytes);
+    let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
         return false, QUIC_ERR_FLOW_CONTROL;
     }
@@ -218,9 +206,9 @@ fn quic_fc_record_recv_reset(
 
     var additional_bytes: u64 = 0;
     if final_size > s.bytes_recv {
-        additional_bytes = calc_consumed_credit_growth(final_size, s.bytes_recv);
+        additional_bytes = final_size - s.bytes_recv;
     }
-    let projected_conn_recv = calc_projected_conn_usage(fc.bytes_recv_total, additional_bytes);
+    let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
         return false, QUIC_ERR_FLOW_CONTROL;
     }

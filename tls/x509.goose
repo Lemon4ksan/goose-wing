@@ -514,10 +514,6 @@ fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> boo
     return cursor_len(cert_cursor) == 0;
 }
 
-inline fn calc_consumed_span_len(start_len: i64, remaining_len: i64) -> i64 {
-    return start_len - remaining_len;
-}
-
 // Parses raw X.509 certificate DER into zero-allocation ParsedCert descriptor (RFC 5280 Section 4.1).
 // Extracts spans for tbsCertificate, serial, issuer, validity, subject, SPKI, and signature.
 //
@@ -533,7 +529,7 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     let tbs_raw_start = cert_seq.buf;
     var tbs_seq = cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
-    let tbs_tlv_len = calc_consumed_span_len(tbs_raw_start.len, cert_seq.buf.len);
+    let tbs_tlv_len = tbs_raw_start.len - cert_seq.buf.len;
     out.tbs_cert = make_span(raw_cert, tbs_raw_start[..tbs_tlv_len]);
 
     guard x509_read_tbs_components(raw_cert, tbs_seq, out) else { return false; }

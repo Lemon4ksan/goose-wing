@@ -21,10 +21,6 @@ inline fn hpack_prefix_mask(prefix_bits: u8) -> u64 {
     };
 }
 
-inline fn calc_hpack_int_rem(val: u64, max_prefix: u64) -> u64 {
-    return val - max_prefix;
-}
-
 // Encodes an integer with an N-bit prefix into out (RFC 7541 Section 5.1).
 fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> bool {
     guard prefix_bits >= 1 && prefix_bits <= 8 else { return false; }
@@ -36,7 +32,7 @@ fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> b
     }
 
     guard out.try_push(prefix_mask | (max_prefix as u8)) else { return false; }
-    var rem = calc_hpack_int_rem(val, max_prefix);
+    var rem = val - max_prefix;
 
     while rem >= 128 {
         guard out.try_push((0x80 | (rem & 0x7F)) as u8) else { return false; }
@@ -74,23 +70,6 @@ fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const 
     return true;
 }
 
-inline fn calc_next_u64_offset(cur: u64, delta: u64) -> u64 {
-    return cur + delta;
-}
-
-inline fn calc_hpack_int_term(nb: u8, m: u64) -> u64 {
-    let payload = (nb & 0x7F) as u64;
-    return payload << m;
-}
-
-inline fn accumulate_hpack_int(val: u64, term: u64) -> u64 {
-    return val + term;
-}
-
-inline fn advance_hpack_shift(m: u64) -> u64 {
-    return m + 7;
-}
-
 // Decodes an integer with an N-bit prefix from slice and advances cursor (RFC 7541 Section 5.1).
 //
 // Example:
@@ -103,7 +82,7 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
     let max_prefix = hpack_prefix_mask(prefix_bits);
     let mask = max_prefix as u8;
     let b = src[offset];
-    offset = calc_next_u64_offset(offset, 1);
+    offset += 1;
 
     var val = (b & mask) as u64;
     guard val == max_prefix else { return val, true; }
@@ -111,10 +90,9 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
     var m: u64 = 0;
     while offset < (src.len as u64) {
         let nb = src[offset];
-        offset = calc_next_u64_offset(offset, 1);
-        let term = calc_hpack_int_term(nb, m);
-        val = accumulate_hpack_int(val, term);
-        m = advance_hpack_shift(m);
+        offset += 1;
+        val += ((nb & 0x7F) as u64) << m;
+        m += 7;
         if (nb & 0x80) == 0 {
             return val, true;
         }
@@ -132,7 +110,7 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
     guard offset < (src.len as u64) else { return false; }
     let str_len, len_ok = hpack_decode_int(src, offset, 7);
     guard len_ok else { return false; }
-    let end = calc_next_u64_offset(offset, str_len);
+    let end = offset + str_len;
     guard end <= (src.len as u64) else { return false; }
     guard out.try_append(src[offset..end]) else { return false; }
     offset = end;

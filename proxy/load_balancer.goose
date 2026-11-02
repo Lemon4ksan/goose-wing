@@ -69,13 +69,9 @@ fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, 
     return true;
 }
 
-inline fn lcg_step_mul(val: u64) -> u64 {
-    return val * 6364136223846793005;
-}
-
 // 64-bit linear congruential PRNG generator (Knuth MMIX parameters)
 inline fn next_prng(state: u64&) -> u64 {
-    let s = lcg_step_mul(state) + 1442695040888963407;
+    let s = state * 6364136223846793005 + 1442695040888963407;
     state = s;
     return s;
 }
@@ -205,14 +201,10 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
     return select_p2c(cluster, n);
 }
 
-inline fn dec_conn_count(conns: i32) -> i32 {
-    return conns - 1;
-}
-
 inline fn dec_active_conns(target: UpstreamTarget&) {
     let cur = target.active_conns;
     if cur > 0 {
-        target.active_conns = dec_conn_count(cur);
+        target.active_conns = cur - 1;
     }
 }
 

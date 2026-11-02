@@ -45,10 +45,6 @@ fn connect_wire_queue(q: WireQueue&, host: const u8[:], port: u16, timeout_ms: u
     return true;
 }
 
-inline fn accumulate_transferred_bytes(current: u64, delta: i32) -> u64 {
-    return current + (delta as u64);
-}
-
 // Submits a recorded command buffer to the physical transport queue (RFC 9113).
 fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool {
     guard q.is_connected else { return 0, false; }
@@ -59,7 +55,7 @@ fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool {
     let sent = wing::native_tcp_send(q.fd, data);
     guard sent >= 0 else { return 0, false; }
 
-    q.bytes_sent = accumulate_transferred_bytes(q.bytes_sent, sent);
+    q.bytes_sent = q.bytes_sent + (sent as u64);
     return sent, true;
 }
 
@@ -71,7 +67,7 @@ fn submit_slice(q: WireQueue&, data: const u8[:]) -> i64, bool {
     let sent = wing::native_tcp_send(q.fd, data);
     guard sent >= 0 else { return 0, false; }
 
-    q.bytes_sent = accumulate_transferred_bytes(q.bytes_sent, sent);
+    q.bytes_sent = q.bytes_sent + (sent as u64);
     return sent, true;
 }
 
@@ -83,7 +79,7 @@ fn poll_recv(q: WireQueue&, out: u8[:], timeout_ms: u32 = 0) -> i64, bool {
     let recvd = wing::native_tcp_recv(q.fd, out, timeout_ms);
     guard recvd >= 0 else { return 0, false; }
 
-    q.bytes_received = accumulate_transferred_bytes(q.bytes_received, recvd);
+    q.bytes_received = q.bytes_received + (recvd as u64);
     return recvd, true;
 }
 
