@@ -33,7 +33,8 @@ Stateful HTTP session execution engine orchestrating the 6-phase pipeline (Inter
 ### Security & Testing
 - **`struct SsrfGuardPolicy`**: SSRF perimeter rules blocking private IPv4 (RFC 1918), CGNAT (RFC 6598), loopback, link-local (RFC 3927), cloud metadata endpoints, and dangerous ports.
 - **`fn set_ssrf_policy(session: Session&, policy: SsrfGuardPolicy)`**: Configures session SSRF protection.
-- **`fn add_mock_response(session: Session&, method: const u8[:], url: const u8[:], status: i32, body: const u8[:])`**: Registers deterministic offline mock responses for integration testing.
+- **`fn mock_route(session: Session&, method: const u8[:], url: const u8[:], status: i32, body: const u8[:])`**: Registers deterministic offline mock routes for integration testing.
+- **`fn close(session: Session&)`**: Closes and drains all active and idle connections in the session pool.
 
 ## Invariants
 - **Body rewind on redirect**: On 307 (Temporary Redirect) and 308 (Permanent Redirect), request bodies are restored from `rewind_buf` to preserve payload integrity (RFC 9110 §15.4.8).

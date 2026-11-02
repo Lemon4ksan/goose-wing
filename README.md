@@ -42,7 +42,7 @@ It is not an ergonomic, high-level HTTP client like Python's `requests`. Writing
 
 ```goose
 import std;
-import wing from "..";
+import wing;
 
 fn main() {
     var sess = wing::new_session("https://api.example.com") { s =>
@@ -51,14 +51,14 @@ fn main() {
         s.default_header("Accept", "application/json");
     };
 
-    let res, ok = sess.get("/v1/status");
-    guard ok && res.is_success() else {
-        print("Request failed!");
+    let res, err = sess.get("/v1/status");
+    guard err.ok() && res.is_success() else {
+        print("Request failed: ", err.message[..]);
         return;
     }
 
     print("Status: ", res.status_code);
-    print("Body: ", res.body);
+    print("Body: ", res.body[..]);
 }
 ```
 

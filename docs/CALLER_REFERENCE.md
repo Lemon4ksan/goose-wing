@@ -9,8 +9,8 @@ Containers carry compile-time capacity caps:
 | Type or field | Capacity limit | Behavior on exceeding budget |
 | :--- | :--- | :--- |
 | `HeaderMap` | 64 dynamic + 64 well-known static slots | Header insertion fails closed or returns false. Headers beyond 64 are rejected. |
-| `HeaderItem.name` | 128 bytes | Header name is truncated or rejected during parsing. |
-| `HeaderItem.value` | 2048 bytes | Header values exceeding 2 KB are rejected to prevent header bomb DoS. |
+| `HeaderItem.name` | 64 bytes | Header name exceeding 64 bytes is rejected or truncated during parsing. |
+| `HeaderItem.value` | 384 bytes | Inline header values exceeding 384 bytes are rejected (zero-copy `HeaderSpan` views preserve larger wire values). |
 | `UrlView` and URL buffers | 2048 bytes | URLs longer than 2048 bytes fail with `UrlParseError.UrlTooLong`. |
 | `SingleflightGroup` key | 64 bytes | Keys longer than 64 bytes are truncated to 64 bytes. |
 | Cookie payload | 4096 bytes (`name + value`) | Rejects Set-Cookie header immediately (returns false). |

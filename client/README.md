@@ -12,10 +12,10 @@ High-performance HTTP client engine providing zero-allocation request/response r
 - **`fn new_client(cfg: ClientConfig) -> Client`**: Creates a Client configured with specific parameters.
 - **`fn new_client(base_url: const u8[:]) -> Client`**: Creates a Client with a pre-configured base URL.
 - **`fn set_profile(client: Client&, profile: Profile)`**: Configures browser TLS/HTTP fingerprint profile (JA4/Akamai).
-- **`fn set_timeout(client: Client&, timeout_ms: i64)`**: Sets default request timeout.
-- **`fn set_header(client: Client&, name: const u8[:], val: const u8[:])`**: Sets persistent default header.
-- **`fn enable_http_cache(client: Client&, options: CacheOptions)`**: Activates RFC 9111 HTTP caching.
-- **`fn enable_doh(client: Client&, doh_url: const u8[:])`**: Enables RFC 8484 DNS-over-HTTPS resolution.
+- **`fn set_timeout_ms(client: Client&, ms: i64)`**: Sets default request timeout in milliseconds.
+- **`fn default_header(client: Client&, name: const u8[:], val: const u8[:])`**: Sets persistent default header.
+- **`fn enable_doh(client: Client&, endpoint: const u8[:] = "...", use_post: bool = true)`**: Enables RFC 8484 DNS-over-HTTPS resolution.
+- **`fn close(client: Client&)`**: Closes and drains all idle and active connections in the connection pool.
 
 ### Request Model (RFC 9110)
 - **`struct Request`**: Zero-copy request representation (`method`, `url`, `headers`, `query_params`, `body`, `timeout`, `cors_mode`).
@@ -30,11 +30,12 @@ High-performance HTTP client engine providing zero-allocation request/response r
 - **`fn sign_hmac_sha256(req: Request&, secret_key: const u8[:])`**: Signs request payload with HMAC-SHA256 (`X-Signature-256`).
 
 ### Response Model (RFC 9110)
-- **`struct Response`**: HTTP response container (`status_code`, `protocol`, `headers`, `trailers`, `body`, `elapsed_us`).
-- **`fn status(res: const Response&) -> i32`**: Returns HTTP status code.
-- **`fn text(res: const Response&) -> const u8[:]`**: Returns response body as a byte slice.
-- **`fn header(res: const Response&, name: const u8[:]) -> const u8[:]`**: Case-insensitive header lookup.
-- **`fn has_header(res: const Response&, name: const u8[:]) -> bool`**: Checks if header exists.
+- **`struct Response`**: HTTP response container (`status_code`, `effective_url`, `headers`, `trailers`, `body`, `elapsed_us`).
+- **`res.status_code`**: Integer HTTP status code (200, 404, etc.).
+- **`res.body`**: Response payload buffer (`u8[>..]`).
+- **`res.is_success()`**: Helper checking if `status_code` is in 200..299 range.
+- **`find_header(res.headers[..], name)`**: Case-insensitive header lookup slice.
+- **`has_header(res.headers[..], name)`**: Checks if header exists.
 - **`fn decode_body(res: Response&) -> bool`**: Automatically decompresses response body (`gzip`, `deflate`, `br`, `zstd`).
 
 ### Interceptors & Policies
