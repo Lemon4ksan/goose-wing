@@ -302,31 +302,28 @@ fn encode_quic_datagram_frame<B>(
 // Example:
 //   wire = [0x31, 0x04, 't', 'e', 's', 't']
 //   returns: true, out_payload = "test"
-fn decode_quic_datagram_frame(
+fn decode_quic_datagram_frame<B>(
     wire:        const u8[:],
-    out_payload: u8[>..]&,
+    out_payload: B&,
 ) -> bool {
     out_payload.clear();
     var idx: i64 = 0;
     let frame_type, ok_t = read_varint(wire, idx);
     guard ok_t else { return false; }
 
-    if frame_type == internal::QUIC_FRAME_DATAGRAM {
-        // Unbounded to end of wire
-        for i in (wire.len - idx) {
-            out_payload.push(wire[idx + i]);
-        }
-        return true;
-    } else if frame_type == internal::QUIC_FRAME_DATAGRAM_LEN {
+    guard frame_type == internal::QUIC_FRAME_DATAGRAM || frame_type == internal::QUIC_FRAME_DATAGRAM_LEN else {
+        return false;
+    }
+
+    if frame_type == internal::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
         guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
-        for i in (len as i64) {
-            out_payload.push(wire[idx + i]);
-        }
+        out_payload.append(wire[idx..idx + (len as i64)]);
         return true;
     }
 
-    return false;
+    out_payload.append(wire[idx..]);
+    return true;
 }
 
 // ---- HTTP/3 Error Code Mapping (draft-16 Section 4.3) ---------------------

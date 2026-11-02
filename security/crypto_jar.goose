@@ -196,17 +196,13 @@ fn seal_binary_hkdf_aes<B>(
     var aad_stack: u8[..256] = [];
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
-        var ct: u8[>..] = [];
-        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], ct);
-        out.append(ct[..]);
+        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], out);
         for i in 16 { out.push(tag[i]); }
         return true;
     } else {
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
-        var ct: u8[>..] = [];
-        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], ct);
-        out.append(ct[..]);
+        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], out);
         for i in 16 { out.push(tag[i]); }
         return true;
     }
@@ -234,17 +230,13 @@ fn seal_binary_xchacha20<B>(
     var aad_stack: u8[..256] = [];
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
-        var ct: u8[>..] = [];
-        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], ct);
-        out.append(ct[..]);
+        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], out);
         for i in 16 { out.push(tag[i]); }
         return true;
     } else {
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_dyn);
-        var ct: u8[>..] = [];
-        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], ct);
-        out.append(ct[..]);
+        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], out);
         for i in 16 { out.push(tag[i]); }
         return true;
     }
@@ -269,13 +261,13 @@ fn private_jar_seal_binary<B>(
     return seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
 }
 
-fn open_binary_xchacha20(
+fn open_binary_xchacha20<B>(
     jar:           const PrivateJar&,
     slot:          const core::KeySlot&,
     cookie_name:   const u8[:],
     raw_wire:      const u8[:],
     now_sec:       i64,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
 
@@ -308,13 +300,13 @@ fn open_binary_xchacha20(
     }
 }
 
-fn open_binary_hkdf_aes(
+fn open_binary_hkdf_aes<B>(
     jar:           const PrivateJar&,
     slot:          const core::KeySlot&,
     cookie_name:   const u8[:],
     raw_wire:      const u8[:],
     now_sec:       i64,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
 
@@ -351,12 +343,12 @@ fn open_binary_hkdf_aes(
 }
 
 // Verifies authentication tag, context binding, and decrypts payload into out_plaintext.
-fn private_jar_open_binary(
+fn private_jar_open_binary<B>(
     jar:           const PrivateJar&,
     cookie_name:   const u8[:],
     raw_wire:      const u8[:],
     now_sec:       i64,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     out_plaintext.clear();
     guard raw_wire.len >= 53 else { return false; }
@@ -388,18 +380,23 @@ fn private_jar_seal<B>(
     guard private_jar_seal_binary(jar, cookie_name, plaintext, now_sec, nonce_seed, raw_wire) else {
         return false;
     }
-    base64url_encode(raw_wire[..], out);
+    core::base64url_encode(raw_wire[..], out);
     return true;
 }
 
 // Decodes Base64URL cookie value and decrypts with constant-time verification.
-fn private_jar_open(
+fn private_jar_open<B>(
     jar:           const PrivateJar&,
     cookie_name:   const u8[:],
     encoded_val:   const u8[:],
     now_sec:       i64,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
+    var raw_wire_stack: u8[..4200] = [];
+    if encoded_val.len <= 5500 {
+        guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }
+        return private_jar_open_binary(jar, cookie_name, raw_wire_stack[..], now_sec, out_plaintext);
+    }
     var raw_wire: u8[>..] = [];
     guard core::base64url_decode(encoded_val, raw_wire) else { return false; }
     return private_jar_open_binary(jar, cookie_name, raw_wire[..], now_sec, out_plaintext);
@@ -449,12 +446,12 @@ fn signed_jar_seal_binary<B>(
     }
 }
 
-fn signed_jar_open_binary(
+fn signed_jar_open_binary<B>(
     jar:         const SignedJar&,
     cookie_name: const u8[:],
     raw_wire:    const u8[:],
     now_sec:     i64,
-    out_payload: u8[>..]&,
+    out_payload: B&,
 ) -> bool {
     out_payload.clear();
     guard raw_wire.len >= K_OVERHEAD_HMAC_SHA256 else { return false; }
@@ -479,21 +476,19 @@ fn signed_jar_open_binary(
     var tag: u8[32] = [0; 32];
     for i in 32 { tag[i] = raw_wire[13 + payload_len + i]; }
 
+    var expected_mac:  u8[32]     = [0; 32];
     var to_sign_stack: u8[..4200] = [];
     if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_stack);
-        let expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
-        guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
-        out_payload.append(payload);
-        return true;
+        expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_dyn);
-        let expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
-        guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
-        out_payload.append(payload);
-        return true;
+        expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
     }
+    guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
+    out_payload.append(payload);
+    return true;
 }
 
 fn signed_jar_seal<B>(
@@ -505,17 +500,22 @@ fn signed_jar_seal<B>(
 ) -> bool {
     var raw_wire: u8[>..] = [];
     guard signed_jar_seal_binary(jar, cookie_name, payload, now_sec, raw_wire) else { return false; }
-    base64url_encode(raw_wire[..], out);
+    core::base64url_encode(raw_wire[..], out);
     return true;
 }
 
-fn signed_jar_open(
+fn signed_jar_open<B>(
     jar:         const SignedJar&,
     cookie_name: const u8[:],
     encoded_val: const u8[:],
     now_sec:     i64,
-    out_payload: u8[>..]&,
+    out_payload: B&,
 ) -> bool {
+    var raw_wire_stack: u8[..4200] = [];
+    if encoded_val.len <= 5500 {
+        guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }
+        return signed_jar_open_binary(jar, cookie_name, raw_wire_stack[..], now_sec, out_payload);
+    }
     var raw_wire: u8[>..] = [];
     guard core::base64url_decode(encoded_val, raw_wire) else { return false; }
     return signed_jar_open_binary(jar, cookie_name, raw_wire[..], now_sec, out_payload);

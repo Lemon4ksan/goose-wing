@@ -226,10 +226,10 @@ fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
 // Example:
 //   raw_header = "a=1; b=2"
 //   out = [CanonicalCookie{name="a", value="1"}, CanonicalCookie{name="b", value="2"}]
-fn parse_server_cookie_header(
+fn parse_server_cookie_header<C>(
     raw_header:  const u8[:],
     now_us:      i64,
-    out:         CanonicalCookie[>..]&,
+    out:         C&,
     max_cookies: i64 = 100,
 ) {
     guard raw_header.len > 0 else { return; }
@@ -247,9 +247,9 @@ fn parse_server_cookie_header(
 // Example:
 //   raw_header = "session=xyz"
 //   out = [CanonicalCookie{name="session", value="xyz"}]
-fn parse_server_cookie_header(
+fn parse_server_cookie_header<C>(
     raw_header:  const u8[:],
-    out:         CanonicalCookie[>..]&,
+    out:         C&,
     max_cookies: i64 = 100,
 ) {
     parse_server_cookie_header(raw_header, 0, out, max_cookies);
@@ -554,7 +554,7 @@ fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const
 // Example:
 //   pair_slice = "user=alice"
 //   out = [CanonicalCookie{name="user", value="alice"}]
-fn parse_single_server_cookie_pair(pair_slice: const u8[:], now_us: i64, out: CanonicalCookie[>..]&) {
+fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out: C&) {
     let clean_pair = trim(pair_slice);
     guard clean_pair.len > 0 else { return; }
     if has_prohibited_cookie_ctl(clean_pair) { return; }
@@ -630,9 +630,10 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     }
     guard line.len > 0 && line[0] != '#' else { return false; }
 
-    var tab_positions: i64[>..] = [];
+    var tab_positions: i64[..8] = [];
     for char_idx in line.len {
         if line[char_idx] == '\t' {
+            guard tab_positions.len < tab_positions.cap else { return false; }
             tab_positions.push(char_idx);
         }
     }

@@ -820,9 +820,8 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
         sub.assert_false(ok, "Generic id-ecPublicKey without curve binding MUST be rejected");
     };
 
-    t.run("HTTP/1 CONNECT fast-path sets Connection: close and consumes all bytes (CVE-2026-94439)") { sub =>
+    t.run("HTTP/1 CONNECT sets Connection: close and consumes all bytes (CVE-2026-94439)") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        server.fast_path = true;
 
         var wire_in: u8[..256] = [];
         wire_in.append("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: example.com\r\n\r\n");

@@ -20,11 +20,7 @@ fn md5_rotate_left(x: u32, n: u32) -> u32 {
 inline fn md5_decode_block(blk: const u8[64]&) -> u32[16] {
     var x: u32[16] = [0; 16];
     for i in 16 {
-        let idx = i * 4;
-        x[i] = blk[idx] |
-               ((blk[idx + 1] as! u32) << 8) |
-               ((blk[idx + 2] as! u32) << 16) |
-               ((blk[idx + 3] as! u32) << 24);
+        x[i] = core::read_le_u32(blk[..], i * 4);
     }
     return x;
 }

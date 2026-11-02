@@ -169,6 +169,36 @@ fn hmac_sha256(key: const u8[:], message: const u8[:]) -> u8[32] {
     return sha256_final(outer_ctx);
 }
 
+// Evaluates HMAC-SHA256 across up to three sequential byte slices without intermediate heap allocations.
+fn hmac_sha256_parts(key: const u8[:], p1: const u8[:], p2: const u8[:], p3: const u8[:]) -> u8[32] {
+    var key_block: u8[64] = [0; 64];
+    if key.len > 64 {
+        let hashed_key = sha256(key);
+        for i in 32 { key_block[i] = hashed_key[i]; }
+    } else {
+        for i in key.len { key_block[i] = key[i]; }
+    }
+
+    var ipad: u8[64] = [0; 64];
+    var opad: u8[64] = [0; 64];
+    for i in 64 {
+        ipad[i] = key_block[i] ^ 0x36;
+        opad[i] = key_block[i] ^ 0x5c;
+    }
+
+    var inner_ctx = Sha256Ctx { .. };
+    sha256_update(inner_ctx, ipad[..]);
+    if p1.len > 0 { sha256_update(inner_ctx, p1); }
+    if p2.len > 0 { sha256_update(inner_ctx, p2); }
+    if p3.len > 0 { sha256_update(inner_ctx, p3); }
+    let inner_hash = sha256_final(inner_ctx);
+
+    var outer_ctx = Sha256Ctx { .. };
+    sha256_update(outer_ctx, opad[..]);
+    sha256_update(outer_ctx, inner_hash[..]);
+    return sha256_final(outer_ctx);
+}
+
 // ---- hkdf-sha256 (rfc 5869) ------------------------------------------------
 
 fn hkdf_extract(salt: const u8[:], ikm: const u8[:]) -> u8[32] {
@@ -182,10 +212,8 @@ fn hkdf_extract(salt: const u8[:], ikm: const u8[:]) -> u8[32] {
 }
 
 fn hkdf_expand_32(prk: const u8[32]&, info: const u8[:]) -> u8[32] {
-    var msg: u8[>..] = [];
-    msg.append(info);
-    msg.push(0x01);
-    return hmac_sha256(prk[..], msg[..]);
+    let one: u8[1] = [0x01];
+    return hmac_sha256_parts(prk[..], info, one[..], "");
 }
 
 fn hkdf_sha256_32(ikm: const u8[32]&, salt: const u8[:], info: const u8[:]) -> u8[32] {
@@ -549,6 +577,36 @@ fn hmac_sha384(key: const u8[:], message: const u8[:]) -> u8[48] {
     return sha384_final(outer_ctx);
 }
 
+// Evaluates HMAC-SHA384 across up to three sequential byte slices without intermediate heap allocations.
+fn hmac_sha384_parts(key: const u8[:], p1: const u8[:], p2: const u8[:], p3: const u8[:]) -> u8[48] {
+    var key_block: u8[128] = [0; 128];
+    if key.len > 128 {
+        let hashed_key = sha384(key);
+        for i in 48 { key_block[i] = hashed_key[i]; }
+    } else {
+        for i in key.len { key_block[i] = key[i]; }
+    }
+
+    var ipad: u8[128] = [0; 128];
+    var opad: u8[128] = [0; 128];
+    for i in 128 {
+        ipad[i] = key_block[i] ^ 0x36;
+        opad[i] = key_block[i] ^ 0x5c;
+    }
+
+    var inner_ctx = Sha384Ctx { .. };
+    sha384_update(inner_ctx, ipad[..]);
+    if p1.len > 0 { sha384_update(inner_ctx, p1); }
+    if p2.len > 0 { sha384_update(inner_ctx, p2); }
+    if p3.len > 0 { sha384_update(inner_ctx, p3); }
+    let inner_hash = sha384_final(inner_ctx);
+
+    var outer_ctx = Sha384Ctx { .. };
+    sha384_update(outer_ctx, opad[..]);
+    sha384_update(outer_ctx, inner_hash[..]);
+    return sha384_final(outer_ctx);
+}
+
 // ---- hkdf-sha384 (rfc 5869) ------------------------------------------------
 
 fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
@@ -564,18 +622,13 @@ fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
 fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     var n: i64 = (length + 31) / 32;
     guard n <= 255 && out.len >= length else { return false; }
-    var t:       u8[32]  = [0; 32];
-    var out_off: i64     = 0;
-    var msg:     u8[>..] = [];
+    var t:       u8[32] = [0; 32];
+    var out_off: i64    = 0;
 
     for i in 1..n + 1 {
-        msg.clear();
-        if i > 1 {
-            msg.append(t[..]);
-        }
-        msg.append(info);
-        msg.push(i as u8);
-        t = hmac_sha256(prk, msg[..]);
+        let ctr: u8[1] = [i as u8];
+        let p1 = if i > 1 { t[..] } else { "" };
+        t = hmac_sha256_parts(prk, p1, info, ctr[..]);
         let to_copy = if length - out_off < 32 { length - out_off } else { 32 };
         for j in to_copy {
             out[out_off + j] = t[j];
@@ -588,18 +641,13 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
 fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     var n: i64 = (length + 47) / 48;
     guard n <= 255 && out.len >= length else { return false; }
-    var t:       u8[48]  = [0; 48];
-    var out_off: i64     = 0;
-    var msg:     u8[>..] = [];
+    var t:       u8[48] = [0; 48];
+    var out_off: i64    = 0;
 
     for i in 1..n + 1 {
-        msg.clear();
-        if i > 1 {
-            msg.append(t[..]);
-        }
-        msg.append(info);
-        msg.push(i as u8);
-        t = hmac_sha384(prk, msg[..]);
+        let ctr: u8[1] = [i as u8];
+        let p1 = if i > 1 { t[..] } else { "" };
+        t = hmac_sha384_parts(prk, p1, info, ctr[..]);
         let to_copy = if length - out_off < 48 { length - out_off } else { 48 };
         for j in to_copy {
             out[out_off + j] = t[j];

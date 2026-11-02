@@ -702,7 +702,7 @@ fn parse_range_header(
 }
 
 // Appends a formatted Content-Range header value (RFC 9110 Section 14.4).
-fn format_content_range(start: i64, end_pos: i64, total_len: i64, out: u8[>..]&) {
+fn format_content_range<B>(start: i64, end_pos: i64, total_len: i64, out: B&) {
     out.append("bytes ");
     if start >= 0 && end_pos >= start {
         format(out, start);
@@ -840,7 +840,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     }
     if !rs.is_satisfiable || !is_ok(r_err) {
         out_status = 416;
-        var cr_val: u8[>..] = [];
+        var cr_val: u8[..64] = [];
         format_content_range(-1, -1, resource_len, cr_val);
         insert_header(out_headers, "content-range", cr_val[..]);
         insert_header(out_headers, "content-length", "0");
@@ -868,7 +868,7 @@ fn serve_multipart_ranges<OpenFn: fn(i64, i64, u8[>..]&)>(
     boundary:     const u8[:],
     out_body:     u8[>..]&,
 ) {
-    var cr_val: u8[>..] = [];
+    var cr_val: u8[..64] = [];
     for r in ranges {
         out_body.append("--");
         out_body.append(boundary);
@@ -905,7 +905,7 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
 ) {
     if !rs.is_satisfiable || rs.ranges.len == 0 || !validate_range_set_bounds(rs.ranges) {
         out_status = 416;
-        var cr_val: u8[>..] = [];
+        var cr_val: u8[..64] = [];
         format_content_range(-1, -1, resource_len, cr_val);
         insert_header(out_headers, "content-range", cr_val[..]);
         insert_header(out_headers, "content-length", "0");
@@ -916,7 +916,7 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
         // Single-part 206 Partial Content (optimization)
         out_status = 206;
         let r = rs.ranges[0];
-        var cr_val: u8[>..] = [];
+        var cr_val: u8[..64] = [];
         format_content_range(r.start, r.end_pos, resource_len, cr_val);
         insert_header(out_headers, "content-range", cr_val[..]);
         insert_header(out_headers, "content-type", content_type);
@@ -931,7 +931,8 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
         // Multipart 206 Partial Content: multipart/byteranges; boundary=...
         out_status = 206;
         let boundary = "goose-byterange-boundary-42";
-        var ct_val: u8[>..] = "multipart/byteranges; boundary=";
+        var ct_val: u8[..128] = [];
+        ct_val.append("multipart/byteranges; boundary=");
         ct_val.append(boundary);
         insert_header(out_headers, "content-type", ct_val[..]);
 

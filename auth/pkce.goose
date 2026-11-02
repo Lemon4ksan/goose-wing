@@ -24,29 +24,75 @@ struct PkcePair {
     method:    u8[..16]  = "S256",
 }
 
-// Checks whether character belongs to RFC 7636 Section 4.1 unreserved set:
-// [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
-fn is_pkce_unreserved_char(ch: u8) -> bool {
-    return (ch >= 'A' && ch <= 'Z') ||
-           (ch >= 'a' && ch <= 'z') ||
-           (ch >= '0' && ch <= '9') ||
-           ch == '-' || ch == '.' || ch == '_' || ch == '~';
+const PKCE_UNRESERVED_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, false, true,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+checkfree inline fn is_pkce_unreserved_char(ch: u8) -> bool {
+    return PKCE_UNRESERVED_LUT[ch];
 }
 
-fn is_base64url_char(ch: u8) -> bool {
-    return (ch >= 'A' && ch <= 'Z') ||
-           (ch >= 'a' && ch <= 'z') ||
-           (ch >= '0' && ch <= '9') ||
-           ch == '-' || ch == '_';
+const BASE64URL_CHAR_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, false, true,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+checkfree inline fn is_base64url_char(ch: u8) -> bool {
+    return BASE64URL_CHAR_LUT[ch];
 }
+
+const CANONICAL_S256_FINAL_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    true, false, false, false, true, false, false, false, true, false, false, false, false, false, false, false,
+    false, true, false, false, false, true, false, false, false, true, false, false, false, true, false, false,
+    false, true, false, false, false, true, false, false, false, true, false, false, false, false, false, false,
+    false, false, false, true, false, false, false, true, false, false, false, true, false, false, false, true,
+    false, false, false, true, false, false, false, true, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
 
 // RFC 7636 §4.2 / RFC 4648 §3.5: Verifies that the 43rd Base64URL character of an S256
 // challenge has bits 1..0 set to 00 (canonical padding bits).
-fn is_canonical_s256_final_char(ch: u8) -> bool {
-    return ch == 'A' || ch == 'E' || ch == 'I' || ch == 'M' ||
-           ch == 'Q' || ch == 'U' || ch == 'Y' || ch == 'c' ||
-           ch == 'g' || ch == 'k' || ch == 'o' || ch == 's' ||
-           ch == 'w' || ch == '0' || ch == '4' || ch == '8';
+checkfree inline fn is_canonical_s256_final_char(ch: u8) -> bool {
+    return CANONICAL_S256_FINAL_LUT[ch];
 }
 
 // Validates whether verifier conforms to RFC 7636 Section 4.1.

@@ -67,23 +67,35 @@ fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.trailer_bytes = 0;
 }
 
-inline fn chunk_fsm_size(state: u64) -> u64 {
+checkfree inline fn chunk_fsm_size(state: u64) -> u64 {
     return state & CHUNK_STATE_SIZE_MASK;
 }
 
-inline fn chunk_fsm_has_size(state: u64) -> bool {
+checkfree inline fn chunk_fsm_has_size(state: u64) -> bool {
     return (state & CHUNK_STATE_HAS_SIZE) != 0;
 }
 
-inline fn is_chunk_token_char(c: u8) -> bool {
-    if c < 0x20 || c >= 0x7F { return false; }
-    if c == '(' || c == ')' || c == '<' || c == '>' || c == '@' ||
-       c == ',' || c == ';' || c == ':' || c == '\\' || c == '"' ||
-       c == '/' || c == '[' || c == ']' || c == '?' || c == '=' ||
-       c == '{' || c == '}' || c == ' ' || c == '\t' {
-        return false;
-    }
-    return true;
+const CHUNK_TOKEN_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+checkfree inline fn is_chunk_token_char(c: u8) -> bool {
+    return CHUNK_TOKEN_LUT[c];
 }
 
 // Consumes trailer headers until final empty line CRLF (RFC 9112 §7.1.2).

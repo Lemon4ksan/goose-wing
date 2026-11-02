@@ -10,9 +10,14 @@ import std;
 
 fn percent_decode<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
+    guard input_bytes.len > 0 else { return true; }
+    guard input_bytes.len <= out.cap else { return false; }
+    if index_of_byte(input_bytes, '%') < 0 {
+        out.append(input_bytes);
+        return true;
+    }
     var scan_idx = 0;
     while scan_idx < input_bytes.len {
-        guard out.len < out.cap else { return false; }
         if input_bytes[scan_idx] == '%' && scan_idx + 2 < input_bytes.len {
             let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
             let low_nibble = hex_digit_to_val(input_bytes[scan_idx + 2]);

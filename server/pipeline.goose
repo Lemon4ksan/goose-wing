@@ -140,16 +140,12 @@ fn decrypt_pipeline_session_cookie(
     now_ns: u64,
 ) {
     let now_sec = (now_ns / 1000000000) as i64;
-    var plain_cookie: u8[>..] = [];
     for idx in req.headers.len {
         guard eq_ascii_fold(req.headers[idx].name[..], "Cookie") else { continue; }
         let session_val = extract_session_cookie_value(req.headers[idx].value[..]);
         guard session_val.len > 0 else { return; }
-        plain_cookie.clear();
-        guard private_jar_open(cfg.private_jar, "session", session_val, now_sec, plain_cookie) else { return; }
         ext.session_data.clear();
-        guard plain_cookie.len <= ext.session_data.cap else { return; }
-        ext.session_data.append(plain_cookie[..]);
+        guard private_jar_open(cfg.private_jar, "session", session_val, now_sec, ext.session_data) else { return; }
         ext.populated_entries |= internal::ENTRY_COOKIES;
         return;
     }

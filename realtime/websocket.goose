@@ -58,18 +58,32 @@ fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mas
 }
 
 // Checks if an opcode represents a control frame (RFC 6455 Section 5.5)
-inline fn is_ws_control_opcode(opcode: u8) -> bool {
+checkfree inline fn is_ws_control_opcode(opcode: u8) -> bool {
     return (opcode & 0x08) != 0;
 }
 
-// Checks if an opcode is valid
-fn is_valid_ws_opcode(opcode: u8) -> bool {
-    return opcode == WS_OPCODE_CONTINUATION ||
-           opcode == WS_OPCODE_TEXT ||
-           opcode == WS_OPCODE_BINARY ||
-           opcode == WS_OPCODE_CLOSE ||
-           opcode == WS_OPCODE_PING ||
-           opcode == WS_OPCODE_PONG;
+const WS_OPCODE_LUT: const bool[256] = [
+    true, true, true, false, false, false, false, false, true, true, true, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+// Checks if an opcode is valid (RFC 6455 Section 5.2)
+checkfree inline fn is_valid_ws_opcode(opcode: u8) -> bool {
+    return WS_OPCODE_LUT[opcode];
 }
 
 // ---- Frame Header Structure and Invariants ------------------------------
@@ -267,7 +281,7 @@ fn encode_ws_frame<B>(
 
     if is_client {
         for i in eff_payload.len {
-            out.push(eff_payload[i] ^ mask_key[i % 4]);
+            out.push(eff_payload[i] ^ mask_key[i & 3]);
         }
     } else {
         out.append(eff_payload);

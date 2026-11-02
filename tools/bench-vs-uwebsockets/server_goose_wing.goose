@@ -25,7 +25,6 @@ fn run_server_reactor(port: u16, worker_id: i64) {
     var app = wing::new_http_server("0.0.0.0", port);
     app.server_name.clear();
     app.server_name.append("goose-wing");
-    app.fast_path = true;
 
     wing::add_static_get_route(app, "/plaintext", "text/plain", "Hello, World!", 1001);
     wing::add_static_get_route(app, "/json", "application/json", "{\"message\":\"Hello, World!\"}", 1002);

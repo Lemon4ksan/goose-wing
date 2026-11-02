@@ -41,17 +41,13 @@ fn to_upper_ascii_byte(b: u8) -> u8 {
     return if b >= 'a' && b <= 'z' { b - 32 } else { b };
 }
 
+extern fn native_swar_eq_ascii_fold(a: const u8[:], b: const u8[:]) -> i32 = "wing_swar_eq_ascii_fold";
+
 // RFC 9110 Section 5.6.3: Compares two byte slices for case-insensitive ASCII equality.
-// Fast path compares slices via vectorized gs_memeq if identical.
+// Fast path uses 64-bit SWAR evaluation (8 bytes per cycle) with vectorized memcmp identity check.
 fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
     guard str_a.len == str_b.len else { return false; }
-    if str_a == str_b { return true; }
-    for i in str_a.len {
-        let ca = if str_a[i] >= 'A' && str_a[i] <= 'Z' { str_a[i] + 32 } else { str_a[i] };
-        let cb = if str_b[i] >= 'A' && str_b[i] <= 'Z' { str_b[i] + 32 } else { str_b[i] };
-        if ca != cb { return false; }
-    }
-    return true;
+    return native_swar_eq_ascii_fold(str_a, str_b) != 0;
 }
 
 // Checks whether s begins with prefix using case-insensitive ASCII comparison.

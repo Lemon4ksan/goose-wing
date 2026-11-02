@@ -23,41 +23,32 @@ fn contains(haystack: const u8[:], needle: const u8[:]) -> bool {
     return find(haystack, needle) >= 0;
 }
 
-// Checks whether s contains byte b.
+extern fn native_memchr(s: const u8[:], b: u8) -> i64 = "wing_memchr";
+extern fn native_simd_last_index_of_byte(s: const u8[:], b: u8) -> i64 = "wing_simd_last_index_of_byte";
+extern fn native_simd_count_byte(s: const u8[:], b: u8) -> i64 = "wing_simd_count_byte";
+
+// Checks whether s contains byte b using vectorized memchr.
 fn contains_byte(s: const u8[:], b: u8) -> bool {
-    for c in s {
-        if c == b { return true; }
-    }
-    return false;
+    guard s.len > 0 else { return false; }
+    return native_memchr(s, b) >= 0;
 }
 
 // Returns the 0-based index of the first occurrence of byte b in s, or -1 if not found.
 fn index_of_byte(s: const u8[:], b: u8) -> i64 {
     guard s.len > 0 else { return -1; }
-    for i in s.len {
-        if s[i] == b { return i; }
-    }
-    return -1;
+    return native_memchr(s, b);
 }
 
 // Returns the 0-based index of the last occurrence of byte b in s, or -1 if not found.
 fn last_index_of_byte(s: const u8[:], b: u8) -> i64 {
     guard s.len > 0 else { return -1; }
-    var idx: i64 = s.len - 1;
-    while idx >= 0 {
-        if s[idx] == b { return idx; }
-        idx--;
-    }
-    return -1;
+    return native_simd_last_index_of_byte(s, b);
 }
 
-// Counts the number of non-overlapping occurrences of byte b in s.
+// Counts the number of non-overlapping occurrences of byte b in s using SSE2 vector popcount.
 fn count_byte(s: const u8[:], b: u8) -> i64 {
-    var count: i64 = 0;
-    for c in s {
-        if c == b { count++; }
-    }
-    return count;
+    guard s.len > 0 else { return 0; }
+    return native_simd_count_byte(s, b);
 }
 
 extern fn native_swar_find_ctl(s: const u8[:]) -> i64 = "wing_swar_find_ctl";

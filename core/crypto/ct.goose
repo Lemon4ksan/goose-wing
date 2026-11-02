@@ -71,43 +71,42 @@ fn ct_eq_tag48(tag_a: const u8[48]&, tag_b: const u8[48]&) -> bool {
     return non_zero == 0;
 }
 
+extern fn native_secure_zeroize(slice: u8[:]) = "wing_secure_zeroize";
+extern fn native_ct_copy_bytes(dst: u8[:], src: const u8[:]) = "wing_ct_copy_bytes";
+
 fn ct_copy_bytes(dst: u8[:], src: const u8[:]) {
-    let len = if dst.len < src.len { dst.len } else { src.len };
-    for i in len { dst[i] = src[i]; }
+    guard dst.len > 0 && src.len > 0 else { return; }
+    native_ct_copy_bytes(dst, src);
 }
 
 // ---- secret memory zeroization & KeySlot (secrecy pattern) -----------------
 
 fn secure_zeroize_16(buf: u8[16]&) {
-    for idx in 16 { buf[idx] = 0; }
+    native_secure_zeroize(buf[..]);
 }
 
 fn secure_zeroize_24(buf: u8[24]&) {
-    for idx in 24 { buf[idx] = 0; }
+    native_secure_zeroize(buf[..]);
 }
 
 fn secure_zeroize_32(buf: u8[32]&) {
-    for idx in 32 { buf[idx] = 0; }
+    native_secure_zeroize(buf[..]);
 }
 
 fn secure_zeroize_48(buf: u8[48]&) {
-    for idx in 48 { buf[idx] = 0; }
+    native_secure_zeroize(buf[..]);
 }
 
 fn secure_zeroize_64(buf: u8[64]&) {
-    for idx in 64 { buf[idx] = 0; }
+    native_secure_zeroize(buf[..]);
 }
 
 fn secure_zeroize_slice(buf: u8[:]) {
-    for idx in buf.len {
-        buf[idx] = 0;
-    }
+    native_secure_zeroize(buf);
 }
 
 fn secure_zeroize_vec(buf: u8[>..]&) {
-    for idx in buf.len {
-        buf[idx] = 0;
-    }
+    native_secure_zeroize(buf[..]);
     buf.clear();
 }
 

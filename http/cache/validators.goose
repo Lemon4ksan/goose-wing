@@ -183,7 +183,7 @@ fn extract_vary_value(
     out_val:      u8[..256]&,
     is_oversized: bool&,
 ) -> bool {
-    var val_buf: u8[>..] = [];
+    var val_buf: u8[..512] = [];
     let ok_c = get_combined(req_headers, field_name, val_buf);
     let raw = if ok_c && val_buf.len > 0 {
         trim_lws(val_buf[..])
@@ -246,7 +246,7 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
 fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap&) -> bool {
     guard !snap.has_star && snap.valid else { return false; }
 
-    var incoming_buf: u8[>..] = [];
+    var incoming_buf: u8[..512] = [];
     for &item in snap.items {
         let field_name = item.name[..];
         let incoming_present = has_header(incoming_req_headers, field_name);

@@ -1493,7 +1493,6 @@ struct HttpServer {
     requests_processed:    u64                       = 0,
     accept_proxy_protocol: bool                      = false,
     trust_proxy_headers:   bool                      = false,
-    fast_path:             bool                      = false,
     topic_tree:            TopicTree                 = TopicTree { .. },
     ws_routes:             WsRouteEntry[..16]        = [WsRouteEntry { .. }; 16],
     ws_route_count:        i32                       = 0,
@@ -1937,27 +1936,6 @@ fn serialize_bad_request_error<B>(server_name: const u8[:], wire_out: B&) {
     serialize_http1_response(err_resp, server_name, wire_out);
 }
 
-// Dispatches a request against the server router in fast-path mode.
-fn dispatch_fast_path_route(router: const RadixRouter&, req: const Request&, res: Response&) {
-    var params = ZeroAllocParams { .. };
-    let match_res = match_route(router, req.method[..], req.url[..], params);
-    let is_invalid_query = req.method[..] == "QUERY" && header(req, "Content-Type").len == 0;
-    match match_res {
-        Found f => {
-            res.status_code = if is_invalid_query { 400 } else { 200 };
-            apply_route_payload(f.handler_id, res);
-            handle_head_method_suppression(req.method[..], res);
-        },
-        MethodNotAllowed mna => {
-            res.status_code = 405;
-            res.headers.push(make_header("Allow", mna.allow_header[..]));
-        },
-        NotFound => {
-            res.status_code = 404;
-        },
-    };
-}
-
 // Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
 fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
@@ -2023,31 +2001,6 @@ fn handle_connection_wire<B>(
     wire_out:  B&,
 ) -> PipelineOutcome, bool {
     wire_out.clear();
-
-    if server.fast_path {
-        var req = new_request("GET", "");
-        let ok_parse, _ = parse_http1_wire_request(wire_in, req);
-        guard ok_parse else {
-            serialize_bad_request_error(server.server_name[..], wire_out);
-            return PipelineOutcome.Handled, false;
-        }
-
-        // WebSocket Upgrade Interception on Fast-Path
-        if is_websocket_upgrade_request(req) {
-            let ws_idx = find_ws_route(server, req.url[..]);
-            if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
-                return PipelineOutcome.Handled, true;
-            }
-        }
-
-        var res = Response { .. };
-        dispatch_fast_path_route(server.pipeline.router, req, res);
-        check_and_apply_connection_close(req, res);
-
-        serialize_http1_response(res, server.server_name[..], wire_out);
-        server.requests_processed++;
-        return PipelineOutcome.Handled, true;
-    }
 
     var effective_ip: u8[..64] = [];
     effective_ip.append(client_ip);
@@ -2246,38 +2199,6 @@ fn try_handle_pipelined_websocket<B>(
     return complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
 }
 
-struct StreamRouteCache {
-    method:     u8[..16]  = [],
-    url:        u8[..128] = [],
-    handler_id: i32       = -1,
-}
-
-inline fn try_match_stream_route_cache(
-    cache:  const StreamRouteCache&,
-    method: const u8[:],
-    url:    const u8[:],
-) -> i32 {
-    guard cache.handler_id >= 0 else { return -1; }
-    if method == cache.method[..] && url == cache.url[..] {
-        return cache.handler_id;
-    }
-    return -1;
-}
-
-inline fn update_stream_route_cache(
-    cache:      StreamRouteCache&,
-    method:     const u8[:],
-    url:        const u8[:],
-    handler_id: i32,
-) {
-    guard url.len <= 128 && method.len <= 16 else { return; }
-    cache.method.clear();
-    cache.method.append(method);
-    cache.url.clear();
-    cache.url.append(url);
-    cache.handler_id = handler_id;
-}
-
 inline fn reset_server_response_fast(res: Response&) {
     res.status_code = 200;
     res.presence_mask = 0;
@@ -2301,66 +2222,17 @@ inline fn reset_server_request_fast(req: Request&) {
     }
 }
 
-fn dispatch_fast_path_matched(
-    server:      HttpServer&,
-    req:         Request&,
-    res:         Response&,
-    route_cache: StreamRouteCache&,
-) {
-    var params = ZeroAllocParams { .. };
-    let match_res = match_route(server.pipeline.router, req.method[..], req.url[..], params);
-    let is_invalid_query = req.method[..] == "QUERY" && header(req, "Content-Type").len == 0;
-    match match_res {
-        Found f => {
-            res.status_code = if is_invalid_query { 400 } else { 200 };
-            apply_route_payload(f.handler_id, res);
-            handle_head_method_suppression(req.method[..], res);
-            if params.len == 0 && !is_invalid_query {
-                update_stream_route_cache(route_cache, req.method[..], req.url[..], f.handler_id);
-            }
-        },
-        MethodNotAllowed mna => {
-            res.status_code = 405;
-            res.headers.push(make_header("Allow", mna.allow_header[..]));
-        },
-        NotFound => {
-            res.status_code = 404;
-        },
-    };
-}
-
-inline fn dispatch_cached_route(
-    server:      HttpServer&,
-    req:         Request&,
-    res:         Response&,
-    route_cache: StreamRouteCache&,
-) {
-    let cached_id = try_match_stream_route_cache(route_cache, req.method[..], req.url[..]);
-    if cached_id >= 0 {
-        res.status_code = 200;
-        apply_route_payload(cached_id, res);
-        handle_head_method_suppression(req.method[..], res);
-        return;
-    }
-    dispatch_fast_path_matched(server, req, res, route_cache);
-}
-
 fn dispatch_pipelined_request<B>(
-    server:      HttpServer&,
-    client_ip:   const u8[:],
-    req:         Request&,
-    res:         Response&,
-    now_ns:      u64,
-    route_cache: StreamRouteCache&,
-    wire_out:    B&,
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    req:       Request&,
+    res:       Response&,
+    now_ns:    u64,
+    wire_out:  B&,
 ) -> bool {
     reset_server_response_fast(res);
-    if server.fast_path {
-        dispatch_cached_route(server, req, res, route_cache);
-    } else {
-        var future = internal::new_inline_handler_future(0);
-        let _ = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
-    }
+    var future = internal::new_inline_handler_future(0);
+    let _ = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
 
     let wants_close = check_and_apply_connection_close(req, res);
     serialize_http1_response(res, server.server_name[..], wire_out);
@@ -2375,7 +2247,6 @@ fn process_pipelined_pipe_step<B>(
     req:           Request&,
     res:           Response&,
     now_ns:        u64,
-    route_cache:   StreamRouteCache&,
     total_handled: i64&,
     wire_out:      B&,
 ) -> PipeStepResult {
@@ -2394,7 +2265,7 @@ fn process_pipelined_pipe_step<B>(
         return PipeStepResult.Error;
     }
 
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
     total_handled++;
     core::advance_to(pipe, consumed, consumed);
 
@@ -2403,166 +2274,6 @@ fn process_pipelined_pipe_step<B>(
         return PipeStepResult.Stop;
     }
     return PipeStepResult.Continue;
-}
-
-inline fn has_ascii_case_byte(s: const u8[:], lower_c: u8) -> bool {
-    let upper_c = lower_c - 32;
-    for b in s {
-        if b == lower_c || b == upper_c { return true; }
-    }
-    return false;
-}
-
-inline fn fast_find_crlfcrlf_inline(stream: const u8[:]) -> i64 {
-    guard stream.len >= 4 else { return -1; }
-    let limit = stream.len - 3;
-    var i: i64 = 0;
-    while i < limit {
-        if stream[i] == '\r' {
-            if stream[i + 1] == '\n' && stream[i + 2] == '\r' && stream[i + 3] == '\n' {
-                return i;
-            }
-        }
-        i++;
-    }
-    return -1;
-}
-
-// Extracts request target path from a GET request line (RFC 9112 §3).
-//
-// Example:
-//   stream = "GET /plaintext HTTP/1.1\r\n"
-//   returns: "/plaintext", ok = true
-inline fn parse_fast_path_request_line(stream: const u8[:]) -> const u8[:], bool {
-    guard stream.len >= 14 else { return "", false; }
-    guard stream[0] == 'G' && stream[1] == 'E' && stream[2] == 'T' && stream[3] == ' ' else { return "", false; }
-    let rest = stream[4..];
-    var path_len = 0;
-    while path_len < rest.len && path_len < 64 && rest[path_len] != ' ' {
-        path_len++;
-    }
-    guard path_len > 0 && path_len < rest.len && rest[path_len] == ' ' else { return "", false; }
-    let ver_rem = rest[path_len + 1..];
-    guard ver_rem.len >= 10 && ver_rem[..10] == "HTTP/1.1\r\n" else { return "", false; }
-    return rest[..path_len], true;
-}
-
-inline fn find_static_route_slot(tree: const RadixTree&, path: const u8[:]) -> i32 {
-    for i in tree.static_slots.len {
-        if tree.static_slots[i].path_str[..] == path && tree.static_slots[i].payload_keep.len > 0 {
-            return i as i32;
-        }
-    }
-    return -1;
-}
-
-inline fn match_fast_path_slot(server: const HttpServer&, stream: const u8[:]) -> i32 {
-    guard server.fast_path && server.pipeline.router.trees.len > 0 else { return -1; }
-    let path, ok_path = parse_fast_path_request_line(stream);
-    guard ok_path else { return -1; }
-    return find_static_route_slot(server.pipeline.router.trees[0].tree, path);
-}
-
-// Validates fast-path header block against request smuggling (RFC 9112 §6) and mandates Host (RFC 9112 §3.2).
-inline fn validate_fast_path_headers(hdr_block: const u8[:], is_close: bool&) -> bool {
-    // Mandate Host header presence for HTTP/1.1 (RFC 9112 §3.2).
-    guard has_ascii_case_byte(hdr_block, 'h') && core::contains_fold(hdr_block, "host:") else { return false; }
-
-    // Reject request smuggling: GET requests with Content-Length or Transfer-Encoding (CWE-444).
-    if has_ascii_case_byte(hdr_block, 'l') {
-        guard !core::contains_fold(hdr_block, "content-length") else { return false; }
-    }
-    if has_ascii_case_byte(hdr_block, 't') {
-        guard !core::contains_fold(hdr_block, "transfer-encoding") else { return false; }
-    }
-
-    if has_ascii_case_byte(hdr_block, 'u') {
-        guard !core::contains_fold(hdr_block, "upgrade") else { return false; }
-    }
-    if has_ascii_case_byte(hdr_block, 'c') {
-        is_close = core::contains_fold(hdr_block, "close");
-    }
-    return true;
-}
-
-inline fn append_fast_path_response<B>(
-    server:   HttpServer&,
-    slot:     const StaticRouteSlot&,
-    is_close: bool,
-    now_sec:  i64,
-    wire_out: B&,
-) {
-    refresh_http_server_date(server, now_sec);
-    if server.server_name == "goose-wing" {
-        wire_out.append(server.cached_date.fast_prefix[..]);
-    } else {
-        wire_out.append("HTTP/1.1 200 OK\r\nServer: ");
-        wire_out.append(server.server_name[..]);
-        wire_out.append("\r\n");
-        wire_out.append(server.cached_date.header_str[..]);
-    }
-    if is_close {
-        wire_out.append(slot.payload_close[..]);
-    } else {
-        wire_out.append(slot.payload_keep[..]);
-    }
-}
-
-inline fn try_fast_path_pipeline_step<B>(
-    server:      HttpServer&,
-    stream:      const u8[:],
-    wire_out:    B&,
-    consumed:    i64&,
-    wants_close: bool&,
-    now_sec:     i64,
-) -> bool {
-    let slot_idx = match_fast_path_slot(server, stream);
-    guard slot_idx >= 0 else { return false; }
-
-    let hdr_end = fast_find_crlfcrlf_inline(stream);
-    guard hdr_end >= 0 && hdr_end <= 8192 else { return false; }
-
-    var is_close = false;
-    guard validate_fast_path_headers(stream[..hdr_end], is_close) else { return false; }
-
-    let slot = server.pipeline.router.trees[0].tree.static_slots[slot_idx as i64];
-    append_fast_path_response(server, slot, is_close, now_sec, wire_out);
-    server.requests_processed++;
-
-    consumed = hdr_end + 4;
-    wants_close = is_close;
-    return true;
-}
-
-inline fn try_fast_path_pipeline_loop<B>(
-    server:        HttpServer&,
-    stream:        const u8[:],
-    wire_out:      B&,
-    now_sec:       i64,
-    fast_handled:  i64&,
-    fast_consumed: i64&,
-    fast_close:    bool&,
-) -> bool {
-    var cur = stream;
-    while cur.len > 0 {
-        cur = strip_pipelined_crlf(cur, fast_consumed);
-        if cur.len == 0 { break; }
-        guard wire_out.len + 256 <= wire_out.cap else { return false; }
-
-        var step_consumed: i64  = 0;
-        var step_close:    bool = false;
-        guard try_fast_path_pipeline_step(server, cur, wire_out, step_consumed, step_close, now_sec) else {
-            return false;
-        }
-        fast_handled++;
-        fast_consumed += step_consumed;
-        cur = cur[step_consumed..];
-        if step_close {
-            fast_close = true;
-            return true;
-        }
-    }
-    return true;
 }
 
 enum StreamTurnResult {
@@ -2577,10 +2288,8 @@ fn process_pipelined_stream_turn<B>(
     client_ip:        const u8[:],
     stream:           const u8[:],
     now_ns:           u64,
-    now_sec:          i64,
     req:              Request&,
     res:              Response&,
-    route_cache:      StreamRouteCache&,
     wire_out:         B&,
     wire_in_len:      i64,
     step_consumed:    i64&,
@@ -2589,19 +2298,6 @@ fn process_pipelined_stream_turn<B>(
     conn_wants_close: bool&,
 ) -> StreamTurnResult {
     guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop; }
-
-    var fast_consumed: i64  = 0;
-    var fast_close:    bool = false;
-    if try_fast_path_pipeline_step(server, stream, wire_out, fast_consumed, fast_close, now_sec) {
-        total_handled++;
-        total_consumed += fast_consumed;
-        step_consumed = fast_consumed;
-        if fast_close {
-            conn_wants_close = true;
-            return StreamTurnResult.Stop;
-        }
-        return StreamTurnResult.Continue;
-    }
 
     reset_server_request_fast(req);
     let ok_parse, consumed = parse_http1_wire_request(stream, req);
@@ -2618,7 +2314,7 @@ fn process_pipelined_stream_turn<B>(
         return StreamTurnResult.Stop;
     }
 
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
     total_handled++;
     total_consumed += consumed;
     step_consumed = consumed;
@@ -2647,23 +2343,9 @@ fn handle_connection_wire_pipelined_stream<B>(
     var total_handled:    i64  = 0;
     var total_consumed:   i64  = 0;
     var conn_wants_close: bool = false;
-    let now_sec = (now_ns / 1000000000) as i64;
-
-    if server.fast_path {
-        var fast_handled:  i64  = 0;
-        var fast_consumed: i64  = 0;
-        var fast_close:    bool = false;
-        if try_fast_path_pipeline_loop(server, stream, wire_out, now_sec, fast_handled, fast_consumed, fast_close) {
-            return fast_handled, fast_consumed, true, fast_close;
-        }
-        total_handled += fast_handled;
-        total_consumed += fast_consumed;
-        stream = stream[fast_consumed..];
-    }
 
     var req = new_request("GET", "");
     var res = Response { .. };
-    var route_cache = StreamRouteCache { .. };
 
     while stream.len > 0 {
         stream = strip_pipelined_crlf(stream, total_consumed);
@@ -2671,7 +2353,7 @@ fn handle_connection_wire_pipelined_stream<B>(
 
         var step_consumed: i64 = 0;
         let turn_res = process_pipelined_stream_turn(
-            server, client_ip, stream, now_ns, now_sec, req, res, route_cache,
+            server, client_ip, stream, now_ns, req, res,
             wire_out, wire_in.len, step_consumed, total_handled, total_consumed, conn_wants_close,
         );
         match turn_res {
@@ -2768,11 +2450,10 @@ fn handle_connection_pipe<B>(
 
     var req = new_request("GET", "");
     var res = Response { .. };
-    var route_cache = StreamRouteCache { .. };
 
     while pipe.readable_len() > 0 {
         let res_step = process_pipelined_pipe_step(
-            server, client_ip, pipe, req, res, now_ns, route_cache, total_handled, wire_out,
+            server, client_ip, pipe, req, res, now_ns, total_handled, wire_out,
         );
         if res_step == PipeStepResult.Error {
             return total_handled, false;
@@ -3344,7 +3025,6 @@ fn handle_connection_page_ring<B>(
     var peek_buf: u8[8192] = [0; 8192];
     var req = new_request("GET", "");
     var res = Response { .. };
-    var route_cache = StreamRouteCache { .. };
     var total_handled: i64 = 0;
 
     while ring.count > 0 {
@@ -3367,7 +3047,7 @@ fn handle_connection_page_ring<B>(
             return total_handled, false;
         }
 
-        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, route_cache, wire_out);
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
         total_handled++;
         core::page_ring_discard(ring, consumed);
 

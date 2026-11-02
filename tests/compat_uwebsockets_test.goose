@@ -63,9 +63,8 @@ fn test_declarative_ws_routing(t: lit::T&) {
         sub.assert_true(find(wire_out[..], "404 Not Found") >= 0, "Returns 404 for unknown WS route");
     };
 
-    t.run("3. Fast-Path and Pipelined Stream WS Upgrade") { sub =>
+    t.run("3. Connection Wire WS Upgrade") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        server.fast_path = true;
         let ws_cfg = wing::new_ws_behavior(200);
         server.add_ws_route("/ws/fast", ws_cfg);
 
@@ -73,8 +72,8 @@ fn test_declarative_ws_routing(t: lit::T&) {
 
         var wire_out: u8[..1024] = [];
         let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", fast_wire, 1000, wire_out);
-        sub.assert_true(ok_handle, "Fast-path handled WS upgrade");
-        sub.assert_true(find(wire_out[..], "HTTP/1.1 101 Switching Protocols") == 0, "Fast-path returns 101");
+        sub.assert_true(ok_handle, "Handled WS upgrade");
+        sub.assert_true(find(wire_out[..], "HTTP/1.1 101 Switching Protocols") == 0, "Returns 101");
     };
 }
 

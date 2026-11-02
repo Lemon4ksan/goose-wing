@@ -666,7 +666,7 @@ fn on_response(
         return dec;
     }
 
-    var vary_combined: u8[>..] = [];
+    var vary_combined: u8[..512] = [];
     get_combined(resp_headers, "vary", vary_combined);
     let vary_slice = if vary_combined.len > 0 { vary_combined[..] } else { resp_headers.get_header("vary") };
     let vary_snap = record_vary_snapshot(vary_slice, req_headers);

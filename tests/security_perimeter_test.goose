@@ -1583,6 +1583,14 @@ fn test_hardened_security_invariants(t: lit::T&) {
         let sok = wing::signed_jar_open_binary(sjar, "prefs", signed[..], 1700000020, out);
         sub.assert_true(sok, "signed jar opened");
         sub.assert_bytes_eq(out[..], "theme=dark", "out_payload cleared before appending");
+
+        var b64_signed: u8[..256] = [];
+        let ok_b64_seal = wing::signed_jar_seal(sjar, "prefs", "theme=dark", 1700000010, b64_signed);
+        sub.assert_true(ok_b64_seal, "signed jar b64 seal ok");
+        var b64_opened: u8[..256] = [];
+        let ok_b64_open = wing::signed_jar_open(sjar, "prefs", b64_signed[..], 1700000020, b64_opened);
+        sub.assert_true(ok_b64_open, "signed jar b64 open ok");
+        sub.assert_bytes_eq(b64_opened[..], "theme=dark", "signed jar b64 roundtrip matches");
     };
 }
 

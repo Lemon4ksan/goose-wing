@@ -140,13 +140,50 @@ inline fn track_header_presence(
     return track_known_header_presence(tracker, id, val, hdr_idx);
 }
 
-fn is_tchar(b: u8) -> bool {
-    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' {
-        return true;
-    }
-    return b == '_' || b == '.' || b == '!' || b == '#' || b == '$' ||
-           b == '%' || b == '&' || b == '\'' || b == '*' || b == '+' || b == '^' ||
-           b == '`' || b == '|' || b == '~';
+const TCHAR_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+checkfree inline fn is_tchar(b: u8) -> bool {
+    return TCHAR_LUT[b];
+}
+
+const HEADER_VAL_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+];
+
+checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
+    return HEADER_VAL_LUT[b];
 }
 
 fn is_valid_header_name(name: const u8[:]) -> bool {
@@ -177,12 +214,7 @@ fn has_embedded_nulls(data: const u8[:]) -> bool {
 
 fn is_valid_header_value(val: const u8[:]) -> bool {
     for b in val {
-        // Rejects NUL, CR, LF, and all CTLs (0x00-0x08, 0x0A-0x1F, 0x7F) except HTAB (0x09)
-        if b < 0x20 {
-            if b != 0x09 { return false; }
-        } else if b == 0x7F {
-            return false;
-        }
+        guard is_valid_header_value_byte(b) else { return false; }
     }
     return true;
 }

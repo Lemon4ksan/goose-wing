@@ -12,45 +12,21 @@ namespace core;
 
 import std;
 
+extern fn native_simd_is_pure_ascii(data: const u8[:]) -> i32 = "wing_simd_is_pure_ascii";
+extern fn native_simd_find_crlf(data: const u8[:]) -> i64 = "wing_simd_find_crlf";
+
 // Returns true if the slice contains only 7-bit ASCII characters (0x00..0x7F).
+// Uses 128-bit SSE2 vectorization (16 bytes per cycle) with 64-bit SWAR fallback.
 fn is_pure_ascii(data: const u8[:]) -> bool {
-    let n = data.len;
-    guard n > 0 else { return true; }
-
-    var i: i64 = 0;
-    while i + 8 <= n {
-        let w = core::read_be_u64(data, i);
-        if (w & 0x8080808080808080) != 0 {
-            return false;
-        }
-        i += 8;
-    }
-
-    while i < n {
-        if data[i] >= 0x80 {
-            return false;
-        }
-        i++;
-    }
-
-    return true;
+    guard data.len > 0 else { return true; }
+    return native_simd_is_pure_ascii(data) != 0;
 }
 
-// Scans for CRLF (\r\n) delimiter in wire byte streams.
+// Scans for CRLF (\r\n) delimiter in wire byte streams using 128-bit SSE2 vector comparison.
 // Returns offset of '\r' if found, or -1 if not found.
 fn find_crlf(data: const u8[:]) -> i64 {
-    let n = data.len;
-    guard n >= 2 else { return -1; }
-
-    var i: i64 = 0;
-    while i + 1 < n {
-        if data[i] == '\r' && data[i + 1] == '\n' {
-            return i;
-        }
-        i++;
-    }
-
-    return -1;
+    guard data.len >= 2 else { return -1; }
+    return native_simd_find_crlf(data);
 }
 
 // Returns true if the slice contains valid RFC 3629 UTF-8.

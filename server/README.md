@@ -14,7 +14,6 @@ struct HttpServer {
     port:                  u16                  = 8080,
     server_name:           u8[..64]             = "wing",
     pipeline:              ServerPipelineConfig = ServerPipelineConfig { .. },
-    fast_path:             bool                 = false,
     trust_proxy_headers:   bool                 = false,
     accept_proxy_protocol: bool                 = false,
     max_body_size:         i64                  = 4194304, // 4 MB

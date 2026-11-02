@@ -558,6 +558,92 @@ int64_t wing_memchr(wing_bytes_ro slice, uint8_t b) {
     return (int64_t)((const uint8_t *)p - slice.data);
 }
 
+// Vectorized byte counter using SSE2 / NEON / SWAR with hardware popcount
+int64_t wing_simd_count_byte(wing_bytes_ro slice, uint8_t b) {
+    const uint8_t *data = slice.data;
+    size_t len = (size_t)slice.len;
+    if (!data || len == 0) return 0;
+
+    int64_t count = 0;
+    size_t i = 0;
+
+#if (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
+    __m128i target = _mm_set1_epi8((char)b);
+    while (i + 16 <= len) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(data + i));
+        __m128i cmp = _mm_cmpeq_epi8(v, target);
+        int mask = _mm_movemask_epi8(cmp);
+#if defined(_MSC_VER)
+        count += (int64_t)__popcnt((unsigned int)(uint16_t)mask);
+#elif defined(__GNUC__) || defined(__clang__)
+        count += (int64_t)__builtin_popcount(mask);
+#else
+        for (int bit = 0; bit < 16; bit++) {
+            if ((mask & (1 << bit)) != 0) count++;
+        }
+#endif
+        i += 16;
+    }
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+    uint8x16_t target = vdupq_n_u8(b);
+    while (i + 16 <= len) {
+        uint8x16_t v = vld1q_u8(data + i);
+        uint8x16_t cmp = vceqq_u8(v, target);
+        uint16_t sum = vaddlvq_u8(cmp);
+        count += (int64_t)(sum / 255);
+        i += 16;
+    }
+#endif
+
+    while (i < len) {
+        if (data[i] == b) count++;
+        i++;
+    }
+
+    return count;
+}
+
+// High-speed reverse byte search using SSE2 vector comparison
+int64_t wing_simd_last_index_of_byte(wing_bytes_ro slice, uint8_t b) {
+    const uint8_t *data = slice.data;
+    int64_t len = slice.len;
+    if (!data || len <= 0) return -1;
+
+#if (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
+    __m128i target = _mm_set1_epi8((char)b);
+    int64_t i = len;
+    while (i >= 16) {
+        int64_t chunk_start = i - 16;
+        __m128i v = _mm_loadu_si128((const __m128i *)(data + chunk_start));
+        __m128i cmp = _mm_cmpeq_epi8(v, target);
+        int mask = _mm_movemask_epi8(cmp);
+        if (mask != 0) {
+#if defined(__GNUC__) || defined(__clang__)
+            int bit = 31 - __builtin_clz(mask);
+#elif defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanReverse(&bit, (unsigned long)mask);
+#else
+            int bit = 15;
+            while ((mask & (1 << bit)) == 0) bit--;
+#endif
+            return chunk_start + (int64_t)bit;
+        }
+        i -= 16;
+    }
+    while (i > 0) {
+        i--;
+        if (data[i] == b) return i;
+    }
+    return -1;
+#else
+    for (int64_t j = len - 1; j >= 0; j--) {
+        if (data[j] == b) return j;
+    }
+    return -1;
+#endif
+}
+
 // 64-bit SWAR case-insensitive equality comparison (8 bytes per cycle)
 int32_t wing_swar_eq_ascii_fold(wing_bytes_ro a, wing_bytes_ro b) {
     if (a.len != b.len) return 0;
@@ -616,6 +702,40 @@ void wing_prefetch_nta(wing_bytes_ro slice) {
 #elif defined(__GNUC__) || defined(__clang__)
         __builtin_prefetch(p + i, 0, 0);
 #endif
+    }
+}
+
+// Cryptographically secure memory zeroization immune to dead-store elimination (DSE).
+void wing_secure_zeroize(wing_bytes_rw slice) {
+    if (!slice.data || slice.len <= 0) return;
+#if defined(_MSC_VER)
+    SecureZeroMemory(slice.data, (size_t)slice.len);
+#elif defined(__STDC_LIB_EXT1__)
+    memset_s(slice.data, (rsize_t)slice.len, 0, (rsize_t)slice.len);
+#else
+    volatile uint8_t *p = (volatile uint8_t *)slice.data;
+    size_t len = (size_t)slice.len;
+    while (len--) {
+        *p++ = 0;
+    }
+#endif
+}
+
+// Constant-time byte copy using 64-bit SWAR words
+void wing_ct_copy_bytes(wing_bytes_rw dst, wing_bytes_ro src) {
+    if (!dst.data || !src.data) return;
+    int64_t len = dst.len < src.len ? dst.len : src.len;
+    if (len <= 0) return;
+    int64_t i = 0;
+    while (i + 8 <= len) {
+        uint64_t w;
+        memcpy(&w, src.data + i, 8);
+        memcpy(dst.data + i, &w, 8);
+        i += 8;
+    }
+    while (i < len) {
+        dst.data[i] = src.data[i];
+        i++;
     }
 }
 

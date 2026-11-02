@@ -9,12 +9,20 @@ import std;
 // ---- internal whatwg url parser implementation -----------------------------
 
 fn is_special_scheme(scheme_str: const u8[:]) -> bool {
-    return scheme_str == "http" ||
-           scheme_str == "https" ||
-           scheme_str == "ws" ||
-           scheme_str == "wss" ||
-           scheme_str == "file" ||
-           scheme_str == "ftp";
+    let len = scheme_str.len;
+    if len == 4 {
+        return scheme_str == "http" || scheme_str == "file";
+    }
+    if len == 5 {
+        return scheme_str == "https";
+    }
+    if len == 2 {
+        return scheme_str == "ws";
+    }
+    if len == 3 {
+        return scheme_str == "wss" || scheme_str == "ftp";
+    }
+    return false;
 }
 
 // Fast-path pre-cleaner: trims C0 controls and spaces (<= 0x20) and strips 0x09, 0x0A, 0x0D

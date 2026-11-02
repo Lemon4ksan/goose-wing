@@ -66,8 +66,11 @@ fn write_u8(cmd: WireCommandBuffer&, val: u8) -> bool {
 
 // Writes a 16-bit big-endian unsigned integer.
 fn write_u16_be(cmd: WireCommandBuffer&, val: u16) -> bool {
-    guard cmd.buf.try_push(((val >> 8) & 0xFF) as u8) &&
-          cmd.buf.try_push((val & 0xFF) as u8) else {
+    let bytes: u8[2] = [
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    guard cmd.buf.try_append(bytes[..]) else {
         cmd.has_error = true;
         return false;
     }
@@ -76,9 +79,12 @@ fn write_u16_be(cmd: WireCommandBuffer&, val: u16) -> bool {
 
 // Writes a 24-bit big-endian unsigned integer.
 fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
-    guard cmd.buf.try_push(((val >> 16) & 0xFF) as u8) &&
-          cmd.buf.try_push(((val >> 8) & 0xFF) as u8) &&
-          cmd.buf.try_push((val & 0xFF) as u8) else {
+    let bytes: u8[3] = [
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    guard cmd.buf.try_append(bytes[..]) else {
         cmd.has_error = true;
         return false;
     }
@@ -87,10 +93,13 @@ fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
 
 // Writes a 32-bit big-endian unsigned integer.
 fn write_u32_be(cmd: WireCommandBuffer&, val: u32) -> bool {
-    guard cmd.buf.try_push(((val >> 24) & 0xFF) as u8) &&
-          cmd.buf.try_push(((val >> 16) & 0xFF) as u8) &&
-          cmd.buf.try_push(((val >> 8) & 0xFF) as u8) &&
-          cmd.buf.try_push((val & 0xFF) as u8) else {
+    let bytes: u8[4] = [
+        ((val >> 24) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    guard cmd.buf.try_append(bytes[..]) else {
         cmd.has_error = true;
         return false;
     }

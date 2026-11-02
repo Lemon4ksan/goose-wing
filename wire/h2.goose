@@ -10,17 +10,18 @@ import .types;
 
 // Appends 9 serialized header bytes to any buffer (RFC 9113 Section 4.1).
 fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
-    guard out.try_push(((hdr.length >> 16) & 0xFF) as u8) &&
-          out.try_push(((hdr.length >> 8) & 0xFF) as u8) &&
-          out.try_push((hdr.length & 0xFF) as u8) &&
-          out.try_push(hdr.frame_type) &&
-          out.try_push(hdr.flags) &&
-          out.try_push(((hdr.stream_id >> 24) & 0x7F) as u8) &&
-          out.try_push(((hdr.stream_id >> 16) & 0xFF) as u8) &&
-          out.try_push(((hdr.stream_id >> 8) & 0xFF) as u8) &&
-          out.try_push((hdr.stream_id & 0xFF) as u8) else {
-        return false;
-    }
+    let bytes: u8[9] = [
+        ((hdr.length >> 16) & 0xFF) as u8,
+        ((hdr.length >> 8) & 0xFF) as u8,
+        (hdr.length & 0xFF) as u8,
+        hdr.frame_type,
+        hdr.flags,
+        ((hdr.stream_id >> 24) & 0x7F) as u8,
+        ((hdr.stream_id >> 16) & 0xFF) as u8,
+        ((hdr.stream_id >> 8) & 0xFF) as u8,
+        (hdr.stream_id & 0xFF) as u8,
+    ];
+    guard out.try_append(bytes[..]) else { return false; }
     return true;
 }
 
@@ -34,11 +35,10 @@ fn parse_frame_header(buf: const u8[:]) -> WireFrameHeader, u32, bool {
     guard buf.len >= 9 else {
         return hdr, 1, false;
     }
-    var r = core::new_slice_reader(buf);
-    let length_val, _ = r.read_u24_be();
-    let f_type, _ = r.read_u8();
-    let flags_val, _ = r.read_u8();
-    let raw_stream, _ = r.read_u32_be();
+    let length_val = core::read_be_u24(buf, 0);
+    let f_type = buf[3];
+    let flags_val = buf[4];
+    let raw_stream = core::read_be_u32(buf, 5);
 
     hdr.length = length_val;
     hdr.frame_type = f_type;
@@ -58,14 +58,15 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     };
     guard encode_frame_header(hdr, out) else { return false; }
     for s in settings {
-        guard out.try_push(((s.id >> 8) & 0xFF) as u8) &&
-              out.try_push((s.id & 0xFF) as u8) &&
-              out.try_push(((s.val >> 24) & 0xFF) as u8) &&
-              out.try_push(((s.val >> 16) & 0xFF) as u8) &&
-              out.try_push(((s.val >> 8) & 0xFF) as u8) &&
-              out.try_push((s.val & 0xFF) as u8) else {
-            return false;
-        }
+        let entry: u8[6] = [
+            ((s.id >> 8) & 0xFF) as u8,
+            (s.id & 0xFF) as u8,
+            ((s.val >> 24) & 0xFF) as u8,
+            ((s.val >> 16) & 0xFF) as u8,
+            ((s.val >> 8) & 0xFF) as u8,
+            (s.val & 0xFF) as u8,
+        ];
+        guard out.try_append(entry[..]) else { return false; }
     }
     return true;
 }
@@ -80,12 +81,13 @@ fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> boo
     };
     guard encode_frame_header(hdr, out) else { return false; }
     let inc = increment & 0x7FFFFFFF;
-    guard out.try_push(((inc >> 24) & 0x7F) as u8) &&
-          out.try_push(((inc >> 16) & 0xFF) as u8) &&
-          out.try_push(((inc >> 8) & 0xFF) as u8) &&
-          out.try_push((inc & 0xFF) as u8) else {
-        return false;
-    }
+    let bytes: u8[4] = [
+        ((inc >> 24) & 0x7F) as u8,
+        ((inc >> 16) & 0xFF) as u8,
+        ((inc >> 8) & 0xFF) as u8,
+        (inc & 0xFF) as u8,
+    ];
+    guard out.try_append(bytes[..]) else { return false; }
     return true;
 }
 
@@ -121,12 +123,13 @@ fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incr
     };
     guard encode_frame_header(hdr, out) else { return false; }
     let psid = prioritized_stream_id & 0x7FFFFFFF;
-    guard out.try_push(((psid >> 24) & 0x7F) as u8) &&
-          out.try_push(((psid >> 16) & 0xFF) as u8) &&
-          out.try_push(((psid >> 8) & 0xFF) as u8) &&
-          out.try_push((psid & 0xFF) as u8) else {
-        return false;
-    }
+    let psid_bytes: u8[4] = [
+        ((psid >> 24) & 0x7F) as u8,
+        ((psid >> 16) & 0xFF) as u8,
+        ((psid >> 8) & 0xFF) as u8,
+        (psid & 0xFF) as u8,
+    ];
+    guard out.try_append(psid_bytes[..]) else { return false; }
     guard out.try_append(p_val[..]) else { return false; }
     return true;
 }

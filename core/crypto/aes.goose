@@ -259,12 +259,12 @@ fn ghash_update(h: const u8[16]&, y: u8[16]&, data: const u8[:]) {
     }
 }
 
-fn aes256_gcm_seal(
+fn aes256_gcm_seal<B>(
     key:            const u8[32]&,
     nonce12:        const u8[12]&,
     plaintext:      const u8[:],
     aad:            const u8[:],
-    out_ciphertext: u8[>..]&,
+    out_ciphertext: B&,
 ) -> u8[16] {
     let ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
@@ -316,13 +316,13 @@ fn aes256_gcm_seal(
     return tag;
 }
 
-fn aes256_gcm_open(
+fn aes256_gcm_open<B>(
     key:           const u8[32]&,
     nonce12:       const u8[12]&,
     ciphertext:    const u8[:],
     aad:           const u8[:],
     tag:           const u8[16]&,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     let ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
@@ -376,12 +376,12 @@ fn aes256_gcm_open(
 }
 
 // AES-128-GCM (NIST SP 800-38D)
-fn aes128_gcm_seal(
+fn aes128_gcm_seal<B>(
     key:            const u8[16]&,
     nonce12:        const u8[12]&,
     plaintext:      const u8[:],
     aad:            const u8[:],
-    out_ciphertext: u8[>..]&,
+    out_ciphertext: B&,
 ) -> u8[16] {
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
@@ -432,13 +432,13 @@ fn aes128_gcm_seal(
     return tag;
 }
 
-fn aes128_gcm_open(
+fn aes128_gcm_open<B>(
     key:           const u8[16]&,
     nonce12:       const u8[12]&,
     ciphertext:    const u8[:],
     aad:           const u8[:],
     tag:           const u8[16]&,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
@@ -492,26 +492,26 @@ fn aes128_gcm_open(
 }
 
 // HKDF-SHA256 + AES-256-GCM scheme (32-byte salt + 12-byte nonce)
-fn hkdf_aes256_gcm_seal(
+fn hkdf_aes256_gcm_seal<B>(
     master_key:     const u8[32]&,
     salt32:         const u8[32]&,
     nonce12:        const u8[12]&,
     plaintext:      const u8[:],
     aad:            const u8[:],
-    out_ciphertext: u8[>..]&,
+    out_ciphertext: B&,
 ) -> u8[16] {
     let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
     return aes256_gcm_seal(derived_key, nonce12, plaintext, aad, out_ciphertext);
 }
 
-fn hkdf_aes256_gcm_open(
+fn hkdf_aes256_gcm_open<B>(
     master_key:    const u8[32]&,
     salt32:        const u8[32]&,
     nonce12:       const u8[12]&,
     ciphertext:    const u8[:],
     aad:           const u8[:],
     tag:           const u8[16]&,
-    out_plaintext: u8[>..]&,
+    out_plaintext: B&,
 ) -> bool {
     let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
     return aes256_gcm_open(derived_key, nonce12, ciphertext, aad, tag, out_plaintext);
