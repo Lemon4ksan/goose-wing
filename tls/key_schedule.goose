@@ -7,6 +7,7 @@ namespace internal;
 
 import std;
 import core from "..";
+import quic.packet;
 
 // ---- Constants and Supported Cipher Suites -------------------------------
 
@@ -425,13 +426,21 @@ fn ks_derive_key_iv(
 }
 
 // Derives QUIC Header Protection key (RFC 9001 Section 5.4).
+// `version` selects the label prefix: "quic hp" for v1, "quicv2 hp" for v2
+// (RFC 9369 §3.3.2). Unknown versions yield an empty prefix and fail closed.
 fn ks_derive_quic_hp_key(
     hash_id:    u8,
     secret:     const u8[:],
     hp_key_len: u16,
     out_hp_key: u8[:],
+    version:    u32 = QUIC_VERSION_1,
 ) -> bool {
-    return hkdf_expand_label(hash_id, secret, "quic hp", [], hp_key_len, out_hp_key);
+    let prefix = quic_hkdf_label_prefix(version);
+    guard prefix.len > 0 else { return false; }
+    var lbl: u8[..16] = [];
+    lbl.append(prefix);
+    lbl.append("hp");
+    return hkdf_expand_label(hash_id, secret, lbl[..], [], hp_key_len, out_hp_key);
 }
 
 // Computes Finished verify_data = HMAC(finished_key, Transcript-Hash) (RFC 8446 Section 4.4.4).

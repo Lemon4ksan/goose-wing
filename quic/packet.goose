@@ -12,9 +12,40 @@ import core from "..";
 // ---- constants and error codes (rfc 9000 section 20) ---------------------
 
 const QUIC_VERSION_1:                u32 = 0x00000001;
+const QUIC_VERSION_2:                u32 = 0x6b3343cf; // RFC 9369 §3.1
 const QUIC_VERSION_NEGOTIATION:      u32 = 0x00000000;
 const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200; // RFC 9000 Section 8.1
 const QUIC_MAX_CID_LEN:              u8  = 20;
+
+// ---- initial salts and HKDF label prefixes (RFC 9001 §5.2, RFC 9369 §3.3) --
+
+const QUIC_V1_INITIAL_SALT: u8[..20] = [
+    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
+    0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
+]; // RFC 9001 §5.2
+const QUIC_V2_INITIAL_SALT: u8[..20] = [
+    0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
+    0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
+]; // RFC 9369 §3.3.1
+
+// Selects the Initial salt for a QUIC version; empty for unknown versions.
+//
+// Example:
+//   version = 0x6b3343cf -> 20-byte v2 salt, ok via non-empty slice
+//   version = 0x0a0a0a0a -> empty slice
+fn quic_initial_salt(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return QUIC_V1_INITIAL_SALT[..]; }
+    if version == QUIC_VERSION_2 { return QUIC_V2_INITIAL_SALT[..]; }
+    return "";
+}
+
+// Returns the HKDF label prefix for a QUIC version: "quic " (v1) or
+// "quicv2 " (v2, RFC 9369 §3.3.2); empty for unknown versions.
+fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return "quic "; }
+    if version == QUIC_VERSION_2 { return "quicv2 "; }
+    return "";
+}
 
 // QUIC Transport Error Codes (RFC 9000 Section 20.1)
 const QUIC_ERR_NO_ERROR:               u64 = 0x00;
@@ -245,12 +276,30 @@ fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> b
     return true;
 }
 
-// Maps 2-bit long packet type to QuicHeaderType enum (RFC 9000 §17.2).
-inline fn classify_long_header_type(long_type: u8) -> QuicHeaderType {
-    if long_type == 0 { return QuicHeaderType.Initial; }
-    if long_type == 1 { return QuicHeaderType.ZeroRtt; }
-    if long_type == 2 { return QuicHeaderType.Handshake; }
-    return QuicHeaderType.Retry;
+// Maps the 2-bit long header Type field to QuicHeaderType for the given QUIC
+// version (RFC 9000 §17.2; RFC 9369 §3.2 remaps v2: 0b01=Initial, 0b10=0-RTT,
+// 0b11=Handshake, 0b00=Retry). Returns false for unknown versions or when
+// two_bits exceeds 0b11.
+//
+// Example:
+//   version = 0x00000001, two_bits = 0b00 -> Initial, true
+//   version = 0x6b3343cf, two_bits = 0b01 -> Initial, true
+//   version = 0x6b3343cf, two_bits = 0b00 -> Retry, true
+fn quic_long_header_type(version: u32, two_bits: u8) -> QuicHeaderType, bool {
+    guard two_bits <= 0x03 else { return QuicHeaderType.Retry, false; }
+    if version == QUIC_VERSION_2 {
+        if two_bits == 0x01 { return QuicHeaderType.Initial, true; }
+        if two_bits == 0x02 { return QuicHeaderType.ZeroRtt, true; }
+        if two_bits == 0x03 { return QuicHeaderType.Handshake, true; }
+        return QuicHeaderType.Retry, true;
+    }
+    if version == QUIC_VERSION_1 {
+        if two_bits == 0x00 { return QuicHeaderType.Initial, true; }
+        if two_bits == 0x01 { return QuicHeaderType.ZeroRtt, true; }
+        if two_bits == 0x02 { return QuicHeaderType.Handshake, true; }
+        return QuicHeaderType.Retry, true;
+    }
+    return QuicHeaderType.Retry, false;
 }
 
 // Parses a QUIC Long Header (RFC 9000 §17.2).
@@ -272,7 +321,15 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers (RFC 9000 §17.2)
     guard (first & 0x40) != 0 else { return hdr, false; }
 
-    hdr.header_type = classify_long_header_type((first >> 4) & 0x03);
+    let ht, ok_ht = quic_long_header_type(ver, (first >> 4) & 0x03);
+    if ok_ht {
+        hdr.header_type = ht;
+    } else {
+        // Unknown version: decode with the v1 Type layout so DCID/SCID stay
+        // parseable for Version Negotiation (RFC 9000 §17.2.1).
+        let ht1, _ = quic_long_header_type(QUIC_VERSION_1, (first >> 4) & 0x03);
+        hdr.header_type = ht1;
+    }
 
     // Reserved bits check (RFC 9000 §17.2): For Initial, 0-RTT, and Handshake,
     // bits 2 and 3 of byte 0 (mask 0x0C) are reserved and MUST be 0.

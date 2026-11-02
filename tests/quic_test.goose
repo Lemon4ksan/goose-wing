@@ -1934,6 +1934,121 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     };
 }
 
+// 30. RFC 9369 QUIC Version 2
+fn test_quic_version2(t: lit::T&) {
+    t.run("V2-01: Version constant and initial salt (RFC 9369 §3.1, §3.3.1)") { sub =>
+        sub.assert_eq(internal::QUIC_VERSION_2, 0x6b3343cf, "QUIC_VERSION_2 is 0x6b3343cf");
+
+        let salt_v2 = internal::quic_initial_salt(internal::QUIC_VERSION_2);
+        let salt_v1 = internal::quic_initial_salt(internal::QUIC_VERSION_1);
+        let exp_v2: u8[20] = [
+            0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
+            0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
+        ];
+        sub.assert_eq(salt_v2.len, 20, "v2 salt is 20 bytes");
+        sub.assert_eq(salt_v2[..], exp_v2[..], "v2 salt matches RFC 9369 §3.3.1 bytes");
+        sub.assert_eq(salt_v1.len, 20, "v1 salt is 20 bytes");
+        sub.assert_false(salt_v1[..] == salt_v2[..], "v1 and v2 initial salts differ");
+
+        let salt_bad = internal::quic_initial_salt(0x0A0A0A0A);
+        sub.assert_eq(salt_bad.len, 0, "unknown version yields empty salt");
+    };
+
+    t.run("V2-02: HKDF label prefixes and HP key divergence (RFC 9369 §3.3.2)") { sub =>
+        sub.assert_eq(internal::quic_hkdf_label_prefix(internal::QUIC_VERSION_1), "quic ", "v1 prefix is 'quic '");
+        sub.assert_eq(
+            internal::quic_hkdf_label_prefix(internal::QUIC_VERSION_2),
+            "quicv2 ",
+            "v2 prefix is 'quicv2 '",
+        );
+        sub.assert_eq(internal::quic_hkdf_label_prefix(0x0A0A0A0A), "", "unknown version yields empty prefix");
+
+        // Same secret must derive different HP keys under v1 vs v2 labels.
+        let secret: u8[32] = [0x42; 32];
+        var hp1: u8[16] = [0; 16];
+        var hp2: u8[16] = [0; 16];
+        let ok1 = internal::ks_derive_quic_hp_key(
+            internal::HASH_SHA256,
+            secret[..],
+            16,
+            hp1[..],
+            internal::QUIC_VERSION_1,
+        );
+        let ok2 = internal::ks_derive_quic_hp_key(
+            internal::HASH_SHA256,
+            secret[..],
+            16,
+            hp2[..],
+            internal::QUIC_VERSION_2,
+        );
+        sub.assert_true(ok1, "v1 HP key derivation ok");
+        sub.assert_true(ok2, "v2 HP key derivation ok");
+        sub.assert_false(hp1[..] == hp2[..], "same secret yields different HP keys per version");
+    };
+
+    t.run("V2-03: Long header type remap (RFC 9369 §3.2)") { sub =>
+        let t1, ok1 = internal::quic_long_header_type(internal::QUIC_VERSION_1, 0);
+        sub.assert_true(ok1, "v1 type bits known");
+        sub.assert_eq(t1, internal::QuicHeaderType.Initial, "v1 0b00 = Initial");
+
+        let t2, ok2 = internal::quic_long_header_type(internal::QUIC_VERSION_2, 1);
+        sub.assert_true(ok2, "v2 type bits known");
+        sub.assert_eq(t2, internal::QuicHeaderType.Initial, "v2 0b01 = Initial");
+
+        let t3, ok3 = internal::quic_long_header_type(internal::QUIC_VERSION_2, 0);
+        sub.assert_true(ok3, "v2 type bits known (Retry)");
+        sub.assert_eq(t3, internal::QuicHeaderType.Retry, "v2 0b00 = Retry");
+
+        let t4, _ = internal::quic_long_header_type(internal::QUIC_VERSION_2, 2);
+        sub.assert_eq(t4, internal::QuicHeaderType.ZeroRtt, "v2 0b10 = 0-RTT");
+        let t5, _ = internal::quic_long_header_type(internal::QUIC_VERSION_2, 3);
+        sub.assert_eq(t5, internal::QuicHeaderType.Handshake, "v2 0b11 = Handshake");
+
+        let _, ok_unk = internal::quic_long_header_type(0x0A0A0A0A, 0);
+        sub.assert_false(ok_unk, "unknown version has no type mapping");
+    };
+
+    t.run("V2-04: Version Negotiation listing QUIC v2 (RFC 9369 §4)") { sub =>
+        // A v2-only peer answers VN with exactly 0x6b3343cf in its supported list.
+        var vn_buf: u8[..64] = [];
+        vn_buf.push(0xC0);
+        core::append_u32_be(vn_buf, internal::QUIC_VERSION_NEGOTIATION);
+        vn_buf.push(4);
+        vn_buf.append("dcid");
+        vn_buf.push(0);
+        core::append_u32_be(vn_buf, internal::QUIC_VERSION_2);
+
+        let hdr, ok = internal::parse_quic_header(vn_buf[..], 0);
+        sub.assert_true(ok, "VN packet with v2 entry parses");
+        sub.assert_eq(hdr.header_type, internal::QuicHeaderType.VersionNegotiation, "type is VersionNegotiation");
+        let vl = hdr.header_len as i64;
+        let listed = ((vn_buf[vl] as u32) << 24) | ((vn_buf[vl + 1] as u32) << 16) |
+                     ((vn_buf[vl + 2] as u32) << 8) | (vn_buf[vl + 3] as u32);
+        sub.assert_eq(listed, internal::QUIC_VERSION_2, "supported list contains 0x6b3343cf");
+    };
+
+    t.run("V2-05: v2 long header parses with remapped Initial type (RFC 9369 §3.2)") { sub =>
+        // first byte 0xD1: long form, fixed bit, Type=0b01 (v2 Initial), pn_len=2
+        var v2_init: u8[..64] = [];
+        v2_init.push(0xD1);
+        core::append_u32_be(v2_init, internal::QUIC_VERSION_2);
+        v2_init.push(4);
+        v2_init.append("dcid");
+        v2_init.push(0);
+        v2_init.push(0);
+        v2_init.push(4);
+        v2_init.push(0x12);
+        v2_init.push(0x34);
+        v2_init.push(0xAA);
+        v2_init.push(0xBB);
+
+        let hdr, ok = internal::parse_quic_header(v2_init[..], 0);
+        sub.assert_true(ok, "v2 Initial long header parses");
+        sub.assert_eq(hdr.header_type, internal::QuicHeaderType.Initial, "v2 Type 0b01 decodes as Initial");
+        sub.assert_eq(hdr.version, internal::QUIC_VERSION_2, "version field is 0x6b3343cf");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", lit::Verbosity.Verbose);
 
@@ -1966,6 +2081,7 @@ fn main() {
     lit::run_case(runner, "27. Connection Migration FSM & Anti-Amplification (RFC 9000)", test_connection_migration);
     lit::run_case(runner, "28. DPLPMTUD Probe Generator & State Machine (RFC 8899)", test_dplpmtud);
     lit::run_case(runner, "29. Cross-Module QUIC Integration & RFC Conformance Fixes", test_quic_cross_module_bug_fixes);
+    lit::run_case(runner, "30. RFC 9369 QUIC v2", test_quic_version2);
 
     let ok = lit::finish(runner);
     assert(ok);
