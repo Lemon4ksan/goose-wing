@@ -99,6 +99,8 @@ import http.hsts;
 import http.early_hints;
 import http.novarysearch;
 import http.h2_framer;
+import http.bhttp;
+import http.ohttp;
 import http2.framing;
 import http2.frames;
 import http2.hpack;

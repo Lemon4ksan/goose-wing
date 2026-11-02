@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Hybrid Public Key Encryption (RFC 9180) for ECH (RFC 9460) and Secure Messaging.
+// Hybrid Public Key Encryption (RFC 9180) for ECH (RFC 9849) and Secure Messaging.
 // Supports DHKEM(X25519, HKDF-SHA256) with AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305.
 namespace wing;
 
@@ -20,12 +20,16 @@ const HPKE_AEAD_AES_256_GCM:       u16 = 0x0002;
 const HPKE_AEAD_CHACHA20_POLY1305: u16 = 0x0003;
 
 // Active encryption/decryption context for HPKE sender or recipient.
+// kem_id/kdf_id are retained so suite_id is recoverable for Secret Export
+// (RFC 9180 Section 5.3) after the key schedule completes.
 struct HpkeContext {
     key:             u8[32] = [0; 32],
     base_nonce:      u8[12] = [0; 12],
     seq:             u64    = 0,
     exporter_secret: u8[32] = [0; 32],
     aead_id:         u16    = HPKE_AEAD_AES_128_GCM,
+    kem_id:          u16    = HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+    kdf_id:          u16    = HPKE_KDF_HKDF_SHA256,
     key_len:         u16    = 16,
     nonce_len:       u16    = 12,
 }
@@ -162,6 +166,8 @@ fn hpke_setup_base_s(
     let nonce_len: u16 = 12;
 
     out_ctx.aead_id = aead_id;
+    out_ctx.kem_id = kem_id;
+    out_ctx.kdf_id = kdf_id;
     out_ctx.key_len = key_len;
     out_ctx.nonce_len = nonce_len;
     out_ctx.seq = 0;
@@ -241,6 +247,8 @@ fn hpke_setup_base_r(
     let nonce_len: u16 = 12;
 
     out_ctx.aead_id = aead_id;
+    out_ctx.kem_id = kem_id;
+    out_ctx.kdf_id = kdf_id;
     out_ctx.key_len = key_len;
     out_ctx.nonce_len = nonce_len;
     out_ctx.seq = 0;
@@ -347,6 +355,32 @@ fn hpke_open(
         return core::chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
     }
     return false;
+}
+
+// ---- Secret Export (RFC 9180 Section 5.3) ----------------------------------
+
+// Exports a secret of length out.len from an established context:
+// Context.Export(exporter_context, L) = LabeledExpand(exporter_secret, "sec",
+// exporter_context, L). Does not advance seq or consume context state.
+fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool {
+    guard out.len > 0 && out.len <= 8160 else { return false; } // 255 * Nh for SHA-256
+    // labeled_info = I2OSP(L,2) || "HPKE-v1" || suite_id || "sec" || context
+    // fits u8[..256] (22 fixed bytes + exporter_context).
+    guard exporter_context.len + 22 <= 256 else { return false; }
+    let suite_id: u8[10] = [
+        0x48, 0x50, 0x4B, 0x45,
+        ((ctx.kem_id >> 8) & 0xFF) as u8, (ctx.kem_id & 0xFF) as u8,
+        ((ctx.kdf_id >> 8) & 0xFF) as u8, (ctx.kdf_id & 0xFF) as u8,
+        ((ctx.aead_id >> 8) & 0xFF) as u8, (ctx.aead_id & 0xFF) as u8,
+    ];
+    return hpke_labeled_expand(
+        suite_id[..],
+        ctx.exporter_secret[..],
+        "sec",
+        exporter_context,
+        out.len as u16,
+        out,
+    );
 }
 
 // Single-shot seal for ECH: generates ephemeral keys, encapsulates, and seals in one pass.
