@@ -2386,7 +2386,7 @@ fn test_jwt_header_capacity_rejection(t: lit::T&) {
 
 fn test_acme_http01(t: lit::T&) {
     t.run("RFC 8555 §8.3 HTTP-01 token validation") { sub =>
-        sub.assert_true(wing::acme_validate_token("LoqXcYV8vQa8jxAjEuX0"), "RFC 8555 example token accepted");
+        sub.assert_true(wing::acme_validate_token("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"), "RFC 8555 §8.3 example token accepted");
         sub.assert_false(wing::acme_validate_token("../etc/passwd"), "path traversal rejected");
         sub.assert_false(wing::acme_validate_token("a/b"), "slash rejected");
         sub.assert_false(wing::acme_validate_token(""), "empty token rejected");
@@ -2433,6 +2433,7 @@ fn test_acme_http01(t: lit::T&) {
             wing::acme_find_challenge(table, "/.well-known/acme-challenge/nope", body, body_len),
             "unknown path rejected",
         );
+        sub.assert_eq(body_len, 6, "out_len untouched on miss");
     };
 }
 
