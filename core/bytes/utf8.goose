@@ -187,3 +187,79 @@ fn validate_utf8_streaming(data: const u8[:], is_final: bool) -> i64, bool {
     }
     return i, true;
 }
+
+// Decode one Unicode scalar, returning (codepoint, consumed bytes, valid).
+// Invalid input yields U+FFFD and consumes one maximal subpart (RFC 3629 / Unicode Standard).
+// Empty input yields (U+FFFD, 0, false).
+//
+// Example:
+//   s = "café"
+//   returns: cp = 99 ('c'), size = 1, valid = true
+fn decode_utf8(s: const u8[:]) -> i64, i64, bool {
+    guard s.len > 0 else { return 0xFFFD, 0, false; }
+    let lead = s[0] as i64;
+    if lead < 0x80 { return lead, 1, true; }
+    if lead < 0xC2 || lead > 0xF4 { return 0xFFFD, 1, false; }
+    let width = if lead < 0xE0 { 2 } else if lead < 0xF0 { 3 } else { 4 };
+    var cp = lead & (0x7F >> width);
+    for i in 1..width {
+        if i == s.len { return 0xFFFD, i, false; }
+        let b = s[i] as i64;
+        if b < 0x80 || b > 0xBF { return 0xFFFD, i, false; }
+        if i == 1 && ((lead == 0xE0 && b < 0xA0) || (lead == 0xED && b > 0x9F)
+                  || (lead == 0xF0 && b < 0x90) || (lead == 0xF4 && b > 0x8F)) {
+            return 0xFFFD, 1, false;
+        }
+        cp = (cp << 6) | (b & 0x3F);
+    }
+    return cp, width, true;
+}
+
+// Decode the final Unicode scalar, returning (codepoint, consumed bytes, valid).
+// Invalid input yields U+FFFD for the final malformed subpart;
+// empty input yields (U+FFFD, 0, false).
+//
+// Example:
+//   s = "!é"
+//   returns: cp = 0xE9, size = 2, valid = true
+fn decode_last_utf8(s: const u8[:]) -> i64, i64, bool {
+    guard s.len > 0 else { return 0xFFFD, 0, false; }
+    var start = s.len - 1;
+    let limit = if s.len - 4 > 0 { s.len - 4 } else { 0 };
+    while start > limit && s[start] >= 0x80 && s[start] <= 0xBF { start -= 1; }
+    let cp, size, valid = decode_utf8(s[start..]);
+    if start + size != s.len { return 0xFFFD, 1, false; }
+    return cp, size, valid;
+}
+
+// Return (codepoint, consumed bytes) from the start, replacing a malformed
+// maximal subpart with U+FFFD. Empty input returns (U+FFFD, 0).
+//
+// Example:
+//   s = "\xE2\x82!"
+//   returns: cp = 0xFFFD, size = 2
+fn decode_utf8_lossy(s: const u8[:]) -> i64, i64 {
+    let cp, size, _ = decode_utf8(s);
+    return cp, size;
+}
+
+// Return (codepoint, consumed bytes) from the end, replacing the final
+// malformed subpart with U+FFFD. Empty input returns (U+FFFD, 0).
+//
+// Example:
+//   s = "!\xE2\x82"
+//   returns: cp = 0xFFFD, size = 2
+fn decode_last_utf8_lossy(s: const u8[:]) -> i64, i64 {
+    let cp, size, _ = decode_last_utf8(s);
+    return cp, size;
+}
+
+// Call F(start, end, codepoint) for each decoded scalar or malformed maximal subpart.
+fn char_indices<F>(s: const u8[:]) {
+    var i: i64 = 0;
+    while i < s.len {
+        let cp, size, _ = decode_utf8(s[i..]);
+        F(i, i + size, cp);
+        i += size;
+    }
+}

@@ -111,31 +111,22 @@ fn trim_byte(val: const u8[:], b: u8) -> const u8[:] {
 
 // Trims any byte contained in cutset from start of val.
 fn trim_start_bytes(val: const u8[:], cutset: const u8[:]) -> const u8[:] {
-    var start: i64 = 0;
-    while start < val.len && contains_byte(cutset, val[start]) {
-        start++;
-    }
-    return val[start..];
+    let at = find_not_byteset(val, cutset);
+    if at < 0 { return ""; }
+    return val[at..];
 }
 
 // Trims any byte contained in cutset from end of val.
 fn trim_end_bytes(val: const u8[:], cutset: const u8[:]) -> const u8[:] {
-    var end_pos: i64 = val.len;
-    while end_pos > 0 && contains_byte(cutset, val[end_pos - 1]) {
-        end_pos--;
-    }
-    return val[..end_pos];
+    let at = rfind_not_byteset(val, cutset);
+    if at < 0 { return ""; }
+    return val[..at + 1];
 }
 
 // Trims any byte contained in cutset from both ends of val.
 fn trim_bytes(val: const u8[:], cutset: const u8[:]) -> const u8[:] {
-    var start: i64 = 0;
-    while start < val.len && contains_byte(cutset, val[start]) {
-        start++;
-    }
-    var end_pos: i64 = val.len;
-    while end_pos > start && contains_byte(cutset, val[end_pos - 1]) {
-        end_pos--;
-    }
-    return val[start..end_pos];
+    let start = find_not_byteset(val, cutset);
+    if start < 0 { return ""; }
+    let end_pos = rfind_not_byteset(val, cutset);
+    return val[start..end_pos + 1];
 }

@@ -527,6 +527,13 @@ uint64_t wing_swar_to_lower_64(uint64_t v) {
     return v | (is_upper >> 2);
 }
 
+// 64-bit SWAR parallel ASCII uppercase converter
+// For any byte in 'a' (0x61) .. 'z' (0x7A), clears bit 5 (0x20).
+uint64_t wing_swar_to_upper_64(uint64_t v) {
+    uint64_t is_lower = (v + 0x1F1F1F1F1F1F1F1FULL) & ~(v + 0x0505050505050505ULL) & 0x8080808080808080ULL;
+    return v ^ (is_lower >> 2);
+}
+
 // In-place vectorized/SWAR ASCII lowercase conversion for HTTP header field names
 void wing_swar_to_lower(wing_bytes_rw slice) {
     uint8_t *data = slice.data;
@@ -548,6 +555,197 @@ void wing_swar_to_lower(wing_bytes_rw slice) {
         }
         i++;
     }
+}
+
+// In-place vectorized/SWAR ASCII uppercase conversion
+void wing_swar_to_upper(wing_bytes_rw slice) {
+    uint8_t *data = slice.data;
+    size_t len = (size_t)slice.len;
+    if (!data || len == 0) return;
+
+    size_t i = 0;
+    while (i + 8 <= len) {
+        uint64_t word;
+        memcpy(&word, data + i, 8);
+        word = wing_swar_to_upper_64(word);
+        memcpy(data + i, &word, 8);
+        i += 8;
+    }
+    while (i < len) {
+        uint8_t b = data[i];
+        if (b >= 'a' && b <= 'z') {
+            data[i] = b - 32;
+        }
+        i++;
+    }
+}
+
+// Vectorized packed-pair substring search (memchr 2.8.3 algorithm)
+// Scans slice for occurrences of b1 at off1 and b2 at off2 using SIMD masks,
+// then verifies candidate start with memcmp(..., needle.data, needle.len).
+int64_t wing_simd_find_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2, wing_bytes_ro needle) {
+    if (!slice.data || !needle.data) return -1;
+    int64_t nlen = needle.len;
+    int64_t slen = slice.len;
+    if (nlen <= 0) return 0;
+    if (slen < nlen) return -1;
+    if (off1 < 0 || off1 >= nlen || off2 < 0 || off2 >= nlen) return -1;
+
+    int64_t limit = slen - nlen + 1;
+    const uint8_t *s = slice.data;
+    const uint8_t *nd = needle.data;
+    size_t i = 0;
+
+#if (defined(__AVX2__))
+    __m256i vb1 = _mm256_set1_epi8((char)b1);
+    __m256i vb2 = _mm256_set1_epi8((char)b2);
+    while (i + 32 <= (size_t)limit) {
+        __m256i v1 = _mm256_loadu_si256((const __m256i *)(s + i + off1));
+        __m256i v2 = _mm256_loadu_si256((const __m256i *)(s + i + off2));
+        __m256i eq = _mm256_and_si256(_mm256_cmpeq_epi8(v1, vb1), _mm256_cmpeq_epi8(v2, vb2));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(eq);
+        while (mask != 0) {
+#if defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanForward(&bit, mask);
+#else
+            uint32_t bit = (uint32_t)__builtin_ctz(mask);
+#endif
+            size_t cand = i + bit;
+            if (memcmp(s + cand, nd, (size_t)nlen) == 0) {
+                return (int64_t)cand;
+            }
+            mask &= mask - 1;
+        }
+        i += 32;
+    }
+#elif (defined(__SSE2__) || defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
+    __m128i vb1 = _mm_set1_epi8((char)b1);
+    __m128i vb2 = _mm_set1_epi8((char)b2);
+    while (i + 16 <= (size_t)limit) {
+        __m128i v1 = _mm_loadu_si128((const __m128i *)(s + i + off1));
+        __m128i v2 = _mm_loadu_si128((const __m128i *)(s + i + off2));
+        __m128i eq = _mm_and_si128(_mm_cmpeq_epi8(v1, vb1), _mm_cmpeq_epi8(v2, vb2));
+        uint32_t mask = (uint32_t)(uint16_t)_mm_movemask_epi8(eq);
+        while (mask != 0) {
+#if defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanForward(&bit, mask);
+#else
+            uint32_t bit = (uint32_t)__builtin_ctz(mask);
+#endif
+            size_t cand = i + bit;
+            if (memcmp(s + cand, nd, (size_t)nlen) == 0) {
+                return (int64_t)cand;
+            }
+            mask &= mask - 1;
+        }
+        i += 16;
+    }
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+    uint8x16_t vb1 = vdupq_n_u8(b1);
+    uint8x16_t vb2 = vdupq_n_u8(b2);
+    while (i + 16 <= (size_t)limit) {
+        uint8x16_t v1 = vld1q_u8(s + i + off1);
+        uint8x16_t v2 = vld1q_u8(s + i + off2);
+        uint8x16_t eq = vandq_u8(vceqq_u8(v1, vb1), vceqq_u8(v2, vb2));
+        if (vmaxvq_u8(eq) != 0) {
+            for (size_t bit = 0; bit < 16; bit++) {
+                if (s[i + bit + off1] == b1 && s[i + bit + off2] == b2) {
+                    if (memcmp(s + i + bit, nd, (size_t)nlen) == 0) {
+                        return (int64_t)(i + bit);
+                    }
+                }
+            }
+        }
+        i += 16;
+    }
+#endif
+
+    while (i < (size_t)limit) {
+        if (s[i + off1] == b1 && s[i + off2] == b2) {
+            if (memcmp(s + i, nd, (size_t)nlen) == 0) {
+                return (int64_t)i;
+            }
+        }
+        i++;
+    }
+    return -1;
+}
+
+// Reverse vectorized packed-pair substring search
+int64_t wing_simd_rfind_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2, wing_bytes_ro needle) {
+    if (!slice.data || !needle.data) return -1;
+    int64_t nlen = needle.len;
+    int64_t slen = slice.len;
+    if (nlen <= 0) return slen;
+    if (slen < nlen) return -1;
+    if (off1 < 0 || off1 >= nlen || off2 < 0 || off2 >= nlen) return -1;
+
+    int64_t limit = slen - nlen + 1;
+    const uint8_t *s = slice.data;
+    const uint8_t *nd = needle.data;
+    int64_t i = limit;
+
+#if (defined(__AVX2__))
+    __m256i vb1 = _mm256_set1_epi8((char)b1);
+    __m256i vb2 = _mm256_set1_epi8((char)b2);
+    while (i >= 32) {
+        int64_t chunk_start = i - 32;
+        __m256i v1 = _mm256_loadu_si256((const __m256i *)(s + chunk_start + off1));
+        __m256i v2 = _mm256_loadu_si256((const __m256i *)(s + chunk_start + off2));
+        __m256i eq = _mm256_and_si256(_mm256_cmpeq_epi8(v1, vb1), _mm256_cmpeq_epi8(v2, vb2));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(eq);
+        while (mask != 0) {
+#if defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanReverse(&bit, mask);
+#else
+            uint32_t bit = 31 - (uint32_t)__builtin_clz(mask);
+#endif
+            int64_t cand = chunk_start + bit;
+            if (memcmp(s + cand, nd, (size_t)nlen) == 0) {
+                return cand;
+            }
+            mask &= ~((uint32_t)1 << bit);
+        }
+        i -= 32;
+    }
+#elif (defined(__SSE2__) || defined(__x86_64__) || defined(_M_AMD64)) && !defined(__ARM_NEON)
+    __m128i vb1 = _mm_set1_epi8((char)b1);
+    __m128i vb2 = _mm_set1_epi8((char)b2);
+    while (i >= 16) {
+        int64_t chunk_start = i - 16;
+        __m128i v1 = _mm_loadu_si128((const __m128i *)(s + chunk_start + off1));
+        __m128i v2 = _mm_loadu_si128((const __m128i *)(s + chunk_start + off2));
+        __m128i eq = _mm_and_si128(_mm_cmpeq_epi8(v1, vb1), _mm_cmpeq_epi8(v2, vb2));
+        uint32_t mask = (uint32_t)(uint16_t)_mm_movemask_epi8(eq);
+        while (mask != 0) {
+#if defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanReverse(&bit, mask);
+#else
+            uint32_t bit = 31 - (uint32_t)__builtin_clz(mask);
+#endif
+            int64_t cand = chunk_start + bit;
+            if (memcmp(s + cand, nd, (size_t)nlen) == 0) {
+                return cand;
+            }
+            mask &= ~((uint32_t)1 << bit);
+        }
+        i -= 16;
+    }
+#endif
+
+    while (i > 0) {
+        i--;
+        if (s[i + off1] == b1 && s[i + off2] == b2) {
+            if (memcmp(s + i, nd, (size_t)nlen) == 0) {
+                return i;
+            }
+        }
+    }
+    return -1;
 }
 
 // High-speed vectorized byte search using platform memchr (AVX2 / SSE2)

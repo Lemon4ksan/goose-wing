@@ -42,6 +42,20 @@ fn to_upper_ascii_byte(b: u8) -> u8 {
 }
 
 extern fn native_swar_eq_ascii_fold(a: const u8[:], b: const u8[:]) -> i32 = "wing_swar_eq_ascii_fold";
+extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
+extern fn native_swar_to_upper(slice: u8[:]) = "wing_swar_to_upper";
+
+// Transforms byte slice in-place to ASCII lowercase using 64-bit SWAR.
+fn make_ascii_lowercase(buf: u8[:]) {
+    guard buf.len > 0 else { return; }
+    native_swar_to_lower(buf);
+}
+
+// Transforms byte slice in-place to ASCII uppercase using 64-bit SWAR.
+fn make_ascii_uppercase(buf: u8[:]) {
+    guard buf.len > 0 else { return; }
+    native_swar_to_upper(buf);
+}
 
 // RFC 9110 Section 5.6.3: Compares two byte slices for case-insensitive ASCII equality.
 // Fast path uses 64-bit SWAR evaluation (8 bytes per cycle) with vectorized memcmp identity check.
