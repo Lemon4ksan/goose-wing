@@ -9,22 +9,26 @@ namespace wing;
 import std;
 import core from "..";
 import http.headers;
+import http.client_cert;
 import proxy.gcra;
 import proxy.load_balancer;
 
 const PROXY_TARGET_NONE: i32 = -1;
 
 struct ProxyConfig {
-    strip_hop_by_hop:            bool     = true,
-    append_forwarded:            bool     = true,
-    preserve_host:               bool     = false,
-    trust_incoming_xff:          bool     = false,
-    max_active_conns_per_target: i32      = 1024,
-    enable_rate_limiting:        bool     = false,
-    rate_limit_rps:              u64      = 100,
-    rate_limit_burst:            u64      = 20,
-    via_pseudonym:               u8[..32] = "wing",
-    http_version:                u8[..8]  = "HTTP/1.1",
+    strip_hop_by_hop:            bool       = true,
+    append_forwarded:            bool       = true,
+    preserve_host:               bool       = false,
+    trust_incoming_xff:          bool       = false,
+    max_active_conns_per_target: i32        = 1024,
+    enable_rate_limiting:        bool       = false,
+    rate_limit_rps:              u64        = 100,
+    rate_limit_burst:            u64        = 20,
+    forward_client_cert:         bool       = false,
+    client_cert_der_len:         i32        = 0,
+    client_cert_der:             u8[..4096] = [],
+    via_pseudonym:               u8[..32]   = "wing",
+    http_version:                u8[..8]    = "HTTP/1.1",
 }
 
 // Helper to format chained X-Forwarded-For value without in-branch bounded buffer operations.
@@ -51,6 +55,7 @@ fn append_forwarded_for(out_headers: HeaderMap&, existing_xff: const u8[:], clie
 }
 
 // Identifies untrusted forwarding metadata headers to strip before re-injection.
+// RFC 9440 §2.4: incoming Client-Cert* fields MUST be removed or overwritten before forwarding.
 inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
     if eq_ascii_fold(name, "x-forwarded-for") { return true; }
     if eq_ascii_fold(name, "x-forwarded-proto") { return true; }
@@ -59,6 +64,8 @@ inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
     if eq_ascii_fold(name, "x-forwarded-server") { return true; }
     if eq_ascii_fold(name, "x-forwarded-ssl") { return true; }
     if eq_ascii_fold(name, "forwarded") { return true; }
+    if eq_ascii_fold(name, "client-cert") { return true; }
+    if eq_ascii_fold(name, "client-cert-chain") { return true; }
     return false;
 }
 
@@ -218,6 +225,15 @@ fn filter_and_forward_headers(
     reset_for_keep_alive(out_headers);
 
     copy_filtered_headers(in_headers, out_headers, config);
+
+    // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
+    if config.forward_client_cert && config.client_cert_der_len > 0 {
+        var enc: u8[..8192] = [];
+        let n = encode_client_cert(config.client_cert_der[..config.client_cert_der_len], enc);
+        if n > 0 {
+            append_header(out_headers, "Client-Cert", enc[..n]);
+        }
+    }
 
     if !config.preserve_host && upstream_host.len > 0 {
         append_header(out_headers, "Host", upstream_host);

@@ -2057,6 +2057,155 @@ fn test_rfc7838_security_and_options(t: lit::T&) {
     };
 }
 
+// --- Component: http/client_cert (RFC 9440) ---
+// Client-Cert / Client-Cert-Chain SFV Byte Sequence codec and TTRP sanitization.
+
+fn test_client_cert_header(t: lit::T&) {
+    t.run("Client-Cert Byte Sequence round-trip on 64-byte DER fixture") { sub =>
+        var der: u8[..64] = [];
+        for i in 64 {
+            der.push((i as u8));
+        }
+
+        var field: u8[..8192] = [];
+        let enc_len = wing::encode_client_cert(der[..], field);
+        sub.assert_eq(enc_len, 90, "encode writes 90 bytes for 64-byte DER");
+        sub.assert_bytes_eq(
+            field[..enc_len],
+            ":AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==:",
+            "encoded field matches SFV Byte Sequence form",
+        );
+
+        var out_der: u8[..4096] = [];
+        var out_len: i32        = 0;
+        let ok = wing::parse_client_cert(field[..enc_len], out_der, out_len);
+        sub.assert_true(ok, "parse_client_cert accepts encoded field");
+        sub.assert_eq(out_len, 64, "decoded DER length is 64");
+        sub.assert_bytes_eq(out_der[..out_len], der[..], "round-trip preserves DER bytes");
+
+        var reenc: u8[..8192] = [];
+        let re_len = wing::encode_client_cert(out_der[..out_len], reenc);
+        sub.assert_eq(re_len, enc_len, "re-encode length matches");
+        sub.assert_bytes_eq(reenc[..re_len], field[..enc_len], "re-encode is byte-for-byte identical");
+    };
+
+    t.run("Client-Cert rejects trailing content, empty, and oversize DER") { sub =>
+        var out_der: u8[..4096] = [];
+        var out_len: i32        = 0;
+
+        let trailing = ":AAECAw==:extra";
+        sub.assert_false(wing::parse_client_cert(trailing, out_der, out_len), "trailing content after colon rejected");
+        sub.assert_eq(out_len, 0, "out_len cleared on trailing-content failure");
+
+        let empty = "::";
+        sub.assert_false(wing::parse_client_cert(empty, out_der, out_len), "empty Byte Sequence rejected");
+
+        let unclosed = ":AAECAw==";
+        sub.assert_false(wing::parse_client_cert(unclosed, out_der, out_len), "missing closing colon rejected");
+
+        // 4097-byte DER fixture (enterprise cap is 4096)
+        var big: u8[>..] = [];
+        big.push(':');
+        var der_src: u8[>..] = [];
+        for _ in 4097 {
+            der_src.push('X');
+        }
+        var b64_buf: u8[>..] = [];
+        core::base64_encode(der_src[..], b64_buf);
+        big.append(b64_buf[..]);
+        big.push(':');
+        sub.assert_false(wing::parse_client_cert(big[..], out_der, out_len), "DER > 4096 bytes rejected");
+        sub.assert_eq(out_len, 0, "out_len cleared on oversize failure");
+    };
+
+    t.run("Client-Cert-Chain list parse and malformed-item rejection") { sub =>
+        var certs: u8[..4096][..4] = [];
+        var lens:  i32[..4]        = [];
+        var count: i32             = 0;
+
+        // SFV List of Byte Sequences with trailing comma (RFC 9110 §5.6.1 #rule)
+        let ok2 = wing::parse_client_cert_chain(":YQ==:, :Yg==:,", certs, lens, count);
+        sub.assert_true(ok2, "two-item list with trailing comma accepted");
+        sub.assert_eq(count, 2, "count == 2");
+        sub.assert_eq(lens[0], 1, "item 0 length is 1");
+        sub.assert_eq(lens[1], 1, "item 1 length is 1");
+        sub.assert_bytes_eq(certs[0][..lens[0]], "a", "item 0 decodes to a");
+        sub.assert_bytes_eq(certs[1][..lens[1]], "b", "item 1 decodes to b");
+
+        certs.clear();
+        lens.clear();
+        count = 0;
+        let ok_bad = wing::parse_client_cert_chain(":YQ==:, !!!, :Yg==:", certs, lens, count);
+        sub.assert_false(ok_bad, "malformed item rejects whole field (RFC 9440 §2.3)");
+        sub.assert_eq(count, 0, "out_count == 0 on malformed chain");
+
+        certs.clear();
+        lens.clear();
+        count = 0;
+        let ok5 = wing::parse_client_cert_chain(
+            ":YQ==:, :Yg==:, :YQ==:, :Yg==:, :YQ==:",
+            certs,
+            lens,
+            count,
+        );
+        sub.assert_false(ok5, "more than 4 chain items rejected");
+        sub.assert_eq(count, 0, "out_count == 0 on oversize chain");
+    };
+
+    t.run("Spoofing strip via is_forwarded_metadata_header") { sub =>
+        sub.assert_true(wing::is_forwarded_metadata_header("client-cert"), "client-cert stripped");
+        sub.assert_true(wing::is_forwarded_metadata_header("Client-Cert-Chain"), "Client-Cert-Chain stripped");
+        sub.assert_true(wing::is_forwarded_metadata_header("CLIENT-CERT"), "CLIENT-CERT case-folded stripped");
+    };
+
+    t.run("filter_and_forward_headers strips spoofed Client-Cert when injection disabled") { sub =>
+        var cfg = wing::ProxyConfig { .. };
+        sub.assert_false(cfg.forward_client_cert, "forward_client_cert defaults to false");
+
+        var in_headers = wing::HeaderMap { .. };
+        wing::append_header(in_headers, "Host", "origin.example");
+        wing::append_header(in_headers, "Client-Cert", ":spoof:");
+
+        var out_headers = wing::HeaderMap { .. };
+        let ok = wing::filter_and_forward_headers(in_headers, out_headers, "203.0.113.9", "https", "origin.example", cfg);
+        sub.assert_true(ok, "filter_and_forward_headers succeeds");
+        sub.assert_false(wing::has_header(out_headers, "Client-Cert"), "spoofed Client-Cert stripped");
+    };
+
+    t.run("filter_and_forward_headers injects exactly one Client-Cert when enabled") { sub =>
+        var cfg = wing::ProxyConfig { .. };
+        cfg.forward_client_cert = true;
+        for i in 64 {
+            cfg.client_cert_der.push((i as u8));
+        }
+        cfg.client_cert_der_len = 64;
+
+        var in_headers = wing::HeaderMap { .. };
+        wing::append_header(in_headers, "Host", "origin.example");
+        wing::append_header(in_headers, "Client-Cert", ":spoof:");
+
+        var out_headers = wing::HeaderMap { .. };
+        let ok = wing::filter_and_forward_headers(in_headers, out_headers, "203.0.113.9", "https", "origin.example", cfg);
+        sub.assert_true(ok, "filter_and_forward_headers succeeds with injection");
+
+        var client_cert_count = 0;
+        for i in out_headers.entries.len {
+            let entry = out_headers.entries[i];
+            let name = out_headers.raw_buf[entry.name_begin..entry.name_end];
+            if core::eq_ascii_fold(name, "client-cert") {
+                client_cert_count++;
+            }
+        }
+        sub.assert_eq(client_cert_count, 1, "exactly one Client-Cert header");
+
+        var expected: u8[..8192] = [];
+        let enc_len = wing::encode_client_cert(cfg.client_cert_der[..cfg.client_cert_der_len], expected);
+        sub.assert_true(enc_len > 0, "expected encode produces output");
+        let actual = wing::get_header(out_headers, "Client-Cert");
+        sub.assert_bytes_eq(actual, expected[..enc_len], "Client-Cert equals encode_client_cert(config.client_cert_der)");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", lit::Verbosity.Verbose);
 
@@ -2092,6 +2241,7 @@ fn main() {
     lit::run_case(runner, "30. Protocol Racing & UDP Firewall Fallback", test_chromium_protocol_racing_and_udp_fallback);
     lit::run_case(runner, "31. Alt-Svc Clear Directive & TTL Expiration", test_altsvc_clear_and_ttl_expiration);
     lit::run_case(runner, "32. RFC 7838 Insecure Transport Security & Toggles", test_rfc7838_security_and_options);
+    lit::run_case(runner, "33. RFC 9440 Client-Cert", test_client_cert_header);
 
     let ok = lit::finish(runner);
     assert(ok);

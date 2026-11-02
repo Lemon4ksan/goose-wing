@@ -86,6 +86,7 @@ import client.stream;
 import http.mime;
 import http.multipart;
 import http.trace;
+import http.client_cert;
 import http.altsvc;
 import http.compression_dict;
 import http.signatures;
