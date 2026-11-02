@@ -1,0 +1,2 @@
+// goose-wing program sidecar: links the runtime allocation counter shim.
+c_sources = ["alloc_count.c"];
