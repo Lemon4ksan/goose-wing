@@ -227,9 +227,10 @@ fn filter_and_forward_headers(
     copy_filtered_headers(in_headers, out_headers, config);
 
     // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
-    if config.forward_client_cert && config.client_cert_der_len > 0 {
+    let cert_der_len = config.client_cert_der_len;
+    if config.forward_client_cert && cert_der_len > 0 && cert_der_len <= CLIENT_CERT_MAX_DER_LEN {
         var enc: u8[..8192] = [];
-        let n = encode_client_cert(config.client_cert_der[..config.client_cert_der_len], enc);
+        let n = encode_client_cert(config.client_cert_der[..cert_der_len], enc);
         if n > 0 {
             append_header(out_headers, "Client-Cert", enc[..n]);
         }

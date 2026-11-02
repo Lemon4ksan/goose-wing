@@ -2167,7 +2167,14 @@ fn test_client_cert_header(t: lit::T&) {
         wing::append_header(in_headers, "Client-Cert", ":spoof:");
 
         var out_headers = wing::HeaderMap { .. };
-        let ok = wing::filter_and_forward_headers(in_headers, out_headers, "203.0.113.9", "https", "origin.example", cfg);
+        let ok = wing::filter_and_forward_headers(
+            in_headers,
+            out_headers,
+            "203.0.113.9",
+            "https",
+            "origin.example",
+            cfg,
+        );
         sub.assert_true(ok, "filter_and_forward_headers succeeds");
         sub.assert_false(wing::has_header(out_headers, "Client-Cert"), "spoofed Client-Cert stripped");
     };
@@ -2185,7 +2192,14 @@ fn test_client_cert_header(t: lit::T&) {
         wing::append_header(in_headers, "Client-Cert", ":spoof:");
 
         var out_headers = wing::HeaderMap { .. };
-        let ok = wing::filter_and_forward_headers(in_headers, out_headers, "203.0.113.9", "https", "origin.example", cfg);
+        let ok = wing::filter_and_forward_headers(
+            in_headers,
+            out_headers,
+            "203.0.113.9",
+            "https",
+            "origin.example",
+            cfg,
+        );
         sub.assert_true(ok, "filter_and_forward_headers succeeds with injection");
 
         var client_cert_count = 0;
@@ -2202,7 +2216,7 @@ fn test_client_cert_header(t: lit::T&) {
         let enc_len = wing::encode_client_cert(cfg.client_cert_der[..cfg.client_cert_der_len], expected);
         sub.assert_true(enc_len > 0, "expected encode produces output");
         let actual = wing::get_header(out_headers, "Client-Cert");
-        sub.assert_bytes_eq(actual, expected[..enc_len], "Client-Cert equals encode_client_cert(config.client_cert_der)");
+        sub.assert_bytes_eq(actual, expected[..enc_len], "Client-Cert equals encode_client_cert(client_cert_der)");
     };
 }
 
