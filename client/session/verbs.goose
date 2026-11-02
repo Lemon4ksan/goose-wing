@@ -164,13 +164,17 @@ fn download_stream<F: fn(const StreamProgress&)>(
     var chunk_buf: u8[>..] = [];
 
     while true {
-        let has_data, is_eof = read_chunk(reader, chunk_size, chunk_buf);
-        if has_data {
+        let st, is_eof = read_chunk(reader, chunk_size, chunk_buf);
+        if st == StreamReadStatus.Error {
+            var resp_err = resp;
+            return copy(resp_err), make_error(502, "stream", "chunked stream decode failure", ErrorKind.Stream);
+        }
+        if st == StreamReadStatus.Data {
             out_body.append(chunk_buf[..]);
             let p = stream_progress(reader);
             F(&p);
         }
-        if is_eof {
+        if is_eof || st == StreamReadStatus.Eof {
             break;
         }
     }

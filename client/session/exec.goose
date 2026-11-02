@@ -122,6 +122,7 @@ struct RequestExecutionContext {
     auth_retried:            bool                = false,
     current_referrer:        u8[..2048]          = [],
     current_referrer_policy: ReferrerPolicy      = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    timeout_ms:              i64                 = 0,
     body:                    u8[>..]             = [],
 }
 
@@ -227,6 +228,7 @@ fn init_execution_context(
         max_redirects:           session.max_redirects,
         first_party_policy:      req.first_party_policy,
         current_referrer_policy: session.default_referrer_policy,
+        timeout_ms:              req.timeout,
         ..
     };
 
@@ -497,6 +499,15 @@ fn copy_sent_headers(headers: const HeaderItem[..32]&, sent_headers: HeaderItem[
     }
 }
 
+// Resolves effective timeout with bounds clamping (1ms .. 600,000ms / 10min).
+// Per-request timeout overrides session timeout when set > 0.
+inline fn calc_effective_timeout_ms(session_timeout: i64, req_timeout: i64) -> u32 {
+    let raw = if req_timeout > 0 { req_timeout } else { session_timeout };
+    if raw <= 0 { return 1; }
+    if raw > 600000 { return 600000; }
+    return raw as u32;
+}
+
 fn dispatch_pooled_h1_hop(
     session:     Session&,
     conn_id:     i32,
@@ -521,12 +532,13 @@ fn dispatch_pooled_h1_hop(
     }
     hop_req.body.append(ctx.body[..]);
 
+    let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
     let ok_ex, keep_alive = execute_h1_exchange(
         session.pool.conns[c_idx],
         hop_req,
         current_url,
         resp,
-        session.timeout_ms as u32,
+        eff_timeout,
     );
     guard ok_ex else {
         session.pool.close_pooled_connection(conn_id);
@@ -574,7 +586,8 @@ fn execute_live_network_hop(
 
     var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, "", now_ns);
     if !has_pooled {
-        let sock = native_tcp_connect(host_str, port_num, session.timeout_ms as u32);
+        let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+        let sock = native_tcp_connect(host_str, port_num, eff_timeout);
         guard sock > 0 else {
             return make_error(502, "transport", "TCP connect failed");
         }

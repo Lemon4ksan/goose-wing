@@ -665,8 +665,8 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
         partial_resp.body.append("12345678901234567890"); // 20 bytes received before close
         var reader = wing::new_stream_reader(partial_resp);
         var chunk_buf: u8[..128] = [];
-        let has_bytes, is_eof = wing::read_chunk(reader, 128, chunk_buf);
-        sub.assert_true(has_bytes, "read available 20 bytes from partial stream");
+        let st, is_eof = wing::read_chunk(reader, 128, chunk_buf);
+        sub.assert_eq(st, wing::StreamReadStatus.Data, "read available 20 bytes from partial stream");
         sub.assert_true(is_eof, "reader reached EOF on closed stream");
         sub.assert_eq(reader.bytes_read, 20, "reader read only 20 bytes");
         sub.assert_eq(reader.content_length, 50, "reader recorded Content-Length 50");

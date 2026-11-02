@@ -1712,8 +1712,8 @@ fn test_incremental_stream_reader(t: lit::T&) {
 
         // Read chunk 1 (10 bytes)
         var c1: u8[>..] = [];
-        let has1, eof1 = wing::read_chunk(reader, 10, c1);
-        sub.assert_true(has1, "read chunk 1");
+        let st1, eof1 = wing::read_chunk(reader, 10, c1);
+        sub.assert_eq(st1, wing::StreamReadStatus.Data, "read chunk 1");
         sub.assert_false(eof1, "not EOF yet");
         sub.assert_bytes_eq(c1[..], "abcdefghij", "first 10 bytes");
 
@@ -1723,15 +1723,15 @@ fn test_incremental_stream_reader(t: lit::T&) {
 
         // Read chunk 2 (10 bytes)
         var c2: u8[>..] = [];
-        let has2, eof2 = wing::read_chunk(reader, 10, c2);
-        sub.assert_true(has2, "read chunk 2");
+        let st2, eof2 = wing::read_chunk(reader, 10, c2);
+        sub.assert_eq(st2, wing::StreamReadStatus.Data, "read chunk 2");
         sub.assert_false(eof2, "not EOF yet");
         sub.assert_bytes_eq(c2[..], "klmnopqrst", "second 10 bytes");
 
         // Read remainder (6 bytes)
         var c3: u8[>..] = [];
-        let has3, eof3 = wing::read_chunk(reader, 10, c3);
-        sub.assert_true(has3, "read chunk 3");
+        let st3, eof3 = wing::read_chunk(reader, 10, c3);
+        sub.assert_eq(st3, wing::StreamReadStatus.Data, "read chunk 3");
         sub.assert_true(eof3, "EOF reached");
         sub.assert_bytes_eq(c3[..], "uvwxyz", "final 6 bytes");
 
@@ -1747,20 +1747,20 @@ fn test_incremental_stream_reader(t: lit::T&) {
 
         var reader_ch = wing::new_stream_reader(resp_chunked);
         var part1: u8[>..] = [];
-        let has_c1, eof_c1 = wing::read_chunk(reader_ch, 6, part1);
-        sub.assert_true(has_c1, "read part 1 (6 bytes)");
+        let st_c1, eof_c1 = wing::read_chunk(reader_ch, 6, part1);
+        sub.assert_eq(st_c1, wing::StreamReadStatus.Data, "read part 1 (6 bytes)");
         sub.assert_false(eof_c1, "not EOF after 6 bytes of 16");
         sub.assert_bytes_eq(part1[..], "012345", "first 6 bytes retained");
 
         var part2: u8[>..] = [];
-        let has_c2, eof_c2 = wing::read_chunk(reader_ch, 6, part2);
-        sub.assert_true(has_c2, "read part 2 (6 bytes)");
+        let st_c2, eof_c2 = wing::read_chunk(reader_ch, 6, part2);
+        sub.assert_eq(st_c2, wing::StreamReadStatus.Data, "read part 2 (6 bytes)");
         sub.assert_false(eof_c2, "not EOF after 12 bytes of 16");
         sub.assert_bytes_eq(part2[..], "6789ab", "next 6 bytes from retained chunk remainder");
 
         var part3: u8[>..] = [];
-        let has_c3, eof_c3 = wing::read_chunk(reader_ch, 6, part3);
-        sub.assert_true(has_c3, "read part 3 (remainder 4 bytes)");
+        let st_c3, eof_c3 = wing::read_chunk(reader_ch, 6, part3);
+        sub.assert_eq(st_c3, wing::StreamReadStatus.Data, "read part 3 (remainder 4 bytes)");
         sub.assert_true(eof_c3, "EOF reached after reading all chunk bytes and trailers");
         sub.assert_bytes_eq(part3[..], "cdef", "final 4 bytes of chunk");
 

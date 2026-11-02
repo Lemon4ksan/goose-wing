@@ -1036,6 +1036,69 @@ fn test_honest_transport_failures(t: lit::T&) {
     };
 }
 
+// Vector B: ErrorKind enum, stream 3-state read_chunk, session close drain, timeout clamp.
+fn test_vector_b_enhancements(t: lit::T&) {
+    t.run("ErrorKind enum typed error classification") { sub =>
+        let err_tr = wing::make_error(502, "transport", "failed connect");
+        sub.assert_eq(err_tr.kind, wing::ErrorKind.Transport, "transport kind resolved");
+
+        let err_tls = wing::make_error(501, "tls", "TLS not wired");
+        sub.assert_eq(err_tls.kind, wing::ErrorKind.Tls, "tls kind resolved");
+
+        let err_mock = wing::make_error(404, "mock", "route miss");
+        sub.assert_eq(err_mock.kind, wing::ErrorKind.Mock, "mock kind resolved");
+
+        let err_ssrf = wing::make_error(403, "ssrf_guard", "blocked subnet");
+        sub.assert_eq(err_ssrf.kind, wing::ErrorKind.SsrfGuard, "ssrf_guard kind resolved");
+
+        let err_stream = wing::make_error(502, "stream", "corrupted chunk");
+        sub.assert_eq(err_stream.kind, wing::ErrorKind.Stream, "stream kind resolved");
+    };
+
+    t.run("read_chunk three-state classification: Data, Eof, Error") { sub =>
+        // Normal chunked stream
+        var resp_good = wing::Response { status_code: 200, .. };
+        resp_good.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        resp_good.body.append("5\r\nhello\r\n0\r\n\r\n");
+
+        var r_good = wing::new_stream_reader(resp_good);
+        var buf: u8[>..] = [];
+        let st1, eof1 = wing::read_chunk(r_good, 10, buf);
+        sub.assert_eq(st1, wing::StreamReadStatus.Data, "data chunk read");
+        sub.assert_bytes_eq(buf[..], "hello", "chunk content matches");
+        sub.assert_true(eof1, "terminal chunk reached EOF");
+
+        // Subsequent read is clean Eof
+        buf.clear();
+        let st2, eof2 = wing::read_chunk(r_good, 10, buf);
+        sub.assert_eq(st2, wing::StreamReadStatus.Eof, "clean Eof status on finished reader");
+        sub.assert_true(eof2, "eof true");
+
+        // Corrupted chunk size yields explicit Error
+        var resp_bad = wing::Response { status_code: 200, .. };
+        resp_bad.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        resp_bad.body.append("ZZ\r\ncorrupted\r\n");
+
+        var r_bad = wing::new_stream_reader(resp_bad);
+        buf.clear();
+        let st_err, eof_err = wing::read_chunk(r_bad, 10, buf);
+        sub.assert_eq(st_err, wing::StreamReadStatus.Error, "corrupted chunk yields Error status");
+        sub.assert_false(eof_err, "error is not EOF");
+    };
+
+    t.run("session.close drains connection pool") { sub =>
+        var session = wing::new_session();
+        wing::close(session);
+        sub.assert_eq(session.pool.conns.len, 0, "session pool has zero connections after close");
+    };
+
+    t.run("Request set_timeout_ms overrides and clamps session timeout") { sub =>
+        var req = wing::new_get("http://example.invalid");
+        wing::set_timeout_ms(req, 3000);
+        sub.assert_eq(req.timeout, 3000, "per-request timeout set");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1061,6 +1124,7 @@ fn main() {
     lit::run_case(runner, "20. RFC 2104 / RFC 4231 HMAC-SHA256 Request Signing", test_hmac_signing);
     lit::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
     lit::run_case(runner, "22. Honest Transport Failures (no fake 200, TLS-not-wired)", test_honest_transport_failures);
+    lit::run_case(runner, "23. Vector B Enhancements (ErrorKind, 3-state read_chunk, close drain, timeout)", test_vector_b_enhancements);
 
     let ok = lit::finish(runner);
     assert(ok);

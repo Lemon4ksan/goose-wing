@@ -87,10 +87,11 @@ fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
     encode_chunk(data, writer.buffer);
 }
 
-fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) {
-    guard !writer.finished && !is_disallowed_trailer_field(name) else { return; }
-    guard writer.trailers.len < writer.trailers.cap else { return; }
+fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) -> bool {
+    guard !writer.finished && !is_disallowed_trailer_field(name) else { return false; }
+    guard writer.trailers.len < writer.trailers.cap else { return false; }
     writer.trailers.push(make_header(name, val));
+    return true;
 }
 
 fn finish_chunk_writer(writer: ChunkWriter&) {
@@ -151,12 +152,13 @@ fn has_header_whitespace(s: const u8[:]) -> bool {
     return false;
 }
 
-fn append_trailer_item(trailers: HeaderItem[..16]&, name: const u8[:], val: const u8[:]) {
-    guard trailers.len < trailers.cap else { return; }
+fn append_trailer_item(trailers: HeaderItem[..16]&, name: const u8[:], val: const u8[:]) -> bool {
+    guard trailers.len < trailers.cap else { return false; }
     var item = HeaderItem { .. };
     item.name.append(name);
     item.value.append(val);
     trailers.push(item);
+    return true;
 }
 
 fn step_chunk_size_line(dec: ChunkedStreamDecoder&, b: u8) -> bool {
@@ -269,7 +271,11 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
     }
 
     let hval = trim_lws(tr_line[(col_idx + 1)..]);
-    append_trailer_item(dec.trailers, hname, hval);
+    guard append_trailer_item(dec.trailers, hname, hval) else {
+        dec.state = ChunkedStreamState.Error;
+        dec.error_code = ChunkedDecodeError.DisallowedTrailer;
+        return false;
+    }
     dec.line_buf.clear();
     return true;
 }
@@ -349,6 +355,12 @@ fn feed_chunked_stream<B>(
 
 // ---- Incremental Stream Reader & Progress Tracking -----------------------
 
+enum StreamReadStatus {
+    Data,
+    Eof,
+    Error,
+}
+
 struct StreamProgress {
     bytes_processed: u64  = 0,
     total_bytes:     i64  = -1,
@@ -392,44 +404,45 @@ fn new_stream_reader(resp: const Response&) -> StreamReader {
     return reader;
 }
 
-// Reads the next chunk from the stream (up to max_bytes).
-// Retains unconsumed chunk remainder across calls so small max_bytes reads
-// do not truncate or discard chunk data.
-// Returns (has_bytes, is_eof).
-fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> bool, bool {
-    guard !reader.finished else { return false, true; }
-
-    let remaining = reader.raw_data.len - reader.cursor;
-    let dec_active = !is_complete(reader.chunk_decoder) && !has_error(reader.chunk_decoder);
-    let has_chunk_work = reader.is_chunked && dec_active;
-    guard remaining > 0 || has_chunk_work else {
+fn read_chunk_chunked<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> StreamReadStatus, bool {
+    guard !has_error(reader.chunk_decoder) else {
         reader.finished = true;
-        return false, true;
+        return StreamReadStatus.Error, false;
     }
 
-    out.clear();
-    if reader.is_chunked {
-        let prev_len = out.len;
-        let limit = if max_bytes > 0 { max_bytes } else { -1 };
-        let ok_dec, consumed = feed_chunked_stream(
-            reader.chunk_decoder,
-            reader.raw_data[reader.cursor..],
-            out,
-            limit,
-        );
-        reader.cursor += consumed;
-        let emitted = (out.len - prev_len) as! u64;
-        reader.bytes_read += emitted;
-
-        let rem_zero = reader.chunk_decoder.chunk_bytes_remaining == 0;
-        let at_wire_end = reader.cursor >= reader.raw_data.len && rem_zero;
-        let is_eof = is_complete(reader.chunk_decoder) || !ok_dec || at_wire_end;
-        if is_eof {
-            reader.finished = true;
-        }
-        return emitted > 0, is_eof;
+    let prev_len = out.len;
+    let limit = if max_bytes > 0 { max_bytes } else { -1 };
+    let ok_dec, consumed = feed_chunked_stream(
+        reader.chunk_decoder,
+        reader.raw_data[reader.cursor..],
+        out,
+        limit,
+    );
+    reader.cursor += consumed;
+    guard ok_dec else {
+        reader.finished = true;
+        return StreamReadStatus.Error, false;
     }
 
+    let emitted = (out.len - prev_len) as! u64;
+    reader.bytes_read += emitted;
+
+    let rem_zero = reader.chunk_decoder.chunk_bytes_remaining == 0;
+    let at_wire_end = reader.cursor >= reader.raw_data.len && rem_zero;
+    let is_eof = is_complete(reader.chunk_decoder) || at_wire_end;
+    if is_eof {
+        reader.finished = true;
+    }
+    if emitted > 0 {
+        return StreamReadStatus.Data, is_eof;
+    }
+    if is_eof {
+        return StreamReadStatus.Eof, true;
+    }
+    return StreamReadStatus.Data, false;
+}
+
+fn read_chunk_identity<B>(reader: StreamReader&, max_bytes: i64, remaining: i64, out: B&) -> StreamReadStatus, bool {
     let to_read = if max_bytes > 0 && remaining > max_bytes { max_bytes } else { remaining };
     out.append(reader.raw_data[reader.cursor..(reader.cursor + to_read)]);
     reader.cursor += to_read;
@@ -439,7 +452,29 @@ fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> bool, bool {
     if is_eof {
         reader.finished = true;
     }
-    return true, is_eof;
+    return StreamReadStatus.Data, is_eof;
+}
+
+// Reads the next chunk from the stream (up to max_bytes).
+// Retains unconsumed chunk remainder across calls so small max_bytes reads
+// do not truncate or discard chunk data.
+// Returns (status, is_eof).
+fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> StreamReadStatus, bool {
+    guard !reader.finished else { return StreamReadStatus.Eof, true; }
+
+    let remaining = reader.raw_data.len - reader.cursor;
+    let dec_active = !is_complete(reader.chunk_decoder) && !has_error(reader.chunk_decoder);
+    let has_chunk_work = reader.is_chunked && dec_active;
+    guard remaining > 0 || has_chunk_work else {
+        reader.finished = true;
+        return StreamReadStatus.Eof, true;
+    }
+
+    out.clear();
+    if reader.is_chunked {
+        return read_chunk_chunked(reader, max_bytes, out);
+    }
+    return read_chunk_identity(reader, max_bytes, remaining, out);
 }
 
 // Reads all remaining data from the stream into out buffer

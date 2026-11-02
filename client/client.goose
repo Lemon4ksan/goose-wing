@@ -290,6 +290,11 @@ fn set_timeout_ms(session: Session&, ms: i64) {
     session.timeout_ms = ms;
 }
 
+// Closes all idle and active connections in the session's pool.
+fn close(session: Session&) {
+    drain_stream_pool(session.pool);
+}
+
 fn set_redirect_mode(session: Session&, mode: RedirectMode) {
     session.redirect_mode = mode;
     session.follow_redirects = (mode == RedirectMode.Follow);

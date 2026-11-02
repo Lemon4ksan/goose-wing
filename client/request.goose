@@ -192,9 +192,10 @@ fn has_header(req: const Request&, name: const u8[:]) -> bool {
     let known_id = identify_known_header(name);
     if known_id != KnownHeaderId.Unknown {
         let bit = header_id_to_bit(known_id);
-        return (req.presence_mask & bit) != 0;
-    }
-    if !is_empty(req.bloom_filter) {
+        guard (req.presence_mask & bit) != 0 else {
+            return false;
+        }
+    } else if !is_empty(req.bloom_filter) {
         guard might_have_header(req.bloom_filter, name) else {
             return false;
         }

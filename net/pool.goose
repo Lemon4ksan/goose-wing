@@ -625,6 +625,20 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     return false;
 }
 
+// Closes and evicts all connections from the stream pool, resetting buffers.
+fn drain_stream_pool(pool: StreamPool&) {
+    for i in pool.conns.len {
+        if !pool.conns[i].closed {
+            group_record_closed(pool, pool.conns[i].key, pool.conns[i].active_allocations > 0);
+            pool.conns[i].transport.close();
+            pool.conns[i].rx_buf.clear();
+            pool.conns[i].closed = true;
+            pool.conns[i].no_new_exchanges = true;
+            pool.conns[i].active_allocations = 0;
+        }
+    }
+}
+
 // OkHttp RealRoutePlanner priority rule: always prefer reusing an already-bound
 // or pooled healthy connection over launching delayed/new connection plans.
 fn acquire_pooled_connection(

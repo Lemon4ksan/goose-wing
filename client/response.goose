@@ -11,21 +11,49 @@ import http.headers;
 
 // ---- error model & diagnostics ---------------------------------------------
 
+enum ErrorKind {
+    None,
+    Transport,
+    Tls,
+    Mock,
+    SsrfGuard,
+    Protocol,
+    Timeout,
+    Stream,
+    InvalidUrl,
+    Redirect,
+}
+
 struct Error {
+    kind:    ErrorKind = ErrorKind.None,
     code:    i32       = 0,
     stage:   u8[..64]  = [],
     message: u8[..256] = [],
 }
 
-fn make_error(code: i32, stage: const u8[:], message: const u8[:]) -> Error {
-    var err = Error { code: code, .. };
+fn error_stage_to_kind(stage: const u8[:]) -> ErrorKind {
+    if eq_ascii_fold(stage, "transport") { return ErrorKind.Transport; }
+    if eq_ascii_fold(stage, "tls") { return ErrorKind.Tls; }
+    if eq_ascii_fold(stage, "mock") { return ErrorKind.Mock; }
+    if eq_ascii_fold(stage, "ssrf_guard") { return ErrorKind.SsrfGuard; }
+    if eq_ascii_fold(stage, "protocol") { return ErrorKind.Protocol; }
+    if eq_ascii_fold(stage, "timeout") { return ErrorKind.Timeout; }
+    if eq_ascii_fold(stage, "stream") { return ErrorKind.Stream; }
+    if eq_ascii_fold(stage, "url") || eq_ascii_fold(stage, "invalid_url") { return ErrorKind.InvalidUrl; }
+    if eq_ascii_fold(stage, "redirect") { return ErrorKind.Redirect; }
+    return ErrorKind.None;
+}
+
+fn make_error(code: i32, stage: const u8[:], message: const u8[:], kind: ErrorKind = ErrorKind.None) -> Error {
+    let resolved_kind = if kind != ErrorKind.None { kind } else { error_stage_to_kind(stage) };
+    var err = Error { kind: resolved_kind, code: code, .. };
     err.stage.append(stage);
     err.message.append(message);
     return err;
 }
 
 fn ok(err: const Error&) -> bool {
-    return err.code == 0;
+    return err.code == 0 && err.kind == ErrorKind.None;
 }
 
 // RFC 9110 §15.2 & Go #65035: Validates that consecutive informational 1xx responses
