@@ -268,6 +268,21 @@ Engineering rules ensuring protocol compliance and resilience against real-world
 4. **Anti-hallucination RFC citation contract**:
    - Always cite the active authoritative RFC specification (e.g. RFC 9110 / RFC 9112 over obsolete
      RFC 7230 / RFC 7231 / RFC 2616).
+   - **Canonical RFC citation comment format**:
+     To enable automated word-for-word verification against the RFC corpus via `scripts/audit_rfc_citations.py`, all protocol comments must follow this exact structure:
+     ```goose
+     // RFC <NUM> Section <X.Y>: <VERBATIM_SECTION_TITLE> - <SPECIFIC_REQUIREMENT>
+     ```
+     *Examples:*
+     ```goose
+     // RFC 9113 Section 4.3: Header Compression and Decompression - An endpoint receiving HEADERS must decompress the block.
+     // RFC 7616 Section 3.4.2.2: Calculation of the "response" Directive - qop=auth calculation of HA2.
+     ```
+   - **Verbatim section title matching**: The `<VERBATIM_SECTION_TITLE>` immediately after `Section <X.Y>:` must match the official section heading in `rfc<NUM>.txt` character-for-character so static scanners can verify section authenticity without false positives.
+   - **Normative keyword quotes**: When citing constraints, quote RFC keywords (`MUST`, `MUST NOT`, `SHOULD`, `REQUIRED`) verbatim:
+     ```goose
+     // RFC 8446 Section 4.2.10: Early Data Indication - A client MUST NOT send early_data if max_early_data_size is 0.
+     ```
    - **Never invent or extrapolate section numbers**: Do not guess section numbers (such as `RFC 9112 §3.1.2`
      or `RFC 7692 §8.1`). Validate section numbers against the local RFC corpus in `.gemini/rfc/` or execute
      `python scripts/audit_rfc_citations.py`. If a specific section number cannot be verified, cite the
