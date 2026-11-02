@@ -121,6 +121,7 @@ import http.cache.cache_control;
 import http.cache.freshness;
 import http.cache.validators;
 import http.cache.engine;
+import http.cache.cache_groups;
 
 // ---- security --------------------------------------------------------------
 

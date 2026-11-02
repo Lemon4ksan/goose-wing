@@ -739,6 +739,162 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     };
 }
 
+// ---- RFC 9875 HTTP Cache Groups -------------------------------------------
+
+fn test_cache_groups(t: lit::T&) {
+    t.run("Parse Cache-Groups List of Strings (RFC 9875 §2)") { sub =>
+        var tags:  wing::CacheGroupTag[..8] = [];
+        var count: i32                      = 0;
+        let ok = wing::parse_cache_group_list("\"scripts\", \"fonts\"", tags, count);
+        sub.assert_true(ok, "Valid Cache-Groups field value parses");
+        sub.assert_eq(count, 2, "Two group members parsed");
+        sub.assert_bytes_eq(tags[0].name[..], "scripts", "First group name is scripts");
+        sub.assert_bytes_eq(tags[1].name[..], "fonts", "Second group name is fonts");
+
+        // RFC 9875 §3 example field value
+        var tags_ex:  wing::CacheGroupTag[..8] = [];
+        var count_ex: i32                      = 0;
+        let ok_ex = wing::parse_cache_group_list("\"eurovision-results\", \"australia\"", tags_ex, count_ex);
+        sub.assert_true(ok_ex, "RFC 9875 §3 example field value parses");
+        sub.assert_eq(count_ex, 2, "RFC 9875 §3 example yields two groups");
+        sub.assert_bytes_eq(tags_ex[0].name[..], "eurovision-results", "First group is eurovision-results");
+        sub.assert_bytes_eq(tags_ex[1].name[..], "australia", "Second group is australia");
+
+        // Unterminated quoted string fails closed
+        var tags_bad:  wing::CacheGroupTag[..8] = [];
+        var count_bad: i32                      = 0;
+        let ok_bad = wing::parse_cache_group_list("\"a\", \"b", tags_bad, count_bad);
+        sub.assert_false(ok_bad, "Unterminated quote rejected");
+        sub.assert_eq(count_bad, 0, "Failed parse yields count 0 (no partial tags)");
+
+        // Non-String member (token) fails closed: field is a List of Strings
+        var tags_tok:  wing::CacheGroupTag[..8] = [];
+        var count_tok: i32                      = 0;
+        sub.assert_false(wing::parse_cache_group_list("scripts", tags_tok, count_tok), "Bare token member rejected");
+
+        // Group name longer than CACHE_GROUP_TAG_MAX rejected (oversize vector)
+        var tags_long:  wing::CacheGroupTag[..8] = [];
+        var count_long: i32                      = 0;
+        let ok_long = wing::parse_cache_group_list(
+            "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+            tags_long,
+            count_long,
+        );
+        sub.assert_false(ok_long, "65-character group name exceeds 64-byte tag budget");
+        sub.assert_eq(count_long, 0, "Oversize name yields count 0");
+
+        // More than CACHE_GROUP_MAX_PER_ENTRY members rejected
+        var tags_many:  wing::CacheGroupTag[..8] = [];
+        var count_many: i32                      = 0;
+        let ok_many = wing::parse_cache_group_list(
+            "\"a\", \"b\", \"c\", \"d\", \"e\", \"f\", \"g\", \"h\", \"i\"",
+            tags_many,
+            count_many,
+        );
+        sub.assert_false(ok_many, "Nine group members exceed 8-tag per-entry budget");
+        sub.assert_eq(count_many, 0, "Excess member count yields count 0");
+    };
+
+    t.run("Serialize Cache-Groups Round-Trip (RFC 9875 §2)") { sub =>
+        var tags:  wing::CacheGroupTag[..8] = [];
+        var count: i32                      = 0;
+        wing::parse_cache_group_list("\"scripts\", \"fonts\"", tags, count);
+
+        var wire: u8[..512] = [];
+        let written = wing::serialize_cache_group_list(tags, count, wire);
+        sub.assert_eq(written, 18, "18 bytes written for two quoted members");
+        sub.assert_bytes_eq(wire[..], "\"scripts\", \"fonts\"", "Serialized field value matches RFC quoting");
+
+        var reparsed: wing::CacheGroupTag[..8] = [];
+        var recount:  i32                      = 0;
+        let ok = wing::parse_cache_group_list(wire[..], reparsed, recount);
+        sub.assert_true(ok, "Serialized output re-parses");
+        sub.assert_eq(recount, 2, "Round-trip yields two groups");
+        sub.assert_bytes_eq(reparsed[0].name[..], "scripts", "Round-trip first group scripts");
+        sub.assert_bytes_eq(reparsed[1].name[..], "fonts", "Round-trip second group fonts");
+    };
+
+    t.run("Store Path Attaches Cache-Groups to CachedEntry (RFC 9875 §2)") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        let req = wing::new_get("https://example.com/app.js");
+        var resp = wing::Response { .. };
+        resp.status_code = 200;
+        resp.effective_url.append("https://example.com/app.js");
+        resp.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        resp.headers.push(wing::make_header("Cache-Groups", "\"scripts\""));
+        resp.body.append("console.log(1)");
+        wing::on_response(cache, req, resp, ts);
+
+        sub.assert_eq(cache.entries.len, 1, "Grouped response stored");
+        sub.assert_eq(cache.entries[0].group_count, 1, "Stored entry carries one group");
+        sub.assert_true(wing::entry_has_group(cache.entries[0], "scripts"), "entry_has_group matches scripts");
+        // RFC 9875 §2.1: group names compare case-sensitive
+        sub.assert_false(wing::entry_has_group(cache.entries[0], "Scripts"), "Group names are case-sensitive");
+    };
+
+    t.run("Group Invalidation via invalidate_group and Cache-Group-Invalidation (RFC 9875 §3)") { sub =>
+        var cache = wing::new_http_cache();
+        let t0 = core::unix(1000, 0);
+        let ts = wing::new_cache_timestamps(t0, t0, t0);
+
+        // Two entries tagged "catalog", one tagged "user-42"
+        let req_a = wing::new_get("https://example.com/catalog/a");
+        var resp_a = wing::Response { .. };
+        resp_a.status_code = 200;
+        resp_a.effective_url.append("https://example.com/catalog/a");
+        resp_a.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        resp_a.headers.push(wing::make_header("Cache-Groups", "\"catalog\""));
+        resp_a.body.append("a");
+        wing::on_response(cache, req_a, resp_a, ts);
+
+        let req_b = wing::new_get("https://example.com/catalog/b");
+        var resp_b = wing::Response { .. };
+        resp_b.status_code = 200;
+        resp_b.effective_url.append("https://example.com/catalog/b");
+        resp_b.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        resp_b.headers.push(wing::make_header("Cache-Groups", "\"catalog\""));
+        resp_b.body.append("b");
+        wing::on_response(cache, req_b, resp_b, ts);
+
+        let req_u = wing::new_get("https://example.com/users/42");
+        var resp_u = wing::Response { .. };
+        resp_u.status_code = 200;
+        resp_u.effective_url.append("https://example.com/users/42");
+        resp_u.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        resp_u.headers.push(wing::make_header("Cache-Groups", "\"user-42\""));
+        resp_u.body.append("u");
+        wing::on_response(cache, req_u, resp_u, ts);
+
+        sub.assert_eq(cache.entries.len, 3, "Three grouped entries stored");
+
+        let purged = wing::invalidate_group(cache, "catalog");
+        sub.assert_eq(purged, 2, "invalidate_group purges both catalog entries");
+        sub.assert_false(cache.entries[0].is_valid, "catalog entry A invalidated");
+        sub.assert_false(cache.entries[1].is_valid, "catalog entry B invalidated");
+        sub.assert_true(cache.entries[2].is_valid, "user-42 entry remains valid");
+
+        // Cache-Group-Invalidation on a state-changing response (RFC 9875 §3)
+        var cache_2 = wing::new_http_cache();
+        wing::on_response(cache_2, req_a, resp_a, ts);
+        wing::on_response(cache_2, req_b, resp_b, ts);
+        wing::on_response(cache_2, req_u, resp_u, ts);
+
+        let post_req = wing::new_post("https://example.com/admin/purge");
+        var post_resp = wing::Response { .. };
+        post_resp.status_code = 200;
+        post_resp.headers.push(wing::make_header("Cache-Group-Invalidation", "\"catalog\""));
+
+        let cascade = wing::check_invalidation(cache_2, post_req, post_resp);
+        sub.assert_eq(cascade, 2, "check_invalidation purges both catalog entries via Cache-Group-Invalidation");
+        sub.assert_false(cache_2.entries[0].is_valid, "POST cascade invalidated catalog entry A");
+        sub.assert_false(cache_2.entries[1].is_valid, "POST cascade invalidated catalog entry B");
+        sub.assert_true(cache_2.entries[2].is_valid, "user-42 entry survives POST cascade");
+    };
+}
+
 // ---- Single-Flight / Request Collapsing ---------------------------------
 
 fn test_request_collapsing(t: lit::T&) {
@@ -1731,6 +1887,7 @@ fn main() {
     lit::run_case(runner, "23. download_stream Incremental Pipeline", test_download_stream_with_progress);
     lit::run_case(runner, "24. W3C traceparent Conformance & Invariants", test_w3c_traceparent);
     lit::run_case(runner, "25. W3C tracestate Multi-Vendor Management", test_w3c_tracestate);
+    lit::run_case(runner, "26. RFC 9875 Cache Groups", test_cache_groups);
 
     let ok = lit::finish(runner);
     assert(ok);
