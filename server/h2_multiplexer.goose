@@ -1060,6 +1060,18 @@ fn dispatch_ingress_frame<B>(
     return true;
 }
 
+inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing::Request&) {
+    for &hdr_item in st.headers {
+        guard req.headers.len < 32 else { break; }
+        req.headers.push(hdr_item);
+        wing::add_header(req.bloom_filter, hdr_item.name[..]);
+    }
+    for &tr_item in st.trailers {
+        guard req.trailers.len < 16 else { break; }
+        req.trailers.push(tr_item);
+    }
+}
+
 fn execute_ready_server_stream<B>(
     sess:       H2ServerSession&,
     stream_idx: i64,
@@ -1073,15 +1085,7 @@ fn execute_ready_server_stream<B>(
 
     // Construct Request
     var req = wing::new_request(sess.streams[stream_idx].method[..], sess.streams[stream_idx].path[..]);
-    for &hdr_item in sess.streams[stream_idx].headers {
-        guard req.headers.len < 32 else { break; }
-        req.headers.push(hdr_item);
-        wing::add_header(req.bloom_filter, hdr_item.name[..]);
-    }
-    for &tr_item in sess.streams[stream_idx].trailers {
-        guard req.trailers.len < 16 else { break; }
-        req.trailers.push(tr_item);
-    }
+    copy_stream_headers_and_trailers(sess.streams[stream_idx], req);
     if sess.streams[stream_idx].spill_slab_idx >= 0 {
         let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
         guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else { return; }

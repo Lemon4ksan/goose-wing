@@ -16,46 +16,12 @@ Package `net/driver` houses the internal hardware-accelerated and kernel-bypass 
 
 ## Driver API Reference (`namespace internal;`)
 
-```goose
-enum TransportDriverKind {
-    Standard,
-    IoUring,
-    Kqueue,
-    WindowsRio,
-    AfXdp,
-    Dpdk,
-    SmartNic,
-}
-
-enum TargetPlatform {
-    Windows,
-    Linux,
-    Darwin,
-    Unknown,
-}
-
-struct DriverProbeResult {
-    kind:         TransportDriverKind = TransportDriverKind.Standard,
-    available:    bool                = true,
-    capabilities: u32                 = CAP_NONE,
-    error_code:   i32                 = 0,
-    reason:       u8[..128]           = [],
-}
-
-struct TransportDriverConfig {
-    preferred_kind:         TransportDriverKind = TransportDriverKind.Standard,
-    ring_size:              u32                 = DEFAULT_RING_SIZE,
-    enable_kernel_bypass:   bool                = false,
-    registered_buffer_size: u32                 = DEFAULT_REGISTERED_BUFFER_SIZE,
-    active_kind:            TransportDriverKind = TransportDriverKind.Standard,
-}
-
-// Probing and initialization
-fn probe_transport_driver(kind: TransportDriverKind) -> DriverProbeResult;
-fn init_transport_driver(cfg: TransportDriverConfig&) -> bool;
-fn auto_transport_driver_config(enable_bypass: bool = false) -> TransportDriverConfig;
-
-// Platform detection
-fn detect_target_platform() -> TargetPlatform;
-fn driver_kind_name(kind: TransportDriverKind) -> u8[:];
-```
+- **`enum TransportDriverKind`**: Backend driver kind (`Standard`, `IoUring`, `Kqueue`, `WindowsRio`, `AfXdp`, `Dpdk`, `SmartNic`).
+- **`enum TargetPlatform`**: Detected host OS platform (`Windows`, `Linux`, `Darwin`, `Unknown`).
+- **`struct DriverProbeResult`**: Probe outcome holding driver kind, availability flag, capability bitmask, and error diagnostics.
+- **`struct TransportDriverConfig`**: Driver configuration holding preferred kind, ring size, kernel bypass flag, and registered buffer size.
+- **`fn probe_transport_driver(kind: TransportDriverKind) -> DriverProbeResult`**: Probes host system for driver capability and kernel support.
+- **`fn init_transport_driver(cfg: TransportDriverConfig&) -> bool`**: Initializes selected kernel or hardware-accelerated driver backend.
+- **`fn auto_transport_driver_config(enable_bypass: bool = false) -> TransportDriverConfig`**: Probes host and returns optimal driver configuration.
+- **`fn detect_target_platform() -> TargetPlatform`**: Detects current host operating system.
+- **`fn driver_kind_name(kind: TransportDriverKind) -> u8[:]`**: Returns string identifier of driver kind.
