@@ -106,6 +106,41 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].in_use = false;
 }
 
+// ---- spill slab pool -------------------------------------------------------
+
+const SPILL_SLAB_SIZE: u64 = 65536;
+const MAX_SPILL_SLABS: u64 = 16;
+
+struct SpillSlab {
+    data:   u8[..65536] = [],
+    in_use: bool        = false,
+}
+
+struct SpillSlabPool {
+    in_use_mask: u16             = 0,
+    slabs:       SpillSlab[..16] = [SpillSlab { .. }; 16],
+}
+
+// Leases an available 64 KiB slab from the worker pool.
+// Returns non-negative slab index on success, or -1 if the pool is saturated.
+fn acquire_spill_slab(pool: SpillSlabPool&) -> i32 {
+    for idx in pool.slabs.len {
+        if !pool.slabs[idx].in_use {
+            pool.slabs[idx].in_use = true;
+            pool.slabs[idx].data.clear();
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
+// Releases a leased slab back to the pool and resets its in_use status.
+fn release_spill_slab(pool: SpillSlabPool&, idx: i32) {
+    guard idx >= 0 && idx < pool.slabs.len else { return; }
+    pool.slabs[idx].data.clear();
+    pool.slabs[idx].in_use = false;
+}
+
 // ---- head buffer release ---------------------------------------------------
 
 struct SyncHeadRelease {

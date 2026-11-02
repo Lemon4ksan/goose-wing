@@ -2031,6 +2031,7 @@ fn handle_connection_wire<B>(
     if is_h2_client_preface(raw_stream) {
         let now_ms = (now_ns / 1000000) as u64;
         var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
+        defer internal::cleanup_h2_server_session(sess, server.pipeline);
         let _, ok_h2 = internal::handle_h2_server_ingress(
             sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out,
         );
@@ -2473,6 +2474,7 @@ fn handle_connection_pipe<B>(
     wire_out:  B&,
 ) -> i64, bool {
     var dummy_sess = internal::new_h2_server_session(server.server_name[..]);
+    defer internal::cleanup_h2_server_session(dummy_sess, server.pipeline);
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
 }
 
@@ -2552,6 +2554,7 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
         pipe.pipe_reset();
         cork.cork_reset();
         var h2_sess = internal::new_h2_server_session(server.server_name[..]);
+        defer internal::cleanup_h2_server_session(h2_sess, server.pipeline);
 
         while true {
             let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);

@@ -21,6 +21,8 @@ struct H2ServerStream {
     body_received:           bool                   = false,
     response_sent:           bool                   = false,
     declared_content_length: i64                    = -1,
+    spill_slab_idx:          i32                    = -1,
+    slab_lease_deadline_ns:  u64                    = 0,
     method:                  u8[..16]               = [],
     path:                    u8[..2048]             = [],
     scheme:                  u8[..16]               = [],
@@ -36,6 +38,8 @@ fn reset_server_stream(st: H2ServerStream&) {
     st.headers_received = false;
     st.body_received = false;
     st.response_sent = false;
+    st.spill_slab_idx = -1;
+    st.slab_lease_deadline_ns = 0;
     st.method.clear();
     st.path.clear();
     st.scheme.clear();
@@ -143,7 +147,7 @@ fn emit_server_settings<B>(out: B&) {
     core::append_u32_be(out, 16);
 
     core::append_u16_be(out, SETTING_INITIAL_WINDOW_SIZE);
-    core::append_u32_be(out, 65535);
+    core::append_u32_be(out, 8192);
 
     core::append_u16_be(out, SETTING_MAX_FRAME_SIZE);
     core::append_u32_be(out, 16384);
@@ -396,11 +400,27 @@ inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) 
     return cancelled.contains(stream_id);
 }
 
-inline fn terminate_server_stream(sess: H2ServerSession&, stream_id: u32) {
+inline fn terminate_server_stream(
+    sess:      H2ServerSession&,
+    pipeline:  wing::ServerPipelineConfig&,
+    stream_id: u32,
+) {
     reset_session_stream(sess.conn, stream_id);
     let s_idx, found = find_server_stream_idx(sess, stream_id);
     if found {
+        if sess.streams[s_idx].spill_slab_idx >= 0 {
+            release_spill_slab(pipeline.slab_pool, sess.streams[s_idx].spill_slab_idx);
+        }
         reset_server_stream(sess.streams[s_idx]);
+    }
+}
+
+fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: wing::ServerPipelineConfig&) {
+    for i in sess.streams.len {
+        if sess.streams[i].active && sess.streams[i].spill_slab_idx >= 0 {
+            release_spill_slab(pipeline.slab_pool, sess.streams[i].spill_slab_idx);
+        }
+        reset_server_stream(sess.streams[i]);
     }
 }
 
@@ -430,6 +450,7 @@ inline fn validate_request_pseudo_headers(dec_list: const DecodedH2HeaderList&, 
 
 fn process_ingress_window_update<B>(
     sess:          H2ServerSession&,
+    pipeline:      wing::ServerPipelineConfig&,
     hdr:           const FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
@@ -451,7 +472,7 @@ fn process_ingress_window_update<B>(
         return false;
     }
     emit_rst_stream(hdr.stream_id, wu_err, out_wire);
-    terminate_server_stream(sess, hdr.stream_id);
+    terminate_server_stream(sess, pipeline, hdr.stream_id);
     return true;
 }
 
@@ -552,6 +573,7 @@ fn process_ingress_settings<B>(
 
 fn process_ingress_headers<B>(
     sess:              H2ServerSession&,
+    pipeline:          wing::ServerPipelineConfig&,
     hdr:               const FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -590,7 +612,7 @@ fn process_ingress_headers<B>(
         if dep_raw == hdr.stream_id {
             // RFC 9113 §5.3.1: Stream cannot depend on itself
             emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-            terminate_server_stream(sess, hdr.stream_id);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
         block_start += 5;
@@ -609,7 +631,7 @@ fn process_ingress_headers<B>(
         // RFC 9113 §8.1.2: A HEADERS frame containing a trailer section MUST have END_STREAM set
         if (hdr.flags & FLAG_END_STREAM) == 0 {
             emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-            terminate_server_stream(sess, hdr.stream_id);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
     }
@@ -640,7 +662,7 @@ fn process_ingress_headers<B>(
         }
         // Stream error (e.g. invalid pseudo-header in trailer or request)
         emit_rst_stream(hdr.stream_id, dec_err, out_wire);
-        terminate_server_stream(sess, hdr.stream_id);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
 
@@ -659,7 +681,7 @@ fn process_ingress_headers<B>(
     guard validate_request_pseudo_headers(dec_list, (hdr.flags & FLAG_END_STREAM) != 0) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-        terminate_server_stream(sess, hdr.stream_id);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
 
@@ -682,6 +704,7 @@ fn process_ingress_headers<B>(
 
 fn process_ingress_continuation<B>(
     sess:              H2ServerSession&,
+    pipeline:          wing::ServerPipelineConfig&,
     hdr:               const FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -706,7 +729,7 @@ fn process_ingress_continuation<B>(
             return false;
         }
         emit_rst_stream(hdr.stream_id, dec_err, out_wire);
-        terminate_server_stream(sess, hdr.stream_id);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         sess.header_accum_stream_id = 0;
         sess.header_accumulator.clear();
         return true;
@@ -730,7 +753,7 @@ fn process_ingress_continuation<B>(
     guard validate_request_pseudo_headers(dec_list, sess.header_accum_end_stream) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-        terminate_server_stream(sess, hdr.stream_id);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         sess.header_accum_stream_id = 0;
         sess.header_accumulator.clear();
         return true;
@@ -755,8 +778,74 @@ fn process_ingress_continuation<B>(
     return true;
 }
 
+// RFC 9113 Section 6.1: DATA - Reassembles ingress stream payload with dynamic slab promotion.
+// If payload exceeds inline 8 KiB capacity, leases a 64 KiB slab from the worker pool.
+// Emits WINDOW_UPDATE to replenish credit when leasing slab.
+//
+// Example:
+//   sess.streams[s_idx].spill_slab_idx = -1, payload.len = 16384, stream_id = 1
+//   returns: true, promoted to slab with WINDOW_UPDATE emitted
+fn process_stream_data_ingress<B>(
+    sess:      H2ServerSession&,
+    pool:      SpillSlabPool&,
+    s_idx:     i32,
+    payload:   const u8[:],
+    stream_id: u32,
+    out_wire:  B&,
+) -> bool {
+    let st_idx = s_idx as i64;
+    guard st_idx >= 0 && st_idx < sess.streams.len else { return false; }
+
+    // 1. Fast path: payload fits in inline 8 KiB buffer
+    let has_inline_cap = sess.streams[st_idx].body.len + payload.len <= sess.streams[st_idx].body.cap;
+    if sess.streams[st_idx].spill_slab_idx < 0 && has_inline_cap {
+        sess.streams[st_idx].body.append(payload);
+        return true;
+    }
+
+    // 2. Dynamic promotion: allocate slab upon exceeding 8 KiB threshold
+    if sess.streams[st_idx].spill_slab_idx < 0 {
+        let slab_idx = acquire_spill_slab(pool);
+        guard slab_idx >= 0 else {
+            // RFC 9113 Section 8.1: HTTP Message Framing - Stream rejected due to pool saturation
+            emit_rst_stream(stream_id, ERR_REFUSED_STREAM, out_wire);
+            return false;
+        }
+        sess.streams[st_idx].spill_slab_idx = slab_idx;
+        sess.streams[st_idx].slab_lease_deadline_ns = core::as_nanos(core::monotonic_now()) + 3000000000;
+        let slab_slot = slab_idx as i64;
+        guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false; }
+        pool.slabs[slab_slot].data.append(sess.streams[st_idx].body[..]);
+        sess.streams[st_idx].body.clear();
+        // RFC 9113 Section 6.9: WINDOW_UPDATE - Grant remaining credit up to 64 KiB
+        emit_window_update(stream_id, 57344, out_wire);
+        let c_idx, c_found = find_session_stream_idx(sess.conn, stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].recv_window += 57344;
+        }
+    }
+
+    // 3. Bounds Check Elimination (BCE) guarded append with lease deadline check
+    let now_ns = core::as_nanos(core::monotonic_now());
+    if now_ns > sess.streams[st_idx].slab_lease_deadline_ns {
+        emit_rst_stream(stream_id, ERR_CANCEL, out_wire);
+        return false;
+    }
+
+    let slab_slot = sess.streams[st_idx].spill_slab_idx as i64;
+    guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false; }
+    guard pool.slabs[slab_slot].data.len + payload.len <= pool.slabs[slab_slot].data.cap else {
+        // Exceeds 64 KiB maximum slab capacity: emit CANCEL
+        emit_rst_stream(stream_id, ERR_CANCEL, out_wire);
+        return false;
+    }
+    pool.slabs[slab_slot].data.append(payload);
+    return true;
+}
+
 fn process_ingress_data<B>(
     sess:          H2ServerSession&,
+    pipeline:      wing::ServerPipelineConfig&,
     hdr:           const FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
@@ -821,12 +910,14 @@ fn process_ingress_data<B>(
     var d_len: i64 = 0;
     if d_start <= d_end && d_end <= frame_payload.len {
         d_len = d_end - d_start;
-        if sess.streams[s_idx].body.len + d_len <= sess.streams[s_idx].body.cap {
-            sess.streams[s_idx].body.append(frame_payload[d_start..d_end]);
-        } else {
-            emit_rst_stream(hdr.stream_id, ERR_INTERNAL_ERROR, out_wire);
-            terminate_server_stream(sess, hdr.stream_id);
-            return true;
+        if d_len > 0 {
+            let app_ok = process_stream_data_ingress(
+                sess, pipeline.slab_pool, s_idx, frame_payload[d_start..d_end], hdr.stream_id, out_wire,
+            );
+            guard app_ok else {
+                terminate_server_stream(sess, pipeline, hdr.stream_id);
+                return true;
+            }
         }
     }
 
@@ -837,7 +928,7 @@ fn process_ingress_data<B>(
         if flow_err == ERR_STREAM_CLOSED || flow_err == ERR_PROTOCOL_ERROR {
             // RFC 9113 §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
             emit_rst_stream(hdr.stream_id, flow_err, out_wire);
-            terminate_server_stream(sess, hdr.stream_id);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
         emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
@@ -858,10 +949,20 @@ fn process_ingress_data<B>(
 
     if (hdr.flags & FLAG_END_STREAM) != 0 {
         let dec_cl = sess.streams[s_idx].declared_content_length;
-        if dec_cl >= 0 && dec_cl != (sess.streams[s_idx].body.len as i64) {
-            // RFC 9113 §8.1.1 & §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
+        let actual_len: i64 = if sess.streams[s_idx].spill_slab_idx >= 0 {
+            let s_slot = sess.streams[s_idx].spill_slab_idx as i64;
+            if s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len {
+                pipeline.slab_pool.slabs[s_slot].data.len
+            } else {
+                0
+            }
+        } else {
+            sess.streams[s_idx].body.len
+        };
+        if dec_cl >= 0 && dec_cl != actual_len {
+            // RFC 9113 Section 8.1.1: Malformed Messages - Content-Length mismatch MUST be treated as malformed
             emit_rst_stream(hdr.stream_id, ERR_PROTOCOL_ERROR, out_wire);
-            terminate_server_stream(sess, hdr.stream_id);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
         sess.streams[s_idx].body_received = true;
@@ -897,6 +998,7 @@ fn collect_cancelled_streams(
 
 fn dispatch_ingress_frame<B>(
     sess:              H2ServerSession&,
+    pipeline:          wing::ServerPipelineConfig&,
     hdr:               const FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -938,19 +1040,22 @@ fn dispatch_ingress_frame<B>(
     } else if hdr.frame_type == FRAME_ALTSVC {
         return process_ingress_altsvc(sess, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == FRAME_WINDOW_UPDATE {
-        return process_ingress_window_update(sess, hdr, frame_payload, out_wire);
+        return process_ingress_window_update(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == FRAME_RST_STREAM {
         for i in sess.streams.len {
             guard sess.streams[i].active && sess.streams[i].stream_id == hdr.stream_id else { continue; }
             sess.streams[i].active = false;
+            if sess.streams[i].spill_slab_idx >= 0 {
+                release_spill_slab(pipeline.slab_pool, sess.streams[i].spill_slab_idx);
+            }
             reset_server_stream(sess.streams[i]);
         }
     } else if hdr.frame_type == FRAME_HEADERS {
-        return process_ingress_headers(sess, hdr, frame_payload, cancelled_streams, out_wire);
+        return process_ingress_headers(sess, pipeline, hdr, frame_payload, cancelled_streams, out_wire);
     } else if hdr.frame_type == FRAME_CONTINUATION {
-        return process_ingress_continuation(sess, hdr, frame_payload, cancelled_streams, out_wire);
+        return process_ingress_continuation(sess, pipeline, hdr, frame_payload, cancelled_streams, out_wire);
     } else if hdr.frame_type == FRAME_DATA {
-        return process_ingress_data(sess, hdr, frame_payload, out_wire);
+        return process_ingress_data(sess, pipeline, hdr, frame_payload, out_wire);
     }
     return true;
 }
@@ -977,7 +1082,15 @@ fn execute_ready_server_stream<B>(
         guard req.trailers.len < 16 else { break; }
         req.trailers.push(tr_item);
     }
-    req.body.append(sess.streams[stream_idx].body[..]);
+    if sess.streams[stream_idx].spill_slab_idx >= 0 {
+        let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
+        guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else { return; }
+        req.body.append(pipeline.slab_pool.slabs[s_slot].data[..]);
+        release_spill_slab(pipeline.slab_pool, sess.streams[stream_idx].spill_slab_idx);
+        sess.streams[stream_idx].spill_slab_idx = -1;
+    } else {
+        req.body.append(sess.streams[stream_idx].body[..]);
+    }
 
     // Execute pipeline
     var res = wing::Response { .. };
@@ -1066,6 +1179,7 @@ inline fn validate_continuation_boundary(sess: const H2ServerSession&, hdr: cons
 // Handles frame header ingress errors, emitting stream resets and advancing offset.
 fn handle_ingress_header_error<B>(
     sess:            H2ServerSession&,
+    pipeline:        wing::ServerPipelineConfig&,
     hdr:             const FrameHeader&,
     err:             u32,
     total_frame_len: i64,
@@ -1075,7 +1189,7 @@ fn handle_ingress_header_error<B>(
     let is_prio_size_err = (hdr.frame_type == FRAME_PRIORITY && err == ERR_FRAME_SIZE_ERROR);
     if err == ERR_STREAM_CLOSED || err == ERR_REFUSED_STREAM || is_prio_size_err {
         emit_rst_stream(hdr.stream_id, err, out_wire);
-        terminate_server_stream(sess, hdr.stream_id);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         offset += total_frame_len;
         return true;
     }
@@ -1125,7 +1239,7 @@ fn handle_h2_server_ingress<B>(
         // Validate Anti-DoS barriers and protocol invariants
         let err = on_ingress_frame_header(sess.conn, hdr, now_ms);
         if err != ERR_NO_ERROR {
-            guard handle_ingress_header_error(sess, hdr, err, total_frame_len, offset, out_wire) else {
+            guard handle_ingress_header_error(sess, pipeline, hdr, err, total_frame_len, offset, out_wire) else {
                 return offset + total_frame_len, false;
             }
             continue;
@@ -1137,7 +1251,7 @@ fn handle_h2_server_ingress<B>(
             return offset + total_frame_len, false;
         }
 
-        guard dispatch_ingress_frame(sess, hdr, frame_payload, cancelled_streams[..], out_wire) else {
+        guard dispatch_ingress_frame(sess, pipeline, hdr, frame_payload, cancelled_streams[..], out_wire) else {
             return offset + total_frame_len, false;
         }
 

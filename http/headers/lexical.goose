@@ -147,7 +147,7 @@ const TCHAR_LUT: const bool[256] = [
     true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
     false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
     true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
-    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
     true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,

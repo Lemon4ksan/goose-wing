@@ -17,6 +17,7 @@ struct ServerPipelineConfig {
     private_jar:             PrivateJar               = PrivateJar { .. },
     header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
     ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
+    slab_pool:               internal::SpillSlabPool  = internal::SpillSlabPool { .. },
     target_host:             u8[..128]                = "example.com",
     deadline_ns:             u64                      = 30000000000, // 30s
     enable_rate_limiter:     bool                     = true,
@@ -36,6 +37,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         private_jar:             new_private_jar(KeyStore { .. }),
         header_pool:             internal::HeaderMapPool { .. },
         ext_pool:                internal::ExtensionsPool { .. },
+        slab_pool:               internal::SpillSlabPool { .. },
         target_host:             [],
         deadline_ns:             30000000000,
         trust_proxy_headers:     false,

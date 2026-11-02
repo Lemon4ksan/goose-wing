@@ -148,6 +148,13 @@
 ### 5.2 Server frame multiplexer (`server/h2_multiplexer.goose`)
 - Connection preface validation: Validates the 24-byte client connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`).
 - Stream state machine: Manages concurrent stream states (`Idle`, `Open`, `HalfClosedRemote`, `HalfClosedLocal`, `Closed`) without heap allocations.
+- Stream body buffering and Spill Slab Pool (RFC 9113 §6.1, §6.5.2, §6.9):
+  - Fast-path inline buffer: Request bodies up to 8,192 bytes buffer directly inside `H2ServerStream.body: u8[..8192]` on the stack with zero allocations.
+  - Worker-pinned Spill Slab Pool: When a request body exceeds 8 KiB, the stream is dynamically promoted to a 64 KiB slab from `ServerPipelineConfig.slab_pool` (`SpillSlabPool`, 16 pre-allocated 64 KiB slabs).
+  - RFC 9113 flow-control contract: The server advertises `SETTINGS_INITIAL_WINDOW_SIZE = 8192` in its initial settings frame, constraining client in-flight data to the inline buffer. Upon dynamic promotion to a slab, the server issues `WINDOW_UPDATE` granting 57,344 bytes of credit (8192 + 57344 = 65536), expanding the stream window to 64 KiB.
+  - Saturated pool defense: If all 16 slabs are in active use when a 17th stream exceeds 8 KiB, the server rejects the stream with `RST_STREAM` (`ERR_REFUSED_STREAM`) without terminating the connection or dropping unbuffered frames.
+  - Slowloris lease timeout: Slabs enforce a strict 3.0-second lease deadline (`slab_lease_deadline_ns`). Stalled clients exceeding the deadline are reset with `ERR_CANCEL` and the slab is immediately reclaimed.
+  - Zero-leak lifecycle: Slabs are unconditionally released upon route handler completion, stream error, `RST_STREAM`, or connection teardown (`cleanup_h2_server_session`).
 - Two-level flow control: Tracks signed 64-bit connection and stream flow-control windows. Stream windows can go negative when the remote peer reduces the initial window via `SETTINGS_INITIAL_WINDOW_SIZE`.
 - Anti-DoS defenses:
   - Rapid reset protection (CVE-2023-44487): GCRA token-bucket tracking the frequency of client-initiated `RST_STREAM` frames. If the client exceeds the burst threshold, the server emits a `GOAWAY` frame with `ENHANCE_YOUR_CALM` (0xb) and closes the connection.
