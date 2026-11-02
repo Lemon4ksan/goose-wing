@@ -32,24 +32,24 @@ struct CacheOptions {
 
 // Cached HTTP representation including headers, body, Vary invariants, and intrusive LRU pointers.
 struct CachedEntry {
-    url_hash:        u32                = 0,
-    url:             u8[..2048]         = [],
-    method:          u8[..16]           = "GET",
-    status_code:     i32                = 200,
-    headers:         HeaderMap          = HeaderMap { .. },
-    cc:              CacheControl       = CacheControl { .. },
-    etag:            EntityTag          = EntityTag { .. },
-    last_modified:   core::Time         = core::Time { .. },
-    timestamps:      CacheTimestamps    = CacheTimestamps { .. },
-    vary:            VarySnapshot       = VarySnapshot { .. },
-    body:            u8[..4096]         = [],
-    head_only:       bool               = false,
-    security_zeroed: bool               = false,
-    is_valid:        bool               = false,
-    group_count:     i32                = 0,
-    groups:          CacheGroupTag[..8] = [],
-    prev_lru:        i32                = -1,
-    next_lru:        i32                = -1,
+    url_hash:        u32                 = 0,
+    url:             u8[..2048]          = [],
+    method:          u8[..16]            = "GET",
+    status_code:     i32                 = 200,
+    headers:         HeaderMap           = HeaderMap { .. },
+    cc:              CacheControl        = CacheControl { .. },
+    etag:            EntityTag           = EntityTag { .. },
+    last_modified:   core::Time          = core::Time { .. },
+    timestamps:      CacheTimestamps     = CacheTimestamps { .. },
+    vary:            VarySnapshot        = VarySnapshot { .. },
+    body:            u8[..4096]          = [],
+    head_only:       bool                = false,
+    security_zeroed: bool                = false,
+    is_valid:        bool                = false,
+    group_count:     i32                 = 0,
+    groups:          CacheGroupTag[..32] = [],
+    prev_lru:        i32                 = -1,
+    next_lru:        i32                 = -1,
 }
 
 // Constructs an empty, uninitialized CachedEntry.
@@ -703,8 +703,8 @@ fn on_response(
     entry.method.append(req.method[..]);
     entry.body.append(resp.body[..]);
 
-    var group_tags:  CacheGroupTag[..8] = [];
-    var group_count: i32                = 0;
+    var group_tags:  CacheGroupTag[..32] = [];
+    var group_count: i32                 = 0;
     if parse_cache_group_list(resp.header("Cache-Groups"), group_tags, group_count) {
         entry.groups = group_tags;
         entry.group_count = group_count;
@@ -765,8 +765,8 @@ fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Respon
 
     // RFC 9875 §3: Cache-Group-Invalidation is ignored for safe-method responses (on_response only
     // reaches this path for unsafe methods); group purges do not cascade (RFC 9875 §2.2.1).
-    var group_tags:  CacheGroupTag[..8] = [];
-    var group_count: i32                = 0;
+    var group_tags:  CacheGroupTag[..32] = [];
+    var group_count: i32                 = 0;
     if parse_cache_group_list(resp.header("Cache-Group-Invalidation"), group_tags, group_count) {
         for slot in 0..group_count {
             count = add_invalidated_entries(count, cache.invalidate_group(group_tags[slot].name[..]));

@@ -16,8 +16,8 @@ import http.cache.engine;
 // Maximum characters in a single cache group name (List of Strings per RFC 9875 §2; engine budget 64).
 const CACHE_GROUP_TAG_MAX: i32 = 64;
 
-// Maximum group members attached to one stored response (List of Strings per RFC 9875 §3; engine budget 8).
-const CACHE_GROUP_MAX_PER_ENTRY: i32 = 8;
+// Maximum group members per stored response (RFC 9875 §2 mandates at least 32; engine budget 32)..
+const CACHE_GROUP_MAX_PER_ENTRY: i32 = 32;
 
 // ---- cache group tag model -------------------------------------------------
 
@@ -34,9 +34,9 @@ struct CacheGroupTag {
 // Example:
 //   raw = "\"scripts\", \"fonts\"", out_tags = [], out_count = 0
 //   returns: true, out_tags = ["scripts", "fonts"], out_count = 2
-fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..8]&, out_count: i32&) -> bool {
+fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_count: i32&) -> bool {
     out_count = 0;
-    var parsed: CacheGroupTag[..8] = [];
+    var parsed: CacheGroupTag[..32] = [];
 
     var cursor: i64 = 0;
     sfv_skip_ows(raw, cursor);
@@ -75,8 +75,8 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..8]&, out_c
 // Example:
 //   tags = ["scripts", "fonts"], count = 2
 //   returns: 18 ("\"scripts\", \"fonts\"")
-fn cache_group_list_wire_len(tags: const CacheGroupTag[..8]&, count: i32) -> i64 {
-    var wire: u8[..544] = [];
+fn cache_group_list_wire_len(tags: const CacheGroupTag[..32]&, count: i32) -> i64 {
+    var wire: u8[..2176] = [];
     var limit = tags.len;
     if count < tags.len { limit = count; }
     for slot in 0..limit {
@@ -106,7 +106,7 @@ fn add_invalidated_entries(total: i64, purged: i64) -> i64 {
 // Example:
 //   tags = ["scripts", "fonts"], count = 2, out = []
 //   returns: 18, out = "\"scripts\", \"fonts\""
-fn serialize_cache_group_list(tags: const CacheGroupTag[..8]&, count: i32, out: u8[..512]&) -> i32 {
+fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out: u8[..512]&) -> i32 {
     guard count >= 0 && count <= tags.len &&
         cache_group_list_wire_len(tags, count) <= out.cap - out.len else { return -1; }
     let start_len = out.len;

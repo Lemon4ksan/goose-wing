@@ -743,8 +743,8 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
 fn test_cache_groups(t: lit::T&) {
     t.run("Parse Cache-Groups List of Strings (RFC 9875 §2)") { sub =>
-        var tags:  wing::CacheGroupTag[..8] = [];
-        var count: i32                      = 0;
+        var tags:  wing::CacheGroupTag[..32] = [];
+        var count: i32                       = 0;
         let ok = wing::parse_cache_group_list("\"scripts\", \"fonts\"", tags, count);
         sub.assert_true(ok, "Valid Cache-Groups field value parses");
         sub.assert_eq(count, 2, "Two group members parsed");
@@ -752,8 +752,8 @@ fn test_cache_groups(t: lit::T&) {
         sub.assert_bytes_eq(tags[1].name[..], "fonts", "Second group name is fonts");
 
         // RFC 9875 §3 example field value
-        var tags_ex:  wing::CacheGroupTag[..8] = [];
-        var count_ex: i32                      = 0;
+        var tags_ex:  wing::CacheGroupTag[..32] = [];
+        var count_ex: i32                       = 0;
         let ok_ex = wing::parse_cache_group_list("\"eurovision-results\", \"australia\"", tags_ex, count_ex);
         sub.assert_true(ok_ex, "RFC 9875 §3 example field value parses");
         sub.assert_eq(count_ex, 2, "RFC 9875 §3 example yields two groups");
@@ -761,20 +761,20 @@ fn test_cache_groups(t: lit::T&) {
         sub.assert_bytes_eq(tags_ex[1].name[..], "australia", "Second group is australia");
 
         // Unterminated quoted string fails closed
-        var tags_bad:  wing::CacheGroupTag[..8] = [];
-        var count_bad: i32                      = 0;
+        var tags_bad:  wing::CacheGroupTag[..32] = [];
+        var count_bad: i32                       = 0;
         let ok_bad = wing::parse_cache_group_list("\"a\", \"b", tags_bad, count_bad);
         sub.assert_false(ok_bad, "Unterminated quote rejected");
         sub.assert_eq(count_bad, 0, "Failed parse yields count 0 (no partial tags)");
 
         // Non-String member (token) fails closed: field is a List of Strings
-        var tags_tok:  wing::CacheGroupTag[..8] = [];
-        var count_tok: i32                      = 0;
+        var tags_tok:  wing::CacheGroupTag[..32] = [];
+        var count_tok: i32                       = 0;
         sub.assert_false(wing::parse_cache_group_list("scripts", tags_tok, count_tok), "Bare token member rejected");
 
         // Group name longer than CACHE_GROUP_TAG_MAX rejected (oversize vector)
-        var tags_long:  wing::CacheGroupTag[..8] = [];
-        var count_long: i32                      = 0;
+        var tags_long:  wing::CacheGroupTag[..32] = [];
+        var count_long: i32                       = 0;
         let ok_long = wing::parse_cache_group_list(
             "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
             tags_long,
@@ -783,21 +783,60 @@ fn test_cache_groups(t: lit::T&) {
         sub.assert_false(ok_long, "65-character group name exceeds 64-byte tag budget");
         sub.assert_eq(count_long, 0, "Oversize name yields count 0");
 
-        // More than CACHE_GROUP_MAX_PER_ENTRY members rejected
-        var tags_many:  wing::CacheGroupTag[..8] = [];
-        var count_many: i32                      = 0;
-        let ok_many = wing::parse_cache_group_list(
-            "\"a\", \"b\", \"c\", \"d\", \"e\", \"f\", \"g\", \"h\", \"i\"",
-            tags_many,
-            count_many,
+        // RFC 9875 §2: value must support at least 32 members; 33 fails closed
+        var raw_many: u8[..1024] = [];
+        var mi:       i64        = 0;
+        while mi < 33 {
+            if mi > 0 { raw_many.append(", "); }
+            raw_many.append("\"g");
+            core::format_i64_dec(mi, raw_many);
+            raw_many.append("\"");
+            mi += 1;
+        }
+        var tags_many:  wing::CacheGroupTag[..32] = [];
+        var count_many: i32                       = 0;
+        sub.assert_false(
+            wing::parse_cache_group_list(raw_many[..], tags_many, count_many),
+            "33 group members exceed 32-member per-entry budget",
         );
-        sub.assert_false(ok_many, "Nine group members exceed 8-tag per-entry budget");
         sub.assert_eq(count_many, 0, "Excess member count yields count 0");
+
+        // RFC 9875 §2: a 32-member field value must parse successfully
+        var raw_full: u8[..1024] = [];
+        var fi:       i64        = 0;
+        while fi < 32 {
+            if fi > 0 { raw_full.append(", "); }
+            raw_full.append("\"g");
+            core::format_i64_dec(fi, raw_full);
+            raw_full.append("\"");
+            fi += 1;
+        }
+        var tags_full:  wing::CacheGroupTag[..32] = [];
+        var count_full: i32                       = 0;
+        sub.assert_true(
+            wing::parse_cache_group_list(raw_full[..], tags_full, count_full),
+            "RFC 9875 §2 32-member field value parses",
+        );
+        sub.assert_eq(count_full, 32, "Thirty-two group members parsed");
+        sub.assert_bytes_eq(tags_full[0].name[..], "g0", "First of 32 members is g0");
+        sub.assert_bytes_eq(tags_full[31].name[..], "g31", "Last of 32 members is g31");
+
+        // 32-member value round-trips through serialize into the 512-byte field buffer
+        var wire_full: u8[..512] = [];
+        let written_full = wing::serialize_cache_group_list(tags_full, count_full, wire_full);
+        sub.assert_true(written_full > 0, "32-member list serializes into 512-byte buffer");
+        var rt_tags:  wing::CacheGroupTag[..32] = [];
+        var rt_count: i32                       = 0;
+        sub.assert_true(
+            wing::parse_cache_group_list(wire_full[..], rt_tags, rt_count),
+            "32-member serialization re-parses",
+        );
+        sub.assert_eq(rt_count, 32, "Round-trip preserves 32 members");
     };
 
     t.run("Serialize Cache-Groups Round-Trip (RFC 9875 §2)") { sub =>
-        var tags:  wing::CacheGroupTag[..8] = [];
-        var count: i32                      = 0;
+        var tags:  wing::CacheGroupTag[..32] = [];
+        var count: i32                       = 0;
         wing::parse_cache_group_list("\"scripts\", \"fonts\"", tags, count);
 
         var wire: u8[..512] = [];
@@ -805,8 +844,8 @@ fn test_cache_groups(t: lit::T&) {
         sub.assert_eq(written, 18, "18 bytes written for two quoted members");
         sub.assert_bytes_eq(wire[..], "\"scripts\", \"fonts\"", "Serialized field value matches RFC quoting");
 
-        var reparsed: wing::CacheGroupTag[..8] = [];
-        var recount:  i32                      = 0;
+        var reparsed: wing::CacheGroupTag[..32] = [];
+        var recount:  i32                       = 0;
         let ok = wing::parse_cache_group_list(wire[..], reparsed, recount);
         sub.assert_true(ok, "Serialized output re-parses");
         sub.assert_eq(recount, 2, "Round-trip yields two groups");
