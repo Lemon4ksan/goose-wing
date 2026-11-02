@@ -2384,6 +2384,58 @@ fn test_jwt_header_capacity_rejection(t: lit::T&) {
     };
 }
 
+fn test_acme_http01(t: lit::T&) {
+    t.run("RFC 8555 §8.3 HTTP-01 token validation") { sub =>
+        sub.assert_true(wing::acme_validate_token("LoqXcYV8vQa8jxAjEuX0"), "RFC 8555 example token accepted");
+        sub.assert_false(wing::acme_validate_token("../etc/passwd"), "path traversal rejected");
+        sub.assert_false(wing::acme_validate_token("a/b"), "slash rejected");
+        sub.assert_false(wing::acme_validate_token(""), "empty token rejected");
+    };
+
+    t.run("RFC 8555 §8.1 key authorization concatenation") { sub =>
+        var out: u8[..256] = [];
+        let n = wing::acme_key_authorization("tok", "TP", out);
+        sub.assert_eq(n, 6, "key authorization length");
+        sub.assert_bytes_eq(out[..], "tok.TP", "token || '.' || thumbprint");
+    };
+
+    t.run("RFC 8555 §8.3 HTTP-01 path construction") { sub =>
+        var out: u8[..128] = [];
+        let n = wing::acme_http01_path("tok", out);
+        sub.assert_eq(n, 31, "path length");
+        sub.assert_bytes_eq(out[..], "/.well-known/acme-challenge/tok", "well-known acme-challenge path");
+    };
+
+    t.run("RFC 8555 §8.3 HTTP-01 path matching rejects traversal") { sub =>
+        sub.assert_true(wing::acme_match_http01("/.well-known/acme-challenge/tok", "tok"), "exact match");
+        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/other", "tok"), "different token");
+        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/../tok", "tok"), "dot-dot traversal");
+    };
+
+    t.run("HTTP-01 challenge responder table lookup") { sub =>
+        var table: wing::AcmeChallenge[..8] = [];
+        var ch = wing::AcmeChallenge {
+            token:        "tok",
+            key_auth:     "tok.TP",
+            key_auth_len: 6,
+        };
+        table.push(ch);
+
+        var body:     u8[..256] = [];
+        var body_len: i32       = 0;
+        sub.assert_true(
+            wing::acme_find_challenge(table, "/.well-known/acme-challenge/tok", body, body_len),
+            "challenge found",
+        );
+        sub.assert_eq(body_len, 6, "body length");
+        sub.assert_bytes_eq(body[..], "tok.TP", "key authorization body");
+        sub.assert_false(
+            wing::acme_find_challenge(table, "/.well-known/acme-challenge/nope", body, body_len),
+            "unknown path rejected",
+        );
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", lit::Verbosity.Verbose);
 
@@ -2409,6 +2461,7 @@ fn main() {
     lit::run_case(runner, "20. Digest Challenge Buffer Bounds & Syntax", test_digest_challenge_buffer_bounds);
     lit::run_case(runner, "21. Digest Authorization Serialization Defenses", test_digest_auth_serialization_security);
     lit::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
+    lit::run_case(runner, "23. RFC 8555 ACME HTTP-01", test_acme_http01);
 
     let ok = lit::finish(runner);
     assert(ok);

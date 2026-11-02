@@ -138,6 +138,7 @@ import auth.pkce;
 import auth.dpop;
 import auth.jwt;
 import auth.jwks;
+import auth.acme;
 
 // ---- tls 1.3 & x.509 pki -------------------------------------------------
 

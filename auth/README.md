@@ -39,6 +39,9 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool`**: Computes canonical RFC 7638 SHA-256 thumbprint.
 - **`fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool`**: SSRF validation for JWKS endpoint retrieval (RFC 8725 §3.12).
 
+### ACME HTTP-01 Challenges (RFC 8555)
+- **`fn acme_validate_token(token: const u8[:]) -> bool`** / **`fn acme_key_authorization(token: const u8[:], thumbprint_b64url: const u8[:], out: u8[..256]&) -> i32`** / **`fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32`** / **`fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool`** / **`fn acme_find_challenge(table: const AcmeChallenge[..8]&, path: const u8[:], out_body: u8[..256]&, out_len: i32&) -> bool`**: HTTP-01 token validation, key authorization, path construction/matching, and challenge responder lookup (RFC 8555 §8.1/§8.3).
+
 ### JSON Web Tokens (RFC 7515, RFC 7519, RFC 8725)
 - **`enum JwtAlg`**: Algorithm enum (`HS256`, `HS384`, `HS512`, `EdDSA`, `None`, `Unknown`).
 - **`enum JwtError`**: Detailed verification error codes.
