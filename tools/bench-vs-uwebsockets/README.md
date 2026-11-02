@@ -34,30 +34,40 @@ docker compose run --rm benchmark --cli
 
 ## 3. Empirical Reference Benchmarks
 
-Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on Linux x86_64:
+Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on Linux x86_64 (Ubuntu 24.04 container, GCC -O3 -flto):
 
-### Table 2. Pipelined TCP & RSS vs C++ uWebSockets
+### Table 2. Benchmarks vs. uWebSockets
 
-| Workload & Scenario | goose-wing (Goose + GCC -O2) | uWebSockets (C++ uWS::App) | Delta / Ratio | Memory RSS |
-| :--- | :---: | :---: | :---: | :---: |
-| **Standard wrk** (1 core, 32x pipeline) | **168,923 req/s** (p50: 353 µs) | 123,340 req/s (p50: 485 µs) | **+37.0%** (1.37x faster) | ~2.1 MB vs 16.4 MB |
-| **Standard wrk** (8 workers, 64x pipeline) | **876,381 req/s** (p99: 3.10 ms) | 721,664 req/s (p99: 5.58 ms) | **+21.4%** (1.8x lower p99 tail) | ~3.1 MB vs 18.2 MB |
-| **Unbounded Line-Rate C Burst** (6 workers, 64x pipeline) | **26,803,444 req/s** (3.12 GB/s) | 8,057,592 req/s (1.17 GB/s) | **+232.6%** (3.33x faster) | ~3.1 MB vs 18.2 MB |
-| **Heap Allocations** | **0 B / 0 allocs** | Dynamic / `new` (glibc ptmalloc) | **Zero-Heap invariant** | **5.9x–7.8x lower** |
+| Workload / Benchmark Suite | goose-wing (Goose) | uWebSockets (C++) | Delta |
+| :--- | :---: | :---: | :---: |
+| **HTTP/1.1 Plaintext GET** (wrk, 4 threads, 64 conns, 5s) | **183,658 req/s** | 153,084 req/s | **+20.0%** |
+| • *Median latency (p50)* | **321.0 µs** | 390.0 µs | **-17.7%** |
+| • *Tail latency (p99)* | **749.0 µs** | 920.0 µs | **-18.6%** |
+| • *Transfer rate* | **23.65 MB/s** | 22.34 MB/s | **+5.9%** |
+| **Multi-Core Peak 1M Target** (6 workers, wrk 128x pipeline, 512 conns) | **954,939 req/s** | 785,073 req/s | **+21.6%** |
+| • *Median latency (p50)* | **314.0 µs** | 395.0 µs | **-20.5%** |
+| • *Tail latency (p99)* | **5,510.0 µs** | 7,710.0 µs | **-28.5%** |
+| • *Transfer rate* | **122.94 MB/s** | 114.55 MB/s | **+7.3%** |
+| **Unbounded Line-Rate Burst** (6 workers, dedicated C burst, 512 conns) | **9,688,950 req/s** | 7,884,619 req/s | **+22.9%** |
+| • *Transfer rate* | **1,247.41 MB/s** | 1,150.46 MB/s | **+8.4%** |
+| **Heap allocations per request** | **0 B (0 allocs)** | 0 B (0 allocs) | Parity |
+| **Process RSS Footprint** | **3.1 MB** | **18.2 MB** | **5.9x lower** |
 
 ```text
 ==================================================================================
- SUITE: Pipelined TCP & RSS vs C++ uWebSockets (wrk + C Burst on SO_REUSEPORT)
+ SUITE: Pipelined TCP & RSS vs C++ uWebSockets (Linux epoll, GCC -O3 -flto, 12 cores)
 ==================================================================================
 | Metric / Scenario                       |         goose-wing |        uWebSockets |            Delta |
 |-----------------------------------------|--------------------|--------------------|------------------|
-| wrk 1 Core (32x pipeline) Throughput    |        168,923 req |        123,340 req |          +37.0%  |
-| wrk 1 Core (32x pipeline) Latency p50   |           353.0 us |           485.0 us |  -27.2% (1.37x)  |
-| wrk 8 Workers (64x pipeline) Throughput |        876,381 req |        721,664 req |          +21.4%  |
-| wrk 8 Workers (64x pipeline) Latency p99|            3.10 ms |            5.58 ms |  -44.4% (1.80x)  |
-| Line-Rate C Burst (6 workers, 64x)      |     26,803,444 req |      8,057,592 req |  +232.6% (3.33x) |
-| Line-Rate C Burst Wire Bandwidth        |          3.12 GB/s |          1.17 GB/s |  +166.7% (2.67x) |
-| Heap Allocations                        |         0 B / 0 al |      Dynamic / new |      Zero-Heap   |
+| Plaintext GET (wrk, 4 thr, 64 conns)    |        183,658 req |        153,084 req |          +20.0%  |
+| Plaintext GET Latency p50               |           321.0 us |           390.0 us |  -17.7% (1.21x)  |
+| Plaintext GET Latency p99               |           749.0 us |           920.0 us |  -18.6% (1.23x)  |
+| Multi-Core Peak 1M Target (6w, 128x)    |        954,939 req |        785,073 req |          +21.6%  |
+| Multi-Core Peak 1M Latency p50          |           314.0 us |           395.0 us |  -20.5% (1.26x)  |
+| Multi-Core Peak 1M Latency p99          |         5,510.0 us |         7,710.0 us |  -28.5% (1.40x)  |
+| Line-Rate C Burst (6 workers, 512 conns)|      9,688,950 req |      7,884,619 req |          +22.9%  |
+| Line-Rate C Burst Transfer Rate         |       1,247.4 MB/s |       1,150.5 MB/s |           +8.4%  |
+| Heap Allocations per request            |         0 B / 0 al |         0 B / 0 al |          Parity  |
 | Process RSS Footprint                   |             3.1 MB |            18.2 MB |      5.9x lower  |
 ==================================================================================
 ```
