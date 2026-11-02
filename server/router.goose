@@ -167,19 +167,26 @@ struct RadixNode {
     static_suffix:   u8[..32]  = [],
 }
 
-struct StaticRouteSlot {
-    path_str:      u8[..64]  = [],
-    handler_id:    i32       = -1,
-    entries_mask:  u32       = 0,
-    pso_mask:      u64       = 0,
-    payload_keep:  u8[..512] = [],
-    payload_close: u8[..512] = [],
+// Flat Register Routing Table (16-slot Structure of Arrays, 592 bytes).
+// Exactly 9.25 CPU cache lines (L1D resident).
+// Hardware registers: w0 (first 8 bytes) and w1 (next 8 bytes) of ASCII path.
+struct L0RegisterTable {
+    w0:           u64[16] = [0; 16],
+    w1:           u64[16] = [0; 16],
+    len:          u16[16] = [0; 16],
+    method_id:    u8[16]  = [0; 16],
+    _pad1:        u8[16]  = [0; 16],
+    handler_id:   i32[16] = [-1; 16],
+    entries_mask: u32[16] = [0; 16],
+    pso_mask:     u64[16] = [0; 16],
+    active_mask:  u16     = 0,
+    count:        u16     = 0,
+    _pad2:        u8[12]  = [0; 12],
 }
 
 struct RadixTree {
-    nodes:        RadixNode[..128]     = [],
-    static_slots: StaticRouteSlot[..8] = [],
-    root_idx:     i32                  = -1,
+    nodes:    RadixNode[..128] = [],
+    root_idx: i32              = -1,
 }
 
 fn new_radix_tree() -> RadixTree {
@@ -378,74 +385,6 @@ fn insert_or_update_param_child(
     return true;
 }
 
-inline fn try_register_static_slot(
-    tree:         RadixTree&,
-    path:         const u8[:],
-    handler_id:   i32,
-    entries_mask: u32,
-    pso_mask:     u64 = 0,
-) {
-    guard path.len <= 64 && tree.static_slots.len < tree.static_slots.cap else { return; }
-    var slot = StaticRouteSlot {
-        handler_id:   handler_id,
-        entries_mask: entries_mask,
-        pso_mask:     pso_mask,
-        ..
-    };
-    slot.path_str.append(path);
-    tree.static_slots.push(slot);
-}
-
-inline fn build_static_slot_payloads(
-    slot:         StaticRouteSlot&,
-    content_type: const u8[:],
-    body:         const u8[:],
-) {
-    var cl_buf: u8[..32] = [];
-    core::format_i64_dec(body.len, cl_buf);
-
-    slot.payload_keep.clear();
-    slot.payload_keep.append("Content-Length: ");
-    slot.payload_keep.append(cl_buf[..]);
-    slot.payload_keep.append("\r\nContent-Type: ");
-    slot.payload_keep.append(content_type);
-    slot.payload_keep.append("\r\n\r\n");
-    slot.payload_keep.append(body);
-
-    slot.payload_close.clear();
-    slot.payload_close.append("Content-Length: ");
-    slot.payload_close.append(cl_buf[..]);
-    slot.payload_close.append("\r\nContent-Type: ");
-    slot.payload_close.append(content_type);
-    slot.payload_close.append("\r\nConnection: close\r\n\r\n");
-    slot.payload_close.append(body);
-}
-
-fn add_static_slot(
-    tree:         RadixTree&,
-    path:         const u8[:],
-    content_type: const u8[:],
-    body:         const u8[:],
-    handler_id:   i32 = 0,
-) -> bool {
-    guard path.len <= 64 && tree.static_slots.len < tree.static_slots.cap else { return false; }
-    guard body.len + content_type.len + 64 <= 512 else { return false; }
-
-    for i in tree.static_slots.len {
-        if tree.static_slots[i].path_str[..] == path {
-            tree.static_slots[i].handler_id = handler_id;
-            build_static_slot_payloads(tree.static_slots[i], content_type, body);
-            return true;
-        }
-    }
-
-    var slot = StaticRouteSlot { handler_id: handler_id, .. };
-    slot.path_str.append(path);
-    build_static_slot_payloads(slot, content_type, body);
-    tree.static_slots.push(slot);
-    return true;
-}
-
 // insert_route inserts a route path into the RadixTree with automatic common-prefix compression.
 //
 // Supports:
@@ -476,14 +415,10 @@ fn insert_route(
         find_param_delimiter(rem, param_start, param_end, is_catchall);
 
         if param_start < 0 {
-            let is_root_pure_static = (cur_idx == tree.root_idx);
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
             tree.nodes[cur_idx as i64].handler_id = handler_id;
             tree.nodes[cur_idx as i64].entries_mask = entries_mask;
             tree.nodes[cur_idx as i64].pso_mask = pso_mask;
-            if is_root_pure_static {
-                try_register_static_slot(tree, path, handler_id, entries_mask, pso_mask);
-            }
             return true;
         }
 
@@ -720,20 +655,6 @@ inline fn resolve_effective_route_path<B>(path: const u8[:], out: B&) -> const u
     return out[..], true;
 }
 
-inline fn try_match_static_slot(tree: const RadixTree&, path: const u8[:]) -> RouteMatchResult {
-    for s_idx in tree.static_slots.len {
-        let slot = &tree.static_slots[s_idx];
-        if slot.path_str[..] == path {
-            return RouteMatchResult.Found {
-                handler_id:   slot.handler_id,
-                entries_mask: slot.entries_mask,
-                pso_mask:     slot.pso_mask,
-            };
-        }
-    }
-    return RouteMatchResult.NotFound;
-}
-
 // Matches path against the RadixTree, recording parameter spans into params.
 fn match_path<B>(
     tree:           const RadixTree&,
@@ -744,9 +665,6 @@ fn match_path<B>(
     let eff_path, ok_path = resolve_effective_route_path(path, out_canon_path);
     guard ok_path && tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
     params.clear();
-
-    let fast_match = try_match_static_slot(tree, eff_path);
-    if match fast_match { Found _ => true, _ => false } { return fast_match; }
 
     var cur_idx = tree.root_idx;
     var rem = eff_path;
@@ -810,6 +728,124 @@ fn match_path(
     return match_path(tree, path, params, canon_path);
 }
 
+// Packs a 64-bit word lane (up to 8 bytes) starting at byte offset.
+inline fn pack_word_lane(path: const u8[:], offset: i64) -> u64 {
+    guard path.len > offset else { return 0; }
+    let rem = path.len - offset;
+    let n = if rem < 8 { rem } else { 8 };
+    var w: u64 = 0;
+    for i in n {
+        w |= (path[offset + i] as u64) << ((i as u64) * 8);
+    }
+    return w;
+}
+
+// Packs wire path slice of up to 16 bytes into two 64-bit integer words (RFC Little-Endian).
+//
+// Example:
+//   path = "/plaintext" (len = 10)
+//   returns: w0 = 0x747865746e69616c, w1 = 0x0000000000007478
+inline fn pack_path_words(path: const u8[:]) -> u64, u64 {
+    return pack_word_lane(path, 0), pack_word_lane(path, 8);
+}
+
+// Evaluates a path slice and HTTP method against the 16-slot L0 register table via scalar SWAR.
+//
+// Example:
+//   path = "/json", method_id = 0 ("GET"), table contains "/json" in slot 2
+//   returns: 2
+inline fn match_l0_swar(
+    path:      const u8[:],
+    method_id: u8,
+    table:     const L0RegisterTable&,
+) -> i32 {
+    guard path.len <= 16 && table.count > 0 else { return -1; }
+    let w0, w1 = pack_path_words(path);
+    let plen = path.len as u16;
+
+    for i in (table.count as i64) {
+        if table.len[i] == plen
+            && table.method_id[i] == method_id
+            && table.w0[i] == w0
+            && table.w1[i] == w1 {
+            return i as i32;
+        }
+    }
+    return -1;
+}
+
+extern fn native_simd_match_l0(
+    path:      const u8[:],
+    method_id: u8,
+    table:     const L0RegisterTable&,
+) -> i32 = "wing_simd_match_l0";
+
+// Evaluates an HTTP request wire path against the L0 Register Table using SIMD vector acceleration.
+//
+// Example:
+//   path = "/plaintext", method_id = 0 ("GET"), table contains "/plaintext" in slot 0
+//   returns: 0
+inline fn match_l0(
+    path:      const u8[:],
+    method_id: u8,
+    table:     const L0RegisterTable&,
+) -> i32 {
+    guard path.len <= 16 && table.count > 0 else { return -1; }
+    return native_simd_match_l0(path, method_id, table);
+}
+
+// Returns true if path contains no dynamic parameter or wildcard delimiters.
+inline fn is_pure_static_path(path: const u8[:]) -> bool {
+    for i in path.len {
+        let b = path[i];
+        if b == ':' || b == '{' || b == '*' {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Registers a static route in L0 register table if path <= 16 bytes and table has space.
+//
+// Example:
+//   path = "/plaintext", method_id = 0 ("GET"), handler_id = 1
+//   returns: true (stored in slot 0)
+fn register_l0_route(
+    table:        L0RegisterTable&,
+    method_id:    u8,
+    path:         const u8[:],
+    handler_id:   i32,
+    entries_mask: u32 = 0,
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+) -> bool {
+    guard path.len <= 16 && (table.count as i64) < 16 else { return false; }
+    guard is_pure_static_path(path) else { return false; }
+
+    let existing = match_l0_swar(path, method_id, table);
+    if existing >= 0 {
+        let e = existing as i64;
+        table.handler_id[e] = handler_id;
+        table.entries_mask[e] = entries_mask;
+        table.pso_mask[e] = pso_mask;
+        return true;
+    }
+
+    let slot = table.count as i64;
+    guard slot < 16 else { return false; }
+
+    let w0, w1 = pack_path_words(path);
+    table.w0[slot] = w0;
+    table.w1[slot] = w1;
+    table.len[slot] = path.len as u16;
+    table.method_id[slot] = method_id;
+    table.handler_id[slot] = handler_id;
+    table.entries_mask[slot] = entries_mask;
+    table.pso_mask[slot] = pso_mask;
+    table.active_mask |= ((1 as u16) << (slot as u16));
+    table.count += 1;
+    return true;
+}
+
 // ---- multi-method radix router ---------------------------------------------
 
 // Method-segregated radix routing table supporting static, parameterized, and wildcard routes.
@@ -819,7 +855,8 @@ struct MethodTree {
 }
 
 struct RadixRouter {
-    trees: MethodTree[..8] = [],
+    trees:    MethodTree[..8] = [],
+    l0_table: L0RegisterTable = L0RegisterTable { .. },
 }
 
 fn new_radix_router() -> RadixRouter {
@@ -849,7 +886,11 @@ fn add_route(
     guard canonicalize_route_path(path, canon_path) else { return false; }
     for idx in router.trees.len {
         if router.trees[idx].method[..] == method {
-            return insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask, pso_mask);
+            let ok = insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask, pso_mask);
+            if ok {
+                register_l0_route(router.l0_table, idx as u8, canon_path[..], handler_id, entries_mask, pso_mask);
+            }
+            return ok;
         }
     }
     return false;
@@ -874,16 +915,7 @@ fn add_static_route(
     body:         const u8[:],
     handler_id:   i32 = 0,
 ) -> bool {
-    var canon_path: u8[..512] = [];
-    guard canonicalize_route_path(path, canon_path) else { return false; }
-    for idx in router.trees.len {
-        if router.trees[idx].method[..] == method {
-            let ok = add_static_slot(router.trees[idx].tree, canon_path[..], content_type, body, handler_id);
-            let ok2 = insert_route(router.trees[idx].tree, canon_path[..], handler_id, 0);
-            return ok && ok2;
-        }
-    }
-    return false;
+    return add_route(router, method, path, handler_id, 0, DEFAULT_ROUTE_PSO_MASK);
 }
 
 fn build_allow_header(
@@ -955,6 +987,29 @@ inline fn resolve_method_tree_index(method: const u8[:]) -> i32 {
     };
 }
 
+// Matches an HTTP request path against the L0 Register Table and returns RouteMatchResult if found.
+inline fn try_match_l0_slot<B>(
+    table:          const L0RegisterTable&,
+    method_id:      u8,
+    path:           const u8[:],
+    params:         ZeroAllocParams&,
+    out_canon_path: B&,
+) -> RouteMatchResult {
+    guard path.len <= 16 && table.count > 0 else { return RouteMatchResult.NotFound; }
+    let slot = match_l0(path, method_id, table);
+    guard slot >= 0 else { return RouteMatchResult.NotFound; }
+
+    let s = slot as i64;
+    params.clear();
+    out_canon_path.clear();
+    out_canon_path.append(path);
+    return RouteMatchResult.Found {
+        handler_id:   table.handler_id[s],
+        entries_mask: table.entries_mask[s],
+        pso_mask:     table.pso_mask[s],
+    };
+}
+
 // Matches a request method and path against registered routes.
 // Automatically canonicalizes path before matching.
 // Automatic HEAD routing: if a route matches GET, HEAD requests route to GET handler (RFC 9110 §9.3.2).
@@ -979,6 +1034,11 @@ fn match_route<B>(
     }
 
     if target_tree_idx >= 0 {
+        let fast_res = try_match_l0_slot(router.l0_table, target_tree_idx as u8, path, params, out_canon_path);
+        if match fast_res { Found _ => true, _ => false } {
+            return fast_res;
+        }
+
         let res = match_path(router.trees[target_tree_idx as i64].tree, path, params, out_canon_path);
         match res {
             Found _ => { return res; },
@@ -989,6 +1049,11 @@ fn match_route<B>(
     // Automatic HEAD routing: if method is HEAD and no explicit HEAD route matched,
     // route to GET handler if a GET route matches (RFC 9110 §9.3.2).
     if method == "HEAD" && router.trees[0].method[..] == "GET" {
+        let fast_head = try_match_l0_slot(router.l0_table, 0, path, params, out_canon_path);
+        if match fast_head { Found _ => true, _ => false } {
+            return fast_head;
+        }
+
         let res_get = match_path(router.trees[0].tree, path, params, out_canon_path);
         match res_get {
             Found _ => { return res_get; },

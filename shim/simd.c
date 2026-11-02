@@ -937,3 +937,88 @@ void wing_ct_copy_bytes(wing_bytes_rw dst, wing_bytes_ro src) {
     }
 }
 
+#if defined(_MSC_VER) && !defined(__clang__)
+static inline int wing_simd_ctz(unsigned int x) {
+    unsigned long r;
+    _BitScanForward(&r, x);
+    return (int)r;
+}
+#define WING_CTZ(x) wing_simd_ctz(x)
+#else
+#define WING_CTZ(x) __builtin_ctz(x)
+#endif
+
+// Flat Register Routing (Tier 0 L0 Register Table)
+// 16-slot Structure of Arrays (592 bytes) matching Goose L0RegisterTable.
+typedef struct {
+    uint64_t w0[16];           // Offset   0 (128 B)
+    uint64_t w1[16];           // Offset 128 (128 B)
+    uint16_t len[16];          // Offset 256  (32 B)
+    uint8_t  method_id[16];    // Offset 288  (16 B)
+    uint8_t  _pad1[16];        // Offset 304  (16 B)
+    int32_t  handler_id[16];   // Offset 320  (64 B)
+    uint32_t entries_mask[16]; // Offset 384  (64 B)
+    uint64_t pso_mask[16];     // Offset 448 (128 B)
+    uint16_t active_mask;      // Offset 576   (2 B)
+    uint16_t count;            // Offset 578   (2 B)
+    uint8_t  _pad2[12];        // Offset 580  (12 B)
+} wing_l0_table_t;
+
+// Matches an HTTP request wire path against the L0 Register Table using AVX2 or portable SWAR.
+int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_table_t *tbl) {
+    if (!tbl || tbl->count == 0 || path.len <= 0 || path.len > 16) {
+        return -1;
+    }
+
+    uint64_t w0 = 0;
+    uint64_t w1 = 0;
+    int64_t n0 = path.len < 8 ? path.len : 8;
+    memcpy(&w0, path.data, (size_t)n0);
+    if (path.len > 8) {
+        int64_t rem = path.len - 8;
+        int64_t n1 = rem < 8 ? rem : 8;
+        memcpy(&w1, path.data + 8, (size_t)n1);
+    }
+
+#if defined(__AVX2__)
+    __m256i req_w0 = _mm256_set1_epi64x((long long)w0);
+    __m256i req_w1 = _mm256_set1_epi64x((long long)w1);
+
+    for (int i = 0; i < 4; i++) {
+        int base = i * 4;
+        if (base >= (int)tbl->count) break;
+
+        __m256i t_w0 = _mm256_loadu_si256((const __m256i *)(tbl->w0 + base));
+        __m256i eq0  = _mm256_cmpeq_epi64(req_w0, t_w0);
+
+        __m256i t_w1 = _mm256_loadu_si256((const __m256i *)(tbl->w1 + base));
+        __m256i eq1  = _mm256_cmpeq_epi64(req_w1, t_w1);
+
+        __m256i both = _mm256_and_si256(eq0, eq1);
+        int mask = _mm256_movemask_pd(_mm256_castsi256_pd(both));
+
+        while (mask != 0) {
+            int bit = WING_CTZ((unsigned int)mask);
+            int slot = base + bit;
+            if (slot < (int)tbl->count &&
+                tbl->len[slot] == (uint16_t)path.len &&
+                tbl->method_id[slot] == method_id) {
+                return slot;
+            }
+            mask &= mask - 1;
+        }
+    }
+    return -1;
+#else
+    for (uint16_t i = 0; i < tbl->count; i++) {
+        if (tbl->len[i] == (uint16_t)path.len &&
+            tbl->method_id[i] == method_id &&
+            tbl->w0[i] == w0 &&
+            tbl->w1[i] == w1) {
+            return (int32_t)i;
+        }
+    }
+    return -1;
+#endif
+}
+

@@ -39,11 +39,26 @@ fn handle_connection_wire<B>(
 ) -> PipelineOutcome, bool;
 ```
 
-### 2. Radix Tree Routing (`server/router.goose`)
+### 2. Radix Tree & Flat Register Routing (`server/router.goose`)
 
-Zero-allocation method-isolated radix routing table with parameter extraction, Pre-Baked Route Pipeline State Objects (PSOs), and RFC 3986 path canonicalization.
+Two-tier zero-allocation HTTP router combining a Tier 0 Flat Register Table (L0 SWAR/SIMD) for line-rate exact matches with a Tier 1 Radix Tree for parameterized and wildcard routes.
+
+- **Tier 0 (L0 Register Table)**: 16-slot Structure of Arrays (592 bytes, L1D resident) comparing two 64-bit words (`w0`, `w1`) per route via AVX2 vector SIMD (`wing_simd_match_l0`) or pure Goose 64-bit SWAR (`match_l0_swar`). Static routes with length $\le 16$ bytes are eagerly populated into L0 upon insertion.
+- **Tier 1 (Radix Tree)**: Method-isolated compressed radix trie with parameter extraction (`/users/{id}`), greedy catch-alls (`/static/{*filepath}`), Pre-Baked Route Pipeline State Objects (PSOs), and RFC 3986 path canonicalization.
 
 ```goose
+struct L0RegisterTable {
+    w0:           u64[16] = [0; 16],
+    w1:           u64[16] = [0; 16],
+    len:          u16[16] = [0; 16],
+    method_id:    u8[16]  = [0; 16],
+    handler_id:   i32[16] = [-1; 16],
+    entries_mask: u32[16] = [0; 16],
+    pso_mask:     u64[16] = [0; 16],
+    active_mask:  u16     = 0,
+    count:        u16     = 0,
+}
+
 enum RouteMatchResult {
     Found { handler_id: i32, entries_mask: u32, pso_mask: u64 },
     NotFound,
