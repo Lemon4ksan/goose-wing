@@ -762,14 +762,12 @@ fn match_path<B>(
         }
 
         if rem.len == 0 {
-            let hid = tree.nodes[cur_idx as i64].handler_id;
-            guard hid >= 0 else { return RouteMatchResult.NotFound; }
-            let mask = tree.nodes[cur_idx as i64].entries_mask;
-            let pso = tree.nodes[cur_idx as i64].pso_mask;
+            let node = tree.nodes[cur_idx as i64];
+            guard node.handler_id >= 0 else { return RouteMatchResult.NotFound; }
             return RouteMatchResult.Found {
-                handler_id:   hid,
-                entries_mask: mask,
-                pso_mask:     pso,
+                handler_id:   node.handler_id,
+                entries_mask: node.entries_mask,
+                pso_mask:     node.pso_mask,
             };
         }
 

@@ -1373,7 +1373,7 @@ fn test_semicolon_query_splitting_defense(t: lit::T&) {
         // Under WHATWG URL, only '&' is a delimiter; ';' is literal data.
         let raw = "?a=1;b=2";
         let q = core::parse_query_params(raw);
-        sub.assert_eq(q.items.len, 1, "Query string with semicolon must NOT be split into multiple parameters");
+        sub.assert_eq(q.tokens.len, 1, "Query string with semicolon must NOT be split into multiple parameters");
         sub.assert_bytes_eq(core::get_query_param(q, "a"), "1;b=2", "Value of 'a' must be '1;b=2' verbatim");
         sub.assert_false(core::has_query_param(q, "b"), "Parameter 'b' must NOT exist (no parameter splitting on semicolon)");
     };
@@ -1381,29 +1381,54 @@ fn test_semicolon_query_splitting_defense(t: lit::T&) {
     t.run("QUERY-02: Canonical ampersand '&' parameter splitting") { sub =>
         let raw = "?foo=bar&baz=qux&num=42";
         let q = core::parse_query_params(raw);
-        sub.assert_eq(q.items.len, 3);
+        sub.assert_eq(q.tokens.len, 3);
         sub.assert_bytes_eq(core::get_query_param(q, "foo"), "bar");
         sub.assert_bytes_eq(core::get_query_param(q, "baz"), "qux");
         sub.assert_bytes_eq(core::get_query_param(q, "num"), "42");
     };
 
-    t.run("QUERY-03: Percent-decoding in query keys and values per RFC 3986 §3.4 ('+' preserved verbatim)") { sub =>
+    t.run("QUERY-03: Zero-copy wire slices and explicit percent-decoding (RFC 3986 §3.4)") { sub =>
         let raw = "?search=hello+world%21&user%5Fid=alice%40example.com";
         let q = core::parse_query_params(raw);
-        sub.assert_eq(q.items.len, 2);
-        sub.assert_bytes_eq(core::get_query_param(q, "search"), "hello+world!", "+ preserved verbatim per RFC 3986 §3.4 and %21 to !");
-        sub.assert_bytes_eq(core::get_query_param(q, "user_id"), "alice@example.com", "%5F decoded to _ and %40 to @");
+        sub.assert_eq(q.tokens.len, 2);
+        // get_query_param returns exact zero-copy wire slices per Vulkan-like engine contract
+        sub.assert_bytes_eq(core::get_query_param(q, "search"), "hello+world%21", "+ preserved verbatim and raw slice returned");
+        sub.assert_bytes_eq(core::get_query_param(q, "user_id"), "alice%40example.com", "Key user%5Fid matches user_id and returns raw slice");
+
+        // Explicit percent-decoding via get_query_param_decoded
+        var dec_search: u8[..64] = [];
+        sub.assert_true(core::get_query_param_decoded(q, "search", dec_search));
+        sub.assert_bytes_eq(dec_search[..], "hello+world!");
+
+        var dec_user: u8[..64] = [];
+        sub.assert_true(core::get_query_param_decoded(q, "user_id", dec_user));
+        sub.assert_bytes_eq(dec_user[..], "alice@example.com");
     };
 
     t.run("QUERY-04: Empty parameters and flag-only parameters") { sub =>
         let raw = "?active&filter=&category=tech";
         let q = core::parse_query_params(raw);
-        sub.assert_eq(q.items.len, 3);
+        sub.assert_eq(q.tokens.len, 3);
         sub.assert_true(core::has_query_param(q, "active"));
         sub.assert_bytes_eq(core::get_query_param(q, "active"), "", "Flag-only parameter has empty value");
         sub.assert_true(core::has_query_param(q, "filter"));
         sub.assert_bytes_eq(core::get_query_param(q, "filter"), "", "Empty value parameter has empty value");
         sub.assert_bytes_eq(core::get_query_param(q, "category"), "tech");
+    };
+
+    t.run("QUERY-05: SWAR 64-bit word scanning across 8-byte boundaries") { sub =>
+        let raw = "?long_parameter_key_one=long_parameter_value_one&short=1&padding_word_stride=aligned8_value";
+        let q = core::parse_query_params(raw);
+        sub.assert_eq(q.tokens.len, 3);
+        sub.assert_bytes_eq(core::get_query_param(q, "long_parameter_key_one"), "long_parameter_value_one");
+        sub.assert_bytes_eq(core::get_query_param(q, "short"), "1");
+        sub.assert_bytes_eq(core::get_query_param(q, "padding_word_stride"), "aligned8_value");
+
+        // Verify descriptor unpacking on first token
+        let tok0 = q.tokens[0];
+        sub.assert_bytes_eq(core::query_token_key(tok0, q.wire), "long_parameter_key_one");
+        sub.assert_bytes_eq(core::query_token_val(tok0, q.wire), "long_parameter_value_one");
+        sub.assert_false(core::query_token_is_valueless(tok0));
     };
 }
 

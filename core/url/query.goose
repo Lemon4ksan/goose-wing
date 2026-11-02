@@ -1,21 +1,167 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// URL query parameter parsing and WHATWG search params.
+// core/url/query.goose
+// WHATWG search parameter tokenizer, percent decoding, and SWAR parameter scanner.
 namespace core;
 
 import std;
 
 // ---- query parameter parsing & whatwg search params -------------------------
 
-struct QueryParamItem {
-    key: u8[..64]  = [],
-    val: u8[..256] = [],
+const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 128;
+const MAX_URL_QUERY_KEY_LIMIT:    i64 = 64;
+const MAX_URL_QUERY_VAL_LIMIT:    i64 = 256;
+const MAX_URL_QUERY_TOKEN_LIMIT:  i64 = 256;
+
+const QUERY_TOKEN_FLAG_ESCAPE:    u64 = (1 as u64) << 63;
+const QUERY_TOKEN_FLAG_VALUELESS: u64 = (1 as u64) << 62;
+
+// Zero-copy URL query tokens container (RFC 3986 §3.4).
+// Memory footprint: ~1048 bytes on stack (1 KB) instead of legacy ~43 KB.
+struct QueryTokens {
+    wire:     const u8[:] = "",
+    tokens:   u64[..128]  = [],
+    overflow: bool        = false,
 }
 
-struct QueryParamsList {
-    items:    QueryParamItem[..128] = [],
-    overflow: bool                  = false,
+// Packs a zero-copy query parameter descriptor into a single 64-bit integer.
+//
+// Layout:
+//   Bit 63:     has_escape (percent character detected)
+//   Bit 62:     is_valueless (no '=' delimiter present)
+//   Bits 32..61: key_offset (up to 1GB wire offset)
+//   Bits 16..31: key_len (up to 64KB)
+//   Bits 0..15:  val_len (up to 64KB)
+inline fn pack_query_token(
+    key_offset: i64,
+    key_len:    i64,
+    val_len:    i64,
+    flags:      u64,
+) -> u64 {
+    let off_part:  u64 = ((key_offset as u64) & 0x3FFFFFFF) << 32;
+    let klen_part: u64 = ((key_len as u64) & 0xFFFF) << 16;
+    let vlen_part: u64 = (val_len as u64) & 0xFFFF;
+    return flags | off_part | klen_part | vlen_part;
+}
+
+inline fn query_token_offset(tok: u64) -> i64 {
+    return ((tok >> 32) & 0x3FFFFFFF) as i64;
+}
+
+inline fn query_token_key_len(tok: u64) -> i64 {
+    return ((tok >> 16) & 0xFFFF) as i64;
+}
+
+inline fn query_token_val_len(tok: u64) -> i64 {
+    return (tok & 0xFFFF) as i64;
+}
+
+inline fn query_token_is_valueless(tok: u64) -> bool {
+    return (tok & QUERY_TOKEN_FLAG_VALUELESS) != 0;
+}
+
+inline fn query_token_has_escape(tok: u64) -> bool {
+    return (tok & QUERY_TOKEN_FLAG_ESCAPE) != 0;
+}
+
+// Extracts zero-copy key slice from backing wire buffer.
+// crap:trusted
+inline fn query_token_key(tok: u64, wire: const u8[:]) -> const u8[:] {
+    let off = query_token_offset(tok);
+    let len = query_token_key_len(tok);
+    guard off >= 0 && off + len <= wire.len else { return ""; }
+    return wire[off..off + len];
+}
+
+// Extracts zero-copy value slice from backing wire buffer.
+// Computes val_offset as (key_offset + key_len + 1).
+// crap:trusted
+inline fn query_token_val(tok: u64, wire: const u8[:]) -> const u8[:] {
+    guard !query_token_is_valueless(tok) else { return ""; }
+    let off = query_token_offset(tok);
+    let klen = query_token_key_len(tok);
+    let vlen = query_token_val_len(tok);
+    let val_off = off + klen + 1;
+    guard val_off >= 0 && val_off + vlen <= wire.len else { return ""; }
+    return wire[val_off..val_off + vlen];
+}
+
+// 64-bit SWAR zero byte check (RFC 9110 / uWebSockets HttpParser algorithm)
+inline fn swar_has_zero_byte(w: u64) -> bool {
+    return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
+}
+
+// 64-bit SWAR search for byte 'b' in word 'w'
+inline fn swar_has_byte(w: u64, b: u8) -> bool {
+    let mask = 0x0101010101010101 * (b as u64);
+    return swar_has_zero_byte(w ^ mask);
+}
+
+// Finds the next '&' delimiter starting at `start` using 64-bit SWAR word scanning.
+//
+// Example:
+//   s = "foo=bar&baz=qux", start = 0
+//   returns: 7 (points to '&')
+inline fn find_next_ampersand(s: const u8[:], start: i64) -> i64 {
+    var i = start;
+    while i + 8 <= s.len {
+        let w = read_le_u64(s, i);
+        if swar_has_byte(w, '&') {
+            break;
+        }
+        i += 8;
+    }
+    while i < s.len {
+        if s[i] == '&' {
+            return i;
+        }
+        i++;
+    }
+    return s.len;
+}
+
+// Finds the first '=' in `s` using 64-bit SWAR word scanning.
+// Returns 0-based index or -1 if not found.
+//
+// Example:
+//   s = "foo=bar"
+//   returns: 3
+inline fn find_first_equals(s: const u8[:]) -> i64 {
+    var i: i64 = 0;
+    while i + 8 <= s.len {
+        let w = read_le_u64(s, i);
+        if swar_has_byte(w, '=') {
+            break;
+        }
+        i += 8;
+    }
+    while i < s.len {
+        if s[i] == '=' {
+            return i;
+        }
+        i++;
+    }
+    return -1;
+}
+
+// Scans `s` for presence of percent-encoding character '%' using SWAR.
+inline fn slice_has_percent(s: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i + 8 <= s.len {
+        let w = read_le_u64(s, i);
+        if swar_has_byte(w, '%') {
+            return true;
+        }
+        i += 8;
+    }
+    while i < s.len {
+        if s[i] == '%' {
+            return true;
+        }
+        i++;
+    }
+    return false;
 }
 
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
@@ -40,79 +186,146 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
     return true;
 }
 
-// Parses a query string into key-value pairs, decoding percent sequences.
-// Only '&' is treated as a parameter delimiter; ';' is kept as literal content.
+// Sanitizes query input by stripping leading '?' and truncating at fragment '#'.
 //
 // Example:
-//   raw_search = "?foo=bar&baz=qux"
-//   returns: QueryParamsList with 2 items: ("foo", "bar"), ("baz", "qux")
-fn parse_query_params(raw_search: const u8[:]) -> QueryParamsList {
-    var list = QueryParamsList { .. };
-    var input = raw_search;
-    if input.len > 0 && input[0] == '?' {
+//   raw = "?foo=bar#frag"
+//   returns: "foo=bar", base = 1
+inline fn sanitize_query_input(raw: const u8[:]) -> const u8[:], i64 {
+    guard raw.len > 0 else { return "", 0; }
+    var input = raw;
+    var base: i64 = 0;
+    if input[0] == '?' {
         input = input[1..];
+        base = 1;
     }
     let hash_idx = core::index_of_byte(input, '#');
     if hash_idx >= 0 {
         input = input[..hash_idx];
     }
-    guard input.len > 0 else { return list; }
-
-    var start = 0;
-    while start < input.len && list.items.len < list.items.cap {
-        var end = input.len;
-        for i in start..input.len {
-            if input[i] == '&' {
-                end = i;
-                break;
-            }
-        }
-        let pair = input[start..end];
-        guard pair.len > 0 else {
-            start = end + 1;
-            continue;
-        }
-
-        let eq_pos = core::index_of_byte(pair, '=');
-        var item = QueryParamItem { .. };
-        if eq_pos >= 0 {
-            let k = pair[..eq_pos];
-            let v = pair[eq_pos + 1..];
-            let ok_k = percent_decode_query(k, item.key);
-            let ok_v = percent_decode_query(v, item.val);
-            if !ok_k || !ok_v {
-                list.overflow = true;
-            }
-        } else {
-            let ok_k = percent_decode_query(pair, item.key);
-            if !ok_k {
-                list.overflow = true;
-            }
-        }
-        list.items.push(item);
-        start = end + 1;
-    }
-    if start < input.len {
-        list.overflow = true;
-    }
-    return list;
+    return input, base;
 }
 
-// Retrieves the first parameter value for given key from QueryParamsList.
-fn get_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> const u8[:] {
-    for idx in list.items.len {
-        if list.items[idx].key[..] == key_str {
-            return list.items[idx].val[..];
+// Extracts a single 64-bit query token descriptor from pair slice.
+// Returns (token, is_overflow).
+//
+// Example:
+//   pair = "key=val", base_offset = 1, start = 0
+//   returns: tok (pack offset 1, k_len 3, v_len 3), is_overflow = false
+inline fn extract_token_descriptor(
+    pair:        const u8[:],
+    base_offset: i64,
+    start:       i64,
+) -> u64, bool {
+    let eq_pos = find_first_equals(pair);
+    let has_esc = slice_has_percent(pair);
+    let flags: u64 = if has_esc { QUERY_TOKEN_FLAG_ESCAPE } else { 0 };
+
+    if eq_pos < 0 {
+        let is_over = (pair.len > MAX_URL_QUERY_KEY_LIMIT) || (pair.len > 0xFFFF);
+        let k_len = if pair.len > 0xFFFF { 0xFFFF } else { pair.len };
+        let tok = pack_query_token(base_offset + start, k_len, 0, flags | QUERY_TOKEN_FLAG_VALUELESS);
+        return tok, is_over;
+    }
+
+    let k_raw = eq_pos;
+    let v_raw = pair.len - (eq_pos + 1);
+    let is_over = (k_raw > MAX_URL_QUERY_KEY_LIMIT) ||
+        (v_raw > MAX_URL_QUERY_VAL_LIMIT) ||
+        (k_raw > 0xFFFF) ||
+        (v_raw > 0xFFFF);
+    let k_len = if k_raw > 0xFFFF { 0xFFFF } else { k_raw };
+    let v_len = if v_raw > 0xFFFF { 0xFFFF } else { v_raw };
+    let tok = pack_query_token(base_offset + start, k_len, v_len, flags);
+    return tok, is_over;
+}
+
+// Parses a wire query string into zero-copy 64-bit token descriptors (RFC 3986 §3.4).
+// Only '&' is treated as a parameter delimiter; ';' is kept as literal content (CVE-2021-31525).
+// Truncates query string at '#' fragment delimiter.
+//
+// Example:
+//   raw_search = "?foo=bar&baz=qux"
+//   returns: QueryTokens with 2 tokens: ("foo", "bar"), ("baz", "qux")
+fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
+    var res = QueryTokens { wire: raw_search, .. };
+    let input, base_offset = sanitize_query_input(raw_search);
+    guard input.len > 0 else { return res; }
+
+    var start: i64 = 0;
+    while start < input.len {
+        if res.tokens.len >= res.tokens.cap {
+            res.overflow = true;
+            break;
+        }
+        let end = find_next_ampersand(input, start);
+        let pair = input[start..end];
+        start = end + 1;
+        guard pair.len > 0 else { continue; }
+
+        let tok, is_over = extract_token_descriptor(pair, base_offset, end - pair.len);
+        if is_over {
+            res.overflow = true;
+        }
+        res.tokens.push(tok);
+    }
+    return res;
+}
+
+// Retrieves the first parameter value slice for given key from QueryTokens.
+// Fast path performs direct zero-copy byte slice comparison.
+// Fallback matches percent-encoded wire keys against plain ASCII search keys.
+fn get_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> const u8[:] {
+    for tok in tokens.tokens {
+        let raw_key = query_token_key(tok, tokens.wire);
+        var matches = (raw_key == key_str);
+        if !matches && query_token_has_escape(tok) {
+            var dec_key: u8[..64] = [];
+            let dec_ok = percent_decode_query(raw_key, dec_key);
+            matches = dec_ok && (dec_key[..] == key_str);
+        }
+        if matches {
+            return query_token_val(tok, tokens.wire);
         }
     }
     return "";
 }
 
-// Checks if list contains a parameter for given key.
-fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
-    for idx in list.items.len {
-        if list.items[idx].key[..] == key_str {
+// Checks if QueryTokens contains a parameter for given key.
+fn has_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> bool {
+    for tok in tokens.tokens {
+        let raw_key = query_token_key(tok, tokens.wire);
+        var matches = (raw_key == key_str);
+        if !matches && query_token_has_escape(tok) {
+            var dec_key: u8[..64] = [];
+            let dec_ok = percent_decode_query(raw_key, dec_key);
+            matches = dec_ok && (dec_key[..] == key_str);
+        }
+        if matches {
             return true;
+        }
+    }
+    return false;
+}
+
+// Retrieves and percent-decodes parameter value for given key into caller-provided buffer `out`.
+// Returns true if key was found and successfully decoded.
+fn get_query_param_decoded<B>(tokens: const QueryTokens&, key_str: const u8[:], out: B&) -> bool {
+    out.clear();
+    for tok in tokens.tokens {
+        let raw_key = query_token_key(tok, tokens.wire);
+        var matches = (raw_key == key_str);
+        if !matches && query_token_has_escape(tok) {
+            var dec_key: u8[..64] = [];
+            let dec_ok = percent_decode_query(raw_key, dec_key);
+            matches = dec_ok && (dec_key[..] == key_str);
+        }
+        if matches {
+            if query_token_is_valueless(tok) {
+                return true;
+            }
+            let raw_val = query_token_val(tok, tokens.wire);
+            return percent_decode_query(raw_val, out);
         }
     }
     return false;
@@ -121,9 +334,6 @@ fn has_query_param(list: const QueryParamsList&, key_str: const u8[:]) -> bool {
 // CVE-2026-39825 & CVE-2025-61726 defense: Count query parameters separated by '&',
 // verify total count does not exceed limit, and enforce per-token length limit (256 bytes)
 // to prevent fixed-buffer parser overflow.
-const MAX_URL_QUERY_PARAMS_LIMIT: i64 = 128;
-const MAX_URL_QUERY_TOKEN_LIMIT:  i64 = 256;
-
 fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUERY_PARAMS_LIMIT) -> bool {
     guard query.len > 0 else { return true; }
     var q = query;

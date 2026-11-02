@@ -69,5 +69,5 @@ Goose Core Systems Library providing zero-allocation byte string utilities, stre
 - **`struct Url` & `struct UrlView`**: Fully parsed URL holding scheme, username, password, host, port, path, query, and fragment.
 - **`fn parse_url(raw: const u8[:]) -> Url, bool`**: WHATWG URL Standard parser with RFC 5952 IPv6 compression and path normalization.
 - **`fn resolve_url(base: const Url&, ref: const u8[:]) -> Url, bool`**: RFC 3986 relative reference resolution.
-- **`fn parse_query_params<B>(query: const u8[:], out: B&)`**: Query string key-value decoder with CVE-2021-31525 semicolon-splitting protection.
+- **`fn parse_query_params(query: const u8[:]) -> QueryTokens`**: Zero-copy 64-bit token slicer (1 KB stack footprint) with SWAR word scanning, CVE-2021-31525 semicolon-splitting defense, and CVE-2026-39825 truncation protection.
 - **`fn compute_origin<B>(u: const Url&, out: B&)`**: Computes serialized web origin string (`scheme://host:port`) for CORS and isolation checks.

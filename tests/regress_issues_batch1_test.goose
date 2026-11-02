@@ -823,13 +823,17 @@ fn test_ws_close_frame_reason_clamped(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_query_param_key_overflow_defense(t: lit::T&) {
     t.run("parse_query_params with key > 64 bytes MUST safely truncate or handle without buffer overflow") { sub =>
-        // QueryParamItem.key capacity is 64 bytes.
-        // A key with 75 characters: "very_long_param_key_exceeding_sixty_four_bytes_boundary_1234567890_abcdef=val"
+        // In legacy implementation, QueryParamItem.key capacity was 64 bytes.
+        // With zero-copy token slicing, wire slicing avoids fixed stack arrays, sets overflow flag,
+        // and accurately preserves key/value offsets without buffer overrun.
         let query = "very_long_param_key_exceeding_sixty_four_bytes_boundary_1234567890_abcdef=val";
         let list = core::parse_query_params(query);
-        sub.assert_true(list.items.len == 1, "Should parse 1 item");
-        sub.assert_true(list.items[0].key.len <= 64, "Key must not exceed capacity 64");
-        sub.assert_true(list.items[0].val[..] == "val", "Value must be 'val'");
+        sub.assert_true(list.tokens.len == 1, "Should parse 1 item");
+        sub.assert_true(list.overflow, "Oversized key must set overflow flag");
+        let k = core::query_token_key(list.tokens[0], list.wire);
+        let v = core::query_token_val(list.tokens[0], list.wire);
+        sub.assert_true(k.len > 64, "Zero-copy key slice preserves wire length");
+        sub.assert_bytes_eq(v, "val", "Value must be 'val'");
     };
 
     t.run("percent_decode_query with 80-byte input into 64-byte buffer MUST NOT overflow") { sub =>
