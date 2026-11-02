@@ -982,6 +982,60 @@ fn test_client_query_capacity_rejections(t: lit::T&) {
     };
 }
 
+// Vector B1: honest transport failures — the synthetic 200 {"id":1042,...}
+// fallback is gone; failures surface as explicit errors.
+fn test_honest_transport_failures(t: lit::T&) {
+    t.run("Failed live connect returns transport error, never a fake 200") { sub =>
+        var session = wing::new_session(wing::ClientConfig {
+            timeout_ms: 500,
+            ..
+        });
+        var req = wing::new_get("http://unresolvable.invalid/resource");
+        let res, err = wing::execute_request(session, req);
+
+        sub.assert_false(wing::ok(err), "failed connect must not report success");
+        sub.assert_bytes_eq(err.stage[..], "transport", "error stage is transport");
+        sub.assert_eq(res.status_code, 0, "no synthesized 200 status");
+        sub.assert_eq(res.body.len, 0, "no synthesized success body (fake 1042 payload removed)");
+    };
+
+    t.run("https:// without TLS wiring fails honestly instead of plaintext fall-through") { sub =>
+        var session = wing::new_session(wing::ClientConfig {
+            timeout_ms: 500,
+            ..
+        });
+        var req = wing::new_get("https://unresolvable.invalid/data");
+        let res, err = wing::execute_request(session, req);
+
+        sub.assert_false(wing::ok(err), "https:// hop without TLS wiring must fail");
+        sub.assert_bytes_eq(err.stage[..], "tls", "error stage is tls");
+        sub.assert_bytes_eq(
+            err.message[..],
+            "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)",
+            "clear TLS-not-wired error message",
+        );
+        sub.assert_eq(res.status_code, 0, "no silent plaintext success");
+        sub.assert_eq(res.body.len, 0, "no fake body behind https://");
+    };
+
+    t.run("Mock mode serves matched routes and errors on misses without fake 200") { sub =>
+        var session = wing::new_session();
+        wing::mock_route(session, "GET", "http://mock.invalid/a", 200, "ok");
+
+        var req_hit = wing::new_get("http://mock.invalid/a");
+        let res_hit, err_hit = wing::execute_request(session, req_hit);
+        sub.assert_true(wing::ok(err_hit), "matched mock route still succeeds");
+        sub.assert_bytes_eq(res_hit.body[..], "ok", "mock body served");
+
+        var req_miss = wing::new_get("http://mock.invalid/b");
+        let res_miss, err_miss = wing::execute_request(session, req_miss);
+        sub.assert_false(wing::ok(err_miss), "unmatched request in mock mode is an explicit error");
+        sub.assert_bytes_eq(err_miss.stage[..], "mock", "error stage is mock");
+        sub.assert_eq(res_miss.status_code, 0, "no fake 200 on mock route miss");
+        sub.assert_eq(res_miss.body.len, 0, "no fake 1042 body on mock route miss");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1006,6 +1060,7 @@ fn main() {
     lit::run_case(runner, "19. send_http1_response_iov helper", test_send_http1_response_iov_helper);
     lit::run_case(runner, "20. RFC 2104 / RFC 4231 HMAC-SHA256 Request Signing", test_hmac_signing);
     lit::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
+    lit::run_case(runner, "22. Honest Transport Failures (no fake 200, TLS-not-wired)", test_honest_transport_failures);
 
     let ok = lit::finish(runner);
     assert(ok);

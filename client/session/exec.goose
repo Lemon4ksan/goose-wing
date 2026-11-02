@@ -546,17 +546,67 @@ fn dispatch_pooled_h1_hop(
     return true;
 }
 
-// Executes a mock or echo response hop, verifying IP addresses against SSRF policies.
+// Opens or reuses a pooled TCP connection and executes one live HTTP/1.1 hop.
+// Returns an ok Error when `resp` holds the exchange response; connect and
+// exchange failures surface as explicit transport errors, never fake successes.
+fn execute_live_network_hop(
+    session:     Session&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    is_https:    bool,
+    origin_buf:  const u8[:],
+    resp:        Response&,
+) -> Error {
+    guard !is_https else {
+        return make_error(501, "tls", "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)");
+    }
+    let now_ns = session.virtual_clock_us * 1000;
+    let host_str = core::hostname(current_url);
+    let port_num = core::effective_port(current_url) as u16;
+    let pool_key = new_pool_key(
+        PoolScheme.Http,
+        host_str,
+        port_num,
+        new_direct_proxy_chain(),
+        new_network_anonymization_key(host_str),
+        TlsAndDnsPolicy { .. },
+    );
+
+    var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, "", now_ns);
+    if !has_pooled {
+        let sock = native_tcp_connect(host_str, port_num, session.timeout_ms as u32);
+        guard sock > 0 else {
+            return make_error(502, "transport", "TCP connect failed");
+        }
+        let t = Transport.Tcp { fd: sock };
+        conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
+        guard conn_id > 0 else {
+            t.close();
+            return make_error(502, "transport", "connection pool registration failed");
+        }
+        has_pooled = true;
+    }
+
+    let curr_path = core::pathname(current_url);
+    let now_sec = session.virtual_clock_us / 1000000;
+    let ok_hop = dispatch_pooled_h1_hop(
+        session, conn_id, ctx.current_method[..], ctx, current_url, is_https,
+        origin_buf, curr_path, now_sec, now_ns, resp,
+    );
+    guard ok_hop else {
+        return make_error(502, "transport", "HTTP/1.1 exchange failed");
+    }
+    return Error { .. };
+}
+
+// Executes a mock response hop or a live pooled HTTP/1.1 hop, verifying IP
+// addresses against SSRF policies. Returns an explicit Error when no hop could
+// be executed; never synthesizes a success response.
 fn execute_mock_or_echo_hop(
     session:     Session&,
     ctx:         RequestExecutionContext&,
     current_url: const core::Url&,
-    out_dns_err: RedirectError&,
-) -> Response {
-    out_dns_err = RedirectError.None;
-    let curr_href = href(current_url);
-    let curr_method = ctx.current_method[..];
-
+) -> Response, Error {
     var origin_buf: u8[..128] = [];
     format_url_origin(current_url, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
@@ -586,6 +636,7 @@ fn execute_mock_or_echo_hop(
     }
 
     var resp = Response { .. };
+    var dns_rebinding_err = RedirectError.None;
     let matched = try_match_mock_route(
         session,
         ctx,
@@ -594,66 +645,24 @@ fn execute_mock_or_echo_hop(
         origin_buf[..],
         curr_path,
         now_sec,
-        out_dns_err,
+        dns_rebinding_err,
         resp,
     );
     if matched {
-        return resp;
+        if dns_rebinding_err != RedirectError.None {
+            return resp, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+        }
+        return resp, Error { .. };
     }
 
-    // Attempt live pooled network transaction when no mock routes are registered
+    // Live pooled network transaction when no mock routes are registered
     if session.mock_routes.len == 0 {
-        let now_ns = session.virtual_clock_us * 1000;
-        let scheme_val = if is_https { PoolScheme.Https } else { PoolScheme.Http };
-        let host_str = core::hostname(current_url);
-        let port_num = core::effective_port(current_url) as u16;
-        let pool_key = new_pool_key(
-            scheme_val,
-            host_str,
-            port_num,
-            new_direct_proxy_chain(),
-            new_network_anonymization_key(host_str),
-            TlsAndDnsPolicy { .. },
-        );
-
-        var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, "", now_ns);
-        if !has_pooled {
-            let sock = native_tcp_connect(host_str, port_num, session.timeout_ms as u32);
-            if sock > 0 {
-                let t = Transport.Tcp { fd: sock };
-                conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
-                has_pooled = (conn_id > 0);
-            }
-        }
-
-        if has_pooled {
-            let ok_hop = dispatch_pooled_h1_hop(
-                session, conn_id, curr_method, ctx, current_url, is_https,
-                origin_buf[..], curr_path, now_sec, now_ns, resp,
-            );
-            if ok_hop {
-                return resp;
-            }
-        }
+        let live_err = execute_live_network_hop(session, ctx, current_url, is_https, origin_buf[..], resp);
+        return resp, live_err;
     }
 
-    // Default mock response
-    resp.status_code = 200;
-    resp.effective_url = copy(current_url.href);
-    resp.headers.push(make_header("Content-Type", "application/json"));
-    resp.headers.push(make_header("Server", "goose-wing/1.0"));
-    resp.body.append("{\"id\":1042,\"status\":\"confirmed\",\"ok\":true}");
-
-    if has_h3 && session.enable_altsvc {
-        record_success(session.altsvc, origin_buf[..]);
-        resp.protocol.clear();
-        resp.protocol.append("h3");
-    }
-
-    ingest_transport_response_headers(session, current_url, is_https, origin_buf[..], curr_path, now_sec, resp);
-
-    copy_sent_headers(ctx.headers, resp.sent_headers);
-    return resp;
+    // Mock mode is active (routes registered) but none matched this request
+    return resp, make_error(502, "mock", "no matching mock route for request");
 }
 
 fn compute_401_auth_header(
@@ -710,13 +719,12 @@ fn compute_401_auth_header(
 }
 
 fn handle_401_auth_retry(
-    session:           Client&,
-    ctx:               RequestExecutionContext&,
-    current_url:       const core::Url&,
-    samesite_eval:     const SameSiteCookieContext&,
-    safe_method:       bool,
-    resp:              Response&,
-    dns_rebinding_err: RedirectError&,
+    session:       Client&,
+    ctx:           RequestExecutionContext&,
+    current_url:   const core::Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method:   bool,
+    resp:          Response&,
 ) -> bool, Error {
     guard resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried else {
         return false, Error { .. };
@@ -736,9 +744,10 @@ fn handle_401_auth_retry(
     remove_header_by_name(ctx.headers, "Authorization");
     ctx.headers.push(make_header("Authorization", auth_header_val[..]));
 
-    resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
-    if dns_rebinding_err != RedirectError.None {
-        return true, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+    var hop_err = Error { .. };
+    resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
+    if !ok(hop_err) {
+        return true, hop_err;
     }
     return true, Error { .. };
 }
@@ -787,11 +796,9 @@ fn execute_single_hop(
     );
 
     // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
-    var dns_rebinding_err = RedirectError.None;
-    out_resp = execute_mock_or_echo_hop(session, ctx, current_url, dns_rebinding_err);
-    guard dns_rebinding_err == RedirectError.None else {
-        return false, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
-    }
+    var hop_err = Error { .. };
+    out_resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
+    guard ok(hop_err) else { return false, hop_err; }
 
     // Phase 4.1: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
     let did_retry, auth_err = handle_401_auth_retry(
@@ -801,7 +808,6 @@ fn execute_single_hop(
         samesite_eval,
         safe_method,
         out_resp,
-        dns_rebinding_err,
     );
     guard ok(auth_err) else { return false, auth_err; }
 
