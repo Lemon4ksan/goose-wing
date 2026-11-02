@@ -265,7 +265,7 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
 
     var idx: i64 = 0;
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
-    guard ok0 && frame == (BHTTP_FRAME_KNOWN_LEN_REQUEST as u64) else { return false; }
+    guard ok0 && frame == BHTTP_FRAME_KNOWN_LEN_REQUEST else { return false; }
 
     let method, ok1 = bhttp_read_len_bytes(raw, idx);
     guard ok1 && method.len >= 1 && method.len <= 16 else { return false; }
@@ -316,7 +316,7 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
 
     var idx: i64 = 0;
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
-    guard ok0 && frame == (BHTTP_FRAME_KNOWN_LEN_RESPONSE as u64) else { return false; }
+    guard ok0 && frame == BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
 
     let status, ok1 = internal::quic_decode_varint_cursor(raw, idx);
     guard ok1 && status >= 200 && status <= 599 else { return false; }

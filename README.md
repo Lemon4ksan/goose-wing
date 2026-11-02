@@ -23,15 +23,17 @@ It is not an ergonomic, high-level HTTP client like Python's `requests`. Writing
 | :--- | :--- |
 | L4 transport and OS drivers | Windows Registered I/O (RIO), Linux `io_uring` (SQ/CQ rings, fixed buffers), Linux `epoll` with `SO_REUSEPORT`, macOS `kqueue`, POSIX/WinSock, non-blocking reactor loops. |
 | HTTP/1.1 wire stack | HeaderMap with 64 static/dynamic slots, 64-bit SWAR lexical tokenizer, RFC 9112 chunked transfer coding and trailers, TE.CL / CL.TE request smuggling defenses (CVE-2023-39326). |
+| HTTP caching and Cache Groups | RFC 9111 HTTP caching engine, RFC 9875 HTTP Cache Groups tag parsing and group invalidation (`Cache-Groups`, `Cache-Group-Invalidation`), RFC 5861 stale-while-revalidate / stale-if-error. |
 | HTTP/2 protocol stack | RFC 9113 9-byte frame codec, RFC 7541 HPACK 256-state Huffman L1 FSM, signed 64-bit flow control, RFC 9218 stream prioritization, Rapid Reset DoS defense (CVE-2023-44487). |
-| HTTP/3 and QUIC engine | RFC 9000 QUIC packet wire codec, RFC 9204 QPACK encoder/decoder, BBR congestion control, RFC 9221 datagrams, RFC 7838 Alt-Svc racing, W3C WebTransport over H3. |
-| TLS 1.3 and PKI | RFC 8446 record layer and key schedule, X.509 ASN.1 DER parser, Encrypted Client Hello (ECH / HPKE RFC 9180), RFC 8879 Zstd certificate compression, Hybrid ML-KEM-768. |
+| HTTP/3 and QUIC engine | RFC 9000 QUIC packet wire codec, RFC 9369 QUIC Version 2 (`0x6b3343cf`) wire framing, salts, and header types, RFC 9204 QPACK encoder/decoder, BBR congestion control, RFC 9221 datagrams, RFC 7838 Alt-Svc racing, W3C WebTransport over H3. |
+| TLS 1.3 and PKI | RFC 8446 record layer and key schedule, X.509 ASN.1 DER parser, RFC 9849 Encrypted Client Hello (ECH / HPKE RFC 9180), RFC 8555 ACME HTTP-01 key authorization and challenge responder, RFC 8879 Zstd certificate compression, Hybrid ML-KEM-768. |
 | Streaming and RPC | RFC 6455 WebSocket with unrolled 64-bit XOR masking, RFC 8441 Extended CONNECT over H2/H3, W3C EventSource (SSE), gRPC over HTTP/2, and gRPC-Web (binary and base64 text). |
 | Compression suite | RFC 7932 Brotli with 122 KB static dictionary in `.rodata`, RFC 9842 Dictionary-Compressed Brotli (DCB) and DCZ, RFC 8478 Zstandard, Deflate, Gzip, and Zlib. |
 | Application security | W3C Fetch Metadata decision matrix ($\pi_{FM}$ CSRF protection), CORS origin matcher, GCRA rate limiter with TAT, 3-tier SSRF and DNS rebinding guard, Privacy Pass tokens. |
+| Oblivious HTTP and Binary HTTP | RFC 9458 Oblivious HTTP (OHTTP) request/response encapsulation over HPKE (RFC 9180), RFC 9292 Binary Representation of HTTP Messages (bhttp) zero-allocation codec. |
 | Authentication and tokens | RFC 7519 JWT / RFC 7515 JWS (HS256..512, EdDSA), RFC 7517 JWKS with rotation, RFC 9449 OAuth 2.0 DPoP, RFC 7636/9700 PKCE, RFC 7616 Digest, RFC 9421 HTTP Message Signatures. |
 | Chromium CookieMonster | RFC 6265bis engine, CHIPS (partitioned cookies), prefixes (`__Host-`, `__Secure-`), Mozilla Public Suffix List (PSL), 6-round garbage collection, SQLite v24 persistence. |
-| Tunneling and proxies | SOCKS5 / SOCKS5h (RFC 1928/1929 ATYP=0x03 DNS leak prevention), HTTP CONNECT tunneling, HAProxy PROXY Protocol v1 and v2 (TLV parsing), Slowloris tarpit defenses. |
+| Tunneling and proxies | RFC 9440 Client-Cert and Client-Cert-Chain header codec and reverse proxy sanitization, SOCKS5 / SOCKS5h (RFC 1928/1929 ATYP=0x03 DNS leak prevention), HTTP CONNECT tunneling, HAProxy PROXY Protocol v1 and v2 (TLV parsing), Slowloris tarpit defenses. |
 | Server engine and router | Compressed Radix Trie (`ZeroAllocParams`, insertion-order independence), Tako v2 connection pool, HTTP/2 server frame multiplexer, gRPC server dispatcher. |
 
 ## Quick start
