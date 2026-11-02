@@ -48,8 +48,6 @@ struct SfDictEntry {
     inner_items:   SfItem[..8]      = [],
 }
 
-// ---- Safe Arithmetic & Index Helpers -------------------------------------
-
 // ---- Character Classes ---------------------------------------------------
 
 inline fn is_sf_whitespace(b: u8) -> bool {
@@ -248,8 +246,8 @@ fn sf_parse_fraction(
     if frac_count == 2 { factor = 0.01; }
     if frac_count == 3 { factor = 0.001; }
 
-    let frac_f = (frac_accum as f64) * factor;
-    var total_f = (int_accum as f64) + frac_f;
+    let frac_f = frac_accum * factor;
+    var total_f = int_accum + frac_f;
     if is_neg {
         total_f = -total_f;
     }
