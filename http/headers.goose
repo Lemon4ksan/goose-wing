@@ -1836,6 +1836,105 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&) -> bool {
     return found;
 }
 
+// Resolves the entry index of the first header matching name.
+fn find_first_header_index(
+    map:  const HeaderMap&,
+    raw:  const u8[:],
+    name: const u8[:],
+) -> i64 {
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let first = map.inline_slots[slot];
+        if first != 0xFF && first < map.entries.len {
+            return first;
+        }
+        return -1;
+    }
+
+    let hname = hash_header_name(name);
+    for i in map.entries.len {
+        let e = map.entries[i];
+        guard e.name_hash == hname else { continue; }
+        let ename = if raw.len > 0 && e.name_end <= raw.len {
+            raw[e.name_begin..e.name_end]
+        } else {
+            map.raw_buf[e.name_begin..e.name_end]
+        };
+        if eq_ascii_fold(ename, name) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Iterates multi-value headers by following intrusive next_idx collision chains.
+// Advances cursor to the next matching entry index, or -1 when exhausted.
+//
+// Example:
+//   map with 2 "set-cookie" headers at entries 3 and 7
+//   cursor = 0 -> returns: "a=1", true, cursor = 7
+//   cursor = 7 -> returns: "b=2", true, cursor = -1
+//   cursor = -1 -> returns: "", false, cursor = -1
+fn next_header_value(
+    map:    const HeaderMap&,
+    raw:    const u8[:],
+    name:   const u8[:],
+    cursor: i64&,
+) -> const u8[:], bool {
+    guard cursor >= 0 else {
+        cursor = -1;
+        return "", false;
+    }
+
+    let cur_idx = if cursor == 0 {
+        find_first_header_index(map, raw, name)
+    } else {
+        cursor
+    };
+
+    guard cur_idx >= 0 && cur_idx < map.entries.len else {
+        cursor = -1;
+        return "", false;
+    }
+
+    let entry = map.entries[cur_idx];
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let expected_slot = well_known_to_slot(wk_id) as u8;
+        guard entry.well_known_id == expected_slot else {
+            cursor = -1;
+            return "", false;
+        }
+    } else {
+        guard entry.name_hash == hash_header_name(name) else {
+            cursor = -1;
+            return "", false;
+        }
+    }
+
+    if entry.next_idx != 0xFF && entry.next_idx < map.entries.len {
+        cursor = entry.next_idx;
+    } else {
+        cursor = -1;
+    }
+
+    let has_raw = raw.len > 0 && entry.values_end <= raw.len;
+    let has_buf = entry.values_end <= map.raw_buf.len;
+    guard has_raw || has_buf else {
+        cursor = -1;
+        return "", false;
+    }
+    let val = if has_raw {
+        raw[entry.values_begin..entry.values_end]
+    } else {
+        map.raw_buf[entry.values_begin..entry.values_end]
+    };
+
+    return val, true;
+}
+
+// Deprecated: Use zero-allocation `next_header_value` cursor iterator instead of copying into dynamic vectors.
 fn get_all_values(map: const HeaderMap&, name: const u8[:], out_values: u8[..256][>..]&) {
     let hname = hash_header_name(name);
     for &entry in map.entries {
