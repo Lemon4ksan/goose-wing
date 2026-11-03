@@ -186,12 +186,97 @@ checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
     return HEADER_VAL_LUT[b];
 }
 
-fn is_valid_header_name(name: const u8[:]) -> bool {
-    guard name.len > 0 else { return false; }
-    for b in name {
-        guard is_tchar(b) else { return false; }
+// RFC 9110 Section 9.3: Method Definitions - 32-bit little-endian wire method constants.
+const HTTP_METHOD_GET_U32:  u32 = 0x20544547; // "GET "
+const HTTP_METHOD_POST_U32: u32 = 0x54534F50; // "POST"
+const HTTP_METHOD_HEAD_U32: u32 = 0x44414548; // "HEAD"
+const HTTP_METHOD_PUT_U32:  u32 = 0x20545550; // "PUT "
+const HTTP_METHOD_DELE_U32: u32 = 0x454C4544; // "DELE"
+
+// RFC 9112 Section 3: Request Line - Matches common HTTP methods via 32-bit little-endian integer bitcasting.
+// Returns (method_slice, consumed_len_including_space, ok).
+//
+// Example:
+//   raw = "GET /index.html HTTP/1.1\r\n"
+//   returns: "GET", 4, true
+fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
+    guard raw.len >= 4 else { return "", 0, false; }
+    let w = core::read_le_u32(raw, 0);
+    if w == HTTP_METHOD_GET_U32 {
+        return raw[0..3], 4, true;
+    }
+    if w == HTTP_METHOD_PUT_U32 {
+        return raw[0..3], 4, true;
+    }
+    if w == HTTP_METHOD_POST_U32 {
+        guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
+        return raw[0..4], 5, true;
+    }
+    if w == HTTP_METHOD_HEAD_U32 {
+        guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
+        return raw[0..4], 5, true;
+    }
+    if w == HTTP_METHOD_DELE_U32 {
+        guard raw.len >= 7 && raw[4] == 'T' && raw[5] == 'E' && raw[6] == ' ' else { return "", 0, false; }
+        return raw[0..6], 7, true;
+    }
+    return "", 0, false;
+}
+
+// RFC 9110 Section 5.6.2: Tokens - Validates an 8-byte SWAR chunk of tchar bytes.
+inline fn is_valid_token_word_swar(src: const u8[:], i: i64) -> bool {
+    let w = core::read_le_u64(src, i);
+    guard !swar_has_ctl_or_del(w) && !swar_has_byte(w, ' ') && !swar_has_byte(w, ':') else {
+        return false;
+    }
+    guard is_tchar(src[i]) && is_tchar(src[i + 1]) && is_tchar(src[i + 2]) && is_tchar(src[i + 3]) else {
+        return false;
+    }
+    guard is_tchar(src[i + 4]) && is_tchar(src[i + 5]) && is_tchar(src[i + 6]) && is_tchar(src[i + 7]) else {
+        return false;
     }
     return true;
+}
+
+// RFC 9110 Section 5.6.2: Tokens - Validates an HTTP token using 8-byte SWAR chunks and TCHAR_LUT.
+fn is_valid_token_swar(src: const u8[:]) -> bool {
+    guard src.len > 0 else { return false; }
+    var i: i64 = 0;
+    while i + 8 <= src.len {
+        guard is_valid_token_word_swar(src, i) else { return false; }
+        i += 8;
+    }
+    while i < src.len {
+        guard is_tchar(src[i]) else { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// RFC 9110 Section 5.6.2: Tokens - Scans a valid token prefix using 8-byte SWAR acceleration.
+//
+// Example:
+//   src = "Content-Length: 42\r\n"
+//   returns: 14, true
+fn scan_token_swar(src: const u8[:]) -> i64, bool {
+    guard src.len > 0 else { return 0, false; }
+    var i: i64 = 0;
+    while i + 8 <= src.len {
+        if !is_valid_token_word_swar(src, i) {
+            break;
+        }
+        i += 8;
+    }
+    while i < src.len && is_tchar(src[i]) {
+        i += 1;
+    }
+    guard i > 0 else { return 0, false; }
+    return i, true;
+}
+
+fn is_valid_header_name(name: const u8[:]) -> bool {
+    guard name.len > 0 && name.len <= 8192 else { return false; }
+    return is_valid_token_swar(name);
 }
 
 // RFC 9113 Section 8.2.1: Wire lowercase ASCII validation for HTTP/2 & HTTP/3 headers

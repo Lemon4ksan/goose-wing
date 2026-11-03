@@ -66,23 +66,24 @@ fn parse_digest_param_key(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     let rem = raw[idx..];
     var k_len: i64 = 0;
     while k_len < rem.len && is_digest_key_char(rem[k_len]) {
-        k_len += 1;
+        k_len = core::add_sat_i64(k_len, 1);
     }
     guard k_len > 0 else { return "", false; }
-    idx += k_len;
+    idx = core::add_sat_i64(idx, k_len);
     return rem[..k_len], true;
 }
 
 inline fn try_consume_quoted_char<B>(s: const u8[:], pos: i64&, out_val: B&) -> bool {
     let b = s[pos];
-    if b == '\\' && pos + 1 < s.len {
-        pos += 1;
+    let next_pos = core::add_sat_i64(pos, 1);
+    if b == '\\' && next_pos < s.len {
+        pos = next_pos;
         guard out_val.try_push(s[pos]) else { return false; }
-        pos += 1;
+        pos = core::add_sat_i64(pos, 1);
         return true;
     }
     guard out_val.try_push(b) else { return false; }
-    pos += 1;
+    pos = next_pos;
     return true;
 }
 
@@ -96,7 +97,7 @@ fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool {
     var pos: i64 = 1;
     while pos < s.len {
         if s[pos] == '"' {
-            return pos + 1, true;
+            return core::add_sat_i64(pos, 1), true;
         }
         guard try_consume_quoted_char(s, pos, out_val) else { return 0, false; }
     }
@@ -115,7 +116,7 @@ inline fn is_digest_token_delim(b: u8) -> bool {
 inline fn scan_digest_token_len(s: const u8[:]) -> i64 {
     var n: i64 = 0;
     while n < s.len && !is_digest_token_delim(s[n]) {
-        n += 1;
+        n = core::add_sat_i64(n, 1);
     }
     return n;
 }
@@ -136,21 +137,21 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     guard rem_pre.len > 0 && rem_pre[0] == '=' else { return false; }
     let rem = rem_pre[1..].trim_start_bytes(" \t");
     guard rem.len > 0 else { return false; }
-    let new_idx = raw.len - rem.len;
+    let new_idx = core::sub_sat_i64(raw.len, rem.len);
 
     if rem[0] == '"' {
         var tmp: u8[..128] = [];
         let q_consumed, ok = parse_quoted_param(rem, tmp);
         guard ok && tmp.len <= out_val.cap else { return false; }
         commit_digest_param_val(tmp[..], out_val);
-        idx = new_idx + q_consumed;
+        idx = core::add_sat_i64(new_idx, q_consumed);
         return true;
     }
 
     let token_len = scan_digest_token_len(rem);
     guard token_len <= out_val.cap else { return false; }
     commit_digest_param_val(rem[..token_len], out_val);
-    idx = new_idx + token_len;
+    idx = core::add_sat_i64(new_idx, token_len);
     return true;
 }
 
@@ -221,7 +222,7 @@ fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]
 //   advances `idx` to 3 (pointing to 'r')
 fn skip_whitespace_and_commas(raw: const u8[:], idx: i64&) {
     let rem = raw[idx..].trim_start_bytes(" \t,\r\n");
-    idx = raw.len - rem.len;
+    idx = core::sub_sat_i64(raw.len, rem.len);
 }
 
 // Advances `idx` past optional leading "Digest " scheme token (RFC 7616 §3.3).
@@ -233,7 +234,7 @@ inline fn skip_digest_scheme(raw: const u8[:], idx: i64&) {
     let rem = raw[idx..];
     guard rem.len >= 7 && eq_ascii_fold(rem[..6], "digest") else { return; }
     guard rem[6] == ' ' || rem[6] == '\t' else { return; }
-    idx += 7;
+    idx = core::add_sat_i64(idx, 7);
 }
 
 // Parses a `WWW-Authenticate: Digest ...` challenge header into structured fields (RFC 7616 §3.3).
@@ -432,19 +433,20 @@ fn serialize_digest_core_kv<B>(
     algo:           const u8[:],
     response_hex:   const u8[:],
 ) -> bool {
-    guard sink.len + 17 <= sink.cap else { return false; }
+    guard core::add_sat_i64(sink.len, 17) <= sink.cap else { return false; }
     sink.append("Digest username=\"");
     guard append_escaped_digest_param(sink, effective_user) else { return false; }
-    guard sink.len + 10 <= sink.cap else { return false; }
+    guard core::add_sat_i64(sink.len, 10) <= sink.cap else { return false; }
     sink.append("\", realm=\"");
     guard append_escaped_digest_param(sink, realm) else { return false; }
-    guard sink.len + 10 <= sink.cap else { return false; }
+    guard core::add_sat_i64(sink.len, 10) <= sink.cap else { return false; }
     sink.append("\", nonce=\"");
     guard append_escaped_digest_param(sink, nonce) else { return false; }
-    guard sink.len + 8 <= sink.cap else { return false; }
+    guard core::add_sat_i64(sink.len, 8) <= sink.cap else { return false; }
     sink.append("\", uri=\"");
     guard append_digest_uri(sink, uri) else { return false; }
-    guard sink.len + 13 + algo.len + 13 + response_hex.len + 1 <= sink.cap else { return false; }
+    let tail_need = core::add_sat_i64(core::add_sat_i64(algo.len, response_hex.len), 27);
+    guard core::add_sat_i64(sink.len, tail_need) <= sink.cap else { return false; }
     sink.append("\", algorithm=");
     sink.append(algo);
     sink.append(", response=\"");
@@ -463,27 +465,28 @@ fn serialize_digest_opt_kv<B>(
     userhash:   bool,
 ) -> bool {
     if active_qop.len > 0 {
-        guard sink.len + 6 + active_qop.len + 5 + nc_str.len + 10 <= sink.cap else { return false; }
+        let qop_need = core::add_sat_i64(core::add_sat_i64(active_qop.len, nc_str.len), 21);
+        guard core::add_sat_i64(sink.len, qop_need) <= sink.cap else { return false; }
         sink.append(", qop=");
         sink.append(active_qop);
         sink.append(", nc=");
         sink.append(nc_str);
         sink.append(", cnonce=\"");
         guard append_escaped_digest_param(sink, cnonce) else { return false; }
-        guard sink.len + 1 <= sink.cap else { return false; }
+        guard core::add_sat_i64(sink.len, 1) <= sink.cap else { return false; }
         sink.push('"');
     }
 
     if opaque.len > 0 {
-        guard sink.len + 10 <= sink.cap else { return false; }
+        guard core::add_sat_i64(sink.len, 10) <= sink.cap else { return false; }
         sink.append(", opaque=\"");
         guard append_escaped_digest_param(sink, opaque) else { return false; }
-        guard sink.len + 1 <= sink.cap else { return false; }
+        guard core::add_sat_i64(sink.len, 1) <= sink.cap else { return false; }
         sink.push('"');
     }
 
     if userhash {
-        guard sink.len + 16 <= sink.cap else { return false; }
+        guard core::add_sat_i64(sink.len, 16) <= sink.cap else { return false; }
         sink.append(", userhash=true");
     }
 
@@ -570,7 +573,7 @@ inline fn is_qop_token_char(b: u8) -> bool {
 fn scan_qop_token_len(s: const u8[:]) -> i64 {
     var n: i64 = 0;
     while n < s.len && is_qop_token_char(s[n]) {
-        n += 1;
+        n = core::add_sat_i64(n, 1);
     }
     return n;
 }
@@ -585,16 +588,68 @@ fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
         if eq_ascii_fold(tok, target) {
             return true;
         }
-        let advance = (raw_qop.len - rem.len) + tok_len;
+        let advance = core::add_sat_i64(core::sub_sat_i64(raw_qop.len, rem.len), tok_len);
         idx = advance;
         while idx < raw_qop.len && raw_qop[idx] != ',' {
-            idx += 1;
+            idx = core::add_sat_i64(idx, 1);
         }
         if idx < raw_qop.len && raw_qop[idx] == ',' {
-            idx += 1;
+            idx = core::add_sat_i64(idx, 1);
         }
     }
     return false;
+}
+
+// Synchronizes stored Digest challenge state when an upstream 401 response includes `stale=true`
+// (RFC 7616 Section 3.3 / vendor/curl vauth/digest.c).
+// Refreshes the stored `nonce` (and `opaque` if present in `incoming`) and resets the nonce
+// counter `nc` to `1` so the request can be retried automatically without user re-authentication.
+// Returns `false` if `incoming` is invalid, `incoming.stale` is `false`, or credentials are empty.
+//
+// Example:
+//   incoming = DigestChallenge { nonce: "new_nonce_99", stale: true, valid: true }, nc = 5
+//   returns: true, stored.nonce = "new_nonce_99", nc = 1
+fn sync_digest_stale_challenge(
+    stored:   DigestChallenge&,
+    incoming: const DigestChallenge&,
+    creds:    const DigestCredentials&,
+    nc:       u32&,
+) -> bool {
+    guard incoming.valid && incoming.stale else { return false; }
+    guard creds.username.len > 0 && creds.password.len > 0 else { return false; }
+    guard incoming.nonce.len > 0 && incoming.nonce.len <= stored.nonce.cap else { return false; }
+    guard incoming.opaque.len <= stored.opaque.cap && incoming.realm.len <= stored.realm.cap else { return false; }
+
+    stored.nonce.clear();
+    stored.nonce.append(incoming.nonce[..]);
+    if incoming.opaque.len > 0 {
+        stored.opaque.clear();
+        stored.opaque.append(incoming.opaque[..]);
+    }
+    if incoming.realm.len > 0 {
+        stored.realm.clear();
+        stored.realm.append(incoming.realm[..]);
+    }
+    stored.stale = false;
+    stored.valid = true;
+    nc = 1;
+    return true;
+}
+
+// Parses a `WWW-Authenticate: Digest` header and synchronizes `stored` + `nc = 1` if `stale=true`.
+//
+// Example:
+//   raw_header = "Digest realm=\"api\", nonce=\"fresh123\", stale=true", nc = 4
+//   returns: true, stored.nonce = "fresh123", nc = 1
+fn refresh_digest_stale_nonce(
+    stored:     DigestChallenge&,
+    raw_header: const u8[:],
+    creds:      const DigestCredentials&,
+    nc:         u32&,
+) -> bool {
+    let incoming, ok = parse_digest_challenge(raw_header);
+    guard ok else { return false; }
+    return sync_digest_stale_challenge(stored, incoming, creds, nc);
 }
 
 // Resolves active qop preference from challenge qop parameter (RFC 7616 §3.4).

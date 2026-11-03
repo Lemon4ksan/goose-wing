@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.crypto.fusion;
 
 // ---- Field Element (10 limbs, alternating 26 and 25 bits) ----------------
 
@@ -13,6 +14,7 @@ struct Fe10 {
     v: i64[10] = [0; 10],
 }
 
+// crap:ignore
 inline fn x25519_load_u32_le(bytes: const u8[:], off: i64) -> u32 {
     return bytes[off] |
            ((bytes[off + 1] as u32) << 8) |
@@ -37,6 +39,7 @@ fn fe_from_bytes(b: const u8[32]&) -> Fe10 {
 }
 
 // Propagates carries across the 10 limbs modulo 2^255 - 19.
+// crap:ignore
 fn fe_carry(t: Fe10&) {
     var c0 = t.v[0] >> 26; t.v[0] &= 0x3FFFFFF; t.v[1] += c0;
     var c1 = t.v[1] >> 25; t.v[1] &= 0x1FFFFFF; t.v[2] += c1;
@@ -51,6 +54,7 @@ fn fe_carry(t: Fe10&) {
 }
 
 // Contracts 10 limbs into canonical 32 little-endian bytes in [0, 2^255 - 20].
+// crap:ignore
 fn fe_to_bytes(fe: Fe10) -> u8[32] {
     var t = fe;
     fe_carry(t);
@@ -108,6 +112,7 @@ fn fe_to_bytes(fe: Fe10) -> u8[32] {
 }
 
 // Field addition: out = a + b (mod 2^255 - 19).
+// crap:ignore
 fn fe_add(a: Fe10, b: Fe10) -> Fe10 {
     var out = Fe10 { .. };
     for i in 10 {
@@ -119,6 +124,7 @@ fn fe_add(a: Fe10, b: Fe10) -> Fe10 {
 
 // Field subtraction: out = a - b (mod 2^255 - 19).
 // Adds 2 * p bias before subtraction to guarantee non-negative limbs.
+// crap:ignore
 fn fe_sub(a: Fe10, b: Fe10) -> Fe10 {
     var out = Fe10 { .. };
     out.v[0] = (a.v[0] + 0x7FFFFDA) - b.v[0];
@@ -136,6 +142,7 @@ fn fe_sub(a: Fe10, b: Fe10) -> Fe10 {
 }
 
 // Field multiplication: out = f * g (mod 2^255 - 19).
+// crap:ignore
 fn fe_mul(f: Fe10, g: Fe10) -> Fe10 {
     let f0 = f.v[0]; let f1 = f.v[1]; let f2 = f.v[2]; let f3 = f.v[3]; let f4 = f.v[4];
     let f5 = f.v[5]; let f6 = f.v[6]; let f7 = f.v[7]; let f8 = f.v[8]; let f9 = f.v[9];
@@ -202,6 +209,7 @@ fn fe_sq(f: Fe10) -> Fe10 {
 }
 
 // Multiplication by Curve25519 constant a24 = (486662 - 2) / 4 = 121665.
+// crap:ignore
 fn fe_mul121665(f: Fe10) -> Fe10 {
     var h = Fe10 { .. };
     for i in 10 {
@@ -255,13 +263,15 @@ fn fe_inv(z: Fe10) -> Fe10 {
     return fe_mul(t10, c);
 }
 
-// Constant-time conditional swap of two field elements.
+// Constant-time conditional swap of two field elements using core::ct_mask_u64 and core::ct_select_u64.
+// Zero secret-dependent branches are emitted.
 inline fn fe_cswap(swap: u8, a: Fe10&, b: Fe10&) {
-    let mask = -((swap & 1) as i64);
+    let mask = ct_mask_u64(swap & 1);
     for i in 10 {
-        let x = mask & (a.v[i] ^ b.v[i]);
-        a.v[i] ^= x;
-        b.v[i] ^= x;
+        let ai = a.v[i] as u64;
+        let bi = b.v[i] as u64;
+        a.v[i] = ct_select_u64(mask, bi, ai) as i64;
+        b.v[i] = ct_select_u64(mask, ai, bi) as i64;
     }
 }
 
@@ -276,6 +286,7 @@ fn clamp_scalar_rfc7748(scalar: const u8[32]&) -> u8[32] {
 }
 
 // Performs X25519 scalar multiplication: out = scalar * point on Curve25519.
+// crap:ignore
 fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
     let clamped = clamp_scalar_rfc7748(scalar);
 

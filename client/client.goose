@@ -714,3 +714,108 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
         session.default_headers.push(make_header(name, value));
     }
 }
+
+// ---- rfc 9842 compression dictionary transport helpers ---------------------
+
+// RFC 9842 Section 2.2: Available-Dictionary - Attaches `Available-Dictionary` and `Dictionary-ID`
+// request headers when a valid dictionary in `session.dict_cache` matches `(origin, url_path)`.
+fn attach_dictionary_request_headers(
+    session:  const Session&,
+    origin:   const u8[:],
+    url_path: const u8[:],
+    req:      Request&,
+) -> bool {
+    guard session.enable_compression_dict else { return false; }
+    let now_sec = session.virtual_clock_us / 1000000;
+    for &entry in session.dict_cache.entries {
+        if dict_entry_matches_request(entry, origin, url_path, now_sec) {
+            set_header(req.headers, "Available-Dictionary", entry.sha256_base64[..], false);
+            if entry.id.len > 0 {
+                var id_hdr: u8[..128] = [];
+                format_dictionary_id_header(id_hdr, entry.id[..]);
+                set_header(req.headers, "Dictionary-ID", id_hdr[..], false);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// RFC 9842 Section 4 & Section 5: Verifies the 4-byte DCZ (`\xFFDCZ`) or DCB (`\xFFDCB`) magic header
+// and validates that the 32-byte SHA-256 dictionary hash matches `expected_hash` in constant time.
+fn verify_dcz_dcb_magic(wire: const u8[:], is_dcz: bool, expected_hash: const u8[32]&) -> const u8[:], bool {
+    var actual_hash: u8[32] = [0; 32];
+    if is_dcz {
+        let payload, ok = decode_dcz_header(wire, actual_hash);
+        guard ok else { return wire[..0], false; }
+        guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
+            return wire[..0], false;
+        }
+        return payload, true;
+    }
+    let payload, ok = decode_dcb_header(wire, actual_hash);
+    guard ok else { return wire[..0], false; }
+    guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
+        return wire[..0], false;
+    }
+    return payload, true;
+}
+
+// RFC 9842 Section 2.1: Use-As-Dictionary - Registers a response body in `session.dict_cache` when
+// `Use-As-Dictionary` is present, and verifies/decodes `dcz` or `dcb` Content-Encoding payloads.
+fn process_dictionary_response<B>(
+    session:          Session&,
+    origin:           const u8[:],
+    use_as_dict_hdr:  const u8[:],
+    content_encoding: const u8[:],
+    raw_body:         const u8[:],
+    out_decoded:      B&,
+) -> bool {
+    let now_sec = session.virtual_clock_us / 1000000;
+    if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
+        let params, ok_p = parse_use_as_dictionary_header(use_as_dict_hdr);
+        if ok_p {
+            dictionary_cache_insert(
+                session.dict_cache,
+                origin,
+                params.match_pattern[..],
+                params.id[..],
+                raw_body,
+                params.ttl_sec,
+                now_sec,
+            );
+        }
+    }
+
+    if core::eq_ascii_fold(content_encoding, ENCODING_DCZ) {
+        var dict_hash: u8[32] = [0; 32];
+        let comp_payload, ok_hdr = decode_dcz_header(raw_body, dict_hash);
+        guard ok_hdr else { return false; }
+        var dict_entry = DictionaryEntry { .. };
+        guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
+            return false;
+        }
+        guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
+            return false;
+        }
+        return decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded);
+    }
+
+    if core::eq_ascii_fold(content_encoding, ENCODING_DCB) {
+        var dict_hash: u8[32] = [0; 32];
+        let comp_payload, ok_hdr = decode_dcb_header(raw_body, dict_hash);
+        guard ok_hdr else { return false; }
+        var dict_entry = DictionaryEntry { .. };
+        guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
+            return false;
+        }
+        guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
+            return false;
+        }
+        return decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded);
+    }
+
+    guard out_decoded.len + raw_body.len <= out_decoded.cap else { return false; }
+    out_decoded.append(raw_body);
+    return true;
+}

@@ -18,6 +18,12 @@ const WIRE_CMD_BUFFER_CAP: i64 = 16384;
 // Maximum capacity for an isolated HPACK staging buffer (RFC 7541 / enterprise tokens).
 const WIRE_HPACK_STAGING_CAP: i64 = 8192;
 
+// Maximum capacity of a WireCommandPool arena in bytes (4 x 16384-byte command buffer regions).
+const WIRE_POOL_ARENA_CAP: i64 = 65536;
+
+// Maximum concurrent 16384-byte command buffers carved from a single 64 KB WireCommandPool arena.
+const WIRE_POOL_MAX_BUFFERS: u32 = 4;
+
 // Command buffer lifecycle states (VkCommandBufferState).
 enum WireCommandBufferState {
     Initial,
@@ -46,12 +52,52 @@ struct WireCommandBuffer {
     flags:                 u32                    = 0,
     active_headers_stream: u32                    = 0,
     active_headers_flags:  u8                     = 0,
+    arena_offset:          i64                    = 0,
+    arena_capacity:        i64                    = WIRE_CMD_BUFFER_CAP,
 }
 
-// Allocates a command buffer from the pool (VkAllocateCommandBuffers).
+// Carves a contiguous zero-copy slice of `req_bytes` directly from `pool.arena` (u8[..65536]).
+// Fails closed with `(false)` when `pool.arena` capacity (65536) is exceeded (Invariant 13).
+fn allocate_pool_arena_slice(pool: WireCommandPool&, req_bytes: i64) -> const u8[:], i64, bool {
+    let start_off = pool.arena.len;
+    let next_len = start_off + req_bytes;
+    guard pool.is_valid && req_bytes > 0 && next_len <= WIRE_POOL_ARENA_CAP else {
+        return "", -1, false;
+    }
+    pool.arena.resize(next_len, 0);
+    pool.allocated_count += 1;
+    let view = pool.arena[start_off..next_len];
+    return view, start_off, true;
+}
+
+// Commits a recorded command buffer's wire frames directly into its carved region in `pool.arena`,
+// returning the zero-copy arena slice view (`const u8[:]`).
+fn commit_command_buffer_to_arena(
+    pool: WireCommandPool&,
+    cmd:  const WireCommandBuffer&,
+) -> const u8[:], bool {
+    let end_off = cmd.arena_offset + cmd.buf.len;
+    guard pool.is_valid &&
+          cmd.arena_offset >= 0 &&
+          cmd.buf.len <= cmd.arena_capacity &&
+          end_off <= pool.arena.len else {
+        return "", false;
+    }
+    for i in cmd.buf.len {
+        pool.arena[cmd.arena_offset + i] = cmd.buf[i];
+    }
+    return pool.arena[cmd.arena_offset..end_off], true;
+}
+
+// Allocates a command buffer backed by a 16 KB region in `pool.arena` (VkAllocateCommandBuffers).
+// Fails closed with `WireResult.ErrorOutOfDeviceMemory` if all 65,536 bytes of `pool.arena` are exhausted.
 fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireResult {
     guard pool.is_valid else {
         return WireCommandBuffer { .. }, WireResult.ErrorInitializationFailed;
+    }
+    let _, start_off, ok = allocate_pool_arena_slice(pool, WIRE_CMD_BUFFER_CAP);
+    guard ok else {
+        return WireCommandBuffer { .. }, WireResult.ErrorOutOfDeviceMemory;
     }
     return WireCommandBuffer {
         buf:                   [],
@@ -61,15 +107,28 @@ fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireRes
         flags:                 0,
         active_headers_stream: 0,
         active_headers_flags:  0,
+        arena_offset:          start_off,
+        arena_capacity:        WIRE_CMD_BUFFER_CAP,
     }, WireResult.Success;
 }
 
-// Frees a command buffer back to its parent pool (VkFreeCommandBuffers).
+// Frees a command buffer back to its parent pool, reclaiming its arena region on LIFO release (VkFreeCommandBuffers).
 fn free_command_buffer(pool: WireCommandPool&, cmd: WireCommandBuffer&) {
+    if pool.is_valid && pool.allocated_count > 0 {
+        pool.allocated_count -= 1;
+        let expected_end = cmd.arena_offset + cmd.arena_capacity;
+        if cmd.arena_offset >= 0 && expected_end == pool.arena.len {
+            pool.arena.resize(cmd.arena_offset);
+        }
+        if pool.allocated_count == 0 {
+            pool.arena.clear();
+        }
+    }
     cmd.state = WireCommandBufferState.Invalid;
     cmd.buf.clear();
     cmd.hpack_staging.clear();
     cmd.has_error = false;
+    cmd.arena_offset = -1;
 }
 
 // Instantiates a new zero-allocation command buffer ready for direct recording.

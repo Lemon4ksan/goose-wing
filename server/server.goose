@@ -13,6 +13,7 @@ import .pipeline;
 import .h2_multiplexer;
 import .soa_timer;
 import realtime.topic_tree;
+import http.compression_dict;
 
 // ---- Reason Phrases for HTTP/1.1 Status Line -----------------------------
 
@@ -3127,4 +3128,105 @@ fn send_static_mmap_file(
     guard mf.size > 0 else { return true; }
     let sent_body, body_ok = core::mmap_file_send(mf, 0, mf.size as u32, sock_fd);
     return body_ok;
+}
+
+// ---- rfc 9842 compression dictionary transport negotiation -----------------
+
+// RFC 9842 Section 2.1: Use-As-Dictionary - Attaches `Use-As-Dictionary` response header advertising
+// the current response payload as a shared compression dictionary for future matching requests.
+fn set_use_as_dictionary_response(
+    res:           Response&,
+    match_pattern: const u8[:],
+    id_str:        const u8[:] = "",
+    ttl_sec:       u32         = 86400,
+) {
+    var hdr_val: u8[..256] = [];
+    format_use_as_dictionary_header(hdr_val, match_pattern, id_str, ttl_sec);
+    set_header(res, "Use-As-Dictionary", hdr_val[..]);
+}
+
+// RFC 9842 Section 6: Checks whether a comma-separated `Accept-Encoding` header list contains `target_token`.
+fn accept_encoding_has_token(ae: const u8[:], target_token: const u8[:]) -> bool {
+    var cursor: i64 = 0;
+    while cursor < ae.len {
+        var comma_idx = cursor;
+        while comma_idx < ae.len && ae[comma_idx] != ',' {
+            comma_idx++;
+        }
+        let item = ae[cursor..comma_idx].trim_lws();
+        var semi_idx: i64 = 0;
+        while semi_idx < item.len && item[semi_idx] != ';' {
+            semi_idx++;
+        }
+        let coding = item[..semi_idx].trim_lws();
+        if coding.len > 0 && core::eq_ascii_fold(coding, target_token) {
+            return true;
+        }
+        cursor = comma_idx + 1;
+    }
+    return false;
+}
+
+// RFC 9842 Section 2.2 & Section 6: Negotiates Compression Dictionary Transport on an incoming `Request`
+// by verifying `Available-Dictionary` (RFC 9651 `:base64:` byte sequence), `Dictionary-ID`, and `Accept-Encoding`
+// (`dcz` or `dcb`), returning the negotiated Content-Encoding (`"dcz"` or `"dcb"`) and `ok == true`.
+fn negotiate_compression_dictionary(
+    req:           const Request&,
+    expected_hash: const u8[32]&,
+    expected_id:   const u8[:] = "",
+) -> const u8[:], bool {
+    let avail_hdr = find_header(req.headers[..], "Available-Dictionary").trim_lws();
+    guard avail_hdr.len >= 3 && avail_hdr[0] == ':' && avail_hdr[avail_hdr.len - 1] == ':' else {
+        return "", false;
+    }
+
+    var expected_b64: u8[..64] = [];
+    format_available_dictionary_header(expected_b64, expected_hash);
+    guard core::ct_eq_bytes(avail_hdr, expected_b64[..]) else {
+        return "", false;
+    }
+
+    if expected_id.len > 0 {
+        let id_hdr = find_header(req.headers[..], "Dictionary-ID").trim_lws();
+        var exp_id_wire: u8[..128] = [];
+        format_dictionary_id_header(exp_id_wire, expected_id);
+        guard id_hdr == exp_id_wire[..] else { return "", false; }
+    }
+
+    let ae = find_header(req.headers[..], "Accept-Encoding");
+    if accept_encoding_has_token(ae, ENCODING_DCZ) {
+        return ENCODING_DCZ, true;
+    }
+    if accept_encoding_has_token(ae, ENCODING_DCB) {
+        return ENCODING_DCB, true;
+    }
+    return "", false;
+}
+
+// RFC 9842 Section 4 & Section 5: Encodes a server `Response` body using `dcz` (`\xFFDCZ` + 32-byte SHA-256)
+// or `dcb` (`\xFFDCB` + 32-byte SHA-256) when negotiated by `negotiate_compression_dictionary`.
+fn apply_negotiated_dictionary_response(
+    req:         const Request&,
+    res:         Response&,
+    dict_hash:   const u8[32]&,
+    raw_content: const u8[:],
+    expected_id: const u8[:] = "",
+) -> bool {
+    let enc, ok = negotiate_compression_dictionary(req, dict_hash, expected_id);
+    guard ok else { return false; }
+
+    res.body.clear();
+    if enc == ENCODING_DCZ {
+        guard encode_dcz_response(res.body, dict_hash, raw_content) else { return false; }
+        set_header(res, "Content-Encoding", ENCODING_DCZ);
+        set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
+        return true;
+    }
+    if enc == ENCODING_DCB {
+        guard encode_dcb_response(res.body, dict_hash, raw_content) else { return false; }
+        set_header(res, "Content-Encoding", ENCODING_DCB);
+        set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
+        return true;
+    }
+    return false;
 }

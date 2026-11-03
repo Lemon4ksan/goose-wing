@@ -1037,15 +1037,26 @@ struct HpackHeaderField {
     val_off:     u32  = 0,
     val_len:     u16  = 0,
     meta_size:   u32  = 0, // name_len + val_len + 32
+    generation:  u8   = 0,
     never_index: bool = false,
+}
+
+// RFC 7541 Section 2.3.2: Dynamic Table - O(1) direct-mapped encoder hash table with generation tracking.
+struct HpackHashTable {
+    slots:       u16[256] = [0; 256],
+    generations: u8[256]  = [0; 256],
 }
 
 struct DynamicTable {
     entries:          HpackHeaderField[128] = [HpackHeaderField { .. }; 128],
     arena:            u8[4096]              = [0; 4096],
+    hash_table:       HpackHashTable        = HpackHashTable { .. },
     head:             u64                   = 0, // Oldest entry index in ring
     count:            u64                   = 0, // Current number of active entries
     arena_write_pos:  u32                   = 0, // Sequential write cursor in arena
+    arena_head:       u32                   = 0, // Linearized boundary write start offset
+    arena_tail:       u32                   = 0, // Linearized boundary oldest live byte offset
+    next_generation:  u8                    = 1, // Monotonic non-zero generation counter
     used_bytes:       u64                   = 0, // Total protocol size (sum of meta_size)
     max_allowed_size: u64                   = 4096, // From SETTINGS_HEADER_TABLE_SIZE
     current_max_size: u64                   = 4096, // Set by HPACK size updates
@@ -1059,63 +1070,99 @@ fn new_dynamic_table(max_allowed: u64 = 4096) -> DynamicTable {
     };
 }
 
+// Computes an 8-bit direct-mapped slot index (0..255) for an HPACK (name, val) pair.
+inline fn compute_hpack_hash_slot(name: const u8[:], val: const u8[:]) -> u8 {
+    var h: u32 = core::FNV1A_32_OFFSET;
+    for b in name {
+        h = (h ^ b) * core::FNV1A_32_PRIME;
+    }
+    h = (h ^ 0xFF) * core::FNV1A_32_PRIME;
+    for b in val {
+        h = (h ^ b) * core::FNV1A_32_PRIME;
+    }
+    return ((h ^ (h >> 8) ^ (h >> 16)) & 0xFF) as u8;
+}
+
+// Advances the monotonic generation counter, skipping 0 (reserved for empty/invalidated slots).
+inline fn next_hpack_generation(dt: DynamicTable&) -> u8 {
+    let g = dt.next_generation;
+    let next_g: u8 = if g == 255 { 1 } else { g + 1 };
+    dt.next_generation = next_g;
+    return if g == 0 { 1 } else { g };
+}
+
+// Invalidates any hash table slot pointing to an evicted ring index & generation.
+inline fn invalidate_hpack_hash_entry(dt: DynamicTable&, ring_idx: u64, entry: const HpackHeaderField&) {
+    let n_off = entry.name_off;
+    let n_len = entry.name_len as u32;
+    let v_off = entry.val_off;
+    let v_len = entry.val_len as u32;
+    let slot = compute_hpack_hash_slot(dt.arena[n_off..n_off + n_len], dt.arena[v_off..v_off + v_len]);
+    let encoded_ref = (ring_idx as u16) + 1;
+    if dt.hash_table.slots[slot] == encoded_ref && dt.hash_table.generations[slot] == entry.generation {
+        dt.hash_table.slots[slot] = 0;
+        dt.hash_table.generations[slot] = 0;
+    }
+}
+
+// Evicts the oldest entry from the dynamic table and updates arena_tail & hash generations.
+fn evict_oldest_entry(dt: DynamicTable&) {
+    guard dt.count > 0 else { return; }
+    let oldest = dt.entries[dt.head];
+    invalidate_hpack_hash_entry(dt, dt.head, oldest);
+    dt.used_bytes -= oldest.meta_size;
+    dt.head = (dt.head + 1) & HPACK_RING_MASK;
+    dt.count--;
+    if dt.count == 0 {
+        dt.arena_head = 0;
+        dt.arena_tail = 0;
+        dt.arena_write_pos = 0;
+    } else {
+        dt.arena_tail = dt.entries[dt.head].name_off;
+    }
+}
+
 // Evicts oldest entries from head until used_bytes <= target_size.
 fn evict_until(dt: DynamicTable&, target_size: u64) {
     while dt.count > 0 && dt.used_bytes > target_size {
+        evict_oldest_entry(dt);
+    }
+}
+
+// RFC 7541 Section 2.3.2: Dynamic Table - Linearized boundary wrap helper.
+// Evicts any older entries whose contiguous arena slice [name_off .. val_off + val_len)
+// overlaps [write_start .. write_end) in the 4096-byte ring buffer.
+fn evict_overlapping_arena_range(dt: DynamicTable&, write_start: u32, write_end: u32) {
+    while dt.count > 0 {
         let oldest = dt.entries[dt.head];
-        dt.used_bytes -= oldest.meta_size;
-        dt.head = (dt.head + 1) & HPACK_RING_MASK;
-        dt.count--;
+        let old_start = oldest.name_off;
+        let old_end = oldest.val_off + oldest.val_len;
+        let overlaps = (old_start < write_end) && (old_end > write_start);
+        guard overlaps else { break; }
+        evict_oldest_entry(dt);
     }
 }
 
-// Linearly compacts all active entries in arena to offset 0 without heap allocation.
-fn compact_dynamic_arena(dt: DynamicTable&) {
-    guard dt.count > 0 else {
-        dt.arena_write_pos = 0;
-        return;
+inline fn pack_header_into_arena(dt: DynamicTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {
+    let n_len = name.len;
+    let v_len = val.len;
+    let name_off = dt.arena_write_pos;
+    for i in n_len {
+        dt.arena[name_off + (i as u32)] = name[i];
     }
-    var tmp:     u8[4096] = [0; 4096];
-    var new_pos: u32      = 0;
-    var i:       u64      = 0;
-
-    while i < dt.count {
-        let idx = (dt.head + i) & HPACK_RING_MASK;
-        let n_len = dt.entries[idx].name_len as u32;
-        let v_len = dt.entries[idx].val_len as u32;
-
-        let old_n_off = dt.entries[idx].name_off;
-        let old_v_off = dt.entries[idx].val_off;
-
-        // Copy name
-        for j in (n_len as i64) {
-            tmp[new_pos + (j as u32)] = dt.arena[old_n_off + (j as u32)];
-        }
-        dt.entries[idx].name_off = new_pos;
-        new_pos += n_len;
-
-        // Copy val
-        for j in (v_len as i64) {
-            tmp[new_pos + (j as u32)] = dt.arena[old_v_off + (j as u32)];
-        }
-        dt.entries[idx].val_off = new_pos;
-        new_pos += v_len;
-
-        i++;
+    let val_off = name_off + (n_len as u32);
+    for i in v_len {
+        dt.arena[val_off + (i as u32)] = val[i];
     }
-
-    // Write back to arena
-    for k in (new_pos as i64) {
-        dt.arena[k] = tmp[k];
-    }
-    dt.arena_write_pos = new_pos;
+    dt.arena_head = name_off;
+    dt.arena_write_pos = val_off + (v_len as u32);
+    return name_off, val_off;
 }
 
-// Inserts a (name, val) pair into dynamic table without heap allocations.
+// Inserts a (name, val) pair into the dynamic table using the linearized boundary ring buffer
+// and O(1) direct-mapped hash table without heap allocations or O(N) compaction copies.
 fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_index: bool = false) {
-    let n_len = name.len as u64;
-    let v_len = val.len as u64;
-    let entry_weight = n_len + v_len + HPACK_ENTRY_OVERHEAD;
+    let entry_weight = (name.len as u64) + (val.len as u64) + HPACK_ENTRY_OVERHEAD;
 
     // RFC 7541 Section 4.4: if entry exceeds current max size, table is emptied
     if entry_weight > dt.current_max_size {
@@ -1125,38 +1172,80 @@ fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_i
 
     evict_until(dt, dt.current_max_size - entry_weight);
 
+    let total_raw = ((name.len as u64) + (val.len as u64)) as u32;
+    guard total_raw <= (HPACK_MAX_ARENA_BYTES as u32) else {
+        evict_until(dt, 0);
+        return;
+    }
+
+    // Linearized boundary policy: if incoming header exceeds remaining space between
+    // arena_write_pos and 4096, wrap write cursor to 0 so every stored header is contiguous (Invariant 10).
+    if dt.arena_write_pos + total_raw > (HPACK_MAX_ARENA_BYTES as u32) {
+        evict_overlapping_arena_range(dt, dt.arena_write_pos, HPACK_MAX_ARENA_BYTES as u32);
+        dt.arena_write_pos = 0;
+    }
+    evict_overlapping_arena_range(dt, dt.arena_write_pos, dt.arena_write_pos + total_raw);
+
     let insert_idx = (dt.head + dt.count) & HPACK_RING_MASK;
-    let total_raw = (n_len + v_len) as u32;
-
-    if (dt.arena_write_pos + total_raw) > (HPACK_MAX_ARENA_BYTES as u32) {
-        compact_dynamic_arena(dt);
-        if (dt.arena_write_pos + total_raw) > (HPACK_MAX_ARENA_BYTES as u32) {
-            // Safety fallback if compaction still cannot fit
-            evict_until(dt, 0);
-            dt.arena_write_pos = 0;
-        }
-    }
-
-    let name_off = dt.arena_write_pos;
-    for i in (n_len as i64) {
-        dt.arena[name_off + (i as u32)] = name[i];
-    }
-    let val_off = name_off + (n_len as u32);
-    for i in (v_len as i64) {
-        dt.arena[val_off + (i as u32)] = val[i];
-    }
-    dt.arena_write_pos = val_off + (v_len as u32);
-
+    let name_off, val_off = pack_header_into_arena(dt, name, val);
+    let gen = next_hpack_generation(dt);
     dt.entries[insert_idx] = HpackHeaderField {
         name_off:    name_off,
-        name_len:    n_len as u16,
+        name_len:    name.len as u16,
         val_off:     val_off,
-        val_len:     v_len as u16,
+        val_len:     val.len as u16,
         meta_size:   entry_weight as u32,
+        generation:  gen,
         never_index: never_index,
     };
-    dt.count++;
+    dt.count += 1;
     dt.used_bytes += entry_weight;
+    dt.arena_tail = dt.entries[dt.head].name_off;
+
+    let slot = compute_hpack_hash_slot(name, val);
+    dt.hash_table.slots[slot] = (insert_idx as u16) + 1;
+    dt.hash_table.generations[slot] = gen;
+}
+
+// RFC 7541 Section 2.3.2: Dynamic Table - Direct-mapped O(1) hash lookup on HpackHashTable.
+// Returns (slot_entry_ref, has_active_slot).
+fn hpack_hash_lookup(tbl: const HpackHashTable&, name: const u8[:], val: const u8[:]) -> u16, bool {
+    let slot = compute_hpack_hash_slot(name, val);
+    let entry_ref = tbl.slots[slot];
+    let gen = tbl.generations[slot];
+    guard entry_ref > 0 && gen > 0 else { return 0, false; }
+    return entry_ref, true;
+}
+
+// RFC 7541 Section 2.3.2: Dynamic Table - Verifies O(1) direct-mapped hash hit against the dynamic table
+// using constant-time byte equality (`core::ct_eq_bytes`) and generation validation, returning the
+// external HPACK index (>= 62) on exact match.
+fn hpack_hash_lookup(dt: const DynamicTable&, name: const u8[:], val: const u8[:]) -> u16, bool {
+    guard dt.count > 0 else { return 0, false; }
+    let slot = compute_hpack_hash_slot(name, val);
+    let entry_ref = dt.hash_table.slots[slot];
+    let slot_gen = dt.hash_table.generations[slot];
+    guard entry_ref > 0 && slot_gen > 0 else { return 0, false; }
+
+    let ring_idx = (entry_ref - 1) as u64;
+    guard ring_idx < HPACK_MAX_RING_ENTRIES else { return 0, false; }
+    let dist = (ring_idx + HPACK_MAX_RING_ENTRIES - dt.head) & HPACK_RING_MASK;
+    guard dist < dt.count else { return 0, false; }
+
+    let entry = dt.entries[ring_idx];
+    guard entry.generation == slot_gen else { return 0, false; }
+
+    let n_end = entry.name_off + entry.name_len;
+    let v_end = entry.val_off + entry.val_len;
+    let entry_name = dt.arena[entry.name_off..n_end];
+    let entry_val = dt.arena[entry.val_off..v_end];
+
+    guard core::ct_eq_bytes(entry_name, name) && core::ct_eq_bytes(entry_val, val) else {
+        return 0, false;
+    }
+
+    let offset_from_newest = (dt.count - 1) - dist;
+    return (62 + offset_from_newest) as u16, true;
 }
 
 // Looks up an external dynamic index (idx >= 62).
@@ -1754,6 +1843,25 @@ enum HpackIndexing {
     None,
 }
 
+fn find_hpack_dynamic_field(dt: const DynamicTable&, name: const u8[:], val: const u8[:]) -> u64, bool {
+    var d_match_idx: u64 = 0;
+    var i:           u64 = 0;
+    while i < dt.count {
+        let ext_idx = 62 + i;
+        let t_name, t_val, ok_get = get_indexed_header_slices(dt, ext_idx);
+        if ok_get && core::ct_eq_bytes(t_name, name) {
+            if core::ct_eq_bytes(t_val, val) {
+                return ext_idx, true;
+            }
+            if d_match_idx == 0 {
+                d_match_idx = ext_idx;
+            }
+        }
+        i += 1;
+    }
+    return d_match_idx, false;
+}
+
 // Encodes a single HTTP/2 header field into out with optional Huffman and dynamic indexing.
 fn encode_hpack_field<B>(
     dt:          DynamicTable&,
@@ -1771,26 +1879,15 @@ fn encode_hpack_field<B>(
         return true;
     }
 
-    // 2. Check for exact match in dynamic table
-    var d_match_idx: u64 = 0;
-    var d_exact = false;
-    var i: u64 = 0;
-    while i < dt.count {
-        let ext_idx = 62 + i;
-        let t_name, t_val, ok_get = get_indexed_header_slices(dt, ext_idx);
-        if ok_get && t_name == name {
-            if t_val == val {
-                d_match_idx = ext_idx;
-                d_exact = true;
-                break;
-            }
-            if d_match_idx == 0 {
-                d_match_idx = ext_idx;
-            }
-        }
-        i++;
+    // 2. Check for O(1) direct-mapped hash hit in dynamic table
+    let fast_idx, fast_ok = hpack_hash_lookup(dt, name, val);
+    if fast_ok && fast_idx >= 62 {
+        hpack_encode_int(out, fast_idx as u64, 7, 0x80);
+        return true;
     }
 
+    // 3. Fallback scan for name-only match or collision resolution in dynamic table
+    let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
     if d_exact {
         hpack_encode_int(out, d_match_idx, 7, 0x80);
         return true;

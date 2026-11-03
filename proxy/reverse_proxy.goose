@@ -31,18 +31,21 @@ struct ProxyConfig {
     http_version:                u8[..8]    = "HTTP/1.1",
 }
 
-// Helper to format chained X-Forwarded-For value without in-branch bounded buffer operations.
-fn format_chained_xff(buf: u8[>..]&, existing_xff: const u8[:], client_ip: const u8[:]) {
+// Helper to format chained X-Forwarded-For value without dynamic heap allocation.
+fn format_chained_xff(buf: u8[..1024]&, existing_xff: const u8[:], client_ip: const u8[:]) -> bool {
+    let needed = core::add_sat_u64(core::add_sat_u64(existing_xff.len as u64, 2), client_ip.len as u64);
+    guard needed <= (buf.cap as u64) else { return false; }
     buf.clear();
     buf.append(existing_xff);
     buf.append(", ");
     buf.append(client_ip);
+    return true;
 }
 
 // Appends client IP to X-Forwarded-For header, chaining with existing entries if present.
 fn append_chained_xff(out_headers: HeaderMap&, existing_xff: const u8[:], client_ip: const u8[:]) -> bool {
-    var chained: u8[>..] = [];
-    format_chained_xff(chained, existing_xff, client_ip);
+    var chained: u8[..1024] = [];
+    guard format_chained_xff(chained, existing_xff, client_ip) else { return false; }
     return append_header(out_headers, "X-Forwarded-For", chained[..]);
 }
 
@@ -161,19 +164,23 @@ fn copy_filtered_headers(
     }
 }
 
-// Helper to format Via header value without in-branch bounded buffer operations.
-fn format_via(buf: u8[>..]&, pseudonym: const u8[:]) {
+// Helper to format Via header value without dynamic heap allocation.
+fn format_via(buf: u8[..64]&, pseudonym: const u8[:]) -> bool {
+    let needed = core::add_sat_u64(4, pseudonym.len as u64);
+    guard needed <= (buf.cap as u64) else { return false; }
     buf.clear();
     buf.append("1.1 ");
     buf.append(pseudonym);
+    return true;
 }
 
 // Injects Via header (RFC 9110 §7.6.3).
 fn inject_via_header(out_headers: HeaderMap&, pseudonym: const u8[:]) {
     guard pseudonym.len > 0 else { return; }
-    var via_buf: u8[>..] = [];
-    format_via(via_buf, pseudonym);
-    append_header(out_headers, "Via", via_buf[..]);
+    var via_buf: u8[..64] = [];
+    if format_via(via_buf, pseudonym) {
+        append_header(out_headers, "Via", via_buf[..]);
+    }
 }
 
 // Injects forwarded client IP into X-Forwarded-For, respecting trust boundary.
@@ -187,7 +194,7 @@ fn append_forwarded_metadata_xff(
         append_forwarded_for(out_headers, "", client_ip);
         return;
     }
-    var combined_buf: u8[>..] = [];
+    var combined_buf: u8[..1024] = [];
     if get_combined(in_headers, "X-Forwarded-For", combined_buf) {
         append_forwarded_for(out_headers, combined_buf[..], client_ip);
     } else {
@@ -258,12 +265,12 @@ fn filter_and_forward_headers(
 }
 
 // Formats upstream wire HTTP/1.1 request buffer ready for transmission.
-fn serialize_upstream_request(
+fn serialize_upstream_request<B>(
     method:  const u8[:],
     uri:     const u8[:],
     headers: const HeaderMap&,
     body:    const u8[:],
-    out:     u8[>..]&,
+    out:     B&,
 ) {
     out.clear();
     out.append(method);
@@ -308,19 +315,19 @@ fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
 }
 
 fn record_proxy_dropped(proxy: ReverseProxy&) {
-    proxy.total_dropped = proxy.total_dropped + 1;
+    proxy.total_dropped = core::add_sat_u64(proxy.total_dropped, 1);
 }
 
 fn record_proxy_forwarded(proxy: ReverseProxy&) {
-    proxy.total_forwarded = proxy.total_forwarded + 1;
+    proxy.total_forwarded = core::add_sat_u64(proxy.total_forwarded, 1);
 }
 
 fn record_proxy_rate_limited(proxy: ReverseProxy&) {
-    proxy.total_rate_limited = proxy.total_rate_limited + 1;
+    proxy.total_rate_limited = core::add_sat_u64(proxy.total_rate_limited, 1);
 }
 
 fn record_proxy_overloaded(proxy: ReverseProxy&) {
-    proxy.total_overloaded = proxy.total_overloaded + 1;
+    proxy.total_overloaded = core::add_sat_u64(proxy.total_overloaded, 1);
 }
 
 // Checks if an upstream target has exceeded its maximum concurrent active connections.
@@ -357,7 +364,7 @@ fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
 
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
 // rewrites headers, and serializes forward wire request.
-fn prepare_proxy_request_at(
+fn prepare_proxy_request_at<B>(
     proxy:      ReverseProxy&,
     method:     const u8[:],
     uri:        const u8[:],
@@ -365,7 +372,7 @@ fn prepare_proxy_request_at(
     client_ip:  const u8[:],
     proto:      const u8[:],
     body:       const u8[:],
-    out_wire:   u8[>..]&,
+    out_wire:   B&,
     now_ns:     u64,
 ) -> i32, bool {
     let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
@@ -416,7 +423,7 @@ fn prepare_proxy_request_at(
 }
 
 // Compatibility wrapper for prepare_proxy_request without explicit timestamp.
-fn prepare_proxy_request(
+fn prepare_proxy_request<B>(
     proxy:      ReverseProxy&,
     method:     const u8[:],
     uri:        const u8[:],
@@ -424,7 +431,7 @@ fn prepare_proxy_request(
     client_ip:  const u8[:],
     proto:      const u8[:],
     body:       const u8[:],
-    out_wire:   u8[>..]&,
+    out_wire:   B&,
 ) -> i32, bool {
     let now_ns = core::as_nanos(core::monotonic_now());
     return prepare_proxy_request_at(
@@ -438,4 +445,117 @@ fn prepare_proxy_request(
         out_wire,
         now_ns,
     );
+}
+
+// ---- Zero-Copy Streaming Forwarding & Kernel Splice Eligibility -----------
+
+const PROXY_STREAM_CHUNK_MAX: i64 = 16384;
+
+enum ProxyTransportKind {
+    PlainTcp,
+    Http1Connect,
+    Tls,
+    WebSocket,
+    WebTransport,
+    Unknown,
+}
+
+// Determines if a proxy tunnel can use kernel pipe forwarding (`splice(2)`).
+// Restricted strictly to plain L4 TCP and unencrypted HTTP/1.1 CONNECT tunnels;
+// TLS, WebSocket (RFC 6455 §5.3 XOR masking), and WebTransport (UDP datagrams)
+// require userspace ring-buffer processing.
+fn can_use_kernel_splice(kind: ProxyTransportKind, is_encrypted: bool) -> bool {
+    guard !is_encrypted else { return false; }
+    return kind == ProxyTransportKind.PlainTcp || kind == ProxyTransportKind.Http1Connect;
+}
+
+// Userspace zero-copy ring-buffer view for streaming chunk transfers (Invariant 10 & 13).
+struct ProxyStreamRing {
+    buf:        u8[..16384] = [],
+    read_pos:   i64         = 0,
+    total_read: u64         = 0,
+    total_sent: u64         = 0,
+}
+
+// Vends unread slice directly from the streaming ring buffer (Invariant 10).
+fn incoming_slice(ring: const ProxyStreamRing&) -> const u8[:] {
+    guard ring.read_pos >= 0 && ring.read_pos <= ring.buf.len else { return ""; }
+    return ring.buf[ring.read_pos..ring.buf.len];
+}
+
+// Advances read cursor after downstream/upstream consumption, resetting when fully drained.
+fn advance_read(ring: ProxyStreamRing&, consumed: i64) -> bool {
+    guard consumed >= 0 && ring.read_pos >= 0 && ring.read_pos <= ring.buf.len else { return false; }
+    let next_pos = core::add_sat_u64(ring.read_pos as u64, consumed as u64);
+    guard next_pos <= (ring.buf.len as u64) else { return false; }
+    ring.read_pos = next_pos as i64;
+    ring.total_sent = core::add_sat_u64(ring.total_sent, consumed as u64);
+    if ring.read_pos == ring.buf.len {
+        ring.buf.clear();
+        ring.read_pos = 0;
+    }
+    return true;
+}
+
+// Compacts unread tail to index 0 to reclaim contiguous tail capacity.
+fn compact_stream_ring(ring: ProxyStreamRing&) {
+    guard ring.read_pos > 0 else { return; }
+    if ring.read_pos >= ring.buf.len {
+        ring.buf.clear();
+        ring.read_pos = 0;
+        return;
+    }
+    var scratch: u8[..16384] = [];
+    scratch.append(ring.buf[ring.read_pos..ring.buf.len]);
+    ring.buf.clear();
+    ring.buf.append(scratch[..]);
+    ring.read_pos = 0;
+}
+
+// Appends incoming payload chunk into the bounded 16 KB ring buffer.
+// Enforces Invariant 13: fails closed with explicit `false` on capacity overflow.
+fn feed_stream_chunk(ring: ProxyStreamRing&, chunk: const u8[:]) -> bool {
+    let needed = core::add_sat_u64(ring.buf.len as u64, chunk.len as u64);
+    if needed > (ring.buf.cap as u64) {
+        compact_stream_ring(ring);
+    }
+    let post_needed = core::add_sat_u64(ring.buf.len as u64, chunk.len as u64);
+    guard post_needed <= (ring.buf.cap as u64) else { return false; }
+    ring.buf.append(chunk);
+    ring.total_read = core::add_sat_u64(ring.total_read, chunk.len as u64);
+    return true;
+}
+
+// Transfers a bounded chunk from `src` ring to `dst` ring, applying RFC 6455 Section 5.3
+// Client-to-Server Masking when forwarding WebSocket frames in userspace.
+fn forward_userspace_stream_chunk(
+    src:     ProxyStreamRing&,
+    dst:     ProxyStreamRing&,
+    kind:    ProxyTransportKind,
+    ws_mask: u8[4],
+) -> i64, bool {
+    let view = incoming_slice(src);
+    guard view.len > 0 else { return 0, true; }
+    let needed = core::add_sat_u64(dst.buf.len as u64, view.len as u64);
+    if needed > (dst.buf.cap as u64) {
+        compact_stream_ring(dst);
+    }
+    let post_needed = core::add_sat_u64(dst.buf.len as u64, view.len as u64);
+    guard post_needed <= (dst.buf.cap as u64) else { return 0, false; }
+
+    if kind == ProxyTransportKind.WebSocket {
+        // RFC 6455 Section 5.3: Client-to-Server Masking - Octet i of transformed data is XORed with masking-key octet i MOD 4.
+        var masked: u8[..16384] = [];
+        for i in view.len {
+            masked.push(view[i] ^ ws_mask[i & 3]);
+        }
+        dst.buf.append(masked[..]);
+    } else {
+        dst.buf.append(view);
+    }
+
+    let n = view.len;
+    dst.total_read = core::add_sat_u64(dst.total_read, n as u64);
+    advance_read(src, n);
+    return n, true;
 }

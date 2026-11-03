@@ -10,6 +10,352 @@ import .constants;
 
 // ---- public suffix data structures and enumerations ------------------------
 
+// Chromium / libpsl DAFSA (Deterministic Acyclic Finite State Automaton) bitmask flags
+// and BNF byte-range boundaries (vendor/libpsl/src/psl-make-dafsa & lookup_string_in_fixed_set.c).
+const PSL_DAFSA_NOT_FOUND:      i32 = -1;
+const PSL_DAFSA_FLAG_EXCEPTION: i32 = 1;
+const PSL_DAFSA_FLAG_WILDCARD:  i32 = 2;
+const PSL_DAFSA_FLAG_PRIVATE:   i32 = 8;
+
+const DAFSA_KEY_MIN_CHAR:       u8 = 0x1F;
+const DAFSA_KEY_MAX_CHAR:       u8 = 0x7F;
+const DAFSA_RETURN_MIN:         u8 = 0x80;
+const DAFSA_RETURN_MAX:         u8 = 0x8F;
+const DAFSA_END_CHAR_MIN:       u8 = 0x9F;
+const DAFSA_CHAR_MASK:          u8 = 0x7F;
+const DAFSA_END_BIT:            u8 = 0x80;
+const DAFSA_OFFSET_TYPE_MASK:   u8 = 0x60;
+const DAFSA_OFFSET_LOW_MASK:    u8 = 0x1F;
+const DAFSA_OFFSET_SINGLE_MASK: u8 = 0x3F;
+const DAFSA_RETURN_VAL_MASK:    u8 = 0x0F;
+
+const PSL_DAFSA_LEN: i64 = 920;
+const PSL_DAFSA_GRAPH: u8[920] = [
+    0x1D, 0x0F, 0x04, 0x15, 0x08, 0x06, 0x0A, 0x3A, 0x0B, 0x03, 0x28, 0x2F, 0x36, 0x1E, 0x0B, 0x1E,
+    0x07, 0x0F, 0x0B, 0x40, 0x50, 0x22, 0x20, 0x20, 0x40, 0xA0, 0x3B, 0xC0, 0x56, 0xF9, 0x02, 0x89,
+    0x6F, 0x6B, 0x6F, 0x68, 0x61, 0x6D, 0xE1, 0xC1, 0x4D, 0xE5, 0xC2, 0xF9, 0x78, 0xF9, 0xC3, 0x55,
+    0xF7, 0x03, 0x06, 0x87, 0x77, 0x77, 0x2E, 0xE3, 0xC2, 0xE5, 0x6F, 0x72, 0x6B, 0x65, 0xF2, 0xC0,
+    0x8B, 0x65, 0xE2, 0xC0, 0xDC, 0x76, 0x65, 0x72, 0x63, 0x65, 0xEC, 0xC0, 0xD4, 0xF5, 0x41, 0xBB,
+    0x41, 0x77, 0x96, 0xF4, 0x05, 0x42, 0x29, 0xC1, 0x04, 0x65, 0xE3, 0xC2, 0x8E, 0xF3, 0x0B, 0x0C,
+    0x04, 0x04, 0x09, 0x06, 0x08, 0x41, 0xF2, 0xC0, 0xBA, 0xF4, 0x02, 0x84, 0x6F, 0xF2, 0xC0, 0x8B,
+    0x61, 0x74, 0xE5, 0xC1, 0x94, 0x70, 0xE2, 0xC0, 0xCF, 0x69, 0xF4, 0xC0, 0x7E, 0xE5, 0x03, 0xC3,
+    0x16, 0x6E, 0x64, 0xE1, 0xC0, 0xEF, 0x63, 0x68, 0x2E, 0xF5, 0xC2, 0x2B, 0x61, 0x70, 0x70, 0x6F,
+    0x72, 0xEF, 0xC0, 0xE2, 0xB3, 0xC1, 0x82, 0xF2, 0x03, 0xC2, 0xA5, 0x61, 0x69, 0x6C, 0x77, 0xE1,
+    0xC0, 0x7E, 0xF1, 0xC2, 0x81, 0xF0, 0x05, 0x03, 0x03, 0x07, 0x83, 0xF2, 0xC0, 0xE0, 0xF0, 0xC0,
+    0x97, 0xEC, 0x03, 0xC2, 0xE2, 0xE3, 0xC0, 0x9F, 0xE7, 0xC2, 0x6A, 0xE1, 0x02, 0x8A, 0x72, 0x6C,
+    0x69, 0x61, 0x6D, 0x65, 0x6E, 0xF4, 0xC2, 0x55, 0x67, 0x65, 0xF3, 0xC1, 0x7B, 0xEF, 0x04, 0x17,
+    0xC0, 0x94, 0xF2, 0x03, 0xC0, 0xEC, 0xE7, 0x03, 0xC2, 0xBD, 0xAE, 0x41, 0xA3, 0x07, 0x04, 0x03,
+    0x04, 0x03, 0x03, 0x40, 0xE7, 0x02, 0x03, 0x09, 0x85, 0xEE, 0x04, 0x08, 0xC2, 0x9E, 0x72, 0x65,
+    0x6E, 0x64, 0x65, 0xF2, 0xC2, 0x68, 0x6C, 0x69, 0x6E, 0xE5, 0xC2, 0x9D, 0xEE, 0x08, 0x0D, 0x40,
+    0x64, 0x16, 0x41, 0xF7, 0x8B, 0x67, 0x72, 0x6F, 0xEB, 0x03, 0xC0, 0xD3, 0x2D, 0x66, 0x72, 0x65,
+    0xE5, 0x8E, 0xE5, 0x03, 0xC0, 0xAC, 0xF4, 0x04, 0x0A, 0xC2, 0x72, 0x6C, 0x69, 0x66, 0x79, 0x2E,
+    0x61, 0x70, 0xF0, 0xC2, 0x4B, 0xAE, 0x41, 0x58, 0x07, 0x04, 0x0A, 0x03, 0x40, 0xE7, 0x02, 0x03,
+    0x09, 0x85, 0xED, 0x07, 0x0A, 0x05, 0x03, 0x31, 0xC1, 0x10, 0x79, 0x73, 0x68, 0x6F, 0x70, 0x69,
+    0x66, 0xF9, 0xC2, 0x1A, 0x73, 0x6B, 0xAE, 0xC1, 0x42, 0xE9, 0xC2, 0x44, 0xE5, 0x08, 0xC2, 0x42,
+    0xEC, 0x02, 0x85, 0x74, 0x64, 0xAE, 0xC2, 0x29, 0xE7, 0xC2, 0x19, 0xEB, 0x07, 0x03, 0x04, 0x03,
+    0x42, 0x16, 0x83, 0xF7, 0xC1, 0xBF, 0x6F, 0x62, 0xE5, 0x8B, 0xE8, 0xC1, 0xB8, 0x61, 0x77, 0x61,
+    0x73, 0x61, 0x6B, 0x69, 0x2E, 0x6A, 0xF0, 0xC1, 0xAC, 0xEA, 0x03, 0xC2, 0x0C, 0xED, 0xC1, 0xA5,
+    0xE9, 0x04, 0x07, 0xC2, 0x02, 0xEE, 0x05, 0x41, 0xB8, 0xC0, 0x54, 0x66, 0xEF, 0xC2, 0x0A, 0xE8,
+    0x03, 0xC1, 0xED, 0x65, 0x72, 0x6F, 0x6B, 0xF5, 0xC0, 0x68, 0xE7, 0x06, 0x03, 0x22, 0x1E, 0xC1,
+    0x40, 0xF2, 0xC1, 0xD0, 0xEF, 0x03, 0x16, 0x84, 0xF6, 0x04, 0x04, 0xC1, 0xE6, 0x74, 0xAE, 0xC1,
+    0xD3, 0xAE, 0x40, 0xCC, 0x07, 0x04, 0x07, 0x03, 0x03, 0x40, 0xE7, 0x02, 0x0C, 0x85, 0x62, 0xAE,
+    0xC0, 0xCC, 0xAE, 0x41, 0xC2, 0x83, 0x69, 0xF4, 0x02, 0x84, 0x6C, 0x61, 0xE2, 0x92, 0x68, 0x75,
+    0xE2, 0x02, 0x8C, 0x75, 0x73, 0x65, 0x72, 0x63, 0x6F, 0x6E, 0x74, 0x65, 0xEE, 0xC1, 0x75, 0x2E,
+    0x69, 0xEF, 0xC1, 0x8C, 0x65, 0x6E, 0x2E, 0xE9, 0xC1, 0xA9, 0xE6, 0x07, 0x04, 0x0F, 0x40, 0xB0,
+    0xC0, 0xD1, 0x6C, 0xF9, 0xC0, 0x52, 0xE9, 0x03, 0xC1, 0x9D, 0x72, 0x65, 0x62, 0x61, 0x73, 0x65,
+    0x61, 0x70, 0xF0, 0xC1, 0x59, 0x65, 0x64, 0x2E, 0x75, 0xF3, 0xC1, 0x8D, 0xE5, 0x05, 0x03, 0x06,
+    0xC1, 0x25, 0xF2, 0xC1, 0x10, 0x6C, 0x62, 0x2E, 0xE1, 0xC1, 0x3B, 0xE4, 0x03, 0xC1, 0x53, 0xF5,
+    0x03, 0xC1, 0x74, 0xAE, 0x40, 0x5A, 0x07, 0x04, 0x07, 0x06, 0xC0, 0xFA, 0xE4, 0x04, 0x0B, 0xC1,
+    0x44, 0x79, 0x6E, 0x64, 0x6E, 0x73, 0x2E, 0x6F, 0x72, 0xE7, 0xC1, 0x34, 0xE5, 0x04, 0x03, 0xC1,
+    0x53, 0xF6, 0xC1, 0x55, 0x6E, 0x6F, 0x2E, 0x64, 0x65, 0xF6, 0xC1, 0x24, 0xE3, 0x0A, 0x40, 0x4A,
+    0x14, 0x03, 0x31, 0x40, 0x9A, 0x0E, 0x85, 0xEF, 0x04, 0x3D, 0xC0, 0xFE, 0xED, 0x04, 0x13, 0xC1,
+    0x23, 0x70, 0x75, 0x74, 0x65, 0x2E, 0x61, 0x6D, 0x61, 0x7A, 0x6F, 0x6E, 0x61, 0x77, 0x73, 0x2E,
+    0x63, 0x6F, 0x6D, 0x8A, 0xAE, 0x09, 0x07, 0x04, 0x03, 0x04, 0x03, 0x03, 0xC0, 0xFA, 0xF4, 0x03,
+    0xC1, 0x04, 0xF7, 0xC1, 0x14, 0x73, 0xE7, 0xC1, 0x10, 0xF2, 0xC0, 0xB6, 0x6D, 0xF8, 0xC1, 0x09,
+    0xE8, 0xC0, 0xEF, 0xE2, 0xC0, 0xF2, 0xE1, 0xC0, 0xA9, 0xAE, 0x40, 0xE3, 0x02, 0x03, 0x03, 0x03,
+    0x83, 0x6C, 0x6F, 0x75, 0xE4, 0x04, 0x07, 0xC0, 0xE7, 0x66, 0x72, 0x6F, 0x6E, 0xF4, 0xC0, 0xBC,
+    0x61, 0x70, 0xF0, 0xC0, 0xB7, 0xEB, 0xC0, 0x6D, 0x69, 0x74, 0x79, 0xAE, 0x03, 0x09, 0x8F, 0x79,
+    0x6F, 0x6B, 0x6F, 0x68, 0x61, 0x6D, 0xE1, 0x9E, 0xF3, 0x02, 0x85, 0x65, 0x6E, 0x64, 0xE1, 0x95,
+    0x61, 0x70, 0x70, 0x6F, 0x72, 0xEF, 0x8F, 0xEB, 0x02, 0x84, 0x6F, 0x62, 0xE5, 0x88, 0x61, 0x77,
+    0x61, 0x73, 0x61, 0x6B, 0x69, 0x2E, 0x6A, 0xF0, 0xB6, 0xE8, 0xC0, 0xAD, 0xE2, 0x07, 0x03, 0x28,
+    0x03, 0x02, 0xC0, 0x62, 0xF9, 0xC0, 0xA2, 0xEC, 0x02, 0xA1, 0xEF, 0x02, 0x90, 0x67, 0x73, 0x70,
+    0x6F, 0x74, 0x2E, 0x63, 0xEF, 0x03, 0xC0, 0x57, 0x2E, 0x75, 0xEB, 0xC0, 0x63, 0x62, 0x2E, 0x63,
+    0x6F, 0x72, 0x65, 0x2E, 0x77, 0x69, 0x6E, 0x64, 0x6F, 0xF7, 0xA4, 0x2E, 0x75, 0x6B, 0x81, 0xE9,
+    0xC0, 0x63, 0x64, 0x82, 0xE3, 0xC0, 0x6F, 0xE1, 0x0B, 0x0D, 0x03, 0x03, 0x04, 0x0A, 0x0D, 0x0E,
+    0x02, 0x03, 0x9F, 0x7A, 0x75, 0x72, 0x65, 0x77, 0x65, 0x62, 0x73, 0x69, 0x74, 0x65, 0xF3, 0xAB,
+    0xF5, 0xC0, 0x56, 0xF4, 0xC0, 0x53, 0x72, 0xF0, 0xC0, 0x4E, 0x70, 0xF0, 0x03, 0xC0, 0x48, 0x73,
+    0x70, 0x6F, 0xF4, 0x89, 0x6D, 0x61, 0x7A, 0x6F, 0x6E, 0x61, 0x77, 0x73, 0x2E, 0x63, 0x6F, 0xED,
+    0x8E, 0x6C, 0x77, 0x61, 0x79, 0x73, 0x64, 0x61, 0x74, 0x61, 0x2E, 0x6E, 0x65, 0x74, 0x88, 0xE9,
+    0xA7, 0x64, 0xAE, 0x95, 0x63, 0xAE, 0x07, 0x02, 0x03, 0x03, 0x03, 0x03, 0x85, 0xFA, 0x98, 0x75,
+    0xEB, 0x96, 0x6E, 0xFA, 0x93, 0x6B, 0xF2, 0x90, 0x6A, 0xF0, 0x8D, 0xE9, 0x02, 0x83, 0xEC, 0x88,
+    0x63, 0xEE, 0x85, 0x62, 0x2E, 0x63, 0x61, 0x80,
+];
+
+// Decodes a 1-, 2-, or 3-byte child jump delta from the DAFSA offset list and advances `pos`.
+// If `pos` sits on an end-of-offsets entry (`0x80` bit set), sets `pos = PSL_DAFSA_LEN` after decoding.
+//
+// Example:
+//   PSL_DAFSA_GRAPH[0] = 0x1D, pos = 0, offset = 0
+//   returns: true, pos = 1, offset = 29
+fn dafsa_get_next_offset(pos: i64&, offset: i64&) -> bool {
+    guard pos >= 0 && pos < PSL_DAFSA_LEN else {
+        return false;
+    }
+    let b0 = PSL_DAFSA_GRAPH[pos];
+    let offset_type = b0 & DAFSA_OFFSET_TYPE_MASK;
+    var bytes_consumed: i64 = 1;
+    var delta:          i64 = b0 & DAFSA_OFFSET_SINGLE_MASK;
+
+    if offset_type == 0x60 {
+        guard core::add_sat_i64(pos, 2) < PSL_DAFSA_LEN else {
+            return false;
+        }
+        let b0_low: u64 = b0 & DAFSA_OFFSET_LOW_MASK;
+        let b1:     u64 = PSL_DAFSA_GRAPH[core::add_sat_i64(pos, 1)];
+        let b2:     u64 = PSL_DAFSA_GRAPH[core::add_sat_i64(pos, 2)];
+        let hi_mid = core::add_sat_u64(core::mul_sat_u64(b0_low, 65536), core::mul_sat_u64(b1, 256));
+        delta = core::add_sat_u64(hi_mid, b2) as i64;
+        bytes_consumed = 3;
+    } else if offset_type == 0x40 {
+        guard core::add_sat_i64(pos, 1) < PSL_DAFSA_LEN else {
+            return false;
+        }
+        let b0_low: u64 = b0 & DAFSA_OFFSET_LOW_MASK;
+        let b1:     u64 = PSL_DAFSA_GRAPH[core::add_sat_i64(pos, 1)];
+        delta = core::add_sat_u64(core::mul_sat_u64(b0_low, 256), b1) as i64;
+        bytes_consumed = 2;
+    }
+
+    if (b0 & DAFSA_END_BIT) != 0 {
+        pos = PSL_DAFSA_LEN;
+    } else {
+        pos = core::add_sat_i64(pos, bytes_consumed);
+    }
+    offset = core::add_sat_i64(offset, delta);
+    return offset >= 0 && offset < PSL_DAFSA_LEN;
+}
+
+// Consumes intermediate plain-ASCII characters (`0x1F..0x7F`) of a DAFSA node label against `key`.
+// Stops when `node_pos` reaches a terminal byte (`>= 0x80`) or when `key_idx` reaches `key.len`.
+//
+// Example:
+//   key = "co.uk", key_idx = 0, node_pos = 109 ('o', 'r' | 0x80)
+//   returns: true (when prefix matches up to terminal byte)
+fn dafsa_consume_prefix_label(key: const u8[:], key_idx: i64&, node_pos: i64&) -> bool {
+    while node_pos >= 0 && node_pos < PSL_DAFSA_LEN {
+        let b = PSL_DAFSA_GRAPH[node_pos];
+        if b < DAFSA_KEY_MIN_CHAR || b >= DAFSA_KEY_MAX_CHAR {
+            return true;
+        }
+        guard key_idx < key.len && key[key_idx] == b else {
+            return false;
+        }
+        key_idx = core::add_sat_i64(key_idx, 1);
+        node_pos = core::add_sat_i64(node_pos, 1);
+    }
+    return false;
+}
+
+// Evaluates the terminal byte of a DAFSA node at `node_pos` after prefix characters have matched.
+// Returns `0` on mismatch, `1` when `out_ret` holds a final return value, or `2` to descend to `node_pos`.
+//
+// Example:
+//   key = "uk", key_idx = 1, node_pos = 197 ('k' | 0x80, 0x80)
+//   returns: 1, out_ret = 0, key_idx = 2, node_pos = 198
+fn dafsa_eval_node_terminal(key: const u8[:], key_idx: i64&, node_pos: i64&, out_ret: i32&) -> i32 {
+    guard dafsa_consume_prefix_label(key, key_idx, node_pos) && node_pos < PSL_DAFSA_LEN else {
+        return 0;
+    }
+    let term = PSL_DAFSA_GRAPH[node_pos];
+    if term >= DAFSA_RETURN_MIN && term <= DAFSA_RETURN_MAX {
+        guard key_idx == key.len else {
+            return 0;
+        }
+        let v: i32 = term & DAFSA_RETURN_VAL_MASK;
+        out_ret = v;
+        return 1;
+    }
+    guard term >= DAFSA_END_CHAR_MIN && key_idx < key.len && key[key_idx] == (term & DAFSA_CHAR_MASK) else {
+        return 0;
+    }
+    key_idx = core::add_sat_i64(key_idx, 1);
+    node_pos = core::add_sat_i64(node_pos, 1);
+    return 2;
+}
+
+// Evaluates the compiled Chromium/libpsl DAFSA for `key` in O(L) time with zero heap allocation.
+// Returns the 4-bit rule flag mask (`0..15`) on exact match, or `PSL_DAFSA_NOT_FOUND` (`-1`).
+//
+// Example:
+//   key = "co.uk"  -> returns 0 (standard ICANN suffix)
+//   key = "ck"     -> returns 2 (PSL_DAFSA_FLAG_WILDCARD)
+//   key = "www.ck" -> returns 1 (PSL_DAFSA_FLAG_EXCEPTION)
+fn dafsa_lookup_string(key: const u8[:]) -> i32 {
+    guard key.len > 0 else {
+        return PSL_DAFSA_NOT_FOUND;
+    }
+    var pos:     i64 = 0;
+    var offset:  i64 = 0;
+    var key_idx: i64 = 0;
+
+    while dafsa_get_next_offset(pos, offset) {
+        var node_pos = offset;
+        var saved_key_idx = key_idx;
+        var out_ret: i32 = PSL_DAFSA_NOT_FOUND;
+        let step = dafsa_eval_node_terminal(key, key_idx, node_pos, out_ret);
+        if step == 1 {
+            return out_ret;
+        }
+        if step == 2 {
+            pos = node_pos;
+            offset = node_pos;
+        } else {
+            key_idx = saved_key_idx;
+        }
+    }
+    return PSL_DAFSA_NOT_FOUND;
+}
+
+// Scans forward in `norm` from `start` to the next '.' delimiter (or `norm.len`).
+//
+// Example:
+//   norm = "www.ck", start = 0 -> returns 3
+fn dafsa_scan_to_next_dot(norm: const u8[:], start: i64) -> i64 {
+    var dot = start;
+    while dot < norm.len && norm[dot] != 0x2E {
+        dot = core::add_sat_i64(dot, 1);
+    }
+    return dot;
+}
+
+// Resolves the public suffix slice when a DAFSA rule matches at `idx` with `flags`.
+//
+// Example:
+//   norm = "sub.www.ck", idx = 4, prev_dot = 0, flags = 1 -> returns "ck", true, true
+fn dafsa_resolve_rule_flags(norm: const u8[:], idx: i64, prev_dot: i64, flags: i32) -> const u8[:], bool, bool {
+    guard flags != PSL_DAFSA_NOT_FOUND else {
+        return norm[0..0], false, false;
+    }
+    let candidate = norm[idx..norm.len];
+    let is_icann = (flags & PSL_DAFSA_FLAG_PRIVATE) == 0;
+    if (flags & PSL_DAFSA_FLAG_EXCEPTION) != 0 {
+        let next_start = core::add_sat_i64(dafsa_scan_to_next_dot(norm, idx), 1);
+        if next_start < norm.len {
+            return norm[next_start..norm.len], true, is_icann;
+        }
+        return candidate, true, is_icann;
+    }
+    if (flags & PSL_DAFSA_FLAG_WILDCARD) != 0 {
+        if idx > 0 {
+            let wild_start = core::add_sat_i64(prev_dot, 1);
+            return norm[wild_start..norm.len], true, is_icann;
+        }
+        return candidate, true, is_icann;
+    }
+    return candidate, true, is_icann;
+}
+
+//Evaluates candidate suffixes of `norm` (a lowercase, leading/trailing-dot-free domain)
+// from longest to shortest against the DAFSA, applying exception (`!`), wildcard (`*.`),
+// and exact rules per the Public Suffix List specification (https://publicsuffix.org/list/).
+// Returns `(suffix_slice, matched, is_icann)`.
+//
+// Example:
+//   norm = "sub.www.ck" -> returns "ck", true, true (exception rule !www.ck drops 1 label)
+//   norm = "sub.foo.ck" -> returns "foo.ck", true, true (wildcard rule *.ck includes 1 label)
+fn dafsa_find_public_suffix(norm: const u8[:]) -> const u8[:], bool, bool {
+    guard norm.len > 0 else {
+        return norm[0..0], false, false;
+    }
+    var idx:      i64 = 0;
+    var prev_dot: i64 = -1;
+    while idx < norm.len {
+        let flags = dafsa_lookup_string(norm[idx..norm.len]);
+        let suf, matched, is_icann = dafsa_resolve_rule_flags(norm, idx, prev_dot, flags);
+        if matched {
+            return suf, true, is_icann;
+        }
+        let next_dot = dafsa_scan_to_next_dot(norm, idx);
+        prev_dot = if idx == 0 { -1 } else { core::sub_sat_i64(idx, 1) };
+        idx = core::add_sat_i64(next_dot, 1);
+    }
+    return norm[0..0], false, false;
+}
+
+// Validates that `domain` is non-empty, <= 256 bytes, valid UTF-8, has no leading
+// or trailing '.', has no empty '..' labels, is not an IP literal, and normalizes to lowercase.
+//
+// Example:
+//   domain = "Example.CO.UK", out = [] -> returns true, out = "example.co.uk"
+//   domain = ".com", out = []          -> returns false (leading dot rejected)
+fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bool {
+    out.clear();
+    guard domain.len > 0 && domain.len <= 256 else {
+        return false;
+    }
+    guard core::validate_utf8(domain) else {
+        return false;
+    }
+    let last_idx = core::sub_sat_i64(domain.len, 1);
+    guard domain[0] != 0x2E && domain[last_idx] != 0x2E else {
+        return false;
+    }
+    guard !core::is_ip_address_literal(domain) else {
+        return false;
+    }
+    var i: i64 = 0;
+    var prev_was_dot = false;
+    while i < domain.len {
+        let b = domain[i];
+        guard b > 0x20 && b != 0x7F else {
+            return false;
+        }
+        if b == 0x2E {
+            guard !prev_was_dot else {
+                return false;
+            }
+            prev_was_dot = true;
+        } else {
+            prev_was_dot = false;
+        }
+        guard out.len < out.cap else {
+            return false;
+        }
+        out.push(core::to_lower_ascii_byte(b));
+        i = core::add_sat_i64(i, 1);
+    }
+    return true;
+}
+
+// Evaluates the compiled Chromium/libpsl DAFSA binary automaton in O(L) time.
+// Returns `true` if `domain` is a public suffix (ICANN or Private), `false` if it is a
+// registrable domain (e.g. `example.com`, `www.ck`, `city.kawasaki.jp`) or malformed
+// (leading/trailing dots, empty labels, IP literal, or invalid UTF-8).
+//
+// Example:
+//   domain = "co.uk"   -> returns true
+//   domain = "foo.ck"  -> returns true (*.ck wildcard)
+//   domain = "www.ck"  -> returns false (!www.ck exception)
+//   domain = ".com"    -> returns false (leading dot rejected)
+fn psl_is_public_suffix(domain: const u8[:]) -> bool {
+    var norm: u8[..256] = [];
+    guard validate_and_lowercase_psl_domain(domain, norm) else {
+        return false;
+    }
+    let suffix, matched, _ = dafsa_find_public_suffix(norm[0..norm.len]);
+    if matched {
+        return suffix.len == norm.len;
+    }
+    var i: i64 = 0;
+    while i < norm.len {
+        if norm[i] == 0x2E {
+            return false;
+        }
+        i = core::add_sat_i64(i, 1);
+    }
+    return true;
+}
+
 enum PslRuleType {
     Normal,
     Wildcard,
@@ -28,7 +374,8 @@ struct PslRule {
 }
 
 struct PslDatabase {
-    rules: PslRule[>..] = [],
+    use_dafsa: bool         = false,
+    rules:     PslRule[>..] = [],
 }
 
 fn psl_to_lower(s: u8[:]) {
@@ -50,10 +397,11 @@ fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, 
 
 fn clear_psl_rules(db: PslDatabase&) {
     db.rules.clear();
+    db.use_dafsa = false;
 }
 
 fn new_psl_database() -> PslDatabase {
-    var db = PslDatabase { rules: [] };
+    var db = PslDatabase { rules: [], use_dafsa: true };
     init_default_psl_rules(db);
     return db;
 }
@@ -82,7 +430,7 @@ fn psl_match_exception(rule: const PslRule&, norm: const u8[:]) -> const u8[:] {
     if first_dot < 0 {
         return pat;
     }
-    let start = first_dot + 1;
+    let start = core::add_sat_i64(first_dot, 1);
     if start >= pat.len {
         return pat;
     }
@@ -92,8 +440,8 @@ fn psl_match_exception(rule: const PslRule&, norm: const u8[:]) -> const u8[:] {
 fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_labels: i32&) -> bool {
     let pat_len = pat.len;
     let norm_len = norm.len;
-    let dots = core::count_byte(pat, '.') as i32;
-    let num_labels = dots + 1;
+    let dots = core::count_byte(pat, '.');
+    let num_labels = core::add_sat_i64(dots, 1) as i32;
     if norm == pat {
         out_start = 0;
         out_labels = num_labels;
@@ -105,17 +453,17 @@ fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_la
     if norm_len < pat_len {
         return false;
     }
-    let suffix_start = norm_len - pat_len;
+    let suffix_start = core::sub_sat_i64(norm_len, pat_len);
     out_start = suffix_start;
     out_labels = num_labels;
     return true;
 }
 
 fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_labels: i32&) -> bool {
-    let dots = core::count_byte(pat, '.') as i32;
+    let dots = core::count_byte(pat, '.');
     if norm == pat {
         out_start = 0;
-        out_labels = dots + 1;
+        out_labels = core::add_sat_i64(dots, 1) as i32;
         return true;
     }
     if !core::ends_with_dot_suffix(norm, pat) {
@@ -126,20 +474,19 @@ fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_
     if n_len <= p_len {
         return false;
     }
-    let rem_len = n_len - p_len;
-    let prefix_len = rem_len - 1;
+    let rem_len = core::sub_sat_i64(n_len, p_len);
+    let prefix_len = core::sub_sat_i64(rem_len, 1);
     if prefix_len < 0 || prefix_len > n_len {
         return false;
     }
     let prefix = norm[..prefix_len];
     let last_dot = core::last_index_of_byte(prefix, '.');
-    let next_dot = last_dot + 1;
+    let next_dot = core::add_sat_i64(last_dot, 1);
     var start: i64 = 0;
     if last_dot >= 0 {
         start = next_dot;
     }
-    let dots = core::count_byte(pat, '.') as i32;
-    let num_labels = dots + 2;
+    let num_labels = core::add_sat_i64(dots, 2) as i32;
     out_start = start;
     out_labels = num_labels;
     return true;
@@ -178,51 +525,69 @@ fn psl_find_best_rule(db: const PslDatabase&, norm: const u8[:], out_start: i64&
     return false;
 }
 
+// Evaluates custom exception rules in `db.rules` against `norm`.
+//
+// Example:
+//   norm = "www.ck" -> returns "ck", true, true (when !www.ck rule exists in db.rules)
+fn psl_find_custom_exception(db: const PslDatabase&, norm: const u8[:]) -> const u8[:], bool, bool {
+    for &rule in db.rules {
+        let exc_suffix = psl_match_exception(rule, norm);
+        if exc_suffix.len > 0 {
+            return exc_suffix, true, (rule.section == PslSection.Icann);
+        }
+    }
+    return norm[0..0], false, false;
+}
+
 // Computes the Public Suffix for `domain` against `db` per Mozilla PSL specification.
 // Returns (has_suffix, is_icann).
 fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -> bool, bool {
     out.clear();
     var norm_buf: u8[..256] = [];
-    if !psl_normalize_domain(domain, norm_buf) {
+    guard psl_normalize_domain(domain, norm_buf) else {
         return false, false;
     }
     let norm = norm_buf[..];
-    if core::is_ip_address_literal(norm) {
+    guard !core::is_ip_address_literal(norm) else {
         return false, false;
     }
 
-    // 1. Exception rules take absolute precedence (!pattern)
-    for &rule in db.rules {
-        let exc_suffix = psl_match_exception(rule, norm);
-        if exc_suffix.len > 0 {
-            out.append(exc_suffix);
-            return true, (rule.section == PslSection.Icann);
-        }
+    // 1. Exception rules in custom runtime rules take precedence (!pattern)
+    let exc_suf, exc_ok, exc_icann = psl_find_custom_exception(db, norm);
+    if exc_ok {
+        out.append(exc_suf);
+        return true, exc_icann;
     }
 
-    // 2. Normal and Wildcard rules: select matching rule with the greatest number of labels
+    // 2. Normal and Wildcard rules in custom runtime rules
     var best_start: i64 = 0;
     var best_sec = PslSection.Icann;
     if psl_find_best_rule(db, norm, best_start, best_sec) {
-        if best_start < 0 || best_start > norm.len {
-            out.clear();
-            return false, false;
+        let custom_suf = norm[best_start..];
+        if db.use_dafsa {
+            let dafsa_suf, dafsa_matched, dafsa_icann = dafsa_find_public_suffix(norm);
+            if dafsa_matched && dafsa_suf.len > custom_suf.len {
+                out.append(dafsa_suf);
+                return true, dafsa_icann;
+            }
         }
-        out.append(norm[best_start..]);
+        out.append(custom_suf);
         return true, (best_sec == PslSection.Icann);
     }
 
-    // 3. Fallback rule: if no rules match, the default rule is * (highest-level TLD)
+    // 3. Evaluate compiled Chromium/libpsl DAFSA when enabled
+    if db.use_dafsa {
+        let dafsa_suf, dafsa_matched, dafsa_icann = dafsa_find_public_suffix(norm);
+        if dafsa_matched {
+            out.append(dafsa_suf);
+            return true, dafsa_icann;
+        }
+    }
+
+    // 4. Fallback rule: if no rules match, the default rule is * (highest-level TLD)
     let last_dot = core::last_index_of_byte(norm, '.');
-    let next_dot = last_dot + 1;
-    var tld_start: i64 = 0;
-    if last_dot >= 0 {
-        tld_start = next_dot;
-    }
-    if tld_start < 0 || tld_start > norm.len {
-        out.clear();
-        return false, false;
-    }
+    let next_dot = core::add_sat_i64(last_dot, 1);
+    let tld_start = if last_dot >= 0 { next_dot } else { 0 };
     out.append(norm[tld_start..]);
     return true, true;
 }
@@ -248,17 +613,17 @@ fn is_public_suffix(db: const PslDatabase&, domain: const u8[:], is_icann_only: 
 
 fn psl_find_registrable_start(clean_host: const u8[:], suffix_len: i64) -> i64 {
     let host_len = clean_host.len;
-    let min_needed = suffix_len + 1;
+    let min_needed = core::add_sat_i64(suffix_len, 1);
     if host_len <= min_needed {
         return 0;
     }
-    let prefix_len = host_len - min_needed;
+    let prefix_len = core::sub_sat_i64(host_len, min_needed);
     if prefix_len < 0 || prefix_len > host_len {
         return 0;
     }
     let prefix = clean_host[..prefix_len];
     let last_dot = core::last_index_of_byte(prefix, '.');
-    let next_pos = last_dot + 1;
+    let next_pos = core::add_sat_i64(last_dot, 1);
     if last_dot >= 0 {
         return next_pos;
     }
@@ -303,14 +668,7 @@ fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) 
 fn is_public_suffix_domain(domain: const u8[:]) -> bool {
     let clean_domain = core::trim_byte(domain, '.');
     guard clean_domain.len > 0 else { return false; }
-    if core::is_ip_address_literal(clean_domain) { return false; }
-
-    var suffix: u8[..128] = [];
-    core::compute_public_suffix(clean_domain, suffix);
-    if suffix.len == 0 { return false; }
-
-    // If domain exactly equals its public suffix, it is a public suffix
-    return eq_ascii_fold(clean_domain, suffix[..]);
+    return psl_is_public_suffix(clean_domain);
 }
 
 // Overload taking an explicit PSL database
@@ -418,192 +776,5 @@ fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
 }
 
 fn init_default_psl_rules(db: PslDatabase&) {
-    // 1. Generic & infrastructure TLDs (ICANN)
-    db.rules.push(new_psl_rule("com", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("mil", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("int", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("arpa", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("io", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ai", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("co", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("dev", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("app", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("xyz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("info", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("biz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("online", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("site", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("store", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("tech", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("cloud", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("pro", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("me", PslRuleType.Normal, PslSection.Icann));
-
-    // 2. Major Country-Code TLDs (ICANN)
-    db.rules.push(new_psl_rule("uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("de", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("fr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("nl", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("eu", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("us", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ca", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("su", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("by", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("kz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ua", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ch", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("at", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("se", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("no", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("fi", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("dk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("pl", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("cz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("cn", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("br", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("mx", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("au", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("nz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("za", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("kr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("tw", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("hk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("sg", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("il", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("tr", PslRuleType.Normal, PslSection.Icann));
-
-    // 3. Multi-level ccTLD rules (ICANN)
-    db.rules.push(new_psl_rule("co.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("me.uk", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("sch.uk", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.au", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.au", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.au", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.au", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.au", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ne.jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("or.jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("go.jp", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ed.jp", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.nz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.nz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.nz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("govt.nz", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.nz", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.br", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.br", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.br", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.br", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gen.in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.in", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.in", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("pp.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("spb.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("msk.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.ru", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.ru", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.cn", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.cn", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.cn", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.cn", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.cn", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.tw", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.tw", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.tw", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.tw", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.tw", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.kr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ne.kr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("or.kr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("go.kr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.kr", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.sg", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.sg", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.sg", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.sg", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.sg", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("com.tr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("edu.tr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.tr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.tr", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.tr", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.za", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.za", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.za", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.za", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.za", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("co.il", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("org.il", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("net.il", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("ac.il", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("gov.il", PslRuleType.Normal, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("fed.us", PslRuleType.Normal, PslSection.Icann));
-    db.rules.push(new_psl_rule("state.us", PslRuleType.Normal, PslSection.Icann));
-
-    // 4. Wildcards & Exceptions
-    db.rules.push(new_psl_rule("ck", PslRuleType.Wildcard, PslSection.Icann));
-    db.rules.push(new_psl_rule("www.ck", PslRuleType.Exception, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("kawasaki.jp", PslRuleType.Wildcard, PslSection.Icann));
-    db.rules.push(new_psl_rule("city.kawasaki.jp", PslRuleType.Exception, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("kobe.jp", PslRuleType.Wildcard, PslSection.Icann));
-    db.rules.push(new_psl_rule("city.kobe.jp", PslRuleType.Exception, PslSection.Icann));
-
-    db.rules.push(new_psl_rule("bd", PslRuleType.Wildcard, PslSection.Icann));
-    db.rules.push(new_psl_rule("np", PslRuleType.Wildcard, PslSection.Icann));
-
-    // 5. Private Section (Hosting, PaaS, multi-tenant isolation)
-    db.rules.push(new_psl_rule("github.io", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("gitlab.io", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("pages.dev", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("workers.dev", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("vercel.app", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("netlify.app", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("herokuapp.com", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("azurewebsites.net", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("cloudfront.net", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("s3.amazonaws.com", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("elb.amazonaws.com", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("compute.amazonaws.com", PslRuleType.Wildcard, PslSection.Private));
-    db.rules.push(new_psl_rule("fly.dev", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("deno.dev", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("myshopify.com", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("blogspot.com", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("blogspot.co.uk", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("alwaysdata.net", PslRuleType.Normal, PslSection.Private));
-    db.rules.push(new_psl_rule("dyndns.org", PslRuleType.Normal, PslSection.Private));
+    db.use_dafsa = true;
 }

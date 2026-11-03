@@ -71,7 +71,8 @@ fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, 
 
 // 64-bit linear congruential PRNG generator (Knuth MMIX parameters)
 inline fn next_prng(state: u64&) -> u64 {
-    let s = state * 6364136223846793005 + 1442695040888963407;
+    let prod = core::mul_sat_u64(state & 0xFFFFFFFF, 6364136223846793005);
+    let s = (state >> 13) ^ prod ^ 1442695040888963407;
     state = s;
     return s;
 }
@@ -203,9 +204,8 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
 
 inline fn dec_active_conns(target: UpstreamTarget&) {
     let cur = target.active_conns;
-    if cur > 0 {
-        target.active_conns = cur - 1;
-    }
+    guard cur > 0 else { return; }
+    target.active_conns = (core::sub_sat_u64(cur as u64, 1)) as i32;
 }
 
 // Releases an active connection for an upstream target upon response completion.
@@ -220,17 +220,92 @@ inline fn inc_target_successes(target: UpstreamTarget&) -> i32 {
     return s;
 }
 
+// Evaluates target circuit breaker state against consecutive healthy/unhealthy thresholds (haproxy hysteresis).
+fn evaluate_circuit_breaker(target: UpstreamTarget&, max_fails_override: i32 = 0) -> bool {
+    let unhealthy_thresh = if target.unhealthy_threshold > 0 {
+        target.unhealthy_threshold
+    } else if max_fails_override > 0 {
+        max_fails_override
+    } else {
+        3
+    };
+    let healthy_thresh = if target.healthy_threshold > 0 { target.healthy_threshold } else { 2 };
+
+    if target.fails >= unhealthy_thresh {
+        target.health_state = UpstreamHealthState.Down;
+        target.is_healthy = false;
+        return false;
+    }
+
+    if target.health_state == UpstreamHealthState.Down {
+        if target.successes > 0 {
+            target.health_state = UpstreamHealthState.Probing;
+        } else {
+            target.is_healthy = false;
+            return false;
+        }
+    }
+
+    if target.health_state == UpstreamHealthState.Probing {
+        if target.successes >= healthy_thresh {
+            target.health_state = UpstreamHealthState.Up;
+            target.is_healthy = true;
+            return true;
+        }
+        target.is_healthy = false;
+        return false;
+    }
+
+    target.health_state = UpstreamHealthState.Up;
+    target.is_healthy = true;
+    return true;
+}
+
+// Records an active or passive health probe result on `target` and evaluates flapping hysteresis.
+// Requires `unhealthy_threshold` consecutive failures to trip Down, and `healthy_threshold`
+// consecutive successes in Half-Open (`Probing`) state to close the circuit back to Up.
+fn record_probe_result(target: UpstreamTarget&, probe_ok: bool) -> UpstreamHealthState {
+    if probe_ok {
+        target.fails = 0;
+        let _ = inc_target_successes(target);
+    } else {
+        target.successes = 0;
+        let _ = inc_target_fails(target);
+        if target.health_state == UpstreamHealthState.Probing {
+            target.health_state = UpstreamHealthState.Down;
+            target.is_healthy = false;
+            return target.health_state;
+        }
+    }
+    let _ = evaluate_circuit_breaker(target, 0);
+    return target.health_state;
+}
+
 // Records success, clearing failure streak and restoring circuit if applicable.
 fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return; }
     cluster.targets[target_idx].fails = 0;
     let s = inc_target_successes(cluster.targets[target_idx]);
 
+    let healthy_thresh = if cluster.targets[target_idx].healthy_threshold > 0 {
+        cluster.targets[target_idx].healthy_threshold
+    } else {
+        1
+    };
+
     if cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
-        if s >= cluster.targets[target_idx].healthy_threshold {
+        if s >= healthy_thresh {
             cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
             cluster.targets[target_idx].is_healthy = true;
             cluster.circuit_open = false;
+        }
+    } else if cluster.targets[target_idx].health_state == UpstreamHealthState.Down {
+        if s >= healthy_thresh || cluster.max_fails > 0 {
+            cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
+            cluster.targets[target_idx].is_healthy = true;
+            cluster.circuit_open = false;
+        } else {
+            cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
         }
     } else {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
@@ -264,8 +339,12 @@ fn record_upstream_failure(cluster: UpstreamCluster&, target_idx: i32) {
     cluster.targets[target_idx].successes = 0;
     let fails = inc_target_fails(cluster.targets[target_idx]);
 
-    let max_f = if cluster.max_fails > 0 { cluster.max_fails } else { cluster.targets[target_idx].unhealthy_threshold };
-    if fails >= max_f {
+    let max_f = if cluster.max_fails > 0 {
+        cluster.max_fails
+    } else {
+        cluster.targets[target_idx].unhealthy_threshold
+    };
+    if fails >= max_f || cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
         cluster.targets[target_idx].is_healthy = false;
     }

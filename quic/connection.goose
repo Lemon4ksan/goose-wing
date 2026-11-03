@@ -40,6 +40,7 @@ struct QuicConnection {
     app_space:         PnSpaceState         = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
     rtt:               RttState             = RttState { .. },
     pacer:             Pacer                = Pacer { .. },
+    bbr:               BbrState             = BbrState { .. },
     stream_table:      QuicStreamTable      = QuicStreamTable { .. },
     flow_ctrl:         QuicFlowControl      = QuicFlowControl { .. },
     bytes_received:    u64                  = 0,
@@ -56,11 +57,13 @@ fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
     var conn = QuicConnection {
         role:              QuicRole.Server,
         state:             QuicConnState.Initial,
-        validated_address: false,
+        bbr:               new_bbr_state(),
         stream_table:      new_quic_stream_table(QuicRole.Server),
         flow_ctrl:         new_quic_flow_control(65536, 65536),
+        validated_address: false,
         ..
     };
+    conn.pacer = conn.bbr.pacer;
     conn.scid.append(scid);
     return conn;
 }
@@ -69,11 +72,13 @@ fn new_quic_client_connection(server_dcid: const u8[:], client_scid: const u8[:]
     var conn = QuicConnection {
         role:              QuicRole.Client,
         state:             QuicConnState.Initial,
-        validated_address: true, // Client address validation is implicit
+        bbr:               new_bbr_state(),
         stream_table:      new_quic_stream_table(QuicRole.Client),
         flow_ctrl:         new_quic_flow_control(65536, 65536),
+        validated_address: true, // Client address validation is implicit
         ..
     };
+    conn.pacer = conn.bbr.pacer;
     conn.dcid.append(server_dcid);
     conn.scid.append(client_scid);
     return conn;
@@ -134,12 +139,131 @@ fn generate_space_ack(space: PnSpaceState&, out_ack: AckFrame&) -> bool {
     return false;
 }
 
-inline fn inc_conn_sent_bytes(conn: QuicConnection&, size_bytes: u64) {
-    conn.bytes_sent = conn.bytes_sent + size_bytes;
+fn match_pn_in_ack_ranges(pn: u64, ranges: const AckInterval[..64]&) -> bool {
+    for r_idx in ranges.len {
+        if pn >= ranges[r_idx].smallest && pn <= ranges[r_idx].largest {
+            return true;
+        }
+    }
+    return false;
 }
 
-inline fn inc_conn_tx_packets(conn: QuicConnection&) {
-    conn.packets_tx = conn.packets_tx + 1;
+// Marks packets matching `ranges` as acknowledged, removing them from `sent_packets`
+// and returning `(acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts)`.
+fn mark_acked_packets_in_space(
+    space:  PnSpaceState&,
+    ranges: const AckInterval[..64]&,
+    now_us: u64,
+) -> u64, u64, u64, u64 {
+    var acked_bytes:     u64 = 0;
+    var latest_rtt_us:   u64 = 0;
+    var in_flight_bytes: u64 = 0;
+    var new_acked_pkts:  u64 = 0;
+
+    if !space.has_acked_packets || ranges[0].largest > space.largest_acked_pn {
+        space.largest_acked_pn = ranges[0].largest;
+        space.has_acked_packets = true;
+    }
+
+    var i: i64 = 0;
+    while i < space.sent_packets.len {
+        let pkt = space.sent_packets[i];
+        if match_pn_in_ack_ranges(pkt.pn, ranges) {
+            new_acked_pkts += 1;
+            if pkt.in_flight {
+                acked_bytes += pkt.size_bytes;
+            }
+            if pkt.pn == ranges[0].largest {
+                latest_rtt_us = if now_us >= pkt.time_sent_us { now_us - pkt.time_sent_us } else { 0 };
+            }
+            space.sent_packets.remove_at(i);
+        } else {
+            if pkt.in_flight {
+                in_flight_bytes += pkt.size_bytes;
+            }
+            i += 1;
+        }
+    }
+    return acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts;
+}
+
+fn calc_lost_bytes(lost_pkts: const SentPacketMeta[..64]&) -> u64 {
+    var lost_bytes: u64 = 0;
+    for i in lost_pkts.len {
+        if lost_pkts[i].in_flight {
+            lost_bytes += lost_pkts[i].size_bytes;
+        }
+    }
+    return lost_bytes;
+}
+
+// Processes a validated ACK frame in `space`, updating RTT, loss detection, and BBRv3 congestion control.
+fn process_space_ack(
+    conn:      QuicConnection&,
+    space:     PnSpaceState&,
+    ack_frame: const AckFrame&,
+    now_us:    u64,
+    is_app:    bool,
+) -> bool {
+    var acked_ranges: AckInterval[..64] = [];
+    let ok = parse_and_validate_ack(space, ack_frame, acked_ranges);
+    guard ok else {
+        quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+        return false;
+    }
+
+    let acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts =
+        mark_acked_packets_in_space(space, acked_ranges, now_us);
+
+    if new_acked_pkts > 0 && latest_rtt_us > 0 {
+        let ack_delay_us = ack_frame.ack_delay << 3;
+        update_rtt(conn.rtt, latest_rtt_us, ack_delay_us, is_app && conn.state == QuicConnState.Established, now_us);
+    }
+
+    let eff_rtt = if latest_rtt_us > 0 { latest_rtt_us } else { conn.rtt.smoothed_rtt_us };
+    if acked_bytes > 0 {
+        let sample_bw = acked_bytes * 8000;
+        if sample_bw > conn.bbr.bw_hi_bps {
+            conn.bbr.bw_hi_bps = sample_bw;
+        }
+    }
+
+    var lost_pkts: SentPacketMeta[..64] = [];
+    let _ = detect_lost_packets(space, conn.rtt, now_us, lost_pkts);
+    let lost_bytes = calc_lost_bytes(lost_pkts);
+
+    bbr_check_probe_rtt(conn.bbr, now_us, eff_rtt);
+    if lost_bytes > 0 || ack_frame.ecn_ce_count > 0 {
+        bbr_on_congestion_signal(
+            conn.bbr,
+            in_flight_bytes,
+            lost_bytes,
+            acked_bytes,
+            ack_frame.ecn_ce_count,
+            new_acked_pkts,
+        );
+    } else if acked_bytes > 0 {
+        bbr_advance_cycle(conn.bbr, true);
+    }
+    bbr_update_pacing_and_cwnd(conn.bbr);
+    conn.pacer = conn.bbr.pacer;
+    return true;
+}
+
+// Routes an inbound ACK frame to loss recovery, RTT estimation, and the BBRv3 state machine.
+fn quic_conn_on_ack(
+    conn:      QuicConnection&,
+    ack_frame: const AckFrame&,
+    now_us:    u64       = 100000,
+    space_id:  PnSpaceId = PnSpaceId.ApplicationData,
+) -> bool {
+    if space_id == PnSpaceId.Initial {
+        return process_space_ack(conn, conn.initial_space, ack_frame, now_us, false);
+    }
+    if space_id == PnSpaceId.Handshake {
+        return process_space_ack(conn, conn.handshake_space, ack_frame, now_us, false);
+    }
+    return process_space_ack(conn, conn.app_space, ack_frame, now_us, true);
 }
 
 // Records an egress packet for loss recovery and anti-amplification tracking
@@ -151,8 +275,8 @@ fn quic_conn_record_sent(
     ack_eliciting: bool,
     now_us:        u64,
 ) {
-    inc_conn_sent_bytes(conn, size_bytes);
-    inc_conn_tx_packets(conn);
+    conn.bytes_sent = conn.bytes_sent + size_bytes;
+    conn.packets_tx = conn.packets_tx + 1;
 
     let meta = SentPacketMeta {
         pn:            pn,
@@ -167,14 +291,6 @@ fn quic_conn_record_sent(
         Handshake => record_space_sent_packet(conn.handshake_space, meta),
         ApplicationData => record_space_sent_packet(conn.app_space, meta),
     }
-}
-
-inline fn inc_conn_recv_bytes(conn: QuicConnection&, dgram_len: i64) {
-    conn.bytes_received = conn.bytes_received + (dgram_len as u64);
-}
-
-inline fn inc_conn_rx_packets(conn: QuicConnection&) {
-    conn.packets_rx = conn.packets_rx + 1;
 }
 
 fn bind_initial_server_cids(conn: QuicConnection&, hdr: const QuicHeader&) {
@@ -216,44 +332,25 @@ fn dispatch_packet_type(conn: QuicConnection&, hdr: const QuicHeader&, out_ack: 
     return true, false;
 }
 
-inline fn calc_payload_offset(hdr_len: u32) -> i64 {
-    return hdr_len;
-}
-
-inline fn calc_bounded_payload_len(total_len: u64, pn_len: u8) -> i64 {
-    let sub = total_len - pn_len;
-    return sub as i64;
-}
-
-inline fn calc_payload_end(start: i64, bounded_len: i64, dgram_len: i64) -> i64 {
-    let end = start + bounded_len;
-    if end <= dgram_len { return end; }
-    return dgram_len;
-}
-
 inline fn get_bounded_payload(
     dgram:       const u8[:],
     start:       i64,
     payload_len: u64,
     pn_len:      u8,
 ) -> u8[:] {
-    let blen = calc_bounded_payload_len(payload_len, pn_len);
+    let blen = (payload_len - pn_len) as i64;
     let end = start + blen;
     guard end <= dgram.len else { return dgram[..0]; }
     return dgram[start..end];
 }
 
 fn get_packet_payload(dgram: const u8[:], hdr: const QuicHeader&) -> u8[:] {
-    let start = calc_payload_offset(hdr.header_len);
+    let start: i64 = hdr.header_len;
     guard start <= dgram.len else { return dgram[..0]; }
     if hdr.payload_length > hdr.pn_length {
         return get_bounded_payload(dgram, start, hdr.payload_length, hdr.pn_length);
     }
     return dgram[start..];
-}
-
-inline fn calc_stream_end_offset(offset: u64, len: u64) -> u64 {
-    return offset + len;
 }
 
 inline fn validate_stream_recv_final_size(
@@ -295,7 +392,7 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         return false, false;
     }
 
-    let end_offset = calc_stream_end_offset(frame.offset, frame.length);
+    let end_offset = frame.offset + frame.length;
     guard validate_stream_recv_final_size(conn.stream_table.streams[idx], end_offset, frame.fin) else {
         quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
         return false, false;
@@ -557,10 +654,45 @@ inline fn quic_is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeade
     return true;
 }
 
+inline fn header_type_to_space_id(htype: QuicHeaderType) -> PnSpaceId {
+    if htype == QuicHeaderType.Initial {
+        return PnSpaceId.Initial;
+    }
+    if htype == QuicHeaderType.Handshake {
+        return PnSpaceId.Handshake;
+    }
+    return PnSpaceId.ApplicationData;
+}
+
+fn dispatch_inbound_ack_frame(
+    conn:   QuicConnection&,
+    frame:  const QuicFrame&,
+    htype:  QuicHeaderType,
+    now_us: u64,
+) -> bool {
+    let ack_f = AckFrame {
+        is_ecn:          frame.frame_type == QuicFrameType.AckEcn,
+        largest_acked:   frame.offset,
+        ack_delay:       frame.max_data,
+        first_ack_range: frame.length,
+        ..
+    };
+    let space_id = header_type_to_space_id(htype);
+    var has_sent = conn.app_space.has_sent_packets;
+    if space_id == PnSpaceId.Initial {
+        has_sent = conn.initial_space.has_sent_packets;
+    } else if space_id == PnSpaceId.Handshake {
+        has_sent = conn.handshake_space.has_sent_packets;
+    }
+    guard has_sent else { return true; }
+    return quic_conn_on_ack(conn, ack_f, now_us, space_id);
+}
+
 fn quic_conn_process_payload(
     conn:    QuicConnection&,
     payload: const u8[:],
     htype:   QuicHeaderType = QuicHeaderType.OneRtt,
+    now_us:  u64            = 100000,
 ) -> bool, bool {
     // RFC 9000 Section 12.4: Frames and Frame Types - An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
     guard payload.len > 0 else {
@@ -582,6 +714,12 @@ fn quic_conn_process_payload(
             return false, false;
         }
 
+        if frame.frame_type == QuicFrameType.Ack || frame.frame_type == QuicFrameType.AckEcn {
+            guard dispatch_inbound_ack_frame(conn, frame, htype, now_us) else {
+                return false, false;
+            }
+        }
+
         let handled, ack_el = dispatch_inbound_frame(conn, frame);
         guard handled else { return false, false; }
         if ack_el {
@@ -592,7 +730,59 @@ fn quic_conn_process_payload(
     return true, any_ack_el;
 }
 
-// Processes an inbound UDP datagram containing QUIC packets.
+// Computes the total wire length of a single QUIC packet within a coalesced datagram slice.
+// Long Header packets with explicit Length (`Initial`, `ZeroRtt`, `Handshake`) end at
+// `header_len + (payload_length - pn_length)`; Short Header (`OneRtt`) consumes the remainder.
+fn calc_coalesced_packet_wire_len(pkt_slice: const u8[:], hdr: const QuicHeader&) -> i64, bool {
+    let start: i64 = hdr.header_len;
+    guard start <= pkt_slice.len else { return 0, false; }
+    if hdr.header_type == QuicHeaderType.Initial
+        || hdr.header_type == QuicHeaderType.ZeroRtt
+        || hdr.header_type == QuicHeaderType.Handshake {
+        guard hdr.payload_length >= hdr.pn_length else { return 0, false; }
+        let blen = (hdr.payload_length - hdr.pn_length) as i64;
+        guard blen > 0 else { return 0, false; }
+        let total_len = start + blen;
+        guard total_len <= pkt_slice.len else { return 0, false; }
+        return total_len, true;
+    }
+    return pkt_slice.len, true;
+}
+
+// Processes a single QUIC packet slice extracted from an inbound UDP datagram.
+fn process_single_coalesced_packet(
+    conn:      QuicConnection&,
+    pkt_slice: const u8[:],
+    now_us:    u64,
+    out_ack:   AckFrame&,
+) -> i64, bool, bool {
+    let dcid_len: u8 = conn.scid.len as u8;
+    let hdr, ok = parse_quic_header(pkt_slice, dcid_len);
+    guard ok else { return 0, false, false; }
+
+    let pkt_wire_len, len_ok = calc_coalesced_packet_wire_len(pkt_slice, hdr);
+    guard len_ok else { return 0, false, false; }
+
+    conn.packets_rx = conn.packets_rx + 1;
+    bind_initial_server_cids(conn, hdr);
+    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
+    guard handled_pkt else { return 0, false, false; }
+
+    if hdr.header_type == QuicHeaderType.VersionNegotiation || hdr.header_type == QuicHeaderType.Retry {
+        return pkt_wire_len, true, needs_ack_pkt;
+    }
+
+    let payload = get_packet_payload(pkt_slice[..pkt_wire_len], hdr);
+    if hdr.payload_length > hdr.pn_length && payload.len == 0 {
+        return 0, false, false;
+    }
+    let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload, hdr.header_type, now_us);
+    guard handled_frames else { return 0, false, false; }
+
+    return pkt_wire_len, true, (needs_ack_pkt || frame_ack_el);
+}
+
+// RFC 9000 Section 12.2: Coalescing Packets - Processes an inbound UDP datagram containing one or more coalesced QUIC packets.
 // Returns (handled: bool, needs_ack: bool).
 fn quic_conn_process_datagram(
     conn:    QuicConnection&,
@@ -601,25 +791,24 @@ fn quic_conn_process_datagram(
     out_ack: AckFrame&,
 ) -> bool, bool {
     guard dgram.len > 0 else { return false, false; }
-    inc_conn_recv_bytes(conn, dgram.len);
-    inc_conn_rx_packets(conn);
+    conn.bytes_received = conn.bytes_received + (dgram.len as u64);
 
-    // Parse packet header
-    let dcid_len: u8 = conn.scid.len as u8;
-    let hdr, ok = parse_quic_header(dgram, dcid_len);
-    guard ok else { return false, false; }
+    var offset: i64 = 0;
+    var any_handled = false;
+    var final_needs_ack = false;
 
-    bind_initial_server_cids(conn, hdr);
-    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
-    guard handled_pkt else { return false, false; }
-
-    let payload = get_packet_payload(dgram, hdr);
-    if hdr.payload_length > hdr.pn_length && payload.len == 0 {
-        return false, false;
+    while offset < dgram.len {
+        let rem = dgram[offset..];
+        let consumed, handled, needs_ack = process_single_coalesced_packet(conn, rem, now_us, out_ack);
+        guard handled && consumed > 0 else {
+            return any_handled, final_needs_ack;
+        }
+        any_handled = true;
+        if needs_ack {
+            final_needs_ack = true;
+        }
+        offset += consumed;
     }
-    let handled_frames, frame_ack_el = quic_conn_process_payload(conn, payload, hdr.header_type);
-    guard handled_frames else { return false, false; }
 
-    let final_needs_ack = needs_ack_pkt || frame_ack_el;
-    return true, final_needs_ack;
+    return any_handled, final_needs_ack;
 }

@@ -2235,3 +2235,29 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
         dst.append_header(name, val);
     }
 }
+
+// RFC 9112 Section 2.1: Message Format - Incrementally scans HTTP/1.1 raw bytes for the CRLFCRLF
+// header block terminator starting at (last_len < 3) ? 0 : last_len - 3 to prevent O(N^2) Slowloris rescans.
+// On success (ok == true), updates `cursor` to the byte offset immediately after "\r\n\r\n" and returns (cursor, true).
+// On incomplete input (ok == false), advances `cursor` to the safe resume offset (raw.len < 3 ? 0 : raw.len - 3)
+// and returns (0, false).
+//
+// Example:
+//   raw = "GET / HTTP/1.1\r\nHost: a\r\n\r\n", last_len = 16, cursor = 0
+//   returns: 27, true, cursor = 27
+fn scan_http1_headers(raw: const u8[:], last_len: u32, cursor: i64&) -> i64, bool {
+    guard raw.len >= 4 else {
+        cursor = 0;
+        return 0, false;
+    }
+    let resume_pos: i64 = if last_len < 3 { 0 } else { last_len - 3 };
+    let start_pos:  i64 = if resume_pos > raw.len - 4 { raw.len - 4 } else { resume_pos };
+    let rel = core::fast_find_crlfcrlf(raw[start_pos..]);
+    if rel >= 0 {
+        let end_offset = start_pos + rel + 4;
+        cursor = end_offset;
+        return end_offset, true;
+    }
+    cursor = raw.len - 3;
+    return 0, false;
+}

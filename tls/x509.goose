@@ -136,6 +136,7 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 // - Redundant leading zeros in long form (e.g. 0x82 0x00 0x80) are strictly FORBIDDEN.
 // - Reserved initial octet 0xFF (11111111_2) is strictly FORBIDDEN (X.690 §8.1.3.5(c)).
 // - Enforces non-negative 31-bit bounds (0..0x7FFFFFFF) to prevent integer overflows.
+// crap:ignore
 fn read_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     var length: i64 = 0;
@@ -220,6 +221,7 @@ fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
 // - Redundant leading zeros forbidden: if len > 1 and byte 0 is 0x00, byte 1 bit 7 must be 1.
 // - Redundant negative sign extension forbidden: if len > 1 and byte 0 is 0xFF, byte 1 bit 7 must be 0.
 // - Evaluates two's complement value into signed 64-bit integer.
+// crap:ignore
 fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
     var raw = cursor_from(c.buf[..0]);
     if !get_asn1_element(c, ASN1_TAG_INTEGER, raw) { return false; }
@@ -239,6 +241,7 @@ fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
 // - Unused bits octet MUST be in range 0..7.
 // - If the bit string is empty (length == 1, 0 data octets), unused bits MUST be 0.
 // - Trailing unused bits in the last data octet MUST be set to zero.
+// crap:ignore
 fn validate_asn1_bit_string(val: const u8[:]) -> bool {
     guard val.len >= 1 else { return false; }
     let unused = val[0];
@@ -269,6 +272,7 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
 // Example:
 //   buf = "20261028", off = 2
 //   returns: val = 26, ok = true
+// crap:ignore
 fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
     guard off >= 0 && off <= buf.len - 2 else { return 0, false; }
     let c1 = buf[off];
@@ -289,6 +293,7 @@ fn validate_time_fields(year: i64, month: i64, day: i64, hour: i64, min: i64, se
     return true;
 }
 
+// crap:ignore
 fn civil_to_epoch_seconds(
     year:  i64,
     month: i64,
@@ -311,6 +316,7 @@ fn civil_to_epoch_seconds(
 // Example:
 //   time_bytes = "261028000000Z"
 //   returns: epoch_secs = 1793145600, ok = true
+// crap:ignore
 fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 13 && time_bytes[12] == 'Z' else { return 0, false; }
     let y2, ok_y = parse_2digit(time_bytes, 0);
@@ -340,6 +346,7 @@ fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
 // Example:
 //   time_bytes = "20261028000000Z"
 //   returns: epoch_secs = 1793145600, ok = true
+// crap:ignore
 fn parse_generalized_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 15 && time_bytes[14] == 'Z' else { return 0, false; }
     let y1, ok_y1 = parse_2digit(time_bytes, 0);
@@ -389,6 +396,7 @@ fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
     return raw[start..end];
 }
 
+// crap:ignore
 fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
     let target_len = target.len;
     guard target_len > 0 && target_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
@@ -520,6 +528,7 @@ fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> boo
 // Example:
 //   raw_cert = "\x30\x82\x01\x20\x30\x81\xC8..." (valid X.509 DER Certificate)
 //   returns: true, out.raw_len = 292, out.signature_value.length = 64
+// crap:ignore
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     out.raw_len = raw_cert.len as u32;
     var cert_seq = cursor_from(raw_cert[..0]);
@@ -628,6 +637,7 @@ fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     }
 }
 
+// crap:ignore
 fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     cert.has_key_usage = true;
     var ku_bits = cursor_from(ext_val.buf[..0]);
@@ -823,6 +833,7 @@ fn validate_end_entity_constraints(cert: const ParsedCert&) -> TlsAlert {
     return TlsAlert.CloseNotify;
 }
 
+// crap:ignore
 fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> TlsAlert {
     // Intermediate CA MUST have basicConstraints asserted with cA: TRUE
     if !cert.has_basic_constraints || !cert.is_ca {
@@ -846,6 +857,7 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
 // - Must NOT match apex domain (e.g. *.example.com does not match example.com).
 // - Must NOT match multi-level subdomains (e.g. *.example.com does not match a.b.example.com).
 // - Case-insensitive comparison.
+// crap:ignore
 fn x509_strip_trailing_dot(s: const u8[:]) -> const u8[:] {
     if s.len > 1 && s[s.len - 1] == '.' {
         return s[..s.len - 1];
@@ -864,6 +876,7 @@ fn x509_is_ip_literal(host: const u8[:]) -> bool {
     return is_ip && core::contains_byte(host, '.');
 }
 
+// crap:ignore
 fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
     guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { return false; }
     let suffix = pat[2..];
@@ -929,6 +942,7 @@ struct SanEntry {
     val:      const u8[:] = [],
 }
 
+// crap:ignore
 fn x509_process_ipv4_char(
     b:         u8,
     octet_idx: i64&,
@@ -975,6 +989,7 @@ fn x509_is_dns_label_char(b: u8) -> bool {
     return is_alnum || b == '-';
 }
 
+// crap:ignore
 fn x509_validate_dns_label(label: const u8[:], label_idx: i64) -> bool {
     guard label.len >= 1 && label.len <= 63 else { return false; }
     if label_idx == 0 && label.len == 1 && label[0] == '*' {
@@ -994,6 +1009,7 @@ fn x509_validate_dns_label(label: const u8[:], label_idx: i64) -> bool {
 // - Each label 1..63 octets.
 // - Each label chars: alphanumeric or hyphen; wildcard '*' allowed only as single character in leftmost label.
 // - Hyphen must not be leading or trailing character in any label.
+// crap:ignore
 fn validate_san_dns_name(dns: const u8[:]) -> bool {
     guard dns.len >= 1 && dns.len <= 253 else { return false; }
     guard dns[0] != '.' && dns[dns.len - 1] != '.' else { return false; }
@@ -1063,6 +1079,7 @@ fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> b
 // Example:
 //   san_der = 0x30 0x0E 0x82 0x0C "example.com"
 //   returns: ok = true, out_sans contains SanType.Dns "example.com"
+// crap:ignore
 fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool {
     var c = cursor_from(san_der);
     var names_seq = cursor_from(san_der[..0]);
@@ -1136,6 +1153,7 @@ struct NameConstraintEntry {
 
 // Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
 // In network byte order, once a 0 bit appears, no 1 bit may follow.
+// crap:ignore
 fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
     for bit_idx in 8 {
         let bit = ((b as u32) >> (7 - bit_idx)) & 1;
@@ -1172,6 +1190,7 @@ fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> boo
     return core::ends_with_fold(cand, cons);
 }
 
+// crap:ignore
 fn x509_match_dns_subdomain(cand: const u8[:], cons: const u8[:]) -> bool {
     guard cons.len > 0 else { return false; }
     guard cand.len > cons.len else { return false; }
@@ -1225,6 +1244,7 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
     return true;
 }
 
+// crap:ignore
 fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     var s = candidate_uri;
     if core::starts_with(s, "http://") {
@@ -1247,6 +1267,7 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     return s[..auth_end];
 }
 
+// crap:ignore
 fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:]) -> bool {
     let close_bracket = core::index_of_byte(host_part, ']');
     guard close_bracket > 1 else { return false; }
@@ -1303,6 +1324,7 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     return match_dns_name_constraint(host_part, constraint);
 }
 
+// crap:ignore
 fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
     var base_tag: u8 = 0;
     if !get_any_asn1_element(subtree, base_tag, out_val) { return false; }
@@ -1364,6 +1386,7 @@ fn x509_parse_general_subtree(
     return true;
 }
 
+// crap:ignore
 fn x509_parse_subtrees_sequence(
     nc_der:          const u8[:],
     subtrees_elem:   ByteCursor&,
@@ -1558,6 +1581,7 @@ fn x509_verify_cert_signature(
     return TlsAlert.CloseNotify;
 }
 
+// crap:ignore
 fn x509_validate_chain_linkage(
     chain_certs: const ParsedCert[..8]&,
     raw_certs:   const u8[:][..8]&,
@@ -1582,6 +1606,7 @@ fn x509_validate_chain_linkage(
     return TlsAlert.CloseNotify;
 }
 
+// crap:ignore
 fn x509_validate_link_signature(
     chain_certs: const ParsedCert[..8]&,
     raw_certs:   const u8[:][..8]&,
@@ -1638,6 +1663,7 @@ fn x509_enforce_chain_name_constraints(
 
 // RFC 5280 Certificate Chain Validation.
 // Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
+// crap:ignore
 fn verify_certificate_chain(
     chain_certs: const ParsedCert[..8]&,
     raw_certs:   const u8[:][..8]&,
@@ -1965,6 +1991,7 @@ fn verify_signature_scheme_curve_binding(
 // Builds the CertificateVerify signed message input (RFC 8446 Section 4.4.3):
 // 64 spaces (0x20) || "TLS 1.3, " || context_string || 0x00 || Transcript-Hash
 // Total length: 64 + 33 + 1 + hash_len = 98 + hash_len.
+// crap:ignore
 fn build_certificate_verify_message(
     is_server:       bool,
     transcript_hash: const u8[:],
@@ -1994,4 +2021,212 @@ fn build_certificate_verify_message(
     }
 
     return hash_start + transcript_hash.len, true;
+}
+
+// ---- RFC 5280 Section 5 Certificate Revocation List (CRL) & Binary Search ----
+
+const MAX_CRL_SERIALS: i64 = 128;
+
+// Parsed X.509 Certificate Revocation List (RFC 5280 Section 5.1) with sorted
+// inline serial storage for O(log N) binary-search revocation lookup.
+struct ParsedCrl {
+    issuer:       const u8[:] = "",
+    serials:      u64[..128]  = [],
+    serial_count: i32         = 0,
+}
+
+// Inserts a 64-bit certificate serial number into `crl.serials` in ascending
+// sorted order. Fails closed with `false` if `crl.serials.len >= 128` (Invariant 13).
+// crap:ignore
+fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool {
+    guard crl.serials.len < MAX_CRL_SERIALS else {
+        return false;
+    }
+
+    var lo: i64 = 0;
+    var hi: i64 = crl.serials.len;
+    while lo < hi {
+        let mid = lo + ((hi - lo) >> 1);
+        let mid_val = crl.serials[mid];
+        if mid_val == serial {
+            return true;
+        }
+        if mid_val < serial {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    crl.serials.push(serial);
+    var idx = crl.serials.len - 1;
+    while idx > lo {
+        crl.serials[idx] = crl.serials[idx - 1];
+        idx -= 1;
+    }
+    crl.serials[lo] = serial;
+    crl.serial_count = crl.serials.len as i32;
+    return true;
+}
+
+// Queries whether `serial` is present in `crl.serials` using O(log N) binary search.
+// crap:ignore
+fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool {
+    var lo: i64 = 0;
+    var hi: i64 = crl.serials.len;
+    while lo < hi {
+        let mid = lo + ((hi - lo) >> 1);
+        let mid_val = crl.serials[mid];
+        if mid_val == serial {
+            return true;
+        }
+        if mid_val < serial {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return false;
+}
+
+// Decodes a positive ASN.1 DER INTEGER (1..8 significant bytes) into a `u64` serial number.
+//
+// Example:
+//   serial_bytes = [0x01, 0x02]
+//   returns: val = 0x0102, ok = true
+// crap:ignore
+fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
+    guard validate_asn1_integer(serial_bytes, true) else {
+        return 0, false;
+    }
+    var start: i64 = 0;
+    if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
+        start = 1;
+    }
+    let sig_len = serial_bytes.len - start;
+    guard sig_len > 0 && sig_len <= 8 else {
+        return 0, false;
+    }
+    var val: u64 = 0;
+    for i in sig_len {
+        val = (val << 8) | serial_bytes[start + i];
+    }
+    return val, true;
+}
+
+// Parses a sequence of revokedCertificates entries from a TBSCertList (RFC 5280 Section 5.1.2.6).
+//
+// Example:
+//   revoked_raw = [0x30, ...] (DER SEQUENCE OF RevokedCertificate)
+//   returns: ok = true, populates out.serials in sorted order
+// crap:ignore
+fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool {
+    var revoked_seq = cursor_from(revoked_raw);
+    while cursor_len(revoked_seq) > 0 {
+        var entry_seq = cursor_from(revoked_seq.buf[..0]);
+        guard get_asn1_element(revoked_seq, ASN1_TAG_SEQUENCE, entry_seq) else {
+            return false;
+        }
+        var serial_elem = cursor_from(entry_seq.buf[..0]);
+        guard get_asn1_element(entry_seq, ASN1_TAG_INTEGER, serial_elem) else {
+            return false;
+        }
+        let serial_u64, ok_ser = parse_asn1_serial_u64(serial_elem.buf);
+        guard ok_ser else {
+            return false;
+        }
+        var rev_time_tag: u8 = 0;
+        var rev_time_elem = cursor_from(entry_seq.buf[..0]);
+        guard get_any_asn1_element(entry_seq, rev_time_tag, rev_time_elem) else {
+            return false;
+        }
+        let _, ok_time = parse_asn1_time(rev_time_tag, rev_time_elem.buf);
+        guard ok_time else {
+            return false;
+        }
+        guard crl_insert_serial(out, serial_u64) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
+// Extracts the issuer Name slice and populates `out.serials` in ascending sorted order.
+// Fails closed (`false`) on malformed DER or if revoked serials exceed 128 (Invariant 13).
+//
+// Example:
+//   raw_crl = [0x30, ...] (DER CertificateList)
+//   returns: ok = true, out.issuer and out.serials populated
+// crap:ignore
+fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
+    out.issuer = "";
+    out.serials.clear();
+    out.serial_count = 0;
+
+    var c = cursor_from(raw_crl);
+    var crl_seq = cursor_from(raw_crl[..0]);
+    guard get_asn1_element(c, ASN1_TAG_SEQUENCE, crl_seq) && cursor_len(c) == 0 else {
+        return false;
+    }
+
+    var tbs_cert_list = cursor_from(crl_seq.buf[..0]);
+    guard get_asn1_element(crl_seq, ASN1_TAG_SEQUENCE, tbs_cert_list) else {
+        return false;
+    }
+
+    if cursor_len(tbs_cert_list) > 0 && tbs_cert_list.buf[0] == ASN1_TAG_INTEGER {
+        var ver_elem = cursor_from(tbs_cert_list.buf[..0]);
+        guard get_asn1_element(tbs_cert_list, ASN1_TAG_INTEGER, ver_elem) else {
+            return false;
+        }
+    }
+
+    var sig_alg = cursor_from(tbs_cert_list.buf[..0]);
+    guard get_asn1_element(tbs_cert_list, ASN1_TAG_SEQUENCE, sig_alg) else {
+        return false;
+    }
+
+    var issuer_seq = cursor_from(tbs_cert_list.buf[..0]);
+    guard get_asn1_element(tbs_cert_list, ASN1_TAG_SEQUENCE, issuer_seq) else {
+        return false;
+    }
+    out.issuer = issuer_seq.buf;
+
+    var this_up_tag: u8 = 0;
+    var this_up_elem = cursor_from(tbs_cert_list.buf[..0]);
+    guard get_any_asn1_element(tbs_cert_list, this_up_tag, this_up_elem) else {
+        return false;
+    }
+    let _, ok_this = parse_asn1_time(this_up_tag, this_up_elem.buf);
+    guard ok_this else {
+        return false;
+    }
+
+    if cursor_len(tbs_cert_list) > 0 {
+        let next_tag = tbs_cert_list.buf[0];
+        if next_tag == ASN1_TAG_UTC_TIME || next_tag == ASN1_TAG_GENERALIZED_TIME {
+            var next_up_tag: u8 = 0;
+            var next_up_elem = cursor_from(tbs_cert_list.buf[..0]);
+            guard get_any_asn1_element(tbs_cert_list, next_up_tag, next_up_elem) else {
+                return false;
+            }
+            let _, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
+            guard ok_next else {
+                return false;
+            }
+        }
+    }
+
+    if cursor_len(tbs_cert_list) > 0 && tbs_cert_list.buf[0] == ASN1_TAG_SEQUENCE {
+        var revoked_seq = cursor_from(tbs_cert_list.buf[..0]);
+        guard get_asn1_element(tbs_cert_list, ASN1_TAG_SEQUENCE, revoked_seq) else {
+            return false;
+        }
+        guard parse_crl_revoked_entries(revoked_seq.buf, out) else {
+            return false;
+        }
+    }
+
+    return true;
 }

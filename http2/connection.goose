@@ -92,6 +92,13 @@ struct H2Stream {
     active:                  bool                = false,
 }
 
+// RFC 9218 Section 4: Priority Parameters - Array-indexed intrusive linked-list node for O(1) priority buckets.
+struct StreamNode {
+    stream_id: u32 = 0,
+    next:      i32 = -1,
+    prev:      i32 = -1,
+}
+
 // ---- http/2 connection state & coordinator -------------------------------
 
 struct H2Connection {
@@ -131,9 +138,13 @@ struct H2Connection {
     is_behind_proxy:       bool = false,
 
     // Starvation toggle per urgency bucket (0..7) between incremental and non-incremental
-    bucket_prefer_incremental: bool[8] = [false; 8],
-    bucket_last_inc_idx:       i32[8]  = [-1; 8],
-    urgency_streak_count:      u32     = 0,
+    bucket_prefer_incremental: bool[8]         = [false; 8],
+    bucket_last_inc_idx:       i32[8]          = [-1; 8],
+    urgency_streak_count:      u32             = 0,
+    active_urgency_mask:       u8              = 0,
+    urgency_heads:             i32[8]          = [-1; 8],
+    urgency_tails:             i32[8]          = [-1; 8],
+    stream_nodes:              StreamNode[128] = [StreamNode { .. }; 128],
 
     // Shutdown / GOAWAY tracking
     goaway_sent:           bool = false,
@@ -650,11 +661,111 @@ fn ack_control_frame_flushed(s: H2Connection&) {
 
 // ---- rfc 9218 extensible write scheduler ---------------------------------
 
+// Unlinks stream node `s_idx` from its urgency bucket `u` if currently linked.
+fn unlink_stream_from_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
+    guard s_idx >= 0 && s_idx < 128 && u <= 7 else { return; }
+    let u_idx = u as i64;
+    let prev = s.stream_nodes[s_idx].prev;
+    let next = s.stream_nodes[s_idx].next;
+    let is_head = (s.urgency_heads[u_idx] == s_idx);
+    let is_tail = (s.urgency_tails[u_idx] == s_idx);
+    guard is_head || is_tail || prev >= 0 || next >= 0 else { return; }
+
+    if prev >= 0 {
+        s.stream_nodes[prev].next = next;
+    } else if is_head {
+        s.urgency_heads[u_idx] = next;
+    }
+
+    if next >= 0 {
+        s.stream_nodes[next].prev = prev;
+    } else if is_tail {
+        s.urgency_tails[u_idx] = prev;
+    }
+
+    s.stream_nodes[s_idx].prev = -1;
+    s.stream_nodes[s_idx].next = -1;
+
+    if s.urgency_heads[u_idx] < 0 {
+        s.urgency_tails[u_idx] = -1;
+        s.active_urgency_mask &= ~(1 << u);
+    }
+}
+
+// Appends stream node `s_idx` to the tail of urgency bucket `u` and sets the bit in `active_urgency_mask`.
+fn link_stream_to_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
+    guard s_idx >= 0 && s_idx < 128 && u <= 7 else { return; }
+    unlink_stream_from_urgency_bucket(s, s_idx, u);
+    let u_idx = u as i64;
+    s.stream_nodes[s_idx].stream_id = s.streams[s_idx].stream_id;
+    s.stream_nodes[s_idx].next = -1;
+    let tail = s.urgency_tails[u_idx];
+    if tail >= 0 {
+        s.stream_nodes[s_idx].prev = tail;
+        s.stream_nodes[tail].next = s_idx;
+        s.urgency_tails[u_idx] = s_idx;
+    } else {
+        s.stream_nodes[s_idx].prev = -1;
+        s.urgency_heads[u_idx] = s_idx;
+        s.urgency_tails[u_idx] = s_idx;
+    }
+    s.active_urgency_mask |= (1 << u);
+}
+
+// Synchronizes stream node membership across the 8 urgency buckets based on send readiness.
+fn sync_stream_urgency_node(s: H2Connection&, s_idx: i32) {
+    guard s_idx >= 0 && s_idx < (s.streams.len as i32) else { return; }
+    let u = s.streams[s_idx].priority.urgency;
+    guard u <= 7 else { return; }
+    let ready = s.streams[s_idx].active && s.streams[s_idx].pending_send_bytes > 0
+        && s.streams[s_idx].send_window > 0;
+    if ready {
+        link_stream_to_urgency_bucket(s, s_idx, u);
+    } else {
+        unlink_stream_from_urgency_bucket(s, s_idx, u);
+    }
+}
+
+// Rebuilds `active_urgency_mask` and `stream_nodes` intrusive lists for any streams modified directly.
+fn refresh_active_urgency_buckets(s: H2Connection&) {
+    var u: i64 = 0;
+    while u < 8 {
+        s.urgency_heads[u] = -1;
+        s.urgency_tails[u] = -1;
+        u++;
+    }
+    s.active_urgency_mask = 0;
+    var idx: i32 = 0;
+    let count = s.streams.len as i32;
+    while idx < count {
+        s.stream_nodes[idx].prev = -1;
+        s.stream_nodes[idx].next = -1;
+        s.stream_nodes[idx].stream_id = s.streams[idx].stream_id;
+        if s.streams[idx].active && s.streams[idx].pending_send_bytes > 0
+            && s.streams[idx].send_window > 0 && s.streams[idx].priority.urgency <= 7 {
+            link_stream_to_urgency_bucket(s, idx, s.streams[idx].priority.urgency);
+        }
+        idx++;
+    }
+}
+
+// Enqueues pending outbound DATA bytes for `stream_id` and updates the O(1) urgency bitmask.
+fn enqueue_stream_send_bytes(s: H2Connection&, stream_id: u32, bytes: u32) -> bool {
+    let s_idx, found = find_session_stream_idx(s, stream_id);
+    guard found else { return false; }
+    s.streams[s_idx].pending_send_bytes += bytes;
+    sync_stream_urgency_node(s, s_idx);
+    return true;
+}
+
 // Applies dynamic priority update (from PRIORITY_UPDATE frame or Priority header).
 fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
     s.client_sent_priority = true;
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
     guard found else { return ERR_NO_ERROR; }
+
+    let old_u = s.streams[s_idx].priority.urgency;
+    unlink_stream_from_urgency_bucket(s, s_idx, old_u);
 
     var final_prio = prio;
     if s.is_behind_proxy {
@@ -662,10 +773,24 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
         final_prio.incremental = true;
     }
     s.streams[s_idx].priority = final_prio;
+    sync_stream_urgency_node(s, s_idx);
     return ERR_NO_ERROR;
 }
 
 const MAX_HIGH_URGENCY_STREAK: u32 = 16; // Max consecutive frames before lower-urgency credit yield
+
+// RFC 9218 Section 4: Priority Parameters - Counts trailing zeros of a non-zero 8-bit urgency mask
+// to select the highest priority active bucket (bit 0 = urgency 0) in O(1).
+inline fn ctz_urgency_mask(mask: u8) -> u8 {
+    if (mask & 0x01) != 0 { return 0; }
+    if (mask & 0x02) != 0 { return 1; }
+    if (mask & 0x04) != 0 { return 2; }
+    if (mask & 0x08) != 0 { return 3; }
+    if (mask & 0x10) != 0 { return 4; }
+    if (mask & 0x20) != 0 { return 5; }
+    if (mask & 0x40) != 0 { return 6; }
+    return 7;
+}
 
 inline fn commit_stream_send_quota(
     s:             H2Connection&,
@@ -691,6 +816,7 @@ inline fn commit_stream_send_quota(
     s.streams[chosen_idx].pending_send_bytes -= send_len;
     s.streams[chosen_idx].send_window -= send_len;
     s.conn_send_window -= send_len;
+    sync_stream_urgency_node(s, chosen_idx);
 
     // Update anti-starvation streak tracking
     if s.streams[chosen_idx].priority.urgency < 3 {
@@ -703,6 +829,9 @@ inline fn commit_stream_send_quota(
 }
 
 fn has_lower_urgency_ready(s: const H2Connection&) -> bool {
+    if (s.active_urgency_mask & 0xF8) != 0 {
+        return true;
+    }
     var chk: i32 = 0;
     let stream_count = s.streams.len as i32;
     while chk < stream_count {
@@ -716,6 +845,16 @@ fn has_lower_urgency_ready(s: const H2Connection&) -> bool {
 }
 
 fn find_non_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
+    let u_idx = u as i64;
+    var node_idx = s.urgency_heads[u_idx];
+    while node_idx >= 0 {
+        if s.streams[node_idx].active && s.streams[node_idx].pending_send_bytes > 0
+            && s.streams[node_idx].send_window > 0 && s.streams[node_idx].priority.urgency == u
+            && !s.streams[node_idx].priority.incremental {
+            return node_idx;
+        }
+        node_idx = s.stream_nodes[node_idx].next;
+    }
     var idx: i32 = 0;
     let stream_count = s.streams.len as i32;
     while idx < stream_count {
@@ -787,33 +926,32 @@ fn select_and_commit_stream(
 // Returns (stream_id, allowed_send_bytes, found).
 fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
     guard s.conn_send_window > 0 else { return 0, 0, false; }
+    refresh_active_urgency_buckets(s);
+    guard s.active_urgency_mask != 0 else { return 0, 0, false; }
 
     // Check if anti-starvation yield is triggered for lower-urgency streams
-    var force_yield = false;
+    var search_mask = s.active_urgency_mask;
     if s.urgency_streak_count >= MAX_HIGH_URGENCY_STREAK {
-        if has_lower_urgency_ready(s) {
-            force_yield = true;
+        if has_lower_urgency_ready(s) || (search_mask & 0xFE) != 0 {
+            search_mask &= 0xFE; // Yield urgency 0 (or high urgency) to next active bucket
         } else {
-            s.urgency_streak_count = 0; // No lower streams waiting, reset streak
+            s.urgency_streak_count = 0;
         }
     }
 
-    var start_u: u8  = if force_yield { 3 } else { 0 };
-    var pass:    i32 = 0;
-
+    var pass: i32 = 0;
     while pass < 2 {
-        var u = start_u;
-        while u <= 7 {
+        var mask = search_mask;
+        while mask != 0 {
+            let u = ctz_urgency_mask(mask);
             let target_stream_id, send_len, ok = select_and_commit_stream(s, u, max_frame_len);
             if ok {
                 return target_stream_id, send_len, true;
             }
-            u++;
+            mask &= ~(1 << u);
         }
-
-        // If force_yield pass completed without finding a lower-urgency candidate, fall back to pass 2 from u=0
-        if force_yield && pass == 0 {
-            start_u = 0;
+        if pass == 0 && search_mask != s.active_urgency_mask {
+            search_mask = s.active_urgency_mask;
             s.urgency_streak_count = 0;
             pass++;
         } else {
@@ -822,4 +960,11 @@ fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
     }
 
     return 0, 0, false;
+}
+
+// RFC 9218 Section 4: Priority Parameters - O(1) priority scheduler overload using `ctz_urgency_mask`
+// on `conn.active_urgency_mask` (bit 0 = urgency 0) with a 16-frame burst quantum cap on Urgency 0.
+fn schedule_next_write(conn: H2Connection&) -> u32, bool {
+    let stream_id, _, ok = schedule_next_write(conn, conn.peer_max_frame_size);
+    return stream_id, ok;
 }

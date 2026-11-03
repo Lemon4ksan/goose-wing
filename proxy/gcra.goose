@@ -119,11 +119,24 @@ fn calc_remaining_burst(tau_ns: u64, t_ns: u64, max_burst: u64, tat_new: u64, no
 }
 
 // Evaluates rate limit admission for cost units at now_ns and advances TAT on success.
+// Multi-cell burst guard: rejects requests with weights exceeding total burst window (tau + T)
+// before mutating Theoretical Arrival Time (TAT) state.
 fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision {
     let t = config.emission_interval_ns;
     let tau = config.tau_ns;
     let limit_window = config.limit_window_ns;
     let delta = core::mul_sat_u64(cost, t);
+
+    guard delta <= limit_window else {
+        let over_retry = core::sub_sat_u64(delta, limit_window);
+        return GcraDecision {
+            allowed:         false,
+            remaining_burst: 0,
+            retry_after_ns:  over_retry,
+            reset_after_ns:  over_retry,
+            tat_ns:          cell.tat_ns,
+        };
+    }
 
     let tat_old = clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
     cell.tat_ns = tat_old;
@@ -161,6 +174,17 @@ fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now
     let tau = config.tau_ns;
     let limit_window = config.limit_window_ns;
     let delta = core::mul_sat_u64(cost, t);
+
+    guard delta <= limit_window else {
+        let over_retry = core::sub_sat_u64(delta, limit_window);
+        return GcraDecision {
+            allowed:         false,
+            remaining_burst: 0,
+            retry_after_ns:  over_retry,
+            reset_after_ns:  over_retry,
+            tat_ns:          cell.tat_ns,
+        };
+    }
 
     let tat_old = clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
     let tat_base = core::ct_max_u64(now_ns, tat_old);
@@ -295,20 +319,21 @@ fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], n
 // Handles admission record tracking for an allocated client entry.
 inline fn record_client_admission(limiter: GatewayRateLimiter&, slot: i32, dec: const GcraDecision&) {
     if dec.allowed {
-        limiter.total_allowed = limiter.total_allowed + 1;
+        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
         limiter.entries[slot].consecutive_rejects = 0;
     } else {
-        limiter.total_rejected = limiter.total_rejected + 1;
-        limiter.entries[slot].consecutive_rejects = limiter.entries[slot].consecutive_rejects + 1;
+        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
+        let next_rej = core::add_sat_u64(limiter.entries[slot].consecutive_rejects, 1);
+        limiter.entries[slot].consecutive_rejects = next_rej as u32;
     }
 }
 
 // Handles admission record tracking for table saturation fallback.
 inline fn record_fallback_admission(limiter: GatewayRateLimiter&, dec: const GcraDecision&) {
     if dec.allowed {
-        limiter.total_allowed = limiter.total_allowed + 1;
+        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
     } else {
-        limiter.total_rejected = limiter.total_rejected + 1;
+        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
     }
 }
 

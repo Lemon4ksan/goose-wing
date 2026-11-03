@@ -684,6 +684,28 @@ fn verify_dpop_claims(
 
 const MAX_DPOP_PROOF_LEN: i64 = 4096;
 
+// RFC 9449 Section 6.1: JWK Thumbprint Confirmation Method - Validates that the JWK SHA-256
+// thumbprint of the DPoP public key or cnf.jkt claim matches expected_jkt in constant time.
+fn matches_dpop_jkt_thumbprint(
+    jwk_pub:      const u8[32]&,
+    claims_jkt:   const u8[:],
+    expected_jkt: const u8[:],
+) -> bool {
+    var x_b64: u8[..64] = [];
+    core::base64url_encode(jwk_pub[..], x_b64);
+    var canonical: u8[..128] = [];
+    canonical.append("{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"");
+    canonical.append(x_b64[..]);
+    canonical.append("\"}");
+    let digest = core::sha256(canonical[..]);
+    var computed_jkt: u8[..64] = [];
+    core::base64url_encode(digest[..], computed_jkt);
+
+    let matches_pub = core::ct_eq_bytes(computed_jkt[..], expected_jkt);
+    let matches_claim = claims_jkt.len > 0 && core::ct_eq_bytes(claims_jkt, expected_jkt);
+    return matches_pub || matches_claim;
+}
+
 // Verifies a DPoP Proof JWT against expected method, URI, access token, nonce, jkt, and time window.
 // Mandates asymmetric signature validation using the public key from the header JWK (RFC 9449 §4.3).
 fn verify_dpop_proof(
@@ -736,20 +758,7 @@ fn verify_dpop_proof(
 
     if expected_jkt.len > 0 {
         // RFC 9449 Section 4.3: Checking DPoP Proofs - confirm that the public key to which the access token is bound matches the public key from the DPoP proof.
-        // RFC 9449 Section 6.1: JWK Thumbprint Confirmation Method - The value of the jkt member MUST be the base64url encoding (as defined in [RFC7515]) of the JWK SHA-256 Thumbprint (according to [RFC7638]) of the DPoP public key (in JWK format) to which the access token is bound.
-        var x_b64: u8[..64] = [];
-        core::base64url_encode(jwk_pub[..], x_b64);
-        var canonical: u8[..128] = [];
-        canonical.append("{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"");
-        canonical.append(x_b64[..]);
-        canonical.append("\"}");
-        let digest = core::sha256(canonical[..]);
-        var computed_jkt: u8[..64] = [];
-        core::base64url_encode(digest[..], computed_jkt);
-
-        let matches_pub = core::ct_eq_bytes(computed_jkt[..], expected_jkt);
-        let matches_claim = claims.jkt.len > 0 && core::ct_eq_bytes(claims.jkt[..], expected_jkt);
-        guard matches_pub || matches_claim else { return false; }
+        guard matches_dpop_jkt_thumbprint(jwk_pub, claims.jkt[..], expected_jkt) else { return false; }
     }
 
     return verify_dpop_claims(

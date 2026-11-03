@@ -9,6 +9,7 @@ import std;
 import core from "..";
 import .proxy;
 import .transport;
+import .udp;
 
 // ---- pool key dimensions & enums ----------------------------------------
 
@@ -278,7 +279,7 @@ fn push_want(q: WantQueue&, item: WantConn) -> bool {
 fn pop_want(q: WantQueue&) -> WantConn, bool {
     while q.head_pos < q.head.len {
         let item = q.head[q.head_pos];
-        q.head_pos++;
+        q.head_pos += 1;
         if !item.cancelled {
             return item, true;
         }
@@ -294,7 +295,7 @@ fn pop_want(q: WantQueue&) -> WantConn, bool {
 
         while q.head_pos < q.head.len {
             let item = q.head[q.head_pos];
-            q.head_pos++;
+            q.head_pos += 1;
             if !item.cancelled {
                 return item, true;
             }
@@ -563,24 +564,32 @@ fn group_record_closed(pool: StreamPool&, key: const PoolKey&, active: bool) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
     if active {
-        if pool.groups[grp_idx].active_conns > 0 { pool.groups[grp_idx].active_conns--; }
+        if pool.groups[grp_idx].active_conns > 0 {
+            pool.groups[grp_idx].active_conns -= 1;
+        }
     } else {
-        if pool.groups[grp_idx].idle_conns > 0 { pool.groups[grp_idx].idle_conns--; }
+        if pool.groups[grp_idx].idle_conns > 0 {
+            pool.groups[grp_idx].idle_conns -= 1;
+        }
     }
 }
 
 fn group_record_acquired(pool: StreamPool&, key: const PoolKey&) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
-    pool.groups[grp_idx].active_conns++;
-    if pool.groups[grp_idx].idle_conns > 0 { pool.groups[grp_idx].idle_conns--; }
+    pool.groups[grp_idx].active_conns += 1;
+    if pool.groups[grp_idx].idle_conns > 0 {
+        pool.groups[grp_idx].idle_conns -= 1;
+    }
 }
 
 fn group_record_released(pool: StreamPool&, key: const PoolKey&) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
-    if pool.groups[grp_idx].active_conns > 0 { pool.groups[grp_idx].active_conns--; }
-    pool.groups[grp_idx].idle_conns++;
+    if pool.groups[grp_idx].active_conns > 0 {
+        pool.groups[grp_idx].active_conns -= 1;
+    }
+    pool.groups[grp_idx].idle_conns += 1;
 }
 
 // Marks a pooled connection as closed, freeing it for slot reclamation.
@@ -638,6 +647,63 @@ fn drain_stream_pool(pool: StreamPool&) {
     }
 }
 
+inline fn mark_multiplexed_acquired(c: PooledConnection&) {
+    c.active_allocations += 1;
+    c.use_count += 1;
+}
+
+inline fn try_acquire_direct_conn(
+    pool:                StreamPool&,
+    c:                   PooledConnection&,
+    key:                 const PoolKey&,
+    now_ns:              i64,
+    do_extensive_checks: bool,
+) -> i32, bool {
+    guard !c.closed && c.key.pool_key_equals(key) else { return -1, false; }
+    let is_h2_h3 = c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic;
+    if is_h2_h3 {
+        guard c.active_allocations < c.max_concurrent_streams else { return -1, false; }
+        let healthy = c.is_connection_healthy(
+            now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+        );
+        guard healthy else { return -1, false; }
+        mark_multiplexed_acquired(c);
+        return c.conn_id, true;
+    }
+
+    guard c.active_allocations == 0 else { return -1, false; }
+    let healthy = c.is_connection_healthy(
+        now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+    );
+    guard healthy else { return -1, false; }
+    c.active_allocations = 1;
+    c.use_count += 1;
+    group_record_acquired(pool, c.key);
+    return c.conn_id, true;
+}
+
+inline fn try_acquire_coalesced_conn(
+    pool:                StreamPool&,
+    c:                   PooledConnection&,
+    key:                 const PoolKey&,
+    target_resolved_ip:  const u8[:],
+    now_ns:              i64,
+    do_extensive_checks: bool,
+) -> i32, bool {
+    guard !c.closed && c.active_allocations < c.max_concurrent_streams else { return -1, false; }
+    let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
+    if is_negative {
+        pool.negative_ip_pool_result_count += 1;
+    }
+    guard can_coalesce else { return -1, false; }
+    let healthy = c.is_connection_healthy(
+        now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+    );
+    guard healthy else { return -1, false; }
+    mark_multiplexed_acquired(c);
+    return c.conn_id, true;
+}
+
 // OkHttp RealRoutePlanner priority rule: always prefer reusing an already-bound
 // or pooled healthy connection over launching delayed/new connection plans.
 fn acquire_pooled_connection(
@@ -648,47 +714,22 @@ fn acquire_pooled_connection(
     do_extensive_checks: bool = false,
 ) -> i32, bool {
     // 1. Direct pool match for exact key
-    for &c in pool.conns {
-        guard !c.closed && c.key.pool_key_equals(key) else { continue; }
-        let is_h2_h3 = c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic;
-        if is_h2_h3 {
-            guard c.active_allocations < c.max_concurrent_streams else { continue; }
-            let healthy = c.is_connection_healthy(
-                now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
-            );
-            guard healthy else { continue; }
-            c.active_allocations++;
-            c.use_count++;
-            return c.conn_id, true;
+    for i in pool.conns.len {
+        let cid, ok = try_acquire_direct_conn(pool, pool.conns[i], key, now_ns, do_extensive_checks);
+        if ok {
+            return cid, true;
         }
-
-        guard c.active_allocations == 0 else { continue; }
-        let healthy = c.is_connection_healthy(
-            now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
-        );
-        guard healthy else { continue; }
-        c.active_allocations = 1;
-        c.use_count++;
-        group_record_acquired(pool, c.key);
-        return c.conn_id, true;
     }
 
     // 2. HTTP/2 IP coalescing match across origins
     if pool.enable_ip_coalescing_h2 && key.scheme == PoolScheme.Https && target_resolved_ip.len > 0 {
-        for &c in pool.conns {
-            guard !c.closed && c.active_allocations < c.max_concurrent_streams else { continue; }
-            let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
-            if is_negative {
-                pool.negative_ip_pool_result_count++;
-            }
-            guard can_coalesce else { continue; }
-            let healthy = c.is_connection_healthy(
-                now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
+        for i in pool.conns.len {
+            let cid, ok = try_acquire_coalesced_conn(
+                pool, pool.conns[i], key, target_resolved_ip, now_ns, do_extensive_checks,
             );
-            guard healthy else { continue; }
-            c.active_allocations++;
-            c.use_count++;
-            return c.conn_id, true;
+            if ok {
+                return cid, true;
+            }
         }
     }
 
@@ -714,7 +755,7 @@ fn register_connection(
     guard slot_idx != -2 else { return -1; }
 
     let cid = pool.next_conn_id;
-    pool.next_conn_id++;
+    pool.next_conn_id += 1;
 
     var conn = PooledConnection {
         conn_id:                cid,
@@ -738,7 +779,7 @@ fn register_connection(
 
     let grp_idx = pool.find_or_create_group(key);
     if grp_idx >= 0 {
-        pool.groups[grp_idx].active_conns++;
+        pool.groups[grp_idx].active_conns += 1;
     }
 
     return cid;
@@ -780,13 +821,141 @@ fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
     for &c in pool.conns {
         if c.conn_id == conn_id {
             if c.active_allocations > 0 {
-                c.active_allocations--;
+                c.active_allocations -= 1;
             }
             if c.active_allocations == 0 {
                 c.idle_at_ns = now_ns;
                 group_record_released(pool, c.key);
             }
             return true;
+        }
+    }
+    return false;
+}
+
+// ---- Warm Upstream Connection Pool with NIK Isolation & EPOLLRDHUP Eviction --
+
+// Linux epoll half-closed peer hangup bitmask (EPOLLRDHUP = 0x2000).
+const EPOLLRDHUP: u32 = 0x2000;
+
+// Maximum warm upstream connections in `UpstreamPool`.
+const UPSTREAM_POOL_CAPACITY: i32 = 64;
+
+// Warm upstream origin connection entry isolated by (endpoint, tls_fingerprint, nik: u64).
+struct UpstreamConnEntry {
+    fd:              i32            = -1,
+    endpoint:        OriginEndpoint = OriginEndpoint { .. },
+    tls_fingerprint: u64            = 0,
+    nik:             u64            = 0,
+    epoll_events:    u32            = 0,
+    in_use:          bool           = false,
+    healthy:         bool           = true,
+}
+
+// Zero-allocation upstream pool indexing up to 64 warm origin connections.
+struct UpstreamPool {
+    entries:       UpstreamConnEntry[..64] = [],
+    evicted_rdhup: u64                     = 0,
+}
+
+inline fn is_epoll_rdhup_signaled(events: u32) -> bool {
+    return (events & EPOLLRDHUP) != 0;
+}
+
+inline fn matches_upstream_partition(
+    entry:           const UpstreamConnEntry&,
+    endpoint:        const OriginEndpoint&,
+    tls_fingerprint: u64,
+    nik:             u64,
+) -> bool {
+    return entry.nik == nik &&
+           entry.tls_fingerprint == tls_fingerprint &&
+           entry.endpoint.origin_endpoint_equals(endpoint);
+}
+
+// Registers a warm upstream connection into `UpstreamPool`, reusing evicted slots or appending up to 64.
+// Fails closed with `false` if all 64 slots are active (Invariant 13).
+fn register_upstream_conn(
+    pool:            UpstreamPool&,
+    fd:              i32,
+    endpoint:        const OriginEndpoint&,
+    tls_fingerprint: u64,
+    nik:             u64,
+) -> bool {
+    guard fd >= 0 else { return false; }
+    let entry = UpstreamConnEntry {
+        fd:              fd,
+        endpoint:        copy(endpoint),
+        tls_fingerprint: tls_fingerprint,
+        nik:             nik,
+        epoll_events:    0,
+        in_use:          false,
+        healthy:         true,
+    };
+    for i in pool.entries.len {
+        if !pool.entries[i].healthy && !pool.entries[i].in_use {
+            pool.entries[i] = entry;
+            return true;
+        }
+    }
+    guard pool.entries.try_push(entry) else {
+        return false;
+    }
+    return true;
+}
+
+// Signals epoll event flags (including EPOLLRDHUP = 0x2000) on an upstream socket descriptor.
+// Immediately marks idle connections with EPOLLRDHUP as unhealthy and evicts them.
+fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bool {
+    var matched = false;
+    for i in pool.entries.len {
+        if pool.entries[i].fd == fd && pool.entries[i].healthy {
+            pool.entries[i].epoll_events = events;
+            if is_epoll_rdhup_signaled(events) {
+                pool.entries[i].healthy = false;
+                pool.entries[i].in_use = false;
+                pool.evicted_rdhup += 1;
+            }
+            matched = true;
+        }
+    }
+    return matched;
+}
+
+// Acquires a warm idle upstream connection matching `(endpoint, tls_fingerprint, nik)`.
+// Evicts and skips any connection that has signaled `EPOLLRDHUP` (`0x2000`) while idle.
+fn acquire_upstream_conn(
+    pool:            UpstreamPool&,
+    endpoint:        const OriginEndpoint&,
+    tls_fingerprint: u64,
+    nik:             u64,
+) -> i32, bool {
+    for i in pool.entries.len {
+        if pool.entries[i].healthy && !pool.entries[i].in_use {
+            if is_epoll_rdhup_signaled(pool.entries[i].epoll_events) {
+                pool.entries[i].healthy = false;
+                pool.evicted_rdhup += 1;
+            } else if matches_upstream_partition(pool.entries[i], endpoint, tls_fingerprint, nik) {
+                pool.entries[i].in_use = true;
+                return pool.entries[i].fd, true;
+            }
+        }
+    }
+    return -1, false;
+}
+
+// Releases an acquired upstream connection back to the idle pool if healthy.
+fn release_upstream_conn(pool: UpstreamPool&, fd: i32, events: u32 = 0) -> bool {
+    for i in pool.entries.len {
+        if pool.entries[i].fd == fd && pool.entries[i].in_use {
+            pool.entries[i].in_use = false;
+            pool.entries[i].epoll_events = events;
+            if is_epoll_rdhup_signaled(events) {
+                pool.entries[i].healthy = false;
+                pool.evicted_rdhup += 1;
+                return false;
+            }
+            return pool.entries[i].healthy;
         }
     }
     return false;

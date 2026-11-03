@@ -186,6 +186,34 @@ fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, 
     return true;
 }
 
+// Parses the next HTTP/2 frame from `raw` at `cursor` and slices its payload (RFC 9113 Section 4.1).
+// Guarantees transactional cursor semantics: `cursor` remains unchanged on `false`.
+//
+// Example:
+//   raw = [0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00], cursor = 0
+//   returns: hdr.frame_type = 0x08, payload.len = 4, ok = true, cursor = 13
+fn read_wire_h2_frame(raw: const u8[:], cursor: i64&) -> WireFrameHeader, const u8[:], bool {
+    guard cursor >= 0 && cursor <= raw.len else {
+        return WireFrameHeader { .. }, "", false;
+    }
+    let unread = raw[cursor..];
+    guard unread.len >= 9 else {
+        return WireFrameHeader { .. }, "", false;
+    }
+    let hdr, _, ok = parse_frame_header(unread);
+    guard ok else {
+        return WireFrameHeader { .. }, "", false;
+    }
+    let body = unread[9..];
+    let flen = hdr.length as i64;
+    guard body.len >= flen else {
+        return WireFrameHeader { .. }, "", false;
+    }
+    let payload = body[..flen];
+    cursor += flen + 9;
+    return hdr, payload, true;
+}
+
 // Zero-copy streaming reader for incoming HTTP/2 frames.
 struct WireH2FrameReader {
     src:    const u8[:] = "",
@@ -202,7 +230,7 @@ fn new_wire_h2_frame_reader(src: const u8[:]) -> WireH2FrameReader {
 
 // Checks if another 9-byte frame header can be read.
 fn has_next(r: const WireH2FrameReader&) -> bool {
-    return r.cursor + 9 <= r.src.len;
+    return r.cursor >= 0 && (r.cursor + 9) <= r.src.len;
 }
 
 // Parses the next HTTP/2 frame and slices its payload without memory allocations.
@@ -211,21 +239,5 @@ fn has_next(r: const WireH2FrameReader&) -> bool {
 //   r.src = [0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00], r.cursor = 0
 //   returns: hdr.frame_type = 0x08, payload.len = 4, ok = true, r.cursor = 13
 fn next_frame(r: WireH2FrameReader&) -> WireFrameHeader, const u8[:], bool {
-    let unread = r.src[r.cursor..];
-    guard unread.len >= 9 else {
-        return WireFrameHeader { .. }, "", false;
-    }
-    let hdr, _, ok = parse_frame_header(unread);
-    guard ok else {
-        return WireFrameHeader { .. }, "", false;
-    }
-    let body = unread[9..];
-    let flen = hdr.length as i64;
-    guard body.len >= flen else {
-        return WireFrameHeader { .. }, "", false;
-    }
-    let payload = body[..flen];
-    let total_size = (flen + 9);
-    r.cursor = r.cursor + total_size;
-    return hdr, payload, true;
+    return read_wire_h2_frame(r.src, r.cursor);
 }

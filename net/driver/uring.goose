@@ -157,6 +157,25 @@ fn uring_has_fast_poll(ring_fd: i64) -> bool {
     return native_uring_has_fast_poll(ring_fd) != 0;
 }
 
+// Maximum number of entries in an io_uring provided buffer ring (IORING_REGISTER_PBUF_RING).
+const URING_MAX_PBUF_RING_ENTRIES: u16 = 32768;
+
+inline fn is_valid_pbuf_ring_entries(entries: u16) -> bool {
+    let entries_u32: u32 = entries;
+    let mask = entries_u32 - 1;
+    return entries >= 1 && entries <= URING_MAX_PBUF_RING_ENTRIES && (entries_u32 & mask) == 0;
+}
+
+// Registers a shared user-kernel provided buffer ring (IORING_REGISTER_PBUF_RING) for multishot recv.
+// Validates that `entries` is a power of 2 in 1..32768 and `ring_fd >= 0`.
+fn uring_register_buf_ring(ring_fd: i32, entries: u16, bgid: u16) -> bool {
+    let valid_entries = is_valid_pbuf_ring_entries(entries);
+    guard ring_fd >= 0 && valid_entries else {
+        return false;
+    }
+    return native_uring_register_pbuf_ring(ring_fd, 0, entries, bgid) == 0;
+}
+
 // Ring submission and completion tracking state
 struct RingQueueState {
     ring_size:         u32 = DEFAULT_RING_SIZE,
@@ -174,6 +193,24 @@ fn new_ring_queue_state(size: u32) -> RingQueueState {
     };
 }
 
+inline fn record_sqe_submission(state: RingQueueState&, sqe: const UringSqe&, cqes: UringCqe[..32]&) {
+    state.submissions_total += 1;
+    state.active_pending += 1;
+
+    let is_buf_select = sqe.opcode == URING_OP_RECV && (sqe.flags & URING_SQE_BUFFER_SELECT) != 0;
+    let cqe_flags: u32 = if is_buf_select { URING_CQE_F_BUFFER | URING_CQE_F_MORE } else { 0 };
+    var cqe = UringCqe {
+        user_data: sqe.user_data,
+        res:       sqe.len as i32,
+        flags:     cqe_flags,
+    };
+    cqes.push(cqe);
+    state.completions_total += 1;
+    if state.active_pending > 0 {
+        state.active_pending -= 1;
+    }
+}
+
 // Submits a batch of SQEs and reaps CQE completions
 fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: UringCqe[..32]&) -> i32 {
     cqes.clear();
@@ -182,23 +219,8 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
         if state.active_pending >= state.ring_size || cqes.len >= cqes.cap {
             break;
         }
-        let sqe = sqes[i];
-        state.submissions_total += 1;
-        state.active_pending += 1;
+        record_sqe_submission(state, sqes[i], cqes);
         submitted += 1;
-
-        let is_buf_select = sqe.opcode == URING_OP_RECV && (sqe.flags & URING_SQE_BUFFER_SELECT) != 0;
-        let cqe_flags: u32 = if is_buf_select { URING_CQE_F_BUFFER | URING_CQE_F_MORE } else { 0 };
-        var cqe = UringCqe {
-            user_data: sqe.user_data,
-            res:       sqe.len as i32,
-            flags:     cqe_flags,
-        };
-        cqes.push(cqe);
-        state.completions_total += 1;
-        if state.active_pending > 0 {
-            state.active_pending -= 1;
-        }
     }
     return submitted;
 }

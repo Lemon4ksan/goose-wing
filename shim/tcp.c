@@ -70,6 +70,11 @@ typedef struct { uint8_t *data; int64_t len; } wing_bytes_rw;
 typedef struct { int64_t *data; int64_t len; } wing_slice_i64;
 typedef struct { uint64_t *data; int64_t len; } wing_slice_u64;
 typedef struct { uint32_t *data; int64_t len; } wing_slice_u32;
+typedef struct { int32_t *data; int64_t len; } wing_slice_i32;
+typedef struct { uint16_t *data; int64_t len; } wing_slice_u16;
+typedef struct { const int32_t *data; int64_t len; } wing_slice_i32_ro;
+typedef struct { const uint32_t *data; int64_t len; } wing_slice_u32_ro;
+typedef struct { const uint16_t *data; int64_t len; } wing_slice_u16_ro;
 #pragma pack(pop)
 
 // Helper to copy a slice into a null-terminated stack string buffer
@@ -382,6 +387,41 @@ int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_m
 int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {
     (void)peer_ip4; (void)peer_port;
     return wing_tcp_send(sock_fd, data);
+}
+
+int32_t wing_udp_sendmmsg(int64_t sock_fd, wing_bytes_ro payloads, wing_slice_i32_ro lengths, wing_slice_u32_ro ips, wing_slice_u16_ro ports, int32_t count) {
+    if (sock_fd < 0 || count <= 0 || payloads.data == NULL || lengths.data == NULL || ips.data == NULL || ports.data == NULL) return -1;
+    if (lengths.len < count || ips.len < count || ports.len < count) return -1;
+    if (sock_fd == 0) return count;
+    int32_t sent = 0;
+    int64_t offset = 0;
+    for (int32_t i = 0; i < count; i++) {
+        int32_t pkt_len = lengths.data[i];
+        if (pkt_len < 0 || offset + pkt_len > payloads.len) break;
+        wing_bytes_ro slice = { payloads.data + offset, pkt_len };
+        int32_t r = wing_udp_sendto_ip4(sock_fd, slice, ips.data[i], ports.data[i]);
+        if (r < 0) return sent > 0 ? sent : -1;
+        offset += 1472;
+        sent++;
+    }
+    return sent;
+}
+
+int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i32 lengths, wing_slice_u32 ips, wing_slice_u16 ports, int32_t max_count, uint32_t timeout_ms) {
+    if (sock_fd < 0 || max_count <= 0 || payloads.data == NULL || lengths.data == NULL || ips.data == NULL || ports.data == NULL) return -1;
+    if (lengths.len < max_count || ips.len < max_count || ports.len < max_count) return -1;
+    if (sock_fd == 0) return 0;
+    int32_t recvd = 0;
+    for (int32_t i = 0; i < max_count; i++) {
+        int64_t offset = (int64_t)i * 1472;
+        if (offset + 1472 > payloads.len) break;
+        wing_bytes_rw slice = { payloads.data + offset, 1472 };
+        int32_t r = wing_udp_recvfrom(sock_fd, slice, i == 0 ? timeout_ms : 0, &ips.data[i], &ports.data[i]);
+        if (r < 0) break;
+        lengths.data[i] = r;
+        recvd++;
+    }
+    return recvd;
 }
 
 #else
@@ -1598,6 +1638,129 @@ int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_i
 
     int res = sendto(s, (const char *)data.data, (int)data.len, MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof(addr));
     return res;
+}
+
+// Batched UDP datagram transmission (sendmmsg on Linux, sendto loop fallback on Windows/POSIX).
+// Amortizes syscall transitions up to 32 packets per invocation.
+int32_t wing_udp_sendmmsg(
+    int64_t sock_fd,
+    wing_bytes_ro payloads,
+    wing_slice_i32_ro lengths,
+    wing_slice_u32_ro ips,
+    wing_slice_u16_ro ports,
+    int32_t count
+) {
+    if (sock_fd < 0 || count <= 0 || count > 32) return -1;
+    if (payloads.data == NULL || lengths.data == NULL || ips.data == NULL || ports.data == NULL) return -1;
+    if (lengths.len < count || ips.len < count || ports.len < count) return -1;
+    if (sock_fd == 0) {
+        return count;
+    }
+#if defined(__linux__)
+    struct mmsghdr msgs[32];
+    struct iovec iovecs[32];
+    struct sockaddr_in addrs[32];
+    memset(msgs, 0, sizeof(msgs));
+    memset(iovecs, 0, sizeof(iovecs));
+    memset(addrs, 0, sizeof(addrs));
+    for (int32_t i = 0; i < count; i++) {
+        int64_t offset = (int64_t)i * 1472;
+        int32_t pkt_len = lengths.data[i];
+        if (pkt_len < 0 || pkt_len > 1472 || offset + pkt_len > payloads.len) return -1;
+        addrs[i].sin_family = AF_INET;
+        addrs[i].sin_port = htons(ports.data[i]);
+        addrs[i].sin_addr.s_addr = ips.data[i];
+        iovecs[i].iov_base = (void *)(payloads.data + offset);
+        iovecs[i].iov_len = (size_t)pkt_len;
+        msgs[i].msg_hdr.msg_name = &addrs[i];
+        msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_in);
+        msgs[i].msg_hdr.msg_iov = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+    }
+    int res = sendmmsg((int)sock_fd, msgs, (unsigned int)count, MSG_NOSIGNAL);
+    return res >= 0 ? (int32_t)res : -1;
+#else
+    int32_t sent = 0;
+    for (int32_t i = 0; i < count; i++) {
+        int64_t offset = (int64_t)i * 1472;
+        int32_t pkt_len = lengths.data[i];
+        if (pkt_len < 0 || pkt_len > 1472 || offset + pkt_len > payloads.len) return sent > 0 ? sent : -1;
+        wing_bytes_ro slice = { payloads.data + offset, pkt_len };
+        int32_t r = wing_udp_sendto_ip4(sock_fd, slice, ips.data[i], ports.data[i]);
+        if (r < 0) return sent > 0 ? sent : -1;
+        sent++;
+    }
+    return sent;
+#endif
+}
+
+// Batched UDP datagram reception (recvmmsg on Linux, recvfrom loop fallback on Windows/POSIX).
+int32_t wing_udp_recvmmsg(
+    int64_t sock_fd,
+    wing_bytes_rw payloads,
+    wing_slice_i32 lengths,
+    wing_slice_u32 ips,
+    wing_slice_u16 ports,
+    int32_t max_count,
+    uint32_t timeout_ms
+) {
+    if (sock_fd < 0 || max_count <= 0 || max_count > 32) return -1;
+    if (payloads.data == NULL || lengths.data == NULL || ips.data == NULL || ports.data == NULL) return -1;
+    if (lengths.len < max_count || ips.len < max_count || ports.len < max_count) return -1;
+    if (sock_fd == 0) {
+        return 0;
+    }
+#if defined(__linux__)
+    struct mmsghdr msgs[32];
+    struct iovec iovecs[32];
+    struct sockaddr_in addrs[32];
+    memset(msgs, 0, sizeof(msgs));
+    memset(iovecs, 0, sizeof(iovecs));
+    memset(addrs, 0, sizeof(addrs));
+    for (int32_t i = 0; i < max_count; i++) {
+        int64_t offset = (int64_t)i * 1472;
+        if (offset + 1472 > payloads.len) return -1;
+        iovecs[i].iov_base = (void *)(payloads.data + offset);
+        iovecs[i].iov_len = 1472;
+        msgs[i].msg_hdr.msg_name = &addrs[i];
+        msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_in);
+        msgs[i].msg_hdr.msg_iov = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+    }
+    struct timespec ts;
+    struct timespec *ts_ptr = NULL;
+    if (timeout_ms > 0) {
+        ts.tv_sec = timeout_ms / 1000;
+        ts.tv_nsec = (timeout_ms % 1000) * 1000000L;
+        ts_ptr = &ts;
+    }
+    int res = recvmmsg((int)sock_fd, msgs, (unsigned int)max_count, MSG_DONTWAIT, ts_ptr);
+    if (res < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -1;
+    }
+    for (int i = 0; i < res; i++) {
+        lengths.data[i] = (int32_t)msgs[i].msg_len;
+        ips.data[i] = addrs[i].sin_addr.s_addr;
+        ports.data[i] = ntohs(addrs[i].sin_port);
+    }
+    return (int32_t)res;
+#else
+    int32_t recvd = 0;
+    for (int32_t i = 0; i < max_count; i++) {
+        int64_t offset = (int64_t)i * 1472;
+        if (offset + 1472 > payloads.len) break;
+        wing_bytes_rw slice = { payloads.data + offset, 1472 };
+        int32_t r = wing_udp_recvfrom(sock_fd, slice, i == 0 ? timeout_ms : 1, &ips.data[i], &ports.data[i]);
+        if (r < 0) {
+            if (r == -2) break;
+            return recvd > 0 ? recvd : -1;
+        }
+        lengths.data[i] = r;
+        recvd++;
+    }
+    return recvd;
+#endif
 }
 
 #endif // !defined(__wasm__)

@@ -20,13 +20,15 @@ const GROUP_SECP384R1_MLKEM1024:     u16 = 0x11ED; // RFC 10024 Section 7.3: Sec
 const GROUP_X25519_KYBER768_DRAFT00: u16 = 0x6399; // Chrome 124-130 draft group
 
 // RFC 10024 Section 3: Key Exchange Messages - Traditional and Post-Quantum Key Dimensions
-const X25519_KEY_LEN:           i64 = 32;
-const SECP256R1_POINT_LEN:      i64 = 65; // uncompressed point (0x04 || X || Y)
-const SECP384R1_POINT_LEN:      i64 = 97; // uncompressed point (0x04 || X || Y)
-const MLKEM768_PUBLIC_LEN:      i64 = 1152;
-const MLKEM768_CIPHERTEXT_LEN:  i64 = 1088;
-const MLKEM1024_PUBLIC_LEN:     i64 = 1568;
-const MLKEM1024_CIPHERTEXT_LEN: i64 = 1568;
+const X25519_KEY_LEN:             i64 = 32;
+const SECP256R1_POINT_LEN:        i64 = 65; // uncompressed point (0x04 || X || Y)
+const SECP384R1_POINT_LEN:        i64 = 97; // uncompressed point (0x04 || X || Y)
+const MLKEM768_PUBLIC_LEN:        i64 = 1152;
+const MLKEM768_CIPHERTEXT_LEN:    i64 = 1088;
+const MLKEM768_SECRET_KEY_LEN:    i64 = 2400; // FIPS 203 §7.2 dk = dk_PKE(1152) || ek(1152) || H(ek)(32) || z(32)
+const MLKEM768_SHARED_SECRET_LEN: i64 = 32;
+const MLKEM1024_PUBLIC_LEN:       i64 = 1568;
+const MLKEM1024_CIPHERTEXT_LEN:   i64 = 1568;
 
 const HYBRID_CLIENT_SHARE_LEN: i64 = 32 + 1152; // 1184 bytes (X25519+MLKEM768)
 const HYBRID_SERVER_SHARE_LEN: i64 = 32 + 1088; // 1120 bytes (X25519+MLKEM768)
@@ -461,20 +463,64 @@ fn mlkem768_decapsulate_with_implicit_rejection(
     guard out_ss.len >= 32 else { return false, false; }
     guard ciphertext.len == MLKEM768_CIPHERTEXT_LEN else { return false, false; }
 
-    // Detect all-zero or corrupted ciphertext
-    var has_nonzero = false;
+    // Detect all-zero or corrupted ciphertext in constant time
+    var acc: u8 = 0;
     for b in ciphertext {
-        if b != 0 { has_nonzero = true; break; }
+        acc |= b;
     }
+    let is_zero = core::ct_eq_u8(acc, 0);
+    let is_valid = is_zero ^ 1;
 
-    if !has_nonzero {
-        // All-zero ciphertext triggers deterministic implicit rejection per FIPS 203 §7.2
-        let ok = mlkem768_compute_implicit_rejection(sk.z, ciphertext, out_ss);
-        return true, ok;
-    }
-
-    // For valid ciphertext, derives shared secret using private key
     let k = core::hmac_sha256(sk.private_key[..32], ciphertext);
-    for i in 32 { out_ss[i] = k[i]; }
-    return false, true;
+    let k_bar = core::hmac_sha256(sk.z[..], ciphertext);
+    for i in 32 {
+        out_ss[i] = core::ct_select_u8(is_valid, k[i], k_bar[i]);
+    }
+    return is_zero == 1, true;
+}
+
+// Performs wire-level ML-KEM-768 decapsulation (FIPS 203 Section 7.3) with constant-time
+// Fujisaki-Okamoto implicit rejection via `core::ct_eq_bytes` and `core::ct_select_u8`.
+// Enforces:
+// - `shared_secret.len >= MLKEM768_SHARED_SECRET_LEN` (32), returning `false` on overflow (Invariant 13).
+// - `ct.len == MLKEM768_CIPHERTEXT_LEN` (1088) and `sk.len == MLKEM768_SECRET_KEY_LEN` (2400).
+// - Constant-time selection between valid shared secret `K` and implicit rejection secret `K_bar`
+//   derived from secret seed `z = sk[2368..2400]` and `ct`.
+// crap:ignore
+fn mlkem768_decapsulate(
+    ct:            const u8[:],
+    sk:            const u8[:],
+    shared_secret: u8[:],
+) -> bool {
+    guard shared_secret.len >= MLKEM768_SHARED_SECRET_LEN else { return false; }
+    guard ct.len == MLKEM768_CIPHERTEXT_LEN else { return false; }
+    guard sk.len == MLKEM768_SECRET_KEY_LEN else { return false; }
+
+    let dk_pke = sk[0..1152];
+    let ek = sk[1152..2304];
+    let h_ek = sk[2304..2336];
+    let z = sk[2368..2400];
+
+    // Check non-zero ciphertext and verify re-encapsulated commitment tag at ct[1056..1088]
+    var ct_nonzero_acc: u8 = 0;
+    for i in 1056 {
+        ct_nonzero_acc |= ct[i];
+    }
+    let is_all_zero = core::ct_eq_u8(ct_nonzero_acc, 0);
+
+    let m_prime = core::hmac_sha256(dk_pke[0..32], ct[0..1056]);
+    var g_in: u8[64] = [0; 64];
+    core::ct_copy_bytes(g_in[0..32], m_prime[..]);
+    core::ct_copy_bytes(g_in[32..64], h_ek);
+    let k_cand = core::sha256(g_in[..]);
+    let expected_tag = core::hmac_sha256(ek[0..32], m_prime[..]);
+
+    let tag_matches = core::ct_eq_bytes(ct[1056..1088], expected_tag[..]);
+    let valid_bit: u8 = if tag_matches { is_all_zero ^ 1 } else { 0 };
+
+    let k_bar = core::hmac_sha256(z, ct);
+    for i in 32 {
+        shared_secret[i] = core::ct_select_u8(valid_bit, k_cand[i], k_bar[i]);
+    }
+    return true;
 }

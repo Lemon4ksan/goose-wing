@@ -16,6 +16,19 @@ import .websocket;
 const TOPIC_TREE_MAX_BUCKETS:       i64 = 256;
 const TOPIC_TREE_MAX_SUBSCRIPTIONS: i64 = 4096;
 
+// Scans forward from `start` until '/' or end of slice (OASIS MQTT v5.0 §4.7).
+//
+// Example:
+//   raw = "sensors/temp", start = 0
+//   returns: 7
+fn scan_topic_segment_end(raw: const u8[:], start: i64) -> i64 {
+    var next = start;
+    while next < raw.len && raw[next] != '/' {
+        next += 1;
+    }
+    return next;
+}
+
 // Matches an MQTT topic pattern (with optional '+' and '#' wildcards) against a concrete topic name.
 fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
     guard pattern.len > 0 && topic.len > 0 else { return false; }
@@ -25,47 +38,31 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
         return false;
     }
 
-    if pattern == topic { return true; }
-    if pattern == "#" { return true; }
+    if pattern == topic || pattern == "#" { return true; }
 
     var p_cur: i64 = 0;
     var t_cur: i64 = 0;
 
     while true {
-        var p_next = p_cur;
-        while p_next < pattern.len && pattern[p_next] != '/' {
-            p_next++;
-        }
+        let p_next = scan_topic_segment_end(pattern, p_cur);
         let p_seg = pattern[p_cur..p_next];
+        if p_seg == "#" { return true; }
 
-        if p_seg == "#" {
-            return true;
-        }
-
-        var t_next = t_cur;
-        while t_next < topic.len && topic[t_next] != '/' {
-            t_next++;
-        }
+        let t_next = scan_topic_segment_end(topic, t_cur);
         let t_seg = topic[t_cur..t_next];
-
-        if p_seg != "+" && p_seg != t_seg {
-            return false;
-        }
+        guard p_seg == "+" || p_seg == t_seg else { return false; }
 
         let p_has_more = p_next < pattern.len;
         let t_has_more = t_next < topic.len;
 
-        if p_has_more && t_has_more {
-            p_cur = p_next + 1;
-            t_cur = t_next + 1;
-        } else if !p_has_more && !t_has_more {
-            return true;
-        } else if p_has_more && !t_has_more {
+        if !p_has_more && !t_has_more { return true; }
+        if !t_has_more {
             // MQTT §4.7.1.2: 'sport/#' matches parent level 'sport'
             return pattern[p_next..] == "/#";
-        } else {
-            return false;
         }
+        guard p_has_more else { return false; }
+        p_cur = p_next + 1;
+        t_cur = t_next + 1;
     }
     return false;
 }
@@ -119,6 +116,26 @@ struct TopicTree {
     total_messages_delivered: u64                       = 0,
 }
 
+inline fn is_valid_wildcard_char(pattern: const u8[:], i: i64, b: u8) -> bool {
+    guard b != 0 else { return false; }
+    if b == '#' {
+        guard i == pattern.len - 1 else { return false; }
+        if i > 0 {
+            guard pattern[i - 1] == '/' else { return false; }
+        }
+        return true;
+    }
+    if b == '+' {
+        if i > 0 {
+            guard pattern[i - 1] == '/' else { return false; }
+        }
+        if i + 1 < pattern.len {
+            guard pattern[i + 1] == '/' else { return false; }
+        }
+    }
+    return true;
+}
+
 // Validates an MQTT topic filter per OASIS MQTT v5.0 §4.7.1.2:
 // - Multi-level wildcard '#' must be the last character and either standalone ("#") or preceded by '/' ("sport/#").
 // - Single-level wildcard '+' must occupy an entire level (must be preceded by '/' or start-of-filter,
@@ -128,26 +145,7 @@ fn is_valid_topic_filter(pattern: const u8[:]) -> bool {
     guard pattern.len > 0 && pattern.len <= 64 else { return false; }
 
     for i in pattern.len {
-        let b = pattern[i];
-        guard b != 0 else { return false; }
-
-        if b == '#' {
-            // Must be the last character
-            guard i == pattern.len - 1 else { return false; }
-            // If preceded by anything, previous byte must be '/'
-            if i > 0 {
-                guard pattern[i - 1] == '/' else { return false; }
-            }
-        } else if b == '+' {
-            // If preceded by anything, previous byte must be '/'
-            if i > 0 {
-                guard pattern[i - 1] == '/' else { return false; }
-            }
-            // If followed by anything, next byte must be '/'
-            if i + 1 < pattern.len {
-                guard pattern[i + 1] == '/' else { return false; }
-            }
-        }
+        guard is_valid_wildcard_char(pattern, i, pattern[i]) else { return false; }
     }
 
     return true;
@@ -199,6 +197,8 @@ struct TopicSubscriptionEvent {
     is_joined:       bool     = false,
 }
 
+const TOPIC_MAX_SUBSCRIBERS_PER_BUCKET: i32 = 512;
+
 // Subscribes a socket descriptor to a topic pattern with old and new subscriber count feedback.
 // Returns true on success, false if capacity is exceeded, invalid pattern, or already subscribed.
 fn subscribe_ex(
@@ -214,15 +214,17 @@ fn subscribe_ex(
     guard b_idx >= 0 else { return false; }
 
     // Check if already subscribed to this bucket
-    var cur = tree.buckets[b_idx as i64].head_sub;
-    while cur >= 0 {
-        let cur_i64 = cur as i64;
-        if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
-            out_old = tree.buckets[b_idx as i64].subscriber_count;
-            out_new = tree.buckets[b_idx as i64].subscriber_count;
-            return true; // Already subscribed
-        }
-        cur = tree.nodes[cur_i64].next_sub;
+    if is_subscribed_in_bucket(tree, b_idx, sock_fd) {
+        out_old = tree.buckets[b_idx as i64].subscriber_count;
+        out_new = tree.buckets[b_idx as i64].subscriber_count;
+        return true;
+    }
+
+    // Enforce bounded 512-subscriber limit per topic bucket (Invariant 13 fail-closed rejection)
+    guard tree.buckets[b_idx as i64].subscriber_count < TOPIC_MAX_SUBSCRIBERS_PER_BUCKET else {
+        out_old = tree.buckets[b_idx as i64].subscriber_count;
+        out_new = tree.buckets[b_idx as i64].subscriber_count;
+        return false;
     }
 
     // Allocate subscription node from bounded pool
@@ -233,17 +235,30 @@ fn subscribe_ex(
             tree.nodes[i].in_use = true;
 
             let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
+            let new_cnt = old_cnt + 1;
             tree.buckets[b_idx as i64].head_sub = i as i32;
-            tree.buckets[b_idx as i64].subscriber_count += 1;
+            tree.buckets[b_idx as i64].subscriber_count = new_cnt;
             tree.active_subscriptions += 1;
 
             out_old = old_cnt;
-            out_new = old_cnt + 1;
+            out_new = new_cnt;
             return true;
         }
     }
 
     return false; // Subscription pool full
+}
+
+fn is_subscribed_in_bucket(tree: const TopicTree&, b: i64, sock_fd: i64) -> bool {
+    var cur = tree.buckets[b].head_sub;
+    while cur >= 0 {
+        let cur_i64 = cur as i64;
+        if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+            return true;
+        }
+        cur = tree.nodes[cur_i64].next_sub;
+    }
+    return false;
 }
 
 // Subscribes a socket descriptor to a topic pattern.
@@ -289,6 +304,38 @@ fn unlink_drainable_node(tree: TopicTree&, node_idx: i32) {
     tree.nodes[n_i64].next_drainable = -1;
 }
 
+fn release_subscription_node(tree: TopicTree&, b: i64, prev: i32, cur: i32) -> i32, i32 {
+    let cur_i64 = cur as i64;
+    let next = tree.nodes[cur_i64].next_sub;
+    if prev < 0 {
+        tree.buckets[b].head_sub = next;
+    } else {
+        tree.nodes[prev as i64].next_sub = next;
+    }
+
+    if tree.nodes[cur_i64].num_message_indices > 0 {
+        unlink_drainable_node(tree, cur);
+        tree.nodes[cur_i64].num_message_indices = 0;
+    }
+
+    tree.nodes[cur_i64].in_use = false;
+    tree.nodes[cur_i64].sock_fd = -1;
+    tree.nodes[cur_i64].next_sub = -1;
+
+    let old_cnt = tree.buckets[b].subscriber_count;
+    tree.buckets[b].subscriber_count = old_cnt - 1;
+    tree.active_subscriptions -= 1;
+    return next, old_cnt;
+}
+
+fn reclaim_empty_bucket(tree: TopicTree&, b: i64) {
+    if tree.buckets[b].subscriber_count <= 0 {
+        tree.buckets[b].in_use = false;
+        tree.buckets[b].head_sub = -1;
+        tree.active_buckets -= 1;
+    }
+}
+
 // Unsubscribes a socket descriptor from a topic pattern with old and new subscriber count feedback.
 // Returns true if unsubscription succeeded, false if not subscribed.
 fn unsubscribe_ex(
@@ -302,40 +349,18 @@ fn unsubscribe_ex(
 
     let b_idx = find_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return false; }
+    let b = b_idx as i64;
 
     var prev: i32 = -1;
-    var cur = tree.buckets[b_idx as i64].head_sub;
+    var cur = tree.buckets[b].head_sub;
 
     while cur >= 0 {
         let cur_i64 = cur as i64;
         if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
-            if prev < 0 {
-                tree.buckets[b_idx as i64].head_sub = tree.nodes[cur_i64].next_sub;
-            } else {
-                tree.nodes[prev as i64].next_sub = tree.nodes[cur_i64].next_sub;
-            }
-
-            if tree.nodes[cur_i64].num_message_indices > 0 {
-                unlink_drainable_node(tree, cur);
-                tree.nodes[cur_i64].num_message_indices = 0;
-            }
-
-            tree.nodes[cur_i64].in_use = false;
-            tree.nodes[cur_i64].sock_fd = -1;
-            tree.nodes[cur_i64].next_sub = -1;
-
-            let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
-            tree.buckets[b_idx as i64].subscriber_count -= 1;
-            tree.active_subscriptions -= 1;
-
+            let _, old_cnt = release_subscription_node(tree, b, prev, cur);
             out_old = old_cnt;
             out_new = old_cnt - 1;
-
-            if tree.buckets[b_idx as i64].subscriber_count <= 0 {
-                tree.buckets[b_idx as i64].in_use = false;
-                tree.buckets[b_idx as i64].head_sub = -1;
-                tree.active_buckets -= 1;
-            }
+            reclaim_empty_bucket(tree, b);
             return true;
         }
         prev = cur;
@@ -383,39 +408,17 @@ fn unsubscribe_all(tree: TopicTree&, sock_fd: i64) -> i32 {
 
         while cur >= 0 {
             let cur_i64 = cur as i64;
-            guard tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd else {
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                let next, _ = release_subscription_node(tree, b, prev, cur);
+                unsubs += 1;
+                cur = next;
+            } else {
                 prev = cur;
                 cur = tree.nodes[cur_i64].next_sub;
-                continue;
             }
-
-            let next = tree.nodes[cur_i64].next_sub;
-            if prev < 0 {
-                tree.buckets[b].head_sub = next;
-            } else {
-                tree.nodes[prev as i64].next_sub = next;
-            }
-
-            if tree.nodes[cur_i64].num_message_indices > 0 {
-                unlink_drainable_node(tree, cur);
-                tree.nodes[cur_i64].num_message_indices = 0;
-            }
-
-            tree.nodes[cur_i64].in_use = false;
-            tree.nodes[cur_i64].sock_fd = -1;
-            tree.nodes[cur_i64].next_sub = -1;
-            tree.buckets[b].subscriber_count -= 1;
-            tree.active_subscriptions -= 1;
-            unsubs += 1;
-
-            cur = next;
         }
 
-        if tree.buckets[b].subscriber_count <= 0 {
-            tree.buckets[b].in_use = false;
-            tree.buckets[b].head_sub = -1;
-            tree.active_buckets -= 1;
-        }
+        reclaim_empty_bucket(tree, b);
     }
 
     return unsubs;
@@ -437,43 +440,19 @@ fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
 
         while cur >= 0 {
             let cur_i64 = cur as i64;
-            guard tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd else {
+            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
+                let next, old_cnt = release_subscription_node(tree, b, prev, cur);
+                unsubs += 1;
+                let new_cnt = old_cnt - 1;
+                HookFn(tree.buckets[b].topic_pattern[..], old_cnt, new_cnt, sock_fd);
+                cur = next;
+            } else {
                 prev = cur;
                 cur = tree.nodes[cur_i64].next_sub;
-                continue;
             }
-
-            let next = tree.nodes[cur_i64].next_sub;
-            if prev < 0 {
-                tree.buckets[b].head_sub = next;
-            } else {
-                tree.nodes[prev as i64].next_sub = next;
-            }
-
-            if tree.nodes[cur_i64].num_message_indices > 0 {
-                unlink_drainable_node(tree, cur);
-                tree.nodes[cur_i64].num_message_indices = 0;
-            }
-
-            tree.nodes[cur_i64].in_use = false;
-            tree.nodes[cur_i64].sock_fd = -1;
-            tree.nodes[cur_i64].next_sub = -1;
-
-            let old_cnt = tree.buckets[b].subscriber_count;
-            tree.buckets[b].subscriber_count -= 1;
-            tree.active_subscriptions -= 1;
-            unsubs += 1;
-
-            HookFn(tree.buckets[b].topic_pattern[..], old_cnt, old_cnt - 1, sock_fd);
-
-            cur = next;
         }
 
-        if tree.buckets[b].subscriber_count <= 0 {
-            tree.buckets[b].in_use = false;
-            tree.buckets[b].head_sub = -1;
-            tree.active_buckets -= 1;
-        }
+        reclaim_empty_bucket(tree, b);
     }
 
     return unsubs;
@@ -483,16 +462,7 @@ fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
 fn is_subscribed(tree: const TopicTree&, sock_fd: i64, pattern: const u8[:]) -> bool {
     let b_idx = find_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return false; }
-
-    var cur = tree.buckets[b_idx as i64].head_sub;
-    while cur >= 0 {
-        let cur_i64 = cur as i64;
-        if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
-            return true;
-        }
-        cur = tree.nodes[cur_i64].next_sub;
-    }
-    return false;
+    return is_subscribed_in_bucket(tree, b_idx, sock_fd);
 }
 
 // Returns the total number of subscribers for a given topic pattern.
@@ -507,15 +477,8 @@ fn socket_subscription_count(tree: const TopicTree&, sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return 0; }
     var count: i32 = 0;
     for b in tree.buckets.len {
-        guard tree.buckets[b].in_use else { continue; }
-        var cur = tree.buckets[b].head_sub;
-        while cur >= 0 {
-            let cur_i64 = cur as i64;
-            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
-                count += 1;
-                break;
-            }
-            cur = tree.nodes[cur_i64].next_sub;
+        if tree.buckets[b].in_use && is_subscribed_in_bucket(tree, b, sock_fd) {
+            count += 1;
         }
     }
     return count;
@@ -530,20 +493,11 @@ fn get_socket_topics(
     guard sock_fd > 0 else { return 0; }
     out_topics.clear();
     for b in tree.buckets.len {
-        guard tree.buckets[b].in_use else { continue; }
-        var cur = tree.buckets[b].head_sub;
-        while cur >= 0 {
-            let cur_i64 = cur as i64;
-            guard tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd else {
-                cur = tree.nodes[cur_i64].next_sub;
-                continue;
-            }
-
+        if tree.buckets[b].in_use && is_subscribed_in_bucket(tree, b, sock_fd) {
             guard out_topics.len < out_topics.cap else { break; }
             var pat: u8[..64] = [];
             pat.append(tree.buckets[b].topic_pattern[..]);
             out_topics.push(pat);
-            break;
         }
     }
     return out_topics.len as i32;
@@ -557,16 +511,9 @@ fn iterate_socket_topics<IterFn: fn(const u8[:])>(
     guard sock_fd > 0 else { return 0; }
     var count: i32 = 0;
     for b in tree.buckets.len {
-        guard tree.buckets[b].in_use else { continue; }
-        var cur = tree.buckets[b].head_sub;
-        while cur >= 0 {
-            let cur_i64 = cur as i64;
-            if tree.nodes[cur_i64].in_use && tree.nodes[cur_i64].sock_fd == sock_fd {
-                IterFn(tree.buckets[b].topic_pattern[..]);
-                count += 1;
-                break;
-            }
-            cur = tree.nodes[cur_i64].next_sub;
+        if tree.buckets[b].in_use && is_subscribed_in_bucket(tree, b, sock_fd) {
+            IterFn(tree.buckets[b].topic_pattern[..]);
+            count += 1;
         }
     }
     return count;
@@ -582,30 +529,47 @@ fn is_valid_publish_topic(topic: const u8[:]) -> bool {
     return true;
 }
 
-// Appends a socket descriptor to out_fds if not previously recorded in bitmask or array.
-fn add_distinct_subscriber(out_fds: i64[..512]&, seen_mask: u64[4]&, fd: i64) {
-    let h = ((fd as u64) ^ ((fd as u64) >> 8)) & 255;
+// Adds a distinct subscriber `sub_id` to `topic` in `tree`, enforcing the 512-subscriber limit.
+// Returns `(subscriber_count: i32, ok: bool)` with `ok = false` when the 512-subscriber limit is exceeded.
+fn add_distinct_subscriber(tree: TopicTree&, topic: const u8[:], sub_id: u32) -> i32, bool {
+    guard sub_id > 0 else { return 0, false; }
+    var old_cnt: i32 = 0;
+    var new_cnt: i32 = 0;
+    let ok = subscribe_ex(tree, sub_id, topic, old_cnt, new_cnt);
+    return new_cnt, ok;
+}
+
+inline fn hash_fd_bucket(fd: i64) -> u64 {
+    let u = fd as u64;
+    return (u ^ (u >> 8)) & 255;
+}
+
+// Appends a socket descriptor to `out_fds` if not previously recorded in bitmask or array.
+// Returns `(count: i32, ok: bool)` with `ok = false` when `out_fds` reaches its 512-subscriber capacity.
+fn add_distinct_subscriber(out_fds: i64[..512]&, seen_mask: u64[4]&, fd: i64) -> i32, bool {
+    let h = hash_fd_bucket(fd);
     let word_idx = (h >> 6) as i64;
     let bit = (1 as u64) << (h & 63);
 
     if (seen_mask[word_idx] & bit) == 0 {
-        seen_mask[word_idx] = seen_mask[word_idx] | bit;
-        guard out_fds.len < out_fds.cap else { return; }
+        guard out_fds.len < out_fds.cap else { return out_fds.len as i32, false; }
+        seen_mask[word_idx] |= bit;
         out_fds.push(fd);
-        return;
+        return out_fds.len as i32, true;
     }
 
     for d_fd in out_fds {
-        if d_fd == fd { return; }
+        if d_fd == fd { return out_fds.len as i32, true; }
     }
-    guard out_fds.len < out_fds.cap else { return; }
+    guard out_fds.len < out_fds.cap else { return out_fds.len as i32, false; }
     out_fds.push(fd);
+    return out_fds.len as i32, true;
 }
 
-// Finds all distinct sockets subscribed to patterns matching the target topic.
-// Returns the number of distinct sockets stored into out_fds.
-fn find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
-    guard is_valid_publish_topic(topic) else { return 0; }
+// Finds all distinct sockets subscribed to patterns matching the target topic,
+// returning `(count: i64, ok: bool)` where `ok == false` if the 512-subscriber buffer overflows.
+fn find_subscribers_checked(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64, bool {
+    guard is_valid_publish_topic(topic) else { return 0, false; }
     out_fds.clear();
     var seen_mask: u64[4] = [0, 0, 0, 0];
 
@@ -617,12 +581,25 @@ fn find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..5
         while cur >= 0 {
             let cur_i64 = cur as i64;
             if tree.nodes[cur_i64].in_use {
-                add_distinct_subscriber(out_fds, seen_mask, tree.nodes[cur_i64].sock_fd);
+                let _, add_ok = add_distinct_subscriber(out_fds, seen_mask, tree.nodes[cur_i64].sock_fd);
+                guard add_ok else { return out_fds.len, false; }
             }
             cur = tree.nodes[cur_i64].next_sub;
         }
     }
-    return out_fds.len;
+    return out_fds.len, true;
+}
+
+// Finds all distinct sockets subscribed to patterns matching the target topic.
+// Returns the number of distinct sockets stored into out_fds.
+fn find_subscribers(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
+    let count, _ = find_subscribers_checked(tree, topic, out_fds);
+    return count;
+}
+
+inline fn record_publish_stats(tree: TopicTree&, delivered: i64) {
+    tree.total_publishes += 1;
+    tree.total_messages_delivered += (delivered as u64);
 }
 
 // Publishes a pre-encoded raw WebSocket frame to all subscribers matching the target topic.
@@ -642,8 +619,7 @@ fn publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u8[:]) 
         }
     }
 
-    tree.total_publishes += 1;
-    tree.total_messages_delivered += delivered as u64;
+    record_publish_stats(tree, delivered);
     return delivered;
 }
 
@@ -742,8 +718,7 @@ fn publish_prepared(
         }
     }
 
-    tree.total_publishes += 1;
-    tree.total_messages_delivered += delivered as u64;
+    record_publish_stats(tree, delivered);
     return delivered;
 }
 
@@ -775,12 +750,25 @@ fn publish_prepared_selective<LookupFn: fn(i64) -> bool>(
         }
     }
 
-    tree.total_publishes += 1;
-    tree.total_messages_delivered += delivered as u64;
+    record_publish_stats(tree, delivered);
     return delivered;
 }
 
 // ---- uWebSockets TopicTree Batch Drainage & Message Palette Engine ---------
+
+fn flush_node_palette_messages(tree: const TopicTree&, n_i64: i64, fd: i64, count: i64) -> i64 {
+    var sent_total: i64 = 0;
+    for i in count {
+        let msg_idx = tree.nodes[n_i64].message_indices[i] as i64;
+        if msg_idx >= 0 && msg_idx < tree.palette.len {
+            let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
+            if sent > 0 {
+                sent_total += 1;
+            }
+        }
+    }
+    return sent_total;
+}
 
 // Drains all batched messages for a specific subscriber node.
 // Unlinks from drainable list and sends wire frames directly to the socket descriptor.
@@ -794,18 +782,7 @@ fn drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
     let fd = tree.nodes[n_i64].sock_fd;
     tree.nodes[n_i64].num_message_indices = 0;
 
-    var sent_total: i64 = 0;
-    for i in count {
-        let msg_idx = tree.nodes[n_i64].message_indices[i] as i64;
-        if msg_idx >= 0 && msg_idx < tree.palette.len {
-            let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
-            if sent > 0 {
-                sent_total += 1;
-            }
-        }
-    }
-
-    return sent_total;
+    return flush_node_palette_messages(tree, n_i64, fd, count);
 }
 
 // Drains all drainable subscribers in batch.
@@ -826,21 +803,50 @@ fn drain(tree: TopicTree&) -> i64 {
         tree.nodes[c_i64].prev_drainable = -1;
         tree.nodes[c_i64].next_drainable = -1;
 
-        for i in count {
-            let msg_idx = tree.nodes[c_i64].message_indices[i] as i64;
-            guard msg_idx >= 0 && msg_idx < tree.palette.len else { continue; }
-            let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
-            if sent > 0 {
-                total_delivered += 1;
-            }
-        }
+        let batch_sent = flush_node_palette_messages(tree, c_i64, fd, count);
+        total_delivered += batch_sent;
         cur = next;
     }
 
     tree.drainable_head = -1;
     tree.palette_len = 0;
-    tree.total_messages_delivered += total_delivered as u64;
+    tree.total_messages_delivered += (total_delivered as u64);
     return total_delivered;
+}
+
+fn check_and_mark_batch_seen(
+    fd:        i64,
+    seen_fds:  i64[..512]&,
+    seen_mask: u64[4]&,
+) -> bool, bool {
+    let h = hash_fd_bucket(fd);
+    let word_idx = (h >> 6) as i64;
+    let bit = (1 as u64) << (h & 63);
+
+    if (seen_mask[word_idx] & bit) == 0 {
+        seen_mask[word_idx] |= bit;
+        guard seen_fds.len < seen_fds.cap else { return false, false; }
+        seen_fds.push(fd);
+        return false, true;
+    }
+
+    for s_fd in seen_fds {
+        if s_fd == fd {
+            return true, true;
+        }
+    }
+    guard seen_fds.len < seen_fds.cap else { return false, false; }
+    seen_fds.push(fd);
+    return false, true;
+}
+
+fn link_drainable_head(tree: TopicTree&, cur: i32, c_i64: i64) {
+    tree.nodes[c_i64].next_drainable = tree.drainable_head;
+    tree.nodes[c_i64].prev_drainable = -1;
+    if tree.drainable_head >= 0 {
+        tree.nodes[tree.drainable_head as i64].prev_drainable = cur;
+    }
+    tree.drainable_head = cur;
 }
 
 // Enqueues a message index to a single subscriber node if matching and not already queued in this batch.
@@ -856,31 +862,14 @@ fn queue_subscriber_batch(
     guard tree.nodes[c_i64].in_use && tree.nodes[c_i64].sock_fd != sender_fd else { return false; }
     let fd = tree.nodes[c_i64].sock_fd;
 
-    let h = ((fd as u64) ^ ((fd as u64) >> 8)) & 255;
-    let word_idx = (h >> 6) as i64;
-    let bit = (1 as u64) << (h & 63);
-
-    var already_queued = false;
-    if (seen_mask[word_idx] & bit) == 0 {
-        seen_mask[word_idx] = seen_mask[word_idx] | bit;
-        guard seen_fds.len < seen_fds.cap else { return false; }
-        seen_fds.push(fd);
-    } else {
-        for s_fd in seen_fds {
-            if s_fd == fd {
-                already_queued = true;
-                break;
-            }
-        }
-        if !already_queued {
-            guard seen_fds.len < seen_fds.cap else { return false; }
-            seen_fds.push(fd);
-        }
-    }
+    var already_queued, ok_seen = check_and_mark_batch_seen(fd, seen_fds, seen_mask);
+    guard ok_seen else { return false; }
 
     let num = tree.nodes[c_i64].num_message_indices as i64;
-    if num > 0 && tree.nodes[c_i64].message_indices[num - 1] == (msg_idx as u16) {
-        already_queued = true;
+    if num > 0 {
+        if tree.nodes[c_i64].message_indices[num - 1] == (msg_idx as u16) {
+            already_queued = true;
+        }
     }
 
     guard !already_queued else { return false; }
@@ -894,12 +883,7 @@ fn queue_subscriber_batch(
     tree.nodes[c_i64].num_message_indices += 1;
 
     if tree.nodes[c_i64].num_message_indices == 1 {
-        tree.nodes[c_i64].next_drainable = tree.drainable_head;
-        tree.nodes[c_i64].prev_drainable = -1;
-        if tree.drainable_head >= 0 {
-            tree.nodes[tree.drainable_head as i64].prev_drainable = cur;
-        }
-        tree.drainable_head = cur;
+        link_drainable_head(tree, cur, c_i64);
     }
     return true;
 }

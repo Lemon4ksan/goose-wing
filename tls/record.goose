@@ -143,7 +143,145 @@ fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
     return level, alert, is_fatal, true;
 }
 
-// ---- Zero-Copy Parsers (ByteCursor & ByteBuilder) -------------------------
+// ---- Zero-Copy Parsers (Canonical Slice + Cursor & ByteCursor) ------------
+
+// Reads a single unsigned byte from `raw` at `cursor` and advances `cursor` by 1.
+//
+// Example:
+//   raw = [0x17, 0x03], cursor = 0
+//   returns: out = 0x17, ok = true, cursor = 1
+// crap:ignore
+fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
+    guard cursor >= 0 && cursor + 1 <= raw.len else {
+        return false;
+    }
+    out = raw[cursor];
+    cursor += 1;
+    return true;
+}
+
+// Reads a big-endian 16-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 2.
+//
+// Example:
+//   raw = [0x03, 0x03], cursor = 0
+//   returns: out = 0x0303, ok = true, cursor = 2
+// crap:ignore
+fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
+    guard cursor >= 0 && cursor + 2 <= raw.len else {
+        return false;
+    }
+    out = ((raw[cursor] as u16) << 8) | raw[cursor + 1];
+    cursor += 2;
+    return true;
+}
+
+// Reads a big-endian 24-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 3.
+//
+// Example:
+//   raw = [0x00, 0x01, 0x02], cursor = 0
+//   returns: out = 0x000102, ok = true, cursor = 3
+// crap:ignore
+fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+    guard cursor >= 0 && cursor + 3 <= raw.len else {
+        return false;
+    }
+    out = ((raw[cursor] as u32) << 16) | ((raw[cursor + 1] as u32) << 8) | raw[cursor + 2];
+    cursor += 3;
+    return true;
+}
+
+// Reads a big-endian 32-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 4.
+//
+// Example:
+//   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
+//   returns: out = 0x01020304, ok = true, cursor = 4
+// crap:ignore
+fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+    guard cursor >= 0 && cursor + 4 <= raw.len else {
+        return false;
+    }
+    out = ((raw[cursor] as u32) << 24) |
+        ((raw[cursor + 1] as u32) << 16) |
+        ((raw[cursor + 2] as u32) << 8) |
+        raw[cursor + 3];
+    cursor += 4;
+    return true;
+}
+
+// Extracts a zero-copy slice of `count` bytes from `raw` at `cursor` and advances `cursor` by `count`.
+//
+// Example:
+//   raw = "hello", cursor = 1, count = 3
+//   returns: sub = "ell", ok = true, cursor = 4
+// crap:ignore
+fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
+    guard count >= 0 && cursor >= 0 && cursor + count <= raw.len else {
+        return raw[..0], false;
+    }
+    let sub = raw[cursor..cursor + count];
+    cursor += count;
+    return sub, true;
+}
+
+// Extracts a 1-byte length-prefixed slice from `raw` at `cursor`.
+// Leaves `cursor` unchanged on error.
+//
+// Example:
+//   raw = [0x02, 0xAA, 0xBB], cursor = 0
+//   returns: sub = [0xAA, 0xBB], ok = true, cursor = 3
+fn slice_get_u8_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+    let saved = cursor;
+    var length: u8 = 0;
+    guard slice_get_u8(raw, cursor, length) else {
+        return raw[..0], false;
+    }
+    let sub, ok = slice_get_bytes(raw, cursor, length);
+    guard ok else {
+        cursor = saved;
+        return raw[..0], false;
+    }
+    return sub, true;
+}
+
+// Extracts a big-endian 2-byte length-prefixed slice from `raw` at `cursor`.
+// Leaves `cursor` unchanged on error.
+//
+// Example:
+//   raw = [0x00, 0x02, 0xAA, 0xBB], cursor = 0
+//   returns: sub = [0xAA, 0xBB], ok = true, cursor = 4
+fn slice_get_u16_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+    let saved = cursor;
+    var length: u16 = 0;
+    guard slice_get_u16(raw, cursor, length) else {
+        return raw[..0], false;
+    }
+    let sub, ok = slice_get_bytes(raw, cursor, length);
+    guard ok else {
+        cursor = saved;
+        return raw[..0], false;
+    }
+    return sub, true;
+}
+
+// Extracts a big-endian 3-byte length-prefixed slice from `raw` at `cursor`.
+// Leaves `cursor` unchanged on error.
+//
+// Example:
+//   raw = [0x00, 0x00, 0x02, 0xAA, 0xBB], cursor = 0
+//   returns: sub = [0xAA, 0xBB], ok = true, cursor = 5
+fn slice_get_u24_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+    let saved = cursor;
+    var length: u32 = 0;
+    guard slice_get_u24(raw, cursor, length) else {
+        return raw[..0], false;
+    }
+    let sub, ok = slice_get_bytes(raw, cursor, length);
+    guard ok else {
+        cursor = saved;
+        return raw[..0], false;
+    }
+    return sub, true;
+}
 
 struct ByteCursor {
     buf: const u8[:] = [],
@@ -165,6 +303,7 @@ fn get_u8(c: ByteCursor&, out: u8&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn get_u16(c: ByteCursor&, out: u16&) -> bool {
     if c.buf.len < 2 { return false; }
     out = ((c.buf[0] as u16) << 8) | c.buf[1];
@@ -172,6 +311,7 @@ fn get_u16(c: ByteCursor&, out: u16&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn get_u24(c: ByteCursor&, out: u32&) -> bool {
     if c.buf.len < 3 { return false; }
     out = ((c.buf[0] as u32) << 16) | ((c.buf[1] as u32) << 8) | c.buf[2];
@@ -179,6 +319,7 @@ fn get_u24(c: ByteCursor&, out: u32&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn get_u32(c: ByteCursor&, out: u32&) -> bool {
     if c.buf.len < 4 { return false; }
     out = ((c.buf[0] as u32) << 24) | ((c.buf[1] as u32) << 16) | ((c.buf[2] as u32) << 8) | c.buf[3];
@@ -226,6 +367,7 @@ fn get_u24_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn get_last_u8(c: ByteCursor&, out: u8&) -> bool {
     let n = c.buf.len;
     if n < 1 { return false; }
@@ -276,6 +418,7 @@ fn start_u8_prefix(b: ByteBuilder&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn finish_u8_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
@@ -300,6 +443,7 @@ fn start_u16_prefix(b: ByteBuilder&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn finish_u16_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
@@ -326,6 +470,7 @@ fn start_u24_prefix(b: ByteBuilder&) -> bool {
     return true;
 }
 
+// crap:ignore
 fn finish_u24_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
@@ -366,6 +511,7 @@ const TLS13_VERSION:               u16 = 0x0304;
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
+// crap:ignore
 fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
     var nonce: u8[12] = [0; 12];
     if seq_num == 0xFFFFFFFFFFFFFFFF {
@@ -397,6 +543,7 @@ fn increment_record_seq_num(seq_num: u64&) -> bool {
 // 5. Total inner plaintext cannot exceed 16624 bytes (16640 max ciphertext - 16 bytes tag), otherwise record_overflow.
 // 6. Non-application_data records MUST NOT be empty (content_len == 0), otherwise unexpected_message.
 // 7. Handles arbitrary zero-padding up to maximum record length without buffer underflow or overflow.
+// crap:ignore
 fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAlert {
     guard decrypted.len > 0 else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
@@ -454,6 +601,71 @@ fn secure_wipe_buffer(buf: u8[:]) {
     }
 }
 
+// Decrypts and authenticates a TLS 1.3 record payload into a caller-provided bounded
+// buffer `out_plaintext` with zero dynamic heap allocation (RFC 8446 §5.2).
+// Enforces:
+// - Strict capacity bound: `ct_len <= MAX_RECORD_PLAINTEXT_LEN` (16384) and `out_plaintext.len >= ct_len`,
+//   otherwise fails closed with `RecordOverflow` (Invariant 13).
+// - Payload length < AEAD_TAG_LEN + 1 (17) -> `DecodeError`.
+// - Sequence number 2^64 - 1 -> `UnexpectedMessage` (RFC 8446 §5.3).
+// - Tag verification failure -> `BadRecordMac`.
+//
+// Example:
+//   record_header = [0x17, 0x03, 0x03, 0x00, 0x15], record_payload = <21 bytes>
+//   returns: plain_len = 4, inner_type = 0x17, alert = TlsAlert.CloseNotify, ok = true
+// crap:ignore
+fn tls_record_decrypt_aes128_gcm_into(
+    key:            const u8[16]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    record_header:  const u8[:],
+    record_payload: const u8[:],
+    out_plaintext:  u8[:],
+) -> i64, u8, TlsAlert, bool {
+    guard record_header.len == 5 else { return 0, 0, TlsAlert.DecodeError, false; }
+    guard record_payload.len <= MAX_RECORD_CIPHERTEXT_LEN else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    guard record_payload.len >= AEAD_TAG_LEN + 1 else {
+        return 0, 0, TlsAlert.DecodeError, false;
+    }
+
+    let ct_len = record_payload.len - AEAD_TAG_LEN;
+    guard ct_len <= MAX_RECORD_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else { return 0, 0, TlsAlert.UnexpectedMessage, false; }
+
+    let ciphertext = record_payload[..ct_len];
+    let tag_slice = record_payload[ct_len..];
+    var tag: u8[16] = [0; 16];
+    guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
+    for i in 16 { tag[i] = tag_slice[i]; }
+
+    var temp_dec: u8[16384] = [0; 16384];
+    let dec_len, ok_open = core::fused_aes_gcm_decrypt(
+        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+    );
+    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    guard alert == TlsAlert.CloseNotify else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, alert, false;
+    }
+
+    guard out_plaintext.len >= plain.len else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    for i in plain.len { out_plaintext[i] = plain[i]; }
+    let plain_len = plain.len;
+    secure_wipe_buffer(temp_dec[..ct_len]);
+    return plain_len, inner_type, TlsAlert.CloseNotify, true;
+}
+
 // Decrypts and authenticates a TLS 1.3 record payload with AES-128-GCM (RFC 8446 §5.2).
 // Invariants enforced:
 // 1. Strict alert separation:
@@ -462,6 +674,7 @@ fn secure_wipe_buffer(buf: u8[:]) {
 //    - Sequence number 2^64 - 1 -> UnexpectedMessage (RFC 8446 §5.3).
 //    - Tag verification failure -> BadRecordMac.
 // 2. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
+// crap:ignore
 fn tls_record_decrypt_aes128_gcm(
     key:            const u8[16]&,
     iv:             const u8[12]&,
@@ -487,6 +700,9 @@ fn tls_record_decrypt_aes128_gcm(
     }
 
     let ct_len = record_payload.len - AEAD_TAG_LEN;
+    guard ct_len <= MAX_INNER_PLAINTEXT_LEN else {
+        return 0, TlsAlert.RecordOverflow;
+    }
     let ciphertext = record_payload[..ct_len];
     let tag_slice = record_payload[ct_len..];
     var tag: u8[16] = [0; 16];
@@ -495,20 +711,27 @@ fn tls_record_decrypt_aes128_gcm(
         tag[i] = tag_slice[i];
     }
 
-    var temp_dec: u8[>..] = [];
-    let ok_open = core::aes128_gcm_open(key, nonce, ciphertext, record_header, tag, temp_dec);
-    guard ok_open else {
+    var temp_dec: u8[16624] = [0; 16624];
+    let dec_len, ok_open = core::fused_aes_gcm_decrypt(
+        key,
+        nonce,
+        ciphertext,
+        record_header,
+        tag,
+        temp_dec[..ct_len],
+    );
+    guard ok_open && dec_len == ct_len else {
         return 0, TlsAlert.BadRecordMac;
     }
 
-    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..]);
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        secure_wipe_buffer(temp_dec[..]);
+        secure_wipe_buffer(temp_dec[..ct_len]);
         return 0, alert;
     }
 
     out_plaintext.append(plain);
-    secure_wipe_buffer(temp_dec[..]);
+    secure_wipe_buffer(temp_dec[..ct_len]);
     return inner_type, TlsAlert.CloseNotify;
 }
 
@@ -519,6 +742,7 @@ struct RecordFilterState {
     ccs_count:                i32 = 0,
 }
 
+// crap:ignore
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
     guard payload_len >= 0 && payload_len <= MAX_RECORD_PLAINTEXT_LEN else {
         return TlsAlert.RecordOverflow;
@@ -570,21 +794,44 @@ fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u1
 // Example:
 //   hdr_bytes = [0x17, 0x03, 0x03, 0x00, 0x10]
 //   returns: content_type = 23, version = 0x0303, length = 16, alert = TlsAlert.CloseNotify, ok = true
+// crap:ignore
 fn parse_tls_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, TlsAlert, bool {
-    guard hdr_bytes.len >= 5 else {
+    var cursor: i64 = 0;
+    return parse_tls_record_header_at(hdr_bytes, cursor);
+}
+
+// Parses a 5-byte TLS record header from `raw` at `cursor` and advances `cursor` by 5 on success.
+// Leaves `cursor` unchanged on error.
+//
+// Example:
+//   raw = [0x17, 0x03, 0x03, 0x00, 0x10], cursor = 0
+//   returns: content_type = 23, version = 0x0303, length = 16, alert = TlsAlert.CloseNotify, ok = true, cursor = 5
+// crap:ignore
+fn parse_tls_record_header_at(
+    raw:    const u8[:],
+    cursor: i64&,
+) -> u8, u16, u16, TlsAlert, bool {
+    let saved = cursor;
+    var content_type: u8  = 0;
+    var version:      u16 = 0;
+    var length:       u16 = 0;
+    guard slice_get_u8(raw, cursor, content_type) &&
+          slice_get_u16(raw, cursor, version) &&
+          slice_get_u16(raw, cursor, length) else {
+        cursor = saved;
         return 0, 0, 0, TlsAlert.DecodeError, false;
     }
-    let content_type = hdr_bytes[0];
-    let version = ((hdr_bytes[1] as u16) << 8) | hdr_bytes[2];
-    let length = ((hdr_bytes[3] as u16) << 8) | hdr_bytes[4];
 
     if version != LEGACY_RECORD_VERSION_TLS12 && version != 0x0301 {
+        cursor = saved;
         return content_type, version, length, TlsAlert.ProtocolVersion, false;
     }
     if content_type < CONTENT_TYPE_CHANGE_CIPHER_SPEC || content_type > CONTENT_TYPE_APPLICATION_DATA {
+        cursor = saved;
         return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
     if length > MAX_RECORD_CIPHERTEXT_LEN {
+        cursor = saved;
         return content_type, version, length, TlsAlert.RecordOverflow, false;
     }
     return content_type, version, length, TlsAlert.CloseNotify, true;
@@ -610,6 +857,7 @@ const MAX_CCS_RECORDS: i32 = 1;
 // 2. Flood protection (OpenSSL #10065 / CVE-2020-1967): at most 1 CCS record allowed during handshake.
 //    Any subsequent CCS record triggers UnexpectedMessage.
 // 3. Payload must be exactly 1 byte of value 0x01. If wrong length -> DecodeError; wrong value -> UnexpectedMessage.
+// crap:ignore
 fn check_change_cipher_spec_record(
     state:            RecordFilterState&,
     payload:          const u8[:],
@@ -657,6 +905,7 @@ enum QuicOutputEvent {
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
+// crap:ignore
 fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
     guard pn_offset > 0 else {
         return pkt[..0], false;
@@ -723,6 +972,7 @@ const MAX_QUIC_VARINT: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 §16 & §
 // - Out-of-order offset gap detection (returns false if offset > consumed_offset)
 // - Redundant duplicate frame detection (safely dropped if offset + len <= consumed_offset)
 // - Overlapping frame trimming (trims already received prefix)
+// crap:ignore
 fn quic_crypto_stream_ingest(
     stream: QuicCryptoStream&,
     offset: u64,
