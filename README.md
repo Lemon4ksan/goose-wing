@@ -42,6 +42,7 @@ It is not an ergonomic, high-level HTTP client like Python's `requests`. Writing
 
 ```goose
 import std;
+import core;
 import wing;
 
 fn main() {
@@ -66,7 +67,8 @@ fn main() {
 
 ```goose
 import std;
-import wing from "..";
+import core;
+import wing;
 
 fn main() {
     var server = wing::new_http_server("127.0.0.1", 8080);
@@ -82,6 +84,7 @@ fn main() {
 ### 3. WebSocket frame encoding
 
 ```goose
+import core;
 import wing;
 
 fn stream_websocket_frame() {
@@ -97,7 +100,7 @@ fn stream_websocket_frame() {
     hdr.encode(frame);
 
     var payload: u8[..32] = [];
-    payload.append_slice("Hello");
+    payload.append("Hello");
     wing::mask_websocket_payload(payload[..], hdr.mask_key);
     frame.append(payload[..]);
 }

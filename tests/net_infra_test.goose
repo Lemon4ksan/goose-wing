@@ -580,9 +580,9 @@ fn test_want_queue_dual_slice(t: lit::T&) {
         let nak = wing::new_network_anonymization_key("https://origin.io");
         let key = wing::new_pool_key(wing::PoolScheme.Https, "origin.io", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
 
-        var w1 = wing::WantConn { req_id: 101, key: copy(key), .. };
-        var w2 = wing::WantConn { req_id: 102, key: copy(key), .. };
-        var w3 = wing::WantConn { req_id: 103, key: copy(key), .. };
+        var w1 = wing::WantConn { req_id: 101, .. };
+        var w2 = wing::WantConn { req_id: 102, .. };
+        var w3 = wing::WantConn { req_id: 103, .. };
 
         sub.assert_true(wing::push_want(q, w1), "Pushed w1");
         sub.assert_true(wing::push_want(q, w2), "Pushed w2");
@@ -614,7 +614,7 @@ fn test_want_queue_dual_slice(t: lit::T&) {
 
         // Fill tail slice to maximum capacity (32 items)
         for i in 32 {
-            var item = wing::WantConn { req_id: (i + 1) as u64, key: copy(key), .. };
+            var item = wing::WantConn { req_id: (i + 1) as u64, .. };
             let pushed = wing::push_want(q, item);
             sub.assert_true(pushed, "Pushed item into tail");
         }
@@ -630,7 +630,7 @@ fn test_want_queue_dual_slice(t: lit::T&) {
 
         // Push 16 more items into freshly empty tail slice
         for i in 16 {
-            var item = wing::WantConn { req_id: (100 + i) as u64, key: copy(key), .. };
+            var item = wing::WantConn { req_id: (100 + i) as u64, .. };
             let pushed = wing::push_want(q, item);
             sub.assert_true(pushed, "Pushed into tail slice while head has items");
         }

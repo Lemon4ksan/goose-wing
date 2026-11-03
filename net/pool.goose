@@ -228,13 +228,12 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
 // ---- two-slice want_conn_queue (Go transport wantConnQueue parity) ------
 
 struct WantConn {
-    req_id:           u64     = 0,
-    key:              PoolKey = PoolKey { .. },
-    ready:            bool    = false,
-    cancelled:        bool    = false,
-    assigned_conn_id: i32     = -1,
-    reused:           bool    = false,
-    err_code:         i32     = 0,
+    req_id:           u64  = 0,
+    ready:            bool = false,
+    cancelled:        bool = false,
+    assigned_conn_id: i32  = -1,
+    reused:           bool = false,
+    err_code:         i32  = 0,
 }
 
 // Zero-reallocation dual-slice queue avoiding shifts during frequent push/pop operations.
