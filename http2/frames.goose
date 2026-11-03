@@ -37,18 +37,6 @@ inline fn decode_origin_slice(rem: const u8[:]) -> const u8[:], i64, bool {
     return rem[2..total], total, true;
 }
 
-// RFC 8336 Section 2.1: Syntax - Decodes a single Origin Entry from slice with cursor
-//
-// Example:
-//   src = [0x00, 0x07, 'e', 'x', '.', 'c', 'o', 'm'], idx = 0
-//   returns: "ex.com", ok = true, idx = 9
-inline fn decode_origin_entry(src: const u8[:], idx: i64&) -> const u8[:], bool {
-    let entry, total, ok = decode_origin_slice(src[idx..]);
-    guard ok else { return "", false; }
-    idx += total;
-    return entry, true;
-}
-
 // RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Parses ORIGIN frame payload
 // Validates stream 0 requirement and populates out_entries.
 fn parse_origin_frame(

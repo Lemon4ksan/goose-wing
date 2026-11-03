@@ -221,22 +221,6 @@ struct GatewayRateLimiter {
     total_rejected: u64                      = 0,
 }
 
-inline fn inc_limiter_allowed(limiter: GatewayRateLimiter&) {
-    limiter.total_allowed = limiter.total_allowed + 1;
-}
-
-inline fn inc_limiter_rejected(limiter: GatewayRateLimiter&) {
-    limiter.total_rejected = limiter.total_rejected + 1;
-}
-
-inline fn inc_client_rejects(entry: GatewayClientEntry&) {
-    entry.consecutive_rejects = entry.consecutive_rejects + 1;
-}
-
-inline fn clear_client_rejects(entry: GatewayClientEntry&) {
-    entry.consecutive_rejects = 0;
-}
-
 // Instantiates a new zero-allocation GatewayRateLimiter.
 fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRateLimiter {
     return GatewayRateLimiter {
@@ -311,20 +295,20 @@ fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], n
 // Handles admission record tracking for an allocated client entry.
 inline fn record_client_admission(limiter: GatewayRateLimiter&, slot: i32, dec: const GcraDecision&) {
     if dec.allowed {
-        inc_limiter_allowed(limiter);
-        clear_client_rejects(limiter.entries[slot]);
+        limiter.total_allowed = limiter.total_allowed + 1;
+        limiter.entries[slot].consecutive_rejects = 0;
     } else {
-        inc_limiter_rejected(limiter);
-        inc_client_rejects(limiter.entries[slot]);
+        limiter.total_rejected = limiter.total_rejected + 1;
+        limiter.entries[slot].consecutive_rejects = limiter.entries[slot].consecutive_rejects + 1;
     }
 }
 
 // Handles admission record tracking for table saturation fallback.
 inline fn record_fallback_admission(limiter: GatewayRateLimiter&, dec: const GcraDecision&) {
     if dec.allowed {
-        inc_limiter_allowed(limiter);
+        limiter.total_allowed = limiter.total_allowed + 1;
     } else {
-        inc_limiter_rejected(limiter);
+        limiter.total_rejected = limiter.total_rejected + 1;
     }
 }
 

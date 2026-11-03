@@ -130,11 +130,6 @@ fn reset_command_buffer(cmd: WireCommandBuffer&, flags: u32) -> WireResult {
     return WireResult.Success;
 }
 
-// Returns recorded byte count.
-inline fn len(cmd: const WireCommandBuffer&) -> i64 {
-    return cmd.buf.len;
-}
-
 // Returns remaining capacity in underlying buffer.
 inline fn available(cmd: const WireCommandBuffer&) -> i64 {
     let rem = cmd.buf.cap - cmd.buf.len;

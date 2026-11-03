@@ -18,14 +18,14 @@ fn main() {
     // 1. Storage and Command Buffer Initialization
     var cmd = wire::new_command_buffer();
 
-    assert(wire::len(cmd) == 0);
+    assert(cmd.buf.len == 0);
     assert(wire::available(cmd) == wire::WIRE_CMD_BUFFER_CAP);
     assert(!cmd.has_error);
     print("CMD_INIT: OK");
 
     // 2. Client Preface
     assert(wire::write_h2_preface(cmd));
-    assert(wire::len(cmd) == 24);
+    assert(cmd.buf.len == 24);
     print("CMD_PREFACE: OK");
 
     // 3. SETTINGS Frame (Stream 0)
@@ -163,7 +163,7 @@ fn main() {
     for i in 0..16 {
         assert(wire::write_raw(of_cmd, chunk[..]));
     }
-    assert(wire::len(of_cmd) == wire::WIRE_CMD_BUFFER_CAP);
+    assert(of_cmd.buf.len == wire::WIRE_CMD_BUFFER_CAP);
     // Writing beyond capacity triggers guard
     assert(!wire::write_u8(of_cmd, 0xFF));
     assert(of_cmd.has_error);

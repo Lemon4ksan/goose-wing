@@ -55,34 +55,6 @@ struct UpstreamHealth {
     failed_probes:         u64         = 0,
 }
 
-inline fn inc_consecutive_successes(h: UpstreamHealth&) -> u32 {
-    let s = h.consecutive_successes + 1;
-    h.consecutive_successes = s;
-    return s;
-}
-
-inline fn inc_consecutive_failures(h: UpstreamHealth&) -> u32 {
-    let f = h.consecutive_failures + 1;
-    h.consecutive_failures = f;
-    return f;
-}
-
-inline fn inc_total_probes(h: UpstreamHealth&) {
-    h.total_probes = h.total_probes + 1;
-}
-
-inline fn inc_failed_probes(h: UpstreamHealth&) {
-    h.failed_probes = h.failed_probes + 1;
-}
-
-inline fn reset_health_successes(h: UpstreamHealth&) {
-    h.consecutive_successes = 0;
-}
-
-inline fn reset_health_failures(h: UpstreamHealth&) {
-    h.consecutive_failures = 0;
-}
-
 inline fn handle_probing_success(health: UpstreamHealth&, successes: u32, threshold: u32) {
     if successes >= threshold {
         health.state = HealthState.Up;
@@ -98,9 +70,10 @@ inline fn handle_down_success(health: UpstreamHealth&, successes: u32, threshold
 
 // Transitions target state upon probe or request success.
 fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const HealthCheckConfig&) -> HealthState {
-    reset_health_failures(health);
-    let successes = inc_consecutive_successes(health);
-    inc_total_probes(health);
+    health.consecutive_failures = 0;
+    let successes = health.consecutive_successes + 1;
+    health.consecutive_successes = successes;
+    health.total_probes = health.total_probes + 1;
     health.last_rtt_us = rtt_us;
 
     if health.state == HealthState.Probing {
@@ -114,10 +87,11 @@ fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const Heal
 
 // Transitions target state upon probe or request failure.
 fn record_probe_failure(health: UpstreamHealth&, config: const HealthCheckConfig&) -> HealthState {
-    reset_health_successes(health);
-    let fails = inc_consecutive_failures(health);
-    inc_total_probes(health);
-    inc_failed_probes(health);
+    health.consecutive_successes = 0;
+    let fails = health.consecutive_failures + 1;
+    health.consecutive_failures = fails;
+    health.total_probes = health.total_probes + 1;
+    health.failed_probes = health.failed_probes + 1;
 
     if fails >= config.unhealthy_threshold {
         health.state = HealthState.Down;
@@ -130,7 +104,7 @@ fn record_probe_failure(health: UpstreamHealth&, config: const HealthCheckConfig
 fn enter_probing_state(health: UpstreamHealth&) -> bool {
     guard health.state == HealthState.Down else { return false; }
     health.state = HealthState.Probing;
-    reset_health_successes(health);
+    health.consecutive_successes = 0;
     return true;
 }
 
@@ -304,7 +278,7 @@ inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: Upstream
         } else {
             HealthState.Down
         };
-        reset_health_successes(slot.health);
+        slot.health.consecutive_successes = 0;
     }
 }
 

@@ -111,11 +111,6 @@ inline fn is_within_limit(offset: u64, len: u64, limit: u64) -> bool {
     return rem >= len;
 }
 
-inline fn calc_max_u64(a: u64, b: u64) -> u64 {
-    if a >= b { return a; }
-    return b;
-}
-
 // ---- Sending Stream State Machine (RFC 9000 Section 3.1) -----------------
 
 // Records transmission of stream data and updates sender state.
@@ -133,7 +128,7 @@ fn quic_stream_on_send_data(
     }
 
     let end_offset = offset + len;
-    s.bytes_sent = calc_max_u64(s.bytes_sent, end_offset);
+    s.bytes_sent = core::ct_max_u64(s.bytes_sent, end_offset);
 
     if fin {
         s.has_send_final_size = true;
@@ -237,7 +232,7 @@ fn quic_stream_on_recv_stream_frame(
         s.recv_state = QuicRecvState.SizeKnown;
     }
 
-    s.bytes_recv = calc_max_u64(s.bytes_recv, end_offset);
+    s.bytes_recv = core::ct_max_u64(s.bytes_recv, end_offset);
 
     if s.has_recv_final_size && s.bytes_recv == s.recv_final_size {
         s.recv_state = QuicRecvState.DataRecvd;

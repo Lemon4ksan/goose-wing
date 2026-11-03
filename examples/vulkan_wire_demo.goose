@@ -114,7 +114,7 @@ fn main() {
 
     // End command buffer recording -> transitions to Executable
     assert(wire::is_success(wire::end_command_buffer(cmd)));
-    print("    Command Buffer State: Executable (", wire::len(cmd), " bytes)");
+    print("    Command Buffer State: Executable (", cmd.buf.len, " bytes)");
 
     // Tier 6: Queue Acquisition, Batch Submission & Synchronization2
     print("\n[6] Acquiring Device Queue and Submitting Batch with Fence:");

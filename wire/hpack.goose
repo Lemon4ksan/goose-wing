@@ -131,10 +131,6 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
     return decode_hpack_int_multibyte(src, offset, initial_offset, max_prefix);
 }
 
-inline fn copy_hpack_slice<B>(src: const u8[:], offset: u64, end: u64, out: B&) -> bool {
-    return out.try_append(src[offset..end]);
-}
-
 // Decodes raw HPACK string and advances cursor (RFC 7541 Section 5.2).
 //
 // Example:
@@ -151,7 +147,7 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
         return false;
     }
     let end = offset + str_len;
-    guard copy_hpack_slice(src, offset, end, out) else {
+    guard out.try_append(src[offset..end]) else {
         offset = initial_offset;
         return false;
     }

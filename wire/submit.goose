@@ -164,15 +164,11 @@ fn poll_recv(q: WireQueue&, out: u8[:], timeout_ms: u32 = 0) -> i64, bool {
     return recvd, true;
 }
 
-inline fn native_close_socket(fd: i64) {
-    if fd >= 0 {
-        wing::native_tcp_close(fd);
-    }
-}
-
 // Shuts down transport descriptor and resets queue state (RFC 9113).
 fn close_wire_queue(q: WireQueue&) {
-    native_close_socket(q.fd);
+    if q.fd >= 0 {
+        wing::native_tcp_close(q.fd);
+    }
     q.fd = -1;
     q.is_connected = false;
 }

@@ -330,10 +330,6 @@ inline fn make_header_span(
     };
 }
 
-inline fn calc_header_line_advance(name_len: i64, val_len: i64, crlf_len: i64) -> i64 {
-    return name_len + 1 + val_len + crlf_len;
-}
-
 inline fn push_header_item(
     headers: HeaderItem[..32]&,
     name:    const u8[:],
@@ -423,7 +419,7 @@ fn parse_http1_wire_header_line<Req>(
         add_header(out_req.bloom_filter, hname);
     }
 
-    cursor += calc_header_line_advance(name_len, val_len, crlf_len);
+    cursor += name_len + 1 + val_len + crlf_len;
     return true;
 }
 
