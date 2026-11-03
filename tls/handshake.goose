@@ -30,20 +30,30 @@ const HS_MSG_MESSAGE_HASH:           u8 = 254; // 0xFE synthetic HRR message
 
 // ---- Extension Type Identifiers ------------------------------------------
 
-const EXT_SERVER_NAME:               u16 = 0; // RFC 6066
-const EXT_STATUS_REQUEST:            u16 = 5; // OCSP stapling
-const EXT_SUPPORTED_GROUPS:          u16 = 10;
-const EXT_SIGNATURE_ALGORITHMS:      u16 = 13;
-const EXT_ALPN:                      u16 = 16; // RFC 7301
-const EXT_COMPRESS_CERTIFICATE:      u16 = 27; // RFC 8879 Section 3
-const EXT_PRE_SHARED_KEY:            u16 = 41;
-const EXT_EARLY_DATA:                u16 = 42;
-const EXT_SUPPORTED_VERSIONS:        u16 = 43;
-const EXT_COOKIE:                    u16 = 44;
-const EXT_PSK_KEY_EXCHANGE_MODES:    u16 = 45;
-const EXT_CERTIFICATE_AUTHORITIES:   u16 = 47; // RFC 8446 Section 4.2.4
-const EXT_KEY_SHARE:                 u16 = 51;
-const EXT_QUIC_TRANSPORT_PARAMETERS: u16 = 0x39; // RFC 9001 Section 8.2
+const EXT_SERVER_NAME:                  u16 = 0; // RFC 6066
+const EXT_MAX_FRAGMENT_LENGTH:          u16 = 1; // RFC 6066
+const EXT_STATUS_REQUEST:               u16 = 5; // OCSP stapling
+const EXT_SUPPORTED_GROUPS:             u16 = 10;
+const EXT_SIGNATURE_ALGORITHMS:         u16 = 13;
+const EXT_USE_SRTP:                     u16 = 14; // RFC 8446 Section 4.2
+const EXT_HEARTBEAT:                    u16 = 15; // RFC 8446 Section 4.2
+const EXT_ALPN:                         u16 = 16; // RFC 7301
+const EXT_SIGNED_CERTIFICATE_TIMESTAMP: u16 = 18; // RFC 8446 Section 4.2
+const EXT_CLIENT_CERTIFICATE_TYPE:      u16 = 19; // RFC 8446 Section 4.2
+const EXT_SERVER_CERTIFICATE_TYPE:      u16 = 20; // RFC 8446 Section 4.2
+const EXT_PADDING:                      u16 = 21; // RFC 8446 Section 4.2
+const EXT_COMPRESS_CERTIFICATE:         u16 = 27; // RFC 8879 Section 3
+const EXT_PRE_SHARED_KEY:               u16 = 41;
+const EXT_EARLY_DATA:                   u16 = 42;
+const EXT_SUPPORTED_VERSIONS:           u16 = 43;
+const EXT_COOKIE:                       u16 = 44;
+const EXT_PSK_KEY_EXCHANGE_MODES:       u16 = 45;
+const EXT_CERTIFICATE_AUTHORITIES:      u16 = 47; // RFC 8446 Section 4.2.4
+const EXT_OID_FILTERS:                  u16 = 48; // RFC 8446 Section 4.2.5
+const EXT_POST_HANDSHAKE_AUTH:          u16 = 49; // RFC 8446 Section 4.2.6
+const EXT_SIGNATURE_ALGORITHMS_CERT:    u16 = 50; // RFC 8446 Section 4.2.3
+const EXT_KEY_SHARE:                    u16 = 51;
+const EXT_QUIC_TRANSPORT_PARAMETERS:    u16 = 0x39; // RFC 9001 Section 8.2
 
 // ---- Handshake State ADT and Transitions ---------------------------------
 
@@ -1094,22 +1104,67 @@ struct SessionTicketCache {
     total_received: u32                      = 0,
 }
 
-fn is_forbidden_nst_extension(ext_type: u16) -> bool {
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS 1.3 extensions.
+inline fn is_known_tls_extension(ext_type: u16) -> bool {
     return match ext_type {
         EXT_SERVER_NAME => true,
+        EXT_MAX_FRAGMENT_LENGTH => true,
         EXT_STATUS_REQUEST => true,
         EXT_SUPPORTED_GROUPS => true,
         EXT_SIGNATURE_ALGORITHMS => true,
+        EXT_USE_SRTP => true,
+        EXT_HEARTBEAT => true,
         EXT_ALPN => true,
+        EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
+        EXT_CLIENT_CERTIFICATE_TYPE => true,
+        EXT_SERVER_CERTIFICATE_TYPE => true,
+        EXT_PADDING => true,
         EXT_COMPRESS_CERTIFICATE => true,
         EXT_PRE_SHARED_KEY => true,
+        EXT_EARLY_DATA => true,
         EXT_SUPPORTED_VERSIONS => true,
         EXT_COOKIE => true,
         EXT_PSK_KEY_EXCHANGE_MODES => true,
+        EXT_CERTIFICATE_AUTHORITIES => true,
+        EXT_OID_FILTERS => true,
+        EXT_POST_HANDSHAKE_AUTH => true,
+        EXT_SIGNATURE_ALGORITHMS_CERT => true,
         EXT_KEY_SHARE => true,
         EXT_QUIC_TRANSPORT_PARAMETERS => true,
         _ => false,
     };
+}
+
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in CertificateRequest.
+inline fn is_permitted_cert_req_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        EXT_STATUS_REQUEST => true,
+        EXT_SIGNATURE_ALGORITHMS => true,
+        EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
+        EXT_CERTIFICATE_AUTHORITIES => true,
+        EXT_OID_FILTERS => true,
+        EXT_SIGNATURE_ALGORITHMS_CERT => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
+// not specified for the message in which it appears, it MUST abort with an "illegal_parameter" alert.
+inline fn is_forbidden_cert_req_extension(ext_type: u16) -> bool {
+    if is_permitted_cert_req_extension(ext_type) {
+        return false;
+    }
+    return is_known_tls_extension(ext_type);
+}
+
+// RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
+// not specified for the message in which it appears, it MUST abort with an "illegal_parameter" alert.
+// In Table 2, early_data (42) is the sole extension specified for NewSessionTicket.
+inline fn is_forbidden_nst_extension(ext_type: u16) -> bool {
+    if ext_type == EXT_EARLY_DATA {
+        return false;
+    }
+    return is_known_tls_extension(ext_type);
 }
 
 fn read_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
@@ -1258,6 +1313,8 @@ fn encode_new_session_ticket<B>(
     guard ticket_lifetime <= MAX_TICKET_LIFETIME_SECS else { return false; }
     guard ticket_nonce.len <= 255 else { return false; }
     guard ticket.len >= 1 && ticket.len <= 65535 else { return false; }
+    // RFC 8446 Section 4.2.10: Early Data Indication - early_data MUST NOT be offered when ticket_lifetime is 0.
+    guard !(ticket_lifetime == 0 && max_early_data_size > 0) else { return false; }
 
     // ticket_lifetime
     out.push(((ticket_lifetime >> 24) & 0xFF) as u8);
@@ -1408,6 +1465,7 @@ fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: Certifica
 }
 
 fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: CertificateRequestMsg&) -> bool {
+    var seen_types: u16[..16] = [];
     while cursor_len(ext_cursor) > 0 {
         var ext_type: u16 = 0;
         guard get_u16(ext_cursor, ext_type) else { return false; }
@@ -1415,10 +1473,20 @@ fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: 
         var ext_data = cursor_from(payload[..0]);
         guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
 
+        // RFC 8446 Section 4.2: Extensions - There MUST NOT be more than one extension
+        // of the same type in a given extension block.
+        guard !seen_types.contains(ext_type) else { return false; }
+        guard seen_types.len < seen_types.cap else { return false; }
+        seen_types.push(ext_type);
+
+        // RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
+        // not specified for the message, it MUST abort with an "illegal_parameter" alert.
+        guard !is_forbidden_cert_req_extension(ext_type) else { return false; }
+
         if ext_type == EXT_SIGNATURE_ALGORITHMS {
             guard read_cert_req_sig_algs(ext_data, out) else { return false; }
         } else if ext_type == EXT_CERTIFICATE_AUTHORITIES {
-            // RFC 8446 §4.2.4 & OpenSSL #32211: authorities<3..2^16-1> lower bound validation
+            // RFC 8446 Section 4.2.4: Certificate Authorities - authorities<3..2^16-1> lower bound validation
             guard validate_certificate_authorities_extension(ext_data.buf) else { return false; }
         }
     }

@@ -387,10 +387,8 @@ fn put_private_token(
 fn entry_matches_challenge(entry: const CachedToken&, digest: const u8[32]&, now_sec: i64) -> bool {
     guard !entry.used else { return false; }
     guard entry.expires_at_sec == 0 || now_sec <= entry.expires_at_sec else { return false; }
-    for k in 32 {
-        guard entry.challenge_digest[k] == digest[k] else { return false; }
-    }
-    return true;
+    // RFC 9577 Section 2.1.4: Token Caching - Cached tokens can only be redeemed when they match all of the fields in the TokenChallenge.
+    return core::ct_eq_bytes(entry.challenge_digest[..], digest[..]);
 }
 
 // Gets and consumes a single-use token matching the challenge (RFC 9577 §2.1.4 single-spend).

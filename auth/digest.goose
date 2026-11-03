@@ -281,9 +281,10 @@ fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
         }
     } else if eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256)
         || eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256_SESS) {
-        let sh = core::sha512_256(data);
-        for b in sh {
-            core::format_u8_hex(b, out_hex);
+        // RFC 7616 Section 3.9.2: Example with SHA-512-256, Charset, and Userhash - Truncated SHA-512 (first 256 bits) for SHA-512-256 digest calculation.
+        let sh = core::sha512(data);
+        for i in 32 {
+            core::format_u8_hex(sh[i], out_hex);
         }
     } else {
         // Default to SHA-256 (RFC 7616 standard)

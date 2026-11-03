@@ -252,13 +252,35 @@ fn get_packet_payload(dgram: const u8[:], hdr: const QuicHeader&) -> u8[:] {
     return dgram[start..];
 }
 
+inline fn calc_stream_end_offset(offset: u64, len: u64) -> u64 {
+    return offset + len;
+}
+
+inline fn validate_stream_recv_final_size(
+    s:          const QuicStream&,
+    end_offset: u64,
+    fin:        bool,
+) -> bool {
+    if s.has_recv_final_size {
+        if end_offset > s.recv_final_size || (fin && end_offset != s.recv_final_size) {
+            return false;
+        }
+    }
+    if fin && !s.has_recv_final_size {
+        if end_offset < s.bytes_recv || end_offset < s.recv_consumed {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     guard quic_stream_can_recv(frame.stream_id, conn.role) else {
         quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
         return false, false;
     }
 
-    // RFC 9000 §19.8: Ingress STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+    // RFC 9000 Section 19.8: STREAM Frames - Ingress STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
         let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
         guard sid_found >= 0 else {
@@ -273,19 +295,10 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         return false, false;
     }
 
-    let end_offset = frame.offset + frame.length;
-    let s = conn.stream_table.streams[idx];
-    if s.has_recv_final_size {
-        if end_offset > s.recv_final_size || (frame.fin && end_offset != s.recv_final_size) {
-            quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
-            return false, false;
-        }
-    }
-    if frame.fin && !s.has_recv_final_size {
-        if end_offset < s.bytes_recv || end_offset < s.recv_consumed {
-            quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
-            return false, false;
-        }
+    let end_offset = calc_stream_end_offset(frame.offset, frame.length);
+    guard validate_stream_recv_final_size(conn.stream_table.streams[idx], end_offset, frame.fin) else {
+        quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
+        return false, false;
     }
 
     let fc_ok, fc_err = quic_fc_record_recv_stream(
@@ -418,6 +431,26 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     return true, true;
 }
 
+inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    if frame.frame_type == QuicFrameType.NewConnectionId {
+        // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
+        if conn.dcid.len == 0 {
+            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            return false, false;
+        }
+        return true, true;
+    }
+    if frame.frame_type == QuicFrameType.RetireConnectionId {
+        // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
+        if conn.scid.len == 0 {
+            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            return false, false;
+        }
+        return true, true;
+    }
+    return true, true;
+}
+
 fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     if frame.frame_type == QuicFrameType.ConnectionClose || frame.frame_type == QuicFrameType.ConnectionCloseApp {
         quic_conn_close(conn, frame.error_code);
@@ -450,6 +483,9 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
             conn.validated_address = true;
         }
         return true, true;
+    }
+    if frame.frame_type == QuicFrameType.NewConnectionId || frame.frame_type == QuicFrameType.RetireConnectionId {
+        return dispatch_conn_id_frame(conn, frame);
     }
     return true, true;
 }
@@ -526,7 +562,11 @@ fn quic_conn_process_payload(
     payload: const u8[:],
     htype:   QuicHeaderType = QuicHeaderType.OneRtt,
 ) -> bool, bool {
-    guard payload.len > 0 else { return true, false; }
+    // RFC 9000 Section 12.4: Frames and Frame Types - An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
+    guard payload.len > 0 else {
+        quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+        return false, false;
+    }
     var idx: i64 = 0;
     var any_ack_el = false;
 

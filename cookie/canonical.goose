@@ -175,11 +175,16 @@ fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> Canonic
     return cookie_ref;
 }
 
-// Sets cookie expiration from a relative Max-Age in seconds, capped at 400 days (RFC 6265bis Section 5.5).
+// RFC 6265 Section 5.2.2: The Max-Age Attribute - If delta-seconds is less than or equal to zero (0), let expiry-time be the earliest representable date and time.
 fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64) -> CanonicalCookie& {
-    let capped_sec = core::ct_min_i64(seconds, internal::K_MAX_COOKIE_AGE_SEC);
-    cookie_ref.expires_utc = now_us + capped_sec * 1000000;
     cookie_ref.persistent = true;
+    if seconds <= 0 {
+        cookie_ref.expires_utc = 0;
+        return cookie_ref;
+    }
+    let capped_sec = core::ct_min_i64(seconds, internal::K_MAX_COOKIE_AGE_SEC);
+    let delta_us = capped_sec * 1000000;
+    cookie_ref.expires_utc = core::add_sat_i64(now_us, delta_us);
     return cookie_ref;
 }
 
@@ -201,28 +206,19 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 
 // Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3 & RFC 6055).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
-    let clean_host = core::trim_byte(host, '.');
-    let clean_domain = core::trim_byte(cookie_val.domain[..], '.');
-
-    var h_norm = clean_host;
-    if h_norm.len > 2 && h_norm[0] == '[' && h_norm[h_norm.len - 1] == ']' {
-        h_norm = h_norm[1..h_norm.len - 1];
-    }
-    var d_norm = clean_domain;
-    if d_norm.len > 2 && d_norm[0] == '[' && d_norm[d_norm.len - 1] == ']' {
-        d_norm = d_norm[1..d_norm.len - 1];
-    }
+    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
+    let clean_domain = core::trim_byte(core::trim_byte(core::trim_byte(cookie_val.domain[..], '.'), '['), ']');
 
     // RFC 6265 Section 5.1.3: If either host or cookie domain is an IP address,
     // domain-matching cannot be used; exact equality is required.
-    if core::is_ip_address_literal(h_norm) || core::is_ip_address_literal(d_norm) {
-        return eq_ascii_fold(d_norm, h_norm);
+    if core::is_ip_address_literal(clean_host) || core::is_ip_address_literal(clean_domain) {
+        return eq_ascii_fold(clean_domain, clean_host);
     }
 
     if cookie_val.host_only {
-        return eq_ascii_fold(d_norm, h_norm);
+        return eq_ascii_fold(clean_domain, clean_host);
     }
-    return cookie_domain_match(h_norm, d_norm);
+    return cookie_domain_match(clean_host, clean_domain);
 }
 
 // Whether req_path matches the cookie's Path attribute (RFC 6265 Section 5.1.4).

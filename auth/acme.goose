@@ -9,7 +9,7 @@ import std;
 import core from "..";
 
 // RFC 8555 §8.3 fixed path prefix for HTTP-01 challenge resources.
-const ACME_HTTP01_PREFIX: u8[..28] = "/.well-known/acme-challenge/"; // RFC 8555 §8.3
+const ACME_HTTP01_PREFIX: u8[..28] = "/.well-known/acme-challenge/";
 
 // Upper bound for challenge tokens (RFC 8555 §8.3 requires ≥128 bits entropy;
 // 64 bytes caps the stack buffer while accepting well-formed base64url tokens).

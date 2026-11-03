@@ -348,6 +348,10 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
 }
 
 fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
+    // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
+    let rule_err = validate_frame_header_rules(hdr, s.local_max_frame_size);
+    guard rule_err == ERR_NO_ERROR else { return rule_err; }
+
     if hdr.stream_id == 0 {
         return ERR_PROTOCOL_ERROR;
     }

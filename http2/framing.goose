@@ -123,34 +123,31 @@ fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
     core::append_u32_be(out, hdr.stream_id & 0x7FFFFFFF);
 }
 
-// Validates frame header invariants against stream 0 / non-zero stream rules and lengths.
-fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16384) -> u32 {
-    guard hdr.length <= max_frame_size else {
-        return ERR_FRAME_SIZE_ERROR;
-    }
-
-    // Stream ID 0 rules (RFC 9113 Section 5.1.1)
-    if hdr.stream_id == 0 {
-        if hdr.frame_type == FRAME_DATA ||
-           hdr.frame_type == FRAME_HEADERS ||
-           hdr.frame_type == FRAME_PRIORITY ||
-           hdr.frame_type == FRAME_RST_STREAM ||
-           hdr.frame_type == FRAME_CONTINUATION ||
-           hdr.frame_type == FRAME_PUSH_PROMISE {
+// RFC 9113 Section 5.1.1: Stream Identifiers - Stream ID 0 rules and stream association.
+inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 {
+    if stream_id == 0 {
+        if frame_type == FRAME_DATA ||
+           frame_type == FRAME_HEADERS ||
+           frame_type == FRAME_PRIORITY ||
+           frame_type == FRAME_RST_STREAM ||
+           frame_type == FRAME_CONTINUATION ||
+           frame_type == FRAME_PUSH_PROMISE {
             return ERR_PROTOCOL_ERROR;
         }
     } else {
-        // Stream ID > 0 rules (RFC 9113 §6.5, §6.7, §6.8, §6.10 & RFC 8336 Section 2.1)
-        if hdr.frame_type == FRAME_SETTINGS ||
-           hdr.frame_type == FRAME_PING ||
-           hdr.frame_type == FRAME_GOAWAY ||
-           hdr.frame_type == FRAME_PRIORITY_UPDATE ||
-           hdr.frame_type == FRAME_ORIGIN {
+        if frame_type == FRAME_SETTINGS ||
+           frame_type == FRAME_PING ||
+           frame_type == FRAME_GOAWAY ||
+           frame_type == FRAME_PRIORITY_UPDATE ||
+           frame_type == FRAME_ORIGIN {
             return ERR_PROTOCOL_ERROR;
         }
     }
+    return ERR_NO_ERROR;
+}
 
-    // Exact length checks for fixed-size frames
+// RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
+inline fn validate_frame_type_length(hdr: const FrameHeader&) -> u32 {
     if hdr.frame_type == FRAME_RST_STREAM && hdr.length != 4 {
         return ERR_FRAME_SIZE_ERROR;
     }
@@ -158,10 +155,11 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
         return ERR_FRAME_SIZE_ERROR;
     }
     if hdr.frame_type == FRAME_SETTINGS {
-        if (hdr.flags & FLAG_ACK) != 0 {
-            if hdr.length != 0 { return ERR_FRAME_SIZE_ERROR; }
-        } else {
-            if (hdr.length % 6) != 0 { return ERR_FRAME_SIZE_ERROR; }
+        if (hdr.flags & FLAG_ACK) != 0 && hdr.length != 0 {
+            return ERR_FRAME_SIZE_ERROR;
+        }
+        if (hdr.flags & FLAG_ACK) == 0 && (hdr.length % 6) != 0 {
+            return ERR_FRAME_SIZE_ERROR;
         }
     }
     if hdr.frame_type == FRAME_PRIORITY && hdr.length != 5 {
@@ -185,8 +183,35 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
             return ERR_FRAME_SIZE_ERROR;
         }
     }
-
+    if hdr.frame_type == FRAME_DATA {
+        let min_len: u32 = if (hdr.flags & FLAG_PADDED) != 0 { 1 } else { 0 };
+        if hdr.length < min_len {
+            return ERR_FRAME_SIZE_ERROR;
+        }
+    }
+    if hdr.frame_type == FRAME_HEADERS {
+        let min_pad:  u32 = if (hdr.flags & FLAG_PADDED) != 0 { 1 } else { 0 };
+        let min_prio: u32 = if (hdr.flags & FLAG_PRIORITY) != 0 { 5 } else { 0 };
+        let min_len = min_pad + min_prio;
+        if hdr.length < min_len {
+            return ERR_FRAME_SIZE_ERROR;
+        }
+    }
     return ERR_NO_ERROR;
+}
+
+// Validates frame header invariants against stream 0 / non-zero stream rules and lengths.
+fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16384) -> u32 {
+    guard hdr.length <= max_frame_size else {
+        return ERR_FRAME_SIZE_ERROR;
+    }
+
+    let stream_err = validate_stream_id_association(hdr.stream_id, hdr.frame_type);
+    guard stream_err == ERR_NO_ERROR else {
+        return stream_err;
+    }
+
+    return validate_frame_type_length(hdr);
 }
 
 // RFC 9113 Section 6.8 & Go #80759:

@@ -63,12 +63,13 @@ enum H3ConnState {
 
 // Fixed-capacity HTTP/3 connection state machine without heap allocations.
 struct H3HeaderCounts {
-    pseudo_status:    i32 = 0,
-    pseudo_method:    i32 = 0,
-    pseudo_scheme:    i32 = 0,
-    pseudo_authority: i32 = 0,
-    pseudo_path:      i32 = 0,
-    host:             i32 = 0,
+    pseudo_status:    i32  = 0,
+    pseudo_method:    i32  = 0,
+    pseudo_scheme:    i32  = 0,
+    pseudo_authority: i32  = 0,
+    pseudo_path:      i32  = 0,
+    host:             i32  = 0,
+    is_connect:       bool = false,
 }
 
 struct H3Connection {
@@ -418,7 +419,8 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
     return H3_ERR_NO_ERROR;
 }
 
-// Validates required HTTP/3 pseudo-headers (RFC 9114 Section 4.3).
+// RFC 9114 Section 4.3.1: Request Pseudo-Header Fields - All HTTP/3 requests MUST include exactly one value for the :method, :scheme, and :path pseudo-header fields, unless the request is a CONNECT request; see Section 4.4.
+// RFC 9114 Section 4.4: The CONNECT Method - The :scheme and :path pseudo-header fields are omitted and :authority is present.
 fn validate_h3_pseudo_headers(
     role:         H3ConnRole,
     status_count: i32,
@@ -426,9 +428,13 @@ fn validate_h3_pseudo_headers(
     scheme_count: i32,
     path_count:   i32,
     auth_count:   i32,
+    is_connect:   bool = false,
 ) -> bool {
     if role == H3ConnRole.Client {
         return status_count == 1 && method_count == 0 && scheme_count == 0 && path_count == 0 && auth_count == 0;
+    }
+    if is_connect {
+        return status_count == 0 && method_count == 1 && scheme_count == 0 && path_count == 0 && auth_count == 1;
     }
     return status_count == 0 && method_count == 1 && scheme_count == 1 && path_count == 1;
 }
@@ -790,6 +796,7 @@ fn process_h3_pseudo_field(
             conn.error_code = H3_ERR_GENERAL_PROTOCOL;
             return H3_ERR_GENERAL_PROTOCOL;
         }
+        counts.is_connect = (field.value[..] == "CONNECT");
         return H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":scheme" {
@@ -908,6 +915,7 @@ fn validate_h3_headers(conn: H3Connection&, s_idx: i32, fields: const HeaderFiel
     let ok_pseudos = validate_h3_pseudo_headers(
         conn.role, counts.pseudo_status, counts.pseudo_method,
         counts.pseudo_scheme, counts.pseudo_path, counts.pseudo_authority,
+        counts.is_connect,
     );
     guard ok_pseudos else {
         conn.state = H3ConnState.Closed;
