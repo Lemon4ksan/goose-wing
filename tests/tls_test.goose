@@ -514,7 +514,7 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
     };
 
     t.run("TLS-11: Full Key Schedule Lifecycle: Early -> Handshake -> Master -> Resumption") { sub =>
-        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
+        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds for AES_128_GCM_SHA256");
         sub.assert_eq(ks.hash_id, internal::HASH_SHA256, "hash_id is SHA256");
         sub.assert_eq(ks.hash_len, 32, "hash_len is 32");
@@ -608,7 +608,7 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
     };
 
     t.run("TLS-33: TLS 1.3 Key Schedule Exporter Master Secret Derivation (RFC 8446 §7.5)") { sub =>
-        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
+        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds");
 
         var sched = ks;
@@ -656,7 +656,7 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
     };
 
     t.run("TLS-34: External PSK Early Secret & Resumption Ticket Nonce Derivation (RFC 8446 §7.1 & §4.6.1)") { sub =>
-        let ks, ok_init = internal::ks_init(internal::TLS_AES_128_GCM_SHA256);
+        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds");
 
         // 1. External PSK generates "ext binder"
@@ -849,34 +849,34 @@ fn test_anti_replay_and_psk(t: lit::T&) {
 fn test_handshake_state_machine(t: lit::T&) {
     t.run("TLS-16: Client & Server State Machine Transitions") { sub =>
         // Client transitions
-        let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_SERVER_HELLO);
+        let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO);
         sub.assert_true(ok1, "ClientWaitSH -> ClientWaitEE");
         sub.assert_true(st1 == wing::HsState.ClientWaitEE, "state is ClientWaitEE");
 
-        let st2, ok2 = wing::can_client_transition(wing::HsState.ClientWaitEE, wing::HS_MSG_ENCRYPTED_EXTENSIONS);
+        let st2, ok2 = wing::can_client_transition(wing::HsState.ClientWaitEE, rfc::TLS_HS_ENCRYPTED_EXTENSIONS);
         sub.assert_true(ok2, "ClientWaitEE -> ClientWaitCertCr");
         sub.assert_true(st2 == wing::HsState.ClientWaitCertCr, "state is ClientWaitCertCr");
 
-        let st3, ok3 = wing::can_client_transition(wing::HsState.ClientWaitCertCr, wing::HS_MSG_CERTIFICATE);
+        let st3, ok3 = wing::can_client_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_CERTIFICATE);
         sub.assert_true(ok3, "ClientWaitCertCr -> ClientWaitCV");
         sub.assert_true(st3 == wing::HsState.ClientWaitCV, "state is ClientWaitCV");
 
-        let st4, ok4 = wing::can_client_transition(wing::HsState.ClientWaitCV, wing::HS_MSG_CERTIFICATE_VERIFY);
+        let st4, ok4 = wing::can_client_transition(wing::HsState.ClientWaitCV, rfc::TLS_HS_CERTIFICATE_VERIFY);
         sub.assert_true(ok4, "ClientWaitCV -> ClientWaitFinished");
         sub.assert_true(st4 == wing::HsState.ClientWaitFinished, "state is ClientWaitFinished");
 
-        let st5, ok5 = wing::can_client_transition(wing::HsState.ClientWaitFinished, wing::HS_MSG_FINISHED);
+        let st5, ok5 = wing::can_client_transition(wing::HsState.ClientWaitFinished, rfc::TLS_HS_FINISHED);
         sub.assert_true(ok5, "ClientWaitFinished -> Connected");
         sub.assert_true(st5 == wing::HsState.Connected, "state is Connected");
 
         // Invalid transition: ClientWaitSH receiving Finished
-        let _, ok_inv = wing::can_client_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_FINISHED);
+        let _, ok_inv = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_FINISHED);
         sub.assert_false(ok_inv, "invalid client transition rejected");
     };
 
     t.run("TLS-17: HelloRetryRequest Detection & Synthetic message_hash") { sub =>
         // HRR Random check
-        sub.assert_true(wing::is_hello_retry_request(wing::HRR_RANDOM), "HRR random recognized");
+        sub.assert_true(wing::is_hello_retry_request(rfc::HRR_RANDOM), "HRR random recognized");
         var bad_random: u8[32] = [0; 32];
         sub.assert_false(wing::is_hello_retry_request(bad_random), "arbitrary random is not HRR");
 
@@ -975,7 +975,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let der_int: u8[5] = [0x02, 0x03, 0x01, 0x02, 0x03];
         var c = wing::cursor_from(der_int[..]);
         var out_val = wing::cursor_from(der_int[..0]);
-        sub.assert_true(wing::get_asn1_element(c, wing::ASN1_TAG_INTEGER, out_val), "read short form DER integer");
+        sub.assert_true(wing::get_asn1_element(c, rfc::ASN1_TAG_INTEGER, out_val), "read short form DER integer");
         sub.assert_eq(wing::cursor_len(out_val), 3, "length is 3");
         sub.assert_true(wing::validate_asn1_integer(out_val.buf, true), "valid integer");
 
@@ -983,13 +983,13 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let non_minimal: u8[4] = [0x02, 0x81, 0x05, 0x01];
         var c_nm = wing::cursor_from(non_minimal[..]);
         var out_nm = wing::cursor_from(non_minimal[..0]);
-        sub.assert_false(wing::get_asn1_element(c_nm, wing::ASN1_TAG_INTEGER, out_nm), "reject non-minimal length < 128 in long form");
+        sub.assert_false(wing::get_asn1_element(c_nm, rfc::ASN1_TAG_INTEGER, out_nm), "reject non-minimal length < 128 in long form");
 
         // Canonical DER rule: Reject BER indefinite form (0x80)
         let ber_indef: u8[3] = [0x30, 0x80, 0x00];
         var c_ber = wing::cursor_from(ber_indef[..]);
         var out_ber = wing::cursor_from(ber_indef[..0]);
-        sub.assert_false(wing::get_asn1_element(c_ber, wing::ASN1_TAG_SEQUENCE, out_ber), "reject BER indefinite form 0x80");
+        sub.assert_false(wing::get_asn1_element(c_ber, rfc::ASN1_TAG_SEQUENCE, out_ber), "reject BER indefinite form 0x80");
 
         // Canonical DER rule: Reject redundant leading zeros in integers (e.g. [0x00, 0x42] where 0x42 high bit is 0)
         let redundant_zero: u8[2] = [0x00, 0x42];
@@ -1007,13 +1007,13 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
     t.run("TLS-21: ASN.1 Time Parsing (UTCTime & GeneralizedTime)") { sub =>
         // UTCTime: "261024195200Z" -> Year 2026, Oct 24, 19:52:00
         let utc_str = "261024195200Z";
-        let t_utc, ok_utc = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, utc_str);
+        let t_utc, ok_utc = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, utc_str);
         sub.assert_true(ok_utc, "parse UTCTime succeeds");
         sub.assert_true(t_utc > 1700000000, "timestamp is modern epoch");
 
         // GeneralizedTime: "20261024195200Z"
         let gen_str = "20261024195200Z";
-        let t_gen, ok_gen = wing::parse_asn1_time(wing::ASN1_TAG_GENERALIZED_TIME, gen_str);
+        let t_gen, ok_gen = wing::parse_asn1_time(rfc::ASN1_TAG_GENERALIZED_TIME, gen_str);
         sub.assert_true(ok_gen, "parse GeneralizedTime succeeds");
         sub.assert_eq(t_utc, t_gen, "UTCTime and GeneralizedTime evaluate to identical timestamp");
     };
@@ -1076,27 +1076,27 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // Signature scheme curve binding (RFC 8446 Section 4.4.3)
         // 0x0403 (secp256r1) requires P-256
         sub.assert_true(
-            wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256, wing::OID_SECP256R1[..]),
+            wing::verify_signature_scheme_curve_binding(rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256, rfc::OID_SECP256R1[..]),
             "secp256r1 scheme binds to P-256 SPKI",
         );
         sub.assert_false(
-            wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256, wing::OID_SECP384R1[..]),
+            wing::verify_signature_scheme_curve_binding(rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256, rfc::OID_SECP384R1[..]),
             "secp256r1 scheme rejects P-384 SPKI",
         );
 
         // Ed25519 requires Ed25519 OID
         sub.assert_true(
-            wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_ED25519, wing::OID_ED25519[..]),
+            wing::verify_signature_scheme_curve_binding(rfc::SIG_SCHEME_ED25519, rfc::OID_ED25519[..]),
             "ed25519 binds to ed25519 SPKI",
         );
 
         // Strict RFC 8446 Invariant: Legacy PKCS#1 v1.5 RSA schemes MUST be rejected in CertificateVerify
         sub.assert_false(
-            wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_RSA_PKCS1_SHA256, wing::OID_RSA_ENCRYPTION[..]),
+            wing::verify_signature_scheme_curve_binding(rfc::SIG_SCHEME_RSA_PKCS1_SHA256, rfc::OID_RSA_ENCRYPTION[..]),
             "legacy PKCS#1 RSA is strictly forbidden in TLS 1.3 CertificateVerify",
         );
         sub.assert_false(
-            wing::verify_signature_scheme_curve_binding(wing::SIG_SCHEME_RSA_PKCS1_SHA384, wing::OID_RSA_ENCRYPTION[..]),
+            wing::verify_signature_scheme_curve_binding(rfc::SIG_SCHEME_RSA_PKCS1_SHA384, rfc::OID_RSA_ENCRYPTION[..]),
             "legacy PKCS#1 SHA384 is strictly forbidden in TLS 1.3 CertificateVerify",
         );
     };
@@ -1130,7 +1130,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   -1,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
 
@@ -1479,7 +1479,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // 2. End-entity MUST NOT assert keyCertSign
         var ee_sign = wing::ParsedCert {
             is_ca:         false,
-            key_usage:     wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:     rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage: true,
         };
         let alert_ee_sign = wing::validate_end_entity_constraints(ee_sign);
@@ -1488,7 +1488,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // 3. Valid end-entity (digitalSignature, not CA)
         var ee_valid = wing::ParsedCert {
             is_ca:         false,
-            key_usage:     wing::KEY_USAGE_DIGITAL_SIGNATURE,
+            key_usage:     rfc::KEY_USAGE_DIGITAL_SIGNATURE,
             has_key_usage: true,
         };
         let alert_ee_ok = wing::validate_end_entity_constraints(ee_valid);
@@ -1513,7 +1513,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_no_sign = wing::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
+            key_usage:             rfc::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
             has_key_usage:         true,
         };
         let alert_ca_no_sign = wing::validate_intermediate_ca_constraints(ca_no_sign, 1);
@@ -1524,7 +1524,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   -1,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         let alert_ca_ok = wing::validate_intermediate_ca_constraints(ca_valid, 1);
@@ -1593,7 +1593,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   0,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         let alert_d1 = wing::validate_intermediate_ca_constraints(ca_depth1, 1);
@@ -1604,7 +1604,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   0,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         let alert_d2 = wing::validate_intermediate_ca_constraints(ca_depth2, 2);
@@ -1615,7 +1615,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   1,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         let alert_d2_ok = wing::validate_intermediate_ca_constraints(ca_depth2_ok, 2);
@@ -1637,16 +1637,16 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0807), "ED25519 (0x0807) is permitted");
 
         // 2. verify_signature_scheme_curve_binding enforces rejection of forbidden schemes
-        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0401, wing::OID_RSA_ENCRYPTION[..]), "reject 0x0401 in curve binding");
-        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0501, wing::OID_RSA_ENCRYPTION[..]), "reject 0x0501 in curve binding");
-        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0804, wing::OID_RSA_ENCRYPTION[..]), "accept 0x0804 in curve binding");
-        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0403, wing::OID_SECP256R1[..]), "accept 0x0403 in curve binding");
+        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0401, rfc::OID_RSA_ENCRYPTION[..]), "reject 0x0401 in curve binding");
+        sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0501, rfc::OID_RSA_ENCRYPTION[..]), "reject 0x0501 in curve binding");
+        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0804, rfc::OID_RSA_ENCRYPTION[..]), "accept 0x0804 in curve binding");
+        sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0403, rfc::OID_SECP256R1[..]), "accept 0x0403 in curve binding");
 
         // 3. Forbidden Certificate Signature Algorithm OIDs (MD5 & SHA-1)
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_MD5_RSA[..]), "MD5-RSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_RSA[..]), "SHA1-RSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_ECDSA[..]), "SHA1-ECDSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(wing::OID_SIG_SHA1_DSA[..]), "SHA1-DSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_MD5_RSA[..]), "MD5-RSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_RSA[..]), "SHA1-RSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_ECDSA[..]), "SHA1-ECDSA is forbidden");
+        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_DSA[..]), "SHA1-DSA is forbidden");
 
         // Valid SHA-256 RSA OID (1.2.840.113549.1.1.11)
         let oid_sha256_rsa: u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
@@ -1660,7 +1660,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
         var bad_sig_raw: u8[20] = [0; 20];
         // Put OID_SIG_SHA1_RSA at offset 10 (length 9)
-        for i in 9 { bad_sig_raw[10 + i] = wing::OID_SIG_SHA1_RSA[i]; }
+        for i in 9 { bad_sig_raw[10 + i] = rfc::OID_SIG_SHA1_RSA[i]; }
 
         var bad_cert = wing::ParsedCert {
             sig_alg_oid:         wing::Span16 { offset: 10, length: 9 },
@@ -1709,7 +1709,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 14, length: 2 },
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         var chain_dup_sub: wing::ParsedCert[..8] = [];
@@ -1738,7 +1738,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 10, length: 2 }, // DUPLICATE EE SPKI!
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         var chain_dup_spki: wing::ParsedCert[..8] = [];
@@ -1767,7 +1767,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 14, length: 2 },
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
         var cert_root_good = wing::ParsedCert {
@@ -1778,7 +1778,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 4, length: 4 },
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
 
@@ -2018,7 +2018,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 14, length: 2 },
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
             skid_key_id:           wing::Span16 { offset: 20, length: 4 }, // SKID = KID1
             has_skid:              true,
@@ -2031,7 +2031,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             spki_raw:              wing::Span16 { offset: 4, length: 4 },
             is_ca:                 true,
             has_basic_constraints: true,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
 
@@ -2405,7 +2405,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             is_ca:                 true,
             has_basic_constraints: true,
             path_len_constraint:   -1,
-            key_usage:             wing::KEY_USAGE_KEY_CERT_SIGN,
+            key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
 
@@ -2443,7 +2443,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
         var client_share = internal::PostQuantumKeyShare {
-            group: internal::GROUP_X25519_MLKEM768,
+            group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
@@ -2461,7 +2461,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
 
         // Draft 0x6399 (Classical || PQ) ordering verification
         var draft_share = internal::PostQuantumKeyShare {
-            group: internal::GROUP_X25519_KYBER768_DRAFT00,
+            group: rfc::GROUP_X25519_KYBER768_DRAFT00,
             ..
         };
         for i in 32 { draft_share.x25519_public[i] = (i + 1) as u8; }
@@ -2473,7 +2473,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_bytes_eq(draft_wire[36..1188], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
         var parsed_draft = internal::PostQuantumKeyShare { .. };
         sub.assert_true(parsed_draft.parse_hybrid_key_share(draft_wire[..]), "Draft share parsed");
-        sub.assert_eq(parsed_draft.group, internal::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
+        sub.assert_eq(parsed_draft.group, rfc::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
         sub.assert_bytes_eq(parsed_draft.x25519_public[..], draft_share.x25519_public[..], "Draft x25519 matches");
 
         // Smuggling attempt: Appending trailing unparsed bytes to KeyShareEntry must fail
@@ -2485,7 +2485,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
 
         // Server Share framing test
         var server_share = internal::PostQuantumServerShare {
-            group: internal::GROUP_X25519_MLKEM768,
+            group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { server_share.x25519_public[i] = (i + 7) as u8; }
@@ -2602,25 +2602,25 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
 
     t.run("TLS-42: RFC 10024 Traditional Post-Quantum Hybrids (SecP256r1MLKEM768 & SecP384r1MLKEM1024)") { sub =>
         // RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
-        sub.assert_eq(internal::GROUP_SECP256R1_MLKEM768, 0x11EB, "SecP256r1MLKEM768 is 0x11EB");
-        sub.assert_eq(internal::GROUP_X25519_MLKEM768, 0x11EC, "X25519MLKEM768 is 0x11EC");
-        sub.assert_eq(internal::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
+        sub.assert_eq(rfc::GROUP_SECP256R1_MLKEM768, 0x11EB, "SecP256r1MLKEM768 is 0x11EB");
+        sub.assert_eq(rfc::GROUP_X25519_MLKEM768, 0x11EC, "X25519MLKEM768 is 0x11EC");
+        sub.assert_eq(rfc::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
 
         // NamedGroup recognition
-        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
-        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
-        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
+        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
+        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
+        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
         sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
         sub.assert_false(internal::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
         sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
 
         // Key share wire lengths (RFC 10024 Section 3)
-        sub.assert_eq(internal::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
-        sub.assert_eq(internal::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
-        sub.assert_eq(internal::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
-        sub.assert_eq(internal::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
-        sub.assert_eq(internal::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
-        sub.assert_eq(internal::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
+        sub.assert_eq(rfc::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
+        sub.assert_eq(rfc::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
+        sub.assert_eq(rfc::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
+        sub.assert_eq(rfc::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
+        sub.assert_eq(rfc::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
+        sub.assert_eq(rfc::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
 
         sub.assert_eq(internal::pq_hybrid_client_share_len(0x11EB), 1217, "SecP256r1+ML-KEM-768 client share 1217B");
         sub.assert_eq(internal::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
@@ -2640,7 +2640,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var parsed_client = internal::SecP256r1MLKEM768KeyShare { .. };
         let ok_parse = internal::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
         sub.assert_true(ok_parse, "Client key share parsed successfully");
-        sub.assert_eq(parsed_client.group, internal::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
+        sub.assert_eq(parsed_client.group, rfc::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
         sub.assert_bytes_eq(parsed_client.secp256r1_public[..], client_share.secp256r1_public[..], "P-256 point matches");
 
         var bad_client = internal::SecP256r1MLKEM768KeyShare { .. };
@@ -2659,13 +2659,13 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var parsed_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
         let ok_p384 = internal::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
         sub.assert_true(ok_p384, "SecP384r1 client share parsed");
-        sub.assert_eq(parsed_384.group, internal::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
+        sub.assert_eq(parsed_384.group, rfc::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
 
         // Extension wiring & secret combiners
         let groups: u16[3] = [
-            internal::GROUP_SECP256R1_MLKEM768,
-            internal::GROUP_X25519_MLKEM768,
-            internal::GROUP_SECP384R1_MLKEM1024,
+            rfc::GROUP_SECP256R1_MLKEM768,
+            rfc::GROUP_X25519_MLKEM768,
+            rfc::GROUP_SECP384R1_MLKEM1024,
         ];
         var ext_wire: u8[>..] = [];
         wing::encode_supported_groups_extension(ext_wire, groups[..]);
@@ -2695,13 +2695,13 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         wing::start_u16_prefix(b_valid); // block len
 
         // Extension 1: EXT_SERVER_NAME (0)
-        wing::put_u16(b_valid, wing::EXT_SERVER_NAME);
+        wing::put_u16(b_valid, rfc::TLS_EXT_SERVER_NAME);
         wing::start_u16_prefix(b_valid);
         wing::put_bytes(b_valid, "mock_sni");
         wing::finish_u16_prefix(b_valid);
 
         // Extension 2: EXT_SUPPORTED_VERSIONS (43)
-        wing::put_u16(b_valid, wing::EXT_SUPPORTED_VERSIONS);
+        wing::put_u16(b_valid, rfc::TLS_EXT_SUPPORTED_VERSIONS);
         wing::start_u16_prefix(b_valid);
         wing::put_bytes(b_valid, "mock_ver");
         wing::finish_u16_prefix(b_valid);
@@ -2717,12 +2717,12 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         var b_dup = wing::builder_init();
         wing::start_u16_prefix(b_dup);
 
-        wing::put_u16(b_dup, wing::EXT_SERVER_NAME);
+        wing::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME);
         wing::start_u16_prefix(b_dup);
         wing::put_bytes(b_dup, "mock_sni_1");
         wing::finish_u16_prefix(b_dup);
 
-        wing::put_u16(b_dup, wing::EXT_SERVER_NAME); // DUPLICATE!
+        wing::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME); // DUPLICATE!
         wing::start_u16_prefix(b_dup);
         wing::put_bytes(b_dup, "mock_sni_2");
         wing::finish_u16_prefix(b_dup);
@@ -2956,11 +2956,11 @@ fn test_handshake_and_ech_security(t: lit::T&) {
     t.run("TLS-30: RFC 9849 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
         // Helper to build a valid RFC 9849 ECHConfig wire payload
         var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, wing::ECH_VERSION_RFC9849); // version 0xFE0D
+        wing::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849); // version 0xFE0D
         wing::start_u16_prefix(b_cfg); // length prefix for contents
 
         wing::put_u8(b_cfg, 0x01); // config_id
-        wing::put_u16(b_cfg, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256); // kem_id (0x0020)
+        wing::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256); // kem_id (0x0020)
 
         // public_key<1..2^16-1>: 32 bytes
         wing::start_u16_prefix(b_cfg);
@@ -2969,8 +2969,8 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         // cipher_suites<4..2^16-1>: KDF HKDF-SHA256 (0x0001), AEAD AES-128-GCM (0x0001)
         wing::start_u16_prefix(b_cfg);
-        wing::put_u16(b_cfg, wing::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_cfg, wing::HPKE_AEAD_AES_128_GCM);
+        wing::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
         wing::finish_u16_prefix(b_cfg);
 
         wing::put_u8(b_cfg, 64); // maximum_name_length
@@ -2990,7 +2990,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         var cfg = wing::EchConfig { .. };
         let ok_cfg = wing::parse_ech_config(b_cfg.buf[..], cfg);
         sub.assert_true(ok_cfg, "valid RFC 9849 ECHConfig parsed");
-        sub.assert_eq(cfg.version, wing::ECH_VERSION_RFC9849, "version is 0xFE0D");
+        sub.assert_eq(cfg.version, rfc::ECH_VERSION_RFC9849, "version is 0xFE0D");
         sub.assert_eq(cfg.config_id, 0x01, "config_id is 1");
         sub.assert_eq(cfg.cipher_suites.len, 1, "1 cipher suite parsed");
         sub.assert_bytes_eq(cfg.public_name[..], "public.cloudflare.com", "public_name matches");
@@ -3006,16 +3006,16 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         // 3. ECHConfig with empty public_name (RFC 9849 public_name<1..255>) rejected
         var b_emptypub = wing::builder_init();
-        wing::put_u16(b_emptypub, wing::ECH_VERSION_RFC9849);
+        wing::put_u16(b_emptypub, rfc::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_emptypub);
         wing::put_u8(b_emptypub, 0x01);
-        wing::put_u16(b_emptypub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::put_u16(b_emptypub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
         wing::start_u16_prefix(b_emptypub);
         for i in 32 { wing::put_u8(b_emptypub, 0x11); }
         wing::finish_u16_prefix(b_emptypub);
         wing::start_u16_prefix(b_emptypub);
-        wing::put_u16(b_emptypub, wing::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_emptypub, wing::HPKE_AEAD_AES_128_GCM);
+        wing::put_u16(b_emptypub, rfc::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_emptypub, rfc::HPKE_AEAD_AES_128_GCM);
         wing::finish_u16_prefix(b_emptypub);
         wing::put_u8(b_emptypub, 64);
         wing::put_u8(b_emptypub, 0); // 0-length public_name!
@@ -3028,16 +3028,16 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         // 4. ECHConfig with IP literal public_name rejected
         var b_ippub = wing::builder_init();
-        wing::put_u16(b_ippub, wing::ECH_VERSION_RFC9849);
+        wing::put_u16(b_ippub, rfc::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_ippub);
         wing::put_u8(b_ippub, 0x01);
-        wing::put_u16(b_ippub, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::put_u16(b_ippub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
         wing::start_u16_prefix(b_ippub);
         for i in 32 { wing::put_u8(b_ippub, 0x11); }
         wing::finish_u16_prefix(b_ippub);
         wing::start_u16_prefix(b_ippub);
-        wing::put_u16(b_ippub, wing::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_ippub, wing::HPKE_AEAD_AES_128_GCM);
+        wing::put_u16(b_ippub, rfc::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_ippub, rfc::HPKE_AEAD_AES_128_GCM);
         wing::finish_u16_prefix(b_ippub);
         wing::put_u8(b_ippub, 64);
         wing::start_u8_prefix(b_ippub);
@@ -3066,7 +3066,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let ok_list = wing::parse_ech_config_list(b_list.buf[..], cfg_list);
         sub.assert_true(ok_list, "ECHConfigList with unsupported version skipped and valid entry parsed");
         sub.assert_eq(cfg_list.configs.len, 1, "1 valid config in list");
-        sub.assert_eq(cfg_list.configs[0].version, wing::ECH_VERSION_RFC9849, "parsed entry is RFC 9849");
+        sub.assert_eq(cfg_list.configs[0].version, rfc::ECH_VERSION_RFC9849, "parsed entry is RFC 9849");
 
         // 6. ECHConfigList with truncated trailing bytes rejected
         var b_trunc = wing::builder_init();
@@ -3091,7 +3091,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 1. Finished before Certificate/CertificateVerify in full handshake MUST BE REJECTED
         let st_bad, ok_bad = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             wing::HandshakeMode.Full,
             false,
         );
@@ -3099,13 +3099,13 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         sub.assert_true(st_bad == wing::HsState.Closed, "state is Closed");
 
         // can_client_transition also rejects Finished before Certificate
-        let _, ok_c_fin = wing::can_client_transition(wing::HsState.ClientWaitCertCr, wing::HS_MSG_FINISHED);
+        let _, ok_c_fin = wing::can_client_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_FINISHED);
         sub.assert_false(ok_c_fin, "can_client_transition rejects Finished in ClientWaitCertCr");
 
         // 2. PSK mode allows Finished directly in ClientWaitCertCr -> transitions to Connected
         let st_psk, ok_psk = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             wing::HandshakeMode.Psk,
             false,
         );
@@ -3113,28 +3113,28 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         sub.assert_true(st_psk == wing::HsState.Connected, "PSK handshake transitions to Connected");
 
         // 3. EncryptedExtensions outside slot rejected
-        let _, ok_ee_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
+        let _, ok_ee_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
         sub.assert_false(ok_ee_sh, "EE in ClientWaitSH rejected");
-        let _, ok_ee_cert = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCert, wing::HS_MSG_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
+        let _, ok_ee_cert = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCert, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
         sub.assert_false(ok_ee_cert, "EE in ClientWaitCert rejected");
 
         // 4. Post-handshake: client sending messages other than KeyUpdate rejected by server
-        let _, ok_srv_fin = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_FINISHED, false);
+        let _, ok_srv_fin = wing::validate_server_handshake_transition(wing::HsState.Connected, rfc::TLS_HS_FINISHED, false);
         sub.assert_false(ok_srv_fin, "post-handshake Finished rejected by server");
-        let _, ok_srv_ch = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_CLIENT_HELLO, false);
+        let _, ok_srv_ch = wing::validate_server_handshake_transition(wing::HsState.Connected, rfc::TLS_HS_CLIENT_HELLO, false);
         sub.assert_false(ok_srv_ch, "post-handshake ClientHello rejected by server");
-        let _, ok_srv_ku = wing::validate_server_handshake_transition(wing::HsState.Connected, wing::HS_MSG_KEY_UPDATE, false);
+        let _, ok_srv_ku = wing::validate_server_handshake_transition(wing::HsState.Connected, rfc::TLS_HS_KEY_UPDATE, false);
         sub.assert_true(ok_srv_ku, "post-handshake KeyUpdate accepted by server");
 
         // 5. Server state machine: client authentication enforcement
-        let st_auth, ok_auth = wing::validate_server_handshake_transition(wing::HsState.ServerWaitCH, wing::HS_MSG_CLIENT_HELLO, true);
+        let st_auth, ok_auth = wing::validate_server_handshake_transition(wing::HsState.ServerWaitCH, rfc::TLS_HS_CLIENT_HELLO, true);
         sub.assert_true(ok_auth, "server accepts CH with client auth");
         sub.assert_true(st_auth == wing::HsState.ServerWaitCert, "server transitions to ServerWaitCert when client auth requested");
 
         // 6. Server state machine: 0-RTT early data acceptance (ServerWaitCH -> ServerWaitEOED)
         let st_0rtt, ok_0rtt = wing::validate_server_handshake_transition(
             wing::HsState.ServerWaitCH,
-            wing::HS_MSG_CLIENT_HELLO,
+            rfc::TLS_HS_CLIENT_HELLO,
             false,
             wing::EarlyDataAccepted.Accepted,
         );
@@ -3143,7 +3143,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         let st_eoed, ok_eoed = wing::validate_server_handshake_transition(
             wing::HsState.ServerWaitEOED,
-            wing::HS_MSG_END_OF_EARLY_DATA,
+            rfc::TLS_HS_END_OF_EARLY_DATA,
             false,
         );
         sub.assert_true(ok_eoed, "server accepts EndOfEarlyData in ServerWaitEOED");
@@ -3159,7 +3159,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 2. Client state transition on HRR: remains waiting for ServerHello2
         let st_hrr, ok_hrr = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitSH,
-            wing::HS_MSG_SERVER_HELLO,
+            rfc::TLS_HS_SERVER_HELLO,
             wing::HandshakeMode.Full,
             true, // is_hrr
         );
@@ -3172,7 +3172,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         let synth_len, ok_synth = wing::build_synthetic_message_hash(mock_ch1, 32, out_synth[..]);
         sub.assert_true(ok_synth, "build synthetic message_hash succeeds");
         sub.assert_eq(synth_len, 36, "message_hash length is 36 bytes (4 hdr + 32 sha256)");
-        sub.assert_eq(out_synth[0], wing::HS_MSG_MESSAGE_HASH, "type is 254 (message_hash)");
+        sub.assert_eq(out_synth[0], rfc::TLS_HS_MESSAGE_HASH, "type is 254 (message_hash)");
         sub.assert_eq(out_synth[1], 0x00, "len byte 1 is 0");
         sub.assert_eq(out_synth[2], 0x00, "len byte 2 is 0");
         sub.assert_eq(out_synth[3], 32, "len byte 3 is 32");
@@ -3224,24 +3224,24 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         for i in 32 { s_rand[i] = (i + 1) as u8; }
         sub.assert_false(wing::has_downgrade_sentinel(s_rand), "clean random has no sentinel");
         sub.assert_true(
-            wing::validate_server_random_downgrade(s_rand, wing::TLS13_VERSION, true),
+            wing::validate_server_random_downgrade(s_rand, rfc::TLS_VERSION_1_3, true),
             "TLS 1.3 negotiation with clean random valid",
         );
 
         // 2. Active downgrade attack on TLS 1.3: ServerHello negotiated version is TLS 1.3 but contains sentinel
         var s_rand_dg12 = s_rand;
-        for i in 8 { s_rand_dg12[24 + i] = wing::DOWNGRADE_SENTINEL_TLS12[i]; }
+        for i in 8 { s_rand_dg12[24 + i] = rfc::DOWNGRADE_SENTINEL_TLS12[i]; }
         sub.assert_true(wing::has_downgrade_sentinel(s_rand_dg12), "sentinel TLS 1.2 detected");
         sub.assert_false(
-            wing::validate_server_random_downgrade(s_rand_dg12, wing::TLS13_VERSION, true),
+            wing::validate_server_random_downgrade(s_rand_dg12, rfc::TLS_VERSION_1_3, true),
             "downgrade sentinel in TLS 1.3 ServerHello strictly rejected",
         );
 
         var s_rand_dg11 = s_rand;
-        for i in 8 { s_rand_dg11[24 + i] = wing::DOWNGRADE_SENTINEL_TLS11[i]; }
+        for i in 8 { s_rand_dg11[24 + i] = rfc::DOWNGRADE_SENTINEL_TLS11[i]; }
         sub.assert_true(wing::has_downgrade_sentinel(s_rand_dg11), "sentinel TLS 1.1 detected");
         sub.assert_false(
-            wing::validate_server_random_downgrade(s_rand_dg11, wing::TLS13_VERSION, true),
+            wing::validate_server_random_downgrade(s_rand_dg11, rfc::TLS_VERSION_1_3, true),
             "downgrade sentinel 1.1 in TLS 1.3 ServerHello strictly rejected",
         );
 
@@ -3261,9 +3261,9 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
     t.run("TLS-35: RFC 8446 §4.1.2 & Appendix B.4 TLS 1.3 Cipher Suite Restrictions") { sub =>
         // 1. Supported TLS 1.3 suites
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1301), "TLS_AES_128_GCM_SHA256 supported");
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1302), "TLS_AES_256_GCM_SHA384 supported");
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1303), "TLS_CHACHA20_POLY1305_SHA256 supported");
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1301), "rfc::TLS_CIPHER_AES_128_GCM_SHA256 supported");
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1302), "rfc::TLS_CIPHER_AES_256_GCM_SHA384 supported");
+        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1303), "rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 supported");
 
         // 2. Legacy TLS 1.2 suites strictly rejected in TLS 1.3
         sub.assert_false(wing::is_supported_tls13_cipher_suite(0xC02F), "ECDHE-RSA-AES128-GCM-SHA256 forbidden in TLS 1.3");
@@ -3300,16 +3300,16 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         // 2. Validate parse_and_validate_ech_retry_configs
         var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, wing::ECH_VERSION_RFC9849);
+        wing::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849);
         wing::start_u16_prefix(b_cfg);
         wing::put_u8(b_cfg, 0x02); // config_id
-        wing::put_u16(b_cfg, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        wing::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
         wing::start_u16_prefix(b_cfg);
         for i in 32 { wing::put_u8(b_cfg, 0x22); }
         wing::finish_u16_prefix(b_cfg);
         wing::start_u16_prefix(b_cfg);
-        wing::put_u16(b_cfg, wing::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_cfg, wing::HPKE_AEAD_AES_128_GCM);
+        wing::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
+        wing::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
         wing::finish_u16_prefix(b_cfg);
         wing::put_u8(b_cfg, 64);
         wing::start_u8_prefix(b_cfg);
@@ -3581,12 +3581,12 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         let ku_not_req: u8[1] = [0];
         let req0, ok0 = wing::parse_key_update(ku_not_req[..]);
         sub.assert_true(ok0, "parse update_not_requested succeeds");
-        sub.assert_eq(req0, wing::KEY_UPDATE_NOT_REQUESTED, "request_update is 0");
+        sub.assert_eq(req0, rfc::KEY_UPDATE_NOT_REQUESTED, "request_update is 0");
 
         let ku_req: u8[1] = [1];
         let req1, ok1 = wing::parse_key_update(ku_req[..]);
         sub.assert_true(ok1, "parse update_requested succeeds");
-        sub.assert_eq(req1, wing::KEY_UPDATE_REQUESTED, "request_update is 1");
+        sub.assert_eq(req1, rfc::KEY_UPDATE_REQUESTED, "request_update is 1");
 
         let ku_bad: u8[1] = [2]; // 2..255 forbidden
         let _, ok_bad = wing::parse_key_update(ku_bad[..]);
@@ -3694,7 +3694,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         var st = wing::HsState.ServerWaitCert;
         let next_st, ok_tr = wing::validate_server_handshake_transition_auth(
             st,
-            wing::HS_MSG_CERTIFICATE,
+            rfc::TLS_HS_CERTIFICATE,
             wing::ClientAuthMode.Requested,
             true, // client_cert_is_empty
         );
@@ -3704,7 +3704,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // In ServerWaitFinished, Finished transitions to Connected
         let final_st, ok_fin = wing::validate_server_handshake_transition_auth(
             next_st,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             wing::ClientAuthMode.Requested,
             true,
         );
@@ -3714,7 +3714,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 3. Client sending CertificateVerify when certificate was empty MUST be rejected (RFC 8446 §4.4.2)
         let _, ok_bad_cv = wing::validate_server_handshake_transition_auth(
             wing::HsState.ServerWaitCV,
-            wing::HS_MSG_CERTIFICATE_VERIFY,
+            rfc::TLS_HS_CERTIFICATE_VERIFY,
             wing::ClientAuthMode.Requested,
             true, // client_cert_is_empty = true
         );
@@ -3723,7 +3723,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 4. Normal client auth with cert: proceeds through ServerWaitCV
         let next_full, ok_full = wing::validate_server_handshake_transition_auth(
             wing::HsState.ServerWaitCert,
-            wing::HS_MSG_CERTIFICATE,
+            rfc::TLS_HS_CERTIFICATE,
             wing::ClientAuthMode.Requested,
             false, // client_cert_is_empty = false
         );
@@ -3789,15 +3789,15 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 5. OpenSSL Bug #31406 & RFC 8446 §4.2.10: 0-RTT PSK cipher suite mismatch handling
         // Case A: server validator strictly rejects mismatched cipher suite
         sub.assert_true(
-            wing::validate_server_early_data_cipher(wing::TLS_CIPHER_AES_128_CCM_SHA256, wing::TLS_CIPHER_AES_128_CCM_SHA256),
+            wing::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_SHA256),
             "identical cipher suites permit early data acceptance",
         );
         sub.assert_false(
-            wing::validate_server_early_data_cipher(wing::TLS_CIPHER_AES_128_CCM_SHA256, wing::TLS_CIPHER_AES_128_CCM_8_SHA256),
+            wing::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_8_SHA256),
             "mismatched PSK vs negotiated cipher suite strictly rejected on server (OpenSSL #31406)",
         );
         sub.assert_false(
-            wing::validate_server_early_data_cipher(0, wing::TLS_CIPHER_AES_128_GCM_SHA256),
+            wing::validate_server_early_data_cipher(0, rfc::TLS_CIPHER_AES_128_GCM_SHA256),
             "uninitialized PSK cipher rejected",
         );
 
@@ -3805,8 +3805,8 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         var ctrl_mismatch = wing::EarlyDataController {
             state:                   wing::EarlyDataState.Offered,
             max_early_data_size:     16384,
-            psk_cipher_suite:        wing::TLS_CIPHER_AES_128_CCM_SHA256,
-            negotiated_cipher_suite: wing::TLS_CIPHER_AES_128_CCM_8_SHA256,
+            psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_CCM_SHA256,
+            negotiated_cipher_suite: rfc::TLS_CIPHER_AES_128_CCM_8_SHA256,
             ..
         };
         let ok_ee_mismatch = wing::early_data_on_encrypted_extensions(ctrl_mismatch, true);
@@ -3828,7 +3828,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         ];
         let parsed, ok_parse = wing::parse_compressed_certificate(valid_comp_payload[..]);
         sub.assert_true(ok_parse, "parse valid CompressedCertificate succeeds");
-        sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESS_ZSTD, "algorithm is zstd");
+        sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_ZSTD, "algorithm is zstd");
         sub.assert_eq(parsed.uncompressed_len as i64, 16, "uncompressed_len is 16");
 
         // 2. Reject unknown algorithm ID (e.g. 0 or 4)
@@ -3861,7 +3861,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 5. Client transition accepts CompressedCertificate in place of Certificate
         let next_cc_cr, ok_cc_cr = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
-            wing::HS_MSG_COMPRESSED_CERTIFICATE,
+            rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             wing::HandshakeMode.Full,
             false,
         );
@@ -3870,7 +3870,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 
         let next_cc, ok_cc = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCert,
-            wing::HS_MSG_COMPRESSED_CERTIFICATE,
+            rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             wing::HandshakeMode.Full,
             false,
         );
@@ -3882,14 +3882,14 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 // RFC 8879 Section 3: Negotiating Certificate Compression - Brotli certificate decompression
 fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
     t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
-        sub.assert_eq(internal::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
-        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD, 3, "Zstandard ID is 3 in specification (RFC 8879 §3)");
-        sub.assert_eq(internal::CERT_COMPRESSION_ZSTD_IANA, 3, "Zstandard IANA official ID is 3");
-        sub.assert_eq(internal::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
+        sub.assert_eq(rfc::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
+        sub.assert_eq(rfc::CERT_COMPRESSION_ZSTD, 3, "Zstandard ID is 3 in specification (RFC 8879 §3)");
+        sub.assert_eq(rfc::CERT_COMPRESSION_ZSTD, 3, "Zstandard IANA official ID is 3");
+        sub.assert_eq(rfc::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
 
-        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_BROTLI), "Brotli valid");
-        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
-        sub.assert_true(internal::is_valid_compression_algorithm(internal::CERT_COMPRESSION_ZSTD_IANA), "Zstd 3 valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_BROTLI), "Brotli valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
+        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
         sub.assert_false(internal::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
         sub.assert_false(internal::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
     };
@@ -3905,7 +3905,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         var decomp_zstd: u8[>..] = [];
 
         var test_cert_msg = internal::CompressedCertificate {
-            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: compressed_data[..],
         };
@@ -3921,7 +3921,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             var parsed = internal::CompressedCertificate { .. };
             let ok_dec = internal::parse_compressed_certificate_msg(wire[..], parsed);
             sub.assert_true(ok_dec, "CompressedCertificate parsed");
-            sub.assert_eq(parsed.algorithm, internal::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
+            sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
             sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
             sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
 
@@ -3949,7 +3949,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         sub.assert_true(ok_zcomp, "zlib compression succeeds");
 
         var zlib_msg = internal::CompressedCertificate {
-            algorithm:                      internal::CERT_COMPRESSION_ZLIB,
+            algorithm:                      rfc::CERT_COMPRESSION_ZLIB,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zlib_comp[..],
         };
@@ -3962,7 +3962,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         let ok_zstd_comp = core::zstd_compress(cert_plaintext, zstd_comp);
         sub.assert_true(ok_zstd_comp, "zstd compression succeeds");
         var zstd_msg = internal::CompressedCertificate {
-            algorithm:                      internal::CERT_COMPRESSION_ZSTD_IANA,
+            algorithm:                      rfc::CERT_COMPRESSION_ZSTD,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zstd_comp[..],
         };
@@ -3974,7 +3974,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
     t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>
         // 1. Decompression bomb: uncompressed_length exceeds caller's max buffer ceiling
         var bomb_msg = internal::CompressedCertificate {
-            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            50000,
             compressed_certificate_message: "abc",
         };
@@ -4007,7 +4007,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         // 5. Corrupted compressed payload
         let corrupt_payload: u8[10] = [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66];
         var corrupt_msg = internal::CompressedCertificate {
-            algorithm:                      internal::CERT_COMPRESSION_BROTLI,
+            algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            10,
             compressed_certificate_message: corrupt_payload[..],
         };

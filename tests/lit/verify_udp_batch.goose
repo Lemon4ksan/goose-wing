@@ -163,7 +163,7 @@ fn verify_wire_h2_frame_slice_cursor() {
 
     var cursor: i64 = 0;
     let hdr1, pay1, ok1 = wire::read_wire_h2_frame(buf[..], cursor);
-    assert(ok1 && hdr1.frame_type == wire::H2_FRAME_WINDOW_UPDATE && pay1.len == 4 && cursor == 13);
+    assert(ok1 && hdr1.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && pay1.len == 4 && cursor == 13);
 
     // Truncated frame test: slice off the last 2 bytes of the PING frame and verify cursor rollback
     let truncated_view = buf[..28];
@@ -174,7 +174,7 @@ fn verify_wire_h2_frame_slice_cursor() {
 
     // Full second frame read succeeds
     let hdr2, pay2, ok2 = wire::read_wire_h2_frame(buf[..], cursor);
-    assert(ok2 && hdr2.frame_type == wire::H2_FRAME_PING && pay2.len == 8 && cursor == 30);
+    assert(ok2 && hdr2.frame_type == rfc::H2_FRAME_PING && pay2.len == 8 && cursor == 30);
     print("WIRE_H2_SLICE_CURSOR: cursor=", cursor, "\n");
 }
 

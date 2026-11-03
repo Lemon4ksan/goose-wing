@@ -32,33 +32,33 @@ fn main() {
     print("=== TLS_HANDSHAKE_AND_RECORD_VERIFICATION ===");
 
     // 1. Client handshake state machine progression (RFC 8446 §4)
-    let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_SERVER_HELLO);
+    let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO);
     assert(ok1 && st1 == wing::HsState.ClientWaitEE);
     print("FSM_CLIENT: ClientWaitSH -> ClientWaitEE");
 
-    let st2, ok2 = wing::can_client_transition(wing::HsState.ClientWaitEE, wing::HS_MSG_ENCRYPTED_EXTENSIONS);
+    let st2, ok2 = wing::can_client_transition(wing::HsState.ClientWaitEE, rfc::TLS_HS_ENCRYPTED_EXTENSIONS);
     assert(ok2 && st2 == wing::HsState.ClientWaitCertCr);
     print("FSM_CLIENT: ClientWaitEE -> ClientWaitCertCr");
 
-    let st3, ok3 = wing::can_client_transition(wing::HsState.ClientWaitCertCr, wing::HS_MSG_CERTIFICATE);
+    let st3, ok3 = wing::can_client_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_CERTIFICATE);
     assert(ok3 && st3 == wing::HsState.ClientWaitCV);
     print("FSM_CLIENT: ClientWaitCertCr -> ClientWaitCV");
 
-    let st4, ok4 = wing::can_client_transition(wing::HsState.ClientWaitCV, wing::HS_MSG_CERTIFICATE_VERIFY);
+    let st4, ok4 = wing::can_client_transition(wing::HsState.ClientWaitCV, rfc::TLS_HS_CERTIFICATE_VERIFY);
     assert(ok4 && st4 == wing::HsState.ClientWaitFinished);
     print("FSM_CLIENT: ClientWaitCV -> ClientWaitFinished");
 
-    let st5, ok5 = wing::can_client_transition(wing::HsState.ClientWaitFinished, wing::HS_MSG_FINISHED);
+    let st5, ok5 = wing::can_client_transition(wing::HsState.ClientWaitFinished, rfc::TLS_HS_FINISHED);
     assert(ok5 && st5 == wing::HsState.Connected);
     print("FSM_CLIENT: ClientWaitFinished -> Connected");
 
     // 2. Illegal handshake transition: unexpected Finished in ClientWaitSH
-    let _, ok_inv = wing::can_client_transition(wing::HsState.ClientWaitSH, wing::HS_MSG_FINISHED);
+    let _, ok_inv = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_FINISHED);
     assert(!ok_inv);
     print("ILLEGAL_TRANSITION: REJECTED");
 
     // 3. HelloRetryRequest detection & synthetic message_hash compression (RFC 8446 §4.4.1)
-    assert(wing::is_hello_retry_request(wing::HRR_RANDOM));
+    assert(wing::is_hello_retry_request(rfc::HRR_RANDOM));
     var arbitrary_rand: u8[32] = [0x55; 32];
     assert(!wing::is_hello_retry_request(arbitrary_rand));
     print("HRR_RANDOM_DETECTION: OK");

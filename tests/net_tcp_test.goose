@@ -1115,35 +1115,35 @@ fn test_tcp_fastopen_and_ecn(t: lit::T&) {
     };
 
     t.run("TCP-02: ECN codepoint decoding and classification (RFC 3168)") { sub =>
-        sub.assert_eq(wing::ECN_NOT_ECT, 0x00 as u8, "ECN_NOT_ECT is 0");
-        sub.assert_eq(wing::ECN_ECT_1, 0x01 as u8, "ECN_ECT_1 is 1");
-        sub.assert_eq(wing::ECN_ECT_0, 0x02 as u8, "ECN_ECT_0 is 2");
-        sub.assert_eq(wing::ECN_CE, 0x03 as u8, "ECN_CE is 3");
+        sub.assert_eq(rfc::ECN_NOT_ECT, 0x00 as u8, "rfc::ECN_NOT_ECT is 0");
+        sub.assert_eq(rfc::ECN_ECT_1, 0x01 as u8, "rfc::ECN_ECT_1 is 1");
+        sub.assert_eq(rfc::ECN_ECT_0, 0x02 as u8, "rfc::ECN_ECT_0 is 2");
+        sub.assert_eq(rfc::ECN_CE, 0x03 as u8, "rfc::ECN_CE is 3");
 
         // Pure ECN bytes
-        sub.assert_eq(wing::ecn_from_tos(0x00 as u8), wing::ECN_NOT_ECT, "tos 0 is NOT_ECT");
-        sub.assert_eq(wing::ecn_from_tos(0x01 as u8), wing::ECN_ECT_1, "tos 1 is ECT_1");
-        sub.assert_eq(wing::ecn_from_tos(0x02 as u8), wing::ECN_ECT_0, "tos 2 is ECT_0");
-        sub.assert_eq(wing::ecn_from_tos(0x03 as u8), wing::ECN_CE, "tos 3 is CE");
+        sub.assert_eq(wing::ecn_from_tos(0x00 as u8), rfc::ECN_NOT_ECT, "tos 0 is NOT_ECT");
+        sub.assert_eq(wing::ecn_from_tos(0x01 as u8), rfc::ECN_ECT_1, "tos 1 is ECT_1");
+        sub.assert_eq(wing::ecn_from_tos(0x02 as u8), rfc::ECN_ECT_0, "tos 2 is ECT_0");
+        sub.assert_eq(wing::ecn_from_tos(0x03 as u8), rfc::ECN_CE, "tos 3 is CE");
 
         // TOS with DSCP bits (e.g. DSCP CS5 = 0x28, shifted = 0xA0)
         let dscp_base: u8 = 0xA0;
-        sub.assert_eq(wing::ecn_from_tos(dscp_base | wing::ECN_ECT_0), wing::ECN_ECT_0, "masked ECT_0 with DSCP");
-        sub.assert_eq(wing::ecn_from_tos(dscp_base | wing::ECN_CE), wing::ECN_CE, "masked CE with DSCP");
+        sub.assert_eq(wing::ecn_from_tos(dscp_base | rfc::ECN_ECT_0), rfc::ECN_ECT_0, "masked ECT_0 with DSCP");
+        sub.assert_eq(wing::ecn_from_tos(dscp_base | rfc::ECN_CE), rfc::ECN_CE, "masked CE with DSCP");
 
         // ECN capabilities
-        sub.assert_false(wing::ecn_is_capable(wing::ECN_NOT_ECT), "NOT_ECT is not capable");
-        sub.assert_true(wing::ecn_is_capable(wing::ECN_ECT_0), "ECT_0 is capable");
-        sub.assert_true(wing::ecn_is_capable(wing::ECN_ECT_1), "ECT_1 is capable");
-        sub.assert_false(wing::ecn_is_capable(wing::ECN_CE), "CE is not capable alone");
+        sub.assert_false(wing::ecn_is_capable(rfc::ECN_NOT_ECT), "NOT_ECT is not capable");
+        sub.assert_true(wing::ecn_is_capable(rfc::ECN_ECT_0), "ECT_0 is capable");
+        sub.assert_true(wing::ecn_is_capable(rfc::ECN_ECT_1), "ECT_1 is capable");
+        sub.assert_false(wing::ecn_is_capable(rfc::ECN_CE), "CE is not capable alone");
 
         // Congestion experienced
-        sub.assert_true(wing::ecn_is_congestion_experienced(wing::ECN_CE), "CE flagged");
-        sub.assert_false(wing::ecn_is_congestion_experienced(wing::ECN_ECT_0), "ECT_0 not CE");
+        sub.assert_true(wing::ecn_is_congestion_experienced(rfc::ECN_CE), "CE flagged");
+        sub.assert_false(wing::ecn_is_congestion_experienced(rfc::ECN_ECT_0), "ECT_0 not CE");
 
         // Invalid fd (-1) safe handling
         sub.assert_false(wing::tcp_set_tos(-1, 0x02 as u8), "set_tos on -1 returns false");
-        sub.assert_false(wing::tcp_set_ecn(-1, wing::ECN_ECT_0), "set_ecn on -1 returns false");
+        sub.assert_false(wing::tcp_set_ecn(-1, rfc::ECN_ECT_0), "set_ecn on -1 returns false");
         sub.assert_false(wing::tcp_set_ipv6_tclass(-1, 0x02 as u8), "set_ipv6_tclass on -1 returns false");
     };
 }

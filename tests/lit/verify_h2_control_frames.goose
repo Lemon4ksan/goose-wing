@@ -16,9 +16,9 @@ import wire_kit from ".";
 fn wing_validate_h2_ctrl_frame_wire(buf: const u8[:]) -> i64 {
     guard buf.len >= 9 else { return -1; }
     let hdr, err_hdr = internal::parse_frame_header(buf);
-    guard err_hdr == internal::ERR_NO_ERROR else { return err_hdr as! i64; }
+    guard err_hdr == rfc::H2_ERR_NO_ERROR else { return err_hdr as! i64; }
     let err_rules = internal::validate_frame_header_rules(hdr);
-    guard err_rules == internal::ERR_NO_ERROR else { return err_rules as! i64; }
+    guard err_rules == rfc::H2_ERR_NO_ERROR else { return err_rules as! i64; }
     guard buf.len >= 9 + (hdr.length as i64) else { return -1; }
     return 0;
 }

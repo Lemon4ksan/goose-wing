@@ -179,7 +179,7 @@ fn test_quic_varint_and_framing(t: lit::T&) {
         // Initial Header
         var orig_hdr = internal::QuicHeader {
             header_type:    internal::QuicHeaderType.Initial,
-            version:        internal::QUIC_VERSION_1,
+            version:        rfc::QUIC_VERSION_1,
             payload_length: 1200,
             packet_number:  42,
             ..
@@ -194,7 +194,7 @@ fn test_quic_varint_and_framing(t: lit::T&) {
         let parsed, ok_dec = internal::parse_quic_header(wire[..], 0);
         sub.assert_true(ok_dec, "parse Initial header ok");
         sub.assert_eq(parsed.header_type, internal::QuicHeaderType.Initial, "header type Initial");
-        sub.assert_eq(parsed.version, internal::QUIC_VERSION_1, "version QUIC v1");
+        sub.assert_eq(parsed.version, rfc::QUIC_VERSION_1, "version QUIC v1");
         sub.assert_eq(parsed.dcid[..], orig_hdr.dcid[..], "dcid matches");
         sub.assert_eq(parsed.scid[..], orig_hdr.scid[..], "scid matches");
         sub.assert_eq(parsed.payload_length, 1200, "payload length matches");
@@ -321,7 +321,7 @@ fn test_header_protection_and_pn(t: lit::T&) {
         // 1. Handshake Packet Header
         var h_hdr = internal::QuicHeader {
             header_type:    internal::QuicHeaderType.Handshake,
-            version:        internal::QUIC_VERSION_1,
+            version:        rfc::QUIC_VERSION_1,
             payload_length: 120,
             packet_number:  42,
             ..
@@ -341,7 +341,7 @@ fn test_header_protection_and_pn(t: lit::T&) {
         // 2. 0-RTT Packet Header
         var z_hdr = internal::QuicHeader {
             header_type:    internal::QuicHeaderType.ZeroRtt,
-            version:        internal::QUIC_VERSION_1,
+            version:        rfc::QUIC_VERSION_1,
             payload_length: 50,
             packet_number:  1,
             ..
@@ -356,7 +356,7 @@ fn test_header_protection_and_pn(t: lit::T&) {
         // 3. Retry Packet Header
         var r_hdr = internal::QuicHeader {
             header_type: internal::QuicHeaderType.Retry,
-            version:     internal::QUIC_VERSION_1,
+            version:     rfc::QUIC_VERSION_1,
             ..
         };
         r_hdr.dcid.append("retry-dcid");
@@ -818,7 +818,7 @@ fn test_quic_crypto_frame_codec(t: lit::T&) {
     var cur: i64 = 0;
     let frame, ok_dec = internal::decode_quic_frame_cursor(wire[..], cur);
     t.assert_true(ok_dec, "decode crypto frame");
-    t.assert_eq(frame.raw_type, internal::QUIC_FRAME_CRYPTO, "frame type is crypto");
+    t.assert_eq(frame.raw_type, rfc::QUIC_FRAME_CRYPTO, "frame type is crypto");
     t.assert_eq(frame.offset, 500, "crypto offset matches");
     t.assert_eq(frame.length, 6, "crypto length matches");
     t.assert_eq(frame.payload.len, 6, "crypto payload slice matches");
@@ -912,17 +912,17 @@ fn test_quic_frame_demuxer(t: lit::T&) {
     // 1. PADDING
     let f1, ok1 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok1, "demux f1 padding ok");
-    t.assert_eq(f1.raw_type, internal::QUIC_FRAME_PADDING, "f1 is padding");
+    t.assert_eq(f1.raw_type, rfc::QUIC_FRAME_PADDING, "f1 is padding");
 
     // 2. PING
     let f2, ok2 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok2, "demux f2 ping ok");
-    t.assert_eq(f2.raw_type, internal::QUIC_FRAME_PING, "f2 is ping");
+    t.assert_eq(f2.raw_type, rfc::QUIC_FRAME_PING, "f2 is ping");
 
     // 3. MAX_DATA
     let f3, ok3 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok3, "demux f3 max_data ok");
-    t.assert_eq(f3.raw_type, internal::QUIC_FRAME_MAX_DATA, "f3 is max_data");
+    t.assert_eq(f3.raw_type, rfc::QUIC_FRAME_MAX_DATA, "f3 is max_data");
     t.assert_eq(f3.max_data, 2000000, "f3 limit matches");
 
     // 4. STREAM part 1
@@ -953,7 +953,7 @@ fn test_quic_frame_demuxer(t: lit::T&) {
     var off: u64 = 0;
     let frame_from_off, next_off, ok_off = internal::decode_quic_frame(packet_wire[..], off);
     t.assert_true(ok_off, "decode from offset 0 ok");
-    t.assert_eq(frame_from_off.raw_type, internal::QUIC_FRAME_PADDING, "offset 0 is padding");
+    t.assert_eq(frame_from_off.raw_type, rfc::QUIC_FRAME_PADDING, "offset 0 is padding");
     t.assert_eq(next_off, 1, "next offset is 1");
 }
 
@@ -966,14 +966,14 @@ fn test_quic_stream_state_machine_send(t: lit::T&) {
     // 1. Ready -> Send: send first data fragment
     let ok1, err1 = internal::quic_stream_on_send_data(s, 0, 1000, false);
     t.assert_true(ok1, "send 1000 bytes ok");
-    t.assert_eq(err1, internal::QUIC_ERR_NO_ERROR, "no error");
+    t.assert_eq(err1, rfc::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.send_state, internal::QuicSendState.Send, "state is Send");
     t.assert_eq(s.bytes_sent, 1000, "bytes sent is 1000");
 
     // 2. Flow control violation: send beyond send_max_data (5000)
     let ok_fc, err_fc = internal::quic_stream_on_send_data(s, 4500, 1000, false); // 5500 > 5000
     t.assert_false(ok_fc, "sending beyond max_stream_data fails");
-    t.assert_eq(err_fc, internal::QUIC_ERR_FLOW_CONTROL, "error is flow control");
+    t.assert_eq(err_fc, rfc::QUIC_ERR_FLOW_CONTROL, "error is flow control");
 
     // 3. Send -> DataSent: send FIN
     let ok2, err2 = internal::quic_stream_on_send_data(s, 1000, 500, true);
@@ -1008,7 +1008,7 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     // 1. Receive data fragment [0, 500)
     let ok1, err1 = internal::quic_stream_on_recv_stream_frame(s, 0, 500, false);
     t.assert_true(ok1, "recv 500 bytes ok");
-    t.assert_eq(err1, internal::QUIC_ERR_NO_ERROR, "no error");
+    t.assert_eq(err1, rfc::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.bytes_recv, 500, "bytes_recv is 500");
 
     // 2. Receive FIN fragment [500, 1000)
@@ -1021,7 +1021,7 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     // 3. Final size violation (RFC 9000 §4.5): frame exceeding declared final size
     let ok_bad_fs, err_bad_fs = internal::quic_stream_on_recv_stream_frame(s, 1000, 10, false);
     t.assert_false(ok_bad_fs, "data exceeding final size rejected");
-    t.assert_eq(err_bad_fs, internal::QUIC_ERR_FINAL_SIZE, "error is FINAL_SIZE_ERROR");
+    t.assert_eq(err_bad_fs, rfc::QUIC_ERR_FINAL_SIZE, "error is FINAL_SIZE_ERROR");
 
     // 4. Application reads all data -> transitions to DataRead
     internal::quic_stream_on_app_read(s, 1000);
@@ -1031,7 +1031,7 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     // 5. RFC 9000 §3.2: RESET_STREAM arriving after DataRecvd / DataRead is ignored
     let ok_rst_ign, err_rst_ign = internal::quic_stream_on_recv_reset(s, 0x123, 1000);
     t.assert_true(ok_rst_ign, "reset on DataRead ignored");
-    t.assert_eq(err_rst_ign, internal::QUIC_ERR_NO_ERROR, "no error");
+    t.assert_eq(err_rst_ign, rfc::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.recv_state, internal::QuicRecvState.DataRead, "state remains DataRead");
 
     // 5b. RFC 9000 §3.2: Duplicate RESET_STREAM arriving on ResetRead state MUST NOT reopen stream
@@ -1044,7 +1044,7 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     t.assert_true(internal::quic_stream_is_recv_closed(s_rst), "recv is closed");
     let ok_r2, err_r2 = internal::quic_stream_on_recv_reset(s_rst, 0x123, 500);
     t.assert_true(ok_r2, "duplicate reset stream accepted without error");
-    t.assert_eq(err_r2, internal::QUIC_ERR_NO_ERROR, "no error on duplicate reset");
+    t.assert_eq(err_r2, rfc::QUIC_ERR_NO_ERROR, "no error on duplicate reset");
     t.assert_eq(s_rst.recv_state, internal::QuicRecvState.ResetRead, "stream remains ResetRead, does NOT reopen");
     t.assert_true(internal::quic_stream_is_recv_closed(s_rst), "stream remains closed");
 
@@ -1059,7 +1059,7 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     var s_uni = internal::new_quic_stream(2, 10000);
     let ok_ss_bad, err_ss_bad = internal::quic_stream_on_recv_stop_sending(s_uni, 0x55, internal::QuicRole.Server);
     t.assert_false(ok_ss_bad, "stop sending on receive-only stream rejected");
-    t.assert_eq(err_ss_bad, internal::QUIC_ERR_STREAM_STATE, "error is STREAM_STATE_ERROR");
+    t.assert_eq(err_ss_bad, rfc::QUIC_ERR_STREAM_STATE, "error is STREAM_STATE_ERROR");
 }
 
 fn test_quic_stream_table(t: lit::T&) {
@@ -1213,7 +1213,7 @@ fn test_ingress_flow_control_and_errors(t: lit::T&) {
     // Ingress 400 bytes at offset 0
     let ok1, err1 = internal::quic_fc_record_recv_stream(fc, s, 0, 400);
     t.assert_true(ok1, "recv 400 bytes ok");
-    t.assert_eq(err1, internal::QUIC_ERR_NO_ERROR, "no error");
+    t.assert_eq(err1, rfc::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.bytes_recv, 400, "stream bytes_recv 400");
     t.assert_eq(fc.bytes_recv_total, 400, "conn bytes_recv_total 400");
 
@@ -1226,7 +1226,7 @@ fn test_ingress_flow_control_and_errors(t: lit::T&) {
     // Ingress exceeding stream limit (offset 400, len 150 -> end 550 > 500)
     let ok_stream_violation, err_stream_violation = internal::quic_fc_record_recv_stream(fc, s, 400, 150);
     t.assert_false(ok_stream_violation, "stream flow control violation rejected");
-    t.assert_eq(err_stream_violation, internal::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR (0x03)");
+    t.assert_eq(err_stream_violation, rfc::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR (0x03)");
 
     // Now test connection-level ingress violation with another stream
     var s4 = internal::new_quic_stream(4, 2000); // Large stream limit
@@ -1239,7 +1239,7 @@ fn test_ingress_flow_control_and_errors(t: lit::T&) {
     // Ingress 200 bytes on s4 -> 900 + 200 = 1100 > 1000 -> Connection FLOW_CONTROL_ERROR
     let ok_conn_violation, err_conn_violation = internal::quic_fc_record_recv_stream(fc, s4, 500, 200);
     t.assert_false(ok_conn_violation, "connection flow control violation rejected");
-    t.assert_eq(err_conn_violation, internal::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR (0x03)");
+    t.assert_eq(err_conn_violation, rfc::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR (0x03)");
 }
 
 fn test_reset_stream_flow_control_accounting(t: lit::T&) {
@@ -1254,7 +1254,7 @@ fn test_reset_stream_flow_control_accounting(t: lit::T&) {
     // Additional 300 bytes committed to connection total.
     let ok_rst, err_rst = internal::quic_fc_record_recv_reset(fc, s, 500);
     t.assert_true(ok_rst, "reset final size 500 accepted");
-    t.assert_eq(err_rst, internal::QUIC_ERR_NO_ERROR, "no error");
+    t.assert_eq(err_rst, rfc::QUIC_ERR_NO_ERROR, "no error");
     t.assert_eq(s.bytes_recv, 500, "stream bytes_recv set to final size 500");
     t.assert_eq(fc.bytes_recv_total, 500, "conn total advanced to 500");
 
@@ -1262,7 +1262,7 @@ fn test_reset_stream_flow_control_accounting(t: lit::T&) {
     var s4 = internal::new_quic_stream(4, 2000);
     let ok_rst_exceed, err_rst_exceed = internal::quic_fc_record_recv_reset(fc, s4, 1200);
     t.assert_false(ok_rst_exceed, "reset exceeding conn limit rejected");
-    t.assert_eq(err_rst_exceed, internal::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR");
+    t.assert_eq(err_rst_exceed, rfc::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR");
 }
 
 fn test_window_update_thresholds(t: lit::T&) {
@@ -1391,7 +1391,7 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
     let handled2, _ = internal::quic_conn_process_datagram(conn2, dgram2[..], 2000, out_ack2);
     t.assert_false(handled2, "violating datagram returns handled=false");
     t.assert_eq(conn2.state, internal::QuicConnState.Closing, "connection transitioned to Closing");
-    t.assert_eq(conn2.close_code, internal::QUIC_ERR_FLOW_CONTROL, "closed with FLOW_CONTROL_ERROR (0x03)");
+    t.assert_eq(conn2.close_code, rfc::QUIC_ERR_FLOW_CONTROL, "closed with FLOW_CONTROL_ERROR (0x03)");
 }
 
 // --- Component: quic_ack_invariants ---
@@ -1840,7 +1840,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         let bad_handled, _ = internal::quic_conn_process_datagram(conn, bad_dgram[..], 2001, ack_out);
         sub.assert_false(bad_handled, "corrupt frame payload rejected");
         sub.assert_true(conn.state == internal::QuicConnState.Closing, "connection moved to Closing on corrupt frame");
-        sub.assert_eq(conn.close_code, internal::QUIC_ERR_FRAME_ENCODING, "closed with FRAME_ENCODING_ERROR (0x07)");
+        sub.assert_eq(conn.close_code, rfc::QUIC_ERR_FRAME_ENCODING, "closed with FRAME_ENCODING_ERROR (0x07)");
     };
 
     t.run("FIX-03: Peer Stream Limit Enforcement (RFC 9000 §4.6)") { sub =>
@@ -1859,7 +1859,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         let handled, _ = internal::quic_conn_process_datagram(conn, dgram[..], 3000, ack_out);
         sub.assert_false(handled, "stream ID exceeding max_streams_bidi rejected");
         sub.assert_true(conn.state == internal::QuicConnState.Closing, "connection in Closing state");
-        sub.assert_eq(conn.close_code, internal::QUIC_ERR_STREAM_LIMIT, "closed with STREAM_LIMIT_ERROR (0x04)");
+        sub.assert_eq(conn.close_code, rfc::QUIC_ERR_STREAM_LIMIT, "closed with STREAM_LIMIT_ERROR (0x04)");
     };
 
     t.run("FIX-04: HANDSHAKE_DONE server rejection and PATH_CHALLENGE accounting") { sub =>
@@ -1877,7 +1877,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         let handled_hd, _ = internal::quic_conn_process_datagram(conn, dgram_hd[..], 4000, ack_out);
         sub.assert_false(handled_hd, "server rejects HANDSHAKE_DONE");
         sub.assert_true(conn.state == internal::QuicConnState.Closing, "connection Closing");
-        sub.assert_eq(conn.close_code, internal::QUIC_ERR_PROTOCOL_VIOLATION, "closed with PROTOCOL_VIOLATION (0x0A)");
+        sub.assert_eq(conn.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "closed with PROTOCOL_VIOLATION (0x0A)");
 
         // Fresh connection: PATH_CHALLENGE byte accounting
         var conn2 = internal::new_quic_server_connection(scid[..]);
@@ -1937,10 +1937,10 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
 // 30. RFC 9369 QUIC Version 2
 fn test_quic_version2(t: lit::T&) {
     t.run("V2-01: Version constant and initial salt (RFC 9369 §3.1, §3.3.1)") { sub =>
-        sub.assert_eq(internal::QUIC_VERSION_2, 0x6b3343cf, "QUIC_VERSION_2 is 0x6b3343cf");
+        sub.assert_eq(rfc::QUIC_VERSION_2, 0x6b3343cf, "QUIC_VERSION_2 is 0x6b3343cf");
 
-        let salt_v2 = internal::quic_initial_salt(internal::QUIC_VERSION_2);
-        let salt_v1 = internal::quic_initial_salt(internal::QUIC_VERSION_1);
+        let salt_v2 = internal::quic_initial_salt(rfc::QUIC_VERSION_2);
+        let salt_v1 = internal::quic_initial_salt(rfc::QUIC_VERSION_1);
         let exp_v2: u8[20] = [
             0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
             0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
@@ -1955,9 +1955,9 @@ fn test_quic_version2(t: lit::T&) {
     };
 
     t.run("V2-02: HKDF label prefixes and HP key divergence (RFC 9369 §3.3.2)") { sub =>
-        sub.assert_eq(internal::quic_hkdf_label_prefix(internal::QUIC_VERSION_1), "quic ", "v1 prefix is 'quic '");
+        sub.assert_eq(internal::quic_hkdf_label_prefix(rfc::QUIC_VERSION_1), "quic ", "v1 prefix is 'quic '");
         sub.assert_eq(
-            internal::quic_hkdf_label_prefix(internal::QUIC_VERSION_2),
+            internal::quic_hkdf_label_prefix(rfc::QUIC_VERSION_2),
             "quicv2 ",
             "v2 prefix is 'quicv2 '",
         );
@@ -1972,14 +1972,14 @@ fn test_quic_version2(t: lit::T&) {
             secret[..],
             16,
             hp1[..],
-            internal::QUIC_VERSION_1,
+            rfc::QUIC_VERSION_1,
         );
         let ok2 = internal::ks_derive_quic_hp_key(
             internal::HASH_SHA256,
             secret[..],
             16,
             hp2[..],
-            internal::QUIC_VERSION_2,
+            rfc::QUIC_VERSION_2,
         );
         sub.assert_true(ok1, "v1 HP key derivation ok");
         sub.assert_true(ok2, "v2 HP key derivation ok");
@@ -1987,21 +1987,21 @@ fn test_quic_version2(t: lit::T&) {
     };
 
     t.run("V2-03: Long header type remap (RFC 9369 §3.2)") { sub =>
-        let t1, ok1 = internal::quic_long_header_type(internal::QUIC_VERSION_1, 0);
+        let t1, ok1 = internal::quic_long_header_type(rfc::QUIC_VERSION_1, 0);
         sub.assert_true(ok1, "v1 type bits known");
         sub.assert_eq(t1, internal::QuicHeaderType.Initial, "v1 0b00 = Initial");
 
-        let t2, ok2 = internal::quic_long_header_type(internal::QUIC_VERSION_2, 1);
+        let t2, ok2 = internal::quic_long_header_type(rfc::QUIC_VERSION_2, 1);
         sub.assert_true(ok2, "v2 type bits known");
         sub.assert_eq(t2, internal::QuicHeaderType.Initial, "v2 0b01 = Initial");
 
-        let t3, ok3 = internal::quic_long_header_type(internal::QUIC_VERSION_2, 0);
+        let t3, ok3 = internal::quic_long_header_type(rfc::QUIC_VERSION_2, 0);
         sub.assert_true(ok3, "v2 type bits known (Retry)");
         sub.assert_eq(t3, internal::QuicHeaderType.Retry, "v2 0b00 = Retry");
 
-        let t4, _ = internal::quic_long_header_type(internal::QUIC_VERSION_2, 2);
+        let t4, _ = internal::quic_long_header_type(rfc::QUIC_VERSION_2, 2);
         sub.assert_eq(t4, internal::QuicHeaderType.ZeroRtt, "v2 0b10 = 0-RTT");
-        let t5, _ = internal::quic_long_header_type(internal::QUIC_VERSION_2, 3);
+        let t5, _ = internal::quic_long_header_type(rfc::QUIC_VERSION_2, 3);
         sub.assert_eq(t5, internal::QuicHeaderType.Handshake, "v2 0b11 = Handshake");
 
         let _, ok_unk = internal::quic_long_header_type(0x0A0A0A0A, 0);
@@ -2012,11 +2012,11 @@ fn test_quic_version2(t: lit::T&) {
         // A v2-only peer answers VN with exactly 0x6b3343cf in its supported list.
         var vn_buf: u8[..64] = [];
         vn_buf.push(0xC0);
-        core::append_u32_be(vn_buf, internal::QUIC_VERSION_NEGOTIATION);
+        core::append_u32_be(vn_buf, rfc::QUIC_VERSION_NEGOTIATION);
         vn_buf.push(4);
         vn_buf.append("dcid");
         vn_buf.push(0);
-        core::append_u32_be(vn_buf, internal::QUIC_VERSION_2);
+        core::append_u32_be(vn_buf, rfc::QUIC_VERSION_2);
 
         let hdr, ok = internal::parse_quic_header(vn_buf[..], 0);
         sub.assert_true(ok, "VN packet with v2 entry parses");
@@ -2024,14 +2024,14 @@ fn test_quic_version2(t: lit::T&) {
         let vl = hdr.header_len as i64;
         let listed = ((vn_buf[vl] as u32) << 24) | ((vn_buf[vl + 1] as u32) << 16) |
                      ((vn_buf[vl + 2] as u32) << 8) | (vn_buf[vl + 3] as u32);
-        sub.assert_eq(listed, internal::QUIC_VERSION_2, "supported list contains 0x6b3343cf");
+        sub.assert_eq(listed, rfc::QUIC_VERSION_2, "supported list contains 0x6b3343cf");
     };
 
     t.run("V2-05: v2 long header parses with remapped Initial type (RFC 9369 §3.2)") { sub =>
         // first byte 0xD1: long form, fixed bit, Type=0b01 (v2 Initial), pn_len=2
         var v2_init: u8[..64] = [];
         v2_init.push(0xD1);
-        core::append_u32_be(v2_init, internal::QUIC_VERSION_2);
+        core::append_u32_be(v2_init, rfc::QUIC_VERSION_2);
         v2_init.push(4);
         v2_init.append("dcid");
         v2_init.push(0);
@@ -2045,7 +2045,7 @@ fn test_quic_version2(t: lit::T&) {
         let hdr, ok = internal::parse_quic_header(v2_init[..], 0);
         sub.assert_true(ok, "v2 Initial long header parses");
         sub.assert_eq(hdr.header_type, internal::QuicHeaderType.Initial, "v2 Type 0b01 decodes as Initial");
-        sub.assert_eq(hdr.version, internal::QUIC_VERSION_2, "version field is 0x6b3343cf");
+        sub.assert_eq(hdr.version, rfc::QUIC_VERSION_2, "version field is 0x6b3343cf");
     };
 }
 

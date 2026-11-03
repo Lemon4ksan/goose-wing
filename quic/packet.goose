@@ -9,24 +9,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- constants and error codes (rfc 9000 section 20) ---------------------
-
-const QUIC_VERSION_1:                u32 = 0x00000001;
-const QUIC_VERSION_2:                u32 = 0x6b3343cf; // RFC 9369 §3.1
-const QUIC_VERSION_NEGOTIATION:      u32 = 0x00000000;
-const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200; // RFC 9000 Section 8.1
-const QUIC_MAX_CID_LEN:              u8  = 20;
-
 // ---- initial salts and HKDF label prefixes (RFC 9001 §5.2, RFC 9369 §3.3) --
-
-const QUIC_V1_INITIAL_SALT: u8[..20] = [
-    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
-    0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
-]; // RFC 9001 §5.2
-const QUIC_V2_INITIAL_SALT: u8[..20] = [
-    0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
-    0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
-]; // RFC 9369 §3.3.1
 
 // Selects the Initial salt for a QUIC version; empty for unknown versions.
 //
@@ -34,65 +17,18 @@ const QUIC_V2_INITIAL_SALT: u8[..20] = [
 //   version = 0x6b3343cf -> 20-byte v2 salt, ok via non-empty slice
 //   version = 0x0a0a0a0a -> empty slice
 fn quic_initial_salt(version: u32) -> const u8[:] {
-    if version == QUIC_VERSION_1 { return QUIC_V1_INITIAL_SALT[..]; }
-    if version == QUIC_VERSION_2 { return QUIC_V2_INITIAL_SALT[..]; }
+    if version == rfc::QUIC_VERSION_1 { return rfc::QUIC_V1_INITIAL_SALT[..]; }
+    if version == rfc::QUIC_VERSION_2 { return rfc::QUIC_V2_INITIAL_SALT[..]; }
     return "";
 }
 
 // Returns the HKDF label prefix for a QUIC version: "quic " (v1) or
 // "quicv2 " (v2, RFC 9369 §3.3.2); empty for unknown versions.
 fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
-    if version == QUIC_VERSION_1 { return "quic "; }
-    if version == QUIC_VERSION_2 { return "quicv2 "; }
+    if version == rfc::QUIC_VERSION_1 { return "quic "; }
+    if version == rfc::QUIC_VERSION_2 { return "quicv2 "; }
     return "";
 }
-
-// QUIC Transport Error Codes (RFC 9000 Section 20.1)
-const QUIC_ERR_NO_ERROR:               u64 = 0x00;
-const QUIC_ERR_INTERNAL:               u64 = 0x01;
-const QUIC_ERR_CONNECTION_REFUSED:     u64 = 0x02;
-const QUIC_ERR_FLOW_CONTROL:           u64 = 0x03;
-const QUIC_ERR_STREAM_LIMIT:           u64 = 0x04;
-const QUIC_ERR_STREAM_STATE:           u64 = 0x05;
-const QUIC_ERR_FINAL_SIZE:             u64 = 0x06;
-const QUIC_ERR_FRAME_ENCODING:         u64 = 0x07;
-const QUIC_ERR_TRANSPORT_PARAMETER:    u64 = 0x08;
-const QUIC_ERR_CONNECTION_ID_LIMIT:    u64 = 0x09;
-const QUIC_ERR_PROTOCOL_VIOLATION:     u64 = 0x0A;
-const QUIC_ERR_INVALID_TOKEN:          u64 = 0x0B;
-const QUIC_ERR_APPLICATION_ERROR:      u64 = 0x0C;
-const QUIC_ERR_CRYPTO_BUFFER_EXCEEDED: u64 = 0x0D;
-const QUIC_ERR_KEY_UPDATE_ERROR:       u64 = 0x0E;
-const QUIC_ERR_AEAD_LIMIT_REACHED:     u64 = 0x0F;
-const QUIC_ERR_NO_VIABLE_PATH:         u64 = 0x10;
-
-// Frame Types (RFC 9000 Section 19)
-const QUIC_FRAME_PADDING:              u64 = 0x00;
-const QUIC_FRAME_PING:                 u64 = 0x01;
-const QUIC_FRAME_ACK:                  u64 = 0x02;
-const QUIC_FRAME_ACK_ECN:              u64 = 0x03;
-const QUIC_FRAME_RESET_STREAM:         u64 = 0x04;
-const QUIC_FRAME_STOP_SENDING:         u64 = 0x05;
-const QUIC_FRAME_CRYPTO:               u64 = 0x06;
-const QUIC_FRAME_NEW_TOKEN:            u64 = 0x07;
-const QUIC_FRAME_STREAM_BASE:          u64 = 0x08; // 0x08..0x0F
-const QUIC_FRAME_MAX_DATA:             u64 = 0x10;
-const QUIC_FRAME_MAX_STREAM_DATA:      u64 = 0x11;
-const QUIC_FRAME_MAX_STREAMS_BIDI:     u64 = 0x12;
-const QUIC_FRAME_MAX_STREAMS_UNI:      u64 = 0x13;
-const QUIC_FRAME_DATA_BLOCKED:         u64 = 0x14;
-const QUIC_FRAME_STREAM_DATA_BLOCKED:  u64 = 0x15;
-const QUIC_FRAME_STREAMS_BLOCKED_BIDI: u64 = 0x16;
-const QUIC_FRAME_STREAMS_BLOCKED_UNI:  u64 = 0x17;
-const QUIC_FRAME_NEW_CONNECTION_ID:    u64 = 0x18;
-const QUIC_FRAME_RETIRE_CONNECTION_ID: u64 = 0x19;
-const QUIC_FRAME_PATH_CHALLENGE:       u64 = 0x1A;
-const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
-const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
-const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
-const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
-const QUIC_FRAME_DATAGRAM:             u64 = 0x30; // RFC 9221 Section 3: DATAGRAM without Length
-const QUIC_FRAME_DATAGRAM_LEN:         u64 = 0x31; // RFC 9221 Section 3: DATAGRAM with Length
 
 // ---- variable-length integer codec (rfc 9000 section 16) ----------------
 
@@ -209,7 +145,7 @@ enum QuicHeaderType {
 
 struct QuicHeader {
     header_type:    QuicHeaderType = QuicHeaderType.OneRtt,
-    version:        u32            = QUIC_VERSION_1,
+    version:        u32            = rfc::QUIC_VERSION_1,
     dcid:           u8[..20]       = [],
     scid:           u8[..20]       = [],
     token:          u8[..512]      = [],
@@ -234,11 +170,11 @@ fn parse_quic_version_negotiation(src: const u8[:], in_hdr: QuicHeader) -> QuicH
     let dlen: i64 = src[5];
     let d_end = 6 + dlen;
     let s_start = 7 + dlen;
-    guard dlen <= QUIC_MAX_CID_LEN && s_start <= src.len else { return hdr, false; }
+    guard dlen <= rfc::QUIC_MAX_CID_LEN && s_start <= src.len else { return hdr, false; }
     hdr.dcid.append(src[6..d_end]);
     let slen: i64 = src[d_end];
     let s_end = s_start + slen;
-    guard slen <= QUIC_MAX_CID_LEN && s_end <= src.len else { return hdr, false; }
+    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else { return hdr, false; }
     hdr.scid.append(src[s_start..s_end]);
 
     // RFC 9000 §17.2.1: Version Negotiation packet MUST contain one or more 32-bit versions
@@ -265,7 +201,7 @@ fn parse_quic_long_cids(
     let dlen: i64 = src[idx];
     let d_start = idx + 1;
     let d_end = d_start + dlen;
-    guard dlen <= QUIC_MAX_CID_LEN && d_end <= src.len else {
+    guard dlen <= rfc::QUIC_MAX_CID_LEN && d_end <= src.len else {
         idx = initial_idx;
         return false;
     }
@@ -277,7 +213,7 @@ fn parse_quic_long_cids(
     let slen: i64 = src[d_end];
     let s_start = d_end + 1;
     let s_end = s_start + slen;
-    guard slen <= QUIC_MAX_CID_LEN && s_end <= src.len else {
+    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else {
         idx = initial_idx;
         return false;
     }
@@ -320,13 +256,13 @@ fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> b
 //   version = 0x6b3343cf, two_bits = 0b00 -> Retry, true
 fn quic_long_header_type(version: u32, two_bits: u8) -> QuicHeaderType, bool {
     guard two_bits <= 0x03 else { return QuicHeaderType.Retry, false; }
-    if version == QUIC_VERSION_2 {
+    if version == rfc::QUIC_VERSION_2 {
         if two_bits == 0x01 { return QuicHeaderType.Initial, true; }
         if two_bits == 0x02 { return QuicHeaderType.ZeroRtt, true; }
         if two_bits == 0x03 { return QuicHeaderType.Handshake, true; }
         return QuicHeaderType.Retry, true;
     }
-    if version == QUIC_VERSION_1 {
+    if version == rfc::QUIC_VERSION_1 {
         if two_bits == 0x00 { return QuicHeaderType.Initial, true; }
         if two_bits == 0x01 { return QuicHeaderType.ZeroRtt, true; }
         if two_bits == 0x02 { return QuicHeaderType.Handshake, true; }
@@ -354,7 +290,7 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     let ver = read_version_u32_be(src);
     hdr.version = ver;
 
-    if ver == QUIC_VERSION_NEGOTIATION {
+    if ver == rfc::QUIC_VERSION_NEGOTIATION {
         return parse_quic_version_negotiation(src, hdr);
     }
 
@@ -368,7 +304,7 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     } else {
         // Unknown version: decode with the v1 Type layout so DCID/SCID stay
         // parseable for Version Negotiation (RFC 9000 §17.2.1).
-        let ht1, _ = quic_long_header_type(QUIC_VERSION_1, type_bits);
+        let ht1, _ = quic_long_header_type(rfc::QUIC_VERSION_1, type_bits);
         hdr.header_type = ht1;
     }
 
@@ -417,7 +353,7 @@ fn parse_quic_short_header(
     guard (first & 0x40) != 0 else { return hdr, false; }
     // Reserved bits check (RFC 9000 §17.3): Bits 3 and 4 of byte 0 (mask 0x18) MUST be 0
     guard (first & 0x18) == 0 else { return hdr, false; }
-    guard dcid_len_short <= QUIC_MAX_CID_LEN else { return hdr, false; }
+    guard dcid_len_short <= rfc::QUIC_MAX_CID_LEN else { return hdr, false; }
     hdr.header_type = QuicHeaderType.OneRtt;
     hdr.spin_bit = (first & 0x20) != 0;
     hdr.key_phase = (first & 0x04) != 0;
@@ -497,7 +433,7 @@ fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bi
 // Encodes a QUIC Long or Short header in unmasked form into out buffer.
 fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     guard pn_len >= 1 && pn_len <= 4 else { return false; }
-    guard hdr.dcid.len <= QUIC_MAX_CID_LEN && hdr.scid.len <= QUIC_MAX_CID_LEN else { return false; }
+    guard hdr.dcid.len <= rfc::QUIC_MAX_CID_LEN && hdr.scid.len <= rfc::QUIC_MAX_CID_LEN else { return false; }
 
     let pn_bits = (pn_len - 1) & 0x03;
 
@@ -614,9 +550,6 @@ fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
     return true;
 }
 
-const QUIC_MAX_PN:   u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 Section 17.1)
-const QUIC_PN_LIMIT: u64 = (1 as u64) << 62;   // 2^62
-
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
 // Returns (reconstructed_pn, ok). If reconstructed PN exceeds 2^62 - 1 or pn_len is invalid, ok is false.
 //
@@ -625,8 +558,8 @@ const QUIC_PN_LIMIT: u64 = (1 as u64) << 62;   // 2^62
 //   returns: 101, ok = true
 fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64, bool {
     guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn, false; }
-    guard largest_acked_pn <= QUIC_MAX_PN else { return 0, false; }
-    guard truncated_pn <= QUIC_MAX_PN else { return 0, false; }
+    guard largest_acked_pn <= rfc::QUIC_MAX_PN else { return 0, false; }
+    guard truncated_pn <= rfc::QUIC_MAX_PN else { return 0, false; }
 
     let pn_nbits = (pn_len as u64) << 3;
     guard 0xFFFFFFFFFFFFFFFF - largest_acked_pn >= 1 else { return 0, false; }
@@ -637,23 +570,23 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
     let inv_mask = ~pn_mask;
     let high_bits = expected_pn & inv_mask;
     let candidate_pn = high_bits | truncated_pn;
-    let win_limit = QUIC_PN_LIMIT - pn_win;
+    let win_limit = rfc::QUIC_PN_LIMIT - pn_win;
 
     if expected_pn >= pnhwin {
         let lower_bound = expected_pn - pnhwin;
         if candidate_pn <= lower_bound && candidate_pn < win_limit {
             let res = candidate_pn + pn_win;
-            return res, res <= QUIC_MAX_PN;
+            return res, res <= rfc::QUIC_MAX_PN;
         }
     }
     if 0xFFFFFFFFFFFFFFFF - expected_pn >= pnhwin {
         let upper_bound = expected_pn + pnhwin;
         if candidate_pn > upper_bound && candidate_pn >= pn_win {
             let res = candidate_pn - pn_win;
-            return res, res <= QUIC_MAX_PN;
+            return res, res <= rfc::QUIC_MAX_PN;
         }
     }
-    return candidate_pn, candidate_pn <= QUIC_MAX_PN;
+    return candidate_pn, candidate_pn <= rfc::QUIC_MAX_PN;
 }
 
 // Reconstructs full 62-bit packet number from truncated wire representation (RFC 9000 Appendix A.3).
@@ -891,10 +824,10 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
 // If with_length is false, encodes frame type 0x30 consuming remainder of packet.
 fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
     if with_length {
-        guard quic_encode_varint(out, QUIC_FRAME_DATAGRAM_LEN) else { return false; }
+        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN) else { return false; }
         guard quic_encode_varint(out, payload.len as u64) else { return false; }
     } else {
-        guard quic_encode_varint(out, QUIC_FRAME_DATAGRAM) else { return false; }
+        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM) else { return false; }
     }
     out.append(payload);
     return true;
@@ -917,10 +850,10 @@ fn decode_quic_datagram_frame(
     let total_len = src.len as u64;
     let limit = if packet_end > 0 && packet_end <= total_len { packet_end } else { total_len };
 
-    if ftype == QUIC_FRAME_DATAGRAM {
+    if ftype == rfc::QUIC_FRAME_DATAGRAM {
         guard off1 <= limit else { return "", offset, false; }
         return src[(off1 as i64)..(limit as i64)], limit, true;
-    } else if ftype == QUIC_FRAME_DATAGRAM_LEN {
+    } else if ftype == rfc::QUIC_FRAME_DATAGRAM_LEN {
         let dlen, off2, ok2 = quic_decode_varint(src, off1);
         guard ok2 else { return "", offset, false; }
         guard 0xFFFFFFFFFFFFFFFF - off2 >= dlen else { return "", offset, false; }

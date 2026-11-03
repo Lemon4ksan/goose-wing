@@ -411,7 +411,7 @@ fn test_close_frame_invalid_utf8_status_1007(t: lit::T&) {
         let handled = wing::receive_view(ws, wire[..], out_view, out_reply);
         sub.assert_true(handled, "Receive handled incoming invalid UTF-8 close frame");
         sub.assert_true(ws.is_closed, "Connection closed on invalid UTF-8");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_INVALID_PAYLOAD, "Close status code MUST be 1007 (Invalid Payload), NOT 1002");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_INVALID_PAYLOAD, "Close status code MUST be 1007 (Invalid Payload), NOT 1002");
     };
 }
 
@@ -444,7 +444,7 @@ fn test_continuation_rsv1_rejected(t: lit::T&) {
         let ok2 = wing::receive_view(ws, f2[..], out_view, out_reply);
         sub.assert_true(ok2, "Frame 2 processed");
         sub.assert_true(ws.is_closed, "WebSocket connection MUST be closed on continuation frame with RSV1 set");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (Protocol Error)");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (Protocol Error)");
     };
 }
 
@@ -805,7 +805,7 @@ fn test_ws_close_frame_reason_clamped(t: lit::T&) {
         for i in 130 { long_reason.push('z' as u8); }
 
         var wire_out: u8[..512] = [];
-        wing::close(ws, wing::WS_STATUS_NORMAL, long_reason[..], wire_out);
+        wing::close(ws, rfc::WS_STATUS_NORMAL, long_reason[..], wire_out);
 
         guard wire_out.len >= 2 else {
             sub.assert_true(false, "close produced empty wire output");

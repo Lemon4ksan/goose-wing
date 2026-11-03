@@ -11,24 +11,13 @@ import core from "..";
 
 // ---- RFC 7616 & RFC 2617 Protocol Constants ------------------------------
 
-const DIGEST_ALGO_MD5:             const u8[:] = "MD5";
-const DIGEST_ALGO_MD5_SESS:        const u8[:] = "MD5-sess";
-const DIGEST_ALGO_SHA256:          const u8[:] = "SHA-256";
-const DIGEST_ALGO_SHA256_SESS:     const u8[:] = "SHA-256-sess";
-const DIGEST_ALGO_SHA512_256:      const u8[:] = "SHA-512-256";
-const DIGEST_ALGO_SHA512_256_SESS: const u8[:] = "SHA-512-256-sess";
-
-const DIGEST_QOP_AUTH:     const u8[:] = "auth";
-const DIGEST_QOP_AUTH_INT: const u8[:] = "auth-int";
-
-// Validates whether the algorithm is officially supported by RFC 7616 / RFC 2617.
 inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
-    return eq_ascii_fold(algo, DIGEST_ALGO_MD5)
-        || eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, DIGEST_ALGO_SHA256)
-        || eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256)
-        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+    return eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
 }
 
 // ---- Digest Models -------------------------------------------------------
@@ -275,13 +264,13 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
 //   returns: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
     var out_hex: u8[..64] = [];
-    if eq_ascii_fold(algorithm, DIGEST_ALGO_MD5) || eq_ascii_fold(algorithm, DIGEST_ALGO_MD5_SESS) {
+    if eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_MD5) || eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_MD5_SESS) {
         let md = core::md5(data);
         for b in md {
             core::format_u8_hex(b, out_hex);
         }
-    } else if eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256)
-        || eq_ascii_fold(algorithm, DIGEST_ALGO_SHA512_256_SESS) {
+    } else if eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_SHA512_256)
+        || eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_SHA512_256_SESS) {
         // RFC 7616 Section 3.9.2: Example with SHA-512-256, Charset, and Userhash - Truncated SHA-512 (first 256 bits) for SHA-512-256 digest calculation.
         let sh = core::sha512(data);
         for i in 32 {
@@ -319,9 +308,9 @@ fn calculate_digest_ha1(
 
     var ha1 = digest_hash_hex(algo, a1[..]);
 
-    if eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS) {
+    if eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS) {
         var a1_sess: u8[..512] = [];
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
@@ -660,11 +649,11 @@ fn refresh_digest_stale_nonce(
 //   returns: "auth"
 inline fn resolve_active_qop(raw_qop: const u8[:]) -> const u8[:] {
     guard raw_qop.len > 0 else { return ""; }
-    if qop_list_has_token(raw_qop, DIGEST_QOP_AUTH) {
-        return DIGEST_QOP_AUTH;
+    if qop_list_has_token(raw_qop, rfc::DIGEST_QOP_AUTH) {
+        return rfc::DIGEST_QOP_AUTH;
     }
-    if qop_list_has_token(raw_qop, DIGEST_QOP_AUTH_INT) {
-        return DIGEST_QOP_AUTH_INT;
+    if qop_list_has_token(raw_qop, rfc::DIGEST_QOP_AUTH_INT) {
+        return rfc::DIGEST_QOP_AUTH_INT;
     }
     return "";
 }

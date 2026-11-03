@@ -67,7 +67,7 @@ fn append_forwarded_header(out_headers: HeaderMap&, elem: const ForwardedElement
     var buf: u8[..512] = [];
     format_forwarded_element(elem, buf);
     guard buf.len > 0 else { return false; }
-    return append_header(out_headers, HEADER_FORWARDED, buf[..]);
+    return append_header(out_headers, rfc::HEADER_FORWARDED, buf[..]);
 }
 
 // Finds the end of a single parameter item (up to ';' outside double quotes).

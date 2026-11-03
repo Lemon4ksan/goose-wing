@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Vulkan-style zero-allocation wire command buffer recording and frame staging.
+// Vulkan-style zero-allocation wire command buffer recording and in-place frame backpatching.
 namespace wire;
 
 import std;
@@ -14,9 +14,6 @@ import .h2;
 
 // Maximum capacity for a stack-allocated wire command buffer (RFC 9113 / enterprise frames).
 const WIRE_CMD_BUFFER_CAP: i64 = 16384;
-
-// Maximum capacity for an isolated HPACK staging buffer (RFC 7541 / enterprise tokens).
-const WIRE_HPACK_STAGING_CAP: i64 = 8192;
 
 // Maximum capacity of a WireCommandPool arena in bytes (4 x 16384-byte command buffer regions).
 const WIRE_POOL_ARENA_CAP: i64 = 65536;
@@ -43,13 +40,13 @@ struct WireCommandBufferBeginInfo {
     flags: u32 = 0,
 }
 
-// Bounded in-place binary command recorder with zero dynamic allocations.
+// Bounded in-place binary command recorder with zero dynamic allocations and 9-byte header backpatching.
 struct WireCommandBuffer {
     buf:                   u8[..16384]            = [],
-    hpack_staging:         u8[..8192]             = [],
     has_error:             bool                   = false,
     state:                 WireCommandBufferState = WireCommandBufferState.Initial,
     flags:                 u32                    = 0,
+    headers_frame_offset:  i64                    = -1,
     active_headers_stream: u32                    = 0,
     active_headers_flags:  u8                     = 0,
     arena_offset:          i64                    = 0,
@@ -83,9 +80,7 @@ fn commit_command_buffer_to_arena(
           end_off <= pool.arena.len else {
         return "", false;
     }
-    for i in cmd.buf.len {
-        pool.arena[cmd.arena_offset + i] = cmd.buf[i];
-    }
+    core::ct_copy_bytes(pool.arena[cmd.arena_offset..end_off], cmd.buf[..]);
     return pool.arena[cmd.arena_offset..end_off], true;
 }
 
@@ -101,10 +96,10 @@ fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireRes
     }
     return WireCommandBuffer {
         buf:                   [],
-        hpack_staging:         [],
         has_error:             false,
         state:                 WireCommandBufferState.Initial,
         flags:                 0,
+        headers_frame_offset:  -1,
         active_headers_stream: 0,
         active_headers_flags:  0,
         arena_offset:          start_off,
@@ -114,31 +109,33 @@ fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireRes
 
 // Frees a command buffer back to its parent pool, reclaiming its arena region on LIFO release (VkFreeCommandBuffers).
 fn free_command_buffer(pool: WireCommandPool&, cmd: WireCommandBuffer&) {
-    if pool.is_valid && pool.allocated_count > 0 {
-        pool.allocated_count -= 1;
-        let expected_end = cmd.arena_offset + cmd.arena_capacity;
-        if cmd.arena_offset >= 0 && expected_end == pool.arena.len {
-            pool.arena.resize(cmd.arena_offset);
-        }
-        if pool.allocated_count == 0 {
-            pool.arena.clear();
-        }
-    }
+    let expected_end = cmd.arena_offset + cmd.arena_capacity;
     cmd.state = WireCommandBufferState.Invalid;
     cmd.buf.clear();
-    cmd.hpack_staging.clear();
     cmd.has_error = false;
+    cmd.headers_frame_offset = -1;
+    let prev_offset = cmd.arena_offset;
     cmd.arena_offset = -1;
+
+    guard pool.is_valid && pool.allocated_count > 0 else { return; }
+    pool.allocated_count -= 1;
+    if pool.allocated_count == 0 {
+        pool.arena.clear();
+        return;
+    }
+    if prev_offset >= 0 && expected_end == pool.arena.len {
+        pool.arena.resize(prev_offset);
+    }
 }
 
 // Instantiates a new zero-allocation command buffer ready for direct recording.
 fn new_command_buffer() -> WireCommandBuffer {
     return WireCommandBuffer {
         buf:                   [],
-        hpack_staging:         [],
         has_error:             false,
         state:                 WireCommandBufferState.Recording,
         flags:                 0,
+        headers_frame_offset:  -1,
         active_headers_stream: 0,
         active_headers_flags:  0,
     };
@@ -154,8 +151,8 @@ fn begin_command_buffer(
         return WireResult.ErrorCommandRecordingActive;
     }
     cmd.buf.clear();
-    cmd.hpack_staging.clear();
     cmd.has_error = false;
+    cmd.headers_frame_offset = -1;
     cmd.active_headers_stream = 0;
     cmd.active_headers_flags = 0;
     cmd.flags = info.flags;
@@ -180,10 +177,10 @@ fn end_command_buffer(cmd: WireCommandBuffer&) -> WireResult {
 // Resets a command buffer to the Initial state (VkResetCommandBuffer).
 fn reset_command_buffer(cmd: WireCommandBuffer&, flags: u32) -> WireResult {
     cmd.buf.clear();
-    cmd.hpack_staging.clear();
     cmd.has_error = false;
     cmd.state = WireCommandBufferState.Initial;
     cmd.flags = 0;
+    cmd.headers_frame_offset = -1;
     cmd.active_headers_stream = 0;
     cmd.active_headers_flags = 0;
     return WireResult.Success;
@@ -198,10 +195,10 @@ inline fn available(cmd: const WireCommandBuffer&) -> i64 {
 // Resets recording cursor to reuse buffer.
 fn reset(cmd: WireCommandBuffer&) {
     cmd.buf.clear();
-    cmd.hpack_staging.clear();
     cmd.has_error = false;
     cmd.state = WireCommandBufferState.Initial;
     cmd.flags = 0;
+    cmd.headers_frame_offset = -1;
     cmd.active_headers_stream = 0;
     cmd.active_headers_flags = 0;
 }
@@ -244,7 +241,7 @@ fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
         cmd.has_error = true;
         return false;
     }
-    guard val <= 0x00FFFFFF else {
+    guard val <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
         cmd.has_error = true;
         return false;
     }
@@ -296,7 +293,7 @@ fn write_raw(cmd: WireCommandBuffer&, data: const u8[:]) -> bool {
 
 // Writes the 24-byte HTTP/2 client connection preface (RFC 9113 Section 3.4).
 fn write_h2_preface(cmd: WireCommandBuffer&) -> bool {
-    return write_raw(cmd, H2_CLIENT_PREFACE[..]);
+    return write_raw(cmd, rfc::H2_CLIENT_PREFACE[..]);
 }
 
 // Writes a 9-byte binary frame header.
@@ -400,85 +397,91 @@ fn write_h2_data(
     return true;
 }
 
-// ---- Vulkan-style Dynamic HEADERS Frame Recording with Staged HPACK ----------
+// ---- Vulkan-style Dynamic HEADERS Frame Recording with In-Place Backpatching -
 
-// Begins a dynamic HEADERS frame block using isolated staging buffer.
+inline fn rollback_headers_frame_on_error(cmd: WireCommandBuffer&) {
+    if cmd.headers_frame_offset >= 0 && cmd.headers_frame_offset <= cmd.buf.len {
+        cmd.buf.resize(cmd.headers_frame_offset);
+    }
+    cmd.headers_frame_offset = -1;
+    cmd.has_error = true;
+}
+
+// Begins a dynamic HEADERS frame block by reserving 9 bytes in-place at `cmd.headers_frame_offset`.
 fn begin_h2_headers(cmd: WireCommandBuffer&, stream_id: u32, flags: u8) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error && stream_id > 0 else {
         cmd.has_error = true;
         return false;
     }
-    cmd.hpack_staging.clear();
+    let start_off = cmd.buf.len;
+    let zero_hdr: u8[9] = [0; 9];
+    guard cmd.buf.try_append(zero_hdr[..]) else {
+        cmd.has_error = true;
+        return false;
+    }
+    cmd.headers_frame_offset = start_off;
     cmd.active_headers_stream = stream_id;
     cmd.active_headers_flags = flags;
     cmd.state = WireCommandBufferState.RecordingHeaders;
     return true;
 }
 
-// Encodes an indexed header field representation into the active HEADERS block (RFC 7541 Section 6.1).
+// Encodes an indexed header field representation directly into `cmd.buf` (RFC 7541 Section 6.1).
 fn hpack_indexed(cmd: WireCommandBuffer&, index: u64) -> bool {
-    guard cmd.state == WireCommandBufferState.RecordingHeaders else {
+    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
-    guard hpack_encode_indexed(cmd.hpack_staging, index) else {
-        cmd.has_error = true;
+    guard hpack_encode_indexed(cmd.buf, index) else {
+        rollback_headers_frame_on_error(cmd);
         return false;
     }
     return true;
 }
 
-// Encodes a literal header field without indexing into the active HEADERS block (RFC 7541 Section 6.2.2).
+// Encodes a literal header field without indexing directly into `cmd.buf` (RFC 7541 Section 6.2.2).
 fn hpack_literal_without_indexing(cmd: WireCommandBuffer&, name: const u8[:], val: const u8[:]) -> bool {
-    guard cmd.state == WireCommandBufferState.RecordingHeaders else {
+    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
-    guard hpack_encode_literal_without_indexing(cmd.hpack_staging, name, val) else {
-        cmd.has_error = true;
+    guard hpack_encode_literal_without_indexing(cmd.buf, name, val) else {
+        rollback_headers_frame_on_error(cmd);
         return false;
     }
     return true;
 }
 
-// Encodes a literal header field never indexed into the active HEADERS block (RFC 7541 Section 6.2.3).
+// Encodes a literal header field never indexed directly into `cmd.buf` (RFC 7541 Section 6.2.3).
 fn hpack_literal_never_indexed(cmd: WireCommandBuffer&, name: const u8[:], val: const u8[:]) -> bool {
-    guard cmd.state == WireCommandBufferState.RecordingHeaders else {
+    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
-    guard hpack_encode_literal_never_indexed(cmd.hpack_staging, name, val) else {
-        cmd.has_error = true;
+    guard hpack_encode_literal_never_indexed(cmd.buf, name, val) else {
+        rollback_headers_frame_on_error(cmd);
         return false;
     }
     return true;
 }
 
-// Completes active HEADERS block, emitting 9-byte frame header and staged HPACK payload.
+// Completes active HEADERS block by backpatching the 9-byte frame header at `cmd.headers_frame_offset`.
 fn end_h2_headers(cmd: WireCommandBuffer&) -> bool {
-    guard cmd.state == WireCommandBufferState.RecordingHeaders else {
-        cmd.has_error = true;
+    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else {
+        rollback_headers_frame_on_error(cmd);
         return false;
     }
-    let payload_len = cmd.hpack_staging.len as u32;
-    let hdr = WireFrameHeader {
-        length:     payload_len,
-        frame_type: H2_FRAME_HEADERS,
-        flags:      cmd.active_headers_flags,
-        stream_id:  cmd.active_headers_stream,
-    };
-    let initial_buf_len = cmd.buf.len;
-    guard encode_frame_header(hdr, cmd.buf) else {
-        cmd.has_error = true;
+    guard patch_frame_header_slice(
+        cmd.buf[..],
+        cmd.headers_frame_offset,
+        rfc::H2_FRAME_HEADERS,
+        cmd.active_headers_flags,
+        cmd.active_headers_stream,
+    ) else {
+        rollback_headers_frame_on_error(cmd);
         return false;
     }
-    guard cmd.buf.try_append(cmd.hpack_staging[..]) else {
-        // Rollback frame header on failure (BUG-19)
-        cmd.buf.resize(initial_buf_len);
-        cmd.has_error = true;
-        return false;
-    }
-    cmd.hpack_staging.clear();
+    cmd.headers_frame_offset = -1;
     cmd.state = WireCommandBufferState.Recording;
     return true;
 }

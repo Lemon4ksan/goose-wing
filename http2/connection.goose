@@ -12,8 +12,6 @@ import .hpack;
 
 // ---- session constants & limits ------------------------------------------
 
-const MAX_INITIAL_WINDOW_SIZE:              i64 = 0x7FFFFFFF; // 2^31 - 1
-const DEFAULT_WINDOW_SIZE:                  i64 = 65535;
 const DEFAULT_RESET_BURST:                  u64 = 1000;  // nghttp2 v1.57.0 reference (CVE-2023-44487)
 const DEFAULT_RESET_RATE:                   u64 = 33;    // Tokens per second
 const MAX_CONT_FRAMES_LIMIT:                u32 = 16;    // CONTINUATION Flood defense (CVE-2024-28182 / CVE-2024-30255)
@@ -162,7 +160,7 @@ fn new_h2_connection(
     behind_proxy:    bool = false,
 ) -> H2Connection {
     return H2Connection {
-        hpack_dec:            new_dynamic_table(HPACK_DEFAULT_MAX_DYN_SIZE),
+        hpack_dec:            new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         reset_limiter:        new_h2_token_bucket(DEFAULT_RESET_BURST, DEFAULT_RESET_RATE, now_ms),
         max_header_list_size: max_header_list,
         is_behind_proxy:      behind_proxy,
@@ -275,77 +273,77 @@ inline fn apply_stream_end_remote(s: H2Connection&, s_idx: i32) {
 
 fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32, bool {
     if s.continuation_stream_id != 0 {
-        if hdr.frame_type != FRAME_CONTINUATION || hdr.stream_id != s.continuation_stream_id {
-            return ERR_PROTOCOL_ERROR, true;
+        if hdr.frame_type != rfc::H2_FRAME_CONTINUATION || hdr.stream_id != s.continuation_stream_id {
+            return rfc::H2_ERR_PROTOCOL_ERROR, true;
         }
 
-        if hdr.length == 0 && (hdr.flags & FLAG_END_HEADERS) == 0 {
-            return ERR_PROTOCOL_ERROR, true;
+        if hdr.length == 0 && (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
+            return rfc::H2_ERR_PROTOCOL_ERROR, true;
         }
 
         if now_ms > s.continuation_start_ms {
             let duration_ms = now_ms - s.continuation_start_ms;
             if duration_ms > s.max_header_block_duration_ms {
-                return ERR_ENHANCE_YOUR_CALM, true;
+                return rfc::H2_ERR_ENHANCE_YOUR_CALM, true;
             }
         }
 
         s.continuation_frames_cnt++;
         if s.continuation_frames_cnt > MAX_CONT_FRAMES_LIMIT {
-            return ERR_ENHANCE_YOUR_CALM, true;
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM, true;
         }
 
         s.accumulated_header_size += hdr.length;
         if s.accumulated_header_size > s.max_header_list_size
             || s.accumulated_header_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
-            return ERR_ENHANCE_YOUR_CALM, true;
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM, true;
         }
 
-        if (hdr.flags & FLAG_END_HEADERS) != 0 {
+        if (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 {
             s.continuation_stream_id = 0;
             s.continuation_frames_cnt = 0;
             s.accumulated_header_size = 0;
         }
-        return ERR_NO_ERROR, true;
+        return rfc::H2_ERR_NO_ERROR, true;
     }
 
-    if hdr.frame_type == FRAME_CONTINUATION {
-        return ERR_PROTOCOL_ERROR, true;
+    if hdr.frame_type == rfc::H2_FRAME_CONTINUATION {
+        return rfc::H2_ERR_PROTOCOL_ERROR, true;
     }
 
-    return ERR_NO_ERROR, false;
+    return rfc::H2_ERR_NO_ERROR, false;
 }
 
 fn validate_h2_empty_frame_streak(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
-    if (hdr.frame_type == FRAME_DATA || hdr.frame_type == FRAME_HEADERS) &&
+    if (hdr.frame_type == rfc::H2_FRAME_DATA || hdr.frame_type == rfc::H2_FRAME_HEADERS) &&
        hdr.length == 0 &&
-       (hdr.flags & FLAG_END_STREAM) == 0 &&
-       (hdr.flags & FLAG_END_HEADERS) == 0 {
+       (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 &&
+       (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
         s.empty_frame_streak++;
         if s.empty_frame_streak > MAX_EMPTY_FRAME_STREAK {
-            return ERR_ENHANCE_YOUR_CALM;
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
     } else {
         s.empty_frame_streak = 0;
     }
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
     if hdr.stream_id == 0 {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
     if hdr.length != 4 {
-        return ERR_FRAME_SIZE_ERROR;
+        return rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if !found && hdr.stream_id > s.last_peer_stream_id {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     if !consume_token(s.reset_limiter, now_ms) {
-        return ERR_ENHANCE_YOUR_CALM;
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
     if found {
@@ -355,119 +353,120 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
             s.active_stream_count--;
         }
     }
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
     // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
     let rule_err = validate_frame_header_rules(hdr, s.local_max_frame_size);
-    guard rule_err == ERR_NO_ERROR else { return rule_err; }
+    guard rule_err == rfc::H2_ERR_NO_ERROR else { return rule_err; }
 
     if hdr.stream_id == 0 {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    if hdr.length == 0 && (hdr.flags & FLAG_END_HEADERS) == 0 {
-        return ERR_PROTOCOL_ERROR;
+    if hdr.length == 0 && (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     if hdr.length > s.max_header_list_size || hdr.length > MAX_HEADER_BLOCK_SIZE_LIMIT {
-        return ERR_ENHANCE_YOUR_CALM;
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
     if (hdr.stream_id % 2) == 0 {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if !found {
         if hdr.stream_id <= s.last_peer_stream_id {
-            return ERR_STREAM_CLOSED;
+            return rfc::H2_ERR_STREAM_CLOSED;
         }
 
         // RFC 9113 Section 6.8 & Go #82365:
         // After receiving GOAWAY, any new stream with ID > goaway_last_stream_id must be refused
         if s.goaway_received && hdr.stream_id > s.goaway_last_stream_id {
-            return ERR_REFUSED_STREAM;
+            return rfc::H2_ERR_REFUSED_STREAM;
         }
 
         if s.active_stream_count >= s.max_concurrent_streams {
             s.concurrency_violations++;
             if s.concurrency_violations > MAX_CONCURRENCY_VIOLATIONS {
-                return ERR_ENHANCE_YOUR_CALM;
+                return rfc::H2_ERR_ENHANCE_YOUR_CALM;
             }
-            return ERR_REFUSED_STREAM;
+            return rfc::H2_ERR_REFUSED_STREAM;
         }
 
         s.last_peer_stream_id = hdr.stream_id;
         s.concurrency_violations = 0;
-        open_new_session_stream(s, hdr.stream_id, (hdr.flags & FLAG_END_STREAM) != 0);
+        open_new_session_stream(s, hdr.stream_id, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0);
     } else {
         // RFC 9113 Section 5.1: Extra HEADERS after END_STREAM is STREAM_CLOSED error
         if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
            s.streams[s_idx].state == H2StreamState.Closed {
-            return ERR_STREAM_CLOSED;
+            return rfc::H2_ERR_STREAM_CLOSED;
         }
         if s.streams[s_idx].headers_received {
             if s.streams[s_idx].trailers_received {
-                return ERR_PROTOCOL_ERROR;
+                return rfc::H2_ERR_PROTOCOL_ERROR;
             }
             // RFC 9113 Section 8.1: A HEADERS frame for trailers MUST carry END_STREAM
-            if (hdr.flags & FLAG_END_STREAM) == 0 {
-                return ERR_PROTOCOL_ERROR;
+            if (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 {
+                return rfc::H2_ERR_PROTOCOL_ERROR;
             }
             s.streams[s_idx].trailers_received = true;
             apply_stream_end_remote(s, s_idx);
         } else {
             s.streams[s_idx].headers_received = true;
-            if (hdr.flags & FLAG_END_STREAM) != 0 {
+            if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
                 apply_stream_end_remote(s, s_idx);
             }
         }
     }
 
-    if (hdr.flags & FLAG_END_HEADERS) == 0 {
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
         s.continuation_stream_id = hdr.stream_id;
         s.continuation_frames_cnt = 0;
         s.accumulated_header_size = hdr.length;
         s.continuation_start_ms = now_ms;
     }
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // RFC 9113 §6.6: Tracks CONTINUATION state machine when PUSH_PROMISE has END_HEADERS cleared.
 fn handle_h2_push_promise_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
     let rule_err = validate_frame_header_rules(hdr, s.local_max_frame_size);
-    guard rule_err == ERR_NO_ERROR else { return rule_err; }
+    guard rule_err == rfc::H2_ERR_NO_ERROR else { return rule_err; }
 
     if hdr.length > s.max_header_list_size || hdr.length > MAX_HEADER_BLOCK_SIZE_LIMIT {
-        return ERR_ENHANCE_YOUR_CALM;
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
-    if (hdr.flags & FLAG_END_HEADERS) == 0 {
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
         s.continuation_stream_id = hdr.stream_id;
         s.continuation_frames_cnt = 0;
         s.accumulated_header_size = hdr.length;
         s.continuation_start_ms = now_ms;
     }
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 fn check_h2_control_frame_flood(s: H2Connection&, hdr: const FrameHeader&) -> u32 {
-    if (hdr.frame_type == FRAME_PING || hdr.frame_type == FRAME_SETTINGS) && (hdr.flags & FLAG_ACK) == 0 {
+    let is_ctrl = hdr.frame_type == rfc::H2_FRAME_PING || hdr.frame_type == rfc::H2_FRAME_SETTINGS;
+    if is_ctrl && (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
         s.pending_control_frames++;
         if s.pending_control_frames > MAX_PENDING_CTRL_FRAMES {
-            return ERR_ENHANCE_YOUR_CALM;
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
     }
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // Validates protocol and Anti-DoS invariants upon receiving a 9-byte frame header
 // strictly before buffering or parsing the frame payload.
 fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
     if hdr.length > s.local_max_frame_size {
-        return ERR_FRAME_SIZE_ERROR;
+        return rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
 
     let cont_err, is_cont = validate_h2_continuation_state(s, hdr, now_ms);
@@ -476,22 +475,22 @@ fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u6
     }
 
     let streak_err = validate_h2_empty_frame_streak(s, hdr);
-    guard streak_err == ERR_NO_ERROR else { return streak_err; }
+    guard streak_err == rfc::H2_ERR_NO_ERROR else { return streak_err; }
 
-    if hdr.frame_type == FRAME_RST_STREAM {
+    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM {
         return handle_h2_rst_stream_header(s, hdr, now_ms);
     }
 
-    if hdr.frame_type == FRAME_HEADERS {
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS {
         return handle_h2_headers_frame_header(s, hdr, now_ms);
     }
 
-    if hdr.frame_type == FRAME_PUSH_PROMISE {
+    if hdr.frame_type == rfc::H2_FRAME_PUSH_PROMISE {
         return handle_h2_push_promise_frame_header(s, hdr, now_ms);
     }
 
     let ctrl_err = check_h2_control_frame_flood(s, hdr);
-    guard ctrl_err == ERR_NO_ERROR else { return ctrl_err; }
+    guard ctrl_err == rfc::H2_ERR_NO_ERROR else { return ctrl_err; }
 
     return validate_frame_header_rules(hdr, s.local_max_frame_size);
 }
@@ -505,12 +504,12 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
     s.initial_window_update_count++;
     // CVE-2026-78669 defense: prevent excessive CPU consumption from repeated initial window changes
     if s.initial_window_update_count > 16 {
-        return ERR_ENHANCE_YOUR_CALM;
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
     let new_win_i64 = new_init_win as i64;
-    guard new_win_i64 <= MAX_INITIAL_WINDOW_SIZE else {
-        return ERR_FLOW_CONTROL_ERROR;
+    guard new_win_i64 <= rfc::H2_MAX_WINDOW_SIZE else {
+        return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
     let delta = new_win_i64 - s.peer_initial_window_size;
@@ -520,15 +519,15 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
         if stream.active && stream.state != H2StreamState.Closed {
             let next_win = stream.send_window + delta;
             // Overflows beyond 2^31 - 1 trigger flow control error
-            if next_win > MAX_INITIAL_WINDOW_SIZE {
-                return ERR_FLOW_CONTROL_ERROR;
+            if next_win > rfc::H2_MAX_WINDOW_SIZE {
+                return rfc::H2_ERR_FLOW_CONTROL_ERROR;
             }
             // Stream window may become negative if peer shrank initial window size
             stream.send_window = next_win;
         }
     }
 
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // RFC 9113 Section 6.8 & Go #82365: Ingests GOAWAY frame (last_stream_id and error_code).
@@ -536,24 +535,24 @@ fn apply_goaway(s: H2Connection&, last_stream_id: u32, error_code: u32) -> u32 {
     s.goaway_received = true;
     s.goaway_last_stream_id = last_stream_id & 0x7FFFFFFF;
     s.goaway_error_code = error_code;
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // Processes incoming WINDOW_UPDATE frame (RFC 9113 Section 6.9).
 fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 {
-    guard increment > 0 && increment <= (MAX_INITIAL_WINDOW_SIZE as u32) else {
-        return ERR_PROTOCOL_ERROR;
+    guard increment > 0 && increment <= rfc::H2_MAX_WINDOW_SIZE else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
     let inc: i64 = increment;
 
     if stream_id == 0 {
         // Connection-level window
         let next_conn = s.conn_send_window + inc;
-        if next_conn > MAX_INITIAL_WINDOW_SIZE {
-            return ERR_FLOW_CONTROL_ERROR;
+        if next_conn > rfc::H2_MAX_WINDOW_SIZE {
+            return rfc::H2_ERR_FLOW_CONTROL_ERROR;
         }
         s.conn_send_window = next_conn;
-        return ERR_NO_ERROR;
+        return rfc::H2_ERR_NO_ERROR;
     }
 
     // Stream-level window
@@ -561,22 +560,22 @@ fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 
     guard found else {
         // If stream ID is unknown but <= last seen, ignore update on closed stream
         if stream_id <= s.last_peer_stream_id {
-            return ERR_NO_ERROR;
+            return rfc::H2_ERR_NO_ERROR;
         }
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams
     if s.streams[s_idx].state == H2StreamState.Closed {
-        return ERR_NO_ERROR;
+        return rfc::H2_ERR_NO_ERROR;
     }
 
     let next_stream = s.streams[s_idx].send_window + inc;
-    if next_stream > MAX_INITIAL_WINDOW_SIZE {
-        return ERR_FLOW_CONTROL_ERROR;
+    if next_stream > rfc::H2_MAX_WINDOW_SIZE {
+        return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
     s.streams[s_idx].send_window = next_stream;
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // Computes effective send quota for a stream: min(max(0, ConnWin), max(0, StreamWin)).
@@ -598,38 +597,38 @@ fn compute_stream_send_quota(s: const H2Connection&, stream_id: u32) -> i64 {
 // Conforms to RFC 9113 §5.1 & §6.9: Flow-controlled DATA frames MUST always be accounted
 // against the connection flow-control window, even if the stream is closed or in error.
 fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len: u32) -> u32 {
-    guard hdr.stream_id != 0 else { return ERR_PROTOCOL_ERROR; }
+    guard hdr.stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
 
     // RFC 9113 §6.9: Always account for DATA frames against connection flow control first
     let total_consumed = hdr.length as i64;
     s.conn_recv_window -= total_consumed;
     if s.conn_recv_window < 0 {
-        return ERR_FLOW_CONTROL_ERROR;
+        return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     guard found else {
         if hdr.stream_id <= s.last_peer_stream_id {
-            return ERR_STREAM_CLOSED;
+            return rfc::H2_ERR_STREAM_CLOSED;
         }
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
        s.streams[s_idx].state == H2StreamState.Closed ||
        s.streams[s_idx].trailers_received {
-        return ERR_STREAM_CLOSED;
+        return rfc::H2_ERR_STREAM_CLOSED;
     }
 
     // RFC 9113 §8.1.1 & §8.8: Status 204, 304, or 1xx MUST NOT contain message body / DATA frames
     let sc = s.streams[s_idx].status_code;
     if sc == 204 || sc == 304 || (sc >= 100 && sc < 200) {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     s.streams[s_idx].recv_window -= total_consumed;
     if s.streams[s_idx].recv_window < 0 {
-        return ERR_FLOW_CONTROL_ERROR;
+        return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
     s.streams[s_idx].received_data_bytes += payload_len;
@@ -637,19 +636,19 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
     // RFC 9113 §8.1.2: Check if incoming DATA causes total data to exceed declared Content-Length
     let dec_len = s.streams[s_idx].declared_content_length;
     if dec_len >= 0 && s.streams[s_idx].received_data_bytes > dec_len {
-        return ERR_PROTOCOL_ERROR;
+        return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    if (hdr.flags & FLAG_END_STREAM) != 0 {
+    if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
         apply_stream_end_remote(s, s_idx);
 
         // Verify Content-Length match if declared (Go #32728 / #46071)
         if dec_len >= 0 && dec_len != s.streams[s_idx].received_data_bytes {
-            return ERR_PROTOCOL_ERROR;
+            return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     }
 
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 // Decrements pending control frames counter when ACK frames are flushed.
@@ -762,7 +761,7 @@ fn enqueue_stream_send_bytes(s: H2Connection&, stream_id: u32, bytes: u32) -> bo
 fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
     s.client_sent_priority = true;
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
-    guard found else { return ERR_NO_ERROR; }
+    guard found else { return rfc::H2_ERR_NO_ERROR; }
 
     let old_u = s.streams[s_idx].priority.urgency;
     unlink_stream_from_urgency_bucket(s, s_idx, old_u);
@@ -774,7 +773,7 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
     }
     s.streams[s_idx].priority = final_prio;
     sync_stream_urgency_node(s, s_idx);
-    return ERR_NO_ERROR;
+    return rfc::H2_ERR_NO_ERROR;
 }
 
 const MAX_HIGH_URGENCY_STREAK: u32 = 16; // Max consecutive frames before lower-urgency credit yield

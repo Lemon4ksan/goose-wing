@@ -29,8 +29,6 @@ const CC_HAS_MIN_FRESH:          u32 = 0x4000;  // min-fresh=delta-seconds
 const CC_STALE_WHILE_REVALIDATE: u32 = 0x8000;  // stale-while-revalidate=delta-seconds (RFC 5861 Section 3)
 const CC_STALE_IF_ERROR:         u32 = 0x10000; // stale-if-error=delta-seconds (RFC 5861 Section 4)
 
-const MAX_DELTA_SECONDS: i32 = 2147483647; // i32::MAX overflow clamp per RFC 9111 Section 1.2.2
-
 // ---- cache-control structure -----------------------------------------------
 
 // Structured representation of parsed HTTP Cache-Control directives.
@@ -183,7 +181,7 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
             return 0, false;
         }
         let digit = (b - '0');
-        acc = core::ct_min_i64(acc * 10 + digit, MAX_DELTA_SECONDS);
+        acc = core::ct_min_i64(acc * 10 + digit, rfc::MAX_DELTA_SECONDS);
     }
     return acc as i32, true;
 }

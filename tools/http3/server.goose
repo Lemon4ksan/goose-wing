@@ -48,7 +48,7 @@ fn handle_h3_settings(
 ) {
     var set_in = wing::H3Settings { .. };
     let err = internal::parse_h3_settings_frame(payload, set_in);
-    guard err == internal::H3_ERR_NO_ERROR else {
+    guard err == rfc::H3_ERR_NO_ERROR else {
         send_h3_connection_close(sock, err, peer_ip, peer_port);
         return;
     }
@@ -75,12 +75,12 @@ fn handle_h3_headers(
     var req_fields: internal::HeaderField[>..] = [];
     let qerr = internal::decode_qpack_section(tbl, payload, req_fields);
     guard qerr == internal::QpackError.None else {
-        send_h3_connection_close(sock, internal::H3_ERR_QPACK_DECOMPRESSION_FAILED, peer_ip, peer_port);
+        send_h3_connection_close(sock, rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED, peer_ip, peer_port);
         return;
     }
 
     guard validate_h3_request_pseudo_headers(req_fields) else {
-        send_h3_connection_close(sock, internal::H3_ERR_GENERAL_PROTOCOL, peer_ip, peer_port);
+        send_h3_connection_close(sock, rfc::H3_ERR_GENERAL_PROTOCOL, peer_ip, peer_port);
         return;
     }
 
@@ -94,11 +94,11 @@ fn dispatch_h3_frame_type(
     peer_ip:   u32,
     peer_port: u16,
 ) -> bool {
-    if ftype == internal::H3_FRAME_SETTINGS {
+    if ftype == rfc::H3_FRAME_SETTINGS {
         handle_h3_settings(sock, payload, peer_ip, peer_port);
         return true;
     }
-    if ftype == internal::H3_FRAME_HEADERS {
+    if ftype == rfc::H3_FRAME_HEADERS {
         handle_h3_headers(sock, payload, peer_ip, peer_port);
         return true;
     }
@@ -134,12 +134,12 @@ fn handle_quic_version_negotiation(
 ) {
     var vn_pkt: u8[>..] = [];
     vn_pkt.push(0xC0);
-    core::append_u32_be(vn_pkt, internal::QUIC_VERSION_NEGOTIATION);
+    core::append_u32_be(vn_pkt, rfc::QUIC_VERSION_NEGOTIATION);
     vn_pkt.push(hdr.scid.len as u8);
     vn_pkt.append(hdr.scid[..]);
     vn_pkt.push(hdr.dcid.len as u8);
     vn_pkt.append(hdr.dcid[..]);
-    core::append_u32_be(vn_pkt, internal::QUIC_VERSION_1);
+    core::append_u32_be(vn_pkt, rfc::QUIC_VERSION_1);
     native_udp_sendto_ip4(sock, vn_pkt[..], peer_ip, peer_port);
 }
 
@@ -151,7 +151,7 @@ fn handle_quic_initial(
 ) {
     var resp_pkt: u8[>..] = [];
     resp_pkt.push(0xC1);
-    core::append_u32_be(resp_pkt, internal::QUIC_VERSION_1);
+    core::append_u32_be(resp_pkt, rfc::QUIC_VERSION_1);
     resp_pkt.push(hdr.scid.len as u8);
     resp_pkt.append(hdr.scid[..]);
     let srv_cid: const u8[:] = "\x01\x02\x03\x04\x05\x06\x07\x08";
@@ -160,7 +160,7 @@ fn handle_quic_initial(
     resp_pkt.push(0);
 
     var h3_ctrl: u8[..128] = [];
-    internal::quic_encode_varint(h3_ctrl, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(h3_ctrl, rfc::H3_STREAM_CONTROL);
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
@@ -187,7 +187,7 @@ fn handle_quic_packet(
     let quic_hdr, ok_qhdr = internal::parse_quic_header(datagram);
     guard ok_qhdr else { return false; }
 
-    if quic_hdr.version != internal::QUIC_VERSION_1 && quic_hdr.version != internal::QUIC_VERSION_NEGOTIATION {
+    if quic_hdr.version != rfc::QUIC_VERSION_1 && quic_hdr.version != rfc::QUIC_VERSION_NEGOTIATION {
         handle_quic_version_negotiation(sock, quic_hdr, peer_ip, peer_port);
         return true;
     }

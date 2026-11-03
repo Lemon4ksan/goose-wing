@@ -6,6 +6,7 @@ namespace wire;
 
 import std;
 import core from "..";
+import http2.hpack;
 
 const HPACK_PREFIX_MASKS: const u64[256] = [
     0, 1, 3, 7, 15, 31, 63, 127, 255, 0, 0, 0, 0, 0, 0, 0,
@@ -131,14 +132,15 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
     return decode_hpack_int_multibyte(src, offset, initial_offset, max_prefix);
 }
 
-// Decodes raw HPACK string and advances cursor (RFC 7541 Section 5.2).
+// Decodes raw or Huffman-encoded HPACK string and advances cursor (RFC 7541 Section 5.2).
 //
 // Example:
 //   src = [0x04, 't', 'e', 's', 't'], offset = 0
 //   returns: ok = true, out = "test", offset = 5
 fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
     let initial_offset = offset;
-    guard offset < (src.len as u64) && (src[offset] & 0x80) == 0 else { return false; }
+    guard offset < (src.len as u64) else { return false; }
+    let is_huffman = (src[offset] & 0x80) != 0;
 
     let str_len, len_ok = hpack_decode_int(src, offset, 7);
     let rem = (src.len as u64) - offset;
@@ -147,9 +149,17 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
         return false;
     }
     let end = offset + str_len;
-    guard out.try_append(src[offset..end]) else {
-        offset = initial_offset;
-        return false;
+    let raw_slice = src[offset..end];
+    if is_huffman {
+        guard internal::huff_decode_bytes(raw_slice, out) else {
+            offset = initial_offset;
+            return false;
+        }
+    } else {
+        guard out.try_append(raw_slice) else {
+            offset = initial_offset;
+            return false;
+        }
     }
     offset = end;
     return true;

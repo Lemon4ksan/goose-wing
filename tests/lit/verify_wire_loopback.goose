@@ -30,13 +30,13 @@ fn encode_client_request_headers<B>(
     internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, internal::HpackIndexing.Incremental, false);
     internal::encode_hpack_field(dt, hpack_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
 
-    var flags: u8 = internal::FLAG_END_HEADERS;
+    var flags: u8 = rfc::H2_FLAG_END_HEADERS;
     if end_stream {
-        flags |= internal::FLAG_END_STREAM;
+        flags |= rfc::H2_FLAG_END_STREAM;
     }
     let hdr = internal::FrameHeader {
         length:     hpack_block.len as u32,
-        frame_type: internal::FRAME_HEADERS,
+        frame_type: rfc::H2_FRAME_HEADERS,
         flags:      flags,
         stream_id:  stream_id,
     };
@@ -47,7 +47,7 @@ fn encode_client_request_headers<B>(
 // 1. HTTP/2 Full Wire Loopback:
 // Client formats Preface + SETTINGS + HEADERS -> Server ingests, dispatches via pipeline -> Server emits SETTINGS + Response HEADERS
 fn test_h2_wire_loopback() {
-    var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
@@ -55,12 +55,12 @@ fn test_h2_wire_loopback() {
 
     // Client encodes raw wire stream
     var client_to_server: u8[..1024] = [];
-    client_to_server.append(internal::H2_CLIENT_PREFACE[..]);
+    client_to_server.append(rfc::H2_CLIENT_PREFACE[..]);
 
     // Client empty SETTINGS frame
     let set_hdr = internal::FrameHeader {
         length:     0,
-        frame_type: internal::FRAME_SETTINGS,
+        frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
@@ -83,33 +83,33 @@ fn test_h2_wire_loopback() {
     // Frame 1: Server SETTINGS (9-byte header + 24-byte payload = 33 bytes)
     assert(server_to_client.len >= 33);
     let s_hdr, err_s = internal::parse_frame_header(server_to_client[..9]);
-    assert(err_s == internal::ERR_NO_ERROR);
-    assert(s_hdr.frame_type == internal::FRAME_SETTINGS);
+    assert(err_s == rfc::H2_ERR_NO_ERROR);
+    assert(s_hdr.frame_type == rfc::H2_FRAME_SETTINGS);
     assert(s_hdr.stream_id == 0);
     assert(s_hdr.length == 24);
 
     // Frame 2: Server SETTINGS ACK (9 bytes)
     assert(server_to_client.len >= 42);
     let ack_hdr, err_ack = internal::parse_frame_header(server_to_client[33..42]);
-    assert(err_ack == internal::ERR_NO_ERROR);
-    assert(ack_hdr.frame_type == internal::FRAME_SETTINGS);
-    assert((ack_hdr.flags & internal::FLAG_ACK) != 0);
+    assert(err_ack == rfc::H2_ERR_NO_ERROR);
+    assert(ack_hdr.frame_type == rfc::H2_FRAME_SETTINGS);
+    assert((ack_hdr.flags & rfc::H2_FLAG_ACK) != 0);
     assert(ack_hdr.stream_id == 0);
 
     // Frame 3: Response HEADERS for stream 1
     let resp_slice = server_to_client[42..];
     assert(resp_slice.len >= 9);
     let r_hdr, err_r = internal::parse_frame_header(resp_slice[..9]);
-    assert(err_r == internal::ERR_NO_ERROR);
-    assert(r_hdr.frame_type == internal::FRAME_HEADERS);
+    assert(err_r == rfc::H2_ERR_NO_ERROR);
+    assert(r_hdr.frame_type == rfc::H2_FRAME_HEADERS);
     assert(r_hdr.stream_id == 1);
-    assert((r_hdr.flags & internal::FLAG_END_HEADERS) != 0);
+    assert((r_hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0);
 
     // Decode response HPACK header block
     var dec_resp = internal::DecodedH2HeaderList { .. };
     let hpack_payload = resp_slice[9..9 + r_hdr.length];
     let hpack_err = internal::decode_hpack_header_block(client_hpack, hpack_payload, dec_resp);
-    assert(hpack_err == internal::ERR_NO_ERROR);
+    assert(hpack_err == rfc::H2_ERR_NO_ERROR);
 
     var has_status_200 = false;
     for &f in dec_resp.fields {
@@ -165,21 +165,21 @@ fn test_h3_wire_loopback() {
 
     // 1. Control Stream (Stream ID 3, Unidirectional) with SETTINGS
     var ctrl_wire: u8[..128] = [];
-    internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
     internal::encode_h3_settings_frame(ctrl_wire, settings);
     let err_ctrl = server_conn.handle_stream_data(3, false, ctrl_wire[..], false);
-    assert(err_ctrl == internal::H3_ERR_NO_ERROR);
+    assert(err_ctrl == rfc::H3_ERR_NO_ERROR);
     assert(server_conn.peer_settings_received);
 
     // 2. Request Stream (Stream ID 0, Bidirectional) with HEADERS frame
     // QPACK section with RIC=0, Base=0, static fields (:method GET = 0xD1, :scheme https = 0xD7, :path / = 0xC1)
     let qpack_sec: u8[5] = [0x00, 0x00, 0xD1, 0xD7, 0xC1];
     var req_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(req_wire, internal::H3_FRAME_HEADERS, qpack_sec.len as u64));
+    assert(internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
     req_wire.append(qpack_sec[..]);
 
     let err_req = server_conn.handle_stream_data(0, true, req_wire[..], false);
-    assert(err_req == internal::H3_ERR_NO_ERROR);
+    assert(err_req == rfc::H3_ERR_NO_ERROR);
 
     let s_idx, found = internal::find_h3_stream_idx(server_conn, 0);
     assert(found);
@@ -188,11 +188,11 @@ fn test_h3_wire_loopback() {
     // 3. DATA frame with payload "HELLO_H3"
     let body = "HELLO_H3";
     var data_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(data_wire, internal::H3_FRAME_DATA, body.len as u64));
+    assert(internal::encode_h3_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
     data_wire.append(body);
 
     let err_data = server_conn.handle_stream_data(0, true, data_wire[..], true);
-    assert(err_data == internal::H3_ERR_NO_ERROR);
+    assert(err_data == rfc::H3_ERR_NO_ERROR);
     assert(server_conn.streams[s_idx].received_body[..] == "HELLO_H3");
     assert(server_conn.streams[s_idx].fin_received);
 

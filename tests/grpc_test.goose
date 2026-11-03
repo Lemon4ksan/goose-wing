@@ -43,7 +43,7 @@ fn test_grpc_lpm_framing(t: lit::T&) {
         var wire: u8[>..] = [];
         wing::encode_grpc_lpm(msg, wire, true);
 
-        sub.assert_eq(wire[0], wing::GRPC_FLAG_COMPRESSED, "Flag byte is 0x01 (GRPC_FLAG_COMPRESSED)");
+        sub.assert_eq(wire[0], rfc::GRPC_FLAG_COMPRESSED, "Flag byte is 0x01 (GRPC_FLAG_COMPRESSED)");
 
         var decoded: u8[>..] = [];
         var is_comp = false;
@@ -311,7 +311,7 @@ fn test_grpc_web_framing(t: lit::T&) {
         var web_trailers: u8[>..] = [];
         wing::encode_grpc_web_trailers(wing::GrpcStatusCode.InvalidArgument, "invalid argument provided", web_trailers);
 
-        sub.assert_eq(web_trailers[0], wing::GRPC_WEB_FLAG_TRAILERS, "Flag has bit 7 set (0x80)");
+        sub.assert_eq(web_trailers[0], rfc::GRPC_WEB_FLAG_TRAILERS, "Flag has bit 7 set (0x80)");
 
         var payload: u8[>..] = [];
         var is_trailers = false;

@@ -46,7 +46,7 @@ fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
 // Wire adapter for integer validation using wing's real get_asn1_integer & validate_asn1_integer.
 fn wing_validate_der_integer(buf: const u8[:]) -> i64 {
     guard buf.len >= 2 else { return -1; }
-    guard buf[0] == wing::ASN1_TAG_INTEGER else { return 0; }
+    guard buf[0] == rfc::ASN1_TAG_INTEGER else { return 0; }
     var c = wing::cursor_from(buf);
     var val: i64 = 0;
     if !wing::get_asn1_integer(c, val) {
@@ -109,7 +109,7 @@ fn main() {
     assert(wire_kit::fuzz_payload(iSerial[..], 100, wing_validate_der_integer));
     print("ASN1_INT_RULES: OK");
 
-    assert(calc_asn1_tag_class(wing::ASN1_TAG_SEQUENCE) == 0);
+    assert(calc_asn1_tag_class(rfc::ASN1_TAG_SEQUENCE) == 0);
     assert(derive_der_short_len(0x2A) == 42);
     print("ASN1_DER_ALL: PASS");
 }

@@ -33,7 +33,7 @@ fn main() {
 
     // 4. Simulate HTTP/2 Client Connection Preface (RFC 9113 Section 3.4)
     var wire_h2_in: u8[>..] = [];
-    wire_h2_in.append(internal::H2_CLIENT_PREFACE[..]);
+    wire_h2_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
     var wire_h2_out: u8[>..] = [];
     let outcome_h2, ok_h2 = wing::handle_connection_wire(server, "127.0.0.1", wire_h2_in[..], 2000000000, wire_h2_out);

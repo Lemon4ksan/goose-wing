@@ -108,7 +108,7 @@ fn test_cmd_buffer_fsm(pool: wire::WireCommandPool&) {
     wire::begin_command_buffer(cmd, begin_info);
 
     // Dynamic headers interleave protection (BUG-04 & BUG-17)
-    assert(wire::begin_h2_headers(cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
     assert(cmd.state == wire::WireCommandBufferState.RecordingHeaders);
 
     // Attempting frame write inside headers block must fail (BUG-17)
@@ -215,7 +215,7 @@ fn test_queue_batch_submit(dev: const wire::WireDevice&) {
 
     var cmd2 = wire::new_command_buffer();
     let s_list: wire::WireSetting[1] = [
-        wire::h2_setting(wire::H2_SETTING_ENABLE_PUSH, 0),
+        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
     ];
     assert(wire::write_h2_settings(cmd2, s_list[..]));
 

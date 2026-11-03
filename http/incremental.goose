@@ -13,14 +13,6 @@ import client.response;
 
 // ---- RFC 10036 Constants --------------------------------------------------
 
-const HEADER_INCREMENTAL: const u8[:] = "Incremental";
-
-// Proxy-Status error parameter values (RFC 10036 Section 3)
-const PROXY_ERROR_INCREMENTAL_REFUSED:      const u8[:] = "incremental_refused";
-const PROXY_ERROR_CONNECTION_LIMIT_REACHED: const u8[:] = "connection_limit_reached";
-
-// ---- Header Parsing & Serialization ---------------------------------------
-
 // Parses an RFC 10036 Incremental header field value.
 // Per RFC 10036 Section 2:
 // - Must be an RFC 9651 Structured Fields Item with Boolean type (?1 or ?0).
@@ -47,7 +39,7 @@ fn parse_incremental_header(val: const u8[:]) -> bool, bool {
 
 // Inspects a HeaderMap to determine whether incremental forwarding was requested.
 fn is_incremental_requested(headers: const HeaderMap&) -> bool {
-    let val = get_header(headers, HEADER_INCREMENTAL);
+    let val = get_header(headers, rfc::HEADER_INCREMENTAL);
     guard val.len > 0 else { return false; }
     let is_inc, ok = parse_incremental_header(val);
     return ok && is_inc;
@@ -55,7 +47,7 @@ fn is_incremental_requested(headers: const HeaderMap&) -> bool {
 
 // Appends `Incremental: ?1` or `Incremental: ?0` to outgoing headers.
 fn append_incremental_header(out_headers: HeaderMap&, incremental: bool) -> bool {
-    return append_header(out_headers, HEADER_INCREMENTAL, if incremental { "?1" } else { "?0" });
+    return append_header(out_headers, rfc::HEADER_INCREMENTAL, if incremental { "?1" } else { "?0" });
 }
 
 // ---- Intermediary Error Handling (RFC 10036 Section 3) --------------------
@@ -66,12 +58,12 @@ fn append_incremental_header(out_headers: HeaderMap&, incremental: bool) -> bool
 fn format_incremental_refused_proxy_status<B>(out: B&, proxy_name: const u8[:]) {
     out.append(proxy_name);
     out.append("; error=");
-    out.append(PROXY_ERROR_INCREMENTAL_REFUSED);
+    out.append(rfc::PROXY_ERROR_INCREMENTAL_REFUSED);
 }
 
 // Formats `Proxy-Status` header value with `connection_limit_reached` (RFC 10036 Section 3).
 fn format_incremental_limit_reached_proxy_status<B>(out: B&, proxy_name: const u8[:]) {
     out.append(proxy_name);
     out.append("; error=");
-    out.append(PROXY_ERROR_CONNECTION_LIMIT_REACHED);
+    out.append(rfc::PROXY_ERROR_CONNECTION_LIMIT_REACHED);
 }

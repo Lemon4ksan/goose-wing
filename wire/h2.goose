@@ -25,6 +25,38 @@ fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
     return true;
 }
 
+// Backpatches a 9-byte HTTP/2 binary frame header in-place into `buf` starting at `offset` (RFC 9113 Section 4.1).
+fn patch_frame_header_slice(
+    buf:        u8[:],
+    offset:     i64,
+    frame_type: u8,
+    flags:      u8,
+    stream_id:  u32,
+) -> bool {
+    let payload_start = offset + 9;
+    guard offset >= 0 && payload_start <= buf.len else {
+        return false;
+    }
+    let tail = buf[payload_start..];
+    let payload_len = tail.len as u32;
+    guard payload_len <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
+        return false;
+    }
+    let bytes: u8[9] = [
+        ((payload_len >> 16) & 0xFF) as u8,
+        ((payload_len >> 8) & 0xFF) as u8,
+        (payload_len & 0xFF) as u8,
+        frame_type,
+        flags,
+        ((stream_id >> 24) & 0x7F) as u8,
+        ((stream_id >> 16) & 0xFF) as u8,
+        ((stream_id >> 8) & 0xFF) as u8,
+        (stream_id & 0xFF) as u8,
+    ];
+    core::ct_copy_bytes(buf[offset..payload_start], bytes[..]);
+    return true;
+}
+
 // Parses a 9-byte HTTP/2 binary frame header (RFC 9113 Section 4.1).
 //
 // Example:
@@ -52,8 +84,8 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     let payload_len = (settings.len as u32) * 6;
     let hdr = WireFrameHeader {
         length:     payload_len,
-        frame_type: H2_FRAME_SETTINGS,
-        flags:      H2_FLAG_NONE,
+        frame_type: rfc::H2_FRAME_SETTINGS,
+        flags:      rfc::H2_FLAG_NONE,
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
@@ -73,11 +105,11 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
 
 // Encodes a WINDOW_UPDATE frame with explicit stream ID and increment (RFC 9113 Section 6.9).
 fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> bool {
-    guard increment >= 1 && increment <= 0x7FFFFFFF else { return false; }
+    guard increment >= 1 && increment <= rfc::H2_MAX_WINDOW_SIZE else { return false; }
     let hdr = WireFrameHeader {
         length:     4,
-        frame_type: H2_FRAME_WINDOW_UPDATE,
-        flags:      H2_FLAG_NONE,
+        frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
+        flags:      rfc::H2_FLAG_NONE,
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
@@ -119,8 +151,8 @@ fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incr
     let payload_len = calc_priority_payload_len(p_val.len);
     let hdr = WireFrameHeader {
         length:     payload_len,
-        frame_type: H2_FRAME_PRIORITY_UPDATE,
-        flags:      H2_FLAG_NONE,
+        frame_type: rfc::H2_FRAME_PRIORITY_UPDATE,
+        flags:      rfc::H2_FLAG_NONE,
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
@@ -141,8 +173,8 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool 
     guard stream_id != 0 else { return false; }
     let hdr = WireFrameHeader {
         length:     4,
-        frame_type: H2_FRAME_RST_STREAM,
-        flags:      H2_FLAG_NONE,
+        frame_type: rfc::H2_FRAME_RST_STREAM,
+        flags:      rfc::H2_FLAG_NONE,
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
@@ -159,8 +191,8 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool 
 fn encode_ping_frame<B>(payload: const u8[8], is_ack: bool, out: B&) -> bool {
     let hdr = WireFrameHeader {
         length:     8,
-        frame_type: H2_FRAME_PING,
-        flags:      if is_ack { H2_FLAG_ACK } else { H2_FLAG_NONE },
+        frame_type: rfc::H2_FRAME_PING,
+        flags:      if is_ack { rfc::H2_FLAG_ACK } else { rfc::H2_FLAG_NONE },
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
@@ -169,7 +201,7 @@ fn encode_ping_frame<B>(payload: const u8[8], is_ack: bool, out: B&) -> bool {
 }
 
 inline fn select_data_frame_flags(end_stream: bool) -> u8 {
-    return if end_stream { H2_FLAG_END_STREAM } else { H2_FLAG_NONE };
+    return if end_stream { rfc::H2_FLAG_END_STREAM } else { rfc::H2_FLAG_NONE };
 }
 
 // Encodes a DATA frame (RFC 9113 Section 6.1).
@@ -177,7 +209,7 @@ fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, 
     guard stream_id != 0 else { return false; }
     let hdr = WireFrameHeader {
         length:     payload.len as u32,
-        frame_type: H2_FRAME_DATA,
+        frame_type: rfc::H2_FRAME_DATA,
         flags:      select_data_frame_flags(end_stream),
         stream_id:  stream_id,
     };

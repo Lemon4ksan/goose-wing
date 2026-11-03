@@ -11,10 +11,6 @@ import quic.packet;
 
 // ---- Constants and Supported Cipher Suites -------------------------------
 
-const TLS_AES_128_GCM_SHA256:       u16 = 0x1301;
-const TLS_AES_256_GCM_SHA384:       u16 = 0x1302;
-const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
-
 const HASH_SHA256: u8 = 1;
 const HASH_SHA384: u8 = 2;
 
@@ -134,11 +130,11 @@ struct KeySchedule {
 
 fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
     var ks = KeySchedule { cipher_suite: cipher_suite };
-    if cipher_suite == TLS_AES_128_GCM_SHA256 || cipher_suite == TLS_CHACHA20_POLY1305_SHA256 {
+    if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 || cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         ks.hash_id = HASH_SHA256;
         ks.hash_len = 32;
         return ks, true;
-    } else if cipher_suite == TLS_AES_256_GCM_SHA384 {
+    } else if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         ks.hash_id = HASH_SHA384;
         ks.hash_len = 48;
         return ks, true;
@@ -433,7 +429,7 @@ fn ks_derive_quic_hp_key(
     secret:     const u8[:],
     hp_key_len: u16,
     out_hp_key: u8[:],
-    version:    u32 = QUIC_VERSION_1,
+    version:    u32 = rfc::QUIC_VERSION_1,
 ) -> bool {
     let prefix = quic_hkdf_label_prefix(version);
     guard prefix.len > 0 else { return false; }
@@ -636,8 +632,6 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
     return true;
 }
 
-const MAX_TICKET_LIFETIME_MS: i64 = 604800000; // 7 days (RFC 8446 §4.6.1)
-
 // Validates ticket age freshness according to RFC 8446 Section 4.2.10 and 4.6.1.
 fn validate_ticket_age(
     obfuscated_ticket_age: u32,
@@ -646,13 +640,13 @@ fn validate_ticket_age(
     tolerance_ms:          i64,
 ) -> bool {
     guard expected_age_ms >= 0 && tolerance_ms >= 0 else { return false; }
-    guard expected_age_ms <= MAX_TICKET_LIFETIME_MS else { return false; }
+    guard expected_age_ms <= rfc::MAX_TICKET_LIFETIME_MS else { return false; }
 
     // RFC 8446 Section 4.2.11.1: ticket age is obfuscated via wrapping addition mod 2^32.
     // Unobfuscation performs wrapping unsigned subtraction mod 2^32.
     let raw_age_u32: u32 = obfuscated_ticket_age - ticket_age_add;
     let raw_age = raw_age_u32 as i64;
-    guard raw_age <= MAX_TICKET_LIFETIME_MS else { return false; }
+    guard raw_age <= rfc::MAX_TICKET_LIFETIME_MS else { return false; }
 
     let diff = if raw_age > expected_age_ms {
         raw_age - expected_age_ms

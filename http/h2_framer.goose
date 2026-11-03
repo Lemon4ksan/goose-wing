@@ -26,27 +26,19 @@ enum H2FrameType {
 // Maps an 8-bit wire frame type code to H2FrameType, or Unknown for extensions.
 fn byte_to_frame_type(b: u8) -> H2FrameType {
     return match b {
-        0x0 => H2FrameType.Data,
-        0x1 => H2FrameType.Headers,
-        0x2 => H2FrameType.Priority,
-        0x3 => H2FrameType.RstStream,
-        0x4 => H2FrameType.Settings,
-        0x5 => H2FrameType.PushPromise,
-        0x6 => H2FrameType.Ping,
-        0x7 => H2FrameType.GoAway,
-        0x8 => H2FrameType.WindowUpdate,
-        0x9 => H2FrameType.Continuation,
+        rfc::H2_FRAME_DATA => H2FrameType.Data,
+        rfc::H2_FRAME_HEADERS => H2FrameType.Headers,
+        rfc::H2_FRAME_PRIORITY => H2FrameType.Priority,
+        rfc::H2_FRAME_RST_STREAM => H2FrameType.RstStream,
+        rfc::H2_FRAME_SETTINGS => H2FrameType.Settings,
+        rfc::H2_FRAME_PUSH_PROMISE => H2FrameType.PushPromise,
+        rfc::H2_FRAME_PING => H2FrameType.Ping,
+        rfc::H2_FRAME_GOAWAY => H2FrameType.GoAway,
+        rfc::H2_FRAME_WINDOW_UPDATE => H2FrameType.WindowUpdate,
+        rfc::H2_FRAME_CONTINUATION => H2FrameType.Continuation,
         _ => H2FrameType.Unknown,
     };
 }
-
-// ---- frame flags -----------------------------------------------------------
-
-let H2_FLAG_END_STREAM:  u8 = 0x01;
-let H2_FLAG_ACK:         u8 = 0x01;
-let H2_FLAG_END_HEADERS: u8 = 0x04;
-let H2_FLAG_PADDED:      u8 = 0x08;
-let H2_FLAG_PRIORITY:    u8 = 0x20;
 
 // ---- error codes -----------------------------------------------------------
 
@@ -177,7 +169,7 @@ fn process_h2_continuation_frame(framer: H2SecurityFramer&, hdr: const H2FrameHe
         return H2ErrorCode.EnhanceYourCalm;
     }
 
-    if (hdr.flags & H2_FLAG_END_HEADERS) != 0 {
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 {
         framer.state = H2ConnState.Idle;
         framer.continuation_stream_id = 0;
         framer.continuation_count = 0;
@@ -198,7 +190,7 @@ fn process_h2_headers_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&
         return H2ErrorCode.EnhanceYourCalm;
     }
 
-    if (hdr.flags & H2_FLAG_END_HEADERS) == 0 {
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
         framer.state = H2ConnState.ExpectContinuation;
         framer.continuation_stream_id = hdr.stream_id;
         framer.continuation_count = 0;
@@ -208,7 +200,7 @@ fn process_h2_headers_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&
 }
 
 inline fn track_unack_flood(count: i32&, max_limit: i32, flags: u8) -> bool {
-    if (flags & H2_FLAG_ACK) != 0 { return true; }
+    if (flags & rfc::H2_FLAG_ACK) != 0 { return true; }
     count++;
     return count <= max_limit;
 }

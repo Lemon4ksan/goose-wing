@@ -38,7 +38,7 @@ fn main() {
 
     // Server requests client certificate with Ed25519 signature algorithm
     var cr_buf: u8[>..] = [];
-    let sig_algs: u16[1] = [wing::SIG_SCHEME_ED25519];
+    let sig_algs: u16[1] = [rfc::SIG_SCHEME_ED25519];
     let cr_ok = wing::encode_certificate_request(cr_buf, "", sig_algs[..]);
     assert(cr_ok);
 
@@ -52,7 +52,7 @@ fn main() {
     assert(cert_ok);
 
     // Server verifies client certificate and transitions to handshake completion
-    let next_hs_state, hs_ok = wing::server_wait_cert_step(wing::HS_MSG_CERTIFICATE, false);
+    let next_hs_state, hs_ok = wing::server_wait_cert_step(rfc::TLS_HS_CERTIFICATE, false);
     assert(hs_ok && next_hs_state == wing::HsState.ServerWaitCV);
     print("    mTLS Handshake verified: Client identity 'CN=PaymentWorkerNode01' authenticated.\n");
 

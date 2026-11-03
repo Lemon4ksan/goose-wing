@@ -9,9 +9,14 @@ namespace wing;
 import std;
 import json;
 
-// ---- core subsystem --------------------------------------------------------
+// ---- core & rfc subsystems -------------------------------------------------
 
 import core from ".";
+import rfc.http;
+import rfc.h2;
+import rfc.h3_quic;
+import rfc.tls;
+import rfc.ws_grpc;
 
 // ---- cookie engine ---------------------------------------------------------
 

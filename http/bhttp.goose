@@ -12,9 +12,6 @@ import .headers;
 
 // ---- RFC 9292 Framing Indicators (Section 3.3) -----------------------------
 
-const BHTTP_FRAME_KNOWN_LEN_REQUEST:  u8 = 0; // RFC 9292 Section 3.3
-const BHTTP_FRAME_KNOWN_LEN_RESPONSE: u8 = 1; // RFC 9292 Section 3.3
-
 // Binary-encoded HTTP request (RFC 9292 Section 3.1 known-length form).
 // Scheme and authority are not retained: `target` carries the request path
 // (RFC 9292 Section 3.4 Path field); empty scheme/authority encode as zero-length.
@@ -239,7 +236,7 @@ fn bhttp_encode_request(req: const BhttpRequest&, out: u8[..8192]&) -> i32 {
     guard req.method.len >= 1 else { return -1; }
     guard req.body_len >= 0 && req.body_len <= req.body.len else { return -1; }
 
-    out.push(BHTTP_FRAME_KNOWN_LEN_REQUEST);
+    out.push(rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST);
     guard bhttp_put_len_bytes(out, req.method) else { return -1; }
     guard bhttp_put_len_bytes(out, "") else { return -1; } // scheme
     guard bhttp_put_len_bytes(out, "") else { return -1; } // authority
@@ -265,7 +262,7 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
 
     var idx: i64 = 0;
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
-    guard ok0 && frame == BHTTP_FRAME_KNOWN_LEN_REQUEST else { return false; }
+    guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST else { return false; }
 
     let method, ok1 = bhttp_read_len_bytes(raw, idx);
     guard ok1 && method.len >= 1 && method.len <= 16 else { return false; }
@@ -295,7 +292,7 @@ fn bhttp_encode_response(res: const BhttpResponse&, out: u8[..8192]&) -> i32 {
     guard res.status >= 200 && res.status <= 599 else { return -1; }
     guard res.body_len >= 0 && res.body_len <= res.body.len else { return -1; }
 
-    out.push(BHTTP_FRAME_KNOWN_LEN_RESPONSE);
+    out.push(rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE);
     guard internal::quic_encode_varint(out, res.status as u64) else { return -1; }
     let blen = res.body_len as i64;
     guard bhttp_encode_tail(res.headers, res.body[..blen], out) else { return -1; }
@@ -316,7 +313,7 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
 
     var idx: i64 = 0;
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
-    guard ok0 && frame == BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
+    guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
 
     let status, ok1 = internal::quic_decode_varint_cursor(raw, idx);
     guard ok1 && status >= 200 && status <= 599 else { return false; }

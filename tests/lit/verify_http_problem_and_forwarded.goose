@@ -117,8 +117,8 @@ fn test_rfc7239_forwarded() {
 
 fn test_rfc_status_codes_and_early_data() {
     // 1. RFC 8470 Section 5.2: 425 Too Early
-    assert(wing::http_status_reason_phrase(425) == "Too Early");
-    assert(wing::HEADER_EARLY_DATA == "Early-Data");
+    assert(rfc::status_phrase(425) == "Too Early");
+    assert(rfc::HEADER_EARLY_DATA == "Early-Data");
     let dec_retry = wing::evaluate_early_data_response(425, true);
     match dec_retry {
         RetryOn1Rtt => { print("EARLY_DATA_RETRY_OK: 1"); },
@@ -127,18 +127,18 @@ fn test_rfc_status_codes_and_early_data() {
     // CHECK: EARLY_DATA_RETRY_OK: 1
 
     // 2. RFC 9110 Section 15.5.21: 422 Unprocessable Content
-    assert(wing::http_status_reason_phrase(422) == "Unprocessable Content");
+    assert(rfc::status_phrase(422) == "Unprocessable Content");
 
     // 3. RFC 6585: Additional HTTP Status Codes
-    assert(wing::http_status_reason_phrase(428) == "Precondition Required");
-    assert(wing::http_status_reason_phrase(431) == "Request Header Fields Too Large");
-    assert(wing::http_status_reason_phrase(511) == "Network Authentication Required");
+    assert(rfc::status_phrase(428) == "Precondition Required");
+    assert(rfc::status_phrase(431) == "Request Header Fields Too Large");
+    assert(rfc::status_phrase(511) == "Network Authentication Required");
 
     // 4. RFC 7725: 451 Unavailable For Legal Reasons
-    assert(wing::http_status_reason_phrase(451) == "Unavailable For Legal Reasons");
+    assert(rfc::status_phrase(451) == "Unavailable For Legal Reasons");
 
     // 5. RFC 6266: Content-Disposition
-    assert(wing::HEADER_CONTENT_DISPOSITION == "Content-Disposition");
+    assert(rfc::HEADER_CONTENT_DISPOSITION == "Content-Disposition");
     print("STATUS_CODES_AND_HEADERS_OK: 1");
     // CHECK: STATUS_CODES_AND_HEADERS_OK: 1
 }

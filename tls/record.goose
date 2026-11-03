@@ -491,23 +491,11 @@ fn finish_u24_prefix(b: ByteBuilder&) -> bool {
 
 // ---- TLS Record Layer Framing & Invariants (RFC 8446 Section 5) ---------
 
-const RECORD_BUFSIZE_IN:         i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
-const RECORD_BUFSIZE_OUT:        i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
-const MAX_RECORD_PLAINTEXT_LEN:  i64 = 16384;
-const MAX_RECORD_CIPHERTEXT_LEN: i64 = 16640; // 2^14 + 256
-const MAX_INNER_PLAINTEXT_LEN:   i64 = 16624; // 16640 - 16 (AEAD tag) per RFC 8446 §5.1 & §5.4
-const TLS_RECORD_HEADER_LEN:     i64 = 5;
+const RECORD_BUFSIZE_IN:  i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
+const RECORD_BUFSIZE_OUT: i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
 
 const MAX_EMPTY_RECORDS:      i32 = 32; // BoringSSL kMaxEmptyRecords DoS defense
 const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
-
-const CONTENT_TYPE_CHANGE_CIPHER_SPEC: u8 = 0x14;
-const CONTENT_TYPE_ALERT:              u8 = 0x15;
-const CONTENT_TYPE_HANDSHAKE:          u8 = 0x16;
-const CONTENT_TYPE_APPLICATION_DATA:   u8 = 0x17;
-
-const LEGACY_RECORD_VERSION_TLS12: u16 = 0x0303;
-const TLS13_VERSION:               u16 = 0x0304;
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
@@ -548,7 +536,7 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
     guard decrypted.len > 0 else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-    guard decrypted.len <= MAX_INNER_PLAINTEXT_LEN else {
+    guard decrypted.len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
 
@@ -570,20 +558,18 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
     guard found else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-    guard inner_type >= CONTENT_TYPE_ALERT && inner_type <= CONTENT_TYPE_APPLICATION_DATA else {
+    guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-    guard content_len <= MAX_RECORD_PLAINTEXT_LEN else {
+    guard content_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
-    guard content_len > 0 || inner_type == CONTENT_TYPE_APPLICATION_DATA else {
+    guard content_len > 0 || inner_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
 
     return decrypted[..content_len], inner_type, TlsAlert.CloseNotify;
 }
-
-const AEAD_TAG_LEN: i64 = 16;
 
 // Compares two 16-byte authentication tags in constant time (RFC 8446 §5.2).
 fn ct_compare_tag16(a: const u8[16]&, b: const u8[16]&) -> bool {
@@ -601,12 +587,74 @@ fn secure_wipe_buffer(buf: u8[:]) {
     }
 }
 
+// RFC 8446 Section 5.2: Record Payload Protection - Seals plaintext and inner ContentType into a TLSCiphertext record.
+// Writes 5-byte header + encrypted (plaintext || inner_type) + 16-byte AES-128-GCM tag into `out_ciphertext`.
+//
+// Example:
+//   key = [0; 16], iv = [0; 12], seq_num = 0, inner_type = 0x17, plaintext = "ping"
+//   returns: total_len = 26, alert = TlsAlert.CloseNotify, ok = true
+fn tls_record_seal_aes128_gcm_into(
+    key:            const u8[16]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    inner_type:     u8,
+    plaintext:      const u8[:],
+    out_ciphertext: u8[:],
+) -> i64, TlsAlert, bool {
+    guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+    var inner_buf: u8[..16640] = [];
+    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    var tag_dummy:       u8[16]      = [0; 16];
+    var encrypted_dummy: u8[..16640] = [];
+    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+
+    var hdr_buf: u8[..5] = [];
+    guard encode_tls_ciphertext_header(
+        hdr_buf,
+        rfc::TLS_CONTENT_APPLICATION_DATA,
+        encrypted_dummy.len as u16,
+    ) else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    let tag, ok_seal = core::aes128_gcm_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    guard ok_seal else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    var record_buf: u8[..16640] = [];
+    guard record_buf.try_append(hdr_buf[..]) &&
+          record_buf.try_append(inner_buf[..]) &&
+          record_buf.try_append(tag[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard out_ciphertext.len >= record_buf.len else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
+    return record_buf.len, TlsAlert.CloseNotify, true;
+}
+
 // Decrypts and authenticates a TLS 1.3 record payload into a caller-provided bounded
 // buffer `out_plaintext` with zero dynamic heap allocation (RFC 8446 §5.2).
 // Enforces:
-// - Strict capacity bound: `ct_len <= MAX_RECORD_PLAINTEXT_LEN` (16384) and `out_plaintext.len >= ct_len`,
+// - Strict capacity bound: `ct_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN` (16384) and `out_plaintext.len >= ct_len`,
 //   otherwise fails closed with `RecordOverflow` (Invariant 13).
-// - Payload length < AEAD_TAG_LEN + 1 (17) -> `DecodeError`.
+// - Payload length < rfc::TLS_AEAD_TAG_LEN + 1 (17) -> `DecodeError`.
 // - Sequence number 2^64 - 1 -> `UnexpectedMessage` (RFC 8446 §5.3).
 // - Tag verification failure -> `BadRecordMac`.
 //
@@ -623,15 +671,15 @@ fn tls_record_decrypt_aes128_gcm_into(
     out_plaintext:  u8[:],
 ) -> i64, u8, TlsAlert, bool {
     guard record_header.len == 5 else { return 0, 0, TlsAlert.DecodeError, false; }
-    guard record_payload.len <= MAX_RECORD_CIPHERTEXT_LEN else {
+    guard record_payload.len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
-    guard record_payload.len >= AEAD_TAG_LEN + 1 else {
+    guard record_payload.len >= rfc::TLS_AEAD_TAG_LEN + 1 else {
         return 0, 0, TlsAlert.DecodeError, false;
     }
 
-    let ct_len = record_payload.len - AEAD_TAG_LEN;
-    guard ct_len <= MAX_RECORD_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+    let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
+    guard ct_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -669,8 +717,8 @@ fn tls_record_decrypt_aes128_gcm_into(
 // Decrypts and authenticates a TLS 1.3 record payload with AES-128-GCM (RFC 8446 §5.2).
 // Invariants enforced:
 // 1. Strict alert separation:
-//    - Payload length > MAX_RECORD_CIPHERTEXT_LEN -> RecordOverflow.
-//    - Payload length < AEAD_TAG_LEN + 1 (17) -> DecodeError.
+//    - Payload length > rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN -> RecordOverflow.
+//    - Payload length < rfc::TLS_AEAD_TAG_LEN + 1 (17) -> DecodeError.
 //    - Sequence number 2^64 - 1 -> UnexpectedMessage (RFC 8446 §5.3).
 //    - Tag verification failure -> BadRecordMac.
 // 2. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
@@ -687,10 +735,10 @@ fn tls_record_decrypt_aes128_gcm(
     guard record_header.len == 5 else {
         return 0, TlsAlert.DecodeError;
     }
-    guard record_payload.len <= MAX_RECORD_CIPHERTEXT_LEN else {
+    guard record_payload.len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow;
     }
-    guard record_payload.len >= AEAD_TAG_LEN + 1 else {
+    guard record_payload.len >= rfc::TLS_AEAD_TAG_LEN + 1 else {
         return 0, TlsAlert.DecodeError;
     }
 
@@ -699,8 +747,8 @@ fn tls_record_decrypt_aes128_gcm(
         return 0, TlsAlert.UnexpectedMessage;
     }
 
-    let ct_len = record_payload.len - AEAD_TAG_LEN;
-    guard ct_len <= MAX_INNER_PLAINTEXT_LEN else {
+    let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow;
     }
     let ciphertext = record_payload[..ct_len];
@@ -744,7 +792,7 @@ struct RecordFilterState {
 
 // crap:ignore
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
-    guard payload_len >= 0 && payload_len <= MAX_RECORD_PLAINTEXT_LEN else {
+    guard payload_len >= 0 && payload_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return TlsAlert.RecordOverflow;
     }
 
@@ -773,17 +821,19 @@ fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_e
 // In TLS 1.3, TLSCiphertext outer content type MUST be application_data (0x17)
 // or change_cipher_spec (0x14) for middlebox compatibility.
 // Length MUST be at least 17 bytes (1 byte inner content type + 16 bytes AEAD tag)
-// and at most MAX_RECORD_CIPHERTEXT_LEN (16640 bytes).
+// and at most rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN (16640 bytes).
 fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u16) -> bool {
-    guard ciphertext_len >= 17 && (ciphertext_len as i64) <= MAX_RECORD_CIPHERTEXT_LEN else {
+    guard ciphertext_len >= 17 && (ciphertext_len as i64) <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
         return false;
     }
-    guard content_type == CONTENT_TYPE_APPLICATION_DATA || content_type == CONTENT_TYPE_CHANGE_CIPHER_SPEC else {
+    let is_app = content_type == rfc::TLS_CONTENT_APPLICATION_DATA;
+    let is_ccs = content_type == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC;
+    guard is_app || is_ccs else {
         return false;
     }
     out.push(content_type);
-    out.push(((LEGACY_RECORD_VERSION_TLS12 >> 8) & 0xFF) as u8);
-    out.push((LEGACY_RECORD_VERSION_TLS12 & 0xFF) as u8);
+    out.push(((rfc::TLS_LEGACY_VERSION_1_2 >> 8) & 0xFF) as u8);
+    out.push((rfc::TLS_LEGACY_VERSION_1_2 & 0xFF) as u8);
     out.push(((ciphertext_len >> 8) & 0xFF) as u8);
     out.push((ciphertext_len & 0xFF) as u8);
     return true;
@@ -822,15 +872,15 @@ fn parse_tls_record_header_at(
         return 0, 0, 0, TlsAlert.DecodeError, false;
     }
 
-    if version != LEGACY_RECORD_VERSION_TLS12 && version != 0x0301 {
+    if version != rfc::TLS_LEGACY_VERSION_1_2 && version != 0x0301 {
         cursor = saved;
         return content_type, version, length, TlsAlert.ProtocolVersion, false;
     }
-    if content_type < CONTENT_TYPE_CHANGE_CIPHER_SPEC || content_type > CONTENT_TYPE_APPLICATION_DATA {
+    if content_type < rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC || content_type > rfc::TLS_CONTENT_APPLICATION_DATA {
         cursor = saved;
         return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
-    if length > MAX_RECORD_CIPHERTEXT_LEN {
+    if length > rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN {
         cursor = saved;
         return content_type, version, length, TlsAlert.RecordOverflow, false;
     }
@@ -963,8 +1013,6 @@ fn new_quic_crypto_stream() -> QuicCryptoStream {
     };
 }
 
-const MAX_QUIC_VARINT: u64 = 0x3FFFFFFFFFFFFFFF; // 2^62 - 1 (RFC 9000 §16 & §19.6)
-
 // Ingests a QUIC CRYPTO frame (RFC 9000 §19.6 / RFC 9001 §4).
 // Handles:
 // - Offset + Length 64-bit integer overflow and 2^62 - 1 varint maximum bounds protection
@@ -979,9 +1027,9 @@ fn quic_crypto_stream_ingest(
     data:   const u8[:],
 ) -> bool, i64 {
     // 1. Integer overflow check: offset + data.len must not wrap around u64 or exceed 2^62 - 1
-    guard offset <= MAX_QUIC_VARINT else { return false, 0; }
+    guard offset <= rfc::QUIC_VARINT_MAX else { return false, 0; }
     let end_offset = offset + (data.len as u64);
-    guard end_offset >= offset && end_offset <= MAX_QUIC_VARINT else { return false, 0; }
+    guard end_offset >= offset && end_offset <= rfc::QUIC_VARINT_MAX else { return false, 0; }
 
     // 2. If end_offset <= stream.consumed_offset, entirely duplicate data; safely drop 0 new bytes
     if end_offset <= stream.consumed_offset {

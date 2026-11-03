@@ -277,7 +277,7 @@ fn test_h2_continuation_flood_and_interleaving() {
         payload_len: 64,
         frame_type:  internal::H2FrameType.Continuation,
         raw_type:    0x9,
-        flags:       internal::H2_FLAG_END_HEADERS,
+        flags:       rfc::H2_FLAG_END_HEADERS,
         stream_id:   1,
         valid:       true,
     };
@@ -398,7 +398,7 @@ fn test_h2_dos_and_stream_parity() {
         payload_len: 32,
         frame_type:  internal::H2FrameType.Headers,
         raw_type:    0x1,
-        flags:       internal::H2_FLAG_END_HEADERS,
+        flags:       rfc::H2_FLAG_END_HEADERS,
         stream_id:   2,
         valid:       true,
     };
@@ -412,7 +412,7 @@ fn test_h2_pseudo_header_invariants() {
     var list1 = internal::DecodedH2HeaderList { .. };
     list1.has_regular_header = true;
     let err_order = internal::validate_header_ordering_and_rules(list1, ":method", "GET");
-    assert(err_order == internal::ERR_PROTOCOL_ERROR);
+    assert(err_order == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_PSEUDO_ORDERING_INVARIANT: PROTOCOL_ERROR");
 
     // 2. Duplicate pseudo-header
@@ -420,45 +420,45 @@ fn test_h2_pseudo_header_invariants() {
     let _ = internal::validate_header_ordering_and_rules(list2, ":method", "GET");
     list2.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
     let err_dup = internal::validate_header_ordering_and_rules(list2, ":method", "POST");
-    assert(err_dup == internal::ERR_PROTOCOL_ERROR);
+    assert(err_dup == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_DUPLICATE_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 3. Undefined pseudo-header
     var list3 = internal::DecodedH2HeaderList { .. };
     let err_undef = internal::validate_header_ordering_and_rules(list3, ":custom", "val");
-    assert(err_undef == internal::ERR_PROTOCOL_ERROR);
+    assert(err_undef == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_UNDEFINED_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 4. Forbidden connection-specific headers in HTTP/2 (RFC 9113 §8.2.2)
     var list4 = internal::DecodedH2HeaderList { .. };
     let err_conn = internal::validate_header_ordering_and_rules(list4, "connection", "close");
-    assert(err_conn == internal::ERR_PROTOCOL_ERROR);
+    assert(err_conn == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_te = internal::validate_header_ordering_and_rules(list4, "transfer-encoding", "chunked");
-    assert(err_te == internal::ERR_PROTOCOL_ERROR);
+    assert(err_te == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_upg = internal::validate_header_ordering_and_rules(list4, "upgrade", "websocket");
-    assert(err_upg == internal::ERR_PROTOCOL_ERROR);
+    assert(err_upg == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_ka = internal::validate_header_ordering_and_rules(list4, "keep-alive", "timeout=5");
-    assert(err_ka == internal::ERR_PROTOCOL_ERROR);
+    assert(err_ka == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_FORBIDDEN_CONNECTION_HEADERS: PROTOCOL_ERROR");
 
     // 5. TE header with disallowed value
     var list5 = internal::DecodedH2HeaderList { .. };
     let err_te_val = internal::validate_header_ordering_and_rules(list5, "te", "gzip");
-    assert(err_te_val == internal::ERR_PROTOCOL_ERROR);
+    assert(err_te_val == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_DISALLOWED_TE_VALUE: PROTOCOL_ERROR");
 
     // 6. TE header with allowed 'trailers'
     var list6 = internal::DecodedH2HeaderList { .. };
     let ok_te_val = internal::validate_header_ordering_and_rules(list6, "te", "trailers");
-    assert(ok_te_val == internal::ERR_NO_ERROR);
+    assert(ok_te_val == rfc::H2_ERR_NO_ERROR);
     print("H2_ALLOWED_TE_TRAILERS: OK");
 
     // 7. :authority forbidden characters (@ and /)
     var list7 = internal::DecodedH2HeaderList { .. };
     let err_auth_at = internal::validate_header_ordering_and_rules(list7, ":authority", "admin@example.com");
-    assert(err_auth_at == internal::ERR_PROTOCOL_ERROR);
+    assert(err_auth_at == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_auth_slash = internal::validate_header_ordering_and_rules(list7, ":authority", "example.com/api");
-    assert(err_auth_slash == internal::ERR_PROTOCOL_ERROR);
+    assert(err_auth_slash == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_FORBIDDEN_CHARS: PROTOCOL_ERROR");
 
     // 8. :authority vs Host mismatch
@@ -466,7 +466,7 @@ fn test_h2_pseudo_header_invariants() {
     let _ = internal::validate_header_ordering_and_rules(list8, ":authority", "example.com");
     list8.fields.push(internal::DecodedH2Header { name: ":authority", value: "example.com", .. });
     let err_mismatch = internal::validate_header_ordering_and_rules(list8, "host", "attacker.com");
-    assert(err_mismatch == internal::ERR_PROTOCOL_ERROR);
+    assert(err_mismatch == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_HOST_MISMATCH: PROTOCOL_ERROR");
 }
 

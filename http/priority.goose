@@ -12,14 +12,8 @@ import .sfv;
 
 // ---- Urgency Constants & Model -------------------------------------------
 
-const PRIORITY_URGENCY_HIGHEST: u8 = 0;
-const PRIORITY_URGENCY_HIGH:    u8 = 1;
-const PRIORITY_URGENCY_DEFAULT: u8 = 3;
-const PRIORITY_URGENCY_LOW:     u8 = 5;
-const PRIORITY_URGENCY_LOWEST:  u8 = 7;
-
 struct PriorityParam {
-    urgency:     u8   = PRIORITY_URGENCY_DEFAULT,
+    urgency:     u8   = rfc::PRIORITY_URGENCY_DEFAULT,
     incremental: bool = false,
 }
 
@@ -28,14 +22,14 @@ type HttpPriority = PriorityParam;
 // Default priority instance per RFC 9218 Section 4.
 fn priority_default(default_incremental: bool = false) -> HttpPriority {
     return HttpPriority {
-        urgency:     PRIORITY_URGENCY_DEFAULT,
+        urgency:     rfc::PRIORITY_URGENCY_DEFAULT,
         incremental: default_incremental,
     };
 }
 
 // Checks if priority holds the standard default values (u=3, i=false).
 fn priority_is_default(p: const HttpPriority&) -> bool {
-    return p.urgency == PRIORITY_URGENCY_DEFAULT && !p.incremental;
+    return p.urgency == rfc::PRIORITY_URGENCY_DEFAULT && !p.incremental;
 }
 
 // Validates whether urgency integer is within RFC 9218 bounds [0..7].

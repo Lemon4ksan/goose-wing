@@ -13,13 +13,7 @@ import tls.hpke;
 
 // ---- RFC 9458 constants ----------------------------------------------------
 
-const OHTTP_INFO_REQUEST:       const u8[:] = "message/bhttp request";  // RFC 9458 Section 4.1
-const OHTTP_INFO_RESPONSE:      const u8[:] = "message/bhttp response"; // RFC 9458 Section 4.4
-const OHTTP_HDR_LEN:            i64         = 7;  // key_id(8) + kem/kdf/aead (16 each)
-const OHTTP_NENC:               i64         = 32; // X25519 encapsulated key length
-const OHTTP_AEAD_TAG_LEN:       i64         = 16;
-const OHTTP_MIN_KEY_CONFIG_LEN: i64         = 41; // 1 + 2 + 32 + 2 + 4 minimum (RFC 9458 Section 3.1)
-const OHTTP_MAX_KEY_CONFIGS:    i64         = 4;
+const OHTTP_MAX_KEY_CONFIGS: i64 = 4;
 
 // ---- structures -------------------------------------------------------------
 
@@ -27,9 +21,9 @@ const OHTTP_MAX_KEY_CONFIGS:    i64         = 4;
 // pair is selected; it must name a supported suite or parsing is rejected.
 struct OhttpKeyConfig {
     key_id:         u8       = 0,
-    kem_id:         u16      = HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-    kdf_id:         u16      = HPKE_KDF_HKDF_SHA256,
-    aead_id:        u16      = HPKE_AEAD_AES_128_GCM,
+    kem_id:         u16      = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+    kdf_id:         u16      = rfc::HPKE_KDF_HKDF_SHA256,
+    aead_id:        u16      = rfc::HPKE_AEAD_AES_128_GCM,
     public_key:     u8[..32] = [],
     public_key_len: i32      = 0,
 }
@@ -48,13 +42,13 @@ struct OhttpSession {
 // Suite restriction for this engine: DHKEM(X25519, HKDF-SHA256) paired with
 // AES-128-GCM or ChaCha20-Poly1305 (RFC 9458 Section 4.3 selection rules).
 fn ohttp_suite_supported(kem_id: u16, kdf_id: u16, aead_id: u16) -> bool {
-    if kem_id != HPKE_KEM_DHKEM_X25519_HKDF_SHA256 {
+    if kem_id != rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 {
         return false;
     }
-    if kdf_id != HPKE_KDF_HKDF_SHA256 {
+    if kdf_id != rfc::HPKE_KDF_HKDF_SHA256 {
         return false;
     }
-    return aead_id == HPKE_AEAD_AES_128_GCM || aead_id == HPKE_AEAD_CHACHA20_POLY1305;
+    return aead_id == rfc::HPKE_AEAD_AES_128_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
 }
 
 // Builds the 7-byte message header hdr = key_id || kem_id || kdf_id || aead_id
@@ -73,7 +67,7 @@ fn ohttp_build_hdr(cfg: const OhttpKeyConfig&, out: u8[7]&) {
 // 21-byte label + 1 zero byte + 7-byte hdr = 29 bytes (Appendix A info vector).
 fn ohttp_request_info(hdr: const u8[:], out: u8[..30]&) -> bool {
     out.clear();
-    out.append(OHTTP_INFO_REQUEST);
+    out.append(rfc::OHTTP_INFO_REQUEST);
     out.push(0);
     out.append(hdr);
     return out.len == 29;
@@ -97,7 +91,7 @@ fn ohttp_derive_response_aead(
     guard session.enc_len == 32 && session.enc.len == 32 else { return false; }
 
     var secret: u8[32] = [0; 32];
-    guard hpke_export(session.ctx, OHTTP_INFO_RESPONSE, secret[..exp_len]) else { return false; }
+    guard hpke_export(session.ctx, rfc::OHTTP_INFO_RESPONSE, secret[..exp_len]) else { return false; }
 
     var salt: u8[..64] = [];
     salt.append(session.enc[..]);
@@ -119,9 +113,9 @@ fn ohttp_derive_response_aead(
 //   raw = 01 00 20 <32-byte pk> 00 04 00 01 00 01, out = OhttpKeyConfig { .. }
 //   returns: ok = true, out.key_id = 1, out.kem_id = 0x0020, first pair 0x0001/0x0001
 fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
-    guard raw.len >= OHTTP_MIN_KEY_CONFIG_LEN else { return false; }
+    guard raw.len >= rfc::OHTTP_MIN_KEY_CONFIG_LEN else { return false; }
     let kem_id = ((raw[1] as u16) << 8) | raw[2];
-    guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
+    guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     let sym_len = ((raw[35] as u16) << 8) | raw[36];
     guard sym_len >= 4 && (sym_len % 4) == 0 else { return false; }
     guard 37 + sym_len == raw.len else { return false; }
@@ -211,7 +205,7 @@ fn ohttp_seal_request(
 
     var ct: u8[>..] = [];
     guard hpke_seal(session.ctx, [], inner_bhttp, ct) else { return false; }
-    guard OHTTP_HDR_LEN + 32 + ct.len <= out.cap else { return false; }
+    guard rfc::OHTTP_HDR_LEN + 32 + ct.len <= out.cap else { return false; }
 
     out.clear();
     out.append(hdr[..]);
@@ -240,7 +234,7 @@ fn ohttp_open_request(
     session:     OhttpSession&,
 ) -> bool {
     guard skR.len == 32 else { return false; }
-    guard enc_request.len >= OHTTP_HDR_LEN + 32 + OHTTP_AEAD_TAG_LEN else { return false; }
+    guard enc_request.len >= rfc::OHTTP_HDR_LEN + 32 + rfc::OHTTP_AEAD_TAG_LEN else { return false; }
     let kem_id = ((enc_request[1] as u16) << 8) | enc_request[2];
     let kdf_id = ((enc_request[3] as u16) << 8) | enc_request[4];
     let aead_id = ((enc_request[5] as u16) << 8) | enc_request[6];
@@ -252,8 +246,8 @@ fn ohttp_open_request(
     guard ohttp_request_info(hdr[..], info) else { return false; }
 
     var enc: u8[32] = [0; 32];
-    for i in 32 { enc[i] = enc_request[OHTTP_HDR_LEN + i]; }
-    let ct = enc_request[OHTTP_HDR_LEN + 32..];
+    for i in 32 { enc[i] = enc_request[rfc::OHTTP_HDR_LEN + i]; }
+    let ct = enc_request[rfc::OHTTP_HDR_LEN + 32..];
 
     var sk: u8[32] = [0; 32];
     for i in 32 { sk[i] = skR[i]; }
@@ -295,13 +289,13 @@ fn ohttp_seal_response(
 
     var ct: u8[>..] = [];
     for i in response.len { ct.push(0); }
-    if session.ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+    if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
         let tag, _, ok = core::aes128_gcm_seal(key16, nonce, response, [], ct[..]);
         guard ok else { return false; }
         for i in 16 { ct.push(tag[i]); }
-    } else if session.ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         let tag, _, ok = core::chacha20_poly1305_seal(key, nonce, response, [], ct[..]);
         guard ok else { return false; }
         for i in 16 { ct.push(tag[i]); }
@@ -332,7 +326,7 @@ fn ohttp_open_response(
     let nk = session.ctx.key_len;
     let nn = session.ctx.nonce_len;
     let exp_len = if nk > nn { nk } else { nn };
-    guard enc_response.len >= exp_len + OHTTP_AEAD_TAG_LEN else { return false; }
+    guard enc_response.len >= exp_len + rfc::OHTTP_AEAD_TAG_LEN else { return false; }
 
     let response_nonce = enc_response[..exp_len];
     let ct = enc_response[exp_len..];
@@ -346,11 +340,11 @@ fn ohttp_open_response(
     let body = ct[..ct.len - 16];
 
     var pt: u8[>..] = [];
-    if session.ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+    if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
         guard core::aes128_gcm_open(key16, nonce, body, [], tag, pt) else { return false; }
-    } else if session.ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         guard core::chacha20_poly1305_open(key, nonce, body, [], tag, pt) else { return false; }
     } else {
         return false;

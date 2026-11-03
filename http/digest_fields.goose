@@ -14,16 +14,6 @@ import .sfv;
 
 // ---- RFC 9530 Constants --------------------------------------------------
 
-const HEADER_CONTENT_DIGEST:      const u8[:] = "Content-Digest";
-const HEADER_REPR_DIGEST:         const u8[:] = "Repr-Digest";
-const HEADER_WANT_CONTENT_DIGEST: const u8[:] = "Want-Content-Digest"; // RFC 9530 Section 4
-const HEADER_WANT_REPR_DIGEST:    const u8[:] = "Want-Repr-Digest"; // RFC 9530 Section 4
-
-const DIGEST_ALG_SHA256: const u8[:] = "sha-256";
-const DIGEST_ALG_SHA512: const u8[:] = "sha-512";
-
-// ---- Digest Computation --------------------------------------------------
-
 inline fn compute_sha256_digest(data: const u8[:]) -> u8[..64] {
     var out: u8[..64] = [];
     let hash = core::sha256(data);
@@ -44,10 +34,10 @@ inline fn compute_sha512_digest(data: const u8[:]) -> u8[..64] {
 //   data = "hello world", alg = "sha-256"
 //   returns: [185, 91, 154, ...], ok = true
 fn compute_digest_bytes(data: const u8[:], alg: const u8[:]) -> u8[..64], bool {
-    if eq_ascii_fold(alg, DIGEST_ALG_SHA256) {
+    if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA256) {
         return compute_sha256_digest(data), true;
     }
-    if eq_ascii_fold(alg, DIGEST_ALG_SHA512) {
+    if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA512) {
         return compute_sha512_digest(data), true;
     }
     var empty: u8[..64] = [];
@@ -64,7 +54,7 @@ fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) ->
     let hash_bytes, ok_hash = compute_digest_bytes(data, alg);
     guard ok_hash else { return false; }
 
-    out.append(if eq_ascii_fold(alg, DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
+    out.append(if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
     core::base64_encode(hash_bytes[..], out);
     out.push(':' as u8);
     return true;
@@ -76,7 +66,7 @@ fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) ->
 fn set_content_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
     var field_val: u8[..128] = [];
     guard format_digest_field_value(alg, req.body[..], field_val) else { return false; }
-    set_header(req, HEADER_CONTENT_DIGEST, field_val[..]);
+    set_header(req, rfc::HEADER_CONTENT_DIGEST, field_val[..]);
     return true;
 }
 
@@ -84,7 +74,7 @@ fn set_content_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
 fn set_repr_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
     var field_val: u8[..128] = [];
     guard format_digest_field_value(alg, req.body[..], field_val) else { return false; }
-    set_header(req, HEADER_REPR_DIGEST, field_val[..]);
+    set_header(req, rfc::HEADER_REPR_DIGEST, field_val[..]);
     return true;
 }
 
@@ -97,21 +87,21 @@ fn format_want_digest_header<B>(out: B&, want_algorithms: const u8[:] = "sha-256
 fn set_want_content_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
     var val: u8[..64] = [];
     format_want_digest_header(val, want_algorithms);
-    set_header(req, HEADER_WANT_CONTENT_DIGEST, val[..]);
+    set_header(req, rfc::HEADER_WANT_CONTENT_DIGEST, val[..]);
 }
 
 // Attaches RFC 9530 Want-Repr-Digest header to Request.
 fn set_want_repr_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
     var val: u8[..64] = [];
     format_want_digest_header(val, want_algorithms);
-    set_header(req, HEADER_WANT_REPR_DIGEST, val[..]);
+    set_header(req, rfc::HEADER_WANT_REPR_DIGEST, val[..]);
 }
 
 // Computes and attaches RFC 9530 Content-Digest header to Response.
 fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> bool {
     var field_val: u8[..128] = [];
     guard format_digest_field_value(alg, res.body[..], field_val) else { return false; }
-    res.set_header(HEADER_CONTENT_DIGEST, field_val[..]);
+    res.set_header(rfc::HEADER_CONTENT_DIGEST, field_val[..]);
     return true;
 }
 
@@ -119,7 +109,7 @@ fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> 
 fn set_response_repr_digest(res: Response&, alg: const u8[:] = "sha-256") -> bool {
     var field_val: u8[..128] = [];
     guard format_digest_field_value(alg, res.body[..], field_val) else { return false; }
-    res.set_header(HEADER_REPR_DIGEST, field_val[..]);
+    res.set_header(rfc::HEADER_REPR_DIGEST, field_val[..]);
     return true;
 }
 
@@ -148,7 +138,9 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
     guard parse_sf_dict(header_val, entries) else { return false; }
 
     for &entry in entries {
-        if eq_ascii_fold(entry.key[..], DIGEST_ALG_SHA256) || eq_ascii_fold(entry.key[..], DIGEST_ALG_SHA512) {
+        let is_sha256 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA256);
+        let is_sha512 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA512);
+        if is_sha256 || is_sha512 {
             if verify_single_digest_entry(entry, data) {
                 return true;
             }
@@ -159,28 +151,28 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
 
 // Verifies Request Content-Digest header against req.body.
 fn verify_request_content_digest(req: const Request&) -> bool {
-    let hdr = req.header(HEADER_CONTENT_DIGEST);
+    let hdr = req.header(rfc::HEADER_CONTENT_DIGEST);
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, req.body[..]);
 }
 
 // Verifies Request Repr-Digest header against req.body.
 fn verify_request_repr_digest(req: const Request&) -> bool {
-    let hdr = req.header(HEADER_REPR_DIGEST);
+    let hdr = req.header(rfc::HEADER_REPR_DIGEST);
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, req.body[..]);
 }
 
 // Verifies Response Content-Digest header against res.body.
 fn verify_response_content_digest(res: const Response&) -> bool {
-    let hdr = res.header(HEADER_CONTENT_DIGEST);
+    let hdr = res.header(rfc::HEADER_CONTENT_DIGEST);
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
 }
 
 // Verifies Response Repr-Digest header against res.body.
 fn verify_response_repr_digest(res: const Response&) -> bool {
-    let hdr = res.header(HEADER_REPR_DIGEST);
+    let hdr = res.header(rfc::HEADER_REPR_DIGEST);
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
 }

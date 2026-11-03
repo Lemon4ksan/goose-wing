@@ -9,16 +9,6 @@ import std;
 
 // ---- Framing Constants (LPM: Length-Prefixed Message) -------------------
 
-// 5-byte LPM Header: 1-byte compression flag + 4-byte big-endian uint32 payload length.
-const GRPC_LPM_HEADER_LEN: u32 = 5;
-
-// gRPC-Web wire flags (stored in the 1st byte of the LPM header):
-// Bit 0: Compressed flag (RFC gRPC)
-const GRPC_FLAG_COMPRESSED: u8 = 0x01;
-
-// Bit 7: Trailers-in-body flag (RFC gRPC-Web Section 2.1)
-const GRPC_WEB_FLAG_TRAILERS: u8 = 0x80;
-
 // Maximum allowed single gRPC message payload size (default 4MB, bounded for zero-heap stack)
 const GRPC_DEFAULT_MAX_MESSAGE_SIZE: u32 = 4194304;
 

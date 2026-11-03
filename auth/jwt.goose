@@ -11,13 +11,6 @@ import json;
 import core from "..";
 
 // Cryptographic key and signature sizes
-const ED25519_KEY_LEN:     i64 = 32;
-const ED25519_SIG_LEN:     i64 = 64;
-const HMAC_SHA256_MAC_LEN: i64 = 32;
-const HMAC_SHA384_MAC_LEN: i64 = 48;
-const HMAC_SHA512_MAC_LEN: i64 = 64;
-
-// Default claim validation clock skew leeway (seconds)
 const DEFAULT_JWT_LEEWAY_SECONDS: i64 = 60;
 
 // ---- JWT / JWS Algorithm & Error Models ----------------------------------
@@ -1220,15 +1213,15 @@ fn verify_jwt_hmac_signature(
     sig_bytes:     const u8[:],
 ) -> bool {
     if alg == JwtAlg.HS256 {
-        guard sig_bytes.len == HMAC_SHA256_MAC_LEN else { return false; }
+        guard sig_bytes.len == rfc::HMAC_SHA256_MAC_LEN else { return false; }
         let expected = core::hmac_sha256(secret_key, signing_input);
         return core::ct_eq_bytes(expected[..], sig_bytes);
     } else if alg == JwtAlg.HS384 {
-        guard sig_bytes.len == HMAC_SHA384_MAC_LEN else { return false; }
+        guard sig_bytes.len == rfc::HMAC_SHA384_MAC_LEN else { return false; }
         let expected = core::hmac_sha384(secret_key, signing_input);
         return core::ct_eq_bytes(expected[..], sig_bytes);
     } else if alg == JwtAlg.HS512 {
-        guard sig_bytes.len == HMAC_SHA512_MAC_LEN else { return false; }
+        guard sig_bytes.len == rfc::HMAC_SHA512_MAC_LEN else { return false; }
         let expected = core::hmac_sha512(secret_key, signing_input);
         return core::ct_eq_bytes(expected[..], sig_bytes);
     }
@@ -1277,9 +1270,9 @@ fn verify_jwt_eddsa_signature(
     signing_input: const u8[:],
     sig_bytes:     const u8[:],
 ) -> bool {
-    guard sig_bytes.len == ED25519_SIG_LEN else { return false; }
+    guard sig_bytes.len == rfc::ED25519_SIG_LEN else { return false; }
     var sig64: u8[64] = [0; 64];
-    for i in ED25519_SIG_LEN {
+    for i in rfc::ED25519_SIG_LEN {
         sig64[i] = sig_bytes[i];
     }
     return core::ed25519_verify(public_key, signing_input, sig64);

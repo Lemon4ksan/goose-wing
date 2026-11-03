@@ -12,26 +12,16 @@ import .hpke;
 
 // ---- ECH Constants & Identifiers -----------------------------------------
 
-const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9849
-
-const ECH_CLIENT_OUTER: u8 = 0;
-const ECH_CLIENT_INNER: u8 = 1;
-
-// Supported ECH version (RFC 9849)
-const ECH_VERSION_RFC9849: u16 = 0xFE0D;
-
-// ---- Data Structures ----------------------------------------------------
-
 struct EchCipherSuite {
-    kdf_id:  u16 = HPKE_KDF_HKDF_SHA256,
-    aead_id: u16 = HPKE_AEAD_AES_128_GCM,
+    kdf_id:  u16 = rfc::HPKE_KDF_HKDF_SHA256,
+    aead_id: u16 = rfc::HPKE_AEAD_AES_128_GCM,
 }
 
 struct EchConfig {
-    version:             u16                 = ECH_VERSION_RFC9849,
+    version:             u16                 = rfc::ECH_VERSION_RFC9849,
     length:              u16                 = 0,
     config_id:           u8                  = 0,
-    kem_id:              u16                 = HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+    kem_id:              u16                 = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
     public_key:          u8[32]              = [0; 32],
     cipher_suites:       EchCipherSuite[..4] = [],
     maximum_name_length: u8                  = 0,
@@ -143,7 +133,7 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     guard raw.len >= 4 else { return false; }
     var c = cursor_from(raw);
 
-    guard get_u16(c, out.version) && out.version == ECH_VERSION_RFC9849 else { return false; }
+    guard get_u16(c, out.version) && out.version == rfc::ECH_VERSION_RFC9849 else { return false; }
     guard get_u16(c, out.length) && out.length <= cursor_len(c) else { return false; }
 
     let total_len = 4 + (out.length as i64);
@@ -178,7 +168,7 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
     let total_entry = 4 + (elen as i64);
     guard total_entry <= cursor_len(list_cursor) else { return false; }
 
-    if ver == ECH_VERSION_RFC9849 {
+    if ver == rfc::ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
         guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
         guard out.configs.len < out.configs.cap else { return false; }
@@ -213,8 +203,8 @@ fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
 }
 
 fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
-    guard cs.kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
-    return cs.aead_id == HPKE_AEAD_AES_128_GCM || cs.aead_id == HPKE_AEAD_CHACHA20_POLY1305;
+    guard cs.kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
+    return cs.aead_id == rfc::HPKE_AEAD_AES_128_GCM || cs.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
 }
 
 // ---- Selection and Matching ----------------------------------------------
@@ -225,7 +215,8 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
     for i in cfg_count {
         guard i < list.configs.len else { break; }
         let cfg = list.configs[i];
-        guard cfg.version == ECH_VERSION_RFC9849 && cfg.kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
+        guard cfg.version == rfc::ECH_VERSION_RFC9849 else { continue; }
+        guard cfg.kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
 
         let cs_count = cfg.cipher_suites.len;
         for j in cs_count {
@@ -278,7 +269,7 @@ fn build_ech_outer_extension<B>(
     ciphertext: const u8[:],
     out:        B&,
 ) -> bool {
-    out.push(ECH_CLIENT_OUTER);
+    out.push(rfc::ECH_CLIENT_OUTER);
     out.push(((cs.kdf_id >> 8) & 0xFF) as u8);
     out.push((cs.kdf_id & 0xFF) as u8);
     out.push(((cs.aead_id >> 8) & 0xFF) as u8);
@@ -302,7 +293,7 @@ fn build_ech_outer_extension<B>(
 // RFC 9849 Section 5: Builds the ECH extension wire bytes for ClientHelloInner.
 // Type = 0x01 (inner), empty payload.
 fn build_ech_inner_extension<B>(out: B&) {
-    out.push(ECH_CLIENT_INNER);
+    out.push(rfc::ECH_CLIENT_INNER);
 }
 
 // Seals the padded ClientHelloInner using HPKE and the selected ECHConfig.

@@ -24,47 +24,47 @@ fn test_control_stream_forbidden_frames_precedence(conn: internal::H3Connection&
     // A. DATA frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
     // If the first frame is any other frame type, connection error H3_MISSING_SETTINGS (0x010A)
     var data_wire: u8[..64] = [];
-    internal::quic_encode_varint(data_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(data_wire, rfc::H3_STREAM_CONTROL);
     assert(internal::encode_h3_data_frame(data_wire, "test"));
     let err_data = internal::handle_stream_data(conn, 2, false, data_wire[..], false);
-    assert(err_data == internal::H3_ERR_MISSING_SETTINGS);
+    assert(err_data == rfc::H3_ERR_MISSING_SETTINGS);
 
     // B. HEADERS frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var headers_wire: u8[..64] = [];
-    internal::quic_encode_varint(headers_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(headers_wire, rfc::H3_STREAM_CONTROL);
     assert(internal::encode_h3_headers_frame(headers_wire, "head"));
     let err_hdr = internal::handle_stream_data(conn, 2, false, headers_wire[..], false);
-    assert(err_hdr == internal::H3_ERR_MISSING_SETTINGS);
+    assert(err_hdr == rfc::H3_ERR_MISSING_SETTINGS);
 
     // C. HTTP/2 reserved frame (0x02 PRIORITY) sent on control stream before SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var h2_wire: u8[..64] = [];
-    internal::quic_encode_varint(h2_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(h2_wire, rfc::H3_STREAM_CONTROL);
     assert(internal::encode_h3_frame_header(h2_wire, 0x02, 0));
     let err_h2 = internal::handle_stream_data(conn, 2, false, h2_wire[..], false);
-    assert(err_h2 == internal::H3_ERR_MISSING_SETTINGS);
+    assert(err_h2 == rfc::H3_ERR_MISSING_SETTINGS);
 
     // D. GOAWAY frame (allowed on control stream) sent before SETTINGS -> H3_ERR_MISSING_SETTINGS (RFC 9114 §6.2.1)
     conn = internal::new_h3_server_connection(settings);
     var ga_wire: u8[..64] = [];
-    internal::quic_encode_varint(ga_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(ga_wire, rfc::H3_STREAM_CONTROL);
     assert(internal::encode_h3_goaway_frame(ga_wire, 0));
     let err_ga = internal::handle_stream_data(conn, 2, false, ga_wire[..], false);
-    assert(err_ga == internal::H3_ERR_MISSING_SETTINGS);
+    assert(err_ga == rfc::H3_ERR_MISSING_SETTINGS);
 
     // E. DATA frame sent on peer control stream after SETTINGS -> H3_ERR_FRAME_UNEXPECTED (RFC 9114 §7.2.1)
     conn = internal::new_h3_server_connection(settings);
     var init_wire: u8[..64] = [];
-    internal::quic_encode_varint(init_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(init_wire, rfc::H3_STREAM_CONTROL);
     assert(internal::encode_h3_settings_frame(init_wire, settings));
     let err_init = internal::handle_stream_data(conn, 2, false, init_wire[..], false);
-    assert(err_init == internal::H3_ERR_NO_ERROR);
+    assert(err_init == rfc::H3_ERR_NO_ERROR);
 
     var post_data: u8[..64] = [];
     assert(internal::encode_h3_data_frame(post_data, "bad"));
     let err_post = internal::handle_stream_data(conn, 2, false, post_data[..], false);
-    assert(err_post == internal::H3_ERR_FRAME_UNEXPECTED);
+    assert(err_post == rfc::H3_ERR_FRAME_UNEXPECTED);
 
     print("CONTROL_STREAM_FORBIDDEN_PRECEDENCE: OK");
 }
@@ -79,7 +79,7 @@ fn test_duplicate_settings_rejection() {
     internal::quic_encode_varint(wire_grease, 0x21); // Duplicate!
     internal::quic_encode_varint(wire_grease, 200);
     let err_grease = internal::parse_h3_settings_frame(wire_grease[..], out_settings);
-    assert(err_grease == internal::H3_ERR_SETTINGS_ERROR);
+    assert(err_grease == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Duplicate unknown setting ID (e.g. 0x1F sent twice)
     var wire_unknown: u8[..64] = [];
@@ -88,7 +88,7 @@ fn test_duplicate_settings_rejection() {
     internal::quic_encode_varint(wire_unknown, 0x1F); // Duplicate!
     internal::quic_encode_varint(wire_unknown, 2);
     let err_unknown = internal::parse_h3_settings_frame(wire_unknown[..], out_settings);
-    assert(err_unknown == internal::H3_ERR_SETTINGS_ERROR);
+    assert(err_unknown == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Valid distinct settings pass
     var wire_valid: u8[..64] = [];
@@ -97,7 +97,7 @@ fn test_duplicate_settings_rejection() {
     internal::quic_encode_varint(wire_valid, 0x40);
     internal::quic_encode_varint(wire_valid, 200);
     let err_valid = internal::parse_h3_settings_frame(wire_valid[..], out_settings);
-    assert(err_valid == internal::H3_ERR_NO_ERROR);
+    assert(err_valid == rfc::H3_ERR_NO_ERROR);
 
     print("DUPLICATE_SETTINGS_REJECTION: OK");
 }
@@ -106,19 +106,19 @@ fn test_push_stream_validation(conn: internal::H3Connection&, settings: const wi
     // 1. Server receives push stream from client -> H3_ERR_STREAM_CREATION (RFC 9114 §6.2.2)
     conn = internal::new_h3_server_connection(settings);
     var push_wire: u8[..64] = [];
-    internal::quic_encode_varint(push_wire, internal::H3_STREAM_PUSH);
+    internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
     internal::quic_encode_varint(push_wire, 0);
     let s_err = internal::handle_stream_data(conn, 2, false, push_wire[..], false);
-    assert(s_err == internal::H3_ERR_STREAM_CREATION);
+    assert(s_err == rfc::H3_ERR_STREAM_CREATION);
     assert(conn.state == internal::H3ConnState.Closed);
 
     // 2. Client receives push stream without having sent MAX_PUSH_ID -> H3_ERR_ID_ERROR (RFC 9114 §4.6)
     conn = internal::new_h3_client_connection(settings);
     push_wire.clear();
-    internal::quic_encode_varint(push_wire, internal::H3_STREAM_PUSH);
+    internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
     internal::quic_encode_varint(push_wire, 0);
     let c_err = internal::handle_stream_data(conn, 3, false, push_wire[..], false);
-    assert(c_err == internal::H3_ERR_ID_ERROR);
+    assert(c_err == rfc::H3_ERR_ID_ERROR);
     assert(conn.state == internal::H3ConnState.Closed);
 
     // 3. Client receives push stream with push_id > max_push_id_advertised -> H3_ERR_ID_ERROR
@@ -126,20 +126,20 @@ fn test_push_stream_validation(conn: internal::H3Connection&, settings: const wi
     var dummy_out: u8[..64] = [];
     assert(internal::send_max_push_id(conn, 5, dummy_out));
     push_wire.clear();
-    internal::quic_encode_varint(push_wire, internal::H3_STREAM_PUSH);
+    internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
     internal::quic_encode_varint(push_wire, 6);
     let c_err_excess = internal::handle_stream_data(conn, 3, false, push_wire[..], false);
-    assert(c_err_excess == internal::H3_ERR_ID_ERROR);
+    assert(c_err_excess == rfc::H3_ERR_ID_ERROR);
 
     // 4. Client receives push stream with push_id <= max_push_id_advertised -> H3_ERR_NO_ERROR
     conn = internal::new_h3_client_connection(settings);
     dummy_out.clear();
     assert(internal::send_max_push_id(conn, 5, dummy_out));
     push_wire.clear();
-    internal::quic_encode_varint(push_wire, internal::H3_STREAM_PUSH);
+    internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
     internal::quic_encode_varint(push_wire, 4);
     let c_err_ok = internal::handle_stream_data(conn, 3, false, push_wire[..], false);
-    assert(c_err_ok == internal::H3_ERR_NO_ERROR);
+    assert(c_err_ok == rfc::H3_ERR_NO_ERROR);
 
     print("PUSH_STREAM_VALIDATION: OK");
 }
@@ -147,7 +147,7 @@ fn test_push_stream_validation(conn: internal::H3Connection&, settings: const wi
 fn test_server_initiated_bidi_stream_rejection(conn: internal::H3Connection&, settings: const wing::H3Settings&) {
     conn = internal::new_h3_client_connection(settings);
     let err_bidi = internal::handle_stream_data(conn, 1, true, "test", false);
-    assert(err_bidi == internal::H3_ERR_STREAM_CREATION);
+    assert(err_bidi == rfc::H3_ERR_STREAM_CREATION);
     assert(conn.state == internal::H3ConnState.Closed);
 
     print("SERVER_INITIATED_BIDI_REJECTION: OK");
@@ -159,20 +159,20 @@ fn test_initial_dynamic_table_capacity_zero(conn: internal::H3Connection&) {
     assert(conn.qpack_table.capacity_bytes == 0);
 
     var enc_stream_data: u8[..64] = [];
-    internal::quic_encode_varint(enc_stream_data, internal::H3_STREAM_QPACK_ENCODER);
+    internal::quic_encode_varint(enc_stream_data, rfc::H3_STREAM_QPACK_ENCODER);
     enc_stream_data.push(0x44); // 0100 0100 (Insert literal name len 4)
     enc_stream_data.append("test");
     enc_stream_data.push(0x03); // Val len 3
     enc_stream_data.append("val");
 
     let err = internal::handle_stream_data(conn, 3, false, enc_stream_data[..], false);
-    assert(err == internal::H3_ERR_QPACK_ENCODER_STREAM_ERROR);
+    assert(err == rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR);
     assert(conn.state == internal::H3ConnState.Closed);
 
     // Now test with Set Dynamic Table Capacity instruction first
     conn = internal::new_h3_client_connection(settings);
     var enc_stream_valid: u8[..64] = [];
-    internal::quic_encode_varint(enc_stream_valid, internal::H3_STREAM_QPACK_ENCODER);
+    internal::quic_encode_varint(enc_stream_valid, rfc::H3_STREAM_QPACK_ENCODER);
     enc_stream_valid.push(0x3F); // 0x20 | 0x1F
     enc_stream_valid.push(0xE1); // Capacity 4096
     enc_stream_valid.push(0x1F);
@@ -182,7 +182,7 @@ fn test_initial_dynamic_table_capacity_zero(conn: internal::H3Connection&) {
     enc_stream_valid.append("val");
 
     let err2 = internal::handle_stream_data(conn, 3, false, enc_stream_valid[..], false);
-    assert(err2 == internal::H3_ERR_NO_ERROR);
+    assert(err2 == rfc::H3_ERR_NO_ERROR);
     assert(conn.qpack_table.insert_count == 1);
 
     print("INITIAL_DYNAMIC_TABLE_CAPACITY_ZERO: OK");

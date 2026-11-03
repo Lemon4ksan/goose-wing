@@ -103,7 +103,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
         guard b >= '0' && b <= '9' else {
             return 0;
         }
-        val = core::ct_min_i64(val * 10 + (b - '0'), MAX_DELTA_SECONDS);
+        val = core::ct_min_i64(val * 10 + (b - '0'), rfc::MAX_DELTA_SECONDS);
     }
     return val;
 }
@@ -148,7 +148,7 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
     let delay = compute_response_delay(ts);
     let initial_age = compute_corrected_initial_age(apparent_age, age_hdr, delay);
     let resident = compute_resident_time(ts);
-    return core::ct_min_i64(initial_age + resident, MAX_DELTA_SECONDS);
+    return core::ct_min_i64(initial_age + resident, rfc::MAX_DELTA_SECONDS);
 }
 
 // ---- freshness lifetime helpers --------------------------------------------

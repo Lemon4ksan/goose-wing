@@ -90,7 +90,7 @@ fn test_packet_number_space_frame_matrix() {
 
     let handled, _ = internal::quic_conn_process_payload(srv, stream_payload[..], internal::QuicHeaderType.Initial);
     assert(!handled);
-    assert(srv.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // Reset connection
     var srv2 = internal::new_quic_server_connection(scid[..]);
@@ -99,7 +99,7 @@ fn test_packet_number_space_frame_matrix() {
     hd_payload.push(0x1E);
     let handled2, _ = internal::quic_conn_process_payload(srv2, hd_payload[..], internal::QuicHeaderType.Initial);
     assert(!handled2);
-    assert(srv2.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv2.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // Initial packet containing CONNECTION_CLOSE_APP (0x1D) -> MUST trigger PROTOCOL_VIOLATION
     var srv3 = internal::new_quic_server_connection(scid[..]);
@@ -107,7 +107,7 @@ fn test_packet_number_space_frame_matrix() {
     assert(wire_kit::parse_hex("1D0000", cc_app_payload)); // CONNECTION_CLOSE_APP code=0 len=0
     let handled3, _ = internal::quic_conn_process_payload(srv3, cc_app_payload[..], internal::QuicHeaderType.Initial);
     assert(!handled3);
-    assert(srv3.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv3.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // 1-RTT packet containing legitimate STREAM frame -> MUST succeed
     var srv4 = internal::new_quic_server_connection(scid[..]);
@@ -129,7 +129,7 @@ fn test_server_receiving_new_token() {
     assert(wire_kit::parse_hex("070474657374", tok_payload));
     let handled, _ = internal::quic_conn_process_payload(srv, tok_payload[..], internal::QuicHeaderType.OneRtt);
     assert(!handled);
-    assert(srv.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     print("QUIC_SERVER_NEW_TOKEN_REJECTED: OK");
 }
@@ -147,7 +147,7 @@ fn test_stream_data_blocked_send_only() {
     assert(wire_kit::parse_hex("15034000", sdb_payload)); // STREAM_DATA_BLOCKED stream=3 limit=0
     let handled, _ = internal::quic_conn_process_payload(srv, sdb_payload[..], internal::QuicHeaderType.OneRtt);
     assert(!handled);
-    assert(srv.close_code == internal::QUIC_ERR_STREAM_STATE);
+    assert(srv.close_code == rfc::QUIC_ERR_STREAM_STATE);
 
     print("QUIC_STREAM_DATA_BLOCKED_INVARIANTS: OK");
 }

@@ -9,25 +9,7 @@ import std;
 
 // ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
-const CAPSULE_DATAGRAM:            u64 = 0x00;        // RFC 9297 Section 3.5 (DATAGRAM Capsule)
-const CAPSULE_ADDRESS_ASSIGN:      u64 = 0x01;        // RFC 9484 Section 4.7.1 & 12.4
-const CAPSULE_ADDRESS_REQUEST:     u64 = 0x02;        // RFC 9484 Section 4.7.2 & 12.4
-const CAPSULE_ROUTE_ADVERTISEMENT: u64 = 0x03;        // RFC 9484 Section 4.7.3 & 12.4
-const CAPSULE_WT_RESET_STREAM:     u64 = 0x190B4D39;  // draft-ietf-webtrans-http3-16
-const CAPSULE_WT_STOP_SENDING:     u64 = 0x190B4D3A;  // draft-ietf-webtrans-http3-16
-const CAPSULE_CLOSE_WEBTRANSPORT:  u64 = 0x2843;      // WebTransport
-const CAPSULE_DRAIN_WEBTRANSPORT:  u64 = 0x78AE;      // WebTransport
-
 // Legacy draft backward-compatibility constants
-const CAPSULE_DRAFT_ADDRESS_ASSIGN:      u64 = 0x3861;
-const CAPSULE_DRAFT_ADDRESS_REQUEST:     u64 = 0x3862;
-const CAPSULE_DRAFT_ROUTE_ADVERTISEMENT: u64 = 0x3863;
-
-const MASQUE_PROTOCOL_CONNECT_UDP: const u8[:] = "connect-udp";
-const MASQUE_PROTOCOL_CONNECT_IP:  const u8[:] = "connect-ip";
-const MASQUE_CAPSULE_HEADER:       const u8[:] = "capsule-protocol";
-const MASQUE_CAPSULE_VALUE:        const u8[:] = "?1";
-
 struct HttpCapsule {
     capsule_type: u64         = 0,
     payload:      const u8[:] = [],
@@ -178,7 +160,7 @@ fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: 
     var datagram_body: u8[..2048] = [];
     guard internal::quic_encode_varint(datagram_body, context_id) else { return false; }
     datagram_body.append(udp_packet);
-    return encode_http_capsule(out, CAPSULE_DATAGRAM, datagram_body[..]);
+    return encode_http_capsule(out, rfc::CAPSULE_DATAGRAM, datagram_body[..]);
 }
 
 // Parses a DATAGRAM capsule payload into (context_id, udp_packet, ok) (RFC 9298 §5).
@@ -248,7 +230,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
         return false;
     }
     body.push(req.prefix_len);
-    return encode_http_capsule(out, CAPSULE_ADDRESS_REQUEST, body[..]);
+    return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
 // Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.7.2).
@@ -300,7 +282,7 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
         return false;
     }
     body.push(assign.prefix_len);
-    return encode_http_capsule(out, CAPSULE_ADDRESS_ASSIGN, body[..]);
+    return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_ASSIGN, body[..]);
 }
 
 // Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.7.1).
@@ -354,7 +336,7 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
         return false;
     }
     body.push(route.ip_protocol);
-    return encode_http_capsule(out, CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
+    return encode_http_capsule(out, rfc::CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
 // Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.7.3).
@@ -491,14 +473,14 @@ fn build_masque_connect_request(
 
     out_headers.set_header(":method", "CONNECT");
     if tunnel.config.mode == MasqueProtocolMode.ConnectUdp {
-        out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_UDP);
+        out_headers.set_header(":protocol", rfc::MASQUE_PROTOCOL_CONNECT_UDP);
     } else {
-        out_headers.set_header(":protocol", MASQUE_PROTOCOL_CONNECT_IP);
+        out_headers.set_header(":protocol", rfc::MASQUE_PROTOCOL_CONNECT_IP);
     }
     out_headers.set_header(":scheme", scheme_buf[..]);
     out_headers.set_header(":authority", auth_buf[..]);
     out_headers.set_header(":path", out_path[..]);
-    out_headers.set_header("capsule-protocol", MASQUE_CAPSULE_VALUE);
+    out_headers.set_header("capsule-protocol", rfc::MASQUE_CAPSULE_VALUE);
 }
 
 // Sends a packet through the tunnel: either as a QUIC DATAGRAM frame or as an in-stream DATAGRAM capsule.
@@ -537,7 +519,7 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     let c, ok_c = parse_http_capsule(capsule_wire);
     guard ok_c else { return false; }
 
-    if c.capsule_type == CAPSULE_DATAGRAM {
+    if c.capsule_type == rfc::CAPSULE_DATAGRAM {
         let ctx_id, pkt, ok_pkt = parse_connect_udp_datagram(c.payload);
         guard ok_pkt && ctx_id == 0 else { return false; }
         out_packet.append(pkt);
@@ -546,11 +528,11 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
         return true;
     }
 
-    if c.capsule_type == CAPSULE_ADDRESS_ASSIGN || c.capsule_type == CAPSULE_DRAFT_ADDRESS_ASSIGN {
+    if c.capsule_type == rfc::CAPSULE_ADDRESS_ASSIGN || c.capsule_type == rfc::CAPSULE_DRAFT_ADDRESS_ASSIGN {
         return apply_assigned_ip(tunnel, c.payload);
     }
 
-    if c.capsule_type == CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
+    if c.capsule_type == rfc::CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == rfc::CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
         out_packet.clear();
         return true;
     }

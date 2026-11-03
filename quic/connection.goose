@@ -208,7 +208,7 @@ fn process_space_ack(
     var acked_ranges: AckInterval[..64] = [];
     let ok = parse_and_validate_ack(space, ack_frame, acked_ranges);
     guard ok else {
-        quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+        quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
         return false;
     }
 
@@ -373,7 +373,7 @@ inline fn validate_stream_recv_final_size(
 
 fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     guard quic_stream_can_recv(frame.stream_id, conn.role) else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
     }
 
@@ -381,20 +381,20 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
         let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
         guard sid_found >= 0 else {
-            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
             return false, false;
         }
     }
 
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
     guard ok else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_LIMIT);
         return false, false;
     }
 
     let end_offset = frame.offset + frame.length;
     guard validate_stream_recv_final_size(conn.stream_table.streams[idx], end_offset, frame.fin) else {
-        quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
+        quic_conn_close(conn, rfc::QUIC_ERR_FINAL_SIZE);
         return false, false;
     }
 
@@ -425,7 +425,7 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
 
 fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     guard quic_stream_can_recv(frame.stream_id, conn.role) else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
     }
 
@@ -433,14 +433,14 @@ fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
         let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
         guard sid_found >= 0 else {
-            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
             return false, false;
         }
     }
 
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
     guard ok else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_LIMIT);
         return false, false;
     }
 
@@ -461,7 +461,7 @@ fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&)
 
 fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     guard quic_stream_can_send(frame.stream_id, conn.role) else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
     }
 
@@ -469,14 +469,14 @@ fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
         let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
         guard sid_found >= 0 else {
-            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
             return false, false;
         }
     }
 
     let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
     guard ok else {
-        quic_conn_close(conn, QUIC_ERR_STREAM_LIMIT);
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_LIMIT);
         return false, false;
     }
 
@@ -497,14 +497,14 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
 
     if frame.frame_type == QuicFrameType.MaxStreamData {
         guard quic_stream_can_send(frame.stream_id, conn.role) else {
-            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
             return false, false;
         }
         // RFC 9000 §19.10: Ingress MAX_STREAM_DATA frame for unopened locally-initiated stream is STREAM_STATE_ERROR
         if !is_peer_initiated_stream(frame.stream_id, conn.role) {
             let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
             guard sid_found >= 0 else {
-                quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+                quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
                 return false, false;
             }
         }
@@ -519,7 +519,7 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         // RFC 9000 §19.13: "An endpoint that receives a STREAM_DATA_BLOCKED frame for a send-only
         // stream MUST terminate the connection with error STREAM_STATE_ERROR."
         guard quic_stream_can_recv(frame.stream_id, conn.role) else {
-            quic_conn_close(conn, QUIC_ERR_STREAM_STATE);
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
             return false, false;
         }
         return true, true;
@@ -532,7 +532,7 @@ inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&)
     if frame.frame_type == QuicFrameType.NewConnectionId {
         // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
         if conn.dcid.len == 0 {
-            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
         return true, true;
@@ -540,7 +540,7 @@ inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&)
     if frame.frame_type == QuicFrameType.RetireConnectionId {
         // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
         if conn.scid.len == 0 {
-            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
         return true, true;
@@ -555,7 +555,7 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     }
     if frame.frame_type == QuicFrameType.HandshakeDone {
         if conn.role == QuicRole.Server {
-            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
         conn.state = QuicConnState.Established;
@@ -565,7 +565,7 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
         // RFC 9000 §19.7: "Clients MUST NOT send NEW_TOKEN frames. A server MUST treat receipt
         // of a NEW_TOKEN frame as a connection error of type PROTOCOL_VIOLATION."
         if conn.role == QuicRole.Server {
-            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
         return true, true;
@@ -696,7 +696,7 @@ fn quic_conn_process_payload(
 ) -> bool, bool {
     // RFC 9000 Section 12.4: Frames and Frame Types - An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
     guard payload.len > 0 else {
-        quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+        quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
         return false, false;
     }
     var idx: i64 = 0;
@@ -705,12 +705,12 @@ fn quic_conn_process_payload(
     while idx < payload.len {
         let frame, ok = decode_quic_frame_cursor(payload, idx);
         guard ok else {
-            quic_conn_close(conn, QUIC_ERR_FRAME_ENCODING);
+            quic_conn_close(conn, rfc::QUIC_ERR_FRAME_ENCODING);
             return false, false;
         }
 
         guard quic_is_frame_allowed_in_packet(frame.frame_type, htype) else {
-            quic_conn_close(conn, QUIC_ERR_PROTOCOL_VIOLATION);
+            quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
 

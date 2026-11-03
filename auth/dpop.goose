@@ -14,17 +14,6 @@ import .jwt;
 
 // ---- RFC 9449 Constants & Identifiers ------------------------------------
 
-const DPOP_HEADER:       const u8[:] = "DPoP";
-const DPOP_NONCE_HEADER: const u8[:] = "DPoP-Nonce";
-const DPOP_AUTH_SCHEME:  const u8[:] = "DPoP";
-const DPOP_JWT_TYP:      const u8[:] = "dpop+jwt";
-
-const DPOP_ERR_INVALID_PROOF: const u8[:] = "invalid_dpop_proof";
-const DPOP_ERR_INVALID_TOKEN: const u8[:] = "invalid_token";
-const DPOP_ERR_USE_NONCE:     const u8[:] = "use_dpop_nonce";
-
-// ---- DPoP Models ---------------------------------------------------------
-
 struct DPoPClaims {
     jti:     u8[..128] = [],
     htm:     u8[..16]  = [],
@@ -778,7 +767,7 @@ fn verify_dpop_proof(
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
-    set_header(req, DPOP_HEADER, proof);
+    set_header(req, rfc::DPOP_HEADER, proof);
     if access_token.len > 0 {
         var auth_val: u8[..2048] = [];
         auth_val.append("DPoP ");
@@ -794,7 +783,7 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
 //   returns: "eyJhbGciOi...", ok = true
 fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
     for idx in headers.len {
-        if core::eq_ascii_fold(headers[idx].name[..], DPOP_NONCE_HEADER) {
+        if core::eq_ascii_fold(headers[idx].name[..], rfc::DPOP_NONCE_HEADER) {
             return headers[idx].value[..], true;
         }
     }

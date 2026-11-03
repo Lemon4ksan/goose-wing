@@ -1915,7 +1915,7 @@ fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
 fn test_doh_query_generation(t: lit::T&) {
     t.run("1. DoH POST Body and GET URL Construction") { sub =>
         var post_body: u8[>..] = [];
-        let ok_post = wing::build_doh_post_body("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1234, post_body);
+        let ok_post = wing::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, post_body);
         sub.assert_true(ok_post, "build_doh_post_body succeeds");
         sub.assert_true(post_body.len >= 12, "Post body at least DNS header size (12 bytes)");
 
@@ -1925,7 +1925,7 @@ fn test_doh_query_generation(t: lit::T&) {
 
         // GET URL with base64url query parameter
         var get_url: u8[>..] = [];
-        let ok_get = wing::build_doh_get_url("https://1.1.1.1/dns-query", "cloudflare.com", wing::DNS_QTYPE_HTTPS, get_url);
+        let ok_get = wing::build_doh_get_url("https://1.1.1.1/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
         sub.assert_true(ok_get, "build_doh_get_url succeeds");
         sub.assert_true(core::starts_with(get_url[..], "https://1.1.1.1/dns-query?dns="), "URL starts with endpoint and ?dns=");
     };
@@ -1937,7 +1937,7 @@ fn test_dns_cache_lifecycle(t: lit::T&) {
 
         var entry = wing::DnsCacheEntry { .. };
         entry.domain.append("api.example.com");
-        entry.qtype = wing::DNS_QTYPE_A;
+        entry.qtype = rfc::DNS_QTYPE_A;
         entry.ipv4_hints.push(0x7F000001); // 127.0.0.1
         entry.inserted_at_sec = 1000;
         entry.ttl_sec = 60;
@@ -1949,19 +1949,19 @@ fn test_dns_cache_lifecycle(t: lit::T&) {
 
         // Lookup at t = 1030 (Fresh, elapsed 30 < 60)
         var out1 = wing::DnsCacheEntry { .. };
-        let st1 = wing::dns_cache_lookup(cache, "api.example.com", wing::DNS_QTYPE_A, 1030, out1);
+        let st1 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1030, out1);
         sub.assert_eq(st1, wing::DnsCacheStatus.Fresh, "Lookup at t=1030 is Fresh");
         sub.assert_eq(out1.ipv4_hints.len, 1, "Output holds 1 IP");
         sub.assert_eq(out1.ipv4_hints[0], 0x7F000001, "IP matches");
 
         // Lookup at t = 1100 (Stale, elapsed 100 >= 60 but < 360)
         var out2 = wing::DnsCacheEntry { .. };
-        let st2 = wing::dns_cache_lookup(cache, "api.example.com", wing::DNS_QTYPE_A, 1100, out2);
+        let st2 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1100, out2);
         sub.assert_eq(st2, wing::DnsCacheStatus.Stale, "Lookup at t=1100 is Stale");
 
         // Lookup at t = 1400 (Expired, elapsed 400 >= 360)
         var out3 = wing::DnsCacheEntry { .. };
-        let st3 = wing::dns_cache_lookup(cache, "api.example.com", wing::DNS_QTYPE_A, 1400, out3);
+        let st3 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1400, out3);
         sub.assert_eq(st3, wing::DnsCacheStatus.Expired, "Lookup at t=1400 is Expired");
 
         // Overwrite existing entry with refreshed TTL
@@ -1972,7 +1972,7 @@ fn test_dns_cache_lifecycle(t: lit::T&) {
         sub.assert_eq(cache.entries.len, 1, "Cache still holds 1 entry after update");
 
         var out4 = wing::DnsCacheEntry { .. };
-        let st4 = wing::dns_cache_lookup(cache, "api.example.com", wing::DNS_QTYPE_A, 1450, out4);
+        let st4 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1450, out4);
         sub.assert_eq(st4, wing::DnsCacheStatus.Fresh, "Lookup after refresh is Fresh");
     };
 }

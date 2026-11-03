@@ -196,6 +196,11 @@ fn mutate_redirect_method<B>(
     out_method.clear();
     clear_body = false;
 
+    if !rfc::is_redirect_status(status_code) {
+        out_method.append(current_method);
+        return;
+    }
+
     let should_rewrite = if status_code == 301 || status_code == 302 {
         eq_ascii_fold(current_method, "POST")
     } else if status_code == 303 {

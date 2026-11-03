@@ -10,16 +10,6 @@ import core from "..";
 
 // ---- RFC 9180 Identifiers and Code Points --------------------------------
 
-const HPKE_MODE_BASE: u8 = 0;
-
-const HPKE_KEM_DHKEM_X25519_HKDF_SHA256: u16 = 0x0020;
-const HPKE_KDF_HKDF_SHA256:              u16 = 0x0001;
-
-const HPKE_AEAD_AES_128_GCM:       u16 = 0x0001;
-const HPKE_AEAD_AES_256_GCM:       u16 = 0x0002;
-const HPKE_AEAD_CHACHA20_POLY1305: u16 = 0x0003;
-
-// Active encryption/decryption context for HPKE sender or recipient.
 // kem_id/kdf_id are retained so suite_id is recoverable for Secret Export
 // (RFC 9180 Section 5.3) after the key schedule completes.
 struct HpkeContext {
@@ -27,9 +17,9 @@ struct HpkeContext {
     base_nonce:      u8[12] = [0; 12],
     seq:             u64    = 0,
     exporter_secret: u8[32] = [0; 32],
-    aead_id:         u16    = HPKE_AEAD_AES_128_GCM,
-    kem_id:          u16    = HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-    kdf_id:          u16    = HPKE_KDF_HKDF_SHA256,
+    aead_id:         u16    = rfc::HPKE_AEAD_AES_128_GCM,
+    kem_id:          u16    = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+    kdf_id:          u16    = rfc::HPKE_KDF_HKDF_SHA256,
     key_len:         u16    = 16,
     nonce_len:       u16    = 12,
 }
@@ -129,8 +119,8 @@ fn hpke_setup_base_s(
     out_enc:      u8[32]&,
     out_ctx:      HpkeContext&,
 ) -> bool {
-    guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
-    guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
+    guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
+    guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
 
     var shared_secret: u8[32] = [0; 32];
     guard dhkem_x25519_encap(pkR, ephemeral_sk, out_enc, shared_secret) else { return false; }
@@ -151,7 +141,7 @@ fn hpke_setup_base_s(
 
     // key_schedule_context = mode (1B) || psk_id_hash (32B) || info_hash (32B)
     var ks_context: u8[65] = [0; 65];
-    ks_context[0] = HPKE_MODE_BASE;
+    ks_context[0] = rfc::HPKE_MODE_BASE;
     core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
     core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
@@ -160,7 +150,7 @@ fn hpke_setup_base_s(
 
     // Key and Nonce lengths based on AEAD
     var key_len: u16 = 16;
-    if aead_id == HPKE_AEAD_AES_256_GCM || aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    if aead_id == rfc::HPKE_AEAD_AES_256_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         key_len = 32;
     }
     let nonce_len: u16 = 12;
@@ -216,8 +206,8 @@ fn hpke_setup_base_r(
     aead_id: u16,
     out_ctx: HpkeContext&,
 ) -> bool {
-    guard kem_id == HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
-    guard kdf_id == HPKE_KDF_HKDF_SHA256 else { return false; }
+    guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
+    guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
 
     let pkR = core::x25519_base_scalarmult(skR);
     var shared_secret: u8[32] = [0; 32];
@@ -234,14 +224,14 @@ fn hpke_setup_base_r(
     let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
 
     var ks_context: u8[65] = [0; 65];
-    ks_context[0] = HPKE_MODE_BASE;
+    ks_context[0] = rfc::HPKE_MODE_BASE;
     core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
     core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
     let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
 
     var key_len: u16 = 16;
-    if aead_id == HPKE_AEAD_AES_256_GCM || aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    if aead_id == rfc::HPKE_AEAD_AES_256_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         key_len = 32;
     }
     let nonce_len: u16 = 12;
@@ -313,19 +303,19 @@ fn hpke_seal(
     let ct_start = out_ct.len;
     for i in pt.len { out_ct.push(0); }
 
-    if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+    if ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
         let tag, _, ok = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct[ct_start..]);
         guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
-    } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
+    } else if ctx.aead_id == rfc::HPKE_AEAD_AES_256_GCM {
         let tag, _, ok = core::aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
         guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
-    } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    } else if ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         let tag, _, ok = core::chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
         guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
@@ -351,13 +341,13 @@ fn hpke_open(
     let nonce = hpke_compute_nonce(ctx);
     ctx.seq += 1;
 
-    if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
+    if ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
         return core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
-    } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
+    } else if ctx.aead_id == rfc::HPKE_AEAD_AES_256_GCM {
         return core::aes256_gcm_open(ctx.key, nonce, ct, aad, tag, out_pt);
-    } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
+    } else if ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         return core::chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
     }
     return false;
@@ -404,8 +394,8 @@ fn hpke_seal_base(
     guard hpke_setup_base_s(
         pkR,
         info,
-        HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-        HPKE_KDF_HKDF_SHA256,
+        rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+        rfc::HPKE_KDF_HKDF_SHA256,
         aead_id,
         ephemeral_sk,
         out_enc,
@@ -431,8 +421,8 @@ fn hpke_open_base(
         enc,
         skR,
         info,
-        HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-        HPKE_KDF_HKDF_SHA256,
+        rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+        rfc::HPKE_KDF_HKDF_SHA256,
         aead_id,
         ctx,
     ) else {

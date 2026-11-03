@@ -43,7 +43,7 @@ fn test_snippet_2_http_server() {
 fn test_snippet_3_websocket() {
     var hdr = wing::WsFrameHeader {
         fin:         true,
-        opcode:      wing::WS_OPCODE_TEXT,
+        opcode:      rfc::WS_OPCODE_TEXT,
         masked:      true,
         mask_key:    [0x12, 0x34, 0x56, 0x78],
         payload_len: 5,

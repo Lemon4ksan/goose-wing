@@ -11,12 +11,6 @@ import core from "..";
 
 // ---- Privacy Pass Constants & Token Types --------------------------------
 
-const SCHEME_PRIVATE_TOKEN:           const u8[:] = "PrivateToken";
-const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
-
-const TOKEN_TYPE_BLIND_RSA:           u16 = 0x0001; // RFC 9578 Blind RSA
-const TOKEN_TYPE_PUBLICLY_VERIFIABLE: u16 = 0x0002; // RFC 9578 §6 Publicly Verifiable
-
 // Checks whether token type is a GREASE identifier (RFC 9577 §6.2.1)
 fn is_grease_token_type(t: u16) -> bool {
     let grease_types: const u16[17] = [
@@ -32,14 +26,14 @@ fn is_grease_token_type(t: u16) -> bool {
 // ---- Data Structures -----------------------------------------------------
 
 struct TokenChallenge {
-    token_type:         u16       = TOKEN_TYPE_BLIND_RSA,
+    token_type:         u16       = rfc::TOKEN_TYPE_BLIND_RSA,
     issuer_name:        u8[..128] = [],
     redemption_context: u8[..32]  = [],
     origin_info:        u8[..256] = [],
 }
 
 struct Token {
-    token_type: u16 = TOKEN_TYPE_BLIND_RSA,
+    token_type: u16 = rfc::TOKEN_TYPE_BLIND_RSA,
     nonce: u8[32] = [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -298,13 +292,13 @@ fn parse_private_token_challenge(
     out_token_key:   u8[..128]&,
     out_max_age_sec: i64&,
 ) -> bool {
-    guard header_val.len > SCHEME_PRIVATE_TOKEN.len else { return false; }
-    guard eq_ascii_fold(header_val[..SCHEME_PRIVATE_TOKEN.len], SCHEME_PRIVATE_TOKEN) else { return false; }
+    guard header_val.len > rfc::SCHEME_PRIVATE_TOKEN.len else { return false; }
+    guard eq_ascii_fold(header_val[..rfc::SCHEME_PRIVATE_TOKEN.len], rfc::SCHEME_PRIVATE_TOKEN) else { return false; }
 
     var temp_token_key: u8[..128] = [];
     var temp_max_age:   i64       = 0;
     let challenge_slice, ok_params = parse_challenge_params(
-        header_val[SCHEME_PRIVATE_TOKEN.len..].trim_lws(),
+        header_val[rfc::SCHEME_PRIVATE_TOKEN.len..].trim_lws(),
         temp_token_key,
         temp_max_age,
     );
@@ -428,7 +422,7 @@ fn has_private_token_challenge<Res>(res: const Res&) -> bool {
     guard res.status_code == 401 else { return false; }
     for idx in res.headers.len {
         if core::eq_ascii_fold(res.headers[idx].name[..], "WWW-Authenticate") {
-            if core::contains(res.headers[idx].value[..], SCHEME_PRIVATE_TOKEN) {
+            if core::contains(res.headers[idx].value[..], rfc::SCHEME_PRIVATE_TOKEN) {
                 return true;
             }
         }

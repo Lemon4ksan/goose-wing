@@ -57,7 +57,7 @@ fn test_idle_stream_window_update() {
 
     // Preface + empty SETTINGS
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0); // SETTINGS frame
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
@@ -83,7 +83,7 @@ fn test_missing_mandatory_pseudo_headers() {
     var wire_out: u8[>..] = [];
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
@@ -114,7 +114,7 @@ fn test_content_length_end_stream_headers() {
     var wire_out: u8[>..] = [];
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
@@ -147,7 +147,7 @@ fn test_content_length_mismatch_data() {
     var wire_out: u8[>..] = [];
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
@@ -186,7 +186,7 @@ fn test_stream_slot_reclamation_on_error() {
     var wire_out: u8[>..] = [];
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
@@ -217,7 +217,7 @@ fn test_settings_max_frame_size_isolation() {
 
     // Client advertises SETTINGS_MAX_FRAME_SIZE = 32768
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 6, 0x04, 0x00, 0); // SETTINGS frame
     init_wire.push(0x00); init_wire.push(0x05); // SETTING_MAX_FRAME_SIZE (0x05)
     init_wire.push(0x00); init_wire.push(0x00); init_wire.push(0x80); init_wire.push(0x00); // 32768

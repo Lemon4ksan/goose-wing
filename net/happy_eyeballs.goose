@@ -10,31 +10,22 @@ import core from "..";
 
 // ---- RFC 8305 and HEv3 normative constants ------------------------------
 
-const HE_RESOLUTION_DELAY_MS:            i64 = 50;   // 50 ms DNS resolution delay (RD)
-const HE_FIRST_ADDRESS_FAMILY_COUNT:     i32 = 1;    // Step for address family interleaving
-const HE_DEFAULT_CAD_MS:                 i64 = 250;  // 250 ms default Connection Attempt Delay
-const HE_MIN_CAD_MS:                     i64 = 100;  // 100 ms recommended minimum dynamic CAD
-const HE_ABSOLUTE_FLOOR_CAD_MS:          i64 = 10;   // Strict absolute floor (>= 10 ms to prevent congestion collapse)
-const HE_MAX_CAD_MS:                     i64 = 2000; // 2000 ms maximum CAD
-const HE_LAST_RESORT_SYNTHESIS_DELAY_MS: i64 = 2000; // 2000 ms Last Resort Local Synthesis Delay
-const HE_ADDRESS_FAMILY_CACHE_TTL_SEC:   i64 = 600;  // 600 seconds (10 minutes) winner cache TTL
-
 // Computes Connection Attempt Delay (CAD) strictly enforcing the >= 10 ms absolute floor.
 fn compute_effective_cad_ms(
     observed_rtt_ms: i64,
     rtt_known:       bool,
-    min_cad_ms:      i64 = HE_MIN_CAD_MS,
-    max_cad_ms:      i64 = HE_MAX_CAD_MS,
+    min_cad_ms:      i64 = rfc::HE_MIN_CAD_MS,
+    max_cad_ms:      i64 = rfc::HE_MAX_CAD_MS,
 ) -> i64 {
-    let eff_min = core::ct_max_i64(min_cad_ms, HE_ABSOLUTE_FLOOR_CAD_MS);
+    let eff_min = core::ct_max_i64(min_cad_ms, rfc::HE_ABSOLUTE_FLOOR_CAD_MS);
     let eff_max = core::ct_max_i64(max_cad_ms, eff_min);
 
     if !rtt_known {
-        return HE_DEFAULT_CAD_MS;
+        return rfc::HE_DEFAULT_CAD_MS;
     }
 
     let clamped = core::clamp_i64(observed_rtt_ms, eff_min, eff_max);
-    return core::ct_max_i64(clamped, HE_ABSOLUTE_FLOOR_CAD_MS);
+    return core::ct_max_i64(clamped, rfc::HE_ABSOLUTE_FLOOR_CAD_MS);
 }
 
 // ---- DNS query models and candidate classification ----------------------
@@ -109,7 +100,7 @@ fn interleave_candidates_he(
     ipv6_list:          const DnsCandidate[:],
     ipv4_list:          const DnsCandidate[:],
     out:                DnsCandidate[..32]&,
-    first_family_count: i32 = HE_FIRST_ADDRESS_FAMILY_COUNT,
+    first_family_count: i32 = rfc::HE_FIRST_ADDRESS_FAMILY_COUNT,
 ) {
     out.clear();
     var idx6: i64 = 0;
@@ -218,7 +209,7 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         } else {
             // A arrived first! Arm Resolution Delay (RD = 50 ms) to wait for AAAA
             task.rd_timer_armed = true;
-            task.rd_deadline_ms = now_ms + HE_RESOLUTION_DELAY_MS;
+            task.rd_deadline_ms = now_ms + rfc::HE_RESOLUTION_DELAY_MS;
         }
     } else {
         task.a_status = DnsQueryStatus.Negative;
@@ -277,7 +268,7 @@ struct AddressFamilyCacheEntry {
 struct AttemptManager {
     attempts:                ConnectionAttempt[..16] = [],
     pending_candidates:      DnsCandidate[..32]      = [],
-    effective_cad_ms:        i64                     = HE_DEFAULT_CAD_MS,
+    effective_cad_ms:        i64                     = rfc::HE_DEFAULT_CAD_MS,
     next_attempt_start_ms:   i64                     = 0,
     current_attempt_idx:     i64                     = 0,
     winner_attempt_id:       i32                     = -1,
@@ -289,7 +280,7 @@ struct AttemptManager {
     next_id:                 i32                     = 1,
 }
 
-fn new_attempt_manager(cad_ms: i64 = HE_DEFAULT_CAD_MS) -> AttemptManager {
+fn new_attempt_manager(cad_ms: i64 = rfc::HE_DEFAULT_CAD_MS) -> AttemptManager {
     return AttemptManager {
         effective_cad_ms: cad_ms,
         ..
@@ -344,7 +335,7 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
     }
     if cand.family == AddressFamily.IPv6 && !has_more_ipv6 && !manager.last_resort_armed {
         manager.last_resort_armed = true;
-        manager.last_resort_deadline_ms = now_ms + HE_LAST_RESORT_SYNTHESIS_DELAY_MS;
+        manager.last_resort_deadline_ms = now_ms + rfc::HE_LAST_RESORT_SYNTHESIS_DELAY_MS;
     }
 
     return true;

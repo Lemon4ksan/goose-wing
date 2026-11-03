@@ -174,7 +174,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
 
         // Establish control stream (Stream 2)
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -190,7 +190,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         internal::encode_h3_headers_frame(req_frame, sec[..]);
 
         let err = conn.handle_stream_data(0, true, req_frame[..], false);
-        sub.assert_eq(err, internal::H3_ERR_GENERAL_PROTOCOL, "conflicting :authority and host MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, "conflicting :authority and host MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("H3 request: reject duplicate host headers and invalid host syntax") { sub =>
@@ -198,7 +198,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -214,7 +214,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         internal::encode_h3_headers_frame(dup_frame, sec_dup[..]);
 
         let err_dup = conn.handle_stream_data(0, true, dup_frame[..], false);
-        sub.assert_eq(err_dup, internal::H3_ERR_GENERAL_PROTOCOL, "duplicate host headers MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_dup, rfc::H3_ERR_GENERAL_PROTOCOL, "duplicate host headers MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // Invalid host syntax (containing '/')
         var conn2 = internal::new_h3_server_connection(settings);
@@ -230,7 +230,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         internal::encode_h3_headers_frame(bad_frame, sec_bad[..]);
 
         let err_bad = conn2.handle_stream_data(0, true, bad_frame[..], false);
-        sub.assert_eq(err_bad, internal::H3_ERR_GENERAL_PROTOCOL, "host with slash MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_bad, rfc::H3_ERR_GENERAL_PROTOCOL, "host with slash MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // Empty :authority
         var conn3 = internal::new_h3_server_connection(settings);
@@ -246,7 +246,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         internal::encode_h3_headers_frame(empty_frame, sec_empty[..]);
 
         let err_empty = conn3.handle_stream_data(0, true, empty_frame[..], false);
-        sub.assert_eq(err_empty, internal::H3_ERR_GENERAL_PROTOCOL, "empty :authority MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_empty, rfc::H3_ERR_GENERAL_PROTOCOL, "empty :authority MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("H3 request: matching case-insensitive :authority and host succeed") { sub =>
@@ -254,7 +254,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -269,7 +269,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
         internal::encode_h3_headers_frame(ok_frame, sec_ok[..]);
 
         let err_ok = conn.handle_stream_data(0, true, ok_frame[..], false);
-        sub.assert_eq(err_ok, internal::H3_ERR_NO_ERROR, "case-insensitive matching authority and host accepted");
+        sub.assert_eq(err_ok, rfc::H3_ERR_NO_ERROR, "case-insensitive matching authority and host accepted");
     };
 }
 
@@ -290,7 +290,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         empty_auth_block.push(0x00); // value len 0
 
         let err_auth = internal::decode_hpack_header_block(dt, empty_auth_block[..], out_list);
-        sub.assert_eq(err_auth, internal::ERR_PROTOCOL_ERROR, "empty :authority MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_auth, rfc::H2_ERR_PROTOCOL_ERROR, "empty :authority MUST return PROTOCOL_ERROR");
 
         // 2. Empty host
         var empty_host_block: u8[..32] = [];
@@ -304,7 +304,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
 
         var out_list2 = internal::DecodedH2HeaderList { .. };
         let err_host = internal::decode_hpack_header_block(dt, empty_host_block[..], out_list2);
-        sub.assert_eq(err_host, internal::ERR_PROTOCOL_ERROR, "empty host header MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_host, rfc::H2_ERR_PROTOCOL_ERROR, "empty host header MUST return PROTOCOL_ERROR");
     };
 
     t.run("HPACK: reject host with invalid authority characters") { sub =>
@@ -323,7 +323,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         slash_host_block.append("evil.com/path");
 
         let err_slash = internal::decode_hpack_header_block(dt, slash_host_block[..], out_list);
-        sub.assert_eq(err_slash, internal::ERR_PROTOCOL_ERROR, "host with slash MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_slash, rfc::H2_ERR_PROTOCOL_ERROR, "host with slash MUST return PROTOCOL_ERROR");
 
         // Host containing userinfo @ (host: user@evil.com)
         var user_host_block: u8[..32] = [];
@@ -338,7 +338,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
 
         var out_list2 = internal::DecodedH2HeaderList { .. };
         let err_user = internal::decode_hpack_header_block(dt, user_host_block[..], out_list2);
-        sub.assert_eq(err_user, internal::ERR_PROTOCOL_ERROR, "host with @ MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_user, rfc::H2_ERR_PROTOCOL_ERROR, "host with @ MUST return PROTOCOL_ERROR");
     };
 
     t.run("HPACK: accept case-insensitive matching :authority and host") { sub =>
@@ -360,7 +360,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         hpack_block.append("example.com");
 
         let err = internal::decode_hpack_header_block(dt, hpack_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "case-insensitive matching authority and host MUST succeed");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "case-insensitive matching authority and host MUST succeed");
     };
 }
 
@@ -374,23 +374,23 @@ fn test_h2_connection_trailers_end_stream_requirement(t: lit::T&) {
         // 1. Initial HEADERS frame on stream 1 (without END_STREAM) -> opens stream
         let h_initial = internal::FrameHeader {
             length:     16,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS, // no END_STREAM
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS, // no END_STREAM
             stream_id:  1,
         };
         let err1 = internal::on_ingress_frame_header(conn, h_initial, 0);
-        sub.assert_eq(err1, internal::ERR_NO_ERROR, "initial HEADERS frame accepted");
+        sub.assert_eq(err1, rfc::H2_ERR_NO_ERROR, "initial HEADERS frame accepted");
 
         // 2. Second HEADERS frame on stream 1 WITHOUT FLAG_END_STREAM (non-final trailers)
         // Per RFC 9113 §8.1: A HEADERS frame for trailers MUST carry FLAG_END_STREAM.
         let h_second_bad = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS, // no END_STREAM!
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS, // no END_STREAM!
             stream_id:  1,
         };
         let err2 = internal::on_ingress_frame_header(conn, h_second_bad, 0);
-        sub.assert_eq(err2, internal::ERR_PROTOCOL_ERROR, "second HEADERS without END_STREAM MUST trigger PROTOCOL_ERROR");
+        sub.assert_eq(err2, rfc::H2_ERR_PROTOCOL_ERROR, "second HEADERS without END_STREAM MUST trigger PROTOCOL_ERROR");
     };
 
     t.run("H2 ingress: valid trailers accepted, third HEADERS rejected") { sub =>
@@ -398,8 +398,8 @@ fn test_h2_connection_trailers_end_stream_requirement(t: lit::T&) {
 
         let h_initial = internal::FrameHeader {
             length:     16,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         internal::on_ingress_frame_header(conn, h_initial, 0);
@@ -407,22 +407,22 @@ fn test_h2_connection_trailers_end_stream_requirement(t: lit::T&) {
         // Valid trailer frame with END_STREAM
         let h_trailers = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         let err_tr = internal::on_ingress_frame_header(conn, h_trailers, 0);
-        sub.assert_eq(err_tr, internal::ERR_NO_ERROR, "valid trailers with END_STREAM accepted");
+        sub.assert_eq(err_tr, rfc::H2_ERR_NO_ERROR, "valid trailers with END_STREAM accepted");
 
         // Third HEADERS frame after trailers received MUST be rejected
         let h_third = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         let err3 = internal::on_ingress_frame_header(conn, h_third, 0);
-        sub.assert_true(err3 == internal::ERR_STREAM_CLOSED || err3 == internal::ERR_PROTOCOL_ERROR, "third HEADERS after trailers rejected");
+        sub.assert_true(err3 == rfc::H2_ERR_STREAM_CLOSED || err3 == rfc::H2_ERR_PROTOCOL_ERROR, "third HEADERS after trailers rejected");
     };
 }
 
@@ -499,7 +499,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
 
         // Control stream setup
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -513,7 +513,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         internal::encode_h3_headers_frame(wire_h, qpack_204[..]);
 
         let err_h = conn.handle_stream_data(0, true, wire_h[..], false);
-        sub.assert_eq(err_h, internal::H3_ERR_NO_ERROR, "headers frame accepted");
+        sub.assert_eq(err_h, rfc::H3_ERR_NO_ERROR, "headers frame accepted");
         sub.assert_eq(conn.streams[0].status_code, 204, "stream status 204 recorded");
 
         // 2. Peer attempts to send DATA frame on 204 response
@@ -521,7 +521,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         internal::encode_h3_data_frame(wire_d, "unexpected body");
 
         let err_d = conn.handle_stream_data(0, true, wire_d[..], true);
-        sub.assert_eq(err_d, internal::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 204 status MUST return H3_ERR_FRAME_UNEXPECTED");
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 204 status MUST return H3_ERR_FRAME_UNEXPECTED");
     };
 
     t.run("H3: reject DATA frame on stream with 304 Not Modified") { sub =>
@@ -529,7 +529,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -547,7 +547,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         internal::encode_h3_data_frame(wire_d, "unexpected body");
 
         let err_d = conn.handle_stream_data(4, true, wire_d[..], true);
-        sub.assert_eq(err_d, internal::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 304 status MUST return H3_ERR_FRAME_UNEXPECTED");
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 304 status MUST return H3_ERR_FRAME_UNEXPECTED");
     };
 
     t.run("H3: reject DATA frame on stream with 103 Early Hints") { sub =>
@@ -555,7 +555,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -573,7 +573,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
         internal::encode_h3_data_frame(wire_d, "unexpected body");
 
         let err_d = conn.handle_stream_data(8, true, wire_d[..], true);
-        sub.assert_eq(err_d, internal::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 1xx status MUST return H3_ERR_FRAME_UNEXPECTED");
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 1xx status MUST return H3_ERR_FRAME_UNEXPECTED");
     };
 }
 
@@ -586,7 +586,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -610,7 +610,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
         internal::encode_h3_headers_frame(wire_te, qpack_te[..]);
 
         let err_te = conn.handle_stream_data(0, true, wire_te[..], true);
-        sub.assert_eq(err_te, internal::H3_ERR_GENERAL_PROTOCOL, "trailer with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_te, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // 3. New connection: trailer with prohibited connection: close
         var conn2 = internal::new_h3_client_connection(settings);
@@ -626,7 +626,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
         internal::encode_h3_headers_frame(wire_conn, qpack_conn[..]);
 
         let err_conn = conn2.handle_stream_data(0, true, wire_conn[..], true);
-        sub.assert_eq(err_conn, internal::H3_ERR_GENERAL_PROTOCOL, "trailer with connection MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_conn, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with connection MUST return H3_ERR_GENERAL_PROTOCOL");
 
         // 4. New connection: trailer with prohibited upgrade
         var conn3 = internal::new_h3_client_connection(settings);
@@ -642,7 +642,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
         internal::encode_h3_headers_frame(wire_upg, qpack_upg[..]);
 
         let err_upg = conn3.handle_stream_data(0, true, wire_upg[..], true);
-        sub.assert_eq(err_upg, internal::H3_ERR_GENERAL_PROTOCOL, "trailer with upgrade MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_upg, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with upgrade MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("QPACK: reject field values with NUL, CR, or LF") { sub =>
@@ -695,7 +695,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_999.append("999");
 
         let err_999 = internal::decode_hpack_header_block(dt, block_999[..], out_list);
-        sub.assert_eq(err_999, internal::ERR_PROTOCOL_ERROR, ":status 999 MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_999, rfc::H2_ERR_PROTOCOL_ERROR, ":status 999 MUST return PROTOCOL_ERROR");
 
         // 2. :status = "042" (out of 100..599 range)
         var block_042: u8[..32] = [];
@@ -707,7 +707,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list2 = internal::DecodedH2HeaderList { .. };
         let err_042 = internal::decode_hpack_header_block(dt, block_042[..], out_list2);
-        sub.assert_eq(err_042, internal::ERR_PROTOCOL_ERROR, ":status 042 MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_042, rfc::H2_ERR_PROTOCOL_ERROR, ":status 042 MUST return PROTOCOL_ERROR");
 
         // 3. :status = "101" (RFC 9113 §8.8: 101 Switching Protocols forbidden in HTTP/2)
         var block_101: u8[..32] = [];
@@ -719,7 +719,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list3 = internal::DecodedH2HeaderList { .. };
         let err_101 = internal::decode_hpack_header_block(dt, block_101[..], out_list3);
-        sub.assert_eq(err_101, internal::ERR_PROTOCOL_ERROR, ":status 101 MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_101, rfc::H2_ERR_PROTOCOL_ERROR, ":status 101 MUST return PROTOCOL_ERROR");
 
         // 4. :status = "20" (less than 3 digits)
         var block_short: u8[..32] = [];
@@ -731,7 +731,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list4 = internal::DecodedH2HeaderList { .. };
         let err_short = internal::decode_hpack_header_block(dt, block_short[..], out_list4);
-        sub.assert_eq(err_short, internal::ERR_PROTOCOL_ERROR, ":status 20 MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_short, rfc::H2_ERR_PROTOCOL_ERROR, ":status 20 MUST return PROTOCOL_ERROR");
 
         // 5. :status = "2000" (more than 3 digits)
         var block_long: u8[..32] = [];
@@ -743,7 +743,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list5 = internal::DecodedH2HeaderList { .. };
         let err_long = internal::decode_hpack_header_block(dt, block_long[..], out_list5);
-        sub.assert_eq(err_long, internal::ERR_PROTOCOL_ERROR, ":status 2000 MUST return PROTOCOL_ERROR");
+        sub.assert_eq(err_long, rfc::H2_ERR_PROTOCOL_ERROR, ":status 2000 MUST return PROTOCOL_ERROR");
     };
 
     t.run("HPACK: accept valid 3-digit :status values") { sub =>
@@ -755,7 +755,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list = internal::DecodedH2HeaderList { .. };
         let err_200 = internal::decode_hpack_header_block(dt, block_200[..], out_list);
-        sub.assert_eq(err_200, internal::ERR_NO_ERROR, ":status 200 accepted");
+        sub.assert_eq(err_200, rfc::H2_ERR_NO_ERROR, ":status 200 accepted");
 
         // :status = "204"
         var block_204: u8[..16] = [];
@@ -763,7 +763,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
 
         var out_list2 = internal::DecodedH2HeaderList { .. };
         let err_204 = internal::decode_hpack_header_block(dt, block_204[..], out_list2);
-        sub.assert_eq(err_204, internal::ERR_NO_ERROR, ":status 204 accepted");
+        sub.assert_eq(err_204, rfc::H2_ERR_NO_ERROR, ":status 204 accepted");
     };
 }
 
@@ -777,8 +777,8 @@ fn test_h2_data_frame_after_trailers_rejection(t: lit::T&) {
         // Open stream 1
         let h_initial = internal::FrameHeader {
             length:     16,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         internal::on_ingress_frame_header(conn, h_initial, 0);
@@ -786,22 +786,22 @@ fn test_h2_data_frame_after_trailers_rejection(t: lit::T&) {
         // Receive trailers with END_STREAM
         let h_trailers = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         let err_tr = internal::on_ingress_frame_header(conn, h_trailers, 0);
-        sub.assert_eq(err_tr, internal::ERR_NO_ERROR, "trailers accepted");
+        sub.assert_eq(err_tr, rfc::H2_ERR_NO_ERROR, "trailers accepted");
 
         // Now attempt to feed a DATA frame on stream 1
         let h_data = internal::FrameHeader {
             length:     10,
-            frame_type: internal::FRAME_DATA,
+            frame_type: rfc::H2_FRAME_DATA,
             flags:      0,
             stream_id:  1,
         };
         let err_data = internal::on_data_frame_received(conn, h_data, 10);
-        sub.assert_eq(err_data, internal::ERR_STREAM_CLOSED, "DATA frame after trailers MUST return ERR_STREAM_CLOSED");
+        sub.assert_eq(err_data, rfc::H2_ERR_STREAM_CLOSED, "DATA frame after trailers MUST return ERR_STREAM_CLOSED");
     };
 }
 
@@ -948,7 +948,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
 
         // Client control stream setup on stream 3 (unidirectional client stream)
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(3, false, ctrl_wire[..], false);
 
@@ -964,13 +964,13 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var wire_req: u8[..128] = [];
         internal::encode_h3_headers_frame(wire_req, qpack_req[..]);
         let err_req = conn.handle_stream_data(0, true, wire_req[..], false);
-        sub.assert_eq(err_req, internal::H3_ERR_NO_ERROR, "initial request headers accepted");
+        sub.assert_eq(err_req, rfc::H3_ERR_NO_ERROR, "initial request headers accepted");
 
         // 2. Client sends DATA frame on stream 0
         var wire_d: u8[..32] = [];
         internal::encode_h3_data_frame(wire_d, "payload-data");
         let err_d = conn.handle_stream_data(0, true, wire_d[..], false);
-        sub.assert_eq(err_d, internal::H3_ERR_NO_ERROR, "data frame accepted");
+        sub.assert_eq(err_d, rfc::H3_ERR_NO_ERROR, "data frame accepted");
 
         // 3. Client sends trailers containing forbidden pseudo-header :path
         var qpack_tr: u8[..64] = [];
@@ -981,7 +981,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var wire_tr: u8[..64] = [];
         internal::encode_h3_headers_frame(wire_tr, qpack_tr[..]);
         let err_tr = conn.handle_stream_data(0, true, wire_tr[..], true);
-        sub.assert_eq(err_tr, internal::H3_ERR_GENERAL_PROTOCOL, "request trailers with pseudo-header MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_tr, rfc::H3_ERR_GENERAL_PROTOCOL, "request trailers with pseudo-header MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("H3 Server: reject prohibited framing headers in request trailers") { sub =>
@@ -989,7 +989,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(3, false, ctrl_wire[..], false);
 
@@ -1014,7 +1014,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var wire_te: u8[..64] = [];
         internal::encode_h3_headers_frame(wire_te, qpack_te[..]);
         let err_te = conn.handle_stream_data(0, true, wire_te[..], true);
-        sub.assert_eq(err_te, internal::H3_ERR_GENERAL_PROTOCOL, "request trailers with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err_te, rfc::H3_ERR_GENERAL_PROTOCOL, "request trailers with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("H3 Server: reject DATA frame or extra HEADERS after request trailers") { sub =>
@@ -1022,7 +1022,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var conn = internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(3, false, ctrl_wire[..], false);
 
@@ -1047,13 +1047,13 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var wire_tr: u8[..64] = [];
         internal::encode_h3_headers_frame(wire_tr, qpack_tr[..]);
         let err_tr = conn.handle_stream_data(0, true, wire_tr[..], false);
-        sub.assert_eq(err_tr, internal::H3_ERR_NO_ERROR, "valid request trailers accepted");
+        sub.assert_eq(err_tr, rfc::H3_ERR_NO_ERROR, "valid request trailers accepted");
 
         // Attempt 1: Peer sends DATA frame after trailers
         var wire_d: u8[..32] = [];
         internal::encode_h3_data_frame(wire_d, "extra data");
         let err_data = conn.handle_stream_data(0, true, wire_d[..], false);
-        sub.assert_eq(err_data, internal::H3_ERR_FRAME_UNEXPECTED, "DATA after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
+        sub.assert_eq(err_data, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
 
         // Attempt 2 (new connection): Peer sends a 3rd HEADERS frame after trailers
         var conn2 = internal::new_h3_server_connection(settings);
@@ -1064,7 +1064,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
         var wire_extra_h: u8[..64] = [];
         internal::encode_h3_headers_frame(wire_extra_h, qpack_tr[..]);
         let err_extra_h = conn2.handle_stream_data(0, true, wire_extra_h[..], true);
-        sub.assert_eq(err_extra_h, internal::H3_ERR_FRAME_UNEXPECTED, "HEADERS after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
+        sub.assert_eq(err_extra_h, rfc::H3_ERR_FRAME_UNEXPECTED, "HEADERS after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
     };
 }
 
@@ -1077,7 +1077,7 @@ fn test_h3_empty_frame_flooding(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -1095,15 +1095,15 @@ fn test_h3_empty_frame_flooding(t: lit::T&) {
         var wire_empty: u8[..16] = [];
         internal::encode_h3_data_frame(wire_empty, "");
 
-        var err: u64 = internal::H3_ERR_NO_ERROR;
+        var err: u64 = rfc::H3_ERR_NO_ERROR;
         for i in 32 {
             err = conn.handle_stream_data(0, true, wire_empty[..], false);
-            sub.assert_eq(err, internal::H3_ERR_NO_ERROR, "empty data frame within budget accepted");
+            sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "empty data frame within budget accepted");
         }
 
         // The 33rd consecutive empty DATA frame triggers flood defense
         err = conn.handle_stream_data(0, true, wire_empty[..], false);
-        sub.assert_eq(err, internal::H3_ERR_EXCESSIVE_LOAD, "empty data frame exceeding streak MUST return H3_ERR_EXCESSIVE_LOAD");
+        sub.assert_eq(err, rfc::H3_ERR_EXCESSIVE_LOAD, "empty data frame exceeding streak MUST return H3_ERR_EXCESSIVE_LOAD");
     };
 }
 
@@ -1398,7 +1398,7 @@ fn test_websocket_length_overflow(t: lit::T&) {
     var msg2 = wing::WsMessage {};
     var reply2: u8[..64] = [];
     let ok2 = wing::receive(session2, bad_close[..], msg2, reply2);
-    t.assert_true(ok2 && session2.is_closed && session2.close_code == wing::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
+    t.assert_true(ok2 && session2.is_closed && session2.close_code == rfc::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
 }
 
 fn test_proxy_protocol_overflow(t: lit::T&) {
@@ -1478,10 +1478,10 @@ fn test_http2_initial_window_flood_cve_2026_78669(t: lit::T&) {
     var conn = internal::new_h2_connection(1000);
     for i in 16 {
         let err = internal::apply_peer_initial_window_size_delta(conn, (65535 + (i % 2)) as u32);
-        t.assert_eq(err, internal::ERR_NO_ERROR, "Initial updates <= 16 must succeed");
+        t.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Initial updates <= 16 must succeed");
     }
     let flood_err = internal::apply_peer_initial_window_size_delta(conn, 65536);
-    t.assert_eq(flood_err, internal::ERR_ENHANCE_YOUR_CALM, "17th window change must return ERR_ENHANCE_YOUR_CALM");
+    t.assert_eq(flood_err, rfc::H2_ERR_ENHANCE_YOUR_CALM, "17th window change must return ERR_ENHANCE_YOUR_CALM");
 }
 
 fn test_query_param_limit_cve_2026_39825(t: lit::T&) {

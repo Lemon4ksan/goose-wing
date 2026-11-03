@@ -99,7 +99,7 @@ fn test_quic_connection_close() {
     // CHECK: CONN_ESTABLISHED: state=true
 
     // Trigger connection close with APPLICATION_ERROR
-    internal::quic_conn_close(conn, internal::QUIC_ERR_APPLICATION_ERROR);
+    internal::quic_conn_close(conn, rfc::QUIC_ERR_APPLICATION_ERROR);
     print("CONN_CLOSED: state=", conn.state == internal::QuicConnState.Closing, " code=", conn.close_code, "\n");
     // CHECK: CONN_CLOSED: state=true code=12
 }

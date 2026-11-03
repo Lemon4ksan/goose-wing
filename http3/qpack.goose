@@ -10,54 +10,8 @@ import std;
 
 // ---- constants, error codes and limits -----------------------------------
 
-const QPACK_STATIC_TABLE_SIZE:   u64 = 99;
-const QPACK_ENTRY_OVERHEAD:      u64 = 32; // RFC 9204 Section 3.2.1 (+32 bytes per entry)
 const QPACK_DEFAULT_MAX_TABLE:   u64 = 4096;
 const QPACK_MAX_BLOCKED_STREAMS: u32 = 128;
-
-// HTTP/3 Error Codes (RFC 9114 Section 8.1 & RFC 9204 Section 2.2.3)
-const H3_ERR_NO_ERROR:                   u64 = 0x0100;
-const H3_ERR_GENERAL_PROTOCOL:           u64 = 0x0101;
-const H3_ERR_INTERNAL:                   u64 = 0x0102;
-const H3_ERR_STREAM_CREATION:            u64 = 0x0103;
-const H3_ERR_CLOSED_CRITICAL_STREAM:     u64 = 0x0104;
-const H3_ERR_FRAME_UNEXPECTED:           u64 = 0x0105;
-const H3_ERR_FRAME_ERROR:                u64 = 0x0106;
-const H3_ERR_EXCESSIVE_LOAD:             u64 = 0x0107;
-const H3_ERR_ID_ERROR:                   u64 = 0x0108;
-const H3_ERR_SETTINGS_ERROR:             u64 = 0x0109;
-const H3_ERR_MISSING_SETTINGS:           u64 = 0x010A;
-const H3_ERR_REQUEST_REJECTED:           u64 = 0x010B;
-const H3_ERR_REQUEST_CANCELLED:          u64 = 0x010C;
-const H3_ERR_REQUEST_INCOMPLETE:         u64 = 0x010D;
-const H3_ERR_CONNECT_ERROR:              u64 = 0x010F;
-const H3_ERR_VERSION_FALLBACK:           u64 = 0x0110;
-const H3_ERR_QPACK_DECOMPRESSION_FAILED: u64 = 0x0200;
-const H3_ERR_QPACK_ENCODER_STREAM_ERROR: u64 = 0x0201;
-const H3_ERR_QPACK_DECODER_STREAM_ERROR: u64 = 0x0202;
-
-// HTTP/3 Frame Types (RFC 9114 Section 7.2)
-const H3_FRAME_DATA:                    u64 = 0x00;
-const H3_FRAME_HEADERS:                 u64 = 0x01;
-const H3_FRAME_CANCEL_PUSH:             u64 = 0x03;
-const H3_FRAME_SETTINGS:                u64 = 0x04;
-const H3_FRAME_PUSH_PROMISE:            u64 = 0x05;
-const H3_FRAME_GOAWAY:                  u64 = 0x07;
-const H3_FRAME_MAX_PUSH_ID:             u64 = 0x0D;
-const H3_FRAME_PRIORITY_UPDATE_REQUEST: u64 = 0xF0700; // RFC 9218 Section 7.2
-const H3_FRAME_PRIORITY_UPDATE_PUSH:    u64 = 0xF0701; // RFC 9218 Section 7.2
-
-// HTTP/3 Unidirectional Stream Types (RFC 9114 Section 6.2)
-const H3_STREAM_CONTROL:       u64 = 0x00;
-const H3_STREAM_PUSH:          u64 = 0x01;
-const H3_STREAM_QPACK_ENCODER: u64 = 0x02;
-const H3_STREAM_QPACK_DECODER: u64 = 0x03;
-
-// HTTP/3 Settings Identifiers (RFC 9114 Section 7.2.4.1 & RFC 9204 Section 5)
-const H3_SETTING_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01; // default 0
-const H3_SETTING_MAX_FIELD_SECTION_SIZE:   u64 = 0x06; // unlimited default
-const H3_SETTING_QPACK_BLOCKED_STREAMS:    u64 = 0x07; // default 0
-const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Extended CONNECT
 
 enum QpackError {
     None,
@@ -116,7 +70,7 @@ struct QpackTable {
 
 // Calculates RFC 9204 Section 3.2.1 protocol weight (+32 byte overhead).
 fn qpack_entry_cost(name_len: u64, val_len: u64) -> u64 {
-    return name_len + val_len + QPACK_ENTRY_OVERHEAD;
+    return name_len + val_len + rfc::QPACK_ENTRY_OVERHEAD;
 }
 
 // ---- rfc 9204 appendix a static table -----------------------------------
@@ -230,7 +184,7 @@ const QPACK_STATIC_TABLE: QpackStaticEntry[99] = [
 
 // Returns static table entry at 0-based index (0..98).
 fn get_qpack_static_field(idx: u64) -> QpackStaticEntry, bool {
-    guard idx < QPACK_STATIC_TABLE_SIZE else {
+    guard idx < rfc::QPACK_STATIC_TABLE_SIZE else {
         return QpackStaticEntry { .. }, false;
     }
     return QPACK_STATIC_TABLE[idx as i64], true;
@@ -242,7 +196,7 @@ fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
     var matched_name_idx: u64 = 0;
     var name_found = false;
     var idx: u64 = 0;
-    while idx < QPACK_STATIC_TABLE_SIZE {
+    while idx < rfc::QPACK_STATIC_TABLE_SIZE {
         let entry = QPACK_STATIC_TABLE[idx as i64];
         if entry.name == name {
             if entry.val == val {
@@ -259,8 +213,6 @@ fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
 }
 
 // ---- prefix integer codec (ric and base) --------------------------------
-
-const QPACK_MAX_INT_VAL: u64 = 0x3FFFFFFFFFFFFFFF; // 62 bits (RFC 9204 Section 4.1.1)
 
 // Decodes a QPACK prefixed integer up to 62 bits (RFC 9204 Section 4.1.1).
 // Returns (value, next_offset, ok).
@@ -293,7 +245,7 @@ fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64,
         }
 
         let term = payload << shift;
-        if (QPACK_MAX_INT_VAL - val) < term {
+        if (rfc::QUIC_VARINT_MAX - val) < term {
             return 0, idx, false; // Overflow beyond 2^62 - 1
         }
         val += term;
@@ -317,7 +269,7 @@ fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError
     if enc_ric == 0 {
         return 0, QpackError.None;
     }
-    let max_entries = max_cap / QPACK_ENTRY_OVERHEAD;
+    let max_entries = max_cap / rfc::QPACK_ENTRY_OVERHEAD;
     let full_range = 2 * max_entries;
     guard full_range > 0 && enc_ric <= full_range else {
         return 0, QpackError.DecompressionFailed;
@@ -349,7 +301,7 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
     if ric == 0 {
         return 0;
     }
-    let max_entries = max_cap / QPACK_ENTRY_OVERHEAD;
+    let max_entries = max_cap / rfc::QPACK_ENTRY_OVERHEAD;
     let full_range = 2 * max_entries;
     if full_range == 0 {
         return 0;
@@ -1139,7 +1091,7 @@ fn encode_qpack_field<B>(
         return;
     }
 
-    if s_idx < QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx as i64].name {
+    if s_idx < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx as i64].name {
         // Literal with Static Name: 0101xxxx (4-bit prefix)
         internal::hpack_encode_int(out, s_idx, 4, 0x50);
         internal::encode_hpack_string_literal(out, val, use_huffman);

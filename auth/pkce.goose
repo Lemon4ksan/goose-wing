@@ -10,14 +10,6 @@ import core from "..";
 
 // ---- PKCE Constants -------------------------------------------------------
 
-const PKCE_METHOD_S256:  const u8[:] = "S256";
-const PKCE_METHOD_PLAIN: const u8[:] = "plain";
-
-const PKCE_MIN_VERIFIER_LEN: i64 = 43;
-const PKCE_MAX_VERIFIER_LEN: i64 = 128;
-
-// ---- PKCE Challenge Pair Model -------------------------------------------
-
 struct PkcePair {
     verifier:  u8[..128] = [],
     challenge: u8[..128] = [],
@@ -97,7 +89,7 @@ checkfree inline fn is_canonical_s256_final_char(ch: u8) -> bool {
 
 // Validates whether verifier conforms to RFC 7636 Section 4.1.
 fn is_valid_code_verifier(v: const u8[:]) -> bool {
-    guard v.len >= PKCE_MIN_VERIFIER_LEN && v.len <= PKCE_MAX_VERIFIER_LEN else {
+    guard v.len >= rfc::PKCE_MIN_VERIFIER_LEN && v.len <= rfc::PKCE_MAX_VERIFIER_LEN else {
         return false;
     }
     for b in v {
@@ -115,15 +107,15 @@ var g_pkce_entropy_counter: u64 = 1;
 // S256: exactly 43 unpadded base64url characters with canonical padding bits.
 // plain: 43..128 unreserved characters (same as code_verifier).
 fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain") -> bool {
-    let eff_method = if method.len == 0 { PKCE_METHOD_PLAIN } else { method };
-    if eff_method == PKCE_METHOD_S256 {
+    let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
+    if eff_method == rfc::PKCE_METHOD_S256 {
         guard challenge.len == 43 else { return false; }
         for i in 42 {
             guard is_base64url_char(challenge[i]) else { return false; }
         }
         guard is_canonical_s256_final_char(challenge[42]) else { return false; }
         return true;
-    } else if eff_method == PKCE_METHOD_PLAIN {
+    } else if eff_method == rfc::PKCE_METHOD_PLAIN {
         return is_valid_code_verifier(challenge);
     }
     return false;
@@ -180,13 +172,13 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
     guard is_valid_code_verifier(verifier) else {
         return false;
     }
-    let eff_method = if method.len == 0 { PKCE_METHOD_PLAIN } else { method };
-    guard eff_method == PKCE_METHOD_S256 || eff_method == PKCE_METHOD_PLAIN else {
+    let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
+    guard eff_method == rfc::PKCE_METHOD_S256 || eff_method == rfc::PKCE_METHOD_PLAIN else {
         return false;
     }
 
     out.clear();
-    if eff_method == PKCE_METHOD_S256 {
+    if eff_method == rfc::PKCE_METHOD_S256 {
         let digest = core::sha256(verifier);
         core::base64url_encode(digest[..], out);
     } else {
@@ -198,7 +190,7 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
 // Constant-time validation of code_verifier against code_challenge (RFC 7636 Section 4.6).
 // Defaults to 'plain' when method is omitted per RFC 7636 §4.3.
 fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "plain") -> bool {
-    let eff_method = if method.len == 0 { PKCE_METHOD_PLAIN } else { method };
+    let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
     guard is_valid_code_verifier(verifier) else {
         return false;
     }
@@ -221,7 +213,7 @@ fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method
 // Creates a complete PKCE challenge pair. Returns false if entropy or method is invalid.
 fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool {
     var pair = PkcePair { .. };
-    let eff_method = if method.len == 0 { PKCE_METHOD_PLAIN } else { method };
+    let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
     guard eff_method.len <= pair.method.cap else { return pair, false; }
     pair.method.clear();
     pair.method.append(eff_method);
@@ -235,13 +227,13 @@ fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> 
 // Validates whether code_challenge conforms to OAuth 2.1 Section 7.6.1 and RFC 9700 Section 2.1.1.
 // Strictly mandates S256 and forbids the legacy plain transformation.
 fn is_valid_code_challenge_strict(challenge: const u8[:], method: const u8[:] = "S256") -> bool {
-    guard method == PKCE_METHOD_S256 else { return false; }
+    guard method == rfc::PKCE_METHOD_S256 else { return false; }
     return is_valid_code_challenge(challenge, method);
 }
 
 // Validates code_verifier against code_challenge under OAuth 2.1 / RFC 9700 strict rules.
 // Rejects method != "S256" immediately.
 fn validate_code_challenge_strict(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "S256") -> bool {
-    guard method == PKCE_METHOD_S256 else { return false; }
+    guard method == rfc::PKCE_METHOD_S256 else { return false; }
     return validate_code_challenge(verifier, challenge, method);
 }

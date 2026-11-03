@@ -15,22 +15,10 @@ import client.response;
 
 // ---- WebTransport & RFC 9221 Constants (draft-16) -------------------------
 
-const WEBTRANSPORT_PROTOCOL:              const u8[:] = "webtransport";
-const SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64         = 0x2b603742;
-const SETTINGS_H3_DATAGRAM:               u64         = 0x33;
-
-const STREAM_TYPE_WEBTRANSPORT: u64 = 0x54;
-const WEBTRANSPORT_BIDI_SIGNAL: u64 = 0x41;
-
-// WebTransport Capsules (draft-16 Section 8 & RFC 9297) are defined in net/masque.goose:
 // CAPSULE_WT_RESET_STREAM (0x190B4D39), CAPSULE_WT_STOP_SENDING (0x190B4D3A),
 // CAPSULE_CLOSE_WEBTRANSPORT (0x2843), CAPSULE_DRAIN_WEBTRANSPORT (0x78AE).
 
 // HTTP/3 Error Code Mapping bounds (draft-16 Section 4.3)
-const WEBTRANSPORT_ERROR_FIRST: u64 = 0x52e4a40fa8db;
-const WEBTRANSPORT_ERROR_LAST:  u64 = 0x52e5ac983162;
-
-// ---- WebTransport Models -------------------------------------------------
 
 struct WebTransportSession {
     session_id:        u64        = 0,
@@ -151,7 +139,7 @@ fn format_webtransport_connect_request(
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
-    set_header(req, ":protocol", WEBTRANSPORT_PROTOCOL);
+    set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
     set_header(req, "sec-webtransport-http3-draft", "draft16");
 }
 
@@ -159,7 +147,7 @@ fn format_webtransport_connect_request(
 fn is_webtransport_connect_request(req: const Request&) -> bool {
     if req.method[..] != "CONNECT" { return false; }
     if !req.has_header(":protocol") { return false; }
-    if req.header(":protocol") != WEBTRANSPORT_PROTOCOL { return false; }
+    if req.header(":protocol") != rfc::WEBTRANSPORT_PROTOCOL { return false; }
     return true;
 }
 
@@ -187,7 +175,7 @@ fn encode_webtransport_uni_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
-    write_varint(out, STREAM_TYPE_WEBTRANSPORT);
+    write_varint(out, rfc::STREAM_TYPE_WEBTRANSPORT);
     write_varint(out, session_id);
 }
 
@@ -204,7 +192,7 @@ fn decode_webtransport_uni_stream_header(
     out.header_len = 0;
     var idx: i64 = 0;
     let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == STREAM_TYPE_WEBTRANSPORT else { return false; }
+    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return false; }
 
     let sid, ok2 = read_varint(wire, idx);
     guard ok2 else { return false; }
@@ -220,7 +208,7 @@ fn encode_webtransport_bidi_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
-    write_varint(out, WEBTRANSPORT_BIDI_SIGNAL);
+    write_varint(out, rfc::WEBTRANSPORT_BIDI_SIGNAL);
     write_varint(out, session_id);
 }
 
@@ -237,7 +225,7 @@ fn decode_webtransport_bidi_stream_header(
     out.header_len = 0;
     var idx: i64 = 0;
     let signal, ok1 = read_varint(wire, idx);
-    guard ok1 && signal == WEBTRANSPORT_BIDI_SIGNAL else { return false; }
+    guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return false; }
 
     let sid, ok2 = read_varint(wire, idx);
     guard ok2 else { return false; }
@@ -292,7 +280,7 @@ fn encode_quic_datagram_frame<B>(
     datagram_payload: const u8[:],
     out:              B&,
 ) {
-    write_varint(out, internal::QUIC_FRAME_DATAGRAM_LEN);
+    write_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN);
     write_varint(out, datagram_payload.len as u64);
     out.append(datagram_payload);
 }
@@ -311,11 +299,11 @@ fn decode_quic_datagram_frame<B>(
     let frame_type, ok_t = read_varint(wire, idx);
     guard ok_t else { return false; }
 
-    guard frame_type == internal::QUIC_FRAME_DATAGRAM || frame_type == internal::QUIC_FRAME_DATAGRAM_LEN else {
+    guard frame_type == rfc::QUIC_FRAME_DATAGRAM || frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN else {
         return false;
     }
 
-    if frame_type == internal::QUIC_FRAME_DATAGRAM_LEN {
+    if frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
         guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
         out_payload.append(wire[idx..idx + (len as i64)]);
@@ -332,18 +320,18 @@ fn decode_quic_datagram_frame<B>(
 // skipping HTTP/3 GREASE code points (0x1f * N + 0x21).
 fn webtransport_code_to_http_code(app_err: u32) -> u64 {
     let n = app_err as u64;
-    return WEBTRANSPORT_ERROR_FIRST + n + (n / 0x1E);
+    return rfc::WEBTRANSPORT_ERROR_FIRST + n + (n / 0x1E);
 }
 
 // Translates an HTTP/3 error code back to a 32-bit WebTransport application error code.
 fn http_code_to_webtransport_code(h3_err: u64) -> u32, bool {
-    guard h3_err >= WEBTRANSPORT_ERROR_FIRST && h3_err <= WEBTRANSPORT_ERROR_LAST else {
+    guard h3_err >= rfc::WEBTRANSPORT_ERROR_FIRST && h3_err <= rfc::WEBTRANSPORT_ERROR_LAST else {
         return 0, false;
     }
     if h3_err >= 0x21 && ((h3_err - 0x21) % 0x1F) == 0 {
         return 0, false;
     }
-    let shifted = h3_err - WEBTRANSPORT_ERROR_FIRST;
+    let shifted = h3_err - rfc::WEBTRANSPORT_ERROR_FIRST;
     let app_err = shifted - (shifted / 0x1F);
     return app_err as u32, true;
 }
@@ -357,7 +345,7 @@ fn encode_webtransport_close_session<B>(
     reason:     const u8[:],
     out:        B&,
 ) {
-    write_varint(out, CAPSULE_CLOSE_WEBTRANSPORT);
+    write_varint(out, rfc::CAPSULE_CLOSE_WEBTRANSPORT);
     let payload_len = 4 + reason.len;
     write_varint(out, payload_len as u64);
 
@@ -399,7 +387,7 @@ fn decode_webtransport_close_session(
 // Encodes a DRAIN_WEBTRANSPORT_SESSION capsule:
 // Capsule Type (varint 0x78AE) || Length (varint 0)
 fn encode_webtransport_drain_session<B>(out: B&) {
-    write_varint(out, CAPSULE_DRAIN_WEBTRANSPORT);
+    write_varint(out, rfc::CAPSULE_DRAIN_WEBTRANSPORT);
     write_varint(out, 0);
 }
 
@@ -419,7 +407,7 @@ fn encode_webtransport_reset_stream<B>(
     error_code: u32,
     out:        B&,
 ) {
-    write_varint(out, CAPSULE_WT_RESET_STREAM);
+    write_varint(out, rfc::CAPSULE_WT_RESET_STREAM);
     var tmp_body: u8[..32] = [];
     write_varint(tmp_body, stream_id);
     write_varint(tmp_body, error_code as u64);
@@ -456,7 +444,7 @@ fn encode_webtransport_stop_sending<B>(
     error_code: u32,
     out:        B&,
 ) {
-    write_varint(out, CAPSULE_WT_STOP_SENDING);
+    write_varint(out, rfc::CAPSULE_WT_STOP_SENDING);
     var tmp_body: u8[..32] = [];
     write_varint(tmp_body, stream_id);
     write_varint(tmp_body, error_code as u64);
@@ -572,7 +560,7 @@ fn demux_webtransport_bidi_stream(
     guard wire.len > 0 else { return 0, wire[..0], false; }
     var idx: i64 = 0;
     let signal, ok1 = read_varint(wire, idx);
-    guard ok1 && signal == WEBTRANSPORT_BIDI_SIGNAL else { return 0, wire[..0], false; }
+    guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return 0, wire[..0], false; }
 
     let sid, ok2 = read_varint(wire, idx);
     guard ok2 else { return 0, wire[..0], false; }
@@ -592,7 +580,7 @@ fn demux_webtransport_uni_stream(
     guard wire.len > 0 else { return 0, wire[..0], false; }
     var idx: i64 = 0;
     let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == STREAM_TYPE_WEBTRANSPORT else { return 0, wire[..0], false; }
+    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return 0, wire[..0], false; }
 
     let sid, ok2 = read_varint(wire, idx);
     guard ok2 else { return 0, wire[..0], false; }
@@ -619,7 +607,7 @@ fn demux_webtransport_stream_header(
     if is_bidi {
         var idx: i64 = 0;
         let signal, ok1 = read_varint(wire, idx);
-        guard ok1 && signal == WEBTRANSPORT_BIDI_SIGNAL else { return false; }
+        guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return false; }
 
         let sid, ok2 = read_varint(wire, idx);
         guard ok2 else { return false; }
@@ -631,7 +619,7 @@ fn demux_webtransport_stream_header(
 
     var idx: i64 = 0;
     let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == STREAM_TYPE_WEBTRANSPORT else { return false; }
+    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return false; }
 
     let sid, ok2 = read_varint(wire, idx);
     guard ok2 else { return false; }

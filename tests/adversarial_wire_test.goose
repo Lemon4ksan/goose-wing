@@ -90,8 +90,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         // Handshake: preface + empty SETTINGS
         var init_wire: u8[..64] = [];
-        init_wire.append(internal::H2_CLIENT_PREFACE[..]);
-        let set_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
+        let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
         internal::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
         let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
@@ -107,8 +107,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         let req_hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         internal::encode_frame_header_to(req_hdr, full_req);
@@ -138,8 +138,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         // Handshake
         var init_wire: u8[..64] = [];
-        init_wire.append(internal::H2_CLIENT_PREFACE[..]);
-        let set_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
+        let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
         internal::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
         let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
@@ -155,8 +155,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         let req_hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         internal::encode_frame_header_to(req_hdr, full_req);
@@ -170,7 +170,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         var data_wire: u8[..128] = [];
         let data_hdr = internal::FrameHeader {
             length:     100,
-            frame_type: internal::FRAME_DATA,
+            frame_type: rfc::H2_FRAME_DATA,
             flags:      0,
             stream_id:  1,
         };
@@ -276,7 +276,7 @@ fn test_adversarial_grpc_web(t: lit::T&) {
         var body_a: u8[..64] = [];
         body_a.append("grpc-message: oops\r\n");
         var frame_a: u8[>..] = [];
-        frame_a.push(wing::GRPC_WEB_FLAG_TRAILERS);
+        frame_a.push(rfc::GRPC_WEB_FLAG_TRAILERS);
         core::write_be_u32(frame_a, body_a.len as u32);
         frame_a.append(body_a[..]);
 

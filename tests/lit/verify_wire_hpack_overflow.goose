@@ -24,9 +24,9 @@ fn main() {
     assert(offset == 0);
     print("HPACK_TRANSACTIONAL_ROLLBACK: OK\n");
 
-    // Case 2: Huffman flag rejected when raw decoding is requested (BUG-15)
-    // 0x84 = 'H' bit set (0x80) with length 4
-    let huffman_src: const u8[5] = [0x84, 0x11, 0x22, 0x33, 0x44];
+    // Case 2: Huffman flag rejected when non-1s padding bits are present (RFC 7541 Section 5.2)
+    // 0x81 = 'H' bit set (0x80) with length 1, followed by 0x00 (invalid padding)
+    let huffman_src: const u8[2] = [0x81, 0x00];
     offset = 0;
     out_str.clear();
     let huff_res = wire::hpack_decode_string(huffman_src[..], offset, out_str);

@@ -31,7 +31,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         // Encode as unfragmented compressed text frame (RSV1=1, FIN=1, Opcode=TEXT)
         var frame_wire: u8[..2048] = [];
         let no_mask: u8[4] = [0, 0, 0, 0];
-        wing::encode_ws_frame_compressed(frame_wire, wing::WS_OPCODE_TEXT, comp_wire[..], false, no_mask, true);
+        wing::encode_ws_frame_compressed(frame_wire, rfc::WS_OPCODE_TEXT, comp_wire[..], false, no_mask, true);
 
         var view = wing::WsMessageView { .. };
         var reply: u8[..256] = [];
@@ -41,7 +41,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         sub.assert_false(ws.is_closed, "Connection must NOT be closed on compressed text frame");
         sub.assert_true(view.is_valid, "Message view must be valid");
         sub.assert_true(view.is_compressed, "Message view must indicate payload is compressed");
-        sub.assert_eq(view.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(view.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
 
         // Verify decompressed payload is valid UTF-8 and matches original
         var decomp_text: u8[..2048] = [];
@@ -74,7 +74,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
 
         // Fragment 1: RSV1=1, FIN=0, Opcode=TEXT
         var f1_wire: u8[..1024] = [];
-        wing::encode_ws_frame_compressed(f1_wire, wing::WS_OPCODE_TEXT, part1, false, no_mask, false);
+        wing::encode_ws_frame_compressed(f1_wire, rfc::WS_OPCODE_TEXT, part1, false, no_mask, false);
 
         var view1 = wing::WsMessageView { .. };
         var reply1: u8[..256] = [];
@@ -85,7 +85,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
 
         // Fragment 2: RSV1=0, FIN=1, Opcode=CONTINUATION
         var f2_wire: u8[..1024] = [];
-        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, part2, false, no_mask, true);
+        wing::encode_ws_frame(f2_wire, rfc::WS_OPCODE_CONTINUATION, part2, false, no_mask, true);
 
         var view2 = wing::WsMessageView { .. };
         var reply2: u8[..256] = [];
@@ -93,7 +93,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         sub.assert_true(ok2, "Terminal continuation fragment accepted");
         sub.assert_false(ws.is_closed, "Connection must NOT be closed on compressed fragmented text message");
         sub.assert_true(view2.is_valid, "Reassembled message is valid");
-        sub.assert_eq(view2.opcode, wing::WS_OPCODE_TEXT, "Preserved initial opcode TEXT");
+        sub.assert_eq(view2.opcode, rfc::WS_OPCODE_TEXT, "Preserved initial opcode TEXT");
         sub.assert_true(view2.is_compressed, "Reassembled view must have is_compressed set to true");
 
         // Verify decompressed reassembled payload
@@ -123,7 +123,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         let handled = wing::receive_view(ws, unmasked_hdr[..], view, reply);
         sub.assert_true(handled, "receive_view must process fatal unmasked header error");
         sub.assert_true(ws.is_closed, "Server must immediately close connection on unmasked client frame");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (PROTOCOL_ERROR)");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (PROTOCOL_ERROR)");
     };
 
     // ------------------------------------------------------------------------
@@ -145,7 +145,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         let handled = wing::receive_view(ws, rsv2_hdr[..], view, reply);
         sub.assert_true(handled, "receive_view must immediately handle RSV violation");
         sub.assert_true(ws.is_closed, "Server must immediately close connection on invalid RSV bits");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (PROTOCOL_ERROR)");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (PROTOCOL_ERROR)");
     };
 
     // ------------------------------------------------------------------------
@@ -153,10 +153,10 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     t.run("5. RFC 6455 §7.4 Close Status Code Validation and Omission on Wire") { sub =>
         // Validation function check
-        sub.assert_true(wing::is_valid_ws_close_code(wing::WS_STATUS_NORMAL), "1000 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(wing::WS_STATUS_GOING_AWAY), "1001 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(wing::WS_STATUS_PROTOCOL_ERROR), "1002 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(wing::WS_STATUS_INVALID_PAYLOAD), "1007 is valid");
+        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_NORMAL), "1000 is valid");
+        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_GOING_AWAY), "1001 is valid");
+        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_PROTOCOL_ERROR), "1002 is valid");
+        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_INVALID_PAYLOAD), "1007 is valid");
         sub.assert_true(wing::is_valid_ws_close_code(3000), "3000 app range is valid");
         sub.assert_true(wing::is_valid_ws_close_code(4999), "4999 private range is valid");
 
@@ -176,7 +176,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         // Outbound close() call with internal code 1006 (WS_STATUS_ABNORMAL_CLOSURE) MUST emit 0-byte payload
         var ws1 = wing::new_websocket_session(false);
         var wire1: u8[..128] = [];
-        wing::close(ws1, wing::WS_STATUS_ABNORMAL_CLOSURE, "abnormal", wire1);
+        wing::close(ws1, rfc::WS_STATUS_ABNORMAL_CLOSURE, "abnormal", wire1);
         let hdr1, ok1 = wing::parse_ws_frame_header(wire1[..]);
         sub.assert_true(ok1, "Close frame must parse");
         sub.assert_eq(hdr1.payload_len, 0, "1006 abnormal close MUST NOT write status code to wire (0 payload length)");
@@ -193,7 +193,7 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         var ws3 = wing::new_websocket_session(false);
         var wire3: u8[..128] = [];
         let bad_utf8: u8[3] = [0xFF, 0xFE, 0xFD];
-        wing::close(ws3, wing::WS_STATUS_NORMAL, bad_utf8[..], wire3);
+        wing::close(ws3, rfc::WS_STATUS_NORMAL, bad_utf8[..], wire3);
         let hdr3, ok3 = wing::parse_ws_frame_header(wire3[..]);
         sub.assert_true(ok3, "Close frame must parse");
         sub.assert_eq(hdr3.payload_len, 2, "Only 2-byte status code written; non-UTF-8 reason omitted");
@@ -217,12 +217,12 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
         let handled = wing::receive_view(ws, empty_close_frame[..], view, reply);
         sub.assert_true(handled, "receive_view handles empty close frame");
         sub.assert_true(view.is_valid, "Close message is valid");
-        sub.assert_eq(view.close_code, wing::WS_STATUS_NO_STATUS, "Close code parsed as 1005 (No Status)");
+        sub.assert_eq(view.close_code, rfc::WS_STATUS_NO_STATUS, "Close code parsed as 1005 (No Status)");
         sub.assert_gt(reply.len, 0, "Server generated reply close frame");
 
         let rep_hdr, ok_rep = wing::parse_ws_frame_header(reply[..]);
         sub.assert_true(ok_rep, "Reply close frame parsed");
-        sub.assert_eq(rep_hdr.opcode, wing::WS_OPCODE_CLOSE, "Reply opcode is Close");
+        sub.assert_eq(rep_hdr.opcode, rfc::WS_OPCODE_CLOSE, "Reply opcode is Close");
         sub.assert_eq(rep_hdr.payload_len, 0, "RFC 6455 §7.1.5: Response close frame to body-less close MUST contain no body (0-byte payload)");
     };
 
@@ -247,13 +247,13 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
     t.run("8. RFC 7692 §5.1 encode_ws_frame_compressed Never Sets RSV1 on Control or Continuation") { sub =>
         var out_ping: u8[..64] = [];
         let mask: u8[4] = [0, 0, 0, 0];
-        wing::encode_ws_frame_compressed(out_ping, wing::WS_OPCODE_PING, "", false, mask, true);
+        wing::encode_ws_frame_compressed(out_ping, rfc::WS_OPCODE_PING, "", false, mask, true);
         let hdr_p, ok_p = wing::parse_ws_frame_header(out_ping[..]);
         sub.assert_true(ok_p, "Ping parsed");
         sub.assert_false(hdr_p.rsv1, "RSV1 MUST NOT be set on control frame per RFC 7692 §5.1");
 
         var out_cont: u8[..64] = [];
-        wing::encode_ws_frame_compressed(out_cont, wing::WS_OPCODE_CONTINUATION, "chunk", false, mask, true);
+        wing::encode_ws_frame_compressed(out_cont, rfc::WS_OPCODE_CONTINUATION, "chunk", false, mask, true);
         let hdr_c, ok_c = wing::parse_ws_frame_header(out_cont[..]);
         sub.assert_true(ok_c, "Continuation parsed");
         sub.assert_false(hdr_c.rsv1, "RSV1 MUST NOT be set on continuation frame per RFC 7692 §5.1");
@@ -323,13 +323,13 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         let handled = wing::receive_view(ws, oversized_hdr[..], view, reply);
         sub.assert_true(handled, "receive_view MUST immediately process oversized header");
         sub.assert_true(ws.is_closed, "Session MUST be transitioned to closed state");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_MESSAGE_TOO_BIG, "Close code MUST be 1009 (Message Too Big)");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_MESSAGE_TOO_BIG, "Close code MUST be 1009 (Message Too Big)");
         sub.assert_gt(reply.len, 0, "Close frame MUST be emitted on wire in reply");
 
         // Verify emitted close frame contains status code 1009
         let hdr_rep, ok_rep = wing::parse_ws_frame_header(reply[..]);
         sub.assert_true(ok_rep, "Parsed emitted reply frame header");
-        sub.assert_eq(hdr_rep.opcode, wing::WS_OPCODE_CLOSE, "Emitted frame opcode is CLOSE");
+        sub.assert_eq(hdr_rep.opcode, rfc::WS_OPCODE_CLOSE, "Emitted frame opcode is CLOSE");
         let p_start = hdr_rep.header_len as i64;
         let p_len = hdr_rep.payload_len as i64;
         var p = reply[p_start..(p_start + p_len)];
@@ -338,7 +338,7 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         }
         let code, _, ok_p = wing::parse_close_payload(p);
         sub.assert_true(ok_p, "Parsed emitted close payload");
-        sub.assert_eq(code, wing::WS_STATUS_MESSAGE_TOO_BIG, "Wire Close frame carries status 1009");
+        sub.assert_eq(code, rfc::WS_STATUS_MESSAGE_TOO_BIG, "Wire Close frame carries status 1009");
     };
 
     // ------------------------------------------------------------------------
@@ -353,27 +353,27 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         var chunk1: u8[..128] = [];
         for i in 70 { chunk1.push('X'); }
         var f1_wire: u8[..256] = [];
-        wing::encode_ws_frame(f1_wire, wing::WS_OPCODE_TEXT, chunk1[..], false, no_mask, false);
+        wing::encode_ws_frame(f1_wire, rfc::WS_OPCODE_TEXT, chunk1[..], false, no_mask, false);
 
         var view1 = wing::WsMessageView { .. };
         var reply1: u8[..256] = [];
         let ok1 = wing::receive_view(ws, f1_wire[..], view1, reply1);
         sub.assert_true(ok1, "Initial 70-byte fragment accepted");
         sub.assert_false(ws.is_closed, "Session still open");
-        sub.assert_eq(ws.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode recorded as TEXT");
+        sub.assert_eq(ws.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode recorded as TEXT");
 
         // Fragment 2: 70 bytes Continuation frame (FIN=1) -> cumulative 140 bytes > 120 limit
         var chunk2: u8[..128] = [];
         for i in 70 { chunk2.push('Y'); }
         var f2_wire: u8[..256] = [];
-        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, chunk2[..], false, no_mask, true);
+        wing::encode_ws_frame(f2_wire, rfc::WS_OPCODE_CONTINUATION, chunk2[..], false, no_mask, true);
 
         var view2 = wing::WsMessageView { .. };
         var reply2: u8[..256] = [];
         let ok2 = wing::receive_view(ws, f2_wire[..], view2, reply2);
         sub.assert_true(ok2, "receive_view handled terminal continuation violation");
         sub.assert_true(ws.is_closed, "Connection closed on cumulative fragment limit violation");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_MESSAGE_TOO_BIG, "Close status is 1009");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_MESSAGE_TOO_BIG, "Close status is 1009");
         sub.assert_eq(ws.frag_opcode, 0, "frag_opcode reset on limit breach");
         sub.assert_eq(ws.frag_buffer.len, 0, "frag_buffer cleared on limit breach");
     };
@@ -399,52 +399,52 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
 
         // Frame 1: Compressed initial fragment (TEXT, RSV1=1, FIN=0)
         var f1_wire: u8[..1024] = [];
-        wing::encode_ws_frame_compressed(f1_wire, wing::WS_OPCODE_TEXT, part1, false, no_mask, false);
+        wing::encode_ws_frame_compressed(f1_wire, rfc::WS_OPCODE_TEXT, part1, false, no_mask, false);
 
         var v1 = wing::WsMessageView { .. };
         var r1: u8[..256] = [];
         let ok1 = wing::receive_view(ws, f1_wire[..], v1, r1);
         sub.assert_true(ok1, "Frame 1 accepted");
-        sub.assert_eq(ws.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode TEXT");
+        sub.assert_eq(ws.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode TEXT");
         sub.assert_true(ws.frag_compressed, "Frag compressed state is true");
 
         // Interleaved Frame 2: Ping heartbeat (PING, FIN=1)
         var ping_wire: u8[..128] = [];
-        wing::encode_ws_frame(ping_wire, wing::WS_OPCODE_PING, "beat", false, no_mask, true);
+        wing::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "beat", false, no_mask, true);
 
         var v_ping = wing::WsMessageView { .. };
         var r_ping: u8[..256] = [];
         let ok_ping = wing::receive_view(ws, ping_wire[..], v_ping, r_ping);
         sub.assert_true(ok_ping, "Interleaved Ping accepted");
         sub.assert_true(v_ping.is_valid, "Ping view is valid");
-        sub.assert_eq(v_ping.opcode, wing::WS_OPCODE_PING, "Ping opcode delivered");
+        sub.assert_eq(v_ping.opcode, rfc::WS_OPCODE_PING, "Ping opcode delivered");
         sub.assert_gt(r_ping.len, 0, "Pong response generated");
         // State retention check
-        sub.assert_eq(ws.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode TEXT preserved across Ping");
+        sub.assert_eq(ws.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode TEXT preserved across Ping");
         sub.assert_true(ws.frag_compressed, "Frag compressed preserved across Ping");
 
         // Interleaved Frame 3: Pong heartbeat (PONG, FIN=1)
         var pong_wire: u8[..128] = [];
-        wing::encode_ws_frame(pong_wire, wing::WS_OPCODE_PONG, "beat", false, no_mask, true);
+        wing::encode_ws_frame(pong_wire, rfc::WS_OPCODE_PONG, "beat", false, no_mask, true);
 
         var v_pong = wing::WsMessageView { .. };
         var r_pong: u8[..256] = [];
         let ok_pong = wing::receive_view(ws, pong_wire[..], v_pong, r_pong);
         sub.assert_true(ok_pong, "Interleaved Pong accepted");
         sub.assert_eq(ws.pongs_received, 1, "Pongs received counter incremented");
-        sub.assert_eq(ws.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode TEXT preserved across Pong");
+        sub.assert_eq(ws.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode TEXT preserved across Pong");
         sub.assert_true(ws.frag_compressed, "Frag compressed preserved across Pong");
 
         // Frame 4: Continuation terminal fragment (CONTINUATION, FIN=1)
         var f2_wire: u8[..1024] = [];
-        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, part2, false, no_mask, true);
+        wing::encode_ws_frame(f2_wire, rfc::WS_OPCODE_CONTINUATION, part2, false, no_mask, true);
 
         var v2 = wing::WsMessageView { .. };
         var r2: u8[..256] = [];
         let ok2 = wing::receive_view(ws, f2_wire[..], v2, r2);
         sub.assert_true(ok2, "Terminal continuation accepted");
         sub.assert_true(v2.is_valid, "Reassembled view is valid");
-        sub.assert_eq(v2.opcode, wing::WS_OPCODE_TEXT, "Reassembled opcode is TEXT");
+        sub.assert_eq(v2.opcode, rfc::WS_OPCODE_TEXT, "Reassembled opcode is TEXT");
         sub.assert_true(v2.is_compressed, "Reassembled message correctly tagged as compressed");
 
         // Decompress and verify
@@ -461,13 +461,13 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         // 5a: Outbound Close idempotence
         var ws = wing::new_websocket_session(true);
         var reply1: u8[..256] = [];
-        wing::close(ws, wing::WS_STATUS_NORMAL, "clean shutdown", reply1);
+        wing::close(ws, rfc::WS_STATUS_NORMAL, "clean shutdown", reply1);
         sub.assert_true(ws.is_closed, "Session is_closed is true");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_NORMAL, "Close code 1000");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_NORMAL, "Close code 1000");
         sub.assert_gt(reply1.len, 0, "First close call emits Close frame on wire");
 
         var reply2: u8[..256] = [];
-        wing::close(ws, wing::WS_STATUS_NORMAL, "clean shutdown again", reply2);
+        wing::close(ws, rfc::WS_STATUS_NORMAL, "clean shutdown again", reply2);
         sub.assert_eq(reply2.len, 0, "Second close call MUST NOT emit duplicate Close frame");
 
         // 5b: Outbound data frame writes blocked post-close
@@ -489,7 +489,7 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         // 5c: Inbound data frames discarded post-close (RFC 6455 §5.5.1)
         let no_mask: u8[4] = [0, 0, 0, 0];
         var incoming_text_frame: u8[..256] = [];
-        wing::encode_ws_frame(incoming_text_frame, wing::WS_OPCODE_TEXT, "hello", false, no_mask, true);
+        wing::encode_ws_frame(incoming_text_frame, rfc::WS_OPCODE_TEXT, "hello", false, no_mask, true);
 
         var view_disc = wing::WsMessageView { .. };
         var rep_disc: u8[..256] = [];
@@ -501,17 +501,17 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         var ws_srv = wing::new_websocket_session(false); // Server session expecting masked frames
         var client_close_frame: u8[..256] = [];
         var close_body:         u8[..64]  = [];
-        wing::encode_close_payload(close_body, wing::WS_STATUS_NORMAL, "client close");
+        wing::encode_close_payload(close_body, rfc::WS_STATUS_NORMAL, "client close");
         let mask_k: u8[4] = [0x12, 0x34, 0x56, 0x78];
-        wing::encode_ws_frame(client_close_frame, wing::WS_OPCODE_CLOSE, close_body[..], true, mask_k, true);
+        wing::encode_ws_frame(client_close_frame, rfc::WS_OPCODE_CLOSE, close_body[..], true, mask_k, true);
 
         var v_close = wing::WsMessageView { .. };
         var r_close: u8[..256] = [];
         let ok_c1 = wing::receive_view(ws_srv, client_close_frame[..], v_close, r_close);
         sub.assert_true(ok_c1, "Initial peer Close frame accepted");
         sub.assert_true(v_close.is_valid, "Close view is valid");
-        sub.assert_eq(v_close.opcode, wing::WS_OPCODE_CLOSE, "Opcode is CLOSE");
-        sub.assert_eq(v_close.close_code, wing::WS_STATUS_NORMAL, "Close code 1000");
+        sub.assert_eq(v_close.opcode, rfc::WS_OPCODE_CLOSE, "Opcode is CLOSE");
+        sub.assert_eq(v_close.close_code, rfc::WS_STATUS_NORMAL, "Close code 1000");
         sub.assert_true(ws_srv.is_closed, "Server session closed");
         sub.assert_true(ws_srv.close_received, "close_received flag is true");
         sub.assert_gt(r_close.len, 0, "Server generated Close response frame");
@@ -534,33 +534,33 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
         // 6a: Orphaned Continuation frame (without starting fragment)
         var ws1 = wing::new_websocket_session(true);
         var cont_frame: u8[..64] = [];
-        wing::encode_ws_frame(cont_frame, wing::WS_OPCODE_CONTINUATION, "chunk", false, no_mask, true);
+        wing::encode_ws_frame(cont_frame, rfc::WS_OPCODE_CONTINUATION, "chunk", false, no_mask, true);
 
         var v1 = wing::WsMessageView { .. };
         var r1: u8[..256] = [];
         let ok1 = wing::receive_view(ws1, cont_frame[..], v1, r1);
         sub.assert_true(ok1, "Orphaned continuation rejected at header check");
         sub.assert_true(ws1.is_closed, "Connection closed");
-        sub.assert_eq(ws1.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Protocol Error 1002 on orphaned continuation");
+        sub.assert_eq(ws1.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Protocol Error 1002 on orphaned continuation");
 
         // 6b: Interleaved new data frame while fragmented message in progress
         var ws2 = wing::new_websocket_session(true);
         var f1_wire: u8[..64] = [];
-        wing::encode_ws_frame(f1_wire, wing::WS_OPCODE_TEXT, "start", false, no_mask, false);
+        wing::encode_ws_frame(f1_wire, rfc::WS_OPCODE_TEXT, "start", false, no_mask, false);
         var v_init = wing::WsMessageView { .. };
         var r_init: u8[..256] = [];
         wing::receive_view(ws2, f1_wire[..], v_init, r_init);
-        sub.assert_eq(ws2.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode TEXT set");
+        sub.assert_eq(ws2.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode TEXT set");
 
         // Send unexpected new Binary data frame before continuation
         var bin_frame: u8[..64] = [];
-        wing::encode_ws_frame(bin_frame, wing::WS_OPCODE_BINARY, "interleaved", false, no_mask, true);
+        wing::encode_ws_frame(bin_frame, rfc::WS_OPCODE_BINARY, "interleaved", false, no_mask, true);
         var v2 = wing::WsMessageView { .. };
         var r2: u8[..256] = [];
         let ok2 = wing::receive_view(ws2, bin_frame[..], v2, r2);
         sub.assert_true(ok2, "Interleaved data frame rejected at header check");
         sub.assert_true(ws2.is_closed, "Connection closed");
-        sub.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Protocol Error 1002 on interleaved data frame");
+        sub.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Protocol Error 1002 on interleaved data frame");
         sub.assert_eq(ws2.frag_opcode, 0, "frag_opcode wiped");
         sub.assert_eq(ws2.frag_buffer.len, 0, "frag_buffer wiped");
     };
@@ -590,7 +590,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         frag1_body.push(0xC3); // Leading byte of 'ß'
 
         var f1_wire: u8[..64] = [];
-        wing::encode_ws_frame(f1_wire, wing::WS_OPCODE_TEXT, frag1_body[..], false, no_mask, false);
+        wing::encode_ws_frame(f1_wire, rfc::WS_OPCODE_TEXT, frag1_body[..], false, no_mask, false);
 
         var v1 = wing::WsMessageView { .. };
         var r1: u8[..256] = [];
@@ -598,14 +598,14 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         sub.assert_true(ok1, "Fragment 1 with trailing incomplete 2-byte lead byte accepted");
         sub.assert_false(v1.is_valid, "Message not complete on Fragment 1");
         sub.assert_false(ws1.is_closed, "Connection MUST NOT fail with premature 1007 on split UTF-8 fragment");
-        sub.assert_eq(ws1.frag_opcode, wing::WS_OPCODE_TEXT, "Frag opcode TEXT recorded");
+        sub.assert_eq(ws1.frag_opcode, rfc::WS_OPCODE_TEXT, "Frag opcode TEXT recorded");
 
         var frag2_body: u8[..16] = [];
         frag2_body.push(0x9F); // Continuation byte of 'ß'
         frag2_body.push('e');
 
         var f2_wire: u8[..64] = [];
-        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, frag2_body[..], false, no_mask, true);
+        wing::encode_ws_frame(f2_wire, rfc::WS_OPCODE_CONTINUATION, frag2_body[..], false, no_mask, true);
 
         var v2 = wing::WsMessageView { .. };
         var r2: u8[..256] = [];
@@ -613,7 +613,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         sub.assert_true(ok2, "Terminal fragment accepted");
         sub.assert_true(v2.is_valid, "Reassembled message is valid");
         sub.assert_false(ws1.is_closed, "Connection remains open and clean");
-        sub.assert_eq(v2.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(v2.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
         let expected_gruesse: u8[7] = ['G', 'r', 0xC3, 0xBC, 0xC3, 0x9F, 'e'];
         sub.assert_bytes_eq(v2.payload, expected_gruesse[..], "Assembled payload matches valid UTF-8 'Grüße'");
 
@@ -623,7 +623,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         var ws2 = wing::new_websocket_session(true);
         var f3_body: u8[..16] = ['1', '0', '0', 0xE2];
         var f3_wire: u8[..64] = [];
-        wing::encode_ws_frame(f3_wire, wing::WS_OPCODE_TEXT, f3_body[..], false, no_mask, false);
+        wing::encode_ws_frame(f3_wire, rfc::WS_OPCODE_TEXT, f3_body[..], false, no_mask, false);
 
         var v3 = wing::WsMessageView { .. };
         var r3: u8[..256] = [];
@@ -633,7 +633,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
 
         var f4_body: u8[..16] = [0x82, 0xAC];
         var f4_wire: u8[..64] = [];
-        wing::encode_ws_frame(f4_wire, wing::WS_OPCODE_CONTINUATION, f4_body[..], false, no_mask, true);
+        wing::encode_ws_frame(f4_wire, rfc::WS_OPCODE_CONTINUATION, f4_body[..], false, no_mask, true);
 
         var v4 = wing::WsMessageView { .. };
         var r4: u8[..256] = [];
@@ -650,7 +650,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         var ws3 = wing::new_websocket_session(true);
         var c1_body: u8[..8]  = [0xF0, 0x9F];
         var c1_wire: u8[..64] = [];
-        wing::encode_ws_frame(c1_wire, wing::WS_OPCODE_TEXT, c1_body[..], false, no_mask, false);
+        wing::encode_ws_frame(c1_wire, rfc::WS_OPCODE_TEXT, c1_body[..], false, no_mask, false);
         var vc1 = wing::WsMessageView { .. };
         var rc1: u8[..256] = [];
         wing::receive_view(ws3, c1_wire[..], vc1, rc1);
@@ -658,7 +658,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
 
         var c2_body: u8[..8]  = [0xA6];
         var c2_wire: u8[..64] = [];
-        wing::encode_ws_frame(c2_wire, wing::WS_OPCODE_CONTINUATION, c2_body[..], false, no_mask, false);
+        wing::encode_ws_frame(c2_wire, rfc::WS_OPCODE_CONTINUATION, c2_body[..], false, no_mask, false);
         var vc2 = wing::WsMessageView { .. };
         var rc2: u8[..256] = [];
         wing::receive_view(ws3, c2_wire[..], vc2, rc2);
@@ -666,7 +666,7 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
 
         var c3_body: u8[..8]  = [0x80];
         var c3_wire: u8[..64] = [];
-        wing::encode_ws_frame(c3_wire, wing::WS_OPCODE_CONTINUATION, c3_body[..], false, no_mask, true);
+        wing::encode_ws_frame(c3_wire, rfc::WS_OPCODE_CONTINUATION, c3_body[..], false, no_mask, true);
         var vc3 = wing::WsMessageView { .. };
         var rc3: u8[..256] = [];
         wing::receive_view(ws3, c3_wire[..], vc3, rc3);
@@ -679,20 +679,20 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
         var ws4 = wing::new_websocket_session(true);
         var bad1_body: u8[..8]  = ['h', 'i', 0xC3];
         var bad1_wire: u8[..64] = [];
-        wing::encode_ws_frame(bad1_wire, wing::WS_OPCODE_TEXT, bad1_body[..], false, no_mask, false);
+        wing::encode_ws_frame(bad1_wire, rfc::WS_OPCODE_TEXT, bad1_body[..], false, no_mask, false);
         var vb1 = wing::WsMessageView { .. };
         var rb1: u8[..256] = [];
         wing::receive_view(ws4, bad1_wire[..], vb1, rb1);
 
         var bad2_body: u8[..8]  = [' ', 'x']; // 0x20 is not a valid UTF-8 continuation byte
         var bad2_wire: u8[..64] = [];
-        wing::encode_ws_frame(bad2_wire, wing::WS_OPCODE_CONTINUATION, bad2_body[..], false, no_mask, true);
+        wing::encode_ws_frame(bad2_wire, rfc::WS_OPCODE_CONTINUATION, bad2_body[..], false, no_mask, true);
         var vb2 = wing::WsMessageView { .. };
         var rb2: u8[..256] = [];
         let ok_bad = wing::receive_view(ws4, bad2_wire[..], vb2, rb2);
         sub.assert_true(ok_bad, "Terminal fragment processed");
         sub.assert_true(ws4.is_closed, "Session MUST close on invalid assembled UTF-8");
-        sub.assert_eq(ws4.close_code, wing::WS_STATUS_INVALID_PAYLOAD, "Close code 1007 on malformed UTF-8 assembly");
+        sub.assert_eq(ws4.close_code, rfc::WS_STATUS_INVALID_PAYLOAD, "Close code 1007 on malformed UTF-8 assembly");
     };
 
     // ------------------------------------------------------------------------
@@ -859,7 +859,7 @@ fn test_ws_close_payload_rfc6455_invariants(t: lit::T&) {
         let empty_payload: u8[0] = [];
         let code_0, reason_0, ok_0 = wing::parse_close_payload(empty_payload[..]);
         sub.assert_true(ok_0, "empty close payload is valid");
-        sub.assert_eq(code_0, wing::WS_STATUS_NO_STATUS, "status code defaults to 1005");
+        sub.assert_eq(code_0, rfc::WS_STATUS_NO_STATUS, "status code defaults to 1005");
         sub.assert_eq(reason_0.len, 0, "reason is empty");
 
         // 1-byte payload is strictly FORBIDDEN on the wire
@@ -1072,11 +1072,11 @@ fn test_rfc8441_data_frame_payload(t: lit::T&) {
         var ws_wire: u8[>..] = [];
         let mask_key: const u8[4] = [0x12, 0x34, 0x56, 0x78];
         let payload = "Ping from H2 WebSocket";
-        wing::encode_ws_frame(ws_wire, wing::WS_OPCODE_TEXT, payload, true, mask_key);
+        wing::encode_ws_frame(ws_wire, rfc::WS_OPCODE_TEXT, payload, true, mask_key);
 
         let hdr, ok = wing::parse_ws_frame_header(ws_wire[..]);
         sub.assert_true(ok, "Parse WS frame from H2 stream data");
-        sub.assert_eq(hdr.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
         sub.assert_eq(hdr.payload_len as i64, payload.len, "Payload length matches");
         sub.assert_true(hdr.masked, "Mask bit set");
     };
@@ -1128,7 +1128,7 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
         // Small frame (<= 125 bytes)
         let hdr_small = wing::WsFrameHeader {
             fin:         true,
-            opcode:      wing::WS_OPCODE_TEXT,
+            opcode:      rfc::WS_OPCODE_TEXT,
             masked:      true,
             mask_key:    [0x12, 0x34, 0x56, 0x78],
             payload_len: 42,
@@ -1142,12 +1142,12 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
         sub.assert_true(ok_s, "Small frame header parsed");
         sub.assert_eq(parsed_small.payload_len, 42, "Small payload length 42");
         sub.assert_true(parsed_small.masked, "Masked bit set");
-        sub.assert_eq(parsed_small.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(parsed_small.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
 
         // Medium frame (126..65535 bytes)
         let hdr_med = wing::WsFrameHeader {
             fin:         true,
-            opcode:      wing::WS_OPCODE_BINARY,
+            opcode:      rfc::WS_OPCODE_BINARY,
             masked:      false,
             payload_len: 1000,
             ..
@@ -1163,7 +1163,7 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
         // Large frame (> 65535 bytes)
         let hdr_lg = wing::WsFrameHeader {
             fin:         true,
-            opcode:      wing::WS_OPCODE_BINARY,
+            opcode:      rfc::WS_OPCODE_BINARY,
             masked:      false,
             payload_len: 100000,
             ..
@@ -1190,23 +1190,23 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         // Close payload codec
         var close_buf: u8[>..] = [];
-        wing::encode_close_payload(close_buf, wing::WS_STATUS_NORMAL, "goodbye");
+        wing::encode_close_payload(close_buf, rfc::WS_STATUS_NORMAL, "goodbye");
         sub.assert_eq(close_buf.len, 2 + 7, "2 status bytes + 7 reason bytes");
 
         let code, reason, ok_close = wing::parse_close_payload(close_buf[..]);
         sub.assert_true(ok_close, "Close payload parsed successfully");
-        sub.assert_eq(code, wing::WS_STATUS_NORMAL, "Status is 1000 Normal");
+        sub.assert_eq(code, rfc::WS_STATUS_NORMAL, "Status is 1000 Normal");
         sub.assert_bytes_eq(reason, "goodbye", "Reason matches");
     };
 
     t.run("5. Full Frame Serialization & RFC 6455 Roundtrip") { sub =>
         let mask: u8[4] = [0xaa, 0xbb, 0xcc, 0xdd];
         var wire: u8[>..] = [];
-        wing::encode_ws_frame(wire, wing::WS_OPCODE_TEXT, "Wing Engine WebSocket", true, mask, true);
+        wing::encode_ws_frame(wire, rfc::WS_OPCODE_TEXT, "Wing Engine WebSocket", true, mask, true);
 
         let hdr, ok = wing::parse_ws_frame_header(wire[..]);
         sub.assert_true(ok, "Parse frame header from serialized wire bytes");
-        sub.assert_eq(hdr.opcode, wing::WS_OPCODE_TEXT, "Text opcode");
+        sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_TEXT, "Text opcode");
         sub.assert_true(hdr.masked, "Client frame masked");
 
         var payload_copy: u8[>..] = [];
@@ -1233,9 +1233,9 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
         sub.assert_true(ping_frame.len > 0, "Ping frame generated");
 
         var close_frame: u8[>..] = [];
-        wing::close(session, wing::WS_STATUS_NORMAL, "goodbye", close_frame);
+        wing::close(session, rfc::WS_STATUS_NORMAL, "goodbye", close_frame);
         sub.assert_true(session.is_closed, "Session marked closed");
-        sub.assert_eq(session.close_code, wing::WS_STATUS_NORMAL, "Close code set");
+        sub.assert_eq(session.close_code, rfc::WS_STATUS_NORMAL, "Close code set");
     };
 
     t.run("7. Aoni-Style Automated Client WebSocket Upgrade & receive Engine") { sub =>
@@ -1254,19 +1254,19 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
         // Test automatic receive on incoming Ping
         var incoming_ping: u8[>..] = [];
         let no_mask: u8[4] = [0, 0, 0, 0];
-        wing::encode_ws_frame(incoming_ping, wing::WS_OPCODE_PING, "ping-payload", false, no_mask, true);
+        wing::encode_ws_frame(incoming_ping, rfc::WS_OPCODE_PING, "ping-payload", false, no_mask, true);
 
         var msg = wing::WsMessage { .. };
         var pong_reply: u8[>..] = [];
         let handled_ping = ws_sess.receive(incoming_ping[..], msg, pong_reply);
         sub.assert_true(handled_ping, "receive processed ping frame");
-        sub.assert_eq(msg.opcode, wing::WS_OPCODE_PING, "Message opcode is PING");
+        sub.assert_eq(msg.opcode, rfc::WS_OPCODE_PING, "Message opcode is PING");
         sub.assert_true(pong_reply.len > 0, "Automatic Pong response generated into reply buffer");
 
         // Verify that the reply is a valid Pong frame
         let pong_hdr, ok_pong = wing::parse_ws_frame_header(pong_reply[..]);
         sub.assert_true(ok_pong, "Parsed auto-pong frame header");
-        sub.assert_eq(pong_hdr.opcode, wing::WS_OPCODE_PONG, "Opcode in auto-reply is PONG");
+        sub.assert_eq(pong_hdr.opcode, rfc::WS_OPCODE_PONG, "Opcode in auto-reply is PONG");
 
         // Server-side upgrade test with complex Connection header
         var server_req = wing::new_request("GET", "https://example.com/ws");
@@ -1308,7 +1308,7 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         // Fragment 1: TEXT with FIN=0
         var f1_wire: u8[..128] = [];
-        wing::encode_ws_frame(f1_wire, wing::WS_OPCODE_TEXT, "Hello, ", false, no_mask, false);
+        wing::encode_ws_frame(f1_wire, rfc::WS_OPCODE_TEXT, "Hello, ", false, no_mask, false);
 
         var msg1 = wing::WsMessage { .. };
         var reply1: u8[..128] = [];
@@ -1318,26 +1318,26 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         // Interleaved Control Frame: PING with FIN=1 during fragmentation (RFC 6455 §5.4)
         var ping_wire: u8[..128] = [];
-        wing::encode_ws_frame(ping_wire, wing::WS_OPCODE_PING, "mid-stream", false, no_mask, true);
+        wing::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "mid-stream", false, no_mask, true);
 
         var ping_msg = wing::WsMessage { .. };
         var ping_reply: u8[..128] = [];
         let ok_p = wing::receive(ws, ping_wire[..], ping_msg, ping_reply);
         sub.assert_true(ok_p, "receive accepted interleaved PING");
         sub.assert_true(ping_msg.is_valid, "Ping message was delivered");
-        sub.assert_eq(ping_msg.opcode, wing::WS_OPCODE_PING, "Ping opcode delivered");
+        sub.assert_eq(ping_msg.opcode, rfc::WS_OPCODE_PING, "Ping opcode delivered");
         sub.assert_gt(ping_reply.len, 0, "Pong response generated for interleaved ping");
 
         // Fragment 2: CONTINUATION with FIN=1
         var f2_wire: u8[..128] = [];
-        wing::encode_ws_frame(f2_wire, wing::WS_OPCODE_CONTINUATION, "World!", false, no_mask, true);
+        wing::encode_ws_frame(f2_wire, rfc::WS_OPCODE_CONTINUATION, "World!", false, no_mask, true);
 
         var msg2 = wing::WsMessage { .. };
         var reply2: u8[..128] = [];
         let ok2 = wing::receive(ws, f2_wire[..], msg2, reply2);
         sub.assert_true(ok2, "receive accepted terminal CONTINUATION fragment");
         sub.assert_true(msg2.is_valid, "Message is valid upon terminal fragment");
-        sub.assert_eq(msg2.opcode, wing::WS_OPCODE_TEXT, "Assembled message preserved original opcode (TEXT)");
+        sub.assert_eq(msg2.opcode, rfc::WS_OPCODE_TEXT, "Assembled message preserved original opcode (TEXT)");
         sub.assert_bytes_eq(msg2.data[..], "Hello, World!", "Assembled payload matches combined fragments");
     };
 
@@ -1348,7 +1348,7 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         var bad_text_wire: u8[..128] = [];
         let invalid_utf8: u8[4] = [0xCE, 0xBA, 0xE1, 0x00]; // 0xE1 followed by 0x00 is invalid UTF-8
-        wing::encode_ws_frame(bad_text_wire, wing::WS_OPCODE_TEXT, invalid_utf8[..], false, no_mask, true);
+        wing::encode_ws_frame(bad_text_wire, rfc::WS_OPCODE_TEXT, invalid_utf8[..], false, no_mask, true);
 
         var msg1 = wing::WsMessage { .. };
         var reply1: u8[..128] = [];
@@ -1356,12 +1356,12 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         sub.assert_false(msg1.is_valid, "Invalid UTF-8 text rejected");
         sub.assert_true(ws1.is_closed, "Connection closed on invalid UTF-8");
-        sub.assert_eq(ws1.close_code, wing::WS_STATUS_INVALID_PAYLOAD, "Close code 1007 Invalid Payload");
+        sub.assert_eq(ws1.close_code, rfc::WS_STATUS_INVALID_PAYLOAD, "Close code 1007 Invalid Payload");
 
         // 9.2 Unexpected CONTINUATION without initial fragment
         var ws2 = wing::new_websocket_session(true);
         var unexpected_cont: u8[..128] = [];
-        wing::encode_ws_frame(unexpected_cont, wing::WS_OPCODE_CONTINUATION, "orphan", false, no_mask, true);
+        wing::encode_ws_frame(unexpected_cont, rfc::WS_OPCODE_CONTINUATION, "orphan", false, no_mask, true);
 
         var msg2 = wing::WsMessage { .. };
         var reply2: u8[..128] = [];
@@ -1369,24 +1369,24 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
 
         sub.assert_false(msg2.is_valid, "Orphan continuation rejected");
         sub.assert_true(ws2.is_closed, "Connection closed on protocol error");
-        sub.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
+        sub.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
 
         // 9.3 Interleaved data frame during fragmentation
         var ws3 = wing::new_websocket_session(true);
         var frag_start: u8[..128] = [];
-        wing::encode_ws_frame(frag_start, wing::WS_OPCODE_TEXT, "part1", false, no_mask, false);
+        wing::encode_ws_frame(frag_start, rfc::WS_OPCODE_TEXT, "part1", false, no_mask, false);
         var msg3 = wing::WsMessage { .. };
         var reply3: u8[..128] = [];
         wing::receive(ws3, frag_start[..], msg3, reply3);
 
         // Next frame is another TEXT frame instead of CONTINUATION
         var bad_interleave: u8[..128] = [];
-        wing::encode_ws_frame(bad_interleave, wing::WS_OPCODE_BINARY, "binary-data", false, no_mask, true);
+        wing::encode_ws_frame(bad_interleave, rfc::WS_OPCODE_BINARY, "binary-data", false, no_mask, true);
         wing::receive(ws3, bad_interleave[..], msg3, reply3);
 
         sub.assert_false(msg3.is_valid, "Interleaved data frame rejected");
         sub.assert_true(ws3.is_closed, "Connection closed on interleaving error");
-        sub.assert_eq(ws3.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
+        sub.assert_eq(ws3.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code 1002 Protocol Error");
     };
 
     t.run("10. Streaming consume_frame_view, >16KB Zero-Copy & Multi-Token Upgrade") { sub =>
@@ -1398,7 +1398,7 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
             big_payload.push('A');
         }
         var big_wire: u8[>..] = [];
-        wing::encode_ws_frame(big_wire, wing::WS_OPCODE_TEXT, big_payload[..], true, mask, true);
+        wing::encode_ws_frame(big_wire, rfc::WS_OPCODE_TEXT, big_payload[..], true, mask, true);
 
         // Partial slice: should return (0, false) without closing
         var view = wing::WsMessageView { .. };
@@ -1440,7 +1440,7 @@ fn test_http3_priority_update(t: lit::T&) {
 
         let hdr, ok_hdr = internal::parse_h3_frame_header(wire[..], 0);
         sub.assert_true(ok_hdr, "parse H3 frame header");
-        sub.assert_eq(hdr.frame_type, internal::H3_FRAME_PRIORITY_UPDATE_REQUEST, "Frame type is 0xF0700");
+        sub.assert_eq(hdr.frame_type, rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, "Frame type is 0xF0700");
 
         let h3_payload_start = hdr.header_len as i64;
         let payload = wire[h3_payload_start..];
@@ -1455,7 +1455,7 @@ fn test_http3_priority_update(t: lit::T&) {
         sub.assert_true(internal::encode_h3_priority_update_push(push_wire, 42, prio), "encode H3 priority update push");
         let push_hdr, ok_push_hdr = internal::parse_h3_frame_header(push_wire[..], 0);
         sub.assert_true(ok_push_hdr, "parse push header");
-        sub.assert_eq(push_hdr.frame_type, internal::H3_FRAME_PRIORITY_UPDATE_PUSH, "Frame type is 0xF0701");
+        sub.assert_eq(push_hdr.frame_type, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, "Frame type is 0xF0701");
 
         let push_start = push_hdr.header_len as i64;
         let push_id, parsed_push_prio, ok_push = internal::parse_h3_priority_update_push(push_wire[push_start..]);

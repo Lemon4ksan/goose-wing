@@ -11,13 +11,6 @@ import core from "..";
 import .headers.lexical;
 import .headers.perfect_hash;
 
-const HEADER_ACCEPT_QUERY:        const u8[:] = "Accept-Query"; // RFC 10008 Section 3
-const HEADER_FORWARDED:           const u8[:] = "Forwarded"; // RFC 7239 Section 4
-const HEADER_EARLY_DATA:          const u8[:] = "Early-Data"; // RFC 8470 Section 5.1
-const HEADER_CONTENT_DISPOSITION: const u8[:] = "Content-Disposition"; // RFC 6266 Section 4
-const MIME_PROBLEM_JSON:          const u8[:] = "application/problem+json"; // RFC 9457 Section 3
-const MIME_PROBLEM_XML:           const u8[:] = "application/problem+xml"; // RFC 9457 Section 3
-
 // ---- header items & ascii helpers (RFC 9110 Section 5.6.3) ------------------
 
 // Individual parsed or constructed HTTP header item.

@@ -46,8 +46,8 @@ fn test_h2_socket_drip() {
 
     // Handshake
     var init_wire: u8[..64] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE[..]);
-    let set_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
+    let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
     internal::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..1024] = [];
     let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
@@ -63,8 +63,8 @@ fn test_h2_socket_drip() {
 
     let req_hdr = internal::FrameHeader {
         length:     hpack_block.len as u32,
-        frame_type: internal::FRAME_HEADERS,
-        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  1,
     };
     internal::encode_frame_header_to(req_hdr, full_req);

@@ -15,14 +15,6 @@ import .sfv;
 
 // ---- RFC 9421 Constants --------------------------------------------------
 
-const HEADER_SIGNATURE_INPUT: const u8[:] = "Signature-Input";
-const HEADER_SIGNATURE:       const u8[:] = "Signature";
-
-const SIG_ALG_HMAC_SHA256: const u8[:] = "hmac-sha256";
-const SIG_ALG_ED25519:     const u8[:] = "ed25519";
-
-// ---- Signature Models ----------------------------------------------------
-
 struct HttpSignatureParams {
     label:      u8[..32]       = "sig1",
     key_id:     u8[..64]       = [],
@@ -244,7 +236,7 @@ fn compute_signature_b64(
     sig_base:   const u8[:],
     out:        u8[..256]&,
 ) -> bool {
-    if alg == SIG_ALG_ED25519 {
+    if alg == rfc::SIG_ALG_ED25519 {
         guard secret_key.len == 32 else { return false; }
         var seed_arr: u8[32] = [0; 32];
         for i in 32 { seed_arr[i] = secret_key[i]; }
@@ -263,7 +255,7 @@ fn verify_crypto_signature(
     sig_base:     const u8[:],
     received_sig: const u8[:],
 ) -> bool {
-    if alg == SIG_ALG_ED25519 {
+    if alg == rfc::SIG_ALG_ED25519 {
         guard key_bytes.len == 32 && received_sig.len == 64 else { return false; }
         var pub_arr: u8[32] = [0; 32];
         for i in 32 { pub_arr[i] = key_bytes[i]; }
@@ -336,8 +328,8 @@ fn attach_request_signature_headers(req: Request&, params: const HttpSignaturePa
     format_signature_input_header_value(params, input_hdr);
     var sig_hdr: u8[..256] = [];
     format_signature_header_value(params.label[..], b64_sig, sig_hdr);
-    set_header(req, HEADER_SIGNATURE_INPUT, input_hdr[..]);
-    set_header(req, HEADER_SIGNATURE, sig_hdr[..]);
+    set_header(req, rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
+    set_header(req, rfc::HEADER_SIGNATURE, sig_hdr[..]);
 }
 
 fn attach_response_signature_headers(res: Response&, params: const HttpSignatureParams&, b64_sig: const u8[:]) {
@@ -345,8 +337,8 @@ fn attach_response_signature_headers(res: Response&, params: const HttpSignature
     format_signature_input_header_value(params, input_hdr);
     var sig_hdr: u8[..256] = [];
     format_signature_header_value(params.label[..], b64_sig, sig_hdr);
-    res.set_header(HEADER_SIGNATURE_INPUT, input_hdr[..]);
-    res.set_header(HEADER_SIGNATURE, sig_hdr[..]);
+    res.set_header(rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
+    res.set_header(rfc::HEADER_SIGNATURE, sig_hdr[..]);
 }
 
 // ---- Request Signing & Verification --------------------------------------
@@ -382,7 +374,7 @@ fn verify_http_signature(
     var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
-    let sig_header_val = req.header(HEADER_SIGNATURE);
+    let sig_header_val = req.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
     let received_b64, ok = extract_signature_value(sig_header_val, label);
@@ -429,7 +421,7 @@ fn verify_http_response_signature(
     var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
-    let sig_header_val = res.header(HEADER_SIGNATURE);
+    let sig_header_val = res.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
     let received_b64, ok = extract_signature_value(sig_header_val, label);
@@ -451,7 +443,7 @@ fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u
         params.key_id.append(key_id);
     }
     params.alg.clear();
-    params.alg.append(SIG_ALG_ED25519);
+    params.alg.append(rfc::SIG_ALG_ED25519);
     params.components.push("@method");
     params.components.push("@authority");
     params.components.push("@path");
@@ -466,7 +458,7 @@ fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: 
         params.key_id.append(key_id);
     }
     params.alg.clear();
-    params.alg.append(SIG_ALG_ED25519);
+    params.alg.append(rfc::SIG_ALG_ED25519);
     params.components.push("@method");
     params.components.push("@authority");
     params.components.push("@path");
@@ -487,7 +479,7 @@ fn sign_response_ed25519(
         params.key_id.append(key_id);
     }
     params.alg.clear();
-    params.alg.append(SIG_ALG_ED25519);
+    params.alg.append(rfc::SIG_ALG_ED25519);
     params.components.push("@status");
     params.components.push("content-type");
     return sign_http_response(res, req, params, private_key);
@@ -505,7 +497,7 @@ fn verify_response_ed25519(
         params.key_id.append(key_id);
     }
     params.alg.clear();
-    params.alg.append(SIG_ALG_ED25519);
+    params.alg.append(rfc::SIG_ALG_ED25519);
     params.components.push("@status");
     params.components.push("content-type");
     return verify_http_response_signature(res, req, "sig1", params, public_key);

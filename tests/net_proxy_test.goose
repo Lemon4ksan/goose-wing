@@ -614,7 +614,7 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
         hdr.ssl.client_flags = internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN;
         hdr.ssl.verify_result = 0; // successfully verified client cert
         hdr.ssl.version.append("TLSv1.3");
-        hdr.ssl.cipher.append("TLS_AES_128_GCM_SHA256");
+        hdr.ssl.cipher.append("rfc::TLS_CIPHER_AES_128_GCM_SHA256");
         hdr.ssl.sig_alg.append("SHA256");
         hdr.ssl.key_alg.append("RSA2048");
         hdr.ssl.client_cn.append("client.tenant42.prod");
@@ -631,7 +631,7 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
         sub.assert_eq(back_hdr.ssl.client_flags, internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN, "client flags preserved");
         sub.assert_eq(back_hdr.ssl.verify_result, 0, "verify_result is 0");
         sub.assert_bytes_eq(back_hdr.ssl.version[..], "TLSv1.3", "SSL version matches");
-        sub.assert_bytes_eq(back_hdr.ssl.cipher[..], "TLS_AES_128_GCM_SHA256", "Cipher matches");
+        sub.assert_bytes_eq(back_hdr.ssl.cipher[..], "rfc::TLS_CIPHER_AES_128_GCM_SHA256", "Cipher matches");
         sub.assert_bytes_eq(back_hdr.ssl.sig_alg[..], "SHA256", "Signature alg matches");
         sub.assert_bytes_eq(back_hdr.ssl.key_alg[..], "RSA2048", "Key alg matches");
         sub.assert_bytes_eq(back_hdr.ssl.client_cn[..], "client.tenant42.prod", "Client CN matches");
@@ -1472,12 +1472,12 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     t.run("Capsule Protocol Framing & Zero-Copy Decode") { sub =>
         var wire: u8[>..] = [];
         let raw_payload = "test_capsule_payload_bytes";
-        let enc_ok = wing::encode_http_capsule(wire, wing::CAPSULE_DATAGRAM, raw_payload);
+        let enc_ok = wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, raw_payload);
         sub.assert_true(enc_ok, "encode_http_capsule succeeded");
 
         let c, dec_ok = wing::parse_http_capsule(wire[..]);
         sub.assert_true(dec_ok, "parse_http_capsule succeeded");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_DATAGRAM, "Type is CAPSULE_DATAGRAM (0x00)");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Type is rfc::CAPSULE_DATAGRAM (0x00)");
         sub.assert_bytes_eq(c.payload, raw_payload, "Payload bytes match exactly");
 
         // Truncated capsule wire detection
@@ -1556,7 +1556,7 @@ fn test_rfc9298_connect_udp(t: lit::T&) {
 
         let c, ok_c = wing::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "parse outer capsule ok");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_DATAGRAM, "Capsule type is 0x00");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Capsule type is 0x00");
 
         let ctx_id, parsed_udp, ok_udp = wing::parse_connect_udp_datagram(c.payload);
         sub.assert_true(ok_udp, "parse_connect_udp_datagram ok");
@@ -1582,7 +1582,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
 
         let c_req, c_req_ok = wing::parse_http_capsule(req_wire[..]);
         sub.assert_true(c_req_ok, "parse request capsule ok");
-        sub.assert_eq(c_req.capsule_type, wing::CAPSULE_ADDRESS_REQUEST, "Type is ADDRESS_REQUEST (0x02)");
+        sub.assert_eq(c_req.capsule_type, rfc::CAPSULE_ADDRESS_REQUEST, "Type is ADDRESS_REQUEST (0x02)");
 
         let dec_req, dec_req_ok = wing::decode_address_request_capsule(c_req.payload);
         sub.assert_true(dec_req_ok, "decode_address_request_capsule ok");
@@ -1606,7 +1606,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
 
         let c_assign, c_assign_ok = wing::parse_http_capsule(assign_wire[..]);
         sub.assert_true(c_assign_ok, "parse assign capsule ok");
-        sub.assert_eq(c_assign.capsule_type, wing::CAPSULE_ADDRESS_ASSIGN, "Type is ADDRESS_ASSIGN (0x01)");
+        sub.assert_eq(c_assign.capsule_type, rfc::CAPSULE_ADDRESS_ASSIGN, "Type is ADDRESS_ASSIGN (0x01)");
 
         let dec_assign, dec_assign_ok = wing::decode_address_assign_capsule(c_assign.payload);
         sub.assert_true(dec_assign_ok, "decode_address_assign_capsule ok");
@@ -1630,7 +1630,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
 
         let c, c_ok = wing::parse_http_capsule(route_wire[..]);
         sub.assert_true(c_ok, "parse route capsule ok");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_ROUTE_ADVERTISEMENT, "Type is ROUTE_ADVERTISEMENT (0x03)");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_ROUTE_ADVERTISEMENT, "Type is ROUTE_ADVERTISEMENT (0x03)");
 
         let dec_route, dec_route_ok = wing::decode_route_advertisement_capsule(c.payload);
         sub.assert_true(dec_route_ok, "decode_route_advertisement_capsule ok");
@@ -1762,7 +1762,7 @@ fn test_masque_capsule_codecs(t: lit::T&) {
 
     let cap, parse_ok = wing::parse_http_capsule(cap_out[..]);
     t.assert_true(parse_ok, "http capsule parse should succeed");
-    t.assert_true(cap.capsule_type == wing::CAPSULE_DATAGRAM, "capsule type should be DATAGRAM");
+    t.assert_true(cap.capsule_type == rfc::CAPSULE_DATAGRAM, "capsule type should be DATAGRAM");
 
     let ctx_id, pkt, pkt_ok = wing::parse_connect_udp_datagram(cap.payload);
     t.assert_true(pkt_ok, "connect udp datagram parse should succeed");
@@ -1777,7 +1777,7 @@ fn test_masque_capsule_codecs(t: lit::T&) {
 
     let cap4, cap4_ok = wing::parse_http_capsule(wire4[..]);
     t.assert_true(cap4_ok, "parse assign capsule");
-    t.assert_true(cap4.capsule_type == wing::CAPSULE_ADDRESS_ASSIGN, "type matches address assign");
+    t.assert_true(cap4.capsule_type == rfc::CAPSULE_ADDRESS_ASSIGN, "type matches address assign");
 
     let dec4, dec4_ok = wing::decode_address_assign_capsule(cap4.payload);
     t.assert_true(dec4_ok, "decode address assign v4");

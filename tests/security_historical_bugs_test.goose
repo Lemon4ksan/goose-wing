@@ -79,7 +79,7 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
 
     t.run("Valid Content-Length in HTTP/2 is parsed correctly") { sub =>
@@ -93,7 +93,7 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "Valid Content-Length must succeed");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Valid Content-Length must succeed");
         sub.assert_true(out_list.has_content_length, "has_content_length set");
         sub.assert_eq(out_list.content_length_val, 1048576, "parsed content-length matches");
     };
@@ -159,7 +159,7 @@ fn test_uwebsockets_1876_control_priority_under_backpressure(t: lit::T&) {
 
         // Control frame (Close) must NOT be dropped!
         var close_wire: u8[>..] = [];
-        wing::close(ws, wing::WS_STATUS_NORMAL, "clean close", close_wire);
+        wing::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
         sub.assert_true(close_wire.len > 0, "Close frame must be written even when socket is backpressured");
         sub.assert_true(ws.is_closed, "Session marked closed");
     };
@@ -351,12 +351,12 @@ fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
         var conn = internal::new_h2_connection(0, 8192, false);
 
         // Increment > 2^31 - 1 is a PROTOCOL_ERROR
-        let err_proto = internal::apply_window_update(conn, 0, (internal::MAX_INITIAL_WINDOW_SIZE as u32) + 1);
-        sub.assert_eq(err_proto, internal::ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
+        let err_proto = internal::apply_window_update(conn, 0, ((rfc::H2_MAX_WINDOW_SIZE as i64) as u32) + 1);
+        sub.assert_eq(err_proto, rfc::H2_ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
 
         // Increment pushing window past 2^31 - 1 is a FLOW_CONTROL_ERROR
-        let err_flow = internal::apply_window_update(conn, 0, internal::MAX_INITIAL_WINDOW_SIZE as u32);
-        sub.assert_eq(err_flow, internal::ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
+        let err_flow = internal::apply_window_update(conn, 0, (rfc::H2_MAX_WINDOW_SIZE as i64) as u32);
+        sub.assert_eq(err_flow, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
     };
 
     t.run("CVE-2026-78669 & Go #81742: Excessive repeated INITIAL_WINDOW_SIZE changes throttled") { sub =>
@@ -364,12 +364,12 @@ fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
 
         for i in 16 {
             let res = internal::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
-            sub.assert_eq(res, internal::ERR_NO_ERROR, "First 16 window updates succeed");
+            sub.assert_eq(res, rfc::H2_ERR_NO_ERROR, "First 16 window updates succeed");
         }
 
         // 17th update triggers ENHANCE_YOUR_CALM defense
         let res_17 = internal::apply_peer_initial_window_size_delta(conn, 65535);
-        sub.assert_eq(res_17, internal::ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
+        sub.assert_eq(res_17, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
     };
 }
 
@@ -379,7 +379,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // In full handshake (is_psk = false), Finished received prematurely before Cert/CV MUST be rejected
         let st_bad_fin, ok_bad_fin = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             wing::HandshakeMode.Full,
             false,
         );
@@ -389,7 +389,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // In PSK mode (is_psk = true), Finished is accepted directly after ServerHello/EncryptedExtensions
         let st_psk_fin, ok_psk_fin = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             wing::HandshakeMode.Psk,
             false,
         );
@@ -399,7 +399,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // Certificate received when expecting Certificate transitions to CV
         let st_cert, ok_cert = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCert,
-            wing::HS_MSG_CERTIFICATE,
+            rfc::TLS_HS_CERTIFICATE,
             wing::HandshakeMode.Full,
             false,
         );
@@ -409,7 +409,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // Synthetic message_hash (254) MUST NEVER appear on wire
         let st_hash, ok_hash = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitSH,
-            wing::HS_MSG_MESSAGE_HASH,
+            rfc::TLS_HS_MESSAGE_HASH,
             wing::HandshakeMode.Full,
             false,
         );
@@ -418,7 +418,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // Post-handshake: only NewSessionTicket and KeyUpdate permitted
         let st_ticket, ok_ticket = wing::validate_client_handshake_transition(
             wing::HsState.Connected,
-            wing::HS_MSG_NEW_SESSION_TICKET,
+            rfc::TLS_HS_NEW_SESSION_TICKET,
             wing::HandshakeMode.Full,
             false,
         );
@@ -427,7 +427,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
 
         let st_rehandshake, ok_rehandshake = wing::validate_client_handshake_transition(
             wing::HsState.Connected,
-            wing::HS_MSG_SERVER_HELLO,
+            rfc::TLS_HS_SERVER_HELLO,
             wing::HandshakeMode.Full,
             false,
         );
@@ -438,7 +438,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // Finished accepted in ServerWaitFinished
         let st_srv_fin, ok_srv_fin = wing::validate_server_handshake_transition(
             wing::HsState.ServerWaitFinished,
-            wing::HS_MSG_FINISHED,
+            rfc::TLS_HS_FINISHED,
             false,
         );
         sub.assert_true(ok_srv_fin, "Finished accepted by server in ServerWaitFinished");
@@ -447,7 +447,7 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
         // Out-of-order ClientHello in ServerWaitFinished rejected
         let st_srv_bad, ok_srv_bad = wing::validate_server_handshake_transition(
             wing::HsState.ServerWaitFinished,
-            wing::HS_MSG_CLIENT_HELLO,
+            rfc::TLS_HS_CLIENT_HELLO,
             false,
         );
         sub.assert_false(ok_srv_bad, "Duplicate ClientHello while waiting for Finished rejected");
@@ -613,7 +613,7 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         var dt = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out_list, 8192, false);
-        sub.assert_ne(err, internal::ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
+        sub.assert_ne(err, rfc::H2_ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
 }
 
@@ -1138,22 +1138,22 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
         sub.assert_eq(conn.conn_recv_window, 65535, "Initial connection receive window is 65535");
 
         // 1. Open stream 1 via HEADERS
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         let err_h = internal::on_ingress_frame_header(conn, h_hdr, 0);
-        sub.assert_eq(err_h, internal::ERR_NO_ERROR, "HEADERS on stream 1 accepted");
+        sub.assert_eq(err_h, rfc::H2_ERR_NO_ERROR, "HEADERS on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 1, "1 active stream");
 
         // 2. Client cancels stream 1 via RST_STREAM
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
         let err_rst = internal::on_ingress_frame_header(conn, rst_hdr, 0);
-        sub.assert_eq(err_rst, internal::ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
+        sub.assert_eq(err_rst, rfc::H2_ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 0, "Active stream count decremented to 0");
 
         // 3. In-flight DATA frame arrives on stream 1 (length = 1000)
-        let data_hdr = internal::FrameHeader { length: 1000, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let data_hdr = internal::FrameHeader { length: 1000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
         let err_data = internal::on_data_frame_received(conn, data_hdr, 1000);
         // Must return ERR_STREAM_CLOSED (stream error) rather than connection error
-        sub.assert_eq(err_data, internal::ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
+        sub.assert_eq(err_data, rfc::H2_ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
         // BUT connection receive window MUST be accounted (decremented by 1000) per RFC 9113 §5.1 / §6.9
         sub.assert_eq(conn.conn_recv_window, 64535, "Connection receive window accounted: 65535 - 1000 = 64535");
     };
@@ -1164,18 +1164,18 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
         conn.conn_recv_window = 500;
 
         // Open stream 1
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 1
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
         internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends DATA frame of 600 bytes on closed stream 1 (exceeding conn_recv_window = 500)
-        let data_hdr = internal::FrameHeader { length: 600, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let data_hdr = internal::FrameHeader { length: 600, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
         let err_data = internal::on_data_frame_received(conn, data_hdr, 600);
         // RFC 9113 §6.9: Connection flow control violation MUST trigger FLOW_CONTROL_ERROR, NOT STREAM_CLOSED!
-        sub.assert_eq(err_data, internal::ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
+        sub.assert_eq(err_data, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
         sub.assert_true(conn.conn_recv_window < 0, "Connection receive window underflowed to negative value");
     };
 
@@ -1183,25 +1183,25 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
         var conn = internal::new_h2_connection(0);
 
         // Open stream 3
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 3
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 3 };
+        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 3 };
         internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends 4 in-flight DATA chunks of 10000 bytes each
         for i in 4 {
-            let data_chunk = internal::FrameHeader { length: 10000, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 3 };
+            let data_chunk = internal::FrameHeader { length: 10000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 3 };
             let err_c = internal::on_data_frame_received(conn, data_chunk, 10000);
-            sub.assert_eq(err_c, internal::ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
+            sub.assert_eq(err_c, rfc::H2_ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
         }
         // Total connection window consumed: 40000
         sub.assert_eq(conn.conn_recv_window, 25535, "Connection receive window accounted: 65535 - 40000 = 25535");
 
         // Replenish connection window via WINDOW_UPDATE (+40000)
         let err_win = internal::apply_window_update(conn, 0, 40000);
-        sub.assert_eq(err_win, internal::ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
+        sub.assert_eq(err_win, rfc::H2_ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
         sub.assert_eq(conn.conn_send_window, 105535, "Connection send window replenished without lockup");
     };
 }

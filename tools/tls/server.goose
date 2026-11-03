@@ -51,7 +51,7 @@ fn handle_tls_connection(conn: i64) {
                 let msg_type = record_payload[0];
                 let msg_len = ((record_payload[1] as u32) << 16) | ((record_payload[2] as u32) << 8) | record_payload[3];
 
-                if msg_type == wing::HS_MSG_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) {
+                if msg_type == rfc::TLS_HS_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) {
                     let ch_payload = record_payload[4..4 + (msg_len as i64)];
 
                     // Parse ClientHello:
@@ -78,12 +78,12 @@ fn handle_tls_connection(conn: i64) {
                                         var entries: wing::TlsExtensionEntry[..32] = [];
                                         let ok_exts = wing::parse_extensions_block(exts_slice, entries);
                                         if ok_exts {
-                                            let sni_raw, has_sni = wing::find_extension(entries, wing::EXT_SERVER_NAME);
+                                            let sni_raw, has_sni = wing::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
                                             if has_sni {
                                                 wing::parse_sni_extension(sni_raw, sni_str);
                                             }
 
-                                            let alpn_raw, has_alpn = wing::find_extension(entries, wing::EXT_ALPN);
+                                            let alpn_raw, has_alpn = wing::find_extension(entries, rfc::TLS_EXT_ALPN);
                                             if has_alpn {
                                                 negotiated_alpn = wing::negotiate_alpn(alpn_raw, false);
                                             }
@@ -136,7 +136,7 @@ fn handle_tls_connection(conn: i64) {
 
                     // Wrap in Handshake Header (type = 2 / ServerHello)
                     var hs_msg: u8[>..] = [];
-                    hs_msg.push(wing::HS_MSG_SERVER_HELLO);
+                    hs_msg.push(rfc::TLS_HS_SERVER_HELLO);
                     let sh_len = sh_builder.buf.len as u32;
                     hs_msg.push(((sh_len >> 16) & 0xFF) as u8);
                     hs_msg.push(((sh_len >> 8) & 0xFF) as u8);

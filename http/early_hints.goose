@@ -13,8 +13,6 @@ import core from "..";
 
 // ---- Early Hints Models -------------------------------------------------
 
-const STATUS_EARLY_HINTS: u16 = 103;
-
 struct EarlyHintLink {
     uri:         u8[..256] = [],
     rel:         u8[..32]  = [], // "preload", "preconnect", "dns-prefetch"
@@ -140,7 +138,7 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
 //   returns: resp with 1 link, ok = true
 fn parse_early_hints(status: u16, raw_link_header: const u8[:]) -> EarlyHintsResponse, bool {
     var resp = EarlyHintsResponse { .. };
-    guard status == STATUS_EARLY_HINTS else { return resp, false; }
+    guard status == rfc::STATUS_EARLY_HINTS else { return resp, false; }
 
     guard parse_link_header(raw_link_header, resp.links) else { return resp, false; }
     resp.is_valid = true;

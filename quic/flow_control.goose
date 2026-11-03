@@ -23,8 +23,8 @@ inline fn calc_unspent_credit(limit: u64, consumed: u64) -> u64 {
 // Calculates candidate window credit advertisement clamped to 2^62 - 1 (RFC 9000 §4.2).
 inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
     let candidate = base + window_size;
-    if candidate < base || candidate > QUIC_VARINT_MAX {
-        return QUIC_VARINT_MAX;
+    if candidate < base || candidate > rfc::QUIC_VARINT_MAX {
+        return rfc::QUIC_VARINT_MAX;
     }
     return candidate;
 }
@@ -164,13 +164,13 @@ fn quic_fc_record_recv_stream(
 ) -> bool, u64 {
     // RFC 9000 §4.1, §4.5, §19.8: Enforce 62-bit VarInt ceiling and arithmetic wrap prevention
     guard quic_valid_offset_len(offset, len) else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
     let end_offset = offset + len;
 
     // RFC 9000 §4.1: Stream-level flow control check
     guard end_offset <= s.recv_max_data else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     // RFC 9000 §4.1: Connection-level flow control check
@@ -180,7 +180,7 @@ fn quic_fc_record_recv_stream(
     }
     let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     if end_offset > s.bytes_recv {
@@ -188,7 +188,7 @@ fn quic_fc_record_recv_stream(
         fc.bytes_recv_total = projected_conn_recv;
     }
 
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Accounts for newly committed bytes when receiving RESET_STREAM (RFC 9000 §4.5).
@@ -200,8 +200,8 @@ fn quic_fc_record_recv_reset(
     final_size: u64,
 ) -> bool, u64 {
     // RFC 9000 §4.5: Final size cannot exceed 2^62 - 1 or the advertised stream limit
-    guard final_size <= QUIC_VARINT_MAX && final_size <= s.recv_max_data else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+    guard final_size <= rfc::QUIC_VARINT_MAX && final_size <= s.recv_max_data else {
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     var additional_bytes: u64 = 0;
@@ -210,7 +210,7 @@ fn quic_fc_record_recv_reset(
     }
     let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     if final_size > s.bytes_recv {
@@ -218,7 +218,7 @@ fn quic_fc_record_recv_reset(
         fc.bytes_recv_total = projected_conn_recv;
     }
 
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Records bytes consumed by application, advancing read markers with wrap protection.
@@ -234,7 +234,7 @@ fn quic_fc_on_app_read(
 // Handles incoming MAX_DATA frame (RFC 9000 §4.2, §19.9). Monotonic updates only up to 2^62 - 1.
 // Returns true if remote limit increased.
 fn quic_fc_update_remote_max_data(fc: QuicFlowControl&, new_limit: u64) -> bool {
-    guard new_limit <= QUIC_VARINT_MAX && new_limit > fc.max_data_remote else {
+    guard new_limit <= rfc::QUIC_VARINT_MAX && new_limit > fc.max_data_remote else {
         return false;
     }
     fc.max_data_remote = new_limit;
@@ -245,7 +245,7 @@ fn quic_fc_update_remote_max_data(fc: QuicFlowControl&, new_limit: u64) -> bool 
 // Handles incoming MAX_STREAM_DATA frame (RFC 9000 §4.2, §19.10). Monotonic updates only up to 2^62 - 1.
 // Returns true if stream send limit increased.
 fn quic_fc_update_stream_send_max_data(s: QuicStream&, new_limit: u64) -> bool {
-    guard new_limit <= QUIC_VARINT_MAX && new_limit > s.send_max_data else {
+    guard new_limit <= rfc::QUIC_VARINT_MAX && new_limit > s.send_max_data else {
         return false;
     }
     s.send_max_data = new_limit;

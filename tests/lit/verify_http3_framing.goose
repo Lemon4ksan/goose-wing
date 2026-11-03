@@ -31,7 +31,7 @@ fn test_h3_frame_headers() {
 
     let hdr, ok = internal::parse_h3_frame_header(data_pkt[..], 0);
     assert(ok);
-    assert(hdr.frame_type == internal::H3_FRAME_DATA);
+    assert(hdr.frame_type == rfc::H3_FRAME_DATA);
     assert(hdr.payload_len == 8);
     assert(hdr.header_len == 2);
 
@@ -57,16 +57,16 @@ fn test_h3_grease_and_h2_reserved() {
     assert(!internal::is_h2_reserved_frame_in_h3(0x01)); // HEADERS is H3
 
     // Stream allowed rules
-    assert(internal::is_allowed_on_control_stream(internal::H3_FRAME_SETTINGS));
-    assert(internal::is_allowed_on_control_stream(internal::H3_FRAME_GOAWAY));
+    assert(internal::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS));
+    assert(internal::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY));
     assert(internal::is_allowed_on_control_stream(0x21)); // GREASE allowed on control
-    assert(!internal::is_allowed_on_control_stream(internal::H3_FRAME_DATA));
-    assert(!internal::is_allowed_on_control_stream(internal::H3_FRAME_HEADERS));
+    assert(!internal::is_allowed_on_control_stream(rfc::H3_FRAME_DATA));
+    assert(!internal::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS));
 
-    assert(internal::is_allowed_on_request_stream(internal::H3_FRAME_DATA));
-    assert(internal::is_allowed_on_request_stream(internal::H3_FRAME_HEADERS));
-    assert(!internal::is_allowed_on_request_stream(internal::H3_FRAME_SETTINGS));
-    assert(!internal::is_allowed_on_request_stream(internal::H3_FRAME_GOAWAY));
+    assert(internal::is_allowed_on_request_stream(rfc::H3_FRAME_DATA));
+    assert(internal::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS));
+    assert(!internal::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS));
+    assert(!internal::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY));
     print("H3_RULES_AND_GREASE: OK");
 }
 
@@ -83,13 +83,13 @@ fn test_h3_settings_frame() {
     // First decode frame header
     let hdr, ok_hdr = internal::parse_h3_frame_header(wire_out[..], 0);
     assert(ok_hdr);
-    assert(hdr.frame_type == internal::H3_FRAME_SETTINGS);
+    assert(hdr.frame_type == rfc::H3_FRAME_SETTINGS);
 
     // Parse settings payload
     let payload = wire_out[hdr.header_len..];
     var parsed_settings = wing::H3Settings { .. };
     let err = internal::parse_h3_settings_frame(payload, parsed_settings);
-    assert(err == internal::H3_ERR_NO_ERROR);
+    assert(err == rfc::H3_ERR_NO_ERROR);
     assert(parsed_settings.qpack_max_table_capacity == 4096);
     assert(parsed_settings.max_field_section_size == 16384);
     assert(parsed_settings.qpack_blocked_streams == 16);
@@ -101,16 +101,16 @@ fn test_h3_settings_frame() {
     internal::quic_encode_varint(bad_h2_setting, 0);
     var bad_settings = wing::H3Settings { .. };
     let err_h2 = internal::parse_h3_settings_frame(bad_h2_setting[..], bad_settings);
-    assert(err_h2 == internal::H3_ERR_SETTINGS_ERROR);
+    assert(err_h2 == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Test rejection of duplicate settings
     var dup_setting: u8[>..] = [];
-    internal::quic_encode_varint(dup_setting, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+    internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
     internal::quic_encode_varint(dup_setting, 1024);
-    internal::quic_encode_varint(dup_setting, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+    internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
     internal::quic_encode_varint(dup_setting, 2048);
     let err_dup = internal::parse_h3_settings_frame(dup_setting[..], bad_settings);
-    assert(err_dup == internal::H3_ERR_SETTINGS_ERROR);
+    assert(err_dup == rfc::H3_ERR_SETTINGS_ERROR);
 
     print("H3_SETTINGS_CONFORMANCE: OK");
 }
@@ -121,7 +121,7 @@ fn test_h3_control_frames_roundtrip() {
     assert(internal::encode_h3_goaway_frame(goaway_buf, 42));
     let gw_hdr, gw_ok = internal::parse_h3_frame_header(goaway_buf[..], 0);
     assert(gw_ok);
-    assert(gw_hdr.frame_type == internal::H3_FRAME_GOAWAY);
+    assert(gw_hdr.frame_type == rfc::H3_FRAME_GOAWAY);
     let gw_id, gw_parsed = internal::parse_h3_goaway_frame(goaway_buf[gw_hdr.header_len..]);
     assert(gw_parsed);
     assert(gw_id == 42);
@@ -131,7 +131,7 @@ fn test_h3_control_frames_roundtrip() {
     assert(internal::encode_h3_cancel_push(cancel_buf, 7));
     let cp_hdr, cp_ok = internal::parse_h3_frame_header(cancel_buf[..], 0);
     assert(cp_ok);
-    assert(cp_hdr.frame_type == internal::H3_FRAME_CANCEL_PUSH);
+    assert(cp_hdr.frame_type == rfc::H3_FRAME_CANCEL_PUSH);
     let cp_id, cp_parsed = internal::parse_h3_cancel_push(cancel_buf[cp_hdr.header_len..]);
     assert(cp_parsed);
     assert(cp_id == 7);
@@ -141,7 +141,7 @@ fn test_h3_control_frames_roundtrip() {
     assert(internal::encode_h3_max_push_id(max_buf, 99));
     let mp_hdr, mp_ok = internal::parse_h3_frame_header(max_buf[..], 0);
     assert(mp_ok);
-    assert(mp_hdr.frame_type == internal::H3_FRAME_MAX_PUSH_ID);
+    assert(mp_hdr.frame_type == rfc::H3_FRAME_MAX_PUSH_ID);
     let mp_id, mp_parsed = internal::parse_h3_max_push_id(max_buf[mp_hdr.header_len..]);
     assert(mp_parsed);
     assert(mp_id == 99);

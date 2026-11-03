@@ -397,7 +397,7 @@ fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
 fn test_dns_and_https_rr(t: lit::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
         var query: u8[>..] = [];
-        let ok_q = wing::build_dns_query("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1234, query);
+        let ok_q = wing::build_dns_query("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, query);
         sub.assert_true(ok_q, "build_dns_query succeeds");
         sub.assert_gt(query.len, 12, "query has header and question");
         sub.assert_eq(query[0], 0x12, "tx_id hi matches");
@@ -448,23 +448,23 @@ fn test_dns_and_https_rr(t: lit::T&) {
         rdata.push(0x00);                   // Target = "." (root)
 
         // Key 1 (ALPN)
-        rdata.push(0x00); rdata.push(wing::SVC_PARAM_ALPN as u8);
+        rdata.push(0x00); rdata.push(rfc::SVC_PARAM_ALPN as u8);
         rdata.push(0x00); rdata.push(0x06); // len = 6
         rdata.push(0x02); rdata.append("h2");
         rdata.push(0x02); rdata.append("h3");
 
         // Key 3 (port)
-        rdata.push(0x00); rdata.push(wing::SVC_PARAM_PORT as u8);
+        rdata.push(0x00); rdata.push(rfc::SVC_PARAM_PORT as u8);
         rdata.push(0x00); rdata.push(0x02);
         rdata.push(0x01); rdata.push(0xBB); // 443
 
         // Key 4 (ipv4hint)
-        rdata.push(0x00); rdata.push(wing::SVC_PARAM_IPV4HINT as u8);
+        rdata.push(0x00); rdata.push(rfc::SVC_PARAM_IPV4HINT as u8);
         rdata.push(0x00); rdata.push(0x04);
         rdata.push(192); rdata.push(0); rdata.push(2); rdata.push(1);
 
         // Key 5 (ech)
-        rdata.push(0x00); rdata.push(wing::SVC_PARAM_ECH as u8);
+        rdata.push(0x00); rdata.push(rfc::SVC_PARAM_ECH as u8);
         rdata.push(0x00); rdata.push(0x04);
         rdata.push(0xFE); rdata.push(0x0D); rdata.push(0xAA); rdata.push(0xBB);
 
@@ -563,8 +563,8 @@ fn test_ech_protocol(t: lit::T&) {
         sub.assert_true(ok_sel, "select_ech_config succeeds");
         sub.assert_eq(selected_cfg.config_id, 42, "config_id is 42");
         sub.assert_eq(selected_cfg.maximum_name_length, 64, "max_name_len is 64");
-        sub.assert_eq(selected_cs.kdf_id, wing::HPKE_KDF_HKDF_SHA256, "kdf is SHA256");
-        sub.assert_eq(selected_cs.aead_id, wing::HPKE_AEAD_AES_128_GCM, "aead is AES-128-GCM");
+        sub.assert_eq(selected_cs.kdf_id, rfc::HPKE_KDF_HKDF_SHA256, "kdf is SHA256");
+        sub.assert_eq(selected_cs.aead_id, rfc::HPKE_AEAD_AES_128_GCM, "aead is AES-128-GCM");
 
         // Verify public key extracted matches Bob's PK
         for i in 32 {
@@ -582,16 +582,16 @@ fn test_ech_protocol(t: lit::T&) {
         let server_pk = core::x25519_base_scalarmult(server_sk);
 
         var config = wing::EchConfig { .. };
-        config.version = wing::ECH_VERSION_RFC9849;
+        config.version = rfc::ECH_VERSION_RFC9849;
         config.config_id = 7;
-        config.kem_id = wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256;
+        config.kem_id = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256;
         config.maximum_name_length = 64;
         for i in 32 { config.public_key[i] = server_pk[i]; }
         config.raw_bytes.append("synthetic-ech-config-raw-bytes");
 
         let cs = wing::EchCipherSuite {
-            kdf_id:  wing::HPKE_KDF_HKDF_SHA256,
-            aead_id: wing::HPKE_AEAD_AES_128_GCM,
+            kdf_id:  rfc::HPKE_KDF_HKDF_SHA256,
+            aead_id: rfc::HPKE_AEAD_AES_128_GCM,
         };
 
         // Real hidden SNI: "secret.crypto.internal"
@@ -636,14 +636,14 @@ fn test_ech_protocol(t: lit::T&) {
         var outer_ext_bytes: u8[>..] = [];
         let ok_ext = wing::build_ech_outer_extension(config.config_id, cs, enc, ciphertext[..], outer_ext_bytes);
         sub.assert_true(ok_ext, "build_ech_outer_extension succeeds");
-        sub.assert_eq(outer_ext_bytes[0], wing::ECH_CLIENT_OUTER, "outer flag is 0x00");
+        sub.assert_eq(outer_ext_bytes[0], rfc::ECH_CLIENT_OUTER, "outer flag is 0x00");
         sub.assert_eq(outer_ext_bytes[5], 7, "config_id is 7");
 
         // Format inner ECH extension (must be 1 byte: 0x01)
         var inner_ext_bytes: u8[>..] = [];
         wing::build_ech_inner_extension(inner_ext_bytes);
         sub.assert_eq(inner_ext_bytes.len, 1, "inner extension is 1 byte");
-        sub.assert_eq(inner_ext_bytes[0], wing::ECH_CLIENT_INNER, "inner flag is 0x01");
+        sub.assert_eq(inner_ext_bytes[0], rfc::ECH_CLIENT_INNER, "inner flag is 0x01");
 
         // Server decrypts ciphertext using server_sk:
         var info: u8[..600] = [];
@@ -680,9 +680,9 @@ fn test_ech_protocol(t: lit::T&) {
 fn test_ech_rfc9849_citations(t: lit::T&) {
     t.run("RFC 9849 ECH constants match corpus") { sub =>
         // rfc9849.txt: encrypted_client_hello(0xfe0d) extension and ECHConfig case 0xfe0d
-        sub.assert_eq(wing::ECH_VERSION_RFC9849, 0xFE0D, "ECH_VERSION_RFC9849 == 0xFE0D");
-        sub.assert_eq(wing::EXT_ENCRYPTED_CLIENT_HELLO, 0xFE0D, "ext type == 0xFE0D");
-        sub.assert_eq(wing::ECH_VERSION_RFC9849, wing::EXT_ENCRYPTED_CLIENT_HELLO, "version == ext type");
+        sub.assert_eq(rfc::ECH_VERSION_RFC9849, 0xFE0D, "rfc::ECH_VERSION_RFC9849 == 0xFE0D");
+        sub.assert_eq(rfc::EXT_ENCRYPTED_CLIENT_HELLO, 0xFE0D, "ext type == 0xFE0D");
+        sub.assert_eq(rfc::ECH_VERSION_RFC9849, rfc::EXT_ENCRYPTED_CLIENT_HELLO, "version == ext type");
     };
 }
 
@@ -691,13 +691,13 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
     t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
         // POST body
         var post_body: u8[>..] = [];
-        let ok_post = wing::build_doh_post_body("cloudflare.com", wing::DNS_QTYPE_HTTPS, 0x1122, post_body);
+        let ok_post = wing::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1122, post_body);
         sub.assert_true(ok_post, "build_doh_post_body succeeds");
         sub.assert_gt(post_body.len, 12, "DoH post body contains DNS header + question");
 
         // GET URL
         var get_url: u8[..512] = [];
-        let ok_get = wing::build_doh_get_url("https://cloudflare-dns.com/dns-query", "cloudflare.com", wing::DNS_QTYPE_HTTPS, get_url);
+        let ok_get = wing::build_doh_get_url("https://cloudflare-dns.com/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
         sub.assert_true(ok_get, "build_doh_get_url succeeds");
         let prefix = "https://cloudflare-dns.com/dns-query?dns=";
         sub.assert_true(get_url.len >= prefix.len, "GET URL length sufficient");
@@ -738,7 +738,7 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
         rdata.push(0x00); rdata.push(0x01); // Priority 1
         rdata.push(0x00);                   // Target "."
         // Key 5 (ECH)
-        rdata.push(0x00); rdata.push(wing::SVC_PARAM_ECH as u8);
+        rdata.push(0x00); rdata.push(rfc::SVC_PARAM_ECH as u8);
         rdata.push(0x00); rdata.push(0x08); // 8 bytes
         rdata.push(0xFE); rdata.push(0x0D);
         rdata.push(0x00); rdata.push(0x04);
@@ -796,9 +796,9 @@ fn test_certificate_request_codec(t: lit::T&) {
     t.run("CertificateRequest Encoding & Parsing (RFC 8446 §4.3.2)") { sub =>
         var req_buf: u8[>..] = [];
         let sig_algs: u16[3] = [
-            wing::SIG_SCHEME_ED25519,
-            wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
-            wing::SIG_SCHEME_RSA_PSS_RSAE_SHA256,
+            rfc::SIG_SCHEME_ED25519,
+            rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
+            rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256,
         ];
         let enc_ok = wing::encode_certificate_request(req_buf, "", sig_algs[..]);
         sub.assert_true(enc_ok, "Encoded CertificateRequest");
@@ -810,9 +810,9 @@ fn test_certificate_request_codec(t: lit::T&) {
         sub.assert_eq(parsed_req.context.len, 0, "Initial handshake context is 0 bytes");
         sub.assert_true(parsed_req.has_signature_algorithms, "Has signature algorithms extension");
         sub.assert_eq(parsed_req.sig_algorithms.len, 3, "Contains 3 signature schemes");
-        sub.assert_eq(parsed_req.sig_algorithms[0], wing::SIG_SCHEME_ED25519, "First scheme is Ed25519");
-        sub.assert_eq(parsed_req.sig_algorithms[1], wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256, "Second is P-256");
-        sub.assert_eq(parsed_req.sig_algorithms[2], wing::SIG_SCHEME_RSA_PSS_RSAE_SHA256, "Third is RSA-PSS");
+        sub.assert_eq(parsed_req.sig_algorithms[0], rfc::SIG_SCHEME_ED25519, "First scheme is Ed25519");
+        sub.assert_eq(parsed_req.sig_algorithms[1], rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256, "Second is P-256");
+        sub.assert_eq(parsed_req.sig_algorithms[2], rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256, "Third is RSA-PSS");
     };
 }
 
@@ -828,12 +828,12 @@ fn test_empty_client_certificate(t: lit::T&) {
         sub.assert_true(is_empty, "Certificate list is empty");
 
         // FSM verification: empty client cert transitions directly to ServerWaitFinished (CV omitted)
-        let next_state, ok_trans = wing::server_wait_cert_step(wing::HS_MSG_CERTIFICATE, true);
+        let next_state, ok_trans = wing::server_wait_cert_step(rfc::TLS_HS_CERTIFICATE, true);
         sub.assert_true(ok_trans, "Empty cert valid in ServerWaitCert");
         sub.assert_eq(next_state, wing::HsState.ServerWaitFinished, "Transitions directly to ServerWaitFinished");
 
         // Negative: if client mistakenly sends CertificateVerify after empty cert, server must reject
-        let _, bad_cv = wing::server_wait_cv_step(wing::HS_MSG_CERTIFICATE_VERIFY, true);
+        let _, bad_cv = wing::server_wait_cv_step(rfc::TLS_HS_CERTIFICATE_VERIFY, true);
         sub.assert_false(bad_cv, "CertificateVerify after empty cert strictly rejected");
     };
 }
@@ -857,13 +857,13 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 
         // Encode CertificateVerify message
         var cv_buf: u8[>..] = [];
-        let enc_cv = wing::encode_client_certificate_verify(cv_buf, wing::SIG_SCHEME_ED25519, sig[..]);
+        let enc_cv = wing::encode_client_certificate_verify(cv_buf, rfc::SIG_SCHEME_ED25519, sig[..]);
         sub.assert_true(enc_cv, "Encoded CertificateVerify message");
 
         // 3. Server side: parse and cryptographically verify
         let scheme, parsed_sig, ok_parse_cv = wing::parse_certificate_verify(cv_buf[..]);
         sub.assert_true(ok_parse_cv, "Parsed CertificateVerify");
-        sub.assert_eq(scheme, wing::SIG_SCHEME_ED25519, "Scheme is Ed25519");
+        sub.assert_eq(scheme, rfc::SIG_SCHEME_ED25519, "Scheme is Ed25519");
         sub.assert_eq(parsed_sig.len, 64, "Signature length is 64 bytes");
 
         let verify_ok = wing::verify_client_certificate_verify(
@@ -917,15 +917,15 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 
 fn test_post_quantum_hybrid(t: lit::T&) {
     t.run("IANA NamedGroup Recognition") { sub =>
-        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
-        sub.assert_true(internal::is_post_quantum_group(internal::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
+        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
+        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
         sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (X25519 classical) is NOT PQ group");
         sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
     };
 
     t.run("Hybrid 1184-Byte Client Key Share Wire Codec") { sub =>
         var share = internal::PostQuantumKeyShare {
-            group: internal::GROUP_X25519_MLKEM768,
+            group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { share.x25519_public[i] = (i + 1) as u8; }
@@ -939,7 +939,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         var parsed = internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Hybrid key share parsed via UFCS");
-        sub.assert_eq(parsed.group, internal::GROUP_X25519_MLKEM768, "Group is 0x11EC");
+        sub.assert_eq(parsed.group, rfc::GROUP_X25519_MLKEM768, "Group is 0x11EC");
         sub.assert_bytes_eq(parsed.x25519_public[..], share.x25519_public[..], "X25519 component matches");
 
         var mlkem_match = true;
@@ -964,7 +964,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
 
     t.run("Hybrid 1120-Byte Server Key Share Wire Codec") { sub =>
         var server_share = internal::PostQuantumServerShare {
-            group: internal::GROUP_X25519_MLKEM768,
+            group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { server_share.x25519_public[i] = (i + 5) as u8; }
@@ -978,7 +978,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         var parsed_server = internal::PostQuantumServerShare { .. };
         let ok_parse = parsed_server.parse_hybrid_server_key_share(wire[..]);
         sub.assert_true(ok_parse, "Server hybrid key share parsed via UFCS");
-        sub.assert_eq(parsed_server.group, internal::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
+        sub.assert_eq(parsed_server.group, rfc::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
         sub.assert_bytes_eq(parsed_server.x25519_public[..], server_share.x25519_public[..], "Server X25519 component matches");
 
         var ct_match = true;
@@ -1020,13 +1020,13 @@ fn test_post_quantum_hybrid(t: lit::T&) {
 
 fn test_rfc8879_certificate_compression(t: lit::T&) {
     t.run("1. RFC 8879 Extension & Handshake Message Codecs") { sub =>
-        let algos: u16[2] = [wing::CERT_COMPRESS_ZSTD, wing::CERT_COMPRESS_BROTLI];
+        let algos: u16[2] = [rfc::CERT_COMPRESSION_ZSTD, rfc::CERT_COMPRESSION_BROTLI];
         var ext_wire: u8[>..] = [];
         wing::encode_compress_certificate_extension(ext_wire, algos[..]);
 
         sub.assert_eq(ext_wire.len, 2 + 2 + 1 + 4, "Extension wire length: 2 type + 2 len + 1 list_len + 4 algorithms = 9 bytes");
         let ext_type = ((ext_wire[0] as u16) << 8) | ext_wire[1];
-        sub.assert_eq(ext_type, wing::EXT_COMPRESS_CERTIFICATE, "Extension type is 27 (compress_certificate)");
+        sub.assert_eq(ext_type, rfc::TLS_EXT_COMPRESS_CERTIFICATE, "Extension type is 27 (compress_certificate)");
 
         // Handshake payload roundtrip
         let fake_cert = "MIIB...Simulated X.509 Certificate Chain Data with Repetitive Certificate Metadata Blocks...";
@@ -1036,14 +1036,14 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
         var hs_payload: u8[>..] = [];
         wing::encode_compressed_certificate_payload(
             hs_payload,
-            wing::CERT_COMPRESS_ZSTD,
+            rfc::CERT_COMPRESSION_ZSTD,
             fake_cert.len as u32,
             compressed[..],
         );
 
         let parsed, ok_parse = wing::parse_compressed_certificate(hs_payload[..]);
         sub.assert_true(ok_parse, "Parse CompressedCertificate payload");
-        sub.assert_eq(parsed.algorithm, wing::CERT_COMPRESS_ZSTD, "Algorithm is Zstandard (3)");
+        sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_ZSTD, "Algorithm is Zstandard (3)");
         sub.assert_eq(parsed.uncompressed_len as i64, fake_cert.len as i64, "Uncompressed length matches original");
 
         // Decompress with native RFC 8878 Zstandard engine
@@ -1089,7 +1089,7 @@ fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
         var cache = wing::DnsCache { .. };
 
         var entry = wing::DnsCacheEntry {
-            qtype:           wing::DNS_QTYPE_A,
+            qtype:           rfc::DNS_QTYPE_A,
             inserted_at_sec: 1000,
             ttl_sec:         300,  // 5 minutes
             stale_ttl_sec:   3600, // 1 hour grace period
@@ -1102,24 +1102,24 @@ fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
 
         // 1. Fresh lookup at t = 1100 (100s elapsed < 300s TTL)
         var hit1 = wing::DnsCacheEntry { .. };
-        let status1 = wing::dns_cache_lookup(cache, "example.com", wing::DNS_QTYPE_A, 1100, hit1);
+        let status1 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 1100, hit1);
         sub.assert_eq(status1, wing::DnsCacheStatus.Fresh, "Lookup within TTL returns Fresh");
         sub.assert_eq(hit1.ipv4_hints[0], 0x5DB8D822, "Cached IPv4 address preserved");
 
         // 2. Stale lookup at t = 1500 (500s elapsed > 300s TTL, but < 3900s stale limit)
         var hit2 = wing::DnsCacheEntry { .. };
-        let status2 = wing::dns_cache_lookup(cache, "example.com", wing::DNS_QTYPE_A, 1500, hit2);
+        let status2 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 1500, hit2);
         sub.assert_eq(status2, wing::DnsCacheStatus.Stale, "Lookup past TTL returns Stale (trigger background revalidation)");
         sub.assert_eq(hit2.ipv4_hints[0], 0x5DB8D822, "Stale cache hit still provides IP for zero-latency connection");
 
         // 3. Expired lookup at t = 5000 (4000s elapsed > 3900s total limit)
         var hit3 = wing::DnsCacheEntry { .. };
-        let status3 = wing::dns_cache_lookup(cache, "example.com", wing::DNS_QTYPE_A, 5000, hit3);
+        let status3 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 5000, hit3);
         sub.assert_eq(status3, wing::DnsCacheStatus.Expired, "Lookup beyond stale window returns Expired");
 
         // 4. Missing domain lookup
         var hit4 = wing::DnsCacheEntry { .. };
-        let status4 = wing::dns_cache_lookup(cache, "notfound.org", wing::DNS_QTYPE_A, 1100, hit4);
+        let status4 = wing::dns_cache_lookup(cache, "notfound.org", rfc::DNS_QTYPE_A, 1100, hit4);
         sub.assert_eq(status4, wing::DnsCacheStatus.Expired, "Missing domain returns Expired");
     };
 }
@@ -1265,13 +1265,13 @@ fn test_x509_asn1_time_parsing(t: lit::T&) {
     t.run("ASN1-SEC-12: Valid UTCTime and GeneralizedTime Canonical DER") { sub =>
         // UTCTime: "261028120000Z" (2026-10-28 12:00:00 UTC)
         let utc_valid = "261028120000Z";
-        let ts_utc, ok_utc = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, utc_valid);
+        let ts_utc, ok_utc = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, utc_valid);
         sub.assert_true(ok_utc, "valid UTCTime parses successfully");
         sub.assert_true(ts_utc > 0, "timestamp > 0");
 
         // GeneralizedTime: "20261028120000Z"
         let gen_valid = "20261028120000Z";
-        let ts_gen, ok_gen = wing::parse_asn1_time(wing::ASN1_TAG_GENERALIZED_TIME, gen_valid);
+        let ts_gen, ok_gen = wing::parse_asn1_time(rfc::ASN1_TAG_GENERALIZED_TIME, gen_valid);
         sub.assert_true(ok_gen, "valid GeneralizedTime parses successfully");
         sub.assert_true(ts_gen > 0, "timestamp > 0");
     };
@@ -1279,22 +1279,22 @@ fn test_x509_asn1_time_parsing(t: lit::T&) {
     t.run("ASN1-SEC-13: Out-of-Bounds Calendar Values and Non-UTC Suffix Rejection") { sub =>
         // Month 13
         let bad_month = "261328120000Z";
-        let _, ok_m = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, bad_month);
+        let _, ok_m = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, bad_month);
         sub.assert_false(ok_m, "month 13 must be rejected");
 
         // Day 32
         let bad_day = "261032120000Z";
-        let _, ok_d = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, bad_day);
+        let _, ok_d = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, bad_day);
         sub.assert_false(ok_d, "day 32 must be rejected");
 
         // Hour 25
         let bad_hour = "261028250000Z";
-        let _, ok_h = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, bad_hour);
+        let _, ok_h = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, bad_hour);
         sub.assert_false(ok_h, "hour 25 must be rejected");
 
         // Non-UTC suffix: local time without 'Z' (strictly forbidden in DER per X.690 §11.7)
         let no_z = "261028120000";
-        let _, ok_z = wing::parse_asn1_time(wing::ASN1_TAG_UTC_TIME, no_z);
+        let _, ok_z = wing::parse_asn1_time(rfc::ASN1_TAG_UTC_TIME, no_z);
         sub.assert_false(ok_z, "missing 'Z' timezone must be rejected in DER");
     };
 }

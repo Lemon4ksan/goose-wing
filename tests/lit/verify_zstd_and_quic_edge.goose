@@ -70,12 +70,12 @@ fn test_quic_vn_boundaries() {
     // 1. Valid Version Negotiation with 1 version (4 bytes)
     var vn_1: u8[>..] = [];
     vn_1.push(0x80); // Long header (bit 7 = 1)
-    core::append_u32_be(vn_1, internal::QUIC_VERSION_NEGOTIATION); // Version 0x00000000
+    core::append_u32_be(vn_1, rfc::QUIC_VERSION_NEGOTIATION); // Version 0x00000000
     vn_1.push(4); // DCID len
     vn_1.append("DCID");
     vn_1.push(4); // SCID len
     vn_1.append("SCID");
-    core::append_u32_be(vn_1, internal::QUIC_VERSION_1); // 1 Supported Version (4 bytes)
+    core::append_u32_be(vn_1, rfc::QUIC_VERSION_1); // 1 Supported Version (4 bytes)
 
     let hdr_1, ok_vn_1 = internal::parse_quic_header(vn_1[..], 0);
     let type_str_1 = if hdr_1.header_type == internal::QuicHeaderType.VersionNegotiation { "VN" } else { "OTHER" };
@@ -84,12 +84,12 @@ fn test_quic_vn_boundaries() {
     // 2. Valid Version Negotiation with 2 versions (8 bytes)
     var vn_2: u8[>..] = [];
     vn_2.push(0x80);
-    core::append_u32_be(vn_2, internal::QUIC_VERSION_NEGOTIATION);
+    core::append_u32_be(vn_2, rfc::QUIC_VERSION_NEGOTIATION);
     vn_2.push(4);
     vn_2.append("DCID");
     vn_2.push(4);
     vn_2.append("SCID");
-    core::append_u32_be(vn_2, internal::QUIC_VERSION_1);
+    core::append_u32_be(vn_2, rfc::QUIC_VERSION_1);
     core::append_u32_be(vn_2, 0xFACEB00C); // Second version
 
     let hdr_2, ok_vn_2 = internal::parse_quic_header(vn_2[..], 0);
@@ -99,7 +99,7 @@ fn test_quic_vn_boundaries() {
     // 3. Malformed Version Negotiation with 0 versions (RFC 9000 §17.2.1: MUST have >= 1 version)
     var vn_empty: u8[>..] = [];
     vn_empty.push(0x80);
-    core::append_u32_be(vn_empty, internal::QUIC_VERSION_NEGOTIATION);
+    core::append_u32_be(vn_empty, rfc::QUIC_VERSION_NEGOTIATION);
     vn_empty.push(4);
     vn_empty.append("DCID");
     vn_empty.push(4);
@@ -112,7 +112,7 @@ fn test_quic_vn_boundaries() {
     // 4. Malformed Version Negotiation with truncated 3-byte version
     var vn_trunc: u8[>..] = [];
     vn_trunc.push(0x80);
-    core::append_u32_be(vn_trunc, internal::QUIC_VERSION_NEGOTIATION);
+    core::append_u32_be(vn_trunc, rfc::QUIC_VERSION_NEGOTIATION);
     vn_trunc.push(4);
     vn_trunc.append("DCID");
     vn_trunc.push(4);
@@ -125,12 +125,12 @@ fn test_quic_vn_boundaries() {
     // 5. Malformed Version Negotiation with 5 bytes (1 version + 1 dangling byte)
     var vn_dangling: u8[>..] = [];
     vn_dangling.push(0x80);
-    core::append_u32_be(vn_dangling, internal::QUIC_VERSION_NEGOTIATION);
+    core::append_u32_be(vn_dangling, rfc::QUIC_VERSION_NEGOTIATION);
     vn_dangling.push(4);
     vn_dangling.append("DCID");
     vn_dangling.push(4);
     vn_dangling.append("SCID");
-    core::append_u32_be(vn_dangling, internal::QUIC_VERSION_1);
+    core::append_u32_be(vn_dangling, rfc::QUIC_VERSION_1);
     vn_dangling.push(0xFF); // 1 extra byte
 
     let _, ok_vn_dangling = internal::parse_quic_header(vn_dangling[..], 0);

@@ -18,9 +18,9 @@ fn wing_validate_grpc_lpm_wire(buf: const u8[:]) -> i64 {
     if ok {
         return payload_slice.len;
     }
-    guard buf.len >= (wing::GRPC_LPM_HEADER_LEN as i64) else { return -1; }
+    guard buf.len >= (rfc::GRPC_LPM_HEADER_LEN as i64) else { return -1; }
     let flag = buf[0];
-    guard (flag & ~wing::GRPC_FLAG_COMPRESSED) == 0 else { return -2; }
+    guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return -2; }
     return -1;
 }
 

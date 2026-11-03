@@ -366,8 +366,8 @@ fn finalize_okp_key(raw_x: const u8[:], key_item: JwksKey&) -> bool {
     guard raw_x.len > 0 else { return false; }
     var decoded_x: u8[..64] = [];
     guard core::base64url_decode(raw_x, decoded_x) else { return false; }
-    guard decoded_x.len == ED25519_KEY_LEN else { return false; }
-    for i in ED25519_KEY_LEN {
+    guard decoded_x.len == rfc::ED25519_KEY_LEN else { return false; }
+    for i in rfc::ED25519_KEY_LEN {
         key_item.public_key[i] = decoded_x[i];
     }
     key_item.valid = true;
@@ -380,7 +380,7 @@ fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
     var decoded_k: u8[..128] = [];
     guard core::base64url_decode(raw_k, decoded_k) else { return false; }
     // RFC 8725 §3.6 & RFC 7518 §3.2: Reject weak symmetric keys (< 128 bits / 16 bytes)
-    guard decoded_k.len >= 16 && decoded_k.len <= HMAC_SHA512_MAC_LEN else { return false; }
+    guard decoded_k.len >= 16 && decoded_k.len <= rfc::HMAC_SHA512_MAC_LEN else { return false; }
     key_item.symmetric_key.clear();
     key_item.symmetric_key.append(decoded_k[..]);
     key_item.valid = true;

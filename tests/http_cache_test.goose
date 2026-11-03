@@ -48,7 +48,7 @@ fn test_cache_control_parsing_and_overflow(t: lit::T&) {
         // Clamping overflow to 2147483647
         var cc_over = wing::CacheControl { .. };
         wing::parse_cache_control_str("max-age=9999999999999", cc_over);
-        sub.assert_eq(cc_over.max_age, wing::MAX_DELTA_SECONDS, "max-age clamped to i32::MAX");
+        sub.assert_eq(cc_over.max_age, rfc::MAX_DELTA_SECONDS, "max-age clamped to i32::MAX");
 
         // Unbounded max-stale
         var cc_unbounded = wing::CacheControl { .. };
@@ -166,7 +166,7 @@ fn test_freshness_math_and_clock_skew(t: lit::T&) {
 
         // Clamped overflow
         let parsed_over = wing::parse_age_header("5000000000");
-        sub.assert_eq(parsed_over, wing::MAX_DELTA_SECONDS, "Age overflow clamped to i32::MAX");
+        sub.assert_eq(parsed_over, rfc::MAX_DELTA_SECONDS, "Age overflow clamped to i32::MAX");
 
         // Malformed Age ignored (returns 0)
         let parsed_bad = wing::parse_age_header("-50");

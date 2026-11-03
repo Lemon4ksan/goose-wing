@@ -88,26 +88,28 @@ fn test_vulkan_wire_conformance() {
 
     // Command 2: SETTINGS
     let s_list: wire::WireSetting[2] = [
-        wire::h2_setting(wire::H2_SETTING_ENABLE_PUSH, 0),
-        wire::h2_setting(wire::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
+        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
+        wire::h2_setting(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
     ];
     assert(wire::write_h2_settings(cmd, s_list[..]));
 
     // Command 3: Dynamic HEADERS Block with Interleave Protection
-    assert(wire::begin_h2_headers(cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
     assert(cmd.state == wire::WireCommandBufferState.RecordingHeaders);
 
     // Interleave rejection: writing frame while in RecordingHeaders must fail
     var interleave_cmd, i_res = wire::allocate_command_buffer(pool);
     assert(wire::is_success(i_res));
     wire::begin_command_buffer(interleave_cmd, begin_info);
-    assert(wire::begin_h2_headers(interleave_cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(wire::begin_h2_headers(interleave_cmd, 1, rfc::H2_FLAG_END_HEADERS));
     let ping_data: u8[8] = [0; 8];
     assert(!wire::write_h2_ping(interleave_cmd, ping_data, false));
     assert(interleave_cmd.has_error);
     wire::free_command_buffer(pool, interleave_cmd);
 
-    // Valid HPACK entries on clean cmd
+    //Valid HPACK entries on clean cmd (zero-staging in-place 9-byte frame header reservation)
+    let hdr_start = cmd.headers_frame_offset;
+    assert(hdr_start > 0);
     assert(wire::hpack_indexed(cmd, 2));
     assert(wire::hpack_indexed(cmd, 7));
     assert(wire::hpack_literal_without_indexing(cmd, ":path", "/vulkan-wire"));
@@ -117,15 +119,49 @@ fn test_vulkan_wire_conformance() {
     // Command 4: DATA Frame
     assert(wire::write_h2_data(cmd, 1, "test-stream-body", true));
 
-    // End command buffer recording
+    // End command buffer recording and commit to pool arena via core::ct_copy_bytes
     let end_res = wire::end_command_buffer(cmd);
     assert(wire::is_success(end_res) && cmd.state == wire::WireCommandBufferState.Executable);
+    let arena_slice, commit_ok = wire::commit_command_buffer_to_arena(pool, cmd);
+    assert(commit_ok && arena_slice.len == cmd.buf.len);
     print("COMMAND_BUFFER_LIFECYCLE_FSM: OK\n");
+
+    // Verify wire::hpack_decode_string Huffman decoding (RFC 7541 Appendix C.4.1 "www.example.com")
+    let huff_wire: u8[13] = [0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff];
+    var huff_pos:     u64      = 0;
+    var decoded_huff: u8[..64] = [];
+    let huff_ok = wire::hpack_decode_string(huff_wire[..], huff_pos, decoded_huff);
+    assert(huff_ok && huff_pos == 13);
+    assert(core::ct_eq_bytes(decoded_huff[..], "www.example.com"));
+
+    // Verify rfc::status_phrase, rfc::status_line_h1, rfc::is_empty_body_status, rfc::is_redirect_status
+    assert(core::ct_eq_bytes(rfc::status_phrase(rfc::STATUS_OK), "OK"));
+    assert(core::ct_eq_bytes(rfc::status_line_h1(rfc::STATUS_NOT_FOUND), "HTTP/1.1 404 Not Found\r\n"));
+    assert(rfc::is_empty_body_status(rfc::STATUS_NO_CONTENT));
+    assert(!rfc::is_empty_body_status(rfc::STATUS_OK));
+    assert(rfc::is_redirect_status(rfc::STATUS_MOVED_PERMANENTLY));
+    assert(!rfc::is_redirect_status(rfc::STATUS_OK));
+    print("RFC_HELPERS_AND_HUFFMAN: OK\n");
 
     // Tier 6: Queue Acquisition, Batch Submission & Synchronization2
     var queue = wire::get_device_queue(dev, 0, 0);
     queue.driver = wire::WireDriverKind.Mock;
     queue.is_connected = true;
+
+    // Verify WireQueue TLS 1.3 record protection (seal + poll_recv_tls roundtrip)
+    let key: u8[16] = [0x11; 16];
+    let iv:  u8[12] = [0x22; 12];
+    wire::enable_wire_queue_tls(queue, key, iv, key, iv);
+    assert(queue.tls.enabled);
+    var sealed_frame: u8[256] = [0; 256];
+    let sealed_len, seal_ok = wire::seal_queue_frame_into(queue, "ping-wire-tls13", sealed_frame[..]);
+    assert(seal_ok && sealed_len == 37 && queue.tls.tx_seq == 1);
+    var opened_plain: u8[256] = [0; 256];
+    let plain_len, ctype, tls_ok = wire::poll_recv_tls(queue, sealed_frame[..sealed_len], opened_plain[..]);
+    assert(tls_ok && ctype == rfc::TLS_CONTENT_APPLICATION_DATA && plain_len == 15);
+    assert(core::ct_eq_bytes(opened_plain[..plain_len], "ping-wire-tls13"));
+    assert(queue.tls.rx_seq == 1);
+    print("WIRE_QUEUE_TLS13: OK\n");
 
     // Create Synchronization2 Fence and Semaphore
     let fence_info = wire::WireFenceCreateInfo { flags: 0 };
@@ -177,6 +213,8 @@ fn main() {
     // CHECK: COMMAND_POOL_RECYCLED: OK
     // CHECK: PIPELINE_STATE_BOUND: OK
     // CHECK: COMMAND_BUFFER_LIFECYCLE_FSM: OK
+    // CHECK: RFC_HELPERS_AND_HUFFMAN: OK
+    // CHECK: WIRE_QUEUE_TLS13: OK
     // CHECK: SEMAPHORE_TIMELINE: OK
     // CHECK: FENCE_SIGNALED: OK
     // CHECK: SOCKET_FD_INVARIANT: OK

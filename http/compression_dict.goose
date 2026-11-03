@@ -19,23 +19,6 @@ import http.headers;
 // 4-byte magic headers per RFC 9842 Section 4 (DCB) and Section 5 (DCZ):
 // DCZ: 0xFF, 'D', 'C', 'Z' (0xFF, 0x44, 0x43, 0x5A)
 // DCB: 0xFF, 'D', 'C', 'B' (0xFF, 0x44, 0x43, 0x42)
-const DCZ_MAGIC_BYTE0: u8 = 0xFF;
-const DCZ_MAGIC_BYTE1: u8 = 0x44; // 'D'
-const DCZ_MAGIC_BYTE2: u8 = 0x43; // 'C'
-const DCZ_MAGIC_BYTE3: u8 = 0x5A; // 'Z'
-
-const DCB_MAGIC_BYTE0: u8 = 0xFF;
-const DCB_MAGIC_BYTE1: u8 = 0x44; // 'D'
-const DCB_MAGIC_BYTE2: u8 = 0x43; // 'C'
-const DCB_MAGIC_BYTE3: u8 = 0x42; // 'B'
-
-const HEADER_USE_AS_DICTIONARY:    const u8[:] = "use-as-dictionary";
-const HEADER_AVAILABLE_DICTIONARY: const u8[:] = "available-dictionary";
-const HEADER_DICTIONARY_ID:        const u8[:] = "dictionary-id"; // RFC 9842 Section 2.3
-const ENCODING_DCZ:                const u8[:] = "dcz";
-const ENCODING_DCB:                const u8[:] = "dcb";
-
-// ---- Dictionary Models & Cache ------------------------------------------
 
 struct DictionaryParams {
     match_pattern: u8[..128] = [],
@@ -179,10 +162,10 @@ fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
 // Encodes a DCZ (Dictionary-Compressed Zstandard) frame:
 // [0xFF, 'D', 'C', 'Z'] || [32-byte Dictionary SHA-256] || [Compressed Zstandard Payload]
 fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    out.push(DCZ_MAGIC_BYTE0);
-    out.push(DCZ_MAGIC_BYTE1);
-    out.push(DCZ_MAGIC_BYTE2);
-    out.push(DCZ_MAGIC_BYTE3);
+    out.push(rfc::DCZ_MAGIC_BYTE0);
+    out.push(rfc::DCZ_MAGIC_BYTE1);
+    out.push(rfc::DCZ_MAGIC_BYTE2);
+    out.push(rfc::DCZ_MAGIC_BYTE3);
     for b in dict_hash {
         out.push(b);
     }
@@ -193,10 +176,10 @@ fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 // Encodes a DCB (Dictionary-Compressed Brotli) frame:
 // [0xFF, 'D', 'C', 'B'] || [32-byte Dictionary SHA-256] || [Compressed Brotli Payload]
 fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    out.push(DCB_MAGIC_BYTE0);
-    out.push(DCB_MAGIC_BYTE1);
-    out.push(DCB_MAGIC_BYTE2);
-    out.push(DCB_MAGIC_BYTE3);
+    out.push(rfc::DCB_MAGIC_BYTE0);
+    out.push(rfc::DCB_MAGIC_BYTE1);
+    out.push(rfc::DCB_MAGIC_BYTE2);
+    out.push(rfc::DCB_MAGIC_BYTE3);
     for b in dict_hash {
         out.push(b);
     }
@@ -212,8 +195,8 @@ fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 //   returns: payload slice, out_hash populated, ok = true
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
     guard wire.len >= 36 else { return wire[..0], false; }
-    guard wire[0] == DCZ_MAGIC_BYTE0 && wire[1] == DCZ_MAGIC_BYTE1 &&
-          wire[2] == DCZ_MAGIC_BYTE2 && wire[3] == DCZ_MAGIC_BYTE3 else {
+    guard wire[0] == rfc::DCZ_MAGIC_BYTE0 && wire[1] == rfc::DCZ_MAGIC_BYTE1 &&
+          wire[2] == rfc::DCZ_MAGIC_BYTE2 && wire[3] == rfc::DCZ_MAGIC_BYTE3 else {
         return wire[..0], false;
     }
 
@@ -230,8 +213,8 @@ fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
 //   returns: payload slice, out_hash populated, ok = true
 fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
     guard wire.len >= 36 else { return wire[..0], false; }
-    guard wire[0] == DCB_MAGIC_BYTE0 && wire[1] == DCB_MAGIC_BYTE1 &&
-          wire[2] == DCB_MAGIC_BYTE2 && wire[3] == DCB_MAGIC_BYTE3 else {
+    guard wire[0] == rfc::DCB_MAGIC_BYTE0 && wire[1] == rfc::DCB_MAGIC_BYTE1 &&
+          wire[2] == rfc::DCB_MAGIC_BYTE2 && wire[3] == rfc::DCB_MAGIC_BYTE3 else {
         return wire[..0], false;
     }
 

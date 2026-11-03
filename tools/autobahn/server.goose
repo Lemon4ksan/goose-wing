@@ -100,9 +100,9 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
                 wing::tcp_send(conn, reply[..]);
             }
 
-            if view.is_valid && (view.opcode == wing::WS_OPCODE_TEXT || view.opcode == wing::WS_OPCODE_BINARY) {
+            if view.is_valid && (view.opcode == rfc::WS_OPCODE_TEXT || view.opcode == rfc::WS_OPCODE_BINARY) {
                 echo_wire.clear();
-                if view.opcode == wing::WS_OPCODE_TEXT {
+                if view.opcode == rfc::WS_OPCODE_TEXT {
                     wing::send_text(ws, view.payload, echo_wire);
                 } else {
                     wing::send_binary(ws, view.payload, echo_wire);

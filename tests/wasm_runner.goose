@@ -122,8 +122,8 @@ fn main() {
     print("\n[6/11] RFC 9113 HTTP/2 Framing & Stream Demux...\n");
     let h2_hdr = internal::FrameHeader {
         length:     24,
-        frame_type: internal::FRAME_HEADERS,
-        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  101,
     };
     var h2_wire: u8[9] = [0; 9];
@@ -132,8 +132,8 @@ fn main() {
     print("  H2 Parse Err:        ", err_h2, "\n");
     print("  H2 Frame Type:       ", parsed_h2.frame_type as i64, " (FRAME_HEADERS)\n");
     print("  H2 Stream ID:        ", parsed_h2.stream_id as i64, "\n");
-    print("  H2 End-Headers Flag: ", (parsed_h2.flags & internal::FLAG_END_HEADERS) != 0, "\n");
-    print("  H2 End-Stream Flag:  ", (parsed_h2.flags & internal::FLAG_END_STREAM) != 0, "\n");
+    print("  H2 End-Headers Flag: ", (parsed_h2.flags & rfc::H2_FLAG_END_HEADERS) != 0, "\n");
+    print("  H2 End-Stream Flag:  ", (parsed_h2.flags & rfc::H2_FLAG_END_STREAM) != 0, "\n");
 
     // ------------------------------------------------------------------------
     // Scenario 7: RFC 9218 Extensible Prioritization Scheme
@@ -235,7 +235,7 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[10/11] TLS 1.3 Post-Quantum Hybrid Key Exchange (X25519MLKEM768)...\n");
     var client_share = internal::PostQuantumKeyShare {
-        group: internal::GROUP_X25519_MLKEM768,
+        group: rfc::GROUP_X25519_MLKEM768,
         ..
     };
     for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
@@ -287,7 +287,7 @@ fn main() {
 
     var quic_hdr = internal::QuicHeader {
         header_type:    internal::QuicHeaderType.Initial,
-        version:        internal::QUIC_VERSION_1,
+        version:        rfc::QUIC_VERSION_1,
         payload_length: 1280,
         packet_number:  99,
         ..

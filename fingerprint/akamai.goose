@@ -642,7 +642,7 @@ fn extract_akamai_from_wire(
 
     var offset: i64 = 0;
     // Skip 24-byte client connection preface if present
-    if wire_bytes.len >= 24 && bytes_eq(wire_bytes[0..24], internal::H2_CLIENT_PREFACE[..]) {
+    if wire_bytes.len >= 24 && bytes_eq(wire_bytes[0..24], rfc::H2_CLIENT_PREFACE[..]) {
         offset = 24;
     }
 
@@ -650,27 +650,27 @@ fn extract_akamai_from_wire(
 
     while (wire_bytes.len - offset) >= 9 {
         let hdr, err = internal::parse_frame_header(wire_bytes[offset..wire_bytes.len]);
-        if err != internal::ERR_NO_ERROR {
+        if err != rfc::H2_ERR_NO_ERROR {
             break;
         }
         let frame_total_len = 9 + (hdr.length as i64);
         guard (wire_bytes.len - offset) >= frame_total_len else { break; }
 
         // Connection handshake phase ends on first HEADERS or DATA frame
-        if hdr.frame_type == internal::FRAME_HEADERS || hdr.frame_type == internal::FRAME_DATA {
+        if hdr.frame_type == rfc::H2_FRAME_HEADERS || hdr.frame_type == rfc::H2_FRAME_DATA {
             break;
         }
 
         let payload = wire_bytes[(offset + 9)..(offset + frame_total_len)];
 
         // SETTINGS Frame (Type 0x04) on Stream 0 (non-ACK)
-        if hdr.frame_type == internal::FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & internal::FLAG_ACK) == 0 {
+        if hdr.frame_type == rfc::H2_FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
             found_settings = true;
             guard process_akamai_settings_frame(hdr, payload, fp) else { return fp, false; }
         }
 
         // WINDOW_UPDATE Frame (Type 0x08) on Stream 0
-        if hdr.frame_type == internal::FRAME_WINDOW_UPDATE && hdr.stream_id == 0 && hdr.length == 4 {
+        if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && hdr.stream_id == 0 && hdr.length == 4 {
             let inc = (((payload[0] & 0x7F) as u32) << 24)
                 | ((payload[1] as u32) << 16)
                 | ((payload[2] as u32) << 8)
@@ -679,7 +679,7 @@ fn extract_akamai_from_wire(
         }
 
         // PRIORITY Frame (Type 0x02)
-        if hdr.frame_type == internal::FRAME_PRIORITY && hdr.length == 5 {
+        if hdr.frame_type == rfc::H2_FRAME_PRIORITY && hdr.length == 5 {
             guard process_akamai_priority_frame(hdr, payload, fp) else { return fp, false; }
         }
 
@@ -707,7 +707,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     let settings_payload_len = (fp.settings.len * 6) as u32;
     var settings_hdr = internal::FrameHeader {
         length:     settings_payload_len,
-        frame_type: internal::FRAME_SETTINGS,
+        frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
@@ -727,7 +727,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     if fp.window_update > 0 {
         var wu_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_WINDOW_UPDATE,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
             stream_id:  0,
         };
@@ -744,7 +744,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     for &p in fp.priority_frames {
         var p_hdr = internal::FrameHeader {
             length:     5,
-            frame_type: internal::FRAME_PRIORITY,
+            frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,
             stream_id:  p.stream_id,
         };

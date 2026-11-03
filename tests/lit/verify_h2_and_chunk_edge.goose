@@ -19,7 +19,7 @@ fn test_h2_padded_data_and_overflow() {
 
     // 1. Client preface + SETTINGS
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     // Empty SETTINGS frame (type 4, flags 0, stream 0)
     init_wire.append([0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]);
 

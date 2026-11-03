@@ -380,7 +380,7 @@ fn lookup_cached_ech_config(
     out_ech:   u8[..512]&,
 ) -> bool {
     var cached = DnsCacheEntry { .. };
-    let cache_status = dns_cache_lookup(dns_cache, domain, DNS_QTYPE_HTTPS, now_sec, cached);
+    let cache_status = dns_cache_lookup(dns_cache, domain, rfc::DNS_QTYPE_HTTPS, now_sec, cached);
     if cache_status == DnsCacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
@@ -403,10 +403,10 @@ fn discover_and_cache_ech_config(
 
     var dns_resp = DnsResponse { .. };
     // RFC 8484 §4.1: DoH clients SHOULD set DNS ID to 0 for maximum HTTP cacheability
-    guard doh_query(session, domain, DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
+    guard doh_query(session, domain, rfc::DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
 
     var cache_entry = DnsCacheEntry {
-        qtype:           DNS_QTYPE_HTTPS,
+        qtype:           rfc::DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
         ttl_sec:         300,
         valid:           true,
@@ -446,7 +446,7 @@ fn resolve_ech_config(
     }
     // Fallback: If discovery failed, check if a stale entry is available
     var cached = DnsCacheEntry { .. };
-    let stale_status = dns_cache_lookup(session.dns_cache, domain, DNS_QTYPE_HTTPS, 0, cached);
+    let stale_status = dns_cache_lookup(session.dns_cache, domain, rfc::DNS_QTYPE_HTTPS, 0, cached);
     if stale_status == DnsCacheStatus.Fresh || stale_status == DnsCacheStatus.Stale {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
@@ -787,7 +787,7 @@ fn process_dictionary_response<B>(
         }
     }
 
-    if core::eq_ascii_fold(content_encoding, ENCODING_DCZ) {
+    if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcz_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -801,7 +801,7 @@ fn process_dictionary_response<B>(
         return decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded);
     }
 
-    if core::eq_ascii_fold(content_encoding, ENCODING_DCB) {
+    if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCB) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }

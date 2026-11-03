@@ -45,19 +45,19 @@ fn parse_origin_frame(
     out_entries: const u8[:][..16]&,
 ) -> u32, u32 {
     guard stream_id == 0 else {
-        return 0, ERR_PROTOCOL_ERROR;
+        return 0, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     var idx: i64 = 0;
     while idx < payload.len {
         let entry, total, ok = decode_origin_slice(payload[idx..]);
-        guard ok else { return out_entries.len as u32, ERR_FRAME_SIZE_ERROR; }
+        guard ok else { return out_entries.len as u32, rfc::H2_ERR_FRAME_SIZE_ERROR; }
         guard out_entries.len < out_entries.cap else {
-            return out_entries.len as u32, ERR_PROTOCOL_ERROR;
+            return out_entries.len as u32, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         out_entries.push(entry);
         idx += total;
     }
-    return out_entries.len as u32, ERR_NO_ERROR;
+    return out_entries.len as u32, rfc::H2_ERR_NO_ERROR;
 }
 
 // RFC 8336 Section 2.1: Syntax - Encodes a single Origin Entry into output buffer
@@ -86,7 +86,7 @@ fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool {
     guard ok else { return false; }
     let hdr = FrameHeader {
         length:     payload_len,
-        frame_type: FRAME_ORIGIN,
+        frame_type: rfc::H2_FRAME_ORIGIN,
         flags:      0,
         stream_id:  0,
     };
@@ -106,7 +106,7 @@ fn encode_origin_frame_single<B>(out: B&, origin: const u8[:]) -> bool {
     guard payload_len <= 16384 else { return false; }
     let hdr = FrameHeader {
         length:     payload_len,
-        frame_type: FRAME_ORIGIN,
+        frame_type: rfc::H2_FRAME_ORIGIN,
         flags:      0,
         stream_id:  0,
     };
@@ -121,22 +121,22 @@ fn encode_origin_frame_single<B>(out: B&, origin: const u8[:]) -> bool {
 //   returns: H2AltSvcFrame { origin: "ex.com", alt_svc_value: "h3" }, ERR_NO_ERROR
 fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u32 {
     guard payload.len >= 2 else {
-        return H2AltSvcFrame { .. }, ERR_FRAME_SIZE_ERROR;
+        return H2AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
     let origin_len = (((payload[0] as i64) << 8) | payload[1]);
     let origin_end = 2 + origin_len;
     guard origin_end <= payload.len else {
-        return H2AltSvcFrame { .. }, ERR_FRAME_SIZE_ERROR;
+        return H2AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
     let valid_origin = if stream_id == 0 { origin_len > 0 } else { origin_len == 0 };
     guard valid_origin else {
         // RFC 7838 §4: An ALTSVC frame with invalid origin information MUST be ignored
-        return H2AltSvcFrame { .. }, ERR_NO_ERROR;
+        return H2AltSvcFrame { .. }, rfc::H2_ERR_NO_ERROR;
     }
     return H2AltSvcFrame {
         origin:        payload[2..origin_end],
         alt_svc_value: payload[origin_end..],
-    }, ERR_NO_ERROR;
+    }, rfc::H2_ERR_NO_ERROR;
 }
 
 // RFC 7838 Section 4.1: The ALTSVC Frame - Encodes ALTSVC frame payload into buffer
@@ -182,7 +182,7 @@ fn encode_altsvc_frame<B>(
 
     let hdr = FrameHeader {
         length:     payload_len,
-        frame_type: FRAME_ALTSVC,
+        frame_type: rfc::H2_FRAME_ALTSVC,
         flags:      0,
         stream_id:  stream_id,
     };

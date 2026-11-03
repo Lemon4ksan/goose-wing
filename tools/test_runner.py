@@ -116,6 +116,7 @@ def main() -> int:
     tests_dir = root_dir / "tests"
     examples_dir = root_dir / "examples"
     core_file = root_dir / "core.goose"
+    rfc_file = root_dir / "rfc.goose"
     wing_file = root_dir / "wing.goose"
 
     goose = find_goose_binary()
@@ -130,11 +131,11 @@ def main() -> int:
 
     total_steps = 2 if args.check_only else 3
 
-    # 1. Typecheck core, wing and examples
-    print(f"\n{yellow(f'[1/{total_steps}] Typechecking core, wing, and examples...')}")
+    # 1. Typecheck core, rfc, wing and examples
+    print(f"\n{yellow(f'[1/{total_steps}] Typechecking core, rfc, wing, and examples...')}")
     t0_core = time.perf_counter()
 
-    for target in [core_file, wing_file]:
+    for target in [core_file, rfc_file, wing_file]:
         code, out, err = run_command([goose, "check", str(target)], cwd=root_dir)
         if code != 0:
             print(red(f"FATAL: goose check {target.name} failed!"))

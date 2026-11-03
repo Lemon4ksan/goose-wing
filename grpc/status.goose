@@ -227,9 +227,6 @@ fn extract_grpc_status(
 
 // ---- Protowire Status Serialization (grpc-status-details-bin) ------------
 
-const PROTO_TAG_STATUS_CODE:    u8 = 0x08; // field 1 (code), wire type 0 (varint)
-const PROTO_TAG_STATUS_MESSAGE: u8 = 0x12; // field 2 (message), wire type 2 (length-delimited)
-
 // Computes encoded byte length of an unsigned 64-bit Protobuf Base-128 VarInt.
 inline fn protowire_varint_len(val: u64) -> u64 {
     var v = val;
@@ -275,12 +272,12 @@ fn build_grpc_status_details(code: i32, msg: const u8[:], dst: u8[:]) -> i32, bo
     guard (dst.len as u64) >= required else { return 0, false; }
 
     var pos: u64 = 0;
-    dst[pos as i64] = PROTO_TAG_STATUS_CODE;
+    dst[pos as i64] = rfc::PROTO_TAG_STATUS_CODE;
     pos = core::add_sat_u64(pos, 1);
     write_protowire_varint(code_u64, dst, pos);
 
     if msg.len > 0 {
-        dst[pos as i64] = PROTO_TAG_STATUS_MESSAGE;
+        dst[pos as i64] = rfc::PROTO_TAG_STATUS_MESSAGE;
         pos = core::add_sat_u64(pos, 1);
         write_protowire_varint(msg_len_u64, dst, pos);
         for i in msg.len {

@@ -45,7 +45,7 @@ fn main() {
     // 4. Encode an outbound WebSocket RFC 6455 Text Frame
     let chat_json = "{\"sender\":\"alice\",\"text\":\"Goose Wing WebSocket streaming!\"}";
     var frame_out: u8[..256] = [];
-    wing::encode_ws_frame(frame_out, wing::WS_OPCODE_TEXT, chat_json, false);
+    wing::encode_ws_frame(frame_out, rfc::WS_OPCODE_TEXT, chat_json, false);
 
     print("\n[3] WebSocket RFC 6455 Frame Encoded:");
     print("    Payload Length: ", chat_json.len, " bytes");
@@ -57,7 +57,7 @@ fn main() {
     var masked_wire: u8[..256] = [];
 
     // Client-to-server frames MUST be masked
-    wing::encode_ws_frame(masked_wire, wing::WS_OPCODE_TEXT, chat_json, true, mask_key);
+    wing::encode_ws_frame(masked_wire, rfc::WS_OPCODE_TEXT, chat_json, true, mask_key);
 
     let parsed_header, hdr_ok = wing::parse_ws_frame_header(masked_wire[..]);
 

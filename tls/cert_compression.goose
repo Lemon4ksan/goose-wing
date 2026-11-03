@@ -11,10 +11,6 @@ import core from "..";
 // ---- RFC 8879 Compression Algorithm Identifiers -------------------------
 
 // RFC 8879 Section 3: Negotiating Certificate Compression - Compression Algorithm Identifiers
-const CERT_COMPRESSION_ZLIB:      u16 = 1; // RFC 8879 Section 3 (zlib)
-const CERT_COMPRESSION_BROTLI:    u16 = 2; // RFC 8879 Section 3 (brotli)
-const CERT_COMPRESSION_ZSTD:      u16 = 3; // RFC 8879 Section 3 (zstd)
-const CERT_COMPRESSION_ZSTD_IANA: u16 = 3; // RFC 8879 Section 3 official IANA codepoint
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Decompression Ceiling
 const MAX_UNCOMPRESSED_CERT_SIZE: u32 = 65536; // 64 KB decompression ceiling (bomb defense)
@@ -29,17 +25,17 @@ inline fn is_within_decompression_ratio(uncompressed_len: u32, compressed_len: u
 
 // Returns true if algorithm is recognized by RFC 8879
 fn is_valid_compression_algorithm(algo: u16) -> bool {
-    return algo == CERT_COMPRESSION_BROTLI
-        || algo == CERT_COMPRESSION_ZSTD
-        || algo == CERT_COMPRESSION_ZSTD_IANA
-        || algo == CERT_COMPRESSION_ZLIB;
+    return algo == rfc::CERT_COMPRESSION_BROTLI
+        || algo == rfc::CERT_COMPRESSION_ZSTD
+        || algo == rfc::CERT_COMPRESSION_ZSTD
+        || algo == rfc::CERT_COMPRESSION_ZLIB;
 }
 
 // ---- CompressedCertificate Message Model ---------------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Structure
 struct CompressedCertificate {
-    algorithm:                      u16         = CERT_COMPRESSION_BROTLI,
+    algorithm:                      u16         = rfc::CERT_COMPRESSION_BROTLI,
     uncompressed_length:            u32         = 0,
     compressed_certificate_message: const u8[:] = "",
 }
@@ -129,7 +125,7 @@ fn decompress_certificate_payload<B>(
     expected_len: u32,
     out_cert:     B&,
 ) -> bool {
-    if algo == CERT_COMPRESSION_BROTLI {
+    if algo == rfc::CERT_COMPRESSION_BROTLI {
         let ok, _ = core::brotli_decompress_with_limit(
             comp_data,
             out_cert,
@@ -137,14 +133,14 @@ fn decompress_certificate_payload<B>(
         );
         guard ok && (out_cert.len as u32) == expected_len else { return false; }
         return true;
-    } else if algo == CERT_COMPRESSION_ZLIB {
+    } else if algo == rfc::CERT_COMPRESSION_ZLIB {
         let ok, _ = core::zlib_decompress(
             comp_data,
             out_cert,
         );
         guard ok && (out_cert.len as u32) == expected_len else { return false; }
         return true;
-    } else if algo == CERT_COMPRESSION_ZSTD || algo == CERT_COMPRESSION_ZSTD_IANA {
+    } else if algo == rfc::CERT_COMPRESSION_ZSTD || algo == rfc::CERT_COMPRESSION_ZSTD {
         let ok, _ = core::zstd_decompress_with_limit(
             comp_data,
             out_cert,

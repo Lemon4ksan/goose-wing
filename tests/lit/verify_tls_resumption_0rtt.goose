@@ -82,8 +82,8 @@ fn test_0rtt_controller_lifecycle() {
     var ctrl = wing::EarlyDataController {
         state:                   wing::EarlyDataState.Offered,
         max_early_data_size:     1000,
-        psk_cipher_suite:        wing::TLS_CIPHER_AES_128_GCM_SHA256,
-        negotiated_cipher_suite: wing::TLS_CIPHER_AES_128_GCM_SHA256,
+        psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        negotiated_cipher_suite: rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         ..
     };
 
@@ -106,8 +106,8 @@ fn test_0rtt_controller_lifecycle() {
     var ctrl_mismatch = wing::EarlyDataController {
         state:                   wing::EarlyDataState.Offered,
         max_early_data_size:     1000,
-        psk_cipher_suite:        wing::TLS_CIPHER_AES_128_GCM_SHA256,
-        negotiated_cipher_suite: wing::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
+        psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        negotiated_cipher_suite: rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
         ..
     };
     let accepted = wing::early_data_on_encrypted_extensions(ctrl_mismatch, true);

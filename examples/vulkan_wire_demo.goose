@@ -86,9 +86,9 @@ fn main() {
 
     // Command 2: Write SETTINGS Frame (Stream 0)
     let settings_list: wire::WireSetting[3] = [
-        wire::h2_setting(wire::H2_SETTING_ENABLE_PUSH, 0),
-        wire::h2_setting(wire::H2_SETTING_INITIAL_WINDOW_SIZE, 131072),
-        wire::h2_setting(wire::H2_SETTING_NO_RFC7540_PRIORITIES, 1),
+        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
+        wire::h2_setting(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 131072),
+        wire::h2_setting(rfc::H2_SETTING_NO_RFC7540_PRIORITIES, 1),
     ];
     assert(wire::write_h2_settings(cmd, settings_list[..]));
     print("    Recorded: SETTINGS Frame (3 parameters)");
@@ -98,7 +98,7 @@ fn main() {
     print("    Recorded: WINDOW_UPDATE Frame (Stream 0, +512 KB)");
 
     // Command 4: Dynamic HEADERS Frame with HPACK Staging
-    assert(wire::begin_h2_headers(cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
     assert(wire::hpack_indexed(cmd, 2)); // :method: GET
     assert(wire::hpack_indexed(cmd, 7)); // :scheme: https
     assert(wire::hpack_literal_without_indexing(cmd, ":path", "/v1/orders"));
@@ -112,9 +112,11 @@ fn main() {
     assert(wire::write_h2_data(cmd, 1, payload, true));
     print("    Recorded: DATA Frame (Stream 1, END_STREAM=true)");
 
-    // End command buffer recording -> transitions to Executable
+    // End command buffer recording -> transitions to Executable and commits to Arena
     assert(wire::is_success(wire::end_command_buffer(cmd)));
-    print("    Command Buffer State: Executable (", cmd.buf.len, " bytes)");
+    let arena_slice, commit_ok = wire::commit_command_buffer_to_arena(pool, cmd);
+    assert(commit_ok && arena_slice.len == cmd.buf.len);
+    print("    Command Buffer State: Executable (", arena_slice.len, " bytes committed to Arena)");
 
     // Tier 6: Queue Acquisition, Batch Submission & Synchronization2
     print("\n[6] Acquiring Device Queue and Submitting Batch with Fence:");

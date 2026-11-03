@@ -1695,7 +1695,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
 fn test_token_challenge_roundtrip(t: lit::T&) {
     t.run("TokenChallenge with 32-byte Redemption Context") { sub =>
         var ch = wing::TokenChallenge {
-            token_type: wing::TOKEN_TYPE_BLIND_RSA,
+            token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
         ch.issuer_name.append("issuer.example.com");
@@ -1709,7 +1709,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
         var parsed = wing::TokenChallenge { .. };
         let ok = wing::unmarshal_token_challenge(wire[..], parsed);
         sub.assert_true(ok, "Unmarshal succeeded");
-        sub.assert_eq(parsed.token_type, wing::TOKEN_TYPE_BLIND_RSA, "Token type matches");
+        sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_BLIND_RSA, "Token type matches");
         sub.assert_bytes_eq(parsed.issuer_name[..], "issuer.example.com", "Issuer name matches");
         sub.assert_eq(parsed.redemption_context.len, 32, "Redemption context is 32 bytes");
         sub.assert_bytes_eq(parsed.origin_info[..], "origin.example.com", "Origin info matches");
@@ -1725,7 +1725,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
 
     t.run("TokenChallenge with Empty Context and Multiple Origins") { sub =>
         var ch = wing::TokenChallenge {
-            token_type: wing::TOKEN_TYPE_PUBLICLY_VERIFIABLE,
+            token_type: rfc::TOKEN_TYPE_PUBLICLY_VERIFIABLE,
             ..
         };
         ch.issuer_name.append("turnstile.cloudflare.com");
@@ -1737,7 +1737,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
         var parsed = wing::TokenChallenge { .. };
         let ok = wing::unmarshal_token_challenge(wire[..], parsed);
         sub.assert_true(ok, "Unmarshal succeeded");
-        sub.assert_eq(parsed.token_type, wing::TOKEN_TYPE_PUBLICLY_VERIFIABLE, "Token type matches");
+        sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_PUBLICLY_VERIFIABLE, "Token type matches");
         sub.assert_eq(parsed.redemption_context.len, 0, "Redemption context is empty");
         sub.assert_bytes_eq(parsed.origin_info[..], "site1.com,site2.com,site3.com", "Origins preserved");
     };
@@ -1746,7 +1746,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
 fn test_token_wire_roundtrip(t: lit::T&) {
     t.run("Token Binary Wire Codec (RFC 9577 §2.2.1)") { sub =>
         var tok = wing::Token {
-            token_type: wing::TOKEN_TYPE_BLIND_RSA,
+            token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
         for i in 32 { tok.nonce[i] = (i + 1) as u8; }
@@ -1762,7 +1762,7 @@ fn test_token_wire_roundtrip(t: lit::T&) {
         var parsed = wing::Token { .. };
         let ok = wing::unmarshal_token(wire[..], 32, 64, parsed);
         sub.assert_true(ok, "Token unmarshaled");
-        sub.assert_eq(parsed.token_type, wing::TOKEN_TYPE_BLIND_RSA, "Token type matches");
+        sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_BLIND_RSA, "Token type matches");
         sub.assert_bytes_eq(parsed.nonce[..], tok.nonce[..], "Nonce matches");
         sub.assert_bytes_eq(parsed.challenge_digest[..], tok.challenge_digest[..], "Challenge digest matches");
         sub.assert_bytes_eq(parsed.token_key_id[..], tok.token_key_id[..], "Token key id matches");
@@ -1774,7 +1774,7 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
     t.run("WWW-Authenticate PrivateToken Challenge Parsing") { sub =>
         // Construct challenge wire and base64url
         var ch = wing::TokenChallenge {
-            token_type: wing::TOKEN_TYPE_BLIND_RSA,
+            token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
         ch.issuer_name.append("issuer.example.com");
@@ -2182,7 +2182,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
             aad,
             pt,
             skEm,
-            wing::HPKE_AEAD_AES_128_GCM,
+            rfc::HPKE_AEAD_AES_128_GCM,
             enc,
             ct,
         );
@@ -2219,7 +2219,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
             info,
             aad,
             ct[..],
-            wing::HPKE_AEAD_AES_128_GCM,
+            rfc::HPKE_AEAD_AES_128_GCM,
             decrypted,
         );
         sub.assert_true(ok_open, "hpke_open_base succeeds");
@@ -2237,7 +2237,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
             info,
             aad,
             ct[..],
-            wing::HPKE_AEAD_AES_128_GCM,
+            rfc::HPKE_AEAD_AES_128_GCM,
             dec_tampered,
         );
         sub.assert_false(ok_tamper, "tampered ciphertext fails decryption");
@@ -2271,7 +2271,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
             aad,
             pt,
             alice_sk,
-            wing::HPKE_AEAD_CHACHA20_POLY1305,
+            rfc::HPKE_AEAD_CHACHA20_POLY1305,
             enc,
             ct,
         );
@@ -2284,7 +2284,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
             info,
             aad,
             ct[..],
-            wing::HPKE_AEAD_CHACHA20_POLY1305,
+            rfc::HPKE_AEAD_CHACHA20_POLY1305,
             decrypted,
         );
         sub.assert_true(ok_open, "ChaCha20Poly1305 open succeeds");

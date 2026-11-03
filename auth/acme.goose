@@ -9,9 +9,6 @@ import std;
 import core from "..";
 
 // RFC 8555 §8.3 fixed path prefix for HTTP-01 challenge resources.
-const ACME_HTTP01_PREFIX: u8[..28] = "/.well-known/acme-challenge/";
-
-// Upper bound for challenge tokens (RFC 8555 §8.3 requires ≥128 bits entropy;
 // 64 bytes caps the stack buffer while accepting well-formed base64url tokens).
 const ACME_MAX_TOKEN_LEN: i64 = 64;
 
@@ -70,10 +67,10 @@ fn acme_key_authorization(
 //   token = "tok", out = []
 //   returns: 31, out = "/.well-known/acme-challenge/tok"
 fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
-    let total = ACME_HTTP01_PREFIX.len + token.len;
+    let total = rfc::ACME_HTTP01_PREFIX.len + token.len;
     guard total <= out.cap else { return -1; }
     out.clear();
-    out.append(ACME_HTTP01_PREFIX[..]);
+    out.append(rfc::ACME_HTTP01_PREFIX[..]);
     out.append(token);
     return total as i32;
 }
@@ -84,13 +81,13 @@ fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
 // public prefix use early exits; the token suffix is compared with
 // core::ct_eq_bytes (constant-time-ish).
 fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool {
-    let expected_len = ACME_HTTP01_PREFIX.len + token.len;
+    let expected_len = rfc::ACME_HTTP01_PREFIX.len + token.len;
     guard acme_validate_token(token) else { return false; }
     guard path.len == expected_len else { return false; }
-    for i in ACME_HTTP01_PREFIX.len {
-        guard path[i] == ACME_HTTP01_PREFIX[i] else { return false; }
+    for i in rfc::ACME_HTTP01_PREFIX.len {
+        guard path[i] == rfc::ACME_HTTP01_PREFIX[i] else { return false; }
     }
-    return core::ct_eq_bytes(path[ACME_HTTP01_PREFIX.len..], token);
+    return core::ct_eq_bytes(path[rfc::ACME_HTTP01_PREFIX.len..], token);
 }
 
 // HTTP-01 responder helper: linear-scans up to 8 challenge slots, matches the

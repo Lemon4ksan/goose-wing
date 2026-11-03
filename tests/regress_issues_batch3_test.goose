@@ -600,7 +600,7 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
 
         // Client preface + SETTINGS frame with MAX_FRAME_SIZE = 0
         var wire_in: u8[..64] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Frame header: len=6, type=4 (SETTINGS), flags=0, stream_id=0
         wire_in.push(0x00); wire_in.push(0x00); wire_in.push(0x06);
@@ -650,7 +650,7 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
             payload_len: 12000,
             frame_type:  internal::H2FrameType.Headers,
             raw_type:    0x1,
-            flags:       internal::H2_FLAG_END_HEADERS,
+            flags:       rfc::H2_FLAG_END_HEADERS,
             stream_id:   1,
             valid:       true,
         };
@@ -701,7 +701,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
         var frame_103: u8[..128] = [];
         internal::encode_h3_headers_frame(frame_103, qpack_103[..]);
         let err1 = internal::handle_stream_data(conn, sid, true, frame_103[..], false);
-        sub.assert_eq(err1, internal::H3_ERR_NO_ERROR, "103 Early Hints HEADERS accepted");
+        sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "103 Early Hints HEADERS accepted");
 
         // 2. Ingest 200 OK final response HEADERS frame
         var qpack_200: u8[..64] = [];
@@ -711,7 +711,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
         var frame_200: u8[..128] = [];
         internal::encode_h3_headers_frame(frame_200, qpack_200[..]);
         let err2 = internal::handle_stream_data(conn, sid, true, frame_200[..], true);
-        sub.assert_eq(err2, internal::H3_ERR_NO_ERROR, "200 OK HEADERS after 103 Early Hints accepted");
+        sub.assert_eq(err2, rfc::H3_ERR_NO_ERROR, "200 OK HEADERS after 103 Early Hints accepted");
 
         let status, ok_s = internal::get_status_code(conn, sid);
         sub.assert_true(ok_s, "Status code available");
@@ -730,7 +730,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
         var frame_101: u8[..128] = [];
         internal::encode_h3_headers_frame(frame_101, qpack_101[..]);
         let err = internal::handle_stream_data(conn, sid, true, frame_101[..], false);
-        sub.assert_eq(err, internal::H3_ERR_GENERAL_PROTOCOL, ":status 101 MUST return H3_ERR_GENERAL_PROTOCOL");
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, ":status 101 MUST return H3_ERR_GENERAL_PROTOCOL");
     };
 
     t.run("QPACK emit_field_checked rejects field names with invalid token chars") { sub =>
@@ -814,8 +814,8 @@ fn test_auth_dpop_digest_privacypass(t: lit::T&) {
 fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
     t.run("verify_signature_scheme_curve_binding rejects generic EC OID without curve match") { sub =>
         let ok = wing::verify_signature_scheme_curve_binding(
-            wing::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
-            wing::OID_EC_PUBLIC_KEY[..],
+            rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
+            rfc::OID_EC_PUBLIC_KEY[..],
         );
         sub.assert_false(ok, "Generic id-ecPublicKey without curve binding MUST be rejected");
     };
@@ -887,7 +887,7 @@ fn has_rst_stream_for(wire: const u8[:], stream_id: u32) -> bool {
         let f_len = ((wire[p] as u32) << 16) | ((wire[p + 1] as u32) << 8) | wire[p + 2];
         let f_type = wire[p + 3];
         let f_sid = ((wire[p + 5] as u32) << 24) | ((wire[p + 6] as u32) << 16) | ((wire[p + 7] as u32) << 8) | wire[p + 8];
-        if f_type == internal::FRAME_RST_STREAM && f_sid == stream_id {
+        if f_type == rfc::H2_FRAME_RST_STREAM && f_sid == stream_id {
             return true;
         }
         p += 9 + (f_len as i64);
@@ -903,7 +903,7 @@ fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     t.run("H2 ingress rejects Content-Length > 0 on HEADERS frame with END_STREAM") { sub =>
         sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // HEADERS frame on stream 1 with END_STREAM set, but Content-Length: 10!
         var hpack_block: u8[>..] = [];
@@ -913,10 +913,10 @@ fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
         internal::encode_hpack_field(dt, hpack_block, ":path", "/api", internal::HpackIndexing.Incremental, false);
         internal::encode_hpack_field(dt, hpack_block, "content-length", "10", internal::HpackIndexing.Incremental, false);
 
-        let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
+        let flags = rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      flags,
             stream_id:  1,
         };
@@ -934,13 +934,13 @@ fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     t.run("H2 ingress rejects PADDED frame when pad_len >= frame_payload.len") { sub =>
         sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // PADDED frame with payload length 5, but pad_len byte = 10 (pad_len >= payload_len)
         let hdr = internal::FrameHeader {
             length:     5,
-            frame_type: internal::FRAME_DATA,
-            flags:      internal::FLAG_PADDED,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      rfc::H2_FLAG_PADDED,
             stream_id:  1,
         };
         internal::encode_frame_header_to(hdr, wire_in);
@@ -955,17 +955,17 @@ fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     t.run("H2 ingress rejects request missing mandatory pseudo-headers") { sub =>
         sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wire_in: u8[>..] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // HEADERS frame missing :path and :scheme
         var hpack_block: u8[>..] = [];
         var dt = internal::new_dynamic_table(4096);
         internal::encode_hpack_field(dt, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
 
-        let flags = internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM;
+        let flags = rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM;
         let hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      flags,
             stream_id:  1,
         };
@@ -1019,7 +1019,7 @@ fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
         for i in 20000 { big_payload.push('a'); }
 
         var wire: u8[>..] = [];
-        wing::encode_ws_frame(wire, wing::WS_OPCODE_TEXT, big_payload[..], false, no_mask, true);
+        wing::encode_ws_frame(wire, rfc::WS_OPCODE_TEXT, big_payload[..], false, no_mask, true);
 
         var msg = wing::WsMessage { .. };
         var reply: u8[>..] = [];
@@ -1027,7 +1027,7 @@ fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
 
         sub.assert_false(msg.is_valid, "Message exceeding 16KB capacity MUST NOT be marked valid");
         sub.assert_true(ws.is_closed, "WebSocket session MUST be closed on capacity overflow");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_MESSAGE_TOO_BIG, "Close code MUST be 1009 Message Too Big");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_MESSAGE_TOO_BIG, "Close code MUST be 1009 Message Too Big");
     };
 }
 
@@ -1195,16 +1195,16 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
 
         // Parse frame header
         let hdr, ok_hdr = internal::parse_frame_header(out_wire[..9], 16384);
-        sub.assert_eq(ok_hdr, internal::ERR_NO_ERROR, "Frame header valid");
-        sub.assert_eq(hdr.frame_type, internal::FRAME_HEADERS, "Type is HEADERS");
+        sub.assert_eq(ok_hdr, rfc::H2_ERR_NO_ERROR, "Frame header valid");
+        sub.assert_eq(hdr.frame_type, rfc::H2_FRAME_HEADERS, "Type is HEADERS");
         sub.assert_eq(hdr.stream_id, 1, "Stream ID is 1");
-        sub.assert_true((hdr.flags & internal::FLAG_END_HEADERS) != 0, "FLAG_END_HEADERS set");
-        sub.assert_true((hdr.flags & internal::FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
+        sub.assert_true((hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0, "FLAG_END_HEADERS set");
+        sub.assert_true((hdr.flags & rfc::H2_FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
 
         // Decode HPACK payload
         var dec_list = internal::DecodedH2HeaderList { is_trailer: true, .. };
         let dec_err = internal::decode_hpack_header_block(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_list);
-        sub.assert_eq(dec_err, internal::ERR_NO_ERROR, "HPACK block decoded");
+        sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "HPACK block decoded");
 
         // Exactly 2 valid trailer headers should survive
         sub.assert_eq(dec_list.fields.len, 2, "Only 2 valid trailers encoded");
@@ -1220,7 +1220,7 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_in: u8[>..] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Client request on stream 1
         var hpack_block: u8[>..] = [];
@@ -1231,8 +1231,8 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
 
         let req_hdr = internal::FrameHeader {
             length:     hpack_block.len as u32,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         internal::encode_frame_header_to(req_hdr, wire_in);
@@ -1261,12 +1261,12 @@ fn test_websocket_close_and_subprotocol(t: lit::T&) {
         reason.push(0xAC); // Total 125 bytes
 
         var out: u8[>..] = [];
-        wing::encode_close_payload(out, wing::WS_STATUS_NORMAL, reason[..]);
+        wing::encode_close_payload(out, rfc::WS_STATUS_NORMAL, reason[..]);
 
         sub.assert_eq(out.len, 2 + 122, "Status code (2B) + truncated reason (122B)");
         let code, reason_slice, ok_parse = wing::parse_close_payload(out[..]);
         sub.assert_true(ok_parse, "Parse close payload succeeds");
-        sub.assert_eq(code, wing::WS_STATUS_NORMAL, "Code matches 1000");
+        sub.assert_eq(code, rfc::WS_STATUS_NORMAL, "Code matches 1000");
         sub.assert_true(core::validate_utf8(reason_slice), "Truncated reason must be strictly valid UTF-8");
         sub.assert_eq(reason_slice.len, 122, "Euro symbol split across 123B was peeled back cleanly");
     };
@@ -1283,7 +1283,7 @@ fn test_websocket_close_and_subprotocol(t: lit::T&) {
         reason.push('Z'); // byte 123 (would be 124th byte)
 
         var out: u8[>..] = [];
-        wing::encode_close_payload(out, wing::WS_STATUS_NORMAL, reason[..]);
+        wing::encode_close_payload(out, rfc::WS_STATUS_NORMAL, reason[..]);
 
         sub.assert_eq(out.len, 2 + 123, "Status code (2B) + 123B reason");
         let _, reason_slice, ok_parse = wing::parse_close_payload(out[..]);
@@ -1571,7 +1571,7 @@ fn test_quic_packet_and_reassembly(t: lit::T&) {
         // 3. Long header with fixed bit cleared MUST fail per RFC 9000 §17.2
         var bad_long: u8[..64] = [];
         bad_long.push(0x80); // Long header, but fixed bit 0x40 NOT set!
-        core::append_u32_be(bad_long, internal::QUIC_VERSION_1);
+        core::append_u32_be(bad_long, rfc::QUIC_VERSION_1);
         bad_long.push(4); // DCID len
         bad_long.append([1, 2, 3, 4]);
         bad_long.push(4); // SCID len
@@ -1584,7 +1584,7 @@ fn test_quic_packet_and_reassembly(t: lit::T&) {
         // 4. Long header with plen < pn_len MUST fail per RFC 9000 §17.2
         var bad_plen: u8[..64] = [];
         bad_plen.push(0xC1); // Long header, Initial, pn_len = 2 (bits 0..1 = 1)
-        core::append_u32_be(bad_plen, internal::QUIC_VERSION_1);
+        core::append_u32_be(bad_plen, rfc::QUIC_VERSION_1);
         bad_plen.push(0); // DCID len 0
         bad_plen.push(0); // SCID len 0
         internal::quic_encode_varint(bad_plen, 0); // token len 0
@@ -1597,7 +1597,7 @@ fn test_quic_packet_and_reassembly(t: lit::T&) {
     t.run("encode_quic_header enforces pn_len bounds and 20-byte CID") { sub =>
         var hdr = internal::QuicHeader {
             header_type:    internal::QuicHeaderType.Initial,
-            version:        internal::QUIC_VERSION_1,
+            version:        rfc::QUIC_VERSION_1,
             payload_length: 64,
             packet_number:  1,
             ..
@@ -1816,27 +1816,27 @@ fn test_h3_framing_and_settings_invariants(t: lit::T&) {
 
         var st1 = wing::H3Settings { .. };
         let err_00 = internal::parse_h3_settings_frame(payload_00[..], st1);
-        sub.assert_eq(err_00, internal::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
+        sub.assert_eq(err_00, rfc::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
 
         // 2. Duplicate QPACK_MAX_TABLE_CAPACITY setting MUST cause H3_SETTINGS_ERROR
         var payload_dup: u8[..32] = [];
-        internal::quic_encode_varint(payload_dup, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         internal::quic_encode_varint(payload_dup, 4096);
-        internal::quic_encode_varint(payload_dup, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         internal::quic_encode_varint(payload_dup, 8192);
 
         var st2 = wing::H3Settings { .. };
         let err_dup = internal::parse_h3_settings_frame(payload_dup[..], st2);
-        sub.assert_eq(err_dup, internal::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
+        sub.assert_eq(err_dup, rfc::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
 
         // 3. Invalid ENABLE_CONNECT_PROTOCOL value (must be 0 or 1)
         var payload_conn: u8[..16] = [];
-        internal::quic_encode_varint(payload_conn, internal::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
+        internal::quic_encode_varint(payload_conn, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
         internal::quic_encode_varint(payload_conn, 2); // Invalid: only 0 or 1 allowed
 
         var st3 = wing::H3Settings { .. };
         let err_conn = internal::parse_h3_settings_frame(payload_conn[..], st3);
-        sub.assert_eq(err_conn, internal::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
+        sub.assert_eq(err_conn, rfc::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
     };
 }
 
@@ -1850,17 +1850,17 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // 1. Establish control stream first (Stream 2)
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         let err_c = conn.handle_stream_data(2, false, ctrl_wire[..], false);
-        sub.assert_eq(err_c, internal::H3_ERR_NO_ERROR, "control stream established");
+        sub.assert_eq(err_c, rfc::H3_ERR_NO_ERROR, "control stream established");
 
         // 2. Open QPACK encoder stream (Stream 6) with valid Set Dynamic Table Capacity instruction (0x20 | 5-bit cap)
         var enc_wire: u8[..64] = [];
-        internal::quic_encode_varint(enc_wire, internal::H3_STREAM_QPACK_ENCODER);
+        internal::quic_encode_varint(enc_wire, rfc::H3_STREAM_QPACK_ENCODER);
         internal::hpack_encode_int(enc_wire, 2048, 5, 0x20); // Capacity 2048
         let err_enc = conn.handle_stream_data(6, false, enc_wire[..], false);
-        sub.assert_eq(err_enc, internal::H3_ERR_NO_ERROR, "encoder stream capacity instruction processed");
+        sub.assert_eq(err_enc, rfc::H3_ERR_NO_ERROR, "encoder stream capacity instruction processed");
         sub.assert_eq(conn.qpack_table.capacity_bytes, 2048, "dynamic table capacity updated to 2048");
 
         // 3. Send malformed instruction on encoder stream -> returns H3_ERR_QPACK_ENCODER_STREAM_ERROR
@@ -1868,7 +1868,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
         // Capacity larger than max_capacity_bytes (4096)
         internal::hpack_encode_int(bad_enc_wire, 999999, 5, 0x20);
         let err_bad_enc = conn.handle_stream_data(6, false, bad_enc_wire[..], false);
-        sub.assert_eq(err_bad_enc, internal::H3_ERR_QPACK_ENCODER_STREAM_ERROR, "invalid encoder instruction closed connection");
+        sub.assert_eq(err_bad_enc, rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR, "invalid encoder instruction closed connection");
         sub.assert_eq(conn.state, internal::H3ConnState.Closed, "conn state is Closed");
     };
 
@@ -1878,7 +1878,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -1887,13 +1887,13 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
         var sec1:      u8[..16] = [0x00, 0x00, 0xD9]; // RIC 0, Base 0, :status 200
         internal::encode_h3_headers_frame(resp_hdrs, sec1[..]);
         let err_h1 = conn.handle_stream_data(0, true, resp_hdrs[..], false);
-        sub.assert_eq(err_h1, internal::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
+        sub.assert_eq(err_h1, rfc::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
 
         // Stream 0: DATA frame
         var data_frame: u8[..32] = [];
         internal::encode_h3_data_frame(data_frame, "hello");
         let err_d1 = conn.handle_stream_data(0, true, data_frame[..], false);
-        sub.assert_eq(err_d1, internal::H3_ERR_NO_ERROR, "data frame accepted");
+        sub.assert_eq(err_d1, rfc::H3_ERR_NO_ERROR, "data frame accepted");
 
         // Stream 0: First trailer section (x-checksum: abc)
         var trailer1_frame: u8[..64] = [];
@@ -1905,13 +1905,13 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
         sec_tr1.append("1");
         internal::encode_h3_headers_frame(trailer1_frame, sec_tr1[..]);
         let err_tr1 = conn.handle_stream_data(0, true, trailer1_frame[..], false);
-        sub.assert_eq(err_tr1, internal::H3_ERR_NO_ERROR, "first trailer section accepted");
+        sub.assert_eq(err_tr1, rfc::H3_ERR_NO_ERROR, "first trailer section accepted");
 
         // 1. DATA frame AFTER trailers MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
         var post_tr_data: u8[..32] = [];
         internal::encode_h3_data_frame(post_tr_data, "illegal");
         let err_post_d = conn.handle_stream_data(0, true, post_tr_data[..], false);
-        sub.assert_eq(err_post_d, internal::H3_ERR_FRAME_UNEXPECTED, "DATA after trailers rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err_post_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA after trailers rejected with H3_FRAME_UNEXPECTED");
 
         // Reset and test second trailer section rejection
         var conn2 = internal::new_h3_client_connection(settings);
@@ -1922,7 +1922,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // 2. Second trailer section MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
         let err_tr2 = conn2.handle_stream_data(0, true, trailer1_frame[..], false);
-        sub.assert_eq(err_tr2, internal::H3_ERR_FRAME_UNEXPECTED, "second trailer section rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err_tr2, rfc::H3_ERR_FRAME_UNEXPECTED, "second trailer section rejected with H3_FRAME_UNEXPECTED");
     };
 
     t.run("handle_stream_data validates 3-digit status code and trailer disallowed headers") { sub =>
@@ -1931,7 +1931,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(2, false, ctrl_wire[..], false);
 
@@ -1945,7 +1945,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
         var bad_st_frame: u8[..64] = [];
         internal::encode_h3_headers_frame(bad_st_frame, sec_bad_st[..]);
         let err_st = conn.handle_stream_data(0, true, bad_st_frame[..], false);
-        sub.assert_eq(err_st, internal::H3_ERR_GENERAL_PROTOCOL, "4-digit status code rejected");
+        sub.assert_eq(err_st, rfc::H3_ERR_GENERAL_PROTOCOL, "4-digit status code rejected");
 
         // 2. Disallowed content-length in trailer section MUST fail
         var conn3 = internal::new_h3_client_connection(settings);
@@ -1964,7 +1964,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
         var cl_tr_frame: u8[..64] = [];
         internal::encode_h3_headers_frame(cl_tr_frame, sec_cl_tr[..]);
         let err_cl_tr = conn3.handle_stream_data(0, true, cl_tr_frame[..], false);
-        sub.assert_eq(err_cl_tr, internal::H3_ERR_GENERAL_PROTOCOL, "content-length in trailer rejected");
+        sub.assert_eq(err_cl_tr, rfc::H3_ERR_GENERAL_PROTOCOL, "content-length in trailer rejected");
     };
 }
 

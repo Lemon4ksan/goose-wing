@@ -12,13 +12,6 @@ import client.response;
 
 // ---- Resumable Uploads Constants (draft-14) -------------------------------
 
-const HEADER_UPLOAD_OFFSET:       const u8[:] = "Upload-Offset";
-const HEADER_UPLOAD_COMPLETE:     const u8[:] = "Upload-Complete";
-const MIME_PARTIAL_UPLOAD:        const u8[:] = "application/partial-upload";
-const STATUS_RESUMABLE_SUPPORTED: i32         = 104;
-
-// ---- Resumable Upload Session State ---------------------------------------
-
 struct ResumableUploadState {
     upload_url: u8[..512] = [],
     total_size: i64       = 0,
@@ -88,10 +81,10 @@ fn format_upload_creation_request(
     req.url.append(endpoint);
 
     // Upload-Complete: ?0 or ?1
-    set_header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
+    set_header(req, rfc::HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
 
     if first_chunk.len > 0 {
-        set_header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
+        set_header(req, "Content-Type", rfc::MIME_PARTIAL_UPLOAD);
         req.body.clear();
         req.body.append(first_chunk);
     }
@@ -110,10 +103,10 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
             state.upload_url.clear();
             state.upload_url.append(val);
             has_loc = true;
-        } else if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
+        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             if off_ok { state.offset = off_val; }
-        } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
+        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             if comp_ok { state.complete = comp_val; }
         }
@@ -133,15 +126,15 @@ fn format_upload_chunk_request(
     req.url.clear();
     req.url.append(state.upload_url[..]);
 
-    set_header(req, "Content-Type", MIME_PARTIAL_UPLOAD);
+    set_header(req, "Content-Type", rfc::MIME_PARTIAL_UPLOAD);
 
     // Upload-Offset: <offset>
     var offset_str: u8[..32] = [];
     core::format_i64_dec(state.offset, offset_str);
-    set_header(req, HEADER_UPLOAD_OFFSET, offset_str[..]);
+    set_header(req, rfc::HEADER_UPLOAD_OFFSET, offset_str[..]);
 
     // Upload-Complete: ?0 or ?1
-    set_header(req, HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
+    set_header(req, rfc::HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
 
     req.body.clear();
     req.body.append(chunk);
@@ -155,10 +148,10 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
     for idx in res.headers.len {
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
-        if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
+        if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             if off_ok { state.offset = off_val; }
-        } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
+        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             if comp_ok { state.complete = comp_val; }
         }
@@ -182,13 +175,13 @@ fn handle_offset_query_response(res: const Response&, state: ResumableUploadStat
     for idx in res.headers.len {
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
-        if eq_ascii_fold(name, HEADER_UPLOAD_OFFSET) {
+        if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             if off_ok {
                 state.offset = off_val;
                 found_offset = true;
             }
-        } else if eq_ascii_fold(name, HEADER_UPLOAD_COMPLETE) {
+        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             if comp_ok { state.complete = comp_val; }
         }

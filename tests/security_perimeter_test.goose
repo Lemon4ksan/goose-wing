@@ -1251,11 +1251,11 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
     t.run("1. RFC 9297 Capsule Codec") { sub =>
         var wire: u8[>..] = [];
         let payload = "capsule_data_payload";
-        sub.assert_true(wing::encode_http_capsule(wire, wing::CAPSULE_DATAGRAM, payload), "encode capsule");
+        sub.assert_true(wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, payload), "encode capsule");
 
         let c, ok = wing::parse_http_capsule(wire[..]);
         sub.assert_true(ok, "parse capsule");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_DATAGRAM, "Capsule type is DATAGRAM (0x00)");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Capsule type is DATAGRAM (0x00)");
         sub.assert_bytes_eq(c.payload, payload, "Payload matches original");
     };
 
@@ -1274,7 +1274,7 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
 
         let parsed_capsule, ok_c = wing::parse_http_capsule(datagram_capsule[..]);
         sub.assert_true(ok_c, "parse datagram capsule");
-        sub.assert_eq(parsed_capsule.capsule_type, wing::CAPSULE_DATAGRAM, "Type is DATAGRAM");
+        sub.assert_eq(parsed_capsule.capsule_type, rfc::CAPSULE_DATAGRAM, "Type is DATAGRAM");
 
         let ctx_id, udp_packet, ok_udp = wing::parse_connect_udp_datagram(parsed_capsule.payload);
         sub.assert_true(ok_udp, "parse connect-udp datagram");

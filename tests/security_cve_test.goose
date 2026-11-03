@@ -471,7 +471,7 @@ fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
         var reply: u8[>..] = [];
         let handled = client_ws.receive(rsv1_frame[..], msg, reply);
         sub.assert_true(client_ws.is_closed, "Connection closed on non-zero RSV bit");
-        sub.assert_eq(client_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Protocol error 1002 on RSV bit");
+        sub.assert_eq(client_ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Protocol error 1002 on RSV bit");
     };
 
     t.run("Client receiving masked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
@@ -480,13 +480,13 @@ fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
         // Masked server frame sent to client
         let mask: u8[4] = [1, 2, 3, 4];
         var masked_frame: u8[>..] = [];
-        wing::encode_ws_frame(masked_frame, wing::WS_OPCODE_TEXT, "hello", true, mask, true);
+        wing::encode_ws_frame(masked_frame, rfc::WS_OPCODE_TEXT, "hello", true, mask, true);
 
         var msg = wing::WsMessage { .. };
         var reply: u8[>..] = [];
         client_ws.receive(masked_frame[..], msg, reply);
         sub.assert_true(client_ws.is_closed, "Client MUST fail connection on masked frame from server");
-        sub.assert_eq(client_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on masked server frame");
+        sub.assert_eq(client_ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on masked server frame");
     };
 
     t.run("Server receiving unmasked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
@@ -495,13 +495,13 @@ fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
         // Unmasked client frame sent to server
         let no_mask: u8[4] = [0, 0, 0, 0];
         var unmasked_frame: u8[>..] = [];
-        wing::encode_ws_frame(unmasked_frame, wing::WS_OPCODE_TEXT, "hello", false, no_mask, true);
+        wing::encode_ws_frame(unmasked_frame, rfc::WS_OPCODE_TEXT, "hello", false, no_mask, true);
 
         var msg = wing::WsMessage { .. };
         var reply: u8[>..] = [];
         server_ws.receive(unmasked_frame[..], msg, reply);
         sub.assert_true(server_ws.is_closed, "Server MUST fail connection on unmasked frame from client");
-        sub.assert_eq(server_ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on unmasked client frame");
+        sub.assert_eq(server_ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "1002 Protocol Error on unmasked client frame");
     };
 }
 
@@ -627,7 +627,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("HTTP/2 :path empty MUST be rejected") { sub =>
@@ -638,7 +638,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
         var dt_dec = internal::new_dynamic_table(4096);
         var out_list = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
 }
 

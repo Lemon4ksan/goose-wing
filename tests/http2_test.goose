@@ -168,7 +168,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         let raw_block: u8[3] = [0x82, 0x87, 0x84];
         var out = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "valid pseudo-headers decode with NO_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "valid pseudo-headers decode with NO_ERROR");
         sub.assert_eq(out.fields.len, 3, "3 fields decoded");
         sub.assert_eq(out.fields[0].name[..], ":method", "method field");
         sub.assert_eq(out.fields[0].value[..], "GET", "GET value");
@@ -182,7 +182,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         let raw_block: u8[2] = [0x93, 0x84];
         var out = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR");
     };
 
     t.run("DYN-05: Duplicate Pseudo-Header Rejection") { sub =>
@@ -191,7 +191,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         let raw_block: u8[2] = [0x82, 0x82];
         var out = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "duplicate pseudo-header must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "duplicate pseudo-header must trigger PROTOCOL_ERROR");
     };
 
     t.run("DYN-06: Content-Length Consistency & Smuggling Guard (CVE-2026-78660)") { sub =>
@@ -220,7 +220,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
 
         var out = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "conflicting Content-Length headers must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "conflicting Content-Length headers must trigger PROTOCOL_ERROR");
 
         // Identical matching Content-Length: "10" and "10" must be accepted
         raw_block.clear();
@@ -232,7 +232,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
 
         var out_ok = internal::DecodedH2HeaderList { .. };
         let err_ok = internal::decode_hpack_header_block(dt, raw_block[..], out_ok);
-        sub.assert_eq(err_ok, internal::ERR_NO_ERROR, "identical multiple Content-Length headers are accepted");
+        sub.assert_eq(err_ok, rfc::H2_ERR_NO_ERROR, "identical multiple Content-Length headers are accepted");
     };
 
     t.run("DYN-07: Forbidden Connection Headers Rejection (RFC 9113 Section 8.2.2)") { sub =>
@@ -247,7 +247,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
 
         var out = internal::DecodedH2HeaderList { .. };
         let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "forbidden 'connection' header must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "forbidden 'connection' header must trigger PROTOCOL_ERROR");
     };
 
     t.run("DYN-08: Missing Mandatory Pseudo-Headers Rejection (RFC 9113 §8.3.1)") { sub =>
@@ -257,7 +257,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         let block_no_path: u8[2] = [0x82, 0x87];
         var out1 = internal::DecodedH2HeaderList { .. };
         let err1 = internal::decode_hpack_header_block(dt, block_no_path[..], out1);
-        sub.assert_eq(err1, internal::ERR_PROTOCOL_ERROR, "request without :path must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err1, rfc::H2_ERR_PROTOCOL_ERROR, "request without :path must trigger PROTOCOL_ERROR");
 
         // Missing all pseudo-headers (only regular header)
         var block_no_pseudo: u8[..32] = [];
@@ -268,7 +268,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         block_no_pseudo.append("bot");
         var out2 = internal::DecodedH2HeaderList { .. };
         let err2 = internal::decode_hpack_header_block(dt, block_no_pseudo[..], out2);
-        sub.assert_eq(err2, internal::ERR_PROTOCOL_ERROR, "request without pseudo-headers must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err2, rfc::H2_ERR_PROTOCOL_ERROR, "request without pseudo-headers must trigger PROTOCOL_ERROR");
     };
 
     t.run("DYN-09: Header Field Name Character Validation (RFC 9113 §8.2.1)") { sub =>
@@ -287,8 +287,8 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
     t.run("FRAME-01: 9-Byte Frame Header Codec Roundtrip") { sub =>
         let orig_hdr = internal::FrameHeader {
             length:     16384,
-            frame_type: internal::FRAME_DATA,
-            flags:      internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      rfc::H2_FLAG_END_STREAM,
             stream_id:  101,
         };
 
@@ -297,18 +297,18 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
         sub.assert_eq(buf.len, 9, "frame header is exactly 9 bytes");
 
         let parsed_hdr, err = internal::parse_frame_header(buf[..]);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "parse_frame_header succeeds");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "parse_frame_header succeeds");
         sub.assert_eq(parsed_hdr.length, 16384, "payload length matches");
-        sub.assert_eq(parsed_hdr.frame_type, internal::FRAME_DATA, "frame type matches");
-        sub.assert_eq(parsed_hdr.flags, internal::FLAG_END_STREAM, "flags match");
+        sub.assert_eq(parsed_hdr.frame_type, rfc::H2_FRAME_DATA, "frame type matches");
+        sub.assert_eq(parsed_hdr.flags, rfc::H2_FLAG_END_STREAM, "flags match");
         sub.assert_eq(parsed_hdr.stream_id, 101, "stream id matches");
     };
 
     t.run("FRAME-02: PADDED Payload Extraction") { sub =>
         let hdr = internal::FrameHeader {
             length:     12,
-            frame_type: internal::FRAME_DATA,
-            flags:      internal::FLAG_PADDED,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      rfc::H2_FLAG_PADDED,
             stream_id:  1,
         };
         // Payload: 1 byte pad length (3), 8 bytes data, 3 bytes padding
@@ -319,14 +319,14 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
         ];
 
         let unpadded, err = internal::extract_padded_frame_payload(hdr, payload[..]);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "extract padding succeeds");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "extract padding succeeds");
         sub.assert_eq(unpadded.len, 8, "unpadded length is 8");
         sub.assert_eq(unpadded, "hello!!!", "unpadded data intact");
 
         // Invalid padding length: pad_len (15) > length (12) -> PROTOCOL_ERROR
         let bad_payload: u8[12] = [0x0F, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let _, bad_err = internal::extract_padded_frame_payload(hdr, bad_payload[..]);
-        sub.assert_eq(bad_err, internal::ERR_PROTOCOL_ERROR, "oversized padding triggers PROTOCOL_ERROR");
+        sub.assert_eq(bad_err, rfc::H2_ERR_PROTOCOL_ERROR, "oversized padding triggers PROTOCOL_ERROR");
     };
 
     t.run("FRAME-03: RFC 9218 Priority Dictionary Parser") { sub =>
@@ -360,7 +360,7 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
         internal::encode_priority_update_payload(42, prio, payload);
 
         let stream_id, parsed_prio, err = internal::parse_priority_update_payload(payload[..]);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "parse_priority_update succeeds");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "parse_priority_update succeeds");
         sub.assert_eq(stream_id, 42, "stream id matches 42");
         sub.assert_eq(parsed_prio.urgency, 1, "urgency matches 1");
         sub.assert_true(parsed_prio.incremental, "incremental is true");
@@ -368,18 +368,18 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
 
     t.run("FRAME-05: SETTINGS Parameter Boundary Validation") { sub =>
         // MAX_FRAME_SIZE below 16384 -> PROTOCOL_ERROR
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_MAX_FRAME_SIZE, 1000), internal::ERR_PROTOCOL_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_MAX_FRAME_SIZE, 1000), rfc::H2_ERR_PROTOCOL_ERROR);
         // MAX_FRAME_SIZE above 16777215 -> PROTOCOL_ERROR
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_MAX_FRAME_SIZE, 20000000), internal::ERR_PROTOCOL_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_MAX_FRAME_SIZE, 20000000), rfc::H2_ERR_PROTOCOL_ERROR);
         // Valid MAX_FRAME_SIZE 65536 -> NO_ERROR
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_MAX_FRAME_SIZE, 65536), internal::ERR_NO_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_MAX_FRAME_SIZE, 65536), rfc::H2_ERR_NO_ERROR);
 
         // INITIAL_WINDOW_SIZE > 0x7FFFFFFF -> FLOW_CONTROL_ERROR
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_INITIAL_WINDOW_SIZE, 0x80000000), internal::ERR_FLOW_CONTROL_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 0x80000000), rfc::H2_ERR_FLOW_CONTROL_ERROR);
 
         // ENABLE_PUSH must be 0 or 1
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_ENABLE_PUSH, 2), internal::ERR_PROTOCOL_ERROR);
-        sub.assert_eq(internal::validate_settings_parameter(internal::SETTING_ENABLE_PUSH, 1), internal::ERR_NO_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_ENABLE_PUSH, 2), rfc::H2_ERR_PROTOCOL_ERROR);
+        sub.assert_eq(internal::validate_settings_parameter(rfc::H2_SETTING_ENABLE_PUSH, 1), rfc::H2_ERR_NO_ERROR);
     };
 }
 
@@ -391,24 +391,24 @@ fn test_flow_control_and_session_state(t: lit::T&) {
         // 1. Open stream 1
         let hdr_open = internal::FrameHeader {
             length:     10,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         let err_open = internal::on_ingress_frame_header(sess, hdr_open, 0);
-        sub.assert_eq(err_open, internal::ERR_NO_ERROR, "open stream 1");
+        sub.assert_eq(err_open, rfc::H2_ERR_NO_ERROR, "open stream 1");
         sub.assert_eq(sess.streams[0].send_window, 65535, "initial send window is 65535");
 
         // 2. Peer decreases SETTINGS_INITIAL_WINDOW_SIZE from 65535 to 10000 (delta = -55535)
         let err_delta1 = internal::apply_peer_initial_window_size_delta(sess, 10000);
-        sub.assert_eq(err_delta1, internal::ERR_NO_ERROR, "apply initial window delta 10000");
+        sub.assert_eq(err_delta1, rfc::H2_ERR_NO_ERROR, "apply initial window delta 10000");
         sub.assert_eq(sess.streams[0].send_window, 10000, "stream window reduced to 10000");
 
         // 3. Peer decreases SETTINGS_INITIAL_WINDOW_SIZE by another 20000 to 0 (delta = -10000)
         // Then stream sends 5000 bytes so window is 5000, then delta brings it negative!
         sess.streams[0].send_window = 5000;
         let err_delta2 = internal::apply_peer_initial_window_size_delta(sess, 0);
-        sub.assert_eq(err_delta2, internal::ERR_NO_ERROR, "initial window delta to 0");
+        sub.assert_eq(err_delta2, rfc::H2_ERR_NO_ERROR, "initial window delta to 0");
         sub.assert_eq(sess.streams[0].send_window, -5000, "stream window is legitimately negative (-5000)");
 
         // 4. While stream send window is negative, effective quota must be 0
@@ -417,7 +417,7 @@ fn test_flow_control_and_session_state(t: lit::T&) {
 
         // 5. WINDOW_UPDATE restores stream window to positive (+3000)
         let err_up = internal::apply_window_update(sess, 1, 8000);
-        sub.assert_eq(err_up, internal::ERR_NO_ERROR, "window update +8000");
+        sub.assert_eq(err_up, rfc::H2_ERR_NO_ERROR, "window update +8000");
         sub.assert_eq(sess.streams[0].send_window, 3000, "stream window restored to +3000");
 
         let quota_restored = internal::compute_stream_send_quota(sess, 1);
@@ -428,11 +428,11 @@ fn test_flow_control_and_session_state(t: lit::T&) {
         var sess = internal::new_session_state();
         // Conn send window is 65535. Adding 0x7FFFFFFF will overflow > 2^31 - 1
         let err_ovf = internal::apply_window_update(sess, 0, 0x7FFFFFFF);
-        sub.assert_eq(err_ovf, internal::ERR_FLOW_CONTROL_ERROR, "window update causing overflow must trigger FLOW_CONTROL_ERROR");
+        sub.assert_eq(err_ovf, rfc::H2_ERR_FLOW_CONTROL_ERROR, "window update causing overflow must trigger FLOW_CONTROL_ERROR");
 
         // Window update with increment = 0 -> PROTOCOL_ERROR
         let err_zero = internal::apply_window_update(sess, 0, 0);
-        sub.assert_eq(err_zero, internal::ERR_PROTOCOL_ERROR, "window update increment 0 must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err_zero, rfc::H2_ERR_PROTOCOL_ERROR, "window update increment 0 must trigger PROTOCOL_ERROR");
     };
 }
 
@@ -442,11 +442,11 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         var sess = internal::new_session_state();
 
         // Open stream 1 (urgency 3 by default)
-        let h1 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
 
         // Open stream 3 (set to urgency 0 - urgent)
-        let h3 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        let h3 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         internal::on_ingress_frame_header(sess, h3, 0);
         internal::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 0, incremental: false });
 
@@ -464,13 +464,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         var sess = internal::new_session_state();
 
         // Stream 1: urgency 1, non-incremental, 2000 bytes
-        let h1 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
         internal::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 1, incremental: false });
         sess.streams[0].pending_send_bytes = 2000;
 
         // Stream 3: urgency 1, incremental, 2000 bytes
-        let h3 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        let h3 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         internal::on_ingress_frame_header(sess, h3, 0);
         internal::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 1, incremental: true });
         sess.streams[1].pending_send_bytes = 2000;
@@ -488,13 +488,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         var sess = internal::new_session_state();
 
         // Stream 1: urgency 2, incremental, 1000 bytes
-        let h1 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
         internal::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 2, incremental: true });
         sess.streams[0].pending_send_bytes = 1000;
 
         // Stream 3: urgency 2, incremental, 1000 bytes
-        let h3 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        let h3 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         internal::on_ingress_frame_header(sess, h3, 0);
         internal::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 2, incremental: true });
         sess.streams[1].pending_send_bytes = 1000;
@@ -516,13 +516,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         var sess = internal::new_session_state();
 
         // Stream 1: high urgency 0, non-incremental, large payload (20000 bytes)
-        let h1 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
         internal::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 0, incremental: false });
         sess.streams[0].pending_send_bytes = 20000;
 
         // Stream 3: lower urgency 3, non-incremental, small payload (500 bytes)
-        let h3 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 3 };
+        let h3 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         internal::on_ingress_frame_header(sess, h3, 0);
         internal::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 3, incremental: false });
         sess.streams[1].pending_send_bytes = 500;
@@ -551,71 +551,71 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         };
 
         // Open stream 1 then reset it
-        let h_open = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let h_open = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h_open, 0);
 
         // Exhaust tokens (5 RST_STREAMs on stream 1)
         var i: u32 = 0;
         while i < 5 {
-            let rst = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+            let rst = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
             let err = internal::on_ingress_frame_header(sess, rst, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "allowed within burst limit");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "allowed within burst limit");
             i++;
         }
 
         // 6th RST_STREAM without time advance -> ENHANCE_YOUR_CALM
-        let rst_flood = internal::FrameHeader { length: 4, frame_type: internal::FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let rst_flood = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
         let err_flood = internal::on_ingress_frame_header(sess, rst_flood, 0);
-        sub.assert_eq(err_flood, internal::ERR_ENHANCE_YOUR_CALM, "rapid reset flood must trigger ENHANCE_YOUR_CALM");
+        sub.assert_eq(err_flood, rfc::H2_ERR_ENHANCE_YOUR_CALM, "rapid reset flood must trigger ENHANCE_YOUR_CALM");
     };
 
     t.run("DOS-02: CONTINUATION Flood Guard (CVE-2024-28182)") { sub =>
         var sess = internal::new_session_state();
 
         // Initial HEADERS on stream 1 without END_HEADERS (enters ExpectContinuation)
-        let h1 = internal::FrameHeader { length: 100, frame_type: internal::FRAME_HEADERS, flags: 0, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 100, frame_type: rfc::H2_FRAME_HEADERS, flags: 0, stream_id: 1 };
         let err0 = internal::on_ingress_frame_header(sess, h1, 0);
-        sub.assert_eq(err0, internal::ERR_NO_ERROR, "headers accepted");
+        sub.assert_eq(err0, rfc::H2_ERR_NO_ERROR, "headers accepted");
 
         // Send MAX_CONT_FRAMES_LIMIT (16) CONTINUATION frames
         var i: u32 = 0;
         while i < internal::MAX_CONT_FRAMES_LIMIT {
-            let c = internal::FrameHeader { length: 10, frame_type: internal::FRAME_CONTINUATION, flags: 0, stream_id: 1 };
+            let c = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_CONTINUATION, flags: 0, stream_id: 1 };
             let err = internal::on_ingress_frame_header(sess, c, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "continuation within limit accepted");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "continuation within limit accepted");
             i++;
         }
 
         // 17th CONTINUATION frame -> ENHANCE_YOUR_CALM
-        let c_flood = internal::FrameHeader { length: 10, frame_type: internal::FRAME_CONTINUATION, flags: 0, stream_id: 1 };
+        let c_flood = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_CONTINUATION, flags: 0, stream_id: 1 };
         let err_flood = internal::on_ingress_frame_header(sess, c_flood, 0);
-        sub.assert_eq(err_flood, internal::ERR_ENHANCE_YOUR_CALM, "excess CONTINUATION frames trigger ENHANCE_YOUR_CALM");
+        sub.assert_eq(err_flood, rfc::H2_ERR_ENHANCE_YOUR_CALM, "excess CONTINUATION frames trigger ENHANCE_YOUR_CALM");
     };
 
     t.run("DOS-03: Slow-Drip CONTINUATION Defense (CVE-2024-27983)") { sub =>
         var sess = internal::new_session_state(0, 8192);
 
         // Start CONTINUATION block at now_ms = 0
-        let h1 = internal::FrameHeader { length: 10, frame_type: internal::FRAME_HEADERS, flags: 0, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_HEADERS, flags: 0, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
 
         // Second CONTINUATION arrives after 15,000 ms (> 10,000 ms max_header_block_duration_ms)
-        let c_slow = internal::FrameHeader { length: 10, frame_type: internal::FRAME_CONTINUATION, flags: 0, stream_id: 1 };
+        let c_slow = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_CONTINUATION, flags: 0, stream_id: 1 };
         let err_slow = internal::on_ingress_frame_header(sess, c_slow, 15000);
-        sub.assert_eq(err_slow, internal::ERR_ENHANCE_YOUR_CALM, "slow-drip header block retention triggers ENHANCE_YOUR_CALM");
+        sub.assert_eq(err_slow, rfc::H2_ERR_ENHANCE_YOUR_CALM, "slow-drip header block retention triggers ENHANCE_YOUR_CALM");
     };
 
     t.run("DOS-04: Stream Interleaving Rejection During CONTINUATION (RFC 9113 Section 6.10)") { sub =>
         var sess = internal::new_session_state();
 
         // HEADERS on stream 1 expecting CONTINUATION
-        let h1 = internal::FrameHeader { length: 10, frame_type: internal::FRAME_HEADERS, flags: 0, stream_id: 1 };
+        let h1 = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_HEADERS, flags: 0, stream_id: 1 };
         internal::on_ingress_frame_header(sess, h1, 0);
 
         // Interleaved DATA frame on stream 1
-        let d = internal::FrameHeader { length: 10, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let d = internal::FrameHeader { length: 10, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
         let err_d = internal::on_ingress_frame_header(sess, d, 0);
-        sub.assert_eq(err_d, internal::ERR_PROTOCOL_ERROR, "interleaved DATA frame triggers PROTOCOL_ERROR");
+        sub.assert_eq(err_d, rfc::H2_ERR_PROTOCOL_ERROR, "interleaved DATA frame triggers PROTOCOL_ERROR");
     };
 
     t.run("DOS-05: Empty Frame Flooding Defense (CVE-2019-9518)") { sub =>
@@ -624,16 +624,16 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         // Send 8 empty DATA frames without END_STREAM (allowed)
         var i: u32 = 0;
         while i < internal::MAX_EMPTY_FRAME_STREAK {
-            let empty_data = internal::FrameHeader { length: 0, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+            let empty_data = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
             let err = internal::on_ingress_frame_header(sess, empty_data, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "empty frame streak within limit");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "empty frame streak within limit");
             i++;
         }
 
         // 9th empty DATA frame -> ENHANCE_YOUR_CALM
-        let empty_streak = internal::FrameHeader { length: 0, frame_type: internal::FRAME_DATA, flags: 0, stream_id: 1 };
+        let empty_streak = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
         let err_streak = internal::on_ingress_frame_header(sess, empty_streak, 0);
-        sub.assert_eq(err_streak, internal::ERR_ENHANCE_YOUR_CALM, "empty frame flood streak triggers ENHANCE_YOUR_CALM");
+        sub.assert_eq(err_streak, rfc::H2_ERR_ENHANCE_YOUR_CALM, "empty frame flood streak triggers ENHANCE_YOUR_CALM");
     };
 
     t.run("DOS-06: PING / SETTINGS Flood Defense (CVE-2019-9512 / CVE-2019-9515)") { sub =>
@@ -642,16 +642,16 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         // Send 64 unacknowledged PING frames
         var i: u32 = 0;
         while i < internal::MAX_PENDING_CTRL_FRAMES {
-            let ping = internal::FrameHeader { length: 8, frame_type: internal::FRAME_PING, flags: 0, stream_id: 0 };
+            let ping = internal::FrameHeader { length: 8, frame_type: rfc::H2_FRAME_PING, flags: 0, stream_id: 0 };
             let err = internal::on_ingress_frame_header(sess, ping, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "ping within control frame quota");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "ping within control frame quota");
             i++;
         }
 
         // 65th unacknowledged PING -> ENHANCE_YOUR_CALM
-        let ping_flood = internal::FrameHeader { length: 8, frame_type: internal::FRAME_PING, flags: 0, stream_id: 0 };
+        let ping_flood = internal::FrameHeader { length: 8, frame_type: rfc::H2_FRAME_PING, flags: 0, stream_id: 0 };
         let err_flood = internal::on_ingress_frame_header(sess, ping_flood, 0);
-        sub.assert_eq(err_flood, internal::ERR_ENHANCE_YOUR_CALM, "unacknowledged control frame flood triggers ENHANCE_YOUR_CALM");
+        sub.assert_eq(err_flood, rfc::H2_ERR_ENHANCE_YOUR_CALM, "unacknowledged control frame flood triggers ENHANCE_YOUR_CALM");
     };
 
     t.run("DOS-07: PING / SETTINGS with FLAG_ACK Do Not Increment Pending Counter") { sub =>
@@ -660,9 +660,9 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         // Send 100 PING frames with FLAG_ACK (e.g. peer confirming our pings)
         var i: u32 = 0;
         while i < 100 {
-            let ping_ack = internal::FrameHeader { length: 8, frame_type: internal::FRAME_PING, flags: internal::FLAG_ACK, stream_id: 0 };
+            let ping_ack = internal::FrameHeader { length: 8, frame_type: rfc::H2_FRAME_PING, flags: rfc::H2_FLAG_ACK, stream_id: 0 };
             let err = internal::on_ingress_frame_header(sess, ping_ack, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "ping ack must be accepted without limit");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "ping ack must be accepted without limit");
             i++;
         }
         sub.assert_eq(sess.pending_control_frames, 0, "pending_control_frames remains 0 for ACKs");
@@ -670,9 +670,9 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         // Send 100 SETTINGS frames with FLAG_ACK
         var j: u32 = 0;
         while j < 100 {
-            let set_ack = internal::FrameHeader { length: 0, frame_type: internal::FRAME_SETTINGS, flags: internal::FLAG_ACK, stream_id: 0 };
+            let set_ack = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: rfc::H2_FLAG_ACK, stream_id: 0 };
             let err = internal::on_ingress_frame_header(sess, set_ack, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "settings ack must be accepted without limit");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "settings ack must be accepted without limit");
             j++;
         }
         sub.assert_eq(sess.pending_control_frames, 0, "pending_control_frames remains 0 for SETTINGS ACKs");
@@ -681,13 +681,13 @@ fn test_anti_dos_mitigations(t: lit::T&) {
     t.run("DOS-08: Ingress Frame Size Check on HEADERS and CONTINUATION (RFC 9113 §4.2)") { sub =>
         var sess = internal::new_session_state();
         // local_max_frame_size = 16384 by default
-        let big_headers = internal::FrameHeader { length: 20000, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let big_headers = internal::FrameHeader { length: 20000, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         let err_h = internal::on_ingress_frame_header(sess, big_headers, 0);
-        sub.assert_eq(err_h, internal::ERR_FRAME_SIZE_ERROR, "HEADERS frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
+        sub.assert_eq(err_h, rfc::H2_ERR_FRAME_SIZE_ERROR, "HEADERS frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
 
-        let big_cont = internal::FrameHeader { length: 20000, frame_type: internal::FRAME_CONTINUATION, flags: internal::FLAG_END_HEADERS, stream_id: 1 };
+        let big_cont = internal::FrameHeader { length: 20000, frame_type: rfc::H2_FRAME_CONTINUATION, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         let err_c = internal::on_ingress_frame_header(sess, big_cont, 0);
-        sub.assert_eq(err_c, internal::ERR_FRAME_SIZE_ERROR, "CONTINUATION frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
+        sub.assert_eq(err_c, rfc::H2_ERR_FRAME_SIZE_ERROR, "CONTINUATION frame exceeding max frame size rejected with FRAME_SIZE_ERROR");
     };
 
     t.run("DOS-09: Stream Capacity 128 and Slot Reclamation on Full Close") { sub =>
@@ -697,28 +697,28 @@ fn test_anti_dos_mitigations(t: lit::T&) {
         // Open 128 concurrent streams
         var sid: u32 = 1;
         while sid <= 255 {
-            let h = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: sid };
+            let h = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: sid };
             let err = internal::on_ingress_frame_header(sess, h, 0);
-            sub.assert_eq(err, internal::ERR_NO_ERROR, "stream opened");
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "stream opened");
             sid += 2;
         }
         sub.assert_eq(sess.active_stream_count, 128, "all 128 streams active");
 
         // 129th stream rejected with REFUSED_STREAM
-        let h_129 = internal::FrameHeader { length: 0, frame_type: internal::FRAME_HEADERS, flags: internal::FLAG_END_HEADERS, stream_id: 257 };
+        let h_129 = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 257 };
         let err_129 = internal::on_ingress_frame_header(sess, h_129, 0);
-        sub.assert_eq(err_129, internal::ERR_REFUSED_STREAM, "129th stream refused due to max_concurrent_streams");
+        sub.assert_eq(err_129, rfc::H2_ERR_REFUSED_STREAM, "129th stream refused due to max_concurrent_streams");
 
         // Close local side, then peer sends DATA with FLAG_END_STREAM
         internal::close_local_stream(sess, 1);
-        let end_data = internal::FrameHeader { length: 0, frame_type: internal::FRAME_DATA, flags: internal::FLAG_END_STREAM, stream_id: 1 };
+        let end_data = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_DATA, flags: rfc::H2_FLAG_END_STREAM, stream_id: 1 };
         let d_err = internal::on_data_frame_received(sess, end_data, 0);
-        sub.assert_eq(d_err, internal::ERR_NO_ERROR, "data with end_stream processed");
+        sub.assert_eq(d_err, rfc::H2_ERR_NO_ERROR, "data with end_stream processed");
         sub.assert_eq(sess.active_stream_count, 127, "active_stream_count decremented on full close");
 
         // Now stream 257 can be accepted in reclaimed slot
         let err_reopen = internal::on_ingress_frame_header(sess, h_129, 0);
-        sub.assert_eq(err_reopen, internal::ERR_NO_ERROR, "slot reclaimed, new stream accepted");
+        sub.assert_eq(err_reopen, rfc::H2_ERR_NO_ERROR, "slot reclaimed, new stream accepted");
         sub.assert_eq(sess.active_stream_count, 128, "active count restored to 128");
     };
 }
@@ -743,14 +743,14 @@ fn encode_client_headers<B>(
     internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
     internal::encode_hpack_field(dt, hdr_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
 
-    var flags: u8 = internal::FLAG_END_HEADERS;
+    var flags: u8 = rfc::H2_FLAG_END_HEADERS;
     if end_stream {
-        flags |= internal::FLAG_END_STREAM;
+        flags |= rfc::H2_FLAG_END_STREAM;
     }
 
     let hdr = internal::FrameHeader {
         length:     hdr_block.len as u32,
-        frame_type: internal::FRAME_HEADERS,
+        frame_type: rfc::H2_FRAME_HEADERS,
         flags:      flags,
         stream_id:  stream_id,
     };
@@ -760,10 +760,10 @@ fn encode_client_headers<B>(
 
 // Helper to encode a client DATA frame
 fn encode_client_data<B>(stream_id: u32, payload: const u8[:], end_stream: bool, out: B&) {
-    let flags: u8 = if end_stream { internal::FLAG_END_STREAM } else { 0 };
+    let flags: u8 = if end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
     let hdr = internal::FrameHeader {
         length:     payload.len as u32,
-        frame_type: internal::FRAME_DATA,
+        frame_type: rfc::H2_FRAME_DATA,
         flags:      flags,
         stream_id:  stream_id,
     };
@@ -783,8 +783,8 @@ fn encode_client_trailers<B>(
     internal::encode_hpack_field(dt, hdr_block, name, value, internal::HpackIndexing.Incremental, false);
     let hdr = internal::FrameHeader {
         length:     hdr_block.len as u32,
-        frame_type: internal::FRAME_HEADERS,
-        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
@@ -799,7 +799,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var out_wire: u8[..512] = [];
-        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", internal::H2_CLIENT_PREFACE[..], 1000, out_wire);
+        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", rfc::H2_CLIENT_PREFACE[..], 1000, out_wire);
 
         sub.assert_true(ok, "Ingress succeeded on preface");
         sub.assert_eq(consumed, 24, "Consumed 24 bytes of client preface");
@@ -809,8 +809,8 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
         // Server must emit SETTINGS frame (type 0x04, length 24, stream 0)
         sub.assert_ge(out_wire.len, 9, "Output has frame header");
         let f_hdr, err_f = internal::parse_frame_header(out_wire[..9]);
-        sub.assert_eq(err_f, internal::ERR_NO_ERROR, "Decoded frame header");
-        sub.assert_eq(f_hdr.frame_type, internal::FRAME_SETTINGS, "Frame is SETTINGS");
+        sub.assert_eq(err_f, rfc::H2_ERR_NO_ERROR, "Decoded frame header");
+        sub.assert_eq(f_hdr.frame_type, rfc::H2_FRAME_SETTINGS, "Frame is SETTINGS");
         sub.assert_eq(f_hdr.stream_id, 0, "SETTINGS on stream 0");
         sub.assert_eq(f_hdr.length, 24, "SETTINGS payload is 24 bytes (4 settings)");
     };
@@ -822,12 +822,12 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
         // Prepend preface
         var wire: u8[..512] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Client SETTINGS (empty)
         let s_hdr = internal::FrameHeader {
             length:     0,
-            frame_type: internal::FRAME_SETTINGS,
+            frame_type: rfc::H2_FRAME_SETTINGS,
             flags:      0,
             stream_id:  0,
         };
@@ -836,7 +836,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
         // Client PING with 8-byte opaque data
         let p_hdr = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  0,
         };
@@ -858,13 +858,13 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
         // Check Frame 2 (SETTINGS ACK)
         let f2_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(f2_hdr.frame_type, internal::FRAME_SETTINGS, "Frame 2 is SETTINGS");
-        sub.assert_true((f2_hdr.flags & internal::FLAG_ACK) != 0, "Frame 2 has FLAG_ACK");
+        sub.assert_eq(f2_hdr.frame_type, rfc::H2_FRAME_SETTINGS, "Frame 2 is SETTINGS");
+        sub.assert_true((f2_hdr.flags & rfc::H2_FLAG_ACK) != 0, "Frame 2 has FLAG_ACK");
 
         // Check Frame 3 (PING ACK)
         let f3_hdr, _ = internal::parse_frame_header(out_wire[42..51]);
-        sub.assert_eq(f3_hdr.frame_type, internal::FRAME_PING, "Frame 3 is PING");
-        sub.assert_true((f3_hdr.flags & internal::FLAG_ACK) != 0, "Frame 3 has FLAG_ACK");
+        sub.assert_eq(f3_hdr.frame_type, rfc::H2_FRAME_PING, "Frame 3 is PING");
+        sub.assert_true((f3_hdr.flags & rfc::H2_FLAG_ACK) != 0, "Frame 3 has FLAG_ACK");
         let ping_echo = out_wire[51..59];
         sub.assert_eq(ping_echo[0], 0x11, "PING opaque byte 0 matched");
         sub.assert_eq(ping_echo[7], 0x88, "PING opaque byte 7 matched");
@@ -876,11 +876,11 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..256] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         let p_hdr = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  0,
         };
@@ -900,8 +900,8 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
         // Frame 2: Server PING ACK (17 bytes)
         sub.assert_eq(cork.cork_pending(), 33 + 17, "Emitted SETTINGS (33) + PING ACK (17)");
         let f2_hdr, _ = internal::parse_frame_header(emitted[33..42]);
-        sub.assert_eq(f2_hdr.frame_type, internal::FRAME_PING, "Frame 2 is PING ACK in cork");
-        sub.assert_true((f2_hdr.flags & internal::FLAG_ACK) != 0, "FLAG_ACK set on PING response");
+        sub.assert_eq(f2_hdr.frame_type, rfc::H2_FRAME_PING, "Frame 2 is PING ACK in cork");
+        sub.assert_true((f2_hdr.flags & rfc::H2_FLAG_ACK) != 0, "FLAG_ACK set on PING response");
 
         core::cork_consume(cork, 33);
         sub.assert_eq(cork.cork_pending(), 17, "Remaining 17 bytes after partial cork consume");
@@ -916,10 +916,10 @@ fn test_h2_request_dispatch(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/api/greet", 101);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         var wire: u8[..512] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "GET", "/api/greet", "127.0.0.1:8080", true, wire);
 
         var out_wire: u8[..1024] = [];
@@ -934,16 +934,16 @@ fn test_h2_request_dispatch(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "Response has frames beyond initial SETTINGS");
 
         let resp_hdr, err_rh = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(err_rh, internal::ERR_NO_ERROR, "Decoded response frame header");
-        sub.assert_eq(resp_hdr.frame_type, internal::FRAME_HEADERS, "Response frame is HEADERS");
+        sub.assert_eq(err_rh, rfc::H2_ERR_NO_ERROR, "Decoded response frame header");
+        sub.assert_eq(resp_hdr.frame_type, rfc::H2_FRAME_HEADERS, "Response frame is HEADERS");
         sub.assert_eq(resp_hdr.stream_id, 1, "Response on stream 1");
-        sub.assert_true((resp_hdr.flags & internal::FLAG_END_HEADERS) != 0, "Response has END_HEADERS");
+        sub.assert_true((resp_hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0, "Response has END_HEADERS");
 
         // Decode response headers with client HPACK table
         var dec_resp = internal::DecodedH2HeaderList { .. };
         let hpack_payload = out_wire[42..42 + resp_hdr.length];
         let dec_err = internal::decode_hpack_header_block(client_hpack, hpack_payload, dec_resp);
-        sub.assert_eq(dec_err, internal::ERR_NO_ERROR, "Client decoded response HPACK without error");
+        sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Client decoded response HPACK without error");
 
         // Verify :status == 200
         var found_status = false;
@@ -965,10 +965,10 @@ fn test_h2_request_dispatch(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/api/data", 202);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         var wire: u8[..512] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         // Headers without END_STREAM
         encode_client_headers(client_hpack, 1, "POST", "/api/data", "127.0.0.1:8080", false, wire);
         // Data with END_STREAM
@@ -989,10 +989,10 @@ fn test_h2_request_dispatch(t: lit::T&) {
         wing::add_route(pipeline.router, "GET", "/first", 1);
         wing::add_route(pipeline.router, "GET", "/second", 2);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         var wire: u8[..1024] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         // Interleaved streams 1 and 3
         encode_client_headers(client_hpack, 1, "GET", "/first", "localhost", true, wire);
         encode_client_headers(client_hpack, 3, "GET", "/second", "localhost", true, wire);
@@ -1010,7 +1010,7 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
         while off + 9 <= out_wire.len {
             let f_hdr, err_f = internal::parse_frame_header(out_wire[off..off + 9]);
-            if err_f == internal::ERR_NO_ERROR && f_hdr.frame_type == internal::FRAME_HEADERS {
+            if err_f == rfc::H2_ERR_NO_ERROR && f_hdr.frame_type == rfc::H2_FRAME_HEADERS {
                 if f_hdr.stream_id == 1 { found_stream_1 = true; }
                 if f_hdr.stream_id == 3 { found_stream_3 = true; }
             }
@@ -1028,10 +1028,10 @@ fn test_h2_server_wire_integration(t: lit::T&) {
         var server = wing::new_http_server("127.0.0.1", 8080);
         wing::add_get_route(server, "/ping", 999);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         var wire_in: u8[..512] = [];
-        wire_in.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "GET", "/ping", "127.0.0.1", true, wire_in);
 
         var wire_out: u8[..1024] = [];
@@ -1052,11 +1052,11 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/split/headers", 200);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         // Prepend preface
         var wire: u8[..1024] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Encode full header block
         var hdr_block: u8[..512] = [];
@@ -1074,8 +1074,8 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 
         let h_hdr = internal::FrameHeader {
             length:     part1.len as u32,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_STREAM, // No FLAG_END_HEADERS!
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_STREAM, // No FLAG_END_HEADERS!
             stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
@@ -1084,8 +1084,8 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         // Frame 2: CONTINUATION (remaining bytes, flags: END_HEADERS)
         let c_hdr = internal::FrameHeader {
             length:     part2.len as u32,
-            frame_type: internal::FRAME_CONTINUATION,
-            flags:      internal::FLAG_END_HEADERS, // Terminal CONTINUATION frame
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      rfc::H2_FLAG_END_HEADERS, // Terminal CONTINUATION frame
             stream_id:  1,
         };
         internal::encode_frame_header_to(c_hdr, wire);
@@ -1100,7 +1100,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         // Verify response was emitted for stream 1
         sub.assert_gt(out_wire.len, 33, "Emitted response frame");
         let resp_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(resp_hdr.frame_type, internal::FRAME_HEADERS, "Response is HEADERS");
+        sub.assert_eq(resp_hdr.frame_type, rfc::H2_FRAME_HEADERS, "Response is HEADERS");
         sub.assert_eq(resp_hdr.stream_id, 1, "Response on stream 1");
     };
 
@@ -1110,12 +1110,12 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..512] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Frame 1: HEADERS without END_HEADERS
         let h_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      0,
             stream_id:  1,
         };
@@ -1126,7 +1126,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         // Frame 2: Zero-length non-terminal CONTINUATION frame (CVE-2024-2758 exploit attempt)
         let c_hdr = internal::FrameHeader {
             length:     0,
-            frame_type: internal::FRAME_CONTINUATION,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
             flags:      0, // No END_HEADERS!
             stream_id:  1,
         };
@@ -1139,7 +1139,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         sub.assert_false(ok, "Ingress rejected zero-length non-terminal CONTINUATION");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
     };
 
     t.run("H2-08: Rapid Reset Batch Bypass (CVE-2023-44487)") { sub =>
@@ -1148,10 +1148,10 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
         var wire: u8[..512] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Frame 1: HEADERS stream 1
         encode_client_headers(client_hpack, 1, "GET", "/fast/reset", "localhost", true, wire);
@@ -1159,7 +1159,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
         // Frame 2: Immediate RST_STREAM stream 1 (Rapid Reset attack pattern)
         let rst_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_RST_STREAM,
+            frame_type: rfc::H2_FRAME_RST_STREAM,
             flags:      0,
             stream_id:  1,
         };
@@ -1186,9 +1186,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/upload/trailers", 10);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "POST", "/upload/trailers", "localhost", false, wire);
         encode_client_data(1, "body-content-here", false, wire);
         encode_client_trailers(client_hpack, 1, "x-checksum", "sha256-abc12345", wire);
@@ -1201,7 +1201,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var off: i64 = 33; // skip server SETTINGS (33B)
         while off + 9 <= out_wire.len {
             let f_hdr, err_f = internal::parse_frame_header(out_wire[off..off + 9]);
-            if err_f == internal::ERR_NO_ERROR && f_hdr.frame_type == internal::FRAME_HEADERS && f_hdr.stream_id == 1 {
+            if err_f == rfc::H2_ERR_NO_ERROR && f_hdr.frame_type == rfc::H2_FRAME_HEADERS && f_hdr.stream_id == 1 {
                 found_resp = true;
                 break;
             }
@@ -1216,9 +1216,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/upload/pseudo-trailer", 11);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "POST", "/upload/pseudo-trailer", "localhost", false, wire);
         encode_client_trailers(client_hpack, 1, ":status", "200", wire);
 
@@ -1228,7 +1228,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_true(ok, "Ingress remained alive on stream error");
         sub.assert_gt(out_wire.len, 33, "Output generated");
         let rst_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(rst_hdr.frame_type, internal::FRAME_RST_STREAM, "Emitted RST_STREAM");
+        sub.assert_eq(rst_hdr.frame_type, rfc::H2_FRAME_RST_STREAM, "Emitted RST_STREAM");
         sub.assert_eq(rst_hdr.stream_id, 1, "RST_STREAM on stream 1");
     };
 
@@ -1238,9 +1238,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/bulk", 12);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "POST", "/bulk", "localhost", false, wire);
 
         var chunk: u8[>..] = [];
@@ -1264,9 +1264,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 13);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         var out_wire: u8[>..] = [];
         internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
 
@@ -1292,14 +1292,14 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 14);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wire);
 
         let wu_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_WINDOW_UPDATE,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
             stream_id:  1,
         };
@@ -1315,7 +1315,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var off: i64 = 33;
         while off + 9 <= out_wire.len {
             let f_hdr, _ = internal::parse_frame_header(out_wire[off..off + 9]);
-            if f_hdr.frame_type == internal::FRAME_RST_STREAM && f_hdr.stream_id == 1 {
+            if f_hdr.frame_type == rfc::H2_FRAME_RST_STREAM && f_hdr.stream_id == 1 {
                 found_rst = true;
                 break;
             }
@@ -1330,15 +1330,15 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_ok: u8[>..] = [];
-        wire_ok.append(internal::H2_CLIENT_PREFACE[..]);
+        wire_ok.append(rfc::H2_CLIENT_PREFACE[..]);
         let s_hdr = internal::FrameHeader {
             length:     6,
-            frame_type: internal::FRAME_SETTINGS,
+            frame_type: rfc::H2_FRAME_SETTINGS,
             flags:      0,
             stream_id:  0,
         };
         internal::encode_frame_header_to(s_hdr, wire_ok);
-        core::append_u16_be(wire_ok, internal::SETTING_ENABLE_PUSH);
+        core::append_u16_be(wire_ok, rfc::H2_SETTING_ENABLE_PUSH);
         core::append_u32_be(wire_ok, 1);
 
         var out_ok: u8[>..] = [];
@@ -1347,7 +1347,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
         var wire: u8[>..] = [];
         internal::encode_frame_header_to(s_hdr, wire);
-        core::append_u16_be(wire, internal::SETTING_ENABLE_PUSH);
+        core::append_u16_be(wire, rfc::H2_SETTING_ENABLE_PUSH);
         core::append_u32_be(wire, 2);
 
         var out_wire: u8[>..] = [];
@@ -1356,7 +1356,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Server rejected client ENABLE_PUSH > 1");
         sub.assert_gt(out_wire.len, 0, "Emitted GOAWAY");
         let g_hdr, _ = internal::parse_frame_header(out_wire[0..9]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "GOAWAY emitted");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "GOAWAY emitted");
     };
 
     t.run("H2-15: gRPC Response Body Preserved Without Spurious OK (RFC 9113)") { sub =>
@@ -1364,9 +1364,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "POST", "/not-found", "localhost", true, wire);
 
         var out_wire: u8[>..] = [];
@@ -1377,7 +1377,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var off: i64 = 33;
         while off + 9 <= out_wire.len {
             let f_hdr, _ = internal::parse_frame_header(out_wire[off..off + 9]);
-            if f_hdr.frame_type == internal::FRAME_DATA && f_hdr.stream_id == 1 {
+            if f_hdr.frame_type == rfc::H2_FRAME_DATA && f_hdr.stream_id == 1 {
                 has_data = true;
             }
             off += 9 + (f_hdr.length as i64);
@@ -1391,10 +1391,10 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         let prio_hdr = internal::FrameHeader {
             length:     5,
-            frame_type: internal::FRAME_PRIORITY,
+            frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,
             stream_id:  3,
         };
@@ -1408,7 +1408,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_true(ok, "Connection remains open");
         sub.assert_gt(out_wire.len, 33, "Output contains frames");
         let rst_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(rst_hdr.frame_type, internal::FRAME_RST_STREAM, "Frame is RST_STREAM");
+        sub.assert_eq(rst_hdr.frame_type, rfc::H2_FRAME_RST_STREAM, "Frame is RST_STREAM");
         sub.assert_eq(rst_hdr.stream_id, 3, "RST_STREAM on stream 3");
     };
 
@@ -1418,11 +1418,11 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         // Invalid PRIORITY frame with length 4 (must be 5)
         let prio_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_PRIORITY,
+            frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,
             stream_id:  5,
         };
@@ -1436,10 +1436,10 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_true(ok, "Connection remains open on PRIORITY size error");
         sub.assert_gt(out_wire.len, 33, "Output contains server preface/settings + RST_STREAM");
         let rst_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(rst_hdr.frame_type, internal::FRAME_RST_STREAM, "Frame is RST_STREAM");
+        sub.assert_eq(rst_hdr.frame_type, rfc::H2_FRAME_RST_STREAM, "Frame is RST_STREAM");
         sub.assert_eq(rst_hdr.stream_id, 5, "RST_STREAM on stream 5");
         let err_code = ((out_wire[42] as u32) << 24) | ((out_wire[43] as u32) << 16) | ((out_wire[44] as u32) << 8) | (out_wire[45] as u32);
-        sub.assert_eq(err_code, internal::ERR_FRAME_SIZE_ERROR, "RST error code is FRAME_SIZE_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_FRAME_SIZE_ERROR, "RST error code is FRAME_SIZE_ERROR");
     };
 
     t.run("H2-CONTINUATION: PUSH_PROMISE with END_HEADERS cleared allows subsequent CONTINUATION (RFC 9113 §6.6, §6.10)") { sub =>
@@ -1449,23 +1449,23 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         // PUSH_PROMISE on stream 1 with END_HEADERS cleared
         let pp_hdr = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PUSH_PROMISE,
+            frame_type: rfc::H2_FRAME_PUSH_PROMISE,
             flags:      0,
             stream_id:  1,
         };
         let err_pp = internal::on_ingress_frame_header(s, pp_hdr, 1000);
-        sub.assert_eq(err_pp, internal::ERR_NO_ERROR, "PUSH_PROMISE header accepted");
+        sub.assert_eq(err_pp, rfc::H2_ERR_NO_ERROR, "PUSH_PROMISE header accepted");
         sub.assert_eq(s.continuation_stream_id, 1, "continuation stream id tracked for PUSH_PROMISE");
 
         // Subsequent CONTINUATION frame on same stream 1
         let cont_hdr = internal::FrameHeader {
             length:     10,
-            frame_type: internal::FRAME_CONTINUATION,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         let err_cont = internal::on_ingress_frame_header(s, cont_hdr, 1000);
-        sub.assert_eq(err_cont, internal::ERR_NO_ERROR, "subsequent CONTINUATION frame accepted");
+        sub.assert_eq(err_cont, rfc::H2_ERR_NO_ERROR, "subsequent CONTINUATION frame accepted");
         sub.assert_eq(s.continuation_stream_id, 0, "continuation state cleared after END_HEADERS");
     };
 
@@ -1475,9 +1475,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 17);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         // Complete stream 1
         encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire);
 
@@ -1498,10 +1498,10 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var off: i64 = 0;
         while off + 9 <= out_wire2.len {
             let f_hdr, _ = internal::parse_frame_header(out_wire2[off..off + 9]);
-            if f_hdr.frame_type == internal::FRAME_RST_STREAM && f_hdr.stream_id == 1 {
+            if f_hdr.frame_type == rfc::H2_FRAME_RST_STREAM && f_hdr.stream_id == 1 {
                 found_rst = true;
                 let err_code = core::read_be_u32(out_wire2, off + 9);
-                sub.assert_eq(err_code, internal::ERR_STREAM_CLOSED, "RST_STREAM error code is STREAM_CLOSED");
+                sub.assert_eq(err_code, rfc::H2_ERR_STREAM_CLOSED, "RST_STREAM error code is STREAM_CLOSED");
                 break;
             }
             off += 9 + (f_hdr.length as i64);
@@ -1522,12 +1522,12 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Frame 1: HEADERS stream 1 WITHOUT FLAG_END_HEADERS
         let h_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      0, // No END_HEADERS!
             stream_id:  1,
         };
@@ -1538,7 +1538,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         // Frame 2: Interleaved PING frame before END_HEADERS
         let ping_hdr = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  0,
         };
@@ -1552,9 +1552,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Ingress rejected interleaved frame before END_HEADERS");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
     t.run("H2-19: Unprompted CONTINUATION Frame Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
@@ -1563,13 +1563,13 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Unprompted CONTINUATION frame without preceding HEADERS
         let c_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_CONTINUATION,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         internal::encode_frame_header_to(c_hdr, wire);
@@ -1582,9 +1582,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Ingress rejected unprompted CONTINUATION");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
     t.run("H2-20: Client PUSH_PROMISE Frame Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.6)") { sub =>
@@ -1593,13 +1593,13 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Client sends PUSH_PROMISE (promised stream id = 2, dummy header fragment)
         let pp_hdr = internal::FrameHeader {
             length:     5,
-            frame_type: internal::FRAME_PUSH_PROMISE,
-            flags:      internal::FLAG_END_HEADERS,
+            frame_type: rfc::H2_FRAME_PUSH_PROMISE,
+            flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
         internal::encode_frame_header_to(pp_hdr, wire);
@@ -1612,9 +1612,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Server rejected client PUSH_PROMISE");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
     t.run("H2-21: Duplicate / Unsolicited SETTINGS ACK Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.5 & §10.5)") { sub =>
@@ -1623,13 +1623,13 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Frame 1: Valid SETTINGS ACK for server initial settings
         let ack_hdr1 = internal::FrameHeader {
             length:     0,
-            frame_type: internal::FRAME_SETTINGS,
-            flags:      internal::FLAG_ACK,
+            frame_type: rfc::H2_FRAME_SETTINGS,
+            flags:      rfc::H2_FLAG_ACK,
             stream_id:  0,
         };
         internal::encode_frame_header_to(ack_hdr1, wire);
@@ -1649,9 +1649,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok2, "Duplicate SETTINGS ACK rejected");
         sub.assert_gt(out_wire2.len, 0, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire2[0..9]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire2, 13);
-        sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
     t.run("H2-22: Control Frame Flood (Excess PINGs/ACKs > 64) Triggers GOAWAY(ENHANCE_YOUR_CALM) (RFC 9113 §10.5)") { sub =>
@@ -1660,13 +1660,13 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Send 65 PING frames in a single batch (exceeding MAX_PENDING_CTRL_FRAMES = 64)
         for i in 65 {
             let ping_hdr = internal::FrameHeader {
                 length:     8,
-                frame_type: internal::FRAME_PING,
+                frame_type: rfc::H2_FRAME_PING,
                 flags:      0,
                 stream_id:  0,
             };
@@ -1685,9 +1685,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var off: i64 = 33;
         while off + 9 <= out_wire.len {
             let f_hdr, _ = internal::parse_frame_header(out_wire[off..off + 9]);
-            if f_hdr.frame_type == internal::FRAME_GOAWAY {
+            if f_hdr.frame_type == rfc::H2_FRAME_GOAWAY {
                 let err_code = core::read_be_u32(out_wire, off + 13);
-                if err_code == internal::ERR_ENHANCE_YOUR_CALM {
+                if err_code == rfc::H2_ERR_ENHANCE_YOUR_CALM {
                     found_calm = true;
                     break;
                 }
@@ -1703,12 +1703,12 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         let h_hdr = internal::FrameHeader {
             length:     2,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
@@ -1721,9 +1721,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Ingress rejected mid-block dynamic table size update");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
     };
 
     t.run("H2-24: HPACK Out-of-Bounds Dynamic Table Index Lookup Rejected with COMPRESSION_ERROR (RFC 7541 §2.3.3)") { sub =>
@@ -1732,12 +1732,12 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         let h_hdr = internal::FrameHeader {
             length:     1,
-            frame_type: internal::FRAME_HEADERS,
-            flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
         internal::encode_frame_header_to(h_hdr, wire);
@@ -1749,9 +1749,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Ingress rejected out-of-bounds dynamic table index lookup");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
     };
 
     t.run("H2-25: PRIORITY_UPDATE on Stream 0 and Server-Initiated Stream Rejection (RFC 9218 §7.1)") { sub =>
@@ -1761,10 +1761,10 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
         // Sub-test A: Prioritized Stream ID 0 must be rejected with PROTOCOL_ERROR
         var wireA: u8[>..] = [];
-        wireA.append(internal::H2_CLIENT_PREFACE[..]);
+        wireA.append(rfc::H2_CLIENT_PREFACE[..]);
         let pu_hdrA = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_PRIORITY_UPDATE,
+            frame_type: rfc::H2_FRAME_PRIORITY_UPDATE,
             flags:      0,
             stream_id:  0,
         };
@@ -1776,15 +1776,15 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         let _, okA = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wireA[..], 1000, out_wireA);
         sub.assert_false(okA, "PRIORITY_UPDATE identifying stream 0 rejected");
         let err_codeA = core::read_be_u32(out_wireA, 46);
-        sub.assert_eq(err_codeA, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_codeA, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
 
         // Sub-test B: Prioritized Stream ID 2 (server-initiated / even) must be rejected with PROTOCOL_ERROR
         var sessB = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wireB: u8[>..] = [];
-        wireB.append(internal::H2_CLIENT_PREFACE[..]);
+        wireB.append(rfc::H2_CLIENT_PREFACE[..]);
         let pu_hdrB = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_PRIORITY_UPDATE,
+            frame_type: rfc::H2_FRAME_PRIORITY_UPDATE,
             flags:      0,
             stream_id:  0,
         };
@@ -1796,19 +1796,19 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         let _, okB = internal::handle_h2_server_ingress(sessB, pipeline, timer, "127.0.0.1", wireB[..], 1000, out_wireB);
         sub.assert_false(okB, "PRIORITY_UPDATE identifying server-initiated stream rejected");
         let err_codeB = core::read_be_u32(out_wireB, 46);
-        sub.assert_eq(err_codeB, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
+        sub.assert_eq(err_codeB, rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
 
         // Sub-test C: Valid PRIORITY_UPDATE for stream 1 applies priority update
         var sessC = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var wireC: u8[>..] = [];
-        wireC.append(internal::H2_CLIENT_PREFACE[..]);
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        wireC.append(rfc::H2_CLIENT_PREFACE[..]);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wireC);
 
         let pu_val: const u8[:] = "u=0, i";
         let pu_hdrC = internal::FrameHeader {
             length:     (4 + pu_val.len) as u32,
-            frame_type: internal::FRAME_PRIORITY_UPDATE,
+            frame_type: rfc::H2_FRAME_PRIORITY_UPDATE,
             flags:      0,
             stream_id:  0,
         };
@@ -1832,9 +1832,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Send 25 pairs of HEADERS + RST_STREAM in a single batch (exceeding old 16-element limit)
         for i in 25 {
@@ -1842,7 +1842,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
             encode_client_headers(client_hpack, s_id, "GET", "/fast/reset", "localhost", true, wire);
             let rst_hdr = internal::FrameHeader {
                 length:     4,
-                frame_type: internal::FRAME_RST_STREAM,
+                frame_type: rfc::H2_FRAME_RST_STREAM,
                 flags:      0,
                 stream_id:  s_id,
             };
@@ -1866,9 +1866,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 27);
 
-        var client_hpack = internal::new_dynamic_table(internal::HPACK_DEFAULT_MAX_DYN_SIZE);
+        var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
         encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire);
 
         var out_wire1: u8[>..] = [];
@@ -1879,7 +1879,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var wire2: u8[>..] = [];
         let wu_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_WINDOW_UPDATE,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
             stream_id:  1,
         };
@@ -1898,14 +1898,14 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         // Connection send window starts at 65535.
         // Send WINDOW_UPDATE on stream 0 with increment 0x7FFFFFFF (2^31 - 1)
         // 65535 + 2147483647 exceeds 2^31 - 1 -> FLOW_CONTROL_ERROR
         let wu_hdr = internal::FrameHeader {
             length:     4,
-            frame_type: internal::FRAME_WINDOW_UPDATE,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
             stream_id:  0,
         };
@@ -1918,9 +1918,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_false(ok, "Window overflow rejected");
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
-        sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
+        sub.assert_eq(g_hdr.frame_type, rfc::H2_FRAME_GOAWAY, "Frame is GOAWAY");
         let err_code = core::read_be_u32(out_wire, 46);
-        sub.assert_eq(err_code, internal::ERR_FLOW_CONTROL_ERROR, "GOAWAY code is FLOW_CONTROL_ERROR");
+        sub.assert_eq(err_code, rfc::H2_ERR_FLOW_CONTROL_ERROR, "GOAWAY code is FLOW_CONTROL_ERROR");
     };
 }
 
@@ -2058,7 +2058,7 @@ fn test_continuation_flood_and_interleaving(t: lit::T&) {
             payload_len: 300,
             frame_type:  internal::H2FrameType.Continuation,
             raw_type:    0x9,
-            flags:       internal::H2_FLAG_END_HEADERS,
+            flags:       rfc::H2_FLAG_END_HEADERS,
             stream_id:   1,
             valid:       true,
         };
@@ -2159,7 +2159,7 @@ fn test_settings_and_stream_id_invariants(t: lit::T&) {
             payload_len: 20,
             frame_type:  internal::H2FrameType.Headers,
             raw_type:    0x1,
-            flags:       internal::H2_FLAG_END_HEADERS,
+            flags:       rfc::H2_FLAG_END_HEADERS,
             stream_id:   2, // Even stream
             valid:       true,
         };
@@ -2170,7 +2170,7 @@ fn test_settings_and_stream_id_invariants(t: lit::T&) {
             payload_len: 20,
             frame_type:  internal::H2FrameType.Headers,
             raw_type:    0x1,
-            flags:       internal::H2_FLAG_END_HEADERS,
+            flags:       rfc::H2_FLAG_END_HEADERS,
             stream_id:   0,
             valid:       true,
         };
@@ -2251,24 +2251,24 @@ fn test_h2_settings_and_ping_invariants(t: lit::T&) {
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
             length:     6, // Length != 0 with ACK is illegal per RFC 9113 §6.5
-            frame_type: internal::FRAME_SETTINGS,
-            flags:      internal::FLAG_ACK,
+            frame_type: rfc::H2_FRAME_SETTINGS,
+            flags:      rfc::H2_FLAG_ACK,
             stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
-        sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "SETTINGS with ACK and length > 0 must trigger FRAME_SIZE_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_FRAME_SIZE_ERROR, "SETTINGS with ACK and length > 0 must trigger FRAME_SIZE_ERROR");
     };
 
     t.run("H2-SEC-02: SETTINGS with Length not multiple of 6 must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
             length:     5, // Not multiple of 6
-            frame_type: internal::FRAME_SETTINGS,
+            frame_type: rfc::H2_FRAME_SETTINGS,
             flags:      0,
             stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
-        sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "SETTINGS length not multiple of 6 must trigger FRAME_SIZE_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_FRAME_SIZE_ERROR, "SETTINGS length not multiple of 6 must trigger FRAME_SIZE_ERROR");
     };
 
     t.run("H2-SEC-03: SETTINGS or PING on Stream != 0 must trigger PROTOCOL_ERROR") { sub =>
@@ -2277,34 +2277,34 @@ fn test_h2_settings_and_ping_invariants(t: lit::T&) {
         // SETTINGS on stream 1
         let hdr_set = internal::FrameHeader {
             length:     6,
-            frame_type: internal::FRAME_SETTINGS,
+            frame_type: rfc::H2_FRAME_SETTINGS,
             flags:      0,
             stream_id:  1, // Illegal: MUST be stream 0 per RFC 9113 §6.5
         };
         let err_set = internal::on_ingress_frame_header(conn, hdr_set, 0);
-        sub.assert_eq(err_set, internal::ERR_PROTOCOL_ERROR, "SETTINGS on stream != 0 must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err_set, rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS on stream != 0 must trigger PROTOCOL_ERROR");
 
         // PING on stream 1
         let hdr_ping = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  1, // Illegal: MUST be stream 0 per RFC 9113 §6.7
         };
         let err_ping = internal::on_ingress_frame_header(conn, hdr_ping, 0);
-        sub.assert_eq(err_ping, internal::ERR_PROTOCOL_ERROR, "PING on stream != 0 must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err_ping, rfc::H2_ERR_PROTOCOL_ERROR, "PING on stream != 0 must trigger PROTOCOL_ERROR");
     };
 
     t.run("H2-SEC-04: PING with Length != 8 must trigger FRAME_SIZE_ERROR") { sub =>
         var conn = internal::new_h2_connection(0);
         let hdr = internal::FrameHeader {
             length:     7, // Illegal: MUST be exactly 8 per RFC 9113 §6.7
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  0,
         };
         let err = internal::on_ingress_frame_header(conn, hdr, 0);
-        sub.assert_eq(err, internal::ERR_FRAME_SIZE_ERROR, "PING with length != 8 must trigger FRAME_SIZE_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_FRAME_SIZE_ERROR, "PING with length != 8 must trigger FRAME_SIZE_ERROR");
     };
 }
 
@@ -2312,10 +2312,10 @@ fn test_h2_window_update_and_flow_control(t: lit::T&) {
     t.run("H2-SEC-05: WINDOW_UPDATE Increment 0 is Forbidden (RFC 9113 §6.9)") { sub =>
         var conn = internal::new_h2_connection(0);
         let err_conn = internal::apply_window_update(conn, 0, 0);
-        sub.assert_eq(err_conn, internal::ERR_PROTOCOL_ERROR, "WINDOW_UPDATE with increment 0 on connection must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err_conn, rfc::H2_ERR_PROTOCOL_ERROR, "WINDOW_UPDATE with increment 0 on connection must trigger PROTOCOL_ERROR");
 
         let err_str = internal::apply_window_update(conn, 1, 0);
-        sub.assert_eq(err_str, internal::ERR_PROTOCOL_ERROR, "WINDOW_UPDATE with increment 0 on stream must trigger PROTOCOL_ERROR");
+        sub.assert_eq(err_str, rfc::H2_ERR_PROTOCOL_ERROR, "WINDOW_UPDATE with increment 0 on stream must trigger PROTOCOL_ERROR");
     };
 
     t.run("H2-SEC-06: Connection Window Overflow beyond 2^31 - 1 triggers FLOW_CONTROL_ERROR") { sub =>
@@ -2323,7 +2323,7 @@ fn test_h2_window_update_and_flow_control(t: lit::T&) {
         // Default conn_send_window is 65535
         // Adding 0x7FFFFFFF will overflow MAX_INITIAL_WINDOW_SIZE (0x7FFFFFFF)
         let err = internal::apply_window_update(conn, 0, 0x7FFFFFFF);
-        sub.assert_eq(err, internal::ERR_FLOW_CONTROL_ERROR, "Connection window overflow must trigger FLOW_CONTROL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Connection window overflow must trigger FLOW_CONTROL_ERROR");
     };
 
     t.run("H2-SEC-07: Excessive Initial Window Updates Flood Defense (CVE-2026-78669)") { sub =>
@@ -2331,7 +2331,7 @@ fn test_h2_window_update_and_flow_control(t: lit::T&) {
         var hit_flood = false;
         for _ in 20 {
             let err = internal::apply_peer_initial_window_size_delta(conn, 65535);
-            if err == internal::ERR_ENHANCE_YOUR_CALM {
+            if err == rfc::H2_ERR_ENHANCE_YOUR_CALM {
                 hit_flood = true;
                 break;
             }
@@ -2347,33 +2347,33 @@ fn test_h2_continuation_flood_and_interleaving(t: lit::T&) {
         // 1. Initial HEADERS frame on stream 1 without END_HEADERS flag
         let h_hdr = internal::FrameHeader {
             length:     100,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      0, // FLAG_END_HEADERS not set
             stream_id:  1,
         };
         let err_h = internal::on_ingress_frame_header(conn, h_hdr, 0);
-        sub.assert_eq(err_h, internal::ERR_NO_ERROR, "HEADERS frame enters continuation state cleanly");
+        sub.assert_eq(err_h, rfc::H2_ERR_NO_ERROR, "HEADERS frame enters continuation state cleanly");
         sub.assert_eq(conn.continuation_stream_id, 1, "connection expects continuation on stream 1");
 
         // 2. Interleaved PING frame on stream 0 arrives before CONTINUATION
         let ping_hdr = internal::FrameHeader {
             length:     8,
-            frame_type: internal::FRAME_PING,
+            frame_type: rfc::H2_FRAME_PING,
             flags:      0,
             stream_id:  0,
         };
         let err_ping = internal::on_ingress_frame_header(conn, ping_hdr, 0);
-        sub.assert_eq(err_ping, internal::ERR_PROTOCOL_ERROR, "Interleaved PING during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
+        sub.assert_eq(err_ping, rfc::H2_ERR_PROTOCOL_ERROR, "Interleaved PING during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
 
         // 3. Interleaved DATA on stream 1 arrives before CONTINUATION
         let data_hdr = internal::FrameHeader {
             length:     50,
-            frame_type: internal::FRAME_DATA,
+            frame_type: rfc::H2_FRAME_DATA,
             flags:      0,
             stream_id:  1,
         };
         let err_data = internal::on_ingress_frame_header(conn, data_hdr, 0);
-        sub.assert_eq(err_data, internal::ERR_PROTOCOL_ERROR, "Interleaved DATA during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
+        sub.assert_eq(err_data, rfc::H2_ERR_PROTOCOL_ERROR, "Interleaved DATA during continuation sequence must trigger PROTOCOL_ERROR per RFC 9113 §4.3");
     };
 
     t.run("H2-SEC-09: CONTINUATION on Different Stream ID Rejected (RFC 9113 §6.10)") { sub =>
@@ -2382,7 +2382,7 @@ fn test_h2_continuation_flood_and_interleaving(t: lit::T&) {
         // HEADERS on stream 3 without END_HEADERS
         let h_hdr = internal::FrameHeader {
             length:     50,
-            frame_type: internal::FRAME_HEADERS,
+            frame_type: rfc::H2_FRAME_HEADERS,
             flags:      0,
             stream_id:  3,
         };
@@ -2391,12 +2391,12 @@ fn test_h2_continuation_flood_and_interleaving(t: lit::T&) {
         // CONTINUATION arrives on stream 5 instead of 3
         let cont_hdr = internal::FrameHeader {
             length:     50,
-            frame_type: internal::FRAME_CONTINUATION,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
             flags:      0,
             stream_id:  5,
         };
         let err_cont = internal::on_ingress_frame_header(conn, cont_hdr, 0);
-        sub.assert_eq(err_cont, internal::ERR_PROTOCOL_ERROR, "CONTINUATION on different stream ID must trigger PROTOCOL_ERROR per RFC 9113 §6.10");
+        sub.assert_eq(err_cont, rfc::H2_ERR_PROTOCOL_ERROR, "CONTINUATION on different stream ID must trigger PROTOCOL_ERROR per RFC 9113 §6.10");
     };
 }
 
@@ -2525,7 +2525,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         // 2. Dynamic table size update: 001xxxxx -> 0x3F 0x00 (size = 31)
         let bad_block: u8[3] = [0x82, 0x3F, 0x00];
         let err = internal::decode_hpack_header_block(dt, bad_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_COMPRESSION_ERROR, "table size update after regular header must fail with COMPRESSION_ERROR per RFC 7541 §4.2");
+        sub.assert_eq(err, rfc::H2_ERR_COMPRESSION_ERROR, "table size update after regular header must fail with COMPRESSION_ERROR per RFC 7541 §4.2");
     };
 
     t.run("HPACK-SEC-09: Table Size Update Exceeding SETTINGS Max Rejected") { sub =>
@@ -2536,7 +2536,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         // 001xxxxx prefix 5: 0x3F (31), followed by (2048 - 31) = 2017 -> 2017 = 0x7E1 -> 0xE1 0x0F
         let oversize_block: u8[3] = [0x3F, 0xE1, 0x0F];
         let err = internal::decode_hpack_header_block(dt, oversize_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_COMPRESSION_ERROR, "size update exceeding max_allowed_size must trigger COMPRESSION_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_COMPRESSION_ERROR, "size update exceeding max_allowed_size must trigger COMPRESSION_ERROR");
     };
 
     t.run("HPACK-SEC-10: Pseudo-Header Ordering (Pseudo After Regular Rejected)") { sub =>
@@ -2548,7 +2548,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         // 2. Static index 2 (:method: GET) -> 0x82 (pseudo-header)
         let out_of_order_block: u8[2] = [0x98, 0x82];
         let err = internal::decode_hpack_header_block(dt, out_of_order_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR per RFC 9113 §8.3");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR per RFC 9113 §8.3");
     };
 
     t.run("HPACK-SEC-11: Forbidden Connection Headers in HTTP/2 Rejected") { sub =>
@@ -2567,7 +2567,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         conn_block.append("close");
 
         let err = internal::decode_hpack_header_block(dt, conn_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "Connection header must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Connection header must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
     };
 
     t.run("HPACK-SEC-12: Disallowed TE Header Value Rejected") { sub =>
@@ -2584,7 +2584,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         te_block.append("gzip");
 
         let err = internal::decode_hpack_header_block(dt, te_block[..], out_list);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "TE header with value other than 'trailers' must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "TE header with value other than 'trailers' must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
     };
 }
 
@@ -2668,16 +2668,16 @@ fn test_stream_frame_encapsulation(t: lit::T&) {
         // 1. Client frame (MUST be masked)
         var client_data: u8[>..] = [];
         let mask: const u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
-        wing::ws_encapsulate_stream_data(client_data, wing::WS_OPCODE_TEXT, "Hello H3 WebSocket", true, mask);
+        wing::ws_encapsulate_stream_data(client_data, rfc::WS_OPCODE_TEXT, "Hello H3 WebSocket", true, mask);
 
         let hdr_c, ok_c = wing::parse_ws_frame_header(client_data[..]);
         sub.assert_true(ok_c, "Client frame header parsed");
         sub.assert_true(hdr_c.masked, "Client frame has mask bit set");
-        sub.assert_eq(hdr_c.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(hdr_c.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
 
         // 2. Server frame (MUST NOT be masked per RFC 6455 §5.1 / RFC 8441 / RFC 9220)
         var server_data: u8[>..] = [];
-        wing::ws_encapsulate_stream_data(server_data, wing::WS_OPCODE_TEXT, "Server response payload", false);
+        wing::ws_encapsulate_stream_data(server_data, rfc::WS_OPCODE_TEXT, "Server response payload", false);
 
         let hdr_s, ok_s = wing::parse_ws_frame_header(server_data[..]);
         sub.assert_true(ok_s, "Server frame header parsed");
@@ -2758,7 +2758,7 @@ fn test_h2_priority_update_frame(t: lit::T&) {
         sub.assert_gt(frame_buf.len, 4, "Frame payload encoded");
 
         let stream_id, parsed_prio, err = internal::parse_priority_update_payload(frame_buf[..]);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "No protocol error");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "No protocol error");
         sub.assert_eq(stream_id, 5, "Stream ID matches 5");
         sub.assert_eq(parsed_prio.urgency, 1, "Urgency matches 1");
         sub.assert_true(parsed_prio.incremental, "Incremental matches true");
@@ -2766,12 +2766,12 @@ fn test_h2_priority_update_frame(t: lit::T&) {
         // Stream ID 0 rejection (RFC 9218 §7.1)
         var zero_id_buf: u8[8] = [0, 0, 0, 0, 'u' as u8, '=' as u8, '2' as u8, 0];
         let _, _, err_zero = internal::parse_priority_update_payload(zero_id_buf[..]);
-        sub.assert_eq(err_zero, internal::ERR_PROTOCOL_ERROR, "Stream 0 rejected with PROTOCOL_ERROR");
+        sub.assert_eq(err_zero, rfc::H2_ERR_PROTOCOL_ERROR, "Stream 0 rejected with PROTOCOL_ERROR");
 
         // Truncated payload (< 4 bytes)
         var trunc_buf: u8[2] = [0, 1];
         let _, _, err_trunc = internal::parse_priority_update_payload(trunc_buf[..]);
-        sub.assert_eq(err_trunc, internal::ERR_FRAME_SIZE_ERROR, "Truncated frame rejected with FRAME_SIZE_ERROR");
+        sub.assert_eq(err_trunc, rfc::H2_ERR_FRAME_SIZE_ERROR, "Truncated frame rejected with FRAME_SIZE_ERROR");
     };
 }
 
@@ -2803,11 +2803,11 @@ fn test_h3_priority_update_integration(t: lit::T&) {
         var settings = wing::H3Settings { .. };
         internal::encode_h3_settings_frame(init_ctrl, settings);
         let err_init = internal::handle_stream_data(conn, 3, false, init_ctrl[..], false);
-        sub.assert_eq(err_init, internal::H3_ERR_NO_ERROR, "Control stream initialized");
+        sub.assert_eq(err_init, rfc::H3_ERR_NO_ERROR, "Control stream initialized");
 
         // Now deliver PRIORITY_UPDATE frame on unidirectional stream 3
         let err_pu = internal::handle_stream_data(conn, 3, false, update_buf[..], false);
-        sub.assert_eq(err_pu, internal::H3_ERR_NO_ERROR, "PRIORITY_UPDATE handled cleanly");
+        sub.assert_eq(err_pu, rfc::H3_ERR_NO_ERROR, "PRIORITY_UPDATE handled cleanly");
 
         // Verify that stream 0 priority has been dynamically updated!
         let updated_prio, ok_up = internal::get_stream_priority(conn, req_id);
@@ -2831,14 +2831,14 @@ fn test_h2_extension_frames(t: lit::T&) {
 
         // Parse 9-byte header
         let hdr, hdr_err = internal::parse_frame_header(wire[..9]);
-        sub.assert_eq(hdr_err, internal::ERR_NO_ERROR, "frame header parsed without error");
-        sub.assert_eq(hdr.frame_type, internal::FRAME_ORIGIN, "frame type is FRAME_ORIGIN (0x0C)");
+        sub.assert_eq(hdr_err, rfc::H2_ERR_NO_ERROR, "frame header parsed without error");
+        sub.assert_eq(hdr.frame_type, rfc::H2_FRAME_ORIGIN, "frame type is FRAME_ORIGIN (0x0C)");
         sub.assert_eq(hdr.stream_id, 0, "stream id is 0");
 
         // Parse payload
         var parsed_origins: const u8[:][..16] = [];
         let count, parse_err = internal::parse_origin_frame(wire[9..9 + hdr.length], hdr.stream_id, parsed_origins);
-        sub.assert_eq(parse_err, internal::ERR_NO_ERROR, "payload parsed without error");
+        sub.assert_eq(parse_err, rfc::H2_ERR_NO_ERROR, "payload parsed without error");
         sub.assert_eq(count, 2, "parsed 2 origins");
         sub.assert_eq(parsed_origins[0], "https://example.com", "origin 0 matched");
         sub.assert_eq(parsed_origins[1], "https://api.example.com", "origin 1 matched");
@@ -2848,16 +2848,16 @@ fn test_h2_extension_frames(t: lit::T&) {
         let dummy_payload: u8[10] = [0x00, 0x08, 'h', 't', 't', 'p', 's', ':', '/', '/'];
         var parsed: const u8[:][..16] = [];
         let _, err = internal::parse_origin_frame(dummy_payload[..], 1, parsed);
-        sub.assert_eq(err, internal::ERR_PROTOCOL_ERROR, "ORIGIN frame on stream 1 returns PROTOCOL_ERROR");
+        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "ORIGIN frame on stream 1 returns PROTOCOL_ERROR");
 
         let bad_hdr = internal::FrameHeader {
             length:     10,
-            frame_type: internal::FRAME_ORIGIN,
+            frame_type: rfc::H2_FRAME_ORIGIN,
             flags:      0,
             stream_id:  3,
         };
         let rule_err = internal::validate_frame_header_rules(bad_hdr);
-        sub.assert_eq(rule_err, internal::ERR_PROTOCOL_ERROR, "validate_frame_header_rules rejects ORIGIN on stream 3");
+        sub.assert_eq(rule_err, rfc::H2_ERR_PROTOCOL_ERROR, "validate_frame_header_rules rejects ORIGIN on stream 3");
     };
 
     t.run("ALTSVC-01: FRAME_ALTSVC on stream 0 with origin") { sub =>
@@ -2866,12 +2866,12 @@ fn test_h2_extension_frames(t: lit::T&) {
         sub.assert_true(enc_ok, "encode_altsvc_frame succeeded");
 
         let hdr, hdr_err = internal::parse_frame_header(wire[..9]);
-        sub.assert_eq(hdr_err, internal::ERR_NO_ERROR, "header parsed ok");
-        sub.assert_eq(hdr.frame_type, internal::FRAME_ALTSVC, "frame type is FRAME_ALTSVC (0x0A)");
+        sub.assert_eq(hdr_err, rfc::H2_ERR_NO_ERROR, "header parsed ok");
+        sub.assert_eq(hdr.frame_type, rfc::H2_FRAME_ALTSVC, "frame type is FRAME_ALTSVC (0x0A)");
         sub.assert_eq(hdr.stream_id, 0, "stream id is 0");
 
         let altsvc, parse_err = internal::parse_altsvc_frame(wire[9..9 + hdr.length], hdr.stream_id);
-        sub.assert_eq(parse_err, internal::ERR_NO_ERROR, "parsed without error");
+        sub.assert_eq(parse_err, rfc::H2_ERR_NO_ERROR, "parsed without error");
         sub.assert_eq(altsvc.origin, "example.com", "origin matched");
         sub.assert_eq(altsvc.alt_svc_value, "h3=\":443\"; ma=86400", "alt_svc_value matched");
     };
@@ -2885,7 +2885,7 @@ fn test_h2_extension_frames(t: lit::T&) {
         sub.assert_eq(hdr.stream_id, 5, "stream id is 5");
 
         let altsvc, parse_err = internal::parse_altsvc_frame(wire[9..9 + hdr.length], hdr.stream_id);
-        sub.assert_eq(parse_err, internal::ERR_NO_ERROR, "parsed without error");
+        sub.assert_eq(parse_err, rfc::H2_ERR_NO_ERROR, "parsed without error");
         sub.assert_eq(altsvc.origin.len, 0, "origin is empty on stream > 0");
         sub.assert_eq(altsvc.alt_svc_value, "h3=\":443\"", "alt_svc_value matched");
     };
@@ -2893,14 +2893,14 @@ fn test_h2_extension_frames(t: lit::T&) {
     t.run("ALTSVC-03: Empty origin on stream 0 is ignored per RFC 7838 §4") { sub =>
         let payload: u8[6] = [0x00, 0x00, 'h', '3', '=', '1'];
         let altsvc, err = internal::parse_altsvc_frame(payload[..], 0);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "empty origin on stream 0 is ignored");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "empty origin on stream 0 is ignored");
         sub.assert_eq(altsvc.alt_svc_value.len, 0, "ignored frame has empty value");
     };
 
     t.run("ALTSVC-04: Non-zero origin on stream > 0 is ignored per RFC 7838 §4") { sub =>
         let payload: u8[8] = [0x00, 0x02, 'o', 'k', 'h', '3', '=', '1'];
         let altsvc, err = internal::parse_altsvc_frame(payload[..], 1);
-        sub.assert_eq(err, internal::ERR_NO_ERROR, "non-empty origin on stream 1 is ignored");
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "non-empty origin on stream 1 is ignored");
         sub.assert_eq(altsvc.alt_svc_value.len, 0, "ignored frame has empty value");
     };
 
@@ -2910,7 +2910,7 @@ fn test_h2_extension_frames(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
-        wire.append(internal::H2_CLIENT_PREFACE[..]);
+        wire.append(rfc::H2_CLIENT_PREFACE[..]);
 
         var origins: const u8[:][..16] = [];
         origins.push("https://example.com");

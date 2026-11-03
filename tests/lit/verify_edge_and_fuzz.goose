@@ -13,8 +13,8 @@ import wire_kit from ".";
 fn decode_h2_header(buf: const u8[:]) -> i64 {
     if buf.len < 9 { return -1; }
     let hdr, err = internal::parse_frame_header(buf, 16384);
-    if err != internal::ERR_NO_ERROR { return -2; }
-    if internal::validate_frame_header_rules(hdr) != internal::ERR_NO_ERROR { return -2; }
+    if err != rfc::H2_ERR_NO_ERROR { return -2; }
+    if internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR { return -2; }
     return hdr.length;
 }
 
@@ -53,17 +53,17 @@ fn main() {
 
     var hdr_orig = internal::FrameHeader {
         length:     8,
-        frame_type: internal::FRAME_HEADERS,
-        flags:      internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_END_HEADERS,
         stream_id:  3,
     };
     var enc_hdr: u8[9] = [0; 9];
     internal::encode_frame_header(hdr_orig, enc_hdr);
     let hdr_dec, err = internal::parse_frame_header(enc_hdr[..]);
-    assert(err == internal::ERR_NO_ERROR);
+    assert(err == rfc::H2_ERR_NO_ERROR);
     assert(hdr_dec.length == 8);
-    assert(hdr_dec.frame_type == internal::FRAME_HEADERS);
-    assert(hdr_dec.flags == (internal::FLAG_END_STREAM | internal::FLAG_END_HEADERS));
+    assert(hdr_dec.frame_type == rfc::H2_FRAME_HEADERS);
+    assert(hdr_dec.flags == (rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_END_HEADERS));
     assert(hdr_dec.stream_id == 3);
     print("EDGE_ROUNDTRIP: OK");
 }

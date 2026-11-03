@@ -22,15 +22,6 @@ enum DplpmtudState {
 }
 
 // RFC 9000 Section 14.1: Minimum Datagram Size - Baseline PMTU
-const PMTU_BASE: u32 = 1200;
-// RFC 8899 Section 5.1.2: The Searching State - IPv6 minimum link MTU
-const PMTU_IPV6_MIN: u32 = 1280;
-// RFC 8899 Section 5.1.2: The Searching State - Intermediate tunnel/VPN MTU
-const PMTU_INTERMEDIATE: u32 = 1420;
-// RFC 8899 Section 5.1.2: The Searching State - Standard Ethernet MTU
-const PMTU_ETHERNET: u32 = 1500;
-
-// RFC 8899 Section 3 / RFC 9000 Section 14: Network and header encapsulation overheads.
 // IPv4 (20) + UDP (8) + QUIC 1-RTT Short Header (~5) + AEAD Tag (16) ~= 49 bytes.
 // IPv6 (40) + UDP (8) + QUIC 1-RTT Short Header (~5) + AEAD Tag (16) ~= 69 bytes.
 const DPLPMTUD_OVERHEAD_IPV4: u32 = 49;
@@ -48,10 +39,10 @@ const CANDIDATE_PMTU_COUNT: u32 = 4;
 
 // RFC 8899 Section 5.1.2: The Searching State - Table of candidate PMTU probe sizes
 inline fn get_candidate_pmtu(idx: u32) -> u32 {
-    if idx == 0 { return PMTU_BASE; }
-    if idx == 1 { return PMTU_IPV6_MIN; }
-    if idx == 2 { return PMTU_INTERMEDIATE; }
-    return PMTU_ETHERNET;
+    if idx == 0 { return rfc::PMTU_BASE; }
+    if idx == 1 { return rfc::PMTU_IPV6_MIN; }
+    if idx == 2 { return rfc::PMTU_INTERMEDIATE; }
+    return rfc::PMTU_ETHERNET;
 }
 
 // ---- Probe Frame Generators (RFC 8899 Section 3) ------------------------
@@ -86,9 +77,9 @@ fn generate_path_challenge_probe<B>(out: B&, data: const u8[8]&, target_size: u3
 struct Dplpmtud {
     state: DplpmtudState = DplpmtudState.Base,
     // RFC 8899 Section 5.1: State Machine - Confirmed PMTU for current path
-    current_pmtu: u32 = PMTU_BASE,
+    current_pmtu: u32 = rfc::PMTU_BASE,
     // RFC 8899 Section 5.1: State Machine - Target size for next probe packet
-    probed_size:        u32 = PMTU_BASE,
+    probed_size:        u32 = rfc::PMTU_BASE,
     probe_idx:          u32 = 0,
     probe_count:        u32 = 0,
     max_probes:         u32 = 3,

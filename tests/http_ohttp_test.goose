@@ -28,7 +28,7 @@ fn test_bhttp_request_roundtrip(t: lit::T&) {
         var out: u8[..8192] = [];
         let n = wing::bhttp_encode_request(req, out);
         sub.assert_true(n > 0, "encode succeeds");
-        sub.assert_eq(out[0], wing::BHTTP_FRAME_KNOWN_LEN_REQUEST, "framing indicator is 0 (RFC 9292 Section 3.3)");
+        sub.assert_eq(out[0], rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST, "framing indicator is 0 (RFC 9292 Section 3.3)");
 
         var decoded = wing::BhttpRequest { .. };
         let ok = wing::bhttp_decode_request(out[..n], decoded);
@@ -59,7 +59,7 @@ fn test_bhttp_response_roundtrip(t: lit::T&) {
         var out: u8[..8192] = [];
         let n = wing::bhttp_encode_response(res, out);
         sub.assert_true(n > 0, "encode succeeds");
-        sub.assert_eq(out[0], wing::BHTTP_FRAME_KNOWN_LEN_RESPONSE, "framing indicator is 1 (RFC 9292 Section 3.3)");
+        sub.assert_eq(out[0], rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE, "framing indicator is 1 (RFC 9292 Section 3.3)");
 
         var decoded = wing::BhttpResponse { .. };
         let ok = wing::bhttp_decode_response(out[..n], decoded);
@@ -115,9 +115,9 @@ fn test_ohttp_key_config(t: lit::T&) {
         let ok = wing::parse_ohttp_key_config(cfg_bytes[..], cfg);
         sub.assert_true(ok, "Appendix A key configuration parses");
         sub.assert_eq(cfg.key_id, 0x01, "key identifier is 1");
-        sub.assert_eq(cfg.kem_id, wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256, "KEM ID is X25519 (0x0020)");
-        sub.assert_eq(cfg.kdf_id, wing::HPKE_KDF_HKDF_SHA256, "first pair KDF ID is HKDF-SHA256 (0x0001)");
-        sub.assert_eq(cfg.aead_id, wing::HPKE_AEAD_AES_128_GCM, "first pair AEAD ID is AES-128-GCM (0x0001)");
+        sub.assert_eq(cfg.kem_id, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256, "KEM ID is X25519 (0x0020)");
+        sub.assert_eq(cfg.kdf_id, rfc::HPKE_KDF_HKDF_SHA256, "first pair KDF ID is HKDF-SHA256 (0x0001)");
+        sub.assert_eq(cfg.aead_id, rfc::HPKE_AEAD_AES_128_GCM, "first pair AEAD ID is AES-128-GCM (0x0001)");
         sub.assert_eq(cfg.public_key_len, 32, "public key is Npk = 32 bytes");
         let pk_expect: u8[32] = [
             0x31, 0xe1, 0xf0, 0x5a, 0x74, 0x01, 0x02, 0x11, 0x52, 0x20, 0xe9, 0xaf, 0x91,
@@ -349,9 +349,9 @@ fn test_hpke_export(t: lit::T&) {
         let ok = wing::hpke_setup_base_s(
             pkR,
             info,
-            wing::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-            wing::HPKE_KDF_HKDF_SHA256,
-            wing::HPKE_AEAD_AES_128_GCM,
+            rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+            rfc::HPKE_KDF_HKDF_SHA256,
+            rfc::HPKE_AEAD_AES_128_GCM,
             eph,
             enc,
             ctx,

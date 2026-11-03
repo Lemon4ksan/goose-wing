@@ -88,7 +88,7 @@ struct PreparedMessage {
     wire:            u8[..16384] = [],
     compressed_wire: u8[..16384] = [],
     has_compressed:  bool        = false,
-    opcode:          u8          = WS_OPCODE_TEXT,
+    opcode:          u8          = rfc::WS_OPCODE_TEXT,
 }
 
 struct SubscriptionNode {
@@ -628,7 +628,7 @@ fn publish(
     tree:    TopicTree&,
     topic:   const u8[:],
     message: const u8[:],
-    opcode:  u8 = WS_OPCODE_TEXT,
+    opcode:  u8 = rfc::WS_OPCODE_TEXT,
 ) -> i64 {
     guard message.len + 14 <= 65536 else { return 0; }
     var frame: u8[..65536] = [];
@@ -639,12 +639,12 @@ fn publish(
 
 // Convenience helper to publish UTF-8 text message to a topic.
 fn publish_text(tree: TopicTree&, topic: const u8[:], text: const u8[:]) -> i64 {
-    return publish(tree, topic, text, WS_OPCODE_TEXT);
+    return publish(tree, topic, text, rfc::WS_OPCODE_TEXT);
 }
 
 // Convenience helper to publish binary message to a topic.
 fn publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i64 {
-    return publish(tree, topic, data, WS_OPCODE_BINARY);
+    return publish(tree, topic, data, rfc::WS_OPCODE_BINARY);
 }
 
 // Encodes an unmasked RFC 6455 server frame once for PreparedMessage broadcast
@@ -656,7 +656,7 @@ fn publish_binary(tree: TopicTree&, topic: const u8[:], data: const u8[:]) -> i6
 fn prepare_message(
     out_msg: PreparedMessage&,
     payload: const u8[:],
-    opcode:  u8 = WS_OPCODE_TEXT,
+    opcode:  u8 = rfc::WS_OPCODE_TEXT,
 ) -> bool {
     guard payload.len + 14 <= out_msg.wire.cap else { return false; }
     out_msg.wire.clear();
@@ -680,7 +680,7 @@ fn prepare_message_compressed(
     out_msg:     PreparedMessage&,
     payload:     const u8[:],
     shared_comp: SharedWsCompressor&,
-    opcode:      u8 = WS_OPCODE_TEXT,
+    opcode:      u8 = rfc::WS_OPCODE_TEXT,
 ) -> bool {
     guard prepare_message(out_msg, payload, opcode) else { return false; }
 
@@ -895,7 +895,7 @@ fn publish_batch(
     tree:      TopicTree&,
     topic:     const u8[:],
     payload:   const u8[:],
-    opcode:    u8  = WS_OPCODE_TEXT,
+    opcode:    u8  = rfc::WS_OPCODE_TEXT,
     sender_fd: i64 = -1,
 ) -> i64 {
     guard is_valid_publish_topic(topic) && payload.len + 14 <= 4096 else { return 0; }

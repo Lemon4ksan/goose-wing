@@ -57,8 +57,6 @@ enum SmartNicCipherSuite {
 
 const TLS_CIPHER_AES_GCM_128_ID: u16 = 51;
 const TLS_CIPHER_AES_GCM_256_ID: u16 = 52;
-const TLS_1_3_WIRE_VERSION:      u16 = 0x0304;
-
 struct SmartNicConfig {
     model:               SmartNicModel = SmartNicModel.Generic,
     enable_hardware_tls: bool          = true,
@@ -124,7 +122,7 @@ fn smartnic_attach_hardware_tls(
     };
 
     let tx_err = wing_smartnic_set_hardware_tls_tx(
-        fd, TLS_1_3_WIRE_VERSION, cipher_id,
+        fd, rfc::TLS_VERSION_1_3, cipher_id,
         tx_key, tx_iv, tx_salt, tx_seq,
     );
     // RFC / FINDING-R6-FRAME-05: Return error if TX offload fails.
@@ -140,7 +138,7 @@ fn smartnic_attach_hardware_tls(
     let eff_rx_seq = if rx_seq.len > 0 { rx_seq } else { tx_seq };
 
     let rx_err = wing_smartnic_set_hardware_tls_rx(
-        fd, TLS_1_3_WIRE_VERSION, cipher_id,
+        fd, rfc::TLS_VERSION_1_3, cipher_id,
         eff_rx_key, eff_rx_iv, eff_rx_salt, eff_rx_seq,
     );
     guard rx_err == 0 else {

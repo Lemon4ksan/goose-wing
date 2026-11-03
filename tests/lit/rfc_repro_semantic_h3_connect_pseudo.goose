@@ -17,7 +17,7 @@ fn main() {
     var settings = wing::H3Settings { .. };
     var conn = internal::new_h3_server_connection(settings);
     let s_idx, err_s = internal::get_or_create_bidi_stream(conn, 0);
-    assert(err_s == internal::H3_ERR_NO_ERROR);
+    assert(err_s == rfc::H3_ERR_NO_ERROR);
 
     // 1. Valid RFC 9114 CONNECT: :method = CONNECT, :authority = host:port (omitted :scheme and :path)
     var valid_connect_fields: internal::HeaderField[>..] = [];
@@ -32,12 +32,12 @@ fn main() {
     valid_connect_fields.push(f2);
 
     let err_valid = internal::validate_h3_headers(conn, s_idx, valid_connect_fields);
-    print("VALID_CONNECT: ", err_valid == internal::H3_ERR_NO_ERROR, "\n");
+    print("VALID_CONNECT: ", err_valid == rfc::H3_ERR_NO_ERROR, "\n");
 
     // 2. Malformed RFC 9114 CONNECT: :scheme and :path must be omitted for CONNECT
     conn = internal::new_h3_server_connection(settings);
     let s_idx2, err_s2 = internal::get_or_create_bidi_stream(conn, 0);
-    assert(err_s2 == internal::H3_ERR_NO_ERROR);
+    assert(err_s2 == rfc::H3_ERR_NO_ERROR);
 
     var malformed_connect_fields: internal::HeaderField[>..] = [];
     var m1 = internal::HeaderField { .. };
@@ -61,12 +61,12 @@ fn main() {
     malformed_connect_fields.push(m4);
 
     let err_malformed = internal::validate_h3_headers(conn, s_idx2, malformed_connect_fields);
-    print("MALFORMED_CONNECT_SCHEME_PATH: ", err_malformed == internal::H3_ERR_GENERAL_PROTOCOL, "\n");
+    print("MALFORMED_CONNECT_SCHEME_PATH: ", err_malformed == rfc::H3_ERR_GENERAL_PROTOCOL, "\n");
 
     // 3. Malformed RFC 9114 CONNECT: missing :authority
     conn = internal::new_h3_server_connection(settings);
     let s_idx3, err_s3 = internal::get_or_create_bidi_stream(conn, 0);
-    assert(err_s3 == internal::H3_ERR_NO_ERROR);
+    assert(err_s3 == rfc::H3_ERR_NO_ERROR);
 
     var no_auth_fields: internal::HeaderField[>..] = [];
     var a1 = internal::HeaderField { .. };
@@ -75,12 +75,12 @@ fn main() {
     no_auth_fields.push(a1);
 
     let err_no_auth = internal::validate_h3_headers(conn, s_idx3, no_auth_fields);
-    print("MALFORMED_CONNECT_NO_AUTH: ", err_no_auth == internal::H3_ERR_GENERAL_PROTOCOL, "\n");
+    print("MALFORMED_CONNECT_NO_AUTH: ", err_no_auth == rfc::H3_ERR_GENERAL_PROTOCOL, "\n");
 
     // 4. Standard valid GET request
     conn = internal::new_h3_server_connection(settings);
     let s_idx4, err_s4 = internal::get_or_create_bidi_stream(conn, 0);
-    assert(err_s4 == internal::H3_ERR_NO_ERROR);
+    assert(err_s4 == rfc::H3_ERR_NO_ERROR);
 
     var get_fields: internal::HeaderField[>..] = [];
     var g1 = internal::HeaderField { .. };
@@ -104,7 +104,7 @@ fn main() {
     get_fields.push(g4);
 
     let err_get = internal::validate_h3_headers(conn, s_idx4, get_fields);
-    print("VALID_GET: ", err_get == internal::H3_ERR_NO_ERROR, "\n");
+    print("VALID_GET: ", err_get == rfc::H3_ERR_NO_ERROR, "\n");
 }
 
 // CHECK: VALID_CONNECT: true

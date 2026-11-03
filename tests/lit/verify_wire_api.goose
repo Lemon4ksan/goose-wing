@@ -30,8 +30,8 @@ fn main() {
 
     // 3. SETTINGS Frame (Stream 0)
     let s_list: wire::WireSetting[2] = [
-        wire::h2_setting(wire::H2_SETTING_ENABLE_PUSH, 0),
-        wire::h2_setting(wire::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
+        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
+        wire::h2_setting(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
     ];
     assert(wire::write_h2_settings(cmd, s_list[..]));
     print("CMD_SETTINGS: OK");
@@ -41,7 +41,7 @@ fn main() {
     print("CMD_WINDOW_UPDATE: OK");
 
     // 5. Dynamic HEADERS Frame with HPACK Back-Patching
-    assert(wire::begin_h2_headers(cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
     assert(wire::hpack_indexed(cmd, 2)); // :method: GET
     assert(wire::hpack_indexed(cmd, 7)); // :scheme: https
     assert(wire::hpack_literal_without_indexing(cmd, ":path", "/healthz"));
@@ -68,33 +68,33 @@ fn main() {
     // Frame 1: SETTINGS
     assert(wire::has_next(reader));
     let f1, p1, ok1 = wire::next_frame(reader);
-    assert(ok1 && f1.frame_type == wire::H2_FRAME_SETTINGS && f1.length == 12 && p1.len == 12);
+    assert(ok1 && f1.frame_type == rfc::H2_FRAME_SETTINGS && f1.length == 12 && p1.len == 12);
 
     // Frame 2: WINDOW_UPDATE
     assert(wire::has_next(reader));
     let f2, p2, ok2 = wire::next_frame(reader);
-    assert(ok2 && f2.frame_type == wire::H2_FRAME_WINDOW_UPDATE && f2.length == 4 && p2.len == 4);
+    assert(ok2 && f2.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && f2.length == 4 && p2.len == 4);
 
     // Frame 3: HEADERS
     assert(wire::has_next(reader));
     let f3, p3, ok3 = wire::next_frame(reader);
-    assert(ok3 && f3.frame_type == wire::H2_FRAME_HEADERS && f3.stream_id == 1 && f3.flags == wire::H2_FLAG_END_HEADERS);
+    assert(ok3 && f3.frame_type == rfc::H2_FRAME_HEADERS && f3.stream_id == 1 && f3.flags == rfc::H2_FLAG_END_HEADERS);
     assert(p3.len == (f3.length as i64));
 
     // Frame 4: RST_STREAM
     assert(wire::has_next(reader));
     let f4, p4, ok4 = wire::next_frame(reader);
-    assert(ok4 && f4.frame_type == wire::H2_FRAME_RST_STREAM && f4.stream_id == 3 && f4.length == 4);
+    assert(ok4 && f4.frame_type == rfc::H2_FRAME_RST_STREAM && f4.stream_id == 3 && f4.length == 4);
 
     // Frame 5: PING
     assert(wire::has_next(reader));
     let f5, p5, ok5 = wire::next_frame(reader);
-    assert(ok5 && f5.frame_type == wire::H2_FRAME_PING && f5.length == 8 && p5.len == 8);
+    assert(ok5 && f5.frame_type == rfc::H2_FRAME_PING && f5.length == 8 && p5.len == 8);
 
     // Frame 6: DATA
     assert(wire::has_next(reader));
     let f6, p6, ok6 = wire::next_frame(reader);
-    assert(ok6 && f6.frame_type == wire::H2_FRAME_DATA && f6.stream_id == 1 && f6.flags == wire::H2_FLAG_END_STREAM);
+    assert(ok6 && f6.frame_type == rfc::H2_FRAME_DATA && f6.stream_id == 1 && f6.flags == rfc::H2_FLAG_END_STREAM);
     assert(p6 == payload);
 
     // No further frames
@@ -114,8 +114,8 @@ fn main() {
     var custom_cmd = wire::new_command_buffer();
     let custom_hdr = wire::WireFrameHeader {
         length:     0,
-        frame_type: wire::H2_FRAME_PING,
-        flags:      wire::H2_FLAG_ACK,
+        frame_type: rfc::H2_FRAME_PING,
+        flags:      rfc::H2_FLAG_ACK,
         stream_id:  0,
     };
     assert(wire::write_h2_frame_header(custom_cmd, custom_hdr));

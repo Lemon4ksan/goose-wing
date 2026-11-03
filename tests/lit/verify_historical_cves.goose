@@ -68,7 +68,7 @@ fn test_uwebsockets_1876_backpressure_priority() {
 
     // Control frame Close MUST NOT be dropped
     var close_wire: u8[>..] = [];
-    wing::close(ws, wing::WS_STATUS_NORMAL, "clean close", close_wire);
+    wing::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
     assert(close_wire.len > 0);
     assert(ws.is_closed);
     print("WS_CLOSE_PRIORITY_RETAINED: OK");

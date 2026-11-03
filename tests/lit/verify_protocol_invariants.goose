@@ -20,7 +20,7 @@ fn test_h2_stream_progression() {
 
     // Client preface + empty settings
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     init_wire.append([0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 

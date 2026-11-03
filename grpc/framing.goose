@@ -16,7 +16,7 @@ import http.mime;
 // Encodes a payload into a 5-byte Length-Prefixed Message (LPM):
 // [1-byte Flag] [4-byte Big-Endian Length] [Payload]
 fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
-    let flag: u8 = if compressed { GRPC_FLAG_COMPRESSED } else { 0x00 };
+    let flag: u8 = if compressed { rfc::GRPC_FLAG_COMPRESSED } else { 0x00 };
     out.push(flag);
     core::write_be_u32(out, payload.len as u32);
     out.append(payload);
@@ -31,17 +31,17 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
 fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u32, bool {
     let off = offset as i64;
     guard off >= 0 && off <= wire.len else { return "", false, 0, false; }
-    guard wire.len - off >= GRPC_LPM_HEADER_LEN else { return "", false, 0, false; }
+    guard wire.len - off >= rfc::GRPC_LPM_HEADER_LEN else { return "", false, 0, false; }
 
     let flag = wire[off];
-    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return "", false, 0, false; }
-    let is_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
+    guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return "", false, 0, false; }
+    let is_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
-    guard (wire.len - off - GRPC_LPM_HEADER_LEN) >= len_val_i64 else { return "", false, 0, false; }
+    guard (wire.len - off - rfc::GRPC_LPM_HEADER_LEN) >= len_val_i64 else { return "", false, 0, false; }
 
-    let p_start = off + GRPC_LPM_HEADER_LEN;
-    let total_consumed = (GRPC_LPM_HEADER_LEN + len_val_i64) as u32;
+    let p_start = off + rfc::GRPC_LPM_HEADER_LEN;
+    let total_consumed = (rfc::GRPC_LPM_HEADER_LEN + len_val_i64) as u32;
     return wire[p_start..p_start + len_val_i64], is_compressed, total_consumed, true;
 }
 
@@ -87,18 +87,18 @@ fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
 
 // Extracts the next available message. Returns true if a full message was consumed.
 fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&) -> bool {
-    guard p.buf.len >= (GRPC_LPM_HEADER_LEN as i64) else { return false; }
+    guard p.buf.len >= (rfc::GRPC_LPM_HEADER_LEN as i64) else { return false; }
 
     let flag = p.buf[0];
-    guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
-    out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
+    guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return false; }
+    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val_i64 = (core::read_be_u32(p.buf[..], 1)) as i64;
-    let total_len = GRPC_LPM_HEADER_LEN + len_val_i64;
+    let total_len = rfc::GRPC_LPM_HEADER_LEN + len_val_i64;
     guard p.buf.len >= total_len else { return false; }
 
     out_payload.clear();
-    let hdr_len_i64: i64 = GRPC_LPM_HEADER_LEN;
+    let hdr_len_i64: i64 = rfc::GRPC_LPM_HEADER_LEN;
     out_payload.append(p.buf[hdr_len_i64..total_len]);
 
     let remaining_bytes = p.buf.len - total_len;
@@ -156,7 +156,7 @@ fn encode_grpc_web_trailers_with_meta<B>(
         }
     }
 
-    out.push(GRPC_WEB_FLAG_TRAILERS);
+    out.push(rfc::GRPC_WEB_FLAG_TRAILERS);
     core::write_be_u32(out, trailer_body.len as u32);
     out.append(trailer_body[..]);
 }
@@ -182,9 +182,9 @@ fn decode_grpc_web_frame<B>(
     guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
 
     let flag = wire[off];
-    guard (flag & ~(GRPC_FLAG_COMPRESSED | GRPC_WEB_FLAG_TRAILERS)) == 0 else { return false, 0; }
-    out_is_trailers = (flag & GRPC_WEB_FLAG_TRAILERS) != 0;
-    out_compressed = (flag & GRPC_FLAG_COMPRESSED) != 0;
+    guard (flag & ~(rfc::GRPC_FLAG_COMPRESSED | rfc::GRPC_WEB_FLAG_TRAILERS)) == 0 else { return false, 0; }
+    out_is_trailers = (flag & rfc::GRPC_WEB_FLAG_TRAILERS) != 0;
+    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
     let total_len = 5 + len_val_i64;

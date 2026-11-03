@@ -160,7 +160,7 @@ fn test_backpressure_and_drain(t: lit::T&) {
         let st2 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
         sub.assert_true(st2 == wing::WsSendStatus.Closed, "Status is Closed when limit exceeded and close_on_limit=true");
         sub.assert_true(ws.is_closed, "WebSocket is marked closed");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_POLICY_VIOLATION, "Close code 1008 Policy Violation");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_POLICY_VIOLATION, "Close code 1008 Policy Violation");
 
         // Subsequent sends on closed socket return Closed
         let st3 = ws.send_text_with_status("after close", out);
@@ -232,7 +232,7 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
 
         let hdr, ok_h = wing::parse_ws_frame_header(wire_ping[..]);
         sub.assert_true(ok_h, "Parsed generated ping header");
-        sub.assert_eq(hdr.opcode, wing::WS_OPCODE_PING, "Frame opcode is Ping (0x9)");
+        sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_PING, "Frame opcode is Ping (0x9)");
 
         // Advance another 5 seconds without touching: idle timeout (10s) expires
         wing::tick_timer_advance(wheel, 5);
@@ -242,11 +242,11 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
         let act_close = ws.tick_heartbeat(wheel, wire_close);
         sub.assert_true(act_close == wing::WsHeartbeatAction.CloseIdle, "tick_heartbeat executed CloseIdle");
         sub.assert_true(ws.is_closed, "Session marked closed");
-        sub.assert_eq(ws.close_code, wing::WS_STATUS_NORMAL, "Close status is 1000");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_NORMAL, "Close status is 1000");
 
         let hdr_c, ok_c = wing::parse_ws_frame_header(wire_close[..]);
         sub.assert_true(ok_c, "Parsed generated close header");
-        sub.assert_eq(hdr_c.opcode, wing::WS_OPCODE_CLOSE, "Frame opcode is Close (0x8)");
+        sub.assert_eq(hdr_c.opcode, rfc::WS_OPCODE_CLOSE, "Frame opcode is Close (0x8)");
     };
 
     t.run("2. Touch Resets Idle Timeout") { sub =>
@@ -486,7 +486,7 @@ fn test_zero_copy_websocket_view(t: lit::T&) {
         let mask: u8[4] = [0x11, 0x22, 0x33, 0x44];
 
         var wire_frame: u8[>..] = [];
-        wing::encode_ws_frame(wire_frame, wing::WS_OPCODE_TEXT, "Zero-Copy Ingress Payload", true, mask, true);
+        wing::encode_ws_frame(wire_frame, rfc::WS_OPCODE_TEXT, "Zero-Copy Ingress Payload", true, mask, true);
 
         var view = wing::WsMessageView { .. };
         var reply: u8[>..] = [];
@@ -495,18 +495,18 @@ fn test_zero_copy_websocket_view(t: lit::T&) {
         let ok = ws.receive_view(wire_frame[..], view, reply);
         sub.assert_true(ok, "ws.receive_view succeeds");
         sub.assert_true(view.is_valid, "Message marked valid");
-        sub.assert_eq(view.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+        sub.assert_eq(view.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
         sub.assert_bytes_eq(view.payload, "Zero-Copy Ingress Payload", "Payload matches wire data without copying into heap or local buffer");
 
         // Ping auto-reply via view
         var ping_wire: u8[>..] = [];
-        wing::encode_ws_frame(ping_wire, wing::WS_OPCODE_PING, "heartbeat", true, mask, true);
+        wing::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "heartbeat", true, mask, true);
 
         var ping_view = wing::WsMessageView { .. };
         var pong_out: u8[>..] = [];
         let ok_ping = ws.receive_view(ping_wire[..], ping_view, pong_out);
         sub.assert_true(ok_ping, "Ping processed");
-        sub.assert_eq(ping_view.opcode, wing::WS_OPCODE_PING, "Ping opcode");
+        sub.assert_eq(ping_view.opcode, rfc::WS_OPCODE_PING, "Ping opcode");
         sub.assert_bytes_eq(ping_view.payload, "heartbeat", "Ping payload matched");
         sub.assert_true(pong_out.len > 0, "Pong reply generated automatically");
     };
@@ -952,7 +952,7 @@ fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
 
         // Build a masked client frame: 6-byte header + payload
         var frame: u8[..256] = [];
-        wing::encode_ws_frame(frame, wing::WS_OPCODE_TEXT, original_msg, true, mask, true);
+        wing::encode_ws_frame(frame, rfc::WS_OPCODE_TEXT, original_msg, true, mask, true);
 
         let hdr, ok_hdr = wing::parse_ws_frame_header(frame[..]);
         sub.assert_true(ok_hdr, "Frame header parsed");
@@ -1236,7 +1236,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     let ok1 = wing::receive(ws, frag_ping[..], msg, reply);
     t.assert_true(ok1, "receive must handle protocol error");
     t.assert_true(ws.is_closed, "WebSocket must be marked closed on fragmented control frame");
-    t.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
+    t.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 
     // 2. Control frame with payload length > 125 (len = 126)
     var ws2 = wing::new_websocket_session(false);
@@ -1250,7 +1250,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     let ok2 = wing::receive(ws2, oversize_ping[..], msg, reply2);
     t.assert_true(ok2, "receive must handle protocol error");
     t.assert_true(ws2.is_closed, "WebSocket must be closed on oversized control frame");
-    t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
+    t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 }
 
 fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
@@ -1382,11 +1382,11 @@ fn test_rfc_6455_1005_empty_close_payload(t: lit::T&) {
 
     var ws = wing::new_websocket_session(false);
     var wire_out: u8[..256] = [];
-    wing::close(ws, wing::WS_STATUS_NO_STATUS, "", wire_out);
+    wing::close(ws, rfc::WS_STATUS_NO_STATUS, "", wire_out);
 
     let hdr, ok = wing::parse_ws_frame_header(wire_out[..]);
     t.assert_true(ok, "Close frame must parse");
-    t.assert_eq(hdr.opcode, wing::WS_OPCODE_CLOSE, "Opcode is Close");
+    t.assert_eq(hdr.opcode, rfc::WS_OPCODE_CLOSE, "Opcode is Close");
     t.assert_eq(hdr.payload_len, 0, "1005 close frame payload length must be 0 bytes on wire");
 }
 
@@ -1416,7 +1416,7 @@ fn test_uweb_1932_ws_send_blocked_when_closed(t: lit::T&) {
     // all subsequent sends (text, binary, ping) MUST be dropped without writing frames.
     var ws = wing::new_websocket_session(false);
     var close_wire: u8[..128] = [];
-    wing::close(ws, wing::WS_STATUS_NORMAL, "bye", close_wire);
+    wing::close(ws, rfc::WS_STATUS_NORMAL, "bye", close_wire);
     t.assert_true(ws.is_closed, "Session is closed");
 
     var wire_out: u8[..256] = [];
@@ -1531,7 +1531,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     let handled1 = wing::receive_view(ws, wire_non_minimal_16[..], view, reply);
     t.assert_true(handled1, "Handled non-minimal 16-bit length frame");
     t.assert_true(ws.is_closed, "Session must be closed on non-minimal length");
-    t.assert_eq(ws.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
+    t.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
 
     // 2. High-bit set in 64-bit length: byte 2 has 0x80 set
     var ws2 = wing::new_websocket_session(false);
@@ -1542,7 +1542,7 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     let handled2 = wing::receive_view(ws2, wire_high_bit_64[..], view, reply);
     t.assert_true(handled2, "Handled high-bit 64-bit length frame");
     t.assert_true(ws2.is_closed, "Session must be closed on high-bit in 64-bit length");
-    t.assert_eq(ws2.close_code, wing::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
+    t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
 }
 
 fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
@@ -1781,7 +1781,7 @@ fn test_uweb_prepared_message(t: lit::T&) {
     wing::subscribe(tree, 102, "broadcast/+");
 
     var msg = wing::PreparedMessage { .. };
-    let ok_prep = wing::prepare_message(msg, "{\"ticker\":\"BTC\",\"price\":92500}", wing::WS_OPCODE_TEXT);
+    let ok_prep = wing::prepare_message(msg, "{\"ticker\":\"BTC\",\"price\":92500}", rfc::WS_OPCODE_TEXT);
     t.assert_true(ok_prep, "prepare_message succeeded");
     t.assert_gt(msg.wire.len, 0, "Wire frame encoded");
     t.assert_false(msg.has_compressed, "Raw prepared message has_compressed is false");
@@ -1789,7 +1789,7 @@ fn test_uweb_prepared_message(t: lit::T&) {
     // Header validation
     let hdr, ok_h = wing::parse_ws_frame_header(msg.wire[..]);
     t.assert_true(ok_h, "Parsed prepared frame header");
-    t.assert_eq(hdr.opcode, wing::WS_OPCODE_TEXT, "Opcode is TEXT");
+    t.assert_eq(hdr.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
     t.assert_true(hdr.fin, "FIN bit set");
     t.assert_false(hdr.masked, "Server frame unmasked per RFC 6455");
 
@@ -1797,7 +1797,7 @@ fn test_uweb_prepared_message(t: lit::T&) {
     var comp_msg = wing::PreparedMessage { .. };
     var shared_comp = wing::SharedWsCompressor { .. };
     let long_payload = "REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345";
-    let ok_c = wing::prepare_message_compressed(comp_msg, long_payload, shared_comp, wing::WS_OPCODE_TEXT);
+    let ok_c = wing::prepare_message_compressed(comp_msg, long_payload, shared_comp, rfc::WS_OPCODE_TEXT);
     t.assert_true(ok_c, "prepare_message_compressed succeeded");
     t.assert_true(comp_msg.has_compressed, "Compressible payload marked has_compressed");
     t.assert_lt(comp_msg.compressed_wire.len, comp_msg.wire.len, "Compressed wire smaller than uncompressed");
@@ -1853,7 +1853,7 @@ fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
     let act_tick = ws.tick_heartbeat(wheel, wire_close);
     t.assert_true(act_tick == wing::WsHeartbeatAction.CloseMaxLifetime, "tick_heartbeat executed CloseMaxLifetime");
     t.assert_true(ws.is_closed, "Session closed by maxLifetime");
-    t.assert_eq(ws.close_code, wing::WS_STATUS_NORMAL, "Close status code 1000");
+    t.assert_eq(ws.close_code, rfc::WS_STATUS_NORMAL, "Close status code 1000");
 }
 
 // --- Test 52: #1347 Safari 15.0-15.3 Broken Compression Workaround ---

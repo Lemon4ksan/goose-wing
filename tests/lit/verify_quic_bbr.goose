@@ -89,7 +89,7 @@ fn test_coalesced_quic_datagram_demux() {
     // Packet 1: Initial packet (Long Header) with PING frame (0x01)
     var init_hdr = internal::QuicHeader {
         header_type:    internal::QuicHeaderType.Initial,
-        version:        internal::QUIC_VERSION_1,
+        version:        rfc::QUIC_VERSION_1,
         payload_length: 2, // 1 byte PN + 1 byte PING frame
         packet_number:  0,
         ..
@@ -102,7 +102,7 @@ fn test_coalesced_quic_datagram_demux() {
     // Packet 2: Handshake packet (Long Header) with PING frame (0x01)
     var hs_hdr = internal::QuicHeader {
         header_type:    internal::QuicHeaderType.Handshake,
-        version:        internal::QUIC_VERSION_1,
+        version:        rfc::QUIC_VERSION_1,
         payload_length: 2, // 1 byte PN + 1 byte PING frame
         packet_number:  0,
         ..

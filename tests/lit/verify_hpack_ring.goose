@@ -74,7 +74,7 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
         0x0d, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d, 0x68, 0x65, 0x61, 0x64, 0x65, 0x72,
     ];
     let err_c21 = internal::decode_hpack_header_block(g_dt_rfc, c21_wire[..], g_out_list, 8192, false);
-    assert(err_c21 == internal::ERR_NO_ERROR);
+    assert(err_c21 == rfc::H2_ERR_NO_ERROR);
     assert(g_out_list.fields.len == 1);
     assert(g_out_list.fields[0].name[..] == "custom-key");
     assert(g_out_list.fields[0].value[..] == "custom-header");

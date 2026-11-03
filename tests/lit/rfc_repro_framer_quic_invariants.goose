@@ -23,7 +23,7 @@ fn test_empty_payload_packet_rejected() {
     let empty_payload: const u8[:] = "";
     let handled, _ = internal::quic_conn_process_payload(srv, empty_payload, internal::QuicHeaderType.OneRtt);
     assert(!handled);
-    assert(srv.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
     assert(srv.state == internal::QuicConnState.Closing);
 
     print("QUIC_EMPTY_PAYLOAD_REJECTED: OK");
@@ -40,7 +40,7 @@ fn test_retire_conn_id_on_zero_length_scid_rejected() {
     // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
     let handled, _ = internal::quic_conn_process_payload(srv, rcid_payload[..], internal::QuicHeaderType.OneRtt);
     assert(!handled);
-    assert(srv.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
     assert(srv.state == internal::QuicConnState.Closing);
 
     print("QUIC_RETIRE_CONN_ID_ZERO_SCID_REJECTED: OK");
@@ -60,7 +60,7 @@ fn test_new_conn_id_on_zero_length_dcid_rejected() {
     // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
     let handled, _ = internal::quic_conn_process_payload(client, ncid_payload[..], internal::QuicHeaderType.OneRtt);
     assert(!handled);
-    assert(client.close_code == internal::QUIC_ERR_PROTOCOL_VIOLATION);
+    assert(client.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
     assert(client.state == internal::QuicConnState.Closing);
 
     print("QUIC_NEW_CONN_ID_ZERO_DCID_REJECTED: OK");

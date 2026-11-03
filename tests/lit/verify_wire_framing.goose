@@ -54,9 +54,24 @@ fn main() {
     let crlf_off = core::fast_find_crlfcrlf(http_msg);
     assert(crlf_off == 40);
     print("CRLFCRLF_OFFSET: ", crlf_off);
+
+    let key: u8[16] = [0; 16];
+    let iv:  u8[12] = [0; 12];
+    var sealed: u8[64] = [0; 64];
+    let sealed_len, seal_alert, ok_seal = wing::tls_record_seal_aes128_gcm_into(
+        key, iv, 0, rfc::TLS_CONTENT_APPLICATION_DATA, "ping", sealed[..],
+    );
+    assert(ok_seal && seal_alert == wing::TlsAlert.CloseNotify && sealed_len == 26);
+    var dec: u8[64] = [0; 64];
+    let dec_len, inner_t, _, ok_dec = wing::tls_record_decrypt_aes128_gcm_into(
+        key, iv, 0, sealed[..5], sealed[5..26], dec[..],
+    );
+    assert(ok_dec && dec_len == 4 && inner_t == rfc::TLS_CONTENT_APPLICATION_DATA && dec[..4] == "ping");
+    print("TLS_SEAL_ROUNDTRIP_LEN: ", dec_len);
 }
 
 // CHECK: GRPC_LPM_LEN: 11
 // CHECK: TLS_RECORD_TYPE: 23
 // CHECK: TLS_OVERFLOW_ALERT: 22
 // CHECK: CRLFCRLF_OFFSET: 40
+// CHECK: TLS_SEAL_ROUNDTRIP_LEN: 4

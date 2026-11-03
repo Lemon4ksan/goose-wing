@@ -15,46 +15,6 @@ import .soa_timer;
 import realtime.topic_tree;
 import http.compression_dict;
 
-// ---- Reason Phrases for HTTP/1.1 Status Line -----------------------------
-
-fn http_status_reason_phrase(code: i32) -> const u8[:] {
-    return match code {
-        100 => "Continue",
-        101 => "Switching Protocols",
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        204 => "No Content",
-        206 => "Partial Content",
-        301 => "Moved Permanently",
-        302 => "Found",
-        304 => "Not Modified",
-        307 => "Temporary Redirect",
-        308 => "Permanent Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        408 => "Request Timeout",
-        413 => "Payload Too Large",
-        417 => "Expectation Failed",
-        422 => "Unprocessable Content",
-        425 => "Too Early",
-        428 => "Precondition Required",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        451 => "Unavailable For Legal Reasons",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        511 => "Network Authentication Required",
-        _ => "Unknown",
-    };
-}
-
 // ---- HTTP/1.1 Wire Request Parser ---------------------------------------
 
 // RFC 3986 §3.2.2 & RFC 9112 §3.2: Validates structural host header integrity.
@@ -108,19 +68,6 @@ fn collect_transfer_encoding_headers<H>(headers: const H&, out_te: u8[..64]&) ->
     return true;
 }
 
-const METHOD_GET_U32:     u32 = 0x20544547;       // "GET "
-const METHOD_PUT_U32:     u32 = 0x20545550;       // "PUT "
-const METHOD_POST_U64:    u64 = 0x2054534F50;     // "POST "
-const METHOD_HEAD_U64:    u64 = 0x2044414548;     // "HEAD "
-const METHOD_DELETE_U64:  u64 = 0x00204554454C4544; // "DELETE "
-const METHOD_OPTIONS_U64: u64 = 0x20534E4F4954504F; // "OPTIONS "
-const METHOD_CONNECT_U64: u64 = 0x205443454E4E4F43; // "CONNECT "
-const METHOD_PATCH_U64:   u64 = 0x204843544150;     // "PATCH "
-const METHOD_TRACE_U64:   u64 = 0x204543415254;     // "TRACE "
-
-const HTTP_VERSION_1_1_U64: u64 = 0x312E312F50545448; // RFC 9112 §2.3 ("HTTP/1.1")
-const HTTP_VERSION_1_0_U64: u64 = 0x302E312F50545448; // RFC 9112 §2.3 ("HTTP/1.0")
-
 // Scans slice for the first space delimiter (' ') starting at `start` offset using 64-bit SWAR.
 // Returns the index of the first space, or -1 if none found.
 //
@@ -163,31 +110,31 @@ fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
 //   returns: 3, "GET"
 inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
     let w0_32 = (w0 & 0xFFFFFFFF) as u32;
-    if w0_32 == METHOD_GET_U32 {
+    if w0_32 == rfc::METHOD_GET_U32 {
         return 3, "GET";
     }
-    if (w0 & 0xFFFFFFFFFF) == METHOD_POST_U64 {
+    if (w0 & 0xFFFFFFFFFF) == rfc::METHOD_POST_U64 {
         return 4, "POST";
     }
-    if (w0 & 0xFFFFFFFFFF) == METHOD_HEAD_U64 {
+    if (w0 & 0xFFFFFFFFFF) == rfc::METHOD_HEAD_U64 {
         return 4, "HEAD";
     }
-    if w0_32 == METHOD_PUT_U32 {
+    if w0_32 == rfc::METHOD_PUT_U32 {
         return 3, "PUT";
     }
-    if (w0 & 0xFFFFFFFFFFFFFF) == METHOD_DELETE_U64 {
+    if (w0 & 0xFFFFFFFFFFFFFF) == rfc::METHOD_DELETE_U64 {
         return 6, "DELETE";
     }
-    if w0 == METHOD_OPTIONS_U64 {
+    if w0 == rfc::METHOD_OPTIONS_U64 {
         return 7, "OPTIONS";
     }
-    if w0 == METHOD_CONNECT_U64 {
+    if w0 == rfc::METHOD_CONNECT_U64 {
         return 7, "CONNECT";
     }
-    if (w0 & 0xFFFFFFFFFFFF) == METHOD_PATCH_U64 {
+    if (w0 & 0xFFFFFFFFFFFF) == rfc::METHOD_PATCH_U64 {
         return 5, "PATCH";
     }
-    if (w0 & 0xFFFFFFFFFFFF) == METHOD_TRACE_U64 {
+    if (w0 & 0xFFFFFFFFFFFF) == rfc::METHOD_TRACE_U64 {
         return 5, "TRACE";
     }
     return 0, "";
@@ -221,8 +168,8 @@ fn parse_http1_request_line<Req>(
     if m_len > 0 {
         out_req.method.clear();
         out_req.method.append(m_slice);
-        is_connect = (w0 == METHOD_CONNECT_U64);
-        is_options = (w0 == METHOD_OPTIONS_U64);
+        is_connect = (w0 == rfc::METHOD_CONNECT_U64);
+        is_options = (w0 == rfc::METHOD_OPTIONS_U64);
     } else {
         sp1 = swar_find_space(req_line, 0);
         guard sp1 > 0 && sp1 <= out_req.method.cap else { return false; }
@@ -255,8 +202,8 @@ fn parse_http1_request_line<Req>(
 
     guard req_line.len - (sp2 + 1) == 8 else { return false; }
     let proto_u64 = core::read_le_u64(req_line, sp2 + 1);
-    guard proto_u64 == HTTP_VERSION_1_1_U64 || proto_u64 == HTTP_VERSION_1_0_U64 else { return false; }
-    out_req.is_http10 = (proto_u64 == HTTP_VERSION_1_0_U64);
+    guard proto_u64 == rfc::HTTP_VERSION_1_1_U64 || proto_u64 == rfc::HTTP_VERSION_1_0_U64 else { return false; }
+    out_req.is_http10 = (proto_u64 == rfc::HTTP_VERSION_1_0_U64);
     return true;
 }
 
@@ -593,12 +540,6 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     return true, total_consumed;
 }
 
-// RFC 9110 §8.6: Returns true if status code prohibits a message body (204, 304, 1xx).
-fn is_empty_body_status(code: i32) -> bool {
-    guard code != 200 else { return false; }
-    return code == 204 || code == 304 || (code >= 100 && code < 200);
-}
-
 struct ResponseFramingInfo {
     has_te: bool     = false,
     te_buf: u8[..64] = [],
@@ -721,7 +662,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     let framing, ok_frame = inspect_response_framing_headers(out_res.headers[..]);
     guard ok_frame else { return false, 0; }
 
-    let is_empty_status = is_empty_body_status(out_res.status_code);
+    let is_empty_status = rfc::is_empty_body_status(out_res.status_code);
 
     // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
     // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
@@ -768,77 +709,11 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
 // ---- HTTP/1.1 Wire Response Serializer -----------------------------------
 
-// Serializes an HTTP/1.1 response using chunked transfer coding and emits trailers (RFC 9112 Section 7.1).
-const HTTP1_STATUS_200: const u8[:] = "HTTP/1.1 200 OK\r\n";
-const HTTP1_STATUS_204: const u8[:] = "HTTP/1.1 204 No Content\r\n";
-const HTTP1_STATUS_301: const u8[:] = "HTTP/1.1 301 Moved Permanently\r\n";
-const HTTP1_STATUS_302: const u8[:] = "HTTP/1.1 302 Found\r\n";
-const HTTP1_STATUS_304: const u8[:] = "HTTP/1.1 304 Not Modified\r\n";
-const HTTP1_STATUS_400: const u8[:] = "HTTP/1.1 400 Bad Request\r\n";
-const HTTP1_STATUS_401: const u8[:] = "HTTP/1.1 401 Unauthorized\r\n";
-const HTTP1_STATUS_403: const u8[:] = "HTTP/1.1 403 Forbidden\r\n";
-const HTTP1_STATUS_404: const u8[:] = "HTTP/1.1 404 Not Found\r\n";
-const HTTP1_STATUS_405: const u8[:] = "HTTP/1.1 405 Method Not Allowed\r\n";
-const HTTP1_STATUS_500: const u8[:] = "HTTP/1.1 500 Internal Server Error\r\n";
-const HTTP1_STATUS_502: const u8[:] = "HTTP/1.1 502 Bad Gateway\r\n";
-const HTTP1_STATUS_503: const u8[:] = "HTTP/1.1 503 Service Unavailable\r\n";
-const HTTP1_STATUS_101: const u8[:] = "HTTP/1.1 101 Switching Protocols\r\n";
-
+// Serializes an HTTP/1.1 response status line (RFC 9112 Section 4).
 fn serialize_status_line<B>(status_code: i32, out: B&) {
-    if status_code == 200 {
-        out.append(HTTP1_STATUS_200);
-        return;
-    }
-    if status_code == 404 {
-        out.append(HTTP1_STATUS_404);
-        return;
-    }
-    if status_code == 400 {
-        out.append(HTTP1_STATUS_400);
-        return;
-    }
-    if status_code == 500 {
-        out.append(HTTP1_STATUS_500);
-        return;
-    }
-    if status_code == 204 {
-        out.append(HTTP1_STATUS_204);
-        return;
-    }
-    if status_code == 304 {
-        out.append(HTTP1_STATUS_304);
-        return;
-    }
-    if status_code == 301 {
-        out.append(HTTP1_STATUS_301);
-        return;
-    }
-    if status_code == 302 {
-        out.append(HTTP1_STATUS_302);
-        return;
-    }
-    if status_code == 401 {
-        out.append(HTTP1_STATUS_401);
-        return;
-    }
-    if status_code == 403 {
-        out.append(HTTP1_STATUS_403);
-        return;
-    }
-    if status_code == 405 {
-        out.append(HTTP1_STATUS_405);
-        return;
-    }
-    if status_code == 502 {
-        out.append(HTTP1_STATUS_502);
-        return;
-    }
-    if status_code == 503 {
-        out.append(HTTP1_STATUS_503);
-        return;
-    }
-    if status_code == 101 {
-        out.append(HTTP1_STATUS_101);
+    let pre = rfc::status_line_h1(status_code);
+    if pre.len > 0 {
+        out.append(pre);
         return;
     }
     out.append("HTTP/1.1 ");
@@ -850,7 +725,7 @@ fn serialize_status_line<B>(status_code: i32, out: B&) {
         core::format_i64_dec(status_code as i64, out);
     }
     out.push(' ');
-    out.append(http_status_reason_phrase(status_code));
+    out.append(rfc::status_phrase(status_code));
     out.append("\r\n");
 }
 
@@ -1093,7 +968,7 @@ fn serialize_http1_headers<Res, B>(
         out_wire.append(get_cached_http_date_header(now_sec));
     }
 
-    let is_empty_status = is_empty_body_status(res.status_code);
+    let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
             serialize_content_length_header(res.body.len, out_wire);
@@ -1118,7 +993,7 @@ fn serialize_http1_response<Res, B>(
     out_wire:    B&,
     now_sec:     i64 = 0,
 ) {
-    let is_empty_status = is_empty_body_status(res.status_code);
+    let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if res.trailers.len > 0 {
             serialize_http1_chunked_response(res, server_name, 4096, out_wire);
@@ -1152,7 +1027,7 @@ fn serialize_http1_response<Res, B>(
 // Headers are serialized into wire_headers, and res.body is transmitted directly without copying into headers.
 fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:], wire_headers: B&) -> i32 {
     wire_headers.clear();
-    let is_empty_status = is_empty_body_status(res.status_code);
+    let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         let has_te = if res.presence_mask != 0 {
             (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
@@ -1311,7 +1186,7 @@ fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> 
 // directly into the cork buffer or socket via vectored I/O without intermediate body copies.
 fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name: const u8[:]) -> i32 {
     guard sc.sock_fd > 0 else { return 0; }
-    let is_empty_status = is_empty_body_status(res.status_code);
+    let is_empty_status = rfc::is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
     if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
         var wire_out: u8[..4096] = [];
@@ -1727,7 +1602,7 @@ fn resolve_sni_credentials_with_fallback<Fallback: fn(const u8[:]) -> SniCredent
 
 // ---- Server Pub/Sub Broadcast Engine (uWebSockets TopicTree pattern) --------
 
-fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = WS_OPCODE_TEXT) -> i64 {
+fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = rfc::WS_OPCODE_TEXT) -> i64 {
     return publish(server.topic_tree, topic, message, opcode);
 }
 
@@ -1908,14 +1783,14 @@ fn complete_ws_upgrade<B>(
 }
 
 fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
-    return raw_stream.len >= 24 && raw_stream[..24] == internal::H2_CLIENT_PREFACE[..];
+    return raw_stream.len >= 24 && raw_stream[..24] == rfc::H2_CLIENT_PREFACE[..];
 }
 
 // True while a short read is still a strict prefix of the 24-byte H2 preface.
 // The preface contains "\r\n\r\n" at offset 14, so a sliced first TCP segment
 // must not fall through to the HTTP/1.1 parser (found by Toxiproxy SlicerToxic).
 fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
-    return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == internal::H2_CLIENT_PREFACE[..raw_stream.len];
+    return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == rfc::H2_CLIENT_PREFACE[..raw_stream.len];
 }
 
 const MAX_SERVER_BODY_LIMIT: i64 = 10 * 1024 * 1024; // 10 MB payload limit
@@ -3194,11 +3069,11 @@ fn negotiate_compression_dictionary(
     }
 
     let ae = find_header(req.headers[..], "Accept-Encoding");
-    if accept_encoding_has_token(ae, ENCODING_DCZ) {
-        return ENCODING_DCZ, true;
+    if accept_encoding_has_token(ae, rfc::ENCODING_DCZ) {
+        return rfc::ENCODING_DCZ, true;
     }
-    if accept_encoding_has_token(ae, ENCODING_DCB) {
-        return ENCODING_DCB, true;
+    if accept_encoding_has_token(ae, rfc::ENCODING_DCB) {
+        return rfc::ENCODING_DCB, true;
     }
     return "", false;
 }
@@ -3216,15 +3091,15 @@ fn apply_negotiated_dictionary_response(
     guard ok else { return false; }
 
     res.body.clear();
-    if enc == ENCODING_DCZ {
+    if enc == rfc::ENCODING_DCZ {
         guard encode_dcz_response(res.body, dict_hash, raw_content) else { return false; }
-        set_header(res, "Content-Encoding", ENCODING_DCZ);
+        set_header(res, "Content-Encoding", rfc::ENCODING_DCZ);
         set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
         return true;
     }
-    if enc == ENCODING_DCB {
+    if enc == rfc::ENCODING_DCB {
         guard encode_dcb_response(res.body, dict_hash, raw_content) else { return false; }
-        set_header(res, "Content-Encoding", ENCODING_DCB);
+        set_header(res, "Content-Encoding", rfc::ENCODING_DCB);
         set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
         return true;
     }

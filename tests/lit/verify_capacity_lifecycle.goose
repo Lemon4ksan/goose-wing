@@ -29,8 +29,8 @@ fn encode_client_h2_request<B>(
 
     let hdr = internal::FrameHeader {
         length:     hpack_block.len as u32,
-        frame_type: internal::FRAME_HEADERS,
-        flags:      internal::FLAG_END_HEADERS | internal::FLAG_END_STREAM,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
     internal::encode_frame_header_to(hdr, out);
@@ -47,10 +47,10 @@ fn test_h2_capacity_lifecycle() {
 
     // Handshake
     var init_wire: u8[..64] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE[..]);
+    init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
     let set_hdr = internal::FrameHeader {
         length:     0,
-        frame_type: internal::FRAME_SETTINGS,
+        frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
@@ -94,29 +94,29 @@ fn test_h3_capacity_lifecycle() {
 
     // Ingest Control Stream with SETTINGS
     var ctrl_wire: u8[..128] = [];
-    internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+    internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
     internal::encode_h3_settings_frame(ctrl_wire, settings);
     let err_ctrl = server_conn.handle_stream_data(3, false, ctrl_wire[..], false);
-    assert(err_ctrl == internal::H3_ERR_NO_ERROR);
+    assert(err_ctrl == rfc::H3_ERR_NO_ERROR);
 
     // QPACK static block: :method GET (0xD1), :scheme https (0xD7), :path / (0xC1)
     let qpack_sec: u8[5] = [0x00, 0x00, 0xD1, 0xD7, 0xC1];
     var req_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(req_wire, internal::H3_FRAME_HEADERS, qpack_sec.len as u64));
+    assert(internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
     req_wire.append(qpack_sec[..]);
 
     let body = "PING";
     var data_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(data_wire, internal::H3_FRAME_DATA, body.len as u64));
+    assert(internal::encode_h3_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
     data_wire.append(body);
 
     for i in 64 {
         let stream_id = (i * 4) as u64; // Client bidi request streams: 0, 4, 8, ...
         let err_h = server_conn.handle_stream_data(stream_id, true, req_wire[..], false);
-        assert(err_h == internal::H3_ERR_NO_ERROR);
+        assert(err_h == rfc::H3_ERR_NO_ERROR);
 
         let err_d = server_conn.handle_stream_data(stream_id, true, data_wire[..], true);
-        assert(err_d == internal::H3_ERR_NO_ERROR);
+        assert(err_d == rfc::H3_ERR_NO_ERROR);
 
         let s_idx, found = internal::find_h3_stream_idx(server_conn, stream_id);
         assert(found);

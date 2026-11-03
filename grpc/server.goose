@@ -15,9 +15,6 @@ import client.response;
 import core from "..";
 
 // Wire protocol constants
-const HTTP_STATUS_OK: i32 = 200;
-
-// ---- Protocol Detection and Content-Type Helpers -------------------------
 
 inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
     guard starts_with_fold(ct, prefix) else { return false; }
@@ -272,7 +269,7 @@ fn build_grpc_trailers_only_response(
     ctx:     const GrpcServerContext&,
     out_res: Response&,
 ) {
-    out_res.status_code = HTTP_STATUS_OK;
+    out_res.status_code = rfc::STATUS_OK;
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
@@ -330,7 +327,7 @@ fn build_grpc_wire_response(
     ctx:          const GrpcServerContext&,
     out_res:      Response&,
 ) {
-    out_res.status_code = HTTP_STATUS_OK;
+    out_res.status_code = rfc::STATUS_OK;
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
@@ -512,10 +509,10 @@ fn parse_client_stream(
     var idx: u64 = 0;
     let wire_slice = out_reader.wire[..];
     let total_len = wire_slice.len as u64;
-    while core::add_sat_u64(idx, GRPC_LPM_HEADER_LEN) <= total_len {
+    while core::add_sat_u64(idx, rfc::GRPC_LPM_HEADER_LEN) <= total_len {
         let flag = wire_slice[idx as i64];
-        guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
-        let is_comp = (flag & GRPC_FLAG_COMPRESSED) != 0;
+        guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return false; }
+        let is_comp = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
         let hdr_off = (core::add_sat_u64(idx, 1)) as i64;
         let len_val = core::read_be_u32(wire_slice, hdr_off);
@@ -589,7 +586,7 @@ fn decode_and_validate_single_lpm(
     }
 
     var is_compressed = false;
-    if wire_bytes.len >= GRPC_LPM_HEADER_LEN {
+    if wire_bytes.len >= rfc::GRPC_LPM_HEADER_LEN {
         let ok_lpm, consumed = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
         if !ok_lpm || consumed != wire_bytes.len {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
@@ -950,10 +947,10 @@ fn feed_grpc_lpm_reader(reader: GrpcLpmReader&, raw: const u8[:]) -> bool {
         GRPC_DEFAULT_MAX_MESSAGE_SIZE
     };
 
-    while core::add_sat_u64(idx, GRPC_LPM_HEADER_LEN) <= total_len {
+    while core::add_sat_u64(idx, rfc::GRPC_LPM_HEADER_LEN) <= total_len {
         let flag = wire_slice[idx as i64];
-        guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
-        let is_comp = (flag & GRPC_FLAG_COMPRESSED) != 0;
+        guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return false; }
+        let is_comp = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
         let hdr_off = (core::add_sat_u64(idx, 1)) as i64;
         let len_val = core::read_be_u32(wire_slice, hdr_off);
@@ -1005,7 +1002,7 @@ fn write_grpc_lpm_frame(
     let total_needed = core::add_sat_u64(writer.wire_buf.len as u64, frame_len);
     guard total_needed <= (writer.wire_buf.cap as u64) else { return false; }
 
-    let flag: u8 = if compressed { GRPC_FLAG_COMPRESSED } else { 0x00 };
+    let flag: u8 = if compressed { rfc::GRPC_FLAG_COMPRESSED } else { 0x00 };
     writer.wire_buf.push(flag);
     core::write_be_u32(writer.wire_buf, payload.len as u32);
     writer.wire_buf.append(payload);

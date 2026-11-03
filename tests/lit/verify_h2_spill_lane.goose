@@ -81,7 +81,7 @@ fn test_inline_body_lifecycle() {
     wing::add_route(pipeline.router, "POST", "/inline", 1);
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0); // SETTINGS
     var wire_out: u8[>..] = [];
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
@@ -118,7 +118,7 @@ fn test_dynamic_promotion_and_reassembly() {
     wing::add_route(pipeline.router, "POST", "/large", 2);
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0); // SETTINGS
     var wire_out: u8[>..] = [];
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
@@ -174,7 +174,7 @@ fn test_maximum_capacity_overflow() {
     wing::add_route(pipeline.router, "POST", "/overflow", 3);
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0); // SETTINGS
     var wire_out: u8[>..] = [];
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
@@ -210,7 +210,7 @@ fn test_maximum_capacity_overflow() {
 
     let has_rst, rst_code = scan_for_rst_stream(wire_out[..], 1);
     print("OVERFLOW_RST_EMITTED: ", if has_rst { "YES" } else { "NO" });
-    print("OVERFLOW_RST_CODE_CANCEL: ", if rst_code == internal::ERR_CANCEL { "YES" } else { "NO" });
+    print("OVERFLOW_RST_CODE_CANCEL: ", if rst_code == rfc::H2_ERR_CANCEL { "YES" } else { "NO" });
     print("OVERFLOW_SLAB_RECLAIMED: ", if count_in_use_slabs(pipeline.slab_pool) == 0 { "YES" } else { "NO" });
 }
 
@@ -221,7 +221,7 @@ fn test_pool_saturation_rejection() {
     wing::add_route(pipeline.router, "POST", "/saturated", 4);
 
     var init_wire: u8[>..] = [];
-    init_wire.append(internal::H2_CLIENT_PREFACE);
+    init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_frame_header(init_wire, 0, 0x04, 0x00, 0); // SETTINGS
     var wire_out: u8[>..] = [];
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
@@ -258,7 +258,7 @@ fn test_pool_saturation_rejection() {
     let has_rst, rst_code = scan_for_rst_stream(wire_out[..], 1);
     print("SATURATION_CONN_ALIVE: ", if ok { "YES" } else { "NO" });
     print("SATURATION_RST_EMITTED: ", if has_rst { "YES" } else { "NO" });
-    print("SATURATION_RST_REFUSED: ", if rst_code == internal::ERR_REFUSED_STREAM { "YES" } else { "NO" });
+    print("SATURATION_RST_REFUSED: ", if rst_code == rfc::H2_ERR_REFUSED_STREAM { "YES" } else { "NO" });
 
     // Clean up acquired slabs
     for i in 16 {

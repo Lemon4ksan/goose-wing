@@ -9,8 +9,6 @@ namespace wing;
 
 import std;
 
-const STATUS_TOO_EARLY: u16 = 425; // RFC 8470 Section 5.2
-
 enum EarlyDataDecision {
     Allow,          // Safe idempotent method (GET, HEAD, OPTIONS, TRACE)
     RejectMutating, // Mutating method (POST, PUT, DELETE, PATCH) forbidden in 0-RTT
@@ -36,7 +34,7 @@ fn evaluate_early_data_request(method: const u8[:], allow_mutating_override: boo
 
 // Evaluates response status to determine if 425 Too Early recovery retry is required
 fn evaluate_early_data_response(status_code: u16, was_sent_early: bool) -> EarlyDataDecision {
-    if was_sent_early && status_code == STATUS_TOO_EARLY {
+    if was_sent_early && status_code == rfc::STATUS_TOO_EARLY {
         return EarlyDataDecision.RetryOn1Rtt;
     }
     return EarlyDataDecision.Allow;

@@ -20,21 +20,21 @@ fn test_h3_framing_and_grease(t: lit::T&) {
         var buf: u8[..64] = [];
 
         // DATA frame (0x00, len 100)
-        sub.assert_true(internal::encode_h3_frame_header(buf, internal::H3_FRAME_DATA, 100), "encode DATA frame header");
+        sub.assert_true(internal::encode_h3_frame_header(buf, rfc::H3_FRAME_DATA, 100), "encode DATA frame header");
         sub.assert_eq(buf.len, 3, "1-byte type + 2-byte len (100 <= 16383 takes 2 bytes)");
 
         let hdr, ok = internal::parse_h3_frame_header(buf[..], 0);
         sub.assert_true(ok, "parse DATA frame header");
-        sub.assert_eq(hdr.frame_type, internal::H3_FRAME_DATA, "type is DATA");
+        sub.assert_eq(hdr.frame_type, rfc::H3_FRAME_DATA, "type is DATA");
         sub.assert_eq(hdr.payload_len, 100, "length is 100");
         sub.assert_eq(hdr.header_len, 3, "header length is 3 bytes");
 
         // Large frame (len 1000000)
         buf.clear();
-        sub.assert_true(internal::encode_h3_frame_header(buf, internal::H3_FRAME_HEADERS, 1000000), "encode HEADERS frame header");
+        sub.assert_true(internal::encode_h3_frame_header(buf, rfc::H3_FRAME_HEADERS, 1000000), "encode HEADERS frame header");
         let hdr_lg, ok_lg = internal::parse_h3_frame_header(buf[..], 0);
         sub.assert_true(ok_lg, "parse large HEADERS header");
-        sub.assert_eq(hdr_lg.frame_type, internal::H3_FRAME_HEADERS, "type is HEADERS");
+        sub.assert_eq(hdr_lg.frame_type, rfc::H3_FRAME_HEADERS, "type is HEADERS");
         sub.assert_eq(hdr_lg.payload_len, 1000000, "length is 1000000");
     };
 
@@ -50,17 +50,17 @@ fn test_h3_framing_and_grease(t: lit::T&) {
         sub.assert_false(internal::is_h3_grease_frame(0x04), "SETTINGS is not GREASE");
 
         // Control stream rules
-        sub.assert_true(internal::is_allowed_on_control_stream(internal::H3_FRAME_SETTINGS), "SETTINGS allowed on Control");
-        sub.assert_true(internal::is_allowed_on_control_stream(internal::H3_FRAME_GOAWAY), "GOAWAY allowed on Control");
+        sub.assert_true(internal::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS allowed on Control");
+        sub.assert_true(internal::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY allowed on Control");
         sub.assert_true(internal::is_allowed_on_control_stream(0x21), "GREASE allowed on Control");
-        sub.assert_false(internal::is_allowed_on_control_stream(internal::H3_FRAME_DATA), "DATA strictly forbidden on Control");
-        sub.assert_false(internal::is_allowed_on_control_stream(internal::H3_FRAME_HEADERS), "HEADERS strictly forbidden on Control");
+        sub.assert_false(internal::is_allowed_on_control_stream(rfc::H3_FRAME_DATA), "DATA strictly forbidden on Control");
+        sub.assert_false(internal::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS), "HEADERS strictly forbidden on Control");
 
         // Request stream rules
-        sub.assert_true(internal::is_allowed_on_request_stream(internal::H3_FRAME_DATA), "DATA allowed on Request");
-        sub.assert_true(internal::is_allowed_on_request_stream(internal::H3_FRAME_HEADERS), "HEADERS allowed on Request");
-        sub.assert_false(internal::is_allowed_on_request_stream(internal::H3_FRAME_SETTINGS), "SETTINGS strictly forbidden on Request");
-        sub.assert_false(internal::is_allowed_on_request_stream(internal::H3_FRAME_GOAWAY), "GOAWAY strictly forbidden on Request");
+        sub.assert_true(internal::is_allowed_on_request_stream(rfc::H3_FRAME_DATA), "DATA allowed on Request");
+        sub.assert_true(internal::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS), "HEADERS allowed on Request");
+        sub.assert_false(internal::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS strictly forbidden on Request");
+        sub.assert_false(internal::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY strictly forbidden on Request");
     };
 }
 
@@ -79,14 +79,14 @@ fn test_h3_settings_conformance(t: lit::T&) {
 
         let hdr, ok_hdr = internal::parse_h3_frame_header(frame_buf[..], 0);
         sub.assert_true(ok_hdr, "parse SETTINGS header");
-        sub.assert_eq(hdr.frame_type, internal::H3_FRAME_SETTINGS, "frame type is SETTINGS");
+        sub.assert_eq(hdr.frame_type, rfc::H3_FRAME_SETTINGS, "frame type is SETTINGS");
 
         let p_start = hdr.header_len as i64;
         let p_end = (hdr.header_len + hdr.payload_len) as i64;
         let payload = frame_buf[p_start..p_end];
         var set_in = wing::H3Settings { .. };
         let err = internal::parse_h3_settings_frame(payload, set_in);
-        sub.assert_eq(err, internal::H3_ERR_NO_ERROR, "settings parsed with NO_ERROR");
+        sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "settings parsed with NO_ERROR");
         sub.assert_eq(set_in.qpack_max_table_capacity, 4096, "table capacity 4096");
         sub.assert_eq(set_in.max_field_section_size, 32768, "max section size 32768");
         sub.assert_eq(set_in.qpack_blocked_streams, 16, "blocked streams 16");
@@ -101,27 +101,27 @@ fn test_h3_settings_conformance(t: lit::T&) {
 
         var set_in = wing::H3Settings { .. };
         let err = internal::parse_h3_settings_frame(bad_payload[..], set_in);
-        sub.assert_eq(err, internal::H3_ERR_SETTINGS_ERROR, "forbidden H2 setting triggers H3_SETTINGS_ERROR (0x0109)");
+        sub.assert_eq(err, rfc::H3_ERR_SETTINGS_ERROR, "forbidden H2 setting triggers H3_SETTINGS_ERROR (0x0109)");
 
         // Forbidden H2 setting 0x04 (SETTINGS_INITIAL_WINDOW_SIZE)
         bad_payload.clear();
         internal::quic_encode_varint(bad_payload, 0x04);
         internal::quic_encode_varint(bad_payload, 65535);
         let err_win = internal::parse_h3_settings_frame(bad_payload[..], set_in);
-        sub.assert_eq(err_win, internal::H3_ERR_SETTINGS_ERROR, "H2 initial window size setting triggers H3_SETTINGS_ERROR");
+        sub.assert_eq(err_win, rfc::H3_ERR_SETTINGS_ERROR, "H2 initial window size setting triggers H3_SETTINGS_ERROR");
     };
 
     t.run("H3-05: Rejection of Duplicate Setting Identifiers") { sub =>
         // Construct payload with duplicate QPACK_MAX_TABLE_CAPACITY (0x01)
         var dup_payload: u8[..16] = [];
-        internal::quic_encode_varint(dup_payload, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(dup_payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         internal::quic_encode_varint(dup_payload, 1024);
-        internal::quic_encode_varint(dup_payload, internal::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(dup_payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         internal::quic_encode_varint(dup_payload, 2048);
 
         var set_in = wing::H3Settings { .. };
         let err = internal::parse_h3_settings_frame(dup_payload[..], set_in);
-        sub.assert_eq(err, internal::H3_ERR_SETTINGS_ERROR, "duplicate setting triggers H3_SETTINGS_ERROR (0x0109)");
+        sub.assert_eq(err, rfc::H3_ERR_SETTINGS_ERROR, "duplicate setting triggers H3_SETTINGS_ERROR (0x0109)");
     };
 }
 
@@ -148,21 +148,21 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
         // Control stream starts with VarInt 0x00 followed by SETTINGS frame
         let ctrl_type, off_ctrl, ok_c = internal::quic_decode_varint(ctrl_buf[..], 0);
         sub.assert_true(ok_c, "decode control stream type");
-        sub.assert_eq(ctrl_type, internal::H3_STREAM_CONTROL, "control stream type is 0x00");
+        sub.assert_eq(ctrl_type, rfc::H3_STREAM_CONTROL, "control stream type is 0x00");
 
         let set_hdr, ok_s = internal::parse_h3_frame_header(ctrl_buf[..], off_ctrl);
         sub.assert_true(ok_s, "parse settings header on control stream");
-        sub.assert_eq(set_hdr.frame_type, internal::H3_FRAME_SETTINGS, "first frame is SETTINGS");
+        sub.assert_eq(set_hdr.frame_type, rfc::H3_FRAME_SETTINGS, "first frame is SETTINGS");
 
         // QPACK Encoder starts with VarInt 0x02
         let qenc_type, _, ok_e = internal::quic_decode_varint(qenc_buf[..], 0);
         sub.assert_true(ok_e, "decode qpack encoder type");
-        sub.assert_eq(qenc_type, internal::H3_STREAM_QPACK_ENCODER, "qpack encoder type is 0x02");
+        sub.assert_eq(qenc_type, rfc::H3_STREAM_QPACK_ENCODER, "qpack encoder type is 0x02");
 
         // QPACK Decoder starts with VarInt 0x03
         let qdec_type, _, ok_d = internal::quic_decode_varint(qdec_buf[..], 0);
         sub.assert_true(ok_d, "decode qpack decoder type");
-        sub.assert_eq(qdec_type, internal::H3_STREAM_QPACK_DECODER, "qpack decoder type is 0x03");
+        sub.assert_eq(qdec_type, rfc::H3_STREAM_QPACK_DECODER, "qpack decoder type is 0x03");
     };
 
     t.run("H3-07: Inbound Control Stream Invariants & SETTINGS Rules") { sub =>
@@ -171,24 +171,24 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
 
         // Server control stream payload: Stream Type 0x00 || GOAWAY frame (NOT SETTINGS!)
         var bad_ctrl: u8[..32] = [];
-        internal::quic_encode_varint(bad_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(bad_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_goaway_frame(bad_ctrl, 0);
 
         let err_no_set = internal::handle_stream_data(conn, 3, false, bad_ctrl[..], false);
         sub.assert_eq(
             err_no_set,
-            internal::H3_ERR_MISSING_SETTINGS,
+            rfc::H3_ERR_MISSING_SETTINGS,
             "first frame not SETTINGS triggers H3_MISSING_SETTINGS (0x010A)",
         );
 
         // Valid server control stream: Stream Type 0x00 || SETTINGS frame
         var conn2 = internal::new_h3_client_connection(settings);
         var good_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(good_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(good_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(good_ctrl, settings);
 
         let err_ok = internal::handle_stream_data(conn2, 3, false, good_ctrl[..], false);
-        sub.assert_eq(err_ok, internal::H3_ERR_NO_ERROR, "valid control stream processed ok");
+        sub.assert_eq(err_ok, rfc::H3_ERR_NO_ERROR, "valid control stream processed ok");
         sub.assert_true(conn2.peer_settings_received, "peer settings recorded");
 
         // Second SETTINGS frame received later on control stream
@@ -197,7 +197,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
         let err_second = internal::handle_stream_data(conn2, 3, false, second_settings[..], false);
         sub.assert_eq(
             err_second,
-            internal::H3_ERR_FRAME_UNEXPECTED,
+            rfc::H3_ERR_FRAME_UNEXPECTED,
             "second SETTINGS frame triggers H3_FRAME_UNEXPECTED (0x0105)",
         );
     };
@@ -207,7 +207,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var good_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(good_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(good_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(good_ctrl, settings);
 
         // Process valid control stream on sid 3
@@ -215,20 +215,20 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
 
         // Register QPACK encoder stream on sid 7
         var qpack_enc: u8[..64] = [];
-        internal::quic_encode_varint(qpack_enc, internal::H3_STREAM_QPACK_ENCODER);
+        internal::quic_encode_varint(qpack_enc, rfc::H3_STREAM_QPACK_ENCODER);
         conn.handle_stream_data(7, false, qpack_enc[..], false);
 
         // Unknown unidirectional stream on sid 11: closing with FIN must NOT trigger critical error
         var unknown_uni: u8[..64] = [];
         internal::quic_encode_varint(unknown_uni, 0x21); // GREASE stream type
         let err_unknown = conn.handle_stream_data(11, false, unknown_uni[..], true);
-        sub.assert_eq(err_unknown, internal::H3_ERR_NO_ERROR, "closing non-critical uni stream is permitted");
+        sub.assert_eq(err_unknown, rfc::H3_ERR_NO_ERROR, "closing non-critical uni stream is permitted");
 
         // Peer closes QPACK encoder stream with FIN -> critical error
         let err_qpack = conn.handle_stream_data(7, false, [], true);
         sub.assert_eq(
             err_qpack,
-            internal::H3_ERR_CLOSED_CRITICAL_STREAM,
+            rfc::H3_ERR_CLOSED_CRITICAL_STREAM,
             "closing QPACK encoder stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)",
         );
 
@@ -238,7 +238,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
         let err_crit = conn_ctrl.handle_stream_data(3, false, [], true);
         sub.assert_eq(
             err_crit,
-            internal::H3_ERR_CLOSED_CRITICAL_STREAM,
+            rfc::H3_ERR_CLOSED_CRITICAL_STREAM,
             "closing control stream triggers H3_CLOSED_CRITICAL_STREAM (0x0104)",
         );
     };
@@ -274,7 +274,7 @@ fn test_h3_request_streams(t: lit::T&) {
         // Parse generated frame
         let hdr, ok_hdr = internal::parse_h3_frame_header(req_buf[..], 0);
         sub.assert_true(ok_hdr, "parse generated request frame");
-        sub.assert_eq(hdr.frame_type, internal::H3_FRAME_HEADERS, "frame type is HEADERS");
+        sub.assert_eq(hdr.frame_type, rfc::H3_FRAME_HEADERS, "frame type is HEADERS");
 
         // Send request body
         var data_buf: u8[..64] = [];
@@ -284,7 +284,7 @@ fn test_h3_request_streams(t: lit::T&) {
 
         let d_hdr, ok_d_hdr = internal::parse_h3_frame_header(data_buf[..], 0);
         sub.assert_true(ok_d_hdr, "parse generated data frame");
-        sub.assert_eq(d_hdr.frame_type, internal::H3_FRAME_DATA, "frame type is DATA");
+        sub.assert_eq(d_hdr.frame_type, rfc::H3_FRAME_DATA, "frame type is DATA");
         sub.assert_eq(d_hdr.payload_len, body.len as u64, "data payload matches body length");
     };
 
@@ -311,7 +311,7 @@ fn test_h3_request_streams(t: lit::T&) {
 
         // Ingest response on bidi stream 0 with FIN
         let err = conn.handle_stream_data(sid, true, srv_wire[..], true);
-        sub.assert_eq(err, internal::H3_ERR_NO_ERROR, "response ingested without error");
+        sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "response ingested without error");
 
         // Inspect response state via UFCS
         let sc, ok_sc = conn.get_status_code(sid);
@@ -338,7 +338,7 @@ fn test_h3_request_streams(t: lit::T&) {
         let err = conn.handle_stream_data(sid, true, bad_resp[..], false);
         sub.assert_eq(
             err,
-            internal::H3_ERR_FRAME_UNEXPECTED,
+            rfc::H3_ERR_FRAME_UNEXPECTED,
             "DATA before HEADERS triggers H3_FRAME_UNEXPECTED (0x0105)",
         );
     };
@@ -355,7 +355,7 @@ fn test_h3_request_streams(t: lit::T&) {
 
         // Ingest GOAWAY with max_stream_id = 4 on control stream
         var ctrl_goaway: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_goaway, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_goaway, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_goaway, settings);
         internal::encode_h3_goaway_frame(ctrl_goaway, 4);
 
@@ -598,14 +598,14 @@ fn test_h3_extended_frames(t: lit::T&) {
 
         // Ingest control stream with extended frames (CANCEL_PUSH, MAX_PUSH_ID, PRIORITY_UPDATE)
         var ctrl_wire: u8[..256] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         internal::encode_h3_cancel_push(ctrl_wire, 1);
         internal::encode_h3_max_push_id(ctrl_wire, 10);
         internal::encode_h3_priority_update_request(ctrl_wire, 0, p_req);
 
         let err_ctrl = conn.handle_stream_data(3, false, ctrl_wire[..], false);
-        sub.assert_eq(err_ctrl, internal::H3_ERR_NO_ERROR, "ingest extended frames on control stream");
+        sub.assert_eq(err_ctrl, rfc::H3_ERR_NO_ERROR, "ingest extended frames on control stream");
     };
 
     t.run("H3-14: Send Request Data Edge Cases") { sub =>
@@ -641,7 +641,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         var buf62: u8[..16] = [0x7F, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F];
         let val62, next_off62, ok62 = internal::qpack_decode_int(buf62[..], 0, 7);
         sub.assert_true(ok62, "decode max 62-bit integer 0x3FFFFFFFFFFFFFFF succeeds");
-        sub.assert_eq(val62, internal::QPACK_MAX_INT_VAL, "decoded value matches 0x3FFFFFFFFFFFFFFF");
+        sub.assert_eq(val62, rfc::QUIC_VARINT_MAX, "decoded value matches 0x3FFFFFFFFFFFFFFF");
         sub.assert_eq(next_off62, 10, "consumed 10 bytes");
 
         // 63-bit integer overflow: payload > 0x3F at 9th continuation byte (0x40)
@@ -686,7 +686,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
 
         // Control stream: valid SETTINGS frame first
         var ctrl_wire: u8[..128] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         conn.handle_stream_data(3, false, ctrl_wire[..], false);
         sub.assert_true(conn.peer_settings_received, "peer settings received");
@@ -694,12 +694,12 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         // Now send frame header with maliciously crafted 62-bit payload length (0x3FFFFFFFFFFFFFF0)
         // that would overflow 'offset + hdr.payload_len'
         var mal_frame: u8[..32] = [];
-        internal::quic_encode_varint(mal_frame, internal::H3_FRAME_CANCEL_PUSH);
+        internal::quic_encode_varint(mal_frame, rfc::H3_FRAME_CANCEL_PUSH);
         internal::quic_encode_varint(mal_frame, 0x3FFFFFFFFFFFFFF0);
         mal_frame.push(0x00);
 
         let err = conn.handle_stream_data(3, false, mal_frame[..], false);
-        sub.assert_eq(err, internal::H3_ERR_FRAME_ERROR, "huge payload_len triggers H3_FRAME_ERROR without overflow");
+        sub.assert_eq(err, rfc::H3_ERR_FRAME_ERROR, "huge payload_len triggers H3_FRAME_ERROR without overflow");
         sub.assert_eq(conn.state, internal::H3ConnState.Closed, "connection closed on frame error");
     };
 
@@ -713,13 +713,13 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
 
         // Control stream with valid SETTINGS followed by frame type 0x0A
         var ctrl_wire: u8[..64] = [];
-        internal::quic_encode_varint(ctrl_wire, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         internal::quic_encode_varint(ctrl_wire, 0x0A);
         internal::quic_encode_varint(ctrl_wire, 0);
 
         let err = conn.handle_stream_data(3, false, ctrl_wire[..], false);
-        sub.assert_eq(err, internal::H3_ERR_FRAME_UNEXPECTED, "frame 0x0A rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err, rfc::H3_ERR_FRAME_UNEXPECTED, "frame 0x0A rejected with H3_FRAME_UNEXPECTED");
     };
 
     t.run("H3-R1-03: Unknown Unidirectional Stream Persistence (RFC 9114 Section 6.2)") { sub =>
@@ -727,7 +727,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         var conn = internal::new_h3_client_connection(settings);
 
         var ctrl: u8[..64] = [];
-        internal::quic_encode_varint(ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl, settings);
         conn.handle_stream_data(3, false, ctrl[..], false);
 
@@ -735,18 +735,18 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         var chunk1: u8[..16] = [];
         internal::quic_encode_varint(chunk1, 0x21);
         let err1 = conn.handle_stream_data(15, false, chunk1[..], false);
-        sub.assert_eq(err1, internal::H3_ERR_NO_ERROR, "unknown uni stream chunk 1 accepted");
+        sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "unknown uni stream chunk 1 accepted");
 
         // Send second chunk with leading byte 0x00
         var chunk2: u8[..16] = [0x00, 0x01, 0x02, 0x03];
         let err2 = conn.handle_stream_data(15, false, chunk2[..], false);
-        sub.assert_eq(err2, internal::H3_ERR_NO_ERROR, "unknown uni stream chunk 2 ignored safely");
-        sub.assert_eq(conn.error_code, internal::H3_ERR_NO_ERROR, "connection still valid");
+        sub.assert_eq(err2, rfc::H3_ERR_NO_ERROR, "unknown uni stream chunk 2 ignored safely");
+        sub.assert_eq(conn.error_code, rfc::H3_ERR_NO_ERROR, "connection still valid");
     };
 
     t.run("QUIC-R1-01: Datagram Frame Length Integer Overflow Protection (RFC 9221 Section 3)") { sub =>
         var wire: u8[..16] = [];
-        internal::quic_encode_varint(wire, internal::QUIC_FRAME_DATAGRAM_LEN);
+        internal::quic_encode_varint(wire, rfc::QUIC_FRAME_DATAGRAM_LEN);
         internal::quic_encode_varint(wire, 0x3FFFFFFFFFFFFFF0);
 
         let payload, _, ok = internal::decode_quic_datagram_frame(wire[..], 0, wire.len as u64);
@@ -763,41 +763,41 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         // Test A: DATA frame (0x00) sent as first frame on control stream MUST trigger H3_ERR_MISSING_SETTINGS (0x010A)
         var conn1 = internal::new_h3_client_connection(settings);
         var bad_ctrl1: u8[..64] = [];
-        internal::quic_encode_varint(bad_ctrl1, internal::H3_STREAM_CONTROL);
-        internal::encode_h3_frame_header(bad_ctrl1, internal::H3_FRAME_DATA, 4);
+        internal::quic_encode_varint(bad_ctrl1, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_frame_header(bad_ctrl1, rfc::H3_FRAME_DATA, 4);
         bad_ctrl1.append([1, 2, 3, 4]);
 
         let err1 = conn1.handle_stream_data(3, false, bad_ctrl1[..], false);
-        sub.assert_eq(err1, internal::H3_ERR_MISSING_SETTINGS, "initial DATA frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
+        sub.assert_eq(err1, rfc::H3_ERR_MISSING_SETTINGS, "initial DATA frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
         sub.assert_eq(conn1.state, internal::H3ConnState.Closed, "connection closed");
-        sub.assert_eq(conn1.error_code, internal::H3_ERR_MISSING_SETTINGS, "error code is H3_MISSING_SETTINGS");
+        sub.assert_eq(conn1.error_code, rfc::H3_ERR_MISSING_SETTINGS, "error code is H3_MISSING_SETTINGS");
 
         // Test B: HEADERS frame (0x01) sent as first frame on control stream MUST trigger H3_ERR_MISSING_SETTINGS (0x010A)
         var conn2 = internal::new_h3_client_connection(settings);
         var bad_ctrl2: u8[..64] = [];
-        internal::quic_encode_varint(bad_ctrl2, internal::H3_STREAM_CONTROL);
-        internal::encode_h3_frame_header(bad_ctrl2, internal::H3_FRAME_HEADERS, 2);
+        internal::quic_encode_varint(bad_ctrl2, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_frame_header(bad_ctrl2, rfc::H3_FRAME_HEADERS, 2);
         bad_ctrl2.append([0x00, 0x00]);
 
         let err2 = conn2.handle_stream_data(3, false, bad_ctrl2[..], false);
-        sub.assert_eq(err2, internal::H3_ERR_MISSING_SETTINGS, "initial HEADERS frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
+        sub.assert_eq(err2, rfc::H3_ERR_MISSING_SETTINGS, "initial HEADERS frame on control stream MUST return H3_MISSING_SETTINGS (0x010A)");
         sub.assert_eq(conn2.state, internal::H3ConnState.Closed, "connection closed");
 
         // Test C: Valid SETTINGS as first frame succeeds
         var conn3 = internal::new_h3_client_connection(settings);
         var good_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(good_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(good_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(good_ctrl, settings);
         let err3 = conn3.handle_stream_data(3, false, good_ctrl[..], false);
-        sub.assert_eq(err3, internal::H3_ERR_NO_ERROR, "initial SETTINGS succeeds");
+        sub.assert_eq(err3, rfc::H3_ERR_NO_ERROR, "initial SETTINGS succeeds");
         sub.assert_eq(conn3.state, internal::H3ConnState.Active, "connection active");
 
         // Test D: Subsequent DATA frame after SETTINGS triggers H3_FRAME_UNEXPECTED (0x0105)
         var bad_post_settings: u8[..64] = [];
-        internal::encode_h3_frame_header(bad_post_settings, internal::H3_FRAME_DATA, 4);
+        internal::encode_h3_frame_header(bad_post_settings, rfc::H3_FRAME_DATA, 4);
         bad_post_settings.append([1, 2, 3, 4]);
         let err4 = conn3.handle_stream_data(3, false, bad_post_settings[..], false);
-        sub.assert_eq(err4, internal::H3_ERR_FRAME_UNEXPECTED, "subsequent DATA frame triggers H3_FRAME_UNEXPECTED (0x0105)");
+        sub.assert_eq(err4, rfc::H3_ERR_FRAME_UNEXPECTED, "subsequent DATA frame triggers H3_FRAME_UNEXPECTED (0x0105)");
         sub.assert_eq(conn3.state, internal::H3ConnState.Closed, "connection closed");
     };
 
@@ -808,14 +808,14 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         // Stream ID 1: server-initiated bidirectional ((1 & 0x03) == 1)
         var conn1 = internal::new_h3_client_connection(settings);
         var init_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(init_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(init_ctrl, settings);
         conn1.handle_stream_data(3, false, init_ctrl[..], false);
 
         var bad_ga1: u8[..32] = [];
         internal::encode_h3_goaway_frame(bad_ga1, 1); // Server-bidi ID 1
         let err1 = conn1.handle_stream_data(3, false, bad_ga1[..], false);
-        sub.assert_eq(err1, internal::H3_ERR_ID_ERROR, "GOAWAY with server-bidi stream ID MUST trigger H3_ERR_ID_ERROR");
+        sub.assert_eq(err1, rfc::H3_ERR_ID_ERROR, "GOAWAY with server-bidi stream ID MUST trigger H3_ERR_ID_ERROR");
         sub.assert_eq(conn1.state, internal::H3ConnState.Closed, "connection closed");
 
         // Test B: Initial GOAWAY with client-uni stream ID triggers H3_ERR_ID_ERROR
@@ -825,7 +825,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         var bad_ga2: u8[..32] = [];
         internal::encode_h3_goaway_frame(bad_ga2, 2); // Client-uni ID 2
         let err2 = conn2.handle_stream_data(3, false, bad_ga2[..], false);
-        sub.assert_eq(err2, internal::H3_ERR_ID_ERROR, "GOAWAY with client-uni stream ID MUST trigger H3_ERR_ID_ERROR");
+        sub.assert_eq(err2, rfc::H3_ERR_ID_ERROR, "GOAWAY with client-uni stream ID MUST trigger H3_ERR_ID_ERROR");
 
         // Test C: Valid GOAWAY with client-bidi stream ID 8 succeeds
         var conn3 = internal::new_h3_client_connection(settings);
@@ -833,7 +833,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         var good_ga: u8[..32] = [];
         internal::encode_h3_goaway_frame(good_ga, 8); // Client-bidi ID 8 ((8 & 0x03) == 0)
         let err3 = conn3.handle_stream_data(3, false, good_ga[..], false);
-        sub.assert_eq(err3, internal::H3_ERR_NO_ERROR, "valid GOAWAY accepted");
+        sub.assert_eq(err3, rfc::H3_ERR_NO_ERROR, "valid GOAWAY accepted");
         sub.assert_eq(conn3.state, internal::H3ConnState.Draining, "connection state is Draining");
         sub.assert_eq(conn3.goaway_max_stream_id, 8, "max stream id is 8");
 
@@ -841,7 +841,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         var bad_seq_ga: u8[..32] = [];
         internal::encode_h3_goaway_frame(bad_seq_ga, 12); // 12 > 8: non-monotonic increase!
         let err4 = conn3.handle_stream_data(3, false, bad_seq_ga[..], false);
-        sub.assert_eq(err4, internal::H3_ERR_ID_ERROR, "increasing GOAWAY stream ID MUST trigger H3_ERR_ID_ERROR");
+        sub.assert_eq(err4, rfc::H3_ERR_ID_ERROR, "increasing GOAWAY stream ID MUST trigger H3_ERR_ID_ERROR");
         sub.assert_eq(conn3.state, internal::H3ConnState.Closed, "connection closed");
 
         // Test E: Subsequent GOAWAY with decreased stream ID succeeds
@@ -851,18 +851,18 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         var good_seq_ga: u8[..32] = [];
         internal::encode_h3_goaway_frame(good_seq_ga, 4); // 4 <= 8: monotonic decrease
         let err5 = conn4.handle_stream_data(3, false, good_seq_ga[..], false);
-        sub.assert_eq(err5, internal::H3_ERR_NO_ERROR, "decreasing GOAWAY accepted");
+        sub.assert_eq(err5, rfc::H3_ERR_NO_ERROR, "decreasing GOAWAY accepted");
         sub.assert_eq(conn4.goaway_max_stream_id, 4, "max stream id updated to 4");
 
         // Test F: GOAWAY with malformed payload (extra trailing bytes) triggers H3_ERR_FRAME_ERROR (RFC 9114 §7.2.6)
         var conn5 = internal::new_h3_client_connection(settings);
         conn5.handle_stream_data(3, false, init_ctrl[..], false);
         var bad_pl_ga: u8[..32] = [];
-        internal::encode_h3_frame_header(bad_pl_ga, internal::H3_FRAME_GOAWAY, 2);
+        internal::encode_h3_frame_header(bad_pl_ga, rfc::H3_FRAME_GOAWAY, 2);
         bad_pl_ga.push(0x00); // stream ID 0
         bad_pl_ga.push(0xFF); // trailing extra garbage byte
         let err6 = conn5.handle_stream_data(3, false, bad_pl_ga[..], false);
-        sub.assert_eq(err6, internal::H3_ERR_FRAME_ERROR, "malformed GOAWAY payload MUST return H3_ERR_FRAME_ERROR");
+        sub.assert_eq(err6, rfc::H3_ERR_FRAME_ERROR, "malformed GOAWAY payload MUST return H3_ERR_FRAME_ERROR");
     };
 
     t.run("QPACK-R2-01: Eviction Barrier and Blocked Streams Constraints (RFC 9204 §2.1.1, §2.1.2)") { sub =>
@@ -919,7 +919,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         // Test A: Long Header Initial packet with non-zero reserved bits (0x0C mask) MUST fail
         var bad_init: u8[..64] = [];
         bad_init.push(0xC8); // Long header Initial (0xC0), but bit 3 is set (0x08)! Reserved bits = 0x08 != 0
-        core::append_u32_be(bad_init, internal::QUIC_VERSION_1);
+        core::append_u32_be(bad_init, rfc::QUIC_VERSION_1);
         bad_init.push(0); // DCID len
         bad_init.push(0); // SCID len
         internal::quic_encode_varint(bad_init, 0); // token len 0
@@ -931,7 +931,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         // Test B: Long Header Handshake packet with non-zero reserved bits (bit 2 is set, 0x04)
         var bad_hs: u8[..64] = [];
         bad_hs.push(0xE4); // Handshake (0xE0) with bit 2 set (0x04)
-        core::append_u32_be(bad_hs, internal::QUIC_VERSION_1);
+        core::append_u32_be(bad_hs, rfc::QUIC_VERSION_1);
         bad_hs.push(0); // DCID len
         bad_hs.push(0); // SCID len
         internal::quic_encode_varint(bad_hs, 4); // plen
@@ -942,7 +942,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
         // Test C: Valid Long Header Initial packet with reserved bits == 0 succeeds
         var good_init: u8[..64] = [];
         good_init.push(0xC0); // Long header Initial, reserved bits = 0
-        core::append_u32_be(good_init, internal::QUIC_VERSION_1);
+        core::append_u32_be(good_init, rfc::QUIC_VERSION_1);
         good_init.push(0);
         good_init.push(0);
         internal::quic_encode_varint(good_init, 0);
@@ -1077,14 +1077,14 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         var push_wire: u8[..64] = [];
         sub.assert_true(internal::encode_h3_push_promise(push_wire, 1, [0x00, 0x00]), "encode PUSH_PROMISE");
         let err_srv = srv_conn.handle_stream_data(0, true, push_wire[..], false);
-        sub.assert_eq(err_srv, internal::H3_ERR_FRAME_UNEXPECTED, "Server receiving PUSH_PROMISE MUST return H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err_srv, rfc::H3_ERR_FRAME_UNEXPECTED, "Server receiving PUSH_PROMISE MUST return H3_FRAME_UNEXPECTED");
         sub.assert_eq(srv_conn.state, internal::H3ConnState.Closed, "server connection closed");
 
         // Test B: Client receiving PUSH_PROMISE when client never sent MAX_PUSH_ID MUST fail with H3_ERR_ID_ERROR
         var cli_conn = internal::new_h3_client_connection(settings);
         let sid, _ = cli_conn.open_request_stream();
         let err_no_max = cli_conn.handle_stream_data(sid, true, push_wire[..], false);
-        sub.assert_eq(err_no_max, internal::H3_ERR_ID_ERROR, "PUSH_PROMISE without MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
+        sub.assert_eq(err_no_max, rfc::H3_ERR_ID_ERROR, "PUSH_PROMISE without MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
 
         // Test C: Client receiving PUSH_PROMISE with Push ID > max_push_id_advertised MUST fail with H3_ERR_ID_ERROR
         var cli_conn2 = internal::new_h3_client_connection(settings);
@@ -1095,24 +1095,24 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         var bad_push_wire: u8[..64] = [];
         sub.assert_true(internal::encode_h3_push_promise(bad_push_wire, 10, [0x00, 0x00]), "encode PUSH_PROMISE with push_id 10 > 5");
         let err_exceed = cli_conn2.handle_stream_data(sid2, true, bad_push_wire[..], false);
-        sub.assert_eq(err_exceed, internal::H3_ERR_ID_ERROR, "PUSH_PROMISE with push_id > advertised limit MUST return H3_ERR_ID_ERROR");
+        sub.assert_eq(err_exceed, rfc::H3_ERR_ID_ERROR, "PUSH_PROMISE with push_id > advertised limit MUST return H3_ERR_ID_ERROR");
 
         // Test D: Client receiving PUSH_PROMISE with push_id <= max_push_id_advertised succeeds
         var good_push_wire: u8[..64] = [];
         sub.assert_true(internal::encode_h3_push_promise(good_push_wire, 3, [0x00, 0x00]), "encode PUSH_PROMISE with push_id 3 <= 5");
         let err_good_push = cli_conn2.handle_stream_data(sid2, true, good_push_wire[..], false);
-        sub.assert_eq(err_good_push, internal::H3_ERR_NO_ERROR, "PUSH_PROMISE with valid push_id accepted");
+        sub.assert_eq(err_good_push, rfc::H3_ERR_NO_ERROR, "PUSH_PROMISE with valid push_id accepted");
 
         // Test E: CANCEL_PUSH with Push ID > advertised max limit on control stream returns H3_ERR_ID_ERROR
         var init_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(init_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(init_ctrl, settings);
         cli_conn2.handle_stream_data(3, false, init_ctrl[..], false);
 
         var bad_cp_wire: u8[..32] = [];
         sub.assert_true(internal::encode_h3_cancel_push(bad_cp_wire, 20), "encode CANCEL_PUSH with push_id 20 > 5");
         let err_cp_exceed = cli_conn2.handle_stream_data(3, false, bad_cp_wire[..], false);
-        sub.assert_eq(err_cp_exceed, internal::H3_ERR_ID_ERROR, "CANCEL_PUSH with push_id > advertised limit returns H3_ERR_ID_ERROR");
+        sub.assert_eq(err_cp_exceed, rfc::H3_ERR_ID_ERROR, "CANCEL_PUSH with push_id > advertised limit returns H3_ERR_ID_ERROR");
 
         // Test F: MAX_PUSH_ID monotonicity violation (decreasing max_push_id) returns H3_ERR_ID_ERROR
         var srv_ctrl_conn = internal::H3Connection {
@@ -1121,19 +1121,19 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
             ..
         };
         var srv_init_ctrl: u8[..64] = [];
-        internal::quic_encode_varint(srv_init_ctrl, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(srv_init_ctrl, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(srv_init_ctrl, settings);
         srv_ctrl_conn.handle_stream_data(2, false, srv_init_ctrl[..], false);
 
         var mp1_wire: u8[..32] = [];
         sub.assert_true(internal::encode_h3_max_push_id(mp1_wire, 50), "first MAX_PUSH_ID = 50");
         let err_mp1 = srv_ctrl_conn.handle_stream_data(2, false, mp1_wire[..], false);
-        sub.assert_eq(err_mp1, internal::H3_ERR_NO_ERROR, "first MAX_PUSH_ID accepted");
+        sub.assert_eq(err_mp1, rfc::H3_ERR_NO_ERROR, "first MAX_PUSH_ID accepted");
 
         var mp2_wire: u8[..32] = [];
         sub.assert_true(internal::encode_h3_max_push_id(mp2_wire, 30), "decreasing MAX_PUSH_ID = 30 < 50");
         let err_mp2 = srv_ctrl_conn.handle_stream_data(2, false, mp2_wire[..], false);
-        sub.assert_eq(err_mp2, internal::H3_ERR_ID_ERROR, "decreasing MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
+        sub.assert_eq(err_mp2, rfc::H3_ERR_ID_ERROR, "decreasing MAX_PUSH_ID MUST return H3_ERR_ID_ERROR");
     };
 
     t.run("H3-R3-02: RFC 9114 & RFC 9204 Hardening (RIC, Stream Recycling, Role Checks, Pseudo-Headers)") { sub =>
@@ -1167,7 +1167,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
             var resp_wire: u8[..64] = [];
             internal::encode_h3_headers_frame(resp_wire, [0x00, 0x00, 0xD9]);
             let err_resp = cli_reuse.handle_stream_data(sid, true, resp_wire[..], true);
-            sub.assert_eq(err_resp, internal::H3_ERR_NO_ERROR, "response ingested");
+            sub.assert_eq(err_resp, rfc::H3_ERR_NO_ERROR, "response ingested");
             // Client sends FIN to close stream locally and remotely
             var req_data: u8[..256] = [];
             cli_reuse.send_request_headers(sid, "GET", "https", "example.com", "/", empty_headers, true, req_data);
@@ -1176,14 +1176,14 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         // Test D: Server sending MAX_PUSH_ID to client triggers H3_FRAME_UNEXPECTED (RFC 9114 §7.2.7)
         var cli_mp = internal::new_h3_client_connection(settings);
         var init_ctrl_d: u8[..64] = [];
-        internal::quic_encode_varint(init_ctrl_d, internal::H3_STREAM_CONTROL);
+        internal::quic_encode_varint(init_ctrl_d, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(init_ctrl_d, settings);
         cli_mp.handle_stream_data(3, false, init_ctrl_d[..], false);
 
         var bad_mp_wire: u8[..32] = [];
         internal::encode_h3_max_push_id(bad_mp_wire, 10);
         let err_cli_mp = cli_mp.handle_stream_data(3, false, bad_mp_wire[..], false);
-        sub.assert_eq(err_cli_mp, internal::H3_ERR_FRAME_UNEXPECTED, "Server sending MAX_PUSH_ID to client rejected");
+        sub.assert_eq(err_cli_mp, rfc::H3_ERR_FRAME_UNEXPECTED, "Server sending MAX_PUSH_ID to client rejected");
 
         // Test E: Server sending PRIORITY_UPDATE to client triggers H3_FRAME_UNEXPECTED (RFC 9218 §7.2)
         var cli_prio = internal::new_h3_client_connection(settings);
@@ -1193,7 +1193,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         let bad_prio = wing::PriorityParam { urgency: 2, incremental: false };
         internal::encode_h3_priority_update_request(bad_prio_wire, 0, bad_prio);
         let err_cli_prio = cli_prio.handle_stream_data(3, false, bad_prio_wire[..], false);
-        sub.assert_eq(err_cli_prio, internal::H3_ERR_FRAME_UNEXPECTED, "Server sending PRIORITY_UPDATE to client rejected");
+        sub.assert_eq(err_cli_prio, rfc::H3_ERR_FRAME_UNEXPECTED, "Server sending PRIORITY_UPDATE to client rejected");
 
         // Test F: Response missing :status triggers H3_ERR_GENERAL_PROTOCOL (RFC 9114 §4.3.2)
         var cli_no_status = internal::new_h3_client_connection(settings);
@@ -1204,7 +1204,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         internal::encode_qpack_field(qpack_no_st, "x-foo", "bar", true);
         internal::encode_h3_headers_frame(no_status_wire, qpack_no_st[..]);
         let err_no_status = cli_no_status.handle_stream_data(sid_ns, true, no_status_wire[..], false);
-        sub.assert_eq(err_no_status, internal::H3_ERR_GENERAL_PROTOCOL, "Response missing :status rejected");
+        sub.assert_eq(err_no_status, rfc::H3_ERR_GENERAL_PROTOCOL, "Response missing :status rejected");
 
         // Test G: Response with client pseudo-header :method triggers H3_ERR_GENERAL_PROTOCOL (RFC 9114 §4.3.2)
         var cli_with_meth = internal::new_h3_client_connection(settings);
@@ -1214,7 +1214,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         internal::encode_qpack_field(qpack_wm, ":method", "GET", true);
         internal::encode_h3_headers_frame(with_meth_wire, qpack_wm[..]);
         let err_with_meth = cli_with_meth.handle_stream_data(sid_wm, true, with_meth_wire[..], false);
-        sub.assert_eq(err_with_meth, internal::H3_ERR_GENERAL_PROTOCOL, "Response containing :method rejected");
+        sub.assert_eq(err_with_meth, rfc::H3_ERR_GENERAL_PROTOCOL, "Response containing :method rejected");
     };
 }
 
@@ -1362,8 +1362,8 @@ fn test_webtransport_error_mapping(t: lit::T&) {
             let app_err = test_codes[i];
             let h3_err = wing::webtransport_code_to_http_code(app_err);
 
-            sub.assert_ge(h3_err, wing::WEBTRANSPORT_ERROR_FIRST, "H3 error >= lower bound");
-            sub.assert_le(h3_err, wing::WEBTRANSPORT_ERROR_LAST, "H3 error <= upper bound");
+            sub.assert_ge(h3_err, rfc::WEBTRANSPORT_ERROR_FIRST, "H3 error >= lower bound");
+            sub.assert_le(h3_err, rfc::WEBTRANSPORT_ERROR_LAST, "H3 error <= upper bound");
 
             // Verify no GREASE collision: (h3_err - 0x21) % 0x1F != 0
             let is_grease = ((h3_err - 0x21) % 0x1F) == 0;
@@ -1375,10 +1375,10 @@ fn test_webtransport_error_mapping(t: lit::T&) {
         }
 
         // Out of bound checks
-        let _, bad1 = wing::http_code_to_webtransport_code(wing::WEBTRANSPORT_ERROR_FIRST - 1);
+        let _, bad1 = wing::http_code_to_webtransport_code(rfc::WEBTRANSPORT_ERROR_FIRST - 1);
         sub.assert_false(bad1, "Underflow H3 error rejected");
 
-        let _, bad2 = wing::http_code_to_webtransport_code(wing::WEBTRANSPORT_ERROR_LAST + 1);
+        let _, bad2 = wing::http_code_to_webtransport_code(rfc::WEBTRANSPORT_ERROR_LAST + 1);
         sub.assert_false(bad2, "Overflow H3 error rejected");
     };
 }
@@ -1392,7 +1392,7 @@ fn test_webtransport_capsules(t: lit::T&) {
 
         var c, ok_c = wing::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "HTTP Capsule parsed from wire");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_CLOSE_WEBTRANSPORT, "Capsule type is CLOSE_WEBTRANSPORT");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_CLOSE_WEBTRANSPORT, "Capsule type is CLOSE_WEBTRANSPORT");
 
         var decoded = wing::WebTransportCloseSession { .. };
         let ok_dec = wing::decode_webtransport_close_session(c.payload, decoded);
@@ -1407,7 +1407,7 @@ fn test_webtransport_capsules(t: lit::T&) {
 
         var c, ok_c = wing::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "Drain capsule parsed");
-        sub.assert_eq(c.capsule_type, wing::CAPSULE_DRAIN_WEBTRANSPORT, "Capsule type is DRAIN_WEBTRANSPORT");
+        sub.assert_eq(c.capsule_type, rfc::CAPSULE_DRAIN_WEBTRANSPORT, "Capsule type is DRAIN_WEBTRANSPORT");
         sub.assert_true(wing::decode_webtransport_drain_session(c.payload), "Drain payload is valid (0-length)");
 
         var bad_payload: u8[2] = [1, 2];
@@ -1420,7 +1420,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         wing::encode_webtransport_reset_stream(12, 503, r_wire);
         var c_r, ok_cr = wing::parse_http_capsule(r_wire[..]);
         sub.assert_true(ok_cr, "Reset stream capsule parsed");
-        sub.assert_eq(c_r.capsule_type, wing::CAPSULE_WT_RESET_STREAM, "Capsule type is WT_RESET_STREAM");
+        sub.assert_eq(c_r.capsule_type, rfc::CAPSULE_WT_RESET_STREAM, "Capsule type is WT_RESET_STREAM");
 
         var reset_dec = wing::WebTransportStreamReset { .. };
         sub.assert_true(wing::decode_webtransport_reset_stream(c_r.payload, reset_dec), "Reset payload decoded");
@@ -1432,7 +1432,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         wing::encode_webtransport_stop_sending(18, 499, s_wire);
         var c_s, ok_cs = wing::parse_http_capsule(s_wire[..]);
         sub.assert_true(ok_cs, "Stop sending capsule parsed");
-        sub.assert_eq(c_s.capsule_type, wing::CAPSULE_WT_STOP_SENDING, "Capsule type is WT_STOP_SENDING");
+        sub.assert_eq(c_s.capsule_type, rfc::CAPSULE_WT_STOP_SENDING, "Capsule type is WT_STOP_SENDING");
 
         var stop_dec = wing::WebTransportStreamStopSending { .. };
         sub.assert_true(wing::decode_webtransport_stop_sending(c_s.payload, stop_dec), "Stop sending payload decoded");

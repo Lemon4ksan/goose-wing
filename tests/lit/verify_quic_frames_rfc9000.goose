@@ -365,7 +365,7 @@ fn test_quic_stream_reassembly_chaos() {
 
 // crap:trusted-bounds
 fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
-    if ftype == internal::QUIC_FRAME_RESET_STREAM {
+    if ftype == rfc::QUIC_FRAME_RESET_STREAM {
         let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
@@ -375,7 +375,7 @@ fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool 
         return cur3, true;
     }
 
-    if ftype == internal::QUIC_FRAME_STOP_SENDING {
+    if ftype == rfc::QUIC_FRAME_STOP_SENDING {
         let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
@@ -388,13 +388,13 @@ fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool 
 
 // crap:trusted-bounds
 fn demux_flow_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
-    if ftype == internal::QUIC_FRAME_MAX_DATA {
+    if ftype == rfc::QUIC_FRAME_MAX_DATA {
         let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         return cur1, true;
     }
 
-    if ftype == internal::QUIC_FRAME_MAX_STREAM_DATA {
+    if ftype == rfc::QUIC_FRAME_MAX_STREAM_DATA {
         let _, cur1, ok1 = internal::quic_decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         let _, cur2, ok2 = internal::quic_decode_varint(src, cur1);
@@ -415,11 +415,11 @@ fn demux_control_frame(src: const u8[:], offset: u64) -> u64, u64, bool {
     guard ok_type else { return 0, offset, false; }
     cur = next_cur;
 
-    if ftype == internal::QUIC_FRAME_PADDING {
+    if ftype == rfc::QUIC_FRAME_PADDING {
         return ftype, cur, true;
     }
 
-    if ftype == internal::QUIC_FRAME_PING {
+    if ftype == rfc::QUIC_FRAME_PING {
         return ftype, cur, true;
     }
 
@@ -443,22 +443,22 @@ fn test_quic_control_frames_demux() {
     packet.push(0x01);
 
     // 3. RESET_STREAM (0x04, stream_id=12, err=0x42, final_size=1024)
-    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_RESET_STREAM));
+    assert(internal::quic_encode_varint(packet, rfc::QUIC_FRAME_RESET_STREAM));
     assert(internal::quic_encode_varint(packet, 12));
     assert(internal::quic_encode_varint(packet, 0x42));
     assert(internal::quic_encode_varint(packet, 1024));
 
     // 4. STOP_SENDING (0x05, stream_id=12, err=0x19)
-    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_STOP_SENDING));
+    assert(internal::quic_encode_varint(packet, rfc::QUIC_FRAME_STOP_SENDING));
     assert(internal::quic_encode_varint(packet, 12));
     assert(internal::quic_encode_varint(packet, 0x19));
 
     // 5. MAX_DATA (0x10, max_data=65536)
-    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_MAX_DATA));
+    assert(internal::quic_encode_varint(packet, rfc::QUIC_FRAME_MAX_DATA));
     assert(internal::quic_encode_varint(packet, 65536));
 
     // 6. MAX_STREAM_DATA (0x11, stream_id=12, max_data=32768)
-    assert(internal::quic_encode_varint(packet, internal::QUIC_FRAME_MAX_STREAM_DATA));
+    assert(internal::quic_encode_varint(packet, rfc::QUIC_FRAME_MAX_STREAM_DATA));
     assert(internal::quic_encode_varint(packet, 12));
     assert(internal::quic_encode_varint(packet, 32768));
 

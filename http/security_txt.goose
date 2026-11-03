@@ -10,10 +10,6 @@ import core from "..";
 
 // ---- canonical locations and media type ------------------------------------
 
-const SECURITY_TXT_WELL_KNOWN_PATH: const u8[:] = "/.well-known/security.txt";
-const SECURITY_TXT_LEGACY_PATH:     const u8[:] = "/security.txt";
-const SECURITY_TXT_CONTENT_TYPE:    const u8[:] = "text/plain; charset=utf-8";
-
 // ---- error codes -----------------------------------------------------------
 
 const SEC_TXT_OK:                    i32 = 0;
@@ -47,7 +43,7 @@ struct SecurityTxt {
 // Constructs a zero-initialized SecurityTxt structure.
 // Returns whether the request URI path matches the RFC 9116 security.txt location.
 fn is_security_txt_path(path: const u8[:]) -> bool {
-    return path == SECURITY_TXT_WELL_KNOWN_PATH || path == SECURITY_TXT_LEGACY_PATH;
+    return path == rfc::SECURITY_TXT_WELL_KNOWN_PATH || path == rfc::SECURITY_TXT_LEGACY_PATH;
 }
 
 // ---- line classification helper --------------------------------------------

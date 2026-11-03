@@ -72,16 +72,11 @@ struct RttState {
     first_sample_time_us: u64 = 0,
 }
 
-const QUIC_LOSS_PACKET_THRESHOLD: u64 = 3;    // kPacketThreshold (RFC 9002 Sec 6.1.1)
-const QUIC_LOSS_TIME_NUMERATOR:   u64 = 9;    // 9/8 kTimeThreshold (RFC 9002 Sec 6.1.2)
-const QUIC_LOSS_TIME_DENOMINATOR: u64 = 8;
-const QUIC_TIMER_GRANULARITY_US:  u64 = 1000; // 1 ms kGranularity
-
 // ---- ack frame encoder & decoder (rfc 9000 section 19.3) -----------------
 
 // Encodes an ACK or ACK_ECN frame into wire VarInt format.
 fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
-    let ftype = if ack.is_ecn { QUIC_FRAME_ACK_ECN } else { QUIC_FRAME_ACK };
+    let ftype = if ack.is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
     guard quic_encode_varint(out, ftype) else { return false; }
     guard quic_encode_varint(out, ack.largest_acked) else { return false; }
     guard quic_encode_varint(out, ack.ack_delay) else { return false; }
@@ -145,7 +140,7 @@ fn decode_ack_ranges(
 fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     var cur = offset;
     let ftype, next_cur0, ok0 = quic_decode_varint(src, cur);
-    guard ok0 && (ftype == QUIC_FRAME_ACK || ftype == QUIC_FRAME_ACK_ECN) else {
+    guard ok0 && (ftype == rfc::QUIC_FRAME_ACK || ftype == rfc::QUIC_FRAME_ACK_ECN) else {
         return AckFrame {}, offset, false;
     }
     cur = next_cur0;
@@ -170,7 +165,7 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     guard largest_acked >= first_range else { return AckFrame {}, offset, false; }
 
     var ack = AckFrame {
-        is_ecn:          (ftype == QUIC_FRAME_ACK_ECN),
+        is_ecn:          (ftype == rfc::QUIC_FRAME_ACK_ECN),
         largest_acked:   largest_acked,
         ack_delay:       ack_delay,
         first_ack_range: first_range,
@@ -364,9 +359,9 @@ fn detect_lost_packets(
     } else {
         rtt.smoothed_rtt_us
     };
-    var loss_delay = (max_rtt * QUIC_LOSS_TIME_NUMERATOR) / QUIC_LOSS_TIME_DENOMINATOR;
-    if loss_delay < QUIC_TIMER_GRANULARITY_US {
-        loss_delay = QUIC_TIMER_GRANULARITY_US;
+    var loss_delay = (max_rtt * rfc::QUIC_LOSS_TIME_NUMERATOR) / rfc::QUIC_LOSS_TIME_DENOMINATOR;
+    if loss_delay < rfc::QUIC_TIMER_GRANULARITY_US {
+        loss_delay = rfc::QUIC_TIMER_GRANULARITY_US;
     }
     let lost_send_time = if now_us > loss_delay { now_us - loss_delay } else { 0 };
 
@@ -378,7 +373,7 @@ fn detect_lost_packets(
             continue;
         }
 
-        let is_packet_threshold = space.largest_acked_pn >= pkt.pn + QUIC_LOSS_PACKET_THRESHOLD;
+        let is_packet_threshold = space.largest_acked_pn >= pkt.pn + rfc::QUIC_LOSS_PACKET_THRESHOLD;
         let is_time_threshold = pkt.time_sent_us <= lost_send_time;
 
         if is_packet_threshold || is_time_threshold {
@@ -429,10 +424,10 @@ fn get_earliest_loss_time(spaces: const PnSpaceState[3]&) -> u64, PnSpaceId {
 
 // Computes probe timeout duration with exponential backoff (RFC 9002 Sec 6.2.1).
 fn compute_pto_duration(rtt: const RttState&, pto_count: u32, is_app_data: bool) -> u64 {
-    let var4 = if 4 * rtt.rttvar_us > QUIC_TIMER_GRANULARITY_US {
+    let var4 = if 4 * rtt.rttvar_us > rfc::QUIC_TIMER_GRANULARITY_US {
         4 * rtt.rttvar_us
     } else {
-        QUIC_TIMER_GRANULARITY_US
+        rfc::QUIC_TIMER_GRANULARITY_US
     };
     var dur = rtt.smoothed_rtt_us + var4;
     if is_app_data {

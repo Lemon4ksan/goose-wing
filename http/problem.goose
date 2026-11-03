@@ -147,7 +147,7 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
 // Creates an RFC 9457 compliant error Response with application/problem+json.
 fn new_problem_response(problem: const ProblemDetails&) -> Response {
     var res = Response { status_code: problem.status, .. };
-    set_header(res, "Content-Type", MIME_PROBLEM_JSON);
+    set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
     serialize_problem_details(problem, res.body);
     return res;
 }

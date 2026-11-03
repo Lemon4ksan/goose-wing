@@ -136,8 +136,7 @@ fn status(res: const Response&) -> i32 {
 // Returns true if the HTTP response status code indicates a redirect (RFC 9110 Section 15.4):
 // 301, 302, 303, 307, or 308.
 fn is_redirect(res: const Response&) -> bool {
-    return res.status_code == 301 || res.status_code == 302 || res.status_code == 303 ||
-           res.status_code == 307 || res.status_code == 308;
+    return rfc::is_redirect_status(res.status_code);
 }
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {

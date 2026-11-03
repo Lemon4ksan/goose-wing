@@ -11,29 +11,6 @@ import core from "..";
 
 // ---- DNS Wire Constants & Record Types -----------------------------------
 
-const DNS_QTYPE_A:     u16 = 1;
-const DNS_QTYPE_AAAA:  u16 = 28;
-const DNS_QTYPE_SVCB:  u16 = 64; // RFC 9460
-const DNS_QTYPE_HTTPS: u16 = 65; // RFC 9460
-
-const DNS_QCLASS_IN: u16 = 1;
-
-const DNS_RCODE_NOERROR:  u8 = 0;
-const DNS_RCODE_FORMERR:  u8 = 1;
-const DNS_RCODE_SERVFAIL: u8 = 2;
-const DNS_RCODE_NXDOMAIN: u8 = 3;
-
-// RFC 9460 SvcParamKey Registrations (Section 14.3)
-const SVC_PARAM_MANDATORY:       u16 = 0;
-const SVC_PARAM_ALPN:            u16 = 1;
-const SVC_PARAM_NO_DEFAULT_ALPN: u16 = 2;
-const SVC_PARAM_PORT:            u16 = 3;
-const SVC_PARAM_IPV4HINT:        u16 = 4;
-const SVC_PARAM_ECH:             u16 = 5; // Encrypted Client Hello ECHConfigList
-const SVC_PARAM_IPV6HINT:        u16 = 6;
-
-// ---- Data Structures ----------------------------------------------------
-
 struct HttpsRecord {
     priority:        u16           = 0, // 0 = AliasMode, >0 = ServiceMode
     target_name:     u8[..255]     = [],
@@ -48,7 +25,7 @@ struct HttpsRecord {
 
 struct DnsResponse {
     tx_id:          u16              = 0,
-    rcode:          u8               = DNS_RCODE_NOERROR,
+    rcode:          u8               = rfc::DNS_RCODE_NOERROR,
     is_response:    bool             = false,
     question_count: u16              = 0,
     answer_count:   u16              = 0,
@@ -321,15 +298,15 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         let val = rdata[off..off + val_len];
         off += val_len;
 
-        if key == SVC_PARAM_ALPN {
+        if key == rfc::SVC_PARAM_ALPN {
             guard parse_alpn_svc_param(val, rec) else { return false; }
-        } else if key == SVC_PARAM_NO_DEFAULT_ALPN {
+        } else if key == rfc::SVC_PARAM_NO_DEFAULT_ALPN {
             guard val.len == 0 else { return false; }
             rec.no_default_alpn = true;
-        } else if key == SVC_PARAM_PORT {
+        } else if key == rfc::SVC_PARAM_PORT {
             guard val.len == 2 else { return false; }
             rec.port = ((val[0] as u16) << 8) | val[1];
-        } else if key == SVC_PARAM_IPV4HINT {
+        } else if key == rfc::SVC_PARAM_IPV4HINT {
             guard val.len > 0 && (val.len % 4) == 0 else { return false; }
             var ip_off: i64 = 0;
             while ip_off + 4 <= val.len {
@@ -339,7 +316,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
                 rec.ipv4_hints.push(hi | lo);
                 ip_off += 4;
             }
-        } else if key == SVC_PARAM_IPV6HINT {
+        } else if key == rfc::SVC_PARAM_IPV6HINT {
             guard val.len > 0 && (val.len % 16) == 0 else { return false; }
             var ip_off: i64 = 0;
             while ip_off + 16 <= val.len {
@@ -349,7 +326,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
                 rec.ipv6_hints.push(ip6);
                 ip_off += 16;
             }
-        } else if key == SVC_PARAM_ECH {
+        } else if key == rfc::SVC_PARAM_ECH {
             // Raw wire bytes of ECHConfigList (RFC 9460 §5)
             guard val.len <= rec.ech_config_list.cap else { return false; }
             rec.has_ech = true;
@@ -377,17 +354,17 @@ fn parse_dns_answer_record(
     out:         DnsResponse&,
 ) -> bool {
     let rdata = raw[rdata_start..rdata_start + rdlength];
-    if rtype == DNS_QTYPE_A {
+    if rtype == rfc::DNS_QTYPE_A {
         guard rdlength == 4 && out.a_records.len < out.a_records.cap else { return false; }
         let ip4 = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16) |
                   ((rdata[2] as u32) << 8) | rdata[3];
         out.a_records.push(ip4);
-    } else if rtype == DNS_QTYPE_AAAA {
+    } else if rtype == rfc::DNS_QTYPE_AAAA {
         guard rdlength == 16 && out.aaaa_records.len < out.aaaa_records.cap else { return false; }
         var ip6: u8[16] = [0; 16];
         for i in 16 { ip6[i] = rdata[i]; }
         out.aaaa_records.push(ip6);
-    } else if rtype == DNS_QTYPE_HTTPS || rtype == DNS_QTYPE_SVCB {
+    } else if rtype == rfc::DNS_QTYPE_HTTPS || rtype == rfc::DNS_QTYPE_SVCB {
         guard rdlength >= 3 && out.https_records.len < out.https_records.cap else { return false; }
         var rec = HttpsRecord { .. };
         rec.priority = ((rdata[0] as u16) << 8) | rdata[1];
@@ -421,7 +398,7 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
     out.answer_count = ((raw[6] as u16) << 8) | raw[7];
     out.min_ttl_sec = if out.answer_count > 0 { 0xFFFFFFFF } else { 0 };
 
-    guard out.rcode == DNS_RCODE_NOERROR else { return true; }
+    guard out.rcode == rfc::DNS_RCODE_NOERROR else { return true; }
 
     var off: i64 = 12;
 
@@ -491,7 +468,7 @@ enum DnsCacheStatus {
 
 struct DnsCacheEntry {
     domain:          u8[..255]        = [],
-    qtype:           u16              = DNS_QTYPE_A,
+    qtype:           u16              = rfc::DNS_QTYPE_A,
     ipv4_hints:      u32[..8]         = [],
     ipv6_hints:      u8[16][..8]      = [],
     https_records:   HttpsRecord[..4] = [],

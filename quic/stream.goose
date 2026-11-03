@@ -121,10 +121,10 @@ fn quic_stream_on_send_data(
     fin:    bool,
 ) -> bool, u64 {
     guard s.send_state == QuicSendState.Ready || s.send_state == QuicSendState.Send else {
-        return false, QUIC_ERR_STREAM_STATE;
+        return false, rfc::QUIC_ERR_STREAM_STATE;
     }
     guard is_within_limit(offset, len, s.send_max_data) else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     let end_offset = offset + len;
@@ -138,7 +138,7 @@ fn quic_stream_on_send_data(
         s.send_state = QuicSendState.Send;
     }
 
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Initiates stream reset on sender side (RFC 9000 Section 3.1).
@@ -150,18 +150,18 @@ fn quic_stream_on_send_reset(
     let ok_state = s.send_state == QuicSendState.Ready ||
                    s.send_state == QuicSendState.Send ||
                    s.send_state == QuicSendState.DataSent;
-    guard ok_state else { return false, QUIC_ERR_STREAM_STATE; }
-    guard final_size <= QUIC_VARINT_MAX else { return false, QUIC_ERR_FINAL_SIZE; }
+    guard ok_state else { return false, rfc::QUIC_ERR_STREAM_STATE; }
+    guard final_size <= rfc::QUIC_VARINT_MAX else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
 
     if s.has_send_final_size {
-        guard s.send_final_size == final_size else { return false, QUIC_ERR_FINAL_SIZE; }
+        guard s.send_final_size == final_size else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
     }
 
     s.send_state = QuicSendState.ResetSent;
     s.send_error_code = error_code;
     s.send_final_size = final_size;
     s.has_send_final_size = true;
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Handles acknowledgement of all sent data or RESET_STREAM frame.
@@ -206,27 +206,27 @@ fn quic_stream_on_recv_stream_frame(
 
     // RFC 9000 §4.5: Data exceeding established final size MUST trigger FINAL_SIZE_ERROR
     if s.has_recv_final_size {
-        guard end_offset <= s.recv_final_size else { return false, QUIC_ERR_FINAL_SIZE; }
+        guard end_offset <= s.recv_final_size else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
         if fin {
-            guard end_offset == s.recv_final_size else { return false, QUIC_ERR_FINAL_SIZE; }
+            guard end_offset == s.recv_final_size else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
         }
     }
 
     // Duplicate frames within final size on closed streams are ignored
     if s.recv_state == QuicRecvState.ResetRecvd || s.recv_state == QuicRecvState.ResetRead {
-        return true, QUIC_ERR_NO_ERROR;
+        return true, rfc::QUIC_ERR_NO_ERROR;
     }
     if s.recv_state == QuicRecvState.DataRecvd || s.recv_state == QuicRecvState.DataRead {
-        return true, QUIC_ERR_NO_ERROR;
+        return true, rfc::QUIC_ERR_NO_ERROR;
     }
 
     guard is_within_limit(offset, len, s.recv_max_data) else {
-        return false, QUIC_ERR_FLOW_CONTROL;
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     if fin && !s.has_recv_final_size {
         let valid_fs = validate_recv_final_size(false, 0, end_offset, s.bytes_recv, s.recv_consumed);
-        guard valid_fs else { return false, QUIC_ERR_FINAL_SIZE; }
+        guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
         s.has_recv_final_size = true;
         s.recv_final_size = end_offset;
         s.recv_state = QuicRecvState.SizeKnown;
@@ -238,7 +238,7 @@ fn quic_stream_on_recv_stream_frame(
         s.recv_state = QuicRecvState.DataRecvd;
     }
 
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Processes an incoming RESET_STREAM frame from peer (RFC 9000 Section 3.2).
@@ -249,7 +249,7 @@ fn quic_stream_on_recv_reset(
 ) -> bool, u64 {
     // RFC 9000 Section 3.2: RESET_STREAM on DataRecvd / DataRead is ignored
     if s.recv_state == QuicRecvState.DataRecvd || s.recv_state == QuicRecvState.DataRead {
-        return true, QUIC_ERR_NO_ERROR;
+        return true, rfc::QUIC_ERR_NO_ERROR;
     }
     // RFC 9000 Section 3.2: Receiving RESET_STREAM on terminal closed stream ResetRead MUST NOT reopen stream
     if s.recv_state == QuicRecvState.ResetRead {
@@ -260,11 +260,11 @@ fn quic_stream_on_recv_reset(
             s.bytes_recv,
             s.recv_consumed,
         );
-        guard valid_fs else { return false, QUIC_ERR_FINAL_SIZE; }
-        return true, QUIC_ERR_NO_ERROR;
+        guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
+        return true, rfc::QUIC_ERR_NO_ERROR;
     }
-    guard final_size <= QUIC_VARINT_MAX else { return false, QUIC_ERR_FINAL_SIZE; }
-    guard final_size <= s.recv_max_data else { return false, QUIC_ERR_FLOW_CONTROL; }
+    guard final_size <= rfc::QUIC_VARINT_MAX else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
+    guard final_size <= s.recv_max_data else { return false, rfc::QUIC_ERR_FLOW_CONTROL; }
 
     let valid_fs = validate_recv_final_size(
         s.has_recv_final_size,
@@ -273,13 +273,13 @@ fn quic_stream_on_recv_reset(
         s.bytes_recv,
         s.recv_consumed,
     );
-    guard valid_fs else { return false, QUIC_ERR_FINAL_SIZE; }
+    guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
 
     s.recv_state = QuicRecvState.ResetRecvd;
     s.recv_error_code = error_code;
     s.recv_final_size = final_size;
     s.has_recv_final_size = true;
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Processes an incoming STOP_SENDING frame from peer (RFC 9000 Section 3.5 & 19.5).
@@ -290,7 +290,7 @@ fn quic_stream_on_recv_stop_sending(
 ) -> bool, u64 {
     // STOP_SENDING cannot be received on a stream where endpoint cannot send (RFC 9000 Section 19.5)
     guard quic_stream_can_send(s.stream_id, role) else {
-        return false, QUIC_ERR_STREAM_STATE;
+        return false, rfc::QUIC_ERR_STREAM_STATE;
     }
 
     s.stop_sending_recv = true;
@@ -306,7 +306,7 @@ fn quic_stream_on_recv_stop_sending(
         s.send_final_size = s.bytes_sent;
     }
 
-    return true, QUIC_ERR_NO_ERROR;
+    return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
 // Consumes contiguous stream bytes by application, advancing to DataRead terminal state.
@@ -332,14 +332,14 @@ fn quic_stream_on_app_read_reset(s: QuicStream&) -> bool {
 
 // Updates peer-advertised send window limit (MAX_STREAM_DATA cannot decrease).
 inline fn quic_stream_update_send_max(s: QuicStream&, limit: u64) {
-    if limit > s.send_max_data && limit <= QUIC_VARINT_MAX {
+    if limit > s.send_max_data && limit <= rfc::QUIC_VARINT_MAX {
         s.send_max_data = limit;
     }
 }
 
 // Updates locally advertised recv window limit.
 inline fn quic_stream_update_recv_max(s: QuicStream&, limit: u64) {
-    if limit > s.recv_max_data && limit <= QUIC_VARINT_MAX {
+    if limit > s.recv_max_data && limit <= rfc::QUIC_VARINT_MAX {
         s.recv_max_data = limit;
     }
 }

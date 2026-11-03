@@ -94,7 +94,7 @@ struct H3Connection {
     max_push_id_advertised:    u64                 = 0,
     max_push_id_received:      u64                 = 0,
     empty_frame_streak:        u32                 = 0,
-    error_code:                u64                 = H3_ERR_NO_ERROR,
+    error_code:                u64                 = rfc::H3_ERR_NO_ERROR,
     local_settings:            wing::H3Settings    = wing::H3Settings { .. },
     peer_settings:             wing::H3Settings    = wing::H3Settings { .. },
     streams:                   H3StreamEntry[..32] = [],
@@ -138,14 +138,14 @@ fn encode_client_preambles<B1, B2, B3>(
     out_qpack_dec: B3&,
 ) -> bool {
     // 1. Control Stream: Stream Type 0x00 || SETTINGS Frame
-    quic_encode_varint(out_ctrl, H3_STREAM_CONTROL);
+    quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL);
     encode_h3_settings_frame(out_ctrl, conn.local_settings);
 
     // 2. QPACK Encoder Stream: Stream Type 0x02
-    quic_encode_varint(out_qpack_enc, H3_STREAM_QPACK_ENCODER);
+    quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER);
 
     // 3. QPACK Decoder Stream: Stream Type 0x03
-    quic_encode_varint(out_qpack_dec, H3_STREAM_QPACK_DECODER);
+    quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER);
 
     conn.local_settings_sent = true;
     return true;
@@ -286,137 +286,137 @@ fn send_request_data<B>(
 fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
     // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
     if !conn.peer_settings_received {
-        if hdr.frame_type != H3_FRAME_SETTINGS {
+        if hdr.frame_type != rfc::H3_FRAME_SETTINGS {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_MISSING_SETTINGS;
-            return H3_ERR_MISSING_SETTINGS;
+            conn.error_code = rfc::H3_ERR_MISSING_SETTINGS;
+            return rfc::H3_ERR_MISSING_SETTINGS;
         }
         let set_err = parse_h3_settings_frame(payload, conn.peer_settings);
-        guard set_err == H3_ERR_NO_ERROR else {
+        guard set_err == rfc::H3_ERR_NO_ERROR else {
             conn.state = H3ConnState.Closed;
             conn.error_code = set_err;
             return set_err;
         }
         conn.peer_settings_received = true;
         conn.state = H3ConnState.Active;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
     // Subsequent strictly forbidden frames on control stream (RFC 9114 §7.2.1, §7.2.2, §7.2.5, §7.2.8)
     guard is_allowed_on_control_stream(hdr.frame_type) else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
 
     // Subsequent frames must not be SETTINGS
-    guard hdr.frame_type != H3_FRAME_SETTINGS else {
+    guard hdr.frame_type != rfc::H3_FRAME_SETTINGS else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
 
-    if hdr.frame_type == H3_FRAME_GOAWAY {
+    if hdr.frame_type == rfc::H3_FRAME_GOAWAY {
         let max_sid, ok_ga = parse_h3_goaway_frame(payload);
         guard ok_ga else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
         if conn.role == H3ConnRole.Client && (max_sid & 0x03) != 0 {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
         if conn.goaway_received && max_sid > conn.goaway_max_stream_id {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
         conn.goaway_received = true;
         conn.goaway_max_stream_id = max_sid;
         conn.state = H3ConnState.Draining;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
-    if hdr.frame_type == H3_FRAME_CANCEL_PUSH {
+    if hdr.frame_type == rfc::H3_FRAME_CANCEL_PUSH {
         let push_id, ok_cp = parse_h3_cancel_push(payload);
         guard ok_cp else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
         if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
-    if hdr.frame_type == H3_FRAME_MAX_PUSH_ID {
+    if hdr.frame_type == rfc::H3_FRAME_MAX_PUSH_ID {
         guard conn.role != H3ConnRole.Client else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-            return H3_ERR_FRAME_UNEXPECTED;
+            conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+            return rfc::H3_ERR_FRAME_UNEXPECTED;
         }
         let max_pid, ok_mp = parse_h3_max_push_id(payload);
         guard ok_mp else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
         if conn.max_push_id_received > 0 && max_pid < conn.max_push_id_received {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
         conn.max_push_id_received = max_pid;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
-    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST {
+    if hdr.frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST {
         guard conn.role != H3ConnRole.Client else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-            return H3_ERR_FRAME_UNEXPECTED;
+            conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+            return rfc::H3_ERR_FRAME_UNEXPECTED;
         }
         let req_stream_id, prio, ok_pu = parse_h3_priority_update_request(payload);
         guard ok_pu else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
         guard (req_stream_id & 0x03) == 0 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
         apply_h3_stream_priority(conn, req_stream_id, prio);
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
-    if hdr.frame_type == H3_FRAME_PRIORITY_UPDATE_PUSH {
+    if hdr.frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_PUSH {
         guard conn.role != H3ConnRole.Client else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-            return H3_ERR_FRAME_UNEXPECTED;
+            conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+            return rfc::H3_ERR_FRAME_UNEXPECTED;
         }
         let push_id, prio, ok_pu = parse_h3_priority_update_push(payload);
         guard ok_pu else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
         if conn.max_push_id_sent && push_id > conn.max_push_id_advertised {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_ID_ERROR;
-            return H3_ERR_ID_ERROR;
+            conn.error_code = rfc::H3_ERR_ID_ERROR;
+            return rfc::H3_ERR_ID_ERROR;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 // RFC 9114 Section 4.3.1: Request Pseudo-Header Fields - All HTTP/3 requests MUST include exactly one value for the :method, :scheme, and :path pseudo-header fields, unless the request is a CONNECT request; see Section 4.4.
@@ -448,30 +448,30 @@ fn handle_push_stream_open(
 ) -> u64 {
     if conn.role == H3ConnRole.Server {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_STREAM_CREATION;
-        return H3_ERR_STREAM_CREATION;
+        conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+        return rfc::H3_ERR_STREAM_CREATION;
     }
 
     let push_id, _, ok_p = quic_decode_varint(data, offset);
     guard ok_p else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-        return H3_ERR_GENERAL_PROTOCOL;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
     }
 
     if !conn.max_push_id_sent || push_id > conn.max_push_id_advertised {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_ID_ERROR;
-        return H3_ERR_ID_ERROR;
+        conn.error_code = rfc::H3_ERR_ID_ERROR;
+        return rfc::H3_ERR_ID_ERROR;
     }
 
     guard conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_EXCESSIVE_LOAD;
-        return H3_ERR_EXCESSIVE_LOAD;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
     }
     conn.ignored_uni_streams.push(stream_id);
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_offset: u64) -> u64 {
@@ -480,16 +480,16 @@ fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_off
         let hdr, ok_hdr = parse_h3_frame_header(data, offset);
         guard ok_hdr else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
 
         offset += hdr.header_len;
         guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len &&
               (offset + hdr.payload_len) <= (data.len as u64) else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
 
         let p_start = offset as i64;
@@ -498,9 +498,9 @@ fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_off
         offset += hdr.payload_len;
 
         let c_err = handle_peer_control_frame(conn, hdr, payload);
-        guard c_err == H3_ERR_NO_ERROR else { return c_err; }
+        guard c_err == rfc::H3_ERR_NO_ERROR else { return c_err; }
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn process_peer_qpack_stream(
@@ -515,26 +515,26 @@ fn process_peer_qpack_stream(
             let next_off, q_err = qpack_process_encoder_instruction(conn.qpack_table, data, offset);
             if q_err != QpackError.None {
                 conn.state = H3ConnState.Closed;
-                conn.error_code = H3_ERR_QPACK_ENCODER_STREAM_ERROR;
-                return H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+                conn.error_code = rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+                return rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
             }
             offset = next_off;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if stream_id == conn.peer_qpack_dec_stream_id {
         while offset < (data.len as u64) {
             let next_off, q_err = qpack_process_decoder_instruction(conn.qpack_table, data, offset);
             if q_err != QpackError.None {
                 conn.state = H3ConnState.Closed;
-                conn.error_code = H3_ERR_QPACK_DECODER_STREAM_ERROR;
-                return H3_ERR_QPACK_DECODER_STREAM_ERROR;
+                conn.error_code = rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+                return rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
             }
             offset = next_off;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn register_peer_uni_stream(
@@ -545,51 +545,51 @@ fn register_peer_uni_stream(
     let stype, off1, ok_type = quic_decode_varint(data, 0);
     guard ok_type else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-        return 0, H3_ERR_GENERAL_PROTOCOL;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return 0, rfc::H3_ERR_GENERAL_PROTOCOL;
     }
 
-    if stype == H3_STREAM_CONTROL {
+    if stype == rfc::H3_STREAM_CONTROL {
         if conn.peer_control_opened {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_STREAM_CREATION;
-            return 0, H3_ERR_STREAM_CREATION;
+            conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+            return 0, rfc::H3_ERR_STREAM_CREATION;
         }
         conn.peer_control_opened = true;
         conn.peer_control_stream_id = stream_id;
-        return off1, H3_ERR_NO_ERROR;
+        return off1, rfc::H3_ERR_NO_ERROR;
     }
-    if stype == H3_STREAM_QPACK_ENCODER {
+    if stype == rfc::H3_STREAM_QPACK_ENCODER {
         if conn.peer_qpack_enc_opened {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_STREAM_CREATION;
-            return 0, H3_ERR_STREAM_CREATION;
+            conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+            return 0, rfc::H3_ERR_STREAM_CREATION;
         }
         conn.peer_qpack_enc_opened = true;
         conn.peer_qpack_enc_stream_id = stream_id;
-        return off1, H3_ERR_NO_ERROR;
+        return off1, rfc::H3_ERR_NO_ERROR;
     }
-    if stype == H3_STREAM_QPACK_DECODER {
+    if stype == rfc::H3_STREAM_QPACK_DECODER {
         if conn.peer_qpack_dec_opened {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_STREAM_CREATION;
-            return 0, H3_ERR_STREAM_CREATION;
+            conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+            return 0, rfc::H3_ERR_STREAM_CREATION;
         }
         conn.peer_qpack_dec_opened = true;
         conn.peer_qpack_dec_stream_id = stream_id;
-        return off1, H3_ERR_NO_ERROR;
+        return off1, rfc::H3_ERR_NO_ERROR;
     }
-    if stype == H3_STREAM_PUSH {
+    if stype == rfc::H3_STREAM_PUSH {
         let p_err = handle_push_stream_open(conn, stream_id, data, off1);
         return off1, p_err;
     }
 
     // Unknown unidirectional stream: ignore payload (RFC 9114 Section 6.2)
     guard conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap else {
-        return 0, H3_ERR_NO_ERROR;
+        return 0, rfc::H3_ERR_NO_ERROR;
     }
     conn.ignored_uni_streams.push(stream_id);
-    return 0, H3_ERR_NO_ERROR;
+    return 0, rfc::H3_ERR_NO_ERROR;
 }
 
 fn is_critical_uni_stream(conn: const H3Connection&, stream_id: u64) -> bool {
@@ -611,11 +611,11 @@ fn handle_uni_stream_data(
     data:      const u8[:],
     fin:       bool,
 ) -> u64 {
-    guard data.len > 0 || fin else { return H3_ERR_NO_ERROR; }
+    guard data.len > 0 || fin else { return rfc::H3_ERR_NO_ERROR; }
 
     for sid in conn.ignored_uni_streams {
         if sid == stream_id {
-            return H3_ERR_NO_ERROR;
+            return rfc::H3_ERR_NO_ERROR;
         }
     }
 
@@ -625,13 +625,13 @@ fn handle_uni_stream_data(
     // RFC 9114 §6.2: Closing a unidirectional stream before stream type header is an error
     if !is_known && data.len == 0 && fin {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-        return H3_ERR_GENERAL_PROTOCOL;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
     }
 
     if !is_known && data.len > 0 {
         let next_off, reg_err = register_peer_uni_stream(conn, stream_id, data);
-        guard reg_err == H3_ERR_NO_ERROR else { return reg_err; }
+        guard reg_err == rfc::H3_ERR_NO_ERROR else { return reg_err; }
         offset = next_off;
     }
 
@@ -639,8 +639,8 @@ fn handle_uni_stream_data(
     if fin {
         if is_critical_uni_stream(conn, stream_id) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_CLOSED_CRITICAL_STREAM;
-            return H3_ERR_CLOSED_CRITICAL_STREAM;
+            conn.error_code = rfc::H3_ERR_CLOSED_CRITICAL_STREAM;
+            return rfc::H3_ERR_CLOSED_CRITICAL_STREAM;
         }
         for i in conn.ignored_uni_streams.len {
             if conn.ignored_uni_streams[i] == stream_id {
@@ -659,13 +659,13 @@ fn handle_uni_stream_data(
         return process_peer_qpack_stream(conn, stream_id, data, offset);
     }
 
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn get_or_create_bidi_stream(conn: H3Connection&, stream_id: u64) -> i32, u64 {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     if found {
-        return s_idx, H3_ERR_NO_ERROR;
+        return s_idx, rfc::H3_ERR_NO_ERROR;
     }
     var reuse_slot: i32 = -1;
     for i in conn.streams.len {
@@ -691,13 +691,13 @@ fn get_or_create_bidi_stream(conn: H3Connection&, stream_id: u64) -> i32, u64 {
     };
     if reuse_slot >= 0 {
         conn.streams[reuse_slot] = ent;
-        return reuse_slot, H3_ERR_NO_ERROR;
+        return reuse_slot, rfc::H3_ERR_NO_ERROR;
     }
     guard conn.streams.len < conn.streams.cap else {
-        return -1, H3_ERR_EXCESSIVE_LOAD;
+        return -1, rfc::H3_ERR_EXCESSIVE_LOAD;
     }
     conn.streams.push(ent);
-    return (conn.streams.len - 1) as i32, H3_ERR_NO_ERROR;
+    return (conn.streams.len - 1) as i32, rfc::H3_ERR_NO_ERROR;
 }
 
 fn is_valid_authority_or_host(val: const u8[:]) -> bool {
@@ -737,8 +737,8 @@ fn validate_h3_trailers(conn: H3Connection&, fields: const HeaderField[>..]&) ->
     for field in fields {
         if field.name.len > 0 && field.name[0] == ':' {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         if eq_ascii_fold(field.name[..], "content-length") ||
            eq_ascii_fold(field.name[..], "host") ||
@@ -749,21 +749,21 @@ fn validate_h3_trailers(conn: H3Connection&, fields: const HeaderField[>..]&) ->
            eq_ascii_fold(field.name[..], "keep-alive") ||
            eq_ascii_fold(field.name[..], "proxy-connection") {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         if has_ctl_chars(field.value[..]) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         if is_forbidden_connection_header(field.name[..], field.value[..]) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn process_h3_pseudo_field(
@@ -777,60 +777,60 @@ fn process_h3_pseudo_field(
         counts.pseudo_status++;
         guard counts.pseudo_status == 1 && field.value.len == 3 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         let sc, ok_sc = core::parse_i32_dec(field.value[..]);
         guard ok_sc && sc >= 100 && sc <= 599 && sc != 101 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         conn.streams[s_idx].status_code = sc;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":method" {
         counts.pseudo_method++;
         guard counts.pseudo_method == 1 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         counts.is_connect = (field.value[..] == "CONNECT");
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":scheme" {
         counts.pseudo_scheme++;
         guard counts.pseudo_scheme == 1 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":authority" {
         counts.pseudo_authority++;
         guard counts.pseudo_authority == 1 && is_valid_authority_or_host(field.value[..]) else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         auth_val.clear();
         auth_val.append(field.value[..]);
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":path" {
         counts.pseudo_path++;
         guard counts.pseudo_path == 1 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     conn.state = H3ConnState.Closed;
-    conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-    return H3_ERR_GENERAL_PROTOCOL;
+    conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+    return rfc::H3_ERR_GENERAL_PROTOCOL;
 }
 
 fn process_h3_regular_field(
@@ -844,29 +844,29 @@ fn process_h3_regular_field(
         counts.host++;
         guard counts.host == 1 && is_valid_authority_or_host(field.value[..]) else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         host_val.clear();
         host_val.append(field.value[..]);
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
     if eq_ascii_fold(field.name[..], "content-length") {
         let cl, ok_cl = core::parse_i64_dec(field.value[..]);
         guard ok_cl && cl >= 0 else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         if conn.streams[s_idx].content_length >= 0 && conn.streams[s_idx].content_length != cl {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         conn.streams[s_idx].content_length = cl;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn validate_h3_headers(conn: H3Connection&, s_idx: i32, fields: const HeaderField[>..]&) -> u64 {
@@ -878,37 +878,37 @@ fn validate_h3_headers(conn: H3Connection&, s_idx: i32, fields: const HeaderFiel
     for field in fields {
         if has_ctl_chars(field.value[..]) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
 
         let is_pseudo = field.name.len > 0 && field.name[0] == ':';
         if is_pseudo {
             guard !seen_regular else {
                 conn.state = H3ConnState.Closed;
-                conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-                return H3_ERR_GENERAL_PROTOCOL;
+                conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+                return rfc::H3_ERR_GENERAL_PROTOCOL;
             }
             let p_err = process_h3_pseudo_field(conn, s_idx, field, counts, auth_val);
-            guard p_err == H3_ERR_NO_ERROR else { return p_err; }
+            guard p_err == rfc::H3_ERR_NO_ERROR else { return p_err; }
             continue;
         }
 
         seen_regular = true;
         if is_forbidden_connection_header(field.name[..], field.value[..]) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         let r_err = process_h3_regular_field(conn, s_idx, field, counts, host_val);
-        guard r_err == H3_ERR_NO_ERROR else { return r_err; }
+        guard r_err == rfc::H3_ERR_NO_ERROR else { return r_err; }
     }
 
     if counts.pseudo_authority > 0 && counts.host > 0 {
         if !core::eq_ascii_fold(auth_val[..], host_val[..]) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
     }
 
@@ -919,40 +919,40 @@ fn validate_h3_headers(conn: H3Connection&, s_idx: i32, fields: const HeaderFiel
     );
     guard ok_pseudos else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-        return H3_ERR_GENERAL_PROTOCOL;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
     }
     if conn.role == H3ConnRole.Server || conn.streams[s_idx].status_code >= 200 {
         conn.streams[s_idx].headers_received = true;
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
     // Clients MUST NOT send PUSH_PROMISE frames to servers
     if conn.role == H3ConnRole.Server {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
     guard payload.len > 0 else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_ERROR;
-        return H3_ERR_FRAME_ERROR;
+        conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+        return rfc::H3_ERR_FRAME_ERROR;
     }
     let push_id, _, ok_p = quic_decode_varint(payload, 0);
     if !ok_p {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_ERROR;
-        return H3_ERR_FRAME_ERROR;
+        conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+        return rfc::H3_ERR_FRAME_ERROR;
     }
     // Push ID MUST NOT exceed advertised MAX_PUSH_ID (or any push if never advertised)
     if !conn.max_push_id_sent || push_id > conn.max_push_id_advertised {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_ID_ERROR;
-        return H3_ERR_ID_ERROR;
+        conn.error_code = rfc::H3_ERR_ID_ERROR;
+        return rfc::H3_ERR_ID_ERROR;
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn handle_bidi_headers(
@@ -963,8 +963,8 @@ fn handle_bidi_headers(
     // RFC 9114 §4.1: Extra HEADERS frame after trailers is forbidden
     if conn.streams[s_idx].trailers_received {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
 
     var decoded_fields: HeaderField[>..] = [];
@@ -973,8 +973,8 @@ fn handle_bidi_headers(
     );
     if q_err != QpackError.None {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_QPACK_DECOMPRESSION_FAILED;
-        return H3_ERR_QPACK_DECOMPRESSION_FAILED;
+        conn.error_code = rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
+        return rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
     }
 
     let is_trailer = conn.streams[s_idx].headers_received &&
@@ -982,9 +982,9 @@ fn handle_bidi_headers(
 
     if is_trailer {
         let t_err = validate_h3_trailers(conn, decoded_fields);
-        guard t_err == H3_ERR_NO_ERROR else { return t_err; }
+        guard t_err == rfc::H3_ERR_NO_ERROR else { return t_err; }
         conn.streams[s_idx].trailers_received = true;
-        return H3_ERR_NO_ERROR;
+        return rfc::H3_ERR_NO_ERROR;
     }
 
     return validate_h3_headers(conn, s_idx, decoded_fields);
@@ -1001,8 +1001,8 @@ fn handle_bidi_data(
         conn.empty_frame_streak++;
         if conn.empty_frame_streak > MAX_H3_EMPTY_FRAME_STREAK {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_EXCESSIVE_LOAD;
-            return H3_ERR_EXCESSIVE_LOAD;
+            conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+            return rfc::H3_ERR_EXCESSIVE_LOAD;
         }
     } else {
         conn.empty_frame_streak = 0;
@@ -1011,15 +1011,15 @@ fn handle_bidi_data(
     // DATA before HEADERS or after trailers is a fatal protocol error
     if !conn.streams[s_idx].headers_received || conn.streams[s_idx].trailers_received {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
     // RFC 9114 §4.1 & Go #81642: 1xx, 204, and 304 responses MUST NOT include DATA frames
     let sc = conn.streams[s_idx].status_code;
     if sc == 204 || sc == 304 || (sc >= 100 && sc < 200) {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-        return H3_ERR_FRAME_UNEXPECTED;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
     let avail = conn.streams[s_idx].received_body.cap - conn.streams[s_idx].received_body.len;
     if avail > 0 {
@@ -1031,10 +1031,10 @@ fn handle_bidi_data(
     if conn.streams[s_idx].content_length >= 0 &&
        conn.streams[s_idx].body_received_len > (conn.streams[s_idx].content_length as u64) {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-        return H3_ERR_GENERAL_PROTOCOL;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn handle_bidi_stream_frames(
@@ -1047,16 +1047,16 @@ fn handle_bidi_stream_frames(
         let hdr, ok_hdr = parse_h3_frame_header(data, offset);
         guard ok_hdr else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
 
         offset += hdr.header_len;
         guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len &&
               (offset + hdr.payload_len) <= (data.len as u64) else {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_ERROR;
-            return H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
         }
 
         let p_start = offset as i64;
@@ -1066,29 +1066,29 @@ fn handle_bidi_stream_frames(
 
         if !is_allowed_on_request_stream(hdr.frame_type) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_FRAME_UNEXPECTED;
-            return H3_ERR_FRAME_UNEXPECTED;
+            conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+            return rfc::H3_ERR_FRAME_UNEXPECTED;
         }
 
-        if hdr.frame_type == H3_FRAME_PUSH_PROMISE {
+        if hdr.frame_type == rfc::H3_FRAME_PUSH_PROMISE {
             let p_err = handle_bidi_push_promise(conn, payload);
-            guard p_err == H3_ERR_NO_ERROR else { return p_err; }
+            guard p_err == rfc::H3_ERR_NO_ERROR else { return p_err; }
             continue;
         }
 
-        if hdr.frame_type == H3_FRAME_HEADERS {
+        if hdr.frame_type == rfc::H3_FRAME_HEADERS {
             let h_err = handle_bidi_headers(conn, s_idx, payload);
-            guard h_err == H3_ERR_NO_ERROR else { return h_err; }
+            guard h_err == rfc::H3_ERR_NO_ERROR else { return h_err; }
             continue;
         }
 
-        if hdr.frame_type == H3_FRAME_DATA {
+        if hdr.frame_type == rfc::H3_FRAME_DATA {
             let d_err = handle_bidi_data(conn, s_idx, hdr.payload_len, payload);
-            guard d_err == H3_ERR_NO_ERROR else { return d_err; }
+            guard d_err == rfc::H3_ERR_NO_ERROR else { return d_err; }
             continue;
         }
     }
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 // Handles incoming raw bytes on a given stream.
@@ -1107,23 +1107,23 @@ fn handle_stream_data(
     // Client-initiated bidirectional streams have (stream_id & 0x01) == 0.
     guard (stream_id & 0x01) == 0 else {
         conn.state = H3ConnState.Closed;
-        conn.error_code = H3_ERR_STREAM_CREATION;
-        return H3_ERR_STREAM_CREATION;
+        conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+        return rfc::H3_ERR_STREAM_CREATION;
     }
 
     let s_idx, err = get_or_create_bidi_stream(conn, stream_id);
-    guard err == H3_ERR_NO_ERROR else { return err; }
+    guard err == rfc::H3_ERR_NO_ERROR else { return err; }
 
     let f_err = handle_bidi_stream_frames(conn, s_idx, data);
-    guard f_err == H3_ERR_NO_ERROR else { return f_err; }
+    guard f_err == rfc::H3_ERR_NO_ERROR else { return f_err; }
 
     if fin {
         conn.streams[s_idx].fin_received = true;
         if conn.streams[s_idx].content_length >= 0 &&
            conn.streams[s_idx].body_received_len != (conn.streams[s_idx].content_length as u64) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = H3_ERR_GENERAL_PROTOCOL;
-            return H3_ERR_GENERAL_PROTOCOL;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
         if conn.streams[s_idx].fin_sent {
             conn.streams[s_idx].state = H3StreamState.Closed;
@@ -1132,7 +1132,7 @@ fn handle_stream_data(
         }
     }
 
-    return H3_ERR_NO_ERROR;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 // ---- Stream Inspection Accessors ----------------------------------------
