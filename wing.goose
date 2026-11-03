@@ -191,6 +191,7 @@ import proxy.reverse_proxy;
 
 // ---- wire subsystem (vulkan-style explicit networking) --------------------
 
+import wire.result;
 import wire.types;
 import wire.hpack;
 import wire.h2;

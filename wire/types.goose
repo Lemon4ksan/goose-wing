@@ -5,6 +5,7 @@
 namespace wire;
 
 import std;
+import .result;
 
 // ---- Transport Driver Kinds & Capabilities -------------------------------
 
@@ -91,3 +92,117 @@ let H2_CLIENT_PREFACE: const u8[24] = [
     'P', 'R', 'I', ' ', '*', ' ', 'H', 'T', 'T', 'P', '/', '2', '.', '0',
     '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n',
 ];
+
+// ---- Vulkan Device, Physical Device & Queue Object Hierarchy -------------
+
+// Queue Family Capability Bitmasks (matching VkQueueFlagBits).
+const WIRE_QUEUE_TRANSMIT_BIT: u32 = 0x00000001;
+const WIRE_QUEUE_RECEIVE_BIT:  u32 = 0x00000002;
+const WIRE_QUEUE_BATCH_BIT:    u32 = 0x00000004;
+
+// Properties of a queue family exposed by a physical device.
+struct WireQueueFamilyProperties {
+    queue_flags: u32 = 0,
+    queue_count: u32 = 1,
+}
+
+// Physical transport device hardware capabilities and limits.
+struct WirePhysicalDeviceProperties {
+    device_id:           u32            = 0,
+    driver_kind:         WireDriverKind = WireDriverKind.Standard,
+    max_buffer_capacity: u64            = 16384,
+    max_batch_size:      u32            = 64,
+    hardware_checksum:   bool           = false,
+    zero_copy_supported: bool           = false,
+}
+
+// Fine-grained optional hardware/kernel acceleration features.
+struct WirePhysicalDeviceFeatures {
+    hpack_compression: bool = true,
+    tcp_zero_copy:     bool = false,
+    hardware_tls:      bool = false,
+    raw_frames:        bool = true,
+}
+
+// Physical device representation (VkPhysicalDevice).
+struct WirePhysicalDevice {
+    properties:   WirePhysicalDeviceProperties = WirePhysicalDeviceProperties { .. },
+    features:     WirePhysicalDeviceFeatures   = WirePhysicalDeviceFeatures { .. },
+    queue_family: WireQueueFamilyProperties    = WireQueueFamilyProperties { .. },
+}
+
+// Root instance context managing physical devices and runtime drivers (VkInstance).
+struct WireInstance {
+    api_version:       u32 = 0x00400000,
+    device_count:      u32 = 1,
+    supported_drivers: u32 = 1,
+}
+
+// Creation parameters for requesting device queues.
+struct WireDeviceQueueCreateInfo {
+    queue_family_index: u32 = 0,
+    queue_count:        u32 = 1,
+}
+
+// Logical device creation info (VkDeviceCreateInfo).
+struct WireDeviceCreateInfo {
+    config:           WireDeviceConfig           = WireDeviceConfig { .. },
+    enabled_features: WirePhysicalDeviceFeatures = WirePhysicalDeviceFeatures { .. },
+}
+
+// Logical device handle managing active queues and memory resources (VkDevice).
+struct WireDevice {
+    physical_device:  WirePhysicalDevice         = WirePhysicalDevice { .. },
+    config:           WireDeviceConfig           = WireDeviceConfig { .. },
+    enabled_features: WirePhysicalDeviceFeatures = WirePhysicalDeviceFeatures { .. },
+    is_active:        bool                       = false,
+}
+
+// Creates a logical WireDevice backed by a physical device and requested features.
+fn create_wire_device(phys: const WirePhysicalDevice&, info: const WireDeviceCreateInfo&) -> WireDevice, WireResult {
+    guard phys.properties.max_buffer_capacity > 0 else {
+        return WireDevice { .. }, WireResult.ErrorInitializationFailed;
+    }
+    return WireDevice {
+        physical_device:  phys,
+        config:           info.config,
+        enabled_features: info.enabled_features,
+        is_active:        true,
+    }, WireResult.Success;
+}
+
+// Releases active logical WireDevice resources.
+fn destroy_wire_device(dev: WireDevice&) {
+    dev.is_active = false;
+}
+
+// Enumerates available physical transport devices associated with the instance.
+fn enumerate_physical_devices(inst: const WireInstance&, out: WirePhysicalDevice[..4]&) -> WireResult {
+    guard inst.device_count > 0 else {
+        return WireResult.ErrorInitializationFailed;
+    }
+    let default_phys = WirePhysicalDevice {
+        properties: WirePhysicalDeviceProperties {
+            device_id:           0,
+            driver_kind:         WireDriverKind.Standard,
+            max_buffer_capacity: 16384,
+            max_batch_size:      64,
+            hardware_checksum:   false,
+            zero_copy_supported: false,
+        },
+        features: WirePhysicalDeviceFeatures {
+            hpack_compression: true,
+            tcp_zero_copy:     false,
+            hardware_tls:      false,
+            raw_frames:        true,
+        },
+        queue_family: WireQueueFamilyProperties {
+            queue_flags: WIRE_QUEUE_TRANSMIT_BIT | WIRE_QUEUE_RECEIVE_BIT | WIRE_QUEUE_BATCH_BIT,
+            queue_count: 1,
+        },
+    };
+    guard out.try_push(default_phys) else {
+        return WireResult.ErrorOutOfHostMemory;
+    }
+    return WireResult.Success;
+}
