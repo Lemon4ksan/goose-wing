@@ -817,7 +817,8 @@ fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: lit::T&) {
         let plaintext = "Ladies and Gentlemen of the class of \x2799: If I could offer you only one tip for the future, sunscreen would be it.";
 
         var ciphertext: u8[>..] = [];
-        let tag = core::chacha20_poly1305_seal(key, nonce, plaintext, aad[..], ciphertext);
+        for i in plaintext.len { ciphertext.push(0); }
+        let tag, _, _ = core::chacha20_poly1305_seal(key, nonce, plaintext, aad[..], ciphertext[..]);
 
         let expected_tag: u8[16] = [
             0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a,

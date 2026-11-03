@@ -259,50 +259,35 @@ fn ghash_update(h: const u8[16]&, y: u8[16]&, data: const u8[:]) {
     }
 }
 
-fn aes256_gcm_seal<B>(
-    key:            const u8[32]&,
-    nonce12:        const u8[12]&,
-    plaintext:      const u8[:],
-    aad:            const u8[:],
-    out_ciphertext: B&,
-) -> u8[16] {
-    let ks = aes256_key_schedule(key);
-    let zero_block: u8[16] = [0; 16];
-    let h = aes_encrypt_block(ks, zero_block);
+inline fn inc_ctr32(ctr: u8[16]&) {
+    var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
+    val += 1;
+    ctr[12] = ((val >> 24) & 0xFF) as u8;
+    ctr[13] = ((val >> 16) & 0xFF) as u8;
+    ctr[14] = ((val >> 8) & 0xFF) as u8;
+    ctr[15] = (val & 0xFF) as u8;
+}
 
+inline fn init_j0(nonce12: const u8[12]&) -> u8[16] {
     var j0: u8[16] = [0; 16];
     for i in 12 { j0[i] = nonce12[i]; }
     j0[15] = 1;
+    return j0;
+}
 
-    let ct_start = out_ciphertext.len;
-    var ctr = j0;
-    var offset = 0;
-    while offset < plaintext.len {
-        // increment 32-bit counter in j0
-        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
-        val += 1;
-        ctr[12] = ((val >> 24) & 0xFF) as u8;
-        ctr[13] = ((val >> 16) & 0xFF) as u8;
-        ctr[14] = ((val >> 8) & 0xFF) as u8;
-        ctr[15] = (val & 0xFF) as u8;
-
-        let enc_ctr = aes_encrypt_block(ks, ctr);
-        let rem = plaintext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
-        for i in take {
-            out_ciphertext.push(plaintext[offset + i] ^ enc_ctr[i]);
-        }
-        offset += take;
-    }
-
-    let ct_slice = out_ciphertext[ct_start..];
+fn aes_gcm_compute_tag(
+    h:      const u8[16]&,
+    enc_j0: const u8[16]&,
+    aad:    const u8[:],
+    ct:     const u8[:],
+) -> u8[16] {
     var ghash_acc: u8[16] = [0; 16];
     ghash_update(h, ghash_acc, aad);
-    ghash_update(h, ghash_acc, ct_slice);
+    ghash_update(h, ghash_acc, ct);
 
     var len_block: u8[16] = [0; 16];
     let aad_bits = (aad.len as u64) * 8;
-    let ct_bits = (ct_slice.len as u64) * 8;
+    let ct_bits = (ct.len as u64) * 8;
     for i in 8 {
         len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
         len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
@@ -310,10 +295,146 @@ fn aes256_gcm_seal<B>(
     for i in 16 { ghash_acc[i] ^= len_block[i]; }
     ghash_acc = ghash_mul(ghash_acc, h);
 
-    let enc_j0 = aes_encrypt_block(ks, j0);
     var tag: u8[16] = [0; 16];
     for i in 16 { tag[i] = ghash_acc[i] ^ enc_j0[i]; }
     return tag;
+}
+
+// In-place AES-256-GCM AEAD decryption (NIST SP 800-38D).
+// On tag mismatch, executes secure_zeroize_slice(in_out) and returns 0, false.
+fn aes256_gcm_open_inplace(
+    key:     const u8[32]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+    tag:     const u8[16]&,
+) -> i64, bool {
+    let ks = aes256_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+    let enc_j0 = aes_encrypt_block(ks, j0);
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
+
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < in_out.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes_encrypt_block(ks, ctr);
+        let rem = in_out.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            in_out[offset + i] ^= enc_ctr[i];
+        }
+        offset += take;
+    }
+    return in_out.len, true;
+}
+
+// In-place AES-256-GCM AEAD encryption (NIST SP 800-38D).
+// Encrypts in_out in-place and returns the 16-byte authentication tag.
+fn aes256_gcm_seal_inplace(
+    key:     const u8[32]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+) -> u8[16], bool {
+    let ks = aes256_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < in_out.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes_encrypt_block(ks, ctr);
+        let rem = in_out.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            in_out[offset + i] ^= enc_ctr[i];
+        }
+        offset += take;
+    }
+
+    let enc_j0 = aes_encrypt_block(ks, j0);
+    let tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
+    return tag, true;
+}
+
+// Out-of-place AES-256-GCM AEAD decryption into caller-provided destination slice (NIST SP 800-38D).
+fn aes256_gcm_open_into(
+    key:        const u8[32]&,
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard dst.len >= ciphertext.len else { return 0, false; }
+    let ks = aes256_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+    let enc_j0 = aes_encrypt_block(ks, j0);
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
+
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
+    }
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < ciphertext.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes_encrypt_block(ks, ctr);
+        let rem = ciphertext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            dst[offset + i] = ciphertext[offset + i] ^ enc_ctr[i];
+        }
+        offset += take;
+    }
+    return ciphertext.len, true;
+}
+
+// Out-of-place AES-256-GCM AEAD encryption into caller-provided destination slice (NIST SP 800-38D).
+fn aes256_gcm_seal(
+    key:       const u8[32]&,
+    nonce12:   const u8[12]&,
+    plaintext: const u8[:],
+    aad:       const u8[:],
+    dst:       u8[:],
+) -> u8[16], i64, bool {
+    var empty_tag: u8[16] = [0; 16];
+    guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
+    let ks = aes256_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < plaintext.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes_encrypt_block(ks, ctr);
+        let rem = plaintext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            dst[offset + i] = plaintext[offset + i] ^ enc_ctr[i];
+        }
+        offset += take;
+    }
+
+    let enc_j0 = aes_encrypt_block(ks, j0);
+    let tag = aes_gcm_compute_tag(h, enc_j0, aad, dst[..plaintext.len]);
+    return tag, plaintext.len, true;
 }
 
 fn aes256_gcm_open<B>(
@@ -327,28 +448,9 @@ fn aes256_gcm_open<B>(
     let ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
-
-    var j0: u8[16] = [0; 16];
-    for i in 12 { j0[i] = nonce12[i]; }
-    j0[15] = 1;
-
-    var ghash_acc: u8[16] = [0; 16];
-    ghash_update(h, ghash_acc, aad);
-    ghash_update(h, ghash_acc, ciphertext);
-
-    var len_block: u8[16] = [0; 16];
-    let aad_bits = (aad.len as u64) * 8;
-    let ct_bits = (ciphertext.len as u64) * 8;
-    for i in 8 {
-        len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
-        len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
-    }
-    for i in 16 { ghash_acc[i] ^= len_block[i]; }
-    ghash_acc = ghash_mul(ghash_acc, h);
-
+    let j0 = init_j0(nonce12);
     let enc_j0 = aes_encrypt_block(ks, j0);
-    var computed_tag: u8[16] = [0; 16];
-    for i in 16 { computed_tag[i] = ghash_acc[i] ^ enc_j0[i]; }
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
         return false;
@@ -357,13 +459,7 @@ fn aes256_gcm_open<B>(
     var ctr = j0;
     var offset = 0;
     while offset < ciphertext.len {
-        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
-        val += 1;
-        ctr[12] = ((val >> 24) & 0xFF) as u8;
-        ctr[13] = ((val >> 16) & 0xFF) as u8;
-        ctr[14] = ((val >> 8) & 0xFF) as u8;
-        ctr[15] = (val & 0xFF) as u8;
-
+        inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
         let take = if rem < 16 { rem } else { 16 };
@@ -375,61 +471,141 @@ fn aes256_gcm_open<B>(
     return true;
 }
 
-// AES-128-GCM (NIST SP 800-38D)
-fn aes128_gcm_seal<B>(
-    key:            const u8[16]&,
-    nonce12:        const u8[12]&,
-    plaintext:      const u8[:],
-    aad:            const u8[:],
-    out_ciphertext: B&,
-) -> u8[16] {
+// In-place AES-128-GCM AEAD decryption (NIST SP 800-38D).
+// On tag mismatch, executes secure_zeroize_slice(in_out) and returns 0, false.
+fn aes128_gcm_open_inplace(
+    key:     const u8[16]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+    tag:     const u8[16]&,
+) -> i64, bool {
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+    let enc_j0 = aes128_encrypt_block(ks, j0);
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
 
-    var j0: u8[16] = [0; 16];
-    for i in 12 { j0[i] = nonce12[i]; }
-    j0[15] = 1;
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
 
-    let ct_start = out_ciphertext.len;
     var ctr = j0;
     var offset = 0;
-    while offset < plaintext.len {
-        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
-        val += 1;
-        ctr[12] = ((val >> 24) & 0xFF) as u8;
-        ctr[13] = ((val >> 16) & 0xFF) as u8;
-        ctr[14] = ((val >> 8) & 0xFF) as u8;
-        ctr[15] = (val & 0xFF) as u8;
-
+    while offset < in_out.len {
+        inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
-        let rem = plaintext.len - offset;
+        let rem = in_out.len - offset;
         let take = if rem < 16 { rem } else { 16 };
         for i in take {
-            out_ciphertext.push(plaintext[offset + i] ^ enc_ctr[i]);
+            in_out[offset + i] ^= enc_ctr[i];
+        }
+        offset += take;
+    }
+    return in_out.len, true;
+}
+
+// In-place AES-128-GCM AEAD encryption (NIST SP 800-38D).
+// Encrypts in_out in-place and returns the 16-byte authentication tag.
+fn aes128_gcm_seal_inplace(
+    key:     const u8[16]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+) -> u8[16], bool {
+    let ks = aes128_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes128_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < in_out.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes128_encrypt_block(ks, ctr);
+        let rem = in_out.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            in_out[offset + i] ^= enc_ctr[i];
         }
         offset += take;
     }
 
-    let ct_slice = out_ciphertext[ct_start..];
-    var ghash_acc: u8[16] = [0; 16];
-    ghash_update(h, ghash_acc, aad);
-    ghash_update(h, ghash_acc, ct_slice);
+    let enc_j0 = aes128_encrypt_block(ks, j0);
+    let tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
+    return tag, true;
+}
 
-    var len_block: u8[16] = [0; 16];
-    let aad_bits = (aad.len as u64) * 8;
-    let ct_bits = (ct_slice.len as u64) * 8;
-    for i in 8 {
-        len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
-        len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
+// Out-of-place AES-128-GCM AEAD decryption into caller-provided destination slice (NIST SP 800-38D).
+fn aes128_gcm_open_into(
+    key:        const u8[16]&,
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard dst.len >= ciphertext.len else { return 0, false; }
+    let ks = aes128_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes128_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+    let enc_j0 = aes128_encrypt_block(ks, j0);
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
+
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
     }
-    for i in 16 { ghash_acc[i] ^= len_block[i]; }
-    ghash_acc = ghash_mul(ghash_acc, h);
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < ciphertext.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes128_encrypt_block(ks, ctr);
+        let rem = ciphertext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            dst[offset + i] = ciphertext[offset + i] ^ enc_ctr[i];
+        }
+        offset += take;
+    }
+    return ciphertext.len, true;
+}
+
+// Out-of-place AES-128-GCM AEAD encryption into caller-provided destination slice (NIST SP 800-38D).
+fn aes128_gcm_seal(
+    key:       const u8[16]&,
+    nonce12:   const u8[12]&,
+    plaintext: const u8[:],
+    aad:       const u8[:],
+    dst:       u8[:],
+) -> u8[16], i64, bool {
+    var empty_tag: u8[16] = [0; 16];
+    guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
+    let ks = aes128_key_schedule(key);
+    let zero_block: u8[16] = [0; 16];
+    let h = aes128_encrypt_block(ks, zero_block);
+    let j0 = init_j0(nonce12);
+
+    var ctr = j0;
+    var offset = 0;
+    while offset < plaintext.len {
+        inc_ctr32(ctr);
+        let enc_ctr = aes128_encrypt_block(ks, ctr);
+        let rem = plaintext.len - offset;
+        let take = if rem < 16 { rem } else { 16 };
+        for i in take {
+            dst[offset + i] = plaintext[offset + i] ^ enc_ctr[i];
+        }
+        offset += take;
+    }
 
     let enc_j0 = aes128_encrypt_block(ks, j0);
-    var tag: u8[16] = [0; 16];
-    for i in 16 { tag[i] = ghash_acc[i] ^ enc_j0[i]; }
-    return tag;
+    let tag = aes_gcm_compute_tag(h, enc_j0, aad, dst[..plaintext.len]);
+    return tag, plaintext.len, true;
 }
 
 fn aes128_gcm_open<B>(
@@ -443,28 +619,9 @@ fn aes128_gcm_open<B>(
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
-
-    var j0: u8[16] = [0; 16];
-    for i in 12 { j0[i] = nonce12[i]; }
-    j0[15] = 1;
-
-    var ghash_acc: u8[16] = [0; 16];
-    ghash_update(h, ghash_acc, aad);
-    ghash_update(h, ghash_acc, ciphertext);
-
-    var len_block: u8[16] = [0; 16];
-    let aad_bits = (aad.len as u64) * 8;
-    let ct_bits = (ciphertext.len as u64) * 8;
-    for i in 8 {
-        len_block[i] = ((aad_bits >> ((7 - i) * 8)) & 0xFF) as u8;
-        len_block[8 + i] = ((ct_bits >> ((7 - i) * 8)) & 0xFF) as u8;
-    }
-    for i in 16 { ghash_acc[i] ^= len_block[i]; }
-    ghash_acc = ghash_mul(ghash_acc, h);
-
+    let j0 = init_j0(nonce12);
     let enc_j0 = aes128_encrypt_block(ks, j0);
-    var computed_tag: u8[16] = [0; 16];
-    for i in 16 { computed_tag[i] = ghash_acc[i] ^ enc_j0[i]; }
+    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
         return false;
@@ -473,13 +630,7 @@ fn aes128_gcm_open<B>(
     var ctr = j0;
     var offset = 0;
     while offset < ciphertext.len {
-        var val = ((ctr[12] as u32) << 24) | ((ctr[13] as u32) << 16) | ((ctr[14] as u32) << 8) | ctr[15];
-        val += 1;
-        ctr[12] = ((val >> 24) & 0xFF) as u8;
-        ctr[13] = ((val >> 16) & 0xFF) as u8;
-        ctr[14] = ((val >> 8) & 0xFF) as u8;
-        ctr[15] = (val & 0xFF) as u8;
-
+        inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
         let take = if rem < 16 { rem } else { 16 };
@@ -492,16 +643,29 @@ fn aes128_gcm_open<B>(
 }
 
 // HKDF-SHA256 + AES-256-GCM scheme (32-byte salt + 12-byte nonce)
-fn hkdf_aes256_gcm_seal<B>(
-    master_key:     const u8[32]&,
-    salt32:         const u8[32]&,
-    nonce12:        const u8[12]&,
-    plaintext:      const u8[:],
-    aad:            const u8[:],
-    out_ciphertext: B&,
-) -> u8[16] {
+fn hkdf_aes256_gcm_seal(
+    master_key: const u8[32]&,
+    salt32:     const u8[32]&,
+    nonce12:    const u8[12]&,
+    plaintext:  const u8[:],
+    aad:        const u8[:],
+    dst:        u8[:],
+) -> u8[16], i64, bool {
     let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
-    return aes256_gcm_seal(derived_key, nonce12, plaintext, aad, out_ciphertext);
+    return aes256_gcm_seal(derived_key, nonce12, plaintext, aad, dst);
+}
+
+fn hkdf_aes256_gcm_open_into(
+    master_key: const u8[32]&,
+    salt32:     const u8[32]&,
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
+    return aes256_gcm_open_into(derived_key, nonce12, ciphertext, aad, tag, dst);
 }
 
 fn hkdf_aes256_gcm_open<B>(

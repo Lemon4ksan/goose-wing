@@ -310,18 +310,24 @@ fn hpke_seal(
     let nonce = hpke_compute_nonce(ctx);
     ctx.seq += 1;
 
+    let ct_start = out_ct.len;
+    for i in pt.len { out_ct.push(0); }
+
     if ctx.aead_id == HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
-        let tag = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct);
+        let tag, _, ok = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct[ct_start..]);
+        guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     } else if ctx.aead_id == HPKE_AEAD_AES_256_GCM {
-        let tag = core::aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct);
+        let tag, _, ok = core::aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
+        guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     } else if ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
-        let tag = core::chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct);
+        let tag, _, ok = core::chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
+        guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
     }

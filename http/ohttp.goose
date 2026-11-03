@@ -294,13 +294,16 @@ fn ohttp_seal_response(
     guard ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
     var ct: u8[>..] = [];
+    for i in response.len { ct.push(0); }
     if session.ctx.aead_id == HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        let tag = core::aes128_gcm_seal(key16, nonce, response, [], ct);
+        let tag, _, ok = core::aes128_gcm_seal(key16, nonce, response, [], ct[..]);
+        guard ok else { return false; }
         for i in 16 { ct.push(tag[i]); }
     } else if session.ctx.aead_id == HPKE_AEAD_CHACHA20_POLY1305 {
-        let tag = core::chacha20_poly1305_seal(key, nonce, response, [], ct);
+        let tag, _, ok = core::chacha20_poly1305_seal(key, nonce, response, [], ct[..]);
+        guard ok else { return false; }
         for i in 16 { ct.push(tag[i]); }
     } else {
         return false;

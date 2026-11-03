@@ -1533,7 +1533,8 @@ fn test_aead_ciphers(t: lit::T&) {
         let plaintext = "secret_session_token_xyz987";
 
         var ciphertext: u8[>..] = [];
-        let tag = core::aes256_gcm_seal(key, iv, plaintext, aad, ciphertext);
+        for i in plaintext.len { ciphertext.push(0); }
+        let tag, _, _ = core::aes256_gcm_seal(key, iv, plaintext, aad, ciphertext[..]);
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length matches");
 
         // Authentic decryption

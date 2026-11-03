@@ -196,13 +196,21 @@ fn seal_binary_hkdf_aes<B>(
     var aad_stack: u8[..256] = [];
     if (15 + cookie_name.len) <= aad_stack.cap {
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
-        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_stack[..], out);
+        let ct_start = out.len;
+        for i in plaintext.len { out.push(0); }
+        let tag, _, _ = core::hkdf_aes256_gcm_seal(
+            slot.master_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
+        );
         for i in 16 { out.push(tag[i]); }
         return true;
     } else {
         var aad_dyn: u8[>..] = [];
         build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
-        let tag = core::hkdf_aes256_gcm_seal(slot.master_key, salt, nonce12, plaintext, aad_dyn[..], out);
+        let ct_start = out.len;
+        for i in plaintext.len { out.push(0); }
+        let tag, _, _ = core::hkdf_aes256_gcm_seal(
+            slot.master_key, salt, nonce12, plaintext, aad_dyn[..], out[ct_start..],
+        );
         for i in 16 { out.push(tag[i]); }
         return true;
     }

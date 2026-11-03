@@ -110,6 +110,47 @@ fn chacha20_xor<B>(
     }
 }
 
+fn chacha20_xor_inplace(
+    key:     const u8[32]&,
+    counter: u32,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+) {
+    var cur_ctr = counter;
+    var offset = 0;
+    while offset < in_out.len {
+        let blk = chacha20_block(key, cur_ctr, nonce12);
+        cur_ctr += 1;
+        let rem = in_out.len - offset;
+        let take = if rem < 64 { rem } else { 64 };
+        for i in take {
+            in_out[offset + i] ^= blk[i];
+        }
+        offset += take;
+    }
+}
+
+fn chacha20_xor_into(
+    key:     const u8[32]&,
+    counter: u32,
+    nonce12: const u8[12]&,
+    input:   const u8[:],
+    dst:     u8[:],
+) {
+    var cur_ctr = counter;
+    var offset = 0;
+    while offset < input.len {
+        let blk = chacha20_block(key, cur_ctr, nonce12);
+        cur_ctr += 1;
+        let rem = input.len - offset;
+        let take = if rem < 64 { rem } else { 64 };
+        for i in take {
+            dst[offset + i] = input[offset + i] ^ blk[i];
+        }
+        offset += take;
+    }
+}
+
 // Poly1305 one-time MAC over GF(2^130 - 5) using 26-bit limbs for pure 64-bit arithmetic.
 fn poly1305_process_block(
     m:  const u8[17]&,
@@ -334,23 +375,82 @@ fn xchacha20_poly1305_open<B>(
     return true;
 }
 
-// ChaCha20-Poly1305 AEAD (IETF RFC 8439, 12-byte nonce)
-fn chacha20_poly1305_seal<B>(
-    key:            const u8[32]&,
-    nonce12:        const u8[12]&,
-    plaintext:      const u8[:],
-    aad:            const u8[:],
-    out_ciphertext: B&,
-) -> u8[16] {
+inline fn chacha20_poly1305_key(key: const u8[32]&, nonce12: const u8[12]&) -> u8[32] {
     let ot_block = chacha20_block(key, 0, nonce12);
     var otk: u8[32] = [0; 32];
     for i in 32 { otk[i] = ot_block[i]; }
+    return otk;
+}
 
-    let ct_start = out_ciphertext.len;
-    chacha20_xor(key, 1, nonce12, plaintext, out_ciphertext);
-    let ciphertext_slice = out_ciphertext[ct_start..];
+// In-place ChaCha20-Poly1305 AEAD decryption (RFC 8439).
+// On tag mismatch, executes secure_zeroize_slice(in_out) and returns 0, false.
+fn chacha20_poly1305_open_inplace(
+    key:     const u8[32]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+    tag:     const u8[16]&,
+) -> i64, bool {
+    let otk = chacha20_poly1305_key(key, nonce12);
+    let computed_tag = poly1305_aead_mac(otk, aad, in_out);
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
 
-    return poly1305_aead_mac(otk, aad, ciphertext_slice);
+    chacha20_xor_inplace(key, 1, nonce12, in_out);
+    return in_out.len, true;
+}
+
+// In-place ChaCha20-Poly1305 AEAD encryption (RFC 8439).
+// Encrypts in_out in-place and returns the 16-byte authentication tag.
+fn chacha20_poly1305_seal_inplace(
+    key:     const u8[32]&,
+    nonce12: const u8[12]&,
+    in_out:  u8[:],
+    aad:     const u8[:],
+) -> u8[16], bool {
+    let otk = chacha20_poly1305_key(key, nonce12);
+    chacha20_xor_inplace(key, 1, nonce12, in_out);
+    let tag = poly1305_aead_mac(otk, aad, in_out);
+    return tag, true;
+}
+
+// Out-of-place ChaCha20-Poly1305 AEAD decryption into caller-provided destination slice (RFC 8439).
+fn chacha20_poly1305_open_into(
+    key:        const u8[32]&,
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard dst.len >= ciphertext.len else { return 0, false; }
+    let otk = chacha20_poly1305_key(key, nonce12);
+    let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
+    guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
+    }
+
+    chacha20_xor_into(key, 1, nonce12, ciphertext, dst[..ciphertext.len]);
+    return ciphertext.len, true;
+}
+
+// Out-of-place ChaCha20-Poly1305 AEAD encryption into caller-provided destination slice (RFC 8439).
+fn chacha20_poly1305_seal(
+    key:       const u8[32]&,
+    nonce12:   const u8[12]&,
+    plaintext: const u8[:],
+    aad:       const u8[:],
+    dst:       u8[:],
+) -> u8[16], i64, bool {
+    var empty_tag: u8[16] = [0; 16];
+    guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
+    let otk = chacha20_poly1305_key(key, nonce12);
+    chacha20_xor_into(key, 1, nonce12, plaintext, dst[..plaintext.len]);
+    let tag = poly1305_aead_mac(otk, aad, dst[..plaintext.len]);
+    return tag, plaintext.len, true;
 }
 
 fn chacha20_poly1305_open<B>(
@@ -361,10 +461,7 @@ fn chacha20_poly1305_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
-    let ot_block = chacha20_block(key, 0, nonce12);
-    var otk: u8[32] = [0; 32];
-    for i in 32 { otk[i] = ot_block[i]; }
-
+    let otk = chacha20_poly1305_key(key, nonce12);
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
     guard ct_eq_tag16(computed_tag, tag) else {
         return false;

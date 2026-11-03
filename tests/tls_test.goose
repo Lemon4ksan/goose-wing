@@ -349,7 +349,8 @@ fn test_record_layer_and_dos(t: lit::T&) {
         let inner_pt: u8[9] = [0x54, 0x6F, 0x70, 0x53, 0x65, 0x63, 0x72, 0x74, 0x17];
 
         var ct: u8[>..] = [];
-        let tag = core::aes128_gcm_seal(key, nonce, inner_pt[..], hdr[..], ct);
+        for i in inner_pt.len { ct.push(0); }
+        let tag, _, _ = core::aes128_gcm_seal(key, nonce, inner_pt[..], hdr[..], ct[..]);
         var payload: u8[>..] = [];
         payload.append(ct[..]);
         payload.append(tag[..]);
