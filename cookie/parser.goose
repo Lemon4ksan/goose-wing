@@ -658,3 +658,145 @@ fn extract_ipv6_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port
     }
     return true;
 }
+
+// Zero-allocation 8-byte span descriptor for a cookie name-value pair in a raw Cookie: header.
+struct CookieSpan {
+    name_pos: u16 = 0,
+    name_len: u16 = 0,
+    val_pos:  u16 = 0,
+    val_len:  u16 = 0,
+}
+
+// Builds a CookieSpan from trimmed pair slice bounds.
+//
+// Example:
+//   raw = "sid=xyz", pair_start = 0, pair_end = 7
+//   returns: CookieSpan { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
+fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> CookieSpan {
+    var eq_pos = -1;
+    var idx = pair_start;
+    while idx < pair_end {
+        if raw[idx] == '=' {
+            eq_pos = idx;
+            break;
+        }
+        idx += 1;
+    }
+
+    if eq_pos >= pair_start {
+        var name_end = eq_pos;
+        while name_end > pair_start {
+            let ch = raw[name_end - 1];
+            if ch == ' ' || ch == '\t' {
+                name_end -= 1;
+            } else {
+                break;
+            }
+        }
+        var val_start = eq_pos + 1;
+        while val_start < pair_end {
+            let ch = raw[val_start];
+            if ch == ' ' || ch == '\t' {
+                val_start += 1;
+            } else {
+                break;
+            }
+        }
+
+        return CookieSpan {
+            name_pos: pair_start as u16,
+            name_len: (name_end - pair_start) as u16,
+            val_pos:  val_start as u16,
+            val_len:  (pair_end - val_start) as u16,
+        };
+    }
+
+    return CookieSpan {
+        name_pos: pair_start as u16,
+        name_len: (pair_end - pair_start) as u16,
+        val_pos:  pair_end as u16,
+        val_len:  0,
+    };
+}
+
+// Parses next cookie pair from raw Cookie: header slice without heap allocations.
+// Trims leading/trailing OWS and advances cursor past the delimiter.
+//
+// Example:
+//   raw_header = "sid=xyz; theme=dark", cursor = 0
+//   returns: span{0, 3, 4, 3}, ok = true, cursor = 9 (points after ';')
+fn next_cookie_span(
+    raw_header: const u8[:],
+    cursor:     i64&,
+) -> CookieSpan, bool {
+    var empty_span = CookieSpan { .. };
+    guard cursor >= 0 && cursor < raw_header.len else { return empty_span, false; }
+
+    // Skip leading spaces, tabs, and leading semicolons
+    while cursor < raw_header.len {
+        let ch = raw_header[cursor];
+        if ch == ' ' || ch == '\t' || ch == ';' {
+            cursor += 1;
+        } else {
+            break;
+        }
+    }
+    guard cursor < raw_header.len else { return empty_span, false; }
+
+    let pair_start = cursor;
+    var pair_end = cursor;
+    while pair_end < raw_header.len && raw_header[pair_end] != ';' {
+        pair_end += 1;
+    }
+
+    let next_cur = if pair_end < raw_header.len { pair_end + 1 } else { pair_end };
+    cursor = next_cur;
+
+    // Trim trailing OWS from pair_end
+    while pair_end > pair_start {
+        let ch = raw_header[pair_end - 1];
+        if ch == ' ' || ch == '\t' {
+            pair_end -= 1;
+        } else {
+            break;
+        }
+    }
+    guard pair_end > pair_start else { return empty_span, false; }
+
+    return parse_cookie_kv_span(raw_header, pair_start, pair_end), true;
+}
+
+// Extracts cookie value slice from raw wire header using span coordinates.
+inline fn cookie_value(raw: const u8[:], span: CookieSpan) -> const u8[:] {
+    let start: i64 = span.val_pos;
+    let end:   i64 = start + span.val_len;
+    guard end <= raw.len && start <= end else { return ""; }
+    return raw[start..end];
+}
+
+// Extracts cookie name slice from raw wire header using span coordinates.
+inline fn cookie_name(raw: const u8[:], span: CookieSpan) -> const u8[:] {
+    let start: i64 = span.name_pos;
+    let end:   i64 = start + span.name_len;
+    guard end <= raw.len && start <= end else { return ""; }
+    return raw[start..end];
+}
+
+// Fast-path lookup for a specific cookie name directly in raw wire buffer.
+// Iterates cookie spans without allocating and returns the first matching value.
+//
+// Example:
+//   raw_header = "theme=dark; sid=abc123", name = "sid"
+//   returns: "abc123", true
+fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:], bool {
+    var cursor: i64 = 0;
+    while cursor < raw_header.len {
+        let span, ok = next_cookie_span(raw_header, cursor);
+        guard ok else { break; }
+        let cname = cookie_name(raw_header, span);
+        if cname == name {
+            return cookie_value(raw_header, span), true;
+        }
+    }
+    return "", false;
+}
