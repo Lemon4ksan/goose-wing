@@ -49,6 +49,7 @@ fn test_device_hierarchy() {
     test_command_pool(dev);
     test_pipeline(dev);
     test_sync_primitives(dev);
+    test_queue_batch_submit(dev);
 
     wire::destroy_wire_device(dev);
     if !dev.is_active {
@@ -204,6 +205,43 @@ fn test_sync_primitives(dev: const wire::WireDevice&) {
     }
 }
 
+fn test_queue_batch_submit(dev: const wire::WireDevice&) {
+    var q = wire::get_device_queue(dev, 0, 0);
+    q.driver = wire::WireDriverKind.Mock;
+    q.is_connected = true;
+
+    var cmd1 = wire::new_command_buffer();
+    assert(wire::write_h2_preface(cmd1));
+
+    var cmd2 = wire::new_command_buffer();
+    let s_list: wire::WireSetting[1] = [
+        wire::h2_setting(wire::H2_SETTING_ENABLE_PUSH, 0),
+    ];
+    assert(wire::write_h2_settings(cmd2, s_list[..]));
+
+    let batch: wire::WireCommandBuffer[2] = [cmd1, cmd2];
+    let submit_info = wire::WireSubmitInfo {
+        stage_mask:       wire::WIRE_PIPELINE_STAGE_ALL_COMMANDS,
+        wait_semaphore:   0,
+        signal_semaphore: 0,
+        bytes_submitted:  0,
+    };
+
+    let fence_info = wire::WireFenceCreateInfo { flags: 0 };
+    var fence, f_res = wire::create_wire_fence(dev, fence_info);
+    assert(wire::is_success(f_res));
+
+    let sent_bytes, sub_res = wire::queue_submit_batch(q, batch[..], submit_info, fence);
+    if wire::is_success(sub_res) && sent_bytes > 0 && fence.status == wire::WireFenceStatus.Signaled {
+        print("QUEUE_SUBMIT_BATCH_OK: 1\n");
+    }
+
+    wire::close_wire_queue(q);
+    if q.fd == -1 && !q.is_connected {
+        print("CLOSE_WIRE_QUEUE_FD_RESET_OK: 1\n");
+    }
+}
+
 fn main() {
     // CHECK: OK_RES_SUCCESS: 1
     // CHECK: OK_RES_NOT_ERROR: 1
@@ -231,6 +269,8 @@ fn main() {
     // CHECK: CREATE_WIRE_SEMAPHORE_OK: 1
     // CHECK: WAIT_WIRE_SEMAPHORE_OK: 1
     // CHECK: DESTROY_WIRE_SEMAPHORE_OK: 1
+    // CHECK: QUEUE_SUBMIT_BATCH_OK: 1
+    // CHECK: CLOSE_WIRE_QUEUE_FD_RESET_OK: 1
     // CHECK: DESTROY_WIRE_DEVICE_OK: 1
     test_wire_result();
     test_device_hierarchy();
