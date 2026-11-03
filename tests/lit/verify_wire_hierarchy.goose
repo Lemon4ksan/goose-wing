@@ -46,9 +46,35 @@ fn test_device_hierarchy() {
         print("CREATE_WIRE_DEVICE_OK: 1\n");
     }
 
+    test_command_pool(dev);
+
     wire::destroy_wire_device(dev);
     if !dev.is_active {
         print("DESTROY_WIRE_DEVICE_OK: 1\n");
+    }
+}
+
+fn test_command_pool(dev: const wire::WireDevice&) {
+    let pool_info = wire::WireCommandPoolCreateInfo {
+        flags:              wire::WIRE_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        queue_family_index: 0,
+    };
+    var pool, pool_res = wire::create_command_pool(dev, pool_info);
+    if wire::is_success(pool_res) && pool.is_valid {
+        print("CREATE_COMMAND_POOL_OK: 1\n");
+    }
+
+    let reset_res = wire::reset_command_pool(pool, wire::WIRE_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    if wire::is_success(reset_res) {
+        print("RESET_COMMAND_POOL_OK: 1\n");
+    }
+
+    wire::trim_command_pool(pool);
+    print("TRIM_COMMAND_POOL_OK: 1\n");
+
+    wire::destroy_command_pool(pool);
+    if !pool.is_valid {
+        print("DESTROY_COMMAND_POOL_OK: 1\n");
     }
 }
 
@@ -58,6 +84,10 @@ fn main() {
     // CHECK: ERR_RES_IS_ERROR: 1
     // CHECK: ENUM_PHYSICAL_DEV_OK: 1
     // CHECK: CREATE_WIRE_DEVICE_OK: 1
+    // CHECK: CREATE_COMMAND_POOL_OK: 1
+    // CHECK: RESET_COMMAND_POOL_OK: 1
+    // CHECK: TRIM_COMMAND_POOL_OK: 1
+    // CHECK: DESTROY_COMMAND_POOL_OK: 1
     // CHECK: DESTROY_WIRE_DEVICE_OK: 1
     test_wire_result();
     test_device_hierarchy();

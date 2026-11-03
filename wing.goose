@@ -195,5 +195,6 @@ import wire.result;
 import wire.types;
 import wire.hpack;
 import wire.h2;
+import wire.pool;
 import wire.cmd;
 import wire.submit;
