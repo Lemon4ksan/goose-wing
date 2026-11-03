@@ -69,12 +69,64 @@ fn test_command_pool(dev: const wire::WireDevice&) {
         print("RESET_COMMAND_POOL_OK: 1\n");
     }
 
+    test_cmd_buffer_fsm(pool);
+
     wire::trim_command_pool(pool);
     print("TRIM_COMMAND_POOL_OK: 1\n");
 
     wire::destroy_command_pool(pool);
     if !pool.is_valid {
         print("DESTROY_COMMAND_POOL_OK: 1\n");
+    }
+}
+
+fn test_cmd_buffer_fsm(pool: wire::WireCommandPool&) {
+    var cmd, alloc_res = wire::allocate_command_buffer(pool);
+    if wire::is_success(alloc_res) && cmd.state == wire::WireCommandBufferState.Initial {
+        print("ALLOC_CMD_BUF_OK: 1\n");
+    }
+
+    let begin_info = wire::WireCommandBufferBeginInfo {
+        flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    let begin_res = wire::begin_command_buffer(cmd, begin_info);
+    if wire::is_success(begin_res) && cmd.state == wire::WireCommandBufferState.Recording {
+        print("BEGIN_CMD_BUF_OK: 1\n");
+    }
+
+    // 24-bit overflow test (BUG-09)
+    let ovf_24 = wire::write_u24_be(cmd, 0x01000000);
+    if !ovf_24 && cmd.has_error {
+        print("U24_OVERFLOW_GUARD_OK: 1\n");
+    }
+
+    // Reset buffer for further clean recording
+    wire::reset_command_buffer(cmd, 0);
+    wire::begin_command_buffer(cmd, begin_info);
+
+    // Dynamic headers interleave protection (BUG-04 & BUG-17)
+    assert(wire::begin_h2_headers(cmd, 1, wire::H2_FLAG_END_HEADERS));
+    assert(cmd.state == wire::WireCommandBufferState.RecordingHeaders);
+
+    // Attempting frame write inside headers block must fail (BUG-17)
+    let ping_data: u8[8] = [0; 8];
+    let interleave_res = wire::write_h2_ping(cmd, ping_data, false);
+    if !interleave_res && cmd.has_error {
+        print("HEADERS_INTERLEAVE_GUARD_OK: 1\n");
+    }
+
+    // Reset and complete clean recording
+    wire::reset_command_buffer(cmd, 0);
+    wire::begin_command_buffer(cmd, begin_info);
+    assert(wire::write_h2_preface(cmd));
+    let end_res = wire::end_command_buffer(cmd);
+    if wire::is_success(end_res) && cmd.state == wire::WireCommandBufferState.Executable {
+        print("END_CMD_BUF_OK: 1\n");
+    }
+
+    wire::free_command_buffer(pool, cmd);
+    if cmd.state == wire::WireCommandBufferState.Invalid {
+        print("FREE_CMD_BUF_OK: 1\n");
     }
 }
 
@@ -86,6 +138,12 @@ fn main() {
     // CHECK: CREATE_WIRE_DEVICE_OK: 1
     // CHECK: CREATE_COMMAND_POOL_OK: 1
     // CHECK: RESET_COMMAND_POOL_OK: 1
+    // CHECK: ALLOC_CMD_BUF_OK: 1
+    // CHECK: BEGIN_CMD_BUF_OK: 1
+    // CHECK: U24_OVERFLOW_GUARD_OK: 1
+    // CHECK: HEADERS_INTERLEAVE_GUARD_OK: 1
+    // CHECK: END_CMD_BUF_OK: 1
+    // CHECK: FREE_CMD_BUF_OK: 1
     // CHECK: TRIM_COMMAND_POOL_OK: 1
     // CHECK: DESTROY_COMMAND_POOL_OK: 1
     // CHECK: DESTROY_WIRE_DEVICE_OK: 1

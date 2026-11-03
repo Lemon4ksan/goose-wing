@@ -160,11 +160,10 @@ fn main() {
     // 11. Capacity Overflow Safety Guard Test
     var of_cmd = wire::new_command_buffer();
     var chunk: u8[1024] = [0; 1024];
-    assert(wire::write_raw(of_cmd, chunk[..]));
-    assert(wire::write_raw(of_cmd, chunk[..]));
-    assert(wire::write_raw(of_cmd, chunk[..]));
-    assert(wire::write_raw(of_cmd, chunk[..]));
-    assert(wire::len(of_cmd) == 4096);
+    for i in 0..16 {
+        assert(wire::write_raw(of_cmd, chunk[..]));
+    }
+    assert(wire::len(of_cmd) == wire::WIRE_CMD_BUFFER_CAP);
     // Writing beyond capacity triggers guard
     assert(!wire::write_u8(of_cmd, 0xFF));
     assert(of_cmd.has_error);
