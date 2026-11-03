@@ -66,6 +66,12 @@ int main(void) {
     assert(map.count == 0);
     assert(map.entries == storage);
 
+    // 5b. Zero-copy cookie span (exact 8 bytes)
+    assert(sizeof(wing_cookie_span_t) == 8);
+    wing_cookie_span_t span = { 0, 4, 5, 10 };
+    assert(span.name_pos == 0 && span.name_len == 4);
+    assert(span.val_pos == 5 && span.val_len == 10);
+
     printf("[c-abi] checking TLS record and alert constants...\n");
 
     // 6. TLS definitions
@@ -74,6 +80,14 @@ int main(void) {
     assert(WING_TLS_ALERT_HANDSHAKE_FAILURE == 40);
     assert(WING_TLS_AES_128_GCM_SHA256 == 0x1301);
     assert(WING_TLS_CHACHA20_POLY1305_SHA256 == 0x1303);
+
+    // 6b. X.509 certificate summary layout
+    wing_x509_cert_summary_t cert_summary;
+    memset(&cert_summary, 0, sizeof(cert_summary));
+    cert_summary.not_before_unix = 1700000000;
+    cert_summary.is_ca = true;
+    assert(cert_summary.not_before_unix == 1700000000);
+    assert(cert_summary.is_ca == true);
 
     printf("[c-abi] checking Net and Server interfaces...\n");
 

@@ -86,6 +86,12 @@ WING_API bool         wing_header_map_append(wing_header_map_t *map, wing_slice_
 WING_API wing_slice_t wing_header_map_get(const wing_header_map_t *map, wing_slice_t name);
 WING_API bool         wing_header_map_contains(const wing_header_map_t *map, wing_slice_t name);
 WING_API bool         wing_header_map_delete(wing_header_map_t *map, wing_slice_t name);
+WING_API bool         wing_header_map_next_value(
+    const wing_header_map_t *map,
+    wing_slice_t             name,
+    int64_t                 *cursor,
+    wing_slice_t            *out_value
+);
 
 static inline void wing_header_map_init(
     wing_header_map_t   *map,
@@ -144,6 +150,22 @@ typedef struct wing_problem_details {
     wing_slice_t detail;
     wing_slice_t instance;
 } wing_problem_details_t;
+
+// ============================================================================
+// Zero-Copy Cookie Parsing (RFC 6265bis §5.6)
+// ============================================================================
+
+typedef struct wing_cookie_span {
+    uint16_t name_pos;
+    uint16_t name_len;
+    uint16_t val_pos;
+    uint16_t val_len;
+} wing_cookie_span_t;
+
+WING_API bool         wing_next_cookie_span(wing_slice_t raw_header, int64_t *cursor, wing_cookie_span_t *out_span);
+WING_API wing_slice_t wing_cookie_name(wing_slice_t raw, wing_cookie_span_t span);
+WING_API wing_slice_t wing_cookie_value(wing_slice_t raw, wing_cookie_span_t span);
+WING_API bool         wing_find_cookie_value(wing_slice_t raw_header, wing_slice_t name, wing_slice_t *out_value);
 
 #ifdef __cplusplus
 }

@@ -101,6 +101,56 @@ typedef struct wing_ech_config {
 
 WING_API bool wing_parse_ech_config(wing_slice_t raw, wing_ech_config_t *out, int64_t *consumed);
 
+// ============================================================================
+// TLS Record Sequence Number & Nonce Derivation (RFC 8446 §5.3)
+// ============================================================================
+
+WING_API bool wing_tls_compute_record_nonce(const uint8_t iv[12], uint64_t seq_num, uint8_t out_nonce[12]);
+WING_API bool wing_tls_increment_seq_num(uint64_t *seq_num);
+
+// ============================================================================
+// TLS Record Decryption & Authenticated Unpacking (RFC 8446 §5.2)
+// ============================================================================
+
+WING_API bool wing_tls_record_decrypt_aes128_gcm(
+    const uint8_t    key[16],
+    const uint8_t    iv[12],
+    uint64_t         seq_num,
+    wing_slice_t     record_header,
+    wing_mut_slice_t record_payload,
+    wing_slice_t    *out_inner_plaintext,
+    uint8_t         *out_inner_content_type,
+    uint8_t         *out_alert
+);
+
+WING_API bool wing_tls_record_decrypt_chacha20_poly1305(
+    const uint8_t    key[32],
+    const uint8_t    iv[12],
+    uint64_t         seq_num,
+    wing_slice_t     record_header,
+    wing_mut_slice_t record_payload,
+    wing_slice_t    *out_inner_plaintext,
+    uint8_t         *out_inner_content_type,
+    uint8_t         *out_alert
+);
+
+// ============================================================================
+// X.509 Certificate Chain Parsing & Validation (RFC 5280 / RFC 6125)
+// ============================================================================
+
+typedef struct wing_x509_cert_summary {
+    wing_slice_t subject_common_name;
+    wing_slice_t issuer_common_name;
+    int64_t      not_before_unix;
+    int64_t      not_after_unix;
+    uint8_t      public_key[32];
+    uint16_t     signature_scheme;
+    bool         is_ca;
+} wing_x509_cert_summary_t;
+
+WING_API bool wing_parse_x509_certificate(wing_slice_t der, wing_x509_cert_summary_t *out_cert);
+WING_API bool wing_verify_certificate_san(wing_slice_t cert_der, wing_slice_t expected_hostname);
+
 #ifdef __cplusplus
 }
 #endif

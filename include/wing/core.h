@@ -55,6 +55,59 @@ WING_API void wing_hmac_sha256(wing_slice_t key, wing_slice_t data, uint8_t out[
 WING_API bool wing_x25519_diffie_hellman(const uint8_t secret[32], const uint8_t peer_pub[32], uint8_t out[32]);
 WING_API bool wing_ed25519_verify(const uint8_t pubkey[32], wing_slice_t message, const uint8_t signature[64]);
 
+WING_API bool wing_aes128_gcm_seal_inplace(
+    const uint8_t    key[16],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    uint8_t          out_tag[16]
+);
+
+WING_API bool wing_aes128_gcm_open_inplace(
+    const uint8_t    key[16],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    const uint8_t    tag[16],
+    int64_t         *out_plaintext_len
+);
+
+WING_API bool wing_aes256_gcm_seal_inplace(
+    const uint8_t    key[32],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    uint8_t          out_tag[16]
+);
+
+WING_API bool wing_aes256_gcm_open_inplace(
+    const uint8_t    key[32],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    const uint8_t    tag[16],
+    int64_t         *out_plaintext_len
+);
+
+WING_API bool wing_chacha20_poly1305_seal_inplace(
+    const uint8_t    key[32],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    uint8_t          out_tag[16]
+);
+
+WING_API bool wing_chacha20_poly1305_open_inplace(
+    const uint8_t    key[32],
+    const uint8_t    nonce[12],
+    wing_mut_slice_t in_out,
+    wing_slice_t     aad,
+    const uint8_t    tag[16],
+    int64_t         *out_plaintext_len
+);
+
+WING_API void wing_secure_zeroize_slice(wing_mut_slice_t buf);
+
 WING_API bool wing_base64_encode(wing_slice_t data, wing_mut_slice_t *out, int64_t *written);
 WING_API bool wing_base64_decode(wing_slice_t b64, wing_mut_slice_t *out, int64_t *written);
 WING_API bool wing_base64_url_encode(wing_slice_t data, wing_mut_slice_t *out, int64_t *written);
