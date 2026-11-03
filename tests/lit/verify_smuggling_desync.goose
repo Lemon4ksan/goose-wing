@@ -141,7 +141,8 @@ fn main() {
     var out_proxy_te = wing::HeaderMap { .. };
     var cfg = wing::ProxyConfig { .. };
     cfg.strip_hop_by_hop = false;
-    wing::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
+    let ok_te_cl = wing::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
+    assert(!ok_te_cl);
     assert(!wing::has_header(out_proxy_te, "Content-Length"));
     print("PROXY_TE_CL_STRIP_CL: PASS");
 
@@ -169,6 +170,29 @@ fn main() {
     }
     assert(p_cl_count == 1);
     print("PROXY_DUP_CL_RESOLVED: PASS");
+
+    // 15. Reverse proxy TE/CL smuggling edge variations (RFC 9112 §6.1, §6.3)
+    var in_p_ws = wing::HeaderMap { .. };
+    wing::append_header(in_p_ws, "Host", "example.com");
+    wing::append_header(in_p_ws, "Transfer-Encoding", "   chunked  \t");
+    wing::append_header(in_p_ws, "Content-Length", "10");
+    var out_p_ws = wing::HeaderMap { .. };
+    assert(!wing::filter_and_forward_headers(in_p_ws, out_p_ws, "127.0.0.1", "http", "backend:80", cfg));
+
+    var in_p_mc = wing::HeaderMap { .. };
+    wing::append_header(in_p_mc, "Host", "example.com");
+    wing::append_header(in_p_mc, "tRaNsFeR-eNcOdInG", "chunked");
+    wing::append_header(in_p_mc, "cOnTeNt-LeNgTh", "10");
+    var out_p_mc = wing::HeaderMap { .. };
+    assert(!wing::filter_and_forward_headers(in_p_mc, out_p_mc, "127.0.0.1", "http", "backend:80", cfg));
+
+    var in_p_mte = wing::HeaderMap { .. };
+    wing::append_header(in_p_mte, "Host", "example.com");
+    wing::append_header(in_p_mte, "Transfer-Encoding", "chunked");
+    wing::append_header(in_p_mte, "Transfer-Encoding", "gzip");
+    var out_p_mte = wing::HeaderMap { .. };
+    assert(!wing::filter_and_forward_headers(in_p_mte, out_p_mte, "127.0.0.1", "http", "backend:80", cfg));
+    print("PROXY_TE_CL_VARIATIONS: REJECTED");
 }
 
 // CHECK-LABEL: === HTTP1_SMUGGLE_DEFENSES ===
@@ -186,3 +210,4 @@ fn main() {
 // CHECK-NEXT: PIPELINE_DUP_CL_DIFF: REJECTED
 // CHECK-NEXT: PROXY_TE_CL_STRIP_CL: PASS
 // CHECK-NEXT: PROXY_DUP_CL_RESOLVED: PASS
+// CHECK-NEXT: PROXY_TE_CL_VARIATIONS: REJECTED
