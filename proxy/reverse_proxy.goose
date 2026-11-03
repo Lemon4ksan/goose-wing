@@ -114,7 +114,8 @@ inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&)
 }
 
 // RFC 9112 Section 6.3 & Section 6.1: Validates framing header integrity before forwarding.
-// Duplicate differing Content-Length headers or duplicate Transfer-Encoding headers are rejected.
+// Duplicate differing Content-Length headers, duplicate Transfer-Encoding headers, or
+// conflicting Content-Length + Transfer-Encoding headers are rejected (Smuggling Protection).
 fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
     var first_cl_found = false;
     var first_cl_val: i64 = 0;
@@ -133,6 +134,8 @@ fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
             has_te = true;
         }
     }
+    // RFC 9112 Section 6.1: Reject TE/CL smuggling conflict before forwarding
+    guard !(first_cl_found && has_te) else { return false; }
     return true;
 }
 
