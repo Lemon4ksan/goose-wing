@@ -101,6 +101,12 @@ fn is_valid_code_verifier(v: const u8[:]) -> bool {
 }
 
 var g_pkce_entropy_counter: u64 = 1;
+var g_pkce_entropy_state: u8[32] = [
+    0x6a, 0x09, 0xe6, 0x67, 0xf3, 0xbc, 0xc9, 0x08,
+    0xbb, 0x67, 0xae, 0x85, 0x84, 0xca, 0xa7, 0x3b,
+    0x3c, 0x6e, 0xf3, 0x72, 0xfe, 0x94, 0xf8, 0x2b,
+    0x5f, 0x1d, 0x36, 0xf1, 0x51, 0x0e, 0x52, 0x7f,
+];
 
 // Validates whether code_challenge conforms to RFC 7636 Section 4.2.
 // Defaults to 'plain' when method is omitted per RFC 7636 §4.3.
@@ -129,18 +135,23 @@ inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
 }
 
 inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
-    var seed: u8[32] = [0; 32];
-    core::write_le_u64_at(seed[..], 0, now_ns);
-    core::write_le_u64_at(seed[..], 8, counter);
-    core::write_le_u64_at(seed[..], 16, now_ns ^ 0xa0761d6478bd642f);
-    core::write_le_u64_at(seed[..], 24, counter * 0xe7037ed1a0b428db);
-    return seed;
+    var buf: u8[..64] = [];
+    buf.append(g_pkce_entropy_state[..]);
+    var meta: u8[16] = [0; 16];
+    core::write_le_u64_at(meta[..], 0, now_ns);
+    core::write_le_u64_at(meta[..], 8, counter);
+    buf.append(meta[..]);
+
+    let round1 = core::sha256(buf[..]);
+    for i in 32 {
+        g_pkce_entropy_state[i] = round1[i];
+    }
+    return core::sha256(g_pkce_entropy_state[..]);
 }
 
 inline fn generate_derived_verifier<B>(out: B&) -> bool {
-    g_pkce_entropy_counter = g_pkce_entropy_counter + 1;
-    let seed = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
-    let raw_entropy = core::sha256(seed[..]);
+    g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
+    let raw_entropy = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
     core::base64url_encode(raw_entropy[..], out);
     return is_valid_code_verifier(out[..]);
 }

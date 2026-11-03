@@ -502,3 +502,125 @@ fn mlkem768_decapsulate(
     }
     return true;
 }
+
+// ---- FIPS 203 Section 4: Ring R_q Arithmetic and Number-Theoretic Transform ---
+
+const MLKEM_Q: i32 = 3329;
+
+// FIPS 203 Section 4.3 Table 1: Bit-reversed powers of zeta = 17 mod 3329
+const MLKEM_ZETAS: i32[128] = [
+    1, 1729, 2580, 3289, 2642, 630, 1897, 848,
+    1062, 1919, 193, 797, 2786, 3260, 569, 1746,
+    296, 2447, 1339, 1476, 3046, 56, 2240, 1333,
+    1426, 2094, 535, 2882, 2393, 2879, 1974, 821,
+    289, 331, 3253, 1756, 1197, 2304, 2277, 2055,
+    650, 1977, 2513, 632, 2865, 33, 1320, 1915,
+    2319, 1435, 807, 452, 1438, 2868, 1534, 2402,
+    2647, 2617, 1481, 648, 2474, 3110, 1227, 910,
+    17, 2761, 583, 2649, 1637, 723, 2288, 1100,
+    1409, 2662, 3281, 233, 756, 2156, 3015, 3050,
+    1703, 1651, 2789, 1789, 1847, 952, 1461, 2687,
+    939, 2308, 2437, 2388, 733, 2337, 268, 641,
+    1584, 2298, 2037, 3220, 375, 2549, 2090, 1645,
+    1063, 319, 2773, 757, 2099, 561, 2466, 2594,
+    2804, 1092, 403, 1026, 1143, 2150, 2775, 886,
+    1722, 1212, 1874, 1029, 2110, 2935, 885, 2154,
+];
+
+// FIPS 203 Section 2.4: Polynomial Ring R_q = Z_q[X]/(X^256 + 1) where q = 3329.
+struct Poly256 {
+    coeffs: i32[256] = [0; 256],
+}
+
+inline fn fips203_mod_q(val: i64) -> i32 {
+    let r = (val % 3329) as i32;
+    if r < 0 {
+        return r + 3329;
+    }
+    return r;
+}
+
+// Adds two polynomials in R_q: c = (a + b) mod q (FIPS 203 Section 4.1).
+fn poly_add(a: const Poly256&, b: const Poly256&) -> Poly256 {
+    var out = Poly256 { .. };
+    for i in 256 {
+        let sum = a.coeffs[i] + b.coeffs[i];
+        out.coeffs[i] = if sum >= 3329 { sum - 3329 } else { sum };
+    }
+    return out;
+}
+
+// Subtracts two polynomials in R_q: c = (a - b) mod q (FIPS 203 Section 4.1).
+fn poly_sub(a: const Poly256&, b: const Poly256&) -> Poly256 {
+    var out = Poly256 { .. };
+    for i in 256 {
+        let diff = a.coeffs[i] - b.coeffs[i];
+        out.coeffs[i] = if diff < 0 { diff + 3329 } else { diff };
+    }
+    return out;
+}
+
+fn ntt_butterfly_layer(f: Poly256&, length: i64, k: i64&) {
+    var start: i64 = 0;
+    while start < 256 {
+        let z = MLKEM_ZETAS[k];
+        k += 1;
+        var j = start;
+        let end_j = core::add_sat_i64(start, length);
+        while j < end_j {
+            let j_len = core::add_sat_i64(j, length);
+            let t = fips203_mod_q((z as i64) * f.coeffs[j_len]);
+            let fj = f.coeffs[j];
+            f.coeffs[j_len] = fips203_mod_q(fj - t);
+            f.coeffs[j] = fips203_mod_q(fj + t);
+            j += 1;
+        }
+        start = core::add_sat_i64(start, core::add_sat_i64(length, length));
+    }
+}
+
+// FIPS 203 Section 4.3: Algorithm 9 NTT(f) - Number-Theoretic Transform in R_q.
+fn poly_ntt(f_in: const Poly256&) -> Poly256 {
+    var f = f_in;
+    var k:      i64 = 1;
+    var length: i64 = 128;
+    while length >= 2 {
+        ntt_butterfly_layer(f, length, k);
+        length = length / 2;
+    }
+    return f;
+}
+
+fn invntt_butterfly_layer(f: Poly256&, length: i64, k: i64&) {
+    var start: i64 = 0;
+    while start < 256 {
+        let z = MLKEM_ZETAS[k];
+        k -= 1;
+        var j = start;
+        let end_j = core::add_sat_i64(start, length);
+        while j < end_j {
+            let j_len = core::add_sat_i64(j, length);
+            let t = f.coeffs[j];
+            let f_j_len = f.coeffs[j_len];
+            f.coeffs[j] = fips203_mod_q(t + f_j_len);
+            f.coeffs[j_len] = fips203_mod_q((z as i64) * (f_j_len - t));
+            j += 1;
+        }
+        start = core::add_sat_i64(start, core::add_sat_i64(length, length));
+    }
+}
+
+// FIPS 203 Section 4.3: Algorithm 10 NTT^-1(f_hat) - Inverse Number-Theoretic Transform in R_q.
+fn poly_invntt(f_in: const Poly256&) -> Poly256 {
+    var f = f_in;
+    var k:      i64 = 127;
+    var length: i64 = 2;
+    while length <= 128 {
+        invntt_butterfly_layer(f, length, k);
+        length = core::add_sat_i64(length, length);
+    }
+    for j in 256 {
+        f.coeffs[j] = fips203_mod_q((f.coeffs[j] as i64) * 3303);
+    }
+    return f;
+}

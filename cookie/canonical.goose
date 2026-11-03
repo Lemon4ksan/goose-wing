@@ -137,6 +137,7 @@ fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCo
 fn with_path(cookie_ref: CanonicalCookie&, path_val: const u8[:]) -> CanonicalCookie& {
     cookie_ref.path.clear();
     cookie_ref.path.append(path_val);
+    cookie_ref.has_path_attr = true;
     return cookie_ref;
 }
 
@@ -257,8 +258,10 @@ fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
 
 // Serializes cookie into a Set-Cookie header string.
 fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('=');
+    if cookie_val.name.len > 0 {
+        out.append(cookie_val.name[..]);
+        out.push('=');
+    }
     out.append(cookie_val.value[..]);
 
     if !cookie_val.host_only && cookie_val.domain.len > 0 {

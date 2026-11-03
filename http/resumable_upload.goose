@@ -145,18 +145,22 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
     // 204 No Content is expected for successful PATCH
     guard res.status_code == 204 || res.status_code == 200 else { return false; }
 
+    var found_offset = false;
     for idx in res.headers.len {
         let name = res.headers[idx].name[..];
         let val = res.headers[idx].value[..];
         if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
-            if off_ok { state.offset = off_val; }
+            if off_ok {
+                state.offset = off_val;
+                found_offset = true;
+            }
         } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             if comp_ok { state.complete = comp_val; }
         }
     }
-    return true;
+    return found_offset;
 }
 
 // Formats a HEAD request to query the server's current offset after connection interruption

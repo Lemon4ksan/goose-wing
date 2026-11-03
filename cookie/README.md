@@ -6,9 +6,9 @@ RFC 6265bis and CHIPS (Cookies Having Independent Partitioned State) compliant c
 ## Public API
 
 ### Canonical Cookie Model (RFC 6265bis)
-- **`struct CanonicalCookie`**: Fully normalized cookie record (`name`, `value`, `domain`, `path`, `creation_utc`, `last_access_utc`, `expires_utc`, `secure`, `httponly`, `same_site`, `priority`, `partition_key`, `source_scheme`, `source_port`).
-- **`enum CookieSameSite`**: SameSite enforcement tiers (`Unspecified`, `NoRestriction`, `Lax`, `Strict`).
-- **`enum CookiePriority`**: Eviction priority tiers (`Low`, `Medium`, `High`).
+- **`struct CanonicalCookie`**: Fully normalized cookie record (`name`, `value`, `encrypted_value`, `domain`, `path`, `creation_utc`, `last_access_utc`, `last_update_utc`, `expires_utc`, `partition_key`, `source_port`, `host_only`, `has_domain_attr`, `has_path_attr`, `persistent`, `secure`, `httponly`, `partitioned`, `same_site`, `priority`, `source_scheme`, `creation_seq`).
+- **`enum CookieSameSite`**: SameSite enforcement tiers (`Default`, `Lax`, `Strict`, `None`, `Unknown`).
+- **`enum CookiePriority`**: Eviction priority tiers (`Low`, `Medium`, `High`, `Unknown`).
 - **`enum CookieSourceScheme`**: Scheme provenance tracking (`Unset`, `NonSecure`, `Secure`).
 - **`fn matches_domain(cookie: const CanonicalCookie&, host: const u8[:]) -> bool`**: Domain-matching per RFC 6265 §5.1.3 and IP exact-matching per RFC 6055.
 - **`fn matches_path(cookie: const CanonicalCookie&, req_path: const u8[:]) -> bool`**: Path-matching per RFC 6265 §5.1.4.
@@ -16,11 +16,11 @@ RFC 6265bis and CHIPS (Cookies Having Independent Partitioned State) compliant c
 
 ### Cookie Jar Engine (RFC 6265)
 - **`struct CanonicalCookieJar`**: In-memory cookie jar managing storage, eviction, and query sorting.
-- **`fn set_canonical_cookie(jar: CanonicalCookieJar&, cookie: CanonicalCookie, now_us: i64, source: CookieSourceOptions) -> bool`**: Ingests and stores a cookie, enforcing domain quotas and collision rules.
-- **`fn set_cookie_header(jar: CanonicalCookieJar&, header_val: const u8[:], req_url: const u8[:], now_us: i64) -> bool`**: High-level helper parsing and storing an incoming `Set-Cookie` header.
-- **`fn get_canonical_cookies_for_request(jar: CanonicalCookieJar&, req_url: const u8[:], is_http_api: bool, partition_key: const u8[:], now_us: i64, out: CanonicalCookie[>..]&, access: CookieAccessOptions)`**: Queries cookies matching the request, sorted per RFC 6265 §5.4 (longest path first, then earliest creation time).
-- **`fn build_cookie_header<B>(jar: CanonicalCookieJar&, req_url: const u8[:], now_us: i64, out: B&)`**: Formats an outgoing `Cookie: name=value; ...` header.
-- **`fn delete_session_cookies(jar: CanonicalCookieJar&) -> i64`**: Evicts non-persistent session cookies.
+- **`fn set_canonical_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, opts: CookieSourceOptions, now_us: i64) -> bool`**: Ingests and stores a cookie, enforcing domain quotas and collision rules.
+- **`fn set_cookie_header(jar: CanonicalCookieJar&, req_url: const u8[:], set_cookie_raw: const u8[:], now_us: i64, is_http_api: bool = true, partition_key: const u8[:] = "") -> bool`**: High-level helper parsing and storing an incoming `Set-Cookie` header.
+- **`fn get_canonical_cookies_for_request(jar: CanonicalCookieJar&, req_url: const u8[:], is_http_api: bool, partition_key: const u8[:], now_us: i64, out: CanonicalCookie[>..]&, access: CookieAccessOptions = CookieAccessOptions { .. })`**: Queries cookies matching the request, sorted per RFC 6265 §5.4 (longest path first, then earliest creation time).
+- **`fn build_cookie_header<B>(jar: CanonicalCookieJar&, out: B&, host: const u8[:], path: const u8[:], is_secure: bool, now_us: i64)`**: Formats an outgoing `Cookie: name=value; ...` header.
+- **`fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = false) -> i64`**: Evicts non-persistent session cookies.
 - **`fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64`**: Sweeps and removes all expired cookies.
 
 ### Set-Cookie Parser (RFC 6265bis §5.5)
@@ -28,17 +28,24 @@ RFC 6265bis and CHIPS (Cookies Having Independent Partitioned State) compliant c
 - **`fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CookieUrl`**: Deconstructs target URL into canonical components for domain and path scoping.
 
 ### Policy & SameSite Evaluation (RFC 6265bis)
-- **`struct SameSiteCookieContext`**: Request context rating (`SameSiteStrict`, `SameSiteLax`, `CrossSite`).
+- **`enum SameSiteContextType`**: Request context rating (`CrossSite`, `SameSiteLaxMethodUnsafe`, `SameSiteLax`, `SameSiteStrict`).
+- **`struct SameSiteCookieContext`**: Context metadata (`context_type`, `schemefully_same`, `is_reload`, `had_cross_site_hop`).
 - **`struct SiteForCookies`**: First-party site context for ancestor frame hierarchy validation.
-- **`fn compute_site_for_cookies(url: const core::Url&, is_main_frame: bool) -> SiteForCookies`**: Computes site-for-cookies context.
-- **`fn validate_security_cookie_prefixes(name: const u8[:], secure: bool, domain: const u8[:], path: const u8[:], host_only: bool) -> bool`**: Enforces strict prefix invariants:
-  - `__Secure-`: Requires `Secure` flag.
-  - `__Host-`: Requires `Secure` flag, `host_only = true` (no Domain attribute), and `path = "/"`.
+- **`fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies`**: Computes site-for-cookies from URL string.
+- **`fn compute_site_for_cookies_with_ancestors(top_url: const u8[:], ancestor_urls: const u8[:][:], is_sandboxed: bool = false) -> SiteForCookies`**: Computes site-for-cookies context evaluating ancestor frame chain.
+- **`fn validate_security_cookie_prefixes(cookie_val: const CanonicalCookie&, cookie_name: const u8[:], opts: CookieSourceOptions) -> bool`**: Enforces strict prefix invariants:
+  - `__Secure-`: Requires `Secure` flag and secure URL.
+  - `__Host-`: Requires `Secure` flag, secure URL, `host_only = true` (no Domain attribute), and `path = "/"`.
+  - `__Http-`: Requires `is_http_api`, `Secure` flag, secure URL, and `HttpOnly`.
+  - `__Host-Http-`: Combines `__Host-` and `__Http-` requirements.
 
 ### Mozilla Public Suffix List (PSL)
-- **`struct PslEngine`**: Public Suffix List rule evaluator.
-- **`fn public_suffix(psl: const PslEngine&, domain: const u8[:]) -> const u8[:]`**: Finds effective public suffix (eTLD).
-- **`fn registrable_domain(psl: const PslEngine&, domain: const u8[:]) -> const u8[:]`**: Returns registrable domain (eTLD+1).
+- **`struct PslDatabase`**: Public Suffix List rule database and DAFSA graph evaluator.
+- **`fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -> bool, bool`**: Finds effective public suffix (eTLD) and returns `(found, is_exception)`.
+- **`fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&)`**: Computes registrable domain (eTLD+1).
+- **`fn is_public_suffix(db: const PslDatabase&, domain: const u8[:], is_icann_only: bool = false) -> bool`**: Checks if domain is a public suffix.
+- **`fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool`**: Domain-matching per RFC 6265 §5.1.3 and IP exact-matching per RFC 6055.
+- **`fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool`**: Path-matching per RFC 6265 §5.1.4.
 
 ### Persistence & Storage
 - **`fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) -> i64`**: Imports cookies from standard Netscape/cURL `cookies.txt` format.
@@ -51,7 +58,7 @@ RFC 6265bis and CHIPS (Cookies Having Independent Partitioned State) compliant c
 - **400-day Max-Age cap**: Cookie lifetimes are capped at 400 days (34,560,000 seconds) per RFC 6265bis Section 5.5.
 - **Control character rejection**: Header values containing any of the 33 ASCII control characters (`0x00..0x1F`, `0x7F`) are strictly rejected.
 - **CHIPS memory quota**: Partitioned cookies are bounded by a 10 KB quota per partition-key/domain pair.
-- **Prefix enforcement**: `__Secure-` and `__Host-` prefixes are enforced case-insensitively.
+- **Prefix enforcement**: `__Secure-`, `__Host-`, `__Http-`, and `__Host-Http-` prefixes are enforced case-insensitively.
 
 ## Verification
 - Cookie engine test suite: `python tools/test_runner.py -p "*cookie*"`

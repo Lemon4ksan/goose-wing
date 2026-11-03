@@ -73,11 +73,12 @@ fn encode_origin_entry<B>(out: B&, origin: const u8[:]) -> bool {
 }
 
 inline fn sum_origins_payload_len(origins: const u8[:][..16]&) -> u32, bool {
-    var payload_len: u32 = 0;
+    var payload_len: u64 = 0;
     for org in origins {
-        payload_len += 2 + (org.len as u32);
+        payload_len += 2 + (org.len as u64);
     }
-    return payload_len, payload_len <= 16384;
+    guard payload_len <= 16384 else { return 0, false; }
+    return payload_len as u32, true;
 }
 
 // RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Serializes full ORIGIN frame with 9-byte header
@@ -102,8 +103,9 @@ fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool {
 
 // RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Serializes single-origin ORIGIN frame
 fn encode_origin_frame_single<B>(out: B&, origin: const u8[:]) -> bool {
-    let payload_len: u32 = 2 + (origin.len as u32);
-    guard payload_len <= 16384 else { return false; }
+    let raw_len: u64 = 2 + (origin.len as u64);
+    guard raw_len <= 16384 else { return false; }
+    let payload_len = raw_len as u32;
     let hdr = FrameHeader {
         length:     payload_len,
         frame_type: rfc::H2_FRAME_ORIGIN,
@@ -162,9 +164,10 @@ fn encode_altsvc_payload<B>(
 }
 
 inline fn calc_altsvc_payload_len(origin_len: i64, alt_svc_len: i64, stream_id: u32) -> u32, bool {
-    let eff_origin: u32 = if stream_id == 0 { origin_len as u32 } else { 0 };
-    let total:      u32 = 2 + eff_origin + (alt_svc_len as u32);
-    return total, total <= 16384;
+    let eff_origin: u64 = if stream_id == 0 { origin_len as u64 } else { 0 };
+    let total:      u64 = 2 + eff_origin + (alt_svc_len as u64);
+    guard total <= 16384 else { return 0, false; }
+    return total as u32, true;
 }
 
 // RFC 7838 Section 4: The ALTSVC HTTP/2 Frame - Encodes full ALTSVC frame with 9-byte header

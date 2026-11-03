@@ -71,16 +71,23 @@ fn is_digit_or_dot(b: u8) -> bool {
     return (b >= '0' && b <= '9') || b == '.';
 }
 
+fn is_valid_dns_char(b: u8) -> bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '.';
+}
+
 fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
-    var has_colon = false;
+    guard pub_raw.len >= 1 && pub_raw.len <= 255 else { return false; }
     var all_digits_dots = true;
+    var last_b: u8 = 0;
     for b in pub_raw {
-        guard b != 0 else { return false; }
-        if b == ':' { has_colon = true; }
-        if !is_digit_or_dot(b) { all_digits_dots = false; }
+        guard is_valid_dns_char(b) else { return false; }
+        if !is_digit_or_dot(b) {
+            all_digits_dots = false;
+        }
+        last_b = b;
     }
-    guard !has_colon else { return false; }
-    guard !all_digits_dots || pub_raw.len == 0 else { return false; }
+    guard last_b != '.' else { return false; }
+    guard !all_digits_dots else { return false; }
     return true;
 }
 
@@ -234,21 +241,32 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
 
 // ---- ClientHelloInner Padding & Encryption ------------------------------
 
+fn calc_ech_padding_len(max_name_len: u8, real_sni_len: i64) -> i64 {
+    if real_sni_len == 0 {
+        return (max_name_len as i64) + 9;
+    }
+    let max_len = max_name_len as i64;
+    if real_sni_len < max_len {
+        return max_len - real_sni_len;
+    }
+    return 0;
+}
+
 // Computes RFC 9849 Section 6.1.3 padding for ClientHelloInner.
 // Pads inner ClientHello to hide exact length of real SNI and extensions.
 fn pad_ech_inner<B>(inner_bytes: const u8[:], max_name_len: u8, real_sni_len: i64, out_padded: B&) -> bool {
     guard inner_bytes.len > 0 else { return false; }
     guard real_sni_len >= 0 else { return false; }
-    out_padded.append(inner_bytes);
 
-    let max_len = max_name_len as i64;
-    let pad_len = if real_sni_len < max_len { max_len - real_sni_len } else { 0 };
+    let pad_len = calc_ech_padding_len(max_name_len, real_sni_len);
 
     // Standard 32-byte alignment padding
-    let current_total = inner_bytes.len + pad_len;
-    let align_pad = if (current_total % 32) != 0 { 32 - (current_total % 32) } else { 0 };
-    let total_padding = pad_len + align_pad;
+    let current_total = core::add_sat_i64(inner_bytes.len, pad_len);
+    let rem = current_total % 32;
+    let align_pad = if rem != 0 { core::sub_sat_i64(32, rem) } else { 0 };
+    let total_padding = core::add_sat_i64(pad_len, align_pad);
 
+    out_padded.append(inner_bytes);
     for i in total_padding {
         out_padded.push(0);
     }

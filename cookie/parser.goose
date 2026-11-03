@@ -537,7 +537,7 @@ fn apply_parsed_cookie_attribute(
 }
 
 fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
-    guard attr_val.len > 0 && attr_val[attr_val.len - 1] != '.' else { return; }
+    guard attr_val.len > 0 else { return; }
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
     // RFC 6265 Section 5.2.3: If domain still begins with '.', ignore the domain attribute
     guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
@@ -603,33 +603,40 @@ fn apply_parsed_expires_attribute(
     }
 }
 
+inline fn try_fallback_exact_host_only(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
+    if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
+        cookie_ref.host_only = true;
+        return true;
+    }
+    return false;
+}
+
+inline fn is_domain_syntax_invalid(domain: const u8[:]) -> bool {
+    if domain.len == 0 || domain[domain.len - 1] == '.' {
+        return true;
+    }
+    return core::contains_byte(domain, '/') || core::contains_byte(domain, ':');
+}
+
 fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
     guard !cookie_ref.host_only else { return true; }
 
-    if core::is_ip_address_literal(cookie_ref.domain[..])
-        || (default_domain.len > 0 && core::is_ip_address_literal(default_domain)) {
-        if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
-            cookie_ref.host_only = true;
-            return true;
-        }
+    if is_domain_syntax_invalid(cookie_ref.domain[..]) {
         return false;
     }
 
+    if core::is_ip_address_literal(cookie_ref.domain[..])
+        || (default_domain.len > 0 && core::is_ip_address_literal(default_domain)) {
+        return try_fallback_exact_host_only(cookie_ref, default_domain);
+    }
+
     if is_public_suffix_domain(cookie_ref.domain[..]) {
-        if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
-            cookie_ref.host_only = true;
-            return true;
-        }
-        return false;
+        return try_fallback_exact_host_only(cookie_ref, default_domain);
     }
 
     // Single-label hosts without dots cannot set domain cookies
     if core::count_byte(cookie_ref.domain[..], '.') == 0 {
-        if default_domain.len > 0 && eq_ascii_fold(cookie_ref.domain[..], default_domain) {
-            cookie_ref.host_only = true;
-            return true;
-        }
-        return false;
+        return try_fallback_exact_host_only(cookie_ref, default_domain);
     }
 
     if default_domain.len > 0 && !cookie_domain_match(default_domain, cookie_ref.domain[..]) {
@@ -667,12 +674,42 @@ struct CookieSpan {
     val_len:  u16 = 0,
 }
 
+inline fn trim_kv_trailing_ows(raw: const u8[:], start: i64, end_bound: i64) -> i64 {
+    var end_pos = end_bound;
+    while end_pos > start {
+        let ch = raw[end_pos - 1];
+        if ch == ' ' || ch == '\t' {
+            end_pos -= 1;
+        } else {
+            break;
+        }
+    }
+    return end_pos;
+}
+
+inline fn trim_kv_leading_ows(raw: const u8[:], start_bound: i64, end_pos: i64) -> i64 {
+    var start = start_bound;
+    while start < end_pos {
+        let ch = raw[start];
+        if ch == ' ' || ch == '\t' {
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    return start;
+}
+
 // Builds a CookieSpan from trimmed pair slice bounds.
 //
 // Example:
 //   raw = "sid=xyz", pair_start = 0, pair_end = 7
 //   returns: CookieSpan { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
 fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> CookieSpan {
+    guard raw.len <= 65535 && pair_end <= 65535 else {
+        return CookieSpan { .. };
+    }
+
     var eq_pos = -1;
     var idx = pair_start;
     while idx < pair_end {
@@ -684,24 +721,8 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
     }
 
     if eq_pos >= pair_start {
-        var name_end = eq_pos;
-        while name_end > pair_start {
-            let ch = raw[name_end - 1];
-            if ch == ' ' || ch == '\t' {
-                name_end -= 1;
-            } else {
-                break;
-            }
-        }
-        var val_start = eq_pos + 1;
-        while val_start < pair_end {
-            let ch = raw[val_start];
-            if ch == ' ' || ch == '\t' {
-                val_start += 1;
-            } else {
-                break;
-            }
-        }
+        let name_end = trim_kv_trailing_ows(raw, pair_start, eq_pos);
+        let val_start = trim_kv_leading_ows(raw, eq_pos + 1, pair_end);
 
         return CookieSpan {
             name_pos: pair_start as u16,

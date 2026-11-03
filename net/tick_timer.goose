@@ -31,9 +31,20 @@ fn new_tick_timer_wheel(idle_timeout_sec: u8 = 10) -> TickTimerWheel {
     };
 }
 
+inline fn clamp_tick_delta(d: u8) -> u8 {
+    if d >= TICK_TIMER_MODULO {
+        return TICK_TIMER_MODULO - 1;
+    }
+    if d == 0 {
+        return 1;
+    }
+    return d;
+}
+
 // Arms a connection slot timeout for delay_sec seconds.
 inline fn tick_timer_arm(wheel: const TickTimerWheel&, delay_sec: u8 = 0) -> u8 {
-    let d = if delay_sec > 0 { delay_sec } else { wheel.idle_timeout_sec };
+    let raw = if delay_sec > 0 { delay_sec } else { wheel.idle_timeout_sec };
+    let d = clamp_tick_delta(raw);
     return (wheel.current_tick + d) % TICK_TIMER_MODULO;
 }
 

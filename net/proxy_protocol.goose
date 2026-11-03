@@ -57,6 +57,8 @@ struct ProxyHeader {
     dst_ipv4:   u8[4]                  = [0; 4],
     src_ipv6:   u8[16]                 = [0; 16],
     dst_ipv6:   u8[16]                 = [0; 16],
+    src_unix:   u8[..108]              = [],
+    dst_unix:   u8[..108]              = [],
     src_port:   u16                    = 0,
     dst_port:   u16                    = 0,
     alpn:       u8[..32]               = [],
@@ -509,6 +511,26 @@ fn parse_proxy_v2_family_transport(
     return false;
 }
 
+// Parses UNIX socket path addresses from PROXY v2 address block (HAProxy §2.2).
+//
+// Example:
+//   wire = [0; 232], hdr = ProxyHeader { .. }
+//   populates: hdr.src_unix, hdr.dst_unix
+fn parse_unix_addresses(wire: const u8[:], hdr: ProxyHeader&) {
+    let src_slice = wire[16..124];
+    let dst_slice = wire[124..232];
+    hdr.src_unix.clear();
+    for b in src_slice {
+        if b == 0 { break; }
+        hdr.src_unix.push(b);
+    }
+    hdr.dst_unix.clear();
+    for b in dst_slice {
+        if b == 0 { break; }
+        hdr.dst_unix.push(b);
+    }
+}
+
 // Parses IP addresses and ports from PROXY v2 address block (HAProxy §2.2).
 //
 // Example:
@@ -556,6 +578,9 @@ fn parse_proxy_v2_addresses(
         return true;
     } else if fam == ProxyAddressFamily.Unix {
         guard payload_len >= 216 else { return false; }
+        if !is_local {
+            parse_unix_addresses(wire, hdr);
+        }
         out_addr_len = 216;
         return true;
     }
@@ -687,6 +712,16 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     return hdr, total_required, true;
 }
 
+fn format_unix_addresses<B>(hdr: const ProxyHeader&, out: B&) {
+    let src_len = hdr.src_unix.len;
+    for b in hdr.src_unix { out.push(b); }
+    for i in (108 - src_len) { out.push(0); }
+
+    let dst_len = hdr.dst_unix.len;
+    for b in hdr.dst_unix { out.push(b); }
+    for i in (108 - dst_len) { out.push(0); }
+}
+
 fn format_proxy_v2_addresses<B>(hdr: const ProxyHeader&, out: B&) {
     if hdr.family == ProxyAddressFamily.Inet4 {
         for b in hdr.src_ipv4 { out.push(b); }
@@ -698,6 +733,8 @@ fn format_proxy_v2_addresses<B>(hdr: const ProxyHeader&, out: B&) {
         for b in hdr.dst_ipv6 { out.push(b); }
         append_u16_be(out, hdr.src_port);
         append_u16_be(out, hdr.dst_port);
+    } else if hdr.family == ProxyAddressFamily.Unix {
+        format_unix_addresses(hdr, out);
     }
 }
 

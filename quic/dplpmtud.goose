@@ -79,12 +79,13 @@ struct Dplpmtud {
     // RFC 8899 Section 5.1: State Machine - Confirmed PMTU for current path
     current_pmtu: u32 = rfc::PMTU_BASE,
     // RFC 8899 Section 5.1: State Machine - Target size for next probe packet
-    probed_size:        u32 = rfc::PMTU_BASE,
-    probe_idx:          u32 = 0,
-    probe_count:        u32 = 0,
-    max_probes:         u32 = 3,
-    search_timer_ms:    u64 = 0,
-    search_interval_ms: u64 = 60000,
+    probed_size:         u32 = rfc::PMTU_BASE,
+    probe_idx:           u32 = 0,
+    probe_count:         u32 = 0,
+    max_probes:          u32 = 3,
+    search_timer_ms:     u64 = 0,
+    search_interval_ms:  u64 = 60000,
+    pmtu_raise_timer_ms: u64 = 600000,
 }
 
 // RFC 8899 Section 5.1.2: The Searching State - Handles acknowledgement of probe
@@ -106,6 +107,7 @@ fn dplpmtud_on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
             d.probed_size = get_candidate_pmtu(d.probe_idx);
         } else {
             d.state = DplpmtudState.SearchComplete;
+            d.search_timer_ms = d.pmtu_raise_timer_ms;
         }
         return true;
     }
@@ -125,6 +127,7 @@ fn dplpmtud_on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
         }
         if d.state == DplpmtudState.Search {
             d.state = DplpmtudState.SearchComplete;
+            d.search_timer_ms = d.pmtu_raise_timer_ms;
             return false;
         }
     }
@@ -135,7 +138,7 @@ fn dplpmtud_on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
 fn dplpmtud_on_search_timer(d: Dplpmtud&, now_ms: u64) {
     guard d.state == DplpmtudState.SearchComplete else { return; }
     if now_ms >= d.search_timer_ms {
-        d.search_timer_ms = now_ms + d.search_interval_ms;
+        d.search_timer_ms = now_ms + d.pmtu_raise_timer_ms;
         d.state = DplpmtudState.Search;
         d.probe_idx = 1;
         d.probe_count = 0;

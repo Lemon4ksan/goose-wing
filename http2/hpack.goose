@@ -698,7 +698,7 @@ fn huff_decode_step(
 // Decodes a Huffman-encoded byte slice directly into any appendable buffer.
 fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     var ctx = new_huff_context();
-    var tmp: u8[4096] = [0; 4096];
+    var tmp: u8[8192] = [0; 8192];
     let written, ok = huff_decode_step(ctx, tmp[..], 0, src, true);
     guard ok else { return false; }
     guard out.len + (written as i64) <= out.cap else { return false; }
@@ -1123,16 +1123,26 @@ fn evict_until(dt: DynamicTable&, target_size: u64) {
     }
 }
 
+fn has_entry_overlapping_arena_range(dt: const DynamicTable&, write_start: u32, write_end: u32) -> bool {
+    var i: u64 = 0;
+    while i < dt.count {
+        let idx = (dt.head + i) & HPACK_RING_MASK;
+        let entry = dt.entries[idx];
+        let old_start = entry.name_off;
+        let old_end = entry.val_off + entry.val_len;
+        if (old_start < write_end) && (old_end > write_start) {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
 // RFC 7541 Section 2.3.2: Dynamic Table - Linearized boundary wrap helper.
 // Evicts any older entries whose contiguous arena slice [name_off .. val_off + val_len)
 // overlaps [write_start .. write_end) in the 4096-byte ring buffer.
 fn evict_overlapping_arena_range(dt: DynamicTable&, write_start: u32, write_end: u32) {
-    while dt.count > 0 {
-        let oldest = dt.entries[dt.head];
-        let old_start = oldest.name_off;
-        let old_end = oldest.val_off + oldest.val_len;
-        let overlaps = (old_start < write_end) && (old_end > write_start);
-        guard overlaps else { break; }
+    while dt.count > 0 && has_entry_overlapping_arena_range(dt, write_start, write_end) {
         evict_oldest_entry(dt);
     }
 }
@@ -1227,7 +1237,7 @@ fn hpack_hash_lookup(dt: const DynamicTable&, name: const u8[:], val: const u8[:
     guard dist < dt.count else { return 0, false; }
 
     let entry = dt.entries[ring_idx];
-    guard entry.generation == slot_gen else { return 0, false; }
+    guard entry.generation == slot_gen && !entry.never_index else { return 0, false; }
 
     let n_end = entry.name_off + entry.name_len;
     let v_end = entry.val_off + entry.val_len;
@@ -1318,7 +1328,6 @@ fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -
 // Updates dynamic table maximum size per HPACK instruction (001xxxxx).
 fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
     guard new_max <= dt.max_allowed_size else { return false; }
-    guard new_max <= HPACK_MAX_ARENA_BYTES else { return false; }
     dt.current_max_size = new_max;
     evict_until(dt, new_max);
     return true;
@@ -1328,7 +1337,7 @@ fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
 
 struct DecodedH2Header {
     name:        u8[..256]  = [],
-    value:       u8[..4096] = [],
+    value:       u8[..8192] = [],
     never_index: bool       = false,
 }
 
@@ -1607,12 +1616,19 @@ fn validate_mandatory_pseudo_headers(out: const DecodedH2HeaderList&) -> u32 {
     }
 
     if has_status {
+        guard !has_method && !has_scheme && !has_path && !has_authority && !has_protocol else {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
         return rfc::H2_ERR_NO_ERROR;
     }
     if has_method {
         if is_connect && !has_protocol {
             guard has_authority else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+            guard !has_scheme && !has_path else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+        } else if is_connect && has_protocol {
+            guard has_scheme && has_path && has_authority else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         } else {
+            guard !has_protocol else { return rfc::H2_ERR_PROTOCOL_ERROR; }
             guard has_scheme && has_path else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         }
         return rfc::H2_ERR_NO_ERROR;
@@ -1666,7 +1682,8 @@ fn validate_pseudo_status(out: const DecodedH2HeaderList&, val: const u8[:]) -> 
 
     for &f in out.fields {
         guard f.name[..] != ":method" && f.name[..] != ":scheme"
-            && f.name[..] != ":path" && f.name[..] != ":protocol" else {
+            && f.name[..] != ":path" && f.name[..] != ":protocol"
+            && f.name[..] != ":authority" else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     }
@@ -1718,25 +1735,12 @@ fn validate_pseudo_header(out: const DecodedH2HeaderList&, name: const u8[:], va
         guard err == rfc::H2_ERR_NO_ERROR else { return err; }
     }
 
-    if name == ":method" || name == ":scheme" || name == ":path" || name == ":protocol" {
+    if name == ":method" || name == ":scheme" || name == ":path" || name == ":protocol" || name == ":authority" {
         guard !scan.has_status else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
 
-    if name == ":path" || name == ":scheme" {
-        guard !scan.has_connect || scan.has_protocol else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-    }
-    if name == ":method" && val == "CONNECT" && !scan.has_protocol {
-        for &f in out.fields {
-            guard f.name[..] != ":path" && f.name[..] != ":scheme" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        }
-    }
-    if name == ":protocol" {
-        for &f in out.fields {
-            guard f.name[..] != ":method" || f.value[..] == "CONNECT" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        }
-    }
-    if name == ":method" && val != "CONNECT" {
-        guard !scan.has_protocol else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    if name == ":method" || name == ":scheme" || name == ":protocol" {
+        guard val.len > 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
 
     if name == ":authority" {
@@ -1747,6 +1751,18 @@ fn validate_pseudo_header(out: const DecodedH2HeaderList&, name: const u8[:], va
     if name == ":path" {
         let err = validate_pseudo_path(val, scan);
         guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+    }
+
+    // RFC 9113 Section 8.5 & RFC 8441: For standard CONNECT requests, :path and :scheme MUST be omitted
+    if (name == ":path" || name == ":scheme") && scan.has_connect && !scan.has_protocol {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
+    if name == ":method" && val == "CONNECT" && !scan.has_protocol {
+        for &f in out.fields {
+            guard f.name[..] != ":path" && f.name[..] != ":scheme" else {
+                return rfc::H2_ERR_PROTOCOL_ERROR;
+            }
+        }
     }
 
     if name == ":method" && val != "OPTIONS" {
@@ -1835,6 +1851,7 @@ fn validate_header_ordering_and_rules(out: DecodedH2HeaderList&, name: const u8[
 enum HpackIndexing {
     Incremental,
     None,
+    NeverIndexed,
 }
 
 fn find_hpack_dynamic_field(dt: const DynamicTable&, name: const u8[:], val: const u8[:]) -> u64, bool {
@@ -1842,16 +1859,17 @@ fn find_hpack_dynamic_field(dt: const DynamicTable&, name: const u8[:], val: con
     var i:           u64 = 0;
     while i < dt.count {
         let ext_idx = 62 + i;
-        let t_name, t_val, ok_get = get_indexed_header_slices(dt, ext_idx);
-        if ok_get && core::ct_eq_bytes(t_name, name) {
-            if core::ct_eq_bytes(t_val, val) {
-                return ext_idx, true;
-            }
-            if d_match_idx == 0 {
-                d_match_idx = ext_idx;
-            }
-        }
         i += 1;
+        let entry, ok_e = lookup_dynamic_index(dt, ext_idx);
+        guard ok_e && !entry.never_index else { continue; }
+        let t_name, t_val, ok_get = get_indexed_header_slices(dt, ext_idx);
+        guard ok_get && core::ct_eq_bytes(t_name, name) else { continue; }
+        if core::ct_eq_bytes(t_val, val) {
+            return ext_idx, true;
+        }
+        if d_match_idx == 0 {
+            d_match_idx = ext_idx;
+        }
     }
     return d_match_idx, false;
 }
@@ -1865,31 +1883,42 @@ fn encode_hpack_field<B>(
     indexing:    HpackIndexing = HpackIndexing.Incremental,
     use_huffman: bool          = true,
 ) -> bool {
-    // 1. Check for exact match in static table
-    let s_idx, exact_s = find_hpack_static_field(name, val);
-    if s_idx > 0 && exact_s {
-        // Indexed field (1xxxxxxx)
-        hpack_encode_int(out, s_idx, 7, 0x80);
-        return true;
+    let is_never = (indexing == HpackIndexing.NeverIndexed);
+    let is_inc = (indexing == HpackIndexing.Incremental);
+
+    if !is_never {
+        // 1. Check for exact match in static table
+        let s_idx, exact_s = find_hpack_static_field(name, val);
+        if s_idx > 0 && exact_s {
+            // Indexed field (1xxxxxxx)
+            hpack_encode_int(out, s_idx, 7, 0x80);
+            return true;
+        }
+
+        // 2. Check for O(1) direct-mapped hash hit in dynamic table
+        let fast_idx, fast_ok = hpack_hash_lookup(dt, name, val);
+        if fast_ok && fast_idx >= 62 {
+            hpack_encode_int(out, fast_idx as u64, 7, 0x80);
+            return true;
+        }
+
+        // 3. Fallback scan for name-only match or collision resolution in dynamic table
+        let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
+        if d_exact {
+            hpack_encode_int(out, d_match_idx, 7, 0x80);
+            return true;
+        }
     }
 
-    // 2. Check for O(1) direct-mapped hash hit in dynamic table
-    let fast_idx, fast_ok = hpack_hash_lookup(dt, name, val);
-    if fast_ok && fast_idx >= 62 {
-        hpack_encode_int(out, fast_idx as u64, 7, 0x80);
-        return true;
-    }
-
-    // 3. Fallback scan for name-only match or collision resolution in dynamic table
-    let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
-    if d_exact {
-        hpack_encode_int(out, d_match_idx, 7, 0x80);
-        return true;
+    let s_idx, _ = find_hpack_static_field(name, val);
+    var d_match_idx: u64 = 0;
+    if !is_never {
+        let dyn_idx, _ = find_hpack_dynamic_field(dt, name, val);
+        d_match_idx = dyn_idx;
     }
 
     // Choose prefix depending on indexing mode
-    let is_inc = (indexing == HpackIndexing.Incremental);
-    let prefix_mask: u8 = if is_inc { 0x40 } else { 0x00 };
+    let prefix_mask: u8 = if is_inc { 0x40 } else if is_never { 0x10 } else { 0x00 };
     let prefix_bits: u8 = if is_inc { 6 } else { 4 };
 
     let name_ref_idx = if s_idx > 0 { s_idx } else { d_match_idx };

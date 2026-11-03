@@ -105,6 +105,37 @@ fn ohttp_derive_response_aead(
 
 // ---- key configuration parsing (RFC 9458 Sections 3.1-3.2) ------------------
 
+// Scans supported OHTTP symmetric suites and extracts the first supported pair (RFC 9458 §3.1).
+//
+// Example:
+//   raw = key_config_bytes, kem_id = 0x0020, sym_len = 4
+//   returns: true, out_kdf = 0x0001, out_aead = 0x0001
+fn scan_supported_ohttp_sym_suite(
+    raw:      const u8[:],
+    kem_id:   u16,
+    sym_len:  u16,
+    out_kdf:  u16&,
+    out_aead: u16&,
+) -> bool {
+    var p: i64 = 0;
+    let limit = sym_len as i64;
+    var first = true;
+    while p + 4 <= limit {
+        let kdf = ((raw[37 + p] as u16) << 8) | raw[37 + p + 1];
+        let aead = ((raw[37 + p + 2] as u16) << 8) | raw[37 + p + 3];
+        guard ohttp_suite_supported(kem_id, kdf, aead) else {
+            return false;
+        }
+        if first {
+            out_kdf = kdf;
+            out_aead = aead;
+            first = false;
+        }
+        p += 4;
+    }
+    return !first;
+}
+
 // Parses one key configuration: Key Identifier (8), KEM ID (16), Public Key
 // (Npk*8, Npk = 32 for X25519), Symmetric Algorithms Length (16) = 4..65532,
 // then repeated 4-byte (KDF ID, AEAD ID) pairs. Unsupported suites are rejected.
@@ -118,10 +149,13 @@ fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     let sym_len = ((raw[35] as u16) << 8) | raw[36];
     guard sym_len >= 4 && (sym_len % 4) == 0 else { return false; }
-    guard 37 + sym_len == raw.len else { return false; }
-    let kdf_id = ((raw[37] as u16) << 8) | raw[38];
-    let aead_id = ((raw[39] as u16) << 8) | raw[40];
-    guard ohttp_suite_supported(kem_id, kdf_id, aead_id) else { return false; }
+    guard 37 + (sym_len as i64) == raw.len else { return false; }
+
+    var kdf_id:  u16 = 0;
+    var aead_id: u16 = 0;
+    guard scan_supported_ohttp_sym_suite(raw, kem_id, sym_len, kdf_id, aead_id) else {
+        return false;
+    }
 
     out.key_id = raw[0];
     out.kem_id = kem_id;

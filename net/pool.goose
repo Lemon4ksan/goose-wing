@@ -255,20 +255,41 @@ fn is_queue_empty(q: const WantQueue&) -> bool {
     return queue_len(q) == 0;
 }
 
+inline fn compact_want_queue(q: WantQueue&) {
+    if q.head_pos > 0 {
+        let unread = q.head.len - q.head_pos;
+        for i in unread {
+            q.head[i] = q.head[q.head_pos + i];
+        }
+        while q.head.len > unread {
+            q.head.pop();
+        }
+        q.head_pos = 0;
+    }
+    var moved: i64 = 0;
+    while q.head.len < q.head.cap && moved < q.tail.len {
+        q.head.push(q.tail[moved]);
+        moved += 1;
+    }
+    if moved > 0 {
+        let remaining_tail = q.tail.len - moved;
+        for i in remaining_tail {
+            q.tail[i] = q.tail[moved + i];
+        }
+        while q.tail.len > remaining_tail {
+            q.tail.pop();
+        }
+    }
+}
+
 // Appends a connection requirement to the tail slice.
 fn push_want(q: WantQueue&, item: WantConn) -> bool {
     if q.tail.len < 32 {
         q.tail.push(item);
         return true;
     }
-    // If tail is full, try compacting head if it was drained
-    if q.head_pos >= q.head.len {
-        q.head.clear();
-        for &t_item in q.tail {
-            q.head.push(copy(t_item));
-        }
-        q.head_pos = 0;
-        q.tail.clear();
+    compact_want_queue(q);
+    if q.tail.len < 32 {
         q.tail.push(item);
         return true;
     }
@@ -667,7 +688,11 @@ inline fn try_acquire_direct_conn(
             now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
         );
         guard healthy else { return -1, false; }
+        let was_idle = c.active_allocations == 0;
         mark_multiplexed_acquired(c);
+        if was_idle {
+            group_record_acquired(pool, c.key);
+        }
         return c.conn_id, true;
     }
 
@@ -700,7 +725,11 @@ inline fn try_acquire_coalesced_conn(
         now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
     );
     guard healthy else { return -1, false; }
+    let was_idle = c.active_allocations == 0;
     mark_multiplexed_acquired(c);
+    if was_idle {
+        group_record_acquired(pool, c.key);
+    }
     return c.conn_id, true;
 }
 
@@ -873,6 +902,13 @@ inline fn matches_upstream_partition(
            entry.endpoint.origin_endpoint_equals(endpoint);
 }
 
+inline fn close_upstream_entry_fd(entry: UpstreamConnEntry&) {
+    if entry.fd >= 0 {
+        tcp_close(entry.fd);
+        entry.fd = -1;
+    }
+}
+
 // Registers a warm upstream connection into `UpstreamPool`, reusing evicted slots or appending up to 64.
 // Fails closed with `false` if all 64 slots are active (Invariant 13).
 fn register_upstream_conn(
@@ -894,6 +930,7 @@ fn register_upstream_conn(
     };
     for i in pool.entries.len {
         if !pool.entries[i].healthy && !pool.entries[i].in_use {
+            close_upstream_entry_fd(pool.entries[i]);
             pool.entries[i] = entry;
             return true;
         }
@@ -912,6 +949,7 @@ fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bo
         if pool.entries[i].fd == fd && pool.entries[i].healthy {
             pool.entries[i].epoll_events = events;
             if is_epoll_rdhup_signaled(events) {
+                close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.entries[i].in_use = false;
                 pool.evicted_rdhup += 1;
@@ -933,6 +971,7 @@ fn acquire_upstream_conn(
     for i in pool.entries.len {
         if pool.entries[i].healthy && !pool.entries[i].in_use {
             if is_epoll_rdhup_signaled(pool.entries[i].epoll_events) {
+                close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.evicted_rdhup += 1;
             } else if matches_upstream_partition(pool.entries[i], endpoint, tls_fingerprint, nik) {
@@ -951,6 +990,7 @@ fn release_upstream_conn(pool: UpstreamPool&, fd: i32, events: u32 = 0) -> bool 
             pool.entries[i].in_use = false;
             pool.entries[i].epoll_events = events;
             if is_epoll_rdhup_signaled(events) {
+                close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.evicted_rdhup += 1;
                 return false;

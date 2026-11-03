@@ -552,7 +552,7 @@ fn verify(
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
-    let parse_err = parse_jwt_unverified(token, out_header, out_claims);
+    let parse_err = parse_jwt_header_only(token, out_header);
     guard parse_err == JwtError.None else { return parse_err; }
 
     let key_idx = resolve_jwks_key_index(jwks, out_header.kid[..]);
@@ -617,14 +617,73 @@ inline fn is_private_or_loopback_ipv4(host: const u8[:]) -> bool {
     return false;
 }
 
-inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
-    if host == "localhost" || host == "::1" || host == "[::1]" { return true; }
-    if host == "metadata.google.internal" || host == "instance-data" { return true; }
+inline fn is_forbidden_ipv6(host: const u8[:]) -> bool {
+    if host == "::1" || host == "[::1]" || host == "::" || host == "[::]" { return true; }
+    if host == "[0:0:0:0:0:0:0:1]" || host == "[0:0:0:0:0:0:0:0]" { return true; }
+    if core::starts_with(host, "[::ffff:") || core::starts_with(host, "::ffff:") { return true; }
+    if core::starts_with(host, "[0:0:0:0:0:ffff:") { return true; }
+    if core::starts_with(host, "[fe80:") || core::starts_with(host, "[fc00:") { return true; }
+    if core::starts_with(host, "[fd00:") { return true; }
+    return false;
+}
+
+inline fn is_all_digits_or_dots(host: const u8[:]) -> bool {
+    guard host.len > 0 else { return false; }
+    for b in host {
+        if b != '.' && (b < '0' || b > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn has_hex_prefix(host: const u8[:]) -> bool {
+    guard host.len >= 2 else { return false; }
+    let limit = core::sub_sat_i64(host.len, 1);
+    for i in limit {
+        let next_i = core::add_sat_i64(i, 1);
+        if host[i] == '0' && host[next_i] == 'x' { return true; }
+    }
+    return false;
+}
+
+inline fn is_non_canonical_ipv4(host: const u8[:]) -> bool {
+    if has_hex_prefix(host) { return true; }
+    guard is_all_digits_or_dots(host) else { return false; }
+
+    var dot_cnt = 0;
+    var octet_len = 0;
+    var first_zero = false;
+
+    for b in host {
+        if b == '.' {
+            if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 { return true; }
+            dot_cnt = core::add_sat_i64(dot_cnt, 1);
+            octet_len = 0;
+            first_zero = false;
+        } else {
+            if octet_len == 0 && b == '0' {
+                first_zero = true;
+            }
+            octet_len = core::add_sat_i64(octet_len, 1);
+        }
+    }
+    if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 { return true; }
+    return dot_cnt != 3;
+}
+
+inline fn is_forbidden_internal_domain(host: const u8[:]) -> bool {
+    if host == "localhost" || host == "metadata.google.internal" || host == "instance-data" { return true; }
     if core::ends_with(host, ".localhost") || core::ends_with(host, ".local") { return true; }
     if core::ends_with(host, ".internal") || core::ends_with(host, ".lan") { return true; }
     if core::ends_with(host, ".corp") { return true; }
-    if core::starts_with(host, "[fe80:") || core::starts_with(host, "[fc00:") { return true; }
-    if core::starts_with(host, "[fd00:") { return true; }
+    return false;
+}
+
+inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
+    if is_forbidden_internal_domain(host) { return true; }
+    if is_forbidden_ipv6(host) { return true; }
+    if is_non_canonical_ipv4(host) { return true; }
     return is_private_or_loopback_ipv4(host);
 }
 
@@ -641,6 +700,19 @@ fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
     guard view.scheme == "https" else { return false; }
     guard view.username.len == 0 && view.password.len == 0 else { return false; }
     guard view.port < 0 || view.port == 443 else { return false; }
-    guard view.host.len > 0 else { return false; }
-    return !is_forbidden_internal_host(view.host);
+    guard view.host.len > 0 && view.host.len <= 255 else { return false; }
+
+    var norm_host: u8[..256] = [];
+    core::to_lower_ascii(view.host, norm_host);
+    for _ in 8 {
+        if norm_host.len == 0 { break; }
+        let last_idx = core::sub_sat_i64(norm_host.len, 1);
+        if norm_host[last_idx] == '.' {
+            norm_host.pop();
+        } else {
+            break;
+        }
+    }
+    guard norm_host.len > 0 else { return false; }
+    return !is_forbidden_internal_host(norm_host[..]);
 }

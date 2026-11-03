@@ -161,6 +161,36 @@ fn bhttp_decode_field_line(
     return headers.append_header(name, val);
 }
 
+fn is_forbidden_trailer_name(name: const u8[:]) -> bool {
+    if name.len > 0 && name[0] == ':' { return true; }
+    if eq_ascii_fold(name, "content-length") { return true; }
+    if eq_ascii_fold(name, "transfer-encoding") { return true; }
+    if eq_ascii_fold(name, "host") { return true; }
+    if eq_ascii_fold(name, "authorization") { return true; }
+    return false;
+}
+
+// Decodes a single binary HTTP trailer field line and advances `idx` (RFC 9292 §3.3).
+//
+// Example:
+//   sec = [0x04, 'e', 't', 'a', 'g', 0x02, '3', '3'], idx = 0
+//   returns: true, idx = 8 (consumed 8 bytes)
+fn bhttp_decode_trailer_line(sec: const u8[:], idx: i64&) -> bool {
+    let name_len, ok1 = internal::quic_decode_varint_cursor(sec, idx);
+    guard ok1 && name_len >= 1 && name_len <= ((sec.len - idx) as u64) else { return false; }
+    let name_end = idx + (name_len as i64);
+    let name = sec[idx..name_end];
+    idx = name_end;
+
+    let val_len, ok2 = internal::quic_decode_varint_cursor(sec, idx);
+    guard ok2 && val_len <= ((sec.len - idx) as u64) else { return false; }
+    let val_end = idx + (val_len as i64);
+    idx = val_end;
+
+    guard !is_forbidden_trailer_name(name) else { return false; }
+    return is_valid_header_name(name) || is_valid_header_name_h2(name);
+}
+
 // Shared tail of every known-length decode: field section, content, trailers,
 // and zero-padding validation after control data (RFC 9292 Sections 3.1, 3.8).
 // Truncated missing lengths are treated as zero (Section 3.8).
@@ -207,10 +237,9 @@ fn bhttp_decode_tail(
         guard tend <= raw.len else { return false; }
         let trailers = raw[idx..tend];
         var jdx: i64 = 0;
-        var seen_regular = false;
         while jdx < trailers.len {
             // Trailer field lines are validated but discarded (Section 3.1).
-            guard bhttp_decode_field_line(trailers, jdx, headers, seen_regular) else { return false; }
+            guard bhttp_decode_trailer_line(trailers, jdx) else { return false; }
         }
         idx = tend;
     }

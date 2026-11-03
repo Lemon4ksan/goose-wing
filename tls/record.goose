@@ -679,7 +679,7 @@ fn tls_record_decrypt_aes128_gcm_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -692,7 +692,7 @@ fn tls_record_decrypt_aes128_gcm_into(
     guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
     for i in 16 { tag[i] = tag_slice[i]; }
 
-    var temp_dec: u8[16384] = [0; 16384];
+    var temp_dec: u8[16624] = [0; 16624];
     let dec_len, ok_open = core::fused_aes_gcm_decrypt(
         key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
     );
@@ -781,6 +781,289 @@ fn tls_record_decrypt_aes128_gcm(
     out_plaintext.append(plain);
     secure_wipe_buffer(temp_dec[..ct_len]);
     return inner_type, TlsAlert.CloseNotify;
+}
+
+fn tls_record_seal_aes256_gcm_into(
+    key:            const u8[32]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    inner_type:     u8,
+    plaintext:      const u8[:],
+    out_ciphertext: u8[:],
+) -> i64, TlsAlert, bool {
+    guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+    var inner_buf: u8[..16640] = [];
+    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    var tag_dummy:       u8[16]      = [0; 16];
+    var encrypted_dummy: u8[..16640] = [];
+    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+
+    var hdr_buf: u8[..5] = [];
+    guard encode_tls_ciphertext_header(
+        hdr_buf,
+        rfc::TLS_CONTENT_APPLICATION_DATA,
+        encrypted_dummy.len as u16,
+    ) else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    let tag, ok_seal = core::aes256_gcm_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    guard ok_seal else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    var record_buf: u8[..16640] = [];
+    guard record_buf.try_append(hdr_buf[..]) &&
+          record_buf.try_append(inner_buf[..]) &&
+          record_buf.try_append(tag[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard out_ciphertext.len >= record_buf.len else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
+    return record_buf.len, TlsAlert.CloseNotify, true;
+}
+
+fn tls_record_seal_chacha20_poly1305_into(
+    key:            const u8[32]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    inner_type:     u8,
+    plaintext:      const u8[:],
+    out_ciphertext: u8[:],
+) -> i64, TlsAlert, bool {
+    guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+    var inner_buf: u8[..16640] = [];
+    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    var tag_dummy:       u8[16]      = [0; 16];
+    var encrypted_dummy: u8[..16640] = [];
+    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else {
+        return 0, TlsAlert.UnexpectedMessage, false;
+    }
+
+    var hdr_buf: u8[..5] = [];
+    guard encode_tls_ciphertext_header(
+        hdr_buf,
+        rfc::TLS_CONTENT_APPLICATION_DATA,
+        encrypted_dummy.len as u16,
+    ) else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    let tag, ok_seal = core::chacha20_poly1305_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    guard ok_seal else {
+        return 0, TlsAlert.InternalError, false;
+    }
+
+    var record_buf: u8[..16640] = [];
+    guard record_buf.try_append(hdr_buf[..]) &&
+          record_buf.try_append(inner_buf[..]) &&
+          record_buf.try_append(tag[..]) else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    guard out_ciphertext.len >= record_buf.len else {
+        return 0, TlsAlert.RecordOverflow, false;
+    }
+    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
+    return record_buf.len, TlsAlert.CloseNotify, true;
+}
+
+fn tls_record_decrypt_aes256_gcm_into(
+    key:            const u8[32]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    record_header:  const u8[:],
+    record_payload: const u8[:],
+    out_plaintext:  u8[:],
+) -> i64, u8, TlsAlert, bool {
+    guard record_header.len == 5 else { return 0, 0, TlsAlert.DecodeError, false; }
+    guard record_payload.len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    guard record_payload.len >= rfc::TLS_AEAD_TAG_LEN + 1 else {
+        return 0, 0, TlsAlert.DecodeError, false;
+    }
+
+    let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else { return 0, 0, TlsAlert.UnexpectedMessage, false; }
+
+    let ciphertext = record_payload[..ct_len];
+    let tag_slice = record_payload[ct_len..];
+    var tag: u8[16] = [0; 16];
+    guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
+    for i in 16 { tag[i] = tag_slice[i]; }
+
+    var temp_dec: u8[16624] = [0; 16624];
+    let dec_len, ok_open = core::aes256_gcm_open_into(
+        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+    );
+    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    guard alert == TlsAlert.CloseNotify else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, alert, false;
+    }
+
+    guard out_plaintext.len >= plain.len else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    for i in plain.len { out_plaintext[i] = plain[i]; }
+    let plain_len = plain.len;
+    secure_wipe_buffer(temp_dec[..ct_len]);
+    return plain_len, inner_type, TlsAlert.CloseNotify, true;
+}
+
+fn tls_record_decrypt_chacha20_poly1305_into(
+    key:            const u8[32]&,
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    record_header:  const u8[:],
+    record_payload: const u8[:],
+    out_plaintext:  u8[:],
+) -> i64, u8, TlsAlert, bool {
+    guard record_header.len == 5 else { return 0, 0, TlsAlert.DecodeError, false; }
+    guard record_payload.len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    guard record_payload.len >= rfc::TLS_AEAD_TAG_LEN + 1 else {
+        return 0, 0, TlsAlert.DecodeError, false;
+    }
+
+    let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+
+    let nonce, ok_nonce = compute_record_nonce(iv, seq_num);
+    guard ok_nonce else { return 0, 0, TlsAlert.UnexpectedMessage, false; }
+
+    let ciphertext = record_payload[..ct_len];
+    let tag_slice = record_payload[ct_len..];
+    var tag: u8[16] = [0; 16];
+    guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
+    for i in 16 { tag[i] = tag_slice[i]; }
+
+    var temp_dec: u8[16624] = [0; 16624];
+    let dec_len, ok_open = core::chacha20_poly1305_open_into(
+        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+    );
+    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    guard alert == TlsAlert.CloseNotify else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, alert, false;
+    }
+
+    guard out_plaintext.len >= plain.len else {
+        secure_wipe_buffer(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.RecordOverflow, false;
+    }
+    for i in plain.len { out_plaintext[i] = plain[i]; }
+    let plain_len = plain.len;
+    secure_wipe_buffer(temp_dec[..ct_len]);
+    return plain_len, inner_type, TlsAlert.CloseNotify, true;
+}
+
+fn tls_record_seal_into(
+    cipher_suite:   u16,
+    key:            const u8[:],
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    inner_type:     u8,
+    plaintext:      const u8[:],
+    out_ciphertext: u8[:],
+) -> i64, TlsAlert, bool {
+    if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
+        guard key.len == 16 else { return 0, TlsAlert.InternalError, false; }
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = key[i]; }
+        return tls_record_seal_aes128_gcm_into(key16, iv, seq_num, inner_type, plaintext, out_ciphertext);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
+        var key32: u8[32] = [0; 32];
+        for i in 32 { key32[i] = key[i]; }
+        return tls_record_seal_aes256_gcm_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
+        var key32: u8[32] = [0; 32];
+        for i in 32 { key32[i] = key[i]; }
+        return tls_record_seal_chacha20_poly1305_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
+    }
+    return 0, TlsAlert.InternalError, false;
+}
+
+fn tls_record_decrypt_into(
+    cipher_suite:   u16,
+    key:            const u8[:],
+    iv:             const u8[12]&,
+    seq_num:        u64,
+    record_header:  const u8[:],
+    record_payload: const u8[:],
+    out_plaintext:  u8[:],
+) -> i64, u8, TlsAlert, bool {
+    if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
+        guard key.len == 16 else { return 0, 0, TlsAlert.InternalError, false; }
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = key[i]; }
+        return tls_record_decrypt_aes128_gcm_into(key16, iv, seq_num, record_header, record_payload, out_plaintext);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
+        var key32: u8[32] = [0; 32];
+        for i in 32 { key32[i] = key[i]; }
+        return tls_record_decrypt_aes256_gcm_into(key32, iv, seq_num, record_header, record_payload, out_plaintext);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
+        var key32: u8[32] = [0; 32];
+        for i in 32 { key32[i] = key[i]; }
+        return tls_record_decrypt_chacha20_poly1305_into(
+            key32,
+            iv,
+            seq_num,
+            record_header,
+            record_payload,
+            out_plaintext,
+        );
+    }
+    return 0, 0, TlsAlert.InternalError, false;
 }
 
 // DoS filter tracking consecutive empty records, early data skipped volume, and CCS records.

@@ -228,6 +228,18 @@ inline fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
     return true;
 }
 
+inline fn finish_chunk_ext_lf(dec: ChunkFsmDecoder&, done: bool&) -> bool {
+    let cur_sz = dec.state & CHUNK_STATE_SIZE_MASK;
+    guard cur_sz <= CHUNK_STATE_SIZE_MASK - 2 else {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return false;
+    };
+    dec.state = (cur_sz + 2) | CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
+    dec.ext_bytes = 0;
+    done = true;
+    return true;
+}
+
 // Consumes a single character of chunk extensions (RFC 9112 §7.1.1).
 inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
     dec.ext_bytes++;
@@ -241,12 +253,7 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
-        dec.state += 2;
-        dec.state |= CHUNK_STATE_HAS_SIZE | CHUNK_STATE_IS_CHUNKED;
-        dec.state &= ~CHUNK_STATE_EXTENSION_ALL_FLAGS;
-        dec.ext_bytes = 0;
-        done = true;
-        return true;
+        return finish_chunk_ext_lf(dec, done);
     }
 
     if c == 0x00 || (c < 0x20 && c != '\r' && c != '\n' && c != '\t') || c == 0x7F {

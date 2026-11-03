@@ -320,6 +320,32 @@ fn validate_request_host_presence<Req>(
     return true;
 }
 
+inline fn store_parsed_header_item<Req>(
+    out_req: Req&,
+    hname:   const u8[:],
+    hval:    const u8[:],
+) -> bool {
+    guard out_req.headers.len < out_req.headers.cap else { return false; }
+    guard hname.len <= 64 && hval.len <= 4096 else { return false; }
+
+    var it = HeaderItem { is_sensitive: false, .. };
+    it.name.append(hname);
+    let safe_len = if hval.len <= 384 { hval.len } else { it.value.cap };
+    it.value.append(hval[..safe_len]);
+    out_req.headers.push(it);
+    add_header(out_req.bloom_filter, hname);
+    return true;
+}
+
+inline fn advance_header_cursor(
+    cursor:   i64&,
+    name_len: i64,
+    val_len:  i64,
+    crlf_len: i64,
+) {
+    cursor += name_len + 1 + val_len + crlf_len;
+}
+
 // Parses a single wire header line using single-pass SWAR scanning and tchar validation.
 // Advances `cursor` past the trailing CRLF delimiter.
 //
@@ -359,15 +385,11 @@ fn parse_http1_wire_header_line<Req>(
     out_req.spans.push(span);
     out_req.presence_mask |= header_id_to_bit(known_id);
 
-    if out_req.headers.len < out_req.headers.cap && hname.len <= 64 && hval.len <= 384 {
-        var it = HeaderItem { is_sensitive: false, .. };
-        it.name.append(hname);
-        it.value.append(hval);
-        out_req.headers.push(it);
-        add_header(out_req.bloom_filter, hname);
+    guard store_parsed_header_item(out_req, hname, hval) else {
+        return false;
     }
 
-    cursor += name_len + 1 + val_len + crlf_len;
+    advance_header_cursor(cursor, name_len, val_len, crlf_len);
     return true;
 }
 
@@ -797,36 +819,35 @@ struct CachedHttpDate {
     last_tsc:    u64       = 0,
 }
 
-var g_cached_http_date: CachedHttpDate = CachedHttpDate { .. };
+fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
+    if date.header_str.len == 0 || (now_sec > 0 && date.last_sec != now_sec) {
+        date.last_sec = now_sec;
+        date.last_tsc = prof_rdtsc();
+        let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+        date.header_str.clear();
+        date.header_str.append("Date: ");
+        core::format_http(date.header_str, core::unix(wall_sec, 0));
+        date.header_str.append("\r\n");
 
-fn format_date_header_string(mono_sec: i64) {
-    g_cached_http_date.last_sec = mono_sec;
-    g_cached_http_date.last_tsc = prof_rdtsc();
-    let wall_sec = core::now().wall_sec;
-    g_cached_http_date.header_str.clear();
-    g_cached_http_date.header_str.append("Date: ");
-    core::format_http(g_cached_http_date.header_str, core::unix(wall_sec, 0));
-    g_cached_http_date.header_str.append("\r\n");
-
-    g_cached_http_date.fast_prefix.clear();
-    g_cached_http_date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
-    g_cached_http_date.fast_prefix.append(g_cached_http_date.header_str[..]);
-}
-
-fn should_refresh_cached_date(now_sec: i64) -> bool {
-    guard g_cached_http_date.header_str.len > 0 else { return true; }
-    if now_sec > 0 {
-        return g_cached_http_date.last_sec != now_sec;
+        date.fast_prefix.clear();
+        date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
+        date.fast_prefix.append(date.header_str[..]);
     }
-    let tsc = prof_rdtsc();
-    return tsc - g_cached_http_date.last_tsc >= 2000000000;
 }
+
+fn format_local_http_date(out: u8[..64]&, now_sec: i64) {
+    out.clear();
+    out.append("Date: ");
+    let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+    core::format_http(out, core::unix(wall_sec, 0));
+    out.append("\r\n");
+}
+
+var g_compat_date: CachedHttpDate = CachedHttpDate { .. };
 
 fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
-    if should_refresh_cached_date(now_sec) {
-        format_date_header_string(now_sec);
-    }
-    return g_cached_http_date.header_str[..];
+    update_server_cached_date(g_compat_date, now_sec);
+    return g_compat_date.header_str[..];
 }
 
 // Formats Content-Length decimal header fast without divisions for common lengths.
@@ -933,11 +954,14 @@ fn serialize_http1_headers<Res, B>(
     out_wire:    B&,
     now_sec:     i64 = 0,
 ) {
+    var date_buf: u8[..64] = [];
+    format_local_http_date(date_buf, now_sec);
+
     if res.status_code == 200 && server_name == "goose-wing" {
         let mask = res.presence_mask;
         if (mask == RES_PRESENCE_CONTENT_TYPE || mask == 0) && res.headers.len == 1 && res.trailers.len == 0 {
-            let _ = get_cached_http_date_header(now_sec);
-            out_wire.append(g_cached_http_date.fast_prefix[..]);
+            out_wire.append(HTTP1_200_SERVER_GOOSE);
+            out_wire.append(date_buf[..]);
             serialize_content_length_header(res.body.len, out_wire);
             if res.headers[0].value == "text/plain" {
                 out_wire.append(HTTP1_CT_TEXT_PLAIN);
@@ -963,9 +987,9 @@ fn serialize_http1_headers<Res, B>(
         mask = detect_response_presence_mask(res.headers[..]);
     }
 
-    // Emit cached RFC 7231 Date header if not explicitly overridden by response
+    // Emit RFC 7231 Date header if not explicitly overridden by response
     if (mask & RES_PRESENCE_DATE) == 0 {
-        out_wire.append(get_cached_http_date_header(now_sec));
+        out_wire.append(date_buf[..]);
     }
 
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
@@ -2095,6 +2119,17 @@ inline fn reset_server_request_fast(req: Request&) {
     }
 }
 
+// Extended server request context holding long header token arena (RFC 9112 Section 2.1).
+struct ServerRequest {
+    raw_header_arena: u8[..8192] = [],
+    req:              Request    = Request { .. },
+}
+
+inline fn reset_server_request(sreq: ServerRequest&) {
+    reset_server_request_fast(sreq.req);
+    sreq.raw_header_arena.clear();
+}
+
 fn dispatch_pipelined_request<B>(
     server:    HttpServer&,
     client_ip: const u8[:],
@@ -2128,10 +2163,13 @@ fn process_pipelined_pipe_step<B>(
     let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
     if !ok_parse || consumed <= 0 {
-        let hdr_end = core::fast_find_crlfcrlf(stream);
+        var keep = false;
+        let _ = handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
+        if keep {
+            core::advance_to(pipe, 0, pipe.readable_len());
+            return PipeStepResult.Stop;
+        }
         core::advance_to(pipe, 0, pipe.readable_len());
-        guard hdr_end >= 0 else { return PipeStepResult.Stop; }
-
         if total_handled == 0 {
             serialize_bad_request_error(server.server_name[..], wire_out);
         }
@@ -2240,7 +2278,7 @@ fn handle_connection_wire_pipelined_stream<B>(
                 return total_handled, total_consumed, false, true;
             },
             KeepStreamFail => {
-                return total_handled, total_consumed, true, true;
+                return total_handled, total_consumed, true, false;
             },
         };
     }
@@ -2471,10 +2509,10 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
     return serve_pipe_loop(server, listener_fd, max_connections);
 }
 
-const REACTOR_LEFTOVER_CAP: i64 = 1024;
+const REACTOR_LEFTOVER_CAP: i64 = 8192;
 
 struct ReactorLeftoverBuf {
-    bytes: u8[1024] = [0; 1024],
+    bytes: u8[8192] = [0; 8192],
 }
 
 struct ReactorIngressBuf {
@@ -2674,15 +2712,57 @@ fn reactor_save_leftover(
     return true;
 }
 
+inline fn inc_sent_total(total: i64, sent: i32) -> i64 {
+    return total + sent;
+}
+
 // Flushes cork aggregation buffer to connection via bounded non-blocking send loop.
 inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
     var sent_total: i64 = 0;
     while sent_total < wire.len {
         let sent = tcp_send(conn, wire[sent_total..]);
         if sent <= 0 { return false; }
-        sent_total += sent;
+        sent_total = inc_sent_total(sent_total, sent);
     }
     return true;
+}
+
+fn reactor_handle_h2_ingress(
+    server:    HttpServer&,
+    conn:      i64,
+    table:     SoAConnTable&,
+    leftovers: ReactorLeftoverBuf[:],
+    slot:      i64,
+    now_ns:    u64,
+    chunk:     ReactorIngressBuf&,
+    cork_wire: u8[..65536]&,
+) -> bool {
+    let now_ms = now_ns / 1000000;
+    var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
+    defer internal::cleanup_h2_server_session(sess, server.pipeline);
+    let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
+        sess, server.pipeline, server.timer, "127.0.0.1", chunk.bytes[..chunk.len], now_ms, cork_wire,
+    );
+    guard ok_h2 else { return false; }
+    server.requests_processed++;
+    if cork_wire.len > 0 {
+        let _ = reactor_drain_cork_wire(conn, cork_wire[..]);
+    }
+    if consumed_h2 < chunk.len {
+        let _ = reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed_h2..chunk.len]);
+    }
+    return true;
+}
+
+inline fn reactor_close_and_inc(
+    epfd:         i64,
+    table:        SoAConnTable&,
+    slot:         i64,
+    free_slots:   FreeSlotStack&,
+    total_served: i64&,
+) {
+    reactor_cleanup_slot(epfd, table, slot, free_slots);
+    total_served++;
 }
 
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
@@ -2708,11 +2788,18 @@ fn reactor_handle_ingress(
 
     let any_recvd, is_closed = reactor_read_bounded_turns(conn, chunk);
     if is_closed {
-        reactor_cleanup_slot(epfd, table, slot, free_slots);
-        total_served++;
+        reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
         return;
     }
     if !any_recvd && prev_len == 0 {
+        return;
+    }
+
+    if is_h2_client_preface(chunk.bytes[..chunk.len]) {
+        let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire);
+        if !ok_h2 {
+            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+        }
         return;
     }
 
@@ -2724,22 +2811,19 @@ fn reactor_handle_ingress(
     let should_close = !ok || wants_close;
     if cork_wire.len > 0 {
         if !reactor_drain_cork_wire(conn, cork_wire[..]) || should_close {
-            reactor_cleanup_slot(epfd, table, slot, free_slots);
-            total_served++;
+            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
             return;
         }
     }
     if should_close {
-        reactor_cleanup_slot(epfd, table, slot, free_slots);
-        total_served++;
+        reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
         return;
     }
 
     // Preserve unconsumed bytes for the next epoll turn
     if consumed < chunk.len {
         if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed..chunk.len]) {
-            reactor_cleanup_slot(epfd, table, slot, free_slots);
-            total_served++;
+            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
         }
     }
 }
@@ -2897,7 +2981,7 @@ fn handle_connection_page_ring<B>(
     }
     guard ring.count > 0 else { return 0, true; }
 
-    var peek_buf: u8[8192] = [0; 8192];
+    var peek_buf: u8[65536] = [0; 65536];
     var req = new_request("GET", "");
     var res = Response { .. };
     var total_handled: i64 = 0;
@@ -2913,6 +2997,12 @@ fn handle_connection_page_ring<B>(
             let hdr_end = core::page_ring_find_crlfcrlf(ring);
             guard hdr_end >= 0 else {
                 // Incomplete HTTP headers; wait for next network packet
+                return total_handled, true;
+            }
+
+            var keep = false;
+            let _ = handle_pipelined_parse_failure(server.server_name[..], peek_buf[..peek_n], req, wire_out, keep);
+            if keep {
                 return total_handled, true;
             }
 

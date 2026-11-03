@@ -71,9 +71,9 @@ inline fn handle_down_success(health: UpstreamHealth&, successes: u32, threshold
 // Transitions target state upon probe or request success.
 fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const HealthCheckConfig&) -> HealthState {
     health.consecutive_failures = 0;
-    let successes = health.consecutive_successes + 1;
+    let successes = core::add_sat_u32(health.consecutive_successes, 1);
     health.consecutive_successes = successes;
-    health.total_probes = health.total_probes + 1;
+    health.total_probes = core::add_sat_u64(health.total_probes, 1);
     health.last_rtt_us = rtt_us;
 
     if health.state == HealthState.Probing {
@@ -88,12 +88,12 @@ fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const Heal
 // Transitions target state upon probe or request failure.
 fn record_probe_failure(health: UpstreamHealth&, config: const HealthCheckConfig&) -> HealthState {
     health.consecutive_successes = 0;
-    let fails = health.consecutive_failures + 1;
+    let fails = core::add_sat_u32(health.consecutive_failures, 1);
     health.consecutive_failures = fails;
-    health.total_probes = health.total_probes + 1;
-    health.failed_probes = health.failed_probes + 1;
+    health.total_probes = core::add_sat_u64(health.total_probes, 1);
+    health.failed_probes = core::add_sat_u64(health.failed_probes, 1);
 
-    if fails >= config.unhealthy_threshold {
+    if fails >= config.unhealthy_threshold || health.state == HealthState.Probing {
         health.state = HealthState.Down;
     }
 
@@ -201,7 +201,7 @@ fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) 
 }
 
 inline fn inc_checks_dispatched(checker: ClusterHealthChecker&) {
-    checker.total_checks_dispatched = checker.total_checks_dispatched + 1;
+    checker.total_checks_dispatched = core::add_sat_u64(checker.total_checks_dispatched, 1);
 }
 
 // Prepares active probe request for target if probe is due and not in flight.
@@ -312,6 +312,7 @@ fn on_probe_failure(
         return HealthState.Down;
     }
 
+    sync_slot_from_cluster(checker.slots[slot_idx], cluster.targets[target_idx].health_state);
     clear_in_flight(checker.slots[slot_idx]);
     let new_state = record_probe_failure(checker.slots[slot_idx].health, checker.config);
     sync_cluster_target_health(cluster, target_idx, new_state);
@@ -319,7 +320,7 @@ fn on_probe_failure(
 }
 
 inline fn inc_timeouts_count(cnt: i32&) {
-    cnt = cnt + 1;
+    cnt = (core::add_sat_u64(cnt as u64, 1)) as i32;
 }
 
 // Checks for probe timeouts in flight.
@@ -336,6 +337,7 @@ fn check_probe_timeouts(
             let elapsed = core::sub_sat_u64(now_ms, checker.slots[i].probe_start_ms);
             if elapsed >= checker.config.timeout_ms {
                 let t_idx = checker.slots[i].target_idx;
+                sync_slot_from_cluster(checker.slots[i], cluster.targets[t_idx].health_state);
                 clear_in_flight(checker.slots[i]);
                 let new_state = record_probe_failure(checker.slots[i].health, checker.config);
                 sync_cluster_target_health(cluster, t_idx, new_state);

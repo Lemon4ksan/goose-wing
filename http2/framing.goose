@@ -162,7 +162,7 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
 // A server can only acknowledge peer streams (client-initiated: odd or 0, or 2^31 - 1 for graceful shutdown).
 fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool {
     let sid = last_stream_id & 0x7FFFFFFF;
-    if sid == 0 {
+    if sid == 0 || sid == 0x7FFFFFFF {
         return true;
     }
     if sender_is_client {
@@ -187,7 +187,7 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
         return payload, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
     let pad_len = payload[0] as u32;
-    guard (1 + pad_len) <= hdr.length else {
+    guard (1 + pad_len) <= (payload.len as u32) else {
         return payload, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     let eff_end = payload.len - pad_len;
@@ -216,7 +216,7 @@ fn extract_headers_frame_payload(
     var raw = payload;
     if has_pad {
         let pad_len = raw[0] as u32;
-        guard (1 + pad_len + (if has_prio { 5 } else { 0 })) <= hdr.length else {
+        guard (1 + pad_len + (if has_prio { 5 } else { 0 })) <= (raw.len as u32) else {
             return raw, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         let eff_end = raw.len - pad_len;
@@ -303,7 +303,10 @@ fn parse_priority_update_payload(
     }
 
     let field_value = payload[4..];
-    let parsed, _ = wing::parse_http_priority(field_value, default_incremental);
+    let parsed, ok = wing::parse_http_priority(field_value, default_incremental);
+    guard ok else {
+        return prioritized_stream_id, p, rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     return prioritized_stream_id, parsed, rfc::H2_ERR_NO_ERROR;
 }
 

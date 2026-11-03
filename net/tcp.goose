@@ -213,7 +213,6 @@ fn tcp_sendv(fd: i64, arr: core::IoVecArray&) -> i32 {
 // Global shared 64 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 65536) in .bss
 // Eliminates the 4 KB stack memset [0; 4096] on every single recv call.
 const RECV_BUFFER_CAP: i64 = 65536;
-var g_shared_recv_buf: u8[65536] = [0; 65536];
 
 // Receives bytes from TCP socket directly into the provided destination slice (zero-copy, zero-heap).
 // Returns bytes received (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
@@ -222,9 +221,15 @@ fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     return native_tcp_recv(fd, dst, timeout_ms);
 }
 
-// Receives bytes directly into the shared 512 KB receive loop buffer without allocating or zeroing stack memory.
+inline fn ensure_shared_buf_len(buf: u8[..65536]&, eff_max: i32) {
+    while (buf.len as i32) < eff_max {
+        buf.push(0);
+    }
+}
+
+// Receives bytes directly into the caller-provided receive buffer without allocating or zeroing stack memory.
 // Returns (bytes_received, readable_slice).
-fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
+fn tcp_recv_shared(fd: i64, buf: u8[..65536]&, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
     guard fd > 0 else { return -1, ""; }
     let eff_max = if max_len > RECV_BUFFER_CAP as i32 {
         RECV_BUFFER_CAP as i32
@@ -233,14 +238,15 @@ fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32
     } else {
         max_len
     };
-    let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
+    ensure_shared_buf_len(buf, eff_max);
+    let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
-        return recvd, g_shared_recv_buf[..recvd];
+        return recvd, buf[..recvd];
     }
     return recvd, "";
 }
 
-// Receives bytes from TCP socket into the shared loop buffer and appends to out.
+// Receives bytes from TCP socket into a local stack buffer and appends to out.
 // Returns:
 //   > 0 : bytes received
 //     0 : peer closed connection cleanly (EOF / FIN)
@@ -248,16 +254,17 @@ fn tcp_recv_shared(fd: i64, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32
 //    -1 : socket error (e.g. connection reset)
 fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 else { return -1; }
-    let eff_max = if max_len > RECV_BUFFER_CAP as i32 {
-        RECV_BUFFER_CAP as i32
+    var buf: u8[16384] = [0; 16384];
+    let eff_max = if max_len > 16384 {
+        16384
     } else if max_len < 1 {
         1
     } else {
         max_len
     };
-    let recvd = native_tcp_recv(fd, g_shared_recv_buf[..eff_max], timeout_ms);
+    let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
-        out.append(g_shared_recv_buf[..recvd]);
+        out.append(buf[..recvd]);
     }
     return recvd;
 }
@@ -424,6 +431,7 @@ fn tcp_flush_cork(fd: i64, cb: core::CorkBuffer&) -> i32 {
 // Matches uWebSockets AsyncSocketData / BackPressure amortized compaction pattern.
 struct BackPressure {
     data:              u8[..65536] = [],
+    pending_cork:      u8[..4096]  = [],
     pending_removal:   i64         = 0,
     total_buffered:    u64         = 0,
     total_drained:     u64         = 0,
@@ -506,6 +514,9 @@ fn async_write_drain_existing(
 ) -> bool, i32, bool {
     guard backpressure_len(bp) > 0 else { return false, 0, false; }
     let sent = tcp_send(fd, backpressure_data(bp));
+    if sent < 0 {
+        return true, -1, false;
+    }
     if sent > 0 {
         backpressure_erase(bp, sent);
     }
@@ -529,6 +540,9 @@ fn async_write_spill_cork(
 ) -> bool, i32, bool {
     guard core::cork_pending(cork) > 0 else { return false, 0, false; }
     let cork_sent = tcp_send(fd, core::cork_as_slice(cork));
+    if cork_sent < 0 {
+        return true, -1, false;
+    }
     if cork_sent > 0 {
         core::cork_consume(cork, cork_sent);
     }
@@ -554,6 +568,9 @@ fn async_write_direct(
     optionally: bool,
 ) -> i32, bool {
     let sent = tcp_send(fd, data);
+    if sent < 0 {
+        return -1, false;
+    }
     guard sent < (data.len as i32) else { return sent, false; }
     if optionally {
         let sent_clamped = if sent > 0 { sent } else { 0 };
@@ -672,6 +689,11 @@ fn check_execute_deferred_shutdown(fd: i64, bp: BackPressure&) {
 // Returns (bytes_drained, is_fully_empty).
 fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, true; }
+    if backpressure_len(bp) == 0 && bp.pending_cork.len > 0 {
+        if backpressure_append(bp, bp.pending_cork[..]) {
+            bp.pending_cork.clear();
+        }
+    }
     let bp_active = backpressure_len(bp);
     guard bp_active > 0 else {
         check_execute_deferred_shutdown(fd, bp);
@@ -687,7 +709,12 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
         backpressure_erase(bp, sent);
     }
 
-    let is_empty = backpressure_len(bp) == 0;
+    if backpressure_len(bp) == 0 && bp.pending_cork.len > 0 {
+        if backpressure_append(bp, bp.pending_cork[..]) {
+            bp.pending_cork.clear();
+        }
+    }
+    let is_empty = backpressure_len(bp) == 0 && bp.pending_cork.len == 0;
     if is_empty {
         check_execute_deferred_shutdown(fd, bp);
     }
@@ -704,9 +731,14 @@ fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) ->
 
     if core::cork_pending(cork) > 0 {
         async_socket_uncork(fd, cork, bp);
+        if core::cork_pending(cork) > 0 {
+            bp.pending_cork.clear();
+            bp.pending_cork.append(core::cork_as_slice(cork));
+            core::cork_reset(cork);
+        }
     }
 
-    guard backpressure_len(bp) == 0 else {
+    guard backpressure_len(bp) == 0 && bp.pending_cork.len == 0 else {
         bp.shutdown_pending = true;
         return false, true;
     }
@@ -802,9 +834,10 @@ fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
 //    -1 : socket error / connection reset
 fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
     guard fd > 0 else { return -1; }
-    let recvd = native_tcp_recv_nonblocking(fd, g_shared_recv_buf[..65536]);
+    var buf: u8[16384] = [0; 16384];
+    let recvd = native_tcp_recv_nonblocking(fd, buf[..16384]);
     if recvd > 0 {
-        out.append(g_shared_recv_buf[..recvd]);
+        out.append(buf[..recvd]);
     }
     return recvd;
 }

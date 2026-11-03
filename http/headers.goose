@@ -294,6 +294,8 @@ root struct OverflowArena {
     spill_url:     u8[>..]          = [],
 }
 
+var dummy_arena: OverflowArena = OverflowArena { .. };
+
 fn reset_overflow_arena(arena: OverflowArena&) {
     arena.spill_raw.clear();
     arena.spill_entries.clear();
@@ -890,27 +892,72 @@ struct ObsFoldPolicy {
     allow_obs_fold:  bool = false,
 }
 
-fn handle_obs_fold(
-    line:   const u8[:],
-    policy: ObsFoldPolicy,
-    map:    HeaderMap&,
+fn validate_folded_framing(buf: const u8[:], begin: u16, end: u16, wk: u8) -> bool {
+    let cl_slot = well_known_to_slot(WellKnownHeader.ContentLength) as u8;
+    let te_slot = well_known_to_slot(WellKnownHeader.TransferEncoding) as u8;
+    if wk == cl_slot {
+        let full_cl = buf[begin..end];
+        var dummy_cl: i64 = 0;
+        return validate_content_length_value(full_cl, dummy_cl);
+    }
+    if wk == te_slot {
+        let full_te = buf[begin..end];
+        return validate_transfer_encoding_value(full_te);
+    }
+    return true;
+}
+
+fn handle_obs_fold_arena(
+    trimmed_continuation: const u8[:],
+    map:                  HeaderMap&,
+    arena:                OverflowArena&,
+    in_spill:             bool,
 ) -> HeaderParseError {
-    if policy.is_first_header || map.entries.len == 0 {
+    let orig_begin: u16 = if in_spill {
+        arena.spill_entries[arena.spill_entries.len - 1].values_begin
+    } else {
+        map.entries[map.entries.len - 1].values_begin
+    };
+    let orig_end: u16 = if in_spill {
+        arena.spill_entries[arena.spill_entries.len - 1].values_end
+    } else {
+        map.entries[map.entries.len - 1].values_end
+    };
+    let orig_val = arena.spill_raw[orig_begin..orig_end];
+    let needed = orig_val.len + 1 + trimmed_continuation.len;
+    guard (arena.spill_raw.len + needed) <= 65535 else {
         map.valid = false;
-        return HeaderParseError.LeadingWhitespaceOnFirstHeader;
-    }
-    guard policy.allow_obs_fold else {
-        map.valid = false;
-        return HeaderParseError.ObsFoldForbidden;
+        return HeaderParseError.CapacityExceeded;
     }
 
+    let new_begin = arena.spill_raw.len as u16;
+    arena.spill_raw.append(orig_val);
+    arena.spill_raw.push(' ');
+    arena.spill_raw.append(trimmed_continuation);
+    let new_end = arena.spill_raw.len as u16;
+
+    let prev_wk: u8 = if in_spill {
+        arena.spill_entries[arena.spill_entries.len - 1].values_begin = new_begin;
+        arena.spill_entries[arena.spill_entries.len - 1].values_end = new_end;
+        arena.spill_entries[arena.spill_entries.len - 1].well_known_id
+    } else {
+        map.entries[map.entries.len - 1].values_begin = new_begin;
+        map.entries[map.entries.len - 1].values_end = new_end;
+        map.entries[map.entries.len - 1].well_known_id
+    };
+
+    guard validate_folded_framing(arena.spill_raw[..], new_begin, new_end, prev_wk) else {
+        map.valid = false;
+        return HeaderParseError.InvalidContentLength;
+    }
+    return HeaderParseError.None;
+}
+
+fn handle_obs_fold_stack(
+    trimmed_continuation: const u8[:],
+    map:                  HeaderMap&,
+) -> HeaderParseError {
     let prev_idx = map.entries.len - 1;
-    let trimmed_continuation = trim_lws(line);
-    guard is_valid_header_value(trimmed_continuation) else {
-        map.valid = false;
-        return HeaderParseError.InvalidHeaderValue;
-    }
-
     let orig_begin = map.entries[prev_idx].values_begin;
     let orig_end = map.entries[prev_idx].values_end;
     let orig_val = map.raw_buf[orig_begin..orig_end];
@@ -931,21 +978,43 @@ fn handle_obs_fold(
     map.entries[prev_idx].values_end = new_end;
 
     let prev_wk = map.entries[prev_idx].well_known_id;
-    if prev_wk == well_known_to_slot(WellKnownHeader.ContentLength) as u8 {
-        let full_cl = map.raw_buf[new_begin..new_end];
-        var dummy_cl: i64 = 0;
-        guard validate_content_length_value(full_cl, dummy_cl) else {
-            map.valid = false;
-            return HeaderParseError.InvalidContentLength;
-        }
-    } else if prev_wk == well_known_to_slot(WellKnownHeader.TransferEncoding) as u8 {
-        let full_te = map.raw_buf[new_begin..new_end];
-        guard validate_transfer_encoding_value(full_te) else {
-            map.valid = false;
-            return HeaderParseError.InvalidContentLength;
-        }
+    guard validate_folded_framing(map.raw_buf[..], new_begin, new_end, prev_wk) else {
+        map.valid = false;
+        return HeaderParseError.InvalidContentLength;
     }
     return HeaderParseError.None;
+}
+
+fn handle_obs_fold(
+    line:   const u8[:],
+    policy: ObsFoldPolicy,
+    map:    HeaderMap&,
+    arena:  OverflowArena& = dummy_arena,
+) -> HeaderParseError {
+    let total_entries = map.entries.len + arena.spill_entries.len;
+    if policy.is_first_header || total_entries == 0 {
+        map.valid = false;
+        return HeaderParseError.LeadingWhitespaceOnFirstHeader;
+    }
+    guard policy.allow_obs_fold else {
+        map.valid = false;
+        return HeaderParseError.ObsFoldForbidden;
+    }
+
+    let trimmed_continuation = trim_lws(line);
+    guard is_valid_header_value(trimmed_continuation) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderValue;
+    }
+
+    let in_spill = arena.spill_entries.len > 0;
+    let prev_in_arena = in_spill
+        || (map.entries.len > 0 && map.entries[map.entries.len - 1].reserved == HEADER_SRC_ARENA);
+
+    if prev_in_arena {
+        return handle_obs_fold_arena(trimmed_continuation, map, arena, in_spill);
+    }
+    return handle_obs_fold_stack(trimmed_continuation, map);
 }
 
 fn validate_header_framing_conflicts(
@@ -1197,6 +1266,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
     var cursor: i64 = 0;
     let buf_len = map.raw_buf.len;
     var is_first_header = true;
+    var prev_was_dup_cl = false;
 
     while cursor < buf_len {
         if map.raw_buf[cursor] == '\r' {
@@ -1223,6 +1293,10 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
 
         let is_lead_ws = map.raw_buf[cursor] == ' ' || map.raw_buf[cursor] == '\t';
         if is_lead_ws {
+            if prev_was_dup_cl {
+                map.valid = false;
+                return HeaderParseError.ObsFoldForbidden;
+            }
             let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
             let fold_err = handle_obs_fold(line, policy, map);
             guard is_ok(fold_err) else { return fold_err; }
@@ -1230,7 +1304,10 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
             var is_dup_cl = false;
             let line_err = parse_single_header_line(line, cursor, map, is_dup_cl);
             guard is_ok(line_err) else { return line_err; }
-            if !is_dup_cl {
+            if is_dup_cl {
+                prev_was_dup_cl = true;
+            } else {
+                prev_was_dup_cl = false;
                 is_first_header = false;
             }
         }
@@ -1260,6 +1337,7 @@ fn parse_overflow_headers_loop(
     var cursor: i64 = 0;
     let buf_len = active_buf.len;
     var is_first_header = true;
+    var prev_was_dup_cl = false;
 
     while cursor < buf_len {
         if active_buf[cursor] == '\r' {
@@ -1286,14 +1364,21 @@ fn parse_overflow_headers_loop(
 
         let is_lead_ws = active_buf[cursor] == ' ' || active_buf[cursor] == '\t';
         if is_lead_ws {
+            if prev_was_dup_cl {
+                map.valid = false;
+                return HeaderParseError.ObsFoldForbidden;
+            }
             let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
-            let fold_err = handle_obs_fold(line, policy, map);
+            let fold_err = handle_obs_fold(line, policy, map, arena);
             guard is_ok(fold_err) else { return fold_err; }
         } else {
             var is_dup_cl: i32 = 0;
             let line_err = parse_single_overflow_header_line(line, cursor, map, arena, src_type, is_dup_cl);
             guard is_ok(line_err) else { return line_err; }
-            if is_dup_cl == 0 {
+            if is_dup_cl != 0 {
+                prev_was_dup_cl = true;
+            } else {
+                prev_was_dup_cl = false;
                 is_first_header = false;
             }
         }
@@ -1320,6 +1405,10 @@ fn parse_headers_with_overflow(
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    guard raw_input.len <= 65535 else {
+        map.valid = false;
+        return HeaderParseError.CapacityExceeded;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
@@ -1631,7 +1720,6 @@ fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: co
         if idx != 0xFF && idx < map.entries.len {
             return resolve_entry_value(map.entries[idx as i64], map, arena);
         }
-        return "";
     }
 
     let hname = hash_header_name(name);
@@ -1703,10 +1791,36 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     return true;
 }
 
+fn calc_entry_match_bytes(raw: const u8[:], e: const HeaderEntry&, name: const u8[:]) -> i64 {
+    guard e.reserved == HEADER_SRC_STACK && e.name_end <= raw.len as u16 else { return -1; }
+    let ename = raw[e.name_begin..e.name_end];
+    guard eq_ascii_fold(ename, name) else { return -1; }
+    return (e.name_end - e.name_begin) + (e.values_end - e.values_begin);
+}
+
+fn can_insert_header(map: const HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
+    let trimmed = trim_lws(value);
+    let needed = name.len + trimmed.len;
+    let hname = hash_header_name(name);
+    var matching = 0;
+    var reclaimed: i64 = 0;
+    for &e in map.entries {
+        if e.name_hash == hname {
+            let b = calc_entry_match_bytes(map.raw_buf[..], e, name);
+            if b >= 0 {
+                matching += 1;
+                reclaimed += b;
+            }
+        }
+    }
+    guard (map.entries.len - matching + 1) <= 128 else { return false; }
+    return (map.raw_buf.len - reclaimed + needed) <= 8192;
+}
+
 fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
-    // If already exists, overwrite value of first occurrence and prune subsequent occurrences
     let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
     guard valid_name && is_valid_header_value(value) else { return false; }
+    guard can_insert_header(map, name, value) else { return false; }
 
     if map.has_header(name) {
         map.remove_header(name);
@@ -1769,27 +1883,52 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
         }
     }
 
-    // Prune entries by rebuilding or marking
-    // In bounded static array, filter entries that do not match name
+    // Prune entries by rebuilding and compacting raw_buf
     var new_entries: HeaderEntry[..128] = [];
     var new_commas:  bool[..128]        = [];
+    var new_raw_buf: u8[..8192]         = [];
     for i in 64 { map.inline_slots[i] = 0xFF; }
 
     for &e, i in map.entries {
-        let ename = map.raw_buf[e.name_begin..e.name_end];
+        let ename = if e.reserved == HEADER_SRC_STACK && e.name_end <= map.raw_buf.len as u16 {
+            map.raw_buf[e.name_begin..e.name_end]
+        } else {
+            ""
+        };
         if eq_ascii_fold(ename, name) {
             found = true;
             continue;
         }
 
-        let new_idx = new_entries.len as u8;
         var copy_e = e;
+        if e.reserved == HEADER_SRC_STACK && e.values_end <= map.raw_buf.len as u16 {
+            let eval = map.raw_buf[e.values_begin..e.values_end];
+            let new_n_begin = new_raw_buf.len as u16;
+            new_raw_buf.append(ename);
+            let new_n_end = new_raw_buf.len as u16;
+
+            let new_v_begin = new_raw_buf.len as u16;
+            new_raw_buf.append(eval);
+            let new_v_end = new_raw_buf.len as u16;
+
+            copy_e.name_begin = new_n_begin;
+            copy_e.name_end = new_n_end;
+            copy_e.values_begin = new_v_begin;
+            copy_e.values_end = new_v_end;
+        }
+        let new_idx = new_entries.len as u8;
         copy_e.next_idx = 0xFF;
 
-        link_rebuilt_entry(map.inline_slots, new_entries, map.raw_buf[..], ename, copy_e, new_idx);
+        let cur_raw: const u8[:] = if new_raw_buf.len > 0 { new_raw_buf[..] } else { map.raw_buf[..] };
+        link_rebuilt_entry(map.inline_slots, new_entries, cur_raw, ename, copy_e, new_idx);
 
         new_entries.push(copy_e);
         new_commas.push(map.header_contains_comma[i]);
+    }
+
+    if map.raw_buf.len > 0 {
+        map.raw_buf.clear();
+        map.raw_buf.append(new_raw_buf[..]);
     }
 
     map.entries.clear();

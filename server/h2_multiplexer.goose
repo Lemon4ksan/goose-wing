@@ -239,7 +239,8 @@ fn emit_response_headers<B>(
     }
 
     let is_grpc = starts_with_fold(res.header("content-type"), "application/grpc");
-    if !is_grpc && res.status_code != 204 && res.status_code != 304 {
+    let has_cl = res.header("content-length").len > 0;
+    if !is_grpc && !has_cl && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
         format(cl_buf, res.body.len);
         encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], HpackIndexing.Incremental, false);
@@ -281,8 +282,57 @@ fn emit_response_headers<B>(
     out.append(hpack_block[..]);
 }
 
-// Encodes HTTP/2 Response DATA chunks
+inline fn deduct_send_windows(
+    conn:     H2Connection&,
+    c_idx:    i64,
+    found:    bool,
+    send_len: i64,
+) {
+    conn.conn_send_window -= send_len;
+    if found {
+        conn.streams[c_idx].send_window -= send_len;
+    }
+}
+
+inline fn calc_data_chunk_size(rem: i64, limit: i64, quota: i64) -> i64 {
+    var sz = if rem < limit { rem } else { limit };
+    if sz > quota {
+        sz = quota;
+    }
+    return sz;
+}
+
+fn emit_one_data_frame<B>(
+    sess:       H2ServerSession&,
+    stream_id:  u32,
+    body:       const u8[:],
+    offset:     i64,
+    limit:      i64,
+    quota:      i64,
+    c_idx:      i64,
+    found:      bool,
+    out:        B&,
+    end_stream: bool,
+) -> i64 {
+    let rem = body.len - offset;
+    let chunk_size = calc_data_chunk_size(rem, limit, quota);
+    let is_last = (offset + chunk_size >= body.len);
+    let flags: u8 = if is_last && end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
+    let hdr = FrameHeader {
+        length:     chunk_size as u32,
+        frame_type: rfc::H2_FRAME_DATA,
+        flags:      flags,
+        stream_id:  stream_id,
+    };
+    encode_frame_header_to(hdr, out);
+    out.append(body[offset..offset + chunk_size]);
+    deduct_send_windows(sess.conn, c_idx, found, chunk_size);
+    return chunk_size;
+}
+
+// Encodes HTTP/2 Response DATA chunks with flow-control window enforcement
 fn emit_response_data<B>(
+    sess:           H2ServerSession&,
     stream_id:      u32,
     body:           const u8[:],
     max_frame_size: u32,
@@ -293,21 +343,17 @@ fn emit_response_data<B>(
 
     var offset: i64 = 0;
     let limit = if max_frame_size >= 16384 { max_frame_size as i64 } else { 16384 };
+    let c_idx, found = find_session_stream_idx(sess.conn, stream_id);
 
     while offset < body.len {
-        let rem = body.len - offset;
-        let chunk_size = if rem < limit { rem } else { limit };
-        let is_last = (offset + chunk_size >= body.len);
+        let quota = compute_stream_send_quota(sess.conn, stream_id);
+        if quota <= 0 {
+            break;
+        }
 
-        let flags: u8 = if is_last && end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
-        let hdr = FrameHeader {
-            length:     chunk_size as u32,
-            frame_type: rfc::H2_FRAME_DATA,
-            flags:      flags,
-            stream_id:  stream_id,
-        };
-        encode_frame_header_to(hdr, out);
-        out.append(body[offset..offset + chunk_size]);
+        let chunk_size = emit_one_data_frame(
+            sess, stream_id, body, offset, limit, quota, c_idx, found, out, end_stream,
+        );
         offset += chunk_size;
     }
 }
@@ -668,7 +714,11 @@ fn process_ingress_headers<B>(
 
     if is_trailer {
         if !is_cancelled && s_exists {
-            apply_decoded_trailers_to_stream(sess.streams[s_exist_idx], dec_list);
+            guard apply_decoded_trailers_to_stream(sess.streams[s_exist_idx], dec_list) else {
+                emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+                terminate_server_stream(sess, pipeline, hdr.stream_id);
+                return true;
+            }
             let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
             if c_found {
                 sess.conn.streams[c_idx].trailers_received = true;
@@ -688,7 +738,11 @@ fn process_ingress_headers<B>(
     guard !is_cancelled else { return true; }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
     guard found else { return true; }
-    apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+    guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     if dec_list.has_content_length {
         sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
@@ -741,7 +795,11 @@ fn process_ingress_continuation<B>(
         guard !is_cancelled else { return true; }
         let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
         guard found else { return true; }
-        apply_decoded_trailers_to_stream(sess.streams[s_idx], dec_list);
+        guard apply_decoded_trailers_to_stream(sess.streams[s_idx], dec_list) else {
+            emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
+            return true;
+        }
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].trailers_received = true;
@@ -764,7 +822,11 @@ fn process_ingress_continuation<B>(
     guard !is_cancelled else { return true; }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
     guard found else { return true; }
-    apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list);
+    guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     if dec_list.has_content_length {
         sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
@@ -1102,13 +1164,6 @@ fn execute_ready_server_stream<B>(
     let now_ns = (now_ms as u64) * 1000000;
     wing::execute_pipeline(pipeline, timer, client_ip, req, now_ns, res, future);
 
-    let is_grpc = starts_with_fold(res.header("content-type"), "application/grpc");
-    let is_head = sess.streams[stream_idx].method[..] == "HEAD";
-    let is_empty_ok = !is_grpc && res.trailers.len == 0 && res.status_code == 200 && res.body.len == 0;
-    if is_empty_ok && !is_head {
-        res.body.append("OK\n");
-    }
-
     // Emit Response
     let has_body = res.body.len > 0;
     let has_trailers = res.trailers.len > 0;
@@ -1116,7 +1171,7 @@ fn execute_ready_server_stream<B>(
     emit_response_headers(sess, target_stream_id, res, end_headers, out_wire);
     if has_body {
         let end_data = !has_trailers;
-        emit_response_data(target_stream_id, res.body[..], sess.conn.peer_max_frame_size, out_wire, end_data);
+        emit_response_data(sess, target_stream_id, res.body[..], sess.conn.peer_max_frame_size, out_wire, end_data);
     }
     if has_trailers {
         emit_response_trailers(sess, target_stream_id, res.trailers, out_wire);

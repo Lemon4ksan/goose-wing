@@ -4017,6 +4017,145 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
     };
 }
 
+// 13. CryptoShield Remediation Conformance
+fn test_remediation_post_quantum(t: lit::T&) {
+    t.run("CryptoShield: FIPS 203 NTT/InvNTT Roundtrip & Polynomial Arithmetic") { sub =>
+        var p = internal::Poly256 {};
+        p.coeffs[0] = 1;
+        p.coeffs[1] = 2;
+        p.coeffs[2] = 3328;
+        p.coeffs[255] = 17;
+
+        var p2 = internal::Poly256 {};
+        p2.coeffs[0] = 10;
+        p2.coeffs[1] = 20;
+
+        let p_sum = internal::poly_add(p, p2);
+        sub.assert_eq(p_sum.coeffs[0], 11, "poly_add coeff 0");
+        sub.assert_eq(p_sum.coeffs[1], 22, "poly_add coeff 1");
+
+        let p_diff = internal::poly_sub(p_sum, p2);
+        sub.assert_eq(p_diff.coeffs[0], p.coeffs[0], "poly_sub restores coeff 0");
+        sub.assert_eq(p_diff.coeffs[1], p.coeffs[1], "poly_sub restores coeff 1");
+
+        let p_hat = internal::poly_ntt(p);
+        let p_rec = internal::poly_invntt(p_hat);
+        sub.assert_eq(p_rec.coeffs[0], p.coeffs[0], "NTT roundtrip coeff 0");
+        sub.assert_eq(p_rec.coeffs[1], p.coeffs[1], "NTT roundtrip coeff 1");
+        sub.assert_eq(p_rec.coeffs[2], p.coeffs[2], "NTT roundtrip coeff 2");
+        sub.assert_eq(p_rec.coeffs[255], p.coeffs[255], "NTT roundtrip coeff 255");
+    };
+}
+
+fn test_remediation_x509_signatures(t: lit::T&) {
+    t.run("CryptoShield: X.509 Signature & OCSP/CRL Verification") { sub =>
+        let empty_cert = wing::ParsedCert {};
+        let dummy_parent = wing::ParsedCert {};
+        let empty_alert = wing::x509_verify_cert_signature(empty_cert, "", dummy_parent, "");
+        sub.assert_eq(wing::tls_alert_to_u8(empty_alert), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "empty cert sig returns CloseNotify");
+
+        let empty_ocsp = wing::ParsedOcspResponse {};
+        let ocsp_sig_alert = wing::x509_verify_ocsp_signature(empty_ocsp, "", dummy_parent, "");
+        sub.assert_eq(wing::tls_alert_to_u8(ocsp_sig_alert), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificateStatusResponse), "empty ocsp sig returns BadCertificateStatusResponse");
+
+        let empty_crl = wing::ParsedCrl {};
+        let crl_sig_alert = wing::x509_verify_crl_signature(empty_crl, "", dummy_parent, "");
+        sub.assert_eq(wing::tls_alert_to_u8(crl_sig_alert), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "empty crl sig returns BadCertificate");
+    };
+}
+
+fn test_remediation_misc(t: lit::T&) {
+    t.run("CryptoShield: Post-Handshake Auth, Boundary & ECH Public Name") { sub =>
+        let st, ok_pha = wing::validate_client_handshake_transition(
+            wing::HsState.Connected,
+            rfc::TLS_HS_CERTIFICATE_REQUEST,
+            wing::HandshakeMode.Full,
+            false,
+        );
+        sub.assert_true(ok_pha, "post-handshake CertificateRequest allowed in Connected");
+        sub.assert_true(st == wing::HsState.Connected, "state remains Connected");
+
+        let hs_msg: u8[14] = [0x01, 0x00, 0x00, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let m_type, m_len, ok_fit = wing::validate_handshake_record_boundary(hs_msg[..], 20);
+        sub.assert_true(ok_fit, "handshake fits in record");
+        sub.assert_eq(m_type, 1, "parsed message type matches");
+        sub.assert_eq(m_len, 10, "parsed message len matches");
+
+        let _, _, ok_exceed = wing::validate_handshake_record_boundary(hs_msg[..], 10);
+        sub.assert_false(ok_exceed, "handshake + 4 header exceeds record");
+
+        var pad_buf: u8[>..] = [];
+        let ok_pad0 = wing::pad_ech_inner("inner-hello", 64, 0, pad_buf);
+        sub.assert_true(ok_pad0, "pad_ech_inner with real_sni_len == 0 succeeds");
+        sub.assert_eq(pad_buf.len % 32, 0, "pad_buf is 32-byte aligned");
+
+        sub.assert_true(wing::validate_ech_public_name_bytes("public.cloudflare-ech.com"), "valid DNS public name");
+        sub.assert_false(wing::validate_ech_public_name_bytes("trailing.dot."), "trailing dot rejected");
+        sub.assert_false(wing::validate_ech_public_name_bytes("192.168.1.1"), "all digits and dots rejected");
+    };
+}
+
+fn test_remediation_record_aead(t: lit::T&) {
+    t.run("CryptoShield: Unified AEAD Dispatch for AES-256-GCM and ChaCha20-Poly1305") { sub =>
+        let key32: u8[32]      = [0x55; 32];
+        let iv12:  u8[12]      = [0xAA; 12];
+        let pt:    const u8[:] = "CryptoShield AEAD Test";
+
+        var ct_raw: u8[128] = [0; 128];
+        let ct_len, alert_seal256, ok_seal256 = wing::tls_record_seal_into(
+            rfc::TLS_CIPHER_AES_256_GCM_SHA384,
+            key32[..],
+            iv12,
+            0,
+            rfc::TLS_CONTENT_APPLICATION_DATA,
+            pt,
+            ct_raw[..],
+        );
+        sub.assert_true(ok_seal256, "seal AES-256-GCM succeeds");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_seal256), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "seal alert CloseNotify");
+
+        var pt_raw: u8[128] = [0; 128];
+        let dec_len, in_type, alert_dec256, ok_dec256 = wing::tls_record_decrypt_into(
+            rfc::TLS_CIPHER_AES_256_GCM_SHA384,
+            key32[..],
+            iv12,
+            0,
+            ct_raw[..5],
+            ct_raw[5..ct_len],
+            pt_raw[..],
+        );
+        sub.assert_true(ok_dec256, "decrypt AES-256-GCM succeeds");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_dec256), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "dec alert CloseNotify");
+        sub.assert_eq(in_type, rfc::TLS_CONTENT_APPLICATION_DATA, "inner type is application data");
+        sub.assert_bytes_eq(pt_raw[..dec_len], pt, "AES-256-GCM plaintext matches");
+
+        var ct_ch_raw: u8[128] = [0; 128];
+        let ct_ch_len, alert_seal_ch, ok_seal_ch = wing::tls_record_seal_into(
+            rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
+            key32[..],
+            iv12,
+            0,
+            rfc::TLS_CONTENT_APPLICATION_DATA,
+            pt,
+            ct_ch_raw[..],
+        );
+        sub.assert_true(ok_seal_ch, "seal ChaCha20-Poly1305 succeeds");
+
+        var pt_ch_raw: u8[128] = [0; 128];
+        let dec_ch_len, in_ch_type, alert_dec_ch, ok_dec_ch = wing::tls_record_decrypt_into(
+            rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
+            key32[..],
+            iv12,
+            0,
+            ct_ch_raw[..5],
+            ct_ch_raw[5..ct_ch_len],
+            pt_ch_raw[..],
+        );
+        sub.assert_true(ok_dec_ch, "decrypt ChaCha20-Poly1305 succeeds");
+        sub.assert_bytes_eq(pt_ch_raw[..dec_ch_len], pt, "ChaCha20 plaintext matches");
+    };
+}
+
 // Main TLS 1.3 & X.509 Conformance Runner
 fn main() {
     var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
@@ -4033,6 +4172,10 @@ fn main() {
     lit::run_case(runner, "10. State Machine Transitions, HRR Invariants, Downgrade & ECH FSM", test_handshake_r2_invariants);
     lit::run_case(runner, "11. NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp", test_handshake_r3_invariants);
     lit::run_case(runner, "12. RFC 8879 Brotli Certificate Decompression & Bomb Defenses", test_rfc8879_brotli_cert_compression);
+    lit::run_case(runner, "13. FIPS 203 NTT & Polynomial Arithmetic", test_remediation_post_quantum);
+    lit::run_case(runner, "14. X.509 Signatures & OCSP/CRL", test_remediation_x509_signatures);
+    lit::run_case(runner, "15. Handshake PHA, Boundary & ECH", test_remediation_misc);
+    lit::run_case(runner, "16. Record Unified AEAD Dispatch", test_remediation_record_aead);
 
     let ok = lit::finish(runner);
     assert(ok);

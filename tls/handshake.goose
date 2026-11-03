@@ -101,8 +101,11 @@ fn client_wait_post_transition(current: HsState, incoming_msg_type: u8) -> HsSta
             return HsState.Connected, true;
         }
     } else if current == HsState.Connected {
-        // RFC 8446 Section 4.6: Post-handshake messages from server
-        if incoming_msg_type == rfc::TLS_HS_NEW_SESSION_TICKET || incoming_msg_type == rfc::TLS_HS_KEY_UPDATE {
+        // RFC 8446 Section 4.6 & Section 4.6.2: Post-handshake messages from server
+        let is_post_hs = incoming_msg_type == rfc::TLS_HS_NEW_SESSION_TICKET
+            || incoming_msg_type == rfc::TLS_HS_KEY_UPDATE
+            || incoming_msg_type == rfc::TLS_HS_CERTIFICATE_REQUEST;
+        if is_post_hs {
             return HsState.Connected, true;
         }
     }
@@ -197,11 +200,12 @@ fn validate_server_handshake_transition_auth(
     incoming_msg_type:    u8,
     client_auth:          ClientAuthMode,
     client_cert_is_empty: bool,
+    early_data_accepted:  EarlyDataAccepted = EarlyDataAccepted.Rejected,
 ) -> HsState, bool {
     guard incoming_msg_type != rfc::TLS_HS_MESSAGE_HASH else { return HsState.Closed, false; }
     if current == HsState.ServerWaitCH || current == HsState.ServerWaitEOED {
         return server_wait_initial_transition(
-            current, incoming_msg_type, client_auth == ClientAuthMode.Requested,
+            current, incoming_msg_type, client_auth == ClientAuthMode.Requested, early_data_accepted,
         );
     }
     if current == HsState.ServerWaitCert {
@@ -219,20 +223,13 @@ fn validate_server_handshake_transition(
     client_auth_requested: bool,
     early_data_accepted:   EarlyDataAccepted = EarlyDataAccepted.Rejected,
 ) -> HsState, bool {
-    if current == HsState.ServerWaitCH || current == HsState.ServerWaitEOED {
-        return server_wait_initial_transition(
-            current,
-            incoming_msg_type,
-            client_auth_requested,
-            early_data_accepted,
-        );
-    }
     let c_auth = if client_auth_requested { ClientAuthMode.Requested } else { ClientAuthMode.Disabled };
     return validate_server_handshake_transition_auth(
         current,
         incoming_msg_type,
         c_auth,
         false,
+        early_data_accepted,
     );
 }
 
@@ -273,8 +270,9 @@ fn validate_handshake_record_boundary(data: const u8[:], record_payload_len: i64
     let msg_len = ((data[1] as u32) << 16) | ((data[2] as u32) << 8) | data[3];
     guard msg_len <= rfc::MAX_HANDSHAKE_MSG_LEN else { return 0, 0, false; }
     guard record_payload_len >= 4 else { return 0, 0, false; }
-    guard (record_payload_len - 4) as u32 == msg_len else { return 0, 0, false; }
-    guard (data.len - 4) as u32 >= msg_len else { return 0, 0, false; }
+    let total_msg_len = (msg_len as i64) + 4;
+    guard total_msg_len <= record_payload_len else { return 0, 0, false; }
+    guard data.len >= total_msg_len else { return 0, 0, false; }
     return msg_type, msg_len, true;
 }
 
@@ -1360,7 +1358,7 @@ fn encode_key_update<B>(out: B&, request_update: u8) -> bool {
 struct CertificateRequestMsg {
     context:                  u8[..32]  = [],
     has_signature_algorithms: bool      = false,
-    sig_algorithms:           u16[..16] = [],
+    sig_algorithms:           u16[..64] = [],
 }
 
 fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) -> bool {

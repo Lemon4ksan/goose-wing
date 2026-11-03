@@ -769,7 +769,8 @@ fn test_shared_buffer_recv(t: lit::T&) {
         let msg1: const u8[:] = "SHARED_BUFFER_TEST_PAYLOAD";
         wing::tcp_send(client, msg1);
 
-        let recvd1, slice1 = wing::tcp_recv_shared(server_conn, 4096, 2000);
+        var shared_buf: u8[..65536] = [];
+        let recvd1, slice1 = wing::tcp_recv_shared(server_conn, shared_buf, 4096, 2000);
         sub.assert_eq(recvd1, msg1.len as i32, "tcp_recv_shared returned byte count");
         sub.assert_eq(slice1, msg1, "tcp_recv_shared slice matches message");
     };

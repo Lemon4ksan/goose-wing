@@ -326,7 +326,7 @@ fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
     let target_len = target.len;
     guard target_len > 0 && target_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
     let base_len = base.len;
-    guard base_len >= target_len && base_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
+    guard base_len >= target_len && base_len <= 65536 else { return Span16 { offset: 0, length: 0 }; }
     let max_idx = base_len - target_len;
     var i: i64 = 0;
     while i <= max_idx {
@@ -417,7 +417,13 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) 
     if !get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) { return false; }
     var spki_oid = cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_oid) { return false; }
-    out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
+
+    var spki_curve = cursor_from(raw_cert[..0]);
+    if spki_oid.buf == rfc::OID_EC_PUBLIC_KEY[..] && get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) {
+        out.spki_alg_oid = make_span(raw_cert, spki_curve.buf);
+    } else {
+        out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
+    }
 
     var spki_pubkey = cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pubkey) { return false; }
@@ -478,7 +484,7 @@ fn x509_read_tbs_components(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: Pa
 }
 
 fn x509_read_outer_signature(raw_cert: const u8[:], cert_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    guard cursor_len(cert_seq) > 0 else { return true; }
+    guard cursor_len(cert_seq) > 0 else { return false; }
     var outer_sig_alg = cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) { return false; }
     var outer_sig_oid = cursor_from(raw_cert[..0]);
@@ -554,7 +560,10 @@ fn x509_parse_bc_path_len(bc_seq: ByteCursor&, cert: ParsedCert&) {
 fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     cert.has_basic_constraints = true;
     var bc_seq = cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) else { return; }
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
     x509_parse_bc_ca_bool(bc_seq, cert);
     x509_parse_bc_path_len(bc_seq, cert);
     if cursor_len(bc_seq) > 0 {
@@ -669,7 +678,12 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
     let is_critical = x509_check_ext_critical(single_ext);
 
     var ext_val = cursor_from(single_ext.buf[..0]);
-    if !get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_val) { return; }
+    if !get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_val) {
+        if is_critical {
+            cert.has_unsupported_critical = true;
+        }
+        return;
+    }
 
     if !is_known_extension_oid(oid.buf) {
         if is_critical {
@@ -679,6 +693,9 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
     }
 
     x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert);
+    if is_critical && cursor_len(single_ext) > 0 {
+        cert.has_unsupported_critical = true;
+    }
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
@@ -1548,7 +1565,7 @@ fn x509_check_child_sans_against_nc(
 ) -> bool {
     guard child_cert.has_san else { return true; }
     var child_sans: SanEntry[..16] = [];
-    guard get_cert_san_extension(child_cert, child_raw, child_sans) else { return true; }
+    guard get_cert_san_extension(child_cert, child_raw, child_sans) else { return false; }
     for s_idx in child_sans.len {
         if !check_name_constraints(nc_entries, child_sans[s_idx]) {
             return false;
@@ -1652,12 +1669,18 @@ enum OcspCertStatus {
 }
 
 struct ParsedOcspResponse {
-    status:          OcspResponseStatus = OcspResponseStatus.Unknown,
-    cert_status:     OcspCertStatus     = OcspCertStatus.Unknown,
-    serial_number:   Span16             = Span16 { offset: 0, length: 0 },
-    this_update:     i64                = 0,
-    next_update:     i64                = 0,
-    has_next_update: bool               = false,
+    status:           OcspResponseStatus = OcspResponseStatus.Unknown,
+    cert_status:      OcspCertStatus     = OcspCertStatus.Unknown,
+    serial_number:    Span16             = Span16 { offset: 0, length: 0 },
+    issuer_name_hash: Span16             = Span16 { offset: 0, length: 0 },
+    issuer_key_hash:  Span16             = Span16 { offset: 0, length: 0 },
+    hash_alg_oid:     Span16             = Span16 { offset: 0, length: 0 },
+    tbs_raw:          Span16             = Span16 { offset: 0, length: 0 },
+    sig_alg_oid:      Span16             = Span16 { offset: 0, length: 0 },
+    signature:        Span16             = Span16 { offset: 0, length: 0 },
+    this_update:      i64                = 0,
+    next_update:      i64                = 0,
+    has_next_update:  bool               = false,
 }
 
 fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
@@ -1699,10 +1722,20 @@ fn x509_parse_ocsp_cert_id(
 
     var hash_alg = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_SEQUENCE, hash_alg) { return false; }
+    if cursor_len(hash_alg) > 0 {
+        var hash_oid = cursor_from(hash_alg.buf[..0]);
+        if get_asn1_element(hash_alg, rfc::ASN1_TAG_OID, hash_oid) {
+            out.hash_alg_oid = make_span(raw_ocsp, hash_oid.buf);
+        }
+    }
+
     var name_hash = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_OCTET_STRING, name_hash) { return false; }
+    out.issuer_name_hash = make_span(raw_ocsp, name_hash.buf);
+
     var key_hash = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_OCTET_STRING, key_hash) { return false; }
+    out.issuer_key_hash = make_span(raw_ocsp, key_hash.buf);
 
     var serial = cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_INTEGER, serial) { return false; }
@@ -1778,6 +1811,24 @@ fn x509_skip_ocsp_version_and_id(tbs_resp_data: ByteCursor&) -> bool {
     return get_any_asn1_element(tbs_resp_data, resp_id_tag, resp_id);
 }
 
+fn x509_ocsp_read_basic_sig(basic_seq: ByteCursor&, raw_ocsp: const u8[:], out: ParsedOcspResponse&) {
+    guard cursor_len(basic_seq) > 0 else { return; }
+    var sig_alg_seq = cursor_from(basic_seq.buf[..0]);
+    if get_asn1_element(basic_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg_seq) {
+        var sig_oid = cursor_from(sig_alg_seq.buf[..0]);
+        if get_asn1_element(sig_alg_seq, rfc::ASN1_TAG_OID, sig_oid) {
+            out.sig_alg_oid = make_span(raw_ocsp, sig_oid.buf);
+        }
+    }
+    if cursor_len(basic_seq) > 0 {
+        var sig_bits = cursor_from(basic_seq.buf[..0]);
+        var unused_bits: u8 = 0;
+        if get_asn1_bit_string(basic_seq, sig_bits, unused_bits) && unused_bits == 0 {
+            out.signature = make_span(raw_ocsp, sig_bits.buf);
+        }
+    }
+}
+
 fn x509_parse_ocsp_basic_response(
     resp_bytes_seq: ByteCursor&,
     raw_ocsp:       const u8[:],
@@ -1793,8 +1844,11 @@ fn x509_parse_ocsp_basic_response(
     var basic_seq = cursor_from(resp_oct.buf[..0]);
     if !get_asn1_element(resp_oct, rfc::ASN1_TAG_SEQUENCE, basic_seq) { return false; }
 
+    let tbs_raw_start = basic_seq.buf;
     var tbs_resp_data = cursor_from(basic_seq.buf[..0]);
     if !get_asn1_element(basic_seq, rfc::ASN1_TAG_SEQUENCE, tbs_resp_data) { return false; }
+    let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, basic_seq.buf.len);
+    out.tbs_raw = make_span(raw_ocsp, tbs_raw_start[..tbs_tlv_len]);
 
     guard x509_skip_ocsp_version_and_id(tbs_resp_data) else { return false; }
 
@@ -1804,7 +1858,10 @@ fn x509_parse_ocsp_basic_response(
     var responses_seq = cursor_from(tbs_resp_data.buf[..0]);
     if !get_asn1_element(tbs_resp_data, rfc::ASN1_TAG_SEQUENCE, responses_seq) { return false; }
 
-    return x509_parse_ocsp_single_response(responses_seq, raw_ocsp, out);
+    guard x509_parse_ocsp_single_response(responses_seq, raw_ocsp, out) else { return false; }
+
+    x509_ocsp_read_basic_sig(basic_seq, raw_ocsp, out);
+    return true;
 }
 
 // Parses an OCSPResponse (RFC 6960 §4.2.1) with zero dynamic allocation.
@@ -1878,7 +1935,59 @@ fn validate_ocsp_stapling(
         return TlsAlert.BadCertificateStatusResponse;
     }
 
+    if leaf_cert.issuer_raw.length > 0 && resp.issuer_name_hash.length > 0 {
+        let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
+        let issuer_dn = span_slice(leaf_raw, leaf_cert.issuer_raw);
+        if ocsp_nh.len == 32 {
+            let h = core::sha256(issuer_dn);
+            if !core::ct_eq_bytes(ocsp_nh, h[..]) {
+                return TlsAlert.BadCertificateStatusResponse;
+            }
+        } else if ocsp_nh.len == 20 {
+            let h = core::sha1(issuer_dn);
+            if !core::ct_eq_bytes(ocsp_nh, h[..]) {
+                return TlsAlert.BadCertificateStatusResponse;
+            }
+        }
+    }
+
     return x509_validate_ocsp_temporal(resp, now_unix);
+}
+
+fn x509_verify_ocsp_signature(
+    resp:        const ParsedOcspResponse&,
+    raw_ocsp:    const u8[:],
+    issuer_cert: const ParsedCert&,
+    issuer_raw:  const u8[:],
+) -> TlsAlert {
+    guard resp.signature.length > 0 && resp.tbs_raw.length > 0 else {
+        return TlsAlert.BadCertificateStatusResponse;
+    }
+    let sig_oid = span_slice(raw_ocsp, resp.sig_alg_oid);
+    let tbs_data = span_slice(raw_ocsp, resp.tbs_raw);
+    let sig_bytes = span_slice(raw_ocsp, resp.signature);
+    var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
+
+    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+        parent_pubkey = parent_pubkey[1..];
+    }
+
+    if sig_oid == rfc::OID_ED25519[..] {
+        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
+            return TlsAlert.BadCertificateStatusResponse;
+        }
+        var pub_arr: u8[32] = [0; 32];
+        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
+        var sig_arr: u8[64] = [0; 64];
+        for k in 64 { sig_arr[k] = sig_bytes[k]; }
+
+        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
+            return TlsAlert.BadCertificateStatusResponse;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    return TlsAlert.UnsupportedCertificate;
 }
 
 // Unwraps TLS 1.3 / TLS 1.2 status_request extension wire framing (opaque OCSPResponse<1..2^24-1>).
@@ -1958,6 +2067,9 @@ struct ParsedCrl {
     issuer:       const u8[:] = "",
     serials:      u64[..128]  = [],
     serial_count: i32         = 0,
+    tbs_raw:      Span16      = Span16 { offset: 0, length: 0 },
+    sig_alg_oid:  Span16      = Span16 { offset: 0, length: 0 },
+    signature:    Span16      = Span16 { offset: 0, length: 0 },
 }
 
 // Inserts a 64-bit certificate serial number into `crl.serials` in ascending
@@ -2028,18 +2140,61 @@ fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
     if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
         start = 1;
     }
-    let sig_len = serial_bytes.len - start;
+    let sig_len = core::sub_sat_i64(serial_bytes.len, start);
     guard sig_len > 0 && sig_len <= 8 else {
         return 0, false;
     }
     var val: u64 = 0;
     for i in sig_len {
-        val = (val << 8) | serial_bytes[start + i];
+        val = (val << 8) | serial_bytes[core::add_sat_i64(start, i)];
     }
     return val, true;
 }
 
+fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
+    guard validate_asn1_integer(serial_bytes, true) else { return false; }
+    var start: i64 = 0;
+    if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
+        start = 1;
+    }
+    let sig_len = core::sub_sat_i64(serial_bytes.len, start);
+    return sig_len > 0 && sig_len <= 20;
+}
+
+// Parses an ASN.1 INTEGER serial from a revoked certificate entry (RFC 5280 §5.1.2.6).
+//
+// Example:
+//   serial_bytes = [0x01, 0x02], out = ParsedCrl { .. }
+//   returns: true
+fn parse_crl_entry_serial(serial_bytes: const u8[:], out: ParsedCrl&) -> bool {
+    guard validate_crl_serial_length(serial_bytes) else { return false; }
+    let serial_u64, ok_ser = parse_asn1_serial_u64(serial_bytes);
+    if ok_ser {
+        guard crl_insert_serial(out, serial_u64) else { return false; }
+    }
+    return true;
+}
+
+// Parses a single revoked certificate entry SEQUENCE (RFC 5280 §5.1.2.6).
+//
+// Example:
+//   entry_raw = [0x02, 0x01, 0x05, 0x17, 0x0D], out = ParsedCrl { .. }
+//   returns: true
+fn parse_crl_single_entry_raw(entry_raw: const u8[:], out: ParsedCrl&) -> bool {
+    var entry_seq = cursor_from(entry_raw);
+    var serial_elem = cursor_from(entry_seq.buf[..0]);
+    guard get_asn1_element(entry_seq, rfc::ASN1_TAG_INTEGER, serial_elem) else { return false; }
+    guard parse_crl_entry_serial(serial_elem.buf, out) else { return false; }
+
+    var rev_time_tag: u8 = 0;
+    var rev_time_elem = cursor_from(entry_seq.buf[..0]);
+    guard get_any_asn1_element(entry_seq, rev_time_tag, rev_time_elem) else { return false; }
+    let _, ok_time = parse_asn1_time(rev_time_tag, rev_time_elem.buf);
+    return ok_time;
+}
+
 // Parses a sequence of revokedCertificates entries from a TBSCertList (RFC 5280 Section 5.1.2.6).
+// Supports serial numbers up to 20 octets (RFC 5280 Section 4.1.2.2).
 //
 // Example:
 //   revoked_raw = [0x30, ...] (DER SEQUENCE OF RevokedCertificate)
@@ -2052,28 +2207,29 @@ fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool 
         guard get_asn1_element(revoked_seq, rfc::ASN1_TAG_SEQUENCE, entry_seq) else {
             return false;
         }
-        var serial_elem = cursor_from(entry_seq.buf[..0]);
-        guard get_asn1_element(entry_seq, rfc::ASN1_TAG_INTEGER, serial_elem) else {
-            return false;
-        }
-        let serial_u64, ok_ser = parse_asn1_serial_u64(serial_elem.buf);
-        guard ok_ser else {
-            return false;
-        }
-        var rev_time_tag: u8 = 0;
-        var rev_time_elem = cursor_from(entry_seq.buf[..0]);
-        guard get_any_asn1_element(entry_seq, rev_time_tag, rev_time_elem) else {
-            return false;
-        }
-        let _, ok_time = parse_asn1_time(rev_time_tag, rev_time_elem.buf);
-        guard ok_time else {
-            return false;
-        }
-        guard crl_insert_serial(out, serial_u64) else {
+        guard parse_crl_single_entry_raw(entry_seq.buf, out) else {
             return false;
         }
     }
     return true;
+}
+
+fn x509_crl_read_outer_sig(crl_seq: ByteCursor&, raw_crl: const u8[:], out: ParsedCrl&) {
+    guard cursor_len(crl_seq) > 0 else { return; }
+    var outer_sig_alg = cursor_from(crl_seq.buf[..0]);
+    if get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) {
+        var outer_sig_oid = cursor_from(outer_sig_alg.buf[..0]);
+        if get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) {
+            out.sig_alg_oid = make_span(raw_crl, outer_sig_oid.buf);
+        }
+    }
+    if cursor_len(crl_seq) > 0 {
+        var sig_bits = cursor_from(crl_seq.buf[..0]);
+        var unused_bits: u8 = 0;
+        if get_asn1_bit_string(crl_seq, sig_bits, unused_bits) && unused_bits == 0 {
+            out.signature = make_span(raw_crl, sig_bits.buf);
+        }
+    }
 }
 
 // Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
@@ -2095,10 +2251,13 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         return false;
     }
 
+    let tbs_raw_start = crl_seq.buf;
     var tbs_cert_list = cursor_from(crl_seq.buf[..0]);
     guard get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, tbs_cert_list) else {
         return false;
     }
+    let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, crl_seq.buf.len);
+    out.tbs_raw = make_span(raw_crl, tbs_raw_start[..tbs_tlv_len]);
 
     if cursor_len(tbs_cert_list) > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_INTEGER {
         var ver_elem = cursor_from(tbs_cert_list.buf[..0]);
@@ -2153,5 +2312,44 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         }
     }
 
+    x509_crl_read_outer_sig(crl_seq, raw_crl, out);
+
     return true;
+}
+
+// Verifies cryptographic signature on an X.509 CRL against issuer's certificate.
+fn x509_verify_crl_signature(
+    crl:         const ParsedCrl&,
+    raw_crl:     const u8[:],
+    issuer_cert: const ParsedCert&,
+    issuer_raw:  const u8[:],
+) -> TlsAlert {
+    guard crl.signature.length > 0 && crl.tbs_raw.length > 0 else {
+        return TlsAlert.BadCertificate;
+    }
+    let sig_oid = span_slice(raw_crl, crl.sig_alg_oid);
+    let tbs_data = span_slice(raw_crl, crl.tbs_raw);
+    let sig_bytes = span_slice(raw_crl, crl.signature);
+    var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
+
+    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+        parent_pubkey = parent_pubkey[1..];
+    }
+
+    if sig_oid == rfc::OID_ED25519[..] {
+        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
+            return TlsAlert.BadCertificate;
+        }
+        var pub_arr: u8[32] = [0; 32];
+        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
+        var sig_arr: u8[64] = [0; 64];
+        for k in 64 { sig_arr[k] = sig_bytes[k]; }
+
+        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
+            return TlsAlert.BadCertificate;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    return TlsAlert.UnsupportedCertificate;
 }

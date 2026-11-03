@@ -232,54 +232,55 @@ fn dafsa_scan_to_next_dot(norm: const u8[:], start: i64) -> i64 {
 //
 // Example:
 //   norm = "sub.www.ck", idx = 4, prev_dot = 0, flags = 1 -> returns "ck", true, true
-fn dafsa_resolve_rule_flags(norm: const u8[:], idx: i64, prev_dot: i64, flags: i32) -> const u8[:], bool, bool {
+fn dafsa_resolve_rule_flags(norm: const u8[:], idx: i64, prev_dot: i64, flags: i32) -> const u8[:], bool, bool, bool {
     guard flags != PSL_DAFSA_NOT_FOUND else {
-        return norm[0..0], false, false;
+        return norm[0..0], false, false, false;
     }
     let candidate = norm[idx..norm.len];
     let is_icann = (flags & PSL_DAFSA_FLAG_PRIVATE) == 0;
-    if (flags & PSL_DAFSA_FLAG_EXCEPTION) != 0 {
+    let is_exception = (flags & PSL_DAFSA_FLAG_EXCEPTION) != 0;
+    if is_exception {
         let next_start = core::add_sat_i64(dafsa_scan_to_next_dot(norm, idx), 1);
         if next_start < norm.len {
-            return norm[next_start..norm.len], true, is_icann;
+            return norm[next_start..norm.len], true, is_icann, true;
         }
-        return candidate, true, is_icann;
+        return candidate, true, is_icann, true;
     }
     if (flags & PSL_DAFSA_FLAG_WILDCARD) != 0 {
         if idx > 0 {
             let wild_start = core::add_sat_i64(prev_dot, 1);
-            return norm[wild_start..norm.len], true, is_icann;
+            return norm[wild_start..norm.len], true, is_icann, false;
         }
-        return candidate, true, is_icann;
+        return candidate, true, is_icann, false;
     }
-    return candidate, true, is_icann;
+    return candidate, true, is_icann, false;
 }
 
 //Evaluates candidate suffixes of `norm` (a lowercase, leading/trailing-dot-free domain)
 // from longest to shortest against the DAFSA, applying exception (`!`), wildcard (`*.`),
 // and exact rules per the Public Suffix List specification (https://publicsuffix.org/list/).
-// Returns `(suffix_slice, matched, is_icann)`.
+// Returns `(suffix_slice, matched, is_icann, is_exception)`.
 //
 // Example:
-//   norm = "sub.www.ck" -> returns "ck", true, true (exception rule !www.ck drops 1 label)
-//   norm = "sub.foo.ck" -> returns "foo.ck", true, true (wildcard rule *.ck includes 1 label)
-fn dafsa_find_public_suffix(norm: const u8[:]) -> const u8[:], bool, bool {
+//   norm = "sub.www.ck" -> returns "ck", true, true, true (exception rule !www.ck drops 1 label)
+//   norm = "sub.foo.ck" -> returns "foo.ck", true, true, false (wildcard rule *.ck includes 1 label)
+fn dafsa_find_public_suffix(norm: const u8[:]) -> const u8[:], bool, bool, bool {
     guard norm.len > 0 else {
-        return norm[0..0], false, false;
+        return norm[0..0], false, false, false;
     }
     var idx:      i64 = 0;
     var prev_dot: i64 = -1;
     while idx < norm.len {
         let flags = dafsa_lookup_string(norm[idx..norm.len]);
-        let suf, matched, is_icann = dafsa_resolve_rule_flags(norm, idx, prev_dot, flags);
+        let suf, matched, is_icann, is_exc = dafsa_resolve_rule_flags(norm, idx, prev_dot, flags);
         if matched {
-            return suf, true, is_icann;
+            return suf, true, is_icann, is_exc;
         }
         let next_dot = dafsa_scan_to_next_dot(norm, idx);
         prev_dot = if idx == 0 { -1 } else { core::sub_sat_i64(idx, 1) };
         idx = core::add_sat_i64(next_dot, 1);
     }
-    return norm[0..0], false, false;
+    return norm[0..0], false, false, false;
 }
 
 // Validates that `domain` is non-empty, <= 256 bytes, valid UTF-8, has no leading
@@ -342,7 +343,7 @@ fn psl_is_public_suffix(domain: const u8[:]) -> bool {
     guard validate_and_lowercase_psl_domain(domain, norm) else {
         return false;
     }
-    let suffix, matched, _ = dafsa_find_public_suffix(norm[0..norm.len]);
+    let suffix, matched, _, _ = dafsa_find_public_suffix(norm[0..norm.len]);
     if matched {
         return suffix.len == norm.len;
     }
@@ -374,8 +375,8 @@ struct PslRule {
 }
 
 struct PslDatabase {
-    use_dafsa: bool         = false,
-    rules:     PslRule[>..] = [],
+    use_dafsa: bool          = false,
+    rules:     PslRule[..64] = [],
 }
 
 fn psl_to_lower(s: u8[:]) {
@@ -392,6 +393,7 @@ fn new_psl_rule(pattern: const u8[:], rule_type: PslRuleType, section: PslSectio
 }
 
 fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, section: PslSection) {
+    guard db.rules.len < db.rules.cap else { return; }
     db.rules.push(new_psl_rule(pattern, rule_type, section));
 }
 
@@ -559,13 +561,22 @@ fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -
         return true, exc_icann;
     }
 
+    // Exception rules in compiled DAFSA also take precedence over normal/wildcard rules
+    if db.use_dafsa {
+        let dafsa_suf, dafsa_matched, dafsa_icann, dafsa_is_exc = dafsa_find_public_suffix(norm);
+        if dafsa_matched && dafsa_is_exc {
+            out.append(dafsa_suf);
+            return true, dafsa_icann;
+        }
+    }
+
     // 2. Normal and Wildcard rules in custom runtime rules
     var best_start: i64 = 0;
     var best_sec = PslSection.Icann;
     if psl_find_best_rule(db, norm, best_start, best_sec) {
         let custom_suf = norm[best_start..];
         if db.use_dafsa {
-            let dafsa_suf, dafsa_matched, dafsa_icann = dafsa_find_public_suffix(norm);
+            let dafsa_suf, dafsa_matched, dafsa_icann, _ = dafsa_find_public_suffix(norm);
             if dafsa_matched && dafsa_suf.len > custom_suf.len {
                 out.append(dafsa_suf);
                 return true, dafsa_icann;
@@ -577,7 +588,7 @@ fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -
 
     // 3. Evaluate compiled Chromium/libpsl DAFSA when enabled
     if db.use_dafsa {
-        let dafsa_suf, dafsa_matched, dafsa_icann = dafsa_find_public_suffix(norm);
+        let dafsa_suf, dafsa_matched, dafsa_icann, _ = dafsa_find_public_suffix(norm);
         if dafsa_matched {
             out.append(dafsa_suf);
             return true, dafsa_icann;
@@ -768,7 +779,7 @@ fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
             current_section = PslSection.Private;
         } else {
             var rule = PslRule { .. };
-            if parse_psl_rule_line(line, current_section, rule) {
+            if db.rules.len < db.rules.cap && parse_psl_rule_line(line, current_section, rule) {
                 db.rules.push(rule);
             }
         }

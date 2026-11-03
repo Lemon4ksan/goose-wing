@@ -30,6 +30,7 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
 }
 
 // Parses a SameSite attribute value case-insensitively (RFC 6265bis Section 5.4.7).
+// Unknown values default to Default (Lax) per RFC 6265bis Section 5.3.7.
 //
 // Example:
 //   raw_val = "Strict"
@@ -38,7 +39,7 @@ fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
     if core::eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
     if core::eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
     if core::eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
-    return CookieSameSite.Unknown;
+    return CookieSameSite.Default;
 }
 
 // ---- priority enumeration --------------------------------------------------
@@ -62,6 +63,7 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
 }
 
 // Parses a Priority attribute value case-insensitively.
+// Unknown values default to Medium per Chromium / RFC 6265bis.
 //
 // Example:
 //   raw_val = "high"
@@ -70,7 +72,7 @@ fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
     if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
     if core::eq_ascii_fold(raw_val, "medium") { return CookiePriority.Medium; }
     if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
-    return CookiePriority.Unknown;
+    return CookiePriority.Medium;
 }
 
 // ---- source scheme enumeration ---------------------------------------------

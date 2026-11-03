@@ -168,12 +168,12 @@ inline fn is_valid_pbuf_ring_entries(entries: u16) -> bool {
 
 // Registers a shared user-kernel provided buffer ring (IORING_REGISTER_PBUF_RING) for multishot recv.
 // Validates that `entries` is a power of 2 in 1..32768 and `ring_fd >= 0`.
-fn uring_register_buf_ring(ring_fd: i32, entries: u16, bgid: u16) -> bool {
+fn uring_register_buf_ring(ring_fd: i32, entries: u16, bgid: u16, ring_addr: u64 = 0) -> bool {
     let valid_entries = is_valid_pbuf_ring_entries(entries);
     guard ring_fd >= 0 && valid_entries else {
         return false;
     }
-    return native_uring_register_pbuf_ring(ring_fd, 0, entries, bgid) == 0;
+    return native_uring_register_pbuf_ring(ring_fd, ring_addr, entries, bgid) == 0;
 }
 
 // Ring submission and completion tracking state
@@ -182,14 +182,16 @@ struct RingQueueState {
     submissions_total: u64 = 0,
     completions_total: u64 = 0,
     active_pending:    u32 = 0,
+    ring_fd:           i64 = -1,
 }
 
-fn new_ring_queue_state(size: u32) -> RingQueueState {
+fn new_ring_queue_state(size: u32, ring_fd: i64 = -1) -> RingQueueState {
     return RingQueueState {
         ring_size:         if size > 0 { size } else { DEFAULT_RING_SIZE },
         submissions_total: 0,
         completions_total: 0,
         active_pending:    0,
+        ring_fd:           ring_fd,
     };
 }
 
@@ -211,6 +213,12 @@ inline fn record_sqe_submission(state: RingQueueState&, sqe: const UringSqe&, cq
     }
 }
 
+inline fn uring_enter_if_active(ring_fd: i64, submitted: i32) {
+    if ring_fd >= 0 && submitted > 0 {
+        native_uring_enter(ring_fd, submitted as u32, 0, 0);
+    }
+}
+
 // Submits a batch of SQEs and reaps CQE completions
 fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: UringCqe[..32]&) -> i32 {
     cqes.clear();
@@ -222,5 +230,6 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
         record_sqe_submission(state, sqes[i], cqes);
         submitted += 1;
     }
+    uring_enter_if_active(state.ring_fd, submitted);
     return submitted;
 }

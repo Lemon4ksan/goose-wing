@@ -232,7 +232,7 @@ fn hsts_cache_update(
         return true;
     }
 
-    let expiry = now_sec + dir.max_age_sec;
+    let expiry = core::add_sat_i64(now_sec, dir.max_age_sec);
 
     // Update existing entry
     if existing_idx >= 0 && existing_idx < cache.entries.len {

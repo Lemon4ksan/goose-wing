@@ -149,6 +149,7 @@ fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidat
 // ---- Phase 1: DNS race task & 50 ms Resolution Delay (RD) ---------------
 
 struct DnsRaceTask {
+    target_port:      u16                        = 443,
     aaaa_status:      DnsQueryStatus             = DnsQueryStatus.Pending,
     a_status:         DnsQueryStatus             = DnsQueryStatus.Pending,
     https_status:     DnsQueryStatus             = DnsQueryStatus.Pending,
@@ -160,8 +161,9 @@ struct DnsRaceTask {
     ready_to_connect: bool                       = false,
 }
 
-fn new_dns_race_task() -> DnsRaceTask {
+fn new_dns_race_task(target_port: u16 = 443) -> DnsRaceTask {
     return DnsRaceTask {
+        target_port:  target_port,
         aaaa_status:  DnsQueryStatus.InFlight,
         a_status:     DnsQueryStatus.InFlight,
         https_status: DnsQueryStatus.InFlight,
@@ -176,7 +178,8 @@ fn on_dns_aaaa_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         task.ipv6_candidates.clear();
         for ip in ips {
             if task.ipv6_candidates.len < 8 {
-                task.ipv6_candidates.push(new_dns_candidate(AddressFamily.IPv6, ip, 443, L4Protocol.Tcp, 50));
+                let cand = new_dns_candidate(AddressFamily.IPv6, ip, task.target_port, L4Protocol.Tcp, 50);
+                task.ipv6_candidates.push(cand);
             }
         }
         // Asymmetric IPv6 Priority: cancel RD timer immediately
@@ -199,7 +202,8 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         task.ipv4_candidates.clear();
         for ip in ips {
             if task.ipv4_candidates.len < 8 {
-                task.ipv4_candidates.push(new_dns_candidate(AddressFamily.IPv4, ip, 443, L4Protocol.Tcp, 40));
+                let cand = new_dns_candidate(AddressFamily.IPv4, ip, task.target_port, L4Protocol.Tcp, 40);
+                task.ipv4_candidates.push(cand);
             }
         }
 
@@ -344,33 +348,47 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
 // Synthesizes a NAT64 IPv6 address prefix 64:ff9b::/96 per RFC 7050 from IPv4 candidate.
 fn synthesize_nat64_candidate(manager: AttemptManager&) {
     guard manager.pending_candidates.len < manager.pending_candidates.cap else { return; }
-    var v4_idx: i64 = -1;
-    for i in manager.pending_candidates.len {
-        guard manager.pending_candidates[i].family == AddressFamily.IPv4 else { continue; }
-        v4_idx = i;
-        break;
+    var v4_ip:   u8[..64] = [];
+    var v4_port: u16      = 443;
+    var v4_proto = L4Protocol.Tcp;
+    var v4_prec: i32 = 30;
+    var found_v4 = false;
+
+    for &c in manager.pending_candidates {
+        if c.family == AddressFamily.IPv4 {
+            v4_ip.append(c.ip[..]);
+            v4_port = c.port;
+            v4_proto = c.l4_proto;
+            v4_prec = c.precedence;
+            found_v4 = true;
+            break;
+        }
     }
-    if v4_idx >= 0 {
-        let cand4 = manager.pending_candidates[v4_idx];
-        var syn_ip: u8[..64] = [];
+    if !found_v4 {
+        for &att in manager.attempts {
+            if att.candidate.family == AddressFamily.IPv4 {
+                v4_ip.append(att.candidate.ip[..]);
+                v4_port = att.candidate.port;
+                v4_proto = att.candidate.l4_proto;
+                v4_prec = att.candidate.precedence;
+                found_v4 = true;
+                break;
+            }
+        }
+    }
+    var syn_ip: u8[..64] = [];
+    if found_v4 {
         syn_ip.append("64:ff9b::");
-        syn_ip.append(cand4.ip[..]);
-        var nat64_cand = new_dns_candidate(
-            AddressFamily.IPv6,
-            syn_ip[..],
-            cand4.port,
-            cand4.l4_proto,
-            cand4.precedence,
-        );
-        manager.pending_candidates.push(nat64_cand);
-        return;
+        syn_ip.append(v4_ip[..]);
+    } else {
+        syn_ip.append("64:ff9b::192.0.2.1");
     }
     var nat64_cand = new_dns_candidate(
         AddressFamily.IPv6,
-        "64:ff9b::192.0.2.1",
-        443,
-        L4Protocol.Tcp,
-        30,
+        syn_ip[..],
+        v4_port,
+        v4_proto,
+        v4_prec,
     );
     manager.pending_candidates.push(nat64_cand);
 }

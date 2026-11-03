@@ -113,8 +113,8 @@ struct WriteBackBatcher {
     total_committed_ops: i64 = 0,
     total_coalesced_ops: i64 = 0,
 
-    // Resizable queue must be the final field
-    ops: PendingStoreOp[>..] = [],
+    // Fixed-capacity queue to prevent heap allocations
+    ops: PendingStoreOp[..256] = [],
 }
 
 // Constructs a new WriteBackBatcher with default Chromium thresholds.
@@ -145,6 +145,8 @@ fn queue_store_mutation(
             }
         }
     }
+
+    guard batcher.ops.len < batcher.ops.cap else { return; }
 
     var pending = PendingStoreOp { .. };
     pending.op_type = operation_type;
@@ -207,14 +209,17 @@ fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
     for cookie_idx in cookies.len {
         let cookie_val = cookies[cookie_idx];
         let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
-        if out.len + delim_len + cookie_val.name.len + 1 + cookie_val.value.len > MAX_COOKIE_HEADER_LEN {
+        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+        if out.len + delim_len + cookie_val.name.len + eq_len + cookie_val.value.len > MAX_COOKIE_HEADER_LEN {
             return;
         }
         if delim_len > 0 {
             out.append("; ");
         }
-        out.append(cookie_val.name[..]);
-        out.push('=');
+        if cookie_val.name.len > 0 {
+            out.append(cookie_val.name[..]);
+            out.push('=');
+        }
         out.append(cookie_val.value[..]);
     }
 }
@@ -302,6 +307,13 @@ fn find_netscape_line_range(content: const u8[:], start: i64) -> i64, i64 {
     return line_end, next_start;
 }
 
+inline fn try_import_netscape_cookie(jar: CanonicalCookieJar&, raw_line: const u8[:], now_us: i64) -> bool {
+    var parsed_cookie = CanonicalCookie { .. };
+    guard try_parse_netscape_cookie_line(raw_line, parsed_cookie) else { return false; }
+    let src_opts = CookieSourceOptions { is_http_api: true, url_is_secure: parsed_cookie.secure };
+    return set_canonical_cookie(jar, parsed_cookie, src_opts, now_us);
+}
+
 // Imports cookies from Netscape cookies.txt format into CanonicalCookieJar.
 fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) -> i64 {
     guard content.len > 0 else { return 0; }
@@ -314,11 +326,7 @@ fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) 
         guard imported_count < internal::K_MAX_COOKIES else { break; }
 
         let line_end, next_start = find_netscape_line_range(content, line_start);
-        let raw_line = content[line_start..line_end];
-        var parsed_cookie = CanonicalCookie { .. };
-        let src_opts = CookieSourceOptions { is_http_api: true, url_is_secure: parsed_cookie.secure };
-        if try_parse_netscape_cookie_line(raw_line, parsed_cookie) &&
-           set_canonical_cookie(jar, parsed_cookie, src_opts, now_us) {
+        if try_import_netscape_cookie(jar, content[line_start..line_end], now_us) {
             imported_count += 1;
         }
 
@@ -540,13 +548,17 @@ fn constant_time_eq(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
 }
 
 fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const CanonicalCookie&) -> bool {
+    let port_match = cookie_a.source_port == -1 || cookie_b.source_port == -1
+        || cookie_a.source_port == cookie_b.source_port;
+    let scheme_match = cookie_a.source_scheme == CookieSourceScheme.Unset
+        || cookie_b.source_scheme == CookieSourceScheme.Unset
+        || cookie_a.source_scheme == cookie_b.source_scheme;
     return cookie_a.name[..] == cookie_b.name[..] &&
            eq_ascii_fold(cookie_a.domain[..], cookie_b.domain[..]) &&
            cookie_a.path[..] == cookie_b.path[..] &&
            cookie_a.host_only == cookie_b.host_only &&
            cookie_a.partition_key[..] == cookie_b.partition_key[..] &&
-           cookie_a.source_scheme == cookie_b.source_scheme &&
-           cookie_a.source_port == cookie_b.source_port;
+           scheme_match && port_match;
 }
 
 // Parses a single name=value cookie pair into the out buffer if valid and not duplicate.
@@ -575,6 +587,7 @@ fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out:
     }
 
     var new_cookie = CanonicalCookie { .. };
+    guard cookie_name.len <= new_cookie.name.cap && cookie_val.len <= new_cookie.value.cap else { return; }
     new_cookie.name.append(cookie_name);
     new_cookie.value.append(cookie_val);
     new_cookie.creation_utc = now_us;
@@ -695,6 +708,11 @@ fn read_json_cookie_member(
         guard s.len <= cookie_ref.value.cap else { return; }
         cookie_ref.value.clear();
         cookie_ref.value.append(s);
+    } else if key == "encrypted_value" {
+        let s = json::read_string(json_reader, scratch);
+        guard s.len <= cookie_ref.encrypted_value.cap else { return; }
+        cookie_ref.encrypted_value.clear();
+        cookie_ref.encrypted_value.append(s);
     } else if key == "domain" {
         let s = json::read_string(json_reader, scratch);
         guard s.len <= cookie_ref.domain.cap else { return; }

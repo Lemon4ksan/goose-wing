@@ -69,20 +69,20 @@ fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, 
     return true;
 }
 
-// 64-bit linear congruential PRNG generator (Knuth MMIX parameters)
+// 64-bit LCG pseudo-random generator with Knuth MMIX multiplier
 inline fn next_prng(state: u64&) -> u64 {
-    let prod = core::mul_sat_u64(state & 0xFFFFFFFF, 6364136223846793005);
-    let s = (state >> 13) ^ prod ^ 1442695040888963407;
+    let lo, _ = core::mul_wide_u64(state, 6364136223846793005);
+    let s = lo ^ 1442695040888963407;
     state = s;
     return s;
 }
 
 inline fn inc_active_conns(target: UpstreamTarget&) {
-    target.active_conns = target.active_conns + 1;
+    target.active_conns = (core::add_sat_u64(target.active_conns as u64, 1)) as i32;
 }
 
 inline fn inc_total_requests(target: UpstreamTarget&) {
-    target.total_requests = target.total_requests + 1;
+    target.total_requests = core::add_sat_u64(target.total_requests, 1);
 }
 
 inline fn record_target_dispatch(target: UpstreamTarget&) {
@@ -91,8 +91,12 @@ inline fn record_target_dispatch(target: UpstreamTarget&) {
 }
 
 inline fn advance_rr_index(cur_rr: i32, n: i32) -> i32 {
-    let next_rr = cur_rr + 1;
+    let next_rr = (core::add_sat_u64(cur_rr as u64, 1)) as i32;
     return if next_rr >= n { 0 } else { next_rr };
+}
+
+inline fn is_target_selectable(target: const UpstreamTarget&) -> bool {
+    return target.is_healthy || target.health_state == UpstreamHealthState.Probing;
 }
 
 // Selects next healthy upstream via Round-Robin.
@@ -101,7 +105,7 @@ fn select_round_robin(cluster: UpstreamCluster&, n: i32) -> i32, bool {
         let idx = cluster.rr_index;
         cluster.rr_index = advance_rr_index(cluster.rr_index, n);
 
-        if cluster.targets[idx].is_healthy {
+        if is_target_selectable(cluster.targets[idx]) {
             record_target_dispatch(cluster.targets[idx]);
             return idx, true;
         }
@@ -109,18 +113,24 @@ fn select_round_robin(cluster: UpstreamCluster&, n: i32) -> i32, bool {
     return NO_UPSTREAM_TARGET, false;
 }
 
-// Finds healthy target with least active connections.
+inline fn evaluate_two_choice(target1: const UpstreamTarget&, r1: i32, target2: const UpstreamTarget&, r2: i32) -> i32 {
+    let w1 = if target1.weight > 0 { target1.weight as u64 } else { 1 };
+    let w2 = if target2.weight > 0 { target2.weight as u64 } else { 1 };
+    let load1 = core::mul_sat_u64(target1.active_conns as u64, w2);
+    let load2 = core::mul_sat_u64(target2.active_conns as u64, w1);
+    return if load1 <= load2 { r1 } else { r2 };
+}
+
+// Finds healthy target with least active connections weighted by target capacity.
 fn find_least_conn_target(cluster: const UpstreamCluster&, n: i32) -> i32 {
-    var best_idx:  i32 = NO_UPSTREAM_TARGET;
-    var min_conns: i32 = 2147483647;
+    var best_idx: i32 = NO_UPSTREAM_TARGET;
 
     for i in n {
-        if cluster.targets[i].is_healthy {
-            let c = cluster.targets[i].active_conns;
-            if c < min_conns {
-                min_conns = c;
-                best_idx = i;
-            }
+        guard is_target_selectable(cluster.targets[i]) else { continue; }
+        if best_idx == NO_UPSTREAM_TARGET {
+            best_idx = i;
+        } else {
+            best_idx = evaluate_two_choice(cluster.targets[best_idx], best_idx, cluster.targets[i], i);
         }
     }
     return best_idx;
@@ -151,14 +161,10 @@ fn pick_two_distinct(cluster: UpstreamCluster&, n: i32) -> i32, i32 {
     return r1, r2;
 }
 
-inline fn evaluate_two_choice(target1: const UpstreamTarget&, r1: i32, target2: const UpstreamTarget&, r2: i32) -> i32 {
-    return if target1.active_conns <= target2.active_conns { r1 } else { r2 };
-}
-
 // Selects next healthy upstream via Power-of-Two-Random-Choices (P2C).
 fn select_p2c(cluster: UpstreamCluster&, n: i32) -> i32, bool {
     if n == 1 {
-        if cluster.targets[0].is_healthy {
+        if is_target_selectable(cluster.targets[0]) {
             record_target_dispatch(cluster.targets[0]);
             return 0, true;
         }
@@ -166,8 +172,8 @@ fn select_p2c(cluster: UpstreamCluster&, n: i32) -> i32, bool {
     }
 
     let r1, r2 = pick_two_distinct(cluster, n);
-    let h1 = cluster.targets[r1].is_healthy;
-    let h2 = cluster.targets[r2].is_healthy;
+    let h1 = is_target_selectable(cluster.targets[r1]);
+    let h2 = is_target_selectable(cluster.targets[r2]);
 
     if h1 && h2 {
         let chosen = evaluate_two_choice(cluster.targets[r1], r1, cluster.targets[r2], r2);
@@ -215,7 +221,7 @@ fn release_upstream_connection(cluster: UpstreamCluster&, target_idx: i32) {
 }
 
 inline fn inc_target_successes(target: UpstreamTarget&) -> i32 {
-    let s = target.successes + 1;
+    let s = (core::add_sat_u64(target.successes as u64, 1)) as i32;
     target.successes = s;
     return s;
 }
@@ -317,7 +323,7 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
 fn update_cluster_circuit_state(cluster: UpstreamCluster&) {
     var any_healthy = false;
     for &t in cluster.targets {
-        if t.is_healthy {
+        if is_target_selectable(t) {
             any_healthy = true;
             break;
         }
@@ -328,7 +334,7 @@ fn update_cluster_circuit_state(cluster: UpstreamCluster&) {
 }
 
 inline fn inc_target_fails(target: UpstreamTarget&) -> i32 {
-    let fails = target.fails + 1;
+    let fails = (core::add_sat_u64(target.fails as u64, 1)) as i32;
     target.fails = fails;
     return fails;
 }

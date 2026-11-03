@@ -145,63 +145,67 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
 }
 
 // Matches and stores core challenge attributes (realm, nonce, algorithm, qop).
-fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
+// Returns (handled: bool, ok: bool).
+fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool, bool {
     if eq_ascii_fold(key, "realm") {
-        guard val.len <= chal.realm.cap else { return false; }
+        guard val.len <= chal.realm.cap else { return true, false; }
         chal.realm.clear();
         chal.realm.append(val);
-        return true;
+        return true, true;
     }
     if eq_ascii_fold(key, "nonce") {
-        guard val.len <= chal.nonce.cap else { return false; }
+        guard val.len <= chal.nonce.cap else { return true, false; }
         chal.nonce.clear();
         chal.nonce.append(val);
-        return true;
+        return true, true;
     }
     if eq_ascii_fold(key, "algorithm") {
-        guard val.len <= chal.algorithm.cap else { return false; }
+        guard val.len <= chal.algorithm.cap else { return true, false; }
         chal.algorithm.clear();
         chal.algorithm.append(val);
-        return true;
+        return true, true;
     }
     if eq_ascii_fold(key, "qop") {
-        guard val.len <= chal.qop.cap else { return false; }
+        guard val.len <= chal.qop.cap else { return true, false; }
         chal.qop.clear();
         chal.qop.append(val);
-        return true;
+        return true, true;
     }
-    return false;
+    return false, true;
 }
 
 // Matches and stores optional challenge attributes (opaque, domain, stale, userhash).
-fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
+fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
     if eq_ascii_fold(key, "opaque") {
-        guard val.len <= chal.opaque.cap else { return; }
+        guard val.len <= chal.opaque.cap else { return false; }
         chal.opaque.clear();
         chal.opaque.append(val);
-        return;
+        return true;
     }
     if eq_ascii_fold(key, "domain") {
-        guard val.len <= chal.domain.cap else { return; }
+        guard val.len <= chal.domain.cap else { return false; }
         chal.domain.clear();
         chal.domain.append(val);
-        return;
+        return true;
     }
     if eq_ascii_fold(key, "stale") {
         chal.stale = eq_ascii_fold(val, "true");
-        return;
+        return true;
     }
     if eq_ascii_fold(key, "userhash") {
         chal.userhash = eq_ascii_fold(val, "true");
-        return;
+        return true;
     }
+    return true;
 }
 
 // Dispatches a challenge parameter key-value pair to core or optional field storage.
-fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) {
-    if !apply_digest_core_param(chal, key, val) {
-        apply_digest_opt_param(chal, key, val);
+fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
+    let handled, ok_core = apply_digest_core_param(chal, key, val);
+    if handled {
+        return ok_core;
     }
+    return apply_digest_opt_param(chal, key, val);
 }
 
 // Advances `idx` past any leading whitespace, commas, or line breaks (RFC 7616 §3.3).
@@ -248,7 +252,7 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         var val: u8[..128] = [];
         guard parse_digest_param_val(raw_header, idx, val) else { return chal, false; }
 
-        apply_digest_param(chal, key, val[..]);
+        guard apply_digest_param(chal, key, val[..]) else { return chal, false; }
     }
 
     chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && is_supported_digest_algo(chal.algorithm[..]));
@@ -271,7 +275,7 @@ fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
         }
     } else if eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_SHA512_256)
         || eq_ascii_fold(algorithm, rfc::DIGEST_ALGO_SHA512_256_SESS) {
-        // RFC 7616 Section 3.9.2: Example with SHA-512-256, Charset, and Userhash - Truncated SHA-512 (first 256 bits) for SHA-512-256 digest calculation.
+        // RFC 7616 Section 3.9.2: Example with SHA-512-256, Charset, and Userhash (first 256 bits of SHA-512).
         let sh = core::sha512(data);
         for i in 32 {
             core::format_u8_hex(sh[i], out_hex);
@@ -300,6 +304,8 @@ fn calculate_digest_ha1(
     cnonce:   const u8[:],
 ) -> u8[..64] {
     var a1: u8[..768] = [];
+    let need1 = core::add_sat_i64(core::add_sat_i64(username.len, realm.len), password.len);
+    guard core::add_sat_i64(need1, 2) <= a1.cap else { return a1; }
     a1.append(username);
     a1.push(':');
     a1.append(realm);
@@ -312,6 +318,8 @@ fn calculate_digest_ha1(
         || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
         || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS) {
         var a1_sess: u8[..512] = [];
+        let need_sess = core::add_sat_i64(core::add_sat_i64(ha1.len, nonce.len), cnonce.len);
+        guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else { return a1; }
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
         a1_sess.append(nonce);
@@ -335,6 +343,9 @@ fn calculate_digest_ha2(
     body:        const u8[:],
 ) -> u8[..64] {
     var a2: u8[..2048] = [];
+    let extra: i64 = if is_auth_int { 65 } else { 0 };
+    let need2 = core::add_sat_i64(core::add_sat_i64(method.len, uri.len), extra);
+    guard core::add_sat_i64(need2, 1) <= a2.cap else { return a2; }
     a2.append(method);
     a2.push(':');
     a2.append(uri);
@@ -679,6 +690,7 @@ fn compute_digest_response<B>(
     guard is_supported_digest_algo(algo) else { return false; }
 
     let active_qop = resolve_active_qop(challenge.qop[..]);
+    guard challenge.qop.len == 0 || active_qop.len > 0 else { return false; }
     let is_auth_int = (active_qop.len == 8);
 
     let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
@@ -693,6 +705,7 @@ fn compute_digest_response<B>(
     );
 
     let ha2_hex = calculate_digest_ha2(algo, method, uri, is_auth_int, body);
+    guard ha1_hex.len > 0 && ha2_hex.len > 0 else { return false; }
 
     var nc_str: u8[..16] = [];
     core::format_u64_hex_fixed(nc, 8, nc_str, false);

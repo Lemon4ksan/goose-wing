@@ -147,6 +147,14 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
         sub.assert_eq(req_socks5[8], 0x00, "Port high byte 0 for 80");
         sub.assert_eq(req_socks5[9], 80, "Port low byte 80");
 
+        // socks5:// with IPv6 uses ATYP = 0x04
+        var req_socks5_v6: u8[..300] = [];
+        var ip6:           u8[16]    = [0; 16];
+        ip6[15] = 1;
+        let err_v6 = wing::build_socks5_connect_request_v6(wing::ProxyScheme.Socks5, "example.com", ip6, true, 80, req_socks5_v6);
+        sub.assert_true(err_v6 == wing::Socks5Error.None, "Socks5 IPv6 request built");
+        sub.assert_eq(req_socks5_v6[3], 0x04, "ATYP == 0x04 (IPv6)");
+
         // High port boundary: 65535 (0xFFFF)
         var req_max_port: u8[..300] = [];
         let err_mp = wing::build_socks5_connect_request(wing::ProxyScheme.Socks5, "example.com", local_ip, true, 65535, req_max_port);

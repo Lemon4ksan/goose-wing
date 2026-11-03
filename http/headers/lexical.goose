@@ -23,7 +23,9 @@ extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
 // 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)
 // Evaluates 8 ASCII bytes in parallel, translating 'A'..'Z' to 'a'..'z' in 4 CPU cycles without branches.
 fn swar_to_lower_64(v: u64) -> u64 {
-    let is_upper = (v + 0x3F3F3F3F3F3F3F3F) & ~(v + 0x2525252525252525) & 0x8080808080808080;
+    let ascii = v & 0x7F7F7F7F7F7F7F7F;
+    let not_high = ~v & 0x8080808080808080;
+    let is_upper = (ascii + 0x3F3F3F3F3F3F3F3F) & ~(ascii + 0x2525252525252525) & not_high;
     return v | (is_upper >> 2);
 }
 

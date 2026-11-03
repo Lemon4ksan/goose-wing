@@ -269,7 +269,8 @@ fn populate_dict_entry(
     b64_hash:      const u8[:],
     ttl_sec:       u32,
     now_sec:       i64,
-) {
+) -> bool {
+    guard origin.len <= 128 && match_pattern.len <= 256 && id_str.len <= 128 && body.len <= 2048 else { return false; }
     entry.valid = true;
     entry.origin.clear();
     entry.origin.append(origin);
@@ -284,6 +285,7 @@ fn populate_dict_entry(
     entry.content.append(body);
     entry.inserted_at_sec = now_sec;
     entry.ttl_sec = ttl_sec;
+    return true;
 }
 
 // Inserts a new dictionary into the cache
@@ -296,6 +298,7 @@ fn dictionary_cache_insert(
     ttl_sec:       u32,
     now_sec:       i64,
 ) -> bool {
+    guard origin.len <= 128 && match_pattern.len <= 256 && id_str.len <= 128 && body.len <= 2048 else { return false; }
     guard body.len > 0 else { return false; }
 
     let hash = core::sha256(body);
@@ -380,7 +383,7 @@ fn decompress_dcz_payload<B>(
     dictionary_content: const u8[:],
     out_buf:            B&,
 ) -> bool {
-    var decompressed: u8[>..] = [];
+    var decompressed: u8[..16384] = [];
     let ok_z, _ = core::zstd_decompress(compressed_payload, decompressed);
     if ok_z {
         out_buf.append(decompressed[..]);
@@ -396,7 +399,7 @@ fn encode_dcz_response<B>(
     dict_hash:   const u8[32]&,
     raw_content: const u8[:],
 ) -> bool {
-    var compressed_zstd: u8[>..] = [];
+    var compressed_zstd: u8[..16384] = [];
     guard core::zstd_compress(raw_content, compressed_zstd) else { return false; }
     return encode_dcz_frame(out, dict_hash, compressed_zstd[..]);
 }
@@ -407,7 +410,7 @@ fn decompress_dcb_payload<B>(
     dictionary_content: const u8[:],
     out_buf:            B&,
 ) -> bool {
-    var decompressed: u8[>..] = [];
+    var decompressed: u8[..16384] = [];
     let ok_b, _ = core::brotli_decompress(compressed_payload, decompressed);
     if ok_b {
         out_buf.append(decompressed[..]);
@@ -423,7 +426,7 @@ fn encode_dcb_response<B>(
     dict_hash:   const u8[32]&,
     raw_content: const u8[:],
 ) -> bool {
-    var compressed_brotli: u8[>..] = [];
+    var compressed_brotli: u8[..16384] = [];
     guard core::brotli_compress(raw_content, compressed_brotli, 0) else { return false; }
     return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
 }

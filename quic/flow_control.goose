@@ -29,12 +29,12 @@ inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
     return candidate;
 }
 
-// Returns the effective consumed or received byte marker for flow control accounting (RFC 9000 §4.1).
+// Returns the effective consumed byte marker for flow control accounting (RFC 9000 §4.1, §4.2).
 inline fn calc_effective_credit_usage(recv: u64, read: u64) -> u64 {
-    if recv > read {
-        return recv;
+    if read > recv {
+        return read;
     }
-    return read;
+    return recv;
 }
 
 // Computes flow control window renewal trigger threshold (RFC 9000 §4.2).

@@ -148,7 +148,7 @@ fn copy_filtered_headers(
     in_headers:  const HeaderMap&,
     out_headers: HeaderMap&,
     config:      const ProxyConfig&,
-) {
+) -> bool {
     for i in in_headers.entries.len {
         let entry = in_headers.entries[i];
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
@@ -159,28 +159,51 @@ fn copy_filtered_headers(
         }
 
         if should_forward_header(name, val, in_headers, config) {
-            append_header(out_headers, name, val);
+            guard append_header(out_headers, name, val) else { return false; }
         }
     }
+    return true;
 }
 
 // Helper to format Via header value without dynamic heap allocation.
-fn format_via(buf: u8[..64]&, pseudonym: const u8[:]) -> bool {
-    let needed = core::add_sat_u64(4, pseudonym.len as u64);
+fn format_via(buf: u8[..64]&, pseudonym: const u8[:], http_version: const u8[:]) -> bool {
+    let ver_str = if http_version.len >= 6 && starts_with(http_version, "HTTP/") {
+        http_version[5..]
+    } else if http_version.len > 0 {
+        http_version
+    } else {
+        "1.1"
+    };
+    let needed = core::add_sat_u64(core::add_sat_u64(ver_str.len as u64, 1), pseudonym.len as u64);
     guard needed <= (buf.cap as u64) else { return false; }
     buf.clear();
-    buf.append("1.1 ");
+    buf.append(ver_str);
+    buf.append(" ");
     buf.append(pseudonym);
     return true;
 }
 
 // Injects Via header (RFC 9110 §7.6.3).
-fn inject_via_header(out_headers: HeaderMap&, pseudonym: const u8[:]) {
-    guard pseudonym.len > 0 else { return; }
+fn inject_via_header(
+    out_headers:  HeaderMap&,
+    in_headers:   const HeaderMap&,
+    pseudonym:    const u8[:],
+    http_version: const u8[:],
+) -> bool {
+    guard pseudonym.len > 0 else { return true; }
     var via_buf: u8[..64] = [];
-    if format_via(via_buf, pseudonym) {
-        append_header(out_headers, "Via", via_buf[..]);
+    guard format_via(via_buf, pseudonym, http_version) else { return false; }
+    let existing = get_header(in_headers, "Via");
+    if existing.len == 0 {
+        return append_header(out_headers, "Via", via_buf[..]);
     }
+    let needed = core::add_sat_u64(core::add_sat_u64(existing.len as u64, 2), via_buf.len as u64);
+    var combined: u8[..256] = [];
+    guard needed <= (combined.cap as u64) else { return false; }
+    combined.append(existing);
+    combined.append(", ");
+    combined.append(via_buf[..]);
+    return append_header(out_headers, "Via", combined[..]);
 }
 
 // Injects forwarded client IP into X-Forwarded-For, respecting trust boundary.
@@ -189,17 +212,16 @@ fn append_forwarded_metadata_xff(
     in_headers:         const HeaderMap&,
     client_ip:          const u8[:],
     trust_incoming_xff: bool,
-) {
+) -> bool {
     if !trust_incoming_xff {
-        append_forwarded_for(out_headers, "", client_ip);
-        return;
+        return append_forwarded_for(out_headers, "", client_ip);
     }
     var combined_buf: u8[..1024] = [];
     if get_combined(in_headers, "X-Forwarded-For", combined_buf) {
-        append_forwarded_for(out_headers, combined_buf[..], client_ip);
+        return append_forwarded_for(out_headers, combined_buf[..], client_ip);
     } else {
         let existing = get_header(in_headers, "X-Forwarded-For");
-        append_forwarded_for(out_headers, existing, client_ip);
+        return append_forwarded_for(out_headers, existing, client_ip);
     }
 }
 
@@ -210,16 +232,25 @@ fn inject_forwarded_metadata(
     client_ip:   const u8[:],
     proto:       const u8[:],
     config:      const ProxyConfig&,
-) {
-    append_forwarded_metadata_xff(out_headers, in_headers, client_ip, config.trust_incoming_xff);
+) -> bool {
+    guard append_forwarded_metadata_xff(
+        out_headers,
+        in_headers,
+        client_ip,
+        config.trust_incoming_xff,
+    ) else { return false; }
 
     let orig_host = get_header(in_headers, "Host");
     if proto.len > 0 {
-        append_header(out_headers, "X-Forwarded-Proto", proto);
+        guard append_header(out_headers, "X-Forwarded-Proto", proto) else { return false; }
     }
-    if orig_host.len > 0 && !config.preserve_host {
-        append_header(out_headers, "X-Forwarded-Host", orig_host);
+    let existing_xf_host = get_header(in_headers, "X-Forwarded-Host");
+    if config.trust_incoming_xff && existing_xf_host.len > 0 {
+        guard append_header(out_headers, "X-Forwarded-Host", existing_xf_host) else { return false; }
+    } else if orig_host.len > 0 && !config.preserve_host {
+        guard append_header(out_headers, "X-Forwarded-Host", orig_host) else { return false; }
     }
+    return true;
 }
 
 // Filters incoming request headers and populates outgoing proxy request headers.
@@ -234,7 +265,7 @@ fn filter_and_forward_headers(
     guard has_consistent_framing_headers(in_headers) else { return false; }
     reset_for_keep_alive(out_headers);
 
-    copy_filtered_headers(in_headers, out_headers, config);
+    guard copy_filtered_headers(in_headers, out_headers, config) else { return false; }
 
     // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
     let cert_der_len = config.client_cert_der_len;
@@ -242,49 +273,67 @@ fn filter_and_forward_headers(
         var enc: u8[..8192] = [];
         let n = encode_client_cert(config.client_cert_der[..cert_der_len], enc);
         if n > 0 {
-            append_header(out_headers, "Client-Cert", enc[..n]);
+            guard append_header(out_headers, "Client-Cert", enc[..n]) else { return false; }
         }
     }
 
     if !config.preserve_host && upstream_host.len > 0 {
-        append_header(out_headers, "Host", upstream_host);
+        guard append_header(out_headers, "Host", upstream_host) else { return false; }
     }
 
     if config.append_forwarded {
-        inject_forwarded_metadata(
+        guard inject_forwarded_metadata(
             out_headers,
             in_headers,
             client_ip,
             proto,
             config,
-        );
+        ) else { return false; }
     }
 
-    inject_via_header(out_headers, config.via_pseudonym[..]);
+    guard inject_via_header(
+        out_headers,
+        in_headers,
+        config.via_pseudonym[..],
+        config.http_version[..],
+    ) else { return false; }
     return true;
 }
 
 // Formats upstream wire HTTP/1.1 request buffer ready for transmission.
 fn serialize_upstream_request<B>(
-    method:  const u8[:],
-    uri:     const u8[:],
-    headers: const HeaderMap&,
-    body:    const u8[:],
-    out:     B&,
+    method:       const u8[:],
+    uri:          const u8[:],
+    headers:      const HeaderMap&,
+    body:         const u8[:],
+    out:          B&,
+    http_version: const u8[:] = "HTTP/1.1",
 ) {
     out.clear();
     out.append(method);
     out.append(" ");
     out.append(if uri.len > 0 { uri } else { "/" });
-    out.append(" HTTP/1.1\r\n");
+    out.append(" ");
+    out.append(if http_version.len > 0 { http_version } else { "HTTP/1.1" });
+    out.append("\r\n");
 
+    var has_cl = false;
     for i in headers.entries.len {
         let entry = headers.entries[i];
         let name = headers.raw_buf[entry.name_begin..entry.name_end];
         let val = headers.raw_buf[entry.values_begin..entry.values_end];
+        if eq_ascii_fold(name, "content-length") {
+            has_cl = true;
+        }
         out.append(name);
         out.append(": ");
         out.append(val);
+        out.append("\r\n");
+    }
+
+    if !has_cl && body.len > 0 {
+        out.append("Content-Length: ");
+        core::format_u64_dec(body.len as u64, out);
         out.append("\r\n");
     }
 
@@ -405,19 +454,40 @@ fn prepare_proxy_request_at<B>(
 
     // 4. Header filtering and metadata injection
     var forward_headers = HeaderMap { .. };
-    let upstream_host = proxy.cluster.targets[target_idx].host[..];
+    var host_buf: u8[..128] = [];
+    let target = proxy.cluster.targets[target_idx];
+    host_buf.append(target.host[..]);
+    if !proxy.config.preserve_host && target.port != 80 && target.port != 443 && target.port > 0 {
+        host_buf.append(":");
+        core::format_u64_dec(target.port as u64, host_buf);
+    }
+    let upstream_host = host_buf[..];
 
-    filter_and_forward_headers(
+    guard filter_and_forward_headers(
         in_headers,
         forward_headers,
         client_ip,
         proto,
         upstream_host,
         proxy.config,
-    );
+    ) else {
+        release_upstream_connection(proxy.cluster, target_idx);
+        return PROXY_TARGET_NONE, false;
+    }
+
+    let has_cl_or_te = has_header(forward_headers, "content-length")
+        || has_header(forward_headers, "transfer-encoding");
+    if body.len > 0 && !has_cl_or_te {
+        var cl_buf: u8[..32] = [];
+        core::format_u64_dec(body.len as u64, cl_buf);
+        guard append_header(forward_headers, "Content-Length", cl_buf[..]) else {
+            release_upstream_connection(proxy.cluster, target_idx);
+            return PROXY_TARGET_NONE, false;
+        }
+    }
 
     // 5. Upstream wire serialization
-    serialize_upstream_request(method, uri, forward_headers, body, out_wire);
+    serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
     record_proxy_forwarded(proxy);
     return target_idx, true;
 }
@@ -505,10 +575,14 @@ fn compact_stream_ring(ring: ProxyStreamRing&) {
         ring.read_pos = 0;
         return;
     }
-    var scratch: u8[..16384] = [];
-    scratch.append(ring.buf[ring.read_pos..ring.buf.len]);
-    ring.buf.clear();
-    ring.buf.append(scratch[..]);
+    let active_len = core::sub_sat_u64(ring.buf.len as u64, ring.read_pos as u64) as i64;
+    for i in active_len {
+        let src_idx = core::add_sat_u64(ring.read_pos as u64, i as u64) as i64;
+        ring.buf[i] = ring.buf[src_idx];
+    }
+    while ring.buf.len > active_len {
+        ring.buf.pop();
+    }
     ring.read_pos = 0;
 }
 
@@ -546,8 +620,10 @@ fn forward_userspace_stream_chunk(
     if kind == ProxyTransportKind.WebSocket {
         // RFC 6455 Section 5.3: Client-to-Server Masking - Octet i of transformed data is XORed with masking-key octet i MOD 4.
         var masked: u8[..16384] = [];
+        let base_offset = src.total_sent;
         for i in view.len {
-            masked.push(view[i] ^ ws_mask[i & 3]);
+            let mask_idx = (core::add_sat_u64(base_offset, i as u64) & 3) as i64;
+            masked.push(view[i] ^ ws_mask[mask_idx]);
         }
         dst.buf.append(masked[..]);
     } else {

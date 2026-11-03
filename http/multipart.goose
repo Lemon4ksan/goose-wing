@@ -131,14 +131,15 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
 // The boundary must be between 1 and 70 ASCII characters (RFC 2046 Section 5.1.1).
 // Validates delimiter line endings and closing dashes per RFC 2046 Section 5.1.1.
 fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
+    guard pos <= body.len else { return false; }
     let rem = body[pos..];
-    let after_pad = core::trim_lws_start(rem);
-    if after_pad.len >= 2 && after_pad[0] == '-' && after_pad[1] == '-' {
-        let after_close = core::trim_lws_start(after_pad[2..]);
+    if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
+        let after_close = core::trim_lws_start(rem[2..]);
         return after_close.len == 0 ||
                (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
                (after_close.len >= 1 && after_close[0] == '\n');
     }
+    let after_pad = core::trim_lws_start(rem);
     return (after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n') ||
            (after_pad.len >= 1 && after_pad[0] == '\n');
 }
@@ -185,6 +186,23 @@ fn find_header_end(body: const u8[:], cursor: i64, max_scan: i64, delim_len: i64
     }
     delim_len = 0;
     return -1;
+}
+
+fn resolve_part_header_end(body: const u8[:], cursor: i64, max_header_bytes: i64, delim_len: i64&) -> i64 {
+    if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
+        delim_len = 2;
+        return cursor;
+    }
+    if cursor < body.len && body[cursor] == '\n' {
+        delim_len = 1;
+        return cursor;
+    }
+    let max_h_scan = if cursor + max_header_bytes < body.len {
+        cursor + max_header_bytes
+    } else {
+        body.len
+    };
+    return find_header_end(body, cursor, max_h_scan, delim_len);
 }
 
 fn find_next_boundary_delim(
@@ -295,12 +313,7 @@ fn parse_multipart_part(
     }
 
     var header_delim_len: i64 = 0;
-    let max_h_scan = if cursor + options.max_header_bytes < body.len {
-        cursor + options.max_header_bytes
-    } else {
-        body.len
-    };
-    let header_end = find_header_end(body, cursor, max_h_scan, header_delim_len);
+    let header_end = resolve_part_header_end(body, cursor, options.max_header_bytes, header_delim_len);
     guard header_end >= 0 else {
         return MultipartError.InvalidPartHeaders;
     }
@@ -313,9 +326,11 @@ fn parse_multipart_part(
     total_memory_used += raw_part_headers.len;
 
     var part_headers = HeaderMap { .. };
-    let h_err = parse_headers(raw_part_headers, part_headers);
-    guard is_ok(h_err) else {
-        return MultipartError.InvalidPartHeaders;
+    if raw_part_headers.len > 0 {
+        let h_err = parse_headers(raw_part_headers, part_headers);
+        guard is_ok(h_err) else {
+            return MultipartError.InvalidPartHeaders;
+        }
     }
 
     // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
@@ -416,14 +431,14 @@ fn parse_multipart(
     var has_closing_delimiter = false;
 
     while cursor < body.len {
-        let rem = body[cursor..];
-        let after_pad = core::trim_lws_start(rem);
-        cursor += rem.len - after_pad.len;
-
         if is_closing_boundary_at(body, cursor) {
             has_closing_delimiter = true;
             break; // Valid closing boundary reached
         }
+
+        let rem = body[cursor..];
+        let after_pad = core::trim_lws_start(rem);
+        cursor += rem.len - after_pad.len;
 
         let p_err = parse_multipart_part(
             body, cursor, part_delim[..], shift_table, options, total_memory_used, msg,

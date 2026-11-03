@@ -241,11 +241,14 @@ fn split_radix_node(
     tree.nodes[s_idx].prefix.append(tree.nodes[c_idx].prefix[common_len..]);
     tree.nodes[s_idx].indices.append(tree.nodes[c_idx].indices[..]);
     for c in tree.nodes[c_idx].children { tree.nodes[s_idx].children.push(c); }
+    tree.nodes[s_idx].wild_child = tree.nodes[c_idx].wild_child;
     tree.nodes[s_idx].param_child = tree.nodes[c_idx].param_child;
     tree.nodes[s_idx].catch_all_child = tree.nodes[c_idx].catch_all_child;
     tree.nodes[s_idx].handler_id = tree.nodes[c_idx].handler_id;
     tree.nodes[s_idx].entries_mask = tree.nodes[c_idx].entries_mask;
     tree.nodes[s_idx].pso_mask = tree.nodes[c_idx].pso_mask;
+    tree.nodes[s_idx].param_name.append(tree.nodes[c_idx].param_name[..]);
+    tree.nodes[s_idx].static_suffix.append(tree.nodes[c_idx].static_suffix[..]);
     tree.nodes[s_idx].priority = tree.nodes[c_idx].priority - 1;
 
     let first_split_byte = tree.nodes[s_idx].prefix[0];
@@ -255,11 +258,15 @@ fn split_radix_node(
     tree.nodes[c_idx].indices.push(first_split_byte);
     tree.nodes[c_idx].children.clear();
     tree.nodes[c_idx].children.push(split_child_idx);
+    tree.nodes[c_idx].wild_child = false;
     tree.nodes[c_idx].param_child = -1;
     tree.nodes[c_idx].catch_all_child = -1;
     tree.nodes[c_idx].handler_id = -1;
     tree.nodes[c_idx].entries_mask = 0;
     tree.nodes[c_idx].pso_mask = 0;
+    tree.nodes[c_idx].param_name.clear();
+    tree.nodes[c_idx].static_suffix.clear();
+    tree.nodes[c_idx].node_type = NodeType.Static;
     return true;
 }
 
@@ -385,6 +392,31 @@ fn insert_or_update_param_child(
     return true;
 }
 
+inline fn inc_node_priority(tree: RadixTree&, cur_idx: i32) {
+    tree.nodes[cur_idx as i64].priority += 1;
+}
+
+inline fn set_endpoint_handler(
+    tree:         RadixTree&,
+    node_idx:     i32,
+    handler_id:   i32,
+    entries_mask: u32,
+    pso_mask:     u64,
+) {
+    let n = node_idx as i64;
+    tree.nodes[n].handler_id = handler_id;
+    tree.nodes[n].entries_mask = entries_mask;
+    tree.nodes[n].pso_mask = pso_mask;
+}
+
+inline fn sub_param_offset(param_end: i64&, param_start: i64) {
+    param_end -= param_start;
+}
+
+inline fn calc_next_char_pos(pos: i64) -> i64 {
+    return pos + 1;
+}
+
 // insert_route inserts a route path into the RadixTree with automatic common-prefix compression.
 //
 // Supports:
@@ -407,7 +439,7 @@ fn insert_route(
     var rem = path;
 
     while rem.len > 0 {
-        tree.nodes[cur_idx as i64].priority += 1;
+        inc_node_priority(tree, cur_idx);
 
         var param_start = -1;
         var param_end = -1;
@@ -416,21 +448,21 @@ fn insert_route(
 
         if param_start < 0 {
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
-            tree.nodes[cur_idx as i64].handler_id = handler_id;
-            tree.nodes[cur_idx as i64].entries_mask = entries_mask;
-            tree.nodes[cur_idx as i64].pso_mask = pso_mask;
+            set_endpoint_handler(tree, cur_idx, handler_id, entries_mask, pso_mask);
             return true;
         }
+
+        guard param_end > param_start else { return false; }
 
         if param_start > 0 {
             guard traverse_or_insert_static(tree, cur_idx, rem[..param_start]) else { return false; }
             rem = rem[param_start..];
-            param_end -= param_start;
+            sub_param_offset(param_end, param_start);
             param_start = 0;
         }
 
         let name = if is_catchall { rem[2..param_end] } else { rem[1..param_end] };
-        let suffix_after = rem[param_end + 1..];
+        let suffix_after = rem[calc_next_char_pos(param_end)..];
 
         if is_catchall {
             return insert_catch_all_child(tree, cur_idx, name, handler_id, entries_mask, pso_mask);
@@ -445,9 +477,7 @@ fn insert_route(
             cur_idx = param_node_idx;
             rem = suffix_after;
         } else {
-            tree.nodes[param_node_idx as i64].handler_id = handler_id;
-            tree.nodes[param_node_idx as i64].entries_mask = entries_mask;
-            tree.nodes[param_node_idx as i64].pso_mask = pso_mask;
+            set_endpoint_handler(tree, param_node_idx, handler_id, entries_mask, pso_mask);
             return true;
         }
     }
@@ -587,13 +617,20 @@ fn match_param_child(
                 break;
             }
         }
-    } else {
-        for i in rem.len {
-            if rem[i] == '/' {
-                val_end = i;
-                break;
+        if val_end >= 0 && val_end < rem.len && rem[val_end] == '.' {
+            let next_dot_child = find_child_by_byte(tree, p_idx, '.');
+            var suffix_ok = false;
+            if next_dot_child >= 0 {
+                let child_pfx = tree.nodes[next_dot_child as i64].prefix[..];
+                let rem_after = rem[val_end..];
+                suffix_ok = rem_after.len >= child_pfx.len && rem_after[..child_pfx.len] == child_pfx;
+            }
+            if !suffix_ok {
+                val_end = core::index_of_byte(rem, '/');
             }
         }
+    } else {
+        val_end = core::index_of_byte(rem, '/');
     }
 
     if val_end < 0 { val_end = rem.len; }
@@ -692,8 +729,12 @@ fn match_path<B>(
         // Try static children first (O(1) index lookup)
         let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
         if next_child >= 0 {
-            cur_idx = next_child;
-            continue;
+            let next_pfx = tree.nodes[next_child as i64].prefix[..];
+            if rem.len >= next_pfx.len && rem[..next_pfx.len] == next_pfx {
+                cur_idx = next_child;
+                continue;
+            }
+            // Child prefix diverged: fall through to param_child / catch_all_child
         }
 
         // Fall back to Param child
@@ -854,9 +895,16 @@ struct MethodTree {
     tree:   RadixTree = RadixTree { .. },
 }
 
+struct StaticRoutePayload {
+    handler_id:   i32       = 0,
+    content_type: u8[..64]  = [],
+    body:         u8[..512] = [],
+}
+
 struct RadixRouter {
-    trees:    MethodTree[..8] = [],
-    l0_table: L0RegisterTable = L0RegisterTable { .. },
+    trees:           MethodTree[..8]          = [],
+    l0_table:        L0RegisterTable          = L0RegisterTable { .. },
+    static_payloads: StaticRoutePayload[..16] = [],
 }
 
 fn new_radix_router() -> RadixRouter {
@@ -915,7 +963,35 @@ fn add_static_route(
     body:         const u8[:],
     handler_id:   i32 = 0,
 ) -> bool {
-    return add_route(router, method, path, handler_id, 0, DEFAULT_ROUTE_PSO_MASK);
+    let eff_id = if handler_id != 0 { handler_id } else { 2048 | (router.static_payloads.len as i32) };
+    guard router.static_payloads.len < router.static_payloads.cap else { return false; }
+    var sp = StaticRoutePayload {
+        handler_id:   eff_id,
+        content_type: [],
+        body:         [],
+    };
+    sp.content_type.append(content_type);
+    sp.body.append(body);
+    router.static_payloads.push(sp);
+    return add_route(router, method, path, eff_id, 0, DEFAULT_ROUTE_PSO_MASK);
+}
+
+fn get_static_route_payload(
+    router:     const RadixRouter&,
+    handler_id: i32,
+    res:        Response&,
+) -> bool {
+    for idx in router.static_payloads.len {
+        if router.static_payloads[idx].handler_id == handler_id {
+            if router.static_payloads[idx].content_type.len > 0 {
+                set_header(res, "Content-Type", router.static_payloads[idx].content_type[..]);
+            }
+            res.body.clear();
+            res.body.append(router.static_payloads[idx].body[..]);
+            return true;
+        }
+    }
+    return false;
 }
 
 fn build_allow_header(
@@ -1022,6 +1098,7 @@ fn match_route<B>(
     out_canon_path: B&,
 ) -> RouteMatchResult {
     guard router.trees.len > 0 else { return RouteMatchResult.NotFound; }
+    let clean_path = strip_query_and_fragment(path);
     var target_tree_idx: i32 = resolve_method_tree_index(method);
     if target_tree_idx < 0 || (target_tree_idx as i64) >= router.trees.len {
         target_tree_idx = -1;
@@ -1034,12 +1111,12 @@ fn match_route<B>(
     }
 
     if target_tree_idx >= 0 {
-        let fast_res = try_match_l0_slot(router.l0_table, target_tree_idx as u8, path, params, out_canon_path);
+        let fast_res = try_match_l0_slot(router.l0_table, target_tree_idx as u8, clean_path, params, out_canon_path);
         if match fast_res { Found _ => true, _ => false } {
             return fast_res;
         }
 
-        let res = match_path(router.trees[target_tree_idx as i64].tree, path, params, out_canon_path);
+        let res = match_path(router.trees[target_tree_idx as i64].tree, clean_path, params, out_canon_path);
         match res {
             Found _ => { return res; },
             _ => {},
@@ -1049,12 +1126,12 @@ fn match_route<B>(
     // Automatic HEAD routing: if method is HEAD and no explicit HEAD route matched,
     // route to GET handler if a GET route matches (RFC 9110 §9.3.2).
     if method == "HEAD" && router.trees[0].method[..] == "GET" {
-        let fast_head = try_match_l0_slot(router.l0_table, 0, path, params, out_canon_path);
+        let fast_head = try_match_l0_slot(router.l0_table, 0, clean_path, params, out_canon_path);
         if match fast_head { Found _ => true, _ => false } {
             return fast_head;
         }
 
-        let res_get = match_path(router.trees[0].tree, path, params, out_canon_path);
+        let res_get = match_path(router.trees[0].tree, clean_path, params, out_canon_path);
         match res_get {
             Found _ => { return res_get; },
             _ => {},
@@ -1062,7 +1139,7 @@ fn match_route<B>(
     }
 
     var allow_buf: u8[..64] = [];
-    if build_allow_header(router, target_tree_idx, method, path, allow_buf) {
+    if build_allow_header(router, target_tree_idx, method, clean_path, allow_buf) {
         return RouteMatchResult.MethodNotAllowed { allow_header: allow_buf };
     }
 

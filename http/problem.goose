@@ -20,6 +20,19 @@ struct ProblemDetails {
     instance: u8[..256] = [],
 }
 
+fn append_json_escaped_string<B>(s: const u8[:], out: B&) {
+    for b in s {
+        match b {
+            '"' => { out.push('\\'); out.push('"'); },
+            '\\' => { out.push('\\'); out.push('\\'); },
+            '\r' => { out.push('\\'); out.push('r'); },
+            '\n' => { out.push('\\'); out.push('n'); },
+            '\t' => { out.push('\\'); out.push('t'); },
+            _ => { out.push(b); },
+        }
+    }
+}
+
 // Formats a ProblemDetails structure into an RFC 9457 JSON byte buffer.
 //
 // Example:
@@ -28,7 +41,7 @@ struct ProblemDetails {
 fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
     out.append("{\"type\":\"");
     if problem.type_uri.len > 0 {
-        out.append(problem.type_uri[..]);
+        append_json_escaped_string(problem.type_uri[..], out);
     } else {
         out.append("about:blank");
     }
@@ -37,17 +50,17 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
 
     if problem.title.len > 0 {
         out.append(",\"title\":\"");
-        out.append(problem.title[..]);
+        append_json_escaped_string(problem.title[..], out);
         out.push('"');
     }
     if problem.detail.len > 0 {
         out.append(",\"detail\":\"");
-        out.append(problem.detail[..]);
+        append_json_escaped_string(problem.detail[..], out);
         out.push('"');
     }
     if problem.instance.len > 0 {
         out.append(",\"instance\":\"");
-        out.append(problem.instance[..]);
+        append_json_escaped_string(problem.instance[..], out);
         out.push('"');
     }
     out.push('}');

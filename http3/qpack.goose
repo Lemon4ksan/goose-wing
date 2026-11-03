@@ -15,6 +15,7 @@ const QPACK_MAX_BLOCKED_STREAMS: u32 = 128;
 
 enum QpackError {
     None,
+    StreamBlocked,           // Stream is blocked waiting for encoder stream
     DecompressionFailed,     // H3_ERR_QPACK_DECOMPRESSION_FAILED (0x0200)
     EncoderStreamError,      // H3_ERR_QPACK_ENCODER_STREAM_ERROR (0x0201)
     DecoderStreamError,      // H3_ERR_QPACK_DECODER_STREAM_ERROR (0x0202)
@@ -29,6 +30,15 @@ struct HeaderField {
     name:        u8[..256]  = [],
     value:       u8[..4096] = [],
     never_index: bool       = false,
+}
+
+struct DynamicEntryDesc {
+    abs_index: u64 = 0,
+    ref_count: u32 = 0,
+    name_off:  u32 = 0,
+    name_len:  u16 = 0,
+    val_off:   u32 = 0,
+    val_len:   u16 = 0,
 }
 
 struct DynamicEntry {
@@ -65,7 +75,9 @@ struct QpackTable {
     control_stream_opened: bool                      = false,
     blocked_streams:       BlockedStreamEntry[..128] = [],
     unacked_sections:      UnackedSection[..16]      = [],
-    entries:               DynamicEntry[>..<]        = [], // Must be last!
+    arena:                 u8[16384]                 = [0; 16384],
+    arena_write_pos:       u32                       = 0,
+    entries:               DynamicEntryDesc[..128]   = [],
 }
 
 // Calculates RFC 9204 Section 3.2.1 protocol weight (+32 byte overhead).
@@ -358,6 +370,49 @@ fn encode_base(base: u64, ric: u64) -> u8, u64 {
 
 // ---- dynamic table management & eviction --------------------------------
 
+inline fn is_qpack_token_char(c: u8) -> bool {
+    if c >= 'a' && c <= 'z' { return true; }
+    if c >= '0' && c <= '9' { return true; }
+    return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+           c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+}
+
+inline fn validate_qpack_entry_name(name: const u8[:]) -> bool {
+    guard name.len > 0 && name.len <= 256 else { return false; }
+    return validate_qpack_field_name(name);
+}
+
+inline fn validate_qpack_field_val(val: const u8[:]) -> bool {
+    for b in val {
+        if b == 0 || b == '\r' || b == '\n' {
+            return false;
+        }
+    }
+    if val.len > 0 {
+        let first = val[0];
+        let last = val[val.len - 1];
+        if first == ' ' || first == '\t' || last == ' ' || last == '\t' {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn validate_qpack_field_name(name: const u8[:]) -> bool {
+    guard name.len > 0 && (name.len > 1 || name[0] != ':') else { return false; }
+    for i in name.len {
+        let c = name[i];
+        if i == 0 && c == ':' {
+            continue;
+        }
+        if !is_qpack_token_char(c) {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn new_qpack_table(
     max_capacity:     u64 = 4096,
     max_blocked:      u32 = 16,
@@ -372,6 +427,36 @@ fn new_qpack_table(
     };
 }
 
+// Compacts dynamic table arena in place to reclaim space from evicted entries.
+fn qpack_compact_arena(tbl: QpackTable&) {
+    var new_arena: u8[16384] = [0; 16384];
+    var new_pos:   u32       = 0;
+    for i in tbl.entries.len {
+        let n_len = tbl.entries[i].name_len as u32;
+        let v_len = tbl.entries[i].val_len as u32;
+        let old_n_off = tbl.entries[i].name_off as i64;
+        let old_v_off = tbl.entries[i].val_off as i64;
+        let new_pos_i = new_pos as i64;
+
+        for j in (n_len as i64) {
+            new_arena[new_pos_i + j] = tbl.arena[old_n_off + j];
+        }
+        tbl.entries[i].name_off = new_pos;
+        new_pos += n_len;
+
+        let next_pos_i = new_pos as i64;
+        for j in (v_len as i64) {
+            new_arena[next_pos_i + j] = tbl.arena[old_v_off + j];
+        }
+        tbl.entries[i].val_off = new_pos;
+        new_pos += v_len;
+    }
+    for k in (new_pos as i64) {
+        tbl.arena[k] = new_arena[k];
+    }
+    tbl.arena_write_pos = new_pos;
+}
+
 // Evicts entries from the dynamic table until used_bytes <= target_bytes.
 // Returns false if an eviction barrier (referenced entry) prevents eviction.
 fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) -> bool {
@@ -380,11 +465,14 @@ fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) -> bool {
         if oldest.ref_count > 0 {
             return false;
         }
-        let cost = qpack_entry_cost(oldest.name.len as u64, oldest.value.len as u64);
+        let cost = qpack_entry_cost(oldest.name_len, oldest.val_len);
         tbl.used_bytes = if tbl.used_bytes >= cost { tbl.used_bytes - cost } else { 0 };
         tbl.entries.remove_at(0);
     }
     tbl.draining_index = if tbl.entries.len > 0 { tbl.entries[0].abs_index } else { tbl.insert_count };
+    if tbl.entries.len == 0 {
+        tbl.arena_write_pos = 0;
+    }
     return tbl.used_bytes <= target_bytes;
 }
 
@@ -397,26 +485,60 @@ fn qpack_set_capacity(tbl: QpackTable&, new_cap: u64) -> bool {
     return true;
 }
 
-// Inserts an entry into the dynamic table with literal name and value.
-fn qpack_insert_literal(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -> bool {
-    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase
-    for c in name {
-        if c >= 'A' && c <= 'Z' {
-            return false;
-        }
+inline fn copy_to_arena(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {
+    let n_off = tbl.arena_write_pos;
+    let n_off_i = n_off as i64;
+    for i in name.len {
+        tbl.arena[n_off_i + i] = name[i];
     }
+    tbl.arena_write_pos += name.len as u32;
 
-    let cost = qpack_entry_cost(name.len as u64, val.len as u64);
+    let v_off = tbl.arena_write_pos;
+    let v_off_i = v_off as i64;
+    for i in val.len {
+        tbl.arena[v_off_i + i] = val[i];
+    }
+    tbl.arena_write_pos += val.len as u32;
+    return n_off, v_off;
+}
+
+inline fn ensure_arena_capacity(tbl: QpackTable&, raw_len: u32) -> bool {
+    if tbl.arena_write_pos + raw_len > 16384 {
+        qpack_compact_arena(tbl);
+    }
+    return tbl.arena_write_pos + raw_len <= 16384;
+}
+
+inline fn validate_literal_inputs(name: const u8[:], val: const u8[:]) -> bool {
+    guard validate_qpack_entry_name(name) else { return false; }
+    guard val.len <= 4096 else { return false; }
+    return validate_qpack_field_val(val);
+}
+
+inline fn prepare_table_for_entry(tbl: QpackTable&, cost: u64, raw_len: u32) -> bool {
     guard cost <= tbl.capacity_bytes else { return false; }
     guard qpack_evict_until(tbl, tbl.capacity_bytes - cost) else { return false; }
+    guard tbl.entries.len < tbl.entries.cap else { return false; }
+    return ensure_arena_capacity(tbl, raw_len);
+}
 
-    var ent = DynamicEntry {
+// Inserts an entry into the dynamic table with literal name and value.
+fn qpack_insert_literal(tbl: QpackTable&, name: const u8[:], val: const u8[:]) -> bool {
+    guard validate_literal_inputs(name, val) else { return false; }
+
+    let cost = qpack_entry_cost(name.len as u64, val.len as u64);
+    let raw_len = (name.len + val.len) as u32;
+    guard prepare_table_for_entry(tbl, cost, raw_len) else { return false; }
+
+    let n_off, v_off = copy_to_arena(tbl, name, val);
+    var ent = DynamicEntryDesc {
         abs_index: tbl.insert_count,
         ref_count: 0,
-        ..
+        name_off:  n_off,
+        name_len:  name.len as u16,
+        val_off:   v_off,
+        val_len:   val.len as u16,
     };
-    ent.name.append(name);
-    ent.value.append(val);
     tbl.entries.push(ent);
 
     tbl.insert_count++;
@@ -431,42 +553,24 @@ fn qpack_insert_named_static(tbl: QpackTable&, static_idx: u64, val: const u8[:]
     return qpack_insert_literal(tbl, s_ent.name, val);
 }
 
-// Inserts an entry referencing a dynamic name by relative index.
-fn qpack_insert_named_dynamic(tbl: QpackTable&, rel_idx: u64, val: const u8[:]) -> bool {
-    guard tbl.insert_count > rel_idx else { return false; }
-    let target_abs = tbl.insert_count - rel_idx - 1;
-
-    var n_buf: u8[..256] = [];
-    var found = false;
-    for &e in tbl.entries {
-        if e.abs_index == target_abs {
-            n_buf.append(e.name[..]);
-            found = true;
-            break;
-        }
-    }
-    guard found else { return false; }
-    return qpack_insert_literal(tbl, n_buf[..], val);
-}
-
-// Duplicates an existing dynamic table entry by relative index.
-fn qpack_duplicate(tbl: QpackTable&, rel_idx: u64) -> bool {
-    guard tbl.insert_count > rel_idx else { return false; }
-    let target_abs = tbl.insert_count - rel_idx - 1;
-
-    var n_buf: u8[..256]  = [];
-    var v_buf: u8[..4096] = [];
-    var found = false;
-    for &e in tbl.entries {
-        if e.abs_index == target_abs {
-            n_buf.append(e.name[..]);
-            v_buf.append(e.value[..]);
-            found = true;
-            break;
-        }
-    }
-    guard found else { return false; }
-    return qpack_insert_literal(tbl, n_buf[..], v_buf[..]);
+inline fn copy_arena_entry(
+    arena:    const u8[:],
+    n_off:    u32,
+    n_len:    u16,
+    v_off:    u32,
+    v_len:    u16,
+    out_name: u8[..256]&,
+    out_val:  u8[..4096]&,
+) -> bool {
+    let n_start = n_off as i64;
+    let n_end = n_start + n_len;
+    let v_start = v_off as i64;
+    let v_end = v_start + v_len;
+    guard n_end <= 16384 else { return false; }
+    guard v_end <= 16384 else { return false; }
+    out_name.append(arena[n_start..n_end]);
+    out_val.append(arena[v_start..v_end]);
+    return true;
 }
 
 // Looks up an entry by absolute index in dynamic table.
@@ -480,14 +584,32 @@ fn qpack_lookup_absolute(
     out_val.clear();
     for &e in tbl.entries {
         if e.abs_index == abs_idx {
-            out_name.append(e.name[..]);
-            out_val.append(e.value[..]);
-            return true;
+            return copy_arena_entry(tbl.arena[..], e.name_off, e.name_len, e.val_off, e.val_len, out_name, out_val);
         }
     }
-    out_name.clear();
-    out_val.clear();
     return false;
+}
+
+// Inserts an entry referencing a dynamic name by relative index.
+fn qpack_insert_named_dynamic(tbl: QpackTable&, rel_idx: u64, val: const u8[:]) -> bool {
+    guard tbl.insert_count > rel_idx else { return false; }
+    let target_abs = tbl.insert_count - rel_idx - 1;
+
+    var n_buf: u8[..256]  = [];
+    var v_buf: u8[..4096] = [];
+    guard qpack_lookup_absolute(tbl, target_abs, n_buf, v_buf) else { return false; }
+    return qpack_insert_literal(tbl, n_buf[..], val);
+}
+
+// Duplicates an existing dynamic table entry by relative index.
+fn qpack_duplicate(tbl: QpackTable&, rel_idx: u64) -> bool {
+    guard tbl.insert_count > rel_idx else { return false; }
+    let target_abs = tbl.insert_count - rel_idx - 1;
+
+    var n_buf: u8[..256]  = [];
+    var v_buf: u8[..4096] = [];
+    guard qpack_lookup_absolute(tbl, target_abs, n_buf, v_buf) else { return false; }
+    return qpack_insert_literal(tbl, n_buf[..], v_buf[..]);
 }
 
 // Pins an entry in the dynamic table to prevent eviction while in active use (RFC 9204 §2.1.1).
@@ -809,51 +931,45 @@ fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 
 // ---- incremental field emission & header accordion protection ------------
 
-inline fn is_qpack_token_char(c: u8) -> bool {
-    if c >= 'a' && c <= 'z' { return true; }
-    if c >= '0' && c <= '9' { return true; }
-    return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
-           c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
-           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+inline fn validate_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
+    guard validate_qpack_field_name(name) else { return false; }
+    return validate_qpack_field_val(val);
+}
+
+inline fn append_header_field<F>(
+    out_fields:  F&,
+    name:        const u8[:],
+    val:         const u8[:],
+    never_index: bool,
+) -> bool {
+    var field = HeaderField { never_index: never_index, .. };
+    guard name.len <= field.name.cap else { return false; }
+    guard val.len <= field.value.cap else { return false; }
+    field.name.append(name);
+    field.value.append(val);
+    out_fields.push(field);
+    return true;
+}
+
+inline fn check_field_budget(budget_left: u64&, out_len: i64, cost: u64) -> bool {
+    guard out_len < 128 else { return false; }
+    guard budget_left >= cost else { return false; }
+    budget_left -= cost;
+    return true;
 }
 
 // Emits a parsed field line, enforcing SETTINGS_MAX_FIELD_SECTION_SIZE + 32-byte overhead.
-fn emit_field_checked(
-    out_fields:  HeaderField[>..]&,
+fn emit_field_checked<F>(
+    out_fields:  F&,
     budget_left: u64&,
     name:        const u8[:],
     val:         const u8[:],
     never_index: bool = false,
 ) -> QpackError {
-    // RFC 9114 Section 4.2 & RFC 9204 Section 4.1: Field names MUST be lowercase valid token chars or pseudo-header
-    guard name.len > 0 && (name.len > 1 || name[0] != ':') else { return QpackError.DecompressionFailed; }
-    for i in name.len {
-        let c = name[i];
-        if i == 0 && c == ':' {
-            continue; // pseudo header prefix
-        }
-        if !is_qpack_token_char(c) {
-            return QpackError.DecompressionFailed;
-        }
-    }
-
-    // RFC 9114 Section 4.2 & Go #80683: Field values MUST NOT contain NUL, CR, or LF
-    for b in val {
-        if b == 0 || b == '\r' || b == '\n' {
-            return QpackError.DecompressionFailed;
-        }
-    }
-
+    guard validate_field_syntax(name, val) else { return QpackError.DecompressionFailed; }
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
-    guard budget_left >= cost else {
-        return QpackError.HeaderListTooLarge;
-    }
-    budget_left -= cost;
-
-    var field = HeaderField { never_index: never_index, .. };
-    field.name.append(name);
-    field.value.append(val);
-    out_fields.push(field);
+    guard check_field_budget(budget_left, out_fields.len, cost) else { return QpackError.HeaderListTooLarge; }
+    guard append_header_field(out_fields, name, val, never_index) else { return QpackError.HeaderListTooLarge; }
     return QpackError.None;
 }
 
@@ -869,14 +985,14 @@ inline fn record_dynamic_abs_used(abs_idx: u64, max_dyn_abs_used: u64&, used_any
 // Example:
 //   src = [0xD1], offset = 0
 //   returns: QpackError.None, offset = 1, out_fields has decoded field
-fn decode_qpack_field_line(
+fn decode_qpack_field_line<F>(
     tbl:              const QpackTable&,
     src:              const u8[:],
     offset:           u64&,
     base:             u64,
     ric:              u64,
     budget:           u64&,
-    out_fields:       HeaderField[>..]&,
+    out_fields:       F&,
     max_dyn_abs_used: u64&,
     used_any_dyn:     bool&,
 ) -> QpackError {
@@ -1015,10 +1131,10 @@ fn decode_qpack_field_line(
 // Example:
 //   src = [0x00, 0x00, 0xD1], out_fields = []
 //   returns: QpackError.None, out_fields has decoded entries
-fn decode_qpack_section(
+fn decode_qpack_section<F>(
     tbl:               const QpackTable&,
     src:               const u8[:],
-    out_fields:        HeaderField[>..]&,
+    out_fields:        F&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
@@ -1077,39 +1193,76 @@ fn decode_qpack_section(
     return QpackError.None;
 }
 
+// Decodes an Encoded Field Section or records the stream as blocked if RIC exceeds insert_count (RFC 9204 §2.1.2).
+//
+// Example:
+//   src = [0x00, 0x00, 0xd1], stream_id = 4
+//   returns: QpackError.None, out_fields contains parsed headers
+fn decode_or_block_qpack_section<F>(
+    tbl:               QpackTable&,
+    stream_id:         u64,
+    src:               const u8[:],
+    out_fields:        F&,
+    max_field_section: u64 = 16384,
+) -> QpackError {
+    guard src.len >= 2 else { return QpackError.DecompressionFailed; }
+    let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
+    guard ok_ric else { return QpackError.DecompressionFailed; }
+    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+    guard ric_err == QpackError.None else { return ric_err; }
+
+    if ric > tbl.insert_count {
+        guard qpack_can_block_stream(tbl) else {
+            return QpackError.BlockedStreamsExhausted;
+        }
+        guard qpack_block_stream(tbl, stream_id, ric, src) else {
+            return QpackError.BlockedStreamsExhausted;
+        }
+        return QpackError.StreamBlocked;
+    }
+
+    return decode_qpack_section(tbl, src, out_fields, max_field_section);
+}
+
 // Encodes a single field line with optional static index lookup.
 fn encode_qpack_field<B>(
     out:         B&,
     name:        const u8[:],
     val:         const u8[:],
     use_huffman: bool = true,
+    never_index: bool = false,
 ) {
-    let s_idx, exact_s = find_qpack_static_field(name, val);
-    if exact_s {
-        // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-        internal::hpack_encode_int(out, s_idx, 6, 0xC0);
-        return;
+    if !never_index {
+        let s_idx, exact_s = find_qpack_static_field(name, val);
+        if exact_s {
+            // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
+            internal::hpack_encode_int(out, s_idx, 6, 0xC0);
+            return;
+        }
     }
 
-    if s_idx < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx as i64].name {
-        // Literal with Static Name: 0101xxxx (4-bit prefix)
-        internal::hpack_encode_int(out, s_idx, 4, 0x50);
+    let s_idx_name, _ = find_qpack_static_field(name, "");
+    if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
+        // Literal with Static Name: 01NTxxxx (4-bit prefix, T=1)
+        let prefix: u8 = if never_index { 0x70 } else { 0x50 };
+        internal::hpack_encode_int(out, s_idx_name, 4, prefix);
         internal::encode_hpack_string_literal(out, val, use_huffman);
         return;
     }
 
     // Literal Name + Literal Value: 001NHxxx (3-bit prefix name)
+    let base_prefix: u8 = if never_index { 0x30 } else { 0x20 };
     if use_huffman {
         let huff_len = internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            internal::hpack_encode_int(out, huff_len, 3, 0x28); // 0x20 | 0x08 (H bit)
+            internal::hpack_encode_int(out, huff_len, 3, base_prefix | 0x08);
             internal::huff_encode_bytes(name, out);
         } else {
-            internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
+            internal::hpack_encode_int(out, name.len as u64, 3, base_prefix);
             out.append(name);
         }
     } else {
-        internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
+        internal::hpack_encode_int(out, name.len as u64, 3, base_prefix);
         out.append(name);
     }
     internal::encode_hpack_string_literal(out, val, use_huffman);

@@ -123,6 +123,13 @@ fn sf_parse_boolean(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64
     return false;
 }
 
+checkfree inline fn sf_check_escape(src: const u8[:], p: i64) -> bool {
+    let p_esc = p + 1;
+    guard p_esc < src.len else { return false; }
+    let ch = src[p_esc];
+    return ch == '\\' || ch == '"';
+}
+
 // Parses an RFC 8941 String: "..." with escaping (\", \\)
 fn sf_parse_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
     if pos >= src.len || src[pos] != '"' {
@@ -133,10 +140,7 @@ fn sf_parse_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     while p < src.len {
         let ch = src[p];
         if ch == '\\' {
-            let p_esc = p + 1;
-            if p_esc >= src.len {
-                return false;
-            }
+            guard sf_check_escape(src, p) else { return false; }
             p = p + 2;
         } else if ch == '"' {
             out_item.kind = SfType.String;
@@ -310,15 +314,55 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) 
     return true;
 }
 
+fn validate_display_string(raw_str: const u8[:]) -> bool {
+    var decoded: u8[..512] = [];
+    var i:       i64       = 0;
+    while i < raw_str.len {
+        let b = raw_str[i];
+        if b == '%' {
+            guard i + 2 < raw_str.len else { return false; }
+            let c1 = raw_str[i + 1];
+            let c2 = raw_str[i + 2];
+            let v1 = if c1 >= '0' && c1 <= '9' {
+                (c1 - '0') as i32
+            } else if c1 >= 'a' && c1 <= 'f' {
+                (c1 - 'a' + 10) as i32
+            } else {
+                -1
+            };
+            let v2 = if c2 >= '0' && c2 <= '9' {
+                (c2 - '0') as i32
+            } else if c2 >= 'a' && c2 <= 'f' {
+                (c2 - 'a' + 10) as i32
+            } else {
+                -1
+            };
+            guard v1 >= 0 && v2 >= 0 else { return false; }
+            guard decoded.len < decoded.cap else { return false; }
+            decoded.push(((v1 << 4) | v2) as u8);
+            i += 3;
+        } else {
+            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
+            guard decoded.len < decoded.cap else { return false; }
+            decoded.push(b);
+            i += 1;
+        }
+    }
+    return core::validate_utf8(decoded[..]);
+}
+
 // Parses an RFC 9651 Section 3.3.4 Display String: %"..."
 fn sf_parse_display_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) -> bool {
     guard pos + 1 < src.len && src[pos] == '%' && src[pos + 1] == '"' else { return false; }
+    let start_idx = pos + 2;
     var p = pos + 2;
     while p < src.len {
         let ch = src[p];
         if ch == '"' {
+            let raw_str = src[start_idx..p];
+            guard validate_display_string(raw_str) else { return false; }
             out_item.kind = SfType.DisplayString;
-            out_item.str_val = src[pos + 2..p];
+            out_item.str_val = raw_str;
             out_next = p + 1;
             return true;
         }
@@ -405,11 +449,18 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
             p = v_next;
         }
 
-        if out_params.len < 8 {
-            out_params.push(SfParameter {
-                key:  key,
-                item: val_item,
-            });
+        var found_idx: i64 = -1;
+        for i in out_params.len {
+            if out_params[i].key == key {
+                found_idx = i;
+                break;
+            }
+        }
+        let param = SfParameter { key: key, item: val_item };
+        if found_idx >= 0 {
+            out_params[found_idx] = param;
+        } else if out_params.len < 8 {
+            out_params.push(param);
         }
     }
     out_next = p;
@@ -547,7 +598,16 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
         }
         p = entry_next;
 
-        if out_entries.len < 16 {
+        var found_idx: i64 = -1;
+        for i in out_entries.len {
+            if out_entries[i].key == entry.key {
+                found_idx = i;
+                break;
+            }
+        }
+        if found_idx >= 0 {
+            out_entries[found_idx] = entry;
+        } else if out_entries.len < 16 {
             out_entries.push(entry);
         }
 

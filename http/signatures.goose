@@ -39,6 +39,15 @@ fn sig_sub_len(total: i64, sub: i64) -> i64 {
     return total - sub;
 }
 
+fn is_default_port(scheme: const u8[:], port: i32) -> bool {
+    if port <= 0 { return true; }
+    if eq_ascii_fold(scheme, "http") && port == 80 { return true; }
+    if eq_ascii_fold(scheme, "https") && port == 443 { return true; }
+    if eq_ascii_fold(scheme, "ws") && port == 80 { return true; }
+    if eq_ascii_fold(scheme, "wss") && port == 443 { return true; }
+    return false;
+}
+
 // Extracts special URL components (@authority, @path, @query, @scheme) per RFC 9421 §2.2.6.
 //
 // Example:
@@ -49,6 +58,10 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
     guard view.valid else { return false; }
     if eq_ascii_fold(comp, "@authority") {
         out.append(view.host);
+        if view.port > 0 && !is_default_port(view.scheme, view.port) {
+            out.push(':');
+            core::format_i64_dec(view.port, out);
+        }
         return true;
     }
     if eq_ascii_fold(comp, "@path") {
@@ -86,6 +99,26 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
     return true;
 }
 
+// Extracts and concatenates comma-separated header field values (RFC 9421 §2.1).
+//
+// Example:
+//   headers = [{"date", "Tue, 20 Apr 2021"}], name = "date"
+//   returns: true, out = "Tue, 20 Apr 2021"
+fn extract_combined_header_value<B>(headers: const HeaderItem[:], name: const u8[:], out: B&) -> bool {
+    var found = false;
+    for &h in headers {
+        guard eq_ascii_fold(h.name[..], name) else { continue; }
+        var norm_buf: u8[..1024] = [];
+        guard normalize_header_value(h.value[..], norm_buf) else { continue; }
+        if found {
+            out.append(", ");
+        }
+        out.append(norm_buf[..]);
+        found = true;
+    }
+    return found;
+}
+
 // Extracts component value per RFC 9421 Section 2.
 //
 // Example:
@@ -104,8 +137,7 @@ fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..102
     if comp.len > 0 && comp[0] == '@' {
         return extract_url_component(req.url[..], comp, out);
     }
-    let val = req.header(comp);
-    return normalize_header_value(val, out);
+    return extract_combined_header_value(req.headers[..], comp, out);
 }
 
 fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
@@ -135,8 +167,16 @@ fn extract_response_component_value(
     if is_req {
         return extract_component_value(req, req_comp, out);
     }
-    let val = res.header(comp);
-    return normalize_header_value(val, out);
+    return extract_combined_header_value(res.headers[..], comp, out);
+}
+
+fn append_escaped_string_param<B>(s: const u8[:], out: B&) {
+    for b in s {
+        if b == '"' || b == '\\' {
+            out.push('\\' as u8);
+        }
+        out.push(b);
+    }
 }
 
 // Formats the "@signature-params" inner-list and parameters (RFC 9421 Section 2.5)
@@ -162,17 +202,17 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
     }
     if params.key_id.len > 0 {
         out.append(";keyid=\"");
-        out.append(params.key_id[..]);
+        append_escaped_string_param(params.key_id[..], out);
         out.push('"' as u8);
     }
     if params.alg.len > 0 {
         out.append(";alg=\"");
-        out.append(params.alg[..]);
+        append_escaped_string_param(params.alg[..], out);
         out.push('"' as u8);
     }
     if params.nonce.len > 0 {
         out.append(";nonce=\"");
-        out.append(params.nonce[..]);
+        append_escaped_string_param(params.nonce[..], out);
         out.push('"' as u8);
     }
 }
@@ -243,10 +283,12 @@ fn compute_signature_b64(
         let ed_sig = core::ed25519_sign(seed_arr, sig_base);
         core::base64_encode(ed_sig[..], out);
         return true;
+    } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
+        let hmac_sig = core::hmac_sha256(secret_key, sig_base);
+        core::base64_encode(hmac_sig[..], out);
+        return true;
     }
-    let hmac_sig = core::hmac_sha256(secret_key, sig_base);
-    core::base64_encode(hmac_sig[..], out);
-    return true;
+    return false;
 }
 
 fn verify_crypto_signature(
@@ -262,10 +304,12 @@ fn verify_crypto_signature(
         var sig_arr: u8[64] = [0; 64];
         for i in 64 { sig_arr[i] = received_sig[i]; }
         return core::ed25519_verify(pub_arr, sig_base, sig_arr);
+    } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
+        let expected_sig = core::hmac_sha256(key_bytes, sig_base);
+        guard received_sig.len == expected_sig.len else { return false; }
+        return core::ct_eq_bytes(received_sig, expected_sig[..]);
     }
-    let expected_sig = core::hmac_sha256(key_bytes, sig_base);
-    guard received_sig.len == expected_sig.len else { return false; }
-    return core::ct_eq_bytes(received_sig, expected_sig[..]);
+    return false;
 }
 
 // Parses an RFC 8941 Structured Fields Dictionary for Signature header using SfType.Binary.
@@ -374,6 +418,9 @@ fn verify_http_signature(
     var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
+    let sig_input_val = req.header(rfc::HEADER_SIGNATURE_INPUT);
+    guard sig_input_val.len > 0 else { return false; }
+
     let sig_header_val = req.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
 
@@ -420,6 +467,9 @@ fn verify_http_response_signature(
 
     var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
+
+    let sig_input_val = res.header(rfc::HEADER_SIGNATURE_INPUT);
+    guard sig_input_val.len > 0 else { return false; }
 
     let sig_header_val = res.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }

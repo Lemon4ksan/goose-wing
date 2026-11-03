@@ -486,6 +486,17 @@ fn test_ack_and_pto_engine(t: lit::T&) {
         sub.assert_eq(dec_ack.ecn_ce_count, 2, "ECN CE count matches");
     };
 
+    t.run("PNSpace: Install Keys and Validate Key State") { sub =>
+        var space = internal::PnSpaceState { space_id: internal::PnSpaceId.Handshake, .. };
+        var hp:   u8[16] = [1; 16];
+        var aead: u8[32] = [2; 32];
+        var iv:   u8[12] = [3; 12];
+        let ok = internal::quic_install_pn_space_keys(space, hp[..], aead[..], iv[..], 0x1301);
+        sub.assert_true(ok, "keys installed");
+        sub.assert_true(space.keys_installed, "keys_installed flag set");
+        sub.assert_eq(space.hp_key.len, 16, "hp_key len 16");
+    };
+
     t.run("ACK-02: Optimistic ACK (OACK) Forward-Dated Attack Rejection") { sub =>
         var space = internal::PnSpaceState {
             space_id:         internal::PnSpaceId.ApplicationData,

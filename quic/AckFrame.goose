@@ -61,6 +61,37 @@ struct PnSpaceState {
     loss_time_us:                  u64                   = 0,
     sent_packets:                  SentPacketMeta[..128] = [],
     recv_ranges:                   AckInterval[..64]     = [],
+    hp_key:                        u8[..32]              = [],
+    aead_key:                      u8[..32]              = [],
+    aead_iv:                       u8[..12]              = [],
+    cipher_suite:                  u16                   = 0x1301,
+    keys_installed:                bool                  = false,
+}
+
+// Installs cryptographic keys for a QUIC packet number space (RFC 9001 §5).
+//
+// Example:
+//   space = PnSpaceState { .. }, hp_key = [1; 16], aead_key = [2; 32], aead_iv = [3; 12]
+//   returns: true, space.keys_installed = true
+fn quic_install_pn_space_keys(
+    space:        PnSpaceState&,
+    hp_key:       const u8[:],
+    aead_key:     const u8[:],
+    aead_iv:      const u8[:],
+    cipher_suite: u16 = 0x1301,
+) -> bool {
+    guard hp_key.len <= space.hp_key.cap else { return false; }
+    guard aead_key.len <= space.aead_key.cap else { return false; }
+    guard aead_iv.len <= space.aead_iv.cap else { return false; }
+    space.hp_key.clear();
+    space.hp_key.append(hp_key);
+    space.aead_key.clear();
+    space.aead_key.append(aead_key);
+    space.aead_iv.clear();
+    space.aead_iv.append(aead_iv);
+    space.cipher_suite = cipher_suite;
+    space.keys_installed = true;
+    return true;
 }
 
 struct RttState {
@@ -267,7 +298,9 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
     while i < ranges.len {
         let r = ranges[i];
         if pn > r.largest + 1 {
-            guard ranges.len < ranges.cap else { return false; }
+            if ranges.len >= ranges.cap {
+                ranges.pop();
+            }
             ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
             return true;
         }
@@ -294,7 +327,9 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
         }
         i++;
     }
-    guard ranges.len < ranges.cap else { return false; }
+    if ranges.len >= ranges.cap {
+        return true;
+    }
     ranges.push(AckInterval { smallest: pn, largest: pn });
     return true;
 }
@@ -327,9 +362,9 @@ fn update_rtt(
         rtt.min_rtt_us = latest_rtt;
     }
 
-    var eff_delay = ack_delay;
-    if handshake_confirmed && eff_delay > rtt.max_ack_delay_us {
-        eff_delay = rtt.max_ack_delay_us;
+    var eff_delay: u64 = 0;
+    if handshake_confirmed {
+        eff_delay = if ack_delay > rtt.max_ack_delay_us { rtt.max_ack_delay_us } else { ack_delay };
     }
 
     var adjusted_rtt = latest_rtt;
@@ -511,7 +546,7 @@ fn evaluate_pto_timer(
     let in_flight_count = count_in_flight_eliciting(spaces);
 
     // Priority 3: Client Anti-deadlock PTO
-    if in_flight_count == 0 && !ctx.peer_completed_addr_validation {
+    if !ctx.is_server && in_flight_count == 0 && !ctx.peer_completed_addr_validation {
         let dur = compute_pto_duration(rtt, pto_count, false);
         let sp = if spaces[1].has_sent_packets { PnSpaceId.Handshake } else { PnSpaceId.Initial };
         return PtoTimerDecision {

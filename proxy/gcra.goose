@@ -255,6 +255,7 @@ fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRa
 
 // Finds entry index by client ID, or returns GATEWAY_LIMITER_NONE if absent.
 fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) -> i32 {
+    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
     let n = limiter.entries.len as i32;
     for i in n {
         if limiter.entries[i].in_use && limiter.entries[i].client_id[..] == client_id {
@@ -267,13 +268,20 @@ fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) 
 // Finds an inactive or expired slot, or oldest active slot for replacement.
 fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> i32 {
     let n = limiter.entries.len as i32;
+    for i in n {
+        if !limiter.entries[i].in_use {
+            return i;
+        }
+    }
+    for i in n {
+        if limiter.entries[i].cell.tat_ns <= now_ns {
+            return i;
+        }
+    }
     var oldest_idx:  i32 = GATEWAY_LIMITER_NONE;
     var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
 
     for i in n {
-        if !limiter.entries[i].in_use || limiter.entries[i].cell.tat_ns <= now_ns {
-            return i;
-        }
         if limiter.entries[i].last_seen_ns < oldest_seen {
             oldest_seen = limiter.entries[i].last_seen_ns;
             oldest_idx = i;
@@ -282,26 +290,29 @@ fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> 
     return oldest_idx;
 }
 
-inline fn populate_entry(entry: GatewayClientEntry&, client_id: const u8[:], now_ns: u64) {
+inline fn populate_entry(entry: GatewayClientEntry&, client_id: const u8[:], now_ns: u64) -> bool {
+    guard client_id.len <= 64 else { return false; }
     entry.client_id.clear();
-    let bounded_len = if client_id.len <= 64 { client_id.len } else { 64 };
-    entry.client_id.append(client_id[..bounded_len]);
+    entry.client_id.append(client_id);
     entry.cell.tat_ns = now_ns;
     entry.last_seen_ns = now_ns;
     entry.consecutive_rejects = 0;
     entry.in_use = true;
+    return true;
 }
 
 inline fn push_new_client_slot(limiter: GatewayRateLimiter&, client_id: const u8[:], now_ns: u64) -> i32 {
+    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
     var new_entry = GatewayClientEntry { in_use: false, .. };
-    populate_entry(new_entry, client_id, now_ns);
+    guard populate_entry(new_entry, client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
     limiter.entries.push(new_entry);
     let n = limiter.entries.len as i32;
-    return n - 1;
+    return (core::sub_sat_u64(n as u64, 1)) as i32;
 }
 
 // Allocates or retrieves an existing entry slot in the bounded table.
 fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], now_ns: u64) -> i32 {
+    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
     let existing_idx = find_client_slot(limiter, client_id);
     guard existing_idx == GATEWAY_LIMITER_NONE else { return existing_idx; }
 
@@ -312,7 +323,7 @@ fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], n
     let slot = find_idle_or_oldest_slot(limiter, now_ns);
     guard slot != GATEWAY_LIMITER_NONE && slot < limiter.entries.len else { return GATEWAY_LIMITER_NONE; }
 
-    populate_entry(limiter.entries[slot], client_id, now_ns);
+    guard populate_entry(limiter.entries[slot], client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
     return slot;
 }
 
@@ -382,7 +393,7 @@ inline fn deactivate_client_slot(entry: GatewayClientEntry&) {
 }
 
 inline fn inc_evicted_count(cnt: i32&) {
-    cnt = cnt + 1;
+    cnt = (core::add_sat_u64(cnt as u64, 1)) as i32;
 }
 
 // Evicts idle entries exceeding max_idle_ns that have no pending TAT delay.

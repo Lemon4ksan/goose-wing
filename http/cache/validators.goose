@@ -295,7 +295,7 @@ fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc:
        eq_ascii_fold(name, "clear-site-data")) {
         return true;
     }
-    if is_private_field(cc, name) && cc.private_fields.len > 0 { return true; }
+    if shared && is_private_field(cc, name) && cc.private_fields.len > 0 { return true; }
     if is_no_cache_field(cc, name) && cc.no_cache_fields.len > 0 { return true; }
     return false;
 }

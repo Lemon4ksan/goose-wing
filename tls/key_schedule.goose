@@ -217,9 +217,11 @@ fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -
         let hs = core::hkdf_extract_384(derived[..48], ecdhe_shared_secret);
         for i in 48 { ks.current_secret[i] = hs[i]; }
     } else {
+        core::secure_zeroize_48(derived);
         return false;
     }
 
+    core::secure_zeroize_48(derived);
     ks.stage = KS_STAGE_HANDSHAKE;
     return true;
 }
@@ -280,9 +282,11 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         let ms = core::hkdf_extract_384(derived[..48], zero_ikm);
         for i in 48 { ks.current_secret[i] = ms[i]; }
     } else {
+        core::secure_zeroize_48(derived);
         return false;
     }
 
+    core::secure_zeroize_48(derived);
     ks.stage = KS_STAGE_MASTER;
 
     let ok_c = derive_secret(
@@ -384,6 +388,7 @@ fn ks_export_keying_material(
     );
 
     core::secure_zeroize_48(intermediate);
+    core::secure_zeroize_48(ctx_hash);
     return ok;
 }
 
@@ -587,6 +592,15 @@ fn strike_register_rotate(reg: ZeroRttStrikeRegister&, now_ms: i64) {
     }
 }
 
+fn strike_register_insert_bits(bitmap: u64[64]&, ticket_id: const u8[:], seeds: const u32[4]&) {
+    for i in 4 {
+        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
+        let word_idx = (bit / 64) as i64;
+        let bit_mask: u64 = (1 as u64) << (bit % 64);
+        bitmap[word_idx] |= bit_mask;
+    }
+}
+
 // Checks if ticket_id was already accepted; if not, registers it and returns true.
 // Returns false on replay detection, invalid arguments, or backward clock skew.
 fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: const u8[:], now_ms: i64) -> bool {
@@ -621,12 +635,11 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
         return false;
     }
 
-    // Insert into current bitmap
-    for i in 4 {
-        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
-        let word_idx = (bit / 64) as i64;
-        let bit_mask: u64 = (1 as u64) << (bit % 64);
-        reg.bitmap_current[word_idx] |= bit_mask;
+    // Insert into appropriate bitmap
+    if epoch == reg.current_epoch - 1 {
+        strike_register_insert_bits(reg.bitmap_previous, ticket_id, seeds);
+    } else {
+        strike_register_insert_bits(reg.bitmap_current, ticket_id, seeds);
     }
 
     return true;

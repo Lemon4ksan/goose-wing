@@ -15,7 +15,7 @@ Layer 7 Reverse Proxy Gateway, Upstream Load Balancing, Active Background Health
 - **`fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32)`**: Aborts in-flight request on client disconnect, timeout, or network error.
 - **`fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64)`**: Dynamically reconfigures gateway GCRA rate limit parameters.
 - **`fn filter_and_forward_headers(in_headers: const HeaderMap&, out_headers: HeaderMap&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const ProxyConfig&) -> bool`**: Strips hop-by-hop headers, normalizes Content-Length/Transfer-Encoding framing, and injects `Via` and `X-Forwarded-*` metadata.
-- **`fn serialize_upstream_request(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: u8[>..]&)`**: Serializes upstream HTTP request buffer.
+- **`fn serialize_upstream_request(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: u8[>..]&, http_version: const u8[:] = "HTTP/1.1")`**: Serializes upstream HTTP request buffer.
 
 ### Load Balancer & Circuit Breaker (`load_balancer.goose`)
 
@@ -45,8 +45,11 @@ Layer 7 Reverse Proxy Gateway, Upstream Load Balancing, Active Background Health
 - **`fn evaluate_probe_response(status_code: u16, config: const HealthCheckConfig&) -> bool`**: Validates probe HTTP status code against expected status.
 - **`struct ClusterHealthChecker`**: Multi-target background health check coordinator.
 - **`fn new_cluster_health_checker(config: HealthCheckConfig = HealthCheckConfig { .. }) -> ClusterHealthChecker`**: Initializes cluster prober.
-- **`fn register_target_health(checker: ClusterHealthChecker&, target_idx: i32) -> bool`**: Registers an upstream target slot for probing.
-- **`fn tick_health_checks(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, now_ms: u64)`**: Drives probing lifecycle and synchronizes cluster health states.
+- **`fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) -> bool`**: Registers an upstream target slot for probing.
+- **`fn poll_next_probe(checker: ClusterHealthChecker&, cluster: const UpstreamCluster&, now_ms: u64, out_wire: u8[>..]&) -> i32, bool`**: Drives probing lifecycle and prepares active HTTP health probe wire request.
+- **`fn on_probe_success(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, target_idx: i32, rtt_us: u32) -> HealthState`**: Handles active probe success, resetting failures and advancing target state machine.
+- **`fn on_probe_failure(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, target_idx: i32) -> HealthState`**: Handles active probe failure, advancing failure count and tripping circuit state.
+- **`fn check_probe_timeouts(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, now_ms: u64) -> i32`**: Sweeps timed-out active health check probes in flight.
 
 ### Generic Cell Rate Algorithm Rate Limiter (`gcra.goose`)
 

@@ -279,6 +279,19 @@ inline fn read_version_u32_be(src: const u8[:]) -> u32 {
     return v3 as u32;
 }
 
+// Decodes a big-endian truncated packet number of 1-4 bytes (RFC 9000 §17.1).
+//
+// Example:
+//   src = [0x01, 0x02], idx = 0, pn_len = 2
+//   returns: 0x0102
+inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) -> u64 {
+    var pn_val: u64 = 0;
+    for i in pn_len {
+        pn_val = (pn_val << 8) | src[idx + i];
+    }
+    return pn_val;
+}
+
 // Parses a QUIC Long Header (RFC 9000 §17.2).
 //
 // Example:
@@ -334,6 +347,7 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     let ipn: i64 = hdr.pn_length;
     let hdr_end = idx + ipn;
     guard plen >= hdr.pn_length && hdr_end <= src.len else { return hdr, false; }
+    hdr.packet_number = decode_unmasked_pn(src, idx, ipn);
     hdr.header_len = hdr_end as u32;
     return hdr, true;
 }
@@ -371,6 +385,7 @@ fn parse_quic_short_header(
     let ipn: i64 = hdr.pn_length;
     let hdr_end = idx + ipn;
     guard hdr_end <= src.len else { return hdr, false; }
+    hdr.packet_number = decode_unmasked_pn(src, idx, ipn);
     hdr.header_len = hdr_end as u32;
     return hdr, true;
 }
@@ -389,13 +404,22 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
     return parse_quic_short_header(src, first, dcid_len_short);
 }
 
-// Builds the first byte of a QUIC Long Header (RFC 9000 §17.2).
+// Builds the first byte of a QUIC Long Header (RFC 9000 §17.2, RFC 9369 §3.2).
 //
 // Example:
-//   ht = QuicHeaderType.Initial, pn_bits = 0
+//   ht = QuicHeaderType.Initial, pn_bits = 0, version = 1
 //   returns: 0xC0, ok = true
-fn build_long_header_first_byte(ht: QuicHeaderType, pn_bits: u8) -> u8, bool {
+fn build_long_header_first_byte(ht: QuicHeaderType, pn_bits: u8, version: u32 = rfc::QUIC_VERSION_1) -> u8, bool {
     let base = 0xC0 | pn_bits;
+    if version == rfc::QUIC_VERSION_2 {
+        match ht {
+            Initial => { return base | 0x10, true; },
+            ZeroRtt => { return base | 0x20, true; },
+            Handshake => { return base | 0x30, true; },
+            Retry => { return base, true; },
+            _ => { return 0, false; },
+        }
+    }
     match ht {
         Initial => { return base, true; },
         ZeroRtt => { return base | 0x10, true; },
@@ -406,7 +430,7 @@ fn build_long_header_first_byte(ht: QuicHeaderType, pn_bits: u8) -> u8, bool {
 }
 
 fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bits: u8) -> bool {
-    let b0, ok_b0 = build_long_header_first_byte(hdr.header_type, pn_bits);
+    let b0, ok_b0 = build_long_header_first_byte(hdr.header_type, pn_bits, hdr.version);
     guard ok_b0 else { return false; }
     out.push(b0);
     core::append_u32_be(out, hdr.version);
@@ -661,6 +685,7 @@ const ARENA_MAX_BYTES:  u64 = 16384;
 struct SegmentedArena {
     chunks:           u8[..16384] = [],
     allocated_chunks: i32         = 0,
+    data_len:         i64         = 0,
 }
 
 // Allocates a single 1024-byte chunk inside the bounded 16-chunk arena.
@@ -687,19 +712,26 @@ fn arena_ensure_bytes(arena: SegmentedArena&, needed_bytes: u64) -> bool {
 // Shifts out `consumed` bytes from the front of the segmented arena and updates `allocated_chunks`.
 fn arena_consume_front(arena: SegmentedArena&, consumed: i64) {
     guard consumed > 0 else { return; }
-    if consumed >= arena.chunks.len {
+    if consumed >= arena.data_len {
         arena.chunks.clear();
         arena.allocated_chunks = 0;
+        arena.data_len = 0;
         return;
     }
-    let remaining = arena.chunks.len - consumed;
+    let remaining = arena.data_len - consumed;
     for i in remaining {
         arena.chunks[i] = arena.chunks[consumed + i];
     }
-    let chunks_needed = (remaining + 1023) >> 10;
-    let new_byte_len = chunks_needed << 10;
-    arena.chunks.resize(new_byte_len, 0);
-    arena.allocated_chunks = chunks_needed as i32;
+    arena.data_len = remaining;
+    if remaining == 0 {
+        arena.chunks.clear();
+        arena.allocated_chunks = 0;
+    } else {
+        let chunks_needed = (remaining + 1023) >> 10;
+        let new_byte_len = chunks_needed << 10;
+        arena.chunks.resize(new_byte_len, 0);
+        arena.allocated_chunks = chunks_needed as i32;
+    }
 }
 
 struct ReassemblyBuffer {
@@ -760,6 +792,17 @@ fn validate_fin_constraints(buf: ReassemblyBuffer&, frag_end: u64) -> bool {
     return true;
 }
 
+inline fn arena_write_payload(arena: SegmentedArena&, base_slab: i64, payload: const u8[:], payload_skip: i64) {
+    let copy_len = payload.len - payload_skip;
+    for idx in copy_len {
+        arena.chunks[base_slab + idx] = payload[payload_skip + idx];
+    }
+    let write_end = base_slab + copy_len;
+    if write_end > arena.data_len {
+        arena.data_len = write_end;
+    }
+}
+
 // Inserts incoming STREAM or CRYPTO fragment, enforcing flow control, FIN, and SegmentedArena bounds.
 fn insert_fragment(
     buf:     ReassemblyBuffer&,
@@ -790,11 +833,8 @@ fn insert_fragment(
 
     guard arena_ensure_bytes(buf.arena, needed_len) else { return false; }
 
-    let copy_len = payload.len - payload_skip;
     let base_slab = (eff_start - buf.consumed_offset) as i64;
-    for idx in copy_len {
-        buf.arena.chunks[base_slab + idx] = payload[payload_skip + idx];
-    }
+    arena_write_payload(buf.arena, base_slab, payload, payload_skip);
 
     guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
     return true;

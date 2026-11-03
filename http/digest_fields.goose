@@ -137,16 +137,16 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(header_val, entries) else { return false; }
 
+    var matched_any = false;
     for &entry in entries {
         let is_sha256 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA256);
         let is_sha512 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA512);
         if is_sha256 || is_sha512 {
-            if verify_single_digest_entry(entry, data) {
-                return true;
-            }
+            guard verify_single_digest_entry(entry, data) else { return false; }
+            matched_any = true;
         }
     }
-    return false;
+    return matched_any;
 }
 
 // Verifies Request Content-Digest header against req.body.

@@ -71,11 +71,16 @@ fn evaluate_tier1_retry<Req>(
     headers_received:  bool = false,
 ) -> Tier1Decision {
     // Chromium QUIC protocol fallback: automatically retry over TCP/TLS before headers
+    // strictly requiring idempotent method or idempotency key, and rewindable/unconsumed body.
     if err_code == ERR_QUIC_PROTOCOL_ERROR && !headers_received {
-        return Tier1Decision {
-            retry_immediately:            true,
-            disable_alternative_services: true,
-        };
+        let idempotent = is_idempotent_method(req.method[..]) || has_idempotency_key(req);
+        let rewindable_ok = req.body.len == 0 || (req.rewindable && !req.body_consumed);
+        if idempotent && rewindable_ok {
+            return Tier1Decision {
+                retry_immediately:            true,
+                disable_alternative_services: true,
+            };
+        }
     }
 
     let retry_ok = should_retry_tier1_stale_socket(reused_connection, req, headers_received);

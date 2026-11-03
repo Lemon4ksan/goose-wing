@@ -432,7 +432,7 @@ inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
 // Example:
 //   src = [largest_acked=10, delay=0, range_count=0, first_range=5], idx = 0, is_ecn = false
 //   returns: QuicFrame { frame_type: Ack, offset: 10, length: 5 }, ok = true
-inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool) -> QuicFrame, bool {
+inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool, frame_start: i64 = 0) -> QuicFrame, bool {
     let largest_acked, ok_la = quic_decode_varint_cursor(src, idx);
     guard ok_la else { return QuicFrame { .. }, false; }
 
@@ -455,12 +455,14 @@ inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool) -> 
 
     let k = if is_ecn { QuicFrameType.AckEcn } else { QuicFrameType.Ack };
     let raw = if is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
+    let payload_slice = if frame_start >= 0 && frame_start <= idx { src[frame_start..idx] } else { src[..0] };
     return QuicFrame {
         frame_type: k,
         raw_type:   raw,
         offset:     largest_acked,
         length:     first_range,
         max_data:   ack_delay,
+        payload:    payload_slice,
     }, true;
 }
 
@@ -816,7 +818,7 @@ inline fn demux_stream_control_frame(src: const u8[:], idx: i64&, ftype: u64) ->
 // Example:
 //   src = [0x00, ...], idx = 0, ftype = QUIC_FRAME_PING (0x01)
 //   returns: QuicFrame { frame_type: Ping, raw_type: 0x01 }, ok = true
-fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64, frame_start: i64 = 0) -> QuicFrame, bool {
     if ftype == rfc::QUIC_FRAME_PADDING {
         return QuicFrame {
             frame_type: QuicFrameType.Padding,
@@ -831,7 +833,7 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool 
         }, true;
     }
     if ftype == rfc::QUIC_FRAME_ACK || ftype == rfc::QUIC_FRAME_ACK_ECN {
-        return decode_ack_frame_cursor(src, idx, ftype == rfc::QUIC_FRAME_ACK_ECN);
+        return decode_ack_frame_cursor(src, idx, ftype == rfc::QUIC_FRAME_ACK_ECN, frame_start);
     }
     if ftype == rfc::QUIC_FRAME_RESET_STREAM || ftype == rfc::QUIC_FRAME_STOP_SENDING {
         return demux_stream_control_frame(src, idx, ftype);
@@ -1035,7 +1037,7 @@ fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     var ok:    bool      = false;
 
     if ftype <= 0x11 {
-        frame, ok = demux_core_frame(src, idx, ftype);
+        frame, ok = demux_core_frame(src, idx, ftype, initial_idx);
     } else if ftype == rfc::QUIC_FRAME_MAX_STREAMS_BIDI || ftype == rfc::QUIC_FRAME_MAX_STREAMS_UNI ||
        ftype == rfc::QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == rfc::QUIC_FRAME_STREAMS_BLOCKED_UNI {
         frame, ok = demux_streams_limit_frame(src, idx, ftype);

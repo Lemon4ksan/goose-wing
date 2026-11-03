@@ -274,6 +274,64 @@ fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
     return alpn_off == val.len;
 }
 
+// Parses mandatory SvcParamKeys list (RFC 9460 §8).
+//
+// Example:
+//   val = [0x00, 0x01]
+//   returns: true
+fn parse_mandatory_svc_param(val: const u8[:]) -> bool {
+    // RFC 9460 §8: Mandatory list of 2-octet SvcParamKeys in ascending order
+    guard val.len > 0 && (val.len % 2) == 0 else { return false; }
+    var m_off:      i64 = 0;
+    var last_m_key: i32 = -1;
+    while m_off + 2 <= val.len {
+        let req_key = ((val[m_off] as u16) << 8) | val[m_off + 1];
+        let rk_i32 = req_key as i32;
+        // Keys in mandatory list MUST NOT include 0 and MUST be strictly increasing and supported
+        let in_range = req_key >= 1 && req_key <= rfc::SVC_PARAM_IPV6HINT;
+        guard rk_i32 > last_m_key && in_range else { return false; }
+        last_m_key = rk_i32;
+        m_off += 2;
+    }
+    return true;
+}
+
+// Parses IPv4 hints parameter from SVCB/HTTPS RDATA (RFC 9460 §7.1).
+//
+// Example:
+//   val = [192, 0, 2, 1]
+//   returns: true
+fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
+    guard val.len > 0 && (val.len % 4) == 0 else { return false; }
+    var ip_off: i64 = 0;
+    while ip_off + 4 <= val.len {
+        guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
+        let hi = ((val[ip_off] as u32) << 24) | ((val[ip_off + 1] as u32) << 16);
+        let lo = ((val[ip_off + 2] as u32) << 8) | val[ip_off + 3];
+        rec.ipv4_hints.push(hi | lo);
+        ip_off += 4;
+    }
+    return true;
+}
+
+// Parses IPv6 hints parameter from SVCB/HTTPS RDATA (RFC 9460 §7.1).
+//
+// Example:
+//   val = [0x20, 0x01, ..., 0x01] (16 bytes)
+//   returns: true
+fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
+    guard val.len > 0 && (val.len % 16) == 0 else { return false; }
+    var ip_off: i64 = 0;
+    while ip_off + 16 <= val.len {
+        guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
+        var ip6: u8[16] = [0; 16];
+        for i in 16 { ip6[i] = val[ip_off + i]; }
+        rec.ipv6_hints.push(ip6);
+        ip_off += 16;
+    }
+    return true;
+}
+
 // Parses SvcParams list from HTTPS/SVCB RDATA according to RFC 9460 §2.1 & §2.2.
 // Keys MUST be in strictly ascending order with valid lengths; truncated records are rejected.
 //
@@ -298,7 +356,9 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         let val = rdata[off..off + val_len];
         off += val_len;
 
-        if key == rfc::SVC_PARAM_ALPN {
+        if key == rfc::SVC_PARAM_MANDATORY {
+            guard parse_mandatory_svc_param(val) else { return false; }
+        } else if key == rfc::SVC_PARAM_ALPN {
             guard parse_alpn_svc_param(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_NO_DEFAULT_ALPN {
             guard val.len == 0 else { return false; }
@@ -307,25 +367,9 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
             guard val.len == 2 else { return false; }
             rec.port = ((val[0] as u16) << 8) | val[1];
         } else if key == rfc::SVC_PARAM_IPV4HINT {
-            guard val.len > 0 && (val.len % 4) == 0 else { return false; }
-            var ip_off: i64 = 0;
-            while ip_off + 4 <= val.len {
-                guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
-                let hi = ((val[ip_off] as u32) << 24) | ((val[ip_off + 1] as u32) << 16);
-                let lo = ((val[ip_off + 2] as u32) << 8) | val[ip_off + 3];
-                rec.ipv4_hints.push(hi | lo);
-                ip_off += 4;
-            }
+            guard parse_ipv4_hints(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_IPV6HINT {
-            guard val.len > 0 && (val.len % 16) == 0 else { return false; }
-            var ip_off: i64 = 0;
-            while ip_off + 16 <= val.len {
-                guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
-                var ip6: u8[16] = [0; 16];
-                for i in 16 { ip6[i] = val[ip_off + i]; }
-                rec.ipv6_hints.push(ip6);
-                ip_off += 16;
-            }
+            guard parse_ipv6_hints(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_ECH {
             // Raw wire bytes of ECHConfigList (RFC 9460 §5)
             guard val.len <= rec.ech_config_list.cap else { return false; }
@@ -356,9 +400,9 @@ fn parse_dns_answer_record(
     let rdata = raw[rdata_start..rdata_start + rdlength];
     if rtype == rfc::DNS_QTYPE_A {
         guard rdlength == 4 && out.a_records.len < out.a_records.cap else { return false; }
-        let ip4 = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16) |
-                  ((rdata[2] as u32) << 8) | rdata[3];
-        out.a_records.push(ip4);
+        let ip_hi = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16);
+        let ip_lo = ((rdata[2] as u32) << 8) | rdata[3];
+        out.a_records.push(ip_hi | ip_lo);
     } else if rtype == rfc::DNS_QTYPE_AAAA {
         guard rdlength == 16 && out.aaaa_records.len < out.aaaa_records.cap else { return false; }
         var ip6: u8[16] = [0; 16];
@@ -381,36 +425,22 @@ fn parse_dns_answer_record(
     return true;
 }
 
-// Parses a complete DNS response wire message (RFC 1035 §4.1.2).
-//
-// Example:
-//   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
-//   returns: ok = true, out.rcode = 0, out.answer_count = 1
-fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
-    guard raw.len >= 12 else { return false; }
-
-    out.tx_id = ((raw[0] as u16) << 8) | raw[1];
-    let flags = ((raw[2] as u16) << 8) | raw[3];
-    out.is_response = ((flags >> 15) & 1) == 1;
-    out.rcode = (flags & 0x0F) as u8;
-
-    out.question_count = ((raw[4] as u16) << 8) | raw[5];
-    out.answer_count = ((raw[6] as u16) << 8) | raw[7];
-    out.min_ttl_sec = if out.answer_count > 0 { 0xFFFFFFFF } else { 0 };
-
-    guard out.rcode == rfc::DNS_RCODE_NOERROR else { return true; }
-
-    var off: i64 = 12;
-
-    // Skip question section
-    for q in out.question_count {
+fn skip_dns_questions(raw: const u8[:], off: i64&, count: u16) -> bool {
+    for q in count {
         var qname: u8[..255] = [];
         guard dns_decode_name(raw, off, qname) else { return false; }
         guard off + 4 <= raw.len else { return false; }
         off += 4; // Skip QTYPE and QCLASS
     }
+    return true;
+}
 
-    // Parse answer section
+// Parses DNS resource records from the Answer section (RFC 1035 §4.1.3).
+//
+// Example:
+//   raw = dns_response_wire, off = 12, out = DnsResponse { answer_count: 1 }
+//   returns: true, off advanced past answer section
+fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
     for a in out.answer_count {
         var aname: u8[..255] = [];
         guard dns_decode_name(raw, off, aname) else { return false; }
@@ -427,10 +457,39 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
         off += 10;
         guard off + rdlength <= raw.len else { return false; }
 
-        guard parse_dns_answer_record(raw, rtype, rdlength, off, out) else { return false; }
+        if rclass == rfc::DNS_QCLASS_IN {
+            guard parse_dns_answer_record(raw, rtype, rdlength, off, out) else { return false; }
+        }
         off += rdlength;
     }
+    return true;
+}
 
+// Parses a complete DNS response wire message (RFC 1035 §4.1.2).
+//
+// Example:
+//   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
+//   returns: ok = true, out.rcode = 0, out.answer_count = 1
+fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
+    guard raw.len >= 12 else { return false; }
+
+    out.tx_id = ((raw[0] as u16) << 8) | raw[1];
+    let flags = ((raw[2] as u16) << 8) | raw[3];
+    out.is_response = ((flags >> 15) & 1) == 1;
+    guard out.is_response else { return false; }
+    // RFC 1035 §4.1.1: TC (bit 9) - TrunCation
+    guard (flags & 0x0200) == 0 else { return false; }
+    out.rcode = (flags & 0x0F) as u8;
+
+    out.question_count = ((raw[4] as u16) << 8) | raw[5];
+    out.answer_count = ((raw[6] as u16) << 8) | raw[7];
+    out.min_ttl_sec = if out.answer_count > 0 { 0xFFFFFFFF } else { 0 };
+
+    guard out.rcode == rfc::DNS_RCODE_NOERROR else { return true; }
+
+    var off: i64 = 12;
+    guard skip_dns_questions(raw, off, out.question_count) else { return false; }
+    guard parse_dns_answers(raw, off, out) else { return false; }
     return true;
 }
 
@@ -490,7 +549,7 @@ fn dns_cache_lookup(
     out_entry: DnsCacheEntry&,
 ) -> DnsCacheStatus {
     for &e in cache.entries {
-        if e.valid && e.qtype == qtype && e.domain[..] == domain {
+        if e.valid && e.qtype == qtype && core::eq_ascii_fold(e.domain[..], domain) {
             let elapsed = now_sec - e.inserted_at_sec;
             if elapsed < e.ttl_sec {
                 out_entry = e;
@@ -511,7 +570,7 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
     for i in cache.entries.len {
         let is_match = cache.entries[i].valid &&
             cache.entries[i].qtype == entry.qtype &&
-            cache.entries[i].domain[..] == entry.domain[..];
+            core::eq_ascii_fold(cache.entries[i].domain[..], entry.domain[..]);
         if is_match {
             cache.entries[i] = entry;
             cache.entries[i].valid = true;

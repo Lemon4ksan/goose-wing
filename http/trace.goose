@@ -198,6 +198,20 @@ fn is_valid_tracestate_val(val: const u8[:]) -> bool {
     return true;
 }
 
+fn find_tracestate_entry_bounds(raw: const u8[:], cursor: i64, out_eq: i64&, out_comma: i64&) {
+    var i = cursor;
+    while i < raw.len {
+        let b = raw[i];
+        if b == '=' && out_eq < 0 {
+            out_eq = i;
+        } else if b == ',' {
+            out_comma = i;
+            break;
+        }
+        i++;
+    }
+}
+
 // Parses W3C `tracestate` header: comma-separated list of key=val pairs.
 //
 // Example:
@@ -212,27 +226,20 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         let trimmed_lead = core::trim_lws_start(rem);
         cursor += rem.len - trimmed_lead.len;
         if cursor == raw.len { break; }
+        if raw[cursor] == ',' {
+            cursor++;
+            continue;
+        }
 
-        // Find end of entry or next comma
         var eq_pos:    i64 = -1;
         var comma_pos: i64 = -1;
-        var i = cursor;
-        while i < raw.len {
-            let b = raw[i];
-            if b == '=' && eq_pos < 0 {
-                eq_pos = i;
-            } else if b == ',' {
-                comma_pos = i;
-                break;
-            }
-            i++;
-        }
+        find_tracestate_entry_bounds(raw, cursor, eq_pos, comma_pos);
 
         let entry_end = if comma_pos >= 0 { comma_pos } else { raw.len };
         guard eq_pos > cursor && eq_pos < entry_end else { return ts, false; }
 
         let k_raw = raw[cursor..eq_pos];
-        let v_raw = raw[eq_pos + 1..entry_end];
+        let v_raw = core::trim_lws_end(raw[eq_pos + 1..entry_end]);
 
         guard is_valid_tracestate_key(k_raw) else { return ts, false; }
         guard is_valid_tracestate_val(v_raw) else { return ts, false; }

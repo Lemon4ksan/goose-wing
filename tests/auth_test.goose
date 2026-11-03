@@ -175,8 +175,8 @@ fn test_rfc7616_userhash_options(t: lit::T&) {
         let ok_resp = wing::compute_digest_response(chal, creds, method, uri, 1, cnonce, "", out_hdr);
         sub.assert_true(ok_resp, "Digest response computed for SHA-512-256");
 
-        let expected_userhash = "793263caabb707a56211940d90411ea4a575adeccb7e360aeb624ed06ece9b0b";
-        let expected_response = "3798d4131c277846293534c3edc11bd8a5e4cdcbff78b05db9d95eeb1cec68a5";
+        let expected_userhash = "488869477bf257147b804c45308cd62ac4e25eb717b12b298c79e62dcea254ec";
+        let expected_response = "ae66e67d6b427bd3f120414a82e4acff38e8ecd9101d6c861229025f607a79dd";
 
         sub.assert_true(core::contains(out_hdr[..], expected_userhash), "Hashed username matches official RFC 7616 Section 3.9.2 vector");
         sub.assert_true(core::contains(out_hdr[..], expected_response), "Response hash matches official RFC 7616 Section 3.9.2 vector");
@@ -1160,6 +1160,38 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
             wing::is_safe_remote_jwks_url("https://example.com:8080/jwks.json"),
             "Non-standard port 8080 rejected",
         );
+        sub.assert_true(
+            wing::is_safe_remote_jwks_url("https://auth.example.com./jwks.json"),
+            "Trailing dot on public domain accepted",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://localhost./jwks.json"),
+            "Trailing dot on localhost rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://[::ffff:127.0.0.1]/jwks.json"),
+            "IPv4-mapped IPv6 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://[::1]/jwks.json"),
+            "IPv6 loopback [::1] rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://[0:0:0:0:0:0:0:1]/jwks.json"),
+            "IPv6 loopback [0:0:0:0:0:0:0:1] rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://2130706433/jwks.json"),
+            "Integer IPv4 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://0x7f000001/jwks.json"),
+            "Hex IPv4 rejected",
+        );
+        sub.assert_false(
+            wing::is_safe_remote_jwks_url("https://0177.0.0.1/jwks.json"),
+            "Octal IPv4 rejected",
+        );
 
         // 9. Oversized token DoS bounds
         var huge_token: u8[>..] = [];
@@ -1508,22 +1540,37 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP Proof JWK Thumbprint Confirmation (jkt / RFC 9449 §6.1)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
-        let expected_jkt = "0ZcOCORZTXDEZytrEBBlSz2bTHTNVrQSnXDtfSTXvt8";
+        var seed: u8[32] = [0; 32];
+        for i in 32 {
+            if i < key.len {
+                seed[i] = key[i];
+            }
+        }
+        let pub_key = core::ed25519_public_key(seed);
+        var x_b64: u8[..64] = [];
+        core::base64url_encode(pub_key[..], x_b64);
+        var canonical: u8[..128] = [];
+        canonical.append("{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"");
+        canonical.append(x_b64[..]);
+        canonical.append("\"}");
+        let digest = core::sha256(canonical[..]);
+        var real_jkt: u8[..64] = [];
+        core::base64url_encode(digest[..], real_jkt);
 
         var c_json: u8[..512] = [];
         c_json.append("{\"jti\":\"jti-jkt-01\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/token\",\"iat\":1714000000,\"jkt\":\"");
-        c_json.append(expected_jkt);
+        c_json.append(real_jkt[..]);
         c_json.append("\"}");
 
         var token: u8[..1024] = [];
         make_test_dpop_token(key, c_json[..], token);
 
         // Direct claim verification
-        sub.assert_true(wing::verify_dpop_jkt(c_json[..], expected_jkt), "verify_dpop_jkt succeeds on matching thumbprint");
+        sub.assert_true(wing::verify_dpop_jkt(c_json[..], real_jkt[..]), "verify_dpop_jkt succeeds on matching thumbprint");
         sub.assert_false(wing::verify_dpop_jkt(c_json[..], "wrong_thumbprint_value_12345678901234567890"), "verify_dpop_jkt fails on wrong thumbprint");
 
         // Proof verification with expected_jkt
-        let ok_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, expected_jkt);
+        let ok_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, real_jkt[..]);
         sub.assert_true(ok_proof, "verify_dpop_proof succeeds when jkt matches");
 
         let fail_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");

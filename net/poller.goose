@@ -181,6 +181,30 @@ fn find_by_tag(p: const Poller&, tag: u64) -> i64 {
     return -1;
 }
 
+inline fn poller_bind_native_registration(
+    p:        Poller&,
+    fd:       i32,
+    tag:      u64,
+    interest: PollInterest,
+    trigger:  PollTrigger,
+) {
+    if p.kqueue_fd >= 0 {
+        var ev = internal::Kevent { .. };
+        let edge = trigger == PollTrigger.Edge;
+        if interest == PollInterest.Read || interest == PollInterest.ReadWrite {
+            internal::kevent_prep_read(ev, fd, tag, edge);
+        } else if interest == PollInterest.Write {
+            internal::kevent_prep_write(ev, fd, tag, edge);
+        }
+    }
+}
+
+inline fn poller_bind_native_deregister(p: Poller&, fd: i32) {
+    if p.kqueue_fd >= 0 {
+        var ev = internal::Kevent { ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, .. };
+    }
+}
+
 fn register_socket(
     p:        Poller&,
     fd:       i32,
@@ -204,6 +228,7 @@ fn register_socket(
             p.registrations[i].sim.bytes = 0;
             p.registrations[i].sim.eof = false;
             p.active_fd_count += 1;
+            poller_bind_native_registration(p, fd, tag, interest, trigger);
             return true;
         }
     }
@@ -223,6 +248,7 @@ fn modify_socket(
     p.registrations[idx].tag = tag;
     p.registrations[idx].interest = interest;
     p.registrations[idx].trigger = trigger;
+    poller_bind_native_registration(p, fd, tag, interest, trigger);
     return true;
 }
 
@@ -239,6 +265,7 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     if p.active_fd_count > 0 {
         p.active_fd_count -= 1;
     }
+    poller_bind_native_deregister(p, fd);
     return true;
 }
 
@@ -334,7 +361,13 @@ fn set_socket_timeout(p: Poller&, fd: i32, seconds: u32) -> bool {
     if seconds == 0 {
         p.registrations[idx].timeout = COARSE_TIMEOUT_DISABLED;
     } else {
-        let delta_ticks: u32 = (seconds + 3) >> 2;
+        var delta_ticks: u32 = (seconds + 3) >> 2;
+        if delta_ticks >= 240 {
+            delta_ticks = 239;
+        }
+        if delta_ticks == 0 {
+            delta_ticks = 1;
+        }
         p.registrations[idx].timeout = ((p.global_coarse_tick + delta_ticks) % 240) as u8;
     }
     return true;
@@ -440,6 +473,16 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 
 // ---- Polling Execution --------------------------------------------------
 
+inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64) {
+    if p.kqueue_fd >= 0 {
+        internal::native_kqueue_kevent(p.kqueue_fd, 0, 0, 0, 64, timeout_ms * 1000000);
+    } else if p.uring_ring_fd >= 0 {
+        internal::native_uring_enter(p.uring_ring_fd, 0, 1, 0);
+    } else if p.rio_cq_id != 0 {
+        internal::native_rio_dequeue_completion(p.rio_cq_id, 0, 64);
+    }
+}
+
 // Gathers readiness events and expired timers into out_events without heap allocations.
 // Returns total number of ready events harvested.
 fn poll_events(
@@ -450,6 +493,7 @@ fn poll_events(
 ) -> i32 {
     out_events.clear();
     p.total_polls += 1;
+    poller_poll_native_drivers(p, timeout_ms);
 
     // 1. Process Expired High-Resolution Timers First
     let timers_fired = check_expired_timers(p, now_ns, out_events);
@@ -662,14 +706,41 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     return count;
 }
 
+inline fn trim_write_buffer(buf: u8[..4096]&, sent: i64) {
+    let write_len = buf.len;
+    guard sent > 0 && sent <= write_len else { return; }
+    let remaining = write_len - sent;
+    for i in remaining {
+        buf[i] = buf[sent + i];
+    }
+    while buf.len > remaining {
+        buf.pop();
+    }
+}
+
+inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
+    guard fd >= 0 else {
+        let count = buf.len;
+        buf.clear();
+        return count;
+    }
+    let sent = tcp_send(fd, buf[..]);
+    if sent <= 0 {
+        let count = buf.len;
+        buf.clear();
+        return count;
+    }
+    let sent_i64 = sent as i64;
+    trim_write_buffer(buf, sent_i64);
+    return sent_i64;
+}
+
 // Flushes outgoing queued write buffer
 fn flush_writes(ev_loop: EventLoop&, tag: u64) -> i64 {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return 0; }
-    let count = ev_loop.buffers[b_idx].write_buf.len;
-    ev_loop.buffers[b_idx].write_buf.clear();
     ev_loop.buffers[b_idx].write_offset = 0;
-    return count;
+    return flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
 }
 
 // Runs a single non-blocking event loop iteration, dispatching harvested events to handler

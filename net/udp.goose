@@ -76,11 +76,28 @@ struct UdpBatchQueue {
     total_recvd:     u64               = 0,
 }
 
+inline fn shift_unsent_messages(queue: UdpBatchQueue&, sent_count: i32, count: i32) {
+    let remaining = (count - sent_count) as i64;
+    let sent_i64 = sent_count as i64;
+    for i in remaining {
+        queue.msgs[i] = queue.msgs[sent_i64 + i];
+    }
+    while queue.msgs.len > remaining {
+        queue.msgs.pop();
+    }
+    queue.count = remaining as i32;
+}
+
 inline fn record_batch_sent_stats(queue: UdpBatchQueue&, sent_count: i32) {
     queue.flushed_batches += 1;
     queue.total_sent += (sent_count as u64);
-    queue.msgs.clear();
-    queue.count = 0;
+    let count = queue.msgs.len as i32;
+    if sent_count >= count {
+        queue.msgs.clear();
+        queue.count = 0;
+    } else if sent_count > 0 {
+        shift_unsent_messages(queue, sent_count, count);
+    }
 }
 
 inline fn record_batch_recv_stats(queue: UdpBatchQueue&, recv_count: i32) {

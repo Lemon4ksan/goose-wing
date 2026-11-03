@@ -199,33 +199,51 @@ fn process_h2_headers_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&
     return H2ErrorCode.NoError;
 }
 
+inline fn dec_flood_count(count: i32&) {
+    if count > 0 {
+        count--;
+    }
+}
+
 inline fn track_unack_flood(count: i32&, max_limit: i32, flags: u8) -> bool {
-    if (flags & rfc::H2_FLAG_ACK) != 0 { return true; }
+    if (flags & rfc::H2_FLAG_ACK) != 0 {
+        dec_flood_count(count);
+        return true;
+    }
     count++;
     return count <= max_limit;
 }
 
-// Validates an incoming frame header and transitions the connection state machine.
-// Enforces stream ID parity, CONTINUATION sequence rules, frame sizes, and flood limits.
-fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) -> H2ErrorCode {
-    guard hdr.valid else { return H2ErrorCode.ProtocolError; }
-    guard hdr.payload_len <= framer.max_frame_size else { return H2ErrorCode.FrameSizeError; }
-
-    let assoc_err = validate_h2_stream_association(hdr);
-    guard assoc_err == H2ErrorCode.NoError else { return assoc_err; }
-
-    if framer.state == H2ConnState.ExpectContinuation {
-        return process_h2_continuation_frame(framer, hdr);
+// Validates frame payload length against RFC 9113 Section 6 requirements.
+fn validate_h2_frame_length(hdr: const H2FrameHeader&) -> H2ErrorCode {
+    if hdr.frame_type == H2FrameType.Ping {
+        if hdr.payload_len != 8 { return H2ErrorCode.FrameSizeError; }
+    } else if hdr.frame_type == H2FrameType.RstStream {
+        if hdr.payload_len != 4 { return H2ErrorCode.FrameSizeError; }
+    } else if hdr.frame_type == H2FrameType.Priority {
+        if hdr.payload_len != 5 { return H2ErrorCode.FrameSizeError; }
+    } else if hdr.frame_type == H2FrameType.WindowUpdate {
+        if hdr.payload_len != 4 { return H2ErrorCode.FrameSizeError; }
+    } else if hdr.frame_type == H2FrameType.Settings {
+        if (hdr.flags & rfc::H2_FLAG_ACK) != 0 {
+            if hdr.payload_len != 0 { return H2ErrorCode.FrameSizeError; }
+        } else if (hdr.payload_len % 6) != 0 {
+            return H2ErrorCode.FrameSizeError;
+        }
     }
+    return H2ErrorCode.NoError;
+}
 
-    guard hdr.frame_type != H2FrameType.Continuation else {
-        return H2ErrorCode.ProtocolError;
+inline fn on_h2_payload_activity(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) {
+    if (hdr.frame_type == H2FrameType.Data || hdr.frame_type == H2FrameType.Headers) && hdr.payload_len > 0 {
+        if framer.rapid_reset_count > 0 {
+            framer.rapid_reset_count--;
+        }
     }
+}
 
-    if hdr.frame_type == H2FrameType.Headers {
-        return process_h2_headers_frame(framer, hdr);
-    }
-
+// Checks and increments connection-level DoS flood counters for RST_STREAM, PING, and SETTINGS.
+fn process_h2_flood_limits(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) -> H2ErrorCode {
     if hdr.frame_type == H2FrameType.RstStream {
         framer.rapid_reset_count++;
         guard framer.rapid_reset_count <= framer.max_rapid_resets else {
@@ -250,6 +268,36 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
     }
 
     return H2ErrorCode.NoError;
+}
+
+// Validates an incoming frame header and transitions the connection state machine.
+// Enforces stream ID parity, CONTINUATION sequence rules, frame sizes, and flood limits.
+fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) -> H2ErrorCode {
+    guard framer.state != H2ConnState.Closed else { return H2ErrorCode.ProtocolError; }
+    guard hdr.valid else { return H2ErrorCode.ProtocolError; }
+    guard hdr.payload_len <= framer.max_frame_size else { return H2ErrorCode.FrameSizeError; }
+
+    let assoc_err = validate_h2_stream_association(hdr);
+    guard assoc_err == H2ErrorCode.NoError else { return assoc_err; }
+
+    let len_err = validate_h2_frame_length(hdr);
+    guard len_err == H2ErrorCode.NoError else { return len_err; }
+
+    if framer.state == H2ConnState.ExpectContinuation {
+        return process_h2_continuation_frame(framer, hdr);
+    }
+
+    guard hdr.frame_type != H2FrameType.Continuation else {
+        return H2ErrorCode.ProtocolError;
+    }
+
+    on_h2_payload_activity(framer, hdr);
+
+    if hdr.frame_type == H2FrameType.Headers {
+        return process_h2_headers_frame(framer, hdr);
+    }
+
+    return process_h2_flood_limits(framer, hdr);
 }
 
 // Validates an HTTP/2 SETTINGS parameter (RFC 9113 Section 6.5.2).

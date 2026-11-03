@@ -50,8 +50,9 @@ fn acme_key_authorization(
     thumbprint_b64url: const u8[:],
     out:               u8[..256]&,
 ) -> i32 {
+    let token_valid = acme_validate_token(token);
     let total = token.len + thumbprint_b64url.len;
-    guard total < out.cap else { return -1; }
+    guard token_valid && total < out.cap else { return -1; }
     out.clear();
     out.append(token);
     out.push('.');
@@ -67,8 +68,9 @@ fn acme_key_authorization(
 //   token = "tok", out = []
 //   returns: 31, out = "/.well-known/acme-challenge/tok"
 fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
+    let token_valid = acme_validate_token(token);
     let total = rfc::ACME_HTTP01_PREFIX.len + token.len;
-    guard total <= out.cap else { return -1; }
+    guard token_valid && total <= out.cap else { return -1; }
     out.clear();
     out.append(rfc::ACME_HTTP01_PREFIX[..]);
     out.append(token);
@@ -104,8 +106,7 @@ fn acme_find_challenge(
     out_body: u8[..256]&,
     out_len:  i32&,
 ) -> bool {
-    for i in table.len {
-        let ch = table[i];
+    for &ch in table {
         let matched = ch.key_auth_len > 0 && acme_match_http01(path, ch.token[..]);
         let fits = ch.key_auth_len <= ch.key_auth.len && ch.key_auth_len <= out_body.cap;
         if matched && fits {

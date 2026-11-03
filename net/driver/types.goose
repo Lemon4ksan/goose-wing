@@ -79,15 +79,24 @@ fn platform_name(plat: TargetPlatform) -> u8[:] {
     };
 }
 
+var g_env_buf: u8[>..] = [];
+
 // Detects the underlying OS platform via system environment indicators
 fn detect_target_platform() -> TargetPlatform {
-    var env_buf: u8[>..] = [];
-    if env("WINDIR", env_buf) || env("OS", env_buf) {
+    g_env_buf.clear();
+    if env("WINDIR", g_env_buf) || env("OS", g_env_buf) {
         return TargetPlatform.Windows;
     }
-    env_buf.clear();
-    if env("DYLD_LIBRARY_PATH", env_buf) {
+    g_env_buf.clear();
+    if env("__CFBundleIdentifier", g_env_buf) || env("TERM_PROGRAM", g_env_buf)
+        || env("Apple_PubSub_Socket_Render", g_env_buf) {
         return TargetPlatform.Darwin;
+    }
+    g_env_buf.clear();
+    if env("OSTYPE", g_env_buf) {
+        if g_env_buf.len >= 6 && g_env_buf[..6] == "darwin" {
+            return TargetPlatform.Darwin;
+        }
     }
     return TargetPlatform.Linux;
 }

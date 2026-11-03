@@ -85,9 +85,17 @@ fn validate_canonical_cookie_security(
         if !validate_script_cookie_name(cookie_name) { return false; }
     }
 
+    let is_trustworthy = opts.url_is_secure || is_trustworthy_non_crypto_host(cookie_val.domain[..]);
+    if cookie_val.secure && !is_trustworthy { return false; }
+
     // RFC 6265bis SameSite=None and CHIPS Partitioned both require Secure
     if cookie_val.same_site == CookieSameSite.None && !cookie_val.secure { return false; }
-    if cookie_val.partitioned && !cookie_val.secure { return false; }
+    if cookie_val.partitioned {
+        if !cookie_val.secure { return false; }
+        if cookie_val.partition_key.len == 0 || has_prohibited_cookie_ctl(cookie_val.partition_key[..]) {
+            return false;
+        }
+    }
 
     return validate_security_cookie_prefixes(cookie_val, cookie_name, opts);
 }
@@ -157,7 +165,7 @@ fn is_cookie_sendable_for_obc(
 
     // Port check: applied to host-only cookies
     if cookie_val.host_only && cookie_val.source_port > 0 && req_port > 0 {
-        if is_trustworthy && cookie_val.source_port == 443 && req_port == 80 {
+        if is_trustworthy {
             return true;
         }
         if cookie_val.source_port != req_port {
@@ -190,11 +198,17 @@ fn validate_security_cookie_prefixes(
     if starts_with_fold(cookie_name, "__host-http-") {
         if !opts.is_http_api { return false; }
         if !cookie_val.secure || !opts.url_is_secure || !cookie_val.httponly { return false; }
-        if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+        if cookie_val.has_domain_attr || !cookie_val.host_only
+            || !cookie_val.has_path_attr || cookie_val.path[..] != "/" {
+            return false;
+        }
     } else if starts_with_fold(cookie_name, "__host-") {
         // Prefix: __Host-
         if !cookie_val.secure || !opts.url_is_secure { return false; }
-        if cookie_val.has_domain_attr || !cookie_val.host_only || cookie_val.path[..] != "/" { return false; }
+        if cookie_val.has_domain_attr || !cookie_val.host_only
+            || !cookie_val.has_path_attr || cookie_val.path[..] != "/" {
+            return false;
+        }
     } else if starts_with_fold(cookie_name, "__http-") {
         // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
         if !opts.is_http_api { return false; }

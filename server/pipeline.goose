@@ -83,22 +83,26 @@ fn evaluate_pipeline_cors_and_csrf(
     req: const Request&,
     res: Response&,
 ) -> PipelineOutcome, bool {
-    let cors_res = evaluate_cors(cfg.cors_policy, req, res);
-    if cors_res == CorsResult.AllowedPreflight {
-        return PipelineOutcome.CorsPreflight, true;
+    if cfg.enable_cors {
+        let cors_res = evaluate_cors(cfg.cors_policy, req, res);
+        if cors_res == CorsResult.AllowedPreflight {
+            return PipelineOutcome.CorsPreflight, true;
+        }
     }
 
-    let fetch_ctx = extract_fetch_context(req, cfg.target_host[..]);
-    let csrf_res = evaluate_fetch_metadata(cfg.csrf_guard, fetch_ctx);
-    apply_isolation_headers(res);
+    if cfg.enable_csrf_guard {
+        let fetch_ctx = extract_fetch_context(req, cfg.target_host[..]);
+        let csrf_res = evaluate_fetch_metadata(cfg.csrf_guard, fetch_ctx);
+        apply_isolation_headers(res);
 
-    match csrf_res {
-        RejectForbidden _ => {
-            res.status_code = 403; // Forbidden
-            return PipelineOutcome.CsrfRejected, true;
-        },
-        _ => {},
-    };
+        match csrf_res {
+            RejectForbidden _ => {
+                res.status_code = 403; // Forbidden
+                return PipelineOutcome.CsrfRejected, true;
+            },
+            _ => {},
+        };
+    }
 
     return PipelineOutcome.Handled, false;
 }
@@ -195,9 +199,9 @@ fn decrypt_pipeline_session_cookie(
     for idx in req.headers.len {
         guard eq_ascii_fold(req.headers[idx].name[..], "Cookie") else { continue; }
         let session_val = extract_session_cookie_value(req.headers[idx].value[..]);
-        guard session_val.len > 0 else { return; }
+        guard session_val.len > 0 else { continue; }
         ext.session_data.clear();
-        guard private_jar_open(cfg.private_jar, "session", session_val, now_sec, ext.session_data) else { return; }
+        guard private_jar_open(cfg.private_jar, "session", session_val, now_sec, ext.session_data) else { continue; }
         ext.populated_entries |= internal::ENTRY_COOKIES;
         return;
     }
@@ -207,7 +211,10 @@ const METRICS_PAYLOAD: const u8[:] =
     "{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
 
 // Dispatches standard route payloads and headers based on handler_id.
-fn apply_route_payload(handler_id: i32, res: Response&) {
+fn apply_route_payload(cfg: const ServerPipelineConfig&, handler_id: i32, res: Response&) {
+    if get_static_route_payload(cfg.router, handler_id, res) {
+        return;
+    }
     if handler_id == 1001 {
         set_header(res, "Content-Type", "text/plain");
         res.body.clear();
@@ -264,7 +271,7 @@ fn dispatch_matched_route(
             internal::poll_future(out_future);
 
             res.status_code = 200;
-            apply_route_payload(f.handler_id, res);
+            apply_route_payload(cfg, f.handler_id, res);
             handle_head_method_suppression(req.method[..], res);
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.Handled;
@@ -344,6 +351,10 @@ fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
     return "";
 }
 
+inline fn is_trusted_proxy_peer(trust_proxy_headers: bool, client_ip: const u8[:]) -> bool {
+    return trust_proxy_headers || client_ip == "127.0.0.1" || client_ip == "::1";
+}
+
 // Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
 // Priority: RFC 7239 Forwarded ("for=..."), X-Real-IP, X-Forwarded-For, client_ip.
 //
@@ -355,7 +366,7 @@ fn extract_effective_client_ip(
     client_ip:           const u8[:],
     req:                 const Request&,
 ) -> const u8[:] {
-    if !trust_proxy_headers && client_ip != "127.0.0.1" && client_ip != "::1" {
+    if !is_trusted_proxy_peer(trust_proxy_headers, client_ip) {
         return client_ip;
     }
     let fwd = header(req, "forwarded");
@@ -419,14 +430,13 @@ fn execute_pipeline(
     let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
 
     if cfg.enable_slowloris_timer {
-        internal::notify_request_start(conn_timer);
-
         // Stage 1: Connection liveliness / timeout check
         guard internal::check_connection_tick(conn_timer, now_ns) else {
-            internal::notify_request_end(conn_timer);
             res.status_code = 408; // Request Timeout
             return PipelineOutcome.SlowlorisClosed;
         }
+
+        internal::notify_request_start(conn_timer);
     }
 
     // Acquire request extensions from pool

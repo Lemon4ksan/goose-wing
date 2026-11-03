@@ -55,6 +55,22 @@ fn make_edge_filter_rule(
     return r;
 }
 
+fn edge_rule_matches(
+    rule:    const EdgeFilterRule&,
+    path:    const u8[:],
+    headers: const HeaderItem[:],
+) -> bool {
+    guard rule.enabled else { return false; }
+    guard rule.path_prefix.len > 0 && core::starts_with(path, rule.path_prefix[..]) else {
+        return false;
+    }
+    if rule.required_header.len > 0 {
+        let has_hdr = headers.find_header(rule.required_header[..]).len > 0;
+        guard !has_hdr else { return false; }
+    }
+    return true;
+}
+
 // Evaluates request path and headers against active edge filter rules.
 // Returns EdgeFilterVerdict::Pass if allowed, or specific verdict on violation.
 fn evaluate_edge_filter(
@@ -64,20 +80,13 @@ fn evaluate_edge_filter(
     headers: const HeaderItem[:],
 ) -> EdgeFilterVerdict {
     guard filter.enabled else { return EdgeFilterVerdict.Pass; }
-    filter.total_inspected += 1;
+    filter.total_inspected = core::add_sat_u64(filter.total_inspected, 1);
 
     for &rule in filter.rules {
-        guard rule.enabled else { continue; }
-
-        let path_matched = rule.path_prefix.len > 0 && core::starts_with(path, rule.path_prefix[..]);
-        guard path_matched else { continue; }
-
-        if rule.required_header.len > 0 {
-            let has_hdr = headers.find_header(rule.required_header[..]).len > 0;
-            guard !has_hdr else { continue; }
+        guard edge_rule_matches(rule, path, headers) else { continue; }
+        if rule.verdict != EdgeFilterVerdict.Pass {
+            filter.total_blocked = core::add_sat_u64(filter.total_blocked, 1);
         }
-
-        filter.total_blocked += 1;
         return rule.verdict;
     }
 

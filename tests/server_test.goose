@@ -35,6 +35,11 @@ fn test_zero_alloc_params(t: lit::T&) {
         // Clear params in place
         wing::clear(params);
         sub.assert_eq(params.len, 0, "params cleared");
+
+        var sreq = wing::ServerRequest { .. };
+        sreq.raw_header_arena.append("Authorization: Bearer test");
+        wing::reset_server_request(sreq);
+        sub.assert_eq(sreq.raw_header_arena.len, 0, "arena cleared");
     };
 }
 
@@ -621,16 +626,24 @@ fn test_standalone_http_server(t: lit::T&) {
 var g_served_sync:    i64 = 0;
 var g_served_reactor: i64 = 0;
 
-thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64) {
+thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     var app = wing::new_http_server("127.0.0.1", 0);
     wing::add_get_route(app, "/ping", 100);
-    g_served_sync = wing::serve(app, listener_fd, max_conns);
+    let served = wing::serve(app, listener_fd, max_conns);
+    g_served_sync = served;
+    if ring_handle != 0 {
+        core::native_spsc_push(ring_handle, served as u64);
+    }
 }
 
-thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64) {
+thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     var app = wing::new_http_server("127.0.0.1", 0);
     wing::add_get_route(app, "/hello", 101);
-    g_served_reactor = wing::serve_reactor(app, listener_fd, max_conns);
+    let served = wing::serve_reactor(app, listener_fd, max_conns);
+    g_served_reactor = served;
+    if ring_handle != 0 {
+        core::native_spsc_push(ring_handle, served as u64);
+    }
 }
 
 fn test_serve_connection_capping(t: lit::T&) {
@@ -640,8 +653,11 @@ fn test_serve_connection_capping(t: lit::T&) {
         defer wing::tcp_close(listener);
 
         let port = wing::tcp_getsockname_port(listener);
-        g_served_sync = 0;
-        let worker_tid = thread_spawn(serve_sync_worker, listener, 3 as i64);
+        var ring, ok_ring = core::spsc_init(16);
+        sub.assert_true(ok_ring, "spsc ring initialized");
+        defer core::spsc_close(ring);
+
+        let worker_tid = thread_spawn(serve_sync_worker, listener, 3 as i64, ring.handle);
 
         for i in 3 {
             let client = wing::tcp_connect("127.0.0.1", port, 2000);
@@ -661,7 +677,10 @@ fn test_serve_connection_capping(t: lit::T&) {
 
         let wait_ok = thread_wait(worker_tid);
         sub.assert_true(wait_ok, "serve worker thread terminated cleanly");
-        sub.assert_eq(g_served_sync, 3, "HttpServer.serve processed exactly 3 connections");
+        var served_count: u64 = 0;
+        let pop_ok = core::spsc_pop(ring, served_count);
+        sub.assert_true(pop_ok, "served count received from worker");
+        sub.assert_eq(served_count as i64, 3, "HttpServer.serve processed exactly 3 connections");
     };
 }
 
@@ -672,8 +691,11 @@ fn test_serve_reactor_connection_capping(t: lit::T&) {
         defer wing::tcp_close(listener);
 
         let port = wing::tcp_getsockname_port(listener);
-        g_served_reactor = 0;
-        let worker_tid = thread_spawn(serve_reactor_worker, listener, 3 as i64);
+        var ring, ok_ring = core::spsc_init(16);
+        sub.assert_true(ok_ring, "spsc ring initialized");
+        defer core::spsc_close(ring);
+
+        let worker_tid = thread_spawn(serve_reactor_worker, listener, 3 as i64, ring.handle);
 
         for i in 3 {
             let client = wing::tcp_connect("127.0.0.1", port, 2000);
@@ -693,7 +715,10 @@ fn test_serve_reactor_connection_capping(t: lit::T&) {
 
         let wait_ok = thread_wait(worker_tid);
         sub.assert_true(wait_ok, "serve_reactor worker thread terminated cleanly");
-        sub.assert_eq(g_served_reactor, 3, "HttpServer.serve_reactor processed exactly 3 connections");
+        var served_count: u64 = 0;
+        let pop_ok = core::spsc_pop(ring, served_count);
+        sub.assert_true(pop_ok, "served count received from worker");
+        sub.assert_eq(served_count as i64, 3, "HttpServer.serve_reactor processed exactly 3 connections");
     };
 }
 

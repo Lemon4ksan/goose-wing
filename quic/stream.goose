@@ -82,12 +82,14 @@ struct QuicStream {
     send_error_code:     u64  = 0,
 
     // Flow control & Recv progress
-    bytes_recv:          u64  = 0,
-    recv_consumed:       u64  = 0,
-    recv_final_size:     u64  = 0,
-    has_recv_final_size: bool = false,
-    recv_max_data:       u64  = 65536,
-    recv_error_code:     u64  = 0,
+    bytes_recv:            u64            = 0,
+    recv_consumed:         u64            = 0,
+    recv_final_size:       u64            = 0,
+    has_recv_final_size:   bool           = false,
+    contiguous_recv_bytes: u64            = 0,
+    recv_max_data:         u64            = 65536,
+    recv_error_code:       u64            = 0,
+    recv_ranges:           Interval[..16] = [],
 
     // STOP_SENDING signaling
     stop_sending_sent: bool = false,
@@ -152,6 +154,7 @@ fn quic_stream_on_send_reset(
                    s.send_state == QuicSendState.DataSent;
     guard ok_state else { return false, rfc::QUIC_ERR_STREAM_STATE; }
     guard final_size <= rfc::QUIC_VARINT_MAX else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
+    guard final_size >= s.bytes_sent else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
 
     if s.has_send_final_size {
         guard s.send_final_size == final_size else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
@@ -195,6 +198,35 @@ inline fn validate_recv_final_size(
     return true;
 }
 
+inline fn record_stream_recv_range(s: QuicStream&, start: u64, end: u64) {
+    guard start < end else { return; }
+    var cur_s = start;
+    var cur_e = end;
+    var i: i64 = 0;
+    while i < s.recv_ranges.len {
+        let it = s.recv_ranges[i];
+        if cur_e < it.start {
+            guard s.recv_ranges.len < s.recv_ranges.cap else { break; }
+            s.recv_ranges.insert_at(i, Interval { start: cur_s, end: cur_e });
+            break;
+        }
+        if cur_s > it.end {
+            i = i + 1;
+            continue;
+        }
+        cur_s = if cur_s < it.start { cur_s } else { it.start };
+        cur_e = if cur_e > it.end { cur_e } else { it.end };
+        s.recv_ranges.remove_at(i);
+    }
+    if i == s.recv_ranges.len {
+        guard s.recv_ranges.len < s.recv_ranges.cap else { return; }
+        s.recv_ranges.push(Interval { start: cur_s, end: cur_e });
+    }
+    if s.recv_ranges.len > 0 && s.recv_ranges[0].start == 0 {
+        s.contiguous_recv_bytes = s.recv_ranges[0].end;
+    }
+}
+
 // Processes incoming STREAM frame fragments and enforces final size invariants.
 fn quic_stream_on_recv_stream_frame(
     s:      QuicStream&,
@@ -233,8 +265,11 @@ fn quic_stream_on_recv_stream_frame(
     }
 
     s.bytes_recv = core::ct_max_u64(s.bytes_recv, end_offset);
+    if len > 0 {
+        record_stream_recv_range(s, offset, end_offset);
+    }
 
-    if s.has_recv_final_size && s.bytes_recv == s.recv_final_size {
+    if s.has_recv_final_size && s.contiguous_recv_bytes == s.recv_final_size {
         s.recv_state = QuicRecvState.DataRecvd;
     }
 
@@ -485,7 +520,16 @@ fn quic_table_open_local_stream(
     is_bidi:           bool,
     default_recv_flow: u64 = 65536,
 ) -> u64, i32, bool {
-    guard tbl.streams.len < tbl.streams.cap else {
+    var has_slot = tbl.streams.len < tbl.streams.cap;
+    if !has_slot {
+        for s in tbl.streams {
+            if quic_stream_is_terminal(s, tbl.role) {
+                has_slot = true;
+                break;
+            }
+        }
+    }
+    guard has_slot else {
         return 0, 0, false;
     }
     let stream_id = advance_stream_counter(tbl, is_bidi);

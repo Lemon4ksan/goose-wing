@@ -61,9 +61,16 @@ fn apply_priority_u(dict_str: const u8[:], p: HttpPriority&) -> bool {
 }
 
 fn apply_priority_i(dict_str: const u8[:], p: HttpPriority&) -> bool {
-    guard sf_dict_has_key(dict_str, "i") else { return false; }
-    p.incremental = sf_dict_get_bool(dict_str, "i", true);
-    return true;
+    var entries: SfDictEntry[..16] = [];
+    guard parse_sf_dict(dict_str, entries) else { return false; }
+    for &entry in entries {
+        if entry.key == "i" {
+            guard entry.item.kind == SfType.Boolean else { return false; }
+            p.incremental = entry.item.bool_val;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Parses RFC 9218 Priority header value: e.g. "u=0, i", "u=5", "i=?0, u=2".

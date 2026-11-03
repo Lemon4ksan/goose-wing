@@ -168,16 +168,47 @@ fn build_socks5_connect_request(
         out.push(SOCKS5_ATYP_IPV4);
         out.append(resolved_ipv4[..]);
     } else {
-        // Fallback to domain if IPv4 is absent
-        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
-        out.push(SOCKS5_ATYP_DOMAIN);
-        out.push(host_str.len as u8);
-        out.append(host_str);
+        // RFC 1928: socks5:// requires local DNS resolution. Do not leak unencrypted domain name!
+        return Socks5Error.AddressTypeNotSupported;
     }
 
     // DST.PORT (2 bytes, big-endian)
     core::write_be_u16(out, port);
 
+    return Socks5Error.None;
+}
+
+// Builds a binary SOCKS5 CONNECT request with IPv6 or domain destination (RFC 1928 §4).
+//
+// Example:
+//   scheme = Socks5, resolved_ipv6 = [0; 16], port = 80
+//   returns: Socks5Error.None, out populated with SOCKS5 connect frame
+fn build_socks5_connect_request_v6(
+    scheme:        ProxyScheme,
+    host_str:      const u8[:],
+    resolved_ipv6: const u8[16]&,
+    has_ipv6:      bool,
+    port:          u16,
+    out:           u8[..300]&,
+) -> Socks5Error {
+    out.clear();
+    out.push(SOCKS5_VER);
+    out.push(SOCKS5_CMD_CONNECT);
+    out.push(0x00); // RSV
+
+    if scheme == ProxyScheme.Socks5h {
+        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
+        out.push(SOCKS5_ATYP_DOMAIN);
+        out.push(host_str.len as u8);
+        out.append(host_str);
+    } else if has_ipv6 {
+        out.push(SOCKS5_ATYP_IPV6);
+        out.append(resolved_ipv6[..]);
+    } else {
+        return Socks5Error.AddressTypeNotSupported;
+    }
+
+    core::write_be_u16(out, port);
     return Socks5Error.None;
 }
 
@@ -259,6 +290,30 @@ enum ConnectTunnelError {
     MalformedHeaders,
 }
 
+inline fn has_crlf_or_null(s: const u8[:]) -> bool {
+    for b in s {
+        if b == '\r' || b == '\n' || b == 0 {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn append_connect_line(out: u8[..1024]&, host: const u8[:], port: u16) {
+    if !has_crlf_or_null(host) && host.len > 0 {
+        format(out, "CONNECT ", host, ":", port, " HTTP/1.1\r\n");
+        format(out, "Host: ", host, ":", port, "\r\n");
+    }
+}
+
+fn append_sanitized_header(out: u8[..1024]&, prefix: const u8[:], val: const u8[:]) {
+    if val.len > 0 && !has_crlf_or_null(val) {
+        out.append(prefix);
+        out.append(val);
+        out.append("\r\n");
+    }
+}
+
 // Builds an isolated HTTP CONNECT request for tunneling through proxy.
 fn build_http_connect_request(
     target_host: const u8[:],
@@ -268,21 +323,9 @@ fn build_http_connect_request(
     out:         u8[..1024]&,
 ) {
     out.clear();
-    format(out, "CONNECT ", target_host, ":", target_port, " HTTP/1.1\r\n");
-    format(out, "Host: ", target_host, ":", target_port, "\r\n");
-
-    if proxy_auth.len > 0 {
-        out.append("Proxy-Authorization: ");
-        out.append(proxy_auth);
-        out.append("\r\n");
-    }
-
-    if user_agent.len > 0 {
-        out.append("User-Agent: ");
-        out.append(user_agent);
-        out.append("\r\n");
-    }
-
+    append_connect_line(out, target_host, target_port);
+    append_sanitized_header(out, "Proxy-Authorization: ", proxy_auth);
+    append_sanitized_header(out, "User-Agent: ", user_agent);
     out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
 }
 
@@ -409,6 +452,14 @@ fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderR
     };
 }
 
+fn check_slowloris_deadlines(reader: HeaderReader&, elapsed_ns: i64) -> SlowlorisViolation {
+    if elapsed_ns >= reader.config.response_header_timeout_ns {
+        reader.poison_connection = true;
+        return SlowlorisViolation.HeaderTimeoutExpired;
+    }
+    return SlowlorisViolation.None;
+}
+
 // Feeds incoming header chunk and verifies all 4 Slowloris defense invariants.
 fn feed_header_bytes(
     reader:      HeaderReader&,
@@ -419,10 +470,9 @@ fn feed_header_bytes(
 
     let elapsed_ns = core::ct_max_i64(0, now_mono_ns - reader.header_read_start_ns);
 
-    // Barrier 1: Monotonic Cumulative Header Deadline (never reset per-byte!)
-    if elapsed_ns >= reader.config.response_header_timeout_ns {
-        reader.poison_connection = true;
-        return SlowlorisViolation.HeaderTimeoutExpired;
+    let v_deadline = check_slowloris_deadlines(reader, elapsed_ns);
+    if v_deadline != SlowlorisViolation.None {
+        return v_deadline;
     }
 
     reader.cumulative_header_bytes += chunk.len;
@@ -452,6 +502,10 @@ fn feed_header_bytes(
             reader.poison_connection = true;
             return SlowlorisViolation.MaxHeaderCountExceeded;
         }
+    }
+
+    if core::find(chunk, "\r\n\r\n") >= 0 || core::find(chunk, "\n\n") >= 0 {
+        reader.headers_complete = true;
     }
 
     return SlowlorisViolation.None;

@@ -80,11 +80,14 @@ fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
 
 // ---- HTTP Datagrams (RFC 9297 Section 2) --------------------------------
 
+inline fn encode_varint_pair<B>(out: B&, a: u64, b: u64) -> bool {
+    return internal::quic_encode_varint(out, a) && internal::quic_encode_varint(out, b);
+}
+
 // Encodes an HTTP Datagram payload for QUIC DATAGRAM frame (RFC 9297 Section 2.1):
 // Format: Quarter Stream ID (VarInt) || Context ID (VarInt) || HTTP Datagram Payload
 fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool {
-    guard internal::quic_encode_varint(out, quarter_stream_id) else { return false; }
-    guard internal::quic_encode_varint(out, context_id) else { return false; }
+    guard encode_varint_pair(out, quarter_stream_id, context_id) else { return false; }
     out.append(payload);
     return true;
 }
@@ -154,12 +157,18 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     return out_host, out_port, true;
 }
 
+fn assemble_datagram_body(body: u8[..2048]&, context_id: u64, udp_packet: const u8[:]) -> bool {
+    guard internal::quic_encode_varint(body, context_id) else { return false; }
+    guard body.len + udp_packet.len <= body.cap else { return false; }
+    body.append(udp_packet);
+    return true;
+}
+
 // Encodes a UDP payload into a DATAGRAM capsule (RFC 9297 / RFC 9298 Section 5):
 // Format: Context ID (VarInt = 0) || UDP Payload
 fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: const u8[:]) -> bool {
     var datagram_body: u8[..2048] = [];
-    guard internal::quic_encode_varint(datagram_body, context_id) else { return false; }
-    datagram_body.append(udp_packet);
+    guard assemble_datagram_body(datagram_body, context_id, udp_packet) else { return false; }
     return encode_http_capsule(out, rfc::CAPSULE_DATAGRAM, datagram_body[..]);
 }
 
@@ -233,6 +242,47 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
+// Decodes a single IP Address Request entry and advances `cur` (RFC 9484 §3.1).
+//
+// Example:
+//   payload = [0x01, 4, 10, 0, 0, 1, 32], cur = 0
+//   returns: true, cur = 7
+fn decode_address_request_entry(payload: const u8[:], cur: i64&, out_req: IpAddressRequest&) -> bool {
+    let req_id, off, ok = internal::quic_decode_varint(payload, cur as u64);
+    guard ok && (off as i64) < payload.len else { return false; }
+    let ver_idx = off as i64;
+    let ip_ver = payload[ver_idx];
+    let ip_start = ver_idx + 1;
+    if ip_ver == 4 {
+        let entry_end = ip_start + 4 + 1;
+        guard entry_end <= payload.len else { return false; }
+        let p_len = payload[ip_start + 4];
+        guard p_len <= 32 else { return false; }
+        if out_req.requested_ip.len == 0 {
+            out_req.request_id = req_id;
+            out_req.ip_version = 4;
+            out_req.requested_ip.append(payload[ip_start..ip_start + 4]);
+            out_req.prefix_len = p_len;
+        }
+        cur = entry_end;
+        return true;
+    } else if ip_ver == 6 {
+        let entry_end = ip_start + 16 + 1;
+        guard entry_end <= payload.len else { return false; }
+        let p_len = payload[ip_start + 16];
+        guard p_len <= 128 else { return false; }
+        if out_req.requested_ip.len == 0 {
+            out_req.request_id = req_id;
+            out_req.ip_version = 6;
+            out_req.requested_ip.append(payload[ip_start..ip_start + 16]);
+            out_req.prefix_len = p_len;
+        }
+        cur = entry_end;
+        return true;
+    }
+    return false;
+}
+
 // Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.7.2).
 //
 // Example:
@@ -240,30 +290,12 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
 //   returns: req.request_id = 1, req.ip_version = 4, req.requested_ip = [10, 0, 0, 1], req.prefix_len = 32, ok = true
 fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, bool {
     var req = IpAddressRequest { .. };
-    guard payload.len >= 2 else { return req, false; }
-    let req_id, off, ok = internal::quic_decode_varint(payload, 0);
-    guard ok && (payload.len as u64) >= (off + 1) else { return req, false; }
-
-    req.request_id = req_id;
-    let ver_idx = off as i64;
-    req.ip_version = payload[ver_idx];
-    let ip_start = ver_idx + 1;
-
-    if req.ip_version == 4 {
-        guard payload.len == (ip_start + 4 + 1) else { return req, false; }
-        req.requested_ip.append(payload[ip_start..(ip_start + 4)]);
-        req.prefix_len = payload[ip_start + 4];
-        guard req.prefix_len <= 32 else { return req, false; }
-    } else if req.ip_version == 6 {
-        guard payload.len == (ip_start + 16 + 1) else { return req, false; }
-        req.requested_ip.append(payload[ip_start..(ip_start + 16)]);
-        req.prefix_len = payload[ip_start + 16];
-        guard req.prefix_len <= 128 else { return req, false; }
-    } else {
-        return req, false;
+    guard payload.len > 0 else { return req, true; }
+    var cur: i64 = 0;
+    while cur < payload.len {
+        guard decode_address_request_entry(payload, cur, req) else { return req, false; }
     }
-
-    return req, true;
+    return req, cur == payload.len;
 }
 
 // Encodes an ADDRESS_ASSIGN Capsule (RFC 9484 Section 4.7.1):
@@ -285,6 +317,47 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_ASSIGN, body[..]);
 }
 
+// Decodes a single IP Address Assign entry and advances `cur` (RFC 9484 §3.2).
+//
+// Example:
+//   payload = [0x01, 4, 10, 0, 0, 2, 32], cur = 0
+//   returns: true, cur = 7
+fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAddressAssign&) -> bool {
+    let req_id, off, ok = internal::quic_decode_varint(payload, cur as u64);
+    guard ok && (off as i64) < payload.len else { return false; }
+    let ver_idx = off as i64;
+    let ip_ver = payload[ver_idx];
+    let ip_start = ver_idx + 1;
+    if ip_ver == 4 {
+        let entry_end = ip_start + 4 + 1;
+        guard entry_end <= payload.len else { return false; }
+        let p_len = payload[ip_start + 4];
+        guard p_len <= 32 else { return false; }
+        if out_assign.assigned_ip.len == 0 {
+            out_assign.request_id = req_id;
+            out_assign.ip_version = 4;
+            out_assign.assigned_ip.append(payload[ip_start..ip_start + 4]);
+            out_assign.prefix_len = p_len;
+        }
+        cur = entry_end;
+        return true;
+    } else if ip_ver == 6 {
+        let entry_end = ip_start + 16 + 1;
+        guard entry_end <= payload.len else { return false; }
+        let p_len = payload[ip_start + 16];
+        guard p_len <= 128 else { return false; }
+        if out_assign.assigned_ip.len == 0 {
+            out_assign.request_id = req_id;
+            out_assign.ip_version = 6;
+            out_assign.assigned_ip.append(payload[ip_start..ip_start + 16]);
+            out_assign.prefix_len = p_len;
+        }
+        cur = entry_end;
+        return true;
+    }
+    return false;
+}
+
 // Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.7.1).
 //
 // Example:
@@ -293,30 +366,12 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
 //            assign.assigned_ip = [10, 0, 0, 1], assign.prefix_len = 32, ok = true
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
-    guard payload.len >= 2 else { return assign, false; }
-    let req_id, off, ok = internal::quic_decode_varint(payload, 0);
-    guard ok && (payload.len as u64) >= (off + 1) else { return assign, false; }
-
-    assign.request_id = req_id;
-    let ver_idx = off as i64;
-    assign.ip_version = payload[ver_idx];
-    let ip_start = ver_idx + 1;
-
-    if assign.ip_version == 4 {
-        guard payload.len == (ip_start + 4 + 1) else { return assign, false; }
-        assign.assigned_ip.append(payload[ip_start..(ip_start + 4)]);
-        assign.prefix_len = payload[ip_start + 4];
-        guard assign.prefix_len <= 32 else { return assign, false; }
-    } else if assign.ip_version == 6 {
-        guard payload.len == (ip_start + 16 + 1) else { return assign, false; }
-        assign.assigned_ip.append(payload[ip_start..(ip_start + 16)]);
-        assign.prefix_len = payload[ip_start + 16];
-        guard assign.prefix_len <= 128 else { return assign, false; }
-    } else {
-        return assign, false;
+    guard payload.len > 0 else { return assign, true; }
+    var cur: i64 = 0;
+    while cur < payload.len {
+        guard decode_address_assign_entry(payload, cur, assign) else { return assign, false; }
     }
-
-    return assign, true;
+    return assign, cur == payload.len;
 }
 
 // Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.7.3):
@@ -339,6 +394,40 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
     return encode_http_capsule(out, rfc::CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
+// Decodes a single Route Advertisement entry and advances `cur` (RFC 9484 §3.3).
+//
+// Example:
+//   payload = [4, 10, 0, 0, 0, 10, 0, 0, 255, 6], cur = 0
+//   returns: true, cur = 10
+fn decode_route_entry(payload: const u8[:], cur: i64&, out_route: RouteAdvertisement&) -> bool {
+    guard cur < payload.len else { return false; }
+    let ip_ver = payload[cur];
+    if ip_ver == 4 {
+        let entry_end = cur + 10;
+        guard entry_end <= payload.len else { return false; }
+        if out_route.start_ip.len == 0 {
+            out_route.ip_version = 4;
+            out_route.start_ip.append(payload[cur + 1..cur + 5]);
+            out_route.end_ip.append(payload[cur + 5..cur + 9]);
+            out_route.ip_protocol = payload[cur + 9];
+        }
+        cur = entry_end;
+        return true;
+    } else if ip_ver == 6 {
+        let entry_end = cur + 34;
+        guard entry_end <= payload.len else { return false; }
+        if out_route.start_ip.len == 0 {
+            out_route.ip_version = 6;
+            out_route.start_ip.append(payload[cur + 1..cur + 17]);
+            out_route.end_ip.append(payload[cur + 17..cur + 33]);
+            out_route.ip_protocol = payload[cur + 33];
+        }
+        cur = entry_end;
+        return true;
+    }
+    return false;
+}
+
 // Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.7.3).
 //
 // Example:
@@ -346,22 +435,12 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
 //   returns: route.ip_version = 4, start_ip = 10.0.0.0, end_ip = 10.0.0.255, ip_protocol = 0, ok = true
 fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisement, bool {
     var route = RouteAdvertisement { .. };
-    guard payload.len >= 2 else { return route, false; }
-    route.ip_version = payload[0];
-    if route.ip_version == 4 {
-        guard payload.len == 10 else { return route, false; }
-        route.start_ip.append(payload[1..5]);
-        route.end_ip.append(payload[5..9]);
-        route.ip_protocol = payload[9];
-        return route, true;
-    } else if route.ip_version == 6 {
-        guard payload.len == 34 else { return route, false; }
-        route.start_ip.append(payload[1..17]);
-        route.end_ip.append(payload[17..33]);
-        route.ip_protocol = payload[33];
-        return route, true;
+    guard payload.len > 0 else { return route, true; }
+    var cur: i64 = 0;
+    while cur < payload.len {
+        guard decode_route_entry(payload, cur, route) else { return route, false; }
     }
-    return route, false;
+    return route, cur == payload.len;
 }
 
 // ---- MASQUE Tunnel Session Manager ---------------------------------------

@@ -33,7 +33,7 @@ fn hpke_labeled_extract(
     label:    const u8[:],
     ikm:      const u8[:],
 ) -> u8[32] {
-    var labeled_ikm: u8[..256] = [];
+    var labeled_ikm: u8[..1024] = [];
     labeled_ikm.append("HPKE-v1");
     labeled_ikm.append(suite_id);
     labeled_ikm.append(label);
@@ -52,7 +52,7 @@ fn hpke_labeled_expand(
     length:   u16,
     out:      u8[:],
 ) -> bool {
-    var labeled_info: u8[..256] = [];
+    var labeled_info: u8[..1024] = [];
     labeled_info.push(((length >> 8) & 0xFF) as u8);
     labeled_info.push((length & 0xFF) as u8);
     labeled_info.append("HPKE-v1");
@@ -90,6 +90,8 @@ fn dhkem_x25519_encap(
 ) -> bool {
     out_enc = core::x25519_base_scalarmult(ephemeral_sk);
     let dh = core::x25519_scalarmult(ephemeral_sk, pkR);
+    var zero: u8[32] = [0; 32];
+    guard !core::ct_eq_bytes(dh[..], zero[..]) else { return false; }
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
     return derive_kem_shared_secret(kem_suite_id[..], dh, out_enc, pkR, out_shared_secret);
 }
@@ -102,6 +104,8 @@ fn dhkem_x25519_decap(
     out_shared_secret: u8[32]&,
 ) -> bool {
     let dh = core::x25519_scalarmult(skR, enc);
+    var zero: u8[32] = [0; 32];
+    guard !core::ct_eq_bytes(dh[..], zero[..]) else { return false; }
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
     return derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
 }
@@ -324,6 +328,29 @@ fn hpke_seal(
     return false;
 }
 
+fn hpke_dispatch_open(
+    aead_id: u16,
+    key:     const u8[32]&,
+    nonce:   const u8[12]&,
+    ct:      const u8[:],
+    aad:     const u8[:],
+    tag:     const u8[16]&,
+    out_pt:  u8[>..]&,
+) -> bool {
+    if aead_id == rfc::HPKE_AEAD_AES_128_GCM {
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = key[i]; }
+        return core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
+    }
+    if aead_id == rfc::HPKE_AEAD_AES_256_GCM {
+        return core::aes256_gcm_open(key, nonce, ct, aad, tag, out_pt);
+    }
+    if aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
+        return core::chacha20_poly1305_open(key, nonce, ct, aad, tag, out_pt);
+    }
+    return false;
+}
+
 // Decrypts ciphertext + 16B tag with current context key/nonce, increments seq.
 fn hpke_open(
     ctx:         HpkeContext&,
@@ -331,26 +358,20 @@ fn hpke_open(
     ct_with_tag: const u8[:],
     out_pt:      u8[>..]&,
 ) -> bool {
+    guard ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
     guard ct_with_tag.len >= 16 else { return false; }
-    let ct_len = ct_with_tag.len - 16;
+    let ct_len = core::sub_sat_i64(ct_with_tag.len, 16);
     let ct = ct_with_tag[..ct_len];
 
     var tag: u8[16] = [0; 16];
-    for i in 16 { tag[i] = ct_with_tag[ct_len + i]; }
+    for i in 16 { tag[i] = ct_with_tag[core::add_sat_i64(ct_len, i)]; }
 
     let nonce = hpke_compute_nonce(ctx);
-    ctx.seq += 1;
-
-    if ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
-        var key16: u8[16] = [0; 16];
-        for i in 16 { key16[i] = ctx.key[i]; }
-        return core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
-    } else if ctx.aead_id == rfc::HPKE_AEAD_AES_256_GCM {
-        return core::aes256_gcm_open(ctx.key, nonce, ct, aad, tag, out_pt);
-    } else if ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        return core::chacha20_poly1305_open(ctx.key, nonce, ct, aad, tag, out_pt);
+    guard hpke_dispatch_open(ctx.aead_id, ctx.key, nonce, ct, aad, tag, out_pt) else {
+        return false;
     }
-    return false;
+    ctx.seq += 1;
+    return true;
 }
 
 // ---- Secret Export (RFC 9180 Section 5.3) ----------------------------------
@@ -361,8 +382,8 @@ fn hpke_open(
 fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool {
     guard out.len > 0 && out.len <= 8160 else { return false; } // 255 * Nh for SHA-256
     // labeled_info = I2OSP(L,2) || "HPKE-v1" || suite_id || "sec" || context
-    // fits u8[..256] (22 fixed bytes + exporter_context).
-    guard exporter_context.len + 22 <= 256 else { return false; }
+    // fits u8[..1024] (22 fixed bytes + exporter_context).
+    guard exporter_context.len + 22 <= 1024 else { return false; }
     let suite_id: u8[10] = [
         0x48, 0x50, 0x4B, 0x45,
         ((ctx.kem_id >> 8) & 0xFF) as u8, (ctx.kem_id & 0xFF) as u8,

@@ -723,10 +723,10 @@ inline fn parse_custom_claim_entry(
 }
 
 struct SeenCustomKey {
-    name: u8[..64] = [],
+    name: u8[..128] = [],
 }
 
-inline fn seen_custom_keys_contains(key: const u8[:], seen: const SeenCustomKey[..16]) -> bool {
+inline fn seen_custom_keys_contains(key: const u8[:], seen: const SeenCustomKey[..64]) -> bool {
     for &sc in seen {
         if sc.name[..] == key { return true; }
     }
@@ -847,7 +847,7 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     var seen_exp = false;
     var seen_nbf = false;
     var seen_iat = false;
-    var seen_custom: SeenCustomKey[..16] = [];
+    var seen_custom: SeenCustomKey[..64] = [];
 
     json::each_member(reader) { key =>
         scratch.clear();
@@ -860,7 +860,7 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
             if seen_custom_keys_contains(key, seen_custom) {
                 had_error = true;
             }
-            if seen_custom.len < seen_custom.cap && key.len <= 64 {
+            if seen_custom.len < seen_custom.cap && key.len <= 128 {
                 var item = SeenCustomKey { .. };
                 item.name.append(key);
                 seen_custom.push(item);
@@ -961,7 +961,7 @@ fn sign_jwt_hmac<B>(
     guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
         return false;
     }
-    guard secret_key.len > 0 else { return false; }
+    guard secret_key.len >= 16 else { return false; }
     out_token.clear();
 
     build_jwt_signing_input(header, claims, out_token);
@@ -1123,6 +1123,19 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
     return JwtError.None;
 }
 
+// Decodes and parses header only without signature verification (RFC 7519).
+fn parse_jwt_header_only(
+    token:      const u8[:],
+    out_header: JwtHeader&,
+) -> JwtError {
+    var dot1: i64 = 0;
+    var dot2: i64 = 0;
+    guard split_jwt_parts(token, dot1, dot2) else {
+        return JwtError.MalformedToken;
+    }
+    return decode_jwt_header(token[..dot1], out_header);
+}
+
 // Decodes and parses header and claims without signature verification (RFC 7519).
 //
 // Example:
@@ -1142,7 +1155,8 @@ fn parse_jwt_unverified(
     let hdr_err = decode_jwt_header(token[..dot1], out_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
-    return decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+    let clm_start = core::add_sat_i64(dot1, 1);
+    return decode_jwt_claims(token[clm_start..dot2], out_claims);
 }
 
 fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bool) -> JwtError {
@@ -1237,6 +1251,10 @@ fn verify_jwt_hmac(
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
+    guard secret_key.len >= 16 else {
+        return JwtError.SignatureInvalid;
+    }
+
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(token, dot1, dot2) else {
@@ -1250,7 +1268,8 @@ fn verify_jwt_hmac(
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
     var sig_bytes: u8[..128] = [];
-    guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
+    let sig_start = core::add_sat_i64(dot2, 1);
+    guard core::base64url_decode(token[sig_start..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
 
@@ -1259,7 +1278,8 @@ fn verify_jwt_hmac(
         return JwtError.SignatureInvalid;
     }
 
-    let clm_err = decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+    let clm_start = core::add_sat_i64(dot1, 1);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], out_claims);
     guard clm_err == JwtError.None else { return clm_err; }
 
     return validate_jwt_claims_rules(out_claims, options, now_unix_sec);
@@ -1304,7 +1324,8 @@ fn verify_jwt_eddsa(
     }
 
     var sig_bytes: u8[..128] = [];
-    guard core::base64url_decode(token[(dot2 + 1)..], sig_bytes) else {
+    let sig_start = core::add_sat_i64(dot2, 1);
+    guard core::base64url_decode(token[sig_start..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
 
@@ -1313,7 +1334,8 @@ fn verify_jwt_eddsa(
         return JwtError.SignatureInvalid;
     }
 
-    let clm_err = decode_jwt_claims(token[(dot1 + 1)..dot2], out_claims);
+    let clm_start = core::add_sat_i64(dot1, 1);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], out_claims);
     guard clm_err == JwtError.None else { return clm_err; }
 
     return validate_jwt_claims_rules(out_claims, options, now_unix_sec);

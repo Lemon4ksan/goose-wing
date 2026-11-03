@@ -63,6 +63,15 @@ fn hash_fnv1a(s: const u8[:]) -> u32 {
     return h;
 }
 
+inline fn advance_monotonic_for_age(cur_ts: CacheTimestamps&, cur_now: core::Time, orig_now: core::Time) {
+    if cur_ts.has_monotonic {
+        let diff_sec = cur_now.wall_sec - orig_now.wall_sec;
+        if diff_sec > 0 {
+            cur_ts.now_mono.nanos += (diff_sec as u64) * 1000000000;
+        }
+    }
+}
+
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
 // Returns false if buffer capacities are exceeded (Invariant 13).
 fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) -> bool {
@@ -87,6 +96,7 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
 
     var cur_ts = entry.timestamps;
     cur_ts.now = cur_now;
+    advance_monotonic_for_age(cur_ts, cur_now, entry.timestamps.now);
     let date_raw = entry.headers.get_header("date");
     var date_time = cur_ts.response_time;
     if date_raw.len > 0 {
@@ -454,6 +464,7 @@ fn freshen_cached_entry_304(
     revalidate_entry_idx: i64,
     resp:                 const Response&,
     ts:                   const CacheTimestamps&,
+    req_headers:          const HeaderMap& = HeaderMap { .. },
 ) -> ResponseDecision {
     var dec = ResponseDecision { .. };
     guard revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len else {
@@ -465,6 +476,10 @@ fn freshen_cached_entry_304(
     var entry = &cache.entries[revalidate_entry_idx];
     let resp_304_headers = resp.response_headers_to_map();
     entry.headers.merge_cached_headers_304(resp_304_headers);
+    let vary_raw = entry.headers.get_header("vary");
+    if vary_raw.len > 0 && req_headers.entries.len > 0 {
+        entry.vary = record_vary_snapshot(vary_raw, req_headers);
+    }
 
     entry.timestamps.request_time = ts.request_time;
     entry.timestamps.request_mono = ts.request_mono;
@@ -594,7 +609,8 @@ fn on_response(
     }
 
     if resp.status_code == 304 {
-        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts);
+        let req_headers = req.request_headers_to_map();
+        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req_headers);
     }
 
     // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error

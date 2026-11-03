@@ -27,7 +27,6 @@ inline fn is_within_decompression_ratio(uncompressed_len: u32, compressed_len: u
 fn is_valid_compression_algorithm(algo: u16) -> bool {
     return algo == rfc::CERT_COMPRESSION_BROTLI
         || algo == rfc::CERT_COMPRESSION_ZSTD
-        || algo == rfc::CERT_COMPRESSION_ZSTD
         || algo == rfc::CERT_COMPRESSION_ZLIB;
 }
 
@@ -125,29 +124,15 @@ fn decompress_certificate_payload<B>(
     expected_len: u32,
     out_cert:     B&,
 ) -> bool {
+    guard expected_len <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     if algo == rfc::CERT_COMPRESSION_BROTLI {
-        let ok, _ = core::brotli_decompress_with_limit(
-            comp_data,
-            out_cert,
-            expected_len as i64,
-        );
-        guard ok && (out_cert.len as u32) == expected_len else { return false; }
-        return true;
-    } else if algo == rfc::CERT_COMPRESSION_ZLIB {
-        let ok, _ = core::zlib_decompress(
-            comp_data,
-            out_cert,
-        );
-        guard ok && (out_cert.len as u32) == expected_len else { return false; }
-        return true;
-    } else if algo == rfc::CERT_COMPRESSION_ZSTD || algo == rfc::CERT_COMPRESSION_ZSTD {
-        let ok, _ = core::zstd_decompress_with_limit(
-            comp_data,
-            out_cert,
-            expected_len as i64,
-        );
-        guard ok && (out_cert.len as u32) == expected_len else { return false; }
-        return true;
+        return decompress_certificate_brotli(comp_data, expected_len, out_cert);
+    }
+    if algo == rfc::CERT_COMPRESSION_ZLIB {
+        return decompress_certificate_zlib(comp_data, expected_len, out_cert);
+    }
+    if algo == rfc::CERT_COMPRESSION_ZSTD {
+        return decompress_certificate_zstd(comp_data, expected_len, out_cert);
     }
     return false;
 }
@@ -159,12 +144,32 @@ fn decompress_certificate_brotli<B>(
     uncompressed_len: u32,
     out_cert:         B&,
 ) -> bool {
-    guard uncompressed_len > 0 else { return false; }
-    guard is_within_decompression_ratio(uncompressed_len, compressed_data.len as u32) else {
-        return false;
-    }
-
+    guard uncompressed_len > 0 && uncompressed_len <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     let ok, _ = core::brotli_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
+    guard ok && (out_cert.len as u32) == uncompressed_len else { return false; }
+    return true;
+}
+
+// Decompresses raw zlib stream with exact uncompressed length verification.
+fn decompress_certificate_zlib<B>(
+    compressed_data:  const u8[:],
+    uncompressed_len: u32,
+    out_cert:         B&,
+) -> bool {
+    guard uncompressed_len > 0 && uncompressed_len <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+    let ok, _ = core::zlib_decompress(compressed_data, out_cert);
+    guard ok && (out_cert.len as u32) == uncompressed_len else { return false; }
+    return true;
+}
+
+// Decompresses raw Zstandard stream with exact uncompressed length verification.
+fn decompress_certificate_zstd<B>(
+    compressed_data:  const u8[:],
+    uncompressed_len: u32,
+    out_cert:         B&,
+) -> bool {
+    guard uncompressed_len > 0 && uncompressed_len <= MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+    let ok, _ = core::zstd_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
     guard ok && (out_cert.len as u32) == uncompressed_len else { return false; }
     return true;
 }
