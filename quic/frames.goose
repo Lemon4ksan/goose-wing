@@ -1022,33 +1022,45 @@ fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bo
 
 // Decodes a single QUIC frame directly from slice with cursor (RFC 9000 §19).
 // Advances `idx` past the decoded frame on success.
+// On failure (`ok = false`), `idx` is restored to its original value.
 //
 // Example:
 //   src = [0x01, 0x06, 0x00, 0x02, 'o', 'k'], idx = 0
 //   returns: QuicFrame { frame_type: Ping }, ok = true, idx = 1
 fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let initial_idx = idx;
     guard idx < src.len else { return QuicFrame { .. }, false; }
 
     let ftype, ok_type = quic_decode_varint_cursor(src, idx);
-    guard ok_type else { return QuicFrame { .. }, false; }
+    guard ok_type else {
+        idx = initial_idx;
+        return QuicFrame { .. }, false;
+    }
+
+    var frame: QuicFrame = QuicFrame { .. };
+    var ok:    bool      = false;
 
     if ftype <= 0x11 {
-        return demux_core_frame(src, idx, ftype);
-    }
-    if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI ||
+        frame, ok = demux_core_frame(src, idx, ftype);
+    } else if ftype == QUIC_FRAME_MAX_STREAMS_BIDI || ftype == QUIC_FRAME_MAX_STREAMS_UNI ||
        ftype == QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == QUIC_FRAME_STREAMS_BLOCKED_UNI {
-        return demux_streams_limit_frame(src, idx, ftype);
+        frame, ok = demux_streams_limit_frame(src, idx, ftype);
+    } else if ftype == QUIC_FRAME_DATA_BLOCKED || ftype == QUIC_FRAME_STREAM_DATA_BLOCKED {
+        frame, ok = demux_blocked_frame(src, idx, ftype);
+    } else if ftype <= 0x1E {
+        frame, ok = demux_session_frame(src, idx, ftype);
+    } else if ftype == QUIC_FRAME_DATAGRAM || ftype == QUIC_FRAME_DATAGRAM_LEN {
+        frame, ok = decode_datagram_frame(src, idx, ftype);
+    } else {
+        frame = QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown };
+        ok = false;
     }
-    if ftype == QUIC_FRAME_DATA_BLOCKED || ftype == QUIC_FRAME_STREAM_DATA_BLOCKED {
-        return demux_blocked_frame(src, idx, ftype);
+
+    if !ok {
+        idx = initial_idx;
+        return frame, false;
     }
-    if ftype <= 0x1E {
-        return demux_session_frame(src, idx, ftype);
-    }
-    if ftype == QUIC_FRAME_DATAGRAM || ftype == QUIC_FRAME_DATAGRAM_LEN {
-        return decode_datagram_frame(src, idx, ftype);
-    }
-    return QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown }, false;
+    return frame, true;
 }
 
 // Decodes a single QUIC frame from a byte slice at `offset`.

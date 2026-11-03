@@ -1414,10 +1414,10 @@ fn decode_hpack_field_step(
         let val_next_off, err_dec = decode_literal_field(dt, src, offset, 6, entry);
         guard err_dec == ERR_NO_ERROR else { return offset, err_dec; }
 
-        insert_header(dt, entry.name[..], entry.value[..], false);
-
         let err = append_decoded_header(out, entry, max_header_list_size, validate_http2_rules);
         guard err == ERR_NO_ERROR else { return offset, err; }
+
+        insert_header(dt, entry.name[..], entry.value[..], false);
         return val_next_off, ERR_NO_ERROR;
     }
 

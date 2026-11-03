@@ -273,6 +273,21 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         return false, false;
     }
 
+    let end_offset = frame.offset + frame.length;
+    let s = conn.stream_table.streams[idx];
+    if s.has_recv_final_size {
+        if end_offset > s.recv_final_size || (frame.fin && end_offset != s.recv_final_size) {
+            quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
+            return false, false;
+        }
+    }
+    if frame.fin && !s.has_recv_final_size {
+        if end_offset < s.bytes_recv || end_offset < s.recv_consumed {
+            quic_conn_close(conn, QUIC_ERR_FINAL_SIZE);
+            return false, false;
+        }
+    }
+
     let fc_ok, fc_err = quic_fc_record_recv_stream(
         conn.flow_ctrl,
         conn.stream_table.streams[idx],

@@ -242,19 +242,34 @@ fn parse_quic_long_cids(
     dcid: u8[..20]&,
     scid: u8[..20]&,
 ) -> bool {
+    let initial_idx = idx;
     guard idx < src.len else { return false; }
     let dlen = src[idx];
     idx += 1;
-    guard dlen <= (QUIC_MAX_CID_LEN as i64) && idx + dlen <= src.len else { return false; }
-    dcid.append(src[idx..idx + dlen]);
+    guard dlen <= (QUIC_MAX_CID_LEN as i64) && idx + dlen <= src.len else {
+        idx = initial_idx;
+        return false;
+    }
+    let d_start = idx;
+    let d_end = idx + dlen;
     idx += dlen;
 
-    guard idx < src.len else { return false; }
+    guard idx < src.len else {
+        idx = initial_idx;
+        return false;
+    }
     let slen = src[idx];
     idx += 1;
-    guard slen <= (QUIC_MAX_CID_LEN as i64) && idx + slen <= src.len else { return false; }
-    scid.append(src[idx..idx + slen]);
+    guard slen <= (QUIC_MAX_CID_LEN as i64) && idx + slen <= src.len else {
+        idx = initial_idx;
+        return false;
+    }
+    let s_start = idx;
+    let s_end = idx + slen;
     idx += slen;
+
+    dcid.append(src[d_start..d_end]);
+    scid.append(src[s_start..s_end]);
     return true;
 }
 
@@ -264,9 +279,11 @@ fn parse_quic_long_cids(
 //   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
 //   returns: true, idx = 5, token = "tokn"
 fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> bool {
+    let initial_idx = idx;
     let tok_len, ok_tok = quic_decode_varint_cursor(src, idx);
     let itok = tok_len as i64;
     guard ok_tok && idx + itok <= src.len && tok_len <= (token.cap as u64) else {
+        idx = initial_idx;
         return false;
     }
     if itok > 0 {

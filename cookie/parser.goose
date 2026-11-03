@@ -720,7 +720,8 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
 }
 
 // Parses next cookie pair from raw Cookie: header slice without heap allocations.
-// Trims leading/trailing OWS and advances cursor past the delimiter.
+// Trims leading/trailing OWS and advances cursor past the delimiter on success.
+// On failure (`ok = false`), `cursor` remains unchanged.
 //
 // Example:
 //   raw_header = "sid=xyz; theme=dark", cursor = 0
@@ -732,25 +733,26 @@ fn next_cookie_span(
     var empty_span = CookieSpan { .. };
     guard cursor >= 0 && cursor < raw_header.len else { return empty_span, false; }
 
+    var cur = cursor;
+
     // Skip leading spaces, tabs, and leading semicolons
-    while cursor < raw_header.len {
-        let ch = raw_header[cursor];
+    while cur < raw_header.len {
+        let ch = raw_header[cur];
         if ch == ' ' || ch == '\t' || ch == ';' {
-            cursor += 1;
+            cur += 1;
         } else {
             break;
         }
     }
-    guard cursor < raw_header.len else { return empty_span, false; }
+    guard cur < raw_header.len else { return empty_span, false; }
 
-    let pair_start = cursor;
-    var pair_end = cursor;
+    let pair_start = cur;
+    var pair_end = cur;
     while pair_end < raw_header.len && raw_header[pair_end] != ';' {
         pair_end += 1;
     }
 
     let next_cur = if pair_end < raw_header.len { pair_end + 1 } else { pair_end };
-    cursor = next_cur;
 
     // Trim trailing OWS from pair_end
     while pair_end > pair_start {
@@ -763,6 +765,7 @@ fn next_cookie_span(
     }
     guard pair_end > pair_start else { return empty_span, false; }
 
+    cursor = next_cur;
     return parse_cookie_kv_span(raw_header, pair_start, pair_end), true;
 }
 
