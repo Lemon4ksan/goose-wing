@@ -47,6 +47,8 @@ fn test_device_hierarchy() {
     }
 
     test_command_pool(dev);
+    test_pipeline(dev);
+    test_sync_primitives(dev);
 
     wire::destroy_wire_device(dev);
     if !dev.is_active {
@@ -130,6 +132,78 @@ fn test_cmd_buffer_fsm(pool: wire::WireCommandPool&) {
     }
 }
 
+fn test_pipeline(dev: const wire::WireDevice&) {
+    let pipe_info = wire::WirePipelineCreateInfo {
+        bind_point: wire::WirePipelineBindPoint.Transmit,
+        layout: wire::WirePipelineLayout {
+            max_frame_size: 16384,
+            push_constants: [],
+        },
+        flags: 0,
+    };
+    var pipe, pipe_res = wire::create_wire_pipeline(dev, pipe_info);
+    if wire::is_success(pipe_res) && pipe.is_valid {
+        print("CREATE_WIRE_PIPELINE_OK: 1\n");
+    }
+
+    var cmd = wire::new_command_buffer();
+    let bind_res = wire::cmd_bind_pipeline(cmd, wire::WirePipelineBindPoint.Transmit, pipe);
+    if wire::is_success(bind_res) {
+        print("BIND_WIRE_PIPELINE_OK: 1\n");
+    }
+
+    wire::destroy_wire_pipeline(pipe);
+    if !pipe.is_valid {
+        print("DESTROY_WIRE_PIPELINE_OK: 1\n");
+    }
+}
+
+fn test_sync_primitives(dev: const wire::WireDevice&) {
+    // 1. Fence test
+    let fence_info = wire::WireFenceCreateInfo {
+        flags: wire::WIRE_FENCE_CREATE_SIGNALED_BIT,
+    };
+    var fence, f_res = wire::create_wire_fence(dev, fence_info);
+    if wire::is_success(f_res) && fence.is_valid {
+        print("CREATE_WIRE_FENCE_OK: 1\n");
+    }
+    let wait_res = wire::wait_for_wire_fence(fence, 1000);
+    if wire::is_success(wait_res) {
+        print("WAIT_WIRE_FENCE_OK: 1\n");
+    }
+    let status_res = wire::get_wire_fence_status(fence);
+    if wire::is_success(status_res) {
+        print("STATUS_WIRE_FENCE_OK: 1\n");
+    }
+    let reset_res = wire::reset_wire_fence(fence);
+    if wire::is_success(reset_res) && fence.status == wire::WireFenceStatus.Unsignaled {
+        print("RESET_WIRE_FENCE_OK: 1\n");
+    }
+    wire::destroy_wire_fence(fence);
+    if !fence.is_valid {
+        print("DESTROY_WIRE_FENCE_OK: 1\n");
+    }
+
+    // 2. Semaphore test
+    let sem_info = wire::WireSemaphoreCreateInfo {
+        semaphore_type: wire::WireSemaphoreType.Timeline,
+        initial_value:  0,
+    };
+    var sem, sem_res = wire::create_wire_semaphore(dev, sem_info);
+    if wire::is_success(sem_res) && sem.is_valid {
+        print("CREATE_WIRE_SEMAPHORE_OK: 1\n");
+    }
+    wire::signal_wire_semaphore(sem, 42);
+    let sem_wait = wire::wait_wire_semaphore(sem, 42);
+    if wire::is_success(sem_wait) {
+        print("WAIT_WIRE_SEMAPHORE_OK: 1\n");
+    }
+    wire::destroy_wire_semaphore(sem);
+    if !sem.is_valid {
+        print("DESTROY_WIRE_SEMAPHORE_OK: 1\n");
+    }
+}
+
 fn main() {
     // CHECK: OK_RES_SUCCESS: 1
     // CHECK: OK_RES_NOT_ERROR: 1
@@ -146,6 +220,17 @@ fn main() {
     // CHECK: FREE_CMD_BUF_OK: 1
     // CHECK: TRIM_COMMAND_POOL_OK: 1
     // CHECK: DESTROY_COMMAND_POOL_OK: 1
+    // CHECK: CREATE_WIRE_PIPELINE_OK: 1
+    // CHECK: BIND_WIRE_PIPELINE_OK: 1
+    // CHECK: DESTROY_WIRE_PIPELINE_OK: 1
+    // CHECK: CREATE_WIRE_FENCE_OK: 1
+    // CHECK: WAIT_WIRE_FENCE_OK: 1
+    // CHECK: STATUS_WIRE_FENCE_OK: 1
+    // CHECK: RESET_WIRE_FENCE_OK: 1
+    // CHECK: DESTROY_WIRE_FENCE_OK: 1
+    // CHECK: CREATE_WIRE_SEMAPHORE_OK: 1
+    // CHECK: WAIT_WIRE_SEMAPHORE_OK: 1
+    // CHECK: DESTROY_WIRE_SEMAPHORE_OK: 1
     // CHECK: DESTROY_WIRE_DEVICE_OK: 1
     test_wire_result();
     test_device_hierarchy();

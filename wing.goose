@@ -197,4 +197,6 @@ import wire.hpack;
 import wire.h2;
 import wire.pool;
 import wire.cmd;
+import wire.pipeline;
+import wire.sync;
 import wire.submit;
