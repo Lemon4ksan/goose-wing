@@ -179,7 +179,7 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
     cqes.clear();
     var submitted: i32 = 0;
     for i in sqes.len {
-        if state.active_pending >= state.ring_size {
+        if state.active_pending >= state.ring_size || cqes.len >= cqes.cap {
             break;
         }
         let sqe = sqes[i];
@@ -187,7 +187,6 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
         state.active_pending += 1;
         submitted += 1;
 
-        guard cqes.len < cqes.cap else { break; }
         let is_buf_select = sqe.opcode == URING_OP_RECV && (sqe.flags & URING_SQE_BUFFER_SELECT) != 0;
         let cqe_flags: u32 = if is_buf_select { URING_CQE_F_BUFFER | URING_CQE_F_MORE } else { 0 };
         var cqe = UringCqe {

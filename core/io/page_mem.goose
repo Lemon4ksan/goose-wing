@@ -154,7 +154,7 @@ fn guarded_arena_read(arena: const GuardedArena&, offset: u64, dst: u8[:]) -> i6
         return 0, false;
     }
 
-    guard offset < arena.used else {
+    guard (offset + (dst.len as u64)) <= arena.used else {
         return 0, false;
     }
 
@@ -239,7 +239,7 @@ fn mmap_file_read(mf: const MmapFile&, offset: u64, dst: u8[:]) -> i64, bool {
         return 0, false;
     }
 
-    guard offset < mf.size else {
+    guard (offset + (dst.len as u64)) <= mf.size else {
         return 0, false;
     }
 
@@ -257,7 +257,7 @@ fn mmap_file_send(mf: const MmapFile&, offset: u64, len: u32, sock_fd: i64) -> i
         return 0, false;
     }
 
-    guard offset < mf.size else {
+    guard (offset + len) <= mf.size else {
         return 0, false;
     }
 
