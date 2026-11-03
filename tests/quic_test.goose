@@ -753,8 +753,8 @@ fn test_quic_stream_frame_codec(t: lit::T&) {
     let ok_enc1 = internal::encode_stream_frame(wire1, 4, 0, "hello quic", flags1);
     t.assert_true(ok_enc1, "encode basic stream frame");
 
-    var r1 = core::new_slice_reader(wire1[..]);
-    let frame1, ok_dec1 = internal::decode_quic_frame_reader(r1);
+    var cur1: i64 = 0;
+    let frame1, ok_dec1 = internal::decode_quic_frame_cursor(wire1[..], cur1);
     t.assert_true(ok_dec1, "decode basic stream frame");
     t.assert_eq(frame1.stream_id, 4, "stream id matches");
     t.assert_eq(frame1.offset, 0, "offset is 0");
@@ -767,8 +767,8 @@ fn test_quic_stream_frame_codec(t: lit::T&) {
     let ok_enc2 = internal::encode_stream_frame(wire2, 8, 1024, "world", flags2);
     t.assert_true(ok_enc2, "encode stream frame with off and fin");
 
-    var r2 = core::new_slice_reader(wire2[..]);
-    let frame2, ok_dec2 = internal::decode_quic_frame_reader(r2);
+    var cur2: i64 = 0;
+    let frame2, ok_dec2 = internal::decode_quic_frame_cursor(wire2[..], cur2);
     t.assert_true(ok_dec2, "decode stream frame with off and fin");
     t.assert_eq(frame2.stream_id, 8, "stream id matches");
     t.assert_eq(frame2.offset, 1024, "offset matches");
@@ -781,8 +781,8 @@ fn test_quic_stream_frame_codec(t: lit::T&) {
     let ok_enc3 = internal::encode_stream_frame(wire3, 12, 2048, "rest-of-packet", flags3);
     t.assert_true(ok_enc3, "encode stream frame without length");
 
-    var r3 = core::new_slice_reader(wire3[..]);
-    let frame3, ok_dec3 = internal::decode_quic_frame_reader(r3);
+    var cur3: i64 = 0;
+    let frame3, ok_dec3 = internal::decode_quic_frame_cursor(wire3[..], cur3);
     t.assert_true(ok_dec3, "decode stream frame without length");
     t.assert_eq(frame3.stream_id, 12, "stream id matches");
     t.assert_eq(frame3.offset, 2048, "offset matches");
@@ -794,8 +794,8 @@ fn test_quic_stream_frame_codec(t: lit::T&) {
     let ok_enc4 = internal::encode_stream_frame(wire4, 16, 5000, "", flags4);
     t.assert_true(ok_enc4, "encode empty fin stream frame");
 
-    var r4 = core::new_slice_reader(wire4[..]);
-    let frame4, ok_dec4 = internal::decode_quic_frame_reader(r4);
+    var cur4: i64 = 0;
+    let frame4, ok_dec4 = internal::decode_quic_frame_cursor(wire4[..], cur4);
     t.assert_true(ok_dec4, "decode empty fin stream frame");
     t.assert_eq(frame4.stream_id, 16, "stream id matches");
     t.assert_eq(frame4.offset, 5000, "offset matches");
@@ -815,8 +815,8 @@ fn test_quic_crypto_frame_codec(t: lit::T&) {
     let ok_enc = internal::encode_crypto_frame(wire, 500, tls_data[..]);
     t.assert_true(ok_enc, "encode crypto frame");
 
-    var r = core::new_slice_reader(wire[..]);
-    let frame, ok_dec = internal::decode_quic_frame_reader(r);
+    var cur: i64 = 0;
+    let frame, ok_dec = internal::decode_quic_frame_cursor(wire[..], cur);
     t.assert_true(ok_dec, "decode crypto frame");
     t.assert_eq(frame.raw_type, internal::QUIC_FRAME_CRYPTO, "frame type is crypto");
     t.assert_eq(frame.offset, 500, "crypto offset matches");
@@ -836,8 +836,8 @@ fn test_quic_control_frames_codec(t: lit::T&) {
     let ok_rst_enc = internal::encode_reset_stream_frame(wire_rst, 4, 0x101, 4096);
     t.assert_true(ok_rst_enc, "encode reset stream frame");
 
-    var r_rst = core::new_slice_reader(wire_rst[..]);
-    let f_rst, ok_rst_dec = internal::decode_quic_frame_reader(r_rst);
+    var cur_rst: i64 = 0;
+    let f_rst, ok_rst_dec = internal::decode_quic_frame_cursor(wire_rst[..], cur_rst);
     t.assert_true(ok_rst_dec, "decode reset stream frame");
     t.assert_eq(f_rst.stream_id, 4, "reset stream id matches");
     t.assert_eq(f_rst.error_code, 0x101, "reset error code matches");
@@ -848,8 +848,8 @@ fn test_quic_control_frames_codec(t: lit::T&) {
     let ok_ss_enc = internal::encode_stop_sending_frame(wire_ss, 8, 0x102);
     t.assert_true(ok_ss_enc, "encode stop sending frame");
 
-    var r_ss = core::new_slice_reader(wire_ss[..]);
-    let f_ss, ok_ss_dec = internal::decode_quic_frame_reader(r_ss);
+    var cur_ss: i64 = 0;
+    let f_ss, ok_ss_dec = internal::decode_quic_frame_cursor(wire_ss[..], cur_ss);
     t.assert_true(ok_ss_dec, "decode stop sending frame");
     t.assert_eq(f_ss.stream_id, 8, "stop sending stream id matches");
     t.assert_eq(f_ss.error_code, 0x102, "stop sending error code matches");
@@ -859,8 +859,8 @@ fn test_quic_control_frames_codec(t: lit::T&) {
     let ok_md_enc = internal::encode_max_data_frame(wire_md, 1048576);
     t.assert_true(ok_md_enc, "encode max data frame");
 
-    var r_md = core::new_slice_reader(wire_md[..]);
-    let f_md, ok_md_dec = internal::decode_quic_frame_reader(r_md);
+    var cur_md: i64 = 0;
+    let f_md, ok_md_dec = internal::decode_quic_frame_cursor(wire_md[..], cur_md);
     t.assert_true(ok_md_dec, "decode max data frame");
     t.assert_eq(f_md.max_data, 1048576, "max data limit matches");
 
@@ -869,8 +869,8 @@ fn test_quic_control_frames_codec(t: lit::T&) {
     let ok_msd_enc = internal::encode_max_stream_data_frame(wire_msd, 12, 262144);
     t.assert_true(ok_msd_enc, "encode max stream data frame");
 
-    var r_msd = core::new_slice_reader(wire_msd[..]);
-    let f_msd, ok_msd_dec = internal::decode_quic_frame_reader(r_msd);
+    var cur_msd: i64 = 0;
+    let f_msd, ok_msd_dec = internal::decode_quic_frame_cursor(wire_msd[..], cur_msd);
     t.assert_true(ok_msd_dec, "decode max stream data frame");
     t.assert_eq(f_msd.stream_id, 12, "max stream data stream id matches");
     t.assert_eq(f_msd.max_data, 262144, "max stream data limit matches");
@@ -906,40 +906,40 @@ fn test_quic_frame_demuxer(t: lit::T&) {
     // Frame 6: STREAM (id=0, offset=12, fin=true)
     internal::encode_stream_frame(packet_wire, 0, 12, "-part-2", internal::QuicStreamFlags { fin: true, with_len: true });
 
-    // Iteratively demux packet frames using zero-alloc slice reader
-    var r = core::new_slice_reader(packet_wire[..]);
+    // Iteratively demux packet frames using zero-alloc slice cursor
+    var p_cur: i64 = 0;
 
     // 1. PADDING
-    let f1, ok1 = internal::decode_quic_frame_reader(r);
+    let f1, ok1 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok1, "demux f1 padding ok");
     t.assert_eq(f1.raw_type, internal::QUIC_FRAME_PADDING, "f1 is padding");
 
     // 2. PING
-    let f2, ok2 = internal::decode_quic_frame_reader(r);
+    let f2, ok2 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok2, "demux f2 ping ok");
     t.assert_eq(f2.raw_type, internal::QUIC_FRAME_PING, "f2 is ping");
 
     // 3. MAX_DATA
-    let f3, ok3 = internal::decode_quic_frame_reader(r);
+    let f3, ok3 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok3, "demux f3 max_data ok");
     t.assert_eq(f3.raw_type, internal::QUIC_FRAME_MAX_DATA, "f3 is max_data");
     t.assert_eq(f3.max_data, 2000000, "f3 limit matches");
 
     // 4. STREAM part 1
-    let f4, ok4 = internal::decode_quic_frame_reader(r);
+    let f4, ok4 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok4, "demux f4 stream ok");
     t.assert_eq(f4.stream_id, 0, "f4 stream_id is 0");
     t.assert_eq(f4.payload, "demux-part-1", "f4 payload matches");
     t.assert_false(f4.fin, "f4 fin is false");
 
     // 5. STOP_SENDING
-    let f5, ok5 = internal::decode_quic_frame_reader(r);
+    let f5, ok5 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok5, "demux f5 stop_sending ok");
     t.assert_eq(f5.stream_id, 4, "f5 stream_id is 4");
     t.assert_eq(f5.error_code, 0x99, "f5 err code matches");
 
     // 6. STREAM part 2 with FIN
-    let f6, ok6 = internal::decode_quic_frame_reader(r);
+    let f6, ok6 = internal::decode_quic_frame_cursor(packet_wire[..], p_cur);
     t.assert_true(ok6, "demux f6 stream fin ok");
     t.assert_eq(f6.stream_id, 0, "f6 stream_id is 0");
     t.assert_eq(f6.offset, 12, "f6 offset is 12");
@@ -947,7 +947,7 @@ fn test_quic_frame_demuxer(t: lit::T&) {
     t.assert_true(f6.fin, "f6 fin is true");
 
     // Reached end of datagram
-    t.assert_true(r.is_eof(), "slice reader reached end of packet");
+    t.assert_eq(p_cur, packet_wire.len, "slice cursor reached end of packet");
 
     // Test offset-based decode_quic_frame API
     var off: u64 = 0;

@@ -16,13 +16,12 @@ Goose Core Systems Library providing zero-allocation byte string utilities, stre
 ### Streaming I/O Abstractions (`core/io/`)
 
 - **`enum IoError`**: Stream outcome statuses (`None`, `Eof`, `UnexpectedEof`, `BufferFull`, `InvalidData`).
-- **`struct SliceReader`**: Zero-allocation cursor view over in-memory slice with bounds-checked binary decoders (`read_u8`, `read_u16_be`, `read_u24_be`, `read_u32_be`, `read_u64_be`, `read_slice`).
-- **`struct SliceWriter`**: Bounded binary serializer writing to in-memory buffers (`write`, `write_u8`, `write_u16_be`, `write_u32_be`).
-- **`struct LimitReader`**: Stream reader wrapping an underlying reader with an upper-bound byte ceiling for DoS payload protection.
-- **`struct TeeReader`**: Multi-tap reader cloning read bytes into an external sink for transparent TLS transcript hashing and audit logging.
 - **`struct RingBuffer`**: Circular FIFO byte queue for zero-allocation socket streaming.
 - **`struct PipeBuffer`**: Two-cursor sliding ring buffer supporting zero-copy read/write advancement.
 - **`struct CorkBuffer`**: 16 KB outbound packet aggregator coalescing small framing writes into unified syscall bursts.
+- **`struct IoVec`**: Vectorized Scatter/Gather I/O memory buffer descriptor.
+- **`struct PageRingBuffer`**: Hardware Virtual Memory Page-Mirrored Ring Buffer for zero-wraparound streaming I/O.
+- **`struct GuardedArena`**: Guarded virtual memory arena with overflow guard pages.
 
 ### Constant-Time Cryptography & Key Schedule (`core/crypto/`)
 
@@ -49,13 +48,10 @@ Goose Core Systems Library providing zero-allocation byte string utilities, stre
 - **PRNG & Fast Mapping (`random.goose`)**: `WyrandRng` (WyRand v4.2), `Xoroshiro64Rng`, `fast_range_u64(r, n)` (Lemire divisionless range mapping).
 - **Network Rate & Jitter Estimators (`network.goose`)**: `JacobsonEwma` (RFC 6298 / RFC 9002 RTT estimation), `exponential_backoff_with_jitter` (AWS / RFC 8305 Happy Eyeballs pacing).
 
-### Concurrency, CSP & Actor Supervision (`core/sync/`)
+### Concurrency & Worker Coordination (`core/sync/`)
 
-- **Classical Synchronization (`mutex.goose`, `semaphore.goose`, `barrier.goose`)**: `Mutex`, `Semaphore`, `CyclicBarrier` (two-phase thread barrier).
-- **Channels & CSP (`channel.goose`, `csp.goose`)**: Bounded FIFO message channels, select multiplexer, and pipeline coordination.
-- **Actor & Supervision Trees (`actor.goose`, `supervisor.goose`)**: Isolated actor mailboxes, message handling, and OTP-style supervision trees (`OneForOne`, `OneForAll`) with automatic restart intensity limits.
-- **Singleflight Call Suppression (`singleflight.goose`)**: Duplicate concurrent request deduplication eliminating cache stampedes.
-- **SPSC Ring Buffer (`spsc_ring.goose`)**: Single-Producer Single-Consumer lock-free ring buffer for thread-safe message passing.
+- **`struct SingleflightGroup`**: Duplicate concurrent request deduplication eliminating cache stampedes.
+- **`struct SpscRing`**: Single-Producer Single-Consumer lock-free ring buffer for thread-safe worker messaging.
 
 ### Time, Monotonic Clocks & Calendar (`core/time/`)
 

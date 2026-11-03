@@ -1385,117 +1385,15 @@ fn test_socks5_frame_validation_ct(t: lit::T&) {
 // ----------------------------------------------------------------------------
 
 // --- Component: core_sync ---
-// Tests for concurrency primitives, actors, channels, and singleflight.
+// Tests for concurrency containment, singleflight deduplication, and SPSC lock-free queues.
 
-// ---- suite 1: multithreading, actors & crash containment ------------------
-
-struct ComputeTask {
-    task_id:     i64  = 0,
-    operand:     i64  = 0,
-    is_terminal: bool = false,
+thread_fn test_crashing_worker() {
+    abort("intentional contained worker failure for test");
 }
 
-struct ComputeResult {
-    task_id:      i64 = 0,
-    computed_val: i64 = 0,
-}
-
-thread_fn compute_worker() {
-    loop {
-        let task = core::recv_msg<ComputeTask>();
-        guard !task.is_terminal else { break; }
-        core::send_msg(ComputeResult {
-            task_id:      task.task_id,
-            computed_val: task.operand * task.operand,
-        });
-    }
-}
-
-// Actor pattern: State manager thread that owns mutable counter without mutexes
-struct CounterCommand {
-    delta: i64  = 0,
-    query: bool = false,
-    quit:  bool = false,
-}
-
-struct CounterResponse {
-    current_value: i64 = 0,
-}
-
-thread_fn counter_actor() {
-    var state: i64 = 0;
-    loop {
-        let cmd = core::recv_msg<CounterCommand>();
-        if cmd.quit { break; }
-        if cmd.query {
-            core::send_msg(CounterResponse { current_value: state });
-        } else {
-            state += cmd.delta;
-        }
-    }
-}
-
-thread_fn contained_crashing_worker() {
-    let task = core::recv_msg<ComputeTask>();
-    if task.operand == 999 {
-        abort("intentional contained worker failure for test");
-    }
-}
-
-fn test_multithreading_and_actors(t: lit::T&) {
-    t.run("Case 1: WaitGroup & Parallel Worker Pool Dispatch") { sub =>
-        let num_tasks:   i64 = 8;
-        let num_workers: i64 = 2;
-
-        var wg = core::WaitGroup { .. };
-        for worker_idx in num_workers {
-            let tid = thread_spawn(compute_worker);
-            wg.add_worker(tid);
-        }
-
-        for task_idx in num_tasks {
-            core::send_msg(ComputeTask {
-                task_id:     task_idx,
-                operand:     task_idx + 1,
-                is_terminal: false,
-            });
-        }
-
-        for worker_idx in num_workers {
-            core::send_msg(ComputeTask { is_terminal: true, .. });
-        }
-
-        var total_sum: i64 = 0;
-        for task_idx in num_tasks {
-            let res = core::recv_msg<ComputeResult>();
-            total_sum += res.computed_val;
-        }
-
-        let wg_ok = wg.wait_all();
-        sub.assert_true(wg_ok, "All workers finished successfully");
-        sub.assert_eq(total_sum, 204, "Parallel computation matched 1^2 + ... + 8^2");
-    };
-
-    t.run("Case 2: Actor-Based State Management (Zero Mutexes)") { sub =>
-        let actor_tid = thread_spawn(counter_actor);
-
-        core::send_msg(CounterCommand { delta: 10, .. });
-        core::send_msg(CounterCommand { delta: 25, .. });
-        core::send_msg(CounterCommand { delta: -5, .. });
-
-        core::send_msg(CounterCommand { query: true, .. });
-        let resp = core::recv_msg<CounterResponse>();
-        sub.assert_eq(resp.current_value, 30, "Actor returned accurate state (10 + 25 - 5 = 30)");
-
-        core::send_msg(CounterCommand { quit: true, .. });
-        let actor_ok = thread_wait(actor_tid);
-        sub.assert_true(actor_ok, "Actor terminated cleanly");
-    };
-
-    t.run("Case 3: Crash Containment via thread_spawn_contained") { sub =>
-        let crash_tid = thread_spawn_contained(contained_crashing_worker);
-        core::send_msg(ComputeTask { operand: 999, .. });
-
+fn test_thread_containment(t: lit::T&) {
+    t.run("Crash Containment via thread_spawn_contained") { sub =>
+        let crash_tid = thread_spawn_contained(test_crashing_worker);
         var abort_msg: u8[>..] = [];
         let ok = thread_wait(crash_tid, abort_msg);
         sub.assert_false(ok, "Contained thread reported abort status");
@@ -1503,334 +1401,51 @@ fn test_multithreading_and_actors(t: lit::T&) {
     };
 }
 
-// ---- suite 2: classical concurrency (baton mutex, semaphore, latch) -------
+fn test_singleflight_and_spsc(t: lit::T&) {
+    t.run("Singleflight Deduplication") { sub =>
+        var g = core::SingleflightGroup { .. };
+        let leader1, _, _ = core::start_or_join(g, "resource-key");
+        sub.assert_true(leader1, "First caller is leader");
 
-thread_fn baton_worker() {
-    for i in 10 {
-        var count = core::baton_lock<i64>();
-        count++;
-        core::baton_unlock(count);
-    }
-}
+        let leader2, _, shared2 = core::start_or_join(g, "resource-key");
+        sub.assert_false(leader2, "Second caller is joiner");
+        sub.assert_true(shared2, "Second caller marked shared");
+        sub.assert_eq(core::waiter_count(g, "resource-key"), 1, "1 joiner recorded");
 
-fn test_classical_primitives(t: lit::T&) {
-    t.run("Case 1: BatonMutex Share-Nothing Mutual Exclusion") { sub =>
-        core::new_baton_mutex(0 as i64);
+        let fin_ok, waiters = core::finish_call(g, "resource-key", 42, true);
+        sub.assert_true(fin_ok, "finish_call ok");
+        sub.assert_eq(waiters, 1, "1 waiter notified");
 
-        let w1 = thread_spawn(baton_worker);
-        let w2 = thread_spawn(baton_worker);
-        let w3 = thread_spawn(baton_worker);
+        let val, res_ok = core::result_value(g, "resource-key");
+        sub.assert_true(res_ok, "Result available");
+        sub.assert_eq(val, 42, "Result value matches 42");
 
-        let ok1 = thread_wait(w1);
-        let ok2 = thread_wait(w2);
-        let ok3 = thread_wait(w3);
-        sub.assert_true(ok1, "Worker 1 terminated cleanly");
-        sub.assert_true(ok2, "Worker 2 terminated cleanly");
-        sub.assert_true(ok3, "Worker 3 terminated cleanly");
-
-        let final_count = core::baton_lock<i64>();
-        sub.assert_eq(final_count, 30, "Atomic baton increments summed correctly (3 * 10 = 30)");
+        let forgot = core::forget(g, "resource-key");
+        sub.assert_true(forgot, "Entry forgotten");
+        sub.assert_false(core::is_in_flight(g, "resource-key"), "Key no longer in flight");
     };
 
-    t.run("Case 2: Counting Semaphore & Bulkhead Capacity Limiting") { sub =>
-        var sem = core::new_semaphore(2);
+    t.run("SPSC Lock-Free Ring Queue") { sub =>
+        let ring, ok = core::spsc_init(16);
+        if ok {
+            defer core::spsc_close(ring);
+            sub.assert_true(ring.is_open, "Ring is open");
+            sub.assert_ge(ring.capacity, 16 as u32, "Capacity at least 16");
 
-        let p1 = sem.acquire();
-        let p2 = sem.acquire();
-        sub.assert_eq(p1.epoch, 1, "First permit has epoch 1");
-        sub.assert_eq(p2.epoch, 1, "Second permit has epoch 1");
+            sub.assert_true(core::spsc_push(ring, 10), "Push 10");
+            sub.assert_true(core::spsc_push(ring, 20), "Push 20");
+            sub.assert_eq(core::spsc_count(ring), 2 as u32, "Count is 2");
 
-        // Quota saturated: try_acquire must return false
-        let p3, ok3 = sem.try_acquire();
-        sub.assert_false(ok3, "try_acquire fails when bulkhead quota is exhausted");
+            var v1: u64 = 0;
+            sub.assert_true(core::spsc_pop(ring, v1), "Pop 1 ok");
+            sub.assert_eq(v1, 10, "Pop 1 matches 10");
 
-        // Release one permit
-        sem.release(p1);
+            var v2: u64 = 0;
+            sub.assert_true(core::spsc_pop(ring, v2), "Pop 2 ok");
+            sub.assert_eq(v2, 20, "Pop 2 matches 20");
 
-        // Slot freed: try_acquire must now succeed
-        let p4, ok4 = sem.try_acquire();
-        sub.assert_true(ok4, "try_acquire succeeds after permit return");
-
-        // Clean up
-        sem.release(p2);
-        sem.release(p4);
-    };
-
-    t.run("Case 3: CountDownLatch One-Shot Coordination") { sub =>
-        var latch = core::new_count_down_latch(3);
-
-        latch.count_down();
-        latch.count_down();
-        latch.count_down();
-
-        // Drain the 3 ticks
-        var ticks_collected: i64 = 0;
-        for i in 3 {
-            let item, ok = core::try_recv_msg<core::LatchTick>();
-            if ok { ticks_collected++; }
+            sub.assert_eq(core::spsc_count(ring), 0 as u32, "Ring empty");
         }
-        sub.assert_eq(ticks_collected, 3, "All 3 countdown ticks were captured");
-    };
-
-    t.run("Case 4: Scoped Permit Release via defer") { sub =>
-        // Drain any leftover permits from global queue
-        while true {
-            let _, ok = core::sem_try_acquire();
-            if !ok { break; }
-        }
-        var sem = core::new_semaphore(1);
-        {
-            let permit = sem.acquire();
-            defer sem.release(permit);
-            let p_blocked, ok_blocked = sem.try_acquire();
-            sub.assert_false(ok_blocked, "Semaphore quota exhausted while scoped permit held");
-        }
-        // At block exit, defer automatically releases the permit!
-        let p_free, ok_free = sem.try_acquire();
-        sub.assert_true(ok_free, "Permit automatically returned to pool via defer upon block exit");
-        sem.release(p_free);
-    };
-}
-
-// ---- suite 3: cyclic barrier two-phase turnstile synchronization ----------
-
-thread_fn barrier_test_worker(worker_id: i32) {
-    var epoch: u64 = 0;
-    for step in 5 {
-        epoch = core::barrier_sync(worker_id, epoch);
-    }
-}
-
-fn test_cyclic_barrier(t: lit::T&) {
-    t.run("Case 1: Two-Phase Turnstile Multi-Worker Synchronization") { sub =>
-        let barrier_tid = core::barrier_start(3);
-        let w1 = thread_spawn(barrier_test_worker, 1 as i32);
-        let w2 = thread_spawn(barrier_test_worker, 2 as i32);
-        let w3 = thread_spawn(barrier_test_worker, 3 as i32);
-
-        let ok1 = thread_wait(w1);
-        let ok2 = thread_wait(w2);
-        let ok3 = thread_wait(w3);
-        sub.assert_true(ok1, "Barrier participant 1 succeeded");
-        sub.assert_true(ok2, "Barrier participant 2 succeeded");
-        sub.assert_true(ok3, "Barrier participant 3 succeeded");
-
-        core::barrier_stop();
-        let coord_ok = thread_wait(barrier_tid);
-        sub.assert_true(coord_ok, "Barrier coordinator shutdown cleanly");
-    };
-}
-
-// ---- suite 4: csp patterns & in-order stream reassembly -------------------
-
-struct ChannelTagA {}
-struct ChannelTagB {}
-
-struct RendezvousReq {
-    command_id: i32 = 0,
-}
-
-thread_fn rendezvous_server() {
-    let req = core::chan_recv<ChannelTagA, RendezvousReq>();
-    core::chan_rendezvous_reply<ChannelTagA>(req.command_id == 100);
-}
-
-fn test_csp_patterns(t: lit::T&) {
-    t.run("Case 1: Reassembler In-Order Stream Reconstruction") { sub =>
-        var r = core::new_reassembler(0);
-
-        // Push packets in out-of-order sequence: 3, 0, 2, 1
-        var item3 = core::ReassemblerItem { seq_id: 3, .. }; item3.data.append("three");
-        var item0 = core::ReassemblerItem { seq_id: 0, .. }; item0.data.append("zero");
-        var item2 = core::ReassemblerItem { seq_id: 2, .. }; item2.data.append("two");
-        var item1 = core::ReassemblerItem { seq_id: 1, .. }; item1.data.append("one");
-
-        r.push_unordered(item3);
-        r.push_unordered(item0);
-        r.push_unordered(item2);
-        r.push_unordered(item1);
-
-        sub.assert_eq(r.pending_count(), 4, "Reassembler holds 4 unordered items");
-
-        let p0, ok0 = r.pop_next_in_order();
-        sub.assert_true(ok0, "Pop item 0 ok");
-        sub.assert_eq(p0.seq_id, 0, "Item 0 sequence verified");
-
-        let p1, ok1 = r.pop_next_in_order();
-        sub.assert_true(ok1, "Pop item 1 ok");
-        sub.assert_eq(p1.seq_id, 1, "Item 1 sequence verified");
-
-        let p2, ok2 = r.pop_next_in_order();
-        sub.assert_true(ok2, "Pop item 2 ok");
-        sub.assert_eq(p2.seq_id, 2, "Item 2 sequence verified");
-
-        let p3, ok3 = r.pop_next_in_order();
-        sub.assert_true(ok3, "Pop item 3 ok");
-        sub.assert_eq(p3.seq_id, 3, "Item 3 sequence verified");
-
-        let p4, ok4 = r.pop_next_in_order();
-        sub.assert_false(ok4, "Pop item 4 returns false (empty)");
-        sub.assert_eq(r.pending_count(), 0, "All items drained");
-    };
-
-    t.run("Case 2: StaticChan Envelope Tagging & Rendezvous") { sub =>
-        let srv = thread_spawn(rendezvous_server);
-        let ok = core::chan_rendezvous<ChannelTagA, RendezvousReq>(RendezvousReq { command_id: 100 });
-        sub.assert_true(ok, "Rendezvous server confirmed command 100 with Ack");
-        thread_wait(srv);
-    };
-}
-
-// ---- suite 5: actor mailbox, stash buffer & 16-byte actor ref -------------
-
-fn test_actor_subsystem(t: lit::T&) {
-    t.run("Case 1: PriorityMailbox Stable Binary Min-Heap Ordering") { sub =>
-        var mb = core::PriorityMailbox { .. };
-
-        // Push entries with different priorities:
-        // Priority 10 (Low), Priority 1 (High), Priority 5 (Medium), Priority 1 (High FIFO second)
-        mb.push(10, 1, 1000);
-        mb.push(1, 2, 2001);
-        mb.push(5, 3, 5000);
-        mb.push(1, 4, 2002);
-
-        sub.assert_eq(mb.count(), 4, "Mailbox has 4 pending messages");
-
-        let e1, ok1 = mb.pop();
-        sub.assert_true(ok1, "Pop 1 ok");
-        sub.assert_eq(e1.payload_val, 2001, "First high-priority message popped first");
-
-        let e2, ok2 = mb.pop();
-        sub.assert_true(ok2, "Pop 2 ok");
-        sub.assert_eq(e2.payload_val, 2002, "Second high-priority message preserved FIFO order");
-
-        let e3, ok3 = mb.pop();
-        sub.assert_true(ok3, "Pop 3 ok");
-        sub.assert_eq(e3.payload_val, 5000, "Medium priority message popped next");
-
-        let e4, ok4 = mb.pop();
-        sub.assert_true(ok4, "Pop 4 ok");
-        sub.assert_eq(e4.payload_val, 1000, "Low priority message popped last");
-
-        let e5, ok5 = mb.pop();
-        sub.assert_false(ok5, "Mailbox empty");
-    };
-
-    t.run("Case 2: StashBuffer Message Deferral and Replay") { sub =>
-        var stash = core::StashBuffer { .. };
-        sub.assert_true(stash.is_empty(), "StashBuffer starts empty");
-
-        stash.stash(core::StashedEnvelope { priority: 1, seq: 1, payload_type: 10, .. });
-        stash.stash(core::StashedEnvelope { priority: 1, seq: 2, payload_type: 20, .. });
-        stash.stash(core::StashedEnvelope { priority: 1, seq: 3, payload_type: 30, .. });
-
-        sub.assert_eq(stash.stash_count(), 3, "Stashed 3 messages");
-        sub.assert_false(stash.is_empty(), "StashBuffer not empty");
-
-        var pending: core::StashedEnvelope[>..] = [];
-        let unstashed = stash.unstash_all(pending);
-        sub.assert_eq(unstashed, 3, "Unstashed exactly 3 messages");
-        sub.assert_eq(pending.len, 3, "Pending array received all 3 messages");
-        sub.assert_true(stash.is_empty(), "StashBuffer cleared after unstash_all");
-    };
-
-    t.run("Case 3: ActorRef 16-Byte Flat Handle Value Semantics") { sub =>
-        let ref_a = core::new_actor_ref(101, 1, 0, 42);
-        let ref_b = core::new_actor_ref(101, 1, 0, 42);
-        let ref_c = core::new_actor_ref(102, 1, 0, 42);
-
-        sub.assert_true(core::eq_actor_ref(ref_a, ref_b), "ref_a and ref_b are equal");
-        sub.assert_false(core::eq_actor_ref(ref_a, ref_c), "ref_a and ref_c differ in actor_id");
-    };
-}
-
-// ---- suite 6: otp supervision trees & fault tolerance ---------------------
-
-fn test_supervision_trees(t: lit::T&) {
-    t.run("Case 1: RestartType Specification & Restart Evaluation") { sub =>
-        var sup = core::Supervisor { .. };
-
-        let ok_perm = sup.add_child(core::ChildSpec { id: 1, restart_type: core::RestartType.Permanent, .. }, 101);
-        let ok_trans = sup.add_child(core::ChildSpec { id: 2, restart_type: core::RestartType.Transient, .. }, 102);
-        let ok_temp = sup.add_child(core::ChildSpec { id: 3, restart_type: core::RestartType.Temporary, .. }, 103);
-        sub.assert_true(ok_perm, "Permanent child added");
-        sub.assert_true(ok_trans, "Transient child added");
-        sub.assert_true(ok_temp, "Temporary child added");
-        sub.assert_eq(sup.child_count(), 3, "Supervisor has 3 children");
-
-        var normal_reason:   core::ExitReason = core::ExitReason.Normal;
-        var abnormal_reason: core::ExitReason = core::ExitReason.Abnormal { error_code: 1, details: [] };
-
-        // Permanent: always restarts
-        sub.assert_true(sup.should_restart_child(0, normal_reason), "Permanent child restarts on Normal");
-        sub.assert_true(sup.should_restart_child(0, abnormal_reason), "Permanent child restarts on Abnormal");
-
-        // Transient: restarts ONLY on Abnormal
-        sub.assert_false(sup.should_restart_child(1, normal_reason), "Transient child does NOT restart on Normal");
-        sub.assert_true(sup.should_restart_child(1, abnormal_reason), "Transient child restarts on Abnormal");
-
-        // Temporary: never restarts
-        sub.assert_false(sup.should_restart_child(2, normal_reason), "Temporary child never restarts (Normal)");
-        sub.assert_false(sup.should_restart_child(2, abnormal_reason), "Temporary child never restarts (Abnormal)");
-    };
-
-    t.run("Case 2: Restart Intensity Throttling (max_restarts / max_seconds)") { sub =>
-        var spec = core::SupervisorSpec {
-            strategy:      core::Strategy.OneForOne,
-            max_restarts:  3,
-            max_seconds:   5,
-            auto_shutdown: core::AutoShutdown.Never,
-        };
-        var sup = core::new_supervisor(spec);
-        sup.add_child(core::ChildSpec { id: 1, .. }, 201);
-
-        // Record 3 failures within 5-second window
-        let r1 = sup.record_failure(0, 1000);
-        let r2 = sup.record_failure(0, 1001);
-        let r3 = sup.record_failure(0, 1002);
-        sub.assert_true(r1, "Failure 1 accepted");
-        sub.assert_true(r2, "Failure 2 accepted");
-        sub.assert_true(r3, "Failure 3 accepted");
-
-        // 4th failure within window must be rejected (intensity limit exceeded!)
-        let r4 = sup.record_failure(0, 1003);
-        sub.assert_false(r4, "Failure 4 rejected: intensity limit exceeded");
-
-        // Failure after window has rolled forward past 5 seconds must succeed
-        let r5 = sup.record_failure(0, 1010);
-        sub.assert_true(r5, "Failure after window expiry accepted");
-    };
-
-    t.run("Case 3: AutoShutdown & Specification Validation") { sub =>
-        // Invalid config: significant child when auto_shutdown is Never must be rejected
-        var sup_never = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.Never, .. });
-        let rejected_sig = sup_never.add_child(core::ChildSpec {
-            id:           1,
-            restart_type: core::RestartType.Transient,
-            significant:  true,
-            ..
-        }, 301);
-        sub.assert_false(rejected_sig, "Child with significant=true rejected when auto_shutdown is Never");
-
-        // Invalid config: permanent child marked significant must be rejected
-        var sup_auto = core::new_supervisor(core::SupervisorSpec { auto_shutdown: core::AutoShutdown.AnySignificant, .. });
-        let rejected_perm_sig = sup_auto.add_child(core::ChildSpec {
-            id:           2,
-            restart_type: core::RestartType.Permanent,
-            significant:  true,
-            ..
-        }, 302);
-        sub.assert_false(rejected_perm_sig, "Permanent child cannot be marked significant");
-
-        // Valid config: transient child marked significant
-        let accepted = sup_auto.add_child(core::ChildSpec {
-            id:           3,
-            restart_type: core::RestartType.Transient,
-            significant:  true,
-            ..
-        }, 303);
-        sub.assert_true(accepted, "Transient significant child accepted");
-        sub.assert_false(sup_auto.is_auto_shutdown(), "AutoShutdown initially false");
     };
 }
 
@@ -2150,210 +1765,10 @@ fn test_parsing_and_formatting(t: lit::T&) {
 
 // --- Component: core_io_stream ---
 // Verification suite for Goose Core I/O Stream Module (core/io):
-// - SliceReader cursor semantics, bounds checking, and integer deserialization (BE/LE)
-// - SliceWriter and CountingWriter with capacity guards and integer serialization
-// - LimitReader bounded reading and DoS threshold enforcement
-// - TeeReader stream tapping and transcript mirroring
 // - RingBuffer circular FIFO storage, wraparound behavior, and zero-copy peeking
-// - Stream piping helpers (copy_reader_to_writer, copy_reader_all, copy_reader_n)
-
-fn test_slice_reader(t: lit::T&) {
-    t.run("Sequential Reading and Exact Slices") { sub =>
-        let data = "Hello, World! Systems Zero-Heap IO";
-        var r = core::new_slice_reader(data);
-
-        sub.assert_eq(r.remaining(), data.len, "Initial remaining matches data len");
-        sub.assert_false(r.is_eof(), "Not EOF initially");
-
-        var buf: u8[16] = [0; 16];
-        let n, err = r.read(buf[..5]);
-        sub.assert_eq(n, 5, "Read 5 bytes");
-        sub.assert_eq(err, core::IoError.None, "No error on partial read");
-        sub.assert_eq(buf[..5], "Hello", "Read bytes match expected slice");
-        sub.assert_eq(r.remaining(), data.len - 5, "Remaining decreased by 5");
-
-        let p_byte, p_ok = r.peek();
-        sub.assert_true(p_ok, "Peek successful");
-        sub.assert_eq(p_byte, ',' as u8, "Peek returns next comma byte");
-        sub.assert_eq(r.remaining(), data.len - 5, "Peek does not advance cursor");
-
-        let slice, s_err = r.read_slice(2);
-        sub.assert_eq(s_err, core::IoError.None, "read_slice ok");
-        sub.assert_eq(slice, ", ", "Yielded exact 2-byte slice");
-
-        let skip_err = r.skip(7);
-        sub.assert_eq(skip_err, core::IoError.None, "Skip 7 bytes ok");
-        sub.assert_eq(r.remaining(), data.len - 14, "Remaining after skip");
-
-        let tail, tail_err = r.read_slice(r.remaining());
-        sub.assert_eq(tail_err, core::IoError.None, "Read remaining slice ok");
-        sub.assert_eq(tail, "Systems Zero-Heap IO", "Tail slice matches");
-        sub.assert_true(r.is_eof(), "Reader reached EOF");
-        sub.assert_eq(r.remaining(), 0, "0 remaining at EOF");
-
-        let eof_n, eof_err = r.read(buf[..]);
-        sub.assert_eq(eof_n, 0, "Read at EOF returns 0 bytes");
-        sub.assert_eq(eof_err, core::IoError.Eof, "Read at EOF returns IoError.Eof");
-    };
-
-    t.run("Binary Integer Deserialization (BE & LE)") { sub =>
-        // Wire packet:
-        // [0] = 0xFE (u8)
-        // [1..2] = 0x12, 0x34 (u16 BE = 0x1234, LE = 0x3412)
-        // [3..5] = 0x01, 0x02, 0x03 (u24 BE = 0x010203)
-        // [6..9] = 0x01, 0x02, 0x03, 0x04 (u32 BE = 0x01020304)
-        // [10..17] = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 (u64 BE)
-        let wire_bytes: u8[18] = [
-            0xFE,
-            0x12, 0x34,
-            0x01, 0x02, 0x03,
-            0x01, 0x02, 0x03, 0x04,
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        ];
-        var r = core::new_slice_reader(wire_bytes[..]);
-
-        let u8_val, err8 = r.read_u8();
-        sub.assert_eq(err8, core::IoError.None, "read_u8 ok");
-        sub.assert_eq(u8_val, 0xFE, "u8 matches 0xFE");
-
-        let u16_val, err16 = r.read_u16_be();
-        sub.assert_eq(err16, core::IoError.None, "read_u16_be ok");
-        sub.assert_eq(u16_val, 0x1234 as u16, "u16 BE matches 0x1234");
-
-        let u24_val, err24 = r.read_u24_be();
-        sub.assert_eq(err24, core::IoError.None, "read_u24_be ok");
-        sub.assert_eq(u24_val, 0x010203 as u32, "u24 BE matches 0x010203");
-
-        let u32_val, err32 = r.read_u32_be();
-        sub.assert_eq(err32, core::IoError.None, "read_u32_be ok");
-        sub.assert_eq(u32_val, 0x01020304 as u32, "u32 BE matches 0x01020304");
-
-        let u64_val, err64 = r.read_u64_be();
-        sub.assert_eq(err64, core::IoError.None, "read_u64_be ok");
-        sub.assert_eq(u64_val, 0x0102030405060708 as u64, "u64 BE matches expected value");
-
-        sub.assert_true(r.is_eof(), "Reader at EOF after decoding packet");
-
-        let _, err_trunc = r.read_u32_be();
-        sub.assert_eq(err_trunc, core::IoError.UnexpectedEof, "Reading past EOF returns UnexpectedEof");
-    };
-}
-
-fn test_slice_writer(t: lit::T&) {
-    t.run("Serialization & Integer Encoding") { sub =>
-        var storage: u8[32] = [0; 32];
-        var w = core::new_slice_writer(storage[..]);
-
-        sub.assert_eq(w.available(), 32, "Initial capacity 32");
-        sub.assert_eq(w.written(), 0, "Written 0");
-
-        let err1 = w.write_u8(0xAA);
-        sub.assert_eq(err1, core::IoError.None, "write_u8 ok");
-
-        let err2 = w.write_u16_be(0xBEEF as u16);
-        sub.assert_eq(err2, core::IoError.None, "write_u16_be ok");
-
-        let err2b = w.write_u24_be(0xABCDEF as u32);
-        sub.assert_eq(err2b, core::IoError.None, "write_u24_be ok");
-
-        let err3 = w.write_u32_be(0xCAFEBABE as u32);
-        sub.assert_eq(err3, core::IoError.None, "write_u32_be ok");
-
-        let err4 = w.write_exact("WING");
-        sub.assert_eq(err4, core::IoError.None, "write_exact string ok");
-
-        sub.assert_eq(w.written(), 1 + 2 + 3 + 4 + 4, "Total written 14 bytes");
-        let written_bytes = w.as_written_slice();
-        sub.assert_eq(written_bytes.len, 14, "Written slice len 14");
-
-        // Verify with SliceReader
-        var r = core::new_slice_reader(written_bytes);
-        let b, _ = r.read_u8();
-        sub.assert_eq(b, 0xAA, "Decoded u8 matches");
-        let v16, _ = r.read_u16_be();
-        sub.assert_eq(v16, 0xBEEF as u16, "Decoded u16 matches");
-        let v24, _ = r.read_u24_be();
-        sub.assert_eq(v24, 0xABCDEF as u32, "Decoded u24 matches");
-        let v32, _ = r.read_u32_be();
-        sub.assert_eq(v32, 0xCAFEBABE as u32, "Decoded u32 matches");
-        let str_tag, _ = r.read_slice(4);
-        sub.assert_eq(str_tag, "WING", "Decoded string tag matches");
-    };
-
-    t.run("Buffer Overflow Guards") { sub =>
-        var small: u8[4] = [0; 4];
-        var w = core::new_slice_writer(small[..]);
-
-        let n, err = w.write("12345678");
-        sub.assert_eq(n, 4, "Wrote only 4 bytes to 4-byte buffer");
-        sub.assert_eq(err, core::IoError.ShortWrite, "ShortWrite reported on partial fit");
-        sub.assert_eq(w.available(), 0, "No capacity remaining");
-
-        let err_ovf = w.write_exact("X");
-        sub.assert_eq(err_ovf, core::IoError.BufferFull, "write_exact on full writer returns BufferFull");
-
-        var cw = core::new_counting_writer();
-        let cw_n, cw_err = core::write(cw, "1234567890");
-        sub.assert_eq(cw_n, 10, "CountingWriter consumed 10 bytes");
-        sub.assert_eq(cw_err, core::IoError.None, "CountingWriter ok");
-        sub.assert_eq(cw.total_written, 10, "Total count is 10");
-    };
-}
-
-fn test_limit_reader(t: lit::T&) {
-    t.run("Strict DoS Boundary & Exceed Enforcement") { sub =>
-        let payload = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        // Limit reading to at most 10 bytes
-        var lr = core::new_limit_reader(payload, 10);
-
-        sub.assert_eq(lr.remaining(), 10, "Limit remaining is 10");
-        sub.assert_false(lr.is_exhausted(), "Not exhausted initially");
-
-        var chunk: u8[8] = [0; 8];
-        let n1, err1 = lr.read(chunk[..8]);
-        sub.assert_eq(n1, 8, "Read 8 bytes under limit");
-        sub.assert_eq(err1, core::IoError.None, "No error on read 8");
-        sub.assert_eq(chunk[..8], "01234567", "Read bytes match payload");
-        sub.assert_eq(lr.remaining(), 2, "2 bytes remaining under limit");
-
-        // Attempting to read 5 bytes when only 2 remain should clamp to 2
-        var small: u8[5] = [0; 5];
-        let n2, err2 = lr.read(small[..5]);
-        sub.assert_eq(n2, 2, "Read clamped to 2 bytes");
-        sub.assert_eq(err2, core::IoError.None, "Read completed");
-        sub.assert_eq(small[..2], "89", "Clamped bytes match");
-        sub.assert_true(lr.is_exhausted(), "Limiter is now exhausted");
-        sub.assert_eq(lr.remaining(), 0, "0 bytes remaining");
-
-        // Next read must fail with LimitExceeded
-        var extra: u8[1] = [0; 1];
-        let n3, err3 = lr.read(extra[..]);
-        sub.assert_eq(n3, 0, "0 bytes read on exhausted limiter");
-        sub.assert_eq(err3, core::IoError.LimitExceeded, "Error is LimitExceeded");
-        sub.assert_true(lr.exceeded, "Exceeded flag set");
-    };
-}
-
-fn test_tee_reader(t: lit::T&) {
-    t.run("Stream Interception and Mirroring") { sub =>
-        let data = "TLS 1.3 ClientHello Transcript Wire Message";
-        var tr = core::new_tee_reader(data);
-        var transcript_tap: u8[>..] = [];
-
-        var client_buf: u8[16] = [0; 16];
-        let n1, err1 = core::read_and_tap(tr, client_buf[..7], transcript_tap);
-        sub.assert_eq(n1, 7, "Read 7 bytes");
-        sub.assert_eq(err1, core::IoError.None, "Read ok");
-        sub.assert_eq(client_buf[..7], "TLS 1.3", "Read slice matches");
-        sub.assert_eq(transcript_tap[..], "TLS 1.3", "Tapped transcript matches");
-
-        let slice, err2 = core::read_slice_and_tap(tr, 12, transcript_tap);
-        sub.assert_eq(err2, core::IoError.None, "read_slice ok");
-        sub.assert_eq(slice, " ClientHello", "Slice matches");
-        sub.assert_eq(transcript_tap[..], "TLS 1.3 ClientHello", "Accumulated transcript matches");
-        sub.assert_eq(tr.intercepted_total, 19, "Total intercepted bytes matches");
-    };
-}
+// - PipeBuffer two-cursor pipeline, advance_to monotonicity, and zero-copy slicing
+// - CorkBuffer 16KB outbound socket buffer aggregation and partial consumption
+// - SIMD accelerated ASCII, UTF-8, and CRLF boundary scanners
 
 fn test_ring_buffer(t: lit::T&) {
     t.run("Circular Storage, Wraparound & Discard") { sub =>
@@ -2412,27 +1827,6 @@ fn test_ring_buffer(t: lit::T&) {
         sub.assert_eq(r_wrap, 8, "Read 8 bytes across edge");
         sub.assert_eq(r_wrap_err, core::IoError.None, "Wrap read ok");
         sub.assert_eq(wrap_out[..], "ABCDEFGH", "Wrapped bytes read in exact order");
-    };
-}
-
-fn test_pipeline_helpers(t: lit::T&) {
-    t.run("Copy Reader to Writer and Buffer") { sub =>
-        var r = core::new_slice_reader("Zero-Allocation Piping Engine");
-        var out_storage: u8[64] = [0; 64];
-        var w = core::new_slice_writer(out_storage[..]);
-
-        let copied, err = core::copy_reader_to_writer(r, w);
-        sub.assert_eq(copied, 29, "Copied 29 bytes");
-        sub.assert_eq(err, core::IoError.None, "Copy ok");
-        sub.assert_eq(w.as_written_slice(), "Zero-Allocation Piping Engine", "Writer received entire stream");
-        sub.assert_true(r.is_eof(), "Reader is EOF");
-
-        var r2 = core::new_slice_reader("Payload Data Segment");
-        var target_buf: u8[>..] = [];
-        let n_all, err_all = core::copy_reader_all(r2, target_buf);
-        sub.assert_eq(n_all, 20, "Copied all 20 bytes into dynamic buffer");
-        sub.assert_eq(err_all, core::IoError.None, "copy_all ok");
-        sub.assert_eq(target_buf[..], "Payload Data Segment", "Dynamic buffer content matches");
     };
 }
 
@@ -2515,16 +1909,16 @@ fn test_cork_buffer(t: lit::T&) {
         sub.assert_eq(cb.cork_as_slice().len, 14, "As slice len is 14");
 
         // Verify content
-        var r = core::new_slice_reader(cb.cork_as_slice());
-        let l, _ = r.read_u24_be();
+        let s = cb.cork_as_slice();
+        let l = core::read_be_u24(s, 0);
         sub.assert_eq(l, 5 as u32, "Decoded length matches 5");
-        let ty, _ = r.read_u8();
+        let ty = s[3];
         sub.assert_eq(ty, 0x00, "Decoded type matches DATA");
-        let fl, _ = r.read_u8();
+        let fl = s[4];
         sub.assert_eq(fl, 0x01, "Decoded flags matches END_STREAM");
-        let sid, _ = r.read_u32_be();
+        let sid = core::read_be_u32(s, 5);
         sub.assert_eq(sid, 1 as u32, "Decoded stream ID matches 1");
-        let pay, _ = r.read_slice(5);
+        let pay = s[9..14];
         sub.assert_eq(pay, "HELLO", "Decoded payload matches HELLO");
 
         // Partial consume (e.g. simulated socket sent 9 header bytes)
@@ -2580,25 +1974,16 @@ fn main() {
     lit::run_case(runner, "18. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)", test_jacobson_rtt_estimator_errata7539);
     lit::run_case(runner, "19. Fast Non-Cryptographic Hashing & Combinators", test_fast_non_cryptographic_hashes);
     lit::run_case(runner, "20. Constant-Time SOCKS5 Frame Length Validation", test_socks5_frame_validation_ct);
-    lit::run_case(runner, "21. Multithreading, Actors & Crash Containment", test_multithreading_and_actors);
-    lit::run_case(runner, "22. Classical Concurrency Primitives", test_classical_primitives);
-    lit::run_case(runner, "23. Two-Phase CyclicBarrier Synchronization", test_cyclic_barrier);
-    lit::run_case(runner, "24. CSP Patterns & In-Order Reassembly", test_csp_patterns);
-    lit::run_case(runner, "25. Actor Subsystem & Priority Mailboxes", test_actor_subsystem);
-    lit::run_case(runner, "26. OTP Supervision Trees & Fault Tolerance", test_supervision_trees);
-    lit::run_case(runner, "27. ASCII Predicates, Case Conversions & Folding", test_case_folding);
-    lit::run_case(runner, "28. Linear Whitespace, ASCII Whitespace & Byte Trimming", test_trimming);
-    lit::run_case(runner, "29. Byte Search, Slice Splitting & ByteTokenizer", test_search_and_split);
-    lit::run_case(runner, "30. Bounds-Checked Decimal & Hex Parsing and Formatting", test_parsing_and_formatting);
-    lit::run_case(runner, "31. SliceReader Stream Cursor & Integer Decoding", test_slice_reader);
-    lit::run_case(runner, "32. SliceWriter & CountingWriter Serialization", test_slice_writer);
-    lit::run_case(runner, "33. LimitReader DoS Boundary Enforcement", test_limit_reader);
-    lit::run_case(runner, "34. TeeReader Stream Interception & Tapping", test_tee_reader);
-    lit::run_case(runner, "35. RingBuffer Circular FIFO & Wraparound", test_ring_buffer);
-    lit::run_case(runner, "36. Stream Pipeline Copy Helpers", test_pipeline_helpers);
-    lit::run_case(runner, "37. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
-    lit::run_case(runner, "38. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
-    lit::run_case(runner, "39. SIMD Fast ASCII, UTF-8 & CRLF Scan", test_simd_accelerators);
+    lit::run_case(runner, "21. Crash Containment via thread_spawn_contained", test_thread_containment);
+    lit::run_case(runner, "22. Singleflight Deduplication & SPSC Lock-Free Ring", test_singleflight_and_spsc);
+    lit::run_case(runner, "23. ASCII Predicates, Case Conversions & Folding", test_case_folding);
+    lit::run_case(runner, "24. Linear Whitespace, ASCII Whitespace & Byte Trimming", test_trimming);
+    lit::run_case(runner, "25. Byte Search, Slice Splitting & ByteTokenizer", test_search_and_split);
+    lit::run_case(runner, "26. Bounds-Checked Decimal & Hex Parsing and Formatting", test_parsing_and_formatting);
+    lit::run_case(runner, "27. RingBuffer Circular FIFO & Wraparound", test_ring_buffer);
+    lit::run_case(runner, "28. PipeBuffer Two-Cursor Pipelines & Monotonicity", test_pipe_buffer);
+    lit::run_case(runner, "29. CorkBuffer 16KB Outbound Aggregation", test_cork_buffer);
+    lit::run_case(runner, "30. SIMD Fast ASCII, UTF-8 & CRLF Scan", test_simd_accelerators);
 
     let ok = lit::finish(runner);
     assert(ok);

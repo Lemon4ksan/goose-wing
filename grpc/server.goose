@@ -488,20 +488,19 @@ fn parse_client_stream(
         out_reader.wire.append(raw_body);
     }
 
-    var reader = core::new_slice_reader(out_reader.wire[..]);
-    while reader.remaining() >= GRPC_LPM_HEADER_LEN {
-        let flag, err_flag = reader.read_u8();
-        guard err_flag == core::IoError.None else { return false; }
+    var idx: i64 = 0;
+    let wire_slice = out_reader.wire[..];
+    while wire_slice.len - idx >= GRPC_LPM_HEADER_LEN {
+        let flag = wire_slice[idx];
         guard (flag & ~GRPC_FLAG_COMPRESSED) == 0 else { return false; }
         let is_comp = (flag & GRPC_FLAG_COMPRESSED) != 0;
 
-        let len_val, err_len = reader.read_u32_be();
-        guard err_len == core::IoError.None else { return false; }
+        let len_val = core::read_be_u32(wire_slice, idx + 1);
+        idx = idx + 5;
 
-        let payload_offset = reader.cursor as u32;
-        guard reader.remaining() >= len_val else { return false; }
-        let skip_err = reader.skip(len_val);
-        guard skip_err == core::IoError.None else { return false; }
+        let payload_offset = idx as u32;
+        guard (wire_slice.len - idx) >= len_val else { return false; }
+        idx = idx + len_val;
         guard out_reader.spans.len < out_reader.spans.cap else { return false; }
 
         let span = GrpcMessageSpan {
@@ -512,7 +511,7 @@ fn parse_client_stream(
         out_reader.spans.push(span);
     }
 
-    guard reader.remaining() == 0 else { return false; }
+    guard idx == wire_slice.len else { return false; }
     return true;
 }
 

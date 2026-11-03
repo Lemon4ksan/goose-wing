@@ -456,8 +456,7 @@ fn process_ingress_window_update<B>(
     out_wire:      B&,
 ) -> bool {
     guard frame_payload.len == 4 else { return true; }
-    var wu_r = core::new_slice_reader(frame_payload);
-    let raw_inc, _ = wu_r.read_u32_be();
+    let raw_inc = core::read_be_u32(frame_payload, 0);
     let inc = raw_inc & 0x7FFFFFFF;
     if hdr.stream_id != 0 && hdr.stream_id > sess.conn.last_peer_stream_id {
         // RFC 9113 §5.1: Frame other than HEADERS or PRIORITY on idle stream is connection error PROTOCOL_ERROR
@@ -537,10 +536,11 @@ fn process_ingress_settings<B>(
         emit_goaway(sess.conn.last_peer_stream_id, ERR_FRAME_SIZE_ERROR, out_wire);
         return false;
     }
-    var settings_r = core::new_slice_reader(frame_payload);
-    while settings_r.remaining() >= 6 {
-        let param_id, _ = settings_r.read_u16_be();
-        let param_val, _ = settings_r.read_u32_be();
+    var off: i64 = 0;
+    while off + 6 <= frame_payload.len {
+        let param_id = core::read_be_u16(frame_payload, off);
+        let param_val = core::read_be_u32(frame_payload, off + 2);
+        off = off + 6;
 
         let val_err = validate_settings_parameter(param_id, param_val, false);
         if val_err != ERR_NO_ERROR {

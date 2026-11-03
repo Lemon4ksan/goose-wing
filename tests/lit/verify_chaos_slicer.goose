@@ -8,9 +8,8 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-fn test_slice_stream_reassembly() {
-    var out_buf: u8[64] = [0; 64];
-    var w = core::new_slice_writer(out_buf[..]);
+fn test_pipe_buffer_reassembly() {
+    var pipe = core::new_pipe_buffer();
 
     let chunks: const u8[:][5] = [
         "GET ",
@@ -21,44 +20,27 @@ fn test_slice_stream_reassembly() {
     ];
 
     for c in chunks {
-        let n, err = core::write(w, c);
+        let n, err = core::write(pipe, c);
         assert(err == core::IoError.None);
         assert(n == c.len);
     }
 
-    assert(core::written(w) == 25);
-    let reassembled = core::as_written_slice(w);
-    assert(reassembled.len == 25);
-    assert(reassembled == "GET /api/v1/stream HTTP/1");
-
-    var r = core::new_slice_reader(reassembled);
-    let m, err_m = core::read_slice(r, 4);
-    assert(err_m == core::IoError.None);
-    assert(m == "GET ");
-
-    let p, err_p = core::read_slice(r, 14);
-    assert(err_p == core::IoError.None);
-    assert(p == "/api/v1/stream");
-
-    let v, err_v = core::read_slice(r, 7);
-    assert(err_v == core::IoError.None);
-    assert(v == " HTTP/1");
-    assert(core::is_eof(r));
+    assert(core::readable_len(pipe) == 25);
+    var target: u8[64] = [0; 64];
+    let n, err = core::read(pipe, target[..25]);
+    assert(err == core::IoError.None);
+    assert(n == 25);
+    assert(target[..25] == "GET /api/v1/stream HTTP/1");
 }
 
-fn test_limit_reader_bounds() {
-    let wire_data = "GET /api/v1/stream HTTP/1.1\r\n";
-    var lr = core::new_limit_reader(wire_data, 14);
-    var tmp: u8[14] = [0; 14];
-    let n, err = core::read(lr, tmp[..]);
-    assert(err == core::IoError.None);
-    assert(n == 14);
-    assert(tmp[..] == "GET /api/v1/st");
+fn test_cork_buffer_streaming() {
+    var cb = core::new_cork_buffer();
+    assert(core::cork_is_empty(cb));
 
-    var extra: u8[1] = [0; 1];
-    let n2, err2 = core::read(lr, extra[..]);
-    assert(n2 == 0);
-    assert(err2 == core::IoError.LimitExceeded);
+    let err = core::cork_write_exact(cb, "GET /api/v1/stream HTTP/1.1\r\n");
+    assert(err == core::IoError.None);
+    assert(core::cork_pending(cb) == 29);
+    assert(core::cork_as_slice(cb) == "GET /api/v1/stream HTTP/1.1\r\n");
 }
 
 fn test_ring_buffer_streaming() {
@@ -84,8 +66,8 @@ fn test_ring_buffer_streaming() {
 }
 
 fn main() {
-    test_slice_stream_reassembly();
-    test_limit_reader_bounds();
+    test_pipe_buffer_reassembly();
+    test_cork_buffer_streaming();
     test_ring_buffer_streaming();
     print("CHAOS_SLICER: DRAINED 25 BYTES OK");
 }

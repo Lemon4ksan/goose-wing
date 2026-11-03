@@ -87,11 +87,10 @@ fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHea
         return hdr, ERR_FRAME_SIZE_ERROR;
     }
 
-    var r = core::new_slice_reader(buf);
-    let length_val, _ = r.read_u24_be();
-    let f_type, _ = r.read_u8();
-    let flags_val, _ = r.read_u8();
-    let raw_stream, _ = r.read_u32_be();
+    let length_val = core::read_be_u24(buf, 0);
+    let f_type = buf[3];
+    let flags_val = buf[4];
+    let raw_stream = core::read_be_u32(buf, 5);
     let stream_id_val = raw_stream & 0x7FFFFFFF;
 
     hdr.length = length_val;
@@ -107,11 +106,13 @@ fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHea
 
 // Serializes a 9-byte HTTP/2 binary frame header in big-endian wire format.
 fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
-    var w = core::new_slice_writer(out[..]);
-    w.write_u24_be(hdr.length & 0x00FFFFFF);
-    w.write_u8(hdr.frame_type);
-    w.write_u8(hdr.flags);
-    w.write_u32_be(hdr.stream_id & 0x7FFFFFFF);
+    let len_val = hdr.length & 0x00FFFFFF;
+    out[0] = ((len_val >> 16) & 0xFF) as u8;
+    out[1] = ((len_val >> 8) & 0xFF) as u8;
+    out[2] = (len_val & 0xFF) as u8;
+    out[3] = hdr.frame_type;
+    out[4] = hdr.flags;
+    core::write_be_u32_at(out[..], 5, hdr.stream_id & 0x7FFFFFFF);
 }
 
 // Appends 9 serialized header bytes to any buffer.

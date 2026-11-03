@@ -1500,8 +1500,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
             let f_hdr, _ = internal::parse_frame_header(out_wire2[off..off + 9]);
             if f_hdr.frame_type == internal::FRAME_RST_STREAM && f_hdr.stream_id == 1 {
                 found_rst = true;
-                let code_r = core::new_slice_reader(out_wire2[off + 9..off + 13]);
-                let err_code, _ = code_r.read_u32_be();
+                let err_code = core::read_be_u32(out_wire2, off + 9);
                 sub.assert_eq(err_code, internal::ERR_STREAM_CLOSED, "RST_STREAM error code is STREAM_CLOSED");
                 break;
             }
@@ -1554,8 +1553,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
@@ -1585,8 +1583,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
@@ -1616,8 +1613,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
@@ -1654,8 +1650,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire2.len, 0, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire2[0..9]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire2[13..17]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire2, 13);
         sub.assert_eq(err_code, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
     };
 
@@ -1691,8 +1686,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         while off + 9 <= out_wire.len {
             let f_hdr, _ = internal::parse_frame_header(out_wire[off..off + 9]);
             if f_hdr.frame_type == internal::FRAME_GOAWAY {
-                let g_r = core::new_slice_reader(out_wire[off + 13..off + 17]);
-                let err_code, _ = g_r.read_u32_be();
+                let err_code = core::read_be_u32(out_wire, off + 13);
                 if err_code == internal::ERR_ENHANCE_YOUR_CALM {
                     found_calm = true;
                     break;
@@ -1728,8 +1722,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
     };
 
@@ -1757,8 +1750,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_COMPRESSION_ERROR, "GOAWAY code is COMPRESSION_ERROR");
     };
 
@@ -1783,8 +1775,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var out_wireA: u8[>..] = [];
         let _, okA = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wireA[..], 1000, out_wireA);
         sub.assert_false(okA, "PRIORITY_UPDATE identifying stream 0 rejected");
-        let g_rA = core::new_slice_reader(out_wireA[46..50]);
-        let err_codeA, _ = g_rA.read_u32_be();
+        let err_codeA = core::read_be_u32(out_wireA, 46);
         sub.assert_eq(err_codeA, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
 
         // Sub-test B: Prioritized Stream ID 2 (server-initiated / even) must be rejected with PROTOCOL_ERROR
@@ -1804,8 +1795,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var out_wireB: u8[>..] = [];
         let _, okB = internal::handle_h2_server_ingress(sessB, pipeline, timer, "127.0.0.1", wireB[..], 1000, out_wireB);
         sub.assert_false(okB, "PRIORITY_UPDATE identifying server-initiated stream rejected");
-        let g_rB = core::new_slice_reader(out_wireB[46..50]);
-        let err_codeB, _ = g_rB.read_u32_be();
+        let err_codeB = core::read_be_u32(out_wireB, 46);
         sub.assert_eq(err_codeB, internal::ERR_PROTOCOL_ERROR, "GOAWAY code is PROTOCOL_ERROR");
 
         // Sub-test C: Valid PRIORITY_UPDATE for stream 1 applies priority update
@@ -1929,8 +1919,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_gt(out_wire.len, 33, "GOAWAY emitted");
         let g_hdr, _ = internal::parse_frame_header(out_wire[33..42]);
         sub.assert_eq(g_hdr.frame_type, internal::FRAME_GOAWAY, "Frame is GOAWAY");
-        let g_r = core::new_slice_reader(out_wire[46..50]);
-        let err_code, _ = g_r.read_u32_be();
+        let err_code = core::read_be_u32(out_wire, 46);
         sub.assert_eq(err_code, internal::ERR_FLOW_CONTROL_ERROR, "GOAWAY code is FLOW_CONTROL_ERROR");
     };
 }

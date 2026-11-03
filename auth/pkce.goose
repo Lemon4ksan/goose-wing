@@ -138,11 +138,10 @@ inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
 
 inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
     var seed: u8[32] = [0; 32];
-    var w = core::new_slice_writer(seed[..]);
-    core::write_u64_le(w, now_ns);
-    core::write_u64_le(w, counter);
-    core::write_u64_le(w, now_ns ^ 0xa0761d6478bd642f);
-    core::write_u64_le(w, counter * 0xe7037ed1a0b428db);
+    core::write_le_u64_at(seed[..], 0, now_ns);
+    core::write_le_u64_at(seed[..], 8, counter);
+    core::write_le_u64_at(seed[..], 16, now_ns ^ 0xa0761d6478bd642f);
+    core::write_le_u64_at(seed[..], 24, counter * 0xe7037ed1a0b428db);
     return seed;
 }
 

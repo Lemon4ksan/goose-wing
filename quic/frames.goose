@@ -1051,16 +1051,6 @@ fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     return QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown }, false;
 }
 
-// Decodes a single QUIC frame from SliceReader (RFC 9000 §19).
-// Advances cursor past the decoded frame on success.
-//
-// Example:
-//   r = [0x01, 0x06, 0x00, 0x02, 'o', 'k'], cursor = 0
-//   returns: QuicFrame { frame_type: Ping }, ok = true, cursor = 1
-fn decode_quic_frame_reader(r: core::SliceReader&) -> QuicFrame, bool {
-    return decode_quic_frame_cursor(r.data, r.cursor);
-}
-
 // Decodes a single QUIC frame from a byte slice at `offset`.
 // On failure (`ok = false`), `next_offset` remains equal to the input `offset`.
 //

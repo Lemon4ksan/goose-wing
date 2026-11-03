@@ -533,11 +533,8 @@ fn parse_proxy_v2_addresses(
                 hdr.src_ipv4[i] = wire[16 + i];
                 hdr.dst_ipv4[i] = wire[20 + i];
             }
-            var port_r = core::new_slice_reader(wire[24..]);
-            let sp, _ = port_r.read_u16_be();
-            let dp, _ = port_r.read_u16_be();
-            hdr.src_port = sp;
-            hdr.dst_port = dp;
+            hdr.src_port = core::read_be_u16(wire, 24);
+            hdr.dst_port = core::read_be_u16(wire, 26);
             format_ipv4(hdr.src_ipv4, hdr.src_ip_str);
             format_ipv4(hdr.dst_ipv4, hdr.dst_ip_str);
         }
@@ -550,11 +547,8 @@ fn parse_proxy_v2_addresses(
                 hdr.src_ipv6[i] = wire[16 + i];
                 hdr.dst_ipv6[i] = wire[32 + i];
             }
-            var port_r = core::new_slice_reader(wire[48..]);
-            let sp, _ = port_r.read_u16_be();
-            let dp, _ = port_r.read_u16_be();
-            hdr.src_port = sp;
-            hdr.dst_port = dp;
+            hdr.src_port = core::read_be_u16(wire, 48);
+            hdr.dst_port = core::read_be_u16(wire, 50);
             format_ipv6(hdr.src_ipv6, hdr.src_ip_str);
             format_ipv6(hdr.dst_ipv6, hdr.dst_ip_str);
         }
@@ -578,15 +572,12 @@ fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
     guard val.len >= 5 else { return false; }
     ssl.has_ssl = true;
     ssl.client_flags = val[0];
-    var ssl_r = core::new_slice_reader(val[1..]);
-    let v_res, _ = ssl_r.read_u32_be();
-    ssl.verify_result = v_res;
+    ssl.verify_result = core::read_be_u32(val, 1);
 
     var sub_offset: i64 = 5;
     while sub_offset + 3 <= val.len {
         let sub_type = val[sub_offset];
-        var sub_r = core::new_slice_reader(val[(sub_offset + 1)..]);
-        let sub_len_u16, _ = sub_r.read_u16_be();
+        let sub_len_u16 = core::read_be_u16(val, sub_offset + 1);
         let sub_len = sub_len_u16 as i64;
         let sub_start = sub_offset + 3;
         let sub_end = sub_start + sub_len;
@@ -632,8 +623,7 @@ fn parse_proxy_v2_tlvs(
 ) -> bool {
     while tlv_offset + 3 <= tlv_limit {
         let tlv_type = wire[tlv_offset];
-        var tlv_r = core::new_slice_reader(wire[(tlv_offset + 1)..]);
-        let tlv_len_u16, _ = tlv_r.read_u16_be();
+        let tlv_len_u16 = core::read_be_u16(wire, tlv_offset + 1);
         let tlv_len = tlv_len_u16 as i64;
         let val_start = tlv_offset + 3;
         let val_end = val_start + tlv_len;
@@ -677,8 +667,7 @@ fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool {
     guard parse_proxy_v2_command(wire[12], hdr.command) else { return hdr, 0, false; }
     guard parse_proxy_v2_family_transport(wire[13], hdr.family, hdr.transport) else { return hdr, 0, false; }
 
-    var len_r = core::new_slice_reader(wire[14..]);
-    let payload_len_u16, _ = len_r.read_u16_be();
+    let payload_len_u16 = core::read_be_u16(wire, 14);
     let payload_len = payload_len_u16 as i64;
     let total_required = 16 + payload_len;
     guard wire.len >= total_required else { return hdr, 0, false; }

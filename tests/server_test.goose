@@ -618,25 +618,19 @@ fn test_standalone_http_server(t: lit::T&) {
 // 2. Share-nothing HttpServer.serve_reactor connection capping, multiplexing, and teardown.
 // 3. TopicTree multi-subscriber live WebSocket broadcast & batched palette drainage.
 
-struct ServerSpawnConfig {
-    listener_fd: i64 = -1,
-    max_conns:   i64 = 0,
-}
+var g_served_sync:    i64 = 0;
+var g_served_reactor: i64 = 0;
 
-thread_fn serve_sync_worker() {
-    let cfg = core::recv_msg<ServerSpawnConfig>();
+thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64) {
     var app = wing::new_http_server("127.0.0.1", 0);
     wing::add_get_route(app, "/ping", 100);
-    let served = wing::serve(app, cfg.listener_fd, cfg.max_conns);
-    core::send_msg(served);
+    g_served_sync = wing::serve(app, listener_fd, max_conns);
 }
 
-thread_fn serve_reactor_worker() {
-    let cfg = core::recv_msg<ServerSpawnConfig>();
+thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64) {
     var app = wing::new_http_server("127.0.0.1", 0);
     wing::add_get_route(app, "/hello", 101);
-    let served = wing::serve_reactor(app, cfg.listener_fd, cfg.max_conns);
-    core::send_msg(served);
+    g_served_reactor = wing::serve_reactor(app, listener_fd, max_conns);
 }
 
 fn test_serve_connection_capping(t: lit::T&) {
@@ -646,8 +640,8 @@ fn test_serve_connection_capping(t: lit::T&) {
         defer wing::tcp_close(listener);
 
         let port = wing::tcp_getsockname_port(listener);
-        let worker_tid = thread_spawn(serve_sync_worker);
-        core::send_msg(ServerSpawnConfig { listener_fd: listener, max_conns: 3 });
+        g_served_sync = 0;
+        let worker_tid = thread_spawn(serve_sync_worker, listener, 3 as i64);
 
         for i in 3 {
             let client = wing::tcp_connect("127.0.0.1", port, 2000);
@@ -665,11 +659,9 @@ fn test_serve_connection_capping(t: lit::T&) {
             wing::tcp_close(client);
         }
 
-        let served = core::recv_msg<i64>();
-        sub.assert_eq(served, 3, "HttpServer.serve processed exactly 3 connections");
-
         let wait_ok = thread_wait(worker_tid);
         sub.assert_true(wait_ok, "serve worker thread terminated cleanly");
+        sub.assert_eq(g_served_sync, 3, "HttpServer.serve processed exactly 3 connections");
     };
 }
 
@@ -680,8 +672,8 @@ fn test_serve_reactor_connection_capping(t: lit::T&) {
         defer wing::tcp_close(listener);
 
         let port = wing::tcp_getsockname_port(listener);
-        let worker_tid = thread_spawn(serve_reactor_worker);
-        core::send_msg(ServerSpawnConfig { listener_fd: listener, max_conns: 3 });
+        g_served_reactor = 0;
+        let worker_tid = thread_spawn(serve_reactor_worker, listener, 3 as i64);
 
         for i in 3 {
             let client = wing::tcp_connect("127.0.0.1", port, 2000);
@@ -699,11 +691,9 @@ fn test_serve_reactor_connection_capping(t: lit::T&) {
             wing::tcp_close(client);
         }
 
-        let served = core::recv_msg<i64>();
-        sub.assert_eq(served, 3, "HttpServer.serve_reactor processed exactly 3 connections");
-
         let wait_ok = thread_wait(worker_tid);
         sub.assert_true(wait_ok, "serve_reactor worker thread terminated cleanly");
+        sub.assert_eq(g_served_reactor, 3, "HttpServer.serve_reactor processed exactly 3 connections");
     };
 }
 

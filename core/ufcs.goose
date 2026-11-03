@@ -214,57 +214,6 @@ fn ::hash(view: const core::UrlView&) -> const u8[:] { return core::hash(view); 
 fn ::port(view: const core::UrlView&) -> i32 { return core::port(view); }
 fn ::is_valid(view: const core::UrlView&) -> bool { return core::is_valid(view); }
 
-// ---- concurrency & sync ufcs bridges ---------------------------------------
-
-fn ::add_worker(wg: core::WaitGroup&, worker_id: i64) -> bool { return core::add_worker(wg, worker_id); }
-fn ::worker_count(wg: const core::WaitGroup&) -> i64 { return core::worker_count(wg); }
-fn ::wait_all(wg: core::WaitGroup&) -> bool { return core::wait_all(wg); }
-fn ::wait_all(wg: core::WaitGroup&, out_diagnostics: u8[>..]&) -> bool { return core::wait_all(wg, out_diagnostics); }
-fn ::failed_count(wg: const core::WaitGroup&) -> i64 { return core::failed_count(wg); }
-
-fn ::acquire(sem: core::Semaphore&) -> core::SemPermit { return core::acquire(sem); }
-fn ::try_acquire(sem: core::Semaphore&) -> core::SemPermit, bool { return core::try_acquire(sem); }
-fn ::release(sem: core::Semaphore&, permit: core::SemPermit) -> bool { return core::release(sem, permit); }
-
-fn ::count_down(latch: core::CountDownLatch&) -> bool { return core::count_down(latch); }
-fn ::latch_wait(latch: core::CountDownLatch&) { core::latch_wait(latch); }
-
-fn ::push_unordered(r: core::Reassembler&, item: core::ReassemblerItem) { core::push_unordered(r, item); }
-fn ::pop_next_in_order(r: core::Reassembler&) -> core::ReassemblerItem, bool { return core::pop_next_in_order(r); }
-fn ::pending_count(r: const core::Reassembler&) -> i64 { return core::pending_count(r); }
-
-fn ::stash(sb: core::StashBuffer&, env: core::StashedEnvelope) { core::stash(sb, env); }
-fn ::unstash_all(sb: core::StashBuffer&, out_pending: core::StashedEnvelope[>..]&) -> i64 {
-    return core::unstash_all(sb, out_pending);
-}
-fn ::stash_count(sb: const core::StashBuffer&) -> i64 { return core::stash_count(sb); }
-fn ::is_empty(sb: const core::StashBuffer&) -> bool { return core::is_empty(sb); }
-
-fn ::push(mb: core::PriorityMailbox&, priority: u32, payload_type: u16, val: i64) {
-    core::push(mb, priority, payload_type, val);
-}
-fn ::pop(mb: core::PriorityMailbox&) -> core::PriorityItem, bool { return core::pop(mb); }
-fn ::count(mb: const core::PriorityMailbox&) -> i64 { return core::count(mb); }
-
-fn ::add_worker(sup: core::Supervisor&, worker_id: i64) -> bool { return core::add_worker(sup, worker_id); }
-fn ::add_child(sup: core::Supervisor&, spec: core::ChildSpec, worker_id: i64) -> bool {
-    return core::add_child(sup, spec, worker_id);
-}
-fn ::child_count(sup: const core::Supervisor&) -> i64 { return core::child_count(sup); }
-fn ::wait_all(sup: core::Supervisor&) -> bool { return core::wait_all(sup); }
-fn ::wait_all(sup: core::Supervisor&, out_diagnostics: u8[>..]&) -> bool {
-    return core::wait_all(sup, out_diagnostics);
-}
-fn ::failed_count(sup: const core::Supervisor&) -> i64 { return core::failed_count(sup); }
-fn ::success_count(sup: const core::Supervisor&) -> i64 { return core::success_count(sup); }
-fn ::is_auto_shutdown(sup: const core::Supervisor&) -> bool { return core::is_auto_shutdown(sup); }
-fn ::should_restart_child(sup: const core::Supervisor&, child_idx: i64, reason: const core::ExitReason&) -> bool {
-    return core::should_restart_child(sup, child_idx, reason);
-}
-fn ::record_failure(sup: core::Supervisor&, child_idx: i64, current_time_s: i64) -> bool {
-    return core::record_failure(sup, child_idx, current_time_s);
-}
-
 // ---- singleflight group ufcs bridges ---------------------------------------
 
 fn ::start_or_join(g: core::SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
@@ -312,47 +261,10 @@ fn ::loss_time_threshold_us(est: const core::JacobsonRttEstimator&) -> u64 { ret
 
 // ---- io stream ufcs bridges ------------------------------------------------
 
-fn ::remaining(r: const core::SliceReader&) -> i64 { return core::remaining(r); }
-fn ::is_eof(r: const core::SliceReader&) -> bool { return core::is_eof(r); }
-fn ::read(r: core::SliceReader&, dst: u8[:]) -> i64, core::IoError { return core::read(r, dst); }
-fn ::read_exact(r: core::SliceReader&, dst: u8[:]) -> core::IoError { return core::read_exact(r, dst); }
-fn ::read_slice(r: core::SliceReader&, count: i64) -> const u8[:], core::IoError { return core::read_slice(r, count); }
-fn ::read_u8(r: core::SliceReader&) -> u8, core::IoError { return core::read_u8(r); }
-fn ::read_u16_be(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_be(r); }
-fn ::read_u16_le(r: core::SliceReader&) -> u16, core::IoError { return core::read_u16_le(r); }
-fn ::read_u24_be(r: core::SliceReader&) -> u32, core::IoError { return core::read_u24_be(r); }
-fn ::read_u24_le(r: core::SliceReader&) -> u32, core::IoError { return core::read_u24_le(r); }
-fn ::read_u32_be(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_be(r); }
-fn ::read_u32_le(r: core::SliceReader&) -> u32, core::IoError { return core::read_u32_le(r); }
-fn ::read_u64_be(r: core::SliceReader&) -> u64, core::IoError { return core::read_u64_be(r); }
-fn ::read_u64_le(r: core::SliceReader&) -> u64, core::IoError { return core::read_u64_le(r); }
-fn ::skip(r: core::SliceReader&, count: i64) -> core::IoError { return core::skip(r, count); }
-fn ::peek(r: const core::SliceReader&) -> u8, bool { return core::peek(r); }
-
-fn ::available(w: const core::SliceWriter&) -> i64 { return core::available(w); }
-fn ::written(w: const core::SliceWriter&) -> i64 { return core::written(w); }
-fn ::write(w: core::SliceWriter&, src: const u8[:]) -> i64, core::IoError { return core::write(w, src); }
-fn ::write_exact(w: core::SliceWriter&, src: const u8[:]) -> core::IoError { return core::write_exact(w, src); }
-fn ::write_u8(w: core::SliceWriter&, b: u8) -> core::IoError { return core::write_u8(w, b); }
-fn ::write_u16_be(w: core::SliceWriter&, v: u16) -> core::IoError { return core::write_u16_be(w, v); }
-fn ::write_u24_be(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u24_be(w, v); }
-fn ::write_u24_le(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u24_le(w, v); }
-fn ::write_u32_be(w: core::SliceWriter&, v: u32) -> core::IoError { return core::write_u32_be(w, v); }
-fn ::write_u64_be(w: core::SliceWriter&, v: u64) -> core::IoError { return core::write_u64_be(w, v); }
-fn ::as_written_slice(w: const core::SliceWriter&) -> const u8[:] { return core::as_written_slice(w); }
-
 fn ::append_u16_be<B>(out: B&, v: u16) { core::append_u16_be(out, v); }
 fn ::append_u24_be<B>(out: B&, v: u32) { core::append_u24_be(out, v); }
 fn ::append_u32_be<B>(out: B&, v: u32) { core::append_u32_be(out, v); }
 fn ::append_u64_be<B>(out: B&, v: u64) { core::append_u64_be(out, v); }
-
-fn ::remaining(lr: const core::LimitReader&) -> i64 { return core::remaining(lr); }
-fn ::is_eof(lr: const core::LimitReader&) -> bool { return core::is_eof(lr); }
-fn ::is_exhausted(lr: const core::LimitReader&) -> bool { return core::is_exhausted(lr); }
-fn ::read(lr: core::LimitReader&, dst: u8[:]) -> i64, core::IoError { return core::read(lr, dst); }
-fn ::read_slice(lr: core::LimitReader&, count: i64) -> const u8[:], core::IoError {
-    return core::read_slice(lr, count);
-}
 
 fn ::len(rb: const core::RingBuffer&) -> i64 { return core::len(rb); }
 fn ::cap(rb: const core::RingBuffer&) -> i64 { return core::cap(rb); }
