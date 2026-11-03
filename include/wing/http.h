@@ -81,12 +81,23 @@ typedef struct wing_header_map {
     int64_t              capacity;
 } wing_header_map_t;
 
-WING_API void         wing_header_map_init(wing_header_map_t *map, wing_header_entry_t *storage, int64_t capacity);
 WING_API bool         wing_header_map_set(wing_header_map_t *map, wing_slice_t name, wing_slice_t value);
 WING_API bool         wing_header_map_append(wing_header_map_t *map, wing_slice_t name, wing_slice_t value);
 WING_API wing_slice_t wing_header_map_get(const wing_header_map_t *map, wing_slice_t name);
 WING_API bool         wing_header_map_contains(const wing_header_map_t *map, wing_slice_t name);
 WING_API bool         wing_header_map_delete(wing_header_map_t *map, wing_slice_t name);
+
+static inline void wing_header_map_init(
+    wing_header_map_t   *map,
+    wing_header_entry_t *storage,
+    int64_t              capacity
+) {
+    if (map) {
+        map->entries = storage;
+        map->count = 0;
+        map->capacity = capacity;
+    }
+}
 
 // ============================================================================
 // Chunked Transfer Framing & FSM (RFC 9112 §7.1)
@@ -107,7 +118,14 @@ typedef struct wing_chunked_decoder {
     int64_t              total_decoded;
 } wing_chunked_decoder_t;
 
-WING_API void wing_chunked_decoder_init(wing_chunked_decoder_t *dec);
+static inline void wing_chunked_decoder_init(wing_chunked_decoder_t *dec) {
+    if (dec) {
+        dec->state = WING_CHUNKED_SIZE;
+        dec->remaining_chunk_len = 0;
+        dec->total_decoded = 0;
+    }
+}
+
 WING_API bool wing_chunked_decode(
     wing_chunked_decoder_t *dec,
     wing_slice_t            raw,
