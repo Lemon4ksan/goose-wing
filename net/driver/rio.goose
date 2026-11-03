@@ -56,8 +56,8 @@ fn new_rio_buffer(id: u64, len: u32) -> RioBufferDescriptor {
 
 // Slices a registered buffer without re-registration or memory allocation
 fn rio_sub_buffer(parent: const RioBufferDescriptor&, off: u64, len: u32) -> RioBufferDescriptor {
-    let parent_end = parent.offset + (parent.length as u64);
-    guard parent.is_registered && off >= parent.offset && (off + (len as u64)) <= parent_end else {
+    let parent_end = parent.offset + parent.length;
+    guard parent.is_registered && off >= parent.offset && (off + len) <= parent_end else {
         return RioBufferDescriptor { .. };
     }
     return RioBufferDescriptor {

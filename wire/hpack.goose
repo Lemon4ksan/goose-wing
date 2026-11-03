@@ -79,12 +79,44 @@ fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const 
     return true;
 }
 
+// Decodes a variable-length multi-byte HPACK integer continuation (RFC 7541 Section 5.1).
+// Advances `offset` past the multi-byte integer octets.
+//
+// Example:
+//   src = [0x9A, 0x0A], offset = 0, initial_offset = 0, max_prefix = 127
+//   returns: val = 1461, ok = true, offset = 2
+fn decode_hpack_int_multibyte(src: const u8[:], offset: u64&, initial_offset: u64, max_prefix: u64) -> u64, bool {
+    var val: u64 = max_prefix;
+    var m:   u64 = 0;
+    while offset < (src.len as u64) {
+        let nb = src[offset];
+        offset += 1;
+        let term = ((nb & 0x7F) as u64) << m;
+        guard val <= (0xFFFFFFFFFFFFFFFF - term) else {
+            offset = initial_offset;
+            return 0, false;
+        }
+        val += term;
+        m += 7;
+        if (nb & 0x80) == 0 {
+            return val, true;
+        }
+        guard m <= 56 else {
+            offset = initial_offset;
+            return 0, false;
+        }
+    }
+    offset = initial_offset;
+    return 0, false;
+}
+
 // Decodes an integer with an N-bit prefix from slice and advances cursor (RFC 7541 Section 5.1).
 //
 // Example:
 //   src = [0x82], offset = 0, prefix_bits = 7
 //   returns: val = 2, ok = true, offset = 1
 fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, bool {
+    let initial_offset = offset;
     guard prefix_bits >= 1 && prefix_bits <= 8 else { return 0, false; }
     guard offset < (src.len as u64) else { return 0, false; }
 
@@ -93,21 +125,14 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
     let b = src[offset];
     offset += 1;
 
-    var val = (b & mask) as u64;
+    let val = (b & mask) as u64;
     guard val == max_prefix else { return val, true; }
 
-    var m: u64 = 0;
-    while offset < (src.len as u64) {
-        let nb = src[offset];
-        offset += 1;
-        val += ((nb & 0x7F) as u64) << m;
-        m += 7;
-        if (nb & 0x80) == 0 {
-            return val, true;
-        }
-        guard m <= 56 else { return 0, false; }
-    }
-    return 0, false;
+    return decode_hpack_int_multibyte(src, offset, initial_offset, max_prefix);
+}
+
+inline fn copy_hpack_slice<B>(src: const u8[:], offset: u64, end: u64, out: B&) -> bool {
+    return out.try_append(src[offset..end]);
 }
 
 // Decodes raw HPACK string and advances cursor (RFC 7541 Section 5.2).
@@ -116,12 +141,20 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
 //   src = [0x04, 't', 'e', 's', 't'], offset = 0
 //   returns: ok = true, out = "test", offset = 5
 fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
-    guard offset < (src.len as u64) else { return false; }
+    let initial_offset = offset;
+    guard offset < (src.len as u64) && (src[offset] & 0x80) == 0 else { return false; }
+
     let str_len, len_ok = hpack_decode_int(src, offset, 7);
-    guard len_ok else { return false; }
+    let rem = (src.len as u64) - offset;
+    guard len_ok && str_len <= rem else {
+        offset = initial_offset;
+        return false;
+    }
     let end = offset + str_len;
-    guard end <= (src.len as u64) else { return false; }
-    guard out.try_append(src[offset..end]) else { return false; }
+    guard copy_hpack_slice(src, offset, end, out) else {
+        offset = initial_offset;
+        return false;
+    }
     offset = end;
     return true;
 }

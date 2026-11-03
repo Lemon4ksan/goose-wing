@@ -33,7 +33,7 @@ fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
 fn parse_frame_header(buf: const u8[:]) -> WireFrameHeader, u32, bool {
     var hdr = WireFrameHeader { .. };
     guard buf.len >= 9 else {
-        return hdr, 1, false;
+        return hdr, 0, false;
     }
     let length_val = core::read_be_u24(buf, 0);
     let f_type = buf[3];
@@ -73,6 +73,7 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
 
 // Encodes a WINDOW_UPDATE frame with explicit stream ID and increment (RFC 9113 Section 6.9).
 fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> bool {
+    guard increment >= 1 && increment <= 0x7FFFFFFF else { return false; }
     let hdr = WireFrameHeader {
         length:     4,
         frame_type: H2_FRAME_WINDOW_UPDATE,
@@ -111,6 +112,7 @@ inline fn calc_priority_payload_len(val_len: i64) -> u32 {
 
 // Encodes an RFC 9218 PRIORITY_UPDATE frame on stream 0 (RFC 9218 Section 7.1).
 fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incremental: bool, out: B&) -> bool {
+    guard prioritized_stream_id != 0 else { return false; }
     var p_val: u8[..32] = [];
     guard format_priority_params(urgency, incremental, p_val) else { return false; }
 
@@ -136,6 +138,7 @@ fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incr
 
 // Encodes a RST_STREAM frame (RFC 9113 Section 6.4).
 fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool {
+    guard stream_id != 0 else { return false; }
     let hdr = WireFrameHeader {
         length:     4,
         frame_type: H2_FRAME_RST_STREAM,
@@ -171,6 +174,7 @@ inline fn select_data_frame_flags(end_stream: bool) -> u8 {
 
 // Encodes a DATA frame (RFC 9113 Section 6.1).
 fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, out: B&) -> bool {
+    guard stream_id != 0 else { return false; }
     let hdr = WireFrameHeader {
         length:     payload.len as u32,
         frame_type: H2_FRAME_DATA,
