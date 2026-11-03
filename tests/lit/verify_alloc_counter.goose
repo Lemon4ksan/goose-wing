@@ -108,12 +108,42 @@ fn test_zero_alloc_hot_paths() {
     print("ZERO_ALLOC_HOT_PATHS: OK");
 }
 
+fn test_zero_alloc_protocol_parsers() {
+    let req_str = "POST /api/v1/checkout HTTP/1.1\r\nHost: store.example.com\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"item\":\"potion\"}";
+    let cookie_str = "session_token=abcdef0123456789; Path=/; Secure; HttpOnly; SameSite=Lax";
+    let q_varint: u8[4] = [0x9D, 0x7F, 0x3E, 0x7D]; // 4-byte QUIC varint (value 494878333)
+
+    var probe: u8[>..] = [];
+    alloc_kit::alloc_reset();
+    let mark = alloc_kit::alloc_mark(probe);
+
+    var parsed_req = wing::new_request("GET", "/");
+
+    for _ in 1000 {
+        parsed_req.url.clear();
+        let ok_http, consumed = wing::parse_http1_wire_request(req_str, parsed_req);
+        assert(ok_http && consumed > 0);
+
+        var cur: i64 = 0;
+        let span, ok_cookie = wing::next_cookie_span(cookie_str, cur);
+        assert(ok_cookie && span.name_len > 0);
+
+        let val, off, ok_q = internal::quic_decode_varint(q_varint[..], 0);
+        assert(ok_q && val == 494878333 && off == 4);
+    }
+
+    assert(alloc_kit::alloc_growth(probe, mark) == 0);
+    assert(alloc_kit::alloc_events() == 0 && alloc_kit::alloc_frees() == 0);
+    print("ZERO_ALLOC_PROTOCOL_PARSERS: OK");
+}
+
 fn main() {
     print("=== RUNNING RUNTIME ALLOCATION COUNTER ===");
     test_note_tap();
     test_interposed_pool_counting();
     test_growth_watermark();
     test_zero_alloc_hot_paths();
+    test_zero_alloc_protocol_parsers();
     print("RUNTIME ALLOCATION COUNTER COMPLETE: ALL CHECKS PASSED");
 }
 
@@ -122,4 +152,5 @@ fn main() {
 // CHECK: ALLOC_POOL_INTERPOSE: OK
 // CHECK: ALLOC_GROWTH_WATERMARK: OK
 // CHECK: ZERO_ALLOC_HOT_PATHS: OK
+// CHECK: ZERO_ALLOC_PROTOCOL_PARSERS: OK
 // CHECK: RUNTIME ALLOCATION COUNTER COMPLETE: ALL CHECKS PASSED
