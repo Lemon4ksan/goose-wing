@@ -83,7 +83,7 @@ def main() -> int:
         )
         if res_c.returncode != 0:
             record_violation(
-                "[LINT REJECTED] C headers drift detected in include/wing/! "
+                "[LINT] C header drift detected in include/wing/. "
                 "Run 'python scripts/gen_c_headers.py' to synchronize.",
                 "red",
             )

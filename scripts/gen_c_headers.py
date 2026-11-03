@@ -637,7 +637,7 @@ def run_generate(include_dir: Path) -> int:
         file_path = include_dir / filename
         file_path.write_text(content, encoding="utf-8", newline="\n")
         count += 1
-    print(f"[GEN] Successfully wrote {count} C header files to {include_dir.as_posix()}/")
+    print(f"[gen] Wrote {count} C header files to {include_dir.as_posix()}/")
     return 0
 
 
@@ -646,13 +646,13 @@ def run_check(include_dir: Path) -> int:
     for filename, expected_content in HEADERS.items():
         file_path = include_dir / filename
         if not file_path.exists():
-            print(f"[ERROR] Missing header file: {file_path.as_posix()}", file=sys.stderr)
+            print(f"[error] Missing header file: {file_path.as_posix()}", file=sys.stderr)
             drift_detected = True
             continue
 
         disk_content = file_path.read_text(encoding="utf-8")
         if disk_content != expected_content:
-            print(f"[ERROR] Header drift detected in {file_path.as_posix()}:", file=sys.stderr)
+            print(f"[error] Header drift detected in {file_path.as_posix()}:", file=sys.stderr)
             diff = difflib.unified_diff(
                 disk_content.splitlines(keepends=True),
                 expected_content.splitlines(keepends=True),
@@ -664,10 +664,10 @@ def run_check(include_dir: Path) -> int:
             drift_detected = True
 
     if drift_detected:
-        print("\n[FAIL] C headers in include/wing/ are out of date! Run: python scripts/gen_c_headers.py", file=sys.stderr)
+        print("\n[error] C headers in include/wing/ are out of date. Run: python scripts/gen_c_headers.py", file=sys.stderr)
         return 1
 
-    print("[PASS] All C headers in include/wing/ are up-to-date and in sync.")
+    print("[c-headers] Up to date.")
     return 0
 
 

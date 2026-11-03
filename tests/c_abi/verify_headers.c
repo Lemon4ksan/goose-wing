@@ -23,7 +23,7 @@ static void dummy_handler(
 }
 
 int main(void) {
-    printf("[C-ABI] Verifying wing/types.h macros and memory layout...\n");
+    printf("[c-abi] checking wing/types.h macros and memory layout...\n");
 
     // 1. Slice macros and string literals
     wing_slice_t s = WING_STR("HTTP/2");
@@ -45,7 +45,7 @@ int main(void) {
     assert(sizeof(wing_mut_slice_t) == 16);
     assert(sizeof(wing_instant_t) == 8);
 
-    printf("[C-ABI] Verifying HTTP constants and structures...\n");
+    printf("[c-abi] checking HTTP constants and structures...\n");
 
     // 3. HTTP method enum
     assert(WING_HTTP_METHOD_GET == 1);
@@ -66,7 +66,7 @@ int main(void) {
     assert(map.count == 0);
     assert(map.entries == storage);
 
-    printf("[C-ABI] Verifying TLS record and alert constants...\n");
+    printf("[c-abi] checking TLS record and alert constants...\n");
 
     // 6. TLS definitions
     assert(WING_TLS_CONTENT_APPLICATION_DATA == 23);
@@ -75,7 +75,7 @@ int main(void) {
     assert(WING_TLS_AES_128_GCM_SHA256 == 0x1301);
     assert(WING_TLS_CHACHA20_POLY1305_SHA256 == 0x1303);
 
-    printf("[C-ABI] Verifying Net and Server interfaces...\n");
+    printf("[c-abi] checking Net and Server interfaces...\n");
 
     // 7. Net definitions
     assert(WING_IP_V4 == 4 && WING_IP_V6 == 6);
@@ -102,6 +102,6 @@ int main(void) {
     assert(prob.status == 404);
     assert(prob.title.len == 9);
 
-    printf("[C-ABI] ALL HEADER DEFINITIONS AND ABI CONSTRAINTS VERIFIED.\n");
+    printf("[c-abi] header definitions and ABI constraints verified.\n");
     return 0;
 }
