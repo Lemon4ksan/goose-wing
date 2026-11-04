@@ -107,32 +107,32 @@ fn handle_tls_connection(conn: i64) {
                     //   supported_versions (0x002B): [0x03, 0x04] (TLS 1.3)
                     //   key_share (0x0033)
                     var sh_builder = core::builder_init();
-                    wing::put_u16(sh_builder, 0x0303); // Legacy version
+                    core::put_u16(sh_builder, 0x0303); // Legacy version
 
                     // 32-byte server random
                     for _ in 32 {
-                        wing::put_u8(sh_builder, 0x5A);
+                        core::put_u8(sh_builder, 0x5A);
                     }
 
                     // Echo session ID length 0
-                    wing::put_u8(sh_builder, 0);
+                    core::put_u8(sh_builder, 0);
 
                     // Selected Cipher Suite: TLS_AES_128_GCM_SHA256 (0x1301)
-                    wing::put_u16(sh_builder, 0x1301);
+                    core::put_u16(sh_builder, 0x1301);
 
                     // Compression method: 0
-                    wing::put_u8(sh_builder, 0);
+                    core::put_u8(sh_builder, 0);
 
                     // Extensions block
-                    wing::start_u16_prefix(sh_builder);
+                    core::start_u16_prefix(sh_builder);
 
                     // 1. supported_versions extension (0x002B) -> TLS 1.3 (0x0304)
-                    wing::put_u16(sh_builder, 43); // EXT_SUPPORTED_VERSIONS
-                    wing::start_u16_prefix(sh_builder);
-                    wing::put_u16(sh_builder, 0x0304); // TLS 1.3
-                    wing::finish_u16_prefix(sh_builder);
+                    core::put_u16(sh_builder, 43); // EXT_SUPPORTED_VERSIONS
+                    core::start_u16_prefix(sh_builder);
+                    core::put_u16(sh_builder, 0x0304); // TLS 1.3
+                    core::finish_u16_prefix(sh_builder);
 
-                    wing::finish_u16_prefix(sh_builder);
+                    core::finish_u16_prefix(sh_builder);
 
                     // Wrap in Handshake Header (type = 2 / ServerHello)
                     var hs_msg: u8[>..] = [];
