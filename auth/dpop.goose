@@ -52,17 +52,6 @@ fn compute_dpop_ath<B>(access_token: const u8[:], out: B&) {
     core::base64url_encode(digest[..], out);
 }
 
-// Validates DPoP-Nonce syntax per RFC 9449 §8 (NQCHAR: ASCII 0x21, 0x23..0x5B, 0x5D..0x7E).
-// Rejects double quotes ('"'), backslashes ('\\'), spaces, and control characters.
-fn is_valid_dpop_nonce(nonce: const u8[:]) -> bool {
-    guard nonce.len > 0 && nonce.len <= 128 else { return false; }
-    for b in nonce {
-        let valid = b == 0x21 || (b >= 0x23 && b <= 0x5b) || (b >= 0x5d && b <= 0x7e);
-        guard valid else { return false; }
-    }
-    return true;
-}
-
 var g_dpop_jti_seq: u64 = 0x853c49e6748fea9b;
 
 // RFC 9449 Section 4.2: DPoP Proof JWT Syntax - Stateful entropy mixer for negligible collision probability.
@@ -110,8 +99,8 @@ inline fn build_dpop_claims_json<B>(
 ) -> bool {
     guard now_sec > 0 && method.len > 0 else { return false; }
     for b in method { guard core::is_tchar(b) else { return false; } }
-    if jti.len > 0 { guard is_valid_dpop_nonce(jti) else { return false; } }
-    if nonce.len > 0 { guard is_valid_dpop_nonce(nonce) else { return false; } }
+    if jti.len > 0 { guard rfc::is_valid_dpop_nonce(jti) else { return false; } }
+    if nonce.len > 0 { guard rfc::is_valid_dpop_nonce(nonce) else { return false; } }
     let eff_jti_len = if jti.len > 0 { jti.len } else { 32 };
     let ath_len:   i64 = if access_token.len > 0 { 55 } else { 0 };
     let nonce_len: i64 = if nonce.len > 0 { core::add_sat_i64(nonce.len, 12) } else { 0 };
@@ -266,10 +255,10 @@ fn create_dpop_proof<B>(
     out.clear();
 
     if nonce.len > 0 {
-        guard is_valid_dpop_nonce(nonce) else { return false; }
+        guard rfc::is_valid_dpop_nonce(nonce) else { return false; }
     }
     if jti.len > 0 {
-        guard is_valid_dpop_nonce(jti) else { return false; }
+        guard rfc::is_valid_dpop_nonce(jti) else { return false; }
     }
     guard key.len == 32 else { return false; }
 
@@ -496,7 +485,7 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
 fn verify_dpop_jti(claims_json: const u8[:]) -> bool {
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json, claims) else { return false; }
-    return is_valid_dpop_nonce(claims.jti[..]);
+    return rfc::is_valid_dpop_nonce(claims.jti[..]);
 }
 
 inline fn is_valid_dpop_method(m: const u8[:]) -> bool {
@@ -583,7 +572,7 @@ fn verify_dpop_claims(
     expected_jkt:    const u8[:] = "",
 ) -> bool {
     // RFC 9449 §4.3: Mandatory unique jti & exact uppercase HTTP method
-    guard is_valid_dpop_nonce(claims.jti[..]) else { return false; }
+    guard rfc::is_valid_dpop_nonce(claims.jti[..]) else { return false; }
     guard is_valid_dpop_method(expected_method) && is_valid_dpop_method(claims.htm[..]) else { return false; }
     guard claims.htm[..] == expected_method else { return false; }
 
@@ -755,7 +744,7 @@ fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
     }
     guard found_idx != -1 else { return "", false; }
     let val = headers[found_idx].value[..];
-    guard is_valid_dpop_nonce(val) else { return "", false; }
+    guard rfc::is_valid_dpop_nonce(val) else { return "", false; }
     return val, true;
 }
 

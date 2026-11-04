@@ -9,20 +9,6 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- Privacy Pass Constants & Token Types --------------------------------
-
-// Checks whether token type is a GREASE identifier (RFC 9577 §6.2.1)
-fn is_grease_token_type(t: u16) -> bool {
-    let grease_types: const u16[17] = [
-        0x0000, 0x02AA, 0x1132, 0x2E96, 0x3CD3, 0x4473, 0x5A63, 0x6D32,
-        0x7F3F, 0x8D07, 0x916B, 0xA6A4, 0xBEAB, 0xC3F3, 0xDA42, 0xE944, 0xF057,
-    ];
-    for g in grease_types {
-        if t == g { return true; }
-    }
-    return false;
-}
-
 // ---- Data Structures -----------------------------------------------------
 
 struct TokenChallenge {

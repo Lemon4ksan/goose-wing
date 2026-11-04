@@ -173,7 +173,7 @@ fn has_trailer(res: const Response&, name: const u8[:]) -> bool {
 }
 
 fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
-    guard !is_disallowed_trailer_field(name) else { return; }
+    guard !rfc::is_disallowed_trailer_field(name) else { return; }
     set_header(res.trailers, name, value, false);
 }
 

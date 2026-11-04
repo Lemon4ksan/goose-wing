@@ -20,32 +20,6 @@ enum ProxyScheme {
     Socks5h,
 }
 
-let SOCKS5_VER:         u8 = 0x05;
-let SOCKS5_RFC1929_VER: u8 = 0x01; // First byte of RFC 1929 subnegotiation MUST be 0x01
-
-let SOCKS5_AUTH_NONE:          u8 = 0x00;
-let SOCKS5_AUTH_GSSAPI:        u8 = 0x01;
-let SOCKS5_AUTH_USERPASS:      u8 = 0x02;
-let SOCKS5_AUTH_NO_ACCEPTABLE: u8 = 0xFF;
-
-let SOCKS5_CMD_CONNECT:       u8 = 0x01;
-let SOCKS5_CMD_BIND:          u8 = 0x02;
-let SOCKS5_CMD_UDP_ASSOCIATE: u8 = 0x03;
-
-let SOCKS5_ATYP_IPV4:   u8 = 0x01;
-let SOCKS5_ATYP_DOMAIN: u8 = 0x03;
-let SOCKS5_ATYP_IPV6:   u8 = 0x04;
-
-let SOCKS5_REP_SUCCEEDED:          u8 = 0x00;
-let SOCKS5_REP_GENERAL_FAILURE:    u8 = 0x01;
-let SOCKS5_REP_NOT_ALLOWED:        u8 = 0x02;
-let SOCKS5_REP_NET_UNREACHABLE:    u8 = 0x03;
-let SOCKS5_REP_HOST_UNREACHABLE:   u8 = 0x04;
-let SOCKS5_REP_CONN_REFUSED:       u8 = 0x05;
-let SOCKS5_REP_TTL_EXPIRED:        u8 = 0x06;
-let SOCKS5_REP_CMD_NOT_SUPPORTED:  u8 = 0x07;
-let SOCKS5_REP_ATYP_NOT_SUPPORTED: u8 = 0x08;
-
 enum Socks5Error {
     None,
     InvalidVersion,
@@ -78,18 +52,18 @@ fn build_socks5_greeting(
     out:  u8[..16]&,
 ) {
     out.clear();
-    out.push(SOCKS5_VER);
+    out.push(rfc::SOCKS5_VER);
     var auth_count: u8 = 1;
     if opts.has_credentials { auth_count++; }
     if opts.enable_gssapi { auth_count++; }
 
     out.push(auth_count);
-    out.push(SOCKS5_AUTH_NONE);
+    out.push(rfc::SOCKS5_AUTH_NONE);
     if opts.has_credentials {
-        out.push(SOCKS5_AUTH_USERPASS);
+        out.push(rfc::SOCKS5_AUTH_USERPASS);
     }
     if opts.enable_gssapi {
-        out.push(SOCKS5_AUTH_GSSAPI);
+        out.push(rfc::SOCKS5_AUTH_GSSAPI);
     }
 }
 
@@ -100,9 +74,9 @@ fn build_socks5_greeting(
 //   returns: 0x00, Socks5Error.None
 fn parse_socks5_greeting_reply(buf: const u8[:]) -> u8, Socks5Error {
     guard buf.len >= 2 else { return 0xFF, Socks5Error.BufferTruncated; }
-    guard buf[0] == SOCKS5_VER else { return 0xFF, Socks5Error.InvalidVersion; }
+    guard buf[0] == rfc::SOCKS5_VER else { return 0xFF, Socks5Error.InvalidVersion; }
     let selected_method = buf[1];
-    if selected_method == SOCKS5_AUTH_NO_ACCEPTABLE {
+    if selected_method == rfc::SOCKS5_AUTH_NO_ACCEPTABLE {
         return 0xFF, Socks5Error.NoAcceptableAuth;
     }
     return selected_method, Socks5Error.None;
@@ -119,7 +93,7 @@ fn build_socks5_rfc1929_auth(
     guard username.len >= 1 && username.len <= 255 else { return Socks5Error.AuthFailed; }
     guard password.len >= 1 && password.len <= 255 else { return Socks5Error.AuthFailed; }
 
-    out.push(SOCKS5_RFC1929_VER); // Version 0x01
+    out.push(rfc::SOCKS5_RFC1929_VER); // Version 0x01
     out.push(username.len as u8);
     out.append(username);
     out.push(password.len as u8);
@@ -135,7 +109,7 @@ fn build_socks5_rfc1929_auth(
 //   returns: Socks5Error.None
 fn parse_socks5_rfc1929_reply(buf: const u8[:]) -> Socks5Error {
     guard buf.len >= 2 else { return Socks5Error.BufferTruncated; }
-    guard buf[0] == SOCKS5_RFC1929_VER else { return Socks5Error.InvalidAuthResponse; }
+    guard buf[0] == rfc::SOCKS5_RFC1929_VER else { return Socks5Error.InvalidAuthResponse; }
     if buf[1] != 0x00 {
         return Socks5Error.AuthFailed;
     }
@@ -153,19 +127,19 @@ fn build_socks5_connect_request(
     out:           u8[..300]&,
 ) -> Socks5Error {
     out.clear();
-    out.push(SOCKS5_VER);
-    out.push(SOCKS5_CMD_CONNECT);
+    out.push(rfc::SOCKS5_VER);
+    out.push(rfc::SOCKS5_CMD_CONNECT);
     out.push(0x00); // RSV
 
     if scheme == ProxyScheme.Socks5h {
         // Delegate DNS resolution to proxy: ATYP = 0x03 (Domain Name)
         guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
-        out.push(SOCKS5_ATYP_DOMAIN);
+        out.push(rfc::SOCKS5_ATYP_DOMAIN);
         out.push(host_str.len as u8);
         out.append(host_str);
     } else if has_ipv4 {
         // Local DNS resolution: ATYP = 0x01 (IPv4)
-        out.push(SOCKS5_ATYP_IPV4);
+        out.push(rfc::SOCKS5_ATYP_IPV4);
         out.append(resolved_ipv4[..]);
     } else {
         // RFC 1928: socks5:// requires local DNS resolution. Do not leak unencrypted domain name!
@@ -192,17 +166,17 @@ fn build_socks5_connect_request_v6(
     out:           u8[..300]&,
 ) -> Socks5Error {
     out.clear();
-    out.push(SOCKS5_VER);
-    out.push(SOCKS5_CMD_CONNECT);
+    out.push(rfc::SOCKS5_VER);
+    out.push(rfc::SOCKS5_CMD_CONNECT);
     out.push(0x00); // RSV
 
     if scheme == ProxyScheme.Socks5h {
         guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
-        out.push(SOCKS5_ATYP_DOMAIN);
+        out.push(rfc::SOCKS5_ATYP_DOMAIN);
         out.push(host_str.len as u8);
         out.append(host_str);
     } else if has_ipv6 {
-        out.push(SOCKS5_ATYP_IPV6);
+        out.push(rfc::SOCKS5_ATYP_IPV6);
         out.append(resolved_ipv6[..]);
     } else {
         return Socks5Error.AddressTypeNotSupported;
@@ -221,10 +195,10 @@ struct Socks5Reply {
 
 // Calculates expected wire length of SOCKS5 connect reply based on ATYP (RFC 1928 Section 5).
 fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
-    if atyp != SOCKS5_ATYP_IPV4 && atyp != SOCKS5_ATYP_IPV6 && atyp != SOCKS5_ATYP_DOMAIN {
+    if atyp != rfc::SOCKS5_ATYP_IPV4 && atyp != rfc::SOCKS5_ATYP_IPV6 && atyp != rfc::SOCKS5_ATYP_DOMAIN {
         return 0, Socks5Error.AddressTypeNotSupported;
     }
-    if atyp == SOCKS5_ATYP_DOMAIN && buf.len < 5 {
+    if atyp == rfc::SOCKS5_ATYP_DOMAIN && buf.len < 5 {
         return 0, Socks5Error.BufferTruncated;
     }
     if buf.len >= 5 {
@@ -233,21 +207,21 @@ fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
             return expected_len, Socks5Error.None;
         }
     }
-    if atyp == SOCKS5_ATYP_IPV4 { return 10, Socks5Error.None; }
-    if atyp == SOCKS5_ATYP_IPV6 { return 22, Socks5Error.None; }
+    if atyp == rfc::SOCKS5_ATYP_IPV4 { return 10, Socks5Error.None; }
+    if atyp == rfc::SOCKS5_ATYP_IPV6 { return 22, Socks5Error.None; }
     return 0, Socks5Error.AddressTypeNotSupported;
 }
 
 // Maps RFC 1928 REP octet to corresponding Socks5Error variant.
 fn socks5_rep_to_error(rep: u8) -> Socks5Error {
-    if rep == SOCKS5_REP_SUCCEEDED { return Socks5Error.None; }
-    if rep == SOCKS5_REP_GENERAL_FAILURE { return Socks5Error.ServerFailure; }
-    if rep == SOCKS5_REP_NOT_ALLOWED { return Socks5Error.ConnectionNotAllowed; }
-    if rep == SOCKS5_REP_NET_UNREACHABLE { return Socks5Error.NetworkUnreachable; }
-    if rep == SOCKS5_REP_HOST_UNREACHABLE { return Socks5Error.HostUnreachable; }
-    if rep == SOCKS5_REP_CONN_REFUSED { return Socks5Error.ConnectionRefused; }
-    if rep == SOCKS5_REP_TTL_EXPIRED { return Socks5Error.TtlExpired; }
-    if rep == SOCKS5_REP_CMD_NOT_SUPPORTED { return Socks5Error.CommandNotSupported; }
+    if rep == rfc::SOCKS5_REP_SUCCEEDED { return Socks5Error.None; }
+    if rep == rfc::SOCKS5_REP_GENERAL_FAILURE { return Socks5Error.ServerFailure; }
+    if rep == rfc::SOCKS5_REP_NOT_ALLOWED { return Socks5Error.ConnectionNotAllowed; }
+    if rep == rfc::SOCKS5_REP_NET_UNREACHABLE { return Socks5Error.NetworkUnreachable; }
+    if rep == rfc::SOCKS5_REP_HOST_UNREACHABLE { return Socks5Error.HostUnreachable; }
+    if rep == rfc::SOCKS5_REP_CONN_REFUSED { return Socks5Error.ConnectionRefused; }
+    if rep == rfc::SOCKS5_REP_TTL_EXPIRED { return Socks5Error.TtlExpired; }
+    if rep == rfc::SOCKS5_REP_CMD_NOT_SUPPORTED { return Socks5Error.CommandNotSupported; }
     return Socks5Error.AddressTypeNotSupported;
 }
 
@@ -259,7 +233,7 @@ fn socks5_rep_to_error(rep: u8) -> Socks5Error {
 //   returns: Socks5Reply { reply_code: 0, bound_port: 8080 }, Socks5Error.None
 fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     guard buf.len >= 4 else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
-    guard buf[0] == SOCKS5_VER else { return Socks5Reply { .. }, Socks5Error.InvalidVersion; }
+    guard buf[0] == rfc::SOCKS5_VER else { return Socks5Reply { .. }, Socks5Error.InvalidVersion; }
 
     let rep = buf[1];
     let atyp = buf[3];

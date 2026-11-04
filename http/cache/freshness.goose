@@ -64,16 +64,6 @@ struct FreshnessMetrics {
     stale_if_error_allowed:         bool = false,
 }
 
-// ---- status code heuristic cacheability ------------------------------------
-
-// Returns whether status_code is heuristically cacheable by default (RFC 9111 Section 4.2.2).
-fn is_heuristically_cacheable_status(status_code: i32) -> bool {
-    return status_code == 200 || status_code == 203 || status_code == 204 || status_code == 206 ||
-           status_code == 300 || status_code == 301 || status_code == 308 ||
-           status_code == 404 || status_code == 405 || status_code == 410 || status_code == 414 ||
-           status_code == 501;
-}
-
 // ---- age header parser -----------------------------------------------------
 
 // Parses Age header delta-seconds, selecting the first member if multiple present (RFC 9111 §5.1).
@@ -129,7 +119,7 @@ fn compute_response_delay(ts: const CacheTimestamps&) -> i64 {
 
 // Computes corrected_initial_age = max(apparent_age, age_hdr + response_delay).
 fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay: i64) -> i64 {
-    return core::ct_max_i64(apparent_age, age_hdr + response_delay);
+    return core::ct_max_i64(apparent_age, core::add_sat_i64(age_hdr, response_delay));
 }
 
 // Computes resident_time = max(0, now - response_time).
@@ -148,7 +138,7 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
     let delay = compute_response_delay(ts);
     let initial_age = compute_corrected_initial_age(apparent_age, age_hdr, delay);
     let resident = compute_resident_time(ts);
-    return core::ct_min_i64(initial_age + resident, rfc::MAX_DELTA_SECONDS);
+    return core::ct_min_i64(core::add_sat_i64(initial_age, resident), rfc::MAX_DELTA_SECONDS);
 }
 
 // ---- freshness lifetime helpers --------------------------------------------
@@ -182,7 +172,7 @@ fn compute_last_modified_heuristic(
     ref_time:           core::Time,
     heuristic_fraction: i64,
 ) -> i64 {
-    guard is_heuristically_cacheable_status(resp_headers.status_code) else { return 0; }
+    guard rfc::is_heuristically_cacheable_status(resp_headers.status_code) else { return 0; }
 
     let lm_raw = get_header(resp_headers, "last-modified");
     guard lm_raw.len > 0 else { return 0; }
@@ -245,7 +235,7 @@ struct FreshnessPolicy {
 fn is_max_stale_blocked(resp_cc: const CacheControl&, policy: FreshnessPolicy) -> bool {
     if is_must_revalidate(resp_cc) { return true; }
     if policy.shared && is_proxy_revalidate(resp_cc) { return true; }
-    if has_s_maxage(resp_cc) { return true; }
+    if policy.shared && has_s_maxage(resp_cc) { return true; }
     if policy.security_zeroed { return true; }
     return false;
 }

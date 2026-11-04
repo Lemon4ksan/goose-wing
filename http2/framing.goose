@@ -65,29 +65,6 @@ fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
     core::append_u32_be(out, hdr.stream_id & 0x7FFFFFFF);
 }
 
-// RFC 9113 Section 5.1.1: Stream Identifiers - Stream ID 0 rules and stream association.
-inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 {
-    if stream_id == 0 {
-        if frame_type == rfc::H2_FRAME_DATA ||
-           frame_type == rfc::H2_FRAME_HEADERS ||
-           frame_type == rfc::H2_FRAME_PRIORITY ||
-           frame_type == rfc::H2_FRAME_RST_STREAM ||
-           frame_type == rfc::H2_FRAME_CONTINUATION ||
-           frame_type == rfc::H2_FRAME_PUSH_PROMISE {
-            return rfc::H2_ERR_PROTOCOL_ERROR;
-        }
-    } else {
-        if frame_type == rfc::H2_FRAME_SETTINGS ||
-           frame_type == rfc::H2_FRAME_PING ||
-           frame_type == rfc::H2_FRAME_GOAWAY ||
-           frame_type == rfc::H2_FRAME_PRIORITY_UPDATE ||
-           frame_type == rfc::H2_FRAME_ORIGIN {
-            return rfc::H2_ERR_PROTOCOL_ERROR;
-        }
-    }
-    return rfc::H2_ERR_NO_ERROR;
-}
-
 // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
 inline fn validate_frame_type_length(hdr: const FrameHeader&) -> u32 {
     if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.length != 4 {
@@ -148,28 +125,12 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
         return rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
 
-    let stream_err = validate_stream_id_association(hdr.stream_id, hdr.frame_type);
+    let stream_err = rfc::validate_stream_id_association(hdr.stream_id, hdr.frame_type);
     guard stream_err == rfc::H2_ERR_NO_ERROR else {
         return stream_err;
     }
 
     return validate_frame_type_length(hdr);
-}
-
-// RFC 9113 Section 6.8 & Go #80759:
-// Validates GOAWAY Last-Stream-ID based on peer stream initiation roles.
-// A client can only acknowledge peer streams (server-initiated: even or 0).
-// A server can only acknowledge peer streams (client-initiated: odd or 0, or 2^31 - 1 for graceful shutdown).
-fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool {
-    let sid = last_stream_id & 0x7FFFFFFF;
-    if sid == 0 || sid == 0x7FFFFFFF {
-        return true;
-    }
-    if sender_is_client {
-        return (sid % 2) == 0;
-    } else {
-        return (sid % 2) != 0;
-    }
 }
 
 // ---- payload extractors & padding validation ----------------------------

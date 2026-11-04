@@ -22,7 +22,7 @@ fn decode_h2_header(buf: const u8[:]) -> i64 {
 fn validate_ws_frame(buf: const u8[:]) -> i64 {
     if buf.len < 2 { return -1; }
     let opcode = buf[0] & 0x0F;
-    if !wing::is_valid_ws_opcode(opcode) { return -2; }
+    if !rfc::is_valid_ws_opcode(opcode) { return -2; }
     let masked = (buf[1] & 0x80) != 0;
     let raw_len = buf[1] & 0x7F;
     var min_hdr: i64 = 2;

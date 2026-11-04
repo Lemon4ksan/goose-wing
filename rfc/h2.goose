@@ -78,3 +78,41 @@ let H2_CLIENT_PREFACE: const u8[24] = [
     'P', 'R', 'I', ' ', '*', ' ', 'H', 'T', 'T', 'P', '/', '2', '.', '0',
     '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n',
 ];
+
+// RFC 9113 Section 5.1.1: Stream Identifiers - Stream ID 0 rules and stream association.
+inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 {
+    if stream_id == 0 {
+        if frame_type == H2_FRAME_DATA ||
+           frame_type == H2_FRAME_HEADERS ||
+           frame_type == H2_FRAME_PRIORITY ||
+           frame_type == H2_FRAME_RST_STREAM ||
+           frame_type == H2_FRAME_CONTINUATION ||
+           frame_type == H2_FRAME_PUSH_PROMISE {
+            return H2_ERR_PROTOCOL_ERROR;
+        }
+    } else {
+        if frame_type == H2_FRAME_SETTINGS ||
+           frame_type == H2_FRAME_PING ||
+           frame_type == H2_FRAME_GOAWAY ||
+           frame_type == H2_FRAME_PRIORITY_UPDATE ||
+           frame_type == H2_FRAME_ORIGIN {
+            return H2_ERR_PROTOCOL_ERROR;
+        }
+    }
+    return H2_ERR_NO_ERROR;
+}
+
+// RFC 9113 Section 6.8: GOAWAY - Validates Last-Stream-ID based on peer stream initiation roles.
+// A client can only acknowledge peer streams (server-initiated: even or 0).
+// A server can only acknowledge peer streams (client-initiated: odd or 0, or 2^31 - 1 for graceful shutdown).
+inline fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool {
+    let sid = last_stream_id & 0x7FFFFFFF;
+    if sid == 0 || sid == 0x7FFFFFFF {
+        return true;
+    }
+    if sender_is_client {
+        return (sid & 1) == 0;
+    } else {
+        return (sid & 1) != 0;
+    }
+}

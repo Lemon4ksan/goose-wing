@@ -58,7 +58,7 @@ fn main() {
 
     // 3. Simulate Inbound HTTP/2 gRPC Unary Request for Greeter
     var req1 = wing::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
-        r.set_header("content-type", wing::GRPC_CONTENT_TYPE_PROTO);
+        r.set_header("content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
         r.set_header("authorization", "Bearer secret-cluster-token-xyz");
     };
 
@@ -79,7 +79,7 @@ fn main() {
     print("    Handled: ", handled1);
     print("    HTTP Status: ", res1.status_code);
     print("    Metadata x-server-version: ", wing::header(res1, "x-server-version"));
-    print("    Trailer grpc-status: ", wing::trailer(res1, wing::HEADER_GRPC_STATUS));
+    print("    Trailer grpc-status: ", wing::trailer(res1, rfc::HEADER_GRPC_STATUS));
 
     // Decode response LPM payload
     var decoded_msg: u8[>..] = [];
@@ -89,7 +89,7 @@ fn main() {
 
     // 5. Simulate Inbound Call Without Credentials (Unauthenticated error test)
     var req2 = wing::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
-        r.set_header("content-type", wing::GRPC_CONTENT_TYPE_PROTO);
+        r.set_header("content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     };
     wing::encode_grpc_lpm("Intruder", req2.body, false);
 
@@ -98,8 +98,8 @@ fn main() {
 
     // In RFC gRPC over HTTP/2, pure errors are returned as 'Trailers-Only'
     // in the initial response HEADERS block to avoid allocating stream data frames.
-    let err_status = wing::header(res2, wing::HEADER_GRPC_STATUS);
-    let err_msg = wing::header(res2, wing::HEADER_GRPC_MESSAGE);
+    let err_status = wing::header(res2, rfc::HEADER_GRPC_STATUS);
+    let err_msg = wing::header(res2, rfc::HEADER_GRPC_MESSAGE);
 
     print("\n[4] Unauthenticated Call Handling (RFC Trailers-Only):");
     print("    Handled: ", handled2);

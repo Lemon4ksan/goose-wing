@@ -42,31 +42,31 @@ fn test_h3_frame_headers() {
 
 fn test_h3_grease_and_h2_reserved() {
     // RFC 9114 Section 7.2.8: 0x1f * N + 0x21 are GREASE frames
-    assert(internal::is_h3_grease_frame(0x21));
-    assert(internal::is_h3_grease_frame(0x40));
-    assert(internal::is_h3_grease_frame(0x5F));
-    assert(!internal::is_h3_grease_frame(0x00));
-    assert(!internal::is_h3_grease_frame(0x04));
+    assert(rfc::is_h3_grease_frame(0x21));
+    assert(rfc::is_h3_grease_frame(0x40));
+    assert(rfc::is_h3_grease_frame(0x5F));
+    assert(!rfc::is_h3_grease_frame(0x00));
+    assert(!rfc::is_h3_grease_frame(0x04));
 
     // RFC 9114 Section 7.2.8: Reserved HTTP/2 frames trigger H3_FRAME_UNEXPECTED
-    assert(internal::is_h2_reserved_frame_in_h3(0x02)); // PRIORITY
-    assert(internal::is_h2_reserved_frame_in_h3(0x06)); // PING
-    assert(internal::is_h2_reserved_frame_in_h3(0x08)); // WINDOW_UPDATE
-    assert(internal::is_h2_reserved_frame_in_h3(0x09)); // CONTINUATION
-    assert(!internal::is_h2_reserved_frame_in_h3(0x00)); // DATA is H3
-    assert(!internal::is_h2_reserved_frame_in_h3(0x01)); // HEADERS is H3
+    assert(rfc::is_h2_reserved_frame_in_h3(0x02)); // PRIORITY
+    assert(rfc::is_h2_reserved_frame_in_h3(0x06)); // PING
+    assert(rfc::is_h2_reserved_frame_in_h3(0x08)); // WINDOW_UPDATE
+    assert(rfc::is_h2_reserved_frame_in_h3(0x09)); // CONTINUATION
+    assert(!rfc::is_h2_reserved_frame_in_h3(0x00)); // DATA is H3
+    assert(!rfc::is_h2_reserved_frame_in_h3(0x01)); // HEADERS is H3
 
     // Stream allowed rules
-    assert(internal::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS));
-    assert(internal::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY));
-    assert(internal::is_allowed_on_control_stream(0x21)); // GREASE allowed on control
-    assert(!internal::is_allowed_on_control_stream(rfc::H3_FRAME_DATA));
-    assert(!internal::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS));
+    assert(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS));
+    assert(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY));
+    assert(rfc::is_allowed_on_control_stream(0x21)); // GREASE allowed on control
+    assert(!rfc::is_allowed_on_control_stream(rfc::H3_FRAME_DATA));
+    assert(!rfc::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS));
 
-    assert(internal::is_allowed_on_request_stream(rfc::H3_FRAME_DATA));
-    assert(internal::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS));
-    assert(!internal::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS));
-    assert(!internal::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY));
+    assert(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_DATA));
+    assert(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS));
+    assert(!rfc::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS));
+    assert(!rfc::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY));
     print("H3_RULES_AND_GREASE: OK");
 }
 

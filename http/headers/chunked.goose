@@ -7,48 +7,6 @@ namespace wing;
 import std;
 import core from "../..";
 
-// RFC 9112 Section 7.1.2 & RFC 9110 Section 6.5.1:
-// Disallowed trailer fields threatening message framing, routing, caching, or connection state.
-fn is_disallowed_control_trailer(name: const u8[:]) -> bool {
-    return eq_ascii_fold(name, "content-length") ||
-           eq_ascii_fold(name, "transfer-encoding") ||
-           eq_ascii_fold(name, "trailer") ||
-           eq_ascii_fold(name, "host") ||
-           eq_ascii_fold(name, "connection") ||
-           eq_ascii_fold(name, "keep-alive") ||
-           eq_ascii_fold(name, "te") ||
-           eq_ascii_fold(name, "upgrade") ||
-           eq_ascii_fold(name, "proxy-connection") ||
-           eq_ascii_fold(name, "authorization") ||
-           eq_ascii_fold(name, "proxy-authorization");
-}
-
-fn is_disallowed_content_or_cond_trailer(name: const u8[:]) -> bool {
-    return eq_ascii_fold(name, "set-cookie") ||
-           eq_ascii_fold(name, "cookie") ||
-           eq_ascii_fold(name, "content-range") ||
-           eq_ascii_fold(name, "content-type") ||
-           eq_ascii_fold(name, "content-encoding") ||
-           eq_ascii_fold(name, "if-match") ||
-           eq_ascii_fold(name, "if-none-match") ||
-           eq_ascii_fold(name, "if-modified-since") ||
-           eq_ascii_fold(name, "if-unmodified-since") ||
-           eq_ascii_fold(name, "if-range") ||
-           eq_ascii_fold(name, "range");
-}
-
-fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
-    let name = trim_lws(hname);
-    guard name.len > 0 else { return true; }
-
-    // RFC 9110 §6.5.1 & RFC 9113 §8.1: Pseudo-header fields are strictly forbidden in trailers
-    if name[0] == ':' {
-        return true;
-    }
-
-    return is_disallowed_control_trailer(name) || is_disallowed_content_or_cond_trailer(name);
-}
-
 // RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics
 enum ChunkedDecodeError {
     None,
@@ -290,7 +248,7 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..1
     }
 
     let hname = tr_line[..col_idx];
-    guard is_valid_header_name(hname) && !is_disallowed_trailer_field(hname) else {
+    guard is_valid_header_name(hname) && !rfc::is_disallowed_trailer_field(hname) else {
         return ChunkedDecodeError.DisallowedTrailer;
     }
 
@@ -420,26 +378,40 @@ fn decode_chunked_body_with_trailers(
     out_body:     u8[>..]&,
     out_trailers: HeaderItem[..16]&,
 ) -> ChunkedDecodeError, i64 {
+    out_body.clear();
+    out_trailers.clear();
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
 
     var cursor: i64 = 0;
     while cursor < raw.len {
         var chunk_size: u64 = 0;
         let line_err = read_chunk_size_line(raw, cursor, chunk_size);
-        guard line_err == ChunkedDecodeError.None else { return line_err, 0; }
+        guard line_err == ChunkedDecodeError.None else {
+            out_body.clear();
+            out_trailers.clear();
+            return line_err, 0;
+        }
 
         if chunk_size == 0 {
             let tr_err = parse_chunked_trailers_with_out(raw, cursor, out_trailers);
             if tr_err == ChunkedDecodeError.None {
                 return ChunkedDecodeError.None, cursor;
             }
+            out_body.clear();
+            out_trailers.clear();
             return tr_err, 0;
         }
 
         let data_err = consume_chunk_data(raw, cursor, chunk_size, out_body);
-        guard data_err == ChunkedDecodeError.None else { return data_err, 0; }
+        guard data_err == ChunkedDecodeError.None else {
+            out_body.clear();
+            out_trailers.clear();
+            return data_err, 0;
+        }
     }
 
+    out_body.clear();
+    out_trailers.clear();
     return ChunkedDecodeError.UnexpectedEof, 0;
 }
 

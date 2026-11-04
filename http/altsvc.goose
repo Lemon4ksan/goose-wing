@@ -162,10 +162,13 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
         guard entry_str.len > 0 else { break; }
 
         var ep = AltSvcEndpoint { .. };
-        if parse_single_altsvc_entry(entry_str, ep) {
-            if out_endpoints.len < out_endpoints.cap {
-                out_endpoints.push(ep);
-            } else {
+        guard parse_single_altsvc_entry(entry_str, ep) else { continue; }
+        if out_endpoints.len < out_endpoints.cap {
+            out_endpoints.push(ep);
+        } else if ep.proto[..] == "h3" {
+            for i in out_endpoints.len {
+                guard out_endpoints[i].proto[..] != "h3" else { continue; }
+                out_endpoints[i] = ep;
                 break;
             }
         }
@@ -278,7 +281,7 @@ fn lookup_h3(
     for &ep in cache.entries[idx].endpoints {
         if ep.proto[..] == "h3" {
             let elapsed = now_sec - cache.entries[idx].inserted_at_sec;
-            if elapsed < ep.max_age_sec {
+            if elapsed >= 0 && elapsed < ep.max_age_sec {
                 out_ep = ep;
                 return true;
             }
@@ -292,11 +295,13 @@ fn record_failure(cache: AltSvcCache&, origin: const u8[:], now_sec: i64) {
     let idx = find_origin_entry_idx(cache, origin);
     guard idx >= 0 else { return; }
 
-    cache.entries[idx].failed_attempts++;
-    let shift = if cache.entries[idx].failed_attempts > 6 { 6 } else { cache.entries[idx].failed_attempts };
+    if cache.entries[idx].failed_attempts < 255 {
+        cache.entries[idx].failed_attempts++;
+    }
+    let shift = min(max(cache.entries[idx].failed_attempts as i64, 1), 6);
     // Backoff: 5s, 10s, 20s, 40s, 80s, 160s, max 320s
     let backoff_sec: i64 = 5 * (1 << (shift - 1));
-    cache.entries[idx].broken_until_sec = now_sec + backoff_sec;
+    cache.entries[idx].broken_until_sec = core::add_sat_i64(now_sec, backoff_sec);
 }
 
 // Records an alternative service connection success, resetting consecutive failures and clearing broken status.

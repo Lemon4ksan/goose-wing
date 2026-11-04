@@ -644,7 +644,7 @@ fn parse_range_spec_list(
             continue;
         }
 
-        guard specs.len < max_ranges else {
+        guard specs.len < max_ranges && specs.len < specs.cap else {
             return RangeError.ExceededMaxRanges;
         }
 

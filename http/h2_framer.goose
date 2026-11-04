@@ -277,15 +277,15 @@ fn process_incoming_frame(framer: H2SecurityFramer&, hdr: const H2FrameHeader&) 
     guard hdr.valid else { return H2ErrorCode.ProtocolError; }
     guard hdr.payload_len <= framer.max_frame_size else { return H2ErrorCode.FrameSizeError; }
 
+    if framer.state == H2ConnState.ExpectContinuation {
+        return process_h2_continuation_frame(framer, hdr);
+    }
+
     let assoc_err = validate_h2_stream_association(hdr);
     guard assoc_err == H2ErrorCode.NoError else { return assoc_err; }
 
     let len_err = validate_h2_frame_length(hdr);
     guard len_err == H2ErrorCode.NoError else { return len_err; }
-
-    if framer.state == H2ConnState.ExpectContinuation {
-        return process_h2_continuation_frame(framer, hdr);
-    }
 
     guard hdr.frame_type != H2FrameType.Continuation else {
         return H2ErrorCode.ProtocolError;

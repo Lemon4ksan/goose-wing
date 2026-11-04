@@ -1603,7 +1603,7 @@ fn test_tier1_stale_socket_and_quic_fallback(t: lit::T&) {
         // It MUST be replayable on stale socket disconnections.
         var req_query = wing::new_request("QUERY", "https://api.io/search");
         wing::text(req_query, "SELECT id, name FROM users WHERE active = true");
-        sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY recognized as idempotent");
+        sub.assert_true(rfc::is_idempotent_method("QUERY"), "QUERY recognized as idempotent");
         sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_query), "QUERY with rewindable body replayable on stale socket drop");
     };
 

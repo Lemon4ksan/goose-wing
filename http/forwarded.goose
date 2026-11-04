@@ -124,7 +124,13 @@ fn parse_forwarded_element(raw: const u8[:], out: ForwardedElement&) -> bool {
         let p_str = rem[..p_len].trim_lws();
         rem = rem[p_len..];
 
-        apply_forwarded_param(p_str, out);
+        guard apply_forwarded_param(p_str, out) else {
+            out.by.clear();
+            out.for_node.clear();
+            out.host.clear();
+            out.proto.clear();
+            return false;
+        }
     }
     return out.by.len > 0 || out.for_node.len > 0 || out.host.len > 0 || out.proto.len > 0;
 }

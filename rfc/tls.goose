@@ -373,3 +373,10 @@ const OCSP_STATUS_INTERNAL_ERROR: u8 = 2;
 const OCSP_STATUS_TRY_LATER:      u8 = 3;
 const OCSP_STATUS_SIG_REQUIRED:   u8 = 5;
 const OCSP_STATUS_UNAUTHORIZED:   u8 = 6;
+
+// ---- TLS GREASE (RFC 8701 Section 2) -------------------------------------
+
+// RFC 8701 Section 2: GREASE Values for TLS - Checks whether a 16-bit code point is a reserved GREASE value (0x?a?a).
+inline fn is_grease_u16(val: u16) -> bool {
+    return (val & 0x0F0F) == 0x0A0A && ((val >> 8) == (val & 0x00FF));
+}

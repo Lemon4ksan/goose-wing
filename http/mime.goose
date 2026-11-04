@@ -56,12 +56,13 @@ fn strict_unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> b
 }
 
 // Liberal unquote for legacy or non-critical headers
-fn unquote<B>(input: const u8[:], out: B&) -> bool {
+fn unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> bool {
     guard input.len >= 2 && input[0] == '"' && input[input.len - 1] == '"' else {
+        guard out.len + input.len <= max_out_len else { out.clear(); return false; }
         out.append(input);
         return true;
     }
-    return strict_unquote(input, out);
+    return strict_unquote(input, out, max_out_len);
 }
 
 fn has_param_name(params: const MediaTypeParam[..16]&, name: const u8[:]) -> bool {
@@ -698,10 +699,12 @@ fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
 fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
     member.is_inner_list = true;
     cursor++; // skip '('
+    var closed = false;
     while cursor < raw.len {
         sfv_skip_ows(raw, cursor);
         if cursor < raw.len && raw[cursor] == ')' {
             cursor++;
+            closed = true;
             break;
         }
         var item = SfvItem { .. };
@@ -711,6 +714,7 @@ fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> b
         member.inner_list.push(item);
         guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
     }
+    guard closed else { return false; }
     return parse_sfv_parameters(raw, cursor, member.inner_params);
 }
 
@@ -839,9 +843,9 @@ fn serialize_sfv_decimal(scaled_milli: i64, out: u8[>..]&) {
     if scaled_milli < 0 {
         out.push('-');
     }
-    let abs_val = if scaled_milli < 0 { -scaled_milli } else { scaled_milli };
-    let int_part = abs_val / 1000;
-    var frac_part = abs_val % 1000;
+    let abs_u: u64 = if scaled_milli < 0 { 0 - (scaled_milli as u64) } else { scaled_milli as u64 };
+    let int_part = abs_u / 1000;
+    var frac_part = (abs_u % 1000) as i64;
 
     format(out, int_part);
     out.push('.');

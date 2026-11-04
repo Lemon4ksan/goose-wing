@@ -440,26 +440,26 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
         }
 
         // Direct is_disallowed_trailer_field verification including pseudo-headers and whitespace
-        sub.assert_true(wing::is_disallowed_trailer_field("connection"), "connection is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("Connection"), "Connection (cased) is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("  connection  "), "whitespace padded connection is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("keep-alive"), "keep-alive is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("upgrade"), "upgrade is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("proxy-connection"), "proxy-connection is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("if-match"), "if-match is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("if-none-match"), "if-none-match is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("if-modified-since"), "if-modified-since is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("if-unmodified-since"), "if-unmodified-since is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("if-range"), "if-range is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field("range"), "range is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field(":method"), "pseudo-header :method is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field(":path"), "pseudo-header :path is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field(":status"), "pseudo-header :status is forbidden");
-        sub.assert_true(wing::is_disallowed_trailer_field(":authority"), "pseudo-header :authority is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("connection"), "connection is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("Connection"), "Connection (cased) is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("  connection  "), "whitespace padded connection is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("keep-alive"), "keep-alive is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("upgrade"), "upgrade is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("proxy-connection"), "proxy-connection is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("if-match"), "if-match is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("if-none-match"), "if-none-match is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("if-modified-since"), "if-modified-since is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("if-unmodified-since"), "if-unmodified-since is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("if-range"), "if-range is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("range"), "range is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field(":method"), "pseudo-header :method is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field(":path"), "pseudo-header :path is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field(":status"), "pseudo-header :status is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field(":authority"), "pseudo-header :authority is forbidden");
 
         // Allowed custom trailers
-        sub.assert_false(wing::is_disallowed_trailer_field("x-checksum"), "x-checksum is allowed");
-        sub.assert_false(wing::is_disallowed_trailer_field("expires"), "expires is allowed");
+        sub.assert_false(rfc::is_disallowed_trailer_field("x-checksum"), "x-checksum is allowed");
+        sub.assert_false(rfc::is_disallowed_trailer_field("expires"), "expires is allowed");
     };
 
     t.run("RFC 9112 Section 7.1.2: Chunked FSM trailer syntax & colon enforcement") { sub =>

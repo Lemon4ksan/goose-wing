@@ -76,16 +76,16 @@ fn find_dict_item_end(s: const u8[:]) -> i64 {
     return s.len;
 }
 
-fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
+fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
     let k_raw, v_raw, has_eq = item.split_once_byte('=');
-    guard has_eq else { return; }
+    guard has_eq else { return true; }
     let k = k_raw.trim_lws();
     let v = v_raw.trim_lws().trim_byte('"');
 
     if core::eq_ascii_fold(k, "match") {
         guard v.len <= p.match_pattern.cap else {
             p.valid = false;
-            return;
+            return false;
         }
         p.match_pattern.clear();
         p.match_pattern.append(v);
@@ -93,7 +93,7 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
     } else if core::eq_ascii_fold(k, "id") {
         guard v.len <= p.id.cap else {
             p.valid = false;
-            return;
+            return false;
         }
         p.id.clear();
         p.id.append(v);
@@ -103,11 +103,12 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
     } else if core::eq_ascii_fold(k, "type") {
         guard v.len <= p.dict_type.cap else {
             p.valid = false;
-            return;
+            return false;
         }
         p.dict_type.clear();
         p.dict_type.append(v);
     }
+    return true;
 }
 
 // Parses `Use-As-Dictionary` header value (e.g. `match="/assets/*", id="v1", ttl=86400, type=raw`).
@@ -128,7 +129,10 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
         let item = rem[..item_len].trim_lws();
         rem = rem[item_len..];
 
-        apply_dictionary_param(p, item);
+        guard apply_dictionary_param(p, item) else {
+            p.valid = false;
+            return p, false;
+        }
     }
 
     return p, p.valid;
@@ -381,7 +385,7 @@ fn dictionary_lookup_by_hash(
     out_entry: DictionaryEntry&,
 ) -> bool {
     for &entry in cache.entries {
-        if entry.valid && entry.sha256_hash == hash {
+        if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], hash[..]) {
             out_entry = entry;
             return true;
         }

@@ -116,6 +116,44 @@ const H3_SETTING_QPACK_BLOCKED_STREAMS:    u64 = 0x07;
 const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Section 3
 const H3_SETTING_H3_DATAGRAM:              u64 = 0x33; // RFC 9297 Section 2.1.1
 
+// RFC 9114 Section 7.2.8: Frame Types of the Format 0x1f * N + 0x21 - Checks if a frame type is a reserved GREASE frame.
+inline fn is_h3_grease_frame(frame_type: u64) -> bool {
+    guard frame_type >= 0x21 else { return false; }
+    return ((frame_type - 0x21) % 0x1F) == 0;
+}
+
+// RFC 9114 Section 7.2.8: Frame Types of the Format 0x1f * N + 0x21 - Checks if a frame type is reserved from HTTP/2 (0x02, 0x06, 0x08, 0x09, 0x0a).
+inline fn is_h2_reserved_frame_in_h3(frame_type: u64) -> bool {
+    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09 || frame_type == 0x0A;
+}
+
+// RFC 9114 Section 7.2: Frame Definitions - Checks if a frame is permitted on the HTTP/3 Control Stream.
+inline fn is_allowed_on_control_stream(frame_type: u64) -> bool {
+    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
+    if frame_type == H3_FRAME_DATA ||
+       frame_type == H3_FRAME_HEADERS ||
+       frame_type == H3_FRAME_PUSH_PROMISE {
+        return false;
+    }
+    return true;
+}
+
+// RFC 9114 Section 7.2: Frame Definitions - Checks if a frame is permitted on an HTTP/3 Request Stream (RFC 9218 Section 7.2).
+inline fn is_allowed_on_request_stream(frame_type: u64) -> bool {
+    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
+    if frame_type == H3_FRAME_SETTINGS || frame_type == H3_FRAME_GOAWAY ||
+       frame_type == H3_FRAME_CANCEL_PUSH || frame_type == H3_FRAME_MAX_PUSH_ID ||
+       frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST || frame_type == H3_FRAME_PRIORITY_UPDATE_PUSH {
+        return false;
+    }
+    return true;
+}
+
+// RFC 9114 Section 7.2.4.1: Defined SETTINGS Parameters - Checks if a setting identifier is reserved from HTTP/2 (0x00, 0x02..0x05).
+inline fn is_h2_reserved_setting_in_h3(id: u64) -> bool {
+    return id == 0x00 || id == 0x02 || id == 0x03 || id == 0x04 || id == 0x05;
+}
+
 // ---- QUIC Stream Flags, Initial Salts & Loss Recovery (RFC 9000, 9001, 9002)
 
 const QUIC_STREAM_FLAG_FIN: u64 = 0x01; // RFC 9000 Section 19.8
@@ -207,3 +245,31 @@ const ECN_ECT_1:   u8 = 0x01; // RFC 3168 Section 5
 const ECN_ECT_0:   u8 = 0x02; // RFC 3168 Section 5
 const ECN_CE:      u8 = 0x03; // RFC 3168 Section 5
 const ECN_MASK:    u8 = 0x03; // RFC 3168 Section 5
+
+// ---- SOCKS5 Protocol Wire Constants (RFC 1928 & RFC 1929) ----------------
+
+const SOCKS5_VER:         u8 = 0x05; // RFC 1928 Section 3
+const SOCKS5_RFC1929_VER: u8 = 0x01; // RFC 1929 Section 2
+
+const SOCKS5_AUTH_NONE:          u8 = 0x00; // RFC 1928 Section 3
+const SOCKS5_AUTH_GSSAPI:        u8 = 0x01; // RFC 1928 Section 3
+const SOCKS5_AUTH_USERPASS:      u8 = 0x02; // RFC 1928 Section 3
+const SOCKS5_AUTH_NO_ACCEPTABLE: u8 = 0xFF; // RFC 1928 Section 3
+
+const SOCKS5_CMD_CONNECT:       u8 = 0x01; // RFC 1928 Section 4
+const SOCKS5_CMD_BIND:          u8 = 0x02; // RFC 1928 Section 4
+const SOCKS5_CMD_UDP_ASSOCIATE: u8 = 0x03; // RFC 1928 Section 4
+
+const SOCKS5_ATYP_IPV4:   u8 = 0x01; // RFC 1928 Section 5
+const SOCKS5_ATYP_DOMAIN: u8 = 0x03; // RFC 1928 Section 5
+const SOCKS5_ATYP_IPV6:   u8 = 0x04; // RFC 1928 Section 5
+
+const SOCKS5_REP_SUCCEEDED:          u8 = 0x00; // RFC 1928 Section 6
+const SOCKS5_REP_GENERAL_FAILURE:    u8 = 0x01; // RFC 1928 Section 6
+const SOCKS5_REP_NOT_ALLOWED:        u8 = 0x02; // RFC 1928 Section 6
+const SOCKS5_REP_NET_UNREACHABLE:    u8 = 0x03; // RFC 1928 Section 6
+const SOCKS5_REP_HOST_UNREACHABLE:   u8 = 0x04; // RFC 1928 Section 6
+const SOCKS5_REP_CONN_REFUSED:       u8 = 0x05; // RFC 1928 Section 6
+const SOCKS5_REP_TTL_EXPIRED:        u8 = 0x06; // RFC 1928 Section 6
+const SOCKS5_REP_CMD_NOT_SUPPORTED:  u8 = 0x07; // RFC 1928 Section 6
+const SOCKS5_REP_ATYP_NOT_SUPPORTED: u8 = 0x08; // RFC 1928 Section 6

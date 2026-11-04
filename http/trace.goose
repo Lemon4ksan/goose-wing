@@ -247,6 +247,10 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         guard is_valid_tracestate_key(k_raw) else { return ts, false; }
         guard is_valid_tracestate_val(v_raw) else { return ts, false; }
 
+        for &m in ts.members {
+            guard m.key[..] != k_raw else { return ts, false; }
+        }
+
         guard ts.members.len < 32 else { return ts, false; }
         var member = TracestateMember { .. };
         member.key.append(k_raw);

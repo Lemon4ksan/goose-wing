@@ -14,14 +14,6 @@ import .parser;
 
 // ---- http method & origin trust --------------------------------------------
 
-// Checks whether an HTTP method is considered safe per RFC 9110 (GET, HEAD, OPTIONS, TRACE).
-fn is_safe_http_method(method: const u8[:]) -> bool {
-    return core::eq_ascii_fold(method, "GET") ||
-           core::eq_ascii_fold(method, "HEAD") ||
-           core::eq_ascii_fold(method, "OPTIONS") ||
-           core::eq_ascii_fold(method, "TRACE");
-}
-
 // Whether host is a local loopback origin (localhost, 127.0.0.1, ::1).
 fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
     let clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };

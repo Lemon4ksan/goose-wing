@@ -32,35 +32,6 @@ fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mas
     return frame[..payload_len];
 }
 
-// Checks if an opcode represents a control frame (RFC 6455 Section 5.5)
-checkfree inline fn is_ws_control_opcode(opcode: u8) -> bool {
-    return (opcode & 0x08) != 0;
-}
-
-const WS_OPCODE_LUT: const bool[256] = [
-    true, true, true, false, false, false, false, false, true, true, true, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-];
-
-// Checks if an opcode is valid (RFC 6455 Section 5.2)
-checkfree inline fn is_valid_ws_opcode(opcode: u8) -> bool {
-    return WS_OPCODE_LUT[opcode];
-}
-
 // ---- Frame Header Structure and Invariants ------------------------------
 
 struct WsFrameHeader {
@@ -142,7 +113,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     let rsv3 = (b0 & 0x10) != 0;
     let opcode = b0 & 0x0F;
 
-    guard is_valid_ws_opcode(opcode) else { return hdr, false; }
+    guard rfc::is_valid_ws_opcode(opcode) else { return hdr, false; }
 
     let masked = (b1 & 0x80) != 0;
     let raw_len = (b1 & 0x7F) as u64;
@@ -150,7 +121,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     // Control frame invariants (RFC 6455 Section 5.5):
     // 1. MUST NOT be fragmented (FIN MUST be 1)
     // 2. Payload length MUST be <= 125 (extended length encodings 126/127 are forbidden)
-    if is_ws_control_opcode(opcode) {
+    if rfc::is_ws_control_opcode(opcode) {
         guard fin && raw_len <= 125 else { return hdr, false; }
     }
 
@@ -177,7 +148,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     }
 
     // Control frames payload length must not exceed 125 bytes
-    if is_ws_control_opcode(opcode) {
+    if rfc::is_ws_control_opcode(opcode) {
         guard payload_len <= 125 else { return hdr, false; }
     }
 
@@ -203,7 +174,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
 
 // Encodes RFC 6455 Frame Header
 fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
-    let eff_fin = if is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
+    let eff_fin = if rfc::is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
     var b0: u8 = hdr.opcode & 0x0F;
     if eff_fin { b0 |= 0x80; }
     if hdr.rsv1 { b0 |= 0x40; }
@@ -214,7 +185,11 @@ fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
     let mask_bit: u8 = if hdr.masked { 0x80 } else { 0x00 };
 
     // RFC 6455 §5.5 & uWS #1407: Control frames MUST NOT exceed 125 bytes and MUST NEVER use extended length
-    let eff_len = if is_ws_control_opcode(hdr.opcode) && hdr.payload_len > 125 { 125 as u64 } else { hdr.payload_len };
+    let eff_len = if rfc::is_ws_control_opcode(hdr.opcode) && hdr.payload_len > 125 {
+        125 as u64
+    } else {
+        hdr.payload_len
+    };
 
     if eff_len <= 125 {
         out.push(mask_bit | (eff_len as u8));
@@ -241,8 +216,8 @@ fn encode_ws_frame<B>(
     fin:       bool        = true,
 ) {
     // RFC 6455 §5.5: Control frames MUST NOT exceed 125 bytes and MUST NOT be fragmented
-    let eff_payload = if is_ws_control_opcode(opcode) && payload.len > 125 { payload[..125] } else { payload };
-    let eff_fin = if is_ws_control_opcode(opcode) { true } else { fin };
+    let eff_payload = if rfc::is_ws_control_opcode(opcode) && payload.len > 125 { payload[..125] } else { payload };
+    let eff_fin = if rfc::is_ws_control_opcode(opcode) { true } else { fin };
 
     let hdr = WsFrameHeader {
         fin:         eff_fin,
@@ -504,7 +479,7 @@ fn encode_ws_frame_compressed<B>(
     fin:                bool         = true,
 ) {
     // RFC 7692 §5.1: RSV1 MUST NOT be set on control frames or continuation frames
-    let eff_rsv1 = !is_ws_control_opcode(opcode) && opcode != rfc::WS_OPCODE_CONTINUATION;
+    let eff_rsv1 = !rfc::is_ws_control_opcode(opcode) && opcode != rfc::WS_OPCODE_CONTINUATION;
     let hdr = WsFrameHeader {
         fin:         fin,
         rsv1:        eff_rsv1, // Signals compressed frame only for initial data frames
@@ -635,23 +610,6 @@ fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
     out.append(reason[..eff_len]);
 }
 
-// Validates whether a WebSocket close status code is permitted on the wire per RFC 6455 §7.4
-fn is_valid_ws_close_code(code: u16) -> bool {
-    // RFC 6455 §7.4.2: Range 1000..4999
-    if code < 1000 || code >= 5000 {
-        return false;
-    }
-    // RFC 6455 §7.4.1 & §7.4.2: Reserved / forbidden status codes that MUST NOT be sent on the wire
-    if code == 1004 || code == 1005 || code == 1006 || code == 1015 {
-        return false;
-    }
-    // RFC 6455 §7.4.2: Codes 1016..2999 are reserved and unassigned
-    if code >= 1016 && code < 3000 {
-        return false;
-    }
-    return true;
-}
-
 // Parses a Close frame payload into (status_code, reason_slice, ok)
 //
 // Example:
@@ -669,7 +627,7 @@ fn parse_close_payload(payload: const u8[:]) -> u16, const u8[:], bool {
     let reason = payload[2..];
 
     // RFC 6455 Section 7.4.1 & 7.4.2: Validate permitted status codes on wire
-    guard is_valid_ws_close_code(status_code) else { return 0, "", false; }
+    guard rfc::is_valid_ws_close_code(status_code) else { return 0, "", false; }
 
     return status_code, reason, true;
 }
@@ -1196,7 +1154,7 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
     // RFC 6455 §7.4.1 / Autobahn 7.1.x:
     // Status codes 1005 (No Status), 1006 (Abnormal), and 0 are internal and MUST NOT be sent on the wire.
     // Invalid codes (<1000, >=5000, 1016..2999, 1004, 1015) MUST NOT be sent on the wire.
-    if is_valid_ws_close_code(status_code) {
+    if rfc::is_valid_ws_close_code(status_code) {
         // RFC 6455 §5.5.1: Close reason MUST be valid UTF-8
         let eff_reason = if reason.len > 0 && core::validate_utf8(reason) { reason } else { "" };
         encode_close_payload(payload, status_code, eff_reason);
@@ -1267,21 +1225,21 @@ fn receive_view_into<B, F>(
         let opcode = b0 & 0x0F;
         let raw_len = (b1 & 0x7F);
 
-        if !is_valid_ws_opcode(opcode) {
+        if !rfc::is_valid_ws_opcode(opcode) {
             close(ws, rfc::WS_STATUS_PROTOCOL_ERROR, "unknown opcode", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_PROTOCOL_ERROR;
             return true, out_view;
         }
 
-        if is_ws_control_opcode(opcode) && !fin {
+        if rfc::is_ws_control_opcode(opcode) && !fin {
             close(ws, rfc::WS_STATUS_PROTOCOL_ERROR, "fragmented control frame", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_PROTOCOL_ERROR;
             return true, out_view;
         }
 
-        if is_ws_control_opcode(opcode) && raw_len > 125 {
+        if rfc::is_ws_control_opcode(opcode) && raw_len > 125 {
             close(ws, rfc::WS_STATUS_PROTOCOL_ERROR, "control frame payload > 125", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_PROTOCOL_ERROR;
@@ -1370,7 +1328,7 @@ fn receive_view_into<B, F>(
 
     // RFC 6455 §5.5.1: If connection is closing or closed, incoming data frames MUST be discarded
     if ws.is_closed || ws.close_received {
-        if !is_ws_control_opcode(hdr.opcode) {
+        if !rfc::is_ws_control_opcode(hdr.opcode) {
             out_view.is_valid = false;
             return false, out_view;
         }
@@ -1378,7 +1336,7 @@ fn receive_view_into<B, F>(
 
     // RFC 6455 §7.4.1 (1009) & Memory Safety:
     // Fast-fail oversized frames immediately from header without waiting to buffer the full wire payload
-    if !is_ws_control_opcode(hdr.opcode) && ws.max_payload_length > 0 && hdr.payload_len > ws.max_payload_length {
+    if !rfc::is_ws_control_opcode(hdr.opcode) && ws.max_payload_length > 0 && hdr.payload_len > ws.max_payload_length {
         close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "payload length exceeds max_payload_length", out_reply);
         ws.is_closed = true;
         ws.close_code = rfc::WS_STATUS_MESSAGE_TOO_BIG;
@@ -1401,7 +1359,7 @@ fn receive_view_into<B, F>(
     }
 
     // Control frames (RFC 6455 §5.5) - can arrive interleaved in fragmented messages
-    if is_ws_control_opcode(hdr.opcode) {
+    if rfc::is_ws_control_opcode(hdr.opcode) {
         if hdr.opcode == rfc::WS_OPCODE_PING {
             send_pong(ws, payload, out_reply);
             out_view.opcode = rfc::WS_OPCODE_PING;

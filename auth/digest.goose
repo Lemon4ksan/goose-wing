@@ -9,23 +9,6 @@ namespace wing;
 import std;
 import core from "..";
 
-// ---- RFC 7616 & RFC 2617 Protocol Constants ------------------------------
-
-inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
-    return eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
-}
-
-inline fn is_sess_digest_algo(algo: const u8[:]) -> bool {
-    return eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
-}
-
 // ---- Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
@@ -236,7 +219,7 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         guard apply_digest_param(chal, key, val[..]) else { return chal, false; }
     }
 
-    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && is_supported_digest_algo(chal.algorithm[..]));
+    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && rfc::is_supported_digest_algo(chal.algorithm[..]));
     return chal, chal.valid;
 }
 
@@ -298,7 +281,7 @@ fn calculate_digest_ha1(
     var ha1 = digest_hash_hex(algo, a1[..]);
     core::secure_zeroize_slice(a1[..]);
 
-    if is_sess_digest_algo(algo) {
+    if rfc::is_sess_digest_algo(algo) {
         guard nonce.len > 0 && cnonce.len > 0 else { return empty_res; }
         var a1_sess: u8[..512] = [];
         let need_sess = core::add_sat_i64(core::add_sat_i64(ha1.len, nonce.len), cnonce.len);
@@ -704,13 +687,13 @@ fn compute_digest_response<B>(
     guard challenge.valid && creds.username.len > 0 else { return false; }
 
     let algo = challenge.algorithm[..];
-    guard is_supported_digest_algo(algo) else { return false; }
+    guard rfc::is_supported_digest_algo(algo) else { return false; }
 
     let active_qop = resolve_active_qop(challenge.qop[..]);
     guard challenge.qop.len == 0 || active_qop.len > 0 else { return false; }
     let is_auth_int = eq_ascii_fold(active_qop, rfc::DIGEST_QOP_AUTH_INT);
 
-    let is_sess = is_sess_digest_algo(algo);
+    let is_sess = rfc::is_sess_digest_algo(algo);
     if active_qop.len > 0 || is_sess {
         guard cnonce.len > 0 else { return false; }
     }

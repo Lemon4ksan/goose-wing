@@ -77,27 +77,8 @@ inline fn ascii_lower(b: u8) -> u8 {
     return b | 0x20;
 }
 
-// Compares header slice against expected static ASCII lowercase string case-insensitively.
-inline fn eq_case_insensitive(actual: const u8[:], expected: const u8[:]) -> bool {
-    guard actual.len == expected.len else { return false; }
-    if actual.len == 4 {
-        return (core::read_le_u32(actual, 0) | 0x20202020) == core::read_le_u32(expected, 0);
-    }
-    if actual.len == 6 {
-        let w32 = (core::read_le_u32(actual, 0) | 0x20202020) == core::read_le_u32(expected, 0);
-        let w16 = (core::read_le_u16(actual, 4) | 0x2020) == core::read_le_u16(expected, 4);
-        return w32 && w16;
-    }
-    if actual.len == 10 {
-        let w64 = (core::read_le_u64(actual, 0) | 0x2020202020202020) == core::read_le_u64(expected, 0);
-        let w16 = (core::read_le_u16(actual, 8) | 0x2020) == core::read_le_u16(expected, 8);
-        return w64 && w16;
-    }
-    return core::eq_ascii_fold(actual, expected);
-}
-
 inline fn check_header(name: const u8[:], expected: const u8[:], id: KnownHeaderId) -> KnownHeaderId {
-    return if eq_case_insensitive(name, expected) { id } else { KnownHeaderId.Unknown };
+    return if core::eq_ascii_fold(name, expected) { id } else { KnownHeaderId.Unknown };
 }
 
 // Identifies well-known HTTP header in O(1) time without linear search.

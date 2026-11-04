@@ -64,11 +64,11 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
 
 // Reassembles LPM messages arriving across fragmented HTTP/2 or HTTP/3 DATA chunks.
 struct GrpcStreamParser {
-    max_size: u32     = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    max_size: u32     = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
     buf:      u8[>..] = [],
 }
 
-fn new_grpc_stream_parser(max_msg_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcStreamParser {
+fn new_grpc_stream_parser(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcStreamParser {
     return GrpcStreamParser {
         max_size: max_msg_size,
         buf:      [],

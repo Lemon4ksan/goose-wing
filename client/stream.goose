@@ -88,7 +88,7 @@ fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
 }
 
 fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) -> bool {
-    guard !writer.finished && !is_disallowed_trailer_field(name) else { return false; }
+    guard !writer.finished && !rfc::is_disallowed_trailer_field(name) else { return false; }
     guard writer.trailers.len < writer.trailers.cap else { return false; }
     writer.trailers.push(make_header(name, val));
     return true;
@@ -265,7 +265,7 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
     }
 
     let hname = tr_line[..col_idx];
-    if has_header_whitespace(hname) || is_disallowed_trailer_field(hname) {
+    if has_header_whitespace(hname) || rfc::is_disallowed_trailer_field(hname) {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
         return false;

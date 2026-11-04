@@ -32,30 +32,31 @@ struct EarlyHintsResponse {
 // Example:
 //   param_str = "rel=preload"
 //   mutates link.rel to "preload"
-fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) {
+fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
     if !has_eq {
         let p_name = param_str.trim_lws();
         if eq_ascii_fold(p_name, "crossorigin") {
             link.crossorigin = true;
         }
-        return;
+        return true;
     }
 
     let p_name = p_name_raw.trim_lws();
     var p_val = p_val_raw.trim_lws().trim_byte('"');
 
     if eq_ascii_fold(p_name, "rel") {
-        guard p_val.len <= link.rel.cap else { return; }
+        guard p_val.len <= link.rel.cap else { return false; }
         link.rel.clear();
         link.rel.append(p_val);
     } else if eq_ascii_fold(p_name, "as") {
-        guard p_val.len <= link.as_type.cap else { return; }
+        guard p_val.len <= link.as_type.cap else { return false; }
         link.as_type.clear();
         link.as_type.append(p_val);
     } else if eq_ascii_fold(p_name, "crossorigin") {
         link.crossorigin = true;
     }
+    return true;
 }
 
 fn find_link_entry_end(s: const u8[:]) -> i64 {
@@ -102,7 +103,7 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
         guard tok_ok else { break; }
         let p_trim = param_token.trim_lws();
         if p_trim.len > 0 {
-            parse_link_param(p_trim, link);
+            guard parse_link_param(p_trim, link) else { return false; }
         }
     }
     return true;
@@ -147,10 +148,10 @@ fn parse_early_hints(status: u16, raw_link_header: const u8[:]) -> EarlyHintsRes
 
 // Checks if link requests a preconnect action
 fn early_hint_is_preconnect(link: const EarlyHintLink&) -> bool {
-    return link.rel[..] == "preconnect" || link.rel[..] == "dns-prefetch";
+    return eq_ascii_fold(link.rel[..], "preconnect") || eq_ascii_fold(link.rel[..], "dns-prefetch");
 }
 
 // Checks if link requests asset preloading
 fn early_hint_is_preload(link: const EarlyHintLink&) -> bool {
-    return link.rel[..] == "preload";
+    return eq_ascii_fold(link.rel[..], "preload");
 }

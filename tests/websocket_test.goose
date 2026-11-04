@@ -153,25 +153,25 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     t.run("5. RFC 6455 §7.4 Close Status Code Validation and Omission on Wire") { sub =>
         // Validation function check
-        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_NORMAL), "1000 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_GOING_AWAY), "1001 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_PROTOCOL_ERROR), "1002 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(rfc::WS_STATUS_INVALID_PAYLOAD), "1007 is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(3000), "3000 app range is valid");
-        sub.assert_true(wing::is_valid_ws_close_code(4999), "4999 private range is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(rfc::WS_STATUS_NORMAL), "1000 is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(rfc::WS_STATUS_GOING_AWAY), "1001 is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(rfc::WS_STATUS_PROTOCOL_ERROR), "1002 is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(rfc::WS_STATUS_INVALID_PAYLOAD), "1007 is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(3000), "3000 app range is valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(4999), "4999 private range is valid");
 
         // Forbidden codes MUST NOT be valid on the wire
-        sub.assert_false(wing::is_valid_ws_close_code(1004), "1004 is forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1005), "1005 is forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1006), "1006 is forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1015), "1015 is forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1004), "1004 is forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1005), "1005 is forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1006), "1006 is forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1015), "1015 is forbidden on wire");
 
         // Invalid ranges
-        sub.assert_false(wing::is_valid_ws_close_code(0), "0 is forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(999), "999 is forbidden (< 1000)");
-        sub.assert_false(wing::is_valid_ws_close_code(1016), "1016 is reserved unassigned");
-        sub.assert_false(wing::is_valid_ws_close_code(2999), "2999 is reserved unassigned");
-        sub.assert_false(wing::is_valid_ws_close_code(5000), "5000 is forbidden (>= 5000)");
+        sub.assert_false(rfc::is_valid_ws_close_code(0), "0 is forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(999), "999 is forbidden (< 1000)");
+        sub.assert_false(rfc::is_valid_ws_close_code(1016), "1016 is reserved unassigned");
+        sub.assert_false(rfc::is_valid_ws_close_code(2999), "2999 is reserved unassigned");
+        sub.assert_false(rfc::is_valid_ws_close_code(5000), "5000 is forbidden (>= 5000)");
 
         // Outbound close() call with internal code 1006 (WS_STATUS_ABNORMAL_CLOSURE) MUST emit 0-byte payload
         var ws1 = wing::new_websocket_session(false);
@@ -870,36 +870,36 @@ fn test_ws_close_payload_rfc6455_invariants(t: lit::T&) {
 
     t.run("WS-SEC-02: Forbidden Close Codes on Wire (RFC 6455 §7.4.1 & §7.4.2)") { sub =>
         // Reserved / internal codes that MUST NOT be sent on the wire
-        sub.assert_false(wing::is_valid_ws_close_code(1004), "1004 (reserved) forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1005), "1005 (no status) forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1006), "1006 (abnormal) forbidden on wire");
-        sub.assert_false(wing::is_valid_ws_close_code(1015), "1015 (TLS failure) forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1004), "1004 (reserved) forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1005), "1005 (no status) forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1006), "1006 (abnormal) forbidden on wire");
+        sub.assert_false(rfc::is_valid_ws_close_code(1015), "1015 (TLS failure) forbidden on wire");
 
         // Reserved unassigned range 1016..2999
-        sub.assert_false(wing::is_valid_ws_close_code(1016), "1016 (reserved) forbidden");
-        sub.assert_false(wing::is_valid_ws_close_code(2000), "2000 (unassigned) forbidden");
-        sub.assert_false(wing::is_valid_ws_close_code(2999), "2999 (unassigned) forbidden");
+        sub.assert_false(rfc::is_valid_ws_close_code(1016), "1016 (reserved) forbidden");
+        sub.assert_false(rfc::is_valid_ws_close_code(2000), "2000 (unassigned) forbidden");
+        sub.assert_false(rfc::is_valid_ws_close_code(2999), "2999 (unassigned) forbidden");
 
         // Out of range (< 1000 or >= 5000)
-        sub.assert_false(wing::is_valid_ws_close_code(999), "code 999 out of range");
-        sub.assert_false(wing::is_valid_ws_close_code(5000), "code 5000 out of range");
+        sub.assert_false(rfc::is_valid_ws_close_code(999), "code 999 out of range");
+        sub.assert_false(rfc::is_valid_ws_close_code(5000), "code 5000 out of range");
     };
 
     t.run("WS-SEC-03: Valid Standard and Application-Defined Close Codes") { sub =>
-        sub.assert_true(wing::is_valid_ws_close_code(1000), "1000 Normal Closure valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1001), "1001 Going Away valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1002), "1002 Protocol Error valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1003), "1003 Unsupported Data valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1007), "1007 Invalid Payload valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1008), "1008 Policy Violation valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1009), "1009 Message Too Big valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1010), "1010 Mandatory Extension valid");
-        sub.assert_true(wing::is_valid_ws_close_code(1011), "1011 Internal Error valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1000), "1000 Normal Closure valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1001), "1001 Going Away valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1002), "1002 Protocol Error valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1003), "1003 Unsupported Data valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1007), "1007 Invalid Payload valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1008), "1008 Policy Violation valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1009), "1009 Message Too Big valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1010), "1010 Mandatory Extension valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(1011), "1011 Internal Error valid");
 
         // Valid registered/private ranges 3000..4999
-        sub.assert_true(wing::is_valid_ws_close_code(3000), "3000 (registered) valid");
-        sub.assert_true(wing::is_valid_ws_close_code(4000), "4000 (private use) valid");
-        sub.assert_true(wing::is_valid_ws_close_code(4999), "4999 (private use) valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(3000), "3000 (registered) valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(4000), "4000 (private use) valid");
+        sub.assert_true(rfc::is_valid_ws_close_code(4999), "4999 (private use) valid");
     };
 }
 

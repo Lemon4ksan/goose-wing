@@ -26,22 +26,22 @@ inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool 
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
 fn is_grpc_content_type(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return matches_grpc_media_type(trimmed, GRPC_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, rfc::GRPC_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type indicates gRPC-Web (binary or text)
 fn is_grpc_web(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return matches_grpc_media_type(trimmed, GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded)
 fn is_grpc_web_text(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
-    return matches_grpc_media_type(trimmed, GRPC_WEB_TEXT_CONTENT_TYPE);
+    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Inspects an incoming Request to determine if it is a gRPC call
@@ -158,11 +158,11 @@ struct GrpcMethodEntry {
 
 struct GrpcServerDispatcher {
     methods:          GrpcMethodEntry[..64] = [],
-    max_message_size: u32                   = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    max_message_size: u32                   = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
     enable_web:       bool                  = true,
 }
 
-fn new_grpc_server_dispatcher(max_msg_size: u32 = GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcServerDispatcher {
+fn new_grpc_server_dispatcher(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcServerDispatcher {
     return GrpcServerDispatcher {
         methods:          [],
         max_message_size: max_msg_size,
@@ -279,9 +279,9 @@ fn build_grpc_trailers_only_response(
         var ct = HeaderItem { .. };
         ct.name.append("content-type");
         if ctx.is_web_text {
-            ct.value.append(GRPC_WEB_TEXT_CONTENT_TYPE);
+            ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
         } else {
-            ct.value.append(GRPC_WEB_CONTENT_TYPE_PROTO);
+            ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
         }
         out_res.headers.push(ct);
 
@@ -299,17 +299,17 @@ fn build_grpc_trailers_only_response(
         // Native HTTP/2 gRPC: Trailers-Only sent in single initial HEADERS frame
         var ct = HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         out_res.headers.push(ct);
 
         var st = HeaderItem { .. };
-        st.name.append(HEADER_GRPC_STATUS);
+        st.name.append(rfc::HEADER_GRPC_STATUS);
         format(st.value, grpc_status_to_code(status) as i64);
         out_res.headers.push(st);
 
         if message.len > 0 {
             var msg_item = HeaderItem { .. };
-            msg_item.name.append(HEADER_GRPC_MESSAGE);
+            msg_item.name.append(rfc::HEADER_GRPC_MESSAGE);
             encode_grpc_message(message, msg_item.value);
             out_res.headers.push(msg_item);
         }
@@ -337,9 +337,9 @@ fn build_grpc_wire_response(
         var ct = HeaderItem { .. };
         ct.name.append("content-type");
         if ctx.is_web_text {
-            ct.value.append(GRPC_WEB_TEXT_CONTENT_TYPE);
+            ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
         } else {
-            ct.value.append(GRPC_WEB_CONTENT_TYPE_PROTO);
+            ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
         }
         out_res.headers.push(ct);
 
@@ -358,11 +358,11 @@ fn build_grpc_wire_response(
         // Native HTTP/2 gRPC
         var ct = HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         out_res.headers.push(ct);
 
         var enc_item = HeaderItem { .. };
-        enc_item.name.append(HEADER_GRPC_ACCEPT_ENCODING);
+        enc_item.name.append(rfc::HEADER_GRPC_ACCEPT_ENCODING);
         enc_item.value.append("identity,gzip");
         out_res.headers.push(enc_item);
 
@@ -372,13 +372,13 @@ fn build_grpc_wire_response(
 
         // Trailers
         var st = HeaderItem { .. };
-        st.name.append(HEADER_GRPC_STATUS);
+        st.name.append(rfc::HEADER_GRPC_STATUS);
         format(st.value, grpc_status_to_code(status) as i64);
         out_res.trailers.push(st);
 
         if message.len > 0 {
             var msg_item = HeaderItem { .. };
-            msg_item.name.append(HEADER_GRPC_MESSAGE);
+            msg_item.name.append(rfc::HEADER_GRPC_MESSAGE);
             encode_grpc_message(message, msg_item.value);
             out_res.trailers.push(msg_item);
         }
@@ -415,7 +415,7 @@ inline fn process_grpc_request_header(
         out_ctx.is_web_text = is_grpc_web_text(v);
         return true;
     }
-    if eq_ascii_fold(n, HEADER_GRPC_TIMEOUT) {
+    if eq_ascii_fold(n, rfc::HEADER_GRPC_TIMEOUT) {
         let ms, ok_to = parse_grpc_timeout(v);
         if ok_to {
             out_ctx.timeout_ms = ms;
@@ -920,7 +920,7 @@ struct GrpcLpmReader {
     spans:        GrpcMessageSpan[..32] = [],
     wire_buf:     u8[..16384]           = [],
     read_cursor:  i64                   = 0,
-    max_msg_size: u32                   = GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    max_msg_size: u32                   = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
 }
 
 // Bounded zero-allocation Length-Prefixed Message (LPM) stream writer (Invariant 13).
@@ -944,7 +944,7 @@ fn feed_grpc_lpm_reader(reader: GrpcLpmReader&, raw: const u8[:]) -> bool {
     let limit = if reader.max_msg_size > 0 {
         reader.max_msg_size
     } else {
-        GRPC_DEFAULT_MAX_MESSAGE_SIZE
+        rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE
     };
 
     while core::add_sat_u64(idx, rfc::GRPC_LPM_HEADER_LEN) <= total_len {

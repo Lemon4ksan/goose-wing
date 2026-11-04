@@ -47,11 +47,11 @@ fn test_ja4_tls_fingerprint(t: lit::T&) {
             0x8a8a, 0x9a9a, 0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
         ];
         for g in grease_samples {
-            sub.assert_true(wing::is_grease_u16(g), "Must recognize valid RFC 8701 GREASE value");
+            sub.assert_true(rfc::is_grease_u16(g), "Must recognize valid RFC 8701 GREASE value");
         }
-        sub.assert_false(wing::is_grease_u16(0x002f), "0x002f is not GREASE");
-        sub.assert_false(wing::is_grease_u16(0x1301), "0x1301 is not GREASE");
-        sub.assert_false(wing::is_grease_u16(0x0a1a), "0x0a1a has mismatched nibbles, not GREASE");
+        sub.assert_false(rfc::is_grease_u16(0x002f), "0x002f is not GREASE");
+        sub.assert_false(rfc::is_grease_u16(0x1301), "0x1301 is not GREASE");
+        sub.assert_false(rfc::is_grease_u16(0x0a1a), "0x0a1a has mismatched nibbles, not GREASE");
 
         // JA4 must be identical with or without GREASE injection (ciphers, extensions, and signature algorithms)
         let base_ciphers:   u16[3] = [0x1301, 0x1302, 0x1303];

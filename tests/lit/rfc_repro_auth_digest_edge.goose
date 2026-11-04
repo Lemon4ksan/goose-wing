@@ -93,11 +93,11 @@ fn main() {
     print("DIGEST_MANDATORY_FIELD_VALIDATION: OK");
 
     // ---- 5. Session Algorithm & auth-int Verification ----------------------
-    assert(wing::is_sess_digest_algo("SHA-256-sess"));
-    assert(wing::is_sess_digest_algo("MD5-sess"));
-    assert(wing::is_sess_digest_algo("SHA-512-256-sess"));
-    assert(!wing::is_sess_digest_algo("SHA-256"));
-    assert(!wing::is_sess_digest_algo("MD5"));
+    assert(rfc::is_sess_digest_algo("SHA-256-sess"));
+    assert(rfc::is_sess_digest_algo("MD5-sess"));
+    assert(rfc::is_sess_digest_algo("SHA-512-256-sess"));
+    assert(!rfc::is_sess_digest_algo("SHA-256"));
+    assert(!rfc::is_sess_digest_algo("MD5"));
 
     let ha1_sess_no_cnonce = wing::calculate_digest_ha1("SHA-256-sess", "user", "realm", "pwd", "nonce", "");
     assert(ha1_sess_no_cnonce.len == 0);

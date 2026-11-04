@@ -855,6 +855,7 @@ fn link_header_entry(
     raw_name: const u8[:],
     hname:    u32,
     new_idx:  u8,
+    arena:    const OverflowArena& = dummy_arena,
 ) {
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
@@ -876,7 +877,7 @@ fn link_header_entry(
     for prev_i in map.entries.len {
         let pe = map.entries[prev_i];
         guard pe.name_hash == hname else { continue; }
-        let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
+        let prev_name = resolve_entry_name(pe, map, arena);
         guard eq_ascii_fold(prev_name, raw_name) else { continue; }
 
         var cur = prev_i as u8;
@@ -914,17 +915,11 @@ fn handle_obs_fold_arena(
     arena:                OverflowArena&,
     in_spill:             bool,
 ) -> HeaderParseError {
-    let orig_begin: u16 = if in_spill {
-        arena.spill_entries[arena.spill_entries.len - 1].values_begin
+    let orig_val = if in_spill {
+        resolve_entry_value(arena.spill_entries[arena.spill_entries.len - 1], map, arena)
     } else {
-        map.entries[map.entries.len - 1].values_begin
+        resolve_entry_value(map.entries[map.entries.len - 1], map, arena)
     };
-    let orig_end: u16 = if in_spill {
-        arena.spill_entries[arena.spill_entries.len - 1].values_end
-    } else {
-        map.entries[map.entries.len - 1].values_end
-    };
-    let orig_val = arena.spill_raw[orig_begin..orig_end];
     let needed = orig_val.len + 1 + trimmed_continuation.len;
     guard (arena.spill_raw.len + needed) <= 65535 else {
         map.valid = false;
@@ -940,10 +935,12 @@ fn handle_obs_fold_arena(
     let prev_wk: u8 = if in_spill {
         arena.spill_entries[arena.spill_entries.len - 1].values_begin = new_begin;
         arena.spill_entries[arena.spill_entries.len - 1].values_end = new_end;
+        arena.spill_entries[arena.spill_entries.len - 1].reserved = HEADER_SRC_ARENA;
         arena.spill_entries[arena.spill_entries.len - 1].well_known_id
     } else {
         map.entries[map.entries.len - 1].values_begin = new_begin;
         map.entries[map.entries.len - 1].values_end = new_end;
+        map.entries[map.entries.len - 1].reserved = HEADER_SRC_ARENA;
         map.entries[map.entries.len - 1].well_known_id
     };
 
@@ -1023,10 +1020,11 @@ fn validate_header_framing_conflicts(
     wk_id:       WellKnownHeader,
     val_trimmed: const u8[:],
     is_dup_cl:   bool&,
+    arena:       const OverflowArena& = dummy_arena,
 ) -> HeaderParseError {
     is_dup_cl = false;
     if wk_id == WellKnownHeader.ContentLength {
-        if has_header(map, "transfer-encoding") {
+        if has_header_spill(map, arena, "transfer-encoding") {
             map.valid = false;
             return HeaderParseError.InvalidContentLength;
         }
@@ -1035,8 +1033,8 @@ fn validate_header_framing_conflicts(
             map.valid = false;
             return HeaderParseError.InvalidContentLength;
         }
-        if has_header(map, "content-length") {
-            let existing_str = get_header(map, "content-length");
+        if has_header_spill(map, arena, "content-length") {
+            let existing_str = get_header_spill(map, arena, "content-length");
             var existing_cl: i64 = 0;
             guard validate_content_length_value(existing_str, existing_cl) else {
                 map.valid = false;
@@ -1050,7 +1048,7 @@ fn validate_header_framing_conflicts(
             return HeaderParseError.None;
         }
     } else if wk_id == WellKnownHeader.TransferEncoding {
-        if has_header(map, "content-length") || has_header(map, "transfer-encoding") {
+        if has_header_spill(map, arena, "content-length") || has_header_spill(map, arena, "transfer-encoding") {
             map.valid = false;
             return HeaderParseError.InvalidContentLength;
         }
@@ -1060,7 +1058,7 @@ fn validate_header_framing_conflicts(
         }
     } else if wk_id == WellKnownHeader.Host {
         // RFC 9112 Section 7.2: Duplicate Host header is forbidden (request smuggling protection)
-        if has_header(map, "host") {
+        if has_header_spill(map, arena, "host") {
             map.valid = false;
             return HeaderParseError.InvalidHeaderName;
         }
@@ -1199,7 +1197,7 @@ fn parse_single_overflow_header_line(
 
     let wk_id = classify_well_known_header(raw_name);
     var dup_cl_bool = false;
-    let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, dup_cl_bool);
+    let conflict_err = validate_header_framing_conflicts(map, wk_id, val_trimmed, dup_cl_bool, arena);
     guard is_ok(conflict_err) else { return conflict_err; }
 
     if dup_cl_bool {
@@ -1234,7 +1232,7 @@ fn parse_single_overflow_header_line(
 
     if map.entries.len < 128 {
         let new_idx = map.entries.len as u8;
-        link_header_entry(map, wk_id, raw_name, hname, new_idx);
+        link_header_entry(map, wk_id, raw_name, hname, new_idx, arena);
         map.entries.push(new_entry);
         map.header_contains_comma.push(contains_comma);
     } else {
@@ -1966,7 +1964,8 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
 }
 
 // RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.
-fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&) -> bool {
+fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_len: i64 = 8192) -> bool {
+    out.clear();
     let wk_id = classify_well_known_header(name);
     let flags = well_known_header_flags(wk_id, name);
     guard (flags & HEADER_FLAG_NO_COMMA_FOLD) == 0 else {
@@ -1984,11 +1983,13 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&) -> bool {
         guard eq_ascii_fold(entry_name, name) else { continue; }
         found = true;
         if !first {
+            guard out.len + 2 <= max_out_len else { out.clear(); return false; }
             out.push(',');
             out.push(' ');
         }
         first = false;
         let val = map.raw_buf[entry.values_begin..entry.values_end];
+        guard out.len + val.len <= max_out_len else { out.clear(); return false; }
         out.append(val);
     }
     return found;
@@ -2272,9 +2273,15 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
 fn merge_with_headers_304(cached_headers: HeaderMap&, response_304: const HeaderMap&) {
     for &entry in response_304.entries {
         let name = response_304.raw_buf[entry.name_begin..entry.name_end];
+        if should_update_header_304(entry.flags, name) && cached_headers.has_header(name) {
+            cached_headers.remove_header(name);
+        }
+    }
+    for &entry in response_304.entries {
+        let name = response_304.raw_buf[entry.name_begin..entry.name_end];
         if should_update_header_304(entry.flags, name) {
             let val = response_304.raw_buf[entry.values_begin..entry.values_end];
-            cached_headers.insert_header(name, val);
+            cached_headers.append_header(name, val);
         }
     }
 }

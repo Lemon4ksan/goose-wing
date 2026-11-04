@@ -454,29 +454,12 @@ fn compute_new_referrer<B>(
 
 // ---- header sanitization on redirect ---------------------------------------
 
-fn is_payload_or_conditional_header(hname: const u8[:]) -> bool {
-    return eq_ascii_fold(hname, "content-type") ||
-           eq_ascii_fold(hname, "content-length") ||
-           eq_ascii_fold(hname, "content-encoding") ||
-           eq_ascii_fold(hname, "content-language") ||
-           eq_ascii_fold(hname, "content-location") ||
-           eq_ascii_fold(hname, "transfer-encoding") ||
-           eq_ascii_fold(hname, "digest") ||
-           eq_ascii_fold(hname, "if-match") ||
-           eq_ascii_fold(hname, "if-none-match") ||
-           eq_ascii_fold(hname, "if-modified-since") ||
-           eq_ascii_fold(hname, "if-unmodified-since") ||
-           eq_ascii_fold(hname, "if-range") ||
-           eq_ascii_fold(hname, "expect") ||
-           eq_ascii_fold(hname, "te");
-}
-
 // Strips payload and conditional validator headers in a single O(N) pass
 // when a redirect mutates request to GET (RFC 9110 Section 15.4).
 fn remove_payload_and_conditional_headers(headers: HeaderItem[..32]&) {
     var write_idx = 0;
     for read_idx in headers.len {
-        if !is_payload_or_conditional_header(headers[read_idx].name[..]) {
+        if !rfc::is_payload_or_conditional_header(headers[read_idx].name[..]) {
             if write_idx != read_idx {
                 headers[write_idx] = copy(headers[read_idx]);
             }

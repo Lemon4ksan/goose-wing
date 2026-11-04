@@ -118,7 +118,7 @@ fn new_jwt_header(alg: JwtAlg = JwtAlg.HS256, kid: const u8[:] = "") -> JwtHeade
 
 fn add_header_crit(header: JwtHeader&, name: const u8[:]) -> bool {
     guard header.crit.len < header.crit.cap && name.len > 0 && name.len <= 32 else { return false; }
-    guard !is_standard_jws_header_param(name) else { return false; }
+    guard !rfc::is_standard_jws_header_param(name) else { return false; }
     for &cp in header.crit {
         guard cp.name[..] != name else { return false; }
     }
@@ -154,20 +154,6 @@ fn serialize_jwt_header<B>(header: const JwtHeader&, out: B&) {
     out.push('}');
 }
 
-fn is_standard_jws_header_param(name: const u8[:]) -> bool {
-    return name == "alg" ||
-           name == "jku" ||
-           name == "jwk" ||
-           name == "kid" ||
-           name == "x5u" ||
-           name == "x5c" ||
-           name == "x5t" ||
-           name == "x5t#S256" ||
-           name == "typ" ||
-           name == "cty" ||
-           name == "crit";
-}
-
 struct SeenHeaderKey {
     name: u8[..64] = [],
 }
@@ -186,7 +172,7 @@ inline fn parse_crit_header_elements(
     json::each_element(reader) {
         scratch.clear();
         let crit_name = json::read_string(reader, scratch);
-        if crit_name.len == 0 || crit_name.contains('\\') || is_standard_jws_header_param(crit_name) {
+        if crit_name.len == 0 || crit_name.contains('\\') || rfc::is_standard_jws_header_param(crit_name) {
             had_error = true;
         }
         for &cp in out_crit {
@@ -364,13 +350,8 @@ fn add_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
     return true;
 }
 
-inline fn is_jwt_standard_claim_name(name: const u8[:]) -> bool {
-    return name == "iss" || name == "sub" || name == "aud" ||
-           name == "exp" || name == "nbf" || name == "iat" || name == "jti";
-}
-
 fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
-    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !rfc::is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 && val.len <= 256 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -392,7 +373,7 @@ fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
 }
 
 fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
-    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !rfc::is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -414,7 +395,7 @@ fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
 }
 
 fn set_claim_bool(claims: JwtClaims&, key: const u8[:], val: bool) -> bool {
-    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !rfc::is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {

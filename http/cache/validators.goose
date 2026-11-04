@@ -42,6 +42,9 @@ fn parse_etag(raw: const u8[:]) -> EntityTag {
 
     let inner_tag = s[1..s.len - 1];
     guard inner_tag.len <= 128 else { return etag; }
+    for b in inner_tag {
+        guard b > 0x20 && b != '"' && b != 0x7F else { return etag; }
+    }
 
     etag.tag.append(inner_tag);
     etag.valid = true;
@@ -184,7 +187,7 @@ fn extract_vary_value(
     is_oversized: bool&,
 ) -> bool {
     var val_buf: u8[..512] = [];
-    let ok_c = get_combined(req_headers, field_name, val_buf);
+    let ok_c = get_combined(req_headers, field_name, val_buf, 512);
     let raw = if ok_c && val_buf.len > 0 {
         trim_lws(val_buf[..])
     } else if has_header(req_headers, field_name) {
@@ -259,7 +262,7 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
         if !incoming_present { return false; }
 
         incoming_buf.clear();
-        let ok_c = get_combined(incoming_req_headers, field_name, incoming_buf);
+        let ok_c = get_combined(incoming_req_headers, field_name, incoming_buf, 512);
         let incoming_val = if ok_c && incoming_buf.len > 0 {
             trim_lws(incoming_buf[..])
         } else {

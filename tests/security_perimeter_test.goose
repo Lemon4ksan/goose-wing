@@ -1195,12 +1195,12 @@ fn test_early_hints_and_replay_guard(t: lit::T&) {
 
     t.run("2. RFC 8470 0-RTT Anti-Replay & 425 Too Early Recovery") { sub =>
         // Safe methods allowed in 0-RTT
-        sub.assert_true(wing::is_safe_for_early_data("GET"), "GET is safe for 0-RTT");
-        sub.assert_true(wing::is_safe_for_early_data("HEAD"), "HEAD is safe for 0-RTT");
+        sub.assert_true(rfc::is_safe_for_early_data("GET"), "GET is safe for 0-RTT");
+        sub.assert_true(rfc::is_safe_for_early_data("HEAD"), "HEAD is safe for 0-RTT");
 
         // Mutating methods forbidden by default
-        sub.assert_false(wing::is_safe_for_early_data("POST"), "POST is mutating, forbidden in 0-RTT");
-        sub.assert_false(wing::is_safe_for_early_data("DELETE"), "DELETE is mutating, forbidden in 0-RTT");
+        sub.assert_false(rfc::is_safe_for_early_data("POST"), "POST is mutating, forbidden in 0-RTT");
+        sub.assert_false(rfc::is_safe_for_early_data("DELETE"), "DELETE is mutating, forbidden in 0-RTT");
 
         let dec_post = wing::evaluate_early_data_request("POST", false);
         sub.assert_eq(dec_post, wing::EarlyDataDecision.RejectMutating, "POST evaluated as RejectMutating");

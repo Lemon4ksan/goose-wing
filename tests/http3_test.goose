@@ -43,24 +43,24 @@ fn test_h3_framing_and_grease(t: lit::T&) {
         // N=0: 0x21 (33)
         // N=1: 0x40 (64)
         // N=2: 0x5F (95)
-        sub.assert_true(internal::is_h3_grease_frame(0x21), "0x21 is GREASE");
-        sub.assert_true(internal::is_h3_grease_frame(0x40), "0x40 is GREASE");
-        sub.assert_true(internal::is_h3_grease_frame(0x5F), "0x5F is GREASE");
-        sub.assert_false(internal::is_h3_grease_frame(0x00), "DATA is not GREASE");
-        sub.assert_false(internal::is_h3_grease_frame(0x04), "SETTINGS is not GREASE");
+        sub.assert_true(rfc::is_h3_grease_frame(0x21), "0x21 is GREASE");
+        sub.assert_true(rfc::is_h3_grease_frame(0x40), "0x40 is GREASE");
+        sub.assert_true(rfc::is_h3_grease_frame(0x5F), "0x5F is GREASE");
+        sub.assert_false(rfc::is_h3_grease_frame(0x00), "DATA is not GREASE");
+        sub.assert_false(rfc::is_h3_grease_frame(0x04), "SETTINGS is not GREASE");
 
         // Control stream rules
-        sub.assert_true(internal::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS allowed on Control");
-        sub.assert_true(internal::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY allowed on Control");
-        sub.assert_true(internal::is_allowed_on_control_stream(0x21), "GREASE allowed on Control");
-        sub.assert_false(internal::is_allowed_on_control_stream(rfc::H3_FRAME_DATA), "DATA strictly forbidden on Control");
-        sub.assert_false(internal::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS), "HEADERS strictly forbidden on Control");
+        sub.assert_true(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS allowed on Control");
+        sub.assert_true(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY allowed on Control");
+        sub.assert_true(rfc::is_allowed_on_control_stream(0x21), "GREASE allowed on Control");
+        sub.assert_false(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_DATA), "DATA strictly forbidden on Control");
+        sub.assert_false(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS), "HEADERS strictly forbidden on Control");
 
         // Request stream rules
-        sub.assert_true(internal::is_allowed_on_request_stream(rfc::H3_FRAME_DATA), "DATA allowed on Request");
-        sub.assert_true(internal::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS), "HEADERS allowed on Request");
-        sub.assert_false(internal::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS strictly forbidden on Request");
-        sub.assert_false(internal::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY strictly forbidden on Request");
+        sub.assert_true(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_DATA), "DATA allowed on Request");
+        sub.assert_true(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS), "HEADERS allowed on Request");
+        sub.assert_false(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS), "SETTINGS strictly forbidden on Request");
+        sub.assert_false(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY), "GOAWAY strictly forbidden on Request");
     };
 }
 
@@ -704,9 +704,9 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R1-02: HTTP/2 Reserved Frame 0x0A (ALTSVC) Rejection (RFC 9114 Section 7.2.8)") { sub =>
-        sub.assert_true(internal::is_h2_reserved_frame_in_h3(0x0A), "0x0A is reserved from H2");
-        sub.assert_false(internal::is_allowed_on_control_stream(0x0A), "0x0A forbidden on control stream");
-        sub.assert_false(internal::is_allowed_on_request_stream(0x0A), "0x0A forbidden on request stream");
+        sub.assert_true(rfc::is_h2_reserved_frame_in_h3(0x0A), "0x0A is reserved from H2");
+        sub.assert_false(rfc::is_allowed_on_control_stream(0x0A), "0x0A forbidden on control stream");
+        sub.assert_false(rfc::is_allowed_on_request_stream(0x0A), "0x0A forbidden on request stream");
 
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);

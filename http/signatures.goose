@@ -394,13 +394,21 @@ fn sign_http_request(
     return true;
 }
 
-fn verify_signature_input_label(sig_input_val: const u8[:], label: const u8[:]) -> bool {
+fn verify_signature_input_label(
+    sig_input_val: const u8[:],
+    label:         const u8[:],
+    params:        const HttpSignatureParams&,
+) -> bool {
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(sig_input_val, entries) else { return false; }
     for &entry in entries {
-        if entry.key == label && entry.is_inner_list {
-            return true;
+        guard entry.key == label && entry.is_inner_list else { continue; }
+        guard entry.inner_items.len == params.components.len else { return false; }
+        for i in params.components.len {
+            let item = entry.inner_items[i];
+            guard item.kind == SfType.String && item.str_val == params.components[i][..] else { return false; }
         }
+        return true;
     }
     return false;
 }
@@ -420,7 +428,7 @@ fn verify_http_signature(
     guard build_signature_base(req, params, sig_base) else { return false; }
 
     let sig_input_val = req.header(rfc::HEADER_SIGNATURE_INPUT);
-    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label) else { return false; }
+    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
 
     let sig_header_val = req.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
@@ -471,7 +479,7 @@ fn verify_http_response_signature(
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
     let sig_input_val = res.header(rfc::HEADER_SIGNATURE_INPUT);
-    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label) else { return false; }
+    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
 
     let sig_header_val = res.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }

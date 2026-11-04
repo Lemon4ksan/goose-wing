@@ -313,7 +313,7 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
     }
 
     // Subsequent strictly forbidden frames on control stream (RFC 9114 §7.2.1, §7.2.2, §7.2.5, §7.2.8)
-    guard is_allowed_on_control_stream(hdr.frame_type) else {
+    guard rfc::is_allowed_on_control_stream(hdr.frame_type) else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
         return rfc::H3_ERR_FRAME_UNEXPECTED;
@@ -1171,7 +1171,7 @@ fn handle_bidi_stream_frames(
         let payload = data[p_start..p_end];
         offset += hdr.payload_len;
 
-        if !is_allowed_on_request_stream(hdr.frame_type) {
+        if !rfc::is_allowed_on_request_stream(hdr.frame_type) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
             return rfc::H3_ERR_FRAME_UNEXPECTED;

@@ -1615,12 +1615,12 @@ fn test_dpop_rfc9449(t: lit::T&) {
     };
 
     t.run("DPoP Nonce NQCHAR syntax & injection rejection (RFC 9449 §8)") { sub =>
-        sub.assert_true(wing::is_valid_dpop_nonce("valid-server-nonce_123.456"), "Valid nonce accepted");
-        sub.assert_false(wing::is_valid_dpop_nonce(""), "Empty nonce rejected");
-        sub.assert_false(wing::is_valid_dpop_nonce("nonce\"with_quote"), "Quote in nonce rejected");
-        sub.assert_false(wing::is_valid_dpop_nonce("nonce\\with_backslash"), "Backslash in nonce rejected");
-        sub.assert_false(wing::is_valid_dpop_nonce("nonce with space"), "Space in nonce rejected");
-        sub.assert_false(wing::is_valid_dpop_nonce("nonce\r\ninjection"), "CRLF in nonce rejected");
+        sub.assert_true(rfc::is_valid_dpop_nonce("valid-server-nonce_123.456"), "Valid nonce accepted");
+        sub.assert_false(rfc::is_valid_dpop_nonce(""), "Empty nonce rejected");
+        sub.assert_false(rfc::is_valid_dpop_nonce("nonce\"with_quote"), "Quote in nonce rejected");
+        sub.assert_false(rfc::is_valid_dpop_nonce("nonce\\with_backslash"), "Backslash in nonce rejected");
+        sub.assert_false(rfc::is_valid_dpop_nonce("nonce with space"), "Space in nonce rejected");
+        sub.assert_false(rfc::is_valid_dpop_nonce("nonce\r\ninjection"), "CRLF in nonce rejected");
     };
 
     t.run("DPoP URI normalization rejects quotes and control characters") { sub =>
@@ -1896,10 +1896,10 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
         sub.assert_false(wing::has_private_token_challenge(resp_200), "Rejects non-401 response");
 
         // GREASE verification (RFC 9577 §6.2.1)
-        sub.assert_true(wing::is_grease_token_type(0x02AA), "0x02AA is GREASE");
-        sub.assert_true(wing::is_grease_token_type(0xF057), "0xF057 is GREASE");
-        sub.assert_false(wing::is_grease_token_type(0x0001), "0x0001 is NOT GREASE (Blind RSA)");
-        sub.assert_false(wing::is_grease_token_type(0x0002), "0x0002 is NOT GREASE (Publicly Verifiable)");
+        sub.assert_true(rfc::is_grease_token_type(0x02AA), "0x02AA is GREASE");
+        sub.assert_true(rfc::is_grease_token_type(0xF057), "0xF057 is GREASE");
+        sub.assert_false(rfc::is_grease_token_type(0x0001), "0x0001 is NOT GREASE (Blind RSA)");
+        sub.assert_false(rfc::is_grease_token_type(0x0002), "0x0002 is NOT GREASE (Publicly Verifiable)");
     };
 }
 

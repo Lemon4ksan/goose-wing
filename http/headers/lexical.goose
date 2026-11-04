@@ -188,13 +188,6 @@ checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
     return HEADER_VAL_LUT[b];
 }
 
-// RFC 9110 Section 9.3: Method Definitions - 32-bit little-endian wire method constants.
-const HTTP_METHOD_GET_U32:  u32 = 0x20544547; // "GET "
-const HTTP_METHOD_POST_U32: u32 = 0x54534F50; // "POST"
-const HTTP_METHOD_HEAD_U32: u32 = 0x44414548; // "HEAD"
-const HTTP_METHOD_PUT_U32:  u32 = 0x20545550; // "PUT "
-const HTTP_METHOD_DELE_U32: u32 = 0x454C4544; // "DELE"
-
 // RFC 9112 Section 3: Request Line - Matches common HTTP methods via 32-bit little-endian integer bitcasting.
 // Returns (method_slice, consumed_len_including_space, ok).
 //
@@ -204,21 +197,21 @@ const HTTP_METHOD_DELE_U32: u32 = 0x454C4544; // "DELE"
 fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
     guard raw.len >= 4 else { return "", 0, false; }
     let w = core::read_le_u32(raw, 0);
-    if w == HTTP_METHOD_GET_U32 {
+    if w == rfc::METHOD_GET_U32 {
         return raw[0..3], 4, true;
     }
-    if w == HTTP_METHOD_PUT_U32 {
+    if w == rfc::METHOD_PUT_U32 {
         return raw[0..3], 4, true;
     }
-    if w == HTTP_METHOD_POST_U32 {
+    if w == rfc::METHOD_POST_U32 {
         guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
         return raw[0..4], 5, true;
     }
-    if w == HTTP_METHOD_HEAD_U32 {
+    if w == rfc::METHOD_HEAD_U32 {
         guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
         return raw[0..4], 5, true;
     }
-    if w == HTTP_METHOD_DELE_U32 {
+    if w == rfc::METHOD_DELE_U32 {
         guard raw.len >= 7 && raw[4] == 'T' && raw[5] == 'E' && raw[6] == ' ' else { return "", 0, false; }
         return raw[0..6], 7, true;
     }

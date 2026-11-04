@@ -13,17 +13,6 @@ import core from "..";
 
 let ERR_QUIC_PROTOCOL_ERROR: i32 = -356; // Chromium net error code parity
 
-// Checks whether an HTTP method is semantically idempotent per RFC 9110.
-fn is_idempotent_method(method: const u8[:]) -> bool {
-    return core::eq_ascii_fold(method, "GET") ||
-           core::eq_ascii_fold(method, "HEAD") ||
-           core::eq_ascii_fold(method, "PUT") ||
-           core::eq_ascii_fold(method, "DELETE") ||
-           core::eq_ascii_fold(method, "OPTIONS") ||
-           core::eq_ascii_fold(method, "TRACE") ||
-           core::eq_ascii_fold(method, "QUERY");
-}
-
 // Checks if request carries a valid non-empty Idempotency-Key header.
 fn has_idempotency_key<Req>(req: const Req&) -> bool {
     return req.header("Idempotency-Key").len > 0;
@@ -46,7 +35,7 @@ fn should_retry_tier1_stale_socket<Req>(
     guard !headers_received else { return false; }
 
     // Invariant 3: Method must be idempotent OR provide Idempotency-Key
-    let idempotent = is_idempotent_method(req.method[..]) || has_idempotency_key(req);
+    let idempotent = rfc::is_idempotent_method(req.method[..]) || has_idempotency_key(req);
     guard idempotent else { return false; }
 
     // Invariant 4: Prevent form-data one-shot-stream retry bug:
@@ -73,7 +62,7 @@ fn evaluate_tier1_retry<Req>(
     // Chromium QUIC protocol fallback: automatically retry over TCP/TLS before headers
     // strictly requiring idempotent method or idempotency key, and rewindable/unconsumed body.
     if err_code == ERR_QUIC_PROTOCOL_ERROR && !headers_received {
-        let idempotent = is_idempotent_method(req.method[..]) || has_idempotency_key(req);
+        let idempotent = rfc::is_idempotent_method(req.method[..]) || has_idempotency_key(req);
         let rewindable_ok = req.body.len == 0 || (req.rewindable && !req.body_consumed);
         if idempotent && rewindable_ok {
             return Tier1Decision {

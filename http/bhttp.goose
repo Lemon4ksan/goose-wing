@@ -65,11 +65,12 @@ fn bhttp_put_len_bytes(out: u8[..8192]&, val: const u8[:]) -> bool {
 //   raw = [0x03, 'G', 'E', 'T'], idx = 0
 //   returns: value = "GET", ok = true, idx = 4
 fn bhttp_read_len_bytes(raw: const u8[:], idx: i64&) -> const u8[:], bool {
-    let n, ok = internal::quic_decode_varint_cursor(raw, idx);
+    var scan = idx;
+    let n, ok = internal::quic_decode_varint_cursor(raw, scan);
     guard ok else { return "", false; }
-    guard n <= ((raw.len - idx) as u64) else { return "", false; }
-    let end = idx + (n as i64);
-    let val = raw[idx..end];
+    guard n <= ((raw.len - scan) as u64) else { return "", false; }
+    let end = scan + (n as i64);
+    let val = raw[scan..end];
     idx = end;
     return val, true;
 }
@@ -116,15 +117,6 @@ fn bhttp_encode_tail(map: const HeaderMap&, body: const u8[:], out: u8[..8192]&)
     return true;
 }
 
-// Rejects the pseudo-fields reserved by HTTP semantics (RFC 9292 Section 3.6).
-fn bhttp_is_reserved_pseudo(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, ":method") ||
-           core::eq_ascii_fold(name, ":scheme") ||
-           core::eq_ascii_fold(name, ":authority") ||
-           core::eq_ascii_fold(name, ":path") ||
-           core::eq_ascii_fold(name, ":status");
-}
-
 // Parses one field line at idx within the bounded view `sec`, appending it to
 // `headers`. Enforces name length >= 1, bounds, pseudo-field ordering, and
 // rejects the reserved pseudo-fields (RFC 9292 Section 3.6).
@@ -139,35 +131,28 @@ fn bhttp_decode_field_line(
     headers:      HeaderMap&,
     seen_regular: bool&,
 ) -> bool {
-    let name_len, ok1 = internal::quic_decode_varint_cursor(sec, idx);
-    guard ok1 && name_len >= 1 && name_len <= ((sec.len - idx) as u64) else { return false; }
-    let name_end = idx + (name_len as i64);
-    let name = sec[idx..name_end];
-    idx = name_end;
+    var scan = idx;
+    let name_len, ok1 = internal::quic_decode_varint_cursor(sec, scan);
+    guard ok1 && name_len >= 1 && name_len <= ((sec.len - scan) as u64) else { return false; }
+    let name_end = scan + (name_len as i64);
+    let name = sec[scan..name_end];
+    scan = name_end;
 
-    let val_len, ok2 = internal::quic_decode_varint_cursor(sec, idx);
-    guard ok2 && val_len <= ((sec.len - idx) as u64) else { return false; }
-    let val_end = idx + (val_len as i64);
-    let val = sec[idx..val_end];
-    idx = val_end;
+    let val_len, ok2 = internal::quic_decode_varint_cursor(sec, scan);
+    guard ok2 && val_len <= ((sec.len - scan) as u64) else { return false; }
+    let val_end = scan + (val_len as i64);
+    let val = sec[scan..val_end];
 
     if name[0] == ':' {
         // Pseudo-fields must precede regular fields; reserved names are invalid (Section 3.6).
         guard !seen_regular else { return false; }
-        guard !bhttp_is_reserved_pseudo(name) else { return false; }
+        guard !rfc::bhttp_is_reserved_pseudo(name) else { return false; }
     } else {
         seen_regular = true;
     }
-    return headers.append_header(name, val);
-}
-
-fn is_forbidden_trailer_name(name: const u8[:]) -> bool {
-    if name.len > 0 && name[0] == ':' { return true; }
-    if eq_ascii_fold(name, "content-length") { return true; }
-    if eq_ascii_fold(name, "transfer-encoding") { return true; }
-    if eq_ascii_fold(name, "host") { return true; }
-    if eq_ascii_fold(name, "authorization") { return true; }
-    return false;
+    guard headers.append_header(name, val) else { return false; }
+    idx = val_end;
+    return true;
 }
 
 // Decodes a single binary HTTP trailer field line and advances `idx` (RFC 9292 §3.3).
@@ -176,19 +161,24 @@ fn is_forbidden_trailer_name(name: const u8[:]) -> bool {
 //   sec = [0x04, 'e', 't', 'a', 'g', 0x02, '3', '3'], idx = 0
 //   returns: true, idx = 8 (consumed 8 bytes)
 fn bhttp_decode_trailer_line(sec: const u8[:], idx: i64&) -> bool {
-    let name_len, ok1 = internal::quic_decode_varint_cursor(sec, idx);
-    guard ok1 && name_len >= 1 && name_len <= ((sec.len - idx) as u64) else { return false; }
-    let name_end = idx + (name_len as i64);
-    let name = sec[idx..name_end];
-    idx = name_end;
+    var scan = idx;
+    let name_len, ok1 = internal::quic_decode_varint_cursor(sec, scan);
+    guard ok1 && name_len >= 1 && name_len <= ((sec.len - scan) as u64) else { return false; }
+    let name_end = scan + (name_len as i64);
+    let name = sec[scan..name_end];
+    scan = name_end;
 
-    let val_len, ok2 = internal::quic_decode_varint_cursor(sec, idx);
-    guard ok2 && val_len <= ((sec.len - idx) as u64) else { return false; }
-    let val_end = idx + (val_len as i64);
+    let val_len, ok2 = internal::quic_decode_varint_cursor(sec, scan);
+    guard ok2 && val_len <= ((sec.len - scan) as u64) else { return false; }
+    let val_end = scan + (val_len as i64);
+    let val = sec[scan..val_end];
+
+    guard !rfc::is_disallowed_trailer_field(name) else { return false; }
+    guard (is_valid_header_name(name) || is_valid_header_name_h2(name)) && is_valid_header_value(val) else {
+        return false;
+    }
     idx = val_end;
-
-    guard !is_forbidden_trailer_name(name) else { return false; }
-    return is_valid_header_name(name) || is_valid_header_name_h2(name);
+    return true;
 }
 
 // Shared tail of every known-length decode: field section, content, trailers,
@@ -205,50 +195,50 @@ fn bhttp_decode_tail(
     body:     u8[..4096]&,
     body_len: i32&,
 ) -> bool {
-    if idx < raw.len {
-        let sec_len, ok = internal::quic_decode_varint_cursor(raw, idx);
-        guard ok else { return false; }
-        let sec_end = idx + (sec_len as i64);
-        guard sec_end <= raw.len else { return false; }
-        let sec = raw[idx..sec_end];
+    var scan = idx;
+    if scan < raw.len {
+        let sec_len, ok = internal::quic_decode_varint_cursor(raw, scan);
+        guard ok && sec_len <= ((raw.len - scan) as u64) else { return false; }
+        let sec_end = scan + (sec_len as i64);
+        let sec = raw[scan..sec_end];
         var jdx: i64 = 0;
         var seen_regular = false;
         while jdx < sec.len {
             guard bhttp_decode_field_line(sec, jdx, headers, seen_regular) else { return false; }
         }
-        idx = sec_end;
+        scan = sec_end;
     }
 
-    if idx < raw.len {
-        let clen, ok = internal::quic_decode_varint_cursor(raw, idx);
-        guard ok && clen <= ((raw.len - idx) as u64) else { return false; }
+    if scan < raw.len {
+        let clen, ok = internal::quic_decode_varint_cursor(raw, scan);
+        guard ok && clen <= ((raw.len - scan) as u64) else { return false; }
         guard clen <= 4096 else { return false; }
-        let cend = idx + (clen as i64);
+        let cend = scan + (clen as i64);
         body.clear();
-        body.append(raw[idx..cend]);
+        body.append(raw[scan..cend]);
         body_len = clen as i32;
-        idx = cend;
+        scan = cend;
     }
 
-    if idx < raw.len {
-        let tlen, ok = internal::quic_decode_varint_cursor(raw, idx);
-        guard ok else { return false; }
-        let tend = idx + (tlen as i64);
-        guard tend <= raw.len else { return false; }
-        let trailers = raw[idx..tend];
+    if scan < raw.len {
+        let tlen, ok = internal::quic_decode_varint_cursor(raw, scan);
+        guard ok && tlen <= ((raw.len - scan) as u64) else { return false; }
+        let tend = scan + (tlen as i64);
+        let trailers = raw[scan..tend];
         var jdx: i64 = 0;
         while jdx < trailers.len {
             // Trailer field lines are validated but discarded (Section 3.1).
             guard bhttp_decode_trailer_line(trailers, jdx) else { return false; }
         }
-        idx = tend;
+        scan = tend;
     }
 
     // Remaining bytes are padding and must be zero-valued (Section 3.8).
-    while idx < raw.len {
-        guard raw[idx] == 0 else { return false; }
-        idx += 1;
+    while scan < raw.len {
+        guard raw[scan] == 0 else { return false; }
+        scan += 1;
     }
+    idx = scan;
     return true;
 }
 
@@ -302,10 +292,21 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
     let authority, ok3 = bhttp_read_len_bytes(raw, idx);
     guard ok3 else { return false; }
     let path, ok4 = bhttp_read_len_bytes(raw, idx);
-    guard ok4 && path.len <= 2048 else { return false; }
+    guard ok4 && path.len <= 2048 else {
+        out.method.clear();
+        return false;
+    }
     out.target.append(path);
 
-    return bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len);
+    if !bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len) {
+        out.method.clear();
+        out.target.clear();
+        out.headers.reset_for_keep_alive();
+        out.body.clear();
+        out.body_len = 0;
+        return false;
+    }
+    return true;
 }
 
 // ---- response codec (RFC 9292 Sections 3.1, 3.3, 3.5) ----------------------
@@ -348,5 +349,12 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
     guard ok1 && status >= 200 && status <= 599 else { return false; }
     out.status = status as i32;
 
-    return bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len);
+    if !bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len) {
+        out.status = 200;
+        out.headers.reset_for_keep_alive();
+        out.body.clear();
+        out.body_len = 0;
+        return false;
+    }
+    return true;
 }

@@ -436,12 +436,12 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
         var res = wing::Response { .. };
         res.status_code = 200;
         res.headers.push(wing::make_header("content-type", "application/grpc+proto"));
-        wing::add_trailer(res, wing::HEADER_GRPC_STATUS, "7");
-        wing::add_trailer(res, wing::HEADER_GRPC_MESSAGE, "Not%20Authorized");
+        wing::add_trailer(res, rfc::HEADER_GRPC_STATUS, "7");
+        wing::add_trailer(res, rfc::HEADER_GRPC_MESSAGE, "Not%20Authorized");
 
-        var status_val = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        var status_val = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(status_val, "7", "Trailer grpc-status is 7");
-        var msg_val = wing::trailer(res, wing::HEADER_GRPC_MESSAGE);
+        var msg_val = wing::trailer(res, rfc::HEADER_GRPC_MESSAGE);
         sub.assert_bytes_eq(msg_val, "Not%20Authorized", "Trailer grpc-message is present");
 
         var decoded_msg: u8[..256] = [];
@@ -460,9 +460,9 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
         var req = wing::new_request("POST", "");
         wing::build_grpc_http_request(cfg, "https://api.example.com", "req_bytes", req);
 
-        sub.assert_bytes_eq(req.header("content-type"), wing::GRPC_CONTENT_TYPE_PROTO, "content-type indexed");
+        sub.assert_bytes_eq(req.header("content-type"), rfc::GRPC_CONTENT_TYPE_PROTO, "content-type indexed");
         sub.assert_bytes_eq(req.header("te"), "trailers", "te indexed");
-        sub.assert_bytes_eq(req.header(wing::HEADER_GRPC_TIMEOUT), "2500m", "grpc-timeout indexed");
+        sub.assert_bytes_eq(req.header(rfc::HEADER_GRPC_TIMEOUT), "2500m", "grpc-timeout indexed");
         sub.assert_bytes_eq(req.header("x-trace-id"), "trace-12345", "custom metadata indexed in bloom filter");
     };
 

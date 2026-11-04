@@ -424,8 +424,8 @@ fn test_cve_ipv6_zone_id_proxy_bypass(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_go_81671_query_method_replayable(t: lit::T&) {
     t.run("Go #81671: QUERY Method Replayability on Stale Socket Drop") { sub =>
-        sub.assert_true(wing::is_idempotent_method("QUERY"), "QUERY is semantically idempotent per RFC 9110");
-        sub.assert_true(wing::is_idempotent_method("query"), "QUERY case-insensitive check matches");
+        sub.assert_true(rfc::is_idempotent_method("QUERY"), "QUERY is semantically idempotent per RFC 9110");
+        sub.assert_true(rfc::is_idempotent_method("query"), "QUERY case-insensitive check matches");
 
         var req = wing::new_request("QUERY", "https://api.io/search");
         wing::text(req, "{\"filter\": \"status=active\"}");

@@ -457,22 +457,22 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
 // 15. RFC 9113 Section 6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Parity Invariants
 fn test_rfc9113_goaway_last_stream_id_parity(t: lit::T&) {
     t.run("Client GOAWAY peer stream parity (can only acknowledge server streams: even or 0)") { sub =>
-        sub.assert_true(internal::validate_goaway_last_stream_id(0, true), "Client GOAWAY with 0 is valid");
-        sub.assert_true(internal::validate_goaway_last_stream_id(2, true), "Client GOAWAY with even stream 2 is valid");
-        sub.assert_true(internal::validate_goaway_last_stream_id(100, true), "Client GOAWAY with even stream 100 is valid");
-        sub.assert_false(internal::validate_goaway_last_stream_id(1, true), "Client GOAWAY with client-initiated stream 1 MUST be rejected");
-        sub.assert_false(internal::validate_goaway_last_stream_id(3, true), "Client GOAWAY with client-initiated stream 3 MUST be rejected");
-        sub.assert_false(internal::validate_goaway_last_stream_id(99, true), "Client GOAWAY with client-initiated stream 99 MUST be rejected");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(0, true), "Client GOAWAY with 0 is valid");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(2, true), "Client GOAWAY with even stream 2 is valid");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(100, true), "Client GOAWAY with even stream 100 is valid");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(1, true), "Client GOAWAY with client-initiated stream 1 MUST be rejected");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(3, true), "Client GOAWAY with client-initiated stream 3 MUST be rejected");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(99, true), "Client GOAWAY with client-initiated stream 99 MUST be rejected");
     };
 
     t.run("Server GOAWAY peer stream parity (can only acknowledge client streams: odd, 0, or max)") { sub =>
-        sub.assert_true(internal::validate_goaway_last_stream_id(0, false), "Server GOAWAY with 0 is valid");
-        sub.assert_true(internal::validate_goaway_last_stream_id(1, false), "Server GOAWAY with odd stream 1 is valid");
-        sub.assert_true(internal::validate_goaway_last_stream_id(101, false), "Server GOAWAY with odd stream 101 is valid");
-        sub.assert_true(internal::validate_goaway_last_stream_id(0x7FFFFFFF, false), "Server GOAWAY with 2^31 - 1 is valid");
-        sub.assert_false(internal::validate_goaway_last_stream_id(2, false), "Server GOAWAY with server-initiated stream 2 MUST be rejected");
-        sub.assert_false(internal::validate_goaway_last_stream_id(4, false), "Server GOAWAY with server-initiated stream 4 MUST be rejected");
-        sub.assert_false(internal::validate_goaway_last_stream_id(102, false), "Server GOAWAY with server-initiated stream 102 MUST be rejected");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(0, false), "Server GOAWAY with 0 is valid");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(1, false), "Server GOAWAY with odd stream 1 is valid");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(101, false), "Server GOAWAY with odd stream 101 is valid");
+        sub.assert_true(rfc::validate_goaway_last_stream_id(0x7FFFFFFF, false), "Server GOAWAY with 2^31 - 1 is valid");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(2, false), "Server GOAWAY with server-initiated stream 2 MUST be rejected");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(4, false), "Server GOAWAY with server-initiated stream 4 MUST be rejected");
+        sub.assert_false(rfc::validate_goaway_last_stream_id(102, false), "Server GOAWAY with server-initiated stream 102 MUST be rejected");
     };
 }
 

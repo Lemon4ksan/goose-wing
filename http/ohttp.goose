@@ -101,6 +101,7 @@ fn ohttp_derive_response_aead(
 
     let ok_k = core::hkdf_expand_bytes_256(prk[..], "key", nk, out_key[..nk]);
     let ok_n = core::hkdf_expand_bytes_256(prk[..], "nonce", nn, out_nonce[..nn]);
+    core::secure_zeroize_32(prk);
     return ok_k && ok_n;
 }
 

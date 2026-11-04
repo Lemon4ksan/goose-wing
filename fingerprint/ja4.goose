@@ -10,16 +10,10 @@ import core from "..";
 
 // ---- grease detection & filtering (rfc 8701) -------------------------------
 
-// Checks whether a 16-bit code point is a reserved TLS GREASE value (RFC 8701 Section 2).
-// GREASE values are of the form 0x?a?a where both nibbles match (0x0a0a, 0x1a1a, ..., 0xfafa).
-fn is_grease_u16(val: u16) -> bool {
-    return (val & 0x0F0F) == 0x0A0A && ((val >> 8) == (val & 0x00FF));
-}
-
 // Filters out GREASE values from a list of 16-bit values into out.
 fn filter_grease_u16(vals: const u16[:], out: u16[>..]&) {
     for v in vals {
-        if !is_grease_u16(v) {
+        if !rfc::is_grease_u16(v) {
             out.push(v);
         }
     }
@@ -73,7 +67,7 @@ fn hash_12_hex<B>(data: const u8[:], out: B&) {
 fn ja4_version_string(supported_versions: const u16[:]) -> const u8[:] {
     var highest: u16 = 0;
     for v in supported_versions {
-        if !is_grease_u16(v) && v > highest {
+        if !rfc::is_grease_u16(v) && v > highest {
             highest = v;
         }
     }

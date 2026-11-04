@@ -55,7 +55,7 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
 
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var auth = wing::HeaderItem { .. };
@@ -74,7 +74,7 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
 
         // Validate response headers
         let res_ct = wing::header(res, "content-type");
-        sub.assert_bytes_eq(res_ct, wing::GRPC_CONTENT_TYPE_PROTO, "Response content-type is application/grpc");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_CONTENT_TYPE_PROTO, "Response content-type is application/grpc");
 
         let srv_ver = wing::header(res, "x-server-version");
         sub.assert_bytes_eq(srv_ver, "wing-grpc-v2", "Custom response metadata header propagated");
@@ -88,14 +88,14 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
         sub.assert_false(is_comp, "Uncompressed payload");
 
         // Validate response trailers
-        let grpc_st = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        let grpc_st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(grpc_st, "0", "grpc-status is 0 (OK)");
 
         // Client-side verification: feed headers + trailers + body into parse_grpc_unary_response
         var hmap = wing::HeaderMap { .. };
         wing::append_header(hmap, "content-type", res_ct);
         var tmap = wing::HeaderMap { .. };
-        wing::append_header(tmap, wing::HEADER_GRPC_STATUS, grpc_st);
+        wing::append_header(tmap, rfc::HEADER_GRPC_STATUS, grpc_st);
 
         var client_resp = wing::GrpcResponse { .. };
         let ok_client = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], false, client_resp);
@@ -109,7 +109,7 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
 
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var auth = wing::HeaderItem { .. };
@@ -127,10 +127,10 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
 
         // Pure error without payload: must be Trailers-Only in headers!
         sub.assert_eq(res.body.len, 0, "Trailers-Only response has empty body");
-        let st_hdr = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st_hdr = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st_hdr, "16", "grpc-status 16 (Unauthenticated) in headers");
 
-        let msg_hdr = wing::header(res, wing::HEADER_GRPC_MESSAGE);
+        let msg_hdr = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
         var decoded_msg: u8[..256] = [];
         wing::decode_grpc_message(msg_hdr, decoded_msg);
         sub.assert_bytes_eq(decoded_msg[..], "Invalid authorization token", "Error message preserved");
@@ -148,7 +148,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_WEB_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         wing::encode_grpc_lpm("WebUser", req.body, false);
@@ -158,7 +158,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
         sub.assert_true(handled, "Dispatched web request");
 
         let res_ct = wing::header(res, "content-type");
-        sub.assert_bytes_eq(res_ct, wing::GRPC_WEB_CONTENT_TYPE_PROTO, "Response content-type is grpc-web");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_WEB_CONTENT_TYPE_PROTO, "Response content-type is grpc-web");
 
         // Verify with client-side gRPC-Web parser
         var hmap = wing::HeaderMap { .. };
@@ -176,7 +176,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_WEB_TEXT_CONTENT_TYPE);
+        ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
         req.headers.push(ct);
 
         // Encode LPM into Base64
@@ -189,7 +189,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
         sub.assert_true(handled, "Dispatched text web request");
 
         let res_ct = wing::header(res, "content-type");
-        sub.assert_bytes_eq(res_ct, wing::GRPC_WEB_TEXT_CONTENT_TYPE, "Response content-type is grpc-web-text");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_WEB_TEXT_CONTENT_TYPE, "Response content-type is grpc-web-text");
 
         // Parse with client gRPC-Web parser
         var hmap = wing::HeaderMap { .. };
@@ -232,7 +232,7 @@ fn test_grpc_server_streaming(t: lit::T&) {
         var req = wing::new_request("POST", "/event.FeedService/Subscribe");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         wing::encode_grpc_lpm("channel_general", req.body, false);
@@ -267,7 +267,7 @@ fn test_grpc_server_streaming(t: lit::T&) {
         sub.assert_false(wing::next_message(parser, msg4, comp4), "No more messages");
 
         // Verify final status in trailers
-        let st = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "0", "Final stream trailer is 0 (OK)");
     };
 }
@@ -300,7 +300,7 @@ fn test_grpc_client_streaming(t: lit::T&) {
         var req = wing::new_request("POST", "/metric.Collector/UploadBatch");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         // Pack 4 messages into request body
@@ -319,7 +319,7 @@ fn test_grpc_client_streaming(t: lit::T&) {
         sub.assert_true(ok_dec, "Summary LPM decoded");
         sub.assert_bytes_eq(decoded[..], "Received 4 items", "Summary response payload");
 
-        let st = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "0", "grpc-status is OK");
     };
 }
@@ -336,7 +336,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/unknown.Service/UnknownMethod");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
         wing::encode_grpc_lpm("test", req.body, false);
 
@@ -346,10 +346,10 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         sub.assert_eq(res.status_code, 200, "HTTP status 200");
         sub.assert_eq(res.body.len, 0, "Trailers-Only empty body");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "12", "grpc-status 12 (UNIMPLEMENTED)");
 
-        let msg = wing::header(res, wing::HEADER_GRPC_MESSAGE);
+        let msg = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
         sub.assert_contains(msg, "Method not found", "Message contains method not found");
     };
 
@@ -357,14 +357,14 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/single_slash_path");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "12", "grpc-status 12 (UNIMPLEMENTED)");
     };
 
@@ -372,14 +372,14 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("GET", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "13", "grpc-status 13 (INTERNAL)");
     };
 
@@ -399,7 +399,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         // 100-byte message when limit is 64
@@ -410,7 +410,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "8", "grpc-status 8 (RESOURCE_EXHAUSTED)");
     };
 
@@ -418,11 +418,11 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var to = wing::HeaderItem { .. };
-        to.name.append(wing::HEADER_GRPC_TIMEOUT);
+        to.name.append(rfc::HEADER_GRPC_TIMEOUT);
         to.value.append("50m"); // 50 milliseconds
         req.headers.push(to);
 
@@ -433,7 +433,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1100000000, res, 1000000000, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "4", "grpc-status 4 (DEADLINE_EXCEEDED)");
     };
 
@@ -441,7 +441,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/secure.Vault/Access");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         wing::encode_grpc_lpm("vault_secret_request", req.body, false);
@@ -450,10 +450,10 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "7", "grpc-status 7 (PERMISSION_DENIED)");
 
-        let msg = wing::header(res, wing::HEADER_GRPC_MESSAGE);
+        let msg = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
         var decoded_msg: u8[..256] = [];
         wing::decode_grpc_message(msg, decoded_msg);
         sub.assert_bytes_eq(decoded_msg[..], "Access forbidden by security policy", "Error message decoded");
@@ -463,11 +463,11 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         var to = wing::HeaderItem { .. };
-        to.name.append(wing::HEADER_GRPC_TIMEOUT);
+        to.name.append(rfc::HEADER_GRPC_TIMEOUT);
         to.value.append("99999999H");
         req.headers.push(to);
 
@@ -477,7 +477,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::trailer(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "0", "grpc-status 0 (OK) - deadline was not falsely triggered");
     };
 
@@ -485,7 +485,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
         var ct = wing::HeaderItem { .. };
         ct.name.append("content-type");
-        ct.value.append(wing::GRPC_CONTENT_TYPE_PROTO);
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
         req.headers.push(ct);
 
         // Two concatenated LPM messages in unary request
@@ -496,7 +496,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
         sub.assert_true(handled, "Handled");
 
-        let st = wing::header(res, wing::HEADER_GRPC_STATUS);
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
         sub.assert_bytes_eq(st, "3", "grpc-status 3 (INVALID_ARGUMENT)");
     };
 

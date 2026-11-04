@@ -17,7 +17,7 @@ fn wing_validate_ws_close_wire(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return 1005; }
     guard buf.len >= 2 else { return -1; }
     let code = core::read_be_u16(buf, 0);
-    guard wing::is_valid_ws_close_code(code) else { return -2; }
+    guard rfc::is_valid_ws_close_code(code) else { return -2; }
     return code as! i64;
 }
 

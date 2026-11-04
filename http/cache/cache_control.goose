@@ -294,11 +294,14 @@ fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheCon
         return true;
     }
     if eq_ascii_fold(name, "max-stale") {
-        cc.flags |= CC_HAS_MAX_STALE;
         if val.len > 0 {
             let secs, ok = parse_delta_seconds(val);
-            cc.max_stale = if ok { secs } else { -1 };
+            if ok {
+                cc.flags |= CC_HAS_MAX_STALE;
+                cc.max_stale = secs;
+            }
         } else {
+            cc.flags |= CC_HAS_MAX_STALE;
             cc.max_stale = -1;
         }
         return true;

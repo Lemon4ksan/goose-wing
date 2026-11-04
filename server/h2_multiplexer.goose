@@ -379,7 +379,7 @@ fn emit_response_trailers<B>(
            !eq_ascii_fold(name_slice, "proxy-connection") &&
            !eq_ascii_fold(name_slice, "transfer-encoding") &&
            !eq_ascii_fold(name_slice, "upgrade") &&
-           !wing::is_disallowed_trailer_field(name_slice) {
+           !rfc::is_disallowed_trailer_field(name_slice) {
             var lower_name: u8[..64] = [];
             for c in name_slice {
                 let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
@@ -391,11 +391,10 @@ fn emit_response_trailers<B>(
         }
     }
 
-    let flags: u8 = rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM;
     let frame_hdr = FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
-        flags:      flags,
+        flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
     encode_frame_header_to(frame_hdr, out);

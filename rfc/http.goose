@@ -6,6 +6,7 @@
 namespace rfc;
 
 import std;
+import core from "..";
 
 // ---- HTTP Status Codes (RFC 9110 Section 15) -----------------------------
 
@@ -270,6 +271,14 @@ inline fn is_redirect_status(code: i32) -> bool {
            code == STATUS_PERMANENT_REDIRECT;
 }
 
+// RFC 9111 Section 4.2.2: Calculating Heuristic Freshness - Status codes heuristically cacheable by default.
+inline fn is_heuristically_cacheable_status(status_code: i32) -> bool {
+    return status_code == 200 || status_code == 203 || status_code == 204 || status_code == 206 ||
+           status_code == 300 || status_code == 301 || status_code == 308 ||
+           status_code == 404 || status_code == 405 || status_code == 410 || status_code == 414 ||
+           status_code == 501;
+}
+
 // ---- HTTP Methods & SWAR Word Constants (RFC 9110 Section 9, RFC 9112) ---
 
 const METHOD_GET:     const u8[:] = "GET";
@@ -286,6 +295,9 @@ const METHOD_QUERY:   const u8[:] = "QUERY"; // RFC 10008 Section 2
 // Little-endian SWAR word constants for HTTP/1.1 request-line parsing (RFC 9112 Section 3)
 const METHOD_GET_U32:     u32 = 0x20544547;         // "GET "
 const METHOD_PUT_U32:     u32 = 0x20545550;         // "PUT "
+const METHOD_POST_U32:    u32 = 0x54534F50;         // "POST"
+const METHOD_HEAD_U32:    u32 = 0x44414548;         // "HEAD"
+const METHOD_DELE_U32:    u32 = 0x454C4544;         // "DELE"
 const METHOD_POST_U64:    u64 = 0x2054534F50;       // "POST "
 const METHOD_HEAD_U64:    u64 = 0x2044414548;       // "HEAD "
 const METHOD_DELETE_U64:  u64 = 0x00204554454C4544; // "DELETE "
@@ -296,6 +308,34 @@ const METHOD_TRACE_U64:   u64 = 0x204543415254;     // "TRACE "
 
 const HTTP_VERSION_1_1_U64: u64 = 0x312E312F50545448; // RFC 9112 Section 2.3 ("HTTP/1.1")
 const HTTP_VERSION_1_0_U64: u64 = 0x302E312F50545448; // RFC 9112 Section 2.3 ("HTTP/1.0")
+
+// RFC 9110 Section 9.2.1: Safe Methods - Checks whether an HTTP method is safe (GET, HEAD, OPTIONS, TRACE).
+inline fn is_safe_http_method(method: const u8[:]) -> bool {
+    return core::eq_ascii_fold(method, "GET") ||
+           core::eq_ascii_fold(method, "HEAD") ||
+           core::eq_ascii_fold(method, "OPTIONS") ||
+           core::eq_ascii_fold(method, "TRACE");
+}
+
+// RFC 9110 Section 9.2.2: Idempotent Methods - Checks whether an HTTP method is semantically idempotent.
+inline fn is_idempotent_method(method: const u8[:]) -> bool {
+    return core::eq_ascii_fold(method, "GET") ||
+           core::eq_ascii_fold(method, "HEAD") ||
+           core::eq_ascii_fold(method, "PUT") ||
+           core::eq_ascii_fold(method, "DELETE") ||
+           core::eq_ascii_fold(method, "OPTIONS") ||
+           core::eq_ascii_fold(method, "TRACE") ||
+           core::eq_ascii_fold(method, "QUERY");
+}
+
+// RFC 8470 Section 5.2: Receiving Early Data - Determines if an HTTP method is safe for 0-RTT Early Data (RFC 10008 Section 2).
+inline fn is_safe_for_early_data(method: const u8[:]) -> bool {
+    return method == "GET" ||
+           method == "HEAD" ||
+           method == "OPTIONS" ||
+           method == "TRACE" ||
+           method == "QUERY";
+}
 
 // ---- Standard HTTP Header Field Names & Media Types ----------------------
 
@@ -332,10 +372,80 @@ const MIME_MULTIPART_FORM_DATA:      const u8[:] = "multipart/form-data";      /
 const MIME_FORM_URLENCODED:          const u8[:] = "application/x-www-form-urlencoded";
 const MIME_PARTIAL_UPLOAD:           const u8[:] = "application/partial-upload";
 
+// ---- Trailer & Redirect Header Predicates (RFC 9110 Section 6.5.1, RFC 9112 Section 7.1.2)
+
+// RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallowed framing, routing, connection, and auth trailer fields.
+inline fn is_disallowed_control_trailer(name: const u8[:]) -> bool {
+    return core::eq_ascii_fold(name, "content-length") ||
+           core::eq_ascii_fold(name, "transfer-encoding") ||
+           core::eq_ascii_fold(name, "trailer") ||
+           core::eq_ascii_fold(name, "host") ||
+           core::eq_ascii_fold(name, "connection") ||
+           core::eq_ascii_fold(name, "keep-alive") ||
+           core::eq_ascii_fold(name, "te") ||
+           core::eq_ascii_fold(name, "upgrade") ||
+           core::eq_ascii_fold(name, "proxy-connection") ||
+           core::eq_ascii_fold(name, "authorization") ||
+           core::eq_ascii_fold(name, "proxy-authorization");
+}
+
+// RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallowed content negotiation, conditional, and cookie trailer fields.
+inline fn is_disallowed_content_or_cond_trailer(name: const u8[:]) -> bool {
+    return core::eq_ascii_fold(name, "set-cookie") ||
+           core::eq_ascii_fold(name, "cookie") ||
+           core::eq_ascii_fold(name, "content-range") ||
+           core::eq_ascii_fold(name, "content-type") ||
+           core::eq_ascii_fold(name, "content-encoding") ||
+           core::eq_ascii_fold(name, "if-match") ||
+           core::eq_ascii_fold(name, "if-none-match") ||
+           core::eq_ascii_fold(name, "if-modified-since") ||
+           core::eq_ascii_fold(name, "if-unmodified-since") ||
+           core::eq_ascii_fold(name, "if-range") ||
+           core::eq_ascii_fold(name, "range");
+}
+
+// RFC 9112 Section 7.1.2: Chunked Trailer Section - Validates whether a header field is prohibited in HTTP trailers.
+inline fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
+    let name = core::trim_lws(hname);
+    guard name.len > 0 else { return true; }
+    // RFC 9113 Section 8.1: HTTP/2 and HTTP/3 pseudo-header fields are strictly forbidden in trailers
+    if name[0] == ':' {
+        return true;
+    }
+    return is_disallowed_control_trailer(name) || is_disallowed_content_or_cond_trailer(name);
+}
+
+// RFC 9110 Section 15.4: Redirection 3xx - Identifies payload and conditional validator headers stripped when mutating redirect to GET.
+inline fn is_payload_or_conditional_header(hname: const u8[:]) -> bool {
+    return core::eq_ascii_fold(hname, "content-type") ||
+           core::eq_ascii_fold(hname, "content-length") ||
+           core::eq_ascii_fold(hname, "content-encoding") ||
+           core::eq_ascii_fold(hname, "content-language") ||
+           core::eq_ascii_fold(hname, "content-location") ||
+           core::eq_ascii_fold(hname, "transfer-encoding") ||
+           core::eq_ascii_fold(hname, "digest") ||
+           core::eq_ascii_fold(hname, "if-match") ||
+           core::eq_ascii_fold(hname, "if-none-match") ||
+           core::eq_ascii_fold(hname, "if-modified-since") ||
+           core::eq_ascii_fold(hname, "if-unmodified-since") ||
+           core::eq_ascii_fold(hname, "if-range") ||
+           core::eq_ascii_fold(hname, "expect") ||
+           core::eq_ascii_fold(hname, "te");
+}
+
 // ---- Binary HTTP & Oblivious HTTP (RFC 9292, RFC 9458) -------------------
 
 const BHTTP_FRAME_KNOWN_LEN_REQUEST:  u8 = 0; // RFC 9292 Section 3.3
 const BHTTP_FRAME_KNOWN_LEN_RESPONSE: u8 = 1; // RFC 9292 Section 3.3
+
+// RFC 9292 Section 3.6: Header and Trailer Field Lines - Rejects pseudo-fields reserved by HTTP semantics in bhttp field sections.
+inline fn bhttp_is_reserved_pseudo(name: const u8[:]) -> bool {
+    return core::eq_ascii_fold(name, ":method") ||
+           core::eq_ascii_fold(name, ":scheme") ||
+           core::eq_ascii_fold(name, ":authority") ||
+           core::eq_ascii_fold(name, ":path") ||
+           core::eq_ascii_fold(name, ":status");
+}
 
 const OHTTP_INFO_REQUEST:       const u8[:] = "message/bhttp request";  // RFC 9458 Section 4.1
 const OHTTP_INFO_RESPONSE:      const u8[:] = "message/bhttp response"; // RFC 9458 Section 4.4
@@ -410,6 +520,23 @@ const DIGEST_ALGO_SHA512_256_SESS: const u8[:] = "SHA-512-256-sess";
 const DIGEST_QOP_AUTH:             const u8[:] = "auth";        // RFC 7616 Section 3.4
 const DIGEST_QOP_AUTH_INT:         const u8[:] = "auth-int";    // RFC 7616 Section 3.4
 
+// RFC 7616 Section 3.4: The Authorization Request Header Field - Checks whether Digest algorithm is supported.
+inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
+    return core::eq_ascii_fold(algo, DIGEST_ALGO_MD5)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+}
+
+// RFC 7616 Section 3.4: The Authorization Request Header Field - Checks whether Digest algorithm uses session key (-sess).
+inline fn is_sess_digest_algo(algo: const u8[:]) -> bool {
+    return core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
+        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+}
+
 const DPOP_HEADER:            const u8[:] = "DPoP";               // RFC 9449 Section 4.1
 const DPOP_NONCE_HEADER:      const u8[:] = "DPoP-Nonce";         // RFC 9449 Section 8
 const DPOP_AUTH_SCHEME:       const u8[:] = "DPoP";               // RFC 9449 Section 7.1
@@ -417,6 +544,37 @@ const DPOP_JWT_TYP:           const u8[:] = "dpop+jwt";           // RFC 9449 Se
 const DPOP_ERR_INVALID_PROOF: const u8[:] = "invalid_dpop_proof"; // RFC 9449 Section 5
 const DPOP_ERR_INVALID_TOKEN: const u8[:] = "invalid_token";      // RFC 9449 Section 7.1
 const DPOP_ERR_USE_NONCE:     const u8[:] = "use_dpop_nonce";     // RFC 9449 Section 8
+
+// RFC 9449 Section 8: Authorization Server-Provided Nonce - Validates DPoP-Nonce syntax (NQCHAR: 0x21, 0x23..0x5B, 0x5D..0x7E).
+inline fn is_valid_dpop_nonce(nonce: const u8[:]) -> bool {
+    guard nonce.len > 0 && nonce.len <= 128 else { return false; }
+    for b in nonce {
+        let valid = b == 0x21 || (b >= 0x23 && b <= 0x5b) || (b >= 0x5d && b <= 0x7e);
+        guard valid else { return false; }
+    }
+    return true;
+}
+
+// RFC 7515 Section 4.1: Registered Header Parameter Names - Checks whether a JWS header parameter name is standard.
+inline fn is_standard_jws_header_param(name: const u8[:]) -> bool {
+    return name == "alg" ||
+           name == "jku" ||
+           name == "jwk" ||
+           name == "kid" ||
+           name == "x5u" ||
+           name == "x5c" ||
+           name == "x5t" ||
+           name == "x5t#S256" ||
+           name == "typ" ||
+           name == "cty" ||
+           name == "crit";
+}
+
+// RFC 7519 Section 4.1: Registered Claim Names - Checks whether a JWT claim name is a standard registered claim.
+inline fn is_jwt_standard_claim_name(name: const u8[:]) -> bool {
+    return name == "iss" || name == "sub" || name == "aud" ||
+           name == "exp" || name == "nbf" || name == "iat" || name == "jti";
+}
 
 const PKCE_METHOD_S256:      const u8[:] = "S256";  // RFC 7636 Section 4.2
 const PKCE_METHOD_PLAIN:     const u8[:] = "plain"; // RFC 7636 Section 4.2
@@ -433,3 +591,15 @@ const SCHEME_PRIVATE_TOKEN:           const u8[:] = "PrivateToken";            /
 const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
 const TOKEN_TYPE_BLIND_RSA:           u16         = 0x0001;                    // RFC 9578 Section 5
 const TOKEN_TYPE_PUBLICLY_VERIFIABLE: u16         = 0x0002;                    // RFC 9578 Section 6
+
+// RFC 9577 Section 6.2.1: Creation of Token Type Registry - Checks whether token type is a reserved GREASE identifier.
+inline fn is_grease_token_type(t: u16) -> bool {
+    let grease_types: const u16[17] = [
+        0x0000, 0x02AA, 0x1132, 0x2E96, 0x3CD3, 0x4473, 0x5A63, 0x6D32,
+        0x7F3F, 0x8D07, 0x916B, 0xA6A4, 0xBEAB, 0xC3F3, 0xDA42, 0xE944, 0xF057,
+    ];
+    for g in grease_types {
+        if t == g { return true; }
+    }
+    return false;
+}

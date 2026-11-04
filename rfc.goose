@@ -6,9 +6,11 @@
 namespace rfc;
 
 import std;
+import core from ".";
 
 import rfc.http;
 import rfc.h2;
 import rfc.h3_quic;
 import rfc.tls;
-import rfc.ws_grpc;
+import rfc.ws;
+import rfc.grpc;

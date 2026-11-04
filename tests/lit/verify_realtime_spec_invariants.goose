@@ -122,23 +122,23 @@ fn test_ws_close_code_invariants() {
     print("--- 3. WS Close Codes (RFC 6455 Section 7.4) ---\n");
 
     // Permitted codes
-    print("CODE_1000_OK: ", wing::is_valid_ws_close_code(1000), "\n");
-    print("CODE_3000_OK: ", wing::is_valid_ws_close_code(3000), "\n");
-    print("CODE_4999_OK: ", wing::is_valid_ws_close_code(4999), "\n");
+    print("CODE_1000_OK: ", rfc::is_valid_ws_close_code(1000), "\n");
+    print("CODE_3000_OK: ", rfc::is_valid_ws_close_code(3000), "\n");
+    print("CODE_4999_OK: ", rfc::is_valid_ws_close_code(4999), "\n");
     // CHECK: CODE_1000_OK: true
     // CHECK: CODE_3000_OK: true
     // CHECK: CODE_4999_OK: true
 
     // Forbidden codes on the wire
-    print("CODE_0_FORBIDDEN: ", !wing::is_valid_ws_close_code(0), "\n");
-    print("CODE_999_FORBIDDEN: ", !wing::is_valid_ws_close_code(999), "\n");
-    print("CODE_1004_FORBIDDEN: ", !wing::is_valid_ws_close_code(1004), "\n");
-    print("CODE_1005_FORBIDDEN: ", !wing::is_valid_ws_close_code(1005), "\n");
-    print("CODE_1006_FORBIDDEN: ", !wing::is_valid_ws_close_code(1006), "\n");
-    print("CODE_1015_FORBIDDEN: ", !wing::is_valid_ws_close_code(1015), "\n");
-    print("CODE_1016_FORBIDDEN: ", !wing::is_valid_ws_close_code(1016), "\n");
-    print("CODE_2999_FORBIDDEN: ", !wing::is_valid_ws_close_code(2999), "\n");
-    print("CODE_5000_FORBIDDEN: ", !wing::is_valid_ws_close_code(5000), "\n");
+    print("CODE_0_FORBIDDEN: ", !rfc::is_valid_ws_close_code(0), "\n");
+    print("CODE_999_FORBIDDEN: ", !rfc::is_valid_ws_close_code(999), "\n");
+    print("CODE_1004_FORBIDDEN: ", !rfc::is_valid_ws_close_code(1004), "\n");
+    print("CODE_1005_FORBIDDEN: ", !rfc::is_valid_ws_close_code(1005), "\n");
+    print("CODE_1006_FORBIDDEN: ", !rfc::is_valid_ws_close_code(1006), "\n");
+    print("CODE_1015_FORBIDDEN: ", !rfc::is_valid_ws_close_code(1015), "\n");
+    print("CODE_1016_FORBIDDEN: ", !rfc::is_valid_ws_close_code(1016), "\n");
+    print("CODE_2999_FORBIDDEN: ", !rfc::is_valid_ws_close_code(2999), "\n");
+    print("CODE_5000_FORBIDDEN: ", !rfc::is_valid_ws_close_code(5000), "\n");
     // CHECK: CODE_0_FORBIDDEN: true
     // CHECK: CODE_999_FORBIDDEN: true
     // CHECK: CODE_1004_FORBIDDEN: true

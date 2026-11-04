@@ -15,43 +15,6 @@ struct H3FrameHeader {
     header_len:  u64 = 0,
 }
 
-// Checks if a frame type is a reserved GREASE frame (RFC 9114 Section 7.2.8: 0x1f * N + 0x21).
-fn is_h3_grease_frame(frame_type: u64) -> bool {
-    if frame_type < 0x21 { return false; }
-    return ((frame_type - 0x21) % 0x1F) == 0;
-}
-
-// Checks if a frame type is reserved from HTTP/2 (RFC 9114 Section 7.2.8: 0x02, 0x06, 0x08, 0x09, 0x0a).
-fn is_h2_reserved_frame_in_h3(frame_type: u64) -> bool {
-    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09 || frame_type == 0x0A;
-}
-
-// Checks if a frame is permitted on the HTTP/3 Control Stream (RFC 9114 Section 7.2).
-// Permitted: SETTINGS, GOAWAY, CANCEL_PUSH, MAX_PUSH_ID, or GREASE/unknown.
-// Strictly FORBIDDEN: DATA, HEADERS, PUSH_PROMISE, and HTTP/2-reserved types.
-fn is_allowed_on_control_stream(frame_type: u64) -> bool {
-    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
-    if frame_type == rfc::H3_FRAME_DATA ||
-       frame_type == rfc::H3_FRAME_HEADERS ||
-       frame_type == rfc::H3_FRAME_PUSH_PROMISE {
-        return false;
-    }
-    return true;
-}
-
-// Checks if a frame is permitted on an HTTP/3 Request Stream (RFC 9114 Section 7.2 & RFC 9218 Section 7.2).
-// Permitted: DATA, HEADERS, or GREASE/unknown.
-// Strictly FORBIDDEN: SETTINGS, GOAWAY, CANCEL_PUSH, MAX_PUSH_ID, PRIORITY_UPDATE, and HTTP/2-reserved types.
-fn is_allowed_on_request_stream(frame_type: u64) -> bool {
-    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
-    if frame_type == rfc::H3_FRAME_SETTINGS || frame_type == rfc::H3_FRAME_GOAWAY ||
-       frame_type == rfc::H3_FRAME_CANCEL_PUSH || frame_type == rfc::H3_FRAME_MAX_PUSH_ID ||
-       frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST || frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_PUSH {
-        return false;
-    }
-    return true;
-}
-
 // ---- Frame Header Encoding & Decoding -----------------------------------
 
 // Parses an HTTP/3 frame header (Type: VarInt, Length: VarInt).
@@ -180,7 +143,7 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 
         // RFC 9114 Section 7.2.4.1: An endpoint that receives any reserved HTTP/2 setting identifier
         // (0x00, 0x02, 0x03, 0x04, 0x05) MUST treat this as a connection error of type H3_SETTINGS_ERROR.
-        if id == 0x00 || id == 0x02 || id == 0x03 || id == 0x04 || id == 0x05 {
+        if rfc::is_h2_reserved_setting_in_h3(id) {
             return rfc::H3_ERR_SETTINGS_ERROR;
         }
 

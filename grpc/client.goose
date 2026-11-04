@@ -70,11 +70,11 @@ fn build_grpc_request_headers(
     append_header(out_headers, ":authority", host);
 
     if cfg.is_web_text {
-        append_header(out_headers, "content-type", GRPC_WEB_TEXT_PROTO);
+        append_header(out_headers, "content-type", rfc::GRPC_WEB_TEXT_PROTO);
     } else if cfg.is_web {
-        append_header(out_headers, "content-type", GRPC_WEB_CONTENT_TYPE_PROTO);
+        append_header(out_headers, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
     } else {
-        append_header(out_headers, "content-type", GRPC_CONTENT_TYPE_PROTO);
+        append_header(out_headers, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     }
 
     append_header(out_headers, "te", "trailers");
@@ -82,13 +82,13 @@ fn build_grpc_request_headers(
     if cfg.timeout_ms > 0 {
         var timeout_buf: u8[..32] = [];
         encode_grpc_timeout(cfg.timeout_ms, timeout_buf);
-        append_header(out_headers, HEADER_GRPC_TIMEOUT, timeout_buf[..]);
+        append_header(out_headers, rfc::HEADER_GRPC_TIMEOUT, timeout_buf[..]);
     }
 
     if cfg.use_compression {
-        append_header(out_headers, HEADER_GRPC_ENCODING, "gzip");
+        append_header(out_headers, rfc::HEADER_GRPC_ENCODING, "gzip");
     }
-    append_header(out_headers, HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
+    append_header(out_headers, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
 
     for i in cfg.metadata.len {
         append_header(out_headers, cfg.metadata[i].key[..], cfg.metadata[i].value[..]);
@@ -123,11 +123,11 @@ fn build_grpc_http_request(
     out_req.bloom_filter.clear();
 
     if cfg.is_web_text {
-        set_header(out_req, "content-type", GRPC_WEB_TEXT_PROTO);
+        set_header(out_req, "content-type", rfc::GRPC_WEB_TEXT_PROTO);
     } else if cfg.is_web {
-        set_header(out_req, "content-type", GRPC_WEB_CONTENT_TYPE_PROTO);
+        set_header(out_req, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
     } else {
-        set_header(out_req, "content-type", GRPC_CONTENT_TYPE_PROTO);
+        set_header(out_req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     }
 
     set_header(out_req, "te", "trailers");
@@ -135,7 +135,7 @@ fn build_grpc_http_request(
     if cfg.timeout_ms > 0 {
         var timeout_buf: u8[..32] = [];
         encode_grpc_timeout(cfg.timeout_ms, timeout_buf);
-        set_header(out_req, HEADER_GRPC_TIMEOUT, timeout_buf[..]);
+        set_header(out_req, rfc::HEADER_GRPC_TIMEOUT, timeout_buf[..]);
     }
 
     for i in cfg.metadata.len {
@@ -176,7 +176,7 @@ fn parse_grpc_unary_response(
     if is_web {
         var wire_bytes: u8[>..] = [];
         let content_type = get_header(res_headers, "content-type");
-        if starts_with_fold(content_type, GRPC_WEB_TEXT_CONTENT_TYPE) {
+        if starts_with_fold(content_type, rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
             guard decode_grpc_web_text(body, wire_bytes) else { return false; }
         } else {
             wire_bytes.append(body);
@@ -245,7 +245,7 @@ fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
 // Processes incoming gRPC-Web response body and trailers.
 fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcResponse&) -> bool {
     var wire_bytes: u8[>..] = [];
-    if starts_with_fold(ct, GRPC_WEB_TEXT_CONTENT_TYPE) {
+    if starts_with_fold(ct, rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
         decode_grpc_web_text(body, wire_bytes);
     } else {
         wire_bytes.append(body);
@@ -293,11 +293,11 @@ fn grpc_unary_call(
     }
 
     // Check for explicit grpc-status in response trailers first, then headers (Trailers-Only)
-    var status_val = trailer(res, HEADER_GRPC_STATUS);
-    var msg_val = trailer(res, HEADER_GRPC_MESSAGE);
+    var status_val = trailer(res, rfc::HEADER_GRPC_STATUS);
+    var msg_val = trailer(res, rfc::HEADER_GRPC_MESSAGE);
     if status_val.len == 0 {
-        status_val = header(res, HEADER_GRPC_STATUS);
-        msg_val = header(res, HEADER_GRPC_MESSAGE);
+        status_val = header(res, rfc::HEADER_GRPC_STATUS);
+        msg_val = header(res, rfc::HEADER_GRPC_MESSAGE);
     }
 
     if status_val.len > 0 {

@@ -144,6 +144,9 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
             out_next = p + 1;
             return true;
         }
+        guard core::is_ascii_alpha(ch) || core::is_ascii_digit(ch) || ch == '+' || ch == '/' || ch == '=' else {
+            return false;
+        }
         p = p + 1;
     }
     return false;
@@ -567,14 +570,10 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
     }
     var p: i64 = 0;
     while p < trimmed.len {
-        p = sf_skip_ws_and_commas(trimmed, p);
-        if p >= trimmed.len {
-            break;
-        }
-
         var entry = SfDictEntry { .. };
         var entry_next: i64 = 0;
         if !sf_parse_single_dict_entry(trimmed, p, entry, entry_next) {
+            out_entries.clear();
             return false;
         }
         p = entry_next;
@@ -591,15 +590,22 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
         } else if out_entries.len < 16 {
             out_entries.push(entry);
         } else {
+            out_entries.clear();
             return false;
         }
 
         p = sf_skip_ws(trimmed, p);
         if p < trimmed.len {
             if trimmed[p] != ',' {
+                out_entries.clear();
                 return false;
             }
             p = p + 1; // skip ','
+            p = sf_skip_ws(trimmed, p);
+            if p >= trimmed.len {
+                out_entries.clear();
+                return false;
+            }
         }
     }
     return true;
@@ -635,14 +641,10 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
     }
     var p: i64 = 0;
     while p < trimmed.len {
-        p = sf_skip_ws_and_commas(trimmed, p);
-        if p >= trimmed.len {
-            break;
-        }
-
         var p_item = SfParameterizedItem { .. };
         var item_next: i64 = 0;
         if !sf_parse_single_list_entry(trimmed, p, p_item, item_next) {
+            out_items.clear();
             return false;
         }
         p = item_next;
@@ -650,15 +652,22 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
         if out_items.len < 16 {
             out_items.push(p_item);
         } else {
+            out_items.clear();
             return false;
         }
 
         p = sf_skip_ws(trimmed, p);
         if p < trimmed.len {
             if trimmed[p] != ',' {
+                out_items.clear();
                 return false;
             }
             p = p + 1; // skip ','
+            p = sf_skip_ws(trimmed, p);
+            if p >= trimmed.len {
+                out_items.clear();
+                return false;
+            }
         }
     }
     return true;

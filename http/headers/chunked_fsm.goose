@@ -52,19 +52,21 @@ enum ChunkFsmStatus {
 }
 
 struct ChunkFsmDecoder {
-    state:         u64 = 0,
-    ext_bytes:     u32 = 0,
-    trailer_bytes: u32 = 0,
+    state:         u64      = 0,
+    ext_bytes:     u32      = 0,
+    trailer_bytes: u32      = 0,
+    trailer_name:  u8[..64] = [],
 }
 
 fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
-    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0 };
+    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0, .. };
 }
 
 fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.state = 0;
     dec.ext_bytes = 0;
     dec.trailer_bytes = 0;
+    dec.trailer_name.clear();
 }
 
 checkfree inline fn chunk_fsm_size(state: u64) -> u64 {
@@ -75,27 +77,9 @@ checkfree inline fn chunk_fsm_has_size(state: u64) -> bool {
     return (state & CHUNK_STATE_HAS_SIZE) != 0;
 }
 
-const CHUNK_TOKEN_LUT: const bool[256] = [
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
-    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
-    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-];
-
-checkfree inline fn is_chunk_token_char(c: u8) -> bool {
-    return CHUNK_TOKEN_LUT[c];
+inline fn fail_chunk_trailer(dec: ChunkFsmDecoder&) -> ChunkFsmStatus {
+    dec.state = CHUNK_STATE_IS_ERROR;
+    return ChunkFsmStatus.Error;
 }
 
 // Consumes trailer headers until final empty line CRLF (RFC 9112 §7.1.2).
@@ -110,52 +94,45 @@ fn feed_chunk_trailer(
 ) -> ChunkFsmStatus {
     while offset < data.len {
         dec.trailer_bytes++;
-        if dec.trailer_bytes > 4096 {
-            dec.state = CHUNK_STATE_IS_ERROR;
-            return ChunkFsmStatus.Error;
-        }
+        guard dec.trailer_bytes <= 4096 else { return fail_chunk_trailer(dec); }
         let c = data[offset];
         offset++;
         let sub_st = chunk_fsm_size(dec.state);
         if sub_st == 0 {
             if c == '\r' {
                 dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 1;
-            } else if is_chunk_token_char(c) {
+            } else if core::is_tchar(c) {
+                dec.trailer_name.clear();
+                dec.trailer_name.push(c);
                 dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 2;
             } else {
-                dec.state = CHUNK_STATE_IS_ERROR;
-                return ChunkFsmStatus.Error;
+                return fail_chunk_trailer(dec);
             }
         } else if sub_st == 1 {
-            if c == '\n' {
-                dec.state = 0;
-                dec.ext_bytes = 0;
-                dec.trailer_bytes = 0;
-                return ChunkFsmStatus.Complete;
-            }
-            dec.state = CHUNK_STATE_IS_ERROR;
-            return ChunkFsmStatus.Error;
+            guard c == '\n' else { return fail_chunk_trailer(dec); }
+            dec.state = 0;
+            dec.ext_bytes = 0;
+            dec.trailer_bytes = 0;
+            dec.trailer_name.clear();
+            return ChunkFsmStatus.Complete;
         } else if sub_st == 2 {
             if c == ':' {
+                guard !rfc::is_disallowed_trailer_field(dec.trailer_name[..]) else { return fail_chunk_trailer(dec); }
                 dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 4;
-            } else if !is_chunk_token_char(c) {
-                dec.state = CHUNK_STATE_IS_ERROR;
-                return ChunkFsmStatus.Error;
+            } else if core::is_tchar(c) && dec.trailer_name.len < dec.trailer_name.cap {
+                dec.trailer_name.push(c);
+            } else {
+                return fail_chunk_trailer(dec);
             }
         } else if sub_st == 4 {
             if c == '\r' {
                 dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 3;
             } else if c == '\n' || c == 0x00 || (c < 0x20 && c != '\t') || c == 0x7F {
-                dec.state = CHUNK_STATE_IS_ERROR;
-                return ChunkFsmStatus.Error;
+                return fail_chunk_trailer(dec);
             }
         } else if sub_st == 3 {
-            if c == '\n' {
-                dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 0;
-            } else {
-                dec.state = CHUNK_STATE_IS_ERROR;
-                return ChunkFsmStatus.Error;
-            }
+            guard c == '\n' else { return fail_chunk_trailer(dec); }
+            dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 0;
         }
     }
     return ChunkFsmStatus.NeedMore;
@@ -274,7 +251,7 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
         if c == ' ' || c == '\t' {
             return true; // BWS after ';'
         }
-        if !is_chunk_token_char(c) {
+        if !core::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -287,7 +264,7 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
         } else if c == ';' {
             dec.state &= ~CHUNK_STATE_EXTENSION_IN_NAME;
             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
-        } else if !is_chunk_token_char(c) {
+        } else if !core::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -298,7 +275,7 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
         if c == '"' {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
             dec.state |= CHUNK_STATE_EXTENSION_QUOTED;
-        } else if is_chunk_token_char(c) {
+        } else if core::is_tchar(c) {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
         } else {
             dec.state = CHUNK_STATE_IS_ERROR;
@@ -328,7 +305,7 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
                 dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
             } else if c == ' ' || c == '\t' {
                 dec.state |= CHUNK_STATE_SEEN_BWS;
-            } else if !is_chunk_token_char(c) {
+            } else if !core::is_tchar(c) {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return false;
             }

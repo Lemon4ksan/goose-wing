@@ -187,7 +187,7 @@ fn extract_grpc_status(
     out_message.clear();
 
     // 1. Check trailers first
-    let trailer_status = get_header(trailers, HEADER_GRPC_STATUS);
+    let trailer_status = get_header(trailers, rfc::HEADER_GRPC_STATUS);
     if trailer_status.len > 0 {
         let code_int, ok_code = core::parse_u32_dec(trim_lws(trailer_status));
         if ok_code {
@@ -196,7 +196,7 @@ fn extract_grpc_status(
             out_status = GrpcStatusCode.Unknown;
         }
 
-        let trailer_msg = get_header(trailers, HEADER_GRPC_MESSAGE);
+        let trailer_msg = get_header(trailers, rfc::HEADER_GRPC_MESSAGE);
         if trailer_msg.len > 0 {
             decode_grpc_message(trailer_msg, out_message);
         }
@@ -204,7 +204,7 @@ fn extract_grpc_status(
     }
 
     // 2. Check headers (Trailers-Only response)
-    let header_status = get_header(headers, HEADER_GRPC_STATUS);
+    let header_status = get_header(headers, rfc::HEADER_GRPC_STATUS);
     if header_status.len > 0 {
         let code_int, ok_code = core::parse_u32_dec(trim_lws(header_status));
         if ok_code {
@@ -213,7 +213,7 @@ fn extract_grpc_status(
             out_status = GrpcStatusCode.Unknown;
         }
 
-        let header_msg = get_header(headers, HEADER_GRPC_MESSAGE);
+        let header_msg = get_header(headers, rfc::HEADER_GRPC_MESSAGE);
         if header_msg.len > 0 {
             decode_grpc_message(header_msg, out_message);
         }

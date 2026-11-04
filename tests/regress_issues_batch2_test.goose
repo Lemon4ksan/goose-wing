@@ -655,34 +655,34 @@ fn test_h2_goaway_last_stream_id_peer_role(t: lit::T&) {
         // by a server have even stream identifiers, the Last-Stream-ID sent by a client MUST be
         // an even stream identifier or zero (streams initiated by the peer)."
         // Client sent stream 1 or 3 -> invalid!
-        let valid_client_0 = internal::validate_goaway_last_stream_id(0, true);
+        let valid_client_0 = rfc::validate_goaway_last_stream_id(0, true);
         sub.assert_true(valid_client_0, "Client GOAWAY with last_stream_id=0 is valid");
 
-        let valid_client_even = internal::validate_goaway_last_stream_id(2, true);
+        let valid_client_even = rfc::validate_goaway_last_stream_id(2, true);
         sub.assert_true(valid_client_even, "Client GOAWAY with last_stream_id=2 (server stream) is valid");
 
-        let invalid_client_odd1 = internal::validate_goaway_last_stream_id(1, true);
+        let invalid_client_odd1 = rfc::validate_goaway_last_stream_id(1, true);
         sub.assert_false(invalid_client_odd1, "Client GOAWAY with last_stream_id=1 MUST be rejected (Go #80759)");
 
-        let invalid_client_odd3 = internal::validate_goaway_last_stream_id(3, true);
+        let invalid_client_odd3 = rfc::validate_goaway_last_stream_id(3, true);
         sub.assert_false(invalid_client_odd3, "Client GOAWAY with last_stream_id=3 MUST be rejected (Go #80759)");
     };
 
     t.run("Server GOAWAY with even stream ID > 0 sent to Client MUST be rejected with PROTOCOL_ERROR") { sub =>
         // Server sent stream 2 or 4 -> invalid! Server can only acknowledge client streams (odd) or 0.
-        let valid_server_0 = internal::validate_goaway_last_stream_id(0, false);
+        let valid_server_0 = rfc::validate_goaway_last_stream_id(0, false);
         sub.assert_true(valid_server_0, "Server GOAWAY with last_stream_id=0 is valid");
 
-        let valid_server_odd = internal::validate_goaway_last_stream_id(1, false);
+        let valid_server_odd = rfc::validate_goaway_last_stream_id(1, false);
         sub.assert_true(valid_server_odd, "Server GOAWAY with last_stream_id=1 (client stream) is valid");
 
-        let valid_server_max = internal::validate_goaway_last_stream_id(0x7FFFFFFF, false);
+        let valid_server_max = rfc::validate_goaway_last_stream_id(0x7FFFFFFF, false);
         sub.assert_true(valid_server_max, "Server GOAWAY with 2^31-1 (graceful shutdown) is valid");
 
-        let invalid_server_even2 = internal::validate_goaway_last_stream_id(2, false);
+        let invalid_server_even2 = rfc::validate_goaway_last_stream_id(2, false);
         sub.assert_false(invalid_server_even2, "Server GOAWAY with even stream 2 MUST be rejected (RFC 9113 §6.8)");
 
-        let invalid_server_even4 = internal::validate_goaway_last_stream_id(4, false);
+        let invalid_server_even4 = rfc::validate_goaway_last_stream_id(4, false);
         sub.assert_false(invalid_server_even4, "Server GOAWAY with even stream 4 MUST be rejected (RFC 9113 §6.8)");
     };
 }

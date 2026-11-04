@@ -519,10 +519,10 @@ fn is_response_cacheable(
     resp_cc:     const CacheControl&,
 ) -> bool {
     if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
-    if resp_cc.is_must_understand() && !is_heuristically_cacheable_status(resp.status_code) { return false; }
+    if resp_cc.is_must_understand() && !rfc::is_heuristically_cacheable_status(resp.status_code) { return false; }
 
     // RFC 9111 Section 3: Status codes not heuristically cacheable require explicit freshness or public directive
-    if !is_heuristically_cacheable_status(resp.status_code) {
+    if !rfc::is_heuristically_cacheable_status(resp.status_code) {
         let has_explicit = has_max_age(resp_cc) || has_s_maxage(resp_cc) ||
             is_public(resp_cc) || resp.header("Expires").len > 0;
         if !has_explicit { return false; }
@@ -551,6 +551,10 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
         if existing.url_hash == entry.url_hash &&
            existing.url[..] == entry.url[..] &&
            existing.vary.matches_vary(req_headers) {
+            if existing.is_valid && !existing.head_only && entry.head_only {
+                cache.lru_touch(idx);
+                return idx;
+            }
             if existing.is_valid {
                 cache.lru_detach(idx as i32);
             }
@@ -689,7 +693,7 @@ fn on_response(
     }
 
     var vary_combined: u8[..512] = [];
-    get_combined(resp_headers, "vary", vary_combined);
+    get_combined(resp_headers, "vary", vary_combined, 512);
     let vary_slice = if vary_combined.len > 0 { vary_combined[..] } else { resp_headers.get_header("vary") };
     let vary_snap = record_vary_snapshot(vary_slice, req_headers);
     guard !vary_snap.has_star && vary_snap.valid else {

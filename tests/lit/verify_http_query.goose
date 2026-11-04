@@ -27,7 +27,7 @@ fn main() {
     // CHECK: QUERY_REQ_OK: QUERY
 
     // 2. Verify 0-RTT Early Data Safety (RFC 10008 §2 & RFC 8470 §5.2)
-    let is_early_safe = wing::is_safe_for_early_data("QUERY");
+    let is_early_safe = rfc::is_safe_for_early_data("QUERY");
     assert(is_early_safe);
     let early_dec = wing::evaluate_early_data_request("QUERY");
     let is_allowed = match early_dec {

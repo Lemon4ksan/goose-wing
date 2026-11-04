@@ -970,7 +970,7 @@ fn execute_single_hop(
     guard ok(pre_err) else { return false, pre_err; }
 
     // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
-    let safe_method = is_safe_http_method(ctx.current_method[..]);
+    let safe_method = rfc::is_safe_http_method(ctx.current_method[..]);
     let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
     if session.enable_cookie_jar {
         prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
@@ -1162,7 +1162,8 @@ inline fn should_retry_request(
     max_retries: i32,
     retry_5xx:   bool,
 ) -> bool {
-    let can_retry = (is_idempotent_method(method) || has_idempotency_key(req)) && (req.body.len == 0 || req.rewindable);
+    let is_idem = rfc::is_idempotent_method(method) || has_idempotency_key(req);
+    let can_retry = is_idem && (req.body.len == 0 || req.rewindable);
     guard can_retry else { return false; }
 
     if status_code == rfc::STATUS_TOO_EARLY {
