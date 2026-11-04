@@ -346,14 +346,17 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
 
 fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
     let step_secs = dur_nanos / NANOS_PER_SEC;
-    let rem = time_val.wall_sec % step_secs;
-    var base_sec = time_val.wall_sec - rem;
-    let rem_nanos = rem * NANOS_PER_SEC + time_val.nsec;
+    guard step_secs > 0 else { return time_val; }
+    let is_neg = time_val.wall_sec < 0;
+    let abs_sec = if is_neg { -time_val.wall_sec } else { time_val.wall_sec };
+    let rem = abs_sec % step_secs;
+    var base_sec = abs_sec - rem;
+    let rem_nanos = rem * NANOS_PER_SEC + (if is_neg { -(time_val.nsec as i64) } else { time_val.nsec as i64 });
     if rem_nanos >= (dur_nanos + 1) / 2 {
         base_sec += step_secs;
     }
     return Time {
-        wall_sec:  base_sec,
+        wall_sec:  if is_neg { -base_sec } else { base_sec },
         nsec:      0,
         tz_offset: time_val.tz_offset,
     };
