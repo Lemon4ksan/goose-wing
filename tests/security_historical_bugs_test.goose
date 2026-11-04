@@ -925,6 +925,21 @@ fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: lit::T&) {
         }
     };
 
+    t.run("X25519 All-Zero Shared Secret Rejection (RFC 7748 §6.1)") { sub =>
+        var scalar:          u8[32] = [1; 32];
+        var low_order_point: u8[32] = [0; 32];
+        let ss, ok = core::x25519_shared_secret(scalar, low_order_point);
+        sub.assert_false(ok, "low-order point yielding all-zero shared secret rejected");
+        sub.assert_true(core::x25519_is_all_zero(ss), "rejected secret is zeroized");
+
+        // Valid key pair test
+        var valid_point: u8[32] = [0; 32];
+        valid_point[0] = 9;
+        let valid_ss, valid_ok = core::x25519_shared_secret(scalar, valid_point);
+        sub.assert_true(valid_ok, "valid point yields shared secret");
+        sub.assert_false(core::x25519_is_all_zero(valid_ss), "valid shared secret is non-zero");
+    };
+
     t.run("X25519 Montgomery Ladder Constant-Time Execution via Dudect") { sub =>
         var ctx = core::new_dudect_context(5000000.0); // 5ms crop threshold
         let u9: u8[32] = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];

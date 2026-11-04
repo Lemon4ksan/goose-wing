@@ -1099,22 +1099,13 @@ inline fn refill_huf_stream_container(
     bits: u32&,
     cont: u64&,
 ) {
-    guard bits > 32 else { return; }
-    if ptr >= 8 {
-        let s = (bits >> 3) as i64;
-        ptr -= s;
-        bits &= 7;
-        if ptr >= 0 && ptr <= src.len - 8 {
-            cont = read_le_u64(src, ptr);
-        }
-    } else if ptr > 0 {
-        let avail = (bits >> 3) as i64;
-        let s = if ptr < avail { ptr } else { avail };
-        ptr -= s;
-        bits -= (s * 8) as u32;
-        if ptr >= 0 && ptr <= src.len - 8 {
-            cont = read_le_u64(src, ptr);
-        }
+    guard bits > 32 && ptr > 0 else { return; }
+    let avail = (bits >> 3) as i64;
+    let s = if ptr < avail { ptr } else { avail };
+    ptr -= s;
+    bits -= (s * 8) as u32;
+    if ptr >= 0 && ptr <= src.len - 8 {
+        cont = read_le_u64(src, ptr);
     }
 }
 
@@ -1682,14 +1673,17 @@ fn decode_fast_seq_params(
     refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
 
     if of_eb > 0 {
+        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
         of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
         bits_consumed += of_eb;
     }
     if ml_eb > 0 {
+        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
         ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
         bits_consumed += ml_eb;
     }
     if ll_eb > 0 {
+        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
         ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
         bits_consumed += ll_eb;
     }
@@ -2308,7 +2302,9 @@ fn parse_zstd_frame_header(
             offset += 4;
         } else {
             if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u64(src, offset) as i64;
+            let raw_fcs = read_le_u64(src, offset);
+            if (raw_fcs >> 63) != 0 { return CompressError.CorruptedBitstream; }
+            frame_content_size = raw_fcs as! i64;
             offset += 8;
         }
         window_size = frame_content_size;
@@ -2323,7 +2319,9 @@ fn parse_zstd_frame_header(
             offset += 4;
         } else if fcs_flag == 3 {
             if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u64(src, offset) as i64;
+            let raw_fcs = read_le_u64(src, offset);
+            if (raw_fcs >> 63) != 0 { return CompressError.CorruptedBitstream; }
+            frame_content_size = raw_fcs as! i64;
             offset += 8;
         }
     }
@@ -2495,6 +2493,9 @@ fn decompress_single_zstd_frame<B>(
     if magic >= ZSTD_MAGIC_SKIPPABLE_START && magic <= ZSTD_MAGIC_SKIPPABLE_END {
         if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
         let skip_len = read_le_u32(src, offset) as i64;
+        if skip_len < 0 || offset + 4 + skip_len > src.len {
+            return CompressError.InputBufferTruncated;
+        }
         offset += 4 + skip_len;
         return CompressError.None;
     }
@@ -3053,9 +3054,12 @@ fn emit_zstd_frame_header<B>(total: i64, include_checksum: bool, out_buf: B&) {
     } else if total <= 65535 + 256 {
         out_buf.push(fhd | 0x40);
         write_le_u16(out_buf, (total - 256) as u16);
-    } else {
+    } else if total <= 4294967295 {
         out_buf.push(fhd | 0x80);
         write_le_u32(out_buf, total as u32);
+    } else {
+        out_buf.push(fhd | 0xC0);
+        write_le_u64(out_buf, total as u64);
     }
 }
 

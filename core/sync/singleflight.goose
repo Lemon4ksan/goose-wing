@@ -40,6 +40,12 @@ fn find_flight_entry_idx(g: const SingleflightGroup&, key_str: const u8[:], kh: 
 // If is_leader is false and execution is in-flight, returns (false, 0, true).
 // If already completed, returns the cached result.
 fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
+    guard key_str.len <= 64 else {
+        // Key exceeds entry capacity; execute unshared to prevent buffer truncation / permanent slot poisoning
+        g.total_leader_calls++;
+        return true, 0, false;
+    }
+
     let kh = wyhash64(key_str);
     let idx = find_flight_entry_idx(g, key_str, kh);
     if idx >= 0 {

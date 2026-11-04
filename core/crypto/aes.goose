@@ -456,6 +456,7 @@ fn aes256_gcm_open<B>(
         return false;
     }
 
+    let start_len = out_plaintext.len;
     var ctr = j0;
     var offset = 0;
     while offset < ciphertext.len {
@@ -467,6 +468,10 @@ fn aes256_gcm_open<B>(
             out_plaintext.push(ciphertext[offset + i] ^ enc_ctr[i]);
         }
         offset += take;
+    }
+    if out_plaintext.len - start_len != ciphertext.len {
+        out_plaintext.clear();
+        return false;
     }
     return true;
 }
@@ -627,6 +632,7 @@ fn aes128_gcm_open<B>(
         return false;
     }
 
+    let start_len = out_plaintext.len;
     var ctr = j0;
     var offset = 0;
     while offset < ciphertext.len {
@@ -638,6 +644,10 @@ fn aes128_gcm_open<B>(
             out_plaintext.push(ciphertext[offset + i] ^ enc_ctr[i]);
         }
         offset += take;
+    }
+    if out_plaintext.len - start_len != ciphertext.len {
+        out_plaintext.clear();
+        return false;
     }
     return true;
 }

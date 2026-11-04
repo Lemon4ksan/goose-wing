@@ -709,25 +709,47 @@ fn inflate_ex<B>(
 ) -> CompressError, i64 {
     let out_start_pos = out.len;
     var r = new_bit_reader(src);
-    var is_final: u32 = 0;
+    var is_final:       u32 = 0;
+    var last_block_pos: i64 = 0;
+    var last_out_len:   i64 = out_start_pos;
 
     while is_final == 0 {
+        if r.bit_count == 0 {
+            last_block_pos = r.pos;
+            last_out_len = out.len;
+        }
+
         let fin, ok_fin = read_bits(r, 1);
-        guard ok_fin else { return CompressError.InputBufferTruncated, r.pos; }
+        guard ok_fin else {
+            out.resize(last_out_len);
+            return CompressError.InputBufferTruncated, last_block_pos;
+        }
         is_final = fin;
 
         let btype, ok_type = read_bits(r, 2);
-        guard ok_type else { return CompressError.InputBufferTruncated, r.pos; }
+        guard ok_type else {
+            out.resize(last_out_len);
+            return CompressError.InputBufferTruncated, last_block_pos;
+        }
 
         if btype == 0 {
             let err = inflate_stored_block(r, out, out_start_pos, max_output_bytes);
-            guard err == CompressError.None else { return err, r.pos; }
+            guard err == CompressError.None else {
+                if err == CompressError.InputBufferTruncated { out.resize(last_out_len); return err, last_block_pos; }
+                return err, r.pos;
+            }
         } else if btype == 1 {
             let err = inflate_fixed_block(r, out, dict, out_start_pos, max_output_bytes);
-            guard err == CompressError.None else { return err, r.pos; }
+            guard err == CompressError.None else {
+                if err == CompressError.InputBufferTruncated { out.resize(last_out_len); return err, last_block_pos; }
+                return err, r.pos;
+            }
         } else if btype == 2 {
             let err = inflate_dynamic_block(r, out, dict, out_start_pos, max_output_bytes);
-            guard err == CompressError.None else { return err, r.pos; }
+            guard err == CompressError.None else {
+                if err == CompressError.InputBufferTruncated { out.resize(last_out_len); return err, last_block_pos; }
+                return err, r.pos;
+            }
         } else {
             return CompressError.InvalidBlockType, r.pos;
         }

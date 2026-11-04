@@ -320,7 +320,7 @@ int64_t wing_page_ring_peek(uint64_t handle, uint64_t head_offset, wing_bytes_rw
 }
 
 int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_len, int64_t sock_fd, uint32_t timeout_ms) {
-    if (!handle || sock_fd <= 0 || max_len == 0) return -1;
+    if (!handle || sock_fd < 0 || max_len == 0) return -1;
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
 
@@ -364,7 +364,7 @@ int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_
 }
 
 int32_t wing_page_ring_send(uint64_t handle, uint64_t head_offset, uint32_t len, int64_t sock_fd) {
-    if (!handle || sock_fd <= 0 || len == 0) return 0;
+    if (!handle || sock_fd < 0 || len == 0) return 0;
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
 
@@ -393,8 +393,9 @@ int64_t wing_page_ring_find_crlf(uint64_t handle, uint64_t head_offset, uint32_t
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
 
+    uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
     uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = { ring->base + off, (int64_t)len };
+    wing_bytes_ro slice = { ring->base + off, (int64_t)search_len };
     return wing_simd_find_crlf(slice);
 }
 
@@ -403,7 +404,8 @@ int64_t wing_page_ring_find_crlfcrlf(uint64_t handle, uint64_t head_offset, uint
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
 
+    uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
     uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = { ring->base + off, (int64_t)len };
+    wing_bytes_ro slice = { ring->base + off, (int64_t)search_len };
     return wing_fast_find_crlfcrlf(slice);
 }

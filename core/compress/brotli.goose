@@ -79,6 +79,7 @@ struct BrotliBitReader {
     pos:       i64         = 0,
     bit_buf:   u64         = 0,
     bit_count: u32         = 0,
+    underflow: bool        = false,
 }
 
 fn new_brotli_bit_reader(src: const u8[:]) -> BrotliBitReader {
@@ -87,6 +88,7 @@ fn new_brotli_bit_reader(src: const u8[:]) -> BrotliBitReader {
         pos:       0,
         bit_buf:   0,
         bit_count: 0,
+        underflow: false,
     };
     brotli_fill_bits(r);
     return r;
@@ -103,6 +105,9 @@ inline fn brotli_fill_bits(r: BrotliBitReader&) {
 inline fn brotli_read_bits(r: BrotliBitReader&, n: u32) -> u32 {
     if r.bit_count < n {
         brotli_fill_bits(r);
+        if r.bit_count < n {
+            r.underflow = true;
+        }
     }
     let mask = if n >= 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << n) - 1 };
     let val = (r.bit_buf & mask) as u32;
@@ -114,12 +119,21 @@ inline fn brotli_read_bits(r: BrotliBitReader&, n: u32) -> u32 {
 inline fn brotli_peek_bits(r: BrotliBitReader&, n: u32) -> u32 {
     if r.bit_count < n {
         brotli_fill_bits(r);
+        if r.bit_count < n {
+            r.underflow = true;
+        }
     }
     let mask = if n >= 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << n) - 1 };
     return (r.bit_buf & mask) as u32;
 }
 
 inline fn brotli_drop_bits(r: BrotliBitReader&, n: u32) {
+    if r.bit_count < n {
+        brotli_fill_bits(r);
+        if r.bit_count < n {
+            r.underflow = true;
+        }
+    }
     r.bit_buf >>= n;
     r.bit_count = if r.bit_count >= n { r.bit_count - n } else { 0 };
 }
@@ -377,7 +391,7 @@ fn read_code_length_code_lengths(
     cl_table: BrotliHuffmanTable&,
 ) -> bool {
     var code_lengths: i32[18] = [0; 18];
-    var space:        u32     = 32;
+    var space:        i32     = 32;
     var num_codes:    u32     = 0;
     var idx = hskip as i64;
     while idx < 18 {
@@ -387,15 +401,16 @@ fn read_code_length_code_lengths(
         brotli_drop_bits(r, l);
         code_lengths[BROTLI_CODE_LENGTH_ORDER[idx]] = v as i32;
         if v != 0 {
-            space -= (32 as u32) >> v;
+            space -= (32 >> v) as i32;
             num_codes += 1;
-            if space == 0 {
+            if space <= 0 {
                 break;
             }
         }
         idx += 1;
     }
 
+    guard !r.underflow else { return false; }
     guard num_codes == 1 || space == 0 else { return false; }
     return construct_brotli_huffman_table(code_lengths[..], 18, cl_table) == 0;
 }
@@ -1140,11 +1155,14 @@ fn brotli_decompress_with_limit_impl<B>(
             is_last,
         );
         guard meta_err == CompressError.None else { return meta_err; }
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
     }
 
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     let pad_bits = r.bit_count & 7;
     if pad_bits > 0 {
         let padding_val = brotli_read_bits(r, pad_bits);
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
         guard padding_val == 0 else { return CompressError.CorruptedBitstream; }
     }
     if r.bit_count > 0 || r.pos < r.src.len {

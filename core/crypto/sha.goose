@@ -620,8 +620,9 @@ fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
 }
 
 fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
-    var n: i64 = (length + 31) / 32;
-    guard n <= 255 && out.len >= length else { return false; }
+    let len_i64 = length as i64;
+    var n: i64 = (len_i64 + 31) / 32;
+    guard n <= 255 && out.len >= len_i64 else { return false; }
     var t:       u8[32] = [0; 32];
     var out_off: i64    = 0;
 
@@ -629,7 +630,7 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
         let ctr: u8[1] = [i as u8];
         let p1 = if i > 1 { t[..] } else { "" };
         t = hmac_sha256_parts(prk, p1, info, ctr[..]);
-        let to_copy = if length - out_off < 32 { length - out_off } else { 32 };
+        let to_copy = if len_i64 - out_off < 32 { len_i64 - out_off } else { 32 };
         for j in to_copy {
             out[out_off + j] = t[j];
         }
@@ -639,8 +640,9 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
 }
 
 fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
-    var n: i64 = (length + 47) / 48;
-    guard n <= 255 && out.len >= length else { return false; }
+    let len_i64 = length as i64;
+    var n: i64 = (len_i64 + 47) / 48;
+    guard n <= 255 && out.len >= len_i64 else { return false; }
     var t:       u8[48] = [0; 48];
     var out_off: i64    = 0;
 
@@ -648,7 +650,7 @@ fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: 
         let ctr: u8[1] = [i as u8];
         let p1 = if i > 1 { t[..] } else { "" };
         t = hmac_sha384_parts(prk, p1, info, ctr[..]);
-        let to_copy = if length - out_off < 48 { length - out_off } else { 48 };
+        let to_copy = if len_i64 - out_off < 48 { len_i64 - out_off } else { 48 };
         for j in to_copy {
             out[out_off + j] = t[j];
         }

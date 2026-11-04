@@ -283,8 +283,9 @@ int32_t wing_page_lock(uint64_t handle, uint64_t offset, uint64_t len) {
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
     if (!arena || !arena->base) return -2;
 
-    if (offset + len > arena->capacity) return -3;
-    uint64_t lock_len = (len == 0) ? arena->capacity : len;
+    if (offset > arena->capacity || len > arena->capacity - offset) return -3;
+    uint64_t lock_len = (len == 0) ? (arena->capacity - offset) : len;
+    if (lock_len == 0) return -3;
 
 #if defined(__wasm__)
     arena->is_locked = true;
@@ -311,8 +312,9 @@ int32_t wing_page_unlock(uint64_t handle, uint64_t offset, uint64_t len) {
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
     if (!arena || !arena->base) return -2;
 
-    if (offset + len > arena->capacity) return -3;
-    uint64_t unlock_len = (len == 0) ? arena->capacity : len;
+    if (offset > arena->capacity || len > arena->capacity - offset) return -3;
+    uint64_t unlock_len = (len == 0) ? (arena->capacity - offset) : len;
+    if (unlock_len == 0) return -3;
 
 #if defined(__wasm__)
     arena->is_locked = false;

@@ -266,6 +266,9 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
         let tok, is_over = extract_token_descriptor(pair, base_offset, end - pair.len);
         if is_over {
             res.overflow = true;
+            if pair.len > 0xFFFF {
+                continue;
+            }
         }
         res.tokens.push(tok);
     }

@@ -119,14 +119,14 @@ enum OriginKind {
 
 struct Origin {
     kind:   OriginKind = OriginKind.Tuple,
-    scheme: u8[..16]   = [],
+    scheme: u8[..64]   = [],
     host:   u8[..256]  = [],
     port:   i32        = -1,
     nonce:  u64        = 0,
 }
 
 struct RegistrableSite {
-    scheme:             u8[..16]  = [],
+    scheme:             u8[..64]  = [],
     registrable_domain: u8[..256] = [],
 }
 
@@ -141,13 +141,14 @@ fn new_opaque_origin() -> Origin {
 }
 
 fn default_port_for_scheme(scheme_str: const u8[:]) -> i32 {
-    if scheme_str == "http" || scheme_str == "ws" { return 80; }
-    if scheme_str == "https" || scheme_str == "wss" { return 443; }
-    if scheme_str == "ftp" { return 21; }
+    if eq_ascii_fold(scheme_str, "http") || eq_ascii_fold(scheme_str, "ws") { return 80; }
+    if eq_ascii_fold(scheme_str, "https") || eq_ascii_fold(scheme_str, "wss") { return 443; }
+    if eq_ascii_fold(scheme_str, "ftp") { return 21; }
     return -1;
 }
 
 fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin {
+    guard scheme.len > 0 && scheme.len <= 64 else { return new_opaque_origin(); }
     var eff_port = port;
     if eff_port < 0 {
         eff_port = default_port_for_scheme(scheme);
@@ -157,10 +158,12 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
     to_lower(orig.scheme[..]);
 
     if contains_byte(host, ':') && (host.len < 2 || host[0] != '[' || host[host.len - 1] != ']') {
+        guard host.len + 2 <= orig.host.cap else { return new_opaque_origin(); }
         orig.host.push('[');
         orig.host.append(host);
         orig.host.push(']');
     } else {
+        guard host.len <= orig.host.cap else { return new_opaque_origin(); }
         orig.host.append(host);
     }
     to_lower(orig.host[..]);

@@ -442,9 +442,18 @@ struct Ed25519KeyPair {
     public_key: u8[32] = [0; 32],
 }
 
+// Checks whether [8]P is the identity element (0 : Z : Z : 0), i.e., P has small order dividing 8.
+fn ed25519_is_small_order(p: EdPoint) -> bool {
+    let p2 = ed25519_point_double(p);
+    let p4 = ed25519_point_double(p2);
+    let p8 = ed25519_point_double(p4);
+    let zero = Fe10 { .. };
+    return fe_eq(p8.X, zero) && fe_eq(p8.Y, p8.Z);
+}
+
 // Derives a 32-byte Ed25519 public key from a 32-byte secret seed.
 fn ed25519_public_key(seed: const u8[32]&) -> u8[32] {
-    let h = sha512(seed[..]);
+    var h = sha512(seed[..]);
 
     var s: u8[32] = [0; 32];
     for i in 32 { s[i] = h[i]; }
@@ -453,7 +462,10 @@ fn ed25519_public_key(seed: const u8[32]&) -> u8[32] {
     s[31] |= 64;
 
     let a_pt = ed25519_scalarmult_base(s);
-    return ed25519_point_compress(a_pt);
+    let pub_key = ed25519_point_compress(a_pt);
+    secure_zeroize_64(h);
+    secure_zeroize_32(s);
+    return pub_key;
 }
 
 // Generates an Ed25519 keypair from a 32-byte seed.
@@ -468,7 +480,7 @@ fn ed25519_keypair(seed: const u8[32]&) -> Ed25519KeyPair {
 // Signs an arbitrary byte message using a 32-byte seed (RFC 8032 Section 5.1.6).
 // Returns 64-byte signature (R || S).
 fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
-    let h = sha512(seed[..]);
+    var h = sha512(seed[..]);
 
     var s:      u8[32] = [0; 32];
     var prefix: u8[32] = [0; 32];
@@ -488,8 +500,8 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     var r_ctx = Sha512Ctx { .. };
     sha512_update(r_ctx, prefix[..]);
     sha512_update(r_ctx, message);
-    let r_hash = sha512_final(r_ctx);
-    let r = sc_reduce(r_hash);
+    var r_hash = sha512_final(r_ctx);
+    var r = sc_reduce(r_hash);
 
     // Commitment R = [r] * B
     let r_pt = ed25519_scalarmult_base(r);
@@ -500,11 +512,11 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     sha512_update(k_ctx, r_bytes[..]);
     sha512_update(k_ctx, a_bytes[..]);
     sha512_update(k_ctx, message);
-    let k_hash = sha512_final(k_ctx);
-    let k = sc_reduce(k_hash);
+    var k_hash = sha512_final(k_ctx);
+    var k = sc_reduce(k_hash);
 
     // Proof scalar S = (r + k * s) mod L
-    let s_scalar = sc_muladd(k, s, r);
+    var s_scalar = sc_muladd(k, s, r);
 
     // Signature is (R || S)
     var sig: u8[64] = [0; 64];
@@ -512,6 +524,15 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
         sig[i] = r_bytes[i];
         sig[32 + i] = s_scalar[i];
     }
+
+    secure_zeroize_64(h);
+    secure_zeroize_32(s);
+    secure_zeroize_32(prefix);
+    secure_zeroize_64(r_hash);
+    secure_zeroize_32(r);
+    secure_zeroize_64(k_hash);
+    secure_zeroize_32(k);
+    secure_zeroize_32(s_scalar);
     return sig;
 }
 
@@ -550,9 +571,11 @@ fn ed25519_verify(public_key: const u8[32]&, message: const u8[:], signature: co
 
     var a_pt = EdPoint { .. };
     guard ed25519_point_decompress(public_key, a_pt) else { return false; }
+    guard !ed25519_is_small_order(a_pt) else { return false; }
 
     var r_pt = EdPoint { .. };
     guard ed25519_point_decompress(r_bytes, r_pt) else { return false; }
+    guard !ed25519_is_small_order(r_pt) else { return false; }
 
     let k = compute_ed25519_challenge(r_bytes, public_key, message);
     let sb = ed25519_scalarmult_base(s_bytes);

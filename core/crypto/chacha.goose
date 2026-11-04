@@ -137,6 +137,7 @@ fn chacha20_xor_into(
     input:   const u8[:],
     dst:     u8[:],
 ) {
+    guard dst.len >= input.len else { return; }
     var cur_ctr = counter;
     var offset = 0;
     while offset < input.len {
@@ -331,7 +332,7 @@ fn xchacha20_poly1305_seal<B>(
 ) -> u8[16] {
     var nonce16: u8[16] = [0; 16];
     for i in 16 { nonce16[i] = nonce24[i]; }
-    let subkey = hchacha20(key, nonce16);
+    var subkey = hchacha20(key, nonce16);
 
     var subnonce: u8[12] = [0; 12];
     for i in 8 { subnonce[4 + i] = nonce24[16 + i]; }
@@ -342,9 +343,18 @@ fn xchacha20_poly1305_seal<B>(
 
     let ct_start = out_ciphertext.len;
     chacha20_xor(subkey, 1, subnonce, plaintext, out_ciphertext);
+    secure_zeroize_32(subkey);
+    guard out_ciphertext.len - ct_start == plaintext.len else {
+        out_ciphertext.resize(ct_start);
+        secure_zeroize_32(otk);
+        var zero_tag: u8[16] = [0; 16];
+        return zero_tag;
+    }
     let ciphertext_slice = out_ciphertext[ct_start..];
 
-    return poly1305_aead_mac(otk, aad, ciphertext_slice);
+    let tag = poly1305_aead_mac(otk, aad, ciphertext_slice);
+    secure_zeroize_32(otk);
+    return tag;
 }
 
 fn xchacha20_poly1305_open<B>(
@@ -357,7 +367,7 @@ fn xchacha20_poly1305_open<B>(
 ) -> bool {
     var nonce16: u8[16] = [0; 16];
     for i in 16 { nonce16[i] = nonce24[i]; }
-    let subkey = hchacha20(key, nonce16);
+    var subkey = hchacha20(key, nonce16);
 
     var subnonce: u8[12] = [0; 12];
     for i in 8 { subnonce[4 + i] = nonce24[16 + i]; }
@@ -368,10 +378,19 @@ fn xchacha20_poly1305_open<B>(
 
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
     guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_32(subkey);
+        secure_zeroize_32(otk);
         return false;
     }
 
+    let start_len = out_plaintext.len;
     chacha20_xor(subkey, 1, subnonce, ciphertext, out_plaintext);
+    secure_zeroize_32(subkey);
+    secure_zeroize_32(otk);
+    guard out_plaintext.len - start_len == ciphertext.len else {
+        out_plaintext.resize(start_len);
+        return false;
+    }
     return true;
 }
 
@@ -391,13 +410,15 @@ fn chacha20_poly1305_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
-    let otk = chacha20_poly1305_key(key, nonce12);
+    var otk = chacha20_poly1305_key(key, nonce12);
     let computed_tag = poly1305_aead_mac(otk, aad, in_out);
     guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_32(otk);
         secure_zeroize_slice(in_out);
         return 0, false;
     }
 
+    secure_zeroize_32(otk);
     chacha20_xor_inplace(key, 1, nonce12, in_out);
     return in_out.len, true;
 }
@@ -410,9 +431,10 @@ fn chacha20_poly1305_seal_inplace(
     in_out:  u8[:],
     aad:     const u8[:],
 ) -> u8[16], bool {
-    let otk = chacha20_poly1305_key(key, nonce12);
+    var otk = chacha20_poly1305_key(key, nonce12);
     chacha20_xor_inplace(key, 1, nonce12, in_out);
     let tag = poly1305_aead_mac(otk, aad, in_out);
+    secure_zeroize_32(otk);
     return tag, true;
 }
 
@@ -426,13 +448,15 @@ fn chacha20_poly1305_open_into(
     dst:        u8[:],
 ) -> i64, bool {
     guard dst.len >= ciphertext.len else { return 0, false; }
-    let otk = chacha20_poly1305_key(key, nonce12);
+    var otk = chacha20_poly1305_key(key, nonce12);
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
     guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_32(otk);
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
 
+    secure_zeroize_32(otk);
     chacha20_xor_into(key, 1, nonce12, ciphertext, dst[..ciphertext.len]);
     return ciphertext.len, true;
 }
@@ -447,9 +471,10 @@ fn chacha20_poly1305_seal(
 ) -> u8[16], i64, bool {
     var empty_tag: u8[16] = [0; 16];
     guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
-    let otk = chacha20_poly1305_key(key, nonce12);
+    var otk = chacha20_poly1305_key(key, nonce12);
     chacha20_xor_into(key, 1, nonce12, plaintext, dst[..plaintext.len]);
     let tag = poly1305_aead_mac(otk, aad, dst[..plaintext.len]);
+    secure_zeroize_32(otk);
     return tag, plaintext.len, true;
 }
 
@@ -461,12 +486,19 @@ fn chacha20_poly1305_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
-    let otk = chacha20_poly1305_key(key, nonce12);
+    var otk = chacha20_poly1305_key(key, nonce12);
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
     guard ct_eq_tag16(computed_tag, tag) else {
+        secure_zeroize_32(otk);
         return false;
     }
 
+    secure_zeroize_32(otk);
+    let start_len = out_plaintext.len;
     chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
+    guard out_plaintext.len - start_len == ciphertext.len else {
+        out_plaintext.resize(start_len);
+        return false;
+    }
     return true;
 }

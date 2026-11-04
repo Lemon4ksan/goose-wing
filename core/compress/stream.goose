@@ -323,10 +323,11 @@ fn parse_stream_header(d: ZStreamDecompressor&) -> CompressError {
         if d.in_buf.len < 4 {
             return CompressError.None;
         }
-        d.format = detect_container_format(d.in_buf[..]);
-        if d.format == ContainerFormat.Auto || (d.format == ContainerFormat.Raw && d.in_buf.len < 10) {
+        let detected = detect_container_format(d.in_buf[..]);
+        if detected == ContainerFormat.Auto || (detected == ContainerFormat.Raw && d.in_buf.len < 10) {
             return CompressError.None;
         }
+        d.format = detected;
     }
 
     if d.format == ContainerFormat.Zstd {
@@ -425,23 +426,24 @@ fn zstream_decompress_write_limit<B>(
             max_output_bytes - produced
         } else { 0 };
         let err, consumed = inflate_ex(d.in_buf[..], temp_out, hist, stream_limit);
+        if consumed > 0 {
+            let new_len = temp_out.len;
+            out.append(temp_out[..]);
+            d.total_out += new_len as u64;
+
+            if d.format == ContainerFormat.Zlib {
+                d.adler = adler32_update(d.adler, temp_out[..]);
+            } else if d.format == ContainerFormat.Gzip {
+                d.crc = crc32_update(d.crc, temp_out[..]);
+            }
+
+            update_sliding_window(d, temp_out[..]);
+            drain_in_buf(d, consumed);
+        }
         if err == CompressError.InputBufferTruncated {
             return CompressError.None; // Partial block: wait for more bytes
         }
         guard err == CompressError.None else { return err; }
-
-        let new_len = temp_out.len;
-        out.append(temp_out[..]);
-        d.total_out += new_len as u64;
-
-        if d.format == ContainerFormat.Zlib {
-            d.adler = adler32_update(d.adler, temp_out[..]);
-        } else if d.format == ContainerFormat.Gzip {
-            d.crc = crc32_update(d.crc, temp_out[..]);
-        }
-
-        update_sliding_window(d, temp_out[..]);
-        drain_in_buf(d, consumed);
         d.deflate_finished = true;
     }
 

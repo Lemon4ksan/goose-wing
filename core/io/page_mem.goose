@@ -135,7 +135,7 @@ fn guarded_arena_write(arena: GuardedArena&, src: const u8[:]) -> i64, bool {
     }
 
     let src_len = src.len as u64;
-    guard arena.used + src_len <= arena.capacity else {
+    guard src_len <= arena.capacity && arena.used <= arena.capacity - src_len else {
         return 0, false;
     }
 
@@ -154,7 +154,8 @@ fn guarded_arena_read(arena: const GuardedArena&, offset: u64, dst: u8[:]) -> i6
         return 0, false;
     }
 
-    guard (offset + (dst.len as u64)) <= arena.used else {
+    let dst_len = dst.len as u64;
+    guard dst_len <= arena.used && offset <= arena.used - dst_len else {
         return 0, false;
     }
 
@@ -239,7 +240,8 @@ fn mmap_file_read(mf: const MmapFile&, offset: u64, dst: u8[:]) -> i64, bool {
         return 0, false;
     }
 
-    guard (offset + (dst.len as u64)) <= mf.size else {
+    let dst_len = dst.len as u64;
+    guard dst_len <= mf.size && offset <= mf.size - dst_len else {
         return 0, false;
     }
 
@@ -257,7 +259,8 @@ fn mmap_file_send(mf: const MmapFile&, offset: u64, len: u32, sock_fd: i64) -> i
         return 0, false;
     }
 
-    guard (offset + len) <= mf.size else {
+    let send_len = len as u64;
+    guard send_len <= mf.size && offset <= mf.size - send_len else {
         return 0, false;
     }
 
@@ -315,7 +318,7 @@ fn pinned_buffer_write(pb: PinnedBuffer&, offset: u64, src: const u8[:]) -> i64,
     }
 
     let src_len = src.len as u64;
-    guard offset + src_len <= pb.capacity else {
+    guard src_len <= pb.capacity && offset <= pb.capacity - src_len else {
         return 0, false;
     }
 
@@ -333,7 +336,8 @@ fn pinned_buffer_read(pb: const PinnedBuffer&, offset: u64, dst: u8[:]) -> i64, 
         return 0, false;
     }
 
-    guard offset < pb.capacity else {
+    let dst_len = dst.len as u64;
+    guard dst_len <= pb.capacity && offset <= pb.capacity - dst_len else {
         return 0, false;
     }
 

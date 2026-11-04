@@ -191,7 +191,7 @@ fn page_ring_recv(
     max_len:    u32 = 0,
     timeout_ms: u32 = 0,
 ) -> i32 {
-    guard pr.is_open && sock_fd > 0 else { return -1; }
+    guard pr.is_open && sock_fd >= 0 else { return -1; }
     let avail = page_ring_available(pr);
     guard avail > 0 else { return 0; }
 
@@ -210,8 +210,8 @@ fn page_ring_send(
     sock_fd: i64,
     max_len: u32 = 0,
 ) -> i32 {
-    guard pr.is_open && sock_fd > 0 && pr.count > 0 else { return 0; }
-    let c = pr.count as u32;
+    guard pr.is_open && sock_fd >= 0 && pr.count > 0 else { return 0; }
+    let c = if pr.count < pr.capacity { pr.count as u32 } else { pr.capacity };
     let to_send = if max_len > 0 { ring_bounded_u32(max_len, c) } else { c };
     let sent = native_page_ring_send(pr.handle, pr.head, to_send, sock_fd);
     if sent > 0 {
@@ -224,11 +224,13 @@ fn page_ring_send(
 // Scans active readable data for CRLF delimiter using vectorized scanner.
 fn page_ring_find_crlf(pr: const PageRingBuffer&) -> i64 {
     guard pr.is_open && pr.count >= 2 else { return -1; }
-    return native_page_ring_find_crlf(pr.handle, pr.head, pr.count as u32);
+    let search_len = if pr.count < pr.capacity { pr.count as u32 } else { pr.capacity };
+    return native_page_ring_find_crlf(pr.handle, pr.head, search_len);
 }
 
 // Scans active readable data for CRLFCRLF (\r\n\r\n) HTTP delimiter using AVX2/SSE2.
 fn page_ring_find_crlfcrlf(pr: const PageRingBuffer&) -> i64 {
     guard pr.is_open && pr.count >= 4 else { return -1; }
-    return native_page_ring_find_crlfcrlf(pr.handle, pr.head, pr.count as u32);
+    let search_len = if pr.count < pr.capacity { pr.count as u32 } else { pr.capacity };
+    return native_page_ring_find_crlfcrlf(pr.handle, pr.head, search_len);
 }

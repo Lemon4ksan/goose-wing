@@ -18,14 +18,7 @@ struct Time {
 }
 
 fn now() -> Time {
-    let wall_ns = time_ns();
-    let sec = wall_ns / 1000000000;
-    let nsec = (wall_ns % 1000000000) as i32;
-    return Time {
-        wall_sec:  sec,
-        nsec:      nsec,
-        tz_offset: 0,
-    };
+    return unix_nano(time_ns());
 }
 
 // unix returns the local Time corresponding to the given Unix time,
@@ -57,15 +50,42 @@ fn unix(secs_count: i64, nano_count: i64 = 0) -> Time {
 }
 
 fn unix_milli(millis_count: i64) -> Time {
-    return unix(millis_count / 1000, (millis_count % 1000) * 1000000);
+    var sec = millis_count / 1000;
+    let rem = millis_count % 1000;
+    if millis_count < 0 && rem != 0 {
+        sec -= 1;
+    }
+    return Time {
+        wall_sec:  sec,
+        nsec:      (rem * 1000000) as i32,
+        tz_offset: 0,
+    };
 }
 
 fn unix_micro(micros_count: i64) -> Time {
-    return unix(micros_count / 1000000, (micros_count % 1000000) * 1000);
+    var sec = micros_count / 1000000;
+    let rem = micros_count % 1000000;
+    if micros_count < 0 && rem != 0 {
+        sec -= 1;
+    }
+    return Time {
+        wall_sec:  sec,
+        nsec:      (rem * 1000) as i32,
+        tz_offset: 0,
+    };
 }
 
 fn unix_nano(nanos_count: i64) -> Time {
-    return unix(nanos_count / 1000000000, nanos_count % 1000000000);
+    var sec = nanos_count / 1000000000;
+    let rem = nanos_count % 1000000000;
+    if nanos_count < 0 && rem != 0 {
+        sec -= 1;
+    }
+    return Time {
+        wall_sec:  sec,
+        nsec:      rem as i32,
+        tz_offset: 0,
+    };
 }
 
 fn date(
@@ -151,14 +171,16 @@ fn is_zero(time_val: Time) -> bool { return time_val.wall_sec == 0 && time_val.n
 // --- Time Arithmetic ---
 
 fn add(time_val: Time, dur: Duration) -> Time {
-    var sec_val = time_val.wall_sec + dur.nanos / 1000000000;
-    var nsec_val = time_val.nsec + (dur.nanos % 1000000000);
+    var dur_sec = dur.nanos / 1000000000;
+    let dur_nsec = dur.nanos % 1000000000;
+    if dur.nanos < 0 && dur_nsec != 0 {
+        dur_sec -= 1;
+    }
+    var sec_val = time_val.wall_sec + dur_sec;
+    var nsec_val = time_val.nsec + dur_nsec;
     if nsec_val >= 1000000000 {
         sec_val += 1;
         nsec_val -= 1000000000;
-    } else if nsec_val < 0 {
-        sec_val -= 1;
-        nsec_val += 1000000000;
     }
     return Time {
         wall_sec:  sec_val,
@@ -184,12 +206,14 @@ fn sub(time_val: Time, other_time: Time) -> Duration {
 }
 
 fn sub(time_val: Time, dur: Duration) -> Time {
-    var sec_val = time_val.wall_sec - dur.nanos / 1000000000;
-    var nsec_val = time_val.nsec - (dur.nanos % 1000000000);
-    if nsec_val >= 1000000000 {
-        sec_val += 1;
-        nsec_val -= 1000000000;
-    } else if nsec_val < 0 {
+    var dur_sec = dur.nanos / 1000000000;
+    let dur_nsec = dur.nanos % 1000000000;
+    if dur.nanos < 0 && dur_nsec != 0 {
+        dur_sec -= 1;
+    }
+    var sec_val = time_val.wall_sec - dur_sec;
+    var nsec_val = time_val.nsec - dur_nsec;
+    if nsec_val < 0 {
         sec_val -= 1;
         nsec_val += 1000000000;
     }
@@ -210,12 +234,13 @@ fn sub(time_val: Time, dur: Duration) -> Time {
 fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     let current_year, current_month, current_day, hour_val, min_val, sec_val = civil_parts(time_val);
     let zero_based = (current_month - 1) + months_count;
-    var new_year = current_year + (zero_based / 12);
-    var new_month = (zero_based % 12) + 1;
-    if new_month < 1 {
-        new_month += 12;
-        new_year -= 1;
+    var year_delta = zero_based / 12;
+    let month_idx = zero_based % 12;
+    if zero_based < 0 && month_idx != 0 {
+        year_delta -= 1;
     }
+    let new_year = current_year + year_delta;
+    let new_month = month_idx + 1;
 
     let max_day_in_month = days_in_month(new_year, new_month);
     let clamped_day = if current_day > max_day_in_month { max_day_in_month } else { current_day };
@@ -286,11 +311,8 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     // Multiple of whole seconds (e.g. 1s, 1m, 1h, 1d)
     if dur.nanos >= 1000000000 && (dur.nanos % 1000000000 == 0) {
         let step_secs = dur.nanos / 1000000000;
-        var rem = time_val.wall_sec % step_secs;
-        var trunc_sec = time_val.wall_sec - rem;
-        if rem < 0 {
-            trunc_sec -= step_secs;
-        }
+        let rem = time_val.wall_sec % step_secs;
+        let trunc_sec = time_val.wall_sec - rem;
         return Time {
             wall_sec:  trunc_sec,
             nsec:      0,
@@ -312,10 +334,8 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     let max_sec: i64 = 9223372036;
     if time_val.wall_sec >= -max_sec && time_val.wall_sec <= max_sec {
         let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-        let is_neg = total_nanos < 0;
-        let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
-        let truncated_abs = (abs_nanos / dur.nanos) * dur.nanos;
-        let base_nanos = if is_neg { -truncated_abs } else { truncated_abs };
+        let rem = total_nanos % dur.nanos;
+        let base_nanos = total_nanos - rem;
         var truncated_time = unix(0, base_nanos);
         truncated_time.tz_offset = time_val.tz_offset;
         return truncated_time;
@@ -326,13 +346,9 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
 
 fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
     let step_secs = dur_nanos / NANOS_PER_SEC;
-    var rem = time_val.wall_sec % step_secs;
+    let rem = time_val.wall_sec % step_secs;
     var base_sec = time_val.wall_sec - rem;
-    var rem_nanos = rem * NANOS_PER_SEC + time_val.nsec;
-    if rem_nanos < 0 {
-        base_sec -= step_secs;
-        rem_nanos += step_secs * NANOS_PER_SEC;
-    }
+    let rem_nanos = rem * NANOS_PER_SEC + time_val.nsec;
     if rem_nanos >= (dur_nanos + 1) / 2 {
         base_sec += step_secs;
     }

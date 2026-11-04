@@ -11,16 +11,16 @@ import std;
 fn is_special_scheme(scheme_str: const u8[:]) -> bool {
     let len = scheme_str.len;
     if len == 4 {
-        return scheme_str == "http" || scheme_str == "file";
+        return eq_ascii_fold(scheme_str, "http") || eq_ascii_fold(scheme_str, "file");
     }
     if len == 5 {
-        return scheme_str == "https";
+        return eq_ascii_fold(scheme_str, "https");
     }
     if len == 2 {
-        return scheme_str == "ws";
+        return eq_ascii_fold(scheme_str, "ws");
     }
     if len == 3 {
-        return scheme_str == "wss" || scheme_str == "ftp";
+        return eq_ascii_fold(scheme_str, "wss") || eq_ascii_fold(scheme_str, "ftp");
     }
     return false;
 }
@@ -286,7 +286,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
     return resolve_relative_path_against_base(out_url, base_url, remainder);
 }
 
-fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) {
+fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) -> bool {
     var colon_pos = -1;
     for scan_idx in userinfo.len {
         if userinfo[scan_idx] == ':' {
@@ -300,33 +300,33 @@ fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) {
 
     // If both username and password are empty (e.g. :@), omit userinfo completely per WHATWG URL
     guard raw_user.len > 0 || raw_pass.len > 0 else {
-        return;
+        return true;
     }
 
     out_url.username_start = out_url.href.len as i32;
     for char_byte in raw_user {
         if char_byte == '@' {
-            out_url.href.append("%40");
+            guard out_url.href.try_append("%40") else { return false; }
         } else {
-            out_url.href.push(char_byte);
+            guard out_url.href.try_push(char_byte) else { return false; }
         }
     }
     out_url.username_end = out_url.href.len as i32;
 
     if raw_pass.len > 0 {
-        out_url.href.push(':');
+        guard out_url.href.try_push(':') else { return false; }
         out_url.password_start = out_url.href.len as i32;
         for char_byte in raw_pass {
             if char_byte == '@' {
-                out_url.href.append("%40");
+                guard out_url.href.try_append("%40") else { return false; }
             } else {
-                out_url.href.push(char_byte);
+                guard out_url.href.try_push(char_byte) else { return false; }
             }
         }
         out_url.password_end = out_url.href.len as i32;
     }
 
-    out_url.href.push('@');
+    return out_url.href.try_push('@');
 }
 
 fn apply_canonical_host_and_port(
@@ -366,11 +366,16 @@ fn apply_canonical_host_and_port(
     to_lower(raw_host[..]);
 
     out_url.host_start = out_url.href.len as i32;
-    out_url.href.append(raw_host[..]);
+    guard out_url.href.try_append(raw_host[..]) else {
+        return UrlParseError.InputTooLong;
+    }
     out_url.host_end = out_url.href.len as i32;
 
     let def_port = default_port_for_scheme(scheme_str);
     if !is_file && port_val >= 0 && port_val != def_port {
+        guard out_url.href.len + 6 <= out_url.href.cap else {
+            return UrlParseError.InputTooLong;
+        }
         out_url.port_start = out_url.href.len as i32;
         out_url.href.push(':');
         format(out_url.href, port_val as i64);
@@ -393,8 +398,9 @@ fn parse_absolute_authority_url(
     is_spec:       bool,
     auth_and_path: const u8[:],
 ) -> Url, UrlParseError {
-    out_url.href.append(scheme_str);
-    out_url.href.append("://");
+    guard out_url.href.try_append(scheme_str) && out_url.href.try_append("://") else {
+        return out_url, UrlParseError.InputTooLong;
+    }
     out_url.scheme_end = scheme_str.len as i32;
 
     let rel_delim = if is_spec {
@@ -419,7 +425,9 @@ fn parse_absolute_authority_url(
     if at_pos >= 0 {
         let userinfo = auth_str[..at_pos];
         host_port_part = auth_str[at_pos + 1..];
-        append_userinfo_to_url(out_url, userinfo);
+        guard append_userinfo_to_url(out_url, userinfo) else {
+            return out_url, UrlParseError.InputTooLong;
+        }
     }
 
     // Host & Port Parsing
@@ -468,6 +476,7 @@ fn is_alphanumeric_byte(b: u8) -> bool {
 // Permitted scoped IPv6 addresses include link-local unicast (fe80::/10), site-local unicast (fec0::/10),
 // and non-global scoped multicast addresses (ff01..ff05, ff08, etc.).
 fn is_scoped_ipv6_for_zone_id(comp_ipv6: const u8[:]) -> bool {
+    guard comp_ipv6.len >= 5 && comp_ipv6[4] == ':' else { return false; }
     if starts_with(comp_ipv6, "fe8") || starts_with(comp_ipv6, "fe9") ||
        starts_with(comp_ipv6, "fea") || starts_with(comp_ipv6, "feb") {
         return true; // Link-local unicast (fe80::/10)
@@ -476,7 +485,7 @@ fn is_scoped_ipv6_for_zone_id(comp_ipv6: const u8[:]) -> bool {
        starts_with(comp_ipv6, "fee") || starts_with(comp_ipv6, "fef") {
         return true; // Site-local unicast (fec0::/10)
     }
-    if comp_ipv6.len >= 4 && comp_ipv6[0] == 'f' && comp_ipv6[1] == 'f' {
+    if comp_ipv6[0] == 'f' && comp_ipv6[1] == 'f' {
         let scope_ch = comp_ipv6[3];
         // Scoped multicast: 1 (interface-local), 2 (link-local), 3 (realm-local),
         // 4 (admin-local), 5 (site-local), 8 (org-local)

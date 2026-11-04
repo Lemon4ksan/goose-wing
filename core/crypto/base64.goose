@@ -84,14 +84,14 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
         let ch = encoded[idx];
         if ch == '=' {
             // RFC 4648 §3.5: padding only valid when 2 chars (bits=4) or 3 chars (bits=2) decoded
-            guard bits == 4 || bits == 2 else { return false; }
+            guard bits == 4 || bits == 2 else { out.clear(); return false; }
             let pad_mask = (((1 as u32) << bits) - 1);
-            guard (buf & pad_mask) == 0 else { return false; }
+            guard (buf & pad_mask) == 0 else { out.clear(); return false; }
             let expected_pad = if bits == 4 { 2 } else { 1 };
-            guard (encoded.len - idx) == expected_pad else { return false; }
+            guard (encoded.len - idx) == expected_pad else { out.clear(); return false; }
             var p = idx;
             while p < encoded.len {
-                guard encoded[p] == '=' else { return false; }
+                guard encoded[p] == '=' else { out.clear(); return false; }
                 p++;
             }
             bits = 0;
@@ -104,7 +104,9 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
+            let prev_len = out.len;
             out.push(((buf >> bits) & 0xFF) as u8);
+            guard out.len > prev_len else { out.clear(); return false; }
         }
         idx++;
     }
@@ -198,7 +200,7 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         let ch = encoded[idx];
         if ch == '=' {
             // RFC 4648 §3.5: padding only valid when 2 chars (bits=4) or 3 chars (bits=2) decoded
-            guard bits == 4 || bits == 2 else { return false; }
+            guard bits == 4 || bits == 2 else { out.clear(); return false; }
             let pad_mask = (((1 as u32) << bits) - 1);
             guard (buf & pad_mask) == 0 else { out.clear(); return false; }
             let expected_pad = if bits == 4 { 2 } else { 1 };
@@ -218,7 +220,9 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
+            let prev_len = out.len;
             out.push(((buf >> bits) & 0xFF) as u8);
+            guard out.len > prev_len else { out.clear(); return false; }
         }
         idx++;
     }

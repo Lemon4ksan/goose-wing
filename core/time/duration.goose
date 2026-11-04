@@ -102,7 +102,7 @@ fn compare(dur1: Duration, dur2: Duration) -> i64 {
 fn truncate(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
     if dur.nanos == DURATION_MIN_NANOS {
-        let q = (DURATION_MIN_NANOS + 1) / step_dur.nanos;
+        let q = DURATION_MIN_NANOS / step_dur.nanos;
         return Duration { nanos: q * step_dur.nanos };
     }
     let is_neg = dur.nanos < 0;
@@ -114,7 +114,15 @@ fn truncate(dur: Duration, step_dur: Duration) -> Duration {
 // Rounds duration to the nearest multiple of step_dur (half rounds away from zero).
 fn round(dur: Duration, step_dur: Duration) -> Duration {
     if step_dur.nanos <= 0 { return dur; }
-    if dur.nanos == DURATION_MIN_NANOS { return dur; }
+    if dur.nanos == DURATION_MIN_NANOS {
+        let q = DURATION_MIN_NANOS / step_dur.nanos;
+        let base_nanos = q * step_dur.nanos;
+        let rem = base_nanos - DURATION_MIN_NANOS;
+        if rem >= step_dur.nanos - rem {
+            return dur;
+        }
+        return Duration { nanos: base_nanos };
+    }
     let is_neg = dur.nanos < 0;
     let abs_nanos = if is_neg { -dur.nanos } else { dur.nanos };
     let quotient = abs_nanos / step_dur.nanos;

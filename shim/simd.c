@@ -36,7 +36,8 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
 // Ultra-fast AVX2 vector batch cork buffer appending for fixed responses
 // Streams 32-byte vector registers directly into cork buffer and flushes when full.
 int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork_len, wing_bytes_ro resp) {
-    if (!cork_buf.data || !resp.data || resp.len <= 0) return cork_len;
+    if (!cork_buf.data || cork_buf.len <= 0 || cork_len < 0 || cork_len > cork_buf.len) return -1;
+    if (!resp.data || resp.len <= 0) return cork_len;
     int64_t clen = cork_len;
     int64_t rlen = resp.len;
 
@@ -53,6 +54,20 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
         }
         if (rem > 0) return -1;
         clen = 0;
+
+        if (rlen > cork_buf.len) {
+            const uint8_t *rp = resp.data;
+            size_t rrem = (size_t)rlen;
+            attempts = 0;
+            while (rrem > 0 && attempts++ < 32) {
+                wing_bytes_ro to_send = {rp, (int64_t)rrem};
+                int32_t sent = wing_tcp_send(conn, to_send);
+                if (sent <= 0) return -1;
+                rp += sent;
+                rrem -= (size_t)sent;
+            }
+            return (rrem == 0) ? 0 : -1;
+        }
     }
 
     uint8_t *dst = cork_buf.data + clen;
@@ -446,12 +461,12 @@ static inline uint64_t wing_swar_has_less(uint64_t x, uint64_t n) {
     return (((x)-0x0101010101010101ULL * (n)) & ~(x) & 0x8080808080808080ULL);
 }
 
-// Scans slice 8 bytes at a time for any control character (< 32, including \r, \n, \t, \0)
+// Scans active readable data for any control character (< 32, including \r, \n, \t, \0)
 // Returns offset of first control character, or len if none found.
 int64_t wing_swar_find_ctl(wing_bytes_ro slice) {
+    if (!slice.data || slice.len <= 0) return 0;
     const uint8_t *data = slice.data;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0) return 0;
 
     size_t i = 0;
     while (i + 8 <= len) {

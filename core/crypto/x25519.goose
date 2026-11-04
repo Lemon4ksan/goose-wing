@@ -288,7 +288,7 @@ fn clamp_scalar_rfc7748(scalar: const u8[32]&) -> u8[32] {
 // Performs X25519 scalar multiplication: out = scalar * point on Curve25519.
 // crap:ignore
 fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
-    let clamped = clamp_scalar_rfc7748(scalar);
+    var clamped = clamp_scalar_rfc7748(scalar);
 
     let x_1 = fe_from_bytes(point);
     var x_2 = Fe10 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
@@ -328,7 +328,9 @@ fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
     fe_cswap(swap, z_2, z_3);
 
     let res = fe_mul(x_2, fe_inv(z_2));
-    return fe_to_bytes(res);
+    let out = fe_to_bytes(res);
+    secure_zeroize_32(clamped);
+    return out;
 }
 
 // Multiplies scalar by the standard Curve25519 base point u = 9.
@@ -340,4 +342,21 @@ fn x25519_base_scalarmult(scalar: const u8[32]&) -> u8[32] {
         0, 0, 0, 0, 0, 0, 0, 0,
     ];
     return x25519_scalarmult(scalar, u9);
+}
+
+// Constant-time check if 32-byte shared secret is all zeros (RFC 7748 §6.1).
+fn x25519_is_all_zero(ss: const u8[32]&) -> bool {
+    let zero: u8[32] = [0; 32];
+    return ct_eq_tag32(ss, zero);
+}
+
+// Performs X25519 Diffie-Hellman shared secret calculation (RFC 7748 §6.1).
+// Returns (shared_secret, true) on success, or ([0; 32], false) if the result is all-zero (low-order point attack).
+fn x25519_shared_secret(scalar: const u8[32]&, point: const u8[32]&) -> u8[32], bool {
+    let ss = x25519_scalarmult(scalar, point);
+    if x25519_is_all_zero(ss) {
+        var zero_ss: u8[32] = [0; 32];
+        return zero_ss, false;
+    }
+    return ss, true;
 }
