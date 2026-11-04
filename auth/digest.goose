@@ -20,6 +20,12 @@ inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
         || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
 }
 
+inline fn is_sess_digest_algo(algo: const u8[:]) -> bool {
+    return eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
+}
+
 // ---- Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
@@ -110,11 +116,6 @@ inline fn scan_digest_token_len(s: const u8[:]) -> i64 {
     return n;
 }
 
-inline fn commit_digest_param_val<B>(val: const u8[:], out_val: B&) {
-    out_val.clear();
-    out_val.append(val);
-}
-
 // Parses a parameter value, which can be quoted ("value") or an unquoted token (RFC 7616 §3.3).
 // Advances `idx` past the parsed value on success.
 //
@@ -131,15 +132,13 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     if rem[0] == '"' {
         var tmp: u8[..128] = [];
         let q_consumed, ok = parse_quoted_param(rem, tmp);
-        guard ok && tmp.len <= out_val.cap else { return false; }
-        commit_digest_param_val(tmp[..], out_val);
+        guard ok && out_val.try_set(tmp[..]) else { return false; }
         idx = core::add_sat_i64(new_idx, q_consumed);
         return true;
     }
 
     let token_len = scan_digest_token_len(rem);
-    guard token_len <= out_val.cap else { return false; }
-    commit_digest_param_val(rem[..token_len], out_val);
+    guard token_len > 0 && out_val.try_set(rem[..token_len]) else { return false; }
     idx = core::add_sat_i64(new_idx, token_len);
     return true;
 }
@@ -148,28 +147,16 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
 // Returns (handled: bool, ok: bool).
 fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool, bool {
     if eq_ascii_fold(key, "realm") {
-        guard val.len <= chal.realm.cap else { return true, false; }
-        chal.realm.clear();
-        chal.realm.append(val);
-        return true, true;
+        return true, chal.realm.try_set(val);
     }
     if eq_ascii_fold(key, "nonce") {
-        guard val.len <= chal.nonce.cap else { return true, false; }
-        chal.nonce.clear();
-        chal.nonce.append(val);
-        return true, true;
+        return true, chal.nonce.try_set(val);
     }
     if eq_ascii_fold(key, "algorithm") {
-        guard val.len <= chal.algorithm.cap else { return true, false; }
-        chal.algorithm.clear();
-        chal.algorithm.append(val);
-        return true, true;
+        return true, chal.algorithm.try_set(val);
     }
     if eq_ascii_fold(key, "qop") {
-        guard val.len <= chal.qop.cap else { return true, false; }
-        chal.qop.clear();
-        chal.qop.append(val);
-        return true, true;
+        return true, chal.qop.try_set(val);
     }
     return false, true;
 }
@@ -177,16 +164,10 @@ fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const 
 // Matches and stores optional challenge attributes (opaque, domain, stale, userhash).
 fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
     if eq_ascii_fold(key, "opaque") {
-        guard val.len <= chal.opaque.cap else { return false; }
-        chal.opaque.clear();
-        chal.opaque.append(val);
-        return true;
+        return chal.opaque.try_set(val);
     }
     if eq_ascii_fold(key, "domain") {
-        guard val.len <= chal.domain.cap else { return false; }
-        chal.domain.clear();
-        chal.domain.append(val);
-        return true;
+        return chal.domain.try_set(val);
     }
     if eq_ascii_fold(key, "stale") {
         chal.stale = eq_ascii_fold(val, "true");
@@ -305,6 +286,7 @@ fn calculate_digest_ha1(
 ) -> u8[..64] {
     var a1:        u8[..768] = [];
     var empty_res: u8[..64]  = [];
+    guard username.len > 0 && realm.len > 0 else { return empty_res; }
     let need1 = core::add_sat_i64(core::add_sat_i64(username.len, realm.len), password.len);
     guard core::add_sat_i64(need1, 2) <= a1.cap else { return empty_res; }
     a1.append(username);
@@ -316,9 +298,8 @@ fn calculate_digest_ha1(
     var ha1 = digest_hash_hex(algo, a1[..]);
     core::secure_zeroize_slice(a1[..]);
 
-    if eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS) {
+    if is_sess_digest_algo(algo) {
+        guard nonce.len > 0 && cnonce.len > 0 else { return empty_res; }
         var a1_sess: u8[..512] = [];
         let need_sess = core::add_sat_i64(core::add_sat_i64(ha1.len, nonce.len), cnonce.len);
         guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else { return empty_res; }
@@ -345,10 +326,12 @@ fn calculate_digest_ha2(
     is_auth_int: bool,
     body:        const u8[:],
 ) -> u8[..64] {
-    var a2: u8[..2048] = [];
+    var a2:        u8[..2048] = [];
+    var empty_res: u8[..64]   = [];
+    guard method.len > 0 && uri.len > 0 else { return empty_res; }
     let extra: i64 = if is_auth_int { 65 } else { 0 };
     let need2 = core::add_sat_i64(core::add_sat_i64(method.len, uri.len), extra);
-    guard core::add_sat_i64(need2, 1) <= a2.cap else { return a2; }
+    guard core::add_sat_i64(need2, 1) <= a2.cap else { return empty_res; }
     a2.append(method);
     a2.push(':');
     a2.append(uri);
@@ -378,6 +361,10 @@ fn calculate_digest_response(
 ) -> u8[..64] {
     var a3:        u8[..1024] = [];
     var empty_res: u8[..64]   = [];
+    guard ha1_hex.len > 0 && ha2_hex.len > 0 && nonce.len > 0 else { return empty_res; }
+    if active_qop.len > 0 {
+        guard nc_str.len > 0 && cnonce.len > 0 else { return empty_res; }
+    }
     let qop_extra: i64 = if active_qop.len > 0 {
         core::add_sat_i64(core::add_sat_i64(nc_str.len, cnonce.len), core::add_sat_i64(active_qop.len, 3))
     } else {
@@ -448,6 +435,9 @@ fn serialize_digest_core_kv<B>(
     algo:           const u8[:],
     response_hex:   const u8[:],
 ) -> bool {
+    guard effective_user.len > 0 && realm.len > 0 && nonce.len > 0 && uri.len > 0 && response_hex.len > 0 else {
+        return false;
+    }
     guard core::add_sat_i64(sink.len, 17) <= sink.cap else { return false; }
     sink.append("Digest username=\"");
     guard append_escaped_digest_param(sink, effective_user) else { return false; }
@@ -626,6 +616,13 @@ fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
     return false;
 }
 
+// Synchronizes an optional challenge buffer: preserves destination when source is empty,
+// or overwrites with source when non-empty (RFC 7616 §3.3).
+inline fn sync_opt_buf<B>(dst: B&, src: const u8[:]) -> bool {
+    guard src.len > 0 else { return true; }
+    return dst.try_set(src);
+}
+
 // Synchronizes stored Digest challenge state when an upstream 401 response includes `stale=true`
 // (RFC 7616 Section 3.3 / vendor/curl vauth/digest.c).
 // Refreshes the stored `nonce` (and `opaque` if present in `incoming`) and resets the nonce
@@ -641,35 +638,14 @@ fn sync_digest_stale_challenge(
     creds:    const DigestCredentials&,
     nc:       u32&,
 ) -> bool {
-    guard incoming.valid && incoming.stale else { return false; }
+    guard stored.valid && incoming.valid && incoming.stale else { return false; }
     guard creds.username.len > 0 && creds.password.len > 0 else { return false; }
-    guard incoming.nonce.len > 0 && incoming.nonce.len <= stored.nonce.cap else { return false; }
-    guard incoming.opaque.len <= stored.opaque.cap && incoming.realm.len <= stored.realm.cap else { return false; }
-    guard incoming.algorithm.len <= stored.algorithm.cap && incoming.qop.len <= stored.qop.cap else { return false; }
-    guard incoming.domain.len <= stored.domain.cap else { return false; }
-
-    stored.nonce.clear();
-    stored.nonce.append(incoming.nonce[..]);
-    if incoming.opaque.len > 0 {
-        stored.opaque.clear();
-        stored.opaque.append(incoming.opaque[..]);
-    }
-    if incoming.realm.len > 0 {
-        stored.realm.clear();
-        stored.realm.append(incoming.realm[..]);
-    }
-    if incoming.algorithm.len > 0 {
-        stored.algorithm.clear();
-        stored.algorithm.append(incoming.algorithm[..]);
-    }
-    if incoming.qop.len > 0 {
-        stored.qop.clear();
-        stored.qop.append(incoming.qop[..]);
-    }
-    if incoming.domain.len > 0 {
-        stored.domain.clear();
-        stored.domain.append(incoming.domain[..]);
-    }
+    guard incoming.nonce.len > 0 && stored.nonce.try_set(incoming.nonce[..]) else { return false; }
+    guard sync_opt_buf(stored.opaque, incoming.opaque[..]) else { return false; }
+    guard sync_opt_buf(stored.realm, incoming.realm[..]) else { return false; }
+    guard sync_opt_buf(stored.algorithm, incoming.algorithm[..]) else { return false; }
+    guard sync_opt_buf(stored.qop, incoming.qop[..]) else { return false; }
+    guard sync_opt_buf(stored.domain, incoming.domain[..]) else { return false; }
     stored.userhash = incoming.userhash;
     stored.stale = false;
     stored.valid = true;
@@ -725,18 +701,16 @@ fn compute_digest_response<B>(
     body:       const u8[:],
     out_header: B&,
 ) -> bool {
-    guard challenge.valid else { return false; }
+    guard challenge.valid && creds.username.len > 0 else { return false; }
 
     let algo = challenge.algorithm[..];
     guard is_supported_digest_algo(algo) else { return false; }
 
     let active_qop = resolve_active_qop(challenge.qop[..]);
     guard challenge.qop.len == 0 || active_qop.len > 0 else { return false; }
-    let is_auth_int = (active_qop.len == 8);
+    let is_auth_int = eq_ascii_fold(active_qop, rfc::DIGEST_QOP_AUTH_INT);
 
-    let is_sess = eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
-        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
+    let is_sess = is_sess_digest_algo(algo);
     if active_qop.len > 0 || is_sess {
         guard cnonce.len > 0 else { return false; }
     }
@@ -745,6 +719,7 @@ fn compute_digest_response<B>(
     }
 
     let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
+    guard effective_user.len > 0 else { return false; }
 
     let ha1_hex = calculate_digest_ha1(
         algo,
@@ -770,6 +745,7 @@ fn compute_digest_response<B>(
         active_qop,
         ha2_hex[..],
     );
+    guard response_hex.len > 0 else { return false; }
 
     return serialize_digest_auth(
         effective_user[..],

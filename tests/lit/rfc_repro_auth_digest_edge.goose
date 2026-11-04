@@ -78,8 +78,50 @@ fn main() {
     assert(stored.domain[..] == "https://auth.example.com");
     assert(stored.userhash);
     print("DIGEST_STALE_SYNC: OK");
+
+    // ---- 4. Mandatory Field & Response Hex Validation ----------------------
+    var empty_user_creds = wing::DigestCredentials { username: "", password: "pwd" };
+    assert(!wing::compute_digest_response(chal, empty_user_creds, "GET", "/api", 1, "cnonce123", "", resp_header));
+
+    var sink_empty_resp: u8[..512] = [];
+    assert(!wing::serialize_digest_auth("user", "realm", "nonce", "/api", "SHA-256", "", "auth", "00000001", "cnonce", "", false, sink_empty_resp));
+
+    let ha2_bad_method = wing::calculate_digest_ha2("SHA-256", "", "/api", false, "");
+    assert(ha2_bad_method.len == 0);
+    let ha2_bad_uri = wing::calculate_digest_ha2("SHA-256", "GET", "", false, "");
+    assert(ha2_bad_uri.len == 0);
+    print("DIGEST_MANDATORY_FIELD_VALIDATION: OK");
+
+    // ---- 5. Session Algorithm & auth-int Verification ----------------------
+    assert(wing::is_sess_digest_algo("SHA-256-sess"));
+    assert(wing::is_sess_digest_algo("MD5-sess"));
+    assert(wing::is_sess_digest_algo("SHA-512-256-sess"));
+    assert(!wing::is_sess_digest_algo("SHA-256"));
+    assert(!wing::is_sess_digest_algo("MD5"));
+
+    let ha1_sess_no_cnonce = wing::calculate_digest_ha1("SHA-256-sess", "user", "realm", "pwd", "nonce", "");
+    assert(ha1_sess_no_cnonce.len == 0);
+    let ha1_sess_no_nonce = wing::calculate_digest_ha1("SHA-256-sess", "user", "realm", "pwd", "", "cnonce");
+    assert(ha1_sess_no_nonce.len == 0);
+
+    let ha2_auth = wing::calculate_digest_ha2("SHA-256", "POST", "/api", false, "body data");
+    let ha2_auth_int = wing::calculate_digest_ha2("SHA-256", "POST", "/api", true, "body data");
+    assert(ha2_auth.len == 64 && ha2_auth_int.len == 64);
+    assert(ha2_auth[..] != ha2_auth_int[..]);
+    print("DIGEST_SESS_AND_AUTH_INT: OK");
+
+    // ---- 6. Grammar & State Invariants -------------------------------------
+    let chal_empty_tok, chal_ok = wing::parse_digest_challenge("realm=, nonce=\"123\"");
+    assert(!chal_ok);
+
+    var uninit_stored = wing::DigestChallenge { valid: false, .. };
+    assert(!wing::sync_digest_stale_challenge(uninit_stored, incoming, creds, nc));
+    print("DIGEST_INVARIANTS_AND_GRAMMAR: OK");
 }
 
 // CHECK: DIGEST_URI_DEFENSE: OK
 // CHECK: DIGEST_CNONCE_NC_VALIDATION: OK
 // CHECK: DIGEST_STALE_SYNC: OK
+// CHECK: DIGEST_MANDATORY_FIELD_VALIDATION: OK
+// CHECK: DIGEST_SESS_AND_AUTH_INT: OK
+// CHECK: DIGEST_INVARIANTS_AND_GRAMMAR: OK
