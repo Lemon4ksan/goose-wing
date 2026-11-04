@@ -1105,6 +1105,197 @@ fn test_vector_b_enhancements(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. Client Round 3 Regression & Protocol Conformance Vectors
+// ----------------------------------------------------------------------------
+fn test_client_round3_repro_vectors(t: lit::T&) {
+    t.run("SSRF IPv6 NAT64 (64:ff9b:1::/48) and ORCHIDv2 (2001:20::/28) sweeps") { sub =>
+        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::"), "NAT64 local prefix base");
+        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::1"), "NAT64 local prefix with host");
+        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1:abcd::1"), "NAT64 local prefix with word 4");
+        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::8.8.8.8"), "NAT64 local prefix is blocked even with public IPv4 suffix");
+        sub.assert_false(wing::is_private_or_reserved_ip("64:ff9b::8.8.8.8"), "well-known NAT64 64:ff9b::/96 with public IPv4 is routable");
+
+        sub.assert_true(wing::is_private_or_reserved_ip("2001:20::1"), "ORCHIDv2 word 0x0020");
+        sub.assert_true(wing::is_private_or_reserved_ip("2001:2f::1"), "ORCHIDv2 word 0x002F");
+        sub.assert_false(wing::is_private_or_reserved_ip("2001:30::1"), "2001:30:: is outside ORCHIDv2 /28");
+
+        sub.assert_false(wing::is_private_or_reserved_ip("2002:808::"), "6to4 8.8.0.0 is public not private");
+        sub.assert_true(wing::is_private_or_reserved_ip("2002:a00::"), "6to4 10.0.0.0/8 is private");
+    };
+
+    t.run("RFC 8470 Section 5.2: 425 Too Early retry idempotency and rewind guards") { sub =>
+        var req_post = wing::new_post("https://example.com/api");
+        req_post.body.append("non-idempotent-body");
+        let retry_post = wing::should_retry_request(
+            rfc::STATUS_TOO_EARLY,
+            wing::Error { .. },
+            "POST",
+            req_post,
+            0,
+            false,
+            0,
+            false,
+        );
+        sub.assert_false(retry_post, "POST without idempotency key must not retry on 425");
+
+        var req_get = wing::new_get("https://example.com/api");
+        let retry_get = wing::should_retry_request(
+            rfc::STATUS_TOO_EARLY,
+            wing::Error { .. },
+            "GET",
+            req_get,
+            0,
+            false,
+            0,
+            false,
+        );
+        sub.assert_true(retry_get, "GET is idempotent and retries on 425");
+
+        var req_post_key = wing::new_post("https://example.com/api");
+        req_post_key.body.append("body");
+        wing::set_header(req_post_key, "Idempotency-Key", "uuid-12345");
+        let retry_key = wing::should_retry_request(
+            rfc::STATUS_TOO_EARLY,
+            wing::Error { .. },
+            "POST",
+            req_post_key,
+            0,
+            false,
+            0,
+            false,
+        );
+        sub.assert_true(retry_key, "POST with Idempotency-Key retries on 425");
+
+        // Non-rewindable body must reject 425 retry
+        req_post_key.rewindable = false;
+        let retry_non_rewind = wing::should_retry_request(
+            rfc::STATUS_TOO_EARLY,
+            wing::Error { .. },
+            "POST",
+            req_post_key,
+            0,
+            false,
+            0,
+            false,
+        );
+        sub.assert_false(retry_non_rewind, "non-rewindable body must never retry on 425");
+    };
+
+    t.run("3xx redirect without Location header triggers ERR_MISSING_LOCATION") { sub =>
+        var session = wing::new_session();
+        session.enable_cookie_jar = false;
+        wing::mock_route(session, "GET", "https://redirect.invalid/no-loc", rfc::STATUS_FOUND, "redirecting");
+        var req = wing::new_get("https://redirect.invalid/no-loc");
+        let resp, err = wing::execute_request(session, req);
+        sub.assert_false(wing::ok(err), "missing Location header on 302 returns error");
+        sub.assert_eq(err.code, rfc::STATUS_BAD_REQUEST, "error code is 400 for bad redirect");
+    };
+
+    t.run("W3C Traceparent parent-id non-zero invariant") { sub =>
+        var pipeline = wing::InterceptorPipeline { .. };
+        let add_ok = wing::add_interceptor(
+            pipeline,
+            wing::InterceptorEntry {
+                scope:   wing::InterceptorScope.Application,
+                kind:    wing::InterceptorKind.Traceparent,
+                prefix:  "00",
+                counter: 0,
+            },
+        );
+        sub.assert_true(add_ok, "interceptor registered");
+
+        var req = wing::new_get("http://example.invalid/trace");
+        wing::apply_app_interceptors_request(pipeline, req, 1000);
+        let tp = wing::header(req, "traceparent");
+        sub.assert_true(tp.len > 0, "traceparent header injected");
+        sub.assert_false(core::ends_with(tp, "-0000000000000000-00"), "traceparent must never have all-zero parent id");
+    };
+
+    t.run("HTTP/1.1 Smuggling: Content-Length omitted on chunked Transfer-Encoding") { sub =>
+        var req = wing::new_post("http://example.invalid");
+        req.body.append("chunked-payload");
+        wing::set_header(req, "Transfer-Encoding", "chunked");
+        let u = core::new_url("http://example.invalid");
+        var hdr_out: u8[..4096] = [];
+        wing::serialize_h1_request(req, u, hdr_out);
+        sub.assert_false(
+            core::contains(hdr_out[..], "Content-Length:"),
+            "Content-Length must be omitted when Transfer-Encoding: chunked is present",
+        );
+        sub.assert_true(
+            core::contains(hdr_out[..], "Transfer-Encoding: chunked"),
+            "Transfer-Encoding: chunked header is serialized",
+        );
+    };
+
+    t.run("RateLimiter clock skew monotonicity guard") { sub =>
+        var limiter = wing::new_rate_limiter(10.0, 10);
+        let t0 = limiter.last_update_mono_ns;
+        let ok1 = wing::allow(limiter, t0 + 1000000);
+        sub.assert_true(ok1, "forward monotonic timestamp succeeds");
+        let ok2 = wing::allow(limiter, t0);
+        sub.assert_false(ok2, "backwards monotonic timestamp rejected by guard without token corruption");
+    };
+
+    t.run("HarEntry URL capacity 2048 bytes and status constant") { sub =>
+        var har = wing::HarEntry { .. };
+        sub.assert_eq(har.url.cap, 2048, "HarEntry url capacity is 2048 bytes");
+        sub.assert_eq(har.status, rfc::STATUS_OK as! u16, "HarEntry default status is rfc::STATUS_OK");
+    };
+
+    t.run("Query param preserving long fragment (>512 bytes)") { sub =>
+        var url_buf: u8[..2048] = [];
+        url_buf.append("https://example.com/path#");
+        for i in 600 {
+            url_buf.push('a');
+        }
+        var qitems: wing::QueryItem[..1] = [];
+        var qi = wing::QueryItem { .. };
+        qi.key.append("k");
+        qi.value.append("v");
+        qitems.push(qi);
+        wing::append_query_params_preserving_fragment(url_buf, qitems[..]);
+        sub.assert_true(core::contains(url_buf[..], "?k=v#"), "query param inserted before fragment");
+        sub.assert_gt(url_buf.len, 600, "fragment longer than 512B was preserved completely");
+    };
+
+    t.run("WebSocket subprotocol token match (RFC 6455 Section 4.2.2)") { sub =>
+        sub.assert_true(wing::header_has_token("chat, superchat", "chat"), "matches first requested token");
+        sub.assert_true(wing::header_has_token("chat, superchat", "superchat"), "matches second requested token");
+        sub.assert_false(wing::header_has_token("chat, superchat", "admin"), "rejects unrequested token");
+        sub.assert_false(wing::header_has_token("", "chat"), "empty header rejects any token");
+    };
+
+    t.run("Response set_header invalidates matching wire spans") { sub =>
+        var resp = wing::Response { status_code: rfc::STATUS_OK, .. };
+        resp.raw_headers.append("X-Test: old_val\r\n");
+        var sp = wing::HeaderSpan {
+            name_pos: 0,
+            name_len: 6,
+            val_pos:  8,
+            val_len:  7,
+            ..
+        };
+        resp.spans.push(sp);
+        sub.assert_eq(resp.spans.len, 1, "initial wire span present");
+
+        wing::set_header(resp, "X-Test", "new_val");
+        sub.assert_eq(resp.spans.len, 0, "matching wire span stripped on set_header");
+        sub.assert_bytes_eq(wing::header(resp, "X-Test"), "new_val", "updated header returned");
+    };
+
+    t.run("CHIPS partition key extraction in RequestExecutionContext") { sub =>
+        var ctx = wing::RequestExecutionContext { .. };
+        ctx.top_frame_origin.scheme.append("https");
+        ctx.top_frame_origin.host.append("publisher.example.com");
+        let u = core::new_url("https://ad.tracker.com/track");
+        var part_key: u8[..256] = [];
+        wing::compute_hop_partition_key(ctx, u, part_key);
+        sub.assert_bytes_eq(part_key[..], "https://publisher.example.com", "top frame origin used as partition key");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1131,6 +1322,7 @@ fn main() {
     lit::run_case(runner, "21. Invariant 13 Query Parameter Capacity & Bounds", test_client_query_capacity_rejections);
     lit::run_case(runner, "22. Honest Transport Failures (no fake 200, TLS-not-wired)", test_honest_transport_failures);
     lit::run_case(runner, "23. Vector B Enhancements (ErrorKind, 3-state read_chunk, close drain, timeout)", test_vector_b_enhancements);
+    lit::run_case(runner, "24. Client Round 3 Regression & Protocol Conformance Vectors", test_client_round3_repro_vectors);
 
     let ok = lit::finish(runner);
     assert(ok);
