@@ -1624,17 +1624,17 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
     t.run("TLS-33: CS-09 Forbidden TLS 1.3 Signature Schemes & Certificate Signature Algorithms") { sub =>
         // 1. Forbidden TLS 1.3 signature schemes (RFC 8446 §4.2.3)
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0401), "RSA-PKCS1-SHA256 (0x0401) is forbidden");
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0501), "RSA-PKCS1-SHA384 (0x0501) is forbidden");
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0601), "RSA-PKCS1-SHA512 (0x0601) is forbidden");
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0201), "RSA-PKCS1-SHA1 (0x0201) is forbidden");
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0203), "ECDSA-SHA1 (0x0203) is forbidden");
-        sub.assert_true(wing::is_forbidden_tls13_sig_scheme(0x0101), "RSA-PKCS1-MD5 (0x0101) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0401), "RSA-PKCS1-SHA256 (0x0401) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0501), "RSA-PKCS1-SHA384 (0x0501) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0601), "RSA-PKCS1-SHA512 (0x0601) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0201), "RSA-PKCS1-SHA1 (0x0201) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0203), "ECDSA-SHA1 (0x0203) is forbidden");
+        sub.assert_true(rfc::is_forbidden_tls13_sig_scheme(0x0101), "RSA-PKCS1-MD5 (0x0101) is forbidden");
 
         // Permitted TLS 1.3 schemes
-        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0403), "ECDSA-SECP256R1-SHA256 (0x0403) is permitted");
-        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0804), "RSA-PSS-RSAE-SHA256 (0x0804) is permitted");
-        sub.assert_false(wing::is_forbidden_tls13_sig_scheme(0x0807), "ED25519 (0x0807) is permitted");
+        sub.assert_false(rfc::is_forbidden_tls13_sig_scheme(0x0403), "ECDSA-SECP256R1-SHA256 (0x0403) is permitted");
+        sub.assert_false(rfc::is_forbidden_tls13_sig_scheme(0x0804), "RSA-PSS-RSAE-SHA256 (0x0804) is permitted");
+        sub.assert_false(rfc::is_forbidden_tls13_sig_scheme(0x0807), "ED25519 (0x0807) is permitted");
 
         // 2. verify_signature_scheme_curve_binding enforces rejection of forbidden schemes
         sub.assert_false(wing::verify_signature_scheme_curve_binding(0x0401, rfc::OID_RSA_ENCRYPTION[..]), "reject 0x0401 in curve binding");
@@ -1643,14 +1643,14 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_true(wing::verify_signature_scheme_curve_binding(0x0403, rfc::OID_SECP256R1[..]), "accept 0x0403 in curve binding");
 
         // 3. Forbidden Certificate Signature Algorithm OIDs (MD5 & SHA-1)
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_MD5_RSA[..]), "MD5-RSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_RSA[..]), "SHA1-RSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_ECDSA[..]), "SHA1-ECDSA is forbidden");
-        sub.assert_true(wing::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_DSA[..]), "SHA1-DSA is forbidden");
+        sub.assert_true(rfc::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_MD5_RSA[..]), "MD5-RSA is forbidden");
+        sub.assert_true(rfc::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_RSA[..]), "SHA1-RSA is forbidden");
+        sub.assert_true(rfc::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_ECDSA[..]), "SHA1-ECDSA is forbidden");
+        sub.assert_true(rfc::is_forbidden_cert_signature_algorithm(rfc::OID_SIG_SHA1_DSA[..]), "SHA1-DSA is forbidden");
 
         // Valid SHA-256 RSA OID (1.2.840.113549.1.1.11)
         let oid_sha256_rsa: u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
-        sub.assert_false(wing::is_forbidden_cert_signature_algorithm(oid_sha256_rsa[..]), "SHA256-RSA is permitted");
+        sub.assert_false(rfc::is_forbidden_cert_signature_algorithm(oid_sha256_rsa[..]), "SHA256-RSA is permitted");
 
         // 4. verify_certificate_chain rejects cert signed with forbidden algorithm
         var store = wing::TrustAnchorStore { anchors: [] };
@@ -2607,12 +2607,12 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_eq(rfc::GROUP_SECP384R1_MLKEM1024, 0x11ED, "SecP384r1MLKEM1024 is 0x11ED");
 
         // NamedGroup recognition
-        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
-        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
-        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
-        sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
-        sub.assert_false(internal::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
-        sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
+        sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_SECP256R1_MLKEM768), "0x11EB is PQ group");
+        sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_SECP384R1_MLKEM1024), "0x11ED is PQ group");
+        sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is PQ group");
+        sub.assert_false(rfc::is_post_quantum_group(0x0017), "0x0017 (secp256r1 classical) is not PQ");
+        sub.assert_false(rfc::is_post_quantum_group(0x0018), "0x0018 (secp384r1 classical) is not PQ");
+        sub.assert_false(rfc::is_post_quantum_group(0x001D), "0x001D (x25519 classical) is not PQ");
 
         // Key share wire lengths (RFC 10024 Section 3)
         sub.assert_eq(rfc::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
@@ -3261,14 +3261,14 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
     t.run("TLS-35: RFC 8446 §4.1.2 & Appendix B.4 TLS 1.3 Cipher Suite Restrictions") { sub =>
         // 1. Supported TLS 1.3 suites
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1301), "rfc::TLS_CIPHER_AES_128_GCM_SHA256 supported");
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1302), "rfc::TLS_CIPHER_AES_256_GCM_SHA384 supported");
-        sub.assert_true(wing::is_supported_tls13_cipher_suite(0x1303), "rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 supported");
+        sub.assert_true(rfc::is_supported_tls13_cipher_suite(0x1301), "rfc::TLS_CIPHER_AES_128_GCM_SHA256 supported");
+        sub.assert_true(rfc::is_supported_tls13_cipher_suite(0x1302), "rfc::TLS_CIPHER_AES_256_GCM_SHA384 supported");
+        sub.assert_true(rfc::is_supported_tls13_cipher_suite(0x1303), "rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 supported");
 
         // 2. Legacy TLS 1.2 suites strictly rejected in TLS 1.3
-        sub.assert_false(wing::is_supported_tls13_cipher_suite(0xC02F), "ECDHE-RSA-AES128-GCM-SHA256 forbidden in TLS 1.3");
-        sub.assert_false(wing::is_supported_tls13_cipher_suite(0xC030), "ECDHE-RSA-AES256-GCM-SHA384 forbidden in TLS 1.3");
-        sub.assert_false(wing::is_supported_tls13_cipher_suite(0x009C), "RSA-AES128-GCM forbidden");
+        sub.assert_false(rfc::is_supported_tls13_cipher_suite(0xC02F), "ECDHE-RSA-AES128-GCM-SHA256 forbidden in TLS 1.3");
+        sub.assert_false(rfc::is_supported_tls13_cipher_suite(0xC030), "ECDHE-RSA-AES256-GCM-SHA384 forbidden in TLS 1.3");
+        sub.assert_false(rfc::is_supported_tls13_cipher_suite(0x009C), "RSA-AES128-GCM forbidden");
 
         // 3. Negotiation against client-offered list
         let client_ciphers: u16[2] = [0x1301, 0x1303];
@@ -3887,11 +3887,11 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         sub.assert_eq(rfc::CERT_COMPRESSION_ZSTD, 3, "Zstandard IANA official ID is 3");
         sub.assert_eq(rfc::CERT_COMPRESSION_ZLIB, 1, "zlib algorithm ID is 1");
 
-        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_BROTLI), "Brotli valid");
-        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
-        sub.assert_true(internal::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
-        sub.assert_false(internal::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
-        sub.assert_false(internal::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
+        sub.assert_true(rfc::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_BROTLI), "Brotli valid");
+        sub.assert_true(rfc::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
+        sub.assert_true(rfc::is_valid_compression_algorithm(rfc::CERT_COMPRESSION_ZSTD), "Zstd 3 valid");
+        sub.assert_false(rfc::is_valid_compression_algorithm(0), "Algorithm 0 invalid");
+        sub.assert_false(rfc::is_valid_compression_algorithm(4), "Algorithm 4 invalid");
     };
 
     t.run("2. Brotli CompressedCertificate Serialization and Roundtrip") { sub =>
@@ -4092,6 +4092,31 @@ fn test_remediation_misc(t: lit::T&) {
         sub.assert_true(wing::validate_ech_public_name_bytes("public.cloudflare-ech.com"), "valid DNS public name");
         sub.assert_false(wing::validate_ech_public_name_bytes("trailing.dot."), "trailing dot rejected");
         sub.assert_false(wing::validate_ech_public_name_bytes("192.168.1.1"), "all digits and dots rejected");
+
+        // RFC Appendix D.4 CCS validations
+        sub.assert_true(rfc::is_valid_ccs_payload([0x01]), "valid CCS payload");
+        sub.assert_false(rfc::is_valid_ccs_payload([0x00]), "invalid CCS byte");
+        sub.assert_false(rfc::is_valid_ccs_payload([0x01, 0x01]), "multi-byte CCS rejected");
+        sub.assert_false(rfc::is_valid_ccs_payload([]), "empty CCS rejected");
+
+        // RFC Appendix B.4 Cipher Suite properties
+        sub.assert_eq(rfc::tls13_cipher_suite_key_len(rfc::TLS_CIPHER_AES_128_GCM_SHA256), 16, "aes128 key len 16");
+        sub.assert_eq(rfc::tls13_cipher_suite_key_len(rfc::TLS_CIPHER_AES_256_GCM_SHA384), 32, "aes256 key len 32");
+        sub.assert_eq(
+            rfc::tls13_cipher_suite_key_len(rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256),
+            32,
+            "chacha key len 32",
+        );
+        sub.assert_eq(rfc::tls13_cipher_suite_hash_len(rfc::TLS_CIPHER_AES_128_GCM_SHA256), 32, "aes128 hash len 32");
+        sub.assert_eq(rfc::tls13_cipher_suite_hash_len(rfc::TLS_CIPHER_AES_256_GCM_SHA384), 48, "aes256 hash len 48");
+
+        // RFC 6960 OCSP Status
+        var ocsp_st = wing::OcspResponseStatus.Unknown;
+        sub.assert_true(wing::x509_parse_ocsp_status(rfc::OCSP_STATUS_SUCCESSFUL, ocsp_st), "ocsp successful");
+        sub.assert_true(ocsp_st == wing::OcspResponseStatus.Successful, "ocsp status matches");
+        sub.assert_true(wing::x509_parse_ocsp_status(rfc::OCSP_STATUS_UNAUTHORIZED, ocsp_st), "ocsp unauthorized");
+        sub.assert_true(ocsp_st == wing::OcspResponseStatus.Unauthorized, "ocsp status unauthorized");
+        sub.assert_false(wing::x509_parse_ocsp_status(99, ocsp_st), "unknown ocsp status rejected");
     };
 }
 

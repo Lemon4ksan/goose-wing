@@ -28,7 +28,7 @@ const KS_STAGE_RESUMPTION: u8 = 4;
 //     opaque label<7..255> = "tls13 " + Label;
 //     opaque context<0..255> = Context;
 // } HkdfLabel;
-fn is_all_zero_slice(data: const u8[:]) -> bool {
+inline fn is_all_zero_slice(data: const u8[:]) -> bool {
     for b in data {
         if b != 0 { return false; }
     }
@@ -132,11 +132,11 @@ fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
     var ks = KeySchedule { cipher_suite: cipher_suite };
     if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 || cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         ks.hash_id = HASH_SHA256;
-        ks.hash_len = 32;
+        ks.hash_len = rfc::tls13_cipher_suite_hash_len(cipher_suite);
         return ks, true;
     } else if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         ks.hash_id = HASH_SHA384;
-        ks.hash_len = 48;
+        ks.hash_len = rfc::tls13_cipher_suite_hash_len(cipher_suite);
         return ks, true;
     }
     return ks, false;
@@ -458,18 +458,22 @@ fn ks_compute_finished_verify_data(
 
     var finished_key: u8[48] = [0; 48];
     if !hkdf_expand_label(hash_id, base_key, "finished", [], hash_len, finished_key[..hash_len]) {
+        core::secure_zeroize_48(finished_key);
         return false;
     }
 
     if hash_id == HASH_SHA256 {
         let vd = core::hmac_sha256(finished_key[..32], transcript_hash);
         for i in 32 { out_verify_data[i] = vd[i]; }
+        core::secure_zeroize_48(finished_key);
         return true;
     } else if hash_id == HASH_SHA384 {
         let vd = core::hmac_sha384(finished_key[..48], transcript_hash);
         for i in 48 { out_verify_data[i] = vd[i]; }
+        core::secure_zeroize_48(finished_key);
         return true;
     }
+    core::secure_zeroize_48(finished_key);
     return false;
 }
 
@@ -524,22 +528,26 @@ fn verify_psk_binder(
 
     var finished_key: u8[48] = [0; 48];
     if !hkdf_expand_label(hash_id, binder_key, "finished", [], hash_len, finished_key[..hash_len]) {
+        core::secure_zeroize_48(finished_key);
         return false;
     }
 
     if hash_id == HASH_SHA256 {
         let ch_hash = core::sha256(truncated_ch);
         let calc_binder = core::hmac_sha256(finished_key[..32], ch_hash[..]);
+        core::secure_zeroize_48(finished_key);
         var exp: u8[32] = [0; 32];
         for i in 32 { exp[i] = expected_binder[i]; }
         return core::ct_eq_tag32(calc_binder, exp);
     } else if hash_id == HASH_SHA384 {
         let ch_hash = core::sha384(truncated_ch);
         let calc_binder = core::hmac_sha384(finished_key[..48], ch_hash[..]);
+        core::secure_zeroize_48(finished_key);
         var exp: u8[48] = [0; 48];
         for i in 48 { exp[i] = expected_binder[i]; }
         return core::ct_eq_tag48(calc_binder, exp);
     }
+    core::secure_zeroize_48(finished_key);
     return false;
 }
 
@@ -564,7 +572,7 @@ fn strike_register_init(epoch_window_ms: i64 = 10000, max_age_tolerance_ms: i64 
 }
 
 // Internal k=4 bit hash computation over ticket identifier / nonce.
-fn strike_reg_hash_bit(data: const u8[:], seed: u32) -> u32 {
+inline fn strike_reg_hash_bit(data: const u8[:], seed: u32) -> u32 {
     var h: u32 = 0x811c9dc5 ^ seed;
     for b in data {
         h = (h ^ b) * 16777619;
@@ -646,7 +654,7 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
 }
 
 // Validates ticket age freshness according to RFC 8446 Section 4.2.10 and 4.6.1.
-fn validate_ticket_age(
+inline fn validate_ticket_age(
     obfuscated_ticket_age: u32,
     ticket_age_add:        u32,
     expected_age_ms:       i64,
@@ -673,10 +681,10 @@ fn validate_ticket_age(
 // The PSK extension is the last extension in ClientHello. The binders list starts with a 2-byte
 // vector length field followed by binders_len bytes.
 // Returns the truncated ClientHello slice and true on success, or empty slice and false on error.
-fn truncate_client_hello_for_binder(client_hello: const u8[:], binders_len: u16) -> const u8[:], bool {
-    let binders_overhead = 2 + binders_len;
+inline fn truncate_client_hello_for_binder(client_hello: const u8[:], binders_len: u16) -> const u8[:], bool {
+    let binders_overhead = 2 + (binders_len as i64);
     guard binders_len > 0 else { return client_hello[..0], false; }
-    guard client_hello.len >= binders_overhead else { return client_hello[..0], false; }
+    guard client_hello.len > binders_overhead else { return client_hello[..0], false; }
     let truncated_len = client_hello.len - binders_overhead;
     return client_hello[..truncated_len], true;
 }
@@ -684,7 +692,7 @@ fn truncate_client_hello_for_binder(client_hello: const u8[:], binders_len: u16)
 // Validates that the number of PSK identities equals the number of PSK binders (RFC 8446 §4.2.11).
 // "The identities and binders lists MUST have the same number of elements;
 // if they do not, the server MUST terminate the handshake with an illegal_parameter alert."
-fn validate_psk_identities_and_binders_count(identities_count: i64, binders_count: i64) -> bool {
+inline fn validate_psk_identities_and_binders_count(identities_count: i64, binders_count: i64) -> bool {
     guard identities_count > 0 && binders_count > 0 else { return false; }
     return identities_count == binders_count;
 }

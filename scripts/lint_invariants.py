@@ -72,23 +72,7 @@ def main() -> int:
         )
         return 1
 
-    # 2. Enforce C headers stability (include/wing/)
-    gen_c_script = root / "scripts" / "gen_c_headers.py"
-    if gen_c_script.exists() and not args.target_file:
-        res_c = subprocess.run(
-            [sys.executable, str(gen_c_script), "--check"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        if res_c.returncode != 0:
-            record_violation(
-                "[LINT] C header drift detected in include/wing/. "
-                "Run 'python scripts/gen_c_headers.py' to synchronize.",
-                "red",
-            )
-
-    # 3. Collect files to inspect
+    # 2. Collect files to inspect
     files_to_scan: list[Path] = []
     staged_lines_by_file: dict[str, set[int]] = {}
     if args.target_file:

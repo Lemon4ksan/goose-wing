@@ -78,6 +78,9 @@ fn new_quic_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigr
 
 // RFC 9000 Section 8.1: Address Validation during Connection Initiation - 3x anti-amplification budget
 inline fn path_amplification_limit(rx: u64) -> u64 {
+    if rx > (0xFFFFFFFFFFFFFFFF / 3) {
+        return 0xFFFFFFFFFFFFFFFF;
+    }
     return rx * 3;
 }
 
@@ -85,6 +88,9 @@ inline fn path_amplification_limit(rx: u64) -> u64 {
 fn path_can_send(path: const QuicPath&, bytes_to_send: u64) -> bool {
     guard path.state != PathValidationState.Validated else {
         return true;
+    }
+    guard 0xFFFFFFFFFFFFFFFF - path.bytes_sent >= bytes_to_send else {
+        return false;
     }
     let limit = path_amplification_limit(path.bytes_received);
     return (path.bytes_sent + bytes_to_send) <= limit;

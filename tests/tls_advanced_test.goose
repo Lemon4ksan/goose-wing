@@ -917,10 +917,10 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 
 fn test_post_quantum_hybrid(t: lit::T&) {
     t.run("IANA NamedGroup Recognition") { sub =>
-        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
-        sub.assert_true(internal::is_post_quantum_group(rfc::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
-        sub.assert_false(internal::is_post_quantum_group(0x001D), "0x001D (X25519 classical) is NOT PQ group");
-        sub.assert_false(internal::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
+        sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
+        sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_X25519_KYBER768_DRAFT00), "0x6399 is post-quantum draft group");
+        sub.assert_false(rfc::is_post_quantum_group(0x001D), "0x001D (X25519 classical) is NOT PQ group");
+        sub.assert_false(rfc::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
     };
 
     t.run("Hybrid 1184-Byte Client Key Share Wire Codec") { sub =>

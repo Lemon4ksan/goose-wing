@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// tls/session.goose
 // Live TLS 1.3 Transport Session, Handshake Orchestrator, and Cipher Slot Storage.
 // Conforms to RFC 8446 (TLS 1.3), RFC 6066 (SNI), RFC 7301 (ALPN), and RFC 5280 / RFC 6125 (X.509 PKI).
 namespace wing;
@@ -160,14 +159,14 @@ fn clear_tls13_session_tickets() {
 }
 
 // Returns the ALPN protocol negotiated on a cipher slot (empty if none).
-fn tls_session_alpn(slot_idx: u16) -> const u8[:] {
+inline fn tls_session_alpn(slot_idx: u16) -> const u8[:] {
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return ""; }
     return g_tls_cipher_slots[idx].negotiated_alpn[..];
 }
 
 // Returns true if the TLS 1.3 session was established via PSK resumption.
-fn tls_session_is_resumed(slot_idx: u16) -> bool {
+inline fn tls_session_is_resumed(slot_idx: u16) -> bool {
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
     return g_tls_cipher_slots[idx].resumed;
@@ -205,10 +204,8 @@ fn free_tls_cipher_slot(slot_idx: u16) {
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return; }
     core::secure_zeroize_32(g_tls_cipher_slots[idx].rx_key);
     core::secure_zeroize_32(g_tls_cipher_slots[idx].tx_key);
-    for i in 12 {
-        g_tls_cipher_slots[idx].rx_iv[i] = 0;
-        g_tls_cipher_slots[idx].tx_iv[i] = 0;
-    }
+    core::secure_zeroize_slice(g_tls_cipher_slots[idx].rx_iv[..]);
+    core::secure_zeroize_slice(g_tls_cipher_slots[idx].tx_iv[..]);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].rx_traffic_secret);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].tx_traffic_secret);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].exporter_secret);
@@ -253,7 +250,9 @@ fn tls_send_encrypted_record(
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
     guard g_tls_cipher_slots[idx].in_use else { return false; }
 
+    guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
     var ct_buf: u8[..16640] = [];
+    guard payload.len + 21 <= ct_buf.cap else { return false; }
     while ct_buf.len < payload.len + 21 {
         ct_buf.push(0);
     }
@@ -940,7 +939,7 @@ fn build_tls13_client_hello_payload<B>(
     psk_age_add: u32         = 0,
 ) {
     out.clear();
-    core::append_u16_be(out, 0x0303);
+    core::append_u16_be(out, rfc::TLS_LEGACY_VERSION_1_2);
     out.append(random[..]);
     out.push(32);
     out.append(random[..]);
@@ -1259,13 +1258,6 @@ fn tls_client_process_server_flight(
     return true;
 }
 
-inline fn cipher_suite_key_len(cs: u16) -> u16 {
-    if cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 || cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
-        return 32;
-    }
-    return 16;
-}
-
 fn tls_client_send_finished(
     fd:            i64,
     cipher_suite:  u16,
@@ -1442,7 +1434,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     var client_hs_iv:  u8[12] = [0; 12];
     var server_hs_key: u8[32] = [0; 32];
     var server_hs_iv:  u8[12] = [0; 12];
-    let key_len_u16 = cipher_suite_key_len(cipher_suite);
+    let key_len_u16 = rfc::tls13_cipher_suite_key_len(cipher_suite);
     let klen = key_len_u16 as i64;
     let hlen = ks.hash_len as i64;
     let ok_c_hs = internal::ks_derive_key_iv(
@@ -1664,6 +1656,7 @@ fn tls_seal_and_send_hs(
     hs_msg:       const u8[:],
 ) -> bool {
     var ct_buf: u8[..4096] = [];
+    guard hs_msg.len + 32 <= ct_buf.cap else { return false; }
     while ct_buf.len < hs_msg.len + 32 { ct_buf.push(0); }
     let s_len, _, ok_seal = tls_record_seal_into(
         cipher_suite, key, iv, seq,
@@ -1682,7 +1675,7 @@ fn build_tls13_server_hello_payload<B>(
     psk_resumed:   bool = false,
 ) {
     out.clear();
-    core::append_u16_be(out, 0x0303);
+    core::append_u16_be(out, rfc::TLS_LEGACY_VERSION_1_2);
     out.append(server_random[..]);
     out.push(session_id.len as u8);
     out.append(session_id);
@@ -1920,7 +1913,7 @@ fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16
         return 0xFFFF, false;
     }
 
-    let key_len_u16 = cipher_suite_key_len(cipher_suite);
+    let key_len_u16 = rfc::tls13_cipher_suite_key_len(cipher_suite);
     let klen = key_len_u16 as i64;
     let hlen = ks.hash_len as i64;
     var client_hs_key: u8[32] = [0; 32];

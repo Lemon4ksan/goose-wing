@@ -32,7 +32,7 @@ inline fn calc_dplpmtud_probe_payload_size(target_mtu: u32, overhead_bytes: u32)
     if target_mtu > overhead_bytes {
         return target_mtu - overhead_bytes;
     }
-    return target_mtu;
+    return 0;
 }
 
 const CANDIDATE_PMTU_COUNT: u32 = 4;

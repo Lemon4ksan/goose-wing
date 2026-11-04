@@ -106,7 +106,7 @@ def has_license_header(file_path: Path, content: str, prefix: str) -> bool:
     if not lines:
         return False
 
-    is_licensing_tool = file_path.name in ("licensing.py", "gen_c_headers.py")
+    is_licensing_tool = file_path.name == "licensing.py"
 
     if lines[0].startswith("#!"):
         if len(lines) < 4:

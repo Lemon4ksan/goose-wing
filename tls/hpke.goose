@@ -34,6 +34,9 @@ fn hpke_labeled_extract(
     ikm:      const u8[:],
 ) -> u8[32] {
     var labeled_ikm: u8[..1024] = [];
+    guard 7 + suite_id.len + label.len + ikm.len <= labeled_ikm.cap else {
+        return [0; 32];
+    }
     labeled_ikm.append("HPKE-v1");
     labeled_ikm.append(suite_id);
     labeled_ikm.append(label);
@@ -53,6 +56,9 @@ fn hpke_labeled_expand(
     out:      u8[:],
 ) -> bool {
     var labeled_info: u8[..1024] = [];
+    guard 9 + suite_id.len + label.len + info.len <= labeled_info.cap else {
+        return false;
+    }
     labeled_info.push(((length >> 8) & 0xFF) as u8);
     labeled_info.push((length & 0xFF) as u8);
     labeled_info.append("HPKE-v1");
@@ -77,8 +83,17 @@ fn derive_kem_shared_secret(
         kem_context[i] = enc[i];
         kem_context[32 + i] = pkR[i];
     }
-    let eae_prk = hpke_labeled_extract(kem_suite_id, [], "eae_prk", dh[..]);
-    return hpke_labeled_expand(kem_suite_id, eae_prk[..], "shared_secret", kem_context[..], 32, out_shared_secret[..]);
+    var eae_prk = hpke_labeled_extract(kem_suite_id, [], "eae_prk", dh[..]);
+    let ok = hpke_labeled_expand(
+        kem_suite_id,
+        eae_prk[..],
+        "shared_secret",
+        kem_context[..],
+        32,
+        out_shared_secret[..],
+    );
+    core::secure_zeroize_32(eae_prk);
+    return ok;
 }
 
 // Performs DHKEM Key Encapsulation: computes shared_secret and encapsulated key (enc).
@@ -89,11 +104,16 @@ fn dhkem_x25519_encap(
     out_shared_secret: u8[32]&,
 ) -> bool {
     out_enc = core::x25519_base_scalarmult(ephemeral_sk);
-    let dh = core::x25519_scalarmult(ephemeral_sk, pkR);
+    var dh = core::x25519_scalarmult(ephemeral_sk, pkR);
     var zero: u8[32] = [0; 32];
-    guard !core::ct_eq_bytes(dh[..], zero[..]) else { return false; }
+    guard !core::ct_eq_bytes(dh[..], zero[..]) else {
+        core::secure_zeroize_32(dh);
+        return false;
+    }
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
-    return derive_kem_shared_secret(kem_suite_id[..], dh, out_enc, pkR, out_shared_secret);
+    let ok = derive_kem_shared_secret(kem_suite_id[..], dh, out_enc, pkR, out_shared_secret);
+    core::secure_zeroize_32(dh);
+    return ok;
 }
 
 // Performs DHKEM Key Decapsulation: reconstructs shared_secret from enc using recipient skR.
@@ -103,11 +123,16 @@ fn dhkem_x25519_decap(
     pkR:               const u8[32]&,
     out_shared_secret: u8[32]&,
 ) -> bool {
-    let dh = core::x25519_scalarmult(skR, enc);
+    var dh = core::x25519_scalarmult(skR, enc);
     var zero: u8[32] = [0; 32];
-    guard !core::ct_eq_bytes(dh[..], zero[..]) else { return false; }
+    guard !core::ct_eq_bytes(dh[..], zero[..]) else {
+        core::secure_zeroize_32(dh);
+        return false;
+    }
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];
-    return derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
+    let ok = derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
+    core::secure_zeroize_32(dh);
+    return ok;
 }
 
 // ---- HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------
@@ -150,7 +175,8 @@ fn hpke_setup_base_s(
     core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
     // secret = LabeledExtract(shared_secret, "secret", "")
-    let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+    var secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+    core::secure_zeroize_32(shared_secret);
 
     // Key and Nonce lengths based on AEAD
     var key_len: u16 = 16;
@@ -174,6 +200,7 @@ fn hpke_setup_base_s(
         key_len,
         out_ctx.key[..key_len],
     ) else {
+        core::secure_zeroize_32(secret);
         return false;
     }
     guard hpke_labeled_expand(
@@ -184,6 +211,8 @@ fn hpke_setup_base_s(
         nonce_len,
         out_ctx.base_nonce[..nonce_len],
     ) else {
+        core::secure_zeroize_32(secret);
+        core::secure_zeroize_32(out_ctx.key);
         return false;
     }
     guard hpke_labeled_expand(
@@ -194,9 +223,12 @@ fn hpke_setup_base_s(
         32,
         out_ctx.exporter_secret[..],
     ) else {
+        core::secure_zeroize_32(secret);
+        core::secure_zeroize_32(out_ctx.key);
         return false;
     }
 
+    core::secure_zeroize_32(secret);
     return true;
 }
 
@@ -232,7 +264,8 @@ fn hpke_setup_base_r(
     core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
     core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
 
-    let secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+    var secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+    core::secure_zeroize_32(shared_secret);
 
     var key_len: u16 = 16;
     if aead_id == rfc::HPKE_AEAD_AES_256_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
@@ -255,6 +288,7 @@ fn hpke_setup_base_r(
         key_len,
         out_ctx.key[..key_len],
     ) else {
+        core::secure_zeroize_32(secret);
         return false;
     }
     guard hpke_labeled_expand(
@@ -265,6 +299,8 @@ fn hpke_setup_base_r(
         nonce_len,
         out_ctx.base_nonce[..nonce_len],
     ) else {
+        core::secure_zeroize_32(secret);
+        core::secure_zeroize_32(out_ctx.key);
         return false;
     }
     guard hpke_labeled_expand(
@@ -275,14 +311,17 @@ fn hpke_setup_base_r(
         32,
         out_ctx.exporter_secret[..],
     ) else {
+        core::secure_zeroize_32(secret);
+        core::secure_zeroize_32(out_ctx.key);
         return false;
     }
 
+    core::secure_zeroize_32(secret);
     return true;
 }
 
 // Computes current AEAD nonce: nonce = base_nonce ^ (0^32 || be64(seq)).
-fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
+inline fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
     var nonce: u8[12] = [0; 12];
     for i in 12 { nonce[i] = ctx.base_nonce[i]; }
     for i in 8 {
@@ -311,6 +350,7 @@ fn hpke_seal(
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = ctx.key[i]; }
         let tag, _, ok = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct[ct_start..]);
+        core::secure_zeroize_16(key16);
         guard ok else { return false; }
         for i in 16 { out_ct.push(tag[i]); }
         return true;
@@ -328,7 +368,7 @@ fn hpke_seal(
     return false;
 }
 
-fn hpke_dispatch_open(
+inline fn hpke_dispatch_open(
     aead_id: u16,
     key:     const u8[32]&,
     nonce:   const u8[12]&,
@@ -340,7 +380,9 @@ fn hpke_dispatch_open(
     if aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        return core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
+        let ok = core::aes128_gcm_open(key16, nonce, ct, aad, tag, out_pt);
+        core::secure_zeroize_16(key16);
+        return ok;
     }
     if aead_id == rfc::HPKE_AEAD_AES_256_GCM {
         return core::aes256_gcm_open(key, nonce, ct, aad, tag, out_pt);
@@ -424,7 +466,10 @@ fn hpke_seal_base(
     ) else {
         return false;
     }
-    return hpke_seal(ctx, aad, pt, out_ct);
+    let ok = hpke_seal(ctx, aad, pt, out_ct);
+    core::secure_zeroize_32(ctx.key);
+    core::secure_zeroize_32(ctx.exporter_secret);
+    return ok;
 }
 
 // Single-shot open for ECH recipient.
@@ -449,5 +494,8 @@ fn hpke_open_base(
     ) else {
         return false;
     }
-    return hpke_open(ctx, aad, ct_with_tag, out_pt);
+    let ok = hpke_open(ctx, aad, ct_with_tag, out_pt);
+    core::secure_zeroize_32(ctx.key);
+    core::secure_zeroize_32(ctx.exporter_secret);
+    return ok;
 }

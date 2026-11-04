@@ -256,7 +256,7 @@ fn parse_handshake_header(data: const u8[:]) -> u8, u32, bool {
     guard msg_type != rfc::TLS_HS_MESSAGE_HASH else { return 0, 0, false; }
     let msg_len = ((data[1] as u32) << 16) | ((data[2] as u32) << 8) | data[3];
     guard msg_len <= rfc::MAX_HANDSHAKE_MSG_LEN else { return 0, 0, false; }
-    guard (data.len - 4) as u32 >= msg_len else { return 0, 0, false; }
+    guard (data.len - 4) >= msg_len else { return 0, 0, false; }
     return msg_type, msg_len, true;
 }
 
@@ -289,7 +289,7 @@ fn encode_handshake_header(msg_type: u8, msg_len: u32, out: u8[4]&) -> bool {
 
 // RFC 8446 Section 4.1.3 HelloRetryRequest special random value:
 // CF 21 AD 74 7E 00 7E 27 9F 7F 07 E0 EB 10 DC 03 BE 3D 68 A8 63 FE 95 D6 53 0E 32 30 79 28 8A 2D
-fn is_hello_retry_request(server_random: const u8[32]&) -> bool {
+inline fn is_hello_retry_request(server_random: const u8[32]&) -> bool {
     return core::ct_eq_tag32(server_random, rfc::HRR_RANDOM);
 }
 
@@ -340,12 +340,12 @@ fn build_synthetic_message_hash(
 
 // RFC 8446 Section 4.1.4: Strictly only ONE HelloRetryRequest allowed per handshake.
 // Second HRR MUST trigger fatal unexpected_message alert.
-fn validate_hrr_count(current_hrr_count: u8) -> bool {
+inline fn validate_hrr_count(current_hrr_count: u8) -> bool {
     return current_hrr_count == 0;
 }
 
 // RFC 8446 Section 4.1.4: ServerHello cipher suite MUST strictly match HRR cipher suite.
-fn validate_hrr_cipher_suite(hrr_cipher: u16, sh_cipher: u16) -> bool {
+inline fn validate_hrr_cipher_suite(hrr_cipher: u16, sh_cipher: u16) -> bool {
     return hrr_cipher != 0 && hrr_cipher == sh_cipher;
 }
 
@@ -369,7 +369,7 @@ fn validate_hrr_selected_group(
 // RFC 8446 Section 4.1.3 Downgrade Sentinel values
 
 // Returns true if the last 8 bytes of server_random match DOWNGRD\x01 or DOWNGRD\x00
-fn has_downgrade_sentinel(server_random: const u8[32]&) -> bool {
+inline fn has_downgrade_sentinel(server_random: const u8[32]&) -> bool {
     let last8 = server_random[24..32];
     var is_tls12 = true;
     var is_tls11 = true;
@@ -393,7 +393,7 @@ fn validate_server_random_downgrade(
     if negotiated_version == rfc::TLS_VERSION_1_3 {
         // In TLS 1.3, sentinel MUST NOT be present
         return !sentinel_present;
-    } else if negotiated_version <= 0x0303 {
+    } else if negotiated_version <= rfc::TLS_LEGACY_VERSION_1_2 {
         // In TLS 1.2 or below, if client offered TLS 1.3 and sees sentinel, abort!
         if client_supports_tls13 && sentinel_present {
             return false;
@@ -404,20 +404,12 @@ fn validate_server_random_downgrade(
 
 // ---- Cipher Suite Restrictions (RFC 8446 Section 4.1.2 & Appendix B.4) ------
 
-fn is_supported_tls13_cipher_suite(cs: u16) -> bool {
-    return cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256 ||
-           cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 ||
-           cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 ||
-           cs == rfc::TLS_CIPHER_AES_128_CCM_SHA256 ||
-           cs == rfc::TLS_CIPHER_AES_128_CCM_8_SHA256;
-}
-
 // Validates server-selected cipher suite against client-offered cipher suites and TLS 1.3 rules (RFC 8446 §4.1.3).
 fn validate_server_cipher_suite(
     selected_cs:           u16,
     client_offered_suites: const u16[:],
 ) -> bool {
-    guard is_supported_tls13_cipher_suite(selected_cs) else { return false; }
+    guard rfc::is_supported_tls13_cipher_suite(selected_cs) else { return false; }
     return client_offered_suites.contains(selected_cs);
 }
 
@@ -445,7 +437,7 @@ fn has_consecutive_dots(raw: const u8[:]) -> bool {
     return false;
 }
 
-fn is_sni_digit_or_dot(b: u8) -> bool {
+inline fn is_sni_digit_or_dot(b: u8) -> bool {
     return (b >= '0' && b <= '9') || b == '.';
 }
 
@@ -541,7 +533,7 @@ fn validate_alpn_extension(alpn_ext_bytes: const u8[:]) -> bool {
     return count > 0 && cursor_len(list_cursor) == 0;
 }
 
-fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
+inline fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
     guard proto.len >= 1 && proto.len <= 255 else { return false; }
     for b in proto {
         guard b != 0 else { return false; }
@@ -549,7 +541,7 @@ fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
     return true;
 }
 
-fn is_http11_name(proto: const u8[:]) -> bool {
+inline fn is_http11_name(proto: const u8[:]) -> bool {
     guard proto.len == 8 else { return false; }
     return proto[0] == 'h' && proto[1] == 't' && proto[2] == 't' && proto[3] == 'p' &&
            proto[4] == '/' && proto[5] == '1' && proto[6] == '.' && proto[7] == '1';
@@ -639,7 +631,7 @@ fn parse_tls_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool
     var cookie_len: u16 = 0;
     guard get_u16(cursor, cookie_len) else { return false; }
     guard cookie_len >= 1 else { return false; }
-    guard (cursor_len(cursor) as u16) == cookie_len else { return false; }
+    guard cursor_len(cursor) == (cookie_len as i64) else { return false; }
     guard cookie_len <= out_cookie.cap else { return false; }
     for i in cookie_len {
         out_cookie.push(cursor.buf[i]);
@@ -656,7 +648,7 @@ fn validate_certificate_authorities_extension(ext_bytes: const u8[:]) -> bool {
     var authorities_len: u16 = 0;
     guard get_u16(cursor, authorities_len) else { return false; }
     guard authorities_len >= 3 else { return false; }
-    guard (cursor_len(cursor) as u16) == authorities_len else { return false; }
+    guard cursor_len(cursor) == authorities_len else { return false; }
 
     var auth_cursor = cursor_from(cursor.buf);
     while cursor_len(auth_cursor) > 0 {
@@ -827,8 +819,6 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
     }
 }
 
-const MAX_UNCOMPRESSED_CERT_LEN: u32 = 65536; // 64 KB decompression ceiling (RFC 8879 DoS / bomb defense)
-
 // Parses a CompressedCertificate handshake message payload (RFC 8879 Section 4)
 // Example:
 //   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x28, 0xB5, 0x2F, 0xFD]
@@ -839,16 +829,15 @@ fn parse_compressed_certificate(payload: const u8[:]) -> CompressedCertMsg, bool
     guard payload.len >= 6 else { return msg, false; }
 
     let algo = ((payload[0] as u16) << 8) | payload[1];
-    let is_zlib_or_br = algo == rfc::CERT_COMPRESSION_ZLIB || algo == rfc::CERT_COMPRESSION_BROTLI;
-    guard is_zlib_or_br || algo == rfc::CERT_COMPRESSION_ZSTD else { return msg, false; }
+    guard rfc::is_valid_compression_algorithm(algo) else { return msg, false; }
 
     let ulen = ((payload[2] as u32) << 16) | ((payload[3] as u32) << 8) | payload[4];
     // RFC 8879 Section 4: uncompressed_length MUST NOT be 0 and MUST NOT exceed bounded buffer ceiling
-    guard ulen > 0 && ulen <= MAX_UNCOMPRESSED_CERT_LEN else { return msg, false; }
+    guard ulen > 0 && ulen <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return msg, false; }
 
     let comp_len = (payload.len - 5) as u32;
     // Decompression bomb ratio sanity check (reject expansion ratio > 1024x)
-    guard ulen <= comp_len * 1024 else { return msg, false; }
+    guard rfc::is_within_decompression_ratio(ulen, comp_len) else { return msg, false; }
 
     msg.algorithm = algo;
     msg.uncompressed_len = ulen;
@@ -873,7 +862,7 @@ fn encode_compressed_certificate_payload<B>(
 
 // Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
 fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool {
-    guard uncompressed_len > 0 && uncompressed_len <= MAX_UNCOMPRESSED_CERT_LEN else { return false; }
+    guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     let ok, _ = core::zstd_decompress(compressed_data, out_cert);
     guard ok else { return false; }
     guard (out_cert.len as u32) == uncompressed_len else { return false; }
@@ -884,7 +873,7 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
 fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> bool {
     var comp_msg = internal::CompressedCertificate { .. };
     guard internal::parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
-    guard comp_msg.uncompressed_length <= MAX_UNCOMPRESSED_CERT_LEN else { return false; }
+    guard comp_msg.uncompressed_length <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     return internal::decompress_certificate_payload(
         comp_msg.compressed_certificate_message,
         comp_msg.algorithm,
@@ -1038,68 +1027,6 @@ struct SessionTicketCache {
 }
 
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS 1.3 extensions.
-inline fn is_known_tls_extension(ext_type: u16) -> bool {
-    return match ext_type {
-        rfc::TLS_EXT_SERVER_NAME => true,
-        rfc::TLS_EXT_MAX_FRAGMENT_LENGTH => true,
-        rfc::TLS_EXT_STATUS_REQUEST => true,
-        rfc::TLS_EXT_SUPPORTED_GROUPS => true,
-        rfc::TLS_EXT_SIGNATURE_ALGORITHMS => true,
-        rfc::TLS_EXT_USE_SRTP => true,
-        rfc::TLS_EXT_HEARTBEAT => true,
-        rfc::TLS_EXT_ALPN => true,
-        rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
-        rfc::TLS_EXT_CLIENT_CERTIFICATE_TYPE => true,
-        rfc::TLS_EXT_SERVER_CERTIFICATE_TYPE => true,
-        rfc::TLS_EXT_PADDING => true,
-        rfc::TLS_EXT_COMPRESS_CERTIFICATE => true,
-        rfc::TLS_EXT_PRE_SHARED_KEY => true,
-        rfc::TLS_EXT_EARLY_DATA => true,
-        rfc::TLS_EXT_SUPPORTED_VERSIONS => true,
-        rfc::TLS_EXT_COOKIE => true,
-        rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES => true,
-        rfc::TLS_EXT_CERTIFICATE_AUTHORITIES => true,
-        rfc::TLS_EXT_OID_FILTERS => true,
-        rfc::TLS_EXT_POST_HANDSHAKE_AUTH => true,
-        rfc::TLS_EXT_SIGNATURE_ALGORITHMS_CERT => true,
-        rfc::TLS_EXT_KEY_SHARE => true,
-        rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS => true,
-        _ => false,
-    };
-}
-
-// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in CertificateRequest.
-inline fn is_permitted_cert_req_extension(ext_type: u16) -> bool {
-    return match ext_type {
-        rfc::TLS_EXT_STATUS_REQUEST => true,
-        rfc::TLS_EXT_SIGNATURE_ALGORITHMS => true,
-        rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
-        rfc::TLS_EXT_CERTIFICATE_AUTHORITIES => true,
-        rfc::TLS_EXT_OID_FILTERS => true,
-        rfc::TLS_EXT_SIGNATURE_ALGORITHMS_CERT => true,
-        _ => false,
-    };
-}
-
-// RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
-// not specified for the message in which it appears, it MUST abort with an "illegal_parameter" alert.
-inline fn is_forbidden_cert_req_extension(ext_type: u16) -> bool {
-    if is_permitted_cert_req_extension(ext_type) {
-        return false;
-    }
-    return is_known_tls_extension(ext_type);
-}
-
-// RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
-// not specified for the message in which it appears, it MUST abort with an "illegal_parameter" alert.
-// In Table 2, early_data (42) is the sole extension specified for NewSessionTicket.
-inline fn is_forbidden_nst_extension(ext_type: u16) -> bool {
-    if ext_type == rfc::TLS_EXT_EARLY_DATA {
-        return false;
-    }
-    return is_known_tls_extension(ext_type);
-}
-
 fn read_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
     // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
     guard cursor_len(ext_data) == 4 else { return false; }
@@ -1129,7 +1056,7 @@ fn read_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: Ne
         seen_types.push(ext_type);
 
         // RFC 8446 Section 4.2 Table 2: Extensions not permitted in NST MUST be rejected
-        guard !is_forbidden_nst_extension(ext_type) else { return false; }
+        guard !rfc::is_forbidden_nst_extension(ext_type) else { return false; }
 
         if ext_type == rfc::TLS_EXT_EARLY_DATA {
             guard read_ticket_early_data(ext_data, out) else { return false; }
@@ -1311,7 +1238,7 @@ fn parse_key_update(payload: const u8[:]) -> u8, bool {
 
 // Validates state for KeyUpdate (RFC 8446 Section 4.6.3).
 // KeyUpdate is ONLY permitted post-handshake in Connected state.
-fn validate_key_update_state(state: HsState) -> bool {
+inline fn validate_key_update_state(state: HsState) -> bool {
     return state == HsState.Connected;
 }
 
@@ -1341,7 +1268,7 @@ fn track_received_key_update(
 }
 
 // Resets consecutive KeyUpdate counter when application data record is sent or received.
-fn on_key_update_app_data(tracker: KeyUpdateTracker&) {
+inline fn on_key_update_app_data(tracker: KeyUpdateTracker&) {
     tracker.consecutive_updates = 0;
 }
 
@@ -1413,7 +1340,7 @@ fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: 
 
         // RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
         // not specified for the message, it MUST abort with an "illegal_parameter" alert.
-        guard !is_forbidden_cert_req_extension(ext_type) else { return false; }
+        guard !rfc::is_forbidden_cert_req_extension(ext_type) else { return false; }
 
         if ext_type == rfc::TLS_EXT_SIGNATURE_ALGORITHMS {
             guard read_cert_req_sig_algs(ext_data, out) else { return false; }
@@ -1494,7 +1421,7 @@ struct EarlyDataController {
 
 // RFC 8446 Section 4.2.10 & OpenSSL Bug #31406:
 // Server MUST verify that the negotiated cipher suite exactly matches the PSK cipher suite before accepting early data.
-fn validate_server_early_data_cipher(psk_cipher: u16, negotiated_cipher: u16) -> bool {
+inline fn validate_server_early_data_cipher(psk_cipher: u16, negotiated_cipher: u16) -> bool {
     return psk_cipher != 0 && negotiated_cipher != 0 && psk_cipher == negotiated_cipher;
 }
 
@@ -1526,7 +1453,7 @@ fn early_data_on_encrypted_extensions(
 
 // Returns true if client is permitted to send EndOfEarlyData (RFC 8446 Section 4.2.10).
 // Only permitted when early_data was accepted.
-fn early_data_can_send_eoed(ctrl: const EarlyDataController&) -> bool {
+inline fn early_data_can_send_eoed(ctrl: const EarlyDataController&) -> bool {
     return ctrl.state == EarlyDataState.Accepted;
 }
 
@@ -1542,6 +1469,7 @@ fn early_data_record_sent(ctrl: EarlyDataController&, record_len: u32) -> bool {
 // ---- Mutual TLS (mTLS) Client Authentication (RFC 8446 Section 4.4.2) ---
 
 fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
+    guard sig_algorithms.len <= 64 else { return; }
     core::append_u16_be(out, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
     let algs_bytes_len = (sig_algorithms.len * 2) as u16;
     core::append_u16_be(out, algs_bytes_len + 2);
@@ -1554,11 +1482,12 @@ fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
 // Encodes a CertificateRequest handshake message (RFC 8446 §4.3.2).
 fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: const u16[:]) -> bool {
     guard context.len <= 32 else { return false; }
+    guard sig_algorithms.len <= 64 else { return false; }
+    var ext_buf: u8[..256] = [];
+    encode_cert_req_ext_sig_algs(ext_buf, sig_algorithms);
+
     out.push(context.len as u8);
     out.append(context);
-
-    var ext_buf: u8[..64] = [];
-    encode_cert_req_ext_sig_algs(ext_buf, sig_algorithms);
     core::append_u16_be(out, ext_buf.len as u16);
     out.append(ext_buf[..]);
     return true;
@@ -1568,11 +1497,11 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
 // When cert_der is empty, an empty certificate_list is encoded.
 fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool {
     guard cert_context.len <= 32 else { return false; }
+    guard cert_der.len <= (rfc::MAX_HANDSHAKE_MSG_LEN as i64) - 5 else { return false; }
+
     out.push(cert_context.len as u8);
     out.append(cert_context);
-
     if cert_der.len == 0 {
-        // Empty certificate list (3 zero bytes for u24 length)
         core::append_u24_be(out, 0);
         return true;
     }

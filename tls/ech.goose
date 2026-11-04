@@ -67,11 +67,11 @@ fn read_ech_cipher_suites(contents: ByteCursor&, out: EchConfig&) -> bool {
     return out.cipher_suites.len > 0;
 }
 
-fn is_digit_or_dot(b: u8) -> bool {
+inline fn is_digit_or_dot(b: u8) -> bool {
     return (b >= '0' && b <= '9') || b == '.';
 }
 
-fn is_valid_dns_char(b: u8) -> bool {
+inline fn is_valid_dns_char(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '.';
 }
 
@@ -209,7 +209,7 @@ fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
     return out.configs.len > 0;
 }
 
-fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
+inline fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
     guard cs.kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
     return cs.aead_id == rfc::HPKE_AEAD_AES_128_GCM || cs.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
 }
@@ -241,15 +241,11 @@ fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: Ec
 
 // ---- ClientHelloInner Padding & Encryption ------------------------------
 
-fn calc_ech_padding_len(max_name_len: u8, real_sni_len: i64) -> i64 {
+inline fn calc_ech_padding_len(max_name_len: u8, real_sni_len: i64) -> i64 {
     if real_sni_len == 0 {
         return (max_name_len as i64) + 9;
     }
-    let max_len = max_name_len as i64;
-    if real_sni_len < max_len {
-        return max_len - real_sni_len;
-    }
-    return 0;
+    return max(0, max_name_len - real_sni_len);
 }
 
 // Computes RFC 9849 Section 6.1.3 padding for ClientHelloInner.
@@ -287,6 +283,9 @@ fn build_ech_outer_extension<B>(
     ciphertext: const u8[:],
     out:        B&,
 ) -> bool {
+    let ct_len = ciphertext.len;
+    guard ct_len >= 1 && ct_len <= 65535 else { return false; }
+
     out.push(rfc::ECH_CLIENT_OUTER);
     out.push(((cs.kdf_id >> 8) & 0xFF) as u8);
     out.push((cs.kdf_id & 0xFF) as u8);
@@ -300,7 +299,6 @@ fn build_ech_outer_extension<B>(
     for i in 32 { out.push(enc[i]); }
 
     // payload: opaque<1..2^16-1>
-    let ct_len = ciphertext.len;
     out.push(((ct_len >> 8) & 0xFF) as u8);
     out.push((ct_len & 0xFF) as u8);
     out.append(ciphertext);
@@ -326,11 +324,10 @@ fn seal_ech_inner(
     out_ct:       u8[>..]&,
 ) -> bool {
     var info: u8[..600] = [];
+    guard 8 + config.raw_bytes.len <= info.cap else { return false; }
     info.append("tls ech");
     info.push(0x00);
-    for i in config.raw_bytes.len {
-        info.push(config.raw_bytes[i]);
-    }
+    info.append(config.raw_bytes[..]);
 
     return hpke_seal_base(
         config.public_key,
@@ -461,7 +458,7 @@ fn ech_fsm_on_server_hello(
 // A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
 // NOTE: This implementation is stricter than RFC 9849 §6.1 step 7 (which requires
 // early_data in BOTH Inner and Outer); reconciliation is slated for follow-up.
-fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data: bool) -> bool {
+inline fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data: bool) -> bool {
     if ch_type == EchClientHelloType.Outer && has_early_data {
         return false;
     }

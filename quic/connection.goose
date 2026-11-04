@@ -746,7 +746,10 @@ fn dispatch_inbound_ack_frame(
     } else if space_id == PnSpaceId.Handshake {
         has_sent = conn.handshake_space.has_sent_packets;
     }
-    guard has_sent else { return true; }
+    guard has_sent else {
+        quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+        return false;
+    }
     return quic_conn_on_ack(conn, ack_f, now_us, space_id);
 }
 

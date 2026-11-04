@@ -40,70 +40,70 @@ enum TlsAlert {
     NoApplicationProtocol,
 }
 
-fn tls_alert_to_u8(alert: TlsAlert) -> u8 {
+inline fn tls_alert_to_u8(alert: TlsAlert) -> u8 {
     return match alert {
-        CloseNotify => 0,
-        UnexpectedMessage => 10,
-        BadRecordMac => 20,
-        RecordOverflow => 22,
-        HandshakeFailure => 40,
-        BadCertificate => 42,
-        UnsupportedCertificate => 43,
-        CertificateRevoked => 44,
-        CertificateExpired => 45,
-        CertificateUnknown => 46,
-        IllegalParameter => 47,
-        UnknownCa => 48,
-        AccessDenied => 49,
-        DecodeError => 50,
-        DecryptError => 51,
-        ProtocolVersion => 70,
-        InsufficientSecurity => 71,
-        InternalError => 80,
-        InappropriateFallback => 86,
-        UserCanceled => 90,
-        MissingExtension => 109,
-        UnsupportedExtension => 110,
-        UnrecognizedName => 112,
-        BadCertificateStatusResponse => 113,
-        UnknownPskIdentity => 115,
-        CertificateRequired => 116,
-        NoApplicationProtocol => 120,
+        CloseNotify => rfc::TLS_ALERT_CLOSE_NOTIFY,
+        UnexpectedMessage => rfc::TLS_ALERT_UNEXPECTED_MESSAGE,
+        BadRecordMac => rfc::TLS_ALERT_BAD_RECORD_MAC,
+        RecordOverflow => rfc::TLS_ALERT_RECORD_OVERFLOW,
+        HandshakeFailure => rfc::TLS_ALERT_HANDSHAKE_FAILURE,
+        BadCertificate => rfc::TLS_ALERT_BAD_CERTIFICATE,
+        UnsupportedCertificate => rfc::TLS_ALERT_UNSUPPORTED_CERTIFICATE,
+        CertificateRevoked => rfc::TLS_ALERT_CERTIFICATE_REVOKED,
+        CertificateExpired => rfc::TLS_ALERT_CERTIFICATE_EXPIRED,
+        CertificateUnknown => rfc::TLS_ALERT_CERTIFICATE_UNKNOWN,
+        IllegalParameter => rfc::TLS_ALERT_ILLEGAL_PARAMETER,
+        UnknownCa => rfc::TLS_ALERT_UNKNOWN_CA,
+        AccessDenied => rfc::TLS_ALERT_ACCESS_DENIED,
+        DecodeError => rfc::TLS_ALERT_DECODE_ERROR,
+        DecryptError => rfc::TLS_ALERT_DECRYPT_ERROR,
+        ProtocolVersion => rfc::TLS_ALERT_PROTOCOL_VERSION,
+        InsufficientSecurity => rfc::TLS_ALERT_INSUFFICIENT_SECURITY,
+        InternalError => rfc::TLS_ALERT_INTERNAL_ERROR,
+        InappropriateFallback => rfc::TLS_ALERT_INAPPROPRIATE_FALLBACK,
+        UserCanceled => rfc::TLS_ALERT_USER_CANCELED,
+        MissingExtension => rfc::TLS_ALERT_MISSING_EXTENSION,
+        UnsupportedExtension => rfc::TLS_ALERT_UNSUPPORTED_EXTENSION,
+        UnrecognizedName => rfc::TLS_ALERT_UNRECOGNIZED_NAME,
+        BadCertificateStatusResponse => rfc::TLS_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE,
+        UnknownPskIdentity => rfc::TLS_ALERT_UNKNOWN_PSK_IDENTITY,
+        CertificateRequired => rfc::TLS_ALERT_CERTIFICATE_REQUIRED,
+        NoApplicationProtocol => rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL,
     };
 }
 
-fn u8_to_tls_alert(code: u8) -> TlsAlert, bool {
+inline fn u8_to_tls_alert(code: u8) -> TlsAlert, bool {
     let alert = match code {
-        0 => TlsAlert.CloseNotify,
-        10 => TlsAlert.UnexpectedMessage,
-        20 => TlsAlert.BadRecordMac,
-        22 => TlsAlert.RecordOverflow,
-        40 => TlsAlert.HandshakeFailure,
-        42 => TlsAlert.BadCertificate,
-        43 => TlsAlert.UnsupportedCertificate,
-        44 => TlsAlert.CertificateRevoked,
-        45 => TlsAlert.CertificateExpired,
-        46 => TlsAlert.CertificateUnknown,
-        47 => TlsAlert.IllegalParameter,
-        48 => TlsAlert.UnknownCa,
-        49 => TlsAlert.AccessDenied,
-        50 => TlsAlert.DecodeError,
-        51 => TlsAlert.DecryptError,
-        70 => TlsAlert.ProtocolVersion,
-        71 => TlsAlert.InsufficientSecurity,
-        80 => TlsAlert.InternalError,
-        86 => TlsAlert.InappropriateFallback,
-        90 => TlsAlert.UserCanceled,
-        109 => TlsAlert.MissingExtension,
-        110 => TlsAlert.UnsupportedExtension,
-        112 => TlsAlert.UnrecognizedName,
-        113 => TlsAlert.BadCertificateStatusResponse,
-        115 => TlsAlert.UnknownPskIdentity,
-        116 => TlsAlert.CertificateRequired,
-        120 => TlsAlert.NoApplicationProtocol,
+        rfc::TLS_ALERT_CLOSE_NOTIFY => TlsAlert.CloseNotify,
+        rfc::TLS_ALERT_UNEXPECTED_MESSAGE => TlsAlert.UnexpectedMessage,
+        rfc::TLS_ALERT_BAD_RECORD_MAC => TlsAlert.BadRecordMac,
+        rfc::TLS_ALERT_RECORD_OVERFLOW => TlsAlert.RecordOverflow,
+        rfc::TLS_ALERT_HANDSHAKE_FAILURE => TlsAlert.HandshakeFailure,
+        rfc::TLS_ALERT_BAD_CERTIFICATE => TlsAlert.BadCertificate,
+        rfc::TLS_ALERT_UNSUPPORTED_CERTIFICATE => TlsAlert.UnsupportedCertificate,
+        rfc::TLS_ALERT_CERTIFICATE_REVOKED => TlsAlert.CertificateRevoked,
+        rfc::TLS_ALERT_CERTIFICATE_EXPIRED => TlsAlert.CertificateExpired,
+        rfc::TLS_ALERT_CERTIFICATE_UNKNOWN => TlsAlert.CertificateUnknown,
+        rfc::TLS_ALERT_ILLEGAL_PARAMETER => TlsAlert.IllegalParameter,
+        rfc::TLS_ALERT_UNKNOWN_CA => TlsAlert.UnknownCa,
+        rfc::TLS_ALERT_ACCESS_DENIED => TlsAlert.AccessDenied,
+        rfc::TLS_ALERT_DECODE_ERROR => TlsAlert.DecodeError,
+        rfc::TLS_ALERT_DECRYPT_ERROR => TlsAlert.DecryptError,
+        rfc::TLS_ALERT_PROTOCOL_VERSION => TlsAlert.ProtocolVersion,
+        rfc::TLS_ALERT_INSUFFICIENT_SECURITY => TlsAlert.InsufficientSecurity,
+        rfc::TLS_ALERT_INTERNAL_ERROR => TlsAlert.InternalError,
+        rfc::TLS_ALERT_INAPPROPRIATE_FALLBACK => TlsAlert.InappropriateFallback,
+        rfc::TLS_ALERT_USER_CANCELED => TlsAlert.UserCanceled,
+        rfc::TLS_ALERT_MISSING_EXTENSION => TlsAlert.MissingExtension,
+        rfc::TLS_ALERT_UNSUPPORTED_EXTENSION => TlsAlert.UnsupportedExtension,
+        rfc::TLS_ALERT_UNRECOGNIZED_NAME => TlsAlert.UnrecognizedName,
+        rfc::TLS_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE => TlsAlert.BadCertificateStatusResponse,
+        rfc::TLS_ALERT_UNKNOWN_PSK_IDENTITY => TlsAlert.UnknownPskIdentity,
+        rfc::TLS_ALERT_CERTIFICATE_REQUIRED => TlsAlert.CertificateRequired,
+        rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL => TlsAlert.NoApplicationProtocol,
         _ => TlsAlert.DecodeError,
     };
-    if alert == TlsAlert.DecodeError && code != 50 {
+    if alert == TlsAlert.DecodeError && code != rfc::TLS_ALERT_DECODE_ERROR {
         return TlsAlert.DecodeError, false;
     }
     return alert, true;
@@ -136,7 +136,7 @@ fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
 
     var is_fatal = true;
     if level == 1 {
-        if desc == 0 || desc == 90 {
+        if desc == rfc::TLS_ALERT_CLOSE_NOTIFY || desc == rfc::TLS_ALERT_USER_CANCELED {
             is_fatal = false;
         }
     }
@@ -150,7 +150,7 @@ fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
 // Example:
 //   raw = [0x17, 0x03], cursor = 0
 //   returns: out = 0x17, ok = true, cursor = 1
-fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
+inline fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
     guard cursor >= 0 && cursor < raw.len else {
         return false;
     }
@@ -164,7 +164,7 @@ fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
 // Example:
 //   raw = [0x17, 0x03], cursor = 0
 //   returns: val = 0x17, ok = true, cursor = 1
-fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
+inline fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
     guard cursor >= 0 && cursor < raw.len else {
         return 0, false;
     }
@@ -178,7 +178,7 @@ fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
 // Example:
 //   raw = [0x03, 0x03], cursor = 0
 //   returns: out = 0x0303, ok = true, cursor = 2
-fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
+inline fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
     guard cursor >= 0 && cursor + 2 <= raw.len else {
         return false;
     }
@@ -192,7 +192,7 @@ fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
 // Example:
 //   raw = [0x03, 0x03], cursor = 0
 //   returns: val = 0x0303, ok = true, cursor = 2
-fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
+inline fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
     guard cursor >= 0 && cursor + 2 <= raw.len else {
         return 0, false;
     }
@@ -206,7 +206,7 @@ fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
 // Example:
 //   raw = [0x00, 0x01, 0x02], cursor = 0
 //   returns: out = 0x000102, ok = true, cursor = 3
-fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+inline fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
     guard cursor >= 0 && cursor + 3 <= raw.len else {
         return false;
     }
@@ -220,7 +220,7 @@ fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = [0x00, 0x01, 0x02], cursor = 0
 //   returns: val = 0x000102, ok = true, cursor = 3
-fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
+inline fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
     guard cursor >= 0 && cursor + 3 <= raw.len else {
         return 0, false;
     }
@@ -234,7 +234,7 @@ fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
 // Example:
 //   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
 //   returns: out = 0x01020304, ok = true, cursor = 4
-fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+inline fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
     guard cursor >= 0 && cursor + 4 <= raw.len else {
         return false;
     }
@@ -248,7 +248,7 @@ fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
 //   returns: val = 0x01020304, ok = true, cursor = 4
-fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
+inline fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
     guard cursor >= 0 && cursor + 4 <= raw.len else {
         return 0, false;
     }
@@ -262,7 +262,7 @@ fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
 // Example:
 //   raw = "hello", cursor = 1, count = 3
 //   returns: sub = "ell", ok = true, cursor = 4
-fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
+inline fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
     guard count >= 0 && cursor >= 0 && cursor + count <= raw.len else {
         return raw[..0], false;
     }
@@ -345,7 +345,7 @@ const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
-fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
+inline fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
     var nonce: u8[12] = [0; 12];
     if seq_num == 0xFFFFFFFFFFFFFFFF {
         return nonce, false;
@@ -363,7 +363,7 @@ fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
 }
 
 // Validates and increments 64-bit record sequence number; rejects 2^64 - 1 (RFC 8446 Section 5.3).
-fn increment_record_seq_num(seq_num: u64&) -> bool {
+inline fn increment_record_seq_num(seq_num: u64&) -> bool {
     if seq_num >= 0xFFFFFFFFFFFFFFFF {
         return false;
     }
@@ -420,19 +420,12 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
 }
 
 // Compares two 16-byte authentication tags in constant time (RFC 8446 §5.2).
-fn ct_compare_tag16(a: const u8[16]&, b: const u8[16]&) -> bool {
+inline fn ct_compare_tag16(a: const u8[16]&, b: const u8[16]&) -> bool {
     var diff: u8 = 0;
     for i in 16 {
         diff |= a[i] ^ b[i];
     }
     return diff == 0;
-}
-
-// Clears and zeroizes a byte slice to ensure zero leakage of unauthenticated data.
-fn secure_wipe_buffer(buf: u8[:]) {
-    for i in buf.len {
-        buf[i] = 0;
-    }
 }
 
 // RFC 8446 Section 5.2: Record Payload Protection - Seals plaintext and inner ContentType into a TLSCiphertext record.
@@ -547,17 +540,17 @@ fn tls_record_decrypt_aes128_gcm_into(
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, alert, false;
     }
 
     guard out_plaintext.len >= plain.len else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
     for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    secure_wipe_buffer(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(temp_dec[..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 
@@ -620,12 +613,12 @@ fn tls_record_decrypt_aes128_gcm(
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, alert;
     }
 
     out_plaintext.append(plain);
-    secure_wipe_buffer(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(temp_dec[..ct_len]);
     return inner_type, TlsAlert.CloseNotify;
 }
 
@@ -779,17 +772,17 @@ fn tls_record_decrypt_aes256_gcm_into(
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, alert, false;
     }
 
     guard out_plaintext.len >= plain.len else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
     for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    secure_wipe_buffer(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(temp_dec[..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 
@@ -831,17 +824,17 @@ fn tls_record_decrypt_chacha20_poly1305_into(
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, alert, false;
     }
 
     guard out_plaintext.len >= plain.len else {
-        secure_wipe_buffer(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
     for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    secure_wipe_buffer(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(temp_dec[..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 
@@ -950,7 +943,7 @@ fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_e
 // or change_cipher_spec (0x14) for middlebox compatibility.
 // Length MUST be at least 17 bytes (1 byte inner content type + 16 bytes AEAD tag)
 // and at most rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN (16640 bytes).
-fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u16) -> bool {
+inline fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u16) -> bool {
     guard ciphertext_len >= 17 && (ciphertext_len as i64) <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
         return false;
     }
@@ -998,7 +991,7 @@ fn parse_tls_record_header_at(
         return 0, 0, 0, TlsAlert.DecodeError, false;
     }
 
-    if version != rfc::TLS_LEGACY_VERSION_1_2 && version != 0x0301 {
+    if version != rfc::TLS_LEGACY_VERSION_1_2 && version != rfc::TLS_LEGACY_VERSION_1_0 {
         cursor = saved;
         return content_type, version, length, TlsAlert.ProtocolVersion, false;
     }
@@ -1016,17 +1009,15 @@ fn parse_tls_record_header_at(
 // Validates RFC 8446 Appendix D.4 Middlebox Compatibility Dummy ChangeCipherSpec record.
 // A CCS record MUST contain exactly one single byte of value 0x01.
 // Any other length or content MUST trigger DecodeError or UnexpectedMessage.
-fn validate_change_cipher_spec_record(payload: const u8[:]) -> TlsAlert {
+inline fn validate_change_cipher_spec_record(payload: const u8[:]) -> TlsAlert {
     if payload.len != 1 {
         return TlsAlert.DecodeError;
     }
-    if payload[0] != 0x01 {
+    if !rfc::is_valid_ccs_payload(payload) {
         return TlsAlert.UnexpectedMessage;
     }
     return TlsAlert.CloseNotify;
 }
-
-const MAX_CCS_RECORDS: i32 = 1;
 
 // Validates RFC 8446 Appendix D.4 Middlebox Compatibility ChangeCipherSpec record with state & flood protection:
 // 1. Must occur during active handshake (after ClientHello, before Finished). If not, UnexpectedMessage.
@@ -1041,7 +1032,7 @@ fn check_change_cipher_spec_record(
     guard handshake_active else {
         return TlsAlert.UnexpectedMessage;
     }
-    guard state.ccs_count < MAX_CCS_RECORDS else {
+    guard state.ccs_count < rfc::MAX_CCS_RECORDS else {
         return TlsAlert.UnexpectedMessage;
     }
     let alert = validate_change_cipher_spec_record(payload);
@@ -1061,7 +1052,7 @@ enum QuicEncryptionLevel {
     Application, // ssl_encryption_application (3)
 }
 
-fn quic_encryption_level_to_u8(level: QuicEncryptionLevel) -> u8 {
+inline fn quic_encryption_level_to_u8(level: QuicEncryptionLevel) -> u8 {
     return match level {
         Initial => 0,
         EarlyData => 1,
@@ -1080,7 +1071,7 @@ enum QuicOutputEvent {
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
-fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
+inline fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
     guard pn_offset > 0 else {
         return pkt[..0], false;
     }

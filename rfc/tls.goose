@@ -27,6 +27,15 @@ const TLS_MAX_RECORD_PLAINTEXT_LEN:  i64 = 16384; // RFC 8446 Section 5.1 (2^14)
 const TLS_MAX_INNER_PLAINTEXT_LEN:   i64 = 16624; // RFC 8446 Section 5.4 (16640 - 16)
 const TLS_MAX_RECORD_CIPHERTEXT_LEN: i64 = 16640; // RFC 8446 Section 5.2 (2^14 + 256)
 
+// RFC 8446 Appendix D.4: At most one dummy ChangeCipherSpec record is permitted.
+const MAX_CCS_RECORDS:            i32 = 1;
+const TLS_CCS_DUMMY_PAYLOAD_BYTE: u8  = 0x01;
+
+// RFC 8446 Appendix D.4: Validates whether payload matches dummy ChangeCipherSpec (single byte 0x01).
+inline fn is_valid_ccs_payload(payload: const u8[:]) -> bool {
+    return payload.len == 1 && payload[0] == rfc::TLS_CCS_DUMMY_PAYLOAD_BYTE;
+}
+
 // ---- TLS 1.3 Handshake Message Types (RFC 8446 Section 4) ----------------
 
 const TLS_HS_CLIENT_HELLO:           u8 = 1;
@@ -69,6 +78,66 @@ const TLS_EXT_SIGNATURE_ALGORITHMS_CERT:    u16 = 50;   // RFC 8446 Section 4.2.
 const TLS_EXT_KEY_SHARE:                    u16 = 51;   // RFC 8446 Section 4.2.8
 const TLS_EXT_QUIC_TRANSPORT_PARAMETERS:    u16 = 0x39; // RFC 9001 Section 8.2
 
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS 1.3 extensions.
+inline fn is_known_tls_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        rfc::TLS_EXT_SERVER_NAME => true,
+        rfc::TLS_EXT_MAX_FRAGMENT_LENGTH => true,
+        rfc::TLS_EXT_STATUS_REQUEST => true,
+        rfc::TLS_EXT_SUPPORTED_GROUPS => true,
+        rfc::TLS_EXT_SIGNATURE_ALGORITHMS => true,
+        rfc::TLS_EXT_USE_SRTP => true,
+        rfc::TLS_EXT_HEARTBEAT => true,
+        rfc::TLS_EXT_ALPN => true,
+        rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
+        rfc::TLS_EXT_CLIENT_CERTIFICATE_TYPE => true,
+        rfc::TLS_EXT_SERVER_CERTIFICATE_TYPE => true,
+        rfc::TLS_EXT_PADDING => true,
+        rfc::TLS_EXT_COMPRESS_CERTIFICATE => true,
+        rfc::TLS_EXT_PRE_SHARED_KEY => true,
+        rfc::TLS_EXT_EARLY_DATA => true,
+        rfc::TLS_EXT_SUPPORTED_VERSIONS => true,
+        rfc::TLS_EXT_COOKIE => true,
+        rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES => true,
+        rfc::TLS_EXT_CERTIFICATE_AUTHORITIES => true,
+        rfc::TLS_EXT_OID_FILTERS => true,
+        rfc::TLS_EXT_POST_HANDSHAKE_AUTH => true,
+        rfc::TLS_EXT_SIGNATURE_ALGORITHMS_CERT => true,
+        rfc::TLS_EXT_KEY_SHARE => true,
+        rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in CertificateRequest.
+inline fn is_permitted_cert_req_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        rfc::TLS_EXT_STATUS_REQUEST => true,
+        rfc::TLS_EXT_SIGNATURE_ALGORITHMS => true,
+        rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP => true,
+        rfc::TLS_EXT_CERTIFICATE_AUTHORITIES => true,
+        rfc::TLS_EXT_OID_FILTERS => true,
+        rfc::TLS_EXT_SIGNATURE_ALGORITHMS_CERT => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - Forbidden extension in CertificateRequest
+inline fn is_forbidden_cert_req_extension(ext_type: u16) -> bool {
+    if rfc::is_permitted_cert_req_extension(ext_type) {
+        return false;
+    }
+    return rfc::is_known_tls_extension(ext_type);
+}
+
+// RFC 8446 Section 4.2: Extensions - Forbidden extension in NewSessionTicket
+inline fn is_forbidden_nst_extension(ext_type: u16) -> bool {
+    if ext_type == rfc::TLS_EXT_EARLY_DATA {
+        return false;
+    }
+    return rfc::is_known_tls_extension(ext_type);
+}
+
 // ---- TLS Alert Description Codes (RFC 8446 Section 6.2) ------------------
 
 const TLS_ALERT_CLOSE_NOTIFY:                    u8 = 0;
@@ -107,6 +176,31 @@ const TLS_CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303; // RFC 8446 Appendix B.
 const TLS_CIPHER_AES_128_CCM_SHA256:       u16 = 0x1304; // RFC 8446 Appendix B.4
 const TLS_CIPHER_AES_128_CCM_8_SHA256:     u16 = 0x1305; // RFC 8446 Appendix B.4
 
+// RFC 8446 Appendix B.4: Validates whether a cipher suite is an RFC 8446 TLS 1.3 cipher suite
+inline fn is_supported_tls13_cipher_suite(cs: u16) -> bool {
+    return cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256
+        || cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384
+        || cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256
+        || cs == rfc::TLS_CIPHER_AES_128_CCM_SHA256
+        || cs == rfc::TLS_CIPHER_AES_128_CCM_8_SHA256;
+}
+
+// RFC 8446 Appendix B.4: Returns the AEAD key length in bytes for a TLS 1.3 cipher suite.
+inline fn tls13_cipher_suite_key_len(cs: u16) -> u16 {
+    if cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 || cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        return 32;
+    }
+    return 16;
+}
+
+// RFC 8446 Appendix B.4: Returns the hash digest output length in bytes for a TLS 1.3 cipher suite.
+inline fn tls13_cipher_suite_hash_len(cs: u16) -> u8 {
+    if cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        return 48;
+    }
+    return 32;
+}
+
 const MAX_HANDSHAKE_MSG_LEN:    u32 = 16777215;  // RFC 8446 Section 5.1 (2^24 - 1)
 const MAX_TICKET_LIFETIME_SECS: u32 = 604800;    // RFC 8446 Section 4.6.1 (7 days)
 const MAX_TICKET_LIFETIME_MS:   i64 = 604800000; // RFC 8446 Section 4.6.1 (7 days in ms)
@@ -131,6 +225,25 @@ const CERT_COMPRESSION_ZLIB:   u16 = 1; // RFC 8879 Section 3
 const CERT_COMPRESSION_BROTLI: u16 = 2; // RFC 8879 Section 3
 const CERT_COMPRESSION_ZSTD:   u16 = 3; // RFC 8879 Section 3
 
+// RFC 8879 Section 4: Compressed Certificate Handshake Message - Decompression Ceiling
+const MAX_UNCOMPRESSED_CERT_SIZE: u32 = 65536; // 64 KB decompression ceiling (bomb defense)
+const MAX_CERT_EXPANSION_RATIO:   u32 = 1024;  // RFC 8879 Section 4: 1024x compression ratio ceiling
+
+// Returns true if algorithm is recognized by RFC 8879
+inline fn is_valid_compression_algorithm(algo: u16) -> bool {
+    return algo == rfc::CERT_COMPRESSION_BROTLI
+        || algo == rfc::CERT_COMPRESSION_ZSTD
+        || algo == rfc::CERT_COMPRESSION_ZLIB;
+}
+
+// RFC 8879 Section 4: Decompression Bomb Ratio Guard - Expansion Ceiling
+// Validates uncompressed expansion does not exceed 1024x compression ratio ceiling.
+inline fn is_within_decompression_ratio(uncompressed_len: u32, compressed_len: u32) -> bool {
+    guard compressed_len > 0 else { return false; }
+    guard uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+    return (uncompressed_len >> 10) <= compressed_len;
+}
+
 const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9849 Section 5
 const ECH_VERSION_RFC9849:        u16 = 0xFE0D; // RFC 9849 Section 4
 const ECH_CLIENT_OUTER:           u8  = 0;      // RFC 9849 Section 5
@@ -148,6 +261,19 @@ const GROUP_SECP256R1_MLKEM768:      u16 = 0x11EB; // RFC 10024 Section 7.2
 const GROUP_X25519_MLKEM768:         u16 = 0x11EC; // RFC 10024 Section 7.1
 const GROUP_SECP384R1_MLKEM1024:     u16 = 0x11ED; // RFC 10024 Section 7.3
 const GROUP_X25519_KYBER768_DRAFT00: u16 = 0x6399;
+
+// Returns true if the group identifier is an X25519 hybrid post-quantum group (0x11EC or 0x6399).
+inline fn is_x25519_pq_group(group: u16) -> bool {
+    return group == rfc::GROUP_X25519_MLKEM768 || group == rfc::GROUP_X25519_KYBER768_DRAFT00;
+}
+
+// Checks whether a TLS supported group is a Post-Quantum Hybrid group (RFC 10024 / draft-ietf-tls-hybrid-design)
+inline fn is_post_quantum_group(group: u16) -> bool {
+    return group == rfc::GROUP_SECP256R1_MLKEM768
+        || group == rfc::GROUP_X25519_MLKEM768
+        || group == rfc::GROUP_SECP384R1_MLKEM1024
+        || group == rfc::GROUP_X25519_KYBER768_DRAFT00;
+}
 
 const X25519_KEY_LEN:             i64 = 32;   // RFC 7748 Section 5
 const SECP256R1_POINT_LEN:        i64 = 65;   // RFC 8446 Section 4.2.8.2
@@ -220,3 +346,30 @@ const SIG_SCHEME_RSA_PKCS1_MD5:          u16 = 0x0101;
 const SIG_SCHEME_RSA_PSS_RSAE_SHA256:    u16 = 0x0804; // RFC 8446 Section 4.2.3
 const SIG_SCHEME_RSA_PSS_RSAE_SHA384:    u16 = 0x0805; // RFC 8446 Section 4.2.3
 const SIG_SCHEME_ED25519:                u16 = 0x0807; // RFC 8446 Section 4.2.3
+
+// RFC 8446 Section 4.2.3: Legacy signature schemes prohibited in TLS 1.3
+inline fn is_forbidden_tls13_sig_scheme(sig_scheme: u16) -> bool {
+    return sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA256
+        || sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA384
+        || sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA512
+        || sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA1
+        || sig_scheme == rfc::SIG_SCHEME_ECDSA_SHA1
+        || sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_MD5;
+}
+
+// Prohibited certificate signature algorithm OIDs (MD5 and SHA-1 per RFC 5280 / RFC 8446)
+inline fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
+    return sig_alg_oid == rfc::OID_SIG_MD5_RSA[..]
+        || sig_alg_oid == rfc::OID_SIG_SHA1_RSA[..]
+        || sig_alg_oid == rfc::OID_SIG_SHA1_ECDSA[..]
+        || sig_alg_oid == rfc::OID_SIG_SHA1_DSA[..];
+}
+
+// ---- OCSP Response Status (RFC 6960 Section 4.2.1) ------------------------
+
+const OCSP_STATUS_SUCCESSFUL:     u8 = 0;
+const OCSP_STATUS_MALFORMED_REQ:  u8 = 1;
+const OCSP_STATUS_INTERNAL_ERROR: u8 = 2;
+const OCSP_STATUS_TRY_LATER:      u8 = 3;
+const OCSP_STATUS_SIG_REQUIRED:   u8 = 5;
+const OCSP_STATUS_UNAUTHORIZED:   u8 = 6;

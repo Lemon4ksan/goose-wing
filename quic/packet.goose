@@ -775,7 +775,7 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
     return true;
 }
 
-fn validate_fin_constraints(buf: ReassemblyBuffer&, frag_end: u64) -> bool {
+fn validate_fin_constraints(buf: const ReassemblyBuffer&, frag_end: u64) -> bool {
     if buf.fin_received && buf.final_size != frag_end {
         return false; // QUIC_ERR_FINAL_SIZE
     }
@@ -787,8 +787,6 @@ fn validate_fin_constraints(buf: ReassemblyBuffer&, frag_end: u64) -> bool {
             return false; // QUIC_ERR_FINAL_SIZE: data already buffered beyond declared final size
         }
     }
-    buf.fin_received = true;
-    buf.final_size = frag_end;
     return true;
 }
 
@@ -837,21 +835,37 @@ fn insert_fragment(
     arena_write_payload(buf.arena, base_slab, payload, payload_skip);
 
     guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
+    if is_fin {
+        buf.fin_received = true;
+        buf.final_size = frag_end;
+    }
     return true;
 }
 
 // Reads contiguous in-order stream bytes from buffer head into out.
-fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&) -> u64 {
+// If max_bytes >= 0, limits read to at most max_bytes without discarding unread bytes.
+fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&, max_bytes: i64 = -1) -> u64 {
     guard buf.intervals.len > 0 else { return 0; }
     guard buf.intervals[0].start == buf.consumed_offset else { return 0; }
 
     let avail_end = buf.intervals[0].end;
-    let take_bytes = (avail_end - buf.consumed_offset) as i64;
-    guard take_bytes > 0 && take_bytes <= (buf.arena.chunks.len as i64) else { return 0; }
+    let total_avail = (avail_end - buf.consumed_offset) as i64;
+    guard total_avail > 0 && total_avail <= (buf.arena.chunks.len as i64) else { return 0; }
+
+    var take_bytes = total_avail;
+    if max_bytes >= 0 {
+        take_bytes = min(total_avail, max_bytes);
+    }
+    guard take_bytes > 0 else { return 0; }
 
     out.append(buf.arena.chunks[0..take_bytes]);
-    buf.consumed_offset = avail_end;
-    buf.intervals.remove_at(0);
+    buf.consumed_offset += take_bytes as u64;
+
+    if take_bytes == total_avail {
+        buf.intervals.remove_at(0);
+    } else {
+        buf.intervals[0].start = buf.consumed_offset;
+    }
 
     arena_consume_front(buf.arena, take_bytes);
     return take_bytes as u64;

@@ -29,14 +29,6 @@ inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
     return candidate;
 }
 
-// Returns the effective consumed byte marker for flow control accounting (RFC 9000 §4.1, §4.2).
-inline fn calc_effective_credit_usage(recv: u64, read: u64) -> u64 {
-    if read > recv {
-        return read;
-    }
-    return recv;
-}
-
 // Computes flow control window renewal trigger threshold (RFC 9000 §4.2).
 inline fn calc_window_renewal_threshold(window_size: u64) -> u64 {
     return window_size >> 1;
@@ -203,21 +195,19 @@ fn quic_fc_record_recv_reset(
     guard final_size <= rfc::QUIC_VARINT_MAX && final_size <= s.recv_max_data else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
-
-    var additional_bytes: u64 = 0;
-    if final_size > s.bytes_recv {
-        additional_bytes = final_size - s.bytes_recv;
+    // RFC 9000 §4.5: Final size cannot be smaller than bytes already received on stream
+    guard final_size >= s.bytes_recv else {
+        return false, rfc::QUIC_ERR_FINAL_SIZE;
     }
+
+    let additional_bytes = final_size - s.bytes_recv;
     let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
-    if final_size > s.bytes_recv {
-        s.bytes_recv = final_size;
-        fc.bytes_recv_total = projected_conn_recv;
-    }
-
+    s.bytes_recv = final_size;
+    fc.bytes_recv_total = projected_conn_recv;
     return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
@@ -257,7 +247,7 @@ fn quic_fc_update_stream_send_max_data(s: QuicStream&, new_limit: u64) -> bool {
 // Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_data: u64).
 fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
-    let consumed = calc_effective_credit_usage(fc.bytes_recv_total, fc.bytes_read_total);
+    let consumed = max(fc.bytes_recv_total, fc.bytes_read_total);
     let available = calc_unspent_credit(fc.max_data_local, consumed);
     let threshold = calc_window_renewal_threshold(fc.local_window_size);
 
@@ -280,7 +270,7 @@ fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
 // Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_stream_data: u64).
 fn quic_fc_check_stream_window_update(s: QuicStream&, stream_window_size: u64) -> bool, u64 {
-    let consumed = calc_effective_credit_usage(s.bytes_recv, s.recv_consumed);
+    let consumed = max(s.bytes_recv, s.recv_consumed);
     let available = calc_unspent_credit(s.recv_max_data, consumed);
     let threshold = calc_window_renewal_threshold(stream_window_size);
 

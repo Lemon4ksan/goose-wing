@@ -234,6 +234,7 @@ fn quic_stream_on_recv_stream_frame(
     len:    u64,
     fin:    bool,
 ) -> bool, u64 {
+    guard quic_valid_offset_len(offset, len) else { return false, rfc::QUIC_ERR_FLOW_CONTROL; }
     let end_offset = offset + len;
 
     // RFC 9000 §4.5: Data exceeding established final size MUST trigger FINAL_SIZE_ERROR
@@ -282,12 +283,11 @@ fn quic_stream_on_recv_reset(
     error_code: u64,
     final_size: u64,
 ) -> bool, u64 {
-    // RFC 9000 Section 3.2: RESET_STREAM on DataRecvd / DataRead is ignored
-    if s.recv_state == QuicRecvState.DataRecvd || s.recv_state == QuicRecvState.DataRead {
-        return true, rfc::QUIC_ERR_NO_ERROR;
-    }
-    // RFC 9000 Section 3.2: Receiving RESET_STREAM on terminal closed stream ResetRead MUST NOT reopen stream
-    if s.recv_state == QuicRecvState.ResetRead {
+    // RFC 9000 Section 3.2 & Section 4.5: Final size consistency must be validated even in terminal states
+    let is_terminal = s.recv_state == QuicRecvState.DataRecvd
+        || s.recv_state == QuicRecvState.DataRead
+        || s.recv_state == QuicRecvState.ResetRead;
+    if is_terminal {
         let valid_fs = validate_recv_final_size(
             s.has_recv_final_size,
             s.recv_final_size,
@@ -487,6 +487,10 @@ fn quic_table_get_or_open_stream(
     let existing = quic_table_find_stream(tbl, stream_id);
     if existing >= 0 {
         return existing, true;
+    }
+    // RFC 9000 §3.1: Ingress frames cannot open uncreated locally-initiated streams
+    guard is_peer_initiated_stream(stream_id, tbl.role) else {
+        return 0, false;
     }
     for i in tbl.streams.len {
         if quic_stream_is_terminal(tbl.streams[i], tbl.role) {

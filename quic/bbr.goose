@@ -140,12 +140,12 @@ fn bbr_check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
     }
 
     // 5-second ProbeRTT filter expiration check
-    if bbr.min_rtt_stamp_us != 0 && (now_us - bbr.min_rtt_stamp_us) >= 5000000 {
+    if bbr.min_rtt_stamp_us != 0 && now_us >= bbr.min_rtt_stamp_us && (now_us - bbr.min_rtt_stamp_us) >= 5000000 {
         bbr.mode = BbrMode.ProbeRtt;
         bbr.probe_rtt_done_stamp_us = now_us + 200000; // Hold ProbeRTT for 200 ms
         let bdp = bbr_bdp(bbr.bw_hi_bps, bbr.min_rtt_us);
         let probe_target = (bdp * 50) / 100; // 0.5 BDP floor
-        bbr.cwnd_bytes = if probe_target > BBR_MIN_CWND_BYTES { probe_target } else { BBR_MIN_CWND_BYTES };
+        bbr.cwnd_bytes = max(probe_target, BBR_MIN_CWND_BYTES);
     }
 }
 
@@ -193,9 +193,9 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
     if bbr.mode != BbrMode.ProbeRtt {
         let bdp = bbr_bdp(eff_bw, bbr.min_rtt_us);
         let target_cwnd = (bdp * 2); // 2 * BDP headroom
-        var cwnd = if target_cwnd > BBR_MIN_CWND_BYTES { target_cwnd } else { BBR_MIN_CWND_BYTES };
+        var cwnd = max(target_cwnd, BBR_MIN_CWND_BYTES);
         if bbr.inflight_hi_bytes > 0 && cwnd > bbr.inflight_hi_bytes {
-            cwnd = if bbr.inflight_hi_bytes > BBR_MIN_CWND_BYTES { bbr.inflight_hi_bytes } else { BBR_MIN_CWND_BYTES };
+            cwnd = max(bbr.inflight_hi_bytes, BBR_MIN_CWND_BYTES);
         }
         bbr.cwnd_bytes = cwnd;
     }
@@ -223,7 +223,8 @@ fn bbr_on_congestion_signal(
         bbr.ecn_alpha_scaled = (bbr.ecn_alpha_scaled * 15 + frac) / 16;
         let ecn_cut = (bbr.ecn_alpha_scaled / 2); // alpha / 2
         let mult = if ecn_cut < 1024 { 1024 - ecn_cut } else { 512 };
-        bbr.cwnd_bytes = (bbr.cwnd_bytes * mult) / 1024;
+        let new_cwnd = (bbr.cwnd_bytes * mult) / 1024;
+        bbr.cwnd_bytes = max(new_cwnd, BBR_MIN_CWND_BYTES);
     }
 
     if has_loss_signal {

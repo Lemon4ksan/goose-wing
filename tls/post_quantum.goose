@@ -13,16 +13,8 @@ import core from "..";
 
 // ---- RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
-// Checks whether a TLS supported group is a Post-Quantum Hybrid group
-fn is_post_quantum_group(group: u16) -> bool {
-    return group == rfc::GROUP_SECP256R1_MLKEM768
-        || group == rfc::GROUP_X25519_MLKEM768
-        || group == rfc::GROUP_SECP384R1_MLKEM1024
-        || group == rfc::GROUP_X25519_KYBER768_DRAFT00;
-}
-
 // RFC 10024 Section 3: Key Exchange Messages - Expected Client Key Share Length
-fn pq_hybrid_client_share_len(group: u16) -> i64 {
+inline fn pq_hybrid_client_share_len(group: u16) -> i64 {
     if group == rfc::GROUP_SECP256R1_MLKEM768 {
         return rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN;
     } else if group == rfc::GROUP_X25519_MLKEM768 || group == rfc::GROUP_X25519_KYBER768_DRAFT00 {
@@ -34,7 +26,7 @@ fn pq_hybrid_client_share_len(group: u16) -> i64 {
 }
 
 // RFC 10024 Section 3: Key Exchange Messages - Expected Server Key Share Length
-fn pq_hybrid_server_share_len(group: u16) -> i64 {
+inline fn pq_hybrid_server_share_len(group: u16) -> i64 {
     if group == rfc::GROUP_SECP256R1_MLKEM768 {
         return rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN;
     } else if group == rfc::GROUP_X25519_MLKEM768 || group == rfc::GROUP_X25519_KYBER768_DRAFT00 {
@@ -89,7 +81,7 @@ struct SecP384r1MLKEM1024ServerShare {
 // For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1152B) || Classical (32B).
 // For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1152B).
 fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
-    guard is_post_quantum_group(share.group) else { return; }
+    guard rfc::is_x25519_pq_group(share.group) else { return; }
     core::write_be_u16(out, share.group);
     core::write_be_u16(out, rfc::HYBRID_CLIENT_SHARE_LEN as u16);
     if share.group == rfc::GROUP_X25519_MLKEM768 {
@@ -111,7 +103,7 @@ fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool
     guard raw.len == 4 + rfc::HYBRID_CLIENT_SHARE_LEN else { return false; }
 
     share.group = core::read_be_u16(raw, 0);
-    guard is_post_quantum_group(share.group) else { return false; }
+    guard rfc::is_x25519_pq_group(share.group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::HYBRID_CLIENT_SHARE_LEN else { return false; }
@@ -131,7 +123,7 @@ fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool
 // For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1088B) || Classical (32B).
 // For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1088B).
 fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: B&) {
-    guard is_post_quantum_group(share.group) else { return; }
+    guard rfc::is_x25519_pq_group(share.group) else { return; }
     core::write_be_u16(out, share.group);
     core::write_be_u16(out, rfc::HYBRID_SERVER_SHARE_LEN as u16);
     if share.group == rfc::GROUP_X25519_MLKEM768 {
@@ -153,7 +145,7 @@ fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:
     guard raw.len == 4 + rfc::HYBRID_SERVER_SHARE_LEN else { return false; }
 
     share.group = core::read_be_u16(raw, 0);
-    guard is_post_quantum_group(share.group) else { return false; }
+    guard rfc::is_x25519_pq_group(share.group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::HYBRID_SERVER_SHARE_LEN else { return false; }

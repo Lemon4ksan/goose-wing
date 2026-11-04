@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// tls/x509.goose
 // Deterministic zero-allocation X.509 PKI, canonical ASN.1 DER parser, and RFC 5280 validator.
 // Conforms to RFC 5280, RFC 6125 (SAN matching), RFC 8446 Section 4.4.3 (CertificateVerify).
 namespace wing;
@@ -13,7 +12,7 @@ import .record;
 // ---- ASN.1 Universal Tags and OIDs ---------------------------------------
 
 // id-at-commonName (2.5.4.3): 55 04 03
-fn is_known_extension_oid(oid: const u8[:]) -> bool {
+inline fn is_known_extension_oid(oid: const u8[:]) -> bool {
     if oid == rfc::OID_BASIC_CONSTRAINTS[..] ||
        oid == rfc::OID_KEY_USAGE[..] ||
        oid == rfc::OID_SUBJECT_ALT_NAME[..] ||
@@ -22,30 +21,6 @@ fn is_known_extension_oid(oid: const u8[:]) -> bool {
        oid == rfc::OID_SUBJECT_KEY_IDENTIFIER[..] ||
        oid == rfc::OID_POLICY_CONSTRAINTS[..] ||
        oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
-        return true;
-    }
-    return false;
-}
-
-// Key Usage bitmasks (byte 1)
-// md5WithRSAEncryption (1.2.840.113549.1.1.4): 2A 86 48 86 F7 0D 01 01 04
-fn is_forbidden_tls13_sig_scheme(sig_scheme: u16) -> bool {
-    if sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA256 ||
-       sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA384 ||
-       sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA512 ||
-       sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_SHA1 ||
-       sig_scheme == rfc::SIG_SCHEME_ECDSA_SHA1 ||
-       sig_scheme == rfc::SIG_SCHEME_RSA_PKCS1_MD5 {
-        return true;
-    }
-    return false;
-}
-
-fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
-    if sig_alg_oid == rfc::OID_SIG_MD5_RSA[..] ||
-       sig_alg_oid == rfc::OID_SIG_SHA1_RSA[..] ||
-       sig_alg_oid == rfc::OID_SIG_SHA1_ECDSA[..] ||
-       sig_alg_oid == rfc::OID_SIG_SHA1_DSA[..] {
         return true;
     }
     return false;
@@ -108,7 +83,7 @@ fn get_asn1_element(c: ByteCursor&, expected_tag: u8, out_val: ByteCursor&) -> b
     return tag == expected_tag;
 }
 
-fn asn1_check_der_integer_padding(val: const u8[:]) -> bool {
+inline fn asn1_check_der_integer_padding(val: const u8[:]) -> bool {
     guard val.len >= 1 else { return false; }
     if val[0] == 0x00 && val.len > 1 {
         if (val[1] & 0x80) == 0 { return false; }
@@ -118,7 +93,7 @@ fn asn1_check_der_integer_padding(val: const u8[:]) -> bool {
     return true;
 }
 
-fn asn1_check_serial_number_rules(val: const u8[:]) -> bool {
+inline fn asn1_check_serial_number_rules(val: const u8[:]) -> bool {
     guard (val[0] & 0x80) == 0 else { return false; }
     guard val.len != 1 || val[0] != 0x00 else { return false; }
     let max_len = if val[0] == 0x00 { 21 } else { 20 };
@@ -130,7 +105,7 @@ fn asn1_check_serial_number_rules(val: const u8[:]) -> bool {
 // - No redundant leading zero padding (if first byte is 0x00 and len > 1, next byte must have bit 7 set).
 // - No redundant negative sign extension (if first byte is 0xFF and len > 1, next byte must have bit 7 clear).
 // - For X.509 serial numbers (RFC 5280 §4.1.2.2): MUST be positive (strictly > 0), max 20 octets.
-fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
+inline fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
     guard asn1_check_der_integer_padding(val) else { return false; }
     if is_serial_number {
         return asn1_check_serial_number_rules(val);
@@ -164,7 +139,7 @@ fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
 // - Unused bits octet MUST be in range 0..7.
 // - If the bit string is empty (length == 1, 0 data octets), unused bits MUST be 0.
 // - Trailing unused bits in the last data octet MUST be set to zero.
-fn validate_asn1_bit_string(val: const u8[:]) -> bool {
+inline fn validate_asn1_bit_string(val: const u8[:]) -> bool {
     guard val.len >= 1 else { return false; }
     let unused = val[0];
     guard unused <= 7 else { return false; }
@@ -194,7 +169,7 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
 // Example:
 //   buf = "20261028", off = 2
 //   returns: val = 26, ok = true
-fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
+inline fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
     guard off >= 0 && off <= buf.len - 2 else { return 0, false; }
     let c1 = buf[off];
     let c2 = buf[off + 1];
@@ -204,7 +179,14 @@ fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
 }
 
 // Validates time fields and leap-year days in month per RFC 5280 Section 4.1.2.5.
-fn validate_time_fields(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> bool {
+inline fn validate_time_fields(
+    year:  i64,
+    month: i64,
+    day:   i64,
+    hour:  i64,
+    min:   i64,
+    sec:   i64,
+) -> bool {
     guard month >= 1 && month <= 12 else { return false; }
     let max_days = core::days_in_month(year, month);
     guard max_days > 0 && day >= 1 && day <= max_days else { return false; }
@@ -595,7 +577,7 @@ fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: Parsed
     cert.skid_key_id = make_span(raw_cert, skid_oct.buf);
 }
 
-fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
+inline fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
     return elem_buf.len > 0 && (elem_buf[0] & 0x80) == 0;
 }
 
@@ -652,7 +634,7 @@ fn x509_dispatch_extension(raw_cert: const u8[:], oid: const u8[:], ext_val: Byt
     }
 }
 
-fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
+inline fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
     guard cursor_len(single_ext) > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return false; }
     var maybe_crit = cursor_from(single_ext.buf[..0]);
     if get_asn1_element(single_ext, rfc::ASN1_TAG_BOOLEAN, maybe_crit) {
@@ -805,7 +787,7 @@ fn x509_strip_trailing_dot(s: const u8[:]) -> const u8[:] {
     return s;
 }
 
-fn x509_is_ip_literal(host: const u8[:]) -> bool {
+inline fn x509_is_ip_literal(host: const u8[:]) -> bool {
     var is_ip = true;
     for b in host {
         if (b < '0' || b > '9') && b != '.' {
@@ -922,7 +904,7 @@ fn parse_ipv4_literal(str: const u8[:], out_ip: u8[4]&) -> bool {
     return true;
 }
 
-fn x509_is_dns_label_char(b: u8) -> bool {
+inline fn x509_is_dns_label_char(b: u8) -> bool {
     let is_alnum = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
     return is_alnum || b == '-';
 }
@@ -966,7 +948,7 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
     return true;
 }
 
-fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
+inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
     if tag_num == 2 { // dNSName [2] IA5String
         guard validate_san_dns_name(elem_buf) else { return false; }
         out_type = SanType.Dns;
@@ -1088,7 +1070,7 @@ struct NameConstraintEntry {
 
 // Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
 // In network byte order, once a 0 bit appears, no 1 bit may follow.
-fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
+inline fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
     for bit_idx in 8 {
         let bit = ((b as u32) >> (7 - bit_idx)) & 1;
         if bit == 0 {
@@ -1111,14 +1093,14 @@ fn validate_cidr_mask(mask: const u8[:]) -> bool {
     return true;
 }
 
-fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
+inline fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
     guard cand.len > 0 else { return false; }
     guard cand[0] != '.' else { return false; }
     guard !core::contains_byte(cand, 0) else { return false; }
     return find(cand, "..") < 0;
 }
 
-fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> bool {
+inline fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> bool {
     guard cons.len > 1 else { return false; }
     guard cand.len > cons.len else { return false; }
     return core::ends_with_fold(cand, cons);
@@ -1217,7 +1199,7 @@ fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:
     return eq_ascii_fold(inner_ip, cons_cmp);
 }
 
-fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
+inline fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
     guard host_part.len > 0 else { return false; }
     for b in host_part {
         if (b < '0' || b > '9') && b != '.' {
@@ -1276,7 +1258,7 @@ fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out
     return true;
 }
 
-fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: ByteCursor&) -> bool {
+inline fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: ByteCursor&) -> bool {
     let opt_num = opt_tag & 0x1F;
     if opt_num == 0 { // minimum MUST be zero
         var min_val: i64 = 0;
@@ -1285,7 +1267,7 @@ fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: ByteCursor&) -> bool {
     return false; // maximum (opt_num == 1) or other tags forbidden
 }
 
-fn x509_parse_general_subtree_bounds(subtree: ByteCursor&) -> bool {
+inline fn x509_parse_general_subtree_bounds(subtree: ByteCursor&) -> bool {
     while cursor_len(subtree) > 0 {
         var opt_tag: u8 = 0;
         var opt_elem = cursor_from(subtree.buf[..0]);
@@ -1369,7 +1351,7 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
     return count > 0;
 }
 
-fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {
+inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {
     if nc.san_type == SanType.Dns {
         return match_dns_name_constraint(san.val, nc.val);
     }
@@ -1463,7 +1445,7 @@ fn x509_validate_single_chain_cert(
     guard val_alert == TlsAlert.CloseNotify else { return val_alert; }
 
     let sig_oid = span_slice(raw_cert, cert.sig_alg_oid);
-    if is_forbidden_cert_signature_algorithm(sig_oid) {
+    if rfc::is_forbidden_cert_signature_algorithm(sig_oid) {
         return TlsAlert.UnsupportedCertificate;
     }
 
@@ -1666,28 +1648,28 @@ struct ParsedOcspResponse {
     has_next_update:  bool               = false,
 }
 
-fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
-    if s_val == 0 {
+inline fn x509_parse_ocsp_status(s_val: u8, out_status: OcspResponseStatus&) -> bool {
+    if s_val == rfc::OCSP_STATUS_SUCCESSFUL {
         out_status = OcspResponseStatus.Successful;
         return true;
     }
-    if s_val == 1 {
+    if s_val == rfc::OCSP_STATUS_MALFORMED_REQ {
         out_status = OcspResponseStatus.MalformedRequest;
         return true;
     }
-    if s_val == 2 {
+    if s_val == rfc::OCSP_STATUS_INTERNAL_ERROR {
         out_status = OcspResponseStatus.InternalError;
         return true;
     }
-    if s_val == 3 {
+    if s_val == rfc::OCSP_STATUS_TRY_LATER {
         out_status = OcspResponseStatus.TryLater;
         return true;
     }
-    if s_val == 5 {
+    if s_val == rfc::OCSP_STATUS_SIG_REQUIRED {
         out_status = OcspResponseStatus.SigRequired;
         return true;
     }
-    if s_val == 6 {
+    if s_val == rfc::OCSP_STATUS_UNAUTHORIZED {
         out_status = OcspResponseStatus.Unauthorized;
         return true;
     }
@@ -1918,7 +1900,10 @@ fn validate_ocsp_stapling(
         return TlsAlert.BadCertificateStatusResponse;
     }
 
-    if leaf_cert.issuer_raw.length > 0 && resp.issuer_name_hash.length > 0 {
+    if leaf_cert.issuer_raw.length > 0 {
+        guard resp.issuer_name_hash.length > 0 else {
+            return TlsAlert.BadCertificateStatusResponse;
+        }
         let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
         let issuer_dn = span_slice(leaf_raw, leaf_cert.issuer_raw);
         if ocsp_nh.len == 32 {
@@ -1931,6 +1916,13 @@ fn validate_ocsp_stapling(
             if !core::ct_eq_bytes(ocsp_nh, h[..]) {
                 return TlsAlert.BadCertificateStatusResponse;
             }
+        } else {
+            return TlsAlert.BadCertificateStatusResponse;
+        }
+    } else if resp.issuer_name_hash.length > 0 {
+        let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
+        guard ocsp_nh.len == 32 || ocsp_nh.len == 20 else {
+            return TlsAlert.BadCertificateStatusResponse;
         }
     }
 
@@ -1990,7 +1982,7 @@ fn verify_signature_scheme_curve_binding(
     sig_scheme: u16,
     spki_oid:   const u8[:],
 ) -> bool {
-    if is_forbidden_tls13_sig_scheme(sig_scheme) {
+    if rfc::is_forbidden_tls13_sig_scheme(sig_scheme) {
         return false;
     }
     if sig_scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
@@ -2117,7 +2109,7 @@ fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
     return val, true;
 }
 
-fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
+inline fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
     guard validate_asn1_integer(serial_bytes, true) else { return false; }
     var start: i64 = 0;
     if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
@@ -2135,10 +2127,8 @@ fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
 fn parse_crl_entry_serial(serial_bytes: const u8[:], out: ParsedCrl&) -> bool {
     guard validate_crl_serial_length(serial_bytes) else { return false; }
     let serial_u64, ok_ser = parse_asn1_serial_u64(serial_bytes);
-    if ok_ser {
-        guard crl_insert_serial(out, serial_u64) else { return false; }
-    }
-    return true;
+    guard ok_ser else { return false; }
+    return crl_insert_serial(out, serial_u64);
 }
 
 // Parses a single revoked certificate entry SEQUENCE (RFC 5280 §5.1.2.6).

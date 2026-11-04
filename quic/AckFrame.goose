@@ -281,12 +281,21 @@ fn parse_and_validate_ack(
     var cur_smallest = first_smallest;
     for i in ack.ranges.len {
         let r = ack.ranges[i];
-        guard cur_smallest >= 2 && (cur_smallest - 2) >= r.gap else { return false; } // Arithmetic underflow
+        guard cur_smallest >= 2 && (cur_smallest - 2) >= r.gap else {
+            out_intervals.clear();
+            return false;
+        }
         let cur_largest = cur_smallest - r.gap - 2;
-        guard cur_largest >= r.ack_range else { return false; }
+        guard cur_largest >= r.ack_range else {
+            out_intervals.clear();
+            return false;
+        }
         cur_smallest = cur_largest - r.ack_range;
 
-        guard out_intervals.len < out_intervals.cap else { return false; }
+        guard out_intervals.len < out_intervals.cap else {
+            out_intervals.clear();
+            return false;
+        }
         out_intervals.push(AckInterval { smallest: cur_smallest, largest: cur_largest });
     }
     return true;
