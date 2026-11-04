@@ -624,6 +624,9 @@ fn mock_route(
     status_code: i32,
     body_str:    const u8[:],
 ) -> MockExchange& {
+    guard session.mock_routes.len < session.mock_routes.cap else {
+        return session.mock_routes[session.mock_routes.len - 1];
+    }
     var route = MockExchange {
         status_code: status_code,
         ..
@@ -665,6 +668,7 @@ fn set_mock_protocol(session: Session&, proto: const u8[:]) {
 }
 
 fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
+    guard session.mock_routes.len < session.mock_routes.cap else { return; }
     var route = MockExchange {
         status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
         ..
@@ -680,6 +684,8 @@ fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: 
 }
 
 fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
+    guard session.mock_routes.len < session.mock_routes.cap else { return; }
+    guard sample_events.len <= 2048 else { return; }
     var route = MockExchange {
         status_code: rfc::STATUS_OK,
         ..

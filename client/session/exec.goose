@@ -94,7 +94,7 @@ fn append_query_params_preserving_fragment(
         else if b == '#' && hash_pos < 0 { hash_pos = scan_idx; }
     }
 
-    var hash_buf: u8[..512] = [];
+    var hash_buf: u8[..2048] = [];
     if hash_pos >= 0 {
         hash_buf.append(out[hash_pos..]);
         out.resize(hash_pos);
@@ -287,6 +287,8 @@ fn init_execution_context(
         ctx.rewind_buf.append(req.rewind_buf[..]);
     } else if req.rewindable && req.body.len <= 4096 {
         ctx.rewind_buf.append(req.body[..]);
+    } else if ctx.body.len > 0 {
+        ctx.rewindable = false;
     }
 
     if req.has_initiator {
@@ -323,6 +325,9 @@ fn process_redirect_hop(
         return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "redirects disabled by mode");
     }
     if ctx.redirect_count >= ctx.max_redirects {
+        return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
+    }
+    guard ctx.url_chain.len < ctx.url_chain.cap else {
         return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
     }
 
@@ -612,7 +617,16 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     } else {
         ProxyScheme.Http
     };
-    let p_port = core::effective_port(p_url) as u16;
+    let raw_port = core::effective_port(p_url);
+    let p_port: u16 = if raw_port > 0 {
+        raw_port as u16
+    } else if p_scheme == ProxyScheme.Socks5 {
+        1080
+    } else if p_scheme == ProxyScheme.Https {
+        443
+    } else {
+        80
+    };
     let ps = new_proxy_server(p_scheme, hostname(p_url), p_port);
     return new_single_proxy_chain(ps);
 }
@@ -949,7 +963,11 @@ fn execute_single_hop(
     out_resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     guard ok(hop_err) else { return false, hop_err; }
 
-    // Phase 4.1: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
+    // Phase 4.1: Network Interceptors (Response Hook for initial transaction)
+    let hop_dur_us = session.virtual_clock_us - hop_start_us;
+    apply_network_interceptors_response(session.pipeline, out_resp, ctx.redirect_count, hop_dur_us);
+
+    // Phase 4.2: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
     let did_retry, auth_err = handle_401_auth_retry(
         session,
         ctx,
@@ -959,10 +977,6 @@ fn execute_single_hop(
         out_resp,
     );
     guard ok(auth_err) else { return false, auth_err; }
-
-    // Phase 4.2: Network Interceptors (Response Hook)
-    let hop_dur_us = session.virtual_clock_us - hop_start_us;
-    apply_network_interceptors_response(session.pipeline, out_resp, ctx.redirect_count, hop_dur_us);
 
     ctx.body_consumed = true;
     if session.enable_cookie_jar {
@@ -986,7 +1000,7 @@ fn execute_single_hop(
 
     // Phase 5: 3xx Detection & ComputeRedirectInfo
     let loc_hdr = header(out_resp, "Location");
-    let is_red = is_redirect(out_resp) && loc_hdr.len > 0;
+    let is_red = is_redirect(out_resp);
 
     if is_red {
         session.pipeline.metrics.redirect_hops += 1;
@@ -1119,12 +1133,13 @@ inline fn should_retry_request(
     max_retries: i32,
     retry_5xx:   bool,
 ) -> bool {
+    let can_retry = (is_idempotent_method(method) || has_idempotency_key(req)) && (req.body.len == 0 || req.rewindable);
+    guard can_retry else { return false; }
+
     if status_code == rfc::STATUS_TOO_EARLY {
         return attempts < 3;
     }
     guard has_retry && attempts < max_retries else { return false; }
-    let can_retry = is_idempotent_method(method) || has_idempotency_key(req);
-    guard can_retry else { return false; }
     let retryable = !ok(err) || (retry_5xx && status_code >= rfc::STATUS_INTERNAL_SERVER_ERROR && status_code <= 599);
     return retryable;
 }

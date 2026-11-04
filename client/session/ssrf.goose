@@ -207,11 +207,16 @@ fn is_private_6to4_prefix(eff_ip: const u8[:]) -> bool {
     }
     guard colon_idx > 0 && colon_idx + 1 < rem.len else { return false; }
     let rem2 = rem[(colon_idx + 1)..];
-    let colon_idx2 = core::index_of_byte(rem2, ':');
-    let p2 = if colon_idx2 > 0 { rem2[..colon_idx2] } else { rem2 };
-    let hex_val2 = parse_hex_u16(p2);
-    guard hex_val2 >= 0 else { return true; }
-    let o2 = (hex_val2 >> 8) & 0xFF;
+    var o2: i32 = 0;
+    if rem2.len > 0 && rem2[0] == ':' {
+        o2 = 0;
+    } else {
+        let colon_idx2 = core::index_of_byte(rem2, ':');
+        let p2 = if colon_idx2 > 0 { rem2[..colon_idx2] } else { rem2 };
+        let hex_val2 = parse_hex_u16(p2);
+        guard hex_val2 >= 0 else { return true; }
+        o2 = (hex_val2 >> 8) & 0xFF;
+    }
     return (o0 == 192 && o1 == 0 && (o2 == 0 || o2 == 2)) ||
            (o0 == 198 && o1 == 51 && o2 == 100) ||
            (o0 == 203 && o1 == 0 && o2 == 113) ||
@@ -257,9 +262,14 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
 
-    // NAT64 well-known prefix 64:ff9b::/96 and local prefix 64:ff9b:1::/48 (RFC 6052 & RFC 8215)
-    if starts_with(eff_ip, "64:ff9b::") || starts_with(eff_ip, "64:ff9b:1::") {
-        let suffix = if starts_with(eff_ip, "64:ff9b::") { eff_ip[9..] } else { eff_ip[11..] };
+    // NAT64 local-use prefix 64:ff9b:1::/48 is non-routable on the public Internet (RFC 8215)
+    if starts_with(eff_ip, "64:ff9b:1:") || eff_ip == "64:ff9b:1::" {
+        return true;
+    }
+
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052)
+    if starts_with(eff_ip, "64:ff9b::") {
+        let suffix = eff_ip[9..];
         if suffix.len == 0 { return true; } // maps to 0.0.0.0
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
@@ -269,10 +279,24 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return true;
     }
 
-    // Benchmarking (RFC 5180), ORCHIDv2 (RFC 7343), Documentation (RFC 3849),
-    // Teredo (RFC 4380), Discard-Only (RFC 6666)
-    if starts_with(eff_ip, "2001:2:") || starts_with(eff_ip, "2001:20:") ||
-       starts_with(eff_ip, "2001:db8:") || starts_with(eff_ip, "2001:0:") ||
+    // Benchmarking (RFC 5180: 2001:2::/48)
+    if starts_with(eff_ip, "2001:2::") || starts_with(eff_ip, "2001:2:0:") {
+        return true;
+    }
+
+    // ORCHIDv2 (RFC 7343: 2001:20::/28 -> word 1 in 0x0020..0x002F)
+    if starts_with(eff_ip, "2001:2") && eff_ip.len >= 8 && eff_ip[7] == ':' {
+        let nibble = eff_ip[6];
+        let is_hex = (nibble >= '0' && nibble <= '9') ||
+            (nibble >= 'a' && nibble <= 'f') ||
+            (nibble >= 'A' && nibble <= 'F');
+        if is_hex {
+            return true;
+        }
+    }
+
+    // Documentation (RFC 3849), Teredo (RFC 4380), Discard-Only (RFC 6666)
+    if starts_with(eff_ip, "2001:db8:") || starts_with(eff_ip, "2001:0:") ||
        starts_with(eff_ip, "2001::") || starts_with(eff_ip, "100::") {
         return true;
     }

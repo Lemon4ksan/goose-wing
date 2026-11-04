@@ -274,10 +274,15 @@ fn ws_perform_handshake(
     let proto = header(resp, "Sec-WebSocket-Protocol");
     if proto.len > 0 {
         let req_proto = header(req, "Sec-WebSocket-Protocol");
-        if req_proto.len > 0 {
-            let n = if proto.len > ws_sess.subprotocol.cap { ws_sess.subprotocol.cap } else { proto.len };
-            ws_sess.subprotocol.append(proto[..n]);
+        if req_proto.len == 0 || !header_has_token(req_proto, proto) {
+            return new_websocket_session(true), resp, make_error(
+                rfc::STATUS_BAD_REQUEST,
+                "websocket_handshake",
+                "server returned Sec-WebSocket-Protocol not offered by client",
+            );
         }
+        let n = if proto.len > ws_sess.subprotocol.cap { ws_sess.subprotocol.cap } else { proto.len };
+        ws_sess.subprotocol.append(proto[..n]);
     }
 
     return ws_sess, resp, Error { .. };
@@ -439,7 +444,11 @@ fn connect_udp(
     var req_headers: HeaderItem[..16] = [];
     build_masque_connect_request(tunnel, req_headers, req_path);
 
-    var full_url: u8[..512] = [];
+    var full_url: u8[..2048] = [];
+    guard proxy_url.len + req_path.len <= full_url.cap else {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "masque", "proxy_url exceeds capacity");
+    }
     full_url.append(proxy_url);
     if full_url.len > 0 && full_url[full_url.len - 1] == '/' {
         full_url.pop();
@@ -485,7 +494,11 @@ fn connect_ip(
     var req_headers: HeaderItem[..16] = [];
     build_masque_connect_request(tunnel, req_headers, req_path);
 
-    var full_url: u8[..512] = [];
+    var full_url: u8[..2048] = [];
+    guard proxy_url.len + req_path.len <= full_url.cap else {
+        tunnel.state = MasqueTunnelState.Failed;
+        return tunnel, Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "masque", "proxy_url exceeds capacity");
+    }
     full_url.append(proxy_url);
     if full_url.len > 0 && full_url[full_url.len - 1] == '/' {
         full_url.pop();

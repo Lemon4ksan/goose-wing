@@ -263,7 +263,7 @@ client/client.goose 590 wing::deny_port 0.00 0 0.85
 client/client.goose 596 wing::set_clock_us 0.00 0 0.85
 client/client.goose 600 wing::trust_location_host 0.00 0 0.85
 client/client.goose 609 wing::is_trusted_location_host 0.00 0 0.85
-client/client.goose 615 wing::mock_route 0.00 0 0.85
+client/client.goose 620 wing::mock_route 90.00 0 0.85
 client/client.goose 632 wing::add_mock_set_cookie 90.00 0 0.85
 client/client.goose 638 wing::add_mock_header 90.00 0 0.85
 client/client.goose 644 wing::add_mock_resolved_ip 90.00 0 0.85
@@ -298,7 +298,7 @@ client/interceptor.goose 457 wing::apply_network_interceptors_response 45.03 0 0
 client/policy.goose 18 wing::new_backoff 0.00 0 0.85
 client/policy.goose 27 wing::delay 30.17 0 0.85
 client/policy.goose 50 wing::new_rate_limiter 0.01 0 0.85
-client/policy.goose 61 wing::allow 105.01 0 0.85
+client/policy.goose 66 wing::allow 180.00 0 0.85
 client/policy.goose 76 wing::allow 0.00 0 0.85
 client/profile.goose 19 wing::profile_user_agent 0.00 0 0.85
 client/profile.goose 28 wing::profile_name 0.00 0 0.85
@@ -3357,7 +3357,7 @@ client/session/exec.goose 140 wing::finalize_success_response 0.03 0 0.85
 client/session/exec.goose 152 wing::apply_redirect_transition 0.12 0 0.85
 client/session/exec.goose 192 wing::merge_session_and_request_headers 0.08 0 0.85
 client/session/exec.goose 213 wing::init_execution_context 0.27 0 0.85
-client/session/exec.goose 271 wing::process_redirect_hop 45.08 0 0.85
+client/session/exec.goose 314 wing::process_redirect_hop 65.00 0 0.85
 client/session/exec.goose 322 wing::append_available_dict_header 405.66 0 0.85
 client/session/exec.goose 350 wing::resolve_mock_protocol_racing 0.49 0 0.85
 client/session/exec.goose 387 wing::ingest_compression_dict_header 0.05 0 0.85
@@ -3382,7 +3382,7 @@ client/session/h1_exchange.goose 127 wing::parse_h1_status_line 165.12 0 0.85
 client/session/h1_exchange.goose 154 wing::parse_h1_header_block 840.34 0 0.85
 client/session/h1_exchange.goose 207 wing::parse_response_headers 135.01 0 0.85
 client/session/h1_exchange.goose 221 wing::pump_h1_fixed_body 45.22 0 0.85
-client/session/h1_exchange.goose 241 wing::feed_chunk_slice 30.17 0 0.85
+client/session/h1_exchange.goose 298 wing::feed_chunk_slice 275.00 0 0.85
 client/session/h1_exchange.goose 264 wing::pump_h1_chunked_body 0.17 0 0.85
 client/session/h1_exchange.goose 288 wing::send_h1_request 0.05 0 0.85
 client/session/h1_exchange.goose 305 wing::read_response_headers 0.03 0 0.85
@@ -3439,8 +3439,8 @@ client/session/verbs.goose 319 wing::sse_perform_connect 0.03 0 0.85
 client/session/verbs.goose 352 wing::sse 0.00 0 0.85
 client/session/verbs.goose 360 wing::sse 0.00 0 0.85
 client/session/verbs.goose 369 wing::sse_reconnect 0.08 0 0.85
-client/session/verbs.goose 405 wing::connect_udp 90.27 0 0.85
-client/session/verbs.goose 454 wing::connect_ip 90.27 0 0.85
+client/session/verbs.goose 432 wing::connect_udp 106.00 0 0.85
+client/session/verbs.goose 484 wing::connect_ip 106.00 0 0.85
 core/bytes/case.goose 10 core::is_ascii_upper 0.00 0 0.85
 core/bytes/case.goose 15 core::is_ascii_lower 0.00 0 0.85
 core/bytes/case.goose 20 core::is_ascii_alpha 0.03 0 0.85

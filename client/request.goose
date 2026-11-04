@@ -127,6 +127,14 @@ fn new_query(url: const u8[:], body: const u8[:], content_type: const u8[:]) -> 
     var req = new_request("QUERY", url);
     req.body.append(body);
     set_header(req, "Content-Type", content_type);
+    req.rewind_buf.clear();
+    if body.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(body);
+        req.rewindable = true;
+    } else {
+        req.rewindable = false;
+    }
+    req.body_consumed = false;
     return req;
 }
 

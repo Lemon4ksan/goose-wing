@@ -193,9 +193,28 @@ fn update_response_presence(res: Response&, name: const u8[:]) {
     }
 }
 
+fn remove_matching_spans(spans: HeaderSpan[..32]&, raw_headers: const u8[:], name: const u8[:]) {
+    var write_idx = 0;
+    for read_idx in spans.len {
+        let n = spans[read_idx].name_slice(raw_headers);
+        if !eq_ascii_fold(n, name) {
+            if write_idx != read_idx {
+                spans[write_idx] = copy(spans[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    while spans.len > write_idx {
+        spans.pop();
+    }
+}
+
 fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
     update_response_presence(res, name);
+    if res.spans.len > 0 && res.raw_headers.len > 0 {
+        remove_matching_spans(res.spans, res.raw_headers[..], name);
+    }
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {

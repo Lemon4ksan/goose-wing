@@ -84,9 +84,9 @@ struct InterceptorPipeline {
     active_mask:         u64            = 0,
     bearer_token:        u8[..4096]     = [],
     app_header_name:     u8[..64]       = [],
-    app_header_val:      u8[..128]      = [],
+    app_header_val:      u8[..4096]     = [],
     net_header_name:     u8[..64]       = [],
-    net_header_val:      u8[..128]      = [],
+    net_header_val:      u8[..4096]     = [],
     req_id_prefix:       u8[..32]       = [],
     req_id_counter:      u64            = 1,
     traceparent_flag:    u8[..2]        = [],
@@ -119,6 +119,8 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             Header => {
+                guard entry.header_name.len <= pipeline.app_header_name.cap else { return false; }
+                guard entry.header_val.len <= pipeline.app_header_val.cap else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
                 pipeline.app_header_name.clear();
                 pipeline.app_header_name.append(entry.header_name[..]);
@@ -134,10 +136,11 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             Traceparent => {
+                guard entry.prefix.len <= pipeline.traceparent_flag.cap else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
                 pipeline.traceparent_flag.clear();
                 pipeline.traceparent_flag.append(entry.prefix[..]);
-                pipeline.traceparent_counter = entry.counter;
+                pipeline.traceparent_counter = if entry.counter > 0 { entry.counter } else { 1 };
                 return true;
             },
             RetryPolicy => {
@@ -157,6 +160,8 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             Header => {
+                guard entry.header_name.len <= pipeline.net_header_name.cap else { return false; }
+                guard entry.header_val.len <= pipeline.net_header_val.cap else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
                 pipeline.net_header_name.clear();
                 pipeline.net_header_name.append(entry.header_name[..]);
@@ -204,6 +209,10 @@ fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
     match scope {
         Application => {
+            guard name.len <= pipeline.app_header_name.cap
+                && val.len <= pipeline.app_header_val.cap else {
+                return false;
+            }
             pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
             pipeline.app_header_name.clear();
             pipeline.app_header_name.append(name);
@@ -212,6 +221,10 @@ fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: con
             return true;
         },
         Network => {
+            guard name.len <= pipeline.net_header_name.cap
+                && val.len <= pipeline.net_header_val.cap else {
+                return false;
+            }
             pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
             pipeline.net_header_name.clear();
             pipeline.net_header_name.append(name);
@@ -224,6 +237,7 @@ fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: con
 }
 
 fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
+    guard prefix.len <= pipeline.req_id_prefix.cap else { return false; }
     pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
     pipeline.req_id_prefix.clear();
     pipeline.req_id_prefix.append(prefix);
@@ -232,6 +246,7 @@ fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") 
 }
 
 fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
+    guard sample_flag.len <= pipeline.traceparent_flag.cap else { return false; }
     pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
     pipeline.traceparent_flag.clear();
     pipeline.traceparent_flag.append(sample_flag);

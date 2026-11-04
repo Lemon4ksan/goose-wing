@@ -15,7 +15,7 @@ import client.session.ssrf;
 struct MockExchange {
     pattern_url:           u8[..256]        = [],
     method:                u8[..16]         = [],
-    status_code:           i32              = 200,
+    status_code:           i32              = rfc::STATUS_OK,
     headers:               HeaderItem[..16] = [],
     set_cookies:           u8[..256][..8]   = [],
     resolved_ips:          u8[..64][..4]    = [],
@@ -76,7 +76,7 @@ fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
 }
 
 fn target_has_scheme(target: const u8[:]) -> bool {
-    guard target.len >= 8 else { return false; }
+    guard target.len >= 4 else { return false; }
     return find(target, "://") >= 0;
 }
 
@@ -114,6 +114,7 @@ fn build_mock_response(
     }
     resp.body.append(route.body[..]);
     for &sent_h in sent_headers {
+        guard resp.sent_headers.len < resp.sent_headers.cap else { break; }
         resp.sent_headers.push(copy(sent_h));
     }
     return resp;

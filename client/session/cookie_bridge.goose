@@ -52,6 +52,40 @@ fn compute_hop_samesite_context(
     };
 }
 
+// Derives the top-level site partition key for CHIPS cookies (RFC 6265bis).
+//
+// Example:
+//   ctx.top_frame_origin = "https://example.com"
+//   returns: out = "https://example.com"
+fn compute_hop_partition_key<B>(
+    ctx:         const RequestExecutionContext&,
+    current_url: const core::Url&,
+    out:         B&,
+) {
+    out.clear();
+    if ctx.top_frame_origin.host.len > 0 {
+        let sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { "https" };
+        out.append(sch);
+        out.append("://");
+        out.append(ctx.top_frame_origin.host[..]);
+    } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
+        let sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { "https" };
+        out.append(sch);
+        out.append("://");
+        out.append(ctx.site_for_cookies.registrable_domain[..]);
+    } else if ctx.is_main_frame {
+        out.append(current_url.scheme());
+        out.append("://");
+        var etld: u8[..128] = [];
+        core::extract_etld_plus_one(current_url.hostname(), etld);
+        if etld.len > 0 {
+            out.append(etld[..]);
+        } else {
+            out.append(current_url.hostname());
+        }
+    }
+}
+
 // Matches and attaches Cookie headers from the canonical jar to outbound request headers.
 fn prepare_hop_cookie_header(
     session:       Session&,
@@ -62,13 +96,15 @@ fn prepare_hop_cookie_header(
 ) {
     var matched_cookies: CanonicalCookie[>..] = [];
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
+    var part_key: u8[..256] = [];
+    compute_hop_partition_key(ctx, current_url, part_key);
     session.jar.get_canonical_cookies_for_request(
         current_url.hostname(),
         current_url.pathname(),
         current_url.scheme(),
         current_url.effective_port(),
         CookieSourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
-        "",
+        part_key[..],
         session.virtual_clock_us,
         matched_cookies,
         CookieAccessOptions {
@@ -122,6 +158,8 @@ fn ingest_hop_response_cookies(
         guard can_write else {
             continue;
         }
-        session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us);
+        var part_key: u8[..256] = [];
+        compute_hop_partition_key(ctx, current_url, part_key);
+        session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us, part_key[..]);
     }
 }

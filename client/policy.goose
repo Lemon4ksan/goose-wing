@@ -25,16 +25,21 @@ fn new_backoff(base: core::Duration, max_delay: core::Duration, factor: f64 = 2.
 
 // The retry delay for an attempt (0-indexed), capped at max_ns.
 fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
-    if attempt <= 0 { return core::Duration { nanos: backoff.base_ns }; }
+    let cap_ns = backoff.max_ns;
+    if attempt <= 0 {
+        let initial = if backoff.base_ns > cap_ns { cap_ns } else { backoff.base_ns };
+        return core::Duration { nanos: initial };
+    }
+    let safe_attempt = if attempt > 60 { 60 } else { attempt };
     var current: f64 = backoff.base_ns;
-    for step_idx in attempt {
+    for step_idx in safe_attempt {
         current *= backoff.factor;
-        if current >= backoff.max_ns {
-            return core::Duration { nanos: backoff.max_ns };
+        if current >= cap_ns {
+            return core::Duration { nanos: cap_ns };
         }
     }
     let res = current as i64;
-    return core::Duration { nanos: if res > backoff.max_ns { backoff.max_ns } else { res } };
+    return core::Duration { nanos: if res > cap_ns { cap_ns } else { res } };
 }
 
 // ---- token bucket rate limiter ---------------------------------------------
@@ -59,6 +64,7 @@ fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
 
 // Attempts to consume one token using an explicit monotonic timestamp (for deterministic testing).
 fn allow(limiter: RateLimiter&, now_mono: i64) -> bool {
+    guard now_mono >= limiter.last_update_mono_ns else { return false; }
     let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;
     limiter.last_update_mono_ns = now_mono;
     limiter.tokens += elapsed_sec * limiter.rate_per_sec;

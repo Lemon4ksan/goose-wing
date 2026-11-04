@@ -155,6 +155,7 @@ fn has_header_whitespace(s: const u8[:]) -> bool {
 fn append_trailer_item(trailers: HeaderItem[..16]&, name: const u8[:], val: const u8[:]) -> bool {
     guard trailers.len < trailers.cap else { return false; }
     var item = HeaderItem { .. };
+    guard name.len <= item.name.cap && val.len <= item.value.cap else { return false; }
     item.name.append(name);
     item.value.append(val);
     trailers.push(item);
@@ -440,9 +441,7 @@ fn read_chunk_chunked<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> Stre
     let emitted = (out.len - prev_len) as! u64;
     reader.bytes_read += emitted;
 
-    let rem_zero = reader.chunk_decoder.chunk_bytes_remaining == 0;
-    let at_wire_end = reader.cursor >= reader.raw_data.len && rem_zero;
-    let is_eof = is_complete(reader.chunk_decoder) || at_wire_end;
+    let is_eof = is_complete(reader.chunk_decoder);
     if is_eof {
         reader.finished = true;
     }
@@ -505,7 +504,7 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
         reader.cursor += consumed;
         let emitted = (out.len - prev_len) as! u64;
         reader.bytes_read += emitted;
-        if is_complete(reader.chunk_decoder) || !ok_dec || reader.cursor >= reader.raw_data.len {
+        if is_complete(reader.chunk_decoder) || !ok_dec {
             reader.finished = true;
         }
         return emitted;

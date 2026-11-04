@@ -53,9 +53,9 @@ fn format_us_as_ms<B>(us: i64, out: B&) {
 struct HarEntry {
     started_iso8601: u8[..32]       = [],
     method:          u8[..16]       = [],
-    url:             u8[..256]      = [],
+    url:             u8[..2048]     = [],
     http_version:    u8[..16]       = [],
-    status:          u16            = 200,
+    status:          u16            = rfc::STATUS_OK as! u16,
     status_text:     u8[..32]       = [],
     request_bytes:   i64            = 0,
     response_bytes:  i64            = 0,

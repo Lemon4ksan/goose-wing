@@ -57,13 +57,16 @@ fn serialize_headers_with_host_check(
     url_val: const core::Url&,
     out:     u8[..4096]&,
     has_cl:  bool&,
+    has_te:  bool&,
 ) -> bool {
     var has_host = false;
     has_cl = false;
+    has_te = false;
 
     for &h in req.headers {
         if eq_ascii_fold(h.name[..], "Host") { has_host = true; }
         if eq_ascii_fold(h.name[..], "Content-Length") { has_cl = true; }
+        if eq_ascii_fold(h.name[..], "Transfer-Encoding") { has_te = true; }
         guard out.try_append(h.name[..]) &&
               out.try_append(": ") &&
               out.try_append(h.value[..]) &&
@@ -90,9 +93,10 @@ fn serialize_h1_request(
     guard out.try_append(" HTTP/1.1\r\n") else { return false; }
 
     var has_cl = false;
-    guard serialize_headers_with_host_check(req, url_val, out, has_cl) else { return false; }
+    var has_te = false;
+    guard serialize_headers_with_host_check(req, url_val, out, has_cl, has_te) else { return false; }
 
-    if !has_cl && req.body.len > 0 {
+    if !has_cl && !has_te && req.body.len > 0 {
         var cl_buf: u8[..32] = [];
         core::format_u64_dec(req.body.len as u64, cl_buf);
         guard out.try_append("Content-Length: ") &&
@@ -191,6 +195,7 @@ fn parse_h1_header_block(
     resp.spans.clear();
     resp.headers.clear();
     resp.set_cookies.clear();
+    resp.presence_mask = 0;
 
     var offset: i64 = 0;
     while offset < header_bytes.len {
@@ -227,6 +232,7 @@ fn parse_h1_header_block(
 
         guard resp.headers.len < resp.headers.cap else { return false; }
         resp.headers.push(make_header(hname, hval));
+        update_response_presence(resp, hname);
 
         if eq_ascii_fold(hname, "Set-Cookie") && resp.set_cookies.len < resp.set_cookies.cap {
             var sc_buf: u8[..256] = [];
@@ -300,7 +306,15 @@ fn feed_chunk_slice(
         let is_tr = (dec.state & 0x1000000000000000) != 0;
         let remaining = buf[cursor..];
         let st, consumed, chunk = internal::chunk_fsm_feed(dec, remaining);
-        record_chunk_trailers(is_tr, consumed, remaining, trailer_buf);
+        if is_tr {
+            record_chunk_trailers(true, consumed, remaining, trailer_buf);
+        } else if (dec.state & 0x1000000000000000) != 0 || st == internal::ChunkFsmStatus.Complete {
+            let nl = core::index_of_byte(remaining[..consumed], '\n');
+            if nl >= 0 && (nl + 1) < consumed {
+                let tr_slice = remaining[(nl + 1)..consumed];
+                record_chunk_trailers(true, tr_slice.len, tr_slice, trailer_buf);
+            }
+        }
         cursor += consumed;
         if chunk.len > 0 {
             resp.body.append(chunk);
@@ -429,8 +443,9 @@ fn pump_response_body(
     leftover:   const u8[:],
     timeout_ms: u32,
 ) -> bool, bool {
+    let req_conn = req.header("Connection");
     let conn_hdr = resp.header("Connection");
-    let is_conn_close = header_has_token(conn_hdr, "close");
+    let is_conn_close = header_has_token(conn_hdr, "close") || header_has_token(req_conn, "close");
     let keep_alive = !is_conn_close && (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
 
     if req.method == "HEAD" || rfc::is_empty_body_status(resp.status_code) {
@@ -441,6 +456,10 @@ fn pump_response_body(
     if header_has_token(te, "chunked") {
         var dec = internal::new_chunk_fsm_decoder();
         let ok_chunk = pump_h1_chunked_body(conn, dec, leftover, resp, timeout_ms);
+        if ok_chunk {
+            remove_header_by_name(resp.headers, "transfer-encoding");
+            resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
+        }
         return ok_chunk, keep_alive;
     }
 
