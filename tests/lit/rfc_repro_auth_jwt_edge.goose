@@ -73,6 +73,18 @@ fn main() {
     assert(wing::parse_jwt_claims_json(num_claims_json, parsed_c));
     assert(parsed_c.exp == 1714000100);
     assert(parsed_c.iat == 1714000000);
+    assert(!wing::parse_jwt_claims_json("{\"sub\":\"user1\",\"exp\":1e100}", parsed_c));
+
+    var tiny_tok: u8[..32] = [];
+    assert(!wing::sign_jwt_hmac(valid_hdr, valid_claims, secret, tiny_tok));
+    assert(parsed_c.iss.try_set("valid-issuer"));
+    var long_iss: u8[..160] = [];
+    for _ in 140 { long_iss.push('x'); }
+    assert(!parsed_c.iss.try_set(long_iss[..]));
+    assert(parsed_c.iss[..] == "valid-issuer");
+    assert(!wing::add_header_crit(valid_hdr, ""));
+    assert(!wing::add_header_crit(valid_hdr, "alg"));
+    assert(!wing::set_claim(parsed_c, "", "val"));
     print("JWT_INT_CLAIMS_PARSING: OK");
 }
 

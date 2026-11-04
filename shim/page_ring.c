@@ -39,9 +39,9 @@ int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms);
 #define MEM_REPLACE_PLACEHOLDER 0x00004000
 #endif
 
-typedef PVOID (WINAPI *pfnVirtualAlloc2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void*, ULONG);
-typedef BOOL (WINAPI *pfnVirtualFreeEx)(HANDLE, PVOID, SIZE_T, ULONG);
-typedef PVOID (WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void*, ULONG);
+typedef PVOID(WINAPI *pfnVirtualAlloc2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef BOOL(WINAPI *pfnVirtualFreeEx)(HANDLE, PVOID, SIZE_T, ULONG);
+typedef PVOID(WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
 
 #elif defined(__APPLE__)
 #include <mach/mach.h>
@@ -135,11 +135,14 @@ int32_t wing_page_ring_create(uint32_t min_capacity, uint64_t *out_handle, uint3
     ring->mapping_handle = hMap;
 
     if (pVirtualAlloc2 && pVirtualFreeEx && pMapViewOfFile3) {
-        PVOID ph = pVirtualAlloc2(GetCurrentProcess(), NULL, 2 * (SIZE_T)cap, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+        PVOID ph = pVirtualAlloc2(GetCurrentProcess(), NULL, 2 * (SIZE_T)cap, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                                  PAGE_NOACCESS, NULL, 0);
         if (ph) {
             pVirtualFreeEx(GetCurrentProcess(), ph, cap, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
-            PVOID v1 = pMapViewOfFile3(hMap, GetCurrentProcess(), ph, 0, cap, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
-            PVOID v2 = pMapViewOfFile3(hMap, GetCurrentProcess(), (char *)ph + cap, 0, cap, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
+            PVOID v1 = pMapViewOfFile3(hMap, GetCurrentProcess(), ph, 0, cap, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE,
+                                       NULL, 0);
+            PVOID v2 = pMapViewOfFile3(hMap, GetCurrentProcess(), (char *)ph + cap, 0, cap, MEM_REPLACE_PLACEHOLDER,
+                                       PAGE_READWRITE, NULL, 0);
             if (v1 && v2 && v2 == (char *)v1 + cap) {
                 ring->base = (uint8_t *)ph;
                 ring->is_placeholder = 1;
@@ -183,8 +186,8 @@ int32_t wing_page_ring_create(uint32_t min_capacity, uint64_t *out_handle, uint3
         if (kr == KERN_SUCCESS) {
             vm_address_t target = addr + cap;
             vm_prot_t cur_prot, max_prot;
-            kr = vm_remap(self, &target, cap, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
-                          self, addr, FALSE, &cur_prot, &max_prot, VM_INHERIT_SHARE);
+            kr = vm_remap(self, &target, cap, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, self, addr, FALSE, &cur_prot,
+                          &max_prot, VM_INHERIT_SHARE);
             if (kr == KERN_SUCCESS && target == addr + cap) {
                 ring->base = (uint8_t *)addr;
                 ring->is_mach_vm = 1;
@@ -319,7 +322,8 @@ int64_t wing_page_ring_peek(uint64_t handle, uint64_t head_offset, wing_bytes_rw
     return wing_page_ring_read(handle, head_offset, dst);
 }
 
-int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_len, int64_t sock_fd, uint32_t timeout_ms) {
+int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_len, int64_t sock_fd,
+                            uint32_t timeout_ms) {
     if (!handle || sock_fd < 0 || max_len == 0) return -1;
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
@@ -333,7 +337,7 @@ int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_
     uint8_t *dst = ring->base + off;
 
 #if defined(__wasm__)
-    wing_bytes_rw buf = { dst, (int64_t)to_recv };
+    wing_bytes_rw buf = {dst, (int64_t)to_recv};
     int32_t res = wing_tcp_recv(sock_fd, buf, timeout_ms);
     if (res > 0) {
         if (off + (size_t)res > ring->capacity) {
@@ -377,7 +381,7 @@ int32_t wing_page_ring_send(uint64_t handle, uint64_t head_offset, uint32_t len,
     const uint8_t *src = ring->base + off;
 
 #if defined(__wasm__)
-    wing_bytes_ro data = { src, (int64_t)to_send };
+    wing_bytes_ro data = {src, (int64_t)to_send};
     return wing_tcp_send(sock_fd, data);
 #elif defined(_WIN32)
     int res = send((SOCKET)sock_fd, (const char *)src, (int)to_send, 0);
@@ -395,7 +399,7 @@ int64_t wing_page_ring_find_crlf(uint64_t handle, uint64_t head_offset, uint32_t
 
     uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
     uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = { ring->base + off, (int64_t)search_len };
+    wing_bytes_ro slice = {ring->base + off, (int64_t)search_len};
     return wing_simd_find_crlf(slice);
 }
 
@@ -406,6 +410,6 @@ int64_t wing_page_ring_find_crlfcrlf(uint64_t handle, uint64_t head_offset, uint
 
     uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
     uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = { ring->base + off, (int64_t)search_len };
+    wing_bytes_ro slice = {ring->base + off, (int64_t)search_len};
     return wing_fast_find_crlfcrlf(slice);
 }

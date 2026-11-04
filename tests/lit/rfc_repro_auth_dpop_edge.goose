@@ -139,6 +139,20 @@ fn main() {
     let _, ok_bad = wing::extract_dpop_nonce(hdrs_bad);
     assert(!ok_bad);
     print("DPOP_NONCE_VALIDATION: OK");
+
+    // ---- 9. Escaped Key Smuggling, Method/JTI Validation, & Small Buffer ---
+    let esc_hdr = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"\\u0063rit\":[\"foo\"],\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"1234\"}}";
+    assert(!wing::verify_dpop_header(esc_hdr));
+    let esc_jwk = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"1234\",\"\\u0064\":\"priv\"}}";
+    assert(!wing::verify_dpop_header(esc_jwk));
+    var esc_claims = wing::DPoPClaims { .. };
+    assert(!wing::parse_dpop_claims("{\"\\u006ati\":\"id1\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/\",\"iat\":1714000000}", esc_claims));
+    assert(!wing::verify_dpop_jti("{\"jti\":\"bad jti with spaces\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/\",\"iat\":1714000000}"));
+    assert(!wing::verify_dpop_method("{\"jti\":\"id1\",\"htm\":\"GET /\",\"htu\":\"https://api.example.com/\",\"iat\":1714000000}", "GET /"));
+    assert(!wing::matches_dpop_jkt_thumbprint(pub_key, "mismatched_claims_jkt_value_123456789012345", expected_jkt[..]));
+    var tiny_proof: u8[..64] = [];
+    assert(!wing::create_dpop_proof(key, "POST", "https://api.example.com/token", "", "", now_sec, "jti-1", tiny_proof));
+    print("DPOP_ESCAPED_AND_BOUNDS: OK");
 }
 
 // CHECK: DPOP_JKT_VERIFICATION: OK
@@ -149,3 +163,4 @@ fn main() {
 // CHECK: DPOP_CLAIMS_BUILD: OK
 // CHECK: DPOP_HEADER_REJECTIONS: OK
 // CHECK: DPOP_NONCE_VALIDATION: OK
+// CHECK: DPOP_ESCAPED_AND_BOUNDS: OK

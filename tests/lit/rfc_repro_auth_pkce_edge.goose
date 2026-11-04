@@ -91,6 +91,17 @@ fn main() {
     // Path traversal or mismatched path rejected
     assert(!wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/../other", out_resp, out_len));
     assert(!wing::acme_find_challenge(acme_table, "/api/v1/challenge_tok_1", out_resp, out_len));
+
+    // ---- 6. ACME Thumbprint Validation & PKCE Small Buffer Bounds ----------
+    assert(wing::acme_key_authorization(tok, "", key_auth) == -1);
+    assert(wing::acme_key_authorization(tok, "bad/thumbprint", key_auth) == -1);
+    assert(wing::acme_key_authorization(tok, "bad.thumbprint", key_auth) == -1);
+
+    var tiny_buf: u8[..32] = [];
+    assert(!wing::compute_code_challenge(rfc_verifier, "S256", tiny_buf));
+    assert(!wing::compute_code_challenge(rfc_verifier, "plain", tiny_buf));
+    assert(!wing::generate_code_verifier(tiny_buf));
+    assert(!wing::generate_code_verifier(tiny_buf, "0123456789abcdef0123456789abcdef"));
     print("ACME_PRIMITIVES: OK");
 }
 

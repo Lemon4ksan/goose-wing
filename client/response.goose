@@ -85,7 +85,7 @@ struct Response {
     final_method:   u8[..16]         = "GET",
     protocol:       u8[..16]         = "HTTP/1.1",
     sent_headers:   HeaderItem[..32] = [],
-    set_cookies:    u8[..256][..16]  = [],
+    set_cookies:    u8[..1024][..16] = [],
     body:           u8[>..]          = [],
 }
 
@@ -215,6 +215,14 @@ fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     if res.spans.len > 0 && res.raw_headers.len > 0 {
         remove_matching_spans(res.spans, res.raw_headers[..], name);
     }
+}
+
+fn remove_header(res: Response&, name: const u8[:]) -> bool {
+    let removed = remove_header_by_name(res.headers, name);
+    if res.spans.len > 0 && res.raw_headers.len > 0 {
+        remove_matching_spans(res.spans, res.raw_headers[..], name);
+    }
+    return removed;
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {

@@ -30,7 +30,7 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
 }
 
 // Parses a SameSite attribute value case-insensitively (RFC 6265bis Section 5.4.7).
-// Unknown values default to Default (Lax) per RFC 6265bis Section 5.3.7.
+// Returns CookieSameSite.Unknown for unrecognized values.
 //
 // Example:
 //   raw_val = "Strict"
@@ -39,7 +39,8 @@ fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
     if core::eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
     if core::eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
     if core::eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
-    return CookieSameSite.Default;
+    if core::eq_ascii_fold(raw_val, "default") { return CookieSameSite.Default; }
+    return CookieSameSite.Unknown;
 }
 
 // ---- priority enumeration --------------------------------------------------
@@ -63,7 +64,7 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
 }
 
 // Parses a Priority attribute value case-insensitively.
-// Unknown values default to Medium per Chromium / RFC 6265bis.
+// Returns CookiePriority.Unknown for unrecognized values.
 //
 // Example:
 //   raw_val = "high"
@@ -72,7 +73,7 @@ fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
     if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
     if core::eq_ascii_fold(raw_val, "medium") { return CookiePriority.Medium; }
     if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
-    return CookiePriority.Medium;
+    return CookiePriority.Unknown;
 }
 
 // ---- source scheme enumeration ---------------------------------------------
@@ -103,6 +104,7 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
 fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
     if core::eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
     if core::eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
+    if core::eq_ascii_fold(raw_val, "unset") { return CookieSourceScheme.Unset; }
     return CookieSourceScheme.Unknown;
 }
 
@@ -121,38 +123,4 @@ enum CookieDeleteCause {
     EXPIRED_OVERWRITE,
     CONTROL_CHAR,
     NON_SECURE,
-}
-
-// Numeric telemetry code for delete_cause.
-fn delete_cause_code(delete_cause: CookieDeleteCause) -> i64 {
-    return match delete_cause {
-        UNKNOWN => 0,
-        EXPIRED => 1,
-        OVERWRITE => 2,
-        EXPLICIT => 3,
-        UNKNOWN_DELETION => 4,
-        DONT_RECORD => 5,
-        EVICTED_DOMAIN => 6,
-        EVICTED_GLOBAL => 7,
-        EXPIRED_OVERWRITE => 10,
-        CONTROL_CHAR => 11,
-        NON_SECURE => 12,
-    };
-}
-
-// Canonical identifier string for delete_cause.
-fn delete_cause_to_string(delete_cause: CookieDeleteCause) -> const u8[:] {
-    return match delete_cause {
-        UNKNOWN => "UNKNOWN",
-        EXPIRED => "EXPIRED",
-        OVERWRITE => "OVERWRITE",
-        EXPLICIT => "EXPLICIT",
-        UNKNOWN_DELETION => "UNKNOWN_DELETION",
-        DONT_RECORD => "DONT_RECORD",
-        EVICTED_DOMAIN => "EVICTED_DOMAIN",
-        EVICTED_GLOBAL => "EVICTED_GLOBAL",
-        EXPIRED_OVERWRITE => "EXPIRED_OVERWRITE",
-        CONTROL_CHAR => "CONTROL_CHAR",
-        NON_SECURE => "NON_SECURE",
-    };
 }

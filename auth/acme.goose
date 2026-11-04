@@ -52,8 +52,9 @@ fn acme_key_authorization(
     out:               u8[..256]&,
 ) -> i32 {
     let token_valid = acme_validate_token(token);
+    let thumb_valid = acme_validate_token(thumbprint_b64url);
     let total = token.len + thumbprint_b64url.len;
-    guard token_valid && total < out.cap else { return -1; }
+    guard token_valid && thumb_valid && total < out.cap else { return -1; }
     out.clear();
     out.append(token);
     out.push('.');

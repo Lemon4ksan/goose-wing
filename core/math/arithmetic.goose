@@ -22,7 +22,7 @@ struct CheckedI64 {
     overflow: bool = false,
 }
 
-extern fn mulhi_u64(a: u64, b: u64) -> u64 = "gs_mulhi_u64";
+extern fn mulhi_u64(a: u64, b: u64) -> u64 = "wing_mulhi_u64";
 
 // 64x64 -> 128-bit unsigned expanding multiplication returning (lo, hi).
 // Executed in a single hardware instruction (mulq on x86-64, umulh on ARM64).
@@ -155,6 +155,16 @@ fn mul_checked_i64(a: i64, b: i64) -> CheckedI64 {
         value:    prod_val,
         overflow: ovf,
     };
+}
+
+// Signed saturating multiplication (64-bit).
+inline fn mul_sat_i64(a: i64, b: i64) -> i64 {
+    let res = mul_checked_i64(a, b);
+    if !res.overflow {
+        return res.value;
+    }
+    let sign_bit = (((a as! u64) ^ (b as! u64)) >> 63) & 1;
+    return if sign_bit == 1 { I64_MIN } else { I64_MAX };
 }
 
 // Computes Euclidean remainder: 0 <= r < |rhs| for all inputs.

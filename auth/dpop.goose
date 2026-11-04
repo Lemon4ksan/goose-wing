@@ -162,7 +162,8 @@ inline fn next_dpop_entropy() -> u64 {
 fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
     out.clear();
     if entropy.len >= 16 {
-        core::base64url_encode(entropy, out);
+        let max_ent = min(entropy.len, 96);
+        core::base64url_encode(entropy[..max_ent], out);
         return;
     }
     // High-resolution clock-seeded pseudo-random fallback
@@ -263,7 +264,11 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
 
     json::each_member(reader) { jwk_key =>
         scratch.clear();
-        if jwk_key == "d" || jwk_key == "p" || jwk_key == "q" || jwk_key == "dp" || jwk_key == "dq" || jwk_key == "qi" {
+        if jwk_key.contains('\\') {
+            info.valid = false;
+            json::skip(reader);
+        } else if jwk_key == "d" || jwk_key == "p" || jwk_key == "q" ||
+                  jwk_key == "dp" || jwk_key == "dq" || jwk_key == "qi" {
             info.has_private_key = true;
             json::skip(reader);
         } else if jwk_key == "k" {
@@ -316,7 +321,10 @@ fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> b
     var had_dup = false;
     json::each_member(reader) { key =>
         scratch.clear();
-        if key == "jwk" {
+        if key.contains('\\') {
+            had_dup = true;
+            json::skip(reader);
+        } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
             verify_dpop_jwk(reader, scratch, jwk_info);
@@ -356,6 +364,16 @@ fn create_dpop_proof<B>(
     }
     guard key.len == 32 else { return false; }
 
+    var norm_uri: u8[..256] = [];
+    guard normalize_dpop_target_uri(target_uri, norm_uri) else {
+        return false;
+    }
+
+    var claims_json: u8[..512] = [];
+    guard build_dpop_claims_json(method, norm_uri[..], access_token, nonce, now_sec, jti, claims_json) else {
+        return false;
+    }
+
     var seed: u8[32] = [0; 32];
     for i in 32 { seed[i] = key[i]; }
     let pub_key = core::ed25519_public_key(seed);
@@ -370,16 +388,6 @@ fn create_dpop_proof<B>(
     var header_b64: u8[..384] = [];
     core::base64url_encode(header_json[..], header_b64);
 
-    var norm_uri: u8[..256] = [];
-    guard normalize_dpop_target_uri(target_uri, norm_uri) else {
-        return false;
-    }
-
-    var claims_json: u8[..512] = [];
-    guard build_dpop_claims_json(method, norm_uri[..], access_token, nonce, now_sec, jti, claims_json) else {
-        return false;
-    }
-
     var claims_b64: u8[..768] = [];
     core::base64url_encode(claims_json[..], claims_b64);
 
@@ -393,10 +401,31 @@ fn create_dpop_proof<B>(
     var sig_b64: u8[..128] = [];
     core::base64url_encode(sig[..], sig_b64);
 
+    let total_len = core::add_sat_i64(core::add_sat_i64(signing_input.len, 1), sig_b64.len);
+    guard total_len <= out.cap else { return false; }
     out.append(signing_input[..]);
     out.push('.' as u8);
     out.append(sig_b64[..]);
 
+    return true;
+}
+
+fn create_dpop_proof(
+    key:          const u8[:],
+    method:       const u8[:],
+    target_uri:   const u8[:],
+    access_token: const u8[:],
+    nonce:        const u8[:],
+    now_sec:      i64,
+    jti:          const u8[:],
+    out:          u8[>..]&,
+) -> bool {
+    var bounded: u8[..2048] = [];
+    guard create_dpop_proof(key, method, target_uri, access_token, nonce, now_sec, jti, bounded) else {
+        return false;
+    }
+    out.clear();
+    out.append(bounded[..]);
     return true;
 }
 
@@ -437,7 +466,10 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
 
     json::each_member(reader) { key =>
         scratch.clear();
-        if key == "crit" {
+        if key.contains('\\') {
+            had_dup = true;
+            json::skip(reader);
+        } else if key == "crit" {
             has_crit = true;
             json::skip(reader);
         } else if key == "typ" {
@@ -504,33 +536,24 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
 
     json::each_member(reader) { key =>
         scratch.clear();
-        if key == "jti" {
+        if key.contains('\\') {
+            had_error = true;
+            json::skip(reader);
+        } else if key == "jti" {
             if seen_jti { had_dup = true; }
             seen_jti = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.jti.cap {
-                out.jti.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.jti.try_set(val) { had_error = true; }
         } else if key == "htm" {
             if seen_htm { had_dup = true; }
             seen_htm = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.htm.cap {
-                out.htm.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.htm.try_set(val) { had_error = true; }
         } else if key == "htu" {
             if seen_htu { had_dup = true; }
             seen_htu = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.htu.cap {
-                out.htu.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.htu.try_set(val) { had_error = true; }
         } else if key == "iat" {
             if seen_iat { had_dup = true; }
             seen_iat = true;
@@ -541,29 +564,17 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
             if seen_nonce { had_dup = true; }
             seen_nonce = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.nonce.cap {
-                out.nonce.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.nonce.try_set(val) { had_error = true; }
         } else if key == "ath" {
             if seen_ath { had_dup = true; }
             seen_ath = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.ath.cap {
-                out.ath.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.ath.try_set(val) { had_error = true; }
         } else if key == "jkt" {
             if seen_jkt { had_dup = true; }
             seen_jkt = true;
             let val = json::read_string(reader, scratch);
-            if val.len <= out.jkt.cap {
-                out.jkt.append(val);
-            } else {
-                had_error = true;
-            }
+            if !out.jkt.try_set(val) { had_error = true; }
         } else {
             json::skip(reader);
         }
@@ -576,20 +587,22 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
 fn verify_dpop_jti(claims_json: const u8[:]) -> bool {
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json, claims) else { return false; }
-    return claims.jti.len > 0 && claims.jti.len <= 128;
+    return is_valid_dpop_nonce(claims.jti[..]);
+}
+
+inline fn is_valid_dpop_method(m: const u8[:]) -> bool {
+    guard m.len > 0 else { return false; }
+    for b in m {
+        guard !(b >= 'a' && b <= 'z') && is_dpop_token_char(b) else { return false; }
+    }
+    return true;
 }
 
 fn verify_dpop_method(claims_json: const u8[:], expected_method: const u8[:]) -> bool {
-    guard expected_method.len > 0 else { return false; }
-    for b in expected_method {
-        if b >= 'a' && b <= 'z' { return false; }
-    }
+    guard is_valid_dpop_method(expected_method) else { return false; }
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json, claims) else { return false; }
-    guard claims.htm.len > 0 else { return false; }
-    for b in claims.htm {
-        if b >= 'a' && b <= 'z' { return false; }
-    }
+    guard is_valid_dpop_method(claims.htm[..]) else { return false; }
     return claims.htm[..] == expected_method;
 }
 
@@ -661,9 +674,8 @@ fn verify_dpop_claims(
     expected_jkt:    const u8[:] = "",
 ) -> bool {
     // RFC 9449 §4.3: Mandatory unique jti & exact uppercase HTTP method
-    guard claims.jti.len > 0 && claims.jti.len <= 128 else { return false; }
-    guard expected_method.len > 0 && claims.htm.len > 0 else { return false; }
-    for b in claims.htm { if b >= 'a' && b <= 'z' { return false; } }
+    guard is_valid_dpop_nonce(claims.jti[..]) else { return false; }
+    guard is_valid_dpop_method(expected_method) && is_valid_dpop_method(claims.htm[..]) else { return false; }
     guard claims.htm[..] == expected_method else { return false; }
 
     // RFC 9449 §4.3: Normalized target URI without query/fragment
@@ -727,6 +739,11 @@ fn matches_dpop_jkt_thumbprint(
     var computed_jkt: u8[..64] = [];
     core::base64url_encode(digest[..], computed_jkt);
 
+    if claims_jkt.len > 0 {
+        guard claims_jkt.len == expected_jkt.len && core::ct_eq_bytes(claims_jkt, expected_jkt) else {
+            return false;
+        }
+    }
     return core::ct_eq_bytes(computed_jkt[..], expected_jkt);
 }
 
@@ -883,11 +900,7 @@ fn check_and_record_dpop_jti(
     }
 
     let total_ttl = core::add_sat_i64(ttl_sec, max_skew_sec);
-    let exp = if now_sec > 9223372036854775807 - total_ttl {
-        9223372036854775807
-    } else {
-        now_sec + total_ttl
-    };
+    let exp = core::add_sat_i64(now_sec, total_ttl);
 
     if free_idx >= 0 {
         var slot = cache.entries[free_idx];

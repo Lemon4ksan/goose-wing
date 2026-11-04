@@ -38,16 +38,13 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    guard default_domain.len <= parsed_cookie.domain.cap else {
+    guard parsed_cookie.domain.try_set(default_domain) else {
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
-    parsed_cookie.domain.append(default_domain);
     to_lower(parsed_cookie.domain[..]);
-    parsed_cookie.path.clear();
-    guard default_path.len <= parsed_cookie.path.cap else {
+    guard parsed_cookie.path.try_set(default_path) else {
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
-    parsed_cookie.path.append(default_path);
     parsed_cookie.host_only = true;
     parsed_cookie.creation_utc = now_us;
     parsed_cookie.last_access_utc = now_us;
@@ -169,7 +166,7 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var parsed_url = CanonicalCookieURL { .. };
     let parsed = core::new_url(raw_url);
     if parsed.valid {
-        parsed_url.scheme.append(scheme(parsed));
+        let _ = parsed_url.scheme.try_set(scheme(parsed));
         parsed_url.is_secure = is_secure_scheme(parsed);
         let h_str = hostname(parsed);
         let clean_h = if h_str.len > 2 && h_str[0] == '[' && h_str[h_str.len - 1] == ']' {
@@ -177,11 +174,10 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
         } else {
             h_str
         };
-        parsed_url.host.append(clean_h);
+        let _ = parsed_url.host.try_set(clean_h);
         to_lower(parsed_url.host[..]);
-        parsed_url.path.clear();
         let p_str = pathname(parsed);
-        parsed_url.path.append(if p_str.len > 0 { p_str } else { "/" });
+        let _ = parsed_url.path.try_set(if p_str.len > 0 { p_str } else { "/" });
         parsed_url.port = effective_port(parsed);
         return parsed_url;
     }
@@ -189,12 +185,12 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var rest_url = raw_url;
 
     if starts_with(rest_url, "https://") {
-        parsed_url.scheme.append("https");
+        let _ = parsed_url.scheme.try_set("https");
         parsed_url.is_secure = true;
         parsed_url.port = 443;
         rest_url = rest_url[8..];
     } else if starts_with(rest_url, "http://") {
-        parsed_url.scheme.append("http");
+        let _ = parsed_url.scheme.try_set("http");
         parsed_url.is_secure = false;
         parsed_url.port = 80;
         rest_url = rest_url[7..];
@@ -204,8 +200,7 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     extract_url_host_and_port(host_part, parsed_url.host, parsed_url.port);
     to_lower(parsed_url.host[..]);
 
-    parsed_url.path.clear();
-    parsed_url.path.append(if path_part.len > 0 { path_part } else { "/" });
+    let _ = parsed_url.path.try_set(if path_part.len > 0 { path_part } else { "/" });
     return parsed_url;
 }
 
@@ -320,7 +315,7 @@ fn is_valid_cookie_calendar_date(
 ) -> bool {
     guard month >= 1 && month <= 12 else { return false; }
     guard day >= 1 && day <= days_in_month(year, month) else { return false; }
-    guard year >= 1601 else { return false; }
+    guard year >= 1601 && year <= 9999 else { return false; }
     guard hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 else { return false; }
     return true;
 }
@@ -541,9 +536,7 @@ fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
     // RFC 6265 Section 5.2.3: If domain still begins with '.', ignore the domain attribute
     guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
-    guard clean_domain.len <= cookie_ref.domain.cap else { return; }
-    cookie_ref.domain.clear();
-    cookie_ref.domain.append(clean_domain);
+    guard cookie_ref.domain.try_set(clean_domain) else { return; }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = false;
 }
@@ -552,15 +545,11 @@ fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[
     if attr_val.len == 0 || attr_val[0] != '/' {
         cookie_ref.has_path_attr = false;
         guard default_path.len > 0 else { return; }
-        guard default_path.len <= cookie_ref.path.cap else { return; }
-        cookie_ref.path.clear();
-        cookie_ref.path.append(default_path);
+        let _ = cookie_ref.path.try_set(default_path);
         return;
     }
-    guard attr_val.len <= cookie_ref.path.cap else { return; }
+    guard cookie_ref.path.try_set(attr_val) else { return; }
     cookie_ref.has_path_attr = true;
-    cookie_ref.path.clear();
-    cookie_ref.path.append(attr_val);
 }
 
 fn apply_parsed_max_age_attribute(
@@ -575,13 +564,13 @@ fn apply_parsed_max_age_attribute(
     has_max_age = true;
     cookie_ref.persistent = true;
     if max_age_val <= 0 {
-        cookie_ref.expires_utc = now_us - 1000000;
+        cookie_ref.expires_utc = core::sub_sat_i64(now_us, 1000000);
         return;
     }
 
     let max_allowed_seconds = internal::K_MAX_COOKIE_AGE_US / 1000000;
-    let capped_sec = core::ct_min_i64(max_age_val, max_allowed_seconds);
-    cookie_ref.expires_utc = now_us + capped_sec * 1000000;
+    let capped_sec = min(max_age_val, max_allowed_seconds);
+    cookie_ref.expires_utc = core::add_sat_i64(now_us, core::mul_sat_i64(capped_sec, 1000000));
 }
 
 fn apply_parsed_expires_attribute(
@@ -596,8 +585,8 @@ fn apply_parsed_expires_attribute(
     guard expires_ok else { return; }
 
     cookie_ref.persistent = true;
-    if expires_us > now_us && (expires_us - now_us > internal::K_MAX_COOKIE_AGE_US) {
-        cookie_ref.expires_utc = now_us + internal::K_MAX_COOKIE_AGE_US; // 400 days cap
+    if expires_us > now_us && (core::sub_sat_i64(expires_us, now_us) > internal::K_MAX_COOKIE_AGE_US) {
+        cookie_ref.expires_utc = core::add_sat_i64(now_us, internal::K_MAX_COOKIE_AGE_US); // 400 days cap
     } else {
         cookie_ref.expires_utc = expires_us;
     }
@@ -643,26 +632,6 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
         return false;
     }
 
-    return true;
-}
-
-// Extracts host and port from an IPv6 bracketed address literal.
-//
-// Example:
-//   host_part = "[::1]:8080"
-//   bare_host_out = "::1", port_out = 8080, returns: true
-fn extract_ipv6_host_and_port<B>(host_part: const u8[:], bare_host_out: B&, port_out: i32&) -> bool {
-    guard host_part.len > 0 && host_part[0] == '[' else { return false; }
-    let close_bracket = core::index_of_byte(host_part, ']');
-    guard close_bracket > 0 else { return false; }
-
-    bare_host_out.append(host_part[1..close_bracket]);
-    if close_bracket + 1 < host_part.len && host_part[close_bracket + 1] == ':' {
-        let port_val, port_ok = parse_int(host_part[close_bracket + 2..]);
-        if port_ok && port_val > 0 && port_val <= 65535 {
-            port_out = port_val as i32;
-        }
-    }
     return true;
 }
 

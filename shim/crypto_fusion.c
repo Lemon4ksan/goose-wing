@@ -13,8 +13,8 @@
 #include <string.h>
 
 typedef struct {
-    uint8_t* ptr;
-    int64_t  len;
+    uint8_t *ptr;
+    int64_t len;
 } wing_slice;
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -59,34 +59,34 @@ static inline __m128i wing_gf128_mul_pclmul(__m128i a, __m128i h) {
     tmp6 = _mm_xor_si128(tmp6, tmp4);
 
     // 2. Left-shift 256-bit product by 1 bit (due to reflected bit-order of GHASH)
-    __m128i tmp7  = _mm_srli_epi32(tmp3, 31);
-    __m128i tmp8  = _mm_srli_epi32(tmp6, 31);
-    tmp3          = _mm_slli_epi32(tmp3, 1);
-    tmp6          = _mm_slli_epi32(tmp6, 1);
-    __m128i tmp9  = _mm_srli_si128(tmp7, 12);
-    tmp8          = _mm_slli_si128(tmp8, 4);
-    tmp7          = _mm_slli_si128(tmp7, 4);
-    tmp3          = _mm_or_si128(tmp3, tmp7);
-    tmp6          = _mm_or_si128(tmp6, tmp8);
-    tmp6          = _mm_or_si128(tmp6, tmp9);
+    __m128i tmp7 = _mm_srli_epi32(tmp3, 31);
+    __m128i tmp8 = _mm_srli_epi32(tmp6, 31);
+    tmp3 = _mm_slli_epi32(tmp3, 1);
+    tmp6 = _mm_slli_epi32(tmp6, 1);
+    __m128i tmp9 = _mm_srli_si128(tmp7, 12);
+    tmp8 = _mm_slli_si128(tmp8, 4);
+    tmp7 = _mm_slli_si128(tmp7, 4);
+    tmp3 = _mm_or_si128(tmp3, tmp7);
+    tmp6 = _mm_or_si128(tmp6, tmp8);
+    tmp6 = _mm_or_si128(tmp6, tmp9);
 
     // 3. Modular reduction over GF(2^128) polynomial
-    tmp7          = _mm_slli_epi32(tmp3, 31);
-    tmp8          = _mm_slli_epi32(tmp3, 30);
-    tmp9          = _mm_slli_epi32(tmp3, 25);
-    tmp7          = _mm_xor_si128(tmp7, tmp8);
-    tmp7          = _mm_xor_si128(tmp7, tmp9);
-    tmp8          = _mm_srli_si128(tmp7, 4);
-    tmp7          = _mm_slli_si128(tmp7, 12);
-    tmp3          = _mm_xor_si128(tmp3, tmp7);
+    tmp7 = _mm_slli_epi32(tmp3, 31);
+    tmp8 = _mm_slli_epi32(tmp3, 30);
+    tmp9 = _mm_slli_epi32(tmp3, 25);
+    tmp7 = _mm_xor_si128(tmp7, tmp8);
+    tmp7 = _mm_xor_si128(tmp7, tmp9);
+    tmp8 = _mm_srli_si128(tmp7, 4);
+    tmp7 = _mm_slli_si128(tmp7, 12);
+    tmp3 = _mm_xor_si128(tmp3, tmp7);
 
-    __m128i tmp2  = _mm_srli_epi32(tmp3, 1);
-    tmp4          = _mm_srli_epi32(tmp3, 2);
-    tmp5          = _mm_srli_epi32(tmp3, 7);
-    tmp2          = _mm_xor_si128(tmp2, tmp4);
-    tmp2          = _mm_xor_si128(tmp2, tmp5);
-    tmp2          = _mm_xor_si128(tmp2, tmp8);
-    tmp3          = _mm_xor_si128(tmp3, tmp2);
+    __m128i tmp2 = _mm_srli_epi32(tmp3, 1);
+    tmp4 = _mm_srli_epi32(tmp3, 2);
+    tmp5 = _mm_srli_epi32(tmp3, 7);
+    tmp2 = _mm_xor_si128(tmp2, tmp4);
+    tmp2 = _mm_xor_si128(tmp2, tmp5);
+    tmp2 = _mm_xor_si128(tmp2, tmp8);
+    tmp3 = _mm_xor_si128(tmp3, tmp2);
     return _mm_xor_si128(tmp6, tmp3);
 }
 
@@ -102,16 +102,16 @@ static inline __m128i wing_aes128_key_expand_step(__m128i key, __m128i gen) {
 
 WING_TARGET_AES_PCLMUL
 static inline void wing_aes128_expand_key(__m128i user_key, __m128i rk[11]) {
-    rk[0]  = user_key;
-    rk[1]  = wing_aes128_key_expand_step(rk[0], _mm_aeskeygenassist_si128(rk[0], 0x01));
-    rk[2]  = wing_aes128_key_expand_step(rk[1], _mm_aeskeygenassist_si128(rk[1], 0x02));
-    rk[3]  = wing_aes128_key_expand_step(rk[2], _mm_aeskeygenassist_si128(rk[2], 0x04));
-    rk[4]  = wing_aes128_key_expand_step(rk[3], _mm_aeskeygenassist_si128(rk[3], 0x08));
-    rk[5]  = wing_aes128_key_expand_step(rk[4], _mm_aeskeygenassist_si128(rk[4], 0x10));
-    rk[6]  = wing_aes128_key_expand_step(rk[5], _mm_aeskeygenassist_si128(rk[5], 0x20));
-    rk[7]  = wing_aes128_key_expand_step(rk[6], _mm_aeskeygenassist_si128(rk[6], 0x40));
-    rk[8]  = wing_aes128_key_expand_step(rk[7], _mm_aeskeygenassist_si128(rk[7], 0x80));
-    rk[9]  = wing_aes128_key_expand_step(rk[8], _mm_aeskeygenassist_si128(rk[8], 0x1B));
+    rk[0] = user_key;
+    rk[1] = wing_aes128_key_expand_step(rk[0], _mm_aeskeygenassist_si128(rk[0], 0x01));
+    rk[2] = wing_aes128_key_expand_step(rk[1], _mm_aeskeygenassist_si128(rk[1], 0x02));
+    rk[3] = wing_aes128_key_expand_step(rk[2], _mm_aeskeygenassist_si128(rk[2], 0x04));
+    rk[4] = wing_aes128_key_expand_step(rk[3], _mm_aeskeygenassist_si128(rk[3], 0x08));
+    rk[5] = wing_aes128_key_expand_step(rk[4], _mm_aeskeygenassist_si128(rk[4], 0x10));
+    rk[6] = wing_aes128_key_expand_step(rk[5], _mm_aeskeygenassist_si128(rk[5], 0x20));
+    rk[7] = wing_aes128_key_expand_step(rk[6], _mm_aeskeygenassist_si128(rk[6], 0x40));
+    rk[8] = wing_aes128_key_expand_step(rk[7], _mm_aeskeygenassist_si128(rk[7], 0x80));
+    rk[9] = wing_aes128_key_expand_step(rk[8], _mm_aeskeygenassist_si128(rk[8], 0x1B));
     rk[10] = wing_aes128_key_expand_step(rk[9], _mm_aeskeygenassist_si128(rk[9], 0x36));
 }
 
@@ -132,21 +132,15 @@ static inline __m128i wing_make_ctr_block(const uint8_t iv[12], uint32_t ctr) {
     blk[13] = (uint8_t)(ctr >> 16);
     blk[14] = (uint8_t)(ctr >> 8);
     blk[15] = (uint8_t)(ctr);
-    return _mm_loadu_si128((const __m128i*)blk);
+    return _mm_loadu_si128((const __m128i *)blk);
 }
 
 // Fused 4-block AES-128-GCM decryption + GHASH loop using AES-NI and PCLMULQDQ.
 // Interleaves _mm_aesenc_si128 rounds across 4 counter blocks with _mm_clmulepi64_si128
 // GHASH updates on the 4 ciphertext blocks.
 WING_TARGET_AES_PCLMUL
-static int32_t wing_aes128_gcm_decrypt_aesni(
-    const uint8_t* key_ptr,
-    const uint8_t* iv_ptr,
-    const uint8_t* src_ptr,
-    int64_t        src_len,
-    uint8_t*       dst_ptr,
-    int64_t        dst_len
-) {
+static int32_t wing_aes128_gcm_decrypt_aesni(const uint8_t *key_ptr, const uint8_t *iv_ptr, const uint8_t *src_ptr,
+                                             int64_t src_len, uint8_t *dst_ptr, int64_t dst_len) {
     if (src_len < 16) {
         return -1;
     }
@@ -156,7 +150,7 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
     }
 
     __m128i rk[11];
-    wing_aes128_expand_key(_mm_loadu_si128((const __m128i*)key_ptr), rk);
+    wing_aes128_expand_key(_mm_loadu_si128((const __m128i *)key_ptr), rk);
 
     // H = AES_K(0^128) in byte-swapped GHASH polynomial order
     __m128i h_raw = wing_aes128_enc_block(_mm_setzero_si128(), rk);
@@ -171,10 +165,10 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
 
     // Fused 4-block (64-byte) pipeline: interleave 4x AES-CTR rounds with 4x PCLMULQDQ GHASH
     while (offset + 64 <= ct_len) {
-        __m128i c0 = _mm_loadu_si128((const __m128i*)(src_ptr + offset));
-        __m128i c1 = _mm_loadu_si128((const __m128i*)(src_ptr + offset + 16));
-        __m128i c2 = _mm_loadu_si128((const __m128i*)(src_ptr + offset + 32));
-        __m128i c3 = _mm_loadu_si128((const __m128i*)(src_ptr + offset + 48));
+        __m128i c0 = _mm_loadu_si128((const __m128i *)(src_ptr + offset));
+        __m128i c1 = _mm_loadu_si128((const __m128i *)(src_ptr + offset + 16));
+        __m128i c2 = _mm_loadu_si128((const __m128i *)(src_ptr + offset + 32));
+        __m128i c3 = _mm_loadu_si128((const __m128i *)(src_ptr + offset + 48));
 
         __m128i b0 = _mm_xor_si128(wing_make_ctr_block(iv_ptr, ctr), rk[0]);
         __m128i b1 = _mm_xor_si128(wing_make_ctr_block(iv_ptr, ctr + 1u), rk[0]);
@@ -216,21 +210,21 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
         b3 = _mm_aesenclast_si128(b3, rk[10]);
         ghash_acc = wing_gf128_mul_pclmul(_mm_xor_si128(ghash_acc, wing_bswap128(c3)), h_swp);
 
-        _mm_storeu_si128((__m128i*)(dst_ptr + offset), _mm_xor_si128(c0, b0));
-        _mm_storeu_si128((__m128i*)(dst_ptr + offset + 16), _mm_xor_si128(c1, b1));
-        _mm_storeu_si128((__m128i*)(dst_ptr + offset + 32), _mm_xor_si128(c2, b2));
-        _mm_storeu_si128((__m128i*)(dst_ptr + offset + 48), _mm_xor_si128(c3, b3));
+        _mm_storeu_si128((__m128i *)(dst_ptr + offset), _mm_xor_si128(c0, b0));
+        _mm_storeu_si128((__m128i *)(dst_ptr + offset + 16), _mm_xor_si128(c1, b1));
+        _mm_storeu_si128((__m128i *)(dst_ptr + offset + 32), _mm_xor_si128(c2, b2));
+        _mm_storeu_si128((__m128i *)(dst_ptr + offset + 48), _mm_xor_si128(c3, b3));
 
         offset += 64;
     }
 
     // Remaining full 16-byte blocks
     while (offset + 16 <= ct_len) {
-        __m128i c0 = _mm_loadu_si128((const __m128i*)(src_ptr + offset));
+        __m128i c0 = _mm_loadu_si128((const __m128i *)(src_ptr + offset));
         __m128i ks = wing_aes128_enc_block(wing_make_ctr_block(iv_ptr, ctr), rk);
         ctr += 1u;
         ghash_acc = wing_gf128_mul_pclmul(_mm_xor_si128(ghash_acc, wing_bswap128(c0)), h_swp);
-        _mm_storeu_si128((__m128i*)(dst_ptr + offset), _mm_xor_si128(c0, ks));
+        _mm_storeu_si128((__m128i *)(dst_ptr + offset), _mm_xor_si128(c0, ks));
         offset += 16;
     }
 
@@ -241,11 +235,11 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
         uint8_t ks_bytes[16];
         memcpy(c_pad, src_ptr + offset, (size_t)rem);
         __m128i ks = wing_aes128_enc_block(wing_make_ctr_block(iv_ptr, ctr), rk);
-        _mm_storeu_si128((__m128i*)ks_bytes, ks);
+        _mm_storeu_si128((__m128i *)ks_bytes, ks);
         for (int64_t i = 0; i < rem; i++) {
             dst_ptr[offset + i] = c_pad[i] ^ ks_bytes[i];
         }
-        __m128i c_vec = _mm_loadu_si128((const __m128i*)c_pad);
+        __m128i c_vec = _mm_loadu_si128((const __m128i *)c_pad);
         ghash_acc = wing_gf128_mul_pclmul(_mm_xor_si128(ghash_acc, wing_bswap128(c_vec)), h_swp);
     }
 
@@ -255,15 +249,15 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
     for (int i = 0; i < 8; i++) {
         len_blk[8 + i] = (uint8_t)(c_bits >> (56 - 8 * i));
     }
-    __m128i len_vec = _mm_loadu_si128((const __m128i*)len_blk);
+    __m128i len_vec = _mm_loadu_si128((const __m128i *)len_blk);
     ghash_acc = wing_gf128_mul_pclmul(_mm_xor_si128(ghash_acc, wing_bswap128(len_vec)), h_swp);
 
     __m128i tag_vec = _mm_xor_si128(wing_bswap128(ghash_acc), j0_enc);
     uint8_t computed_tag[16];
-    _mm_storeu_si128((__m128i*)computed_tag, tag_vec);
+    _mm_storeu_si128((__m128i *)computed_tag, tag_vec);
 
     // Constant-time tag comparison (Invariant 11)
-    const uint8_t* wire_tag = src_ptr + ct_len;
+    const uint8_t *wire_tag = src_ptr + ct_len;
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++) {
         diff |= (computed_tag[i] ^ wire_tag[i]);
@@ -283,30 +277,25 @@ static int32_t wing_aes128_gcm_decrypt_aesni(
 // ---- Constant-Time Scalar Fallback (for non-AES-NI CPUs) -----------------
 
 static const uint8_t WING_AES_SBOX[256] = {
-    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
-    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
-    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
-    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
-    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
-    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
-    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
-    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
-    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
-    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
-    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
-    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
-    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
-    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
-    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
-    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
-};
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76, 0xca, 0x82, 0xc9,
+    0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0, 0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f,
+    0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15, 0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07,
+    0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75, 0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3,
+    0x29, 0xe3, 0x2f, 0x84, 0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58,
+    0xcf, 0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8, 0x51, 0xa3,
+    0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2, 0xcd, 0x0c, 0x13, 0xec, 0x5f,
+    0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73, 0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88,
+    0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb, 0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac,
+    0x62, 0x91, 0x95, 0xe4, 0x79, 0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a,
+    0xae, 0x08, 0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a, 0x70,
+    0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e, 0xe1, 0xf8, 0x98, 0x11,
+    0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf, 0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42,
+    0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16};
 
-static inline uint8_t wing_gf_xtime(uint8_t x) {
-    return (uint8_t)((x << 1) ^ (((x >> 7) & 1u) * 0x1bu));
-}
+static inline uint8_t wing_gf_xtime(uint8_t x) { return (uint8_t)((x << 1) ^ (((x >> 7) & 1u) * 0x1bu)); }
 
 static void wing_aes128_scalar_expand(const uint8_t key[16], uint8_t rk[176]) {
-    static const uint8_t rcon[10] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36};
+    static const uint8_t rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36};
     memcpy(rk, key, 16);
     for (int i = 4; i < 44; i++) {
         uint8_t t[4];
@@ -326,30 +315,29 @@ static void wing_aes128_scalar_expand(const uint8_t key[16], uint8_t rk[176]) {
 
 static void wing_aes128_scalar_enc(const uint8_t rk[176], const uint8_t in[16], uint8_t out[16]) {
     uint8_t s[16];
-    for (int i = 0; i < 16; i++) s[i] = in[i] ^ rk[i];
+    for (int i = 0; i < 16; i++)
+        s[i] = in[i] ^ rk[i];
     for (int r = 1; r <= 10; r++) {
         uint8_t t[16];
-        for (int i = 0; i < 16; i++) t[i] = WING_AES_SBOX[s[i]];
+        for (int i = 0; i < 16; i++)
+            t[i] = WING_AES_SBOX[s[i]];
         // ShiftRows
-        uint8_t sr[16] = {
-            t[0], t[5], t[10], t[15],
-            t[4], t[9], t[14], t[3],
-            t[8], t[13], t[2], t[7],
-            t[12], t[1], t[6], t[11]
-        };
+        uint8_t sr[16] = {t[0], t[5],  t[10], t[15], t[4],  t[9], t[14], t[3],
+                          t[8], t[13], t[2],  t[7],  t[12], t[1], t[6],  t[11]};
         if (r < 10) {
             for (int c = 0; c < 4; c++) {
-                uint8_t a0 = sr[c*4+0], a1 = sr[c*4+1], a2 = sr[c*4+2], a3 = sr[c*4+3];
+                uint8_t a0 = sr[c * 4 + 0], a1 = sr[c * 4 + 1], a2 = sr[c * 4 + 2], a3 = sr[c * 4 + 3];
                 uint8_t all = a0 ^ a1 ^ a2 ^ a3;
-                s[c*4+0] = a0 ^ all ^ wing_gf_xtime(a0 ^ a1);
-                s[c*4+1] = a1 ^ all ^ wing_gf_xtime(a1 ^ a2);
-                s[c*4+2] = a2 ^ all ^ wing_gf_xtime(a2 ^ a3);
-                s[c*4+3] = a3 ^ all ^ wing_gf_xtime(a3 ^ a0);
+                s[c * 4 + 0] = a0 ^ all ^ wing_gf_xtime(a0 ^ a1);
+                s[c * 4 + 1] = a1 ^ all ^ wing_gf_xtime(a1 ^ a2);
+                s[c * 4 + 2] = a2 ^ all ^ wing_gf_xtime(a2 ^ a3);
+                s[c * 4 + 3] = a3 ^ all ^ wing_gf_xtime(a3 ^ a0);
             }
         } else {
             memcpy(s, sr, 16);
         }
-        for (int i = 0; i < 16; i++) s[i] ^= rk[r * 16 + i];
+        for (int i = 0; i < 16; i++)
+            s[i] ^= rk[r * 16 + i];
     }
     memcpy(out, s, 16);
 }
@@ -370,19 +358,13 @@ static void wing_ghash_scalar_mul(uint8_t y[16], const uint8_t h[16]) {
         vh = (vh >> 1) ^ (((uint64_t)0 - lsb) & 0xE100000000000000ULL);
     }
     for (int i = 0; i < 8; i++) {
-        y[i]     = (uint8_t)(zh >> (56 - 8 * i));
+        y[i] = (uint8_t)(zh >> (56 - 8 * i));
         y[8 + i] = (uint8_t)(zl >> (56 - 8 * i));
     }
 }
 
-static int32_t wing_aes128_gcm_decrypt_scalar(
-    const uint8_t* key_ptr,
-    const uint8_t* iv_ptr,
-    const uint8_t* src_ptr,
-    int64_t        src_len,
-    uint8_t*       dst_ptr,
-    int64_t        dst_len
-) {
+static int32_t wing_aes128_gcm_decrypt_scalar(const uint8_t *key_ptr, const uint8_t *iv_ptr, const uint8_t *src_ptr,
+                                              int64_t src_len, uint8_t *dst_ptr, int64_t dst_len) {
     if (src_len < 16) return -1;
     int64_t ct_len = src_len - 16;
     if (dst_len < ct_len) return -1;
@@ -396,7 +378,10 @@ static int32_t wing_aes128_gcm_decrypt_scalar(
 
     uint8_t j0[16];
     memcpy(j0, iv_ptr, 12);
-    j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
+    j0[12] = 0;
+    j0[13] = 0;
+    j0[14] = 0;
+    j0[15] = 1;
     uint8_t j0_enc[16];
     wing_aes128_scalar_enc(rk, j0, j0_enc);
 
@@ -431,13 +416,14 @@ static int32_t wing_aes128_gcm_decrypt_scalar(
     wing_ghash_scalar_mul(y, h_blk);
 
     uint8_t diff = 0;
-    const uint8_t* wire_tag = src_ptr + ct_len;
+    const uint8_t *wire_tag = src_ptr + ct_len;
     for (int i = 0; i < 16; i++) {
         uint8_t calc_t = y[i] ^ j0_enc[i];
         diff |= (calc_t ^ wire_tag[i]);
     }
     if (diff != 0) {
-        for (int64_t i = 0; i < ct_len; i++) dst_ptr[i] = 0;
+        for (int64_t i = 0; i < ct_len; i++)
+            dst_ptr[i] = 0;
         return -1;
     }
     return (int32_t)ct_len;

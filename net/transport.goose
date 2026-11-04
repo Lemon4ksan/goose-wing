@@ -46,7 +46,7 @@ fn send(t: Transport.Unix, data: const u8[:]) -> i32 {
 
 fn send(t: Transport.Tls, data: const u8[:]) -> i32 {
     guard t.fd > 0 else { return 0; }
-    return tcp_send(t.fd, data);
+    return tls_transport_send(t.fd, t.cipher_slot, data);
 }
 
 fn send(t: Transport.Mock, data: const u8[:]) -> i32 {
@@ -82,7 +82,7 @@ fn recv_slice(t: Transport.Unix, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
 
 fn recv_slice(t: Transport.Tls, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard t.fd > 0 else { return 0; }
-    return tcp_recv_slice(t.fd, dst, timeout_ms);
+    return tls_transport_recv_slice(t.fd, t.cipher_slot, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Mock, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
@@ -118,9 +118,7 @@ fn close(t: Transport.Unix) {
 }
 
 fn close(t: Transport.Tls) {
-    if t.fd > 0 {
-        tcp_close(t.fd);
-    }
+    tls_transport_close(t.fd, t.cipher_slot);
 }
 
 fn close(t: Transport.Mock) {

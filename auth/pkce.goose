@@ -129,8 +129,10 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain"
 
 // Encodes caller-provided entropy bytes into a base64url PKCE verifier (RFC 7636 §4.1).
 inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
-    let max_raw = if entropy.len > 96 { 96 } else { entropy.len };
-    core::base64url_encode(entropy[..max_raw], out);
+    let max_raw = min(entropy.len, 96);
+    var encoded: u8[..128] = [];
+    core::base64url_encode(entropy[..max_raw], encoded);
+    guard out.try_set(encoded[..]) else { return false; }
     return is_valid_code_verifier(out[..]);
 }
 
@@ -150,6 +152,7 @@ inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
 }
 
 inline fn generate_derived_verifier<B>(out: B&) -> bool {
+    guard out.cap >= 43 else { return false; }
     g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
     let raw_entropy = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
     core::base64url_encode(raw_entropy[..], out);
@@ -185,6 +188,10 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
     }
     let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
     guard eff_method == rfc::PKCE_METHOD_S256 || eff_method == rfc::PKCE_METHOD_PLAIN else {
+        return false;
+    }
+    let needed = if eff_method == rfc::PKCE_METHOD_S256 { 43 } else { verifier.len };
+    guard needed <= out.cap else {
         return false;
     }
 
@@ -225,9 +232,7 @@ fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method
 fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool {
     var pair = PkcePair { .. };
     let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
-    guard eff_method.len <= pair.method.cap else { return pair, false; }
-    pair.method.clear();
-    pair.method.append(eff_method);
+    guard pair.method.try_set(eff_method) else { return pair, false; }
     guard generate_code_verifier(pair.verifier, entropy) else { return pair, false; }
     guard compute_code_challenge(pair.verifier[..], eff_method, pair.challenge) else { return pair, false; }
     return pair, true;

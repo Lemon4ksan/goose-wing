@@ -49,6 +49,18 @@ import http.incremental;
 import http.forwarded;
 import http.problem;
 
+// ---- tls 1.3 & x.509 pki -------------------------------------------------
+
+import tls.record;
+import tls.key_schedule;
+import tls.handshake;
+import tls.x509;
+import tls.hpke;
+import tls.ech;
+import tls.post_quantum;
+import tls.cert_compression;
+import tls.session;
+
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
 import net.proxy;
@@ -148,17 +160,6 @@ import auth.dpop;
 import auth.jwt;
 import auth.jwks;
 import auth.acme;
-
-// ---- tls 1.3 & x.509 pki -------------------------------------------------
-
-import tls.record;
-import tls.key_schedule;
-import tls.handshake;
-import tls.x509;
-import tls.hpke;
-import tls.ech;
-import tls.post_quantum;
-import tls.cert_compression;
 
 // ---- server primitives -----------------------------------------------------
 

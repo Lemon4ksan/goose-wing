@@ -731,6 +731,16 @@ fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw
     return true;
 }
 
+// Parses a DER-encoded X.509 certificate and adds its Subject DN and SPKI to the trust anchor store.
+fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]) -> bool {
+    var cert = ParsedCert { .. };
+    guard parse_x509_certificate(raw_cert_der, cert) else { return false; }
+    let subj = span_slice(raw_cert_der, cert.subject_raw);
+    let spki = span_slice(raw_cert_der, cert.spki_raw);
+    guard subj.len > 0 && spki.len > 0 else { return false; }
+    return add_trust_anchor(store, subj, spki);
+}
+
 fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
     let s_slice = span_slice(raw_cert, cert.subject_raw);
     let spki_slice = span_slice(raw_cert, cert.spki_raw);
@@ -1621,6 +1631,10 @@ fn verify_certificate_chain(
 
     let is_direct_trust_anchor = chain_certs.len == 1 &&
         matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]);
+
+    if chain_certs.len == 1 && chain_certs[0].is_ca && !is_direct_trust_anchor {
+        return TlsAlert.UnknownCa;
+    }
 
     for i in chain_certs.len {
         let cert_alert = x509_validate_single_chain_cert(

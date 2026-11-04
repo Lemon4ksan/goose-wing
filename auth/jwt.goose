@@ -111,13 +111,17 @@ fn new_jwt_header(alg: JwtAlg = JwtAlg.HS256, kid: const u8[:] = "") -> JwtHeade
         ..
     };
     if kid.len > 0 {
-        hdr.kid.append(kid);
+        let _ = hdr.kid.try_set(kid);
     }
     return hdr;
 }
 
 fn add_header_crit(header: JwtHeader&, name: const u8[:]) -> bool {
-    guard header.crit.len < header.crit.cap && name.len <= 32 else { return false; }
+    guard header.crit.len < header.crit.cap && name.len > 0 && name.len <= 32 else { return false; }
+    guard !is_standard_jws_header_param(name) else { return false; }
+    for &cp in header.crit {
+        guard cp.name[..] != name else { return false; }
+    }
     var item = CritParam { .. };
     item.name.append(name);
     header.crit.push(item);
@@ -182,7 +186,7 @@ inline fn parse_crit_header_elements(
     json::each_element(reader) {
         scratch.clear();
         let crit_name = json::read_string(reader, scratch);
-        if is_standard_jws_header_param(crit_name) {
+        if crit_name.len == 0 || crit_name.contains('\\') || is_standard_jws_header_param(crit_name) {
             had_error = true;
         }
         for &cp in out_crit {
@@ -190,7 +194,7 @@ inline fn parse_crit_header_elements(
                 had_error = true; // RFC 7515 §4.1.11: senders MUST NOT use duplicate names
             }
         }
-        if out_crit.len < out_crit.cap && crit_name.len <= 32 {
+        if out_crit.len < out_crit.cap && crit_name.len > 0 && crit_name.len <= 32 {
             var cp = CritParam { .. };
             cp.name.append(crit_name);
             out_crit.push(cp);
@@ -203,7 +207,7 @@ inline fn parse_crit_header_elements(
     }
 }
 
-inline fn is_header_key_present(name: const u8[:], seen: const SeenHeaderKey[..8]) -> bool {
+inline fn is_header_key_present(name: const u8[:], seen: const SeenHeaderKey[:]) -> bool {
     for &o in seen {
         if o.name[..] == name { return true; }
     }
@@ -237,26 +241,17 @@ inline fn parse_jwt_header_member(
         if seen_typ { had_error = true; }
         seen_typ = true;
         let typ_str = json::read_string(reader, scratch);
-        if typ_str.len <= out_header.typ.cap {
-            out_header.typ.clear();
-            out_header.typ.append(typ_str);
-        } else { had_error = true; }
+        if !out_header.typ.try_set(typ_str) { had_error = true; }
     } else if key == "kid" {
         if seen_kid { had_error = true; }
         seen_kid = true;
         let kid_str = json::read_string(reader, scratch);
-        if kid_str.len <= out_header.kid.cap {
-            out_header.kid.clear();
-            out_header.kid.append(kid_str);
-        } else { had_error = true; }
+        if !out_header.kid.try_set(kid_str) { had_error = true; }
     } else if key == "cty" {
         if seen_cty { had_error = true; }
         seen_cty = true;
         let cty_str = json::read_string(reader, scratch);
-        if cty_str.len <= out_header.cty.cap {
-            out_header.cty.clear();
-            out_header.cty.append(cty_str);
-        } else { had_error = true; }
+        if !out_header.cty.try_set(cty_str) { had_error = true; }
     } else if key == "crit" {
         if seen_crit { had_error = true; }
         seen_crit = true;
@@ -268,7 +263,7 @@ inline fn parse_jwt_header_member(
             had_error = true;
         }
     } else {
-        if is_header_key_present(key, seen_others) { had_error = true; }
+        if is_header_key_present(key, seen_others[..]) { had_error = true; }
         if seen_others.len < seen_others.cap && key.len <= 64 {
             var item = SeenHeaderKey { .. };
             item.name.append(key);
@@ -316,7 +311,7 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
 
     // RFC 7515 §4.1.11: Every parameter listed in crit MUST be present in the header
     for &cp in out_header.crit {
-        if !is_header_key_present(cp.name[..], seen_others) {
+        if !is_header_key_present(cp.name[..], seen_others[..]) {
             had_error = true;
         }
     }
@@ -347,24 +342,10 @@ struct JwtClaims {
     custom_claims: JwtClaimItem[..16] = [],
 }
 
-fn set_issuer(claims: JwtClaims&, iss: const u8[:]) -> bool {
-    claims.iss.clear();
-    guard iss.len <= claims.iss.cap else { return false; }
-    claims.iss.append(iss);
-    return true;
-}
-
-fn set_subject(claims: JwtClaims&, sub: const u8[:]) -> bool {
-    claims.sub.clear();
-    guard sub.len <= claims.sub.cap else { return false; }
-    claims.sub.append(sub);
-    return true;
-}
-
 fn set_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
+    guard aud.len <= claims.aud.cap && aud.len <= 128 else { return false; }
     claims.aud.clear();
     claims.audiences.clear();
-    guard aud.len <= claims.aud.cap && aud.len <= 128 else { return false; }
     claims.aud.append(aud);
     var item: u8[..128] = [];
     item.append(aud);
@@ -383,32 +364,13 @@ fn add_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
     return true;
 }
 
-fn set_jwt_id(claims: JwtClaims&, jti: const u8[:]) -> bool {
-    claims.jti.clear();
-    guard jti.len <= claims.jti.cap else { return false; }
-    claims.jti.append(jti);
-    return true;
-}
-
-fn set_expiry(claims: JwtClaims&, exp_unix_sec: i64) {
-    claims.exp = exp_unix_sec;
-}
-
-fn set_not_before(claims: JwtClaims&, nbf_unix_sec: i64) {
-    claims.nbf = nbf_unix_sec;
-}
-
-fn set_issued_at(claims: JwtClaims&, iat_unix_sec: i64) {
-    claims.iat = iat_unix_sec;
-}
-
 inline fn is_jwt_standard_claim_name(name: const u8[:]) -> bool {
     return name == "iss" || name == "sub" || name == "aud" ||
            name == "exp" || name == "nbf" || name == "iat" || name == "jti";
 }
 
 fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
-    guard !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 && val.len <= 256 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -430,7 +392,7 @@ fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
 }
 
 fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
-    guard !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -452,7 +414,7 @@ fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
 }
 
 fn set_claim_bool(claims: JwtClaims&, key: const u8[:], val: bool) -> bool {
-    guard !is_jwt_standard_claim_name(key) else { return false; }
+    guard key.len > 0 && !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -769,20 +731,14 @@ inline fn parse_jwt_standard_claim(
         if seen_iss { had_error = true; }
         seen_iss = true;
         let s = json::read_string(reader, scratch);
-        if s.len <= out_claims.iss.cap {
-            out_claims.iss.clear();
-            out_claims.iss.append(s);
-        } else { had_error = true; }
+        if !out_claims.iss.try_set(s) { had_error = true; }
         return true;
     }
     if key == "sub" {
         if seen_sub { had_error = true; }
         seen_sub = true;
         let s = json::read_string(reader, scratch);
-        if s.len <= out_claims.sub.cap {
-            out_claims.sub.clear();
-            out_claims.sub.append(s);
-        } else { had_error = true; }
+        if !out_claims.sub.try_set(s) { had_error = true; }
         return true;
     }
     if key == "aud" {
@@ -795,10 +751,7 @@ inline fn parse_jwt_standard_claim(
         if seen_jti { had_error = true; }
         seen_jti = true;
         let s = json::read_string(reader, scratch);
-        if s.len <= out_claims.jti.cap {
-            out_claims.jti.clear();
-            out_claims.jti.append(s);
-        } else { had_error = true; }
+        if !out_claims.jti.try_set(s) { had_error = true; }
         return true;
     }
     if key == "exp" {
@@ -806,8 +759,8 @@ inline fn parse_jwt_standard_claim(
         seen_exp = true;
         let p = json::peek(reader);
         if (p >= '0' && p <= '9') || p == '-' {
-            let val = json::read_number(reader) as i64;
-            if val < 0 { had_error = true; } else { out_claims.exp = val; }
+            let num = json::read_number(reader);
+            if num >= 0.0 && num <= 9223372036854774784.0 { out_claims.exp = num as i64; } else { had_error = true; }
         } else { json::skip(reader); had_error = true; }
         return true;
     }
@@ -816,8 +769,8 @@ inline fn parse_jwt_standard_claim(
         seen_nbf = true;
         let p = json::peek(reader);
         if (p >= '0' && p <= '9') || p == '-' {
-            let val = json::read_number(reader) as i64;
-            if val < 0 { had_error = true; } else { out_claims.nbf = val; }
+            let num = json::read_number(reader);
+            if num >= 0.0 && num <= 9223372036854774784.0 { out_claims.nbf = num as i64; } else { had_error = true; }
         } else { json::skip(reader); had_error = true; }
         return true;
     }
@@ -826,8 +779,8 @@ inline fn parse_jwt_standard_claim(
         seen_iat = true;
         let p = json::peek(reader);
         if (p >= '0' && p <= '9') || p == '-' {
-            let val = json::read_number(reader) as i64;
-            if val < 0 { had_error = true; } else { out_claims.iat = val; }
+            let num = json::read_number(reader);
+            if num >= 0.0 && num <= 9223372036854774784.0 { out_claims.iat = num as i64; } else { had_error = true; }
         } else { json::skip(reader); had_error = true; }
         return true;
     }
@@ -928,15 +881,8 @@ fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtVal
     };
 }
 
-fn set_expected_type(opts: JwtValidationOptions&, typ: const u8[:]) -> bool {
-    opts.expected_typ.clear();
-    guard typ.len <= opts.expected_typ.cap else { return false; }
-    opts.expected_typ.append(typ);
-    return true;
-}
-
 fn add_supported_crit(opts: JwtValidationOptions&, name: const u8[:]) -> bool {
-    guard opts.supported_crit.len < opts.supported_crit.cap && name.len <= 32 else { return false; }
+    guard opts.supported_crit.len < opts.supported_crit.cap && name.len > 0 && name.len <= 32 else { return false; }
     var item = CritParam { .. };
     item.name.append(name);
     opts.supported_crit.push(item);
@@ -993,6 +939,24 @@ fn sign_jwt_hmac<B>(
     guard secret_key.len >= 16 else { return false; }
     out_token.clear();
 
+    var token_buf: u8[>..] = [];
+    build_jwt_signing_input(header, claims, token_buf);
+    let signing_input = token_buf[..];
+    append_jwt_hmac_signature(header.alg, secret_key, signing_input, token_buf);
+    return out_token.try_set(token_buf[..]);
+}
+
+fn sign_jwt_hmac(
+    header:     const JwtHeader&,
+    claims:     const JwtClaims&,
+    secret_key: const u8[:],
+    out_token:  u8[>..]&,
+) -> bool {
+    guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
+        return false;
+    }
+    guard secret_key.len >= 16 else { return false; }
+    out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
     append_jwt_hmac_signature(header.alg, secret_key, signing_input, out_token);
@@ -1019,6 +983,21 @@ fn sign_jwt_eddsa<B>(
     guard header.alg == JwtAlg.EdDSA else { return false; }
     out_token.clear();
 
+    var token_buf: u8[>..] = [];
+    build_jwt_signing_input(header, claims, token_buf);
+    let signing_input = token_buf[..];
+    append_jwt_eddsa_signature(seed_key, signing_input, token_buf);
+    return out_token.try_set(token_buf[..]);
+}
+
+fn sign_jwt_eddsa(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    seed_key:  const u8[32],
+    out_token: u8[>..]&,
+) -> bool {
+    guard header.alg == JwtAlg.EdDSA else { return false; }
+    out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
     append_jwt_eddsa_signature(seed_key, signing_input, out_token);
@@ -1060,11 +1039,7 @@ fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_se
     guard leeway >= 0 else { return false; }
     guard now_unix_sec >= 0 else { return false; }
     if exp >= 0 {
-        let max_exp_cutoff = if exp > 9223372036854775807 - leeway {
-            9223372036854775807
-        } else {
-            exp + leeway
-        };
+        let max_exp_cutoff = core::add_sat_i64(exp, leeway);
         return now_unix_sec < max_exp_cutoff;
     }
     return !require_exp;
@@ -1074,11 +1049,7 @@ fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_se
     guard leeway >= 0 else { return false; }
     guard now_unix_sec >= 0 else { return false; }
     if nbf >= 0 {
-        let min_nbf_cutoff = if nbf < leeway {
-            0
-        } else {
-            nbf - leeway
-        };
+        let min_nbf_cutoff = max(0, core::sub_sat_i64(nbf, leeway));
         return now_unix_sec >= min_nbf_cutoff;
     }
     return !require_nbf;

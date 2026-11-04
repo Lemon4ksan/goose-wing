@@ -99,22 +99,20 @@ fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
 
 // Replaces the cookie value in-place and returns cookie_ref for chaining.
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
-    cookie_ref.value.clear();
-    cookie_ref.value.append(val);
+    let _ = cookie_ref.value.try_set(val);
     return cookie_ref;
 }
 
 // Sets the Domain attribute in-place, stripping any leading dot (RFC 6265bis Section 5.2.3).
 fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> CanonicalCookie& {
     cookie_ref.has_domain_attr = true;
-    cookie_ref.domain.clear();
     var clean_domain = domain_val;
     var is_host = host_only;
     if clean_domain.len > 0 && clean_domain[0] == '.' {
         clean_domain = clean_domain[1..];
         is_host = false;
     }
-    cookie_ref.domain.append(clean_domain);
+    guard cookie_ref.domain.try_set(clean_domain) else { return cookie_ref; }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = is_host;
     return cookie_ref;
@@ -122,12 +120,8 @@ fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only:
 
 // Configures the cookie as host-only for host_val (RFC 6265bis Section 5.5).
 fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCookie& {
-    cookie_ref.domain.clear();
-    if host_val.len > 0 && host_val[0] == '.' {
-        cookie_ref.domain.append(host_val[1..]);
-    } else {
-        cookie_ref.domain.append(host_val);
-    }
+    let clean = if host_val.len > 0 && host_val[0] == '.' { host_val[1..] } else { host_val };
+    guard cookie_ref.domain.try_set(clean) else { return cookie_ref; }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = true;
     return cookie_ref;
@@ -135,8 +129,7 @@ fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCo
 
 // Sets the cookie Path attribute in-place.
 fn with_path(cookie_ref: CanonicalCookie&, path_val: const u8[:]) -> CanonicalCookie& {
-    cookie_ref.path.clear();
-    cookie_ref.path.append(path_val);
+    guard cookie_ref.path.try_set(path_val) else { return cookie_ref; }
     cookie_ref.has_path_attr = true;
     return cookie_ref;
 }
@@ -170,8 +163,7 @@ fn with_priority(cookie_ref: CanonicalCookie&, priority_level: CookiePriority) -
 
 // Sets the CHIPS top-frame partition key and updates the Partitioned flag.
 fn with_partition_key(cookie_ref: CanonicalCookie&, key: const u8[:]) -> CanonicalCookie& {
-    cookie_ref.partition_key.clear();
-    cookie_ref.partition_key.append(key);
+    guard cookie_ref.partition_key.try_set(key) else { return cookie_ref; }
     cookie_ref.partitioned = (key.len > 0);
     return cookie_ref;
 }
@@ -183,8 +175,8 @@ fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64)
         cookie_ref.expires_utc = 0;
         return cookie_ref;
     }
-    let capped_sec = core::ct_min_i64(seconds, internal::K_MAX_COOKIE_AGE_SEC);
-    let delta_us = capped_sec * 1000000;
+    let capped_sec = min(seconds, internal::K_MAX_COOKIE_AGE_SEC);
+    let delta_us = core::mul_sat_i64(capped_sec, 1000000);
     cookie_ref.expires_utc = core::add_sat_i64(now_us, delta_us);
     return cookie_ref;
 }
@@ -228,33 +220,6 @@ fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bo
 }
 
 // ---- unique key formatting & serialization --------------------------------
-
-// Computes the canonical unique key for collision resolution:
-// (name, domain, path, host_only, partition_key, source_scheme, source_port).
-fn format_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('\0');
-    out.append(cookie_val.domain[..]);
-    out.push('\0');
-    out.append(cookie_val.path[..]);
-    out.push('\0');
-    out.append(if cookie_val.host_only { "H" } else { "D" });
-    out.push('\0');
-    out.append(cookie_val.partition_key[..]);
-    out.push('\0');
-    format(out, cookie_val.source_port as i64);
-    out.push('\0');
-    out.append(source_scheme_to_string(cookie_val.source_scheme));
-}
-
-// Unique key tuple (name, domain, path) for legacy equivalence checks.
-fn format_legacy_unique_key<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    out.append(cookie_val.name[..]);
-    out.push('\0');
-    out.append(cookie_val.domain[..]);
-    out.push('\0');
-    out.append(cookie_val.path[..]);
-}
 
 // Serializes cookie into a Set-Cookie header string.
 fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {

@@ -59,8 +59,8 @@ typedef struct {
 } wing_bytes_ro;
 
 // Flags for guarded arena allocation
-#define WING_PAGE_GUARD_PAGE   0x01
-#define WING_PAGE_HUGE_PAGES   0x02
+#define WING_PAGE_GUARD_PAGE 0x01
+#define WING_PAGE_HUGE_PAGES 0x02
 
 typedef struct {
     uint8_t *base;
@@ -93,12 +93,8 @@ static uint64_t align_page_up(uint64_t size, uint64_t page_size) {
     return (size + page_size - 1) & ~(page_size - 1);
 }
 
-int32_t wing_guarded_arena_create(
-    uint64_t requested_capacity,
-    uint32_t flags,
-    uint64_t *out_handle,
-    uint64_t *out_capacity
-) {
+int32_t wing_guarded_arena_create(uint64_t requested_capacity, uint32_t flags, uint64_t *out_handle,
+                                  uint64_t *out_capacity) {
     if (!out_handle || !out_capacity || requested_capacity == 0) {
         return -1;
     }
@@ -208,11 +204,7 @@ void wing_guarded_arena_destroy(uint64_t handle) {
     free(arena);
 }
 
-int64_t wing_guarded_arena_write(
-    uint64_t handle,
-    uint64_t offset,
-    wing_bytes_ro src
-) {
+int64_t wing_guarded_arena_write(uint64_t handle, uint64_t offset, wing_bytes_ro src) {
     if (handle == 0 || !src.data || src.len <= 0) return 0;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
     if (!arena || !arena->base) return -1;
@@ -226,11 +218,7 @@ int64_t wing_guarded_arena_write(
     return (int64_t)to_write;
 }
 
-int64_t wing_guarded_arena_read(
-    uint64_t handle,
-    uint64_t offset,
-    wing_bytes_rw dst
-) {
+int64_t wing_guarded_arena_read(uint64_t handle, uint64_t offset, wing_bytes_rw dst) {
     if (handle == 0 || !dst.data || dst.len <= 0) return 0;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
     if (!arena || !arena->base) return -1;
@@ -353,11 +341,7 @@ typedef struct {
 #endif
 } wing_mmap_file_t;
 
-int32_t wing_mmap_file_open(
-    wing_bytes_ro path,
-    uint64_t *out_handle,
-    uint64_t *out_size
-) {
+int32_t wing_mmap_file_open(wing_bytes_ro path, uint64_t *out_handle, uint64_t *out_size) {
     if (!out_handle || !out_size || !path.data || path.len <= 0 || path.len >= 1024) {
         return -1;
     }
@@ -397,15 +381,8 @@ int32_t wing_mmap_file_open(
     fclose(f);
     mf->is_malloc = 1;
 #elif defined(_WIN32)
-    HANDLE hFile = CreateFileA(
-        path_buf,
-        GENERIC_READ,
-        FILE_SHARE_READ,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
+    HANDLE hFile =
+        CreateFileA(path_buf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         free(mf);
         return -3;
@@ -487,11 +464,7 @@ int32_t wing_mmap_file_open(
     return 0;
 }
 
-int64_t wing_mmap_file_read(
-    uint64_t handle,
-    uint64_t offset,
-    wing_bytes_rw dst
-) {
+int64_t wing_mmap_file_read(uint64_t handle, uint64_t offset, wing_bytes_rw dst) {
     if (handle == 0 || !dst.data || dst.len <= 0) return 0;
     wing_mmap_file_t *mf = (wing_mmap_file_t *)(uintptr_t)handle;
     if (!mf || (!mf->base && mf->file_size > 0)) return -1;
@@ -507,12 +480,7 @@ int64_t wing_mmap_file_read(
     return (int64_t)to_read;
 }
 
-int32_t wing_mmap_file_send(
-    uint64_t handle,
-    uint64_t offset,
-    uint32_t len,
-    int64_t sock_fd
-) {
+int32_t wing_mmap_file_send(uint64_t handle, uint64_t offset, uint32_t len, int64_t sock_fd) {
     if (handle == 0 || len == 0 || sock_fd < 0) return 0;
     wing_mmap_file_t *mf = (wing_mmap_file_t *)(uintptr_t)handle;
     if (!mf || (!mf->base && mf->file_size > 0)) return -1;
@@ -524,7 +492,7 @@ int32_t wing_mmap_file_send(
     if (to_send == 0 || !mf->base) return 0;
 
 #if defined(__wasm__)
-    wing_bytes_ro slice = { mf->base + offset, (int64_t)to_send };
+    wing_bytes_ro slice = {mf->base + offset, (int64_t)to_send};
     return wing_tcp_send(sock_fd, slice);
 #elif defined(_WIN32)
     int sent = send((SOCKET)sock_fd, (const char *)(mf->base + offset), (int)to_send, 0);

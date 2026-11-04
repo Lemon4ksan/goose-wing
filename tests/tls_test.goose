@@ -4156,6 +4156,68 @@ fn test_remediation_record_aead(t: lit::T&) {
     };
 }
 
+// 17. Live TLS 1.3 Transport, Handshake Orchestration & Session Tickets
+fn test_live_tls_transport_session(t: lit::T&) {
+    t.run("TLS-43: Canonical Ed25519 X.509 Certificate Generation & Trust Anchor Validation") { sub =>
+        let seed: u8[32] = [
+            0x9d, 0x61, 0xb1, 0x9c, 0x4f, 0x61, 0x97, 0xf8,
+            0x9a, 0x21, 0xe1, 0xf3, 0xc2, 0x55, 0xa0, 0x45,
+            0x82, 0xe2, 0x15, 0x68, 0x77, 0x11, 0x0f, 0x2e,
+            0xa0, 0x21, 0x86, 0xc4, 0x2d, 0x39, 0x53, 0x4f,
+        ];
+        var cert_der: u8[..2048] = [];
+        let ok_gen = wing::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", cert_der);
+        sub.assert_true(ok_gen, "canonical Ed25519 self-signed DER cert generated");
+
+        var parsed = wing::ParsedCert { .. };
+        let ok_parse = wing::parse_x509_certificate(cert_der[..], parsed);
+        sub.assert_true(ok_parse, "generated cert parsed by X.509 parser");
+        sub.assert_true(parsed.has_san, "cert has Subject Alternative Name extension");
+        sub.assert_true(parsed.has_basic_constraints, "cert has Basic Constraints extension");
+        sub.assert_true(parsed.is_ca, "self-signed test cert has is_ca true");
+
+        var sans: wing::SanEntry[..16] = [];
+        let ok_san = wing::get_cert_san_extension(parsed, cert_der[..], sans);
+        sub.assert_true(ok_san, "extracted SAN entries");
+        sub.assert_true(wing::match_any_san(sans, "localhost"), "matches DNS SAN 'localhost'");
+        sub.assert_true(wing::match_any_san(sans, "127.0.0.1"), "matches IP SAN '127.0.0.1'");
+        sub.assert_false(wing::match_any_san(sans, "evil.com"), "rejects untrusted SAN 'evil.com'");
+
+        var store = wing::TrustAnchorStore { .. };
+        let ok_anchor = wing::add_trust_anchor_cert_der(store, cert_der[..]);
+        sub.assert_true(ok_anchor, "added cert to trust anchor store");
+
+        var chain_parsed: wing::ParsedCert[..8] = [];
+        chain_parsed.push(parsed);
+        var chain_raw: const u8[:][..8] = [];
+        chain_raw.push(cert_der[..]);
+
+        let alert = wing::verify_certificate_chain(chain_parsed, chain_raw, store, 1735689600);
+        sub.assert_eq(wing::tls_alert_to_u8(alert), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "chain verified against trusted anchor store");
+
+        var empty_store = wing::TrustAnchorStore { .. };
+        let alert_untrusted = wing::verify_certificate_chain(chain_parsed, chain_raw, empty_store, 1735689600);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_untrusted), wing::tls_alert_to_u8(wing::TlsAlert.UnknownCa), "untrusted cert rejected with UnknownCa alert");
+    };
+
+    t.run("TLS-44: Post-Handshake Session Ticket & KeyUpdate Dispatch") { sub =>
+        let slot_idx = wing::alloc_tls_cipher_slot();
+        sub.assert_true(slot_idx != 0xFFFF, "allocated cipher slot");
+
+        let ok_ku = wing::tls_send_key_update(0, slot_idx, 0);
+        sub.assert_false(ok_ku, "KeyUpdate rejected on uninitialized/invalid socket descriptor");
+
+        let ok_nst = wing::tls_send_new_session_ticket(0, slot_idx, 86400, "nonce", "ticket");
+        sub.assert_false(ok_nst, "NewSessionTicket rejected on invalid socket descriptor");
+
+        let srv_cfg = wing::TlsServerHandshakeConfig { .. };
+        let _, ok_srv = wing::tls_server_handshake(-1, srv_cfg);
+        sub.assert_false(ok_srv, "tls_server_handshake safely fails on closed fd");
+
+        wing::free_tls_cipher_slot(slot_idx);
+    };
+}
+
 // Main TLS 1.3 & X.509 Conformance Runner
 fn main() {
     var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
@@ -4176,6 +4238,7 @@ fn main() {
     lit::run_case(runner, "14. X.509 Signatures & OCSP/CRL", test_remediation_x509_signatures);
     lit::run_case(runner, "15. Handshake PHA, Boundary & ECH", test_remediation_misc);
     lit::run_case(runner, "16. Record Unified AEAD Dispatch", test_remediation_record_aead);
+    lit::run_case(runner, "17. Live TLS 1.3 Transport, Handshake Orchestration & Session Tickets", test_live_tls_transport_session);
 
     let ok = lit::finish(runner);
     assert(ok);

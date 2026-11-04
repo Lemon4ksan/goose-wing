@@ -379,16 +379,10 @@ struct PslDatabase {
     rules:     PslRule[..64] = [],
 }
 
-fn psl_to_lower(s: u8[:]) {
-    for i in s.len {
-        s[i] = core::to_lower_ascii_byte(s[i]);
-    }
-}
-
 fn new_psl_rule(pattern: const u8[:], rule_type: PslRuleType, section: PslSection) -> PslRule {
     var new_rule = PslRule { rule_type: rule_type, section: section, .. };
-    new_rule.pattern.append(pattern);
-    psl_to_lower(new_rule.pattern[..]);
+    guard new_rule.pattern.try_set(pattern) else { return new_rule; }
+    to_lower(new_rule.pattern[..]);
     return new_rule;
 }
 
@@ -397,15 +391,8 @@ fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, 
     db.rules.push(new_psl_rule(pattern, rule_type, section));
 }
 
-fn clear_psl_rules(db: PslDatabase&) {
-    db.rules.clear();
-    db.use_dafsa = false;
-}
-
 fn new_psl_database() -> PslDatabase {
-    var db = PslDatabase { rules: [], use_dafsa: true };
-    init_default_psl_rules(db);
-    return db;
+    return PslDatabase { rules: [], use_dafsa: true };
 }
 
 // ---- public suffix query and matching engine -------------------------------
@@ -415,8 +402,8 @@ fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
     let trimmed = core::trim_byte(domain, '.');
     guard trimmed.len > 0 && trimmed.len <= 256 else { return false; }
-    out.append(trimmed);
-    psl_to_lower(out[..]);
+    guard out.try_set(trimmed) else { return false; }
+    to_lower(out[..]);
     return true;
 }
 
@@ -673,6 +660,12 @@ fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) 
     out.append(clean_host[start_pos..]);
 }
 
+// Extracts eTLD+1 from host using the full compiled DAFSA automaton.
+fn psl_extract_etld_plus_one<B>(host: const u8[:], out: B&) {
+    let db = PslDatabase { use_dafsa: true, .. };
+    extract_etld_plus_one(db, host, out);
+}
+
 // ---- public suffix & rfc 6265 scoping api ----------------------------------
 
 // Whether domain is a public suffix (cannot set domain cookies for it).
@@ -680,11 +673,6 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
     let clean_domain = core::trim_byte(domain, '.');
     guard clean_domain.len > 0 else { return false; }
     return psl_is_public_suffix(clean_domain);
-}
-
-// Overload taking an explicit PSL database
-fn is_public_suffix_domain(db: const PslDatabase&, domain: const u8[:]) -> bool {
-    return is_public_suffix(db, domain);
 }
 
 // Matches host against cookie domain (RFC 6265 Section 5.1.3).
@@ -784,8 +772,4 @@ fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
             }
         }
     };
-}
-
-fn init_default_psl_rules(db: PslDatabase&) {
-    db.use_dafsa = true;
 }

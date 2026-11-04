@@ -15,6 +15,7 @@ const TLS_CONTENT_ALERT:              u8 = 0x15; // 21
 const TLS_CONTENT_HANDSHAKE:          u8 = 0x16; // 22
 const TLS_CONTENT_APPLICATION_DATA:   u8 = 0x17; // 23
 
+const TLS_LEGACY_VERSION_1_0: u16 = 0x0301; // RFC 8446 Section 5.1
 const TLS_LEGACY_VERSION_1_2: u16 = 0x0303; // RFC 8446 Section 5.1
 const TLS_VERSION_1_3:        u16 = 0x0304; // RFC 8446 Section 4.2.1
 
@@ -142,6 +143,7 @@ const HPKE_AEAD_AES_128_GCM:             u16 = 0x0001;  // RFC 9180 Section 7.3
 const HPKE_AEAD_AES_256_GCM:             u16 = 0x0002;  // RFC 9180 Section 7.3
 const HPKE_AEAD_CHACHA20_POLY1305:       u16 = 0x0003;  // RFC 9180 Section 7.3
 
+const GROUP_X25519:                  u16 = 0x001D; // RFC 8446 Section 4.2.7
 const GROUP_SECP256R1_MLKEM768:      u16 = 0x11EB; // RFC 10024 Section 7.2
 const GROUP_X25519_MLKEM768:         u16 = 0x11EC; // RFC 10024 Section 7.1
 const GROUP_SECP384R1_MLKEM1024:     u16 = 0x11ED; // RFC 10024 Section 7.3

@@ -240,7 +240,7 @@ fn test_curl_location_url_resolution(t: lit::T&) {
 fn test_curl_redirect_guards_and_limits(t: lit::T&) {
     t.run("curl test25: redirect loop exceeding max_redirects returns error") { sub =>
         var session = wing::new_session();
-        wing::set_max_redirects(session, 3);
+        session.max_redirects = 3;
 
         // Infinite 302 loop: /step1 -> /step2 -> /step1 ...
         wing::mock_route(session, "GET", "https://example.com/step1", 302, "");

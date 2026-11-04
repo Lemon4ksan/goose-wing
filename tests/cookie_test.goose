@@ -965,8 +965,8 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: lit::T&) {
 
         var sql_host: u8[..512] = [];
         var sql_dom:  u8[..512] = [];
-        wing::generate_sqlite_insert_sql(c_host, sql_host);
-        wing::generate_sqlite_insert_sql(c_dom, sql_dom);
+        wing::generate_sqlite_insert_sql(sql_host, c_host);
+        wing::generate_sqlite_insert_sql(sql_dom, c_dom);
 
         // Host-only cookie has host_key = 'example.com', domain cookie has host_key = '.example.com'
         sub.assert_contains(sql_host[..], "'example.com'", "SQL-01: host-only cookie must not have leading dot in host_key");
@@ -2398,7 +2398,7 @@ fn test_cookie_hardening_invariants(t: lit::T&) {
 
     t.run("PSL-01: PSL Wildcard base domains must be recognized as public suffixes") { sub =>
         var db = wing::new_psl_database();
-        wing::init_default_psl_rules(db);
+        db.use_dafsa = true;
 
         // kawasaki.jp is a wildcard rule pattern (*.kawasaki.jp) -> base domain is a public suffix
         sub.assert_true(wing::is_public_suffix(db, "kawasaki.jp"), "kawasaki.jp base domain must be public suffix");

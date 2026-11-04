@@ -161,6 +161,10 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
     or `isize` (attempting `let x: usize` produces `unknown type: usize`; casting `x as usize` fails with
     `as can only convert between numeric types, not to usize`). Slice and buffer `.len` is strictly `i64`,
     and indexing uses `i64` or `u64`. Always use canonical fixed-width types: `u64`, `i64`, `u32`, `i32`.
+  - **Built-in `min(a, b)`, `max(a, b)`, and UFCS `.try_set(src)`**: Goose provides built-in `min` and
+    `max` in `std`. Never write ternary clamping (`if x > 96 { 96 } else { x }`); write `min(x, 96)` or
+    `max(0, x)` directly (which also avoids adding branch nodes to `EffCC` / `G-CRAP`). Similarly, use
+    `dst.try_set(src)` from `core/ufcs.goose` instead of repeating `guard src.len <= dst.cap ... dst.clear(); dst.append(src);`.
 
 ## Strict code clarity and anti-bloat invariants
 

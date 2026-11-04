@@ -235,7 +235,7 @@ fn parse_h1_header_block(
         update_response_presence(resp, hname);
 
         if eq_ascii_fold(hname, "Set-Cookie") && resp.set_cookies.len < resp.set_cookies.cap {
-            var sc_buf: u8[..256] = [];
+            var sc_buf: u8[..1024] = [];
             let n = if hval.len > sc_buf.cap { sc_buf.cap } else { hval.len };
             sc_buf.append(hval[..n]);
             resp.set_cookies.push(sc_buf);

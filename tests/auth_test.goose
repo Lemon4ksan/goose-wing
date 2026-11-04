@@ -202,12 +202,12 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
     t.run("HS256 token generation and validation") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "key-hs256");
         var clm = wing::JwtClaims { .. };
-        wing::set_issuer(clm, "https://auth.goose-wing.dev");
-        wing::set_subject(clm, "user_42");
+        clm.iss.try_set("https://auth.goose-wing.dev");
+        clm.sub.try_set("user_42");
         wing::set_audience(clm, "api.service.internal");
-        wing::set_jwt_id(clm, "jwt-uuid-001");
-        wing::set_expiry(clm, now_sec + 3600);
-        wing::set_issued_at(clm, now_sec);
+        clm.jti.try_set("jwt-uuid-001");
+        clm.exp = now_sec + 3600;
+        clm.iat = now_sec;
         wing::set_claim(clm, "role", "admin");
         wing::set_claim_int(clm, "tier", 5);
         wing::set_claim_bool(clm, "verified", true);
@@ -243,8 +243,8 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
         // HS384
         var hdr384 = wing::new_jwt_header(wing::JwtAlg.HS384);
         var clm384 = wing::JwtClaims { .. };
-        wing::set_subject(clm384, "agent_384");
-        wing::set_expiry(clm384, now_sec + 100);
+        clm384.sub.try_set("agent_384");
+        clm384.exp = now_sec + 100;
 
         var token384: u8[>..] = [];
         sub.assert_true(wing::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 signed");
@@ -259,8 +259,8 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
         // HS512
         var hdr512 = wing::new_jwt_header(wing::JwtAlg.HS512);
         var clm512 = wing::JwtClaims { .. };
-        wing::set_subject(clm512, "agent_512");
-        wing::set_expiry(clm512, now_sec + 100);
+        clm512.sub.try_set("agent_512");
+        clm512.exp = now_sec + 100;
 
         var token512: u8[>..] = [];
         sub.assert_true(wing::sign_jwt_hmac(hdr512, clm512, secret, token512), "HS512 signed");
@@ -276,8 +276,8 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
     t.run("Tampered payload or signature rejected") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "original_user");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.sub.try_set("original_user");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -316,9 +316,9 @@ fn test_asymmetric_eddsa_jwt(t: lit::T&) {
     t.run("EdDSA token generation and validation") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "ed25519-root-key");
         var clm = wing::JwtClaims { .. };
-        wing::set_issuer(clm, "https://id.goose.io");
-        wing::set_subject(clm, "srv_identity_ed25519");
-        wing::set_expiry(clm, now_sec + 1800);
+        clm.iss.try_set("https://id.goose.io");
+        clm.sub.try_set("srv_identity_ed25519");
+        clm.exp = now_sec + 1800;
         wing::set_claim(clm, "scope", "cluster:admin");
 
         var token: u8[>..] = [];
@@ -340,8 +340,8 @@ fn test_asymmetric_eddsa_jwt(t: lit::T&) {
     t.run("EdDSA signature tampering and wrong public key") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "device_007");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.sub.try_set("device_007");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_eddsa(hdr, clm, seed, token);
@@ -367,8 +367,8 @@ fn test_jwt_security_defenses(t: lit::T&) {
         // Attacker creates HS256 token, but server expects EdDSA
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "victim");
-        wing::set_expiry(clm, now_sec + 300);
+        clm.sub.try_set("victim");
+        clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -391,8 +391,8 @@ fn test_jwt_security_defenses(t: lit::T&) {
         let public_key = core::ed25519_public_key(seed);
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "victim");
-        wing::set_expiry(clm, now_sec + 300);
+        clm.sub.try_set("victim");
+        clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
         wing::sign_jwt_eddsa(hdr, clm, seed, token);
@@ -417,8 +417,8 @@ fn test_jwt_security_defenses(t: lit::T&) {
     t.run("Expiration and Clock Skew Leeway (exp)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "time_traveler");
-        wing::set_expiry(clm, now_sec - 100); // Expired 100 seconds ago
+        clm.sub.try_set("time_traveler");
+        clm.exp = now_sec - 100; // Expired 100 seconds ago
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -442,9 +442,9 @@ fn test_jwt_security_defenses(t: lit::T&) {
     t.run("Not Before check (nbf)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "future_user");
-        wing::set_not_before(clm, now_sec + 200); // Valid only in 200 seconds
-        wing::set_expiry(clm, now_sec + 1000);
+        clm.sub.try_set("future_user");
+        clm.nbf = now_sec + 200; // Valid only in 200 seconds
+        clm.exp = now_sec + 1000;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -461,10 +461,10 @@ fn test_jwt_security_defenses(t: lit::T&) {
     t.run("Issuer, Audience, Subject Mismatch Rejections") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_issuer(clm, "auth.real.com");
+        clm.iss.try_set("auth.real.com");
         wing::set_audience(clm, "app.real.com");
-        wing::set_subject(clm, "user.real");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.sub.try_set("user.real");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -602,9 +602,9 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
     t.run("Verify EdDSA token using JWKS key lookup") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
         var clm = wing::JwtClaims { .. };
-        wing::set_issuer(clm, "auth.corp.com");
-        wing::set_subject(clm, "admin_alice");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.iss.try_set("auth.corp.com");
+        clm.sub.try_set("admin_alice");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
@@ -623,8 +623,8 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
     t.run("Verify HMAC token using JWKS key lookup") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "legacy-sym-v1");
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "service_worker");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.sub.try_set("service_worker");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
@@ -642,8 +642,8 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
     t.run("Unknown kid in token rejected with KeyNotFound") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "unregistered-kid-999");
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "intruder");
-        wing::set_expiry(clm, now_sec + 600);
+        clm.sub.try_set("intruder");
+        clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
@@ -659,8 +659,8 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
     t.run("JWKS Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 §3.1)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "victim");
-        wing::set_expiry(clm, now_sec + 300);
+        clm.sub.try_set("victim");
+        clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
@@ -688,8 +688,8 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "enc-key-1");
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "victim");
-        wing::set_expiry(clm, now_sec + 300);
+        clm.sub.try_set("victim");
+        clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
         wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
@@ -707,8 +707,8 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
 
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS512, "hs256-only-key");
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "victim");
-        wing::set_expiry(clm, now_sec + 300);
+        clm.sub.try_set("victim");
+        clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
         wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
@@ -814,8 +814,8 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
     t.run("Negative leeway rejected in expiration validation (RFC 8725 §2.5)") { sub =>
         var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
         var clm = wing::JwtClaims { .. };
-        wing::set_subject(clm, "alice");
-        wing::set_expiry(clm, 1000);
+        clm.sub.try_set("alice");
+        clm.exp = 1000;
 
         var token: u8[..1024] = [];
         wing::sign_jwt_hmac(hdr, clm, secret, token);
@@ -967,7 +967,7 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var out_h = wing::new_jwt_header();
         var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        wing::set_expected_type(opts, "at+jwt");
+        opts.expected_typ.try_set("at+jwt");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.None, "Expected typ 'at+jwt' matches token typ");
         sub.assert_bytes_eq(out_h.typ[..], "at+jwt", "Parsed typ matches");
@@ -982,13 +982,13 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var out_h = wing::new_jwt_header();
         var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        wing::set_expected_type(opts, "at+jwt"); // expected without prefix, header has prefix
+        opts.expected_typ.try_set("at+jwt"); // expected without prefix, header has prefix
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.None, "'application/at+jwt' equivalent to 'at+jwt'");
 
         // Inverse: expected with prefix, header without prefix
         var opts2 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        wing::set_expected_type(opts2, "application/at+jwt");
+        opts2.expected_typ.try_set("application/at+jwt");
         let hdr_json2 = "{\"alg\":\"HS256\",\"typ\":\"at+jwt\"}";
         var token2: u8[..1024] = [];
         craft_raw_jwt(hdr_json2, clm_json, secret, token2);
@@ -1006,7 +1006,7 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var out_h = wing::new_jwt_header();
         var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        wing::set_expected_type(opts, "at+jwt"); // expecting access token
+        opts.expected_typ.try_set("at+jwt"); // expecting access token
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.TypeMismatch, "Type confusion between id+jwt and at+jwt rejected");
     };
@@ -1020,7 +1020,7 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var out_h = wing::new_jwt_header();
         var out_c = wing::JwtClaims { .. };
         var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        wing::set_expected_type(opts, "at+jwt");
+        opts.expected_typ.try_set("at+jwt");
         let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
         sub.assert_eq(err, wing::JwtError.None, "Case-insensitive typ comparison succeeds");
     };

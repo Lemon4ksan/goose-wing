@@ -21,7 +21,8 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // ----------------------------------------------------------------------------
 fn test_cve_ipv4_formats_ssrf(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     let targets: const u8[..64][..6] = [
         "http://0177.0.0.1/admin",
@@ -44,7 +45,8 @@ fn test_cve_ipv4_formats_ssrf(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     let lh_targets: const u8[..64][..3] = [
         "http://localhost/admin",
@@ -408,7 +410,8 @@ fn test_cve_proxy_authorization_leakage(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_ipv6_zone_id_proxy_bypass(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     // IPv6 link-local with zone ID
     var req_ll = wing::new_get("http://[fe80::1%25eth0]/admin");

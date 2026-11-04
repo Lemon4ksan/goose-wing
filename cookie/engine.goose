@@ -43,7 +43,7 @@ struct CanonicalCookieJar {
     expired_overwrite_count:    i64  = 0,
     rejected_security_count:    i64  = 0,
     strict_secure_cookies:      bool = false,
-    access_update_threshold_us: i64  = 60000000, // 60s (Chromium kDefaultAccessUpdateThresholdSeconds)
+    access_update_threshold_us: i64  = internal::K_ACCESS_UPDATE_THRESHOLD_US, // 60s
 
     cookies: CanonicalCookie[>..] = [],
 }
@@ -53,8 +53,8 @@ struct CanonicalCookieJar {
 // jar.add("session_id", "val").with_domain("example.com").with_secure();
 fn add(jar: CanonicalCookieJar&, name: const u8[:], val: const u8[:]) -> CanonicalCookie& {
     var new_cookie = CanonicalCookie { .. };
-    new_cookie.name.append(name);
-    new_cookie.value.append(val);
+    let _ = new_cookie.name.try_set(name);
+    let _ = new_cookie.value.try_set(val);
     new_cookie.creation_seq = jar.seq_counter;
     jar.seq_counter = core::add_sat_i64(jar.seq_counter, 1);
     return jar.cookies.push(new_cookie);
@@ -198,16 +198,6 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 
 // ---- ingestion & insertion pipeline ----------------------------------------
 
-fn is_cookie_security_valid(cookie: const CanonicalCookie&, opts: CookieSourceOptions) -> bool {
-    if !cookie.validate_canonical_cookie_security(opts) {
-        return false;
-    }
-    if !opts.is_http_api && !validate_script_cookie_name(cookie.name[..]) {
-        return false;
-    }
-    return true;
-}
-
 fn insert_fresh_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, now_us: i64) {
     new_cookie.creation_utc = now_us;
     new_cookie.last_update_utc = now_us;
@@ -226,7 +216,7 @@ fn set_canonical_cookie(
     opts:       CookieSourceOptions,
     now_us:     i64,
 ) -> bool {
-    if !is_cookie_security_valid(new_cookie, opts) {
+    if !new_cookie.validate_canonical_cookie_security(opts) {
         jar.rejected_security_count = core::add_sat_i64(jar.rejected_security_count, 1);
         return false;
     }
@@ -241,7 +231,7 @@ fn set_canonical_cookie(
         let ok = jar.handle_cookie_collision(new_cookie, collision_idx, opts.url_is_secure, now_us);
         if ok && !new_cookie.is_expired(now_us) {
             var etld_plus_one: u8[..256] = [];
-            new_cookie.get_canonical_cookie_effective_domain(etld_plus_one);
+            psl_extract_etld_plus_one(new_cookie.domain[..], etld_plus_one);
             jar.enforce_post_insertion_quotas(new_cookie, etld_plus_one[..], now_us);
         }
         return ok;
@@ -252,13 +242,13 @@ fn set_canonical_cookie(
         return true;
     }
 
-    if jar.has_secure_shadowing_collision(new_cookie, opts.url_is_secure) {
+    if has_secure_shadowing_collision(jar, new_cookie, opts.url_is_secure) {
         jar.rejected_security_count = core::add_sat_i64(jar.rejected_security_count, 1);
         return false;
     }
 
     var etld_plus_one: u8[..256] = [];
-    new_cookie.get_canonical_cookie_effective_domain(etld_plus_one);
+    psl_extract_etld_plus_one(new_cookie.domain[..], etld_plus_one);
 
     insert_fresh_cookie(jar, new_cookie, now_us);
     jar.enforce_post_insertion_quotas(new_cookie, etld_plus_one[..], now_us);
@@ -291,9 +281,23 @@ fn set_cookie_header(
     );
     guard ok else { return false; }
 
-    if parsed_cookie.partitioned && partition_key.len > 0 {
-        parsed_cookie.partition_key.clear();
-        parsed_cookie.partition_key.append(partition_key);
+    if parsed_cookie.partitioned {
+        if partition_key.len > 0 {
+            parsed_cookie.partition_key.clear();
+            parsed_cookie.partition_key.append(partition_key);
+        } else if parsed_cookie.partition_key.len == 0 {
+            parsed_cookie.partition_key.clear();
+            let sch = if parsed_url.is_secure { "https" } else { "http" };
+            parsed_cookie.partition_key.append(sch);
+            parsed_cookie.partition_key.append("://");
+            var etld: u8[..128] = [];
+            psl_extract_etld_plus_one(parsed_url.host[..], etld);
+            if etld.len > 0 {
+                parsed_cookie.partition_key.append(etld[..]);
+            } else {
+                parsed_cookie.partition_key.append(parsed_url.host[..]);
+            }
+        }
     }
 
     parsed_cookie.adjust_origin_bound_cookies_on_insert(parsed_url.host[..], parsed_url.port, parsed_url.is_secure);
@@ -599,7 +603,12 @@ fn has_secure_shadowing_collision(
     new_cookie:    const CanonicalCookie&,
     url_is_secure: bool,
 ) -> bool {
-    return jar.cookies.any() { it.would_insecure_overwrite_secure(new_cookie, url_is_secure) };
+    for &existing in jar.cookies {
+        if existing.would_insecure_overwrite_secure(new_cookie, url_is_secure) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn has_httponly_shadowing_collision(
@@ -646,13 +655,9 @@ fn priority_rank(priority_level: CookiePriority) -> i32 {
     };
 }
 
-fn get_canonical_cookie_effective_domain<B>(cookie_val: const CanonicalCookie&, out: B&) {
-    core::extract_etld_plus_one(cookie_val.domain[..], out);
-}
-
 fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus_one: const u8[:]) -> bool {
     var candidate_etld: u8[..256] = [];
-    get_canonical_cookie_effective_domain(cookie_val, candidate_etld);
+    psl_extract_etld_plus_one(cookie_val.domain[..], candidate_etld);
     return eq_ascii_fold(candidate_etld[..], target_etld_plus_one);
 }
 
@@ -881,11 +886,11 @@ fn deduct_domain_priority_excess(
 }
 
 fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], need_to_evict: i64) -> i64 {
-    var candidate_indices: u16[..3400] = [];
+    var candidate_indices: i32[..3400] = [];
     for &cookie_val, idx in jar.cookies {
         if cookie_val.matches_effective_domain(etld_plus_one) {
             guard candidate_indices.len < candidate_indices.cap else { break; }
-            candidate_indices.push(idx as u16);
+            candidate_indices.push(idx as i32);
         }
     }
     guard candidate_indices.len > 0 else { return 0; }
@@ -904,12 +909,12 @@ fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], n
 }
 
 fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64, now_us: i64) -> i64 {
-    var candidate_indices: u16[..3400] = [];
+    var candidate_indices: i32[..3400] = [];
     for &cookie_val, idx in jar.cookies {
         let elapsed_us = core::sub_sat_i64(now_us, cookie_val.last_access_utc);
         if elapsed_us >= internal::K_SAFE_FROM_GLOBAL_PURGE_US {
             guard candidate_indices.len < candidate_indices.cap else { break; }
-            candidate_indices.push(idx as u16);
+            candidate_indices.push(idx as i32);
         }
     }
     guard candidate_indices.len > 0 else { return 0; }
@@ -933,11 +938,18 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
 // up to `need_to_evict` to prevent cookie jar exhaustion under active traffic.
 fn evict_global_lru_fallback_cookies(jar: CanonicalCookieJar&, need_to_evict: i64) -> i64 {
     guard need_to_evict > 0 else { return 0; }
-    var candidate_indices: u16[..3400] = [];
+    var candidate_indices: i32[..3400] = [];
     for &cookie_val, idx in jar.cookies {
         if !cookie_val.secure || cookie_val.priority == CookiePriority.Low {
             guard candidate_indices.len < candidate_indices.cap else { break; }
-            candidate_indices.push(idx as u16);
+            candidate_indices.push(idx as i32);
+        }
+    }
+    // Hard ceiling breach (K_MAX_COOKIES = 3300): must evict even secure/medium cookies to prevent memory breach
+    if candidate_indices.len == 0 && jar.cookies.len >= internal::K_MAX_COOKIES {
+        for &cookie_val, idx in jar.cookies {
+            guard candidate_indices.len < candidate_indices.cap else { break; }
+            candidate_indices.push(idx as i32);
         }
     }
     guard candidate_indices.len > 0 else { return 0; }

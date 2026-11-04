@@ -1423,7 +1423,7 @@ fn test_masque_address_capsule_bounds(t: lit::T&) {
 fn test_jwt_exp_overflow(t: lit::T&) {
     var claims = wing::JwtClaims { .. };
     // Expiry near i64::MAX
-    wing::set_expiry(claims, 9223372036854775800);
+    claims.exp = 9223372036854775800;
     var opts = wing::JwtValidationOptions {};
     opts.leeway_seconds = 60;
     // Current time 1000 should NOT consider this expired despite addition overflow

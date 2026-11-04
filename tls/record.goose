@@ -494,7 +494,7 @@ fn finish_u24_prefix(b: ByteBuilder&) -> bool {
 const RECORD_BUFSIZE_IN:  i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
 const RECORD_BUFSIZE_OUT: i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
 
-const MAX_EMPTY_RECORDS:      i32 = 32; // BoringSSL kMaxEmptyRecords DoS defense
+const MAX_EMPTY_RECORDS:      i32 = 32;    // BoringSSL kMaxEmptyRecords DoS defense
 const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))

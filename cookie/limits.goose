@@ -8,7 +8,7 @@ import std;
 
 // Maximum cookie lifetime (400 days).
 let K_MINUTES_IN_400_DAYS: i64 = 576000;
-let K_MAX_COOKIE_AGE_SEC:  i64 = 576000 * 60;            // 34,560,000 seconds
+let K_MAX_COOKIE_AGE_SEC:  i64 = 576000 * 60;           // 34,560,000 seconds
 let K_MAX_COOKIE_AGE_US:   i64 = 576000 * 60 * 1000000; // 34,560,000,000,000 us
 
 // Payload and attribute length limits (RFC 6265bis Section 5.5).
@@ -42,4 +42,7 @@ let K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES: i64 = 10240; // 10 KB quota
 
 // Persistence commit interval and batch size.
 let K_COMMIT_INTERVAL_MS:      i64 = 30000; // 30 seconds
-let K_COMMIT_AFTER_BATCH_SIZE: i64 = 512;   // 512 mutations
+let K_COMMIT_AFTER_BATCH_SIZE: i64 = 256;   // 256 mutations (bounded to WriteBackBatcher ops capacity)
+
+// Access time update threshold (60 seconds, Chromium kDefaultAccessUpdateThresholdSeconds).
+let K_ACCESS_UPDATE_THRESHOLD_US: i64 = 60 * 1000000;

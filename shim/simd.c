@@ -33,6 +33,23 @@ typedef struct {
 // Forward declaration from shim/tcp.c
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
 
+uint64_t wing_mulhi_u64(uint64_t a, uint64_t b) {
+#if defined(__SIZEOF_INT128__)
+    return (uint64_t)(((unsigned __int128)a * (unsigned __int128)b) >> 64);
+#elif defined(_MSC_VER) && defined(_M_X64)
+    return __umulh(a, b);
+#else
+    uint64_t a_lo = (uint32_t)a, a_hi = a >> 32;
+    uint64_t b_lo = (uint32_t)b, b_hi = b >> 32;
+    uint64_t p0 = a_lo * b_lo;
+    uint64_t p1 = a_lo * b_hi;
+    uint64_t p2 = a_hi * b_lo;
+    uint64_t p3 = a_hi * b_hi;
+    uint64_t cy = ((p0 >> 32) + (uint32_t)p1 + (uint32_t)p2) >> 32;
+    return p3 + (p1 >> 32) + (p2 >> 32) + cy;
+#endif
+}
+
 // Ultra-fast AVX2 vector batch cork buffer appending for fixed responses
 // Streams 32-byte vector registers directly into cork buffer and flushes when full.
 int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork_len, wing_bytes_ro resp) {
@@ -598,7 +615,8 @@ void wing_swar_to_upper(wing_bytes_rw slice) {
 // Vectorized packed-pair substring search (memchr 2.8.3 algorithm)
 // Scans slice for occurrences of b1 at off1 and b2 at off2 using SIMD masks,
 // then verifies candidate start with memcmp(..., needle.data, needle.len).
-int64_t wing_simd_find_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2, wing_bytes_ro needle) {
+int64_t wing_simd_find_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2,
+                            wing_bytes_ro needle) {
     if (!slice.data || !needle.data) return -1;
     int64_t nlen = needle.len;
     int64_t slen = slice.len;
@@ -689,7 +707,8 @@ int64_t wing_simd_find_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8
 }
 
 // Reverse vectorized packed-pair substring search
-int64_t wing_simd_rfind_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2, wing_bytes_ro needle) {
+int64_t wing_simd_rfind_pair(wing_bytes_ro slice, uint8_t b1, int64_t off1, uint8_t b2, int64_t off2,
+                             wing_bytes_ro needle) {
     if (!slice.data || !needle.data) return -1;
     int64_t nlen = needle.len;
     int64_t slen = slice.len;
@@ -838,7 +857,8 @@ int64_t wing_simd_last_index_of_byte(wing_bytes_ro slice, uint8_t b) {
             _BitScanReverse(&bit, (unsigned long)mask);
 #else
             int bit = 15;
-            while ((mask & (1 << bit)) == 0) bit--;
+            while ((mask & (1 << bit)) == 0)
+                bit--;
 #endif
             return chunk_start + (int64_t)bit;
         }
@@ -969,14 +989,14 @@ typedef struct {
     uint64_t w0[16];           // Offset   0 (128 B)
     uint64_t w1[16];           // Offset 128 (128 B)
     uint16_t len[16];          // Offset 256  (32 B)
-    uint8_t  method_id[16];    // Offset 288  (16 B)
-    uint8_t  _pad1[16];        // Offset 304  (16 B)
-    int32_t  handler_id[16];   // Offset 320  (64 B)
+    uint8_t method_id[16];     // Offset 288  (16 B)
+    uint8_t _pad1[16];         // Offset 304  (16 B)
+    int32_t handler_id[16];    // Offset 320  (64 B)
     uint32_t entries_mask[16]; // Offset 384  (64 B)
     uint64_t pso_mask[16];     // Offset 448 (128 B)
     uint16_t active_mask;      // Offset 576   (2 B)
     uint16_t count;            // Offset 578   (2 B)
-    uint8_t  _pad2[12];        // Offset 580  (12 B)
+    uint8_t _pad2[12];         // Offset 580  (12 B)
 } wing_l0_table_t;
 
 // Matches an HTTP request wire path against the L0 Register Table using AVX2 or portable SWAR.
@@ -1004,10 +1024,10 @@ int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_
         if (base >= (int)tbl->count) break;
 
         __m256i t_w0 = _mm256_loadu_si256((const __m256i *)(tbl->w0 + base));
-        __m256i eq0  = _mm256_cmpeq_epi64(req_w0, t_w0);
+        __m256i eq0 = _mm256_cmpeq_epi64(req_w0, t_w0);
 
         __m256i t_w1 = _mm256_loadu_si256((const __m256i *)(tbl->w1 + base));
-        __m256i eq1  = _mm256_cmpeq_epi64(req_w1, t_w1);
+        __m256i eq1 = _mm256_cmpeq_epi64(req_w1, t_w1);
 
         __m256i both = _mm256_and_si256(eq0, eq1);
         int mask = _mm256_movemask_pd(_mm256_castsi256_pd(both));
@@ -1015,9 +1035,7 @@ int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_
         while (mask != 0) {
             int bit = WING_CTZ((unsigned int)mask);
             int slot = base + bit;
-            if (slot < (int)tbl->count &&
-                tbl->len[slot] == (uint16_t)path.len &&
-                tbl->method_id[slot] == method_id) {
+            if (slot < (int)tbl->count && tbl->len[slot] == (uint16_t)path.len && tbl->method_id[slot] == method_id) {
                 return slot;
             }
             mask &= mask - 1;
@@ -1026,9 +1044,7 @@ int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_
     return -1;
 #else
     for (uint16_t i = 0; i < tbl->count; i++) {
-        if (tbl->len[i] == (uint16_t)path.len &&
-            tbl->method_id[i] == method_id &&
-            tbl->w0[i] == w0 &&
+        if (tbl->len[i] == (uint16_t)path.len && tbl->method_id[i] == method_id && tbl->w0[i] == w0 &&
             tbl->w1[i] == w1) {
             return (int32_t)i;
         }
@@ -1036,4 +1052,3 @@ int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_
     return -1;
 #endif
 }
-

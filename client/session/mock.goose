@@ -17,7 +17,7 @@ struct MockExchange {
     method:                u8[..16]         = [],
     status_code:           i32              = rfc::STATUS_OK,
     headers:               HeaderItem[..16] = [],
-    set_cookies:           u8[..256][..8]   = [],
+    set_cookies:           u8[..1024][..8]  = [],
     resolved_ips:          u8[..64][..4]    = [],
     body:                  u8[..1024]       = [],
     protocol:              u8[..16]         = [],

@@ -137,29 +137,29 @@ fn queue_store_mutation(
     batcher:        WriteBackBatcher&,
     operation_type: StoreOpType,
     cookie_val:     const CanonicalCookie&,
-) {
+) -> bool {
     for op_idx in batcher.ops.len {
-        if are_cookies_store_identical(batcher.ops[op_idx].cookie, cookie_val) {
-            if coalesce_store_mutation(batcher, op_idx, operation_type, cookie_val) {
-                return;
-            }
+        if are_cookies_store_identical(batcher.ops[op_idx].cookie, cookie_val) &&
+            coalesce_store_mutation(batcher, op_idx, operation_type, cookie_val) {
+            return true;
         }
     }
 
-    guard batcher.ops.len < batcher.ops.cap else { return; }
+    guard batcher.ops.len < batcher.ops.cap else { return false; }
 
     var pending = PendingStoreOp { .. };
     pending.op_type = operation_type;
     pending.cookie = cookie_val;
     batcher.ops.push(pending);
+    return true;
 }
 
-fn queue_insert(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) {
-    queue_store_mutation(batcher, StoreOpType.InsertOrUpdate, cookie_val);
+fn queue_insert(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) -> bool {
+    return queue_store_mutation(batcher, StoreOpType.InsertOrUpdate, cookie_val);
 }
 
-fn queue_delete(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) {
-    queue_store_mutation(batcher, StoreOpType.Delete, cookie_val);
+fn queue_delete(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) -> bool {
+    return queue_store_mutation(batcher, StoreOpType.Delete, cookie_val);
 }
 
 // Checks if the write-back batcher needs to commit based on batch size or time.
@@ -204,13 +204,36 @@ fn flush_store_batch<B>(
 
 // Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
 // Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
+fn format_cookie_header_value(out: u8[>..]&, cookies: const CanonicalCookie[:]) {
+    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
+    for cookie_idx in cookies.len {
+        let cookie_val = cookies[cookie_idx];
+        let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
+        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
+        if out.len + needed > MAX_COOKIE_HEADER_LEN {
+            return;
+        }
+        if delim_len > 0 {
+            out.append("; ");
+        }
+        if cookie_val.name.len > 0 {
+            out.append(cookie_val.name[..]);
+            out.push('=');
+        }
+        out.append(cookie_val.value[..]);
+    }
+}
+
+// Formats cookies into bounded stack buffers, respecting both buffer capacity and 8192-byte limit.
 fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
     const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for cookie_idx in cookies.len {
         let cookie_val = cookies[cookie_idx];
         let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
         let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
-        if out.len + delim_len + cookie_val.name.len + eq_len + cookie_val.value.len > MAX_COOKIE_HEADER_LEN {
+        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
+        if out.len + needed > out.cap || out.len + needed > MAX_COOKIE_HEADER_LEN {
             return;
         }
         if delim_len > 0 {
@@ -356,6 +379,8 @@ fn export_json(jar: const CanonicalCookieJar&, out: u8[>..]&) {
         json::format_key(out, "last_update_utc"); json::format_int(out, cookie_val.last_update_utc); out.push(',');
         json::format_key(out, "expires_utc"); json::format_int(out, cookie_val.expires_utc); out.push(',');
         json::format_key(out, "host_only"); json::format_bool(out, cookie_val.host_only); out.push(',');
+        json::format_key(out, "has_path_attr"); json::format_bool(out, cookie_val.has_path_attr); out.push(',');
+        json::format_key(out, "has_domain_attr"); json::format_bool(out, cookie_val.has_domain_attr); out.push(',');
         json::format_key(out, "persistent"); json::format_bool(out, cookie_val.persistent); out.push(',');
         json::format_key(out, "secure"); json::format_bool(out, cookie_val.secure); out.push(',');
         json::format_key(out, "httponly"); json::format_bool(out, cookie_val.httponly); out.push(',');
@@ -513,10 +538,6 @@ fn coalesce_store_mutation(
     return false;
 }
 
-fn generate_sqlite_insert_sql<B>(cookie_val: const CanonicalCookie&, out: B&) {
-    generate_sqlite_insert_sql(out, cookie_val);
-}
-
 // Parses an incoming Cookie: header into a growable array of CanonicalCookie.
 //
 // Example:
@@ -587,9 +608,7 @@ fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out:
     }
 
     var new_cookie = CanonicalCookie { .. };
-    guard cookie_name.len <= new_cookie.name.cap && cookie_val.len <= new_cookie.value.cap else { return; }
-    new_cookie.name.append(cookie_name);
-    new_cookie.value.append(cookie_val);
+    guard new_cookie.name.try_set(cookie_name) && new_cookie.value.try_set(cookie_val) else { return; }
     new_cookie.creation_utc = now_us;
     new_cookie.last_access_utc = now_us;
     new_cookie.last_update_utc = now_us;
@@ -607,11 +626,14 @@ fn populate_netscape_cookie_fields(
     cookie_val:  const u8[:],
     is_httponly: bool,
 ) {
-    cookie_ref.name.append(cookie_name);
-    cookie_ref.value.append(cookie_val);
-    cookie_ref.domain.append(domain_val);
-    cookie_ref.path.clear();
-    cookie_ref.path.append(path_val);
+    let _ = cookie_ref.name.try_set(cookie_name);
+    let _ = cookie_ref.value.try_set(cookie_val);
+    let _ = cookie_ref.domain.try_set(domain_val);
+    let _ = cookie_ref.path.try_set(path_val);
+    if path_val.len > 0 {
+        cookie_ref.has_path_attr = true;
+    }
+    cookie_ref.has_domain_attr = !eq_ascii_fold(subdom_flag, "false");
     cookie_ref.host_only = eq_ascii_fold(subdom_flag, "false");
     cookie_ref.secure = eq_ascii_fold(secure_flag, "true");
     cookie_ref.httponly = is_httponly;
@@ -723,6 +745,13 @@ fn read_json_cookie_member(
         guard s.len <= cookie_ref.path.cap else { return; }
         cookie_ref.path.clear();
         cookie_ref.path.append(s);
+        if s.len > 0 {
+            cookie_ref.has_path_attr = true;
+        }
+    } else if key == "has_path_attr" {
+        cookie_ref.has_path_attr = json::read_bool(json_reader);
+    } else if key == "has_domain_attr" {
+        cookie_ref.has_domain_attr = json::read_bool(json_reader);
     } else if key == "creation_utc" {
         cookie_ref.creation_utc = json::read_int(json_reader);
     } else if key == "last_access_utc" {

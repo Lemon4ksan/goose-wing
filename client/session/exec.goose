@@ -642,10 +642,8 @@ fn execute_live_network_hop(
     origin_buf:  const u8[:],
     resp:        Response&,
 ) -> Error {
-    guard !is_https else {
-        return make_error(rfc::STATUS_NOT_IMPLEMENTED, "tls", "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)");
-    }
     let now_ns = session.virtual_clock_us * 1000;
+    let now_sec = session.virtual_clock_us / 1000000;
     let host_str = core::hostname(current_url);
     if session.ssrf_guard.enabled {
         if is_private_or_reserved_ip(host_str) {
@@ -662,8 +660,9 @@ fn execute_live_network_hop(
         host_str
     };
 
+    let pool_scheme = if is_https { PoolScheme.Https } else { PoolScheme.Http };
     let pool_key = new_pool_key(
-        PoolScheme.Http,
+        pool_scheme,
         host_str,
         port_num,
         resolve_hop_proxy_chain(session),
@@ -678,7 +677,32 @@ fn execute_live_network_hop(
         guard sock > 0 else {
             return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
         }
-        let t = Transport.Tcp { fd: sock };
+        var t = Transport.Disconnected;
+        if is_https {
+            let host_is_hsts = session.enable_hsts && is_hsts_host(session.hsts, host_str, now_sec);
+            let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
+
+            var tls_cfg = TlsClientHandshakeConfig { .. };
+            tls_cfg.server_name.append(host_str);
+            tls_cfg.alpn.append("http/1.1");
+            tls_cfg.trust_store = session.trust_store;
+            tls_cfg.insecure_skip_verify = effective_insecure_skip;
+            tls_cfg.virtual_clock_sec = now_sec;
+
+            let slot_idx, ok_tls = tls_client_handshake(sock, tls_cfg);
+            guard ok_tls else {
+                native_tcp_close(sock);
+                return make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS 1.3 handshake failed");
+            }
+            t = Transport.Tls {
+                fd:            sock,
+                record_seq_rx: 0,
+                record_seq_tx: 0,
+                cipher_slot:   slot_idx,
+            };
+        } else {
+            t = Transport.Tcp { fd: sock };
+        }
         conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
         guard conn_id > 0 else {
             t.close();

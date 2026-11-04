@@ -73,11 +73,11 @@ fn compute_hop_partition_key<B>(
         out.append(sch);
         out.append("://");
         out.append(ctx.site_for_cookies.registrable_domain[..]);
-    } else if ctx.is_main_frame {
+    } else {
         out.append(current_url.scheme());
         out.append("://");
         var etld: u8[..128] = [];
-        core::extract_etld_plus_one(current_url.hostname(), etld);
+        psl_extract_etld_plus_one(current_url.hostname(), etld);
         if etld.len > 0 {
             out.append(etld[..]);
         } else {
@@ -116,7 +116,7 @@ fn prepare_hop_cookie_header(
 
     remove_header_by_name(ctx.headers, "Cookie");
     if matched_cookies.len > 0 {
-        var cookie_hdr_val: u8[..2048] = [];
+        var cookie_hdr_val: u8[..8192] = [];
         format_cookie_header_value(cookie_hdr_val, matched_cookies[..]);
         if cookie_hdr_val.len > 0 && ctx.headers.len < 32 {
             ctx.headers.push(make_header("Cookie", cookie_hdr_val[..], true));
@@ -130,7 +130,7 @@ fn ingest_hop_response_cookies(
     ctx:           const RequestExecutionContext&,
     current_url:   const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
-    set_cookies:   const u8[..256][..16]&,
+    set_cookies:   const u8[..1024][..16]&,
 ) {
     for &set_cookie_str in set_cookies {
         var def_path: u8[..256] = [];

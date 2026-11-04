@@ -798,7 +798,8 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
 fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
     t.run("IPv4-Mapped IPv6 Loopback and Private Address SSRF Blocking") { sub =>
         var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+        session.ssrf_guard.enabled = true;
+        session.ssrf_guard.deny_local_network = true;
 
         // 1. IPv4-mapped loopback (127.0.0.1)
         var req_loop = wing::new_get("http://[::ffff:127.0.0.1]/admin");
@@ -838,7 +839,8 @@ fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
 
     t.run("DNS Rebinding with IPv4-Mapped IPv6 Resolved Address") { sub =>
         var session = wing::new_session();
-        wing::enable_ssrf_guard(session, true);
+        session.ssrf_guard.enabled = true;
+        session.ssrf_guard.deny_local_network = true;
 
         // Hostname resolves to IPv4-mapped loopback address
         wing::mock_route(session, "GET", "http://rebind.target.com/api", 200, "ok");

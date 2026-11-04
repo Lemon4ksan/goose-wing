@@ -274,10 +274,26 @@ fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     set_header(req.headers, name, value, false);
 }
 
+fn remove_spans_by_id(spans: HeaderSpan[..32]&, target_id: u8) {
+    var write_idx = 0;
+    for read_idx in spans.len {
+        if spans[read_idx].id != target_id {
+            if write_idx != read_idx {
+                spans[write_idx] = copy(spans[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    while spans.len > write_idx {
+        spans.pop();
+    }
+}
+
 fn remove_header(req: Request&, name: const u8[:]) -> bool {
     let known_id = identify_known_header(name);
     if known_id != KnownHeaderId.Unknown {
         req.presence_mask &= ~header_id_to_bit(known_id);
+        remove_spans_by_id(req.spans, header_id_to_u8(known_id));
     }
     return remove_header_by_name(req.headers, name);
 }

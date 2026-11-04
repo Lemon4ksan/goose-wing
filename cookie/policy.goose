@@ -109,8 +109,8 @@ fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: con
 
     var etld1: u8[..128] = [];
     var etld2: u8[..128] = [];
-    core::extract_etld_plus_one(host1, etld1);
-    core::extract_etld_plus_one(host2, etld2);
+    psl_extract_etld_plus_one(host1, etld1);
+    psl_extract_etld_plus_one(host2, etld2);
 
     return core::eq_ascii_fold(etld1[..], etld2[..]);
 }
@@ -233,15 +233,15 @@ struct SiteForCookies {
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    site.scheme.append(parsed.scheme[..]);
-    core::extract_etld_plus_one(parsed.host[..], site.registrable_domain);
+    let _ = site.scheme.try_set(parsed.scheme[..]);
+    psl_extract_etld_plus_one(parsed.host[..], site.registrable_domain);
     return site;
 }
 
 fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> SiteForCookies {
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    site.scheme.append(scheme(url_val));
-    core::extract_etld_plus_one(hostname(url_val), site.registrable_domain);
+    let _ = site.scheme.try_set(scheme(url_val));
+    psl_extract_etld_plus_one(hostname(url_val), site.registrable_domain);
     return site;
 }
 
@@ -353,10 +353,6 @@ struct SameSiteCookieContext {
     schemefully_same:   bool                = true,
     is_reload:          bool                = false,
     had_cross_site_hop: bool                = false,
-}
-
-fn new_samesite_context(ctx_type: SameSiteContextType) -> SameSiteCookieContext {
-    return SameSiteCookieContext { context_type: ctx_type, .. };
 }
 
 fn can_set_canonical_cookie_for_context(

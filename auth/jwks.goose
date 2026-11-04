@@ -86,6 +86,9 @@ fn add_symmetric_key(
     guard jwks.keys.len < jwks.keys.cap else { return false; }
     guard kid.len <= 64 else { return false; }
     guard secret_key.len >= 16 && secret_key.len <= 64 else { return false; }
+    guard alg == JwtAlg.Unspecified || alg == JwtAlg.HS256 || alg == JwtAlg.HS384 || alg == JwtAlg.HS512 else {
+        return false;
+    }
     var key = JwksKey {
         kty:   JwkKeyType.Oct,
         crv:   "",
@@ -125,31 +128,37 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
     guard is_okp || is_oct else { return false; }
 
     out.clear();
+    var buf: u8[..256] = [];
     if is_okp {
-        out.append("{\"crv\":\"");
-        out.append(key.crv[..]);
-        out.append("\",\"kty\":\"OKP\",\"x\":\"");
+        buf.append("{\"crv\":\"");
+        buf.append(key.crv[..]);
+        buf.append("\",\"kty\":\"OKP\",\"x\":\"");
         var x_b64: u8[..64] = [];
         core::base64url_encode(key.public_key[..], x_b64);
-        out.append(x_b64[..]);
-        out.append("\"}");
+        buf.append(x_b64[..]);
+        buf.append("\"}");
     } else {
-        out.append("{\"k\":\"");
+        buf.append("{\"k\":\"");
         var k_b64: u8[..128] = [];
         core::base64url_encode(key.symmetric_key[..], k_b64);
-        out.append(k_b64[..]);
-        out.append("\",\"kty\":\"oct\"}");
+        buf.append(k_b64[..]);
+        core::secure_zeroize_slice(k_b64[..]);
+        buf.append("\",\"kty\":\"oct\"}");
     }
-    return true;
+    let ok = out.try_set(buf[..]);
+    core::secure_zeroize_slice(buf[..]);
+    return ok;
 }
 
 // Computes the RFC 7638 JWK Thumbprint:
 // SHA-256 hash of canonical JSON, base64url-encoded without padding.
 fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
     out.clear();
+    guard out.cap >= 43 else { return false; }
     var canonical: u8[..256] = [];
     guard compute_canonical_jwk(key, canonical) else { return false; }
     let digest = core::sha256(canonical[..]);
+    core::secure_zeroize_slice(canonical[..]);
     core::base64url_encode(digest[..], out);
     return true;
 }
@@ -223,10 +232,7 @@ fn parse_jwk_key_core_type(
     }
     if field_key == "crv" {
         let crv_str = json::read_string(reader, scratch);
-        if crv_str.len <= key_item.crv.cap {
-            key_item.crv.clear();
-            key_item.crv.append(crv_str);
-        } else {
+        if !key_item.crv.try_set(crv_str) {
             key_item.crv.clear();
             key_item.has_invalid_type = true;
         }
@@ -256,10 +262,7 @@ fn parse_jwk_key_ident(
 ) -> bool {
     if field_key == "use" {
         let use_str = json::read_string(reader, scratch);
-        if use_str.len <= key_item.use.cap {
-            key_item.use.clear();
-            key_item.use.append(use_str);
-        } else {
+        if !key_item.use.try_set(use_str) {
             key_item.use.clear();
             key_item.has_invalid_type = true;
         }
@@ -267,10 +270,7 @@ fn parse_jwk_key_ident(
     }
     if field_key == "kid" {
         let kid_str = json::read_string(reader, scratch);
-        if kid_str.len <= key_item.kid.cap {
-            key_item.kid.clear();
-            key_item.kid.append(kid_str);
-        } else {
+        if !key_item.kid.try_set(kid_str) {
             key_item.kid.clear();
             key_item.has_invalid_type = true;
         }
@@ -294,10 +294,7 @@ fn parse_jwk_key_material(
 ) -> bool {
     if field_key == "x" {
         let x_str = json::read_string(reader, scratch);
-        if x_str.len <= raw_x.cap {
-            raw_x.clear();
-            raw_x.append(x_str);
-        } else {
+        if !raw_x.try_set(x_str) {
             raw_x.clear();
             key_item.has_invalid_type = true;
         }
@@ -305,10 +302,7 @@ fn parse_jwk_key_material(
     }
     if field_key == "k" {
         let k_str = json::read_string(reader, scratch);
-        if k_str.len <= raw_k.cap {
-            raw_k.clear();
-            raw_k.append(k_str);
-        } else {
+        if !raw_k.try_set(k_str) {
             raw_k.clear();
             key_item.has_invalid_type = true;
         }
@@ -363,13 +357,15 @@ fn parse_jwk_key_fields(
     var seen_keys: SeenHeaderKey[..16] = [];
     json::each_member(reader) { field_key =>
         scratch.clear();
-        if field_key.contains('\\') || is_header_key_present(field_key, seen_keys) {
+        if field_key.contains('\\') || is_header_key_present(field_key, seen_keys[..]) {
             key_item.has_invalid_type = true;
         }
         if seen_keys.len < seen_keys.cap && field_key.len <= 64 {
             var item = SeenHeaderKey { .. };
             item.name.append(field_key);
             seen_keys.push(item);
+        } else {
+            key_item.has_invalid_type = true;
         }
         parse_jwk_key_field(field_key, reader, scratch, raw_x, raw_k, key_item);
     };
@@ -443,6 +439,7 @@ fn parse_single_jwk_element(
     if finalize_jwk_key(raw_x[..], raw_k[..], key_item) {
         out_jwks.keys.push(key_item);
     }
+    core::secure_zeroize_slice(raw_k[..]);
 }
 
 // Parses an RFC 7517 JWKS JSON document into Jwks struct.
@@ -454,18 +451,29 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
     out_jwks.keys.clear();
     var reader = json::reader(json_bytes);
     var scratch: u8[>..] = [];
+    var seen_keys_root = false;
+    var had_error = false;
 
     json::each_member(reader) { root_key =>
-        if root_key == "keys" {
+        if root_key.contains('\\') {
+            had_error = true;
+            json::skip(reader);
+        } else if root_key == "keys" && !seen_keys_root && json::peek(reader) == '[' {
+            seen_keys_root = true;
             json::each_element(reader) {
                 parse_single_jwk_element(reader, scratch, out_jwks);
             };
         } else {
+            if root_key == "keys" { had_error = true; }
             json::skip(reader);
         }
     };
 
-    return json::finish(reader) && out_jwks.keys.len > 0;
+    guard json::finish(reader) && !had_error && seen_keys_root && out_jwks.keys.len > 0 else {
+        zeroize_jwks(out_jwks);
+        return false;
+    }
+    return true;
 }
 
 // ---- Integrated JWKS JWT Verification -------------------------------------
@@ -516,34 +524,6 @@ fn validate_jwks_key_compatibility(
     return JwtError.None;
 }
 
-fn verify_jwks_okp(
-    token:        const u8[:],
-    key:          const JwksKey&,
-    options:      const JwtValidationOptions&,
-    now_unix_sec: i64,
-    out_header:   JwtHeader&,
-    out_claims:   JwtClaims&,
-) -> JwtError {
-    guard out_header.alg == JwtAlg.EdDSA else {
-        return JwtError.AlgorithmMismatch;
-    }
-    return verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims);
-}
-
-fn verify_jwks_oct(
-    token:        const u8[:],
-    key:          const JwksKey&,
-    options:      const JwtValidationOptions&,
-    now_unix_sec: i64,
-    out_header:   JwtHeader&,
-    out_claims:   JwtClaims&,
-) -> JwtError {
-    guard out_header.alg != JwtAlg.EdDSA else {
-        return JwtError.AlgorithmMismatch;
-    }
-    return verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims);
-}
-
 fn dispatch_jwks_verification(
     token:        const u8[:],
     key:          const JwksKey&,
@@ -556,8 +536,8 @@ fn dispatch_jwks_verification(
     guard compat_err == JwtError.None else { return compat_err; }
 
     return match key.kty {
-        OKP => verify_jwks_okp(token, key, options, now_unix_sec, out_header, out_claims),
-        Oct => verify_jwks_oct(token, key, options, now_unix_sec, out_header, out_claims),
+        OKP => verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims),
+        Oct => verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims),
         Unknown => JwtError.KeyNotFound,
     };
 }

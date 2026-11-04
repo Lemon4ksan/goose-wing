@@ -47,6 +47,7 @@ struct ClientConfig {
     enable_protocol_racing:  bool         = true,
     quic_race_delay_ms:      i64          = 200,
     enable_compression_dict: bool         = true,
+    insecure_skip_verify:    bool         = false,
 }
 
 type SessionConfig = ClientConfig;
@@ -111,7 +112,9 @@ struct Client {
     // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
     pool: StreamPool = StreamPool { .. },
 
-    enable_cookie_jar: bool = true,
+    enable_cookie_jar:    bool             = true,
+    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
+    insecure_skip_verify: bool             = false,
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
@@ -166,6 +169,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         enable_hsts:             true,
         pool:                    new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
+        insecure_skip_verify:    cfg.insecure_skip_verify,
         jar:                     CanonicalCookieJar { .. },
         ..
     };
@@ -302,28 +306,6 @@ fn close(session: Session&) {
 fn set_redirect_mode(session: Session&, mode: RedirectMode) {
     session.redirect_mode = mode;
     session.follow_redirects = (mode == RedirectMode.Follow);
-}
-
-fn set_max_redirects(session: Session&, count: i64) {
-    session.max_redirects = count;
-}
-
-fn set_https_only(session: Session&, enabled: bool) {
-    session.https_only = enabled;
-    session.ssrf_guard.https_only = enabled;
-}
-
-fn set_enable_referer(session: Session&, enabled: bool) {
-    session.enable_referer = enabled;
-}
-
-fn set_referrer_policy(session: Session&, policy: ReferrerPolicy) {
-    session.default_referrer_policy = policy;
-}
-
-fn enable_ssrf_guard(session: Session&, deny_local_network: bool = true) {
-    session.ssrf_guard.enabled = true;
-    session.ssrf_guard.deny_local_network = deny_local_network;
 }
 
 // ---- dns-over-https & automated ech discovery (rfc 8484, rfc 9460) ----------

@@ -385,9 +385,10 @@ struct StreamReader {
 //   cl = "1024"
 //   returns: 1024, ok = true
 fn parse_content_length_value(cl: const u8[:]) -> i64, bool {
-    guard cl.len > 0 else { return -1, false; }
+    let clean = core::trim_lws(cl);
+    guard clean.len > 0 else { return -1, false; }
     var num: i64 = 0;
-    for b in cl {
+    for b in clean {
         guard b >= '0' && b <= '9' else { return -1, false; }
         let d = (b - '0') as i64;
         guard num <= (9223372036854775807 / 10) else { return -1, false; }

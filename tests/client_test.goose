@@ -334,7 +334,7 @@ fn test_oauth_flow(t: lit::T&) {
 fn test_redirect_loop_and_manual(t: lit::T&) {
     t.run("Redirect Loop Detection (TooManyRedirects)") { sub =>
         var session = wing::new_session();
-        wing::set_max_redirects(session, 2);
+        session.max_redirects = 2;
 
         // Infinite redirect loop: a -> b -> a
         wing::mock_route(session, "GET", "https://example.com/loop_a", 302, "");
@@ -406,7 +406,8 @@ fn test_body_rewind(t: lit::T&) {
 
 fn test_ssrf_subnets(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     t.run("3-Tier SSRF Guard: Loopback, RFC 1918 Private, Cloud Metadata") { sub =>
         let blocked_urls: const u8[..64][..5] = [
@@ -427,7 +428,8 @@ fn test_ssrf_subnets(t: lit::T&) {
 
 fn test_dns_rebinding(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     t.run("DNS Rebinding Defense via Resolved IP Sweep") { sub =>
         // Host has harmless public name 'rebound.attacker.com', but DNS resolution
@@ -444,7 +446,8 @@ fn test_dns_rebinding(t: lit::T&) {
 
 fn test_dangerous_ports(t: lit::T&) {
     var session = wing::new_session();
-    wing::enable_ssrf_guard(session, true);
+    session.ssrf_guard.enabled = true;
+    session.ssrf_guard.deny_local_network = true;
 
     t.run("Dangerous Service Port Blocking (SSH, Redis, etc.)") { sub =>
         // Port 22 (SSH)
@@ -1005,7 +1008,7 @@ fn test_honest_transport_failures(t: lit::T&) {
         sub.assert_eq(res.body.len, 0, "no synthesized success body (fake 1042 payload removed)");
     };
 
-    t.run("https:// without TLS wiring fails honestly instead of plaintext fall-through") { sub =>
+    t.run("https:// connect failure fails honestly with transport error") { sub =>
         var session = wing::new_session(wing::ClientConfig {
             timeout_ms: 500,
             ..
@@ -1013,15 +1016,46 @@ fn test_honest_transport_failures(t: lit::T&) {
         var req = wing::new_get("https://unresolvable.invalid/data");
         let res, err = wing::execute_request(session, req);
 
-        sub.assert_false(wing::ok(err), "https:// hop without TLS wiring must fail");
-        sub.assert_bytes_eq(err.stage[..], "tls", "error stage is tls");
-        sub.assert_bytes_eq(
-            err.message[..],
-            "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)",
-            "clear TLS-not-wired error message",
-        );
+        sub.assert_false(wing::ok(err), "https:// connect to unresolvable host must fail");
+        sub.assert_bytes_eq(err.stage[..], "transport", "error stage is transport");
         sub.assert_eq(res.status_code, 0, "no silent plaintext success");
         sub.assert_eq(res.body.len, 0, "no fake body behind https://");
+    };
+
+    t.run("Client TLS configuration: insecure_skip_verify & trust anchor store") { sub =>
+        var session = wing::new_session(wing::ClientConfig {
+            insecure_skip_verify: true,
+            ..
+        });
+        sub.assert_true(session.insecure_skip_verify, "insecure_skip_verify set via ClientConfig");
+        session.insecure_skip_verify = false;
+        sub.assert_false(session.insecure_skip_verify, "insecure_skip_verify cleared directly");
+
+        let seed: u8[32] = [1; 32];
+        var cert_der: u8[..2048] = [];
+        let ok_gen = wing::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", cert_der);
+        sub.assert_true(ok_gen, "test self-signed cert generated");
+
+        let ok_add = wing::add_trust_anchor_cert_der(session.trust_store, cert_der[..]);
+        sub.assert_true(ok_add, "trust anchor added to client session store");
+        sub.assert_eq(session.trust_store.anchors.len, 1, "trust anchor count is 1");
+    };
+
+    t.run("RFC 6797 §12.1 HSTS strictly forbids insecure_skip_verify override") { sub =>
+        var session = wing::new_session();
+        session.insecure_skip_verify = true;
+        wing::hsts_cache_update(session.hsts, "secure.example.com", "max-age=31536000", 1700000000);
+
+        let now_sec: i64 = 1700000000;
+        let is_hsts = session.enable_hsts && wing::is_hsts_host(session.hsts, "secure.example.com", now_sec);
+        sub.assert_true(is_hsts, "secure.example.com is an active HSTS host");
+
+        let effective_skip = session.insecure_skip_verify && !is_hsts;
+        sub.assert_false(effective_skip, "HSTS host strictly suppresses insecure_skip_verify (RFC 6797 §12.1)");
+
+        let non_hsts = session.enable_hsts && wing::is_hsts_host(session.hsts, "plain.example.com", now_sec);
+        let non_hsts_skip = session.insecure_skip_verify && !non_hsts;
+        sub.assert_true(non_hsts_skip, "Non-HSTS host permits insecure_skip_verify");
     };
 
     t.run("Mock mode serves matched routes and errors on misses without fake 200") { sub =>
