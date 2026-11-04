@@ -378,6 +378,24 @@ struct StreamReader {
     raw_data:       u8[>..]              = [],
 }
 
+// Parses a decimal Content-Length header value with 64-bit overflow validation (RFC 9110 §8.6).
+//
+// Example:
+//   cl = "1024"
+//   returns: 1024, ok = true
+fn parse_content_length_value(cl: const u8[:]) -> i64, bool {
+    guard cl.len > 0 else { return -1, false; }
+    var num: i64 = 0;
+    for b in cl {
+        guard b >= '0' && b <= '9' else { return -1, false; }
+        let d = (b - '0') as i64;
+        guard num <= (9223372036854775807 / 10) else { return -1, false; }
+        guard num < (9223372036854775807 / 10) || d <= 7 else { return -1, false; }
+        num = num * 10 + d;
+    }
+    return num, true;
+}
+
 fn new_stream_reader(resp: const Response&) -> StreamReader {
     var reader = StreamReader { .. };
     reader.raw_data.append(resp.body[..]);
@@ -389,16 +407,11 @@ fn new_stream_reader(resp: const Response&) -> StreamReader {
 
     let cl = header(resp, "Content-Length");
     if cl.len > 0 {
-        var num: i64 = 0;
-        var has_digit = false;
-        for b in cl {
-            if b >= '0' && b <= '9' {
-                num = num * 10 + (b - '0');
-                has_digit = true;
-            }
-        }
-        if has_digit {
-            reader.content_length = num;
+        let val, ok = parse_content_length_value(cl);
+        if ok {
+            reader.content_length = val;
+        } else {
+            reader.content_length = -1;
         }
     }
     return reader;

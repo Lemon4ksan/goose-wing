@@ -167,7 +167,10 @@ fn download_stream<F: fn(const StreamProgress&)>(
         let st, is_eof = read_chunk(reader, chunk_size, chunk_buf);
         if st == StreamReadStatus.Error {
             var resp_err = resp;
-            return copy(resp_err), make_error(502, "stream", "chunked stream decode failure", ErrorKind.Stream);
+            let err = make_error(
+                rfc::STATUS_BAD_GATEWAY, "stream", "chunked stream decode failure", ErrorKind.Stream,
+            );
+            return copy(resp_err), err;
         }
         if st == StreamReadStatus.Data {
             out_body.append(chunk_buf[..]);
@@ -199,13 +202,21 @@ fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
     }
 }
 
-fn connection_has_upgrade(conn: const u8[:]) -> bool {
-    if eq_ascii_fold(conn, "upgrade") { return true; }
-    guard conn.len >= 7 else { return false; }
-    for t in 0..conn.len - 6 {
-        if eq_ascii_fold(conn[t..t + 7], "upgrade") {
+// Checks whether a comma-separated header value contains the target token (case-insensitive).
+//
+// Example:
+//   hdr = "gzip, deflate, br", token = "deflate"
+//   returns: true
+fn header_has_token(hdr: const u8[:], token: const u8[:]) -> bool {
+    var offset: i64 = 0;
+    while offset < hdr.len {
+        let comma = core::index_of_byte(hdr[offset..], ',');
+        let token_end = if comma >= 0 { offset + comma } else { hdr.len };
+        let tok = core::trim_lws(hdr[offset..token_end]);
+        if eq_ascii_fold(tok, token) {
             return true;
         }
+        offset = token_end + 1;
     }
     return false;
 }
@@ -221,7 +232,7 @@ fn ws_perform_handshake(
     }
 
     // Validate 101 Switching Protocols (RFC 6455 Section 4.2.2, RFC 9931 Section 3)
-    if resp.status_code != 101 {
+    if resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
         return new_websocket_session(true), resp, make_error(
             resp.status_code,
             "websocket_handshake",
@@ -229,11 +240,11 @@ fn ws_perform_handshake(
         );
     }
 
-    // Validate Upgrade: websocket
+    // Validate Upgrade: websocket (RFC 6455 §4.2.2)
     let upg = header(resp, "Upgrade");
-    if !eq_ascii_fold(upg, "websocket") {
+    if !header_has_token(upg, "websocket") {
         return new_websocket_session(true), resp, make_error(
-            400,
+            rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "missing or invalid Upgrade header in server response",
         );
@@ -241,9 +252,9 @@ fn ws_perform_handshake(
 
     // Validate Connection header contains Upgrade
     let conn = header(resp, "Connection");
-    if !connection_has_upgrade(conn) {
+    if !header_has_token(conn, "upgrade") {
         return new_websocket_session(true), resp, make_error(
-            400,
+            rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "missing Connection: Upgrade header in server response",
         );
@@ -253,7 +264,7 @@ fn ws_perform_handshake(
     let server_accept = header(resp, "Sec-WebSocket-Accept");
     if !validate_websocket_accept(client_key, server_accept) {
         return new_websocket_session(true), resp, make_error(
-            400,
+            rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "invalid Sec-WebSocket-Accept key in server response",
         );
@@ -262,7 +273,11 @@ fn ws_perform_handshake(
     var ws_sess = new_websocket_session(true);
     let proto = header(resp, "Sec-WebSocket-Protocol");
     if proto.len > 0 {
-        ws_sess.subprotocol.append(proto);
+        let req_proto = header(req, "Sec-WebSocket-Protocol");
+        if req_proto.len > 0 {
+            let n = if proto.len > ws_sess.subprotocol.cap { ws_sess.subprotocol.cap } else { proto.len };
+            ws_sess.subprotocol.append(proto[..n]);
+        }
     }
 
     return ws_sess, resp, Error { .. };
@@ -313,7 +328,14 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
 
     F(&req);
 
-    return ws_perform_handshake(session, req, client_key[..]);
+    let eff_key = header(req, "Sec-WebSocket-Key");
+    return ws_perform_handshake(session, req, if eff_key.len > 0 { eff_key } else { client_key[..] });
+}
+
+fn is_sse_content_type(ct: const u8[:]) -> bool {
+    guard starts_with_fold(ct, "text/event-stream") else { return false; }
+    guard ct.len == 17 || ct[17] == ';' || ct[17] == ' ' || ct[17] == '\t' else { return false; }
+    return true;
 }
 
 fn sse_perform_connect(
@@ -327,7 +349,7 @@ fn sse_perform_connect(
         return eff_sub, resp, err;
     }
 
-    if resp.status_code != 200 {
+    if resp.status_code != rfc::STATUS_OK {
         return eff_sub, resp, make_error(
             resp.status_code,
             "sse_connect",
@@ -336,9 +358,9 @@ fn sse_perform_connect(
     }
 
     let ct = header(resp, "Content-Type");
-    if !starts_with(ct, "text/event-stream") {
+    if !is_sse_content_type(ct) {
         return eff_sub, resp, make_error(
-            415,
+            rfc::STATUS_UNSUPPORTED_MEDIA_TYPE,
             "sse_connect",
             "server response is not text/event-stream",
         );
@@ -377,7 +399,7 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
         return resp, err;
     }
 
-    if resp.status_code != 200 {
+    if resp.status_code != rfc::STATUS_OK {
         sub.connected = false;
         return resp, make_error(
             resp.status_code,
@@ -387,10 +409,10 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
     }
 
     let ct = header(resp, "Content-Type");
-    if !starts_with(ct, "text/event-stream") {
+    if !is_sse_content_type(ct) {
         sub.connected = false;
         return resp, make_error(
-            415,
+            rfc::STATUS_UNSUPPORTED_MEDIA_TYPE,
             "sse_reconnect",
             "server response is not text/event-stream",
         );
@@ -426,8 +448,7 @@ fn connect_udp(
 
     var req = new_request("CONNECT", full_url[..]);
     for &h in req_headers {
-        req.headers.push(copy(h));
-        add_header(req.bloom_filter, h.name[..]);
+        set_header(req, h.name[..], h.value[..]);
     }
 
     let resp, err = do(session, req);
@@ -444,7 +465,7 @@ fn connect_udp(
     let caps_val = header(resp, "capsule-protocol");
     if !is_capsule_protocol_negotiated(caps_val) {
         tunnel.state = MasqueTunnelState.Failed;
-        return tunnel, resp, make_error(502, "masque", "proxy missing required Capsule-Protocol: ?1 header");
+        return tunnel, resp, make_error(rfc::STATUS_BAD_GATEWAY, "masque", "proxy missing required Capsule-Protocol: ?1 header");
     }
 
     tunnel.state = MasqueTunnelState.Established;
@@ -473,8 +494,7 @@ fn connect_ip(
 
     var req = new_request("CONNECT", full_url[..]);
     for &h in req_headers {
-        req.headers.push(copy(h));
-        add_header(req.bloom_filter, h.name[..]);
+        set_header(req, h.name[..], h.value[..]);
     }
 
     let resp, err = do(session, req);
@@ -491,7 +511,7 @@ fn connect_ip(
     let caps_val = header(resp, "capsule-protocol");
     if !is_capsule_protocol_negotiated(caps_val) {
         tunnel.state = MasqueTunnelState.Failed;
-        return tunnel, resp, make_error(502, "masque", "proxy missing required Capsule-Protocol: ?1 header");
+        return tunnel, resp, make_error(rfc::STATUS_BAD_GATEWAY, "masque", "proxy missing required Capsule-Protocol: ?1 header");
     }
 
     tunnel.state = MasqueTunnelState.Established;

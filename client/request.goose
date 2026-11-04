@@ -169,6 +169,10 @@ fn materialize_headers(req: Request&, wire: const u8[:]) {
         item.value.append(wire[v_start..v_end]);
         req.headers.push(item);
         add_header(req.bloom_filter, item.name[..]);
+        let known_id = identify_known_header(item.name[..]);
+        if known_id != KnownHeaderId.Unknown {
+            req.presence_mask |= header_id_to_bit(known_id);
+        }
     }
 }
 
@@ -302,8 +306,12 @@ fn text(req: Request&, body_str: const u8[:]) {
     req.body.clear();
     req.body.append(body_str);
     req.rewind_buf.clear();
-    req.rewind_buf.append(body_str);
-    req.rewindable = true;
+    if body_str.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(body_str);
+        req.rewindable = true;
+    } else {
+        req.rewindable = false;
+    }
     req.body_consumed = false;
 }
 
@@ -312,8 +320,12 @@ fn raw_json(req: Request&, json_str: const u8[:]) {
     req.body.clear();
     req.body.append(json_str);
     req.rewind_buf.clear();
-    req.rewind_buf.append(json_str);
-    req.rewindable = true;
+    if json_str.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(json_str);
+        req.rewindable = true;
+    } else {
+        req.rewindable = false;
+    }
     req.body_consumed = false;
 }
 
@@ -330,8 +342,12 @@ fn json<T>(req: Request&, payload: const T&) {
     }
     req.body.push('}');
     req.rewind_buf.clear();
-    req.rewind_buf.append(req.body[..]);
-    req.rewindable = true;
+    if req.body.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(req.body[..]);
+        req.rewindable = true;
+    } else {
+        req.rewindable = false;
+    }
     req.body_consumed = false;
 }
 
@@ -342,10 +358,12 @@ fn set_json<T>(req: Request&, payload: const T&) {
 fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = false) {
     req.body.clear();
     req.body.append(stream_bytes);
-    req.rewindable = rewindable;
     req.rewind_buf.clear();
-    if rewindable {
+    if rewindable && stream_bytes.len <= req.rewind_buf.cap {
         req.rewind_buf.append(stream_bytes);
+        req.rewindable = true;
+    } else {
+        req.rewindable = false;
     }
     req.body_consumed = false;
 }

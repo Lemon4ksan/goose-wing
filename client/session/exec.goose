@@ -34,6 +34,51 @@ import net.retry;
 
 // ---- url resolution helpers ------------------------------------------------
 
+// Escapes special delimiters and control characters in a query parameter component (RFC 3986 §3.4).
+//
+// Example:
+//   raw = "a&b=c", out = []
+//   returns: true, out = "a%26b%3Dc"
+fn append_query_component(raw: const u8[:], out: u8[..2048]&) -> bool {
+    for b in raw {
+        if b == ' ' {
+            guard out.try_append("%20") else { return false; }
+        } else if b == '&' {
+            guard out.try_append("%26") else { return false; }
+        } else if b == '=' {
+            guard out.try_append("%3D") else { return false; }
+        } else if b == '#' {
+            guard out.try_append("%23") else { return false; }
+        } else if b == '+' {
+            guard out.try_append("%2B") else { return false; }
+        } else if b == '%' {
+            guard out.try_append("%25") else { return false; }
+        } else if b < 0x20 || b >= 0x7F {
+            guard out.try_push('%') else { return false; }
+            let hi = (b >> 4) & 0x0F;
+            let lo = b & 0x0F;
+            let hi_c = if hi < 10 { '0' + hi } else { 'A' + hi - 10 };
+            guard out.try_push(hi_c) else { return false; }
+            let lo_c = if lo < 10 { '0' + lo } else { 'A' + lo - 10 };
+            guard out.try_push(lo_c) else { return false; }
+        } else {
+            guard out.try_push(b) else { return false; }
+        }
+    }
+    return true;
+}
+
+inline fn append_single_query_param(
+    query_item: const QueryItem&,
+    sep:        u8,
+    out:        u8[..2048]&,
+) -> bool {
+    guard out.try_push(sep) else { return false; }
+    guard append_query_component(query_item.key[..], out) else { return false; }
+    guard out.try_push('=') else { return false; }
+    return append_query_component(query_item.value[..], out);
+}
+
 // Appends query parameters to a URL buffer, preserving trailing fragment if present (RFC 3986 Section 4.1).
 fn append_query_params_preserving_fragment(
     out:          u8[..2048]&,
@@ -56,18 +101,12 @@ fn append_query_params_preserving_fragment(
     }
 
     for &query_item, param_idx in query_params {
-        if param_idx == 0 && !has_query_mark {
-            out.push('?');
-        } else {
-            out.push('&');
-        }
-        out.append(query_item.key[..]);
-        out.push('=');
-        out.append(query_item.value[..]);
+        let sep: u8 = if param_idx == 0 && !has_query_mark { '?' } else { '&' };
+        guard append_single_query_param(query_item, sep, out) else { break; }
     }
 
     if hash_buf.len > 0 {
-        out.append(hash_buf[..]);
+        out.try_append(hash_buf[..]);
     }
 }
 
@@ -128,11 +167,11 @@ struct RequestExecutionContext {
 
 fn validate_hop_prerequisites(session: const Session&, current_url: const core::Url&) -> Error {
     if session.https_only && scheme(current_url) != "https" {
-        return make_error(400, "ssrf_guard", "https_only policy violated");
+        return make_error(rfc::STATUS_BAD_REQUEST, "ssrf_guard", "https_only policy violated");
     }
     let ssrf_err = validate_url_against_ssrf(current_url, session.ssrf_guard);
     if ssrf_err != RedirectError.None {
-        return make_error(403, "ssrf_guard", redirect_error_to_string(ssrf_err));
+        return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", redirect_error_to_string(ssrf_err));
     }
     return Error { .. };
 }
@@ -164,11 +203,13 @@ fn apply_redirect_transition(
 
     if redirect_info.clear_body {
         ctx.body.clear();
+        ctx.rewind_buf.clear();
+        ctx.rewindable = false;
         ctx.body_consumed = false;
     } else {
         // 307 or 308 redirect preserves method and body
         if !ctx.rewindable && ctx.body_consumed {
-            return make_error(400, "body_rewind", "http: cannot rewind body");
+            return make_error(rfc::STATUS_BAD_REQUEST, "body_rewind", "http: cannot rewind body");
         }
         ctx.body.clear();
         ctx.body.append(ctx.rewind_buf[..]);
@@ -279,10 +320,10 @@ fn process_redirect_hop(
         return false, Error { .. };
     }
     if ctx.redirect_mode == RedirectMode.Error {
-        return false, make_error(310, "redirect", "redirects disabled by mode");
+        return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "redirects disabled by mode");
     }
     if ctx.redirect_count >= ctx.max_redirects {
-        return false, make_error(310, "redirect", "maximum redirect hops exceeded");
+        return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
     }
 
     let ref_policy_hdr = header(resp, "Referrer-Policy");
@@ -308,7 +349,7 @@ fn process_redirect_hop(
     );
 
     guard redirect_info.error == RedirectError.None else {
-        return false, make_error(310, "redirect", redirect_error_to_string(redirect_info.error));
+        return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", redirect_error_to_string(redirect_info.error));
     }
 
     let redirect_err = apply_redirect_transition(session, ctx, redirect_info);
@@ -468,7 +509,7 @@ fn try_match_mock_route(
         if dns_err != RedirectError.None {
             out_dns_err = dns_err;
             out_resp = Response {
-                status_code:   403,
+                status_code:   rfc::STATUS_FORBIDDEN,
                 effective_url: copy(current_url.href),
                 ..
             };
@@ -476,7 +517,7 @@ fn try_match_mock_route(
         }
 
         out_resp = build_mock_response(route, current_url, ctx.headers[..]);
-        if route.status_code == 101 {
+        if route.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
             let sent_key = find_header(ctx.headers[..], "sec-websocket-key");
             if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
                 var accept_buf: u8[..64] = [];
@@ -558,6 +599,24 @@ fn dispatch_pooled_h1_hop(
     return true;
 }
 
+fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
+    if session.proxy_url.len == 0 {
+        return new_direct_proxy_chain();
+    }
+    let p_url = core::new_url(session.proxy_url[..]);
+    guard p_url.valid else { return new_direct_proxy_chain(); }
+    let p_scheme = if scheme(p_url) == "https" {
+        ProxyScheme.Https
+    } else if scheme(p_url) == "socks5" {
+        ProxyScheme.Socks5
+    } else {
+        ProxyScheme.Http
+    };
+    let p_port = core::effective_port(p_url) as u16;
+    let ps = new_proxy_server(p_scheme, hostname(p_url), p_port);
+    return new_single_proxy_chain(ps);
+}
+
 // Opens or reuses a pooled TCP connection and executes one live HTTP/1.1 hop.
 // Returns an ok Error when `resp` holds the exchange response; connect and
 // exchange failures surface as explicit transport errors, never fake successes.
@@ -570,17 +629,31 @@ fn execute_live_network_hop(
     resp:        Response&,
 ) -> Error {
     guard !is_https else {
-        return make_error(501, "tls", "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)");
+        return make_error(rfc::STATUS_NOT_IMPLEMENTED, "tls", "TLS not wired: https:// requires a TLS handshake (Transport.Tls not implemented)");
     }
     let now_ns = session.virtual_clock_us * 1000;
     let host_str = core::hostname(current_url);
+    if session.ssrf_guard.enabled {
+        if is_private_or_reserved_ip(host_str) {
+            return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: private IP blocked");
+        }
+    }
+
     let port_num = core::effective_port(current_url) as u16;
+    let site_site = if ctx.top_frame_origin.host.len > 0 {
+        ctx.top_frame_origin.host[..]
+    } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
+        ctx.site_for_cookies.registrable_domain[..]
+    } else {
+        host_str
+    };
+
     let pool_key = new_pool_key(
         PoolScheme.Http,
         host_str,
         port_num,
-        new_direct_proxy_chain(),
-        new_network_anonymization_key(host_str),
+        resolve_hop_proxy_chain(session),
+        new_network_anonymization_key(site_site, ctx.had_cross_site_hop),
         TlsAndDnsPolicy { .. },
     );
 
@@ -589,13 +662,13 @@ fn execute_live_network_hop(
         let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
         let sock = native_tcp_connect(host_str, port_num, eff_timeout);
         guard sock > 0 else {
-            return make_error(502, "transport", "TCP connect failed");
+            return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
         }
         let t = Transport.Tcp { fd: sock };
         conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
         guard conn_id > 0 else {
             t.close();
-            return make_error(502, "transport", "connection pool registration failed");
+            return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "connection pool registration failed");
         }
         has_pooled = true;
     }
@@ -607,7 +680,7 @@ fn execute_live_network_hop(
         origin_buf, curr_path, now_sec, now_ns, resp,
     );
     guard ok_hop else {
-        return make_error(502, "transport", "HTTP/1.1 exchange failed");
+        return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP/1.1 exchange failed");
     }
     return Error { .. };
 }
@@ -663,7 +736,7 @@ fn execute_mock_or_echo_hop(
     );
     if matched {
         if dns_rebinding_err != RedirectError.None {
-            return resp, make_error(403, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
+            return resp, make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", redirect_error_to_string(dns_rebinding_err));
         }
         return resp, Error { .. };
     }
@@ -675,7 +748,7 @@ fn execute_mock_or_echo_hop(
     }
 
     // Mock mode is active (routes registered) but none matched this request
-    return resp, make_error(502, "mock", "no matching mock route for request");
+    return resp, make_error(rfc::STATUS_BAD_GATEWAY, "mock", "no matching mock route for request");
 }
 
 fn compute_401_auth_header(
@@ -683,7 +756,7 @@ fn compute_401_auth_header(
     ctx:             RequestExecutionContext&,
     current_url:     const core::Url&,
     www_auth:        const u8[:],
-    auth_header_val: u8[..512]&,
+    auth_header_val: u8[..4096]&,
 ) -> bool {
     if starts_with_fold(www_auth, "Digest") {
         let chal, ok_c = parse_digest_challenge(www_auth);
@@ -713,22 +786,73 @@ fn compute_401_auth_header(
             ctx.body[..],
             auth_header_val,
         );
+        core::secure_zeroize_slice(c_creds.password[..]);
         guard ok_d else { return false; }
         session.creds.nonce_counter += 1;
         return true;
     }
     if starts_with_fold(www_auth, "Basic") {
+        // RFC 7617 §2: username MUST NOT contain colon
+        guard core::index_of_byte(session.creds.username[..], ':') < 0 else { return false; }
         var user_pass: u8[..140] = [];
         user_pass.append(session.creds.username[..]);
         user_pass.push(':');
         user_pass.append(session.creds.password[..]);
         var b64_user_pass: u8[..200] = [];
         core::base64_encode(user_pass[..], b64_user_pass);
+        core::secure_zeroize_slice(user_pass[..]);
         auth_header_val.append("Basic ");
         auth_header_val.append(b64_user_pass[..]);
         return true;
     }
     return false;
+}
+
+fn find_auth_header_from_response(
+    session:         Client&,
+    ctx:             RequestExecutionContext&,
+    current_url:     const core::Url&,
+    resp:            const Response&,
+    auth_header_val: u8[..4096]&,
+) -> bool {
+    // Scan all WWW-Authenticate headers, prioritizing Digest over Basic
+    for &h in resp.headers {
+        if eq_ascii_fold(h.name[..], "WWW-Authenticate") && starts_with_fold(h.value[..], "Digest") {
+            if compute_401_auth_header(session, ctx, current_url, h.value[..], auth_header_val) {
+                return true;
+            }
+        }
+    }
+    for &h in resp.headers {
+        if eq_ascii_fold(h.name[..], "WWW-Authenticate") && starts_with_fold(h.value[..], "Basic") {
+            if compute_401_auth_header(session, ctx, current_url, h.value[..], auth_header_val) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline fn prepare_auth_retry_hop(
+    session:       Client&,
+    ctx:           RequestExecutionContext&,
+    current_url:   const core::Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method:   bool,
+    resp:          const Response&,
+    auth_val:      const u8[:],
+) {
+    ctx.auth_retried = true;
+    if ctx.body.len > 0 {
+        ctx.body.clear();
+        ctx.body.append(ctx.rewind_buf[..]);
+    }
+    if session.enable_cookie_jar {
+        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
+        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+    }
+    remove_header_by_name(ctx.headers, "Authorization");
+    ctx.headers.push(make_header("Authorization", auth_val));
 }
 
 fn handle_401_auth_retry(
@@ -739,27 +863,37 @@ fn handle_401_auth_retry(
     safe_method:   bool,
     resp:          Response&,
 ) -> bool, Error {
-    guard resp.status_code == 401 && session.creds.has_credentials && !ctx.auth_retried else {
+    guard !ctx.auth_retried && session.creds.has_credentials && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
         return false, Error { .. };
     }
-    let www_auth = header(resp, "WWW-Authenticate");
-    guard www_auth.len > 0 else { return false, Error { .. }; }
-
-    var auth_header_val: u8[..512] = [];
-    guard compute_401_auth_header(session, ctx, current_url, www_auth, auth_header_val) else {
+    guard ctx.body.len == 0 || ctx.rewindable else {
         return false, Error { .. };
     }
 
-    ctx.auth_retried = true;
-    ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
-    prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+    var auth_header_val: u8[..4096] = [];
+    guard find_auth_header_from_response(session, ctx, current_url, resp, auth_header_val) else {
+        return false, Error { .. };
+    }
 
-    remove_header_by_name(ctx.headers, "Authorization");
-    ctx.headers.push(make_header("Authorization", auth_header_val[..]));
+    prepare_auth_retry_hop(session, ctx, current_url, samesite_eval, safe_method, resp, auth_header_val[..]);
+
+    let hop_start_us = session.virtual_clock_us;
+    apply_network_interceptors_request(
+        session.pipeline,
+        ctx.headers,
+        current_url.href[..],
+        ctx.current_method[..],
+        ctx.body.len,
+        ctx.redirect_count,
+    );
 
     var hop_err = Error { .. };
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
-    if !ok(hop_err) {
+
+    let hop_dur_us = session.virtual_clock_us - hop_start_us;
+    apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
+
+    guard ok(hop_err) else {
         return true, hop_err;
     }
     return true, Error { .. };
@@ -795,7 +929,9 @@ fn execute_single_hop(
     // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
     let safe_method = is_safe_http_method(ctx.current_method[..]);
     let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
-    prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+    if session.enable_cookie_jar {
+        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+    }
 
     // Phase 3.5: Network Interceptors (Request Hook)
     let hop_start_us = session.virtual_clock_us;
@@ -829,7 +965,9 @@ fn execute_single_hop(
     apply_network_interceptors_response(session.pipeline, out_resp, ctx.redirect_count, hop_dur_us);
 
     ctx.body_consumed = true;
-    ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, out_resp.set_cookies);
+    if session.enable_cookie_jar {
+        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, out_resp.set_cookies);
+    }
 
     // Phase 4.5: RFC 9111 HTTP Cache Update & 304 Freshening
     if session.enable_cache {
@@ -837,7 +975,10 @@ fn execute_single_hop(
         var hop_req = copy(req);
         hop_req.url.clear();
         hop_req.url.append(current_url.href[..]);
-        let resp_dec = on_response(session.cache, hop_req, out_resp, cache_ts, cache_revalidate_idx);
+        hop_req.method.clear();
+        hop_req.method.append(ctx.current_method[..]);
+        let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
+        let resp_dec = on_response(session.cache, hop_req, out_resp, cache_ts, eff_reval_idx);
         if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
             out_resp = copy(resp_dec.response);
         }
@@ -881,11 +1022,11 @@ fn check_cache_and_inject_headers(
     }
     if lookup_dec.kind == LookupResultKind.Fail504 {
         out_resp = Response {
-            status_code: 504,
+            status_code: rfc::STATUS_GATEWAY_TIMEOUT,
             ..
         };
         out_resp.effective_url.append(raw_eff_url);
-        out_err = make_error(504, "cache", "504 Gateway Timeout (only-if-cached miss)");
+        out_err = make_error(rfc::STATUS_GATEWAY_TIMEOUT, "cache", "504 Gateway Timeout (only-if-cached miss)");
         return true;
     }
     if lookup_dec.kind == LookupResultKind.Revalidate {
@@ -918,7 +1059,7 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
 
     let parsed_initial, parse_err = core::parse_url(raw_eff_url[..]);
     guard parsed_initial.valid else {
-        return Response { .. }, make_error(400, "url_parse", "invalid request url");
+        return Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "url_parse", "invalid request url");
     }
 
     let req_time = session.virtual_clock_us / 1000000;
@@ -965,15 +1106,31 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
         }
     }
 
-    return Response { .. }, make_error(310, "redirect", "maximum redirect hops exceeded");
+    return Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
+}
+
+inline fn should_retry_request(
+    status_code: i32,
+    err:         Error,
+    method:      const u8[:],
+    req:         const Request&,
+    attempts:    i32,
+    has_retry:   bool,
+    max_retries: i32,
+    retry_5xx:   bool,
+) -> bool {
+    if status_code == rfc::STATUS_TOO_EARLY {
+        return attempts < 3;
+    }
+    guard has_retry && attempts < max_retries else { return false; }
+    let can_retry = is_idempotent_method(method) || has_idempotency_key(req);
+    guard can_retry else { return false; }
+    let retryable = !ok(err) || (retry_5xx && status_code >= rfc::STATUS_INTERNAL_SERVER_ERROR && status_code <= 599);
+    return retryable;
 }
 
 fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     let start_us = session.virtual_clock_us;
-
-    // Phase -1: Application Interceptors (Request Hook)
-    var active_req = copy(req);
-    apply_app_interceptors_request(session.pipeline, active_req, start_us);
 
     var max_retries: i32  = 0;
     var retry_5xx:   bool = false;
@@ -981,14 +1138,19 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
 
     var attempts: i32 = 0;
     while true {
+        // Phase -1: Application Interceptors (Request Hook) per attempt
+        var active_req = copy(req);
+        apply_app_interceptors_request(session.pipeline, active_req, session.virtual_clock_us);
+
         let resp, err = execute_request_inner(session, active_req);
-        if has_retry && attempts < max_retries {
-            let can_retry = is_idempotent_method(active_req.method[..]) || has_idempotency_key(active_req);
-            let retryable = !ok(err) || (retry_5xx && resp.status_code >= 500 && resp.status_code <= 599);
-            if can_retry && retryable {
-                attempts += 1;
-                continue;
-            }
+
+        let retry = should_retry_request(
+            resp.status_code, err, active_req.method[..], active_req,
+            attempts, has_retry, max_retries, retry_5xx,
+        );
+        if retry {
+            attempts += 1;
+            continue;
         }
 
         // Phase 6: Application Interceptors (Response Hook)
@@ -997,5 +1159,5 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
         apply_app_interceptors_response(session.pipeline, active_req, final_resp, err, total_dur_us);
         return copy(final_resp), err;
     }
-    return Response { .. }, make_error(500, "client", "request execution failed");
+    return Response { .. }, make_error(rfc::STATUS_INTERNAL_SERVER_ERROR, "client", "request execution failed");
 }

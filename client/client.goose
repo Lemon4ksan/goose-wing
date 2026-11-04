@@ -111,6 +111,8 @@ struct Client {
     // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
     pool: StreamPool = StreamPool { .. },
 
+    enable_cookie_jar: bool = true,
+
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
 }
@@ -135,6 +137,7 @@ fn new_client() -> Client {
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
         pool:                    new_stream_pool(),
+        enable_cookie_jar:       true,
         jar:                     CanonicalCookieJar { .. },
         ..
     };
@@ -162,6 +165,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
         pool:                    new_stream_pool(),
+        enable_cookie_jar:       cfg.cookie_jar,
         jar:                     CanonicalCookieJar { .. },
         ..
     };
@@ -368,7 +372,7 @@ fn doh_query(
     doh_client.mock_routes = copy(session.mock_routes);
 
     let res, err = do(doh_client, req);
-    guard ok(err) && res.status_code == 200 else { return false; }
+    guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
 
     return parse_dns_response(res.body[..], out_resp);
 }
@@ -562,6 +566,7 @@ fn set_credentials(session: Session&, username: const u8[:], password: const u8[
 fn clear_credentials(session: Session&) {
     session.creds.has_credentials = false;
     session.creds.username.clear();
+    core::secure_zeroize_slice(session.creds.password[..]);
     session.creds.password.clear();
     session.creds.nonce_counter = 1;
 }
@@ -661,7 +666,7 @@ fn set_mock_protocol(session: Session&, proto: const u8[:]) {
 
 fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
     var route = MockExchange {
-        status_code: 101,
+        status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
         ..
     };
     route.method.append("GET");
@@ -676,7 +681,7 @@ fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: 
 
 fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
     var route = MockExchange {
-        status_code: 200,
+        status_code: rfc::STATUS_OK,
         ..
     };
     route.method.append("GET");
@@ -729,11 +734,11 @@ fn attach_dictionary_request_headers(
     let now_sec = session.virtual_clock_us / 1000000;
     for &entry in session.dict_cache.entries {
         if dict_entry_matches_request(entry, origin, url_path, now_sec) {
-            set_header(req.headers, "Available-Dictionary", entry.sha256_base64[..], false);
+            set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
             if entry.id.len > 0 {
                 var id_hdr: u8[..128] = [];
                 format_dictionary_id_header(id_hdr, entry.id[..]);
-                set_header(req.headers, "Dictionary-ID", id_hdr[..], false);
+                set_header(req, "Dictionary-ID", id_hdr[..]);
             }
             return true;
         }

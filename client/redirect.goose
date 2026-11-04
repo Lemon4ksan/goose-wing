@@ -201,9 +201,9 @@ fn mutate_redirect_method<B>(
         return;
     }
 
-    let should_rewrite = if status_code == 301 || status_code == 302 {
+    let should_rewrite = if status_code == rfc::STATUS_MOVED_PERMANENTLY || status_code == rfc::STATUS_FOUND {
         eq_ascii_fold(current_method, "POST")
-    } else if status_code == 303 {
+    } else if status_code == rfc::STATUS_SEE_OTHER {
         !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD")
     } else {
         false

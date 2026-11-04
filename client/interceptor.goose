@@ -60,7 +60,7 @@ struct InterceptorEntry {
     kind:         InterceptorKind  = InterceptorKind.None,
     log_level:    LogLevel         = LogLevel.Basic,
     header_name:  u8[..64]         = [],
-    header_val:   u8[..256]        = [],
+    header_val:   u8[..4096]       = [],
     prefix:       u8[..32]         = [],
     counter:      u64              = 0,
     max_retries:  i32              = 0,
@@ -82,7 +82,7 @@ struct NetworkMetrics {
 // Replaces 3.5 KB entry array on the stack with a 64-bit bitmask and flat parameters.
 struct InterceptorPipeline {
     active_mask:         u64            = 0,
-    bearer_token:        u8[..128]      = [],
+    bearer_token:        u8[..4096]     = [],
     app_header_name:     u8[..64]       = [],
     app_header_val:      u8[..128]      = [],
     net_header_name:     u8[..64]       = [],
@@ -112,6 +112,7 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             AuthBearer => {
+                guard entry.header_val.len <= pipeline.bearer_token.cap else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
                 pipeline.bearer_token.clear();
                 pipeline.bearer_token.append(entry.header_val[..]);
@@ -192,6 +193,7 @@ fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: L
 }
 
 fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
+    guard "Bearer ".len + token.len <= pipeline.bearer_token.cap else { return false; }
     pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
     pipeline.bearer_token.clear();
     pipeline.bearer_token.append("Bearer ");

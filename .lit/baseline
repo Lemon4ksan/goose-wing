@@ -279,8 +279,8 @@ client/client.goose 746 wing::verify_dcz_dcb_magic 0.08 0 0.85
 client/client.goose 766 wing::process_dictionary_response 45.57 0 0.85
 client/interceptor.goose 105 wing::add_interceptor 0.12 0 0.85
 client/interceptor.goose 178 wing::add_logging 0.00 0 0.85
-client/interceptor.goose 194 wing::add_bearer_auth 0.00 0 0.85
-client/interceptor.goose 202 wing::add_header 0.00 0 0.85
+client/interceptor.goose 195 wing::add_bearer_auth 15.00 0 0.85
+client/interceptor.goose 203 wing::add_header 0.00 0 0.85
 client/interceptor.goose 224 wing::add_request_id 0.00 0 0.85
 client/interceptor.goose 232 wing::add_traceparent 0.00 0 0.85
 client/interceptor.goose 240 wing::add_retry 0.00 0 0.85
@@ -3350,7 +3350,7 @@ wire/types.goose 180 wire::enumerate_physical_devices 0.01 0 0.85
 client/session/cookie_bridge.goose 17 wing::compute_hop_samesite_context 0.76 0 0.85
 client/session/cookie_bridge.goose 56 wing::prepare_hop_cookie_header 0.08 0 0.85
 client/session/cookie_bridge.goose 92 wing::ingest_hop_response_cookies 0.12 0 0.85
-client/session/exec.goose 38 wing::append_query_params_preserving_fragment 0.66 0 0.85
+client/session/exec.goose 83 wing::append_query_params_preserving_fragment 31.00 0 0.85
 client/session/exec.goose 76 wing::build_effective_url 135.34 0 0.85
 client/session/exec.goose 129 wing::validate_hop_prerequisites 0.03 0 0.85
 client/session/exec.goose 140 wing::finalize_success_response 0.03 0 0.85
@@ -3369,7 +3369,7 @@ client/session/exec.goose 511 wing::dispatch_pooled_h1_hop 0.12 0 0.85
 client/session/exec.goose 564 wing::execute_live_network_hop 90.08 0 0.85
 client/session/exec.goose 618 wing::execute_mock_or_echo_hop 30.27 0 0.85
 client/session/exec.goose 681 wing::compute_401_auth_header 60.27 0 0.85
-client/session/exec.goose 734 wing::handle_401_auth_retry 0.08 0 0.85
+client/session/exec.goose 858 wing::handle_401_auth_retry 60.10 0 0.85
 client/session/exec.goose 768 wing::execute_single_hop 375.98 0 0.85
 client/session/exec.goose 862 wing::check_cache_and_inject_headers 0.34 0 0.85
 client/session/exec.goose 905 wing::execute_request_inner 210.27 0 0.85

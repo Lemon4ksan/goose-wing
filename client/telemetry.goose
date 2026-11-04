@@ -64,19 +64,19 @@ struct HarEntry {
 
 // Serializes a single entry object conforming to HTTP Archive (HAR 1.2) specification
 fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
-    out.append("{\"startedDateTime\":\"");
-    out.append(entry.started_iso8601[..]);
-    out.append("\",\"time\":");
+    out.append("{\"startedDateTime\":");
+    json::format_string(out, entry.started_iso8601[..]);
+    out.append(",\"time\":");
     let total_us = compute_total_timing_us(entry.timings);
     format_us_as_ms(total_us, out);
 
-    out.append(",\"request\":{\"method\":\"");
-    out.append(entry.method[..]);
-    out.append("\",\"url\":");
+    out.append(",\"request\":{\"method\":");
+    json::format_string(out, entry.method[..]);
+    out.append(",\"url\":");
     json::format_string(out, entry.url[..]);
-    out.append(",\"httpVersion\":\"");
-    out.append(entry.http_version[..]);
-    out.append("\",\"bodySize\":");
+    out.append(",\"httpVersion\":");
+    json::format_string(out, entry.http_version[..]);
+    out.append(",\"bodySize\":");
     format(out, entry.request_bytes);
     out.append("}");
 
@@ -84,9 +84,9 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
     format(out, entry.status as u32);
     out.append(",\"statusText\":");
     json::format_string(out, entry.status_text[..]);
-    out.append(",\"httpVersion\":\"");
-    out.append(entry.http_version[..]);
-    out.append("\",\"bodySize\":");
+    out.append(",\"httpVersion\":");
+    json::format_string(out, entry.http_version[..]);
+    out.append(",\"bodySize\":");
     format(out, entry.response_bytes);
     out.append("}");
 

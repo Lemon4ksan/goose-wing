@@ -90,7 +90,7 @@ struct Response {
 }
 
 fn reset_response(res: Response&) {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     res.effective_url.clear();
     res.headers.clear();
     res.raw_headers.clear();
@@ -126,7 +126,7 @@ fn is_http1(res: const Response&) -> bool {
 
 // Returns true if the HTTP response status code is within the 2xx Successful range [200, 299] (RFC 9110 Section 15.3).
 fn is_success(res: const Response&) -> bool {
-    return res.status_code >= 200 && res.status_code < 300;
+    return res.status_code >= rfc::STATUS_OK && res.status_code < 300;
 }
 
 fn status(res: const Response&) -> i32 {
@@ -210,9 +210,29 @@ fn text(res: const Response&) -> const u8[:] {
     return res.body[..];
 }
 
+fn remove_decompressed_spans(spans: HeaderSpan[..32]&, raw_headers: const u8[:]) {
+    var write_idx = 0;
+    for read_idx in spans.len {
+        let n = spans[read_idx].name_slice(raw_headers);
+        let keep = !eq_ascii_fold(n, "content-encoding") && !eq_ascii_fold(n, "content-length");
+        if keep {
+            if write_idx != read_idx {
+                spans[write_idx] = copy(spans[read_idx]);
+            }
+            write_idx++;
+        }
+    }
+    while spans.len > write_idx {
+        spans.pop();
+    }
+}
+
 fn clear_decompressed_headers(res: Response&) {
     remove_header_by_name(res.headers, "content-encoding");
     remove_header_by_name(res.headers, "content-length");
+    if res.spans.len > 0 && res.raw_headers.len > 0 {
+        remove_decompressed_spans(res.spans, res.raw_headers[..]);
+    }
     res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 
@@ -293,7 +313,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
         var found = false;
         var decompressed: u8[>..] = [];
         for &entry in dict_cache.entries {
-            if entry.valid && entry.sha256_hash == dict_hash {
+            if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash[..]) {
                 let ok_dec = decompress_dcz_payload(p_slice, entry.content[..], decompressed);
                 guard ok_dec else { return false; }
                 found = true;
@@ -314,7 +334,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
         var found = false;
         var decompressed: u8[>..] = [];
         for &entry in dict_cache.entries {
-            if entry.valid && entry.sha256_hash == dict_hash {
+            if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash[..]) {
                 let ok_dec = decompress_dcb_payload(p_slice, entry.content[..], decompressed);
                 guard ok_dec else { return false; }
                 found = true;
@@ -338,7 +358,7 @@ fn read_json_field(reader: json::Reader&, dst: i64&) {
 }
 
 fn read_json_field(reader: json::Reader&, dst: i32&) {
-    dst = json::read_int(reader) as! i32;
+    dst = core::clamp_i64(json::read_int(reader), -2147483648, 2147483647) as! i32;
 }
 
 fn read_json_field(reader: json::Reader&, dst: f64&) {
@@ -353,7 +373,8 @@ fn read_json_field(reader: json::Reader&, dst) {
     var scratch: u8[>..] = [];
     let str_val = json::read_string(reader, scratch);
     dst.clear();
-    dst.append(str_val);
+    let n = core::ct_min_i64(str_val.len, dst.cap);
+    dst.append(str_val[..n]);
 }
 
 // ---- json response decoding -------------------------------------------------
@@ -374,7 +395,7 @@ fn json<T>(res: const Response&, out: T&) -> Error {
     };
     if !json::finish(reader) {
         let msg = json::message(reader);
-        return make_error(422, "json_decode", msg[..]);
+        return make_error(rfc::STATUS_UNPROCESSABLE_CONTENT, "json_decode", msg[..]);
     }
     return Error { .. };
 }

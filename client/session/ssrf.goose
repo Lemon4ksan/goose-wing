@@ -181,15 +181,41 @@ fn is_localhost_name(host: const u8[:]) -> bool {
 //   s = "1f90"
 //   returns: 8080
 fn parse_hex_u16(s: const u8[:]) -> i32 {
+    guard s.len > 0 && s.len <= 4 else { return -1; }
     var val: i32 = 0;
     for b in s {
         let h = if b >= '0' && b <= '9' { (b - '0') as i32 }
                 else if b >= 'a' && b <= 'f' { (b - 'a' + 10) as i32 }
                 else if b >= 'A' && b <= 'F' { (b - 'A' + 10) as i32 }
-                else { break; };
+                else { return -1; };
         val = (val << 4) | h;
     }
     return val;
+}
+
+fn is_private_6to4_prefix(eff_ip: const u8[:]) -> bool {
+    guard starts_with(eff_ip, "2002:") else { return false; }
+    let rem = eff_ip[5..];
+    let colon_idx = core::index_of_byte(rem, ':');
+    let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
+    let hex_val1 = parse_hex_u16(p1);
+    guard hex_val1 >= 0 else { return true; }
+    let o0 = (hex_val1 >> 8) & 0xFF;
+    let o1 = hex_val1 & 0xFF;
+    if is_private_ipv4_octets(o0, o1) {
+        return true;
+    }
+    guard colon_idx > 0 && colon_idx + 1 < rem.len else { return false; }
+    let rem2 = rem[(colon_idx + 1)..];
+    let colon_idx2 = core::index_of_byte(rem2, ':');
+    let p2 = if colon_idx2 > 0 { rem2[..colon_idx2] } else { rem2 };
+    let hex_val2 = parse_hex_u16(p2);
+    guard hex_val2 >= 0 else { return true; }
+    let o2 = (hex_val2 >> 8) & 0xFF;
+    return (o0 == 192 && o1 == 0 && (o2 == 0 || o2 == 2)) ||
+           (o0 == 198 && o1 == 51 && o2 == 100) ||
+           (o0 == 203 && o1 == 0 && o2 == 113) ||
+           (o0 == 192 && o1 == 88 && o2 == 99);
 }
 
 fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
@@ -238,19 +264,15 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
         return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
     }
 
-    // 6to4 prefix 2002::/16
-    if starts_with(eff_ip, "2002:") {
-        let rem = eff_ip[5..];
-        let colon_idx = core::index_of_byte(rem, ':');
-        let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
-        let hex_val1 = parse_hex_u16(p1);
-        let o0 = (hex_val1 >> 8) & 0xFF;
-        let o1 = hex_val1 & 0xFF;
-        return is_private_ipv4_octets(o0, o1);
+    // 6to4 prefix 2002::/16 (RFC 3056)
+    if is_private_6to4_prefix(eff_ip) {
+        return true;
     }
 
-    // Documentation prefix (RFC 3849), Teredo (RFC 4380), Discard-Only (RFC 6666)
-    if starts_with(eff_ip, "2001:db8:") || starts_with(eff_ip, "2001:0:") ||
+    // Benchmarking (RFC 5180), ORCHIDv2 (RFC 7343), Documentation (RFC 3849),
+    // Teredo (RFC 4380), Discard-Only (RFC 6666)
+    if starts_with(eff_ip, "2001:2:") || starts_with(eff_ip, "2001:20:") ||
+       starts_with(eff_ip, "2001:db8:") || starts_with(eff_ip, "2001:0:") ||
        starts_with(eff_ip, "2001::") || starts_with(eff_ip, "100::") {
         return true;
     }
