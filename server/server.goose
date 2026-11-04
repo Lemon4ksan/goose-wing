@@ -24,7 +24,18 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
         for b in host_val {
             guard b != '[' && b != ']' else { return false; }
         }
-        return true;
+        let col_idx = core::index_of_byte(host_val, ':');
+        if col_idx < 0 {
+            return true;
+        }
+        guard col_idx > 0 else { return false; }
+        let port_slice = host_val[(col_idx + 1)..];
+        guard port_slice.len > 0 && port_slice.len <= 5 else { return false; }
+        for pb in port_slice {
+            guard pb >= '0' && pb <= '9' else { return false; }
+        }
+        let p_val, p_ok = core::parse_u64_dec(port_slice);
+        return p_ok && p_val <= 65535;
     }
     let close_idx = core::index_of_byte(host_val, ']');
     guard close_idx > 1 else { return false; }
@@ -142,8 +153,24 @@ inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
 
 // RFC 9112 §3.2.3: Validates authority-form request target for CONNECT method (host:port).
 inline fn validate_connect_authority(target: const u8[:]) -> bool {
+    guard target.len >= 3 else { return false; }
+    if target[0] == '[' {
+        let close_idx = core::index_of_byte(target, ']');
+        guard close_idx > 1 && close_idx + 2 < target.len && target[close_idx + 1] == ':' else {
+            return false;
+        }
+        var comp_buf: u8[..64] = [];
+        guard core::parse_and_compress_ipv6(target[1..close_idx], comp_buf) else {
+            return false;
+        }
+        let port_num, port_ok = core::parse_port_number(target[(close_idx + 2)..]);
+        return port_ok && port_num > 0;
+    }
     let col = core::index_of_byte(target, ':');
     guard col > 0 && col + 1 < target.len else { return false; }
+    guard validate_host_header_chars(target[..col]) && validate_host_header_structure(target) else {
+        return false;
+    }
     let port_num, port_ok = core::parse_port_number(target[(col + 1)..]);
     return port_ok && port_num > 0;
 }
@@ -296,6 +323,9 @@ inline fn clear_request_headers_state<Req>(req: Req&) {
     req.headers.clear();
     req.spans.clear();
     req.presence_mask = 0;
+    if !is_empty(req.bloom_filter) {
+        clear(req.bloom_filter);
+    }
 }
 
 inline fn has_smuggling_conflict(mask: u32) -> bool {
@@ -326,12 +356,10 @@ inline fn store_parsed_header_item<Req>(
     hval:    const u8[:],
 ) -> bool {
     guard out_req.headers.len < out_req.headers.cap else { return false; }
-    guard hname.len <= 64 && hval.len <= 4096 else { return false; }
-
     var it = HeaderItem { is_sensitive: false, .. };
+    guard hname.len <= it.name.cap && hval.len <= it.value.cap else { return false; }
     it.name.append(hname);
-    let safe_len = if hval.len <= 384 { hval.len } else { it.value.cap };
-    it.value.append(hval[..safe_len]);
+    it.value.append(hval);
     out_req.headers.push(it);
     add_header(out_req.bloom_filter, hname);
     return true;
@@ -527,9 +555,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
 
     if has_te {
         guard validate_span_te_header(wire, out_req.spans[..], presence_tracker.te_idx) else {
-            out_req.headers.clear();
-            out_req.spans.clear();
-            out_req.presence_mask = 0;
+            clear_request_headers_state(out_req);
             return false, 0;
         }
 
@@ -539,10 +565,10 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
             out_req.trailers,
         );
         if dec_err != ChunkedDecodeError.None {
+            out_req.body.clear();
+            out_req.trailers.clear();
             if dec_err != ChunkedDecodeError.UnexpectedEof {
-                out_req.headers.clear();
-                out_req.spans.clear();
-                out_req.presence_mask = 0;
+                clear_request_headers_state(out_req);
             }
             return false, 0;
         }
@@ -579,21 +605,39 @@ fn parse_http1_response_headers_block<Res>(rest_headers: const u8[:], out_res: R
     out_res.headers.clear();
     while cursor < rest_headers.len {
         let rel_end = find(rest_headers[cursor..], "\r\n");
-        if rel_end < 0 || rel_end == 0 { break; }
+        if rel_end == 0 { break; }
+        guard rel_end > 0 else {
+            out_res.headers.clear();
+            return false;
+        }
 
         let line = rest_headers[cursor..(cursor + rel_end)];
         let colon = core::index_of_byte(line, ':');
-        guard colon > 0 else { return false; }
+        guard colon > 0 else {
+            out_res.headers.clear();
+            return false;
+        }
         let hname = line[..colon];
-        guard is_valid_header_name(hname) else { return false; }
+        guard is_valid_header_name(hname) else {
+            out_res.headers.clear();
+            return false;
+        }
         let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else { return false; }
+        guard is_valid_header_value(hval) else {
+            out_res.headers.clear();
+            return false;
+        }
 
         var item = HeaderItem { .. };
-        guard hname.len <= item.name.cap && hval.len <= item.value.cap else { return false; }
+        let fits = hname.len <= item.name.cap &&
+            hval.len <= item.value.cap &&
+            out_res.headers.len < out_res.headers.cap;
+        guard fits else {
+            out_res.headers.clear();
+            return false;
+        }
         item.name.append(hname);
         item.value.append(hval);
-        guard out_res.headers.len < out_res.headers.cap else { return false; }
         out_res.headers.push(item);
         cursor += rel_end + 2;
     }
@@ -618,12 +662,8 @@ fn inspect_response_framing_headers(headers: const HeaderItem[:]) -> ResponseFra
         } else if eq_ascii_fold(hdr.name[..], "content-length") {
             info.has_cl = true;
             cl_count++;
-            let val_trimmed = trim_lws(hdr.value[..]);
-            guard val_trimmed.len > 0 else { return info, false; }
-            for b in val_trimmed {
-                guard b >= '0' && b <= '9' else { return info, false; }
-            }
-            let parsed_cl, ok_cl = core::parse_i64_dec(val_trimmed);
+            var parsed_cl: i64 = 0;
+            let ok_cl = validate_content_length_value(hdr.value[..], parsed_cl);
             guard ok_cl && parsed_cl >= 0 else { return info, false; }
             if cl_count == 1 {
                 info.cl_len = parsed_cl;
@@ -646,11 +686,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     guard wire.len >= 4 else { return false, 0; }
 
     let hdr_end = core::fast_find_crlfcrlf(wire);
-    guard hdr_end >= 0 else {
-        if wire.len > 8192 { return false, 0; }
-        return false, 0;
-    }
-    guard hdr_end <= 8192 else { return false, 0; }
+    guard hdr_end >= 0 && hdr_end <= 8192 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
@@ -660,16 +696,25 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
     let status_line = header_bytes[..line_end];
     // RFC 9112 Section 4: Status Line - Exactly SP between HTTP-version and 3-digit status code (uWS #1949)
-    guard status_line.len >= 12 && status_line[..7] == "HTTP/1." && status_line[8] == ' ' else { return false, 0; }
+    guard status_line.len >= 12 &&
+          status_line[..7] == "HTTP/1." &&
+          (status_line[7] == '0' || status_line[7] == '1') &&
+          status_line[8] == ' ' else {
+        return false, 0;
+    }
     if status_line.len > 12 {
         guard status_line[12] == ' ' else { return false, 0; }
     }
 
-    // Parse 3-digit status code
+    // Parse 3-digit status code (100..599)
+    guard status_line[9] >= '1' && status_line[9] <= '5' &&
+          status_line[10] >= '0' && status_line[10] <= '9' &&
+          status_line[11] >= '0' && status_line[11] <= '9' else {
+        return false, 0;
+    }
     let c0 = status_line[9] - '0';
     let c1 = status_line[10] - '0';
     let c2 = status_line[11] - '0';
-    guard c0 >= 0 && c0 <= 9 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else { return false, 0; }
     out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
     out_res.protocol.clear();
     out_res.protocol.append(status_line[..8]);
@@ -680,6 +725,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
     out_res.trailers.clear();
     out_res.body.clear();
+    out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
 
     let framing, ok_frame = inspect_response_framing_headers(out_res.headers[..]);
     guard ok_frame else { return false, 0; }
@@ -693,6 +739,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
         if framing.has_cl {
             remove_header_by_name(out_res.headers, "content-length");
+            out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
         }
         // RFC 9112 §6.3 Rule 1: 1xx, 204, and 304 responses NEVER have a message body
         if is_empty_status {
@@ -854,7 +901,7 @@ fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
 const CL_HEADER_PREFIX: const u8[:] = "Content-Length: ";
 
 fn serialize_content_length_header<B>(body_len: i64, out: B&) {
-    if body_len == 0 {
+    if body_len <= 0 {
         out.append("Content-Length: 0\r\n");
         return;
     }
@@ -949,20 +996,26 @@ fn serialize_response_headers_list<B>(headers: const HeaderItem[:], is_empty_sta
 // Serializes only the HTTP/1.1 response status line and headers into out_wire,
 // omitting the body. Used for zero-copy vectored transmission via tcp_send2.
 fn serialize_http1_headers<Res, B>(
-    res:         const Res&,
-    server_name: const u8[:],
-    out_wire:    B&,
-    now_sec:     i64 = 0,
+    res:               const Res&,
+    server_name:       const u8[:],
+    out_wire:          B&,
+    now_sec:           i64 = 0,
+    override_body_len: i64 = -1,
 ) {
     var date_buf: u8[..64] = [];
     format_local_http_date(date_buf, now_sec);
+    let eff_body_len = if override_body_len >= 0 { override_body_len } else { res.body.len };
+
+    var mask = res.presence_mask;
+    if mask == 0 && res.headers.len > 0 {
+        mask = detect_response_presence_mask(res.headers[..]);
+    }
 
     if res.status_code == 200 && server_name == "goose-wing" {
-        let mask = res.presence_mask;
-        if (mask == RES_PRESENCE_CONTENT_TYPE || mask == 0) && res.headers.len == 1 && res.trailers.len == 0 {
+        if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.len == 1 && res.trailers.len == 0 {
             out_wire.append(HTTP1_200_SERVER_GOOSE);
             out_wire.append(date_buf[..]);
-            serialize_content_length_header(res.body.len, out_wire);
+            serialize_content_length_header(eff_body_len, out_wire);
             if res.headers[0].value == "text/plain" {
                 out_wire.append(HTTP1_CT_TEXT_PLAIN);
             } else if res.headers[0].value == "application/json" {
@@ -982,11 +1035,6 @@ fn serialize_http1_headers<Res, B>(
         serialize_server_header(server_name, out_wire);
     }
 
-    var mask = res.presence_mask;
-    if mask == 0 && res.headers.len > 0 {
-        mask = detect_response_presence_mask(res.headers[..]);
-    }
-
     // Emit RFC 7231 Date header if not explicitly overridden by response
     if (mask & RES_PRESENCE_DATE) == 0 {
         out_wire.append(date_buf[..]);
@@ -995,7 +1043,7 @@ fn serialize_http1_headers<Res, B>(
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
-            serialize_content_length_header(res.body.len, out_wire);
+            serialize_content_length_header(eff_body_len, out_wire);
         }
     }
 
@@ -1086,11 +1134,17 @@ fn send_http1_response_iov<Res, B>(
     wire_headers: B&,
 ) -> i32 {
     wire_headers.clear();
-    serialize_http1_headers(res, server_name, wire_headers);
+    let n = core::iovec_count(body_iov);
+    var iov_total: i64 = 0;
+    for i in n {
+        let chunk = core::iovec_get(body_iov, i);
+        iov_total += chunk.len;
+    }
+    let ov_len = if res.body.len == 0 && iov_total > 0 { iov_total } else { -1 };
+    serialize_http1_headers(res, server_name, wire_headers, 0, ov_len);
     guard fd > 0 else { return 0; }
     var arr = core::new_iovec_array();
     core::iovec_push(arr, wire_headers[..]);
-    let n = core::iovec_count(body_iov);
     for i in n {
         let chunk = core::iovec_get(body_iov, i);
         if chunk.len > 0 {
@@ -1213,12 +1267,12 @@ fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
     if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
-        var wire_out: u8[..4096] = [];
+        var wire_out: u8[..16384] = [];
         serialize_http1_chunked_response(res, server_name, 4096, wire_out);
         return server_cork_write(sc, wire_out[..]);
     }
 
-    var hdr_buf: u8[..512] = [];
+    var hdr_buf: u8[..8192] = [];
     serialize_http1_headers(res, server_name, hdr_buf);
     if res.body.len == 0 || is_empty_status {
         return server_cork_write(sc, hdr_buf[..]);
@@ -1266,6 +1320,11 @@ fn begin_http_stream_request<Req>(
     let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     if has_te {
+        guard validate_span_te_header(wire, out_req.spans[..], tracker.te_idx) else {
+            consumer.is_headers_parsed = false;
+            clear_request_headers_state(out_req);
+            return false, 0;
+        }
         consumer.is_chunked = true;
         consumer.content_length = -1;
     } else if has_cl {
@@ -1399,19 +1458,7 @@ struct HttpServer {
 }
 
 inline fn refresh_http_server_date(server: HttpServer&, now_sec: i64) {
-    if server.cached_date.header_str.len == 0 || (now_sec > 0 && server.cached_date.last_sec != now_sec) {
-        server.cached_date.last_sec = now_sec;
-        server.cached_date.last_tsc = prof_rdtsc();
-        let wall_sec = core::now().wall_sec;
-        server.cached_date.header_str.clear();
-        server.cached_date.header_str.append("Date: ");
-        core::format_http(server.cached_date.header_str, core::unix(wall_sec, 0));
-        server.cached_date.header_str.append("\r\n");
-
-        server.cached_date.fast_prefix.clear();
-        server.cached_date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
-        server.cached_date.fast_prefix.append(server.cached_date.header_str[..]);
-    }
+    update_server_cached_date(server.cached_date, now_sec);
 }
 
 fn new_http_server(
@@ -1479,11 +1526,10 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
 
 // Registers a declarative WebSocket route on the server instance (uWebSockets app.ws pattern)
 fn add_ws_route(server: HttpServer&, path: const u8[:], behavior: const WsBehavior& = WsBehavior { .. }) -> bool {
-    guard server.ws_route_count < server.ws_routes.len as i32 else { return false; }
+    guard path.len > 0 && path.len <= 128 && server.ws_route_count < server.ws_routes.len as i32 else { return false; }
     for i in server.ws_routes.len {
         if !server.ws_routes[i].in_use {
-            server.ws_routes[i].path.clear();
-            server.ws_routes[i].path.append(path);
+            let _ = server.ws_routes[i].path.try_set(path);
             server.ws_routes[i].behavior = behavior;
             server.ws_routes[i].in_use = true;
             server.ws_route_count += 1;
@@ -1712,6 +1758,9 @@ fn defer_ws_upgrade(
     req:     const Request&,
     sock_fd: i64,
 ) -> WsPendingUpgrade, bool {
+    guard is_websocket_upgrade_request(req) else {
+        return WsPendingUpgrade { .. }, false;
+    }
     let r_idx = find_ws_route(server, req.url[..]);
     guard r_idx >= 0 else {
         return WsPendingUpgrade { .. }, false;
@@ -1722,6 +1771,9 @@ fn defer_ws_upgrade(
     }
     let subprotocol = req.headers.find_header("Sec-WebSocket-Protocol");
     let extensions = req.headers.find_header("Sec-WebSocket-Extensions");
+    guard subprotocol.len <= 64 && extensions.len <= 64 else {
+        return WsPendingUpgrade { .. }, false;
+    }
 
     var pending = new_ws_pending_upgrade(sock_fd, client_key, r_idx, subprotocol, extensions);
     return pending, true;
@@ -1735,16 +1787,6 @@ fn complete_ws_upgrade<B>(
     guard pending.in_use && !pending.is_aborted else {
         return WebSocketSession { .. }, false;
     }
-
-    var accept_key: u8[..64] = [];
-    compute_websocket_accept(pending.client_key[..], accept_key);
-
-    out_wire.append("HTTP/1.1 101 Switching Protocols\r\n");
-    out_wire.append("Upgrade: websocket\r\n");
-    out_wire.append("Connection: Upgrade\r\n");
-    out_wire.append("Sec-WebSocket-Accept: ");
-    out_wire.append(accept_key[..]);
-    out_wire.append("\r\n");
 
     let route_behavior = if pending.route_idx >= 0 && pending.route_idx < server.ws_routes.len as i32 {
         server.ws_routes[pending.route_idx as i64].behavior
@@ -1760,6 +1802,21 @@ fn complete_ws_upgrade<B>(
     } else {
         ""
     };
+
+    var session = new_websocket_session(false);
+    guard subproto.len <= session.subprotocol.cap && pending.user_data.len <= session.user_data.cap else {
+        return WebSocketSession { .. }, false;
+    }
+
+    var accept_key: u8[..64] = [];
+    compute_websocket_accept(pending.client_key[..], accept_key);
+
+    out_wire.append("HTTP/1.1 101 Switching Protocols\r\n");
+    out_wire.append("Upgrade: websocket\r\n");
+    out_wire.append("Connection: Upgrade\r\n");
+    out_wire.append("Sec-WebSocket-Accept: ");
+    out_wire.append(accept_key[..]);
+    out_wire.append("\r\n");
 
     if subproto.len > 0 {
         out_wire.append("Sec-WebSocket-Protocol: ");
@@ -1777,7 +1834,6 @@ fn complete_ws_upgrade<B>(
 
     out_wire.append("\r\n");
 
-    var session = new_websocket_session(false);
     session.compress_mode = route_behavior.compression;
     session.permessage_deflate = compress_active;
     session.max_backpressure = route_behavior.max_backpressure;
@@ -1786,13 +1842,6 @@ fn complete_ws_upgrade<B>(
     session.max_lifetime_s = route_behavior.max_lifetime_s;
     session.send_pings_automatically = route_behavior.send_pings_automatically;
     session.reset_idle_timeout_on_send = route_behavior.reset_idle_timeout_on_send;
-
-    guard subproto.len <= session.subprotocol.cap else {
-        return WebSocketSession { .. }, false;
-    }
-    guard pending.user_data.len <= session.user_data.cap else {
-        return WebSocketSession { .. }, false;
-    }
 
     if subproto.len > 0 {
         session.subprotocol.append(subproto);
@@ -1899,7 +1948,7 @@ fn handle_connection_wire<B>(
     wire_out.clear();
 
     var effective_ip: u8[..64] = [];
-    effective_ip.append(client_ip);
+    let _ = effective_ip.try_set(client_ip[..min(client_ip.len, 64)]);
     var raw_stream = wire_in;
 
     if server.accept_proxy_protocol {
@@ -2170,10 +2219,14 @@ fn process_pipelined_pipe_step<B>(
             return PipeStepResult.Stop;
         }
         core::advance_to(pipe, 0, pipe.readable_len());
-        if total_handled == 0 {
-            serialize_bad_request_error(server.server_name[..], wire_out);
-        }
         return PipeStepResult.Error;
+    }
+
+    if try_handle_pipelined_websocket(server, req, wire_out) {
+        total_handled++;
+        core::advance_to(pipe, consumed, consumed);
+        core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+        return PipeStepResult.Stop;
     }
 
     let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
@@ -2813,18 +2866,23 @@ fn reactor_handle_h2_ingress(
     cork_wire: u8[..65536]&,
 ) -> bool {
     let now_ms = now_ns / 1000000;
+    cork_wire.clear();
     var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
     defer internal::cleanup_h2_server_session(sess, server.pipeline);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         sess, server.pipeline, server.timer, "127.0.0.1", chunk.bytes[..chunk.len], now_ms, cork_wire,
     );
+    if cork_wire.len > 0 {
+        if !reactor_drain_cork_wire(conn, cork_wire[..]) {
+            return false;
+        }
+    }
     guard ok_h2 else { return false; }
     server.requests_processed++;
-    if cork_wire.len > 0 {
-        let _ = reactor_drain_cork_wire(conn, cork_wire[..]);
-    }
     if consumed_h2 < chunk.len {
-        let _ = reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed_h2..chunk.len]);
+        guard reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed_h2..chunk.len]) else {
+            return false;
+        }
     }
     return true;
 }
@@ -3069,22 +3127,19 @@ fn handle_connection_page_ring<B>(
         let ok_parse, consumed = parse_http1_wire_request(peek_buf[..peek_n], req);
 
         if !ok_parse || consumed <= 0 {
-            let hdr_end = core::page_ring_find_crlfcrlf(ring);
-            guard hdr_end >= 0 else {
-                // Incomplete HTTP headers; wait for next network packet
-                return total_handled, true;
-            }
-
             var keep = false;
             let _ = handle_pipelined_parse_failure(server.server_name[..], peek_buf[..peek_n], req, wire_out, keep);
             if keep {
                 return total_handled, true;
             }
-
-            if total_handled == 0 {
-                serialize_bad_request_error(server.server_name[..], wire_out);
-            }
+            core::page_ring_clear(ring);
             return total_handled, false;
+        }
+
+        if try_handle_pipelined_websocket(server, req, wire_out) {
+            total_handled++;
+            core::page_ring_clear(ring);
+            break;
         }
 
         let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
@@ -3116,6 +3171,7 @@ fn serve_static_mmap_file<B>(
     content_type: const u8[:],
     wire_out:     B&,
 ) -> bool {
+    guard content_type.len <= 384 else { return false; }
     var mf, ok = core::mmap_file_open(path);
     guard ok else { return false; }
     defer core::mmap_file_close(mf);
@@ -3134,12 +3190,14 @@ fn serve_static_mmap_file<B>(
     var chunk_buf: u8[4096] = [0; 4096];
     var offset:    u64      = 0;
     while offset < mf.size {
-        let n, r_ok = core::mmap_file_read(mf, offset, chunk_buf[..]);
+        let rem = mf.size - offset;
+        let ask = min(rem, 4096);
+        let n, r_ok = core::mmap_file_read(mf, offset, chunk_buf[..(ask as i64)]);
         guard r_ok && n > 0 else { break; }
         wire_out.append(chunk_buf[..n]);
         offset = offset + (n as u64);
     }
-    return true;
+    return offset == mf.size;
 }
 
 // Sends a static file directly from kernel memory-mapped pages to a socket with zero user-space copying.
@@ -3148,10 +3206,11 @@ fn send_static_mmap_file(
     path:         const u8[:],
     content_type: const u8[:],
 ) -> bool {
-    guard sock_fd > 0 else { return false; }
+    guard sock_fd > 0 && content_type.len <= 384 else { return false; }
     var mf, ok = core::mmap_file_open(path);
     guard ok else { return false; }
     defer core::mmap_file_close(mf);
+    guard mf.size <= 0x7FFFFFFF else { return false; }
 
     var hdr_buf: u8[..512] = [];
     hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
@@ -3180,7 +3239,8 @@ fn set_use_as_dictionary_response(
     id_str:        const u8[:] = "",
     ttl_sec:       u32         = 86400,
 ) {
-    var hdr_val: u8[..256] = [];
+    guard match_pattern.len <= 128 && id_str.len <= 64 else { return; }
+    var hdr_val: u8[..512] = [];
     format_use_as_dictionary_header(hdr_val, match_pattern, id_str, ttl_sec);
     set_header(res, "Use-As-Dictionary", hdr_val[..]);
 }
@@ -3215,6 +3275,7 @@ fn negotiate_compression_dictionary(
     expected_hash: const u8[32]&,
     expected_id:   const u8[:] = "",
 ) -> const u8[:], bool {
+    guard expected_id.len <= 126 else { return "", false; }
     let avail_hdr = find_header(req.headers[..], "Available-Dictionary").trim_lws();
     guard avail_hdr.len >= 3 && avail_hdr[0] == ':' && avail_hdr[avail_hdr.len - 1] == ':' else {
         return "", false;
@@ -3255,15 +3316,19 @@ fn apply_negotiated_dictionary_response(
     let enc, ok = negotiate_compression_dictionary(req, dict_hash, expected_id);
     guard ok else { return false; }
 
-    res.body.clear();
+    var encoded_body: u8[..16384] = [];
     if enc == rfc::ENCODING_DCZ {
-        guard encode_dcz_response(res.body, dict_hash, raw_content) else { return false; }
+        guard encode_dcz_response(encoded_body, dict_hash, raw_content) else { return false; }
+        res.body.clear();
+        res.body.append(encoded_body[..]);
         set_header(res, "Content-Encoding", rfc::ENCODING_DCZ);
         set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
         return true;
     }
     if enc == rfc::ENCODING_DCB {
-        guard encode_dcb_response(res.body, dict_hash, raw_content) else { return false; }
+        guard encode_dcb_response(encoded_body, dict_hash, raw_content) else { return false; }
+        res.body.clear();
+        res.body.append(encoded_body[..]);
         set_header(res, "Content-Encoding", rfc::ENCODING_DCB);
         set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
         return true;

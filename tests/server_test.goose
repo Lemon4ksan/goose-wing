@@ -1070,7 +1070,7 @@ fn build_h2_test_frame_header<B>(out: B&, length: u32, frame_type: u8, flags: u8
 }
 
 fn test_server_audit_regressions(t: lit::T&) {
-    t.run("1. EdgeFilter bounds and LWS-trimmed duplicate required_header (F001, F002)") { sub =>
+    t.run("1. EdgeFilter bounds and duplicate required_header") { sub =>
         // F001: path_prefix > 64 bytes must not silently truncate to a shorter prefix that matches /api/...
         let long_pfx: const u8[:] = "/api/v1/012345678901234567890123456789012345678901234567890123456789/secret";
         let r_long = wing::make_edge_filter_rule("long", long_pfx, wing::EdgeFilterVerdict.BlockForbidden);
@@ -1092,7 +1092,7 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_false(wing::edge_rule_matches(r_hdr, "/secure/data", dup_hdrs[..]), "valid second duplicate header must satisfy required header");
     };
 
-    t.run("2. H2ServerSession role, presence_mask, authority Host synthesis, GOAWAY & partial RST_STREAM (F003, F010, F011, F012, F013)") { sub =>
+    t.run("2. H2ServerSession role, presence_mask, GOAWAY & RST_STREAM") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         sub.assert_true(sess.conn.is_server, "H2ServerSession must initialize conn.is_server = true");
         sub.assert_false(sess.conn.enable_push, "H2ServerSession must initialize conn.enable_push = false");
@@ -1137,11 +1137,11 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_eq(consumed, (req_wire.len - 9) as i64, "Consumed complete frames, left 9-byte incomplete RST_STREAM");
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
-        // Decode response HEADERS frame from wire_out to verify status is 200 (not 400 from missing Content-Type presence_mask!)
+        // Decode response HEADERS frame from wire_out (starts at offset 26 after two 13-byte WINDOW_UPDATE frames)
         var resp_dt = internal::new_dynamic_table(4096);
         var resp_list = internal::DecodedH2HeaderList { .. };
-        let h_len = ((wire_out[0] as i64) << 16) | ((wire_out[1] as i64) << 8) | (wire_out[2] as i64);
-        let dec_err = internal::decode_hpack_header_block(resp_dt, wire_out[9..(9 + h_len)], resp_list);
+        let h_len = ((wire_out[26] as i64) << 16) | ((wire_out[27] as i64) << 8) | (wire_out[28] as i64);
+        let dec_err = internal::decode_hpack_header_block(resp_dt, wire_out[35..(35 + h_len)], resp_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
         sub.assert_eq(resp_list.fields[0].name[..], ":status", "First response field is :status");
         sub.assert_eq(resp_list.fields[0].value[..], "200", "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1156,7 +1156,7 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_true(sess.conn.goaway_received, "sess.conn.goaway_received set to true");
     };
 
-    t.run("3. Pipeline HEAD Content-Length deduplication, CORS/CSRF PSO masks & RFC 7239 quoted Forwarded (F015, F017, F018, F020)") { sub =>
+    t.run("3. Pipeline HEAD CL dedup, CORS/CSRF PSO & RFC 7239 Forwarded") { sub =>
         // F020: ExtensionsPool resets conn_id and request_seq
         var ext_pool = internal::ExtensionsPool { .. };
         let e_idx = internal::acquire_extensions(ext_pool);
@@ -1168,7 +1168,7 @@ fn test_server_audit_regressions(t: lit::T&) {
 
         // F017: HEAD request must NOT emit duplicate Content-Length: 0 and Content-Length: 13
         var server = wing::new_http_server("127.0.0.1", 8080);
-        wing::add_get_route(server, "/head-check", 1);
+        wing::add_get_route(server, "/head-check", 1001);
         let head_req = "HEAD /head-check HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
         var head_out: u8[>..] = [];
         let outcome_h, ok_h = wing::handle_connection_wire(server, "127.0.0.1", head_req, 1000000000, head_out);
@@ -1196,7 +1196,7 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_eq(fwd_ip, "203.0.113.77", "Quoted ';for=' inside extension parameter ignored in favor of real for= parameter");
     };
 
-    t.run("4. RadixRouter priority underflow, >64B static routes, non-dot suffix, backtracking & OPTIONS * (F021-F029)") { sub =>
+    t.run("4. RadixRouter >64B static, non-dot suffix, backtrack & OPTIONS") { sub =>
         // F021 & F022: Static route > 64 bytes and node splitting without priority underflow
         var tree = wing::new_radix_tree();
         let long_route: const u8[:] = "/api/v1/organizations/departments/engineering/teams/backend/services/authentication/status";
@@ -1248,7 +1248,7 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_true(ok_star, "OPTIONS * includes POST when POST tree has a single root route");
     };
 
-    t.run("5. Server Host/CONNECT validation, single-header serializer, pipelined 400 dedup & mmap <4096B (F030, F031, F039, F048, F051, F055)") { sub =>
+    t.run("5. Server Host/CONNECT, serializer, pipe 400 dedup & mmap") { sub =>
         // F030: Host header with invalid port must be rejected
         var req_bad_port = wing::Request { .. };
         let ok_bp1, _ = wing::parse_http1_wire_request("GET / HTTP/1.1\r\nHost: example.com:99999\r\n\r\n", req_bad_port);
@@ -1296,7 +1296,6 @@ fn test_server_audit_regressions(t: lit::T&) {
 fn main() {
     var runner = lit::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", lit::Verbosity.Verbose);
 
-    lit::run_case(runner, "13. Server Audit Regressions (EdgeFilter, H2Mux, Pipeline, Router, Server)", test_server_audit_regressions);
     lit::run_case(runner, "1. Zero-Allocation Parameter Extraction & Byte Spans", test_zero_alloc_params);
     lit::run_case(runner, "2. Radix Trie: Static Precedence, Catch-All & Method Isolation", test_radix_trie_routing);
     lit::run_case(runner, "3. Tako v2 6-Mechanism Server Pool", test_tako_v2_pool_mechanisms);
@@ -1309,6 +1308,7 @@ fn main() {
     lit::run_case(runner, "10. Empty Line & Whitespace Invariants", test_server_empty_line_and_whitespace_invariants);
     lit::run_case(runner, "11. Target & Host Invariants", test_server_target_and_host_invariants);
     lit::run_case(runner, "12. NGINX Reverse Proxy Harmony (X-Real-IP, Connection Close, SSE)", test_nginx_harmony_invariants);
+    lit::run_case(runner, "13. Server Audit Regressions", test_server_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

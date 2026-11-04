@@ -50,9 +50,22 @@ fn make_edge_filter_rule(
         verdict:         verdict,
         enabled:         true,
     };
-    r.name.append(name);
-    r.path_prefix.append(path_prefix);
+    guard r.name.try_set(name) && r.path_prefix.try_set(path_prefix) else {
+        r.name.clear();
+        r.path_prefix.clear();
+        r.enabled = false;
+        return r;
+    }
     return r;
+}
+
+fn has_non_empty_header_value(headers: const HeaderItem[:], req_name: const u8[:]) -> bool {
+    for &hdr in headers {
+        if eq_ascii_fold(hdr.name[..], req_name) && core::trim_lws(hdr.value[..]).len > 0 {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn edge_rule_matches(
@@ -65,8 +78,7 @@ fn edge_rule_matches(
         return false;
     }
     if rule.required_header.len > 0 {
-        let has_hdr = headers.find_header(rule.required_header[..]).len > 0;
-        guard !has_hdr else { return false; }
+        guard !has_non_empty_header_value(headers, rule.required_header[..]) else { return false; }
     }
     return true;
 }

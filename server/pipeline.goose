@@ -18,7 +18,7 @@ struct ServerPipelineConfig {
     header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
     ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
     slab_pool:               internal::SpillSlabPool  = internal::SpillSlabPool { .. },
-    target_host:             u8[..128]                = "example.com",
+    target_host:             u8[..256]                = "example.com",
     deadline_ns:             u64                      = 30000000000, // 30s
     enable_rate_limiter:     bool                     = true,
     enable_csrf_guard:       bool                     = true,
@@ -43,7 +43,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         trust_proxy_headers:     false,
         server_pso_capabilities: 0xFFFFFFFFFFFFFFFF,
     };
-    cfg.target_host.append(target_host);
+    let _ = cfg.target_host.try_set(target_host);
     return cfg;
 }
 
@@ -79,18 +79,25 @@ fn validate_pipeline_expect_header(req: const Request&) -> bool {
 // Evaluates CORS policies and Sec-Fetch-* cross-origin isolation metadata.
 // Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
 fn evaluate_pipeline_cors_and_csrf(
-    cfg: ServerPipelineConfig&,
-    req: const Request&,
-    res: Response&,
+    cfg:  ServerPipelineConfig&,
+    req:  const Request&,
+    res:  Response&,
+    mask: u64 = STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF,
 ) -> PipelineOutcome, bool {
-    if cfg.enable_cors {
+    if cfg.enable_cors && (mask & STAGE_INGRESS_CORS_PREFLIGHT) != 0 {
         let cors_res = evaluate_cors(cfg.cors_policy, req, res);
         if cors_res == CorsResult.AllowedPreflight {
             return PipelineOutcome.CorsPreflight, true;
         }
+        if cors_res == CorsResult.RejectedOrigin || cors_res == CorsResult.InvalidConfig {
+            if req.method[..] == "OPTIONS" && header(req, "access-control-request-method").len > 0 {
+                res.status_code = 403;
+                return PipelineOutcome.CsrfRejected, true;
+            }
+        }
     }
 
-    if cfg.enable_csrf_guard {
+    if cfg.enable_csrf_guard && (mask & STAGE_INGRESS_FETCH_CSRF) != 0 {
         let fetch_ctx = extract_fetch_context(req, cfg.target_host[..]);
         let csrf_res = evaluate_fetch_metadata(cfg.csrf_guard, fetch_ctx);
         apply_isolation_headers(res);
@@ -137,7 +144,7 @@ fn dispatch_ingress_pipeline(
     // Stage: CORS preflight and Fetch Metadata CSRF isolation
     let has_cors_csrf = (mask & (STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF)) != 0;
     if has_cors_csrf && (cfg.enable_cors || cfg.enable_csrf_guard) {
-        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res);
+        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res, mask);
         guard !is_term else { return sec_outcome, true; }
     }
 
@@ -248,7 +255,7 @@ fn dispatch_matched_route(
         },
         MethodNotAllowed mna => {
             res.status_code = 405; // Method Not Allowed
-            res.headers.push(make_header("Allow", mna.allow_header[..]));
+            set_header(res, "Allow", mna.allow_header[..]);
             internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.MethodNotAllowed;
         },
@@ -285,7 +292,7 @@ fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
     if header(res, "content-length").len == 0 && res.body.len > 0 {
         var cl_buf: u8[..32] = [];
         core::format_i64_dec(res.body.len, cl_buf);
-        res.headers.push(make_header("Content-Length", cl_buf[..]));
+        set_header(res, "Content-Length", cl_buf[..]);
     }
     res.body.clear();
 }
@@ -336,12 +343,12 @@ fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
 //   returns: "192.0.2.60"
 fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
     guard fwd.len > 0 else { return ""; }
-    let comma_idx = core::index_of_byte(fwd, ',');
+    let comma_idx = core::find_unquoted_byte(fwd, ',');
     let elem = if comma_idx >= 0 { fwd[..comma_idx] } else { fwd };
 
     var pos: i64 = 0;
     while pos < elem.len {
-        let sc = core::index_of_byte(elem[pos..], ';');
+        let sc = core::find_unquoted_byte(elem[pos..], ';');
         let pair = if sc >= 0 { elem[pos..(pos + sc)] } else { elem[pos..] };
         pos = if sc >= 0 { pos + sc + 1 } else { elem.len };
 
@@ -372,12 +379,12 @@ fn extract_effective_client_ip(
     let fwd = header(req, "forwarded");
     if fwd.len > 0 {
         let fwd_ip = extract_rfc7239_forwarded_for(fwd);
-        if fwd_ip.len > 0 {
+        if fwd_ip.len > 0 && fwd_ip.len <= 48 {
             return fwd_ip;
         }
     }
     let real_ip = core::trim_lws(header(req, "x-real-ip"));
-    if real_ip.len > 0 {
+    if real_ip.len > 0 && real_ip.len <= 48 {
         return real_ip;
     }
     let xff = header(req, "x-forwarded-for");
@@ -388,7 +395,7 @@ fn extract_effective_client_ip(
         } else {
             core::trim_lws(xff)
         };
-        if first_ip.len > 0 {
+        if first_ip.len > 0 && first_ip.len <= 48 {
             return first_ip;
         }
     }
@@ -447,7 +454,7 @@ fn execute_pipeline(
         return PipelineOutcome.RateLimited;
     }
     let e_idx = ext_slot_idx as i64;
-    cfg.ext_pool.slots[e_idx].peer_ip.append(eff_ip);
+    let _ = cfg.ext_pool.slots[e_idx].peer_ip.try_set(eff_ip[..min(eff_ip.len, 48)]);
     cfg.ext_pool.slots[e_idx].canon_url.clear();
 
     let match_res = match_route(

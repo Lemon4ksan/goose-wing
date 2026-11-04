@@ -73,6 +73,8 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
             pool.slots[idx].in_use = true;
             pool.slots[idx].peer_ip.clear();
             pool.slots[idx].matched_route.clear();
+            pool.slots[idx].conn_id = 0;
+            pool.slots[idx].request_seq = 0;
             pool.slots[idx].params.clear();
             pool.slots[idx].session_data.clear();
             pool.slots[idx].canon_url.clear();
@@ -94,6 +96,8 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     let s_idx = idx;
     pool.slots[s_idx].peer_ip.clear();
     pool.slots[s_idx].matched_route.clear();
+    pool.slots[s_idx].conn_id = 0;
+    pool.slots[s_idx].request_seq = 0;
     pool.slots[s_idx].params.clear();
     pool.slots[s_idx].session_data.clear();
     pool.slots[s_idx].canon_url.clear();

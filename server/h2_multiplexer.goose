@@ -77,8 +77,12 @@ fn new_h2_server_session(
     server_name_str: const u8[:] = "goose-wing/1.0",
     now_ms:          u64         = 0,
 ) -> H2ServerSession {
+    var conn = new_h2_connection(now_ms);
+    conn.is_server = true;
+    conn.enable_push = false;
+    conn.max_concurrent_streams = 16;
     var sess = H2ServerSession {
-        conn:                  new_h2_connection(now_ms),
+        conn:                  conn,
         hpack_enc:             new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         preface_handled:       false,
         server_settings_sent:  false,
@@ -87,7 +91,7 @@ fn new_h2_server_session(
         server_name:           [],
         ..
     };
-    sess.server_name.append(server_name_str);
+    let _ = sess.server_name.try_set(server_name_str[..min(server_name_str.len, 64)]);
     return sess;
 }
 
@@ -232,7 +236,7 @@ fn emit_response_headers<B>(
     format(status_buf, res.status_code as i64);
     encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], HpackIndexing.Incremental, false);
 
-    if sess.server_name.len > 0 {
+    if sess.server_name.len > 0 && !res.has_header("server") {
         encode_hpack_field(
             sess.hpack_enc, hpack_block, "server", sess.server_name[..], HpackIndexing.Incremental, false,
         );
@@ -254,7 +258,8 @@ fn emit_response_headers<B>(
            !eq_ascii_fold(name_slice, "keep-alive") &&
            !eq_ascii_fold(name_slice, "proxy-connection") &&
            !eq_ascii_fold(name_slice, "transfer-encoding") &&
-           !eq_ascii_fold(name_slice, "upgrade") {
+           !eq_ascii_fold(name_slice, "upgrade") &&
+           !eq_ascii_fold(name_slice, "te") {
             // RFC 9113 Section 8.2.1: Field names MUST be lowercase
             var lower_name: u8[..64] = [];
             for c in name_slice {
@@ -379,6 +384,7 @@ fn emit_response_trailers<B>(
            !eq_ascii_fold(name_slice, "proxy-connection") &&
            !eq_ascii_fold(name_slice, "transfer-encoding") &&
            !eq_ascii_fold(name_slice, "upgrade") &&
+           !eq_ascii_fold(name_slice, "te") &&
            !rfc::is_disallowed_trailer_field(name_slice) {
             var lower_name: u8[..64] = [];
             for c in name_slice {
@@ -406,23 +412,17 @@ fn apply_decoded_headers_to_stream(st: H2ServerStream&, dec_list: const DecodedH
         let n = entry.name[..];
         let v = entry.value[..];
         if n == ":method" {
-            st.method.clear();
-            guard v.len <= st.method.cap else { return false; }
-            st.method.append(v);
+            guard st.method.try_set(v) else { return false; }
         } else if n == ":path" {
-            st.path.clear();
-            guard v.len <= st.path.cap else { return false; }
-            st.path.append(v);
+            guard st.path.try_set(v) else { return false; }
         } else if n == ":scheme" {
-            st.scheme.clear();
-            guard v.len <= st.scheme.cap else { return false; }
-            st.scheme.append(v);
+            guard st.scheme.try_set(v) else { return false; }
         } else if n == ":authority" {
-            st.authority.clear();
-            guard v.len <= st.authority.cap else { return false; }
-            st.authority.append(v);
+            guard st.authority.try_set(v) else { return false; }
+        } else if n == ":protocol" {
+            guard v.len <= 64 else { return false; }
         } else {
-            guard st.headers.len < st.headers.cap else { return false; }
+            guard st.headers.len < st.headers.cap && n.len <= 64 && v.len <= 2048 else { return false; }
             st.headers.push(wing::make_header(n, v));
         }
     }
@@ -434,7 +434,7 @@ fn apply_decoded_trailers_to_stream(st: H2ServerStream&, dec_list: const Decoded
     for &entry in dec_list.fields {
         let n = entry.name[..];
         let v = entry.value[..];
-        guard st.trailers.len < st.trailers.cap else { return false; }
+        guard st.trailers.len < st.trailers.cap && n.len <= 64 && v.len <= 2048 else { return false; }
         st.trailers.push(wing::make_header(n, v));
     }
     st.body_received = true;
@@ -451,6 +451,13 @@ inline fn terminate_server_stream(
     stream_id: u32,
 ) {
     reset_session_stream(sess.conn, stream_id);
+    if sess.conn.continuation_stream_id == stream_id {
+        sess.conn.continuation_stream_id = 0;
+    }
+    if sess.header_accum_stream_id == stream_id {
+        sess.header_accum_stream_id = 0;
+        sess.header_accumulator.clear();
+    }
     let s_idx, found = find_server_stream_idx(sess, stream_id);
     if found {
         if sess.streams[s_idx].spill_slab_idx >= 0 {
@@ -503,7 +510,7 @@ fn process_ingress_window_update<B>(
     guard frame_payload.len == 4 else { return true; }
     let raw_inc = core::read_be_u32(frame_payload, 0);
     let inc = raw_inc & 0x7FFFFFFF;
-    if hdr.stream_id != 0 && hdr.stream_id > sess.conn.last_peer_stream_id {
+    if hdr.stream_id != 0 && ((hdr.stream_id % 2) == 0 || hdr.stream_id > sess.conn.last_peer_stream_id) {
         // RFC 9113 §5.1: Frame other than HEADERS or PRIORITY on idle stream is connection error PROTOCOL_ERROR
         // RFC 9113 §6.4: RST_STREAM frames MUST NOT be sent for an idle stream
         emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
@@ -734,9 +741,16 @@ fn process_ingress_headers<B>(
         return true;
     }
 
-    guard !is_cancelled else { return true; }
+    guard !is_cancelled else {
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-    guard found else { return true; }
+    guard found else {
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -818,9 +832,16 @@ fn process_ingress_continuation<B>(
 
     sess.header_accum_stream_id = 0;
     sess.header_accumulator.clear();
-    guard !is_cancelled else { return true; }
+    guard !is_cancelled else {
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
-    guard found else { return true; }
+    guard found else {
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
     guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -926,7 +947,7 @@ fn process_ingress_data<B>(
 
     let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
     if !found {
-        if hdr.stream_id <= sess.conn.last_peer_stream_id {
+        if (hdr.stream_id % 2) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
             // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
             // Account for flow control connection-wide per RFC 9113 §6.9
@@ -968,19 +989,7 @@ fn process_ingress_data<B>(
         d_end -= pad_len;
     }
 
-    var d_len: i64 = 0;
-    if d_start <= d_end && d_end <= frame_payload.len {
-        d_len = d_end - d_start;
-        if d_len > 0 {
-            let app_ok = process_stream_data_ingress(
-                sess, pipeline.slab_pool, s_idx, frame_payload[d_start..d_end], hdr.stream_id, out_wire,
-            );
-            guard app_ok else {
-                terminate_server_stream(sess, pipeline, hdr.stream_id);
-                return true;
-            }
-        }
-    }
+    let d_len: i64 = if d_start <= d_end && d_end <= frame_payload.len { d_end - d_start } else { 0 };
 
     // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
     // while connection and stream flow-control windows account for the full frame payload (hdr.length).
@@ -993,18 +1002,32 @@ fn process_ingress_data<B>(
             return true;
         }
         emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
         return false;
     }
+
+    let had_slab = sess.streams[s_idx].spill_slab_idx >= 0;
+    if d_len > 0 {
+        let app_ok = process_stream_data_ingress(
+            sess, pipeline.slab_pool, s_idx, frame_payload[d_start..d_end], hdr.stream_id, out_wire,
+        );
+        guard app_ok else {
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
+            return true;
+        }
+    }
+    let promoted_now = !had_slab && sess.streams[s_idx].spill_slab_idx >= 0;
 
     // Replenish receive windows if consumed and non-zero
     if frame_payload.len > 0 {
         emit_window_update(0, frame_payload.len as u32, out_wire);
-        emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
-        // Replenish session tracking windows
         sess.conn.conn_recv_window += hdr.length as i64;
-        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-        if c_found {
-            sess.conn.streams[c_idx].recv_window += hdr.length as i64;
+        if !promoted_now {
+            emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
+            let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+            if c_found {
+                sess.conn.streams[c_idx].recv_window += hdr.length as i64;
+            }
         }
     }
 
@@ -1049,12 +1072,37 @@ fn collect_cancelled_streams(
             break;
         }
         let sc_tot = 9 + (sc_hdr.length as i64);
-        if sc_hdr.frame_type == rfc::H2_FRAME_RST_STREAM && sc_hdr.stream_id != 0 {
+        guard p_scan + sc_tot <= wire.len else { break; }
+        if sc_hdr.frame_type == rfc::H2_FRAME_RST_STREAM && sc_hdr.stream_id != 0 && sc_hdr.length == 4 {
             guard cancelled_streams.len < cancelled_streams.cap else { break; }
             cancelled_streams.push(sc_hdr.stream_id);
         }
         p_scan += sc_tot;
     }
+}
+
+fn process_ingress_goaway<B>(
+    sess:          H2ServerSession&,
+    hdr:           const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire:      B&,
+) -> bool {
+    guard hdr.stream_id == 0 else {
+        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        return false;
+    }
+    guard frame_payload.len >= 8 else {
+        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR, out_wire);
+        return false;
+    }
+    let last_stream_id = core::read_be_u32(frame_payload, 0) & 0x7FFFFFFF;
+    let err_code = core::read_be_u32(frame_payload, 4);
+    guard last_stream_id == 0 || (last_stream_id % 2) == 0 else {
+        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        return false;
+    }
+    apply_goaway(sess.conn, last_stream_id, err_code);
+    return true;
 }
 
 fn dispatch_ingress_frame<B>(
@@ -1067,6 +1115,8 @@ fn dispatch_ingress_frame<B>(
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_SETTINGS {
         return process_ingress_settings(sess, hdr, frame_payload, out_wire);
+    } else if hdr.frame_type == rfc::H2_FRAME_GOAWAY {
+        return process_ingress_goaway(sess, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PING {
         if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && frame_payload.len == 8 {
             var opaque: u8[8] = [0; 8];
@@ -1126,6 +1176,13 @@ inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing:
         guard req.headers.len < 32 else { break; }
         req.headers.push(hdr_item);
         wing::add_header(req.bloom_filter, hdr_item.name[..]);
+        let known_id = wing::identify_known_header(hdr_item.name[..]);
+        req.presence_mask |= wing::header_id_to_bit(known_id);
+    }
+    if st.authority.len > 0 && (req.presence_mask & wing::HDR_PRESENCE_HOST) == 0 && req.headers.len < 32 {
+        req.headers.push(wing::make_header("host", st.authority[..]));
+        wing::add_header(req.bloom_filter, "host");
+        req.presence_mask |= wing::HDR_PRESENCE_HOST;
     }
     for &tr_item in st.trailers {
         guard req.trailers.len < 16 else { break; }
