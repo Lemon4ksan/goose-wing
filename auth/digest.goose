@@ -303,9 +303,10 @@ fn calculate_digest_ha1(
     nonce:    const u8[:],
     cnonce:   const u8[:],
 ) -> u8[..64] {
-    var a1: u8[..768] = [];
+    var a1:        u8[..768] = [];
+    var empty_res: u8[..64]  = [];
     let need1 = core::add_sat_i64(core::add_sat_i64(username.len, realm.len), password.len);
-    guard core::add_sat_i64(need1, 2) <= a1.cap else { return a1; }
+    guard core::add_sat_i64(need1, 2) <= a1.cap else { return empty_res; }
     a1.append(username);
     a1.push(':');
     a1.append(realm);
@@ -313,19 +314,21 @@ fn calculate_digest_ha1(
     a1.append(password);
 
     var ha1 = digest_hash_hex(algo, a1[..]);
+    core::secure_zeroize_slice(a1[..]);
 
     if eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
         || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
         || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS) {
         var a1_sess: u8[..512] = [];
         let need_sess = core::add_sat_i64(core::add_sat_i64(ha1.len, nonce.len), cnonce.len);
-        guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else { return a1; }
+        guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else { return empty_res; }
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
         a1_sess.append(nonce);
         a1_sess.push(':');
         a1_sess.append(cnonce);
         ha1 = digest_hash_hex(algo, a1_sess[..]);
+        core::secure_zeroize_slice(a1_sess[..]);
     }
     return ha1;
 }
@@ -373,7 +376,19 @@ fn calculate_digest_response(
     active_qop: const u8[:],
     ha2_hex:    const u8[:],
 ) -> u8[..64] {
-    var a3: u8[..512] = [];
+    var a3:        u8[..1024] = [];
+    var empty_res: u8[..64]   = [];
+    let qop_extra: i64 = if active_qop.len > 0 {
+        core::add_sat_i64(core::add_sat_i64(nc_str.len, cnonce.len), core::add_sat_i64(active_qop.len, 3))
+    } else {
+        0
+    };
+    let need3 = core::add_sat_i64(
+        core::add_sat_i64(ha1_hex.len, nonce.len),
+        core::add_sat_i64(ha2_hex.len, core::add_sat_i64(qop_extra, 2)),
+    );
+    guard need3 <= a3.cap else { return empty_res; }
+
     a3.append(ha1_hex);
     a3.push(':');
     a3.append(nonce);
@@ -413,10 +428,10 @@ fn append_escaped_digest_param<B>(sink: B&, val: const u8[:]) -> bool {
 }
 
 // Appends a digest URI without backslash escaping (RFC 7616 §3.4 / RFC 3986).
-// Rejects control characters (\r, \n, \0) and unencoded quotes to prevent header breakout.
+// Rejects control characters (\r, \n, \0), backslashes, and unencoded quotes to prevent header breakout.
 fn append_digest_uri<B>(sink: B&, uri: const u8[:]) -> bool {
     for b in uri {
-        guard b != '\r' && b != '\n' && b != '\0' && b != '"' else { return false; }
+        guard b != '\r' && b != '\n' && b != '\0' && b != '"' && b != '\\' else { return false; }
         guard sink.len < sink.cap else { return false; }
         sink.push(b);
     }
@@ -471,6 +486,12 @@ fn serialize_digest_opt_kv<B>(
         sink.append(active_qop);
         sink.append(", nc=");
         sink.append(nc_str);
+        sink.append(", cnonce=\"");
+        guard append_escaped_digest_param(sink, cnonce) else { return false; }
+        guard core::add_sat_i64(sink.len, 1) <= sink.cap else { return false; }
+        sink.push('"');
+    } else if cnonce.len > 0 {
+        guard core::add_sat_i64(sink.len, 11) <= sink.cap else { return false; }
         sink.append(", cnonce=\"");
         guard append_escaped_digest_param(sink, cnonce) else { return false; }
         guard core::add_sat_i64(sink.len, 1) <= sink.cap else { return false; }
@@ -536,11 +557,16 @@ fn serialize_digest_auth<B>(
 }
 
 fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..64] {
-    var user_realm: u8[..384] = [];
+    var user_realm: u8[..512] = [];
+    var empty_res:  u8[..64]  = [];
+    let need = core::add_sat_i64(core::add_sat_i64(username.len, realm.len), 1);
+    guard need <= user_realm.cap else { return empty_res; }
     user_realm.append(username);
     user_realm.push(':');
     user_realm.append(realm);
-    return digest_hash_hex(algo, user_realm[..]);
+    let res = digest_hash_hex(algo, user_realm[..]);
+    core::secure_zeroize_slice(user_realm[..]);
+    return res;
 }
 
 fn resolve_digest_user(
@@ -619,6 +645,8 @@ fn sync_digest_stale_challenge(
     guard creds.username.len > 0 && creds.password.len > 0 else { return false; }
     guard incoming.nonce.len > 0 && incoming.nonce.len <= stored.nonce.cap else { return false; }
     guard incoming.opaque.len <= stored.opaque.cap && incoming.realm.len <= stored.realm.cap else { return false; }
+    guard incoming.algorithm.len <= stored.algorithm.cap && incoming.qop.len <= stored.qop.cap else { return false; }
+    guard incoming.domain.len <= stored.domain.cap else { return false; }
 
     stored.nonce.clear();
     stored.nonce.append(incoming.nonce[..]);
@@ -630,6 +658,19 @@ fn sync_digest_stale_challenge(
         stored.realm.clear();
         stored.realm.append(incoming.realm[..]);
     }
+    if incoming.algorithm.len > 0 {
+        stored.algorithm.clear();
+        stored.algorithm.append(incoming.algorithm[..]);
+    }
+    if incoming.qop.len > 0 {
+        stored.qop.clear();
+        stored.qop.append(incoming.qop[..]);
+    }
+    if incoming.domain.len > 0 {
+        stored.domain.clear();
+        stored.domain.append(incoming.domain[..]);
+    }
+    stored.userhash = incoming.userhash;
     stored.stale = false;
     stored.valid = true;
     nc = 1;
@@ -692,6 +733,16 @@ fn compute_digest_response<B>(
     let active_qop = resolve_active_qop(challenge.qop[..]);
     guard challenge.qop.len == 0 || active_qop.len > 0 else { return false; }
     let is_auth_int = (active_qop.len == 8);
+
+    let is_sess = eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA256_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS)
+        || eq_ascii_fold(algo, rfc::DIGEST_ALGO_SHA512_256_SESS);
+    if active_qop.len > 0 || is_sess {
+        guard cnonce.len > 0 else { return false; }
+    }
+    if active_qop.len > 0 {
+        guard nc > 0 else { return false; }
+    }
 
     let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
 

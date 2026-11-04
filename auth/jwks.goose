@@ -330,6 +330,13 @@ fn parse_jwk_key_field(
     raw_k:     u8[..128]&,
     key_item:  JwksKey&,
 ) {
+    if field_key == "d" || field_key == "p" || field_key == "q" ||
+       field_key == "dp" || field_key == "dq" || field_key == "qi" {
+        // RFC 7517 §4: Public JWKs MUST NOT contain private key parameters
+        key_item.has_invalid_type = true;
+        json::skip(reader);
+        return;
+    }
     if parse_jwk_key_core_type(field_key, reader, scratch, key_item) {
         // Matched kty, crv, or alg
     } else if parse_jwk_key_ident(field_key, reader, scratch, key_item) {
@@ -353,8 +360,17 @@ fn parse_jwk_key_fields(
     raw_k:    u8[..128]&,
     key_item: JwksKey&,
 ) {
+    var seen_keys: SeenHeaderKey[..16] = [];
     json::each_member(reader) { field_key =>
         scratch.clear();
+        if field_key.contains('\\') || is_header_key_present(field_key, seen_keys) {
+            key_item.has_invalid_type = true;
+        }
+        if seen_keys.len < seen_keys.cap && field_key.len <= 64 {
+            var item = SeenHeaderKey { .. };
+            item.name.append(field_key);
+            seen_keys.push(item);
+        }
         parse_jwk_key_field(field_key, reader, scratch, raw_x, raw_k, key_item);
     };
 }
@@ -380,9 +396,13 @@ fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
     var decoded_k: u8[..128] = [];
     guard core::base64url_decode(raw_k, decoded_k) else { return false; }
     // RFC 8725 §3.6 & RFC 7518 §3.2: Reject weak symmetric keys (< 128 bits / 16 bytes)
-    guard decoded_k.len >= 16 && decoded_k.len <= rfc::HMAC_SHA512_MAC_LEN else { return false; }
+    guard decoded_k.len >= 16 && decoded_k.len <= rfc::HMAC_SHA512_MAC_LEN else {
+        core::secure_zeroize_slice(decoded_k[..]);
+        return false;
+    }
     key_item.symmetric_key.clear();
     key_item.symmetric_key.append(decoded_k[..]);
+    core::secure_zeroize_slice(decoded_k[..]);
     key_item.valid = true;
     return true;
 }
@@ -622,8 +642,21 @@ inline fn is_forbidden_ipv6(host: const u8[:]) -> bool {
     if host == "[0:0:0:0:0:0:0:1]" || host == "[0:0:0:0:0:0:0:0]" { return true; }
     if core::starts_with(host, "[::ffff:") || core::starts_with(host, "::ffff:") { return true; }
     if core::starts_with(host, "[0:0:0:0:0:ffff:") { return true; }
-    if core::starts_with(host, "[fe80:") || core::starts_with(host, "[fc00:") { return true; }
-    if core::starts_with(host, "[fd00:") { return true; }
+    let h = if core::starts_with(host, "[") && core::ends_with(host, "]") && host.len >= 2 {
+        host[1..(host.len - 1)]
+    } else {
+        host
+    };
+    if core::starts_with(h, "fe8") || core::starts_with(h, "fe9") ||
+       core::starts_with(h, "fea") || core::starts_with(h, "feb") {
+        return true;
+    }
+    if core::starts_with(h, "fc") || core::starts_with(h, "fd") {
+        return true;
+    }
+    if core::starts_with(h, "0::") || core::starts_with(h, "0:0:") || core::starts_with(h, "::") {
+        return true;
+    }
     return false;
 }
 
@@ -653,22 +686,25 @@ inline fn is_non_canonical_ipv4(host: const u8[:]) -> bool {
 
     var dot_cnt = 0;
     var octet_len = 0;
+    var octet_val = 0;
     var first_zero = false;
 
     for b in host {
         if b == '.' {
-            if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 { return true; }
+            if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 || octet_val > 255 { return true; }
             dot_cnt = core::add_sat_i64(dot_cnt, 1);
             octet_len = 0;
+            octet_val = 0;
             first_zero = false;
         } else {
             if octet_len == 0 && b == '0' {
                 first_zero = true;
             }
+            octet_val = octet_val * 10 + (b - '0');
             octet_len = core::add_sat_i64(octet_len, 1);
         }
     }
-    if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 { return true; }
+    if octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 || octet_val > 255 { return true; }
     return dot_cnt != 3;
 }
 
@@ -682,6 +718,7 @@ inline fn is_forbidden_internal_domain(host: const u8[:]) -> bool {
 
 inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
     if is_forbidden_internal_domain(host) { return true; }
+    if is_private_or_reserved_ip(host) { return true; }
     if is_forbidden_ipv6(host) { return true; }
     if is_non_canonical_ipv4(host) { return true; }
     return is_private_or_loopback_ipv4(host);
@@ -704,8 +741,7 @@ fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
 
     var norm_host: u8[..256] = [];
     core::to_lower_ascii(view.host, norm_host);
-    for _ in 8 {
-        if norm_host.len == 0 { break; }
+    while norm_host.len > 0 {
         let last_idx = core::sub_sat_i64(norm_host.len, 1);
         if norm_host[last_idx] == '.' {
             norm_host.pop();

@@ -69,14 +69,15 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     out.clear();
     guard raw_uri.len > 0 else { return false; }
     // RFC 9449 §4.3: Target URI scheme MUST be http or https
-    guard core::starts_with(raw_uri, "http://") || core::starts_with(raw_uri, "https://") else {
-        return false;
-    }
-
+    let is_https = core::starts_with(raw_uri, "https://");
+    let is_http = core::starts_with(raw_uri, "http://");
+    guard is_https || is_http else { return false; }
+    let scheme_len: i64 = if is_https { 8 } else { 7 };
     let end_idx, path_start, ok = scan_uri_delimiters(raw_uri);
     guard ok else { return false; }
     let scheme_host_end = if path_start != -1 { path_start } else { end_idx };
-
+    // Host portion must not be empty
+    guard scheme_host_end > scheme_len else { return false; }
     // RFC 3986 §3.2.1: Reject userinfo in authority
     guard !raw_uri[..scheme_host_end].contains('@') && scheme_host_end <= 256 else { return false; }
 
@@ -93,10 +94,18 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
 
     // RFC 3986 §6.2.3 / RFC 9449 §4.3: Scheme-based default port normalization
     var emit_len = sh_buf.len;
-    if core::starts_with(sh_buf[..], "http://") && core::ends_with(sh_buf[..], ":80") {
-        emit_len = core::sub_sat_i64(sh_buf.len, 3);
-    } else if core::starts_with(sh_buf[..], "https://") && core::ends_with(sh_buf[..], ":443") {
-        emit_len = core::sub_sat_i64(sh_buf.len, 4);
+    let colon_idx = core::last_index_of_byte(sh_buf[scheme_len..], ':');
+    if colon_idx != -1 {
+        let close_bracket = core::last_index_of_byte(sh_buf[scheme_len..], ']');
+        if close_bracket == -1 || colon_idx > close_bracket {
+            let port_pos = scheme_len + colon_idx;
+            let port_str = sh_buf[port_pos..];
+            if is_http && port_str == ":80" {
+                emit_len = port_pos;
+            } else if is_https && port_str == ":443" {
+                emit_len = port_pos;
+            }
+        }
     }
 
     let path_len: i64 = if path_start != -1 { core::sub_sat_i64(end_idx, path_start) } else { 1 };
@@ -106,7 +115,6 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     for k in emit_len {
         out.push(sh_buf[k]);
     }
-
     // Append path
     if path_start != -1 {
         for k in path_len {
@@ -115,7 +123,6 @@ fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     } else {
         out.push('/' as u8);
     }
-
     return true;
 }
 
@@ -191,10 +198,10 @@ inline fn build_dpop_claims_json<B>(
     jti:          const u8[:],
     out:          B&,
 ) -> bool {
-    guard method.len > 0 else { return false; }
-    for b in method {
-        guard is_dpop_token_char(b) else { return false; }
-    }
+    guard now_sec > 0 && method.len > 0 else { return false; }
+    for b in method { guard is_dpop_token_char(b) else { return false; } }
+    if jti.len > 0 { guard is_valid_dpop_nonce(jti) else { return false; } }
+    if nonce.len > 0 { guard is_valid_dpop_nonce(nonce) else { return false; } }
     let eff_jti_len = if jti.len > 0 { jti.len } else { 32 };
     let ath_len:   i64 = if access_token.len > 0 { 55 } else { 0 };
     let nonce_len: i64 = if nonce.len > 0 { core::add_sat_i64(nonce.len, 12) } else { 0 };
@@ -213,11 +220,7 @@ inline fn build_dpop_claims_json<B>(
     }
     out.append("\",\"htm\":\"");
     for b in method {
-        if b >= 'a' && b <= 'z' {
-            out.push(b - 32);
-        } else {
-            out.push(b);
-        }
+        if b >= 'a' && b <= 'z' { out.push(b - 32); } else { out.push(b); }
     }
     out.append("\",\"htu\":\"");
     out.append(norm_uri);
@@ -229,7 +232,6 @@ inline fn build_dpop_claims_json<B>(
         out.append(nonce);
         out.push('"' as u8);
     }
-
     if access_token.len > 0 {
         var ath: u8[..64] = [];
         compute_dpop_ath(access_token, ath);
@@ -237,7 +239,6 @@ inline fn build_dpop_claims_json<B>(
         out.append(ath[..]);
         out.push('"' as u8);
     }
-
     out.push('}' as u8);
     return true;
 }
@@ -258,6 +259,7 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
     }
     var seen_kty = false;
     var seen_crv = false;
+    var seen_x = false;
 
     json::each_member(reader) { jwk_key =>
         scratch.clear();
@@ -268,6 +270,7 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
             info.has_private_key = true;
             json::skip(reader);
         } else if jwk_key == "kty" {
+            if seen_kty { info.valid = false; }
             seen_kty = true;
             let kty_val = json::read_string(reader, scratch);
             let is_okp = (kty_val == "OKP");
@@ -276,12 +279,15 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
                 info.has_private_key = true;
             }
         } else if jwk_key == "crv" {
+            if seen_crv { info.valid = false; }
             seen_crv = true;
             let crv_val = json::read_string(reader, scratch);
             if crv_val != "Ed25519" {
                 info.valid = false;
             }
         } else if jwk_key == "x" {
+            if seen_x { info.valid = false; }
+            seen_x = true;
             let x_val = json::read_string(reader, scratch);
             if x_val.len > info.x.cap {
                 info.valid = false;
@@ -293,7 +299,7 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
             json::skip(reader);
         }
     };
-    info.valid = info.valid && seen_kty && seen_crv && info.kty_ok && !info.has_private_key;
+    info.valid = info.valid && seen_kty && seen_crv && seen_x && info.kty_ok && !info.has_private_key;
     return info.valid;
 }
 
@@ -306,15 +312,21 @@ fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> b
     var reader = json::reader(header_json);
     var scratch: u8[>..] = [];
     var jwk_info = DPoPJwkInfo { .. };
+    var seen_jwk = false;
+    var had_dup = false;
     json::each_member(reader) { key =>
         scratch.clear();
         if key == "jwk" {
+            if seen_jwk { had_dup = true; }
+            seen_jwk = true;
             verify_dpop_jwk(reader, scratch, jwk_info);
         } else {
             json::skip(reader);
         }
     };
-    guard jwk_info.valid && jwk_info.x.len > 0 else { return false; }
+    guard json::finish(reader) && !had_dup && seen_jwk && jwk_info.valid && jwk_info.x.len > 0 else {
+        return false;
+    }
     var decoded_x: u8[..64] = [];
     guard core::base64url_decode(jwk_info.x[..], decoded_x) else { return false; }
     guard decoded_x.len == 32 else { return false; }
@@ -377,6 +389,7 @@ fn create_dpop_proof<B>(
     signing_input.append(claims_b64[..]);
 
     let sig = core::ed25519_sign(seed, signing_input[..]);
+    core::secure_zeroize_32(seed);
     var sig_b64: u8[..128] = [];
     core::base64url_encode(sig[..], sig_b64);
 
@@ -389,28 +402,20 @@ fn create_dpop_proof<B>(
 
 // ---- DPoP Proof Verification ---------------------------------------------
 
+// RFC 9449 §4.3: Checks whether algorithm is an allowed asymmetric digital signature algorithm.
+// Rejects 'none' and all symmetric algorithms (such as HMAC, AES-GCM, dir).
+fn is_asymmetric_dpop_alg(alg: const u8[:]) -> bool {
+    return alg == "EdDSA" ||
+           alg == "ES256" || alg == "ES384" || alg == "ES512" ||
+           alg == "RS256" || alg == "RS384" || alg == "RS512" ||
+           alg == "PS256" || alg == "PS384" || alg == "PS512";
+}
+
 // RFC 9449 §4.3 & §6.2: Rejects 'none' and symmetric HMAC algorithms (HS256, HS384, HS512).
 // Asymmetric digital signature algorithms (e.g. EdDSA, ES256, RS256) are strictly required.
 fn is_matching_dpop_alg(alg_val: const u8[:], expected_alg: const u8[:]) -> bool {
-    guard alg_val.len > 0 else { return false; }
-    guard !core::eq_ascii_fold(alg_val, "none") else { return false; }
-    if core::eq_ascii_fold(alg_val, "HS256") ||
-       core::eq_ascii_fold(alg_val, "HS384") ||
-       core::eq_ascii_fold(alg_val, "HS512") {
-        return false;
-    }
-    if alg_val.len >= 2 {
-        if (alg_val[0] == 'H' || alg_val[0] == 'h') && (alg_val[1] == 'S' || alg_val[1] == 's') {
-            return false;
-        }
-    }
+    guard is_asymmetric_dpop_alg(alg_val) else { return false; }
     if expected_alg.len > 0 {
-        if core::eq_ascii_fold(expected_alg, "none") ||
-           core::eq_ascii_fold(expected_alg, "HS256") ||
-           core::eq_ascii_fold(expected_alg, "HS384") ||
-           core::eq_ascii_fold(expected_alg, "HS512") {
-            return false;
-        }
         return alg_val == expected_alg;
     }
     return true;
@@ -426,12 +431,16 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
     var seen_alg = false;
     var seen_jwk = false;
     var had_dup = false;
+    var has_crit = false;
     var scratch: u8[>..] = [];
     var jwk_info = DPoPJwkInfo { .. };
 
     json::each_member(reader) { key =>
         scratch.clear();
-        if key == "typ" {
+        if key == "crit" {
+            has_crit = true;
+            json::skip(reader);
+        } else if key == "typ" {
             if seen_typ { had_dup = true; }
             seen_typ = true;
             let typ_val = json::read_string(reader, scratch);
@@ -453,7 +462,7 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
             json::skip(reader);
         }
     };
-    return json::finish(reader) && !had_dup && valid_typ && valid_alg && seen_jwk && jwk_info.valid;
+    return json::finish(reader) && !had_dup && !has_crit && valid_typ && valid_alg && seen_jwk && jwk_info.valid;
 }
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], pub_key: const u8[32]) -> bool {
@@ -602,13 +611,18 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
 }
 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
-    guard now_sec > 0 else { return true; }
-    guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json, claims) else { return false; }
     guard claims.has_iat && claims.iat > 0 else { return false; }
-    guard claims.iat <= (now_sec + max_skew_sec) else { return false; }
-    return (now_sec - claims.iat) <= (max_age_sec + max_skew_sec);
+    if now_sec > 0 {
+        guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
+        let max_future = core::add_sat_i64(now_sec, max_skew_sec);
+        guard claims.iat <= max_future else { return false; }
+        let age = core::sub_sat_i64(now_sec, claims.iat);
+        let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
+        guard age <= max_allowed_age else { return false; }
+    }
+    return true;
 }
 
 fn verify_dpop_ath(claims_json: const u8[:], expected_ath: const u8[:]) -> bool {
@@ -646,55 +660,51 @@ fn verify_dpop_claims(
     max_skew_sec:    i64         = 60,
     expected_jkt:    const u8[:] = "",
 ) -> bool {
-    // RFC 9449 §4.3 Rule 4: Mandatory unique jti
+    // RFC 9449 §4.3: Mandatory unique jti & exact uppercase HTTP method
     guard claims.jti.len > 0 && claims.jti.len <= 128 else { return false; }
-
-    // RFC 9449 §4.3 Rule 5: Exact uppercase HTTP method
     guard expected_method.len > 0 && claims.htm.len > 0 else { return false; }
-    for b in claims.htm {
-        if b >= 'a' && b <= 'z' { return false; }
-    }
+    for b in claims.htm { if b >= 'a' && b <= 'z' { return false; } }
     guard claims.htm[..] == expected_method else { return false; }
 
-    // RFC 9449 §4.3 Rule 6: Normalized target URI without query/fragment
+    // RFC 9449 §4.3: Normalized target URI without query/fragment
     guard claims.htu.len > 0 else { return false; }
-    for b in claims.htu {
-        if b == '?' || b == '#' { return false; }
-    }
+    for b in claims.htu { if b == '?' || b == '#' { return false; } }
     var norm_expected_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(expected_uri, norm_expected_uri) else { return false; }
     var norm_htu: u8[..256] = [];
     guard normalize_dpop_target_uri(claims.htu[..], norm_htu) else { return false; }
     guard norm_htu[..] == norm_expected_uri[..] else { return false; }
 
-    // RFC 9449 §4.3 Rule 7: Access token hash binding
+    // RFC 9449 §4.3: Access token hash binding
     if access_token.len > 0 {
         var expected_ath: u8[..64] = [];
         compute_dpop_ath(access_token, expected_ath);
         guard claims.ath.len > 0 && claims.ath.len == expected_ath.len else { return false; }
         guard core::ct_eq_bytes(claims.ath[..], expected_ath[..]) else { return false; }
+    } else {
+        guard claims.ath.len == 0 else { return false; }
     }
 
-    // RFC 9449 §4.3: Server nonce validation
+    // RFC 9449 §4.3: Server nonce & JWK Thumbprint confirmation
     if expected_nonce.len > 0 {
         guard claims.nonce.len > 0 && claims.nonce.len == expected_nonce.len else { return false; }
         guard core::ct_eq_bytes(claims.nonce[..], expected_nonce) else { return false; }
     }
-
-    // RFC 9449 §6.1: JWK Thumbprint confirmation
     if expected_jkt.len > 0 {
         guard claims.jkt.len > 0 && claims.jkt.len == expected_jkt.len else { return false; }
         guard core::ct_eq_bytes(claims.jkt[..], expected_jkt) else { return false; }
     }
 
-    // RFC 9449 §4.3 Rule 8: Creation time & validity window
+    // RFC 9449 §4.3: Mandatory creation time & validity window
+    guard claims.has_iat && claims.iat > 0 else { return false; }
     if now_sec > 0 {
         guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
-        guard claims.has_iat && claims.iat > 0 else { return false; }
-        guard claims.iat <= (now_sec + max_skew_sec) else { return false; }
-        guard (now_sec - claims.iat) <= (max_age_sec + max_skew_sec) else { return false; }
+        let max_future = core::add_sat_i64(now_sec, max_skew_sec);
+        guard claims.iat <= max_future else { return false; }
+        let age = core::sub_sat_i64(now_sec, claims.iat);
+        let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
+        guard age <= max_allowed_age else { return false; }
     }
-
     return true;
 }
 
@@ -757,21 +767,20 @@ fn verify_dpop_proof(
         var key_seed: u8[32] = [0; 32];
         for i in 32 { key_seed[i] = key[i]; }
         let derived_pub = core::ed25519_public_key(key_seed);
+        core::secure_zeroize_32(key_seed);
         guard core::ct_eq_bytes(jwk_pub[..], key) || core::ct_eq_bytes(jwk_pub[..], derived_pub[..]) else {
             return false;
         }
     }
 
     guard verify_dpop_signature(signing_input, sig_b64, jwk_pub) else { return false; }
-
     var claims_json: u8[..2048] = [];
     guard core::base64url_decode(claims_b64, claims_json) else { return false; }
-
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json[..], claims) else { return false; }
 
     if expected_jkt.len > 0 {
-        // RFC 9449 Section 4.3: Checking DPoP Proofs - confirm that the public key to which the access token is bound matches the public key from the DPoP proof.
+        // RFC 9449 Section 4.3: Checking DPoP Proofs - confirm that the public key matches expected_jkt
         guard matches_dpop_jkt_thumbprint(jwk_pub, claims.jkt[..], expected_jkt) else { return false; }
     }
 
@@ -792,13 +801,15 @@ fn verify_dpop_proof(
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
-    set_header(req, rfc::DPOP_HEADER, proof);
+    guard proof.len > 0 && proof.len <= 2048 else { return; }
     if access_token.len > 0 {
+        guard access_token.len <= 2040 else { return; }
         var auth_val: u8[..2048] = [];
         auth_val.append("DPoP ");
         auth_val.append(access_token);
         set_header(req, "Authorization", auth_val[..]);
     }
+    set_header(req, rfc::DPOP_HEADER, proof);
 }
 
 // Extracts DPoP-Nonce from response headers as a zero-copy slice (RFC 9449 §8).
@@ -807,12 +818,19 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
 //   headers = [{"DPoP-Nonce", "eyJhbGciOi..."}]
 //   returns: "eyJhbGciOi...", ok = true
 fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
+    var found_idx: i64 = -1;
     for idx in headers.len {
         if core::eq_ascii_fold(headers[idx].name[..], rfc::DPOP_NONCE_HEADER) {
-            return headers[idx].value[..], true;
+            if found_idx != -1 {
+                return "", false;
+            }
+            found_idx = idx;
         }
     }
-    return "", false;
+    guard found_idx != -1 else { return "", false; }
+    let val = headers[found_idx].value[..];
+    guard is_valid_dpop_nonce(val) else { return "", false; }
+    return val, true;
 }
 
 // Extracts DPoP-Nonce into a target buffer (cleared only on success).

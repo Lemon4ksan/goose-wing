@@ -173,6 +173,25 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - **No local variable re-aliasing**: Do not create chains of synonymous local bindings (`let a = buf.len; let n = a;`).
    - **No redundant 0-arg struct constructor wrappers**: Never declare `fn new_foo() -> Foo { return Foo { .. }; }` (or `Foo {}`). Instantiate structs with native literal syntax `Foo { .. }` (or `wing::Foo { .. }`, `core::Foo { .. }`) directly at every call site.
    - **No trivial single-line struct field getters**: Never write wrapper functions whose sole purpose is returning an attribute or field of an argument (`fn foo(x: const Bar&) -> Baz { return x.field; }`). Access struct attributes directly at call sites or document invariants directly on struct fields.
+   - **No trivial single-line struct field setters, raw arithmetic wrappers, or mutators (Anti G-CRAP gaming)**: Never declare functions or `inline fn` helpers whose sole purpose is assigning a single field (`claims.exp = exp_unix_sec;`) or performing trivial mechanical arithmetic (`val1 + val2`, `val1 + 1`, `val1 - 1`) without domain validation or state machine transitions:
+     ```goose
+     // PROHIBITED ANTI-PATTERN:
+     fn set_expiry(claims: JwtClaims&, exp_unix_sec: i64) {
+         claims.exp = exp_unix_sec;
+     }
+     fn set_not_before(claims: JwtClaims&, nbf_unix_sec: i64) {
+         claims.nbf = nbf_unix_sec;
+     }
+     fn set_issued_at(claims: JwtClaims&, iat_unix_sec: i64) {
+         claims.iat = iat_unix_sec;
+     }
+     inline fn inc_one(val: i64) -> i64 {
+         return val + 1;
+     }
+     ```
+     Mutate struct fields directly at call sites (`claims.exp = exp_unix_sec;`). AI models often invent trivial setter wrappers, mechanical arithmetic helpers (`val + 1`), or micro-functions to artificially decrease cyclomatic complexity and cheat the G-CRAP complexity gate.
+     *Exception / Permitted pattern*: 1-line functions are entirely valid and encouraged when they encapsulate non-trivial logic (e.g. bitmasks, complex predicate expressions, domain rules), are reused across multiple call sites, and their descriptive name brings genuine architectural clarity to the algorithm (e.g. `is_supported_digest_algo`, `is_valid_dpop_nonce`, `calc_amplification_limit`).
+     Never slice cohesive protocol routines into trivial artificial micro-helpers solely to satisfy G-CRAP. If a cohesive protocol function has legitimate linear guards or assignments that cause a G-CRAP ratchet delta, fix/update the baseline entry (`.lit/baseline`) rather than introducing artificial function bloat.
    - **Zero dead code (Mandatory call-site or test integration)**: Every function declared in production source files must be actively integrated and called by protocol engines, dispatchers, or test suites. Unreferenced functions are rejected by pre-commit.
    - **Domain-named leaf primitives over mechanical names**: When isolating a depth-0 arithmetic invariant for G-CRAP proof (`inline fn calc_amplification_limit`), name the function after the protocol domain rule, never after the raw operator (`add_one`, `sub_one`, `mul_by_three`).
 2. **Input/output examples (`// Example:`) where genuinely useful**:

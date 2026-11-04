@@ -15,9 +15,9 @@ import .headers.perfect_hash;
 
 // Individual parsed or constructed HTTP header item.
 struct HeaderItem {
-    name:         u8[..64]  = [],
-    value:        u8[..384] = [],
-    is_sensitive: bool      = false,
+    name:         u8[..64]   = [],
+    value:        u8[..2048] = [],
+    is_sensitive: bool       = false,
 }
 
 // Zero-copy view into parsed wire HTTP header offsets.
@@ -51,6 +51,7 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
     return eq_ascii_fold(name, "authorization") ||
            eq_ascii_fold(name, "proxy-authorization") ||
            eq_ascii_fold(name, "cookie") ||
+           eq_ascii_fold(name, "dpop") ||
            eq_ascii_fold(name, "x-api-key") ||
            eq_ascii_fold(name, "x-auth-token") ||
            eq_ascii_fold(name, "x-access-token") ||

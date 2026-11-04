@@ -302,11 +302,16 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
 
     json::each_member(reader) { key =>
         scratch.clear();
-        parse_jwt_header_member(
-            key, reader, scratch, out_header,
-            seen_alg, seen_typ, seen_kid, seen_cty, seen_crit,
-            seen_others, had_error,
-        );
+        if key.contains('\\') {
+            had_error = true;
+            json::skip(reader);
+        } else {
+            parse_jwt_header_member(
+                key, reader, scratch, out_header,
+                seen_alg, seen_typ, seen_kid, seen_cty, seen_crit,
+                seen_others, had_error,
+            );
+        }
     };
 
     // RFC 7515 §4.1.11: Every parameter listed in crit MUST be present in the header
@@ -397,7 +402,13 @@ fn set_issued_at(claims: JwtClaims&, iat_unix_sec: i64) {
     claims.iat = iat_unix_sec;
 }
 
+inline fn is_jwt_standard_claim_name(name: const u8[:]) -> bool {
+    return name == "iss" || name == "sub" || name == "aud" ||
+           name == "exp" || name == "nbf" || name == "iat" || name == "jti";
+}
+
 fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
+    guard !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 && val.len <= 256 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -419,6 +430,7 @@ fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool {
 }
 
 fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
+    guard !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -440,6 +452,7 @@ fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool {
 }
 
 fn set_claim_bool(claims: JwtClaims&, key: const u8[:], val: bool) -> bool {
+    guard !is_jwt_standard_claim_name(key) else { return false; }
     guard key.len <= 64 else { return false; }
     for &c in claims.custom_claims {
         if c.key[..] == key {
@@ -821,6 +834,27 @@ inline fn parse_jwt_standard_claim(
     return false;
 }
 
+inline fn record_custom_claim(
+    key:         const u8[:],
+    reader:      json::Reader&,
+    scratch:     u8[>..]&,
+    out_claims:  JwtClaims&,
+    seen_custom: SeenCustomKey[..64]&,
+    had_error:   bool&,
+) {
+    if seen_custom_keys_contains(key, seen_custom) {
+        had_error = true;
+    }
+    if seen_custom.len < seen_custom.cap && key.len <= 128 {
+        var item = SeenCustomKey { .. };
+        item.name.append(key);
+        seen_custom.push(item);
+    } else {
+        had_error = true;
+    }
+    parse_custom_claim_entry(key, reader, scratch, out_claims, had_error);
+}
+
 // Parses a decoded JSON byte slice into a JwtClaims struct (RFC 7519 §4).
 //
 // Example:
@@ -851,23 +885,18 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
 
     json::each_member(reader) { key =>
         scratch.clear();
-        let handled = parse_jwt_standard_claim(
-            key, reader, scratch, out_claims,
-            seen_iss, seen_sub, seen_aud, seen_jti, seen_exp, seen_nbf, seen_iat,
-            had_error,
-        );
-        if !handled {
-            if seen_custom_keys_contains(key, seen_custom) {
-                had_error = true;
+        if key.contains('\\') {
+            had_error = true;
+            json::skip(reader);
+        } else {
+            let handled = parse_jwt_standard_claim(
+                key, reader, scratch, out_claims,
+                seen_iss, seen_sub, seen_aud, seen_jti, seen_exp, seen_nbf, seen_iat,
+                had_error,
+            );
+            if !handled {
+                record_custom_claim(key, reader, scratch, out_claims, seen_custom, had_error);
             }
-            if seen_custom.len < seen_custom.cap && key.len <= 128 {
-                var item = SeenCustomKey { .. };
-                item.name.append(key);
-                seen_custom.push(item);
-            } else {
-                had_error = true;
-            }
-            parse_custom_claim_entry(key, reader, scratch, out_claims, had_error);
         }
     };
     return json::finish(reader) && !had_error;
@@ -1000,8 +1029,8 @@ fn sign_jwt_eddsa<B>(
 
 // Hard bounds on raw token and component sizes to prevent parser DoS and memory exhaustion
 const MAX_JWT_TOKEN_LEN:       i64 = 8192;
-const MAX_JWT_HEADER_PART_LEN: i64 = 2048;
-const MAX_JWT_CLAIMS_PART_LEN: i64 = 4096;
+const MAX_JWT_HEADER_PART_LEN: i64 = 1365;
+const MAX_JWT_CLAIMS_PART_LEN: i64 = 2730;
 
 fn split_jwt_parts(
     token: const u8[:],
@@ -1036,7 +1065,7 @@ fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_se
         } else {
             exp + leeway
         };
-        return now_unix_sec <= max_exp_cutoff;
+        return now_unix_sec < max_exp_cutoff;
     }
     return !require_exp;
 }
@@ -1260,29 +1289,42 @@ fn verify_jwt_hmac(
     guard split_jwt_parts(token, dot1, dot2) else {
         return JwtError.MalformedToken;
     }
+    guard core::index_of_byte(token, '=') == -1 else {
+        return JwtError.MalformedToken;
+    }
 
-    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    var temp_header = JwtHeader { .. };
+    let hdr_err = decode_jwt_header(token[..dot1], temp_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
-    let hdr_rule_err = verify_jwt_header_rules(out_header, options);
+    let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
     var sig_bytes: u8[..128] = [];
     let sig_start = core::add_sat_i64(dot2, 1);
+    guard token.len - sig_start <= 172 else {
+        return JwtError.SignatureInvalid;
+    }
     guard core::base64url_decode(token[sig_start..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
 
     let signing_input = token[..dot2];
-    guard verify_jwt_hmac_signature(out_header.alg, secret_key, signing_input, sig_bytes[..]) else {
+    guard verify_jwt_hmac_signature(temp_header.alg, secret_key, signing_input, sig_bytes[..]) else {
         return JwtError.SignatureInvalid;
     }
 
+    var temp_claims = JwtClaims { .. };
     let clm_start = core::add_sat_i64(dot1, 1);
-    let clm_err = decode_jwt_claims(token[clm_start..dot2], out_claims);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], temp_claims);
     guard clm_err == JwtError.None else { return clm_err; }
 
-    return validate_jwt_claims_rules(out_claims, options, now_unix_sec);
+    let clm_rule_err = validate_jwt_claims_rules(temp_claims, options, now_unix_sec);
+    guard clm_rule_err == JwtError.None else { return clm_rule_err; }
+
+    out_header = copy(temp_header);
+    out_claims = copy(temp_claims);
+    return JwtError.None;
 }
 
 fn verify_jwt_eddsa_signature(
@@ -1312,19 +1354,26 @@ fn verify_jwt_eddsa(
     guard split_jwt_parts(token, dot1, dot2) else {
         return JwtError.MalformedToken;
     }
+    guard core::index_of_byte(token, '=') == -1 else {
+        return JwtError.MalformedToken;
+    }
 
-    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    var temp_header = JwtHeader { .. };
+    let hdr_err = decode_jwt_header(token[..dot1], temp_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
-    let hdr_rule_err = verify_jwt_header_rules(out_header, options);
+    let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
-    if out_header.alg != JwtAlg.EdDSA {
+    if temp_header.alg != JwtAlg.EdDSA {
         return JwtError.AlgorithmMismatch;
     }
 
     var sig_bytes: u8[..128] = [];
     let sig_start = core::add_sat_i64(dot2, 1);
+    guard token.len - sig_start <= 172 else {
+        return JwtError.SignatureInvalid;
+    }
     guard core::base64url_decode(token[sig_start..], sig_bytes) else {
         return JwtError.InvalidBase64;
     }
@@ -1334,9 +1383,15 @@ fn verify_jwt_eddsa(
         return JwtError.SignatureInvalid;
     }
 
+    var temp_claims = JwtClaims { .. };
     let clm_start = core::add_sat_i64(dot1, 1);
-    let clm_err = decode_jwt_claims(token[clm_start..dot2], out_claims);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], temp_claims);
     guard clm_err == JwtError.None else { return clm_err; }
 
-    return validate_jwt_claims_rules(out_claims, options, now_unix_sec);
+    let clm_rule_err = validate_jwt_claims_rules(temp_claims, options, now_unix_sec);
+    guard clm_rule_err == JwtError.None else { return clm_rule_err; }
+
+    out_header = copy(temp_header);
+    out_claims = copy(temp_claims);
+    return JwtError.None;
 }

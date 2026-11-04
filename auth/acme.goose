@@ -38,6 +38,7 @@ fn acme_validate_token(token: const u8[:]) -> bool {
 
 // Builds the RFC 8555 §8.1 key authorization body into `out`:
 //   keyAuthorization = token || '.' || base64url(Thumbprint(accountKey))
+//
 // The caller supplies the thumbprint already base64url-encoded via
 // compute_jwk_thumbprint + base64url_encode (no re-encoding here).
 // Returns bytes written, or -1 when the result would exceed ACME_MAX_KEY_AUTH_LEN.
@@ -62,6 +63,7 @@ fn acme_key_authorization(
 
 // Builds the RFC 8555 §8.3 HTTP-01 challenge path into `out`:
 //   ACME_HTTP01_PREFIX || token
+//
 // Returns bytes written, or -1 when the path would exceed the caller buffer.
 //
 // Example:
