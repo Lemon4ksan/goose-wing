@@ -15,7 +15,7 @@ import wire_kit from ".";
 // Wire adapter for verify_split_stream and fuzzing using wing::get_asn1_length
 fn wing_decode_der_length(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    var c = wing::cursor_from(buf);
+    var c = core::cursor_from(buf);
     var out_len: i64 = 0;
     if wing::get_asn1_length(c, out_len) {
         return out_len;

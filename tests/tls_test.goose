@@ -16,65 +16,65 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 fn test_byte_cursor_and_builder(t: lit::T&) {
     t.run("TLS-01: Zero-Copy ByteCursor Reading & Primitive Extraction") { sub =>
         let raw: u8[10] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0xAA, 0xBB];
-        var c = wing::cursor_from(raw[..]);
+        var c = core::cursor_from(raw[..]);
 
-        sub.assert_eq(wing::cursor_len(c), 10, "cursor starts at length 10");
+        sub.assert_eq(core::cursor_len(c), 10, "cursor starts at length 10");
 
         var u8_val: u8 = 0;
-        sub.assert_true(wing::get_u8(c, u8_val), "get_u8 succeeds");
+        sub.assert_true(core::get_u8(c, u8_val), "get_u8 succeeds");
         sub.assert_eq(u8_val, 0x12, "u8 matches 0x12");
-        sub.assert_eq(wing::cursor_len(c), 9, "len after u8 is 9");
+        sub.assert_eq(core::cursor_len(c), 9, "len after u8 is 9");
 
         var u16_val: u16 = 0;
-        sub.assert_true(wing::get_u16(c, u16_val), "get_u16 succeeds");
+        sub.assert_true(core::get_u16(c, u16_val), "get_u16 succeeds");
         sub.assert_eq(u16_val, 0x3456, "u16 matches 0x3456");
 
         var u24_val: u32 = 0;
-        sub.assert_true(wing::get_u24(c, u24_val), "get_u24 succeeds");
+        sub.assert_true(core::get_u24(c, u24_val), "get_u24 succeeds");
         sub.assert_eq(u24_val, 0x789ABC, "u24 matches 0x789ABC");
 
         var u32_val: u32 = 0;
-        sub.assert_true(wing::get_u32(c, u32_val), "get_u32 succeeds");
+        sub.assert_true(core::get_u32(c, u32_val), "get_u32 succeeds");
         sub.assert_eq(u32_val, 0xDEF0AABB, "u32 matches 0xDEF0AABB");
 
-        sub.assert_eq(wing::cursor_len(c), 0, "cursor is empty");
+        sub.assert_eq(core::cursor_len(c), 0, "cursor is empty");
         var underflow: u8 = 0;
-        sub.assert_false(wing::get_u8(c, underflow), "underflow fails safely");
+        sub.assert_false(core::get_u8(c, underflow), "underflow fails safely");
     };
 
     t.run("TLS-02: Length-Prefixed Zero-Copy Slicing") { sub =>
         // [len: 3, 0x01, 0x02, 0x03] || [len: 0x0002, 0xAA, 0xBB]
         let data: u8[8] = [0x03, 0x01, 0x02, 0x03, 0x00, 0x02, 0xAA, 0xBB];
-        var c = wing::cursor_from(data[..]);
+        var c = core::cursor_from(data[..]);
 
-        var p8 = wing::cursor_from(data[..0]);
-        sub.assert_true(wing::get_u8_length_prefixed(c, p8), "read u8 prefixed slice");
-        sub.assert_eq(wing::cursor_len(p8), 3, "p8 length is 3");
+        var p8 = core::cursor_from(data[..0]);
+        sub.assert_true(core::get_u8_length_prefixed(c, p8), "read u8 prefixed slice");
+        sub.assert_eq(core::cursor_len(p8), 3, "p8 length is 3");
         sub.assert_eq(p8.buf[0], 0x01, "p8[0] == 1");
         sub.assert_eq(p8.buf[2], 0x03, "p8[2] == 3");
 
-        var p16 = wing::cursor_from(data[..0]);
-        sub.assert_true(wing::get_u16_length_prefixed(c, p16), "read u16 prefixed slice");
-        sub.assert_eq(wing::cursor_len(p16), 2, "p16 length is 2");
+        var p16 = core::cursor_from(data[..0]);
+        sub.assert_true(core::get_u16_length_prefixed(c, p16), "read u16 prefixed slice");
+        sub.assert_eq(core::cursor_len(p16), 2, "p16 length is 2");
         sub.assert_eq(p16.buf[0], 0xAA, "p16[0] == 0xAA");
         sub.assert_eq(p16.buf[1], 0xBB, "p16[1] == 0xBB");
     };
 
     t.run("TLS-03: ByteBuilder Nested Prefixes & Backpatching") { sub =>
-        var b = wing::builder_init();
-        wing::put_u8(b, 0xAA);
+        var b = core::builder_init();
+        core::put_u8(b, 0xAA);
 
         // Nested u16 length-prefixed block
-        sub.assert_true(wing::start_u16_prefix(b), "start u16 prefix");
-        wing::put_u8(b, 0xBB);
-        wing::put_u8(b, 0xCC);
+        sub.assert_true(core::start_u16_prefix(b), "start u16 prefix");
+        core::put_u8(b, 0xBB);
+        core::put_u8(b, 0xCC);
 
         // Nested u8 length-prefixed block inside u16 block
-        sub.assert_true(wing::start_u8_prefix(b), "start u8 prefix");
-        wing::put_u8(b, 0xDD);
-        sub.assert_true(wing::finish_u8_prefix(b), "finish u8 prefix");
+        sub.assert_true(core::start_u8_prefix(b), "start u8 prefix");
+        core::put_u8(b, 0xDD);
+        sub.assert_true(core::finish_u8_prefix(b), "finish u8 prefix");
 
-        sub.assert_true(wing::finish_u16_prefix(b), "finish u16 prefix");
+        sub.assert_true(core::finish_u16_prefix(b), "finish u16 prefix");
 
         // Expected output:
         // [0xAA] || [u16 len: 4 (0x00, 0x04)] || [0xBB, 0xCC] || [u8 len: 1 (0x01)] || [0xDD]
@@ -896,13 +896,13 @@ fn test_handshake_state_machine(t: lit::T&) {
     t.run("TLS-18: SNI Parsing, Lowercase Normalization & IP Rejection") { sub =>
         // Construct valid SNI extension:
         // [list len: 17] || [name_type: 0] || [name len: 14] || "WikiPedia.ORG"
-        var b = wing::builder_init();
-        wing::start_u16_prefix(b); // list
-        wing::put_u8(b, 0);        // host_name type
-        wing::start_u16_prefix(b); // name
-        wing::put_bytes(b, "WikiPedia.ORG");
-        wing::finish_u16_prefix(b);
-        wing::finish_u16_prefix(b);
+        var b = core::builder_init();
+        core::start_u16_prefix(b); // list
+        core::put_u8(b, 0);        // host_name type
+        core::start_u16_prefix(b); // name
+        core::put_bytes(b, "WikiPedia.ORG");
+        core::finish_u16_prefix(b);
+        core::finish_u16_prefix(b);
 
         var sni: u8[..255] = [];
         let ok_sni = wing::parse_sni_extension(b.buf[..], sni);
@@ -910,26 +910,26 @@ fn test_handshake_state_machine(t: lit::T&) {
         sub.assert_eq(sni[..], "wikipedia.org", "SNI normalized to lowercase");
 
         // Rejection of IPv4 literal in SNI (RFC 6066 Section 3)
-        var b_ip4 = wing::builder_init();
-        wing::start_u16_prefix(b_ip4);
-        wing::put_u8(b_ip4, 0);
-        wing::start_u16_prefix(b_ip4);
-        wing::put_bytes(b_ip4, "192.168.1.1");
-        wing::finish_u16_prefix(b_ip4);
-        wing::finish_u16_prefix(b_ip4);
+        var b_ip4 = core::builder_init();
+        core::start_u16_prefix(b_ip4);
+        core::put_u8(b_ip4, 0);
+        core::start_u16_prefix(b_ip4);
+        core::put_bytes(b_ip4, "192.168.1.1");
+        core::finish_u16_prefix(b_ip4);
+        core::finish_u16_prefix(b_ip4);
 
         var sni_ip: u8[..255] = [];
         let ok_ip4 = wing::parse_sni_extension(b_ip4.buf[..], sni_ip);
         sub.assert_false(ok_ip4, "IPv4 literal in SNI strictly rejected");
 
         // Rejection of IPv6 literal in SNI
-        var b_ip6 = wing::builder_init();
-        wing::start_u16_prefix(b_ip6);
-        wing::put_u8(b_ip6, 0);
-        wing::start_u16_prefix(b_ip6);
-        wing::put_bytes(b_ip6, "2001:db8::1");
-        wing::finish_u16_prefix(b_ip6);
-        wing::finish_u16_prefix(b_ip6);
+        var b_ip6 = core::builder_init();
+        core::start_u16_prefix(b_ip6);
+        core::put_u8(b_ip6, 0);
+        core::start_u16_prefix(b_ip6);
+        core::put_bytes(b_ip6, "2001:db8::1");
+        core::finish_u16_prefix(b_ip6);
+        core::finish_u16_prefix(b_ip6);
 
         let ok_ip6 = wing::parse_sni_extension(b_ip6.buf[..], sni_ip);
         sub.assert_false(ok_ip6, "IPv6 literal in SNI strictly rejected");
@@ -937,15 +937,15 @@ fn test_handshake_state_machine(t: lit::T&) {
 
     t.run("TLS-19: ALPN Negotiation (QUIC h3 requirement & TCP prioritization)") { sub =>
         // Construct ALPN list: ["h2", "http/1.1"]
-        var b_tcp = wing::builder_init();
-        wing::start_u16_prefix(b_tcp);
-        wing::start_u8_prefix(b_tcp);
-        wing::put_bytes(b_tcp, "h2");
-        wing::finish_u8_prefix(b_tcp);
-        wing::start_u8_prefix(b_tcp);
-        wing::put_bytes(b_tcp, "http/1.1");
-        wing::finish_u8_prefix(b_tcp);
-        wing::finish_u16_prefix(b_tcp);
+        var b_tcp = core::builder_init();
+        core::start_u16_prefix(b_tcp);
+        core::start_u8_prefix(b_tcp);
+        core::put_bytes(b_tcp, "h2");
+        core::finish_u8_prefix(b_tcp);
+        core::start_u8_prefix(b_tcp);
+        core::put_bytes(b_tcp, "http/1.1");
+        core::finish_u8_prefix(b_tcp);
+        core::finish_u16_prefix(b_tcp);
 
         // TCP prefers "h2"
         let neg_tcp = wing::negotiate_alpn(b_tcp.buf[..], false);
@@ -956,12 +956,12 @@ fn test_handshake_state_machine(t: lit::T&) {
         sub.assert_true(neg_quic_fail == wing::NegotiatedAlpn.None, "QUIC rejects absence of h3");
 
         // Construct ALPN list with "h3"
-        var b_quic = wing::builder_init();
-        wing::start_u16_prefix(b_quic);
-        wing::start_u8_prefix(b_quic);
-        wing::put_bytes(b_quic, "h3");
-        wing::finish_u8_prefix(b_quic);
-        wing::finish_u16_prefix(b_quic);
+        var b_quic = core::builder_init();
+        core::start_u16_prefix(b_quic);
+        core::start_u8_prefix(b_quic);
+        core::put_bytes(b_quic, "h3");
+        core::finish_u8_prefix(b_quic);
+        core::finish_u16_prefix(b_quic);
 
         let neg_quic_ok = wing::negotiate_alpn(b_quic.buf[..], true);
         sub.assert_true(neg_quic_ok == wing::NegotiatedAlpn.H3, "QUIC negotiates h3");
@@ -973,22 +973,22 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
     t.run("TLS-20: Canonical ASN.1 DER Length & Integer Validation") { sub =>
         // Short form: tag 0x02, len 3, [0x01, 0x02, 0x03]
         let der_int: u8[5] = [0x02, 0x03, 0x01, 0x02, 0x03];
-        var c = wing::cursor_from(der_int[..]);
-        var out_val = wing::cursor_from(der_int[..0]);
+        var c = core::cursor_from(der_int[..]);
+        var out_val = core::cursor_from(der_int[..0]);
         sub.assert_true(wing::get_asn1_element(c, rfc::ASN1_TAG_INTEGER, out_val), "read short form DER integer");
-        sub.assert_eq(wing::cursor_len(out_val), 3, "length is 3");
+        sub.assert_eq(core::cursor_len(out_val), 3, "length is 3");
         sub.assert_true(wing::validate_asn1_integer(out_val.buf, true), "valid integer");
 
         // Canonical DER rule: Reject non-minimal long form (e.g. len 5 encoded as 0x81 0x05)
         let non_minimal: u8[4] = [0x02, 0x81, 0x05, 0x01];
-        var c_nm = wing::cursor_from(non_minimal[..]);
-        var out_nm = wing::cursor_from(non_minimal[..0]);
+        var c_nm = core::cursor_from(non_minimal[..]);
+        var out_nm = core::cursor_from(non_minimal[..0]);
         sub.assert_false(wing::get_asn1_element(c_nm, rfc::ASN1_TAG_INTEGER, out_nm), "reject non-minimal length < 128 in long form");
 
         // Canonical DER rule: Reject BER indefinite form (0x80)
         let ber_indef: u8[3] = [0x30, 0x80, 0x00];
-        var c_ber = wing::cursor_from(ber_indef[..]);
-        var out_ber = wing::cursor_from(ber_indef[..0]);
+        var c_ber = core::cursor_from(ber_indef[..]);
+        var out_ber = core::cursor_from(ber_indef[..0]);
         sub.assert_false(wing::get_asn1_element(c_ber, rfc::ASN1_TAG_SEQUENCE, out_ber), "reject BER indefinite form 0x80");
 
         // Canonical DER rule: Reject redundant leading zeros in integers (e.g. [0x00, 0x42] where 0x42 high bit is 0)
@@ -1153,19 +1153,19 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
     t.run("TLS-25: CS-01 ASN.1 DER Length 4-Byte Bounds, Signed Overflow & Reserved Octet Defense") { sub =>
         // 1. 4-byte overflow (bit 31 set: 0x80000000 = 2147483648)
         let of_4byte: u8[5] = [0x84, 0x80, 0x00, 0x00, 0x00];
-        var c_of = wing::cursor_from(of_4byte[..]);
+        var c_of = core::cursor_from(of_4byte[..]);
         var len_of: i64 = 0;
         sub.assert_false(wing::get_asn1_length(c_of, len_of), "reject 4-byte length with signed bit set (overflow)");
 
         // 2. Initial octet 0xFF strictly forbidden per X.690 Section 8.1.3.5(c)
         let ff_len: u8[3] = [0xFF, 0x01, 0x01];
-        var c_ff = wing::cursor_from(ff_len[..]);
+        var c_ff = core::cursor_from(ff_len[..]);
         var len_ff: i64 = 0;
         sub.assert_false(wing::get_asn1_length(c_ff, len_ff), "reject initial octet 0xFF");
 
         // 3. Length > 4 bytes (e.g. 5 bytes) forbidden
         let five_byte_len: u8[6] = [0x85, 0x01, 0x00, 0x00, 0x00, 0x00];
-        var c_5 = wing::cursor_from(five_byte_len[..]);
+        var c_5 = core::cursor_from(five_byte_len[..]);
         var len_5: i64 = 0;
         sub.assert_false(wing::get_asn1_length(c_5, len_5), "reject 5-byte length");
 
@@ -1179,54 +1179,54 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // 1. Valid integers decoded by get_asn1_integer
         // 0 -> [0x02, 0x01, 0x00]
         let zero_int: u8[3] = [0x02, 0x01, 0x00];
-        var c0 = wing::cursor_from(zero_int[..]);
+        var c0 = core::cursor_from(zero_int[..]);
         var v0: i64 = -999;
         sub.assert_true(wing::get_asn1_integer(c0, v0), "decode integer 0");
         sub.assert_eq(v0, 0, "v0 == 0");
 
         // 127 -> [0x02, 0x01, 0x7F]
         let int_127: u8[3] = [0x02, 0x01, 0x7F];
-        var c127 = wing::cursor_from(int_127[..]);
+        var c127 = core::cursor_from(int_127[..]);
         var v127: i64 = 0;
         sub.assert_true(wing::get_asn1_integer(c127, v127), "decode integer 127");
         sub.assert_eq(v127, 127, "v127 == 127");
 
         // 128 -> [0x02, 0x02, 0x00, 0x80] (requires 0x00 prefix to stay positive)
         let int_128: u8[4] = [0x02, 0x02, 0x00, 0x80];
-        var c128 = wing::cursor_from(int_128[..]);
+        var c128 = core::cursor_from(int_128[..]);
         var v128: i64 = 0;
         sub.assert_true(wing::get_asn1_integer(c128, v128), "decode integer 128");
         sub.assert_eq(v128, 128, "v128 == 128");
 
         // Negative integer -1 -> [0x02, 0x01, 0xFF]
         let neg_one: u8[3] = [0x02, 0x01, 0xFF];
-        var cn1 = wing::cursor_from(neg_one[..]);
+        var cn1 = core::cursor_from(neg_one[..]);
         var vn1: i64 = 0;
         sub.assert_true(wing::get_asn1_integer(cn1, vn1), "decode integer -1");
         sub.assert_eq(vn1, -1, "vn1 == -1");
 
         // Negative integer -128 -> [0x02, 0x01, 0x80]
         let neg_128: u8[3] = [0x02, 0x01, 0x80];
-        var cn128 = wing::cursor_from(neg_128[..]);
+        var cn128 = core::cursor_from(neg_128[..]);
         var vn128: i64 = 0;
         sub.assert_true(wing::get_asn1_integer(cn128, vn128), "decode integer -128");
         sub.assert_eq(vn128, -128, "vn128 == -128");
 
         // 2. Reject zero-length integer [0x02, 0x00]
         let zero_len: u8[2] = [0x02, 0x00];
-        var cz = wing::cursor_from(zero_len[..]);
+        var cz = core::cursor_from(zero_len[..]);
         var vz: i64 = 0;
         sub.assert_false(wing::get_asn1_integer(cz, vz), "reject zero-length integer");
 
         // 3. Reject redundant leading zeros [0x02, 0x02, 0x00, 0x7F]
         let red_zero: u8[4] = [0x02, 0x02, 0x00, 0x7F];
-        var crz = wing::cursor_from(red_zero[..]);
+        var crz = core::cursor_from(red_zero[..]);
         var vrz: i64 = 0;
         sub.assert_false(wing::get_asn1_integer(crz, vrz), "reject redundant leading zero");
 
         // 4. Reject redundant negative sign extension [0x02, 0x02, 0xFF, 0x80]
         let red_sign: u8[4] = [0x02, 0x02, 0xFF, 0x80];
-        var crs = wing::cursor_from(red_sign[..]);
+        var crs = core::cursor_from(red_sign[..]);
         var vrs: i64 = 0;
         sub.assert_false(wing::get_asn1_integer(crs, vrs), "reject redundant negative sign");
 
@@ -1266,8 +1266,8 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
         // 6. get_asn1_bit_string element parser
         let full_der_bs: u8[4] = [0x03, 0x02, 0x00, 0x55];
-        var c_bs = wing::cursor_from(full_der_bs[..]);
-        var out_bits = wing::cursor_from(full_der_bs[..0]);
+        var c_bs = core::cursor_from(full_der_bs[..]);
+        var out_bits = core::cursor_from(full_der_bs[..0]);
         var out_unused: u8 = 0xFF;
         sub.assert_true(wing::get_asn1_bit_string(c_bs, out_bits, out_unused), "parse DER bit string");
         sub.assert_eq(out_unused, 0, "unused bits is 0");
@@ -1382,19 +1382,19 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
         // 5. Valid SAN extension with mixed DNS and IP entries
         // SEQUENCE { [2] "api.example.com" (15 bytes), [7] 10.0.0.1 (4 bytes) }
-        var b = wing::builder_init();
-        wing::put_u8(b, 0x30); // outer SEQUENCE tag
-        wing::start_u8_prefix(b);
-        wing::put_u8(b, 0x82); // dNSName
-        wing::put_u8(b, 15);
-        wing::put_bytes(b, "api.example.com");
-        wing::put_u8(b, 0x87); // iPAddress
-        wing::put_u8(b, 4);
-        wing::put_u8(b, 10);
-        wing::put_u8(b, 0);
-        wing::put_u8(b, 0);
-        wing::put_u8(b, 1);
-        sub.assert_true(wing::finish_u8_prefix(b), "finish sequence prefix");
+        var b = core::builder_init();
+        core::put_u8(b, 0x30); // outer SEQUENCE tag
+        core::start_u8_prefix(b);
+        core::put_u8(b, 0x82); // dNSName
+        core::put_u8(b, 15);
+        core::put_bytes(b, "api.example.com");
+        core::put_u8(b, 0x87); // iPAddress
+        core::put_u8(b, 4);
+        core::put_u8(b, 10);
+        core::put_u8(b, 0);
+        core::put_u8(b, 0);
+        core::put_u8(b, 1);
+        sub.assert_true(core::finish_u8_prefix(b), "finish sequence prefix");
 
         var multi_sans: wing::SanEntry[..16] = [];
         sub.assert_true(wing::parse_san_extension(b.buf[..], multi_sans), "parse multi-entry SAN extension");
@@ -1416,38 +1416,38 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // 2. read_tbs_validity rejects DER sequence with notBefore > notAfter
         // SEQUENCE { UTCTime "261028000000Z", UTCTime "251028000000Z" }
         // 261028000000Z (2026-10-28) > 251028000000Z (2025-10-28)
-        var b_inv = wing::builder_init();
-        wing::put_u8(b_inv, 0x30); // outer SEQUENCE
-        wing::start_u8_prefix(b_inv);
+        var b_inv = core::builder_init();
+        core::put_u8(b_inv, 0x30); // outer SEQUENCE
+        core::start_u8_prefix(b_inv);
         // notBefore: 2026-10-28 00:00:00Z
-        wing::put_u8(b_inv, 0x17);
-        wing::put_u8(b_inv, 13);
-        wing::put_bytes(b_inv, "261028000000Z");
+        core::put_u8(b_inv, 0x17);
+        core::put_u8(b_inv, 13);
+        core::put_bytes(b_inv, "261028000000Z");
         // notAfter: 2025-10-28 00:00:00Z
-        wing::put_u8(b_inv, 0x17);
-        wing::put_u8(b_inv, 13);
-        wing::put_bytes(b_inv, "251028000000Z");
-        sub.assert_true(wing::finish_u8_prefix(b_inv), "finish inverted validity DER");
+        core::put_u8(b_inv, 0x17);
+        core::put_u8(b_inv, 13);
+        core::put_bytes(b_inv, "251028000000Z");
+        sub.assert_true(core::finish_u8_prefix(b_inv), "finish inverted validity DER");
 
-        var c_inv = wing::cursor_from(b_inv.buf[..]);
+        var c_inv = core::cursor_from(b_inv.buf[..]);
         var dummy_cert = wing::ParsedCert {};
         sub.assert_false(wing::read_tbs_validity(b_inv.buf[..], c_inv, dummy_cert), "read_tbs_validity rejects inverted time");
 
         // 3. Valid validity sequence parses correctly
-        var b_val = wing::builder_init();
-        wing::put_u8(b_val, 0x30);
-        wing::start_u8_prefix(b_val);
+        var b_val = core::builder_init();
+        core::put_u8(b_val, 0x30);
+        core::start_u8_prefix(b_val);
         // notBefore: 2025-10-28 00:00:00Z
-        wing::put_u8(b_val, 0x17);
-        wing::put_u8(b_val, 13);
-        wing::put_bytes(b_val, "251028000000Z");
+        core::put_u8(b_val, 0x17);
+        core::put_u8(b_val, 13);
+        core::put_bytes(b_val, "251028000000Z");
         // notAfter: 2026-10-28 00:00:00Z
-        wing::put_u8(b_val, 0x17);
-        wing::put_u8(b_val, 13);
-        wing::put_bytes(b_val, "261028000000Z");
-        sub.assert_true(wing::finish_u8_prefix(b_val), "finish valid validity DER");
+        core::put_u8(b_val, 0x17);
+        core::put_u8(b_val, 13);
+        core::put_bytes(b_val, "261028000000Z");
+        sub.assert_true(core::finish_u8_prefix(b_val), "finish valid validity DER");
 
-        var c_val = wing::cursor_from(b_val.buf[..]);
+        var c_val = core::cursor_from(b_val.buf[..]);
         var out_cert = wing::ParsedCert {};
         sub.assert_true(wing::read_tbs_validity(b_val.buf[..], c_val, out_cert), "read_tbs_validity accepts valid time");
         sub.assert_true(out_cert.validity_not_before < out_cert.validity_not_after, "notBefore < notAfter");
@@ -1535,24 +1535,24 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // 1. read_cert_extensions DER parsing:
         // BasicConstraints SEQUENCE { cA: FALSE (omitted), pathLenConstraint: 2 }
         // RFC 5280 §4.2.1.9: pathLenConstraint is meaningful ONLY if cA is TRUE.
-        var b_bc_ee = wing::builder_init();
-        wing::put_u8(b_bc_ee, 0x30); // outer Extension SEQUENCE
-        wing::start_u8_prefix(b_bc_ee);
-        wing::put_u8(b_bc_ee, 0x06); // OID tag
-        wing::put_u8(b_bc_ee, 3);
-        wing::put_bytes(b_bc_ee, "\x55\x1D\x13"); // 2.5.29.19
-        wing::put_u8(b_bc_ee, 0x04); // OCTET STRING tag
-        wing::start_u8_prefix(b_bc_ee);
-        wing::put_u8(b_bc_ee, 0x30); // BasicConstraints SEQUENCE
-        wing::start_u8_prefix(b_bc_ee);
-        wing::put_u8(b_bc_ee, 0x02); // INTEGER tag
-        wing::put_u8(b_bc_ee, 1);
-        wing::put_u8(b_bc_ee, 2);    // pathLen = 2
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish BC seq");
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish octet str");
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ee), "finish ext seq");
+        var b_bc_ee = core::builder_init();
+        core::put_u8(b_bc_ee, 0x30); // outer Extension SEQUENCE
+        core::start_u8_prefix(b_bc_ee);
+        core::put_u8(b_bc_ee, 0x06); // OID tag
+        core::put_u8(b_bc_ee, 3);
+        core::put_bytes(b_bc_ee, "\x55\x1D\x13"); // 2.5.29.19
+        core::put_u8(b_bc_ee, 0x04); // OCTET STRING tag
+        core::start_u8_prefix(b_bc_ee);
+        core::put_u8(b_bc_ee, 0x30); // BasicConstraints SEQUENCE
+        core::start_u8_prefix(b_bc_ee);
+        core::put_u8(b_bc_ee, 0x02); // INTEGER tag
+        core::put_u8(b_bc_ee, 1);
+        core::put_u8(b_bc_ee, 2);    // pathLen = 2
+        sub.assert_true(core::finish_u8_prefix(b_bc_ee), "finish BC seq");
+        sub.assert_true(core::finish_u8_prefix(b_bc_ee), "finish octet str");
+        sub.assert_true(core::finish_u8_prefix(b_bc_ee), "finish ext seq");
 
-        var c_bc_ee = wing::cursor_from(b_bc_ee.buf[..]);
+        var c_bc_ee = core::cursor_from(b_bc_ee.buf[..]);
         var cert_parsed_ee = wing::ParsedCert {};
         wing::read_cert_extensions(b_bc_ee.buf[..], c_bc_ee, cert_parsed_ee);
         sub.assert_true(cert_parsed_ee.has_basic_constraints, "has BC");
@@ -1560,27 +1560,27 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_eq(cert_parsed_ee.path_len_constraint, -1, "pathLen ignored when is_ca is false");
 
         // 2. BasicConstraints with cA: TRUE and pathLen: 2
-        var b_bc_ca = wing::builder_init();
-        wing::put_u8(b_bc_ca, 0x30); // outer Extension SEQUENCE
-        wing::start_u8_prefix(b_bc_ca);
-        wing::put_u8(b_bc_ca, 0x06); // OID tag
-        wing::put_u8(b_bc_ca, 3);
-        wing::put_bytes(b_bc_ca, "\x55\x1D\x13"); // 2.5.29.19
-        wing::put_u8(b_bc_ca, 0x04); // OCTET STRING tag
-        wing::start_u8_prefix(b_bc_ca);
-        wing::put_u8(b_bc_ca, 0x30); // BasicConstraints SEQUENCE
-        wing::start_u8_prefix(b_bc_ca);
-        wing::put_u8(b_bc_ca, 0x01); // BOOLEAN tag
-        wing::put_u8(b_bc_ca, 1);
-        wing::put_u8(b_bc_ca, 0xFF); // TRUE
-        wing::put_u8(b_bc_ca, 0x02); // INTEGER tag
-        wing::put_u8(b_bc_ca, 1);
-        wing::put_u8(b_bc_ca, 2);    // pathLen = 2
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish BC ca seq");
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish octet str");
-        sub.assert_true(wing::finish_u8_prefix(b_bc_ca), "finish ext seq");
+        var b_bc_ca = core::builder_init();
+        core::put_u8(b_bc_ca, 0x30); // outer Extension SEQUENCE
+        core::start_u8_prefix(b_bc_ca);
+        core::put_u8(b_bc_ca, 0x06); // OID tag
+        core::put_u8(b_bc_ca, 3);
+        core::put_bytes(b_bc_ca, "\x55\x1D\x13"); // 2.5.29.19
+        core::put_u8(b_bc_ca, 0x04); // OCTET STRING tag
+        core::start_u8_prefix(b_bc_ca);
+        core::put_u8(b_bc_ca, 0x30); // BasicConstraints SEQUENCE
+        core::start_u8_prefix(b_bc_ca);
+        core::put_u8(b_bc_ca, 0x01); // BOOLEAN tag
+        core::put_u8(b_bc_ca, 1);
+        core::put_u8(b_bc_ca, 0xFF); // TRUE
+        core::put_u8(b_bc_ca, 0x02); // INTEGER tag
+        core::put_u8(b_bc_ca, 1);
+        core::put_u8(b_bc_ca, 2);    // pathLen = 2
+        sub.assert_true(core::finish_u8_prefix(b_bc_ca), "finish BC ca seq");
+        sub.assert_true(core::finish_u8_prefix(b_bc_ca), "finish octet str");
+        sub.assert_true(core::finish_u8_prefix(b_bc_ca), "finish ext seq");
 
-        var c_bc_ca = wing::cursor_from(b_bc_ca.buf[..]);
+        var c_bc_ca = core::cursor_from(b_bc_ca.buf[..]);
         var cert_parsed_ca = wing::ParsedCert {};
         wing::read_cert_extensions(b_bc_ca.buf[..], c_bc_ca, cert_parsed_ca);
         sub.assert_true(cert_parsed_ca.has_basic_constraints, "has BC");
@@ -1879,21 +1879,21 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
     t.run("TLS-36: CS-12 Unrecognized Critical Extension Rejection") { sub =>
         // 1. Extension with unrecognized OID marked critical: TRUE
         // Extension SEQUENCE { OID 1.3.153 (2B 06 99), critical BOOLEAN TRUE (0xFF), extnValue OCTET STRING "val" }
-        var b_crit = wing::builder_init();
-        wing::put_u8(b_crit, 0x30); // Extension SEQUENCE
-        wing::start_u8_prefix(b_crit);
-        wing::put_u8(b_crit, 0x06); // OID
-        wing::put_u8(b_crit, 3);
-        wing::put_bytes(b_crit, "\x2B\x06\x99"); // Unrecognized OID
-        wing::put_u8(b_crit, 0x01); // BOOLEAN (critical)
-        wing::put_u8(b_crit, 1);
-        wing::put_u8(b_crit, 0xFF); // TRUE
-        wing::put_u8(b_crit, 0x04); // OCTET STRING
-        wing::put_u8(b_crit, 3);
-        wing::put_bytes(b_crit, "val");
-        sub.assert_true(wing::finish_u8_prefix(b_crit), "finish crit ext");
+        var b_crit = core::builder_init();
+        core::put_u8(b_crit, 0x30); // Extension SEQUENCE
+        core::start_u8_prefix(b_crit);
+        core::put_u8(b_crit, 0x06); // OID
+        core::put_u8(b_crit, 3);
+        core::put_bytes(b_crit, "\x2B\x06\x99"); // Unrecognized OID
+        core::put_u8(b_crit, 0x01); // BOOLEAN (critical)
+        core::put_u8(b_crit, 1);
+        core::put_u8(b_crit, 0xFF); // TRUE
+        core::put_u8(b_crit, 0x04); // OCTET STRING
+        core::put_u8(b_crit, 3);
+        core::put_bytes(b_crit, "val");
+        sub.assert_true(core::finish_u8_prefix(b_crit), "finish crit ext");
 
-        var c_crit = wing::cursor_from(b_crit.buf[..]);
+        var c_crit = core::cursor_from(b_crit.buf[..]);
         var cert_crit = wing::ParsedCert {};
         wing::read_cert_extensions(b_crit.buf[..], c_crit, cert_crit);
         sub.assert_true(cert_crit.has_unsupported_critical, "unrecognized critical extension detected");
@@ -1914,21 +1914,21 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_eq(wing::tls_alert_to_u8(alert_crit), wing::tls_alert_to_u8(wing::TlsAlert.UnsupportedExtension), "unrecognized critical extension returns UnsupportedExtension");
 
         // 3. Extension with unrecognized OID marked critical: FALSE (allowed to be ignored per RFC 5280 §4.2)
-        var b_noncrit = wing::builder_init();
-        wing::put_u8(b_noncrit, 0x30); // Extension SEQUENCE
-        wing::start_u8_prefix(b_noncrit);
-        wing::put_u8(b_noncrit, 0x06); // OID
-        wing::put_u8(b_noncrit, 3);
-        wing::put_bytes(b_noncrit, "\x2B\x06\x99");
-        wing::put_u8(b_noncrit, 0x01); // BOOLEAN (critical)
-        wing::put_u8(b_noncrit, 1);
-        wing::put_u8(b_noncrit, 0x00); // FALSE
-        wing::put_u8(b_noncrit, 0x04); // OCTET STRING
-        wing::put_u8(b_noncrit, 3);
-        wing::put_bytes(b_noncrit, "val");
-        sub.assert_true(wing::finish_u8_prefix(b_noncrit), "finish noncrit ext");
+        var b_noncrit = core::builder_init();
+        core::put_u8(b_noncrit, 0x30); // Extension SEQUENCE
+        core::start_u8_prefix(b_noncrit);
+        core::put_u8(b_noncrit, 0x06); // OID
+        core::put_u8(b_noncrit, 3);
+        core::put_bytes(b_noncrit, "\x2B\x06\x99");
+        core::put_u8(b_noncrit, 0x01); // BOOLEAN (critical)
+        core::put_u8(b_noncrit, 1);
+        core::put_u8(b_noncrit, 0x00); // FALSE
+        core::put_u8(b_noncrit, 0x04); // OCTET STRING
+        core::put_u8(b_noncrit, 3);
+        core::put_bytes(b_noncrit, "val");
+        sub.assert_true(core::finish_u8_prefix(b_noncrit), "finish noncrit ext");
 
-        var c_noncrit = wing::cursor_from(b_noncrit.buf[..]);
+        var c_noncrit = core::cursor_from(b_noncrit.buf[..]);
         var cert_noncrit = wing::ParsedCert {};
         wing::read_cert_extensions(b_noncrit.buf[..], c_noncrit, cert_noncrit);
         sub.assert_false(cert_noncrit.has_unsupported_critical, "unrecognized non-critical extension ignored");
@@ -1936,21 +1936,21 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
     t.run("TLS-37: CS-13 AKID and SKID Chain Linking & KeyID Invariants") { sub =>
         // 1. SubjectKeyIdentifier (2.5.29.14) DER extraction
-        var b_skid = wing::builder_init();
-        wing::put_u8(b_skid, 0x30); // Extension SEQUENCE
-        wing::start_u8_prefix(b_skid);
-        wing::put_u8(b_skid, 0x06); // OID
-        wing::put_u8(b_skid, 3);
-        wing::put_bytes(b_skid, "\x55\x1D\x0E"); // 2.5.29.14
-        wing::put_u8(b_skid, 0x04); // OCTET STRING extnValue
-        wing::start_u8_prefix(b_skid);
-        wing::put_u8(b_skid, 0x04); // KeyIdentifier OCTET STRING
-        wing::put_u8(b_skid, 4);
-        wing::put_bytes(b_skid, "\x11\x22\x33\x44");
-        sub.assert_true(wing::finish_u8_prefix(b_skid), "finish skid val");
-        sub.assert_true(wing::finish_u8_prefix(b_skid), "finish skid ext");
+        var b_skid = core::builder_init();
+        core::put_u8(b_skid, 0x30); // Extension SEQUENCE
+        core::start_u8_prefix(b_skid);
+        core::put_u8(b_skid, 0x06); // OID
+        core::put_u8(b_skid, 3);
+        core::put_bytes(b_skid, "\x55\x1D\x0E"); // 2.5.29.14
+        core::put_u8(b_skid, 0x04); // OCTET STRING extnValue
+        core::start_u8_prefix(b_skid);
+        core::put_u8(b_skid, 0x04); // KeyIdentifier OCTET STRING
+        core::put_u8(b_skid, 4);
+        core::put_bytes(b_skid, "\x11\x22\x33\x44");
+        sub.assert_true(core::finish_u8_prefix(b_skid), "finish skid val");
+        sub.assert_true(core::finish_u8_prefix(b_skid), "finish skid ext");
 
-        var c_skid = wing::cursor_from(b_skid.buf[..]);
+        var c_skid = core::cursor_from(b_skid.buf[..]);
         var cert_parsed_skid = wing::ParsedCert {};
         wing::read_cert_extensions(b_skid.buf[..], c_skid, cert_parsed_skid);
         sub.assert_true(cert_parsed_skid.has_skid, "has SKID");
@@ -1958,24 +1958,24 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_eq(skid_slice, "\x11\x22\x33\x44", "SKID key ID matches");
 
         // 2. AuthorityKeyIdentifier (2.5.29.35) DER extraction
-        var b_akid = wing::builder_init();
-        wing::put_u8(b_akid, 0x30); // Extension SEQUENCE
-        wing::start_u8_prefix(b_akid);
-        wing::put_u8(b_akid, 0x06); // OID
-        wing::put_u8(b_akid, 3);
-        wing::put_bytes(b_akid, "\x55\x1D\x23"); // 2.5.29.35
-        wing::put_u8(b_akid, 0x04); // OCTET STRING extnValue
-        wing::start_u8_prefix(b_akid);
-        wing::put_u8(b_akid, 0x30); // AuthorityKeyIdentifier SEQUENCE
-        wing::start_u8_prefix(b_akid);
-        wing::put_u8(b_akid, 0x80); // keyIdentifier [0] IMPLICIT
-        wing::put_u8(b_akid, 4);
-        wing::put_bytes(b_akid, "\x11\x22\x33\x44");
-        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid seq");
-        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid val");
-        sub.assert_true(wing::finish_u8_prefix(b_akid), "finish akid ext");
+        var b_akid = core::builder_init();
+        core::put_u8(b_akid, 0x30); // Extension SEQUENCE
+        core::start_u8_prefix(b_akid);
+        core::put_u8(b_akid, 0x06); // OID
+        core::put_u8(b_akid, 3);
+        core::put_bytes(b_akid, "\x55\x1D\x23"); // 2.5.29.35
+        core::put_u8(b_akid, 0x04); // OCTET STRING extnValue
+        core::start_u8_prefix(b_akid);
+        core::put_u8(b_akid, 0x30); // AuthorityKeyIdentifier SEQUENCE
+        core::start_u8_prefix(b_akid);
+        core::put_u8(b_akid, 0x80); // keyIdentifier [0] IMPLICIT
+        core::put_u8(b_akid, 4);
+        core::put_bytes(b_akid, "\x11\x22\x33\x44");
+        sub.assert_true(core::finish_u8_prefix(b_akid), "finish akid seq");
+        sub.assert_true(core::finish_u8_prefix(b_akid), "finish akid val");
+        sub.assert_true(core::finish_u8_prefix(b_akid), "finish akid ext");
 
-        var c_akid = wing::cursor_from(b_akid.buf[..]);
+        var c_akid = core::cursor_from(b_akid.buf[..]);
         var cert_parsed_akid = wing::ParsedCert {};
         wing::read_cert_extensions(b_akid.buf[..], c_akid, cert_parsed_akid);
         sub.assert_true(cert_parsed_akid.has_akid, "has AKID");
@@ -2068,63 +2068,63 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
     t.run("TLS-38: CS-14 Policy Constraints & InhibitAnyPolicy Negative Bounds & Empty Sequence Defense") { sub =>
         // 1. PolicyConstraints (2.5.29.36) empty sequence rejection (RFC 5280 §4.2.1.11)
-        var b_pc_empty = wing::builder_init();
-        wing::put_u8(b_pc_empty, 0x30); // Extension SEQUENCE
-        wing::start_u8_prefix(b_pc_empty);
-        wing::put_u8(b_pc_empty, 0x06); // OID
-        wing::put_u8(b_pc_empty, 3);
-        wing::put_bytes(b_pc_empty, "\x55\x1D\x24"); // 2.5.29.36
-        wing::put_u8(b_pc_empty, 0x04); // OCTET STRING
-        wing::start_u8_prefix(b_pc_empty);
-        wing::put_u8(b_pc_empty, 0x30); // Empty SEQUENCE
-        wing::put_u8(b_pc_empty, 0);
-        sub.assert_true(wing::finish_u8_prefix(b_pc_empty), "finish octet str");
-        sub.assert_true(wing::finish_u8_prefix(b_pc_empty), "finish ext seq");
+        var b_pc_empty = core::builder_init();
+        core::put_u8(b_pc_empty, 0x30); // Extension SEQUENCE
+        core::start_u8_prefix(b_pc_empty);
+        core::put_u8(b_pc_empty, 0x06); // OID
+        core::put_u8(b_pc_empty, 3);
+        core::put_bytes(b_pc_empty, "\x55\x1D\x24"); // 2.5.29.36
+        core::put_u8(b_pc_empty, 0x04); // OCTET STRING
+        core::start_u8_prefix(b_pc_empty);
+        core::put_u8(b_pc_empty, 0x30); // Empty SEQUENCE
+        core::put_u8(b_pc_empty, 0);
+        sub.assert_true(core::finish_u8_prefix(b_pc_empty), "finish octet str");
+        sub.assert_true(core::finish_u8_prefix(b_pc_empty), "finish ext seq");
 
-        var c_pc_empty = wing::cursor_from(b_pc_empty.buf[..]);
+        var c_pc_empty = core::cursor_from(b_pc_empty.buf[..]);
         var cert_pc_empty = wing::ParsedCert {};
         wing::read_cert_extensions(b_pc_empty.buf[..], c_pc_empty, cert_pc_empty);
         sub.assert_true(cert_pc_empty.has_malformed_policy_constraints, "empty PolicyConstraints flagged as malformed");
 
         // 2. PolicyConstraints with negative SkipCerts integer
-        var b_pc_neg = wing::builder_init();
-        wing::put_u8(b_pc_neg, 0x30);
-        wing::start_u8_prefix(b_pc_neg);
-        wing::put_u8(b_pc_neg, 0x06);
-        wing::put_u8(b_pc_neg, 3);
-        wing::put_bytes(b_pc_neg, "\x55\x1D\x24");
-        wing::put_u8(b_pc_neg, 0x04);
-        wing::start_u8_prefix(b_pc_neg);
-        wing::put_u8(b_pc_neg, 0x30);
-        wing::start_u8_prefix(b_pc_neg);
-        wing::put_u8(b_pc_neg, 0x80); // [0] requireExplicitPolicy
-        wing::put_u8(b_pc_neg, 1);
-        wing::put_u8(b_pc_neg, 0xFF); // Negative integer in DER!
-        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish pc seq");
-        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish octet str");
-        sub.assert_true(wing::finish_u8_prefix(b_pc_neg), "finish ext seq");
+        var b_pc_neg = core::builder_init();
+        core::put_u8(b_pc_neg, 0x30);
+        core::start_u8_prefix(b_pc_neg);
+        core::put_u8(b_pc_neg, 0x06);
+        core::put_u8(b_pc_neg, 3);
+        core::put_bytes(b_pc_neg, "\x55\x1D\x24");
+        core::put_u8(b_pc_neg, 0x04);
+        core::start_u8_prefix(b_pc_neg);
+        core::put_u8(b_pc_neg, 0x30);
+        core::start_u8_prefix(b_pc_neg);
+        core::put_u8(b_pc_neg, 0x80); // [0] requireExplicitPolicy
+        core::put_u8(b_pc_neg, 1);
+        core::put_u8(b_pc_neg, 0xFF); // Negative integer in DER!
+        sub.assert_true(core::finish_u8_prefix(b_pc_neg), "finish pc seq");
+        sub.assert_true(core::finish_u8_prefix(b_pc_neg), "finish octet str");
+        sub.assert_true(core::finish_u8_prefix(b_pc_neg), "finish ext seq");
 
-        var c_pc_neg = wing::cursor_from(b_pc_neg.buf[..]);
+        var c_pc_neg = core::cursor_from(b_pc_neg.buf[..]);
         var cert_pc_neg = wing::ParsedCert {};
         wing::read_cert_extensions(b_pc_neg.buf[..], c_pc_neg, cert_pc_neg);
         sub.assert_true(cert_pc_neg.has_malformed_policy_constraints, "negative SkipCerts flagged as malformed");
 
         // 3. InhibitAnyPolicy (2.5.29.54) with negative integer
-        var b_iap_neg = wing::builder_init();
-        wing::put_u8(b_iap_neg, 0x30);
-        wing::start_u8_prefix(b_iap_neg);
-        wing::put_u8(b_iap_neg, 0x06);
-        wing::put_u8(b_iap_neg, 3);
-        wing::put_bytes(b_iap_neg, "\x55\x1D\x36"); // 2.5.29.54
-        wing::put_u8(b_iap_neg, 0x04);
-        wing::start_u8_prefix(b_iap_neg);
-        wing::put_u8(b_iap_neg, 0x02); // INTEGER
-        wing::put_u8(b_iap_neg, 1);
-        wing::put_u8(b_iap_neg, 0x80); // Negative integer
-        sub.assert_true(wing::finish_u8_prefix(b_iap_neg), "finish octet str");
-        sub.assert_true(wing::finish_u8_prefix(b_iap_neg), "finish ext seq");
+        var b_iap_neg = core::builder_init();
+        core::put_u8(b_iap_neg, 0x30);
+        core::start_u8_prefix(b_iap_neg);
+        core::put_u8(b_iap_neg, 0x06);
+        core::put_u8(b_iap_neg, 3);
+        core::put_bytes(b_iap_neg, "\x55\x1D\x36"); // 2.5.29.54
+        core::put_u8(b_iap_neg, 0x04);
+        core::start_u8_prefix(b_iap_neg);
+        core::put_u8(b_iap_neg, 0x02); // INTEGER
+        core::put_u8(b_iap_neg, 1);
+        core::put_u8(b_iap_neg, 0x80); // Negative integer
+        sub.assert_true(core::finish_u8_prefix(b_iap_neg), "finish octet str");
+        sub.assert_true(core::finish_u8_prefix(b_iap_neg), "finish ext seq");
 
-        var c_iap_neg = wing::cursor_from(b_iap_neg.buf[..]);
+        var c_iap_neg = core::cursor_from(b_iap_neg.buf[..]);
         var cert_iap_neg = wing::ParsedCert {};
         wing::read_cert_extensions(b_iap_neg.buf[..], c_iap_neg, cert_iap_neg);
         sub.assert_true(cert_iap_neg.has_malformed_policy_constraints, "negative InhibitAnyPolicy flagged as malformed");
@@ -2147,11 +2147,11 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
     t.run("TLS-39: CS-15 OCSP Stapling Wire Framing, ResponseStatus, Temporal Inversion & CertID Matching") { sub =>
         // 1. Wire unwrapping (unwrap_tls_ocsp_response)
-        var b_wire = wing::builder_init();
-        wing::put_u8(b_wire, 0); // uint24 high
-        wing::put_u8(b_wire, 0); // uint24 mid
-        wing::put_u8(b_wire, 4); // uint24 low = 4 bytes
-        wing::put_bytes(b_wire, "OCSP");
+        var b_wire = core::builder_init();
+        core::put_u8(b_wire, 0); // uint24 high
+        core::put_u8(b_wire, 0); // uint24 mid
+        core::put_u8(b_wire, 4); // uint24 low = 4 bytes
+        core::put_bytes(b_wire, "OCSP");
         let unwrapped, ok_unwrap = wing::unwrap_tls_ocsp_response(b_wire.buf[..]);
         sub.assert_true(ok_unwrap, "unwrap valid wire response");
         sub.assert_eq(unwrapped, "OCSP", "unwrapped content matches");
@@ -2182,91 +2182,91 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // CertStatus: good [0] NULL
         // thisUpdate: 2026-10-28 00:00:00Z ("20261028000000Z")
         // nextUpdate: 2026-10-29 00:00:00Z ("20261029000000Z")
-        var b_tbs = wing::builder_init();
-        wing::put_u8(b_tbs, 0x30); // tbsResponseData SEQUENCE
-        wing::start_u8_prefix(b_tbs);
+        var b_tbs = core::builder_init();
+        core::put_u8(b_tbs, 0x30); // tbsResponseData SEQUENCE
+        core::start_u8_prefix(b_tbs);
 
         // responderID [1] EXPLICIT byName (empty sequence for mock)
-        wing::put_u8(b_tbs, 0xA1);
-        wing::put_u8(b_tbs, 2);
-        wing::put_u8(b_tbs, 0x30);
-        wing::put_u8(b_tbs, 0);
+        core::put_u8(b_tbs, 0xA1);
+        core::put_u8(b_tbs, 2);
+        core::put_u8(b_tbs, 0x30);
+        core::put_u8(b_tbs, 0);
 
         // producedAt GeneralizedTime
-        wing::put_u8(b_tbs, 0x18);
-        wing::put_u8(b_tbs, 15);
-        wing::put_bytes(b_tbs, "20261028000000Z");
+        core::put_u8(b_tbs, 0x18);
+        core::put_u8(b_tbs, 15);
+        core::put_bytes(b_tbs, "20261028000000Z");
 
         // responses SEQUENCE OF SingleResponse
-        wing::put_u8(b_tbs, 0x30);
-        wing::start_u8_prefix(b_tbs);
-        wing::put_u8(b_tbs, 0x30); // SingleResponse SEQUENCE
-        wing::start_u8_prefix(b_tbs);
+        core::put_u8(b_tbs, 0x30);
+        core::start_u8_prefix(b_tbs);
+        core::put_u8(b_tbs, 0x30); // SingleResponse SEQUENCE
+        core::start_u8_prefix(b_tbs);
 
         // certID SEQUENCE
-        wing::put_u8(b_tbs, 0x30);
-        wing::put_u8(b_tbs, 9);
+        core::put_u8(b_tbs, 0x30);
+        core::put_u8(b_tbs, 9);
         // hashAlgorithm SEQUENCE (empty)
-        wing::put_u8(b_tbs, 0x30);
-        wing::put_u8(b_tbs, 0);
+        core::put_u8(b_tbs, 0x30);
+        core::put_u8(b_tbs, 0);
         // issuerNameHash OCTET STRING (empty)
-        wing::put_u8(b_tbs, 0x04);
-        wing::put_u8(b_tbs, 0);
+        core::put_u8(b_tbs, 0x04);
+        core::put_u8(b_tbs, 0);
         // issuerKeyHash OCTET STRING (empty)
-        wing::put_u8(b_tbs, 0x04);
-        wing::put_u8(b_tbs, 0);
+        core::put_u8(b_tbs, 0x04);
+        core::put_u8(b_tbs, 0);
         // serialNumber INTEGER 0x42
-        wing::put_u8(b_tbs, 0x02);
-        wing::put_u8(b_tbs, 1);
-        wing::put_u8(b_tbs, 0x42);
+        core::put_u8(b_tbs, 0x02);
+        core::put_u8(b_tbs, 1);
+        core::put_u8(b_tbs, 0x42);
 
         // certStatus [0] IMPLICIT NULL (Good)
-        wing::put_u8(b_tbs, 0x80);
-        wing::put_u8(b_tbs, 0);
+        core::put_u8(b_tbs, 0x80);
+        core::put_u8(b_tbs, 0);
 
         // thisUpdate GeneralizedTime: 2026-10-28 00:00:00Z
-        wing::put_u8(b_tbs, 0x18);
-        wing::put_u8(b_tbs, 15);
-        wing::put_bytes(b_tbs, "20261028000000Z");
+        core::put_u8(b_tbs, 0x18);
+        core::put_u8(b_tbs, 15);
+        core::put_bytes(b_tbs, "20261028000000Z");
 
         // nextUpdate [0] EXPLICIT GeneralizedTime: 2026-10-29 00:00:00Z
-        wing::put_u8(b_tbs, 0xA0);
-        wing::put_u8(b_tbs, 17);
-        wing::put_u8(b_tbs, 0x18);
-        wing::put_u8(b_tbs, 15);
-        wing::put_bytes(b_tbs, "20261029000000Z");
+        core::put_u8(b_tbs, 0xA0);
+        core::put_u8(b_tbs, 17);
+        core::put_u8(b_tbs, 0x18);
+        core::put_u8(b_tbs, 15);
+        core::put_bytes(b_tbs, "20261029000000Z");
 
-        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish single_resp");
-        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish responses");
-        sub.assert_true(wing::finish_u8_prefix(b_tbs), "finish tbsResponseData");
+        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish single_resp");
+        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish responses");
+        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish tbsResponseData");
 
-        var b_basic = wing::builder_init();
-        wing::put_u8(b_basic, 0x30); // BasicOCSPResponse SEQUENCE
-        wing::start_u8_prefix(b_basic);
-        wing::put_bytes(b_basic, b_tbs.buf[..]);
-        sub.assert_true(wing::finish_u8_prefix(b_basic), "finish BasicOCSPResponse");
+        var b_basic = core::builder_init();
+        core::put_u8(b_basic, 0x30); // BasicOCSPResponse SEQUENCE
+        core::start_u8_prefix(b_basic);
+        core::put_bytes(b_basic, b_tbs.buf[..]);
+        sub.assert_true(core::finish_u8_prefix(b_basic), "finish BasicOCSPResponse");
 
-        var b_ocsp = wing::builder_init();
-        wing::put_u8(b_ocsp, 0x30); // outer OCSPResponse SEQUENCE
-        wing::start_u8_prefix(b_ocsp);
-        wing::put_u8(b_ocsp, 0x0A); // ENUMERATED responseStatus
-        wing::put_u8(b_ocsp, 1);
-        wing::put_u8(b_ocsp, 0);    // 0 = Successful
+        var b_ocsp = core::builder_init();
+        core::put_u8(b_ocsp, 0x30); // outer OCSPResponse SEQUENCE
+        core::start_u8_prefix(b_ocsp);
+        core::put_u8(b_ocsp, 0x0A); // ENUMERATED responseStatus
+        core::put_u8(b_ocsp, 1);
+        core::put_u8(b_ocsp, 0);    // 0 = Successful
 
-        wing::put_u8(b_ocsp, 0xA0); // [0] EXPLICIT ResponseBytes
-        wing::start_u8_prefix(b_ocsp);
-        wing::put_u8(b_ocsp, 0x30); // ResponseBytes SEQUENCE
-        wing::start_u8_prefix(b_ocsp);
-        wing::put_u8(b_ocsp, 0x06); // OID id-pkix-ocsp-basic
-        wing::put_u8(b_ocsp, 9);
-        wing::put_bytes(b_ocsp, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
-        wing::put_u8(b_ocsp, 0x04); // response OCTET STRING
-        wing::start_u8_prefix(b_ocsp);
-        wing::put_bytes(b_ocsp, b_basic.buf[..]);
-        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish response OCTET STRING");
-        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish ResponseBytes SEQUENCE");
-        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish [0] ResponseBytes");
-        sub.assert_true(wing::finish_u8_prefix(b_ocsp), "finish OCSPResponse");
+        core::put_u8(b_ocsp, 0xA0); // [0] EXPLICIT ResponseBytes
+        core::start_u8_prefix(b_ocsp);
+        core::put_u8(b_ocsp, 0x30); // ResponseBytes SEQUENCE
+        core::start_u8_prefix(b_ocsp);
+        core::put_u8(b_ocsp, 0x06); // OID id-pkix-ocsp-basic
+        core::put_u8(b_ocsp, 9);
+        core::put_bytes(b_ocsp, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
+        core::put_u8(b_ocsp, 0x04); // response OCTET STRING
+        core::start_u8_prefix(b_ocsp);
+        core::put_bytes(b_ocsp, b_basic.buf[..]);
+        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish response OCTET STRING");
+        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish ResponseBytes SEQUENCE");
+        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish [0] ResponseBytes");
+        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish OCSPResponse");
 
         var parsed_ok = wing::ParsedOcspResponse {};
         sub.assert_true(wing::parse_ocsp_response(b_ocsp.buf[..], parsed_ok), "parse full OCSP response");
@@ -2302,80 +2302,80 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let leaf_kp = core::ed25519_keypair(leaf_seed);
 
         // 1. Build TBSCertificate payload for leaf
-        var b_tbs_body = wing::builder_init();
+        var b_tbs_body = core::builder_init();
         // serialNumber (INTEGER: 0x42)
-        wing::put_u8(b_tbs_body, 0x02);
-        wing::put_u8(b_tbs_body, 1);
-        wing::put_u8(b_tbs_body, 0x42);
+        core::put_u8(b_tbs_body, 0x02);
+        core::put_u8(b_tbs_body, 1);
+        core::put_u8(b_tbs_body, 0x42);
         // signature (AlgorithmIdentifier: OID_ED25519)
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 5);
-        wing::put_u8(b_tbs_body, 0x06);
-        wing::put_u8(b_tbs_body, 3);
-        wing::put_bytes(b_tbs_body, "\x2B\x65\x70");
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 5);
+        core::put_u8(b_tbs_body, 0x06);
+        core::put_u8(b_tbs_body, 3);
+        core::put_bytes(b_tbs_body, "\x2B\x65\x70");
         // issuer (SEQUENCE "ROOT")
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 6);
-        wing::put_u8(b_tbs_body, 0x13);
-        wing::put_u8(b_tbs_body, 4);
-        wing::put_bytes(b_tbs_body, "ROOT");
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 6);
+        core::put_u8(b_tbs_body, 0x13);
+        core::put_u8(b_tbs_body, 4);
+        core::put_bytes(b_tbs_body, "ROOT");
         // validity (240101000000Z to 260101000000Z: 1704067200 to 1767225600)
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 30);
-        wing::put_u8(b_tbs_body, 0x17);
-        wing::put_u8(b_tbs_body, 13);
-        wing::put_bytes(b_tbs_body, "240101000000Z");
-        wing::put_u8(b_tbs_body, 0x17);
-        wing::put_u8(b_tbs_body, 13);
-        wing::put_bytes(b_tbs_body, "260101000000Z");
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 30);
+        core::put_u8(b_tbs_body, 0x17);
+        core::put_u8(b_tbs_body, 13);
+        core::put_bytes(b_tbs_body, "240101000000Z");
+        core::put_u8(b_tbs_body, 0x17);
+        core::put_u8(b_tbs_body, 13);
+        core::put_bytes(b_tbs_body, "260101000000Z");
         // subject (SEQUENCE "LEAF")
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 6);
-        wing::put_u8(b_tbs_body, 0x13);
-        wing::put_u8(b_tbs_body, 4);
-        wing::put_bytes(b_tbs_body, "LEAF");
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 6);
+        core::put_u8(b_tbs_body, 0x13);
+        core::put_u8(b_tbs_body, 4);
+        core::put_bytes(b_tbs_body, "LEAF");
         // SPKI
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 42);
-        wing::put_u8(b_tbs_body, 0x30);
-        wing::put_u8(b_tbs_body, 5);
-        wing::put_u8(b_tbs_body, 0x06);
-        wing::put_u8(b_tbs_body, 3);
-        wing::put_bytes(b_tbs_body, "\x2B\x65\x70");
-        wing::put_u8(b_tbs_body, 0x03);
-        wing::put_u8(b_tbs_body, 33);
-        wing::put_u8(b_tbs_body, 0x00);
-        wing::put_bytes(b_tbs_body, leaf_kp.public_key[..]);
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 42);
+        core::put_u8(b_tbs_body, 0x30);
+        core::put_u8(b_tbs_body, 5);
+        core::put_u8(b_tbs_body, 0x06);
+        core::put_u8(b_tbs_body, 3);
+        core::put_bytes(b_tbs_body, "\x2B\x65\x70");
+        core::put_u8(b_tbs_body, 0x03);
+        core::put_u8(b_tbs_body, 33);
+        core::put_u8(b_tbs_body, 0x00);
+        core::put_bytes(b_tbs_body, leaf_kp.public_key[..]);
 
         // Wrap in TBSCertificate SEQUENCE
-        var b_tbs_full = wing::builder_init();
-        wing::put_u8(b_tbs_full, 0x30);
-        wing::put_u8(b_tbs_full, b_tbs_body.buf.len as u8);
-        wing::put_bytes(b_tbs_full, b_tbs_body.buf[..]);
+        var b_tbs_full = core::builder_init();
+        core::put_u8(b_tbs_full, 0x30);
+        core::put_u8(b_tbs_full, b_tbs_body.buf.len as u8);
+        core::put_bytes(b_tbs_full, b_tbs_body.buf[..]);
 
         // Compute Ed25519 signature over TBSCertificate DER
         let leaf_sig = core::ed25519_sign(root_kp.seed, b_tbs_full.buf[..]);
 
         // Build outer Certificate SEQUENCE
-        var b_cert_inner = wing::builder_init();
-        wing::put_bytes(b_cert_inner, b_tbs_full.buf[..]);
+        var b_cert_inner = core::builder_init();
+        core::put_bytes(b_cert_inner, b_tbs_full.buf[..]);
         // outer signatureAlgorithm
-        wing::put_u8(b_cert_inner, 0x30);
-        wing::put_u8(b_cert_inner, 5);
-        wing::put_u8(b_cert_inner, 0x06);
-        wing::put_u8(b_cert_inner, 3);
-        wing::put_bytes(b_cert_inner, "\x2B\x65\x70");
+        core::put_u8(b_cert_inner, 0x30);
+        core::put_u8(b_cert_inner, 5);
+        core::put_u8(b_cert_inner, 0x06);
+        core::put_u8(b_cert_inner, 3);
+        core::put_bytes(b_cert_inner, "\x2B\x65\x70");
         // outer signatureValue (BIT STRING: len 65 = 1 unused bits octet + 64 sig bytes)
-        wing::put_u8(b_cert_inner, 0x03);
-        wing::put_u8(b_cert_inner, 65);
-        wing::put_u8(b_cert_inner, 0x00);
-        wing::put_bytes(b_cert_inner, leaf_sig[..]);
+        core::put_u8(b_cert_inner, 0x03);
+        core::put_u8(b_cert_inner, 65);
+        core::put_u8(b_cert_inner, 0x00);
+        core::put_bytes(b_cert_inner, leaf_sig[..]);
 
-        var b_leaf_cert = wing::builder_init();
-        wing::put_u8(b_leaf_cert, 0x30);
-        wing::put_u8(b_leaf_cert, 0x81);
-        wing::put_u8(b_leaf_cert, b_cert_inner.buf.len as u8);
-        wing::put_bytes(b_leaf_cert, b_cert_inner.buf[..]);
+        var b_leaf_cert = core::builder_init();
+        core::put_u8(b_leaf_cert, 0x30);
+        core::put_u8(b_leaf_cert, 0x81);
+        core::put_u8(b_leaf_cert, b_cert_inner.buf.len as u8);
+        core::put_bytes(b_leaf_cert, b_cert_inner.buf[..]);
 
         // Parse leaf certificate with zero-copy DER parser
         var parsed_leaf = wing::ParsedCert { .. };
@@ -2691,22 +2691,22 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
 fn test_handshake_and_ech_security(t: lit::T&) {
     t.run("TLS-25: RFC 8446 §4.2 Duplicate Extension Rejection & Block Bounds") { sub =>
         // 1. Construct valid extensions block with distinct extension IDs
-        var b_valid = wing::builder_init();
-        wing::start_u16_prefix(b_valid); // block len
+        var b_valid = core::builder_init();
+        core::start_u16_prefix(b_valid); // block len
 
         // Extension 1: EXT_SERVER_NAME (0)
-        wing::put_u16(b_valid, rfc::TLS_EXT_SERVER_NAME);
-        wing::start_u16_prefix(b_valid);
-        wing::put_bytes(b_valid, "mock_sni");
-        wing::finish_u16_prefix(b_valid);
+        core::put_u16(b_valid, rfc::TLS_EXT_SERVER_NAME);
+        core::start_u16_prefix(b_valid);
+        core::put_bytes(b_valid, "mock_sni");
+        core::finish_u16_prefix(b_valid);
 
         // Extension 2: EXT_SUPPORTED_VERSIONS (43)
-        wing::put_u16(b_valid, rfc::TLS_EXT_SUPPORTED_VERSIONS);
-        wing::start_u16_prefix(b_valid);
-        wing::put_bytes(b_valid, "mock_ver");
-        wing::finish_u16_prefix(b_valid);
+        core::put_u16(b_valid, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+        core::start_u16_prefix(b_valid);
+        core::put_bytes(b_valid, "mock_ver");
+        core::finish_u16_prefix(b_valid);
 
-        wing::finish_u16_prefix(b_valid);
+        core::finish_u16_prefix(b_valid);
 
         var entries: wing::TlsExtensionEntry[..32] = [];
         let ok_val = wing::parse_extensions_block(b_valid.buf[..], entries);
@@ -2714,29 +2714,29 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_eq(entries.len, 2, "2 extensions parsed");
 
         // 2. Duplicate extension attack (RFC 8446 §4.2 violation)
-        var b_dup = wing::builder_init();
-        wing::start_u16_prefix(b_dup);
+        var b_dup = core::builder_init();
+        core::start_u16_prefix(b_dup);
 
-        wing::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME);
-        wing::start_u16_prefix(b_dup);
-        wing::put_bytes(b_dup, "mock_sni_1");
-        wing::finish_u16_prefix(b_dup);
+        core::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME);
+        core::start_u16_prefix(b_dup);
+        core::put_bytes(b_dup, "mock_sni_1");
+        core::finish_u16_prefix(b_dup);
 
-        wing::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME); // DUPLICATE!
-        wing::start_u16_prefix(b_dup);
-        wing::put_bytes(b_dup, "mock_sni_2");
-        wing::finish_u16_prefix(b_dup);
+        core::put_u16(b_dup, rfc::TLS_EXT_SERVER_NAME); // DUPLICATE!
+        core::start_u16_prefix(b_dup);
+        core::put_bytes(b_dup, "mock_sni_2");
+        core::finish_u16_prefix(b_dup);
 
-        wing::finish_u16_prefix(b_dup);
+        core::finish_u16_prefix(b_dup);
 
         var entries_dup: wing::TlsExtensionEntry[..32] = [];
         let ok_dup = wing::parse_extensions_block(b_dup.buf[..], entries_dup);
         sub.assert_false(ok_dup, "duplicate extension MUST be strictly rejected per RFC 8446 Section 4.2");
 
         // 3. Trailing garbage after extensions block
-        var b_trail = wing::builder_init();
-        wing::put_bytes(b_trail, b_valid.buf[..]);
-        wing::put_u8(b_trail, 0xFF); // trailing unparsed byte
+        var b_trail = core::builder_init();
+        core::put_bytes(b_trail, b_valid.buf[..]);
+        core::put_u8(b_trail, 0xFF); // trailing unparsed byte
         var entries_trail: wing::TlsExtensionEntry[..32] = [];
         let ok_trail = wing::parse_extensions_block(b_trail.buf[..], entries_trail);
         sub.assert_false(ok_trail, "trailing garbage after extensions block rejected");
@@ -2744,105 +2744,105 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
     t.run("TLS-26: RFC 6066 SNI Strict Boundary, Duplicate HostName & Dot Format Invariants") { sub =>
         // 1. Duplicate host_name in single ServerNameList (RFC 6066 §3 violation)
-        var b_dup = wing::builder_init();
-        wing::start_u16_prefix(b_dup); // list
+        var b_dup = core::builder_init();
+        core::start_u16_prefix(b_dup); // list
         // Name 1
-        wing::put_u8(b_dup, 0); // host_name
-        wing::start_u16_prefix(b_dup);
-        wing::put_bytes(b_dup, "a.example.com");
-        wing::finish_u16_prefix(b_dup);
+        core::put_u8(b_dup, 0); // host_name
+        core::start_u16_prefix(b_dup);
+        core::put_bytes(b_dup, "a.example.com");
+        core::finish_u16_prefix(b_dup);
         // Name 2 (duplicate host_name!)
-        wing::put_u8(b_dup, 0); // host_name
-        wing::start_u16_prefix(b_dup);
-        wing::put_bytes(b_dup, "b.example.com");
-        wing::finish_u16_prefix(b_dup);
-        wing::finish_u16_prefix(b_dup);
+        core::put_u8(b_dup, 0); // host_name
+        core::start_u16_prefix(b_dup);
+        core::put_bytes(b_dup, "b.example.com");
+        core::finish_u16_prefix(b_dup);
+        core::finish_u16_prefix(b_dup);
 
         var sni_out: u8[..255] = [];
         let ok_dup = wing::parse_sni_extension(b_dup.buf[..], sni_out);
         sub.assert_false(ok_dup, "duplicate host_name in ServerNameList strictly rejected");
 
         // 2. Empty ServerNameList (RFC 6066 §3 server_name_list<1..2^16-1>)
-        var b_empty = wing::builder_init();
-        wing::start_u16_prefix(b_empty);
-        wing::finish_u16_prefix(b_empty); // length 0
+        var b_empty = core::builder_init();
+        core::start_u16_prefix(b_empty);
+        core::finish_u16_prefix(b_empty); // length 0
         let ok_empty = wing::parse_sni_extension(b_empty.buf[..], sni_out);
         sub.assert_false(ok_empty, "empty ServerNameList strictly rejected");
 
         // 3. Trailing dot in host_name ("example.com.")
-        var b_dot = wing::builder_init();
-        wing::start_u16_prefix(b_dot);
-        wing::put_u8(b_dot, 0);
-        wing::start_u16_prefix(b_dot);
-        wing::put_bytes(b_dot, "example.com.");
-        wing::finish_u16_prefix(b_dot);
-        wing::finish_u16_prefix(b_dot);
+        var b_dot = core::builder_init();
+        core::start_u16_prefix(b_dot);
+        core::put_u8(b_dot, 0);
+        core::start_u16_prefix(b_dot);
+        core::put_bytes(b_dot, "example.com.");
+        core::finish_u16_prefix(b_dot);
+        core::finish_u16_prefix(b_dot);
         let ok_dot = wing::parse_sni_extension(b_dot.buf[..], sni_out);
         sub.assert_false(ok_dot, "trailing dot in SNI rejected per RFC 6066");
 
         // 4. Leading dot in host_name (".example.com")
-        var b_ldot = wing::builder_init();
-        wing::start_u16_prefix(b_ldot);
-        wing::put_u8(b_ldot, 0);
-        wing::start_u16_prefix(b_ldot);
-        wing::put_bytes(b_ldot, ".example.com");
-        wing::finish_u16_prefix(b_ldot);
-        wing::finish_u16_prefix(b_ldot);
+        var b_ldot = core::builder_init();
+        core::start_u16_prefix(b_ldot);
+        core::put_u8(b_ldot, 0);
+        core::start_u16_prefix(b_ldot);
+        core::put_bytes(b_ldot, ".example.com");
+        core::finish_u16_prefix(b_ldot);
+        core::finish_u16_prefix(b_ldot);
         let ok_ldot = wing::parse_sni_extension(b_ldot.buf[..], sni_out);
         sub.assert_false(ok_ldot, "leading dot in SNI rejected");
 
         // 5. Consecutive dots in host_name ("foo..bar.com")
-        var b_cdots = wing::builder_init();
-        wing::start_u16_prefix(b_cdots);
-        wing::put_u8(b_cdots, 0);
-        wing::start_u16_prefix(b_cdots);
-        wing::put_bytes(b_cdots, "foo..bar.com");
-        wing::finish_u16_prefix(b_cdots);
-        wing::finish_u16_prefix(b_cdots);
+        var b_cdots = core::builder_init();
+        core::start_u16_prefix(b_cdots);
+        core::put_u8(b_cdots, 0);
+        core::start_u16_prefix(b_cdots);
+        core::put_bytes(b_cdots, "foo..bar.com");
+        core::finish_u16_prefix(b_cdots);
+        core::finish_u16_prefix(b_cdots);
         let ok_cdots = wing::parse_sni_extension(b_cdots.buf[..], sni_out);
         sub.assert_false(ok_cdots, "consecutive dots in SNI rejected");
 
         // 6. Trailing garbage in extension_data after server_name_list
-        var b_trail = wing::builder_init();
-        wing::start_u16_prefix(b_trail);
-        wing::put_u8(b_trail, 0);
-        wing::start_u16_prefix(b_trail);
-        wing::put_bytes(b_trail, "example.com");
-        wing::finish_u16_prefix(b_trail);
-        wing::finish_u16_prefix(b_trail);
-        wing::put_u8(b_trail, 0xEE); // trailing unparsed byte
+        var b_trail = core::builder_init();
+        core::start_u16_prefix(b_trail);
+        core::put_u8(b_trail, 0);
+        core::start_u16_prefix(b_trail);
+        core::put_bytes(b_trail, "example.com");
+        core::finish_u16_prefix(b_trail);
+        core::finish_u16_prefix(b_trail);
+        core::put_u8(b_trail, 0xEE); // trailing unparsed byte
         let ok_trail = wing::parse_sni_extension(b_trail.buf[..], sni_out);
         sub.assert_false(ok_trail, "trailing garbage in SNI extension rejected");
     };
 
     t.run("TLS-27: RFC 7301 ALPN Empty List, Zero-Length Name & Trailing Garbage Defenses") { sub =>
         // 1. Empty ProtocolNameList (length 0, RFC 7301 §3.1 violation)
-        var b_empty = wing::builder_init();
-        wing::start_u16_prefix(b_empty);
-        wing::finish_u16_prefix(b_empty); // len 0
+        var b_empty = core::builder_init();
+        core::start_u16_prefix(b_empty);
+        core::finish_u16_prefix(b_empty); // len 0
         sub.assert_false(wing::validate_alpn_extension(b_empty.buf[..]), "empty ALPN list rejected by validator");
         let neg_empty = wing::negotiate_alpn(b_empty.buf[..], false);
         sub.assert_true(neg_empty == wing::NegotiatedAlpn.None, "empty ALPN list negotiates None");
 
         // 2. Protocol name with 0-length (empty string "")
-        var b_zlen = wing::builder_init();
-        wing::start_u16_prefix(b_zlen);
-        wing::start_u8_prefix(b_zlen);
+        var b_zlen = core::builder_init();
+        core::start_u16_prefix(b_zlen);
+        core::start_u8_prefix(b_zlen);
         // 0-length name
-        wing::finish_u8_prefix(b_zlen);
-        wing::finish_u16_prefix(b_zlen);
+        core::finish_u8_prefix(b_zlen);
+        core::finish_u16_prefix(b_zlen);
         sub.assert_false(wing::validate_alpn_extension(b_zlen.buf[..]), "0-length protocol name rejected");
         let neg_zlen = wing::negotiate_alpn(b_zlen.buf[..], false);
         sub.assert_true(neg_zlen == wing::NegotiatedAlpn.None, "0-length protocol name negotiates None");
 
         // 3. Trailing garbage in ALPN extension
-        var b_valid = wing::builder_init();
-        wing::start_u16_prefix(b_valid);
-        wing::start_u8_prefix(b_valid);
-        wing::put_bytes(b_valid, "h2");
-        wing::finish_u8_prefix(b_valid);
-        wing::finish_u16_prefix(b_valid);
-        wing::put_u8(b_valid, 0x99); // trailing garbage
+        var b_valid = core::builder_init();
+        core::start_u16_prefix(b_valid);
+        core::start_u8_prefix(b_valid);
+        core::put_bytes(b_valid, "h2");
+        core::finish_u8_prefix(b_valid);
+        core::finish_u16_prefix(b_valid);
+        core::put_u8(b_valid, 0x99); // trailing garbage
         sub.assert_false(wing::validate_alpn_extension(b_valid.buf[..]), "trailing bytes in ALPN rejected");
         let neg_trail = wing::negotiate_alpn(b_valid.buf[..], false);
         sub.assert_true(neg_trail == wing::NegotiatedAlpn.None, "trailing bytes in ALPN negotiates None");
@@ -2850,42 +2850,42 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
     t.run("TLS-28: RFC 8446 Supported Versions Validation & Strict TLS 1.3 Negotiation") { sub =>
         // 1. ClientHello offering TLS 1.3 (0x0304) and TLS 1.2 (0x0303)
-        var b_ch = wing::builder_init();
-        wing::start_u8_prefix(b_ch); // 1-byte length prefix
-        wing::put_u16(b_ch, 0x0304); // TLS 1.3
-        wing::put_u16(b_ch, 0x0303); // TLS 1.2
-        wing::finish_u8_prefix(b_ch);
+        var b_ch = core::builder_init();
+        core::start_u8_prefix(b_ch); // 1-byte length prefix
+        core::put_u16(b_ch, 0x0304); // TLS 1.3
+        core::put_u16(b_ch, 0x0303); // TLS 1.2
+        core::finish_u8_prefix(b_ch);
 
         let has_tls13, ok_ch = wing::parse_client_supported_versions(b_ch.buf[..]);
         sub.assert_true(ok_ch, "ClientHello supported_versions parsed");
         sub.assert_true(has_tls13, "TLS 1.3 supported");
 
         // 2. ClientHello offering only legacy versions (0x0303 TLS 1.2, 0x0301 TLS 1.0)
-        var b_legacy = wing::builder_init();
-        wing::start_u8_prefix(b_legacy);
-        wing::put_u16(b_legacy, 0x0303);
-        wing::put_u16(b_legacy, 0x0301);
-        wing::finish_u8_prefix(b_legacy);
+        var b_legacy = core::builder_init();
+        core::start_u8_prefix(b_legacy);
+        core::put_u16(b_legacy, 0x0303);
+        core::put_u16(b_legacy, 0x0301);
+        core::finish_u8_prefix(b_legacy);
 
         let has_tls13_leg, ok_leg = wing::parse_client_supported_versions(b_legacy.buf[..]);
         sub.assert_true(ok_leg, "legacy list parses");
         sub.assert_false(has_tls13_leg, "TLS 1.3 NOT supported in legacy-only ClientHello");
 
         // 3. ClientHello odd length (RFC 8446 §4.2.1 violation: each version is 2 bytes)
-        var b_odd = wing::builder_init();
-        wing::put_u8(b_odd, 3); // odd length 3
-        wing::put_u8(b_odd, 0x03);
-        wing::put_u8(b_odd, 0x04);
-        wing::put_u8(b_odd, 0x03);
+        var b_odd = core::builder_init();
+        core::put_u8(b_odd, 3); // odd length 3
+        core::put_u8(b_odd, 0x03);
+        core::put_u8(b_odd, 0x04);
+        core::put_u8(b_odd, 0x03);
         let _, ok_odd = wing::parse_client_supported_versions(b_odd.buf[..]);
         sub.assert_false(ok_odd, "odd length supported_versions rejected");
 
         // 4. ClientHello duplicate versions rejected
-        var b_dup = wing::builder_init();
-        wing::start_u8_prefix(b_dup);
-        wing::put_u16(b_dup, 0x0304);
-        wing::put_u16(b_dup, 0x0304); // duplicate!
-        wing::finish_u8_prefix(b_dup);
+        var b_dup = core::builder_init();
+        core::start_u8_prefix(b_dup);
+        core::put_u16(b_dup, 0x0304);
+        core::put_u16(b_dup, 0x0304); // duplicate!
+        core::finish_u8_prefix(b_dup);
         let _, ok_dup = wing::parse_client_supported_versions(b_dup.buf[..]);
         sub.assert_false(ok_dup, "duplicate version in ClientHello supported_versions rejected");
 
@@ -2955,36 +2955,36 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
     t.run("TLS-30: RFC 9849 ECHConfig Parsing, Downgrade Protection & Skipped Versions") { sub =>
         // Helper to build a valid RFC 9849 ECHConfig wire payload
-        var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849); // version 0xFE0D
-        wing::start_u16_prefix(b_cfg); // length prefix for contents
+        var b_cfg = core::builder_init();
+        core::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849); // version 0xFE0D
+        core::start_u16_prefix(b_cfg); // length prefix for contents
 
-        wing::put_u8(b_cfg, 0x01); // config_id
-        wing::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256); // kem_id (0x0020)
+        core::put_u8(b_cfg, 0x01); // config_id
+        core::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256); // kem_id (0x0020)
 
         // public_key<1..2^16-1>: 32 bytes
-        wing::start_u16_prefix(b_cfg);
-        for i in 32 { wing::put_u8(b_cfg, (i + 1) as u8); }
-        wing::finish_u16_prefix(b_cfg);
+        core::start_u16_prefix(b_cfg);
+        for i in 32 { core::put_u8(b_cfg, (i + 1) as u8); }
+        core::finish_u16_prefix(b_cfg);
 
         // cipher_suites<4..2^16-1>: KDF HKDF-SHA256 (0x0001), AEAD AES-128-GCM (0x0001)
-        wing::start_u16_prefix(b_cfg);
-        wing::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
-        wing::finish_u16_prefix(b_cfg);
+        core::start_u16_prefix(b_cfg);
+        core::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
+        core::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
+        core::finish_u16_prefix(b_cfg);
 
-        wing::put_u8(b_cfg, 64); // maximum_name_length
+        core::put_u8(b_cfg, 64); // maximum_name_length
 
         // public_name: "public.cloudflare.com"
-        wing::start_u8_prefix(b_cfg);
-        wing::put_bytes(b_cfg, "public.cloudflare.com");
-        wing::finish_u8_prefix(b_cfg);
+        core::start_u8_prefix(b_cfg);
+        core::put_bytes(b_cfg, "public.cloudflare.com");
+        core::finish_u8_prefix(b_cfg);
 
         // extensions: 0 length
-        wing::start_u16_prefix(b_cfg);
-        wing::finish_u16_prefix(b_cfg);
+        core::start_u16_prefix(b_cfg);
+        core::finish_u16_prefix(b_cfg);
 
-        wing::finish_u16_prefix(b_cfg); // end contents
+        core::finish_u16_prefix(b_cfg); // end contents
 
         // 1. Parsing genuine ECHConfig succeeds
         var cfg = wing::EchConfig { .. };
@@ -2996,8 +2996,8 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_bytes_eq(cfg.public_name[..], "public.cloudflare.com", "public_name matches");
 
         // 2. Unsupported ECH version (e.g. 0xFE0C or 0x0001) in parse_ech_config rejected
-        var b_badver = wing::builder_init();
-        wing::put_bytes(b_badver, b_cfg.buf[..]);
+        var b_badver = core::builder_init();
+        core::put_bytes(b_badver, b_cfg.buf[..]);
         b_badver.buf[0] = 0xFE;
         b_badver.buf[1] = 0x0C; // unsupported version
         var cfg_bad = wing::EchConfig { .. };
@@ -3005,62 +3005,62 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_false(ok_badver, "unsupported ECHConfig version strictly rejected in parse_ech_config");
 
         // 3. ECHConfig with empty public_name (RFC 9849 public_name<1..255>) rejected
-        var b_emptypub = wing::builder_init();
-        wing::put_u16(b_emptypub, rfc::ECH_VERSION_RFC9849);
-        wing::start_u16_prefix(b_emptypub);
-        wing::put_u8(b_emptypub, 0x01);
-        wing::put_u16(b_emptypub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
-        wing::start_u16_prefix(b_emptypub);
-        for i in 32 { wing::put_u8(b_emptypub, 0x11); }
-        wing::finish_u16_prefix(b_emptypub);
-        wing::start_u16_prefix(b_emptypub);
-        wing::put_u16(b_emptypub, rfc::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_emptypub, rfc::HPKE_AEAD_AES_128_GCM);
-        wing::finish_u16_prefix(b_emptypub);
-        wing::put_u8(b_emptypub, 64);
-        wing::put_u8(b_emptypub, 0); // 0-length public_name!
-        wing::start_u16_prefix(b_emptypub);
-        wing::finish_u16_prefix(b_emptypub);
-        wing::finish_u16_prefix(b_emptypub);
+        var b_emptypub = core::builder_init();
+        core::put_u16(b_emptypub, rfc::ECH_VERSION_RFC9849);
+        core::start_u16_prefix(b_emptypub);
+        core::put_u8(b_emptypub, 0x01);
+        core::put_u16(b_emptypub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        core::start_u16_prefix(b_emptypub);
+        for i in 32 { core::put_u8(b_emptypub, 0x11); }
+        core::finish_u16_prefix(b_emptypub);
+        core::start_u16_prefix(b_emptypub);
+        core::put_u16(b_emptypub, rfc::HPKE_KDF_HKDF_SHA256);
+        core::put_u16(b_emptypub, rfc::HPKE_AEAD_AES_128_GCM);
+        core::finish_u16_prefix(b_emptypub);
+        core::put_u8(b_emptypub, 64);
+        core::put_u8(b_emptypub, 0); // 0-length public_name!
+        core::start_u16_prefix(b_emptypub);
+        core::finish_u16_prefix(b_emptypub);
+        core::finish_u16_prefix(b_emptypub);
 
         let ok_emptypub = wing::parse_ech_config(b_emptypub.buf[..], cfg_bad);
         sub.assert_false(ok_emptypub, "empty public_name in ECHConfig rejected");
 
         // 4. ECHConfig with IP literal public_name rejected
-        var b_ippub = wing::builder_init();
-        wing::put_u16(b_ippub, rfc::ECH_VERSION_RFC9849);
-        wing::start_u16_prefix(b_ippub);
-        wing::put_u8(b_ippub, 0x01);
-        wing::put_u16(b_ippub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
-        wing::start_u16_prefix(b_ippub);
-        for i in 32 { wing::put_u8(b_ippub, 0x11); }
-        wing::finish_u16_prefix(b_ippub);
-        wing::start_u16_prefix(b_ippub);
-        wing::put_u16(b_ippub, rfc::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_ippub, rfc::HPKE_AEAD_AES_128_GCM);
-        wing::finish_u16_prefix(b_ippub);
-        wing::put_u8(b_ippub, 64);
-        wing::start_u8_prefix(b_ippub);
-        wing::put_bytes(b_ippub, "192.168.1.1"); // IP literal!
-        wing::finish_u8_prefix(b_ippub);
-        wing::start_u16_prefix(b_ippub);
-        wing::finish_u16_prefix(b_ippub);
-        wing::finish_u16_prefix(b_ippub);
+        var b_ippub = core::builder_init();
+        core::put_u16(b_ippub, rfc::ECH_VERSION_RFC9849);
+        core::start_u16_prefix(b_ippub);
+        core::put_u8(b_ippub, 0x01);
+        core::put_u16(b_ippub, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        core::start_u16_prefix(b_ippub);
+        for i in 32 { core::put_u8(b_ippub, 0x11); }
+        core::finish_u16_prefix(b_ippub);
+        core::start_u16_prefix(b_ippub);
+        core::put_u16(b_ippub, rfc::HPKE_KDF_HKDF_SHA256);
+        core::put_u16(b_ippub, rfc::HPKE_AEAD_AES_128_GCM);
+        core::finish_u16_prefix(b_ippub);
+        core::put_u8(b_ippub, 64);
+        core::start_u8_prefix(b_ippub);
+        core::put_bytes(b_ippub, "192.168.1.1"); // IP literal!
+        core::finish_u8_prefix(b_ippub);
+        core::start_u16_prefix(b_ippub);
+        core::finish_u16_prefix(b_ippub);
+        core::finish_u16_prefix(b_ippub);
 
         let ok_ippub = wing::parse_ech_config(b_ippub.buf[..], cfg_bad);
         sub.assert_false(ok_ippub, "IP literal in ECHConfig public_name rejected");
 
         // 5. ECHConfigList containing an unsupported version entry before an RFC 9849 entry:
         // RFC 9849 §4: Client MUST ignore unsupported versions and successfully parse supported versions.
-        var b_list = wing::builder_init();
-        wing::start_u16_prefix(b_list); // list length
+        var b_list = core::builder_init();
+        core::start_u16_prefix(b_list); // list length
         // Entry 1: unsupported version 0x9999 (len 6)
-        wing::put_u16(b_list, 0x9999);
-        wing::put_u16(b_list, 6);
-        wing::put_bytes(b_list, "ignore");
+        core::put_u16(b_list, 0x9999);
+        core::put_u16(b_list, 6);
+        core::put_bytes(b_list, "ignore");
         // Entry 2: valid RFC 9849 config
-        wing::put_bytes(b_list, b_cfg.buf[..]);
-        wing::finish_u16_prefix(b_list);
+        core::put_bytes(b_list, b_cfg.buf[..]);
+        core::finish_u16_prefix(b_list);
 
         var cfg_list = wing::EchConfigList { .. };
         let ok_list = wing::parse_ech_config_list(b_list.buf[..], cfg_list);
@@ -3069,9 +3069,9 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_eq(cfg_list.configs[0].version, rfc::ECH_VERSION_RFC9849, "parsed entry is RFC 9849");
 
         // 6. ECHConfigList with truncated trailing bytes rejected
-        var b_trunc = wing::builder_init();
-        wing::put_bytes(b_trunc, b_list.buf[..]);
-        wing::put_u8(b_trunc, 0xAA); // trailing byte after list
+        var b_trunc = core::builder_init();
+        core::put_bytes(b_trunc, b_list.buf[..]);
+        core::put_u8(b_trunc, 0xAA); // trailing byte after list
         var cfg_list_bad = wing::EchConfigList { .. };
         let ok_trunc_list = wing::parse_ech_config_list(b_trunc.buf[..], cfg_list_bad);
         sub.assert_false(ok_trunc_list, "ECHConfigList with trailing garbage rejected");
@@ -3299,31 +3299,31 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         );
 
         // 2. Validate parse_and_validate_ech_retry_configs
-        var b_cfg = wing::builder_init();
-        wing::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849);
-        wing::start_u16_prefix(b_cfg);
-        wing::put_u8(b_cfg, 0x02); // config_id
-        wing::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
-        wing::start_u16_prefix(b_cfg);
-        for i in 32 { wing::put_u8(b_cfg, 0x22); }
-        wing::finish_u16_prefix(b_cfg);
-        wing::start_u16_prefix(b_cfg);
-        wing::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
-        wing::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
-        wing::finish_u16_prefix(b_cfg);
-        wing::put_u8(b_cfg, 64);
-        wing::start_u8_prefix(b_cfg);
-        wing::put_bytes(b_cfg, "retry.cloudflare.com");
-        wing::finish_u8_prefix(b_cfg);
-        wing::start_u16_prefix(b_cfg);
-        wing::finish_u16_prefix(b_cfg);
-        wing::finish_u16_prefix(b_cfg);
+        var b_cfg = core::builder_init();
+        core::put_u16(b_cfg, rfc::ECH_VERSION_RFC9849);
+        core::start_u16_prefix(b_cfg);
+        core::put_u8(b_cfg, 0x02); // config_id
+        core::put_u16(b_cfg, rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256);
+        core::start_u16_prefix(b_cfg);
+        for i in 32 { core::put_u8(b_cfg, 0x22); }
+        core::finish_u16_prefix(b_cfg);
+        core::start_u16_prefix(b_cfg);
+        core::put_u16(b_cfg, rfc::HPKE_KDF_HKDF_SHA256);
+        core::put_u16(b_cfg, rfc::HPKE_AEAD_AES_128_GCM);
+        core::finish_u16_prefix(b_cfg);
+        core::put_u8(b_cfg, 64);
+        core::start_u8_prefix(b_cfg);
+        core::put_bytes(b_cfg, "retry.cloudflare.com");
+        core::finish_u8_prefix(b_cfg);
+        core::start_u16_prefix(b_cfg);
+        core::finish_u16_prefix(b_cfg);
+        core::finish_u16_prefix(b_cfg);
 
         // Wrap into ECHConfigList
-        var b_list = wing::builder_init();
-        wing::start_u16_prefix(b_list);
-        wing::put_bytes(b_list, b_cfg.buf[..]);
-        wing::finish_u16_prefix(b_list);
+        var b_list = core::builder_init();
+        core::start_u16_prefix(b_list);
+        core::put_bytes(b_list, b_cfg.buf[..]);
+        core::finish_u16_prefix(b_list);
 
         var out_rc = wing::EchConfigList { .. };
         sub.assert_true(

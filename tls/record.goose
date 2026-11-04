@@ -150,9 +150,8 @@ fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool {
 // Example:
 //   raw = [0x17, 0x03], cursor = 0
 //   returns: out = 0x17, ok = true, cursor = 1
-// crap:ignore
 fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
-    guard cursor >= 0 && cursor + 1 <= raw.len else {
+    guard cursor >= 0 && cursor < raw.len else {
         return false;
     }
     out = raw[cursor];
@@ -160,19 +159,46 @@ fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
     return true;
 }
 
+// Reads a single unsigned byte directly from `raw` at `cursor` (Rule 9 value return).
+//
+// Example:
+//   raw = [0x17, 0x03], cursor = 0
+//   returns: val = 0x17, ok = true, cursor = 1
+fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
+    guard cursor >= 0 && cursor < raw.len else {
+        return 0, false;
+    }
+    let val = raw[cursor];
+    cursor += 1;
+    return val, true;
+}
+
 // Reads a big-endian 16-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 2.
 //
 // Example:
 //   raw = [0x03, 0x03], cursor = 0
 //   returns: out = 0x0303, ok = true, cursor = 2
-// crap:ignore
 fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
     guard cursor >= 0 && cursor + 2 <= raw.len else {
         return false;
     }
-    out = ((raw[cursor] as u16) << 8) | raw[cursor + 1];
+    out = core::read_be_u16(raw, cursor);
     cursor += 2;
     return true;
+}
+
+// Reads a big-endian 16-bit integer directly from `raw` at `cursor` (Rule 9 value return).
+//
+// Example:
+//   raw = [0x03, 0x03], cursor = 0
+//   returns: val = 0x0303, ok = true, cursor = 2
+fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
+    guard cursor >= 0 && cursor + 2 <= raw.len else {
+        return 0, false;
+    }
+    let val = core::read_be_u16(raw, cursor);
+    cursor += 2;
+    return val, true;
 }
 
 // Reads a big-endian 24-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 3.
@@ -180,14 +206,27 @@ fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
 // Example:
 //   raw = [0x00, 0x01, 0x02], cursor = 0
 //   returns: out = 0x000102, ok = true, cursor = 3
-// crap:ignore
 fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
     guard cursor >= 0 && cursor + 3 <= raw.len else {
         return false;
     }
-    out = ((raw[cursor] as u32) << 16) | ((raw[cursor + 1] as u32) << 8) | raw[cursor + 2];
+    out = core::read_be_u24(raw, cursor);
     cursor += 3;
     return true;
+}
+
+// Reads a big-endian 24-bit integer directly from `raw` at `cursor` (Rule 9 value return).
+//
+// Example:
+//   raw = [0x00, 0x01, 0x02], cursor = 0
+//   returns: val = 0x000102, ok = true, cursor = 3
+fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
+    guard cursor >= 0 && cursor + 3 <= raw.len else {
+        return 0, false;
+    }
+    let val = core::read_be_u24(raw, cursor);
+    cursor += 3;
+    return val, true;
 }
 
 // Reads a big-endian 32-bit unsigned integer from `raw` at `cursor` and advances `cursor` by 4.
@@ -195,17 +234,27 @@ fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
 //   returns: out = 0x01020304, ok = true, cursor = 4
-// crap:ignore
 fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
     guard cursor >= 0 && cursor + 4 <= raw.len else {
         return false;
     }
-    out = ((raw[cursor] as u32) << 24) |
-        ((raw[cursor + 1] as u32) << 16) |
-        ((raw[cursor + 2] as u32) << 8) |
-        raw[cursor + 3];
+    out = core::read_be_u32(raw, cursor);
     cursor += 4;
     return true;
+}
+
+// Reads a big-endian 32-bit integer directly from `raw` at `cursor` (Rule 9 value return).
+//
+// Example:
+//   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
+//   returns: val = 0x01020304, ok = true, cursor = 4
+fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
+    guard cursor >= 0 && cursor + 4 <= raw.len else {
+        return 0, false;
+    }
+    let val = core::read_be_u32(raw, cursor);
+    cursor += 4;
+    return val, true;
 }
 
 // Extracts a zero-copy slice of `count` bytes from `raw` at `cursor` and advances `cursor` by `count`.
@@ -213,7 +262,6 @@ fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = "hello", cursor = 1, count = 3
 //   returns: sub = "ell", ok = true, cursor = 4
-// crap:ignore
 fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
     guard count >= 0 && cursor >= 0 && cursor + count <= raw.len else {
         return raw[..0], false;
@@ -283,211 +331,9 @@ fn slice_get_u24_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:],
     return sub, true;
 }
 
-struct ByteCursor {
-    buf: const u8[:] = [],
-}
-
-inline fn cursor_from(buf: const u8[:]) -> ByteCursor {
-    return ByteCursor { buf: buf };
-}
-
-inline fn cursor_len(c: const ByteCursor&) -> i64 {
-    guard c.buf.len >= 0 else { return 0; }
-    return c.buf.len;
-}
-
-fn get_u8(c: ByteCursor&, out: u8&) -> bool {
-    if c.buf.len < 1 { return false; }
-    out = c.buf[0];
-    c.buf = c.buf[1..];
-    return true;
-}
-
-// crap:ignore
-fn get_u16(c: ByteCursor&, out: u16&) -> bool {
-    if c.buf.len < 2 { return false; }
-    out = ((c.buf[0] as u16) << 8) | c.buf[1];
-    c.buf = c.buf[2..];
-    return true;
-}
-
-// crap:ignore
-fn get_u24(c: ByteCursor&, out: u32&) -> bool {
-    if c.buf.len < 3 { return false; }
-    out = ((c.buf[0] as u32) << 16) | ((c.buf[1] as u32) << 8) | c.buf[2];
-    c.buf = c.buf[3..];
-    return true;
-}
-
-// crap:ignore
-fn get_u32(c: ByteCursor&, out: u32&) -> bool {
-    if c.buf.len < 4 { return false; }
-    out = ((c.buf[0] as u32) << 24) | ((c.buf[1] as u32) << 16) | ((c.buf[2] as u32) << 8) | c.buf[3];
-    c.buf = c.buf[4..];
-    return true;
-}
-
-fn get_bytes(c: ByteCursor&, out: ByteCursor&, count: i64) -> bool {
-    if count < 0 || c.buf.len < count { return false; }
-    out = ByteCursor { buf: c.buf[..count] };
-    c.buf = c.buf[count..];
-    return true;
-}
-
-fn get_u8_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
-    let saved = c.buf;
-    var length: u8 = 0;
-    if !get_u8(c, length) { return false; }
-    if !get_bytes(c, out, length) {
-        c.buf = saved;
-        return false;
-    }
-    return true;
-}
-
-fn get_u16_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
-    let saved = c.buf;
-    var length: u16 = 0;
-    if !get_u16(c, length) { return false; }
-    if !get_bytes(c, out, length) {
-        c.buf = saved;
-        return false;
-    }
-    return true;
-}
-
-fn get_u24_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
-    let saved = c.buf;
-    var length: u32 = 0;
-    if !get_u24(c, length) { return false; }
-    if !get_bytes(c, out, length) {
-        c.buf = saved;
-        return false;
-    }
-    return true;
-}
-
-// crap:ignore
-fn get_last_u8(c: ByteCursor&, out: u8&) -> bool {
-    let n = c.buf.len;
-    if n < 1 { return false; }
-    out = c.buf[n - 1];
-    c.buf = c.buf[..n - 1];
-    return true;
-}
-
-struct ByteBuilder {
-    offsets: i64[..8] = [],
-    buf:     u8[>..]  = [],
-}
-
-fn builder_init() -> ByteBuilder {
-    return ByteBuilder { offsets: [], buf: [] };
-}
-
-fn put_u8(b: ByteBuilder&, val: u8) {
-    b.buf.push(val);
-}
-
-fn put_u16(b: ByteBuilder&, val: u16) {
-    b.buf.push(((val >> 8) & 0xFF) as u8);
-    b.buf.push((val & 0xFF) as u8);
-}
-
-fn put_u24(b: ByteBuilder&, val: u32) {
-    b.buf.push(((val >> 16) & 0xFF) as u8);
-    b.buf.push(((val >> 8) & 0xFF) as u8);
-    b.buf.push((val & 0xFF) as u8);
-}
-
-fn put_u32(b: ByteBuilder&, val: u32) {
-    b.buf.push(((val >> 24) & 0xFF) as u8);
-    b.buf.push(((val >> 16) & 0xFF) as u8);
-    b.buf.push(((val >> 8) & 0xFF) as u8);
-    b.buf.push((val & 0xFF) as u8);
-}
-
-fn put_bytes(b: ByteBuilder&, data: const u8[:]) {
-    b.buf.append(data);
-}
-
-fn start_u8_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len >= b.offsets.cap { return false; }
-    b.offsets.push(b.buf.len);
-    b.buf.push(0);
-    return true;
-}
-
-// crap:ignore
-fn finish_u8_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len > 0 else { return false; }
-    let start = b.offsets[b.offsets.len - 1];
-    guard start >= 0 && start < b.buf.len else {
-        b.offsets.pop();
-        return false;
-    }
-    let body_len = b.buf.len - start - 1;
-    guard body_len >= 0 && body_len <= 255 else {
-        return false;
-    }
-    b.offsets.pop();
-    b.buf[start] = body_len as u8;
-    return true;
-}
-
-fn start_u16_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len >= b.offsets.cap { return false; }
-    b.offsets.push(b.buf.len);
-    b.buf.push(0);
-    b.buf.push(0);
-    return true;
-}
-
-// crap:ignore
-fn finish_u16_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len > 0 else { return false; }
-    let start = b.offsets[b.offsets.len - 1];
-    guard start >= 0 && start + 1 < b.buf.len else {
-        b.offsets.pop();
-        return false;
-    }
-    let body_len = b.buf.len - start - 2;
-    guard body_len >= 0 && body_len <= 65535 else {
-        return false;
-    }
-    b.offsets.pop();
-    b.buf[start] = ((body_len >> 8) & 0xFF) as u8;
-    b.buf[start + 1] = (body_len & 0xFF) as u8;
-    return true;
-}
-
-fn start_u24_prefix(b: ByteBuilder&) -> bool {
-    if b.offsets.len >= b.offsets.cap { return false; }
-    b.offsets.push(b.buf.len);
-    b.buf.push(0);
-    b.buf.push(0);
-    b.buf.push(0);
-    return true;
-}
-
-// crap:ignore
-fn finish_u24_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len > 0 else { return false; }
-    let start = b.offsets[b.offsets.len - 1];
-    guard start >= 0 && start + 2 < b.buf.len else {
-        b.offsets.pop();
-        return false;
-    }
-    let body_len = b.buf.len - start - 3;
-    guard body_len >= 0 && body_len <= 16777215 else {
-        return false;
-    }
-    b.offsets.pop();
-    b.buf[start] = ((body_len >> 16) & 0xFF) as u8;
-    b.buf[start + 1] = ((body_len >> 8) & 0xFF) as u8;
-    b.buf[start + 2] = (body_len & 0xFF) as u8;
-    return true;
-}
+// Re-export core streaming cursor and builder types into wing.
+type ByteCursor = core::ByteCursor;
+type ByteBuilder = core::ByteBuilder;
 
 // ---- TLS Record Layer Framing & Invariants (RFC 8446 Section 5) ---------
 
@@ -499,17 +345,20 @@ const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
-// crap:ignore
 fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
     var nonce: u8[12] = [0; 12];
     if seq_num == 0xFFFFFFFFFFFFFFFF {
         return nonce, false;
     }
     for i in 12 { nonce[i] = iv[i]; }
-    for i in 8 {
-        let b = ((seq_num >> ((7 - i) * 8)) & 0xFF) as u8;
-        nonce[4 + i] ^= b;
-    }
+    nonce[4] ^= ((seq_num >> 56) & 0xFF) as u8;
+    nonce[5] ^= ((seq_num >> 48) & 0xFF) as u8;
+    nonce[6] ^= ((seq_num >> 40) & 0xFF) as u8;
+    nonce[7] ^= ((seq_num >> 32) & 0xFF) as u8;
+    nonce[8] ^= ((seq_num >> 24) & 0xFF) as u8;
+    nonce[9] ^= ((seq_num >> 16) & 0xFF) as u8;
+    nonce[10] ^= ((seq_num >> 8) & 0xFF) as u8;
+    nonce[11] ^= (seq_num & 0xFF) as u8;
     return nonce, true;
 }
 
@@ -1073,7 +922,6 @@ struct RecordFilterState {
     ccs_count:                i32 = 0,
 }
 
-// crap:ignore
 fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert {
     guard payload_len >= 0 && payload_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return TlsAlert.RecordOverflow;
@@ -1127,7 +975,6 @@ fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u1
 // Example:
 //   hdr_bytes = [0x17, 0x03, 0x03, 0x00, 0x10]
 //   returns: content_type = 23, version = 0x0303, length = 16, alert = TlsAlert.CloseNotify, ok = true
-// crap:ignore
 fn parse_tls_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, TlsAlert, bool {
     var cursor: i64 = 0;
     return parse_tls_record_header_at(hdr_bytes, cursor);
@@ -1139,7 +986,6 @@ fn parse_tls_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, TlsAlert, bo
 // Example:
 //   raw = [0x17, 0x03, 0x03, 0x00, 0x10], cursor = 0
 //   returns: content_type = 23, version = 0x0303, length = 16, alert = TlsAlert.CloseNotify, ok = true, cursor = 5
-// crap:ignore
 fn parse_tls_record_header_at(
     raw:    const u8[:],
     cursor: i64&,
@@ -1190,7 +1036,6 @@ const MAX_CCS_RECORDS: i32 = 1;
 // 2. Flood protection (OpenSSL #10065 / CVE-2020-1967): at most 1 CCS record allowed during handshake.
 //    Any subsequent CCS record triggers UnexpectedMessage.
 // 3. Payload must be exactly 1 byte of value 0x01. If wrong length -> DecodeError; wrong value -> UnexpectedMessage.
-// crap:ignore
 fn check_change_cipher_spec_record(
     state:            RecordFilterState&,
     payload:          const u8[:],
@@ -1238,7 +1083,6 @@ enum QuicOutputEvent {
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
-// crap:ignore
 fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
     guard pn_offset > 0 else {
         return pkt[..0], false;
@@ -1303,7 +1147,6 @@ fn new_quic_crypto_stream() -> QuicCryptoStream {
 // - Out-of-order offset gap detection (returns false if offset > consumed_offset)
 // - Redundant duplicate frame detection (safely dropped if offset + len <= consumed_offset)
 // - Overlapping frame trimming (trims already received prefix)
-// crap:ignore
 fn quic_crypto_stream_ingest(
     stream: QuicCryptoStream&,
     offset: u64,

@@ -106,7 +106,7 @@ fn handle_tls_connection(conn: i64) {
                     // Extensions:
                     //   supported_versions (0x002B): [0x03, 0x04] (TLS 1.3)
                     //   key_share (0x0033)
-                    var sh_builder = wing::builder_init();
+                    var sh_builder = core::builder_init();
                     wing::put_u16(sh_builder, 0x0303); // Legacy version
 
                     // 32-byte server random

@@ -425,3 +425,48 @@ fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
     arr.append(slice);
     return true;
 }
+
+// ---- ByteCursor stream reader bridges --------------------------------------
+
+fn ::cursor_from(buf: const u8[:]) -> core::ByteCursor { return core::cursor_from(buf); }
+fn ::cursor_len(c: const core::ByteCursor&) -> i64 { return core::cursor_len(c); }
+fn ::get_u8(c: core::ByteCursor&, out: u8&) -> bool { return core::get_u8(c, out); }
+fn ::read_u8(c: core::ByteCursor&) -> u8, bool { return core::read_u8(c); }
+fn ::get_u16(c: core::ByteCursor&, out: u16&) -> bool { return core::get_u16(c, out); }
+fn ::read_u16(c: core::ByteCursor&) -> u16, bool { return core::read_u16(c); }
+fn ::get_u24(c: core::ByteCursor&, out: u32&) -> bool { return core::get_u24(c, out); }
+fn ::read_u24(c: core::ByteCursor&) -> u32, bool { return core::read_u24(c); }
+fn ::get_u32(c: core::ByteCursor&, out: u32&) -> bool { return core::get_u32(c, out); }
+fn ::read_u32(c: core::ByteCursor&) -> u32, bool { return core::read_u32(c); }
+fn ::get_bytes(c: core::ByteCursor&, out: core::ByteCursor&, count: i64) -> bool {
+    return core::get_bytes(c, out, count);
+}
+fn ::read_bytes(c: core::ByteCursor&, count: i64) -> const u8[:], bool { return core::read_bytes(c, count); }
+fn ::get_u8_length_prefixed(c: core::ByteCursor&, out: core::ByteCursor&) -> bool {
+    return core::get_u8_length_prefixed(c, out);
+}
+fn ::read_u8_prefixed(c: core::ByteCursor&) -> const u8[:], bool { return core::read_u8_prefixed(c); }
+fn ::get_u16_length_prefixed(c: core::ByteCursor&, out: core::ByteCursor&) -> bool {
+    return core::get_u16_length_prefixed(c, out);
+}
+fn ::read_u16_prefixed(c: core::ByteCursor&) -> const u8[:], bool { return core::read_u16_prefixed(c); }
+fn ::get_u24_length_prefixed(c: core::ByteCursor&, out: core::ByteCursor&) -> bool {
+    return core::get_u24_length_prefixed(c, out);
+}
+fn ::read_u24_prefixed(c: core::ByteCursor&) -> const u8[:], bool { return core::read_u24_prefixed(c); }
+fn ::get_last_u8(c: core::ByteCursor&, out: u8&) -> bool { return core::get_last_u8(c, out); }
+
+// ---- ByteBuilder serialization bridges -------------------------------------
+
+fn ::builder_init() -> core::ByteBuilder { return core::builder_init(); }
+fn ::put_u8(b: core::ByteBuilder&, val: u8) { core::put_u8(b, val); }
+fn ::put_u16(b: core::ByteBuilder&, val: u16) { core::put_u16(b, val); }
+fn ::put_u24(b: core::ByteBuilder&, val: u32) { core::put_u24(b, val); }
+fn ::put_u32(b: core::ByteBuilder&, val: u32) { core::put_u32(b, val); }
+fn ::put_bytes(b: core::ByteBuilder&, data: const u8[:]) { core::put_bytes(b, data); }
+fn ::start_u8_prefix(b: core::ByteBuilder&) -> bool { return core::start_u8_prefix(b); }
+fn ::finish_u8_prefix(b: core::ByteBuilder&) -> bool { return core::finish_u8_prefix(b); }
+fn ::start_u16_prefix(b: core::ByteBuilder&) -> bool { return core::start_u16_prefix(b); }
+fn ::finish_u16_prefix(b: core::ByteBuilder&) -> bool { return core::finish_u16_prefix(b); }
+fn ::start_u24_prefix(b: core::ByteBuilder&) -> bool { return core::start_u24_prefix(b); }
+fn ::finish_u24_prefix(b: core::ByteBuilder&) -> bool { return core::finish_u24_prefix(b); }

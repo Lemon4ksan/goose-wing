@@ -110,7 +110,7 @@ fn test_ws_split_stream() {
     let mask: u8[4] = [0x12, 0x34, 0x56, 0x78];
     wing::encode_ws_frame(frame_out, rfc::WS_OPCODE_TEXT, payload, true, mask, true);
 
-    let ok = wire_kit::verify_split_stream(frame_out[..], -1, rfc::WS_OPCODE_TEXT as i64, parse_ws_frame_step);
+    let ok = wire_kit::verify_split_stream(frame_out[..], -1, rfc::WS_OPCODE_TEXT, parse_ws_frame_step);
     assert(ok);
     assert(wire_kit::fuzz_payload(frame_out[..], 100, parse_ws_frame_step));
     print("WS_SPLIT_STREAM_VERIFIED: OK");

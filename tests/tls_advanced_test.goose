@@ -26,56 +26,56 @@ fn test_wireframer_cursor_and_builder_framing(t: lit::T&) {
         // Vector 1: Truncated u8 length-prefixed field
         // Header declares length 5, but only 2 payload bytes exist (total 3 bytes)
         let truncated_u8: u8[3] = [0x05, 0xAA, 0xBB];
-        var c8 = wing::cursor_from(truncated_u8[..]);
-        var out8 = wing::cursor_from(truncated_u8[..0]);
+        var c8 = core::cursor_from(truncated_u8[..]);
+        var out8 = core::cursor_from(truncated_u8[..0]);
 
-        let ok8 = wing::get_u8_length_prefixed(c8, out8);
+        let ok8 = core::get_u8_length_prefixed(c8, out8);
         sub.assert_false(ok8, "u8 length-prefixed underflow returns false");
         // On underflow, cursor MUST NOT be mutated or consume the length prefix!
-        sub.assert_eq(wing::cursor_len(c8), 3, "cursor position preserved on u8 underflow");
+        sub.assert_eq(core::cursor_len(c8), 3, "cursor position preserved on u8 underflow");
 
         // Vector 2: Truncated u16 length-prefixed field
         // Header declares length 10, but only 2 payload bytes exist (total 4 bytes)
         let truncated_u16: u8[4] = [0x00, 0x0A, 0xAA, 0xBB];
-        var c16 = wing::cursor_from(truncated_u16[..]);
-        var out16 = wing::cursor_from(truncated_u16[..0]);
+        var c16 = core::cursor_from(truncated_u16[..]);
+        var out16 = core::cursor_from(truncated_u16[..0]);
 
-        let ok16 = wing::get_u16_length_prefixed(c16, out16);
+        let ok16 = core::get_u16_length_prefixed(c16, out16);
         sub.assert_false(ok16, "u16 length-prefixed underflow returns false");
-        sub.assert_eq(wing::cursor_len(c16), 4, "cursor position preserved on u16 underflow");
+        sub.assert_eq(core::cursor_len(c16), 4, "cursor position preserved on u16 underflow");
 
         // Vector 3: Truncated u24 length-prefixed field
         // Header declares length 100, but only 2 payload bytes exist (total 5 bytes)
         let truncated_u24: u8[5] = [0x00, 0x00, 0x64, 0xAA, 0xBB];
-        var c24 = wing::cursor_from(truncated_u24[..]);
-        var out24 = wing::cursor_from(truncated_u24[..0]);
+        var c24 = core::cursor_from(truncated_u24[..]);
+        var out24 = core::cursor_from(truncated_u24[..0]);
 
-        let ok24 = wing::get_u24_length_prefixed(c24, out24);
+        let ok24 = core::get_u24_length_prefixed(c24, out24);
         sub.assert_false(ok24, "u24 length-prefixed underflow returns false");
-        sub.assert_eq(wing::cursor_len(c24), 5, "cursor position preserved on u24 underflow");
+        sub.assert_eq(core::cursor_len(c24), 5, "cursor position preserved on u24 underflow");
     };
 
     t.run("ByteBuilder negative length underflow & bounds safety") { sub =>
         // Vector 1: u8 prefix backpatching on truncated buffer
-        var b8 = wing::builder_init();
-        sub.assert_true(wing::start_u8_prefix(b8), "start u8 prefix");
+        var b8 = core::builder_init();
+        sub.assert_true(core::start_u8_prefix(b8), "start u8 prefix");
         // Buffer is externally cleared/truncated after start_prefix
         b8.buf.clear();
-        let ok_finish8 = wing::finish_u8_prefix(b8);
+        let ok_finish8 = core::finish_u8_prefix(b8);
         sub.assert_false(ok_finish8, "finish_u8_prefix on truncated buffer must fail safely");
 
         // Vector 2: u16 prefix backpatching on truncated buffer
-        var b16 = wing::builder_init();
-        sub.assert_true(wing::start_u16_prefix(b16), "start u16 prefix");
+        var b16 = core::builder_init();
+        sub.assert_true(core::start_u16_prefix(b16), "start u16 prefix");
         b16.buf.clear();
-        let ok_finish16 = wing::finish_u16_prefix(b16);
+        let ok_finish16 = core::finish_u16_prefix(b16);
         sub.assert_false(ok_finish16, "finish_u16_prefix on truncated buffer must fail safely");
 
         // Vector 3: u24 prefix backpatching on truncated buffer
-        var b24 = wing::builder_init();
-        sub.assert_true(wing::start_u24_prefix(b24), "start u24 prefix");
+        var b24 = core::builder_init();
+        sub.assert_true(core::start_u24_prefix(b24), "start u24 prefix");
         b24.buf.clear();
-        let ok_finish24 = wing::finish_u24_prefix(b24);
+        let ok_finish24 = core::finish_u24_prefix(b24);
         sub.assert_false(ok_finish24, "finish_u24_prefix on truncated buffer must fail safely");
     };
 }
@@ -1135,7 +1135,7 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
     t.run("ASN1-SEC-01: Short Form and Long Form Valid Lengths") { sub =>
         // Short form: 0x42 = 66
         let short_der: u8[1] = [0x42];
-        var c1 = wing::cursor_from(short_der[..]);
+        var c1 = core::cursor_from(short_der[..]);
         var out_len1: i64 = 0;
         let ok1 = wing::get_asn1_length(c1, out_len1);
         sub.assert_true(ok1, "short form length succeeds");
@@ -1143,7 +1143,7 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
 
         // Long form: 2 bytes: 0x82 0x01 0x00 = 256
         let long_der: u8[3] = [0x82, 0x01, 0x00];
-        var c2 = wing::cursor_from(long_der[..]);
+        var c2 = core::cursor_from(long_der[..]);
         var out_len2: i64 = 0;
         let ok2 = wing::get_asn1_length(c2, out_len2);
         sub.assert_true(ok2, "long form length succeeds");
@@ -1152,7 +1152,7 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
 
     t.run("ASN1-SEC-02: BER Indefinite Length (0x80) strictly forbidden in DER") { sub =>
         let indef_der: u8[1] = [0x80];
-        var c = wing::cursor_from(indef_der[..]);
+        var c = core::cursor_from(indef_der[..]);
         var out_len: i64 = 0;
         let ok = wing::get_asn1_length(c, out_len);
         sub.assert_false(ok, "indefinite length 0x80 must fail in DER per X.690 §8.1.3.6");
@@ -1161,7 +1161,7 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
     t.run("ASN1-SEC-03: Redundant Leading Zero in Long Form Length Rejected") { sub =>
         // 0x82 0x00 0x80 (2-byte length where first length byte is 0x00)
         let red_der: u8[3] = [0x82, 0x00, 0x80];
-        var c = wing::cursor_from(red_der[..]);
+        var c = core::cursor_from(red_der[..]);
         var out_len: i64 = 0;
         let ok = wing::get_asn1_length(c, out_len);
         sub.assert_false(ok, "redundant leading zero in long form length must be rejected");
@@ -1169,14 +1169,14 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
 
     t.run("ASN1-SEC-04: Reserved Initial Octet 0xFF and Truncated Lengths Rejected") { sub =>
         let ff_der: u8[1] = [0xFF];
-        var c1 = wing::cursor_from(ff_der[..]);
+        var c1 = core::cursor_from(ff_der[..]);
         var out_len1: i64 = 0;
         let ok1 = wing::get_asn1_length(c1, out_len1);
         sub.assert_false(ok1, "reserved initial octet 0xFF must be rejected");
 
         // Declares 3 length bytes (0x83), but only 1 byte follows
         let trunc_der: u8[2] = [0x83, 0x01];
-        var c2 = wing::cursor_from(trunc_der[..]);
+        var c2 = core::cursor_from(trunc_der[..]);
         var out_len2: i64 = 0;
         let ok2 = wing::get_asn1_length(c2, out_len2);
         sub.assert_false(ok2, "truncated long form length must be rejected");

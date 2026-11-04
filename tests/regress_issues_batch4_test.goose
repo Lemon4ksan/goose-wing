@@ -1118,7 +1118,7 @@ fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: lit::T&) {
         //   02 01 FF (pathLen: -1)
         var bc_der: u8[..8] = [0x30, 0x06, 0x01, 0x01, 0xFF, 0x02, 0x01, 0xFF];
         var cert = wing::ParsedCert { .. };
-        var c = wing::cursor_from(bc_der[..]);
+        var c = core::cursor_from(bc_der[..]);
         wing::x509_parse_basic_constraints_ext(c, cert);
 
         sub.assert_true(cert.has_unsupported_critical, "negative pathLenConstraint MUST mark cert unsupported/malformed");
@@ -1131,7 +1131,7 @@ fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: lit::T&) {
         //   02 01 03 (pathLen: 3)
         var bc_der: u8[..8] = [0x30, 0x06, 0x01, 0x01, 0x00, 0x02, 0x01, 0x03];
         var cert = wing::ParsedCert { .. };
-        var c = wing::cursor_from(bc_der[..]);
+        var c = core::cursor_from(bc_der[..]);
         wing::x509_parse_basic_constraints_ext(c, cert);
 
         sub.assert_true(cert.has_unsupported_critical, "pathLenConstraint on non-CA cert MUST mark cert unsupported/malformed");
@@ -1149,9 +1149,9 @@ fn test_x509_name_constraints_subtree_dns_nul(t: lit::T&) {
         subtree_buf.push(12);
         subtree_buf.append("example\0.com");
 
-        var c = wing::cursor_from(subtree_buf[..]);
+        var c = core::cursor_from(subtree_buf[..]);
         var out_type = wing::SanType.Other;
-        var out_val = wing::cursor_from(subtree_buf[..0]);
+        var out_val = core::cursor_from(subtree_buf[..0]);
         let ok = wing::x509_parse_general_subtree_base(c, out_type, out_val);
         sub.assert_false(ok, "subtree base dNSName with embedded NUL MUST be rejected");
     };

@@ -25,9 +25,9 @@ fn wing_check_tlv_length_prefix(buf: const u8[:]) -> i64 {
 
 // Wire adapter for verify_split_stream and fuzzing using wing's real get_any_asn1_element.
 fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
-    var c = wing::cursor_from(buf);
+    var c = core::cursor_from(buf);
     var tag: u8 = 0;
-    var val = wing::cursor_from(buf[..0]);
+    var val = core::cursor_from(buf[..0]);
     if wing::get_any_asn1_element(c, tag, val) {
         return val.buf.len;
     }
@@ -35,7 +35,7 @@ fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
     let pre_check = wing_check_tlv_length_prefix(buf);
     guard pre_check == 0 else { return pre_check; }
 
-    var c_len = wing::cursor_from(buf[1..]);
+    var c_len = core::cursor_from(buf[1..]);
     var out_len: i64 = 0;
     guard wing::get_asn1_length(c_len, out_len) else { return -2; }
     let total_hdr = buf.len - c_len.buf.len;
@@ -47,7 +47,7 @@ fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
 fn wing_validate_der_integer(buf: const u8[:]) -> i64 {
     guard buf.len >= 2 else { return -1; }
     guard buf[0] == rfc::ASN1_TAG_INTEGER else { return 0; }
-    var c = wing::cursor_from(buf);
+    var c = core::cursor_from(buf);
     var val: i64 = 0;
     if !wing::get_asn1_integer(c, val) {
         let vlen = buf[1] as i64;

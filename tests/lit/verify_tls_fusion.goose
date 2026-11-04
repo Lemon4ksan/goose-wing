@@ -139,6 +139,16 @@ fn verify_tls_record_slice_and_bounds() {
     let sub8, ok_s8 = wing::slice_get_u8_length_prefixed(wire_bytes[..], cursor);
     assert(ok_s8 && sub8.len == 2 && cursor == 18);
 
+    var r_cursor: i64 = 5;
+    let r_b8, ok_r8 = wing::slice_read_u8(wire_bytes[..], r_cursor);
+    assert(ok_r8 && r_b8 == 0xAA && r_cursor == 6);
+    let r_b16, ok_r16 = wing::slice_read_u16(wire_bytes[..], r_cursor);
+    assert(ok_r16 && r_b16 == 0x0102 && r_cursor == 8);
+    let r_b24, ok_r24 = wing::slice_read_u24(wire_bytes[..], r_cursor);
+    assert(ok_r24 && r_b24 == 0x000102 && r_cursor == 11);
+    let r_b32, ok_r32 = wing::slice_read_u32(wire_bytes[..], r_cursor);
+    assert(ok_r32 && r_b32 == 0x01020304 && r_cursor == 15);
+
     let pfx16: u8[4] = [0x00, 0x02, 0xBE, 0xEF];
     var c16: i64 = 0;
     let sub16, ok_s16 = wing::slice_get_u16_length_prefixed(pfx16[..], c16);
@@ -149,12 +159,12 @@ fn verify_tls_record_slice_and_bounds() {
     let sub24, ok_s24 = wing::slice_get_u24_length_prefixed(pfx24[..], c24);
     assert(ok_s24 && sub24.len == 2 && c24 == 5);
 
-    var bc = wing::cursor_from(pfx24[..]);
+    var bc = core::cursor_from(pfx24[..]);
     var last_b: u8 = 0;
-    assert(wing::get_last_u8(bc, last_b) && last_b == 0xFE);
-    var bb = wing::builder_init();
-    wing::put_u24(bb, 0x010203);
-    wing::put_u32(bb, 0x04050607);
+    assert(core::get_last_u8(bc, last_b) && last_b == 0xFE);
+    var bb = core::builder_init();
+    core::put_u24(bb, 0x010203);
+    core::put_u32(bb, 0x04050607);
     assert(bb.buf.len == 7);
 
     // Decrypt valid TLS 1.3 record using zero-heap tls_record_decrypt_aes128_gcm_into
@@ -246,50 +256,50 @@ fn verify_mlkem768_decapsulate() {
 
 // crap:ignore
 fn verify_x509_crl_binary_search() {
-    var b = wing::builder_init();
-    assert(wing::start_u8_prefix(b));
+    var b = core::builder_init();
+    assert(core::start_u8_prefix(b));
     b.buf[0] = 0x30;
-    assert(wing::start_u8_prefix(b)); // outer SEQUENCE
+    assert(core::start_u8_prefix(b)); // outer SEQUENCE
     b.buf.push(0x30);
-    assert(wing::start_u8_prefix(b)); // tbsCertList SEQUENCE
+    assert(core::start_u8_prefix(b)); // tbsCertList SEQUENCE
 
     // version INTEGER 1
     let ver_der: u8[3] = [0x02, 0x01, 0x01];
-    wing::put_bytes(b, ver_der[..]);
+    core::put_bytes(b, ver_der[..]);
     // signature AlgorithmIdentifier SEQUENCE
     let sig_der: u8[7] = [0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70];
-    wing::put_bytes(b, sig_der[..]);
+    core::put_bytes(b, sig_der[..]);
     // issuer Name SEQUENCE
     let iss_der: u8[13] = [0x30, 0x0B, 0x31, 0x09, 0x30, 0x07, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x00];
-    wing::put_bytes(b, iss_der[..]);
+    core::put_bytes(b, iss_der[..]);
     // thisUpdate UTCTime "260101000000Z"
     let time_der: u8[15] = [0x17, 0x0D, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5A];
-    wing::put_bytes(b, time_der[..]);
+    core::put_bytes(b, time_der[..]);
 
     // revokedCertificates SEQUENCE
     b.buf.push(0x30);
-    assert(wing::start_u8_prefix(b));
+    assert(core::start_u8_prefix(b));
     // Entry 1: serial 0x0300
     b.buf.push(0x30);
-    assert(wing::start_u8_prefix(b));
+    assert(core::start_u8_prefix(b));
     let ser1: u8[4] = [0x02, 0x02, 0x03, 0x00];
-    wing::put_bytes(b, ser1[..]);
-    wing::put_bytes(b, time_der[..]);
-    assert(wing::finish_u8_prefix(b));
+    core::put_bytes(b, ser1[..]);
+    core::put_bytes(b, time_der[..]);
+    assert(core::finish_u8_prefix(b));
     // Entry 2: serial 0x0100
     b.buf.push(0x30);
-    assert(wing::start_u8_prefix(b));
+    assert(core::start_u8_prefix(b));
     let ser2: u8[4] = [0x02, 0x02, 0x01, 0x00];
-    wing::put_bytes(b, ser2[..]);
-    wing::put_bytes(b, time_der[..]);
-    assert(wing::finish_u8_prefix(b));
-    assert(wing::finish_u8_prefix(b)); // finish revokedCertificates
+    core::put_bytes(b, ser2[..]);
+    core::put_bytes(b, time_der[..]);
+    assert(core::finish_u8_prefix(b));
+    assert(core::finish_u8_prefix(b)); // finish revokedCertificates
 
-    assert(wing::finish_u8_prefix(b)); // finish tbsCertList
-    wing::put_bytes(b, sig_der[..]);
+    assert(core::finish_u8_prefix(b)); // finish tbsCertList
+    core::put_bytes(b, sig_der[..]);
     let sig_val: u8[3] = [0x03, 0x01, 0x00];
-    wing::put_bytes(b, sig_val[..]);
-    assert(wing::finish_u8_prefix(b)); // finish outer length
+    core::put_bytes(b, sig_val[..]);
+    assert(core::finish_u8_prefix(b)); // finish outer length
     b.offsets.pop();
 
     var crl = wing::ParsedCrl { .. };
