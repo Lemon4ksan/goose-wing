@@ -718,7 +718,10 @@ def main() -> int:
                     r"\b([A-Za-z0-9_]+:\s*(?:core::)?(?:SliceReader|ByteCursor|WireReader)&)",
                     sig_params,
                 )
-                if m_wrap and not re.match(r"^(core/io(\.goose|/.*\.goose)|quic/frames\.goose)$", rel_path):
+                if m_wrap and not re.match(
+                    r"^(core/io(\.goose|/.*\.goose)|tls/.*\.goose|quic/frames\.goose)$",
+                    rel_path,
+                ):
                     record_violation(
                         f"[LINT] {rel_path}:{line_num} -> Parser '{sig_fn_name}' takes artificial cursor wrapper '{m_wrap.group(1)}'. "
                         f"Lingua franca is 'const u8[:]' with 'idx: i64&'.",

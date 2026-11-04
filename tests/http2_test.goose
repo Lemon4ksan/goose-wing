@@ -2738,21 +2738,25 @@ fn test_priority_serialization(t: lit::T&) {
     t.run("Priority Header Serialization") { sub =>
         var out: u8[>..] = [];
 
-        var p1 = wing::HttpPriority { urgency: 0, incremental: true };
+        var p1 = wing::PriorityParam { urgency: 0, incremental: true };
         wing::serialize_http_priority(p1, out);
         sub.assert_eq(out[..], "u=0, i", "Serialized u=0, i");
 
         out.clear();
-        var p2 = wing::HttpPriority { urgency: 5, incremental: false };
+        var p2 = wing::PriorityParam { urgency: 5, incremental: false };
         wing::serialize_http_priority(p2, out);
         sub.assert_eq(out[..], "u=5", "Serialized u=5");
+
+        let def_p = wing::priority_default();
+        sub.assert_true(wing::priority_is_default(def_p), "Default priority recognized");
+        sub.assert_false(wing::priority_is_default(p1), "Non-default priority recognized");
     };
 }
 
 fn test_h2_priority_update_frame(t: lit::T&) {
     t.run("HTTP/2 PRIORITY_UPDATE Frame (RFC 9218 §7.1)") { sub =>
         var frame_buf: u8[>..] = [];
-        let prio = wing::HttpPriority { urgency: 1, incremental: true };
+        let prio = wing::PriorityParam { urgency: 1, incremental: true };
         internal::encode_priority_update_payload(5, prio, frame_buf);
 
         sub.assert_gt(frame_buf.len, 4, "Frame payload encoded");
@@ -2792,7 +2796,7 @@ fn test_h3_priority_update_integration(t: lit::T&) {
 
         // Encode a PRIORITY_UPDATE frame for stream 0
         var update_buf: u8[>..] = [];
-        let new_prio = wing::HttpPriority { urgency: 0, incremental: true };
+        let new_prio = wing::PriorityParam { urgency: 0, incremental: true };
         let enc_ok = internal::encode_h3_priority_update_request(update_buf, req_id, new_prio);
         sub.assert_true(enc_ok, "Encoded H3 PRIORITY_UPDATE frame");
 

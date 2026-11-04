@@ -44,10 +44,12 @@ fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
     let name, val, has_val = trimmed.split_once_byte('=');
     let key = name.trim_lws();
     if eq_ascii_fold(key, "includesubdomains") {
+        guard !has_val && !d.include_subdomains else { return false; }
         d.include_subdomains = true;
         return true;
     }
     if eq_ascii_fold(key, "preload") {
+        guard !has_val && !d.preload else { return false; }
         d.preload = true;
         return true;
     }
@@ -238,6 +240,7 @@ fn hsts_cache_update(
     if existing_idx >= 0 && existing_idx < cache.entries.len {
         cache.entries[existing_idx].expiry_epoch_sec = expiry;
         cache.entries[existing_idx].include_subdomains = dir.include_subdomains;
+        cache.entries[existing_idx].is_preload = dir.preload;
         return true;
     }
 

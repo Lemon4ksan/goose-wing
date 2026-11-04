@@ -1230,39 +1230,34 @@ fn encode_qpack_field<B>(
     name:        const u8[:],
     val:         const u8[:],
     use_huffman: bool = true,
-    never_index: bool = false,
 ) {
-    if !never_index {
-        let s_idx, exact_s = find_qpack_static_field(name, val);
-        if exact_s {
-            // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-            internal::hpack_encode_int(out, s_idx, 6, 0xC0);
-            return;
-        }
+    let s_idx, exact_s = find_qpack_static_field(name, val);
+    if exact_s {
+        // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
+        internal::hpack_encode_int(out, s_idx, 6, 0xC0);
+        return;
     }
 
     let s_idx_name, _ = find_qpack_static_field(name, "");
     if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
         // Literal with Static Name: 01NTxxxx (4-bit prefix, T=1)
-        let prefix: u8 = if never_index { 0x70 } else { 0x50 };
-        internal::hpack_encode_int(out, s_idx_name, 4, prefix);
+        internal::hpack_encode_int(out, s_idx_name, 4, 0x50);
         internal::encode_hpack_string_literal(out, val, use_huffman);
         return;
     }
 
     // Literal Name + Literal Value: 001NHxxx (3-bit prefix name)
-    let base_prefix: u8 = if never_index { 0x30 } else { 0x20 };
     if use_huffman {
         let huff_len = internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            internal::hpack_encode_int(out, huff_len, 3, base_prefix | 0x08);
+            internal::hpack_encode_int(out, huff_len, 3, 0x28);
             internal::huff_encode_bytes(name, out);
         } else {
-            internal::hpack_encode_int(out, name.len as u64, 3, base_prefix);
+            internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
             out.append(name);
         }
     } else {
-        internal::hpack_encode_int(out, name.len as u64, 3, base_prefix);
+        internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
         out.append(name);
     }
     internal::encode_hpack_string_literal(out, val, use_huffman);

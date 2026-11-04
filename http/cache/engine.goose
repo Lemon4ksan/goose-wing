@@ -541,6 +541,7 @@ fn is_response_cacheable(
         }
     }
 
+    guard resp.body.len <= 4096 else { return false; }
     return resp.body.len <= cache.options.max_entry_size;
 }
 
@@ -676,6 +677,11 @@ fn on_response(
         resp_headers,
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
+
+    guard req.url.len <= 2048 && req.method.len <= 16 else {
+        dec.kind = ResponseDecisionKind.PassThrough;
+        return dec;
+    }
 
     guard cache.is_response_cacheable(req_cc, req_headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;

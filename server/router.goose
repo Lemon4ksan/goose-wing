@@ -720,9 +720,7 @@ fn match_path<B>(
             let node = tree.nodes[cur_idx as i64];
             guard node.handler_id >= 0 else { return RouteMatchResult.NotFound; }
             return RouteMatchResult.Found {
-                handler_id:   node.handler_id,
-                entries_mask: node.entries_mask,
-                pso_mask:     node.pso_mask,
+                handler_id: node.handler_id, entries_mask: node.entries_mask, pso_mask: node.pso_mask,
             };
         }
 

@@ -17,18 +17,16 @@ struct PriorityParam {
     incremental: bool = false,
 }
 
-type HttpPriority = PriorityParam;
-
 // Default priority instance per RFC 9218 Section 4.
-fn priority_default(default_incremental: bool = false) -> HttpPriority {
-    return HttpPriority {
+fn priority_default(default_incremental: bool = false) -> PriorityParam {
+    return PriorityParam {
         urgency:     rfc::PRIORITY_URGENCY_DEFAULT,
         incremental: default_incremental,
     };
 }
 
 // Checks if priority holds the standard default values (u=3, i=false).
-fn priority_is_default(p: const HttpPriority&) -> bool {
+fn priority_is_default(p: const PriorityParam&) -> bool {
     return p.urgency == rfc::PRIORITY_URGENCY_DEFAULT && !p.incremental;
 }
 
@@ -53,14 +51,14 @@ fn urgency_to_ascii(u: u8) -> u8 {
 
 // ---- RFC 9218 Structured Field Parser ------------------------------------
 
-fn apply_priority_u(dict_str: const u8[:], p: HttpPriority&) -> bool {
+fn apply_priority_u(dict_str: const u8[:], p: PriorityParam&) -> bool {
     let u_val = sf_dict_get_int(dict_str, "u", -1);
     guard is_valid_urgency(u_val) else { return false; }
     p.urgency = u_val as u8;
     return true;
 }
 
-fn apply_priority_i(dict_str: const u8[:], p: HttpPriority&) -> bool {
+fn apply_priority_i(dict_str: const u8[:], p: PriorityParam&) -> bool {
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(dict_str, entries) else { return false; }
     for &entry in entries {
@@ -75,12 +73,12 @@ fn apply_priority_i(dict_str: const u8[:], p: HttpPriority&) -> bool {
 
 // Parses RFC 9218 Priority header value: e.g. "u=0, i", "u=5", "i=?0, u=2".
 // Ignores unknown parameters per RFC 9218 Section 4.
-// Returns parsed HttpPriority and true if at least one recognized parameter was parsed.
+// Returns parsed PriorityParam and true if at least one recognized parameter was parsed.
 //
 // Example:
 //   raw = "u=0, i"
 //   returns: p with urgency=0, incremental=true, ok = true
-fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> HttpPriority, bool {
+fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
     var p = priority_default(default_incremental);
     let trimmed = core::trim_ascii_space(raw);
     if trimmed.len == 0 {
@@ -100,15 +98,10 @@ fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> H
 // ---- RFC 9218 Structured Field Serializer --------------------------------
 
 // Writes RFC 9218 Priority header value: e.g. "u=3", "u=0, i".
-fn serialize_http_priority<B>(prio: const HttpPriority&, out: B&) {
+fn serialize_http_priority<B>(prio: const PriorityParam&, out: B&) {
     out.append("u=");
     out.push(urgency_to_ascii(prio.urgency));
     if prio.incremental {
         out.append(", i");
     }
-}
-
-// Backward-compatible alias for existing callers.
-fn write_priority_param_rfc9218<B>(prio: const HttpPriority&, out: B&) {
-    serialize_http_priority(prio, out);
 }

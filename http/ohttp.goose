@@ -97,10 +97,11 @@ fn ohttp_derive_response_aead(
     salt.append(session.enc[..]);
     salt.append(response_nonce);
     let prk = core::hkdf_extract(salt[..], secret[..exp_len]);
+    core::secure_zeroize_32(secret);
 
-    guard core::hkdf_expand_bytes_256(prk[..], "key", nk, out_key[..nk]) else { return false; }
-    guard core::hkdf_expand_bytes_256(prk[..], "nonce", nn, out_nonce[..nn]) else { return false; }
-    return true;
+    let ok_k = core::hkdf_expand_bytes_256(prk[..], "key", nk, out_key[..nk]);
+    let ok_n = core::hkdf_expand_bytes_256(prk[..], "nonce", nn, out_nonce[..nn]);
+    return ok_k && ok_n;
 }
 
 // ---- key configuration parsing (RFC 9458 Sections 3.1-3.2) ------------------
@@ -176,18 +177,35 @@ fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
 //   returns: ok = true, out_count = 2, out[0..2] filled
 fn parse_ohttp_key_configs(raw: const u8[:], out: OhttpKeyConfig[..4]&, out_count: i32&) -> bool {
     out_count = 0;
+    out.clear();
     guard raw.len >= 2 else { return false; }
     var idx:   i64 = 0;
     var count: i64 = 0;
     while idx < raw.len {
-        guard (raw.len - idx) >= 2 else { return false; }
+        guard (raw.len - idx) >= 2 else {
+            out.clear();
+            out_count = 0;
+            return false;
+        }
         let elen = ((raw[idx] as i64) << 8) | raw[idx + 1];
         idx += 2;
-        guard elen > 0 && elen <= (raw.len - idx) else { return false; }
-        guard count < OHTTP_MAX_KEY_CONFIGS else { return false; }
+        guard elen > 0 && elen <= (raw.len - idx) else {
+            out.clear();
+            out_count = 0;
+            return false;
+        }
+        guard count < OHTTP_MAX_KEY_CONFIGS else {
+            out.clear();
+            out_count = 0;
+            return false;
+        }
         var elem = OhttpKeyConfig { .. };
-        guard parse_ohttp_key_config(raw[idx..idx + elen], elem) else { return false; }
-        out[count] = elem;
+        guard parse_ohttp_key_config(raw[idx..idx + elen], elem) else {
+            out.clear();
+            out_count = 0;
+            return false;
+        }
+        out.push(elem);
         count += 1;
         idx += elen;
     }
@@ -285,7 +303,9 @@ fn ohttp_open_request(
 
     var sk: u8[32] = [0; 32];
     for i in 32 { sk[i] = skR[i]; }
-    guard hpke_setup_base_r(enc, sk, info[..], kem_id, kdf_id, aead_id, session.ctx) else { return false; }
+    let ok_setup = hpke_setup_base_r(enc, sk, info[..], kem_id, kdf_id, aead_id, session.ctx);
+    core::secure_zeroize_32(sk);
+    guard ok_setup else { return false; }
 
     var pt: u8[>..] = [];
     guard hpke_open(session.ctx, [], ct, pt) else { return false; }
@@ -323,19 +343,25 @@ fn ohttp_seal_response(
 
     var ct: u8[>..] = [];
     for i in response.len { ct.push(0); }
+    var seal_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
         let tag, _, ok = core::aes128_gcm_seal(key16, nonce, response, [], ct[..]);
-        guard ok else { return false; }
-        for i in 16 { ct.push(tag[i]); }
+        core::secure_zeroize_16(key16);
+        if ok {
+            for i in 16 { ct.push(tag[i]); }
+            seal_ok = true;
+        }
     } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         let tag, _, ok = core::chacha20_poly1305_seal(key, nonce, response, [], ct[..]);
-        guard ok else { return false; }
-        for i in 16 { ct.push(tag[i]); }
-    } else {
-        return false;
+        if ok {
+            for i in 16 { ct.push(tag[i]); }
+            seal_ok = true;
+        }
     }
+    core::secure_zeroize_32(key);
+    guard seal_ok else { return false; }
 
     guard response_nonce.len + ct.len <= out.cap else { return false; }
     out.clear();
@@ -374,15 +400,17 @@ fn ohttp_open_response(
     let body = ct[..ct.len - 16];
 
     var pt: u8[>..] = [];
+    var open_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        guard core::aes128_gcm_open(key16, nonce, body, [], tag, pt) else { return false; }
+        open_ok = core::aes128_gcm_open(key16, nonce, body, [], tag, pt);
+        core::secure_zeroize_16(key16);
     } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        guard core::chacha20_poly1305_open(key, nonce, body, [], tag, pt) else { return false; }
-    } else {
-        return false;
+        open_ok = core::chacha20_poly1305_open(key, nonce, body, [], tag, pt);
     }
+    core::secure_zeroize_32(key);
+    guard open_ok else { return false; }
 
     guard pt.len <= out.cap else { return false; }
     out.clear();

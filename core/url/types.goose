@@ -297,3 +297,90 @@ fn is_secure_scheme(url_val: const Url&) -> bool {
     let scheme_str = scheme(url_val);
     return scheme_str == "https" || scheme_str == "wss";
 }
+
+// Formats normalized URL without query (`?`) or fragment (`#`) into `out` (RFC 3986 §6.2.3 / RFC 9449 §4.2).
+fn format_url_without_query_or_hash<B>(url_val: const Url&, out: B&) -> bool {
+    guard url_val.valid else { return false; }
+    let end_idx: i64 = if url_val.search_start >= 0 {
+        url_val.search_start as i64
+    } else if url_val.hash_start >= 0 {
+        url_val.hash_start as i64
+    } else {
+        url_val.href.len
+    };
+    return out.try_set(url_val.href[..end_idx]);
+}
+
+// Scans URI delimiter boundaries up to `?` or `#`, rejecting backslashes, double quotes,
+// spaces, and control characters (RFC 9449 §4.2).
+//
+// Example:
+//   raw_uri = "https://example.com:443/resource?query=1#frag"
+//   returns: end_idx = 32, path_start = 23, ok = true (end before '?', path at '/')
+inline fn scan_http_target_uri_bounds(raw_uri: const u8[:]) -> i64, i64, bool {
+    var end_idx = raw_uri.len;
+    var slash_cnt:  i64 = 0;
+    var path_start: i64 = -1;
+    for b, i in raw_uri {
+        if b == '?' || b == '#' {
+            end_idx = i;
+            break;
+        }
+        guard b != '\\' && b != '"' && is_ascii_vchar(b) else { return 0, 0, false; }
+        if b == '/' && path_start == -1 {
+            slash_cnt = add_sat_i64(slash_cnt, 1);
+            if slash_cnt == 3 {
+                path_start = i;
+            }
+        }
+    }
+    return end_idx, path_start, true;
+}
+
+// Strips explicit default port (:80 for http, :443 for https) from a lowercased scheme://authority slice.
+inline fn trim_default_http_port_len(sh_buf: const u8[:], scheme_len: i64, is_https: bool) -> i64 {
+    guard scheme_len >= 0 && scheme_len <= sh_buf.len else { return sh_buf.len; }
+    let auth = sh_buf[scheme_len..];
+    let colon_idx = last_index_of_byte(auth, ':');
+    guard colon_idx >= 0 else { return sh_buf.len; }
+    let close_bracket = last_index_of_byte(auth, ']');
+    guard close_bracket == -1 || colon_idx > close_bracket else { return sh_buf.len; }
+    let port_pos = add_sat_i64(scheme_len, colon_idx);
+    guard port_pos >= 0 && port_pos <= sh_buf.len else { return sh_buf.len; }
+    let port_str = sh_buf[port_pos..];
+    if (!is_https && port_str == ":80") || (is_https && port_str == ":443") {
+        return port_pos;
+    }
+    return sh_buf.len;
+}
+
+// Normalizes an HTTP/HTTPS target URI by lowercasing scheme and host, removing default ports
+// (:80 for http, :443 for https), and stripping query and fragment components (RFC 9449 §4.2).
+// Rejects userinfo (`@`), backslashes, double quotes, spaces, and control characters.
+fn normalize_http_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
+    out.clear();
+    let is_https = starts_with_fold(raw_uri, "https://");
+    let is_http = starts_with_fold(raw_uri, "http://");
+    guard is_https || is_http else { return false; }
+    let scheme_len: i64 = if is_https { 8 } else { 7 };
+
+    let end_idx, path_start, ok = scan_http_target_uri_bounds(raw_uri);
+    guard ok else { return false; }
+    let scheme_host_end = if path_start != -1 { path_start } else { end_idx };
+    guard scheme_host_end > scheme_len && scheme_host_end <= 256 else { return false; }
+    guard !contains_byte(raw_uri[..scheme_host_end], '@') else { return false; }
+
+    var sh_buf: u8[..256] = [];
+    to_lower_ascii(raw_uri[..scheme_host_end], sh_buf);
+    let emit_len = trim_default_http_port_len(sh_buf[..], scheme_len, is_https);
+    let path_slice: const u8[:] = if path_start >= 0 && path_start <= end_idx && end_idx <= raw_uri.len {
+        raw_uri[path_start..end_idx]
+    } else {
+        "/"
+    };
+
+    guard add_sat_i64(emit_len, path_slice.len) <= out.cap else { return false; }
+    out.append(sh_buf[..emit_len]);
+    out.append(path_slice);
+    return true;
+}

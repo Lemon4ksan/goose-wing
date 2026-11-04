@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """Project-agnostic deterministic scanner and coverage-ledger manager for Goose (.goose) codebases.
 
 Enumerates all Goose functions, enriches them with `goose-lit crap` complexity/BCE metrics when

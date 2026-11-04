@@ -61,7 +61,6 @@ fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> bool {
 // - Redundant leading zeros in long form (e.g. 0x82 0x00 0x80) are strictly FORBIDDEN.
 // - Reserved initial octet 0xFF (11111111_2) is strictly FORBIDDEN (X.690 §8.1.3.5(c)).
 // - Enforces non-negative 31-bit bounds (0..0x7FFFFFFF) to prevent integer overflows.
-// crap:ignore
 fn read_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
     var length: i64 = 0;
@@ -146,7 +145,6 @@ fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
 // - Redundant leading zeros forbidden: if len > 1 and byte 0 is 0x00, byte 1 bit 7 must be 1.
 // - Redundant negative sign extension forbidden: if len > 1 and byte 0 is 0xFF, byte 1 bit 7 must be 0.
 // - Evaluates two's complement value into signed 64-bit integer.
-// crap:ignore
 fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
     var raw = cursor_from(c.buf[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_INTEGER, raw) { return false; }
@@ -166,7 +164,6 @@ fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
 // - Unused bits octet MUST be in range 0..7.
 // - If the bit string is empty (length == 1, 0 data octets), unused bits MUST be 0.
 // - Trailing unused bits in the last data octet MUST be set to zero.
-// crap:ignore
 fn validate_asn1_bit_string(val: const u8[:]) -> bool {
     guard val.len >= 1 else { return false; }
     let unused = val[0];
@@ -197,7 +194,6 @@ fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -
 // Example:
 //   buf = "20261028", off = 2
 //   returns: val = 26, ok = true
-// crap:ignore
 fn parse_2digit(buf: const u8[:], off: i64) -> i64, bool {
     guard off >= 0 && off <= buf.len - 2 else { return 0, false; }
     let c1 = buf[off];
@@ -218,7 +214,6 @@ fn validate_time_fields(year: i64, month: i64, day: i64, hour: i64, min: i64, se
     return true;
 }
 
-// crap:ignore
 fn civil_to_epoch_seconds(
     year:  i64,
     month: i64,
@@ -241,7 +236,6 @@ fn civil_to_epoch_seconds(
 // Example:
 //   time_bytes = "261028000000Z"
 //   returns: epoch_secs = 1793145600, ok = true
-// crap:ignore
 fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 13 && time_bytes[12] == 'Z' else { return 0, false; }
     let y2, ok_y = parse_2digit(time_bytes, 0);
@@ -271,7 +265,6 @@ fn parse_utc_time(time_bytes: const u8[:]) -> i64, bool {
 // Example:
 //   time_bytes = "20261028000000Z"
 //   returns: epoch_secs = 1793145600, ok = true
-// crap:ignore
 fn parse_generalized_time(time_bytes: const u8[:]) -> i64, bool {
     guard time_bytes.len == 15 && time_bytes[14] == 'Z' else { return 0, false; }
     let y1, ok_y1 = parse_2digit(time_bytes, 0);
@@ -321,7 +314,6 @@ fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
     return raw[start..end];
 }
 
-// crap:ignore
 fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
     let target_len = target.len;
     guard target_len > 0 && target_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
@@ -459,7 +451,6 @@ fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> boo
 // Example:
 //   raw_cert = "\x30\x82\x01\x20\x30\x81\xC8..." (valid X.509 DER Certificate)
 //   returns: true, out.raw_len = 292, out.signature_value.length = 64
-// crap:ignore
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     out.raw_len = raw_cert.len as u32;
     var cert_seq = cursor_from(raw_cert[..0]);
@@ -571,7 +562,6 @@ fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     }
 }
 
-// crap:ignore
 fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     cert.has_key_usage = true;
     var ku_bits = cursor_from(ext_val.buf[..0]);
@@ -785,7 +775,6 @@ fn validate_end_entity_constraints(cert: const ParsedCert&) -> TlsAlert {
     return TlsAlert.CloseNotify;
 }
 
-// crap:ignore
 fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> TlsAlert {
     // Intermediate CA MUST have basicConstraints asserted with cA: TRUE
     if !cert.has_basic_constraints || !cert.is_ca {
@@ -809,7 +798,6 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
 // - Must NOT match apex domain (e.g. *.example.com does not match example.com).
 // - Must NOT match multi-level subdomains (e.g. *.example.com does not match a.b.example.com).
 // - Case-insensitive comparison.
-// crap:ignore
 fn x509_strip_trailing_dot(s: const u8[:]) -> const u8[:] {
     if s.len > 1 && s[s.len - 1] == '.' {
         return s[..s.len - 1];
@@ -828,7 +816,6 @@ fn x509_is_ip_literal(host: const u8[:]) -> bool {
     return is_ip && core::contains_byte(host, '.');
 }
 
-// crap:ignore
 fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
     guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { return false; }
     let suffix = pat[2..];
@@ -894,7 +881,6 @@ struct SanEntry {
     val:      const u8[:] = [],
 }
 
-// crap:ignore
 fn x509_process_ipv4_char(
     b:         u8,
     octet_idx: i64&,
@@ -941,7 +927,6 @@ fn x509_is_dns_label_char(b: u8) -> bool {
     return is_alnum || b == '-';
 }
 
-// crap:ignore
 fn x509_validate_dns_label(label: const u8[:], label_idx: i64) -> bool {
     guard label.len >= 1 && label.len <= 63 else { return false; }
     if label_idx == 0 && label.len == 1 && label[0] == '*' {
@@ -961,7 +946,6 @@ fn x509_validate_dns_label(label: const u8[:], label_idx: i64) -> bool {
 // - Each label 1..63 octets.
 // - Each label chars: alphanumeric or hyphen; wildcard '*' allowed only as single character in leftmost label.
 // - Hyphen must not be leading or trailing character in any label.
-// crap:ignore
 fn validate_san_dns_name(dns: const u8[:]) -> bool {
     guard dns.len >= 1 && dns.len <= 253 else { return false; }
     guard dns[0] != '.' && dns[dns.len - 1] != '.' else { return false; }
@@ -1031,7 +1015,6 @@ fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> b
 // Example:
 //   san_der = 0x30 0x0E 0x82 0x0C "example.com"
 //   returns: ok = true, out_sans contains SanType.Dns "example.com"
-// crap:ignore
 fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool {
     var c = cursor_from(san_der);
     var names_seq = cursor_from(san_der[..0]);
@@ -1105,7 +1088,6 @@ struct NameConstraintEntry {
 
 // Validates that an IPv4 (4-byte) or IPv6 (16-byte) subnet mask is contiguous CIDR.
 // In network byte order, once a 0 bit appears, no 1 bit may follow.
-// crap:ignore
 fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
     for bit_idx in 8 {
         let bit = ((b as u32) >> (7 - bit_idx)) & 1;
@@ -1142,7 +1124,6 @@ fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> boo
     return core::ends_with_fold(cand, cons);
 }
 
-// crap:ignore
 fn x509_match_dns_subdomain(cand: const u8[:], cons: const u8[:]) -> bool {
     guard cons.len > 0 else { return false; }
     guard cand.len > cons.len else { return false; }
@@ -1196,7 +1177,6 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
     return true;
 }
 
-// crap:ignore
 fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     var s = candidate_uri;
     if core::starts_with(s, "http://") {
@@ -1219,7 +1199,6 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     return s[..auth_end];
 }
 
-// crap:ignore
 fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:]) -> bool {
     let close_bracket = core::index_of_byte(host_part, ']');
     guard close_bracket > 1 else { return false; }
@@ -1276,7 +1255,6 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     return match_dns_name_constraint(host_part, constraint);
 }
 
-// crap:ignore
 fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
     var base_tag: u8 = 0;
     if !get_any_asn1_element(subtree, base_tag, out_val) { return false; }
@@ -1338,7 +1316,6 @@ fn x509_parse_general_subtree(
     return true;
 }
 
-// crap:ignore
 fn x509_parse_subtrees_sequence(
     nc_der:          const u8[:],
     subtrees_elem:   ByteCursor&,
@@ -1533,39 +1510,26 @@ fn x509_verify_cert_signature(
     return TlsAlert.CloseNotify;
 }
 
-// crap:ignore
 fn x509_validate_chain_linkage(
-    chain_certs: const ParsedCert[..8]&,
-    raw_certs:   const u8[:][..8]&,
-    i:           i64,
+    child_cert:  const ParsedCert&,
+    child_raw:   const u8[:],
+    parent_cert: const ParsedCert&,
+    parent_raw:  const u8[:],
 ) -> TlsAlert {
-    if i + 1 < chain_certs.len {
-        let cert = chain_certs[i];
-        let issuer_slice = span_slice(raw_certs[i], cert.issuer_raw);
-        let next_subject_slice = span_slice(raw_certs[i + 1], chain_certs[i + 1].subject_raw);
-        if issuer_slice != next_subject_slice {
+    let issuer_slice = span_slice(child_raw, child_cert.issuer_raw);
+    let next_subject_slice = span_slice(parent_raw, parent_cert.subject_raw);
+    if issuer_slice != next_subject_slice {
+        return TlsAlert.UnknownCa;
+    }
+
+    if child_cert.has_akid && parent_cert.has_skid {
+        let child_akid = span_slice(child_raw, child_cert.akid_key_id);
+        let parent_skid = span_slice(parent_raw, parent_cert.skid_key_id);
+        if child_akid != parent_skid {
             return TlsAlert.UnknownCa;
         }
-
-        if cert.has_akid && chain_certs[i + 1].has_skid {
-            let child_akid = span_slice(raw_certs[i], cert.akid_key_id);
-            let parent_skid = span_slice(raw_certs[i + 1], chain_certs[i + 1].skid_key_id);
-            if child_akid != parent_skid {
-                return TlsAlert.UnknownCa;
-            }
-        }
     }
-    return TlsAlert.CloseNotify;
-}
-
-// crap:ignore
-fn x509_validate_link_signature(
-    chain_certs: const ParsedCert[..8]&,
-    raw_certs:   const u8[:][..8]&,
-    i:           i64,
-) -> TlsAlert {
-    guard i + 1 < chain_certs.len else { return TlsAlert.CloseNotify; }
-    return x509_verify_cert_signature(chain_certs[i], raw_certs[i], chain_certs[i + 1], raw_certs[i + 1]);
+    return x509_verify_cert_signature(child_cert, child_raw, parent_cert, parent_raw);
 }
 
 fn x509_check_child_sans_against_nc(
@@ -1613,9 +1577,36 @@ fn x509_enforce_chain_name_constraints(
     return TlsAlert.CloseNotify;
 }
 
+fn x509_validate_chain_nodes(
+    chain_certs:            const ParsedCert[..8]&,
+    raw_certs:              const u8[:][..8]&,
+    trust_store:            const TrustAnchorStore&,
+    is_direct_trust_anchor: bool,
+    now_unix:               i64,
+) -> TlsAlert {
+    let n = min(chain_certs.len, raw_certs.len);
+    for i in n {
+        let cert_alert = x509_validate_single_chain_cert(
+            chain_certs[i], raw_certs[i], i, is_direct_trust_anchor, now_unix,
+        );
+        guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
+        if i + 1 == n && !matches_trust_anchor(trust_store, chain_certs[i], raw_certs[i]) {
+            return TlsAlert.UnknownCa;
+        }
+    }
+    if n > 1 {
+        for i in n - 1 {
+            let link_alert = x509_validate_chain_linkage(
+                chain_certs[i], raw_certs[i], chain_certs[i + 1], raw_certs[i + 1],
+            );
+            guard link_alert == TlsAlert.CloseNotify else { return link_alert; }
+        }
+    }
+    return TlsAlert.CloseNotify;
+}
+
 // RFC 5280 Certificate Chain Validation.
 // Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
-// crap:ignore
 fn verify_certificate_chain(
     chain_certs: const ParsedCert[..8]&,
     raw_certs:   const u8[:][..8]&,
@@ -1623,7 +1614,7 @@ fn verify_certificate_chain(
     now_unix:    i64,
 ) -> TlsAlert {
     guard chain_certs.len > 0 && chain_certs.len <= MAX_CHAIN_DEPTH else { return TlsAlert.BadCertificate; }
-    guard raw_certs.len == chain_certs.len else { return TlsAlert.BadCertificate; }
+    guard raw_certs.len > 0 && raw_certs.len == chain_certs.len else { return TlsAlert.BadCertificate; }
 
     if x509_detect_chain_cycles(chain_certs, raw_certs) {
         return TlsAlert.BadCertificate;
@@ -1636,32 +1627,10 @@ fn verify_certificate_chain(
         return TlsAlert.UnknownCa;
     }
 
-    for i in chain_certs.len {
-        let cert_alert = x509_validate_single_chain_cert(
-            chain_certs[i],
-            raw_certs[i],
-            i,
-            is_direct_trust_anchor,
-            now_unix,
-        );
-        guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
+    let nodes_alert = x509_validate_chain_nodes(chain_certs, raw_certs, trust_store, is_direct_trust_anchor, now_unix);
+    guard nodes_alert == TlsAlert.CloseNotify else { return nodes_alert; }
 
-        let link_alert = x509_validate_chain_linkage(chain_certs, raw_certs, i);
-        guard link_alert == TlsAlert.CloseNotify else { return link_alert; }
-
-        let sig_alert = x509_validate_link_signature(chain_certs, raw_certs, i);
-        guard sig_alert == TlsAlert.CloseNotify else { return sig_alert; }
-    }
-
-    let nc_alert = x509_enforce_chain_name_constraints(chain_certs, raw_certs);
-    guard nc_alert == TlsAlert.CloseNotify else { return nc_alert; }
-
-    let top_idx = chain_certs.len - 1;
-    if !matches_trust_anchor(trust_store, chain_certs[top_idx], raw_certs[top_idx]) {
-        return TlsAlert.UnknownCa;
-    }
-
-    return TlsAlert.CloseNotify;
+    return x509_enforce_chain_name_constraints(chain_certs, raw_certs);
 }
 
 // ---- 6c. RFC 6066 §8 & RFC 6960 OCSP Stapling & Status Validation -----------
@@ -2039,36 +2008,22 @@ fn verify_signature_scheme_curve_binding(
 // Builds the CertificateVerify signed message input (RFC 8446 Section 4.4.3):
 // 64 spaces (0x20) || "TLS 1.3, " || context_string || 0x00 || Transcript-Hash
 // Total length: 64 + 33 + 1 + hash_len = 98 + hash_len.
-// crap:ignore
 fn build_certificate_verify_message(
     is_server:       bool,
     transcript_hash: const u8[:],
     out:             u8[:],
 ) -> i64, bool {
-    let needed = 98 + transcript_hash.len;
-    guard out.len >= needed else { return 0, false; }
-
-    // 64 spaces
-    for i in 64 { out[i] = 0x20; }
-
-    // "TLS 1.3, "
-    let prefix = "TLS 1.3, ";
-    for i in prefix.len { out[64 + i] = prefix[i]; }
-
-    // Context string: "server CertificateVerify" (24 chars) or "client CertificateVerify" (24 chars)
-    let ctx_str = if is_server { "server CertificateVerify" } else { "client CertificateVerify" };
-    for i in ctx_str.len { out[73 + i] = ctx_str[i]; }
-
-    // Separator 0x00
-    out[73 + ctx_str.len] = 0x00;
-
-    // Transcript Hash
-    let hash_start = 74 + ctx_str.len;
-    for i in transcript_hash.len {
-        out[hash_start + i] = transcript_hash[i];
-    }
-
-    return hash_start + transcript_hash.len, true;
+    var buf: u8[..256] = [];
+    for _ in 64 { buf.push(0x20); }
+    let ctx = if is_server {
+        "TLS 1.3, server CertificateVerify\x00"
+    } else {
+        "TLS 1.3, client CertificateVerify\x00"
+    };
+    guard buf.try_append(ctx) && buf.try_append(transcript_hash) else { return 0, false; }
+    guard out.len >= buf.len else { return 0, false; }
+    core::ct_copy_bytes(out[..buf.len], buf[..]);
+    return buf.len, true;
 }
 
 // ---- RFC 5280 Section 5 Certificate Revocation List (CRL) & Binary Search ----
@@ -2088,7 +2043,6 @@ struct ParsedCrl {
 
 // Inserts a 64-bit certificate serial number into `crl.serials` in ascending
 // sorted order. Fails closed with `false` if `crl.serials.len >= 128` (Invariant 13).
-// crap:ignore
 fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool {
     guard crl.serials.len < MAX_CRL_SERIALS else {
         return false;
@@ -2121,7 +2075,6 @@ fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool {
 }
 
 // Queries whether `serial` is present in `crl.serials` using O(log N) binary search.
-// crap:ignore
 fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool {
     var lo: i64 = 0;
     var hi: i64 = crl.serials.len;
@@ -2145,7 +2098,6 @@ fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool {
 // Example:
 //   serial_bytes = [0x01, 0x02]
 //   returns: val = 0x0102, ok = true
-// crap:ignore
 fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
     guard validate_asn1_integer(serial_bytes, true) else {
         return 0, false;
@@ -2213,7 +2165,6 @@ fn parse_crl_single_entry_raw(entry_raw: const u8[:], out: ParsedCrl&) -> bool {
 // Example:
 //   revoked_raw = [0x30, ...] (DER SEQUENCE OF RevokedCertificate)
 //   returns: ok = true, populates out.serials in sorted order
-// crap:ignore
 fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool {
     var revoked_seq = cursor_from(revoked_raw);
     while cursor_len(revoked_seq) > 0 {
@@ -2253,7 +2204,6 @@ fn x509_crl_read_outer_sig(crl_seq: ByteCursor&, raw_crl: const u8[:], out: Pars
 // Example:
 //   raw_crl = [0x30, ...] (DER CertificateList)
 //   returns: ok = true, out.issuer and out.serials populated
-// crap:ignore
 fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     out.issuer = "";
     out.serials.clear();

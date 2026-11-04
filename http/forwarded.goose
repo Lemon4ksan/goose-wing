@@ -70,34 +70,6 @@ fn append_forwarded_header(out_headers: HeaderMap&, elem: const ForwardedElement
     return append_header(out_headers, rfc::HEADER_FORWARDED, buf[..]);
 }
 
-// Finds the end of a single parameter item (up to ';' outside double quotes).
-fn find_forwarded_param_end(s: const u8[:]) -> i64 {
-    var in_quotes = false;
-    for i in s.len {
-        let b = s[i];
-        if b == '"' {
-            in_quotes = !in_quotes;
-        } else if !in_quotes && b == ';' {
-            return i;
-        }
-    }
-    return s.len;
-}
-
-// Finds the end of a forwarded-element (up to ',' outside double quotes).
-fn find_forwarded_element_end(s: const u8[:]) -> i64 {
-    var in_quotes = false;
-    for i in s.len {
-        let b = s[i];
-        if b == '"' {
-            in_quotes = !in_quotes;
-        } else if !in_quotes && b == ',' {
-            return i;
-        }
-    }
-    return s.len;
-}
-
 // Applies a parsed parameter key-value pair to a ForwardedElement.
 fn apply_forwarded_param(param_str: const u8[:], out: ForwardedElement&) -> bool {
     let key_raw, val_raw, has_eq = param_str.split_once_byte('=');
@@ -148,7 +120,7 @@ fn parse_forwarded_element(raw: const u8[:], out: ForwardedElement&) -> bool {
         rem = rem.trim_start_bytes(" \t;");
         guard rem.len > 0 else { break; }
 
-        let p_len = find_forwarded_param_end(rem);
+        let p_len = rem.find_unquoted_byte(';');
         let p_str = rem[..p_len].trim_lws();
         rem = rem[p_len..];
 
@@ -169,7 +141,7 @@ fn parse_forwarded_header(raw: const u8[:], out_elements: ForwardedElement[..8]&
         rem = rem.trim_start_bytes(" \t,");
         guard rem.len > 0 else { break; }
 
-        let elem_len = find_forwarded_element_end(rem);
+        let elem_len = rem.find_unquoted_byte(',');
         let elem_str = rem[..elem_len].trim_lws();
         rem = rem[elem_len..];
 

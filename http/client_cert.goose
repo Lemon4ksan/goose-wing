@@ -67,7 +67,7 @@ fn parse_client_cert(raw: const u8[:], out_der: u8[..4096]&, out_len: i32&) -> b
     let tail = rest.trim_lws();
     guard tail.len == 0 else { return false; }
 
-    guard decode_base64(b64, out_der) else {
+    guard core::base64_decode(b64, out_der) else {
         out_der.clear();
         return false;
     }
@@ -118,7 +118,7 @@ fn append_client_cert_chain_item(
     guard out_certs.len < CLIENT_CERT_CHAIN_MAX_ITEMS else { return false; }
 
     var item: u8[..4096] = [];
-    guard decode_base64(b64, item) else { return false; }
+    guard core::base64_decode(b64, item) else { return false; }
     guard item.len > 0 && item.len <= CLIENT_CERT_MAX_DER_LEN else { return false; }
 
     out_certs.push(item);

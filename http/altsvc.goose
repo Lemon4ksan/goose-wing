@@ -68,19 +68,6 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
     }
 }
 
-fn find_altsvc_entry_end(s: const u8[:]) -> i64 {
-    var in_quotes = false;
-    for i in s.len {
-        let b = s[i];
-        if b == '"' {
-            in_quotes = !in_quotes;
-        } else if b == ',' && !in_quotes {
-            return i;
-        }
-    }
-    return s.len;
-}
-
 // Parses semicolon-delimited parameter list for an Alt-Svc entry.
 //
 // Example:
@@ -149,7 +136,7 @@ fn parse_single_altsvc_entry(entry_str: const u8[:], ep: AltSvcEndpoint&) -> boo
 fn read_next_altsvc_entry(rem: const u8[:]) -> const u8[:], const u8[:] {
     let s = rem.trim_start_bytes(" \t,");
     guard s.len > 0 else { return "", ""; }
-    let entry_len = find_altsvc_entry_end(s);
+    let entry_len = s.find_unquoted_byte(',');
     let entry_str = s[..entry_len].trim_lws();
     let next_rem = if entry_len < s.len { s[entry_len + 1..] } else { s[entry_len..] };
     return entry_str, next_rem;

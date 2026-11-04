@@ -1243,6 +1243,44 @@ fn parse_single_overflow_header_line(
     return HeaderParseError.None;
 }
 
+fn process_header_line(
+    raw_buf:         const u8[:],
+    cursor:          i64,
+    line_end:        i64,
+    allow_obs_fold:  bool,
+    map:             HeaderMap&,
+    is_first_header: bool&,
+    prev_was_dup_cl: bool&,
+) -> HeaderParseError {
+    let line = raw_buf[cursor..line_end];
+    if is_line_whitespace_only(line) {
+        map.valid = false;
+        return HeaderParseError.WhitespaceOnlyLine;
+    }
+
+    let is_lead_ws = raw_buf[cursor] == ' ' || raw_buf[cursor] == '\t';
+    if is_lead_ws {
+        if prev_was_dup_cl {
+            map.valid = false;
+            return HeaderParseError.ObsFoldForbidden;
+        }
+        let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
+        let fold_err = handle_obs_fold(line, policy, map);
+        guard is_ok(fold_err) else { return fold_err; }
+    } else {
+        var is_dup_cl = false;
+        let line_err = parse_single_header_line(line, cursor, map, is_dup_cl);
+        guard is_ok(line_err) else { return line_err; }
+        if is_dup_cl {
+            prev_was_dup_cl = true;
+        } else {
+            prev_was_dup_cl = false;
+            is_first_header = false;
+        }
+    }
+    return HeaderParseError.None;
+}
+
 // Parses an HTTP/1.x header block into map (RFC 9112 Section 5.2).
 // Header names and values are indexed as offsets into the map's buffer.
 // Obsolete line folding (obs-fold) is rejected unless allow_obs_fold is set.
@@ -1285,33 +1323,10 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
 
         let rel_end = find_any(map.raw_buf[cursor..], CRLF_SET);
         let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
-        let line = map.raw_buf[cursor..line_end];
-
-        if is_line_whitespace_only(line) {
-            map.valid = false;
-            return HeaderParseError.WhitespaceOnlyLine;
-        }
-
-        let is_lead_ws = map.raw_buf[cursor] == ' ' || map.raw_buf[cursor] == '\t';
-        if is_lead_ws {
-            if prev_was_dup_cl {
-                map.valid = false;
-                return HeaderParseError.ObsFoldForbidden;
-            }
-            let policy = ObsFoldPolicy { is_first_header: is_first_header, allow_obs_fold: allow_obs_fold };
-            let fold_err = handle_obs_fold(line, policy, map);
-            guard is_ok(fold_err) else { return fold_err; }
-        } else {
-            var is_dup_cl = false;
-            let line_err = parse_single_header_line(line, cursor, map, is_dup_cl);
-            guard is_ok(line_err) else { return line_err; }
-            if is_dup_cl {
-                prev_was_dup_cl = true;
-            } else {
-                prev_was_dup_cl = false;
-                is_first_header = false;
-            }
-        }
+        let line_err = process_header_line(
+            map.raw_buf[..], cursor, line_end, allow_obs_fold, map, is_first_header, prev_was_dup_cl,
+        );
+        guard is_ok(line_err) else { return line_err; }
 
         guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
             map.valid = false;
@@ -1872,6 +1887,38 @@ fn link_rebuilt_entry(
     }
 }
 
+fn append_rebuilt_entry(
+    e:            const HeaderEntry&,
+    raw_buf:      const u8[:],
+    ename:        const u8[:],
+    new_raw_buf:  u8[..8192]&,
+    new_entries:  HeaderEntry[..128]&,
+    inline_slots: u8[64]&,
+) {
+    var copy_e = e;
+    if e.reserved == HEADER_SRC_STACK && e.values_end <= raw_buf.len as u16 {
+        let eval = raw_buf[e.values_begin..e.values_end];
+        let new_n_begin = new_raw_buf.len as u16;
+        new_raw_buf.append(ename);
+        let new_n_end = new_raw_buf.len as u16;
+
+        let new_v_begin = new_raw_buf.len as u16;
+        new_raw_buf.append(eval);
+        let new_v_end = new_raw_buf.len as u16;
+
+        copy_e.name_begin = new_n_begin;
+        copy_e.name_end = new_n_end;
+        copy_e.values_begin = new_v_begin;
+        copy_e.values_end = new_v_end;
+    }
+    let new_idx = new_entries.len as u8;
+    copy_e.next_idx = 0xFF;
+
+    let cur_raw: const u8[:] = if new_raw_buf.len > 0 { new_raw_buf[..] } else { raw_buf };
+    link_rebuilt_entry(inline_slots, new_entries, cur_raw, ename, copy_e, new_idx);
+    new_entries.push(copy_e);
+}
+
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     let wk_id = classify_well_known_header(name);
     var found = false;
@@ -1901,29 +1948,7 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
             continue;
         }
 
-        var copy_e = e;
-        if e.reserved == HEADER_SRC_STACK && e.values_end <= map.raw_buf.len as u16 {
-            let eval = map.raw_buf[e.values_begin..e.values_end];
-            let new_n_begin = new_raw_buf.len as u16;
-            new_raw_buf.append(ename);
-            let new_n_end = new_raw_buf.len as u16;
-
-            let new_v_begin = new_raw_buf.len as u16;
-            new_raw_buf.append(eval);
-            let new_v_end = new_raw_buf.len as u16;
-
-            copy_e.name_begin = new_n_begin;
-            copy_e.name_end = new_n_end;
-            copy_e.values_begin = new_v_begin;
-            copy_e.values_end = new_v_end;
-        }
-        let new_idx = new_entries.len as u8;
-        copy_e.next_idx = 0xFF;
-
-        let cur_raw: const u8[:] = if new_raw_buf.len > 0 { new_raw_buf[..] } else { map.raw_buf[..] };
-        link_rebuilt_entry(map.inline_slots, new_entries, cur_raw, ename, copy_e, new_idx);
-
-        new_entries.push(copy_e);
+        append_rebuilt_entry(e, map.raw_buf[..], ename, new_raw_buf, new_entries, map.inline_slots);
         new_commas.push(map.header_contains_comma[i]);
     }
 

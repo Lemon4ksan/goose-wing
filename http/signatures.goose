@@ -25,19 +25,7 @@ struct HttpSignatureParams {
     components: u8[..32][..16] = [],
 }
 
-// ---- Helper Functions & Proven Skew Arithmetic ---------------------------
-
-fn sig_add_skew(t: i64) -> i64 {
-    return t + 60;
-}
-
-fn sig_sub_skew(t: i64) -> i64 {
-    return t - 60;
-}
-
-fn sig_sub_len(total: i64, sub: i64) -> i64 {
-    return total - sub;
-}
+// ---- Helper Functions & Port Inspection -----------------------------------
 
 fn is_default_port(scheme: const u8[:], port: i32) -> bool {
     if port <= 0 { return true; }
@@ -142,7 +130,7 @@ fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..102
 
 fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
     guard comp.len > 4 else { return comp, false; }
-    let s0 = sig_sub_len(comp.len, 4);
+    let s0 = comp.len - 4;
     guard comp[s0..] == ";req" else { return comp, false; }
     return comp[..s0], true;
 }
@@ -281,6 +269,7 @@ fn compute_signature_b64(
         var seed_arr: u8[32] = [0; 32];
         for i in 32 { seed_arr[i] = secret_key[i]; }
         let ed_sig = core::ed25519_sign(seed_arr, sig_base);
+        core::secure_zeroize_32(seed_arr);
         core::base64_encode(ed_sig[..], out);
         return true;
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
@@ -333,7 +322,7 @@ fn validate_signature_created(created: i64, expires: i64, now_sec: i64) -> bool 
         guard created < expires else { return false; }
     }
     if created > 0 && now_sec > 0 {
-        let max_skew = sig_add_skew(now_sec);
+        let max_skew = now_sec + 60;
         guard max_skew >= created else { return false; }
     }
     return true;
@@ -341,7 +330,7 @@ fn validate_signature_created(created: i64, expires: i64, now_sec: i64) -> bool 
 
 fn validate_signature_expires(expires: i64, now_sec: i64) -> bool {
     if expires > 0 && now_sec > 0 {
-        let min_skew = sig_sub_skew(now_sec);
+        let min_skew = now_sec - 60;
         guard min_skew <= expires else { return false; }
     }
     return true;
@@ -405,6 +394,17 @@ fn sign_http_request(
     return true;
 }
 
+fn verify_signature_input_label(sig_input_val: const u8[:], label: const u8[:]) -> bool {
+    var entries: SfDictEntry[..16] = [];
+    guard parse_sf_dict(sig_input_val, entries) else { return false; }
+    for &entry in entries {
+        if entry.key == label && entry.is_inner_list {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Verifies an RFC 9421 signature on a Request (HMAC-SHA256 or Ed25519).
 fn verify_http_signature(
     req:       const Request&,
@@ -413,13 +413,14 @@ fn verify_http_signature(
     key_bytes: const u8[:],
     now_sec:   i64 = 0,
 ) -> bool {
+    guard label == params.label else { return false; }
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
     var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
     let sig_input_val = req.header(rfc::HEADER_SIGNATURE_INPUT);
-    guard sig_input_val.len > 0 else { return false; }
+    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label) else { return false; }
 
     let sig_header_val = req.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
@@ -463,13 +464,14 @@ fn verify_http_response_signature(
     key_bytes: const u8[:],
     now_sec:   i64 = 0,
 ) -> bool {
+    guard label == params.label else { return false; }
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
     var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
     let sig_input_val = res.header(rfc::HEADER_SIGNATURE_INPUT);
-    guard sig_input_val.len > 0 else { return false; }
+    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label) else { return false; }
 
     let sig_header_val = res.header(rfc::HEADER_SIGNATURE);
     guard sig_header_val.len > 0 else { return false; }
@@ -490,6 +492,7 @@ fn verify_http_response_signature(
 fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u8[:]) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
+        guard key_id.len <= params.key_id.cap else { return false; }
         params.key_id.append(key_id);
     }
     params.alg.clear();
@@ -505,6 +508,7 @@ fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u
 fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
+        guard key_id.len <= params.key_id.cap else { return false; }
         params.key_id.append(key_id);
     }
     params.alg.clear();
@@ -526,6 +530,7 @@ fn sign_response_ed25519(
 ) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
+        guard key_id.len <= params.key_id.cap else { return false; }
         params.key_id.append(key_id);
     }
     params.alg.clear();
@@ -544,6 +549,7 @@ fn verify_response_ed25519(
 ) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
+        guard key_id.len <= params.key_id.cap else { return false; }
         params.key_id.append(key_id);
     }
     params.alg.clear();

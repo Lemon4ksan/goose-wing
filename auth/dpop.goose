@@ -34,96 +34,13 @@ struct DPoPConfig {
 
 // ---- Helper Functions: URI Normalization & Access Token Hash -------------
 
-// Scans URI delimiter boundaries for RFC 9449 normalization.
-//
-// Example:
-//   raw_uri = "https://example.com:443/resource?query=1#frag"
-//   returns: end_idx = 35, path_start = 25, ok = true (end before '?', path at '/')
-inline fn scan_uri_delimiters(raw_uri: const u8[:]) -> i64, i64, bool {
-    var end_idx = raw_uri.len;
-    for i in raw_uri.len {
-        let b = raw_uri[i];
-        if b == '?' || b == '#' {
-            end_idx = i;
-            break;
-        }
-        guard b != '\\' && b != '"' && b > 0x20 && b < 0x7f else { return 0, 0, false; }
-    }
-    var slash_cnt = 0;
-    var path_start = -1;
-    for k in end_idx {
-        if raw_uri[k] == '/' {
-            slash_cnt += 1;
-            if slash_cnt == 3 {
-                path_start = k;
-                break;
-            }
-        }
-    }
-    return end_idx, path_start, true;
-}
-
 // Normalizes target URI for the "htu" claim (RFC 9449 Section 4.2).
-// Strips query string and fragment, forces scheme and host to lowercase.
+// Strips query string and fragment, forces scheme and host to lowercase,
+// and removes default scheme ports (:80 / :443).
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     out.clear();
     guard raw_uri.len > 0 else { return false; }
-    // RFC 9449 §4.3: Target URI scheme MUST be http or https
-    let is_https = core::starts_with(raw_uri, "https://");
-    let is_http = core::starts_with(raw_uri, "http://");
-    guard is_https || is_http else { return false; }
-    let scheme_len: i64 = if is_https { 8 } else { 7 };
-    let end_idx, path_start, ok = scan_uri_delimiters(raw_uri);
-    guard ok else { return false; }
-    let scheme_host_end = if path_start != -1 { path_start } else { end_idx };
-    // Host portion must not be empty
-    guard scheme_host_end > scheme_len else { return false; }
-    // RFC 3986 §3.2.1: Reject userinfo in authority
-    guard !raw_uri[..scheme_host_end].contains('@') && scheme_host_end <= 256 else { return false; }
-
-    var sh_buf: u8[..256] = [];
-    // Lowercase scheme and host
-    for k in scheme_host_end {
-        let ch = raw_uri[k];
-        if ch >= 'A' && ch <= 'Z' {
-            sh_buf.push(ch + 32);
-        } else {
-            sh_buf.push(ch);
-        }
-    }
-
-    // RFC 3986 §6.2.3 / RFC 9449 §4.3: Scheme-based default port normalization
-    var emit_len = sh_buf.len;
-    let colon_idx = core::last_index_of_byte(sh_buf[scheme_len..], ':');
-    if colon_idx != -1 {
-        let close_bracket = core::last_index_of_byte(sh_buf[scheme_len..], ']');
-        if close_bracket == -1 || colon_idx > close_bracket {
-            let port_pos = scheme_len + colon_idx;
-            let port_str = sh_buf[port_pos..];
-            if is_http && port_str == ":80" {
-                emit_len = port_pos;
-            } else if is_https && port_str == ":443" {
-                emit_len = port_pos;
-            }
-        }
-    }
-
-    let path_len: i64 = if path_start != -1 { core::sub_sat_i64(end_idx, path_start) } else { 1 };
-    let needed = core::add_sat_i64(emit_len, path_len);
-    guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
-
-    for k in emit_len {
-        out.push(sh_buf[k]);
-    }
-    // Append path
-    if path_start != -1 {
-        for k in path_len {
-            out.push(raw_uri[path_start + k]);
-        }
-    } else {
-        out.push('/' as u8);
-    }
-    return true;
+    return core::normalize_http_target_uri(raw_uri, out);
 }
 
 // Computes the RFC 9449 Section 4.2 "ath" (Access Token Hash) claim:
@@ -181,14 +98,6 @@ fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") {
 
 // ---- DPoP Proof JWT Generation -------------------------------------------
 
-fn is_dpop_token_char(b: u8) -> bool {
-    return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
-        (b >= '0' && b <= '9') || b == '!' || b == '#' ||
-        b == '$' || b == '%' || b == '&' || b == '\'' ||
-        b == '*' || b == '+' || b == '-' || b == '.' ||
-        b == '^' || b == '_' || b == '`' || b == '|' || b == '~';
-}
-
 // Serializes DPoP claims JSON payload (RFC 9449 §4.2).
 inline fn build_dpop_claims_json<B>(
     method:       const u8[:],
@@ -200,7 +109,7 @@ inline fn build_dpop_claims_json<B>(
     out:          B&,
 ) -> bool {
     guard now_sec > 0 && method.len > 0 else { return false; }
-    for b in method { guard is_dpop_token_char(b) else { return false; } }
+    for b in method { guard core::is_tchar(b) else { return false; } }
     if jti.len > 0 { guard is_valid_dpop_nonce(jti) else { return false; } }
     if nonce.len > 0 { guard is_valid_dpop_nonce(nonce) else { return false; } }
     let eff_jti_len = if jti.len > 0 { jti.len } else { 32 };
@@ -593,7 +502,7 @@ fn verify_dpop_jti(claims_json: const u8[:]) -> bool {
 inline fn is_valid_dpop_method(m: const u8[:]) -> bool {
     guard m.len > 0 else { return false; }
     for b in m {
-        guard !(b >= 'a' && b <= 'z') && is_dpop_token_char(b) else { return false; }
+        guard !(b >= 'a' && b <= 'z') && core::is_tchar(b) else { return false; }
     }
     return true;
 }

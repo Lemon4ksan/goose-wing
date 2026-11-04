@@ -13,10 +13,6 @@ import core from "..";
 
 // ---- RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
-// RFC 10024 Section 4: Negotiated Groups - Post-Quantum Traditional Hybrid NamedGroup Identifiers
-
-// RFC 10024 Section 3: Key Exchange Messages - Traditional and Post-Quantum Key Dimensions
-
 // Checks whether a TLS supported group is a Post-Quantum Hybrid group
 fn is_post_quantum_group(group: u16) -> bool {
     return group == rfc::GROUP_SECP256R1_MLKEM768
@@ -464,7 +460,6 @@ fn mlkem768_decapsulate_with_implicit_rejection(
 // - `ct.len == MLKEM768_CIPHERTEXT_LEN` (1088) and `sk.len == MLKEM768_SECRET_KEY_LEN` (2400).
 // - Constant-time selection between valid shared secret `K` and implicit rejection secret `K_bar`
 //   derived from secret seed `z = sk[2368..2400]` and `ct`.
-// crap:ignore
 fn mlkem768_decapsulate(
     ct:            const u8[:],
     sk:            const u8[:],

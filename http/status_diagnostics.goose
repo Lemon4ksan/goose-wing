@@ -113,18 +113,14 @@ fn read_status_param_name(raw: const u8[:], idx: i64&) -> const u8[:] {
 // Example:
 //   raw = "\"xyzzy\"", idx = 0
 //   returns: "xyzzy", idx becomes 7
-fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:] {
+fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     idx += 1; // skip opening quote
     let v_start = idx;
     let rel_quote = core::index_of_byte(raw[idx..], '"');
-    if rel_quote >= 0 {
-        let val = raw[v_start..idx + rel_quote];
-        idx += rel_quote + 1; // skip closing quote
-        return val;
-    }
-    let val = raw[v_start..];
-    idx = raw.len;
-    return val;
+    guard rel_quote >= 0 else { return raw[..0], false; }
+    let val = raw[v_start..idx + rel_quote];
+    idx += rel_quote + 1; // skip closing quote
+    return val, true;
 }
 
 // Reads unquoted token parameter value.
@@ -163,7 +159,9 @@ fn read_status_param(raw: const u8[:], idx: i64&) -> const u8[:], const u8[:], b
         idx += 1; // skip '='
         skip_lws_at(raw, idx);
         if idx < raw.len && raw[idx] == '"' {
-            param_val = read_quoted_status_val(raw, idx);
+            let q_val, q_ok = read_quoted_status_val(raw, idx);
+            guard q_ok else { return raw[..0], raw[..0], false; }
+            param_val = q_val;
         } else {
             param_val = read_token_status_val(raw, idx);
         }
@@ -189,25 +187,31 @@ fn apply_cache_status_flags(entry: CacheStatusEntry&, name: const u8[:]) -> bool
     return false;
 }
 
-fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: const u8[:]) {
-    guard !apply_cache_status_flags(entry, name) else { return; }
+fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: const u8[:]) -> bool {
+    guard !apply_cache_status_flags(entry, name) else { return true; }
 
     if core::eq_ascii_fold(name, "ttl") {
-        let ttl_v, _ = core::parse_i64_dec(val);
+        let ttl_v, ok = core::parse_i64_dec(val);
+        guard ok else { return false; }
         entry.ttl = ttl_v;
     } else if core::eq_ascii_fold(name, "fwd") {
+        guard val.len <= entry.fwd.cap else { return false; }
         entry.fwd.clear();
         entry.fwd.append(val);
     } else if core::eq_ascii_fold(name, "fwd-status") {
-        let fwd_v, _ = core::parse_i64_dec(val);
+        let fwd_v, ok = core::parse_i64_dec(val);
+        guard ok && fwd_v >= 0 && fwd_v <= 999 else { return false; }
         entry.fwd_status = fwd_v as! i32;
     } else if core::eq_ascii_fold(name, "key") {
+        guard val.len <= entry.key.cap else { return false; }
         entry.key.clear();
         entry.key.append(val);
     } else if core::eq_ascii_fold(name, "detail") {
+        guard val.len <= entry.detail.cap else { return false; }
         entry.detail.clear();
         entry.detail.append(val);
     }
+    return true;
 }
 
 // Parses a single cache-status entry into out_entry.
@@ -222,12 +226,13 @@ fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: Cache
 
     out_entry = CacheStatusEntry { .. };
     let name = read_status_target_name(raw, idx);
+    guard name.len <= out_entry.cache_name.cap else { return false; }
     out_entry.cache_name.append(name);
 
     while idx < raw.len && raw[idx] != ',' {
         let p_name, p_val, ok = read_status_param(raw, idx);
-        guard ok else { break; }
-        apply_cache_status_param(out_entry, p_name, p_val);
+        guard ok else { return false; }
+        guard apply_cache_status_param(out_entry, p_name, p_val) else { return false; }
     }
     return true;
 }
@@ -296,20 +301,25 @@ fn format_cache_status<B>(entry: const CacheStatusEntry&, out: B&) {
 
 // ---- RFC 9209 Proxy-Status Parser and Formatter --------------------------
 
-fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: const u8[:]) {
+fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: const u8[:]) -> bool {
     if core::eq_ascii_fold(name, "error") {
+        guard val.len <= entry.error_type.cap else { return false; }
         entry.error_type.clear();
         entry.error_type.append(val);
     } else if core::eq_ascii_fold(name, "next-hop") {
+        guard val.len <= entry.next_hop.cap else { return false; }
         entry.next_hop.clear();
         entry.next_hop.append(val);
     } else if core::eq_ascii_fold(name, "details") {
+        guard val.len <= entry.details.cap else { return false; }
         entry.details.clear();
         entry.details.append(val);
     } else if core::eq_ascii_fold(name, "received-status") {
-        let rec_v, _ = core::parse_i64_dec(val);
+        let rec_v, ok = core::parse_i64_dec(val);
+        guard ok && rec_v >= 0 && rec_v <= 999 else { return false; }
         entry.received_status = rec_v as! i32;
     }
+    return true;
 }
 
 // Parses a single proxy-status entry into out_entry.
@@ -324,12 +334,13 @@ fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: Proxy
 
     out_entry = ProxyStatusEntry { .. };
     let name = read_status_target_name(raw, idx);
+    guard name.len <= out_entry.proxy_name.cap else { return false; }
     out_entry.proxy_name.append(name);
 
     while idx < raw.len && raw[idx] != ',' {
         let p_name, p_val, ok = read_status_param(raw, idx);
-        guard ok else { break; }
-        apply_proxy_status_param(out_entry, p_name, p_val);
+        guard ok else { return false; }
+        guard apply_proxy_status_param(out_entry, p_name, p_val) else { return false; }
     }
     return true;
 }

@@ -4214,7 +4214,65 @@ fn test_live_tls_transport_session(t: lit::T&) {
         let _, ok_srv = wing::tls_server_handshake(-1, srv_cfg);
         sub.assert_false(ok_srv, "tls_server_handshake safely fails on closed fd");
 
+        sub.assert_bytes_eq(wing::tls_session_alpn(slot_idx), "", "initial negotiated ALPN is empty");
+        sub.assert_false(wing::tls_session_is_resumed(slot_idx), "initial session is not PSK resumed");
+
         wing::free_tls_cipher_slot(slot_idx);
+    };
+
+    t.run("TLS-45: ALPN Negotiation & PSK Session Ticket Resumption Wire Conformance") { sub =>
+        wing::clear_tls13_session_tickets();
+
+        let psk: u8[32] = [0x42; 32];
+        wing::store_tls13_session_ticket("example.com", "ticket-id-01", psk, 0x11223344, 3600);
+
+        var out_ticket: u8[..256] = [];
+        var out_psk:    u8[32]    = [0; 32];
+        var out_age:    u32       = 0;
+        let found = wing::lookup_tls13_session_ticket("example.com", out_ticket, out_psk, out_age);
+        sub.assert_true(found, "cached session ticket found by hostname");
+        sub.assert_bytes_eq(out_ticket[..], "ticket-id-01", "ticket identity matches");
+        sub.assert_eq(out_age, 0x11223344, "ticket age_add matches");
+
+        let cli_rand: u8[32] = [0x11; 32];
+        let cli_priv: u8[32] = [0x22; 32];
+        let cli_pub = core::x25519_base_scalarmult(cli_priv);
+
+        var ch_payload: u8[..2048] = [];
+        wing::build_tls13_client_hello_payload(
+            cli_rand, cli_pub, "example.com", "h2,http/1.1",
+            ch_payload, out_ticket[..], out_age,
+        );
+        var ch_msg: u8[..2048] = [];
+        ch_msg.push(rfc::TLS_HS_CLIENT_HELLO);
+        core::append_u24_be(ch_msg, ch_payload.len as u32);
+        ch_msg.append(ch_payload[..]);
+
+        var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+        sub.assert_true(ok_kse && internal::ks_init_early_secret(ks_early, out_psk[..]), "ks_init_early_secret succeeds");
+        var b_key: u8[32] = [0; 32];
+        for i in 32 { b_key[i] = ks_early.binder_key[i]; }
+        let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], 33);
+        sub.assert_true(ok_tr, "truncate_client_hello_for_binder succeeds");
+        var binder: u8[32] = [0; 32];
+        sub.assert_true(wing::compute_tls13_psk_binder(b_key, trunc_ch, binder), "compute_tls13_psk_binder succeeds");
+        let b_start = ch_msg.len - 32;
+        for i in 32 { ch_msg[b_start + i] = binder[i]; }
+
+        var srv_sid:     u8[..32] = [];
+        var srv_cli_pub: u8[32]   = [0; 32];
+        var srv_alpn:    u8[..32] = [];
+        var srv_resumed: bool     = false;
+        var srv_psk:     u8[32]   = [0; 32];
+        let ok_ch = wing::parse_client_hello_for_server(
+            ch_msg[..], "h2,http/1.1", srv_sid, srv_cli_pub,
+            srv_alpn, srv_resumed, srv_psk,
+        );
+        sub.assert_true(ok_ch, "server parsed ClientHello with multi-ALPN and PSK");
+        sub.assert_bytes_eq(srv_alpn[..], "h2", "server selected h2 from client ALPN list");
+        sub.assert_true(srv_resumed, "server verified PSK binder and accepted resumption");
+
+        wing::clear_tls13_session_tickets();
     };
 }
 

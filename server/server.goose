@@ -2509,6 +2509,81 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
     return serve_pipe_loop(server, listener_fd, max_connections);
 }
 
+fn tls_recv_pipe(
+    fd:         i64,
+    slot_idx:   u16,
+    pipe:       core::PipeBuffer&,
+    min_span:   i64 = 4096,
+    timeout_ms: u32 = 5000,
+) -> i32 {
+    guard fd > 0 else { return -1; }
+    let span, err = core::get_write_span(pipe, min_span);
+    if err != core::IoError.None { return -1; }
+    let recvd = tls_transport_recv_slice(fd, slot_idx, span, timeout_ms);
+    if recvd > 0 { core::commit_write(pipe, recvd); }
+    return recvd;
+}
+
+fn tls_flush_cork(fd: i64, slot_idx: u16, cork: core::CorkBuffer&) -> i32 {
+    let slice = core::cork_as_slice(cork);
+    guard slice.len > 0 else { return 0; }
+    let sent = tls_transport_send(fd, slot_idx, slice);
+    cork.cork_reset();
+    return sent;
+}
+
+// Executes a live TLS 1.3 HTTPS accept and dispatch loop using PipeBuffer and TLS record AEAD.
+fn serve_tls(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    tls_config:      const TlsServerHandshakeConfig&,
+    max_connections: i64 = 0,
+) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+    var pipe = core::new_pipe_buffer();
+    var cork = core::new_cork_buffer();
+    var total_served: i64 = 0;
+
+    while max_connections == 0 || total_served < max_connections {
+        let conn = tcp_accept(listener_fd, 0);
+        if conn <= 0 { continue; }
+
+        let slot_idx, ok_hs = tls_server_handshake(conn, tls_config);
+        if !ok_hs {
+            tcp_close(conn);
+            total_served++;
+            continue;
+        }
+
+        pipe.pipe_reset();
+        cork.cork_reset();
+        var h2_sess = internal::new_h2_server_session(server.server_name[..]);
+
+        loop {
+            let recvd = tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
+            if recvd <= 0 { break; }
+
+            let now_ns = core::as_nanos(core::monotonic_now());
+            let _, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
+            let should_close = !ok || core::contains_fold(core::cork_as_slice(cork), "connection: close");
+            if !ok {
+                if cork.cork_pending() > 0 { tls_flush_cork(conn, slot_idx, cork); }
+                break;
+            }
+            if cork.cork_pending() > 0 {
+                let sent = tls_flush_cork(conn, slot_idx, cork);
+                if sent <= 0 || should_close { break; }
+            } else if should_close {
+                break;
+            }
+        }
+        internal::cleanup_h2_server_session(h2_sess, server.pipeline);
+        tls_transport_close(conn, slot_idx);
+        total_served++;
+    }
+    return total_served;
+}
+
 const REACTOR_LEFTOVER_CAP: i64 = 8192;
 
 struct ReactorLeftoverBuf {

@@ -115,3 +115,41 @@ fn token_next(tok: ByteTokenizer&) -> const u8[:], bool {
     tok.exhausted = true;
     return tok.src[start..], true;
 }
+
+// Finds the 0-based index of the first occurrence of `delim` outside double quotes ("..."),
+// honoring backslash-escaped characters (`\"` and `\\`). Returns `s.len` if `delim` is not found.
+//
+// Example:
+//   s = "foo=\"a;b\"; bar=1", delim = ';'
+//   returns: 9 (index of ';' after closing quote)
+fn find_unquoted_byte(s: const u8[:], delim: u8) -> i64 {
+    var in_quotes = false;
+    var escaped = false;
+    for b, i in s {
+        if escaped {
+            escaped = false;
+        } else if in_quotes && b == '\\' {
+            escaped = true;
+        } else if b == '"' {
+            in_quotes = !in_quotes;
+        } else if !in_quotes && b == delim {
+            return i;
+        }
+    }
+    return s.len;
+}
+
+// Splits `s` at the first occurrence of `delim` outside double quotes ("...").
+// Returns `(prefix, remainder, true)` when `delim` is found, or `(s, "", false)` when not found.
+//
+// Example:
+//   s = "for=\"192.0.2.1\";proto=https", delim = ';'
+//   returns: "for=\"192.0.2.1\"", "proto=https", ok = true
+fn split_once_unquoted_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
+    let idx = find_unquoted_byte(s, delim);
+    let next_idx = add_sat_i64(idx, 1);
+    guard idx >= 0 && next_idx <= s.len else {
+        return s, "", false;
+    }
+    return s[..idx], s[next_idx..], true;
+}

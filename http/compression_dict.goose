@@ -83,16 +83,28 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) {
     let v = v_raw.trim_lws().trim_byte('"');
 
     if core::eq_ascii_fold(k, "match") {
+        guard v.len <= p.match_pattern.cap else {
+            p.valid = false;
+            return;
+        }
         p.match_pattern.clear();
         p.match_pattern.append(v);
         p.valid = (v.len > 0 && v[0] == '/');
     } else if core::eq_ascii_fold(k, "id") {
+        guard v.len <= p.id.cap else {
+            p.valid = false;
+            return;
+        }
         p.id.clear();
         p.id.append(v);
     } else if core::eq_ascii_fold(k, "ttl") {
         let ttl_val, ttl_ok = v.parse_u32_dec();
         if ttl_ok { p.ttl_sec = ttl_val; }
     } else if core::eq_ascii_fold(k, "type") {
+        guard v.len <= p.dict_type.cap else {
+            p.valid = false;
+            return;
+        }
         p.dict_type.clear();
         p.dict_type.append(v);
     }
@@ -270,7 +282,7 @@ fn populate_dict_entry(
     ttl_sec:       u32,
     now_sec:       i64,
 ) -> bool {
-    guard origin.len <= 128 && match_pattern.len <= 256 && id_str.len <= 128 && body.len <= 2048 else { return false; }
+    guard origin.len <= 128 && match_pattern.len <= 128 && id_str.len <= 64 && body.len <= 2048 else { return false; }
     entry.valid = true;
     entry.origin.clear();
     entry.origin.append(origin);
@@ -298,7 +310,7 @@ fn dictionary_cache_insert(
     ttl_sec:       u32,
     now_sec:       i64,
 ) -> bool {
-    guard origin.len <= 128 && match_pattern.len <= 256 && id_str.len <= 128 && body.len <= 2048 else { return false; }
+    guard origin.len <= 128 && match_pattern.len <= 128 && id_str.len <= 64 && body.len <= 2048 else { return false; }
     guard body.len > 0 else { return false; }
 
     let hash = core::sha256(body);

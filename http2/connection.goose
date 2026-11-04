@@ -160,16 +160,14 @@ fn new_h2_connection(
     now_ms:          u64  = 0,
     max_header_list: u32  = 8192,
     behind_proxy:    bool = false,
-    is_server:       bool = false,
-    enable_push:     bool = true,
 ) -> H2Connection {
     return H2Connection {
         hpack_dec:            new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         reset_limiter:        new_h2_token_bucket(DEFAULT_RESET_BURST, DEFAULT_RESET_RATE, now_ms),
         max_header_list_size: max_header_list,
         is_behind_proxy:      behind_proxy,
-        is_server:            is_server,
-        enable_push:          enable_push,
+        is_server:            false,
+        enable_push:          true,
         ..
     };
 }
@@ -178,10 +176,8 @@ inline fn new_session_state(
     now_ms:          u64  = 0,
     max_header_list: u32  = 8192,
     behind_proxy:    bool = false,
-    is_server:       bool = false,
-    enable_push:     bool = true,
 ) -> H2Connection {
-    return new_h2_connection(now_ms, max_header_list, behind_proxy, is_server, enable_push);
+    return new_h2_connection(now_ms, max_header_list, behind_proxy);
 }
 
 // Checks if the connection has capacity to store an additional active stream descriptor.

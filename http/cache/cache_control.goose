@@ -348,17 +348,8 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
         cursor += rem.len - trimmed_lead.len;
         guard cursor < len else { break; }
 
-        var token_end = cursor;
-        var in_quotes = false;
-        while token_end < len {
-            let b = raw[token_end];
-            if b == '"' && (token_end == cursor || raw[token_end - 1] != '\\') {
-                in_quotes = !in_quotes;
-            } else if b == ',' && !in_quotes {
-                break;
-            }
-            token_end++;
-        }
+        let rem_from_cursor = raw[cursor..];
+        let token_end = cursor + rem_from_cursor.find_unquoted_byte(',');
 
         let directive_slice = trim_lws(raw[cursor..token_end]);
         cursor = token_end + 1;

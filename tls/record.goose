@@ -380,7 +380,6 @@ fn increment_record_seq_num(seq_num: u64&) -> bool {
 // 5. Total inner plaintext cannot exceed 16624 bytes (16640 max ciphertext - 16 bytes tag), otherwise record_overflow.
 // 6. Non-application_data records MUST NOT be empty (content_len == 0), otherwise unexpected_message.
 // 7. Handles arbitrary zero-padding up to maximum record length without buffer underflow or overflow.
-// crap:ignore
 fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAlert {
     guard decrypted.len > 0 else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
@@ -510,7 +509,6 @@ fn tls_record_seal_aes128_gcm_into(
 // Example:
 //   record_header = [0x17, 0x03, 0x03, 0x00, 0x15], record_payload = <21 bytes>
 //   returns: plain_len = 4, inner_type = 0x17, alert = TlsAlert.CloseNotify, ok = true
-// crap:ignore
 fn tls_record_decrypt_aes128_gcm_into(
     key:            const u8[16]&,
     iv:             const u8[12]&,
@@ -571,7 +569,6 @@ fn tls_record_decrypt_aes128_gcm_into(
 //    - Sequence number 2^64 - 1 -> UnexpectedMessage (RFC 8446 §5.3).
 //    - Tag verification failure -> BadRecordMac.
 // 2. Absolute zero-leakage guarantee: destination buffer is completely wiped on failure.
-// crap:ignore
 fn tls_record_decrypt_aes128_gcm(
     key:            const u8[16]&,
     iv:             const u8[12]&,

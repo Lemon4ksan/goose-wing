@@ -165,6 +165,12 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
     `max` in `std`. Never write ternary clamping (`if x > 96 { 96 } else { x }`); write `min(x, 96)` or
     `max(0, x)` directly (which also avoids adding branch nodes to `EffCC` / `G-CRAP`). Similarly, use
     `dst.try_set(src)` from `core/ufcs.goose` instead of repeating `guard src.len <= dst.cap ... dst.clear(); dst.append(src);`.
+  - **Canonical `core` character classes, unquoted scanners, and URI normalizers**: Never re-declare
+    per-module lookup tables (`PKCE_UNRESERVED_LUT`, `is_cookie_token_char`, `is_dpop_token_char`, `is_sf_tchar`),
+    ad-hoc quote-aware delimiter loops (`find_altsvc_entry_end`, `find_forwarded_param_end`), or private
+    Base64/UTF-8 decoders. Use canonical `core` primitives (`core::is_tchar`, `core::is_uri_unreserved`,
+    `core::is_ascii_vchar`, `core::is_ascii_printable`, `core::is_ascii_hexdigit`, `find_unquoted_byte`,
+    `split_once_unquoted_byte`, `core::normalize_http_target_uri`, `core::base64_decode`, `core::validate_utf8`).
 
 ## Strict code clarity and anti-bloat invariants
 
@@ -243,12 +249,14 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
    - Functions computing intermediate cryptographic hashes, message digests, token slices, or single-result data transformations must return their values directly (`-> u8[..64]`, `-> u8[32]`, `-> const u8[:]`, `-> (T, bool)`) relying on compiler RVO / structural return (`sret`).
    - Never define functions taking C-style out-parameters (`out_hex: u8[..64]&`, `out_ha1: u8[..64]&`, `out_response: u8[..64]&`) that force the caller to declare uninitialized temporary stack buffers (`var buf: u8[..64] = [];`) before invocation.
    - Out-parameters (`out: B&`, `dst: u8[:]&`) are permitted exclusively for cumulative streaming sinks (e.g. `HeaderWriter`, `serialize_digest_auth`, `encode_quic_frame`) that append directly into caller-owned transport buffers without intermediate copies.
-10. **Byte slice (`const u8[:]`) as universal lingua franca (Prohibition of `io.Reader` and cursor wrappers in parsers)**:
+10. **Byte slice (`const u8[:]`) as universal lingua franca and canonical `core::ByteCursor` / `core::ByteBuilder`**:
    - The byte slice (`const u8[:]` or `u8[:]`) is the universal primitive for all memory, wire packets, and protocol payloads across Goose.
-   - **No artificial cursor wrappers**: Protocol parsers, frame decoders, and RFC tokenizers must never wrap in-memory slices in artificial cursor objects (`struct SliceReader`, `struct ByteCursor`, `struct WireReader`). Parsers must accept canonical slices (`raw: const u8[:]`) and an explicit cursor offset (`idx: i64&`), or return `(consumed_len, bool)` / `(Frame, bool)`. Direct slices preserve bounds visibility for compiler Bounds Check Elimination (BCE) and maintain minimal G-CRAP branch depth.
-   - **Zero-copy socket streaming via ring-buffer views**: Sockets and transports must not implement Go-style virtual `io.Reader.Read(p: u8[:])` (which forces callers to allocate receiving buffers and copy bytes from the kernel). Transports manage an internal ring buffer or scratch arena and vend unread slices directly (`incoming_slice() -> const u8[:]`), advancing state after parsing (`advance_read(consumed)`).
-11. **Constant-time cryptographic comparisons (No timing side-channels)**:
+   - **No ad-hoc cursor wrappers in text/HTTP parsers**: HTTP, header, URL, and RFC text tokenizers must never invent custom cursor wrapper structs (`struct SliceReader`, `struct WireReader`). Accept canonical slices (`raw: const u8[:]`) with an explicit cursor offset (`idx: i64&`), or return `(consumed_len, bool)` / `(Frame, bool)`. Direct slices preserve bounds visibility for compiler Bounds Check Elimination (BCE) and maintain minimal G-CRAP branch depth.
+   - **Canonical `core::ByteCursor` and `core::ByteBuilder` (`core/io/cursor.goose`)**: For binary length-prefixed wire protocols (TLS 1.3 records/handshakes, ASN.1 DER/X.509, QUIC frames), use `core::ByteCursor` (`read_u8`, `read_u16`, `read_u24`, `read_u16_prefixed`, `read_u24_prefixed`) and `core::ByteBuilder` (`start_u16_prefix`, `finish_u16_prefix`) instead of manual index arithmetic.
+   - **Zero-copy socket streaming via ring-buffer views**: Sockets and transports must not implement Go-style virtual `io.Reader.Read(p: u8[:])` (which forces callers to allocate receiving buffers and copy bytes from the kernel). Transports manage an internal ring buffer (`core::PageRingBuffer`, `core::PipeBuffer`) or scratch arena and vend unread slices directly, advancing state after parsing.
+11. **Constant-time cryptographic comparisons and stack secret zeroization (No side-channels or key leaks)**:
    - Never compare cryptographic digests, MAC tags, HMAC outputs, or verification tokens using `==` or `!=`. Always use `core::ct_eq_bytes` to prevent timing side-channel leaks.
+   - Ephemeral private keys, AEAD keys, HKDF PRKs/secrets, and signing seeds copied onto the stack must be wiped with `core::secure_zeroize_16` / `core::secure_zeroize_32` before function return (including on early error paths).
 12. **Zero dynamic vectors (`u8[>..]`) in wire frame structs**:
    - Protocol frame, packet, and header structs (`*Frame`, `*Packet`, `*Header`) must store payload views as zero-copy slices (`const u8[:]`) or stack-bounded arrays (`u8[..N]`), never heap-allocated `u8[>..]` vectors.
 13. **Zero silent buffer drops (Strict capacity overflow error propagation)**:
@@ -267,6 +275,10 @@ Enforced statically via `scripts/lint_invariants.py` and `.githooks/pre-commit`:
 17. **Enterprise-scale buffer limits over toy RFC examples**:
    - Never allocate miniature stack buffers (`u8[..384]`, `u8[..512]`) for external bearer tokens, access tokens, certificates, or authorization headers based on brief RFC examples.
    - Use canonical enterprise constants: `const MAX_AUTH_TOKEN_LEN: u64 = 4096;`, `const MAX_HEADER_FIELD_LEN: u64 = 8192;`.
+18. **Transactional out-buffer hygiene (Zero dirty state on error)**:
+   - Functions taking a mutable output buffer (`out: B&`, `dst: u8[..N]&`) and returning `bool` must validate all preconditions before mutating `out`, or call `out.clear()` on every failure branch (`return false`) so callers never observe partial or corrupted data.
+19. **HeaderMap Bloom filter synchronization**:
+   - Never push directly to `req.headers.push(...)` without updating the corresponding `bloom_filter` or routing through `add_header` / `append_header`.
 
 ## Protocol specification fidelity and adversarial testing
 
@@ -282,12 +294,13 @@ Engineering rules ensuring protocol compliance and resilience against real-world
      - *Injection payloads*: escaped quotes (`\"`), CRLF, and duplicate keys must not confuse parsers.
      - *Delimiter variations*: comma-separated lists (`qop="auth, auth-int"`) must be tested with varying whitespace, order, and extra tokens.
 3. **Pre-commit adversarial self-audit checklist**:
-   - Before opening a PR or finalizing any feature branch, verify the 5 cardinal LLM bug patterns:
+   - Before opening a PR or finalizing any feature branch, verify the 6 cardinal LLM bug patterns:
      1. Check every `len < cap` and `len <= cap`: does every branch reject on overflow?
      2. Check every PRNG / unique ID generator: does it preserve entropy across invocations?
      3. Check every string search: is a structured reader used for JSON, headers, and URLs?
      4. Check enum dispatchers: do unknown strings return `Unknown` / `false` instead of defaulting to a valid variant?
      5. Check buffer sizing: are enterprise-sized tokens (up to 4096 bytes) supported?
+     6. Check stack secrets and out-buffers: are ephemeral keys wiped via `core::secure_zeroize_*` and out-buffers cleared on error?
 4. **Anti-hallucination RFC citation contract**:
    - Always cite the active authoritative RFC specification (e.g. RFC 9110 / RFC 9112 over obsolete
      RFC 7230 / RFC 7231 / RFC 2616).

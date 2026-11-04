@@ -87,17 +87,6 @@ inline fn query_token_val(tok: u64, wire: const u8[:]) -> const u8[:] {
     return wire[val_off..val_off + vlen];
 }
 
-// 64-bit SWAR zero byte check (RFC 9110 / uWebSockets HttpParser algorithm)
-inline fn swar_has_zero_byte(w: u64) -> bool {
-    return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
-}
-
-// 64-bit SWAR search for byte 'b' in word 'w'
-inline fn swar_has_byte(w: u64, b: u8) -> bool {
-    let mask = 0x0101010101010101 * (b as u64);
-    return swar_has_zero_byte(w ^ mask);
-}
-
 // Finds the next '&' delimiter starting at `start` using 64-bit SWAR word scanning.
 //
 // Example:

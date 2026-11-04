@@ -678,6 +678,7 @@ fn execute_live_network_hop(
             return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
         }
         var t = Transport.Disconnected;
+        var neg_proto = NegotiatedProtocol.Http11;
         if is_https {
             let host_is_hsts = session.enable_hsts && is_hsts_host(session.hsts, host_str, now_sec);
             let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
@@ -694,6 +695,9 @@ fn execute_live_network_hop(
                 native_tcp_close(sock);
                 return make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS 1.3 handshake failed");
             }
+            if tls_session_alpn(slot_idx) == "h2" {
+                neg_proto = NegotiatedProtocol.Http2;
+            }
             t = Transport.Tls {
                 fd:            sock,
                 record_seq_rx: 0,
@@ -703,7 +707,8 @@ fn execute_live_network_hop(
         } else {
             t = Transport.Tcp { fd: sock };
         }
-        conn_id = register_connection(session.pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
+        let max_streams: i32 = if neg_proto == NegotiatedProtocol.Http2 { 100 } else { 1 };
+        conn_id = register_connection(session.pool, pool_key, neg_proto, t, "", max_streams, now_ns);
         guard conn_id > 0 else {
             t.close();
             return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "connection pool registration failed");

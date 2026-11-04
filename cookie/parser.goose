@@ -410,19 +410,9 @@ fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
-// RFC 6265 Section 4.1.1 & RFC 9110 Section 5.6.2 token character validator.
-fn is_cookie_token_char(b: u8) -> bool {
-    if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
-        return true;
-    }
-    return b == '!' || b == '#' || b == '$' || b == '%' || b == '&' ||
-           b == '\'' || b == '*' || b == '+' || b == '-' || b == '.' ||
-           b == '^' || b == '_' || b == '`' || b == '|' || b == '~';
-}
-
 // RFC 6265 Section 4.1.1 cookie-octet validator (%x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E).
 fn is_cookie_octet(b: u8) -> bool {
-    guard b >= 0x21 && b <= 0x7E else { return false; }
+    guard core::is_ascii_vchar(b) else { return false; }
     return b != '"' && b != ',' && b != ';' && b != '\\';
 }
 
@@ -439,7 +429,7 @@ fn is_valid_cookie_value(val: const u8[:]) -> bool {
 fn validate_cookie_name(name: const u8[:]) -> bool {
     guard name.len > 0 else { return true; }
     for b in name {
-        guard is_cookie_token_char(b) else { return false; }
+        guard core::is_tchar(b) else { return false; }
     }
     return true;
 }

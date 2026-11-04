@@ -165,6 +165,12 @@ fn ::is_schemeful_same_site_urls(url_a: const core::Url&, url_b: const core::Url
 fn ::is_same_site_origin_url(origin_val: const core::Origin&, url_val: const core::Url&) -> bool {
     return core::is_same_site_origin_url(origin_val, url_val);
 }
+fn ::format_url_without_query_or_hash<B>(url_val: const core::Url&, out: B&) -> bool {
+    return core::format_url_without_query_or_hash(url_val, out);
+}
+fn ::normalize_http_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
+    return core::normalize_http_target_uri(raw_uri, out);
+}
 
 // ---- file & path ufcs bridges -----------------------------------------------
 
@@ -360,6 +366,12 @@ fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:],
 }
 fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     return core::split_once_fold(s, delim);
+}
+fn ::find_unquoted_byte(s: const u8[:], delim: u8) -> i64 {
+    return core::find_unquoted_byte(s, delim);
+}
+fn ::split_once_unquoted_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
+    return core::split_once_unquoted_byte(s, delim);
 }
 fn ::make_byte_tokenizer(src: const u8[:], delim: u8) -> core::ByteTokenizer {
     return core::make_byte_tokenizer(src, delim);

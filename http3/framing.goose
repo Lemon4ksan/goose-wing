@@ -278,7 +278,7 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
 fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, stream_id) else { return false; }
-    wing::write_priority_param_rfc9218(prio, payload);
+    wing::serialize_http_priority(prio, payload);
     guard encode_h3_frame_header(out, rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, payload.len as u64) else { return false; }
     out.append(payload[..]);
     return true;
@@ -308,7 +308,7 @@ fn parse_h3_priority_update_request(
 fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, push_id) else { return false; }
-    wing::write_priority_param_rfc9218(prio, payload);
+    wing::serialize_http_priority(prio, payload);
     guard encode_h3_frame_header(out, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
     out.append(payload[..]);
     return true;

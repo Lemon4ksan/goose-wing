@@ -60,6 +60,20 @@ typedef struct wing_event {
     void             *user_data;
 } wing_event_t;
 
+// ============================================================================
+// Layer 4 Cross-Platform TCP Socket Transport (shim/tcp.c)
+// ============================================================================
+
+WING_API int32_t  wing_tcp_init(void);
+WING_API void     wing_tcp_cleanup(void);
+WING_API int64_t  wing_tcp_listen(wing_slice_t host, uint16_t port, int32_t backlog);
+WING_API uint16_t wing_tcp_getsockname_port(int64_t sock_fd);
+WING_API int64_t  wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms);
+WING_API int64_t  wing_tcp_connect(wing_slice_t host, uint16_t port, uint32_t timeout_ms);
+WING_API int32_t  wing_tcp_send(int64_t sock_fd, wing_slice_t data);
+WING_API int32_t  wing_tcp_recv(int64_t sock_fd, wing_mut_slice_t buf, uint32_t timeout_ms);
+WING_API void     wing_tcp_close(int64_t sock_fd);
+
 #ifdef __cplusplus
 }
 #endif

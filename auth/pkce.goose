@@ -16,29 +16,6 @@ struct PkcePair {
     method:    u8[..16]  = "S256",
 }
 
-const PKCE_UNRESERVED_LUT: const bool[256] = [
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, true, true, false,
-    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
-    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, false, false, false, true,
-    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-];
-
-checkfree inline fn is_pkce_unreserved_char(ch: u8) -> bool {
-    return PKCE_UNRESERVED_LUT[ch];
-}
-
 const BASE64URL_CHAR_LUT: const bool[256] = [
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
@@ -93,7 +70,7 @@ fn is_valid_code_verifier(v: const u8[:]) -> bool {
         return false;
     }
     for b in v {
-        guard is_pkce_unreserved_char(b) else {
+        guard core::is_uri_unreserved(b) else {
             return false;
         }
     }

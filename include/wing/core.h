@@ -145,6 +145,57 @@ typedef struct wing_instant {
 WING_API wing_instant_t wing_monotonic_now(void);
 WING_API int64_t        wing_duration_nanos(wing_instant_t start, wing_instant_t end);
 
+// ============================================================================
+// Hardware SIMD & SWAR Wire Acceleration (shim/simd.c)
+// ============================================================================
+
+WING_API int32_t wing_simd_is_pure_ascii(wing_slice_t slice);
+WING_API int64_t wing_simd_find_crlf(wing_slice_t slice);
+WING_API int64_t wing_fast_find_crlfcrlf(wing_slice_t slice);
+WING_API int64_t wing_swar_find_ctl(wing_slice_t slice);
+WING_API void    wing_simd_mask_websocket(wing_mut_slice_t slice, const uint8_t mask[4]);
+WING_API void    wing_swar_to_lower(wing_mut_slice_t slice);
+WING_API void    wing_swar_to_upper(wing_mut_slice_t slice);
+WING_API int32_t wing_fast_u64toa(uint64_t value, wing_mut_slice_t dst);
+WING_API int32_t wing_fast_u32toa_hex(uint32_t value, wing_mut_slice_t dst);
+
+// ============================================================================
+// Virtual Memory Page-Mirrored Ring Buffer & Guarded Arena (shim/page_*.c)
+// ============================================================================
+
+#define WING_PAGE_GUARD_PAGE 0x01
+#define WING_PAGE_HUGE_PAGES 0x02
+
+WING_API int32_t wing_page_ring_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *out_capacity);
+WING_API void    wing_page_ring_destroy(uint64_t handle);
+WING_API int64_t wing_page_ring_write(uint64_t handle, uint64_t tail_offset, wing_slice_t src);
+WING_API int64_t wing_page_ring_read(uint64_t handle, uint64_t head_offset, wing_mut_slice_t dst);
+WING_API int64_t wing_page_ring_peek(uint64_t handle, uint64_t head_offset, wing_mut_slice_t dst);
+WING_API int64_t wing_page_ring_find_crlf(uint64_t handle, uint64_t head_offset, uint32_t len);
+WING_API int64_t wing_page_ring_find_crlfcrlf(uint64_t handle, uint64_t head_offset, uint32_t len);
+
+WING_API int32_t wing_guarded_arena_create(
+    uint64_t  requested_capacity,
+    uint32_t  flags,
+    uint64_t *out_handle,
+    uint64_t *out_capacity
+);
+WING_API void    wing_guarded_arena_destroy(uint64_t handle);
+WING_API int64_t wing_guarded_arena_write(uint64_t handle, uint64_t offset, wing_slice_t src);
+WING_API int64_t wing_guarded_arena_read(uint64_t handle, uint64_t offset, wing_mut_slice_t dst);
+WING_API int32_t wing_guarded_arena_reset(uint64_t handle);
+
+// ============================================================================
+// Lock-Free Cache-Line Aligned SPSC Queue (shim/spsc.c)
+// ============================================================================
+
+WING_API int32_t  wing_spsc_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *out_capacity);
+WING_API void     wing_spsc_destroy(uint64_t handle);
+WING_API int32_t  wing_spsc_push(uint64_t handle, uint64_t value);
+WING_API int32_t  wing_spsc_pop(uint64_t handle, uint64_t *out_value);
+WING_API uint32_t wing_spsc_count(uint64_t handle);
+WING_API uint32_t wing_spsc_available(uint64_t handle);
+
 #ifdef __cplusplus
 }
 #endif

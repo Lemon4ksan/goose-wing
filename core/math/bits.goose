@@ -279,3 +279,22 @@ inline fn write_le_u64<B>(out: B&, val: u64) {
     ];
     out.append(bytes[..]);
 }
+
+// 64-bit SWAR zero byte check (RFC 9110 / uWebSockets HttpParser algorithm).
+inline fn swar_has_zero_byte(w: u64) -> bool {
+    return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
+}
+
+// 64-bit SWAR search for byte `b` in 8-byte word `w`.
+inline fn swar_has_byte(w: u64, b: u8) -> bool {
+    let mask = 0x0101010101010101 * (b as u64);
+    return swar_has_zero_byte(w ^ mask);
+}
+
+// 64-bit SWAR control character check (< 0x20 or == 0x7F).
+inline fn swar_has_ctl_or_del(w: u64) -> bool {
+    let sub = w - 0x2020202020202020;
+    let has_under_20 = (sub & (~w) & 0x8080808080808080) != 0;
+    let has_del = swar_has_byte(w, 0x7F);
+    return has_under_20 || has_del;
+}

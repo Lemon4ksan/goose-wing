@@ -48,38 +48,11 @@ struct SfDictEntry {
     inner_items:   SfItem[..8]      = [],
 }
 
-// ---- Character Classes ---------------------------------------------------
-
-inline fn is_sf_whitespace(b: u8) -> bool {
-    return b == ' ' || b == '\t';
-}
-
-inline fn is_sf_alpha(b: u8) -> bool {
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z');
-}
-
-inline fn is_sf_digit(b: u8) -> bool {
-    return b >= '0' && b <= '9';
-}
-
-inline fn is_sf_tchar(b: u8) -> bool {
-    if is_sf_alpha(b) || is_sf_digit(b) {
-        return true;
-    }
-    return b == '!' || b == '#' || b == '$' || b == '%' || b == '&' ||
-           b == '\'' || b == '*' || b == '+' || b == '-' || b == '.' ||
-           b == '^' || b == '_' || b == '`' || b == '|' || b == '~';
-}
-
-inline fn is_sf_key_char(b: u8) -> bool {
-    return (b >= 'a' && b <= 'z') || is_sf_digit(b) || b == '_' || b == '-' || b == '.' || b == '*';
-}
-
 // ---- Whitespace & Index Scanners -----------------------------------------
 
 fn sf_skip_ws(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
-    while p < src.len && is_sf_whitespace(src[p]) {
+    while p < src.len && core::is_lws(src[p]) {
         p = p + 1;
     }
     return p;
@@ -89,7 +62,7 @@ fn sf_skip_ws_and_commas(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
     while p < src.len {
         let ch = src[p];
-        if is_sf_whitespace(ch) || ch == ',' {
+        if core::is_lws(ch) || ch == ',' {
             p = p + 1;
         } else {
             break;
@@ -147,7 +120,7 @@ fn sf_parse_string(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
             out_item.str_val = src[start..p];
             out_next = p + 1;
             return true;
-        } else if ch < 0x20 || ch >= 0x7f {
+        } else if !core::is_ascii_printable(ch) {
             return false;
         } else {
             p = p + 1;
@@ -182,14 +155,14 @@ fn sf_parse_token(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&)
         return false;
     }
     let first = src[pos];
-    if !is_sf_alpha(first) && first != '*' {
+    if !core::is_ascii_alpha(first) && first != '*' {
         return false;
     }
     let start = pos;
     var p = start + 1;
     while p < src.len {
         let ch = src[p];
-        if is_sf_tchar(ch) || ch == ':' || ch == '/' {
+        if core::is_tchar(ch) || ch == ':' || ch == '/' {
             p = p + 1;
         } else {
             break;
@@ -213,7 +186,7 @@ fn sf_scan_digits(
     var p = pos;
     var accum: i64 = 0;
     var count: i32 = 0;
-    while p < src.len && is_sf_digit(src[p]) {
+    while p < src.len && core::is_ascii_digit(src[p]) {
         let digit = (src[p] - '0') as i64;
         accum = accum * 10 + digit;
         count = count + 1;
@@ -271,7 +244,7 @@ fn sf_parse_number(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     if src[p] == '-' {
         is_neg = true;
         p = p + 1;
-        if p >= src.len || !is_sf_digit(src[p]) {
+        if p >= src.len || !core::is_ascii_digit(src[p]) {
             return false;
         }
     }
@@ -392,13 +365,17 @@ fn sf_parse_bare_item(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i
     if ch == '@' {
         return sf_parse_date(src, pos, out_item, out_next);
     }
-    if ch == '-' || is_sf_digit(ch) {
+    if ch == '-' || core::is_ascii_digit(ch) {
         return sf_parse_number(src, pos, out_item, out_next);
     }
-    if is_sf_alpha(ch) || ch == '*' {
+    if core::is_ascii_alpha(ch) || ch == '*' {
         return sf_parse_token(src, pos, out_item, out_next);
     }
     return false;
+}
+
+inline fn is_sf_key_char(b: u8) -> bool {
+    return (b >= 'a' && b <= 'z') || core::is_ascii_digit(b) || b == '_' || b == '-' || b == '.' || b == '*';
 }
 
 // Parses an RFC 8941 Key: lcalpha, digit, _, -, ., *
@@ -461,6 +438,8 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
             out_params[found_idx] = param;
         } else if out_params.len < 8 {
             out_params.push(param);
+        } else {
+            return false;
         }
     }
     out_next = p;
@@ -516,6 +495,8 @@ fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next
         }
         if entry.inner_items.len < 8 {
             entry.inner_items.push(inner_item);
+        } else {
+            return false;
         }
         p = in_next;
     }
@@ -609,6 +590,8 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
             out_entries[found_idx] = entry;
         } else if out_entries.len < 16 {
             out_entries.push(entry);
+        } else {
+            return false;
         }
 
         p = sf_skip_ws(trimmed, p);
@@ -666,6 +649,8 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
 
         if out_items.len < 16 {
             out_items.push(p_item);
+        } else {
+            return false;
         }
 
         p = sf_skip_ws(trimmed, p);

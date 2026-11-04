@@ -64,16 +64,6 @@ fn unquote<B>(input: const u8[:], out: B&) -> bool {
     return strict_unquote(input, out);
 }
 
-fn count_preceding_slashes(s: const u8[:], idx: i64) -> i64 {
-    var slash_count: i64 = 0;
-    var j = idx - 1;
-    while j >= 0 && s[j] == '\\' {
-        slash_count++;
-        j--;
-    }
-    return slash_count;
-}
-
 fn has_param_name(params: const MediaTypeParam[..16]&, name: const u8[:]) -> bool {
     for &p in params {
         if p.name[..] == name {
@@ -133,20 +123,8 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
 fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
     var rem = rem_in;
     while rem.len > 0 {
-        var next_semi: i64 = -1;
-        var in_quotes = false;
-        for i in rem.len {
-            let b = rem[i];
-            if b == '"' && (count_preceding_slashes(rem, i) % 2) == 0 {
-                in_quotes = !in_quotes;
-            } else if b == ';' && !in_quotes {
-                next_semi = i;
-                break;
-            }
-        }
-
-        let param_token = if next_semi >= 0 { rem[..next_semi] } else { rem };
-        rem = if next_semi >= 0 { rem[next_semi + 1..] } else { "" };
+        let param_token, next_rem, _ = rem.split_once_unquoted_byte(';');
+        rem = next_rem;
 
         let p_trim = trim_lws(param_token);
         if p_trim.len == 0 { continue; }
@@ -475,7 +453,7 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
             cursor++;
         } else {
             // Printable ASCII %x20-7E only
-            guard b >= 0x20 && b <= 0x7E else { return false; }
+            guard core::is_ascii_printable(b) else { return false; }
             guard out_bare.text.try_push(b) else { return false; }
             cursor++;
         }
@@ -492,7 +470,7 @@ fn parse_sfv_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
 fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
     guard cursor < raw.len else { return false; }
     let first = raw[cursor];
-    guard (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '*' else { return false; }
+    guard core::is_ascii_alpha(first) || first == '*' else { return false; }
 
     out_bare.kind = SfvType.Token;
     out_bare.text.clear();
@@ -501,7 +479,7 @@ fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bo
 
     while cursor < raw.len {
         let b = raw[cursor];
-        if is_tchar(b) || b == ':' || b == '/' {
+        if core::is_tchar(b) || b == ':' || b == '/' {
             guard out_bare.text.len < out_bare.text.cap else { return false; }
             out_bare.text.push(b);
             cursor++;
@@ -528,8 +506,7 @@ fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
     var b64_bytes: u8[..1088] = [];
     while cursor < raw.len && raw[cursor] != ':' {
         let b = raw[cursor];
-        let is_b64 = (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
-            (b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=';
+        let is_b64 = core::is_ascii_alphanumeric(b) || b == '+' || b == '/' || b == '=';
         guard is_b64 else { return false; }
         guard b64_bytes.len < b64_bytes.cap else { return false; }
         b64_bytes.push(b);
@@ -539,61 +516,7 @@ fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
     cursor++; // skip closing ':'
 
     // Decode Base64
-    guard decode_base64(b64_bytes[..], out_bare.text) else { return false; }
-    return true;
-}
-
-fn b64_val(c: u8) -> i32 {
-    if c >= 'A' && c <= 'Z' { return c - 'A'; }
-    if c >= 'a' && c <= 'z' { return c - 'a' + 26; }
-    if c >= '0' && c <= '9' { return c - '0' + 52; }
-    if c == '+' { return 62; }
-    if c == '/' { return 63; }
-    return -1;
-}
-
-// Decodes a base64 encoded byte slice into output buffer.
-//
-// Example:
-//   src = "aGVsbG8=", out = []
-//   returns: true, out = "hello"
-fn decode_base64<B>(src: const u8[:], out: B&) -> bool {
-    guard (src.len % 4) == 0 else { return false; }
-    var i: i64 = 0;
-    while i < src.len {
-        let c0 = src[i];
-        let c1 = src[i + 1];
-        let c2 = src[i + 2];
-        let c3 = src[i + 3];
-
-        let v0 = b64_val(c0);
-        let v1 = b64_val(c1);
-        guard v0 >= 0 && v1 >= 0 else { out.clear(); return false; }
-
-        if c2 == '=' {
-            guard c3 == '=' && i + 4 == src.len else { out.clear(); return false; }
-            guard (v1 & 0x0F) == 0 else { out.clear(); return false; } // non-zero pad bits
-            guard out.len < out.cap else { out.clear(); return false; }
-            out.push(((v0 << 2) | (v1 >> 4)) as u8);
-        } else if c3 == '=' {
-            guard i + 4 == src.len else { out.clear(); return false; }
-            let v2 = b64_val(c2);
-            guard v2 >= 0 else { out.clear(); return false; }
-            guard (v2 & 0x03) == 0 else { out.clear(); return false; } // non-zero pad bits
-            guard out.len + 2 <= out.cap else { out.clear(); return false; }
-            out.push(((v0 << 2) | (v1 >> 4)) as u8);
-            out.push(((v1 << 4) | (v2 >> 2)) as u8);
-        } else {
-            let v2 = b64_val(c2);
-            let v3 = b64_val(c3);
-            guard v2 >= 0 && v3 >= 0 else { out.clear(); return false; }
-            guard out.len + 3 <= out.cap else { out.clear(); return false; }
-            out.push(((v0 << 2) | (v1 >> 4)) as u8);
-            out.push(((v1 << 4) | (v2 >> 2)) as u8);
-            out.push(((v2 << 6) | v3) as u8);
-        }
-        i += 4;
-    }
+    guard core::base64_decode(b64_bytes[..], out_bare.text) else { return false; }
     return true;
 }
 
@@ -651,7 +574,7 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
         if b == '"' {
             cursor++; // consumed closing quote
             // Validate that decoded bytes are valid UTF-8
-            guard validate_utf8(out_bare.text[..]) else { return false; }
+            guard core::validate_utf8(out_bare.text[..]) else { return false; }
             return true;
         } else if b == '%' {
             // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 Section 3.3.8
@@ -664,50 +587,12 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
             cursor += 3;
         } else {
             // Printable ASCII %x20-7E except % and "
-            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
+            guard core::is_ascii_printable(b) && b != '%' && b != '"' else { return false; }
             guard out_bare.text.try_push(b) else { return false; }
             cursor++;
         }
     }
     return false;
-}
-
-// UTF-8 byte sequence validator
-fn validate_utf8(data: const u8[:]) -> bool {
-    var i: i64 = 0;
-    while i < data.len {
-        let b0 = data[i];
-        if b0 <= 0x7F {
-            i++;
-        } else if (b0 & 0xE0) == 0xC0 {
-            guard i + 1 < data.len else { return false; }
-            let b1 = data[i + 1];
-            guard (b1 & 0xC0) == 0x80 else { return false; }
-            guard b0 >= 0xC2 else { return false; } // Overlong
-            i += 2;
-        } else if (b0 & 0xF0) == 0xE0 {
-            guard i + 2 < data.len else { return false; }
-            let b1 = data[i + 1];
-            let b2 = data[i + 2];
-            guard (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 else { return false; }
-            if b0 == 0xE0 && b1 < 0xA0 { return false; } // Overlong
-            if b0 == 0xED && b1 >= 0xA0 { return false; } // UTF-16 surrogates U+D800..U+DFFF
-            i += 3;
-        } else if (b0 & 0xF8) == 0xF0 {
-            guard i + 3 < data.len else { return false; }
-            let b1 = data[i + 1];
-            let b2 = data[i + 2];
-            let b3 = data[i + 3];
-            guard (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80 else { return false; }
-            if b0 == 0xF0 && b1 < 0x90 { return false; } // Overlong
-            if b0 == 0xF4 && b1 > 0x8F { return false; } // Above U+10FFFF
-            guard b0 <= 0xF4 else { return false; }
-            i += 4;
-        } else {
-            return false;
-        }
-    }
-    return true;
 }
 
 // RFC 8941 Section 3.3: Bare item dispatcher

@@ -26,7 +26,6 @@ const TRACE_FLAG_SAMPLED: u8 = 0x01; // Bit 0: parent recorded / sampled
 inline fn hex_val(c: u8) -> i32 {
     if c >= '0' && c <= '9' { return c - '0'; }
     if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
     return -1;
 }
 
@@ -179,7 +178,11 @@ fn is_valid_tracestate_key(key: const u8[:]) -> bool {
         guard tenant_len >= 1 && tenant_len <= 241 else { return false; }
         guard system_len >= 1 && system_len <= 14 else { return false; }
         let sys_first = key[at_pos + 1];
-        guard (sys_first >= 'a' && sys_first <= 'z') || (sys_first >= '0' && sys_first <= '9') else { return false; }
+        guard sys_first >= 'a' && sys_first <= 'z' else { return false; }
+        let tenant_first = key[0];
+        let is_alnum = (tenant_first >= 'a' && tenant_first <= 'z') ||
+            (tenant_first >= '0' && tenant_first <= '9');
+        guard is_alnum else { return false; }
     } else {
         // Simple key MUST start with lowercase ASCII letter (W3C §3.3.1.1: lcalpha)
         let first = key[0];
@@ -244,12 +247,11 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         guard is_valid_tracestate_key(k_raw) else { return ts, false; }
         guard is_valid_tracestate_val(v_raw) else { return ts, false; }
 
-        if ts.members.len < 32 {
-            var member = TracestateMember { .. };
-            member.key.append(k_raw);
-            member.val.append(v_raw);
-            ts.members.push(member);
-        }
+        guard ts.members.len < 32 else { return ts, false; }
+        var member = TracestateMember { .. };
+        member.key.append(k_raw);
+        member.val.append(v_raw);
+        ts.members.push(member);
 
         cursor = if comma_pos >= 0 { comma_pos + 1 } else { raw.len };
     }

@@ -31,6 +31,69 @@ fn is_ascii_alphanumeric(b: u8) -> bool {
     return is_ascii_alpha(b) || is_ascii_digit(b);
 }
 
+// Checks whether byte is an ASCII hexadecimal digit ('0'..'9', 'a'..'f', 'A'..'F').
+inline fn is_ascii_hexdigit(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
+}
+
+// Checks whether byte is visible ASCII (VCHAR, RFC 5234 §B.1: 0x21..0x7E).
+inline fn is_ascii_vchar(b: u8) -> bool {
+    return b >= 0x21 && b <= 0x7E;
+}
+
+// Checks whether byte is printable ASCII (0x20..0x7E).
+inline fn is_ascii_printable(b: u8) -> bool {
+    return b >= 0x20 && b <= 0x7E;
+}
+
+const TCHAR_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+// RFC 9110 Section 5.6.2: Checks whether byte is an HTTP token character (tchar).
+checkfree inline fn is_tchar(b: u8) -> bool {
+    return TCHAR_LUT[b];
+}
+
+const URI_UNRESERVED_LUT: const bool[256] = [
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, false, true,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+];
+
+// RFC 3986 Section 2.3: Checks whether byte is an unreserved URI character (ALPHA / DIGIT / "-" / "." / "_" / "~").
+checkfree inline fn is_uri_unreserved(b: u8) -> bool {
+    return URI_UNRESERVED_LUT[b];
+}
+
 // Converts an ASCII byte to lowercase if it is uppercase; otherwise returns unchanged.
 fn to_lower_ascii_byte(b: u8) -> u8 {
     return if b >= 'A' && b <= 'Z' { b + 32 } else { b };

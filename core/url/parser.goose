@@ -149,11 +149,11 @@ fn parse_url_scheme_delimiter(input_bytes: const u8[:]) -> i64, bool {
         return -1, true;
     }
     let scheme_cand = input_bytes[..delim_pos];
-    guard is_alpha_byte(scheme_cand[0]) else {
+    guard is_ascii_alpha(scheme_cand[0]) else {
         return -1, false;
     }
     for char_byte in scheme_cand[1..] {
-        if !is_alphanumeric_byte(char_byte) && char_byte != '+' && char_byte != '-' && char_byte != '.' {
+        if !is_ascii_alphanumeric(char_byte) && char_byte != '+' && char_byte != '-' && char_byte != '.' {
             return -1, false;
         }
     }
@@ -464,14 +464,6 @@ fn parse_port_number(port_str: const u8[:]) -> i32, bool {
     return val as i32, true;
 }
 
-fn is_alpha_byte(b: u8) -> bool {
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z');
-}
-
-fn is_alphanumeric_byte(b: u8) -> bool {
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
-}
-
 // RFC 6874 §2 & RFC 4007 §5: A ZoneID MUST NOT be attached to an address with global scope.
 // Permitted scoped IPv6 addresses include link-local unicast (fe80::/10), site-local unicast (fec0::/10),
 // and non-global scoped multicast addresses (ff01..ff05, ff08, etc.).
@@ -504,17 +496,11 @@ inline fn validate_zone_id(zone_id: const u8[:]) -> bool {
     var idx: i64 = 0;
     while idx < zone_id.len {
         let b = zone_id[idx];
-        let is_unres = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
-            (b >= '0' && b <= '9') || b == '-' || b == '.' || b == '_' || b == '~';
-        if is_unres {
+        if is_uri_unreserved(b) {
             idx += 1;
         } else if b == '%' {
             guard idx + 2 < zone_id.len else { return false; }
-            let h1 = zone_id[idx + 1];
-            let h2 = zone_id[idx + 2];
-            let is_h1 = (h1 >= '0' && h1 <= '9') || (h1 >= 'a' && h1 <= 'f') || (h1 >= 'A' && h1 <= 'F');
-            let is_h2 = (h2 >= '0' && h2 <= '9') || (h2 >= 'a' && h2 <= 'f') || (h2 >= 'A' && h2 <= 'F');
-            guard is_h1 && is_h2 else { return false; }
+            guard is_ascii_hexdigit(zone_id[idx + 1]) && is_ascii_hexdigit(zone_id[idx + 2]) else { return false; }
             idx += 3;
         } else {
             return false;
@@ -665,9 +651,9 @@ inline fn has_unencoded_control_byte(s: const u8[:]) -> bool {
 }
 
 inline fn is_valid_scheme_slice(scheme_slice: const u8[:]) -> bool {
-    guard scheme_slice.len > 0 && is_alpha_byte(scheme_slice[0]) else { return false; }
+    guard scheme_slice.len > 0 && is_ascii_alpha(scheme_slice[0]) else { return false; }
     for char_byte in scheme_slice[1..] {
-        guard is_alphanumeric_byte(char_byte) || char_byte == '+' || char_byte == '-' || char_byte == '.' else {
+        guard is_ascii_alphanumeric(char_byte) || char_byte == '+' || char_byte == '-' || char_byte == '.' else {
             return false;
         }
     }
