@@ -77,8 +77,9 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
         internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
 
@@ -91,11 +92,12 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
         internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Valid Content-Length must succeed");
-        sub.assert_true(out_list.has_content_length, "has_content_length set");
-        sub.assert_eq(out_list.content_length_val, 1048576, "parsed content-length matches");
+        sub.assert_true(pseudo.has_content_length, "has_content_length set");
+        sub.assert_eq(pseudo.content_length_val, 1048576, "parsed content-length matches");
     };
 }
 
@@ -271,12 +273,12 @@ fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
 
 fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
     t.run("OpenSSL #33332 & Go #82350: Cross-origin redirect strips sensitive headers and Host") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Authorization", "Bearer secret-token"));
-        headers.push(wing::make_header("Cookie", "session=xyz123"));
-        headers.push(wing::make_header("X-Api-Key", "super-secret-key"));
-        headers.push(wing::make_header("Host", "api.bank.com"));
-        headers.push(wing::make_header("X-Custom-Data", "regular-value"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Authorization", "Bearer secret-token");
+        wing::append_header(headers, "Cookie", "session=xyz123");
+        wing::append_header(headers, "X-Api-Key", "super-secret-key");
+        wing::append_header(headers, "Host", "api.bank.com");
+        wing::append_header(headers, "X-Custom-Data", "regular-value");
 
         var rinfo = wing::RedirectInfo {
             is_cross_origin:     true,
@@ -287,17 +289,17 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
 
         wing::sanitize_headers_on_redirect(headers, rinfo, wing::RedirectSanitizeOptions { .. });
 
-        sub.assert_false(wing::has_header(headers[..], "Authorization"), "Authorization must be stripped on cross-origin redirect");
-        sub.assert_false(wing::has_header(headers[..], "Cookie"), "Cookie must be stripped on redirect");
-        sub.assert_false(wing::has_header(headers[..], "X-Api-Key"), "X-Api-Key must be stripped on cross-origin redirect");
-        sub.assert_false(wing::has_header(headers[..], "Host"), "Stale Host header must be stripped on cross-origin redirect (Go #82350)");
-        sub.assert_true(wing::has_header(headers[..], "X-Custom-Data"), "Non-sensitive custom header must be preserved");
+        sub.assert_false(wing::has_header(headers, "Authorization"), "Authorization must be stripped on cross-origin redirect");
+        sub.assert_false(wing::has_header(headers, "Cookie"), "Cookie must be stripped on redirect");
+        sub.assert_false(wing::has_header(headers, "X-Api-Key"), "X-Api-Key must be stripped on cross-origin redirect");
+        sub.assert_false(wing::has_header(headers, "Host"), "Stale Host header must be stripped on cross-origin redirect (Go #82350)");
+        sub.assert_true(wing::has_header(headers, "X-Custom-Data"), "Non-sensitive custom header must be preserved");
     };
 
     t.run("CVE-2018-1000007: Scheme downgrade (HTTPS -> HTTP) strips credentials even to trusted host") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Authorization", "Basic dXNlcjpwYXNz"));
-        headers.push(wing::make_header("X-Custom", "safe"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Authorization", "Basic dXNlcjpwYXNz");
+        wing::append_header(headers, "X-Custom", "safe");
 
         var rinfo = wing::RedirectInfo {
             is_cross_origin:     false,
@@ -313,8 +315,8 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
             wing::RedirectSanitizeOptions { trusted_location_forwarding: true },
         );
 
-        sub.assert_false(wing::has_header(headers[..], "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
-        sub.assert_true(wing::has_header(headers[..], "X-Custom"), "Non-sensitive header preserved");
+        sub.assert_false(wing::has_header(headers, "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
+        sub.assert_true(wing::has_header(headers, "X-Custom"), "Non-sensitive header preserved");
     };
 }
 
@@ -611,8 +613,9 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         raw_block.append("value");
 
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out_list, 8192, false);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
         sub.assert_ne(err, rfc::H2_ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
 }

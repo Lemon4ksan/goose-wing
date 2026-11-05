@@ -90,8 +90,9 @@ fn test_cve_crlf_header_injection(t: lit::T&) {
         wing::set_header(req, "X-Injected\r\nEvil: true", "valid-value");
 
         var has_injected_crlf = false;
-        for hdr in req.headers {
-            for b in hdr.name {
+        for idx in 0..req.headers.entries.len {
+            let e = req.headers.entries[idx];
+            for b in wing::entry_name(req.headers, e) {
                 if b == '\r' || b == '\n' || b == 0 {
                     has_injected_crlf = true;
                 }
@@ -105,8 +106,9 @@ fn test_cve_crlf_header_injection(t: lit::T&) {
         wing::set_header(req, "X-Test", "value\r\nSet-Cookie: pwned=true");
 
         var has_injected_crlf = false;
-        for hdr in req.headers {
-            for b in hdr.value {
+        for idx in 0..req.headers.entries.len {
+            let e = req.headers.entries[idx];
+            for b in wing::entry_value(req.headers, e) {
                 if b == '\r' || b == '\n' || b == 0 {
                     has_injected_crlf = true;
                 }
@@ -141,12 +143,8 @@ fn test_cve_port_change_and_representation_headers(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        var has_auth = false;
-        var has_key = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
+        let has_key = wing::has_header(req.headers, "X-API-Key");
         sub.assert_false(has_auth, "Authorization must be stripped across port change even if hostname is trusted");
         sub.assert_false(has_key, "X-API-Key must be stripped across port change even if hostname is trusted");
     };
@@ -168,12 +166,8 @@ fn test_cve_port_change_and_representation_headers(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        var has_sig = false;
-        var has_csrf = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "X-Signature-256") { has_sig = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-CSRF-Token") { has_csrf = true; }
-        }
+        let has_sig = wing::has_header(req.headers, "X-Signature-256");
+        let has_csrf = wing::has_header(req.headers, "X-CSRF-Token");
         sub.assert_false(has_sig, "X-Signature-256 must be stripped on cross-origin redirect");
         sub.assert_false(has_csrf, "X-CSRF-Token must be stripped on cross-origin redirect");
     };
@@ -197,14 +191,9 @@ fn test_cve_port_change_and_representation_headers(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        var has_if_match = false;
-        var has_if_none_match = false;
-        var has_expect = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "If-Match") { has_if_match = true; }
-            if core::eq_ascii_fold(hdr.name[..], "If-None-Match") { has_if_none_match = true; }
-            if core::eq_ascii_fold(hdr.name[..], "Expect") { has_expect = true; }
-        }
+        let has_if_match = wing::has_header(req.headers, "If-Match");
+        let has_if_none_match = wing::has_header(req.headers, "If-None-Match");
+        let has_expect = wing::has_header(req.headers, "Expect");
         sub.assert_false(has_if_match, "If-Match must be stripped when method mutates to GET");
         sub.assert_false(has_if_none_match, "If-None-Match must be stripped when method mutates to GET");
         sub.assert_false(has_expect, "Expect must be stripped when method mutates to GET");
@@ -366,19 +355,19 @@ fn test_cve_connect_tunnel_security(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_proxy_authorization_leakage(t: lit::T&) {
     t.run("CVE-2025-4673: Strip Proxy-Authorization Before Origin Request") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Host", "target.com"));
-        headers.push(wing::make_header("Proxy-Authorization", "Basic proxy_secret_cred"));
-        headers.push(wing::make_header("PROXY-AUTHORIZATION", "Basic UPPERCASE_SECRET"));
-        headers.push(wing::make_header("Proxy-Authenticate", "Basic realm=proxy"));
-        headers.push(wing::make_header("Proxy-Connection", "Keep-Alive"));
-        headers.push(wing::make_header("Authorization", "Bearer origin_token"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Host", "target.com");
+        wing::append_header(headers, "Proxy-Authorization", "Basic proxy_secret_cred");
+        wing::append_header(headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_SECRET");
+        wing::append_header(headers, "Proxy-Authenticate", "Basic realm=proxy");
+        wing::append_header(headers, "Proxy-Connection", "Keep-Alive");
+        wing::append_header(headers, "Authorization", "Bearer origin_token");
 
         wing::sanitize_tunnel_headers_for_origin(headers);
 
-        sub.assert_eq(headers.len, 2, "All proxy headers stripped");
-        sub.assert_bytes_eq(headers[0].name[..], "Host", "Host header preserved");
-        sub.assert_bytes_eq(headers[1].name[..], "Authorization", "Origin bearer token preserved");
+        sub.assert_eq(headers.entries.len, 2, "All proxy headers stripped");
+        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[0]), "Host", "Host header preserved");
+        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[1]), "Authorization", "Origin bearer token preserved");
     };
 
     t.run("CVE-2025-4673: Cross-Origin Redirect Must Strip Proxy-Authorization") { sub =>
@@ -394,12 +383,8 @@ fn test_cve_proxy_authorization_leakage(t: lit::T&) {
 
         wing::sanitize_headers_on_redirect(req.headers, redirect_info, wing::RedirectSanitizeOptions { .. });
 
-        var has_proxy_auth = false;
-        var has_user_auth = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Proxy-Authorization") { has_proxy_auth = true; }
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_user_auth = true; }
-        }
+        let has_proxy_auth = wing::has_header(req.headers, "Proxy-Authorization");
+        let has_user_auth = wing::has_header(req.headers, "Authorization");
         sub.assert_false(has_proxy_auth, "Proxy-Authorization must be stripped on cross-origin redirect (CVE-2025-4673)");
         sub.assert_false(has_user_auth, "Authorization must be stripped on cross-origin redirect");
     };
@@ -601,20 +586,20 @@ fn test_cve_2026_94440_multipart_memory_header_accounting(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9110_proxy_hop_by_hop_sanitization(t: lit::T&) {
     t.run("Proxy header sanitization must strip standard hop-by-hop headers and connection tokens (RFC 9110 & Go #16875)") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Host", "origin.example.com", false));
-        headers.push(wing::make_header("Proxy-Authorization", "Basic c2VjcmV0", false));
-        headers.push(wing::make_header("Connection", "keep-alive, x-forwarded-hop", false));
-        headers.push(wing::make_header("Keep-Alive", "timeout=5", false));
-        headers.push(wing::make_header("Transfer-Encoding", "chunked", false));
-        headers.push(wing::make_header("X-Forwarded-Hop", "strip-me", false));
-        headers.push(wing::make_header("Accept", "application/json", false));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Host", "origin.example.com");
+        wing::append_header(headers, "Proxy-Authorization", "Basic c2VjcmV0");
+        wing::append_header(headers, "Connection", "keep-alive, x-forwarded-hop");
+        wing::append_header(headers, "Keep-Alive", "timeout=5");
+        wing::append_header(headers, "Transfer-Encoding", "chunked");
+        wing::append_header(headers, "X-Forwarded-Hop", "strip-me");
+        wing::append_header(headers, "Accept", "application/json");
 
         wing::sanitize_tunnel_headers_for_origin(headers);
 
-        sub.assert_eq(headers.len, 2, "Only non-hop-by-hop headers (Host, Accept) should remain");
-        sub.assert_bytes_eq(headers[0].name[..], "Host", "Header 0 is Host");
-        sub.assert_bytes_eq(headers[1].name[..], "Accept", "Header 1 is Accept");
+        sub.assert_eq(headers.entries.len, 2, "Only non-hop-by-hop headers (Host, Accept) should remain");
+        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[0]), "Host", "Header 0 is Host");
+        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[1]), "Accept", "Header 1 is Accept");
     };
 }
 
@@ -628,8 +613,9 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
         internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
 
@@ -639,8 +625,9 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
         internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", internal::HpackIndexing.None, false);
 
         var dt_dec = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt_dec, raw_bytes[..], out_list, 8192, true);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
 }

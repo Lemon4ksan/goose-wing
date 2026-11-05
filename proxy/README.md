@@ -15,7 +15,7 @@ Layer 7 Reverse Proxy Gateway, Upstream Load Balancing, Active Background Health
 - **`fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32)`**: Aborts in-flight request on client disconnect, timeout, or network error.
 - **`fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64)`**: Dynamically reconfigures gateway GCRA rate limit parameters.
 - **`fn filter_and_forward_headers(in_headers: const HeaderMap&, out_headers: HeaderMap&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const ProxyConfig&) -> bool`**: Strips hop-by-hop headers, normalizes Content-Length/Transfer-Encoding framing, and injects `Via` and `X-Forwarded-*` metadata.
-- **`fn serialize_upstream_request(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: u8[>..]&, http_version: const u8[:] = "HTTP/1.1")`**: Serializes upstream HTTP request buffer.
+- **`fn serialize_upstream_request(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: u8[>..]&, http_version: const u8[:] = "HTTP/1.1")`**: Serializes upstream HTTP request buffer via `wire::encode_h1_request`.
 
 ### Load Balancer & Circuit Breaker (`load_balancer.goose`)
 

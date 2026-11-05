@@ -170,17 +170,6 @@ fn update_from_headers(
     return update_isolation_context(ctx, coop, coep, document_origin);
 }
 
-// Updates isolation context directly from a HeaderItem slice
-fn update_from_headers(
-    ctx:             CrossOriginIsolationContext&,
-    headers:         const HeaderItem[:],
-    document_origin: const u8[:],
-) -> bool {
-    let coop = headers.find_header("cross-origin-opener-policy");
-    let coep = headers.find_header("cross-origin-embedder-policy");
-    return update_isolation_context(ctx, coop, coep, document_origin);
-}
-
 // Checks whether a subresource response is permitted to load under the active parent context (WHATWG Fetch §4.5).
 fn is_subresource_allowed(
     ctx:                     const CrossOriginIsolationContext&,

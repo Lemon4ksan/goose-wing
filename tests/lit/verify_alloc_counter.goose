@@ -81,7 +81,8 @@ fn test_zero_alloc_hot_paths() {
     let val:    const u8[:] = "9f3d2a1b";
 
     var dt = internal::new_dynamic_table();
-    var out = internal::DecodedH2HeaderList { .. };
+    var pseudo = internal::H2PseudoHeaders { .. };
+    var out = wing::HeaderMap { .. };
     var enc:   u8[..256] = [];
     var probe: u8[>..]   = [];
 
@@ -95,8 +96,8 @@ fn test_zero_alloc_hot_paths() {
         let hdr, err = internal::parse_frame_header(raw[..]);
         assert(err == 0 && hdr.stream_id == 1);
 
-        let derr = internal::decode_hpack_header_block(dt, hblock[..], out);
-        assert(derr == 0 && out.fields.len == 3);
+        let derr = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        assert(derr == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
 
         enc.clear();
         let ok = internal::encode_hpack_field(dt, enc, name, val, internal::HpackIndexing.None, true);

@@ -46,10 +46,7 @@ fn is_grpc_web_text(ct: const u8[:]) -> bool {
 
 // Inspects an incoming Request to determine if it is a gRPC call
 fn is_grpc_request(req: const Request&) -> bool {
-    var ct = req.header("content-type");
-    if ct.len == 0 {
-        ct = find_header(req.headers[..], "content-type");
-    }
+    let ct = req.header("content-type");
     return ct.len > 0 && is_grpc_content_type(ct);
 }
 
@@ -252,13 +249,9 @@ fn find_method_by_name(d: const GrpcServerDispatcher&, service: const u8[:], met
 // ---- Wire Response Builders ---------------------------------------------
 
 // Appends gRPC metadata entries into a response header or trailer list.
-fn append_grpc_metadata_headers<H>(target: H&, metadata: const GrpcMetadata[:]) {
+fn append_grpc_metadata_headers(target: HeaderMap&, metadata: const GrpcMetadata[:]) {
     for &m in metadata {
-        guard target.len < target.cap else { break; }
-        var item = HeaderItem { .. };
-        item.name.append(m.key[..]);
-        item.value.append(m.value[..]);
-        target.push(item);
+        let _ = append_header(target, m.key[..], m.value[..]);
     }
 }
 
@@ -276,14 +269,8 @@ fn build_grpc_trailers_only_response(
 
     if ctx.is_web {
         // gRPC-Web: Trailers are framed in body with flag 0x80
-        var ct = HeaderItem { .. };
-        ct.name.append("content-type");
-        if ctx.is_web_text {
-            ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-        } else {
-            ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
-        }
-        out_res.headers.push(ct);
+        let ct_val = if ctx.is_web_text { rfc::GRPC_WEB_TEXT_CONTENT_TYPE } else { rfc::GRPC_WEB_CONTENT_TYPE_PROTO };
+        let _ = append_header(out_res.headers, "content-type", ct_val);
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
@@ -297,21 +284,16 @@ fn build_grpc_trailers_only_response(
         }
     } else {
         // Native HTTP/2 gRPC: Trailers-Only sent in single initial HEADERS frame
-        var ct = HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        out_res.headers.push(ct);
+        let _ = append_header(out_res.headers, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
-        var st = HeaderItem { .. };
-        st.name.append(rfc::HEADER_GRPC_STATUS);
-        format(st.value, grpc_status_to_code(status) as i64);
-        out_res.headers.push(st);
+        var st_val: u8[..32] = [];
+        format(st_val, grpc_status_to_code(status) as i64);
+        let _ = append_header(out_res.headers, rfc::HEADER_GRPC_STATUS, st_val[..]);
 
         if message.len > 0 {
-            var msg_item = HeaderItem { .. };
-            msg_item.name.append(rfc::HEADER_GRPC_MESSAGE);
-            encode_grpc_message(message, msg_item.value);
-            out_res.headers.push(msg_item);
+            var msg_val: u8[..1024] = [];
+            encode_grpc_message(message, msg_val);
+            let _ = append_header(out_res.headers, rfc::HEADER_GRPC_MESSAGE, msg_val[..]);
         }
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
@@ -334,14 +316,8 @@ fn build_grpc_wire_response(
 
     if ctx.is_web {
         // gRPC-Web
-        var ct = HeaderItem { .. };
-        ct.name.append("content-type");
-        if ctx.is_web_text {
-            ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-        } else {
-            ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
-        }
-        out_res.headers.push(ct);
+        let ct_val = if ctx.is_web_text { rfc::GRPC_WEB_TEXT_CONTENT_TYPE } else { rfc::GRPC_WEB_CONTENT_TYPE_PROTO };
+        let _ = append_header(out_res.headers, "content-type", ct_val);
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
@@ -356,31 +332,22 @@ fn build_grpc_wire_response(
         }
     } else {
         // Native HTTP/2 gRPC
-        var ct = HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        out_res.headers.push(ct);
-
-        var enc_item = HeaderItem { .. };
-        enc_item.name.append(rfc::HEADER_GRPC_ACCEPT_ENCODING);
-        enc_item.value.append("identity,gzip");
-        out_res.headers.push(enc_item);
+        let _ = append_header(out_res.headers, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        let _ = append_header(out_res.headers, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
 
         out_res.body.append(raw_lpm_body);
 
         // Trailers
-        var st = HeaderItem { .. };
-        st.name.append(rfc::HEADER_GRPC_STATUS);
-        format(st.value, grpc_status_to_code(status) as i64);
-        out_res.trailers.push(st);
+        var st_val: u8[..32] = [];
+        format(st_val, grpc_status_to_code(status) as i64);
+        let _ = append_header(out_res.trailers, rfc::HEADER_GRPC_STATUS, st_val[..]);
 
         if message.len > 0 {
-            var msg_item = HeaderItem { .. };
-            msg_item.name.append(rfc::HEADER_GRPC_MESSAGE);
-            encode_grpc_message(message, msg_item.value);
-            out_res.trailers.push(msg_item);
+            var msg_val: u8[..1024] = [];
+            encode_grpc_message(message, msg_val);
+            let _ = append_header(out_res.trailers, rfc::HEADER_GRPC_MESSAGE, msg_val[..]);
         }
 
         append_grpc_metadata_headers(out_res.trailers, ctx.response_trailers[..]);
@@ -460,10 +427,10 @@ fn extract_grpc_server_context(
     let ok_path = parse_grpc_path(req.url[..], out_ctx.service, out_ctx.method);
     guard ok_path else { return false; }
 
-    for &hdr in req.headers {
+    for &e in req.headers.entries {
         let ok_hdr = process_grpc_request_header(
-            hdr.name[..],
-            hdr.value[..],
+            entry_name(req.headers, e),
+            entry_value(req.headers, e),
             out_ctx,
             now_mono_ns,
             req_start_mono_ns,

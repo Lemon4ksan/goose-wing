@@ -60,26 +60,28 @@ fn test_h2_field_value_ctl_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_undefined_pseudo_header_rejection(t: lit::T&) {
     t.run("Valid standard pseudo-headers accepted in order") { sub =>
-        var list = internal::DecodedH2HeaderList { .. };
-        let err1 = internal::validate_header_ordering_and_rules(list, ":method", "GET");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var list = wing::HeaderMap { .. };
+        let err1 = internal::validate_header_ordering_and_rules(pseudo, list, ":method", "GET");
         sub.assert_eq(err1, rfc::H2_ERR_NO_ERROR, ":method is valid pseudo-header");
-        list.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
 
-        let err2 = internal::validate_header_ordering_and_rules(list, ":path", "/index.html");
+        let err2 = internal::validate_header_ordering_and_rules(pseudo, list, ":path", "/index.html");
         sub.assert_eq(err2, rfc::H2_ERR_NO_ERROR, ":path is valid pseudo-header");
     };
 
     t.run("Undefined pseudo-header :custom MUST return ERR_PROTOCOL_ERROR") { sub =>
         // RFC 9113 Section 8.3: "Endpoints MUST treat a request or response that contains an undefined
         // or invalid pseudo-header field as malformed (Section 8.1.1)."
-        var list = internal::DecodedH2HeaderList { .. };
-        let err = internal::validate_header_ordering_and_rules(list, ":custom", "val");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var list = wing::HeaderMap { .. };
+        let err = internal::validate_header_ordering_and_rules(pseudo, list, ":custom", "val");
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Undefined pseudo-header :custom MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("Undefined pseudo-header :fake MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var list = internal::DecodedH2HeaderList { .. };
-        let err = internal::validate_header_ordering_and_rules(list, ":fake", "exploit");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var list = wing::HeaderMap { .. };
+        let err = internal::validate_header_ordering_and_rules(pseudo, list, ":fake", "exploit");
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Undefined pseudo-header :fake MUST return ERR_PROTOCOL_ERROR");
     };
 }
@@ -365,36 +367,30 @@ fn test_cache_control_max_age_overflow_clamping(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_connect_scheme_path_rejection(t: lit::T&) {
     t.run("Standard CONNECT with :path present MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)") { sub =>
-        // RFC 9113 Section 8.5:
-        // "For CONNECT requests, the ':path' and ':scheme' pseudo-header fields MUST be omitted."
-        // "A request that includes ':path' or ':scheme' in a CONNECT request (unless using
-        // the Extended CONNECT protocol defined in RFC 8441) MUST be treated as malformed."
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "CONNECT");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "CONNECT");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method CONNECT accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "CONNECT", .. });
 
-        let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "proxy.example.com:443");
+        let ok_auth = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "proxy.example.com:443");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":authority", value: "proxy.example.com:443", .. });
 
         // Standard CONNECT with :path must be rejected as PROTOCOL_ERROR!
-        let err_path = internal::validate_header_ordering_and_rules(headers, ":path", "/");
+        let err_path = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "/");
         sub.assert_eq(err_path, rfc::H2_ERR_PROTOCOL_ERROR, "Standard CONNECT with :path MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)");
     };
 
     t.run("Standard CONNECT with :scheme present MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "CONNECT");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "CONNECT");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method CONNECT accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "CONNECT", .. });
 
-        let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "proxy.example.com:443");
+        let ok_auth = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "proxy.example.com:443");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":authority", value: "proxy.example.com:443", .. });
 
         // Standard CONNECT with :scheme must be rejected as PROTOCOL_ERROR!
-        let err_scheme = internal::validate_header_ordering_and_rules(headers, ":scheme", "https");
+        let err_scheme = internal::validate_header_ordering_and_rules(pseudo, headers, ":scheme", "https");
         sub.assert_eq(err_scheme, rfc::H2_ERR_PROTOCOL_ERROR, "Standard CONNECT with :scheme MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)");
     };
 }
@@ -477,22 +473,22 @@ fn test_informational_1xx_response_limit(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
     t.run("Asterisk-form :path '*' is valid for OPTIONS method") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "OPTIONS");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "OPTIONS");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method OPTIONS accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "OPTIONS", .. });
 
-        let ok_path = internal::validate_header_ordering_and_rules(headers, ":path", "*");
+        let ok_path = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "*");
         sub.assert_eq(ok_path, rfc::H2_ERR_NO_ERROR, ":path '*' accepted for OPTIONS");
     };
 
     t.run("Asterisk-form :path '*' on GET method MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3.1)") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
 
-        let err_path = internal::validate_header_ordering_and_rules(headers, ":path", "*");
+        let err_path = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "*");
         sub.assert_eq(err_path, rfc::H2_ERR_PROTOCOL_ERROR, "GET with :path '*' MUST be rejected with PROTOCOL_ERROR (RFC 9113 §8.3.1)");
     };
 }
@@ -502,22 +498,22 @@ fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
     t.run("Response pseudo-header :status in Request header block MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
 
-        let err_status = internal::validate_header_ordering_and_rules(headers, ":status", "200");
+        let err_status = internal::validate_header_ordering_and_rules(pseudo, headers, ":status", "200");
         sub.assert_eq(err_status, rfc::H2_ERR_PROTOCOL_ERROR, ":status in request header block MUST return PROTOCOL_ERROR (RFC 9113 §8.3)");
     };
 
     t.run("Request pseudo-header :method in Response header block MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_status = internal::validate_header_ordering_and_rules(headers, ":status", "200");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_status = internal::validate_header_ordering_and_rules(pseudo, headers, ":status", "200");
         sub.assert_eq(ok_status, rfc::H2_ERR_NO_ERROR, ":status 200 accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":status", value: "200", .. });
 
-        let err_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
+        let err_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(err_meth, rfc::H2_ERR_PROTOCOL_ERROR, ":method in response header block MUST return PROTOCOL_ERROR (RFC 9113 §8.3)");
     };
 }
@@ -527,32 +523,32 @@ fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
     t.run("Matching :authority and Host headers are accepted") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_auth = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":authority", value: "example.com", .. });
 
-        let ok_host = internal::validate_header_ordering_and_rules(headers, "host", "example.com");
+        let ok_host = internal::validate_header_ordering_and_rules(pseudo, headers, "host", "example.com");
         sub.assert_eq(ok_host, rfc::H2_ERR_NO_ERROR, "Matching Host header accepted");
     };
 
     t.run("Conflicting :authority and Host headers MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3.1)") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_auth = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":authority", value: "example.com", .. });
 
-        let err_host = internal::validate_header_ordering_and_rules(headers, "host", "attacker.com");
+        let err_host = internal::validate_header_ordering_and_rules(pseudo, headers, "host", "attacker.com");
         sub.assert_eq(err_host, rfc::H2_ERR_PROTOCOL_ERROR, "Conflicting Host 'attacker.com' MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3.1)");
     };
 
     t.run("Multiple Host headers in HTTP/2 MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.2.1)") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_host1 = internal::validate_header_ordering_and_rules(headers, "host", "example.com");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_host1 = internal::validate_header_ordering_and_rules(pseudo, headers, "host", "example.com");
         sub.assert_eq(ok_host1, rfc::H2_ERR_NO_ERROR, "First Host accepted");
-        headers.fields.push(internal::DecodedH2Header { name: "host", value: "example.com", .. });
 
-        let err_host2 = internal::validate_header_ordering_and_rules(headers, "host", "example.com");
+        let err_host2 = internal::validate_header_ordering_and_rules(pseudo, headers, "host", "example.com");
         sub.assert_eq(err_host2, rfc::H2_ERR_PROTOCOL_ERROR, "Duplicate Host header MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.2.1)");
     };
 }
@@ -597,14 +593,14 @@ fn test_h3_duplicate_control_stream_rejection(t: lit::T&) {
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
         // First control stream: Stream ID 3 (unidirectional), Type 0x00 (H3_STREAM_CONTROL)
-        var ctrl1_wire: u8[>..] = [];
+        var ctrl1_wire: u8[..16] = [];
         internal::quic_encode_varint(ctrl1_wire, rfc::H3_STREAM_CONTROL);
         let err1 = conn.handle_stream_data(3, false, ctrl1_wire[..], false);
         sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "First control stream accepted");
         sub.assert_true(conn.peer_control_opened, "Peer control opened flag set");
 
         // Second control stream: Stream ID 7 (unidirectional), Type 0x00
-        var ctrl2_wire: u8[>..] = [];
+        var ctrl2_wire: u8[..16] = [];
         internal::quic_encode_varint(ctrl2_wire, rfc::H3_STREAM_CONTROL);
         let err2 = conn.handle_stream_data(7, false, ctrl2_wire[..], false);
         sub.assert_eq(err2, rfc::H3_ERR_STREAM_CREATION, "Duplicate control stream MUST return H3_ERR_STREAM_CREATION (0x0103)");
@@ -728,25 +724,25 @@ fn test_h2_stream_blocked_after_goaway(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_path_character_validation(t: lit::T&) {
     t.run("Path containing unescaped angle brackets (<>) MUST return ERR_PROTOCOL_ERROR (Go #77843)") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
 
         // Unescaped '>' is forbidden in RFC 3986 pchar and query
-        let err_gt = internal::validate_header_ordering_and_rules(headers, ":path", "/api/search?q=test>123");
+        let err_gt = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "/api/search?q=test>123");
         sub.assert_eq(err_gt, rfc::H2_ERR_PROTOCOL_ERROR, "Path with raw '>' MUST return ERR_PROTOCOL_ERROR (Go #77843)");
 
         // Unescaped '<' is forbidden
-        let err_lt = internal::validate_header_ordering_and_rules(headers, ":path", "/api/search<test");
+        let err_lt = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "/api/search<test");
         sub.assert_eq(err_lt, rfc::H2_ERR_PROTOCOL_ERROR, "Path with raw '<' MUST return ERR_PROTOCOL_ERROR (Go #77843)");
 
         // Space inside path is forbidden
-        let err_sp = internal::validate_header_ordering_and_rules(headers, ":path", "/api/my test");
+        let err_sp = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "/api/my test");
         sub.assert_eq(err_sp, rfc::H2_ERR_PROTOCOL_ERROR, "Path with interior space MUST return ERR_PROTOCOL_ERROR");
 
         // Properly percent-encoded path is valid
-        let ok_encoded = internal::validate_header_ordering_and_rules(headers, ":path", "/api/search?q=test%3E123");
+        let ok_encoded = internal::validate_header_ordering_and_rules(pseudo, headers, ":path", "/api/search?q=test%3E123");
         sub.assert_eq(ok_encoded, rfc::H2_ERR_NO_ERROR, "Percent-encoded path '/api/search?q=test%3E123' is valid");
     };
 }
@@ -758,16 +754,17 @@ fn test_h2_trailer_forbidden_pseudo_headers(t: lit::T&) {
     t.run("Pseudo-headers in HTTP/2 trailer block MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3)") { sub =>
         // RFC 9113 Section 8.3:
         // "Pseudo-header fields MUST NOT appear in trailer sections."
-        var trailers = internal::DecodedH2HeaderList { is_trailer: true, .. };
+        var pseudo = internal::H2PseudoHeaders { is_trailer: true, .. };
+        var trailers = wing::HeaderMap { .. };
 
-        let err_status = internal::validate_header_ordering_and_rules(trailers, ":status", "200");
+        let err_status = internal::validate_header_ordering_and_rules(pseudo, trailers, ":status", "200");
         sub.assert_eq(err_status, rfc::H2_ERR_PROTOCOL_ERROR, "Pseudo-header :status in trailers MUST return PROTOCOL_ERROR");
 
-        let err_path = internal::validate_header_ordering_and_rules(trailers, ":path", "/index");
+        let err_path = internal::validate_header_ordering_and_rules(pseudo, trailers, ":path", "/index");
         sub.assert_eq(err_path, rfc::H2_ERR_PROTOCOL_ERROR, "Pseudo-header :path in trailers MUST return PROTOCOL_ERROR");
 
         // Regular trailer field is valid
-        let ok_trailer = internal::validate_header_ordering_and_rules(trailers, "grpc-status", "0");
+        let ok_trailer = internal::validate_header_ordering_and_rules(pseudo, trailers, "grpc-status", "0");
         sub.assert_eq(ok_trailer, rfc::H2_ERR_NO_ERROR, "Regular trailer field 'grpc-status' is valid");
     };
 }
@@ -906,24 +903,24 @@ fn test_h1_host_header_validation_and_duplicates(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_authority_character_validation(t: lit::T&) {
     t.run(":authority with path, query, fragment or userinfo MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let ok_meth = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
 
-        let err_path = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com/api");
+        let err_path = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com/api");
         sub.assert_eq(err_path, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with '/' MUST return ERR_PROTOCOL_ERROR");
 
-        let err_query = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com?foo=1");
+        let err_query = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com?foo=1");
         sub.assert_eq(err_query, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with '?' MUST return ERR_PROTOCOL_ERROR");
 
-        let err_hash = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com#sec");
+        let err_hash = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com#sec");
         sub.assert_eq(err_hash, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with '#' MUST return ERR_PROTOCOL_ERROR");
 
-        let err_user = internal::validate_header_ordering_and_rules(headers, ":authority", "admin@example.com");
+        let err_user = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "admin@example.com");
         sub.assert_eq(err_user, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with '@' MUST return ERR_PROTOCOL_ERROR");
 
-        let ok_auth = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com:443");
+        let ok_auth = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com:443");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority 'example.com:443' is valid");
     };
 }
@@ -933,24 +930,25 @@ fn test_h2_authority_character_validation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_trailer_disallowed_fields(t: lit::T&) {
     t.run("Disallowed headers in HTTP/2 trailers MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.1.2)") { sub =>
-        var trailers = internal::DecodedH2HeaderList { is_trailer: true, .. };
+        var pseudo = internal::H2PseudoHeaders { is_trailer: true, .. };
+        var trailers = wing::HeaderMap { .. };
 
-        let err_cl = internal::validate_header_ordering_and_rules(trailers, "content-length", "100");
+        let err_cl = internal::validate_header_ordering_and_rules(pseudo, trailers, "content-length", "100");
         sub.assert_eq(err_cl, rfc::H2_ERR_PROTOCOL_ERROR, "content-length in trailers MUST return PROTOCOL_ERROR");
 
-        let err_te = internal::validate_header_ordering_and_rules(trailers, "transfer-encoding", "chunked");
+        let err_te = internal::validate_header_ordering_and_rules(pseudo, trailers, "transfer-encoding", "chunked");
         sub.assert_eq(err_te, rfc::H2_ERR_PROTOCOL_ERROR, "transfer-encoding in trailers MUST return PROTOCOL_ERROR");
 
-        let err_host = internal::validate_header_ordering_and_rules(trailers, "host", "evil.com");
+        let err_host = internal::validate_header_ordering_and_rules(pseudo, trailers, "host", "evil.com");
         sub.assert_eq(err_host, rfc::H2_ERR_PROTOCOL_ERROR, "host in trailers MUST return PROTOCOL_ERROR");
 
-        let err_conn = internal::validate_header_ordering_and_rules(trailers, "connection", "close");
+        let err_conn = internal::validate_header_ordering_and_rules(pseudo, trailers, "connection", "close");
         sub.assert_eq(err_conn, rfc::H2_ERR_PROTOCOL_ERROR, "connection in trailers MUST return PROTOCOL_ERROR");
 
-        let err_tr = internal::validate_header_ordering_and_rules(trailers, "trailer", "x-foo");
+        let err_tr = internal::validate_header_ordering_and_rules(pseudo, trailers, "trailer", "x-foo");
         sub.assert_eq(err_tr, rfc::H2_ERR_PROTOCOL_ERROR, "trailer in trailers MUST return PROTOCOL_ERROR");
 
-        let ok_custom = internal::validate_header_ordering_and_rules(trailers, "x-checksum-sha256", "abc123def");
+        let ok_custom = internal::validate_header_ordering_and_rules(pseudo, trailers, "x-checksum-sha256", "abc123def");
         sub.assert_eq(ok_custom, rfc::H2_ERR_NO_ERROR, "Allowed trailer header 'x-checksum-sha256' is valid");
     };
 }
@@ -1043,10 +1041,10 @@ fn test_url_bracketed_host_validation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_redirect_sensitive_header_stripping(t: lit::T&) {
     t.run("Proxy-Authorization and Authorization purged on cross-origin redirect (CVE-2025-4673)") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Authorization", "Bearer secret123"));
-        headers.push(wing::make_header("Proxy-Authorization", "Basic proxysecret"));
-        headers.push(wing::make_header("User-Agent", "GooseWing/1.0"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Authorization", "Bearer secret123");
+        wing::append_header(headers, "Proxy-Authorization", "Basic proxysecret");
+        wing::append_header(headers, "User-Agent", "GooseWing/1.0");
 
         let red_info = wing::RedirectInfo {
             is_cross_origin:     true,
@@ -1058,13 +1056,13 @@ fn test_redirect_sensitive_header_stripping(t: lit::T&) {
 
         wing::sanitize_headers_on_redirect(headers, red_info, wing::RedirectSanitizeOptions { .. });
 
-        let has_auth = wing::find_header_index(headers[..], "Authorization") >= 0;
+        let has_auth = wing::find_header_index(headers, "Authorization") >= 0;
         sub.assert_false(has_auth, "Authorization header MUST be stripped on cross-origin redirect");
 
-        let has_proxy_auth = wing::find_header_index(headers[..], "Proxy-Authorization") >= 0;
+        let has_proxy_auth = wing::find_header_index(headers, "Proxy-Authorization") >= 0;
         sub.assert_false(has_proxy_auth, "Proxy-Authorization MUST be stripped on cross-origin redirect (CVE-2025-4673)");
 
-        let has_ua = wing::find_header_index(headers[..], "User-Agent") >= 0;
+        let has_ua = wing::find_header_index(headers, "User-Agent") >= 0;
         sub.assert_true(has_ua, "User-Agent header is preserved across redirect");
     };
 }
@@ -1292,12 +1290,13 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: lit::T&) {
         wire.push(0x06);
         wire.append("newval");
 
-        var out_headers = internal::DecodedH2HeaderList { .. };
-        let err_code = internal::decode_hpack_header_block(dt, wire[..], out_headers, 8192, false);
+        var out_pseudo = internal::H2PseudoHeaders { .. };
+        var out_headers = wing::HeaderMap { .. };
+        let err_code = internal::decode_hpack_to_map(dt, wire[..], out_pseudo, out_headers, 8192, false);
         sub.assert_eq(err_code, rfc::H2_ERR_NO_ERROR, "Literal header with indexed name from dynamic table MUST decode without bounds abort");
-        sub.assert_eq(out_headers.fields.len, 1, "Decoded 1 header");
-        sub.assert_eq(out_headers.fields[0].name[..], "custom-header", "Header name matches dynamic table entry");
-        sub.assert_eq(out_headers.fields[0].value[..], "newval", "Header value matches literal value");
+        sub.assert_eq(out_headers.entries.len, 1, "Decoded 1 header");
+        sub.assert_eq(wing::entry_name(out_headers, out_headers.entries[0]), "custom-header", "Header name matches dynamic table entry");
+        sub.assert_eq(wing::entry_value(out_headers, out_headers.entries[0]), "newval", "Header value matches literal value");
     };
 }
 
@@ -1306,20 +1305,20 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_authority_whitespace_rejection(t: lit::T&) {
     t.run(":authority with interior space MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let _ = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
 
-        let code = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com :80");
+        let code = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com :80");
         sub.assert_eq(code, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with space MUST be rejected with ERR_PROTOCOL_ERROR");
     };
 
     t.run(":authority with comma MUST return ERR_PROTOCOL_ERROR") { sub =>
-        var headers = internal::DecodedH2HeaderList { .. };
-        let ok_meth = internal::validate_header_ordering_and_rules(headers, ":method", "GET");
-        headers.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let _ = internal::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
 
-        let code = internal::validate_header_ordering_and_rules(headers, ":authority", "example.com,evil.com");
+        let code = internal::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com,evil.com");
         sub.assert_eq(code, rfc::H2_ERR_PROTOCOL_ERROR, ":authority with comma MUST be rejected with ERR_PROTOCOL_ERROR");
     };
 }

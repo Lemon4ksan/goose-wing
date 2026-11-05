@@ -1516,9 +1516,9 @@ fn test_resumable_uploads(t: lit::T&) {
 
         // Server responds 201 Created
         var create_resp = wing::Response { status_code: 201, .. };
-        create_resp.headers.push(wing::make_header("Location", "https://storage.cdn.com/uploads/session-abc1234"));
-        create_resp.headers.push(wing::make_header("Upload-Offset", "500000"));
-        create_resp.headers.push(wing::make_header("Upload-Complete", "?0"));
+        wing::set_header(create_resp, "Location", "https://storage.cdn.com/uploads/session-abc1234");
+        wing::set_header(create_resp, "Upload-Offset", "500000");
+        wing::set_header(create_resp, "Upload-Complete", "?0");
 
         let ok_handle = wing::handle_creation_response(create_resp, state);
         sub.assert_true(ok_handle, "Creation response handled");
@@ -1541,8 +1541,8 @@ fn test_resumable_uploads(t: lit::T&) {
 
         // Server responds 204 No Content for PATCH
         var patch_resp = wing::Response { status_code: 204, .. };
-        patch_resp.headers.push(wing::make_header("Upload-Offset", "800000"));
-        patch_resp.headers.push(wing::make_header("Upload-Complete", "?1"));
+        wing::set_header(patch_resp, "Upload-Offset", "800000");
+        wing::set_header(patch_resp, "Upload-Complete", "?1");
 
         let ok_patch = wing::handle_chunk_response(patch_resp, state);
         sub.assert_true(ok_patch, "Chunk response handled");
@@ -1561,8 +1561,8 @@ fn test_resumable_uploads(t: lit::T&) {
 
         // Server returns current stored offset 500000
         var head_resp = wing::Response { status_code: 204, .. };
-        head_resp.headers.push(wing::make_header("Upload-Offset", "500000"));
-        head_resp.headers.push(wing::make_header("Upload-Complete", "?0"));
+        wing::set_header(head_resp, "Upload-Offset", "500000");
+        wing::set_header(head_resp, "Upload-Complete", "?0");
 
         let ok_rec = wing::handle_offset_query_response(head_resp, state);
         sub.assert_true(ok_rec, "Offset query response parsed");

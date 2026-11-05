@@ -210,19 +210,11 @@ fn test_redirect_state_machine(t: lit::T&) {
         );
 
         // Sensitive headers MUST be purged on cross-origin hop!
-        var has_auth = false;
-        var has_apikey = false;
-        var has_authtok = false;
-        var has_cookie = false;
-        var has_accept = false;
-
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_apikey = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-Auth-Token") { has_authtok = true; }
-            if core::eq_ascii_fold(hdr.name[..], "Cookie") { has_cookie = true; }
-            if core::eq_ascii_fold(hdr.name[..], "Accept") { has_accept = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
+        let has_apikey = wing::has_header(req.headers, "X-API-Key");
+        let has_authtok = wing::has_header(req.headers, "X-Auth-Token");
+        let has_cookie = wing::has_header(req.headers, "Cookie");
+        let has_accept = wing::has_header(req.headers, "Accept");
 
         sub.assert_false(has_auth, "Authorization stripped on cross-origin redirect");
         sub.assert_false(has_apikey, "X-API-Key stripped (CVE-2026-55553, CVE-2026-64684)");
@@ -250,10 +242,7 @@ fn test_redirect_state_machine(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        var has_auth = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
         sub.assert_false(has_auth, "Authorization stripped on HTTPS -> HTTP downgrade (CVE-2024-1968)");
     };
 
@@ -276,12 +265,8 @@ fn test_redirect_state_machine(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        var has_auth = false;
-        var has_key = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_key = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
+        let has_key = wing::has_header(req.headers, "X-API-Key");
         sub.assert_true(has_auth, "Authorization preserved on same-origin redirect");
         sub.assert_true(has_key, "X-API-Key preserved on same-origin redirect");
     };
@@ -549,15 +534,9 @@ fn test_network_pipeline_edge_invariants(t: lit::T&) {
         let resp, err = wing::execute_request(session, req);
         sub.assert_true(wing::ok(err), "request succeeded");
 
-        var sent_cookie: u8[..512] = [];
-        for &sent_h in resp.sent_headers {
-            if core::eq_ascii_fold(sent_h.name[..], "Cookie") {
-                sent_cookie.append(sent_h.value[..]);
-            }
-        }
-
-        sub.assert_contains(sent_cookie[..], "lax_token=public2", "Lax cookie included in top-level cross-site navigation");
-        sub.assert_not_contains(sent_cookie[..], "strict_token=secret1", "Strict cookie NOT leaked in cross-site navigation");
+        let sent_cookie = wing::sent_header(resp, "Cookie");
+        sub.assert_contains(sent_cookie, "lax_token=public2", "Lax cookie included in top-level cross-site navigation");
+        sub.assert_not_contains(sent_cookie, "strict_token=secret1", "Strict cookie NOT leaked in cross-site navigation");
     };
 
     t.run("HSTS Upgrade on 302 Redirect Hop") { sub =>
@@ -602,11 +581,12 @@ fn test_network_pipeline_edge_invariants(t: lit::T&) {
 
         var accept_count = 0;
         var final_accept: u8[..64] = [];
-        for &sent_h in resp.sent_headers {
-            if core::eq_ascii_fold(sent_h.name[..], "Accept") {
+        for idx in 0..resp.sent_headers.entries.len {
+            let entry = resp.sent_headers.entries[idx];
+            if core::eq_ascii_fold(wing::entry_name(resp.sent_headers, entry), "Accept") {
                 accept_count += 1;
                 final_accept.clear();
-                final_accept.append(sent_h.value[..]);
+                final_accept.append(wing::entry_value(resp.sent_headers, entry));
             }
         }
         sub.assert_eq(accept_count, 1, "exactly one Accept header sent");
@@ -787,13 +767,13 @@ fn test_closure_chain_interceptor(t: lit::T&) {
 
         let resp, err = wing::do_intercepted(client, req) { chain, client =>
             // Inject header into request before proceed
-            chain.request.headers.push(wing::make_header("X-Custom-Client", "Interceptor-V1"));
+            wing::set_header(chain.request, "X-Custom-Client", "Interceptor-V1");
 
             // Proceed down the chain
             wing::proceed(chain, client);
 
             // Mutate response after proceed
-            chain.response.headers.push(wing::make_header("X-Processed-By", "Client-Chain"));
+            wing::set_header(chain.response, "X-Processed-By", "Client-Chain");
         };
 
         sub.assert_true(wing::ok(err), "intercepted call ok");
@@ -1098,7 +1078,7 @@ fn test_vector_b_enhancements(t: lit::T&) {
     t.run("read_chunk three-state classification: Data, Eof, Error") { sub =>
         // Normal chunked stream
         var resp_good = wing::Response { status_code: 200, .. };
-        resp_good.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        wing::set_header(resp_good, "Transfer-Encoding", "chunked");
         resp_good.body.append("5\r\nhello\r\n0\r\n\r\n");
 
         var r_good = wing::new_stream_reader(resp_good);
@@ -1116,7 +1096,7 @@ fn test_vector_b_enhancements(t: lit::T&) {
 
         // Corrupted chunk size yields explicit Error
         var resp_bad = wing::Response { status_code: 200, .. };
-        resp_bad.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        wing::set_header(resp_bad, "Transfer-Encoding", "chunked");
         resp_bad.body.append("ZZ\r\ncorrupted\r\n");
 
         var r_bad = wing::new_stream_reader(resp_bad);
@@ -1301,21 +1281,12 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
         sub.assert_false(wing::header_has_token("", "chat"), "empty header rejects any token");
     };
 
-    t.run("Response set_header invalidates matching wire spans") { sub =>
+    t.run("Response set_header overwrites existing header in-place") { sub =>
         var resp = wing::Response { status_code: rfc::STATUS_OK, .. };
-        resp.raw_headers.append("X-Test: old_val\r\n");
-        var sp = wing::HeaderSpan {
-            name_pos: 0,
-            name_len: 6,
-            val_pos:  8,
-            val_len:  7,
-            ..
-        };
-        resp.spans.push(sp);
-        sub.assert_eq(resp.spans.len, 1, "initial wire span present");
+        wing::set_header(resp, "X-Test", "old_val");
+        sub.assert_bytes_eq(wing::header(resp, "X-Test"), "old_val", "initial header value");
 
         wing::set_header(resp, "X-Test", "new_val");
-        sub.assert_eq(resp.spans.len, 0, "matching wire span stripped on set_header");
         sub.assert_bytes_eq(wing::header(resp, "X-Test"), "new_val", "updated header returned");
     };
 

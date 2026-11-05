@@ -272,10 +272,10 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         var conn_timer = internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/api/v1/users/777");
-        req.headers.push(wing::make_header("Host", "example.com"));
-        req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
-        req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
-        req.headers.push(wing::make_header("Sec-Fetch-Dest", "empty"));
+        wing::set_header(req, "Host", "example.com");
+        wing::set_header(req, "Sec-Fetch-Site", "same-origin");
+        wing::set_header(req, "Sec-Fetch-Mode", "cors");
+        wing::set_header(req, "Sec-Fetch-Dest", "empty");
 
         var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
@@ -297,7 +297,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/health");
-        req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        wing::set_header(req, "Sec-Fetch-Site", "same-origin");
 
         var res1 = wing::Response { .. };
         var fut1 = internal::new_inline_handler_future(0);
@@ -319,8 +319,8 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         var evil_req = wing::new_request("POST", "/api/transfer");
-        evil_req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
-        evil_req.headers.push(wing::make_header("Sec-Fetch-Mode", "cors"));
+        wing::set_header(evil_req, "Sec-Fetch-Site", "cross-site");
+        wing::set_header(evil_req, "Sec-Fetch-Mode", "cors");
 
         var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
@@ -338,7 +338,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // POST to GET-only route -> 405 Method Not Allowed
         var req_post = wing::new_request("POST", "/api/data");
-        req_post.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        wing::set_header(req_post, "Sec-Fetch-Site", "same-origin");
 
         var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
@@ -352,7 +352,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // Automatic HEAD routing in pipeline: executes GET handler and suppresses body (RFC 9110 §9.3.2)
         var req_head = wing::new_request("HEAD", "/api/data");
-        req_head.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+        wing::set_header(req_head, "Sec-Fetch-Site", "same-origin");
         var res_head = wing::Response { .. };
         res_head.body.append("Should be suppressed");
         var fut_head = internal::new_inline_handler_future(0);
@@ -371,8 +371,8 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // 1. Valid Expect: 100-continue proceeds to pipeline routing
         var req_100 = wing::new_request("POST", "/upload");
-        req_100.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
-        req_100.headers.push(wing::make_header("Expect", "100-continue"));
+        wing::set_header(req_100, "Sec-Fetch-Site", "same-origin");
+        wing::set_header(req_100, "Expect", "100-continue");
 
         var res1 = wing::Response { .. };
         var fut1 = internal::new_inline_handler_future(0);
@@ -381,8 +381,8 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // 2. Unknown Expect: foo-bar -> 417 Expectation Failed
         var req_unknown = wing::new_request("POST", "/upload");
-        req_unknown.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
-        req_unknown.headers.push(wing::make_header("Expect", "unknown-feature-flag"));
+        wing::set_header(req_unknown, "Sec-Fetch-Site", "same-origin");
+        wing::set_header(req_unknown, "Expect", "unknown-feature-flag");
 
         var res2 = wing::Response { .. };
         var fut2 = internal::new_inline_handler_future(0);
@@ -405,7 +405,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // Request 1 to /healthz: even with invalid Expect header, passes via fast-path bypass
         var req1 = wing::new_request("GET", "/healthz");
-        req1.headers.push(wing::make_header("Expect", "invalid-expectation"));
+        wing::set_header(req1, "Expect", "invalid-expectation");
         var res1 = wing::Response { .. };
         var fut1 = internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req1, 1000000000, res1, fut1);
@@ -421,7 +421,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // Request to /secure: gets egress security headers
         var req_sec = wing::new_request("GET", "/secure");
-        req_sec.headers.push(wing::make_header("Host", "example.com"));
+        wing::set_header(req_sec, "Host", "example.com");
         var res_sec = wing::Response { .. };
         var fut_sec = internal::new_inline_handler_future(0);
         let out_sec = wing::execute_pipeline(cfg, timer, "10.0.0.1", req_sec, 1000000000, res_sec, fut_sec);
@@ -1026,21 +1026,21 @@ fn test_server_audit_regressions(t: lit::T&) {
         let long_pfx: const u8[:] = "/api/v1/012345678901234567890123456789012345678901234567890123456789/secret";
         let r_long = wing::make_edge_filter_rule("long", long_pfx, wing::EdgeFilterVerdict.BlockForbidden);
         let short_req_path = long_pfx[..64];
-        var empty_hdrs: wing::HeaderItem[..4] = [];
-        sub.assert_false(wing::edge_rule_matches(r_long, short_req_path, empty_hdrs[..]), "truncated 64B prefix must not match shorter path");
+        var empty_hdrs = wing::HeaderMap { .. };
+        sub.assert_false(wing::edge_rule_matches(r_long, short_req_path, empty_hdrs), "truncated 64B prefix must not match shorter path");
 
         // F002: whitespace-only required_header must NOT satisfy required_header check
         var r_hdr = wing::make_edge_filter_rule("auth-check", "/secure", wing::EdgeFilterVerdict.BlockForbidden);
         r_hdr.required_header.append("X-API-Key");
-        var ws_hdrs: wing::HeaderItem[..4] = [];
-        ws_hdrs.push(wing::make_header("X-API-Key", "   \t  "));
-        sub.assert_true(wing::edge_rule_matches(r_hdr, "/secure/data", ws_hdrs[..]), "whitespace-only required header must trigger block rule");
+        var ws_hdrs = wing::HeaderMap { .. };
+        wing::append_header(ws_hdrs, "X-API-Key", "   \t  ");
+        sub.assert_true(wing::edge_rule_matches(r_hdr, "/secure/data", ws_hdrs), "whitespace-only required header must trigger block rule");
 
         // F002: empty first header followed by non-empty duplicate header must satisfy required_header
-        var dup_hdrs: wing::HeaderItem[..4] = [];
-        dup_hdrs.push(wing::make_header("X-API-Key", ""));
-        dup_hdrs.push(wing::make_header("X-API-Key", "valid-token"));
-        sub.assert_false(wing::edge_rule_matches(r_hdr, "/secure/data", dup_hdrs[..]), "valid second duplicate header must satisfy required header");
+        var dup_hdrs = wing::HeaderMap { .. };
+        wing::append_header(dup_hdrs, "X-API-Key", "");
+        wing::append_header(dup_hdrs, "X-API-Key", "valid-token");
+        sub.assert_false(wing::edge_rule_matches(r_hdr, "/secure/data", dup_hdrs), "valid second duplicate header must satisfy required header");
     };
 
     t.run("2. H2ServerSession role, presence_mask, GOAWAY & RST_STREAM") { sub =>
@@ -1090,12 +1090,13 @@ fn test_server_audit_regressions(t: lit::T&) {
 
         // Decode response HEADERS frame from wire_out (starts at offset 26 after two 13-byte WINDOW_UPDATE frames)
         var resp_dt = internal::new_dynamic_table(4096);
-        var resp_list = internal::DecodedH2HeaderList { .. };
+        var resp_pseudo = internal::H2PseudoHeaders { .. };
+        var resp_list = wing::HeaderMap { .. };
         let h_len = ((wire_out[26] as i64) << 16) | ((wire_out[27] as i64) << 8) | (wire_out[28] as i64);
-        let dec_err = internal::decode_hpack_header_block(resp_dt, wire_out[35..(35 + h_len)], resp_list);
+        let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[35..(35 + h_len)], resp_pseudo, resp_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
-        sub.assert_eq(resp_list.fields[0].name[..], ":status", "First response field is :status");
-        sub.assert_eq(resp_list.fields[0].value[..], "200", "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
+        sub.assert_true(resp_pseudo.has_status, "First response field is :status");
+        sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
 
         // F011: Incoming client GOAWAY frame on stream 0 must mark sess.conn.goaway_received = true
         var goaway_wire: u8[>..] = [];
@@ -1216,7 +1217,7 @@ fn test_server_audit_regressions(t: lit::T&) {
 
         // F039: serialize_http1_headers with 1 custom header pushed directly (presence_mask == 0) must NOT rewrite it to Content-Type!
         var res_custom = wing::Response { status_code: 200, .. };
-        res_custom.headers.push(wing::make_header("X-Custom-Tag", "my-val"));
+        wing::append_header(res_custom.headers, "X-Custom-Tag", "my-val");
         var custom_wire: u8[..512] = [];
         wing::serialize_http1_response(res_custom, "goose-wing", custom_wire);
         sub.assert_contains(custom_wire[..], "X-Custom-Tag: my-val\r\n", "Custom header preserved");

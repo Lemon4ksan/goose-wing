@@ -1731,8 +1731,8 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
     // 5) Non-token characters in extension name ("5;foo@bar=1\r\n") MUST be rejected.
     // 6) Legitimate extensions ("5;name=value;flag\r\n" and "5;name=\"quoted val\"\r\n") MUST succeed.
 
-    var body:     u8[>..]                = [];
-    var trailers: wing::HeaderItem[..16] = [];
+    var body: u8[>..] = [];
+    var trailers = wing::HeaderMap { .. };
 
     // 1. Valid extensions
     body.clear(); trailers.clear();

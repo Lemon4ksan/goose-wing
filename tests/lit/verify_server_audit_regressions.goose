@@ -29,21 +29,21 @@ fn test_s1(t: lit::T&) {
         let long_pfx: const u8[:] = "/api/v1/012345678901234567890123456789012345678901234567890123456789/secret";
         let r_long = wing::make_edge_filter_rule("long", long_pfx, wing::EdgeFilterVerdict.BlockForbidden);
         let short_req_path = long_pfx[..64];
-        var empty_hdrs: wing::HeaderItem[..4] = [];
-        sub.assert_false(wing::edge_rule_matches(r_long, short_req_path, empty_hdrs[..]), "truncated 64B prefix must not match shorter path");
+        var empty_hdrs = wing::HeaderMap { .. };
+        sub.assert_false(wing::edge_rule_matches(r_long, short_req_path, empty_hdrs), "truncated 64B prefix must not match shorter path");
 
         // F002: whitespace-only required_header must NOT satisfy required_header check
         var r_hdr = wing::make_edge_filter_rule("auth-check", "/secure", wing::EdgeFilterVerdict.BlockForbidden);
         r_hdr.required_header.append("X-API-Key");
-        var ws_hdrs: wing::HeaderItem[..4] = [];
-        ws_hdrs.push(wing::make_header("X-API-Key", "   \t  "));
-        sub.assert_true(wing::edge_rule_matches(r_hdr, "/secure/data", ws_hdrs[..]), "whitespace-only required header must trigger block rule");
+        var ws_hdrs = wing::HeaderMap { .. };
+        wing::append_header(ws_hdrs, "X-API-Key", "   \t  ");
+        sub.assert_true(wing::edge_rule_matches(r_hdr, "/secure/data", ws_hdrs), "whitespace-only required header must trigger block rule");
 
         // F002: empty first header followed by non-empty duplicate header must satisfy required_header
-        var dup_hdrs: wing::HeaderItem[..4] = [];
-        dup_hdrs.push(wing::make_header("X-API-Key", ""));
-        dup_hdrs.push(wing::make_header("X-API-Key", "valid-token"));
-        sub.assert_false(wing::edge_rule_matches(r_hdr, "/secure/data", dup_hdrs[..]), "valid second duplicate header must satisfy required header");
+        var dup_hdrs = wing::HeaderMap { .. };
+        wing::append_header(dup_hdrs, "X-API-Key", "");
+        wing::append_header(dup_hdrs, "X-API-Key", "valid-token");
+        sub.assert_false(wing::edge_rule_matches(r_hdr, "/secure/data", dup_hdrs), "valid second duplicate header must satisfy required header");
     };
 }
 
@@ -93,12 +93,13 @@ fn test_s2(t: lit::T&) {
 
         if wire_out.len >= 35 {
             var resp_dt = internal::new_dynamic_table(4096);
-            var resp_list = internal::DecodedH2HeaderList { .. };
+            var resp_pseudo = internal::H2PseudoHeaders { .. };
+            var resp_list = wing::HeaderMap { .. };
             let h_len = ((wire_out[26] as i64) << 16) | ((wire_out[27] as i64) << 8) | (wire_out[28] as i64);
-            let dec_err = internal::decode_hpack_header_block(resp_dt, wire_out[35..(35 + h_len)], resp_list);
+            let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[35..(35 + h_len)], resp_pseudo, resp_list);
             sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
-            sub.assert_eq(resp_list.fields[0].name[..], ":status", "First response field is :status");
-            sub.assert_eq(resp_list.fields[0].value[..], "200", "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
+            sub.assert_true(resp_pseudo.has_status, "First response field is :status");
+            sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
         }
 
         // F011: Incoming client GOAWAY frame on stream 0 must mark sess.conn.goaway_received = true
@@ -227,7 +228,7 @@ fn test_s5a(t: lit::T&) {
 
         // F039: serialize_http1_headers with 1 custom header pushed directly (presence_mask == 0) must NOT rewrite it to Content-Type!
         var res_custom = wing::Response { status_code: 200, .. };
-        res_custom.headers.push(wing::make_header("X-Custom-Tag", "my-val"));
+        wing::append_header(res_custom.headers, "X-Custom-Tag", "my-val");
         var custom_wire: u8[..512] = [];
         wing::serialize_http1_response(res_custom, "goose-wing", custom_wire);
         sub.assert_contains(custom_wire[..], "X-Custom-Tag: my-val\r\n", "Custom header preserved");
@@ -267,10 +268,10 @@ fn run_round2_part1a(t: lit::T&) {
         sub.assert_false(wing::add_edge_filter_rule(ef, r_disabled), "add_edge_filter_rule must reject disabled overflow rule");
         let r_admin = wing::make_edge_filter_rule("block-admin", "/admin", wing::EdgeFilterVerdict.BlockForbidden);
         sub.assert_true(wing::add_edge_filter_rule(ef, r_admin), "add_edge_filter_rule accepts valid rule");
-        var empty_hdrs: wing::HeaderItem[..4] = [];
-        sub.assert_true(wing::edge_rule_matches(r_admin, "//admin/panel", empty_hdrs[..]), "edge_rule_matches catches //admin/panel");
-        sub.assert_true(wing::edge_rule_matches(r_admin, "/./admin/panel", empty_hdrs[..]), "edge_rule_matches catches /./admin/panel");
-        sub.assert_true(wing::edge_rule_matches(r_admin, "/public/../admin/panel", empty_hdrs[..]), "edge_rule_matches catches /public/../admin/panel");
+        var empty_hdrs = wing::HeaderMap { .. };
+        sub.assert_true(wing::edge_rule_matches(r_admin, "//admin/panel", empty_hdrs), "edge_rule_matches catches //admin/panel");
+        sub.assert_true(wing::edge_rule_matches(r_admin, "/./admin/panel", empty_hdrs), "edge_rule_matches catches /./admin/panel");
+        sub.assert_true(wing::edge_rule_matches(r_admin, "/public/../admin/panel", empty_hdrs), "edge_rule_matches catches /public/../admin/panel");
 
         // R2-F002: reset_h2_server_session_inplace resets urgency_heads and urgency_tails to -1
         var h2_sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
@@ -281,8 +282,8 @@ fn run_round2_part1a(t: lit::T&) {
         sub.assert_eq(h2_sess.conn.urgency_tails[3], -1, "urgency_tails reset to -1");
 
         // R2-F003: emit_response_trailers when all trailers are disallowed emits 0-length DATA(END_STREAM), not 0-length HEADERS
-        var bad_trailers: wing::HeaderItem[..16] = [];
-        bad_trailers.push(wing::make_header("content-length", "10"));
+        var bad_trailers = wing::HeaderMap { .. };
+        wing::append_header(bad_trailers, "content-length", "10");
         var tr_wire: u8[..128] = [];
         internal::emit_response_trailers(h2_sess, 1, bad_trailers, tr_wire);
         sub.assert_eq(tr_wire.len, 9, "Filtered empty trailer block emits 9-byte frame");
@@ -323,7 +324,7 @@ fn run_round2_part1b(t: lit::T&) {
             var hname: u8[..64] = [];
             hname.append("x-custom-");
             core::fast_u64toa(h_i as u64, hname);
-            st_full.headers.push(wing::make_header(hname[..], "v"));
+            wing::append_header(st_full.headers, hname[..], "v");
         }
         var req_h2_full = wing::new_request("GET", "/test");
         internal::copy_stream_headers_and_trailers(st_full, req_h2_full);

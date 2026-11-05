@@ -1,6 +1,6 @@
 # goose-wing
 
-Vulkan-style, zero-allocation networking engine and HTTP/1.1, HTTP/2, HTTP/3 protocol stack for Goose.
+Vulkan-style, zero-allocation web framework and HTTP/1.1, HTTP/2, HTTP/3 protocol stack for Goose.
 
 [![Goose Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
 [![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)

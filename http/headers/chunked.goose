@@ -241,7 +241,7 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
 // Example:
 //   tr_line = "ETag: \"xyzzy\""
 //   returns: ChunkedDecodeError.None, trailer appended
-fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..16]&) -> ChunkedDecodeError {
+fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderMap&) -> ChunkedDecodeError {
     let col_idx = core::index_of_byte(tr_line, ':');
     guard col_idx > 0 else {
         return ChunkedDecodeError.DisallowedTrailer;
@@ -254,17 +254,16 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..1
 
     let val_slice = tr_line[(col_idx + 1)..];
     let trimmed_val = trim_lws(val_slice);
-    guard is_valid_header_value(trimmed_val) && out_trailers.len < out_trailers.cap else {
+    guard is_valid_header_value(trimmed_val) && out_trailers.entries.len < 16 else {
         return ChunkedDecodeError.DisallowedTrailer;
     }
 
-    var item = HeaderItem { .. };
-    guard hname.len <= item.name.cap && trimmed_val.len <= item.value.cap else {
+    guard hname.len <= 64 && trimmed_val.len <= 2048 else {
         return ChunkedDecodeError.DisallowedTrailer;
     }
-    item.name.append(hname);
-    item.value.append(trimmed_val);
-    out_trailers.push(item);
+    guard out_trailers.append_header(hname, trimmed_val) else {
+        return ChunkedDecodeError.DisallowedTrailer;
+    }
     return ChunkedDecodeError.None;
 }
 
@@ -276,7 +275,7 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderItem[..1
 fn parse_chunked_trailers_with_out(
     raw:          const u8[:],
     cursor:       i64&,
-    out_trailers: HeaderItem[..16]&,
+    out_trailers: HeaderMap&,
 ) -> ChunkedDecodeError {
     var trailer_count:       i32 = 0;
     var total_trailer_bytes: i64 = 0;
@@ -316,7 +315,7 @@ fn parse_chunked_trailers_with_out(
 //   raw = "\r\n", cursor = 0
 //   returns: ChunkedDecodeError.None, cursor = 2
 fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError {
-    var dummy: HeaderItem[..16] = [];
+    var dummy = HeaderMap { .. };
     return parse_chunked_trailers_with_out(raw, cursor, dummy);
 }
 
@@ -376,7 +375,7 @@ fn read_chunk_size_line(raw: const u8[:], cursor: i64&, out_size: u64&) -> Chunk
 fn decode_chunked_body_with_trailers(
     raw:          const u8[:],
     out_body:     u8[>..]&,
-    out_trailers: HeaderItem[..16]&,
+    out_trailers: HeaderMap&,
 ) -> ChunkedDecodeError, i64 {
     out_body.clear();
     out_trailers.clear();
@@ -422,7 +421,7 @@ fn decode_chunked_body_with_trailers(
 //   raw = "4\r\nWiki\r\n0\r\n\r\n"
 //   returns: ChunkedDecodeError.None, out_body = "Wiki"
 fn decode_chunked_body(raw: const u8[:], out_body: u8[>..]&) -> ChunkedDecodeError {
-    var dummy: HeaderItem[..16] = [];
+    var dummy = HeaderMap { .. };
     let err, _ = decode_chunked_body_with_trailers(raw, out_body, dummy);
     return err;
 }

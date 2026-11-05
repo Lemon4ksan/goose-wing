@@ -308,9 +308,11 @@ fn log_interceptor_request(pipeline: InterceptorPipeline&, req: const Request&, 
     push_log(pipeline, line[..]);
 
     if lvl == LogLevel.Headers || lvl == LogLevel.Body {
-        for &h in req.headers {
+        for &e in req.headers.entries {
+            let h_name = entry_name(req.headers, e);
+            let h_val = entry_value(req.headers, e);
             var h_line: u8[..256] = [];
-            format(h_line, "--> ", h.name[..], ": ", h.value[..]);
+            format(h_line, "--> ", h_name, ": ", h_val);
             push_log(pipeline, h_line[..]);
         }
     }
@@ -338,9 +340,11 @@ fn log_interceptor_response(
     push_log(pipeline, line[..]);
 
     if ok(err) && (lvl == LogLevel.Headers || lvl == LogLevel.Body) {
-        for &h in resp.headers {
+        for &e in resp.headers.entries {
+            let h_name = entry_name(resp.headers, e);
+            let h_val = entry_value(resp.headers, e);
             var h_line: u8[..256] = [];
-            format(h_line, "<-- ", h.name[..], ": ", h.value[..]);
+            format(h_line, "<-- ", h_name, ": ", h_val);
             push_log(pipeline, h_line[..]);
         }
     }
@@ -353,7 +357,7 @@ fn log_interceptor_response(
 
 fn log_network_interceptor_request(
     pipeline:   InterceptorPipeline&,
-    headers:    const HeaderItem[..32]&,
+    headers:    const HeaderMap&,
     target_url: const u8[:],
     method:     const u8[:],
     hop_index:  i64,
@@ -365,9 +369,11 @@ fn log_network_interceptor_request(
     push_log(pipeline, line[..]);
 
     if lvl == LogLevel.Headers || lvl == LogLevel.Body {
-        for &h in headers {
+        for &e in headers.entries {
+            let h_name = entry_name(headers, e);
+            let h_val = entry_value(headers, e);
             var h_line: u8[..256] = [];
-            format(h_line, "--> (net) ", h.name[..], ": ", h.value[..]);
+            format(h_line, "--> (net) ", h_name, ": ", h_val);
             push_log(pipeline, h_line[..]);
         }
     }
@@ -436,7 +442,7 @@ fn apply_app_interceptors_response(
 
 fn apply_network_interceptors_request(
     pipeline:   InterceptorPipeline&,
-    headers:    HeaderItem[..32]&,
+    headers:    HeaderMap&,
     target_url: const u8[:],
     method:     const u8[:],
     body_len:   i64,
@@ -454,9 +460,8 @@ fn apply_network_interceptors_request(
 
     if (mask & INTERCEPTOR_NET_HEADER) != 0 {
         let h_name = pipeline.net_header_name[..];
-        if !has_header(headers[..], h_name) {
-            guard headers.len < headers.cap else { return; }
-            headers.push(make_header(h_name, pipeline.net_header_val[..]));
+        if !has_header(headers, h_name) {
+            set_header(headers, h_name, pipeline.net_header_val[..]);
         }
     }
     if (mask & INTERCEPTOR_NET_LOGGING) != 0 {

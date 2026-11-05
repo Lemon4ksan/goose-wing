@@ -92,12 +92,12 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
 // Example:
 //   headers = [{"date", "Tue, 20 Apr 2021"}], name = "date"
 //   returns: true, out = "Tue, 20 Apr 2021"
-fn extract_combined_header_value<B>(headers: const HeaderItem[:], name: const u8[:], out: B&) -> bool {
+fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:], out: B&) -> bool {
     var found = false;
-    for &h in headers {
-        guard eq_ascii_fold(h.name[..], name) else { continue; }
+    for &e in headers.entries {
+        guard eq_ascii_fold(entry_name(headers, e), name) else { continue; }
         var norm_buf: u8[..1024] = [];
-        guard normalize_header_value(h.value[..], norm_buf) else { continue; }
+        guard normalize_header_value(entry_value(headers, e), norm_buf) else { continue; }
         if found {
             out.append(", ");
         }
@@ -125,7 +125,7 @@ fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..102
     if comp.len > 0 && comp[0] == '@' {
         return extract_url_component(req.url[..], comp, out);
     }
-    return extract_combined_header_value(req.headers[..], comp, out);
+    return extract_combined_header_value(req.headers, comp, out);
 }
 
 fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
@@ -155,7 +155,7 @@ fn extract_response_component_value(
     if is_req {
         return extract_component_value(req, req_comp, out);
     }
-    return extract_combined_header_value(res.headers[..], comp, out);
+    return extract_combined_header_value(res.headers, comp, out);
 }
 
 fn append_escaped_string_param<B>(s: const u8[:], out: B&) {

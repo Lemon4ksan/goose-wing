@@ -445,9 +445,9 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
     let req_path = extract_path_from_url(req.url[..]);
     ctx.path.try_set(req_path);
 
-    for &h in req.headers {
-        let name = h.name[..];
-        let val = trim_lws(h.value[..]);
+    for &e in req.headers.entries {
+        let name = entry_name(req.headers, e);
+        let val = trim_lws(entry_value(req.headers, e));
 
         if core::eq_ascii_fold(name, "Sec-Fetch-Site") {
             let parsed_site = parse_sec_fetch_site(val);

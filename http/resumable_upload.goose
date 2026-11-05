@@ -95,9 +95,9 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
     guard res.status_code == 201 || res.status_code == 200 else { return false; }
 
     var has_loc = false;
-    for idx in res.headers.len {
-        let name = res.headers[idx].name[..];
-        let val = res.headers[idx].value[..];
+    for &e in res.headers.entries {
+        let name = entry_name(res.headers, e);
+        let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, "location") {
             guard val.len <= state.upload_url.cap else { return false; }
             state.upload_url.clear();
@@ -146,9 +146,9 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
     guard res.status_code == 204 || res.status_code == 200 else { return false; }
 
     var found_offset = false;
-    for idx in res.headers.len {
-        let name = res.headers[idx].name[..];
-        let val = res.headers[idx].value[..];
+    for &e in res.headers.entries {
+        let name = entry_name(res.headers, e);
+        let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             if off_ok {
@@ -176,9 +176,9 @@ fn handle_offset_query_response(res: const Response&, state: ResumableUploadStat
     guard res.status_code == 204 || res.status_code == 200 else { return false; }
 
     var found_offset = false;
-    for idx in res.headers.len {
-        let name = res.headers[idx].name[..];
-        let val = res.headers[idx].value[..];
+    for &e in res.headers.entries {
+        let name = entry_name(res.headers, e);
+        let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             if off_ok {

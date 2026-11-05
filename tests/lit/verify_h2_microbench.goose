@@ -119,16 +119,17 @@ fn bench_h2_hpack_decode() {
     let iters:  u64   = 5000;
 
     var dt = internal::new_dynamic_table();
-    var out = internal::DecodedH2HeaderList { .. };
+    var pseudo = internal::H2PseudoHeaders { .. };
+    var out = wing::HeaderMap { .. };
     for _ in iters {
-        let err = internal::decode_hpack_header_block(dt, hblock[..], out);
-        assert(err == 0 && out.fields.len == 3);
+        let err = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        assert(err == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
     }
 
     let t0 = core::monotonic_now();
     for _ in iters {
-        let err = internal::decode_hpack_header_block(dt, hblock[..], out);
-        assert(err == 0 && out.fields.len == 3);
+        let err = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        assert(err == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
     }
     let t1 = core::monotonic_now();
 

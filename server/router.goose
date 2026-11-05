@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import wire.pipeline;
 
 // ---- pipeline stage bitmask constants (64-bit register layout) --------------
 
@@ -37,6 +38,36 @@ const DEFAULT_ROUTE_PSO_MASK: u64 =
     STAGE_INGRESS_CORS_PREFLIGHT |
     STAGE_INGRESS_FETCH_CSRF |
     STAGE_INGRESS_AUTH_COOKIE;
+
+// Maps a combined 64-bit PSO mask (bits 0..31 ingress, bits 32..63 egress) to role-scoped server ingress_mask.
+inline fn pso_mask_to_srv_ingress(pso_mask: u64) -> u64 {
+    if pso_mask == 0 {
+        return wire::STAGE_SRV_IN_ROUTE_MATCH;
+    }
+    var m: u64 = wire::STAGE_SRV_IN_ROUTE_MATCH | wire::STAGE_SRV_IN_EDGE_FILTER;
+    if (pso_mask & STAGE_INGRESS_SLOWLORIS) != 0 { m |= wire::STAGE_SRV_IN_SLOWLORIS; }
+    if (pso_mask & STAGE_INGRESS_EXPECT_100) != 0 { m |= wire::STAGE_SRV_IN_EXPECT_100; }
+    if (pso_mask & STAGE_INGRESS_IP_RATELIMIT) != 0 { m |= wire::STAGE_SRV_IN_RATELIMIT_IP; }
+    if (pso_mask & STAGE_INGRESS_ROUTE_RATELIMIT) != 0 { m |= wire::STAGE_SRV_IN_RATELIMIT_ROUTE; }
+    if (pso_mask & STAGE_INGRESS_CORS_PREFLIGHT) != 0 { m |= wire::STAGE_SRV_IN_CORS; }
+    if (pso_mask & STAGE_INGRESS_FETCH_CSRF) != 0 { m |= wire::STAGE_SRV_IN_CSRF; }
+    if (pso_mask & STAGE_INGRESS_AUTH_COOKIE) != 0 { m |= wire::STAGE_SRV_IN_AUTH_COOKIE; }
+    if (pso_mask & STAGE_INGRESS_AUTH_JWT) != 0 { m |= wire::STAGE_SRV_IN_AUTH_JWT; }
+    return m;
+}
+
+// Maps a combined 64-bit PSO mask (bits 0..31 ingress, bits 32..63 egress) to role-scoped server egress_mask.
+inline fn pso_mask_to_srv_egress(pso_mask: u64) -> u64 {
+    var m: u64 = 0;
+    if (pso_mask & STAGE_EGRESS_ETAG) != 0 { m |= wire::STAGE_SRV_OUT_ETAG; }
+    if (pso_mask & STAGE_EGRESS_COMPRESS_GZIP) != 0 { m |= wire::STAGE_SRV_OUT_COMPRESS_GZIP; }
+    if (pso_mask & STAGE_EGRESS_COMPRESS_BROTLI) != 0 { m |= wire::STAGE_SRV_OUT_COMPRESS_BR; }
+    if (pso_mask & STAGE_EGRESS_COMPRESS_ZSTD) != 0 { m |= wire::STAGE_SRV_OUT_COMPRESS_ZSTD; }
+    if (pso_mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 { m |= wire::STAGE_SRV_OUT_SECURITY_HEADERS; }
+    if (pso_mask & STAGE_EGRESS_METRICS) != 0 { m |= wire::STAGE_SRV_OUT_METRICS; }
+    if (pso_mask & STAGE_EGRESS_ACCESS_LOG) != 0 { m |= wire::STAGE_SRV_OUT_ACCESS_LOG; }
+    return m;
+}
 
 enum NodeType {
     Root,
@@ -163,12 +194,14 @@ struct RadixNode {
     handler_id:      i32       = -1,
     entries_mask:    u32       = 0,
     pso_mask:        u64       = 0,
+    ingress_mask:    u64       = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:     u64       = wire::STAGE_SRV_OUT_DEFAULT_MASK,
     param_name:      u8[..32]  = [],
     static_suffix:   u8[..32]  = [],
 }
 
-// Flat Register Routing Table (16-slot Structure of Arrays, 592 bytes).
-// Exactly 9.25 CPU cache lines (L1D resident).
+// Flat Register Routing Table (16-slot Structure of Arrays).
+// First 592 bytes match C wing_l0_table_t (w0.._pad2).
 // Hardware registers: w0 (first 8 bytes) and w1 (next 8 bytes) of ASCII path.
 struct L0RegisterTable {
     w0:           u64[16] = [0; 16],
@@ -182,6 +215,8 @@ struct L0RegisterTable {
     active_mask:  u16     = 0,
     count:        u16     = 0,
     _pad2:        u8[12]  = [0; 12],
+    ingress_mask: u64[16] = [wire::STAGE_SRV_IN_DEFAULT_MASK; 16],
+    egress_mask:  u64[16] = [wire::STAGE_SRV_OUT_DEFAULT_MASK; 16],
 }
 
 struct RadixTree {
@@ -247,6 +282,8 @@ fn split_radix_node(
     tree.nodes[s_idx].handler_id = tree.nodes[c_idx].handler_id;
     tree.nodes[s_idx].entries_mask = tree.nodes[c_idx].entries_mask;
     tree.nodes[s_idx].pso_mask = tree.nodes[c_idx].pso_mask;
+    tree.nodes[s_idx].ingress_mask = tree.nodes[c_idx].ingress_mask;
+    tree.nodes[s_idx].egress_mask = tree.nodes[c_idx].egress_mask;
     tree.nodes[s_idx].param_name.append(tree.nodes[c_idx].param_name[..]);
     tree.nodes[s_idx].static_suffix.append(tree.nodes[c_idx].static_suffix[..]);
     tree.nodes[s_idx].priority = if tree.nodes[c_idx].priority > 0 { tree.nodes[c_idx].priority - 1 } else { 0 };
@@ -264,6 +301,8 @@ fn split_radix_node(
     tree.nodes[c_idx].handler_id = -1;
     tree.nodes[c_idx].entries_mask = 0;
     tree.nodes[c_idx].pso_mask = 0;
+    tree.nodes[c_idx].ingress_mask = wire::STAGE_SRV_IN_DEFAULT_MASK;
+    tree.nodes[c_idx].egress_mask = wire::STAGE_SRV_OUT_DEFAULT_MASK;
     tree.nodes[c_idx].param_name.clear();
     tree.nodes[c_idx].static_suffix.clear();
     tree.nodes[c_idx].node_type = NodeType.Static;
@@ -359,6 +398,8 @@ fn insert_catch_all_child(
     handler_id:   i32,
     entries_mask: u32,
     pso_mask:     u64 = 0,
+    ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) -> bool {
     guard name.len > 0 && name.len <= 32 else { return false; }
     let ca_idx = alloc_node(tree, NodeType.CatchAll);
@@ -369,6 +410,8 @@ fn insert_catch_all_child(
     tree.nodes[ca].handler_id = handler_id;
     tree.nodes[ca].entries_mask = entries_mask;
     tree.nodes[ca].pso_mask = pso_mask;
+    tree.nodes[ca].ingress_mask = ingress_mask;
+    tree.nodes[ca].egress_mask = egress_mask;
 
     tree.nodes[cur].catch_all_child = ca_idx;
     tree.nodes[cur].wild_child = true;
@@ -412,11 +455,15 @@ inline fn set_endpoint_handler(
     handler_id:   i32,
     entries_mask: u32,
     pso_mask:     u64,
+    ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) {
     let n = node_idx as i64;
     tree.nodes[n].handler_id = handler_id;
     tree.nodes[n].entries_mask = entries_mask;
     tree.nodes[n].pso_mask = pso_mask;
+    tree.nodes[n].ingress_mask = ingress_mask;
+    tree.nodes[n].egress_mask = egress_mask;
 }
 
 inline fn sub_param_offset(param_end: i64&, param_start: i64) {
@@ -441,6 +488,8 @@ fn insert_route(
     handler_id:   i32,
     entries_mask: u32 = 0,
     pso_mask:     u64 = 0,
+    ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
     guard tree.root_idx >= 0 else { return false; }
@@ -458,7 +507,7 @@ fn insert_route(
 
         if param_start < 0 {
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
-            set_endpoint_handler(tree, cur_idx, handler_id, entries_mask, pso_mask);
+            set_endpoint_handler(tree, cur_idx, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask);
             return true;
         }
 
@@ -477,7 +526,9 @@ fn insert_route(
         let suffix_after = rem[calc_next_char_pos(param_end)..];
 
         if is_catchall {
-            return insert_catch_all_child(tree, cur_idx, name, handler_id, entries_mask, pso_mask);
+            return insert_catch_all_child(
+                tree, cur_idx, name, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask,
+            );
         }
 
         var param_node_idx: i32 = -1;
@@ -489,7 +540,7 @@ fn insert_route(
             cur_idx = param_node_idx;
             rem = suffix_after;
         } else {
-            set_endpoint_handler(tree, param_node_idx, handler_id, entries_mask, pso_mask);
+            set_endpoint_handler(tree, param_node_idx, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask);
             return true;
         }
     }
@@ -601,7 +652,13 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
 // ---- route matching --------------------------------------------------------
 
 enum RouteMatchResult {
-    Found { handler_id: i32, entries_mask: u32, pso_mask: u64 },
+    Found {
+        handler_id:   i32,
+        entries_mask: u32,
+        pso_mask:     u64,
+        ingress_mask: u64,
+        egress_mask:  u64,
+    },
     NotFound,
     MethodNotAllowed { allow_header: u8[..64] },
 }
@@ -681,6 +738,8 @@ fn match_catch_all_child(
             handler_id:   hid,
             entries_mask: tree.nodes[ca_idx as i64].entries_mask,
             pso_mask:     tree.nodes[ca_idx as i64].pso_mask,
+            ingress_mask: tree.nodes[ca_idx as i64].ingress_mask,
+            egress_mask:  tree.nodes[ca_idx as i64].egress_mask,
         };
     }
     return RouteMatchResult.NotFound;
@@ -745,6 +804,8 @@ inline fn make_found_route(n: const RadixNode&) -> RouteMatchResult {
         handler_id:   n.handler_id,
         entries_mask: n.entries_mask,
         pso_mask:     n.pso_mask,
+        ingress_mask: n.ingress_mask,
+        egress_mask:  n.egress_mask,
     };
 }
 
@@ -957,6 +1018,8 @@ fn register_l0_route(
     handler_id:   i32,
     entries_mask: u32 = 0,
     pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+    ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) -> bool {
     guard path.len <= 16 && (table.count as i64) < 16 else { return false; }
     guard is_pure_static_path(path) else { return false; }
@@ -967,6 +1030,8 @@ fn register_l0_route(
         table.handler_id[e] = handler_id;
         table.entries_mask[e] = entries_mask;
         table.pso_mask[e] = pso_mask;
+        table.ingress_mask[e] = ingress_mask;
+        table.egress_mask[e] = egress_mask;
         return true;
     }
 
@@ -981,6 +1046,8 @@ fn register_l0_route(
     table.handler_id[slot] = handler_id;
     table.entries_mask[slot] = entries_mask;
     table.pso_mask[slot] = pso_mask;
+    table.ingress_mask[slot] = ingress_mask;
+    table.egress_mask[slot] = egress_mask;
     table.active_mask |= ((1 as u16) << (slot as u16));
     table.count += 1;
     return true;
@@ -1000,10 +1067,13 @@ struct StaticRoutePayload {
     body:         u8[..512] = [],
 }
 
+const DEFAULT_METRICS_PAYLOAD: const u8[:] =
+    "{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
+
 struct RadixRouter {
     trees:           MethodTree[..8]          = [],
     l0_table:        L0RegisterTable          = L0RegisterTable { .. },
-    static_payloads: StaticRoutePayload[..16] = [],
+    static_payloads: StaticRoutePayload[..32] = [],
 }
 
 fn new_radix_router() -> RadixRouter {
@@ -1015,6 +1085,9 @@ fn new_radix_router() -> RadixRouter {
         mt.method.append(m);
         r.trees.push(mt);
     }
+    let _ = set_static_route_payload(r, 1001, "text/plain", "Hello, World!");
+    let _ = set_static_route_payload(r, 1002, "application/json", "{\"message\":\"Hello, World!\"}");
+    let _ = set_static_route_payload(r, 1003, "application/json", DEFAULT_METRICS_PAYLOAD);
     return r;
 }
 
@@ -1029,16 +1102,48 @@ fn add_route(
     entries_mask: u32 = 0,
     pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
 ) -> bool {
+    let in_mask = pso_mask_to_srv_ingress(pso_mask);
+    let out_mask = pso_mask_to_srv_egress(pso_mask);
+    return add_route_masks(router, method, path, handler_id, entries_mask, pso_mask, in_mask, out_mask);
+}
+
+// Registers a route pattern with explicit role-scoped ingress_mask and egress_mask.
+fn add_route_masks(
+    router:       RadixRouter&,
+    method:       const u8[:],
+    path:         const u8[:],
+    handler_id:   i32,
+    entries_mask: u32,
+    pso_mask:     u64,
+    ingress_mask: u64,
+    egress_mask:  u64,
+) -> bool {
     var canon_path: u8[..512] = [];
     guard canonicalize_route_path(path, canon_path) else { return false; }
     for idx in router.trees.len {
-        if router.trees[idx].method[..] == method {
-            let ok = insert_route(router.trees[idx].tree, canon_path[..], handler_id, entries_mask, pso_mask);
-            if ok {
-                register_l0_route(router.l0_table, idx as u8, canon_path[..], handler_id, entries_mask, pso_mask);
-            }
-            return ok;
+        guard router.trees[idx].method[..] == method else { continue; }
+        let ok = insert_route(
+            router.trees[idx].tree,
+            canon_path[..],
+            handler_id,
+            entries_mask,
+            pso_mask,
+            ingress_mask,
+            egress_mask,
+        );
+        if ok {
+            register_l0_route(
+                router.l0_table,
+                idx as u8,
+                canon_path[..],
+                handler_id,
+                entries_mask,
+                pso_mask,
+                ingress_mask,
+                egress_mask,
+            );
         }
+        return ok;
     }
     return false;
 }
@@ -1054,6 +1159,45 @@ fn add_route_pso(
     return add_route(router, method, path, handler_id, 0, pso_mask);
 }
 
+// Registers a route pattern with explicit Server Ingress and Egress 64-bit stage masks.
+fn add_route_pso(
+    router:       RadixRouter&,
+    method:       const u8[:],
+    path:         const u8[:],
+    handler_id:   i32,
+    ingress_mask: u64,
+    egress_mask:  u64,
+) -> bool {
+    return add_route_masks(router, method, path, handler_id, 0, DEFAULT_ROUTE_PSO_MASK, ingress_mask, egress_mask);
+}
+
+// Attaches or updates a static payload for a given `handler_id` in `router.static_payloads`.
+fn set_static_route_payload(
+    router:       RadixRouter&,
+    handler_id:   i32,
+    content_type: const u8[:],
+    body:         const u8[:],
+) -> bool {
+    for idx in router.static_payloads.len {
+        if router.static_payloads[idx].handler_id == handler_id {
+            guard router.static_payloads[idx].content_type.try_set(content_type)
+                && router.static_payloads[idx].body.try_set(body) else {
+                return false;
+            }
+            return true;
+        }
+    }
+    guard router.static_payloads.len < router.static_payloads.cap else { return false; }
+    var sp = StaticRoutePayload {
+        handler_id:   handler_id,
+        content_type: [],
+        body:         [],
+    };
+    guard sp.content_type.try_set(content_type) && sp.body.try_set(body) else { return false; }
+    router.static_payloads.push(sp);
+    return true;
+}
+
 fn add_static_route(
     router:       RadixRouter&,
     method:       const u8[:],
@@ -1063,16 +1207,8 @@ fn add_static_route(
     handler_id:   i32 = 0,
 ) -> bool {
     let eff_id = if handler_id != 0 { handler_id } else { 2048 | (router.static_payloads.len as i32) };
-    guard router.static_payloads.len < router.static_payloads.cap else { return false; }
-    var sp = StaticRoutePayload {
-        handler_id:   eff_id,
-        content_type: [],
-        body:         [],
-    };
-    guard sp.content_type.try_set(content_type) && sp.body.try_set(body) else { return false; }
     guard add_route(router, method, path, eff_id, 0, DEFAULT_ROUTE_PSO_MASK) else { return false; }
-    router.static_payloads.push(sp);
-    return true;
+    return set_static_route_payload(router, eff_id, content_type, body);
 }
 
 fn get_static_route_payload(
@@ -1187,6 +1323,8 @@ inline fn try_match_l0_slot<B>(
         handler_id:   table.handler_id[s],
         entries_mask: table.entries_mask[s],
         pso_mask:     table.pso_mask[s],
+        ingress_mask: table.ingress_mask[s],
+        egress_mask:  table.egress_mask[s],
     };
 }
 

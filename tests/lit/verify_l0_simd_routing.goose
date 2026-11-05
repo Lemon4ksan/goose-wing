@@ -221,7 +221,7 @@ fn test_l0_pipeline_execution() {
 
     // Exact L0 hit through pipeline
     var req1 = wing::new_request("GET", "/healthz");
-    req1.headers.push(wing::make_header("Host", "example.com"));
+    wing::append_header(req1.headers, "Host", "example.com");
 
     var res1 = wing::Response { .. };
     var fut1 = internal::new_inline_handler_future(0);
@@ -232,7 +232,7 @@ fn test_l0_pipeline_execution() {
 
     // Query fallback through pipeline
     var req2 = wing::new_request("GET", "/json?pretty=1");
-    req2.headers.push(wing::make_header("Host", "example.com"));
+    wing::append_header(req2.headers, "Host", "example.com");
 
     var res2 = wing::Response { .. };
     var fut2 = internal::new_inline_handler_future(0);

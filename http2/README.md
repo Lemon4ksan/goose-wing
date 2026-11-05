@@ -29,9 +29,11 @@ Zero-allocation HTTP/2 protocol engine (RFC 9113), HPACK header compression (RFC
 ### HPACK Compression & Canonical Dynamic Table (`hpack.goose`, RFC 7541)
 
 - **`struct DynamicTable`**: Bounded circular buffer managing HPACK dynamic table entries with eviction accounting and generations.
+- **`struct H2PseudoHeaders`**: Validated HTTP/2 pseudo-headers (`:method`, `:scheme`, `:authority`, `:path`, `:protocol`, `:status`) and `content_length` tracking.
 - **`struct DecodedH2Header`**: Decoded header name-value pair view.
 - **`struct DecodedH2HeaderList`**: Bounded collection of decoded request/response headers with validated pseudo-header presence.
 - **`fn new_dynamic_table(max_size: u32) -> DynamicTable`**: Initializes HPACK dynamic table with specified capacity.
+- **`fn decode_hpack_field_step_to_map`**: Decodes a single HPACK representation directly into `H2PseudoHeaders` and `wing::HeaderMap` (used by `wire::decode_hpack_to_map`).
 - **`fn decode_hpack_header_block(dt: DynamicTable&, src: const u8[:], out: DecodedH2HeaderList&, max_header_list_size: u32 = 8192, validate_http2_rules: bool = true) -> u32`**: Decodes indexed, literal, and Huffman-encoded header blocks.
 
 ### Connection State & Stream Multiplexing (`connection.goose`)

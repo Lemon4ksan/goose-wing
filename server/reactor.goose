@@ -747,10 +747,10 @@ fn handle_h3_server_datagram<B>(
     };
     var req = new_request(method, path);
     if h3_conn.streams[s_idx].req_authority.len > 0 {
-        req.headers.push(make_header("host", h3_conn.streams[s_idx].req_authority[..]));
-        add_header(req.bloom_filter, "host");
+        let _ = append_header(req.headers, "host", h3_conn.streams[s_idx].req_authority[..]);
         req.presence_mask |= HDR_PRESENCE_HOST;
     }
+    let _ = internal::copy_stream_headers(h3_conn, stream_id, req.headers);
     if h3_conn.streams[s_idx].received_body.len > 0 {
         req.body.append(h3_conn.streams[s_idx].received_body[..]);
     }
@@ -761,13 +761,15 @@ fn handle_h3_server_datagram<B>(
     server.requests_processed++;
 
     var extra_map = HeaderMap { .. };
-    for &hdr in res.headers {
+    for &e in res.headers.entries {
+        let hdr_name = entry_name(res.headers, e);
+        let hdr_val = entry_value(res.headers, e);
         var lname: u8[..128] = [];
-        for b in hdr.name {
+        for b in hdr_name {
             let c = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
             lname.push(c);
         }
-        let _ = extra_map.append_header(lname[..], hdr.value[..]);
+        let _ = extra_map.append_header(lname[..], hdr_val);
     }
     return internal::send_response_headers_and_body(
         h3_conn, stream_id, res.status_code, extra_map, res.body[..], tx_wire,

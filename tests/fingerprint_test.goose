@@ -155,14 +155,9 @@ fn test_wing_profile_and_session(t: lit::T&) {
         sub.assert_contains(wing::user_agent(session), "Wing/1.0", "Session defaults to Wing authentic User-Agent");
 
         // Default headers check
-        var has_ua = false;
-        var has_accept = false;
-        var has_zstd = false;
-        for &hdr in session.default_headers {
-            if hdr.name[..] == "User-Agent" { has_ua = true; }
-            if hdr.name[..] == "Accept" { has_accept = true; }
-            if hdr.name[..] == "Accept-Encoding" && find(hdr.value[..], "zstd") >= 0 { has_zstd = true; }
-        }
+        let has_ua = wing::has_header(session.default_headers, "User-Agent");
+        let has_accept = wing::has_header(session.default_headers, "Accept");
+        let has_zstd = find(wing::get_header(session.default_headers, "Accept-Encoding"), "zstd") >= 0;
         sub.assert_true(has_ua, "User-Agent present in session default headers");
         sub.assert_true(has_accept, "Accept present in session default headers");
         sub.assert_true(has_zstd, "Zstandard present in session default Accept-Encoding");
@@ -197,7 +192,7 @@ fn test_wing_profile_and_session(t: lit::T&) {
         var prof_ovr = wing::wing_default_profile();
         wing::set_header(prof_ovr, "User-Agent", "UniqueUA/1.0");
         sub.assert_bytes_eq(prof_ovr.user_agent[..], "UniqueUA/1.0", "set_header overrides user_agent field");
-        sub.assert_eq(prof_ovr.extra_headers.len, 0, "No duplicate in extra_headers");
+        sub.assert_eq(prof_ovr.extra_headers.entries.len, 0, "No duplicate in extra_headers");
     };
 }
 
@@ -411,32 +406,32 @@ fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
 fn test_akamai_pseudo_header_ordering(t: lit::T&) {
     t.run("Order pseudo headers according to browser specification") { sub =>
         let chrome_fp = wing::akamai_chrome_preset();
-        var chrome_ordered: wing::HeaderItem[..4] = [];
+        var chrome_ordered = wing::HeaderMap { .. };
         wing::order_pseudo_headers(chrome_fp, "GET", "api.example.com", "https", "/v1/data", chrome_ordered);
 
-        sub.assert_eq(chrome_ordered.len, 4, "4 ordered headers");
-        sub.assert_eq(chrome_ordered[0].name[..], ":method", "Chrome 0 is :method");
-        sub.assert_eq(chrome_ordered[1].name[..], ":authority", "Chrome 1 is :authority");
-        sub.assert_eq(chrome_ordered[2].name[..], ":scheme", "Chrome 2 is :scheme");
-        sub.assert_eq(chrome_ordered[3].name[..], ":path", "Chrome 3 is :path");
+        sub.assert_eq(chrome_ordered.entries.len, 4, "4 ordered headers");
+        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[0]), ":method", "Chrome 0 is :method");
+        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[1]), ":authority", "Chrome 1 is :authority");
+        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[2]), ":scheme", "Chrome 2 is :scheme");
+        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[3]), ":path", "Chrome 3 is :path");
 
         let ff_fp = wing::akamai_firefox_preset();
-        var ff_ordered: wing::HeaderItem[..4] = [];
+        var ff_ordered = wing::HeaderMap { .. };
         wing::order_pseudo_headers(ff_fp, "GET", "api.example.com", "https", "/v1/data", ff_ordered);
 
-        sub.assert_eq(ff_ordered[0].name[..], ":method", "Firefox 0 is :method");
-        sub.assert_eq(ff_ordered[1].name[..], ":path", "Firefox 1 is :path");
-        sub.assert_eq(ff_ordered[2].name[..], ":authority", "Firefox 2 is :authority");
-        sub.assert_eq(ff_ordered[3].name[..], ":scheme", "Firefox 3 is :scheme");
+        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[0]), ":method", "Firefox 0 is :method");
+        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[1]), ":path", "Firefox 1 is :path");
+        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[2]), ":authority", "Firefox 2 is :authority");
+        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[3]), ":scheme", "Firefox 3 is :scheme");
 
         let saf_fp = wing::akamai_safari_preset();
-        var saf_ordered: wing::HeaderItem[..4] = [];
+        var saf_ordered = wing::HeaderMap { .. };
         wing::order_pseudo_headers(saf_fp, "GET", "api.example.com", "https", "/v1/data", saf_ordered);
 
-        sub.assert_eq(saf_ordered[0].name[..], ":method", "Safari 0 is :method");
-        sub.assert_eq(saf_ordered[1].name[..], ":scheme", "Safari 1 is :scheme");
-        sub.assert_eq(saf_ordered[2].name[..], ":authority", "Safari 2 is :authority");
-        sub.assert_eq(saf_ordered[3].name[..], ":path", "Safari 3 is :path");
+        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[0]), ":method", "Safari 0 is :method");
+        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[1]), ":scheme", "Safari 1 is :scheme");
+        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[2]), ":authority", "Safari 2 is :authority");
+        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[3]), ":path", "Safari 3 is :path");
     };
 }
 

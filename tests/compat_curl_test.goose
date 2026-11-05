@@ -441,15 +441,15 @@ fn test_curl_connect_tunneling_and_proxy_rules(t: lit::T&) {
 fn test_curl_expect_100_continue(t: lit::T&) {
     t.run("curl test1129 & test1130: Expect header validation") { sub =>
         var req_valid = wing::new_request("POST", "/upload");
-        req_valid.headers.push(wing::make_header("Expect", "100-continue"));
+        wing::set_header(req_valid, "Expect", "100-continue");
         sub.assert_true(wing::validate_pipeline_expect_header(req_valid), "100-continue is recognized as valid");
 
         var req_case = wing::new_request("POST", "/upload");
-        req_case.headers.push(wing::make_header("Expect", "100-Continue"));
+        wing::set_header(req_case, "Expect", "100-Continue");
         sub.assert_true(wing::validate_pipeline_expect_header(req_case), "case-insensitive 100-Continue is valid");
 
         var req_invalid = wing::new_request("POST", "/upload");
-        req_invalid.headers.push(wing::make_header("Expect", "unknown-token-xyz"));
+        wing::set_header(req_invalid, "Expect", "unknown-token-xyz");
         sub.assert_false(wing::validate_pipeline_expect_header(req_invalid), "unrecognized Expect token rejected");
     };
 
@@ -461,8 +461,8 @@ fn test_curl_expect_100_continue(t: lit::T&) {
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var req = wing::new_request("POST", "/upload");
-        req.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
-        req.headers.push(wing::make_header("Expect", "unsupported-feature"));
+        wing::set_header(req, "Sec-Fetch-Site", "same-origin");
+        wing::set_header(req, "Expect", "unsupported-feature");
 
         var res = wing::Response { .. };
         var fut = internal::new_inline_handler_future(0);
@@ -494,8 +494,8 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_false(ok1, "1Z non-hex rejected by ChunkedStreamDecoder");
         sub.assert_eq(dec1.error_code, wing::ChunkedDecodeError.InvalidChunkSizeHex, "error code InvalidChunkSizeHex");
 
-        var body1:     u8[>..]                = [];
-        var trailers1: wing::HeaderItem[..16] = [];
+        var body1: u8[>..] = [];
+        var trailers1 = wing::HeaderMap { .. };
         let err1, _ = wing::decode_chunked_body_with_trailers("1Z\r\nHello\r\n0\r\n\r\n", body1, trailers1);
         sub.assert_eq(err1, wing::ChunkedDecodeError.InvalidChunkSizeHex, "decode_chunked_body rejects 1Z");
 
@@ -566,16 +566,16 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_true(wing::is_complete(dec1), "stream is complete");
         sub.assert_eq(cons1, raw_1a.len, "all bytes consumed");
 
-        var body1:     u8[>..]                = [];
-        var trailers1: wing::HeaderItem[..16] = [];
+        var body1: u8[>..] = [];
+        var trailers1 = wing::HeaderMap { .. };
         let err1, _ = wing::decode_chunked_body_with_trailers(raw_1a, body1, trailers1);
         sub.assert_eq(err1, wing::ChunkedDecodeError.None, "decoded 1A with extension cleanly");
         sub.assert_bytes_eq(body1[..], "abcdefghijklmnopqrstuvwxyz", "decoded body matches");
 
         // Vector 2: Quoted-string extension with escaped quote
         let raw_quote = "5;desc=\"quoted \\\"val\\\"\"\r\nHello\r\n0\r\n\r\n";
-        var body_q:     u8[>..]                = [];
-        var trailers_q: wing::HeaderItem[..16] = [];
+        var body_q: u8[>..] = [];
+        var trailers_q = wing::HeaderMap { .. };
         let err_q, _ = wing::decode_chunked_body_with_trailers(raw_quote, body_q, trailers_q);
         sub.assert_eq(err_q, wing::ChunkedDecodeError.None, "quoted extension parsed cleanly");
         sub.assert_bytes_eq(body_q[..], "Hello", "quoted extension payload matches");
@@ -595,8 +595,8 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         let st_bad2, _, _ = internal::chunk_fsm_feed(fsm_bad2, "5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n");
         sub.assert_eq(st_bad2, internal::ChunkFsmStatus.Error, "FSM rejects unclosed quote in extension");
 
-        var body_bad2: u8[>..]                = [];
-        var tr_bad2:   wing::HeaderItem[..16] = [];
+        var body_bad2: u8[>..] = [];
+        var tr_bad2 = wing::HeaderMap { .. };
         let err_bad2, _ = wing::decode_chunked_body_with_trailers("5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n", body_bad2, tr_bad2);
         sub.assert_ne(err_bad2, wing::ChunkedDecodeError.None, "unclosed quote rejected by decoder");
 
@@ -680,8 +680,8 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
     t.run("curl test 150, 584: chunked response terminating before terminal 0\\r\\n\\r\\n chunk rejected") { sub =>
         // Vector 1: Complete chunk data but missing final 0\r\n\r\n
         let chunk_wire_trunc = "5\r\nHello\r\n";
-        var body1:     u8[>..]                = [];
-        var trailers1: wing::HeaderItem[..16] = [];
+        var body1: u8[>..] = [];
+        var trailers1 = wing::HeaderMap { .. };
         let err1, _ = wing::decode_chunked_body_with_trailers(chunk_wire_trunc, body1, trailers1);
         sub.assert_eq(err1, wing::ChunkedDecodeError.UnexpectedEof, "decode_chunked_body detects missing 0\\r\\n\\r\\n as UnexpectedEof");
 
@@ -699,8 +699,8 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
 
         // Vector 2: Truncated mid-chunk payload (3 of 5 bytes)
         let mid_chunk = "5\r\nHel";
-        var body2:     u8[>..]                = [];
-        var trailers2: wing::HeaderItem[..16] = [];
+        var body2: u8[>..] = [];
+        var trailers2 = wing::HeaderMap { .. };
         let err2, _ = wing::decode_chunked_body_with_trailers(mid_chunk, body2, trailers2);
         sub.assert_eq(err2, wing::ChunkedDecodeError.UnexpectedEof, "mid-chunk truncation rejected as UnexpectedEof");
 
@@ -712,8 +712,8 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
 
         // Vector 3: Truncated mid-trailer line
         let trunc_tr = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026";
-        var body3:     u8[>..]                = [];
-        var trailers3: wing::HeaderItem[..16] = [];
+        var body3: u8[>..] = [];
+        var trailers3 = wing::HeaderMap { .. };
         let err3, _ = wing::decode_chunked_body_with_trailers(trunc_tr, body3, trailers3);
         sub.assert_eq(err3, wing::ChunkedDecodeError.UnexpectedEof, "truncated trailer line rejected as UnexpectedEof");
     };
@@ -748,28 +748,26 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
 
         // Vector 2: Direct chunked body decoding with trailers
         let chunk_wire = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\n\r\n";
-        var body_raw:     u8[>..]                = [];
-        var trailers_raw: wing::HeaderItem[..16] = [];
+        var body_raw: u8[>..] = [];
+        var trailers_raw = wing::HeaderMap { .. };
         let err_raw, cons_raw = wing::decode_chunked_body_with_trailers(chunk_wire, body_raw, trailers_raw);
         sub.assert_eq(err_raw, wing::ChunkedDecodeError.None, "clean decode with single trailer");
         sub.assert_eq(cons_raw, chunk_wire.len, "exact bytes consumed");
         sub.assert_bytes_eq(body_raw[..], "Hello", "payload matches");
-        sub.assert_eq(trailers_raw.len, 1, "exactly 1 trailer extracted");
-        sub.assert_bytes_eq(trailers_raw[0].name[..], "Expires", "trailer name is Expires");
-        sub.assert_bytes_eq(trailers_raw[0].value[..], "Wed, 21 Oct 2026 07:28:00 GMT", "trailer value matches");
+        sub.assert_eq(trailers_raw.entries.len, 1, "exactly 1 trailer extracted");
+        sub.assert_bytes_eq(wing::entry_name(trailers_raw, trailers_raw.entries[0]), "Expires", "trailer name is Expires");
+        sub.assert_bytes_eq(wing::entry_value(trailers_raw, trailers_raw.entries[0]), "Wed, 21 Oct 2026 07:28:00 GMT", "trailer value matches");
 
         // Vector 3: Case-insensitive trailer lookup and multiple fields
         let multi_tr = "4\r\ntest\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nETag: \"abc-123\"\r\nVary: Accept-Encoding\r\n\r\n";
-        var body_m: u8[>..]                = [];
-        var tr_m:   wing::HeaderItem[..16] = [];
+        var body_m: u8[>..] = [];
+        var tr_m = wing::HeaderMap { .. };
         let err_m, _ = wing::decode_chunked_body_with_trailers(multi_tr, body_m, tr_m);
         sub.assert_eq(err_m, wing::ChunkedDecodeError.None, "decoded 3 trailers cleanly");
-        sub.assert_eq(tr_m.len, 3, "3 trailers extracted into array");
+        sub.assert_eq(tr_m.entries.len, 3, "3 trailers extracted into array");
 
         var res_m = wing::Response { .. };
-        for &t in tr_m {
-            wing::add_trailer(res_m, t.name[..], t.value[..]);
-        }
+        wing::append_all_headers(tr_m, res_m.trailers);
         sub.assert_true(wing::has_trailer(res_m, "expires"), "case-insensitive 'expires' found");
         sub.assert_bytes_eq(wing::trailer(res_m, "EXPIRES"), "Wed, 21 Oct 2026 07:28:00 GMT", "case-insensitive 'EXPIRES' lookup matches");
         sub.assert_true(wing::has_trailer(res_m, "etag"), "etag found");
@@ -787,21 +785,19 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
         sub.assert_true(wing::is_complete(dec), "decoder marked Complete");
         sub.assert_eq(cons, chunk_data.len, "all stream bytes consumed");
         sub.assert_bytes_eq(body[..], "Hello", "body payload extracted");
-        sub.assert_eq(dec.trailers.len, 1, "exactly 1 trailer captured");
-        sub.assert_bytes_eq(dec.trailers[0].name[..], "Expires", "decoder trailer name");
-        sub.assert_bytes_eq(dec.trailers[0].value[..], "Wed, 21 Oct 2026 07:28:00 GMT", "decoder trailer value");
+        sub.assert_eq(dec.trailers.entries.len, 1, "exactly 1 trailer captured");
+        sub.assert_bytes_eq(wing::entry_name(dec.trailers, dec.trailers.entries[0]), "Expires", "decoder trailer name");
+        sub.assert_bytes_eq(wing::entry_value(dec.trailers, dec.trailers.entries[0]), "Wed, 21 Oct 2026 07:28:00 GMT", "decoder trailer value");
 
         var resp_copy = wing::Response { .. };
-        for &tr in dec.trailers {
-            wing::add_trailer(resp_copy, tr.name[..], tr.value[..]);
-        }
+        wing::append_all_headers(dec.trailers, resp_copy.trailers);
         sub.assert_true(wing::has_trailer(resp_copy, "Expires"), "Response has copied trailer");
         sub.assert_bytes_eq(wing::trailer(resp_copy, "Expires"), "Wed, 21 Oct 2026 07:28:00 GMT", "copied trailer value matches");
     };
 
     t.run("curl test 188, 1090: Disallowed trailer security defenses per RFC 9112 Section 7.1.2") { sub =>
-        var body_p:     u8[>..]                = [];
-        var trailers_p: wing::HeaderItem[..16] = [];
+        var body_p: u8[>..] = [];
+        var trailers_p = wing::HeaderMap { .. };
 
         // Content-Length in trailer (framing conflict smuggling)
         let cl_wire = "4\r\nwiki\r\n0\r\nContent-Length: 10\r\n\r\n";

@@ -49,6 +49,8 @@ struct H3StreamEntry {
     req_method:        u8[..16]            = [],
     req_path:          u8[..1024]          = [],
     req_authority:     u8[..256]           = [],
+    headers:           wing::HeaderMap     = wing::HeaderMap { .. },
+    trailers:          wing::HeaderMap     = wing::HeaderMap { .. },
     received_body:     u8[..4096]          = [],
 }
 
@@ -230,10 +232,23 @@ fn encode_h3_extra_headers<B1, B2>(
         let vb = entry.values_begin as i64;
         let ve = entry.values_end as i64;
         if nb >= 0 && ne >= nb && ne <= raw_len && vb >= 0 && ve >= vb && ve <= raw_len {
-            let name = extra_headers.raw_buf[nb..ne];
+            let raw_name = extra_headers.raw_buf[nb..ne];
             let val = extra_headers.raw_buf[vb..ve];
+            if wire::is_h2_skipped_header_name(raw_name) {
+                continue;
+            }
+            if core::eq_ascii_fold(raw_name, "te") && !core::eq_ascii_fold(core::trim_lws(val), "trailers") {
+                continue;
+            }
+            var lower_name: u8[..256] = [];
+            if raw_name.len == 0 || raw_name.len > lower_name.cap {
+                continue;
+            }
+            for b in raw_name {
+                lower_name.push(core::to_lower_ascii_byte(b));
+            }
             encode_qpack_field_dynamic(
-                tbl, stream_id, base, name, val,
+                tbl, stream_id, base, lower_name[..], val,
                 body_fields, enc_stream, max_dyn_abs, used_any_dyn, false,
             );
         }
@@ -1144,11 +1159,31 @@ fn handle_bidi_headers(
     if is_trailer {
         let t_err = validate_h3_trailers(conn, decoded_fields);
         guard t_err == rfc::H3_ERR_NO_ERROR else { return t_err; }
+        conn.streams[s_idx].trailers.clear();
+        for &f in decoded_fields {
+            guard wing::append_header(conn.streams[s_idx].trailers, f.name[..], f.value[..]) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+                return rfc::H3_ERR_EXCESSIVE_LOAD;
+            }
+        }
         conn.streams[s_idx].trailers_received = true;
         return rfc::H3_ERR_NO_ERROR;
     }
 
-    return validate_h3_headers(conn, s_idx, decoded_fields);
+    let v_err = validate_h3_headers(conn, s_idx, decoded_fields);
+    guard v_err == rfc::H3_ERR_NO_ERROR else { return v_err; }
+    conn.streams[s_idx].headers.clear();
+    for &f in decoded_fields {
+        if f.name.len > 0 && f.name[0] != ':' {
+            guard wing::append_header(conn.streams[s_idx].headers, f.name[..], f.value[..]) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+                return rfc::H3_ERR_EXCESSIVE_LOAD;
+            }
+        }
+    }
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn check_h3_empty_streak(conn: H3Connection&, payload_len: u64) -> bool {
@@ -1345,6 +1380,40 @@ fn get_response_body(conn: const H3Connection&, stream_id: u64) -> const u8[:], 
         return conn.streams[s_idx].received_body[..], true;
     }
     return "", false;
+}
+
+fn copy_stream_headers(conn: const H3Connection&, stream_id: u64, out_headers: wing::HeaderMap&) -> bool {
+    let s_idx, found = find_h3_stream_idx(conn, stream_id);
+    guard found && s_idx >= 0 && s_idx < conn.streams.len && conn.streams[s_idx].headers_received else {
+        return false;
+    }
+    out_headers.clear();
+    let src = conn.streams[s_idx].headers;
+    for &e in src.entries {
+        let name = wing::entry_name(src, e);
+        let val = wing::entry_value(src, e);
+        if !wing::append_header(out_headers, name, val) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn copy_stream_trailers(conn: const H3Connection&, stream_id: u64, out_trailers: wing::HeaderMap&) -> bool {
+    let s_idx, found = find_h3_stream_idx(conn, stream_id);
+    guard found && s_idx >= 0 && s_idx < conn.streams.len && conn.streams[s_idx].trailers_received else {
+        return false;
+    }
+    out_trailers.clear();
+    let src = conn.streams[s_idx].trailers;
+    for &e in src.entries {
+        let name = wing::entry_name(src, e);
+        let val = wing::entry_value(src, e);
+        if !wing::append_header(out_trailers, name, val) {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {

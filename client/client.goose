@@ -31,6 +31,7 @@ import client.stream;
 import client.session.ssrf;
 import client.session.mock;
 import net.pool;
+import wire.pipeline;
 
 // ---- client configuration and state ----------------------------------------
 
@@ -72,7 +73,7 @@ struct Client {
     https_only:              bool              = false,
     enable_referer:          bool              = true,
     default_referrer_policy: ReferrerPolicy    = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    default_headers:         HeaderItem[..16]  = [],
+    default_headers:         HeaderMap         = HeaderMap { .. },
     ssrf_guard:              SsrfGuardPolicy   = SsrfGuardPolicy { .. },
     virtual_clock_us:        i64               = 1700000000000000,
     trusted_location_hosts:  u8[..128][..8]    = [],
@@ -100,7 +101,8 @@ struct Client {
     enable_compression_dict: bool            = true,
 
     // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network)
-    pipeline: InterceptorPipeline = InterceptorPipeline { .. },
+    pipeline:      InterceptorPipeline = InterceptorPipeline { .. },
+    wire_pipeline: wire::WirePipeline  = wire::default_client_pipeline(),
 
     // RFC 7616 Digest & RFC 7617 Basic Authenticator
     creds: ClientCredentials = ClientCredentials { .. },
@@ -137,6 +139,7 @@ fn new_client() -> Client {
         dict_cache:              DictionaryCache { .. },
         enable_compression_dict: true,
         pipeline:                InterceptorPipeline { .. },
+        wire_pipeline:           wire::default_client_pipeline(),
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
         pool:                    new_stream_pool(),
@@ -165,6 +168,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         dict_cache:              DictionaryCache { .. },
         enable_compression_dict: cfg.enable_compression_dict,
         pipeline:                InterceptorPipeline { .. },
+        wire_pipeline:           wire::default_client_pipeline(),
         hsts:                    HstsCache { .. },
         enable_hsts:             true,
         pool:                    new_stream_pool(),
@@ -225,23 +229,26 @@ fn apply_profile(client: Client&, profile: const BrowserProfile&) {
     client.profile_spec = profile;
     client.default_headers.clear();
     if profile.user_agent.len > 0 {
-        client.default_headers.push(make_header("User-Agent", profile.user_agent[..]));
+        set_header(client.default_headers, "User-Agent", profile.user_agent[..]);
     }
     if profile.accept.len > 0 {
-        client.default_headers.push(make_header("Accept", profile.accept[..]));
+        set_header(client.default_headers, "Accept", profile.accept[..]);
     }
     if profile.accept_encoding.len > 0 {
-        client.default_headers.push(make_header("Accept-Encoding", profile.accept_encoding[..]));
+        set_header(client.default_headers, "Accept-Encoding", profile.accept_encoding[..]);
     }
     if profile.accept_language.len > 0 {
-        client.default_headers.push(make_header("Accept-Language", profile.accept_language[..]));
+        set_header(client.default_headers, "Accept-Language", profile.accept_language[..]);
     }
     if profile.upgrade_insecure_requests.len > 0 {
-        client.default_headers.push(make_header("Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]));
+        set_header(client.default_headers, "Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]);
     }
-    for &h in profile.extra_headers {
-        guard client.default_headers.len < client.default_headers.cap else { break; }
-        client.default_headers.push(copy(h));
+    for &e in profile.extra_headers.entries {
+        let h_name = entry_name(profile.extra_headers, e);
+        let h_val = entry_value(profile.extra_headers, e);
+        if h_name.len > 0 {
+            set_header(client.default_headers, h_name, h_val);
+        }
     }
 }
 
@@ -268,7 +275,7 @@ fn set_user_agent(session: Session&, ua: const u8[:]) {
 }
 
 fn user_agent(session: const Session&) -> const u8[:] {
-    let ua = find_header(session.default_headers[..], "user-agent");
+    let ua = get_header(session.default_headers, "user-agent");
     if ua.len > 0 { return ua; }
     return profile_user_agent(session.profile);
 }
@@ -669,10 +676,10 @@ fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: 
     };
     route.method.append("GET");
     route.pattern_url.append(url_pattern);
-    route.headers.push(make_header("Upgrade", "websocket"));
-    route.headers.push(make_header("Connection", "Upgrade"));
+    set_header(route.headers, "Upgrade", "websocket");
+    set_header(route.headers, "Connection", "Upgrade");
     if subprotocol.len > 0 {
-        route.headers.push(make_header("Sec-WebSocket-Protocol", subprotocol));
+        set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
     }
     session.mock_routes.push(route);
 }
@@ -686,9 +693,9 @@ fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: cons
     };
     route.method.append("GET");
     route.pattern_url.append(url_pattern);
-    route.headers.push(make_header("Content-Type", "text/event-stream"));
-    route.headers.push(make_header("Cache-Control", "no-cache"));
-    route.headers.push(make_header("Connection", "keep-alive"));
+    set_header(route.headers, "Content-Type", "text/event-stream");
+    set_header(route.headers, "Cache-Control", "no-cache");
+    set_header(route.headers, "Connection", "keep-alive");
     if sample_events.len > 0 {
         route.body.append(sample_events);
     }
@@ -715,9 +722,7 @@ fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
 }
 
 fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
-    if session.default_headers.len < 16 {
-        session.default_headers.push(make_header(name, value));
-    }
+    set_header(session.default_headers, name, value);
 }
 
 // ---- rfc 9842 compression dictionary transport helpers ---------------------

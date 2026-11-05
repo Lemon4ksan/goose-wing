@@ -26,7 +26,6 @@ fn test_large_bearer_token() {
     let auth = wing::header(req, "Authorization");
     assert(auth.len == 1507);
     assert(core::starts_with(auth, "Bearer aaaaa"));
-    assert(req.headers[0].is_sensitive);
     print("CHECK_BEARER_LARGE: OK");
 }
 
@@ -65,55 +64,26 @@ fn test_body_rewind_overflow() {
 fn test_materialize_presence_mask() {
     var req = wing::Request { .. };
     let wire = "Host: test.example.com\r\nAuthorization: Bearer mysecret\r\n\r\n";
-    // Construct zero-copy spans
-    var s1 = wing::HeaderSpan { .. };
-    s1.name_pos = 0;
-    s1.name_len = 4;
-    s1.val_pos = 6;
-    s1.val_len = 16;
-    s1.id = wing::header_id_to_u8(wing::KnownHeaderId.Host);
-    req.spans.push(s1);
-
-    var s2 = wing::HeaderSpan { .. };
-    s2.name_pos = 24;
-    s2.name_len = 13;
-    s2.val_pos = 39;
-    s2.val_len = 15;
-    s2.id = wing::header_id_to_u8(wing::KnownHeaderId.Authorization);
-    req.spans.push(s2);
-
-    wing::materialize_headers(req, wire);
-    assert(req.headers.len == 2);
+    let err = wing::parse_headers(wire, req.headers);
+    assert(err == wing::HeaderParseError.None);
+    assert(req.headers.entries.len == 2);
     assert(wing::has_header(req, "Host"));
     assert(wing::has_header(req, "Authorization"));
     assert(wing::header(req, "Host") == "test.example.com");
     assert(wing::header(req, "Authorization") == "Bearer mysecret");
 
-    let host_bit = wing::header_id_to_bit(wing::KnownHeaderId.Host);
-    assert((req.presence_mask & host_bit) != 0);
-
     let ok_rem_host = wing::remove_header(req, "Host");
     assert(ok_rem_host);
     assert(wing::header(req, "Host") == "");
     assert(!wing::has_header(req, "Host"));
-    assert((req.presence_mask & host_bit) == 0);
     print("CHECK_MATERIALIZE_PRESENCE: OK");
 }
 
 fn test_response_spans_invalidation() {
     var res = wing::Response { .. };
-    res.raw_headers.append("content-encoding: gzip\r\ncontent-length: 128\r\ncontent-type: text/plain\r\n\r\n");
-
-    var s1 = wing::HeaderSpan { name_pos: 0, name_len: 16, val_pos: 18, val_len: 4, id: 0 };
-    var s2 = wing::HeaderSpan { name_pos: 24, name_len: 14, val_pos: 40, val_len: 3, id: 0 };
-    var s3 = wing::HeaderSpan { name_pos: 45, name_len: 12, val_pos: 59, val_len: 10, id: 0 };
-    res.spans.push(s1);
-    res.spans.push(s2);
-    res.spans.push(s3);
-
-    res.headers.push(wing::make_header("content-encoding", "gzip"));
-    res.headers.push(wing::make_header("content-length", "128"));
-    res.headers.push(wing::make_header("content-type", "text/plain"));
+    wing::append_header(res.headers, "content-encoding", "gzip");
+    wing::append_header(res.headers, "content-length", "128");
+    wing::append_header(res.headers, "content-type", "text/plain");
 
     assert(wing::header(res, "content-encoding") == "gzip");
     wing::clear_decompressed_headers(res);

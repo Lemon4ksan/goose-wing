@@ -89,8 +89,7 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
         let h_name = entry.headers.raw_buf[h_entry.name_begin..h_entry.name_end];
         let h_val = entry.headers.raw_buf[h_entry.values_begin..h_entry.values_end];
         if !eq_ascii_fold(h_name, "age") {
-            guard out_resp.headers.len < out_resp.headers.cap else { return false; }
-            out_resp.headers.push(make_header(h_name, h_val));
+            guard append_header(out_resp.headers, h_name, h_val) else { return false; }
         }
     }
 
@@ -109,8 +108,7 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
 
     var age_str: u8[..64] = [];
     format(age_str, cur_age);
-    guard out_resp.headers.len < out_resp.headers.cap else { return false; }
-    out_resp.headers.push(make_header("Age", age_str[..]));
+    guard append_header(out_resp.headers, "Age", age_str[..]) else { return false; }
 
     out_resp.body.clear();
     out_resp.body.append(entry.body[..]);
@@ -283,18 +281,10 @@ fn lru_touch(cache: HttpCache&, idx: i64) {
 
 // ---- header conversion and url origin helpers ------------------------------
 
-// Converts request headers from app Request to HeaderMap.
-fn request_headers_to_map(req: const Request&) -> HeaderMap {
-    var map = HeaderMap { .. };
-    for &h in req.headers { map.append_header(h.name[..], h.value[..]); }
-    return map;
-}
-
-// Converts response headers from app Response to HeaderMap.
+// Returns a copy of response headers with `status_code` populated.
 fn response_headers_to_map(resp: const Response&) -> HeaderMap {
-    var map = HeaderMap { .. };
+    var map = copy(resp.headers);
     map.status_code = resp.status_code;
-    for &h in resp.headers { map.append_header(h.name[..], h.value[..]); }
     return map;
 }
 
@@ -385,9 +375,8 @@ fn lookup(
         return dec;
     }
 
-    let req_headers = req.request_headers_to_map();
     let req_cc = parse_cache_control_headers(
-        req_headers,
+        req.headers,
         CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
 
@@ -398,7 +387,7 @@ fn lookup(
     }
 
     let req_hash = hash_fnv1a(req.url[..]);
-    let matched_idx = cache.find_matching_entry(req.url[..], req_hash, req_headers, is_get);
+    let matched_idx = cache.find_matching_entry(req.url[..], req_hash, req.headers, is_get);
 
     if matched_idx < 0 {
         cache.total_misses++;
@@ -614,8 +603,7 @@ fn on_response(
     }
 
     if resp.status_code == 304 {
-        let req_headers = req.request_headers_to_map();
-        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req_headers);
+        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req.headers);
     }
 
     // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error
@@ -624,9 +612,8 @@ fn on_response(
     if is_gateway_error && valid_reval_idx {
         let entry = cache.entries[revalidate_entry_idx];
         if entry.is_valid {
-            let req_headers = req.request_headers_to_map();
             let req_cc = parse_cache_control_headers(
-                req_headers,
+                req.headers,
                 CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
             );
             let age_hdr = parse_age_header(get_header(entry.headers, "age"));
@@ -671,9 +658,8 @@ fn on_response(
         return dec;
     }
 
-    let req_headers = req.request_headers_to_map();
     let req_cc = parse_cache_control_headers(
-        req_headers,
+        req.headers,
         CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
     let resp_headers = resp.response_headers_to_map();
@@ -687,7 +673,7 @@ fn on_response(
         return dec;
     }
 
-    guard cache.is_response_cacheable(req_cc, req_headers, resp, resp_cc) else {
+    guard cache.is_response_cacheable(req_cc, req.headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
@@ -695,7 +681,7 @@ fn on_response(
     var vary_combined: u8[..512] = [];
     get_combined(resp_headers, "vary", vary_combined, 512);
     let vary_slice = if vary_combined.len > 0 { vary_combined[..] } else { resp_headers.get_header("vary") };
-    let vary_snap = record_vary_snapshot(vary_slice, req_headers);
+    let vary_snap = record_vary_snapshot(vary_slice, req.headers);
     guard !vary_snap.has_star && vary_snap.valid else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
@@ -736,7 +722,7 @@ fn on_response(
         entry.group_count = group_count;
     }
 
-    let store_idx = cache.upsert_cache_entry(entry, req_headers);
+    let store_idx = cache.upsert_cache_entry(entry, req.headers);
     cache.total_stores++;
     dec.kind = ResponseDecisionKind.StoreAndReturn;
     dec.entry_idx = store_idx;

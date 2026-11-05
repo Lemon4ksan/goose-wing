@@ -42,6 +42,11 @@ import http3.connection;
 import quic.packet;
 import quic.frames;
 import quic.connection;
+import wire.types;
+import wire.hpack;
+import wire.h2;
+import wire.pipeline;
+import client.session.stages;
 
 // ---- url resolution helpers ------------------------------------------------
 
@@ -152,7 +157,7 @@ fn build_effective_url(
 struct RequestExecutionContext {
     url_chain:               core::Url[..16]     = [],
     current_method:          u8[..16]            = [],
-    headers:                 HeaderItem[..32]    = [],
+    headers:                 HeaderMap           = HeaderMap { .. },
     rewind_buf:              u8[..4096]          = [],
     rewindable:              bool                = true,
     body_consumed:           bool                = false,
@@ -242,22 +247,21 @@ fn apply_redirect_transition(
 }
 
 fn merge_session_and_request_headers(
-    headers:         HeaderItem[..32]&,
-    default_headers: const HeaderItem[..16]&,
-    req_headers:     const HeaderItem[..32]&,
+    headers:         HeaderMap&,
+    default_headers: const HeaderMap&,
+    req_headers:     const HeaderMap&,
     profile:         Profile,
 ) {
-    for &default_hdr in default_headers {
-        headers.push(copy(default_hdr));
+    copy_headers(default_headers, headers);
+    for &e in req_headers.entries {
+        let name = entry_name(req_headers, e);
+        remove_header_by_name(headers, name);
     }
-    for &req_hdr in req_headers {
-        remove_header_by_name(headers, req_hdr.name[..]);
-        headers.push(copy(req_hdr));
-    }
+    append_all_headers(req_headers, headers);
     if profile != Profile.None {
-        let has_ae = find_header(headers[..], "accept-encoding").len > 0;
+        let has_ae = find_header(headers, "accept-encoding").len > 0;
         if !has_ae {
-            headers.push(make_header("Accept-Encoding", "zstd, br, gzip"));
+            set_header(headers, "Accept-Encoding", "zstd, br, gzip");
         }
     }
 }
@@ -376,20 +380,10 @@ fn process_redirect_hop(
     return true, Error { .. };
 }
 
-fn append_available_dict_header(headers: HeaderItem[..32]&, dict_b64: const u8[:]) {
-    remove_header_by_name(headers, "Available-Dictionary");
-    headers.push(make_header("Available-Dictionary", dict_b64));
-    var ae_idx = -1;
-    for i in headers.len {
-        if eq_ascii_fold(headers[i].name[..], "accept-encoding") {
-            ae_idx = i;
-            break;
-        }
-    }
-    if ae_idx < 0 {
-        return;
-    }
-    let val = headers[ae_idx].value[..];
+fn append_available_dict_header(headers: HeaderMap&, dict_b64: const u8[:]) {
+    set_header(headers, "Available-Dictionary", dict_b64);
+    let val = find_header(headers, "accept-encoding");
+    guard val.len > 0 else { return; }
     var already_has = false;
     if val.len >= 3 {
         for k in val.len - 2 {
@@ -400,7 +394,10 @@ fn append_available_dict_header(headers: HeaderItem[..32]&, dict_b64: const u8[:
         }
     }
     if !already_has {
-        headers[ae_idx].value.append(", dcb, dcz");
+        var new_ae: u8[..256] = [];
+        new_ae.append(val);
+        new_ae.append(", dcb, dcz");
+        set_header(headers, "Accept-Encoding", new_ae[..]);
     }
 }
 
@@ -477,27 +474,25 @@ fn ingest_transport_response_headers(
     now_sec:     i64,
     resp:        Response&,
 ) {
-    if session.enable_altsvc && is_https {
-        let alt_svc_val = header(resp, "Alt-Svc");
-        if alt_svc_val.len > 0 {
-            update(session.altsvc, origin_buf, alt_svc_val, now_sec);
-        }
+    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_ALT_SVC) {
+        let _ = stage_client_alt_svc(
+            resp,
+            current_url,
+            is_https,
+            origin_buf,
+            curr_path,
+            now_sec,
+            session.altsvc,
+            session.enable_altsvc,
+            session.hsts,
+            session.enable_hsts,
+            session.dict_cache,
+            session.enable_compression_dict,
+        );
     }
 
-    if session.enable_hsts && is_https {
-        let hsts_val = header(resp, "Strict-Transport-Security");
-        if hsts_val.len > 0 {
-            hsts_cache_update(session.hsts, core::hostname(current_url), hsts_val, now_sec);
-        }
-    }
-
-    if session.enable_compression_dict && is_https {
-        ingest_compression_dict_header(session.dict_cache, origin_buf, curr_path, now_sec, resp);
-    }
-
-    let enc = header(resp, "Content-Encoding");
-    if enc.len > 0 {
-        decode_body_with_dictionary(resp, session.dict_cache);
+    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
+        let _ = stage_client_decompress(resp, session.dict_cache);
     }
 }
 
@@ -532,13 +527,14 @@ fn try_match_mock_route(
             return true;
         }
 
-        out_resp = build_mock_response(route, current_url, ctx.headers[..]);
+        let mock_resp = build_mock_response(route, current_url, ctx.headers);
+        out_resp = copy(mock_resp);
         if route.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
-            let sent_key = find_header(ctx.headers[..], "sec-websocket-key");
+            let sent_key = find_header(ctx.headers, "sec-websocket-key");
             if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
                 var accept_buf: u8[..64] = [];
                 compute_websocket_accept(sent_key, accept_buf);
-                out_resp.headers.push(make_header("Sec-WebSocket-Accept", accept_buf[..]));
+                out_resp.set_header("Sec-WebSocket-Accept", accept_buf[..]);
             }
         }
 
@@ -547,13 +543,6 @@ fn try_match_mock_route(
         return true;
     }
     return false;
-}
-
-fn copy_sent_headers(headers: const HeaderItem[..32]&, sent_headers: HeaderItem[..32]&) {
-    for &sent_h in headers {
-        guard sent_headers.len < sent_headers.cap else { break; }
-        sent_headers.push(copy(sent_h));
-    }
 }
 
 // Resolves effective timeout with bounds clamping (1ms .. 600,000ms / 10min).
@@ -583,10 +572,7 @@ fn dispatch_pooled_h1_hop(
 
     var hop_req = Request { .. };
     hop_req.method.append(curr_method);
-    for &h in ctx.headers {
-        guard hop_req.headers.len < hop_req.headers.cap else { return false; }
-        hop_req.headers.push(copy(h));
-    }
+    copy_headers(ctx.headers, hop_req.headers);
     hop_req.body.append(ctx.body[..]);
 
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
@@ -603,7 +589,7 @@ fn dispatch_pooled_h1_hop(
     }
 
     resp.effective_url = copy(current_url.href);
-    copy_sent_headers(ctx.headers, resp.sent_headers);
+    copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(
         session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
     );
@@ -674,7 +660,7 @@ fn format_ipv6_bytes(ip6: const u8[16]&, out: u8[..64]&) {
 }
 
 fn collect_ipv4_dns_candidates(
-    ssrf_guard: const SsrfGuardConfig&,
+    ssrf_guard: const SsrfGuardPolicy&,
     a_entry:    const DnsCacheEntry&,
     port_num:   u16,
     out_list:   DnsCandidate[..8]&,
@@ -693,7 +679,7 @@ fn collect_ipv4_dns_candidates(
 }
 
 fn collect_ipv6_dns_candidates(
-    ssrf_guard: const SsrfGuardConfig&,
+    ssrf_guard: const SsrfGuardPolicy&,
     aaaa_entry: const DnsCacheEntry&,
     port_num:   u16,
     out_list:   DnsCandidate[..8]&,
@@ -814,15 +800,16 @@ fn dial_live_tcp_or_proxy(
 }
 
 fn encode_h2_client_request(
-    curr_method: const u8[:],
-    current_url: const core::Url&,
-    is_https:    bool,
-    ctx:         const RequestExecutionContext&,
-    out_wire:    u8[..8192]&,
+    curr_method:  const u8[:],
+    current_url:  const core::Url&,
+    is_https:     bool,
+    ctx:          const RequestExecutionContext&,
+    enc_dt:       internal::DynamicTable&,
+    stream_id:    u32,
+    send_preface: bool,
+    out_wire:     u8[..8192]&,
 ) -> bool {
     out_wire.clear();
-    var hpack_dt = internal::new_dynamic_table(4096);
-    var hblock: u8[..4096] = [];
     let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
     let auth_str = core::host(current_url);
     var path_buf: u8[..2048] = [];
@@ -831,93 +818,113 @@ fn encode_h2_client_request(
     let q_str = core::search(current_url);
     if q_str.len > 0 { path_buf.append(q_str); }
 
-    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":method", curr_method);
-    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":scheme", scheme_str);
-    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":authority", auth_str);
-    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":path", path_buf[..]);
-    for &h in ctx.headers {
-        var low_name: u8[..128] = [];
-        low_name.append(h.name[..]);
-        to_lower(low_name[..]);
-        if low_name[..] != "host" && low_name[..] != "connection" && low_name[..] != "transfer-encoding" {
-            let _ = internal::encode_hpack_field(hpack_dt, hblock, low_name[..], h.value[..]);
-        }
+    var pseudo = internal::H2PseudoHeaders {
+        has_method:    true,
+        has_scheme:    true,
+        has_authority: true,
+        has_path:      true,
+        ..
+    };
+    pseudo.method.append(curr_method);
+    pseudo.scheme.append(scheme_str);
+    pseudo.authority.append(auth_str);
+    pseudo.path.append(path_buf[..]);
+
+    if send_preface {
+        guard out_wire.try_append(rfc::H2_CLIENT_PREFACE) else { return false; }
+        let empty_settings: wire::WireSetting[..1] = [];
+        guard wire::encode_settings_frame(empty_settings[..], out_wire) else { return false; }
     }
 
     let has_body = ctx.body.len > 0;
-    let needed = 24 + 9 + 9 + hblock.len + (if has_body { 9 + ctx.body.len } else { 0 });
-    guard needed <= 8192 else { return false; }
-
-    out_wire.append(rfc::H2_CLIENT_PREFACE);
-    let set_hdr = internal::FrameHeader {
-        length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0,
-    };
-    internal::encode_frame_header_to(set_hdr, out_wire);
-
-    let h_flags: u8 = if has_body {
-        rfc::H2_FLAG_END_HEADERS
-    } else {
-        rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM
-    };
-    let h_hdr = internal::FrameHeader {
-        length: hblock.len as u32, frame_type: rfc::H2_FRAME_HEADERS, flags: h_flags, stream_id: 1,
-    };
-    internal::encode_frame_header_to(h_hdr, out_wire);
-    out_wire.append(hblock[..]);
+    guard wire::encode_h2_headers_frame_from_map(
+        enc_dt,
+        stream_id,
+        pseudo,
+        ctx.headers,
+        !has_body,
+        out_wire,
+        16384,
+    ) else { return false; }
 
     if has_body {
-        let d_hdr = internal::FrameHeader {
-            length:     ctx.body.len as u32,
-            frame_type: rfc::H2_FRAME_DATA,
-            flags:      rfc::H2_FLAG_END_STREAM,
-            stream_id:  1,
-        };
-        internal::encode_frame_header_to(d_hdr, out_wire);
-        out_wire.append(ctx.body[..]);
+        guard wire::encode_data_frame(stream_id, ctx.body[..], true, out_wire) else {
+            return false;
+        }
     }
     return true;
 }
 
-fn process_h2_response_frame(
-    hdr:      const internal::FrameHeader&,
-    payload:  const u8[:],
-    dec_dt:   internal::DynamicTable&,
-    resp:     Response&,
-    got_hdrs: bool&,
+fn process_h2_response_frame<B>(
+    hdr:       const internal::FrameHeader&,
+    payload:   const u8[:],
+    stream_id: u32,
+    dec_dt:    internal::DynamicTable&,
+    resp:      Response&,
+    got_hdrs:  bool&,
+    out_ctrl:  B&,
 ) -> bool, bool {
-    if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == 1 {
+    if hdr.frame_type == rfc::H2_FRAME_SETTINGS && hdr.stream_id == 0 {
+        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+            let ack_hdr = wire::WireFrameHeader {
+                length:     0,
+                frame_type: rfc::H2_FRAME_SETTINGS,
+                flags:      rfc::H2_FLAG_ACK,
+                stream_id:  0,
+            };
+            let _ = wire::encode_frame_header(ack_hdr, out_ctrl);
+        }
+        return true, false;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_PING && hdr.stream_id == 0 {
+        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && payload.len == 8 {
+            var ping_data: u8[8] = [0; 8];
+            for i in 8 { ping_data[i] = payload[i]; }
+            let _ = wire::encode_ping_frame(ping_data, true, out_ctrl);
+        }
+        return true, false;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE {
+        return true, false;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
         let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
         guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
-        var dec_list = internal::DecodedH2HeaderList { .. };
-        let d_err = internal::decode_hpack_header_block(dec_dt, frag, dec_list, 8192, false);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
-        for &f in dec_list.fields {
-            if f.name[..] == ":status" {
-                let sc, ok_sc = core::parse_u32_dec(f.value[..]);
-                if ok_sc { resp.status_code = sc as i32; }
-            } else if resp.headers.len < resp.headers.cap {
-                resp.headers.push(make_header(f.name[..], f.value[..]));
-            }
+        if pseudo.status > 0 {
+            resp.status_code = pseudo.status;
+        }
+        for &e in resp.headers.entries {
+            update_response_presence(resp, entry_name(resp.headers, e));
         }
         got_hdrs = true;
         let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
         return true, done;
     }
-    if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == 1 {
+    if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
+        if d_slice.len > 0 {
+            let inc = d_slice.len as u32;
+            let _ = wire::encode_window_update_frame(0, inc, out_ctrl);
+            let _ = wire::encode_window_update_frame(stream_id, inc, out_ctrl);
+        }
         let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
         return true, done;
     }
     return true, false;
 }
 
-fn drain_h2_response_frames(
-    rx_accum: const u8[:],
-    dec_dt:   internal::DynamicTable&,
-    resp:     Response&,
-    got_hdrs: bool&,
+fn drain_h2_response_frames<B>(
+    rx_accum:  const u8[:],
+    stream_id: u32,
+    dec_dt:    internal::DynamicTable&,
+    resp:      Response&,
+    got_hdrs:  bool&,
+    out_ctrl:  B&,
 ) -> bool, bool {
     var consumed: i64 = 0;
     while rx_accum.len - consumed >= 9 {
@@ -927,11 +934,52 @@ fn drain_h2_response_frames(
         guard rx_accum.len - consumed >= frame_total else { break; }
         let payload = rx_accum[consumed + 9..consumed + frame_total];
         consumed += frame_total;
-        let ok_f, done = process_h2_response_frame(hdr, payload, dec_dt, resp, got_hdrs);
+        let ok_f, done = process_h2_response_frame(hdr, payload, stream_id, dec_dt, resp, got_hdrs, out_ctrl);
         guard ok_f else { return false, false; }
         if done { return true, true; }
     }
     return true, false;
+}
+
+fn recv_h2_response_loop(
+    tp:          Transport&,
+    stream_id:   u32,
+    dec_dt:      internal::DynamicTable&,
+    eff_timeout: u32,
+    resp:        Response&,
+) -> bool {
+    var rx_accum: u8[..16384] = [];
+    var chunk:    u8[4096]    = [0; 4096];
+    var got_hdrs = false;
+    for step in 16 {
+        let n = tp.recv_slice(chunk[..], eff_timeout);
+        if n > 0 {
+            let _ = rx_accum.try_append(chunk[..n]);
+        }
+        var hdrs_now = false;
+        var body_tmp = Response { .. };
+        var ctrl_out: u8[..256] = [];
+        let ok_f, done = drain_h2_response_frames(
+            rx_accum[..],
+            stream_id,
+            dec_dt,
+            body_tmp,
+            hdrs_now,
+            ctrl_out,
+        );
+        guard ok_f else { return false; }
+        if ctrl_out.len > 0 {
+            let _ = tp.send(ctrl_out[..]);
+        }
+        if hdrs_now {
+            resp.status_code = body_tmp.status_code;
+            resp.headers = copy(body_tmp.headers);
+            resp.body = copy(body_tmp.body);
+            got_hdrs = true;
+        }
+        if done || n <= 0 { break; }
+    }
+    return got_hdrs;
 }
 
 fn dispatch_pooled_h2_hop(
@@ -949,8 +997,19 @@ fn dispatch_pooled_h2_hop(
 ) -> bool {
     let c_idx = session.pool.find_connection_index(conn_id);
     guard c_idx >= 0 else { return false; }
+    let stream_id = session.pool.conns[c_idx].next_h2_stream_id;
+    let send_preface = !session.pool.conns[c_idx].h2_preface_sent;
     var wire_out: u8[..8192] = [];
-    guard encode_h2_client_request(curr_method, current_url, is_https, ctx, wire_out) else {
+    guard encode_h2_client_request(
+        curr_method,
+        current_url,
+        is_https,
+        ctx,
+        session.pool.conns[c_idx].hpack_enc,
+        stream_id,
+        send_preface,
+        wire_out,
+    ) else {
         session.pool.close_pooled_connection(conn_id);
         return false;
     }
@@ -959,37 +1018,22 @@ fn dispatch_pooled_h2_hop(
         session.pool.close_pooled_connection(conn_id);
         return false;
     }
+    session.pool.conns[c_idx].h2_preface_sent = true;
+    session.pool.conns[c_idx].next_h2_stream_id += 2;
     reset_response(resp);
     resp.protocol.clear();
     resp.protocol.append("HTTP/2");
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
-    var rx_accum: u8[..16384] = [];
-    var chunk:    u8[4096]    = [0; 4096];
-    var dec_dt = internal::new_dynamic_table(4096);
-    var got_hdrs = false;
-    for step in 16 {
-        let n = session.pool.conns[c_idx].transport.recv_slice(chunk[..], eff_timeout);
-        if n > 0 {
-            let _ = rx_accum.try_append(chunk[..n]);
-        }
-        var hdrs_now = false;
-        var body_tmp = Response { .. };
-        let ok_f, done = drain_h2_response_frames(rx_accum[..], dec_dt, body_tmp, hdrs_now);
-        guard ok_f else {
-            session.pool.close_pooled_connection(conn_id);
-            return false;
-        }
-        if hdrs_now {
-            resp.status_code = body_tmp.status_code;
-            resp.headers = copy(body_tmp.headers);
-            resp.body = copy(body_tmp.body);
-            got_hdrs = true;
-        }
-        if done || n <= 0 { break; }
-    }
+    let got_hdrs = recv_h2_response_loop(
+        session.pool.conns[c_idx].transport,
+        stream_id,
+        session.pool.conns[c_idx].hpack_dec,
+        eff_timeout,
+        resp,
+    );
     guard got_hdrs else { session.pool.close_pooled_connection(conn_id); return false; }
     resp.effective_url = copy(current_url.href);
-    copy_sent_headers(ctx.headers, resp.sent_headers);
+    copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, resp);
     session.pool.release_connection(conn_id, now_ns);
     return true;
@@ -1016,16 +1060,12 @@ fn execute_live_h3_hop(
         tcp_close(udp_fd);
         return false;
     }
-    var extra_map = HeaderMap { .. };
-    for &h in ctx.headers {
-        let _ = extra_map.append_header(h.name[..], h.value[..]);
-    }
     var req_wire: u8[..4096] = [];
     let curr_path = core::pathname(current_url);
     let eff_path: const u8[:] = if curr_path.len > 0 { curr_path } else { "/" };
     let ok_h = internal::send_request_headers(
         h3_conn, sid, ctx.current_method[..], "https", core::host(current_url),
-        eff_path, extra_map, ctx.body.len == 0, req_wire,
+        eff_path, ctx.headers, ctx.body.len == 0, req_wire,
     );
     if ok_h && ctx.body.len > 0 {
         let _ = internal::send_request_data(h3_conn, sid, ctx.body[..], true, req_wire);
@@ -1052,10 +1092,15 @@ fn execute_live_h3_hop(
     resp.status_code = sc;
     resp.protocol.clear();
     resp.protocol.append("HTTP/3");
+    let _ = internal::copy_stream_headers(h3_conn, sid, resp.headers);
+    for &e in resp.headers.entries {
+        update_response_presence(resp, entry_name(resp.headers, e));
+    }
+    let _ = internal::copy_stream_trailers(h3_conn, sid, resp.trailers);
     let body_slice, ok_b = internal::get_response_body(h3_conn, sid);
     if ok_b { resp.body.append(body_slice); }
     resp.effective_url = copy(current_url.href);
-    copy_sent_headers(ctx.headers, resp.sent_headers);
+    copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(session, current_url, true, origin_buf, curr_path, now_sec, resp);
     return true;
 }
@@ -1214,20 +1259,18 @@ fn execute_mock_or_echo_hop(
     }
 
     let curr_path = core::pathname(current_url);
-    var matched_dict_b64: u8[..64] = [];
-    var has_dict = false;
-    if session.enable_compression_dict && is_https {
-        has_dict = dictionary_lookup_for_request(
+    if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_DICT_NEGOTIATE) {
+        let _ = stage_client_dict_negotiate(
+            ctx.headers,
             session.dict_cache,
+            session.enable_compression_dict,
             origin_buf[..],
             curr_path,
+            is_https,
             now_sec,
-            matched_dict_b64,
         );
-    }
-    remove_header_by_name(ctx.headers, "Available-Dictionary");
-    if has_dict {
-        append_available_dict_header(ctx.headers, matched_dict_b64[..]);
+    } else {
+        remove_header_by_name(ctx.headers, "Available-Dictionary");
     }
 
     var resp = Response { .. };
@@ -1327,16 +1370,20 @@ fn find_auth_header_from_response(
     auth_header_val: u8[..4096]&,
 ) -> bool {
     // Scan all WWW-Authenticate headers, prioritizing Digest over Basic
-    for &h in resp.headers {
-        if eq_ascii_fold(h.name[..], "WWW-Authenticate") && starts_with_fold(h.value[..], "Digest") {
-            if compute_401_auth_header(session, ctx, current_url, h.value[..], auth_header_val) {
+    for &e in resp.headers.entries {
+        let h_name = entry_name(resp.headers, e);
+        let h_val = entry_value(resp.headers, e);
+        if eq_ascii_fold(h_name, "WWW-Authenticate") && starts_with_fold(h_val, "Digest") {
+            if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
                 return true;
             }
         }
     }
-    for &h in resp.headers {
-        if eq_ascii_fold(h.name[..], "WWW-Authenticate") && starts_with_fold(h.value[..], "Basic") {
-            if compute_401_auth_header(session, ctx, current_url, h.value[..], auth_header_val) {
+    for &e in resp.headers.entries {
+        let h_name = entry_name(resp.headers, e);
+        let h_val = entry_value(resp.headers, e);
+        if eq_ascii_fold(h_name, "WWW-Authenticate") && starts_with_fold(h_val, "Basic") {
+            if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
                 return true;
             }
         }
@@ -1359,265 +1406,15 @@ inline fn prepare_auth_retry_hop(
         ctx.body.append(ctx.rewind_buf[..]);
     }
     if session.enable_cookie_jar {
-        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.set_cookies);
+        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.headers);
         prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
     }
-    remove_header_by_name(ctx.headers, "Authorization");
-    ctx.headers.push(make_header("Authorization", auth_val));
-}
-
-fn handle_401_auth_retry(
-    session:       Client&,
-    ctx:           RequestExecutionContext&,
-    current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
-    safe_method:   bool,
-    resp:          Response&,
-) -> bool, Error {
-    guard !ctx.auth_retried && session.creds.has_credentials && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
-        return false, Error { .. };
-    }
-    guard ctx.body.len == 0 || ctx.rewindable else {
-        return false, Error { .. };
-    }
-
-    var auth_header_val: u8[..4096] = [];
-    guard find_auth_header_from_response(session, ctx, current_url, resp, auth_header_val) else {
-        return false, Error { .. };
-    }
-
-    prepare_auth_retry_hop(session, ctx, current_url, samesite_eval, safe_method, resp, auth_header_val[..]);
-
-    let hop_start_us = session.virtual_clock_us;
-    apply_network_interceptors_request(
-        session.pipeline,
-        ctx.headers,
-        current_url.href[..],
-        ctx.current_method[..],
-        ctx.body.len,
-        ctx.redirect_count,
-    );
-
-    var hop_err = Error { .. };
-    resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
-
-    let hop_dur_us = session.virtual_clock_us - hop_start_us;
-    apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
-
-    guard ok(hop_err) else {
-        return true, hop_err;
-    }
-    return true, Error { .. };
-}
-
-fn execute_single_hop(
-    session:              Client&,
-    ctx:                  RequestExecutionContext&,
-    req:                  const Request&,
-    cache_ts:             CacheTimestamps&,
-    cache_revalidate_idx: i64,
-    out_resp:             Response&,
-) -> bool, Error {
-    var current_url = ctx.url_chain[ctx.url_chain.len - 1];
-
-    // RFC 6797 HSTS Upgrade on redirect hops
-    if session.enable_hsts && !current_url.is_secure_scheme() {
-        var upgraded_url: u8[..2048] = [];
-        let now_sec = session.virtual_clock_us / 1000000;
-        if hsts_upgrade_url(session.hsts, current_url.href[..], now_sec, upgraded_url) {
-            let parsed_upgraded, parse_err = core::parse_url(upgraded_url[..]);
-            if parsed_upgraded.valid {
-                ctx.url_chain[ctx.url_chain.len - 1] = parsed_upgraded;
-                current_url = parsed_upgraded;
-            }
-        }
-    }
-
-    // Phase 1: Pre-validation of Hop
-    let pre_err = validate_hop_prerequisites(session, current_url);
-    guard ok(pre_err) else { return false, pre_err; }
-
-    // Phase 2 & 3: Compute SameSite Context & Synthesize Fresh Cookie Header
-    let safe_method = rfc::is_safe_http_method(ctx.current_method[..]);
-    let samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
-    if session.enable_cookie_jar {
-        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
-    }
-
-    // Phase 3.5: Network Interceptors (Request Hook)
-    let hop_start_us = session.virtual_clock_us;
-    apply_network_interceptors_request(
-        session.pipeline,
-        ctx.headers,
-        current_url.href[..],
-        ctx.current_method[..],
-        ctx.body.len,
-        ctx.redirect_count,
-    );
-
-    // Phase 4: Network Transaction & Ingest Set-Cookie Before 3xx Analysis
-    var hop_err = Error { .. };
-    out_resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
-    guard ok(hop_err) else { return false, hop_err; }
-
-    // Phase 4.1: Network Interceptors (Response Hook for initial transaction)
-    let hop_dur_us = session.virtual_clock_us - hop_start_us;
-    apply_network_interceptors_response(session.pipeline, out_resp, ctx.redirect_count, hop_dur_us);
-
-    // Phase 4.2: RFC 7616 Digest & RFC 7617 Basic 401 Authenticator Loop
-    let did_retry, auth_err = handle_401_auth_retry(
-        session,
-        ctx,
-        current_url,
-        samesite_eval,
-        safe_method,
-        out_resp,
-    );
-    guard ok(auth_err) else { return false, auth_err; }
-
-    ctx.body_consumed = true;
-    if session.enable_cookie_jar {
-        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, out_resp.set_cookies);
-    }
-
-    // Phase 4.5: RFC 9111 HTTP Cache Update & 304 Freshening
-    if session.enable_cache {
-        cache_ts.response_time = cache_ts.now;
-        var hop_req = copy(req);
-        hop_req.url.clear();
-        hop_req.url.append(current_url.href[..]);
-        hop_req.method.clear();
-        hop_req.method.append(ctx.current_method[..]);
-        let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
-        let resp_dec = on_response(session.cache, hop_req, out_resp, cache_ts, eff_reval_idx);
-        if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
-            out_resp = copy(resp_dec.response);
-        }
-    }
-
-    // Phase 5: 3xx Detection & ComputeRedirectInfo
-    let loc_hdr = header(out_resp, "Location");
-    let is_red = is_redirect(out_resp);
-
-    if is_red {
-        session.pipeline.metrics.redirect_hops += 1;
-    } else {
-        finalize_success_response(ctx, out_resp);
-        return false, Error { .. };
-    }
-
-    let should_continue, red_err = process_redirect_hop(session, ctx, out_resp, current_url, loc_hdr);
-    guard ok(red_err) else { return false, red_err; }
-    return should_continue, Error { .. };
-}
-
-fn check_cache_and_inject_headers(
-    session:        Client&,
-    req:            const Request&,
-    raw_eff_url:    const u8[:],
-    cache_ts:       const CacheTimestamps&,
-    ctx:            RequestExecutionContext&,
-    out_resp:       Response&,
-    out_err:        Error&,
-    revalidate_idx: i64&,
-) -> bool {
-    guard session.enable_cache else { return false; }
-    var lookup_req = copy(req);
-    lookup_req.url.clear();
-    lookup_req.url.append(raw_eff_url);
-    let lookup_dec = lookup(session.cache, lookup_req, cache_ts.now);
-    if lookup_dec.kind == LookupResultKind.Hit {
-        out_resp = copy(lookup_dec.cached_response);
-        out_err = Error { .. };
-        return true;
-    }
-    if lookup_dec.kind == LookupResultKind.Fail504 {
-        out_resp = Response {
-            status_code: rfc::STATUS_GATEWAY_TIMEOUT,
-            ..
-        };
-        out_resp.effective_url.append(raw_eff_url);
-        out_err = make_error(rfc::STATUS_GATEWAY_TIMEOUT, "cache", "504 Gateway Timeout (only-if-cached miss)");
-        return true;
-    }
-    if lookup_dec.kind == LookupResultKind.Revalidate {
-        revalidate_idx = lookup_dec.entry_idx;
-        if revalidate_idx >= 0 && revalidate_idx < session.cache.entries.len {
-            let cond_map = session.cache.entries[revalidate_idx].build_revalidation_headers();
-            for &c_entry in cond_map.entries {
-                let c_name = cond_map.raw_buf[c_entry.name_begin..c_entry.name_end];
-                let c_val = cond_map.raw_buf[c_entry.values_begin..c_entry.values_end];
-                ctx.headers.push(make_header(c_name, c_val));
-            }
-        }
-    }
-    return false;
+    set_header(ctx.headers, "Authorization", auth_val, true);
 }
 
 fn execute_request_inner(session: Client&, req: const Request&) -> Response, Error {
-    var raw_eff_url: u8[..2048] = [];
-    build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
-
-    // Phase -0.5: RFC 6797 HSTS Pre-Flight URL Upgrade (http:// -> https://)
-    if session.enable_hsts {
-        var upgraded_url: u8[..2048] = [];
-        let now_sec = session.virtual_clock_us / 1000000;
-        if hsts_upgrade_url(session.hsts, raw_eff_url[..], now_sec, upgraded_url) {
-            raw_eff_url.clear();
-            raw_eff_url.append(upgraded_url[..]);
-        }
-    }
-
-    let parsed_initial, parse_err = core::parse_url(raw_eff_url[..]);
-    guard parsed_initial.valid else {
-        return Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "url_parse", "invalid request url");
-    }
-
-    let req_time = session.virtual_clock_us / 1000000;
-    let req_time_ns = ((session.virtual_clock_us % 1000000) * 1000) as u32;
-    var cache_ts = CacheTimestamps {
-        request_time: core::unix(req_time, req_time_ns),
-        now:          core::unix(req_time, req_time_ns),
-    };
-
-    var ctx = init_execution_context(session, req, parsed_initial);
-
-    // Phase 0: RFC 9111 HTTP Cache Lookup & Conditional Header Injection
-    var cache_resp = Response { .. };
-    var cache_err = Error { .. };
-    var cache_revalidate_idx: i64 = -1;
-    let cache_hit = check_cache_and_inject_headers(
-        session,
-        req,
-        raw_eff_url[..],
-        cache_ts,
-        ctx,
-        cache_resp,
-        cache_err,
-        cache_revalidate_idx,
-    );
-    if cache_hit {
-        return cache_resp, cache_err;
-    }
-
-    // Main redirect execution loop (Chromium net::URLRequest 6-phase pipeline)
-    while ctx.redirect_count <= ctx.max_redirects {
-        var resp = Response { .. };
-        let should_continue, hop_err = execute_single_hop(
-            session,
-            ctx,
-            req,
-            cache_ts,
-            cache_revalidate_idx,
-            resp,
-        );
-        guard ok(hop_err) else { return resp, hop_err; }
-        if !should_continue {
-            return resp, Error { .. };
-        }
-    }
-
-    return Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
+    var noop = wire::NoOpStage {};
+    return execute_client_pipeline_with_stage(session, req, noop);
 }
 
 inline fn should_retry_request(

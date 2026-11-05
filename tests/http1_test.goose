@@ -56,6 +56,31 @@ fn test_headermap_zero_heap_and_inline_slots(t: lit::T&) {
         sub.assert_false(wing::has_header(map, "X-Custom-Engine"), "Removed header no longer present");
     };
 
+    t.run("200-Iteration In-Place Overwrite and Shrink Compaction Without raw_buf Exhaustion") { sub =>
+        var map = wing::HeaderMap { .. };
+        wing::append_header(map, "Host", "api.example.com");
+        wing::append_header(map, "User-Agent", "goose-wing/1.0");
+        wing::append_header(map, "Authorization", "Bearer initial-token-000000000000000000000000");
+
+        for iter in 200 {
+            var token_val: u8[..64] = [];
+            format(token_val, "Bearer rotated-jwt-token-iteration-", iter);
+            sub.assert_true(
+                wing::insert_header(map, "Authorization", token_val[..]),
+                "insert_header succeeded across 200 iterations without raw_buf exhaustion",
+            );
+            sub.assert_bytes_eq(wing::get_header(map, "Authorization"), token_val[..], "Authorization matches current iteration");
+
+            var trace_val: u8[..32] = [];
+            format(trace_val, "hop-", iter);
+            sub.assert_true(wing::insert_header(map, "X-Hop-Trace", trace_val[..]), "insert X-Hop-Trace succeeded");
+            sub.assert_true(wing::remove_header(map, "X-Hop-Trace"), "remove X-Hop-Trace compacted raw_buf");
+        }
+        sub.assert_bytes_eq(wing::get_header(map, "Host"), "api.example.com", "Host intact after 200 compactions");
+        sub.assert_bytes_eq(wing::get_header(map, "User-Agent"), "goose-wing/1.0", "User-Agent intact after 200 compactions");
+        sub.assert_lt(map.raw_buf.len, 256, "raw_buf remained compact (< 256 bytes) after 200 overwrite/remove cycles");
+    };
+
     t.run("Connection Reuse (reset_for_keep_alive)") { sub =>
         var map = wing::HeaderMap { .. };
         wing::set_inline(map, wing::WellKnownHeader.Host, "example.com");
@@ -299,20 +324,20 @@ fn test_chromium_net_parity(t: lit::T&) {
 fn test_oneshot_chunked_trailers(t: lit::T&) {
     t.run("Single and multi-chunk decoding with byte count accuracy") { sub =>
         let raw = "4\r\nWiki\r\n6\r\n pedia\r\n0\r\n\r\n";
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded successfully");
         sub.assert_bytes_eq(out_body[..], "Wiki pedia", "Body reassembled");
         sub.assert_eq(consumed, raw.len, "All raw bytes consumed");
-        sub.assert_eq(out_trailers.len, 0, "No trailers in simple message");
+        sub.assert_eq(out_trailers.entries.len, 0, "No trailers in simple message");
     };
 
     t.run("Chunk extension ignored and parsed cleanly") { sub =>
         let raw = "5;ext_name=ext_value;flag\r\nHello\r\n0;last=1\r\n\r\n";
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded successfully with extensions");
@@ -322,14 +347,14 @@ fn test_oneshot_chunked_trailers(t: lit::T&) {
 
     t.run("Extraction of multiple custom trailers") { sub =>
         let raw = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123xyz\r\nX-Timing: dur=15.4\r\n\r\n";
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded cleanly with trailers");
         sub.assert_bytes_eq(out_body[..], "Hello", "Payload correct");
         sub.assert_eq(consumed, raw.len, "Consumed exact stream length");
-        sub.assert_eq(out_trailers.len, 3, "3 trailers extracted");
+        sub.assert_eq(out_trailers.entries.len, 3, "3 trailers extracted");
 
         var req = wing::new_request("POST", "/data");
         req.trailers = copy(out_trailers);
@@ -342,8 +367,8 @@ fn test_oneshot_chunked_trailers(t: lit::T&) {
 
     t.run("Pipelined keep-alive requests separation") { sub =>
         let raw = "4\r\nBody\r\n0\r\n\r\nGET /next HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let err, consumed = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded chunked segment");
@@ -358,8 +383,8 @@ fn test_oneshot_chunked_trailers(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_smuggling_defenses(t: lit::T&) {
     t.run("Bare LF in chunk size rejection (CVE-2025-22871)") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let raw = "4\nWiki\r\n0\r\n\r\n";
         let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -367,8 +392,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("Bare LF in chunk data terminator rejection") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let raw = "4\r\nWiki\n0\r\n\r\n";
         let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -376,8 +401,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("Bare LF in chunk data terminator at exact buffer end") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let raw = "4\r\nWiki\n";
         let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -385,8 +410,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("Bare LF in trailer line rejection") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let raw = "4\r\nWiki\r\n0\r\nX-Check: val\n\r\n";
         let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -394,8 +419,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("Bare LF terminating trailer section rejection") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let raw = "0\r\n\n";
         let err, _ = wing::decode_chunked_body_with_trailers(raw, out_body, out_trailers);
@@ -403,8 +428,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("RFC 9110 Section 6.5.1: Full Forbidden Trailer Fields Enforcement") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         let disallowed_cases: const u8[:][20] = [
             "Transfer-Encoding: chunked",
@@ -475,8 +500,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("Trailer flood protection (> 16 fields or > 4096 bytes)") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         // 17 trailer headers
         var flood: u8[..2048] = "0\r\n";
@@ -502,8 +527,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("RFC 9112 Section 7.1: Chunk size 64-bit integer overflow rejection") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         // 1. 0xffffffffffffffff (16 hex digits: 2^64 - 1, signed overflow)
         let raw_max = "FFFFFFFFFFFFFFFF\r\nWiki\r\n0\r\n\r\n";
@@ -533,8 +558,8 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("RFC 9112 Section 7.1: Leading zeros in chunk size accepted") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
 
         // Chunk size with leading zeros > 16 characters total, but small value
         let raw_zeros = "00000000000000000004\r\nWiki\r\n00000000000000000000\r\n\r\n";
@@ -601,9 +626,9 @@ fn test_incremental_chunked_stream_decoder(t: lit::T&) {
         sub.assert_true(wing::is_complete(dec), "Decoder reached Complete state");
         sub.assert_false(wing::has_error(dec), "No error in decoder");
         sub.assert_bytes_eq(stream_out[..], "Hello World", "Reassembled stream payload");
-        sub.assert_eq(dec.trailers.len, 1, "1 trailer extracted");
-        sub.assert_bytes_eq(dec.trailers[0].name[..], "X-Checksum", "Trailer name");
-        sub.assert_bytes_eq(dec.trailers[0].value[..], "c89a", "Trailer value");
+        sub.assert_eq(dec.trailers.entries.len, 1, "1 trailer extracted");
+        sub.assert_bytes_eq(wing::entry_name(dec.trailers, dec.trailers.entries[0]), "X-Checksum", "Trailer name");
+        sub.assert_bytes_eq(wing::entry_value(dec.trailers, dec.trailers.entries[0]), "c89a", "Trailer value");
     };
 
     t.run("Arbitrary 7-byte chunk slice feeding") { sub =>
@@ -706,27 +731,12 @@ fn test_httpserver_chunked_ingress(t: lit::T&) {
         var req = wing::new_request("", "");
         let ok_parse, consumed = wing::parse_http1_wire_request(wire, req);
         sub.assert_true(ok_parse, "Parse succeeded");
-        sub.assert_true(req.spans.len == 3, "Captured 3 header spans");
+        sub.assert_eq(consumed, wire.len, "Consumed entire header block");
+        sub.assert_eq(req.headers.entries.len, 3, "Captured 3 headers in HeaderMap");
 
-        let host_val = wing::header_from_wire(req, wire, "Host");
-        sub.assert_bytes_eq(host_val, "api.example.com", "Extracted Host via zero-copy span");
-
-        let auth_val = wing::header_from_wire(req, wire, "Authorization");
-        sub.assert_bytes_eq(auth_val, "Bearer test_secret_token_12345", "Extracted Authorization via zero-copy span");
-
-        let custom_val = wing::header_from_wire(req, wire, "X-Custom-Tag");
-        sub.assert_bytes_eq(custom_val, "wing-fast", "Extracted custom header via zero-copy span");
-
-        var empty_req = wing::new_request("", "");
-        wing::materialize_headers(empty_req, wire);
-        sub.assert_true(empty_req.headers.len == 0, "No spans to materialize");
-
-        var span_req = wing::new_request("", "");
-        span_req.spans.append(req.spans[..]);
-        wing::materialize_headers(span_req, wire);
-        sub.assert_true(span_req.headers.len == 3, "Materialized 3 headers from spans");
-        sub.assert_bytes_eq(span_req.headers[0].name[..], "Host", "First header name matches");
-        sub.assert_bytes_eq(span_req.headers[0].value[..], "api.example.com", "First header value matches");
+        sub.assert_bytes_eq(wing::header(req, "Host"), "api.example.com", "Extracted Host from HeaderMap");
+        sub.assert_bytes_eq(wing::header(req, "Authorization"), "Bearer test_secret_token_12345", "Extracted Authorization from HeaderMap");
+        sub.assert_bytes_eq(wing::header(req, "X-Custom-Tag"), "wing-fast", "Extracted custom header from HeaderMap");
     };
 }
 
@@ -763,25 +773,22 @@ fn test_chunked_response_and_wire_parser(t: lit::T&) {
     };
 
     t.run("Fixed-size chunk serialization with encode_chunked_payload") { sub =>
-        var body_data: u8[..64]               = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        var trs:       wing::HeaderItem[..16] = [];
-        var item = wing::HeaderItem { .. };
-        item.name.append("X-Complete");
-        item.value.append("true");
-        trs.push(item);
+        var body_data: u8[..64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var trs = wing::HeaderMap { .. };
+        wing::append_header(trs, "X-Complete", "true");
 
         var encoded_wire: u8[>..] = [];
         wing::encode_chunked_payload(body_data[..], trs, 10, encoded_wire);
 
-        var parsed_body: u8[>..]                = [];
-        var parsed_trs:  wing::HeaderItem[..16] = [];
+        var parsed_body: u8[>..] = [];
+        var parsed_trs = wing::HeaderMap { .. };
         let err, consumed = wing::decode_chunked_body_with_trailers(encoded_wire[..], parsed_body, parsed_trs);
         sub.assert_eq(err, wing::ChunkedDecodeError.None, "Decoded segmented chunks");
         sub.assert_eq(consumed, encoded_wire.len, "Exact bytes consumed");
         sub.assert_bytes_eq(parsed_body[..], "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Payload fully reconstructed");
-        sub.assert_eq(parsed_trs.len, 1, "1 trailer reconstructed");
-        sub.assert_bytes_eq(parsed_trs[0].name[..], "X-Complete", "Trailer name correct");
-        sub.assert_bytes_eq(parsed_trs[0].value[..], "true", "Trailer value correct");
+        sub.assert_eq(parsed_trs.entries.len, 1, "1 trailer reconstructed");
+        sub.assert_bytes_eq(wing::entry_name(parsed_trs, parsed_trs.entries[0]), "X-Complete", "Trailer name correct");
+        sub.assert_bytes_eq(wing::entry_value(parsed_trs, parsed_trs.entries[0]), "true", "Trailer value correct");
     };
 
     t.run("RFC 9112 Section 6.1: Response wire parser strips Content-Length when chunked present") { sub =>
@@ -789,10 +796,10 @@ fn test_chunked_response_and_wire_parser(t: lit::T&) {
         var res = wing::Response { .. };
         let ok_parse, consumed = wing::parse_http1_wire_response(wire_dual, res);
         sub.assert_true(ok_parse, "Dual TE+CL in response parsed cleanly (TE overrides CL)");
+        sub.assert_eq(consumed, wire_dual.len, "Consumed entire dual TE+CL response");
         sub.assert_bytes_eq(res.body[..], "hello", "Body decoded from chunked");
         sub.assert_false(wing::has_header(res, "content-length"), "Content-Length header MUST be stripped per RFC 9112 Section 6.1");
-        sub.assert_true(res.spans.len > 0, "Response spans populated by SWAR response wire parser");
-        sub.assert_bytes_eq(wing::header_from_wire(res, wire_dual, "Transfer-Encoding"), "chunked", "Zero-copy header_from_wire on Response");
+        sub.assert_bytes_eq(wing::header(res, "Transfer-Encoding"), "chunked", "HeaderMap Transfer-Encoding on Response");
     };
 }
 
@@ -1522,6 +1529,30 @@ fn test_early_hints_link_header_security(t: lit::T&) {
     t.assert_false(ok_bad2, "characters between > and ; must be rejected");
 }
 
+fn test_headermap_inplace_compaction_and_overwrite(t: lit::T&) {
+    var map = wing::HeaderMap { .. };
+    t.require_true(wing::insert_header(map, "Host", "example.com"));
+    t.require_true(wing::insert_header(map, "Authorization", "Bearer initial_long_secret_token_value_1234567890"));
+    t.require_true(wing::insert_header(map, "X-Custom", "after-auth"));
+    let initial_len = map.raw_buf.len;
+
+    // 1. Shorter in-place overwrite shifts tail immediately without slack bytes
+    t.require_true(wing::insert_header(map, "Authorization", "Bearer short"));
+    t.assert_lt(map.raw_buf.len, initial_len, "raw_buf shrinks immediately on shorter overwrite");
+    t.assert_bytes_eq(wing::get_header(map, "Authorization"), "Bearer short", "Overwritten value matches");
+    t.assert_bytes_eq(wing::get_header(map, "X-Custom"), "after-auth", "Tail entry shifted cleanly");
+
+    // 2. Repeated remove + insert cycles never exhaust raw_buf
+    for i in 0..500 {
+        t.require_true(wing::remove_header(map, "Authorization"));
+        t.require_true(wing::insert_header(map, "Authorization", "Bearer rotating_hop_token_value_abcdef_0123456789"));
+        t.require_true(wing::set_or_replace(map, "X-Custom", "updated-val"));
+    }
+    t.assert_lt(map.raw_buf.len, 256, "raw_buf remains compact after 500 mutation cycles");
+    t.assert_bytes_eq(wing::get_header(map, "Host"), "example.com", "Host preserved");
+    t.assert_bytes_eq(wing::get_header(map, "X-Custom"), "updated-val", "X-Custom preserved");
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/1.1 Framing, Chunked Transfer, and Smuggling Defense Suite", lit::Verbosity.Verbose);
 
@@ -1544,6 +1575,7 @@ fn main() {
     lit::run_case(runner, "17. RFC 9209 Proxy-Status", test_proxy_status_rfc9209);
     lit::run_case(runner, "18. Resumable Upload Structured Fields", test_resumable_upload_structured_fields);
     lit::run_case(runner, "19. Early Hints Link Header Security", test_early_hints_link_header_security);
+    lit::run_case(runner, "20. HeaderMap In-Place Compaction & Overwrite", test_headermap_inplace_compaction_and_overwrite);
 
     let ok = lit::finish(runner);
     assert(ok);

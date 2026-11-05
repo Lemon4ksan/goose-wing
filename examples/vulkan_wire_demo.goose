@@ -165,5 +165,14 @@ fn main() {
     wire::destroy_wire_pipeline(pipe);
     wire::destroy_command_pool(pool);
     wire::destroy_wire_device(dev);
-    print("\n[8] Full 7-tier pipeline execution verified successfully.");
+
+    // Tier 8: Composable L7 Stage Pipeline (Role-Scoped Masks & Step Combinator)
+    print("\n[8] Tier 2 Composable L7 Stage Pipeline (Client & Server WirePipeline):");
+    var client_pipe = wire::default_client_pipeline();
+    wire::disable_ingress_stage(client_pipe, wire::STAGE_CLI_IN_CACHE_LOOKUP);
+    print("    Client Pipeline Ingress Stages: ", client_pipe.ingress_stages.len, " (Cache Lookup Disabled)");
+    var srv_pipe = wire::default_server_pipeline();
+    wire::enable_egress_stage(srv_pipe, wire::STAGE_SRV_OUT_ETAG | wire::STAGE_SRV_OUT_COMPRESS_GZIP);
+    print("    Server Pipeline Egress Stages:  ", srv_pipe.egress_stages.len, " (ETag + Gzip Enabled)");
+    print("\n[9] Full Two-Tier Vulkan-Style Wire & Stage Pipeline execution verified successfully.");
 }

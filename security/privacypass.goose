@@ -399,9 +399,9 @@ fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) {
 fn has_private_token_challenge<Res>(res: const Res&) -> bool {
     guard res.status_code == rfc::STATUS_UNAUTHORIZED else { return false; }
     let scheme_len = rfc::SCHEME_PRIVATE_TOKEN.len;
-    for idx in res.headers.len {
-        guard core::eq_ascii_fold(res.headers[idx].name[..], "WWW-Authenticate") else { continue; }
-        let val = trim_lws(res.headers[idx].value[..]);
+    for &e in res.headers.entries {
+        guard core::eq_ascii_fold(entry_name(res.headers, e), "WWW-Authenticate") else { continue; }
+        let val = trim_lws(entry_value(res.headers, e));
         guard val.len >= scheme_len && eq_ascii_fold(val[..scheme_len], rfc::SCHEME_PRIVATE_TOKEN) else { continue; }
         if val.len == scheme_len || val[scheme_len] == ' ' || val[scheme_len] == '\t' {
             return true;

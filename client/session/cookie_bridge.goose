@@ -94,11 +94,11 @@ fn prepare_hop_cookie_header(
     samesite_eval: const SameSiteCookieContext&,
     safe_method:   bool,
 ) {
-    var matched_cookies: CanonicalCookie[>..] = [];
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
-    session.jar.get_canonical_cookies_for_request(
+    let _ = encode_cookie_header_to_map(
+        session.jar,
         current_url.hostname(),
         current_url.pathname(),
         current_url.scheme(),
@@ -106,22 +106,13 @@ fn prepare_hop_cookie_header(
         CookieSourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
         part_key[..],
         session.virtual_clock_us,
-        matched_cookies,
         CookieAccessOptions {
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: ctx.is_main_frame,
             is_safe_method:          safe_method,
         },
+        ctx.headers,
     );
-
-    remove_header_by_name(ctx.headers, "Cookie");
-    if matched_cookies.len > 0 {
-        var cookie_hdr_val: u8[..8192] = [];
-        format_cookie_header_value(cookie_hdr_val, matched_cookies[..]);
-        if cookie_hdr_val.len > 0 && ctx.headers.len < 32 {
-            ctx.headers.push(make_header("Cookie", cookie_hdr_val[..], true));
-        }
-    }
 }
 
 // Ingests Set-Cookie headers from an incoming response hop into the canonical jar.
@@ -130,13 +121,17 @@ fn ingest_hop_response_cookies(
     ctx:           const RequestExecutionContext&,
     current_url:   const core::Url&,
     samesite_eval: const SameSiteCookieContext&,
-    set_cookies:   const u8[..1024][..16]&,
+    resp_headers:  const HeaderMap&,
 ) {
-    for &set_cookie_str in set_cookies {
+    for i in resp_headers.entries.len {
+        let e = resp_headers.entries[i];
+        let ename = entry_name(resp_headers, e);
+        guard eq_ascii_fold(ename, "set-cookie") else { continue; }
+        let set_cookie_str = entry_value(resp_headers, e);
         var def_path: u8[..256] = [];
         compute_default_cookie_path(current_url.pathname(), def_path);
         var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(
-            set_cookie_str[..],
+            set_cookie_str,
             current_url.hostname(),
             def_path[..],
             session.virtual_clock_us,
@@ -160,6 +155,6 @@ fn ingest_hop_response_cookies(
         }
         var part_key: u8[..256] = [];
         compute_hop_partition_key(ctx, current_url, part_key);
-        session.jar.set_cookie_header(current_url.href[..], set_cookie_str[..], session.virtual_clock_us, part_key[..]);
+        session.jar.set_cookie_header(current_url.href[..], set_cookie_str, session.virtual_clock_us, part_key[..]);
     }
 }

@@ -403,10 +403,8 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/api/data");
-        let h_cc = wing::make_header("Cache-Control", "max-age=3600");
-        let h_etag = wing::make_header("ETag", "\"data-v1\"");
-        resp.headers.push(h_cc);
-        resp.headers.push(h_etag);
+        wing::set_header(resp, "Cache-Control", "max-age=3600");
+        wing::set_header(resp, "ETag", "\"data-v1\"");
         resp.body.append("{\"message\": \"hello world\"}");
 
         let ts = wing::new_cache_timestamps(t0, t0, t0);
@@ -434,10 +432,10 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/resource");
-        resp.headers.push(wing::make_header("Cache-Control", "max-age=60"));
-        resp.headers.push(wing::make_header("ETag", "\"tag-abc\""));
-        resp.headers.push(wing::make_header("Content-Type", "text/html"));
-        resp.headers.push(wing::make_header("Strict-Transport-Security", "max-age=31536000"));
+        wing::set_header(resp, "Cache-Control", "max-age=60");
+        wing::set_header(resp, "ETag", "\"tag-abc\"");
+        wing::set_header(resp, "Content-Type", "text/html");
+        wing::set_header(resp, "Strict-Transport-Security", "max-age=31536000");
         resp.body.append("<html>content</html>");
 
         let ts0 = wing::new_cache_timestamps(t0, t0, t0);
@@ -452,11 +450,11 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         // Origin returns 304 Not Modified with fresh Cache-Control: max-age=7200
         var resp_304 = wing::Response { .. };
         resp_304.status_code = 304;
-        resp_304.headers.push(wing::make_header("Cache-Control", "max-age=7200"));
-        resp_304.headers.push(wing::make_header("X-Fresh-Note", "updated"));
+        wing::set_header(resp_304, "Cache-Control", "max-age=7200");
+        wing::set_header(resp_304, "X-Fresh-Note", "updated");
         // Attempt to corrupt Content-Type and HSTS in 304
-        resp_304.headers.push(wing::make_header("Content-Type", "application/poison"));
-        resp_304.headers.push(wing::make_header("Strict-Transport-Security", "max-age=0"));
+        wing::set_header(resp_304, "Content-Type", "application/poison");
+        wing::set_header(resp_304, "Strict-Transport-Security", "max-age=0");
 
         let ts_304 = wing::new_cache_timestamps(t_stale, t_stale, t_stale);
         let dec_freshen = wing::on_response(cache, req, resp_304, ts_304, dec_stale.entry_idx);
@@ -480,8 +478,8 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/freshness-test");
-        resp.headers.push(wing::make_header("Cache-Control", "max-age=60"));
-        resp.headers.push(wing::make_header("ETag", "\"etag-1\""));
+        wing::set_header(resp, "Cache-Control", "max-age=60");
+        wing::set_header(resp, "ETag", "\"etag-1\"");
         resp.body.append("content v1");
 
         let ts0 = wing::new_cache_timestamps(t0, t0, t0);
@@ -495,7 +493,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         // Origin responds 304 with max-age=60 at t=4601
         var resp_304 = wing::Response { .. };
         resp_304.status_code = 304;
-        resp_304.headers.push(wing::make_header("Cache-Control", "max-age=60"));
+        wing::set_header(resp_304, "Cache-Control", "max-age=60");
 
         let t_resp_304 = core::unix(4601, 0);
         let ts_304 = wing::new_cache_timestamps(t_stale, t_resp_304, t_resp_304);
@@ -534,7 +532,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         // Unknown status code 299 with must-understand -> MUST NOT be stored
         var resp = wing::Response { .. };
         resp.status_code = 299;
-        resp.headers.push(wing::make_header("Cache-Control", "max-age=3600, must-understand"));
+        wing::set_header(resp, "Cache-Control", "max-age=3600, must-understand");
         resp.body.append("data");
 
         let ts = wing::new_cache_timestamps(t0, t0, t0);
@@ -552,7 +550,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var resp_head = wing::Response { .. };
         resp_head.status_code = 200;
         resp_head.effective_url.append("https://example.com/asset.png");
-        resp_head.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_head, "Cache-Control", "max-age=3600");
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         wing::on_response(cache, req_head, resp_head, ts);
@@ -575,7 +573,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var resp1 = wing::Response { .. };
         resp1.status_code = 200;
         resp1.effective_url.append("https://example.com/api/items");
-        resp1.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp1, "Cache-Control", "max-age=3600");
         resp1.body.append("[1, 2, 3]");
         wing::on_response(cache, req1, resp1, ts);
 
@@ -583,7 +581,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var resp2 = wing::Response { .. };
         resp2.status_code = 200;
         resp2.effective_url.append("https://example.com/api/items/42");
-        resp2.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp2, "Cache-Control", "max-age=3600");
         resp2.body.append("{\"id\": 42}");
         wing::on_response(cache, req2, resp2, ts);
 
@@ -593,7 +591,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var post_req = wing::new_post("https://example.com/api/items");
         var post_resp = wing::Response { .. };
         post_resp.status_code = 201; // Created
-        post_resp.headers.push(wing::make_header("Location", "https://example.com/api/items/42"));
+        wing::set_header(post_resp, "Location", "https://example.com/api/items/42");
 
         wing::on_response(cache, post_req, post_resp, ts);
 
@@ -617,7 +615,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var resp_child = wing::Response { .. };
         resp_child.status_code = 200;
         resp_child.effective_url.append("https://example.com/posts/42");
-        resp_child.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_child, "Cache-Control", "max-age=3600");
         resp_child.body.append("{\"id\": 42}");
         wing::on_response(cache, req_child, resp_child, ts);
 
@@ -625,7 +623,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         var post_req = wing::new_post("https://example.com/posts");
         var post_resp = wing::Response { .. };
         post_resp.status_code = 201;
-        post_resp.headers.push(wing::make_header("Location", "/posts/42"));
+        wing::set_header(post_resp, "Location", "/posts/42");
 
         wing::on_response(cache, post_req, post_resp, ts);
 
@@ -655,7 +653,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         // 403 WITH max-age=60 -> STORE
         var resp_403_fresh = wing::Response { .. };
         resp_403_fresh.status_code = 403;
-        resp_403_fresh.headers.push(wing::make_header("Cache-Control", "max-age=60"));
+        wing::set_header(resp_403_fresh, "Cache-Control", "max-age=60");
         let dec3 = wing::on_response(cache, req2, resp_403_fresh, ts);
         sub.assert_eq(dec3.kind, wing::ResponseDecisionKind.StoreAndReturn, "403 with explicit max-age is stored");
     };
@@ -669,25 +667,25 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         let req_a = wing::new_get("https://example.com/a");
         var resp_a = wing::Response { .. };
         resp_a.status_code = 200;
-        resp_a.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_a, "Cache-Control", "max-age=3600");
         wing::on_response(cache, req_a, resp_a, ts);
 
         let req_b = wing::new_get("https://example.com/b");
         var resp_b = wing::Response { .. };
         resp_b.status_code = 200;
-        resp_b.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_b, "Cache-Control", "max-age=3600");
         wing::on_response(cache, req_b, resp_b, ts);
 
         let req_c = wing::new_get("https://example.com/c");
         var resp_c = wing::Response { .. };
         resp_c.status_code = 200;
-        resp_c.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_c, "Cache-Control", "max-age=3600");
         wing::on_response(cache, req_c, resp_c, ts);
 
         // Updating entry B should NOT corrupt LRU pointers
         var resp_b_v2 = wing::Response { .. };
         resp_b_v2.status_code = 200;
-        resp_b_v2.headers.push(wing::make_header("Cache-Control", "max-age=7200"));
+        wing::set_header(resp_b_v2, "Cache-Control", "max-age=7200");
         wing::on_response(cache, req_b, resp_b_v2, ts);
 
         sub.assert_true(cache.lru_head >= 0, "LRU head valid");
@@ -704,7 +702,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         let req_d = wing::new_get("https://example.com/d");
         var resp_d = wing::Response { .. };
         resp_d.status_code = 200;
-        resp_d.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
+        wing::set_header(resp_d, "Cache-Control", "max-age=3600");
         let dec_d = wing::on_response(cache, req_d, resp_d, ts);
 
         sub.assert_eq(dec_d.entry_idx, 0, "Invalidated slot 0 reused for new entry D");
@@ -719,9 +717,9 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         let req = wing::new_get("https://example.com/qualified-no-cache");
         var resp = wing::Response { .. };
         resp.status_code = 200;
-        resp.headers.push(wing::make_header("Cache-Control", "max-age=3600, no-cache=\"X-Sensitive\""));
-        resp.headers.push(wing::make_header("X-Sensitive", "secret"));
-        resp.headers.push(wing::make_header("X-Public", "hello"));
+        wing::set_header(resp, "Cache-Control", "max-age=3600, no-cache=\"X-Sensitive\"");
+        wing::set_header(resp, "X-Sensitive", "secret");
+        wing::set_header(resp, "X-Public", "hello");
         resp.body.append("content");
 
         wing::on_response(cache, req, resp, ts);
@@ -862,8 +860,8 @@ fn test_cache_groups(t: lit::T&) {
         var resp = wing::Response { .. };
         resp.status_code = 200;
         resp.effective_url.append("https://example.com/app.js");
-        resp.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
-        resp.headers.push(wing::make_header("Cache-Groups", "\"scripts\""));
+        wing::set_header(resp, "Cache-Control", "max-age=3600");
+        wing::set_header(resp, "Cache-Groups", "\"scripts\"");
         resp.body.append("console.log(1)");
         wing::on_response(cache, req, resp, ts);
 
@@ -884,8 +882,8 @@ fn test_cache_groups(t: lit::T&) {
         var resp_a = wing::Response { .. };
         resp_a.status_code = 200;
         resp_a.effective_url.append("https://example.com/catalog/a");
-        resp_a.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
-        resp_a.headers.push(wing::make_header("Cache-Groups", "\"catalog\""));
+        wing::set_header(resp_a, "Cache-Control", "max-age=3600");
+        wing::set_header(resp_a, "Cache-Groups", "\"catalog\"");
         resp_a.body.append("a");
         wing::on_response(cache, req_a, resp_a, ts);
 
@@ -893,8 +891,8 @@ fn test_cache_groups(t: lit::T&) {
         var resp_b = wing::Response { .. };
         resp_b.status_code = 200;
         resp_b.effective_url.append("https://example.com/catalog/b");
-        resp_b.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
-        resp_b.headers.push(wing::make_header("Cache-Groups", "\"catalog\""));
+        wing::set_header(resp_b, "Cache-Control", "max-age=3600");
+        wing::set_header(resp_b, "Cache-Groups", "\"catalog\"");
         resp_b.body.append("b");
         wing::on_response(cache, req_b, resp_b, ts);
 
@@ -902,8 +900,8 @@ fn test_cache_groups(t: lit::T&) {
         var resp_u = wing::Response { .. };
         resp_u.status_code = 200;
         resp_u.effective_url.append("https://example.com/users/42");
-        resp_u.headers.push(wing::make_header("Cache-Control", "max-age=3600"));
-        resp_u.headers.push(wing::make_header("Cache-Groups", "\"user-42\""));
+        wing::set_header(resp_u, "Cache-Control", "max-age=3600");
+        wing::set_header(resp_u, "Cache-Groups", "\"user-42\"");
         resp_u.body.append("u");
         wing::on_response(cache, req_u, resp_u, ts);
 
@@ -924,7 +922,7 @@ fn test_cache_groups(t: lit::T&) {
         let post_req = wing::new_post("https://example.com/admin/purge");
         var post_resp = wing::Response { .. };
         post_resp.status_code = 200;
-        post_resp.headers.push(wing::make_header("Cache-Group-Invalidation", "\"catalog\""));
+        wing::set_header(post_resp, "Cache-Group-Invalidation", "\"catalog\"");
 
         let cascade = wing::check_invalidation(cache_2, post_req, post_resp);
         sub.assert_eq(cascade, 2, "check_invalidation purges both catalog entries via Cache-Group-Invalidation");
@@ -1487,8 +1485,7 @@ fn test_http_signatures(t: lit::T&) {
         sub.assert_false(ver_wrong_key, "Tampered key rejected");
 
         // Verification fails if header was tampered
-        req.headers[1].value.clear();
-        req.headers[1].value.append("application/xml"); // changed accept
+        wing::set_header(req, "Accept", "application/xml"); // changed accept
         let ver_tampered = wing::verify_http_signature(req, "sig-bank", params, key, 1700000100);
         sub.assert_false(ver_tampered, "Tampered header rejected");
     };
@@ -1700,7 +1697,7 @@ fn test_incremental_stream_reader(t: lit::T&) {
             status_code: 200,
             ..
         };
-        resp.headers.push(wing::make_header("Content-Length", "26"));
+        wing::set_header(resp, "Content-Length", "26");
         resp.body.append("abcdefghijklmnopqrstuvwxyz");
 
         var reader = wing::new_stream_reader(resp);
@@ -1742,7 +1739,7 @@ fn test_incremental_stream_reader(t: lit::T&) {
 
         // Chunked stream with small max_bytes reads retaining unconsumed remainder and exposing trailers
         var resp_chunked = wing::Response { status_code: 200, .. };
-        resp_chunked.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        wing::set_header(resp_chunked, "Transfer-Encoding", "chunked");
         resp_chunked.body.append("10\r\n0123456789abcdef\r\n0\r\nExpires: 0\r\nX-Checksum: sha256-abc\r\n\r\n");
 
         var reader_ch = wing::new_stream_reader(resp_chunked);
@@ -1770,7 +1767,7 @@ fn test_incremental_stream_reader(t: lit::T&) {
 
         var resp_target = wing::Response { status_code: 200, .. };
         wing::copy_trailers_to_response(reader_ch, resp_target);
-        sub.assert_eq(resp_target.trailers.len, 2, "trailers copied to Response object");
+        sub.assert_eq(resp_target.trailers.entries.len, 2, "trailers copied to Response object");
         sub.assert_bytes_eq(wing::trailer(resp_target, "expires"), "0", "Response has expires trailer");
     };
 }

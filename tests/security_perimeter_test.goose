@@ -411,7 +411,7 @@ fn test_fetch_metadata_decision_matrix(t: lit::T&) {
         wing::add_exempt_path(guard_cfg, "/api/webhook/stripe");
 
         var req = wing::new_request("POST", "https://api.example.com/api/webhook/stripe?signature=abc123#frag");
-        req.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
+        wing::set_header(req, "Sec-Fetch-Site", "cross-site");
         let ctx = wing::extract_fetch_context(req, "api.example.com");
 
         sub.assert_bytes_eq(ctx.path[..], "/api/webhook/stripe", "path extracted cleanly without query or host");
@@ -474,9 +474,9 @@ fn test_cors_policy_and_matching(t: lit::T&) {
 
         // Preflight request
         var preflight_req = wing::new_request("OPTIONS", "/api/v1/resource");
-        preflight_req.headers.push(wing::make_header("Origin", "https://portal.example.com"));
-        preflight_req.headers.push(wing::make_header("Access-Control-Request-Method", "POST"));
-        preflight_req.headers.push(wing::make_header("Access-Control-Request-Headers", "Content-Type, Authorization"));
+        wing::set_header(preflight_req, "Origin", "https://portal.example.com");
+        wing::set_header(preflight_req, "Access-Control-Request-Method", "POST");
+        wing::set_header(preflight_req, "Access-Control-Request-Headers", "Content-Type, Authorization");
 
         var preflight_res = wing::Response { .. };
         let preflight_res_code = wing::evaluate_cors(policy, preflight_req, preflight_res);
@@ -499,7 +499,7 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         policy.allow_credentials = true; // Illegal combination per W3C CORS / Fetch spec
 
         var req = wing::new_request("GET", "/api/data");
-        req.headers.push(wing::make_header("Origin", "https://untrusted.com"));
+        wing::set_header(req, "Origin", "https://untrusted.com");
 
         var res = wing::Response { .. };
         let res_code = wing::evaluate_cors(policy, req, res);
@@ -513,7 +513,7 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         policy.allow_credentials = true; // Illegal per Fetch spec §3.2.2 even if multiple origins present
 
         var req = wing::new_request("GET", "/api/data");
-        req.headers.push(wing::make_header("Origin", "https://portal.example.com"));
+        wing::set_header(req, "Origin", "https://portal.example.com");
 
         var res = wing::Response { .. };
         let res_code = wing::evaluate_cors(policy, req, res);
@@ -527,7 +527,7 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         wild_policy.allow_credentials = false;
 
         var iframe_req = wing::new_request("GET", "/api/data");
-        iframe_req.headers.push(wing::make_header("Origin", "null"));
+        wing::set_header(iframe_req, "Origin", "null");
         var iframe_res = wing::Response { .. };
         let wild_null_code = wing::evaluate_cors(wild_policy, iframe_req, iframe_res);
         sub.assert_true(wild_null_code == wing::CorsResult.RejectedOrigin, "Origin: null rejected against wildcard pattern");
@@ -539,7 +539,7 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         cred_policy.allow_credentials = true;
 
         var upper_null_req = wing::new_request("GET", "/api/user");
-        upper_null_req.headers.push(wing::make_header("Origin", "NULL"));
+        wing::set_header(upper_null_req, "Origin", "NULL");
         var upper_null_res = wing::Response { .. };
         let upper_code = wing::evaluate_cors(cred_policy, upper_null_req, upper_null_res);
         sub.assert_true(upper_code == wing::CorsResult.RejectedOrigin, "Origin: NULL rejected when credentials enabled");
@@ -636,16 +636,16 @@ fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
         sub.assert_true(wing::add_edge_filter_rule(filter, r_heavy), "Heavy throttle rule added");
 
         // Evaluate /public/index.html -> Pass
-        var empty_headers: wing::HeaderItem[..4] = [];
-        let v1 = wing::evaluate_edge_filter(filter, "GET", "/public/index.html", empty_headers[..]);
+        var empty_headers = wing::HeaderMap { .. };
+        let v1 = wing::evaluate_edge_filter(filter, "GET", "/public/index.html", empty_headers);
         sub.assert_true(v1 == wing::EdgeFilterVerdict.Pass, "Public path passes");
 
         // Evaluate /admin/users -> BlockForbidden (403)
-        let v2 = wing::evaluate_edge_filter(filter, "POST", "/admin/users", empty_headers[..]);
+        let v2 = wing::evaluate_edge_filter(filter, "POST", "/admin/users", empty_headers);
         sub.assert_true(v2 == wing::EdgeFilterVerdict.BlockForbidden, "Admin path blocked");
 
         // Evaluate /api/heavy/compute -> ThrottleRate (429)
-        let v3 = wing::evaluate_edge_filter(filter, "POST", "/api/heavy/compute", empty_headers[..]);
+        let v3 = wing::evaluate_edge_filter(filter, "POST", "/api/heavy/compute", empty_headers);
         sub.assert_true(v3 == wing::EdgeFilterVerdict.ThrottleRate, "Heavy path throttled");
 
         sub.assert_eq(filter.total_inspected as i64, 3, "Total inspected count");
@@ -659,15 +659,15 @@ fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
         let _ = wing::add_edge_filter_rule(filter, rule);
 
         // Missing header -> Block
-        var hdrs_missing: wing::HeaderItem[..4] = [];
-        hdrs_missing.push(wing::make_header("Authorization", "Bearer tok", false));
-        let v_deny = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_missing[..]);
+        var hdrs_missing = wing::HeaderMap { .. };
+        wing::append_header(hdrs_missing, "Authorization", "Bearer tok");
+        let v_deny = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_missing);
         sub.assert_true(v_deny == wing::EdgeFilterVerdict.BlockForbidden, "Missing required header blocked");
 
         // Present header -> Pass
-        var hdrs_ok: wing::HeaderItem[..4] = [];
-        hdrs_ok.push(wing::make_header("X-API-Key", "secret-key-123", false));
-        let v_allow = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_ok[..]);
+        var hdrs_ok = wing::HeaderMap { .. };
+        wing::append_header(hdrs_ok, "X-API-Key", "secret-key-123");
+        let v_allow = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_ok);
         sub.assert_true(v_allow == wing::EdgeFilterVerdict.Pass, "Present required header allowed");
     };
 }
@@ -964,14 +964,9 @@ fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        var has_auth = false;
-        var has_api_key = false;
-        var has_custom = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-            if core::eq_ascii_fold(hdr.name[..], "X-API-Key") { has_api_key = true; }
-            if core::eq_ascii_fold(hdr.name[..], "Custom-Key") { has_custom = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
+        let has_api_key = wing::has_header(req.headers, "X-API-Key");
+        let has_custom = wing::has_header(req.headers, "Custom-Key");
 
         sub.assert_false(has_auth, "Authorization must be stripped on scheme downgrade even if host is trusted");
         sub.assert_false(has_api_key, "X-API-Key must be stripped on scheme downgrade even if host is trusted");
@@ -996,12 +991,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
         sub.assert_true(wing::ok(err), "request succeeded");
         sub.assert_eq(res.status_code, 200, "final status 200");
 
-        var sent_auth = false;
-        for sent_hdr in res.sent_headers {
-            if core::eq_ascii_fold(sent_hdr.name[..], "Authorization") {
-                sent_auth = true;
-            }
-        }
+        let sent_auth = wing::has_sent_header(res, "Authorization");
         sub.assert_false(sent_auth, "Authorization header must not be sent over cleartext HTTP on scheme downgrade");
     };
 
@@ -1025,10 +1015,7 @@ fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
             wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        var has_auth = false;
-        for hdr in req.headers {
-            if core::eq_ascii_fold(hdr.name[..], "Authorization") { has_auth = true; }
-        }
+        let has_auth = wing::has_header(req.headers, "Authorization");
         sub.assert_true(has_auth, "Authorization is preserved for trusted cross-origin HTTPS -> HTTPS");
     };
 }
@@ -1673,8 +1660,8 @@ fn test_security_audit_regressions(t: lit::T&) {
 
         // Duplicate Sec-Fetch-Site header must not downgrade CrossSite to Missing
         var req_dup = wing::new_request("POST", "https://app.example.com/transfer");
-        req_dup.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
-        req_dup.headers.push(wing::make_header("Sec-Fetch-Site", ""));
+        wing::append_header(req_dup.headers, "Sec-Fetch-Site", "cross-site");
+        wing::append_header(req_dup.headers, "Sec-Fetch-Site", "");
         let extracted_dup = wing::extract_fetch_context(req_dup, "app.example.com");
         sub.assert_true(
             extracted_dup.site == wing::SecFetchSite.CrossSite,
@@ -1698,7 +1685,7 @@ fn test_security_audit_regressions(t: lit::T&) {
         var cors_cfg = wing::CorsPolicy { .. };
         let _ = wing::add_allowed_origin(cors_cfg, "https://app.example.com");
         var req_opt = wing::new_request("OPTIONS", "https://api.example.com/info");
-        req_opt.headers.push(wing::make_header("Origin", "https://app.example.com"));
+        wing::set_header(req_opt, "Origin", "https://app.example.com");
         var res_opt = wing::Response { status_code: 200, .. };
         let cors_res = wing::evaluate_cors(cors_cfg, req_opt, res_opt);
         sub.assert_true(
@@ -1767,7 +1754,7 @@ fn test_security_audit_regressions(t: lit::T&) {
         var req_pt = wing::new_request("GET", "https://api.example.com/resource");
         wing::attach_private_token(req_pt, "tok_raw_bytes");
         sub.assert_bytes_eq(
-            wing::find_header(req_pt.headers[..], "Authorization"),
+            wing::header(req_pt, "Authorization"),
             "PrivateToken token=\"dG9rX3Jhd19ieXRlcw\"",
             "attach_private_token sets Authorization header",
         );

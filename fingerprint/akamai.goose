@@ -772,19 +772,19 @@ fn order_pseudo_headers(
     authority: const u8[:],
     scheme:    const u8[:],
     path:      const u8[:],
-    out:       HeaderItem[..4]&,
+    out:       HeaderMap&,
 ) {
     out.clear();
     for b in fp.pseudo_headers {
-        guard out.len < out.cap else { break; }
+        guard out.entries.len < 4 else { break; }
         if b == 'm' {
-            out.push(make_header(":method", method));
+            let _ = append_header(out, ":method", method);
         } else if b == 'a' {
-            out.push(make_header(":authority", authority));
+            let _ = append_header(out, ":authority", authority);
         } else if b == 's' {
-            out.push(make_header(":scheme", scheme));
+            let _ = append_header(out, ":scheme", scheme);
         } else if b == 'p' {
-            out.push(make_header(":path", path));
+            let _ = append_header(out, ":path", path);
         }
     }
 }

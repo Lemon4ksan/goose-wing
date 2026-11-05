@@ -756,7 +756,7 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
             status_code: 200,
             ..
         };
-        mock.headers.push(wing::make_header("content-type", "application/dns-message"));
+        wing::append_header(mock.headers, "content-type", "application/dns-message");
         mock.body.append(dns_resp_wire[..]);
         client.mock_routes.push(mock);
 

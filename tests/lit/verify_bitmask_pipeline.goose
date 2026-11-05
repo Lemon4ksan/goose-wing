@@ -77,8 +77,8 @@ fn test_pso_fast_path_and_ingress() {
 
     // Case 1: Fast-path probe bypasses invalid Expect header
     var req_probe = wing::new_request("GET", "/healthz");
-    req_probe.headers.push(wing::make_header("Host", "example.com"));
-    req_probe.headers.push(wing::make_header("Expect", "invalid-unsupported-expectation"));
+    wing::append_header(req_probe.headers, "Host", "example.com");
+    wing::append_header(req_probe.headers, "Expect", "invalid-unsupported-expectation");
 
     var res_probe = wing::Response { .. };
     var fut_probe = internal::new_inline_handler_future(0);
@@ -91,8 +91,8 @@ fn test_pso_fast_path_and_ingress() {
 
     // Case 2: Protected route rejects invalid Expect header with 417
     var req_bad_exp = wing::new_request("POST", "/protected");
-    req_bad_exp.headers.push(wing::make_header("Host", "example.com"));
-    req_bad_exp.headers.push(wing::make_header("Expect", "invalid-unsupported-expectation"));
+    wing::append_header(req_bad_exp.headers, "Host", "example.com");
+    wing::append_header(req_bad_exp.headers, "Expect", "invalid-unsupported-expectation");
 
     var res_bad_exp = wing::Response { .. };
     var fut_bad_exp = internal::new_inline_handler_future(0);
@@ -103,9 +103,9 @@ fn test_pso_fast_path_and_ingress() {
 
     // Case 3: Protected route accepts valid Expect: 100-continue
     var req_ok_exp = wing::new_request("POST", "/protected");
-    req_ok_exp.headers.push(wing::make_header("Host", "example.com"));
-    req_ok_exp.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
-    req_ok_exp.headers.push(wing::make_header("Expect", "100-continue"));
+    wing::append_header(req_ok_exp.headers, "Host", "example.com");
+    wing::append_header(req_ok_exp.headers, "Sec-Fetch-Site", "same-origin");
+    wing::append_header(req_ok_exp.headers, "Expect", "100-continue");
 
     var res_ok_exp = wing::Response { .. };
     var fut_ok_exp = internal::new_inline_handler_future(0);
@@ -125,7 +125,7 @@ fn test_pso_egress_security_headers() {
 
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     var req = wing::new_request("GET", "/secure-api");
-    req.headers.push(wing::make_header("Host", "example.com"));
+    wing::append_header(req.headers, "Host", "example.com");
 
     var res = wing::Response { .. };
     var fut = internal::new_inline_handler_future(0);

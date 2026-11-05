@@ -18,6 +18,7 @@ import client.response;
 import client.session.h1_exchange;
 import proxy.gcra;
 import proxy.load_balancer;
+import wire.h1;
 
 const PROXY_TARGET_NONE: i32 = -1;
 
@@ -316,37 +317,16 @@ fn serialize_upstream_request<B>(
     http_version: const u8[:] = "HTTP/1.1",
 ) {
     out.clear();
-    out.append(method);
-    out.append(" ");
-    out.append(if uri.len > 0 { uri } else { "/" });
-    out.append(" ");
-    out.append(if http_version.len > 0 { http_version } else { "HTTP/1.1" });
-    out.append("\r\n");
-
-    var has_cl = false;
-    for i in headers.entries.len {
-        let entry = headers.entries[i];
-        let name = headers.raw_buf[entry.name_begin..entry.name_end];
-        let val = headers.raw_buf[entry.values_begin..entry.values_end];
-        if eq_ascii_fold(name, "content-length") {
-            has_cl = true;
-        }
-        out.append(name);
-        out.append(": ");
-        out.append(val);
-        out.append("\r\n");
-    }
-
-    if !has_cl && body.len > 0 {
-        out.append("Content-Length: ");
-        core::format_u64_dec(body.len as u64, out);
-        out.append("\r\n");
-    }
-
-    out.append("\r\n");
-    if body.len > 0 {
-        out.append(body);
-    }
+    let _ = wire::encode_h1_request(
+        method,
+        uri,
+        "",
+        headers,
+        body,
+        wire::H1HeaderFilterMode.PreserveAll,
+        out,
+        http_version,
+    );
 }
 
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.

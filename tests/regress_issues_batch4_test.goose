@@ -124,7 +124,7 @@ fn test_http1_response_serialization_empty_status(t: lit::T&) {
         // 204 No Content with Transfer-Encoding or trailers requested
         var res_204 = wing::Response { .. };
         res_204.status_code = 204;
-        res_204.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        wing::set_header(res_204, "Transfer-Encoding", "chunked");
         wing::add_trailer(res_204, "X-Checksum", "abc");
         res_204.body.append("illegal body data");
 
@@ -140,7 +140,7 @@ fn test_http1_response_serialization_empty_status(t: lit::T&) {
         // 304 Not Modified
         var res_304 = wing::Response { .. };
         res_304.status_code = 304;
-        res_304.headers.push(wing::make_header("Transfer-Encoding", "chunked"));
+        wing::set_header(res_304, "Transfer-Encoding", "chunked");
         wing::add_trailer(res_304, "X-Checksum", "abc");
 
         var wire_304: u8[>..] = [];
@@ -279,7 +279,8 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
 fn test_h2_hpack_host_authority_validation(t: lit::T&) {
     t.run("HPACK: reject empty :authority and empty host") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // 1. Empty :authority (0x01 is static index for :authority with literal value len 0)
         var empty_auth_block: u8[..32] = [];
@@ -289,7 +290,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         empty_auth_block.push(0x01); // literal with static name 1 (:authority)
         empty_auth_block.push(0x00); // value len 0
 
-        let err_auth = internal::decode_hpack_header_block(dt, empty_auth_block[..], out_list);
+        let err_auth = internal::decode_hpack_to_map(dt, empty_auth_block[..], pseudo, out_list);
         sub.assert_eq(err_auth, rfc::H2_ERR_PROTOCOL_ERROR, "empty :authority MUST return PROTOCOL_ERROR");
 
         // 2. Empty host
@@ -302,14 +303,16 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         empty_host_block.append("host");
         empty_host_block.push(0);    // value len 0
 
-        var out_list2 = internal::DecodedH2HeaderList { .. };
-        let err_host = internal::decode_hpack_header_block(dt, empty_host_block[..], out_list2);
+        var pseudo2 = internal::H2PseudoHeaders { .. };
+        var out_list2 = wing::HeaderMap { .. };
+        let err_host = internal::decode_hpack_to_map(dt, empty_host_block[..], pseudo2, out_list2);
         sub.assert_eq(err_host, rfc::H2_ERR_PROTOCOL_ERROR, "empty host header MUST return PROTOCOL_ERROR");
     };
 
     t.run("HPACK: reject host with invalid authority characters") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // Host containing slash (host: evil.com/path)
         var slash_host_block: u8[..32] = [];
@@ -322,7 +325,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         slash_host_block.push(13);   // value len 13
         slash_host_block.append("evil.com/path");
 
-        let err_slash = internal::decode_hpack_header_block(dt, slash_host_block[..], out_list);
+        let err_slash = internal::decode_hpack_to_map(dt, slash_host_block[..], pseudo, out_list);
         sub.assert_eq(err_slash, rfc::H2_ERR_PROTOCOL_ERROR, "host with slash MUST return PROTOCOL_ERROR");
 
         // Host containing userinfo @ (host: user@evil.com)
@@ -336,14 +339,16 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         user_host_block.push(13);
         user_host_block.append("user@evil.com");
 
-        var out_list2 = internal::DecodedH2HeaderList { .. };
-        let err_user = internal::decode_hpack_header_block(dt, user_host_block[..], out_list2);
+        var pseudo2 = internal::H2PseudoHeaders { .. };
+        var out_list2 = wing::HeaderMap { .. };
+        let err_user = internal::decode_hpack_to_map(dt, user_host_block[..], pseudo2, out_list2);
         sub.assert_eq(err_user, rfc::H2_ERR_PROTOCOL_ERROR, "host with @ MUST return PROTOCOL_ERROR");
     };
 
     t.run("HPACK: accept case-insensitive matching :authority and host") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // :authority: Example.COM and host: example.com
         var hpack_block: u8[..64] = [];
@@ -359,7 +364,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         hpack_block.push(11);
         hpack_block.append("example.com");
 
-        let err = internal::decode_hpack_header_block(dt, hpack_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, hpack_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "case-insensitive matching authority and host MUST succeed");
     };
 }
@@ -684,7 +689,8 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
 fn test_h2_status_pseudo_header_validation(t: lit::T&) {
     t.run("HPACK: reject invalid :status values (out of range, non-3-digit, or 101)") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // 1. :status = "999" (out of 100..599 range)
         var block_999: u8[..32] = [];
@@ -694,7 +700,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_999.push(3);
         block_999.append("999");
 
-        let err_999 = internal::decode_hpack_header_block(dt, block_999[..], out_list);
+        let err_999 = internal::decode_hpack_to_map(dt, block_999[..], pseudo, out_list);
         sub.assert_eq(err_999, rfc::H2_ERR_PROTOCOL_ERROR, ":status 999 MUST return PROTOCOL_ERROR");
 
         // 2. :status = "042" (out of 100..599 range)
@@ -705,8 +711,9 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_042.push(3);
         block_042.append("042");
 
-        var out_list2 = internal::DecodedH2HeaderList { .. };
-        let err_042 = internal::decode_hpack_header_block(dt, block_042[..], out_list2);
+        var pseudo2 = internal::H2PseudoHeaders { .. };
+        var out_list2 = wing::HeaderMap { .. };
+        let err_042 = internal::decode_hpack_to_map(dt, block_042[..], pseudo2, out_list2);
         sub.assert_eq(err_042, rfc::H2_ERR_PROTOCOL_ERROR, ":status 042 MUST return PROTOCOL_ERROR");
 
         // 3. :status = "101" (RFC 9113 §8.8: 101 Switching Protocols forbidden in HTTP/2)
@@ -717,8 +724,9 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_101.push(3);
         block_101.append("101");
 
-        var out_list3 = internal::DecodedH2HeaderList { .. };
-        let err_101 = internal::decode_hpack_header_block(dt, block_101[..], out_list3);
+        var pseudo3 = internal::H2PseudoHeaders { .. };
+        var out_list3 = wing::HeaderMap { .. };
+        let err_101 = internal::decode_hpack_to_map(dt, block_101[..], pseudo3, out_list3);
         sub.assert_eq(err_101, rfc::H2_ERR_PROTOCOL_ERROR, ":status 101 MUST return PROTOCOL_ERROR");
 
         // 4. :status = "20" (less than 3 digits)
@@ -729,8 +737,9 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_short.push(2);
         block_short.append("20");
 
-        var out_list4 = internal::DecodedH2HeaderList { .. };
-        let err_short = internal::decode_hpack_header_block(dt, block_short[..], out_list4);
+        var pseudo4 = internal::H2PseudoHeaders { .. };
+        var out_list4 = wing::HeaderMap { .. };
+        let err_short = internal::decode_hpack_to_map(dt, block_short[..], pseudo4, out_list4);
         sub.assert_eq(err_short, rfc::H2_ERR_PROTOCOL_ERROR, ":status 20 MUST return PROTOCOL_ERROR");
 
         // 5. :status = "2000" (more than 3 digits)
@@ -741,8 +750,9 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_long.push(4);
         block_long.append("2000");
 
-        var out_list5 = internal::DecodedH2HeaderList { .. };
-        let err_long = internal::decode_hpack_header_block(dt, block_long[..], out_list5);
+        var pseudo5 = internal::H2PseudoHeaders { .. };
+        var out_list5 = wing::HeaderMap { .. };
+        let err_long = internal::decode_hpack_to_map(dt, block_long[..], pseudo5, out_list5);
         sub.assert_eq(err_long, rfc::H2_ERR_PROTOCOL_ERROR, ":status 2000 MUST return PROTOCOL_ERROR");
     };
 
@@ -753,16 +763,18 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         var block_200: u8[..16] = [];
         block_200.push(0x88); // static entry 8 (:status: 200)
 
-        var out_list = internal::DecodedH2HeaderList { .. };
-        let err_200 = internal::decode_hpack_header_block(dt, block_200[..], out_list);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
+        let err_200 = internal::decode_hpack_to_map(dt, block_200[..], pseudo, out_list);
         sub.assert_eq(err_200, rfc::H2_ERR_NO_ERROR, ":status 200 accepted");
 
         // :status = "204"
         var block_204: u8[..16] = [];
         block_204.push(0x89); // static entry 9 (:status: 204)
 
-        var out_list2 = internal::DecodedH2HeaderList { .. };
-        let err_204 = internal::decode_hpack_header_block(dt, block_204[..], out_list2);
+        var pseudo2 = internal::H2PseudoHeaders { .. };
+        var out_list2 = wing::HeaderMap { .. };
+        let err_204 = internal::decode_hpack_to_map(dt, block_204[..], pseudo2, out_list2);
         sub.assert_eq(err_204, rfc::H2_ERR_NO_ERROR, ":status 204 accepted");
     };
 }
@@ -1353,16 +1365,16 @@ fn test_chunked_cve_2019_16276(t: lit::T&) {
     // Space before colon in trailers must be rejected
     var wire: u8[..64] = [];
     wire.append("Content-Length : 100\r\n\r\n");
-    var out_trailers: wing::HeaderItem[..16] = [];
-    var cursor:       i64                    = 0;
+    var out_trailers = wing::HeaderMap { .. };
+    var cursor: i64 = 0;
     let err = wing::parse_chunked_trailers_with_out(wire[..], cursor, out_trailers);
     t.assert_true(err != wing::ChunkedDecodeError.None, "Space before colon in trailer must fail per CVE-2019-16276");
 
     // Negative / overflow chunk size
     var bad_chunk: u8[..64] = [];
     bad_chunk.append("FFFFFFFFFFFFFFFF\r\n");
-    var out_body: u8[>..]                = [];
-    var trailers: wing::HeaderItem[..16] = [];
+    var out_body: u8[>..] = [];
+    var trailers = wing::HeaderMap { .. };
     let b_err, b_consumed = wing::decode_chunked_body_with_trailers(bad_chunk[..], out_body, trailers);
     t.assert_true(b_err != wing::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");
 }

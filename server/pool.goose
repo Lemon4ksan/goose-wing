@@ -19,8 +19,8 @@ let ENTRY_ALL:      u32 = 0x0F;
 // ---- header map pool -------------------------------------------------------
 
 struct PooledHeaderMap {
-    headers: wing::HeaderItem[..32] = [],
-    in_use:  bool                   = false,
+    headers: wing::HeaderMap = wing::HeaderMap { .. },
+    in_use:  bool            = false,
 }
 
 struct HeaderMapPool {

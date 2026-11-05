@@ -95,10 +95,8 @@ fn main() {
 
     var dpop_req = wing::Request { .. };
     wing::attach_dpop(dpop_req, proof_at[..]);
-    assert(dpop_req.headers.len == 1);
-    assert(dpop_req.headers[0].name[..] == "DPoP");
-    assert(dpop_req.headers[0].value.len == proof_at.len);
-    assert(dpop_req.headers[0].is_sensitive);
+    assert(dpop_req.headers.entries.len == 1);
+    assert(wing::header(dpop_req, "DPoP").len == proof_at.len);
     print("DPOP_ATTACH_AND_SENSITIVE: OK");
 
     // ---- 5. RFC 9449 §4.3 Target URI Normalization Edge Cases --------------
@@ -128,14 +126,14 @@ fn main() {
     print("DPOP_HEADER_REJECTIONS: OK");
 
     // ---- 8. RFC 9449 §8 Nonce Header Validation ----------------------------
-    var hdrs_dup: wing::HeaderItem[..4] = [];
-    hdrs_dup.push(wing::make_header("DPoP-Nonce", "nonce1"));
-    hdrs_dup.push(wing::make_header("DPoP-Nonce", "nonce2"));
+    var hdrs_dup = wing::HeaderMap { .. };
+    wing::append_header(hdrs_dup, "DPoP-Nonce", "nonce1");
+    wing::append_header(hdrs_dup, "DPoP-Nonce", "nonce2");
     let _, ok_nonce = wing::extract_dpop_nonce(hdrs_dup);
     assert(!ok_nonce);
 
-    var hdrs_bad: wing::HeaderItem[..4] = [];
-    hdrs_bad.push(wing::make_header("DPoP-Nonce", "bad nonce with spaces"));
+    var hdrs_bad = wing::HeaderMap { .. };
+    wing::append_header(hdrs_bad, "DPoP-Nonce", "bad nonce with spaces");
     let _, ok_bad = wing::extract_dpop_nonce(hdrs_bad);
     assert(!ok_bad);
     print("DPOP_NONCE_VALIDATION: OK");

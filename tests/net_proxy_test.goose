@@ -256,34 +256,34 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
         sub.assert_contains(req_buf[..], "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n", "Proxy auth header included");
 
         // Isolation barrier: sanitize_tunnel_headers_for_origin (CVE-2025-4673 & CVE-2021-33197)
-        var origin_headers: wing::HeaderItem[..32] = [];
-        origin_headers.push(wing::make_header("Host", "secure.bank.com"));
-        origin_headers.push(wing::make_header("Proxy-Authorization", "Basic dXNlcjpwYXNz"));
-        origin_headers.push(wing::make_header("PROXY-AUTHORIZATION", "Basic UPPERCASE_LEAK"));
-        origin_headers.push(wing::make_header("proxy-authorization", "Basic lowercase_leak"));
-        origin_headers.push(wing::make_header("Proxy-Authenticate", "Basic realm=corp"));
-        origin_headers.push(wing::make_header("Proxy-Connection", "Keep-Alive"));
-        origin_headers.push(wing::make_header("Authorization", "Bearer user_token_99"));
-        origin_headers.push(wing::make_header("Cookie", "session=secret_session"));
+        var origin_headers = wing::HeaderMap { .. };
+        wing::append_header(origin_headers, "Host", "secure.bank.com");
+        wing::append_header(origin_headers, "Proxy-Authorization", "Basic dXNlcjpwYXNz");
+        wing::append_header(origin_headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_LEAK");
+        wing::append_header(origin_headers, "proxy-authorization", "Basic lowercase_leak");
+        wing::append_header(origin_headers, "Proxy-Authenticate", "Basic realm=corp");
+        wing::append_header(origin_headers, "Proxy-Connection", "Keep-Alive");
+        wing::append_header(origin_headers, "Authorization", "Bearer user_token_99");
+        wing::append_header(origin_headers, "Cookie", "session=secret_session");
 
         wing::sanitize_tunnel_headers_for_origin(origin_headers);
 
-        sub.assert_eq(origin_headers.len, 3, "All 5 proxy header variations stripped from origin request");
-        sub.assert_bytes_eq(origin_headers[0].name[..], "Host", "Host header preserved");
-        sub.assert_bytes_eq(origin_headers[1].name[..], "Authorization", "Target origin bearer auth preserved");
-        sub.assert_bytes_eq(origin_headers[2].name[..], "Cookie", "Origin cookies preserved");
+        sub.assert_eq(origin_headers.entries.len, 3, "All 5 proxy header variations stripped from origin request");
+        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[0]), "Host", "Host header preserved");
+        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[1]), "Authorization", "Target origin bearer auth preserved");
+        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[2]), "Cookie", "Origin cookies preserved");
 
         // Edge case: empty headers list
-        var empty_hdrs: wing::HeaderItem[..32] = [];
+        var empty_hdrs = wing::HeaderMap { .. };
         wing::sanitize_tunnel_headers_for_origin(empty_hdrs);
-        sub.assert_eq(empty_hdrs.len, 0, "Empty headers list remains empty");
+        sub.assert_eq(empty_hdrs.entries.len, 0, "Empty headers list remains empty");
 
         // Edge case: headers list with ONLY proxy headers
-        var only_proxy: wing::HeaderItem[..32] = [];
-        only_proxy.push(wing::make_header("Proxy-Authorization", "Basic xyz"));
-        only_proxy.push(wing::make_header("Proxy-Connection", "close"));
+        var only_proxy = wing::HeaderMap { .. };
+        wing::append_header(only_proxy, "Proxy-Authorization", "Basic xyz");
+        wing::append_header(only_proxy, "Proxy-Connection", "close");
         wing::sanitize_tunnel_headers_for_origin(only_proxy);
-        sub.assert_eq(only_proxy.len, 0, "Headers list with only proxy headers reduced to 0");
+        sub.assert_eq(only_proxy.entries.len, 0, "Headers list with only proxy headers reduced to 0");
     };
 
     t.run("OkHttp Leftover Buffer Defense: TLS Tunnel Buffered Too Many Bytes (CVE-2026-56866)") { sub =>

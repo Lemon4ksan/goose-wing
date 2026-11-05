@@ -82,7 +82,7 @@ fn test_span_headers_and_parsing() {
 
     let hdr_block: const u8[:] = "Content-Type: application/json\r\nServer: wing-vulkan\r\n";
     let ok_hdrs = wing::parse_h1_header_block(hdr_block, resp);
-    print(if ok_hdrs && resp.spans.len == 2 { "spans_count_2" } else { "spans_fail" });
+    print(if ok_hdrs && resp.headers.entries.len == 2 { "spans_count_2" } else { "spans_fail" });
     // CHECK: spans_count_2
 
     let ct = resp.header("Content-Type");
@@ -122,7 +122,7 @@ fn test_soa_slot_encapsulation() {
     print(if tr_tcp.is_connected() { "slot_tr_connected" } else { "slot_tr_disc" });
     // CHECK: slot_tr_connected
 
-    let h2_idx = table.ensure_h2_session(slot, "wing-h2", 1000);
+    let h2_idx = table.ensure_h2_session(slot, pipeline, "wing-h2", 1000);
     print(if h2_idx >= 0 && table.is_h2[slot] { "h2_session_bound" } else { "h2_session_fail" });
     // CHECK: h2_session_bound
 

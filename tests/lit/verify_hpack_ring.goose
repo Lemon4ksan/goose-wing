@@ -14,14 +14,15 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-var g_dt_rfc:     internal::DynamicTable        = internal::DynamicTable { .. };
-var g_dt_wrap:    internal::DynamicTable        = internal::DynamicTable { .. };
-var g_out_list:   internal::DecodedH2HeaderList = internal::DecodedH2HeaderList { .. };
-var g_conn:       internal::H2Connection        = internal::H2Connection { .. };
-var g_client:     wing::Client                  = wing::Client { .. };
-var g_server_res: wing::Response                = wing::Response { .. };
-var g_dcz_res:    wing::Response                = wing::Response { .. };
-var g_req:        wing::Request                 = wing::Request { .. };
+var g_dt_rfc:     internal::DynamicTable    = internal::DynamicTable { .. };
+var g_dt_wrap:    internal::DynamicTable    = internal::DynamicTable { .. };
+var g_out_pseudo: internal::H2PseudoHeaders = internal::H2PseudoHeaders { .. };
+var g_out_list:   wing::HeaderMap           = wing::HeaderMap { .. };
+var g_conn:       internal::H2Connection    = internal::H2Connection { .. };
+var g_client:     wing::Client              = wing::Client { .. };
+var g_server_res: wing::Response            = wing::Response { .. };
+var g_dcz_res:    wing::Response            = wing::Response { .. };
+var g_req:        wing::Request             = wing::Request { .. };
 
 fn verify_incremental_http1_scan() {
     let raw = "GET /api/v1/items HTTP/1.1\r\nHost: example.com\r\nUser-Agent: wing/1.0\r\n\r\n{\"ok\":true}";
@@ -73,11 +74,11 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
         0x40, 0x0a, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d, 0x6b, 0x65, 0x79,
         0x0d, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d, 0x68, 0x65, 0x61, 0x64, 0x65, 0x72,
     ];
-    let err_c21 = internal::decode_hpack_header_block(g_dt_rfc, c21_wire[..], g_out_list, 8192, false);
+    let err_c21 = internal::decode_hpack_to_map(g_dt_rfc, c21_wire[..], g_out_pseudo, g_out_list, 8192, false);
     assert(err_c21 == rfc::H2_ERR_NO_ERROR);
-    assert(g_out_list.fields.len == 1);
-    assert(g_out_list.fields[0].name[..] == "custom-key");
-    assert(g_out_list.fields[0].value[..] == "custom-header");
+    assert(g_out_list.entries.len == 1);
+    assert(wing::entry_name(g_out_list, g_out_list.entries[0]) == "custom-key");
+    assert(wing::entry_value(g_out_list, g_out_list.entries[0]) == "custom-header");
     assert(g_dt_rfc.used_bytes == 55);
 
     // Verify O(1) hash lookup on dynamic table & HpackHashTable overload

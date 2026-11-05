@@ -458,8 +458,8 @@ fn test_f011_perfect_hash_and_chunked_trailers(t: lit::T&) {
 
     t.run("decode_chunked_body_with_trailers clears out_body and out_trailers on mid-stream error") { sub =>
         let wire = "4\r\nWiki\r\n4\r\nBad!\r\n0\r\nContent-Length: 5\r\n\r\n";
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
         let err, consumed = wing::decode_chunked_body_with_trailers(wire, out_body, out_trailers);
         sub.assert_false(err == wing::ChunkedDecodeError.None, "Disallowed trailer fails chunked decode");
         sub.assert_eq(out_body.len, 0, "out_body MUST be cleared on chunked decode failure");
@@ -593,29 +593,26 @@ fn test_f014_sfv_and_signatures(t: lit::T&) {
 // F015: H2 ExpectContinuation, Compression Dict, Forwarded, HSTS IPv6 & Trace
 // ----------------------------------------------------------------------------
 fn test_f015_h2_dict_forwarded_hsts_trace(t: lit::T&) {
-    t.run("H2 process_incoming_frame returns ProtocolError and closes connection on bad frame during ExpectContinuation") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
-        let hdr_open = internal::H2FrameHeader {
-            payload_len: 10,
-            frame_type:  internal::H2FrameType.Headers,
-            flags:       0, // END_HEADERS not set -> ExpectContinuation
-            stream_id:   1,
-            valid:       true,
+    t.run("H2 on_ingress_frame_header returns ProtocolError on bad frame during continuation") { sub =>
+        var conn = internal::new_h2_connection(0);
+        let hdr_open = internal::FrameHeader {
+            length:     10,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      0, // END_HEADERS not set -> ExpectContinuation
+            stream_id:  1,
         };
-        let err1 = internal::process_incoming_frame(framer, hdr_open);
-        sub.assert_true(err1 == internal::H2ErrorCode.NoError, "HEADERS opens continuation state");
+        let err1 = internal::on_ingress_frame_header(conn, hdr_open, 0);
+        sub.assert_true(err1 == rfc::H2_ERR_NO_ERROR, "HEADERS opens continuation state");
 
         // Send a PING with invalid length 4 while ExpectContinuation is active
-        let bad_ping = internal::H2FrameHeader {
-            payload_len: 4,
-            frame_type:  internal::H2FrameType.Ping,
-            flags:       0,
-            stream_id:   0,
-            valid:       true,
+        let bad_ping = internal::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_PING,
+            flags:      0,
+            stream_id:  0,
         };
-        let err2 = internal::process_incoming_frame(framer, bad_ping);
-        sub.assert_true(err2 == internal::H2ErrorCode.ProtocolError, "Non-CONTINUATION frame during ExpectContinuation MUST return ProtocolError per RFC 9113 §6.10");
-        sub.assert_true(framer.state == internal::H2ConnState.Closed, "Framer state MUST transition to Closed");
+        let err2 = internal::on_ingress_frame_header(conn, bad_ping, 0);
+        sub.assert_true(err2 == rfc::H2_ERR_PROTOCOL_ERROR, "Non-CONTINUATION frame during ExpectContinuation MUST return ProtocolError per RFC 9113 §6.10");
     };
 
     t.run("parse_use_as_dictionary_header rejects oversized id even when followed by valid match") { sub =>

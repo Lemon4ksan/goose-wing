@@ -46,7 +46,7 @@ fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) {
 // Encodes an entire body buffer as RFC 9112 chunked transfer frames with optional trailers.
 fn encode_chunked_payload<B>(
     body:       const u8[:],
-    trailers:   const HeaderItem[..16]&,
+    trailers:   const HeaderMap&,
     chunk_size: i64,
     out:        B&,
 ) {
@@ -60,14 +60,14 @@ fn encode_chunked_payload<B>(
         }
     }
 
-    if trailers.len == 0 {
+    if trailers.entries.len == 0 {
         encode_chunk_end(out);
     } else {
         out.push('0');
         out.push('\r');
         out.push('\n');
-        for &t in trailers {
-            encode_chunk_trailer(t.name[..], t.value[..], out);
+        for &e in trailers.entries {
+            encode_chunk_trailer(entry_name(trailers, e), entry_value(trailers, e), out);
         }
         out.push('\r');
         out.push('\n');
@@ -77,9 +77,9 @@ fn encode_chunked_payload<B>(
 // ---- Chunk Stream Writer (for Chunked Uploads) ---------------------------
 
 struct ChunkWriter {
-    trailers: HeaderItem[..16] = [],
-    finished: bool             = false,
-    buffer:   u8[>..]          = [],
+    trailers: HeaderMap = HeaderMap { .. },
+    finished: bool      = false,
+    buffer:   u8[>..]   = [],
 }
 
 fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
@@ -89,22 +89,21 @@ fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
 
 fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) -> bool {
     guard !writer.finished && !rfc::is_disallowed_trailer_field(name) else { return false; }
-    guard writer.trailers.len < writer.trailers.cap else { return false; }
-    writer.trailers.push(make_header(name, val));
-    return true;
+    guard writer.trailers.entries.len < 16 else { return false; }
+    return append_header(writer.trailers, name, val);
 }
 
 fn finish_chunk_writer(writer: ChunkWriter&) {
     guard !writer.finished else { return; }
     writer.finished = true;
-    if writer.trailers.len == 0 {
+    if writer.trailers.entries.len == 0 {
         encode_chunk_end(writer.buffer);
     } else {
         writer.buffer.push('0');
         writer.buffer.push('\r');
         writer.buffer.push('\n');
-        for &t in writer.trailers {
-            encode_chunk_trailer(t.name[..], t.value[..], writer.buffer);
+        for &e in writer.trailers.entries {
+            encode_chunk_trailer(entry_name(writer.trailers, e), entry_value(writer.trailers, e), writer.buffer);
         }
         writer.buffer.push('\r');
         writer.buffer.push('\n');
@@ -128,7 +127,7 @@ struct ChunkedStreamDecoder {
     chunk_bytes_remaining: u64                = 0,
     crlf_step:             i32                = 0,
     line_buf:              u8[..1024]         = [],
-    trailers:              HeaderItem[..16]   = [],
+    trailers:              HeaderMap          = HeaderMap { .. },
     trailer_count:         i32                = 0,
     total_trailer_bytes:   i64                = 0,
     bytes_consumed_total:  u64                = 0,
@@ -152,14 +151,9 @@ fn has_header_whitespace(s: const u8[:]) -> bool {
     return false;
 }
 
-fn append_trailer_item(trailers: HeaderItem[..16]&, name: const u8[:], val: const u8[:]) -> bool {
-    guard trailers.len < trailers.cap else { return false; }
-    var item = HeaderItem { .. };
-    guard name.len <= item.name.cap && val.len <= item.value.cap else { return false; }
-    item.name.append(name);
-    item.value.append(val);
-    trailers.push(item);
-    return true;
+fn append_trailer_item(trailers: HeaderMap&, name: const u8[:], val: const u8[:]) -> bool {
+    guard trailers.entries.len < 16 else { return false; }
+    return append_header(trailers, name, val);
 }
 
 fn step_chunk_size_line(dec: ChunkedStreamDecoder&, b: u8) -> bool {
@@ -520,15 +514,12 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
 
 // Looks up a decoded chunk trailer by case-insensitive name.
 fn trailer(reader: const StreamReader&, name: const u8[:]) -> const u8[:] {
-    return find_header(reader.chunk_decoder.trailers[..], name);
+    return find_header(reader.chunk_decoder.trailers, name);
 }
 
 // Copies decoded chunk trailers to a target Response object.
 fn copy_trailers_to_response(reader: const StreamReader&, resp: Response&) {
-    for &t in reader.chunk_decoder.trailers {
-        guard resp.trailers.len < resp.trailers.cap else { break; }
-        resp.trailers.push(t);
-    }
+    append_all_headers(reader.chunk_decoder.trailers, resp.trailers);
 }
 
 // Calculates current stream progress

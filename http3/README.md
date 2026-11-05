@@ -19,10 +19,13 @@ Zero-allocation HTTP/3 protocol engine (RFC 9114), QPACK header compression (RFC
 
 ### QPACK Compression & Dynamic Table (`qpack.goose`, RFC 9204)
 
+- **`struct H3PseudoHeaders`**: Validated HTTP/3 pseudo-headers (`:method`, `:scheme`, `:authority`, `:path`, `:protocol`, `:status`) and `content_length` tracking.
 - **`struct HeaderField`**: Decompressed HTTP header representation (`name: u8[..256]`, `value: u8[..4096]`, `never_index: bool`).
 - **`struct QpackTable`**: Bounded dynamic table managing inserts, evictions, unacked stream references, and blocked stream queues with zero heap allocations.
-- **`enum QpackError`**: Decompression and instruction errors (`None`, `DecompressionFailed`, `EncoderStreamError`, `DecoderStreamError`, `BlockedStreamsExhausted`, `StreamBlocked`, `HeaderListTooLarge`, `ClosedCriticalStream`, `StreamCreationError`, `FrameEncodingError`).
+- **`enum QpackError`**: Decompression and instruction errors (`None`, `DecompressionFailed`, `EncoderStreamError`, `DecoderStreamError`, `BlockedStreamsExhausted`, `StreamBlocked`, `HeaderListTooLarge`, `ClosedCriticalStream`, `StreamCreationError`, `FrameEncodingError`, `MessageError`).
 - **`fn new_qpack_table(max_capacity: u64 = 4096, max_blocked: u32 = 16, initial_capacity: u64 = 4096) -> QpackTable`**: Constructs a new QPACK table.
+- **`fn decode_qpack_to_map(tbl: const QpackTable&, src: const u8[:], out_pseudo: H3PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> QpackError`**: Decodes an encoded field section directly into `H3PseudoHeaders` and `wing::HeaderMap`.
+- **`fn decode_or_block_qpack_to_map(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_pseudo: H3PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> QpackError`**: Decodes an encoded field section directly into `wing::HeaderMap` or records the stream as blocked if Required Insert Count exceeds Insert Count (RFC 9204 §2.1.2).
 - **`fn decode_qpack_section<F>(tbl: const QpackTable&, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384) -> QpackError`**: Decodes encoded field section enforcing Header Accordion defenses (CVE-2026-12523 / CVE-2026-40898).
 - **`fn decode_or_block_qpack_section<F>(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384) -> QpackError`**: Decodes an encoded field section or records stream as blocked if Required Insert Count exceeds Insert Count (RFC 9204 §2.1.2).
 - **`fn encode_qpack_field<B>(out: B&, name: const u8[:], val: const u8[:], use_huffman: bool = true, never_index: bool = false)`**: Serializes a header line into QPACK wire format with static table index lookup and literal encoding.

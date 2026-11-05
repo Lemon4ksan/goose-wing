@@ -256,76 +256,31 @@ inline fn trim_header_value_bounds(slice: const u8[:]) -> i64, i64 {
 }
 
 fn validate_span_host_header(
-    wire:     const u8[:],
-    spans:    const HeaderSpan[:],
+    headers:  const HeaderMap&,
     host_idx: i16,
 ) -> bool {
     let idx = host_idx as i64;
-    guard idx >= 0 && idx < spans.len else { return false; }
-    let span = spans[idx];
-    let start = span.val_pos as i64;
-    let end = start + span.val_len;
-    guard end <= wire.len else { return false; }
-    let host_val = wire[start..end];
+    guard idx >= 0 && idx < headers.entries.len else { return false; }
+    let host_val = entry_value(headers, headers.entries[idx]);
     guard host_val.len > 0 && validate_host_header_chars(host_val) else { return false; }
     guard validate_host_header_structure(host_val) else { return false; }
     return true;
 }
 
 fn validate_span_te_header(
-    wire:   const u8[:],
-    spans:  const HeaderSpan[:],
-    te_idx: i16,
+    headers: const HeaderMap&,
+    te_idx:  i16,
 ) -> bool {
     let idx = te_idx as i64;
-    guard idx >= 0 && idx < spans.len else { return false; }
-    let span = spans[idx];
-    let start = span.val_pos as i64;
-    let end = start + span.val_len;
-    guard end <= wire.len else { return false; }
-    let te_val = wire[start..end];
+    guard idx >= 0 && idx < headers.entries.len else { return false; }
+    let te_val = entry_value(headers, headers.entries[idx]);
     guard validate_transfer_encoding_value(te_val) else { return false; }
-    return true;
-}
-
-inline fn make_header_span(
-    cursor:   i64,
-    name_len: i64,
-    lead_ws:  i64,
-    val_len:  i64,
-    id_tag:   u8,
-) -> HeaderSpan {
-    let v_pos = cursor + name_len + 1 + lead_ws;
-    return HeaderSpan {
-        name_pos: cursor as u16,
-        name_len: name_len as u16,
-        val_pos:  v_pos as u16,
-        val_len:  val_len as u16,
-        id:       id_tag,
-    };
-}
-
-inline fn push_header_item(
-    headers: HeaderItem[..32]&,
-    name:    const u8[:],
-    val:     const u8[:],
-) -> bool {
-    guard headers.len < headers.cap else { return false; }
-    var item = HeaderItem { .. };
-    guard name.len <= item.name.cap && val.len <= item.value.cap else { return false; }
-    item.name.append(name);
-    item.value.append(val);
-    headers.push(item);
     return true;
 }
 
 inline fn clear_request_headers_state<Req>(req: Req&) {
     req.headers.clear();
-    req.spans.clear();
     req.presence_mask = 0;
-    if !is_empty(req.bloom_filter) {
-        clear(req.bloom_filter);
-    }
 }
 
 inline fn has_smuggling_conflict(mask: u32) -> bool {
@@ -334,7 +289,6 @@ inline fn has_smuggling_conflict(mask: u32) -> bool {
 }
 
 fn validate_request_host_presence<Req>(
-    wire:             const u8[:],
     out_req:          const Req&,
     presence_tracker: const HeaderPresenceTracker&,
 ) -> bool {
@@ -343,7 +297,7 @@ fn validate_request_host_presence<Req>(
         guard has_host else { return false; }
     }
     if has_host {
-        guard validate_span_host_header(wire, out_req.spans[..], presence_tracker.host_idx) else {
+        guard validate_span_host_header(out_req.headers, presence_tracker.host_idx) else {
             return false;
         }
     }
@@ -355,14 +309,8 @@ inline fn store_parsed_header_item<Req>(
     hname:   const u8[:],
     hval:    const u8[:],
 ) -> bool {
-    guard out_req.headers.len < out_req.headers.cap else { return false; }
-    var it = HeaderItem { is_sensitive: false, .. };
-    guard hname.len <= it.name.cap && hval.len <= it.value.cap else { return false; }
-    it.name.append(hname);
-    it.value.append(hval);
-    out_req.headers.push(it);
-    add_header(out_req.bloom_filter, hname);
-    return true;
+    guard hname.len <= 256 && hval.len <= 4096 else { return false; }
+    return append_header(out_req.headers, hname, hval);
 }
 
 inline fn advance_header_cursor(
@@ -400,17 +348,12 @@ fn parse_http1_wire_header_line<Req>(
     let hval = val_slice[lead_ws..end_ws];
 
     // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
-    let cur_hdr_idx = out_req.spans.len as i16;
+    let cur_hdr_idx = out_req.headers.entries.len as i16;
     let known_id = identify_known_header(hname);
     guard track_known_header_presence(presence_tracker, known_id, hval, cur_hdr_idx) else {
         return false;
     }
 
-    let span = make_header_span(base_offset + cursor, name_len, lead_ws, hval.len, header_id_to_u8(known_id));
-    guard out_req.spans.len < out_req.spans.cap else {
-        return false;
-    }
-    out_req.spans.push(span);
     out_req.presence_mask |= header_id_to_bit(known_id);
 
     guard store_parsed_header_item(out_req, hname, hval) else {
@@ -501,9 +444,6 @@ fn parse_http1_request_headers<Req>(
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
     clear_request_headers_state(out_req);
-    if !is_empty(out_req.bloom_filter) {
-        clear(out_req.bloom_filter);
-    }
     presence_tracker = HeaderPresenceTracker { .. };
     let base_offset = req_offset + line_end + 2;
     guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker, base_offset) else {
@@ -515,7 +455,7 @@ fn parse_http1_request_headers<Req>(
     out_req.body.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
-    guard validate_request_host_presence(wire, out_req, presence_tracker) else {
+    guard validate_request_host_presence(out_req, presence_tracker) else {
         clear_request_headers_state(out_req);
         return false;
     }
@@ -555,7 +495,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     }
 
     if has_te {
-        guard validate_span_te_header(wire, out_req.spans[..], presence_tracker.te_idx) else {
+        guard validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
             clear_request_headers_state(out_req);
             return false, 0;
         }
@@ -620,26 +560,15 @@ fn parse_http1_wire_response_header_line<Res>(
     let lead_ws, end_ws = trim_header_value_bounds(val_slice[..val_len]);
     let hval = val_slice[lead_ws..end_ws];
 
-    let known_id = identify_known_header(hname);
-    let span = make_header_span(base_offset + cursor, name_len, lead_ws, hval.len, header_id_to_u8(known_id));
-    var item = HeaderItem { .. };
-    let fits = hname.len <= item.name.cap &&
-        hval.len <= item.value.cap &&
-        out_res.headers.len < out_res.headers.cap &&
-        out_res.spans.len < out_res.spans.cap;
-    guard fits else { return false; }
-
-    out_res.spans.push(span);
-    item.name.append(hname);
-    item.value.append(hval);
-    out_res.headers.push(item);
+    guard hname.len <= 256 && hval.len <= 4096 else { return false; }
+    guard append_header(out_res.headers, hname, hval) else { return false; }
     advance_header_cursor(cursor, name_len, val_len, crlf_len);
     return true;
 }
 
 // Example:
 //   rest_headers = "Content-Type: text/plain\r\n\r\n"
-//   returns: true (out_res.headers and out_res.spans populated)
+//   returns: true (out_res.headers populated)
 fn parse_http1_response_headers_block<Res>(
     rest_headers: const u8[:],
     out_res:      Res&,
@@ -647,45 +576,44 @@ fn parse_http1_response_headers_block<Res>(
 ) -> bool {
     var cursor: i64 = 0;
     out_res.headers.clear();
-    out_res.spans.clear();
     while cursor < rest_headers.len {
         if rest_headers[cursor] == '\r' && cursor + 1 < rest_headers.len && rest_headers[cursor + 1] == '\n' {
             if cursor + 2 == rest_headers.len {
                 return true;
             }
             out_res.headers.clear();
-            out_res.spans.clear();
             return false;
         }
         guard parse_http1_wire_response_header_line(rest_headers, cursor, out_res, base_offset) else {
             out_res.headers.clear();
-            out_res.spans.clear();
             return false;
         }
     }
     return true;
 }
 
-fn inspect_response_framing_headers(headers: const HeaderItem[:]) -> ResponseFramingInfo, bool {
+fn inspect_response_framing_headers(headers: const HeaderMap&) -> ResponseFramingInfo, bool {
     var info = ResponseFramingInfo { .. };
     var cl_count = 0;
 
-    for &hdr in headers {
-        if eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+    for &e in headers.entries {
+        let hname = entry_name(headers, e);
+        let hval = entry_value(headers, e);
+        if eq_ascii_fold(hname, "transfer-encoding") {
             if info.has_te {
-                guard info.te_buf.len + 2 + hdr.value.len <= info.te_buf.cap else { return info, false; }
+                guard info.te_buf.len + 2 + hval.len <= info.te_buf.cap else { return info, false; }
                 info.te_buf.append(", ");
-                info.te_buf.append(hdr.value[..]);
+                info.te_buf.append(hval);
             } else {
                 info.has_te = true;
-                guard hdr.value.len <= info.te_buf.cap else { return info, false; }
-                info.te_buf.append(hdr.value[..]);
+                guard hval.len <= info.te_buf.cap else { return info, false; }
+                info.te_buf.append(hval);
             }
-        } else if eq_ascii_fold(hdr.name[..], "content-length") {
+        } else if eq_ascii_fold(hname, "content-length") {
             info.has_cl = true;
             cl_count++;
             var parsed_cl: i64 = 0;
-            let ok_cl = validate_content_length_value(hdr.value[..], parsed_cl);
+            let ok_cl = validate_content_length_value(hval, parsed_cl);
             guard ok_cl && parsed_cl >= 0 else { return info, false; }
             if cl_count == 1 {
                 info.cl_len = parsed_cl;
@@ -699,8 +627,7 @@ fn inspect_response_framing_headers(headers: const HeaderItem[:]) -> ResponseFra
 
 inline fn purge_conflicting_cl_from_response<Res>(out_res: Res&) {
     remove_header_by_name(out_res.headers, "content-length");
-    remove_spans_by_id(out_res.spans, header_id_to_u8(KnownHeaderId.ContentLength));
-    out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
+    out_res.presence_mask = detect_response_presence_mask(out_res.headers);
 }
 
 // Parses an HTTP/1.1 status line and populates out_res.status_code and out_res.protocol (RFC 9112 §4).
@@ -758,9 +685,9 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
     out_res.trailers.clear();
     out_res.body.clear();
-    out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
+    out_res.presence_mask = detect_response_presence_mask(out_res.headers);
 
-    let framing, ok_frame = inspect_response_framing_headers(out_res.headers[..]);
+    let framing, ok_frame = inspect_response_framing_headers(out_res.headers);
     guard ok_frame else { return false, 0; }
 
     let is_empty_status = rfc::is_empty_body_status(out_res.status_code);
@@ -853,24 +780,26 @@ fn serialize_http1_chunked_response<Res, B>(
     serialize_server_header(server_name, out_wire);
     out_wire.append("Transfer-Encoding: chunked\r\n");
 
-    if res.trailers.len > 0 {
+    if res.trailers.entries.len > 0 {
         out_wire.append("Trailer: ");
-        for i in res.trailers.len {
+        for i in res.trailers.entries.len {
             if i > 0 { out_wire.append(", "); }
-            out_wire.append(res.trailers[i].name[..]);
+            out_wire.append(entry_name(res.trailers, res.trailers.entries[i]));
         }
         out_wire.append("\r\n");
     }
 
     let has_conn = res.has_header("connection");
-    for &hdr in res.headers {
-        if eq_ascii_fold(hdr.name[..], "content-length") { continue; }
-        if eq_ascii_fold(hdr.name[..], "transfer-encoding") { continue; }
-        if eq_ascii_fold(hdr.name[..], "trailer") && res.trailers.len > 0 { continue; }
+    for &e in res.headers.entries {
+        let hname = entry_name(res.headers, e);
+        let hval = entry_value(res.headers, e);
+        if eq_ascii_fold(hname, "content-length") { continue; }
+        if eq_ascii_fold(hname, "transfer-encoding") { continue; }
+        if eq_ascii_fold(hname, "trailer") && res.trailers.entries.len > 0 { continue; }
 
-        out_wire.append(hdr.name[..]);
+        out_wire.append(hname);
         out_wire.append(": ");
-        out_wire.append(hdr.value[..]);
+        out_wire.append(hval);
         out_wire.append("\r\n");
     }
 
@@ -964,28 +893,29 @@ fn serialize_content_length_header<B>(body_len: i64, out: B&) {
     out.append(buf[..pos]);
 }
 
-fn detect_response_presence_mask(headers: const HeaderItem[:]) -> u16 {
+fn detect_response_presence_mask(headers: const HeaderMap&) -> u16 {
     var mask: u16 = 0;
-    for &hdr in headers {
-        let nlen = hdr.name.len;
+    for &e in headers.entries {
+        let hname = entry_name(headers, e);
+        let nlen = hname.len;
         if nlen == 4 {
-            if (hdr.name[0] == 'd' || hdr.name[0] == 'D') && eq_ascii_fold(hdr.name[..], "date") {
+            if (hname[0] == 'd' || hname[0] == 'D') && eq_ascii_fold(hname, "date") {
                 mask = mask | RES_PRESENCE_DATE;
             }
         } else if nlen == 10 {
-            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "connection") {
+            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "connection") {
                 mask = mask | RES_PRESENCE_CONNECTION;
             }
         } else if nlen == 12 {
-            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-type") {
+            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-type") {
                 mask = mask | RES_PRESENCE_CONTENT_TYPE;
             }
         } else if nlen == 14 {
-            if (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-length") {
+            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-length") {
                 mask = mask | RES_PRESENCE_CONTENT_LENGTH;
             }
         } else if nlen == 17 {
-            if (hdr.name[0] == 't' || hdr.name[0] == 'T') && eq_ascii_fold(hdr.name[..], "transfer-encoding") {
+            if (hname[0] == 't' || hname[0] == 'T') && eq_ascii_fold(hname, "transfer-encoding") {
                 mask = mask | RES_PRESENCE_TRANSFER_ENCODING;
             }
         }
@@ -993,31 +923,33 @@ fn detect_response_presence_mask(headers: const HeaderItem[:]) -> u16 {
     return mask;
 }
 
-fn serialize_response_headers_list<B>(headers: const HeaderItem[:], is_empty_status: bool, out: B&) {
-    for &hdr in headers {
-        let nlen = hdr.name.len;
+fn serialize_response_headers_list<B>(headers: const HeaderMap&, is_empty_status: bool, out: B&) {
+    for &e in headers.entries {
+        let hname = entry_name(headers, e);
+        let hval = entry_value(headers, e);
+        let nlen = hname.len;
         if is_empty_status {
-            let is_suppressed = (nlen == 14 && eq_ascii_fold(hdr.name[..], "content-length"))
-                || (nlen == 17 && eq_ascii_fold(hdr.name[..], "transfer-encoding"));
+            let is_suppressed = (nlen == 14 && eq_ascii_fold(hname, "content-length"))
+                || (nlen == 17 && eq_ascii_fold(hname, "transfer-encoding"));
             if is_suppressed {
                 continue;
             }
         }
 
-        if nlen == 12 && (hdr.name[0] == 'c' || hdr.name[0] == 'C') && eq_ascii_fold(hdr.name[..], "content-type") {
-            if hdr.value == "text/plain" {
+        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-type") {
+            if hval == "text/plain" {
                 out.append("Content-Type: text/plain\r\n");
                 continue;
             }
-            if hdr.value == "application/json" {
+            if hval == "application/json" {
                 out.append("Content-Type: application/json\r\n");
                 continue;
             }
         }
 
-        out.append(hdr.name[..]);
+        out.append(hname);
         out.append(": ");
-        out.append(hdr.value[..]);
+        out.append(hval);
         out.append("\r\n");
     }
 }
@@ -1035,13 +967,13 @@ fn serialize_http1_headers<Res, B>(
     let eff_body_len = if override_body_len >= 0 { override_body_len } else { res.body.len };
 
     var mask = res.presence_mask;
-    if mask == 0 && res.headers.len > 0 {
-        mask = detect_response_presence_mask(res.headers[..]);
+    if mask == 0 && res.headers.entries.len > 0 {
+        mask = detect_response_presence_mask(res.headers);
     }
 
     let is_default_srv = server_name == "goose-wing" || server_name == "goose-wing/1.0";
     if res.status_code == 200 && is_default_srv {
-        if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.len == 1 && res.trailers.len == 0 {
+        if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.entries.len == 1 && res.trailers.entries.len == 0 {
             if server_name == "goose-wing" {
                 out_wire.append(g_compat_date.fast_prefix[..]);
             } else {
@@ -1049,14 +981,16 @@ fn serialize_http1_headers<Res, B>(
                 out_wire.append(date_hdr);
             }
             serialize_content_length_header(eff_body_len, out_wire);
-            if res.headers[0].value == "text/plain" {
+            let h0_name = entry_name(res.headers, res.headers.entries[0]);
+            let h0_val = entry_value(res.headers, res.headers.entries[0]);
+            if h0_val == "text/plain" {
                 out_wire.append(HTTP1_CT_TEXT_PLAIN);
-            } else if res.headers[0].value == "application/json" {
+            } else if h0_val == "application/json" {
                 out_wire.append(HTTP1_CT_APP_JSON);
             } else {
-                out_wire.append(res.headers[0].name[..]);
+                out_wire.append(h0_name);
                 out_wire.append(": ");
-                out_wire.append(res.headers[0].value[..]);
+                out_wire.append(h0_val);
                 out_wire.append("\r\n");
             }
             out_wire.append(HTTP1_CONN_KEEP_ALIVE);
@@ -1082,7 +1016,7 @@ fn serialize_http1_headers<Res, B>(
         }
     }
 
-    serialize_response_headers_list(res.headers[..], is_empty_status, out_wire);
+    serialize_response_headers_list(res.headers, is_empty_status, out_wire);
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn {
@@ -1102,14 +1036,14 @@ fn serialize_http1_response<Res, B>(
 ) {
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
-        if res.trailers.len > 0 {
+        if res.trailers.entries.len > 0 {
             serialize_http1_chunked_response(res, server_name, 4096, out_wire);
             return;
         }
         let has_te = if res.presence_mask != 0 {
             (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
-        } else if res.headers.len > 0 {
-            (detect_response_presence_mask(res.headers[..]) & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else if res.headers.entries.len > 0 {
+            (detect_response_presence_mask(res.headers) & RES_PRESENCE_TRANSFER_ENCODING) != 0
         } else {
             false
         };
@@ -1138,14 +1072,14 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
     if !is_empty_status {
         let has_te = if res.presence_mask != 0 {
             (res.presence_mask & RES_PRESENCE_TRANSFER_ENCODING) != 0
-        } else if res.headers.len > 0 {
-            (detect_response_presence_mask(res.headers[..]) & RES_PRESENCE_TRANSFER_ENCODING) != 0
+        } else if res.headers.entries.len > 0 {
+            (detect_response_presence_mask(res.headers) & RES_PRESENCE_TRANSFER_ENCODING) != 0
         } else {
             false
         };
-        if has_te || res.trailers.len > 0 {
+        if has_te || res.trailers.entries.len > 0 {
             let te = header(res, "transfer-encoding");
-            if eq_ascii_fold(te, "chunked") || res.trailers.len > 0 {
+            if eq_ascii_fold(te, "chunked") || res.trailers.entries.len > 0 {
                 serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
                 return tcp_send(fd, wire_headers[..]);
             }
@@ -1342,7 +1276,7 @@ fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name
     guard sc.sock_fd > 0 else { return 0; }
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
-    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.len > 0) {
+    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.entries.len > 0) {
         return write_cork_chunked_response_stream(sc, res, server_name);
     }
 
@@ -1394,7 +1328,7 @@ fn begin_http_stream_request<Req>(
     let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     if has_te {
-        guard validate_span_te_header(wire, out_req.spans[..], tracker.te_idx) else {
+        guard validate_span_te_header(out_req.headers, tracker.te_idx) else {
             consumer.is_headers_parsed = false;
             clear_request_headers_state(out_req);
             return false, 0;
@@ -2294,7 +2228,7 @@ fn handle_pipelined_parse_failure<B>(
     let hdr_end = core::fast_find_crlfcrlf(stream);
     let is_valid_prefix = is_possible_http_method_prefix(stream);
 
-    if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix && req.headers.len > 0 {
+    if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix && req.headers.entries.len > 0 {
         // If both TE and CL are present, reject immediately as smuggling attempt (RFC 9112 §6.1, §6.3)
         let te_str = req.header("transfer-encoding");
         let cl_str = req.header("content-length");
@@ -2371,14 +2305,10 @@ inline fn reset_server_request_fast(req: Request&) {
     req.url.clear();
     req.presence_mask = 0;
     req.headers.clear();
-    req.spans.clear();
     req.trailers.clear();
     req.query_params.clear();
     req.body.clear();
     req.is_http10 = false;
-    if !is_empty(req.bloom_filter) {
-        clear(req.bloom_filter);
-    }
 }
 
 // Extended server request context holding long header token arena (RFC 9112 Section 2.1).
@@ -3120,7 +3050,7 @@ fn negotiate_compression_dictionary(
     expected_id:   const u8[:] = "",
 ) -> const u8[:], bool {
     guard expected_id.len <= 126 else { return "", false; }
-    let avail_hdr = find_header(req.headers[..], "Available-Dictionary").trim_lws();
+    let avail_hdr = find_header(req.headers, "Available-Dictionary").trim_lws();
     guard avail_hdr.len >= 3 && avail_hdr[0] == ':' && avail_hdr[avail_hdr.len - 1] == ':' else {
         return "", false;
     }
@@ -3132,13 +3062,13 @@ fn negotiate_compression_dictionary(
     }
 
     if expected_id.len > 0 {
-        let id_hdr = find_header(req.headers[..], "Dictionary-ID").trim_lws();
+        let id_hdr = find_header(req.headers, "Dictionary-ID").trim_lws();
         var exp_id_wire: u8[..128] = [];
         format_dictionary_id_header(exp_id_wire, expected_id);
         guard id_hdr == exp_id_wire[..] else { return "", false; }
     }
 
-    let ae = find_header(req.headers[..], "Accept-Encoding");
+    let ae = find_header(req.headers, "Accept-Encoding");
     if accept_encoding_has_token(ae, rfc::ENCODING_DCZ) {
         return rfc::ENCODING_DCZ, true;
     }

@@ -6,7 +6,10 @@ namespace wire;
 
 import std;
 import core from "..";
+import http.headers;
+import http2.hpack;
 import .types;
+import .hpack;
 
 // Appends 9 serialized header bytes to any buffer (RFC 9113 Section 4.1).
 fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
@@ -272,4 +275,68 @@ fn has_next(r: const WireH2FrameReader&) -> bool {
 //   returns: hdr.frame_type = 0x08, payload.len = 4, ok = true, r.cursor = 13
 fn next_frame(r: WireH2FrameReader&) -> WireFrameHeader, const u8[:], bool {
     return read_wire_h2_frame(r.src, r.cursor);
+}
+
+inline fn calc_h2_headers_chunk_flags(f_type: u8, end_stream: bool, rem_after: i64) -> u8 {
+    let es: u8 = if f_type == rfc::H2_FRAME_HEADERS && end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
+    let eh: u8 = if rem_after <= 0 { rfc::H2_FLAG_END_HEADERS } else { 0 };
+    return es | eh;
+}
+
+// Encodes an HTTP/2 HEADERS frame (and any required CONTINUATION frames when exceeding `max_frame_size`)
+// directly from `pseudo` and `headers: const wing::HeaderMap&` using HPACK dynamic table `dt` (RFC 9113 §6.2).
+//
+// Example:
+//   encode_h2_headers_frame_from_map(dt, 1, pseudo, headers, true, out, 16384)
+//   returns: true, out contains 9-byte HEADERS frame header + HPACK block
+fn encode_h2_headers_frame_from_map<B>(
+    dt:             internal::DynamicTable&,
+    stream_id:      u32,
+    pseudo:         const internal::H2PseudoHeaders&,
+    headers:        const wing::HeaderMap&,
+    end_stream:     bool,
+    out:            B&,
+    max_frame_size: u32 = 16384,
+) -> bool {
+    guard stream_id != 0 else { return false; }
+    var hpack_buf: u8[..8192] = [];
+    guard encode_hpack_from_map(dt, pseudo, headers, hpack_buf, true) else { return false; }
+
+    let max_chunk = max(16384, max_frame_size as i64);
+    var offset: i64 = 0;
+    var first = true;
+    while first || offset < hpack_buf.len {
+        let rem = hpack_buf.len - offset;
+        let chunk_len = min(rem, max_chunk);
+        let rem_after = rem - chunk_len;
+        let f_type = if first { rfc::H2_FRAME_HEADERS } else { rfc::H2_FRAME_CONTINUATION };
+        let hdr = WireFrameHeader {
+            length:     chunk_len as u32,
+            frame_type: f_type,
+            flags:      calc_h2_headers_chunk_flags(f_type, end_stream, rem_after),
+            stream_id:  stream_id,
+        };
+        guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..offset + chunk_len]) else {
+            return false;
+        }
+        offset += chunk_len;
+        first = false;
+    }
+    return true;
+}
+
+// Decodes a 9-byte HTTP/2 frame header and validates RFC 9113 §4.1–4.2 size bounds.
+//
+// Example:
+//   raw = [0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]
+//   returns: WireFrameHeader { length: 4, frame_type: 0, flags: 1, stream_id: 1 }, rfc::H2_ERR_NO_ERROR
+fn decode_h2_frame_header(raw: const u8[:], max_frame_size: u32 = 16384) -> WireFrameHeader, u32 {
+    let hdr, _, ok = parse_frame_header(raw);
+    guard ok else {
+        return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
+    }
+    guard hdr.length <= max_frame_size else {
+        return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
+    }
+    return hdr, rfc::H2_ERR_NO_ERROR;
 }

@@ -21,11 +21,9 @@ struct Request {
     method:               u8[..16]            = "GET",
     url:                  u8[..2048]          = [],
     timeout:              i64                 = 0,
-    headers:              HeaderItem[..32]    = [],
-    spans:                HeaderSpan[..32]    = [],
+    headers:              HeaderMap           = HeaderMap { .. },
     presence_mask:        u32                 = 0,
-    bloom_filter:         HeaderBloomFilter   = HeaderBloomFilter { .. },
-    trailers:             HeaderItem[..16]    = [],
+    trailers:             HeaderMap           = HeaderMap { .. },
     query_params:         QueryItem[..16]     = [],
     rewind_buf:           u8[..4096]          = [],
     rewindable:           bool                = true,
@@ -72,9 +70,7 @@ fn reset_request(req: Request&) {
     req.method.append("GET");
     req.url.clear();
     req.headers.clear();
-    req.spans.clear();
     req.presence_mask = 0;
-    req.bloom_filter.clear();
     req.trailers.clear();
     req.query_params.clear();
     req.rewind_buf.clear();
@@ -144,106 +140,22 @@ fn new_query<F: fn(Request&)>(url: const u8[:], body: const u8[:], content_type:
     return req;
 }
 
-// Returns the header value slice for a HeaderSpan from wire.
-inline fn header_span_value(span: HeaderSpan, wire: const u8[:]) -> const u8[:] {
-    let start = span.val_pos as i64;
-    let end = start + span.val_len;
-    guard end <= wire.len else { return ""; }
-    return wire[start..end];
-}
-
-// Returns the header name slice for a HeaderSpan from wire.
-inline fn header_span_name(span: HeaderSpan, wire: const u8[:]) -> const u8[:] {
-    let start = span.name_pos as i64;
-    let end = start + span.name_len;
-    guard end <= wire.len else { return ""; }
-    return wire[start..end];
-}
-
-// Materializes HeaderItem entries from HeaderSpan when legacy iteration is required.
-fn materialize_headers(req: Request&, wire: const u8[:]) {
-    guard req.headers.len == 0 && req.spans.len > 0 else { return; }
-    for i in req.spans.len {
-        guard req.headers.len < req.headers.cap else { break; }
-        let span = req.spans[i];
-        let n_start = span.name_pos as i64;
-        let n_end = n_start + span.name_len;
-        let v_start = span.val_pos as i64;
-        let v_end = v_start + span.val_len;
-        guard n_end <= wire.len && v_end <= wire.len else { continue; }
-        var item = HeaderItem { .. };
-        guard span.name_len <= item.name.cap && span.val_len <= item.value.cap else { continue; }
-        item.name.append(wire[n_start..n_end]);
-        item.value.append(wire[v_start..v_end]);
-        req.headers.push(item);
-        add_header(req.bloom_filter, item.name[..]);
-        let known_id = identify_known_header(item.name[..]);
-        if known_id != KnownHeaderId.Unknown {
-            req.presence_mask |= header_id_to_bit(known_id);
-        }
-    }
-}
-
-// Returns the value of a request header by name (O(1) MPH bitmask check with Bloom filter fallback).
+// Returns the value of a request header by name.
 fn header(req: const Request&, name: const u8[:]) -> const u8[:] {
-    let known_id = identify_known_header(name);
-    if known_id != KnownHeaderId.Unknown {
-        let bit = header_id_to_bit(known_id);
-        guard (req.presence_mask & bit) != 0 else {
-            return "";
-        }
-    } else if !is_empty(req.bloom_filter) {
-        guard might_have_header(req.bloom_filter, name) else {
-            return "";
-        }
-    }
-    return find_header(req.headers[..], name);
+    return get_header(req.headers, name);
 }
 
 fn has_header(req: const Request&, name: const u8[:]) -> bool {
-    let known_id = identify_known_header(name);
-    if known_id != KnownHeaderId.Unknown {
-        let bit = header_id_to_bit(known_id);
-        guard (req.presence_mask & bit) != 0 else {
-            return false;
-        }
-    } else if !is_empty(req.bloom_filter) {
-        guard might_have_header(req.bloom_filter, name) else {
-            return false;
-        }
-    }
-    return has_header(req.headers[..], name);
-}
-
-// Extracts a header value directly from wire bytes using zero-copy spans and O(1) bitmask.
-fn header_from_wire(req: const Request&, wire: const u8[:], name: const u8[:]) -> const u8[:] {
-    let known_id = identify_known_header(name);
-    if known_id != KnownHeaderId.Unknown {
-        let bit = header_id_to_bit(known_id);
-        guard (req.presence_mask & bit) != 0 else { return ""; }
-        let target_id = header_id_to_u8(known_id);
-        for i in req.spans.len {
-            if req.spans[i].id == target_id {
-                return header_span_value(req.spans[i], wire);
-            }
-        }
-        return "";
-    }
-    for i in req.spans.len {
-        if core::eq_ascii_fold(header_span_name(req.spans[i], wire), name) {
-            return header_span_value(req.spans[i], wire);
-        }
-    }
-    return "";
+    return has_header(req.headers, name);
 }
 
 // Returns the value of a request trailer by name (case-insensitive lookup)
 fn trailer(req: const Request&, name: const u8[:]) -> const u8[:] {
-    return find_header(req.trailers[..], name);
+    return get_header(req.trailers, name);
 }
 
 fn has_trailer(req: const Request&, name: const u8[:]) -> bool {
-    return has_header(req.trailers[..], name);
+    return has_header(req.trailers, name);
 }
 
 fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
@@ -255,7 +167,6 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
-    add_header(req.bloom_filter, name);
     let known_id = identify_known_header(name);
     if known_id != KnownHeaderId.Unknown {
         req.presence_mask |= header_id_to_bit(known_id);
@@ -266,7 +177,6 @@ fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
 // Sets a header on the request. Matches existing headers case-insensitively,
 // drops control characters, and marks credential headers sensitive.
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
-    add_header(req.bloom_filter, name);
     let known_id = identify_known_header(name);
     if known_id != KnownHeaderId.Unknown {
         req.presence_mask |= header_id_to_bit(known_id);
@@ -274,28 +184,12 @@ fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     set_header(req.headers, name, value, false);
 }
 
-fn remove_spans_by_id(spans: HeaderSpan[..32]&, target_id: u8) {
-    var write_idx = 0;
-    for read_idx in spans.len {
-        if spans[read_idx].id != target_id {
-            if write_idx != read_idx {
-                spans[write_idx] = copy(spans[read_idx]);
-            }
-            write_idx++;
-        }
-    }
-    while spans.len > write_idx {
-        spans.pop();
-    }
-}
-
 fn remove_header(req: Request&, name: const u8[:]) -> bool {
     let known_id = identify_known_header(name);
     if known_id != KnownHeaderId.Unknown {
         req.presence_mask &= ~header_id_to_bit(known_id);
-        remove_spans_by_id(req.spans, header_id_to_u8(known_id));
     }
-    return remove_header_by_name(req.headers, name);
+    return remove_header(req.headers, name);
 }
 
 fn bearer(req: Request&, token: const u8[:]) {

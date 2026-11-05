@@ -83,8 +83,8 @@ fn main() {
 
     var conn_timer1 = internal::new_connection_timer(30000000000, 1000000000);
     var query_no_ct = wing::new_request("QUERY", "/items/search");
-    query_no_ct.headers.push(wing::make_header("Host", "example.com"));
-    query_no_ct.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+    wing::append_header(query_no_ct.headers, "Host", "example.com");
+    wing::append_header(query_no_ct.headers, "Sec-Fetch-Site", "same-origin");
     query_no_ct.body.append("raw filter");
 
     var res1 = wing::Response { .. };
@@ -97,8 +97,8 @@ fn main() {
     // 6. Verify Server Pipeline Acceptance when Content-Type is valid
     var conn_timer2 = internal::new_connection_timer(30000000000, 1000000000);
     var query_valid = wing::new_query("/items/search", "raw filter", "text/plain");
-    query_valid.headers.push(wing::make_header("Host", "example.com"));
-    query_valid.headers.push(wing::make_header("Sec-Fetch-Site", "same-origin"));
+    wing::append_header(query_valid.headers, "Host", "example.com");
+    wing::append_header(query_valid.headers, "Sec-Fetch-Site", "same-origin");
 
     var res2 = wing::Response { .. };
     var future2 = internal::new_inline_handler_future(0);

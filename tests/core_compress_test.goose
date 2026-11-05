@@ -867,10 +867,8 @@ fn test_zstandard_rfc8878(t: lit::T&) {
 
         var res = wing::Response { .. };
         res.status_code = 200;
-        let h_enc = wing::make_header("Content-Encoding", "zstd");
-        let h_type = wing::make_header("Content-Type", "text/plain");
-        res.headers.push(h_enc);
-        res.headers.push(h_type);
+        wing::set_header(res, "Content-Encoding", "zstd");
+        wing::set_header(res, "Content-Type", "text/plain");
         res.body.append(wire[..]);
 
         let decoded = wing::decode_body(res);
@@ -1688,8 +1686,8 @@ fn test_brotli_http_client_integration(t: lit::T&) {
         // 2. Response with Content-Encoding: br
         var res = wing::Response { .. };
         res.status_code = 200;
-        res.headers.push(wing::make_header("Content-Encoding", "br"));
-        res.headers.push(wing::make_header("Content-Type", "application/json"));
+        wing::set_header(res, "Content-Encoding", "br");
+        wing::set_header(res, "Content-Type", "application/json");
         res.body.append(comp_body[..]);
 
         // 3. Transparent auto-decompression via wing::decode_body

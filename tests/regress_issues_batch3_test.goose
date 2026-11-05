@@ -616,71 +616,43 @@ fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
         sub.assert_false(ok, "Invalid SETTINGS_MAX_FRAME_SIZE MUST return ok == false and emit GOAWAY");
     };
 
-    t.run("validate_h2_stream_association rejects Priority and PushPromise on stream 0") { sub =>
-        let hdr_prio = internal::H2FrameHeader {
-            frame_type:  internal::H2FrameType.Priority,
-            flags:       0,
-            stream_id:   0,
-            payload_len: 5,
-        };
-        sub.assert_true(internal::validate_h2_stream_association(hdr_prio) == internal::H2ErrorCode.ProtocolError, "Priority on stream 0 is ProtocolError");
-
-        let hdr_push = internal::H2FrameHeader {
-            frame_type:  internal::H2FrameType.PushPromise,
-            flags:       0,
-            stream_id:   0,
-            payload_len: 4,
-        };
-        sub.assert_true(internal::validate_h2_stream_association(hdr_push) == internal::H2ErrorCode.ProtocolError, "PushPromise on stream 0 is ProtocolError");
-
-        let hdr_ga = internal::H2FrameHeader {
-            frame_type:  internal::H2FrameType.GoAway,
-            flags:       0,
-            stream_id:   1,
-            payload_len: 8,
-        };
-        sub.assert_true(internal::validate_h2_stream_association(hdr_ga) == internal::H2ErrorCode.ProtocolError, "GoAway on stream 1 is ProtocolError");
+    t.run("validate_stream_id_association rejects Priority and PushPromise on stream 0") { sub =>
+        sub.assert_eq(rfc::validate_stream_id_association(0, rfc::H2_FRAME_PRIORITY), rfc::H2_ERR_PROTOCOL_ERROR, "Priority on stream 0 is ProtocolError");
+        sub.assert_eq(rfc::validate_stream_id_association(0, rfc::H2_FRAME_PUSH_PROMISE), rfc::H2_ERR_PROTOCOL_ERROR, "PushPromise on stream 0 is ProtocolError");
+        sub.assert_eq(rfc::validate_stream_id_association(1, rfc::H2_FRAME_GOAWAY), rfc::H2_ERR_PROTOCOL_ERROR, "GoAway on stream 1 is ProtocolError");
     };
 
-    t.run("H2SecurityFramer enforces settings flood and single headers frame bounds") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+    t.run("H2Connection enforces settings flood and single headers frame bounds") { sub =>
+        var conn = internal::new_h2_connection(0);
 
-        // 1. Single HEADERS frame exceeding max_header_block_bytes (8192) must trigger EnhanceYourCalm
-        let big_hdr = internal::H2FrameHeader {
-            payload_len: 12000,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       rfc::H2_FLAG_END_HEADERS,
-            stream_id:   1,
-            valid:       true,
+        // 1. Single HEADERS frame exceeding max_header_list_size (8192) must trigger EnhanceYourCalm
+        let big_hdr = internal::FrameHeader {
+            length:     12000,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  1,
         };
-        let err_big = internal::process_incoming_frame(framer, big_hdr);
-        sub.assert_eq(err_big, internal::H2ErrorCode.EnhanceYourCalm, "Single HEADERS > 8KB triggers EnhanceYourCalm");
-        sub.assert_true(framer.state == internal::H2ConnState.Closed);
+        let err_big = internal::on_ingress_frame_header(conn, big_hdr, 0);
+        sub.assert_eq(err_big, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Single HEADERS > 8KB triggers EnhanceYourCalm");
 
         // 2. SETTINGS flood defense (CVE-2019-9515)
-        var framer_set = internal::H2SecurityFramer { .. };
-        for _ in 10 {
-            let sf = internal::H2FrameHeader {
-                payload_len: 6,
-                frame_type:  internal::H2FrameType.Settings,
-                raw_type:    0x4,
-                flags:       0x0,
-                stream_id:   0,
-                valid:       true,
+        var conn_set = internal::new_h2_connection(0);
+        for _ in 64 {
+            let sf = internal::FrameHeader {
+                length:     6,
+                frame_type: rfc::H2_FRAME_SETTINGS,
+                flags:      0x0,
+                stream_id:  0,
             };
-            sub.assert_eq(internal::process_incoming_frame(framer_set, sf), internal::H2ErrorCode.NoError);
+            sub.assert_eq(internal::on_ingress_frame_header(conn_set, sf, 0), rfc::H2_ERR_NO_ERROR);
         }
-        let sf_11 = internal::H2FrameHeader {
-            payload_len: 6,
-            frame_type:  internal::H2FrameType.Settings,
-            raw_type:    0x4,
-            flags:       0x0,
-            stream_id:   0,
-            valid:       true,
+        let sf_65 = internal::FrameHeader {
+            length:     6,
+            frame_type: rfc::H2_FRAME_SETTINGS,
+            flags:      0x0,
+            stream_id:  0,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer_set, sf_11), internal::H2ErrorCode.EnhanceYourCalm, "11th SETTINGS triggers EnhanceYourCalm");
-        sub.assert_true(framer_set.state == internal::H2ConnState.Closed);
+        sub.assert_eq(internal::on_ingress_frame_header(conn_set, sf_65, 0), rfc::H2_ERR_ENHANCE_YOUR_CALM, "65th SETTINGS triggers EnhanceYourCalm");
     };
 }
 
@@ -857,9 +829,9 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
         fp.pseudo_headers.push('p');
         fp.pseudo_headers.push('x'); // 5th pseudo header
 
-        var out_hdrs: wing::HeaderItem[..4] = [];
+        var out_hdrs = wing::HeaderMap { .. };
         wing::order_pseudo_headers(fp, "GET", "example.com", "https", "/", out_hdrs);
-        sub.assert_eq(out_hdrs.len, 4, "Bounded to 4 pseudo headers without abort");
+        sub.assert_eq(out_hdrs.entries.len, 4, "Bounded to 4 pseudo headers without abort");
     };
 }
 
@@ -1000,7 +972,7 @@ fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
         var req = wing::new_request("GET", "https://example.com/ws");
         req.set_header("Upgrade", "websocket");
         req.set_header("Connection", "keep-alive");
-        req.headers.push(wing::make_header("Connection", "Upgrade"));
+        wing::append_header(req.headers, "Connection", "Upgrade");
         req.set_header("Sec-WebSocket-Version", "13");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
@@ -1036,9 +1008,9 @@ fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_client_redirect_origin_and_fragment_safety(t: lit::T&) {
     t.run("Cross-origin 307 redirect MUST set Origin to null to prevent leaking internal origin") { sub =>
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Origin", "https://internal.corp.example.com"));
-        headers.push(wing::make_header("Content-Type", "application/json"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Origin", "https://internal.corp.example.com");
+        wing::append_header(headers, "Content-Type", "application/json");
 
         var redir = wing::RedirectInfo {
             status_code:     307,
@@ -1049,9 +1021,9 @@ fn test_client_redirect_origin_and_fragment_safety(t: lit::T&) {
 
         wing::sanitize_headers_on_redirect(headers, redir, wing::RedirectSanitizeOptions { .. });
 
-        let origin_idx = wing::find_header_index(headers[..], "Origin");
+        let origin_idx = wing::find_header_index(headers, "Origin");
         sub.assert_ge(origin_idx, 0, "Origin header present");
-        sub.assert_bytes_eq(headers[origin_idx].value[..], "null", "Origin on cross-origin 307 MUST be 'null'");
+        sub.assert_bytes_eq(wing::get_header(headers, "Origin"), "null", "Origin on cross-origin 307 MUST be 'null'");
     };
 
     t.run("inherit_target_fragment does not crash when combined length exceeds 2048") { sub =>
@@ -1175,18 +1147,18 @@ fn test_pool_and_proxy_san_invariants(t: lit::T&) {
 fn test_h2_multiplexer_trailers(t: lit::T&) {
     t.run("emit_response_trailers filters pseudo-headers, hop-by-hop, and disallowed fields") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var trailers: wing::HeaderItem[..16] = [];
+        var trailers = wing::HeaderMap { .. };
 
         // Valid trailers
-        trailers.push(wing::make_header("x-checksum", "sha256-abc"));
-        trailers.push(wing::make_header("x-duration", "15ms"));
+        wing::append_header(trailers, "x-checksum", "sha256-abc");
+        wing::append_header(trailers, "x-duration", "15ms");
 
         // Forbidden pseudo-headers and connection headers per RFC 9113 §8.1 / §8.2.2
-        trailers.push(wing::make_header(":status", "200"));
-        trailers.push(wing::make_header("connection", "close"));
-        trailers.push(wing::make_header("transfer-encoding", "chunked"));
-        trailers.push(wing::make_header("content-length", "42"));
-        trailers.push(wing::make_header("host", "example.com"));
+        wing::append_header(trailers, ":status", "200");
+        wing::append_header(trailers, "connection", "close");
+        wing::append_header(trailers, "transfer-encoding", "chunked");
+        wing::append_header(trailers, "content-length", "42");
+        wing::append_header(trailers, "host", "example.com");
 
         var out_wire: u8[>..] = [];
         internal::emit_response_trailers(sess, 1, trailers, out_wire);
@@ -1202,16 +1174,17 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
         sub.assert_true((hdr.flags & rfc::H2_FLAG_END_STREAM) != 0, "FLAG_END_STREAM set");
 
         // Decode HPACK payload
-        var dec_list = internal::DecodedH2HeaderList { is_trailer: true, .. };
-        let dec_err = internal::decode_hpack_header_block(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_list);
+        var dec_pseudo = internal::H2PseudoHeaders { is_trailer: true, .. };
+        var dec_list = wing::HeaderMap { .. };
+        let dec_err = internal::decode_hpack_to_map(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_pseudo, dec_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "HPACK block decoded");
 
         // Exactly 2 valid trailer headers should survive
-        sub.assert_eq(dec_list.fields.len, 2, "Only 2 valid trailers encoded");
-        sub.assert_bytes_eq(dec_list.fields[0].name[..], "x-checksum", "First trailer name");
-        sub.assert_bytes_eq(dec_list.fields[0].value[..], "sha256-abc", "First trailer value");
-        sub.assert_bytes_eq(dec_list.fields[1].name[..], "x-duration", "Second trailer name");
-        sub.assert_bytes_eq(dec_list.fields[1].value[..], "15ms", "Second trailer value");
+        sub.assert_eq(dec_list.entries.len, 2, "Only 2 valid trailers encoded");
+        sub.assert_bytes_eq(wing::entry_name(dec_list, dec_list.entries[0]), "x-checksum", "First trailer name");
+        sub.assert_bytes_eq(wing::entry_value(dec_list, dec_list.entries[0]), "sha256-abc", "First trailer value");
+        sub.assert_bytes_eq(wing::entry_name(dec_list, dec_list.entries[1]), "x-duration", "Second trailer name");
+        sub.assert_bytes_eq(wing::entry_value(dec_list, dec_list.entries[1]), "15ms", "Second trailer value");
     };
 
     t.run("handle_h2_server_ingress emits response with body and trailers") { sub =>
@@ -1310,8 +1283,8 @@ fn test_websocket_close_and_subprotocol(t: lit::T&) {
         req.set_header("Connection", "Upgrade");
         req.set_header("Sec-WebSocket-Version", "13");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
-        req.headers.push(wing::make_header("Sec-WebSocket-Protocol", "wamp.2.json"));
-        req.headers.push(wing::make_header("Sec-WebSocket-Protocol", "chat.v1"));
+        wing::append_header(req.headers, "Sec-WebSocket-Protocol", "wamp.2.json");
+        wing::append_header(req.headers, "Sec-WebSocket-Protocol", "chat.v1");
 
         var resp = wing::Response { .. };
         let ws_sess, ok = wing::ws_upgrade_request(req, resp, "chat.v1");

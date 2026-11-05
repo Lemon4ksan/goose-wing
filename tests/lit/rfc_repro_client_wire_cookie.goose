@@ -103,8 +103,8 @@ fn test_h1_set_cookie_parsing() {
     let raw_resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: session=longtoken_abc123xyz456; Path=/; Secure; HttpOnly\r\n\r\n";
     let ok = wing::parse_response_headers(raw_resp[..], resp);
     assert(ok);
-    assert(resp.set_cookies.len == 1);
-    assert(core::contains(resp.set_cookies[0][..], "longtoken_abc123xyz456"));
+    assert(wing::has_header(resp, "Set-Cookie"));
+    assert(core::contains(wing::header(resp, "Set-Cookie"), "longtoken_abc123xyz456"));
     print("CHECK_H1_SET_COOKIE: OK");
 }
 

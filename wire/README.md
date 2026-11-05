@@ -50,12 +50,24 @@ The `wire` subsystem implements a 7-tier explicit networking architecture mappin
 - **`fn trim_command_pool(pool: WireCommandPool&)`**: Trims unused memory capacity in pool arena.
 - **`fn destroy_command_pool(pool: WireCommandPool&)`**: Invalidates pool and releases arena memory.
 
-### Pipeline State Objects (`pipeline.goose`)
+### Pipeline State Objects & Composable L7 Stage Pipeline (`pipeline.goose`)
 
+- **`enum PipelineRole`**: Pipeline execution role (`Client`, `Server`).
+- **`enum StageVerdict`**: Modular stage outcome (`Continue`, `ShortCircuit { status_code: u16 }`, `RetryAuth`, `FollowRedirect`, `Abort { err_code: i32 }`).
+- **`struct PipelineState`**: Step-by-step execution state (`verdict: StageVerdict`) with `begin_pipeline`, `step`, and `can_continue` combinator primitives.
+- **Built-in Client Stage Bitmasks**:
+  - Ingress (`STAGE_CLI_IN_*`): `URL_SANITIZE`, `ALT_SVC`, `HSTS_UPGRADE`, `COOKIE_LOAD`, `CACHE_LOOKUP`, `DICT_NEGOTIATE`, `HEADER_PREPARE`, `POOL_ACQUIRE`.
+  - Egress (`STAGE_CLI_OUT_*`): `WIRE_SEND_RECV`, `DECOMPRESS`, `ALT_SVC_RECORD`, `COOKIE_STORE`, `CACHE_STORE`, `AUTH_CHALLENGE`, `REDIRECT_EVAL`.
+- **Built-in Server Stage Bitmasks**:
+  - Ingress (`STAGE_SRV_IN_*`): `SLOWLORIS`, `EXPECT_100`, `EDGE_FILTER`, `RATELIMIT_IP`, `ROUTE_MATCH`, `RATELIMIT_ROUTE`, `CORS`, `CSRF`, `AUTH_COOKIE`, `AUTH_JWT`, `CACHE_LOOKUP`.
+  - Egress (`STAGE_SRV_OUT_*`): `ETAG`, `COMPRESS`, `CACHE_STORE`, `SECURITY_HEADERS`, `METRICS_LOG`.
+- **User Stage Hook Combinators**: `enum ClientHookPhase` (`PreFlight`, `PreWireHop`, `PostWireHop`), `enum ServerHookPhase` (`PreRoute`, `PostAuth`, `PreSerialize`), `struct NoOpStage`, and `struct StageChain<First, Next>` (`chain_stages(s1, s2)` for unlimited compile-time stage composition).
 - **`enum WirePipelineBindPoint`**: Protocol pipeline direction (`Transmit`, `Receive`).
 - **`struct WirePipelineLayout`**: Protocol sizing and push constants (`max_frame_size: u32`, `push_constants: u8[..64]`).
-- **`struct WirePipelineCreateInfo`**: Pipeline creation info (`bind_point`, `layout`, `flags`).
-- **`struct WirePipeline`**: Immutable pipeline state object (`bind_point`, `layout`, `is_valid`).
+- **`struct WirePipelineCreateInfo`**: Pipeline creation info (`bind_point`, `layout`, `flags`, `role`, `ingress_mask`, `egress_mask`).
+- **`struct WirePipeline`**: Immutable pipeline state object (`bind_point`, `layout`, `role`, `ingress_mask`, `egress_mask`, `is_valid`).
+- **Role-Scoped Default Pipelines**: `default_client_pipeline()` and `default_server_pipeline()`.
+- **Bitmask Configuration Helpers**: `enable_ingress_stage`, `disable_ingress_stage`, `enable_egress_stage`, `disable_egress_stage`, `add_ingress_stage`, and `add_egress_stage`.
 - **`fn create_wire_pipeline(dev: const WireDevice&, info: const WirePipelineCreateInfo&) -> WirePipeline, WireResult`**: Creates immutable PSO.
 - **`fn cmd_bind_pipeline(cmd: WireCommandBuffer&, bind_point: WirePipelineBindPoint, pipe: const WirePipeline&) -> WireResult`**: Binds PSO to command buffer.
 - **`fn destroy_wire_pipeline(pipe: WirePipeline&)`**: Releases pipeline state object.
@@ -109,6 +121,14 @@ The `wire` subsystem implements a 7-tier explicit networking architecture mappin
 - **`fn hpack_literal_without_indexing(cmd: WireCommandBuffer&, name: const u8[:], val: const u8[:]) -> bool`**: Encodes literal header without indexing.
 - **`fn hpack_literal_never_indexed(cmd: WireCommandBuffer&, name: const u8[:], val: const u8[:]) -> bool`**: Encodes literal header never indexed.
 - **`fn end_h2_headers(cmd: WireCommandBuffer&) -> bool`**: Closes HEADERS block, back-patches length, and returns to Recording state.
+- **Multi-Protocol Command Recorders**: `cmd_encode_h1_request`, `cmd_encode_h1_response`, `cmd_encode_h2_headers_map`, and `cmd_encode_h3_headers_map` record HTTP/1.1, HTTP/2 HPACK, and HTTP/3 QPACK frames directly from `wing::HeaderMap` into `WireCommandBuffer`.
+
+### Tier 1 Sans-IO Codecs (`h1.goose`, `hpack.goose`, `h2.goose`, `h3.goose`)
+
+- **HTTP/1.1 Wire Codec**: `encode_h1_request<B>`, `encode_h1_response<B>`, `encode_h1_status_line<B>`, and `decode_h1_response_head` provide a unified Sans-IO HTTP/1.1 serializer and response head parser operating directly on `wing::HeaderMap`.
+- **HPACK Header Block Codec**: `encode_hpack_from_map<B>` and `decode_hpack_to_map` implement RFC 7541 HPACK header block encoding and decoding on `internal::H2PseudoHeaders` and `wing::HeaderMap`.
+- **HTTP/2 Frame Codec**: `encode_h2_headers_from_map<B>` and `decode_h2_headers_to_map` encode and decode HTTP/2 `HEADERS` + `CONTINUATION` frames over `wing::HeaderMap`.
+- **HTTP/3 QPACK Frame Codec**: `encode_h3_headers_from_map<B1, B2>`, `decode_h3_headers_to_map`, `encode_h3_data<B>`, and `decode_h3_data` provide HTTP/3 QPACK `HEADERS` and `DATA` frame codecs over `internal::H3PseudoHeaders` and `wing::HeaderMap`.
 
 ### Transport Queue Batch Submission (`submit.goose`)
 
@@ -119,5 +139,8 @@ The `wire` subsystem implements a 7-tier explicit networking architecture mappin
 - **`fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool`**: Transmits command buffer with full-drain loop.
 - **`fn submit_slice(q: WireQueue&, data: const u8[:]) -> i64, bool`**: Transmits raw slice directly with full-drain loop.
 - **`fn queue_submit_batch(q: WireQueue&, cmd_bufs: const WireCommandBuffer[:], info: const WireSubmitInfo&, fence: WireFence&) -> i64, WireResult`**: Atomically sends batch of command buffers and signals completion fence.
+- **`fn submit_to_transport(q: WireQueue&, tp: wing::Transport&, cmd_bufs: const WireCommandBuffer[:], fence: WireFence&) -> i64, WireResult`**: Flushes recorded command buffers over an active `wing::Transport` (TCP or TLS 1.3).
+- **`fn submit_to_ring(cmd: WireCommandBuffer&, ring: core::PageRingBuffer&) -> WireResult`**: Writes command buffer octets into a `core::PageRingBuffer` and resets `cmd`.
+- **`fn submit_to_cork(cmd: WireCommandBuffer&, cork: core::PipeBuffer&) -> WireResult`**: Writes command buffer octets into a `core::PipeBuffer` cork arena and resets `cmd`.
 - **`fn poll_recv(q: WireQueue&, out: u8[:], timeout_ms: u32 = 0) -> i64, bool`**: Polls transport socket for incoming octets.
 - **`fn close_wire_queue(q: WireQueue&)`**: Closes transport socket and resets `fd = -1`.

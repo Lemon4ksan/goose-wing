@@ -119,9 +119,8 @@ fn build_grpc_http_request(
         out_req.url.append(cfg.method[..]);
     }
 
-    // Reset headers and bloom filter for reliable O(1) header lookup
+    // Reset headers for reliable O(1) header lookup
     out_req.headers.clear();
-    out_req.bloom_filter.clear();
 
     if cfg.is_web_text {
         set_header(out_req, "content-type", rfc::GRPC_WEB_TEXT_PROTO);

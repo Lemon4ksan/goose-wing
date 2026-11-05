@@ -49,7 +49,7 @@ struct ClientProfile {
     accept_encoding:           u8[..64]           = [],
     accept_language:           u8[..64]           = [],
     upgrade_insecure_requests: u8[..8]            = [],
-    extra_headers:             HeaderItem[..16]   = [],
+    extra_headers:             HeaderMap          = HeaderMap { .. },
     header_order:              u8[..32][..64]     = [],
     h2:                        H2Settings         = H2Settings { .. },
     h3:                        H3Settings         = H3Settings { .. },
@@ -209,8 +209,8 @@ fn ja4h(
     if profile.accept_language.len > 0 { header_names.push("accept-language"); }
     if profile.upgrade_insecure_requests.len > 0 { header_names.push("upgrade-insecure-requests"); }
 
-    for &h in profile.extra_headers {
-        header_names.push(h.name[..]);
+    for &e in profile.extra_headers.entries {
+        header_names.push(entry_name(profile.extra_headers, e));
     }
 
     return compute_ja4h(
@@ -247,15 +247,7 @@ fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
         profile.upgrade_insecure_requests.append(value);
         return;
     }
-    for idx in profile.extra_headers.len {
-        if eq_ascii_fold(profile.extra_headers[idx].name[..], name) {
-            profile.extra_headers[idx].value.clear();
-            profile.extra_headers[idx].value.append(value);
-            return;
-        }
-    }
-    guard profile.extra_headers.len < profile.extra_headers.cap else { return; }
-    profile.extra_headers.push(make_header(name, value));
+    set_header(profile.extra_headers, name, value);
 }
 
 // Sets a custom User-Agent in the profile.

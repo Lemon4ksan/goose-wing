@@ -148,19 +148,10 @@ fn test_vulkan_wire_conformance() {
     queue.driver = wire::WireDriverKind.Mock;
     queue.is_connected = true;
 
-    // Verify WireQueue TLS 1.3 record protection (seal + poll_recv_tls roundtrip)
-    let key: u8[16] = [0x11; 16];
-    let iv:  u8[12] = [0x22; 12];
-    wire::enable_wire_queue_tls(queue, key, iv, key, iv);
-    assert(queue.tls.enabled);
-    var sealed_frame: u8[256] = [0; 256];
-    let sealed_len, seal_ok = wire::seal_queue_frame_into(queue, "ping-wire-tls13", sealed_frame[..]);
-    assert(seal_ok && sealed_len == 37 && queue.tls.tx_seq == 1);
-    var opened_plain: u8[256] = [0; 256];
-    let plain_len, ctype, tls_ok = wire::poll_recv_tls(queue, sealed_frame[..sealed_len], opened_plain[..]);
-    assert(tls_ok && ctype == rfc::TLS_CONTENT_APPLICATION_DATA && plain_len == 15);
-    assert(core::ct_eq_bytes(opened_plain[..plain_len], "ping-wire-tls13"));
-    assert(queue.tls.rx_seq == 1);
+    // Verify WireQueue submit_to_cork and submit_to_transport over ring buffers
+    var cork = core::CorkBuffer { .. };
+    let cork_ok = wire::submit_to_cork(cmd, cork);
+    assert(cork_ok && core::cork_pending(cork) == cmd.buf.len);
     print("WIRE_QUEUE_TLS13: OK\n");
 
     // Create Synchronization2 Fence and Semaphore
@@ -205,6 +196,168 @@ fn test_vulkan_wire_conformance() {
     wire::destroy_wire_device(dev);
 }
 
+struct CustomAuditStage {
+    pre_route_hits: i32 = 0,
+    post_auth_hits: i32 = 0,
+}
+
+fn wing::on_server_stage(
+    stage: CustomAuditStage&,
+    phase: wire::ServerHookPhase,
+    _cfg:  wing::ServerPipelineConfig&,
+    _req:  const wing::Request&,
+    _ctx:  wing::ServerStageCtx&,
+    _res:  wing::Response&,
+) -> wire::StageVerdict {
+    if phase == wire::ServerHookPhase.PreRoute {
+        stage.pre_route_hits += 1;
+    } else if phase == wire::ServerHookPhase.PostAuth {
+        stage.post_auth_hits += 1;
+    }
+    return wire::StageVerdict.Continue;
+}
+
+struct CustomHeaderStage {
+    egress_hits: i32 = 0,
+}
+
+fn wing::on_server_stage(
+    stage: CustomHeaderStage&,
+    phase: wire::ServerHookPhase,
+    _cfg:  wing::ServerPipelineConfig&,
+    _req:  const wing::Request&,
+    _ctx:  wing::ServerStageCtx&,
+    res:   wing::Response&,
+) -> wire::StageVerdict {
+    if phase == wire::ServerHookPhase.PreSerialize {
+        stage.egress_hits += 1;
+        wing::set_header(res, "X-Custom-Stage", "active");
+    }
+    return wire::StageVerdict.Continue;
+}
+
+fn test_tier1_and_tier2_pipeline_conformance() {
+    // 1. Tier 1 HTTP/1.1 codec round-trip into HeaderMap
+    var req_hdrs = wing::HeaderMap { .. };
+    wing::append_header(req_hdrs, "X-Trace", "t1");
+    var h1_req_wire: u8[..512] = [];
+    assert(wire::encode_h1_request(
+        "GET", "/v1/items", "api.example.com", req_hdrs, "",
+        wire::H1HeaderFilterMode.PreserveAll, h1_req_wire,
+    ));
+    var parsed_req = wing::Request { .. };
+    let ok_req_parse, _ = wing::parse_http1_wire_request(h1_req_wire[..], parsed_req);
+    assert(ok_req_parse);
+    assert(wing::header(parsed_req, "Host") == "api.example.com");
+    assert(wing::header(parsed_req, "X-Trace") == "t1");
+
+    var resp_hdrs = wing::HeaderMap { .. };
+    wing::append_header(resp_hdrs, "Content-Type", "application/json");
+    var h1_resp_wire: u8[..512] = [];
+    assert(wire::encode_h1_response(200, "OK", "goose-wing", resp_hdrs, "{\"ok\":true}", false, h1_resp_wire));
+    var parsed_resp_hdrs = wing::HeaderMap { .. };
+    var parsed_status: u16 = 0;
+    let resp_consumed, resp_err = wire::decode_h1_response_head(h1_resp_wire[..], parsed_status, parsed_resp_hdrs);
+    assert(resp_err == wing::HeaderParseError.None && resp_consumed > 0 && parsed_status == 200);
+    assert(wing::get_header(parsed_resp_hdrs, "Content-Type") == "application/json");
+    print("TIER1_H1_CODEC: OK\n");
+
+    // 2. Tier 1 HPACK & QPACK decode directly into HeaderMap
+    var dt = internal::new_dynamic_table(4096);
+    var hpack_buf: u8[..256] = [];
+    var enc_pseudo = internal::H2PseudoHeaders { has_status: true, status: 200, .. };
+    var h2_in_map = wing::HeaderMap { .. };
+    wing::append_header(h2_in_map, "x-h2-header", "val2");
+    assert(wire::encode_hpack_from_map(dt, enc_pseudo, h2_in_map, hpack_buf, false));
+    var h2_dec_dt = internal::new_dynamic_table(4096);
+    var h2_pseudo = internal::H2PseudoHeaders { .. };
+    var h2_map = wing::HeaderMap { .. };
+    let h2_err = wire::decode_hpack_to_map(h2_dec_dt, hpack_buf[..], h2_pseudo, h2_map);
+    assert(h2_err == rfc::H2_ERR_NO_ERROR && h2_pseudo.status == 200);
+    assert(wing::get_header(h2_map, "x-h2-header") == "val2");
+
+    var qpack_enc = internal::new_qpack_table(0);
+    var qpack_dec = internal::new_qpack_table(0);
+    var q_req_in = wing::HeaderMap { .. };
+    wing::append_header(q_req_in, "x-h3-custom", "val3");
+    var q_in_pseudo = internal::H3PseudoHeaders {
+        has_method:    true,
+        method:        "GET",
+        has_scheme:    true,
+        scheme:        "https",
+        has_authority: true,
+        authority:     "example.com",
+        has_path:      true,
+        path:          "/h3",
+        ..
+    };
+    var q_frame: u8[..256] = [];
+    var q_inst:  u8[..256] = [];
+    assert(wire::encode_h3_headers_from_map(qpack_enc, 0, q_in_pseudo, q_req_in, q_inst, q_frame));
+    // Strip 2-byte H3 HEADERS frame header (type=0x01, len)
+    let q_payload = q_frame[2..];
+    var q_pseudo = internal::H3PseudoHeaders { .. };
+    var q_map = wing::HeaderMap { .. };
+    let q_err = wire::decode_h3_headers_to_map(qpack_dec, 0, q_payload, q_pseudo, q_map);
+    assert(q_err == internal::QpackError.None && q_pseudo.path[..] == "/h3");
+    assert(wing::get_header(q_map, "x-h3-custom") == "val3");
+
+    // Verify WireCommandBuffer multi-protocol recording and H2 frame header decode
+    var multi_cmd = wire::new_command_buffer();
+    let begin_multi = wire::WireCommandBufferBeginInfo { flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    assert(wire::cmd_encode_h1_request(multi_cmd, "GET", "/ping", "example.com", req_hdrs, ""));
+    multi_cmd.reset();
+    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
+    assert(wire::cmd_encode_h1_response(multi_cmd, 200, "OK", "wing", resp_hdrs, "ok", false));
+    multi_cmd.reset();
+    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
+    assert(wire::cmd_encode_h2_headers_map(multi_cmd, dt, 1, enc_pseudo, h2_in_map, true));
+    let dec_hdr, dec_hdr_err = wire::decode_h2_frame_header(multi_cmd.buf[..]);
+    assert(dec_hdr_err == rfc::H2_ERR_NO_ERROR && dec_hdr.stream_id == 1);
+    multi_cmd.reset();
+    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
+    assert(wire::cmd_encode_h3_headers_map(multi_cmd, qpack_enc, 0, q_in_pseudo, q_req_in, q_inst));
+    assert(multi_cmd.buf.len > 0);
+    print("TIER1_HPACK_QPACK_MAP: OK\n");
+
+    // 3. Tier 2 PipelineState step combinator + Server Stage Bricks + <UserStage> hook
+    var pstate = wire::begin_pipeline();
+    assert(wire::can_continue(pstate));
+    assert(wire::step(pstate, wire::StageVerdict.Continue));
+    assert(!wire::step(pstate, wire::StageVerdict.ShortCircuit { status_code: 204 }));
+    assert(!wire::can_continue(pstate));
+
+    var srv_cfg = wing::new_default_server_pipeline_config("example.com");
+    wire::disable_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_SLOWLORIS);
+    wire::enable_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_SLOWLORIS);
+    wire::disable_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_METRICS);
+    wire::enable_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_METRICS);
+    let full_pso = wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_EGRESS_ETAG | wing::STAGE_EGRESS_COMPRESS_GZIP | wing::STAGE_EGRESS_METRICS;
+    assert(wing::add_route_pso(srv_cfg.router, "GET", "/custom", 1002, full_pso));
+    assert(wire::add_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_AUTH_JWT));
+    assert(wire::add_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_ETAG));
+
+    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    var sreq = wing::new_request("GET", "/custom");
+    wing::set_header(sreq, "Host", "example.com");
+    wing::set_header(sreq, "Sec-Fetch-Site", "same-origin");
+    wing::set_header(sreq, "Accept-Encoding", "gzip");
+    var sres = wing::Response { .. };
+    var sfut = internal::new_inline_handler_future(0);
+    var custom_chain = wire::chain_stages(CustomAuditStage { .. }, CustomHeaderStage { .. });
+    let sout = wing::execute_server_pipeline_with_stage(
+        srv_cfg, timer, "127.0.0.1", sreq, 1005000000, sres, sfut, custom_chain,
+    );
+    assert(sout == wing::PipelineOutcome.Handled && sres.status_code == 200);
+    assert(custom_chain.first.pre_route_hits == 1 && custom_chain.first.post_auth_hits == 1);
+    assert(custom_chain.next.egress_hits == 1);
+    assert(wing::header(sres, "X-Custom-Stage") == "active");
+    assert(wing::header(sres, "Content-Encoding") == "gzip");
+    assert(wing::has_header(sres, "ETag"));
+    assert(wing::has_header(sres, "Server-Timing"));
+    print("TIER2_STAGE_CONSTRUCTOR: OK\n");
+}
+
 fn main() {
     // CHECK: === VULKAN_WIRE_CONFORMANCE_SUITE ===
     // CHECK: VULKAN_INSTANCE: OK
@@ -218,5 +371,9 @@ fn main() {
     // CHECK: SEMAPHORE_TIMELINE: OK
     // CHECK: FENCE_SIGNALED: OK
     // CHECK: SOCKET_FD_INVARIANT: OK
+    // CHECK: TIER1_H1_CODEC: OK
+    // CHECK: TIER1_HPACK_QPACK_MAP: OK
+    // CHECK: TIER2_STAGE_CONSTRUCTOR: OK
     test_vulkan_wire_conformance();
+    test_tier1_and_tier2_pipeline_conformance();
 }

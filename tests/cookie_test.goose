@@ -202,7 +202,7 @@ fn test_samesite_lax_post_window_and_obc(t: lit::T&) {
 
     // At t=119s cross-site top-level POST must include cookie
     lit::advance_sec(clock, 119);
-    var out_119: wing::CanonicalCookie[>..] = [];
+    var out_119: u16[..180] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_119,
         wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: false },
@@ -211,14 +211,14 @@ fn test_samesite_lax_post_window_and_obc(t: lit::T&) {
 
     // At t=121s cross-site POST is blocked, but GET is allowed
     lit::advance_sec(clock, 2);
-    var out_121_post: wing::CanonicalCookie[>..] = [];
+    var out_121_post: u16[..180] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_post,
         wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: false },
     );
     t.assert_eq(out_121_post.len, 0, "at t=121s Lax+POST window expired for unsafe POST");
 
-    var out_121_get: wing::CanonicalCookie[>..] = [];
+    var out_121_get: u16[..180] = [];
     wing::get_canonical_cookies_for_request(
         jar, "https://idp.example.com/acs", true, "", clock.now_us, out_121_get,
         wing::CookieAccessOptions { is_same_site: false, is_top_level_navigation: true, is_safe_method: true },

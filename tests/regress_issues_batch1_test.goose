@@ -57,9 +57,9 @@ fn test_redirect_stale_host_header_leakage(t: lit::T&) {
     t.run("Outbound Host header must not be retained on cross-origin redirect") { sub =>
         // When a request has an explicit custom Host header, redirecting to a different origin
         // MUST strip or update the Host header to match the new destination authority (Go #82350).
-        var headers: wing::HeaderItem[..32] = [];
-        headers.push(wing::make_header("Host", "internal-vault.corp.local"));
-        headers.push(wing::make_header("X-Custom", "keep"));
+        var headers = wing::HeaderMap { .. };
+        wing::append_header(headers, "Host", "internal-vault.corp.local");
+        wing::append_header(headers, "X-Custom", "keep");
 
         let origin_target = core::new_url("https://evil-phishing.com/harvest");
 
@@ -76,7 +76,7 @@ fn test_redirect_stale_host_header_leakage(t: lit::T&) {
         wing::sanitize_headers_on_redirect(headers, rinfo, wing::RedirectSanitizeOptions { .. });
 
         // Host header pointing to the previous host MUST be stripped to prevent host header injection / routing desync
-        let host_idx = wing::find_header_index(headers[..], "Host");
+        let host_idx = wing::find_header_index(headers, "Host");
         sub.assert_true(host_idx < 0, "Stale Host header from source origin must be stripped on cross-origin redirect (Go #82350)");
     };
 }
@@ -517,8 +517,8 @@ fn test_forbidden_trailer_fields(t: lit::T&) {
         // "A sender MUST NOT generate a trailer that contains any of the following fields:
         // ... Content-Encoding, Content-Type, Content-Range."
         // A recipient MUST NOT process forbidden fields as metadata of the payload.
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
         let chunk_wire: const u8[:] = "5\r\nHello\r\n0\r\nContent-Type: text/html\r\n\r\n";
 
         let err, _ = wing::decode_chunked_body_with_trailers(chunk_wire, out_body, out_trailers);
@@ -526,8 +526,8 @@ fn test_forbidden_trailer_fields(t: lit::T&) {
     };
 
     t.run("Content-Encoding in chunked trailer must be rejected as DisallowedTrailer") { sub =>
-        var out_body:     u8[>..]                = [];
-        var out_trailers: wing::HeaderItem[..16] = [];
+        var out_body: u8[>..] = [];
+        var out_trailers = wing::HeaderMap { .. };
         let chunk_wire: const u8[:] = "5\r\nHello\r\n0\r\nContent-Encoding: gzip\r\n\r\n";
 
         let err, _ = wing::decode_chunked_body_with_trailers(chunk_wire, out_body, out_trailers);

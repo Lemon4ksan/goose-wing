@@ -14,6 +14,7 @@ import client.request;
 import net.pool;
 import net.transport;
 import http.headers;
+import wire.h1;
 
 // ---- 1. Exchange Protocol State Machine ------------------------------------
 
@@ -52,60 +53,31 @@ fn format_request_target(
     return true;
 }
 
-fn serialize_headers_with_host_check(
-    req:     const Request&,
-    url_val: const core::Url&,
-    out:     u8[..4096]&,
-    has_cl:  bool&,
-    has_te:  bool&,
-) -> bool {
-    var has_host = false;
-    has_cl = false;
-    has_te = false;
-
-    for &h in req.headers {
-        if eq_ascii_fold(h.name[..], "Host") { has_host = true; }
-        if eq_ascii_fold(h.name[..], "Content-Length") { has_cl = true; }
-        if eq_ascii_fold(h.name[..], "Transfer-Encoding") { has_te = true; }
-        guard out.try_append(h.name[..]) &&
-              out.try_append(": ") &&
-              out.try_append(h.value[..]) &&
-              out.try_append("\r\n") else { return false; }
-    }
-
-    if !has_host {
-        guard out.try_append("Host: ") &&
-              out.try_append(url_val.host()) &&
-              out.try_append("\r\n") else { return false; }
-    }
-    return true;
-}
-
 fn serialize_h1_request(
     req:     const Request&,
     url_val: const core::Url&,
     out:     u8[..4096]&,
 ) -> bool {
     out.clear();
-
-    guard out.try_append(req.method[..]) && out.try_append(" ") else { return false; }
-    guard format_request_target(req, url_val, out) else { return false; }
-    guard out.try_append(" HTTP/1.1\r\n") else { return false; }
-
-    var has_cl = false;
-    var has_te = false;
-    guard serialize_headers_with_host_check(req, url_val, out, has_cl, has_te) else { return false; }
-
+    var target_buf: u8[..4096] = [];
+    guard format_request_target(req, url_val, target_buf) else { return false; }
+    let has_cl = req.header("Content-Length").len > 0;
+    let has_te = req.header("Transfer-Encoding").len > 0;
+    var hdrs = req.headers;
     if !has_cl && !has_te && req.body.len > 0 {
         var cl_buf: u8[..32] = [];
         core::format_u64_dec(req.body.len as u64, cl_buf);
-        guard out.try_append("Content-Length: ") &&
-              out.try_append(cl_buf[..]) &&
-              out.try_append("\r\n") else { return false; }
+        guard append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
-
-    guard out.try_append("\r\n") else { return false; }
-    return true;
+    return wire::encode_h1_request(
+        req.method[..],
+        target_buf[..],
+        url_val.host(),
+        hdrs,
+        "",
+        wire::H1HeaderFilterMode.PreserveAll,
+        out,
+    );
 }
 
 // ---- 3. Response Status and Header Parsing ----------------------------------
@@ -149,52 +121,27 @@ fn parse_h1_status_line(
     return true;
 }
 
-// Parses raw HTTP response header block into zero-copy spans and HeaderItem views (RFC 9112 §2.1).
-// Populates resp.raw_headers, resp.spans, and resp.headers.
-//
 // Strips Content-Length if Transfer-Encoding is present to prevent HTTP desync (RFC 9112 §6.1).
 //
 // Example:
 //   resp.headers = [("Transfer-Encoding", "chunked"), ("Content-Length", "10")]
-//   returns: Content-Length removed from headers and spans
+//   returns: Content-Length removed from headers
 fn strip_conflicting_content_length(resp: Response&) {
     let te = header(resp, "Transfer-Encoding");
     let cl = header(resp, "Content-Length");
     guard te.len > 0 && cl.len > 0 else { return; }
     remove_header_by_name(resp.headers, "content-length");
-    guard resp.spans.len > 0 && resp.raw_headers.len > 0 else {
-        resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
-        return;
-    }
-    var write_idx = 0;
-    for read_idx in resp.spans.len {
-        let n = resp.spans[read_idx].name_slice(resp.raw_headers[..]);
-        if eq_ascii_fold(n, "content-length") {
-            continue;
-        }
-        if write_idx != read_idx {
-            resp.spans[write_idx] = copy(resp.spans[read_idx]);
-        }
-        write_idx++;
-    }
-    while resp.spans.len > write_idx {
-        resp.spans.pop();
-    }
     resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 
 // Example:
 //   header_bytes = "Content-Type: text/plain\r\nContent-Length: 5\r\n"
-//   returns: ok = true, resp.spans.len = 2, resp.headers.len = 2
+//   returns: ok = true, resp.headers.entries.len = 2
 fn parse_h1_header_block(
     header_bytes: const u8[:],
     resp:         Response&,
 ) -> bool {
-    resp.raw_headers.clear();
-    guard resp.raw_headers.try_append(header_bytes) else { return false; }
-    resp.spans.clear();
     resp.headers.clear();
-    resp.set_cookies.clear();
     resp.presence_mask = 0;
 
     var offset: i64 = 0;
@@ -204,7 +151,6 @@ fn parse_h1_header_block(
         let line_end = offset + rel_nl;
         let line_raw = header_bytes[offset..line_end];
         let line = core::trim_end_byte(line_raw, '\r');
-        let line_start = offset;
         offset = line_end + 1;
 
         guard line.len > 0 else { continue; }
@@ -220,27 +166,8 @@ fn parse_h1_header_block(
         let v_len = v_trim.len;
         let hval = line[v_start..(v_start + v_len)];
 
-        let known_id = identify_known_header(hname);
-        let span = HeaderSpan {
-            name_pos: line_start as u16,
-            name_len: hname.len as u16,
-            val_pos:  (line_start + v_start) as u16,
-            val_len:  v_len as u16,
-            id:       header_id_to_u8(known_id),
-        };
-        guard resp.spans.len < resp.spans.cap else { return false; }
-        resp.spans.push(span);
-
-        guard resp.headers.len < resp.headers.cap else { return false; }
-        resp.headers.push(make_header(hname, hval));
+        guard append_header(resp.headers, hname, hval) else { return false; }
         update_response_presence(resp, hname);
-
-        if eq_ascii_fold(hname, "Set-Cookie") && resp.set_cookies.len < resp.set_cookies.cap {
-            var sc_buf: u8[..1024] = [];
-            let n = if hval.len > sc_buf.cap { sc_buf.cap } else { hval.len };
-            sc_buf.append(hval[..n]);
-            resp.set_cookies.push(sc_buf);
-        }
     }
     strip_conflicting_content_length(resp);
     return true;

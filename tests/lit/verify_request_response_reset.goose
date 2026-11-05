@@ -19,7 +19,7 @@ fn main() {
     req.is_http10 = true;
     wing::set_header(req, "X-Custom-Header", "Value123");
 
-    assert(req.headers.len == 1);
+    assert(req.headers.entries.len == 1);
     assert(req.url.len > 0);
     assert(req.timeout == 5000);
 
@@ -27,8 +27,8 @@ fn main() {
 
     assert(req.method[..] == "GET");
     assert(req.url.len == 0);
-    assert(req.headers.len == 0);
-    assert(req.trailers.len == 0);
+    assert(req.headers.entries.len == 0);
+    assert(req.trailers.entries.len == 0);
     assert(req.query_params.len == 0);
     assert(req.rewind_buf.len == 0);
     assert(req.timeout == 0);
@@ -39,13 +39,13 @@ fn main() {
     wing::set_header(res, "Content-Type", "application/json");
 
     assert(res.status_code == 404);
-    assert(res.headers.len == 1);
+    assert(res.headers.entries.len == 1);
 
     wing::reset_response(res);
 
     assert(res.status_code == 200);
-    assert(res.headers.len == 0);
-    assert(res.sent_headers.len == 0);
+    assert(res.headers.entries.len == 0);
+    assert(res.sent_headers.entries.len == 0);
     assert(res.body.len == 0);
 
     print("REQUEST_RESPONSE_RESET: OK");

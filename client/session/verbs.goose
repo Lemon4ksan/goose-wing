@@ -442,8 +442,8 @@ fn connect_udp(
     var tunnel = new_connect_udp_tunnel(proxy_url, target_host, target_port, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
 
-    var req_path:    u8[..256]        = [];
-    var req_headers: HeaderItem[..16] = [];
+    var req_path:    u8[..256] = [];
+    var req_headers: HeaderMap = HeaderMap { .. };
     build_masque_connect_request(tunnel, req_headers, req_path);
 
     var full_url: u8[..2048] = [];
@@ -458,8 +458,8 @@ fn connect_udp(
     full_url.append(req_path[..]);
 
     var req = new_request("CONNECT", full_url[..]);
-    for &h in req_headers {
-        set_header(req, h.name[..], h.value[..]);
+    for &e in req_headers.entries {
+        set_header(req, entry_name(req_headers, e), entry_value(req_headers, e));
     }
 
     let resp, err = do(session, req);
@@ -492,8 +492,8 @@ fn connect_ip(
     var tunnel = new_connect_ip_tunnel(proxy_url, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
 
-    var req_path:    u8[..256]        = [];
-    var req_headers: HeaderItem[..16] = [];
+    var req_path:    u8[..256] = [];
+    var req_headers: HeaderMap = HeaderMap { .. };
     build_masque_connect_request(tunnel, req_headers, req_path);
 
     var full_url: u8[..2048] = [];
@@ -508,8 +508,8 @@ fn connect_ip(
     full_url.append(req_path[..]);
 
     var req = new_request("CONNECT", full_url[..]);
-    for &h in req_headers {
-        set_header(req, h.name[..], h.value[..]);
+    for &e in req_headers.entries {
+        set_header(req, entry_name(req_headers, e), entry_value(req_headers, e));
     }
 
     let resp, err = do(session, req);

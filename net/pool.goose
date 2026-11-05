@@ -10,6 +10,7 @@ import core from "..";
 import .proxy;
 import .transport;
 import .udp;
+import http2.hpack;
 
 // ---- pool key dimensions & enums ----------------------------------------
 
@@ -363,23 +364,27 @@ enum NegotiatedProtocol {
 
 // Active or idle pooled TCP/TLS/QUIC connection representation.
 struct PooledConnection {
-    conn_id:                i32                = -1,
-    key:                    PoolKey            = PoolKey { .. },
-    protocol:               NegotiatedProtocol = NegotiatedProtocol.Http11,
-    transport:              Transport          = Transport.Disconnected,
-    rx_buf:                 u8[..8192]         = [],
-    resolved_ip:            u8[..64]           = [],
-    san_hosts:              u8[..128][..8]     = [],
-    cert_valid:             bool               = true,
-    active_allocations:     i32                = 0,
-    max_concurrent_streams: i32                = 1,
-    idle_at_ns:             i64                = 0,
-    created_at_ns:          i64                = 0,
-    use_count:              i64                = 0,
-    source_exhausted:       bool               = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
-    remote_rst:             bool               = false,
-    no_new_exchanges:       bool               = false,
-    closed:                 bool               = false,
+    conn_id:                i32                    = -1,
+    key:                    PoolKey                = PoolKey { .. },
+    protocol:               NegotiatedProtocol     = NegotiatedProtocol.Http11,
+    transport:              Transport              = Transport.Disconnected,
+    rx_buf:                 u8[..8192]             = [],
+    resolved_ip:            u8[..64]               = [],
+    san_hosts:              u8[..128][..8]         = [],
+    cert_valid:             bool                   = true,
+    active_allocations:     i32                    = 0,
+    max_concurrent_streams: i32                    = 1,
+    idle_at_ns:             i64                    = 0,
+    created_at_ns:          i64                    = 0,
+    use_count:              i64                    = 0,
+    source_exhausted:       bool                   = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
+    remote_rst:             bool                   = false,
+    no_new_exchanges:       bool                   = false,
+    closed:                 bool                   = false,
+    hpack_enc:              internal::DynamicTable = internal::new_dynamic_table(4096),
+    hpack_dec:              internal::DynamicTable = internal::new_dynamic_table(4096),
+    next_h2_stream_id:      u32                    = 1,
+    h2_preface_sent:        bool                   = false,
 }
 
 const IDLE_CONNECTION_HEALTHY_NS:   i64 = 1000000000; // 1 second threshold for extensive checks

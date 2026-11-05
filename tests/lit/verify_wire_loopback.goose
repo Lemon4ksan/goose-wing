@@ -106,19 +106,12 @@ fn test_h2_wire_loopback() {
     assert((r_hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0);
 
     // Decode response HPACK header block
-    var dec_resp = internal::DecodedH2HeaderList { .. };
+    var dec_pseudo = internal::H2PseudoHeaders { .. };
+    var dec_resp = wing::HeaderMap { .. };
     let hpack_payload = resp_slice[9..9 + r_hdr.length];
-    let hpack_err = internal::decode_hpack_header_block(client_hpack, hpack_payload, dec_resp);
+    let hpack_err = internal::decode_hpack_to_map(client_hpack, hpack_payload, dec_pseudo, dec_resp);
     assert(hpack_err == rfc::H2_ERR_NO_ERROR);
-
-    var has_status_200 = false;
-    for &f in dec_resp.fields {
-        if f.name[..] == ":status" && f.value[..] == "200" {
-            has_status_200 = true;
-            break;
-        }
-    }
-    assert(has_status_200);
+    assert(dec_pseudo.has_status && dec_pseudo.status == 200);
     print("H2_LOOPBACK: OK");
 }
 
@@ -172,11 +165,24 @@ fn test_h3_wire_loopback() {
     assert(server_conn.peer_settings_received);
 
     // 2. Request Stream (Stream ID 0, Bidirectional) with HEADERS frame
-    // QPACK section with RIC=0, Base=0, static fields (:method GET = 0xD1, :scheme https = 0xD7, :path / = 0xC1)
-    let qpack_sec: u8[5] = [0x00, 0x00, 0xD1, 0xD7, 0xC1];
-    var req_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
-    req_wire.append(qpack_sec[..]);
+    // Encode with QPACK including a custom header (`x-loopback-id: 42`) and verify lossless HeaderMap extraction
+    var cli_qpack = internal::new_qpack_table(0);
+    var req_hdrs = wing::HeaderMap { .. };
+    wing::append_header(req_hdrs, "x-loopback-id", "42");
+    var req_pseudo = internal::H3PseudoHeaders {
+        has_method:    true,
+        method:        "GET",
+        has_scheme:    true,
+        scheme:        "https",
+        has_authority: true,
+        authority:     "example.com",
+        has_path:      true,
+        path:          "/",
+        ..
+    };
+    var req_wire:   u8[..256] = [];
+    var qpack_inst: u8[..256] = [];
+    assert(wire::encode_h3_headers_from_map(cli_qpack, 0, req_pseudo, req_hdrs, qpack_inst, req_wire));
 
     let err_req = server_conn.handle_stream_data(0, true, req_wire[..], false);
     assert(err_req == rfc::H3_ERR_NO_ERROR);
@@ -184,6 +190,7 @@ fn test_h3_wire_loopback() {
     let s_idx, found = internal::find_h3_stream_idx(server_conn, 0);
     assert(found);
     assert(server_conn.streams[s_idx].headers_received);
+    assert(wing::get_header(server_conn.streams[s_idx].headers, "x-loopback-id") == "42");
 
     // 3. DATA frame with payload "HELLO_H3"
     let body = "HELLO_H3";

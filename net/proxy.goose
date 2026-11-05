@@ -304,10 +304,11 @@ fn build_http_connect_request(
     out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
 }
 
-fn is_token_in_connection_headers<H>(headers: const H&, target_name: const u8[:]) -> bool {
-    for &h in headers {
-        guard eq_ascii_fold(h.name[..], "connection") else { continue; }
-        var rest: const u8[:] = h.value[..];
+fn is_token_in_connection_headers(headers: const HeaderMap&, target_name: const u8[:]) -> bool {
+    for idx in 0..headers.entries.len {
+        let e = headers.entries[idx];
+        guard eq_ascii_fold(entry_name(headers, e), "connection") else { continue; }
+        var rest: const u8[:] = entry_value(headers, e);
         while rest.len > 0 {
             let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
             let token = trim_lws(token_raw);
@@ -327,19 +328,20 @@ fn is_token_in_connection_headers<H>(headers: const H&, target_name: const u8[:]
 // Example:
 //   headers contains [("Proxy-Authorization", "Basic ..."), ("Host", "example.com")]
 //   after: headers contains only [("Host", "example.com")]
-fn sanitize_tunnel_headers_for_origin<H>(headers: H&) {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        let h_name = headers[read_idx].name[..];
+fn sanitize_tunnel_headers_for_origin(headers: HeaderMap&) {
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    let total_entries = headers.entries.len;
+    for read_i in total_entries {
+        let h_name = entry_name(headers, headers.entries[read_i]);
         let drop = is_hop_by_hop_header_name(h_name) || is_token_in_connection_headers(headers, h_name);
         if !drop {
-            if write_idx != read_idx {
-                headers[write_idx] = copy(headers[read_idx]);
-            }
-            write_idx++;
+            compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
         }
     }
-    headers.resize(write_idx);
+    if write_entry_i < total_entries {
+        finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
+    }
 }
 
 // Inspects HTTP CONNECT response and defends against data injection before TLS handshake.

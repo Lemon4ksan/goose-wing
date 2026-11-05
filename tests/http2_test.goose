@@ -166,12 +166,12 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // 2. Indexed :scheme: https (static index 7 -> 0x87)
         // 3. Indexed :path: / (static index 4 -> 0x84)
         let raw_block: u8[3] = [0x82, 0x87, 0x84];
-        var out = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "valid pseudo-headers decode with NO_ERROR");
-        sub.assert_eq(out.fields.len, 3, "3 fields decoded");
-        sub.assert_eq(out.fields[0].name[..], ":method", "method field");
-        sub.assert_eq(out.fields[0].value[..], "GET", "GET value");
+        sub.assert_true(pseudo.has_method && pseudo.has_scheme && pseudo.has_path, "3 pseudo-fields decoded");
+        sub.assert_eq(pseudo.method[..], "GET", "GET value");
     };
 
     t.run("DYN-04: Pseudo-Header Ordering Violation Rejection (RFC 9113 Section 8.3)") { sub =>
@@ -180,8 +180,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // 1. Regular header: accept: */* (static index 19 -> 0x93)
         // 2. Pseudo header: :path: / (static index 4 -> 0x84)  <-- ILLEGAL: pseudo after regular!
         let raw_block: u8[2] = [0x93, 0x84];
-        var out = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR");
     };
 
@@ -189,8 +190,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         var dt = internal::new_dynamic_table(4096);
         // Block: duplicate :method: GET (0x82, 0x82)
         let raw_block: u8[2] = [0x82, 0x82];
-        var out = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "duplicate pseudo-header must trigger PROTOCOL_ERROR");
     };
 
@@ -218,8 +220,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.push(2);
         raw_block.append("20");
 
-        var out = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "conflicting Content-Length headers must trigger PROTOCOL_ERROR");
 
         // Identical matching Content-Length: "10" and "10" must be accepted
@@ -230,8 +233,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.push(0x00); raw_block.push(14); raw_block.append("content-length"); raw_block.push(2); raw_block.append("10");
         raw_block.push(0x00); raw_block.push(14); raw_block.append("content-length"); raw_block.push(2); raw_block.append("10");
 
-        var out_ok = internal::DecodedH2HeaderList { .. };
-        let err_ok = internal::decode_hpack_header_block(dt, raw_block[..], out_ok);
+        var pseudo_ok = internal::H2PseudoHeaders { .. };
+        var out_ok = wing::HeaderMap { .. };
+        let err_ok = internal::decode_hpack_to_map(dt, raw_block[..], pseudo_ok, out_ok);
         sub.assert_eq(err_ok, rfc::H2_ERR_NO_ERROR, "identical multiple Content-Length headers are accepted");
     };
 
@@ -245,8 +249,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.push(5);
         raw_block.append("close");
 
-        var out = internal::DecodedH2HeaderList { .. };
-        let err = internal::decode_hpack_header_block(dt, raw_block[..], out);
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "forbidden 'connection' header must trigger PROTOCOL_ERROR");
     };
 
@@ -255,8 +260,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
 
         // Missing :path (only :method: GET and :scheme: https)
         let block_no_path: u8[2] = [0x82, 0x87];
-        var out1 = internal::DecodedH2HeaderList { .. };
-        let err1 = internal::decode_hpack_header_block(dt, block_no_path[..], out1);
+        var pseudo1 = internal::H2PseudoHeaders { .. };
+        var out1 = wing::HeaderMap { .. };
+        let err1 = internal::decode_hpack_to_map(dt, block_no_path[..], pseudo1, out1);
         sub.assert_eq(err1, rfc::H2_ERR_PROTOCOL_ERROR, "request without :path must trigger PROTOCOL_ERROR");
 
         // Missing all pseudo-headers (only regular header)
@@ -266,8 +272,9 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         block_no_pseudo.append("user-agent");
         block_no_pseudo.push(3);
         block_no_pseudo.append("bot");
-        var out2 = internal::DecodedH2HeaderList { .. };
-        let err2 = internal::decode_hpack_header_block(dt, block_no_pseudo[..], out2);
+        var pseudo2 = internal::H2PseudoHeaders { .. };
+        var out2 = wing::HeaderMap { .. };
+        let err2 = internal::decode_hpack_to_map(dt, block_no_pseudo[..], pseudo2, out2);
         sub.assert_eq(err2, rfc::H2_ERR_PROTOCOL_ERROR, "request without pseudo-headers must trigger PROTOCOL_ERROR");
     };
 
@@ -940,23 +947,15 @@ fn test_h2_request_dispatch(t: lit::T&) {
         sub.assert_true((resp_hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0, "Response has END_HEADERS");
 
         // Decode response headers with client HPACK table
-        var dec_resp = internal::DecodedH2HeaderList { .. };
+        var dec_pseudo = internal::H2PseudoHeaders { .. };
+        var dec_resp = wing::HeaderMap { .. };
         let hpack_payload = out_wire[42..42 + resp_hdr.length];
-        let dec_err = internal::decode_hpack_header_block(client_hpack, hpack_payload, dec_resp);
+        let dec_err = internal::decode_hpack_to_map(client_hpack, hpack_payload, dec_pseudo, dec_resp);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Client decoded response HPACK without error");
 
         // Verify :status == 200
-        var found_status = false;
-        var status_code_val: u8[..16] = [];
-        for &f in dec_resp.fields {
-            if f.name[..] == ":status" {
-                found_status = true;
-                status_code_val.clear();
-                status_code_val.append(f.value[..]);
-            }
-        }
-        sub.assert_true(found_status, "Found :status in response headers");
-        sub.assert_bytes_eq(status_code_val[..], "200", ":status is 200");
+        sub.assert_true(dec_pseudo.has_status, "Found :status in response headers");
+        sub.assert_eq(dec_pseudo.status, 200, ":status is 200");
     };
 
     t.run("H2-04: POST Request with DATA Frame Payload") { sub =>
@@ -1929,314 +1928,254 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
 fn test_continuation_flood_and_interleaving(t: lit::T&) {
     t.run("H2-01: CONTINUATION Flood Exceeding Frame Cap Rejection (CVE-2024-27983)") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        // 1. Initial HEADERS frame on stream 1 without END_HEADERS
-        let h_hdr = internal::H2FrameHeader {
-            payload_len: 100,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       0x0, // No END_HEADERS
-            stream_id:   1,
-            valid:       true,
+        let h_hdr = internal::FrameHeader {
+            length:     100,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let err0 = internal::process_incoming_frame(framer, h_hdr);
-        sub.assert_eq(err0, internal::H2ErrorCode.NoError);
-        sub.assert_true(framer.state == internal::H2ConnState.ExpectContinuation);
+        let err0 = internal::on_ingress_frame_header(conn, h_hdr, 0);
+        sub.assert_eq(err0, rfc::H2_ERR_NO_ERROR);
+        sub.assert_eq(conn.continuation_stream_id, 1);
 
-        // 2. Stream 5 valid CONTINUATION frames (allowed)
-        for _ in 5 {
-            let cont_hdr = internal::H2FrameHeader {
-                payload_len: 100,
-                frame_type:  internal::H2FrameType.Continuation,
-                raw_type:    0x9,
-                flags:       0x0, // Not finished yet
-                stream_id:   1,
-                valid:       true,
+        for _ in 16 {
+            let cont_hdr = internal::FrameHeader {
+                length:     100,
+                frame_type: rfc::H2_FRAME_CONTINUATION,
+                flags:      0x0,
+                stream_id:  1,
             };
-            let err_cont = internal::process_incoming_frame(framer, cont_hdr);
-            sub.assert_eq(err_cont, internal::H2ErrorCode.NoError);
+            let err_cont = internal::on_ingress_frame_header(conn, cont_hdr, 0);
+            sub.assert_eq(err_cont, rfc::H2_ERR_NO_ERROR);
         }
 
-        // 3. 6th CONTINUATION frame (exceeds max_continuation_frames = 5) -> EnhanceYourCalm (DDoS mitigation)
-        let flood_hdr = internal::H2FrameHeader {
-            payload_len: 100,
-            frame_type:  internal::H2FrameType.Continuation,
-            raw_type:    0x9,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let flood_hdr = internal::FrameHeader {
+            length:     100,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let err_flood = internal::process_incoming_frame(framer, flood_hdr);
-        sub.assert_eq(err_flood, internal::H2ErrorCode.EnhanceYourCalm, "CONTINUATION flood must be rejected with EnhanceYourCalm");
-        sub.assert_true(framer.state == internal::H2ConnState.Closed);
+        let err_flood = internal::on_ingress_frame_header(conn, flood_hdr, 0);
+        sub.assert_eq(err_flood, rfc::H2_ERR_ENHANCE_YOUR_CALM, "CONTINUATION flood must be rejected with EnhanceYourCalm");
     };
 
     t.run("H2-02: Stream Interleaving While Expecting CONTINUATION Rejection (RFC 9113 Section 4.3)") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        // HEADERS on stream 1 without END_HEADERS
-        let h_hdr = internal::H2FrameHeader {
-            payload_len: 50,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let h_hdr = internal::FrameHeader {
+            length:     50,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      0x0,
+            stream_id:  1,
         };
-        internal::process_incoming_frame(framer, h_hdr);
+        let _ = internal::on_ingress_frame_header(conn, h_hdr, 0);
 
-        // Interleaved DATA frame on stream 1 (Illegal while expecting CONTINUATION)
-        let data_hdr = internal::H2FrameHeader {
-            payload_len: 10,
-            frame_type:  internal::H2FrameType.Data,
-            raw_type:    0x0,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let data_hdr = internal::FrameHeader {
+            length:     10,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let err1 = internal::process_incoming_frame(framer, data_hdr);
-        sub.assert_eq(err1, internal::H2ErrorCode.ProtocolError, "Non-CONTINUATION frame interleaved must trigger ProtocolError");
+        let err1 = internal::on_ingress_frame_header(conn, data_hdr, 0);
+        sub.assert_eq(err1, rfc::H2_ERR_PROTOCOL_ERROR, "Non-CONTINUATION frame interleaved must trigger ProtocolError");
 
-        // Reset and test interleaved CONTINUATION on DIFFERENT stream (stream 3 instead of 1)
-        var framer2 = internal::H2SecurityFramer { .. };
-        internal::process_incoming_frame(framer2, h_hdr);
+        var conn2 = internal::new_h2_connection(0);
+        let _ = internal::on_ingress_frame_header(conn2, h_hdr, 0);
 
-        let cont_other_stream = internal::H2FrameHeader {
-            payload_len: 50,
-            frame_type:  internal::H2FrameType.Continuation,
-            raw_type:    0x9,
-            flags:       0x0,
-            stream_id:   3, // Different stream!
-            valid:       true,
+        let cont_other_stream = internal::FrameHeader {
+            length:     50,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      0x0,
+            stream_id:  3,
         };
-        let err2 = internal::process_incoming_frame(framer2, cont_other_stream);
-        sub.assert_eq(err2, internal::H2ErrorCode.ProtocolError, "CONTINUATION on different stream must trigger ProtocolError");
+        let err2 = internal::on_ingress_frame_header(conn2, cont_other_stream, 0);
+        sub.assert_eq(err2, rfc::H2_ERR_PROTOCOL_ERROR, "CONTINUATION on different stream must trigger ProtocolError");
     };
 
     t.run("H2-03: Cumulative Header Block Size Bomb Rejection") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        // HEADERS with 4000 bytes
-        let h_hdr = internal::H2FrameHeader {
-            payload_len: 4000,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let h_hdr = internal::FrameHeader {
+            length:     4000,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      0x0,
+            stream_id:  1,
         };
-        internal::process_incoming_frame(framer, h_hdr);
+        let _ = internal::on_ingress_frame_header(conn, h_hdr, 0);
 
-        // CONTINUATION with 5000 bytes (total 9000 > max_header_block_bytes 8192)
-        let cont_bomb = internal::H2FrameHeader {
-            payload_len: 5000,
-            frame_type:  internal::H2FrameType.Continuation,
-            raw_type:    0x9,
-            flags:       0x4, // END_HEADERS
-            stream_id:   1,
-            valid:       true,
+        let cont_bomb = internal::FrameHeader {
+            length:     5000,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  1,
         };
-        let err = internal::process_incoming_frame(framer, cont_bomb);
-        sub.assert_eq(err, internal::H2ErrorCode.EnhanceYourCalm, "Cumulative header block > 8KB must be rejected with EnhanceYourCalm");
+        let err = internal::on_ingress_frame_header(conn, cont_bomb, 0);
+        sub.assert_eq(err, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Cumulative header block > 8KB must be rejected with EnhanceYourCalm");
     };
 
     t.run("H2-04: Valid CONTINUATION Sequence with END_HEADERS") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        let h_hdr = internal::H2FrameHeader {
-            payload_len: 200,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let h_hdr = internal::FrameHeader {
+            length:     200,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      0x0,
+            stream_id:  1,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, h_hdr), internal::H2ErrorCode.NoError);
+        sub.assert_eq(internal::on_ingress_frame_header(conn, h_hdr, 0), rfc::H2_ERR_NO_ERROR);
 
-        let cont_final = internal::H2FrameHeader {
-            payload_len: 300,
-            frame_type:  internal::H2FrameType.Continuation,
-            raw_type:    0x9,
-            flags:       rfc::H2_FLAG_END_HEADERS,
-            stream_id:   1,
-            valid:       true,
+        let cont_final = internal::FrameHeader {
+            length:     300,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  1,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, cont_final), internal::H2ErrorCode.NoError);
-        sub.assert_true(framer.state == internal::H2ConnState.Idle, "State returned to Idle on END_HEADERS");
+        sub.assert_eq(internal::on_ingress_frame_header(conn, cont_final, 0), rfc::H2_ERR_NO_ERROR);
+        sub.assert_eq(conn.continuation_stream_id, 0, "State returned to Idle on END_HEADERS");
     };
 }
 
 fn test_rapid_reset_and_dos_floods(t: lit::T&) {
     t.run("RESET-01: Rapid Reset Flood Defense (CVE-2023-44487)") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
+        conn.reset_limiter = internal::new_h2_token_bucket(100, 33, 0);
+        conn.last_peer_stream_id = 1;
 
-        // 100 RST_STREAM frames processed (under limit)
         for _ in 100 {
-            let rst = internal::H2FrameHeader {
-                payload_len: 4,
-                frame_type:  internal::H2FrameType.RstStream,
-                raw_type:    0x3,
-                flags:       0x0,
-                stream_id:   1,
-                valid:       true,
+            let rst = internal::FrameHeader {
+                length:     4,
+                frame_type: rfc::H2_FRAME_RST_STREAM,
+                flags:      0x0,
+                stream_id:  1,
             };
-            let err = internal::process_incoming_frame(framer, rst);
-            sub.assert_eq(err, internal::H2ErrorCode.NoError);
+            let err = internal::on_ingress_frame_header(conn, rst, 0);
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR);
         }
 
-        // 101st RST_STREAM frame (exceeds max_rapid_resets = 100) -> EnhanceYourCalm
-        let rst_flood = internal::H2FrameHeader {
-            payload_len: 4,
-            frame_type:  internal::H2FrameType.RstStream,
-            raw_type:    0x3,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let rst_flood = internal::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_RST_STREAM,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let err_flood = internal::process_incoming_frame(framer, rst_flood);
-        sub.assert_eq(err_flood, internal::H2ErrorCode.EnhanceYourCalm, "Rapid reset flood must trigger EnhanceYourCalm");
-        sub.assert_true(framer.state == internal::H2ConnState.Closed);
+        let err_flood = internal::on_ingress_frame_header(conn, rst_flood, 0);
+        sub.assert_eq(err_flood, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Rapid reset flood must trigger EnhanceYourCalm");
     };
 
     t.run("PING-01: PING Flood Defense (CVE-2019-9512)") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        // 10 unacknowledged PING frames allowed
-        for _ in 10 {
-            let ping = internal::H2FrameHeader {
-                payload_len: 8,
-                frame_type:  internal::H2FrameType.Ping,
-                raw_type:    0x6,
-                flags:       0x0, // Not an ACK
-                stream_id:   0,
-                valid:       true,
+        for _ in 64 {
+            let ping = internal::FrameHeader {
+                length:     8,
+                frame_type: rfc::H2_FRAME_PING,
+                flags:      0x0,
+                stream_id:  0,
             };
-            sub.assert_eq(internal::process_incoming_frame(framer, ping), internal::H2ErrorCode.NoError);
+            sub.assert_eq(internal::on_ingress_frame_header(conn, ping, 0), rfc::H2_ERR_NO_ERROR);
         }
 
-        // 11th unacknowledged PING -> EnhanceYourCalm
-        let ping_flood = internal::H2FrameHeader {
-            payload_len: 8,
-            frame_type:  internal::H2FrameType.Ping,
-            raw_type:    0x6,
-            flags:       0x0,
-            stream_id:   0,
-            valid:       true,
+        let ping_flood = internal::FrameHeader {
+            length:     8,
+            frame_type: rfc::H2_FRAME_PING,
+            flags:      0x0,
+            stream_id:  0,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, ping_flood), internal::H2ErrorCode.EnhanceYourCalm);
+        sub.assert_eq(internal::on_ingress_frame_header(conn, ping_flood, 0), rfc::H2_ERR_ENHANCE_YOUR_CALM);
     };
 }
 
 fn test_settings_and_stream_id_invariants(t: lit::T&) {
     t.run("SETTING-01: SETTINGS_MAX_FRAME_SIZE=0 Infinite Loop Defense ") { sub =>
-        // Setting 0 must trigger ProtocolError
-        let err0 = internal::validate_h2_setting(0x5, 0);
-        sub.assert_eq(err0, internal::H2ErrorCode.ProtocolError, "SETTINGS_MAX_FRAME_SIZE=0 must return ProtocolError");
+        let err0 = internal::validate_settings_parameter(0x5, 0);
+        sub.assert_eq(err0, rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS_MAX_FRAME_SIZE=0 must return ProtocolError");
 
-        // Setting < 16,384 must trigger ProtocolError
-        let err1 = internal::validate_h2_setting(0x5, 1000);
-        sub.assert_eq(err1, internal::H2ErrorCode.ProtocolError, "SETTINGS_MAX_FRAME_SIZE < 16384 must return ProtocolError");
+        let err1 = internal::validate_settings_parameter(0x5, 1000);
+        sub.assert_eq(err1, rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS_MAX_FRAME_SIZE < 16384 must return ProtocolError");
 
-        // Min valid: 16,384
-        let err_min = internal::validate_h2_setting(0x5, 16384);
-        sub.assert_eq(err_min, internal::H2ErrorCode.NoError, "SETTINGS_MAX_FRAME_SIZE=16384 is valid");
+        let err_min = internal::validate_settings_parameter(0x5, 16384);
+        sub.assert_eq(err_min, rfc::H2_ERR_NO_ERROR, "SETTINGS_MAX_FRAME_SIZE=16384 is valid");
 
-        // Max valid: 16,777,215 (2^24 - 1)
-        let err_max = internal::validate_h2_setting(0x5, 16777215);
-        sub.assert_eq(err_max, internal::H2ErrorCode.NoError, "SETTINGS_MAX_FRAME_SIZE=16777215 is valid");
+        let err_max = internal::validate_settings_parameter(0x5, 16777215);
+        sub.assert_eq(err_max, rfc::H2_ERR_NO_ERROR, "SETTINGS_MAX_FRAME_SIZE=16777215 is valid");
 
-        // Setting > 16,777,215 must trigger ProtocolError
-        let err_ovf = internal::validate_h2_setting(0x5, 20000000);
-        sub.assert_eq(err_ovf, internal::H2ErrorCode.ProtocolError, "SETTINGS_MAX_FRAME_SIZE > 16777215 must return ProtocolError");
+        let err_ovf = internal::validate_settings_parameter(0x5, 20000000);
+        sub.assert_eq(err_ovf, rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS_MAX_FRAME_SIZE > 16777215 must return ProtocolError");
     };
 
     t.run("STREAM-01: Stream ID Parity & Connection-Level Isolation (RFC 9113 Section 5.1.1)") { sub =>
-        var framer = internal::H2SecurityFramer { .. };
+        var conn = internal::new_h2_connection(0);
 
-        // 1. Client HEADERS on even stream (stream 2) -> ProtocolError
-        let even_hdr = internal::H2FrameHeader {
-            payload_len: 20,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       rfc::H2_FLAG_END_HEADERS,
-            stream_id:   2, // Even stream
-            valid:       true,
+        let even_hdr = internal::FrameHeader {
+            length:     20,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  2,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, even_hdr), internal::H2ErrorCode.ProtocolError, "Client HEADERS on even stream must fail");
+        sub.assert_eq(internal::on_ingress_frame_header(conn, even_hdr, 0), rfc::H2_ERR_PROTOCOL_ERROR, "Client HEADERS on even stream must fail");
 
-        // 2. Client HEADERS on stream 0 -> ProtocolError
-        let stream0_hdr = internal::H2FrameHeader {
-            payload_len: 20,
-            frame_type:  internal::H2FrameType.Headers,
-            raw_type:    0x1,
-            flags:       rfc::H2_FLAG_END_HEADERS,
-            stream_id:   0,
-            valid:       true,
+        let stream0_hdr = internal::FrameHeader {
+            length:     20,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  0,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, stream0_hdr), internal::H2ErrorCode.ProtocolError, "HEADERS on stream 0 must fail");
+        sub.assert_eq(internal::on_ingress_frame_header(conn, stream0_hdr, 0), rfc::H2_ERR_PROTOCOL_ERROR, "HEADERS on stream 0 must fail");
 
-        // 3. SETTINGS on stream > 0 -> ProtocolError
-        let s_hdr = internal::H2FrameHeader {
-            payload_len: 6,
-            frame_type:  internal::H2FrameType.Settings,
-            raw_type:    0x4,
-            flags:       0x0,
-            stream_id:   1, // Must be stream 0!
-            valid:       true,
+        let s_hdr = internal::FrameHeader {
+            length:     6,
+            frame_type: rfc::H2_FRAME_SETTINGS,
+            flags:      0x0,
+            stream_id:  1,
         };
-        sub.assert_eq(internal::process_incoming_frame(framer, s_hdr), internal::H2ErrorCode.ProtocolError, "SETTINGS on stream 1 must fail");
+        sub.assert_eq(internal::on_ingress_frame_header(conn, s_hdr, 0), rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS on stream 1 must fail");
     };
 }
 
 fn test_h2_wire_framing_and_types(t: lit::T&) {
     t.run("WIRE-01: Frame Type Mapping and Extension Handling (RFC 9113 Sec 6)") { sub =>
-        sub.assert_eq(internal::byte_to_frame_type(0x0), internal::H2FrameType.Data, "0x0 is Data");
-        sub.assert_eq(internal::byte_to_frame_type(0x1), internal::H2FrameType.Headers, "0x1 is Headers");
-        sub.assert_eq(internal::byte_to_frame_type(0x2), internal::H2FrameType.Priority, "0x2 is Priority");
-        sub.assert_eq(internal::byte_to_frame_type(0x3), internal::H2FrameType.RstStream, "0x3 is RstStream");
-        sub.assert_eq(internal::byte_to_frame_type(0x4), internal::H2FrameType.Settings, "0x4 is Settings");
-        sub.assert_eq(internal::byte_to_frame_type(0x5), internal::H2FrameType.PushPromise, "0x5 is PushPromise");
-        sub.assert_eq(internal::byte_to_frame_type(0x6), internal::H2FrameType.Ping, "0x6 is Ping");
-        sub.assert_eq(internal::byte_to_frame_type(0x7), internal::H2FrameType.GoAway, "0x7 is GoAway");
-        sub.assert_eq(internal::byte_to_frame_type(0x8), internal::H2FrameType.WindowUpdate, "0x8 is WindowUpdate");
-        sub.assert_eq(internal::byte_to_frame_type(0x9), internal::H2FrameType.Continuation, "0x9 is Continuation");
-        sub.assert_eq(internal::byte_to_frame_type(0x0A), internal::H2FrameType.Unknown, "0x0A is Unknown");
-        sub.assert_eq(internal::byte_to_frame_type(0xFF), internal::H2FrameType.Unknown, "0xFF is Unknown");
+        sub.assert_eq(rfc::H2_FRAME_DATA, 0x0, "0x0 is Data");
+        sub.assert_eq(rfc::H2_FRAME_HEADERS, 0x1, "0x1 is Headers");
+        sub.assert_eq(rfc::H2_FRAME_PRIORITY, 0x2, "0x2 is Priority");
+        sub.assert_eq(rfc::H2_FRAME_RST_STREAM, 0x3, "0x3 is RstStream");
+        sub.assert_eq(rfc::H2_FRAME_SETTINGS, 0x4, "0x4 is Settings");
+        sub.assert_eq(rfc::H2_FRAME_PUSH_PROMISE, 0x5, "0x5 is PushPromise");
+        sub.assert_eq(rfc::H2_FRAME_PING, 0x6, "0x6 is Ping");
+        sub.assert_eq(rfc::H2_FRAME_GOAWAY, 0x7, "0x7 is GoAway");
+        sub.assert_eq(rfc::H2_FRAME_WINDOW_UPDATE, 0x8, "0x8 is WindowUpdate");
+        sub.assert_eq(rfc::H2_FRAME_CONTINUATION, 0x9, "0x9 is Continuation");
     };
 
     t.run("WIRE-02: 9-Byte Frame Header Decoding & Reserved Bit Masking (RFC 9113 Sec 4.1)") { sub =>
-        // Truncated header (< 9 bytes)
         var short_buf: u8[8] = [0; 8];
-        let _, err_short = internal::parse_h2_frame_header(short_buf[..]);
-        sub.assert_eq(err_short, internal::H2ErrorCode.FrameSizeError, "short header returns FrameSizeError");
+        let _, err_short = internal::parse_frame_header(short_buf[..]);
+        sub.assert_eq(err_short, rfc::H2_ERR_FRAME_SIZE_ERROR, "short header returns FrameSizeError");
 
-        // Valid DATA frame: length 128 (0x000080), type 0x00, flags 0x01 (END_STREAM), stream 5 (0x00000005)
         var data_hdr_raw: u8[9] = [
             0x00, 0x00, 0x80, // length = 128
             0x00,             // type = DATA
             0x01,             // flags = END_STREAM
             0x00, 0x00, 0x00, 0x05, // stream ID = 5
         ];
-        let h1, err1 = internal::parse_h2_frame_header(data_hdr_raw[..]);
-        sub.assert_eq(err1, internal::H2ErrorCode.NoError, "valid DATA header returns NoError");
-        sub.assert_true(h1.valid, "valid flag is true");
-        sub.assert_eq(h1.payload_len, 128, "payload len is 128");
-        sub.assert_eq(h1.frame_type, internal::H2FrameType.Data, "frame type is Data");
+        let h1, err1 = internal::parse_frame_header(data_hdr_raw[..]);
+        sub.assert_eq(err1, rfc::H2_ERR_NO_ERROR, "valid DATA header returns NoError");
+        sub.assert_eq(h1.length, 128, "payload len is 128");
+        sub.assert_eq(h1.frame_type, rfc::H2_FRAME_DATA, "frame type is Data");
         sub.assert_eq(h1.flags, 0x01, "flags match");
         sub.assert_eq(h1.stream_id, 5, "stream id is 5");
 
-        // HEADERS frame with reserved high bit set: stream 0x80000003 -> masked to 3
         var res_hdr_raw: u8[9] = [
             0x00, 0x01, 0x00, // length = 256
             0x01,             // type = HEADERS
             0x04,             // flags = END_HEADERS
             0x80, 0x00, 0x00, 0x03, // stream ID = 3 with high bit set
         ];
-        let h2, err2 = internal::parse_h2_frame_header(res_hdr_raw[..]);
-        sub.assert_eq(err2, internal::H2ErrorCode.NoError, "reserved bit header returns NoError");
+        let h2, err2 = internal::parse_frame_header(res_hdr_raw[..]);
+        sub.assert_eq(err2, rfc::H2_ERR_NO_ERROR, "reserved bit header returns NoError");
         sub.assert_eq(h2.stream_id, 3, "reserved bit masked out to stream id 3");
-        sub.assert_eq(h2.payload_len, 256, "payload len is 256");
+        sub.assert_eq(h2.length, 256, "payload len is 256");
     };
 }
 
@@ -2518,42 +2457,46 @@ fn test_hpack_dynamic_table_invariants(t: lit::T&) {
 fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-08: Dynamic Table Size Update in middle of Block Rejected") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // Header block:
         // 1. Static index 2 (:method: GET) -> 0x82
         // 2. Dynamic table size update: 001xxxxx -> 0x3F 0x00 (size = 31)
         let bad_block: u8[3] = [0x82, 0x3F, 0x00];
-        let err = internal::decode_hpack_header_block(dt, bad_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, bad_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_COMPRESSION_ERROR, "table size update after regular header must fail with COMPRESSION_ERROR per RFC 7541 §4.2");
     };
 
     t.run("HPACK-SEC-09: Table Size Update Exceeding SETTINGS Max Rejected") { sub =>
         var dt = internal::new_dynamic_table(1024); // max allowed size = 1024
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // Table size update requesting 2048:
         // 001xxxxx prefix 5: 0x3F (31), followed by (2048 - 31) = 2017 -> 2017 = 0x7E1 -> 0xE1 0x0F
         let oversize_block: u8[3] = [0x3F, 0xE1, 0x0F];
-        let err = internal::decode_hpack_header_block(dt, oversize_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, oversize_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_COMPRESSION_ERROR, "size update exceeding max_allowed_size must trigger COMPRESSION_ERROR");
     };
 
     t.run("HPACK-SEC-10: Pseudo-Header Ordering (Pseudo After Regular Rejected)") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // Header block:
         // 1. Static index 24 (cache-control: no-cache) -> 0x98 (regular header)
         // 2. Static index 2 (:method: GET) -> 0x82 (pseudo-header)
         let out_of_order_block: u8[2] = [0x98, 0x82];
-        let err = internal::decode_hpack_header_block(dt, out_of_order_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, out_of_order_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR per RFC 9113 §8.3");
     };
 
     t.run("HPACK-SEC-11: Forbidden Connection Headers in HTTP/2 Rejected") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // Literal Header with Incremental Indexing (01000000 = 0x40):
         // Name: "connection" (raw, 10 bytes): 0x0A, "connection"
@@ -2566,13 +2509,14 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         conn_block.push(5);    // val len 5
         conn_block.append("close");
 
-        let err = internal::decode_hpack_header_block(dt, conn_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, conn_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Connection header must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
     };
 
     t.run("HPACK-SEC-12: Disallowed TE Header Value Rejected") { sub =>
         var dt = internal::new_dynamic_table(4096);
-        var out_list = internal::DecodedH2HeaderList { .. };
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out_list = wing::HeaderMap { .. };
 
         // TE header with value other than "trailers" (e.g. "gzip") is illegal in HTTP/2
         var te_block: u8[..64] = [];
@@ -2583,7 +2527,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
         te_block.push(4);    // "gzip"
         te_block.append("gzip");
 
-        let err = internal::decode_hpack_header_block(dt, te_block[..], out_list);
+        let err = internal::decode_hpack_to_map(dt, te_block[..], pseudo, out_list);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "TE header with value other than 'trailers' must trigger PROTOCOL_ERROR per RFC 9113 §8.2.2");
     };
 }

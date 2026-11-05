@@ -8,7 +8,7 @@ Containers carry compile-time capacity caps:
 
 | Type or field | Capacity limit | Behavior on exceeding budget |
 | :--- | :--- | :--- |
-| `HeaderMap` | 64 dynamic + 64 well-known static slots | Header insertion fails closed or returns false. Headers beyond 64 are rejected. |
+| `HeaderMap` | 64 dynamic + 64 well-known static slots, 8192-byte `raw_buf` | Header insertion fails closed (`false`). In-place overwrites and removals compact `raw_buf` via `compact_tail_after` without temporary buffers. |
 | `HeaderItem.name` | 64 bytes | Header name exceeding 64 bytes is rejected or truncated during parsing. |
 | `HeaderItem.value` | 384 bytes | Inline header values exceeding 384 bytes are rejected (zero-copy `HeaderSpan` views preserve larger wire values). |
 | `UrlView` and URL buffers | 2048 bytes | URLs longer than 2048 bytes fail with `UrlParseError.UrlTooLong`. |

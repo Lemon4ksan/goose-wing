@@ -79,24 +79,19 @@ fn main() {
     print("  301 Clear Body:      ", r_info.clear_body, "\n");
     print("  301 Is Cross-Origin: ", r_info.is_cross_origin, "\n");
 
-    var req_headers: wing::HeaderItem[..32] = [];
-    req_headers.push(wing::make_header("Authorization", "Bearer secret_jwt_token_999", true));
-    req_headers.push(wing::make_header("X-API-Key", "api_key_secret_888", true));
-    req_headers.push(wing::make_header("Accept", "application/json", false));
+    var req_headers = wing::HeaderMap { .. };
+    wing::append_header(req_headers, "Authorization", "Bearer secret_jwt_token_999");
+    wing::append_header(req_headers, "X-API-Key", "api_key_secret_888");
+    wing::append_header(req_headers, "Accept", "application/json");
 
     wing::sanitize_headers_on_redirect(
         req_headers,
         r_info,
         wing::RedirectSanitizeOptions { enable_referer: true },
     );
-    var has_auth = false;
-    var has_apikey = false;
-    var has_accept = false;
-    for h in req_headers {
-        if core::eq_ascii_fold(h.name[..], "Authorization") { has_auth = true; }
-        if core::eq_ascii_fold(h.name[..], "X-API-Key") { has_apikey = true; }
-        if core::eq_ascii_fold(h.name[..], "Accept") { has_accept = true; }
-    }
+    let has_auth = wing::has_header(req_headers, "Authorization");
+    let has_apikey = wing::has_header(req_headers, "X-API-Key");
+    let has_accept = wing::has_header(req_headers, "Accept");
     print("  Auth purged:         ", !has_auth, "\n");
     print("  API Key purged:      ", !has_apikey, "\n");
     print("  Accept preserved:    ", has_accept, "\n");
@@ -106,14 +101,15 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[5/11] RFC 9112 Chunked Transfer Coding & Trailers...\n");
     let chunked_wire = "5\r\nHello\r\n8\r\n, World!\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123\r\n\r\n";
-    var body_out:     u8[>..]                = [];
-    var trailers_out: wing::HeaderItem[..16] = [];
+    var body_out: u8[>..] = [];
+    var trailers_out = wing::HeaderMap { .. };
     let err_chunk, _consumed = wing::decode_chunked_body_with_trailers(chunked_wire, body_out, trailers_out);
     print("  Chunk decode ok:     ", err_chunk == wing::ChunkedDecodeError.None, "\n");
     print("  Body Reassembled:    ", body_out[..], "\n");
-    print("  Trailers Extracted:  ", trailers_out.len, "\n");
-    for ti in trailers_out.len {
-        print("    Trailer: ", trailers_out[ti].name[..], " = ", trailers_out[ti].value[..], "\n");
+    print("  Trailers Extracted:  ", trailers_out.entries.len, "\n");
+    for ti in trailers_out.entries.len {
+        let e = trailers_out.entries[ti];
+        print("    Trailer: ", wing::entry_name(trailers_out, e), " = ", wing::entry_value(trailers_out, e), "\n");
     }
 
     // ------------------------------------------------------------------------
@@ -222,12 +218,17 @@ fn main() {
     internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", internal::HpackIndexing.Incremental, true);
     print("  HPACK Encoded Bytes: ", hpack_wire.len, "\n");
 
-    var decoded_headers = internal::DecodedH2HeaderList { .. };
-    let hpack_dec_err = internal::decode_hpack_header_block(dt_dec, hpack_wire[..], decoded_headers);
+    var decoded_pseudo = internal::H2PseudoHeaders { .. };
+    var decoded_headers = wing::HeaderMap { .. };
+    let hpack_dec_err = internal::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
     print("  HPACK Decode Err:    ", hpack_dec_err, " (0 == OK)\n");
-    print("  Decoded Headers:     ", decoded_headers.fields.len, "\n");
-    for di in decoded_headers.fields.len {
-        print("    [", di, "] ", decoded_headers.fields[di].name[..], " = ", decoded_headers.fields[di].value[..], "\n");
+    print("  Decoded Headers:     ", decoded_headers.entries.len + 3, "\n");
+    print("    [0] :method = ", decoded_pseudo.method[..], "\n");
+    print("    [1] :path = ", decoded_pseudo.path[..], "\n");
+    print("    [2] :scheme = ", decoded_pseudo.scheme[..], "\n");
+    for di in decoded_headers.entries.len {
+        let e = decoded_headers.entries[di];
+        print("    [", di + 3, "] ", wing::entry_name(decoded_headers, e), " = ", wing::entry_value(decoded_headers, e), "\n");
     }
 
     // ------------------------------------------------------------------------

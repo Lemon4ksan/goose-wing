@@ -1023,12 +1023,12 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
 // Extracts DPoP-Nonce from response headers as a zero-copy slice (RFC 9449 §8).
 //
 // Example:
-//   headers = [{"DPoP-Nonce", "eyJhbGciOi..."}]
+//   headers = HeaderMap { "DPoP-Nonce": "eyJhbGciOi..." }
 //   returns: "eyJhbGciOi...", ok = true
-fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
+fn extract_dpop_nonce(headers: const HeaderMap&) -> const u8[:], bool {
     var found_idx: i64 = -1;
-    for idx in headers.len {
-        if core::eq_ascii_fold(headers[idx].name[..], rfc::DPOP_NONCE_HEADER) {
+    for idx in headers.entries.len {
+        if core::eq_ascii_fold(entry_name(headers, headers.entries[idx]), rfc::DPOP_NONCE_HEADER) {
             if found_idx != -1 {
                 return "", false;
             }
@@ -1036,7 +1036,7 @@ fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
         }
     }
     guard found_idx != -1 else { return "", false; }
-    let val = headers[found_idx].value[..];
+    let val = entry_value(headers, headers.entries[found_idx]);
     guard rfc::is_valid_dpop_nonce(val) else { return "", false; }
     return val, true;
 }
@@ -1044,9 +1044,9 @@ fn extract_dpop_nonce<H>(headers: const H[:]) -> const u8[:], bool {
 // Extracts DPoP-Nonce into a target buffer (cleared only on success).
 //
 // Example:
-//   headers = [{"DPoP-Nonce", "nonce-xyz"}], out_nonce = ""
+//   headers = HeaderMap { "DPoP-Nonce": "nonce-xyz" }, out_nonce = ""
 //   returns: ok = true, out_nonce = "nonce-xyz"
-fn extract_dpop_nonce<H, B>(headers: const H[:], out_nonce: B&) -> bool {
+fn extract_dpop_nonce<B>(headers: const HeaderMap&, out_nonce: B&) -> bool {
     let nonce, ok = extract_dpop_nonce(headers);
     guard ok else { return false; }
     out_nonce.clear();

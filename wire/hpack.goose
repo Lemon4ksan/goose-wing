@@ -6,6 +6,7 @@ namespace wire;
 
 import std;
 import core from "..";
+import http.headers;
 import http2.hpack;
 
 const HPACK_PREFIX_MASKS: const u64[256] = [
@@ -163,4 +164,152 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
     }
     offset = end;
     return true;
+}
+
+inline fn is_h2_skipped_header_name(name: const u8[:]) -> bool {
+    return core::eq_ascii_fold(name, "host")
+        || core::eq_ascii_fold(name, "connection")
+        || core::eq_ascii_fold(name, "keep-alive")
+        || core::eq_ascii_fold(name, "proxy-connection")
+        || core::eq_ascii_fold(name, "transfer-encoding")
+        || core::eq_ascii_fold(name, "upgrade");
+}
+
+fn encode_hpack_pseudo_fields<B>(
+    dt:          internal::DynamicTable&,
+    pseudo:      const internal::H2PseudoHeaders&,
+    out:         B&,
+    use_huffman: bool,
+) -> bool {
+    guard !pseudo.is_trailer else { return true; }
+    let inc = internal::HpackIndexing.Incremental;
+    if pseudo.has_status && pseudo.status > 0 {
+        var st_buf: u8[..16] = [];
+        core::format_u64_dec(pseudo.status as u64, st_buf);
+        return internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
+    }
+    if pseudo.has_method {
+        guard internal::encode_hpack_field(dt, out, ":method", pseudo.method[..], inc, use_huffman) else {
+            return false;
+        }
+    }
+    if pseudo.has_scheme {
+        guard internal::encode_hpack_field(dt, out, ":scheme", pseudo.scheme[..], inc, use_huffman) else {
+            return false;
+        }
+    }
+    if pseudo.has_authority {
+        guard internal::encode_hpack_field(dt, out, ":authority", pseudo.authority[..], inc, use_huffman) else {
+            return false;
+        }
+    }
+    if pseudo.has_path {
+        guard internal::encode_hpack_field(dt, out, ":path", pseudo.path[..], inc, use_huffman) else {
+            return false;
+        }
+    }
+    if pseudo.has_protocol {
+        guard internal::encode_hpack_field(dt, out, ":protocol", pseudo.protocol[..], inc, use_huffman) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn should_skip_h2_entry(raw_name: const u8[:], val: const u8[:]) -> bool {
+    if is_h2_skipped_header_name(raw_name) {
+        return true;
+    }
+    return core::eq_ascii_fold(raw_name, "te") && !core::eq_ascii_fold(core::trim_lws(val), "trailers");
+}
+
+fn encode_single_hpack_map_entry<B>(
+    dt:          internal::DynamicTable&,
+    headers:     const wing::HeaderMap&,
+    e:           const wing::HeaderEntry&,
+    out:         B&,
+    use_huffman: bool,
+) -> bool {
+    let raw_name = wing::entry_name(headers, e);
+    let val = wing::entry_value(headers, e);
+    if should_skip_h2_entry(raw_name, val) {
+        return true;
+    }
+    var lower_name: u8[..256] = [];
+    guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
+    for b in raw_name {
+        lower_name.push(core::to_lower_ascii_byte(b));
+    }
+    let is_sens = wing::is_sensitive(e);
+    let idx_mode = if is_sens { internal::HpackIndexing.NeverIndexed } else { internal::HpackIndexing.Incremental };
+    return internal::encode_hpack_field(dt, out, lower_name[..], val, idx_mode, use_huffman);
+}
+
+// Encodes HTTP/2 pseudo-headers and regular headers from `headers: const wing::HeaderMap&`
+// into an HPACK block using dynamic table compression (RFC 7541, RFC 9113 §8.2).
+// Automatically lowercases regular header names and strips HTTP/1.1 connection-specific headers.
+//
+// Example:
+//   encode_hpack_from_map(dt, pseudo, headers, out, true)
+//   returns: true, out contains encoded HPACK octets
+fn encode_hpack_from_map<B>(
+    dt:          internal::DynamicTable&,
+    pseudo:      const internal::H2PseudoHeaders&,
+    headers:     const wing::HeaderMap&,
+    out:         B&,
+    use_huffman: bool = true,
+) -> bool {
+    guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else { return false; }
+
+    for &e in headers.entries {
+        guard encode_single_hpack_map_entry(dt, headers, e, out, use_huffman) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Decodes an HPACK header block into `out_pseudo` and `out_headers` using `dt` (RFC 7541, RFC 9113 §8.2).
+// Returns RFC 9113 error code (`rfc::H2_ERR_NO_ERROR` on success).
+//
+// Example:
+//   src = [0x82, 0x86, 0x84], decode_hpack_to_map(dt, src, out_pseudo, out_headers)
+//   returns: rfc::H2_ERR_NO_ERROR, out_pseudo.method = "GET"
+fn decode_hpack_to_map(
+    dt:                   internal::DynamicTable&,
+    src:                  const u8[:],
+    out_pseudo:           internal::H2PseudoHeaders&,
+    out_headers:          wing::HeaderMap&,
+    max_header_list_size: u32  = 8192,
+    validate_http2_rules: bool = true,
+) -> u32 {
+    var offset: u64 = 0;
+    let src_len = src.len as u64;
+    var updates_allowed = true;
+    var update_count: u32 = 0;
+
+    internal::clear_h2_pseudo_headers(out_pseudo, true);
+    out_headers.clear();
+
+    while offset < src_len {
+        let next_off, err = internal::decode_hpack_field_step_to_map(
+            dt,
+            src,
+            offset,
+            updates_allowed,
+            update_count,
+            out_pseudo,
+            out_headers,
+            max_header_list_size,
+            validate_http2_rules,
+        );
+        guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+        offset = next_off;
+    }
+
+    if validate_http2_rules && !out_pseudo.is_trailer {
+        let v_err = internal::validate_mandatory_pseudo_headers(out_pseudo);
+        guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
+    }
+    return rfc::H2_ERR_NO_ERROR;
 }

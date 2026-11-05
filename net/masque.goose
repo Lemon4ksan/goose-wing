@@ -75,12 +75,6 @@ fn has_capsule_protocol(headers: const HeaderMap&) -> bool {
     return is_capsule_protocol_negotiated(val);
 }
 
-// Checks if Capsule-Protocol header is negotiated in a HeaderItem slice
-fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
-    let val = headers.find_header("capsule-protocol");
-    return is_capsule_protocol_negotiated(val);
-}
-
 // ---- HTTP Datagrams (RFC 9297 Section 2) --------------------------------
 
 // Encodes an HTTP Datagram payload for QUIC DATAGRAM frame (RFC 9297 Section 2.1):
@@ -523,7 +517,7 @@ fn new_connect_ip_tunnel(
 // Builds the HTTP Extended CONNECT request headers and path for MASQUE handshake (RFC 9298 & RFC 9484)
 fn build_masque_connect_request(
     tunnel:      const MasqueTunnelSession&,
-    out_headers: HeaderItem[..16]&,
+    out_headers: HeaderMap&,
     out_path:    u8[..256]&,
 ) {
     out_headers.clear();

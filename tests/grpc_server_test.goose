@@ -53,15 +53,8 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
     t.run("Successful Unary RPC over HTTP/2") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
 
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
-
-        var auth = wing::HeaderItem { .. };
-        auth.name.append("authorization");
-        auth.value.append("Bearer valid-token");
-        req.headers.push(auth);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, "authorization", "Bearer valid-token");
 
         // Body: 5-byte LPM with payload "Alice"
         wing::encode_grpc_lpm("Alice", req.body, false);
@@ -107,15 +100,8 @@ fn test_grpc_server_unary_http2(t: lit::T&) {
     t.run("Unary RPC Authentication Failure (Unauthenticated)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
 
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
-
-        var auth = wing::HeaderItem { .. };
-        auth.name.append("authorization");
-        auth.value.append("Bearer invalid-token");
-        req.headers.push(auth);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, "authorization", "Bearer invalid-token");
 
         wing::encode_grpc_lpm("Bob", req.body, false);
 
@@ -146,10 +132,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
 
     t.run("Binary gRPC-Web (application/grpc-web)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
 
         wing::encode_grpc_lpm("WebUser", req.body, false);
 
@@ -174,10 +157,7 @@ fn test_grpc_server_unary_web(t: lit::T&) {
 
     t.run("Base64 Text gRPC-Web (application/grpc-web-text)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 
         // Encode LPM into Base64
         var raw_lpm: u8[>..] = [];
@@ -230,10 +210,7 @@ fn test_grpc_server_streaming(t: lit::T&) {
 
     t.run("Server-Streaming produces sequential LPM stream") { sub =>
         var req = wing::new_request("POST", "/event.FeedService/Subscribe");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         wing::encode_grpc_lpm("channel_general", req.body, false);
 
@@ -298,10 +275,7 @@ fn test_grpc_client_streaming(t: lit::T&) {
 
     t.run("Client-Streaming collects multiple LPM frames") { sub =>
         var req = wing::new_request("POST", "/metric.Collector/UploadBatch");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         // Pack 4 messages into request body
         wing::encode_grpc_lpm("item_1", req.body, false);
@@ -334,10 +308,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Unregistered Service or Method returns Unimplemented (12)") { sub =>
         var req = wing::new_request("POST", "/unknown.Service/UnknownMethod");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
         wing::encode_grpc_lpm("test", req.body, false);
 
         var res = wing::Response { .. };
@@ -355,10 +326,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Malformed URI path returns Unimplemented (12)") { sub =>
         var req = wing::new_request("POST", "/single_slash_path");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
@@ -370,10 +338,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Non-POST HTTP method rejected with Internal (13)") { sub =>
         var req = wing::new_request("GET", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
@@ -385,10 +350,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Non-gRPC Request ignored (returns false)") { sub =>
         var req = wing::new_request("POST", "/api/v1/users");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append("application/json");
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", "application/json");
 
         var res = wing::Response { .. };
         let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
@@ -397,10 +359,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Message Size Exceeds Limit returns ResourceExhausted (8)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         // 100-byte message when limit is 64
         let big_msg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
@@ -416,15 +375,8 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Expired Timeout returns DeadlineExceeded (4)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
-
-        var to = wing::HeaderItem { .. };
-        to.name.append(rfc::HEADER_GRPC_TIMEOUT);
-        to.value.append("50m"); // 50 milliseconds
-        req.headers.push(to);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_TIMEOUT, "50m"); // 50 milliseconds
 
         wing::encode_grpc_lpm("LateUser", req.body, false);
 
@@ -439,10 +391,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Custom Handler Error returns PermissionDenied (7)") { sub =>
         var req = wing::new_request("POST", "/secure.Vault/Access");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         wing::encode_grpc_lpm("vault_secret_request", req.body, false);
 
@@ -461,15 +410,8 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Huge Timeout 99999999H does not overflow u64 deadline") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
-
-        var to = wing::HeaderItem { .. };
-        to.name.append(rfc::HEADER_GRPC_TIMEOUT);
-        to.value.append("99999999H");
-        req.headers.push(to);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_TIMEOUT, "99999999H");
 
         wing::encode_grpc_lpm("Alice", req.body, false);
 
@@ -483,10 +425,7 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Concatenated LPM frames in Unary RPC rejected with InvalidArgument (3)") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
 
         // Two concatenated LPM messages in unary request
         wing::encode_grpc_lpm("Msg1", req.body, false);
@@ -511,15 +450,8 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
 
     t.run("Gzip Compressed Unary & Client-Streaming Requests Accepted") { sub =>
         var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
-        var ct = wing::HeaderItem { .. };
-        ct.name.append("content-type");
-        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
-        req.headers.push(ct);
-
-        var enc = wing::HeaderItem { .. };
-        enc.name.append(rfc::HEADER_GRPC_ENCODING);
-        enc.value.append("gzip");
-        req.headers.push(enc);
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_ENCODING, "gzip");
 
         wing::encode_grpc_lpm("GzipUser", req.body, true);
 

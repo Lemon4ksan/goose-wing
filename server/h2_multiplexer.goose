@@ -15,21 +15,21 @@ import .pipeline;
 // ---- Server Stream Descriptor --------------------------------------------
 
 struct H2ServerStream {
-    stream_id:               u32                    = 0,
-    active:                  bool                   = false,
-    headers_received:        bool                   = false,
-    body_received:           bool                   = false,
-    response_sent:           bool                   = false,
-    declared_content_length: i64                    = -1,
-    spill_slab_idx:          i32                    = -1,
-    slab_lease_deadline_ns:  u64                    = 0,
-    method:                  u8[..16]               = [],
-    path:                    u8[..2048]             = [],
-    scheme:                  u8[..16]               = [],
-    authority:               u8[..128]              = [],
-    headers:                 wing::HeaderItem[..32] = [],
-    trailers:                wing::HeaderItem[..16] = [],
-    body:                    u8[..8192]             = [],
+    stream_id:               u32             = 0,
+    active:                  bool            = false,
+    headers_received:        bool            = false,
+    body_received:           bool            = false,
+    response_sent:           bool            = false,
+    declared_content_length: i64             = -1,
+    spill_slab_idx:          i32             = -1,
+    slab_lease_deadline_ns:  u64             = 0,
+    method:                  u8[..16]        = [],
+    path:                    u8[..2048]      = [],
+    scheme:                  u8[..16]        = [],
+    authority:               u8[..128]       = [],
+    headers:                 wing::HeaderMap = wing::HeaderMap { .. },
+    trailers:                wing::HeaderMap = wing::HeaderMap { .. },
+    body:                    u8[..8192]      = [],
 }
 
 fn reset_server_stream(st: H2ServerStream&) {
@@ -330,9 +330,9 @@ fn emit_response_headers<B>(
         encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], HpackIndexing.Incremental, false);
     }
 
-    for &hdr in res.headers {
-        let name_slice = hdr.name[..];
-        let val_slice = hdr.value[..];
+    for &e in res.headers.entries {
+        let name_slice = wing::entry_name(res.headers, e);
+        let val_slice = wing::entry_value(res.headers, e);
         // Skip connection hop-by-hop headers forbidden in HTTP/2 (RFC 9113 Section 8.2.2)
         if !eq_ascii_fold(name_slice, "connection") &&
            !eq_ascii_fold(name_slice, "keep-alive") &&
@@ -447,15 +447,15 @@ fn emit_response_data<B>(
 fn emit_response_trailers<B>(
     sess:      H2ServerSession&,
     stream_id: u32,
-    trailers:  const wing::HeaderItem[..16]&,
+    trailers:  const wing::HeaderMap&,
     out:       B&,
 ) {
-    guard trailers.len > 0 else { return; }
+    guard trailers.entries.len > 0 else { return; }
     var hpack_block: u8[..4096] = [];
 
-    for &hdr in trailers {
-        let name_slice = hdr.name[..];
-        let val_slice = hdr.value[..];
+    for &e in trailers.entries {
+        let name_slice = wing::entry_name(trailers, e);
+        let val_slice = wing::entry_value(trailers, e);
         // RFC 9113 §8.1 / §8.2.2 & RFC 9110 §6.5.1: Trailers MUST NOT include pseudo-headers,
         // hop-by-hop connection headers, or disallowed framing/routing trailer fields.
         if name_slice.len > 0 && name_slice[0] != ':' &&
@@ -498,37 +498,29 @@ fn emit_response_trailers<B>(
     out.append(hpack_block[..]);
 }
 
-fn apply_decoded_headers_to_stream(st: H2ServerStream&, dec_list: const DecodedH2HeaderList&) -> bool {
-    for &entry in dec_list.fields {
-        let n = entry.name[..];
-        let v = entry.value[..];
-        if n == ":method" {
-            guard st.method.try_set(v) else { return false; }
-        } else if n == ":path" {
-            guard st.path.try_set(v) else { return false; }
-        } else if n == ":scheme" {
-            guard st.scheme.try_set(v) else { return false; }
-        } else if n == ":authority" {
-            guard st.authority.try_set(v) else { return false; }
-        } else if n == ":protocol" {
-            guard v.len <= 64 else { return false; }
-        } else {
-            guard st.headers.len < st.headers.cap && n.len <= 64 && v.len <= 2048 else { return false; }
-            st.headers.push(wing::make_header(n, v));
-        }
+fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const H2PseudoHeaders&) -> bool {
+    if pseudo.has_method {
+        guard st.method.try_set(pseudo.method[..]) else { return false; }
+    }
+    if pseudo.has_path {
+        guard st.path.try_set(pseudo.path[..]) else { return false; }
+    }
+    if pseudo.has_scheme {
+        guard st.scheme.try_set(pseudo.scheme[..]) else { return false; }
+    }
+    if pseudo.has_authority {
+        guard st.authority.try_set(pseudo.authority[..]) else { return false; }
     }
     st.headers_received = true;
     return true;
 }
 
-fn apply_decoded_trailers_to_stream(st: H2ServerStream&, dec_list: const DecodedH2HeaderList&) -> bool {
-    for &entry in dec_list.fields {
-        let n = entry.name[..];
-        let v = entry.value[..];
-        guard st.trailers.len < st.trailers.cap && n.len <= 64 && v.len <= 2048 else { return false; }
-        st.trailers.push(wing::make_header(n, v));
+inline fn validate_decoded_map_bounds(map: const wing::HeaderMap&) -> bool {
+    for &e in map.entries {
+        let n = wing::entry_name(map, e);
+        let v = wing::entry_value(map, e);
+        guard n.len <= 64 && v.len <= 2048 else { return false; }
     }
-    st.body_received = true;
     return true;
 }
 
@@ -567,25 +559,12 @@ fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: wing::ServerPipel
     }
 }
 
-inline fn validate_request_pseudo_headers(dec_list: const DecodedH2HeaderList&, end_stream: bool) -> bool {
-    var has_method = false;
-    var has_scheme = false;
-    var has_path = false;
-    var is_connect = false;
-    for &f in dec_list.fields {
-        if f.name[..] == ":method" {
-            has_method = true;
-            if f.value[..] == "CONNECT" { is_connect = true; }
-        } else if f.name[..] == ":scheme" {
-            has_scheme = true;
-        } else if f.name[..] == ":path" {
-            has_path = true;
-        }
-    }
-    if !has_method || (!is_connect && (!has_scheme || !has_path)) {
+inline fn validate_request_pseudo_headers(pseudo: const H2PseudoHeaders&, end_stream: bool) -> bool {
+    let is_connect = pseudo.has_method && pseudo.method[..] == "CONNECT";
+    if !pseudo.has_method || (!is_connect && (!pseudo.has_scheme || !pseudo.has_path)) {
         return false;
     }
-    if end_stream && dec_list.has_content_length && dec_list.content_length_val != 0 {
+    if end_stream && pseudo.has_content_length && pseudo.content_length_val != 0 {
         return false;
     }
     return true;
@@ -796,9 +775,9 @@ fn process_ingress_headers<B>(
         return false;
     }
 
-    var dec_list = DecodedH2HeaderList { .. };
-    dec_list.is_trailer = is_trailer;
-    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, fragment, dec_list);
+    var pseudo = H2PseudoHeaders { is_trailer: is_trailer, .. };
+    var dec_headers = wing::HeaderMap { .. };
+    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, fragment, pseudo, dec_headers);
     if dec_err != rfc::H2_ERR_NO_ERROR {
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
@@ -812,11 +791,13 @@ fn process_ingress_headers<B>(
 
     if is_trailer {
         if !is_cancelled && s_exists {
-            guard apply_decoded_trailers_to_stream(sess.streams[s_exist_idx], dec_list) else {
+            guard validate_decoded_map_bounds(dec_headers) else {
                 emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
                 terminate_server_stream(sess, pipeline, hdr.stream_id);
                 return true;
             }
+            wing::append_all_headers(dec_headers, sess.streams[s_exist_idx].trailers);
+            sess.streams[s_exist_idx].body_received = true;
             let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
             if c_found {
                 sess.conn.streams[c_idx].trailers_received = true;
@@ -826,7 +807,7 @@ fn process_ingress_headers<B>(
         return true;
     }
 
-    guard validate_request_pseudo_headers(dec_list, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0) else {
+    guard validate_request_pseudo_headers(pseudo, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -843,16 +824,18 @@ fn process_ingress_headers<B>(
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
+    guard validate_decoded_map_bounds(dec_headers) &&
+          apply_decoded_pseudo_to_stream(sess.streams[s_idx], pseudo) else {
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    if dec_list.has_content_length {
-        sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+    wing::append_all_headers(dec_headers, sess.streams[s_idx].headers);
+    if pseudo.has_content_length {
+        sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
-            sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+            sess.conn.streams[c_idx].declared_content_length = pseudo.content_length_val;
         }
     }
     if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
@@ -879,9 +862,9 @@ fn process_ingress_continuation<B>(
     }
     guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return true; }
 
-    var dec_list = DecodedH2HeaderList { .. };
-    dec_list.is_trailer = sess.header_accum_is_trailer;
-    let dec_err = decode_hpack_header_block(sess.conn.hpack_dec, sess.header_accumulator[..], dec_list);
+    var pseudo = H2PseudoHeaders { is_trailer: sess.header_accum_is_trailer, .. };
+    var dec_headers = wing::HeaderMap { .. };
+    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, sess.header_accumulator[..], pseudo, dec_headers);
     if dec_err != rfc::H2_ERR_NO_ERROR {
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
@@ -900,11 +883,13 @@ fn process_ingress_continuation<B>(
         guard !is_cancelled else { return true; }
         let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
         guard found else { return true; }
-        guard apply_decoded_trailers_to_stream(sess.streams[s_idx], dec_list) else {
+        guard validate_decoded_map_bounds(dec_headers) else {
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
             terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
+        wing::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
+        sess.streams[s_idx].body_received = true;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].trailers_received = true;
@@ -913,7 +898,7 @@ fn process_ingress_continuation<B>(
         return true;
     }
 
-    guard validate_request_pseudo_headers(dec_list, sess.header_accum_end_stream) else {
+    guard validate_request_pseudo_headers(pseudo, sess.header_accum_end_stream) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -934,16 +919,18 @@ fn process_ingress_continuation<B>(
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    guard apply_decoded_headers_to_stream(sess.streams[s_idx], dec_list) else {
+    guard validate_decoded_map_bounds(dec_headers) &&
+          apply_decoded_pseudo_to_stream(sess.streams[s_idx], pseudo) else {
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    if dec_list.has_content_length {
-        sess.streams[s_idx].declared_content_length = dec_list.content_length_val;
+    wing::append_all_headers(dec_headers, sess.streams[s_idx].headers);
+    if pseudo.has_content_length {
+        sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
-            sess.conn.streams[c_idx].declared_content_length = dec_list.content_length_val;
+            sess.conn.streams[c_idx].declared_content_length = pseudo.content_length_val;
         }
     }
     if sess.header_accum_end_stream {
@@ -1276,31 +1263,18 @@ fn dispatch_ingress_frame<B>(
 }
 
 inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing::Request&) {
-    if st.authority.len > 0 {
-        var has_explicit_host = false;
-        for &h_chk in st.headers {
-            if eq_ascii_fold(h_chk.name[..], "host") {
-                has_explicit_host = true;
-                break;
-            }
-        }
-        if !has_explicit_host && req.headers.len < 32 {
-            req.headers.push(wing::make_header("host", st.authority[..]));
-            wing::add_header(req.bloom_filter, "host");
-            req.presence_mask |= wing::HDR_PRESENCE_HOST;
-        }
+    if st.authority.len > 0 && !wing::has_header(st.headers, "host") {
+        let _ = wing::append_header(req.headers, "host", st.authority[..]);
+        req.presence_mask |= wing::HDR_PRESENCE_HOST;
     }
-    for &hdr_item in st.headers {
-        guard req.headers.len < 32 else { break; }
-        req.headers.push(hdr_item);
-        wing::add_header(req.bloom_filter, hdr_item.name[..]);
-        let known_id = wing::identify_known_header(hdr_item.name[..]);
+    for &e in st.headers.entries {
+        let name = wing::entry_name(st.headers, e);
+        let val = wing::entry_value(st.headers, e);
+        guard wing::append_header(req.headers, name, val) else { break; }
+        let known_id = wing::identify_known_header(name);
         req.presence_mask |= wing::header_id_to_bit(known_id);
     }
-    for &tr_item in st.trailers {
-        guard req.trailers.len < 16 else { break; }
-        req.trailers.push(tr_item);
-    }
+    wing::append_all_headers(st.trailers, req.trailers);
 }
 
 fn execute_ready_server_stream<B>(
@@ -1335,7 +1309,7 @@ fn execute_ready_server_stream<B>(
 
     // Emit Response
     let has_body = res.body.len > 0;
-    let has_trailers = res.trailers.len > 0;
+    let has_trailers = res.trailers.entries.len > 0;
     let end_headers = !has_body && !has_trailers;
     emit_response_headers(sess, target_stream_id, res, end_headers, out_wire);
     if has_body {

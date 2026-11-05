@@ -1705,9 +1705,9 @@ fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
 
 // Helper to search for a token inside a specified HTTP header across all matching lines.
 fn req_has_header_token(req: const Request&, header_name: const u8[:], token: const u8[:]) -> bool {
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], header_name) {
-            if has_header_token_fold(hdr.value[..], token) {
+    for &e in req.headers.entries {
+        if core::eq_ascii_fold(entry_name(req.headers, e), header_name) {
+            if has_header_token_fold(entry_value(req.headers, e), token) {
                 return true;
             }
         }
@@ -1717,9 +1717,9 @@ fn req_has_header_token(req: const Request&, header_name: const u8[:], token: co
 
 // Helper to determine if a subprotocol is requested by the client in Sec-WebSocket-Protocol.
 fn req_has_subprotocol(req: const Request&, subprotocol: const u8[:]) -> bool {
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "sec-websocket-protocol") {
-            if has_subprotocol_token(hdr.value[..], subprotocol) {
+    for &e in req.headers.entries {
+        if core::eq_ascii_fold(entry_name(req.headers, e), "sec-websocket-protocol") {
+            if has_subprotocol_token(entry_value(req.headers, e), subprotocol) {
                 return true;
             }
         }
@@ -1852,13 +1852,14 @@ fn validate_h2_websocket_request(req: const Request&) -> bool {
     guard auth.len > 0 else { return false; }
 
     // RFC 8441 §4: Connection-specific headers and Sec-WebSocket-Key MUST NOT be present
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "connection") ||
-           core::eq_ascii_fold(hdr.name[..], "upgrade") ||
-           core::eq_ascii_fold(hdr.name[..], "keep-alive") ||
-           core::eq_ascii_fold(hdr.name[..], "transfer-encoding") ||
-           core::eq_ascii_fold(hdr.name[..], "proxy-connection") ||
-           core::eq_ascii_fold(hdr.name[..], "sec-websocket-key") {
+    for &e in req.headers.entries {
+        let name = entry_name(req.headers, e);
+        if core::eq_ascii_fold(name, "connection") ||
+           core::eq_ascii_fold(name, "upgrade") ||
+           core::eq_ascii_fold(name, "keep-alive") ||
+           core::eq_ascii_fold(name, "transfer-encoding") ||
+           core::eq_ascii_fold(name, "proxy-connection") ||
+           core::eq_ascii_fold(name, "sec-websocket-key") {
             return false;
         }
     }

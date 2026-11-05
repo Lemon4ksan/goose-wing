@@ -6,11 +6,16 @@ namespace wire;
 
 import std;
 import core from "..";
+import http.headers;
+import http2.hpack;
+import http3.qpack;
 import .result;
 import .types;
 import .pool;
+import .h1;
 import .hpack;
 import .h2;
+import .h3;
 
 // Maximum capacity for a stack-allocated wire command buffer (RFC 9113 / enterprise frames).
 const WIRE_CMD_BUFFER_CAP: i64 = 16384;
@@ -483,5 +488,98 @@ fn end_h2_headers(cmd: WireCommandBuffer&) -> bool {
     }
     cmd.headers_frame_offset = -1;
     cmd.state = WireCommandBufferState.Recording;
+    return true;
+}
+
+// ---- Multi-Protocol Command Recording (HTTP/1.1, HTTP/2, HTTP/3) -------------
+
+// Records an HTTP/1.1 request head and optional body into `cmd.buf` (RFC 9112 §3–§6).
+fn cmd_encode_h1_request(
+    cmd:         WireCommandBuffer&,
+    method:      const u8[:],
+    target:      const u8[:],
+    host:        const u8[:],
+    headers:     const wing::HeaderMap&,
+    body:        const u8[:],
+    filter_mode: H1HeaderFilterMode = H1HeaderFilterMode.PreserveAll,
+) -> bool {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
+        cmd.has_error = true;
+        return false;
+    }
+    let start_len = cmd.buf.len;
+    guard encode_h1_request(method, target, host, headers, body, filter_mode, cmd.buf) else {
+        cmd.buf.resize(start_len);
+        cmd.has_error = true;
+        return false;
+    }
+    return true;
+}
+
+// Records an HTTP/1.1 response head and body into `cmd.buf` (RFC 9112 §4).
+fn cmd_encode_h1_response(
+    cmd:             WireCommandBuffer&,
+    status_code:     u16,
+    reason:          const u8[:],
+    server_name:     const u8[:],
+    headers:         const wing::HeaderMap&,
+    body:            const u8[:],
+    is_head_request: bool = false,
+) -> bool {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
+        cmd.has_error = true;
+        return false;
+    }
+    let start_len = cmd.buf.len;
+    guard encode_h1_response(status_code, reason, server_name, headers, body, is_head_request, cmd.buf) else {
+        cmd.buf.resize(start_len);
+        cmd.has_error = true;
+        return false;
+    }
+    return true;
+}
+
+// Records an HTTP/2 HEADERS frame (and any CONTINUATION frames) from `pseudo` and `headers` into `cmd.buf`.
+fn cmd_encode_h2_headers_map(
+    cmd:            WireCommandBuffer&,
+    dt:             internal::DynamicTable&,
+    stream_id:      u32,
+    pseudo:         const internal::H2PseudoHeaders&,
+    headers:        const wing::HeaderMap&,
+    end_stream:     bool,
+    max_frame_size: u32 = 16384,
+) -> bool {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
+        cmd.has_error = true;
+        return false;
+    }
+    let start_len = cmd.buf.len;
+    guard encode_h2_headers_frame_from_map(dt, stream_id, pseudo, headers, end_stream, cmd.buf, max_frame_size) else {
+        cmd.buf.resize(start_len);
+        cmd.has_error = true;
+        return false;
+    }
+    return true;
+}
+
+// Records an HTTP/3 HEADERS frame from `pseudo` and `headers` into `cmd.buf` using QPACK `tbl` (RFC 9114 §7.2.2).
+fn cmd_encode_h3_headers_map<B>(
+    cmd:            WireCommandBuffer&,
+    tbl:            internal::QpackTable&,
+    stream_id:      u64,
+    pseudo:         const internal::H3PseudoHeaders&,
+    headers:        const wing::HeaderMap&,
+    out_enc_stream: B&,
+) -> bool {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
+        cmd.has_error = true;
+        return false;
+    }
+    let start_len = cmd.buf.len;
+    guard encode_h3_headers_from_map(tbl, stream_id, pseudo, headers, out_enc_stream, cmd.buf) else {
+        cmd.buf.resize(start_len);
+        cmd.has_error = true;
+        return false;
+    }
     return true;
 }

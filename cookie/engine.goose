@@ -13,6 +13,7 @@ import .psl;
 import .policy;
 import .parser;
 import .store;
+import http.headers;
 
 // ---- canonical cookie jar container ----------------------------------------
 
@@ -331,15 +332,15 @@ fn build_cookie_header<B>(
     is_secure: bool,
     now_us:    i64,
 ) {
-    var matched: CanonicalCookie[>..] = [];
+    var matched_indices: u16[..180] = [];
     jar.get_canonical_cookies_for_request(
         host, path,
         if is_secure { "https" } else { "http" },
         if is_secure { 443 } else { 80 },
         CookieSourceOptions { is_http_api: true, url_is_secure: is_secure },
-        "", now_us, matched,
+        "", now_us, matched_indices,
     );
-    format_cookie_header_value(out, matched[..]);
+    format_cookie_header_from_indices(jar, matched_indices[..], out);
 }
 
 // Builds an outgoing HTTP Cookie header directly from an arbitrary request URL.
@@ -351,7 +352,7 @@ fn build_cookie_header<B>(
     partition_key: const u8[:] = "",
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
-    var matched: CanonicalCookie[>..] = [];
+    var matched_indices: u16[..180] = [];
     jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
@@ -360,9 +361,9 @@ fn build_cookie_header<B>(
         CookieSourceOptions { is_http_api: true, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
-        matched,
+        matched_indices,
     );
-    format_cookie_header_value(out, matched[..]);
+    format_cookie_header_from_indices(jar, matched_indices[..], out);
 }
 
 // Builds an outgoing HTTP Cookie header for a request with explicit is_http_api and partition_key
@@ -375,7 +376,7 @@ fn build_request_cookie_header<B>(
     out:           B&,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
-    var matched: CanonicalCookie[>..] = [];
+    var matched_indices: u16[..180] = [];
     jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
@@ -384,9 +385,9 @@ fn build_request_cookie_header<B>(
         CookieSourceOptions { is_http_api: is_http_api, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
-        matched,
+        matched_indices,
     );
-    format_cookie_header_value(out, matched[..]);
+    format_cookie_header_from_indices(jar, matched_indices[..], out);
 }
 
 // URL-based overload for get_canonical_cookies_for_request.
@@ -396,7 +397,7 @@ fn get_canonical_cookies_for_request(
     is_http_api:   bool,
     partition_key: const u8[:],
     now_us:        i64,
-    out:           CanonicalCookie[>..]&,
+    out_indices:   u16[..180]&,
     access:        CookieAccessOptions = CookieAccessOptions { .. },
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
@@ -408,17 +409,13 @@ fn get_canonical_cookies_for_request(
         CookieSourceOptions { is_http_api: is_http_api, url_is_secure: parsed_url.is_secure },
         partition_key,
         now_us,
-        out,
+        out_indices,
         access,
     );
 }
 
-// Queries and extracts matching cookies for an outgoing HTTP request.
-// Updates last_access_utc for retrieved cookies.
-// Returns cookies sorted per RFC 6265 Section 5.4:
-// 1. Longest Path first (path.len descending)
-// 2. Earliest creation_utc first (creation_utc ascending)
-fn get_canonical_cookies_for_request(
+// Collects matching cookie slot indices for an outgoing HTTP request without sorting.
+fn collect_matching_cookie_indices(
     jar:           CanonicalCookieJar&,
     host:          const u8[:],
     path:          const u8[:],
@@ -427,10 +424,12 @@ fn get_canonical_cookies_for_request(
     source:        CookieSourceOptions,
     partition_key: const u8[:],
     now_us:        i64,
-    out:           CanonicalCookie[>..]&,
+    out_indices:   u16[..180]&,
     access:        CookieAccessOptions = CookieAccessOptions { .. },
 ) {
-    for &cookie_val in jar.cookies {
+    out_indices.clear();
+    for &cookie_val, idx in jar.cookies {
+        guard out_indices.len < 180 else { break; }
         if !cookie_val.cookie_matches_request(
             host, path, scheme, port,
             source, partition_key, access,
@@ -443,10 +442,81 @@ fn get_canonical_cookies_for_request(
         if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
             cookie_val.last_access_utc = now_us;
         }
-        out.push(cookie_val);
+        out_indices.push(idx as u16);
     }
+}
 
-    out.stable_sort() { cookie_a, cookie_b => cookie_a.request_cookie_order_less(cookie_b) };
+// Sorts matched cookie slot indices per RFC 6265 Section 5.4 (longest path, earliest creation).
+fn sort_cookie_indices(jar: const CanonicalCookieJar&, out_indices: u16[..180]&) {
+    out_indices.stable_sort() { idx_a, idx_b =>
+        jar.cookies[idx_a as i64].request_cookie_order_less(jar.cookies[idx_b as i64])
+    };
+}
+
+// Queries and extracts matching cookie indices for an outgoing HTTP request.
+// Updates last_access_utc for retrieved cookies.
+// Returns cookie indices sorted per RFC 6265 Section 5.4:
+// 1. Longest Path first (path.len descending)
+// 2. Earliest creation_utc first (creation_utc ascending)
+fn get_canonical_cookies_for_request(
+    jar:           CanonicalCookieJar&,
+    host:          const u8[:],
+    path:          const u8[:],
+    scheme:        const u8[:],
+    port:          i32,
+    source:        CookieSourceOptions,
+    partition_key: const u8[:],
+    now_us:        i64,
+    out_indices:   u16[..180]&,
+    access:        CookieAccessOptions = CookieAccessOptions { .. },
+) {
+    collect_matching_cookie_indices(
+        jar, host, path, scheme, port, source, partition_key, now_us, out_indices, access,
+    );
+    sort_cookie_indices(jar, out_indices);
+}
+
+// Formats matched cookies for an outgoing HTTP request directly into `headers` under "Cookie".
+// Returns false on capacity overflow without silent drops.
+fn encode_cookie_header_to_map(
+    jar:           CanonicalCookieJar&,
+    host:          const u8[:],
+    path:          const u8[:],
+    scheme:        const u8[:],
+    port:          i32,
+    source:        CookieSourceOptions,
+    partition_key: const u8[:],
+    now_us:        i64,
+    access:        CookieAccessOptions,
+    headers:       HeaderMap&,
+) -> bool {
+    var matched_indices: u16[..180] = [];
+    get_canonical_cookies_for_request(
+        jar, host, path, scheme, port, source, partition_key, now_us, matched_indices, access,
+    );
+    let _ = remove_header(headers, "Cookie");
+    guard matched_indices.len > 0 else { return true; }
+
+    var cookie_hdr_val: u8[..8192] = [];
+    for i in matched_indices.len {
+        let idx = matched_indices[i] as i64;
+        guard idx >= 0 && idx < jar.cookies.len else { continue; }
+        let cookie_val = jar.cookies[idx];
+        let delim_len: i64 = if i > 0 { 2 } else { 0 };
+        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
+        guard cookie_hdr_val.len + needed <= cookie_hdr_val.cap else { return false; }
+        if delim_len > 0 {
+            cookie_hdr_val.append("; ");
+        }
+        if cookie_val.name.len > 0 {
+            cookie_hdr_val.append(cookie_val.name[..]);
+            cookie_hdr_val.push('=');
+        }
+        cookie_hdr_val.append(cookie_val.value[..]);
+    }
+    guard cookie_hdr_val.len > 0 else { return true; }
+    return set_or_replace(headers, "Cookie", cookie_hdr_val[..], true);
 }
 
 // ---- quotas & garbage collection engine ------------------------------------
@@ -527,20 +597,26 @@ fn enforce_chips_quota(
 ) -> i64 {
     guard partition_key.len > 0 else { return 0; }
 
-    var candidates:  CanonicalCookie[>..] = [];
-    var total_bytes: i64                  = 0;
-    jar.gather_chips_candidates(partition_key, etld_plus_one, candidates, total_bytes);
+    var candidate_indices: u16[..180] = [];
+    var total_bytes:       i64        = 0;
+    jar.gather_chips_candidates(partition_key, etld_plus_one, candidate_indices, total_bytes);
 
     guard total_bytes > internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
 
-    candidates.stable_sort() { a, b => a.chips_lra_candidate_less(b) };
+    candidate_indices.stable_sort() { idx_a, idx_b =>
+        jar.cookies[idx_a as i64].chips_lra_candidate_less(jar.cookies[idx_b as i64])
+    };
 
-    var to_delete_seqs: i64[>..] = [];
-    var evicted_count:  i64      = 0;
+    var to_delete_seqs: i64[..180] = [];
+    var evicted_count:  i64        = 0;
 
-    for &candidate_cookie in candidates {
+    for i in candidate_indices.len {
         if total_bytes <= internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
+        let idx = candidate_indices[i] as i64;
+        guard idx >= 0 && idx < jar.cookies.len else { continue; }
+        let candidate_cookie = jar.cookies[idx];
         total_bytes = core::sub_sat_i64(total_bytes, candidate_cookie.payload_size());
+        guard to_delete_seqs.len < to_delete_seqs.cap else { break; }
         to_delete_seqs.push(candidate_cookie.creation_seq);
         evicted_count = core::add_sat_i64(evicted_count, 1);
     }
@@ -629,19 +705,21 @@ fn has_httponly_shadowing_collision(
     return false;
 }
 
-fn gather_chips_candidates<B>(
-    jar:           const CanonicalCookieJar&,
-    partition_key: const u8[:],
-    etld_plus_one: const u8[:],
-    candidates:    B&,
-    total_bytes:   i64&,
+fn gather_chips_candidates(
+    jar:               const CanonicalCookieJar&,
+    partition_key:     const u8[:],
+    etld_plus_one:     const u8[:],
+    candidate_indices: u16[..180]&,
+    total_bytes:       i64&,
 ) {
-    for &cookie_val in jar.cookies {
+    candidate_indices.clear();
+    for &cookie_val, idx in jar.cookies {
         if (cookie_val.partitioned || cookie_val.partition_key.len > 0) &&
            cookie_val.partition_key[..] == partition_key &&
            cookie_val.matches_effective_domain(etld_plus_one) {
             total_bytes = core::add_sat_i64(total_bytes, cookie_val.payload_size());
-            candidates.push(cookie_val);
+            guard candidate_indices.len < 180 else { break; }
+            candidate_indices.push(idx as u16);
         }
     }
 }
@@ -844,7 +922,7 @@ fn purge_domain_priority_round(
     protect_sec:   bool,
     quota_allowed: i64,
 ) -> i64 {
-    var candidate_indices: u16[..3400] = [];
+    var candidate_indices: u16[..180] = [];
     for &cookie_val, idx in jar.cookies {
         if cookie_val.matches_effective_domain(etld_plus_one) &&
            cookie_val.priority == target_prio &&
@@ -859,7 +937,7 @@ fn purge_domain_priority_round(
         jar.cookies[idx_a as i64].domain_gc_candidate_less(jar.cookies[idx_b as i64])
     };
 
-    var to_delete_seqs: i64[..256] = [];
+    var to_delete_seqs: i64[..180] = [];
     let evict_count = min(min(quota_allowed, candidate_indices.len), to_delete_seqs.cap);
     for i in evict_count {
         to_delete_seqs.push(jar.cookies[candidate_indices[i] as i64].creation_seq);
@@ -886,11 +964,11 @@ fn deduct_domain_priority_excess(
 }
 
 fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], need_to_evict: i64) -> i64 {
-    var candidate_indices: i32[..3400] = [];
+    var candidate_indices: u16[..180] = [];
     for &cookie_val, idx in jar.cookies {
         if cookie_val.matches_effective_domain(etld_plus_one) {
             guard candidate_indices.len < candidate_indices.cap else { break; }
-            candidate_indices.push(idx as i32);
+            candidate_indices.push(idx as u16);
         }
     }
     guard candidate_indices.len > 0 else { return 0; }
@@ -899,7 +977,7 @@ fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], n
         jar.cookies[idx_a as i64].fallback_gc_candidate_less(jar.cookies[idx_b as i64])
     };
 
-    var fallback_seqs: i64[..256] = [];
+    var fallback_seqs: i64[..180] = [];
     let evict_fallback = min(min(need_to_evict, candidate_indices.len), fallback_seqs.cap);
     for i in evict_fallback {
         fallback_seqs.push(jar.cookies[candidate_indices[i] as i64].creation_seq);

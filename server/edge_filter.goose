@@ -60,9 +60,9 @@ fn make_edge_filter_rule(
     return r;
 }
 
-fn has_non_empty_header_value(headers: const HeaderItem[:], req_name: const u8[:]) -> bool {
-    for &hdr in headers {
-        if eq_ascii_fold(hdr.name[..], req_name) && core::trim_lws(hdr.value[..]).len > 0 {
+fn has_non_empty_header_value(headers: const HeaderMap&, req_name: const u8[:]) -> bool {
+    for &e in headers.entries {
+        if eq_ascii_fold(entry_name(headers, e), req_name) && core::trim_lws(entry_value(headers, e)).len > 0 {
             return true;
         }
     }
@@ -72,7 +72,7 @@ fn has_non_empty_header_value(headers: const HeaderItem[:], req_name: const u8[:
 fn edge_rule_matches(
     rule:    const EdgeFilterRule&,
     path:    const u8[:],
-    headers: const HeaderItem[:],
+    headers: const HeaderMap&,
 ) -> bool {
     guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
     var canon_path: u8[..512] = [];
@@ -92,7 +92,7 @@ fn evaluate_edge_filter(
     filter:  EdgeFilter&,
     method:  const u8[:],
     path:    const u8[:],
-    headers: const HeaderItem[:],
+    headers: const HeaderMap&,
 ) -> EdgeFilterVerdict {
     guard filter.enabled else { return EdgeFilterVerdict.Pass; }
     filter.total_inspected = core::add_sat_u64(filter.total_inspected, 1);

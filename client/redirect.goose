@@ -456,18 +456,22 @@ fn compute_new_referrer<B>(
 
 // Strips payload and conditional validator headers in a single O(N) pass
 // when a redirect mutates request to GET (RFC 9110 Section 15.4).
-fn remove_payload_and_conditional_headers(headers: HeaderItem[..32]&) {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        if !rfc::is_payload_or_conditional_header(headers[read_idx].name[..]) {
-            if write_idx != read_idx {
-                headers[write_idx] = copy(headers[read_idx]);
-            }
-            write_idx++;
+fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
+    var found = false;
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    let total_entries = headers.entries.len;
+
+    for read_i in total_entries {
+        let name = entry_name(headers, headers.entries[read_i]);
+        if rfc::is_payload_or_conditional_header(name) {
+            found = true;
+            continue;
         }
+        compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
     }
-    while headers.len > write_idx {
-        headers.pop();
+    if found {
+        finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
     }
 }
 
@@ -477,16 +481,14 @@ fn remove_payload_and_conditional_headers(headers: HeaderItem[..32]&) {
 //   headers = [Origin: "https://a.com"], options = { is_cross_origin = true, clear_body = true }
 //   headers becomes: [] (Origin header removed)
 fn sanitize_origin_header_on_redirect(
-    headers: HeaderItem[..32]&,
+    headers: HeaderMap&,
     options: RedirectOriginOptions,
 ) {
-    let origin_idx = find_header_index(headers[..], "Origin");
-    if origin_idx >= 0 && (options.is_cross_origin || options.tainted_origin) {
+    if has_header(headers, "Origin") && (options.is_cross_origin || options.tainted_origin) {
         if options.clear_body && !options.cors_mode && !options.tainted_origin {
             remove_header_by_name(headers, "Origin");
         } else {
-            headers[origin_idx].value.clear();
-            headers[origin_idx].value.append("null");
+            set_header(headers, "Origin", "null");
         }
     }
 }
@@ -498,7 +500,7 @@ fn sanitize_origin_header_on_redirect(
 //   headers = [Cookie: "id=1", Host: "a.com"], redirect_info.is_cross_origin = true
 //   headers becomes: [] (Cookie and Host stripped)
 fn sanitize_headers_on_redirect(
-    headers:       HeaderItem[..32]&,
+    headers:       HeaderMap&,
     redirect_info: const RedirectInfo&,
     options:       RedirectSanitizeOptions = RedirectSanitizeOptions { .. },
 ) {
@@ -536,9 +538,6 @@ fn sanitize_headers_on_redirect(
     // Referer Header Application
     remove_header_by_name(headers, "Referer");
     if options.enable_referer && redirect_info.new_referrer.len > 0 {
-        guard headers.len < headers.cap else {
-            return;
-        }
-        headers.push(make_header("Referer", redirect_info.new_referrer[..]));
+        set_header(headers, "Referer", redirect_info.new_referrer[..]);
     }
 }

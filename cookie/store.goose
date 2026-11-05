@@ -202,6 +202,63 @@ fn flush_store_batch<B>(
 
 // ---- outgoing header value formatting & ingestion --------------------------
 
+// Formats indexed cookies from jar into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
+// Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
+fn format_cookie_header_from_indices(
+    jar:     const CanonicalCookieJar&,
+    indices: const u16[:],
+    out:     u8[>..]&,
+) {
+    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
+    for i in indices.len {
+        let idx = indices[i] as i64;
+        guard idx >= 0 && idx < jar.cookies.len else { continue; }
+        let cookie_val = jar.cookies[idx];
+        let delim_len: i64 = if i > 0 { 2 } else { 0 };
+        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
+        if out.len + needed > MAX_COOKIE_HEADER_LEN {
+            return;
+        }
+        if delim_len > 0 {
+            out.append("; ");
+        }
+        if cookie_val.name.len > 0 {
+            out.append(cookie_val.name[..]);
+            out.push('=');
+        }
+        out.append(cookie_val.value[..]);
+    }
+}
+
+// Formats indexed cookies from jar into bounded stack buffers, respecting both buffer capacity and 8192-byte limit.
+fn format_cookie_header_from_indices<B>(
+    jar:     const CanonicalCookieJar&,
+    indices: const u16[:],
+    out:     B&,
+) {
+    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
+    for i in indices.len {
+        let idx = indices[i] as i64;
+        guard idx >= 0 && idx < jar.cookies.len else { continue; }
+        let cookie_val = jar.cookies[idx];
+        let delim_len: i64 = if i > 0 { 2 } else { 0 };
+        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
+        if out.len + needed > out.cap || out.len + needed > MAX_COOKIE_HEADER_LEN {
+            return;
+        }
+        if delim_len > 0 {
+            out.append("; ");
+        }
+        if cookie_val.name.len > 0 {
+            out.append(cookie_val.name[..]);
+            out.push('=');
+        }
+        out.append(cookie_val.value[..]);
+    }
+}
+
 // Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
 // Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
 fn format_cookie_header_value(out: u8[>..]&, cookies: const CanonicalCookie[:]) {

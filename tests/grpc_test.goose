@@ -422,9 +422,9 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
             status_code: 200,
             ..
         };
-        mock.headers.push(wing::make_header("content-type", "application/grpc+proto"));
-        mock.headers.push(wing::make_header("grpc-status", "0"));
-        mock.headers.push(wing::make_header("grpc-message", "Order%20Created"));
+        wing::append_header(mock.headers, "content-type", "application/grpc+proto");
+        wing::append_header(mock.headers, "grpc-status", "0");
+        wing::append_header(mock.headers, "grpc-message", "Order%20Created");
 
         // Response body with LPM
         wing::encode_grpc_lpm("order_id_998822", mock.body, false);
@@ -443,7 +443,7 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
     t.run("3. Response Trailer Status Extraction") { sub =>
         var res = wing::Response { .. };
         res.status_code = 200;
-        res.headers.push(wing::make_header("content-type", "application/grpc+proto"));
+        wing::set_header(res, "content-type", "application/grpc+proto");
         wing::add_trailer(res, rfc::HEADER_GRPC_STATUS, "7");
         wing::add_trailer(res, rfc::HEADER_GRPC_MESSAGE, "Not%20Authorized");
 

@@ -73,28 +73,23 @@ const RES_PRESENCE_TRANSFER_ENCODING: u16 = 1 << 4;
 const RES_PRESENCE_SERVER:            u16 = 1 << 5;
 
 struct Response {
-    status_code:    i32              = 0,
-    effective_url:  u8[..2048]       = [],
-    headers:        HeaderItem[..32] = [],
-    raw_headers:    u8[..4096]       = [],
-    spans:          HeaderSpan[..32] = [],
-    trailers:       HeaderItem[..16] = [],
-    presence_mask:  u16              = 0,
-    redirect_count: i64              = 0,
-    url_chain:      u8[..256][..16]  = [],
-    final_method:   u8[..16]         = "GET",
-    protocol:       u8[..16]         = "HTTP/1.1",
-    sent_headers:   HeaderItem[..32] = [],
-    set_cookies:    u8[..1024][..16] = [],
-    body:           u8[>..]          = [],
+    status_code:    i32             = 0,
+    effective_url:  u8[..2048]      = [],
+    headers:        HeaderMap       = HeaderMap { .. },
+    trailers:       HeaderMap       = HeaderMap { .. },
+    presence_mask:  u16             = 0,
+    redirect_count: i64             = 0,
+    url_chain:      u8[..256][..16] = [],
+    final_method:   u8[..16]        = "GET",
+    protocol:       u8[..16]        = "HTTP/1.1",
+    sent_headers:   HeaderMap       = HeaderMap { .. },
+    body:           u8[>..]         = [],
 }
 
 fn reset_response(res: Response&) {
     res.status_code = rfc::STATUS_OK;
     res.effective_url.clear();
     res.headers.clear();
-    res.raw_headers.clear();
-    res.spans.clear();
     res.trailers.clear();
     res.presence_mask = 0;
     res.redirect_count = 0;
@@ -104,7 +99,6 @@ fn reset_response(res: Response&) {
     res.protocol.clear();
     res.protocol.append("HTTP/1.1");
     res.sent_headers.clear();
-    res.set_cookies.clear();
     res.body.clear();
 }
 
@@ -140,55 +134,20 @@ fn is_redirect(res: const Response&) -> bool {
 }
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
-    if res.spans.len > 0 && res.raw_headers.len > 0 {
-        let val = header_from_wire(res, res.raw_headers[..], name);
-        if val.len > 0 {
-            return val;
-        }
-    }
-    return find_header(res.headers[..], name);
+    return get_header(res.headers, name);
 }
 
 fn has_header(res: const Response&, name: const u8[:]) -> bool {
-    if res.spans.len > 0 && res.raw_headers.len > 0 {
-        if header_from_wire(res, res.raw_headers[..], name).len > 0 {
-            return true;
-        }
-        for &s in res.spans {
-            if eq_ascii_fold(s.name_slice(res.raw_headers[..]), name) {
-                return true;
-            }
-        }
-    }
-    return has_header(res.headers[..], name);
-}
-
-// Extracts a header value directly from response wire bytes using zero-copy spans and O(1) ID tags.
-fn header_from_wire(res: const Response&, wire: const u8[:], name: const u8[:]) -> const u8[:] {
-    let known_id = identify_known_header(name);
-    if known_id != KnownHeaderId.Unknown {
-        let target_id = header_id_to_u8(known_id);
-        for i in res.spans.len {
-            if res.spans[i].id == target_id {
-                return res.spans[i].val_slice(wire);
-            }
-        }
-    }
-    for i in res.spans.len {
-        if eq_ascii_fold(res.spans[i].name_slice(wire), name) {
-            return res.spans[i].val_slice(wire);
-        }
-    }
-    return "";
+    return has_header(res.headers, name);
 }
 
 // Returns the value of a response trailer by name (case-insensitive lookup)
 fn trailer(res: const Response&, name: const u8[:]) -> const u8[:] {
-    return find_header(res.trailers[..], name);
+    return get_header(res.trailers, name);
 }
 
 fn has_trailer(res: const Response&, name: const u8[:]) -> bool {
-    return has_header(res.trailers[..], name);
+    return has_header(res.trailers, name);
 }
 
 fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
@@ -212,73 +171,30 @@ fn update_response_presence(res: Response&, name: const u8[:]) {
     }
 }
 
-fn remove_matching_spans(spans: HeaderSpan[..32]&, raw_headers: const u8[:], name: const u8[:]) {
-    var write_idx = 0;
-    for read_idx in spans.len {
-        let n = spans[read_idx].name_slice(raw_headers);
-        if !eq_ascii_fold(n, name) {
-            if write_idx != read_idx {
-                spans[write_idx] = copy(spans[read_idx]);
-            }
-            write_idx++;
-        }
-    }
-    while spans.len > write_idx {
-        spans.pop();
-    }
-}
-
 fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
     update_response_presence(res, name);
-    if res.spans.len > 0 && res.raw_headers.len > 0 {
-        remove_matching_spans(res.spans, res.raw_headers[..], name);
-    }
 }
 
 fn remove_header(res: Response&, name: const u8[:]) -> bool {
-    let removed = remove_header_by_name(res.headers, name);
-    if res.spans.len > 0 && res.raw_headers.len > 0 {
-        remove_matching_spans(res.spans, res.raw_headers[..], name);
-    }
-    return removed;
+    return remove_header(res.headers, name);
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
-    return find_header(res.sent_headers[..], name);
+    return get_header(res.sent_headers, name);
 }
 
 fn has_sent_header(res: const Response&, name: const u8[:]) -> bool {
-    return has_header(res.sent_headers[..], name);
+    return has_header(res.sent_headers, name);
 }
 
 fn text(res: const Response&) -> const u8[:] {
     return res.body[..];
 }
 
-fn remove_decompressed_spans(spans: HeaderSpan[..32]&, raw_headers: const u8[:]) {
-    var write_idx = 0;
-    for read_idx in spans.len {
-        let n = spans[read_idx].name_slice(raw_headers);
-        let keep = !eq_ascii_fold(n, "content-encoding") && !eq_ascii_fold(n, "content-length");
-        if keep {
-            if write_idx != read_idx {
-                spans[write_idx] = copy(spans[read_idx]);
-            }
-            write_idx++;
-        }
-    }
-    while spans.len > write_idx {
-        spans.pop();
-    }
-}
-
 fn clear_decompressed_headers(res: Response&) {
-    remove_header_by_name(res.headers, "content-encoding");
-    remove_header_by_name(res.headers, "content-length");
-    if res.spans.len > 0 && res.raw_headers.len > 0 {
-        remove_decompressed_spans(res.spans, res.raw_headers[..]);
-    }
+    let _ = remove_header(res.headers, "content-encoding");
+    let _ = remove_header(res.headers, "content-length");
     res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 

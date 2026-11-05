@@ -1490,12 +1490,12 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_bytes_eq(req.header("Authorization"), "DPoP token_xyz", "Authorization header has DPoP scheme");
 
         // Nonce extraction from response headers
-        var resp_headers: wing::HeaderItem[..4] = [];
-        resp_headers.push(wing::make_header("Content-Type", "application/json"));
-        resp_headers.push(wing::make_header("DPoP-Nonce", "server_nonce_retry_456"));
+        var resp_headers = wing::HeaderMap { .. };
+        wing::append_header(resp_headers, "Content-Type", "application/json");
+        wing::append_header(resp_headers, "DPoP-Nonce", "server_nonce_retry_456");
 
         var extracted_nonce: u8[..128] = [];
-        let ok_nonce = wing::extract_dpop_nonce(resp_headers[..], extracted_nonce);
+        let ok_nonce = wing::extract_dpop_nonce(resp_headers, extracted_nonce);
         sub.assert_true(ok_nonce, "DPoP-Nonce extracted");
         sub.assert_bytes_eq(extracted_nonce[..], "server_nonce_retry_456", "Extracted nonce matches header");
     };
@@ -1889,7 +1889,7 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
 
     t.run("Client Response Challenge Detection and GREASE Types") { sub =>
         var resp = wing::Response { status_code: 401, .. };
-        resp.headers.push(wing::make_header("WWW-Authenticate", "PrivateToken challenge=\"abc\""));
+        wing::set_header(resp, "WWW-Authenticate", "PrivateToken challenge=\"abc\"");
         sub.assert_true(wing::has_private_token_challenge(resp), "Detects 401 PrivateToken challenge");
 
         var resp_200 = wing::Response { status_code: 200, .. };
@@ -2220,8 +2220,8 @@ fn test_hpke_rfc9180(t: lit::T&) {
         let pt:   const u8[:] = "Beauty is truth, truth beauty";
         let aad:  const u8[:] = "Count-0";
 
-        var enc: u8[32]  = [0; 32];
-        var ct:  u8[>..] = [];
+        var enc: u8[32]     = [0; 32];
+        var ct:  u8[..1024] = [];
 
         let ok_seal = wing::hpke_seal_base(
             pkRm,
@@ -2309,8 +2309,8 @@ fn test_hpke_rfc9180(t: lit::T&) {
         let pt:   const u8[:] = "EncryptedClientHelloInner message payload";
         let aad:  const u8[:] = "ClientHelloOuterAAD";
 
-        var enc: u8[32]  = [0; 32];
-        var ct:  u8[>..] = [];
+        var enc: u8[32]     = [0; 32];
+        var ct:  u8[..1024] = [];
 
         let ok_seal = wing::hpke_seal_base(
             bob_pk,

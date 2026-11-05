@@ -38,14 +38,11 @@ fn parse_wire_h2_step(buf: const u8[:]) -> i64 {
     if buf.len < 9 {
         return 0;
     }
-    let hdr, err = internal::parse_h2_frame_header(buf);
-    if err != internal::H2ErrorCode.NoError {
+    let hdr, err = internal::parse_frame_header(buf);
+    if err != rfc::H2_ERR_NO_ERROR {
         return 1;
     }
-    if !hdr.valid {
-        return 2;
-    }
-    return (hdr.stream_id & 0x7FFFFFFF);
+    return (hdr.stream_id & 0x7FFFFFFF) as i64;
 }
 
 fn test_h1_chunking_desync_fsm() {
@@ -208,264 +205,237 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
 }
 
 fn test_h2_continuation_flood_and_interleaving() {
-    var framer = internal::H2SecurityFramer { .. };
+    var conn = internal::new_h2_connection(0);
 
     // 1. Initial HEADERS frame on stream 1 without END_HEADERS
-    let h_hdr = internal::H2FrameHeader {
-        payload_len: 128,
-        frame_type:  internal::H2FrameType.Headers,
-        raw_type:    0x1,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    let h_hdr = internal::FrameHeader {
+        length:     128,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      0x0,
+        stream_id:  1,
     };
-    let err0 = internal::process_incoming_frame(framer, h_hdr);
-    assert(err0 == internal::H2ErrorCode.NoError);
-    assert(framer.state == internal::H2ConnState.ExpectContinuation);
-    assert(framer.continuation_stream_id == 1);
+    let err0 = internal::on_ingress_frame_header(conn, h_hdr, 0);
+    assert(err0 == rfc::H2_ERR_NO_ERROR);
+    assert(conn.continuation_stream_id == 1);
     print("H2_EXPECT_CONTINUATION_STATE: OK");
 
     // 2. Interleaved PING frame on stream 0 -> ProtocolError
-    let ping_hdr = internal::H2FrameHeader {
-        payload_len: 8,
-        frame_type:  internal::H2FrameType.Ping,
-        raw_type:    0x6,
-        flags:       0x0,
-        stream_id:   0,
-        valid:       true,
+    let ping_hdr = internal::FrameHeader {
+        length:     8,
+        frame_type: rfc::H2_FRAME_PING,
+        flags:      0x0,
+        stream_id:  0,
     };
-    let err_ping = internal::process_incoming_frame(framer, ping_hdr);
-    assert(err_ping == internal::H2ErrorCode.ProtocolError);
-    assert(framer.state == internal::H2ConnState.Closed);
+    let err_ping = internal::on_ingress_frame_header(conn, ping_hdr, 0);
+    assert(err_ping == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_INTERLEAVED_PING_BAN: PROTOCOL_ERROR");
 
-    // 3. Reset framer: Interleaved DATA frame on stream 1 -> ProtocolError
-    var framer_data = internal::H2SecurityFramer { .. };
-    internal::process_incoming_frame(framer_data, h_hdr);
-    let data_hdr = internal::H2FrameHeader {
-        payload_len: 64,
-        frame_type:  internal::H2FrameType.Data,
-        raw_type:    0x0,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    // 3. Reset connection: Interleaved DATA frame on stream 1 -> ProtocolError
+    var conn_data = internal::new_h2_connection(0);
+    let _ = internal::on_ingress_frame_header(conn_data, h_hdr, 0);
+    let data_hdr = internal::FrameHeader {
+        length:     64,
+        frame_type: rfc::H2_FRAME_DATA,
+        flags:      0x0,
+        stream_id:  1,
     };
-    let err_data = internal::process_incoming_frame(framer_data, data_hdr);
-    assert(err_data == internal::H2ErrorCode.ProtocolError);
-    assert(framer_data.state == internal::H2ConnState.Closed);
+    let err_data = internal::on_ingress_frame_header(conn_data, data_hdr, 0);
+    assert(err_data == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_INTERLEAVED_DATA_BAN: PROTOCOL_ERROR");
 
-    // 4. Reset framer: CONTINUATION on wrong stream ID (stream 3 instead of 1) -> ProtocolError
-    var framer_mismatch = internal::H2SecurityFramer { .. };
-    internal::process_incoming_frame(framer_mismatch, h_hdr);
-    let cont_bad_sid = internal::H2FrameHeader {
-        payload_len: 64,
-        frame_type:  internal::H2FrameType.Continuation,
-        raw_type:    0x9,
-        flags:       0x0,
-        stream_id:   3,
-        valid:       true,
+    // 4. Reset connection: CONTINUATION on wrong stream ID (stream 3 instead of 1) -> ProtocolError
+    var conn_mismatch = internal::new_h2_connection(0);
+    let _ = internal::on_ingress_frame_header(conn_mismatch, h_hdr, 0);
+    let cont_bad_sid = internal::FrameHeader {
+        length:     64,
+        frame_type: rfc::H2_FRAME_CONTINUATION,
+        flags:      0x0,
+        stream_id:  3,
     };
-    let err_bad_sid = internal::process_incoming_frame(framer_mismatch, cont_bad_sid);
-    assert(err_bad_sid == internal::H2ErrorCode.ProtocolError);
-    assert(framer_mismatch.state == internal::H2ConnState.Closed);
+    let err_bad_sid = internal::on_ingress_frame_header(conn_mismatch, cont_bad_sid, 0);
+    assert(err_bad_sid == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_MISMATCHED_STREAM_BAN: PROTOCOL_ERROR");
 
     // 5. Unsolicited CONTINUATION frame when state is Idle -> ProtocolError
-    var framer_idle = internal::H2SecurityFramer { .. };
-    let cont_unsolicited = internal::H2FrameHeader {
-        payload_len: 64,
-        frame_type:  internal::H2FrameType.Continuation,
-        raw_type:    0x9,
-        flags:       rfc::H2_FLAG_END_HEADERS,
-        stream_id:   1,
-        valid:       true,
+    var conn_idle = internal::new_h2_connection(0);
+    let cont_unsolicited = internal::FrameHeader {
+        length:     64,
+        frame_type: rfc::H2_FRAME_CONTINUATION,
+        flags:      rfc::H2_FLAG_END_HEADERS,
+        stream_id:  1,
     };
-    let err_unsolicited = internal::process_incoming_frame(framer_idle, cont_unsolicited);
-    assert(err_unsolicited == internal::H2ErrorCode.ProtocolError);
+    let err_unsolicited = internal::on_ingress_frame_header(conn_idle, cont_unsolicited, 0);
+    assert(err_unsolicited == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_UNSOLICITED_CONTINUATION_BAN: PROTOCOL_ERROR");
 
-    // 6. CONTINUATION flood DoS (CVE-2024-27983): Send 5 allowed, 6th triggers EnhanceYourCalm
-    var framer_flood = internal::H2SecurityFramer { .. };
-    internal::process_incoming_frame(framer_flood, h_hdr);
-    for _ in 5 {
-        let cont_ok = internal::H2FrameHeader {
-            payload_len: 10,
-            frame_type:  internal::H2FrameType.Continuation,
-            raw_type:    0x9,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+    // 6. CONTINUATION flood DoS (CVE-2024-27983): Send 16 allowed, 17th triggers EnhanceYourCalm
+    var conn_flood = internal::new_h2_connection(0);
+    let _ = internal::on_ingress_frame_header(conn_flood, h_hdr, 0);
+    for _ in 16 {
+        let cont_ok = internal::FrameHeader {
+            length:     10,
+            frame_type: rfc::H2_FRAME_CONTINUATION,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let st_ok = internal::process_incoming_frame(framer_flood, cont_ok);
-        assert(st_ok == internal::H2ErrorCode.NoError);
+        let st_ok = internal::on_ingress_frame_header(conn_flood, cont_ok, 0);
+        assert(st_ok == rfc::H2_ERR_NO_ERROR);
     }
-    let cont_6th = internal::H2FrameHeader {
-        payload_len: 10,
-        frame_type:  internal::H2FrameType.Continuation,
-        raw_type:    0x9,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    let cont_17th = internal::FrameHeader {
+        length:     10,
+        frame_type: rfc::H2_FRAME_CONTINUATION,
+        flags:      0x0,
+        stream_id:  1,
     };
-    let err_flood = internal::process_incoming_frame(framer_flood, cont_6th);
-    assert(err_flood == internal::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_flood.state == internal::H2ConnState.Closed);
+    let err_flood = internal::on_ingress_frame_header(conn_flood, cont_17th, 0);
+    assert(err_flood == rfc::H2_ERR_ENHANCE_YOUR_CALM);
     print("H2_CONTINUATION_FLOOD_LIMIT: ENHANCE_YOUR_CALM");
 
     // 7. Cumulative header block size DoS limit (> 8192 bytes)
-    var framer_size = internal::H2SecurityFramer { .. };
-    let big_h_hdr = internal::H2FrameHeader {
-        payload_len: 8000,
-        frame_type:  internal::H2FrameType.Headers,
-        raw_type:    0x1,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    var conn_size = internal::new_h2_connection(0);
+    let big_h_hdr = internal::FrameHeader {
+        length:     8000,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      0x0,
+        stream_id:  1,
     };
-    internal::process_incoming_frame(framer_size, big_h_hdr);
-    let big_cont_hdr = internal::H2FrameHeader {
-        payload_len: 500,
-        frame_type:  internal::H2FrameType.Continuation,
-        raw_type:    0x9,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    let _ = internal::on_ingress_frame_header(conn_size, big_h_hdr, 0);
+    let big_cont_hdr = internal::FrameHeader {
+        length:     500,
+        frame_type: rfc::H2_FRAME_CONTINUATION,
+        flags:      0x0,
+        stream_id:  1,
     };
-    let err_size = internal::process_incoming_frame(framer_size, big_cont_hdr);
-    assert(err_size == internal::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_size.state == internal::H2ConnState.Closed);
+    let err_size = internal::on_ingress_frame_header(conn_size, big_cont_hdr, 0);
+    assert(err_size == rfc::H2_ERR_ENHANCE_YOUR_CALM);
     print("H2_CUMULATIVE_BLOCK_SIZE_LIMIT: ENHANCE_YOUR_CALM");
 }
 
 fn test_h2_dos_and_stream_parity() {
     // 1. Rapid Reset DoS (CVE-2023-44487): 100 allowed, 101st triggers EnhanceYourCalm
-    var framer_rr = internal::H2SecurityFramer { .. };
+    var conn_rr = internal::new_h2_connection(0);
+    conn_rr.reset_limiter = internal::new_h2_token_bucket(100, 33, 0);
+    conn_rr.last_peer_stream_id = 1;
     for _ in 100 {
-        let rst_hdr = internal::H2FrameHeader {
-            payload_len: 4,
-            frame_type:  internal::H2FrameType.RstStream,
-            raw_type:    0x3,
-            flags:       0x0,
-            stream_id:   1,
-            valid:       true,
+        let rst_hdr = internal::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_RST_STREAM,
+            flags:      0x0,
+            stream_id:  1,
         };
-        let st_rst = internal::process_incoming_frame(framer_rr, rst_hdr);
-        assert(st_rst == internal::H2ErrorCode.NoError);
+        let st_rst = internal::on_ingress_frame_header(conn_rr, rst_hdr, 0);
+        assert(st_rst == rfc::H2_ERR_NO_ERROR);
     }
-    let rst_101 = internal::H2FrameHeader {
-        payload_len: 4,
-        frame_type:  internal::H2FrameType.RstStream,
-        raw_type:    0x3,
-        flags:       0x0,
-        stream_id:   1,
-        valid:       true,
+    let rst_101 = internal::FrameHeader {
+        length:     4,
+        frame_type: rfc::H2_FRAME_RST_STREAM,
+        flags:      0x0,
+        stream_id:  1,
     };
-    let err_rr = internal::process_incoming_frame(framer_rr, rst_101);
-    assert(err_rr == internal::H2ErrorCode.EnhanceYourCalm);
-    assert(framer_rr.state == internal::H2ConnState.Closed);
+    let err_rr = internal::on_ingress_frame_header(conn_rr, rst_101, 0);
+    assert(err_rr == rfc::H2_ERR_ENHANCE_YOUR_CALM);
     print("H2_RAPID_RESET_DEFENSE: ENHANCE_YOUR_CALM");
 
-    // 2. Ping flood DoS: 10 allowed, 11th triggers EnhanceYourCalm
-    var framer_ping = internal::H2SecurityFramer { .. };
-    for _ in 10 {
-        let ping_hdr = internal::H2FrameHeader {
-            payload_len: 8,
-            frame_type:  internal::H2FrameType.Ping,
-            raw_type:    0x6,
-            flags:       0x0,
-            stream_id:   0,
-            valid:       true,
+    // 2. Ping flood DoS: 64 allowed, 65th triggers EnhanceYourCalm
+    var conn_ping = internal::new_h2_connection(0);
+    for _ in 64 {
+        let ping_hdr = internal::FrameHeader {
+            length:     8,
+            frame_type: rfc::H2_FRAME_PING,
+            flags:      0x0,
+            stream_id:  0,
         };
-        let st_p = internal::process_incoming_frame(framer_ping, ping_hdr);
-        assert(st_p == internal::H2ErrorCode.NoError);
+        let st_p = internal::on_ingress_frame_header(conn_ping, ping_hdr, 0);
+        assert(st_p == rfc::H2_ERR_NO_ERROR);
     }
-    let ping_11 = internal::H2FrameHeader {
-        payload_len: 8,
-        frame_type:  internal::H2FrameType.Ping,
-        raw_type:    0x6,
-        flags:       0x0,
-        stream_id:   0,
-        valid:       true,
+    let ping_65 = internal::FrameHeader {
+        length:     8,
+        frame_type: rfc::H2_FRAME_PING,
+        flags:      0x0,
+        stream_id:  0,
     };
-    let err_ping_flood = internal::process_incoming_frame(framer_ping, ping_11);
-    assert(err_ping_flood == internal::H2ErrorCode.EnhanceYourCalm);
+    let err_ping_flood = internal::on_ingress_frame_header(conn_ping, ping_65, 0);
+    assert(err_ping_flood == rfc::H2_ERR_ENHANCE_YOUR_CALM);
     print("H2_PING_FLOOD_DEFENSE: ENHANCE_YOUR_CALM");
 
     // 3. Client stream parity: Client HEADERS on even stream ID (stream 2) -> ProtocolError
-    var framer_parity = internal::H2SecurityFramer { .. };
-    let even_hdr = internal::H2FrameHeader {
-        payload_len: 32,
-        frame_type:  internal::H2FrameType.Headers,
-        raw_type:    0x1,
-        flags:       rfc::H2_FLAG_END_HEADERS,
-        stream_id:   2,
-        valid:       true,
+    var conn_parity = internal::new_h2_connection(0);
+    let even_hdr = internal::FrameHeader {
+        length:     32,
+        frame_type: rfc::H2_FRAME_HEADERS,
+        flags:      rfc::H2_FLAG_END_HEADERS,
+        stream_id:  2,
     };
-    let err_parity = internal::process_incoming_frame(framer_parity, even_hdr);
-    assert(err_parity == internal::H2ErrorCode.ProtocolError);
+    let err_parity = internal::on_ingress_frame_header(conn_parity, even_hdr, 0);
+    assert(err_parity == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_EVEN_STREAM_ID_BAN: PROTOCOL_ERROR");
 }
 
 fn test_h2_pseudo_header_invariants() {
     // 1. Pseudo-header after regular header (RFC 9113 §8.3)
-    var list1 = internal::DecodedH2HeaderList { .. };
-    list1.has_regular_header = true;
-    let err_order = internal::validate_header_ordering_and_rules(list1, ":method", "GET");
+    var pseudo1 = internal::H2PseudoHeaders { .. };
+    var list1 = wing::HeaderMap { .. };
+    pseudo1.has_regular_header = true;
+    let err_order = internal::validate_header_ordering_and_rules(pseudo1, list1, ":method", "GET");
     assert(err_order == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_PSEUDO_ORDERING_INVARIANT: PROTOCOL_ERROR");
 
     // 2. Duplicate pseudo-header
-    var list2 = internal::DecodedH2HeaderList { .. };
-    let _ = internal::validate_header_ordering_and_rules(list2, ":method", "GET");
-    list2.fields.push(internal::DecodedH2Header { name: ":method", value: "GET", .. });
-    let err_dup = internal::validate_header_ordering_and_rules(list2, ":method", "POST");
+    var pseudo2 = internal::H2PseudoHeaders { .. };
+    var list2 = wing::HeaderMap { .. };
+    let _ = internal::validate_header_ordering_and_rules(pseudo2, list2, ":method", "GET");
+    let err_dup = internal::validate_header_ordering_and_rules(pseudo2, list2, ":method", "POST");
     assert(err_dup == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_DUPLICATE_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 3. Undefined pseudo-header
-    var list3 = internal::DecodedH2HeaderList { .. };
-    let err_undef = internal::validate_header_ordering_and_rules(list3, ":custom", "val");
+    var pseudo3 = internal::H2PseudoHeaders { .. };
+    var list3 = wing::HeaderMap { .. };
+    let err_undef = internal::validate_header_ordering_and_rules(pseudo3, list3, ":custom", "val");
     assert(err_undef == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_UNDEFINED_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 4. Forbidden connection-specific headers in HTTP/2 (RFC 9113 §8.2.2)
-    var list4 = internal::DecodedH2HeaderList { .. };
-    let err_conn = internal::validate_header_ordering_and_rules(list4, "connection", "close");
+    var pseudo4 = internal::H2PseudoHeaders { .. };
+    var list4 = wing::HeaderMap { .. };
+    let err_conn = internal::validate_header_ordering_and_rules(pseudo4, list4, "connection", "close");
     assert(err_conn == rfc::H2_ERR_PROTOCOL_ERROR);
-    let err_te = internal::validate_header_ordering_and_rules(list4, "transfer-encoding", "chunked");
+    let err_te = internal::validate_header_ordering_and_rules(pseudo4, list4, "transfer-encoding", "chunked");
     assert(err_te == rfc::H2_ERR_PROTOCOL_ERROR);
-    let err_upg = internal::validate_header_ordering_and_rules(list4, "upgrade", "websocket");
+    let err_upg = internal::validate_header_ordering_and_rules(pseudo4, list4, "upgrade", "websocket");
     assert(err_upg == rfc::H2_ERR_PROTOCOL_ERROR);
-    let err_ka = internal::validate_header_ordering_and_rules(list4, "keep-alive", "timeout=5");
+    let err_ka = internal::validate_header_ordering_and_rules(pseudo4, list4, "keep-alive", "timeout=5");
     assert(err_ka == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_FORBIDDEN_CONNECTION_HEADERS: PROTOCOL_ERROR");
 
     // 5. TE header with disallowed value
-    var list5 = internal::DecodedH2HeaderList { .. };
-    let err_te_val = internal::validate_header_ordering_and_rules(list5, "te", "gzip");
+    var pseudo5 = internal::H2PseudoHeaders { .. };
+    var list5 = wing::HeaderMap { .. };
+    let err_te_val = internal::validate_header_ordering_and_rules(pseudo5, list5, "te", "gzip");
     assert(err_te_val == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_DISALLOWED_TE_VALUE: PROTOCOL_ERROR");
 
     // 6. TE header with allowed 'trailers'
-    var list6 = internal::DecodedH2HeaderList { .. };
-    let ok_te_val = internal::validate_header_ordering_and_rules(list6, "te", "trailers");
+    var pseudo6 = internal::H2PseudoHeaders { .. };
+    var list6 = wing::HeaderMap { .. };
+    let ok_te_val = internal::validate_header_ordering_and_rules(pseudo6, list6, "te", "trailers");
     assert(ok_te_val == rfc::H2_ERR_NO_ERROR);
     print("H2_ALLOWED_TE_TRAILERS: OK");
 
     // 7. :authority forbidden characters (@ and /)
-    var list7 = internal::DecodedH2HeaderList { .. };
-    let err_auth_at = internal::validate_header_ordering_and_rules(list7, ":authority", "admin@example.com");
+    var pseudo7 = internal::H2PseudoHeaders { .. };
+    var list7 = wing::HeaderMap { .. };
+    let err_auth_at = internal::validate_header_ordering_and_rules(pseudo7, list7, ":authority", "admin@example.com");
     assert(err_auth_at == rfc::H2_ERR_PROTOCOL_ERROR);
-    let err_auth_slash = internal::validate_header_ordering_and_rules(list7, ":authority", "example.com/api");
+    let err_auth_slash = internal::validate_header_ordering_and_rules(pseudo7, list7, ":authority", "example.com/api");
     assert(err_auth_slash == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_FORBIDDEN_CHARS: PROTOCOL_ERROR");
 
     // 8. :authority vs Host mismatch
-    var list8 = internal::DecodedH2HeaderList { .. };
-    let _ = internal::validate_header_ordering_and_rules(list8, ":authority", "example.com");
-    list8.fields.push(internal::DecodedH2Header { name: ":authority", value: "example.com", .. });
-    let err_mismatch = internal::validate_header_ordering_and_rules(list8, "host", "attacker.com");
+    var pseudo8 = internal::H2PseudoHeaders { .. };
+    var list8 = wing::HeaderMap { .. };
+    let _ = internal::validate_header_ordering_and_rules(pseudo8, list8, ":authority", "example.com");
+    let err_mismatch = internal::validate_header_ordering_and_rules(pseudo8, list8, "host", "attacker.com");
     assert(err_mismatch == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_AUTHORITY_HOST_MISMATCH: PROTOCOL_ERROR");
 }

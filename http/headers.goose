@@ -11,14 +11,7 @@ import core from "..";
 import .headers.lexical;
 import .headers.perfect_hash;
 
-// ---- header items & ascii helpers (RFC 9110 Section 5.6.3) ------------------
-
-// Individual parsed or constructed HTTP header item.
-struct HeaderItem {
-    name:         u8[..64]   = [],
-    value:        u8[..2048] = [],
-    is_sensitive: bool       = false,
-}
+// ---- header ascii helpers (RFC 9110 Section 5.6.3) -------------------------
 
 // Zero-copy view into parsed wire HTTP header offsets.
 struct HeaderSpan {
@@ -102,15 +95,6 @@ fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
     }
 }
 
-// A sanitized HeaderItem, detecting sensitive headers and stripping control bytes.
-fn make_header(name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> HeaderItem {
-    let sens = is_sensitive || is_heuristic_sensitive_header(name);
-    var header_item = HeaderItem { is_sensitive: sens, .. };
-    sanitize_header_bytes(name, header_item.name);
-    sanitize_header_bytes(value, header_item.value);
-    return header_item;
-}
-
 // ---- 256-bit Header Bloom Filter (uWebSockets Fast-Path) -------------------
 
 // 256-bit fast-rejection Bloom filter for HTTP headers (Alex Hultman / uWebSockets algorithm).
@@ -179,90 +163,6 @@ fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
     guard b2 else { return false; }
     let b3 = (bf.bits[p3 >> 6] & ((1 as u64) << (p3 & 63))) != 0;
     return b3;
-}
-
-// Case-insensitive lookup of a header value in a HeaderItem slice (RFC 9110 Section 5.6.3).
-// Returns empty slice if not found.
-fn find_header(headers: const HeaderItem[:], name: const u8[:]) -> const u8[:] {
-    for &h in headers {
-        if eq_ascii_fold(h.name[..], name) {
-            return h.value[..];
-        }
-    }
-    return "";
-}
-
-// Case-insensitive check for presence of a header in a HeaderItem slice.
-fn has_header(headers: const HeaderItem[:], name: const u8[:]) -> bool {
-    for &h in headers {
-        if eq_ascii_fold(h.name[..], name) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Case-insensitive search for the index of a header in a HeaderItem slice.
-// Returns 0-based index or -1 if not found.
-fn find_header_index(headers: const HeaderItem[:], name: const u8[:]) -> i64 {
-    for i in 0..headers.len {
-        if eq_ascii_fold(headers[i].name[..], name) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-// Sets or replaces a header in a bounded HeaderItem collection.
-// Matches existing headers case-insensitively and updates value/sensitivity in-place.
-fn set_header<H>(headers: H&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) {
-    let hdr = make_header(name, value, is_sensitive);
-    for &h in headers {
-        if eq_ascii_fold(h.name[..], hdr.name[..]) {
-            h.value.clear();
-            h.value.append(hdr.value[..]);
-            h.is_sensitive = hdr.is_sensitive;
-            return;
-        }
-    }
-    guard headers.len < headers.cap else { return; }
-    headers.push(hdr);
-}
-
-// Removes all occurrences of a header by name (case-insensitively) in-place.
-// Returns true if at least one header was removed.
-fn remove_header_by_name<H>(headers: H&, target_name: const u8[:]) -> bool {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        if !eq_ascii_fold(headers[read_idx].name[..], target_name) {
-            if write_idx != read_idx {
-                headers[write_idx] = copy(headers[read_idx]);
-            }
-            write_idx++;
-        }
-    }
-    let removed = headers.len > write_idx;
-    while headers.len > write_idx {
-        headers.pop();
-    }
-    return removed;
-}
-
-// Purges credential and sensitive headers in-place (RFC 9110 Section 15.4).
-fn remove_sensitive_headers<H>(headers: H&) {
-    var write_idx = 0;
-    for read_idx in headers.len {
-        let is_sens = headers[read_idx].is_sensitive || is_heuristic_sensitive_header(headers[read_idx].name[..]);
-        if !is_sens {
-            if write_idx != read_idx {
-                headers[write_idx] = copy(headers[read_idx]);
-            }
-            write_idx++;
-        }
-    }
-    while headers.len > write_idx {
-        headers.pop();
-    }
 }
 
 // ---- header bitmask flags & persistence constants --------------------------
@@ -848,6 +748,45 @@ fn reset_for_keep_alive(map: HeaderMap&) {
 }
 
 // ---- wire parser -----------------------------------------------------------
+
+fn link_header_entry_stack(
+    map:      HeaderMap&,
+    wk_id:    WellKnownHeader,
+    raw_name: const u8[:],
+    hname:    u32,
+    new_idx:  u8,
+) {
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let existing = map.inline_slots[slot];
+        if existing == 0xFF {
+            map.inline_slots[slot] = new_idx;
+            return;
+        }
+
+        var cur = existing;
+        while map.entries[cur as i64].next_idx != 0xFF {
+            cur = map.entries[cur as i64].next_idx;
+        }
+
+        map.entries[cur as i64].next_idx = new_idx;
+        return;
+    }
+
+    for prev_i in map.entries.len {
+        let pe = map.entries[prev_i];
+        guard pe.name_hash == hname else { continue; }
+        let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
+        guard eq_ascii_fold(prev_name, raw_name) else { continue; }
+
+        var cur = prev_i as u8;
+        while map.entries[cur as i64].next_idx != 0xFF {
+            cur = map.entries[cur as i64].next_idx;
+        }
+        map.entries[cur as i64].next_idx = new_idx;
+        break;
+    }
+}
 
 fn link_header_entry(
     map:      HeaderMap&,
@@ -1799,7 +1738,7 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
         name_hash:     hname,
     };
 
-    link_header_entry(map, wk_id, name, hname, new_idx);
+    link_header_entry_stack(map, wk_id, name, hname, new_idx);
     map.entries.push(entry);
     map.header_contains_comma.push(contains_comma);
     return true;
@@ -1831,9 +1770,103 @@ fn can_insert_header(map: const HeaderMap&, name: const u8[:], value: const u8[:
     return (map.raw_buf.len - reclaimed + needed) <= 8192;
 }
 
+fn entry_name(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
+    guard entry.reserved == HEADER_SRC_STACK && entry.name_end <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[entry.name_begin..entry.name_end];
+}
+
+fn entry_value(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
+    guard entry.reserved == HEADER_SRC_STACK && entry.values_end <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[entry.values_begin..entry.values_end];
+}
+
+fn clear(map: HeaderMap&) {
+    reset_for_keep_alive(map);
+}
+
+fn find_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
+    guard name.len > 0 else { return ""; }
+    return get_header(map, name);
+}
+
+fn find_header_index(map: const HeaderMap&, name: const u8[:]) -> i64 {
+    return find_first_header_index(map, "", name);
+}
+
+fn shift_raw_buf_left(map: HeaderMap&, from_offset: u16, delta: u16) {
+    guard delta > 0 else { return; }
+    let start = from_offset as i64;
+    let d = delta as i64;
+    let total = map.raw_buf.len;
+    var pos = start;
+    while pos < total {
+        map.raw_buf[pos - d] = map.raw_buf[pos];
+        pos += 1;
+    }
+    var popped: i64 = 0;
+    while popped < d && map.raw_buf.len > 0 {
+        map.raw_buf.pop();
+        popped += 1;
+    }
+    for i in map.entries.len {
+        if map.entries[i].reserved == HEADER_SRC_STACK && map.entries[i].name_begin >= from_offset {
+            map.entries[i].name_begin -= delta;
+            map.entries[i].name_end -= delta;
+            map.entries[i].values_begin -= delta;
+            map.entries[i].values_end -= delta;
+        }
+    }
+}
+
+fn try_overwrite_single_header_in_place(
+    map:          HeaderMap&,
+    name:         const u8[:],
+    trimmed:      const u8[:],
+    is_sensitive: bool,
+) -> bool {
+    let idx = find_first_header_index(map, "", name);
+    guard idx >= 0 && idx < map.entries.len else { return false; }
+    let e = map.entries[idx];
+    guard e.next_idx == 0xFF && e.reserved == HEADER_SRC_STACK else { return false; }
+    let old_val_begin = e.values_begin;
+    let old_val_end = e.values_end;
+    let old_len = (old_val_end - old_val_begin) as i64;
+    guard trimmed.len <= old_len else { return false; }
+
+    for k in trimmed.len {
+        map.raw_buf[old_val_begin + k] = trimmed[k];
+    }
+    let new_val_end = old_val_begin + (trimmed.len as u16);
+    map.entries[idx].values_end = new_val_end;
+
+    var contains_comma = false;
+    for b in trimmed {
+        if b == ',' { contains_comma = true; break; }
+    }
+    map.header_contains_comma[idx] = contains_comma;
+    if contains_comma {
+        map.entries[idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+    } else {
+        map.entries[idx].flags &= ~HEADER_FLAG_CONTAINS_COMMA;
+    }
+    if is_sensitive || is_heuristic_sensitive_header(name) {
+        map.entries[idx].flags |= HEADER_FLAG_SENSITIVE;
+    }
+
+    let shrink_delta = old_val_end - new_val_end;
+    if shrink_delta > 0 {
+        shift_raw_buf_left(map, old_val_end, shrink_delta);
+    }
+    return true;
+}
+
 fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
     let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
     guard valid_name && is_valid_header_value(value) else { return false; }
+    let trimmed = trim_lws(value);
+    if try_overwrite_single_header_in_place(map, name, trimmed, false) {
+        return true;
+    }
     guard can_insert_header(map, name, value) else { return false; }
 
     if map.has_header(name) {
@@ -1842,125 +1875,208 @@ fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     return map.append_header(name, value);
 }
 
+fn set_or_replace(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> bool {
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(value) else { return false; }
+    let trimmed = trim_lws(value);
+    if try_overwrite_single_header_in_place(map, name, trimmed, is_sensitive) {
+        return true;
+    }
+    guard can_insert_header(map, name, value) else { return false; }
+    if map.has_header(name) {
+        map.remove_header(name);
+    }
+    let ok = map.append_header(name, value);
+    if ok && (is_sensitive || is_heuristic_sensitive_header(name)) && map.entries.len > 0 {
+        map.entries[map.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
+    }
+    return ok;
+}
+
+fn set_header(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) {
+    var clean_name: u8[..128]  = [];
+    var clean_val:  u8[..4096] = [];
+    sanitize_header_bytes(name, clean_name);
+    sanitize_header_bytes(value, clean_val);
+    guard clean_name.len > 0 else { return; }
+    let _ = set_or_replace(map, clean_name[..], clean_val[..], is_sensitive);
+}
+
 fn set_inline(map: HeaderMap&, id: WellKnownHeader, value: const u8[:]) -> bool {
     guard id != WellKnownHeader.Unknown else { return false; }
     let name = well_known_header_name(id);
     return map.insert_header(name, value);
 }
 
-fn link_rebuilt_entry(
-    inline_slots: u8[64]&,
-    new_entries:  HeaderEntry[..128]&,
-    raw_buf:      const u8[:],
-    ename:        const u8[:],
-    copy_e:       const HeaderEntry&,
-    new_idx:      u8,
-) {
-    let cur_wk = if copy_e.well_known_id != 0xFF { copy_e.well_known_id as i64 } else { -1 };
-    if cur_wk >= 0 && cur_wk < 64 {
-        let ex = inline_slots[cur_wk];
-        if ex == 0xFF {
-            inline_slots[cur_wk] = new_idx;
-            return;
-        }
-        var cur = ex;
-        while new_entries[cur as i64].next_idx != 0xFF {
-            cur = new_entries[cur as i64].next_idx;
-        }
-        new_entries[cur as i64].next_idx = new_idx;
-        return;
+fn rebuild_inline_slots_and_chains(map: HeaderMap&) {
+    for i in 64 {
+        map.inline_slots[i] = 0xFF;
     }
-
-    for prev_i in new_entries.len {
-        guard new_entries[prev_i].name_hash == copy_e.name_hash else { continue; }
-        let prev_n = raw_buf[new_entries[prev_i].name_begin..new_entries[prev_i].name_end];
-        guard eq_ascii_fold(prev_n, ename) else { continue; }
-
-        var cur = prev_i as u8;
-        while new_entries[cur as i64].next_idx != 0xFF {
-            cur = new_entries[cur as i64].next_idx;
+    for i in map.entries.len {
+        map.entries[i].next_idx = 0xFF;
+    }
+    for i in map.entries.len {
+        let idx_u8 = i as u8;
+        let wk = map.entries[i].well_known_id;
+        if wk != 0xFF && (wk as i64) < 64 {
+            let slot = wk as i64;
+            let first = map.inline_slots[slot];
+            if first == 0xFF {
+                map.inline_slots[slot] = idx_u8;
+                continue;
+            }
+            var cur = first;
+            while map.entries[cur as i64].next_idx != 0xFF {
+                cur = map.entries[cur as i64].next_idx;
+            }
+            map.entries[cur as i64].next_idx = idx_u8;
+            continue;
         }
-        new_entries[cur as i64].next_idx = new_idx;
-        break;
+        let hname = map.entries[i].name_hash;
+        let nb_i = map.entries[i].name_begin;
+        let ne_i = map.entries[i].name_end;
+        for prev_i in i {
+            guard map.entries[prev_i].name_hash == hname else { continue; }
+            let nb_p = map.entries[prev_i].name_begin;
+            let ne_p = map.entries[prev_i].name_end;
+            let match_name = eq_ascii_fold(map.raw_buf[nb_p..ne_p], map.raw_buf[nb_i..ne_i]);
+            guard match_name else { continue; }
+            var cur = prev_i as u8;
+            while map.entries[cur as i64].next_idx != 0xFF {
+                cur = map.entries[cur as i64].next_idx;
+            }
+            map.entries[cur as i64].next_idx = idx_u8;
+            break;
+        }
     }
 }
 
-fn append_rebuilt_entry(
-    e:            const HeaderEntry&,
-    raw_buf:      const u8[:],
-    ename:        const u8[:],
-    new_raw_buf:  u8[..8192]&,
-    new_entries:  HeaderEntry[..128]&,
-    inline_slots: u8[64]&,
-) {
-    var copy_e = e;
-    if e.reserved == HEADER_SRC_STACK && e.values_end <= raw_buf.len as u16 {
-        let eval = raw_buf[e.values_begin..e.values_end];
-        let new_n_begin = new_raw_buf.len as u16;
-        new_raw_buf.append(ename);
-        let new_n_end = new_raw_buf.len as u16;
-
-        let new_v_begin = new_raw_buf.len as u16;
-        new_raw_buf.append(eval);
-        let new_v_end = new_raw_buf.len as u16;
-
-        copy_e.name_begin = new_n_begin;
-        copy_e.name_end = new_n_end;
-        copy_e.values_begin = new_v_begin;
-        copy_e.values_end = new_v_end;
+fn compact_kept_entry_in_place(map: HeaderMap&, read_i: i64, write_entry_i: i64&, write_raw_pos: u16&) {
+    var e = map.entries[read_i];
+    let has_comma = map.header_contains_comma[read_i];
+    if e.reserved == HEADER_SRC_STACK && e.values_end <= map.raw_buf.len {
+        let n_len = e.name_end - e.name_begin;
+        let v_len = e.values_end - e.values_begin;
+        let old_n_begin = e.name_begin;
+        let old_v_begin = e.values_begin;
+        let new_n_begin = write_raw_pos;
+        if new_n_begin != old_n_begin {
+            for k in (n_len as i64) {
+                map.raw_buf[new_n_begin + k] = map.raw_buf[old_n_begin + k];
+            }
+        }
+        let new_n_end = new_n_begin + n_len;
+        if new_n_end != old_v_begin {
+            for k in (v_len as i64) {
+                map.raw_buf[new_n_end + k] = map.raw_buf[old_v_begin + k];
+            }
+        }
+        let new_v_end = new_n_end + v_len;
+        write_raw_pos = new_v_end;
+        e.name_begin = new_n_begin;
+        e.name_end = new_n_end;
+        e.values_begin = new_n_end;
+        e.values_end = new_v_end;
     }
-    let new_idx = new_entries.len as u8;
-    copy_e.next_idx = 0xFF;
+    e.next_idx = 0xFF;
+    map.entries[write_entry_i] = e;
+    map.header_contains_comma[write_entry_i] = has_comma;
+    write_entry_i += 1;
+}
 
-    let cur_raw: const u8[:] = if new_raw_buf.len > 0 { new_raw_buf[..] } else { raw_buf };
-    link_rebuilt_entry(inline_slots, new_entries, cur_raw, ename, copy_e, new_idx);
-    new_entries.push(copy_e);
+fn finish_in_place_compaction(map: HeaderMap&, write_entry_i: i64, write_raw_pos: u16) {
+    while map.entries.len > write_entry_i {
+        map.entries.pop();
+    }
+    while map.header_contains_comma.len > write_entry_i {
+        map.header_contains_comma.pop();
+    }
+    let target_raw_len = write_raw_pos as i64;
+    while map.raw_buf.len > target_raw_len {
+        map.raw_buf.pop();
+    }
+    rebuild_inline_slots_and_chains(map);
 }
 
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
-    let wk_id = classify_well_known_header(name);
     var found = false;
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    let total_entries = map.entries.len;
 
-    if wk_id != WellKnownHeader.Unknown {
-        let slot = well_known_to_slot(wk_id);
-        if map.inline_slots[slot] != 0xFF {
-            map.inline_slots[slot] = 0xFF;
-            found = true;
+    for read_i in total_entries {
+        let e = map.entries[read_i];
+        var is_match = false;
+        if e.reserved == HEADER_SRC_STACK && e.name_end <= map.raw_buf.len {
+            is_match = eq_ascii_fold(map.raw_buf[e.name_begin..e.name_end], name);
         }
-    }
-
-    // Prune entries by rebuilding and compacting raw_buf
-    var new_entries: HeaderEntry[..128] = [];
-    var new_commas:  bool[..128]        = [];
-    var new_raw_buf: u8[..8192]         = [];
-    for i in 64 { map.inline_slots[i] = 0xFF; }
-
-    for &e, i in map.entries {
-        let ename = if e.reserved == HEADER_SRC_STACK && e.name_end <= map.raw_buf.len as u16 {
-            map.raw_buf[e.name_begin..e.name_end]
-        } else {
-            ""
-        };
-        if eq_ascii_fold(ename, name) {
+        if is_match {
             found = true;
             continue;
         }
-
-        append_rebuilt_entry(e, map.raw_buf[..], ename, new_raw_buf, new_entries, map.inline_slots);
-        new_commas.push(map.header_contains_comma[i]);
+        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
     }
 
-    if map.raw_buf.len > 0 {
-        map.raw_buf.clear();
-        map.raw_buf.append(new_raw_buf[..]);
+    if found {
+        finish_in_place_compaction(map, write_entry_i, write_raw_pos);
     }
-
-    map.entries.clear();
-    for e in new_entries { map.entries.push(e); }
-    map.header_contains_comma.clear();
-    for c in new_commas { map.header_contains_comma.push(c); }
-
     return found;
+}
+
+fn remove_header_by_name(map: HeaderMap&, target_name: const u8[:]) -> bool {
+    guard target_name.len > 0 else { return false; }
+    return remove_header(map, target_name);
+}
+
+fn copy_headers(src: const HeaderMap&, dst: HeaderMap&) {
+    dst.reset_for_keep_alive();
+    for &e in src.entries {
+        let name = entry_name(src, e);
+        let val = entry_value(src, e);
+        if name.len > 0 {
+            let ok = dst.append_header(name, val);
+            if ok && (e.flags & HEADER_FLAG_SENSITIVE) != 0 && dst.entries.len > 0 {
+                dst.entries[dst.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
+            }
+        }
+    }
+}
+
+fn append_all_headers(src: const HeaderMap&, dst: HeaderMap&) {
+    for &e in src.entries {
+        let name = entry_name(src, e);
+        let val = entry_value(src, e);
+        if name.len > 0 {
+            let ok = dst.append_header(name, val);
+            if ok && (e.flags & HEADER_FLAG_SENSITIVE) != 0 && dst.entries.len > 0 {
+                dst.entries[dst.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
+            }
+        }
+    }
+}
+
+fn remove_sensitive_headers(map: HeaderMap&) {
+    var found = false;
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    let total_entries = map.entries.len;
+
+    for read_i in total_entries {
+        let e = map.entries[read_i];
+        var is_sens = (e.flags & HEADER_FLAG_SENSITIVE) != 0;
+        if !is_sens && e.reserved == HEADER_SRC_STACK && e.name_end <= map.raw_buf.len {
+            is_sens = is_heuristic_sensitive_header(map.raw_buf[e.name_begin..e.name_end]);
+        }
+        if is_sens {
+            found = true;
+            continue;
+        }
+        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
+    }
+
+    if found {
+        finish_in_place_compaction(map, write_entry_i, write_raw_pos);
+    }
 }
 
 // RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.

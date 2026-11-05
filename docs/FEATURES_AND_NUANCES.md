@@ -103,7 +103,8 @@
 
 ### 4.1 Flat-buffer `HeaderMap` (`http/headers.goose`)
 
-- Flat buffer: Stores raw header text in a flat 8 KB continuous buffer with `\0\0` termination (Chromium `raw_headers_` pattern) accompanied by 128 compact 16-byte `HeaderEntry` descriptor records.
+- Flat buffer: Stores raw header text in a flat 8 KB continuous buffer with `\0\0` termination (Chromium `raw_headers_` pattern) accompanied by 64 compact 16-byte `HeaderEntry` descriptor records. `Request.headers` and `Response.headers` embed `HeaderMap` directly.
+- In-place compaction: `insert_header` overwrites shorter or equal values in place and compacts trailing bytes via `compact_tail_after` without temporary stack buffers; `remove_header` shifts trailing `raw_buf` bytes and updates descriptor offsets so repeated header rewrites across redirect and retry hops never exhaust the 8 KB arena.
 - O(1) inline lookups: 64 compile-time slots (`inline_slots[64]`) provide index-based lookups for canonical headers (`Host`, `Authorization`, `Content-Type`, `User-Agent`, `Set-Cookie`, etc.) without hashing.
 - Host header validation (RFC 9112 §7.2, uWebSockets #1949): Enforces that `Host` contains only `uri-host [ ":" port ]`. Rejects values containing `/`, `?`, `#`, or `@` with `HeaderParseError.InvalidHeaderValue`. Rejects duplicate `Host` headers with `HeaderParseError.InvalidHeaderName`.
 - Vectorized SWAR tokenizer: 64-bit SIMD Within A Register algorithms (`swar_has_zero_byte`, `swar_has_byte`, `swar_has_ctl_or_del`) accelerate delimiter and control character validation.

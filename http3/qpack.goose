@@ -7,6 +7,8 @@
 namespace internal;
 
 import std;
+import core from "..";
+import http.headers;
 
 // ---- constants, error codes and limits -----------------------------------
 
@@ -24,6 +26,45 @@ enum QpackError {
     ClosedCriticalStream,    // H3_ERR_CLOSED_CRITICAL_STREAM (0x0104)
     StreamCreationError,     // H3_ERR_STREAM_CREATION (0x0103)
     FrameEncodingError,      // H3_ERR_FRAME_ERROR
+    MessageError,            // H3_ERR_GENERAL_PROTOCOL (0x0101) / H3_ERR_MESSAGE_ERROR (0x010E)
+}
+
+// Decoded HTTP/3 pseudo-header fields and message validation metadata (RFC 9114 §4.3).
+struct H3PseudoHeaders {
+    method:             u8[..16]   = [],
+    scheme:             u8[..16]   = [],
+    authority:          u8[..256]  = [],
+    path:               u8[..1024] = [],
+    protocol:           u8[..64]   = [],
+    status:             i32        = 0,
+    has_method:         bool       = false,
+    has_scheme:         bool       = false,
+    has_authority:      bool       = false,
+    has_path:           bool       = false,
+    has_protocol:       bool       = false,
+    has_status:         bool       = false,
+    has_regular_header: bool       = false,
+    content_length:     i64        = -1,
+    is_trailer:         bool       = false,
+}
+
+inline fn clear_h3_pseudo_headers(pseudo: H3PseudoHeaders&, preserve_is_trailer: bool = true) {
+    let keep_trailer = if preserve_is_trailer { pseudo.is_trailer } else { false };
+    pseudo.method.clear();
+    pseudo.scheme.clear();
+    pseudo.authority.clear();
+    pseudo.path.clear();
+    pseudo.protocol.clear();
+    pseudo.status = 0;
+    pseudo.has_method = false;
+    pseudo.has_scheme = false;
+    pseudo.has_authority = false;
+    pseudo.has_path = false;
+    pseudo.has_protocol = false;
+    pseudo.has_status = false;
+    pseudo.has_regular_header = false;
+    pseudo.content_length = -1;
+    pseudo.is_trailer = keep_trailer;
 }
 
 struct HeaderField {
@@ -1223,6 +1264,331 @@ fn decode_or_block_qpack_section<F>(
     }
 
     return decode_qpack_section(tbl, src, out_fields, max_field_section);
+}
+
+inline fn emit_qpack_field_to_map(
+    out_pseudo:  H3PseudoHeaders&,
+    out_headers: wing::HeaderMap&,
+    budget_left: u64&,
+    name:        const u8[:],
+    val:         const u8[:],
+    never_index: bool = false,
+) -> QpackError {
+    guard validate_field_syntax(name, val) else { return QpackError.DecompressionFailed; }
+    let cost = qpack_entry_cost(name.len as u64, val.len as u64);
+    guard budget_left >= cost else { return QpackError.HeaderListTooLarge; }
+    budget_left -= cost;
+
+    let is_pseudo = name.len > 0 && name[0] == ':';
+    if is_pseudo {
+        guard !out_pseudo.is_trailer && !out_pseudo.has_regular_header else {
+            return QpackError.MessageError;
+        }
+        if name == ":status" {
+            guard !out_pseudo.has_status && val.len == 3 else { return QpackError.MessageError; }
+            let sc, ok_sc = core::parse_i32_dec(val);
+            guard ok_sc && sc >= 100 && sc <= 599 && sc != 101 else { return QpackError.MessageError; }
+            out_pseudo.status = sc;
+            out_pseudo.has_status = true;
+            return QpackError.None;
+        }
+        if name == ":method" {
+            guard !out_pseudo.has_method && val.len > 0 && out_pseudo.method.try_set(val) else {
+                return QpackError.MessageError;
+            }
+            out_pseudo.has_method = true;
+            return QpackError.None;
+        }
+        if name == ":scheme" {
+            guard !out_pseudo.has_scheme && val.len > 0 && out_pseudo.scheme.try_set(val) else {
+                return QpackError.MessageError;
+            }
+            out_pseudo.has_scheme = true;
+            return QpackError.None;
+        }
+        if name == ":authority" {
+            guard !out_pseudo.has_authority && val.len > 0 && out_pseudo.authority.try_set(val) else {
+                return QpackError.MessageError;
+            }
+            out_pseudo.has_authority = true;
+            return QpackError.None;
+        }
+        if name == ":path" {
+            guard !out_pseudo.has_path && val.len > 0 && out_pseudo.path.try_set(val) else {
+                return QpackError.MessageError;
+            }
+            out_pseudo.has_path = true;
+            return QpackError.None;
+        }
+        if name == ":protocol" {
+            guard !out_pseudo.has_protocol && val.len > 0 && out_pseudo.protocol.try_set(val) else {
+                return QpackError.MessageError;
+            }
+            out_pseudo.has_protocol = true;
+            return QpackError.None;
+        }
+        return QpackError.MessageError;
+    }
+
+    out_pseudo.has_regular_header = true;
+    if name == "content-length" {
+        let cl, ok_cl = core::parse_i64_dec(val);
+        let _, ok_u = core::parse_u64_dec(val);
+        guard ok_cl && ok_u else { return QpackError.MessageError; }
+        if out_pseudo.content_length >= 0 && out_pseudo.content_length != cl {
+            return QpackError.MessageError;
+        }
+        out_pseudo.content_length = cl;
+    }
+
+    guard wing::append_header(out_headers, name, val) else {
+        return QpackError.HeaderListTooLarge;
+    }
+    if never_index {
+        let idx = wing::find_header_index(out_headers, name);
+        if idx >= 0 {
+            out_headers.entries[idx].flags = out_headers.entries[idx].flags | wing::HEADER_FLAG_SENSITIVE;
+        }
+    }
+    return QpackError.None;
+}
+
+// Decodes a single QPACK field line directly into `out_headers` (RFC 9204 §4.5.2–4.5.6).
+// Advances `offset` past the decoded field line.
+//
+// Example:
+//   src = [0xD1], offset = 0 (static index 17: ":method: GET")
+//   returns: QpackError.None, offset = 1, out_pseudo.method = "GET"
+fn decode_qpack_field_line_to_map(
+    tbl:              const QpackTable&,
+    src:              const u8[:],
+    offset:           u64&,
+    base:             u64,
+    ric:              u64,
+    budget:           u64&,
+    out_pseudo:       H3PseudoHeaders&,
+    out_headers:      wing::HeaderMap&,
+    max_dyn_abs_used: u64&,
+    used_any_dyn:     bool&,
+) -> QpackError {
+    let b = src[offset];
+
+    if (b & 0x80) != 0 {
+        let is_static = (b & 0x40) != 0;
+        let idx, next_off, ok = qpack_decode_int(src, offset, 6);
+        guard ok else { return QpackError.DecompressionFailed; }
+
+        if is_static {
+            let s_ent, s_ok = get_qpack_static_field(idx);
+            guard s_ok else { return QpackError.DecompressionFailed; }
+            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, s_ent.name, s_ent.val, false);
+            guard err == QpackError.None else { return err; }
+        } else {
+            guard base > idx else { return QpackError.DecompressionFailed; }
+            let abs_idx = base - idx - 1;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; }
+            var n: u8[..256]  = [];
+            var v: u8[..4096] = [];
+            guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
+                return QpackError.DecompressionFailed;
+            }
+            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], false);
+            guard err == QpackError.None else { return err; }
+            record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    if (b & 0xF0) == 0x10 {
+        let post_idx, next_off, ok = qpack_decode_int(src, offset, 4);
+        guard ok else { return QpackError.DecompressionFailed; }
+        guard (0xFFFFFFFFFFFFFFFF - base) >= post_idx else { return QpackError.DecompressionFailed; }
+        let abs_idx = base + post_idx;
+        guard abs_idx < ric else { return QpackError.DecompressionFailed; }
+        var n: u8[..256]  = [];
+        var v: u8[..4096] = [];
+        guard qpack_lookup_absolute(tbl, abs_idx, n, v) else {
+            return QpackError.DecompressionFailed;
+        }
+        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], false);
+        guard err == QpackError.None else { return err; }
+        record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    if (b & 0xC0) == 0x40 {
+        let is_never_index = (b & 0x20) != 0;
+        let is_static = (b & 0x10) != 0;
+        let name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 4);
+        guard ok_idx else { return QpackError.DecompressionFailed; }
+
+        var n: u8[..256] = [];
+        if is_static {
+            let s_ent, s_ok = get_qpack_static_field(name_idx);
+            guard s_ok else { return QpackError.DecompressionFailed; }
+            n.append(s_ent.name);
+        } else {
+            guard base > name_idx else { return QpackError.DecompressionFailed; }
+            let abs_idx = base - name_idx - 1;
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; }
+            var dummy_v: u8[..4096] = [];
+            guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+                return QpackError.DecompressionFailed;
+            }
+            record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+        }
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    if (b & 0xF0) == 0x00 {
+        let is_never_index = (b & 0x08) != 0;
+        let post_name_idx, val_start, ok_idx = qpack_decode_int(src, offset, 3);
+        guard ok_idx else { return QpackError.DecompressionFailed; }
+        guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
+        let abs_idx = base + post_name_idx;
+        guard abs_idx < ric else { return QpackError.DecompressionFailed; }
+
+        var n:       u8[..256]  = [];
+        var dummy_v: u8[..4096] = [];
+        guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+            return QpackError.DecompressionFailed;
+        }
+        record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    if (b & 0xE0) == 0x20 {
+        let is_never_index = (b & 0x10) != 0;
+        var n: u8[..256] = [];
+        let val_start, ok_name = decode_qpack_string(src, offset, 3, n);
+        guard ok_name else { return QpackError.DecompressionFailed; }
+
+        var v: u8[..4096] = [];
+        let next_off, ok_val = decode_qpack_string(src, val_start, 7, v);
+        guard ok_val else { return QpackError.DecompressionFailed; }
+
+        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
+        guard err == QpackError.None else { return err; }
+        offset = next_off;
+        return QpackError.None;
+    }
+
+    return QpackError.DecompressionFailed;
+}
+
+// Decodes a complete QPACK Encoded Field Section directly into `out_pseudo` and `out_headers` (RFC 9204 §4.5).
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], decode_qpack_to_map(tbl, src, out_pseudo, out_headers, 16384)
+//   returns: QpackError.None, out_pseudo.method = "GET"
+fn decode_qpack_to_map(
+    tbl:               const QpackTable&,
+    src:               const u8[:],
+    out_pseudo:        H3PseudoHeaders&,
+    out_headers:       wing::HeaderMap&,
+    max_field_section: u64 = 16384,
+) -> QpackError {
+    guard src.len >= 2 else { return QpackError.DecompressionFailed; }
+    var offset: u64 = 0;
+    clear_h3_pseudo_headers(out_pseudo, true);
+    out_headers.clear();
+    var budget = max_field_section;
+
+    let enc_ric, base_off, ok_ric = qpack_decode_int(src, offset, 8);
+    guard ok_ric else { return QpackError.DecompressionFailed; }
+
+    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+    guard ric_err == QpackError.None else { return ric_err; }
+
+    if ric > tbl.insert_count && (tbl.max_blocked == 0 || tbl.blocked_streams.len >= tbl.max_blocked) {
+        return QpackError.BlockedStreamsExhausted;
+    }
+
+    guard base_off < (src.len as u64) else { return QpackError.DecompressionFailed; }
+    let sign_bit: u8 = if (src[base_off] & 0x80) != 0 { 1 } else { 0 };
+    let delta_base, fields_off, ok_db = qpack_decode_int(src, base_off, 7);
+    guard ok_db else { return QpackError.DecompressionFailed; }
+
+    let base, base_err = decode_base(sign_bit, delta_base, ric);
+    guard base_err == QpackError.None else { return base_err; }
+
+    offset = fields_off;
+    var max_dyn_abs_used: u64 = 0;
+    var used_any_dyn = false;
+
+    while offset < (src.len as u64) {
+        let f_err = decode_qpack_field_line_to_map(
+            tbl,
+            src,
+            offset,
+            base,
+            ric,
+            budget,
+            out_pseudo,
+            out_headers,
+            max_dyn_abs_used,
+            used_any_dyn,
+        );
+        guard f_err == QpackError.None else { return f_err; }
+    }
+
+    let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
+    guard ric >= min_ric && ric <= tbl.insert_count else {
+        return QpackError.DecompressionFailed;
+    }
+
+    return QpackError.None;
+}
+
+// Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`,
+// or records the stream as blocked if RIC exceeds `insert_count` (RFC 9204 §2.1.2).
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], stream_id = 4
+//   returns: QpackError.None, out_pseudo and out_headers populated
+fn decode_or_block_qpack_to_map(
+    tbl:               QpackTable&,
+    stream_id:         u64,
+    src:               const u8[:],
+    out_pseudo:        H3PseudoHeaders&,
+    out_headers:       wing::HeaderMap&,
+    max_field_section: u64 = 16384,
+) -> QpackError {
+    guard src.len >= 2 else { return QpackError.DecompressionFailed; }
+    let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
+    guard ok_ric else { return QpackError.DecompressionFailed; }
+    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+    guard ric_err == QpackError.None else { return ric_err; }
+
+    if ric > tbl.insert_count {
+        guard qpack_can_block_stream(tbl) else {
+            return QpackError.BlockedStreamsExhausted;
+        }
+        guard qpack_block_stream(tbl, stream_id, ric, src) else {
+            return QpackError.BlockedStreamsExhausted;
+        }
+        return QpackError.StreamBlocked;
+    }
+
+    return decode_qpack_to_map(tbl, src, out_pseudo, out_headers, max_field_section);
 }
 
 // Encodes a single field line with optional static index lookup.
