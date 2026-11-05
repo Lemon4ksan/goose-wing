@@ -17,12 +17,16 @@ enum JwkKeyType {
     Unknown,
     OKP,    // Octet Key Pair (RFC 8037: Ed25519)
     Oct,    // Symmetric Octet Sequence (RFC 7518: HMAC)
+    EC,     // Elliptic Curve (RFC 7518: ECDSA P-256)
+    RSA,    // RSA Key (RFC 7518: RSASSA-PKCS1-v1_5 / RSASSA-PSS)
 }
 
 fn jwk_key_type_to_string(kty: JwkKeyType) -> const u8[:] {
     return match kty {
         OKP => "OKP",
         Oct => "oct",
+        EC => "EC",
+        RSA => "RSA",
         Unknown => "unknown",
     };
 }
@@ -35,6 +39,8 @@ fn jwk_key_type_to_string(kty: JwkKeyType) -> const u8[:] {
 fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
     if s == "OKP" { return JwkKeyType.OKP; }
     if s == "oct" { return JwkKeyType.Oct; }
+    if s == "EC" { return JwkKeyType.EC; }
+    if s == "RSA" { return JwkKeyType.RSA; }
     return JwkKeyType.Unknown;
 }
 
@@ -46,6 +52,10 @@ struct JwksKey {
     kid:              u8[..64]   = [],
     symmetric_key:    u8[..64]   = [],
     public_key:       u8[32]     = [0; 32],
+    ec_x:             u8[..48]   = [],
+    ec_y:             u8[..48]   = [],
+    rsa_n:            u8[..512]  = [],
+    rsa_e:            u8[..8]    = [],
     valid:            bool       = false,
     has_invalid_type: bool       = false,
 }
@@ -72,6 +82,55 @@ fn add_ed25519_key(
         ..
     };
     key.kid.append(kid);
+    jwks.keys.push(key);
+    return true;
+}
+
+// Registers an asymmetric ECDSA P-256 public key in the key set (RFC 7518 §6.2).
+fn add_es256_key(
+    jwks: Jwks&,
+    kid:  const u8[:],
+    x:    const u8[:],
+    y:    const u8[:],
+) -> bool {
+    guard jwks.keys.len < jwks.keys.cap else { return false; }
+    guard kid.len <= 64 && x.len == 32 && y.len == 32 else { return false; }
+    var key = JwksKey {
+        kty:   JwkKeyType.EC,
+        crv:   "P-256",
+        alg:   JwtAlg.ES256,
+        use:   "sig",
+        valid: true,
+        ..
+    };
+    key.kid.append(kid);
+    key.ec_x.append(x);
+    key.ec_y.append(y);
+    jwks.keys.push(key);
+    return true;
+}
+
+// Registers an asymmetric RSA public key in the key set (RFC 7518 §6.3).
+fn add_rsa_key(
+    jwks: Jwks&,
+    kid:  const u8[:],
+    alg:  JwtAlg,
+    n_be: const u8[:],
+    e_be: const u8[:],
+) -> bool {
+    guard jwks.keys.len < jwks.keys.cap else { return false; }
+    guard kid.len <= 64 && n_be.len >= 64 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
+    guard alg == JwtAlg.Unspecified || alg == JwtAlg.RS256 || alg == JwtAlg.PS256 else { return false; }
+    var key = JwksKey {
+        kty:   JwkKeyType.RSA,
+        alg:   alg,
+        use:   "sig",
+        valid: true,
+        ..
+    };
+    key.kid.append(kid);
+    key.rsa_n.append(n_be);
+    key.rsa_e.append(e_be);
     jwks.keys.push(key);
     return true;
 }
@@ -121,14 +180,18 @@ fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
 // - No whitespace
 // - OKP (RFC 8037 §4): "crv", "kty", "x"
 // - oct (RFC 7638 §3.2): "k", "kty"
+// - EC  (RFC 7638 §3.2): "crv", "kty", "x", "y"
+// - RSA (RFC 7638 §3.2): "e", "kty", "n"
 // - Ignores optional members (alg, use, kid)
 fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
     let is_okp = key.kty == JwkKeyType.OKP && key.crv.len > 0;
     let is_oct = key.kty == JwkKeyType.Oct && key.symmetric_key.len > 0;
-    guard is_okp || is_oct else { return false; }
+    let is_ec = key.kty == JwkKeyType.EC && key.crv.len > 0 && key.ec_x.len > 0 && key.ec_y.len > 0;
+    let is_rsa = key.kty == JwkKeyType.RSA && key.rsa_n.len > 0 && key.rsa_e.len > 0;
+    guard is_okp || is_oct || is_ec || is_rsa else { return false; }
 
     out.clear();
-    var buf: u8[..256] = [];
+    var buf: u8[..1024] = [];
     if is_okp {
         buf.append("{\"crv\":\"");
         buf.append(key.crv[..]);
@@ -137,13 +200,35 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
         core::base64url_encode(key.public_key[..], x_b64);
         buf.append(x_b64[..]);
         buf.append("\"}");
-    } else {
+    } else if is_oct {
         buf.append("{\"k\":\"");
         var k_b64: u8[..128] = [];
         core::base64url_encode(key.symmetric_key[..], k_b64);
         buf.append(k_b64[..]);
         core::secure_zeroize_slice(k_b64[..]);
         buf.append("\",\"kty\":\"oct\"}");
+    } else if is_ec {
+        buf.append("{\"crv\":\"");
+        buf.append(key.crv[..]);
+        buf.append("\",\"kty\":\"EC\",\"x\":\"");
+        var x_b64: u8[..64] = [];
+        core::base64url_encode(key.ec_x[..], x_b64);
+        buf.append(x_b64[..]);
+        buf.append("\",\"y\":\"");
+        var y_b64: u8[..64] = [];
+        core::base64url_encode(key.ec_y[..], y_b64);
+        buf.append(y_b64[..]);
+        buf.append("\"}");
+    } else {
+        buf.append("{\"e\":\"");
+        var e_b64: u8[..16] = [];
+        core::base64url_encode(key.rsa_e[..], e_b64);
+        buf.append(e_b64[..]);
+        buf.append("\",\"kty\":\"RSA\",\"n\":\"");
+        var n_b64: u8[..768] = [];
+        core::base64url_encode(key.rsa_n[..], n_b64);
+        buf.append(n_b64[..]);
+        buf.append("\"}");
     }
     let ok = out.try_set(buf[..]);
     core::secure_zeroize_slice(buf[..]);
@@ -155,7 +240,7 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
 fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
     out.clear();
     guard out.cap >= 43 else { return false; }
-    var canonical: u8[..256] = [];
+    var canonical: u8[..1024] = [];
     guard compute_canonical_jwk(key, canonical) else { return false; }
     let digest = core::sha256(canonical[..]);
     core::secure_zeroize_slice(canonical[..]);
@@ -176,6 +261,26 @@ fn serialize_jwk_key<B>(k: const JwksKey&, out: B&) {
         var x_b64: u8[..64] = [];
         core::base64url_encode(k.public_key[..], x_b64);
         json::format_string(out, x_b64[..]);
+    } else if k.kty == JwkKeyType.EC {
+        out.append(",\"crv\":");
+        json::format_string(out, k.crv[..]);
+        out.append(",\"x\":");
+        var x_b64: u8[..64] = [];
+        core::base64url_encode(k.ec_x[..], x_b64);
+        json::format_string(out, x_b64[..]);
+        out.append(",\"y\":");
+        var y_b64: u8[..64] = [];
+        core::base64url_encode(k.ec_y[..], y_b64);
+        json::format_string(out, y_b64[..]);
+    } else if k.kty == JwkKeyType.RSA {
+        out.append(",\"n\":");
+        var n_b64: u8[..768] = [];
+        core::base64url_encode(k.rsa_n[..], n_b64);
+        json::format_string(out, n_b64[..]);
+        out.append(",\"e\":");
+        var e_b64: u8[..16] = [];
+        core::base64url_encode(k.rsa_e[..], e_b64);
+        json::format_string(out, e_b64[..]);
     } else {
         out.append(",\"k\":");
         var k_b64: u8[..128] = [];
@@ -279,31 +384,62 @@ fn parse_jwk_key_ident(
     return false;
 }
 
-// Parses JWK cryptographic material fields ("x", "k") from JSON reader (RFC 7517 §4).
+struct JwkRawMaterial {
+    raw_x: u8[..128]  = [],
+    raw_y: u8[..128]  = [],
+    raw_k: u8[..128]  = [],
+    raw_n: u8[..1024] = [],
+    raw_e: u8[..32]   = [],
+}
+
+// Parses JWK cryptographic material fields ("x", "y", "k", "n", "e") from JSON reader (RFC 7517 §4).
 //
 // Example:
 //   field_key = "x", json string = "base64url..."
-//   stores in raw_x, returns: true
+//   stores in mat.raw_x, returns: true
 fn parse_jwk_key_material(
     field_key: const u8[:],
     reader:    json::Reader&,
     scratch:   u8[>..]&,
-    raw_x:     u8[..128]&,
-    raw_k:     u8[..128]&,
+    mat:       JwkRawMaterial&,
     key_item:  JwksKey&,
 ) -> bool {
     if field_key == "x" {
         let x_str = json::read_string(reader, scratch);
-        if !raw_x.try_set(x_str) {
-            raw_x.clear();
+        if !mat.raw_x.try_set(x_str) {
+            mat.raw_x.clear();
+            key_item.has_invalid_type = true;
+        }
+        return true;
+    }
+    if field_key == "y" {
+        let y_str = json::read_string(reader, scratch);
+        if !mat.raw_y.try_set(y_str) {
+            mat.raw_y.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "k" {
         let k_str = json::read_string(reader, scratch);
-        if !raw_k.try_set(k_str) {
-            raw_k.clear();
+        if !mat.raw_k.try_set(k_str) {
+            mat.raw_k.clear();
+            key_item.has_invalid_type = true;
+        }
+        return true;
+    }
+    if field_key == "n" {
+        let n_str = json::read_string(reader, scratch);
+        if !mat.raw_n.try_set(n_str) {
+            mat.raw_n.clear();
+            key_item.has_invalid_type = true;
+        }
+        return true;
+    }
+    if field_key == "e" {
+        let e_str = json::read_string(reader, scratch);
+        if !mat.raw_e.try_set(e_str) {
+            mat.raw_e.clear();
             key_item.has_invalid_type = true;
         }
         return true;
@@ -320,8 +456,7 @@ fn parse_jwk_key_field(
     field_key: const u8[:],
     reader:    json::Reader&,
     scratch:   u8[>..]&,
-    raw_x:     u8[..128]&,
-    raw_k:     u8[..128]&,
+    mat:       JwkRawMaterial&,
     key_item:  JwksKey&,
 ) {
     if field_key == "d" || field_key == "p" || field_key == "q" ||
@@ -335,8 +470,8 @@ fn parse_jwk_key_field(
         // Matched kty, crv, or alg
     } else if parse_jwk_key_ident(field_key, reader, scratch, key_item) {
         // Matched use or kid
-    } else if parse_jwk_key_material(field_key, reader, scratch, raw_x, raw_k, key_item) {
-        // Matched x or k
+    } else if parse_jwk_key_material(field_key, reader, scratch, mat, key_item) {
+        // Matched x, y, k, n, or e
     } else {
         json::skip(reader);
     }
@@ -346,12 +481,11 @@ fn parse_jwk_key_field(
 //
 // Example:
 //   reader positioned at {"kty":"OKP", ...}
-//   populates key_item, raw_x, raw_k
+//   populates key_item and mat
 fn parse_jwk_key_fields(
     reader:   json::Reader&,
     scratch:  u8[>..]&,
-    raw_x:    u8[..128]&,
-    raw_k:    u8[..128]&,
+    mat:      JwkRawMaterial&,
     key_item: JwksKey&,
 ) {
     var seen_keys: SeenHeaderKey[..16] = [];
@@ -367,7 +501,7 @@ fn parse_jwk_key_fields(
         } else {
             key_item.has_invalid_type = true;
         }
-        parse_jwk_key_field(field_key, reader, scratch, raw_x, raw_k, key_item);
+        parse_jwk_key_field(field_key, reader, scratch, mat, key_item);
     };
 }
 
@@ -387,7 +521,8 @@ fn finalize_okp_key(raw_x: const u8[:], key_item: JwksKey&) -> bool {
 }
 
 fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
-    guard key_item.alg != JwtAlg.EdDSA else { return false; }
+    guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.HS256 ||
+          key_item.alg == JwtAlg.HS384 || key_item.alg == JwtAlg.HS512 else { return false; }
     guard raw_k.len > 0 else { return false; }
     var decoded_k: u8[..128] = [];
     guard core::base64url_decode(raw_k, decoded_k) else { return false; }
@@ -403,15 +538,51 @@ fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
     return true;
 }
 
+fn finalize_ec_key(raw_x: const u8[:], raw_y: const u8[:], key_item: JwksKey&) -> bool {
+    // RFC 7518 §6.2: EC curve P-256 for ES256 signatures
+    guard key_item.crv[..] == "P-256" else { return false; }
+    guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.ES256 else { return false; }
+    guard raw_x.len > 0 && raw_y.len > 0 else { return false; }
+    var decoded_x: u8[..64] = [];
+    var decoded_y: u8[..64] = [];
+    guard core::base64url_decode(raw_x, decoded_x) && core::base64url_decode(raw_y, decoded_y) else { return false; }
+    guard decoded_x.len == 32 && decoded_y.len == 32 else { return false; }
+    key_item.ec_x.clear();
+    key_item.ec_x.append(decoded_x[..]);
+    key_item.ec_y.clear();
+    key_item.ec_y.append(decoded_y[..]);
+    key_item.valid = true;
+    return true;
+}
+
+fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) -> bool {
+    // RFC 7518 §6.3: RSA modulus n and exponent e
+    guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.RS256 || key_item.alg == JwtAlg.PS256 else {
+        return false;
+    }
+    guard raw_n.len > 0 && raw_e.len > 0 else { return false; }
+    var decoded_n: u8[..512] = [];
+    var decoded_e: u8[..8]   = [];
+    guard core::base64url_decode(raw_n, decoded_n) && core::base64url_decode(raw_e, decoded_e) else { return false; }
+    guard decoded_n.len >= 64 && decoded_n.len <= 512 && decoded_e.len >= 1 && decoded_e.len <= 8 else { return false; }
+    key_item.rsa_n.clear();
+    key_item.rsa_n.append(decoded_n[..]);
+    key_item.rsa_e.clear();
+    key_item.rsa_e.append(decoded_e[..]);
+    key_item.valid = true;
+    return true;
+}
+
 fn finalize_jwk_key(
-    raw_x:    const u8[:],
-    raw_k:    const u8[:],
+    mat:      const JwkRawMaterial&,
     key_item: JwksKey&,
 ) -> bool {
     guard !key_item.has_invalid_type else { return false; }
     return match key_item.kty {
-        OKP => finalize_okp_key(raw_x, key_item),
-        Oct => finalize_oct_key(raw_k, key_item),
+        OKP => finalize_okp_key(mat.raw_x[..], key_item),
+        Oct => finalize_oct_key(mat.raw_k[..], key_item),
+        EC => finalize_ec_key(mat.raw_x[..], mat.raw_y[..], key_item),
+        RSA => finalize_rsa_key(mat.raw_n[..], mat.raw_e[..], key_item),
         Unknown => false,
     };
 }
@@ -432,14 +603,13 @@ fn parse_single_jwk_element(
     }
 
     var key_item = JwksKey { .. };
-    var raw_x: u8[..128] = [];
-    var raw_k: u8[..128] = [];
+    var mat = JwkRawMaterial { .. };
 
-    parse_jwk_key_fields(reader, scratch, raw_x, raw_k, key_item);
-    if finalize_jwk_key(raw_x[..], raw_k[..], key_item) {
+    parse_jwk_key_fields(reader, scratch, mat, key_item);
+    if finalize_jwk_key(mat, key_item) {
         out_jwks.keys.push(key_item);
     }
-    core::secure_zeroize_slice(raw_k[..]);
+    core::secure_zeroize_slice(mat.raw_k[..]);
 }
 
 // Parses an RFC 7517 JWKS JSON document into Jwks struct.
@@ -491,7 +661,9 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
 fn is_kty_alg_compatible(kty: JwkKeyType, alg: JwtAlg) -> bool {
     return match kty {
         OKP => alg == JwtAlg.EdDSA,
-        Oct => (alg != JwtAlg.EdDSA && alg != JwtAlg.None && alg != JwtAlg.Unknown && alg != JwtAlg.Unspecified),
+        Oct => (alg == JwtAlg.HS256 || alg == JwtAlg.HS384 || alg == JwtAlg.HS512),
+        EC => alg == JwtAlg.ES256,
+        RSA => (alg == JwtAlg.RS256 || alg == JwtAlg.PS256),
         Unknown => false,
     };
 }
@@ -524,6 +696,21 @@ fn validate_jwks_key_compatibility(
     return JwtError.None;
 }
 
+fn verify_jwks_ec_key(
+    token:        const u8[:],
+    key:          const JwksKey&,
+    options:      const JwtValidationOptions&,
+    now_unix_sec: i64,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
+) -> JwtError {
+    var pub_pt: u8[..65] = [];
+    pub_pt.push(0x04);
+    pub_pt.append(key.ec_x[..]);
+    pub_pt.append(key.ec_y[..]);
+    return verify_jwt_es256(token, pub_pt[..], options, now_unix_sec, out_header, out_claims);
+}
+
 fn dispatch_jwks_verification(
     token:        const u8[:],
     key:          const JwksKey&,
@@ -538,6 +725,8 @@ fn dispatch_jwks_verification(
     return match key.kty {
         OKP => verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims),
         Oct => verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims),
+        EC => verify_jwks_ec_key(token, key, options, now_unix_sec, out_header, out_claims),
+        RSA => verify_jwt_rsa(token, key.rsa_n[..], key.rsa_e[..], options, now_unix_sec, out_header, out_claims),
         Unknown => JwtError.KeyNotFound,
     };
 }

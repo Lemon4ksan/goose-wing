@@ -17,10 +17,14 @@ const SOA_INVALID_TICK: u8  = 255;
 
 // Structure-of-Arrays connection state table.
 struct SoAConnTable {
-    fds:           i64[1024] = [-1; 1024],
-    timeout_ticks: u8[1024]  = [255; 1024],
-    leftover_lens: u16[1024] = [0; 1024],
-    count:         i64       = 0,
+    fds:           i64[1024]  = [-1; 1024],
+    timeout_ticks: u8[1024]   = [255; 1024],
+    leftover_lens: u16[1024]  = [0; 1024],
+    is_h2:         bool[1024] = [false; 1024],
+    h2_slot_map:   i16[1024]  = [-1; 1024],
+    has_tls:       bool[1024] = [false; 1024],
+    tls_slots:     u16[1024]  = [0xFFFF; 1024],
+    count:         i64        = 0,
 }
 
 // Advances high-water mark for allocated connection slots.
@@ -43,6 +47,10 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
             table.fds[i] = fd;
             table.timeout_ticks[i] = timeout_tick;
             table.leftover_lens[i] = 0;
+            table.is_h2[i] = false;
+            table.h2_slot_map[i] = -1;
+            table.has_tls[i] = false;
+            table.tls_slots[i] = 0xFFFF;
             table.count = advance_high_water_mark(table.count, i);
             return i;
         }
@@ -56,6 +64,10 @@ fn soa_table_free(table: SoAConnTable&, slot: i64) {
     table.fds[slot] = SOA_INVALID_FD;
     table.timeout_ticks[slot] = SOA_INVALID_TICK;
     table.leftover_lens[slot] = 0;
+    table.is_h2[slot] = false;
+    table.h2_slot_map[slot] = -1;
+    table.has_tls[slot] = false;
+    table.tls_slots[slot] = 0xFFFF;
 }
 
 // Updates the timeout tick for an active connection slot (activity refresh).

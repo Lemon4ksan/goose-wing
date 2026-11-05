@@ -175,3 +175,19 @@ fn rio_release_address_buf(pool: RioAddressPool&, slot_idx: i32) -> bool {
     }
     return true;
 }
+
+// Enqueues a registered buffer slice into a Windows RIO Request Queue (`RIOSend`).
+fn rio_submit_send(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u64 = 0) -> i32 {
+    guard rq_id != 0 && desc.is_registered && desc.buffer_id != 0 && desc.length > 0 else {
+        return -1;
+    }
+    return native_rio_send(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
+}
+
+// Enqueues a registered buffer slice into a Windows RIO Request Queue (`RIOReceive`).
+fn rio_submit_recv(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u64 = 0) -> i32 {
+    guard rq_id != 0 && desc.is_registered && desc.buffer_id != 0 && desc.length > 0 else {
+        return -1;
+    }
+    return native_rio_receive(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
+}

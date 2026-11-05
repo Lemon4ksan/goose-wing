@@ -46,6 +46,9 @@ struct H3StreamEntry {
     body_received_len: u64                 = 0,
     content_length:    i64                 = -1,
     priority:          wing::PriorityParam = wing::PriorityParam { urgency: 3, incremental: false },
+    req_method:        u8[..16]            = [],
+    req_path:          u8[..1024]          = [],
+    req_authority:     u8[..256]           = [],
     received_body:     u8[..4096]          = [],
 }
 
@@ -99,6 +102,7 @@ struct H3Connection {
     error_code:                u64                 = rfc::H3_ERR_NO_ERROR,
     local_settings:            wing::H3Settings    = wing::H3Settings { .. },
     peer_settings:             wing::H3Settings    = wing::H3Settings { .. },
+    encoder_stream_buf:        u8[..4096]          = [],
     streams:                   H3StreamEntry[..32] = [],
     qpack_table:               QpackTable          = QpackTable { .. }, // Resizable array must be final field
 }
@@ -213,7 +217,58 @@ fn open_request_stream(conn: H3Connection&) -> u64, bool {
     return sid, true;
 }
 
-// Encodes request headers into QPACK field section and wraps in a HEADERS frame.
+fn encode_h3_extra_headers<B1, B2>(
+    tbl:           QpackTable&,
+    stream_id:     u64,
+    base:          u64,
+    extra_headers: const wing::HeaderMap&,
+    body_fields:   B1&,
+    enc_stream:    B2&,
+    max_dyn_abs:   u64&,
+    used_any_dyn:  bool&,
+) {
+    let raw_len = extra_headers.raw_buf.len;
+    for i in extra_headers.entries.len {
+        let entry = extra_headers.entries[i];
+        let nb = entry.name_begin as i64;
+        let ne = entry.name_end as i64;
+        let vb = entry.values_begin as i64;
+        let ve = entry.values_end as i64;
+        if nb >= 0 && ne >= nb && ne <= raw_len && vb >= 0 && ve >= vb && ve <= raw_len {
+            let name = extra_headers.raw_buf[nb..ne];
+            let val = extra_headers.raw_buf[vb..ve];
+            encode_qpack_field_dynamic(
+                tbl, stream_id, base, name, val,
+                body_fields, enc_stream, max_dyn_abs, used_any_dyn, false,
+            );
+        }
+    }
+}
+
+fn prepend_qpack_section_prefix<B>(
+    tbl:          QpackTable&,
+    stream_id:    u64,
+    base:         u64,
+    max_dyn_abs:  u64,
+    used_any_dyn: bool,
+    out_payload:  B&,
+) {
+    if used_any_dyn {
+        let ric = max_dyn_abs + 1;
+        let _ = qpack_track_unacked_stream(tbl, stream_id, ric);
+        let enc_ric = encode_ric(ric, tbl.max_capacity_bytes);
+        internal::hpack_encode_int(out_payload, enc_ric, 8, 0x00);
+        let sign_bit, delta_base = encode_base(base, ric);
+        let sign_mask: u8 = if sign_bit != 0 { 0x80 } else { 0x00 };
+        internal::hpack_encode_int(out_payload, delta_base, 7, sign_mask);
+    } else {
+        out_payload.push(0x00);
+        out_payload.push(0x00);
+    }
+}
+
+// Encodes request headers into QPACK field section (utilizing the dynamic table when enabled)
+// and wraps in a HEADERS frame (RFC 9114 §4.3.1, RFC 9204 §4.5).
 fn send_request_headers<B>(
     conn:          H3Connection&,
     stream_id:     u64,
@@ -228,27 +283,36 @@ fn send_request_headers<B>(
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found else { return false; }
 
-    // Build QPACK field section:
-    // Required prefix: EncodedInsertCount (0) and SignBit + DeltaBase (0) -> 2 bytes: 0x00, 0x00
+    let base = conn.qpack_table.insert_count;
+    var max_dyn_abs: u64 = 0;
+    var used_any_dyn = false;
+    var body_fields: u8[..4096] = [];
+
+    encode_qpack_field_dynamic(
+        conn.qpack_table, stream_id, base, ":method", method,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
+    );
+    encode_qpack_field_dynamic(
+        conn.qpack_table, stream_id, base, ":scheme", scheme,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
+    );
+    encode_qpack_field_dynamic(
+        conn.qpack_table, stream_id, base, ":authority", authority,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
+    );
+    encode_qpack_field_dynamic(
+        conn.qpack_table, stream_id, base, ":path", path,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
+    );
+    encode_h3_extra_headers(
+        conn.qpack_table, stream_id, base, extra_headers,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn,
+    );
+
     var qpack_payload: u8[..4096] = [];
-    qpack_payload.push(0x00);
-    qpack_payload.push(0x00);
+    prepend_qpack_section_prefix(conn.qpack_table, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload);
+    guard qpack_payload.try_append(body_fields[..]) else { return false; }
 
-    // Pseudo-headers (RFC 9114 Section 4.3.1)
-    encode_qpack_field(qpack_payload, ":method", method, true);
-    encode_qpack_field(qpack_payload, ":scheme", scheme, true);
-    encode_qpack_field(qpack_payload, ":authority", authority, true);
-    encode_qpack_field(qpack_payload, ":path", path, true);
-
-    // Extra application headers
-    for i in extra_headers.entries.len {
-        let entry = extra_headers.entries[i];
-        let name = extra_headers.raw_buf[entry.name_begin..entry.name_end];
-        let val = extra_headers.raw_buf[entry.values_begin..entry.values_end];
-        encode_qpack_field(qpack_payload, name, val, true);
-    }
-
-    // Wrap in HEADERS frame
     let ok_frame = encode_h3_headers_frame(out, qpack_payload[..]);
     guard ok_frame else { return false; }
 
@@ -262,6 +326,15 @@ fn send_request_headers<B>(
         };
     }
     return true;
+}
+
+// Configures local QPACK dynamic table capacity from peer SETTINGS_QPACK_MAX_TABLE_CAPACITY
+// and emits the Set Dynamic Table Capacity instruction onto `conn.encoder_stream_buf` (RFC 9204 §4.3.1).
+fn h3_activate_qpack_dynamic_table(conn: H3Connection&, new_cap: u64) -> bool {
+    if new_cap > conn.qpack_table.max_capacity_bytes {
+        conn.qpack_table.max_capacity_bytes = new_cap;
+    }
+    return encode_qpack_set_capacity(conn.qpack_table, new_cap, conn.encoder_stream_buf);
 }
 
 // Encodes a DATA frame on an open request stream.
@@ -860,6 +933,7 @@ fn process_h3_pseudo_field(
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
+        let _ = conn.streams[s_idx].req_method.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":scheme" {
@@ -876,6 +950,7 @@ fn process_h3_pseudo_field(
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
+        let _ = conn.streams[s_idx].req_authority.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":path" {
@@ -884,6 +959,7 @@ fn process_h3_pseudo_field(
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
+        let _ = conn.streams[s_idx].req_path.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":protocol" {
@@ -1272,6 +1348,49 @@ fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
         return conn.streams[s_idx].fin_received;
     }
     return false;
+}
+
+// Encodes a server HTTP/3 response (HEADERS + optional DATA frame) onto `out` (RFC 9114 §4.1).
+fn send_response_headers_and_body<B>(
+    conn:          H3Connection&,
+    stream_id:     u64,
+    status_code:   i32,
+    extra_headers: const wing::HeaderMap&,
+    body:          const u8[:],
+    out:           B&,
+) -> bool {
+    let s_idx, found = find_h3_stream_idx(conn, stream_id);
+    guard found else { return false; }
+
+    var sc_str: u8[..16] = [];
+    format(sc_str, status_code as i64);
+
+    let base = conn.qpack_table.insert_count;
+    var max_dyn_abs: u64 = 0;
+    var used_any_dyn = false;
+    var body_fields: u8[..4096] = [];
+
+    encode_qpack_field_dynamic(
+        conn.qpack_table, stream_id, base, ":status", sc_str[..],
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, false,
+    );
+    encode_h3_extra_headers(
+        conn.qpack_table, stream_id, base, extra_headers,
+        body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn,
+    );
+
+    var qpack_payload: u8[..4096] = [];
+    prepend_qpack_section_prefix(conn.qpack_table, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload);
+    guard qpack_payload.try_append(body_fields[..]) else { return false; }
+    guard encode_h3_headers_frame(out, qpack_payload[..]) else { return false; }
+
+    conn.streams[s_idx].headers_sent = true;
+    if body.len > 0 {
+        guard encode_h3_data_frame(out, body) else { return false; }
+    }
+    conn.streams[s_idx].fin_sent = true;
+    conn.streams[s_idx].state = H3StreamState.Closed;
+    return true;
 }
 
 fn apply_h3_stream_priority(conn: H3Connection&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {

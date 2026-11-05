@@ -1085,11 +1085,11 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         sub.assert_false(wing::parse_jwt_claims_json("{\"aud\":[123]}", clm_num_aud), "Non-string aud element rejected");
 
         // 3. parse_jwt_alg: unknown alg parses as Unknown and rejects even with allow_none_alg = true
-        let alg_rs = wing::parse_jwt_alg("RS256");
-        sub.assert_eq(alg_rs, wing::JwtAlg.Unknown, "RS256 parses as Unknown");
+        let alg_unk = wing::parse_jwt_alg("ES256K");
+        sub.assert_eq(alg_unk, wing::JwtAlg.Unknown, "ES256K parses as Unknown");
         var opts_allow_none = wing::default_jwt_validation_options(wing::JwtAlg.None);
         opts_allow_none.allow_none_alg = true;
-        let err_unknown = wing::verify_jwt_algorithm(alg_rs, wing::JwtAlg.None, opts_allow_none.allow_none_alg);
+        let err_unknown = wing::verify_jwt_algorithm(alg_unk, wing::JwtAlg.None, opts_allow_none.allow_none_alg);
         sub.assert_eq(err_unknown, wing::JwtError.UnsupportedAlgorithm, "Unknown alg cannot bypass as none");
 
         // 4. claim_str ignores numeric/boolean claims, and set_claim_int clears val_str
@@ -2484,6 +2484,105 @@ fn test_acme_http01(t: lit::T&) {
     };
 }
 
+fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
+    let now_sec: i64 = 1770000000;
+    let ec_priv: u8[32] = [
+        0xc9, 0xaf, 0xa9, 0xd8, 0x45, 0xba, 0x75, 0x16,
+        0x6b, 0x5c, 0x21, 0x57, 0x67, 0xb1, 0xd6, 0x93,
+        0x4e, 0x50, 0xc3, 0xdb, 0x36, 0xe8, 0x9b, 0x12,
+        0x7b, 0x8a, 0x62, 0x2b, 0x12, 0x0f, 0x67, 0x21,
+    ];
+    let ec_pub = core::ecdsa_p256_public_key(ec_priv);
+
+    t.run("ES256 JWT Sign, Verify, and JWKS Integration") { sub =>
+        var hdr = wing::new_jwt_header(wing::JwtAlg.ES256, "es256-key-1");
+        var clm = wing::JwtClaims { .. };
+        clm.sub.try_set("oidc_user_ec");
+        clm.exp = now_sec + 600;
+
+        var token: u8[>..] = [];
+        sub.assert_true(wing::sign_jwt_es256(hdr, clm, ec_priv, token), "ES256 JWT signed");
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::JwtClaims { .. };
+        var opts = wing::default_jwt_validation_options(wing::JwtAlg.ES256);
+        let err = wing::verify_jwt_es256(token[..], ec_pub[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, wing::JwtError.None, "ES256 JWT verified directly");
+        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "oidc_user_ec", "sub claim matches");
+
+        var jwks = wing::Jwks { .. };
+        sub.assert_true(wing::add_es256_key(jwks, "es256-key-1", ec_pub[1..33], ec_pub[33..65]), "add_es256_key ok");
+
+        var jwks_json: u8[>..] = [];
+        wing::serialize_jwks(jwks, jwks_json);
+        var parsed_jwks = wing::Jwks { .. };
+        sub.assert_true(wing::parse_jwks_json(jwks_json[..], parsed_jwks), "EC JWKS parsed");
+
+        var out_h2 = wing::new_jwt_header();
+        var out_c2 = wing::JwtClaims { .. };
+        let err_jwks = wing::verify(token[..], parsed_jwks, opts, now_sec, out_h2, out_c2);
+        sub.assert_eq(err_jwks, wing::JwtError.None, "ES256 JWT verified via parsed JWKS");
+
+        var ec_tp: u8[..64] = [];
+        sub.assert_true(wing::compute_jwk_thumbprint(parsed_jwks.keys[0], ec_tp), "EC RFC 7638 thumbprint computed");
+        sub.assert_eq(ec_tp.len, 43, "EC thumbprint is 43 chars");
+    };
+
+    t.run("RS256 & PS256 JWT Sign, Verify, and JWKS Integration") { sub =>
+        // 1024-bit test RSA modulus (e=1, d=1 with odd modulus > message for deterministic fast check)
+        var rsa_n: u8[128] = [0xFF; 128];
+        let rsa_e: u8[1] = [0x01];
+        let rsa_d: u8[1] = [0x01];
+
+        var hdr_rs = wing::new_jwt_header(wing::JwtAlg.RS256, "rsa-key-1");
+        var clm_rs = wing::JwtClaims { .. };
+        clm_rs.sub.try_set("oidc_user_rsa");
+        clm_rs.exp = now_sec + 600;
+
+        var tok_rs: u8[>..] = [];
+        sub.assert_true(wing::sign_jwt_rs256(hdr_rs, clm_rs, rsa_n[..], rsa_d[..], tok_rs), "RS256 JWT signed");
+
+        var jwks = wing::Jwks { .. };
+        sub.assert_true(wing::add_rsa_key(jwks, "rsa-key-1", wing::JwtAlg.Unspecified, rsa_n[..], rsa_e[..]), "add_rsa_key ok");
+
+        var out_h = wing::new_jwt_header();
+        var out_c = wing::JwtClaims { .. };
+        var opts_rs = wing::default_jwt_validation_options(wing::JwtAlg.RS256);
+        sub.assert_eq(wing::verify(tok_rs[..], jwks, opts_rs, now_sec, out_h, out_c), wing::JwtError.None, "RS256 verified via JWKS");
+
+        var hdr_ps = wing::new_jwt_header(wing::JwtAlg.PS256, "rsa-key-1");
+        let salt32: u8[32] = [0x42; 32];
+        var tok_ps: u8[>..] = [];
+        sub.assert_true(wing::sign_jwt_ps256(hdr_ps, clm_rs, rsa_n[..], rsa_d[..], salt32[..], tok_ps), "PS256 JWT signed");
+        var opts_ps = wing::default_jwt_validation_options(wing::JwtAlg.PS256);
+        sub.assert_eq(wing::verify(tok_ps[..], jwks, opts_ps, now_sec, out_h, out_c), wing::JwtError.None, "PS256 verified via JWKS");
+    };
+
+    t.run("ES256 DPoP Proof Creation and Verification (RFC 9449)") { sub =>
+        var proof: u8[..2048] = [];
+        let ok_create = wing::create_dpop_proof_es256(
+            ec_priv, "POST", "https://api.example.com/resource", "access_tok_123", "nonce_abc", now_sec, "jti_es256_1", proof,
+        );
+        sub.assert_true(ok_create, "ES256 DPoP proof created");
+
+        let ok_verify = wing::verify_dpop_proof(
+            proof[..], ec_pub[..], "POST", "https://api.example.com/resource", "access_tok_123", "nonce_abc", now_sec, 300, 60, "", "ES256",
+        );
+        sub.assert_true(ok_verify, "ES256 DPoP proof verified");
+
+        let raw_p256 = core::ecdsa_p256_sign(ec_priv, "der-test");
+        var der_p256: u8[..72] = [];
+        sub.assert_true(core::ecdsa_p256_encode_der_sig(raw_p256, der_p256), "DER encoded P-256 sig");
+        sub.assert_true(core::ecdsa_p256_verify(ec_pub[..], "der-test", der_p256[..]), "DER P-256 verified");
+
+        var p384_priv: u8[48] = [0x01; 48];
+        p384_priv[47] = 0x05;
+        let p384_pub = core::ecdsa_p384_public_key(p384_priv);
+        let p384_sig = core::ecdsa_p384_sign(p384_priv, "p384-test");
+        sub.assert_true(core::ecdsa_p384_verify(p384_pub[..], "p384-test", p384_sig[..]), "P-384 verified");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", lit::Verbosity.Verbose);
 
@@ -2510,6 +2609,7 @@ fn main() {
     lit::run_case(runner, "21. Digest Authorization Serialization Defenses", test_digest_auth_serialization_security);
     lit::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
     lit::run_case(runner, "23. RFC 8555 ACME HTTP-01", test_acme_http01);
+    lit::run_case(runner, "24. ES256 & RS256/PS256 JWT, JWKS, and DPoP Interop", test_es256_rsa_jwt_jwks_dpop);
 
     let ok = lit::finish(runner);
     assert(ok);

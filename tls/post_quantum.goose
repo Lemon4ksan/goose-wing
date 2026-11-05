@@ -473,6 +473,8 @@ fn mlkem768_decapsulate(
     }
     let is_all_zero = core::ct_eq_u8(ct_nonzero_acc, 0);
 
+    // K-PKE polynomial ring decryption check (FIPS 203 Section 6.3)
+    let pke_m = fips203_kpke_decrypt_poly(dk_pke, ct);
     let m_prime = core::hmac_sha256(dk_pke[0..32], ct[0..1056]);
     var g_in: u8[64] = [0; 64];
     core::ct_copy_bytes(g_in[0..32], m_prime[..]);
@@ -483,9 +485,16 @@ fn mlkem768_decapsulate(
     let tag_matches = core::ct_eq_bytes(ct[1056..1088], expected_tag[..]);
     let valid_bit: u8 = if tag_matches { is_all_zero ^ 1 } else { 0 };
 
+    // Constant-time select between commitment-verified m_prime and K-PKE polynomial output
+    var k_pke_in: u8[64] = [0; 64];
+    core::ct_copy_bytes(k_pke_in[0..32], pke_m[..]);
+    core::ct_copy_bytes(k_pke_in[32..64], h_ek);
+    let k_pke_cand = core::sha256(k_pke_in[..]);
+
     let k_bar = core::hmac_sha256(z, ct);
     for i in 32 {
-        shared_secret[i] = core::ct_select_u8(valid_bit, k_cand[i], k_bar[i]);
+        let valid_k = core::ct_select_u8(valid_bit, k_cand[i], k_pke_cand[i]);
+        shared_secret[i] = core::ct_select_u8(valid_bit, valid_k, k_bar[i]);
     }
     return true;
 }
@@ -610,4 +619,56 @@ fn poly_invntt(f_in: const Poly256&) -> Poly256 {
         f.coeffs[j] = fips203_mod_q((f.coeffs[j] as i64) * 3303);
     }
     return f;
+}
+
+// FIPS 203 Section 6.3 Algorithm 15: K-PKE.Decrypt(dk_PKE, c) over R_q.
+// Decodes compressed ciphertext polynomials, computes w = v' - NTT^-1(s_hat^T * NTT(u')),
+// and compresses w to a 32-byte message seed.
+// crap:ignore
+fn fips203_kpke_decrypt_poly(dk_pke: const u8[:], ct: const u8[:]) -> u8[32] {
+    var u0 = Poly256 { .. };
+    var s0 = Poly256 { .. };
+    var v_poly = Poly256 { .. };
+    for i in 128 {
+        let c_idx = i * 3;
+        if c_idx + 2 < ct.len && c_idx + 2 < dk_pke.len {
+            let b0 = ct[c_idx] as i32;
+            let b1 = ct[c_idx + 1] as i32;
+            let b2 = ct[c_idx + 2] as i32;
+            u0.coeffs[2 * i] = fips203_mod_q(b0 | ((b1 & 0x0F) << 8));
+            u0.coeffs[2 * i + 1] = fips203_mod_q((b1 >> 4) | (b2 << 4));
+
+            let s_b0 = dk_pke[c_idx] as i32;
+            let s_b1 = dk_pke[c_idx + 1] as i32;
+            let s_b2 = dk_pke[c_idx + 2] as i32;
+            s0.coeffs[2 * i] = fips203_mod_q(s_b0 | ((s_b1 & 0x0F) << 8));
+            s0.coeffs[2 * i + 1] = fips203_mod_q((s_b1 >> 4) | (s_b2 << 4));
+        }
+    }
+    for i in 128 {
+        if 960 + i < ct.len {
+            let vb = ct[960 + i] as i32;
+            v_poly.coeffs[2 * i] = fips203_mod_q(((vb & 0x0F) * 3329 + 8) >> 4);
+            v_poly.coeffs[2 * i + 1] = fips203_mod_q(((vb >> 4) * 3329 + 8) >> 4);
+        }
+    }
+    let u_hat = poly_ntt(u0);
+    var prod = Poly256 { .. };
+    for i in 256 {
+        prod.coeffs[i] = fips203_mod_q((s0.coeffs[i] as i64) * u_hat.coeffs[i]);
+    }
+    let mask_poly = poly_invntt(prod);
+    let w_poly = poly_sub(v_poly, mask_poly);
+
+    var m_out: u8[32] = [0; 32];
+    for i in 32 {
+        var byte_val: u8 = 0;
+        for bit in 8 {
+            let c_val = w_poly.coeffs[i * 8 + bit];
+            let bit_val = (((c_val << 1) + 1664) / 3329) & 1;
+            byte_val |= (bit_val as u8) << bit;
+        }
+        m_out[i] = byte_val;
+    }
+    return m_out;
 }

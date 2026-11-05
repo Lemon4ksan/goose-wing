@@ -15,9 +15,18 @@ import http.mime;
 
 // Encodes a payload into a 5-byte Length-Prefixed Message (LPM):
 // [1-byte Flag] [4-byte Big-Endian Length] [Payload]
+// When `compressed` is true, `payload` is Gzip-compressed before framing.
 fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
-    let flag: u8 = if compressed { rfc::GRPC_FLAG_COMPRESSED } else { 0x00 };
-    out.push(flag);
+    if compressed {
+        var gz_buf: u8[>..] = [];
+        if core::gzip_compress(payload, gz_buf, 6) {
+            out.push(rfc::GRPC_FLAG_COMPRESSED);
+            core::write_be_u32(out, gz_buf.len as u32);
+            out.append(gz_buf[..]);
+            return;
+        }
+    }
+    out.push(0x00);
     core::write_be_u32(out, payload.len as u32);
     out.append(payload);
 }

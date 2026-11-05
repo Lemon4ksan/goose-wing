@@ -23,6 +23,24 @@ extern fn native_uring_register_buffers(
 ) -> i32 = "wing_uring_register_buffers";
 extern fn native_uring_unregister_buffers(ring_fd: i64) -> i32 = "wing_uring_unregister_buffers";
 extern fn native_uring_has_fast_poll(ring_fd: i64) -> i32 = "wing_uring_has_fast_poll";
+extern fn native_uring_submit_sqe(
+    ring_fd:   i64,
+    opcode:    u8,
+    flags:     u8,
+    ioprio:    u16,
+    fd:        i32,
+    off:       u64,
+    addr:      u64,
+    len:       u32,
+    user_data: u64,
+    buf_index: u16,
+) -> i32 = "wing_uring_submit_sqe";
+extern fn native_uring_peek_cqe(
+    ring_fd:       i64,
+    user_data_out: u64&,
+    res_out:       i32&,
+    flags_out:     u32&,
+) -> i32 = "wing_uring_peek_cqe";
 
 // Registered I/O vector for IORING_REGISTER_BUFFERS
 struct UringIovec {
@@ -219,17 +237,57 @@ inline fn uring_enter_if_active(ring_fd: i64, submitted: i32) {
     }
 }
 
+inline fn uring_try_submit_mmap_sqe(state: RingQueueState&, sqe: const UringSqe&) -> bool {
+    guard state.ring_fd >= 0 else { return false; }
+    let rc = native_uring_submit_sqe(
+        state.ring_fd, sqe.opcode, sqe.flags, sqe.ioprio,
+        sqe.fd, sqe.off, sqe.addr, sqe.len, sqe.user_data, sqe.buf_index,
+    );
+    guard rc == 0 else { return false; }
+    state.submissions_total += 1;
+    state.active_pending += 1;
+    return true;
+}
+
+inline fn uring_reap_kernel_cqes(state: RingQueueState&, cqes: UringCqe[..32]&, used_mmap: bool) {
+    guard used_mmap && state.ring_fd >= 0 else { return; }
+    while cqes.len < cqes.cap {
+        var udata: u64 = 0;
+        var res_v: i32 = 0;
+        var flg_v: u32 = 0;
+        let got = native_uring_peek_cqe(state.ring_fd, udata, res_v, flg_v);
+        if got == 0 {
+            break;
+        }
+        cqes.push(UringCqe {
+            user_data: udata,
+            res:       res_v,
+            flags:     flg_v,
+        });
+        state.completions_total += 1;
+        if state.active_pending > 0 {
+            state.active_pending -= 1;
+        }
+    }
+}
+
 // Submits a batch of SQEs and reaps CQE completions
 fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: UringCqe[..32]&) -> i32 {
     cqes.clear();
     var submitted: i32 = 0;
+    var used_mmap = false;
     for i in sqes.len {
         if state.active_pending >= state.ring_size || cqes.len >= cqes.cap {
             break;
         }
-        record_sqe_submission(state, sqes[i], cqes);
+        if uring_try_submit_mmap_sqe(state, sqes[i]) {
+            used_mmap = true;
+        } else {
+            record_sqe_submission(state, sqes[i], cqes);
+        }
         submitted += 1;
     }
     uring_enter_if_active(state.ring_fd, submitted);
+    uring_reap_kernel_cqes(state, cqes, used_mmap);
     return submitted;
 }

@@ -22,6 +22,9 @@ enum JwtAlg {
     HS384,       // HMAC using SHA-384
     HS512,       // HMAC using SHA-512
     EdDSA,       // Ed25519 digital signature (RFC 8037 Section 3.1)
+    ES256,       // ECDSA using P-256 and SHA-256 (RFC 7518 Section 3.4)
+    RS256,       // RSASSA-PKCS1-v1_5 using SHA-256 (RFC 7518 Section 3.3)
+    PS256,       // RSASSA-PSS using SHA-256 and MGF1 with SHA-256 (RFC 7518 Section 3.5)
     Unknown,     // Unsupported or unrecognized algorithm (RFC 7515 §4.1.1)
 }
 
@@ -33,6 +36,9 @@ fn jwt_alg_to_string(alg: JwtAlg) -> const u8[:] {
         HS384 => "HS384",
         HS512 => "HS512",
         EdDSA => "EdDSA",
+        ES256 => "ES256",
+        RS256 => "RS256",
+        PS256 => "PS256",
         Unknown => "unknown",
     };
 }
@@ -47,6 +53,9 @@ fn parse_jwt_alg(s: const u8[:]) -> JwtAlg {
     if s == "HS384" { return JwtAlg.HS384; }
     if s == "HS512" { return JwtAlg.HS512; }
     if s == "EdDSA" { return JwtAlg.EdDSA; }
+    if s == "ES256" { return JwtAlg.ES256; }
+    if s == "RS256" { return JwtAlg.RS256; }
+    if s == "PS256" { return JwtAlg.PS256; }
     if s == "none" { return JwtAlg.None; }
     return JwtAlg.Unknown;
 }
@@ -985,6 +994,116 @@ fn sign_jwt_eddsa(
     return true;
 }
 
+// Signs a JWT using asymmetric ECDSA P-256 (ES256 per RFC 7518 §3.4).
+fn sign_jwt_es256<B>(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    priv_key:  const u8[32],
+    out_token: B&,
+) -> bool {
+    guard header.alg == JwtAlg.ES256 else { return false; }
+    out_token.clear();
+
+    var token_buf: u8[>..] = [];
+    build_jwt_signing_input(header, claims, token_buf);
+    let signing_input = token_buf[..];
+    let sig64 = core::ecdsa_p256_sign(priv_key, signing_input);
+    token_buf.push('.');
+    core::base64url_encode(sig64[..], token_buf);
+    return out_token.try_set(token_buf[..]);
+}
+
+fn sign_jwt_es256(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    priv_key:  const u8[32],
+    out_token: u8[>..]&,
+) -> bool {
+    guard header.alg == JwtAlg.ES256 else { return false; }
+    out_token.clear();
+    build_jwt_signing_input(header, claims, out_token);
+    let sig64 = core::ecdsa_p256_sign(priv_key, out_token[..]);
+    out_token.push('.');
+    core::base64url_encode(sig64[..], out_token);
+    return true;
+}
+
+// Signs a JWT using asymmetric RSASSA-PKCS1-v1_5 SHA-256 (RS256 per RFC 7518 §3.3).
+fn sign_jwt_rs256<B>(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    out_token: B&,
+) -> bool {
+    guard header.alg == JwtAlg.RS256 else { return false; }
+    out_token.clear();
+
+    var token_buf: u8[>..] = [];
+    build_jwt_signing_input(header, claims, token_buf);
+    var sig_buf: u8[..512] = [];
+    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, token_buf[..], sig_buf) else { return false; }
+    token_buf.push('.');
+    core::base64url_encode(sig_buf[..], token_buf);
+    return out_token.try_set(token_buf[..]);
+}
+
+fn sign_jwt_rs256(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    out_token: u8[>..]&,
+) -> bool {
+    guard header.alg == JwtAlg.RS256 else { return false; }
+    out_token.clear();
+    build_jwt_signing_input(header, claims, out_token);
+    var sig_buf: u8[..512] = [];
+    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, out_token[..], sig_buf) else { return false; }
+    out_token.push('.');
+    core::base64url_encode(sig_buf[..], out_token);
+    return true;
+}
+
+// Signs a JWT using asymmetric RSASSA-PSS SHA-256 (PS256 per RFC 7518 §3.5).
+fn sign_jwt_ps256<B>(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    salt:      const u8[:],
+    out_token: B&,
+) -> bool {
+    guard header.alg == JwtAlg.PS256 else { return false; }
+    out_token.clear();
+
+    var token_buf: u8[>..] = [];
+    build_jwt_signing_input(header, claims, token_buf);
+    var sig_buf: u8[..512] = [];
+    guard core::rsa_pss_sha256_sign(n_be, d_be, salt, token_buf[..], sig_buf) else { return false; }
+    token_buf.push('.');
+    core::base64url_encode(sig_buf[..], token_buf);
+    return out_token.try_set(token_buf[..]);
+}
+
+fn sign_jwt_ps256(
+    header:    const JwtHeader&,
+    claims:    const JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    salt:      const u8[:],
+    out_token: u8[>..]&,
+) -> bool {
+    guard header.alg == JwtAlg.PS256 else { return false; }
+    out_token.clear();
+    build_jwt_signing_input(header, claims, out_token);
+    var sig_buf: u8[..512] = [];
+    guard core::rsa_pss_sha256_sign(n_be, d_be, salt, out_token[..], sig_buf) else { return false; }
+    out_token.push('.');
+    core::base64url_encode(sig_buf[..], out_token);
+    return true;
+}
+
 // ---- JWT Verification & Claim Validation ---------------------------------
 
 // Hard bounds on raw token and component sizes to prevent parser DoS and memory exhaustion
@@ -1332,6 +1451,138 @@ fn verify_jwt_eddsa(
 
     let signing_input = token[..dot2];
     guard verify_jwt_eddsa_signature(public_key, signing_input, sig_bytes[..]) else {
+        return JwtError.SignatureInvalid;
+    }
+
+    var temp_claims = JwtClaims { .. };
+    let clm_start = core::add_sat_i64(dot1, 1);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], temp_claims);
+    guard clm_err == JwtError.None else { return clm_err; }
+
+    let clm_rule_err = validate_jwt_claims_rules(temp_claims, options, now_unix_sec);
+    guard clm_rule_err == JwtError.None else { return clm_rule_err; }
+
+    out_header = copy(temp_header);
+    out_claims = copy(temp_claims);
+    return JwtError.None;
+}
+
+// Verifies a JWT signed with ECDSA P-256 (ES256 per RFC 7518 §3.4).
+fn verify_jwt_es256(
+    token:        const u8[:],
+    public_key:   const u8[:],
+    options:      const JwtValidationOptions&,
+    now_unix_sec: i64,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
+) -> JwtError {
+    var dot1: i64 = 0;
+    var dot2: i64 = 0;
+    guard split_jwt_parts(token, dot1, dot2) else {
+        return JwtError.MalformedToken;
+    }
+    guard core::index_of_byte(token, '=') == -1 else {
+        return JwtError.MalformedToken;
+    }
+
+    var temp_header = JwtHeader { .. };
+    let hdr_err = decode_jwt_header(token[..dot1], temp_header);
+    guard hdr_err == JwtError.None else { return hdr_err; }
+
+    let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
+    guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
+
+    if temp_header.alg != JwtAlg.ES256 {
+        return JwtError.AlgorithmMismatch;
+    }
+
+    var sig_bytes: u8[..128] = [];
+    let sig_start = core::add_sat_i64(dot2, 1);
+    guard token.len - sig_start <= 172 else {
+        return JwtError.SignatureInvalid;
+    }
+    guard core::base64url_decode(token[sig_start..], sig_bytes) else {
+        return JwtError.InvalidBase64;
+    }
+    // RFC 7518 §3.4: ES256 JWS signature MUST be the 64-octet R || S representation
+    guard sig_bytes.len == 64 else {
+        return JwtError.SignatureInvalid;
+    }
+
+    let signing_input = token[..dot2];
+    guard core::ecdsa_p256_verify(public_key, signing_input, sig_bytes[..]) else {
+        return JwtError.SignatureInvalid;
+    }
+
+    var temp_claims = JwtClaims { .. };
+    let clm_start = core::add_sat_i64(dot1, 1);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], temp_claims);
+    guard clm_err == JwtError.None else { return clm_err; }
+
+    let clm_rule_err = validate_jwt_claims_rules(temp_claims, options, now_unix_sec);
+    guard clm_rule_err == JwtError.None else { return clm_rule_err; }
+
+    out_header = copy(temp_header);
+    out_claims = copy(temp_claims);
+    return JwtError.None;
+}
+
+fn verify_jwt_rsa_signature(
+    alg:           JwtAlg,
+    n_be:          const u8[:],
+    e_be:          const u8[:],
+    signing_input: const u8[:],
+    sig_bytes:     const u8[:],
+) -> bool {
+    if alg == JwtAlg.RS256 {
+        return core::rsa_pkcs1_sha256_verify(n_be, e_be, signing_input, sig_bytes);
+    } else if alg == JwtAlg.PS256 {
+        return core::rsa_pss_sha256_verify(n_be, e_be, signing_input, sig_bytes);
+    }
+    return false;
+}
+
+// Verifies a JWT signed with RSA (RS256 or PS256 per RFC 7518 §3.3, §3.5).
+fn verify_jwt_rsa(
+    token:        const u8[:],
+    n_be:         const u8[:],
+    e_be:         const u8[:],
+    options:      const JwtValidationOptions&,
+    now_unix_sec: i64,
+    out_header:   JwtHeader&,
+    out_claims:   JwtClaims&,
+) -> JwtError {
+    var dot1: i64 = 0;
+    var dot2: i64 = 0;
+    guard split_jwt_parts(token, dot1, dot2) else {
+        return JwtError.MalformedToken;
+    }
+    guard core::index_of_byte(token, '=') == -1 else {
+        return JwtError.MalformedToken;
+    }
+
+    var temp_header = JwtHeader { .. };
+    let hdr_err = decode_jwt_header(token[..dot1], temp_header);
+    guard hdr_err == JwtError.None else { return hdr_err; }
+
+    let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
+    guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
+
+    if temp_header.alg != JwtAlg.RS256 && temp_header.alg != JwtAlg.PS256 {
+        return JwtError.AlgorithmMismatch;
+    }
+
+    var sig_bytes: u8[..512] = [];
+    let sig_start = core::add_sat_i64(dot2, 1);
+    guard token.len - sig_start <= 684 else {
+        return JwtError.SignatureInvalid;
+    }
+    guard core::base64url_decode(token[sig_start..], sig_bytes) else {
+        return JwtError.InvalidBase64;
+    }
+
+    let signing_input = token[..dot2];
+    guard verify_jwt_rsa_signature(temp_header.alg, n_be, e_be, signing_input, sig_bytes[..]) else {
         return JwtError.SignatureInvalid;
     }
 

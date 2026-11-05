@@ -50,8 +50,13 @@ fn test_grpc_lpm_framing(t: lit::T&) {
         let ok_dec, consumed = wing::decode_grpc_lpm(wire[..], 0, decoded, is_comp);
 
         sub.assert_true(ok_dec, "LPM decoded");
+        sub.assert_eq(consumed, wire.len as u32, "Consumed full compressed frame");
         sub.assert_true(is_comp, "Compression flag reported as true");
-        sub.assert_bytes_eq(decoded[..], msg, "Payload restored");
+
+        var decomp: u8[>..] = [];
+        let ok_gz, _ = core::gzip_decompress_with_limit(decoded[..], decomp, 4096);
+        sub.assert_true(ok_gz, "Gzip decompression succeeded");
+        sub.assert_bytes_eq(decomp[..], msg, "Payload restored");
     };
 
     t.run("3. Zero-Length Empty LPM Frame") { sub =>
@@ -121,8 +126,11 @@ fn test_grpc_lpm_framing(t: lit::T&) {
         sub.assert_eq(count, 3, "Parsed 3 consecutive LPM frames");
         sub.assert_bytes_eq(payloads[0][..], "Message1", "1st payload");
         sub.assert_false(comp_flags[0], "1st uncompressed");
-        sub.assert_bytes_eq(payloads[1][..], "Message2", "2nd payload");
         sub.assert_true(comp_flags[1], "2nd compressed");
+        var decomp2: u8[..64] = [];
+        let ok_gz2, _ = core::gzip_decompress_with_limit(payloads[1][..], decomp2, 64);
+        sub.assert_true(ok_gz2, "2nd payload gzip decompressed");
+        sub.assert_bytes_eq(decomp2[..], "Message2", "2nd payload");
         sub.assert_bytes_eq(payloads[2][..], "Message3", "3rd payload");
         sub.assert_false(comp_flags[2], "3rd uncompressed");
     };

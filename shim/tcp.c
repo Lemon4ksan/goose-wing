@@ -203,6 +203,19 @@ uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
     return 0;
 }
 
+int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
+    if (out_ip.data == NULL || out_ip.len <= 0) return -1;
+    const char *src = "127.0.0.1";
+    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active &&
+        g_wasm_sockets[sock_fd].host[0] != '\0') {
+        src = g_wasm_sockets[sock_fd].host;
+    }
+    int64_t len = (int64_t)strlen(src);
+    if (len > out_ip.len) len = out_ip.len;
+    memcpy(out_ip.data, src, (size_t)len);
+    return (int32_t)len;
+}
+
 int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     (void)timeout_ms;
     if (listener_fd <= 0 || listener_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[listener_fd].active ||
@@ -473,8 +486,14 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
 void wing_epoll_close(int64_t epfd) { (void)epfd; }
 
 int64_t wing_udp_listen(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
+int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
 int64_t wing_udp_connect(wing_bytes_ro host, uint16_t port) { return wing_tcp_connect(host, port, 0); }
 int32_t wing_udp_send(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_send(sock_fd, data); }
+int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host, uint16_t port) {
+    (void)host;
+    (void)port;
+    return wing_tcp_send(sock_fd, data);
+}
 int32_t wing_udp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
     return wing_tcp_recv(sock_fd, buf, timeout_ms);
 }
@@ -740,6 +759,33 @@ uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
         return 0;
     }
     return ntohs(addr.sin_port);
+}
+
+int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
+    if (out_ip.data == NULL || out_ip.len <= 0) return -1;
+    const char *fallback = "127.0.0.1";
+    if (sock_fd > 0) {
+        struct sockaddr_in addr;
+#ifdef _WIN32
+        int len = sizeof(addr);
+#else
+        socklen_t len = sizeof(addr);
+#endif
+        memset(&addr, 0, sizeof(addr));
+        if (getpeername((SOCKET)sock_fd, (struct sockaddr *)&addr, &len) == 0 && addr.sin_family == AF_INET) {
+            const char *ip_str = inet_ntoa(addr.sin_addr);
+            if (ip_str && ip_str[0] != '\0') {
+                int64_t ip_len = (int64_t)strlen(ip_str);
+                if (ip_len > out_ip.len) ip_len = out_ip.len;
+                memcpy(out_ip.data, ip_str, (size_t)ip_len);
+                return (int32_t)ip_len;
+            }
+        }
+    }
+    int64_t fb_len = (int64_t)strlen(fallback);
+    if (fb_len > out_ip.len) fb_len = out_ip.len;
+    memcpy(out_ip.data, fallback, (size_t)fb_len);
+    return (int32_t)fb_len;
 }
 
 // Accepts an incoming connection with an optional timeout in milliseconds.

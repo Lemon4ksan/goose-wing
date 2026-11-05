@@ -256,13 +256,13 @@ fn build_response_signature_base<B>(
     return true;
 }
 
-// ---- Cryptographic Engine (HMAC-SHA256 & Ed25519) ------------------------
+// ---- Cryptographic Engine (HMAC-SHA256, Ed25519, ECDSA-P256, RSA) --------
 
 fn compute_signature_b64(
     alg:        const u8[:],
     secret_key: const u8[:],
     sig_base:   const u8[:],
-    out:        u8[..256]&,
+    out:        u8[..1024]&,
 ) -> bool {
     if alg == rfc::SIG_ALG_ED25519 {
         guard secret_key.len == 32 else { return false; }
@@ -271,6 +271,33 @@ fn compute_signature_b64(
         let ed_sig = core::ed25519_sign(seed_arr, sig_base);
         core::secure_zeroize_32(seed_arr);
         core::base64_encode(ed_sig[..], out);
+        return true;
+    } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
+        guard secret_key.len == 32 else { return false; }
+        var priv_arr: u8[32] = [0; 32];
+        for i in 32 { priv_arr[i] = secret_key[i]; }
+        let ec_sig = core::ecdsa_p256_sign(priv_arr, sig_base);
+        core::secure_zeroize_32(priv_arr);
+        core::base64_encode(ec_sig[..], out);
+        return true;
+    } else if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
+        guard secret_key.len >= 128 && (secret_key.len % 2) == 0 else { return false; }
+        let half = secret_key.len / 2;
+        var rsa_sig: u8[..512] = [];
+        guard core::rsa_pkcs1_sha256_sign(secret_key[..half], secret_key[half..], sig_base, rsa_sig) else {
+            return false;
+        }
+        core::base64_encode(rsa_sig[..], out);
+        return true;
+    } else if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
+        guard secret_key.len >= 256 && (secret_key.len % 2) == 0 else { return false; }
+        let half = secret_key.len / 2;
+        let salt64 = core::sha512(sig_base);
+        var pss_sig: u8[..512] = [];
+        guard core::rsa_pss_sha512_sign(secret_key[..half], secret_key[half..], salt64[..], sig_base, pss_sig) else {
+            return false;
+        }
+        core::base64_encode(pss_sig[..], out);
         return true;
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
         let hmac_sig = core::hmac_sha256(secret_key, sig_base);
@@ -293,6 +320,18 @@ fn verify_crypto_signature(
         var sig_arr: u8[64] = [0; 64];
         for i in 64 { sig_arr[i] = received_sig[i]; }
         return core::ed25519_verify(pub_arr, sig_base, sig_arr);
+    } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
+        guard received_sig.len == 64 else { return false; }
+        return core::ecdsa_p256_verify(key_bytes, sig_base, received_sig);
+    } else if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
+        if key_bytes.len > 0 && key_bytes[0] == 0x30 {
+            return core::rsa_pkcs1_sha256_verify_der(key_bytes, sig_base, received_sig);
+        }
+        let default_e: const u8[3] = [0x01, 0x00, 0x01];
+        return core::rsa_pkcs1_sha256_verify(key_bytes, default_e[..], sig_base, received_sig);
+    } else if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
+        let default_e: const u8[3] = [0x01, 0x00, 0x01];
+        return core::rsa_pss_sha512_verify(key_bytes, default_e[..], sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
         let expected_sig = core::hmac_sha256(key_bytes, sig_base);
         guard received_sig.len == expected_sig.len else { return false; }
@@ -341,7 +380,7 @@ fn validate_signature_timestamps(params: const HttpSignatureParams&, now_sec: i6
     return validate_signature_expires(params.expires, now_sec);
 }
 
-fn format_signature_header_value(label: const u8[:], b64_sig: const u8[:], out: u8[..256]&) {
+fn format_signature_header_value(label: const u8[:], b64_sig: const u8[:], out: u8[..1024]&) {
     out.clear();
     out.append(label);
     out.append("=:");
@@ -359,7 +398,7 @@ fn format_signature_input_header_value(params: const HttpSignatureParams&, out: 
 fn attach_request_signature_headers(req: Request&, params: const HttpSignatureParams&, b64_sig: const u8[:]) {
     var input_hdr: u8[..1024] = [];
     format_signature_input_header_value(params, input_hdr);
-    var sig_hdr: u8[..256] = [];
+    var sig_hdr: u8[..1024] = [];
     format_signature_header_value(params.label[..], b64_sig, sig_hdr);
     set_header(req, rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
     set_header(req, rfc::HEADER_SIGNATURE, sig_hdr[..]);
@@ -368,7 +407,7 @@ fn attach_request_signature_headers(req: Request&, params: const HttpSignaturePa
 fn attach_response_signature_headers(res: Response&, params: const HttpSignatureParams&, b64_sig: const u8[:]) {
     var input_hdr: u8[..1024] = [];
     format_signature_input_header_value(params, input_hdr);
-    var sig_hdr: u8[..256] = [];
+    var sig_hdr: u8[..1024] = [];
     format_signature_header_value(params.label[..], b64_sig, sig_hdr);
     res.set_header(rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
     res.set_header(rfc::HEADER_SIGNATURE, sig_hdr[..]);
@@ -387,7 +426,7 @@ fn sign_http_request(
         return false;
     }
 
-    var b64_sig: u8[..256] = [];
+    var b64_sig: u8[..1024] = [];
     guard compute_signature_b64(params.alg[..], secret_key, sig_base[..], b64_sig) else { return false; }
 
     attach_request_signature_headers(req, params, b64_sig[..]);
@@ -413,7 +452,7 @@ fn verify_signature_input_label(
     return false;
 }
 
-// Verifies an RFC 9421 signature on a Request (HMAC-SHA256 or Ed25519).
+// Verifies an RFC 9421 signature on a Request.
 fn verify_http_signature(
     req:       const Request&,
     label:     const u8[:],
@@ -436,7 +475,7 @@ fn verify_http_signature(
     let received_b64, ok = extract_signature_value(sig_header_val, label);
     guard ok else { return false; }
 
-    var received_sig: u8[..128] = [];
+    var received_sig: u8[..512] = [];
     guard core::base64_decode(received_b64, received_sig) else { return false; }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
@@ -456,7 +495,7 @@ fn sign_http_response(
         return false;
     }
 
-    var b64_sig: u8[..256] = [];
+    var b64_sig: u8[..1024] = [];
     guard compute_signature_b64(params.alg[..], secret_key, sig_base[..], b64_sig) else { return false; }
 
     attach_response_signature_headers(res, params, b64_sig[..]);
@@ -487,7 +526,7 @@ fn verify_http_response_signature(
     let received_b64, ok = extract_signature_value(sig_header_val, label);
     guard ok else { return false; }
 
-    var received_sig: u8[..128] = [];
+    var received_sig: u8[..512] = [];
     guard core::base64_decode(received_b64, received_sig) else { return false; }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);

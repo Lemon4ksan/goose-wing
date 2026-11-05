@@ -235,6 +235,8 @@ fn test_rio_buffer_lifecycle(t: lit::T&) {
         sub.assert_false(buf.is_registered, "Buffer deregistered");
         sub.assert_false(buf.page_locked, "Page lock released");
         sub.assert_false(internal::rio_can_zero_copy(buf, 100), "Cannot zero-copy after deregister");
+        sub.assert_eq(internal::rio_submit_send(0, buf, 0), -1, "rio_submit_send rejects unregistered buffer");
+        sub.assert_eq(internal::rio_submit_recv(0, buf, 0), -1, "rio_submit_recv rejects unregistered buffer");
     };
 
     t.run("Physical Windows RIO Kernel Registration") { sub =>
@@ -394,6 +396,15 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
         };
         sub.assert_eq(desc.addr, 0x10000800, "Packet buffer offset mapped");
         sub.assert_eq(desc.len, 1460, "Packet length 1460 bytes");
+
+        var xsk = internal::new_af_xdp_socket();
+        sub.assert_false(internal::af_xdp_fill_push(xsk, 0x10000800), "fill_push rejects unbound socket");
+        sub.assert_false(internal::af_xdp_tx_submit(xsk, desc), "tx_submit rejects unbound socket");
+        let _, rx_ok = internal::af_xdp_rx_poll(xsk);
+        sub.assert_false(rx_ok, "rx_poll rejects unbound socket");
+        let _, comp_ok = internal::af_xdp_complete_pop(xsk);
+        sub.assert_false(comp_ok, "complete_pop rejects unbound socket");
+        internal::af_xdp_close(xsk);
     };
 
     t.run("DPDK Port and Mempool Interface") { sub =>
@@ -419,6 +430,15 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
         let pool = internal::dpdk_create_mempool(4096, 2048);
         sub.assert_true(pool.is_created, "mempool created");
         sub.assert_eq(pool.n_elements, 4096, "4096 packet mbufs");
+
+        let tx_mbufs: u64[2] = [0xA001, 0xA002];
+        let sent_pkts = internal::dpdk_tx_burst(dev, 0, tx_mbufs[..]);
+        sub.assert_eq(sent_pkts, 2 as u16, "dpdk_tx_burst sent 2 packets");
+        var rx_mbufs: u64[..32] = [];
+        let recvd_pkts = internal::dpdk_rx_burst(dev, 0, rx_mbufs, 32);
+        sub.assert_eq(recvd_pkts, 2 as u16, "dpdk_rx_burst received 2 packets");
+        sub.assert_eq(rx_mbufs[0], 0xA001 as u64, "mbuf 0 matches");
+        sub.assert_eq(rx_mbufs[1], 0xA002 as u64, "mbuf 1 matches");
 
         internal::dpdk_stop_port(dev);
         sub.assert_false(dev.is_started, "dev stopped cleanly");
@@ -456,11 +476,16 @@ fn test_smartnic_ktls_offload(t: lit::T&) {
             rx_salt[..],
             rx_seq[..],
         );
-        sub.assert_eq(err, 0, "smartnic_attach_hardware_tls succeeded");
-        sub.assert_true(sess.ktls_active, "kTLS active");
-        sub.assert_true(sess.tx_offloaded, "TX offloaded");
-        sub.assert_true(sess.rx_offloaded, "RX offloaded");
-        sub.assert_eq(sess.fd, 100, "Target fd retained");
+        if internal::detect_target_platform() == internal::TargetPlatform.Linux && err == 0 {
+            sub.assert_true(sess.ktls_active, "kTLS active");
+            sub.assert_true(sess.tx_offloaded, "TX offloaded");
+            sub.assert_true(sess.rx_offloaded, "RX offloaded");
+            sub.assert_eq(sess.fd, 100, "Target fd retained");
+        } else {
+            sub.assert_true(err != 0, "Non-Linux or non-kTLS socket rejects fake kTLS offload");
+            sub.assert_false(sess.tx_offloaded, "TX not falsely marked offloaded");
+            sub.assert_false(sess.rx_offloaded, "RX not falsely marked offloaded");
+        }
 
         // Verify invalid fd rejects immediately with error
         let sess_bad, err_bad = internal::smartnic_attach_hardware_tls(

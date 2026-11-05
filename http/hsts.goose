@@ -96,9 +96,36 @@ struct HstsEntry {
 }
 
 struct HstsCache {
-    entries:             HstsEntry[..16] = [],
-    enable_preload_list: bool            = true,
+    entries:             HstsEntry[..128] = [],
+    enable_preload_list: bool             = true,
 }
+
+const HSTS_PRELOAD_TLDS: const u8[:][30] = [
+    ".dev", ".app", ".page", ".bank", ".insurance", ".chrome",
+    ".gle", ".gmail", ".goog", ".google", ".hangouts", ".nexus",
+    ".play", ".search", ".youtube", ".android", ".fly", ".foo",
+    ".meet", ".new", ".phd", ".prof", ".rsvp", ".day",
+    ".boo", ".dad", ".esq", ".mov", ".zip", ".ing",
+];
+
+const HSTS_PRELOAD_DOMAINS: const u8[:][64] = [
+    "google.com", "github.com", "paypal.com", "bankofamerica.com",
+    "cloudflare.com", "wikipedia.org", "stripe.com", "facebook.com",
+    "twitter.com", "x.com", "apple.com", "microsoft.com",
+    "amazon.com", "linkedin.com", "dropbox.com", "slack.com",
+    "discord.com", "zoom.us", "notion.so", "figma.com",
+    "gitlab.com", "bitbucket.org", "npmjs.com", "pypi.org",
+    "crates.io", "golang.org", "rust-lang.org", "python.org",
+    "mozilla.org", "eff.org", "torproject.org", "signal.org",
+    "proton.me", "protonmail.com", "fastmail.com", "tutanota.com",
+    "1password.com", "bitwarden.com", "lastpass.com", "dashlane.com",
+    "chase.com", "wellsfargo.com", "citibank.com", "americanexpress.com",
+    "capitalone.com", "hsbc.com", "barclays.co.uk", "revolut.com",
+    "wise.com", "coinbase.com", "binance.com", "kraken.com",
+    "vercel.com", "netlify.com", "heroku.com", "digitalocean.com",
+    "linode.com", "vultr.com", "render.com", "fly.io",
+    "supabase.com", "planetscale.com", "tailscale.com", "wireguard.com",
+];
 
 fn host_matches_domain(sub: const u8[:], domain: const u8[:]) -> bool {
     if eq_ascii_fold(sub, domain) { return true; }
@@ -108,14 +135,20 @@ fn host_matches_domain(sub: const u8[:], domain: const u8[:]) -> bool {
 }
 
 fn is_preloaded_tld(hostname: const u8[:]) -> bool {
-    return ends_with_fold(hostname, ".dev") || ends_with_fold(hostname, ".app") ||
-           ends_with_fold(hostname, ".page") || ends_with_fold(hostname, ".bank");
+    for tld in HSTS_PRELOAD_TLDS {
+        if ends_with_fold(hostname, tld) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn is_preloaded_property(h: const u8[:]) -> bool {
-    if host_matches_domain(h, "google.com") || host_matches_domain(h, "github.com") { return true; }
-    if host_matches_domain(h, "paypal.com") || host_matches_domain(h, "bankofamerica.com") { return true; }
-    if host_matches_domain(h, "cloudflare.com") || host_matches_domain(h, "wikipedia.org") { return true; }
+    for dom in HSTS_PRELOAD_DOMAINS {
+        if host_matches_domain(h, dom) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -257,6 +290,88 @@ fn hsts_cache_update(
     return true;
 }
 
+// ---- HSTS Cache Persistence (RFC 6797 Section 5.3) ------------------------
+
+fn format_hsts_cache_line<B>(entry: const HstsEntry&, out: B&) {
+    out.append(entry.host[..]);
+    out.push('\t');
+    format(out, entry.expiry_epoch_sec);
+    out.push('\t');
+    out.push(if entry.include_subdomains { '1' } else { '0' });
+    out.push('\t');
+    out.push(if entry.is_preload { '1' } else { '0' });
+    out.push('\n');
+}
+
+// Serializes active unexpired dynamic HSTS entries into tab-separated lines.
+fn save_hsts_cache<B>(cache: const HstsCache&, now_sec: i64, out: B&) -> i64 {
+    var saved: i64 = 0;
+    for &entry in cache.entries {
+        if entry.valid && entry.expiry_epoch_sec >= now_sec {
+            format_hsts_cache_line(entry, out);
+            saved += 1;
+        }
+    }
+    return saved;
+}
+
+// Parses a single serialized HSTS cache line (`host\texpiry\tinclude_subdomains\tpreload`).
+//
+// Example:
+//   line = "example.com\t1700003600\t1\t0"
+//   returns: entry with host="example.com", expiry_epoch_sec=1700003600, ok = true
+fn parse_hsts_cache_line(line: const u8[:], now_sec: i64) -> HstsEntry, bool {
+    var entry = HstsEntry { .. };
+    let trimmed = line.trim_lws();
+    guard trimmed.len > 0 && trimmed[0] != '#' else { return entry, false; }
+
+    var tok = make_byte_tokenizer(trimmed, '\t');
+    let host_part, ok_h = tok.token_next();
+    let exp_part, ok_e = tok.token_next();
+    let sub_part, ok_s = tok.token_next();
+    let pre_part, ok_p = tok.token_next();
+    guard ok_h && ok_e && ok_s else { return entry, false; }
+
+    let clean = host_part.trim_end_byte('.');
+    guard is_valid_hsts_hostname(clean) else { return entry, false; }
+
+    let expiry, exp_ok = exp_part.parse_i64_dec();
+    guard exp_ok && expiry >= now_sec else { return entry, false; }
+
+    entry.host.append(clean);
+    entry.expiry_epoch_sec = expiry;
+    entry.include_subdomains = (sub_part == "1" || eq_ascii_fold(sub_part, "true"));
+    entry.is_preload = ok_p && (pre_part == "1" || eq_ascii_fold(pre_part, "true"));
+    entry.valid = true;
+    return entry, true;
+}
+
+fn upsert_hsts_entry(cache: HstsCache&, entry: const HstsEntry&, now_sec: i64) {
+    let existing_idx = find_hsts_entry_index(cache, entry.host[..]);
+    if existing_idx >= 0 && existing_idx < cache.entries.len {
+        cache.entries[existing_idx] = entry;
+    } else {
+        store_hsts_entry(cache, entry, now_sec);
+    }
+}
+
+// Deserializes persisted HSTS entries into `cache`, skipping expired or invalid hosts.
+fn load_hsts_cache(cache: HstsCache&, data: const u8[:], now_sec: i64) -> i64 {
+    guard data.len > 0 else { return 0; }
+    var loaded: i64 = 0;
+    var tok = make_byte_tokenizer(data, '\n');
+    while true {
+        let line, ok = tok.token_next();
+        guard ok else { break; }
+        let entry, entry_ok = parse_hsts_cache_line(line, now_sec);
+        if entry_ok {
+            upsert_hsts_entry(cache, entry, now_sec);
+            loaded += 1;
+        }
+    }
+    return loaded;
+}
+
 // ---- Automated URL Upgrade Engine (RFC 6797 Section 8.3) ------------------
 
 fn find_authority_end(url: const u8[:]) -> i64 {
@@ -269,13 +384,66 @@ fn find_authority_end(url: const u8[:]) -> i64 {
     return url.len;
 }
 
+// Extracts `(host, port)` from a bracketed IPv6 host-port slice.
+//
+// Example:
+//   host_port = "[2001:db8::1]:8080"
+//   returns: host = "[2001:db8::1]", port = "8080", ok = true
+fn split_ipv6_host_port(host_port: const u8[:]) -> const u8[:], const u8[:], bool {
+    let close_idx = host_port.index_of_byte(']');
+    guard close_idx > 1 && close_idx < host_port.len else { return "", "", false; }
+    let host = host_port[..close_idx + 1];
+    let after = close_idx + 1;
+    if after == host_port.len {
+        return host, "", true;
+    }
+    guard after < host_port.len && host_port[after] == ':' else { return "", "", false; }
+    let port_start = after + 1;
+    guard port_start <= host_port.len else { return "", "", false; }
+    return host, host_port[port_start..], true;
+}
+
+// Extracts `(userinfo, host, port)` from an authority slice, handling `userinfo@` and IPv6 `[...]` brackets.
+//
+// Example:
+//   auth = "user:pass@example.com:8080"
+//   returns: userinfo = "user:pass@", host = "example.com", port = "8080", ok = true
+fn split_authority_components(auth: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
+    guard auth.len > 0 else { return "", "", "", false; }
+    let at_idx = auth.last_index_of_byte('@');
+    var userinfo = auth[..0];
+    var host_port = auth;
+    if at_idx >= 0 {
+        let split_at = at_idx + 1;
+        guard split_at <= auth.len else { return "", "", "", false; }
+        userinfo = auth[..split_at];
+        host_port = auth[split_at..];
+    }
+    guard host_port.len > 0 else { return "", "", "", false; }
+
+    if host_port[0] == '[' {
+        let host, port, ok = split_ipv6_host_port(host_port);
+        return userinfo, host, port, ok;
+    }
+
+    let host, port, _ = host_port.split_once_byte(':');
+    guard host.len > 0 else { return "", "", "", false; }
+    return userinfo, host, port, true;
+}
+
+// Splits an `http://` URL into `(host, port, path_and_query, ok)`.
+//
+// Example:
+//   raw_url = "http://user@example.com:8080/api?q=1"
+//   returns: host = "example.com", port = "8080", rem = "/api?q=1", ok = true
 fn split_http_url(raw_url: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
     guard raw_url.len >= 7 else { return "", "", "", false; }
     guard starts_with(raw_url, "http://") else { return "", "", "", false; }
 
     let auth_end = find_authority_end(raw_url);
     let auth = raw_url[7..auth_end];
-    let host, port, _ = auth.split_once_byte(':');
+    let _, host, port, ok = split_authority_components(auth);
+    guard ok else { return "", "", "", false; }
     let rem = if auth_end < raw_url.len { raw_url[auth_end..] } else { "" };
     return host, port, rem, true;
 }
@@ -288,12 +456,19 @@ fn hsts_upgrade_url<B>(
     now_sec: i64,
     out_url: B&,
 ) -> bool {
-    let host, port, rem, ok = split_http_url(raw_url);
+    guard raw_url.len >= 7 && starts_with(raw_url, "http://") else { return false; }
+    let auth_end = find_authority_end(raw_url);
+    let auth = raw_url[7..auth_end];
+    let userinfo, host, port, ok = split_authority_components(auth);
     guard ok else { return false; }
     guard is_hsts_host(cache, host, now_sec) else { return false; }
+    let rem = if auth_end < raw_url.len { raw_url[auth_end..] } else { "" };
 
     out_url.clear();
     out_url.append("https://");
+    if userinfo.len > 0 {
+        out_url.append(userinfo);
+    }
     out_url.append(host);
     if port.len > 0 && port != "80" {
         out_url.push(':');

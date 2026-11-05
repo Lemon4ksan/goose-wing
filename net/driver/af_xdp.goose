@@ -20,6 +20,16 @@ extern fn native_af_xdp_register_umem(
 ) -> i32 = "wing_af_xdp_register_umem";
 extern fn native_af_xdp_set_ring_size(xsk_fd: i64, ring_opt: i32, entries: u32) -> i32 = "wing_af_xdp_set_ring_size";
 extern fn native_af_xdp_bind(xsk_fd: i64, ifindex: u32, queue_id: u32, flags: u32) -> i32 = "wing_af_xdp_bind";
+extern fn native_af_xdp_mmap_rings(xsk_fd: i64, entries: u32) -> i32 = "wing_af_xdp_mmap_rings";
+extern fn native_af_xdp_fill_push(xsk_fd: i64, umem_offset: u64) -> i32 = "wing_af_xdp_fill_push";
+extern fn native_af_xdp_tx_submit(xsk_fd: i64, addr: u64, len: u32, options: u32) -> i32 = "wing_af_xdp_tx_submit";
+extern fn native_af_xdp_rx_poll(
+    xsk_fd:      i64,
+    addr_out:    u64&,
+    len_out:     u32&,
+    options_out: u32&,
+) -> i32 = "wing_af_xdp_rx_poll";
+extern fn native_af_xdp_complete_pop(xsk_fd: i64, addr_out: u64&) -> i32 = "wing_af_xdp_complete_pop";
 extern fn native_af_xdp_close(xsk_fd: i64) = "wing_af_xdp_close";
 
 // AF_XDP packet descriptor (matches Linux struct xdp_desc)
@@ -45,6 +55,7 @@ struct AfXdpSocket {
     queue_id:       u32       = 0,
     umem:           AfXdpUmem = AfXdpUmem { .. },
     is_bound:       bool      = false,
+    rings_mapped:   bool      = false,
     zero_copy_mode: bool      = true,
 }
 
@@ -63,11 +74,12 @@ fn new_af_xdp_socket() -> AfXdpSocket {
         queue_id:       0,
         umem:           AfXdpUmem { .. },
         is_bound:       false,
+        rings_mapped:   false,
         zero_copy_mode: true,
     };
 }
 
-// Creates and registers an AF_XDP kernel-bypass socket with UMEM memory pool.
+// Creates and registers an AF_XDP kernel-bypass socket with UMEM memory pool and mmap rings.
 fn af_xdp_open_socket(
     ifindex:    u32,
     queue_id:   u32,
@@ -96,11 +108,14 @@ fn af_xdp_open_socket(
     }
     umem.is_registered = true;
 
-    // Configure standard ring depths (2048 descriptors)
+    // Configure standard ring depths (2048 descriptors) and map Fill/Completion/RX/TX rings
     native_af_xdp_set_ring_size(fd, XSK_RING_FILL, 2048);
     native_af_xdp_set_ring_size(fd, XSK_RING_COMPLETION, 2048);
     native_af_xdp_set_ring_size(fd, XSK_RING_RX, 2048);
     native_af_xdp_set_ring_size(fd, XSK_RING_TX, 2048);
+
+    let mmap_err = native_af_xdp_mmap_rings(fd, 2048);
+    let mapped = mmap_err == 0;
 
     let bind_flags = if zero_copy { XDP_FLAGS_ZEROCOPY } else { XDP_FLAGS_COPY };
     let bind_err = native_af_xdp_bind(fd, ifindex, queue_id, bind_flags);
@@ -115,16 +130,53 @@ fn af_xdp_open_socket(
         queue_id:       queue_id,
         umem:           umem,
         is_bound:       true,
+        rings_mapped:   mapped,
         zero_copy_mode: zero_copy,
     }, 0;
 }
 
-// Closes AF_XDP socket and unbinds from NIC queue.
+// Publishes a UMEM frame offset into the AF_XDP Fill Ring for kernel RX reception.
+fn af_xdp_fill_push(sock: const AfXdpSocket&, umem_offset: u64) -> bool {
+    guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else { return false; }
+    return native_af_xdp_fill_push(sock.fd, umem_offset) == 0;
+}
+
+// Submits a packet descriptor to the AF_XDP TX Ring and kicks the kernel.
+fn af_xdp_tx_submit(sock: const AfXdpSocket&, desc: const XdpDesc&) -> bool {
+    guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped && desc.len > 0 else { return false; }
+    return native_af_xdp_tx_submit(sock.fd, desc.addr, desc.len, desc.options) == 0;
+}
+
+// Polls a received packet descriptor from the AF_XDP RX Ring.
+fn af_xdp_rx_poll(sock: const AfXdpSocket&) -> XdpDesc, bool {
+    guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else {
+        return XdpDesc { .. }, false;
+    }
+    var addr: u64 = 0;
+    var len:  u32 = 0;
+    var opts: u32 = 0;
+    let got = native_af_xdp_rx_poll(sock.fd, addr, len, opts);
+    guard got != 0 else {
+        return XdpDesc { .. }, false;
+    }
+    return XdpDesc { addr: addr, len: len, options: opts }, true;
+}
+
+// Pops a completed TX frame offset from the AF_XDP Completion Ring.
+fn af_xdp_complete_pop(sock: const AfXdpSocket&) -> u64, bool {
+    guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else { return 0, false; }
+    var addr: u64 = 0;
+    let got = native_af_xdp_complete_pop(sock.fd, addr);
+    return addr, got != 0;
+}
+
+// Closes AF_XDP socket, unmaps rings, and unbinds from NIC queue.
 fn af_xdp_close(sock: AfXdpSocket&) {
     if sock.fd >= 0 {
         native_af_xdp_close(sock.fd);
         sock.fd = -1;
         sock.is_bound = false;
+        sock.rings_mapped = false;
         sock.umem.is_registered = false;
     }
 }

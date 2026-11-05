@@ -1542,6 +1542,23 @@ fn test_brotli_level0_roundtrip(t: lit::T&) {
         let ok_de, err_de = core::brotli_decompress(comp_empty[..], decomp_empty);
         sub.assert_true(ok_de, "Empty string decompression succeeds");
         sub.assert_eq(decomp_empty.len, 0, "Empty string roundtrips to 0 bytes");
+
+        // 3. Level 1 LZ77 compressed encoder and decoder round-trip
+        var rep_src: u8[>..] = [];
+        for i in 40 {
+            rep_src.append("Brotli Level 1 Greedy LZ77 Compression Engine Test Pattern! ");
+        }
+        var comp_l1: u8[>..] = [];
+        let ok_l1 = core::brotli_compress(rep_src[..], comp_l1, 1);
+        sub.assert_true(ok_l1, "Level 1 LZ77 compression succeeds");
+        sub.assert_true(comp_l1.len < rep_src.len / 2, "Level 1 LZ77 achieves >2x compression on repetitive payload");
+
+        var decomp_l1: u8[>..] = [];
+        let ok_dl1, err_dl1 = core::brotli_decompress(comp_l1[..], decomp_l1);
+        sub.assert_eq(err_dl1, core::CompressError.None, "No error on Level 1 LZ77 decompression");
+        sub.assert_true(ok_dl1, "Level 1 LZ77 decompression succeeds");
+        sub.assert_eq(decomp_l1.len, rep_src.len, "Level 1 decompressed length matches");
+        sub.assert_true(decomp_l1[..] == rep_src[..], "Level 1 decompressed payload matches verbatim");
     };
 }
 

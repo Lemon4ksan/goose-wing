@@ -508,6 +508,34 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
         sub.assert_true(wing::is_grpc_content_type("application/grpc-web+proto"), "application/grpc-web+proto accepted");
         sub.assert_true(wing::is_grpc_content_type("application/grpc-web-text+proto"), "application/grpc-web-text+proto accepted");
     };
+
+    t.run("Gzip Compressed Unary & Client-Streaming Requests Accepted") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        var ct = wing::HeaderItem { .. };
+        ct.name.append("content-type");
+        ct.value.append(rfc::GRPC_CONTENT_TYPE_PROTO);
+        req.headers.push(ct);
+
+        var enc = wing::HeaderItem { .. };
+        enc.name.append(rfc::HEADER_GRPC_ENCODING);
+        enc.value.append("gzip");
+        req.headers.push(enc);
+
+        wing::encode_grpc_lpm("GzipUser", req.body, true);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Compressed unary request handled");
+
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "grpc-status 0 (OK)");
+
+        var decoded_msg: u8[>..] = [];
+        var is_comp = false;
+        let ok_lpm, _ = wing::decode_grpc_lpm(res.body[..], 0, decoded_msg, is_comp);
+        sub.assert_true(ok_lpm, "Decoded response LPM");
+        sub.assert_bytes_eq(decoded_msg[..], "Hello, GzipUser!", "Decompressed request payload processed by handler");
+    };
 }
 
 // ----------------------------------------------------------------------------

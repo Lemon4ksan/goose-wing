@@ -17,6 +17,7 @@ extern fn native_tcp_listen_unix(path: const u8[:], backlog: i32) -> i64 = "wing
 extern fn native_tcp_connect_unix(path: const u8[:]) -> i64 = "wing_tcp_connect_unix";
 extern fn native_adopt_socket(raw_fd: i64) -> i64 = "wing_adopt_socket";
 extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
+extern fn native_tcp_get_peer_ip(sock_fd: i64, out_ip: u8[:]) -> i32 = "wing_tcp_get_peer_ip";
 extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
 extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
 extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
@@ -129,6 +130,18 @@ fn adopt_socket(raw_fd: i64) -> i64 {
 // Retrieves the locally bound port for a socket.
 fn tcp_getsockname_port(fd: i64) -> u16 {
     return native_tcp_getsockname_port(fd);
+}
+
+// Retrieves the connected peer IPv4 address string for a socket (or "127.0.0.1" fallback).
+fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
+    out_ip.clear();
+    var raw: u8[64] = [0; 64];
+    let n = native_tcp_get_peer_ip(fd, raw[..]);
+    if n > 0 && n <= 64 {
+        let _ = out_ip.try_append(raw[..n]);
+    } else {
+        let _ = out_ip.try_append("127.0.0.1");
+    }
 }
 
 // Accepts an incoming connection with an optional timeout in milliseconds.

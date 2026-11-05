@@ -1538,6 +1538,36 @@ fn parse_certificate_verify(payload: const u8[:]) -> u16, const u8[:], bool {
     return sig_scheme, payload[4..], true;
 }
 
+// Verifies a TLS 1.3 digital signature in CertificateVerify (RFC 8446 §4.4.3).
+fn verify_tls13_certificate_verify_sig(
+    sig_scheme: u16,
+    signature:  const u8[:],
+    pubkey:     const u8[:],
+    msg:        const u8[:],
+) -> bool {
+    if sig_scheme == rfc::SIG_SCHEME_ED25519 {
+        guard pubkey.len == 32 && signature.len == 64 else { return false; }
+        var pub_arr: u8[32] = [0; 32];
+        for i in 32 { pub_arr[i] = pubkey[i]; }
+        var sig_arr: u8[64] = [0; 64];
+        for i in 64 { sig_arr[i] = signature[i]; }
+        return core::ed25519_verify(pub_arr, msg, sig_arr);
+    }
+    if sig_scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
+        return core::ecdsa_p256_verify(pubkey, msg, signature);
+    }
+    if sig_scheme == rfc::SIG_SCHEME_ECDSA_SECP384R1_SHA384 {
+        return core::ecdsa_p384_verify(pubkey, msg, signature);
+    }
+    if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
+        return core::rsa_pss_sha256_verify_der(pubkey, msg, signature);
+    }
+    if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA384 {
+        return core::rsa_pss_sha384_verify_der(pubkey, msg, signature);
+    }
+    return false;
+}
+
 // Verifies a client's digital signature in CertificateVerify (RFC 8446 §4.4.3).
 fn verify_client_certificate_verify(
     sig_scheme:      u16,
@@ -1545,17 +1575,8 @@ fn verify_client_certificate_verify(
     client_pubkey:   const u8[:],
     transcript_hash: const u8[:],
 ) -> bool {
-    guard sig_scheme == rfc::SIG_SCHEME_ED25519 else { return false; }
-    guard client_pubkey.len == 32 && signature.len == 64 else { return false; }
-
-    var pub_arr: u8[32] = [0; 32];
-    for i in 32 { pub_arr[i] = client_pubkey[i]; }
-
-    var sig_arr: u8[64] = [0; 64];
-    for i in 64 { sig_arr[i] = signature[i]; }
-
     var msg_buf: u8[160] = [0; 160];
     let msg_len, ok_m = build_certificate_verify_message(false, transcript_hash, msg_buf[..]);
     guard ok_m else { return false; }
-    return core::ed25519_verify(pub_arr, msg_buf[..msg_len], sig_arr);
+    return verify_tls13_certificate_verify_sig(sig_scheme, signature, client_pubkey, msg_buf[..msg_len]);
 }

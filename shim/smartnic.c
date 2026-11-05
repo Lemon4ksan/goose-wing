@@ -182,7 +182,7 @@ int32_t wing_smartnic_probe(void) {
 
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
     (void)fd;
-    return 0;
+    return -1;
 }
 
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
@@ -194,7 +194,7 @@ int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t
     (void)iv;
     (void)salt;
     (void)rec_seq;
-    return 0;
+    return -1;
 }
 
 int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
@@ -206,7 +206,7 @@ int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t
     (void)iv;
     (void)salt;
     (void)rec_seq;
-    return 0;
+    return -1;
 }
 
 #else

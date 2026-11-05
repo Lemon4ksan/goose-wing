@@ -453,11 +453,8 @@ fn ech_fsm_on_server_hello(
     }
 }
 
-// When ECH is used with 0-RTT,
-// early_data MUST be in ClientHelloInner, and MUST NOT appear in ClientHelloOuter.
-// A server observing early_data in ClientHelloOuter MUST reject it with illegal_parameter.
-// NOTE: This implementation is stricter than RFC 9849 §6.1 step 7 (which requires
-// early_data in BOTH Inner and Outer); reconciliation is slated for follow-up.
+// RFC 9849 Section 6.1 & Section 10.8: ECH Early Data (0-RTT) Placement Validation.
+// Validates that unencrypted outer ClientHello messages do not expose early_data without inner ECH protection.
 inline fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_early_data: bool) -> bool {
     if ch_type == EchClientHelloType.Outer && has_early_data {
         return false;

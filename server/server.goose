@@ -1414,10 +1414,10 @@ fn notify_socket_writable<Callback: fn(i64, u64, u64) -> bool>(
 
 // Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
 struct SniCertEntry {
-    pattern:  u8[..128]   = [],
-    cert_pem: const u8[:] = "",
-    key_pem:  const u8[:] = "",
-    in_use:   bool        = false,
+    pattern:  u8[..128]  = [],
+    cert_pem: u8[..4096] = [],
+    key_pem:  u8[..4096] = [],
+    in_use:   bool       = false,
 }
 
 const MAX_SNI_DOMAINS: i64 = 32;
@@ -1578,8 +1578,8 @@ fn add_server_name(
     // Check if pattern already registered: update in place
     for i in server.sni_registry.entries.len {
         if server.sni_registry.entries[i].in_use && eq_ascii_fold(server.sni_registry.entries[i].pattern[..], pattern) {
-            server.sni_registry.entries[i].cert_pem = cert_pem;
-            server.sni_registry.entries[i].key_pem = key_pem;
+            let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
+            let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
             return true;
         }
     }
@@ -1590,8 +1590,8 @@ fn add_server_name(
         if !server.sni_registry.entries[i].in_use {
             server.sni_registry.entries[i].pattern.clear();
             server.sni_registry.entries[i].pattern.append(pattern);
-            server.sni_registry.entries[i].cert_pem = cert_pem;
-            server.sni_registry.entries[i].key_pem = key_pem;
+            let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
+            let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
             server.sni_registry.entries[i].in_use = true;
             server.sni_registry.count += 1;
             return true;
@@ -1608,8 +1608,8 @@ fn remove_server_name(server: HttpServer&, pattern: const u8[:]) -> bool {
         if entry.in_use && eq_ascii_fold(entry.pattern[..], pattern) {
             entry.in_use = false;
             entry.pattern.clear();
-            entry.cert_pem = "";
-            entry.key_pem = "";
+            entry.cert_pem.clear();
+            entry.key_pem.clear();
             server.sni_registry.count -= 1;
             return true;
         }
@@ -1632,8 +1632,8 @@ fn resolve_sni_credentials(
         let entry = &server.sni_registry.entries[i];
         if entry.in_use && eq_ascii_fold(entry.pattern[..], sni_hostname) {
             return SniCredentials {
-                cert_pem: entry.cert_pem,
-                key_pem:  entry.key_pem,
+                cert_pem: entry.cert_pem[..],
+                key_pem:  entry.key_pem[..],
             }, true;
         }
     }
@@ -1646,8 +1646,8 @@ fn resolve_sni_credentials(
         guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { continue; }
         if match_dns_san(pat, sni_hostname) {
             return SniCredentials {
-                cert_pem: entry.cert_pem,
-                key_pem:  entry.key_pem,
+                cert_pem: entry.cert_pem[..],
+                key_pem:  entry.key_pem[..],
             }, true;
         }
     }
@@ -2429,6 +2429,11 @@ fn handle_connection_pipe<B>(
     return total_handled, true;
 }
 
+inline fn alloc_temp_h2_session(server_name: const u8[:], now_ns: u64) -> i64 {
+    let idx = alloc_reactor_h2_session(server_name, now_ns / 1000000) as i64;
+    return clamp(idx, 0, 7);
+}
+
 fn handle_connection_pipe<B>(
     server:    HttpServer&,
     client_ip: const u8[:],
@@ -2436,9 +2441,9 @@ fn handle_connection_pipe<B>(
     now_ns:    u64,
     wire_out:  B&,
 ) -> i64, bool {
-    var dummy_sess = internal::new_h2_server_session(server.server_name[..]);
-    defer internal::cleanup_h2_server_session(dummy_sess, server.pipeline);
-    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, dummy_sess);
+    let h2_idx = alloc_temp_h2_session(server.server_name[..], now_ns);
+    defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, g_reactor_h2_sessions[h2_idx]);
 }
 
 // Binds and listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets app.listen(path) pattern).
@@ -2462,7 +2467,8 @@ fn serve_page_ring_loop(
     ring:            core::PageRingBuffer&,
 ) -> i64 {
     var cork = core::new_cork_buffer();
-    var total_served: i64 = 0;
+    var peer_ip:      u8[..64] = [];
+    var total_served: i64      = 0;
 
     while max_connections == 0 || total_served < max_connections {
         let conn = tcp_accept(listener_fd, 0);
@@ -2473,6 +2479,7 @@ fn serve_page_ring_loop(
 
         core::page_ring_clear(ring);
         cork.cork_reset();
+        tcp_get_peer_ip(conn, peer_ip);
 
         while true {
             let recvd = core::page_ring_recv(ring, conn, 65536, 5000);
@@ -2481,7 +2488,7 @@ fn serve_page_ring_loop(
             }
 
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, ok_handle = handle_connection_page_ring(server, "127.0.0.1", ring, now_ns, cork);
+            let count, ok_handle = handle_connection_page_ring(server, peer_ip[..], ring, now_ns, cork);
             let should_close = !ok_handle || core::contains_fold(core::cork_as_slice(cork), "connection: close");
             if !ok_handle {
                 if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
@@ -2505,7 +2512,8 @@ fn serve_page_ring_loop(
 fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
-    var total_served: i64 = 0;
+    var peer_ip:      u8[..64] = [];
+    var total_served: i64      = 0;
 
     while max_connections == 0 || total_served < max_connections {
         let conn = tcp_accept(listener_fd, 0);
@@ -2516,8 +2524,9 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
 
         pipe.pipe_reset();
         cork.cork_reset();
-        var h2_sess = internal::new_h2_server_session(server.server_name[..]);
-        defer internal::cleanup_h2_server_session(h2_sess, server.pipeline);
+        tcp_get_peer_ip(conn, peer_ip);
+        let h2_idx = alloc_temp_h2_session(server.server_name[..], 0);
+        defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
         while true {
             let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
@@ -2526,7 +2535,9 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
             }
 
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
+            let count, ok = handle_connection_pipe(
+                server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx],
+            );
             let should_close = !ok || core::contains_fold(core::cork_as_slice(cork), "connection: close");
             if !ok {
                 if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
@@ -2595,7 +2606,8 @@ fn serve_tls(
     guard listener_fd > 0 else { return 0; }
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
-    var total_served: i64 = 0;
+    var peer_ip:      u8[..64] = [];
+    var total_served: i64      = 0;
 
     while max_connections == 0 || total_served < max_connections {
         let conn = tcp_accept(listener_fd, 0);
@@ -2610,14 +2622,17 @@ fn serve_tls(
 
         pipe.pipe_reset();
         cork.cork_reset();
-        var h2_sess = internal::new_h2_server_session(server.server_name[..]);
+        tcp_get_peer_ip(conn, peer_ip);
+        let h2_idx = alloc_temp_h2_session(server.server_name[..], 0);
 
         loop {
             let recvd = tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
             if recvd <= 0 { break; }
 
             let now_ns = core::as_nanos(core::monotonic_now());
-            let _, ok = handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, cork, h2_sess);
+            let _, ok = handle_connection_pipe(
+                server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx],
+            );
             let should_close = !ok || core::contains_fold(core::cork_as_slice(cork), "connection: close");
             if !ok {
                 if cork.cork_pending() > 0 { tls_flush_cork(conn, slot_idx, cork); }
@@ -2630,7 +2645,7 @@ fn serve_tls(
                 break;
             }
         }
-        internal::cleanup_h2_server_session(h2_sess, server.pipeline);
+        free_reactor_h2_session(h2_idx as i16, server.pipeline);
         tls_transport_close(conn, slot_idx);
         total_served++;
     }
@@ -2648,6 +2663,34 @@ struct ReactorIngressBuf {
     len:   i64       = 0,
 }
 
+var g_reactor_h2_sessions: internal::H2ServerSession[8] = [internal::H2ServerSession { .. }; 8];
+var g_reactor_h2_in_use:   bool[8]                      = [false; 8];
+var g_reactor_leftovers:   ReactorLeftoverBuf[1024]     = [ReactorLeftoverBuf { .. }; 1024];
+var g_reactor_table:       SoAConnTable                 = SoAConnTable { .. };
+var g_reactor_chunk:       ReactorIngressBuf            = ReactorIngressBuf { .. };
+var g_reactor_cork:        u8[..65536]                  = [];
+var g_reactor_free_slots:  FreeSlotStack                = FreeSlotStack { .. };
+
+fn alloc_reactor_h2_session(server_name: const u8[:], now_ms: u64) -> i16 {
+    for i in 8 {
+        if !g_reactor_h2_in_use[i] {
+            g_reactor_h2_in_use[i] = true;
+            internal::reset_h2_server_session_inplace(g_reactor_h2_sessions[i], server_name, now_ms);
+            return i as i16;
+        }
+    }
+    g_reactor_h2_in_use[0] = true;
+    internal::reset_h2_server_session_inplace(g_reactor_h2_sessions[0], server_name, now_ms);
+    return 0;
+}
+
+fn free_reactor_h2_session(h2_idx: i16, pipeline: ServerPipelineConfig&) {
+    let idx = h2_idx as i64;
+    guard idx >= 0 && idx < 8 && g_reactor_h2_in_use[idx] else { return; }
+    internal::cleanup_h2_server_session(g_reactor_h2_sessions[idx], pipeline);
+    g_reactor_h2_in_use[idx] = false;
+}
+
 // Cleans up a connection slot, removes from epoll, closes fd, and returns slot to free stack.
 fn reactor_cleanup_slot(
     epfd:       i64,
@@ -2658,7 +2701,17 @@ fn reactor_cleanup_slot(
     let fd = table.fds[slot_idx];
     if fd > 0 {
         epoll_del(epfd, fd);
-        tcp_close(fd);
+        if table.has_tls[slot_idx] && table.tls_slots[slot_idx] != 0xFFFF {
+            tls_transport_close(fd, table.tls_slots[slot_idx]);
+        } else {
+            tcp_close(fd);
+        }
+        if table.h2_slot_map[slot_idx] >= 0 {
+            let h2_i = table.h2_slot_map[slot_idx] as i64;
+            if h2_i >= 0 && h2_i < 8 {
+                g_reactor_h2_in_use[h2_i] = false;
+            }
+        }
         soa_table_free(table, slot_idx);
     }
     push_free_slot(free_slots, slot_idx);
@@ -2719,6 +2772,10 @@ inline fn reactor_register_client_slot(
     table.fds[slot] = client_fd;
     table.timeout_ticks[slot] = tick_timer_arm(timer_wheel, 15);
     table.leftover_lens[slot] = 0;
+    table.is_h2[slot] = false;
+    table.h2_slot_map[slot] = -1;
+    table.has_tls[slot] = false;
+    table.tls_slots[slot] = 0xFFFF;
     table.count = advance_high_water_mark(table.count, slot);
     epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
 }
@@ -2855,6 +2912,13 @@ inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
     return true;
 }
 
+inline fn reactor_send_slot_wire(table: const SoAConnTable&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
+        return tls_transport_send(conn, table.tls_slots[slot], wire) > 0;
+    }
+    return reactor_drain_cork_wire(conn, wire);
+}
+
 fn reactor_handle_h2_ingress(
     server:    HttpServer&,
     conn:      i64,
@@ -2867,13 +2931,20 @@ fn reactor_handle_h2_ingress(
 ) -> bool {
     let now_ms = now_ns / 1000000;
     cork_wire.clear();
-    var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
-    defer internal::cleanup_h2_server_session(sess, server.pipeline);
+    var h2_idx = table.h2_slot_map[slot];
+    if !table.is_h2[slot] || h2_idx < 0 || h2_idx >= 8 {
+        h2_idx = alloc_reactor_h2_session(server.server_name[..], now_ms);
+        table.h2_slot_map[slot] = h2_idx;
+        table.is_h2[slot] = true;
+    }
+    var peer_ip: u8[..64] = [];
+    tcp_get_peer_ip(conn, peer_ip);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
-        sess, server.pipeline, server.timer, "127.0.0.1", chunk.bytes[..chunk.len], now_ms, cork_wire,
+        g_reactor_h2_sessions[h2_idx as i64], server.pipeline, server.timer,
+        peer_ip[..], chunk.bytes[..chunk.len], now_ms, cork_wire,
     );
     if cork_wire.len > 0 {
-        if !reactor_drain_cork_wire(conn, cork_wire[..]) {
+        if !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) {
             return false;
         }
     }
@@ -2888,14 +2959,34 @@ fn reactor_handle_h2_ingress(
 }
 
 inline fn reactor_close_and_inc(
+    server:       HttpServer&,
     epfd:         i64,
     table:        SoAConnTable&,
     slot:         i64,
     free_slots:   FreeSlotStack&,
     total_served: i64&,
 ) {
+    if table.h2_slot_map[slot] >= 0 {
+        free_reactor_h2_session(table.h2_slot_map[slot], server.pipeline);
+        table.h2_slot_map[slot] = -1;
+        table.is_h2[slot] = false;
+    }
     reactor_cleanup_slot(epfd, table, slot, free_slots);
     total_served++;
+}
+
+fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
+    if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
+        let available = 65536 - chunk.len;
+        guard available > 0 else { return false, false; }
+        let recvd = tls_transport_recv_slice(conn, table.tls_slots[slot], chunk.bytes[chunk.len..], 50);
+        if recvd <= 0 {
+            return false, true;
+        }
+        chunk.len += recvd;
+        return true, false;
+    }
+    return reactor_read_bounded_turns(conn, chunk);
 }
 
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
@@ -2919,44 +3010,46 @@ fn reactor_handle_ingress(
     chunk.len = 0;
     reactor_load_leftover(table, leftovers[slot], slot, chunk);
 
-    let any_recvd, is_closed = reactor_read_bounded_turns(conn, chunk);
+    let any_recvd, is_closed = reactor_read_slot_turns(table, slot, conn, chunk);
     if is_closed {
-        reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         return;
     }
     if !any_recvd && prev_len == 0 {
         return;
     }
 
-    if is_h2_client_preface(chunk.bytes[..chunk.len]) {
+    if table.is_h2[slot] || is_h2_client_preface(chunk.bytes[..chunk.len]) {
         let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire);
         if !ok_h2 {
-            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         }
         return;
     }
 
+    var peer_ip: u8[..64] = [];
+    tcp_get_peer_ip(conn, peer_ip);
     cork_wire.clear();
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
-        server, "127.0.0.1", chunk.bytes[..chunk.len], now_ns, cork_wire,
+        server, peer_ip[..], chunk.bytes[..chunk.len], now_ns, cork_wire,
     );
 
     let should_close = !ok || wants_close;
     if cork_wire.len > 0 {
-        if !reactor_drain_cork_wire(conn, cork_wire[..]) || should_close {
-            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+        if !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) || should_close {
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
             return;
         }
     }
     if should_close {
-        reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         return;
     }
 
     // Preserve unconsumed bytes for the next epoll turn
     if consumed < chunk.len {
         if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed..chunk.len]) {
-            reactor_close_and_inc(epfd, table, slot, free_slots, total_served);
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         }
     }
 }
@@ -3054,16 +3147,14 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
     }
 
-    var ready_fds:    i64[1024]         = [0; 1024];
-    var ready_udata:  u64[1024]         = [0; 1024];
-    var cork_wire:    u8[..65536]       = [];
-    var chunk:        ReactorIngressBuf = ReactorIngressBuf { .. };
-    var total_served: i64               = 0;
+    var ready_fds:    i64[1024] = [0; 1024];
+    var ready_udata:  u64[1024] = [0; 1024];
+    var total_served: i64       = 0;
 
-    var table = SoAConnTable { .. };
-    var leftovers: ReactorLeftoverBuf[1024] = [ReactorLeftoverBuf { .. }; 1024];
-    var free_slots = FreeSlotStack { .. };
-    init_free_slots(free_slots, 1024);
+    g_reactor_table = SoAConnTable { .. };
+    g_reactor_cork.clear();
+    g_reactor_chunk.len = 0;
+    init_free_slots(g_reactor_free_slots, 1024);
     var timer_wheel = new_tick_timer_wheel(15);
     var last_sweep_sec: i64 = 0;
     var turn_counter:   i64 = 0;
@@ -3072,7 +3163,9 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
 
     while max_connections == 0 || total_served < max_connections {
         if server.worker_ring.is_open {
-            reactor_drain_worker_ring(server.worker_ring, epfd, table, free_slots, timer_wheel, total_served);
+            reactor_drain_worker_ring(
+                server.worker_ring, epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, total_served,
+            );
         }
 
         let epoll_timeout = reactor_epoll_timeout(server.worker_ring);
@@ -3080,20 +3173,217 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
 
         turn_counter++;
         reactor_poll_sweep(
-            epfd, table, free_slots, timer_wheel, n, turn_counter,
+            epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, n, turn_counter,
             last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
         );
 
         if n > 0 {
             reactor_dispatch_events(
-                server, epfd, listener_fd, table, leftovers[..], free_slots,
-                timer_wheel, ready_udata[..n], cached_now_ns, chunk, cork_wire, total_served,
+                server, epfd, listener_fd, g_reactor_table, g_reactor_leftovers[..], g_reactor_free_slots,
+                timer_wheel, ready_udata[..n], cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served,
             );
         }
     }
 
-    reactor_cleanup_all(epfd, table, free_slots);
+    reactor_cleanup_all(epfd, g_reactor_table, g_reactor_free_slots);
     return total_served;
+}
+
+fn reactor_accept_tls_client(
+    listener_fd:  i64,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  TickTimerWheel&,
+    tls_config:   const TlsServerHandshakeConfig&,
+    total_served: i64&,
+) {
+    while true {
+        let client_fd = tcp_accept_nonblocking(listener_fd);
+        if client_fd <= 0 { break; }
+        let tls_slot, ok_hs = tls_server_handshake(client_fd, tls_config);
+        if !ok_hs {
+            tcp_close(client_fd);
+            total_served++;
+            continue;
+        }
+        var slot = pop_free_slot(free_slots);
+        if slot < 0 {
+            slot = reactor_evict_stale_slot(epfd, table, free_slots, timer_wheel, total_served);
+        }
+        if slot >= 0 {
+            reactor_register_client_slot(epfd, table, client_fd, slot, timer_wheel);
+            table.has_tls[slot] = true;
+            table.tls_slots[slot] = tls_slot;
+        } else {
+            tls_transport_close(client_fd, tls_slot);
+            total_served++;
+        }
+    }
+}
+
+fn reactor_dispatch_tls_events(
+    server:       HttpServer&,
+    epfd:         i64,
+    listener_fd:  i64,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  TickTimerWheel&,
+    tls_config:   const TlsServerHandshakeConfig&,
+    ready_udata:  const u64[:],
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+) {
+    for i in ready_udata.len {
+        let udata = ready_udata[i];
+        if udata == EPOLL_LISTENER_TAG {
+            reactor_accept_tls_client(
+                listener_fd, epfd, table, free_slots,
+                timer_wheel, tls_config, total_served,
+            );
+            continue;
+        }
+        let slot = udata as i64;
+        if slot >= 0 && slot < 1024 && table.fds[slot] > 0 {
+            reactor_handle_ingress(
+                server, epfd, table, leftovers, slot, free_slots,
+                timer_wheel, now_ns, chunk, cork_wire, total_served,
+            );
+        }
+    }
+}
+
+// Executes a non-blocking TLS 1.3 reactor loop with epoll (Section 4.3).
+fn serve_reactor_tls(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    tls_config:      const TlsServerHandshakeConfig&,
+    max_connections: i64 = 0,
+) -> i64 {
+    guard listener_fd > 0 else { return 0; }
+    let epfd = epoll_create();
+    guard epfd >= 0 else { return 0; }
+    defer epoll_close(epfd);
+
+    tcp_set_nonblocking(listener_fd, true);
+    epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+
+    var ready_fds:    i64[1024] = [0; 1024];
+    var ready_udata:  u64[1024] = [0; 1024];
+    var total_served: i64       = 0;
+    g_reactor_table = SoAConnTable { .. };
+    g_reactor_cork.clear();
+    g_reactor_chunk.len = 0;
+    init_free_slots(g_reactor_free_slots, 1024);
+    var timer_wheel = new_tick_timer_wheel(15);
+    var last_sweep_sec: i64 = 0;
+    var turn_counter:   i64 = 0;
+    var cached_now_ns:  u64 = 0;
+    var cached_now_sec: i64 = 0;
+
+    while max_connections == 0 || total_served < max_connections {
+        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 10);
+        turn_counter++;
+        reactor_poll_sweep(
+            epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, n, turn_counter,
+            last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
+        );
+        reactor_dispatch_tls_events(
+            server, epfd, listener_fd, g_reactor_table, g_reactor_leftovers[..],
+            g_reactor_free_slots, timer_wheel, tls_config, ready_udata[..n as i64],
+            cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served,
+        );
+    }
+    reactor_cleanup_all(epfd, g_reactor_table, g_reactor_free_slots);
+    return total_served;
+}
+
+// Processes an incoming HTTP/3 request stream payload through `H3Connection` and `server.pipeline` (RFC 9114).
+fn handle_h3_server_datagram<B>(
+    server:    HttpServer&,
+    h3_conn:   internal::H3Connection&,
+    stream_id: u64,
+    client_ip: const u8[:],
+    rx_wire:   const u8[:],
+    now_ns:    u64,
+    tx_wire:   B&,
+) -> bool {
+    tx_wire.clear();
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    let h_err = internal::handle_stream_data(h3_conn, stream_id, true, rx_wire, true);
+    guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
+
+    let s_idx, found = internal::find_h3_stream_idx(h3_conn, stream_id);
+    guard found && s_idx >= 0 && s_idx < h3_conn.streams.len else { return false; }
+    guard h3_conn.streams[s_idx].headers_received else { return false; }
+
+    let method = if h3_conn.streams[s_idx].req_method.len > 0 {
+        h3_conn.streams[s_idx].req_method[..]
+    } else {
+        "GET"
+    };
+    let path = if h3_conn.streams[s_idx].req_path.len > 0 {
+        h3_conn.streams[s_idx].req_path[..]
+    } else {
+        "/"
+    };
+    var req = new_request(method, path);
+    if h3_conn.streams[s_idx].req_authority.len > 0 {
+        req.headers.push(make_header("host", h3_conn.streams[s_idx].req_authority[..]));
+        add_header(req.bloom_filter, "host");
+    }
+    if h3_conn.streams[s_idx].received_body.len > 0 {
+        req.body.append(h3_conn.streams[s_idx].received_body[..]);
+    }
+
+    var res = Response { .. };
+    var future = internal::new_inline_handler_future(0);
+    execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    server.requests_processed++;
+
+    var extra_map = HeaderMap { .. };
+    for &hdr in res.headers {
+        var lname: u8[..128] = [];
+        for b in hdr.name {
+            let c = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
+            lname.push(c);
+        }
+        let _ = extra_map.append_header(lname[..], hdr.value[..]);
+    }
+    return internal::send_response_headers_and_body(
+        h3_conn, stream_id, res.status_code, extra_map, res.body[..], tx_wire,
+    );
+}
+
+// Executes a UDP HTTP/3 datagram server loop (Section 4.3).
+fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
+    guard udp_fd > 0 else { return 0; }
+    let h3_settings = H3Settings { .. };
+    var h3_conn = internal::new_h3_server_connection(h3_settings);
+    var rx_buf:  u8[1472]   = [0; 1472];
+    var tx_wire: u8[..1472] = [];
+    var served:  i64        = 0;
+
+    while max_datagrams == 0 || served < max_datagrams {
+        var peer_ip4:  u32 = 0;
+        var peer_port: u16 = 0;
+        let recvd = native_udp_recvfrom(udp_fd, rx_buf[..], 250, peer_ip4, peer_port);
+        if recvd <= 0 {
+            if max_datagrams > 0 { break; }
+            continue;
+        }
+        let now_ns = core::as_nanos(core::monotonic_now());
+        if handle_h3_server_datagram(server, h3_conn, 0, "127.0.0.1", rx_buf[..recvd], now_ns, tx_wire) {
+            let _ = native_udp_sendto_ip4(udp_fd, tx_wire[..], peer_ip4, peer_port);
+        }
+        served++;
+    }
+    return served;
 }
 
 // ---------------------------------------------------------------------------

@@ -570,6 +570,16 @@ fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
     return is_hsts_host(session.hsts, hostname, now_sec);
 }
 
+fn export_hsts<B>(session: const Session&, out: B&) -> i64 {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return save_hsts_cache(session.hsts, now_sec, out);
+}
+
+fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return load_hsts_cache(session.hsts, data, now_sec);
+}
+
 fn allow_port(session: Session&, port_num: i32) {
     if session.ssrf_guard.allowed_ports.len < 16 {
         session.ssrf_guard.allowed_ports.push(port_num);

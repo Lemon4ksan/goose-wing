@@ -100,7 +100,7 @@ fn test_proxy_protocol_wire_ingress() {
         src_port:  8080,
         dst_port:  80,
     };
-    var v2_wire: u8[>..] = [];
+    var v2_wire: u8[..512] = [];
     assert(wing::format_proxy_v2(v2_hdr_orig, v2_wire));
     v2_wire.append("PONG-REPLY-OK!");
 

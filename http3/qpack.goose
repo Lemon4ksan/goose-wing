@@ -1262,3 +1262,132 @@ fn encode_qpack_field<B>(
     }
     internal::encode_hpack_string_literal(out, val, use_huffman);
 }
+
+// Searches the dynamic table for an entry matching `name` and `val` (or `name` only).
+// Returns `(abs_index, exact_value_match, name_found)`.
+fn find_qpack_dynamic_field(
+    tbl:  const QpackTable&,
+    name: const u8[:],
+    val:  const u8[:],
+) -> u64, bool, bool {
+    var matched_name_abs: u64 = 0;
+    var name_found = false;
+    var i = tbl.entries.len - 1;
+    while i >= 0 {
+        let e = tbl.entries[i];
+        i--;
+        let n_start = e.name_off as i64;
+        let n_end = n_start + e.name_len;
+        let v_start = e.val_off as i64;
+        let v_end = v_start + e.val_len;
+        guard n_end <= 16384 && v_end <= 16384 else { continue; }
+        guard tbl.arena[n_start..n_end] == name else { continue; }
+        if tbl.arena[v_start..v_end] == val {
+            return e.abs_index, true, true;
+        }
+        if !name_found {
+            matched_name_abs = e.abs_index;
+            name_found = true;
+        }
+    }
+    return matched_name_abs, false, name_found;
+}
+
+// Emits a Set Dynamic Table Capacity instruction (001xxxxx, 5-bit prefix) onto `out_enc`
+// and updates `tbl.capacity_bytes` (RFC 9204 §4.3.1).
+fn encode_qpack_set_capacity<B>(tbl: QpackTable&, new_cap: u64, out_enc: B&) -> bool {
+    guard qpack_set_capacity(tbl, new_cap) else { return false; }
+    internal::hpack_encode_int(out_enc, new_cap, 5, 0x20);
+    return true;
+}
+
+// Emits an Encoder Stream insertion instruction (Insert with Static Name Reference 11xxxxxx
+// or Insert with Literal Name 01Hxxxxx) and inserts the entry into `tbl` (RFC 9204 §4.3.2, §4.3.3).
+fn encode_qpack_dynamic_insert<B>(
+    tbl:         QpackTable&,
+    name:        const u8[:],
+    val:         const u8[:],
+    out_enc:     B&,
+    use_huffman: bool = true,
+) -> u64, bool {
+    guard tbl.capacity_bytes > 0 else { return 0, false; }
+    let s_idx_name, _ = find_qpack_static_field(name, "");
+    let has_static_name = s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE
+        && name == QPACK_STATIC_TABLE[s_idx_name as i64].name;
+
+    if has_static_name {
+        guard qpack_insert_named_static(tbl, s_idx_name, val) else { return 0, false; }
+        internal::hpack_encode_int(out_enc, s_idx_name, 6, 0xC0);
+        internal::encode_hpack_string_literal(out_enc, val, use_huffman);
+        return tbl.insert_count - 1, true;
+    }
+
+    guard qpack_insert_literal(tbl, name, val) else { return 0, false; }
+    if use_huffman {
+        let huff_len = internal::huff_encoded_byte_len(name);
+        if huff_len < (name.len as u64) {
+            internal::hpack_encode_int(out_enc, huff_len, 5, 0x60);
+            internal::huff_encode_bytes(name, out_enc);
+        } else {
+            internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40);
+            out_enc.append(name);
+        }
+    } else {
+        internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40);
+        out_enc.append(name);
+    }
+    internal::encode_hpack_string_literal(out_enc, val, use_huffman);
+    return tbl.insert_count - 1, true;
+}
+
+// Encodes a single field line using Static Table, Dynamic Table lookup/insertion, or Literal fallback (RFC 9204 §4.5).
+fn encode_qpack_field_dynamic<B1, B2>(
+    tbl:              QpackTable&,
+    stream_id:        u64,
+    base:             u64,
+    name:             const u8[:],
+    val:              const u8[:],
+    out_section:      B1&,
+    out_enc_stream:   B2&,
+    max_dyn_abs_used: u64&,
+    used_any_dyn:     bool&,
+    use_huffman:      bool = true,
+) {
+    let s_idx, exact_s = find_qpack_static_field(name, val);
+    if exact_s {
+        internal::hpack_encode_int(out_section, s_idx, 6, 0xC0);
+        return;
+    }
+
+    if tbl.capacity_bytes > 0 {
+        let dyn_abs, exact_d, _ = find_qpack_dynamic_field(tbl, name, val);
+        if exact_d {
+            let _ = qpack_track_stream_ref(tbl, stream_id, dyn_abs);
+            record_dynamic_abs_used(dyn_abs, max_dyn_abs_used, used_any_dyn);
+            if dyn_abs < base {
+                let rel_idx = base - dyn_abs - 1;
+                internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
+            } else {
+                let post_idx = dyn_abs - base;
+                internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
+            }
+            return;
+        }
+
+        let new_abs, ins_ok = encode_qpack_dynamic_insert(tbl, name, val, out_enc_stream, use_huffman);
+        if ins_ok {
+            let _ = qpack_track_stream_ref(tbl, stream_id, new_abs);
+            record_dynamic_abs_used(new_abs, max_dyn_abs_used, used_any_dyn);
+            if new_abs < base {
+                let rel_idx = base - new_abs - 1;
+                internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
+            } else {
+                let post_idx = new_abs - base;
+                internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
+            }
+            return;
+        }
+    }
+
+    encode_qpack_field(out_section, name, val, use_huffman);
+}

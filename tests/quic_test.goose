@@ -1815,6 +1815,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-02: Multiplexed ACK and STREAM payload processing & Frame Error") { sub =>
         let scid: u8[4] = [0x21, 0x22, 0x23, 0x24];
         var conn = internal::new_quic_server_connection(scid[..]);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 0, 1200, true, 1000);
 
         // Synthesize datagram containing ACK frame followed by STREAM frame
         var dgram: u8[..128] = [];
@@ -2057,6 +2058,43 @@ fn test_quic_version2(t: lit::T&) {
         sub.assert_true(ok, "v2 Initial long header parses");
         sub.assert_eq(hdr.header_type, internal::QuicHeaderType.Initial, "v2 Type 0b01 decodes as Initial");
         sub.assert_eq(hdr.version, rfc::QUIC_VERSION_2, "version field is 0x6b3343cf");
+    };
+
+    t.run("V2-06: RFC 9001 Encrypted Packet Seal/Open & CRYPTO Frame Ingestion") { sub =>
+        let scid:   u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let c_scid: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        var client_conn = internal::new_quic_client_connection(scid[..], c_scid[..]);
+        var server_conn = internal::new_quic_server_connection(scid[..]);
+
+        sub.assert_true(internal::quic_conn_install_initial_keys(client_conn, scid[..]), "client initial keys derived");
+        sub.assert_true(internal::quic_conn_install_initial_keys(server_conn, scid[..]), "server initial keys derived");
+
+        // Construct plaintext payload with CRYPTO frame + PADDING to 1200+ bytes
+        var plain: u8[..1300] = [];
+        let ch_msg = "ClientHelloHandshakeFlight";
+        sub.assert_true(internal::encode_crypto_frame(plain, 0, ch_msg), "encode crypto frame");
+        sub.assert_true(internal::encode_padding_frame(plain, 1180), "pad initial payload");
+
+        var hdr = internal::QuicHeader {
+            header_type:   internal::QuicHeaderType.Initial,
+            version:       rfc::QUIC_VERSION_1,
+            packet_number: 1,
+            ..
+        };
+        hdr.dcid.append(scid[..]);
+        hdr.scid.append(c_scid[..]);
+
+        var sealed_pkt: u8[..1400] = [];
+        let ok_seal = internal::quic_seal_packet(client_conn.tx_initial_space, hdr, 2, plain[..], sealed_pkt);
+        sub.assert_true(ok_seal, "quic_seal_packet succeeded");
+        sub.assert_true(sealed_pkt.len >= 1200, "Initial datagram >= 1200 bytes");
+
+        var out_ack = internal::AckFrame { .. };
+        let handled, needs_ack = internal::quic_conn_process_datagram(server_conn, sealed_pkt[..], 5000, out_ack);
+        sub.assert_true(handled, "server decrypted and processed Initial datagram");
+        sub.assert_true(needs_ack, "CRYPTO frame is ack-eliciting");
+        sub.assert_eq(server_conn.initial_crypto.consumed_offset, ch_msg.len as u64, "CRYPTO stream ingested ClientHello");
+        sub.assert_eq(server_conn.initial_crypto.buf[..], ch_msg, "CRYPTO stream buffer matches ClientHello");
     };
 }
 

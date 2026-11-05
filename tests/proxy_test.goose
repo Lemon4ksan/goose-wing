@@ -210,6 +210,54 @@ fn test_reverse_proxy_streaming(t: lit::T&) {
         sub.assert_eq(masked_slice[2], ('n' as u8) ^ 0x56, "byte 2 masked with key[2]");
         sub.assert_eq(masked_slice[3], ('g' as u8) ^ 0x78, "byte 3 masked with key[3]");
     };
+
+    t.run("Live ReverseProxy exchange over StreamPool") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        guard listener > 0 else { return; }
+        let port = wing::tcp_getsockname_port(listener);
+        sub.assert_gt(port as i64, 0, "ephemeral port allocated");
+
+        let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client_sock, 0, "connected to upstream listener");
+        let server_sock = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(server_sock, 0, "accepted upstream socket");
+
+        let canned_resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nUpstream Pong";
+        let _ = wing::tcp_send(server_sock, canned_resp);
+
+        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+        sub.assert_true(wing::add_upstream_target(proxy.cluster, "127.0.0.1", port, 1), "added upstream");
+
+        var pool = wing::new_stream_pool();
+        let pkey = wing::new_pool_key(
+            wing::PoolScheme.Http,
+            "127.0.0.1",
+            port,
+            wing::new_direct_proxy_chain(),
+            wing::NetworkAnonymizationKey { .. },
+            wing::TlsAndDnsPolicy { .. },
+        );
+        let t = wing::Transport.Tcp { fd: client_sock };
+        let cid = wing::register_connection(pool, pkey, wing::NegotiatedProtocol.Http11, t, "127.0.0.1", 1, 1000);
+        sub.assert_gt(cid as i64, 0, "registered warm connection in pool");
+        let _ = wing::release_connection(pool, cid, 1000);
+
+        var in_hdrs = wing::HeaderMap { .. };
+        let _ = wing::append_header(in_hdrs, "Host", "edge.example.com");
+        var resp = wing::Response { .. };
+        let ok_ex = wing::execute_proxy_exchange(
+            proxy, pool, "GET", "/v1/health", in_hdrs, "203.0.113.5", "https", "", resp, 2000, 2000,
+        );
+        sub.assert_true(ok_ex, "execute_proxy_exchange succeeded");
+        sub.assert_eq(resp.status_code, 200, "upstream status 200");
+        sub.assert_bytes_eq(resp.body[..], "Upstream Pong", "upstream body forwarded");
+        sub.assert_eq(proxy.cluster.targets[0].active_conns, 0, "active conns released after exchange");
+        sub.assert_eq(proxy.cluster.targets[0].successes, 1, "upstream success recorded");
+
+        wing::tcp_close(server_sock);
+        wing::tcp_close(listener);
+        wing::close_pooled_connection(pool, cid);
+    };
 }
 
 fn main() {

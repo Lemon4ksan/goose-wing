@@ -7,6 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .tcp;
 
 // ---- SOCKS5 normative constants (RFC 1928 & RFC 1929) -------------------
 
@@ -397,6 +398,107 @@ fn verify_connect_tunnel_response(
 // the underlying transport connection to be closed immediately rather than returned to pool.
 fn should_close_connection_on_connect_error(err: ConnectTunnelError) -> bool {
     return err != ConnectTunnelError.None;
+}
+
+// Parses a dotted-decimal IPv4 literal (e.g. "127.0.0.1") into 4 network-order octets.
+//
+// Example:
+//   raw = "127.0.0.1"
+//   returns: [127, 0, 0, 1], true
+fn parse_socks5_ipv4_literal(raw: const u8[:]) -> u8[4], bool {
+    var out: u8[4] = [0; 4];
+    var rest = raw;
+    for i in 4 {
+        let part, rem, has_dot = core::split_once_byte(rest, '.');
+        if i < 3 {
+            guard has_dot else { return out, false; }
+        } else {
+            guard !has_dot else { return out, false; }
+        }
+        let val, ok_v = core::parse_u32_dec(part);
+        guard ok_v && val <= 255 else { return out, false; }
+        out[i] = val as u8;
+        rest = rem;
+    }
+    return out, true;
+}
+
+// Executes a live SOCKS5/SOCKS5h client handshake over an open TCP socket (RFC 1928 & RFC 1929).
+fn socks5_client_handshake(
+    sock_fd:     i64,
+    scheme:      ProxyScheme,
+    target_host: const u8[:],
+    target_port: u16,
+    username:    const u8[:],
+    password:    const u8[:],
+    timeout_ms:  u32 = 5000,
+) -> Socks5Error {
+    guard sock_fd > 0 else { return Socks5Error.ServerFailure; }
+    var greet: u8[..16] = [];
+    build_socks5_greeting(Socks5GreetingOptions { has_credentials: username.len > 0, .. }, greet);
+    guard tcp_send(sock_fd, greet[..]) == (greet.len as i32) else { return Socks5Error.ServerFailure; }
+
+    var reply_raw: u8[64] = [0; 64];
+    let n1 = tcp_recv_slice(sock_fd, reply_raw[..], timeout_ms);
+    guard n1 >= 2 else { return Socks5Error.BufferTruncated; }
+    let method, g_err = parse_socks5_greeting_reply(reply_raw[..n1]);
+    guard g_err == Socks5Error.None else { return g_err; }
+
+    if method == rfc::SOCKS5_AUTH_USERPASS {
+        var auth_buf: u8[..520] = [];
+        let a_err = build_socks5_rfc1929_auth(username, password, auth_buf);
+        guard a_err == Socks5Error.None else { return a_err; }
+        guard tcp_send(sock_fd, auth_buf[..]) == (auth_buf.len as i32) else { return Socks5Error.AuthFailed; }
+        let n_auth = tcp_recv_slice(sock_fd, reply_raw[..], timeout_ms);
+        guard n_auth >= 2 else { return Socks5Error.BufferTruncated; }
+        let auth_res = parse_socks5_rfc1929_reply(reply_raw[..n_auth]);
+        guard auth_res == Socks5Error.None else { return auth_res; }
+    } else if method != rfc::SOCKS5_AUTH_NONE {
+        return Socks5Error.NoAcceptableAuth;
+    }
+
+    var req_buf: u8[..300] = [];
+    let ip4, has_ip4 = parse_socks5_ipv4_literal(target_host);
+    var effective_scheme = scheme;
+    if scheme == ProxyScheme.Socks5 && !has_ip4 {
+        effective_scheme = ProxyScheme.Socks5h;
+    }
+    let req_err = build_socks5_connect_request(effective_scheme, target_host, ip4, has_ip4, target_port, req_buf);
+    guard req_err == Socks5Error.None else { return req_err; }
+    guard tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else { return Socks5Error.ServerFailure; }
+
+    var conn_reply_raw: u8[300] = [0; 300];
+    let n2 = tcp_recv_slice(sock_fd, conn_reply_raw[..], timeout_ms);
+    guard n2 >= 4 else { return Socks5Error.BufferTruncated; }
+    let _, c_err = parse_socks5_connect_reply(conn_reply_raw[..n2]);
+    return c_err;
+}
+
+// Executes a live HTTP CONNECT client tunnel handshake over an open TCP socket (RFC 9110 §9.3.6).
+fn http_connect_client_handshake(
+    sock_fd:     i64,
+    target_host: const u8[:],
+    target_port: u16,
+    proxy_auth:  const u8[:],
+    user_agent:  const u8[:],
+    timeout_ms:  u32 = 5000,
+) -> ConnectTunnelError {
+    guard sock_fd > 0 else { return ConnectTunnelError.ConnectFailed; }
+    var req_buf: u8[..1024] = [];
+    build_http_connect_request(target_host, target_port, proxy_auth, user_agent, req_buf);
+    guard tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else { return ConnectTunnelError.ConnectFailed; }
+
+    var resp_buf: u8[..4096] = [];
+    var chunk:    u8[1024]   = [0; 1024];
+    for step in 8 {
+        let n = tcp_recv_slice(sock_fd, chunk[..], timeout_ms);
+        guard n > 0 else { break; }
+        guard resp_buf.try_append(chunk[..n]) else { return ConnectTunnelError.TunnelBufferedTooManyBytes; }
+        if find(resp_buf[..], "\r\n\r\n") >= 0 {
+            break;
+        }
+    }
+    return verify_connect_tunnel_response(resp_buf[..], 0);
 }
 
 // ---- 4-tier Slowloris and Reverse-Slowloris tarpit defenses --------------

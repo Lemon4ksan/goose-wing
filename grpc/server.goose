@@ -561,6 +561,12 @@ fn write_stream_message(
 
 // ---- Core Dispatch Execution --------------------------------------------
 
+inline fn is_supported_grpc_encoding(enc: const u8[:]) -> bool {
+    let trimmed = trim_lws(enc);
+    if trimmed.len == 0 { return true; }
+    return eq_ascii_fold(trimmed, "gzip") || eq_ascii_fold(trimmed, "identity");
+}
+
 // Validates single-message LPM request body for Unary and ServerStreaming RPCs.
 //
 // Example:
@@ -597,16 +603,32 @@ fn decode_and_validate_single_lpm(
         return false;
     }
 
+    if is_compressed {
+        let enc = get_metadata(ctx, rfc::HEADER_GRPC_ENCODING);
+        guard is_supported_grpc_encoding(enc) else {
+            build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
+            return false;
+        }
+        var decomp_buf: u8[>..] = [];
+        let ok_gz, gz_err = core::gzip_decompress_with_limit(req_payload[..], decomp_buf, d.max_message_size);
+        guard ok_gz else {
+            let is_overflow = gz_err == core::CompressError.OutputBufferOverflow;
+            let code = if is_overflow { GrpcStatusCode.ResourceExhausted } else { GrpcStatusCode.Internal };
+            let msg = if is_overflow {
+                "Decompressed message exceeds max configured message size"
+            } else {
+                "Failed to decompress gRPC gzip payload"
+            };
+            build_grpc_trailers_only_response(code, msg, ctx, res);
+            return false;
+        }
+        req_payload.clear();
+        req_payload.append(decomp_buf[..]);
+    }
+
     if (req_payload.len as u32) > d.max_message_size {
         build_grpc_trailers_only_response(
             GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
-        );
-        return false;
-    }
-
-    if is_compressed {
-        build_grpc_trailers_only_response(
-            GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res,
         );
         return false;
     }
@@ -779,26 +801,69 @@ fn dispatch_grpc_server_streaming<
     return true;
 }
 
-fn validate_client_stream_spans(
-    reader:   const GrpcClientStreamReader&,
+fn append_decompressed_stream_span(
+    raw_msg:   const u8[:],
+    span:      GrpcMessageSpan,
+    max_size:  u32,
+    ctx:       const GrpcServerContext&,
+    res:       Response&,
+    new_wire:  u8[>..]&,
+    new_spans: GrpcMessageSpan[..32]&,
+) -> bool {
+    let offset_start = new_wire.len as u32;
+    if !span.compressed {
+        new_wire.append(raw_msg);
+        new_spans.push(GrpcMessageSpan { offset: offset_start, len: span.len, compressed: false });
+        return true;
+    }
+    let ok_gz, gz_err = core::gzip_decompress_with_limit(raw_msg, new_wire, max_size);
+    guard ok_gz else {
+        let is_overflow = gz_err == core::CompressError.OutputBufferOverflow;
+        let code = if is_overflow { GrpcStatusCode.ResourceExhausted } else { GrpcStatusCode.Internal };
+        build_grpc_trailers_only_response(code, "Failed to decompress client stream message", ctx, res);
+        return false;
+    }
+    let decomp_len = (new_wire.len as u32) - offset_start;
+    new_spans.push(GrpcMessageSpan { offset: offset_start, len: decomp_len, compressed: false });
+    return true;
+}
+
+fn validate_and_decompress_client_stream(
+    reader:   GrpcClientStreamReader&,
     max_size: u32,
     ctx:      const GrpcServerContext&,
     res:      Response&,
 ) -> bool {
-    for span in reader.spans {
-        if span.len > max_size {
+    let enc = get_metadata(ctx, rfc::HEADER_GRPC_ENCODING);
+    var any_compressed = false;
+    for &span in reader.spans {
+        if span.compressed {
+            any_compressed = true;
+            guard is_supported_grpc_encoding(enc) else {
+                build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
+                return false;
+            }
+        } else if span.len > max_size {
             build_grpc_trailers_only_response(
                 GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
             );
             return false;
         }
-        if span.compressed {
-            build_grpc_trailers_only_response(
-                GrpcStatusCode.Unimplemented, "Compression not implemented for method", ctx, res,
-            );
+    }
+    guard any_compressed else { return true; }
+
+    var new_wire:  u8[>..]               = [];
+    var new_spans: GrpcMessageSpan[..32] = [];
+    for i in reader.spans.len {
+        let span = reader.spans[i];
+        let raw_msg = get_client_stream_message(reader, i);
+        guard append_decompressed_stream_span(raw_msg, span, max_size, ctx, res, new_wire, new_spans) else {
             return false;
         }
     }
+    reader.wire.clear();
+    reader.wire.append(new_wire[..]);
+    reader.spans = new_spans;
     return true;
 }
 
@@ -868,7 +933,7 @@ fn dispatch_grpc_client_streaming<
         return true;
     }
 
-    guard validate_client_stream_spans(reader, d.max_message_size, ctx, res) else {
+    guard validate_and_decompress_client_stream(reader, d.max_message_size, ctx, res) else {
         return true;
     }
 
@@ -1024,12 +1089,23 @@ fn dispatch_grpc_bidi_streaming(
     let in_len = reader.wire_buf.len;
     guard in_len >= 0 && conn.recv_window >= in_len else { return false; }
 
+    let limit = if reader.max_msg_size > 0 {
+        reader.max_msg_size
+    } else {
+        rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE
+    };
     while reader.read_cursor < reader.spans.len {
         let span = reader.spans[reader.read_cursor];
-        guard !span.compressed else { return false; }
         let msg, ok = read_next_grpc_lpm(reader);
         guard ok else { return false; }
-        guard write_grpc_lpm_frame(writer, msg, false) else { return false; }
+        if span.compressed {
+            var decomp_buf: u8[..16384] = [];
+            let ok_gz, _ = core::gzip_decompress_with_limit(msg, decomp_buf, limit);
+            guard ok_gz else { return false; }
+            guard write_grpc_lpm_frame(writer, decomp_buf[..], false) else { return false; }
+        } else {
+            guard write_grpc_lpm_frame(writer, msg, false) else { return false; }
+        }
     }
 
     let total_out = writer.wire_buf.len;

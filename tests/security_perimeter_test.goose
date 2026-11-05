@@ -704,13 +704,20 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
     t.run("Chromium Preload List: Google, GitHub & .dev/.app TLDs Auto-Upgraded to HTTPS") { sub =>
         var client = wing::new_client();
 
-        // 1. Static preloaded domain (github.com)
+        // 1. Static preloaded domain (github.com & expanded preload domains)
         sub.assert_true(wing::is_hsts(client, "github.com"), "github.com is preloaded HSTS");
         sub.assert_true(wing::is_hsts(client, "api.github.com"), "api.github.com inherits HSTS");
+        sub.assert_true(wing::is_hsts(client, "stripe.com"), "stripe.com is preloaded HSTS");
+        sub.assert_true(wing::is_hsts(client, "api.stripe.com"), "api.stripe.com inherits HSTS");
+        sub.assert_true(wing::is_hsts(client, "proton.me"), "proton.me is preloaded HSTS");
+        sub.assert_true(wing::is_hsts(client, "1password.com"), "1password.com is preloaded HSTS");
 
-        // 2. HSTS TLD (.dev and .app)
+        // 2. HSTS TLD (.dev, .app, .page, .bank, .insurance, .chrome, .goog, .youtube, .zip)
         sub.assert_true(wing::is_hsts(client, "myproject.dev"), ".dev TLD is always HSTS");
         sub.assert_true(wing::is_hsts(client, "coolservice.app"), ".app TLD is always HSTS");
+        sub.assert_true(wing::is_hsts(client, "secure.insurance"), ".insurance TLD is always HSTS");
+        sub.assert_true(wing::is_hsts(client, "portal.chrome"), ".chrome TLD is always HSTS");
+        sub.assert_true(wing::is_hsts(client, "archive.zip"), ".zip TLD is always HSTS");
 
         // 3. Regular non-HSTS domain
         sub.assert_false(wing::is_hsts(client, "example.com"), "example.com is not HSTS");
@@ -725,6 +732,34 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
         sub.assert_eq(wing::status(resp), 200, "status 200");
         // Effective URL must be https://, not cleartext http://!
         sub.assert_bytes_eq(resp.effective_url[..8], "https://", "URL was transparently upgraded to https:// before dispatch");
+
+        // 5. Userinfo and IPv6 authority handling in split_http_url and hsts_upgrade_url
+        let u_host, u_port, u_rem, u_ok = wing::split_http_url("http://alice:secret@github.com:8080/org/repo?x=1");
+        sub.assert_true(u_ok, "split_http_url with userinfo ok");
+        sub.assert_bytes_eq(u_host, "github.com", "host extracted after userinfo@");
+        sub.assert_bytes_eq(u_port, "8080", "port extracted after host");
+        sub.assert_bytes_eq(u_rem, "/org/repo?x=1", "remainder preserved");
+
+        var upgraded_userinfo: u8[..256] = [];
+        sub.assert_true(
+            wing::hsts_upgrade_url(client.hsts, "http://alice:secret@github.com:8080/org/repo", 1700000000, upgraded_userinfo),
+            "hsts_upgrade_url upgrades URL with userinfo",
+        );
+        sub.assert_bytes_eq(
+            upgraded_userinfo[..],
+            "https://alice:secret@github.com:8080/org/repo",
+            "userinfo and custom port preserved during HSTS upgrade",
+        );
+
+        let v6_host, v6_port, v6_rem, v6_ok = wing::split_http_url("http://[2001:db8::1]:8080/status");
+        sub.assert_true(v6_ok, "split_http_url with IPv6 literal ok");
+        sub.assert_bytes_eq(v6_host, "[2001:db8::1]", "IPv6 bracketed host preserved without splitting on internal colons");
+        sub.assert_bytes_eq(v6_port, "8080", "IPv6 port extracted cleanly");
+        sub.assert_bytes_eq(v6_rem, "/status", "IPv6 remainder preserved");
+        sub.assert_false(
+            wing::hsts_upgrade_url(client.hsts, "http://[2001:db8::1]:8080/status", 1700000000, upgraded_userinfo),
+            "RFC 6797 §8.1.1: IPv6 literal is never an HSTS host",
+        );
     };
 }
 
@@ -786,6 +821,51 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
 
         // RFC 6797 Section 8.1: Must be rejected and ignored!
         sub.assert_false(wing::is_hsts(client, "insecure.test"), "HSTS header ignored over plain HTTP");
+    };
+
+    t.run("HSTS Cache Persistence (save_hsts_cache / load_hsts_cache) & 128-Entry Capacity") { sub =>
+        var client1 = wing::new_client();
+        wing::set_clock_us(client1, 1700000000000000);
+
+        // Populate 20 distinct dynamic HSTS hosts (exceeding old 16-entry cap)
+        for i in 20 {
+            var host_buf: u8[..64] = [];
+            host_buf.append("host");
+            format(host_buf, i);
+            host_buf.append(".example.org");
+            sub.assert_true(
+                wing::hsts_cache_update(client1.hsts, host_buf[..], "max-age=3600; includeSubDomains; preload", 1700000000),
+                "hsts_cache_update succeeds for all 20 hosts",
+            );
+        }
+
+        // Verify all 20 hosts remain active without eviction
+        for i in 20 {
+            var host_buf: u8[..64] = [];
+            host_buf.append("host");
+            format(host_buf, i);
+            host_buf.append(".example.org");
+            sub.assert_true(wing::is_hsts(client1, host_buf[..]), "all 20 hosts retained in 128-entry HstsCache");
+        }
+
+        // Serialize HSTS cache
+        var persisted: u8[>..] = [];
+        let saved_count = wing::export_hsts(client1, persisted);
+        sub.assert_eq(saved_count, 20, "all 20 active entries exported");
+
+        // Load into a fresh client at t = 1700000500
+        var client2 = wing::new_client();
+        wing::set_clock_us(client2, 1700000500000000);
+        let loaded_count = wing::import_hsts(client2, persisted[..]);
+        sub.assert_eq(loaded_count, 20, "all 20 unexpired entries imported");
+        sub.assert_true(wing::is_hsts(client2, "sub.host0.example.org"), "imported subdomain HSTS active");
+        sub.assert_true(wing::is_hsts(client2, "host19.example.org"), "imported 20th host HSTS active");
+
+        // Loading after expiry (t = 1700004000) skips expired entries
+        var client3 = wing::new_client();
+        wing::set_clock_us(client3, 1700004000000000);
+        let expired_loaded = wing::import_hsts(client3, persisted[..]);
+        sub.assert_eq(expired_loaded, 0, "expired entries skipped on import");
     };
 }
 

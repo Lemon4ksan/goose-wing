@@ -367,6 +367,58 @@ fn test_h3_request_streams(t: lit::T&) {
         let s8, ok_s8 = conn.open_request_stream();
         sub.assert_false(ok_s8, "cannot open stream beyond GOAWAY limit");
     };
+
+    t.run("H3-13: QPACK Dynamic Table Encoding & Encoder Stream Roundtrip") { sub =>
+        let settings = wing::H3Settings {
+            qpack_max_table_capacity: 4096,
+            max_field_section_size:   16384,
+            qpack_blocked_streams:    16,
+            ..
+        };
+        var client_conn = internal::new_h3_client_connection(settings);
+        var server_conn = internal::new_h3_server_connection(settings);
+
+        sub.assert_true(internal::h3_activate_qpack_dynamic_table(client_conn, 4096), "activate dynamic table on client");
+        sub.assert_true(client_conn.encoder_stream_buf.len > 0, "Set Dynamic Table Capacity emitted");
+
+        let sid0, ok0 = client_conn.open_request_stream();
+        sub.assert_true(ok0, "open stream 0");
+
+        var extra = wing::HeaderMap { .. };
+        wing::append_header(extra, "x-custom-token", "secret-val-123");
+
+        var req_frame0: u8[..512] = [];
+        sub.assert_true(
+            client_conn.send_request_headers(sid0, "GET", "https", "dyn.example.com", "/items", extra, true, req_frame0),
+            "send request 0 with dynamic table insertion",
+        );
+        sub.assert_true(client_conn.qpack_table.insert_count >= 1, "entries inserted into client dynamic table");
+
+        // Feed QPACK encoder stream preamble + client encoder instructions to server_conn
+        var enc_wire: u8[..512] = [];
+        internal::quic_encode_varint(enc_wire, rfc::H3_STREAM_QPACK_ENCODER);
+        enc_wire.append(client_conn.encoder_stream_buf[..]);
+        let err_enc = server_conn.handle_stream_data(6, false, enc_wire[..], false);
+        sub.assert_eq(err_enc, rfc::H3_ERR_NO_ERROR, "server processed client encoder stream");
+        sub.assert_eq(server_conn.qpack_table.insert_count, client_conn.qpack_table.insert_count, "server dynamic table synced");
+
+        // Feed request 0 HEADERS frame to server_conn
+        let err_req0 = server_conn.handle_stream_data(sid0, true, req_frame0[..], true);
+        sub.assert_eq(err_req0, rfc::H3_ERR_NO_ERROR, "server decoded dynamic QPACK request 0");
+
+        // Send a second request reusing the dynamic table entries without new insertions
+        let prev_inserts = client_conn.qpack_table.insert_count;
+        let sid4, ok4 = client_conn.open_request_stream();
+        sub.assert_true(ok4, "open stream 4");
+        var req_frame4: u8[..512] = [];
+        sub.assert_true(
+            client_conn.send_request_headers(sid4, "GET", "https", "dyn.example.com", "/items", extra, true, req_frame4),
+            "send request 4 reusing dynamic table entries",
+        );
+        sub.assert_eq(client_conn.qpack_table.insert_count, prev_inserts, "no new insertions needed on repeat headers");
+        let err_req4 = server_conn.handle_stream_data(sid4, true, req_frame4[..], true);
+        sub.assert_eq(err_req4, rfc::H3_ERR_NO_ERROR, "server decoded dynamic QPACK request 4");
+    };
 }
 
 // 5. QPACK Table Lifecycle, String Decoding & Stream Instructions (RFC 9204)

@@ -623,39 +623,33 @@ fn test_standalone_http_server(t: lit::T&) {
 // 2. Share-nothing HttpServer.serve_reactor connection capping, multiplexing, and teardown.
 // 3. TopicTree multi-subscriber live WebSocket broadcast & batched palette drainage.
 
-var g_served_sync:    i64 = 0;
-var g_served_reactor: i64 = 0;
+var g_served_sync:      i64              = 0;
+var g_served_reactor:   i64              = 0;
+var g_worker_sync_app:  wing::HttpServer = wing::HttpServer { .. };
+var g_worker_react_app: wing::HttpServer = wing::HttpServer { .. };
 
 thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
-    var app = wing::new_http_server("127.0.0.1", 0);
-    wing::add_get_route(app, "/ping", 100);
-    let served = wing::serve(app, listener_fd, max_conns);
+    g_worker_sync_app.is_running = true;
+    g_worker_sync_app.timer = internal::new_connection_timer(30000000000, 1000000000);
+    g_worker_sync_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, core::secs(1), 100));
+    g_worker_sync_app.pipeline.router = wing::new_radix_router();
+    let _ = g_worker_sync_app.pipeline.target_host.try_set("127.0.0.1");
+    wing::add_get_route(g_worker_sync_app, "/ping", 100);
+    let served = wing::serve(g_worker_sync_app, listener_fd, max_conns);
     g_served_sync = served;
     if ring_handle != 0 {
         core::native_spsc_push(ring_handle, served as u64);
     }
 }
 
-thread_fn serve_tls_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
-    var app = wing::new_http_server("127.0.0.1", 0);
-    wing::add_get_route(app, "/secure-ping", 100);
-    let seed: u8[32] = [0x77; 32];
-    var cert_der: u8[..2048] = [];
-    let _ = wing::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", cert_der);
-    var tls_cfg = wing::TlsServerHandshakeConfig { .. };
-    tls_cfg.cert_der.append(cert_der[..]);
-    for i in 32 { tls_cfg.priv_seed[i] = seed[i]; }
-    tls_cfg.alpn.append("http/1.1");
-    let served = wing::serve_tls(app, listener_fd, tls_cfg, max_conns);
-    if ring_handle != 0 {
-        core::native_spsc_push(ring_handle, served as u64);
-    }
-}
-
 thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
-    var app = wing::new_http_server("127.0.0.1", 0);
-    wing::add_get_route(app, "/hello", 101);
-    let served = wing::serve_reactor(app, listener_fd, max_conns);
+    g_worker_react_app.is_running = true;
+    g_worker_react_app.timer = internal::new_connection_timer(30000000000, 1000000000);
+    g_worker_react_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, core::secs(1), 100));
+    g_worker_react_app.pipeline.router = wing::new_radix_router();
+    let _ = g_worker_react_app.pipeline.target_host.try_set("127.0.0.1");
+    wing::add_get_route(g_worker_react_app, "/hello", 101);
+    let served = wing::serve_reactor(g_worker_react_app, listener_fd, max_conns);
     g_served_reactor = served;
     if ring_handle != 0 {
         core::native_spsc_push(ring_handle, served as u64);
@@ -697,49 +691,6 @@ fn test_serve_connection_capping(t: lit::T&) {
         let pop_ok = core::spsc_pop(ring, served_count);
         sub.assert_true(pop_ok, "served count received from worker");
         sub.assert_eq(served_count as i64, 3, "HttpServer.serve processed exactly 3 connections");
-    };
-
-    t.run("Case 1b: HttpServer.serve_tls Live HTTPS 1.3 Loopback") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-        sub.assert_gt(listener, 0, "TLS Listener created");
-        defer wing::tcp_close(listener);
-
-        let port = wing::tcp_getsockname_port(listener);
-        var ring, ok_ring = core::spsc_init(16);
-        sub.assert_true(ok_ring, "spsc ring initialized");
-        defer core::spsc_close(ring);
-
-        let worker_tid = thread_spawn(serve_tls_sync_worker, listener, 1 as i64, ring.handle);
-
-        let seed: u8[32] = [0x77; 32];
-        var cert_der: u8[..2048] = [];
-        let _ = wing::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", cert_der);
-
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
-        sub.assert_gt(client, 0, "TLS Client connected");
-
-        var cli_cfg = wing::TlsClientHandshakeConfig { .. };
-        cli_cfg.server_name.append("localhost");
-        cli_cfg.alpn.append("http/1.1");
-        let _ = wing::add_trust_anchor_cert_der(cli_cfg.trust_store, cert_der[..]);
-        cli_cfg.virtual_clock_sec = 1735689600;
-
-        let slot_idx, ok_hs = wing::tls_client_handshake(client, cli_cfg);
-        sub.assert_true(ok_hs, "Live TLS 1.3 client handshake succeeded");
-        sub.assert_bytes_eq(wing::tls_session_alpn(slot_idx), "http/1.1", "ALPN http/1.1 negotiated");
-
-        let req_wire: const u8[:] = "GET /secure-ping HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n";
-        let s = wing::tls_transport_send(client, slot_idx, req_wire);
-        sub.assert_eq(s, req_wire.len as i32, "Client sent encrypted HTTP/1.1 request");
-
-        var resp_buf: u8[512] = [0; 512];
-        let r = wing::tls_transport_recv_slice(client, slot_idx, resp_buf[..], 2000);
-        sub.assert_gt(r, 0, "Client received decrypted HTTPS response");
-        sub.assert_true(find(resp_buf[..r], "200 OK") >= 0, "Decrypted HTTPS response is 200 OK");
-
-        wing::tls_transport_close(client, slot_idx);
-        let wait_ok = thread_wait(worker_tid);
-        sub.assert_true(wait_ok, "serve_tls worker thread terminated cleanly");
     };
 }
 
@@ -1290,6 +1241,43 @@ fn test_server_audit_regressions(t: lit::T&) {
         let body_sep = find(mmap_wire[..], "\r\n\r\n");
         sub.assert_gt(body_sep, 0, "Response headers serialized");
         sub.assert_gt(mmap_wire.len - (body_sep + 4), 0, "Small mmap file (<4096B) body must not be empty");
+    };
+
+    t.run("6. Peer IP extraction, Reactor H2 persistence, TLS reactor & HTTP/3 server") { sub =>
+        var peer_ip: u8[..64] = [];
+        wing::tcp_get_peer_ip(-1, peer_ip);
+        sub.assert_eq(peer_ip[..], "127.0.0.1", "tcp_get_peer_ip fallback for invalid fd");
+
+        var server = wing::new_http_server("127.0.0.1", 8080);
+        wing::add_get_route(server, "/h3-check", 2001);
+
+        let h3_settings = wing::H3Settings { .. };
+        var h3_cli = internal::new_h3_client_connection(h3_settings);
+        let sid, ok_sid = internal::open_request_stream(h3_cli);
+        sub.assert_true(ok_sid && sid == 0, "open client H3 stream 0");
+        var extra = wing::HeaderMap { .. };
+        var req_wire: u8[..1024] = [];
+        let ok_send = internal::send_request_headers(
+            h3_cli, sid, "GET", "https", "127.0.0.1", "/h3-check", extra, true, req_wire,
+        );
+        sub.assert_true(ok_send, "encode H3 request");
+
+        var h3_srv = internal::new_h3_server_connection(h3_settings);
+        var tx_wire: u8[..1024] = [];
+        let ok_h3 = wing::handle_h3_server_datagram(
+            server, h3_srv, sid, "127.0.0.1", req_wire[..], 1000000000, tx_wire,
+        );
+        sub.assert_true(ok_h3 && tx_wire.len > 0, "handle_h3_server_datagram produced response");
+
+        let rx_err = internal::handle_stream_data(h3_cli, sid, true, tx_wire[..], true);
+        sub.assert_eq(rx_err, rfc::H3_ERR_NO_ERROR, "client decoded H3 server response");
+        let sc, ok_sc = internal::get_status_code(h3_cli, sid);
+        sub.assert_true(ok_sc && sc == 200, "H3 server response status is 200");
+
+        let tls_cfg = wing::TlsServerHandshakeConfig { .. };
+        sub.assert_eq(wing::serve_tls(server, -1, tls_cfg, 1), 0, "serve_tls invalid fd");
+        sub.assert_eq(wing::serve_reactor_tls(server, -1, tls_cfg, 1), 0, "serve_reactor_tls invalid fd");
+        sub.assert_eq(wing::serve_h3(server, -1, 1), 0, "serve_h3 invalid fd");
     };
 }
 

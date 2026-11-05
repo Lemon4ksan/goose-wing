@@ -524,19 +524,17 @@ fn quic_table_open_local_stream(
     is_bidi:           bool,
     default_recv_flow: u64 = 65536,
 ) -> u64, i32, bool {
-    var has_slot = tbl.streams.len < tbl.streams.cap;
-    if !has_slot {
-        for s in tbl.streams {
-            if quic_stream_is_terminal(s, tbl.role) {
-                has_slot = true;
-                break;
-            }
+    for i in tbl.streams.len {
+        if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
+            let stream_id = advance_stream_counter(tbl, is_bidi);
+            tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
+            return stream_id, i as i32, true;
         }
     }
-    guard has_slot else {
+    guard tbl.streams.len < tbl.streams.cap else {
         return 0, 0, false;
     }
     let stream_id = advance_stream_counter(tbl, is_bidi);
-    let idx, ok = quic_table_get_or_open_stream(tbl, stream_id, default_recv_flow);
-    return stream_id, idx, ok;
+    let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
+    return stream_id, new_idx, true;
 }

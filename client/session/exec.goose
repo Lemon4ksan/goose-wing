@@ -30,7 +30,18 @@ import client.client;
 import client.session.cookie_bridge;
 import client.session.h1_exchange;
 import net.pool;
+import net.proxy;
+import net.dns;
+import net.happy_eyeballs;
 import net.retry;
+import http2.framing;
+import http2.hpack;
+import http3.framing;
+import http3.qpack;
+import http3.connection;
+import quic.packet;
+import quic.frames;
+import quic.connection;
 
 // ---- url resolution helpers ------------------------------------------------
 
@@ -612,6 +623,8 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     guard p_url.valid else { return new_direct_proxy_chain(); }
     let p_scheme = if scheme(p_url) == "https" {
         ProxyScheme.Https
+    } else if scheme(p_url) == "socks5h" {
+        ProxyScheme.Socks5h
     } else if scheme(p_url) == "socks5" {
         ProxyScheme.Socks5
     } else {
@@ -620,7 +633,7 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     let raw_port = core::effective_port(p_url);
     let p_port: u16 = if raw_port > 0 {
         raw_port as u16
-    } else if p_scheme == ProxyScheme.Socks5 {
+    } else if p_scheme == ProxyScheme.Socks5 || p_scheme == ProxyScheme.Socks5h {
         1080
     } else if p_scheme == ProxyScheme.Https {
         443
@@ -631,7 +644,423 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     return new_single_proxy_chain(ps);
 }
 
-// Opens or reuses a pooled TCP connection and executes one live HTTP/1.1 hop.
+fn format_ipv4_u32(ip4: u32, out: u8[..64]&) {
+    out.clear();
+    let b0 = ((ip4 >> 24) & 0xFF) as u64;
+    let b1 = ((ip4 >> 16) & 0xFF) as u64;
+    let b2 = ((ip4 >> 8) & 0xFF) as u64;
+    let b3 = (ip4 & 0xFF) as u64;
+    core::format_u64_dec(b0, out);
+    out.push('.');
+    core::format_u64_dec(b1, out);
+    out.push('.');
+    core::format_u64_dec(b2, out);
+    out.push('.');
+    core::format_u64_dec(b3, out);
+}
+
+fn format_ipv6_bytes(ip6: const u8[16]&, out: u8[..64]&) {
+    out.clear();
+    let hex_chars: const u8[:] = "0123456789abcdef";
+    for g in 8 {
+        if g > 0 { out.push(':'); }
+        let hi = ip6[g * 2];
+        let lo = ip6[g * 2 + 1];
+        out.push(hex_chars[((hi >> 4) & 0x0F) as i64]);
+        out.push(hex_chars[(hi & 0x0F) as i64]);
+        out.push(hex_chars[((lo >> 4) & 0x0F) as i64]);
+        out.push(hex_chars[(lo & 0x0F) as i64]);
+    }
+}
+
+fn collect_ipv4_dns_candidates(
+    session:  const Session&,
+    a_entry:  const DnsCacheEntry&,
+    port_num: u16,
+    out_list: DnsCandidate[..8]&,
+) -> bool {
+    var ip4_buf: u8[..64] = [];
+    for ip4 in a_entry.ipv4_hints {
+        format_ipv4_u32(ip4, ip4_buf);
+        if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network {
+            guard !is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
+        }
+        if out_list.len < 8 {
+            out_list.push(new_dns_candidate(AddressFamily.IPv4, ip4_buf[..], port_num, L4Protocol.Tcp, 40));
+        }
+    }
+    return true;
+}
+
+fn collect_ipv6_dns_candidates(
+    session:    const Session&,
+    aaaa_entry: const DnsCacheEntry&,
+    port_num:   u16,
+    out_list:   DnsCandidate[..8]&,
+) -> bool {
+    var ip6_buf: u8[..64] = [];
+    for &ip6 in aaaa_entry.ipv6_hints {
+        format_ipv6_bytes(ip6, ip6_buf);
+        if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network {
+            guard !is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
+        }
+        if out_list.len < 8 {
+            out_list.push(new_dns_candidate(AddressFamily.IPv6, ip6_buf[..], port_num, L4Protocol.Tcp, 50));
+        }
+    }
+    return true;
+}
+
+fn resolve_and_validate_live_host(
+    session:        Session&,
+    host_str:       const u8[:],
+    port_num:       u16,
+    now_sec:        i64,
+    out_candidates: DnsCandidate[..32]&,
+    out_ech_list:   u8[..512]&,
+) -> Error {
+    out_candidates.clear();
+    out_ech_list.clear();
+    let now_ms = now_sec * 1000;
+    var task = new_dns_race_task(port_num);
+
+    var a_entry = DnsCacheEntry { .. };
+    let a_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_A, now_sec, a_entry);
+    if a_stat != DnsCacheStatus.Expired {
+        guard collect_ipv4_dns_candidates(session, a_entry, port_num, task.ipv4_candidates) else {
+            return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+        }
+        task.a_status = DnsQueryStatus.Success;
+    }
+
+    var aaaa_entry = DnsCacheEntry { .. };
+    let aaaa_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_AAAA, now_sec, aaaa_entry);
+    if aaaa_stat != DnsCacheStatus.Expired {
+        guard collect_ipv6_dns_candidates(session, aaaa_entry, port_num, task.ipv6_candidates) else {
+            return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+        }
+        task.aaaa_status = DnsQueryStatus.Success;
+    }
+
+    if session.enable_ech || session.auto_ech_discovery {
+        var https_entry = DnsCacheEntry { .. };
+        let h_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
+        if h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 {
+            if https_entry.https_records[0].has_ech {
+                out_ech_list.append(https_entry.https_records[0].ech_config_list[..]);
+            }
+        }
+    }
+
+    let _ = check_dns_resolution_delay_tick(task, now_ms + rfc::HE_RESOLUTION_DELAY_MS);
+    interleave_candidates_he(task.ipv6_candidates[..], task.ipv4_candidates[..], out_candidates);
+    if out_candidates.len == 0 {
+        out_candidates.push(new_dns_candidate(AddressFamily.IPv4, host_str, port_num, L4Protocol.Tcp, 40));
+    }
+    return Error { .. };
+}
+
+fn dial_live_tcp_or_proxy(
+    session:     const Session&,
+    proxy_chain: const ProxyChain&,
+    host_str:    const u8[:],
+    port_num:    u16,
+    candidates:  const DnsCandidate[:],
+    eff_timeout: u32,
+    now_ms:      i64,
+    out_ip:      u8[..64]&,
+) -> i64, Error {
+    out_ip.clear();
+    if !proxy_chain.is_direct && proxy_chain.servers.len > 0 {
+        let ps = proxy_chain.servers[0];
+        let sock = native_tcp_connect(ps.host[..], ps.port, eff_timeout);
+        guard sock > 0 else {
+            return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed");
+        }
+        let p_url = core::new_url(session.proxy_url[..]);
+        let p_user = core::username(p_url);
+        let p_pass = core::password(p_url);
+        if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
+            let s_err = socks5_client_handshake(sock, ps.scheme, host_str, port_num, p_user, p_pass, eff_timeout);
+            if s_err != Socks5Error.None {
+                native_tcp_close(sock);
+                return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
+            }
+        } else {
+            let c_err = http_connect_client_handshake(sock, host_str, port_num, "", "goose-wing/1.0", eff_timeout);
+            if c_err != ConnectTunnelError.None {
+                native_tcp_close(sock);
+                return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
+            }
+        }
+        out_ip.append(ps.host[..]);
+        return sock, Error { .. };
+    }
+
+    var mgr = new_attempt_manager();
+    start_attempt_race(mgr, candidates, now_ms);
+    for &cand in candidates {
+        let sock = native_tcp_connect(cand.ip[..], cand.port, eff_timeout);
+        if sock > 0 {
+            if mgr.attempts.len > 0 {
+                let _ = bind_winner_attempt(mgr, mgr.attempts[0].attempt_id, false);
+            }
+            out_ip.append(cand.ip[..]);
+            return sock, Error { .. };
+        }
+        let _ = tick_attempt_manager(mgr, now_ms + mgr.effective_cad_ms);
+    }
+    return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
+}
+
+fn encode_h2_client_request(
+    curr_method: const u8[:],
+    current_url: const core::Url&,
+    is_https:    bool,
+    ctx:         const RequestExecutionContext&,
+    out_wire:    u8[..8192]&,
+) -> bool {
+    out_wire.clear();
+    var hpack_dt = internal::new_dynamic_table(4096);
+    var hblock: u8[..4096] = [];
+    let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
+    let auth_str = core::host(current_url);
+    var path_buf: u8[..2048] = [];
+    let p_str = core::pathname(current_url);
+    if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
+    let q_str = core::search(current_url);
+    if q_str.len > 0 { path_buf.append(q_str); }
+
+    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":method", curr_method);
+    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":scheme", scheme_str);
+    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":authority", auth_str);
+    let _ = internal::encode_hpack_field(hpack_dt, hblock, ":path", path_buf[..]);
+    for &h in ctx.headers {
+        var low_name: u8[..128] = [];
+        low_name.append(h.name[..]);
+        to_lower(low_name[..]);
+        if low_name[..] != "host" && low_name[..] != "connection" && low_name[..] != "transfer-encoding" {
+            let _ = internal::encode_hpack_field(hpack_dt, hblock, low_name[..], h.value[..]);
+        }
+    }
+
+    let has_body = ctx.body.len > 0;
+    let needed = 24 + 9 + 9 + hblock.len + (if has_body { 9 + ctx.body.len } else { 0 });
+    guard needed <= 8192 else { return false; }
+
+    out_wire.append(rfc::H2_CLIENT_PREFACE);
+    let set_hdr = internal::FrameHeader {
+        length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0,
+    };
+    internal::encode_frame_header_to(set_hdr, out_wire);
+
+    let h_flags: u8 = if has_body {
+        rfc::H2_FLAG_END_HEADERS
+    } else {
+        rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM
+    };
+    let h_hdr = internal::FrameHeader {
+        length: hblock.len as u32, frame_type: rfc::H2_FRAME_HEADERS, flags: h_flags, stream_id: 1,
+    };
+    internal::encode_frame_header_to(h_hdr, out_wire);
+    out_wire.append(hblock[..]);
+
+    if has_body {
+        let d_hdr = internal::FrameHeader {
+            length:     ctx.body.len as u32,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      rfc::H2_FLAG_END_STREAM,
+            stream_id:  1,
+        };
+        internal::encode_frame_header_to(d_hdr, out_wire);
+        out_wire.append(ctx.body[..]);
+    }
+    return true;
+}
+
+fn process_h2_response_frame(
+    hdr:      const internal::FrameHeader&,
+    payload:  const u8[:],
+    dec_dt:   internal::DynamicTable&,
+    resp:     Response&,
+    got_hdrs: bool&,
+) -> bool, bool {
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == 1 {
+        let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
+        guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+        var dec_list = internal::DecodedH2HeaderList { .. };
+        let d_err = internal::decode_hpack_header_block(dec_dt, frag, dec_list, 8192, false);
+        guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+        for &f in dec_list.fields {
+            if f.name[..] == ":status" {
+                let sc, ok_sc = core::parse_u32_dec(f.value[..]);
+                if ok_sc { resp.status_code = sc as i32; }
+            } else if resp.headers.len < resp.headers.cap {
+                resp.headers.push(make_header(f.name[..], f.value[..]));
+            }
+        }
+        got_hdrs = true;
+        let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
+        return true, done;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == 1 {
+        let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
+        guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+        resp.body.append(d_slice);
+        let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
+        return true, done;
+    }
+    return true, false;
+}
+
+fn drain_h2_response_frames(
+    rx_accum: const u8[:],
+    dec_dt:   internal::DynamicTable&,
+    resp:     Response&,
+    got_hdrs: bool&,
+) -> bool, bool {
+    var consumed: i64 = 0;
+    while rx_accum.len - consumed >= 9 {
+        let hdr, h_err = internal::parse_frame_header(rx_accum[consumed..], 16384);
+        guard h_err == rfc::H2_ERR_NO_ERROR else { break; }
+        let frame_total = 9 + (hdr.length as i64);
+        guard rx_accum.len - consumed >= frame_total else { break; }
+        let payload = rx_accum[consumed + 9..consumed + frame_total];
+        consumed += frame_total;
+        let ok_f, done = process_h2_response_frame(hdr, payload, dec_dt, resp, got_hdrs);
+        guard ok_f else { return false, false; }
+        if done { return true, true; }
+    }
+    return true, false;
+}
+
+fn dispatch_pooled_h2_hop(
+    session:     Session&,
+    conn_id:     i32,
+    curr_method: const u8[:],
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    is_https:    bool,
+    origin_buf:  const u8[:],
+    curr_path:   const u8[:],
+    now_sec:     i64,
+    now_ns:      i64,
+    resp:        Response&,
+) -> bool {
+    let c_idx = session.pool.find_connection_index(conn_id);
+    guard c_idx >= 0 else { return false; }
+    var wire_out: u8[..8192] = [];
+    guard encode_h2_client_request(curr_method, current_url, is_https, ctx, wire_out) else {
+        session.pool.close_pooled_connection(conn_id);
+        return false;
+    }
+    let sent = session.pool.conns[c_idx].transport.send(wire_out[..]);
+    guard sent == (wire_out.len as i32) else {
+        session.pool.close_pooled_connection(conn_id);
+        return false;
+    }
+    reset_response(resp);
+    resp.protocol.clear();
+    resp.protocol.append("HTTP/2");
+    let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+    var rx_accum: u8[..16384] = [];
+    var chunk:    u8[4096]    = [0; 4096];
+    var dec_dt = internal::new_dynamic_table(4096);
+    var got_hdrs = false;
+    for step in 16 {
+        let n = session.pool.conns[c_idx].transport.recv_slice(chunk[..], eff_timeout);
+        if n > 0 {
+            let _ = rx_accum.try_append(chunk[..n]);
+        }
+        var hdrs_now = false;
+        var body_tmp = Response { .. };
+        let ok_f, done = drain_h2_response_frames(rx_accum[..], dec_dt, body_tmp, hdrs_now);
+        guard ok_f else {
+            session.pool.close_pooled_connection(conn_id);
+            return false;
+        }
+        if hdrs_now {
+            resp.status_code = body_tmp.status_code;
+            resp.headers = copy(body_tmp.headers);
+            resp.body = copy(body_tmp.body);
+            got_hdrs = true;
+        }
+        if done || n <= 0 { break; }
+    }
+    guard got_hdrs else { session.pool.close_pooled_connection(conn_id); return false; }
+    resp.effective_url = copy(current_url.href);
+    copy_sent_headers(ctx.headers, resp.sent_headers);
+    ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, resp);
+    session.pool.release_connection(conn_id, now_ns);
+    return true;
+}
+
+fn execute_live_h3_hop(
+    session:     Session&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    origin_buf:  const u8[:],
+    h3_ep:       const AltSvcEndpoint&,
+    now_sec:     i64,
+    resp:        Response&,
+) -> bool {
+    let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { core::hostname(current_url) };
+    let target_port = if h3_ep.port > 0 { h3_ep.port } else { core::effective_port(current_url) as u16 };
+    let udp_fd = native_udp_bind("0.0.0.0", 0);
+    guard udp_fd > 0 else { return false; }
+
+    let h3_settings = H3Settings { .. };
+    var h3_conn = internal::new_h3_client_connection(h3_settings);
+    let sid, ok_s = internal::open_request_stream(h3_conn);
+    guard ok_s else {
+        tcp_close(udp_fd);
+        return false;
+    }
+    var extra_map = HeaderMap { .. };
+    for &h in ctx.headers {
+        let _ = extra_map.append_header(h.name[..], h.value[..]);
+    }
+    var req_wire: u8[..4096] = [];
+    let curr_path = core::pathname(current_url);
+    let eff_path: const u8[:] = if curr_path.len > 0 { curr_path } else { "/" };
+    let ok_h = internal::send_request_headers(
+        h3_conn, sid, ctx.current_method[..], "https", core::host(current_url),
+        eff_path, extra_map, ctx.body.len == 0, req_wire,
+    );
+    if ok_h && ctx.body.len > 0 {
+        let _ = internal::send_request_data(h3_conn, sid, ctx.body[..], true, req_wire);
+    }
+    let sent = native_udp_sendto(udp_fd, req_wire[..], target_host, target_port);
+    if sent <= 0 {
+        tcp_close(udp_fd);
+        return false;
+    }
+    var rx_buf:    u8[1472] = [0; 1472];
+    var peer_ip4:  u32      = 0;
+    var peer_port: u16      = 0;
+    let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+    let recvd = native_udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
+    tcp_close(udp_fd);
+    guard recvd > 0 else { return false; }
+
+    let h_err = internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
+    guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
+    let sc, ok_sc = internal::get_status_code(h3_conn, sid);
+    guard ok_sc else { return false; }
+
+    reset_response(resp);
+    resp.status_code = sc;
+    resp.protocol.clear();
+    resp.protocol.append("HTTP/3");
+    let body_slice, ok_b = internal::get_response_body(h3_conn, sid);
+    if ok_b { resp.body.append(body_slice); }
+    resp.effective_url = copy(current_url.href);
+    copy_sent_headers(ctx.headers, resp.sent_headers);
+    ingest_transport_response_headers(session, current_url, true, origin_buf, curr_path, now_sec, resp);
+    return true;
+}
+
+// Opens or reuses a pooled TCP/TLS/HTTP2/HTTP3 connection and executes one live network hop.
 // Returns an ok Error when `resp` holds the exchange response; connect and
 // exchange failures surface as explicit transport errors, never fake successes.
 fn execute_live_network_hop(
@@ -640,10 +1069,13 @@ fn execute_live_network_hop(
     current_url: const core::Url&,
     is_https:    bool,
     origin_buf:  const u8[:],
+    has_h3:      bool,
+    h3_ep:       const AltSvcEndpoint&,
     resp:        Response&,
 ) -> Error {
     let now_ns = session.virtual_clock_us * 1000;
     let now_sec = session.virtual_clock_us / 1000000;
+    let now_ms = session.virtual_clock_us / 1000;
     let host_str = core::hostname(current_url);
     if session.ssrf_guard.enabled {
         if is_private_or_reserved_ip(host_str) {
@@ -652,6 +1084,22 @@ fn execute_live_network_hop(
     }
 
     let port_num = core::effective_port(current_url) as u16;
+    var dns_candidates: DnsCandidate[..32] = [];
+    var ech_list:       u8[..512]          = [];
+    let dns_err = resolve_and_validate_live_host(session, host_str, port_num, now_sec, dns_candidates, ech_list);
+    if !ok(dns_err) {
+        return dns_err;
+    }
+
+    let proxy_chain = resolve_hop_proxy_chain(session);
+    if has_h3 && is_https && proxy_chain.is_direct && session.enable_protocol_racing {
+        if execute_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp) {
+            record_success(session.altsvc, origin_buf);
+            return Error { .. };
+        }
+        record_failure(session.altsvc, origin_buf, now_sec);
+    }
+
     let site_site = if ctx.top_frame_origin.host.len > 0 {
         ctx.top_frame_origin.host[..]
     } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
@@ -665,17 +1113,21 @@ fn execute_live_network_hop(
         pool_scheme,
         host_str,
         port_num,
-        resolve_hop_proxy_chain(session),
+        proxy_chain,
         new_network_anonymization_key(site_site, ctx.had_cross_site_hop),
         TlsAndDnsPolicy { .. },
     );
 
-    var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, "", now_ns);
+    let first_ip = if dns_candidates.len > 0 { dns_candidates[0].ip[..] } else { "" };
+    var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, first_ip, now_ns);
     if !has_pooled {
         let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
-        let sock = native_tcp_connect(host_str, port_num, eff_timeout);
-        guard sock > 0 else {
-            return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
+        var dialed_ip: u8[..64] = [];
+        let sock, dial_err = dial_live_tcp_or_proxy(
+            session, proxy_chain, host_str, port_num, dns_candidates[..], eff_timeout, now_ms, dialed_ip,
+        );
+        if !ok(dial_err) {
+            return dial_err;
         }
         var t = Transport.Disconnected;
         var neg_proto = NegotiatedProtocol.Http11;
@@ -685,10 +1137,13 @@ fn execute_live_network_hop(
 
             var tls_cfg = TlsClientHandshakeConfig { .. };
             tls_cfg.server_name.append(host_str);
-            tls_cfg.alpn.append("http/1.1");
+            tls_cfg.alpn.append("h2,http/1.1");
             tls_cfg.trust_store = session.trust_store;
             tls_cfg.insecure_skip_verify = effective_insecure_skip;
             tls_cfg.virtual_clock_sec = now_sec;
+            if ech_list.len > 0 {
+                tls_cfg.ech_config_list.append(ech_list[..]);
+            }
 
             let slot_idx, ok_tls = tls_client_handshake(sock, tls_cfg);
             guard ok_tls else {
@@ -708,7 +1163,7 @@ fn execute_live_network_hop(
             t = Transport.Tcp { fd: sock };
         }
         let max_streams: i32 = if neg_proto == NegotiatedProtocol.Http2 { 100 } else { 1 };
-        conn_id = register_connection(session.pool, pool_key, neg_proto, t, "", max_streams, now_ns);
+        conn_id = register_connection(session.pool, pool_key, neg_proto, t, dialed_ip[..], max_streams, now_ns);
         guard conn_id > 0 else {
             t.close();
             return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "connection pool registration failed");
@@ -717,7 +1172,18 @@ fn execute_live_network_hop(
     }
 
     let curr_path = core::pathname(current_url);
-    let now_sec = session.virtual_clock_us / 1000000;
+    let c_idx = session.pool.find_connection_index(conn_id);
+    if c_idx >= 0 && session.pool.conns[c_idx].protocol == NegotiatedProtocol.Http2 {
+        let ok_h2 = dispatch_pooled_h2_hop(
+            session, conn_id, ctx.current_method[..], ctx, current_url, is_https,
+            origin_buf, curr_path, now_sec, now_ns, resp,
+        );
+        guard ok_h2 else {
+            return make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP/2 exchange failed");
+        }
+        return Error { .. };
+    }
+
     let ok_hop = dispatch_pooled_h1_hop(
         session, conn_id, ctx.current_method[..], ctx, current_url, is_https,
         origin_buf, curr_path, now_sec, now_ns, resp,
@@ -786,7 +1252,9 @@ fn execute_mock_or_echo_hop(
 
     // Live pooled network transaction when no mock routes are registered
     if session.mock_routes.len == 0 {
-        let live_err = execute_live_network_hop(session, ctx, current_url, is_https, origin_buf[..], resp);
+        let live_err = execute_live_network_hop(
+            session, ctx, current_url, is_https, origin_buf[..], has_h3, candidate_h3_ep, resp,
+        );
         return resp, live_err;
     }
 

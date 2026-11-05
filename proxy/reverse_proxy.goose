@@ -10,6 +10,12 @@ import std;
 import core from "..";
 import http.headers;
 import http.client_cert;
+import net.tcp;
+import net.transport;
+import net.pool;
+import client.request;
+import client.response;
+import client.session.h1_exchange;
 import proxy.gcra;
 import proxy.load_balancer;
 
@@ -396,6 +402,13 @@ fn finish_proxy_request(proxy: ReverseProxy&, target_idx: i32, success: bool) {
     }
 }
 
+// Finalizes an upstream exchange by evaluating the HTTP status code (5xx server errors
+// count as upstream failures for circuit breaking) and releasing active connection state.
+fn complete_upstream_exchange(proxy: ReverseProxy&, target_idx: i32, status_code: i32, transport_ok: bool) {
+    let ok = transport_ok && status_code >= 100 && status_code < 500;
+    finish_proxy_request(proxy, target_idx, ok);
+}
+
 // Aborts an in-flight proxy request due to downstream stall, timeout, or network disconnect.
 fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32) {
     guard target_idx >= 0 && target_idx < proxy.cluster.targets.len else { return; }
@@ -634,4 +647,122 @@ fn forward_userspace_stream_chunk(
     dst.total_read = core::add_sat_u64(dst.total_read, n as u64);
     advance_read(src, n);
     return n, true;
+}
+
+// ---- Live Pooled Upstream Execution ----------------------------------------
+
+fn acquire_or_dial_upstream_conn(
+    pool:       StreamPool&,
+    target:     const UpstreamTarget&,
+    timeout_ms: u32,
+    now_ns:     i64,
+) -> i32, bool {
+    let pool_key = new_pool_key(
+        PoolScheme.Http,
+        target.host[..],
+        target.port,
+        new_direct_proxy_chain(),
+        NetworkAnonymizationKey { .. },
+        TlsAndDnsPolicy { .. },
+    );
+    let existing_cid, has_pooled = acquire_pooled_connection(pool, pool_key, "", now_ns);
+    if has_pooled && existing_cid > 0 {
+        return existing_cid, true;
+    }
+    let sock = tcp_connect(target.host[..], target.port, timeout_ms);
+    guard sock > 0 else { return -1, false; }
+    var t = Transport.Tcp { fd: sock };
+    let new_cid = register_connection(pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
+    guard new_cid > 0 else {
+        t.close();
+        return -1, false;
+    }
+    return new_cid, true;
+}
+
+fn read_and_parse_upstream_headers(
+    conn:       PooledConnection&,
+    out_resp:   Response&,
+    timeout_ms: u32,
+) -> i64, bool {
+    let hdr_end_idx, ok_hdr = read_response_headers(conn, timeout_ms);
+    let rx = conn.rx_buf[..];
+    guard ok_hdr && hdr_end_idx >= 0 && hdr_end_idx + 4 <= rx.len else { return -1, false; }
+    guard parse_response_headers(rx[..hdr_end_idx], out_resp) else { return -1, false; }
+    return hdr_end_idx + 4, true;
+}
+
+fn exchange_prepared_wire_on_conn(
+    conn:       PooledConnection&,
+    method:     const u8[:],
+    wire_req:   const u8[:],
+    out_resp:   Response&,
+    timeout_ms: u32,
+) -> bool, bool {
+    conn.rx_buf.clear();
+    guard send_all(conn.transport, wire_req) else { return false, false; }
+
+    var dummy_req = new_request(method, "/");
+    while true {
+        let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, out_resp, timeout_ms);
+        let rx = conn.rx_buf[..];
+        guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else { return false, false; }
+        let is_interim = out_resp.status_code >= 100 && out_resp.status_code < 200 && out_resp.status_code != 101;
+        if is_interim {
+            drain_rx_buf(conn.rx_buf, leftover_start);
+            continue;
+        }
+        return pump_response_body(conn, dummy_req, out_resp, rx[leftover_start..], timeout_ms);
+    }
+    return false, false;
+}
+
+// Executes a full reverse proxy exchange over `StreamPool`: selects an upstream target,
+// rewrites and serializes the HTTP/1.1 request (`prepare_proxy_request_at`), acquires or dials
+// a pooled backend connection, reads the upstream response, and records health via `complete_upstream_exchange`.
+fn execute_proxy_exchange(
+    proxy:      ReverseProxy&,
+    pool:       StreamPool&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    body:       const u8[:],
+    out_resp:   Response&,
+    timeout_ms: u32 = 5000,
+    now_ns:     u64 = 0,
+) -> bool {
+    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
+    var wire_req: u8[..16384] = [];
+    let target_idx, ok_prep = prepare_proxy_request_at(
+        proxy, method, uri, in_headers, client_ip, proto, body, wire_req, effective_now,
+    );
+    guard ok_prep && target_idx >= 0 else { return false; }
+
+    let target = proxy.cluster.targets[target_idx];
+    let now_i64 = effective_now as i64;
+    let conn_id, ok_conn = acquire_or_dial_upstream_conn(pool, target, timeout_ms, now_i64);
+    guard ok_conn && conn_id > 0 else {
+        complete_upstream_exchange(proxy, target_idx, 0, false);
+        return false;
+    }
+
+    let c_idx = pool.find_connection_index(conn_id);
+    guard c_idx >= 0 else {
+        pool.close_pooled_connection(conn_id);
+        complete_upstream_exchange(proxy, target_idx, 0, false);
+        return false;
+    }
+
+    let ok_ex, keep_alive = exchange_prepared_wire_on_conn(
+        pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
+    );
+    if ok_ex && keep_alive {
+        pool.release_connection(conn_id, now_i64);
+    } else {
+        pool.close_pooled_connection(conn_id);
+    }
+    complete_upstream_exchange(proxy, target_idx, out_resp.status_code, ok_ex);
+    return ok_ex;
 }

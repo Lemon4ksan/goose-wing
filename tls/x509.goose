@@ -1457,6 +1457,68 @@ fn x509_validate_single_chain_cert(
     return TlsAlert.CloseNotify;
 }
 
+fn x509_verify_signature_by_oid(
+    sig_oid:       const u8[:],
+    tbs_data:      const u8[:],
+    sig_bytes:     const u8[:],
+    parent_pubkey: const u8[:],
+    err_alert:     TlsAlert,
+) -> TlsAlert {
+    if sig_oid == rfc::OID_ED25519[..] {
+        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
+            return err_alert;
+        }
+        var pub_arr: u8[32] = [0; 32];
+        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
+        var sig_arr: u8[64] = [0; 64];
+        for k in 64 { sig_arr[k] = sig_bytes[k]; }
+
+        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    if sig_oid == rfc::OID_SIG_ECDSA_SHA256[..] {
+        guard core::ecdsa_p256_verify(parent_pubkey, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    if sig_oid == rfc::OID_SIG_ECDSA_SHA384[..] {
+        guard core::ecdsa_p384_verify(parent_pubkey, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    if sig_oid == rfc::OID_SIG_SHA256_RSA[..] {
+        guard core::rsa_pkcs1_sha256_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    if sig_oid == rfc::OID_SIG_SHA384_RSA[..] {
+        guard core::rsa_pkcs1_sha384_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    if sig_oid == rfc::OID_SIG_RSASSA_PSS[..] {
+        let pss_ok = core::rsa_pss_sha256_verify_der(parent_pubkey, tbs_data, sig_bytes)
+            || core::rsa_pss_sha384_verify_der(parent_pubkey, tbs_data, sig_bytes);
+        guard pss_ok else {
+            return err_alert;
+        }
+        return TlsAlert.CloseNotify;
+    }
+
+    return TlsAlert.UnsupportedCertificate;
+}
+
 fn x509_verify_cert_signature(
     child_cert:  const ParsedCert&,
     child_raw:   const u8[:],
@@ -1470,23 +1532,18 @@ fn x509_verify_cert_signature(
     let sig_bytes = span_slice(child_raw, child_cert.signature_value);
     var parent_pubkey = span_slice(parent_raw, parent_cert.spki_pubkey);
 
-    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+    if parent_pubkey.len >= 2 && parent_pubkey[0] == 0 {
         parent_pubkey = parent_pubkey[1..];
     }
 
-    if sig_oid == rfc::OID_ED25519[..] {
-        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
-            return TlsAlert.BadCertificate;
-        }
-        var pub_arr: u8[32] = [0; 32];
-        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
-        var sig_arr: u8[64] = [0; 64];
-        for k in 64 { sig_arr[k] = sig_bytes[k]; }
-
-        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
-            return TlsAlert.BadCertificate;
-        }
-        return TlsAlert.CloseNotify;
+    if sig_oid == rfc::OID_ED25519[..]
+        || sig_oid == rfc::OID_SIG_ECDSA_SHA256[..]
+        || sig_oid == rfc::OID_SIG_ECDSA_SHA384[..]
+        || sig_oid == rfc::OID_SIG_SHA256_RSA[..]
+        || sig_oid == rfc::OID_SIG_SHA384_RSA[..]
+        || sig_oid == rfc::OID_SIG_RSASSA_PSS[..]
+    {
+        return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificate);
     }
 
     return TlsAlert.CloseNotify;
@@ -1943,26 +2000,13 @@ fn x509_verify_ocsp_signature(
     let sig_bytes = span_slice(raw_ocsp, resp.signature);
     var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
 
-    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+    if parent_pubkey.len >= 2 && parent_pubkey[0] == 0 {
         parent_pubkey = parent_pubkey[1..];
     }
 
-    if sig_oid == rfc::OID_ED25519[..] {
-        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
-            return TlsAlert.BadCertificateStatusResponse;
-        }
-        var pub_arr: u8[32] = [0; 32];
-        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
-        var sig_arr: u8[64] = [0; 64];
-        for k in 64 { sig_arr[k] = sig_bytes[k]; }
-
-        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
-            return TlsAlert.BadCertificateStatusResponse;
-        }
-        return TlsAlert.CloseNotify;
-    }
-
-    return TlsAlert.UnsupportedCertificate;
+    return x509_verify_signature_by_oid(
+        sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificateStatusResponse,
+    );
 }
 
 // Unwraps TLS 1.3 / TLS 1.2 status_request extension wire framing (opaque OCSPResponse<1..2^24-1>).
@@ -2286,24 +2330,9 @@ fn x509_verify_crl_signature(
     let sig_bytes = span_slice(raw_crl, crl.signature);
     var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
 
-    if parent_pubkey.len == 33 && parent_pubkey[0] == 0 {
+    if parent_pubkey.len >= 2 && parent_pubkey[0] == 0 {
         parent_pubkey = parent_pubkey[1..];
     }
 
-    if sig_oid == rfc::OID_ED25519[..] {
-        guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
-            return TlsAlert.BadCertificate;
-        }
-        var pub_arr: u8[32] = [0; 32];
-        for k in 32 { pub_arr[k] = parent_pubkey[k]; }
-        var sig_arr: u8[64] = [0; 64];
-        for k in 64 { sig_arr[k] = sig_bytes[k]; }
-
-        guard core::ed25519_verify(pub_arr, tbs_data, sig_arr) else {
-            return TlsAlert.BadCertificate;
-        }
-        return TlsAlert.CloseNotify;
-    }
-
-    return TlsAlert.UnsupportedCertificate;
+    return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificate);
 }

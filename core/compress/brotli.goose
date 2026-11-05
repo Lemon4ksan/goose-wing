@@ -634,6 +634,295 @@ fn decode_brotli_distance(
 
 // ---- Level 0 and Level 1 Brotli Encoders ----------------------------------
 
+struct BrotliLz77Cmd {
+    ins_start: u32 = 0,
+    ins_len:   u32 = 0,
+    copy_len:  u32 = 0,
+    distance:  u32 = 0,
+}
+
+// Maps an insert length to RFC 7932 Section 5 `(ins_code, extra_bits, extra_val)`.
+//
+// Example:
+//   ins_len = 7
+//   returns: code = 6, extra_bits = 1, extra_val = 1
+fn encode_brotli_insert_len(ins_len: u32) -> u32, u32, u32 {
+    for i in 24 {
+        let idx = 23 - i;
+        let base = INSERT_LENGTH_BASE[idx];
+        if ins_len >= base {
+            let eb = INSERT_LENGTH_EXTRA_BITS[idx] as u32;
+            return idx as u32, eb, ins_len - base;
+        }
+    }
+    return 0, 0, 0;
+}
+
+// Maps a copy length (>= 2) to RFC 7932 Section 5 `(copy_code, extra_bits, extra_val)`.
+//
+// Example:
+//   copy_len = 4
+//   returns: code = 2, extra_bits = 0, extra_val = 0
+fn encode_brotli_copy_len(copy_len: u32) -> u32, u32, u32 {
+    for i in 24 {
+        let idx = 23 - i;
+        let base = COPY_LENGTH_BASE[idx];
+        if copy_len >= base {
+            let eb = COPY_LENGTH_EXTRA_BITS[idx] as u32;
+            return idx as u32, eb, copy_len - base;
+        }
+    }
+    return 0, 0, 0;
+}
+
+// Encodes `(ins_code, copy_code, dist_zero)` into the 704-symbol command alphabet (RFC 7932 Section 5).
+//
+// Example:
+//   ins_code = 0, copy_code = 2, dist_zero = false
+//   returns: 130
+fn encode_brotli_cmd_code(ins_code: u32, copy_code: u32, dist_zero: bool) -> u32 {
+    let ins_hi = ins_code >> 3;
+    let copy_hi = copy_code >> 3;
+    var cell: u32 = 2;
+    if dist_zero && ins_hi == 0 && copy_hi < 2 {
+        cell = copy_hi;
+    } else if ins_hi == 0 {
+        cell = if copy_hi == 0 { 2 } else if copy_hi == 1 { 3 } else { 6 };
+    } else if ins_hi == 1 {
+        cell = if copy_hi == 0 { 4 } else if copy_hi == 1 { 5 } else { 8 };
+    } else {
+        cell = if copy_hi == 0 { 7 } else if copy_hi == 1 { 9 } else { 10 };
+    }
+    return (cell << 6) | ((ins_code & 7) << 3) | (copy_code & 7);
+}
+
+// Encodes a positive backward distance (with NPOSTFIX = 0, NDIRECT = 0) into `(dcode, extra_bits, extra_val)`.
+//
+// Example:
+//   dist = 4, dist_ring = [4, 11, 15, 16]
+//   returns: dcode = 0, extra_bits = 0, extra_val = 0
+fn encode_brotli_distance_code(dist: u32, dist_ring: u32[4]&) -> u32, u32, u32 {
+    if dist == dist_ring[0] {
+        return 0, 0, 0;
+    }
+    var dcode: u32 = 16;
+    var eb:    u32 = 0;
+    var ev:    u32 = 0;
+    if dist == dist_ring[1] {
+        dcode = 1;
+    } else if dist == dist_ring[2] {
+        dcode = 2;
+    } else if dist == dist_ring[3] {
+        dcode = 3;
+    } else {
+        let d = dist + 3;
+        var nbits: u32 = 1;
+        while ((1 as u32) << (nbits + 2)) <= d {
+            nbits += 1;
+        }
+        let hbit = (d >> nbits) & 1;
+        dcode = 16 + ((nbits - 1) << 1) + hbit;
+        eb = nbits;
+        ev = d - ((2 + hbit) << nbits);
+    }
+    dist_ring[3] = dist_ring[2];
+    dist_ring[2] = dist_ring[1];
+    dist_ring[1] = dist_ring[0];
+    dist_ring[0] = dist;
+    return dcode, eb, ev;
+}
+
+fn emit_brotli_flat_prefix_256<B>(w: BrotliBitWriter&, out: B&) {
+    for i in 12 {
+        let sym = BROTLI_CODE_LENGTH_ORDER[i];
+        if sym == 8 || sym == 9 {
+            brotli_write_bits(w, 4, 7, out);
+        } else {
+            brotli_write_bits(w, 2, 0, out);
+        }
+    }
+    for i in 256 {
+        brotli_write_bits(w, 1, 0, out);
+    }
+}
+
+fn emit_brotli_flat_prefix_704<B>(w: BrotliBitWriter&, out: B&) {
+    for i in 13 {
+        let sym = BROTLI_CODE_LENGTH_ORDER[i];
+        if sym == 9 || sym == 10 {
+            brotli_write_bits(w, 4, 7, out);
+        } else {
+            brotli_write_bits(w, 2, 0, out);
+        }
+    }
+    for i in 320 {
+        brotli_write_bits(w, 1, 0, out);
+    }
+    for i in 384 {
+        brotli_write_bits(w, 1, 1, out);
+    }
+}
+
+fn emit_brotli_flat_prefix_64<B>(w: BrotliBitWriter&, out: B&) {
+    for i in 10 {
+        let sym = BROTLI_CODE_LENGTH_ORDER[i];
+        if sym == 6 || sym == 7 {
+            brotli_write_bits(w, 4, 7, out);
+        } else {
+            brotli_write_bits(w, 2, 0, out);
+        }
+    }
+    for i in 64 {
+        brotli_write_bits(w, 1, 0, out);
+    }
+}
+
+// Emits a flat RFC 7932 prefix code covering `alphabet_size` symbols (`256`, `704`, or `64`).
+fn emit_brotli_flat_prefix_code<B>(w: BrotliBitWriter&, alphabet_size: i32, out: B&) {
+    brotli_write_bits(w, 2, 0, out);
+    if alphabet_size == 256 {
+        emit_brotli_flat_prefix_256(w, out);
+    } else if alphabet_size == 704 {
+        emit_brotli_flat_prefix_704(w, out);
+    } else {
+        emit_brotli_flat_prefix_64(w, out);
+    }
+}
+
+inline fn write_canonical_sym<B>(w: BrotliBitWriter&, sym: u32, alphabet_size: i32, out: B&) {
+    if alphabet_size == 256 {
+        let rev = bit_reverse_8(sym, 8);
+        brotli_write_bits(w, 8, rev as u64, out);
+    } else if alphabet_size == 64 {
+        let rev = bit_reverse_8(sym, 6);
+        brotli_write_bits(w, 6, rev as u64, out);
+    } else if sym < 320 {
+        let rev = bit_reverse_8(sym, 9);
+        brotli_write_bits(w, 9, rev as u64, out);
+    } else {
+        let code = 640 + (sym - 320);
+        let rev = bit_reverse_8(code, 10);
+        brotli_write_bits(w, 10, rev as u64, out);
+    }
+}
+
+inline fn hash4_brotli(chunk: const u8[:], pos: i64) -> i64 {
+    let b0: u32 = chunk[pos];
+    let b1: u32 = chunk[pos + 1];
+    let b2: u32 = chunk[pos + 2];
+    let b3: u32 = chunk[pos + 3];
+    let v = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    let h: i64 = (v * 0x1E35A7BD) >> 20;
+    return h;
+}
+
+fn measure_lz77_match(chunk: const u8[:], cand: i64, pos: i64) -> i64 {
+    guard cand >= 0 && (pos - cand) <= 65500 else { return 0; }
+    var mlen: i64 = 0;
+    let max_m = min(chunk.len - pos, 2048);
+    while mlen < max_m && chunk[cand + mlen] == chunk[pos + mlen] {
+        mlen += 1;
+    }
+    return mlen;
+}
+
+// Scans `chunk` with a 4096-entry greedy hash table and records LZ77 commands into `cmds`.
+//
+// Example:
+//   chunk = "AAAAAAAA", cmds = []
+//   returns: 8
+fn scan_brotli_lz77_commands(chunk: const u8[:], cmds: BrotliLz77Cmd[..4096]&) -> i64 {
+    cmds.clear();
+    var htable:        i32[4096] = [-1; 4096];
+    var pos:           i64       = 0;
+    var lit_start:     i64       = 0;
+    var matched_bytes: i64       = 0;
+
+    while pos + 4 <= chunk.len {
+        let h = hash4_brotli(chunk, pos);
+        let cand = htable[h] as i64;
+        let mlen = measure_lz77_match(chunk, cand, pos);
+        if mlen >= 4 {
+            let cmd = BrotliLz77Cmd {
+                ins_start: lit_start as u32,
+                ins_len:   (pos - lit_start) as u32,
+                copy_len:  mlen as u32,
+                distance:  (pos - cand) as u32,
+            };
+            guard cmds.try_push(cmd) else { break; }
+            htable[h] = pos as i32;
+            matched_bytes += mlen;
+            pos += mlen;
+            lit_start = pos;
+            continue;
+        }
+        htable[h] = pos as i32;
+        pos += 1;
+    }
+
+    if lit_start < chunk.len && cmds.len > 0 {
+        let tail_cmd = BrotliLz77Cmd {
+            ins_start: lit_start as u32,
+            ins_len:   (chunk.len - lit_start) as u32,
+            copy_len:  2,
+            distance:  1,
+        };
+        guard cmds.try_push(tail_cmd) else { return 0; }
+    }
+    return matched_bytes;
+}
+
+fn emit_brotli_compressed_chunk<B>(
+    w:         BrotliBitWriter&,
+    chunk:     const u8[:],
+    cmds:      const BrotliLz77Cmd[:],
+    dist_ring: u32[4]&,
+    out:       B&,
+) {
+    brotli_write_bits(w, 1, 0, out); // ISLAST = 0
+    brotli_write_bits(w, 2, 0, out); // MNIBBLES = 0 (4 nibbles = 16 bits)
+    brotli_write_bits(w, 16, (chunk.len - 1) as u64, out);
+    brotli_write_bits(w, 1, 0, out); // ISUNCOMPRESSED = 0
+
+    // 3x num_block_types = 1 (3 zero bits), dist_params = 0 (6 zero bits),
+    // context_mode = 0 (2 zero bits), num_lit_htrees = 1 (1 zero bit), num_dist_htrees = 1 (1 zero bit)
+    brotli_write_bits(w, 13, 0, out);
+
+    emit_brotli_flat_prefix_code(w, 256, out);
+    emit_brotli_flat_prefix_code(w, 704, out);
+    emit_brotli_flat_prefix_code(w, 64, out);
+
+    for &cmd in cmds {
+        let ins_code, ins_eb, ins_ev = encode_brotli_insert_len(cmd.ins_len);
+        let copy_code, copy_eb, copy_ev = encode_brotli_copy_len(cmd.copy_len);
+        let dist_zero = (cmd.distance == dist_ring[0]) && (ins_code < 8) && (copy_code < 16);
+        let cmd_sym = encode_brotli_cmd_code(ins_code, copy_code, dist_zero);
+
+        write_canonical_sym(w, cmd_sym, 704, out);
+        if ins_eb > 0 {
+            brotli_write_bits(w, ins_eb, ins_ev as u64, out);
+        }
+        if copy_eb > 0 {
+            brotli_write_bits(w, copy_eb, copy_ev as u64, out);
+        }
+        let s_idx = cmd.ins_start as i64;
+        for k in cmd.ins_len {
+            let b = chunk[s_idx + (k as i64)] as u32;
+            write_canonical_sym(w, b, 256, out);
+        }
+        if (s_idx + (cmd.ins_len as i64)) >= chunk.len {
+            break;
+        }
+        if !dist_zero {
+            let dcode, deb, dev = encode_brotli_distance_code(cmd.distance, dist_ring);
+            write_canonical_sym(w, dcode, 64, out);
+            if deb > 0 {
+                brotli_write_bits(w, deb, dev as u64, out);
+            }
+        }
+    }
+}
+
 // Emits an authentic RFC 7932 uncompressed stream.
 fn emit_brotli_stream_header<B>(w: BrotliBitWriter&, out: B&) {
     brotli_write_bits(w, 1, 0, out);
@@ -654,7 +943,22 @@ fn emit_brotli_final_empty_metablock<B>(w: BrotliBitWriter&, out: B&) {
     brotli_write_byte_align(w, out);
 }
 
-fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
+fn encode_brotli_level1_chunk<B>(
+    w:         BrotliBitWriter&,
+    chunk:     const u8[:],
+    cmds:      BrotliLz77Cmd[..4096]&,
+    dist_ring: u32[4]&,
+    out:       B&,
+) {
+    let matched = scan_brotli_lz77_commands(chunk, cmds);
+    if cmds.len > 0 && matched > (cmds.len * 3 + 64) {
+        emit_brotli_compressed_chunk(w, chunk, cmds[..], dist_ring, out);
+    } else {
+        emit_brotli_uncompressed_chunk(w, chunk, out);
+    }
+}
+
+fn brotli_compress_stream<B>(src: const u8[:], level: i32, out: B&) {
     if src.len == 0 {
         out.push(6);
         return;
@@ -662,25 +966,36 @@ fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
 
     var w = new_brotli_bit_writer();
     emit_brotli_stream_header(w, out);
+    var dist_ring: u32[4]                = [4, 11, 15, 16];
+    var cmds:      BrotliLz77Cmd[..4096] = [];
+    let max_chunk: i64 = if level <= 0 { 65536 } else { 65500 };
 
     var offset: i64 = 0;
     while offset < src.len {
         var chunk_len = src.len - offset;
-        if chunk_len > 65536 {
-            chunk_len = 65536;
+        if chunk_len > max_chunk {
+            chunk_len = max_chunk;
         }
         let chunk = src[offset..(offset + chunk_len)];
-        emit_brotli_uncompressed_chunk(w, chunk, out);
+        if level <= 0 {
+            emit_brotli_uncompressed_chunk(w, chunk, out);
+        } else {
+            encode_brotli_level1_chunk(w, chunk, cmds, dist_ring, out);
+        }
         offset += chunk_len;
     }
 
     emit_brotli_final_empty_metablock(w, out);
 }
 
-// Fast Level 1 compressor: uses fast LZ77 run-length or uncompressed meta-block.
+fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
+    brotli_compress_stream(src, 0, out);
+}
+
+// Fast Level 1 compressor: uses greedy LZ77 command encoding and falls back to uncompressed meta-blocks
+// when LZ77 savings do not outweigh the prefix tree header.
 fn brotli_compress_level1<B>(src: const u8[:], out: B&) {
-    // For general inputs, level 0 uncompressed is optimal and zero-overhead
-    brotli_compress_level0(src, out);
+    brotli_compress_stream(src, 1, out);
 }
 
 // Universal Brotli compression entry point.

@@ -481,10 +481,13 @@ const HEADER_WANT_REPR_DIGEST:    const u8[:] = "Want-Repr-Digest";    // RFC 95
 const DIGEST_ALG_SHA256:          const u8[:] = "sha-256";             // RFC 9530 Section 5
 const DIGEST_ALG_SHA512:          const u8[:] = "sha-512";             // RFC 9530 Section 5
 
-const HEADER_SIGNATURE_INPUT: const u8[:] = "Signature-Input"; // RFC 9421 Section 4.1
-const HEADER_SIGNATURE:       const u8[:] = "Signature";       // RFC 9421 Section 4.2
-const SIG_ALG_HMAC_SHA256:    const u8[:] = "hmac-sha256";     // RFC 9421 Section 3.3.3
-const SIG_ALG_ED25519:        const u8[:] = "ed25519";         // RFC 9421 Section 3.3.6
+const HEADER_SIGNATURE_INPUT:    const u8[:] = "Signature-Input"; // RFC 9421 Section 4.1
+const HEADER_SIGNATURE:          const u8[:] = "Signature";       // RFC 9421 Section 4.2
+const SIG_ALG_RSA_PSS_SHA512:    const u8[:] = "rsa-pss-sha512";  // RFC 9421 Section 3.3.1
+const SIG_ALG_RSA_V1_5_SHA256:   const u8[:] = "rsa-v1_5-sha256"; // RFC 9421 Section 3.3.2
+const SIG_ALG_HMAC_SHA256:       const u8[:] = "hmac-sha256";     // RFC 9421 Section 3.3.3
+const SIG_ALG_ECDSA_P256_SHA256: const u8[:] = "ecdsa-p256-sha256"; // RFC 9421 Section 3.3.4
+const SIG_ALG_ED25519:           const u8[:] = "ed25519";         // RFC 9421 Section 3.3.6
 
 // ---- Incremental HTTP, Extensible Priority & Resumable Uploads -----------
 
