@@ -6,7 +6,7 @@ This directory houses native LLVM-style LIT (`goose-lit`) verification suites fo
 
 - [Design principles](#design-principles)
 - [Directive reference](#directive-reference)
-- [The six-pillar testing methodology](#the-six-pillar-testing-methodology)
+- [The six-pillar testing method](#the-six-pillar-testing-method)
 - [Canonical test template](#canonical-test-template)
 - [Running LIT tests](#running-lit-tests)
 - [Hardware complexity gate](#hardware-complexity-gate)
@@ -14,12 +14,14 @@ This directory houses native LLVM-style LIT (`goose-lit`) verification suites fo
 ## Design principles
 
 Standard unit tests rely on private helper assertions (`assert(x == y)`). This leaves hidden bugs in streaming parsers:
+
 1. **Partial reads**: Real sockets deliver frames split across arbitrary 1-byte chunks.
 2. **Silent state corruption**: Internal FSMs may enter unhandled states without failing immediate return values.
 3. **Off-by-one pointer errors**: Buffers with trailing bytes or missing delimiters can trigger silent out-of-bounds access.
 4. **Vector vs. scalar divergence**: AVX2/NEON scanners can disagree with scalar fallbacks on unaligned boundaries.
 
 Goose LIT adopts the LLVM testing paradigm:
+
 - Compile tests directly to native machine code without Wasm virtualization.
 - Pipe stdout streams through `FileCheck` pattern matchers.
 - Trace every FSM state transition and cursor movement explicitly.
@@ -51,10 +53,12 @@ Directives are parsed directly from comments at the top of each `.goose` test fi
 | `// CHECK-LABEL: <tag>` | Divides file into independent verification blocks (prevents cross-block matching). |
 | `// CHECK-SAME: <pattern>` | Matches `<pattern>` on the same line as the previous match. |
 
-## The six-pillar testing methodology
+## The six-pillar testing method
 
 ### 1. Deterministic FSM state tracing
+
 Instead of checking a single boolean outcome, emit state machine transitions and frame decodes to stdout:
+
 ```goose
 // CHECK-LABEL: === H2_FSM_TRANSITION ===
 // CHECK-NEXT: STATE: Idle -> Active
@@ -65,7 +69,9 @@ Instead of checking a single boolean outcome, emit state machine transitions and
 ```
 
 ### 2. Prefix fragmentation verification
+
 Every wire parser must be validated against incremental packet arrivals. Using `wire_kit`:
+
 ```goose
 fn parse_step(buf: const u8[:]) -> i64 {
     let _, ok = wing::parse_frame(buf);
@@ -80,7 +86,9 @@ print("SPLIT_STREAM: OK");
 ```
 
 ### 3. In-process deterministic chaos fuzzing
+
 Exercise thousands of bit-flips, swaps, and boundary bytes (`0x00`, `0xFF`, `0x7F`, `0x80`) without external fuzzing daemons:
+
 ```goose
 // Runs 10,000 deterministic mutations using xorshift64
 assert(wire_kit::fuzz_payload<parse_step>(valid_wire[..], 10000));
@@ -89,7 +97,9 @@ print("CHAOS_FUZZ: OK");
 ```
 
 ### 4. Dual-engine verification (AVX2 vs. scalar)
+
 Validate that optimized SIMD routines match scalar fallbacks on all boundary conditions:
+
 ```goose
 // RUN: goose build --cc gcc -O2 -o %t.opt.exe %s
 // RUN: %t.opt.exe | %FileCheck %s --prefix=CHECK
@@ -98,13 +108,17 @@ Validate that optimized SIMD routines match scalar fallbacks on all boundary con
 ```
 
 ### 5. Static complexity and bounds gating
+
 Enforce function flatness and proven index bounds before compilation:
+
 ```bash
 goose-lit gate auth/pkce.goose 25 --cov 0.85
 ```
 
 ### 6. Bug regression reproducers
+
 Every fixed bug receives a dedicated reproducer block with a unique `HIST_` or `BUG_` label:
+
 ```goose
 // CVE or bug fix regression
 let malicious_input = "...";
@@ -165,6 +179,7 @@ fn main() {
 ## Running LIT tests
 
 ### Run all suites in parallel
+
 ```bash
 python scripts/test_lit.py --jobs 8
 # or via just:
@@ -172,6 +187,7 @@ just lit
 ```
 
 ### Run a specific pattern
+
 ```bash
 python scripts/test_lit.py "*h2*"
 # or via just:
@@ -179,11 +195,22 @@ just lit "*h2*"
 ```
 
 ### Verbose tracing
+
 ```bash
 python scripts/test_lit.py "verify_wire_framing" --verbose
 ```
 
 ### Integrated with full test runner
+
 ```bash
 python tools/test_runner.py --lit --jobs 8
+```
+
+## Hardware complexity gate
+
+Use `goose-lit gate` to enforce the G-CRAP complexity ceiling and bounds-check elimination invariants on production modules:
+
+```bash
+goose-lit gate auth/jwks.goose 25 --cov 0.85
+goose-lit crap . --baseline .lit/baseline --cov 0.85 --delta 5.0
 ```

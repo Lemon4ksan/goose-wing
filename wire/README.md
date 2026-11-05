@@ -118,6 +118,6 @@ The `wire` subsystem implements a 7-tier explicit networking architecture mappin
 - **`fn connect_wire_queue(q: WireQueue&, host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> bool`**: Establishes TCP transport connection.
 - **`fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool`**: Transmits command buffer with full-drain loop.
 - **`fn submit_slice(q: WireQueue&, data: const u8[:]) -> i64, bool`**: Transmits raw slice directly with full-drain loop.
-- **`fn queue_submit_batch(q: WireQueue&, cmd_bufs: const WireCommandBuffer[:], info: const WireSubmitInfo&, fence: WireFence&) -> i64, WireResult`**: Atomically transmits batch of command buffers and signals completion fence.
+- **`fn queue_submit_batch(q: WireQueue&, cmd_bufs: const WireCommandBuffer[:], info: const WireSubmitInfo&, fence: WireFence&) -> i64, WireResult`**: Atomically sends batch of command buffers and signals completion fence.
 - **`fn poll_recv(q: WireQueue&, out: u8[:], timeout_ms: u32 = 0) -> i64, bool`**: Polls transport socket for incoming octets.
 - **`fn close_wire_queue(q: WireQueue&)`**: Closes transport socket and resets `fd = -1`.

@@ -19,13 +19,16 @@
 ## 1. Memory and time model
 
 ### 1.1 Memory model
+
 `goose-wing` does not use a garbage collector. Memory follows these rules:
+
 - Hot-path allocations: Parsing HTTP request lines, headers, query strings, cookies, JSON tokens, and multipart boundaries executes with zero heap allocations.
 - Bounded inline buffers: Variable-length strings and structures employ compile-time sized arrays (e.g. `u8[..2048]`, `HeaderMap` with 64 static slots and 64 dynamic entries). If an incoming protocol element exceeds its budget, the parser fails closed and terminates the connection, so memory use stays bounded.
 - Slice views over flat memory: Headers, URLs, and token streams are slice views (`const u8[:]`) referencing underlying slab memory or continuous flat buffers without cloning.
 - No implicit boxing or forwarding proxies: Functions in `wing` are called directly, without alias wrappers ("никаких алиасингов").
 
 ### 1.2 Monotonic timekeeping
+
 - Separation of clocks: Real-world dates use `Time` (civil Gregorian calendar via Howard Hinnant algorithms), while timeouts, rate-limiters, deadlines, and metrics use monotonically increasing nanoseconds (`clock_ns()`).
 - No background timer threads: `Deadline` and `Stopwatch` are stack-allocated structures. Checking `deadline.is_expired()` compiles to a single branchless CPU register comparison without creating runtime timer channels or Goroutines.
 - Saturated arithmetic: Differences between timestamps $> 292$ years saturate at `INT64_MAX` or `INT64_MIN` without two's-complement integer wraparound.
@@ -35,6 +38,7 @@
 `goose-wing` implements native transport drivers for all tier-1 operating systems ("Большая Тройка"), with a shared non-blocking `Poller` and `EventLoop` in `net/driver/` and `net/poller.goose`.
 
 ### 2.1 Drivers
+
 1. Windows Registered I/O (RIO):
    - Kernel-bypass networking via `mswsock.dll` (`WSAID_MULTIPLE_RIO`).
    - Pre-allocated, page-locked virtual memory buffers (`RioBufferDescriptor`) eliminate page faults and double-buffering.
@@ -50,6 +54,7 @@
    - Fallback driver on non-blocking BSD sockets, with no external dependencies and the same feature set as the other drivers.
 
 ### 2.2 Poller and EventLoop
+
 - Socket registration table: Fixed 64-slot table (`SocketRegistration[..64]`) managing read/write interests (`PollInterest.Read`, `Write`, `ReadWrite`) and triggering models (`PollTrigger.Level`, `Edge`).
 - High-resolution timer wheels: Stack-allocated timer table (`PollerTimer[..32]`) supporting one-shot and recurring periodic timers with sub-millisecond precision.
 - Connection buffering: Integrated 4 KB ring buffers (`RingBuffer`) per connection, enabling non-blocking zero-copy reads, buffered writes, and single-pass pipeline flushes.
@@ -57,12 +62,14 @@
 ## 3. Connection setup and proxies
 
 ### 3.1 Happy Eyeballs v2/v3 (RFC 8305)
+
 - Asymmetric IPv6 priority: Initiates DNS resolution for IPv6 (AAAA) and IPv4 (A) concurrently. If IPv4 finishes first, a 50 ms Resolution Delay (RD) timer is armed, allowing IPv6 to catch up before falling back.
 - Connection attempt delay (CAD): 250 ms default pacing between parallel TCP connections with a floor of 10 ms.
 - RFC 6724 address interleaving: Alternates address families ($\text{IPv6}_1 \to \text{IPv4}_1 \to \text{IPv6}_2 \to \text{IPv4}_2$).
 - NAT64 local synthesis: 2000 ms timer triggering RFC 7050 prefix synthesis (`64:ff9b::/96`) on pure IPv6 networks.
 
 ### 3.2 Proxy support (`net/proxy.goose`)
+
 - SOCKS5 / SOCKS5h (RFC 1928, RFC 1929):
   - Phase 1: Authentication negotiation (Method `0x00` No Auth or `0x02` Username/Password).
   - Phase 2: RFC 1929 subnegotiation with mandatory version byte `0x01`.
@@ -83,6 +90,7 @@
   - 256 B/s Byte-Drip gate terminating clients that intentionally trickle header bytes to hold connections open.
 
 ### 3.3 Two-tier retry (`net/retry.goose`)
+
 - Tier 1: zero-delay stale socket recovery:
   - Recovers from half-closed keep-alive connections closed by the server while idle in the pool.
   - Requires 4 conditions: `reused == true`, `headers_received == false`, request is idempotent (GET, HEAD, PUT, DELETE, OPTIONS) or carries `Idempotency-Key`, and request body is rewindable (`BodyRewind`).
@@ -94,6 +102,7 @@
 ## 4. HTTP/1.1 wire stack and request smuggling
 
 ### 4.1 Flat-buffer `HeaderMap` (`http/headers.goose`)
+
 - Flat buffer: Stores raw header text in a flat 8 KB continuous buffer with `\0\0` termination (Chromium `raw_headers_` pattern) accompanied by 128 compact 16-byte `HeaderEntry` descriptor records.
 - O(1) inline lookups: 64 compile-time slots (`inline_slots[64]`) provide index-based lookups for canonical headers (`Host`, `Authorization`, `Content-Type`, `User-Agent`, `Set-Cookie`, etc.) without hashing.
 - Host header validation (RFC 9112 §7.2, uWebSockets #1949): Enforces that `Host` contains only `uri-host [ ":" port ]`. Rejects values containing `/`, `?`, `#`, or `@` with `HeaderParseError.InvalidHeaderValue`. Rejects duplicate `Host` headers with `HeaderParseError.InvalidHeaderName`.
@@ -101,6 +110,7 @@
 - Chromium 304 cache merging: In-place replacement of cached headers on HTTP 304 Not Modified responses.
 
 ### 4.2 RFC 9112 chunked transfer coding
+
 - CRLF only (CVE-2025-22871): Rejects bare LF (`\n`) in chunk-size lines, chunk data boundaries, and trailers. A bare LF aborts parsing with a 400 Bad Request error.
 - Chunk extension whitespace tolerance (RFC 9112 §7.1.1, Go #82257): Accepts bad whitespace (`' '` or `\t`) preceding the semicolon in chunk extensions without failing.
 - TE.CL / CL.TE handling:
@@ -113,6 +123,7 @@
   - 6-state zero-alloc state machine (`ChunkSizeLine`, `ChunkData`, `ChunkDataCrlf`, `Trailers`, `Complete`, `Error`) that accepts input split into pieces as small as 1 byte.
 
 ### 4.5 RFC 9530 Digest Fields (`http/digest_fields.goose`)
+
 - Modern replacement for obsolete RFC 3230 `Digest` headers (`Content-Digest` and `Repr-Digest`).
 - Structured Field Values (RFC 8941 / RFC 9651) dictionary formatting using byte sequences (`:base64:`).
 - Supported hashing algorithms: `sha-256` and `sha-512`.
@@ -120,11 +131,13 @@
 - Constant-time hash verification via `core::ct_eq_bytes` to prevent timing side channels.
 
 ### 4.6 RFC 9213 Targeted HTTP Cache-Control (`http/cache/cache_control.goose`)
+
 - Zero-allocation parsing and precedence resolution for targeted intermediary cache headers.
 - Precedence hierarchy: `<target>-Cache-Control` -> `CDN-Cache-Control` -> standard `Cache-Control`.
 - Allows CDN edges and reverse proxies to apply specific cache lifetimes without mutating end-user browser caching directives.
 
 ### 4.7 RFC 9116 Vulnerability Disclosure (`http/security_txt.goose`)
+
 - Zero-heap line parser and validator for `/.well-known/security.txt` and `/security.txt`.
 - Enforces mandatory `Contact` and `Expires` directives per RFC 9116 §2.5.3 and §2.5.5.
 - Validates RFC 3339 timestamps and rejects stale files against current Unix epoch.
@@ -136,6 +149,7 @@
 `goose-wing` implements HTTP/2 (RFC 9113), HPACK (RFC 7541), and Extensible Priorities (RFC 9218) in `http2/` and `server/h2_multiplexer.goose`.
 
 ### 5.1 Binary framing and HPACK
+
 - 9-byte frame header: Zero-copy parser and serializer for all 10 standard HTTP/2 frame types (`DATA`, `HEADERS`, `PRIORITY`, `RST_STREAM`, `SETTINGS`, `PUSH_PROMISE`, `PING`, `GOAWAY`, `WINDOW_UPDATE`, `CONTINUATION`).
 - HPACK 256-state Huffman FSM: Nibble-based Huffman decoder operating on 4-bit nibbles with a 16 KiB table that fits in the L1 data cache.
 - Dynamic table with in-place ring buffer: Zero-heap sliding window table with byte-exact eviction and integer shift bounds preventing Trail of Bits FIND-401 integer overflow (CVE-2022-41723).
@@ -146,6 +160,7 @@
 - GOAWAY stream ID parity (RFC 9113 §6.8, Go #80759, Go #82365): Client-sent GOAWAY frames must specify stream ID 0 or an even stream ID. Server-sent GOAWAY frames must specify 0, an odd stream ID, or `0x7FFFFFFF`. Incoming streams with ID greater than `last_stream_id` are rejected with `ERR_REFUSED_STREAM`.
 
 ### 5.2 Server frame multiplexer (`server/h2_multiplexer.goose`)
+
 - Connection preface validation: Validates the 24-byte client connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`).
 - Stream state machine: Manages concurrent stream states (`Idle`, `Open`, `HalfClosedRemote`, `HalfClosedLocal`, `Closed`) without heap allocations.
 - Stream body buffering and Spill Slab Pool (RFC 9113 §6.1, §6.5.2, §6.9):
@@ -166,12 +181,14 @@
 Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 
 ### 6.1 QUIC core (RFC 9000, RFC 9002)
+
 - Variable-length integer codec (varint): Zero-alloc 2-bit tagged prefix encoder/decoder for 8-bit, 16-bit, 32-bit, and 62-bit integer ranges.
 - Packet and header protection: AES-128/256-ECB and ChaCha20 sample-based header protection concealing packet numbers and key phase bits.
 - ACK frame serialization (`quic/AckFrame.goose`): Run-length encoded ACK ranges with ECN (Explicit Congestion Notification) counter tracking.
 - BBR v1 and v2 congestion control (`quic/bbr.goose`): State machine (`Startup`, `Drain`, `ProbeBW`, `ProbeRTT`) tracking minimum RTT and bottleneck bandwidth estimates.
 
 ### 6.2 HTTP/3 and QPACK (RFC 9114, RFC 9204)
+
 - QPACK dynamic and static codec: 99-entry static table codec and encoder/decoder stream framing with prefix integer decoders.
 - Pseudo-header invariants (RFC 9114 §4.3):
   - Duplicate pseudo-headers (`:status`, `:method`, `:scheme`, `:authority`, `:path`) are rejected with `H3_ERR_GENERAL_PROTOCOL` (0x0101).
@@ -185,6 +202,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Cache tracking advertised HTTP/3 endpoints with `ma` (max-age) and exponential failure backoff ($5\text{s}, 10\text{s}, 20\text{s} \dots 320\text{s}$).
 
 ### 6.3 WebTransport over HTTP/3 (draft-16, RFC 9221)
+
 - Extended CONNECT initiation and inspection: Initiates and validates bidirectional WebTransport sessions via `:protocol = webtransport` and `sec-webtransport-http3-draft: draft16`.
 - Unidirectional and bidirectional stream framing:
   - Unidirectional streams: Prefixed with VarInt stream type `0x54` (`STREAM_TYPE_WEBTRANSPORT`) and VarInt Session ID.
@@ -197,6 +215,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 ## 7. Streaming and RPC (WebSocket, SSE, gRPC)
 
 ### 7.1 WebSocket (RFC 6455, RFC 8441)
+
 - 64-bit SWAR masking: Payload masking and unmasking using 64-bit unrolled XOR iterations (`core::read_be_u64` and `core::write_be_u64_at`), 8 bytes per iteration.
 - Control frame invariants: Control frames (`PING`, `PONG`, `CLOSE`) must have `FIN == 1` and a payload of at most 125 bytes; fragmented control frames are rejected with close code 1002.
 - Ping and Pong handling (RFC 6455 §5.5, Go #7825): Empty Ping frames (`payload.len == 0`) trigger an empty Pong response with matching empty payload without terminating the connection.
@@ -208,10 +227,12 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Calculates `Sec-WebSocket-Accept` using fixed-stack 128-byte SHA-1 and Base64 buffers.
 
 ### 7.2 Server-sent events (W3C EventSource)
+
 - Incremental line normalizer: Stream parser that normalizes `CR`, `LF`, and `CRLF` boundaries across fragmented network reads.
 - Field parsing: Dispatches multi-line `data:`, `event:`, `id:`, `retry:`, and comment keep-alives (`:`) without heap allocations.
 
 ### 7.3 gRPC over HTTP/2 and gRPC-Web (`grpc/`)
+
 - Length-prefixed messages (LPM): 5-byte header codec (`[compression_flag: u8] || [message_length: u32_be]`).
 - Streaming dispatcher: Supports Unary, Server Streaming, Client Streaming, and Bidirectional Streaming RPCs.
 - Trailers-only responses: Emits trailers-only HTTP/2 responses for immediate errors (e.g. `NotFound`, `PermissionDenied`, `DeadlineExceeded`).
@@ -220,12 +241,14 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Base64 gRPC-Web-Text for legacy proxy environments.
 
 ### 7.4 Extended CONNECT for WebSockets (RFC 8441, RFC 9220)
+
 - WebSocket bootstrapping over HTTP/2 and HTTP/3 multiplexed streams.
 - Protocol pseudo-header `:protocol = websocket` with `CONNECT` method.
 - Replaces TCP connection upgrades with stream-isolated bidirectional tunnels.
 - Extensible prioritization integration via RFC 9218 frames.
 
 ### 7.5 MASQUE and the Capsule Protocol (RFC 9297, RFC 9298)
+
 - CONNECT-UDP tunneling: Translates IP UDP packets across HTTP/2 and HTTP/3 capsules.
 - Capsule framer: Variable-length integer framing for Datagram, Address Assign, and Route Request capsules.
 
@@ -234,6 +257,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 `goose-wing` contains a cryptographic core and a TLS 1.3 implementation, both written in Goose, in `core/crypto/` and `tls/`.
 
 ### 8.1 TLS 1.3 handshake and record layer (RFC 8446)
+
 - Cipher suites:
   - `TLS_AES_128_GCM_SHA256`
   - `TLS_AES_256_GCM_SHA384`
@@ -245,18 +269,21 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 - ClientHello fragmentation: Splits initial ClientHello records across multiple TLS fragments without changing the handshake transcript hash, to evade Deep Packet Inspection (DPI) filters.
 
 ### 8.2 Hybrid post-quantum key exchange (RFC 10024, FIPS 203)
+
 - IANA group `0x11EC` (`X25519MLKEM768`):
   - Encodes 1184-byte client key share: `32B X25519 || 1152B ML-KEM-768`.
   - Encodes 1120-byte server key share: `32B X25519 || 1088B ML-KEM-768 Ciphertext`.
   - Derives hybrid shared secret: $\text{SHA-256}(ss_{\text{classical}} \parallel ss_{\text{pq}})$.
 
 ### 8.3 Constant-time cryptography (`core/crypto/`)
+
 - Branchless primitives: `ct_eq_u8`, `ct_select_u8`, `ct_eq_bytes` using arithmetic right shifts and two's complement negation so execution has no secret-dependent branches.
 - Dudect test: Welch's $t$-test runner verifying $|t| < 4.5$ with outlier cropping ($>2000\text{ ns}$).
 - Ed25519 (RFC 8032): Twisted Edwards curve $-x^2 + y^2 = 1 + d x^2 y^2$ over $\mathbb{F}_{2^{255}-19}$ with extended projective coordinates $(X:Y:Z:T)$, branchless scalar multiplication, signature verification, and malleability protection ($S < L$).
 - Privacy Pass blind tokens (RFC 9576–9578): Zero-alloc wire codec for `TokenChallenge` and `Token`, single-use cache, and GREASE support for Cloudflare Turnstile and Apple Private Access Tokens.
 
 ### 8.4 TLS 1.3 Mutual Authentication (mTLS / RFC 8446 §4.4.2)
+
 - Server-side and client-side support for TLS 1.3 client certificates.
 - Codec for `CertificateRequest` messages with configurable signature algorithms (`SIG_SCHEME_ED25519`, `SIG_SCHEME_ECDSA_SECP256R1_SHA256`, `SIG_SCHEME_RSA_PSS_RSAE_SHA256`).
 - FSM state transitions: `ServerWaitCert` -> `ServerWaitCV` -> `ServerWaitFinished`.
@@ -268,6 +295,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 `goose-wing` includes compression and decompression code with no external dependencies in `core/compress/`.
 
 ### 9.1 RFC 7932 Brotli
+
 - In-memory static dictionary: The 122,784-byte RFC 7932 static dictionary is a string literal in `.rodata`. Parsing it takes 41 ms and uses no stack.
 - 121 string transformations (Appendix B): All word transformations (prefixes, suffixes, cut-from-left/right, capitalization, uppercase).
 - Zero-heap Huffman bit reader: LSB-first bit reader with 64-bit accumulator and 8-bit fast lookahead tables (`fast[256]`).
@@ -275,20 +303,24 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 - Decompression bomb defense: Decompression stops when output reaches `max_output_bytes`.
 
 ### 9.2 RFC 9842 Dictionary-Compressed Brotli (DCB) and DCZ
+
 - Binary wire framing: `[0xFF, 'D', 'C', 'B'] || [32B Dict SHA-256] || [Brotli Payload]`.
 - Content negotiation: The client advertises `dcb, dcz` in `Accept-Encoding` when matching cached dictionaries are present and decompresses the response.
 
 ### 9.3 Zstandard (RFC 8478, RFC 8879), Deflate, and Gzip
+
 - Zstandard decompressor: Frame format, FSE (Finite State Entropy) and Huffman decoding with streaming block assembly.
 - Canonical signatures: All decompressors provide the uniform signature `fn <algo>_decompress(src, out) -> bool, CompressError` without proxy adapters.
 
 ### 9.4 Automatic Zstandard Client Negotiation (RFC 8878)
+
 - Default client sessions automatically advertise `Accept-Encoding: zstd, br, gzip`.
 - Streaming decompression of Zstandard response payloads with zero heap allocation.
 
 ## 10. Authentication and tokens
 
 ### 10.1 RFC 7519 JWT, RFC 7515 JWS, and RFC 7517 JWKS (`auth/`)
+
 - Zero-alloc JWT models:
   - `JwtHeader`: `alg`, `typ`, `kid`, `cty`.
   - `JwtClaims`: `iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, plus `ClaimPair[..32]` for custom string, integer, and boolean claims.
@@ -301,6 +333,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 - JWKS key rotation: Holds up to 16 active keys (`OKP` for Ed25519 and `Oct` for HMAC) with $O(1)$ lookup by `kid`.
 
 ### 10.2 OAuth 2.0 DPoP (RFC 9449) and PKCE (RFC 7636, RFC 9700, OAuth 2.1)
+
 - Demonstrating proof-of-possession (DPoP):
   - Signs JOSE tokens with `typ: "dpop+jwt"`.
   - Canonicalizes HTTP target URI (HTU without query or fragment) and HTTP method (HTM).
@@ -313,6 +346,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
   - Verification runs in constant time.
 
 ### 10.3 RFC 9421 HTTP Message Signatures (`http/signatures.goose`)
+
 - Structured fields serialization of `Signature-Input` and `Signature`.
 - Cryptographic signature support with Ed25519 (RFC 8032) and HMAC-SHA256.
 - Canonical component basis covering `@method`, `@authority`, `@path`, `@query`, and `@status`.
@@ -323,6 +357,7 @@ Implemented in `quic/`, `http3/`, and `realtime/webtransport.goose`.
 Implemented in `cookie/`, following Chromium's `net::CookieMonster`.
 
 ### 11.1 Cookie limits and prefixes
+
 - Capacity caps: 4096-byte payload (`name + value`), 1024-byte per-attribute limit, CTL character rejection.
 - Prefixes:
   - `__Host-`: Must have `Secure`, must not have a `Domain` attribute, and must have `Path=/`.
@@ -330,7 +365,9 @@ Implemented in `cookie/`, following Chromium's `net::CookieMonster`.
 - CHIPS partitioning: Isolates cookie jars across top-level sites with a 10 KB budget per partition.
 
 ### 11.2 6-round eviction
+
 Eviction order, as in Chromium:
+
 1. Purge expired cookies globally.
 2. Purge expired cookies in the current domain.
 3. If domain quota exceeded (180 cookies), evict non-secure cookies first.
@@ -341,13 +378,16 @@ Eviction order, as in Chromium:
 ## 12. Server, radix router, and pipeline
 
 ### 12.1 Compressed radix router (`server/router.goose`)
+
 - Zero-allocation parameter extraction: `ZeroAllocParams` records stack-allocated slice spans (`u8[:]`) referencing parameter tokens without allocating strings.
 - Insertion-order independence: `{id}.json` and `{id}/comments.json` route the same way in any registration order (fix for `matchit` issue #83, commit `f607f73`).
 - Static route precedence: Exact static paths take precedence over parametric or wildcard subtrees.
 - Automatic 405 Method Not Allowed: Returns `405` with an `Allow` header that lists the registered methods.
 
 ### 12.2 Tako v2 connection pool (`server/pool.goose`)
+
 Isolated within `namespace internal;`:
+
 - `HeaderMapPool`: Reuses pre-allocated 8 KB flat-buffer header structures across keep-alive connections.
 - `ExtensionsPool`: Slabs for request-scoped metadata, sanitized on release so data does not carry over between requests.
 - `SyncHeadRelease`: Zero-copy handoff of connection heads to worker threads.
@@ -355,6 +395,7 @@ Isolated within `namespace internal;`:
 - `ConnectionTimer`: Slowloris sweeper tracking connection activity and dropping stalled clients.
 
 ### 12.3 Vectorized zero-copy server transmission (`server/server.goose`)
+
 - Scatter/gather vectorized response dispatch via `send_http1_response_iov`.
 - Combines serialized HTTP headers and up to 15 payload segments from `IoVecArray` into a single `tcp_sendv` kernel call (`WSASend` / `writev`).
 - Eliminates intermediate buffer copies when assembling multipart or chunked JSON payloads.

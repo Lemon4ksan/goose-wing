@@ -13,10 +13,13 @@ Automated verification harness running [h2spec](https://github.com/summerwind/h2
 ### 1. Run Generic Suite (44 Tests)
 
 From repository root:
+
 ```powershell
 python tools/h2spec.py generic
 ```
+
 Or via Windows batch:
+
 ```cmd
 .\tools\run_h2spec.bat generic
 ```

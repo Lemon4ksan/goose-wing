@@ -26,7 +26,7 @@ End-to-end verification suite testing the `serve_reactor` event loop against rea
    Asserts that oversized header blocks exceeding the 8192-byte limit are rejected.
 
 8. **Concurrent Chaos Blast**:
-   Fires 10 concurrent threads running micro-sliced streams simultaneously to ensure lock-free reactor stability and zero connection slot leakage.
+   Fires 10 concurrent threads running micro-sliced streams simultaneously to verify lock-free reactor stability and zero connection slot leakage.
 
 ## Running Locally
 

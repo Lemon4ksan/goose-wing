@@ -5,16 +5,19 @@ End-to-end verification suite testing `goose-wing`'s native RFC 9000 QUIC transp
 ## Quick Start
 
 ### Host Mode (Local Compiler)
+
 ```bash
 python tools/http3.py
 ```
 
 ### Docker Mode (Hermetic Container)
+
 ```bash
 docker compose -f tools/http3/docker-compose.yml up --build --abort-on-container-exit
 ```
 
 ## Verified Capabilities
+
 1. **RFC 9000 Section 17.2.1 Version Negotiation**: Server handles unknown QUIC versions and returns valid Version Negotiation packet with supported version list (`QUIC_VERSION_1`).
 2. **RFC 9000 Section 17.2.2 QUIC v1 Initial Datagram Ingestion**: Parses Long Header Initial packets and validates 1200-byte datagram minimum anti-amplification bound.
 3. **RFC 9114 Section 6.2.1 HTTP/3 Control Stream Preamble**: Validates Unidirectional Control Stream (`0x00`) initialization with `SETTINGS` frame.

@@ -18,10 +18,13 @@ This package integrates the [Shopify Toxiproxy](https://github.com/Shopify/toxip
 ### 1. Starting the server manually
 
 Run from the repository root:
+
 ```powershell
 .\tools\start_toxiproxy.bat
 ```
+
 Or check status via Python:
+
 ```powershell
 python tools/toxiproxy/server.py --status
 ```
@@ -36,12 +39,14 @@ python tools/toxiproxy/server.py --status
 
 ### 3. Running chaos stress tests
 
-#### Locally:
+#### Locally
+
 ```powershell
 python tools/toxiproxy/stress_all_goose.py
 ```
 
-#### In Docker (Docker Compose):
+#### In Docker (Docker Compose)
+
 ```powershell
 # Run the 43-stage suite in a Linux container
 docker compose -f tools/toxiproxy/docker-compose.yml up --build chaos-suite --abort-on-container-exit
@@ -56,6 +61,7 @@ python tools/toxiproxy.py --daemon
 ### 4. Python API
 
 #### Synchronous usage with scoped toxics
+
 ```python
 from tools.toxiproxy import ChaosProxy, LatencyToxic, SlicerToxic
 
@@ -75,17 +81,16 @@ with ChaosProxy(upstream_host="127.0.0.1", upstream_port=8080) as proxy:
 ```
 
 #### Asynchronous usage
+
 ```python
 import asyncio
 from tools.toxiproxy import ChaosProxy, BandwidthToxic
-
 
 async def test():
     async with ChaosProxy(upstream_host="127.0.0.1", upstream_port=8080) as proxy:
         async with proxy.atoxic(BandwidthToxic("throttle", rate_kib=32)):
             # ... run async requests through proxy.bound_port ...
             pass
-
 
 asyncio.run(test())
 ```

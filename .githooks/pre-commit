@@ -11,6 +11,15 @@ if [ -f ".git/MERGE_HEAD" ]; then
     exit 1
 fi
 
+# Find all staged .md files and check with goosemarklint if installed
+STAGED_MD_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
+if [ -n "$STAGED_MD_FILES" ] && command -v goosemarklint >/dev/null 2>&1; then
+    echo "[pre-commit] Checking Markdown files with goosemarklint..."
+    if ! goosemarklint check $STAGED_MD_FILES; then
+        exit 1
+    fi
+fi
+
 # Find all staged .goose files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.goose$' || true)
 

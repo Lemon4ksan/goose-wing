@@ -6,6 +6,7 @@ Comparative benchmarks and hardware latency evaluations measuring `goose-wing` a
 
 `goose-wing` achieves zero dynamic heap allocation on all ingress wire parsing, frame decoding, and serialization paths.
 Memory is managed via:
+
 - Bounded static buffers (`u8[..N]`) allocated in frame/stack memory without `malloc` overhead.
 - Direct non-owning byte slices (`u8[:]`) referencing network ring buffers.
 - SWAR 64-bit word scanners and AVX2 vector primitives for delimiter searches.

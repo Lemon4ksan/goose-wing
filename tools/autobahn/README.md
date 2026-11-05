@@ -21,10 +21,13 @@ Automated verification suite validating 100% compliance with **RFC 6455** using 
 ### 1. Run Complete RFC 6455 Suite (301 Cases)
 
 From repository root:
+
 ```powershell
 python tools/autobahn.py
 ```
+
 Or via the Windows batch script:
+
 ```cmd
 .\tools\run_autobahn.bat
 ```
@@ -45,17 +48,21 @@ python tools/autobahn.py -i "5.19"
 ### 3. Run in Docker (Docker Compose)
 
 Run the entire Autobahn testsuite in isolated Docker containers (native `goose-wing` WebSocket server + official `crossbario/autobahn-testsuite`):
+
 ```powershell
 docker compose -f tools/autobahn/docker-compose.yml up --build --abort-on-container-exit
 ```
+
 Or via the Python runner:
+
 ```powershell
 python tools/autobahn.py --compose
 ```
 
 ### 4. Rebuild Server Executable
 
-If you modify `tools/autobahn/server.goose`, rebuild locally with:
+If you change `tools/autobahn/server.goose`, rebuild locally with:
+
 ```powershell
 python tools/autobahn.py --rebuild
 ```

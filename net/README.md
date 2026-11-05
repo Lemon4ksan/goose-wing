@@ -2,7 +2,7 @@
 
 Package `net` delivers the low-level, zero-allocation networking foundations of `goose-wing`. It provides high-performance TCP socket operations, an event loop reactor, connection pooling, Happy Eyeballs v3 (RFC 8305 / RFC 9460), DNS-over-HTTPS (RFC 8484), MASQUE HTTP datagram tunneling (RFC 9297, RFC 9298, RFC 9484), HAProxy PROXY protocol v1/v2, SOCKS5 proxying, and adaptive retry/circuit breaking.
 
-All parsers and serializers operate with zero dynamic heap allocations on the hot path, leveraging stack-bounded buffers (`u8[..N]`) and zero-copy byte slices (`const u8[:]`).
+All parsers and serializers operate with zero dynamic heap allocations on the hot path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices (`const u8[:]`).
 
 ## Public API Reference
 

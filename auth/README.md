@@ -1,11 +1,13 @@
 # `auth`
 
 ## Overview
+
 RFC-compliant implementations of core HTTP and OAuth authentication protocols. Provides zero-allocation wire framing, cryptographic token signing and verification, JSON Web Key Sets (JWKS), and Application-Layer Proof-of-Possession (DPoP).
 
 ## Public API
 
 ### HTTP Digest Authentication (RFC 7616)
+
 - **`struct DigestChallenge`**: Parsed challenge container (`realm`, `nonce`, `opaque`, `algorithm`, `qop`, `userhash`, `stale`).
 - **`struct DigestCredentials`**: User credentials container (`username`, `password`).
 - **`fn parse_digest_challenge(raw: const u8[:]) -> DigestChallenge, bool`**: Parses an incoming `WWW-Authenticate: Digest` header.
@@ -13,6 +15,7 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn serialize_digest_auth<B>(effective_user: const u8[:], realm: const u8[:], nonce: const u8[:], uri: const u8[:], algo: const u8[:], response_hex: const u8[:], active_qop: const u8[:], nc_str: const u8[:], cnonce: const u8[:], opaque: const u8[:], userhash: bool, sink: B&) -> bool`**: Formats an RFC 7616 `Authorization: Digest` header.
 
 ### OAuth 2.0 PKCE (RFC 7636)
+
 - **`struct PkcePair`**: Pair container holding `verifier` and `challenge`.
 - **`fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool`**: Generates a high-entropy code verifier and its S256 challenge.
 - **`fn generate_code_verifier<B>(out: B&, entropy: const u8[:]) -> bool`**: Generates an RFC 7636 verifier string (43–128 unreserved characters).
@@ -22,6 +25,7 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn is_valid_code_challenge(c: const u8[:], method: const u8[:]) -> bool`**: Verifies challenge length and character grammar.
 
 ### OAuth 2.0 DPoP (RFC 9449)
+
 - **`struct DPoPClaims`**: Validated proof claims (`jti`, `htm`, `htu`, `iat`, `nonce`, `ath`, `jkt`).
 - **`struct DPoPReplayCache`**: Bounded ring-buffer tracking recent `jti` tokens to defend against replay attacks.
 - **`fn create_dpop_proof<B>(key: const u8[:], method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool`**: Generates an asymmetric Ed25519 DPoP proof JWT.
@@ -30,6 +34,7 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "")`**: Attaches `DPoP` and `Authorization: DPoP <token>` headers to a request.
 
 ### JSON Web Key Sets (RFC 7517, RFC 7638, RFC 8725)
+
 - **`enum JwkKeyType`**: Key family variants (`OKP`, `Oct`, `Unknown`).
 - **`struct JwksKey`**: Key container holding Ed25519 public key or symmetric HMAC key.
 - **`struct Jwks`**: Stack-bounded collection of up to 16 keys.
@@ -40,9 +45,15 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool`**: SSRF validation for JWKS endpoint retrieval (RFC 8725 §3.12).
 
 ### ACME HTTP-01 Challenges (RFC 8555)
-- **`fn acme_validate_token(token: const u8[:]) -> bool`** / **`fn acme_key_authorization(token: const u8[:], thumbprint_b64url: const u8[:], out: u8[..256]&) -> i32`** / **`fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32`** / **`fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool`** / **`fn acme_find_challenge(table: const AcmeChallenge[..8]&, path: const u8[:], out_body: u8[..256]&, out_len: i32&) -> bool`**: HTTP-01 token validation, key authorization, path construction/matching, and challenge responder lookup (RFC 8555 §8.1/§8.3).
+
+- **`fn acme_validate_token(token: const u8[:]) -> bool`**: Validates HTTP-01 token syntax (RFC 8555 §8.3).
+- **`fn acme_key_authorization(token: const u8[:], thumbprint_b64url: const u8[:], out: u8[..256]&) -> i32`**: Builds the `<token>.<thumbprint>` key authorization string (RFC 8555 §8.1).
+- **`fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32`**: Formats the `/.well-known/acme-challenge/<token>` URI path.
+- **`fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool`**: Matches an incoming request path against a token.
+- **`fn acme_find_challenge(table: const AcmeChallenge[..8]&, path: const u8[:], out_body: u8[..256]&, out_len: i32&) -> bool`**: Looks up the challenge response payload in the responder table.
 
 ### JSON Web Tokens (RFC 7515, RFC 7519, RFC 8725)
+
 - **`enum JwtAlg`**: Algorithm enum (`HS256`, `HS384`, `HS512`, `EdDSA`, `None`, `Unknown`).
 - **`enum JwtError`**: Detailed verification error codes.
 - **`struct JwtHeader`**: JOSE header attributes (`alg`, `typ`, `kid`, `crit`).
@@ -54,6 +65,7 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **`fn verify_jwt_eddsa(token: const u8[:], public_key: const u8[32], options: const JwtValidationOptions&, now_unix_sec: i64, out_header: JwtHeader&, out_claims: JwtClaims&) -> JwtError`**: Verifies Ed25519 signature and claims.
 
 ## Invariants
+
 - **Zero heap allocation**: Parsing, decoding, and formatting use stack-bounded arrays and zero-copy byte slice views (`const u8[:]`).
 - **Constant-time verification**: MACs, signatures, hashes, and secrets are verified with `core::ct_eq_bytes` to prevent timing side channels.
 - **RFC 8725 security best practices**: Rejects `none` algorithm by default, enforces algorithm pinning, verifies `crit` headers, and enforces explicit token typing (`typ`).
@@ -61,6 +73,7 @@ RFC-compliant implementations of core HTTP and OAuth authentication protocols. P
 - **Capacity safety**: Invariant 13 buffer guards reject oversize inputs explicitly without silent truncation.
 
 ## Verification
+
 - Run auth unit test suite: `python tools/test_runner.py -p "*auth*"`
 - Run full typecheck: `python tools/test_runner.py --check-only`
 - Run invariant audit: `python scripts/lint_invariants.py --target-file auth/jwks.goose --strict-examples`

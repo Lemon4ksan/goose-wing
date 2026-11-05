@@ -19,7 +19,7 @@ Containers carry compile-time capacity caps:
 | Chunked trailers | 16 headers, 4096 total bytes | Trailer parsing aborts with a framing error. |
 | HTTP range intervals | 16 intervals | Ranges exceeding 16 are rejected with 416 Range Not Satisfiable. |
 
-When designing request payloads or long headers, ensure strings fit within the fixed inline capacities, or use dynamic growth vectors (`u8[>..]`) where supported (such as streaming bodies).
+When designing request payloads or long headers, make sure strings fit within the fixed inline capacities, or use dynamic growth vectors (`u8[>..]`) where supported (such as streaming bodies).
 
 ## 2. Core time and calendar (`core/time.goose`)
 
@@ -30,6 +30,7 @@ Nanosecond differences exceeding $\approx \pm 292$ years ($2^{63}-1$ nanoseconds
 ### `parse_duration(str) -> Duration, bool`
 
 The function returns `(Duration, false)` on failure and does not panic on invalid input. Parsing rules:
+
 - Shorthand with a leading decimal point such as `".5s"` parses as `500ms`.
 - Composite formats like `"1h30m45s"` and `"-2.5s"` are supported.
 - Trailing characters, embedded whitespace, duplicate unit suffixes, and multiple signs (such as `"--5s"`) cause parsing to return `false`.
@@ -51,9 +52,10 @@ These types are stack-allocated structs querying CPU monotonic counters via `clo
 
 ### `SingleflightGroup`
 
-`g.do(key, fn)` ensures that only one execution of `fn` runs concurrently for a given key. The return signature is `(result, shared, error)`. `shared == true` indicates that the caller received a cached result computed by another caller. If the executing function errors or aborts, all joined callers unblock immediately and receive the error.
+`g.do(key, fn)` makes sure that only one execution of `fn` runs concurrently for a given key. The return signature is `(result, shared, error)`. `shared == true` indicates that the caller received a cached result computed by another caller. If the executing function errors or aborts, all joined callers unblock immediately and receive the error.
 
 Key deletion options:
+
 - `g.forget(key)` deletes the key immediately, allowing subsequent requests to start a new execution.
 - `g.forget_unshared(key)` deletes the key only if no other callers joined (`waiters == 0`).
 - Keys longer than 64 bytes (`u8[..64]`) are truncated to 64 bytes.
@@ -85,6 +87,7 @@ Ports must be in the range `0..65535`. Port 0 is rejected for client requests (`
 ### Hop-by-hop header stripping
 
 When forwarding requests with `strip_hop_by_hop_headers`, the following headers are removed:
+
 - `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`
 - `TE`, `Trailers`, `Transfer-Encoding`, `Upgrade`
 - Any custom header named in the `Connection` header value (for example `Connection: X-Foo`).
@@ -138,6 +141,7 @@ Cookies with default SameSite (`CookieSameSite.Default`) allow cross-site top-le
 ### Eviction order
 
 When a domain exceeds the 180-cookie limit:
+
 1. Expired cookies are purged first.
 2. Low-priority cookies are evicted before medium and high priority.
 3. In round 4, domain cookies (`.example.com`) are evicted before host-only cookies (`example.com`) in round 5.
@@ -152,6 +156,7 @@ When a domain exceeds the 180-cookie limit:
 ### Private network access
 
 When creating a `Client`, outbound destinations are checked against private and local IP blocks:
+
 - IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `0.0.0.0/8`.
 - IPv6: `::1`, `fe80::/10`, `fc00::/7`.
 
@@ -160,6 +165,7 @@ Requests targeting these addresses from untrusted inputs are blocked unless expl
 ### Client profile headers
 
 Setting a profile with `client.set_profile(wing::Profile.Wing)` sets the authentic zero-allocation systems engine identity:
+
 - `User-Agent: Wing/1.0 (Goose Zero-Heap Systems Engine) NetStack/7.0`
 - `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8`
 - `Accept-Encoding: zstd, gzip, br`
@@ -170,7 +176,7 @@ Setting a profile with `client.set_profile(wing::Profile.Wing)` sets the authent
 
 ### HTTP cache
 
-When `ClientConfig.enable_cache` is `true`, `Client` checks its embedded `HttpCache` before dispatching network requests and records cacheable responses or performs 304 revalidations. Unsafe methods (`POST`, `PUT`, `DELETE`, `PATCH`) invalidate matching cached representations.
+When `ClientConfig.enable_cache` is `true`, `Client` checks its embedded `HttpCache` before dispatching network requests and records cacheable responses or does 304 revalidations. Unsafe methods (`POST`, `PUT`, `DELETE`, `PATCH`) invalidate matching cached representations.
 
 ## 9. HTTP server pipeline (`server/pipeline.goose`)
 
@@ -202,6 +208,7 @@ Callers requiring remote proxy DNS resolution must use `socks5h://` (`ATYP = 0x0
 ### Retry policies (`net/retry.goose`)
 
 Zero-delay retry occurs only when four conditions are met:
+
 1. The connection was reused from the pool.
 2. The failure occurred before response headers arrived.
 3. The method is idempotent or carries an `Idempotency-Key`.

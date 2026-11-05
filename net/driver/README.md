@@ -22,6 +22,6 @@ Package `net/driver` houses the internal hardware-accelerated and kernel-bypass 
 - **`struct TransportDriverConfig`**: Driver configuration holding preferred kind, ring size, kernel bypass flag, and registered buffer size.
 - **`fn probe_transport_driver(kind: TransportDriverKind) -> DriverProbeResult`**: Probes host system for driver capability and kernel support.
 - **`fn init_transport_driver(cfg: TransportDriverConfig&) -> bool`**: Initializes selected kernel or hardware-accelerated driver backend.
-- **`fn auto_transport_driver_config(enable_bypass: bool = false) -> TransportDriverConfig`**: Probes host and returns optimal driver configuration.
+- **`fn auto_transport_driver_config(enable_bypass: bool = false) -> TransportDriverConfig`**: Probes host and returns the best driver configuration.
 - **`fn detect_target_platform() -> TargetPlatform`**: Detects current host operating system.
 - **`fn driver_kind_name(kind: TransportDriverKind) -> u8[:]`**: Returns string identifier of driver kind.

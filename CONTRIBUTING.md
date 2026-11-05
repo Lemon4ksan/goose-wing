@@ -123,7 +123,7 @@ Register new C source files across Windows, Linux, and macOS in [`wing.build`](w
 ## Pull request checklist
 
 - [ ] All test suites pass `python tools/test_runner.py --check-only`.
-- [ ] All modified `.goose` files are formatted with `goose format`.
+- [ ] All changed `.goose` files are formatted with `goose format`.
 - [ ] No heap allocations (`[>..]`) are introduced on wire parsing or serialization paths.
 - [ ] C shims compile without warnings under `-Wall -Wextra -Werror`.
 - [ ] License header check passes (`python tools/licensing.py --check`).

@@ -14,15 +14,19 @@ Live end-to-end conformance and verification harness for `goose-wing`'s zero-all
 ## Quick Start
 
 ### 1. Run Locally
+
 ```powershell
 python tools/grpc.py
 ```
 
 ### 2. Run in Docker (Docker Compose)
+
 ```powershell
 docker compose -f tools/grpc/docker-compose.yml up --build --abort-on-container-exit
 ```
+
 Or via the Python runner:
+
 ```powershell
 python tools/grpc.py --compose
 ```

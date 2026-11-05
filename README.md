@@ -9,7 +9,7 @@ Vulkan-style, zero-allocation networking engine and HTTP/1.1, HTTP/2, HTTP/3 pro
 
 High-throughput networking hits the same hardware bottlenecks that graphics APIs hit a decade ago: memory bandwidth, L1/L2 cache misses, per-call heap allocations, and OS context switches. `wing` applies the explicit resource model of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
 
-- Caller-owned memory and descriptor pools: Functions take caller-allocated slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The engine performs 0 heap allocations on packet paths and event loops.
+- Caller-owned memory and descriptor pools: Functions take caller-allocated slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The engine does 0 heap allocations on packet paths and event loops.
 - Buffer views instead of string copies: Protocol parsers do not allocate strings or header objects. `HeaderSpan` stores a 9-byte offset-and-length view (`name_pos: u16, name_len: u16, val_pos: u16, val_len: u16, id: u8`) over the raw packet buffer, while `presence_mask: u32` and a 256-bit `HeaderBloomFilter` (four `u64` registers) reject missing headers in 1 to 3 CPU cycles before reading memory.
 - Command batching and explicit state machines: Outbound writes batch into `CorkBuffer` and OS ring queues (`io_uring`, Windows RIO) to amortize syscalls. Decoders use SIMD and 64-bit SWAR scanners and return explicit cursor offsets and error states rather than throwing exceptions.
 
@@ -142,22 +142,6 @@ Hardware instruction and cycle breakdown per request across pipeline stages (`be
 | 7. HTTP/1.1 response serialization | 167.7 cycles | 148.0 cycles | 155.1 cycles |
 | 8. Output buffer / cork append | 47.1 cycles | 47.0 cycles | 46.1 cycles |
 | **Total pipeline CPU cycles** | **~824 cycles/req** | **~845 cycles/req** | **~1,201 cycles/req** |
-
-## Verification
-
-```bash
-# Static typecheck validation across core, wing, and all 36 suites
-python tools/test_runner.py --check-only
-
-# 62 parallel LIT verification suites (spec invariants, wire fuzzing, CVE regressions)
-python scripts/test_lit.py
-
-# G-CRAP complexity and branch ratchet enforcement
-python scripts/ratchet.py
-
-# Invariant linter (line length, no pass-through aliases, zero heap loops)
-python scripts/lint_invariants.py
-```
 
 ## Documentation
 

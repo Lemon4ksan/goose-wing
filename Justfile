@@ -54,6 +54,18 @@ license-fix:
 lint:
     ruff check tools/ scripts/
 
+# Lint Markdown documentation with goosemarklint (ASD-STE100, LLM tells, and markdownlint)
+md-lint *paths=".":
+    goosemarklint check {{paths}}
+
+# Format Markdown documentation with goosemarklint
+md-fmt *paths=".":
+    goosemarklint fmt {{paths}}
+
+# Verify Markdown formatting without modifying files
+md-fmt-check *paths=".":
+    goosemarklint fmt --check {{paths}}
+
 # Configure git to use repository pre-commit hooks
 install-hooks:
     git config core.hooksPath .githooks
