@@ -1634,6 +1634,104 @@ fn test_webtransport_stream_demuxing(t: lit::T&) {
     };
 }
 
+// 16. HTTP/3 Bug Hunter Audit Regressions (F001-F006)
+fn test_h3_audit_regressions(t: lit::T&) {
+    t.run("F001: Reject signed Content-Length (+5, -0) per RFC 9110 §8.6") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+        var qpack1: u8[..128] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack1, ":method", "POST");
+        internal::encode_qpack_field(qpack1, ":scheme", "https");
+        internal::encode_qpack_field(qpack1, ":path", "/upload");
+        internal::encode_qpack_field(qpack1, "content-length", "+5");
+        var frame1: u8[..160] = [];
+        let _ = internal::encode_h3_headers_frame(frame1, qpack1[..]);
+        let err = conn.handle_stream_data(0, true, frame1[..], false);
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, "+5 Content-Length rejected");
+
+        var conn2 = internal::new_h3_server_connection(settings);
+        var qpack2: u8[..128] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack2, ":method", "POST");
+        internal::encode_qpack_field(qpack2, ":scheme", "https");
+        internal::encode_qpack_field(qpack2, ":path", "/upload");
+        internal::encode_qpack_field(qpack2, "content-length", "-0");
+        var frame2: u8[..160] = [];
+        let _ = internal::encode_h3_headers_frame(frame2, qpack2[..]);
+        let err2 = conn2.handle_stream_data(0, true, frame2[..], false);
+        sub.assert_eq(err2, rfc::H3_ERR_GENERAL_PROTOCOL, "-0 Content-Length rejected");
+    };
+
+    t.run("F002: 204/304 with non-zero Content-Length and 0 DATA bytes + FIN before headers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var c_conn = internal::new_h3_client_connection(settings);
+        let sid, _ = c_conn.open_request_stream();
+        var out_hdr: u8[..256] = [];
+        var extra = wing::HeaderMap { .. };
+        let _ = c_conn.send_request_headers(sid, "GET", "https", "example.com", "/res", extra, true, out_hdr);
+
+        var resp_qpack: u8[..128] = [0x00, 0x00];
+        internal::encode_qpack_field(resp_qpack, ":status", "204");
+        internal::encode_qpack_field(resp_qpack, "content-length", "42");
+        var resp_frame: u8[..160] = [];
+        let _ = internal::encode_h3_headers_frame(resp_frame, resp_qpack[..]);
+        let err_204 = c_conn.handle_stream_data(sid, true, resp_frame[..], true);
+        sub.assert_eq(err_204, rfc::H3_ERR_NO_ERROR, "204 with CL=42 and 0 DATA bytes succeeds per RFC 9114 §4.1.2");
+
+        var s_conn = internal::new_h3_server_connection(settings);
+        let empty_payload: u8[0] = [];
+        let err_fin = s_conn.handle_stream_data(0, true, empty_payload[..], true);
+        sub.assert_ne(err_fin, rfc::H3_ERR_NO_ERROR, "FIN on bidi stream before final headers must fail");
+    };
+
+    t.run("F003: Reject oversized :method and bounded frame encoding overflow") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+        var qpack_m: u8[..128] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack_m, ":method", "OVERSIZEDMETHOD17");
+        internal::encode_qpack_field(qpack_m, ":scheme", "https");
+        internal::encode_qpack_field(qpack_m, ":path", "/");
+        var frame_m: u8[..160] = [];
+        let _ = internal::encode_h3_headers_frame(frame_m, qpack_m[..]);
+        let err = conn.handle_stream_data(0, true, frame_m[..], false);
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, "Oversized :method (>16 bytes) rejected instead of silent drop");
+
+        var tiny_out: u8[..4] = [];
+        let ok_data = internal::encode_h3_data_frame(tiny_out, "12345");
+        sub.assert_false(ok_data, "encode_h3_data_frame returns false when payload exceeds buffer cap");
+        sub.assert_eq(tiny_out.len, 0, "tiny_out remains clean on failed encode_h3_data_frame");
+    };
+
+    t.run("F004/F005: PUSH_PROMISE H3_ERR_ID_ERROR closes connection and Server GOAWAY Push ID check") { sub =>
+        let settings = wing::H3Settings { .. };
+        var c_conn = internal::new_h3_client_connection(settings);
+        let sid, _ = c_conn.open_request_stream();
+        var out_hdr: u8[..256] = [];
+        var extra = wing::HeaderMap { .. };
+        let _ = c_conn.send_request_headers(sid, "GET", "https", "example.com", "/", extra, false, out_hdr);
+        var pp_frame: u8[..64] = [];
+        let _ = internal::encode_h3_push_promise(pp_frame, 0, [0x00, 0x00]);
+        let err_pp = c_conn.handle_stream_data(sid, true, pp_frame[..], false);
+        sub.assert_eq(err_pp, rfc::H3_ERR_ID_ERROR, "PUSH_PROMISE without MAX_PUSH_ID returns H3_ERR_ID_ERROR");
+        sub.assert_eq(c_conn.state, internal::H3ConnState.Closed, "Connection state transitions to Closed on H3_ERR_ID_ERROR");
+        sub.assert_eq(c_conn.error_code, rfc::H3_ERR_ID_ERROR, "Connection error_code recorded");
+    };
+
+    t.run("F006: QPACK stream referencing >8 dynamic entries does not leak ref_count") { sub =>
+        var tbl = internal::new_qpack_table(4096, 4);
+        for i in 12 {
+            var name: u8[..16] = [];
+            name.append("x-dyn-");
+            name.push(('a' + (i as u8)));
+            sub.assert_true(internal::qpack_insert_literal(tbl, name[..], "val"), "inserted dyn entry");
+            sub.assert_true(internal::qpack_track_stream_ref(tbl, 4, (i as u64)), "tracked stream ref");
+        }
+        internal::qpack_cancel_stream(tbl, 4);
+        for i in tbl.entries.len {
+            sub.assert_eq(tbl.entries[i].ref_count, 0, "all 12 entries unpinned after stream cancel");
+        }
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", lit::Verbosity.Verbose);
 
@@ -1652,6 +1750,7 @@ fn main() {
     lit::run_case(runner, "13. WebTransport Capsule Codecs", test_webtransport_capsules);
     lit::run_case(runner, "14. WebTransport Session Lifecycle", test_webtransport_session_lifecycle);
     lit::run_case(runner, "15. WebTransport Stream Demuxing & Session Routing", test_webtransport_stream_demuxing);
+    lit::run_case(runner, "16. HTTP/3 Bug Hunter Audit Regressions (F001-F006)", test_h3_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

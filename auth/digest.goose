@@ -30,10 +30,6 @@ struct DigestCredentials {
 
 // ---- Challenge Parsing (RFC 7616 Section 3.3) -----------------------------
 
-inline fn is_digest_key_char(b: u8) -> bool {
-    return b != '=' && b != ' ' && b != '\t' && b != ',' && b != '\r' && b != '\n' && b != '"';
-}
-
 // Extracts a digest parameter key up to '=', space, or tab (RFC 7616 §3.3).
 // Advances `idx` past the key bytes without consuming the trailing delimiter.
 //
@@ -43,10 +39,14 @@ inline fn is_digest_key_char(b: u8) -> bool {
 fn parse_digest_param_key(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     let rem = raw[idx..];
     var k_len: i64 = 0;
-    while k_len < rem.len && is_digest_key_char(rem[k_len]) {
+    while k_len < rem.len && core::is_tchar(rem[k_len]) {
         k_len = core::add_sat_i64(k_len, 1);
     }
     guard k_len > 0 else { return "", false; }
+    if k_len < rem.len {
+        let next_b = rem[k_len];
+        guard next_b == '=' || next_b == ' ' || next_b == '\t' else { return "", false; }
+    }
     idx = core::add_sat_i64(idx, k_len);
     return rem[..k_len], true;
 }
@@ -93,7 +93,7 @@ inline fn is_digest_token_delim(b: u8) -> bool {
 //   returns: 8 (length of "token123")
 inline fn scan_digest_token_len(s: const u8[:]) -> i64 {
     var n: i64 = 0;
-    while n < s.len && !is_digest_token_delim(s[n]) {
+    while n < s.len && !is_digest_token_delim(s[n]) && core::is_tchar(s[n]) {
         n = core::add_sat_i64(n, 1);
     }
     return n;
@@ -115,14 +115,18 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     if rem[0] == '"' {
         var tmp: u8[..128] = [];
         let q_consumed, ok = parse_quoted_param(rem, tmp);
-        guard ok && out_val.try_set(tmp[..]) else { return false; }
-        idx = core::add_sat_i64(new_idx, q_consumed);
+        let after_q = core::add_sat_i64(new_idx, q_consumed);
+        let delim_ok = after_q >= raw.len || is_digest_token_delim(raw[after_q]);
+        guard ok && delim_ok && out_val.try_set(tmp[..]) else { return false; }
+        idx = after_q;
         return true;
     }
 
     let token_len = scan_digest_token_len(rem);
-    guard token_len > 0 && out_val.try_set(rem[..token_len]) else { return false; }
-    idx = core::add_sat_i64(new_idx, token_len);
+    let after_tok = core::add_sat_i64(new_idx, token_len);
+    let tok_delim_ok = after_tok >= raw.len || is_digest_token_delim(raw[after_tok]);
+    guard token_len > 0 && tok_delim_ok && out_val.try_set(rem[..token_len]) else { return false; }
+    idx = after_tok;
     return true;
 }
 
@@ -516,7 +520,10 @@ fn serialize_digest_auth<B>(
         algo,
         response_hex,
     );
-    guard ok_core else { return false; }
+    guard ok_core else {
+        sink.clear();
+        return false;
+    }
     let ok_opt = serialize_digest_opt_kv(
         sink,
         active_qop,
@@ -525,7 +532,10 @@ fn serialize_digest_auth<B>(
         opaque,
         userhash,
     );
-    guard ok_opt else { return false; }
+    guard ok_opt else {
+        sink.clear();
+        return false;
+    }
     return true;
 }
 
@@ -583,15 +593,14 @@ fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
         let rem = raw_qop[idx..].trim_start_bytes(" \t,\"");
         guard rem.len > 0 else { break; }
         let tok_len = scan_qop_token_len(rem);
+        guard tok_len > 0 else { return false; }
         let tok = rem[..tok_len];
+        let after_tok = rem[tok_len..].trim_start_bytes(" \t\"");
+        guard after_tok.len == 0 || after_tok[0] == ',' else { return false; }
         if eq_ascii_fold(tok, target) {
             return true;
         }
-        let advance = core::add_sat_i64(core::sub_sat_i64(raw_qop.len, rem.len), tok_len);
-        idx = advance;
-        while idx < raw_qop.len && raw_qop[idx] != ',' {
-            idx = core::add_sat_i64(idx, 1);
-        }
+        idx = core::sub_sat_i64(raw_qop.len, after_tok.len);
         if idx < raw_qop.len && raw_qop[idx] == ',' {
             idx = core::add_sat_i64(idx, 1);
         }

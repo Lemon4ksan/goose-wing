@@ -55,9 +55,9 @@ struct BlockedStreamEntry {
 }
 
 struct UnackedSection {
-    stream_id:   u64      = 0,
-    ric:         u64      = 0,
-    ref_entries: u64[..8] = [],
+    stream_id:   u64       = 0,
+    ric:         u64       = 0,
+    ref_entries: u64[..32] = [],
 }
 
 struct QpackTable {
@@ -666,8 +666,9 @@ fn qpack_track_stream_ref(tbl: QpackTable&, stream_id: u64, abs_idx: u64) -> boo
     }
     for i in tbl.unacked_sections.len {
         if tbl.unacked_sections[i].stream_id == stream_id {
-            if tbl.unacked_sections[i].ref_entries.len < tbl.unacked_sections[i].ref_entries.cap {
-                tbl.unacked_sections[i].ref_entries.push(abs_idx);
+            guard tbl.unacked_sections[i].ref_entries.try_push(abs_idx) else {
+                qpack_unpin_entry(tbl, abs_idx);
+                return false;
             }
             return true;
         }

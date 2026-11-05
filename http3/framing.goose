@@ -36,29 +36,44 @@ fn parse_h3_frame_header(src: const u8[:], offset: u64) -> H3FrameHeader, bool {
     }, true;
 }
 
+inline fn append_h3_frame_parts(out: u8[>..]&, hdr: const u8[:], payload: const u8[:]) -> bool {
+    out.append(hdr);
+    out.append(payload);
+    return true;
+}
+
+inline fn append_h3_frame_parts<B>(out: B&, hdr: const u8[:], payload: const u8[:]) -> bool {
+    let need = core::add_sat_i64(hdr.len, payload.len);
+    guard core::add_sat_i64(out.len, need) <= out.cap else { return false; }
+    out.append(hdr);
+    out.append(payload);
+    return true;
+}
+
 // Encodes an HTTP/3 frame header (Type: VarInt, Length: VarInt) into buffer.
 fn encode_h3_frame_header<B>(out: B&, frame_type: u64, payload_len: u64) -> bool {
-    let ok_t = quic_encode_varint(out, frame_type);
-    let ok_l = quic_encode_varint(out, payload_len);
-    return ok_t && ok_l;
+    var hdr: u8[..16] = [];
+    let ok_t = quic_encode_varint(hdr, frame_type);
+    let ok_l = quic_encode_varint(hdr, payload_len);
+    guard ok_t && ok_l else { return false; }
+    let empty: u8[0] = [];
+    return append_h3_frame_parts(out, hdr[..], empty[..]);
 }
 
 // ---- DATA & HEADERS Frames (RFC 9114 Sections 7.2.1 and 7.2.2) -----------
 
 // Encodes a DATA frame (Type 0x00).
 fn encode_h3_data_frame<B>(out: B&, data: const u8[:]) -> bool {
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_DATA, data.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(data);
-    return true;
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_DATA, data.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], data);
 }
 
 // Encodes a HEADERS frame (Type 0x01).
 fn encode_h3_headers_frame<B>(out: B&, qpack_field_section: const u8[:]) -> bool {
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_HEADERS, qpack_field_section.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(qpack_field_section);
-    return true;
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_HEADERS, qpack_field_section.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], qpack_field_section);
 }
 
 // Encodes a PUSH_PROMISE frame (Type 0x05, RFC 9114 Section 7.2.5).
@@ -66,10 +81,10 @@ fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u
     var pid_buf: u8[..8] = [];
     guard quic_encode_varint(pid_buf, push_id) else { return false; }
     let plen = (pid_buf.len as u64) + (qpack_field_section.len as u64);
-    guard encode_h3_frame_header(out, rfc::H3_FRAME_PUSH_PROMISE, plen) else { return false; }
-    out.append(pid_buf[..]);
-    out.append(qpack_field_section);
-    return true;
+    var hdr: u8[..24] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_PUSH_PROMISE, plen) else { return false; }
+    hdr.append(pid_buf[..]);
+    return append_h3_frame_parts(out, hdr[..], qpack_field_section);
 }
 
 // ---- SETTINGS Frame (RFC 9114 Section 7.2.4 & RFC 9204 Section 5) --------
@@ -97,10 +112,9 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
         quic_encode_varint(payload, settings.enable_connect_protocol);
     }
 
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_SETTINGS, payload.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(payload[..]);
-    return true;
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_SETTINGS, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Records a setting identifier into the seen list, ensuring uniqueness (RFC 9114 §7.2.4).
@@ -175,11 +189,10 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 // Encodes a GOAWAY frame (Type 0x07).
 fn encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
     var payload: u8[..8] = [];
-    quic_encode_varint(payload, stream_id);
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_GOAWAY, payload.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(payload[..]);
-    return true;
+    guard quic_encode_varint(payload, stream_id) else { return false; }
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_GOAWAY, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Parses a GOAWAY frame payload.
@@ -196,11 +209,10 @@ fn parse_h3_goaway_frame(payload: const u8[:]) -> u64, bool {
 // Encodes a CANCEL_PUSH frame (Type 0x03).
 fn encode_h3_cancel_push<B>(out: B&, push_id: u64) -> bool {
     var payload: u8[..8] = [];
-    quic_encode_varint(payload, push_id);
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_CANCEL_PUSH, payload.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(payload[..]);
-    return true;
+    guard quic_encode_varint(payload, push_id) else { return false; }
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_CANCEL_PUSH, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Parses a CANCEL_PUSH frame payload.
@@ -217,11 +229,10 @@ fn parse_h3_cancel_push(payload: const u8[:]) -> u64, bool {
 // Encodes a MAX_PUSH_ID frame (Type 0x0D).
 fn encode_h3_max_push_id<B>(out: B&, push_id: u64) -> bool {
     var payload: u8[..8] = [];
-    quic_encode_varint(payload, push_id);
-    let ok_hdr = encode_h3_frame_header(out, rfc::H3_FRAME_MAX_PUSH_ID, payload.len as u64);
-    guard ok_hdr else { return false; }
-    out.append(payload[..]);
-    return true;
+    guard quic_encode_varint(payload, push_id) else { return false; }
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_MAX_PUSH_ID, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Parses a MAX_PUSH_ID frame payload.
@@ -242,9 +253,10 @@ fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const win
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, stream_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
-    guard encode_h3_frame_header(out, rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, payload.len as u64) else { return false; }
-    out.append(payload[..]);
-    return true;
+    var hdr: u8[..16] = [];
+    let plen = payload.len as u64;
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, plen) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Parses a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2).
@@ -272,9 +284,9 @@ fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::Pr
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, push_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
-    guard encode_h3_frame_header(out, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
-    out.append(payload[..]);
-    return true;
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
 // Parses a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2).

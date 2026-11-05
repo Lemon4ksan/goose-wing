@@ -143,15 +143,10 @@ fn encode_client_preambles<B1, B2, B3>(
     out_qpack_enc: B2&,
     out_qpack_dec: B3&,
 ) -> bool {
-    // 1. Control Stream: Stream Type 0x00 || SETTINGS Frame
-    quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL);
-    encode_h3_settings_frame(out_ctrl, conn.local_settings);
-
-    // 2. QPACK Encoder Stream: Stream Type 0x02
-    quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER);
-
-    // 3. QPACK Decoder Stream: Stream Type 0x03
-    quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER);
+    guard quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL) else { return false; }
+    guard encode_h3_settings_frame(out_ctrl, conn.local_settings) else { return false; }
+    guard quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER) else { return false; }
+    guard quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER) else { return false; }
 
     conn.local_settings_sent = true;
     return true;
@@ -928,12 +923,12 @@ fn process_h3_pseudo_field(
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":method" {
-        guard validate_pseudo_method(field, counts) else {
+        guard validate_pseudo_method(field, counts) &&
+              conn.streams[s_idx].req_method.try_set(field.value[..]) else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        let _ = conn.streams[s_idx].req_method.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":scheme" {
@@ -945,21 +940,21 @@ fn process_h3_pseudo_field(
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":authority" {
-        guard validate_pseudo_authority(field, counts, auth_val) else {
+        guard validate_pseudo_authority(field, counts, auth_val) &&
+              conn.streams[s_idx].req_authority.try_set(field.value[..]) else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        let _ = conn.streams[s_idx].req_authority.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":path" {
-        guard validate_pseudo_path(field, counts) else {
+        guard validate_pseudo_path(field, counts) &&
+              conn.streams[s_idx].req_path.try_set(field.value[..]) else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        let _ = conn.streams[s_idx].req_path.try_set(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
     if field.name[..] == ":protocol" {
@@ -997,7 +992,8 @@ fn process_h3_regular_field(
     }
     if eq_ascii_fold(field.name[..], "content-length") {
         let cl, ok_cl = core::parse_i64_dec(field.value[..]);
-        guard ok_cl && cl >= 0 else {
+        let _, ok_u = core::parse_u64_dec(field.value[..]);
+        guard ok_cl && ok_u else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1092,6 +1088,8 @@ fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
     }
     // Push ID MUST NOT exceed advertised MAX_PUSH_ID (or any push if never advertised)
     if !conn.max_push_id_sent || push_id > conn.max_push_id_advertised {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_ID_ERROR;
         return rfc::H3_ERR_ID_ERROR;
     }
     let qpack_data = payload[(qpack_off as i64)..];
@@ -1308,7 +1306,14 @@ fn handle_stream_data(
 
     if fin {
         conn.streams[s_idx].fin_received = true;
-        if conn.streams[s_idx].content_length >= 0 &&
+        if !conn.streams[s_idx].headers_received &&
+           !qpack_is_stream_blocked(conn.qpack_table, stream_id) {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_REQUEST_INCOMPLETE;
+            return rfc::H3_ERR_REQUEST_INCOMPLETE;
+        }
+        let sc = conn.streams[s_idx].status_code;
+        if sc != 204 && sc != 304 && conn.streams[s_idx].content_length >= 0 &&
            conn.streams[s_idx].body_received_len != (conn.streams[s_idx].content_length as u64) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;

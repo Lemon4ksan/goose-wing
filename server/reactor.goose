@@ -35,7 +35,11 @@ var g_reactor_chunk:       ReactorIngressBuf            = ReactorIngressBuf { ..
 var g_reactor_cork:        u8[..65536]                  = [];
 var g_reactor_free_slots:  FreeSlotStack                = FreeSlotStack { .. };
 
-fn alloc_reactor_h2_session(server_name: const u8[:], now_ms: u64) -> i16 {
+fn alloc_reactor_h2_session(
+    pipeline:    ServerPipelineConfig&,
+    server_name: const u8[:],
+    now_ms:      u64,
+) -> i16 {
     for i in 8 {
         if !g_reactor_h2_in_use[i] {
             g_reactor_h2_in_use[i] = true;
@@ -43,6 +47,7 @@ fn alloc_reactor_h2_session(server_name: const u8[:], now_ms: u64) -> i16 {
             return i as i16;
         }
     }
+    internal::cleanup_h2_server_session(g_reactor_h2_sessions[0], pipeline);
     g_reactor_h2_in_use[0] = true;
     internal::reset_h2_server_session_inplace(g_reactor_h2_sessions[0], server_name, now_ms);
     return 0;
@@ -56,10 +61,16 @@ fn free_reactor_h2_session(h2_idx: i16, pipeline: ServerPipelineConfig&) {
 }
 
 // Encapsulated UFCS method on SoAConnTable: acquires or returns the persistent H2ServerSession index for `slot`.
-fn ensure_h2_session(table: SoAConnTable&, slot: i64, server_name: const u8[:], now_ms: u64) -> i64 {
+fn ensure_h2_session(
+    table:       SoAConnTable&,
+    slot:        i64,
+    pipeline:    ServerPipelineConfig&,
+    server_name: const u8[:],
+    now_ms:      u64,
+) -> i64 {
     var h2_idx = table.h2_slot_map[slot];
     if !table.is_h2[slot] || h2_idx < 0 || h2_idx >= 8 {
-        h2_idx = alloc_reactor_h2_session(server_name, now_ms);
+        h2_idx = alloc_reactor_h2_session(pipeline, server_name, now_ms);
         table.h2_slot_map[slot] = h2_idx;
         table.is_h2[slot] = true;
     }
@@ -330,7 +341,10 @@ fn reactor_handle_h2_ingress(
 ) -> bool {
     let now_ms = now_ns / 1000000;
     cork_wire.clear();
-    let h2_idx = table.ensure_h2_session(slot, server.server_name[..], now_ms);
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    let h2_idx = table.ensure_h2_session(slot, server.pipeline, server.server_name[..], now_ms);
     var peer_ip: u8[..64] = [];
     tcp_get_peer_ip(conn, peer_ip);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
@@ -413,6 +427,12 @@ fn reactor_handle_ingress(
     if table.is_h2[slot] || is_h2_client_preface(chunk.bytes[..chunk.len]) {
         let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire);
         if !ok_h2 {
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        }
+        return;
+    }
+    if is_partial_h2_client_preface(chunk.bytes[..chunk.len]) {
+        if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[..chunk.len]) {
             reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         }
         return;
@@ -682,11 +702,13 @@ fn serve_reactor_tls(
             epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, n, turn_counter,
             last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
         );
-        reactor_dispatch_tls_events(
-            server, epfd, listener_fd, g_reactor_table, g_reactor_leftovers[..],
-            g_reactor_free_slots, timer_wheel, tls_config, ready_udata[..n as i64],
-            cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served,
-        );
+        if n > 0 {
+            reactor_dispatch_tls_events(
+                server, epfd, listener_fd, g_reactor_table, g_reactor_leftovers[..],
+                g_reactor_free_slots, timer_wheel, tls_config, ready_udata[..n as i64],
+                cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served,
+            );
+        }
     }
     reactor_cleanup_all(epfd, g_reactor_table, g_reactor_free_slots);
     return total_served;
@@ -727,6 +749,7 @@ fn handle_h3_server_datagram<B>(
     if h3_conn.streams[s_idx].req_authority.len > 0 {
         req.headers.push(make_header("host", h3_conn.streams[s_idx].req_authority[..]));
         add_header(req.bloom_filter, "host");
+        req.presence_mask |= HDR_PRESENCE_HOST;
     }
     if h3_conn.streams[s_idx].received_body.len > 0 {
         req.body.append(h3_conn.streams[s_idx].received_body[..]);
@@ -751,6 +774,37 @@ fn handle_h3_server_datagram<B>(
     );
 }
 
+inline fn dispatch_h3_udp_datagram(
+    server:    HttpServer&,
+    udp_fd:    i64,
+    h3_conn:   internal::H3Connection&,
+    served:    i64,
+    peer_ip4:  u32,
+    peer_port: u16,
+    rx_slice:  const u8[:],
+    now_ns:    u64,
+    tx_wire:   u8[..1472]&,
+) {
+    let stream_id = ((served & 15) * 4) as u64;
+    for st_i in h3_conn.streams.len {
+        if h3_conn.streams[st_i].stream_id == stream_id {
+            h3_conn.streams[st_i] = internal::H3StreamEntry { stream_id: stream_id, .. };
+        }
+    }
+    var peer_ip_str: u8[..32] = [];
+    format(peer_ip_str, ((peer_ip4 >> 24) & 0xFF) as i64);
+    peer_ip_str.push('.');
+    format(peer_ip_str, ((peer_ip4 >> 16) & 0xFF) as i64);
+    peer_ip_str.push('.');
+    format(peer_ip_str, ((peer_ip4 >> 8) & 0xFF) as i64);
+    peer_ip_str.push('.');
+    format(peer_ip_str, (peer_ip4 & 0xFF) as i64);
+    if server.handle_h3_server_datagram(h3_conn, stream_id, peer_ip_str[..], rx_slice, now_ns, tx_wire) {
+        let udp_tr = Transport.Udp { fd: udp_fd, peer_ip4: peer_ip4, peer_port: peer_port };
+        let _ = udp_tr.send(tx_wire[..]);
+    }
+}
+
 // Executes a UDP HTTP/3 datagram server loop (Section 4.3).
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
@@ -769,10 +823,9 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
             continue;
         }
         let now_ns = core::as_nanos(core::monotonic_now());
-        if server.handle_h3_server_datagram(h3_conn, 0, "127.0.0.1", rx_buf[..recvd], now_ns, tx_wire) {
-            let udp_tr = Transport.Udp { fd: udp_fd, peer_ip4: peer_ip4, peer_port: peer_port };
-            let _ = udp_tr.send(tx_wire[..]);
-        }
+        dispatch_h3_udp_datagram(
+            server, udp_fd, h3_conn, served, peer_ip4, peer_port, rx_buf[..recvd], now_ns, tx_wire,
+        );
         served++;
     }
     return served;

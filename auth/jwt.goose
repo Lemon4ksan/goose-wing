@@ -311,7 +311,11 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
         }
     }
 
-    return json::finish(reader) && !had_error && seen_alg;
+    guard json::finish(reader) && !had_error && seen_alg else {
+        out_header = JwtHeader { .. };
+        return false;
+    }
+    return true;
 }
 
 // ---- JWT Claims Model & Parser -------------------------------------------
@@ -338,7 +342,7 @@ struct JwtClaims {
 }
 
 fn set_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
-    guard aud.len <= claims.aud.cap && aud.len <= 128 else { return false; }
+    guard aud.len > 0 && aud.len <= claims.aud.cap && aud.len <= 128 else { return false; }
     claims.aud.clear();
     claims.audiences.clear();
     claims.aud.append(aud);
@@ -349,7 +353,7 @@ fn set_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
 }
 
 fn add_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
-    guard claims.audiences.len < claims.audiences.cap && aud.len <= 128 else { return false; }
+    guard aud.len > 0 && claims.audiences.len < claims.audiences.cap && aud.len <= 128 else { return false; }
     if claims.aud.len == 0 {
         claims.aud.append(aud);
     }
@@ -842,7 +846,11 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
             }
         }
     };
-    return json::finish(reader) && !had_error;
+    guard json::finish(reader) && !had_error else {
+        out_claims = JwtClaims { .. };
+        return false;
+    }
+    return true;
 }
 
 // ---- JWT Validation Options ----------------------------------------------
@@ -873,6 +881,10 @@ fn default_jwt_validation_options(expected_alg: JwtAlg = JwtAlg.HS256) -> JwtVal
 
 fn add_supported_crit(opts: JwtValidationOptions&, name: const u8[:]) -> bool {
     guard opts.supported_crit.len < opts.supported_crit.cap && name.len > 0 && name.len <= 32 else { return false; }
+    guard !rfc::is_standard_jws_header_param(name) else { return false; }
+    for &cp in opts.supported_crit {
+        guard cp.name[..] != name else { return false; }
+    }
     var item = CritParam { .. };
     item.name.append(name);
     opts.supported_crit.push(item);

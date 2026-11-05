@@ -33,6 +33,7 @@ struct EdgeFilter {
 }
 
 fn add_edge_filter_rule(filter: EdgeFilter&, rule: EdgeFilterRule) -> bool {
+    guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
     guard filter.rules.len < filter.rules.cap else { return false; }
     filter.rules.push(rule);
     return true;
@@ -73,8 +74,10 @@ fn edge_rule_matches(
     path:    const u8[:],
     headers: const HeaderItem[:],
 ) -> bool {
-    guard rule.enabled else { return false; }
-    guard rule.path_prefix.len > 0 && core::starts_with(path, rule.path_prefix[..]) else {
+    guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
+    var canon_path: u8[..512] = [];
+    guard canonicalize_route_path(path, canon_path) else { return true; }
+    guard core::starts_with(canon_path[..], rule.path_prefix[..]) else {
         return false;
     }
     if rule.required_header.len > 0 {

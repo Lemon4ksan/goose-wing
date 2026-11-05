@@ -223,7 +223,7 @@ fn notify_request_end(timer: ConnectionTimer&) {
 }
 
 inline fn is_connection_tick_due(timer: const ConnectionTimer&, now_ns: u64) -> bool {
-    return (now_ns - timer.last_tick_mono_ns) >= timer.half_deadline_ns;
+    return (max(now_ns, timer.last_tick_mono_ns) - timer.last_tick_mono_ns) >= timer.half_deadline_ns;
 }
 
 inline fn advance_connection_tick(timer: ConnectionTimer&) -> bool {

@@ -110,6 +110,14 @@ fn add_es256_key(
     return true;
 }
 
+// Validates RFC 7518 §2 & §6.3.1.1-6.3.1.2 minimal Base64urlUInt RSA modulus and public exponent.
+inline fn is_canonical_jwk_rsa_params(n_be: const u8[:], e_be: const u8[:]) -> bool {
+    guard n_be.len >= 64 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
+    let n_last = core::sub_sat_i64(n_be.len, 1);
+    guard (n_be[0] & 0x80) != 0 && (n_be[n_last] & 1) == 1 else { return false; }
+    return e_be[0] != 0 && core::is_valid_rsa_public_exponent(e_be, n_be);
+}
+
 // Registers an asymmetric RSA public key in the key set (RFC 7518 §6.3).
 fn add_rsa_key(
     jwks: Jwks&,
@@ -119,7 +127,7 @@ fn add_rsa_key(
     e_be: const u8[:],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 && n_be.len >= 64 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
+    guard kid.len <= 64 && is_canonical_jwk_rsa_params(n_be, e_be) else { return false; }
     guard alg == JwtAlg.Unspecified || alg == JwtAlg.RS256 || alg == JwtAlg.PS256 else { return false; }
     var key = JwksKey {
         kty:   JwkKeyType.RSA,
@@ -286,6 +294,7 @@ fn serialize_jwk_key<B>(k: const JwksKey&, out: B&) {
         var k_b64: u8[..128] = [];
         core::base64url_encode(k.symmetric_key[..], k_b64);
         json::format_string(out, k_b64[..]);
+        core::secure_zeroize_slice(k_b64[..]);
     }
 
     if k.alg != JwtAlg.Unspecified && k.alg != JwtAlg.None && k.alg != JwtAlg.Unknown {
@@ -556,7 +565,7 @@ fn finalize_ec_key(raw_x: const u8[:], raw_y: const u8[:], key_item: JwksKey&) -
 }
 
 fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) -> bool {
-    // RFC 7518 §6.3: RSA modulus n and exponent e
+    // RFC 7518 §6.3: RSA modulus n and exponent e (Base64urlUInt without leading zero byte)
     guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.RS256 || key_item.alg == JwtAlg.PS256 else {
         return false;
     }
@@ -564,7 +573,7 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) 
     var decoded_n: u8[..512] = [];
     var decoded_e: u8[..8]   = [];
     guard core::base64url_decode(raw_n, decoded_n) && core::base64url_decode(raw_e, decoded_e) else { return false; }
-    guard decoded_n.len >= 64 && decoded_n.len <= 512 && decoded_e.len >= 1 && decoded_e.len <= 8 else { return false; }
+    guard is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]) else { return false; }
     key_item.rsa_n.clear();
     key_item.rsa_n.append(decoded_n[..]);
     key_item.rsa_e.clear();
@@ -609,6 +618,7 @@ fn parse_single_jwk_element(
     if finalize_jwk_key(mat, key_item) {
         out_jwks.keys.push(key_item);
     }
+    zeroize_jwks_key(key_item);
     core::secure_zeroize_slice(mat.raw_k[..]);
 }
 

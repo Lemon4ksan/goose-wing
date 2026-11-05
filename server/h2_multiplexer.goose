@@ -149,6 +149,15 @@ fn reset_h2_server_session_inplace(
     sess.conn.is_behind_proxy = false;
     sess.conn.urgency_streak_count = 0;
     sess.conn.active_urgency_mask = 0;
+    sess.conn.urgency_heads = [-1; 8];
+    sess.conn.urgency_tails = [-1; 8];
+    sess.conn.bucket_prefer_incremental = [false; 8];
+    sess.conn.bucket_last_inc_idx = [-1; 8];
+    for n_i in 128 {
+        sess.conn.stream_nodes[n_i].stream_id = 0;
+        sess.conn.stream_nodes[n_i].next = -1;
+        sess.conn.stream_nodes[n_i].prev = -1;
+    }
     sess.conn.goaway_sent = false;
     sess.conn.goaway_received = false;
     sess.conn.goaway_last_stream_id = 0;
@@ -468,6 +477,17 @@ fn emit_response_trailers<B>(
         }
     }
 
+    if hpack_block.len == 0 {
+        let empty_data = FrameHeader {
+            length:     0,
+            frame_type: rfc::H2_FRAME_DATA,
+            flags:      rfc::H2_FLAG_END_STREAM,
+            stream_id:  stream_id,
+        };
+        encode_frame_header_to(empty_data, out);
+        return;
+    }
+
     let frame_hdr = FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
@@ -749,6 +769,7 @@ fn process_ingress_headers<B>(
         if sess.streams[s_exist_idx].body_received {
             // RFC 9113 §5.1: Frame on half-closed (remote) stream
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
         // RFC 9113 §8.1.2: A HEADERS frame containing a trailer section MUST have END_STREAM set
@@ -996,6 +1017,23 @@ fn process_stream_data_ingress<B>(
     return true;
 }
 
+inline fn replenish_closed_stream_conn_window<B>(
+    sess:     H2ServerSession&,
+    data_len: u32,
+    out_wire: B&,
+) -> bool {
+    sess.conn.conn_recv_window -= data_len as i64;
+    guard sess.conn.conn_recv_window >= 0 else {
+        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_FLOW_CONTROL_ERROR, out_wire);
+        return false;
+    }
+    if data_len > 0 {
+        emit_window_update(0, data_len, out_wire);
+        sess.conn.conn_recv_window += data_len as i64;
+    }
+    return true;
+}
+
 fn process_ingress_data<B>(
     sess:          H2ServerSession&,
     pipeline:      wing::ServerPipelineConfig&,
@@ -1021,15 +1059,7 @@ fn process_ingress_data<B>(
         if (hdr.stream_id % 2) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
             // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
-            // Account for flow control connection-wide per RFC 9113 §6.9
-            sess.conn.conn_recv_window -= hdr.length as i64;
-            if sess.conn.conn_recv_window < 0 {
-                emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_FLOW_CONTROL_ERROR, out_wire);
-                return false;
-            }
-            emit_window_update(0, hdr.length, out_wire);
-            sess.conn.conn_recv_window += hdr.length as i64;
-            return true;
+            return replenish_closed_stream_conn_window(sess, hdr.length, out_wire);
         } else {
             // Idle stream receives DATA -> connection error PROTOCOL_ERROR (RFC 9113 §5.1)
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
@@ -1041,14 +1071,8 @@ fn process_ingress_data<B>(
     if sess.streams[s_idx].body_received {
         // RFC 9113 §5.1: Receiving DATA after END_STREAM is a stream error STREAM_CLOSED
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
-        sess.conn.conn_recv_window -= hdr.length as i64;
-        if sess.conn.conn_recv_window < 0 {
-            emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_FLOW_CONTROL_ERROR, out_wire);
-            return false;
-        }
-        emit_window_update(0, hdr.length, out_wire);
-        sess.conn.conn_recv_window += hdr.length as i64;
-        return true;
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return replenish_closed_stream_conn_window(sess, hdr.length, out_wire);
     }
 
     var d_start: i64 = 0;
@@ -1176,6 +1200,28 @@ fn process_ingress_goaway<B>(
     return true;
 }
 
+inline fn process_ingress_priority<B>(
+    sess:          H2ServerSession&,
+    pipeline:      wing::ServerPipelineConfig&,
+    hdr:           const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire:      B&,
+) -> bool {
+    guard frame_payload.len == 5 else {
+        // RFC 9113 §6.3: PRIORITY with length other than 5 is stream error FRAME_SIZE_ERROR
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return true;
+    }
+    let dep_raw = core::read_be_u32(frame_payload, 0) & 0x7FFFFFFF;
+    if dep_raw == hdr.stream_id {
+        // RFC 9113 §5.3.1: Stream cannot depend on itself -> stream error PROTOCOL_ERROR
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        terminate_server_stream(sess, pipeline, hdr.stream_id);
+    }
+    return true;
+}
+
 fn dispatch_ingress_frame<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
@@ -1195,20 +1241,7 @@ fn dispatch_ingress_frame<B>(
             emit_ping_ack(opaque, out_wire);
         }
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY {
-        if frame_payload.len != 5 {
-            // RFC 9113 §6.3: PRIORITY with length other than 5 is stream error FRAME_SIZE_ERROR
-            emit_rst_stream(hdr.stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR, out_wire);
-            return true;
-        }
-        let b0 = frame_payload[0] as u32;
-        let b1 = frame_payload[1] as u32;
-        let b2 = frame_payload[2] as u32;
-        let b3 = frame_payload[3] as u32;
-        let dep_raw = ((b0 & 0x7F) << 24) | (b1 << 16) | (b2 << 8) | b3;
-        if dep_raw == hdr.stream_id {
-            // RFC 9113 §5.3.1: Stream cannot depend on itself -> stream error PROTOCOL_ERROR
-            emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
-        }
+        return process_ingress_priority(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {
         let prio_stream_id, prio_param, prio_err = parse_priority_update_payload(frame_payload, false);
         if prio_err != rfc::H2_ERR_NO_ERROR || (prio_stream_id % 2) == 0 {
@@ -1243,17 +1276,26 @@ fn dispatch_ingress_frame<B>(
 }
 
 inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing::Request&) {
+    if st.authority.len > 0 {
+        var has_explicit_host = false;
+        for &h_chk in st.headers {
+            if eq_ascii_fold(h_chk.name[..], "host") {
+                has_explicit_host = true;
+                break;
+            }
+        }
+        if !has_explicit_host && req.headers.len < 32 {
+            req.headers.push(wing::make_header("host", st.authority[..]));
+            wing::add_header(req.bloom_filter, "host");
+            req.presence_mask |= wing::HDR_PRESENCE_HOST;
+        }
+    }
     for &hdr_item in st.headers {
         guard req.headers.len < 32 else { break; }
         req.headers.push(hdr_item);
         wing::add_header(req.bloom_filter, hdr_item.name[..]);
         let known_id = wing::identify_known_header(hdr_item.name[..]);
         req.presence_mask |= wing::header_id_to_bit(known_id);
-    }
-    if st.authority.len > 0 && (req.presence_mask & wing::HDR_PRESENCE_HOST) == 0 && req.headers.len < 32 {
-        req.headers.push(wing::make_header("host", st.authority[..]));
-        wing::add_header(req.bloom_filter, "host");
-        req.presence_mask |= wing::HDR_PRESENCE_HOST;
     }
     for &tr_item in st.trailers {
         guard req.trailers.len < 16 else { break; }

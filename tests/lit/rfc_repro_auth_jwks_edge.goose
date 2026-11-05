@@ -53,6 +53,31 @@ fn main() {
     assert(wing::add_symmetric_key(jwks_sym, "k1", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"));
     var tiny_tp: u8[..16] = [];
     assert(!wing::compute_jwk_thumbprint(jwks_sym.keys[0], tiny_tp));
+
+    // ---- 5. F002: Reject Non-Minimal RSA Base64urlUInt & Invalid Exponents -
+    var jwks_rsa = wing::Jwks { .. };
+    var valid_n: u8[64] = [0xFF; 64];
+    valid_n[0] = 0x80;
+    valid_n[63] = 0x01;
+    let valid_e:   u8[3] = [0x01, 0x00, 0x01];
+    let padded_e:  u8[4] = [0x00, 0x01, 0x00, 0x01];
+    let bad_e_one: u8[1] = [0x01];
+    var padded_n: u8[64] = [0xFF; 64];
+    padded_n[0] = 0x00;
+
+    assert(!wing::add_rsa_key(jwks_rsa, "rsa-pad-e", wing::JwtAlg.RS256, valid_n[..], padded_e[..]));
+    assert(!wing::add_rsa_key(jwks_rsa, "rsa-bad-e", wing::JwtAlg.RS256, valid_n[..], bad_e_one[..]));
+    assert(!wing::add_rsa_key(jwks_rsa, "rsa-pad-n", wing::JwtAlg.RS256, padded_n[..], valid_e[..]));
+    assert(wing::add_rsa_key(jwks_rsa, "rsa-ok", wing::JwtAlg.RS256, valid_n[..], valid_e[..]));
+
+    var n_b64: u8[..128] = [];
+    core::base64url_encode(valid_n[..], n_b64);
+    var jwk_rsa_pad_e: u8[..256] = [];
+    jwk_rsa_pad_e.append("{\"keys\":[{\"kty\":\"RSA\",\"n\":\"");
+    jwk_rsa_pad_e.append(n_b64[..]);
+    jwk_rsa_pad_e.append("\",\"e\":\"AAEAAQ\"}]}");
+    var parsed_rsa_jwks = wing::Jwks { .. };
+    assert(!wing::parse_jwks_json(jwk_rsa_pad_e[..], parsed_rsa_jwks));
     print("JWKS_BOUNDS_AND_ALG_HARDENING: OK");
 }
 

@@ -58,6 +58,16 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
     return SOA_INVALID_FD;
 }
 
+inline fn trim_soa_high_water_mark(table: SoAConnTable&) {
+    while table.count > 0 && table.count <= table.fds.len {
+        let last_idx = table.count - 1;
+        guard last_idx >= 0 && last_idx < table.fds.len && table.fds[last_idx] < 0 else {
+            break;
+        }
+        table.count = last_idx;
+    }
+}
+
 // Releases a connection slot in the SoA table.
 fn soa_table_free(table: SoAConnTable&, slot: i64) {
     guard slot >= 0 && slot < table.fds.len else { return; }
@@ -68,6 +78,7 @@ fn soa_table_free(table: SoAConnTable&, slot: i64) {
     table.h2_slot_map[slot] = -1;
     table.has_tls[slot] = false;
     table.tls_slots[slot] = 0xFFFF;
+    trim_soa_high_water_mark(table);
 }
 
 // Updates the timeout tick for an active connection slot (activity refresh).
@@ -84,7 +95,7 @@ fn soa_table_sweep_expired(
     out_expired: i64[:],
 ) -> i64 {
     var expired_n: i64 = 0;
-    let limit = table.count;
+    let limit = min(max(table.count, 0), SOA_TABLE_CAP);
 
     for s in limit {
         let tick = table.timeout_ticks[s];

@@ -116,6 +116,22 @@ fn main() {
 
     var uninit_stored = wing::DigestChallenge { valid: false, .. };
     assert(!wing::sync_digest_stale_challenge(uninit_stored, incoming, creds, nc));
+
+    // ---- 7. F005: RFC 7616 Token Grammar, QOP Delimiters & Sink Hygiene ----
+    let _, ok_ctrl_key = wing::parse_digest_challenge("Digest bad;key=\"val\", realm=\"r\", nonce=\"n\"");
+    assert(!ok_ctrl_key);
+    let _, ok_trailing_junk = wing::parse_digest_challenge("Digest realm=\"r\"junk, nonce=\"n\"");
+    assert(!ok_trailing_junk);
+    let _, ok_bad_unquoted = wing::parse_digest_challenge("Digest realm=\"r\", nonce=\"n\", algorithm=SHA\"256");
+    assert(!ok_bad_unquoted);
+
+    assert(!wing::qop_list_has_token("auth bogus", "auth"));
+    assert(!wing::qop_list_has_token("bogus auth", "auth"));
+    assert(wing::qop_list_has_token("auth, auth-int", "auth"));
+
+    var tiny_sink: u8[..48] = [];
+    assert(!wing::serialize_digest_auth("Mufasa", "http-auth@example.org", "nonce123", "/dir/index.html", "SHA-256", "753927fa0e85d155564e2e272a28d1802ca10daf4496794697cf8db5856cb6c1", "auth", "00000001", "cnonce123", "", false, tiny_sink));
+    assert(tiny_sink.len == 0);
     print("DIGEST_INVARIANTS_AND_GRAMMAR: OK");
 }
 

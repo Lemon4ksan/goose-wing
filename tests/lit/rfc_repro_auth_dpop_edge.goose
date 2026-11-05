@@ -152,6 +152,17 @@ fn main() {
     assert(!wing::matches_dpop_jkt_thumbprint(pub_key, "mismatched_claims_jkt_value_123456789012345", expected_jkt[..]));
     var tiny_proof: u8[..64] = [];
     assert(!wing::create_dpop_proof(key, "POST", "https://api.example.com/token", "", "", now_sec, "jti-1", tiny_proof));
+
+    // ---- 10. F001, F004 & F006: Padded JWS, Non-Integer IAT & Dirty Claims --
+    var padded_proof: u8[>..] = [];
+    padded_proof.append(proof[..]);
+    padded_proof.push('=');
+    assert(!wing::verify_dpop_proof(padded_proof[..], key, "POST", "https://api.example.com/token", "", "", now_sec, 300, 60, expected_jkt[..]));
+
+    var bad_iat_claims = wing::DPoPClaims { .. };
+    assert(!wing::parse_dpop_claims("{\"jti\":\"id1\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/\",\"iat\":1e100}", bad_iat_claims));
+    assert(!wing::parse_dpop_claims("{\"jti\":\"id1\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/\",\"iat\":\"1714000000\"}", bad_iat_claims));
+    assert(bad_iat_claims.jti.len == 0 && !bad_iat_claims.has_iat);
     print("DPOP_ESCAPED_AND_BOUNDS: OK");
 }
 

@@ -11,6 +11,7 @@ import std;
 import json;
 import core from "..";
 import .jwt;
+import .jwks;
 
 // ---- RFC 9449 Constants & Identifiers ------------------------------------
 
@@ -171,7 +172,7 @@ fn parse_dpop_jwk_coord<B>(
     if seen { valid = false; }
     seen = true;
     let val = json::read_string(reader, scratch);
-    if !dst.try_set(val) {
+    if core::index_of_byte(val, '=') != -1 || !dst.try_set(val) {
         valid = false;
     }
 }
@@ -564,8 +565,9 @@ fn verify_dpop_signature_with_jwk(
         guard jwk_info.kty[..] == "RSA" else { return false; }
         var decoded_n: u8[..512] = [];
         var decoded_e: u8[..8]   = [];
-        guard core::base64url_decode(jwk_info.n[..], decoded_n) && decoded_n.len >= 64 else { return false; }
-        guard core::base64url_decode(jwk_info.e[..], decoded_e) && decoded_e.len >= 1 else { return false; }
+        guard core::base64url_decode(jwk_info.n[..], decoded_n) else { return false; }
+        guard core::base64url_decode(jwk_info.e[..], decoded_e) else { return false; }
+        guard is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]) else { return false; }
         var sig_bytes: u8[..512] = [];
         guard core::base64url_decode(sig_b64, sig_bytes) else { return false; }
         if alg == "RS256" {
@@ -574,6 +576,27 @@ fn verify_dpop_signature_with_jwk(
         return core::rsa_pss_sha256_verify(decoded_n[..], decoded_e[..], signing_input, sig_bytes[..]);
     }
     return false;
+}
+
+// Parses a JSON numeric `iat` claim value from `reader` into `out.iat` (RFC 9449 §4.2).
+//
+// Example:
+//   reader at "1700000000}", out = DPoPClaims { .. }, had_error = false
+//   returns: out.iat = 1700000000, out.has_iat = true, had_error = false
+inline fn parse_dpop_iat_field(reader: json::Reader&, out: DPoPClaims&, had_error: bool&) {
+    let p = json::peek(reader);
+    guard (p >= '0' && p <= '9') || p == '-' else {
+        json::skip(reader);
+        had_error = true;
+        return;
+    }
+    let num = json::read_number(reader);
+    guard num >= 0.0 && num <= 9223372036854774784.0 else {
+        had_error = true;
+        return;
+    }
+    out.iat = num as i64;
+    out.has_iat = true;
 }
 
 // Parses decoded JSON payload into a typed DPoPClaims struct in a single pass.
@@ -627,9 +650,7 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
         } else if key == "iat" {
             if seen_iat { had_dup = true; }
             seen_iat = true;
-            let val = json::read_int(reader);
-            out.iat = val;
-            out.has_iat = true;
+            parse_dpop_iat_field(reader, out, had_error);
         } else if key == "nonce" {
             if seen_nonce { had_dup = true; }
             seen_nonce = true;
@@ -650,7 +671,11 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
         }
     };
 
-    return json::finish(reader) && !had_dup && !had_error;
+    guard json::finish(reader) && !had_dup && !had_error else {
+        out = DPoPClaims { .. };
+        return false;
+    }
+    return true;
 }
 
 // RFC 9449 Section 4.3 Rule 4: Mandatory unique jti claim validation.
@@ -824,24 +849,45 @@ fn matches_dpop_jkt_thumbprint_jwk(
 ) -> bool {
     var canonical: u8[..1024] = [];
     if jwk_info.kty[..] == "OKP" {
+        var decoded_x: u8[..64] = [];
+        guard core::base64url_decode(jwk_info.x[..], decoded_x) && decoded_x.len == 32 else { return false; }
+        var x_b64: u8[..64] = [];
+        core::base64url_encode(decoded_x[..], x_b64);
         canonical.append("{\"crv\":\"");
         canonical.append(jwk_info.crv[..]);
         canonical.append("\",\"kty\":\"OKP\",\"x\":\"");
-        canonical.append(jwk_info.x[..]);
+        canonical.append(x_b64[..]);
         canonical.append("\"}");
     } else if jwk_info.kty[..] == "EC" {
+        var decoded_x: u8[..64] = [];
+        var decoded_y: u8[..64] = [];
+        guard core::base64url_decode(jwk_info.x[..], decoded_x) && decoded_x.len == 32 else { return false; }
+        guard core::base64url_decode(jwk_info.y[..], decoded_y) && decoded_y.len == 32 else { return false; }
+        var x_b64: u8[..64] = [];
+        var y_b64: u8[..64] = [];
+        core::base64url_encode(decoded_x[..], x_b64);
+        core::base64url_encode(decoded_y[..], y_b64);
         canonical.append("{\"crv\":\"");
         canonical.append(jwk_info.crv[..]);
         canonical.append("\",\"kty\":\"EC\",\"x\":\"");
-        canonical.append(jwk_info.x[..]);
+        canonical.append(x_b64[..]);
         canonical.append("\",\"y\":\"");
-        canonical.append(jwk_info.y[..]);
+        canonical.append(y_b64[..]);
         canonical.append("\"}");
     } else if jwk_info.kty[..] == "RSA" {
+        var decoded_n: u8[..512] = [];
+        var decoded_e: u8[..8]   = [];
+        guard core::base64url_decode(jwk_info.n[..], decoded_n) else { return false; }
+        guard core::base64url_decode(jwk_info.e[..], decoded_e) else { return false; }
+        guard is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]) else { return false; }
+        var e_b64: u8[..16]  = [];
+        var n_b64: u8[..768] = [];
+        core::base64url_encode(decoded_e[..], e_b64);
+        core::base64url_encode(decoded_n[..], n_b64);
         canonical.append("{\"e\":\"");
-        canonical.append(jwk_info.e[..]);
+        canonical.append(e_b64[..]);
         canonical.append("\",\"kty\":\"RSA\",\"n\":\"");
-        canonical.append(jwk_info.n[..]);
+        canonical.append(n_b64[..]);
         canonical.append("\"}");
     } else {
         return false;
@@ -914,14 +960,16 @@ fn verify_dpop_proof(
     expected_jkt:    const u8[:] = "",
     expected_alg:    const u8[:] = "EdDSA",
 ) -> bool {
-    guard jwt.len > 0 && jwt.len <= MAX_DPOP_PROOF_LEN else { return false; }
+    guard jwt.len > 0 && jwt.len <= MAX_DPOP_PROOF_LEN && core::index_of_byte(jwt, '=') == -1 else { return false; }
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
 
     let header_b64 = jwt[..dot1];
-    let claims_b64 = jwt[(dot1 + 1)..dot2];
-    let sig_b64 = jwt[(dot2 + 1)..];
+    let claims_start = core::add_sat_i64(dot1, 1);
+    let claims_b64 = jwt[claims_start..dot2];
+    let sig_start = core::add_sat_i64(dot2, 1);
+    let sig_b64 = jwt[sig_start..];
     let signing_input = jwt[..dot2];
 
     var header_json: u8[..1024] = [];

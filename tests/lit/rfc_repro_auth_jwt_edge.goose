@@ -85,6 +85,25 @@ fn main() {
     assert(!wing::add_header_crit(valid_hdr, ""));
     assert(!wing::add_header_crit(valid_hdr, "alg"));
     assert(!wing::set_claim(parsed_c, "", "val"));
+
+    // ---- 7. F006: Transactional JSON Parsing, Empty Aud & Supported Crit ---
+    var dirty_hdr = wing::JwtHeader { .. };
+    assert(!wing::parse_jwt_header_json("{\"kid\":\"leaked-kid\",\"alg\":\"HS256\",\"alg\":\"RS256\"}", dirty_hdr));
+    assert(dirty_hdr.kid.len == 0);
+
+    var dirty_clm = wing::JwtClaims { .. };
+    assert(!wing::parse_jwt_claims_json("{\"sub\":\"leaked-sub\",\"exp\":1e100}", dirty_clm));
+    assert(dirty_clm.sub.len == 0);
+
+    var aud_clm = wing::JwtClaims { .. };
+    assert(!wing::set_audience(aud_clm, ""));
+    assert(!wing::add_audience(aud_clm, ""));
+    assert(aud_clm.audiences.len == 0);
+
+    var crit_opts = wing::JwtValidationOptions { .. };
+    assert(!wing::add_supported_crit(crit_opts, "alg"));
+    assert(wing::add_supported_crit(crit_opts, "custom_ext"));
+    assert(!wing::add_supported_crit(crit_opts, "custom_ext"));
     print("JWT_INT_CLAIMS_PARSING: OK");
 }
 

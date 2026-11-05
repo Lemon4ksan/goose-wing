@@ -343,9 +343,7 @@ fn find_param_delimiter(rem: const u8[:], param_start: i64&, param_end: i64&, is
     for i in rem.len {
         if rem[i] == '{' {
             param_start = i;
-            if i + 1 < rem.len && rem[i + 1] == '*' {
-                is_catchall = true;
-            }
+            is_catchall = (i + 1 < rem.len && rem[i + 1] == '*');
         } else if rem[i] == '}' && param_start >= 0 {
             param_end = i;
             break;
@@ -473,7 +471,9 @@ fn insert_route(
             param_start = 0;
         }
 
-        let name = if is_catchall { rem[2..param_end] } else { rem[1..param_end] };
+        let name_start = if is_catchall { 2 } else { 1 };
+        guard param_end > name_start else { return false; }
+        let name = rem[name_start..param_end];
         let suffix_after = rem[calc_next_char_pos(param_end)..];
 
         if is_catchall {
@@ -507,15 +507,21 @@ fn strip_query_and_fragment(path: const u8[:]) -> const u8[:] {
     return path;
 }
 
-// Strips absolute-URI scheme and authority if present (RFC 9112 Section 3.2.2).
-fn strip_scheme_and_authority(path: const u8[:]) -> const u8[:] {
-    var colon_slash = -1;
+inline fn find_scheme_colon_slash(path: const u8[:]) -> i64 {
     for i in path.len {
-        if path[i] == ':' && i + 2 < path.len && path[i + 1] == '/' && path[i + 2] == '/' {
-            colon_slash = i;
+        if path[i] == '/' {
             break;
         }
+        if path[i] == ':' && i + 2 < path.len && path[i + 1] == '/' && path[i + 2] == '/' {
+            return i;
+        }
     }
+    return -1;
+}
+
+// Strips absolute-URI scheme and authority if present (RFC 9112 Section 3.2.2).
+fn strip_scheme_and_authority(path: const u8[:]) -> const u8[:] {
+    let colon_slash = find_scheme_colon_slash(path);
     if colon_slash <= 0 {
         return path;
     }
@@ -764,6 +770,39 @@ fn resolve_wildcard_backtrack(
     return make_found_route(tree.nodes[next_w as i64]);
 }
 
+inline fn step_wildcard_or_backtrack(
+    tree:       const RadixTree&,
+    eff_path:   const u8[:],
+    cur_idx:    i32&,
+    cursor:     u16&,
+    bt_node:    i32&,
+    bt_cur:     u16,
+    bt_plen:    i64,
+    params:     ZeroAllocParams&,
+    out_ca_res: RouteMatchResult&,
+) -> bool, bool {
+    var next_w: i32 = -1;
+    var next_c: u16 = 0;
+    let ok_w, is_ca = try_match_wildcard_fallback(tree, cur_idx, eff_path, cursor, params, next_w, next_c, out_ca_res);
+    if ok_w {
+        cur_idx = next_w;
+        cursor = next_c;
+        return true, is_ca;
+    }
+    guard bt_node >= 0 else { return false, false; }
+    cur_idx = bt_node;
+    cursor = bt_cur;
+    params.len = bt_plen;
+    bt_node = -1;
+    let ok_bt, is_ca_bt = try_match_wildcard_fallback(
+        tree, cur_idx, eff_path, cursor, params, next_w, next_c, out_ca_res,
+    );
+    guard ok_bt else { return false, false; }
+    cur_idx = next_w;
+    cursor = next_c;
+    return true, is_ca_bt;
+}
+
 // Matches path against the RadixTree, recording parameter spans into params.
 fn match_path<B>(
     tree:           const RadixTree&,
@@ -809,14 +848,12 @@ fn match_path<B>(
             continue;
         }
 
-        var next_w: i32 = -1;
-        var next_c: u16 = 0;
         var ca_res = RouteMatchResult.NotFound;
-        let ok_w, is_ca = try_match_wildcard_fallback(tree, cur_idx, eff_path, cursor, params, next_w, next_c, ca_res);
-        if !ok_w { break; }
+        let ok_step, is_ca = step_wildcard_or_backtrack(
+            tree, eff_path, cur_idx, cursor, bt_node, bt_cur, bt_plen, params, ca_res,
+        );
+        if !ok_step { break; }
         if is_ca { return ca_res; }
-        cur_idx = next_w;
-        cursor = next_c;
     }
 
     return resolve_wildcard_backtrack(tree, bt_node, eff_path, bt_cur, bt_plen, params);
