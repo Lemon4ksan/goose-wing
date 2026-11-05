@@ -109,9 +109,37 @@ fn test_push_sink_chunked_streaming() {
     // CHECK: Wikipedia
 }
 
+fn test_soa_slot_encapsulation() {
+    print("=== SoAConnTable Zero-Cost UFCS Encapsulation ===");
+    var table = wing::SoAConnTable { .. };
+    var pipeline = wing::ServerPipelineConfig { .. };
+
+    let slot = table.soa_table_alloc(42, 10);
+    print(if slot == 0 { "soa_alloc_0" } else { "soa_alloc_fail" });
+    // CHECK: soa_alloc_0
+
+    let tr_tcp = table.slot_transport(slot);
+    print(if tr_tcp.is_connected() { "slot_tr_connected" } else { "slot_tr_disc" });
+    // CHECK: slot_tr_connected
+
+    let h2_idx = table.ensure_h2_session(slot, "wing-h2", 1000);
+    print(if h2_idx >= 0 && table.is_h2[slot] { "h2_session_bound" } else { "h2_session_fail" });
+    // CHECK: h2_session_bound
+
+    table.release_h2_session(slot, pipeline);
+    print(if !table.is_h2[slot] && table.h2_slot_map[slot] == -1 { "h2_session_released" } else { "h2_release_fail" });
+    // CHECK: h2_session_released
+
+    table.soa_table_free(slot);
+    let tr_disc = table.slot_transport(slot);
+    print(if !tr_disc.is_connected() { "slot_freed_disc" } else { "slot_still_conn" });
+    // CHECK: slot_freed_disc
+}
+
 fn main() {
     test_transport_polymorphism();
     test_pool_and_connection();
     test_span_headers_and_parsing();
     test_push_sink_chunked_streaming();
+    test_soa_slot_encapsulation();
 }

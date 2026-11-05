@@ -170,6 +170,7 @@ import server.pipeline;
 import server.edge_filter;
 import server.cache;
 import server.server;
+import server.reactor;
 import server.h2_multiplexer;
 import server.soa_timer;
 import server.profiler;

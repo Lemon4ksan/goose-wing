@@ -674,15 +674,15 @@ fn format_ipv6_bytes(ip6: const u8[16]&, out: u8[..64]&) {
 }
 
 fn collect_ipv4_dns_candidates(
-    session:  const Session&,
-    a_entry:  const DnsCacheEntry&,
-    port_num: u16,
-    out_list: DnsCandidate[..8]&,
+    ssrf_guard: const SsrfGuardConfig&,
+    a_entry:    const DnsCacheEntry&,
+    port_num:   u16,
+    out_list:   DnsCandidate[..8]&,
 ) -> bool {
     var ip4_buf: u8[..64] = [];
     for ip4 in a_entry.ipv4_hints {
         format_ipv4_u32(ip4, ip4_buf);
-        if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network {
+        if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
         }
         if out_list.len < 8 {
@@ -693,7 +693,7 @@ fn collect_ipv4_dns_candidates(
 }
 
 fn collect_ipv6_dns_candidates(
-    session:    const Session&,
+    ssrf_guard: const SsrfGuardConfig&,
     aaaa_entry: const DnsCacheEntry&,
     port_num:   u16,
     out_list:   DnsCandidate[..8]&,
@@ -701,7 +701,7 @@ fn collect_ipv6_dns_candidates(
     var ip6_buf: u8[..64] = [];
     for &ip6 in aaaa_entry.ipv6_hints {
         format_ipv6_bytes(ip6, ip6_buf);
-        if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network {
+        if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
         }
         if out_list.len < 8 {
@@ -725,18 +725,18 @@ fn resolve_and_validate_live_host(
     var task = new_dns_race_task(port_num);
 
     var a_entry = DnsCacheEntry { .. };
-    let a_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_A, now_sec, a_entry);
+    let a_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_A, now_sec, a_entry);
     if a_stat != DnsCacheStatus.Expired {
-        guard collect_ipv4_dns_candidates(session, a_entry, port_num, task.ipv4_candidates) else {
+        guard collect_ipv4_dns_candidates(session.ssrf_guard, a_entry, port_num, task.ipv4_candidates) else {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
         }
         task.a_status = DnsQueryStatus.Success;
     }
 
     var aaaa_entry = DnsCacheEntry { .. };
-    let aaaa_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_AAAA, now_sec, aaaa_entry);
+    let aaaa_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_AAAA, now_sec, aaaa_entry);
     if aaaa_stat != DnsCacheStatus.Expired {
-        guard collect_ipv6_dns_candidates(session, aaaa_entry, port_num, task.ipv6_candidates) else {
+        guard collect_ipv6_dns_candidates(session.ssrf_guard, aaaa_entry, port_num, task.ipv6_candidates) else {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
         }
         task.aaaa_status = DnsQueryStatus.Success;
@@ -744,7 +744,7 @@ fn resolve_and_validate_live_host(
 
     if session.enable_ech || session.auto_ech_discovery {
         var https_entry = DnsCacheEntry { .. };
-        let h_stat = dns_cache_lookup(session.dns_cache, host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
+        let h_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
         if h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 {
             if https_entry.https_records[0].has_ech {
                 out_ech_list.append(https_entry.https_records[0].ech_config_list[..]);
@@ -752,7 +752,7 @@ fn resolve_and_validate_live_host(
         }
     }
 
-    let _ = check_dns_resolution_delay_tick(task, now_ms + rfc::HE_RESOLUTION_DELAY_MS);
+    let _ = task.check_dns_resolution_delay_tick(now_ms + rfc::HE_RESOLUTION_DELAY_MS);
     interleave_candidates_he(task.ipv6_candidates[..], task.ipv4_candidates[..], out_candidates);
     if out_candidates.len == 0 {
         out_candidates.push(new_dns_candidate(AddressFamily.IPv4, host_str, port_num, L4Protocol.Tcp, 40));
@@ -761,7 +761,7 @@ fn resolve_and_validate_live_host(
 }
 
 fn dial_live_tcp_or_proxy(
-    session:     const Session&,
+    proxy_url:   const u8[:],
     proxy_chain: const ProxyChain&,
     host_str:    const u8[:],
     port_num:    u16,
@@ -777,7 +777,7 @@ fn dial_live_tcp_or_proxy(
         guard sock > 0 else {
             return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed");
         }
-        let p_url = core::new_url(session.proxy_url[..]);
+        let p_url = core::new_url(proxy_url);
         let p_user = core::username(p_url);
         let p_pass = core::password(p_url);
         if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
@@ -798,17 +798,17 @@ fn dial_live_tcp_or_proxy(
     }
 
     var mgr = new_attempt_manager();
-    start_attempt_race(mgr, candidates, now_ms);
+    mgr.start_attempt_race(candidates, now_ms);
     for &cand in candidates {
         let sock = native_tcp_connect(cand.ip[..], cand.port, eff_timeout);
         if sock > 0 {
             if mgr.attempts.len > 0 {
-                let _ = bind_winner_attempt(mgr, mgr.attempts[0].attempt_id, false);
+                let _ = mgr.bind_winner_attempt(mgr.attempts[0].attempt_id, false);
             }
             out_ip.append(cand.ip[..]);
             return sock, Error { .. };
         }
-        let _ = tick_attempt_manager(mgr, now_ms + mgr.effective_cad_ms);
+        let _ = mgr.tick_attempt_manager(now_ms + mgr.effective_cad_ms);
     }
     return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
 }
@@ -1094,10 +1094,10 @@ fn execute_live_network_hop(
     let proxy_chain = resolve_hop_proxy_chain(session);
     if has_h3 && is_https && proxy_chain.is_direct && session.enable_protocol_racing {
         if execute_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp) {
-            record_success(session.altsvc, origin_buf);
+            session.altsvc.record_success(origin_buf);
             return Error { .. };
         }
-        record_failure(session.altsvc, origin_buf, now_sec);
+        session.altsvc.record_failure(origin_buf, now_sec);
     }
 
     let site_site = if ctx.top_frame_origin.host.len > 0 {
@@ -1119,12 +1119,12 @@ fn execute_live_network_hop(
     );
 
     let first_ip = if dns_candidates.len > 0 { dns_candidates[0].ip[..] } else { "" };
-    var conn_id, has_pooled = acquire_pooled_connection(session.pool, pool_key, first_ip, now_ns);
+    var conn_id, has_pooled = session.pool.acquire_pooled_connection(pool_key, first_ip, now_ns);
     if !has_pooled {
         let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
         var dialed_ip: u8[..64] = [];
         let sock, dial_err = dial_live_tcp_or_proxy(
-            session, proxy_chain, host_str, port_num, dns_candidates[..], eff_timeout, now_ms, dialed_ip,
+            session.proxy_url[..], proxy_chain, host_str, port_num, dns_candidates[..], eff_timeout, now_ms, dialed_ip,
         );
         if !ok(dial_err) {
             return dial_err;
@@ -1132,7 +1132,7 @@ fn execute_live_network_hop(
         var t = Transport.Disconnected;
         var neg_proto = NegotiatedProtocol.Http11;
         if is_https {
-            let host_is_hsts = session.enable_hsts && is_hsts_host(session.hsts, host_str, now_sec);
+            let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
             let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
 
             var tls_cfg = TlsClientHandshakeConfig { .. };
