@@ -34,7 +34,7 @@ fn test_retire_conn_id_on_zero_length_scid_rejected() {
     var srv = internal::new_quic_server_connection("");
     srv.state = internal::QuicConnState.Established;
 
-    var rcid_payload: u8[>..] = [];
+    var rcid_payload: u8[..32] = [];
     assert(internal::encode_retire_conn_id_frame(rcid_payload, 1));
 
     // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
@@ -52,7 +52,7 @@ fn test_new_conn_id_on_zero_length_dcid_rejected() {
     var client = internal::new_quic_client_connection("", scid[..]);
     client.state = internal::QuicConnState.Established;
 
-    var ncid_payload: u8[>..] = [];
+    var ncid_payload: u8[..64] = [];
     let reset_tok: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let new_cid:   u8[4]  = [0xAA, 0xBB, 0xCC, 0xDD];
     assert(internal::encode_new_conn_id_frame(ncid_payload, 1, 0, new_cid[..], reset_tok));

@@ -256,14 +256,15 @@ fn ohttp_seal_request(
         return false;
     }
 
-    var ct: u8[>..] = [];
-    guard hpke_seal(session.ctx, [], inner_bhttp, ct) else { return false; }
-    guard rfc::OHTTP_HDR_LEN + 32 + ct.len <= out.cap else { return false; }
+    guard rfc::OHTTP_HDR_LEN + 32 + inner_bhttp.len + 16 <= out.cap else { return false; }
 
     out.clear();
     out.append(hdr[..]);
     out.append(enc[..]);
-    out.append(ct[..]);
+    guard hpke_seal(session.ctx, [], inner_bhttp, out) else {
+        out.clear();
+        return false;
+    }
 
     session.enc.clear();
     session.enc.append(enc[..]);
@@ -308,16 +309,12 @@ fn ohttp_open_request(
     core::secure_zeroize_32(sk);
     guard ok_setup else { return false; }
 
-    var pt: u8[>..] = [];
-    guard hpke_open(session.ctx, [], ct, pt) else { return false; }
-    guard pt.len <= out.cap else { return false; }
-
     out.clear();
-    out.append(pt[..]);
+    guard hpke_open(session.ctx, [], ct, out) else { return false; }
     session.enc.clear();
     session.enc.append(enc[..]);
     session.enc_len = 32;
-    out_len = pt.len as i32;
+    out_len = out.len as i32;
     return true;
 }
 
@@ -400,22 +397,22 @@ fn ohttp_open_response(
     for i in 16 { tag[i] = ct[ct.len - 16 + i]; }
     let body = ct[..ct.len - 16];
 
-    var pt: u8[>..] = [];
+    out.clear();
     var open_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        open_ok = core::aes128_gcm_open(key16, nonce, body, [], tag, pt);
+        open_ok = core::aes128_gcm_open(key16, nonce, body, [], tag, out);
         core::secure_zeroize_16(key16);
     } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        open_ok = core::chacha20_poly1305_open(key, nonce, body, [], tag, pt);
+        open_ok = core::chacha20_poly1305_open(key, nonce, body, [], tag, out);
     }
     core::secure_zeroize_32(key);
-    guard open_ok else { return false; }
+    guard open_ok else {
+        out.clear();
+        return false;
+    }
 
-    guard pt.len <= out.cap else { return false; }
-    out.clear();
-    out.append(pt[..]);
-    out_len = pt.len as i32;
+    out_len = out.len as i32;
     return true;
 }

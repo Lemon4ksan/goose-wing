@@ -519,7 +519,7 @@ fn tls_record_decrypt_aes128_gcm_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -751,7 +751,7 @@ fn tls_record_decrypt_aes256_gcm_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -803,7 +803,7 @@ fn tls_record_decrypt_chacha20_poly1305_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -851,19 +851,27 @@ fn tls_record_seal_into(
         guard key.len == 16 else { return 0, TlsAlert.InternalError, false; }
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        return tls_record_seal_aes128_gcm_into(key16, iv, seq_num, inner_type, plaintext, out_ciphertext);
+        let n, alert, ok = tls_record_seal_aes128_gcm_into(key16, iv, seq_num, inner_type, plaintext, out_ciphertext);
+        core::secure_zeroize_16(key16);
+        return n, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = key[i]; }
-        return tls_record_seal_aes256_gcm_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
+        let n, alert, ok = tls_record_seal_aes256_gcm_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
+        core::secure_zeroize_32(key32);
+        return n, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = key[i]; }
-        return tls_record_seal_chacha20_poly1305_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
+        let n, alert, ok = tls_record_seal_chacha20_poly1305_into(
+            key32, iv, seq_num, inner_type, plaintext, out_ciphertext,
+        );
+        core::secure_zeroize_32(key32);
+        return n, alert, ok;
     }
     return 0, TlsAlert.InternalError, false;
 }
@@ -881,19 +889,27 @@ fn tls_record_decrypt_into(
         guard key.len == 16 else { return 0, 0, TlsAlert.InternalError, false; }
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = key[i]; }
-        return tls_record_decrypt_aes128_gcm_into(key16, iv, seq_num, record_header, record_payload, out_plaintext);
+        let n, inner, alert, ok = tls_record_decrypt_aes128_gcm_into(
+            key16, iv, seq_num, record_header, record_payload, out_plaintext,
+        );
+        core::secure_zeroize_16(key16);
+        return n, inner, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = key[i]; }
-        return tls_record_decrypt_aes256_gcm_into(key32, iv, seq_num, record_header, record_payload, out_plaintext);
+        let n, inner, alert, ok = tls_record_decrypt_aes256_gcm_into(
+            key32, iv, seq_num, record_header, record_payload, out_plaintext,
+        );
+        core::secure_zeroize_32(key32);
+        return n, inner, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = key[i]; }
-        return tls_record_decrypt_chacha20_poly1305_into(
+        let n, inner, alert, ok = tls_record_decrypt_chacha20_poly1305_into(
             key32,
             iv,
             seq_num,
@@ -901,6 +917,8 @@ fn tls_record_decrypt_into(
             record_payload,
             out_plaintext,
         );
+        core::secure_zeroize_32(key32);
+        return n, inner, alert, ok;
     }
     return 0, 0, TlsAlert.InternalError, false;
 }
@@ -950,6 +968,9 @@ inline fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_
     let is_app = content_type == rfc::TLS_CONTENT_APPLICATION_DATA;
     let is_ccs = content_type == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC;
     guard is_app || is_ccs else {
+        return false;
+    }
+    guard core::add_sat_i64(out.len, 5) <= out.cap else {
         return false;
     }
     out.push(content_type);

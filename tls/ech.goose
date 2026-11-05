@@ -76,17 +76,29 @@ inline fn is_valid_dns_char(b: u8) -> bool {
 }
 
 fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
-    guard pub_raw.len >= 1 && pub_raw.len <= 255 else { return false; }
+    guard pub_raw.len >= 1 && pub_raw.len <= 253 else { return false; }
     var all_digits_dots = true;
-    var last_b: u8 = 0;
+    var first_b:   u8  = 0;
+    var last_b:    u8  = 0;
+    var label_len: i64 = 0;
     for b in pub_raw {
+        if first_b == 0 { first_b = b; }
         guard is_valid_dns_char(b) else { return false; }
         if !is_digit_or_dot(b) {
             all_digits_dots = false;
         }
+        if b == '.' {
+            guard last_b != '.' && last_b != '-' else { return false; }
+            label_len = 0;
+        } else {
+            guard b != '-' || last_b != '.' else { return false; }
+            label_len = core::add_sat_i64(label_len, 1);
+            guard label_len <= 63 else { return false; }
+        }
         last_b = b;
     }
-    guard last_b != '.' else { return false; }
+    guard first_b != '.' && first_b != '-' else { return false; }
+    guard last_b != '.' && last_b != '-' else { return false; }
     guard !all_digits_dots else { return false; }
     return true;
 }
@@ -261,6 +273,8 @@ fn pad_ech_inner<B>(inner_bytes: const u8[:], max_name_len: u8, real_sni_len: i6
     let rem = current_total % 32;
     let align_pad = if rem != 0 { core::sub_sat_i64(32, rem) } else { 0 };
     let total_padding = core::add_sat_i64(pad_len, align_pad);
+    let needed = core::add_sat_i64(inner_bytes.len, total_padding);
+    guard core::add_sat_i64(out_padded.len, needed) <= out_padded.cap else { return false; }
 
     out_padded.append(inner_bytes);
     for i in total_padding {
@@ -285,6 +299,7 @@ fn build_ech_outer_extension<B>(
 ) -> bool {
     let ct_len = ciphertext.len;
     guard ct_len >= 1 && ct_len <= 65535 else { return false; }
+    guard core::add_sat_i64(out.len, core::add_sat_i64(42, ct_len)) <= out.cap else { return false; }
 
     out.push(rfc::ECH_CLIENT_OUTER);
     out.push(((cs.kdf_id >> 8) & 0xFF) as u8);
@@ -314,14 +329,14 @@ fn build_ech_inner_extension<B>(out: B&) {
 
 // Seals the padded ClientHelloInner using HPKE and the selected ECHConfig.
 // Info string: "tls ech\x00" || ECHConfig
-fn seal_ech_inner(
+fn seal_ech_inner<B>(
     config:       const EchConfig&,
     cs:           const EchCipherSuite&,
     outer_aad:    const u8[:],
     inner_padded: const u8[:],
     ephemeral_sk: const u8[32]&,
     out_enc:      u8[32]&,
-    out_ct:       u8[>..]&,
+    out_ct:       B&,
 ) -> bool {
     var info: u8[..600] = [];
     guard 8 + config.raw_bytes.len <= info.cap else { return false; }
@@ -424,14 +439,15 @@ fn ech_fsm_on_server_hello(
 
     if sh_type == EchServerHelloType.HelloRetryRequest {
         guard !fsm.has_hrr else { return false; } // Strictly only ONE HRR allowed
-        fsm.has_hrr = true;
         if has_ech_ext {
             // ECH rejected with retry_configs
             guard parse_and_validate_ech_retry_configs(ech_ext_data, out_retry_configs) else { return false; }
+            fsm.has_hrr = true;
             fsm.mode = EchHandshakeMode.RejectedWithRetry;
             return true;
         } else {
             // ECH accepted in HRR; client continues ECH with ClientHello2
+            fsm.has_hrr = true;
             fsm.mode = EchHandshakeMode.Offered;
             return true;
         }

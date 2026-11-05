@@ -145,7 +145,7 @@ fn test_quic_ack_offset_chaining() {
         first_ack_range: 5,
         ..
     };
-    var wire: u8[>..] = [];
+    var wire: u8[..64] = [];
     // Prefix wire with 3 padding bytes (PING or PADDING frames)
     wire.append([0x00, 0x00, 0x01]);
 

@@ -882,7 +882,7 @@ def main() -> int:
                         rf"\bencode_\w+_to\([^,]+,\s*{re.escape(fn_out_param_name)}\b", code_no_c18
                     ):
                         fn_wrote_to_out = True
-                    elif re.search(rf"\b{re.escape(fn_out_param_name)}\.clear\(\)", code_no_c18):
+                    elif re.search(rf"\b{re.escape(fn_out_param_name)}\.(?:clear|resize|truncate)\(", code_no_c18):
                         fn_wrote_to_out = False
                     elif fn_wrote_to_out:
                         m_err_ret = re.search(

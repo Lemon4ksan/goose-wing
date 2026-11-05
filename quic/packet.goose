@@ -62,20 +62,22 @@ fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
     guard val <= 0x3FFFFFFFFFFFFFFF else { return false; }
 
     if val <= 63 {
-        out.push(val as u8);
-        return true;
+        return out.try_push(val as u8);
     }
     if val <= 16383 {
+        guard out.cap - out.len >= 2 else { return false; }
         let masked = (0x4000 | val) as u16;
         core::append_u16_be(out, masked);
         return true;
     }
     if val <= 1073741823 {
+        guard out.cap - out.len >= 4 else { return false; }
         let masked = (0x80000000 | val) as u32;
         core::append_u32_be(out, masked);
         return true;
     }
 
+    guard out.cap - out.len >= 8 else { return false; }
     let masked = 0xC000000000000000 | val;
     core::append_u64_be(out, masked);
     return true;
@@ -410,6 +412,8 @@ fn parse_quic_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bo
 //   ht = QuicHeaderType.Initial, pn_bits = 0, version = 1
 //   returns: 0xC0, ok = true
 fn build_long_header_first_byte(ht: QuicHeaderType, pn_bits: u8, version: u32 = rfc::QUIC_VERSION_1) -> u8, bool {
+    guard pn_bits <= 0x03 else { return 0, false; }
+    guard version == rfc::QUIC_VERSION_1 || version == rfc::QUIC_VERSION_2 else { return 0, false; }
     let base = 0xC0 | pn_bits;
     if version == rfc::QUIC_VERSION_2 {
         match ht {
@@ -430,8 +434,11 @@ fn build_long_header_first_byte(ht: QuicHeaderType, pn_bits: u8, version: u32 = 
 }
 
 fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bits: u8) -> bool {
+    let orig_len = out.len;
     let b0, ok_b0 = build_long_header_first_byte(hdr.header_type, pn_bits, hdr.version);
     guard ok_b0 else { return false; }
+    let min_fixed = 7 + hdr.dcid.len + hdr.scid.len;
+    guard out.cap - out.len >= min_fixed else { return false; }
     out.push(b0);
     core::append_u32_be(out, hdr.version);
 
@@ -441,15 +448,18 @@ fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bi
     out.append(hdr.scid[..]);
 
     if hdr.header_type == QuicHeaderType.Initial {
-        quic_encode_varint(out, hdr.token.len as u64);
-        if hdr.token.len > 0 {
-            out.append(hdr.token[..]);
+        guard quic_encode_varint(out, hdr.token.len as u64) && out.try_append(hdr.token[..]) else {
+            out.resize(orig_len, 0);
+            return false;
         }
     }
 
     if hdr.header_type != QuicHeaderType.Retry {
-        quic_encode_varint(out, hdr.payload_length);
-        encode_packet_number(out, hdr.packet_number, pn_len);
+        guard quic_encode_varint(out, hdr.payload_length)
+            && encode_packet_number(out, hdr.packet_number, pn_len) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     }
     return true;
 }
@@ -466,6 +476,7 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     }
 
     // Short Header (1-RTT)
+    guard out.cap - out.len >= 1 + hdr.dcid.len + (pn_len as i64) else { return false; }
     var b0: u8 = 0x40 | pn_bits;
     if hdr.spin_bit { b0 = b0 | 0x20; }
     if hdr.key_phase { b0 = b0 | 0x04; }
@@ -474,8 +485,7 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     if hdr.dcid.len > 0 {
         out.append(hdr.dcid[..]);
     }
-    encode_packet_number(out, hdr.packet_number, pn_len);
-    return true;
+    return encode_packet_number(out, hdr.packet_number, pn_len);
 }
 
 // ---- header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
@@ -552,6 +562,7 @@ fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -
 // Encodes truncated packet number (1 to 4 bytes) in big-endian order (RFC 9000 Appendix A.2).
 fn encode_packet_number<B>(out: B&, pn: u64, pn_len: u8) -> bool {
     guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    guard out.cap - out.len >= (pn_len as i64) else { return false; }
     let b0 = (pn & 0xFF) as u8;
     let b1 = ((pn >> 8) & 0xFF) as u8;
     let b2 = ((pn >> 16) & 0xFF) as u8;
@@ -586,9 +597,10 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
     guard truncated_pn <= rfc::QUIC_MAX_PN else { return 0, false; }
 
     let pn_nbits = (pn_len as u64) << 3;
+    let pn_win = (1 as u64) << pn_nbits;
+    guard truncated_pn < pn_win else { return 0, false; }
     guard 0xFFFFFFFFFFFFFFFF - largest_acked_pn >= 1 else { return 0, false; }
     let expected_pn = largest_acked_pn + 1;
-    let pn_win = (1 as u64) << pn_nbits;
     let pnhwin = pn_win >> 1;
     let pn_mask = pn_win - 1;
     let inv_mask = ~pn_mask;
@@ -660,11 +672,11 @@ fn can_send_on_path(path: const PathState&, packet_bytes: u64) -> bool {
 }
 
 fn on_path_bytes_received(path: PathState&, bytes: u64) {
-    path.bytes_received += bytes;
+    path.bytes_received = core::add_sat_u64(path.bytes_received, bytes);
 }
 
 fn on_path_bytes_sent(path: PathState&, bytes: u64) {
-    path.bytes_sent += bytes;
+    path.bytes_sent = core::add_sat_u64(path.bytes_sent, bytes);
 }
 
 fn validate_path(path: PathState&) {
@@ -808,10 +820,13 @@ fn insert_fragment(
     payload: const u8[:],
     is_fin:  bool,
 ) -> bool {
+    guard payload.len >= 0 else { return false; }
     let plen_u64 = payload.len as u64;
     guard 0xFFFFFFFFFFFFFFFF - offset >= plen_u64 else { return false; }
     let frag_end = offset + plen_u64;
-    guard frag_end <= buf.max_data_limit else { return false; } // QUIC_ERR_FLOW_CONTROL
+    guard frag_end <= rfc::QUIC_VARINT_MAX && frag_end <= buf.max_data_limit else {
+        return false; // QUIC_ERR_FLOW_CONTROL
+    }
 
     if buf.fin_received && frag_end > buf.final_size {
         return false; // QUIC_ERR_FINAL_SIZE: data exceeds already established final size
@@ -822,6 +837,10 @@ fn insert_fragment(
     }
 
     if frag_end <= buf.consumed_offset {
+        if is_fin {
+            buf.fin_received = true;
+            buf.final_size = frag_end;
+        }
         return true; // Duplicate of already consumed stream data
     }
 
@@ -829,12 +848,13 @@ fn insert_fragment(
     let payload_skip = (eff_start - offset) as i64;
     let needed_len = frag_end - buf.consumed_offset;
 
+    guard needed_len <= ARENA_MAX_BYTES else { return false; }
+    guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
     guard arena_ensure_bytes(buf.arena, needed_len) else { return false; }
 
     let base_slab = (eff_start - buf.consumed_offset) as i64;
     arena_write_payload(buf.arena, base_slab, payload, payload_skip);
 
-    guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
     if is_fin {
         buf.fin_received = true;
         buf.final_size = frag_end;
@@ -851,10 +871,12 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&, max_bytes: i64 = -1) -> u
     let avail_end = buf.intervals[0].end;
     let total_avail = (avail_end - buf.consumed_offset) as i64;
     guard total_avail > 0 && total_avail <= (buf.arena.chunks.len as i64) else { return 0; }
+    let avail_out = out.cap - out.len;
+    guard avail_out > 0 else { return 0; }
 
-    var take_bytes = total_avail;
+    var take_bytes = min(total_avail, avail_out);
     if max_bytes >= 0 {
-        take_bytes = min(total_avail, max_bytes);
+        take_bytes = min(take_bytes, max_bytes);
     }
     guard take_bytes > 0 else { return 0; }
 
@@ -877,13 +899,20 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&, max_bytes: i64 = -1) -> u
 // If with_length is true (default), encodes frame type 0x31 with VarInt length prefix.
 // If with_length is false, encodes frame type 0x30 consuming remainder of packet.
 fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
+    let orig_len = out.len;
     if with_length {
-        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN) else { return false; }
-        guard quic_encode_varint(out, payload.len as u64) else { return false; }
+        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN)
+            && quic_encode_varint(out, payload.len as u64) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     } else {
         guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM) else { return false; }
     }
-    out.append(payload);
+    guard out.try_append(payload) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -897,12 +926,14 @@ fn decode_quic_datagram_frame(
     offset:     u64,
     packet_end: u64 = 0,
 ) -> const u8[:], u64, bool {
-    guard offset < (src.len as u64) else { return "", offset, false; }
-    let ftype, off1, ok1 = quic_decode_varint(src, offset);
-    guard ok1 else { return "", offset, false; }
-
     let total_len = src.len as u64;
-    let limit = if packet_end > 0 && packet_end <= total_len { packet_end } else { total_len };
+    guard offset < total_len else { return "", offset, false; }
+    if packet_end > 0 {
+        guard packet_end <= total_len && offset < packet_end else { return "", offset, false; }
+    }
+    let limit = if packet_end > 0 { packet_end } else { total_len };
+    let ftype, off1, ok1 = quic_decode_varint(src, offset);
+    guard ok1 && off1 <= limit else { return "", offset, false; }
 
     if ftype == rfc::QUIC_FRAME_DATAGRAM {
         guard off1 <= limit else { return "", offset, false; }

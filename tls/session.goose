@@ -925,7 +925,7 @@ fn parse_tls13_certificate_chain(payload: const u8[:], out_certs: const u8[:][..
 
 fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
     var entries: TlsExtensionEntry[..32] = [];
-    guard parse_extensions_block(ext_bytes, entries) else { return "", true; }
+    guard parse_extensions_block(ext_bytes, entries) else { return "", false; }
     let status_data, has_st = find_extension(entries, rfc::TLS_EXT_STATUS_REQUEST);
     guard has_st else { return "", true; }
     return unwrap_tls_ocsp_response(status_data);
@@ -1944,6 +1944,23 @@ fn verify_client_hello_psk_binder(
     return core::ct_eq_bytes(exp_binder[..], binder_slice);
 }
 
+fn verify_client_hello_psk_entry(
+    entries: const TlsExtensionEntry[..32]&,
+    payload: const u8[:],
+    psk_ext: const u8[:],
+    out_psk: u8[32]&,
+) -> bool {
+    guard entries.len > 0 else { return false; }
+    var last_type: u16 = 0;
+    for e in entries { last_type = e.ext_type; }
+    guard last_type == rfc::TLS_EXT_PRE_SHARED_KEY else { return false; }
+    guard verify_client_hello_psk_binder(payload, psk_ext, out_psk) else {
+        core::secure_zeroize_32(out_psk);
+        return false;
+    }
+    return true;
+}
+
 // Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, and PSK.
 //
 // Example:
@@ -2008,7 +2025,8 @@ fn parse_client_hello_for_server(
     }
 
     let psk_ext, has_psk = find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
-    if has_psk && verify_client_hello_psk_binder(payload, psk_ext, out_psk_secret) {
+    if has_psk {
+        guard verify_client_hello_psk_entry(entries, payload, psk_ext, out_psk_secret) else { return false; }
         out_psk_resumed = true;
     }
     return out_session_id.try_set(sid);

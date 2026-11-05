@@ -337,15 +337,16 @@ fn xchacha20_poly1305_seal<B>(
     var subnonce: u8[12] = [0; 12];
     for i in 8 { subnonce[4 + i] = nonce24[16 + i]; }
 
-    let ot_block = chacha20_block(subkey, 0, subnonce);
+    var ot_block = chacha20_block(subkey, 0, subnonce);
     var otk: u8[32] = [0; 32];
     for i in 32 { otk[i] = ot_block[i]; }
+    secure_zeroize_64(ot_block);
 
     let ct_start = out_ciphertext.len;
     chacha20_xor(subkey, 1, subnonce, plaintext, out_ciphertext);
     secure_zeroize_32(subkey);
     guard out_ciphertext.len - ct_start == plaintext.len else {
-        out_ciphertext.resize(ct_start);
+        out_ciphertext.clear();
         secure_zeroize_32(otk);
         var zero_tag: u8[16] = [0; 16];
         return zero_tag;
@@ -372,9 +373,10 @@ fn xchacha20_poly1305_open<B>(
     var subnonce: u8[12] = [0; 12];
     for i in 8 { subnonce[4 + i] = nonce24[16 + i]; }
 
-    let ot_block = chacha20_block(subkey, 0, subnonce);
+    var ot_block = chacha20_block(subkey, 0, subnonce);
     var otk: u8[32] = [0; 32];
     for i in 32 { otk[i] = ot_block[i]; }
+    secure_zeroize_64(ot_block);
 
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
     guard ct_eq_tag16(computed_tag, tag) else {
@@ -388,16 +390,17 @@ fn xchacha20_poly1305_open<B>(
     secure_zeroize_32(subkey);
     secure_zeroize_32(otk);
     guard out_plaintext.len - start_len == ciphertext.len else {
-        out_plaintext.resize(start_len);
+        out_plaintext.clear();
         return false;
     }
     return true;
 }
 
 inline fn chacha20_poly1305_key(key: const u8[32]&, nonce12: const u8[12]&) -> u8[32] {
-    let ot_block = chacha20_block(key, 0, nonce12);
+    var ot_block = chacha20_block(key, 0, nonce12);
     var otk: u8[32] = [0; 32];
     for i in 32 { otk[i] = ot_block[i]; }
+    secure_zeroize_64(ot_block);
     return otk;
 }
 
@@ -497,7 +500,7 @@ fn chacha20_poly1305_open<B>(
     let start_len = out_plaintext.len;
     chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
     guard out_plaintext.len - start_len == ciphertext.len else {
-        out_plaintext.resize(start_len);
+        out_plaintext.clear();
         return false;
     }
     return true;

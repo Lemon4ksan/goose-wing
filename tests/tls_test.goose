@@ -126,7 +126,7 @@ fn test_record_layer_and_dos(t: lit::T&) {
         sub.assert_eq(wing::tls_alert_to_u8(alert_ct), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "unexpected message alert");
 
         // Header encoder bounds: rejecting ciphertext > 16640 and bad content type
-        var enc_out: u8[>..] = [];
+        var enc_out: u8[..64] = [];
         sub.assert_false(wing::encode_tls_ciphertext_header(enc_out, 0x17, 16641), "encoder rejects oversized ciphertext");
         sub.assert_false(wing::encode_tls_ciphertext_header(enc_out, 0x99, 100), "encoder rejects invalid content type");
     };
@@ -3077,7 +3077,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_false(ok_trunc_list, "ECHConfigList with trailing garbage rejected");
 
         // 7. ECH inner padding bounds
-        var padded: u8[>..] = [];
+        var padded: u8[..512] = [];
         sub.assert_false(wing::pad_ech_inner("", 64, 10, padded), "empty inner_bytes rejected");
         sub.assert_false(wing::pad_ech_inner("inner", 64, -1, padded), "negative real_sni_len rejected");
         sub.assert_true(wing::pad_ech_inner("inner", 64, 10, padded), "valid padding succeeds");
@@ -3465,7 +3465,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
     // ------------------------------------------------------------------------
     t.run("TLS-37: Post-Handshake NewSessionTicket Lifetime, Nonce & EarlyData Bounds") { sub =>
         // 1. Valid NewSessionTicket
-        var b_ticket: u8[>..] = [];
+        var b_ticket: u8[..512] = [];
         let valid_nonce: u8[4] = [0x01, 0x02, 0x03, 0x04];
         let valid_ticket_data = "encrypted_session_ticket_sample";
         sub.assert_true(
@@ -3493,7 +3493,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_eq(nst.max_early_data_size as i64, 16384, "max_early_data_size is 16384");
 
         // 2. Reject ticket_lifetime > 604800 (7 days)
-        var b_bad_life: u8[>..] = [];
+        var b_bad_life: u8[..512] = [];
         wing::encode_new_session_ticket(b_bad_life, 604801, 0, valid_nonce[..], valid_ticket_data, 0);
         var nst_bad = wing::NewSessionTicketMsg { .. };
         sub.assert_false(
@@ -3737,8 +3737,10 @@ fn test_handshake_r3_invariants(t: lit::T&) {
     t.run("TLS-41: 0-RTT Early Data Acceptance, Rejection Recovery & ECH Placement") { sub =>
         // 1. Early data accepted by server
         var ctrl_accept = wing::EarlyDataController {
-            state:               wing::EarlyDataState.Offered,
-            max_early_data_size: 16384,
+            state:                   wing::EarlyDataState.Offered,
+            max_early_data_size:     16384,
+            psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+            negotiated_cipher_suite: rfc::TLS_CIPHER_AES_128_GCM_SHA256,
             ..
         };
         sub.assert_true(
@@ -3900,9 +3902,9 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         let ok_c = core::brotli_compress(cert_plaintext, compressed_data, 0);
         sub.assert_true(ok_c, "Brotli level 0 compression of certificate succeeds");
 
-        var decomp2:     u8[>..] = [];
-        var decomp_zlib: u8[>..] = [];
-        var decomp_zstd: u8[>..] = [];
+        var decomp2:     u8[..4096] = [];
+        var decomp_zlib: u8[..4096] = [];
+        var decomp_zstd: u8[..4096] = [];
 
         var test_cert_msg = internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
@@ -3910,7 +3912,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             compressed_certificate_message: compressed_data[..],
         };
 
-        var wire: u8[>..] = [];
+        var wire: u8[..4096] = [];
         let ok_enc = internal::encode_compressed_certificate(test_cert_msg, wire);
         sub.assert_true(ok_enc, "CompressedCertificate encoded");
         sub.assert_eq(wire.len, 8 + compressed_data.len, "Wire length matches 8 + compressed len");
@@ -3926,7 +3928,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             sub.assert_true(parsed.compressed_certificate_message == compressed_data[..], "Compressed bytes match");
 
             // Safe decompression via handler interface
-            var decompressed: u8[>..] = [];
+            var decompressed: u8[..4096] = [];
             let ok_decomp = internal::decompress_certificate_message(parsed, 10000, decompressed);
             sub.assert_true(ok_decomp, "Safe decompression succeeds");
             sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
@@ -3938,7 +3940,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
 
         var wire_copy: u8[..4096] = [];
         wire_copy.append(wire[..]);
-        var decomp3: u8[>..] = [];
+        var decomp3: u8[..4096] = [];
         let ok_incoming = wing::decompress_incoming_certificate(wire_copy[..], decomp3);
         sub.assert_true(ok_incoming, "decompress_incoming_certificate succeeds on handshake wire payload");
         sub.assert_bytes_eq(decomp3[..], cert_plaintext, "decomp3 matches original plaintext");
@@ -3978,7 +3980,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             uncompressed_length:            50000,
             compressed_certificate_message: "abc",
         };
-        var out_sink: u8[>..] = [];
+        var out_sink: u8[..1024] = [];
         let ok_b1 = internal::decompress_certificate_message(bomb_msg, 1024, out_sink);
         sub.assert_false(ok_b1, "Decompression bomb exceeding max_allowed_len rejected");
 
@@ -4011,7 +4013,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             uncompressed_length:            10,
             compressed_certificate_message: corrupt_payload[..],
         };
-        var out_corrupt: u8[>..] = [];
+        var out_corrupt: u8[..1024] = [];
         let ok_c_fail = internal::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
         sub.assert_false(ok_c_fail, "Corrupted Brotli payload fails gracefully without crash");
     };
@@ -4084,7 +4086,7 @@ fn test_remediation_misc(t: lit::T&) {
         let _, _, ok_exceed = wing::validate_handshake_record_boundary(hs_msg[..], 10);
         sub.assert_false(ok_exceed, "handshake + 4 header exceeds record");
 
-        var pad_buf: u8[>..] = [];
+        var pad_buf: u8[..512] = [];
         let ok_pad0 = wing::pad_ech_inner("inner-hello", 64, 0, pad_buf);
         sub.assert_true(ok_pad0, "pad_ech_inner with real_sni_len == 0 succeeds");
         sub.assert_eq(pad_buf.len % 32, 0, "pad_buf is 32-byte aligned");

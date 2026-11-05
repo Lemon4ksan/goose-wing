@@ -47,15 +47,24 @@ inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
     return is_tchar(b);
 }
 
-// Header presence bitmask constants (O(1) duplicate & smuggling detector)
+// Header presence bitmask constants (O(1) duplicate & smuggling detector, aligned with header_id_to_bit)
 const HDR_PRESENCE_NONE:              u32 = 0;
-const HDR_PRESENCE_HOST:              u32 = 1 << 0;
-const HDR_PRESENCE_CONTENT_LENGTH:    u32 = 1 << 1;
-const HDR_PRESENCE_TRANSFER_ENCODING: u32 = 1 << 2;
-const HDR_PRESENCE_CONNECTION:        u32 = 1 << 3;
-const HDR_PRESENCE_UPGRADE:           u32 = 1 << 4;
-const HDR_PRESENCE_SEC_WEBSOCKET_KEY: u32 = 1 << 5;
-const HDR_PRESENCE_SMUGGLING_MASK:    u32 = (1 << 1) | (1 << 2);
+const HDR_PRESENCE_HOST:              u32 = 0x0002;
+const HDR_PRESENCE_DATE:              u32 = 0x0004;
+const HDR_PRESENCE_ACCEPT:            u32 = 0x0008;
+const HDR_PRESENCE_COOKIE:            u32 = 0x0010;
+const HDR_PRESENCE_ORIGIN:            u32 = 0x0020;
+const HDR_PRESENCE_SERVER:            u32 = 0x0040;
+const HDR_PRESENCE_CONNECTION:        u32 = 0x0080;
+const HDR_PRESENCE_USER_AGENT:        u32 = 0x0100;
+const HDR_PRESENCE_CONTENT_TYPE:      u32 = 0x0200;
+const HDR_PRESENCE_CONTENT_LENGTH:    u32 = 0x0400;
+const HDR_PRESENCE_AUTHORIZATION:     u32 = 0x0800;
+const HDR_PRESENCE_TRANSFER_ENCODING: u32 = 0x1000;
+const HDR_PRESENCE_SEC_WEBSOCKET_KEY: u32 = 0x2000;
+const HDR_PRESENCE_UPGRADE:           u32 = 0x4000;
+const HDR_PRESENCE_EXPECT:            u32 = 0x8000;
+const HDR_PRESENCE_SMUGGLING_MASK:    u32 = 0x0400 | 0x1000;
 
 struct HeaderPresenceTracker {
     mask:                   u32  = 0,
@@ -128,7 +137,10 @@ fn track_known_header_presence(
             tracker.upgrade_idx = hdr_idx;
             true
         },
-        _ => true,
+        _ => {
+            tracker.mask |= header_id_to_bit(id);
+            true
+        },
     };
 }
 

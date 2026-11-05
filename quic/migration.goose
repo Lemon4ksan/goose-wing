@@ -31,7 +31,8 @@ struct QuicEndpointAddr {
 fn new_quic_endpoint_addr(ip: const u8[:], port: u16) -> QuicEndpointAddr {
     var addr = QuicEndpointAddr { port: port, .. };
     if ip.len > 0 {
-        addr.ip.append(ip);
+        let take = min(ip.len, addr.ip.cap);
+        addr.ip.append(ip[..take]);
     }
     return addr;
 }
@@ -173,7 +174,9 @@ fn quic_migration_retry_probe(mgr: QuicMigrationManager&) -> bool {
     guard mgr.has_probing_path && mgr.probing_path.state == PathValidationState.Validating else {
         return false;
     }
-    mgr.probing_path.retry_count += 1;
+    if mgr.probing_path.retry_count < 0xFFFFFFFF {
+        mgr.probing_path.retry_count += 1;
+    }
     if mgr.probing_path.retry_count >= mgr.probing_path.max_retries {
         mgr.probing_path.state = PathValidationState.Failed;
         mgr.has_probing_path = false;

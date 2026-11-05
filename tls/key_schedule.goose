@@ -29,10 +29,11 @@ const KS_STAGE_RESUMPTION: u8 = 4;
 //     opaque context<0..255> = Context;
 // } HkdfLabel;
 inline fn is_all_zero_slice(data: const u8[:]) -> bool {
+    var acc: u8 = 0;
     for b in data {
-        if b != 0 { return false; }
+        acc |= b;
     }
-    return true;
+    return acc == 0;
 }
 
 fn hkdf_expand_label(
@@ -151,26 +152,30 @@ fn ks_init_early_secret_with_mode(ks: KeySchedule&, psk: const u8[:], is_externa
     let ikm = if psk.len > 0 { psk } else { zero_salt };
 
     if ks.hash_id == HASH_SHA256 {
-        let es = core::hkdf_extract(zero_salt, ikm);
+        var es = core::hkdf_extract(zero_salt, ikm);
         for i in 32 { ks.current_secret[i] = es[i]; }
+        core::secure_zeroize_32(es);
     } else if ks.hash_id == HASH_SHA384 {
-        let es = core::hkdf_extract_384(zero_salt, ikm);
+        var es = core::hkdf_extract_384(zero_salt, ikm);
         for i in 48 { ks.current_secret[i] = es[i]; }
+        core::secure_zeroize_48(es);
     } else {
         return false;
     }
 
-    ks.stage = KS_STAGE_EARLY;
-
     let binder_label = if is_external { "ext binder" } else { "res binder" };
-    return derive_secret(
+    guard derive_secret(
         ks.hash_id,
         ks.hash_len,
         ks.current_secret[..ks.hash_len],
         binder_label,
         [],
         ks.binder_key[..ks.hash_len],
-    );
+    ) else {
+        return false;
+    }
+    ks.stage = KS_STAGE_EARLY;
+    return true;
 }
 
 // Early Secret = HKDF-Extract(0, PSK) defaulting to resumption PSK or 0-filled secret
@@ -211,11 +216,13 @@ fn ks_advance_to_handshake(ks: KeySchedule&, ecdhe_shared_secret: const u8[:]) -
     }
 
     if ks.hash_id == HASH_SHA256 {
-        let hs = core::hkdf_extract(derived[..32], ecdhe_shared_secret);
+        var hs = core::hkdf_extract(derived[..32], ecdhe_shared_secret);
         for i in 32 { ks.current_secret[i] = hs[i]; }
+        core::secure_zeroize_32(hs);
     } else if ks.hash_id == HASH_SHA384 {
-        let hs = core::hkdf_extract_384(derived[..48], ecdhe_shared_secret);
+        var hs = core::hkdf_extract_384(derived[..48], ecdhe_shared_secret);
         for i in 48 { ks.current_secret[i] = hs[i]; }
+        core::secure_zeroize_48(hs);
     } else {
         core::secure_zeroize_48(derived);
         return false;
@@ -276,18 +283,19 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
     let zero_ikm = zeros[..ks.hash_len];
 
     if ks.hash_id == HASH_SHA256 {
-        let ms = core::hkdf_extract(derived[..32], zero_ikm);
+        var ms = core::hkdf_extract(derived[..32], zero_ikm);
         for i in 32 { ks.current_secret[i] = ms[i]; }
+        core::secure_zeroize_32(ms);
     } else if ks.hash_id == HASH_SHA384 {
-        let ms = core::hkdf_extract_384(derived[..48], zero_ikm);
+        var ms = core::hkdf_extract_384(derived[..48], zero_ikm);
         for i in 48 { ks.current_secret[i] = ms[i]; }
+        core::secure_zeroize_48(ms);
     } else {
         core::secure_zeroize_48(derived);
         return false;
     }
 
     core::secure_zeroize_48(derived);
-    ks.stage = KS_STAGE_MASTER;
 
     let ok_c = derive_secret(
         ks.hash_id,
@@ -313,7 +321,9 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
         transcript_hash,
         ks.exporter_secret[..ks.hash_len],
     );
-    return ok_c && ok_s && ok_exp;
+    guard ok_c && ok_s && ok_exp else { return false; }
+    ks.stage = KS_STAGE_MASTER;
+    return true;
 }
 
 // Resumption Master Secret = Derive-Secret(Master Secret, "res master", ClientHello...server Finished)
@@ -452,6 +462,9 @@ fn ks_compute_finished_verify_data(
     transcript_hash: const u8[:],
     out_verify_data: u8[:],
 ) -> bool {
+    guard (hash_id == HASH_SHA256 && hash_len == 32) || (hash_id == HASH_SHA384 && hash_len == 48) else {
+        return false;
+    }
     guard out_verify_data.len >= hash_len else { return false; }
     guard base_key.len >= hash_len else { return false; }
     guard transcript_hash.len == hash_len else { return false; }
@@ -463,13 +476,15 @@ fn ks_compute_finished_verify_data(
     }
 
     if hash_id == HASH_SHA256 {
-        let vd = core::hmac_sha256(finished_key[..32], transcript_hash);
+        var vd = core::hmac_sha256(finished_key[..32], transcript_hash);
         for i in 32 { out_verify_data[i] = vd[i]; }
+        core::secure_zeroize_32(vd);
         core::secure_zeroize_48(finished_key);
         return true;
     } else if hash_id == HASH_SHA384 {
-        let vd = core::hmac_sha384(finished_key[..48], transcript_hash);
+        var vd = core::hmac_sha384(finished_key[..48], transcript_hash);
         for i in 48 { out_verify_data[i] = vd[i]; }
+        core::secure_zeroize_48(vd);
         core::secure_zeroize_48(finished_key);
         return true;
     }
@@ -477,18 +492,23 @@ fn ks_compute_finished_verify_data(
     return false;
 }
 
-// Updates application traffic secret: next_secret = Derive-Secret(current, "traffic upd", "") (RFC 8446 Section 7.2).
+// Updates application traffic secret:
+// next_secret = HKDF-Expand-Label(current, "traffic upd", "", Hash.length) (RFC 8446 §7.2).
 fn ks_update_traffic_secret(hash_id: u8, hash_len: u8, traffic_secret: u8[:]) -> bool {
+    guard (hash_id == HASH_SHA256 && hash_len == 32) || (hash_id == HASH_SHA384 && hash_len == 48) else {
+        return false;
+    }
     guard traffic_secret.len >= hash_len else { return false; }
     var next_secret: u8[48] = [0; 48];
-    if !derive_secret(
+    if !hkdf_expand_label(
         hash_id,
-        hash_len,
         traffic_secret[..hash_len],
         "traffic upd",
         [],
+        hash_len,
         next_secret[..hash_len],
     ) {
+        core::secure_zeroize_48(next_secret);
         return false;
     }
     for i in hash_len {
@@ -522,6 +542,9 @@ fn verify_psk_binder(
     truncated_ch:    const u8[:],
     expected_binder: const u8[:],
 ) -> bool {
+    guard (hash_id == HASH_SHA256 && hash_len == 32) || (hash_id == HASH_SHA384 && hash_len == 48) else {
+        return false;
+    }
     guard expected_binder.len == hash_len else { return false; }
     guard binder_key.len >= hash_len else { return false; }
     guard truncated_ch.len > 0 else { return false; }
@@ -534,18 +557,22 @@ fn verify_psk_binder(
 
     if hash_id == HASH_SHA256 {
         let ch_hash = core::sha256(truncated_ch);
-        let calc_binder = core::hmac_sha256(finished_key[..32], ch_hash[..]);
+        var calc_binder = core::hmac_sha256(finished_key[..32], ch_hash[..]);
         core::secure_zeroize_48(finished_key);
         var exp: u8[32] = [0; 32];
         for i in 32 { exp[i] = expected_binder[i]; }
-        return core::ct_eq_tag32(calc_binder, exp);
+        let eq = core::ct_eq_tag32(calc_binder, exp);
+        core::secure_zeroize_32(calc_binder);
+        return eq;
     } else if hash_id == HASH_SHA384 {
         let ch_hash = core::sha384(truncated_ch);
-        let calc_binder = core::hmac_sha384(finished_key[..48], ch_hash[..]);
+        var calc_binder = core::hmac_sha384(finished_key[..48], ch_hash[..]);
         core::secure_zeroize_48(finished_key);
         var exp: u8[48] = [0; 48];
         for i in 48 { exp[i] = expected_binder[i]; }
-        return core::ct_eq_tag48(calc_binder, exp);
+        let eq = core::ct_eq_tag48(calc_binder, exp);
+        core::secure_zeroize_48(calc_binder);
+        return eq;
     }
     core::secure_zeroize_48(finished_key);
     return false;
@@ -643,12 +670,11 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
         return false;
     }
 
-    // Insert into appropriate bitmap
+    // Insert into current bitmap (and previous bitmap when in previous epoch) so rotation does not evict early
     if epoch == reg.current_epoch - 1 {
         strike_register_insert_bits(reg.bitmap_previous, ticket_id, seeds);
-    } else {
-        strike_register_insert_bits(reg.bitmap_current, ticket_id, seeds);
     }
+    strike_register_insert_bits(reg.bitmap_current, ticket_id, seeds);
 
     return true;
 }

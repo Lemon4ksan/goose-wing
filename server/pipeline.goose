@@ -65,6 +65,9 @@ enum PipelineOutcome {
 // Validates Expect header compliance per RFC 9110 Section 10.1.1.
 // Returns true if valid or absent; false if unsupported expectation requested.
 fn validate_pipeline_expect_header(req: const Request&) -> bool {
+    if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_EXPECT) == 0 {
+        return true;
+    }
     for &hdr in req.headers {
         if eq_ascii_fold(hdr.name[..], "expect") {
             let exp_val = hdr.value[..];
@@ -202,6 +205,9 @@ fn decrypt_pipeline_session_cookie(
     ext:    internal::RequestExtensions&,
     now_ns: u64,
 ) {
+    if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_COOKIE) == 0 {
+        return;
+    }
     let now_sec = (now_ns / 1000000000) as i64;
     for idx in req.headers.len {
         guard eq_ascii_fold(req.headers[idx].name[..], "Cookie") else { continue; }

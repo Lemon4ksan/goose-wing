@@ -220,12 +220,13 @@ fn parse_h1_header_block(
         let v_len = v_trim.len;
         let hval = line[v_start..(v_start + v_len)];
 
+        let known_id = identify_known_header(hname);
         let span = HeaderSpan {
             name_pos: line_start as u16,
             name_len: hname.len as u16,
             val_pos:  (line_start + v_start) as u16,
             val_len:  v_len as u16,
-            id:       0,
+            id:       header_id_to_u8(known_id),
         };
         guard resp.spans.len < resp.spans.cap else { return false; }
         resp.spans.push(span);

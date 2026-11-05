@@ -91,7 +91,7 @@ inline fn fe_neg(a: Fe10) -> Fe10 {
 fn fe_eq(a: Fe10, b: Fe10) -> bool {
     let ba = fe_to_bytes(a);
     let bb = fe_to_bytes(b);
-    return ba == bb;
+    return ct_eq_tag32(ba, bb);
 }
 
 // Branchless conditional selection: if cond == 1 return a, else b.
@@ -328,21 +328,27 @@ fn sc_is_ge_l(s: const u8[32]&) -> bool {
     return true; // equal to L
 }
 
+// Subtracts L from `rem` in-place when `rem >= L` using branchless borrow propagation.
 inline fn sc_sub_l_inplace(rem: u64[4]&) {
-    var borrow: u64 = 0;
+    var diff:   u64[4] = [0; 4];
+    var borrow: u64    = 0;
     for j in 4 {
-        let term = ED25519_L_WORDS[j] + borrow;
-        if rem[j] < term || (borrow == 1 && term == 0) {
-            rem[j] = (rem[j] + (0xFFFFFFFFFFFFFFFF - term)) + 1;
-            borrow = 1;
-        } else {
-            rem[j] -= term;
-            borrow = 0;
-        }
+        let rj = rem[j];
+        let lj = ED25519_L_WORDS[j];
+        let sub1 = rj - lj;
+        let b1: u64 = if rj < lj { 1 } else { 0 };
+        let sub2 = sub1 - borrow;
+        let b2: u64 = if sub1 < borrow { 1 } else { 0 };
+        diff[j] = sub2;
+        borrow = b1 | b2;
+    }
+    let mask: u64 = borrow - 1;
+    for j in 4 {
+        rem[j] = (rem[j] & (~mask)) | (diff[j] & mask);
     }
 }
 
-// Reduces 64-byte little-endian integer modulo L using bitwise division.
+// Reduces 64-byte little-endian integer modulo L using constant-time bitwise division.
 fn sc_reduce(in64: const u8[64]&) -> u8[32] {
     var rem: u64[4] = [0; 4];
 
@@ -359,23 +365,7 @@ fn sc_reduce(in64: const u8[64]&) -> u8[32] {
             rem[j] = (rem[j] << 1) | carry;
             carry = next_carry;
         }
-
-        // Compare rem with L
-        var ge = true;
-        for j in 4 {
-            let idx = 3 - j;
-            if rem[idx] > ED25519_L_WORDS[idx] {
-                ge = true;
-                break;
-            } else if rem[idx] < ED25519_L_WORDS[idx] {
-                ge = false;
-                break;
-            }
-        }
-
-        if ge {
-            sc_sub_l_inplace(rem);
-        }
+        sc_sub_l_inplace(rem);
     }
 
     var out: u8[32] = [0; 32];
@@ -432,7 +422,9 @@ fn sc_muladd(k: const u8[32]&, s: const u8[32]&, r: const u8[32]&) -> u8[32] {
         b64[off + 1] = ((w >> 8) & 0xFF) as u8;
     }
 
-    return sc_reduce(b64);
+    let out = sc_reduce(b64);
+    secure_zeroize_64(b64);
+    return out;
 }
 
 // ---- Ed25519 Public API (RFC 8032) ---------------------------------------

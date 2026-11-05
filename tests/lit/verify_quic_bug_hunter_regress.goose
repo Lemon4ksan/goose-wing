@@ -110,7 +110,7 @@ fn test_packet_read_contiguous_capacity_safety() {
 
     // Read with small buffer of capacity 32 passing bounded headroom.
     var out_small: u8[..32] = [];
-    let read_bytes = internal::read_contiguous(buf, out_small, (out_small.cap - out_small.len) as i64);
+    let read_bytes = internal::read_contiguous(buf, out_small, out_small.cap - out_small.len);
     assert(read_bytes == 32);
     assert(out_small.len == 32);
     assert(buf.consumed_offset == 32);
@@ -236,6 +236,305 @@ fn test_connection_inbound_ack_for_unsent_space() {
     print("REGRESS_CONN_ACK_UNSENT_SPACE: OK");
 }
 
+fn test_f001_rx_pn_reconstruction_and_transactional_coalesced() {
+    var server = internal::new_quic_server_connection("srv_scid");
+    var client = internal::new_quic_client_connection("srv_scid", "cli_scid");
+    assert(internal::quic_conn_install_initial_keys(server, "srv_scid"));
+    assert(internal::quic_conn_install_initial_keys(client, "srv_scid"));
+
+    // Simulate receiving PNs up to 200 on server initial_space while largest_acked_pn remains 0 (no TX ACKs).
+    server.initial_space.has_recv_packets = true;
+    server.initial_space.largest_recv_pn = 200;
+    server.initial_space.largest_acked_pn = 0;
+
+    var payload: u8[..1200] = [];
+    assert(internal::encode_ping_frame(payload));
+    assert(internal::encode_padding_frame(payload, 1199));
+
+    var hdr = internal::QuicHeader {
+        header_type:   internal::QuicHeaderType.Initial,
+        version:       rfc::QUIC_VERSION_1,
+        packet_number: 201,
+        ..
+    };
+    hdr.dcid.append("srv_scid");
+    hdr.scid.append("cli_scid");
+
+    var wire_pkt: u8[..1400] = [];
+    assert(internal::quic_seal_packet(client.tx_initial_space, hdr, 1, payload[..], wire_pkt));
+
+    var out_ack = internal::AckFrame { .. };
+    let ok_dgram, _ = internal::quic_conn_process_datagram(server, wire_pkt[..], 10000, out_ack);
+    assert(ok_dgram);
+    assert(server.initial_space.largest_recv_pn == 201);
+
+    // Part B: Unauthenticated Retry must not bind server CIDs or increment server initial CID latch
+    var srv2 = internal::new_quic_server_connection("srv2_scid");
+    var retry_hdr = internal::QuicHeader {
+        header_type: internal::QuicHeaderType.Retry,
+        version:     rfc::QUIC_VERSION_1,
+        ..
+    };
+    retry_hdr.dcid.append("spoof_dcid");
+    retry_hdr.scid.append("spoof_scid");
+    var retry_wire: u8[..64] = [];
+    assert(internal::encode_quic_header(retry_wire, retry_hdr, 1));
+    let _, _ = internal::quic_conn_process_datagram(srv2, retry_wire[..], 10000, out_ack);
+    assert(srv2.dcid.len == 0);
+
+    print("REGRESS_F001_PN_RECONSTRUCT_AND_TX_STATE: OK");
+}
+
+fn test_f002_f003_f004_ack_and_pto_invariants() {
+    // F002: 64 additional ACK ranges (via quic_conn_on_ack) must succeed
+    var conn_ack = internal::new_quic_server_connection("srv_ack");
+    conn_ack.app_space.has_sent_packets = true;
+    conn_ack.app_space.largest_sent_pn = 500;
+    var ack64 = internal::AckFrame {
+        largest_acked:   200,
+        first_ack_range: 0,
+        ..
+    };
+    for _ in 64 {
+        ack64.ranges.push(internal::AckRange { gap: 0, ack_range: 0 });
+    }
+    assert(internal::quic_conn_on_ack(conn_ack, ack64, 10000));
+
+    // F003: process_space_ack must handle >64 lost packets without leaving loss_time_us == 0
+    var conn_loss = internal::new_quic_server_connection("srv_loss");
+    for p in 70 {
+        internal::quic_conn_record_sent(conn_loss, internal::PnSpaceId.ApplicationData, p as u64, 100, true, 1000);
+    }
+    internal::quic_conn_record_sent(conn_loss, internal::PnSpaceId.ApplicationData, 100, 100, true, 2000);
+    var ack_top = internal::AckFrame {
+        largest_acked:   100,
+        first_ack_range: 0,
+        ..
+    };
+    assert(internal::quic_conn_on_ack(conn_loss, ack_top, 3000));
+    assert(conn_loss.app_space.sent_packets.len == 0);
+
+    // F004: evaluate_pto_timer client AntiDeadlock when AppData has 1 packet before handshake_confirmed
+    var rtt = internal::RttState { .. };
+    var spaces: internal::PnSpaceState[3] = [
+        internal::PnSpaceState { space_id: internal::PnSpaceId.Initial, .. },
+        internal::PnSpaceState { space_id: internal::PnSpaceId.Handshake, .. },
+        internal::PnSpaceState { space_id: internal::PnSpaceId.ApplicationData, .. },
+    ];
+    spaces[2].sent_packets.push(internal::SentPacketMeta {
+        pn:            1,
+        time_sent_us:  1000,
+        size_bytes:    100,
+        ack_eliciting: true,
+        in_flight:     true,
+    });
+    let ctx = internal::PtoContext {
+        is_server:                      false,
+        is_amplification_limited:       false,
+        peer_completed_addr_validation: false,
+        handshake_confirmed:            false,
+    };
+    let dec = internal::evaluate_pto_timer(spaces, rtt, 0, 5000, ctx);
+    assert(dec.mode == internal::PtoTimerMode.AntiDeadlock);
+
+    print("REGRESS_F002_F003_F004_ACK_PTO: OK");
+}
+
+fn test_f005_f006_f007_bbr_and_cubic_math() {
+    // F005: pacer_can_send zero rate and non-monotonic clock
+    var pacer = internal::Pacer { pacing_rate_bps: 0, .. };
+    let ok1, _ = internal::pacer_can_send(pacer, 1000000, 1200);
+    assert(ok1);
+    let _, _ = internal::pacer_can_send(pacer, 900000, 1200);
+    assert(pacer.last_pacing_time_us == 1000000);
+
+    // F006: bbr_bdp high BDP saturation instead of u64 wrap to 0
+    let bdp = internal::bbr_bdp(40000000000000, 500000);
+    assert(bdp > 1000000000);
+
+    // F007: cubic_on_ack app-limited before first epoch must not skip k_ms initialization
+    var cubic = internal::CubicState { cwnd_segments: 10, w_max_segments: 20, .. };
+    let _ = internal::cubic_on_ack(cubic, 1000000, 40000, 1200, 1200);
+    let _ = internal::cubic_on_ack(cubic, 2000000, 40000, 1200, 1200);
+    let _ = internal::cubic_on_ack(cubic, 2100000, 40000, 10000, 1200);
+    assert(cubic.k_ms > 0);
+    assert(cubic.epoch_start_us == 2100000);
+
+    print("REGRESS_F005_F006_F007_BBR_CUBIC: OK");
+}
+
+fn test_f008_to_f012_conn_and_dplpmtud() {
+    // F008: record_space_sent_packet must not advance largest_sent_pn when sent_packets[..128] is full
+    var sp = internal::PnSpaceState { .. };
+    for i in 128 {
+        let m = internal::SentPacketMeta {
+            pn:            i as u64,
+            time_sent_us:  1000,
+            size_bytes:    100,
+            ack_eliciting: true,
+            in_flight:     true,
+        };
+        internal::record_space_sent_packet(sp, m);
+    }
+    let m_overflow = internal::SentPacketMeta {
+        pn:            500,
+        time_sent_us:  2000,
+        size_bytes:    100,
+        ack_eliciting: true,
+        in_flight:     true,
+    };
+    internal::record_space_sent_packet(sp, m_overflow);
+    assert(sp.largest_sent_pn == 127);
+
+    // F009: quic_is_frame_allowed_in_packet rejects Unknown and Retry/VersionNegotiation
+    assert(!internal::quic_is_frame_allowed_in_packet(
+        internal::QuicFrameType.Unknown,
+        internal::QuicHeaderType.OneRtt,
+    ));
+    assert(!internal::quic_is_frame_allowed_in_packet(
+        internal::QuicFrameType.Ping,
+        internal::QuicHeaderType.Retry,
+    ));
+
+    // F011: quic_seal_packet with 200-byte Initial token and bounded out_pkt overflow rejection
+    var cli = internal::new_quic_client_connection("srv_scid", "cli_scid");
+    assert(internal::quic_conn_install_initial_keys(cli, "srv_scid"));
+    var hdr_tok = internal::QuicHeader {
+        header_type:   internal::QuicHeaderType.Initial,
+        version:       rfc::QUIC_VERSION_1,
+        packet_number: 1,
+        ..
+    };
+    hdr_tok.dcid.append("srv_scid");
+    hdr_tok.scid.append("cli_scid");
+    var tok200: u8[200] = [0xAA; 200];
+    hdr_tok.token.append(tok200[..]);
+    var out_big: u8[..512] = [];
+    assert(internal::quic_seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_big));
+    var out_tiny: u8[..16] = [];
+    assert(!internal::quic_seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_tiny));
+
+    // F012: DPLPMTUD probe buffer capacity check and search timer not downgrading confirmed 1500 PMTU
+    var small_probe: u8[..32] = [];
+    assert(!internal::generate_ping_probe(small_probe, 1200));
+    var d = internal::Dplpmtud { .. };
+    assert(internal::dplpmtud_on_probe_acked(d, 1200));
+    assert(internal::dplpmtud_on_probe_acked(d, 1280));
+    assert(internal::dplpmtud_on_probe_acked(d, 1420));
+    assert(internal::dplpmtud_on_probe_acked(d, 1500));
+    assert(d.state == internal::DplpmtudState.SearchComplete);
+    assert(d.current_pmtu == 1500);
+    internal::dplpmtud_on_search_timer(d, 700000);
+    assert(d.current_pmtu == 1500);
+
+    print("REGRESS_F008_TO_F012_CONN_DPLPMTUD: OK");
+}
+
+fn test_f013_to_f022_frames_migration_packet() {
+    // F013: Frame encoders must reject when out buffer lacks capacity without leaving partial bytes
+    var tiny_buf: u8[..4] = [];
+    assert(!internal::encode_padding_frame(tiny_buf, 10));
+    assert(tiny_buf.len == 0);
+    assert(!internal::encode_crypto_frame(tiny_buf, 0, "0123456789"));
+    assert(tiny_buf.len == 0);
+
+    // F014: Frame decoders reject negative idx
+    var neg_idx: i64 = -4;
+    let _, ok_path = internal::demux_path_frame("0123456789", neg_idx, rfc::QUIC_FRAME_PATH_CHALLENGE);
+    assert(!ok_path);
+
+    // F015: new_quic_endpoint_addr safely handles >64 byte slice without crash
+    var long_ip: u8[80] = [65; 80];
+    let ep = internal::new_quic_endpoint_addr(long_ip[..], 443);
+    assert(ep.ip.len <= 64);
+
+    // F016: build_long_header_first_byte rejects pn_bits > 3 and unknown version
+    let _, ok_pnbits = internal::build_long_header_first_byte(internal::QuicHeaderType.Initial, 0x0C, rfc::QUIC_VERSION_1);
+    assert(!ok_pnbits);
+    let _, ok_ver = internal::build_long_header_first_byte(internal::QuicHeaderType.Initial, 0, 0xDEADBEEF);
+    assert(!ok_ver);
+
+    // F018: decode_packet_number_checked rejects truncated_pn >= (1 << (pn_len * 8))
+    let _, ok_trunc = internal::decode_packet_number_checked(100, 0x1FF, 1);
+    assert(!ok_trunc);
+
+    // F019: on_path_bytes_sent saturates instead of wrapping around u64::MAX
+    var pstate = internal::PathState { bytes_received: 1000, bytes_sent: 0xFFFFFFFFFFFFFFF0, .. };
+    internal::on_path_bytes_sent(pstate, 0x20);
+    assert(!internal::can_send_on_path(pstate, 1));
+
+    // F020: insert_fragment does not corrupt arena when intervals[..64] is full
+    var rbuf = internal::new_reassembly_buffer(65536);
+    var cur_off: u64 = 0;
+    for _ in 64 {
+        assert(internal::insert_fragment(rbuf, cur_off, "A", false));
+        cur_off = core::add_sat_u64(cur_off, 2);
+    }
+    let prev_data_len = rbuf.arena.data_len;
+    assert(!internal::insert_fragment(rbuf, 200, "B", false));
+    assert(rbuf.arena.data_len == prev_data_len);
+
+    // F021: read_contiguous with default max_bytes = -1 clamps to out.cap - out.len
+    var rbuf2 = internal::new_reassembly_buffer(65536);
+    var blk64: u8[64] = [90; 64];
+    assert(internal::insert_fragment(rbuf2, 0, blk64[..], false));
+    var out16: u8[..16] = [];
+    let n16 = internal::read_contiguous(rbuf2, out16);
+    assert(n16 == 16);
+    assert(rbuf2.consumed_offset == 16);
+
+    // F022: decode_quic_datagram_frame rejects packet_end > src.len
+    let _, _, ok_dgram_end = internal::decode_quic_datagram_frame("\x30abc", 0, 100);
+    assert(!ok_dgram_end);
+
+    print("REGRESS_F013_TO_F022_FRAMES_PACKET: OK");
+}
+
+fn test_f023_to_f027_stream_invariants() {
+    // F023: quic_stream_on_send_data rejects FIN at end_offset < s.bytes_sent
+    var s_tx = internal::new_quic_stream(0, 65536);
+    s_tx.send_max_data = 65536;
+    let ok_s1, _ = internal::quic_stream_on_send_data(s_tx, 0, 100, false);
+    assert(ok_s1);
+    let ok_s2, err_s2 = internal::quic_stream_on_send_data(s_tx, 0, 50, true);
+    assert(!ok_s2);
+    assert(err_s2 == rfc::QUIC_ERR_FINAL_SIZE);
+
+    // F024: quic_stream_on_recv_stream_frame does not silently drop intervals
+    var s_rx = internal::new_quic_stream(0, 65536);
+    var rx_off: u64 = 2;
+    for _ in 17 {
+        let ok_r, _ = internal::quic_stream_on_recv_stream_frame(s_rx, rx_off, 1, false);
+        assert(ok_r);
+        rx_off = core::add_sat_u64(rx_off, 2);
+    }
+    assert(s_rx.recv_ranges.len == 17);
+
+    // F025: duplicate RESET_STREAM in ResetRecvd does not overwrite recv_error_code
+    var s_rst = internal::new_quic_stream(0, 65536);
+    let ok_r1, _ = internal::quic_stream_on_recv_reset(s_rst, 0x101, 100);
+    assert(ok_r1);
+    let ok_r2, _ = internal::quic_stream_on_recv_reset(s_rst, 0x999, 100);
+    assert(ok_r2);
+    assert(s_rst.recv_error_code == 0x101);
+
+    // F026: quic_stream_on_app_read rejects reading past contiguous_recv_bytes
+    var s_read = internal::new_quic_stream(0, 65536);
+    let _, _ = internal::quic_stream_on_recv_stream_frame(s_read, 0, 50, true);
+    assert(!internal::quic_stream_on_app_read(s_read, 100));
+    assert(s_read.recv_consumed == 0);
+
+    // F027: quic_table_open_local_stream enforces max_streams_bidi / max_streams_uni
+    var tbl = internal::new_quic_stream_table(internal::QuicRole.Client);
+    tbl.max_streams_bidi = 1;
+    let _, _, ok_open1 = internal::quic_table_open_local_stream(tbl, true);
+    assert(ok_open1);
+    let _, _, ok_open2 = internal::quic_table_open_local_stream(tbl, true);
+    assert(!ok_open2);
+
+    print("REGRESS_F023_TO_F027_STREAM: OK");
+}
+
 fn main() {
     test_fc_recv_reset_smaller_than_bytes_recv();
     test_fc_credit_renewal_threshold_and_bounds();
@@ -250,6 +549,12 @@ fn main() {
     test_bbr_check_probe_rtt_clock_underflow();
     test_ack_transactional_intervals_clear_on_error();
     test_connection_inbound_ack_for_unsent_space();
+    test_f001_rx_pn_reconstruction_and_transactional_coalesced();
+    test_f002_f003_f004_ack_and_pto_invariants();
+    test_f005_f006_f007_bbr_and_cubic_math();
+    test_f008_to_f012_conn_and_dplpmtud();
+    test_f013_to_f022_frames_migration_packet();
+    test_f023_to_f027_stream_invariants();
 }
 
 // CHECK: REGRESS_FC_RESET_FINAL_SIZE: OK
@@ -265,3 +570,9 @@ fn main() {
 // CHECK: REGRESS_BBR_CLOCK_UNDERFLOW: OK
 // CHECK: REGRESS_ACK_TRANSACTIONAL_CLEAR: OK
 // CHECK: REGRESS_CONN_ACK_UNSENT_SPACE: OK
+// CHECK: REGRESS_F001_PN_RECONSTRUCT_AND_TX_STATE: OK
+// CHECK: REGRESS_F002_F003_F004_ACK_PTO: OK
+// CHECK: REGRESS_F005_F006_F007_BBR_CUBIC: OK
+// CHECK: REGRESS_F008_TO_F012_CONN_DPLPMTUD: OK
+// CHECK: REGRESS_F013_TO_F022_FRAMES_PACKET: OK
+// CHECK: REGRESS_F023_TO_F027_STREAM: OK

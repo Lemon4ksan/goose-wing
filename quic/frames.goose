@@ -126,6 +126,7 @@ inline fn build_stream_frame_type(flags: QuicStreamFlags) -> u64 {
 // Encodes one or more PADDING frames (0x00) into output buffer.
 fn encode_padding_frame<B>(out: B&, count: u64 = 1) -> bool {
     guard count > 0 else { return true; }
+    guard count <= ((out.cap - out.len) as u64) else { return false; }
     for _ in count {
         out.push(rfc::QUIC_FRAME_PADDING as u8);
     }
@@ -134,8 +135,7 @@ fn encode_padding_frame<B>(out: B&, count: u64 = 1) -> bool {
 
 // Encodes a PING frame (0x01) into output buffer.
 fn encode_ping_frame<B>(out: B&) -> bool {
-    out.push(rfc::QUIC_FRAME_PING as u8);
-    return true;
+    return out.try_push(rfc::QUIC_FRAME_PING as u8);
 }
 
 // Encodes a RESET_STREAM frame (0x04) (RFC 9000 Section 19.4).
@@ -149,10 +149,14 @@ fn encode_reset_stream_frame<B>(
     guard error_code <= rfc::QUIC_VARINT_MAX else { return false; }
     guard final_size <= rfc::QUIC_VARINT_MAX else { return false; }
 
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_RESET_STREAM) else { return false; }
-    guard quic_encode_varint(out, stream_id) else { return false; }
-    guard quic_encode_varint(out, error_code) else { return false; }
-    guard quic_encode_varint(out, final_size) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_RESET_STREAM)
+        && quic_encode_varint(out, stream_id)
+        && quic_encode_varint(out, error_code)
+        && quic_encode_varint(out, final_size) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -165,9 +169,13 @@ fn encode_stop_sending_frame<B>(
     guard stream_id <= rfc::QUIC_VARINT_MAX else { return false; }
     guard error_code <= rfc::QUIC_VARINT_MAX else { return false; }
 
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_STOP_SENDING) else { return false; }
-    guard quic_encode_varint(out, stream_id) else { return false; }
-    guard quic_encode_varint(out, error_code) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_STOP_SENDING)
+        && quic_encode_varint(out, stream_id)
+        && quic_encode_varint(out, error_code) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -179,11 +187,13 @@ fn encode_crypto_frame<B>(
 ) -> bool {
     guard quic_valid_offset_len(offset, data.len as u64) else { return false; }
 
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_CRYPTO) else { return false; }
-    guard quic_encode_varint(out, offset) else { return false; }
-    guard quic_encode_varint(out, data.len as u64) else { return false; }
-    if data.len > 0 {
-        out.append(data);
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_CRYPTO)
+        && quic_encode_varint(out, offset)
+        && quic_encode_varint(out, data.len as u64)
+        && out.try_append(data) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -199,18 +209,28 @@ fn encode_stream_frame_explicit<B>(
     guard stream_id <= rfc::QUIC_VARINT_MAX else { return false; }
     guard quic_valid_offset_len(offset, data.len as u64) else { return false; }
 
+    let orig_len = out.len;
     let ftype = build_stream_frame_type(flags);
 
-    guard quic_encode_varint(out, ftype) else { return false; }
-    guard quic_encode_varint(out, stream_id) else { return false; }
+    guard quic_encode_varint(out, ftype) && quic_encode_varint(out, stream_id) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     if flags.with_offset {
-        guard quic_encode_varint(out, offset) else { return false; }
+        guard quic_encode_varint(out, offset) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     }
     if flags.with_len {
-        guard quic_encode_varint(out, data.len as u64) else { return false; }
+        guard quic_encode_varint(out, data.len as u64) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     }
-    if data.len > 0 {
-        out.append(data);
+    guard out.try_append(data) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -231,8 +251,12 @@ fn encode_stream_frame<B>(
 // Encodes a MAX_DATA frame (0x10) (RFC 9000 Section 19.9).
 fn encode_max_data_frame<B>(out: B&, max_data: u64) -> bool {
     guard max_data <= rfc::QUIC_VARINT_MAX else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_MAX_DATA) else { return false; }
-    guard quic_encode_varint(out, max_data) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_MAX_DATA)
+        && quic_encode_varint(out, max_data) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -245,9 +269,13 @@ fn encode_max_stream_data_frame<B>(
     guard stream_id <= rfc::QUIC_VARINT_MAX else { return false; }
     guard max_stream_data <= rfc::QUIC_VARINT_MAX else { return false; }
 
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_MAX_STREAM_DATA) else { return false; }
-    guard quic_encode_varint(out, stream_id) else { return false; }
-    guard quic_encode_varint(out, max_stream_data) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_MAX_STREAM_DATA)
+        && quic_encode_varint(out, stream_id)
+        && quic_encode_varint(out, max_stream_data) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -255,25 +283,36 @@ fn encode_max_stream_data_frame<B>(
 fn encode_max_streams_frame<B>(out: B&, max_streams: u64, is_bidi: bool) -> bool {
     guard max_streams <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
     let ftype = if is_bidi { rfc::QUIC_FRAME_MAX_STREAMS_BIDI } else { rfc::QUIC_FRAME_MAX_STREAMS_UNI };
-    guard quic_encode_varint(out, ftype) else { return false; }
-    guard quic_encode_varint(out, max_streams) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, ftype) && quic_encode_varint(out, max_streams) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
 // Encodes a DATA_BLOCKED frame (0x14) (RFC 9000 Section 19.12).
 fn encode_data_blocked_frame<B>(out: B&, max_data: u64) -> bool {
     guard max_data <= rfc::QUIC_VARINT_MAX else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_DATA_BLOCKED) else { return false; }
-    guard quic_encode_varint(out, max_data) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_DATA_BLOCKED)
+        && quic_encode_varint(out, max_data) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
 // Encodes a STREAM_DATA_BLOCKED frame (0x15) (RFC 9000 Section 19.13).
 fn encode_stream_data_blocked_frame<B>(out: B&, stream_id: u64, limit: u64) -> bool {
     guard stream_id <= rfc::QUIC_VARINT_MAX && limit <= rfc::QUIC_VARINT_MAX else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_STREAM_DATA_BLOCKED) else { return false; }
-    guard quic_encode_varint(out, stream_id) else { return false; }
-    guard quic_encode_varint(out, limit) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_STREAM_DATA_BLOCKED)
+        && quic_encode_varint(out, stream_id)
+        && quic_encode_varint(out, limit) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -281,8 +320,11 @@ fn encode_stream_data_blocked_frame<B>(out: B&, stream_id: u64, limit: u64) -> b
 fn encode_streams_blocked_frame<B>(out: B&, stream_limit: u64, is_bidi: bool) -> bool {
     guard stream_limit <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
     let ftype = if is_bidi { rfc::QUIC_FRAME_STREAMS_BLOCKED_BIDI } else { rfc::QUIC_FRAME_STREAMS_BLOCKED_UNI };
-    guard quic_encode_varint(out, ftype) else { return false; }
-    guard quic_encode_varint(out, stream_limit) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, ftype) && quic_encode_varint(out, stream_limit) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -290,9 +332,13 @@ fn encode_streams_blocked_frame<B>(out: B&, stream_limit: u64, is_bidi: bool) ->
 // The token MUST NOT be empty.
 fn encode_new_token_frame<B>(out: B&, token: const u8[:]) -> bool {
     guard token.len > 0 else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_NEW_TOKEN) else { return false; }
-    guard quic_encode_varint(out, token.len as u64) else { return false; }
-    out.append(token);
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_NEW_TOKEN)
+        && quic_encode_varint(out, token.len as u64)
+        && out.try_append(token) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -306,13 +352,15 @@ fn encode_new_conn_id_frame<B>(
 ) -> bool {
     guard seq <= rfc::QUIC_VARINT_MAX && retire_prior_to <= seq else { return false; }
     guard conn_id.len >= 1 && conn_id.len <= 20 else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_NEW_CONNECTION_ID) else { return false; }
-    guard quic_encode_varint(out, seq) else { return false; }
-    guard quic_encode_varint(out, retire_prior_to) else { return false; }
-    out.push(conn_id.len as u8);
-    out.append(conn_id);
-    for i in 16 {
-        out.push(stateless_reset_token[i]);
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_NEW_CONNECTION_ID)
+        && quic_encode_varint(out, seq)
+        && quic_encode_varint(out, retire_prior_to)
+        && out.try_push(conn_id.len as u8)
+        && out.try_append(conn_id)
+        && out.try_append(stateless_reset_token[..]) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -320,8 +368,12 @@ fn encode_new_conn_id_frame<B>(
 // Encodes a RETIRE_CONNECTION_ID frame (0x19) (RFC 9000 Section 19.16).
 fn encode_retire_conn_id_frame<B>(out: B&, seq: u64) -> bool {
     guard seq <= rfc::QUIC_VARINT_MAX else { return false; }
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_RETIRE_CONNECTION_ID) else { return false; }
-    guard quic_encode_varint(out, seq) else { return false; }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_RETIRE_CONNECTION_ID)
+        && quic_encode_varint(out, seq) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -332,9 +384,11 @@ fn encode_retire_conn_id_frame<B>(out: B&, seq: u64) -> bool {
 //   data = [1, 2, 3, 4, 5, 6, 7, 8]
 //   out: appends 0x1A followed by 8 data bytes
 fn encode_path_challenge_frame<B>(out: B&, data: const u8[8]&) -> bool {
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_PATH_CHALLENGE) else { return false; }
-    for i in 8 {
-        out.push(data[i]);
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_PATH_CHALLENGE)
+        && out.try_append(data[..]) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -346,9 +400,11 @@ fn encode_path_challenge_frame<B>(out: B&, data: const u8[8]&) -> bool {
 //   data = [1, 2, 3, 4, 5, 6, 7, 8]
 //   out: appends 0x1B followed by 8 data bytes
 fn encode_path_response_frame<B>(out: B&, data: const u8[8]&) -> bool {
-    guard quic_encode_varint(out, rfc::QUIC_FRAME_PATH_RESPONSE) else { return false; }
-    for i in 8 {
-        out.push(data[i]);
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_PATH_RESPONSE)
+        && out.try_append(data[..]) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -368,15 +424,21 @@ fn encode_connection_close_frame<B>(
     is_app:     bool = false,
 ) -> bool {
     guard error_code <= rfc::QUIC_VARINT_MAX else { return false; }
+    let orig_len = out.len;
     let ftype = if is_app { rfc::QUIC_FRAME_CONNECTION_CLOSE_APP } else { rfc::QUIC_FRAME_CONNECTION_CLOSE };
-    guard quic_encode_varint(out, ftype) else { return false; }
-    guard quic_encode_varint(out, error_code) else { return false; }
-    if !is_app {
-        guard quic_encode_varint(out, frame_type) else { return false; }
+    guard quic_encode_varint(out, ftype) && quic_encode_varint(out, error_code) else {
+        out.resize(orig_len, 0);
+        return false;
     }
-    guard quic_encode_varint(out, reason.len as u64) else { return false; }
-    if reason.len > 0 {
-        out.append(reason);
+    if !is_app {
+        guard quic_encode_varint(out, frame_type) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
+    }
+    guard quic_encode_varint(out, reason.len as u64) && out.try_append(reason) else {
+        out.resize(orig_len, 0);
+        return false;
     }
     return true;
 }
@@ -476,7 +538,7 @@ inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool
     let tlen, ok_len = quic_decode_varint_cursor(src, idx);
     guard ok_len && tlen > 0 else { return QuicFrame { .. }, false; }
     let ilen = tlen as i64;
-    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    guard ilen >= 0 && ilen <= src.len - idx else { return QuicFrame { .. }, false; }
     let token = src[idx..idx + ilen];
     idx += ilen;
     return QuicFrame {
@@ -546,7 +608,7 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, b
         return QuicCryptoFrame { .. }, false;
     }
     let dlen = data_len as i64;
-    guard idx + dlen <= src.len else {
+    guard dlen >= 0 && dlen <= src.len - idx else {
         return QuicCryptoFrame { .. }, false;
     }
 
@@ -601,7 +663,7 @@ inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicSt
         return QuicStreamFrame { .. }, false;
     }
     let dlen = data_len as i64;
-    guard idx + dlen <= src.len else {
+    guard dlen >= 0 && dlen <= src.len - idx else {
         return QuicStreamFrame { .. }, false;
     }
 
@@ -659,11 +721,11 @@ inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bo
     guard ok_seq else { return QuicFrame { .. }, false; }
     let retire_prior, ok_ret = quic_decode_varint_cursor(src, idx);
     guard ok_ret && retire_prior <= seq else { return QuicFrame { .. }, false; }
-    guard idx < src.len else { return QuicFrame { .. }, false; }
+    guard idx >= 0 && idx < src.len else { return QuicFrame { .. }, false; }
     let cid_len = src[idx] as i64;
     idx += 1;
     guard cid_len >= 1 && cid_len <= 20 else { return QuicFrame { .. }, false; }
-    guard idx + cid_len + 16 <= src.len else { return QuicFrame { .. }, false; }
+    guard cid_len + 16 <= src.len - idx else { return QuicFrame { .. }, false; }
     let payload = src[idx..idx + cid_len + 16];
     idx += cid_len + 16;
     return QuicFrame {
@@ -699,6 +761,7 @@ inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame,
 //
 // crap:trusted-bounds
 inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    guard idx >= 0 && idx <= src.len else { return QuicFrame { .. }, false; }
     if ftype == rfc::QUIC_FRAME_DATAGRAM {
         let payload = src[idx..src.len];
         idx = src.len;
@@ -712,7 +775,7 @@ inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> Quic
     let dlen, ok = quic_decode_varint_cursor(src, idx);
     guard ok else { return QuicFrame { .. }, false; }
     let ilen = dlen as i64;
-    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    guard ilen >= 0 && ilen <= src.len - idx else { return QuicFrame { .. }, false; }
     let payload = src[idx..idx + ilen];
     idx += ilen;
     return QuicFrame {
@@ -732,7 +795,7 @@ inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> Quic
 //
 // crap:trusted-bounds
 inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
-    guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
+    guard idx >= 0 && 8 <= src.len - idx else { return QuicPathFrame { .. }, false; }
     var frame = QuicPathFrame { .. };
     for i in 8 {
         frame.data[i] = src[idx + i];
@@ -750,7 +813,7 @@ inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> QuicPathFr
 //
 // crap:trusted-bounds
 inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> QuicPathFrame, bool {
-    guard idx + 8 <= src.len else { return QuicPathFrame { .. }, false; }
+    guard idx >= 0 && 8 <= src.len - idx else { return QuicPathFrame { .. }, false; }
     var frame = QuicPathFrame { .. };
     for i in 8 {
         frame.data[i] = src[idx + i];
@@ -949,7 +1012,7 @@ inline fn decode_connection_close_frame(
     let rlen, ok_rlen = quic_decode_varint_cursor(src, idx);
     guard ok_rlen else { return QuicFrame { .. }, false; }
     let ilen = rlen as i64;
-    guard idx + ilen <= src.len else { return QuicFrame { .. }, false; }
+    guard ilen >= 0 && ilen <= src.len - idx else { return QuicFrame { .. }, false; }
     let reason = src[idx..idx + ilen];
     idx += ilen;
     let k = if ftype == rfc::QUIC_FRAME_CONNECTION_CLOSE {
@@ -974,8 +1037,8 @@ inline fn decode_connection_close_frame(
 //   returns: QuicFrame { length: 8 }, ok = true, idx = 8
 inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     let cur = idx;
+    guard cur >= 0 && 8 <= src.len - cur else { return QuicFrame { .. }, false; }
     let end = cur + 8;
-    guard src.len >= end else { return QuicFrame { .. }, false; }
     idx = end;
     let k = if ftype == rfc::QUIC_FRAME_PATH_CHALLENGE {
         QuicFrameType.PathChallenge
@@ -1025,7 +1088,7 @@ fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bo
 //   returns: QuicFrame { frame_type: Ping }, ok = true, idx = 1
 fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     let initial_idx = idx;
-    guard idx < src.len else { return QuicFrame { .. }, false; }
+    guard idx >= 0 && idx < src.len else { return QuicFrame { .. }, false; }
 
     let ftype, ok_type = quic_decode_varint_cursor(src, idx);
     guard ok_type else {

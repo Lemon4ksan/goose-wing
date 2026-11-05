@@ -184,9 +184,9 @@ fn fused_aes_gcm_encrypt(
 
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
-    let h = aes128_encrypt_block(ks, zero_block);
+    var h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
-    let enc_j0 = aes128_encrypt_block(ks, j0);
+    var enc_j0 = aes128_encrypt_block(ks, j0);
 
     var ghash_acc: u8[16] = [0; 16];
     ghash_update(h, ghash_acc, aad);
@@ -217,6 +217,8 @@ fn fused_aes_gcm_encrypt(
     }
 
     let tag = fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_acc, aad.len, plaintext.len);
+    secure_zeroize_16(h);
+    secure_zeroize_16(enc_j0);
     return tag, plaintext.len, true;
 }
 
@@ -240,9 +242,9 @@ fn fused_aes_gcm_decrypt(
 
     let ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
-    let h = aes128_encrypt_block(ks, zero_block);
+    var h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
-    let enc_j0 = aes128_encrypt_block(ks, j0);
+    var enc_j0 = aes128_encrypt_block(ks, j0);
 
     var ghash_acc: u8[16] = [0; 16];
     ghash_update(h, ghash_acc, aad);
@@ -273,6 +275,8 @@ fn fused_aes_gcm_decrypt(
     }
 
     let computed_tag = fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_acc, aad.len, ciphertext.len);
+    secure_zeroize_16(h);
+    secure_zeroize_16(enc_j0);
     guard ct_eq_bytes(computed_tag[..], tag[..]) else {
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;

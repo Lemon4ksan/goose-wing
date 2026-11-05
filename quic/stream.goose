@@ -89,7 +89,7 @@ struct QuicStream {
     contiguous_recv_bytes: u64            = 0,
     recv_max_data:         u64            = 65536,
     recv_error_code:       u64            = 0,
-    recv_ranges:           Interval[..16] = [],
+    recv_ranges:           Interval[..64] = [],
 
     // STOP_SENDING signaling
     stop_sending_sent: bool = false,
@@ -125,14 +125,23 @@ fn quic_stream_on_send_data(
     guard s.send_state == QuicSendState.Ready || s.send_state == QuicSendState.Send else {
         return false, rfc::QUIC_ERR_STREAM_STATE;
     }
+    guard quic_valid_offset_len(offset, len) else {
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
+    }
     guard is_within_limit(offset, len, s.send_max_data) else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;
     }
 
     let end_offset = offset + len;
-    s.bytes_sent = core::ct_max_u64(s.bytes_sent, end_offset);
-
     if fin {
+        guard end_offset >= s.bytes_sent else {
+            return false, rfc::QUIC_ERR_FINAL_SIZE;
+        }
+        if s.has_send_final_size {
+            guard end_offset == s.send_final_size else {
+                return false, rfc::QUIC_ERR_FINAL_SIZE;
+            }
+        }
         s.has_send_final_size = true;
         s.send_final_size = end_offset;
         s.send_state = QuicSendState.DataSent;
@@ -140,6 +149,7 @@ fn quic_stream_on_send_data(
         s.send_state = QuicSendState.Send;
     }
 
+    s.bytes_sent = core::ct_max_u64(s.bytes_sent, end_offset);
     return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
@@ -198,15 +208,15 @@ inline fn validate_recv_final_size(
     return true;
 }
 
-inline fn record_stream_recv_range(s: QuicStream&, start: u64, end: u64) {
-    guard start < end else { return; }
+inline fn record_stream_recv_range(s: QuicStream&, start: u64, end: u64) -> bool {
+    guard start < end else { return true; }
     var cur_s = start;
     var cur_e = end;
     var i: i64 = 0;
     while i < s.recv_ranges.len {
         let it = s.recv_ranges[i];
         if cur_e < it.start {
-            guard s.recv_ranges.len < s.recv_ranges.cap else { break; }
+            guard s.recv_ranges.len < s.recv_ranges.cap else { return false; }
             s.recv_ranges.insert_at(i, Interval { start: cur_s, end: cur_e });
             break;
         }
@@ -214,17 +224,18 @@ inline fn record_stream_recv_range(s: QuicStream&, start: u64, end: u64) {
             i = i + 1;
             continue;
         }
-        cur_s = if cur_s < it.start { cur_s } else { it.start };
-        cur_e = if cur_e > it.end { cur_e } else { it.end };
+        cur_s = min(cur_s, it.start);
+        cur_e = max(cur_e, it.end);
         s.recv_ranges.remove_at(i);
     }
     if i == s.recv_ranges.len {
-        guard s.recv_ranges.len < s.recv_ranges.cap else { return; }
+        guard s.recv_ranges.len < s.recv_ranges.cap else { return false; }
         s.recv_ranges.push(Interval { start: cur_s, end: cur_e });
     }
     if s.recv_ranges.len > 0 && s.recv_ranges[0].start == 0 {
         s.contiguous_recv_bytes = s.recv_ranges[0].end;
     }
+    return true;
 }
 
 // Processes incoming STREAM frame fragments and enforces final size invariants.
@@ -260,15 +271,21 @@ fn quic_stream_on_recv_stream_frame(
     if fin && !s.has_recv_final_size {
         let valid_fs = validate_recv_final_size(false, 0, end_offset, s.bytes_recv, s.recv_consumed);
         guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
+    }
+
+    if len > 0 {
+        guard record_stream_recv_range(s, offset, end_offset) else {
+            return false, rfc::QUIC_ERR_FLOW_CONTROL;
+        }
+    }
+
+    if fin && !s.has_recv_final_size {
         s.has_recv_final_size = true;
         s.recv_final_size = end_offset;
         s.recv_state = QuicRecvState.SizeKnown;
     }
 
     s.bytes_recv = core::ct_max_u64(s.bytes_recv, end_offset);
-    if len > 0 {
-        record_stream_recv_range(s, offset, end_offset);
-    }
 
     if s.has_recv_final_size && s.contiguous_recv_bytes == s.recv_final_size {
         s.recv_state = QuicRecvState.DataRecvd;
@@ -283,21 +300,6 @@ fn quic_stream_on_recv_reset(
     error_code: u64,
     final_size: u64,
 ) -> bool, u64 {
-    // RFC 9000 Section 3.2 & Section 4.5: Final size consistency must be validated even in terminal states
-    let is_terminal = s.recv_state == QuicRecvState.DataRecvd
-        || s.recv_state == QuicRecvState.DataRead
-        || s.recv_state == QuicRecvState.ResetRead;
-    if is_terminal {
-        let valid_fs = validate_recv_final_size(
-            s.has_recv_final_size,
-            s.recv_final_size,
-            final_size,
-            s.bytes_recv,
-            s.recv_consumed,
-        );
-        guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
-        return true, rfc::QUIC_ERR_NO_ERROR;
-    }
     guard final_size <= rfc::QUIC_VARINT_MAX else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
     guard final_size <= s.recv_max_data else { return false, rfc::QUIC_ERR_FLOW_CONTROL; }
 
@@ -309,6 +311,14 @@ fn quic_stream_on_recv_reset(
         s.recv_consumed,
     );
     guard valid_fs else { return false, rfc::QUIC_ERR_FINAL_SIZE; }
+
+    let is_terminal = s.recv_state == QuicRecvState.DataRecvd
+        || s.recv_state == QuicRecvState.DataRead
+        || s.recv_state == QuicRecvState.ResetRecvd
+        || s.recv_state == QuicRecvState.ResetRead;
+    if is_terminal {
+        return true, rfc::QUIC_ERR_NO_ERROR;
+    }
 
     s.recv_state = QuicRecvState.ResetRecvd;
     s.recv_error_code = error_code;
@@ -346,6 +356,8 @@ fn quic_stream_on_recv_stop_sending(
 
 // Consumes contiguous stream bytes by application, advancing to DataRead terminal state.
 fn quic_stream_on_app_read(s: QuicStream&, bytes: u64) -> bool {
+    guard 0xFFFFFFFFFFFFFFFF - s.recv_consumed >= bytes else { return false; }
+    guard s.recv_consumed + bytes <= s.contiguous_recv_bytes else { return false; }
     s.recv_consumed = s.recv_consumed + bytes;
     if s.recv_state == QuicRecvState.DataRecvd && s.recv_consumed >= s.recv_final_size {
         s.recv_state = QuicRecvState.DataRead;
@@ -524,6 +536,11 @@ fn quic_table_open_local_stream(
     is_bidi:           bool,
     default_recv_flow: u64 = 65536,
 ) -> u64, i32, bool {
+    let next_id = if is_bidi { tbl.next_local_bidi_id } else { tbl.next_local_uni_id };
+    let limit = if is_bidi { tbl.max_streams_bidi } else { tbl.max_streams_uni };
+    guard next_id <= rfc::QUIC_VARINT_MAX && (next_id >> 2) < limit else {
+        return 0, 0, false;
+    }
     for i in tbl.streams.len {
         if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
             let stream_id = advance_stream_counter(tbl, is_bidi);

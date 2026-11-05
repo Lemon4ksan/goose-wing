@@ -111,14 +111,34 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
             bit -= 1;
         }
     }
+    guard started else { return false; }
     out.clear();
     out.append(acc[..]);
+    return true;
+}
+
+// Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` (RFC 8017 §3.1).
+// crap:ignore
+fn is_valid_rsa_public_exponent(e_be: const u8[:], n_be: const u8[:]) -> bool {
+    guard e_be.len > 0 && n_be.len >= 64 else { return false; }
+    var start: i64 = 0;
+    while start < e_be.len && e_be[start] == 0 {
+        start += 1;
+    }
+    let e_trim = e_be[start..e_be.len];
+    guard e_trim.len >= 1 && e_trim.len <= n_be.len else { return false; }
+    guard (e_trim[e_trim.len - 1] & 1) == 1 else { return false; }
+    guard e_trim.len > 1 || e_trim[0] >= 3 else { return false; }
+    if e_trim.len == n_be.len {
+        guard rsa_be_cmp(e_trim, n_be) < 0 else { return false; }
+    }
     return true;
 }
 
 // ---- ASN.1 DER RSAPublicKey Parser (RFC 8017 Appendix A.1.1) -------------
 
 // Reads an ASN.1 DER tag and length at `idx`, advancing `idx` to the value payload.
+// Leaves `idx` unchanged on error.
 //
 // Example:
 //   der = [0x02, 0x81, 0x80, ...], idx = 0
@@ -128,20 +148,23 @@ fn parse_der_tlv_header(der: const u8[:], idx: i64&) -> u8, i64, bool {
     guard idx + 2 <= der.len else { return 0, 0, false; }
     let tag = der[idx];
     let b1 = der[idx + 1];
-    idx += 2;
+    var next_idx = idx + 2;
     if (b1 & 0x80) == 0 {
         let len = b1 as i64;
-        guard idx + len <= der.len else { return 0, 0, false; }
+        guard next_idx + len <= der.len else { return 0, 0, false; }
+        idx = next_idx;
         return tag, len, true;
     }
     let num_bytes = (b1 & 0x7F) as i64;
-    guard num_bytes >= 1 && num_bytes <= 2 && idx + num_bytes <= der.len else { return 0, 0, false; }
+    guard num_bytes >= 1 && num_bytes <= 2 && next_idx + num_bytes <= der.len else { return 0, 0, false; }
     var len: i64 = 0;
     for i in num_bytes {
-        len = (len << 8) | der[idx + i];
+        len = (len << 8) | der[next_idx + i];
     }
-    idx += num_bytes;
-    guard idx + len <= der.len else { return 0, 0, false; }
+    guard (num_bytes == 1 && len >= 128) || (num_bytes == 2 && len >= 256) else { return 0, 0, false; }
+    next_idx += num_bytes;
+    guard next_idx + len <= der.len else { return 0, 0, false; }
+    idx = next_idx;
     return tag, len, true;
 }
 
@@ -161,16 +184,21 @@ fn parse_rsa_public_key_der(der: const u8[:]) -> const u8[:], const u8[:], bool 
     guard n_ok && n_tag == 0x02 && n_len >= 64 else { return "", "", false; }
     var n_slice = der[idx..idx + n_len];
     idx += n_len;
-    if n_slice.len > 1 && n_slice[0] == 0x00 {
+    guard (n_slice[0] & 0x80) == 0 else { return "", "", false; }
+    if n_slice[0] == 0x00 {
+        guard n_slice.len > 1 && (n_slice[1] & 0x80) != 0 else { return "", "", false; }
         n_slice = n_slice[1..n_slice.len];
     }
 
     let e_tag, e_len, e_ok = parse_der_tlv_header(der, idx);
     guard e_ok && e_tag == 0x02 && e_len >= 1 && idx + e_len == der.len else { return "", "", false; }
     var e_slice = der[idx..idx + e_len];
-    if e_slice.len > 1 && e_slice[0] == 0x00 {
+    guard (e_slice[0] & 0x80) == 0 else { return "", "", false; }
+    if e_slice[0] == 0x00 {
+        guard e_slice.len > 1 && (e_slice[1] & 0x80) != 0 else { return "", "", false; }
         e_slice = e_slice[1..e_slice.len];
     }
+    guard is_valid_rsa_public_exponent(e_slice, n_slice) else { return "", "", false; }
     return n_slice, e_slice, true;
 }
 
@@ -214,7 +242,7 @@ fn build_emsa_pkcs1_v15(
 // Verifies an RSASSA-PKCS1-v1_5 SHA-256 signature using big-endian modulus `n_be` and exponent `e_be`.
 // crap:ignore
 fn rsa_pkcs1_sha256_verify(n_be: const u8[:], e_be: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    guard sig.len == n_be.len else { return false; }
+    guard sig.len == n_be.len && is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let digest = sha256(message);
@@ -226,7 +254,7 @@ fn rsa_pkcs1_sha256_verify(n_be: const u8[:], e_be: const u8[:], message: const 
 // Verifies an RSASSA-PKCS1-v1_5 SHA-384 signature using big-endian modulus `n_be` and exponent `e_be`.
 // crap:ignore
 fn rsa_pkcs1_sha384_verify(n_be: const u8[:], e_be: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    guard sig.len == n_be.len else { return false; }
+    guard sig.len == n_be.len && is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let digest = sha384(message);
@@ -277,6 +305,7 @@ fn rsa_mgf1_xor_block(blk: const u8[:], dst: u8[:], offset: i64) {
 // Mask Generation Function MGF1 (RFC 8017 Appendix B.2.1) supporting SHA-256 (32), SHA-384 (48), and SHA-512 (64).
 // crap:ignore
 fn rsa_mgf1_xor(seed: const u8[:], hash_len: i64, dst: u8[:]) {
+    guard seed.len <= 64 && (hash_len == 32 || hash_len == 48 || hash_len == 64) else { return; }
     var counter: u32      = 0;
     var offset:  i64      = 0;
     var hash_in: u8[..68] = [];
@@ -309,6 +338,7 @@ fn rsa_mgf1_xor(seed: const u8[:], hash_len: i64, dst: u8[:]) {
 fn verify_emsa_pss(em: const u8[:], m_hash: const u8[:], mod_first_byte: u8) -> bool {
     let h_len = m_hash.len;
     let em_len = em.len;
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && (mod_first_byte & 0x80) != 0 else { return false; }
     guard em_len >= h_len + h_len + 2 && em_len <= 512 else { return false; }
     guard em[em_len - 1] == 0xBC else { return false; }
 
@@ -359,7 +389,7 @@ fn verify_emsa_pss(em: const u8[:], m_hash: const u8[:], mod_first_byte: u8) -> 
 // Verifies an RSASSA-PSS SHA-256 signature using big-endian modulus `n_be` and exponent `e_be`.
 // crap:ignore
 fn rsa_pss_sha256_verify(n_be: const u8[:], e_be: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    guard sig.len == n_be.len else { return false; }
+    guard sig.len == n_be.len && is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha256(message);
@@ -369,7 +399,7 @@ fn rsa_pss_sha256_verify(n_be: const u8[:], e_be: const u8[:], message: const u8
 // Verifies an RSASSA-PSS SHA-384 signature using big-endian modulus `n_be` and exponent `e_be`.
 // crap:ignore
 fn rsa_pss_sha384_verify(n_be: const u8[:], e_be: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    guard sig.len == n_be.len else { return false; }
+    guard sig.len == n_be.len && is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha384(message);
@@ -379,7 +409,7 @@ fn rsa_pss_sha384_verify(n_be: const u8[:], e_be: const u8[:], message: const u8
 // Verifies an RSASSA-PSS SHA-512 signature using big-endian modulus `n_be` and exponent `e_be`.
 // crap:ignore
 fn rsa_pss_sha512_verify(n_be: const u8[:], e_be: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    guard sig.len == n_be.len else { return false; }
+    guard sig.len == n_be.len && is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha512(message);
@@ -411,6 +441,7 @@ fn encode_emsa_pss(
 ) -> bool {
     let h_len = m_hash.len;
     let s_len = salt.len;
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && (mod_first_byte & 0x80) != 0 else { return false; }
     guard s_len == h_len && em_len >= h_len + s_len + 2 && em_len <= 512 else { return false; }
 
     var m_prime: u8[..136] = [];

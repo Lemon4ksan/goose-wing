@@ -186,8 +186,8 @@ fn verify_tls_record_slice_and_bounds() {
     );
     assert(dec_ok && plain_len == 4 && inner_type == 0x17 && dec_alert == wing::TlsAlert.CloseNotify);
 
-    // Oversized ciphertext (> 16384 bytes) MUST fail closed with RecordOverflow (Invariant 13)
-    var oversize_payload: u8[16401] = [0; 16401];
+    // Oversized ciphertext (> 16640 bytes) MUST fail closed with RecordOverflow (Invariant 13)
+    var oversize_payload: u8[16641] = [0; 16641];
     var out_over:         u8[16384] = [0; 16384];
     let _, _, over_alert, over_ok = wing::tls_record_decrypt_aes128_gcm_into(
         key, iv, 0, hdr[..], oversize_payload[..], out_over[..],

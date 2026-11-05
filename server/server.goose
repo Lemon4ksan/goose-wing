@@ -597,49 +597,68 @@ struct ResponseFramingInfo {
 
 // Parses raw HTTP/1.1 response header lines into header items (RFC 9112 Section 5).
 //
+// Parses a single HTTP/1.1 response header line using SWAR scanning and records its HeaderSpan.
+// Advances `cursor` past the trailing CRLF delimiter.
+//
+// Example:
+//   rest_headers = "Content-Type: text/plain\r\n\r\n", cursor = 0
+//   returns: ok = true, cursor = 26
+fn parse_http1_wire_response_header_line<Res>(
+    rest_headers: const u8[:],
+    cursor:       i64&,
+    out_res:      Res&,
+    base_offset:  i64 = 0,
+) -> bool {
+    let name_len, ok_name = scan_header_field_name_swar(rest_headers[cursor..]);
+    guard ok_name && name_len > 0 else { return false; }
+    let hname = rest_headers[cursor..(cursor + name_len)];
+
+    let val_slice = rest_headers[(cursor + name_len + 1)..];
+    let val_len, crlf_len, ok_val = scan_header_field_value_swar(val_slice);
+    guard ok_val && crlf_len == 2 else { return false; }
+    let lead_ws, end_ws = trim_header_value_bounds(val_slice[..val_len]);
+    let hval = val_slice[lead_ws..end_ws];
+
+    let known_id = identify_known_header(hname);
+    let span = make_header_span(base_offset + cursor, name_len, lead_ws, hval.len, header_id_to_u8(known_id));
+    var item = HeaderItem { .. };
+    let fits = hname.len <= item.name.cap &&
+        hval.len <= item.value.cap &&
+        out_res.headers.len < out_res.headers.cap &&
+        out_res.spans.len < out_res.spans.cap;
+    guard fits else { return false; }
+
+    out_res.spans.push(span);
+    item.name.append(hname);
+    item.value.append(hval);
+    out_res.headers.push(item);
+    advance_header_cursor(cursor, name_len, val_len, crlf_len);
+    return true;
+}
+
 // Example:
 //   rest_headers = "Content-Type: text/plain\r\n\r\n"
-//   returns: true (out_res.headers populated)
-fn parse_http1_response_headers_block<Res>(rest_headers: const u8[:], out_res: Res&) -> bool {
+//   returns: true (out_res.headers and out_res.spans populated)
+fn parse_http1_response_headers_block<Res>(
+    rest_headers: const u8[:],
+    out_res:      Res&,
+    base_offset:  i64 = 0,
+) -> bool {
     var cursor: i64 = 0;
     out_res.headers.clear();
+    out_res.spans.clear();
     while cursor < rest_headers.len {
-        let rel_end = find(rest_headers[cursor..], "\r\n");
-        if rel_end == 0 { break; }
-        guard rel_end > 0 else {
+        if rest_headers[cursor] == '\r' && cursor + 1 < rest_headers.len && rest_headers[cursor + 1] == '\n' {
+            break;
+        }
+        if rest_headers[cursor] == '\n' {
+            break;
+        }
+        guard parse_http1_wire_response_header_line(rest_headers, cursor, out_res, base_offset) else {
             out_res.headers.clear();
+            out_res.spans.clear();
             return false;
         }
-
-        let line = rest_headers[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        guard colon > 0 else {
-            out_res.headers.clear();
-            return false;
-        }
-        let hname = line[..colon];
-        guard is_valid_header_name(hname) else {
-            out_res.headers.clear();
-            return false;
-        }
-        let hval = trim_lws(line[(colon + 1)..]);
-        guard is_valid_header_value(hval) else {
-            out_res.headers.clear();
-            return false;
-        }
-
-        var item = HeaderItem { .. };
-        let fits = hname.len <= item.name.cap &&
-            hval.len <= item.value.cap &&
-            out_res.headers.len < out_res.headers.cap;
-        guard fits else {
-            out_res.headers.clear();
-            return false;
-        }
-        item.name.append(hname);
-        item.value.append(hval);
-        out_res.headers.push(item);
-        cursor += rel_end + 2;
     }
     return true;
 }
@@ -675,6 +694,42 @@ fn inspect_response_framing_headers(headers: const HeaderItem[:]) -> ResponseFra
     return info, true;
 }
 
+inline fn purge_conflicting_cl_from_response<Res>(out_res: Res&) {
+    remove_header_by_name(out_res.headers, "content-length");
+    remove_spans_by_id(out_res.spans, header_id_to_u8(KnownHeaderId.ContentLength));
+    out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
+}
+
+// Parses an HTTP/1.1 status line and populates out_res.status_code and out_res.protocol (RFC 9112 §4).
+//
+// Example:
+//   status_line = "HTTP/1.1 200 OK"
+//   returns: true, out_res.status_code = 200
+fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) -> bool {
+    guard status_line.len >= 12 &&
+          status_line[..7] == "HTTP/1." &&
+          (status_line[7] == '0' || status_line[7] == '1') &&
+          status_line[8] == ' ' else {
+        return false;
+    }
+    if status_line.len > 12 {
+        guard status_line[12] == ' ' else { return false; }
+    }
+
+    guard status_line[9] >= '1' && status_line[9] <= '5' &&
+          status_line[10] >= '0' && status_line[10] <= '9' &&
+          status_line[11] >= '0' && status_line[11] <= '9' else {
+        return false;
+    }
+    let c0 = status_line[9] - '0';
+    let c1 = status_line[10] - '0';
+    let c2 = status_line[11] - '0';
+    out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
+    out_res.protocol.clear();
+    out_res.protocol.append(status_line[..8]);
+    return true;
+}
+
 // Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Returns (ok, total_bytes_consumed).
@@ -690,38 +745,13 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
-    // Find end of status line
     let line_end = find(header_bytes, "\r\n");
     guard line_end > 0 else { return false, 0; }
-
-    let status_line = header_bytes[..line_end];
-    // RFC 9112 Section 4: Status Line - Exactly SP between HTTP-version and 3-digit status code (uWS #1949)
-    guard status_line.len >= 12 &&
-          status_line[..7] == "HTTP/1." &&
-          (status_line[7] == '0' || status_line[7] == '1') &&
-          status_line[8] == ' ' else {
-        return false, 0;
-    }
-    if status_line.len > 12 {
-        guard status_line[12] == ' ' else { return false, 0; }
-    }
-
-    // Parse 3-digit status code (100..599)
-    guard status_line[9] >= '1' && status_line[9] <= '5' &&
-          status_line[10] >= '0' && status_line[10] <= '9' &&
-          status_line[11] >= '0' && status_line[11] <= '9' else {
-        return false, 0;
-    }
-    let c0 = status_line[9] - '0';
-    let c1 = status_line[10] - '0';
-    let c2 = status_line[11] - '0';
-    out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
-    out_res.protocol.clear();
-    out_res.protocol.append(status_line[..8]);
+    guard parse_http1_wire_status_line(header_bytes[..line_end], out_res) else { return false, 0; }
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
-    guard parse_http1_response_headers_block(rest_headers, out_res) else { return false, 0; }
+    guard parse_http1_response_headers_block(rest_headers, out_res, line_end + 2) else { return false, 0; }
 
     out_res.trailers.clear();
     out_res.body.clear();
@@ -738,8 +768,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         guard validate_transfer_encoding_value(framing.te_buf[..]) else { return false, 0; }
         // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
         if framing.has_cl {
-            remove_header_by_name(out_res.headers, "content-length");
-            out_res.presence_mask = detect_response_presence_mask(out_res.headers[..]);
+            purge_conflicting_cl_from_response(out_res);
         }
         // RFC 9112 §6.3 Rule 1: 1xx, 204, and 304 responses NEVER have a message body
         if is_empty_status {
@@ -867,10 +896,10 @@ struct CachedHttpDate {
 }
 
 fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
-    if date.header_str.len == 0 || (now_sec > 0 && date.last_sec != now_sec) {
-        date.last_sec = now_sec;
+    let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+    if date.header_str.len == 0 || date.last_sec != wall_sec {
+        date.last_sec = wall_sec;
         date.last_tsc = prof_rdtsc();
-        let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
         date.header_str.clear();
         date.header_str.append("Date: ");
         core::format_http(date.header_str, core::unix(wall_sec, 0));
@@ -884,10 +913,7 @@ fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
 
 fn format_local_http_date(out: u8[..64]&, now_sec: i64) {
     out.clear();
-    out.append("Date: ");
-    let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
-    core::format_http(out, core::unix(wall_sec, 0));
-    out.append("\r\n");
+    out.append(get_cached_http_date_header(now_sec));
 }
 
 var g_compat_date: CachedHttpDate = CachedHttpDate { .. };
@@ -1002,8 +1028,7 @@ fn serialize_http1_headers<Res, B>(
     now_sec:           i64 = 0,
     override_body_len: i64 = -1,
 ) {
-    var date_buf: u8[..64] = [];
-    format_local_http_date(date_buf, now_sec);
+    let date_hdr = get_cached_http_date_header(now_sec);
     let eff_body_len = if override_body_len >= 0 { override_body_len } else { res.body.len };
 
     var mask = res.presence_mask;
@@ -1011,10 +1036,15 @@ fn serialize_http1_headers<Res, B>(
         mask = detect_response_presence_mask(res.headers[..]);
     }
 
-    if res.status_code == 200 && server_name == "goose-wing" {
+    let is_default_srv = server_name == "goose-wing" || server_name == "goose-wing/1.0";
+    if res.status_code == 200 && is_default_srv {
         if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.len == 1 && res.trailers.len == 0 {
-            out_wire.append(HTTP1_200_SERVER_GOOSE);
-            out_wire.append(date_buf[..]);
+            if server_name == "goose-wing" {
+                out_wire.append(g_compat_date.fast_prefix[..]);
+            } else {
+                out_wire.append("HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n");
+                out_wire.append(date_hdr);
+            }
             serialize_content_length_header(eff_body_len, out_wire);
             if res.headers[0].value == "text/plain" {
                 out_wire.append(HTTP1_CT_TEXT_PLAIN);
@@ -1029,6 +1059,8 @@ fn serialize_http1_headers<Res, B>(
             out_wire.append(HTTP1_CONN_KEEP_ALIVE);
             return;
         }
+    }
+    if res.status_code == 200 && server_name == "goose-wing" {
         out_wire.append(HTTP1_200_SERVER_GOOSE);
     } else {
         serialize_status_line(res.status_code, out_wire);
@@ -1037,7 +1069,7 @@ fn serialize_http1_headers<Res, B>(
 
     // Emit RFC 7231 Date header if not explicitly overridden by response
     if (mask & RES_PRESENCE_DATE) == 0 {
-        out_wire.append(date_buf[..]);
+        out_wire.append(date_hdr);
     }
 
     let is_empty_status = rfc::is_empty_body_status(res.status_code);

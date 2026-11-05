@@ -148,7 +148,7 @@ fn parse_stream_wire_step(buf: const u8[:]) -> i64 {
 fn test_quic_varint_pathological() {
     // 1. Minimum and Maximum RFC 9000 VarInt values across all 4 encodings
     // 1-byte: 0, 63
-    var buf1: u8[>..] = [];
+    var buf1: u8[..16] = [];
     assert(internal::quic_encode_varint(buf1, 0));
     assert(internal::quic_encode_varint(buf1, 63));
     assert(buf1.len == 2);
@@ -157,7 +157,7 @@ fn test_quic_varint_pathological() {
     assert(ok0 && v0 == 0 && ok63 && v63 == 63 && o2 == 2);
 
     // 2-byte: 64, 16383
-    var buf2: u8[>..] = [];
+    var buf2: u8[..16] = [];
     assert(internal::quic_encode_varint(buf2, 64));
     assert(internal::quic_encode_varint(buf2, 16383));
     assert(buf2.len == 4);
@@ -166,7 +166,7 @@ fn test_quic_varint_pathological() {
     assert(ok64 && v64 == 64 && ok16k && v16k == 16383 && o4 == 4);
 
     // 4-byte: 16384, 1073741823
-    var buf4: u8[>..] = [];
+    var buf4: u8[..16] = [];
     assert(internal::quic_encode_varint(buf4, 16384));
     assert(internal::quic_encode_varint(buf4, 1073741823));
     assert(buf4.len == 8);
@@ -175,7 +175,7 @@ fn test_quic_varint_pathological() {
     assert(ok164 && v164 == 16384 && ok1g && v1g == 1073741823 && o6 == 8);
 
     // 8-byte: 1073741824, 0x3FFFFFFFFFFFFFFF (2^62 - 1)
-    var buf8: u8[>..] = [];
+    var buf8: u8[..32] = [];
     assert(internal::quic_encode_varint(buf8, 1073741824));
     assert(internal::quic_encode_varint(buf8, 0x3FFFFFFFFFFFFFFF));
     assert(buf8.len == 16);
@@ -184,7 +184,7 @@ fn test_quic_varint_pathological() {
     assert(ok1g1 && v1g1 == 1073741824 && okmax && vmax == 0x3FFFFFFFFFFFFFFF && o8 == 16);
 
     // 2. Reject integer exceeding 62-bit RFC 9000 limit
-    var buf_ovf: u8[>..] = [];
+    var buf_ovf: u8[..16] = [];
     let ok_ovf = internal::quic_encode_varint(buf_ovf, 0x4000000000000000);
     assert(!ok_ovf);
 
@@ -208,7 +208,7 @@ fn test_quic_varint_pathological() {
 
 // crap:trusted-bounds
 fn verify_single_stream_flag(flags: u8, payload: const u8[:]) {
-    var wire: u8[>..] = [];
+    var wire: u8[..128] = [];
     let stream_id: u64 = (flags as u64) << 2;
     let offset:    u64 = if (flags & 0x04) != 0 { 1024 } else { 0 };
     assert(encode_quic_stream_frame(wire, flags, stream_id, offset, payload));
@@ -237,7 +237,7 @@ fn test_quic_stream_flag_matrix() {
 // crap:trusted-bounds
 fn test_quic_stream_zero_length() {
     // 1. Zero-length payload WITHOUT FIN (flags = 0x0A: LEN only)
-    var wire_empty: u8[>..] = [];
+    var wire_empty: u8[..32] = [];
     assert(encode_quic_stream_frame(wire_empty, 0x02, 10, 0, ""));
     let f_empty, _, ok_empty = parse_quic_stream_frame(wire_empty[..], 0);
     assert(ok_empty);
@@ -246,7 +246,7 @@ fn test_quic_stream_zero_length() {
     assert(f_empty.data.len == 0);
 
     // 2. Zero-length payload WITH FIN (flags = 0x0B: LEN | FIN)
-    var wire_fin: u8[>..] = [];
+    var wire_fin: u8[..32] = [];
     assert(encode_quic_stream_frame(wire_fin, 0x03, 10, 0, ""));
     let f_fin, _, ok_fin = parse_quic_stream_frame(wire_fin[..], 0);
     assert(ok_fin);
@@ -255,7 +255,7 @@ fn test_quic_stream_zero_length() {
     assert(f_fin.data.len == 0);
 
     // 3. Zero-length payload with non-zero offset AND FIN (flags = 0x07: OFF | LEN | FIN)
-    var wire_off_fin: u8[>..] = [];
+    var wire_off_fin: u8[..32] = [];
     assert(encode_quic_stream_frame(wire_off_fin, 0x07, 10, 4096, ""));
     let f_off_fin, _, ok_off_fin = parse_quic_stream_frame(wire_off_fin[..], 0);
     assert(ok_off_fin);
@@ -278,7 +278,7 @@ fn test_quic_stream_zero_length() {
 // crap:trusted-bounds
 fn test_quic_stream_truncation_attacks() {
     // 1. Truncation attack: Length field claims 100 bytes, but wire only holds 10 bytes
-    var wire_trunc: u8[>..] = [];
+    var wire_trunc: u8[..64] = [];
     assert(internal::quic_encode_varint(wire_trunc, 0x0A));
     assert(internal::quic_encode_varint(wire_trunc, 4));
     assert(internal::quic_encode_varint(wire_trunc, 100));
@@ -287,7 +287,7 @@ fn test_quic_stream_truncation_attacks() {
     assert(!ok_trunc);
 
     // 2. Stream offset + length overflow (> 2^62 - 1)
-    var wire_ovf: u8[>..] = [];
+    var wire_ovf: u8[..64] = [];
     assert(internal::quic_encode_varint(wire_ovf, 0x0E));
     assert(internal::quic_encode_varint(wire_ovf, 4));
     assert(internal::quic_encode_varint(wire_ovf, 0x3FFFFFFFFFFFFFF0));
@@ -297,7 +297,7 @@ fn test_quic_stream_truncation_attacks() {
     assert(!ok_ovf);
 
     // 3. Truncated VarInt Stream ID
-    var wire_bad_sid: u8[>..] = [];
+    var wire_bad_sid: u8[..16] = [];
     wire_bad_sid.push(0x0A);
     wire_bad_sid.push(0x80);
     let _, _, ok_bad_sid = parse_quic_stream_frame(wire_bad_sid[..], 0);
@@ -323,10 +323,10 @@ fn test_quic_stream_reassembly_chaos() {
     assert(r_buf.final_size == 15);
 
     // 3. Contiguous read from head: should only yield first 5 bytes due to gap at [5, 10)
-    var out1: u8[>..] = [];
+    var out1: u8[..32] = [];
     let r1 = internal::read_contiguous(r_buf, out1);
     assert(r1 == 5);
-    assert(out1 == "HELLO");
+    assert(out1[..] == "HELLO");
     assert(r_buf.consumed_offset == 5);
 
     // 4. Final Size Violation attack 1: Inject data exceeding established final size 15
@@ -342,10 +342,10 @@ fn test_quic_stream_reassembly_chaos() {
     assert(ok3);
 
     // 7. Contiguous read tail: reads remaining 10 bytes up to final size 15
-    var out2: u8[>..] = [];
+    var out2: u8[..32] = [];
     let r2 = internal::read_contiguous(r_buf, out2);
     assert(r2 == 10);
-    assert(out2 == " RFC QUIC!");
+    assert(out2[..] == " RFC QUIC!");
     assert(r_buf.consumed_offset == 15);
 
     // 8. Reassembly interval overlap and duplicates
@@ -353,10 +353,10 @@ fn test_quic_stream_reassembly_chaos() {
     assert(internal::insert_fragment(r_buf2, 0, "ABCDEF", false));
     assert(internal::insert_fragment(r_buf2, 3, "DEFGHI", false));
     assert(internal::insert_fragment(r_buf2, 0, "ABC", false));
-    var out_ovl: u8[>..] = [];
+    var out_ovl: u8[..32] = [];
     let r_ovl = internal::read_contiguous(r_buf2, out_ovl);
     assert(r_ovl == 9);
-    assert(out_ovl == "ABCDEFGHI");
+    assert(out_ovl[..] == "ABCDEFGHI");
 
     print("STREAM_REASSEMBLY: gap_handled=true final_size_enforced=true overlap_merged=true");
 }
@@ -434,7 +434,7 @@ fn demux_control_frame(src: const u8[:], offset: u64) -> u64, u64, bool {
 
 // crap:trusted-bounds
 fn test_quic_control_frames_demux() {
-    var packet: u8[>..] = [];
+    var packet: u8[..128] = [];
 
     // 1. PADDING run (8 zeroes)
     for _ in 8 { packet.push(0x00); }
@@ -480,7 +480,7 @@ fn test_quic_control_frames_demux() {
 
 // crap:trusted-bounds
 fn test_quic_stream_mutation_fuzzing() {
-    var valid_frame: u8[>..] = [];
+    var valid_frame: u8[..128] = [];
     assert(encode_quic_stream_frame(valid_frame, 0x07, 100, 2048, "MUTATION_SEED_PAYLOAD_32_BYTES!!"));
 
     // 1. Split-stream prefix validation: ensure partial reads never panic

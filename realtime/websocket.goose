@@ -1806,6 +1806,10 @@ fn ws_upgrade_request(
 // Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request
 fn is_websocket_upgrade_request(req: const Request&) -> bool {
     guard req.method[..] == "GET" else { return false; }
+    let ws_mask = HDR_PRESENCE_HOST | HDR_PRESENCE_UPGRADE | HDR_PRESENCE_CONNECTION | HDR_PRESENCE_SEC_WEBSOCKET_KEY;
+    if req.presence_mask != 0 {
+        guard (req.presence_mask & ws_mask) == ws_mask else { return false; }
+    }
     // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
     let host = req.headers.find_header("Host");
     guard host.len > 0 else { return false; }

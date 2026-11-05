@@ -1500,7 +1500,7 @@ fn test_quic_header_security_bits(t: lit::T&) {
 fn test_quic_path_frames(t: lit::T&) {
     t.run("PATH-01: PATH_CHALLENGE frame serialization and parsing") { sub =>
         let challenge_token: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-        var out_wire: u8[>..] = [];
+        var out_wire: u8[..32] = [];
         let enc_ok = internal::encode_path_challenge_frame(out_wire, challenge_token);
         sub.assert_true(enc_ok, "encode_path_challenge_frame succeeded");
         sub.assert_eq(out_wire.len, 9, "wire buffer has 9 bytes (1 type + 8 payload)");
@@ -1517,7 +1517,7 @@ fn test_quic_path_frames(t: lit::T&) {
 
     t.run("PATH-02: PATH_RESPONSE frame serialization and parsing") { sub =>
         let response_token: u8[8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
-        var out_wire: u8[>..] = [];
+        var out_wire: u8[..32] = [];
         let enc_ok = internal::encode_path_response_frame(out_wire, response_token);
         sub.assert_true(enc_ok, "encode_path_response_frame succeeded");
         sub.assert_eq(out_wire.len, 9, "wire buffer has 9 bytes (1 type + 8 payload)");
@@ -1534,7 +1534,7 @@ fn test_quic_path_frames(t: lit::T&) {
 
     t.run("PATH-03: Unified QUIC frame demuxer dispatches PATH frames") { sub =>
         let token: u8[8] = [10, 20, 30, 40, 50, 60, 70, 80];
-        var wire: u8[>..] = [];
+        var wire: u8[..32] = [];
         internal::encode_path_challenge_frame(wire, token);
         internal::encode_path_response_frame(wire, token);
 
@@ -1682,8 +1682,9 @@ fn test_connection_migration(t: lit::T&) {
 fn test_dplpmtud(t: lit::T&) {
     t.run("DPL-01: Padded PING probe generation across target sizes") { sub =>
         let sizes: u32[4] = [1200, 1280, 1420, 1500];
+        var buf: u8[..1600] = [];
         for sz in sizes {
-            var buf: u8[>..] = [];
+            buf.clear();
             let ok = internal::generate_ping_probe(buf, sz);
             sub.assert_true(ok, "generate_ping_probe succeeded");
             sub.assert_eq(buf.len as u32, sz, "probe buffer length matches target size exactly");
@@ -1695,8 +1696,9 @@ fn test_dplpmtud(t: lit::T&) {
     t.run("DPL-02: Padded PATH_CHALLENGE probe generation across target sizes") { sub =>
         let challenge: u8[8]  = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04];
         let sizes:     u32[4] = [1200, 1280, 1420, 1500];
+        var buf: u8[..1600] = [];
         for sz in sizes {
-            var buf: u8[>..] = [];
+            buf.clear();
             let ok = internal::generate_path_challenge_probe(buf, challenge, sz);
             sub.assert_true(ok, "generate_path_challenge_probe succeeded");
             sub.assert_eq(buf.len as u32, sz, "probe buffer length matches target size exactly");

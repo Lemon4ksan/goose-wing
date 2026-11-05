@@ -42,7 +42,15 @@ fn hpke_labeled_extract(
     labeled_ikm.append(label);
     labeled_ikm.append(ikm);
 
-    return core::hkdf_extract(salt, labeled_ikm[..]);
+    let prk = core::hkdf_extract(salt, labeled_ikm[..]);
+    for i in labeled_ikm.len { labeled_ikm[i] = 0; }
+    return prk;
+}
+
+inline fn is_valid_hpke_aead(aead_id: u16) -> bool {
+    return aead_id == rfc::HPKE_AEAD_AES_128_GCM
+        || aead_id == rfc::HPKE_AEAD_AES_256_GCM
+        || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
 }
 
 // Computes LabeledExpand(prk, label, info, L) =
@@ -150,6 +158,8 @@ fn hpke_setup_base_s(
 ) -> bool {
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
+    guard is_valid_hpke_aead(aead_id) else { return false; }
+    guard info.len <= 998 else { return false; }
 
     var shared_secret: u8[32] = [0; 32];
     guard dhkem_x25519_encap(pkR, ephemeral_sk, out_enc, shared_secret) else { return false; }
@@ -244,6 +254,8 @@ fn hpke_setup_base_r(
 ) -> bool {
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
+    guard is_valid_hpke_aead(aead_id) else { return false; }
+    guard info.len <= 998 else { return false; }
 
     let pkR = core::x25519_base_scalarmult(skR);
     var shared_secret: u8[32] = [0; 32];
@@ -324,58 +336,78 @@ fn hpke_setup_base_r(
 inline fn hpke_compute_nonce(ctx: const HpkeContext&) -> u8[12] {
     var nonce: u8[12] = [0; 12];
     for i in 12 { nonce[i] = ctx.base_nonce[i]; }
+    var tail = nonce[4..12];
     for i in 8 {
         let b = ((ctx.seq >> ((7 - i) * 8)) & 0xFF) as u8;
-        nonce[4 + i] ^= b;
+        tail[i] ^= b;
     }
     return nonce;
 }
 
 // ---- HPKE Seal and Open (RFC 9180 Section 5.2) ---------------------------
 
+fn hpke_dispatch_seal<B>(
+    aead_id: u16,
+    key:     const u8[32]&,
+    nonce:   const u8[12]&,
+    pt:      const u8[:],
+    aad:     const u8[:],
+    out_ct:  B&,
+) -> bool {
+    guard is_valid_hpke_aead(aead_id) else { return false; }
+    guard core::add_sat_i64(out_ct.len, core::add_sat_i64(pt.len, 16)) <= out_ct.cap else {
+        return false;
+    }
+    let ct_start = out_ct.len;
+    for i in pt.len { out_ct.push(0); }
+    var tag: u8[16] = [0; 16];
+    var ok = false;
+    if aead_id == rfc::HPKE_AEAD_AES_128_GCM {
+        var key16: u8[16] = [0; 16];
+        for i in 16 { key16[i] = key[i]; }
+        let t, _, s = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct[ct_start..]);
+        core::secure_zeroize_16(key16);
+        tag = t;
+        ok = s;
+    } else if aead_id == rfc::HPKE_AEAD_AES_256_GCM {
+        let t, _, s = core::aes256_gcm_seal(key, nonce, pt, aad, out_ct[ct_start..]);
+        tag = t;
+        ok = s;
+    } else if aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
+        let t, _, s = core::chacha20_poly1305_seal(key, nonce, pt, aad, out_ct[ct_start..]);
+        tag = t;
+        ok = s;
+    }
+    guard ok else {
+        out_ct.resize(ct_start);
+        return false;
+    }
+    for i in 16 { out_ct.push(tag[i]); }
+    return true;
+}
+
 // Encrypts plaintext with current context key/nonce, increments seq, and appends ciphertext + 16B tag.
-fn hpke_seal(
+fn hpke_seal<B>(
     ctx:    HpkeContext&,
     aad:    const u8[:],
     pt:     const u8[:],
-    out_ct: u8[>..]&,
+    out_ct: B&,
 ) -> bool {
+    guard ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
     let nonce = hpke_compute_nonce(ctx);
-    ctx.seq += 1;
-
-    let ct_start = out_ct.len;
-    for i in pt.len { out_ct.push(0); }
-
-    if ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
-        var key16: u8[16] = [0; 16];
-        for i in 16 { key16[i] = ctx.key[i]; }
-        let tag, _, ok = core::aes128_gcm_seal(key16, nonce, pt, aad, out_ct[ct_start..]);
-        core::secure_zeroize_16(key16);
-        guard ok else { return false; }
-        for i in 16 { out_ct.push(tag[i]); }
-        return true;
-    } else if ctx.aead_id == rfc::HPKE_AEAD_AES_256_GCM {
-        let tag, _, ok = core::aes256_gcm_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
-        guard ok else { return false; }
-        for i in 16 { out_ct.push(tag[i]); }
-        return true;
-    } else if ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        let tag, _, ok = core::chacha20_poly1305_seal(ctx.key, nonce, pt, aad, out_ct[ct_start..]);
-        guard ok else { return false; }
-        for i in 16 { out_ct.push(tag[i]); }
-        return true;
-    }
-    return false;
+    guard hpke_dispatch_seal(ctx.aead_id, ctx.key, nonce, pt, aad, out_ct) else { return false; }
+    ctx.seq = core::add_sat_u64(ctx.seq, 1);
+    return true;
 }
 
-inline fn hpke_dispatch_open(
+inline fn hpke_dispatch_open<B>(
     aead_id: u16,
     key:     const u8[32]&,
     nonce:   const u8[12]&,
     ct:      const u8[:],
     aad:     const u8[:],
     tag:     const u8[16]&,
-    out_pt:  u8[>..]&,
+    out_pt:  B&,
 ) -> bool {
     if aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
@@ -394,11 +426,11 @@ inline fn hpke_dispatch_open(
 }
 
 // Decrypts ciphertext + 16B tag with current context key/nonce, increments seq.
-fn hpke_open(
+fn hpke_open<B>(
     ctx:         HpkeContext&,
     aad:         const u8[:],
     ct_with_tag: const u8[:],
-    out_pt:      u8[>..]&,
+    out_pt:      B&,
 ) -> bool {
     guard ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
     guard ct_with_tag.len >= 16 else { return false; }
@@ -443,7 +475,7 @@ fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:
 }
 
 // Single-shot seal for ECH: generates ephemeral keys, encapsulates, and seals in one pass.
-fn hpke_seal_base(
+fn hpke_seal_base<B>(
     pkR:          const u8[32]&,
     info:         const u8[:],
     aad:          const u8[:],
@@ -451,7 +483,7 @@ fn hpke_seal_base(
     ephemeral_sk: const u8[32]&,
     aead_id:      u16,
     out_enc:      u8[32]&,
-    out_ct:       u8[>..]&,
+    out_ct:       B&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_s(
@@ -473,14 +505,14 @@ fn hpke_seal_base(
 }
 
 // Single-shot open for ECH recipient.
-fn hpke_open_base(
+fn hpke_open_base<B>(
     enc:         const u8[32]&,
     skR:         const u8[32]&,
     info:        const u8[:],
     aad:         const u8[:],
     ct_with_tag: const u8[:],
     aead_id:     u16,
-    out_pt:      u8[>..]&,
+    out_pt:      B&,
 ) -> bool {
     var ctx = HpkeContext { .. };
     guard hpke_setup_base_r(

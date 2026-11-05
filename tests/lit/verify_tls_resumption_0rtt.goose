@@ -15,7 +15,7 @@ import wing from "../..";
 import wire_kit from ".";
 
 fn test_new_session_ticket_codec() {
-    var raw_nst: u8[>..] = [];
+    var raw_nst: u8[..256] = [];
     let nonce:       u8[8]       = [1, 2, 3, 4, 5, 6, 7, 8];
     let ticket_body: const u8[:] = "encrypted_session_ticket_payload_bytes";
 

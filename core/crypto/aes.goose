@@ -661,8 +661,10 @@ fn hkdf_aes256_gcm_seal(
     aad:        const u8[:],
     dst:        u8[:],
 ) -> u8[16], i64, bool {
-    let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
-    return aes256_gcm_seal(derived_key, nonce12, plaintext, aad, dst);
+    var derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
+    let tag, written_len, ok = aes256_gcm_seal(derived_key, nonce12, plaintext, aad, dst);
+    secure_zeroize_32(derived_key);
+    return tag, written_len, ok;
 }
 
 fn hkdf_aes256_gcm_open_into(
@@ -674,8 +676,10 @@ fn hkdf_aes256_gcm_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
-    return aes256_gcm_open_into(derived_key, nonce12, ciphertext, aad, tag, dst);
+    var derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
+    let written_len, ok = aes256_gcm_open_into(derived_key, nonce12, ciphertext, aad, tag, dst);
+    secure_zeroize_32(derived_key);
+    return written_len, ok;
 }
 
 fn hkdf_aes256_gcm_open<B>(
@@ -687,6 +691,8 @@ fn hkdf_aes256_gcm_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
-    let derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
-    return aes256_gcm_open(derived_key, nonce12, ciphertext, aad, tag, out_plaintext);
+    var derived_key = hkdf_sha256_32(master_key, salt32[..], "aes-256-gcm-cookie");
+    let ok = aes256_gcm_open(derived_key, nonce12, ciphertext, aad, tag, out_plaintext);
+    secure_zeroize_32(derived_key);
+    return ok;
 }

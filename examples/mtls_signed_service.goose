@@ -37,7 +37,7 @@ fn main() {
     print("[1] Negotiating TLS 1.3 Mutual Authentication (mTLS):");
 
     // Server requests client certificate with Ed25519 signature algorithm
-    var cr_buf: u8[>..] = [];
+    var cr_buf: u8[..256] = [];
     let sig_algs: u16[1] = [rfc::SIG_SCHEME_ED25519];
     let cr_ok = wing::encode_certificate_request(cr_buf, "", sig_algs[..]);
     assert(cr_ok);
@@ -47,7 +47,7 @@ fn main() {
     let cr_parsed = wing::parse_certificate_request(cr_buf[..], false, client_cr);
     assert(cr_parsed && client_cr.has_signature_algorithms);
 
-    var client_cert_msg: u8[>..] = [];
+    var client_cert_msg: u8[..256] = [];
     let cert_ok = wing::encode_client_certificate(client_cert_msg, "", "CN=PaymentWorkerNode01");
     assert(cert_ok);
 

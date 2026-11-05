@@ -27,11 +27,14 @@ fn encode_compressed_certificate<B>(
     guard msg.uncompressed_length > 0 && msg.uncompressed_length <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else {
         return false;
     }
-    let comp_len = msg.compressed_certificate_message.len as u32;
-    guard comp_len >= 1 && comp_len <= 0xFFFFFF && comp_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else {
+    guard msg.compressed_certificate_message.len >= 1
+        && msg.compressed_certificate_message.len <= (rfc::MAX_UNCOMPRESSED_CERT_SIZE as i64) else {
         return false;
     }
+    let comp_len = msg.compressed_certificate_message.len as u32;
     guard rfc::is_valid_compression_algorithm(msg.algorithm) else { return false; }
+    let needed = core::add_sat_i64(8, msg.compressed_certificate_message.len);
+    guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
 
     out.push(((msg.algorithm >> 8) & 0xFF) as u8);
     out.push((msg.algorithm & 0xFF) as u8);
@@ -125,6 +128,8 @@ fn decompress_certificate_brotli<B>(
     out_cert:         B&,
 ) -> bool {
     guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+    guard (uncompressed_len as i64) <= out_cert.cap else { return false; }
+    out_cert.clear();
     let ok, _ = core::brotli_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
     guard ok && (out_cert.len as u32) == uncompressed_len else {
         out_cert.clear();
@@ -140,7 +145,9 @@ fn decompress_certificate_zlib<B>(
     out_cert:         B&,
 ) -> bool {
     guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
-    let ok, _ = core::zlib_decompress(compressed_data, out_cert);
+    guard (uncompressed_len as i64) <= out_cert.cap else { return false; }
+    out_cert.clear();
+    let ok, _ = core::zlib_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
     guard ok && (out_cert.len as u32) == uncompressed_len else {
         out_cert.clear();
         return false;
@@ -155,6 +162,8 @@ fn decompress_certificate_zstd<B>(
     out_cert:         B&,
 ) -> bool {
     guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
+    guard (uncompressed_len as i64) <= out_cert.cap else { return false; }
+    out_cert.clear();
     let ok, _ = core::zstd_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
     guard ok && (out_cert.len as u32) == uncompressed_len else {
         out_cert.clear();

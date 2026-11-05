@@ -72,7 +72,7 @@ fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
         ..
     };
     conn.pacer = conn.bbr.pacer;
-    conn.scid.append(scid);
+    conn.scid.append(scid[..min(scid.len, conn.scid.cap)]);
     return conn;
 }
 
@@ -87,8 +87,8 @@ fn new_quic_client_connection(server_dcid: const u8[:], client_scid: const u8[:]
         ..
     };
     conn.pacer = conn.bbr.pacer;
-    conn.dcid.append(server_dcid);
-    conn.scid.append(client_scid);
+    conn.dcid.append(server_dcid[..min(server_dcid.len, conn.dcid.cap)]);
+    conn.scid.append(client_scid[..min(client_scid.len, conn.scid.cap)]);
     return conn;
 }
 
@@ -121,6 +121,7 @@ fn quic_conn_close(conn: QuicConnection&, err_code: u64) {
 }
 
 fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
+    guard space.sent_packets.len < space.sent_packets.cap else { return; }
     space.has_sent_packets = true;
     if meta.pn > space.largest_sent_pn || space.sent_packets.len == 0 {
         space.largest_sent_pn = meta.pn;
@@ -128,7 +129,6 @@ fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
     if meta.ack_eliciting {
         space.time_of_last_ack_eliciting_us = meta.time_sent_us;
     }
-    guard space.sent_packets.len < space.sent_packets.cap else { return; }
     space.sent_packets.push(meta);
 }
 
@@ -150,7 +150,7 @@ fn generate_space_ack(space: PnSpaceState&, out_ack: AckFrame&) -> bool {
     return false;
 }
 
-fn match_pn_in_ack_ranges(pn: u64, ranges: const AckInterval[..64]&) -> bool {
+fn match_pn_in_ack_ranges(pn: u64, ranges: const AckInterval[..65]&) -> bool {
     for r_idx in ranges.len {
         if pn >= ranges[r_idx].smallest && pn <= ranges[r_idx].largest {
             return true;
@@ -163,7 +163,7 @@ fn match_pn_in_ack_ranges(pn: u64, ranges: const AckInterval[..64]&) -> bool {
 // and returning `(acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts)`.
 fn mark_acked_packets_in_space(
     space:  PnSpaceState&,
-    ranges: const AckInterval[..64]&,
+    ranges: const AckInterval[..65]&,
     now_us: u64,
 ) -> u64, u64, u64, u64 {
     var acked_bytes:     u64 = 0;
@@ -198,7 +198,7 @@ fn mark_acked_packets_in_space(
     return acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts;
 }
 
-fn calc_lost_bytes(lost_pkts: const SentPacketMeta[..64]&) -> u64 {
+fn calc_lost_bytes(lost_pkts: const SentPacketMeta[..128]&) -> u64 {
     var lost_bytes: u64 = 0;
     for i in lost_pkts.len {
         if lost_pkts[i].in_flight {
@@ -250,7 +250,7 @@ fn process_space_ack(
     now_us:    u64,
     is_app:    bool,
 ) -> bool {
-    var acked_ranges: AckInterval[..64] = [];
+    var acked_ranges: AckInterval[..65] = [];
     let ok = parse_and_validate_ack(space, ack_frame, acked_ranges);
     guard ok else {
         quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
@@ -268,7 +268,7 @@ fn process_space_ack(
     let eff_rtt = if latest_rtt_us > 0 { latest_rtt_us } else { conn.rtt.smoothed_rtt_us };
     update_bbr_sample_bw(conn.bbr, acked_bytes, eff_rtt);
 
-    var lost_pkts: SentPacketMeta[..64] = [];
+    var lost_pkts: SentPacketMeta[..128] = [];
     let _ = detect_lost_packets(space, conn.rtt, now_us, lost_pkts);
     let lost_bytes = calc_lost_bytes(lost_pkts);
 
@@ -643,7 +643,14 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     if frame.frame_type == QuicFrameType.NewConnectionId || frame.frame_type == QuicFrameType.RetireConnectionId {
         return dispatch_conn_id_frame(conn, frame);
     }
-    return true, true;
+    if frame.frame_type == QuicFrameType.DataBlocked
+        || frame.frame_type == QuicFrameType.StreamsBlockedBidi
+        || frame.frame_type == QuicFrameType.StreamsBlockedUni
+        || frame.frame_type == QuicFrameType.Datagram {
+        return true, true;
+    }
+    quic_conn_close(conn, rfc::QUIC_ERR_FRAME_ENCODING);
+    return false, false;
 }
 
 fn dispatch_crypto_inbound(conn: QuicConnection&, frame: const QuicFrame&, htype: QuicHeaderType) -> bool, bool {
@@ -721,6 +728,10 @@ fn quic_conn_on_probe_lost(conn: QuicConnection&, lost_size: u32) -> bool {
 
 // RFC 9000 Section 12.5 (Table 3): Validates whether a frame type is permitted in a packet type.
 inline fn quic_is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeaderType) -> bool {
+    guard ftype != QuicFrameType.Unknown else { return false; }
+    guard htype != QuicHeaderType.Retry && htype != QuicHeaderType.VersionNegotiation else {
+        return false;
+    }
     if htype == QuicHeaderType.Initial || htype == QuicHeaderType.Handshake {
         return ftype == QuicFrameType.Padding
             || ftype == QuicFrameType.Ping
@@ -849,12 +860,17 @@ fn quic_derive_initial_space_keys(
     let prefix = quic_hkdf_label_prefix(version);
     guard prefix.len > 0 else { return false; }
 
-    let initial_secret = core::hkdf_extract(salt, dcid);
+    var initial_secret = core::hkdf_extract(salt, dcid);
     var client_secret: u8[32] = [0; 32];
     var server_secret: u8[32] = [0; 32];
     let ok_c = hkdf_expand_label(HASH_SHA256, initial_secret[..], "client in", [], 32, client_secret[..]);
     let ok_s = hkdf_expand_label(HASH_SHA256, initial_secret[..], "server in", [], 32, server_secret[..]);
-    guard ok_c && ok_s else { return false; }
+    core::secure_zeroize_32(initial_secret);
+    guard ok_c && ok_s else {
+        core::secure_zeroize_32(client_secret);
+        core::secure_zeroize_32(server_secret);
+        return false;
+    }
 
     var lbl_key: u8[..16] = [];
     lbl_key.append(prefix);
@@ -869,6 +885,8 @@ fn quic_derive_initial_space_keys(
     guard hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_key[..], [], 16, c_key[..])
         && hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_iv[..], [], 12, c_iv[..])
         && ks_derive_quic_hp_key(HASH_SHA256, client_secret[..], 16, c_hp[..], version) else {
+        core::secure_zeroize_16(c_key);
+        core::secure_zeroize_16(c_hp);
         core::secure_zeroize_32(client_secret);
         core::secure_zeroize_32(server_secret);
         return false;
@@ -880,6 +898,10 @@ fn quic_derive_initial_space_keys(
     guard hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_key[..], [], 16, s_key[..])
         && hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_iv[..], [], 12, s_iv[..])
         && ks_derive_quic_hp_key(HASH_SHA256, server_secret[..], 16, s_hp[..], version) else {
+        core::secure_zeroize_16(c_key);
+        core::secure_zeroize_16(c_hp);
+        core::secure_zeroize_16(s_key);
+        core::secure_zeroize_16(s_hp);
         core::secure_zeroize_32(client_secret);
         core::secure_zeroize_32(server_secret);
         return false;
@@ -888,12 +910,19 @@ fn quic_derive_initial_space_keys(
     core::secure_zeroize_32(client_secret);
     core::secure_zeroize_32(server_secret);
 
+    var ok_install = false;
     if role == QuicRole.Client {
-        guard quic_install_pn_space_keys(tx_space, c_hp[..], c_key[..], c_iv[..], 0x1301) else { return false; }
-        return quic_install_pn_space_keys(rx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
+        ok_install = quic_install_pn_space_keys(tx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
+            && quic_install_pn_space_keys(rx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
+    } else {
+        ok_install = quic_install_pn_space_keys(rx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
+            && quic_install_pn_space_keys(tx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
     }
-    guard quic_install_pn_space_keys(rx_space, c_hp[..], c_key[..], c_iv[..], 0x1301) else { return false; }
-    return quic_install_pn_space_keys(tx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
+    core::secure_zeroize_16(c_key);
+    core::secure_zeroize_16(c_hp);
+    core::secure_zeroize_16(s_key);
+    core::secure_zeroize_16(s_hp);
+    return ok_install;
 }
 
 fn quic_conn_install_initial_keys(
@@ -913,19 +942,25 @@ fn quic_compute_hp_mask(space: const PnSpaceState&, sample_slice: const u8[:]) -
         guard space.hp_key.len == 16 else { return [0; 5], false; }
         var hp16: u8[16] = [0; 16];
         for i in 16 { hp16[i] = space.hp_key[i]; }
-        return aes128_header_protect_mask(hp16, sample), true;
+        let mask = aes128_header_protect_mask(hp16, sample);
+        core::secure_zeroize_16(hp16);
+        return mask, true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard space.hp_key.len == 32 else { return [0; 5], false; }
         var hp32: u8[32] = [0; 32];
         for i in 32 { hp32[i] = space.hp_key[i]; }
-        return aes256_header_protect_mask(hp32, sample), true;
+        let mask = aes256_header_protect_mask(hp32, sample);
+        core::secure_zeroize_32(hp32);
+        return mask, true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard space.hp_key.len == 32 else { return [0; 5], false; }
         var hp32: u8[32] = [0; 32];
         for i in 32 { hp32[i] = space.hp_key[i]; }
-        return chacha20_header_protect_mask(hp32, sample), true;
+        let mask = chacha20_header_protect_mask(hp32, sample);
+        core::secure_zeroize_32(hp32);
+        return mask, true;
     }
     return [0; 5], false;
 }
@@ -957,6 +992,7 @@ fn quic_aead_open_payload(
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::fused_aes_gcm_decrypt(key16, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
+        core::secure_zeroize_16(key16);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
@@ -965,6 +1001,7 @@ fn quic_aead_open_payload(
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::aes256_gcm_open_into(key32, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
+        core::secure_zeroize_32(key32);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
@@ -973,6 +1010,7 @@ fn quic_aead_open_payload(
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::chacha20_poly1305_open_into(key32, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
+        core::secure_zeroize_32(key32);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
@@ -989,17 +1027,23 @@ fn quic_aead_seal_payload_inplace(
     if space.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 && space.aead_key.len == 16 {
         var key16: u8[16] = [0; 16];
         for i in 16 { key16[i] = space.aead_key[i]; }
-        return core::aes128_gcm_seal_inplace(key16, nonce, ct, aad);
+        let tag, ok = core::aes128_gcm_seal_inplace(key16, nonce, ct, aad);
+        core::secure_zeroize_16(key16);
+        return tag, ok;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 && space.aead_key.len == 32 {
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = space.aead_key[i]; }
-        return core::aes256_gcm_seal_inplace(key32, nonce, ct, aad);
+        let tag, ok = core::aes256_gcm_seal_inplace(key32, nonce, ct, aad);
+        core::secure_zeroize_32(key32);
+        return tag, ok;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 && space.aead_key.len == 32 {
         var key32: u8[32] = [0; 32];
         for i in 32 { key32[i] = space.aead_key[i]; }
-        return core::chacha20_poly1305_seal_inplace(key32, nonce, ct, aad);
+        let tag, ok = core::chacha20_poly1305_seal_inplace(key32, nonce, ct, aad);
+        core::secure_zeroize_32(key32);
+        return tag, ok;
     }
     return [0; 16], false;
 }
@@ -1020,7 +1064,7 @@ fn quic_seal_packet<B>(
         hdr_wire.payload_length = (pn_len as u64) + (plaintext.len as u64) + 16;
     }
 
-    var work_hdr: u8[..128] = [];
+    var work_hdr: u8[..600] = [];
     guard encode_quic_header(work_hdr, hdr_wire, pn_len) else { return false; }
     let pn_offset = (work_hdr.len - (pn_len as i64)) as u32;
 
@@ -1034,7 +1078,7 @@ fn quic_seal_packet<B>(
     let tag, ok_seal = quic_aead_seal_payload_inplace(space, nonce, work_hdr[..], ct_buf[..]);
     guard ok_seal else { return false; }
 
-    var full_pkt: u8[..16512] = [];
+    var full_pkt: u8[..17000] = [];
     guard full_pkt.try_append(work_hdr[..])
         && full_pkt.try_append(ct_buf[..])
         && full_pkt.try_append(tag[..]) else {
@@ -1047,8 +1091,7 @@ fn quic_seal_packet<B>(
     guard ok_mask else { return false; }
 
     apply_header_protection(full_pkt[..], pn_offset, pn_len, hp_mask);
-    out_pkt.append(full_pkt[..]);
-    return true;
+    return out_pkt.try_append(full_pkt[..]);
 }
 
 // Computes the total wire length of a single QUIC packet within a coalesced datagram slice.
@@ -1131,7 +1174,7 @@ fn verify_and_decrypt_packet(
         hdr.key_phase = (unmasked_b0 & 0x04) != 0;
     }
 
-    let full_pn, pn_ok = decode_packet_number_checked(space.largest_acked_pn, trunc_pn, pn_len);
+    let full_pn, pn_ok = decode_packet_number_checked(space.largest_recv_pn, trunc_pn, pn_len);
     guard pn_ok else { return false; }
     hdr.packet_number = full_pn;
     hdr.pn_length = pn_len;
@@ -1196,10 +1239,9 @@ fn process_single_coalesced_packet(
     guard len_ok else { return 0, false, false; }
 
     if hdr.header_type == QuicHeaderType.VersionNegotiation || hdr.header_type == QuicHeaderType.Retry {
-        conn_inc_packets_rx(conn);
-        bind_initial_server_cids(conn, hdr);
         let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
         guard handled_pkt else { return 0, false, false; }
+        conn_inc_packets_rx(conn);
         return pkt_wire_len, true, needs_ack_pkt;
     }
 
@@ -1209,13 +1251,16 @@ fn process_single_coalesced_packet(
         return 0, false, false;
     }
 
-    conn_inc_packets_rx(conn);
-    bind_initial_server_cids(conn, hdr);
-    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
-    guard handled_pkt else { return 0, false, false; }
-
     let handled_frames, frame_ack_el = quic_conn_process_payload(conn, plaintext_payload[..], hdr.header_type, now_us);
     guard handled_frames else { return 0, false, false; }
+
+    conn_inc_packets_rx(conn);
+    bind_initial_server_cids(conn, hdr);
+    if conn.state == QuicConnState.Closing || conn.state == QuicConnState.Closed {
+        return pkt_wire_len, true, false;
+    }
+    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
+    guard handled_pkt else { return 0, false, false; }
     return pkt_wire_len, true, (needs_ack_pkt || frame_ack_el);
 }
 

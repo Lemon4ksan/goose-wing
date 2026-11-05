@@ -153,7 +153,7 @@ fn test_stream_data_blocked_send_only() {
 }
 
 fn test_frame_encoders() {
-    var out_tok: u8[>..] = [];
+    var out_tok: u8[..64] = [];
     assert(!internal::encode_new_token_frame(out_tok, "")); // empty token rejected
     assert(internal::encode_new_token_frame(out_tok, "valid_token"));
     let f_tok, _, ok_tok = internal::decode_quic_frame(out_tok[..], 0);
@@ -161,7 +161,7 @@ fn test_frame_encoders() {
     assert(f_tok.frame_type == internal::QuicFrameType.NewToken);
     assert(f_tok.payload == "valid_token");
 
-    var out_ncid: u8[>..] = [];
+    var out_ncid: u8[..64] = [];
     let reset_tok: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let cid:       u8[4]  = [0xAA, 0xBB, 0xCC, 0xDD];
     assert(internal::encode_new_conn_id_frame(out_ncid, 1, 0, cid[..], reset_tok));
@@ -171,7 +171,7 @@ fn test_frame_encoders() {
     assert(f_ncid.stream_id == 1);
     assert(f_ncid.offset == 0);
 
-    var out_rcid: u8[>..] = [];
+    var out_rcid: u8[..32] = [];
     assert(internal::encode_retire_conn_id_frame(out_rcid, 2));
     let f_rcid, _, ok_rcid = internal::decode_quic_frame(out_rcid[..], 0);
     assert(ok_rcid);

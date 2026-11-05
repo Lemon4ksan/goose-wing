@@ -141,11 +141,9 @@ fn is_redirect(res: const Response&) -> bool {
 
 fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
     if res.spans.len > 0 && res.raw_headers.len > 0 {
-        for &s in res.spans {
-            let n = s.name_slice(res.raw_headers[..]);
-            if eq_ascii_fold(n, name) {
-                return s.val_slice(res.raw_headers[..]);
-            }
+        let val = header_from_wire(res, res.raw_headers[..], name);
+        if val.len > 0 {
+            return val;
         }
     }
     return find_header(res.headers[..], name);
@@ -153,14 +151,35 @@ fn header(res: const Response&, name: const u8[:]) -> const u8[:] {
 
 fn has_header(res: const Response&, name: const u8[:]) -> bool {
     if res.spans.len > 0 && res.raw_headers.len > 0 {
+        if header_from_wire(res, res.raw_headers[..], name).len > 0 {
+            return true;
+        }
         for &s in res.spans {
-            let n = s.name_slice(res.raw_headers[..]);
-            if eq_ascii_fold(n, name) {
+            if eq_ascii_fold(s.name_slice(res.raw_headers[..]), name) {
                 return true;
             }
         }
     }
     return has_header(res.headers[..], name);
+}
+
+// Extracts a header value directly from response wire bytes using zero-copy spans and O(1) ID tags.
+fn header_from_wire(res: const Response&, wire: const u8[:], name: const u8[:]) -> const u8[:] {
+    let known_id = identify_known_header(name);
+    if known_id != KnownHeaderId.Unknown {
+        let target_id = header_id_to_u8(known_id);
+        for i in res.spans.len {
+            if res.spans[i].id == target_id {
+                return res.spans[i].val_slice(wire);
+            }
+        }
+    }
+    for i in res.spans.len {
+        if eq_ascii_fold(res.spans[i].name_slice(wire), name) {
+            return res.spans[i].val_slice(wire);
+        }
+    }
+    return "";
 }
 
 // Returns the value of a response trailer by name (case-insensitive lookup)

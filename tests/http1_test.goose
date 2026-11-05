@@ -791,6 +791,8 @@ fn test_chunked_response_and_wire_parser(t: lit::T&) {
         sub.assert_true(ok_parse, "Dual TE+CL in response parsed cleanly (TE overrides CL)");
         sub.assert_bytes_eq(res.body[..], "hello", "Body decoded from chunked");
         sub.assert_false(wing::has_header(res, "content-length"), "Content-Length header MUST be stripped per RFC 9112 Section 6.1");
+        sub.assert_true(res.spans.len > 0, "Response spans populated by SWAR response wire parser");
+        sub.assert_bytes_eq(wing::header_from_wire(res, wire_dual, "Transfer-Encoding"), "chunked", "Zero-copy header_from_wire on Response");
     };
 }
 

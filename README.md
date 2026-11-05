@@ -1,21 +1,21 @@
 # goose-wing
 
+Vulkan-style, zero-allocation networking engine and HTTP/1.1, HTTP/2, HTTP/3 protocol stack for Goose.
+
 [![Goose Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
 [![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)
 
-Zero-allocation networking engine and protocol stack for Goose.
-
 ## Design and scope
 
-`wing` is a low-level networking engine, designed on the same principles as Vulkan or DPDK:
+High-throughput networking hits the same hardware bottlenecks that graphics APIs hit a decade ago: memory bandwidth, L1/L2 cache misses, per-call heap allocations, and OS context switches. `wing` applies the explicit resource model of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
 
-- Memory is managed by the caller. Functions accept caller-owned slices and stack buffers (`u8[..N]`). The engine performs 0 heap allocations on packet paths and event loops.
-- Protocol decoders work directly on byte slices using SIMD and 64-bit SWAR scanners rather than allocating strings or intermediate objects.
-- State machines expose explicit cursor offsets and error boundaries instead of hiding failures behind exceptions or dynamic fallbacks.
+- Caller-owned memory and descriptor pools: Functions take caller-allocated slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The engine performs 0 heap allocations on packet paths and event loops.
+- Buffer views instead of string copies: Protocol parsers do not allocate strings or header objects. `HeaderSpan` stores a 9-byte offset-and-length view (`name_pos: u16, name_len: u16, val_pos: u16, val_len: u16, id: u8`) over the raw packet buffer, while `presence_mask: u32` and a 256-bit `HeaderBloomFilter` (four `u64` registers) reject missing headers in 1 to 3 CPU cycles before reading memory.
+- Command batching and explicit state machines: Outbound writes batch into `CorkBuffer` and OS ring queues (`io_uring`, Windows RIO) to amortize syscalls. Decoders use SIMD and 64-bit SWAR scanners and return explicit cursor offsets and error states rather than throwing exceptions.
 
 This makes `wing` suited for reverse proxies, gateways, and edge services where predictable clock cycles and zero allocations are required (a complete HTTP/1.1 request-response cycle takes ~820 cycles on x86_64).
 
-It is not an ergonomic, high-level HTTP client like Python's `requests`. Writing a simple GET request requires setting up buffers, arenas, and handling transport states. Ergonomic application-level APIs belong in separate libraries built on top of `wing`.
+It is not a high-level HTTP client like Python's `requests`. Sending a request requires setting up buffers, arenas, and transport state. High-level application APIs belong in separate libraries built on top of `wing`.
 
 ## Subsystems
 

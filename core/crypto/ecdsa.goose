@@ -272,6 +272,7 @@ fn decode_p256_public_key(pub_key: const u8[:]) -> P256Point, bool {
 }
 
 // Extracts a fixed-width big-endian integer from an ASN.1 DER INTEGER element inside an ECDSA signature.
+// Leaves `idx` unchanged on error.
 //
 // Example:
 //   der = [0x02, 0x20, 0x11, ...], idx = 0, out_int = [0; 32]
@@ -281,15 +282,15 @@ fn parse_der_ecdsa_int(der: const u8[:], idx: i64&, out_int: u8[:]) -> bool {
     guard idx + 2 <= der.len else { return false; }
     guard der[idx] == 0x02 else { return false; }
     let int_len: i64 = der[idx + 1];
-    idx += 2;
-    guard int_len > 0 && idx + int_len <= der.len else { return false; }
-    guard (der[idx] & 0x80) == 0 else { return false; }
-    if int_len > 1 && der[idx] == 0x00 && (der[idx + 1] & 0x80) == 0 {
+    let val_idx = idx + 2;
+    guard int_len > 0 && (int_len & 0x80) == 0 && val_idx + int_len <= der.len else { return false; }
+    guard (der[val_idx] & 0x80) == 0 else { return false; }
+    if int_len > 1 && der[val_idx] == 0x00 && (der[val_idx + 1] & 0x80) == 0 {
         return false;
     }
     var src_off: i64 = 0;
     var rem_len = int_len;
-    if rem_len == out_int.len + 1 && der[idx] == 0x00 {
+    if rem_len > 1 && der[val_idx] == 0x00 {
         src_off = 1;
         rem_len -= 1;
     }
@@ -299,9 +300,9 @@ fn parse_der_ecdsa_int(der: const u8[:], idx: i64&, out_int: u8[:]) -> bool {
     }
     let pad_len = out_int.len - rem_len;
     for i in rem_len {
-        out_int[pad_len + i] = der[idx + src_off + i];
+        out_int[pad_len + i] = der[val_idx + src_off + i];
     }
-    idx += int_len;
+    idx = val_idx + int_len;
     return true;
 }
 
@@ -313,18 +314,9 @@ fn parse_der_ecdsa_int(der: const u8[:], idx: i64&, out_int: u8[:]) -> bool {
 // crap:ignore
 fn ecdsa_p256_decode_der_sig(der_sig: const u8[:], out_raw: u8[64]&) -> bool {
     guard der_sig.len >= 8 && der_sig[0] == 0x30 else { return false; }
-    var idx:     i64 = 1;
-    var seq_len: i64 = 0;
-    if (der_sig[idx] & 0x80) == 0 {
-        seq_len = der_sig[idx];
-        idx += 1;
-    } else if der_sig[idx] == 0x81 {
-        guard idx + 1 < der_sig.len else { return false; }
-        seq_len = der_sig[idx + 1];
-        idx += 2;
-    } else {
-        return false;
-    }
+    guard (der_sig[1] & 0x80) == 0 else { return false; }
+    let seq_len: i64 = der_sig[1];
+    var idx: i64 = 2;
     guard idx + seq_len == der_sig.len else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[0..32]) else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[32..64]) else { return false; }
@@ -413,10 +405,18 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
 
     var k_scalar = u256_from_be(v_hmac);
-    if u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
+    while u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
         v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
         k_scalar = u256_from_be(v_hmac);
     }
+    secure_zeroize_slice(seed_buf[..]);
+    secure_zeroize_32(k_hmac);
+    secure_zeroize_32(v_hmac);
     let g = P256Point {
         x:        U256 { v: P256_GX },
         y:        U256 { v: P256_GY },
@@ -450,9 +450,11 @@ fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
     guard pub_ok else { return false; }
 
     var raw_sig: u8[64] = [0; 64];
-    if sig.len == 64 && sig[0] != 0x30 {
-        for i in 64 {
-            raw_sig[i] = sig[i];
+    if sig.len == 64 {
+        if sig[0] != 0x30 || !ecdsa_p256_decode_der_sig(sig, raw_sig) {
+            for i in 64 {
+                raw_sig[i] = sig[i];
+            }
         }
     } else {
         guard ecdsa_p256_decode_der_sig(sig, raw_sig) else { return false; }
@@ -771,18 +773,9 @@ fn decode_p384_public_key(pub_key: const u8[:]) -> P384Point, bool {
 // crap:ignore
 fn ecdsa_p384_decode_der_sig(der_sig: const u8[:], out_raw: u8[96]&) -> bool {
     guard der_sig.len >= 8 && der_sig[0] == 0x30 else { return false; }
-    var idx:     i64 = 1;
-    var seq_len: i64 = 0;
-    if (der_sig[idx] & 0x80) == 0 {
-        seq_len = der_sig[idx];
-        idx += 1;
-    } else if der_sig[idx] == 0x81 {
-        guard idx + 1 < der_sig.len else { return false; }
-        seq_len = der_sig[idx + 1];
-        idx += 2;
-    } else {
-        return false;
-    }
+    guard (der_sig[1] & 0x80) == 0 else { return false; }
+    let seq_len: i64 = der_sig[1];
+    var idx: i64 = 2;
     guard idx + seq_len == der_sig.len else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[0..48]) else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[48..96]) else { return false; }
@@ -839,10 +832,18 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
 
     var k_scalar = u384_from_be(v_hmac);
-    if u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
+    while u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
         v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
         k_scalar = u384_from_be(v_hmac);
     }
+    secure_zeroize_slice(seed_buf[..]);
+    secure_zeroize_48(k_hmac);
+    secure_zeroize_48(v_hmac);
     let g = P384Point {
         x:        U384 { v: P384_GX },
         y:        U384 { v: P384_GY },
@@ -876,9 +877,11 @@ fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
     guard pub_ok else { return false; }
 
     var raw_sig: u8[96] = [0; 96];
-    if sig.len == 96 && sig[0] != 0x30 {
-        for i in 96 {
-            raw_sig[i] = sig[i];
+    if sig.len == 96 {
+        if sig[0] != 0x30 || !ecdsa_p384_decode_der_sig(sig, raw_sig) {
+            for i in 96 {
+                raw_sig[i] = sig[i];
+            }
         }
     } else {
         guard ecdsa_p384_decode_der_sig(sig, raw_sig) else { return false; }

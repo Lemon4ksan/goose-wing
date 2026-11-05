@@ -192,7 +192,7 @@ fn test_round2_padding_and_empty_record_invariants(t: lit::T&) {
 
 fn test_round2_framing_and_dos_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.2: TLSCiphertext header minimum size and outer type restrictions") { sub =>
-        var out: u8[>..] = [];
+        var out: u8[..64] = [];
 
         // 1. Ciphertext length < 17 bytes (tag 16 + type 1) is impossible in TLS 1.3
         sub.assert_false(
@@ -602,7 +602,7 @@ fn test_ech_protocol(t: lit::T&) {
         inner_hello.append(";alpn=h2;keyshare=x25519");
 
         // Pad inner hello to hide length
-        var inner_padded: u8[>..] = [];
+        var inner_padded: u8[..512] = [];
         let ok_pad = wing::pad_ech_inner(inner_hello[..], config.maximum_name_length, real_sni.len, inner_padded);
         sub.assert_true(ok_pad, "pad_ech_inner succeeds");
         sub.assert_gt(inner_padded.len, inner_hello.len, "padding added");
@@ -618,8 +618,8 @@ fn test_ech_protocol(t: lit::T&) {
             0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
         ];
 
-        var enc:        u8[32]  = [0; 32];
-        var ciphertext: u8[>..] = [];
+        var enc:        u8[32]    = [0; 32];
+        var ciphertext: u8[..512] = [];
         let ok_seal = wing::seal_ech_inner(
             config,
             cs,
@@ -633,7 +633,7 @@ fn test_ech_protocol(t: lit::T&) {
         sub.assert_eq(ciphertext.len, inner_padded.len + 16, "ciphertext len = padded len + 16B tag");
 
         // Format outer ECH extension
-        var outer_ext_bytes: u8[>..] = [];
+        var outer_ext_bytes: u8[..512] = [];
         let ok_ext = wing::build_ech_outer_extension(config.config_id, cs, enc, ciphertext[..], outer_ext_bytes);
         sub.assert_true(ok_ext, "build_ech_outer_extension succeeds");
         sub.assert_eq(outer_ext_bytes[0], rfc::ECH_CLIENT_OUTER, "outer flag is 0x00");
@@ -651,7 +651,7 @@ fn test_ech_protocol(t: lit::T&) {
         info.push(0x00);
         for i in config.raw_bytes.len { info.push(config.raw_bytes[i]); }
 
-        var decrypted: u8[>..] = [];
+        var decrypted: u8[..512] = [];
         let ok_open = wing::hpke_open_base(
             enc,
             server_sk,
@@ -794,7 +794,7 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
 
 fn test_certificate_request_codec(t: lit::T&) {
     t.run("CertificateRequest Encoding & Parsing (RFC 8446 §4.3.2)") { sub =>
-        var req_buf: u8[>..] = [];
+        var req_buf: u8[..256] = [];
         let sig_algs: u16[3] = [
             rfc::SIG_SCHEME_ED25519,
             rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
@@ -819,7 +819,7 @@ fn test_certificate_request_codec(t: lit::T&) {
 fn test_empty_client_certificate(t: lit::T&) {
     t.run("Empty Client Certificate Handling (RFC 8446 §4.4.2)") { sub =>
         // Client without certificate must send empty Certificate message
-        var cert_buf: u8[>..] = [];
+        var cert_buf: u8[..256] = [];
         let enc_ok = wing::encode_client_certificate(cert_buf, "", "");
         sub.assert_true(enc_ok, "Encoded empty client Certificate");
 
@@ -856,7 +856,7 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
         let sig = core::ed25519_sign(seed, sign_input[..input_len]);
 
         // Encode CertificateVerify message
-        var cv_buf: u8[>..] = [];
+        var cv_buf: u8[..256] = [];
         let enc_cv = wing::encode_client_certificate_verify(cv_buf, rfc::SIG_SCHEME_ED25519, sig[..]);
         sub.assert_true(enc_cv, "Encoded CertificateVerify message");
 
@@ -1047,7 +1047,7 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
         sub.assert_eq(parsed.uncompressed_len as i64, fake_cert.len as i64, "Uncompressed length matches original");
 
         // Decompress with native RFC 8878 Zstandard engine
-        var decompressed: u8[>..] = [];
+        var decompressed: u8[..4096] = [];
         sub.assert_true(wing::decompress_certificate_zstd(parsed.compressed_data, parsed.uncompressed_len, decompressed), "Decompression succeeds");
         sub.assert_bytes_eq(decompressed[..], fake_cert, "Decompressed certificate matches original plaintext exactly");
     };
@@ -1504,19 +1504,19 @@ fn test_aead_ciphers(t: lit::T&) {
         let aad = "cookie_name=session_id";
         let plaintext = "user_id=12345&role=admin";
 
-        var ciphertext: u8[>..] = [];
+        var ciphertext: u8[..256] = [];
         let tag = core::xchacha20_poly1305_seal(key, nonce, plaintext, aad, ciphertext);
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length equals plaintext length");
 
         // Authentic decryption
-        var decrypted: u8[>..] = [];
+        var decrypted: u8[..256] = [];
         let ok_auth = core::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, decrypted);
         sub.assert_true(ok_auth, "authentic ciphertext opens successfully");
         sub.assert_eq(decrypted[..], plaintext, "decrypted plaintext matches original");
 
         // Tampered ciphertext bit must be rejected
         ciphertext[0] ^= 0x01;
-        var dec_tampered: u8[>..] = [];
+        var dec_tampered: u8[..256] = [];
         let ok_ct_tamper = core::xchacha20_poly1305_open(key, nonce, ciphertext[..], aad, tag, dec_tampered);
         sub.assert_false(ok_ct_tamper, "tampered ciphertext rejected by Poly1305 tag");
         ciphertext[0] ^= 0x01; // restore
@@ -1532,13 +1532,13 @@ fn test_aead_ciphers(t: lit::T&) {
         let aad = "cookie_name=auth_token";
         let plaintext = "secret_session_token_xyz987";
 
-        var ciphertext: u8[>..] = [];
+        var ciphertext: u8[..256] = [];
         for i in plaintext.len { ciphertext.push(0); }
         let tag, _, _ = core::aes256_gcm_seal(key, iv, plaintext, aad, ciphertext[..]);
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length matches");
 
         // Authentic decryption
-        var decrypted: u8[>..] = [];
+        var decrypted: u8[..256] = [];
         let ok_auth = core::aes256_gcm_open(key, iv, ciphertext[..], aad, tag, decrypted);
         sub.assert_true(ok_auth, "AES-256-GCM authentic decryption succeeds");
         sub.assert_eq(decrypted[..], plaintext, "decrypted plaintext matches original");
@@ -1546,7 +1546,7 @@ fn test_aead_ciphers(t: lit::T&) {
         // Tampered tag must be rejected
         var bad_tag = tag;
         bad_tag[15] ^= 0x80;
-        var dec_bad: u8[>..] = [];
+        var dec_bad: u8[..256] = [];
         let ok_tag_tamper = core::aes256_gcm_open(key, iv, ciphertext[..], aad, bad_tag, dec_bad);
         sub.assert_false(ok_tag_tamper, "tampered GHASH tag rejected");
     };
@@ -1564,19 +1564,19 @@ fn test_crypto_jar_container(t: lit::T&) {
 
         var jar = wing::new_private_jar(store, false);
 
-        var sealed_cookie: u8[>..] = [];
+        var sealed_cookie: u8[..256] = [];
         let ok_seal = wing::private_jar_seal_binary(jar, "session_jwt", "payload_data_123", 1700000010, 0x123456789ABCDEF0, sealed_cookie);
         sub.assert_true(ok_seal, "private jar binary seal succeeds");
         sub.assert_eq(sealed_cookie.len, 53 + "payload_data_123".len, "exact 53B wire overhead");
 
         // Authentic open
-        var opened: u8[>..] = [];
+        var opened: u8[..256] = [];
         let ok_open = wing::private_jar_open_binary(jar, "session_jwt", sealed_cookie[..], 1700000020, opened);
         sub.assert_true(ok_open, "private jar opens authentic cookie");
         sub.assert_eq(opened[..], "payload_data_123", "cookie payload verified");
 
         // AAD Binding: Trying to open with different cookie name must fail!
-        var opened_bad: u8[>..] = [];
+        var opened_bad: u8[..256] = [];
         let ok_bad_name = wing::private_jar_open_binary(jar, "other_cookie", sealed_cookie[..], 1700000020, opened_bad);
         sub.assert_false(ok_bad_name, "AAD cookie name alteration rejected");
 
@@ -1593,12 +1593,12 @@ fn test_crypto_jar_container(t: lit::T&) {
 
         var jar = wing::new_private_jar(store, true);
 
-        var sealed_cookie: u8[>..] = [];
+        var sealed_cookie: u8[..256] = [];
         let ok_seal = wing::private_jar_seal_binary(jar, "secure_sess", "secret_info", 1700000010, 0xFEDCBA9876543210, sealed_cookie);
         sub.assert_true(ok_seal, "HKDF AES-GCM seal succeeds");
         sub.assert_eq(sealed_cookie.len, 65 + "secret_info".len, "exact 65B wire overhead");
 
-        var opened: u8[>..] = [];
+        var opened: u8[..256] = [];
         let ok_open = wing::private_jar_open_binary(jar, "secure_sess", sealed_cookie[..], 1700000020, opened);
         sub.assert_true(ok_open, "HKDF AES-GCM authentic cookie opens");
         sub.assert_eq(opened[..], "secret_info", "payload matches");

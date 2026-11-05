@@ -59,15 +59,17 @@ struct QuicFlowControl {
 }
 
 fn new_quic_flow_control(initial_max_data_remote: u64, local_window: u64) -> QuicFlowControl {
+    let eff_remote = min(initial_max_data_remote, rfc::QUIC_VARINT_MAX);
+    let eff_local = min(local_window, rfc::QUIC_VARINT_MAX);
     return QuicFlowControl {
-        max_data_remote:          initial_max_data_remote,
+        max_data_remote:          eff_remote,
         bytes_sent_total:         0,
         is_data_blocked:          false,
-        max_data_local:           local_window,
+        max_data_local:           eff_local,
         bytes_recv_total:         0,
         bytes_read_total:         0,
-        local_window_size:        local_window,
-        last_advertised_max_data: local_window,
+        local_window_size:        eff_local,
+        last_advertised_max_data: eff_local,
     };
 }
 
@@ -102,8 +104,9 @@ fn quic_fc_can_send(
     if end_offset > s.bytes_sent {
         additional_conn_bytes = end_offset - s.bytes_sent;
     }
-    let projected_conn_total = fc.bytes_sent_total + additional_conn_bytes;
-    let conn_ok = projected_conn_total <= fc.max_data_remote;
+    let projected_conn_total = core::add_sat_u64(fc.bytes_sent_total, additional_conn_bytes);
+    let conn_ok = (0xFFFFFFFFFFFFFFFF - fc.bytes_sent_total >= additional_conn_bytes)
+        && (projected_conn_total <= fc.max_data_remote);
 
     let can_send = stream_ok && conn_ok;
     let blocked_stream = !stream_ok;
@@ -130,6 +133,10 @@ fn quic_fc_record_send(
     var additional_conn_bytes: u64 = 0;
     if end_offset > s.bytes_sent {
         additional_conn_bytes = end_offset - s.bytes_sent;
+    }
+    guard 0xFFFFFFFFFFFFFFFF - fc.bytes_sent_total >= additional_conn_bytes else {
+        fc.is_data_blocked = true;
+        return false;
     }
     let projected_conn_total = fc.bytes_sent_total + additional_conn_bytes;
     guard projected_conn_total <= fc.max_data_remote else {
@@ -170,6 +177,9 @@ fn quic_fc_record_recv_stream(
     if end_offset > s.bytes_recv {
         additional_bytes = end_offset - s.bytes_recv;
     }
+    guard 0xFFFFFFFFFFFFFFFF - fc.bytes_recv_total >= additional_bytes else {
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
+    }
     let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;
@@ -201,6 +211,9 @@ fn quic_fc_record_recv_reset(
     }
 
     let additional_bytes = final_size - s.bytes_recv;
+    guard 0xFFFFFFFFFFFFFFFF - fc.bytes_recv_total >= additional_bytes else {
+        return false, rfc::QUIC_ERR_FLOW_CONTROL;
+    }
     let projected_conn_recv = fc.bytes_recv_total + additional_bytes;
     guard projected_conn_recv <= fc.max_data_local else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;

@@ -174,7 +174,7 @@ fn new_dudect_context(crop_threshold_ns: f64 = 2000.0) -> DudectContext {
 // Samples exceeding crop_threshold_ns are discarded (cropped), never clamped,
 // preserving unbiased sample means per hardware-rust-crypto methodology.
 fn dudect_push_sample(ctx: DudectContext&, class_idx: i32, elapsed_ns: f64) -> bool {
-    if elapsed_ns < 0.0 || (ctx.crop_threshold_ns > 0.0 && elapsed_ns > ctx.crop_threshold_ns) {
+    if !(elapsed_ns >= 0.0) || (ctx.crop_threshold_ns > 0.0 && elapsed_ns > ctx.crop_threshold_ns) {
         ctx.cropped_outliers += 1;
         return false;
     }
@@ -196,9 +196,9 @@ fn dudect_push_sample(ctx: DudectContext&, class_idx: i32, elapsed_ns: f64) -> b
 
 // Approximate Newton-Raphson square root for Welch's t-statistic denominator.
 fn approx_sqrt(val: f64) -> f64 {
-    if val <= 0.0 { return 0.0; }
-    var x = val;
-    for iter in 20 {
+    if !(val > 0.0) { return 0.0; }
+    var x = if val < 1.0 { 1.0 } else { val };
+    for iter in 64 {
         x = 0.5 * (x + val / x);
     }
     return x;
@@ -207,16 +207,18 @@ fn approx_sqrt(val: f64) -> f64 {
 // Computes absolute Welch's |t| statistic between Class 0 and Class 1.
 fn dudect_abs_t(ctx: const DudectContext&) -> f64 {
     if ctx.n0 < 2 || ctx.n1 < 2 { return 0.0; }
+    let diff = ctx.mean0 - ctx.mean1;
+    let abs_diff = if diff < 0.0 { -diff } else { diff };
+    if abs_diff <= 0.000000000001 { return 0.0; }
     let var0 = ctx.m2_0 / (ctx.n0 - 1);
     let var1 = ctx.m2_1 / (ctx.n1 - 1);
     let denom_sq = (var0 / ctx.n0) + (var1 / ctx.n1);
-    if denom_sq <= 0.000000000001 { return 0.0; }
-    let diff = ctx.mean0 - ctx.mean1;
-    let abs_diff = if diff < 0.0 { -diff } else { diff };
+    if denom_sq <= 0.000000000001 { return 1000000000.0; }
     return abs_diff / approx_sqrt(denom_sq);
 }
 
 // Verifies that |t| is strictly below threshold (default 4.5 for 99.999% confidence, or 1.5 for lockstep).
 fn dudect_is_constant_time(ctx: const DudectContext&, max_t: f64 = 4.5) -> bool {
+    guard ctx.n0 >= 2 && ctx.n1 >= 2 else { return false; }
     return dudect_abs_t(ctx) <= max_t;
 }

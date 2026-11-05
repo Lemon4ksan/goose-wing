@@ -450,13 +450,13 @@ fn decode_block_codes<B>(
     loop {
         // Fast path: tight inline decoding of consecutive 9-bit literals
         while r.bit_count >= 15 {
-            if max_output_bytes > 0 && (out.len - out_start_pos) >= max_output_bytes {
-                return CompressError.OutputBufferOverflow;
-            }
             let fast_val = lit_table.fast[(r.bit_buf & 0x1FF) as i64];
             if fast_val < 0 { break; }
             let sym = fast_val & 0xFFFF;
             if sym >= 256 { break; }
+            if max_output_bytes > 0 && (out.len - out_start_pos) >= max_output_bytes {
+                return CompressError.OutputBufferOverflow;
+            }
             let fast_len = fast_val >> 16;
             r.bit_buf >>= fast_len;
             r.bit_count -= fast_len;

@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.crypto.ct;
 
 // ---- sha-256 (fips 180-4 / rfc 6234) ---------------------------------------
 
@@ -161,12 +162,17 @@ fn hmac_sha256(key: const u8[:], message: const u8[:]) -> u8[32] {
     var inner_ctx = Sha256Ctx { .. };
     sha256_update(inner_ctx, ipad[..]);
     sha256_update(inner_ctx, message);
-    let inner_hash = sha256_final(inner_ctx);
+    var inner_hash = sha256_final(inner_ctx);
 
     var outer_ctx = Sha256Ctx { .. };
     sha256_update(outer_ctx, opad[..]);
     sha256_update(outer_ctx, inner_hash[..]);
-    return sha256_final(outer_ctx);
+    let out = sha256_final(outer_ctx);
+    secure_zeroize_64(key_block);
+    secure_zeroize_64(ipad);
+    secure_zeroize_64(opad);
+    secure_zeroize_32(inner_hash);
+    return out;
 }
 
 // Evaluates HMAC-SHA256 across up to three sequential byte slices without intermediate heap allocations.
@@ -191,12 +197,17 @@ fn hmac_sha256_parts(key: const u8[:], p1: const u8[:], p2: const u8[:], p3: con
     if p1.len > 0 { sha256_update(inner_ctx, p1); }
     if p2.len > 0 { sha256_update(inner_ctx, p2); }
     if p3.len > 0 { sha256_update(inner_ctx, p3); }
-    let inner_hash = sha256_final(inner_ctx);
+    var inner_hash = sha256_final(inner_ctx);
 
     var outer_ctx = Sha256Ctx { .. };
     sha256_update(outer_ctx, opad[..]);
     sha256_update(outer_ctx, inner_hash[..]);
-    return sha256_final(outer_ctx);
+    let out = sha256_final(outer_ctx);
+    secure_zeroize_64(key_block);
+    secure_zeroize_64(ipad);
+    secure_zeroize_64(opad);
+    secure_zeroize_32(inner_hash);
+    return out;
 }
 
 // ---- hkdf-sha256 (rfc 5869) ------------------------------------------------
@@ -217,8 +228,10 @@ fn hkdf_expand_32(prk: const u8[32]&, info: const u8[:]) -> u8[32] {
 }
 
 fn hkdf_sha256_32(ikm: const u8[32]&, salt: const u8[:], info: const u8[:]) -> u8[32] {
-    let prk = hkdf_extract(salt, ikm[..]);
-    return hkdf_expand_32(prk, info);
+    var prk = hkdf_extract(salt, ikm[..]);
+    let okm = hkdf_expand_32(prk, info);
+    secure_zeroize_32(prk);
+    return okm;
 }
 
 // ---- sha-384 & sha-512 tables ----------------------------------------------
@@ -540,12 +553,17 @@ fn hmac_sha512(key: const u8[:], message: const u8[:]) -> u8[64] {
     var inner_ctx = Sha512Ctx { .. };
     sha512_update(inner_ctx, ipad[..]);
     sha512_update(inner_ctx, message);
-    let inner_hash = sha512_final(inner_ctx);
+    var inner_hash = sha512_final(inner_ctx);
 
     var outer_ctx = Sha512Ctx { .. };
     sha512_update(outer_ctx, opad[..]);
     sha512_update(outer_ctx, inner_hash[..]);
-    return sha512_final(outer_ctx);
+    let out = sha512_final(outer_ctx);
+    secure_zeroize_slice(key_block[..]);
+    secure_zeroize_slice(ipad[..]);
+    secure_zeroize_slice(opad[..]);
+    secure_zeroize_64(inner_hash);
+    return out;
 }
 
 // ---- hmac-sha384 (rfc 2104 / rfc 4231) -------------------------------------
@@ -569,12 +587,17 @@ fn hmac_sha384(key: const u8[:], message: const u8[:]) -> u8[48] {
     var inner_ctx = Sha384Ctx { .. };
     sha384_update(inner_ctx, ipad[..]);
     sha384_update(inner_ctx, message);
-    let inner_hash = sha384_final(inner_ctx);
+    var inner_hash = sha384_final(inner_ctx);
 
     var outer_ctx = Sha384Ctx { .. };
     sha384_update(outer_ctx, opad[..]);
     sha384_update(outer_ctx, inner_hash[..]);
-    return sha384_final(outer_ctx);
+    let out = sha384_final(outer_ctx);
+    secure_zeroize_slice(key_block[..]);
+    secure_zeroize_slice(ipad[..]);
+    secure_zeroize_slice(opad[..]);
+    secure_zeroize_48(inner_hash);
+    return out;
 }
 
 // Evaluates HMAC-SHA384 across up to three sequential byte slices without intermediate heap allocations.
@@ -599,12 +622,17 @@ fn hmac_sha384_parts(key: const u8[:], p1: const u8[:], p2: const u8[:], p3: con
     if p1.len > 0 { sha384_update(inner_ctx, p1); }
     if p2.len > 0 { sha384_update(inner_ctx, p2); }
     if p3.len > 0 { sha384_update(inner_ctx, p3); }
-    let inner_hash = sha384_final(inner_ctx);
+    var inner_hash = sha384_final(inner_ctx);
 
     var outer_ctx = Sha384Ctx { .. };
     sha384_update(outer_ctx, opad[..]);
     sha384_update(outer_ctx, inner_hash[..]);
-    return sha384_final(outer_ctx);
+    let out = sha384_final(outer_ctx);
+    secure_zeroize_slice(key_block[..]);
+    secure_zeroize_slice(ipad[..]);
+    secure_zeroize_slice(opad[..]);
+    secure_zeroize_48(inner_hash);
+    return out;
 }
 
 // ---- hkdf-sha384 (rfc 5869) ------------------------------------------------
@@ -622,7 +650,7 @@ fn hkdf_extract_384(salt: const u8[:], ikm: const u8[:]) -> u8[48] {
 fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     let len_i64 = length as i64;
     var n: i64 = (len_i64 + 31) / 32;
-    guard n <= 255 && out.len >= len_i64 else { return false; }
+    guard prk.len >= 32 && n <= 255 && out.len >= len_i64 else { return false; }
     var t:       u8[32] = [0; 32];
     var out_off: i64    = 0;
 
@@ -636,13 +664,14 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
         }
         out_off += to_copy;
     }
+    secure_zeroize_32(t);
     return true;
 }
 
 fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool {
     let len_i64 = length as i64;
     var n: i64 = (len_i64 + 47) / 48;
-    guard n <= 255 && out.len >= len_i64 else { return false; }
+    guard prk.len >= 48 && n <= 255 && out.len >= len_i64 else { return false; }
     var t:       u8[48] = [0; 48];
     var out_off: i64    = 0;
 
@@ -656,6 +685,7 @@ fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: 
         }
         out_off += to_copy;
     }
+    secure_zeroize_48(t);
     return true;
 }
 

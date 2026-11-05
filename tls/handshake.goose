@@ -863,9 +863,13 @@ fn encode_compressed_certificate_payload<B>(
 // Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
 fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool {
     guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
-    let ok, _ = core::zstd_decompress(compressed_data, out_cert);
-    guard ok else { return false; }
-    guard (out_cert.len as u32) == uncompressed_len else { return false; }
+    guard (uncompressed_len as i64) <= out_cert.cap else { return false; }
+    out_cert.clear();
+    let ok, _ = core::zstd_decompress_with_limit(compressed_data, out_cert, uncompressed_len as i64);
+    guard ok && (out_cert.len as u32) == uncompressed_len else {
+        out_cert.clear();
+        return false;
+    }
     return true;
 }
 
@@ -919,7 +923,7 @@ fn parse_supported_groups_extension(
 
 // RFC 8446 Section 4.2.8: Key Share - Encodes ClientHello key_share extension (type 51)
 fn encode_key_share_client_extension<B>(out: B&, client_shares_raw: const u8[:]) {
-    guard client_shares_raw.len >= 4 && client_shares_raw.len <= 65535 else { return; }
+    guard client_shares_raw.len >= 4 && client_shares_raw.len <= 65533 else { return; }
     core::write_be_u16(out, rfc::TLS_EXT_KEY_SHARE);
     let list_len = client_shares_raw.len as u16;
     core::write_be_u16(out, list_len + 2);
@@ -947,7 +951,7 @@ fn parse_key_share_client_extension(
 
 // RFC 8446 Section 4.2.8: Key Share - Encodes ServerHello key_share extension (type 51)
 fn encode_key_share_server_extension<B>(out: B&, group: u16, key_exchange: const u8[:]) {
-    guard key_exchange.len >= 1 && key_exchange.len <= 65535 else { return; }
+    guard key_exchange.len >= 1 && key_exchange.len <= 65531 else { return; }
     core::write_be_u16(out, rfc::TLS_EXT_KEY_SHARE);
     let kex_len = key_exchange.len as u16;
     core::write_be_u16(out, kex_len + 4);
@@ -967,10 +971,10 @@ fn parse_key_share_server_extension(
     out_key_exchange: u8[..2048]&,
 ) -> bool {
     guard data.len >= 5 else { return false; }
-    out_group = core::read_be_u16(data, 0);
     let kex_len = core::read_be_u16(data, 2) as i64;
     guard kex_len >= 1 && data.len == 4 + kex_len else { return false; }
     guard kex_len <= out_key_exchange.cap else { return false; }
+    out_group = core::read_be_u16(data, 0);
     out_key_exchange.clear();
     out_key_exchange.append(data[4..]);
     return true;
@@ -1175,6 +1179,8 @@ fn encode_new_session_ticket<B>(
     guard ticket.len >= 1 && ticket.len <= 65535 else { return false; }
     // RFC 8446 Section 4.2.10: Early Data Indication - early_data MUST NOT be offered when ticket_lifetime is 0.
     guard !(ticket_lifetime == 0 && max_early_data_size > 0) else { return false; }
+    let body_wire_len = core::add_sat_i64(21, core::add_sat_i64(ticket_nonce.len, ticket.len));
+    guard core::add_sat_i64(out.len, body_wire_len) <= out.cap else { return false; }
 
     // ticket_lifetime
     out.push(((ticket_lifetime >> 24) & 0xFF) as u8);
@@ -1291,7 +1297,7 @@ struct CertificateRequestMsg {
 fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) -> bool {
     out.has_signature_algorithms = true;
     var alg_cursor = cursor_from(ext_data.buf[..0]);
-    guard get_u16_length_prefixed(ext_data, alg_cursor) else { return false; }
+    guard get_u16_length_prefixed(ext_data, alg_cursor) && cursor_len(ext_data) == 0 else { return false; }
     let bytes_len = cursor_len(alg_cursor);
     guard bytes_len >= 2 && (bytes_len % 2) == 0 else { return false; }
     while cursor_len(alg_cursor) > 0 {
@@ -1433,10 +1439,9 @@ fn early_data_on_encrypted_extensions(
 ) -> bool {
     guard ctrl.state == EarlyDataState.Offered else { return false; }
     if ee_has_early_data {
-        let has_ciphers = ctrl.psk_cipher_suite != 0 && ctrl.negotiated_cipher_suite != 0;
-        if has_ciphers && ctrl.psk_cipher_suite != ctrl.negotiated_cipher_suite {
-            // OpenSSL Bug #31406 & RFC 8446 §4.2.10: Mismatched cipher suite between PSK and server selection
-            // strictly invalidates early_data; client MUST reject and abort.
+        if !validate_server_early_data_cipher(ctrl.psk_cipher_suite, ctrl.negotiated_cipher_suite) {
+            // OpenSSL Bug #31406 & RFC 8446 §4.2.10: Mismatched or missing cipher suite
+            // between PSK and server selection invalidates early_data.
             ctrl.state = EarlyDataState.Rejected;
             ctrl.keys_discarded = true;
             return false;
@@ -1481,10 +1486,12 @@ fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
 
 // Encodes a CertificateRequest handshake message (RFC 8446 §4.3.2).
 fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: const u16[:]) -> bool {
-    guard context.len <= 32 else { return false; }
-    guard sig_algorithms.len <= 64 else { return false; }
+    guard context.len >= 0 && context.len <= 32 else { return false; }
+    guard sig_algorithms.len >= 1 && sig_algorithms.len <= 64 else { return false; }
     var ext_buf: u8[..256] = [];
     encode_cert_req_ext_sig_algs(ext_buf, sig_algorithms);
+    let req_len = core::add_sat_i64(3, core::add_sat_i64(context.len, ext_buf.len));
+    guard core::add_sat_i64(out.len, req_len) <= out.cap else { return false; }
 
     out.push(context.len as u8);
     out.append(context);
@@ -1497,7 +1504,11 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
 // When cert_der is empty, an empty certificate_list is encoded.
 fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool {
     guard cert_context.len <= 32 else { return false; }
-    guard cert_der.len <= (rfc::MAX_HANDSHAKE_MSG_LEN as i64) - 5 else { return false; }
+    let needed = core::add_sat_i64(9, core::add_sat_i64(cert_context.len, cert_der.len));
+    let max_cert_len = (rfc::MAX_HANDSHAKE_MSG_LEN as i64) - 5;
+    guard cert_der.len <= max_cert_len && core::add_sat_i64(out.len, needed) <= out.cap else {
+        return false;
+    }
 
     out.push(cert_context.len as u8);
     out.append(cert_context);
@@ -1518,6 +1529,7 @@ fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: co
 // Encodes a client CertificateVerify message (RFC 8446 §4.4.3).
 fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool {
     guard signature.len > 0 && signature.len <= 512 else { return false; }
+    guard core::add_sat_i64(out.len, core::add_sat_i64(4, signature.len)) <= out.cap else { return false; }
     core::append_u16_be(out, sig_scheme);
     core::append_u16_be(out, signature.len as u16);
     out.append(signature);

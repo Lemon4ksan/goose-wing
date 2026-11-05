@@ -77,7 +77,7 @@ fn test_h3_settings_frame() {
         qpack_blocked_streams:    16,
         enable_connect_protocol:  1,
     };
-    var wire_out: u8[>..] = [];
+    var wire_out: u8[..128] = [];
     assert(internal::encode_h3_settings_frame(wire_out, settings));
 
     // First decode frame header
@@ -96,7 +96,7 @@ fn test_h3_settings_frame() {
     assert(parsed_settings.enable_connect_protocol == 1);
 
     // Test rejection of forbidden HTTP/2 settings (e.g. 0x02 = SETTINGS_ENABLE_PUSH)
-    var bad_h2_setting: u8[>..] = [];
+    var bad_h2_setting: u8[..32] = [];
     internal::quic_encode_varint(bad_h2_setting, 0x02);
     internal::quic_encode_varint(bad_h2_setting, 0);
     var bad_settings = wing::H3Settings { .. };
@@ -104,7 +104,7 @@ fn test_h3_settings_frame() {
     assert(err_h2 == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Test rejection of duplicate settings
-    var dup_setting: u8[>..] = [];
+    var dup_setting: u8[..32] = [];
     internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
     internal::quic_encode_varint(dup_setting, 1024);
     internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
@@ -117,7 +117,7 @@ fn test_h3_settings_frame() {
 
 fn test_h3_control_frames_roundtrip() {
     // 1. GOAWAY
-    var goaway_buf: u8[>..] = [];
+    var goaway_buf: u8[..32] = [];
     assert(internal::encode_h3_goaway_frame(goaway_buf, 42));
     let gw_hdr, gw_ok = internal::parse_h3_frame_header(goaway_buf[..], 0);
     assert(gw_ok);
@@ -127,7 +127,7 @@ fn test_h3_control_frames_roundtrip() {
     assert(gw_id == 42);
 
     // 2. CANCEL_PUSH
-    var cancel_buf: u8[>..] = [];
+    var cancel_buf: u8[..32] = [];
     assert(internal::encode_h3_cancel_push(cancel_buf, 7));
     let cp_hdr, cp_ok = internal::parse_h3_frame_header(cancel_buf[..], 0);
     assert(cp_ok);
@@ -137,7 +137,7 @@ fn test_h3_control_frames_roundtrip() {
     assert(cp_id == 7);
 
     // 3. MAX_PUSH_ID
-    var max_buf: u8[>..] = [];
+    var max_buf: u8[..32] = [];
     assert(internal::encode_h3_max_push_id(max_buf, 99));
     let mp_hdr, mp_ok = internal::parse_h3_frame_header(max_buf[..], 0);
     assert(mp_ok);

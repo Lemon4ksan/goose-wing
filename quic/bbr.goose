@@ -54,22 +54,25 @@ fn pacer_set_rate(pacer: Pacer&, rate_bps: u64) {
 
 // Queries whether pacer permits transmitting packet_bytes at now_us, updating token bucket.
 fn pacer_can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> bool, u64 {
-    let dur_us = (packet_bytes * 8 * 1000000) / pacer.pacing_rate_bps;
+    let rate = max(pacer.pacing_rate_bps, 64000);
+    pacer.pacing_rate_bps = rate;
+    let dur_u64 = min(core::mul_sat_u64(packet_bytes, 8000000) / rate, 1000000000);
+    let dur_us = dur_u64 as i64;
     if pacer.last_pacing_time_us == 0 {
         pacer.last_pacing_time_us = now_us;
-        pacer.bucket_balance_us = -(dur_us as i64);
+        pacer.bucket_balance_us = -dur_us;
         return true, 0;
     }
 
-    let elapsed = (now_us - pacer.last_pacing_time_us) as i64;
-    pacer.last_pacing_time_us = now_us;
-    pacer.bucket_balance_us += elapsed;
-    if pacer.bucket_balance_us > pacer.burst_allowance_us {
-        pacer.bucket_balance_us = pacer.burst_allowance_us;
+    var elapsed: i64 = 0;
+    if now_us > pacer.last_pacing_time_us {
+        elapsed = min(now_us - pacer.last_pacing_time_us, 1000000000) as i64;
+        pacer.last_pacing_time_us = now_us;
     }
+    pacer.bucket_balance_us = min(core::add_sat_i64(pacer.bucket_balance_us, elapsed), pacer.burst_allowance_us);
 
     if pacer.bucket_balance_us >= 0 {
-        pacer.bucket_balance_us -= (dur_us as i64);
+        pacer.bucket_balance_us = core::sub_sat_i64(pacer.bucket_balance_us, dur_us);
         return true, 0;
     }
 
@@ -120,7 +123,8 @@ fn new_bbr_state() -> BbrState {
 // Computes Bandwidth-Delay Product (BDP) in bytes.
 fn bbr_bdp(bw_bps: u64, min_rtt_us: u64) -> u64 {
     guard min_rtt_us > 0 && min_rtt_us != 0xFFFFFFFFFFFFFFFF else { return 10 * 1200; }
-    return (bw_bps * min_rtt_us) / (8 * 1000000);
+    let bytes_per_sec = bw_bps >> 3;
+    return core::mul_sat_u64(bytes_per_sec, min_rtt_us) / 1000000;
 }
 
 // Updates min_rtt tracking and triggers 5-second ProbeRTT transition.
@@ -187,12 +191,12 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
         _ => {},
     }
 
-    let pacing_bps = (eff_bw * gain_num) / gain_denom;
+    let pacing_bps = core::mul_sat_u64(eff_bw, gain_num) / gain_denom;
     pacer_set_rate(bbr.pacer, pacing_bps);
 
     if bbr.mode != BbrMode.ProbeRtt {
         let bdp = bbr_bdp(eff_bw, bbr.min_rtt_us);
-        let target_cwnd = (bdp * 2); // 2 * BDP headroom
+        let target_cwnd = core::mul_sat_u64(bdp, 2); // 2 * BDP headroom
         var cwnd = max(target_cwnd, BBR_MIN_CWND_BYTES);
         if bbr.inflight_hi_bytes > 0 && cwnd > bbr.inflight_hi_bytes {
             cwnd = max(bbr.inflight_hi_bytes, BBR_MIN_CWND_BYTES);
@@ -278,8 +282,8 @@ struct CubicState {
 fn cubic_compute_k(w_max: u64) -> u64 {
     // K = cbrt((w_max * (1 - 0.7)) / 0.4) = cbrt((w_max * 3) / 4)
     // Multiplied by 10^9 before cbrt to obtain millisecond precision
-    let w_diff = (w_max * 3) / 4;
-    return int_cbrt(w_diff * 1000000000);
+    let w_diff = core::mul_sat_u64(w_max, 3) / 4;
+    return int_cbrt(core::mul_sat_u64(w_diff, 1000000000));
 }
 
 // Updates CUBIC window with app-limited freeze (draft-ietf-ccwg-ratelimited-increase-11).
@@ -290,25 +294,25 @@ fn cubic_on_ack(
     bytes_in_flight: u64,
     mss_bytes:       u64 = 1200,
 ) -> u64 {
-    let cur_cwnd_bytes = cubic.cwnd_segments * mss_bytes;
+    let cur_cwnd_bytes = core::mul_sat_u64(cubic.cwnd_segments, mss_bytes);
     // App-limited check: pipe utilization < 75%
-    if bytes_in_flight < (cur_cwnd_bytes * 3) / 4 {
+    if bytes_in_flight < core::mul_sat_u64(cur_cwnd_bytes, 3) / 4 {
         cubic.app_limited = true;
-        if cubic.last_update_us != 0 && now_us > cubic.last_update_us {
+        if cubic.epoch_start_us != 0 && cubic.last_update_us != 0 && now_us > cubic.last_update_us {
             let elapsed_idle = now_us - cubic.last_update_us;
-            cubic.epoch_start_us += elapsed_idle; // Freeze growth epoch
+            cubic.epoch_start_us = core::add_sat_u64(cubic.epoch_start_us, elapsed_idle); // Freeze growth epoch
         }
-        cubic.last_update_us = now_us;
+        cubic.last_update_us = max(cubic.last_update_us, now_us);
         return cur_cwnd_bytes;
     }
     cubic.app_limited = false;
 
     if cubic.epoch_start_us == 0 {
-        cubic.epoch_start_us = now_us;
+        cubic.epoch_start_us = max(now_us, 1);
         cubic.k_ms = cubic_compute_k(cubic.w_max_segments);
     }
 
-    let t_ms = (now_us - cubic.epoch_start_us) / 1000;
+    let t_ms = if now_us > cubic.epoch_start_us { (now_us - cubic.epoch_start_us) / 1000 } else { 0 };
     var w_cubic: u64 = cubic.w_max_segments;
 
     let diff_ms = if t_ms < cubic.k_ms { cubic.k_ms - t_ms } else { t_ms - cubic.k_ms };

@@ -107,22 +107,32 @@ struct RttState {
 
 // Encodes an ACK or ACK_ECN frame into wire VarInt format.
 fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
+    let orig_len = out.len;
     let ftype = if ack.is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
-    guard quic_encode_varint(out, ftype) else { return false; }
-    guard quic_encode_varint(out, ack.largest_acked) else { return false; }
-    guard quic_encode_varint(out, ack.ack_delay) else { return false; }
-    guard quic_encode_varint(out, ack.ranges.len as u64) else { return false; }
-    guard quic_encode_varint(out, ack.first_ack_range) else { return false; }
+    guard quic_encode_varint(out, ftype)
+        && quic_encode_varint(out, ack.largest_acked)
+        && quic_encode_varint(out, ack.ack_delay)
+        && quic_encode_varint(out, ack.ranges.len as u64)
+        && quic_encode_varint(out, ack.first_ack_range) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
 
     for i in ack.ranges.len {
-        guard quic_encode_varint(out, ack.ranges[i].gap) else { return false; }
-        guard quic_encode_varint(out, ack.ranges[i].ack_range) else { return false; }
+        guard quic_encode_varint(out, ack.ranges[i].gap)
+            && quic_encode_varint(out, ack.ranges[i].ack_range) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     }
 
     if ack.is_ecn {
-        guard quic_encode_varint(out, ack.ect0_count) else { return false; }
-        guard quic_encode_varint(out, ack.ect1_count) else { return false; }
-        guard quic_encode_varint(out, ack.ecn_ce_count) else { return false; }
+        guard quic_encode_varint(out, ack.ect0_count)
+            && quic_encode_varint(out, ack.ect1_count)
+            && quic_encode_varint(out, ack.ecn_ce_count) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
     }
     return true;
 }
@@ -264,10 +274,10 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
 // Example:
 //   space.largest_sent_pn = 10, ack = AckFrame { largest_acked: 10, first_ack_range: 2 }
 //   returns: ok = true, out_intervals = [AckInterval { smallest: 8, largest: 10 }]
-fn parse_and_validate_ack(
+fn parse_and_validate_ack<B>(
     space:         const PnSpaceState&,
     ack:           const AckFrame&,
-    out_intervals: AckInterval[..64]&,
+    out_intervals: B&,
 ) -> bool {
     guard space.has_sent_packets else { return false; }
     guard ack.largest_acked <= space.largest_sent_pn else { return false; } // OACK forward attack!
@@ -303,6 +313,7 @@ fn parse_and_validate_ack(
 
 // Records received packet number into descending non-overlapping interval set.
 fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
+    guard pn <= rfc::QUIC_MAX_PN else { return false; }
     var i = 0;
     while i < ranges.len {
         let r = ranges[i];
@@ -363,7 +374,7 @@ fn update_rtt(
         rtt.min_rtt_us = latest_rtt;
         rtt.smoothed_rtt_us = latest_rtt;
         rtt.rttvar_us = latest_rtt / 2;
-        rtt.first_sample_time_us = now_us;
+        rtt.first_sample_time_us = max(now_us, 1);
         return;
     }
 
@@ -389,11 +400,11 @@ fn update_rtt(
 // ---- packet & time threshold loss detection (rfc 9002 section 6.1) -------
 
 // Detects and removes lost packets in pn_space using packet and time thresholds.
-fn detect_lost_packets(
+fn detect_lost_packets<B>(
     space:    PnSpaceState&,
     rtt:      const RttState&,
     now_us:   u64,
-    out_lost: SentPacketMeta[..64]&,
+    out_lost: B&,
 ) -> bool {
     guard space.has_acked_packets else { return true; }
     space.loss_time_us = 0;
@@ -488,9 +499,12 @@ struct PtoContext {
     handshake_confirmed:            bool = false,
 }
 
-fn count_in_flight_eliciting(spaces: const PnSpaceState[3]&) -> u64 {
+fn count_in_flight_eliciting(spaces: const PnSpaceState[3]&, handshake_confirmed: bool = true) -> u64 {
     var count: u64 = 0;
     for s in 3 {
+        if spaces[s].space_id == PnSpaceId.ApplicationData && !handshake_confirmed {
+            continue;
+        }
         for p in spaces[s].sent_packets.len {
             if spaces[s].sent_packets[p].ack_eliciting { count++; }
         }
@@ -552,7 +566,7 @@ fn evaluate_pto_timer(
     }
 
     // Check ack-eliciting packets in flight across spaces
-    let in_flight_count = count_in_flight_eliciting(spaces);
+    let in_flight_count = count_in_flight_eliciting(spaces, ctx.handshake_confirmed);
 
     // Priority 3: Client Anti-deadlock PTO
     if !ctx.is_server && in_flight_count == 0 && !ctx.peer_completed_addr_validation {

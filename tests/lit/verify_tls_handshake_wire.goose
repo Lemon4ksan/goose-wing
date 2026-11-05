@@ -245,6 +245,73 @@ fn main() {
     let ch_dummy_hash: u8[32] = [0x42; 32];
     assert(internal::ks_derive_early_traffic(ks_test, ch_dummy_hash[..]));
     print("KS_EARLY_TRAFFIC: OK");
+
+    // 16. Regression (TLS-BUG-001): ks_update_traffic_secret must use HKDF-Expand-Label(secret, "traffic upd", "", L) per RFC 8446 §7.2
+    var ts_upd:          u8[32] = [0x77; 32];
+    var expected_ts_upd: u8[32] = [0; 32];
+    assert(internal::hkdf_expand_label(internal::HASH_SHA256, ts_upd[..], "traffic upd", [], 32, expected_ts_upd[..]));
+    assert(internal::ks_update_traffic_secret(internal::HASH_SHA256, 32, ts_upd[..]));
+    assert(core::ct_eq_bytes(ts_upd[..], expected_ts_upd[..]));
+    print("KS_UPDATE_TRAFFIC_RFC8446: OK");
+
+    // 17. Regression (TLS-BUG-002): extract_leaf_ocsp_extension must reject malformed CertificateEntry extension blocks
+    let bad_cert_ext: u8[3] = [0x00, 0x05, 0xFF];
+    let _, ok_bad_ocsp_ext = wing::extract_leaf_ocsp_extension(bad_cert_ext[..]);
+    assert(!ok_bad_ocsp_ext);
+    print("LEAF_OCSP_EXT_REJECT_MALFORMED: OK");
+
+    // 18. Regression (TLS-BUG-003): x509_verify_cert_signature must reject unhandled signature algorithm OIDs
+    let fake_cert_raw: u8[16] = [0x30, 0x03, 0x02, 0x01, 0x01, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D, 0xAA, 0xBB];
+    let child_unhandled = wing::ParsedCert {
+        tbs_cert:        wing::Span16 { offset: 0, length: 5 },
+        sig_alg_oid:     wing::Span16 { offset: 5, length: 9 },
+        signature_value: wing::Span16 { offset: 14, length: 2 },
+        ..
+    };
+    let parent_dummy = wing::ParsedCert {
+        spki_pubkey: wing::Span16 { offset: 0, length: 5 },
+        ..
+    };
+    let sig_alert = wing::x509_verify_cert_signature(child_unhandled, fake_cert_raw[..], parent_dummy, fake_cert_raw[..]);
+    assert(sig_alert != wing::TlsAlert.CloseNotify);
+    print("X509_UNHANDLED_SIG_OID_REJECTED: OK");
+
+    // 19. Regression (TLS-BUG-005 & TLS-BUG-006): ECH public_name leading/consecutive dots & KeyShare u16 wraparound
+    assert(!wing::validate_ech_public_name_bytes(".example.com"));
+    assert(!wing::validate_ech_public_name_bytes("a..b.com"));
+    assert(!wing::validate_ech_public_name_bytes("-bad.example.com"));
+    var early_ctrl = wing::EarlyDataController {
+        state:                   wing::EarlyDataState.Offered,
+        psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        negotiated_cipher_suite: 0,
+        ..
+    };
+    assert(!wing::early_data_on_encrypted_extensions(early_ctrl, true));
+    print("ECH_AND_EARLY_DATA_GUARDS: OK");
+
+    // 20. Regression (TLS-BUG-007 & TLS-BUG-008): HPKE sequence overflow / unknown aead_id & StrikeRegister previous-epoch replay
+    var hpke_ctx = wing::HpkeContext {
+        aead_id: rfc::HPKE_AEAD_AES_128_GCM,
+        seq:     0xFFFFFFFFFFFFFFFF,
+        ..
+    };
+    var hpke_ct: u8[..64] = [];
+    assert(!wing::hpke_seal(hpke_ctx, "", "hello", hpke_ct));
+    var sreg = internal::strike_register_init(1000, 10000);
+    assert(internal::strike_register_check_and_insert(sreg, "init-epoch-10", 10000));
+    assert(internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 9500));
+    assert(!internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 11000));
+    print("HPKE_AND_STRIKE_REGISTER_GUARDS: OK");
+
+    // 21. Regression (TLS-BUG-010 & TLS-BUG-012): Header capacity guard & X.509 pathLenConstraint > 255 / duplicate extension rejection
+    var tiny_hdr: u8[..4] = [];
+    assert(!wing::encode_tls_ciphertext_header(tiny_hdr, 23, 32));
+    var bc_cert = wing::ParsedCert { path_len_constraint: -1, .. };
+    let bc_ext_256: u8[9] = [0x30, 0x07, 0x01, 0x01, 0xFF, 0x02, 0x02, 0x01, 0x00];
+    var bc_cur = core::cursor_from(bc_ext_256[..]);
+    wing::x509_parse_basic_constraints_ext(bc_cur, bc_cert);
+    assert(bc_cert.path_len_constraint == 255 || bc_cert.has_unsupported_critical);
+    print("RECORD_AND_X509_BC_GUARDS: OK");
 }
 
 // CHECK-LABEL: === TLS_HANDSHAKE_AND_RECORD_VERIFICATION ===
@@ -268,3 +335,9 @@ fn main() {
 // CHECK-NEXT: CERT_REQ_40_SIG_ALGS: OK
 // CHECK-NEXT: PSK_BINDER_OVERFLOW_REJECTED: OK
 // CHECK-NEXT: KS_EARLY_TRAFFIC: OK
+// CHECK-NEXT: KS_UPDATE_TRAFFIC_RFC8446: OK
+// CHECK-NEXT: LEAF_OCSP_EXT_REJECT_MALFORMED: OK
+// CHECK-NEXT: X509_UNHANDLED_SIG_OID_REJECTED: OK
+// CHECK-NEXT: ECH_AND_EARLY_DATA_GUARDS: OK
+// CHECK-NEXT: HPKE_AND_STRIKE_REGISTER_GUARDS: OK
+// CHECK-NEXT: RECORD_AND_X509_BC_GUARDS: OK

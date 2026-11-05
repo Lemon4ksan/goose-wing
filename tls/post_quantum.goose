@@ -102,13 +102,14 @@ fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
 fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::HYBRID_CLIENT_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard rfc::is_x25519_pq_group(share.group) else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard rfc::is_x25519_pq_group(group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::HYBRID_CLIENT_SHARE_LEN else { return false; }
 
-    if share.group == rfc::GROUP_X25519_MLKEM768 {
+    share.group = group;
+    if group == rfc::GROUP_X25519_MLKEM768 {
         core::ct_copy_bytes(share.mlkem768_public[..], raw[4..1156]);
         core::ct_copy_bytes(share.x25519_public[..], raw[1156..1188]);
     } else {
@@ -144,13 +145,14 @@ fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: 
 fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::HYBRID_SERVER_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard rfc::is_x25519_pq_group(share.group) else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard rfc::is_x25519_pq_group(group) else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::HYBRID_SERVER_SHARE_LEN else { return false; }
 
-    if share.group == rfc::GROUP_X25519_MLKEM768 {
+    share.group = group;
+    if group == rfc::GROUP_X25519_MLKEM768 {
         core::ct_copy_bytes(share.mlkem768_ciphertext[..], raw[4..1092]);
         core::ct_copy_bytes(share.x25519_public[..], raw[1092..1124]);
     } else {
@@ -178,13 +180,14 @@ fn format_secp256r1_mlkem768_key_share<B>(share: const SecP256r1MLKEM768KeyShare
 fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard group == rfc::GROUP_SECP256R1_MLKEM768 else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN else { return false; }
     guard raw[4] == 0x04 else { return false; }
 
+    share.group = group;
     core::ct_copy_bytes(share.secp256r1_public[..], raw[4..69]);
     core::ct_copy_bytes(share.mlkem768_public[..], raw[69..1221]);
 
@@ -208,13 +211,14 @@ fn format_secp256r1_mlkem768_server_share<B>(share: const SecP256r1MLKEM768Serve
 fn parse_secp256r1_mlkem768_server_share(share: SecP256r1MLKEM768ServerShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard group == rfc::GROUP_SECP256R1_MLKEM768 else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN else { return false; }
     guard raw[4] == 0x04 else { return false; }
 
+    share.group = group;
     core::ct_copy_bytes(share.secp256r1_public[..], raw[4..69]);
     core::ct_copy_bytes(share.mlkem768_ciphertext[..], raw[69..1157]);
 
@@ -238,13 +242,14 @@ fn format_secp384r1_mlkem1024_key_share<B>(share: const SecP384r1MLKEM1024KeySha
 fn parse_secp384r1_mlkem1024_key_share(share: SecP384r1MLKEM1024KeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::SECP384R1_MLKEM1024_CLIENT_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard group == rfc::GROUP_SECP384R1_MLKEM1024 else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP384R1_MLKEM1024_CLIENT_SHARE_LEN else { return false; }
     guard raw[4] == 0x04 else { return false; }
 
+    share.group = group;
     core::ct_copy_bytes(share.secp384r1_public[..], raw[4..101]);
     core::ct_copy_bytes(share.mlkem1024_public[..], raw[101..1669]);
 
@@ -268,13 +273,14 @@ fn format_secp384r1_mlkem1024_server_share<B>(share: const SecP384r1MLKEM1024Ser
 fn parse_secp384r1_mlkem1024_server_share(share: SecP384r1MLKEM1024ServerShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::SECP384R1_MLKEM1024_SERVER_SHARE_LEN else { return false; }
 
-    share.group = core::read_be_u16(raw, 0);
-    guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return false; }
+    let group = core::read_be_u16(raw, 0);
+    guard group == rfc::GROUP_SECP384R1_MLKEM1024 else { return false; }
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP384R1_MLKEM1024_SERVER_SHARE_LEN else { return false; }
     guard raw[4] == 0x04 else { return false; }
 
+    share.group = group;
     core::ct_copy_bytes(share.secp384r1_public[..], raw[4..101]);
     core::ct_copy_bytes(share.mlkem1024_ciphertext[..], raw[101..1669]);
 
@@ -292,7 +298,9 @@ fn derive_secp256r1_mlkem768_shared_secret(
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], classical_ss[..]);
     core::ct_copy_bytes(combined[32..64], pq_ss[..]);
-    return core::sha256(combined[..]);
+    let res = core::sha256(combined[..]);
+    core::secure_zeroize_64(combined);
+    return res;
 }
 
 // RFC 10024 Section 4.3: Shared Secret - SecP384r1 + ML-KEM-1024 Shared Secret Combiner
@@ -304,7 +312,9 @@ fn derive_secp384r1_mlkem1024_shared_secret(
     var combined: u8[80] = [0; 80];
     core::ct_copy_bytes(combined[0..48], classical_ss[..]);
     core::ct_copy_bytes(combined[48..80], pq_ss[..]);
-    return core::sha384(combined[..]);
+    let res = core::sha384(combined[..]);
+    for i in 80 { combined[i] = 0; }
+    return res;
 }
 
 // RFC 10024 Section 7.1 / draft-ietf-tls-ecdhe-mlkem: X25519 + ML-KEM-768 Shared Secret Combiner
@@ -316,7 +326,9 @@ fn derive_x25519_mlkem768_shared_secret(
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], pq_ss[..]);
     core::ct_copy_bytes(combined[32..64], classical_ss[..]);
-    return core::sha256(combined[..]);
+    let res = core::sha256(combined[..]);
+    core::secure_zeroize_64(combined);
+    return res;
 }
 
 // Validates non-zero entropy and derives X25519+ML-KEM-768 shared secret (PQ || Classical).
@@ -328,23 +340,21 @@ fn derive_x25519_mlkem768_shared_secret_checked(
     guard classical_ss.len == 32 && pq_ss.len == 32 else { return false; }
     guard out.len >= 32 else { return false; }
 
-    var classical_has_nonzero = false;
-    for b in classical_ss {
-        if b != 0 { classical_has_nonzero = true; break; }
-    }
-    guard classical_has_nonzero else { return false; }
+    var classical_acc: u8 = 0;
+    for b in classical_ss { classical_acc |= b; }
+    guard classical_acc != 0 else { return false; }
 
-    var pq_has_nonzero = false;
-    for b in pq_ss {
-        if b != 0 { pq_has_nonzero = true; break; }
-    }
-    guard pq_has_nonzero else { return false; }
+    var pq_acc: u8 = 0;
+    for b in pq_ss { pq_acc |= b; }
+    guard pq_acc != 0 else { return false; }
 
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], pq_ss[0..32]);
     core::ct_copy_bytes(combined[32..64], classical_ss[0..32]);
-    let h = core::sha256(combined[..]);
+    var h = core::sha256(combined[..]);
+    core::secure_zeroize_64(combined);
     core::ct_copy_bytes(out[0..32], h[..]);
+    core::secure_zeroize_32(h);
     return true;
 }
 
@@ -357,7 +367,9 @@ fn derive_hybrid_shared_secret(
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], classical_ss[..]);
     core::ct_copy_bytes(combined[32..64], pq_ss[..]);
-    return core::sha256(combined[..]);
+    let res = core::sha256(combined[..]);
+    core::secure_zeroize_64(combined);
+    return res;
 }
 
 // Validates non-zero entropy and derives hybrid shared secret (RFC 7748 §6.1, RFC 10024 §4).
@@ -370,23 +382,21 @@ fn derive_hybrid_shared_secret_checked(
     guard classical_ss.len == 32 && pq_ss.len == 32 else { return false; }
     guard out.len >= 32 else { return false; }
 
-    var classical_has_nonzero = false;
-    for b in classical_ss {
-        if b != 0 { classical_has_nonzero = true; break; }
-    }
-    guard classical_has_nonzero else { return false; }
+    var classical_acc: u8 = 0;
+    for b in classical_ss { classical_acc |= b; }
+    guard classical_acc != 0 else { return false; }
 
-    var pq_has_nonzero = false;
-    for b in pq_ss {
-        if b != 0 { pq_has_nonzero = true; break; }
-    }
-    guard pq_has_nonzero else { return false; }
+    var pq_acc: u8 = 0;
+    for b in pq_ss { pq_acc |= b; }
+    guard pq_acc != 0 else { return false; }
 
     var combined: u8[64] = [0; 64];
     core::ct_copy_bytes(combined[0..32], classical_ss[0..32]);
     core::ct_copy_bytes(combined[32..64], pq_ss[0..32]);
-    let h = core::sha256(combined[..]);
+    var h = core::sha256(combined[..]);
+    core::secure_zeroize_64(combined);
     core::ct_copy_bytes(out[0..32], h[..]);
+    core::secure_zeroize_32(h);
     return true;
 }
 
@@ -474,28 +484,36 @@ fn mlkem768_decapsulate(
     let is_all_zero = core::ct_eq_u8(ct_nonzero_acc, 0);
 
     // K-PKE polynomial ring decryption check (FIPS 203 Section 6.3)
-    let pke_m = fips203_kpke_decrypt_poly(dk_pke, ct);
-    let m_prime = core::hmac_sha256(dk_pke[0..32], ct[0..1056]);
+    var pke_m = fips203_kpke_decrypt_poly(dk_pke, ct);
+    var m_prime = core::hmac_sha256(dk_pke[0..32], ct[0..1056]);
     var g_in: u8[64] = [0; 64];
     core::ct_copy_bytes(g_in[0..32], m_prime[..]);
     core::ct_copy_bytes(g_in[32..64], h_ek);
-    let k_cand = core::sha256(g_in[..]);
-    let expected_tag = core::hmac_sha256(ek[0..32], m_prime[..]);
+    var k_cand = core::sha256(g_in[..]);
+    var expected_tag = core::hmac_sha256(ek[0..32], m_prime[..]);
 
     let tag_matches = core::ct_eq_bytes(ct[1056..1088], expected_tag[..]);
-    let valid_bit: u8 = if tag_matches { is_all_zero ^ 1 } else { 0 };
+    let valid_bit: u8 = core::ct_select_u8(if tag_matches { 1 } else { 0 }, is_all_zero ^ 1, 0);
 
     // Constant-time select between commitment-verified m_prime and K-PKE polynomial output
     var k_pke_in: u8[64] = [0; 64];
     core::ct_copy_bytes(k_pke_in[0..32], pke_m[..]);
     core::ct_copy_bytes(k_pke_in[32..64], h_ek);
-    let k_pke_cand = core::sha256(k_pke_in[..]);
+    var k_pke_cand = core::sha256(k_pke_in[..]);
 
-    let k_bar = core::hmac_sha256(z, ct);
+    var k_bar = core::hmac_sha256(z, ct);
     for i in 32 {
         let valid_k = core::ct_select_u8(valid_bit, k_cand[i], k_pke_cand[i]);
         shared_secret[i] = core::ct_select_u8(valid_bit, valid_k, k_bar[i]);
     }
+    core::secure_zeroize_32(pke_m);
+    core::secure_zeroize_32(m_prime);
+    core::secure_zeroize_64(g_in);
+    core::secure_zeroize_32(k_cand);
+    core::secure_zeroize_32(expected_tag);
+    core::secure_zeroize_64(k_pke_in);
+    core::secure_zeroize_32(k_pke_cand);
+    core::secure_zeroize_32(k_bar);
     return true;
 }
 
