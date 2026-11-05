@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 
 // ---- quota specification & decisions ---------------------------------------
 
@@ -21,9 +22,8 @@ struct GcraQuota {
 // T = period / limit (emission interval), tau = T * burst (delay tolerance).
 fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
-    let l = if limit > 0 { limit } else { 1 as u64 };
-    let t_raw = p_ns / l;
-    let t_ns = if t_raw > 0 { t_raw } else { 1 as u64 };
+    let l = max(limit, 1);
+    let t_ns = max(p_ns / l, 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst);
 
     return GcraQuota {
@@ -59,18 +59,19 @@ const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0s
 
 // Calculates remaining burst allowance after admission without underflow or overflow hazards.
 inline fn gcra_remaining_burst(tau: u64, t: u64, burst: u64, tat: u64, now_ns: u64) -> u64 {
-    let baseline = core::add_sat_u64(now_ns, t);
+    let t_safe = max(t, 1);
+    let baseline = core::add_sat_u64(now_ns, t_safe);
     guard tat > baseline else { return burst; }
     let diff = tat - baseline;
     guard tau > diff else { return 0; }
-    let rem = (tau - diff) / t;
-    return if rem < burst { rem } else { burst };
+    let rem = (tau - diff) / t_safe;
+    return min(rem, burst);
 }
 
 // Evaluates rate limit admission for a request consuming cost_n tokens at now_ns.
 // Returns Allowed with remaining capacity, or Rejected with retry_after_ns.
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
-    let t = quota.emission_interval_ns;
+    let t = max(quota.emission_interval_ns, 1);
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
 
@@ -87,6 +88,15 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     }
 
     let tat_base = core::ct_max_u64(now_ns, tat_old);
+    if delta > limit_window {
+        let excess = delta - limit_window;
+        let base_wait = core::sub_sat_u64(tat_base, now_ns);
+        return RateLimitDecision.Rejected {
+            retry_after_ns: core::add_sat_u64(base_wait, excess),
+            current_tat_ns: tat_old,
+        };
+    }
+
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
@@ -119,7 +129,7 @@ fn gcra_reserve_n(
     now_ns:      u64,
     max_wait_ns: u64,
 ) -> RateLimitDecision {
-    let t = quota.emission_interval_ns;
+    let t = max(quota.emission_interval_ns, 1);
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
 
@@ -132,21 +142,22 @@ fn gcra_reserve_n(
     }
 
     let tat_base = core::ct_max_u64(now_ns, tat_old);
+    if delta > core::add_sat_u64(limit_window, max_wait_ns) {
+        let excess = delta - limit_window;
+        let base_wait = core::sub_sat_u64(tat_base, now_ns);
+        return RateLimitDecision.Rejected {
+            retry_after_ns: core::add_sat_u64(base_wait, excess),
+            current_tat_ns: tat_old,
+        };
+    }
+
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns >= t_allow {
         cell.tat_ns = tat_new;
         let reset_after = core::sub_sat_u64(tat_new, now_ns);
-
-        var rem: u64 = 0;
-        let baseline = core::add_sat_u64(now_ns, t);
-        if tat_new > baseline {
-            let diff = tat_new - baseline;
-            rem = if tau > diff { (tau - diff) / t } else { 0 };
-        } else {
-            rem = quota.burst;
-        }
+        let rem = gcra_remaining_burst(tau, t, quota.burst, tat_new, now_ns);
 
         return RateLimitDecision.Allowed {
             remaining_burst: rem,
@@ -303,11 +314,15 @@ fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> Probabilis
 // 5% sampled check: 19 of 20 requests pass immediately without touch;
 // 1 in 20 applies cost * sample_rate to the TAT cell.
 fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
+    let rate = if pgcra.sample_rate > 0 { pgcra.sample_rate } else { 20 as u64 };
+    if pgcra.rng_state == 0 {
+        pgcra.rng_state = 0x853c49e6748fea9b;
+    }
     pgcra.rng_state ^= pgcra.rng_state >> 12;
     pgcra.rng_state ^= pgcra.rng_state << 25;
     pgcra.rng_state ^= pgcra.rng_state >> 27;
 
-    let sampled = (pgcra.rng_state % pgcra.sample_rate) == 0;
+    let sampled = (pgcra.rng_state % rate) == 0;
     if !sampled {
         let tat_curr = pgcra.cell.tat_ns;
         let rem = gcra_remaining_burst(
@@ -325,7 +340,7 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         };
     }
 
-    let scaled_cost = cost_n * pgcra.sample_rate;
+    let scaled_cost = core::mul_sat_u64(cost_n, rate);
     return gcra_check_n(pgcra.quota, pgcra.cell, scaled_cost, now_ns);
 }
 
@@ -344,24 +359,24 @@ fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: c
 
             var reset_str: u8[..32] = [];
             let reset_sec = core::add_sat_u64(a.reset_after_ns, 999999999) / 1000000000;
-            core::format_i64_dec(reset_sec as i64, reset_str);
+            core::format_u64_dec(reset_sec, reset_str);
             res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Reserved r => {
             res.headers.set_header("RateLimit-Remaining", "0");
             var reset_str: u8[..32] = [];
             let reset_sec = core::add_sat_u64(r.wait_ns, 999999999) / 1000000000;
-            core::format_i64_dec(reset_sec as i64, reset_str);
+            core::format_u64_dec(reset_sec, reset_str);
             res.headers.set_header("RateLimit-Reset", reset_str[..]);
         },
         Rejected rej => {
             res.headers.set_header("RateLimit-Remaining", "0");
             let retry_sec = core::add_sat_u64(rej.retry_after_ns, 999999999) / 1000000000;
             var retry_str: u8[..32] = [];
-            core::format_i64_dec(retry_sec as i64, retry_str);
+            core::format_u64_dec(retry_sec, retry_str);
             res.headers.set_header("RateLimit-Reset", retry_str[..]);
             res.headers.set_header("Retry-After", retry_str[..]);
-            res.status_code = 429; // Too Many Requests
+            res.status_code = rfc::STATUS_TOO_MANY_REQUESTS;
         },
     };
 }

@@ -293,6 +293,7 @@ fn new_attempt_manager(cad_ms: i64 = rfc::HE_DEFAULT_CAD_MS) -> AttemptManager {
 
 // Starts the Happy Eyeballs socket racing sequence.
 fn start_attempt_race(manager: AttemptManager&, candidates: const DnsCandidate[:], now_ms: i64) {
+    manager.attempts.clear();
     manager.pending_candidates.clear();
     for &c in candidates {
         if manager.pending_candidates.len < 32 {
@@ -302,6 +303,9 @@ fn start_attempt_race(manager: AttemptManager&, candidates: const DnsCandidate[:
     manager.current_attempt_idx = 0;
     manager.has_winner = false;
     manager.winner_attempt_id = -1;
+    manager.last_resort_armed = false;
+    manager.last_resort_deadline_ms = 0;
+    manager.last_resort_triggered = false;
 
     // Launch first attempt immediately
     launch_next_candidate_attempt(manager, now_ms);

@@ -9,17 +9,22 @@ import core from "..";
 
 // ---- protocol wire constants & overhead definitions ------------------------
 
-let WIRE_VER_XCHACHA20:    u8 = 0x01;
-let WIRE_VER_HKDF_AES_GCM: u8 = 0x02;
-let WIRE_VER_HMAC_SHA256:  u8 = 0x03;
+const WIRE_VER_XCHACHA20:    u8 = 0x01;
+const WIRE_VER_HKDF_AES_GCM: u8 = 0x02;
+const WIRE_VER_HMAC_SHA256:  u8 = 0x03;
 
-let K_OVERHEAD_XCHACHA20:    i64 = 53; // 1 + 4 + 8 + 24 + 16
-let K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
-let K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
+const K_OVERHEAD_XCHACHA20:    i64 = 53; // 1 + 4 + 8 + 24 + 16
+const K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
+const K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
+const MAX_COOKIE_NAME_LEN:     i64 = 4096; // RFC 6265 §6.1
 
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
 // Binds creation timestamp and cookie name to prevent replay and context swapping.
+//
+// Example:
+//   ver = 1, key_id = 1, timestamp_sec = 1700000000, cookie_name = "sid", out = []
+//   out becomes [0x01, 0,0,0,1, 0,0,0,0,0x65,0x53,0xF1,0x00, 0,3, 's','i','d']
 fn build_cookie_aad<B>(
     ver:           u8,
     key_id:        u32,
@@ -37,6 +42,10 @@ fn build_cookie_aad<B>(
 // Framed HMAC input buffer for SignedJar:
 // ver (1B) || key_id (4B) || timestamp (8B) || cookie_name_len (2B) || cookie_name || payload_len (4B) || payload.
 // Length prefixes prevent boundary collisions between cookie name and payload.
+//
+// Example:
+//   key_id = 1, cookie_sec = 1700000000, cookie_name = "sid", payload = "ok", out = []
+//   out becomes [0x03, 0,0,0,1, 0,0,0,0,0x65,0x53,0xF1,0x00, 0,3, 's','i','d', 0,0,0,2, 'o','k']
 fn build_signed_to_sign<B>(
     key_id:      u32,
     cookie_sec:  i64,
@@ -63,17 +72,23 @@ struct KeyStore {
     clock_skew_tolerance_sec: i64                = 300,     // 5 minutes skew tolerance
 }
 
-// Creates an empty KeyStore with default session lifetime and skew tolerance.
-// Appends a KeySlot to the store if capacity permits.
+// Appends a KeySlot to the store if capacity permits and key_id is not already active.
 fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     guard store.keys.len < store.keys.cap else { return false; }
+    for idx in store.keys.len {
+        if store.keys[idx].key_id == slot.key_id && !store.keys[idx].revoked {
+            return false;
+        }
+    }
     store.keys.push(slot);
     return true;
 }
 
 // Returns the currently active, non-revoked KeySlot.
 fn active_key(store: const KeyStore&) -> core::KeySlot, bool {
-    guard store.keys.len > 0 else { return core::KeySlot { .. }, false; }
+    guard store.active_idx >= 0 && store.active_idx < store.keys.len else {
+        return core::KeySlot { .. }, false;
+    }
     let slot = store.keys[store.active_idx];
     guard !slot.revoked else { return core::KeySlot { .. }, false; }
     return slot, true;
@@ -100,28 +115,37 @@ fn find_key(store: const KeyStore&, key_id: u32) -> core::KeySlot, bool {
     return core::KeySlot { .. }, false;
 }
 
-// Zeroizes and revokes a key in the store by key_id.
+// Zeroizes and revokes all slots matching key_id in the store.
 fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
+    var found = false;
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id {
             core::zeroize_key_slot(store.keys[idx]);
-            return true;
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 // Checks if a key needs proactive rotation (starts >= 24 hours before expiration).
 fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
-    guard slot.expires_at_sec > 0 && !slot.revoked else { return false; }
+    guard slot.expires_at_sec > 0 && now_sec >= 0 && !slot.revoked else { return false; }
+    if now_sec >= slot.expires_at_sec { return true; }
     return (slot.expires_at_sec - now_sec) <= 86400;
 }
 
 // Validates cookie creation timestamp against clock skew tolerance and max age TTL.
 fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i64) -> bool {
     guard now_sec > 0 else { return true; }
-    if cookie_sec > now_sec + store.clock_skew_tolerance_sec { return false; }
-    if now_sec - cookie_sec > store.max_age_sec { return false; }
+    guard cookie_sec >= 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec >= 0 else {
+        return false;
+    }
+    let now_u = now_sec as u64;
+    let cookie_u = cookie_sec as u64;
+    let skew_u = store.clock_skew_tolerance_sec as u64;
+    let max_age_u = store.max_age_sec as u64;
+    if cookie_u > core::add_sat_u64(now_u, skew_u) { return false; }
+    if now_u > cookie_u && (now_u - cookie_u) > max_age_u { return false; }
     return true;
 }
 
@@ -142,7 +166,7 @@ var g_jar_nonce_counter: u64 = 1;
 
 // Derives 32 bytes of cryptographically secure non-linear entropy by mixing
 // caller seed, monotonic invocation counter, high-resolution hardware/OS clock (clock_ns),
-// and timestamp through SHA-256 (RFC / FINDING-R2-SEC-08).
+// and timestamp through SHA-256.
 fn generate_jar_entropy(seed: u64, now_sec: i64, domain: u64 = 0) -> u8[32] {
     g_jar_nonce_counter = g_jar_nonce_counter + 1;
     let now_ns = clock_ns() as u64;
@@ -153,7 +177,9 @@ fn generate_jar_entropy(seed: u64, now_sec: i64, domain: u64 = 0) -> u8[32] {
         entropy_in[16 + i] = ((now_ns >> (i * 8)) & 0xFF) as u8;
         entropy_in[24 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
     }
-    return core::sha256(entropy_in[..]);
+    let out = core::sha256(entropy_in[..]);
+    core::secure_zeroize_32(entropy_in);
+    return out;
 }
 
 inline fn init_hkdf_salt_nonce(
@@ -162,8 +188,8 @@ inline fn init_hkdf_salt_nonce(
     salt:       u8[32]&,
     nonce12:    u8[12]&,
 ) {
-    let entropy1 = generate_jar_entropy(nonce_seed, now_sec, 0x73616c745f686b64);
-    let entropy2 = generate_jar_entropy(nonce_seed, now_sec, 0x6e6f6e63655f3132);
+    var entropy1 = generate_jar_entropy(nonce_seed, now_sec, 0x73616c745f686b64);
+    var entropy2 = generate_jar_entropy(nonce_seed, now_sec, 0x6e6f6e63655f3132);
     for i in 8 {
         salt[i] = entropy1[i];
         salt[8 + i] = ((now_sec as u64 >> (i * 8)) & 0xFF) as u8;
@@ -174,6 +200,8 @@ inline fn init_hkdf_salt_nonce(
     for i in 4 {
         nonce12[8 + i] = entropy2[8 + i];
     }
+    core::secure_zeroize_32(entropy1);
+    core::secure_zeroize_32(entropy2);
 }
 
 fn seal_binary_hkdf_aes<B>(
@@ -184,36 +212,31 @@ fn seal_binary_hkdf_aes<B>(
     nonce_seed:  u64,
     out:         B&,
 ) -> bool {
+    out.clear();
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+
     out.push(WIRE_VER_HKDF_AES_GCM);
     core::write_be_u32(out, slot.key_id);
 
     var salt:    u8[32] = [0; 32];
     var nonce12: u8[12] = [0; 12];
     init_hkdf_salt_nonce(nonce_seed, now_sec, salt, nonce12);
-    for i in 32 { out.push(salt[i]); }
-    for i in 12 { out.push(nonce12[i]); }
+    out.append(salt[..]);
+    out.append(nonce12[..]);
 
-    var aad_stack: u8[..256] = [];
-    if (15 + cookie_name.len) <= aad_stack.cap {
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
-        let ct_start = out.len;
-        for i in plaintext.len { out.push(0); }
-        let tag, _, _ = core::hkdf_aes256_gcm_seal(
-            slot.master_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
-        );
-        for i in 16 { out.push(tag[i]); }
-        return true;
-    } else {
-        var aad_dyn: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_dyn);
-        let ct_start = out.len;
-        for i in plaintext.len { out.push(0); }
-        let tag, _, _ = core::hkdf_aes256_gcm_seal(
-            slot.master_key, salt, nonce12, plaintext, aad_dyn[..], out[ct_start..],
-        );
-        for i in 16 { out.push(tag[i]); }
-        return true;
+    var aad_stack: u8[..4128] = [];
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
+    let ct_start = out.len;
+    for i in plaintext.len { out.push(0); }
+    let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
+        slot.master_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
+    );
+    guard ok_seal else {
+        out.clear();
+        return false;
     }
+    out.append(tag[..]);
+    return true;
 }
 
 fn seal_binary_xchacha20<B>(
@@ -224,30 +247,26 @@ fn seal_binary_xchacha20<B>(
     nonce_seed:  u64,
     out:         B&,
 ) -> bool {
+    out.clear();
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+
     out.push(WIRE_VER_XCHACHA20);
     core::write_be_u32(out, slot.key_id);
     core::write_be_u64(out, now_sec as u64);
 
-    let entropy = generate_jar_entropy(nonce_seed, now_sec, 0x7863686163686132);
+    var entropy = generate_jar_entropy(nonce_seed, now_sec, 0x7863686163686132);
     var nonce24: u8[24] = [0; 24];
     for i in 24 {
         nonce24[i] = entropy[i];
     }
-    for i in 24 { out.push(nonce24[i]); }
+    core::secure_zeroize_32(entropy);
+    out.append(nonce24[..]);
 
-    var aad_stack: u8[..256] = [];
-    if (15 + cookie_name.len) <= aad_stack.cap {
-        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
-        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], out);
-        for i in 16 { out.push(tag[i]); }
-        return true;
-    } else {
-        var aad_dyn: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_dyn);
-        let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_dyn[..], out);
-        for i in 16 { out.push(tag[i]); }
-        return true;
-    }
+    var aad_stack: u8[..4128] = [];
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
+    let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], out);
+    out.append(tag[..]);
+    return true;
 }
 
 // Encrypts and authenticates cookie payload into binary wire format:
@@ -260,13 +279,17 @@ fn private_jar_seal_binary<B>(
     nonce_seed:  u64,
     out:         B&,
 ) -> bool {
-    let slot, ok_key = active_key(jar.store);
+    out.clear();
+    var slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
 
-    if jar.use_hkdf_aes {
-        return seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
-    }
-    return seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+    let ok = if jar.use_hkdf_aes {
+        seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
+    } else {
+        seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
+    };
+    core::zeroize_key_slot(slot);
+    return ok;
 }
 
 fn open_binary_xchacha20<B>(
@@ -277,35 +300,32 @@ fn open_binary_xchacha20<B>(
     now_sec:       i64,
     out_plaintext: B&,
 ) -> bool {
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
+    let ct_len = raw_wire.len - K_OVERHEAD_XCHACHA20;
 
-    var ts: u64 = 0;
-    for i in 8 { ts = (ts << 8) | raw_wire[5 + i]; }
-    let cookie_sec = ts as i64;
-
-    if now_sec > 0 {
-        if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
-        if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
-    }
+    let ts = core::read_be_u64(raw_wire, 5);
+    let cookie_sec = ts as! i64;
 
     var nonce24: u8[24] = [0; 24];
     for i in 24 { nonce24[i] = raw_wire[13 + i]; }
 
-    let ct_len = raw_wire.len - K_OVERHEAD_XCHACHA20;
     let ct = raw_wire[37..37 + ct_len];
 
     var tag: u8[16] = [0; 16];
     for i in 16 { tag[i] = raw_wire[37 + ct_len + i]; }
 
-    var aad_stack: u8[..256] = [];
-    if (15 + cookie_name.len) <= aad_stack.cap {
-        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
-        return core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext);
-    } else {
-        var aad_dyn: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-        return core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_dyn[..], tag, out_plaintext);
+    var aad_stack: u8[..4128] = [];
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
+    guard core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
+        out_plaintext.clear();
+        return false;
     }
+    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else {
+        out_plaintext.clear();
+        return false;
+    }
+    return true;
 }
 
 fn open_binary_hkdf_aes<B>(
@@ -316,7 +336,9 @@ fn open_binary_hkdf_aes<B>(
     now_sec:       i64,
     out_plaintext: B&,
 ) -> bool {
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
+    let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
 
     var salt32: u8[32] = [0; 32];
     for i in 32 { salt32[i] = raw_wire[5 + i]; }
@@ -326,28 +348,24 @@ fn open_binary_hkdf_aes<B>(
 
     var ts: u64 = 0;
     for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
-    let cookie_sec = ts as i64;
+    let cookie_sec = ts as! i64;
 
-    if now_sec > 0 {
-        if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
-        if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
-    }
-
-    let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
     let ct = raw_wire[49..49 + ct_len];
 
     var tag: u8[16] = [0; 16];
     for i in 16 { tag[i] = raw_wire[49 + ct_len + i]; }
 
-    var aad_stack: u8[..256] = [];
-    if (15 + cookie_name.len) <= aad_stack.cap {
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
-        return core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext);
-    } else {
-        var aad_dyn: u8[>..] = [];
-        build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_dyn);
-        return core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_dyn[..], tag, out_plaintext);
+    var aad_stack: u8[..4128] = [];
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
+    guard core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
+        out_plaintext.clear();
+        return false;
     }
+    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else {
+        out_plaintext.clear();
+        return false;
+    }
+    return true;
 }
 
 // Verifies authentication tag, context binding, and decrypts payload into out_plaintext.
@@ -359,20 +377,21 @@ fn private_jar_open_binary<B>(
     out_plaintext: B&,
 ) -> bool {
     out_plaintext.clear();
-    guard raw_wire.len >= 53 else { return false; }
+    guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
     let ver = raw_wire[0];
     let key_id = core::read_be_u32(raw_wire, 1);
 
-    let slot, ok_key = find_key(jar.store, key_id);
+    var slot, ok_key = find_key(jar.store, key_id);
     guard ok_key else { return false; }
 
+    var ok = false;
     if ver == WIRE_VER_XCHACHA20 {
-        return open_binary_xchacha20(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
+        ok = open_binary_xchacha20(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
+    } else if ver == WIRE_VER_HKDF_AES_GCM {
+        ok = open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
     }
-    if ver == WIRE_VER_HKDF_AES_GCM {
-        return open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
-    }
-    return false;
+    core::zeroize_key_slot(slot);
+    return ok;
 }
 
 // Encodes encrypted cookie to Base64URL string for HTTP header transmission.
@@ -384,6 +403,7 @@ fn private_jar_seal<B>(
     nonce_seed:  u64,
     out:         B&,
 ) -> bool {
+    out.clear();
     var raw_wire: u8[>..] = [];
     guard private_jar_seal_binary(jar, cookie_name, plaintext, now_sec, nonce_seed, raw_wire) else {
         return false;
@@ -400,6 +420,7 @@ fn private_jar_open<B>(
     now_sec:       i64,
     out_plaintext: B&,
 ) -> bool {
+    out_plaintext.clear();
     var raw_wire_stack: u8[..4200] = [];
     if encoded_val.len <= 5500 {
         guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }
@@ -431,7 +452,11 @@ fn signed_jar_seal_binary<B>(
     now_sec:     i64,
     out:         B&,
 ) -> bool {
-    let slot, ok_key = active_key(jar.store);
+    out.clear();
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard payload.len <= 0x7FFFFFFF else { return false; }
+
+    var slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
 
     out.push(WIRE_VER_HMAC_SHA256);
@@ -439,19 +464,20 @@ fn signed_jar_seal_binary<B>(
     core::write_be_u64(out, now_sec as u64);
     out.append(payload);
 
-    var to_sign_stack: u8[..4200] = [];
-    if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
+    var mac:           u8[32]     = [0; 32];
+    var to_sign_stack: u8[..8320] = [];
+    if (19 + cookie_name.len + payload.len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_stack);
-        let mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
-        for i in 32 { out.push(mac[i]); }
-        return true;
+        mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_dyn);
-        let mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
-        for i in 32 { out.push(mac[i]); }
-        return true;
+        mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
     }
+    core::zeroize_key_slot(slot);
+    out.append(mac[..]);
+    core::secure_zeroize_32(mac);
+    return true;
 }
 
 fn signed_jar_open_binary<B>(
@@ -462,31 +488,28 @@ fn signed_jar_open_binary<B>(
     out_payload: B&,
 ) -> bool {
     out_payload.clear();
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard raw_wire.len >= K_OVERHEAD_HMAC_SHA256 else { return false; }
     let ver = raw_wire[0];
     guard ver == WIRE_VER_HMAC_SHA256 else { return false; }
 
+    let payload_len = raw_wire.len - K_OVERHEAD_HMAC_SHA256;
+    guard payload_len <= 0x7FFFFFFF else { return false; }
+
     let key_id = core::read_be_u32(raw_wire, 1);
 
-    let slot, ok_key = find_key(jar.store, key_id);
+    var slot, ok_key = find_key(jar.store, key_id);
     guard ok_key else { return false; }
 
     let cookie_sec = core::read_be_u64(raw_wire, 5) as! i64;
-
-    if now_sec > 0 {
-        if cookie_sec > now_sec + jar.store.clock_skew_tolerance_sec { return false; }
-        if now_sec - cookie_sec > jar.store.max_age_sec { return false; }
-    }
-
-    let payload_len = raw_wire.len - K_OVERHEAD_HMAC_SHA256;
     let payload = raw_wire[13..13 + payload_len];
 
     var tag: u8[32] = [0; 32];
     for i in 32 { tag[i] = raw_wire[13 + payload_len + i]; }
 
     var expected_mac:  u8[32]     = [0; 32];
-    var to_sign_stack: u8[..4200] = [];
-    if (15 + cookie_name.len + 4 + payload.len) <= to_sign_stack.cap {
+    var to_sign_stack: u8[..8320] = [];
+    if (19 + cookie_name.len + payload_len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_stack);
         expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
     } else {
@@ -494,7 +517,10 @@ fn signed_jar_open_binary<B>(
         build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_dyn);
         expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
     }
-    guard core::ct_eq_tag32(expected_mac, tag) else { return false; }
+    core::zeroize_key_slot(slot);
+    let mac_ok = core::ct_eq_tag32(expected_mac, tag);
+    core::secure_zeroize_32(expected_mac);
+    guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else { return false; }
     out_payload.append(payload);
     return true;
 }
@@ -506,6 +532,7 @@ fn signed_jar_seal<B>(
     now_sec:     i64,
     out:         B&,
 ) -> bool {
+    out.clear();
     var raw_wire: u8[>..] = [];
     guard signed_jar_seal_binary(jar, cookie_name, payload, now_sec, raw_wire) else { return false; }
     core::base64url_encode(raw_wire[..], out);
@@ -519,6 +546,7 @@ fn signed_jar_open<B>(
     now_sec:     i64,
     out_payload: B&,
 ) -> bool {
+    out_payload.clear();
     var raw_wire_stack: u8[..4200] = [];
     if encoded_val.len <= 5500 {
         guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }

@@ -1478,7 +1478,7 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
 
 fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     t.run("Capsule Protocol Framing & Zero-Copy Decode") { sub =>
-        var wire: u8[>..] = [];
+        var wire: u8[..256] = [];
         let raw_payload = "test_capsule_payload_bytes";
         let enc_ok = wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, raw_payload);
         sub.assert_true(enc_ok, "encode_http_capsule succeeded");
@@ -1504,7 +1504,7 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     };
 
     t.run("HTTP Datagrams over QUIC (Quarter Stream ID + Context ID)") { sub =>
-        var dgram_wire: u8[>..] = [];
+        var dgram_wire: u8[..256] = [];
         let udp_sample = "dns_query_udp_payload";
         let quarter_stream_id: u64 = 2; // Stream ID 8 / 4 = 2
         let context_id:        u64 = 0; // Default uncompressed context
@@ -1519,7 +1519,7 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
         sub.assert_bytes_eq(payload, udp_sample, "Payload matches");
 
         // QUIC DATAGRAM frame (RFC 9221 Type 0x31 with length)
-        var quic_frame_wire: u8[>..] = [];
+        var quic_frame_wire: u8[..256] = [];
         let frame_ok = internal::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
         sub.assert_true(frame_ok, "encode_quic_datagram_frame ok");
 
@@ -1557,7 +1557,7 @@ fn test_rfc9298_connect_udp(t: lit::T&) {
     };
 
     t.run("In-Stream DATAGRAM Capsule Serialization") { sub =>
-        var wire: u8[>..] = [];
+        var wire: u8[..256] = [];
         let udp_data = "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
         let enc_ok = wing::encode_connect_udp_datagram_capsule(wire, 0, udp_data);
         sub.assert_true(enc_ok, "encode_connect_udp_datagram_capsule ok");
@@ -1584,7 +1584,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         };
         req.requested_ip.append([10, 0, 0, 42]);
 
-        var req_wire: u8[>..] = [];
+        var req_wire: u8[..256] = [];
         let req_enc_ok = wing::encode_address_request_capsule(req_wire, req);
         sub.assert_true(req_enc_ok, "encode_address_request_capsule ok");
 
@@ -1608,7 +1608,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         };
         assign.assigned_ip.append([192, 168, 1, 100]);
 
-        var assign_wire: u8[>..] = [];
+        var assign_wire: u8[..256] = [];
         let assign_enc_ok = wing::encode_address_assign_capsule(assign_wire, assign);
         sub.assert_true(assign_enc_ok, "encode_address_assign_capsule ok");
 
@@ -1632,7 +1632,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         route.start_ip.append([10, 0, 0, 0]);
         route.end_ip.append([10, 0, 0, 255]);
 
-        var route_wire: u8[>..] = [];
+        var route_wire: u8[..256] = [];
         let enc_ok = wing::encode_route_advertisement_capsule(route_wire, route);
         sub.assert_true(enc_ok, "encode_route_advertisement_capsule ok");
 
@@ -1665,7 +1665,7 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
 
         // 2. Client sends UDP packet through tunnel (in-stream capsule mode via UFCS)
         var tunnel_mut = copy(tunnel);
-        var wire_out: u8[>..] = [];
+        var wire_out: u8[..256] = [];
         let dns_query = "fake_dns_wire_query";
         let send_ok = tunnel_mut.send_packet(dns_query, wire_out);
         sub.assert_true(send_ok, "tunnel.send_packet UFCS succeeded");
@@ -1673,7 +1673,7 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
         sub.assert_eq(tunnel_mut.bytes_sent, dns_query.len as u64, "Bytes sent matches");
 
         // 3. Client receives UDP response packet from wire via UFCS
-        var packet_in: u8[>..] = [];
+        var packet_in: u8[..256] = [];
         let recv_ok = tunnel_mut.receive_capsule(wire_out[..], packet_in);
         sub.assert_true(recv_ok, "tunnel.receive_capsule UFCS succeeded");
         sub.assert_bytes_eq(packet_in[..], dns_query, "Received packet content matches sent query");
@@ -1702,10 +1702,10 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
         };
         assign.assigned_ip.append([10, 8, 0, 5]);
 
-        var assign_capsule_wire: u8[>..] = [];
+        var assign_capsule_wire: u8[..256] = [];
         wing::encode_address_assign_capsule(assign_capsule_wire, assign);
 
-        var dummy_pkt: u8[>..] = [];
+        var dummy_pkt: u8[..256] = [];
         let recv_ok = wing::receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
         sub.assert_true(recv_ok, "ADDRESS_ASSIGN capsule ingested");
         sub.assert_bytes_eq(tunnel_mut.assigned_ip[..], [10, 8, 0, 5], "Tunnel assigned IP is 10.8.0.5");

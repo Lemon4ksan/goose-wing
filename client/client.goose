@@ -340,7 +340,9 @@ fn doh_query(
         req.url.append(session.doh.endpoint[..]);
         set_header(req, "content-type", "application/dns-message");
         set_header(req, "accept", "application/dns-message");
-        guard build_dns_query(domain, qtype, tx_id, req.body) else { return false; }
+        var wire_query: u8[..512] = [];
+        guard build_dns_query(domain, qtype, tx_id, wire_query) else { return false; }
+        req.body.append(wire_query[..]);
     } else {
         guard build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
         set_header(req, "accept", "application/dns-message");

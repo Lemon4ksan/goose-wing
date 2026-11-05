@@ -63,6 +63,7 @@ struct WebTransportStreamStopSending {
 // ---- Varint Helper (RFC 9000 Section 16) ---------------------------------
 
 fn write_varint<B>(out: B&, val: u64) {
+    guard val <= 0x3FFFFFFFFFFFFFFF else { return; }
     if val <= 63 {
         out.push(val as u8);
     } else if val <= 16383 {
@@ -86,42 +87,24 @@ fn write_varint<B>(out: B&, val: u64) {
 }
 
 // Reads a variable-length integer (RFC 9000 Section 16).
-// Advances `idx` past the consumed integer bytes.
+// Advances `idx` past the consumed integer bytes; leaves `idx` unchanged on error.
 //
 // Example:
 //   wire = [0x25], idx = 0
 //   returns: 37, ok = true, idx = 1
 fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
-    guard idx < wire.len else { return 0, false; }
+    guard idx >= 0 && idx < wire.len else { return 0, false; }
     let first = wire[idx];
-    idx += 1;
     let prefix = first >> 6;
+    let needed = (1 as i64) << prefix;
+    guard idx + needed <= wire.len else { return 0, false; }
 
-    if prefix == 0 {
-        return (first & 0x3F), true;
-    } else if prefix == 1 {
-        guard idx < wire.len else { return 0, false; }
-        let b1 = wire[idx];
-        idx += 1;
-        let v = (((first & 0x3F) as u64) << 8) | b1;
-        return v, true;
-    } else if prefix == 2 {
-        guard idx + 2 < wire.len else { return 0, false; }
-        var v = ((first & 0x3F) as u64) << 24;
-        v |= (wire[idx] as u64) << 16;
-        v |= (wire[idx + 1] as u64) << 8;
-        v |= wire[idx + 2];
-        idx += 3;
-        return v, true;
-    } else {
-        guard idx + 6 < wire.len else { return 0, false; }
-        var v = ((first & 0x3F) as u64) << 56;
-        for i in 7 {
-            v |= (wire[idx + i] as u64) << (8 * (6 - i));
-        }
-        idx += 7;
-        return v, true;
+    var v = (first & 0x3F) as u64;
+    for i in 1..needed {
+        v = (v << 8) | wire[idx + i];
     }
+    idx += needed;
+    return v, true;
 }
 
 // ---- Session Initiation (Extended CONNECT :protocol = webtransport) ------
@@ -134,7 +117,7 @@ fn format_webtransport_connect_request(
     req.method.clear();
     req.method.append("CONNECT");
     req.url.clear();
-    let copy_len = if url_target.len <= req.url.cap { url_target.len } else { req.url.cap };
+    let copy_len = min(url_target.len, req.url.cap);
     req.url.append(url_target[..copy_len]);
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
@@ -258,20 +241,16 @@ fn decode_webtransport_datagram(
     wire: const u8[:],
     out:  WebTransportDatagram&,
 ) -> bool {
-    out.payload.clear();
     var idx: i64 = 0;
     let quarter_id, ok1 = read_varint(wire, idx);
-    guard ok1 else { return false; }
+    guard ok1 && quarter_id <= 0x0FFFFFFFFFFFFFFF else { return false; }
     let ctx_id, ok2 = read_varint(wire, idx);
     guard ok2 && ctx_id == 0 else { return false; }
-
-    out.session_id = quarter_id * 4;
     guard idx <= wire.len && (wire.len - idx) <= out.payload.cap else { return false; }
 
-    for i in (wire.len - idx) {
-        out.payload.push(wire[idx + i]);
-    }
-
+    out.session_id = quarter_id * 4;
+    out.payload.clear();
+    out.payload.append(wire[idx..]);
     return true;
 }
 
@@ -303,14 +282,14 @@ fn decode_quic_datagram_frame<B>(
         return false;
     }
 
+    var payload_end = wire.len;
     if frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
         guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
-        out_payload.append(wire[idx..idx + (len as i64)]);
-        return true;
+        payload_end = idx + (len as i64);
     }
 
-    out_payload.append(wire[idx..]);
+    out_payload.append(wire[idx..payload_end]);
     return true;
 }
 
@@ -367,7 +346,8 @@ fn decode_webtransport_close_session(
     out:     WebTransportCloseSession&,
 ) -> bool {
     guard payload.len >= 4 else { return false; }
-    out.reason.clear();
+    let reason = payload[4..];
+    guard reason.len <= out.reason.cap && core::validate_utf8(reason) else { return false; }
 
     var code: u32 = (payload[0] as u32) << 24;
     code |= (payload[1] as u32) << 16;
@@ -375,12 +355,8 @@ fn decode_webtransport_close_session(
     code |= payload[3];
     out.error_code = code;
 
-    let reason_len = payload.len - 4;
-    guard reason_len <= 1024 else { return false; }
-
-    for i in reason_len {
-        out.reason.push(payload[4 + i]);
-    }
+    out.reason.clear();
+    out.reason.append(reason);
     return true;
 }
 
@@ -480,7 +456,7 @@ fn close_webtransport_session(session: WebTransportSession&, code: u32, reason: 
     session.is_active = false;
     session.close_code = code;
     session.close_reason.clear();
-    let copy_len = if reason.len <= session.close_reason.cap { reason.len } else { session.close_reason.cap };
+    let copy_len = min(reason.len, session.close_reason.cap);
     session.close_reason.append(reason[..copy_len]);
 }
 
@@ -533,7 +509,7 @@ struct WebTransportSessionEntry {
     session_id:      u64                      = 0,
     state:           WebTransportSessionState = WebTransportSessionState.Closed,
     close_code:      u32                      = 0,
-    close_reason:    u8[..256]                = [],
+    close_reason:    u8[..1024]               = [],
     bytes_received:  u64                      = 0,
     frames_received: u64                      = 0,
     streams_count:   u32                      = 0,
@@ -648,22 +624,32 @@ fn find_session_entry_index(demuxer: const WebTransportDemuxer&, session_id: u64
     return -1, false;
 }
 
-// Registers a new active session into the demuxer
+// Registers a new active session into the demuxer, reusing closed session slots if full
 fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
     for i in demuxer.sessions.len {
         if demuxer.sessions[i].session_id == session_id {
             demuxer.sessions[i].state = WebTransportSessionState.Active;
+            demuxer.sessions[i].close_code = 0;
+            demuxer.sessions[i].close_reason.clear();
             return true;
         }
     }
-    guard demuxer.sessions.len < demuxer.sessions.cap else { return false; }
-    var entry = WebTransportSessionEntry {
+    let entry = WebTransportSessionEntry {
         session_id: session_id,
         state:      WebTransportSessionState.Active,
         ..
     };
-    demuxer.sessions.push(entry);
-    return true;
+    if demuxer.sessions.len < demuxer.sessions.cap {
+        demuxer.sessions.push(entry);
+        return true;
+    }
+    for i in demuxer.sessions.len {
+        if demuxer.sessions[i].state == WebTransportSessionState.Closed {
+            demuxer.sessions[i] = entry;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Updates session state (Connecting, Active, Draining, Closed)
@@ -693,7 +679,7 @@ fn drain_webtransport_demuxer_session(demuxer: WebTransportDemuxer&, session_id:
     return set_webtransport_session_state(demuxer, session_id, WebTransportSessionState.Draining);
 }
 
-// Closes a session with error code and reason
+// Closes a session with error code and reason, and closes all associated open stream routes
 fn close_webtransport_demuxer_session(
     demuxer:    WebTransportDemuxer&,
     session_id: u64,
@@ -705,12 +691,13 @@ fn close_webtransport_demuxer_session(
     demuxer.sessions[s_idx].state = WebTransportSessionState.Closed;
     demuxer.sessions[s_idx].close_code = code;
     demuxer.sessions[s_idx].close_reason.clear();
-    let copy_len = if reason.len <= demuxer.sessions[s_idx].close_reason.cap {
-        reason.len
-    } else {
-        demuxer.sessions[s_idx].close_reason.cap
-    };
+    let copy_len = min(reason.len, demuxer.sessions[s_idx].close_reason.cap);
     demuxer.sessions[s_idx].close_reason.append(reason[..copy_len]);
+    for i in demuxer.streams.len {
+        if demuxer.streams[i].session_id == session_id {
+            demuxer.streams[i].is_open = false;
+        }
+    }
     return true;
 }
 
@@ -718,47 +705,30 @@ inline fn is_session_routable(state: WebTransportSessionState) -> bool {
     return state == WebTransportSessionState.Active || state == WebTransportSessionState.Draining;
 }
 
-inline fn record_new_stream_route(
+// Allocates or reuses a closed stream route slot in `demuxer.streams`.
+fn record_new_stream_route(
     demuxer:         WebTransportDemuxer&,
     stream_id:       u64,
     session_id:      u64,
     kind:            WebTransportStreamKind,
     bytes_delivered: u64,
-) {
-    guard demuxer.streams.len < demuxer.streams.cap else { return; }
-    var route = WebTransportStreamRoute {
+) -> bool {
+    let route = WebTransportStreamRoute {
         stream_id:       stream_id,
         session_id:      session_id,
         kind:            kind,
         is_open:         true,
         bytes_delivered: bytes_delivered,
     };
+    for i in demuxer.streams.len {
+        if !demuxer.streams[i].is_open {
+            demuxer.streams[i] = route;
+            return true;
+        }
+    }
+    guard demuxer.streams.len < demuxer.streams.cap else { return false; }
     demuxer.streams.push(route);
-}
-
-inline fn record_session_bytes(entry: WebTransportSessionEntry&, n: u64) {
-    entry.bytes_received += n;
-}
-
-inline fn record_stream_bytes(route: WebTransportStreamRoute&, n: u64) {
-    route.bytes_delivered += n;
-}
-
-inline fn record_dropped_frame(demuxer: WebTransportDemuxer&) {
-    demuxer.dropped_frames += 1;
-}
-
-inline fn record_dispatched_frame(demuxer: WebTransportDemuxer&) {
-    demuxer.total_dispatched += 1;
-}
-
-inline fn record_session_frame(entry: WebTransportSessionEntry&) {
-    entry.frames_received += 1;
-}
-
-inline fn record_session_stream(entry: WebTransportSessionEntry&) {
-    entry.streams_count += 1;
-    entry.frames_received += 1;
+    return true;
 }
 
 // Routes incoming data chunks to an existing open WebTransport stream.
@@ -774,16 +744,16 @@ fn route_existing_stream(
 
     let s_idx, has_session = find_session_entry_index(demuxer, sid);
     guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        record_dropped_frame(demuxer);
+        demuxer.dropped_frames += 1;
         return false;
     }
 
     guard is_session_routable(demuxer.sessions[s_idx].state) else {
-        record_dropped_frame(demuxer);
+        demuxer.dropped_frames += 1;
         return false;
     }
 
-    record_session_frame(demuxer.sessions[s_idx]);
+    demuxer.sessions[s_idx].frames_received += 1;
     if fin {
         demuxer.streams[route_idx].is_open = false;
     }
@@ -794,10 +764,9 @@ fn route_existing_stream(
     out.payload = wire;
     out.fin = fin;
 
-    record_session_bytes(demuxer.sessions[s_idx], wire.len as u64);
-    record_stream_bytes(demuxer.streams[route_idx], wire.len as u64);
-
-    record_dispatched_frame(demuxer);
+    demuxer.sessions[s_idx].bytes_received += wire.len as u64;
+    demuxer.streams[route_idx].bytes_delivered += wire.len as u64;
+    demuxer.total_dispatched += 1;
     return true;
 }
 
@@ -812,30 +781,34 @@ fn route_new_stream(
     let is_bidi = (stream_id & 0x02) == 0;
     var hdr = WebTransportDemuxHeader { .. };
     guard demux_webtransport_stream_header(wire, is_bidi, hdr) else {
-        record_dropped_frame(demuxer);
+        demuxer.dropped_frames += 1;
         return false;
     }
 
     let s_idx, has_session = find_session_entry_index(demuxer, hdr.session_id);
     guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        record_dropped_frame(demuxer);
+        demuxer.dropped_frames += 1;
         return false;
     }
 
     guard demuxer.sessions[s_idx].state == WebTransportSessionState.Active else {
-        record_dropped_frame(demuxer);
+        demuxer.dropped_frames += 1;
         return false;
     }
 
     guard hdr.header_len >= 0 && hdr.header_len <= wire.len else { return false; }
     let payload = wire[hdr.header_len..];
 
-    record_session_stream(demuxer.sessions[s_idx]);
-
-    record_session_bytes(demuxer.sessions[s_idx], payload.len as u64);
     if !fin {
-        record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind, payload.len as u64);
+        guard record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind, payload.len as u64) else {
+            demuxer.dropped_frames += 1;
+            return false;
+        }
     }
+
+    demuxer.sessions[s_idx].streams_count += 1;
+    demuxer.sessions[s_idx].frames_received += 1;
+    demuxer.sessions[s_idx].bytes_received += payload.len as u64;
 
     out.kind = hdr.kind;
     out.stream_id = stream_id;
@@ -843,7 +816,7 @@ fn route_new_stream(
     out.payload = payload;
     out.fin = fin;
 
-    record_dispatched_frame(demuxer);
+    demuxer.total_dispatched += 1;
     return true;
 }
 

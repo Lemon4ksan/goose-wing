@@ -44,8 +44,10 @@ inline fn clamp_tick_delta(d: u8) -> u8 {
 // Arms a connection slot timeout for delay_sec seconds.
 inline fn tick_timer_arm(wheel: const TickTimerWheel&, delay_sec: u8 = 0) -> u8 {
     let raw = if delay_sec > 0 { delay_sec } else { wheel.idle_timeout_sec };
-    let d = clamp_tick_delta(raw);
-    return (wheel.current_tick + d) % TICK_TIMER_MODULO;
+    let d:   u32 = clamp_tick_delta(raw);
+    let cur: u32 = wheel.current_tick;
+    let m:   u32 = TICK_TIMER_MODULO;
+    return ((cur + d) % m) as u8;
 }
 
 // Disarms a connection slot timeout.

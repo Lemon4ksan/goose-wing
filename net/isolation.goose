@@ -9,6 +9,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // ---- Network Isolation Key (NIK) Model -----------------------------------
 
@@ -24,7 +25,7 @@ fn new_network_isolation_key(top_level: const u8[:], frame: const u8[:]) -> Netw
     var nik = NetworkIsolationKey { is_empty: false, .. };
     nik.top_level_site.append(top_level);
     nik.frame_site.append(frame);
-    nik.is_cross_site = (top_level != frame);
+    nik.is_cross_site = !core::eq_ascii_fold(nik.top_level_site[..], nik.frame_site[..]);
     return nik;
 }
 

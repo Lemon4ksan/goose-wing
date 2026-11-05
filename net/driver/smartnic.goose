@@ -10,8 +10,8 @@ import std;
 import net.driver.types;
 
 // Native C bindings from shim/smartnic.c
-extern fn wing_smartnic_probe() -> i32;
-extern fn wing_smartnic_enable_ktls(fd: i64) -> i32;
+extern fn native_smartnic_probe() -> i32 = "wing_smartnic_probe";
+extern fn native_smartnic_enable_ktls(fd: i64) -> i32 = "wing_smartnic_enable_ktls";
 extern fn wing_smartnic_set_hardware_tls_tx(
     fd:      i64, version: u16, cipher_type: u16,
     key:     const u8[:],
@@ -26,9 +26,6 @@ extern fn wing_smartnic_set_hardware_tls_rx(
     salt:    const u8[:],
     rec_seq: const u8[:],
 ) -> i32;
-
-fn native_smartnic_probe() -> i32 { return wing_smartnic_probe(); }
-fn native_smartnic_enable_ktls(fd: i64) -> i32 { return wing_smartnic_enable_ktls(fd); }
 
 enum SmartNicModel {
     Generic,

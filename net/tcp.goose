@@ -732,9 +732,14 @@ fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) ->
     if core::cork_pending(cork) > 0 {
         async_socket_uncork(fd, cork, bp);
         if core::cork_pending(cork) > 0 {
+            let rem = core::cork_as_slice(cork);
             bp.pending_cork.clear();
-            bp.pending_cork.append(core::cork_as_slice(cork));
+            let copy_len = min(rem.len, bp.pending_cork.cap);
+            bp.pending_cork.append(rem[0..copy_len]);
             core::cork_reset(cork);
+            if copy_len < rem.len {
+                core::cork_write(cork, rem[copy_len..]);
+            }
         }
     }
 
@@ -888,11 +893,13 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
     var raw_fds:   i64[256] = [0; 256];
     var raw_udata: u64[256] = [0; 256];
     let n = native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
-    for i in n {
+    guard n > 0 else { return 0; }
+    let limit = min(n as i64, min(out_fds.cap, out_udata.cap));
+    for i in limit {
         out_fds.push(raw_fds[i]);
         out_udata.push(raw_udata[i]);
     }
-    return n;
+    return limit as i32;
 }
 
 // Closes epoll/reactor handle.
@@ -900,11 +907,6 @@ fn epoll_close(epfd: i64) {
     if epfd >= 0 {
         native_epoll_close(epfd);
     }
-}
-
-// Appends HTTP response directly to cork buffer using AVX2 SIMD instructions and flushes if full.
-fn fast_cork_append(conn: i64, cork_buf: u8[:], cork_len: i64, resp: const u8[:]) -> i64 {
-    return native_fast_cork_append(conn, cork_buf, cork_len, resp);
 }
 
 // Pins calling thread to specific CPU core ID.

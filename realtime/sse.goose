@@ -56,18 +56,21 @@ fn parse_sse_retry(field_val: const u8[:]) -> u32, bool {
     return num, true;
 }
 
+const SSE_MAX_DATA_LEN: i64 = 4096;
+const SSE_MAX_LINE_LEN: i64 = 4112;
+
 fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8[:]) {
     if field_name == "event" {
         p.cur_event.clear();
-        let copy_len = if field_val.len <= p.cur_event.cap { field_val.len } else { p.cur_event.cap };
+        let copy_len = min(field_val.len, p.cur_event.cap);
         p.cur_event.append(field_val[..copy_len]);
     } else if field_name == "data" {
-        if p.has_data && p.cur_data.len < 4096 {
+        if p.has_data && p.cur_data.len < SSE_MAX_DATA_LEN {
             p.cur_data.push('\n');
         }
         p.has_data = true;
         for b in field_val {
-            if p.cur_data.len < 4096 {
+            if p.cur_data.len < SSE_MAX_DATA_LEN {
                 p.cur_data.push(b);
             }
         }
@@ -79,7 +82,7 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
         }
         if !has_null {
             p.last_event_id.clear();
-            let copy_len = if field_val.len <= p.last_event_id.cap { field_val.len } else { p.last_event_id.cap };
+            let copy_len = min(field_val.len, p.last_event_id.cap);
             p.last_event_id.append(field_val[..copy_len]);
         }
     } else if field_name == "retry" {
@@ -118,16 +121,13 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
             ev.data.append(p.cur_data[..]);
             ev.id.append(p.last_event_id[..]);
 
-            if out_events.len < out_events.cap {
-                out_events.push(ev);
-            } else {
-                return;
-            }
-
             // Reset current event buffer, keep last_event_id and retry_ms
             p.cur_event.clear();
             p.cur_data.clear();
             p.has_data = false;
+
+            guard out_events.len < out_events.cap else { return; }
+            out_events.push(ev);
         } else {
             p.cur_event.clear();
         }
@@ -174,28 +174,36 @@ fn sse_feed<E>(p: SseParser&, chunk: const u8[:], out_events: E&) {
             }
         } else {
             p.prev_was_cr = false;
-            if p.line_buf.len < 4112 {
+            if p.line_buf.len < SSE_MAX_LINE_LEN {
                 p.line_buf.push(b);
             }
         }
     }
 }
 
-// Flushes any trailing buffered line at end of stream
+// Resets transient stream state at EOF or reconnection while preserving last_event_id and retry_ms.
+// W3C EventSource §9.2.6: Once the end of the file is reached, any pending data must be discarded
+// (incomplete events without a trailing empty line are NOT dispatched).
 fn sse_flush<E>(p: SseParser&, out_events: E&) {
-    if p.line_buf.len > 0 {
-        sse_process_line(p, out_events);
-        p.line_buf.clear();
-    }
-    // Final empty line boundary to dispatch last event if pending
-    sse_process_line(p, out_events);
+    let _ = out_events.len;
+    p.line_buf.clear();
+    p.cur_event.clear();
+    p.cur_data.clear();
+    p.prev_was_cr = false;
+    p.has_data = false;
+    p.bom_checked = false;
 }
 
 // ---- SSE Serializer -----------------------------------------------------
 
+// Scans for the first line break or NUL byte in an SSE header token.
+//
+// Example:
+//   s = "id-42\r\ninjected"
+//   returns: 5
 fn sse_clean_token_len(s: const u8[:]) -> i64 {
     for i in s.len {
-        if s[i] == '\r' || s[i] == '\n' {
+        if s[i] == '\r' || s[i] == '\n' || s[i] == 0 {
             return i;
         }
     }
@@ -263,15 +271,15 @@ fn sse_format_event<B>(
 // ---- High-Level Ergonomic SSE Subscription ------------------------------
 
 struct SseSubscription {
-    parser:    SseParser = SseParser { .. },
-    url:       u8[..256] = [],
-    connected: bool      = false,
+    parser:    SseParser  = SseParser { .. },
+    url:       u8[..2048] = [],
+    connected: bool       = false,
 }
 
 fn new_sse_subscription(url: const u8[:] = "") -> SseSubscription {
     var sub = SseSubscription { .. };
     if url.len > 0 {
-        let copy_len = if url.len <= sub.url.cap { url.len } else { sub.url.cap };
+        let copy_len = min(url.len, sub.url.cap);
         sub.url.append(url[..copy_len]);
     }
     return sub;
@@ -284,15 +292,23 @@ fn sse_build_request_headers<B>(
     path: const u8[:],
     out:  B&,
 ) {
-    let eff_path = if path.len > 0 { path } else { "/" };
+    let raw_path = if path.len > 0 { path } else { "/" };
+    let clean_path = raw_path[..sse_clean_token_len(raw_path)];
+    let eff_path = if clean_path.len > 0 { clean_path } else { "/" };
+    let clean_host = host[..sse_clean_token_len(host)];
+
     out.append("GET ");
     out.append(eff_path);
     out.append(" HTTP/1.1\r\nHost: ");
-    out.append(host);
+    out.append(clean_host);
     out.append("\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive");
     if sub.parser.last_event_id.len > 0 {
-        out.append("\r\nLast-Event-ID: ");
-        out.append(sub.parser.last_event_id[..]);
+        let raw_id = sub.parser.last_event_id[..];
+        let clean_id = raw_id[..sse_clean_token_len(raw_id)];
+        if clean_id.len > 0 {
+            out.append("\r\nLast-Event-ID: ");
+            out.append(clean_id);
+        }
     }
     out.append("\r\n\r\n");
 }

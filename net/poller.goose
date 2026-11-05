@@ -395,8 +395,8 @@ inline fn dispatch_expired_registration(
 ) -> bool {
     guard reg.in_use else { return false; }
     guard is_coarse_timeout_expired(reg.timeout, old_tick, elapsed_ticks) else { return false; }
-    reg.timeout = COARSE_TIMEOUT_DISABLED;
     guard out_events.len < out_events.cap else { return false; }
+    reg.timeout = COARSE_TIMEOUT_DISABLED;
     out_events.push(PollReadyEvent {
         tag:             reg.tag,
         fd:              reg.fd,
@@ -496,10 +496,10 @@ fn poll_events(
     poller_poll_native_drivers(p, timeout_ms);
 
     // 1. Process Expired High-Resolution Timers First
-    let timers_fired = check_expired_timers(p, now_ns, out_events);
+    check_expired_timers(p, now_ns, out_events);
 
     // 2. Process Coarse Socket Timeouts (uSockets 4-second pattern)
-    let coarse_fired = check_coarse_timeouts(p, now_ns, out_events);
+    check_coarse_timeouts(p, now_ns, out_events);
 
     // 3. Reap Socket Readiness Events
     for i in p.registrations.len {
@@ -687,23 +687,41 @@ fn feed_read(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
     return true;
 }
 
+inline fn shift_read_buffer(buf: u8[..4096]&, consumed: i64) {
+    let read_len = buf.len;
+    guard consumed > 0 && consumed <= read_len else { return; }
+    let remaining = read_len - consumed;
+    for i in remaining {
+        buf[i] = buf[consumed + i];
+    }
+    buf.resize(remaining);
+}
+
 // Reads available data from the connection buffer
 fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return 0; }
-    let count = ev_loop.buffers[b_idx].read_buf.len;
-    out.append(ev_loop.buffers[b_idx].read_buf[..]);
-    ev_loop.buffers[b_idx].read_buf.clear();
+    let avail = ev_loop.buffers[b_idx].read_buf.len;
+    let space = max(0, out.cap - out.len);
+    let to_copy = min(avail, space);
+    if to_copy > 0 {
+        out.append(ev_loop.buffers[b_idx].read_buf[..to_copy]);
+        shift_read_buffer(ev_loop.buffers[b_idx].read_buf, to_copy);
+    }
 
-    // Clear simulated read ready bit on poller
+    let remaining = ev_loop.buffers[b_idx].read_buf.len;
     let fd = ev_loop.buffers[b_idx].fd;
     let r_idx = find_registration(ev_loop.poller, fd);
     if r_idx >= 0 {
-        ev_loop.poller.registrations[r_idx].sim.ready &= ~POLL_READ;
-        ev_loop.poller.registrations[r_idx].sim.bytes = 0;
+        if remaining == 0 {
+            ev_loop.poller.registrations[r_idx].sim.ready &= ~POLL_READ;
+            ev_loop.poller.registrations[r_idx].sim.bytes = 0;
+        } else {
+            ev_loop.poller.registrations[r_idx].sim.bytes = remaining;
+        }
     }
 
-    return count;
+    return to_copy;
 }
 
 inline fn trim_write_buffer(buf: u8[..4096]&, sent: i64) {
@@ -794,6 +812,17 @@ fn drain_deferred_tasks<TaskFn: fn(u64, u64, u32, EventLoop&)>(ev_loop: EventLoo
             TaskFn(tag, user_data, task_id, ev_loop);
         }
     }
-    ev_loop.deferred_count = 0;
+    let total_now = ev_loop.deferred_count;
+    if total_now > count {
+        let added = (total_now - count) as i64;
+        let offset = count as i64;
+        for i in added {
+            ev_loop.deferred_tasks[i] = ev_loop.deferred_tasks[offset + i];
+            ev_loop.deferred_tasks[offset + i].in_use = false;
+        }
+        ev_loop.deferred_count = total_now - count;
+    } else {
+        ev_loop.deferred_count = 0;
+    }
     return count;
 }

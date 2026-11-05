@@ -250,6 +250,38 @@ fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]
     return false;
 }
 
+// Extracts scheme + authority origin prefix from a URL or Origin string (RFC 6454 §4).
+// Returns empty slice for opaque ("null") or malformed URLs.
+//
+// Example:
+//   url_or_origin = "https://partner.example.com/checkout?id=1"
+//   returns: "https://partner.example.com"
+fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:] {
+    let s = trim_lws(url_or_origin);
+    var scheme_len: i64 = 0;
+    if starts_with_fold(s, "https://") {
+        scheme_len = 8;
+    } else if starts_with_fold(s, "http://") {
+        scheme_len = 7;
+    } else {
+        return s[..0];
+    }
+    let rest = s[scheme_len..];
+    var end_idx = rest.len;
+    let slash_idx = core::index_of_byte(rest, '/');
+    if slash_idx >= 0 && slash_idx < end_idx { end_idx = slash_idx; }
+    let query_idx = core::index_of_byte(rest, '?');
+    if query_idx >= 0 && query_idx < end_idx { end_idx = query_idx; }
+    let hash_idx = core::index_of_byte(rest, '#');
+    if hash_idx >= 0 && hash_idx < end_idx { end_idx = hash_idx; }
+
+    let host = rest[..end_idx];
+    if host.len == 0 || core::contains_byte(host, '@') || core::contains_byte(host, '\\') {
+        return s[..0];
+    }
+    return s[..scheme_len + end_idx];
+}
+
 // Extracts host from URL or Origin string (RFC 6454 / RFC 3986).
 // Requires valid http:// or https:// scheme prefix; returns empty slice for opaque origins (e.g. "null").
 //
@@ -257,28 +289,12 @@ fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]
 //   url_or_origin = "https://example.com:8080/path"
 //   returns: "example.com:8080"
 fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
-    var s = url_or_origin;
-    if starts_with_fold(s, "https://") {
-        s = s[8..];
-    } else if starts_with_fold(s, "http://") {
-        s = s[7..];
-    } else {
-        return s[..0];
+    let origin = extract_origin_from_url(url_or_origin);
+    guard origin.len > 0 else { return origin; }
+    if starts_with_fold(origin, "https://") {
+        return origin[8..];
     }
-
-    let slash_idx = core::index_of_byte(s, '/');
-    if slash_idx >= 0 { s = s[..slash_idx]; }
-    let query_idx = core::index_of_byte(s, '?');
-    if query_idx >= 0 { s = s[..query_idx]; }
-    let hash_idx = core::index_of_byte(s, '#');
-    if hash_idx >= 0 { s = s[..hash_idx]; }
-
-    // RFC 6454 / RFC 3986: Origins and hosts MUST NOT contain userinfo (@).
-    // If '@' is present, the authority has been spoofed (e.g. https://example.com@evil.com)
-    if core::contains_byte(s, '@') {
-        return s[..0];
-    }
-    return s;
+    return origin[7..];
 }
 
 fn evaluate_samesite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
@@ -325,12 +341,21 @@ fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const Fetch
 
 fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
     let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
+    let candidate_origin = extract_origin_from_url(candidate);
     let candidate_host = extract_host_from_url(candidate);
+    let cand_scheme = if starts_with_fold(candidate_origin, "https://") {
+        "https"
+    } else if starts_with_fold(candidate_origin, "http://") {
+        "http"
+    } else {
+        ""
+    };
+    let scheme_ok = ctx.target_scheme.len == 0 || subtle_equal_ascii_fold(cand_scheme, ctx.target_scheme[..]);
 
-    if candidate_host.len > 0 && subtle_equal_ascii_fold(candidate_host, ctx.target_host[..]) {
+    if candidate_host.len > 0 && scheme_ok && subtle_equal_ascii_fold(candidate_host, ctx.target_host[..]) {
         return CsrfDecision.Allow;
     }
-    if is_origin_trusted(guard_cfg, candidate) {
+    if candidate_origin.len > 0 && is_origin_trusted(guard_cfg, candidate_origin) {
         return CsrfDecision.Allow;
     }
     if !ctx.method_is_safe {
@@ -355,7 +380,7 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
         return evaluate_samesite_fetch(guard_cfg, ctx);
     }
 
-    if ctx.site == SecFetchSite.CrossSite {
+    if ctx.site == SecFetchSite.CrossSite || ctx.site == SecFetchSite.Unknown {
         return evaluate_crosssite_fetch(guard_cfg, ctx);
     }
 
@@ -371,18 +396,18 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 }
 
 // Extracts normalized path from relative or absolute URL (RFC 3986 §3.3).
-// Strips query parameters and fragments.
+// Strips query parameters and fragments before authority removal to prevent query-slash smuggling.
 //
 // Example:
 //   raw = "https://example.com/api/webhook?foo=bar"
 //   returns: "/api/webhook"
-// Extracts normalized path component from a URL.
-//
-// Example:
-//   raw = "https://example.com/api/v1?query=1"
-//   returns: "/api/v1"
 fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
-    var s = raw;
+    var s = trim_lws(raw);
+    let query_idx = core::index_of_byte(s, '?');
+    if query_idx >= 0 { s = s[..query_idx]; }
+    let hash_idx = core::index_of_byte(s, '#');
+    if hash_idx >= 0 { s = s[..hash_idx]; }
+
     if starts_with_fold(s, "https://") {
         s = s[8..];
         let slash = core::index_of_byte(s, '/');
@@ -392,13 +417,6 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
         let slash = core::index_of_byte(s, '/');
         s = if slash >= 0 { s[slash..] } else { "/" };
     }
-    if s.len == 0 {
-        return "/";
-    }
-    let query_idx = core::index_of_byte(s, '?');
-    if query_idx >= 0 { s = s[..query_idx]; }
-    let hash_idx = core::index_of_byte(s, '#');
-    if hash_idx >= 0 { s = s[..hash_idx]; }
     return if s.len > 0 { s } else { "/" };
 }
 
@@ -410,27 +428,34 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
 fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
     var ctx = FetchContext { .. };
     ctx.method.clear();
-    let m_len = if req.method.len <= ctx.method.cap { req.method.len } else { ctx.method.cap };
+    let m_len = min(req.method.len, ctx.method.cap);
     ctx.method.append(req.method[..m_len]);
 
     // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
     let m = req.method[..];
     ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
+    if starts_with_fold(req.url[..], "http://") {
+        ctx.target_scheme.clear();
+        ctx.target_scheme.append("http");
+    }
     ctx.target_host.clear();
-    let th_len = if target_host.len <= ctx.target_host.cap { target_host.len } else { ctx.target_host.cap };
+    let th_len = min(target_host.len, ctx.target_host.cap);
     ctx.target_host.append(target_host[..th_len]);
 
     let req_path = extract_path_from_url(req.url[..]);
-    ctx.path.clear();
-    let copy_len = if req_path.len <= ctx.path.cap { req_path.len } else { ctx.path.cap };
-    ctx.path.append(req_path[..copy_len]);
+    ctx.path.try_set(req_path);
 
     for &h in req.headers {
         let name = h.name[..];
         let val = trim_lws(h.value[..]);
 
         if core::eq_ascii_fold(name, "Sec-Fetch-Site") {
-            ctx.site = parse_sec_fetch_site(val);
+            let parsed_site = parse_sec_fetch_site(val);
+            if ctx.site == SecFetchSite.Missing {
+                ctx.site = parsed_site;
+            } else if parsed_site != ctx.site {
+                ctx.site = SecFetchSite.CrossSite;
+            }
         } else if core::eq_ascii_fold(name, "Sec-Fetch-Mode") {
             ctx.mode = parse_sec_fetch_mode(val);
         } else if core::eq_ascii_fold(name, "Sec-Fetch-Dest") {
@@ -439,15 +464,13 @@ fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> Fetc
             ctx.user_activated = (val == "?1");
         } else if core::eq_ascii_fold(name, "Origin") {
             if !ctx.has_origin {
-                let o_len = if val.len <= ctx.origin.cap { val.len } else { ctx.origin.cap };
-                ctx.origin.append(val[..o_len]);
                 ctx.has_origin = true;
+                ctx.origin.try_set(val);
             }
         } else if core::eq_ascii_fold(name, "Referer") {
             if !ctx.has_referer {
-                let r_len = if val.len <= ctx.referer.cap { val.len } else { ctx.referer.cap };
-                ctx.referer.append(val[..r_len]);
                 ctx.has_referer = true;
+                ctx.referer.try_set(val);
             }
         } else if core::eq_ascii_fold(name, "Cookie") {
             ctx.has_session_cookie = true;
@@ -464,11 +487,15 @@ fn apply_isolation_headers<Res>(res: Res&) {
     let vary_key = "Vary";
     let vary_val = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";
 
-    let vary_idx = find_header_index(res.headers[..], vary_key);
-    if vary_idx >= 0 {
-        if find(res.headers[vary_idx].value[..], "Sec-Fetch-Site") < 0 {
-            res.headers[vary_idx].value.append(", ");
-            res.headers[vary_idx].value.append(vary_val);
+    let existing_vary = res.headers.find_header(vary_key);
+    if existing_vary.len > 0 {
+        if !header_list_has_token(existing_vary, "Sec-Fetch-Site") &&
+            existing_vary.len + 2 + vary_val.len <= 2048 {
+            var merged: u8[..2048] = [];
+            merged.append(existing_vary);
+            merged.append(", ");
+            merged.append(vary_val);
+            set_header(res, vary_key, merged[..]);
         }
     } else {
         set_header(res, vary_key, vary_val);

@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 
 enum CorsResult {
     NoCors,
@@ -24,7 +25,6 @@ struct CorsPolicy {
     max_age_sec:       i64             = 86400, // 24 hours preflight cache
 }
 
-// Creates a default CORS policy.
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }
@@ -36,23 +36,36 @@ fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool 
 }
 
 // Validates characters in a CORS subdomain label sequence (RFC 1035 / WHATWG Fetch §3.2).
+//
+// Example:
+//   sub = "stage.app"
+//   returns: true
 inline fn validate_cors_subdomain(sub: const u8[:]) -> bool {
     var prev_dot = false;
-    for b in sub {
-        if b == '/' || b == '?' || b == '#' || b == '@' || b == ':' || b <= 0x20 || b == 0x7F {
-            return false;
-        }
+    for i in sub.len {
+        let b = sub[i];
+        let is_alnum = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9');
         if b == '.' {
-            if prev_dot { return false; }
+            if prev_dot || i == 0 || i == sub.len - 1 { return false; }
             prev_dot = true;
-        } else {
+        } else if b == '-' {
+            if prev_dot || i == 0 || i == sub.len - 1 { return false; }
+            if i + 1 < sub.len && sub[i + 1] == '.' { return false; }
             prev_dot = false;
+        } else if is_alnum {
+            prev_dot = false;
+        } else {
+            return false;
         }
     }
     return true;
 }
 
 // Verifies whether candidate host matches wildcard domain suffix "*.domain.tld".
+//
+// Example:
+//   cand_rest = "api.example.com", pat_rest = "*.example.com"
+//   returns: true
 inline fn match_cors_wildcard_host(cand_rest: const u8[:], pat_rest: const u8[:]) -> bool {
     guard starts_with_fold(pat_rest, "*.") else { return false; }
     let domain_suffix = pat_rest[2..];
@@ -63,13 +76,16 @@ inline fn match_cors_wildcard_host(cand_rest: const u8[:], pat_rest: const u8[:]
 
     let sub = cand_rest[..prefix_len - 1];
     guard sub.len > 0 else { return false; }
-    guard sub[0] != '.' && sub[sub.len - 1] != '.' else { return false; }
     return validate_cors_subdomain(sub);
 }
 
 // Matches origin against a pattern with strict scheme and subdomain enforcement:
 // E.g. pattern "https://*.example.com" matches "https://app.example.com",
 // but REJECTS "http://app.example.com", "https://evil.com", "https://notexample.com".
+//
+// Example:
+//   candidate = "https://api.example.com", pattern = "https://*.example.com"
+//   returns: true
 fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bool {
     let cand = trim_lws(candidate);
     let pat = trim_lws(pattern);
@@ -127,13 +143,29 @@ fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
     return false;
 }
 
+// Checks whether a comma-separated HTTP header value contains a specific token (case-insensitive, RFC 9110 §5.6.1).
+inline fn header_list_has_token(header_val: const u8[:], token: const u8[:]) -> bool {
+    var rest = header_val;
+    while rest.len > 0 {
+        let item, after, has_comma = split_once(rest, ",");
+        let trimmed = trim_lws(item);
+        if trimmed == "*" || eq_ascii_fold(trimmed, token) {
+            return true;
+        }
+        if !has_comma { break; }
+        rest = after;
+    }
+    return false;
+}
+
 // Injects Vary: Origin header on dynamic CORS responses (RFC 9111 / WHATWG Fetch §3.2.4).
 inline fn apply_cors_vary_header<Res>(res: Res&) {
     let existing_vary = res.headers.find_header("Vary");
     if existing_vary.len == 0 {
         res.headers.set_header("Vary", "Origin");
-    } else if core::index_of_fold(existing_vary, "Origin") < 0 {
-        var new_vary: u8[..128] = [];
+    } else if !header_list_has_token(existing_vary, "Origin") {
+        guard existing_vary.len + 8 <= 2048 else { return; }
+        var new_vary: u8[..2048] = [];
         new_vary.append(existing_vary);
         new_vary.append(", Origin");
         res.headers.set_header("Vary", new_vary[..]);
@@ -153,7 +185,7 @@ fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
         core::format_i64_dec(policy.max_age_sec, age_str);
         res.headers.set_header("Access-Control-Max-Age", age_str[..]);
     }
-    res.status_code = 204; // No Content
+    res.status_code = rfc::STATUS_NO_CONTENT;
 }
 
 // Evaluates CORS rules against request Origin and populates response headers.
@@ -186,7 +218,8 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         res.headers.set_header("Access-Control-Allow-Credentials", "true");
     }
 
-    if req.method[..] == "OPTIONS" {
+    let req_method_hdr = trim_lws(req.headers.find_header("Access-Control-Request-Method"));
+    if req.method[..] == "OPTIONS" && req_method_hdr.len > 0 {
         apply_cors_preflight_headers(policy, res);
         return CorsResult.AllowedPreflight;
     }

@@ -394,6 +394,8 @@ fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription,
 
 // Reconnects an existing SSE subscription with Last-Event-ID
 fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
+    var dummy_events: SseEvent[..1] = [];
+    sse_flush(sub.parser, dummy_events);
     let eff_url = if sub.url.len > 0 { sub.url[..] } else { "" };
     var req = new_request("GET", eff_url);
     sub.prepare_request(req);

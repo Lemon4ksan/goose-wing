@@ -48,8 +48,11 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
 
 // Encodes an HTTP Capsule into buffer: Type (VarInt) || Length (VarInt) || Value
 fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> bool {
-    guard internal::quic_encode_varint(out, capsule_type) else { return false; }
-    guard internal::quic_encode_varint(out, payload.len as u64) else { return false; }
+    var hdr: u8[..16] = [];
+    guard internal::quic_encode_varint(hdr, capsule_type) else { return false; }
+    guard internal::quic_encode_varint(hdr, payload.len as u64) else { return false; }
+    guard out.len + hdr.len + payload.len <= out.cap else { return false; }
+    out.append(hdr[..]);
     out.append(payload);
     return true;
 }
@@ -80,14 +83,14 @@ fn has_capsule_protocol(headers: const HeaderItem[:]) -> bool {
 
 // ---- HTTP Datagrams (RFC 9297 Section 2) --------------------------------
 
-inline fn encode_varint_pair<B>(out: B&, a: u64, b: u64) -> bool {
-    return internal::quic_encode_varint(out, a) && internal::quic_encode_varint(out, b);
-}
-
 // Encodes an HTTP Datagram payload for QUIC DATAGRAM frame (RFC 9297 Section 2.1):
 // Format: Quarter Stream ID (VarInt) || Context ID (VarInt) || HTTP Datagram Payload
 fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool {
-    guard encode_varint_pair(out, quarter_stream_id, context_id) else { return false; }
+    var hdr: u8[..16] = [];
+    guard internal::quic_encode_varint(hdr, quarter_stream_id) else { return false; }
+    guard internal::quic_encode_varint(hdr, context_id) else { return false; }
+    guard out.len + hdr.len + payload.len <= out.cap else { return false; }
+    out.append(hdr[..]);
     out.append(payload);
     return true;
 }
@@ -242,7 +245,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
-// Decodes a single IP Address Request entry and advances `cur` (RFC 9484 §3.1).
+// Decodes a single IP Address Request entry and advances `cur` (RFC 9484 §4.7.2).
 //
 // Example:
 //   payload = [0x01, 4, 10, 0, 0, 1, 32], cur = 0
@@ -317,7 +320,7 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_ASSIGN, body[..]);
 }
 
-// Decodes a single IP Address Assign entry and advances `cur` (RFC 9484 §3.2).
+// Decodes a single IP Address Assign entry and advances `cur` (RFC 9484 §4.7.1).
 //
 // Example:
 //   payload = [0x01, 4, 10, 0, 0, 2, 32], cur = 0
@@ -394,7 +397,7 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
     return encode_http_capsule(out, rfc::CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
-// Decodes a single Route Advertisement entry and advances `cur` (RFC 9484 §3.3).
+// Decodes a single Route Advertisement entry and advances `cur` (RFC 9484 §4.7.3).
 //
 // Example:
 //   payload = [4, 10, 0, 0, 0, 10, 0, 0, 255, 6], cur = 0
@@ -593,6 +596,7 @@ fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool
 
 // Ingests an incoming in-stream Capsule from the tunnel wire stream.
 fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
+    out_packet.clear();
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let c, ok_c = parse_http_capsule(capsule_wire);
@@ -601,7 +605,7 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     if c.capsule_type == rfc::CAPSULE_DATAGRAM {
         let ctx_id, pkt, ok_pkt = parse_connect_udp_datagram(c.payload);
         guard ok_pkt && ctx_id == 0 else { return false; }
-        out_packet.append(pkt);
+        guard out_packet.try_set(pkt) else { return false; }
         tunnel.packets_received++;
         tunnel.bytes_received += pkt.len as u64;
         return true;
@@ -612,12 +616,10 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     }
 
     if c.capsule_type == rfc::CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == rfc::CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
-        out_packet.clear();
         return true;
     }
 
     // RFC 9297 §3.2: Endpoints which receive a capsule with an unknown capsule type MUST silently ignore that capsule.
-    out_packet.clear();
     return true;
 }
 
@@ -627,12 +629,13 @@ fn receive_quic_datagram<B>(
     datagram_frame_payload: const u8[:],
     out_packet:             B&,
 ) -> bool {
+    out_packet.clear();
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let q_id, ctx_id, pkt, ok = decode_http_datagram(datagram_frame_payload);
     guard ok && q_id == tunnel.quarter_stream_id && ctx_id == 0 else { return false; }
 
-    out_packet.append(pkt);
+    guard out_packet.try_set(pkt) else { return false; }
     tunnel.packets_received++;
     tunnel.bytes_received += pkt.len as u64;
     return true;

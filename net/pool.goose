@@ -210,17 +210,27 @@ fn pool_scheme_to_u64(s: PoolScheme) -> u64 {
     };
 }
 
+inline fn wyhash64_ascii_fold(data: const u8[:], seed: u64) -> u64 {
+    var folded: u8[..256] = [];
+    for b in data {
+        guard folded.len < folded.cap else { break; }
+        let ch = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
+        folded.push(ch);
+    }
+    return core::wyhash64(folded[..], seed);
+}
+
 // Computes 64-bit WyHash composite hash for PoolKey partitioning and socket grouping.
 fn pool_key_hash(k: const PoolKey&) -> u64 {
-    var h: u64 = core::wyhash64(k.origin_endpoint.host[..], k.origin_endpoint.port);
+    var h: u64 = wyhash64_ascii_fold(k.origin_endpoint.host[..], k.origin_endpoint.port);
     h = core::hash_combine_u64(h, pool_scheme_to_u64(k.scheme));
     h = core::hash_combine_u64(h, k.proxy_chain.servers.len as u64);
     for &srv in k.proxy_chain.servers {
-        let sh = core::wyhash64(srv.host[..], srv.port);
+        let sh = wyhash64_ascii_fold(srv.host[..], srv.port);
         h = core::hash_combine_u64(h, sh);
     }
     h = core::hash_combine_u64(h, k.partition_key.nonce);
-    let part_h = core::wyhash64(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition);
+    let part_h = wyhash64_ascii_fold(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition);
     h = core::hash_combine_u64(h, part_h);
     h = core::hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
     return h;
@@ -372,14 +382,14 @@ struct PooledConnection {
     closed:                 bool               = false,
 }
 
-let IDLE_CONNECTION_HEALTHY_NS:   i64 = 1000000000; // 1 second threshold for extensive checks
-let DEFAULT_IDLE_CONN_TIMEOUT_NS: i64 = 90000000000; // 90 seconds
-let DEFAULT_DIAL_TIMEOUT_NS:      i64 = 30000000000; // 30 seconds
-let DEFAULT_KEEP_ALIVE_NS:        i64 = 30000000000; // 30 seconds
+const IDLE_CONNECTION_HEALTHY_NS:   i64 = 1000000000; // 1 second threshold for extensive checks
+const DEFAULT_IDLE_CONN_TIMEOUT_NS: i64 = 90000000000; // 90 seconds
+const DEFAULT_DIAL_TIMEOUT_NS:      i64 = 30000000000; // 30 seconds
+const DEFAULT_KEEP_ALIVE_NS:        i64 = 30000000000; // 30 seconds
 
-let DEFAULT_MAX_SOCKETS_PER_GROUP:       i32 = 6;
-let DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN: i32 = 32;
-let DEFAULT_SOCKET_SOFT_CAP_PER_POOL:    i32 = 256;
+const DEFAULT_MAX_SOCKETS_PER_GROUP:       i32 = 6;
+const DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN: i32 = 32;
+const DEFAULT_SOCKET_SOFT_CAP_PER_POOL:    i32 = 256;
 
 // OkHttp RealConnection.isHealthy parity: validates whether an idle or active socket
 // is still alive, performing non-blocking peek when idle duration exceeds threshold.
@@ -402,6 +412,8 @@ fn is_connection_healthy(
     let idle_duration_ns = core::ct_max_i64(0, now_ns - conn.idle_at_ns);
 
     if max_idle_ns > 0 && idle_duration_ns > max_idle_ns {
+        conn.transport.close();
+        conn.rx_buf.clear();
         conn.no_new_exchanges = true;
         conn.closed = true;
         return false;
@@ -410,6 +422,8 @@ fn is_connection_healthy(
     if do_extensive_checks || idle_duration_ns >= healthy_threshold_ns {
         // Non-blocking check for received FIN (stream exhaustion)
         if conn.source_exhausted {
+            conn.transport.close();
+            conn.rx_buf.clear();
             conn.no_new_exchanges = true;
             conn.closed = true;
             return false;
@@ -681,14 +695,19 @@ inline fn try_acquire_direct_conn(
     do_extensive_checks: bool,
 ) -> i32, bool {
     guard !c.closed && c.key.pool_key_equals(key) else { return -1, false; }
+    let was_idle = c.active_allocations == 0;
     let is_h2_h3 = c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic;
     if is_h2_h3 {
         guard c.active_allocations < c.max_concurrent_streams else { return -1, false; }
         let healthy = c.is_connection_healthy(
             now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
         );
-        guard healthy else { return -1, false; }
-        let was_idle = c.active_allocations == 0;
+        if !healthy {
+            if c.closed {
+                group_record_closed(pool, c.key, !was_idle);
+            }
+            return -1, false;
+        }
         mark_multiplexed_acquired(c);
         if was_idle {
             group_record_acquired(pool, c.key);
@@ -696,11 +715,16 @@ inline fn try_acquire_direct_conn(
         return c.conn_id, true;
     }
 
-    guard c.active_allocations == 0 else { return -1, false; }
+    guard was_idle else { return -1, false; }
     let healthy = c.is_connection_healthy(
         now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
     );
-    guard healthy else { return -1, false; }
+    if !healthy {
+        if c.closed {
+            group_record_closed(pool, c.key, false);
+        }
+        return -1, false;
+    }
     c.active_allocations = 1;
     c.use_count += 1;
     group_record_acquired(pool, c.key);
@@ -721,11 +745,16 @@ inline fn try_acquire_coalesced_conn(
         pool.negative_ip_pool_result_count += 1;
     }
     guard can_coalesce else { return -1, false; }
+    let was_idle = c.active_allocations == 0;
     let healthy = c.is_connection_healthy(
         now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
     );
-    guard healthy else { return -1, false; }
-    let was_idle = c.active_allocations == 0;
+    if !healthy {
+        if c.closed {
+            group_record_closed(pool, c.key, !was_idle);
+        }
+        return -1, false;
+    }
     mark_multiplexed_acquired(c);
     if was_idle {
         group_record_acquired(pool, c.key);
@@ -840,18 +869,20 @@ fn register_connection(
         let idx = pool.find_connection_index(cid);
         if idx >= 0 {
             pool.conns[idx].transport = t;
+            return cid;
         }
     }
+    var t_cleanup = t;
+    t_cleanup.close();
     return cid;
 }
 
 // Releases an active allocation back to the pool, transitioning to idle when count reaches 0.
 fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
     for &c in pool.conns {
-        if c.conn_id == conn_id {
-            if c.active_allocations > 0 {
-                c.active_allocations -= 1;
-            }
+        if c.conn_id == conn_id && !c.closed {
+            guard c.active_allocations > 0 else { return false; }
+            c.active_allocations -= 1;
             if c.active_allocations == 0 {
                 c.idle_at_ns = now_ns;
                 group_record_released(pool, c.key);
@@ -948,13 +979,14 @@ fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bo
     for i in pool.entries.len {
         if pool.entries[i].fd == fd && pool.entries[i].healthy {
             pool.entries[i].epoll_events = events;
-            if is_epoll_rdhup_signaled(events) {
+            if is_epoll_rdhup_signaled(events) && !pool.entries[i].in_use {
                 close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
-                pool.entries[i].in_use = false;
                 pool.evicted_rdhup += 1;
+                matched = true;
+            } else if !is_epoll_rdhup_signaled(events) {
+                matched = true;
             }
-            matched = true;
         }
     }
     return matched;

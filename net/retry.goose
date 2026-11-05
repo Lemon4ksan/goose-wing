@@ -11,7 +11,7 @@ import core from "..";
 
 // ---- Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 
-let ERR_QUIC_PROTOCOL_ERROR: i32 = -356; // Chromium net error code parity
+const ERR_QUIC_PROTOCOL_ERROR: i32 = -356; // Chromium net error code parity
 
 // Checks if request carries a valid non-empty Idempotency-Key header.
 fn has_idempotency_key<Req>(req: const Req&) -> bool {
@@ -111,7 +111,8 @@ inline fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
     guard max_val > min_val else { return min_val; }
     seed += core::WYP0_V42;
     let rnd = core::wymum(seed ^ core::WYP1_V42, seed);
-    let range = (max_val - min_val + 1) as u64;
+    let diff = (max_val as u64) - (min_val as u64);
+    let range = core::add_sat_u64(diff, 1);
     let offset = core::fast_range_biased_u64(rnd, range) as! i64;
     return min_val + offset;
 }
@@ -124,10 +125,11 @@ fn compute_backoff_jitter_ms(
     rng_seed:      u64&,
 ) -> i64 {
     // Compute capped deterministic exponential target t = min(c, b * 2^a)
-    let safe_attempt = if attempt < 0 { 0 } else if attempt > 60 { 60 } else { attempt };
-    let safe_base = if cfg.base_ms < 0 { 0 } else { cfg.base_ms };
+    let safe_attempt = min(max(0, attempt), 60);
+    let safe_base = max(0, cfg.base_ms);
+    let safe_cap = max(0, cfg.cap_ms);
     let exp_bound = core::shl_sat_u64(safe_base as u64, safe_attempt as u32);
-    let target_t = core::ct_min_u64(cfg.cap_ms as u64, exp_bound) as! i64;
+    let target_t = core::ct_min_u64(safe_cap as u64, exp_bound) as! i64;
 
     return match cfg.strategy {
         None => target_t,
@@ -152,7 +154,7 @@ fn compute_backoff_jitter_ms(
             let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { safe_base };
             let upper = if prev > 3074457345618258602 { 9223372036854775807 } else { prev * 3 };
             let rnd_sleep = uniform_random(rng_seed, safe_base, upper);
-            let sleep_ms = core::ct_min_i64(rnd_sleep, cfg.cap_ms);
+            let sleep_ms = core::ct_min_i64(rnd_sleep, safe_cap);
             prev_sleep_ms = sleep_ms;
             sleep_ms
         },
@@ -239,6 +241,7 @@ fn trip_circuit_breaker_if_exceeded(
     now_mono_ns:    i64,
 ) -> bool {
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
+    guard host_str.len > 0 && host_str.len <= 256 else { return false; }
 
     let block_dur_ns = if retry_after_ms > 9223372036854 {
         9223372036854775807
@@ -270,6 +273,20 @@ fn trip_circuit_breaker_if_exceeded(
         return true;
     }
 
+    var reclaim_idx: i64 = 0;
+    for i in breaker.hosts.len {
+        if !breaker.hosts[i].is_blocked || now_mono_ns >= breaker.hosts[i].blocked_until_mono_ns {
+            reclaim_idx = i;
+            break;
+        }
+        if breaker.hosts[i].blocked_until_mono_ns < breaker.hosts[reclaim_idx].blocked_until_mono_ns {
+            reclaim_idx = i;
+        }
+    }
+    breaker.hosts[reclaim_idx].host.clear();
+    breaker.hosts[reclaim_idx].host.append(host_str);
+    breaker.hosts[reclaim_idx].blocked_until_mono_ns = unblock_at;
+    breaker.hosts[reclaim_idx].is_blocked = true;
     return true;
 }
 

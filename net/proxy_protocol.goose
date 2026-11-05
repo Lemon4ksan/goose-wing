@@ -118,6 +118,7 @@ fn format_ipv6<B>(ip: const u8[16]&, out: B&) {
 //   returns: ok = true, out_port = 8080
 fn parse_port_decimal(str: const u8[:], out_port: u16&) -> bool {
     guard str.len > 0 && str.len <= 5 else { return false; }
+    guard str.len == 1 || str[0] != '0' else { return false; }
     var acc: u32 = 0;
     for b in str {
         guard b >= '0' && b <= '9' else { return false; }
@@ -147,6 +148,9 @@ fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
             current = 0;
             digits = 0;
         } else if b >= '0' && b <= '9' {
+            if digits == 1 && current == 0 {
+                return false;
+            }
             current = current * 10 + (b - '0');
             digits++;
             guard digits <= 3 && current <= 255 else { return false; }
@@ -288,27 +292,18 @@ fn proxy_span_slice(raw: const u8[:], span: ProxyTokenSpan) -> const u8[:] {
 //   line = "TCP4 1.2.3.4 5.6.7.8 123 456"
 //   returns: ok = true, tokens has 5 spans
 fn tokenize_proxy_v1_spans(line: const u8[:], tokens: ProxyTokenSpan[..8]&) -> bool {
+    guard line.len > 0 && line[0] != ' ' && line[line.len - 1] != ' ' else { return false; }
     var tok_start: i64 = 0;
-    var in_tok = false;
 
     for i in line.len {
         if line[i] == ' ' {
-            if in_tok {
-                guard tokens.len < tokens.cap else { return false; }
-                tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
-                in_tok = false;
-            }
-        } else {
-            if !in_tok {
-                tok_start = i;
-                in_tok = true;
-            }
+            guard i > tok_start && tokens.len < tokens.cap else { return false; }
+            tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (i - tok_start) as u16 });
+            tok_start = i + 1;
         }
     }
-    if in_tok {
-        guard tokens.len < tokens.cap else { return false; }
-        tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
-    }
+    guard tok_start < line.len && tokens.len < tokens.cap else { return false; }
+    tokens.push(ProxyTokenSpan { offset: tok_start as u16, length: (line.len - tok_start) as u16 });
     return true;
 }
 
@@ -324,7 +319,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
 
     // Locate CRLF terminator within maximum allowed length (107 bytes)
     var crlf_idx: i64 = -1;
-    let scan_limit = if wire.len < internal::PROXY_V1_MAX_LEN { wire.len } else { internal::PROXY_V1_MAX_LEN };
+    let scan_limit = min(wire.len, internal::PROXY_V1_MAX_LEN);
     for i in 6..scan_limit {
         if wire[i] == '\r' && i + 1 < wire.len && wire[i + 1] == '\n' {
             crlf_idx = i;
@@ -387,52 +382,53 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
         return false;
     }
 
-    out.append("PROXY ");
+    var scratch: u8[..128] = [];
+    scratch.append("PROXY ");
 
     if is_local_or_unspec {
-        out.append("UNKNOWN\r\n");
-        return true;
+        scratch.append("UNKNOWN\r\n");
+        return out.try_append(scratch[..]);
     }
 
     if hdr.family == ProxyAddressFamily.Inet4 {
-        out.append("TCP4 ");
+        scratch.append("TCP4 ");
         if hdr.src_ip_str.len > 0 {
-            out.append(hdr.src_ip_str[..]);
+            scratch.append(hdr.src_ip_str[..]);
         } else {
-            format_ipv4(hdr.src_ipv4, out);
+            format_ipv4(hdr.src_ipv4, scratch);
         }
-        out.push(' ');
+        scratch.push(' ');
         if hdr.dst_ip_str.len > 0 {
-            out.append(hdr.dst_ip_str[..]);
+            scratch.append(hdr.dst_ip_str[..]);
         } else {
-            format_ipv4(hdr.dst_ipv4, out);
+            format_ipv4(hdr.dst_ipv4, scratch);
         }
-        out.push(' ');
-        format(out, hdr.src_port as i64);
-        out.push(' ');
-        format(out, hdr.dst_port as i64);
-        out.append("\r\n");
-        return true;
+        scratch.push(' ');
+        format(scratch, hdr.src_port as i64);
+        scratch.push(' ');
+        format(scratch, hdr.dst_port as i64);
+        scratch.append("\r\n");
+        return out.try_append(scratch[..]);
     }
 
-    out.append("TCP6 ");
+    scratch.append("TCP6 ");
     if hdr.src_ip_str.len > 0 {
-        out.append(hdr.src_ip_str[..]);
+        scratch.append(hdr.src_ip_str[..]);
     } else {
-        format_ipv6(hdr.src_ipv6, out);
+        format_ipv6(hdr.src_ipv6, scratch);
     }
-    out.push(' ');
+    scratch.push(' ');
     if hdr.dst_ip_str.len > 0 {
-        out.append(hdr.dst_ip_str[..]);
+        scratch.append(hdr.dst_ip_str[..]);
     } else {
-        format_ipv6(hdr.dst_ipv6, out);
+        format_ipv6(hdr.dst_ipv6, scratch);
     }
-    out.push(' ');
-    format(out, hdr.src_port as i64);
-    out.push(' ');
-    format(out, hdr.dst_port as i64);
-    out.append("\r\n");
-    return true;
+    scratch.push(' ');
+    format(scratch, hdr.src_port as i64);
+    scratch.push(' ');
+    format(scratch, hdr.dst_port as i64);
+    scratch.append("\r\n");
+    return out.try_append(scratch[..]);
 }
 
 // ---- PROXY Protocol v2 Parser & Serializer (Binary) ----------------------
@@ -610,25 +606,15 @@ fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
 
         let sub_val = val[sub_start..sub_end];
         if sub_type == internal::PP2_SUBTYPE_SSL_VERSION {
-            guard sub_val.len <= ssl.version.cap else { return false; }
-            ssl.version.clear();
-            ssl.version.append(sub_val);
+            guard ssl.version.try_set(sub_val) else { return false; }
         } else if sub_type == internal::PP2_SUBTYPE_SSL_CN {
-            guard sub_val.len <= ssl.client_cn.cap else { return false; }
-            ssl.client_cn.clear();
-            ssl.client_cn.append(sub_val);
+            guard ssl.client_cn.try_set(sub_val) else { return false; }
         } else if sub_type == internal::PP2_SUBTYPE_SSL_CIPHER {
-            guard sub_val.len <= ssl.cipher.cap else { return false; }
-            ssl.cipher.clear();
-            ssl.cipher.append(sub_val);
+            guard ssl.cipher.try_set(sub_val) else { return false; }
         } else if sub_type == internal::PP2_SUBTYPE_SSL_SIG_ALG {
-            guard sub_val.len <= ssl.sig_alg.cap else { return false; }
-            ssl.sig_alg.clear();
-            ssl.sig_alg.append(sub_val);
+            guard ssl.sig_alg.try_set(sub_val) else { return false; }
         } else if sub_type == internal::PP2_SUBTYPE_SSL_KEY_ALG {
-            guard sub_val.len <= ssl.key_alg.cap else { return false; }
-            ssl.key_alg.clear();
-            ssl.key_alg.append(sub_val);
+            guard ssl.key_alg.try_set(sub_val) else { return false; }
         }
         sub_offset = sub_end;
     }
@@ -657,21 +643,13 @@ fn parse_proxy_v2_tlvs(
         let val = wire[val_start..val_end];
 
         if tlv_type == internal::PP2_TYPE_ALPN {
-            guard val.len <= hdr.alpn.cap else { return false; }
-            hdr.alpn.clear();
-            hdr.alpn.append(val);
+            guard hdr.alpn.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_AUTHORITY {
-            guard val.len <= hdr.authority.cap else { return false; }
-            hdr.authority.clear();
-            hdr.authority.append(val);
+            guard hdr.authority.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_UNIQUE_ID {
-            guard val.len <= hdr.unique_id.cap else { return false; }
-            hdr.unique_id.clear();
-            hdr.unique_id.append(val);
+            guard hdr.unique_id.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_NETNS {
-            guard val.len <= hdr.netns.cap else { return false; }
-            hdr.netns.clear();
-            hdr.netns.append(val);
+            guard hdr.netns.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_SSL {
             guard parse_proxy_v2_ssl_tlv(val, hdr.ssl) else { return false; }
         }
@@ -803,6 +781,13 @@ fn format_proxy_v2_tlvs<B>(hdr: const ProxyHeader&, out: B&) {
 
 // Formats a PROXY protocol v2 binary header
 fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
+    var payload_buf: u8[..1024] = [];
+    format_proxy_v2_addresses(hdr, payload_buf);
+    format_proxy_v2_tlvs(hdr, payload_buf);
+
+    let total_needed = 16 + payload_buf.len;
+    guard out.len + total_needed <= out.cap else { return false; }
+
     for b in internal::PROXY_V2_PREAMBLE { out.push(b); }
 
     let cmd_nibble: u8 = if hdr.command == ProxyCommand.Local {
@@ -830,17 +815,10 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
 
     out.push((fam_nibble << 4) | trans_nibble);
 
-    let len_offset = out.len;
-    out.push(0);
-    out.push(0);
-
-    let payload_start = out.len;
-    format_proxy_v2_addresses(hdr, out);
-    format_proxy_v2_tlvs(hdr, out);
-
-    let total_payload = (out.len - payload_start) as u16;
-    out[len_offset] = ((total_payload >> 8) & 0xFF) as u8;
-    out[len_offset + 1] = (total_payload & 0xFF) as u8;
+    let total_payload = payload_buf.len as u16;
+    out.push(((total_payload >> 8) & 0xFF) as u8);
+    out.push((total_payload & 0xFF) as u8);
+    out.append(payload_buf[..]);
 
     return true;
 }

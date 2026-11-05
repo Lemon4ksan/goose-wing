@@ -326,6 +326,7 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
         server.add_ws_route("/ws/stream", ws_cfg);
 
         var req = wing::new_request("GET", "/ws/stream");
+        req.set_header("Host", "127.0.0.1:8080");
         req.set_header("Upgrade", "websocket");
         req.set_header("Connection", "Upgrade");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
@@ -360,6 +361,7 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
         server.add_ws_route("/ws/abortable", ws_cfg);
 
         var req = wing::new_request("GET", "/ws/abortable");
+        req.set_header("Host", "127.0.0.1:8080");
         req.set_header("Upgrade", "websocket");
         req.set_header("Connection", "Upgrade");
         req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");

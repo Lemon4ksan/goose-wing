@@ -1073,7 +1073,7 @@ fn test_poller_timer_wheel(t: lit::T&) {
 fn dummy_event_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::EventLoop&) {
     if tag == 5001 {
         if (ev.events & wing::POLL_READ) != 0 {
-            var msg_buf: u8[>..] = [];
+            var msg_buf: u8[..64] = [];
             wing::consume_read(el, tag, msg_buf);
             // Echo back with prefix "ACK:"
             var reply: u8[..64] = "ACK:";
@@ -1127,7 +1127,7 @@ var g_client_received: u8[..64] = [];
 fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::EventLoop&) {
     if tag == 6001 { // Server connection
         if (ev.events & wing::POLL_READ) != 0 {
-            var buf: u8[>..] = [];
+            var buf: u8[..64] = [];
             wing::consume_read(el, tag, buf);
             g_server_received.clear();
             g_server_received.append(buf[..]);
@@ -1137,7 +1137,7 @@ fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Eve
         }
     } else if tag == 6002 { // Client connection
         if (ev.events & wing::POLL_READ) != 0 {
-            var buf: u8[>..] = [];
+            var buf: u8[..64] = [];
             wing::consume_read(el, tag, buf);
             g_client_received.clear();
             g_client_received.append(buf[..]);
@@ -1914,7 +1914,7 @@ fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
 
 fn test_doh_query_generation(t: lit::T&) {
     t.run("1. DoH POST Body and GET URL Construction") { sub =>
-        var post_body: u8[>..] = [];
+        var post_body: u8[..512] = [];
         let ok_post = wing::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, post_body);
         sub.assert_true(ok_post, "build_doh_post_body succeeds");
         sub.assert_true(post_body.len >= 12, "Post body at least DNS header size (12 bytes)");
@@ -1924,7 +1924,7 @@ fn test_doh_query_generation(t: lit::T&) {
         sub.assert_eq(post_body[1], 0x34, "Tx ID byte 1");
 
         // GET URL with base64url query parameter
-        var get_url: u8[>..] = [];
+        var get_url: u8[..512] = [];
         let ok_get = wing::build_doh_get_url("https://1.1.1.1/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
         sub.assert_true(ok_get, "build_doh_get_url succeeds");
         sub.assert_true(core::starts_with(get_url[..], "https://1.1.1.1/dns-query?dns="), "URL starts with endpoint and ?dns=");

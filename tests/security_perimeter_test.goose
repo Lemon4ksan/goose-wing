@@ -1251,7 +1251,7 @@ fn test_no_vary_search_cache(t: lit::T&) {
 
 fn test_masque_capsules_and_datagrams(t: lit::T&) {
     t.run("1. RFC 9297 Capsule Codec") { sub =>
-        var wire: u8[>..] = [];
+        var wire: u8[..256] = [];
         let payload = "capsule_data_payload";
         sub.assert_true(wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, payload), "encode capsule");
 
@@ -1262,12 +1262,12 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
     };
 
     t.run("2. MASQUE CONNECT-UDP (RFC 9298) Tunneling") { sub =>
-        var path: u8[>..] = [];
+        var path: u8[..256] = [];
         wing::format_connect_udp_path(path, "1.1.1.1", 53);
         sub.assert_bytes_eq(path[..], "/.well-known/masque/udp/1.1.1.1/53/", "MASQUE URI template path");
 
         // UDP packet datagram capsule
-        var datagram_capsule: u8[>..] = [];
+        var datagram_capsule: u8[..256] = [];
         let fake_dns_query = "dns_packet_bytes";
         sub.assert_true(
             wing::encode_connect_udp_datagram_capsule(datagram_capsule, 0, fake_dns_query),
@@ -1449,6 +1449,264 @@ fn test_hardened_security_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. Security Audit Regression Suite (FIND-SEC-001 .. FIND-SEC-011)
+// ----------------------------------------------------------------------------
+fn test_security_audit_regressions(t: lit::T&) {
+    t.run("FIND-SEC-001..004: CryptoJar Timestamp Overflow, Bounds, Key Revocation & Dead Code Integration") { sub =>
+        var store = wing::KeyStore { .. };
+        var raw_key: u8[32] = [0x42; 32];
+        let slot1 = core::new_key_slot(1, raw_key[..], 1700000000);
+        sub.assert_true(wing::add_key(store, slot1), "add slot 1");
+
+        // Duplicate key_id must not create unrevokable shadow slot
+        sub.assert_false(wing::add_key(store, slot1), "reject duplicate key_id 1");
+
+        // Corrupt active_idx out of bounds must return false safely without panic
+        store.active_idx = 5;
+        let _, ok_corrupt_active = wing::active_key(store);
+        sub.assert_false(ok_corrupt_active, "out-of-bounds active_idx rejected safely");
+        store.active_idx = 0;
+
+        // needs_rotation and is_cookie_timestamp_valid with negative/extreme timestamps
+        sub.assert_true(wing::is_cookie_timestamp_valid(store, 1700000000, 1700000100), "valid cookie timestamp");
+        sub.assert_false(wing::is_cookie_timestamp_valid(store, -9000000000000000000, 1700000100), "negative i64 timestamp rejected without overflow");
+        sub.assert_false(wing::needs_rotation(store.keys[0], 1700000100), "fresh key does not need rotation");
+        store.keys[0].expires_at_sec = 1700050000;
+        sub.assert_true(wing::needs_rotation(store.keys[0], 1700000100), "key expiring within 24h needs rotation");
+        sub.assert_false(wing::needs_rotation(store.keys[0], -9000000000000000000), "extreme negative now_sec handled without overflow");
+        store.keys[0].expires_at_sec = 0;
+
+        // Pre-MAC unauthenticated wire cookie_sec = 0x8000000000000000 (i64::MIN) must not panic or bypass TTL
+        var pjar = wing::new_private_jar(store, false);
+        var forged_wire: u8[..64] = [];
+        forged_wire.push(0x01); // WIRE_VER_HKDF_AES256GCM
+        core::append_u32_be(forged_wire, 1);
+        core::append_u64_be(forged_wire, 0x8000000000000000); // i64::MIN when cast
+        for i in 32 { forged_wire.push(0xAA); }
+        var out_plain: u8[..64] = [];
+        sub.assert_false(
+            wing::private_jar_open_binary(pjar, "sess", forged_wire[..], 1700000000, out_plain),
+            "unauthenticated high-bit timestamp rejected without signed overflow",
+        );
+
+        // PrivateJar base64url seal/open roundtrip and undersized buffer rejection
+        var b64_priv: u8[..256] = [];
+        sub.assert_true(
+            wing::private_jar_seal(pjar, "sess", "secret_val", 1700000000, 99, b64_priv),
+            "private_jar_seal base64url succeeded",
+        );
+        var opened_priv: u8[..64] = [];
+        sub.assert_true(
+            wing::private_jar_open(pjar, "sess", b64_priv[..], 1700000010, opened_priv),
+            "private_jar_open base64url succeeded",
+        );
+        sub.assert_bytes_eq(opened_priv[..], "secret_val", "private_jar base64url roundtrip");
+
+        sub.assert_false(
+            wing::private_jar_seal_binary(pjar, "", "secret_val", 1700000000, 99, opened_priv),
+            "empty cookie_name in private_jar_seal_binary must return false",
+        );
+
+        var sjar = wing::new_signed_jar(store);
+        var s_wire: u8[..128] = [];
+        sub.assert_true(wing::signed_jar_seal_binary(sjar, "prefs", "long_payload_value", 1700000000, s_wire), "signed seal");
+        sub.assert_false(
+            wing::signed_jar_open_binary(sjar, "", s_wire[..], 1700000005, opened_priv),
+            "empty cookie_name in signed_jar_open_binary must return false",
+        );
+    };
+
+    t.run("FIND-SEC-005..007: CSRF Query/Fragment Path Smuggling, Scheme/Referer & Duplicate Sec-Fetch-Site") { sub =>
+        // Query and fragment containing '/' on root URL must not smuggle exempt path
+        sub.assert_bytes_eq(
+            wing::extract_path_from_url("https://example.com?redirect=/api/webhook/stripe"),
+            "/",
+            "query slash must not be extracted as URL path",
+        );
+        sub.assert_bytes_eq(
+            wing::extract_path_from_url("https://example.com#/api/webhook/stripe"),
+            "/",
+            "fragment slash must not be extracted as URL path",
+        );
+
+        // Backslash in authority must be rejected by extract_host_from_url
+        sub.assert_bytes_eq(
+            wing::extract_host_from_url("https://evil.com\\@example.com"),
+            "",
+            "backslash userinfo smuggling rejected",
+        );
+        sub.assert_bytes_eq(
+            wing::extract_host_from_url("https://evil.com\\path"),
+            "",
+            "backslash in host rejected",
+        );
+
+        // Trusted origin Referer with path must match trusted_origins entry
+        var cfg = wing::CrossOriginGuard { .. };
+        sub.assert_true(wing::add_trusted_origin(cfg, "https://partner.example.com"), "add trusted origin");
+        sub.assert_true(wing::add_exempt_path(cfg, "/api/webhook/stripe"), "add exempt path");
+
+        var ctx_ref = wing::FetchContext {
+            site:           wing::SecFetchSite.Missing,
+            method_is_safe: false,
+            has_origin:     false,
+            has_referer:    true,
+            ..
+        };
+        ctx_ref.referer.append("https://partner.example.com/checkout/pay?step=2");
+        ctx_ref.target_host.append("app.example.com");
+        ctx_ref.path.clear();
+        ctx_ref.path.append("/pay");
+        let dec_ref = wing::evaluate_fetch_metadata(cfg, ctx_ref);
+        let ok_ref = match dec_ref {
+            Allow => true,
+            _ => false,
+        };
+        sub.assert_true(ok_ref, "Referer with path matches trusted origin");
+
+        // Cross-scheme downgrade Origin: http://app.example.com -> target https://app.example.com must be blocked
+        var ctx_downgrade = wing::FetchContext {
+            site:           wing::SecFetchSite.Missing,
+            method_is_safe: false,
+            has_origin:     true,
+            ..
+        };
+        ctx_downgrade.origin.append("http://app.example.com");
+        ctx_downgrade.target_host.append("app.example.com");
+        ctx_downgrade.path.clear();
+        ctx_downgrade.path.append("/transfer");
+        let dec_downgrade = wing::evaluate_fetch_metadata(cfg, ctx_downgrade);
+        let ok_downgrade = match dec_downgrade {
+            RejectForbidden r => r.reason == wing::CsrfRejectReason.OriginHostMismatch,
+            _ => false,
+        };
+        sub.assert_true(
+            ok_downgrade,
+            "HTTP origin against HTTPS target blocked in fallback check",
+        );
+        sub.assert_bytes_eq(
+            wing::csrf_reject_reason_to_string(wing::CsrfRejectReason.OriginHostMismatch),
+            "OriginHostMismatch",
+            "reject reason string",
+        );
+
+        // Duplicate Sec-Fetch-Site header must not downgrade CrossSite to Missing
+        var req_dup = wing::new_request("POST", "https://app.example.com/transfer");
+        req_dup.headers.push(wing::make_header("Sec-Fetch-Site", "cross-site"));
+        req_dup.headers.push(wing::make_header("Sec-Fetch-Site", ""));
+        let extracted_dup = wing::extract_fetch_context(req_dup, "app.example.com");
+        sub.assert_true(
+            extracted_dup.site == wing::SecFetchSite.CrossSite,
+            "empty duplicate Sec-Fetch-Site must not overwrite CrossSite",
+        );
+    };
+
+    t.run("FIND-SEC-008: CORS Subdomain Backslash, Vary Token Match & Non-Preflight OPTIONS") { sub =>
+        sub.assert_false(
+            wing::match_cors_origin_pattern("https://evil.com\\.example.com", "https://*.example.com"),
+            "backslash in CORS subdomain rejected",
+        );
+
+        // Vary: X-Origin must still receive Origin token
+        var res_vary = wing::Response { status_code: 200, .. };
+        res_vary.set_header("Vary", "X-Origin");
+        wing::apply_cors_vary_header(res_vary);
+        sub.assert_bytes_eq(res_vary.header("Vary"), "X-Origin, Origin", "Vary: X-Origin is not confused with Origin");
+
+        // Regular OPTIONS without Access-Control-Request-Method is not a preflight
+        var cors_cfg = wing::CorsPolicy { .. };
+        let _ = wing::add_allowed_origin(cors_cfg, "https://app.example.com");
+        var req_opt = wing::new_request("OPTIONS", "https://api.example.com/info");
+        req_opt.headers.push(wing::make_header("Origin", "https://app.example.com"));
+        var res_opt = wing::Response { status_code: 200, .. };
+        let cors_res = wing::evaluate_cors(cors_cfg, req_opt, res_opt);
+        sub.assert_true(
+            cors_res == wing::CorsResult.AllowedActual,
+            "OPTIONS without Access-Control-Request-Method handled as actual request, not preflight",
+        );
+    };
+
+    t.run("FIND-SEC-009: Cross-Origin Isolation IPv6 Hostname, Opaque Null Origin & Parameterized Headers") { sub =>
+        sub.assert_true(
+            wing::parse_coop("same-origin; report-to=\"coop-ep\"") == wing::CoopPolicy.SameOrigin,
+            "parse_coop strips structured parameters",
+        );
+        sub.assert_true(
+            wing::parse_coep("require-corp; report-to=\"coep-ep\"") == wing::CoepPolicy.RequireCorp,
+            "parse_coep strips structured parameters",
+        );
+        sub.assert_true(
+            wing::parse_corp("same-origin; report-to=\"corp-ep\"") == wing::CorpPolicy.SameOrigin,
+            "parse_corp strips structured parameters",
+        );
+
+        // Distinct IPv6 origins must not both truncate to "[" and match as same-site
+        var iso_ctx = wing::CrossOriginIsolationContext {
+            coop: wing::CoopPolicy.SameOrigin,
+            coep: wing::CoepPolicy.RequireCorp,
+            ..
+        };
+        iso_ctx.document_origin.append("https://[::1]:8443");
+        sub.assert_false(
+            wing::is_subresource_allowed(iso_ctx, "https://[2001:db8::1]:8443", "same-site"),
+            "different IPv6 hosts must not match as same-site",
+        );
+
+        // Opaque "null" origins must never match as same-origin
+        var null_ctx = wing::CrossOriginIsolationContext {
+            coop: wing::CoopPolicy.SameOrigin,
+            coep: wing::CoepPolicy.RequireCorp,
+            ..
+        };
+        null_ctx.document_origin.append("null");
+        sub.assert_false(
+            wing::is_subresource_allowed(null_ctx, "null", "same-origin"),
+            "opaque null origins must not match as same-origin",
+        );
+    };
+
+    t.run("FIND-SEC-010..011: Privacy Pass Framing/Challenge & Probabilistic GCRA Overflow") { sub =>
+        // Empty issuer_name (iss_len == 0) must be rejected per RFC 9577 §2.1.1
+        var bad_chal_wire: u8[..16] = [0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00];
+        var out_chal = wing::TokenChallenge { .. };
+        sub.assert_false(
+            wing::unmarshal_token_challenge(bad_chal_wire[..], out_chal),
+            "empty issuer_name rejected by unmarshal_token_challenge",
+        );
+
+        // PrivateToken prefix collision ("PrivateTokenFoo ...") must be rejected
+        var out_key: u8[..128] = [];
+        var max_age: i64       = 0;
+        sub.assert_false(
+            wing::parse_private_token_challenge("PrivateTokenFoo challenge=\"Y2hhbA==\", token-key=\"a2V5\"", out_chal, out_key, max_age),
+            "PrivateTokenFoo scheme prefix rejected",
+        );
+
+        // attach_private_token formats and sets Authorization header
+        var req_pt = wing::new_request("GET", "https://api.example.com/resource");
+        wing::attach_private_token(req_pt, "tok_raw_bytes");
+        sub.assert_bytes_eq(
+            wing::find_header(req_pt.headers[..], "Authorization"),
+            "PrivateToken token=\"dG9rX3Jhd19ieXRlcw\"",
+            "attach_private_token sets Authorization header",
+        );
+
+        // Probabilistic GCRA with huge cost_n must saturate and reject, not wrap to 0
+        let quota = wing::new_gcra_quota(10, core::seconds(1), 10);
+        var pgcra = wing::new_probabilistic_gcra(quota, 20);
+        let huge_dec = wing::gcra_check_n(quota, pgcra.cell, 0x4000000000000000, 0xFFFFFFFFFFFFFFF0);
+        sub.assert_false(wing::is_allowed(huge_dec), "huge cost near u64::MAX rejected without saturation bypass");
+        for step in 50 {
+            let d = wing::check_rate_limit(pgcra, 0x8000000000000000, 1000000000);
+            if !wing::is_allowed(d) {
+                break;
+            }
+            sub.assert_true(step < 49, "sampled huge cost must be rejected within 50 steps");
+        }
+    };
+}
+
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
     var runner = lit::new_runner(title, lit::Verbosity.Verbose);
@@ -1476,6 +1734,7 @@ fn main() {
     lit::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys",
         test_har_telemetry_and_isolation);
     lit::run_case(runner, "22. Hardened Security Layer Invariants", test_hardened_security_invariants);
+    lit::run_case(runner, "23. Security Audit Regressions (FIND-SEC-001..011)", test_security_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -396,7 +396,7 @@ fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
 // 1. DNS Wire Format & RFC 9460 HTTPS/SVCB Resource Records (Type 65)
 fn test_dns_and_https_rr(t: lit::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
-        var query: u8[>..] = [];
+        var query: u8[..512] = [];
         let ok_q = wing::build_dns_query("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, query);
         sub.assert_true(ok_q, "build_dns_query succeeds");
         sub.assert_gt(query.len, 12, "query has header and question");

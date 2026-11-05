@@ -25,7 +25,7 @@ extern fn native_simd_unmask_shifted(
 // In-place zero-copy unmasking that shifts the unmasked payload back over the frame header
 // (uWebSockets unmaskImprecise8). Overwrites header directly in slice and returns payload slice.
 fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mask_key: const u8[4]&) -> u8[:] {
-    guard payload_len > 0 && header_len > 0 && frame.len >= header_len + payload_len else {
+    guard payload_len > 0 && header_len > 0 && header_len <= frame.len && payload_len <= frame.len - header_len else {
         return frame[..0];
     }
     native_simd_unmask_shifted(frame, header_len, payload_len, mask_key);
@@ -326,6 +326,7 @@ fn ws_inflate_message<B>(
     max_payload:  i64  = 65536,
     reset_window: bool = true,
 ) -> bool {
+    out_plain.clear();
     guard compressed.len > 0 else { return false; }
     shared.decompress_buf.clear();
 
@@ -337,6 +338,7 @@ fn ws_inflate_message<B>(
 
     let ok_d, err = core::inflate_with_limit(shared.decompress_buf[..], out_plain, max_payload);
     if !ok_d {
+        out_plain.clear();
         // OutputBufferOverflow indicates a decompression bomb exceeding max_payload: abort immediately!
         if err == core::CompressError.OutputBufferOverflow {
             if reset_window {
@@ -346,9 +348,9 @@ fn ws_inflate_message<B>(
             return false;
         }
         // Fallback: try direct inflate without appended tail
-        out_plain.clear();
         let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, max_payload);
         if !ok_raw {
+            out_plain.clear();
             if reset_window {
                 shared.decompress_buf.clear();
                 shared.compress_buf.clear();
@@ -384,6 +386,30 @@ fn new_dedicated_ws_compressor(window_kb: i64 = 32) -> DedicatedWsCompressor {
     };
 }
 
+// Updates the sliding dictionary window with new uncompressed bytes up to `window_kb * 1024` (max 32 KB).
+fn update_dedicated_history(dedicated: DedicatedWsCompressor&, raw: const u8[:]) {
+    let win_bytes = if dedicated.window_kb > 0 { dedicated.window_kb * 1024 } else { 32768 };
+    let max_win = min(win_bytes, min(32768, dedicated.history.cap));
+    guard max_win > 0 && raw.len > 0 else { return; }
+
+    if raw.len >= max_win {
+        dedicated.history.clear();
+        dedicated.history.append(raw[raw.len - max_win..]);
+        return;
+    }
+
+    let total = dedicated.history.len + raw.len;
+    if total > max_win {
+        let drop_len = total - max_win;
+        let keep_len = dedicated.history.len - drop_len;
+        for i in keep_len {
+            dedicated.history[i] = dedicated.history[drop_len + i];
+        }
+        dedicated.history.resize(keep_len);
+    }
+    dedicated.history.append(raw);
+}
+
 fn deflate_message_dedicated<B>(
     dedicated:    DedicatedWsCompressor&,
     raw:          const u8[:],
@@ -393,7 +419,8 @@ fn deflate_message_dedicated<B>(
     guard raw.len > 0 else { return false; }
     dedicated.compress_buf.clear();
 
-    let ok = core::deflate(raw, dedicated.compress_buf, 6);
+    let dict = if reset_window { "" } else { dedicated.history[..] };
+    let ok = core::deflate_with_dict(raw, dedicated.compress_buf, 6, dict);
     guard ok && dedicated.compress_buf.len > 0 else {
         dedicated.compress_buf.clear();
         return false;
@@ -411,14 +438,6 @@ fn deflate_message_dedicated<B>(
         }
     }
 
-    if !reset_window {
-        guard raw.len <= dedicated.history.cap else {
-            dedicated.history.clear();
-            dedicated.compress_buf.clear();
-            return false;
-        }
-    }
-
     out_wire.append(dedicated.compress_buf[..eff_len]);
     dedicated.total_compressed += eff_len as u64;
     dedicated.total_uncompressed += raw.len as u64;
@@ -427,8 +446,7 @@ fn deflate_message_dedicated<B>(
         dedicated.history.clear();
         dedicated.compress_buf.clear();
     } else {
-        dedicated.history.clear();
-        dedicated.history.append(raw);
+        update_dedicated_history(dedicated, raw);
     }
     return true;
 }
@@ -440,6 +458,7 @@ fn inflate_message_dedicated<B>(
     max_payload:  i64  = 65536,
     reset_window: bool = false,
 ) -> bool {
+    out_plain.clear();
     guard compressed.len > 0 else { return false; }
     dedicated.decompress_buf.clear();
 
@@ -448,15 +467,17 @@ fn inflate_message_dedicated<B>(
     let tail: u8[4] = [0x00, 0x00, 0xFF, 0xFF];
     dedicated.decompress_buf.append(tail[..]);
 
-    let ok_d, err = core::inflate_with_limit(dedicated.decompress_buf[..], out_plain, max_payload);
+    let dict = if reset_window { "" } else { dedicated.history[..] };
+    let ok_d, err = core::inflate_with_dict_limit(dedicated.decompress_buf[..], out_plain, dict, max_payload);
     if !ok_d {
+        out_plain.clear();
         if err == core::CompressError.OutputBufferOverflow {
             dedicated.decompress_buf.clear();
             return false;
         }
-        out_plain.clear();
-        let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, max_payload);
+        let ok_raw, _ = core::inflate_with_dict_limit(compressed, out_plain, dict, max_payload);
         if !ok_raw {
+            out_plain.clear();
             dedicated.decompress_buf.clear();
             return false;
         }
@@ -464,7 +485,10 @@ fn inflate_message_dedicated<B>(
 
     dedicated.total_decompressed += out_plain.len as u64;
     if reset_window {
+        dedicated.history.clear();
         dedicated.decompress_buf.clear();
+    } else {
+        update_dedicated_history(dedicated, out_plain[..]);
     }
     return true;
 }
@@ -478,24 +502,30 @@ fn encode_ws_frame_compressed<B>(
     mask_key:           const u8[4]& = [0, 0, 0, 0],
     fin:                bool         = true,
 ) {
+    let eff_payload = if rfc::is_ws_control_opcode(opcode) && compressed_payload.len > 125 {
+        compressed_payload[..125]
+    } else {
+        compressed_payload
+    };
+    let eff_fin = if rfc::is_ws_control_opcode(opcode) { true } else { fin };
     // RFC 7692 §5.1: RSV1 MUST NOT be set on control frames or continuation frames
     let eff_rsv1 = !rfc::is_ws_control_opcode(opcode) && opcode != rfc::WS_OPCODE_CONTINUATION;
     let hdr = WsFrameHeader {
-        fin:         fin,
+        fin:         eff_fin,
         rsv1:        eff_rsv1, // Signals compressed frame only for initial data frames
         opcode:      opcode,
         masked:      masked,
         mask_key:    mask_key,
-        payload_len: compressed_payload.len as u64,
+        payload_len: eff_payload.len as u64,
         ..
     };
     hdr.encode(out);
     if masked {
-        for i in compressed_payload.len {
-            out.push(compressed_payload[i] ^ mask_key[i % 4]);
+        for i in eff_payload.len {
+            out.push(eff_payload[i] ^ mask_key[i % 4]);
         }
     } else {
-        out.append(compressed_payload);
+        out.append(eff_payload);
     }
 }
 
@@ -560,13 +590,6 @@ fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
     core::base64_encode(digest[..], out);
 }
 
-fn is_base64_char(b: u8) -> bool {
-    return (b >= 'A' && b <= 'Z') ||
-           (b >= 'a' && b <= 'z') ||
-           (b >= '0' && b <= '9') ||
-           b == '+' || b == '/';
-}
-
 // Validates an RFC 6455 §4.2.1 client Sec-WebSocket-Key:
 // Must be exactly 24 characters, end in "==", and contain valid Base64 characters representing a 16-byte nonce.
 fn is_valid_websocket_key(key: const u8[:]) -> bool {
@@ -574,16 +597,20 @@ fn is_valid_websocket_key(key: const u8[:]) -> bool {
     guard key[22] == '=' && key[23] == '=' else { return false; }
 
     for i in 22 {
-        guard is_base64_char(key[i]) else { return false; }
+        guard core::base64_val(key[i]) >= 0 else { return false; }
     }
-    return true;
+    // RFC 4648 §3.5 / RFC 6455 §4.2.1: 16 bytes (128 bits) encoded in 22 Base64 sextets (132 bits)
+    // must have the 4 trailing padding bits of the 22nd character equal to zero.
+    return (core::base64_val(key[21]) & 0x0F) == 0;
 }
 
 // Validates server `Sec-WebSocket-Accept` against client key
 fn validate_websocket_accept(client_key: const u8[:], server_accept: const u8[:]) -> bool {
+    guard server_accept.len == 28 else { return false; }
     var expected: u8[..64] = [];
     compute_websocket_accept(client_key, expected);
-    return expected[..] == server_accept;
+    guard expected.len == 28 else { return false; }
+    return core::ct_eq_bytes(expected[..], server_accept);
 }
 
 // Formats a 16-byte random nonce into a 24-character Base64 client key
@@ -673,13 +700,12 @@ fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
     var has_digits = false;
     while idx < user_agent.len && user_agent[idx] >= '0' && user_agent[idx] <= '9' {
         minor = minor * 10 + (user_agent[idx] - '0');
+        // Safari 15.0 - 15.3 were affected; 15.4+ fixed the bug
+        guard minor <= 3 else { return false; }
         has_digits = true;
         idx++;
     }
     guard has_digits && idx < user_agent.len && user_agent[idx] == ' ' else { return false; }
-
-    // Safari 15.0 - 15.3 were affected; 15.4+ fixed the bug
-    guard minor <= 3 else { return false; }
 
     let safari_marker = " Safari/";
     let safari_pos = find(user_agent[idx..], safari_marker);
@@ -822,7 +848,7 @@ fn check_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) -> WsHea
     if ws.timeout_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.timeout_slot) {
         return WsHeartbeatAction.CloseIdle;
     }
-    if ws.send_pings_automatically && ws.ping_slot != TICK_TIMER_DISARMED &&
+    if !ws.close_received && ws.send_pings_automatically && ws.ping_slot != TICK_TIMER_DISARMED &&
         tick_timer_is_expired(wheel, ws.ping_slot) {
         return WsHeartbeatAction.SendPing;
     }
@@ -854,7 +880,7 @@ struct WsPendingUpgrade {
     route_idx:   i32       = -1,
     client_key:  u8[..64]  = [],
     subprotocol: u8[..64]  = [],
-    extensions:  u8[..64]  = [],
+    extensions:  u8[..256] = [],
     user_tag:    u64       = 0,
     user_data:   u8[..128] = [],
     is_aborted:  bool      = false,
@@ -875,9 +901,16 @@ fn new_ws_pending_upgrade(
         in_use:     true,
         ..
     };
-    p.client_key.append(client_key);
-    if subprotocol.len > 0 { p.subprotocol.append(subprotocol); }
-    if extensions.len > 0 { p.extensions.append(extensions); }
+    let k_len = min(client_key.len, p.client_key.cap);
+    p.client_key.append(client_key[..k_len]);
+    if subprotocol.len > 0 {
+        let s_len = min(subprotocol.len, p.subprotocol.cap);
+        p.subprotocol.append(subprotocol[..s_len]);
+    }
+    if extensions.len > 0 {
+        let e_len = min(extensions.len, p.extensions.cap);
+        p.extensions.append(extensions[..e_len]);
+    }
     return p;
 }
 
@@ -924,7 +957,7 @@ fn set_max_backpressure(ws: WebSocketSession&, max_bytes: u64, close_on_limit: b
 // Enforces max_backpressure and overflow drop/close policies.
 fn notify_buffered<B>(ws: WebSocketSession&, bytes_added: u64, out_close: B&) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
-    if ws.buffered_amount + bytes_added > ws.max_backpressure {
+    if bytes_added > ws.max_backpressure || ws.buffered_amount > ws.max_backpressure - bytes_added {
         if ws.close_on_backpressure_limit {
             close(ws, rfc::WS_STATUS_POLICY_VIOLATION, "backpressure limit exceeded", out_close);
             return WsSendStatus.Closed;
@@ -1462,13 +1495,13 @@ fn receive_view_into<B, F>(
         ws.frag_compressed = hdr.rsv1;
         ws.frag_utf8_offset = 0;
         frag_buf.clear();
-        let max_len_i64 = ws.max_payload_length as i64;
+        let max_len_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
         let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
             max_len_i64
         } else {
             max_frag_cap
         };
-        if eff_cap > 0 && payload.len > eff_cap {
+        if eff_cap <= 0 || payload.len > eff_cap {
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_MESSAGE_TOO_BIG;
@@ -1506,13 +1539,13 @@ fn receive_view_into<B, F>(
             return true, out_view;
         }
 
-        let max_len_i64 = ws.max_payload_length as i64;
+        let max_len_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
         let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
             max_len_i64
         } else {
             max_frag_cap
         };
-        if eff_cap > 0 && (frag_buf.len + payload.len) > eff_cap {
+        if eff_cap <= 0 || payload.len > eff_cap - frag_buf.len {
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds capacity", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_MESSAGE_TOO_BIG;
@@ -1580,7 +1613,7 @@ fn consume_frame_view_into<B, F>(
     max_frag_cap: i64,
     out_reply:    B&,
 ) -> i64, bool, WsMessageView {
-    guard wire.len >= 2 else { return 0, false, WsMessageView { .. }; }
+    guard !ws.is_closed && wire.len >= 2 else { return 0, false, WsMessageView { .. }; }
 
     let hdr, ok_hdr = parse_ws_frame_header(wire);
     if ok_hdr {
@@ -1742,6 +1775,14 @@ fn ws_upgrade_request(
         return WebSocketSession { .. }, false;
     }
 
+    var session = new_websocket_session(false);
+    if subprotocol.len > 0 {
+        guard subprotocol.len <= session.subprotocol.cap else {
+            out_resp.status_code = 400;
+            return WebSocketSession { .. }, false;
+        }
+    }
+
     var accept_key: u8[..64] = [];
     compute_websocket_accept(client_key, accept_key);
 
@@ -1750,12 +1791,7 @@ fn ws_upgrade_request(
     out_resp.set_header("Connection", "Upgrade");
     out_resp.set_header("Sec-WebSocket-Accept", accept_key[..]);
 
-    var session = new_websocket_session(false);
     if subprotocol.len > 0 {
-        guard subprotocol.len <= session.subprotocol.cap else {
-            out_resp.status_code = 400;
-            return WebSocketSession { .. }, false;
-        }
         // RFC 6455 §4.1 & §4.2.2 item 5: Server MUST only select a subprotocol requested by the client
         // across one or more Sec-WebSocket-Protocol header fields.
         if req_has_subprotocol(req, subprotocol) {
@@ -1773,26 +1809,8 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field
     let host = req.headers.find_header("Host");
     guard host.len > 0 else { return false; }
-    var has_upgrade_hdr = false;
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "upgrade") {
-            if has_header_token_fold(hdr.value[..], "websocket") {
-                has_upgrade_hdr = true;
-                break;
-            }
-        }
-    }
-    guard has_upgrade_hdr else { return false; }
-    var has_upgrade_conn = false;
-    for &hdr in req.headers {
-        if core::eq_ascii_fold(hdr.name[..], "connection") {
-            if has_header_token_fold(hdr.value[..], "upgrade") {
-                has_upgrade_conn = true;
-                break;
-            }
-        }
-    }
-    guard has_upgrade_conn else { return false; }
+    guard req_has_header_token(req, "upgrade", "websocket") else { return false; }
+    guard req_has_header_token(req, "connection", "upgrade") else { return false; }
     let ver = req.headers.find_header("Sec-WebSocket-Version");
     guard ver == "13" else { return false; }
     let key = req.headers.find_header("Sec-WebSocket-Key");
@@ -1815,15 +1833,15 @@ fn is_h2_websocket_request(req: const Request&) -> bool {
 // Validates an RFC 8441 WebSocket Extended CONNECT request according to strict protocol rules:
 // - :method MUST be CONNECT
 // - :protocol MUST be websocket
-// - :scheme and :path MUST be present
-// - :authority MUST be present
+// - :scheme MUST be http or https
+// - :path and :authority MUST be present
 // - sec-websocket-version MUST be 13
 // - MUST NOT contain connection, upgrade, keep-alive, transfer-encoding, proxy-connection, or sec-websocket-key
 fn validate_h2_websocket_request(req: const Request&) -> bool {
     guard is_h2_websocket_request(req) else { return false; }
 
     let scheme = req.headers.find_header(":scheme");
-    guard scheme.len > 0 else { return false; }
+    guard core::eq_ascii_fold(scheme, "http") || core::eq_ascii_fold(scheme, "https") else { return false; }
     let path = req.headers.find_header(":path");
     guard path.len > 0 else { return false; }
     let auth = req.headers.find_header(":authority");
@@ -1876,14 +1894,17 @@ fn ws_h2_upgrade_request(
         return WebSocketSession { .. }, false;
     }
 
-    out_resp.status_code = 200;
-
     var session = new_websocket_session(false);
     if subprotocol.len > 0 {
         guard subprotocol.len <= session.subprotocol.cap else {
             out_resp.status_code = 400;
             return WebSocketSession { .. }, false;
         }
+    }
+
+    out_resp.status_code = 200;
+
+    if subprotocol.len > 0 {
         if req_has_subprotocol(req, subprotocol) {
             out_resp.set_header("sec-websocket-protocol", subprotocol);
             session.subprotocol.append(subprotocol);

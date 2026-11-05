@@ -31,7 +31,7 @@ fn scan_topic_segment_end(raw: const u8[:], start: i64) -> i64 {
 
 // Matches an MQTT topic pattern (with optional '+' and '#' wildcards) against a concrete topic name.
 fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
-    guard pattern.len > 0 && topic.len > 0 else { return false; }
+    guard is_valid_topic_filter(pattern) && is_valid_publish_topic(topic) else { return false; }
 
     // OASIS MQTT v5.0 §4.7.2: Topics starting with '$' MUST NOT match filters starting with '+' or '#'
     if topic[0] == '$' && (pattern[0] == '+' || pattern[0] == '#') {
@@ -208,6 +208,8 @@ fn subscribe_ex(
     out_old: i32&,
     out_new: i32&,
 ) -> bool {
+    out_old = 0;
+    out_new = 0;
     guard sock_fd > 0 && is_valid_topic_filter(pattern) else { return false; }
 
     let b_idx = get_or_create_topic_bucket(tree, pattern);
@@ -246,6 +248,7 @@ fn subscribe_ex(
         }
     }
 
+    reclaim_empty_bucket(tree, b_idx);
     return false; // Subscription pool full
 }
 
@@ -345,6 +348,8 @@ fn unsubscribe_ex(
     out_old: i32&,
     out_new: i32&,
 ) -> bool {
+    out_old = 0;
+    out_new = 0;
     guard sock_fd > 0 && pattern.len > 0 else { return false; }
 
     let b_idx = find_topic_bucket(tree, pattern);
@@ -490,8 +495,8 @@ fn get_socket_topics(
     sock_fd:    i64,
     out_topics: u8[..64][..32]&,
 ) -> i32 {
-    guard sock_fd > 0 else { return 0; }
     out_topics.clear();
+    guard sock_fd > 0 else { return 0; }
     for b in tree.buckets.len {
         if tree.buckets[b].in_use && is_subscribed_in_bucket(tree, b, sock_fd) {
             guard out_topics.len < out_topics.cap else { break; }
@@ -686,13 +691,13 @@ fn prepare_message_compressed(
 
     if payload.len > 0 {
         let comp_slice, ok_c = ws_deflate_message_slice(shared_comp, payload, true);
-        if ok_c && comp_slice.len > 0 {
-            guard comp_slice.len + 14 <= out_msg.compressed_wire.cap else { return false; }
-            let no_mask: u8[4] = [0, 0, 0, 0];
-            encode_ws_frame_compressed(out_msg.compressed_wire, opcode, comp_slice, false, no_mask, true);
-            if out_msg.compressed_wire.len < out_msg.wire.len {
-                out_msg.has_compressed = true;
-            }
+        guard ok_c && comp_slice.len > 0 && comp_slice.len + 14 <= out_msg.compressed_wire.cap else {
+            return true;
+        }
+        let no_mask: u8[4] = [0, 0, 0, 0];
+        encode_ws_frame_compressed(out_msg.compressed_wire, opcode, comp_slice, false, no_mask, true);
+        if out_msg.compressed_wire.len < out_msg.wire.len {
+            out_msg.has_compressed = true;
         }
     }
     return true;
@@ -782,7 +787,9 @@ fn drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
     let fd = tree.nodes[n_i64].sock_fd;
     tree.nodes[n_i64].num_message_indices = 0;
 
-    return flush_node_palette_messages(tree, n_i64, fd, count);
+    let sent = flush_node_palette_messages(tree, n_i64, fd, count);
+    tree.total_messages_delivered += (sent as u64);
+    return sent;
 }
 
 // Drains all drainable subscribers in batch.
@@ -790,7 +797,10 @@ fn drain_subscriber(tree: TopicTree&, node_idx: i32) -> i64 {
 // Resets the outgoing message palette to 0 allocations.
 fn drain(tree: TopicTree&) -> i64 {
     var cur = tree.drainable_head;
-    guard cur >= 0 else { return 0; }
+    if cur < 0 {
+        tree.palette_len = 0;
+        return 0;
+    }
 
     var total_delivered: i64 = 0;
     while cur >= 0 {
@@ -824,8 +834,8 @@ fn check_and_mark_batch_seen(
     let bit = (1 as u64) << (h & 63);
 
     if (seen_mask[word_idx] & bit) == 0 {
-        seen_mask[word_idx] |= bit;
         guard seen_fds.len < seen_fds.cap else { return false, false; }
+        seen_mask[word_idx] |= bit;
         seen_fds.push(fd);
         return false, true;
     }
@@ -925,6 +935,10 @@ fn publish_batch(
             }
             cur = tree.nodes[cur as i64].next_sub;
         }
+    }
+
+    if queued == 0 && tree.palette_len == ((msg_idx + 1) as i32) {
+        tree.palette_len = msg_idx as i32;
     }
 
     tree.total_publishes += 1;

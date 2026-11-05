@@ -355,19 +355,28 @@ fn verify_connect_tunnel_response(
     guard delim_idx >= 0 else { return ConnectTunnelError.MalformedHeaders; }
     let header_end_pos = delim_idx + 4;
 
-    // Parse status code from "HTTP/1.x 200 ..."
-    let space_idx = core::index_of_byte(raw_response, ' ');
-    guard space_idx > 0 && space_idx + 4 <= raw_response.len else { return ConnectTunnelError.InvalidStatusLine; }
+    let first_crlf = find(raw_response[..header_end_pos], "\r\n");
+    guard first_crlf >= 12 else { return ConnectTunnelError.MalformedHeaders; }
 
-    // Ensure status code is exactly 3 digits followed by ' ' or '\r' or '\n'
-    if space_idx + 4 < raw_response.len {
-        let after_code = raw_response[space_idx + 4];
-        guard after_code == ' ' || after_code == '\r' || after_code == '\n' else {
+    let minor_ver = raw_response[7];
+    guard (minor_ver == '0' || minor_ver == '1') && raw_response[8] == ' ' else {
+        return ConnectTunnelError.InvalidStatusLine;
+    }
+
+    // Ensure status code is exactly 3 digits followed by ' ' or '\r'
+    let d0 = raw_response[9];
+    let d1 = raw_response[10];
+    let d2 = raw_response[11];
+    guard d0 >= '0' && d0 <= '9' && d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9' else {
+        return ConnectTunnelError.InvalidStatusLine;
+    }
+    if first_crlf > 12 {
+        guard raw_response[12] == ' ' else {
             return ConnectTunnelError.InvalidStatusLine;
         }
     }
 
-    let status_code_str = raw_response[space_idx + 1..space_idx + 4];
+    let status_code_str = raw_response[9..12];
     if status_code_str == "407" {
         return ConnectTunnelError.ProxyAuthRequired;
     }
@@ -414,6 +423,7 @@ struct HeaderReader {
     header_read_start_ns:    i64                    = 0,
     cumulative_header_bytes: i64                    = 0,
     header_lines_count:      i32                    = 0,
+    tail_bytes:              u8[..3]                = [],
     headers_complete:        bool                   = false,
     poison_connection:       bool                   = false,
 }
@@ -432,6 +442,35 @@ fn check_slowloris_deadlines(reader: HeaderReader&, elapsed_ns: i64) -> Slowlori
         return SlowlorisViolation.HeaderTimeoutExpired;
     }
     return SlowlorisViolation.None;
+}
+
+inline fn detect_header_end_across_chunks(reader: HeaderReader&, chunk: const u8[:]) -> bool {
+    if core::find(chunk, "\r\n\r\n") >= 0 || core::find(chunk, "\n\n") >= 0 {
+        return true;
+    }
+    var window: u8[..6] = [];
+    window.append(reader.tail_bytes[..]);
+    let take_head = min(chunk.len, 3);
+    if take_head > 0 {
+        window.append(chunk[..take_head]);
+    }
+    if core::find(window[..], "\r\n\r\n") >= 0 || core::find(window[..], "\n\n") >= 0 {
+        return true;
+    }
+    var combined: u8[..6] = [];
+    combined.append(reader.tail_bytes[..]);
+    if chunk.len >= 3 {
+        combined.clear();
+        combined.append(chunk[chunk.len - 3..]);
+    } else if chunk.len > 0 {
+        combined.append(chunk);
+    }
+    reader.tail_bytes.clear();
+    let keep = min(combined.len, 3);
+    if keep > 0 {
+        reader.tail_bytes.append(combined[combined.len - keep..]);
+    }
+    return false;
 }
 
 // Feeds incoming header chunk and verifies all 4 Slowloris defense invariants.
@@ -478,7 +517,7 @@ fn feed_header_bytes(
         }
     }
 
-    if core::find(chunk, "\r\n\r\n") >= 0 || core::find(chunk, "\n\n") >= 0 {
+    if detect_header_end_across_chunks(reader, chunk) {
         reader.headers_complete = true;
     }
 

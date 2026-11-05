@@ -37,33 +37,28 @@ struct DnsResponse {
 
 // ---- DNS Name Encoding and Compression Decoding (RFC 1035) --------------
 
-// CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--".
+// CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--"
+// and enforces RFC 952 / RFC 1123 LDH label rules on all labels.
 // Per RFC 3492 / RFC 5891 §4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
 // If it encodes pure ASCII characters, it is invalid and must be rejected.
 fn validate_punycode_label(label: const u8[:]) -> bool {
+    guard label.len > 0 && label.len <= 63 else { return false; }
+    // RFC 952 / RFC 1123: labels MUST NOT start or end with a hyphen
+    guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
+    for b in label {
+        let is_lower = b >= 'a' && b <= 'z';
+        let is_upper = b >= 'A' && b <= 'Z';
+        let is_digit = b >= '0' && b <= '9';
+        let is_valid = is_lower || is_upper || is_digit || b == '-' || b == '_';
+        guard is_valid else { return false; }
+    }
     guard label.len >= 4 else { return true; }
     // Check if label begins with "xn--" or "XN--"
-    if (label[0] == 'x' || label[0] == 'X') &&
-       (label[1] == 'n' || label[1] == 'N') &&
-       label[2] == '-' && label[3] == '-' {
-        // Label after "xn--" cannot be empty or exceed 63 bytes total
-        guard label.len > 4 && label.len <= 63 else { return false; }
-        let payload = label[4..];
-
-        // In Punycode, if there is a delimiter '-', the portion before '-' is literal ASCII,
-        // and the portion after '-' contains the base-36 delta encodings.
-        // If there is NO delimiter '-', the entire payload is base-36 delta encodings.
-        // If the payload ends with '-' (e.g. "xn--test-"), there are NO non-ASCII deltas!
-        // That means it encodes pure ASCII, which is an invalid ACE label (CVE-2026-39821).
-        if payload[payload.len - 1] == '-' {
-            return false;
-        }
-
-        // Verify all characters are valid LDH (letters, digits, hyphen)
-        for b in payload {
-            let is_ldh = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-';
-            guard is_ldh else { return false; }
-        }
+    let is_xn = (label[0] == 'x' || label[0] == 'X') &&
+                (label[1] == 'n' || label[1] == 'N') &&
+                label[2] == '-' && label[3] == '-';
+    if is_xn {
+        guard label.len > 4 else { return false; }
     }
     return true;
 }
@@ -73,6 +68,7 @@ fn validate_punycode_label(label: const u8[:]) -> bool {
 // and total encoded domain length does not exceed 253 bytes.
 fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
     guard domain.len > 0 && domain.len <= 253 else { return false; }
+    guard domain[domain.len - 1] != '.' else { return false; }
     var start = 0;
     while start < domain.len {
         var dot_pos = domain.len;
@@ -83,7 +79,6 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
             }
         }
         let label = domain[start..dot_pos];
-        guard label.len > 0 && label.len <= 63 else { return false; }
         guard validate_punycode_label(label) else { return false; }
         start = dot_pos + 1;
     }
@@ -127,14 +122,18 @@ fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
 fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
     var jumps = 0;
     var current_off = offset;
+    var final_off = offset;
     var advanced_original = false;
+    var scratch: u8[..255] = [];
 
     while current_off < raw.len {
         let b = raw[current_off];
         if b == 0 {
             if !advanced_original {
-                offset = current_off + 1;
+                final_off = current_off + 1;
             }
+            guard domain.try_set(scratch[..]) else { return false; }
+            offset = final_off;
             return true;
         }
 
@@ -146,7 +145,7 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
             guard ptr_off < current_off && ptr_off >= 12 else { return false; }
 
             if !advanced_original {
-                offset = current_off + 2;
+                final_off = current_off + 2;
                 advanced_original = true;
             }
 
@@ -158,26 +157,23 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
 
         // RFC 1035 §2.3.4 & §4.1.4: High 2 bits MUST be 00 for uncompressed labels,
         // and label length MUST NOT exceed 63 octets. (01 and 10 are reserved).
-        guard (b & 0xC0) == 0 && b <= 63 else { return false; }
+        guard (b & 0xC0) == 0 && b > 0 && b <= 63 else { return false; }
 
-        let label_len = b;
+        let label_len = b as i64;
         current_off += 1;
         guard current_off + label_len <= raw.len else { return false; }
 
-        if domain.len > 0 {
-            guard domain.len + 1 + (label_len as i64) <= 253 else { return false; }
-            domain.push('.');
+        if scratch.len > 0 {
+            guard scratch.len + 1 + label_len <= 253 else { return false; }
+            scratch.push('.');
         } else {
-            guard (label_len as i64) <= 253 else { return false; }
+            guard label_len <= 253 else { return false; }
         }
-        for i in current_off..current_off + label_len {
-            guard domain.len < 253 else { return false; }
-            domain.push(raw[i]);
-        }
+        scratch.append(raw[current_off..current_off + label_len]);
         current_off += label_len;
 
         if !advanced_original {
-            offset = current_off;
+            final_off = current_off;
         }
     }
     return false;
@@ -190,30 +186,29 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
 //   returns: true, offset = 13, domain = "example.com"
 fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i64, domain: B&) -> bool {
     var current_off = offset;
+    var scratch: u8[..255] = [];
     while current_off < max_offset {
         let b = raw[current_off];
         if b == 0 {
+            guard domain.try_set(scratch[..]) else { return false; }
             offset = current_off + 1;
             return true;
         }
 
         // Pointers (0xC0) are strictly forbidden in TargetName
-        guard (b & 0xC0) == 0 && b <= 63 else { return false; }
+        guard (b & 0xC0) == 0 && b > 0 && b <= 63 else { return false; }
 
         let label_len = b as i64;
         current_off += 1;
         guard current_off + label_len <= max_offset else { return false; }
 
-        if domain.len > 0 {
-            guard domain.len + 1 + label_len <= 253 else { return false; }
-            domain.push('.');
+        if scratch.len > 0 {
+            guard scratch.len + 1 + label_len <= 253 else { return false; }
+            scratch.push('.');
         } else {
             guard label_len <= 253 else { return false; }
         }
-        for i in current_off..current_off + label_len {
-            guard domain.len < 253 else { return false; }
-            domain.push(raw[i]);
-        }
+        scratch.append(raw[current_off..current_off + label_len]);
         current_off += label_len;
     }
     return false;
@@ -244,6 +239,7 @@ fn serialize_dns_question<B>(domain: const u8[:], qtype: u16, qclass: u16, out: 
 
 // Builds a standard 12-byte header + question DNS query.
 fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool {
+    guard validate_idna_domain_bounds(domain) else { return false; }
     serialize_dns_header(tx_id, 1, 0x0100, out);
     return serialize_dns_question(domain, qtype, 1, out);
 }
@@ -278,22 +274,25 @@ fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
 //
 // Example:
 //   val = [0x00, 0x01]
-//   returns: true
-fn parse_mandatory_svc_param(val: const u8[:]) -> bool {
+//   returns: mask = 2, ok = true
+fn parse_mandatory_svc_param(val: const u8[:]) -> u32, bool {
     // RFC 9460 §8: Mandatory list of 2-octet SvcParamKeys in ascending order
-    guard val.len > 0 && (val.len % 2) == 0 else { return false; }
+    guard val.len > 0 && (val.len % 2) == 0 else { return 0, false; }
     var m_off:      i64 = 0;
     var last_m_key: i32 = -1;
+    var mask:       u32 = 0;
     while m_off + 2 <= val.len {
         let req_key = ((val[m_off] as u16) << 8) | val[m_off + 1];
         let rk_i32 = req_key as i32;
         // Keys in mandatory list MUST NOT include 0 and MUST be strictly increasing and supported
         let in_range = req_key >= 1 && req_key <= rfc::SVC_PARAM_IPV6HINT;
-        guard rk_i32 > last_m_key && in_range else { return false; }
+        guard rk_i32 > last_m_key && in_range else { return 0, false; }
+        let bit_shift: u32 = req_key;
+        mask |= (1 as u32) << bit_shift;
         last_m_key = rk_i32;
         m_off += 2;
     }
-    return true;
+    return mask, true;
 }
 
 // Parses IPv4 hints parameter from SVCB/HTTPS RDATA (RFC 9460 §7.1).
@@ -339,8 +338,10 @@ fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
 //   rdata = "\x00\x01\x00\x03\x02h2"
 //   returns: ok = true, rec.alpns = ["h2"]
 fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
-    var off:      i64 = 0;
-    var last_key: i32 = -1;
+    var off:            i64 = 0;
+    var last_key:       i32 = -1;
+    var mandatory_mask: u32 = 0;
+    var seen_mask:      u32 = 0;
 
     while off + 4 <= rdata.len {
         let key = ((rdata[off] as u16) << 8) | rdata[off + 1];
@@ -356,8 +357,15 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
         let val = rdata[off..off + val_len];
         off += val_len;
 
+        if key >= 1 && key <= 31 {
+            let bit_shift: u32 = key;
+            seen_mask |= (1 as u32) << bit_shift;
+        }
+
         if key == rfc::SVC_PARAM_MANDATORY {
-            guard parse_mandatory_svc_param(val) else { return false; }
+            let m_mask, ok_m = parse_mandatory_svc_param(val);
+            guard ok_m else { return false; }
+            mandatory_mask = m_mask;
         } else if key == rfc::SVC_PARAM_ALPN {
             guard parse_alpn_svc_param(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_NO_DEFAULT_ALPN {
@@ -372,14 +380,12 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
             guard parse_ipv6_hints(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_ECH {
             // Raw wire bytes of ECHConfigList (RFC 9460 §5)
-            guard val.len <= rec.ech_config_list.cap else { return false; }
+            guard rec.ech_config_list.try_set(val) else { return false; }
             rec.has_ech = true;
-            for i in val.len {
-                rec.ech_config_list.push(val[i]);
-            }
         }
     }
     guard off == rdata.len else { return false; }
+    guard (mandatory_mask & seen_mask) == mandatory_mask else { return false; }
     return true;
 }
 
@@ -441,6 +447,7 @@ fn skip_dns_questions(raw: const u8[:], off: i64&, count: u16) -> bool {
 //   raw = dns_response_wire, off = 12, out = DnsResponse { answer_count: 1 }
 //   returns: true, off advanced past answer section
 fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
+    var has_ttl = false;
     for a in out.answer_count {
         var aname: u8[..255] = [];
         guard dns_decode_name(raw, off, aname) else { return false; }
@@ -450,15 +457,16 @@ fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
         let rclass = ((raw[off + 2] as u16) << 8) | raw[off + 3];
         let ttl = ((raw[off + 4] as u32) << 24) | ((raw[off + 5] as u32) << 16) |
                   ((raw[off + 6] as u32) << 8) | raw[off + 7];
-        if ttl < out.min_ttl_sec {
-            out.min_ttl_sec = ttl;
-        }
         let rdlength = (((raw[off + 8] as u16) << 8) | raw[off + 9]) as i64;
         off += 10;
         guard off + rdlength <= raw.len else { return false; }
 
         if rclass == rfc::DNS_QCLASS_IN {
             guard parse_dns_answer_record(raw, rtype, rdlength, off, out) else { return false; }
+            if !has_ttl || ttl < out.min_ttl_sec {
+                out.min_ttl_sec = ttl;
+                has_ttl = true;
+            }
         }
         off += rdlength;
     }
@@ -471,6 +479,7 @@ fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
 //   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
 //   returns: ok = true, out.rcode = 0, out.answer_count = 1
 fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
+    out = DnsResponse { .. };
     guard raw.len >= 12 else { return false; }
 
     out.tx_id = ((raw[0] as u16) << 8) | raw[1];
@@ -483,7 +492,6 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
 
     out.question_count = ((raw[4] as u16) << 8) | raw[5];
     out.answer_count = ((raw[6] as u16) << 8) | raw[7];
-    out.min_ttl_sec = if out.answer_count > 0 { 0xFFFFFFFF } else { 0 };
 
     guard out.rcode == rfc::DNS_RCODE_NOERROR else { return true; }
 
@@ -505,9 +513,13 @@ fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16
     var raw_query: u8[..512] = [];
     guard build_dns_query(domain, qtype, 0, raw_query) else { return false; }
 
+    var encoded_q: u8[..1024] = [];
+    core::base64url_encode(raw_query[..], encoded_q);
+    guard out_url.len + server_url.len + 5 + encoded_q.len <= out_url.cap else { return false; }
+
     out_url.append(server_url);
     out_url.append("?dns=");
-    core::base64url_encode(raw_query[..], out_url);
+    out_url.append(encoded_q[..]);
     return true;
 }
 

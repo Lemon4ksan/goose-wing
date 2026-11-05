@@ -90,11 +90,6 @@ fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
     return cfg;
 }
 
-// Generates the socket option profile corresponding to a ClientProfile
-fn p0f_socket_config(profile: const wing::ClientProfile&) -> SocketP0fProfile {
-    return p0f_socket_config(profile.kind);
-}
-
 // Validates whether the socket profile parameters comply with p0f v3 invariants
 fn validate_p0f_socket_invariants(cfg: const SocketP0fProfile&) -> bool {
     // TTL must be a standard IP TTL (32, 64, 128, 255)
@@ -130,34 +125,4 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     core::format_i64_dec(cfg.wscale as i64, out);
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
-}
-
-// Configures SO_LINGER on socket (RFC 1122 Section 4.2.2.13).
-fn tcp_set_linger(fd: i64, onoff: bool, timeout_sec: i32 = 0) -> bool {
-    guard fd > 0 else { return false; }
-    return wing::tcp_set_linger(fd, onoff, timeout_sec);
-}
-
-// Configures TCP_NODELAY (Nagle algorithm bypass) on socket.
-fn tcp_set_nodelay(fd: i64, enable: bool = true) -> bool {
-    guard fd > 0 else { return false; }
-    return wing::tcp_set_nodelay(fd, enable);
-}
-
-// Configures SO_REUSEADDR on socket.
-fn tcp_set_reuseaddr(fd: i64, enable: bool = true) -> bool {
-    guard fd > 0 else { return false; }
-    return wing::tcp_set_reuseaddr(fd, enable);
-}
-
-// Configures SO_REUSEPORT on socket (Linux / FreeBSD).
-fn tcp_set_reuseport(fd: i64, enable: bool = true) -> bool {
-    guard fd > 0 else { return false; }
-    return wing::tcp_set_reuseport(fd, enable);
-}
-
-// Abruptly terminates socket with TCP RST (RFC 1122 Section 4.2.2.13).
-fn tcp_abort(fd: i64) -> bool {
-    guard fd > 0 else { return false; }
-    return wing::tcp_abort(fd);
 }

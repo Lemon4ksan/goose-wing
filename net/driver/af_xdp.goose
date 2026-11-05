@@ -9,25 +9,18 @@ import std;
 import net.driver.types;
 
 // Native C bindings from shim/af_xdp.c
-extern fn wing_af_xdp_probe() -> i32;
-extern fn wing_af_xdp_create_socket() -> i64;
-extern fn wing_af_xdp_register_umem(xsk_fd: i64, addr: u64, len: u64, chunk_size: u32, headroom: u32) -> i32;
-extern fn wing_af_xdp_set_ring_size(xsk_fd: i64, ring_opt: i32, entries: u32) -> i32;
-extern fn wing_af_xdp_bind(xsk_fd: i64, ifindex: u32, queue_id: u32, flags: u32) -> i32;
-extern fn wing_af_xdp_close(xsk_fd: i64);
-
-fn native_af_xdp_probe() -> i32 { return wing_af_xdp_probe(); }
-fn native_af_xdp_create_socket() -> i64 { return wing_af_xdp_create_socket(); }
-fn native_af_xdp_register_umem(fd: i64, addr: u64, len: u64, chunk: u32, headroom: u32) -> i32 {
-    return wing_af_xdp_register_umem(fd, addr, len, chunk, headroom);
-}
-fn native_af_xdp_set_ring_size(fd: i64, opt: i32, entries: u32) -> i32 {
-    return wing_af_xdp_set_ring_size(fd, opt, entries);
-}
-fn native_af_xdp_bind(fd: i64, ifindex: u32, qid: u32, flags: u32) -> i32 {
-    return wing_af_xdp_bind(fd, ifindex, qid, flags);
-}
-fn native_af_xdp_close(fd: i64) { wing_af_xdp_close(fd); }
+extern fn native_af_xdp_probe() -> i32 = "wing_af_xdp_probe";
+extern fn native_af_xdp_create_socket() -> i64 = "wing_af_xdp_create_socket";
+extern fn native_af_xdp_register_umem(
+    xsk_fd:     i64,
+    addr:       u64,
+    len:        u64,
+    chunk_size: u32,
+    headroom:   u32,
+) -> i32 = "wing_af_xdp_register_umem";
+extern fn native_af_xdp_set_ring_size(xsk_fd: i64, ring_opt: i32, entries: u32) -> i32 = "wing_af_xdp_set_ring_size";
+extern fn native_af_xdp_bind(xsk_fd: i64, ifindex: u32, queue_id: u32, flags: u32) -> i32 = "wing_af_xdp_bind";
+extern fn native_af_xdp_close(xsk_fd: i64) = "wing_af_xdp_close";
 
 // AF_XDP packet descriptor (matches Linux struct xdp_desc)
 struct XdpDesc {
