@@ -45,42 +45,74 @@ from toxiproxy import (
 )
 
 _default_bin = "goose_chaos_server.exe" if sys.platform == "win32" else "goose_chaos_server"
+_default_cli_bin = "goose_chaos_client.exe" if sys.platform == "win32" else "goose_chaos_client"
 SERVER_EXE = Path(
     os.environ.get(
         "CHAOS_SERVER_BIN", Path(__file__).resolve().parent.parent / "bin" / _default_bin
     )
 )
+CLIENT_EXE = Path(
+    os.environ.get(
+        "CHAOS_CLIENT_BIN", Path(__file__).resolve().parent.parent / "bin" / _default_cli_bin
+    )
+)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 SERVER_SRC = Path(__file__).resolve().parent / "goose_chaos_server.goose"
+CLIENT_SRC = Path(__file__).resolve().parent / "goose_chaos_client.goose"
 CONNECT_HOST = os.environ.get("PROXY_CONNECT_HOST", "127.0.0.1")
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-def ensure_server_binary(force_rebuild: bool = False) -> Path:
-    """Ensures the native Goose Chaos server is compiled and ready."""
-    SERVER_EXE.parent.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file() and SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
-        return SERVER_EXE
+def _build_goose_binary(src: Path, exe: Path, label: str, force_rebuild: bool = False) -> Path:
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    if not force_rebuild and exe.is_file() and exe.stat().st_mtime >= src.stat().st_mtime:
+        return exe
 
-    print(f"[*] Building native Goose Chaos server: {SERVER_SRC} -> {SERVER_EXE}...")
+    print(f"[*] Building native Goose {label}: {src} -> {exe}...")
     env = os.environ.copy()
     if sys.platform == "win32":
         gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
         if gcc_wrapper.is_file():
             env["GOOSE_CC"] = str(gcc_wrapper)
-    cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
+    cmd = ["goose", "build", str(src), "-o", str(exe), "-O2"]
     res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env)
     if res.returncode != 0:
-        print("[!] Failed to build Chaos server:", file=sys.stderr)
+        print(f"[!] Failed to build {label}:", file=sys.stderr)
         if res.stdout:
             print(res.stdout, file=sys.stderr)
         if res.stderr:
             print(res.stderr, file=sys.stderr)
         sys.exit(1)
 
-    print(f"[+] Successfully built {SERVER_EXE.name}")
-    return SERVER_EXE
+    print(f"[+] Successfully built {exe.name}")
+    return exe
+
+
+def ensure_server_binary(force_rebuild: bool = False) -> Path:
+    """Ensures the native Goose Chaos server is compiled and ready."""
+    return _build_goose_binary(SERVER_SRC, SERVER_EXE, "Chaos server", force_rebuild)
+
+
+def ensure_client_binary(force_rebuild: bool = False) -> Path:
+    """Ensures the native Goose Chaos client is compiled and ready."""
+    return _build_goose_binary(CLIENT_SRC, CLIENT_EXE, "Chaos client", force_rebuild)
+
+
+def run_native_client_mode(proxy_port: int, mode: int, timeout: float = 10.0) -> str:
+    env = os.environ.copy()
+    env["WING_PORT"] = str(proxy_port)
+    env["WING_WORKERS"] = str(mode)
+    res = subprocess.run(
+        [str(CLIENT_EXE)],
+        check=False,
+        cwd=str(ROOT_DIR),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
+    return (res.stdout or "").strip()
 
 
 class NativeGooseServer:
@@ -744,6 +776,74 @@ async def main():
                 cycles_ok += 1
 
         record(cycles_ok == 50, f"50 rapid chaos cycles completed ({cycles_ok}/50 OK)")
+
+        # SECTION 6: Native Goose Client (`wing::Session`) E2E Resilience under Toxiproxy
+        print("\n6. Native Goose Client (`wing::Session`) E2E Resilience under Toxiproxy")
+        ensure_client_binary()
+
+        # 6.1 HTTP/1.1 GET, POST, POST chunked, and chunked response + trailer decoding under SlicerToxic
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s1", min_bytes=1, max_bytes=3, delay_ms=1, stream="both"))
+        out1 = await asyncio.to_thread(run_native_client_mode, proxy_port, 1)
+        record(
+            "PASS:MODE1_H1_SLICER_AND_CHUNKED" in out1,
+            "Native Goose Client GET/POST/Chunked-Upload & Chunked-Response+Trailer under 1..3B Slicer",
+            out1,
+        )
+
+        # 6.2 302 Redirect chain + Set-Cookie / CookieJar persistence across hops under Slicer + Latency
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s2", min_bytes=2, max_bytes=5, delay_ms=1, stream="both"))
+        proxy.add_toxic(LatencyToxic("cli_l2", latency_ms=15, jitter_ms=5, stream="both"))
+        out2 = await asyncio.to_thread(run_native_client_mode, proxy_port, 2)
+        record(
+            "PASS:MODE2_REDIRECT_AND_COOKIES" in out2,
+            "Native Goose Client 302 Redirect chain + CookieJar persistence under Slicer + Latency",
+            out2,
+        )
+
+        # 6.3 Keep-Alive connection pool socket reuse under Bandwidth + SlowClose
+        proxy.clear_toxics()
+        proxy.add_toxic(BandwidthToxic("cli_bw3", rate_kib=64, stream="both"))
+        proxy.add_toxic(SlowCloseToxic("cli_sc3", delay_ms=50, stream="both"))
+        out3 = await asyncio.to_thread(run_native_client_mode, proxy_port, 3)
+        await asyncio.sleep(0.12)
+        record(
+            "PASS:MODE3_KEEPALIVE_POOL" in out3,
+            "Native Goose Client Keep-Alive connection pool socket reuse (use_count >= 2) under Bandwidth + SlowClose",
+            out3,
+        )
+
+        # 6.4 Automatic retry interceptor recovery from 503 Service Unavailable under Slicer + Latency
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s4", min_bytes=2, max_bytes=6, delay_ms=1, stream="both"))
+        proxy.add_toxic(LatencyToxic("cli_l4", latency_ms=10, jitter_ms=4, stream="both"))
+        out4 = await asyncio.to_thread(run_native_client_mode, proxy_port, 4)
+        record(
+            "PASS:MODE4_RETRY_RECOVERY" in out4,
+            "Native Goose Client automatic retry policy recovery from 503 under Slicer + Latency",
+            out4,
+        )
+
+        # 6.5 Native HTTP/2 Client (h2c prior knowledge) multi-stream reuse under SlicerToxic
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s5", min_bytes=2, max_bytes=5, delay_ms=1, stream="both"))
+        out5 = await asyncio.to_thread(run_native_client_mode, proxy_port, 5)
+        record(
+            "PASS:MODE5_H2_CLIENT_SLICER" in out5,
+            "Native Goose HTTP/2 Client multi-stream multiplexing (streams 1 & 3) under 2..5B Slicer",
+            out5,
+        )
+
+        # 6.6 Mid-stream response truncation detection & dead socket eviction from pool under LimitDataToxic
+        proxy.clear_toxics()
+        proxy.add_toxic(LimitDataToxic("cli_ld6", bytes_limit=24, stream="downstream"))
+        out6 = await asyncio.to_thread(run_native_client_mode, proxy_port, 6)
+        record(
+            "PASS:MODE6_TRUNCATION_EVICTION" in out6,
+            "Native Goose Client mid-stream response truncation detection & pool socket eviction under LimitData",
+            out6,
+        )
 
     finally:
         await proxy.stop()

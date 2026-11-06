@@ -8,24 +8,50 @@ import core from "../..";
 import wing from "../..";
 
 struct ChaosEchoStage {
-    active: bool = true,
+    active:      bool = true,
+    flaky_calls: i32  = 0,
 }
 
 fn wing::on_server_stage(
-    _stage: ChaosEchoStage&,
-    phase:  wire::ServerHookPhase,
-    _cfg:   wing::ServerPipelineConfig&,
-    req:    const wing::Request&,
-    _ctx:   wing::ServerStageCtx&,
-    res:    wing::Response&,
+    stage: ChaosEchoStage&,
+    phase: wire::ServerHookPhase,
+    _cfg:  wing::ServerPipelineConfig&,
+    req:   const wing::Request&,
+    _ctx:  wing::ServerStageCtx&,
+    res:   wing::Response&,
 ) -> wire::StageVerdict {
-    if phase == wire::ServerHookPhase.PostAuth && req.url[..] != "/shutdown" {
+    if phase == wire::ServerHookPhase.PreRoute && req.url[..] != "/shutdown" {
         res.status_code = 200;
         wing::set_header(res, "Content-Type", "text/plain");
         res.body.clear();
         if req.url[..] == "/echo" {
             res.body.append("ECHO:");
             res.body.append(req.body[..]);
+        } else if req.url[..] == "/redirect-start" {
+            res.status_code = 302;
+            wing::set_header(res, "Location", "/redirect-final");
+            wing::set_header(res, "Set-Cookie", "chaos_cookie=token_99; Path=/");
+            res.body.append("REDIRECTING");
+            return wire::StageVerdict.ShortCircuit { status_code: 302 };
+        } else if req.url[..] == "/redirect-final" {
+            let ck = req.header("Cookie");
+            if find(ck, "chaos_cookie=token_99") >= 0 {
+                res.body.append("REDIRECT_COOKIE_OK");
+            } else {
+                res.status_code = 403;
+                res.body.append("MISSING_COOKIE");
+                return wire::StageVerdict.ShortCircuit { status_code: 403 };
+            }
+        } else if req.url[..] == "/flaky" {
+            stage.flaky_calls += 1;
+            if (stage.flaky_calls % 2) == 1 {
+                res.status_code = 503;
+                res.body.append("TEMP_UNAVAILABLE");
+                return wire::StageVerdict.ShortCircuit { status_code: 503 };
+            }
+            res.body.append("RETRY_RECOVERED_OK");
+        } else if req.url[..] == "/keepalive" {
+            res.body.append("KEEPALIVE_OK");
         } else {
             res.body.append("OK");
         }
@@ -167,7 +193,16 @@ fn handle_chaos_http1_request(
     var res = wing::Response { .. };
     let now_ns = core::as_nanos(core::monotonic_now());
     let _ = wing::dispatch_server_request_with_stage(server, "127.0.0.1", req, now_ns, res, echo_stage);
-    wing::set_header(res, "Connection", "close");
+    if req.url[..] == "/chunked-resp" {
+        let raw_chunked = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nTrailer: X-Chaos-Trailer\r\nConnection: close\r\n\r\n7\r\nCHUNK_A\r\n8\r\n_CHUNK_B\r\n0\r\nX-Chaos-Trailer: verified\r\n\r\n";
+        wing::tcp_send(conn, raw_chunked);
+        return;
+    }
+    if req.url[..] == "/keepalive" {
+        wing::set_header(res, "Connection", "keep-alive");
+    } else {
+        wing::set_header(res, "Connection", "close");
+    }
     wing::serialize_http1_response(res, server.server_name[..], out_wire);
     wing::tcp_send(conn, out_wire[..]);
 
@@ -185,6 +220,7 @@ fn serve_chaos_connection(
 ) {
     in_buf.clear();
     var idle_count = 0;
+    var ka_count = 0;
     var chunk: u8[..4096] = [];
     while in_buf.len < 65000 {
         chunk.clear();
@@ -215,7 +251,15 @@ fn serve_chaos_connection(
 
         let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
         if hdr_end >= 0 && is_http1_request_ready(in_buf[..], hdr_end) {
+            let is_ka = core::starts_with(in_buf[..], "GET /keepalive ");
             handle_chaos_http1_request(conn, server, in_buf[..], echo_stage, is_running);
+            if is_ka {
+                ka_count++;
+                if ka_count < 2 {
+                    in_buf.clear();
+                    continue;
+                }
+            }
             break;
         }
     }
@@ -233,7 +277,7 @@ fn main() {
     var server = wing::new_http_server("0.0.0.0", port);
     let _ = server.server_name.try_set("goose-chaos/1.0");
     wing::add_static_get_route(server, "/ping", "text/plain", "OK", 101);
-    wing::add_post_route(server, "/echo", 202);
+    wing::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "ECHO:H2ClientSlicedPayload_777", 202);
     wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
 
     var echo_stage = ChaosEchoStage { .. };

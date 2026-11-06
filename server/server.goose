@@ -2625,8 +2625,8 @@ fn serve_h2_connection(
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
-    var sess = internal::new_h2_server_session(server.server_name[..], 1000);
-    defer internal::cleanup_h2_server_session(sess, server.pipeline);
+    let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 1000000000);
+    defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
     var peer_ip: u8[..64] = [];
     tcp_get_peer_ip(conn_fd, peer_ip);
@@ -2637,16 +2637,19 @@ fn serve_h2_connection(
     var chunk:    u8[..4096]  = [];
     h2_in.append(initial_buf);
 
-    var now_ms: u64 = 1000;
+    var now_ms:     u64 = 1000;
+    var idle_ticks: u32 = 0;
     loop {
         out_wire.clear();
         let consumed, ok = internal::handle_h2_server_ingress(
-            sess, server.pipeline, server.timer, peer_ip[..], h2_in[..], now_ms, out_wire,
+            g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer, peer_ip[..], h2_in[..], now_ms, out_wire,
         );
         if out_wire.len > 0 {
             let _ = tcp_send(conn_fd, out_wire[..]);
         }
         if !ok {
+            chunk.clear();
+            let _ = tcp_recv(conn_fd, chunk, 4096, 10);
             return false;
         }
         if consumed > 0 {
@@ -2659,11 +2662,16 @@ fn serve_h2_connection(
         chunk.clear();
         let recvd = tcp_recv(conn_fd, chunk, 4096, recv_timeout_ms);
         if recvd == -2 {
+            idle_ticks++;
+            if idle_ticks >= 2 {
+                break;
+            }
             continue;
         }
         if recvd <= 0 {
             break;
         }
+        idle_ticks = 0;
         h2_in.append(chunk[..recvd]);
         now_ms += 10;
     }

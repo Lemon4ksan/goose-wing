@@ -86,6 +86,7 @@ struct H2Stream {
     received_data_bytes:     i64                 = 0,
     headers_received:        bool                = false,
     trailers_received:       bool                = false,
+    closed_by_rst:           bool                = false,
     status_code:             i32                 = 0,
     active:                  bool                = false,
 }
@@ -210,6 +211,19 @@ fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool 
     return idx, ok;
 }
 
+// Finds a previously opened stream that has transitioned to Closed.
+fn find_closed_h2_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
+    var idx: i32 = 0;
+    while idx < (s.streams.len as i32) {
+        let st = s.streams[idx];
+        if !st.active && st.state == H2StreamState.Closed && st.stream_id == stream_id {
+            return idx, true;
+        }
+        idx++;
+    }
+    return -1, false;
+}
+
 // ---- frame ingress coordinator & anti-dos barriers -----------------------
 
 // Opens a new stream descriptor with default RFC 9218 priority.
@@ -270,6 +284,7 @@ fn reset_session_stream(s: H2Connection&, stream_id: u32) {
     guard found else { return; }
 
     s.streams[s_idx].state = H2StreamState.Closed;
+    s.streams[s_idx].closed_by_rst = true;
     s.streams[s_idx].active = false;
     if s.active_stream_count > 0 {
         s.active_stream_count--;
@@ -380,6 +395,7 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
 
     if found {
         s.streams[s_idx].state = H2StreamState.Closed;
+        s.streams[s_idx].closed_by_rst = true;
         s.streams[s_idx].active = false;
         if s.active_stream_count > 0 {
             s.active_stream_count--;
@@ -451,7 +467,11 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if !found {
         if hdr.stream_id <= s.last_peer_stream_id {
-            return rfc::H2_ERR_STREAM_CLOSED;
+            let _, was_closed = find_closed_h2_stream_idx(s, hdr.stream_id);
+            if was_closed {
+                return rfc::H2_ERR_STREAM_CLOSED;
+            }
+            return rfc::H2_ERR_PROTOCOL_ERROR;
         }
 
         // RFC 9113 Section 6.8 & Go #82365:

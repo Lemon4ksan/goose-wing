@@ -571,6 +571,7 @@ fn dispatch_pooled_h1_hop(
     guard c_idx >= 0 else { return false; }
 
     var hop_req = Request { .. };
+    hop_req.method.clear();
     hop_req.method.append(curr_method);
     copy_headers(ctx.headers, hop_req.headers);
     hop_req.body.append(ctx.body[..]);
@@ -965,7 +966,8 @@ fn recv_h2_response_loop(
     var rx_accum: u8[..16384] = [];
     var chunk:    u8[4096]    = [0; 4096];
     var got_hdrs = false;
-    for step in 16 {
+    var is_done = false;
+    for step in 4096 {
         let n = tp.recv_slice(chunk[..], eff_timeout);
         if n > 0 {
             let _ = rx_accum.try_append(chunk[..n]);
@@ -981,11 +983,15 @@ fn recv_h2_response_loop(
         );
         guard ok_f else { return false; }
         if ctrl_out.len > 0 {
-            let _ = tp.send(ctrl_out[..]);
+            let _ = send_all(tp, ctrl_out[..]);
         }
-        if done || n <= 0 { break; }
+        if done {
+            is_done = true;
+            break;
+        }
+        if n <= 0 { break; }
     }
-    return got_hdrs;
+    return got_hdrs && is_done;
 }
 
 fn dispatch_pooled_h2_hop(
@@ -1019,8 +1025,7 @@ fn dispatch_pooled_h2_hop(
         session.pool.close_pooled_connection(conn_id);
         return false;
     }
-    let sent = session.pool.conns[c_idx].transport.send(wire_out[..]);
-    guard sent == (wire_out.len as i32) else {
+    guard send_all(session.pool.conns[c_idx].transport, wire_out[..]) else {
         session.pool.close_pooled_connection(conn_id);
         return false;
     }
@@ -1235,6 +1240,9 @@ fn execute_live_network_hop(
                 cipher_slot:   slot_idx,
             };
         } else {
+            if session.http2_prior_knowledge {
+                neg_proto = NegotiatedProtocol.Http2;
+            }
             t = Transport.Tcp { fd: sock };
         }
         let max_streams: i32 = if neg_proto == NegotiatedProtocol.Http2 { 100 } else { 1 };

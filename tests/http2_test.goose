@@ -1468,7 +1468,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         sub.assert_eq(s.continuation_stream_id, 0, "continuation state cleared after END_HEADERS");
     };
 
-    t.run("H2-17: HEADERS on Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
+    t.run("H2-17: HEADERS on RST-Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
@@ -1477,12 +1477,13 @@ fn test_h2_protocol_invariants(t: lit::T&) {
         var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
         wire.append(rfc::H2_CLIENT_PREFACE[..]);
-        // Complete stream 1
-        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", true, wire);
+        // Open stream 1 and close it via RST_STREAM (RFC 9113 §5.1 / h2spec 5.1.9)
+        encode_client_headers(client_hpack, 1, "GET", "/test", "localhost", false, wire);
+        internal::emit_rst_stream(1, rfc::H2_ERR_CANCEL, wire);
 
         var out_wire: u8[>..] = [];
         let _, ok1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out_wire);
-        sub.assert_true(ok1, "Stream 1 completed normally");
+        sub.assert_true(ok1, "Stream 1 closed via RST_STREAM");
 
         // Send second HEADERS frame on now-closed stream 1
         var wire2: u8[>..] = [];

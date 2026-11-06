@@ -147,8 +147,7 @@ fn parse_h1_header_block(
     var offset: i64 = 0;
     while offset < header_bytes.len {
         let rel_nl = core::index_of_byte(header_bytes[offset..], '\n');
-        guard rel_nl >= 0 else { break; }
-        let line_end = offset + rel_nl;
+        let line_end = if rel_nl >= 0 { offset + rel_nl } else { header_bytes.len };
         let line_raw = header_bytes[offset..line_end];
         let line = core::trim_end_byte(line_raw, '\r');
         offset = line_end + 1;
@@ -180,6 +179,12 @@ fn parse_h1_header_block(
 //   returns: ok = true, resp.status_code = 200
 fn parse_response_headers(header_block: const u8[:], resp: Response&) -> bool {
     let first_line_end = core::index_of_byte(header_block, '\n');
+    if first_line_end < 0 {
+        let status_only = core::trim_end_byte(header_block, '\r');
+        resp.headers.clear();
+        resp.presence_mask = 0;
+        return parse_h1_status_line(status_only, resp);
+    }
     guard first_line_end > 0 else { return false; }
 
     let status_raw = header_block[..first_line_end];

@@ -19,7 +19,9 @@ struct H2ServerStream {
     active:                  bool            = false,
     headers_received:        bool            = false,
     body_received:           bool            = false,
+    headers_sent:            bool            = false,
     response_sent:           bool            = false,
+    pending_has_trailers:    bool            = false,
     declared_content_length: i64             = -1,
     spill_slab_idx:          i32             = -1,
     slab_lease_deadline_ns:  u64             = 0,
@@ -37,7 +39,9 @@ fn reset_server_stream(st: H2ServerStream&) {
     st.active = false;
     st.headers_received = false;
     st.body_received = false;
+    st.headers_sent = false;
     st.response_sent = false;
+    st.pending_has_trailers = false;
     st.spill_slab_idx = -1;
     st.slab_lease_deadline_ns = 0;
     st.method.clear();
@@ -423,8 +427,8 @@ fn emit_response_data<B>(
     max_frame_size: u32,
     out:            B&,
     end_stream:     bool = true,
-) {
-    guard body.len > 0 else { return; }
+) -> i64 {
+    guard body.len > 0 else { return 0; }
 
     var offset: i64 = 0;
     let limit = if max_frame_size >= 16384 { max_frame_size as i64 } else { 16384 };
@@ -441,6 +445,7 @@ fn emit_response_data<B>(
         );
         offset += chunk_size;
     }
+    return offset;
 }
 
 // Encodes HTTP/2 Response Trailing HEADERS using HPACK
@@ -519,7 +524,7 @@ inline fn validate_decoded_map_bounds(map: const wing::HeaderMap&) -> bool {
     for &e in map.entries {
         let n = wing::entry_name(map, e);
         let v = wing::entry_value(map, e);
-        guard n.len <= 64 && v.len <= 2048 else { return false; }
+        guard n.len <= 256 && v.len <= 8192 else { return false; }
     }
     return true;
 }
@@ -777,7 +782,7 @@ fn process_ingress_headers<B>(
 
     var pseudo = H2PseudoHeaders { is_trailer: is_trailer, .. };
     var dec_headers = wing::HeaderMap { .. };
-    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, fragment, pseudo, dec_headers);
+    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, fragment, pseudo, dec_headers, 16384);
     if dec_err != rfc::H2_ERR_NO_ERROR {
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
@@ -864,7 +869,7 @@ fn process_ingress_continuation<B>(
 
     var pseudo = H2PseudoHeaders { is_trailer: sess.header_accum_is_trailer, .. };
     var dec_headers = wing::HeaderMap { .. };
-    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, sess.header_accumulator[..], pseudo, dec_headers);
+    let dec_err = decode_hpack_to_map(sess.conn.hpack_dec, sess.header_accumulator[..], pseudo, dec_headers, 16384);
     if dec_err != rfc::H2_ERR_NO_ERROR {
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
@@ -1277,6 +1282,54 @@ inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing:
     wing::append_all_headers(st.trailers, req.trailers);
 }
 
+inline fn complete_server_stream_response(
+    sess:             H2ServerSession&,
+    stream_idx:       i64,
+    target_stream_id: u32,
+) {
+    sess.streams[stream_idx].response_sent = true;
+    sess.streams[stream_idx].active = false;
+
+    let c_idx, c_found = find_session_stream_idx(sess.conn, target_stream_id);
+    if c_found {
+        sess.conn.streams[c_idx].state = H2StreamState.Closed;
+        sess.conn.streams[c_idx].active = false;
+        if sess.conn.active_stream_count > 0 {
+            sess.conn.active_stream_count--;
+        }
+    }
+}
+
+fn flush_pending_server_stream<B>(
+    sess:       H2ServerSession&,
+    stream_idx: i64,
+    out_wire:   B&,
+) {
+    let target_stream_id = sess.streams[stream_idx].stream_id;
+    let quota = compute_stream_send_quota(sess.conn, target_stream_id);
+    guard quota > 0 else { return; }
+
+    let has_trailers = sess.streams[stream_idx].pending_has_trailers;
+    let sent = emit_response_data(
+        sess,
+        target_stream_id,
+        sess.streams[stream_idx].body[..],
+        sess.conn.peer_max_frame_size,
+        out_wire,
+        !has_trailers,
+    );
+    if sent < sess.streams[stream_idx].body.len {
+        var rem_body: u8[..8192] = [];
+        let _ = rem_body.try_set(sess.streams[stream_idx].body[sent..]);
+        let _ = sess.streams[stream_idx].body.try_set(rem_body[..]);
+        return;
+    }
+    if has_trailers {
+        emit_response_trailers(sess, target_stream_id, sess.streams[stream_idx].trailers, out_wire);
+    }
+    complete_server_stream_response(sess, stream_idx, target_stream_id);
+}
+
 fn execute_ready_server_stream<B>(
     sess:       H2ServerSession&,
     stream_idx: i64,
@@ -1312,26 +1365,27 @@ fn execute_ready_server_stream<B>(
     let has_trailers = res.trailers.entries.len > 0;
     let end_headers = !has_body && !has_trailers;
     emit_response_headers(sess, target_stream_id, res, end_headers, out_wire);
+    sess.streams[stream_idx].headers_sent = true;
     if has_body {
         let end_data = !has_trailers;
-        emit_response_data(sess, target_stream_id, res.body[..], sess.conn.peer_max_frame_size, out_wire, end_data);
+        let sent = emit_response_data(
+            sess, target_stream_id, res.body[..], sess.conn.peer_max_frame_size, out_wire, end_data,
+        );
+        if sent < res.body.len {
+            let _ = sess.streams[stream_idx].body.try_set(res.body[sent..]);
+            sess.streams[stream_idx].trailers.clear();
+            if has_trailers {
+                wing::append_all_headers(res.trailers, sess.streams[stream_idx].trailers);
+            }
+            sess.streams[stream_idx].pending_has_trailers = has_trailers;
+            return;
+        }
     }
     if has_trailers {
         emit_response_trailers(sess, target_stream_id, res.trailers, out_wire);
     }
 
-    sess.streams[stream_idx].response_sent = true;
-    sess.streams[stream_idx].active = false;
-
-    // RFC 9113 §5.1: Response sent with END_STREAM -> stream transitions to Closed
-    let c_idx, c_found = find_session_stream_idx(sess.conn, target_stream_id);
-    if c_found {
-        sess.conn.streams[c_idx].state = H2StreamState.Closed;
-        sess.conn.streams[c_idx].active = false;
-        if sess.conn.active_stream_count > 0 {
-            sess.conn.active_stream_count--;
-        }
-    }
+    complete_server_stream_response(sess, stream_idx, target_stream_id);
 }
 
 fn dispatch_ready_server_streams<B>(
@@ -1343,11 +1397,12 @@ fn dispatch_ready_server_streams<B>(
     out_wire:  B&,
 ) {
     for i in sess.streams.len {
-        let is_ready = sess.streams[i].active &&
-            sess.streams[i].headers_received &&
-            sess.streams[i].body_received &&
-            !sess.streams[i].response_sent;
-        guard is_ready else { continue; }
+        guard sess.streams[i].active && !sess.streams[i].response_sent else { continue; }
+        if sess.streams[i].headers_sent {
+            flush_pending_server_stream(sess, i, out_wire);
+            continue;
+        }
+        guard sess.streams[i].headers_received && sess.streams[i].body_received else { continue; }
         execute_ready_server_stream(sess, i, pipeline, timer, client_ip, now_ms, out_wire);
     }
 }
@@ -1388,6 +1443,13 @@ fn handle_ingress_header_error<B>(
     offset:          i64&,
     out_wire:        B&,
 ) -> bool {
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS && err == rfc::H2_ERR_STREAM_CLOSED {
+        let c_idx, c_closed = find_closed_h2_stream_idx(sess.conn, hdr.stream_id);
+        if c_closed && !sess.conn.streams[c_idx].closed_by_rst {
+            emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+            return false;
+        }
+    }
     let is_prio_size_err = (hdr.frame_type == rfc::H2_FRAME_PRIORITY && err == rfc::H2_ERR_FRAME_SIZE_ERROR);
     if err == rfc::H2_ERR_STREAM_CLOSED || err == rfc::H2_ERR_REFUSED_STREAM || is_prio_size_err {
         emit_rst_stream(hdr.stream_id, err, out_wire);

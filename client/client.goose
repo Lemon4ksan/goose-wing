@@ -114,9 +114,10 @@ struct Client {
     // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
     pool: StreamPool = StreamPool { .. },
 
-    enable_cookie_jar:    bool             = true,
-    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
-    insecure_skip_verify: bool             = false,
+    enable_cookie_jar:     bool             = true,
+    http2_prior_knowledge: bool             = false,
+    trust_store:           TrustAnchorStore = TrustAnchorStore { .. },
+    insecure_skip_verify:  bool             = false,
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
