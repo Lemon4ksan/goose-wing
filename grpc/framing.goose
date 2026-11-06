@@ -109,17 +109,7 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
     out_payload.clear();
     let hdr_len_i64: i64 = rfc::GRPC_LPM_HEADER_LEN;
     out_payload.append(p.buf[hdr_len_i64..total_len]);
-
-    let remaining_bytes = p.buf.len - total_len;
-    if remaining_bytes == 0 {
-        p.buf.clear();
-    } else {
-        var temp: u8[>..] = [];
-        temp.append(p.buf[total_len..]);
-        p.buf.clear();
-        p.buf.append(temp[..]);
-    }
-
+    core::compact_wire_buffer(p.buf, total_len);
     return true;
 }
 
@@ -282,4 +272,163 @@ fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {
 //   returns: true, out = [0, 0, 0, 0, 0]
 fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
     return core::base64_decode(b64_stream, out);
+}
+
+// ---- Zero-Copy Base-128 Varint Protobuf Wire Primitives -----------------
+
+const PB_WIRE_VARINT:   u32 = 0;
+const PB_WIRE_I64:      u32 = 1;
+const PB_WIRE_LEN:      u32 = 2;
+const PB_WIRE_I32:      u32 = 5;
+const PB_MAX_FIELD_NUM: u32 = 0x1FFFFFFF;
+
+inline fn merge_varint_septet(acc: u64, b: u8, shift: u64) -> u64 {
+    return acc | (((b & 0x7F) as u64) << (shift & 63));
+}
+
+// Reads a Base-128 Varint from `wire` starting at `pos`.
+// Advances `pos` only when a complete, valid 64-bit varint is decoded.
+//
+// Example:
+//   wire = [0xAC, 0x02], pos = 0
+//   returns: val = 300, ok = true, pos = 2
+fn pb_read_varint(wire: const u8[:], pos: i64&) -> u64, bool {
+    let rem = core::sub_sat_i64(wire.len, pos);
+    guard pos >= 0 && rem > 0 else { return 0, false; }
+    let max_steps = min(rem, 10);
+    var result: u64 = 0;
+    var shift:  u64 = 0;
+    var step:   i64 = 0;
+    while step < max_steps {
+        let idx = core::add_sat_i64(pos, step);
+        let b = wire[idx];
+        if step == 9 && b > 1 { return 0, false; }
+        result = merge_varint_septet(result, b, shift);
+        if (b & 0x80) == 0 {
+            pos = core::add_sat_i64(idx, 1);
+            return result, true;
+        }
+        shift = core::add_sat_u64(shift, 7);
+        step = core::add_sat_i64(step, 1);
+    }
+    return 0, false;
+}
+
+// Appends a Base-128 Varint representation of `val` into `out`.
+fn pb_write_varint<B>(val: u64, out: B&) -> bool {
+    let req_len = protowire_varint_len(val) as i64;
+    let needed = core::add_sat_i64(out.len, req_len);
+    guard needed <= out.cap else { return false; }
+    var v = val;
+    while v >= 0x80 {
+        out.push(((v & 0x7F) as u8) | 0x80);
+        v = v >> 7;
+    }
+    out.push((v & 0x7F) as u8);
+    return true;
+}
+
+// Advances `pos` past a single Protobuf field value of type `wire_type`.
+// Leaves `pos` unchanged if the field is truncated or `wire_type` is unsupported.
+//
+// Example:
+//   wire = [0x03, 'a', 'b', 'c'], pos = 0, wire_type = 2
+//   returns: true, pos = 4
+fn pb_skip_field(wire: const u8[:], pos: i64&, wire_type: u32) -> bool {
+    let rem = core::sub_sat_i64(wire.len, pos);
+    guard pos >= 0 && rem > 0 else { return false; }
+    if wire_type == PB_WIRE_VARINT {
+        var cur = pos;
+        let _, ok = pb_read_varint(wire, cur);
+        if ok { pos = cur; }
+        return ok;
+    }
+    if wire_type == PB_WIRE_I64 {
+        guard rem >= 8 else { return false; }
+        pos = core::add_sat_i64(pos, 8);
+        return true;
+    }
+    if wire_type == PB_WIRE_LEN {
+        var cur = pos;
+        let len_u64, ok = pb_read_varint(wire, cur);
+        let tail = core::sub_sat_i64(wire.len, cur);
+        guard ok && len_u64 <= (tail as u64) else { return false; }
+        pos = core::add_sat_i64(cur, len_u64 as i64);
+        return true;
+    }
+    if wire_type == PB_WIRE_I32 {
+        guard rem >= 4 else { return false; }
+        pos = core::add_sat_i64(pos, 4);
+        return true;
+    }
+    return false;
+}
+
+// Scans Protobuf TLV records in `wire` and returns the varint value for `field_num`.
+//
+// Example:
+//   wire = [0x08, 0x96, 0x01], field_num = 1
+//   returns: val = 150, ok = true
+fn pb_read_varint_field(wire: const u8[:], field_num: u32) -> u64, bool {
+    guard field_num >= 1 && field_num <= PB_MAX_FIELD_NUM else { return 0, false; }
+    var pos: i64 = 0;
+    while pos < wire.len {
+        let tag, ok_tag = pb_read_varint(wire, pos);
+        guard ok_tag && tag > 0 else { return 0, false; }
+        let fnum = (tag >> 3) as u32;
+        let wtype = (tag & 0x07) as u32;
+        if fnum == field_num && wtype == PB_WIRE_VARINT {
+            return pb_read_varint(wire, pos);
+        }
+        guard pb_skip_field(wire, pos, wtype) else { return 0, false; }
+    }
+    return 0, false;
+}
+
+// Encodes a Protobuf varint field (`wire_type = 0`) for `field_num` into `out`.
+fn pb_write_varint_field<B>(field_num: u32, val: u64, out: B&) -> bool {
+    let tag = (((field_num & PB_MAX_FIELD_NUM) as u64) << 3) | (PB_WIRE_VARINT as u64);
+    let total_len = core::add_sat_u64(protowire_varint_len(tag), protowire_varint_len(val)) as i64;
+    let needed = core::add_sat_i64(out.len, total_len);
+    guard field_num >= 1 && field_num <= PB_MAX_FIELD_NUM && needed <= out.cap else { return false; }
+    let _ = pb_write_varint(tag, out);
+    return pb_write_varint(val, out);
+}
+
+// Scans Protobuf TLV records in `wire` and returns a zero-copy byte slice for `field_num`.
+//
+// Example:
+//   wire = [0x0A, 0x05, 'A', 'l', 'i', 'c', 'e'], field_num = 1
+//   returns: slice = "Alice", ok = true
+fn pb_read_bytes_field(wire: const u8[:], field_num: u32) -> const u8[:], bool {
+    guard field_num >= 1 && field_num <= PB_MAX_FIELD_NUM else { return "", false; }
+    var pos: i64 = 0;
+    while pos < wire.len {
+        let tag, ok_tag = pb_read_varint(wire, pos);
+        guard ok_tag && tag > 0 else { return "", false; }
+        let fnum = (tag >> 3) as u32;
+        let wtype = (tag & 0x07) as u32;
+        if fnum == field_num && wtype == PB_WIRE_LEN {
+            let len_u64, ok_len = pb_read_varint(wire, pos);
+            let rem = core::sub_sat_i64(wire.len, pos);
+            guard ok_len && len_u64 <= (rem as u64) else { return "", false; }
+            let end_pos = core::add_sat_i64(pos, len_u64 as i64);
+            return wire[pos..end_pos], true;
+        }
+        guard pb_skip_field(wire, pos, wtype) else { return "", false; }
+    }
+    return "", false;
+}
+
+// Encodes a length-delimited Protobuf string/bytes field (`wire_type = 2`) into `out`.
+fn pb_write_bytes_field<B>(field_num: u32, payload: const u8[:], out: B&) -> bool {
+    let tag = (((field_num & PB_MAX_FIELD_NUM) as u64) << 3) | (PB_WIRE_LEN as u64);
+    let len_u64 = payload.len as u64;
+    let hdr_len = core::add_sat_u64(protowire_varint_len(tag), protowire_varint_len(len_u64)) as i64;
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, hdr_len), payload.len);
+    guard field_num >= 1 && field_num <= PB_MAX_FIELD_NUM && needed <= out.cap else { return false; }
+    let _ = pb_write_varint(tag, out);
+    let _ = pb_write_varint(len_u64, out);
+    out.append(payload);
+    return true;
 }

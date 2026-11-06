@@ -821,27 +821,28 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
 
 // Parses a CompressedCertificate handshake message payload (RFC 8879 Section 4)
 // Example:
-//   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x28, 0xB5, 0x2F, 0xFD]
+//   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x28, 0xB5, 0x2F, 0xFD]
 //   returns: msg with algorithm = CERT_COMPRESS_ZSTD, uncompressed_len = 256, ok = true
 fn parse_compressed_certificate(payload: const u8[:]) -> CompressedCertMsg, bool {
     var msg = CompressedCertMsg { compressed_data: payload[..0], .. };
-    // RFC 8879 Section 4: algorithm (2B) + uncompressed_length (3B) + compressed_data (>= 1B)
-    guard payload.len >= 6 else { return msg, false; }
+    // RFC 8879 Section 4: algorithm (2B) + uncompressed_length (3B) + comp_len (3B) + compressed_data (>= 1B)
+    guard payload.len >= 9 else { return msg, false; }
 
-    let algo = ((payload[0] as u16) << 8) | payload[1];
+    let algo = core::read_be_u16(payload, 0);
     guard rfc::is_valid_compression_algorithm(algo) else { return msg, false; }
 
-    let ulen = ((payload[2] as u32) << 16) | ((payload[3] as u32) << 8) | payload[4];
+    let ulen = core::read_be_u24(payload, 2);
     // RFC 8879 Section 4: uncompressed_length MUST NOT be 0 and MUST NOT exceed bounded buffer ceiling
     guard ulen > 0 && ulen <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return msg, false; }
 
-    let comp_len = (payload.len - 5) as u32;
+    let comp_len = core::read_be_u24(payload, 5);
+    guard comp_len >= 1 && (payload.len - 8) == comp_len else { return msg, false; }
     // Decompression bomb ratio sanity check (reject expansion ratio > 1024x)
     guard rfc::is_within_decompression_ratio(ulen, comp_len) else { return msg, false; }
 
     msg.algorithm = algo;
     msg.uncompressed_len = ulen;
-    msg.compressed_data = payload[5..];
+    msg.compressed_data = payload[8..];
     return msg, true;
 }
 
@@ -852,11 +853,15 @@ fn encode_compressed_certificate_payload<B>(
     uncompressed_len: u32,
     compressed_data:  const u8[:],
 ) {
+    let comp_len = compressed_data.len as u32;
     out.push(((algorithm >> 8) & 0xFF) as u8);
     out.push((algorithm & 0xFF) as u8);
     out.push(((uncompressed_len >> 16) & 0xFF) as u8);
     out.push(((uncompressed_len >> 8) & 0xFF) as u8);
     out.push((uncompressed_len & 0xFF) as u8);
+    out.push(((comp_len >> 16) & 0xFF) as u8);
+    out.push(((comp_len >> 8) & 0xFF) as u8);
+    out.push((comp_len & 0xFF) as u8);
     out.append(compressed_data);
 }
 

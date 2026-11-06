@@ -1516,8 +1516,6 @@ fn validate_and_record_pseudo_header(
             guard !pseudo.has_method && !pseudo.has_status && val.len > 0 else {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
-            let invalid_connect = val == "CONNECT" && !pseudo.has_protocol && (pseudo.has_path || pseudo.has_scheme);
-            guard !invalid_connect else { return rfc::H2_ERR_PROTOCOL_ERROR; }
             if val != "OPTIONS" && pseudo.has_path && pseudo.path[..] == "*" {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
@@ -1530,9 +1528,6 @@ fn validate_and_record_pseudo_header(
     if name == ":scheme" {
         if validate_http2_rules {
             guard !pseudo.has_scheme && !pseudo.has_status && val.len > 0 else {
-                return rfc::H2_ERR_PROTOCOL_ERROR;
-            }
-            if pseudo.has_method && pseudo.method[..] == "CONNECT" && !pseudo.has_protocol {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
         }
@@ -1557,9 +1552,6 @@ fn validate_and_record_pseudo_header(
     if name == ":path" {
         if validate_http2_rules {
             guard !pseudo.has_path && !pseudo.has_status else {
-                return rfc::H2_ERR_PROTOCOL_ERROR;
-            }
-            if pseudo.has_method && pseudo.method[..] == "CONNECT" && !pseudo.has_protocol {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
             let err = validate_pseudo_path(val, pseudo);

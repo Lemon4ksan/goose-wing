@@ -1732,6 +1732,284 @@ fn test_h3_audit_regressions(t: lit::T&) {
     };
 }
 
+// --- Component: nghttp3_vendor_conformance ---
+// Ported test vectors from vendor/nghttp3 (tests/nghttp3_qpack_test.c,
+// tests/nghttp3_http_test.c, tests/nghttp3_conn_test.c):
+// - Required Insert Count (RIC) wrap-around reconstruction (test_nghttp3_qpack_decoder_reconstruct_ricnt)
+// - Huffman all-ones 4-byte [0xFF, 0xFF, 0xFF, 0xFF] rejection (test_nghttp3_qpack_huffman_decode_fail_state)
+// - Header value SWAR boundary checks at 31B, 32B, 64B (test_nghttp3_check_header_value)
+// - Post-Base Dynamic Indexed Field & Literal Field with Post-Base Name Reference (RFC 9204 §4.5.3, §4.5.5)
+// - Out-of-order stream decoding and stream cancellation instruction (0x40 | stream_id)
+fn test_nghttp3_vendor_conformance(t: lit::T&) {
+    t.run("NGHTTP3-QPACK-01: Required Insert Count (RIC) Modulo Wrap-Around Reconstruction") { sub =>
+        // test_nghttp3_qpack_decoder_reconstruct_ricnt (RFC 9204 §4.5.1.1):
+        // max_entries = 4096 / 32 = 128; full_range = 2 * 128 = 256
+        let cap:       u64    = 4096;
+        let ric_cases: u64[6] = [1, 127, 128, 255, 256, 300];
+        for i in 6 {
+            let orig_ric = ric_cases[i];
+            let enc_ric = internal::encode_ric(orig_ric, cap);
+            let dec_ric, err = internal::decode_ric(enc_ric, orig_ric + 10, cap);
+            sub.assert_eq(err, internal::QpackError.None, "RIC reconstructed cleanly across modulo boundary");
+            sub.assert_eq(dec_ric, orig_ric, "reconstructed RIC equals original RIC");
+        }
+
+        // Invalid encoded_ric != 0 when max_table_capacity == 0 MUST fail
+        let _, err_zero_cap = internal::decode_ric(1, 0, 0);
+        sub.assert_eq(
+            err_zero_cap,
+            internal::QpackError.DecompressionFailed,
+            "non-zero encoded RIC with 0 table capacity rejected",
+        );
+    };
+
+    t.run("NGHTTP3-QPACK-02: 4-Byte All-Ones Huffman Failure & Post-Base Dynamic Indexing") { sub =>
+        // test_nghttp3_qpack_huffman_decode_fail_state: 4 bytes of 0xFF
+        let all_ones: u8[4] = [0xFF, 0xFF, 0xFF, 0xFF];
+        var huff_out: u8[..32] = [];
+        sub.assert_false(internal::huff_decode_bytes(all_ones[..], huff_out), "4-byte 0xFFFFFFFF Huffman rejected");
+
+        // Post-Base Dynamic Indexed Field (0001xxxx = 0x10 | post_base_idx)
+        // Insert 2 entries: abs 0 ("x-k0": "v0"), abs 1 ("x-k1": "v1").
+        // Set RIC = 2, Base = 1 (Sign=1, DeltaBase = RIC - Base - 1 = 0 -> byte1 = 0x80).
+        // Post-base index 0 resolves to Base + 0 = abs_idx 1 ("x-k1": "v1")!
+        var tbl = internal::new_qpack_table(4096, 16);
+        sub.assert_true(internal::qpack_insert_literal(tbl, "x-k0", "v0"), "insert abs 0");
+        sub.assert_true(internal::qpack_insert_literal(tbl, "x-k1", "v1"), "insert abs 1");
+
+        var sec: u8[..64] = [];
+        let enc_ric = internal::encode_ric(2, tbl.capacity_bytes);
+        sec.push(enc_ric as u8);
+        sec.push(0x80); // Sign=1 (negative delta), DeltaBase=0 -> Base = 2 - 0 - 1 = 1
+        sec.push(0xD9); // Static :status 200
+        sec.push(0x80); // Relative index 0 -> Base - 1 - 0 = 0 ("x-k0": "v0")
+        sec.push(0x10); // Post-base index 0 -> Base + 0 = 1 ("x-k1": "v1")
+
+        var out_fields: internal::HeaderField[>..] = [];
+        let err = internal::decode_qpack_section(tbl, sec[..], out_fields, 16384);
+        sub.assert_eq(err, internal::QpackError.None, "post-base dynamic indexed section decoded");
+        sub.assert_eq(out_fields.len, 3, "3 fields decoded");
+        sub.assert_eq(out_fields[1].name[..], "x-k0", "relative index 0 resolved to abs 0");
+        sub.assert_eq(out_fields[1].value[..], "v0", "relative index 0 value matches");
+        sub.assert_eq(out_fields[2].name[..], "x-k1", "post-base index 0 resolved to abs 1");
+        sub.assert_eq(out_fields[2].value[..], "v1", "post-base index 0 value matches");
+    };
+
+    t.run("NGHTTP3-HTTP-01: Header Value & Name SWAR Boundary Checks (test_nghttp3_check_header_value)") { sub =>
+        // Valid 32B and 64B header values (exercising 8-byte SWAR / 16-byte SIMD boundaries)
+        let good31 = "0123456789abcdef0123456789abcde";
+        let good32 = "0123456789abcdef0123456789abcdef";
+        let good64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        sub.assert_true(wing::is_valid_header_value(good31), "31-byte printable value valid");
+        sub.assert_true(wing::is_valid_header_value(good32), "32-byte printable value valid");
+        sub.assert_true(wing::is_valid_header_value(good64), "64-byte printable value valid");
+        sub.assert_true(wing::is_valid_header_value(""), "empty header value valid");
+
+        // Control chars (0x00..0x08, 0x0A..0x1F, 0x7F) at index 31 (end of 32-byte block) MUST fail
+        let bad_ctl_bytes: u8[6] = [0x00, 0x07, 0x0A, 0x0D, 0x1F, 0x7F];
+        for k in 6 {
+            var buf32: u8[32] = ['a'; 32];
+            buf32[31] = bad_ctl_bytes[k];
+            sub.assert_false(wing::is_valid_header_value(buf32[..]), "control char at byte 31 rejected");
+        }
+
+        // Horizontal tab (0x09) and space (0x20) inside header value are valid
+        var tab_mid: u8[32] = ['a'; 32];
+        tab_mid[15] = '\t';
+        tab_mid[16] = ' ';
+        sub.assert_true(wing::is_valid_header_value(tab_mid[..]), "interior HTAB and SP valid in header value");
+    };
+
+    t.run("NGHTTP3-CONN-01: Decoder Stream Cancellation & Encoder Dynamic Table Sync") { sub =>
+        var enc_tbl = internal::new_qpack_table(4096, 16);
+        var dec_tbl = internal::new_qpack_table(4096, 16);
+
+        // Stream 8 pins dynamic entry 0, Stream 12 pins dynamic entry 1
+        sub.assert_true(internal::qpack_insert_literal(enc_tbl, "x-stream-8", "alpha"), "insert entry 0");
+        sub.assert_true(internal::qpack_insert_literal(enc_tbl, "x-stream-12", "bravo"), "insert entry 1");
+        sub.assert_true(internal::qpack_track_stream_ref(enc_tbl, 8, 0), "stream 8 pins entry 0");
+        sub.assert_true(internal::qpack_track_stream_ref(enc_tbl, 12, 1), "stream 12 pins entry 1");
+        sub.assert_true(internal::qpack_track_unacked_stream(enc_tbl, 12, 2), "stream 12 tracks RIC=2");
+
+        // Decoder emits Stream Cancellation for stream 8 (01xxxxxx = 0x48)
+        // followed by Section Acknowledgment for stream 12 (1xxxxxxx = 0x8C)
+        let dec_wire: u8[2] = [0x48, 0x8C];
+        let next1, err1 = internal::qpack_process_decoder_instruction(enc_tbl, dec_wire[..], 0);
+        sub.assert_eq(err1, internal::QpackError.None, "stream 8 cancellation processed");
+        sub.assert_eq(next1, 1, "consumed 1 byte for stream cancellation");
+        sub.assert_eq(enc_tbl.entries[0].ref_count, 0, "entry 0 unpinned after stream 8 cancellation");
+
+        let next2, err2 = internal::qpack_process_decoder_instruction(enc_tbl, dec_wire[..], next1);
+        sub.assert_eq(err2, internal::QpackError.None, "stream 12 section ack processed");
+        sub.assert_eq(next2, 2, "consumed 2nd byte for section ack");
+        sub.assert_eq(enc_tbl.known_rcvd_count, 2, "known_rcvd_count advanced to 2");
+
+        // Encoder instruction stream synced into dec_tbl
+        var inst_wire: u8[..64] = [];
+        inst_wire.push(0x4A); // Insert literal name (len 10)
+        inst_wire.append("x-stream-8");
+        inst_wire.push(0x05); // val len 5
+        inst_wire.append("alpha");
+        let _, err_inst = internal::qpack_process_encoder_instruction(dec_tbl, inst_wire[..], 0);
+        sub.assert_eq(err_inst, internal::QpackError.None, "decoder processed encoder literal insert");
+        sub.assert_eq(dec_tbl.insert_count, 1, "decoder insert_count is 1");
+    };
+}
+
+// 18. Ported Control Stream, SETTINGS, GOAWAY & Request Framing Semantics (vendor/nghttp3/tests/nghttp3_conn_test.c)
+fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
+    t.run("NGHTTP3-CONN-02: Control Stream First-Frame SETTINGS & Reserved H2 Settings/Frames Rejection (test_nghttp3_conn_read_control)") { sub =>
+        let settings = wing::H3Settings { .. };
+
+        // 1. Control stream starting with GOAWAY, CANCEL_PUSH, DATA, or HEADERS before SETTINGS -> H3_ERR_MISSING_SETTINGS
+        let non_settings_first: u64[4] = [
+            rfc::H3_FRAME_GOAWAY,
+            rfc::H3_FRAME_CANCEL_PUSH,
+            rfc::H3_FRAME_DATA,
+            rfc::H3_FRAME_HEADERS,
+        ];
+        for ftype in non_settings_first {
+            var conn = internal::new_h3_client_connection(settings);
+            var wire: u8[..32] = [];
+            internal::quic_encode_varint(wire, rfc::H3_STREAM_CONTROL);
+            internal::encode_h3_frame_header(wire, ftype, 1);
+            wire.push(0x00);
+            let err = conn.handle_stream_data(3, false, wire[..], false);
+            sub.assert_eq(err, rfc::H3_ERR_MISSING_SETTINGS, "non-SETTINGS first frame on control stream returns H3_ERR_MISSING_SETTINGS");
+        }
+
+        // 2. Duplicate SETTINGS frame on control stream -> H3_ERR_FRAME_UNEXPECTED
+        var conn_dup = internal::new_h3_client_connection(settings);
+        var wire_dup: u8[..64] = [];
+        internal::quic_encode_varint(wire_dup, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(wire_dup, settings);
+        internal::encode_h3_settings_frame(wire_dup, settings);
+        let err_dup = conn_dup.handle_stream_data(3, false, wire_dup[..], false);
+        sub.assert_eq(err_dup, rfc::H3_ERR_FRAME_UNEXPECTED, "second SETTINGS frame on control stream rejected");
+
+        // 3. Reserved HTTP/2 Setting IDs (0x00, 0x02, 0x03, 0x04, 0x05) -> H3_ERR_SETTINGS_ERROR (RFC 9114 §7.2.4.1)
+        let reserved_setting_ids: u64[5] = [0x00, 0x02, 0x03, 0x04, 0x05];
+        for rsid in reserved_setting_ids {
+            var raw_set: u8[..16] = [];
+            internal::quic_encode_varint(raw_set, rsid);
+            internal::quic_encode_varint(raw_set, 1);
+            var parsed_s = wing::H3Settings { .. };
+            let err_rs = internal::parse_h3_settings_frame(raw_set[..], parsed_s);
+            sub.assert_eq(err_rs, rfc::H3_ERR_SETTINGS_ERROR, "reserved HTTP/2 setting ID rejected with H3_ERR_SETTINGS_ERROR");
+        }
+
+        // 4. Forbidden HTTP/2 frame types (0x02 PRIORITY, 0x06 PING, 0x08 WINDOW_UPDATE, 0x09 CONTINUATION) -> H3_ERR_FRAME_UNEXPECTED
+        let forbidden_h2_frames: u64[4] = [0x02, 0x06, 0x08, 0x09];
+        for h2f in forbidden_h2_frames {
+            var conn_f = internal::new_h3_client_connection(settings);
+            var wire_f: u8[..64] = [];
+            internal::quic_encode_varint(wire_f, rfc::H3_STREAM_CONTROL);
+            internal::encode_h3_settings_frame(wire_f, settings);
+            internal::encode_h3_frame_header(wire_f, h2f, 0);
+            let err_f = conn_f.handle_stream_data(3, false, wire_f[..], false);
+            sub.assert_eq(err_f, rfc::H3_ERR_FRAME_UNEXPECTED, "forbidden HTTP/2 frame type on H3 control stream rejected");
+        }
+    };
+
+    t.run("NGHTTP3-CONN-03: GOAWAY Monotonicity & Request Stream Frame Ordering (test_nghttp3_conn_recv_goaway)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        var init_ctrl: u8[..64] = [];
+        internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(init_ctrl, settings);
+        sub.assert_eq(conn.handle_stream_data(3, false, init_ctrl[..], false), rfc::H3_ERR_NO_ERROR, "control stream initialized");
+
+        // 1. First GOAWAY with stream ID 16 -> accepted
+        var ga1: u8[..16] = [];
+        internal::encode_h3_goaway_frame(ga1, 16);
+        sub.assert_eq(conn.handle_stream_data(3, false, ga1[..], false), rfc::H3_ERR_NO_ERROR, "GOAWAY(16) accepted");
+
+        // 2. Second GOAWAY with lower stream ID 8 -> accepted
+        var ga2: u8[..16] = [];
+        internal::encode_h3_goaway_frame(ga2, 8);
+        sub.assert_eq(conn.handle_stream_data(3, false, ga2[..], false), rfc::H3_ERR_NO_ERROR, "decreasing GOAWAY(8) accepted");
+
+        // 3. Third GOAWAY with higher stream ID 12 > 8 -> H3_ERR_ID_ERROR (RFC 9114 §5.2)
+        var ga3: u8[..16] = [];
+        internal::encode_h3_goaway_frame(ga3, 12);
+        sub.assert_eq(conn.handle_stream_data(3, false, ga3[..], false), rfc::H3_ERR_ID_ERROR, "increasing GOAWAY(12 > 8) rejected with H3_ERR_ID_ERROR");
+
+        // 4. Request stream receiving DATA frame before initial HEADERS frame -> H3_ERR_FRAME_UNEXPECTED (RFC 9114 §4.1)
+        var req_conn = internal::new_h3_client_connection(settings);
+        let sid, _ = req_conn.open_request_stream();
+        var data_first: u8[..16] = [];
+        internal::encode_h3_data_frame(data_first, "hello");
+        sub.assert_eq(
+            req_conn.handle_stream_data(sid, true, data_first[..], false),
+            rfc::H3_ERR_FRAME_UNEXPECTED,
+            "DATA frame before initial HEADERS rejected with H3_ERR_FRAME_UNEXPECTED",
+        );
+    };
+
+    t.run("NGHTTP3-HTTP-02: Header Name/Value Lexical Matrix & Server OPTIONS * Validation (nghttp3_http_test.c)") { sub =>
+        // 1. test_nghttp3_check_header_value (nghttp3_http_test.c:354-409):
+        // All control chars 0x00..0x08, 0x0A..0x1F, and 0x7F (DEL) MUST be rejected
+        var ctl: u8 = 0;
+        while ctl <= 0x1F {
+            if ctl != '\t' {
+                let bad_v: u8[3] = ['a', ctl, 'b'];
+                sub.assert_false(internal::validate_qpack_field_val(bad_v[..]), "control char 0x00..0x1F (except HTAB) rejected in QPACK value");
+            }
+            ctl += 1;
+        }
+        let del_v: u8[3] = ['a', 0x7F, 'b'];
+        sub.assert_false(internal::validate_qpack_field_val(del_v[..]), "DEL (0x7F) rejected in QPACK value");
+
+        // Leading or trailing SP (' ') or HTAB ('\t') rejected; internal HTAB and 0x80..0xFE accepted
+        sub.assert_false(internal::validate_qpack_field_val(" alpha"), "leading SP rejected");
+        sub.assert_false(internal::validate_qpack_field_val("alpha "), "trailing SP rejected");
+        sub.assert_false(internal::validate_qpack_field_val("\talpha"), "leading HTAB rejected");
+        sub.assert_false(internal::validate_qpack_field_val("alpha\t"), "trailing HTAB rejected");
+        sub.assert_true(internal::validate_qpack_field_val("alpha\tbravo"), "internal HTAB accepted");
+        sub.assert_true(internal::validate_qpack_field_val(""), "empty header value accepted");
+        let obs_text: u8[4] = ['a', 0x80, 0xFE, 'b'];
+        sub.assert_true(internal::validate_qpack_field_val(obs_text[..]), "obs-text 0x80..0xFE accepted");
+
+        // 2. test_nghttp3_check_header_name (nghttp3_http_test.c:411-424)
+        sub.assert_false(internal::validate_qpack_field_name(""), "empty header name rejected");
+        sub.assert_false(internal::validate_qpack_field_name(":"), "bare ':' header name rejected");
+        sub.assert_true(internal::validate_qpack_field_name("a"), "single lowercase char 'a' accepted");
+        sub.assert_true(internal::validate_qpack_field_name(":a"), "pseudo-header ':a' syntax accepted");
+        sub.assert_false(internal::validate_qpack_field_name("foO"), "uppercase 'foO' rejected");
+        sub.assert_false(internal::validate_qpack_field_name(":Foo"), "uppercase ':Foo' rejected");
+        let bad_name_utf: u8[4] = ['0', '0', '0', 0xFC];
+        sub.assert_false(internal::validate_qpack_field_name(bad_name_utf[..]), "non-ASCII 0xFC in header name rejected");
+
+        // 3. Server pseudo-header validation: OPTIONS * accepted vs GET * rejected (RFC 9114 §4.3.1)
+        let settings = wing::H3Settings { .. };
+        var cli_conn = internal::new_h3_client_connection(settings);
+        let sid_opt, _ = cli_conn.open_request_stream();
+        let sid_bad, _ = cli_conn.open_request_stream();
+        let empty_extra = wing::HeaderMap { .. };
+
+        var opt_frame: u8[..128] = [];
+        sub.assert_true(
+            cli_conn.send_request_headers(sid_opt, "OPTIONS", "https", "example.com", "*", empty_extra, true, opt_frame),
+            "encode OPTIONS * request headers",
+        );
+        var srv_opt = internal::new_h3_server_connection(settings);
+        sub.assert_eq(srv_opt.handle_stream_data(0, true, opt_frame[..], true), rfc::H3_ERR_NO_ERROR, "OPTIONS * accepted by H3 server");
+
+        var bad_frame: u8[..128] = [];
+        sub.assert_true(
+            cli_conn.send_request_headers(sid_bad, "GET", "https", "example.com", "*", empty_extra, true, bad_frame),
+            "encode GET * request headers",
+        );
+        var srv_get_star = internal::new_h3_server_connection(settings);
+        sub.assert_eq(
+            srv_get_star.handle_stream_data(0, true, bad_frame[..], true),
+            rfc::H3_ERR_GENERAL_PROTOCOL,
+            "GET * rejected by H3 server with H3_ERR_GENERAL_PROTOCOL",
+        );
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", lit::Verbosity.Verbose);
 
@@ -1751,6 +2029,8 @@ fn main() {
     lit::run_case(runner, "14. WebTransport Session Lifecycle", test_webtransport_session_lifecycle);
     lit::run_case(runner, "15. WebTransport Stream Demuxing & Session Routing", test_webtransport_stream_demuxing);
     lit::run_case(runner, "16. HTTP/3 Bug Hunter Audit Regressions (F001-F006)", test_h3_audit_regressions);
+    lit::run_case(runner, "17. nghttp3 Vendor Conformance Vectors", test_nghttp3_vendor_conformance);
+    lit::run_case(runner, "18. nghttp3 Control Stream, SETTINGS, GOAWAY & Request Ordering", test_nghttp3_conn_and_http_semantics);
 
     let ok = lit::finish(runner);
     assert(ok);

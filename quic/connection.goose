@@ -227,6 +227,7 @@ inline fn update_bbr_on_ack(
     round_done:      bool,
 ) {
     if lost_bytes > 0 || ecn_ce_count > 0 {
+        bbr_update_pacing_and_cwnd(conn.bbr);
         bbr_on_congestion_signal(
             conn.bbr,
             in_flight_bytes,
@@ -236,9 +237,9 @@ inline fn update_bbr_on_ack(
             new_acked_pkts,
         );
     } else if acked_bytes > 0 {
-        bbr_advance_cycle(conn.bbr, true);
+        bbr_advance_cycle(conn.bbr, round_done);
+        bbr_update_pacing_and_cwnd(conn.bbr);
     }
-    bbr_update_pacing_and_cwnd(conn.bbr);
     conn.pacer = conn.bbr.pacer;
 }
 

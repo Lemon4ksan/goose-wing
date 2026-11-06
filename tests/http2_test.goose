@@ -2873,6 +2873,418 @@ fn test_h2_extension_frames(t: lit::T&) {
     };
 }
 
+// --- Component: nghttp2_and_h2_vendor_conformance ---
+// Ported test vectors from vendor/nghttp2 (tests/nghttp2_hd_test.c,
+// tests/nghttp2_frame_test.c, tests/nghttp2_http_test.c) and vendor/h2:
+// - HPACK zero-length Huffman string literal ([0x40, 0x01, 'x', 0x80] -> x: "")
+// - HPACK indexed representation 0x80 (index == 0) rejection
+// - HPACK dynamic table shrink to 0 (0x20) followed by resize to 1024 (0x3F, 0xE1, 0x07)
+// - HPACK 150-entry sequential insertion & FIFO wrap-around verification
+// - RFC 9218 Extensible Priority dictionary edge cases from test_nghttp2_http_parse_priority
+// - RST_STREAM arbitrary 32-bit error code (1000000009) & HEADERS FLAG_PRIORITY bitmask
+fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
+    t.run("NGHTTP2-HD-01: Zero-length Huffman literal and empty value encoding/decoding") { sub =>
+        var dt = internal::new_dynamic_table(4096);
+        // Request pseudo-headers + literal with incremental indexing (0x40), name "x" (len 1),
+        // value: Huffman bit set with length 0 (0x80)
+        let wire: u8[7] = [0x82, 0x87, 0x84, 0x40, 0x01, 'x', 0x80];
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, wire[..], pseudo, out);
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "zero-length Huffman string literal decodes with NO_ERROR");
+        sub.assert_true(out.has_header("x"), "header 'x' present in decoded map");
+        sub.assert_eq(out.get_header("x"), "", "header 'x' has empty value");
+        sub.assert_eq(dt.count, 1, "entry inserted into dynamic table");
+    };
+
+    t.run("NGHTTP2-HD-02: Indexed representation 0x80 (index 0) and out-of-bounds static/dynamic indices") { sub =>
+        var dt = internal::new_dynamic_table(4096);
+        let wire_idx0: u8[1] = [0x80];
+        var pseudo0 = internal::H2PseudoHeaders { .. };
+        var out0 = wing::HeaderMap { .. };
+        let err0 = internal::decode_hpack_to_map(dt, wire_idx0[..], pseudo0, out0);
+        sub.assert_eq(err0, rfc::H2_ERR_COMPRESSION_ERROR, "indexed representation 0x80 must return COMPRESSION_ERROR");
+
+        // Index 62 when dynamic table is empty -> COMPRESSION_ERROR
+        let wire_idx62: u8[2] = [0x82, 0xBE];
+        var pseudo62 = internal::H2PseudoHeaders { .. };
+        var out62 = wing::HeaderMap { .. };
+        let err62 = internal::decode_hpack_to_map(dt, wire_idx62[..], pseudo62, out62);
+        sub.assert_eq(err62, rfc::H2_ERR_COMPRESSION_ERROR, "out-of-bounds dynamic index 62 on empty table returns COMPRESSION_ERROR");
+    };
+
+    t.run("NGHTTP2-HD-03: Dynamic Table Size Update 0 Eviction + Resize to 1024 (RFC 7541 §4.2)") { sub =>
+        var dt = internal::new_dynamic_table(4096);
+        internal::insert_header(dt, "x-nghttp2-a", "alpha");
+        internal::insert_header(dt, "x-nghttp2-b", "bravo");
+        sub.assert_eq(dt.count, 2, "2 entries before size update");
+
+        // Header block starting with two consecutive table size updates:
+        // 1. 0x20 (size = 0 -> evicts all entries)
+        // 2. 0x3F, 0xE1, 0x07 (size = 31 + 0x61 + (7 << 7) = 31 + 97 + 896 = 1024)
+        // Followed by :method: GET (0x82), :scheme: https (0x87), :path: / (0x84)
+        let wire: u8[7] = [0x20, 0x3F, 0xE1, 0x07, 0x82, 0x87, 0x84];
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var out = wing::HeaderMap { .. };
+        let err = internal::decode_hpack_to_map(dt, wire[..], pseudo, out);
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "consecutive leading table size updates (0 then 1024) accepted");
+        sub.assert_eq(dt.count, 0, "size update to 0 evicted all prior dynamic entries");
+        sub.assert_eq(dt.used_bytes, 0, "used_bytes is 0 after eviction");
+        sub.assert_eq(dt.current_max_size, 1024, "current_max_size updated to 1024");
+    };
+
+    t.run("NGHTTP2-HD-04: 150-Iteration HPACK Encode/Decode Ring Buffer Wrap-Around") { sub =>
+        var enc_dt = internal::new_dynamic_table(4096);
+        var dec_dt = internal::new_dynamic_table(4096);
+
+        var i: u32 = 0;
+        while i < 150 {
+            var hblock: u8[..128] = [];
+            hblock.push(0x82); // :method GET
+            hblock.push(0x87); // :scheme https
+            hblock.push(0x84); // :path /
+
+            var val_buf: u8[..16] = [];
+            val_buf.append("val-");
+            val_buf.push(('0' + ((i / 100) % 10) as u8));
+            val_buf.push(('0' + ((i / 10) % 10) as u8));
+            val_buf.push(('0' + (i % 10) as u8));
+
+            internal::encode_hpack_field(enc_dt, hblock, "x-seq-id", val_buf[..], internal::HpackIndexing.Incremental, true);
+
+            var pseudo = internal::H2PseudoHeaders { .. };
+            var out = wing::HeaderMap { .. };
+            let err = internal::decode_hpack_to_map(dec_dt, hblock[..], pseudo, out);
+            sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "iteration HPACK block decoded");
+            sub.assert_eq(out.get_header("x-seq-id"), val_buf[..], "decoded x-seq-id matches encoded value");
+            i += 1;
+        }
+        sub.assert_eq(enc_dt.count, dec_dt.count, "encoder and decoder dynamic table counts stay in lockstep");
+        sub.assert_eq(enc_dt.used_bytes, dec_dt.used_bytes, "encoder and decoder used_bytes stay in lockstep");
+    };
+
+    t.run("NGHTTP2-HTTP-01: RFC 9218 Extensible Priority Vectors (test_nghttp2_http_parse_priority)") { sub =>
+        // 1. Empty string -> returns default urgency=3, inc=false with ok=false (no explicit parameter)
+        let p_empty, ok_empty = wing::parse_http_priority("");
+        sub.assert_false(ok_empty, "empty priority field has no explicit parameters");
+        sub.assert_eq(p_empty.urgency, 3, "default urgency 3");
+        sub.assert_false(p_empty.incremental, "default incremental false");
+
+        // 2. "u=7,i" -> urgency=7, inc=true
+        let p1, ok1 = wing::parse_http_priority("u=7,i");
+        sub.assert_true(ok1, "u=7,i parses");
+        sub.assert_eq(p1.urgency, 7, "urgency 7");
+        sub.assert_true(p1.incremental, "incremental true");
+
+        // 3. "u=0,i=?0" -> urgency=0, inc=false
+        let p2, ok2 = wing::parse_http_priority("u=0,i=?0");
+        sub.assert_true(ok2, "u=0,i=?0 parses");
+        sub.assert_eq(p2.urgency, 0, "urgency 0");
+        sub.assert_false(p2.incremental, "incremental false");
+
+        // 4. Duplicate keys: "u=0, i, i=?0, u=6" -> last key wins (urgency=6, inc=false)
+        let p3, ok3 = wing::parse_http_priority("u=0, i, i=?0, u=6");
+        sub.assert_true(ok3, "duplicate keys parse");
+        sub.assert_eq(p3.urgency, 6, "later urgency u=6 overwrites u=0");
+        sub.assert_false(p3.incremental, "later i=?0 overwrites i");
+
+        // 5. Explicit boolean ?1: "i=?1" -> urgency=3, inc=true
+        let p4, ok4 = wing::parse_http_priority("i=?1");
+        sub.assert_true(ok4, "i=?1 parses");
+        sub.assert_eq(p4.urgency, 3, "default urgency 3");
+        sub.assert_true(p4.incremental, "incremental true");
+
+        // 6. Out-of-bounds u=-1 or u=8 ignored/preserved per RFC 9218 §4
+        let p5, ok5 = wing::parse_http_priority("u=-1, i=?1");
+        sub.assert_true(ok5, "u=-1 ignored gracefully");
+        sub.assert_eq(p5.urgency, 3, "urgency remains default 3");
+        sub.assert_true(p5.incremental, "incremental true preserved");
+
+        // 7. Complex parameterized dictionary with inner list and quoted commas (nghttp2_http_test.c:249)
+        let p6, ok6 = wing::parse_http_priority("i=?0, u=1, a=(x y z), u=2; i=?0;foo=\",,,\", i=?1;i=?0; u=6");
+        sub.assert_true(ok6, "complex parameterized priority dictionary parses");
+        sub.assert_eq(p6.urgency, 2, "u=2 wins (u=6 after ';' is parameter on i, not dict member)");
+        sub.assert_true(p6.incremental, "i=?1 wins (i=?0 after ';' is parameter, not dict member)");
+
+        // 8. Type mismatch: inner list on 'i' or 'u' ("i=(1 2)" or "u=(1 2)") must be rejected
+        let _, ok_bad_i = wing::parse_http_priority("i=(1 2)");
+        sub.assert_false(ok_bad_i, "inner list i=(1 2) rejected as non-boolean");
+        let _, ok_bad_u = wing::parse_http_priority("u=(1 2)");
+        sub.assert_false(ok_bad_u, "inner list u=(1 2) rejected as non-integer");
+        let _, ok_bad_syntax = wing::parse_http_priority("u=0,");
+        sub.assert_false(ok_bad_syntax, "trailing comma 'u=0,' rejected");
+    };
+
+    t.run("NGHTTP2-FRAME-01: RST_STREAM with Unknown Error Code & HEADERS Exclusive Priority Bit") { sub =>
+        // nghttp2_frame_test.c: test_nghttp2_frame_pack_rst_stream with error code 1000000009 (0x3B9ACA09)
+        var wire_rst: u8[..32] = [];
+        internal::emit_rst_stream(1000000007, 1000000009, wire_rst);
+        sub.assert_eq(wire_rst.len, 13, "RST_STREAM frame is 9B header + 4B payload = 13B");
+
+        let r_hdr, r_err = internal::parse_frame_header(wire_rst[..9]);
+        sub.assert_eq(r_err, rfc::H2_ERR_NO_ERROR, "RST_STREAM header parsed");
+        sub.assert_eq(r_hdr.frame_type, rfc::H2_FRAME_RST_STREAM, "frame type is RST_STREAM");
+        sub.assert_eq(r_hdr.stream_id, 1000000007, "stream_id 1000000007 preserved");
+        let code = core::read_be_u32(wire_rst[..], 9);
+        sub.assert_eq(code, 1000000009, "unknown 32-bit error code 1000000009 preserved verbatim");
+
+        // HEADERS frame with both FLAG_PADDED (0x08) and FLAG_PRIORITY (0x20)
+        // Payload: PadLen=2 (1B) + [Exclusive=1 | StreamDep=3 (4B) + Weight=12 (1B)] + HPACK(3B: 0x82,0x87,0x84) + Padding(2B) = 11B
+        let h_hdr = internal::FrameHeader {
+            length:     11,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_PADDED | rfc::H2_FLAG_PRIORITY,
+            stream_id:  1,
+        };
+        let h_payload: u8[11] = [
+            0x02,                   // Pad length = 2
+            0x80, 0x00, 0x00, 0x03, // Exclusive=1, Stream Dependency=3
+            12,                     // Weight = 12
+            0x82, 0x87, 0x84,       // :method GET, :scheme https, :path /
+            0x00, 0x00,             // 2 bytes padding
+        ];
+        let unpadded, pad_err = internal::extract_padded_frame_payload(h_hdr, h_payload[..]);
+        sub.assert_eq(pad_err, rfc::H2_ERR_NO_ERROR, "padded + priority HEADERS payload extracted");
+        sub.assert_eq(unpadded.len, 8, "unpadded length is 5B priority + 3B hpack = 8B");
+    };
+}
+
+// 32. Ported Session, Mandatory Headers, Content-Length & Flow Control Vectors (vendor/nghttp2/tests/nghttp2_session_test.c)
+fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
+    t.run("NGHTTP2-SESS-01: Mandatory Pseudo-Headers & Forbidden Connection Headers (test_nghttp2_http_mandatory_headers)") { sub =>
+        // 1. Forbidden connection-specific headers: connection, keep-alive, proxy-connection, transfer-encoding, upgrade
+        let forbidden_names: const u8[:][5] = [
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "transfer-encoding",
+            "upgrade",
+        ];
+        for fname in forbidden_names {
+            var dt = internal::new_dynamic_table(4096);
+            var hblock: u8[..128] = [0x82, 0x87, 0x84]; // :method GET, :scheme https, :path /
+            hblock.push(0x00);
+            hblock.push(fname.len as u8);
+            hblock.append(fname);
+            hblock.push(3);
+            hblock.append("val");
+            var pseudo = internal::H2PseudoHeaders { .. };
+            var out = wing::HeaderMap { .. };
+            let err = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+            sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "forbidden connection-specific header rejected");
+        }
+
+        // 2. "te" header: only "trailers" is valid; "gzip" or "chunked" or "trailers, deflate" must fail
+        let bad_te_vals: const u8[:][3] = ["gzip", "chunked", "trailers, deflate"];
+        for bte in bad_te_vals {
+            var dt = internal::new_dynamic_table(4096);
+            var hblock: u8[..128] = [0x82, 0x87, 0x84];
+            hblock.push(0x00);
+            hblock.push(2);
+            hblock.append("te");
+            hblock.push(bte.len as u8);
+            hblock.append(bte);
+            var pseudo = internal::H2PseudoHeaders { .. };
+            var out = wing::HeaderMap { .. };
+            let err = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+            sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "TE header != 'trailers' rejected");
+        }
+        var dt_te_ok = internal::new_dynamic_table(4096);
+        var hb_te_ok: u8[..128] = [0x82, 0x87, 0x84];
+        hb_te_ok.push(0x00);
+        hb_te_ok.push(2);
+        hb_te_ok.append("te");
+        hb_te_ok.push(8);
+        hb_te_ok.append("trailers");
+        var pseudo_te = internal::H2PseudoHeaders { .. };
+        var out_te = wing::HeaderMap { .. };
+        sub.assert_eq(internal::decode_hpack_to_map(dt_te_ok, hb_te_ok[..], pseudo_te, out_te), rfc::H2_ERR_NO_ERROR, "TE: trailers accepted");
+
+        // 3. Uppercase letters in header names (RFC 9113 §8.2.1) must fail
+        let upper_names: const u8[:][4] = ["Content-Type", "X-Custom", "accept-Encoding", ":Method"];
+        for uname in upper_names {
+            var dt = internal::new_dynamic_table(4096);
+            var hblock: u8[..128] = [0x82, 0x87, 0x84];
+            hblock.push(0x00);
+            hblock.push(uname.len as u8);
+            hblock.append(uname);
+            hblock.push(3);
+            hblock.append("val");
+            var pseudo = internal::H2PseudoHeaders { .. };
+            var out = wing::HeaderMap { .. };
+            let err = internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+            sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "uppercase character in header name rejected");
+        }
+    };
+
+    t.run("NGHTTP2-SESS-02: Invalid Frame Header Rules Matrix (test_nghttp2_session_recv_invalid_frame)") { sub =>
+        // 1. DATA on stream 0 -> PROTOCOL_ERROR
+        let h_data0 = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_data0), rfc::H2_ERR_PROTOCOL_ERROR, "DATA on stream 0 rejected");
+
+        // 2. HEADERS on stream 0 -> PROTOCOL_ERROR
+        let h_hdr0 = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_HEADERS, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_hdr0), rfc::H2_ERR_PROTOCOL_ERROR, "HEADERS on stream 0 rejected");
+
+        // 3. PRIORITY on stream 0 -> PROTOCOL_ERROR; PRIORITY with length != 5 -> FRAME_SIZE_ERROR
+        let h_prio0 = internal::FrameHeader { length: 5, frame_type: rfc::H2_FRAME_PRIORITY, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_prio0), rfc::H2_ERR_PROTOCOL_ERROR, "PRIORITY on stream 0 rejected");
+        let h_prio6 = internal::FrameHeader { length: 6, frame_type: rfc::H2_FRAME_PRIORITY, flags: 0, stream_id: 1 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_prio6), rfc::H2_ERR_FRAME_SIZE_ERROR, "PRIORITY length 6 rejected");
+
+        // 4. RST_STREAM on stream 0 -> PROTOCOL_ERROR; RST_STREAM length != 4 -> FRAME_SIZE_ERROR
+        let h_rst0 = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_rst0), rfc::H2_ERR_PROTOCOL_ERROR, "RST_STREAM on stream 0 rejected");
+        let h_rst3 = internal::FrameHeader { length: 3, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_rst3), rfc::H2_ERR_FRAME_SIZE_ERROR, "RST_STREAM length 3 rejected");
+
+        // 5. SETTINGS on stream != 0 -> PROTOCOL_ERROR; SETTINGS ACK with length > 0 -> FRAME_SIZE_ERROR; length % 6 != 0 -> FRAME_SIZE_ERROR
+        let h_set1 = internal::FrameHeader { length: 6, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 1 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_set1), rfc::H2_ERR_PROTOCOL_ERROR, "SETTINGS on stream 1 rejected");
+        let h_set_ack6 = internal::FrameHeader { length: 6, frame_type: rfc::H2_FRAME_SETTINGS, flags: rfc::H2_FLAG_ACK, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_set_ack6), rfc::H2_ERR_FRAME_SIZE_ERROR, "SETTINGS ACK with payload length 6 rejected");
+        let h_set5 = internal::FrameHeader { length: 5, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_set5), rfc::H2_ERR_FRAME_SIZE_ERROR, "SETTINGS length 5 (not multiple of 6) rejected");
+
+        // 6. PING on stream != 0 -> PROTOCOL_ERROR; PING length != 8 -> FRAME_SIZE_ERROR
+        let h_ping1 = internal::FrameHeader { length: 8, frame_type: rfc::H2_FRAME_PING, flags: 0, stream_id: 1 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_ping1), rfc::H2_ERR_PROTOCOL_ERROR, "PING on stream 1 rejected");
+        let h_ping7 = internal::FrameHeader { length: 7, frame_type: rfc::H2_FRAME_PING, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_ping7), rfc::H2_ERR_FRAME_SIZE_ERROR, "PING length 7 rejected");
+
+        // 7. GOAWAY on stream != 0 -> PROTOCOL_ERROR; GOAWAY length < 8 -> FRAME_SIZE_ERROR
+        let h_ga1 = internal::FrameHeader { length: 8, frame_type: rfc::H2_FRAME_GOAWAY, flags: 0, stream_id: 1 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_ga1), rfc::H2_ERR_PROTOCOL_ERROR, "GOAWAY on stream 1 rejected");
+        let h_ga7 = internal::FrameHeader { length: 7, frame_type: rfc::H2_FRAME_GOAWAY, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_ga7), rfc::H2_ERR_FRAME_SIZE_ERROR, "GOAWAY length 7 rejected");
+
+        // 8. WINDOW_UPDATE length != 4 -> FRAME_SIZE_ERROR
+        let h_wu5 = internal::FrameHeader { length: 5, frame_type: rfc::H2_FRAME_WINDOW_UPDATE, flags: 0, stream_id: 0 };
+        sub.assert_eq(internal::validate_frame_header_rules(h_wu5), rfc::H2_ERR_FRAME_SIZE_ERROR, "WINDOW_UPDATE length 5 rejected");
+    };
+
+    t.run("NGHTTP2-SESS-03: Two-Level Flow Control & Initial Window Adjustment (test_nghttp2_session_flow_control)") { sub =>
+        var sess = internal::new_session_state();
+        // Open streams 1 and 3
+        let hdr1 = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
+        let hdr3 = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
+        sub.assert_eq(internal::on_ingress_frame_header(sess, hdr1, 0), rfc::H2_ERR_NO_ERROR, "open stream 1");
+        sub.assert_eq(internal::on_ingress_frame_header(sess, hdr3, 0), rfc::H2_ERR_NO_ERROR, "open stream 3");
+
+        // Default initial window is 65535
+        sub.assert_eq(sess.streams[0].send_window, 65535, "stream 1 initial send_window 65535");
+        sess.streams[0].send_window -= 40000; // now 25535
+
+        // Peer sends SETTINGS_INITIAL_WINDOW_SIZE = 10000 (delta = -55535)
+        // Stream 1 send_window must become 25535 - 55535 = -30000 (negative window permitted per RFC 9113 §6.9.2!)
+        let err_s = internal::apply_peer_initial_window_size_delta(sess, 10000);
+        sub.assert_eq(err_s, rfc::H2_ERR_NO_ERROR, "apply SETTINGS_INITIAL_WINDOW_SIZE = 10000");
+        sub.assert_eq(sess.streams[0].send_window, -30000, "stream 1 send_window adjusted to -30000");
+        sub.assert_eq(sess.streams[1].send_window, 10000, "stream 3 send_window adjusted to 10000");
+        sub.assert_eq(internal::compute_stream_send_quota(sess, 1), 0, "negative window yields 0 send quota");
+        sub.assert_eq(internal::compute_stream_send_quota(sess, 3), 10000, "stream 3 send quota is 10000");
+
+        // Peer sends SETTINGS_INITIAL_WINDOW_SIZE = 0x80000000 (> 2^31 - 1) -> FLOW_CONTROL_ERROR
+        let err_bad = internal::apply_peer_initial_window_size_delta(sess, 0x80000000);
+        sub.assert_eq(err_bad, rfc::H2_ERR_FLOW_CONTROL_ERROR, "INITIAL_WINDOW_SIZE > 2^31-1 rejected with FLOW_CONTROL_ERROR");
+    };
+
+    t.run("NGHTTP2-HTTP-02: Extended CONNECT Ordering, OPTIONS *, Authority/Host & Content-Length Mismatch (nghttp2_http_test.c)") { sub =>
+        // 1. RFC 8441 Extended CONNECT with :protocol appearing AFTER :method, :scheme, :path, :authority
+        var dt_ext = internal::new_dynamic_table(4096);
+        var hb_ext: u8[..256] = [];
+        internal::encode_hpack_field(dt_ext, hb_ext, ":method", "CONNECT", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_ext, hb_ext, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_ext, hb_ext, ":path", "/chat", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_ext, hb_ext, ":authority", "example.com", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_ext, hb_ext, ":protocol", "websocket", internal::HpackIndexing.None, false);
+
+        var dec_dt1 = internal::new_dynamic_table(4096);
+        var pseudo_ext = internal::H2PseudoHeaders { .. };
+        var out_ext = wing::HeaderMap { .. };
+        let err_ext = internal::decode_hpack_to_map(dec_dt1, hb_ext[..], pseudo_ext, out_ext);
+        sub.assert_eq(err_ext, rfc::H2_ERR_NO_ERROR, "Extended CONNECT with trailing :protocol accepted");
+        sub.assert_eq(pseudo_ext.protocol[..], "websocket", ":protocol is websocket");
+
+        // 2. Classic CONNECT with :scheme or :path (without :protocol) must fail with PROTOCOL_ERROR
+        var dt_bad_conn = internal::new_dynamic_table(4096);
+        var hb_bad_conn: u8[..256] = [];
+        internal::encode_hpack_field(dt_bad_conn, hb_bad_conn, ":method", "CONNECT", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_bad_conn, hb_bad_conn, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_bad_conn, hb_bad_conn, ":authority", "example.com:443", internal::HpackIndexing.None, false);
+        var pseudo_bc = internal::H2PseudoHeaders { .. };
+        var out_bc = wing::HeaderMap { .. };
+        sub.assert_eq(
+            internal::decode_hpack_to_map(dt_bad_conn, hb_bad_conn[..], pseudo_bc, out_bc),
+            rfc::H2_ERR_PROTOCOL_ERROR,
+            "classic CONNECT with :scheme and no :protocol rejected",
+        );
+
+        // 3. OPTIONS with :path = "*" accepted; GET with :path = "*" rejected (both orderings)
+        var dt_opt = internal::new_dynamic_table(4096);
+        var hb_opt: u8[..128] = [];
+        internal::encode_hpack_field(dt_opt, hb_opt, ":method", "OPTIONS", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_opt, hb_opt, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_opt, hb_opt, ":path", "*", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_opt, hb_opt, ":authority", "example.com", internal::HpackIndexing.None, false);
+        var pseudo_opt = internal::H2PseudoHeaders { .. };
+        var out_opt = wing::HeaderMap { .. };
+        sub.assert_eq(internal::decode_hpack_to_map(dt_opt, hb_opt[..], pseudo_opt, out_opt), rfc::H2_ERR_NO_ERROR, "OPTIONS * accepted");
+
+        var dt_get_star1 = internal::new_dynamic_table(4096);
+        var hb_get_star1: u8[..128] = [];
+        internal::encode_hpack_field(dt_get_star1, hb_get_star1, ":method", "GET", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_get_star1, hb_get_star1, ":scheme", "https", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_get_star1, hb_get_star1, ":path", "*", internal::HpackIndexing.None, false);
+        var pseudo_gs1 = internal::H2PseudoHeaders { .. };
+        var out_gs1 = wing::HeaderMap { .. };
+        sub.assert_eq(internal::decode_hpack_to_map(dt_get_star1, hb_get_star1[..], pseudo_gs1, out_gs1), rfc::H2_ERR_PROTOCOL_ERROR, "GET * (:method before :path) rejected");
+
+        var dt_get_star2 = internal::new_dynamic_table(4096);
+        var hb_get_star2: u8[..128] = [];
+        internal::encode_hpack_field(dt_get_star2, hb_get_star2, ":path", "*", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_get_star2, hb_get_star2, ":method", "GET", internal::HpackIndexing.None, false);
+        internal::encode_hpack_field(dt_get_star2, hb_get_star2, ":scheme", "https", internal::HpackIndexing.None, false);
+        var pseudo_gs2 = internal::H2PseudoHeaders { .. };
+        var out_gs2 = wing::HeaderMap { .. };
+        sub.assert_eq(internal::decode_hpack_to_map(dt_get_star2, hb_get_star2[..], pseudo_gs2, out_gs2), rfc::H2_ERR_PROTOCOL_ERROR, "GET * (:path before :method) rejected");
+
+        // 4. Content-Length mismatch with DATA payload length triggers RST_STREAM(PROTOCOL_ERROR) (RFC 9113 §8.1.1)
+        var sess_cl = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var pipeline_cl = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var timer_cl = internal::new_connection_timer(30000000000, 1000000000);
+        var wire_cl: u8[..512] = [];
+        wire_cl.append(rfc::H2_CLIENT_PREFACE[..]);
+
+        var client_dt = internal::new_dynamic_table(4096);
+        var cl_hblock: u8[..128] = [];
+        internal::encode_hpack_field(client_dt, cl_hblock, ":method", "POST", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_dt, cl_hblock, ":scheme", "https", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_dt, cl_hblock, ":path", "/upload", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_dt, cl_hblock, ":authority", "localhost", internal::HpackIndexing.Incremental, false);
+        internal::encode_hpack_field(client_dt, cl_hblock, "content-length", "10", internal::HpackIndexing.None, false);
+
+        let h_hdr_cl = internal::FrameHeader {
+            length:     cl_hblock.len as u32,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  1,
+        };
+        internal::encode_frame_header_to(h_hdr_cl, wire_cl);
+        wire_cl.append(cl_hblock[..]);
+        // Send only 4 bytes with END_STREAM when content-length promised 10 bytes
+        encode_client_data(1, "abcd", true, wire_cl);
+
+        var out_cl: u8[..512] = [];
+        let _, ok_cl_ing = internal::handle_h2_server_ingress(sess_cl, pipeline_cl, timer_cl, "127.0.0.1", wire_cl[..], 1000, out_cl);
+        sub.assert_true(ok_cl_ing, "connection stays alive on stream content-length mismatch");
+        sub.assert_gt(out_cl.len, 33, "RST_STREAM emitted after server settings");
+        let rst_f, _ = internal::parse_frame_header(out_cl[33..42]);
+        sub.assert_eq(rst_f.frame_type, rfc::H2_FRAME_RST_STREAM, "emitted RST_STREAM for content-length mismatch");
+        sub.assert_eq(core::read_be_u32(out_cl[..], 42), rfc::H2_ERR_PROTOCOL_ERROR, "RST_STREAM code is PROTOCOL_ERROR");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/2 Protocol, Multiplexing, HPACK, and RFC Invariants Suite", lit::Verbosity.Verbose);
 
@@ -2906,6 +3318,8 @@ fn main() {
     lit::run_case(runner, "28. H2 Priority Update Frame", test_h2_priority_update_frame);
     lit::run_case(runner, "29. H3 Priority Update Integration", test_h3_priority_update_integration);
     lit::run_case(runner, "30. HTTP/2 FRAME_ORIGIN & FRAME_ALTSVC (RFC 8336 & RFC 7838)", test_h2_extension_frames);
+    lit::run_case(runner, "31. nghttp2 & h2 Vendor Conformance Vectors", test_nghttp2_and_h2_vendor_conformance);
+    lit::run_case(runner, "32. nghttp2 Session, Mandatory Headers & Flow Control Semantics", test_nghttp2_session_and_http_semantics);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -1995,3 +1995,143 @@ fn ws_encapsulate_stream_data<B>(
         encode_ws_frame(out, opcode, payload, false, empty_mask);
     }
 }
+
+// ---- WebSocket Session Drivers & Message Stage Hook ----------------------
+
+// Default WebSocket message stage hook (RFC 6455 echo).
+fn on_ws_message<Stage, B>(_stage: Stage&, ws: WebSocketSession&, view: const WsMessageView&, out_wire: B&) {
+    if view.opcode == rfc::WS_OPCODE_TEXT {
+        send_text(ws, view.payload, out_wire);
+    } else if view.opcode == rfc::WS_OPCODE_BINARY {
+        send_binary(ws, view.payload, out_wire);
+    }
+}
+
+// Drains trailing socket bytes after sending a Close frame so the peer receives
+// the Close frame instead of an immediate TCP RST (RFC 6455 §7.1.1).
+fn ws_drain_and_close(conn_fd: i64) {
+    var drain_buf: u8[..4096] = [];
+    var step:      i64        = 0;
+    while step < 10 {
+        step = core::add_sat_i64(step, 1);
+        drain_buf.clear();
+        let dn = tcp_recv(conn_fd, drain_buf, 20);
+        if dn <= 0 {
+            break;
+        }
+    }
+    tcp_close(conn_fd);
+}
+
+// Returns true if the decoded WebSocket message view is a complete valid data frame (text or binary).
+inline fn is_ws_data_message(view: const WsMessageView&) -> bool {
+    return view.is_valid && (view.opcode == rfc::WS_OPCODE_TEXT || view.opcode == rfc::WS_OPCODE_BINARY);
+}
+
+// Sends buffered WebSocket wire bytes over `conn_fd` when `wire` is non-empty.
+inline fn flush_ws_wire(conn_fd: i64, wire: const u8[:]) {
+    if wire.len > 0 {
+        let _ = tcp_send(conn_fd, wire);
+    }
+}
+
+// Consumes and dispatches all complete WebSocket frames currently buffered in `in_slice`.
+// Returns the total number of bytes consumed from `in_slice`.
+fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
+    conn_fd:  i64,
+    ws:       WebSocketSession&,
+    stage:    Stage&,
+    in_slice: u8[:],
+    frag_buf: FragBuf&,
+    out_wire: OutBuf&,
+) -> i64 {
+    var cursor: i64        = 0;
+    var reply:  u8[..1024] = [];
+    while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
+        reply.clear();
+        let consumed, handled, view = consume_frame_view_into(
+            ws, in_slice[cursor..], frag_buf, ws.max_payload_length as i64, reply,
+        );
+        if !handled || consumed <= 0 {
+            break;
+        }
+        cursor = core::add_sat_i64(cursor, consumed);
+        flush_ws_wire(conn_fd, reply[..]);
+        if is_ws_data_message(view) {
+            out_wire.clear();
+            on_ws_message(stage, ws, view, out_wire);
+            flush_ws_wire(conn_fd, out_wire[..]);
+        }
+        if ws.is_closed {
+            ws_drain_and_close(conn_fd);
+            break;
+        }
+    }
+    return cursor;
+}
+
+// Drives an upgraded RFC 6455 WebSocket session using caller-supplied wire and fragment buffers.
+fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
+    conn_fd:  i64,
+    ws:       WebSocketSession&,
+    stage:    Stage&,
+    in_buf:   InBuf&,
+    frag_buf: FragBuf&,
+    out_wire: OutBuf&,
+) {
+    var chunk_buf:   u8[..65536] = [];
+    var close_reply: u8[..256]   = [];
+    loop {
+        let consumed = drain_ws_session_frames(conn_fd, ws, stage, in_buf[..], frag_buf, out_wire);
+        if ws.is_closed {
+            return;
+        }
+        core::compact_wire_buffer(in_buf, consumed);
+        chunk_buf.clear();
+        let recvd = tcp_recv(conn_fd, chunk_buf, 100);
+        if recvd < 0 {
+            tcp_close(conn_fd);
+            return;
+        }
+        if recvd == 0 {
+            continue;
+        }
+        let max_wire_cap = core::add_sat_i64(ws.max_payload_length as i64, 65536);
+        guard core::add_sat_i64(in_buf.len, recvd) <= max_wire_cap else {
+            close_reply.clear();
+            close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "frame exceeds wire buffer capacity", close_reply);
+            if close_reply.len > 0 {
+                let _ = tcp_send(conn_fd, close_reply[..]);
+            }
+            ws_drain_and_close(conn_fd);
+            return;
+        }
+        in_buf.append(chunk_buf[..recvd]);
+    }
+}
+
+// Drives an upgraded RFC 6455 WebSocket session with default echo behavior on wire::NoOpStage.
+fn serve_ws_session_buf<InBuf, FragBuf, OutBuf>(
+    conn_fd:  i64,
+    ws:       WebSocketSession&,
+    in_buf:   InBuf&,
+    frag_buf: FragBuf&,
+    out_wire: OutBuf&,
+) {
+    var stage = wire::NoOpStage {};
+    serve_ws_session_buf(conn_fd, ws, stage, in_buf, frag_buf, out_wire);
+}
+
+// Drives an upgraded RFC 6455 WebSocket session with 64 KB stack-allocated buffers.
+fn serve_ws_session<Stage>(conn_fd: i64, ws: WebSocketSession&, stage: Stage&) {
+    var in_buf:   u8[..65536] = [];
+    var frag_buf: u8[..65536] = [];
+    var out_wire: u8[..65536] = [];
+    serve_ws_session_buf(conn_fd, ws, stage, in_buf, frag_buf, out_wire);
+}
+
+// Drives an upgraded RFC 6455 WebSocket session with 64 KB stack buffers and default echo behavior.
+fn serve_ws_session(conn_fd: i64, ws: WebSocketSession&) {
+    var stage = wire::NoOpStage {};
+    serve_ws_session(conn_fd, ws, stage);
+}

@@ -63,7 +63,7 @@ fn apply_priority_i(dict_str: const u8[:], p: PriorityParam&) -> bool {
     guard parse_sf_dict(dict_str, entries) else { return false; }
     for &entry in entries {
         if entry.key == "i" {
-            guard entry.item.kind == SfType.Boolean else { return false; }
+            guard !entry.is_inner_list && entry.item.kind == SfType.Boolean else { return false; }
             p.incremental = entry.item.bool_val;
             return true;
         }

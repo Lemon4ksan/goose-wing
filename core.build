@@ -10,4 +10,4 @@ c_libs_windows = ["ws2_32", "mswsock"];
 c_flags_cc = ["-mstackrealign"];
 c_flags_cc_windows = ["-mstackrealign", "-Wl,--stack,33554432"];
 c_flags_msvc = ["/std:c11"];
-exclude = ["scratch", "vendor", "tools", "bench"];
+exclude = ["scratch", "vendor", "tools", "bench", "cli"];

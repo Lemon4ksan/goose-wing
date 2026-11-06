@@ -18,16 +18,12 @@ fn test_unary_handler(
     ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-    out_status:  wing::GrpcStatusCode&,
-    out_message: u8[..256]&,
-) {
+) -> wing::GrpcStatus {
     if handler_id == 1 {
         // Greeter.SayHello
         let auth = wing::get_metadata(ctx, "authorization");
         if auth == "Bearer invalid-token" {
-            out_status = wing::GrpcStatusCode.Unauthenticated;
-            out_message.append("Invalid authorization token");
-            return;
+            return wing::grpc_error(wing::GrpcStatusCode.Unauthenticated, "Invalid authorization token");
         }
 
         wing::add_response_metadata(ctx, "x-server-version", "wing-grpc-v2");
@@ -35,12 +31,13 @@ fn test_unary_handler(
         res_payload.append("Hello, ");
         res_payload.append(req_payload);
         res_payload.push('!');
-        out_status = wing::GrpcStatusCode.Ok;
-    } else if handler_id == 99 {
-        // Custom error handler
-        out_status = wing::GrpcStatusCode.PermissionDenied;
-        out_message.append("Access forbidden by security policy");
+        return wing::grpc_ok();
     }
+    if handler_id == 99 {
+        // Custom error handler
+        return wing::grpc_error(wing::GrpcStatusCode.PermissionDenied, "Access forbidden by security policy");
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
 }
 
 // ----------------------------------------------------------------------------
@@ -192,16 +189,17 @@ fn test_server_streaming_handler(
     ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     writer:      wing::GrpcServerStreamWriter&,
-    out_status:  wing::GrpcStatusCode&,
-    out_message: u8[..256]&,
-) {
+) -> wing::GrpcStatus {
+    let _ = ctx;
+    let _ = req_payload;
     if handler_id == 2 {
         // Stream 3 events
         wing::write_stream_message(writer, "Event 1: Connected", false);
         wing::write_stream_message(writer, "Event 2: Processing", false);
         wing::write_stream_message(writer, "Event 3: Complete", false);
-        out_status = wing::GrpcStatusCode.Ok;
+        return wing::grpc_ok();
     }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
 }
 
 fn test_grpc_server_streaming(t: lit::T&) {
@@ -257,16 +255,16 @@ fn test_client_streaming_handler(
     ctx:         wing::GrpcServerContext&,
     reader:      const wing::GrpcClientStreamReader&,
     res_payload: u8[>..]&,
-    out_status:  wing::GrpcStatusCode&,
-    out_message: u8[..256]&,
-) {
+) -> wing::GrpcStatus {
+    let _ = ctx;
     if handler_id == 3 {
         let count = reader.spans.len;
         res_payload.append("Received ");
         format(res_payload, count);
         res_payload.append(" items");
-        out_status = wing::GrpcStatusCode.Ok;
+        return wing::grpc_ok();
     }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
 }
 
 fn test_grpc_client_streaming(t: lit::T&) {
@@ -470,6 +468,57 @@ fn test_grpc_server_rfc_invariants(t: lit::T&) {
     };
 }
 
+struct TestGrpcStage {
+    call_count: u64 = 0,
+}
+
+fn wing::on_grpc_unary(
+    stage:       TestGrpcStage&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    req_payload: const u8[:],
+    res_payload: u8[>..]&,
+) -> wing::GrpcStatus {
+    let _ = ctx;
+    stage.call_count += 1;
+    if handler_id == 1 {
+        res_payload.append("Stage: ");
+        res_payload.append(req_payload);
+        return wing::grpc_ok();
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Unknown stage handler");
+}
+
+fn test_grpc_unary_stage_dispatch(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+
+    t.run("Staged Unary Dispatch invokes custom stage and NoOpStage fallback") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::encode_grpc_lpm("StageUser", req.body, false);
+
+        var stage = TestGrpcStage { .. };
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary_stage(dispatcher, stage, req, 1000000000, res);
+        sub.assert_true(handled, "Handled by stage dispatcher");
+        sub.assert_eq(stage.call_count, 1, "Stage call_count incremented");
+
+        var decoded_msg: u8[>..] = [];
+        var is_comp = false;
+        let ok_lpm, _ = wing::decode_grpc_lpm(res.body[..], 0, decoded_msg, is_comp);
+        sub.assert_true(ok_lpm, "Decoded stage response LPM");
+        sub.assert_bytes_eq(decoded_msg[..], "Stage: StageUser", "Stage response payload matches");
+
+        var noop_stage = wire::NoOpStage {};
+        var noop_res = wing::Response { .. };
+        let noop_handled = wing::dispatch_grpc_unary_stage(dispatcher, noop_stage, req, 1000000000, noop_res);
+        sub.assert_true(noop_handled, "Handled by NoOpStage fallback");
+        let noop_st = wing::header(noop_res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(noop_st, "12", "NoOpStage returns UNIMPLEMENTED (12)");
+    };
+}
+
 // ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
@@ -481,6 +530,7 @@ fn main() {
     lit::run_case(runner, "3. Server-Streaming RPC Dispatch", test_grpc_server_streaming);
     lit::run_case(runner, "4. Client-Streaming RPC Dispatch", test_grpc_client_streaming);
     lit::run_case(runner, "5. Error Handling & RFC Invariants", test_grpc_server_rfc_invariants);
+    lit::run_case(runner, "6. Staged Unary Dispatch", test_grpc_unary_stage_dispatch);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -3822,10 +3822,11 @@ fn test_handshake_r3_invariants(t: lit::T&) {
     // TLS-42: RFC 8879 CompressedCertificate Parser Sanity Bounds & Decompression Bomb Protection
     // ------------------------------------------------------------------------
     t.run("TLS-42: CompressedCertificate Bounds, Decompression Bomb Defense & Transitions") { sub =>
-        // 1. Valid CompressedCertificate payload
-        let valid_comp_payload: u8[10] = [
+        // 1. Valid CompressedCertificate payload (RFC 8879 §4: 2B algo + 3B ulen + 3B comp_len + data)
+        let valid_comp_payload: u8[13] = [
             0x00, 0x03,             // algorithm = 3 (zstd)
             0x00, 0x00, 0x10,       // uncompressed_length = 16
+            0x00, 0x00, 0x05,       // compressed_certificate_message length = 5
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, // compressed_data (5 bytes)
         ];
         let parsed, ok_parse = wing::parse_compressed_certificate(valid_comp_payload[..]);
@@ -3834,27 +3835,30 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_eq(parsed.uncompressed_len as i64, 16, "uncompressed_len is 16");
 
         // 2. Reject unknown algorithm ID (e.g. 0 or 4)
-        let unknown_algo: u8[10] = [
+        let unknown_algo: u8[13] = [
             0x00, 0x04,             // algorithm = 4 (unknown)
             0x00, 0x00, 0x10,
+            0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
         let _, ok_unknown = wing::parse_compressed_certificate(unknown_algo[..]);
         sub.assert_false(ok_unknown, "unknown compression algorithm rejected");
 
         // 3. Reject uncompressed_length == 0
-        let zero_ulen: u8[10] = [
+        let zero_ulen: u8[13] = [
             0x00, 0x03,
             0x00, 0x00, 0x00,       // uncompressed_length = 0
+            0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
         let _, ok_zero_ulen = wing::parse_compressed_certificate(zero_ulen[..]);
         sub.assert_false(ok_zero_ulen, "uncompressed_length == 0 rejected");
 
         // 4. Reject uncompressed_length > MAX_UNCOMPRESSED_CERT_LEN (65536)
-        let bomb_payload: u8[10] = [
+        let bomb_payload: u8[13] = [
             0x00, 0x03,
             0x01, 0x00, 0x00,       // uncompressed_length = 65,536 + 1 = 65537+
+            0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
         let _, ok_bomb = wing::parse_compressed_certificate(bomb_payload[..]);

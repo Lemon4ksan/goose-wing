@@ -438,6 +438,25 @@ fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
     return true;
 }
 
+// Shifts unconsumed wire bytes in `arr[consumed..arr.len]` to index `0..rem_len` in-place.
+fn compact_wire_buffer<B>(arr: B&, consumed: i64) {
+    guard consumed > 0 else { return; }
+    let rem_len = core::sub_sat_i64(arr.len, consumed);
+    if rem_len <= 0 {
+        arr.clear();
+        return;
+    }
+    var idx: i64 = 0;
+    while idx < rem_len {
+        let src_idx = core::add_sat_i64(consumed, idx);
+        arr[idx] = arr[src_idx];
+        idx = core::add_sat_i64(idx, 1);
+    }
+    arr.resize(rem_len);
+}
+
+fn ::compact_wire_buffer<B>(arr: B&, consumed: i64) { core::compact_wire_buffer(arr, consumed); }
+
 // ---- ByteCursor stream reader bridges --------------------------------------
 
 fn ::cursor_from(buf: const u8[:]) -> core::ByteCursor { return core::cursor_from(buf); }

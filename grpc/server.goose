@@ -605,7 +605,7 @@ fn decode_and_validate_single_lpm(
 
 // Unary RPC Dispatcher:
 // Executes a single Request-Response RPC cycle conforming to RFC gRPC over HTTP/2 and gRPC-Web.
-fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&)>(
+fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus>(
     d:                 const GrpcServerDispatcher&,
     req:               const Request&,
     now_mono_ns:       u64,
@@ -672,29 +672,116 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
 
     // 7. Invoke User Handler
     var res_payload: u8[>..] = [];
-    var status = GrpcStatusCode.Ok;
-    var message: u8[..256] = [];
-
-    HandlerFn(entry.handler_id, ctx, req_payload[..], res_payload, status, message);
+    let st = HandlerFn(entry.handler_id, ctx, req_payload[..], res_payload);
 
     // 8. Generate Wire Response
-    if status != GrpcStatusCode.Ok && res_payload.len == 0 {
+    if st.code != GrpcStatusCode.Ok && res_payload.len == 0 {
         // Pure error without payload -> Trailers-Only response
-        build_grpc_trailers_only_response(status, message[..], ctx, res);
+        build_grpc_trailers_only_response(st.code, st.message[..], ctx, res);
     } else {
         // Standard payload + trailers response
         var lpm_response: u8[>..] = [];
         encode_grpc_lpm(res_payload[..], lpm_response, false);
-        build_grpc_wire_response(status, message[..], lpm_response[..], ctx, res);
+        build_grpc_wire_response(st.code, st.message[..], lpm_response[..], ctx, res);
     }
 
+    return true;
+}
+
+// Default UFCS unary gRPC stage hook on wire::NoOpStage.
+fn on_grpc_unary<B>(
+    _stage:      wire::NoOpStage&,
+    _handler_id: u16,
+    _ctx:        GrpcServerContext&,
+    _req_bytes:  const u8[:],
+    _res_bytes:  B&,
+) -> GrpcStatus {
+    return grpc_error(GrpcStatusCode.Unimplemented, "Method not implemented");
+}
+
+// Validates gRPC unary method routing, transport policy, and deadline on `req`, returning the handler ID.
+fn prepare_grpc_unary_dispatch(
+    d:                 const GrpcServerDispatcher&,
+    req:               const Request&,
+    now_mono_ns:       u64,
+    req_start_mono_ns: u64,
+    ctx:               GrpcServerContext&,
+    res:               Response&,
+) -> u16, bool {
+    if !eq_ascii_fold(req.method[..], "POST") {
+        build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
+        return 0, false;
+    }
+    if !extract_grpc_server_context(req, ctx, now_mono_ns, req_start_mono_ns) {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
+        return 0, false;
+    }
+    var path_buf: u8[..128] = [];
+    path_buf.push('/');
+    path_buf.append(ctx.service[..]);
+    path_buf.push('/');
+    path_buf.append(ctx.method[..]);
+    let method_idx = find_method(d, path_buf[..]);
+    if method_idx < 0 {
+        var err_msg: u8[..256] = [];
+        err_msg.append("Method not found: ");
+        err_msg.append(path_buf[..]);
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, err_msg[..], ctx, res);
+        return 0, false;
+    }
+    let entry = d.methods[method_idx];
+    if ctx.is_web && !d.enable_web {
+        build_grpc_trailers_only_response(GrpcStatusCode.PermissionDenied, "gRPC-Web transport disabled", ctx, res);
+        return 0, false;
+    }
+    if entry.method_type != GrpcMethodType.Unary {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Method type mismatch", ctx, res);
+        return 0, false;
+    }
+    if is_deadline_exceeded(ctx, now_mono_ns) {
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res,
+        );
+        return 0, false;
+    }
+    return entry.handler_id, true;
+}
+
+// Stateful UFCS `<Stage>` Unary RPC Dispatcher: invokes `on_grpc_unary`.
+fn dispatch_grpc_unary_stage<Stage>(
+    d:                 const GrpcServerDispatcher&,
+    stage:             Stage&,
+    req:               const Request&,
+    now_mono_ns:       u64,
+    res:               Response&,
+    req_start_mono_ns: u64 = 0,
+) -> bool {
+    guard is_grpc_request(req) else { return false; }
+    var ctx = GrpcServerContext { .. };
+    let handler_id, ok_prep = prepare_grpc_unary_dispatch(d, req, now_mono_ns, req_start_mono_ns, ctx, res);
+    guard ok_prep else { return true; }
+
+    var req_payload: u8[>..] = [];
+    guard decode_and_validate_single_lpm(d, req, ctx, res, req_payload) else {
+        return true;
+    }
+
+    var res_payload: u8[>..] = [];
+    let st = on_grpc_unary(stage, handler_id, ctx, req_payload[..], res_payload);
+    if st.code != GrpcStatusCode.Ok && res_payload.len == 0 {
+        build_grpc_trailers_only_response(st.code, st.message[..], ctx, res);
+    } else {
+        var lpm_response: u8[>..] = [];
+        encode_grpc_lpm(res_payload[..], lpm_response, false);
+        build_grpc_wire_response(st.code, st.message[..], lpm_response[..], ctx, res);
+    }
     return true;
 }
 
 // Server-Streaming RPC Dispatcher:
 // Handler sends 0, 1, or multiple messages through GrpcServerStreamWriter.
 fn dispatch_grpc_server_streaming<
-    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], GrpcServerStreamWriter&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], GrpcServerStreamWriter&) -> GrpcStatus,
 >(
     d:                 const GrpcServerDispatcher&,
     req:               const Request&,
@@ -754,15 +841,12 @@ fn dispatch_grpc_server_streaming<
     }
 
     var writer = GrpcServerStreamWriter { .. };
-    var status = GrpcStatusCode.Ok;
-    var message: u8[..256] = [];
+    let st = HandlerFn(entry.handler_id, ctx, req_payload[..], writer);
 
-    HandlerFn(entry.handler_id, ctx, req_payload[..], writer, status, message);
-
-    if status != GrpcStatusCode.Ok && writer.body.len == 0 {
-        build_grpc_trailers_only_response(status, message[..], ctx, res);
+    if st.code != GrpcStatusCode.Ok && writer.body.len == 0 {
+        build_grpc_trailers_only_response(st.code, st.message[..], ctx, res);
     } else {
-        build_grpc_wire_response(status, message[..], writer.body[..], ctx, res);
+        build_grpc_wire_response(st.code, st.message[..], writer.body[..], ctx, res);
     }
 
     return true;
@@ -837,7 +921,7 @@ fn validate_and_decompress_client_stream(
 // Client-Streaming RPC Dispatcher:
 // Parses all received LPM messages from the request body into GrpcClientStreamReader.
 fn dispatch_grpc_client_streaming<
-    HandlerFn: fn(u16, GrpcServerContext&, const GrpcClientStreamReader&, u8[>..]&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const GrpcClientStreamReader&, u8[>..]&) -> GrpcStatus,
 >(
     d:                 const GrpcServerDispatcher&,
     req:               const Request&,
@@ -905,17 +989,14 @@ fn dispatch_grpc_client_streaming<
     }
 
     var res_payload: u8[>..] = [];
-    var status = GrpcStatusCode.Ok;
-    var message: u8[..256] = [];
+    let st = HandlerFn(entry.handler_id, ctx, reader, res_payload);
 
-    HandlerFn(entry.handler_id, ctx, reader, res_payload, status, message);
-
-    if status != GrpcStatusCode.Ok && res_payload.len == 0 {
-        build_grpc_trailers_only_response(status, message[..], ctx, res);
+    if st.code != GrpcStatusCode.Ok && res_payload.len == 0 {
+        build_grpc_trailers_only_response(st.code, st.message[..], ctx, res);
     } else {
         var lpm_response: u8[>..] = [];
         encode_grpc_lpm(res_payload[..], lpm_response, false);
-        build_grpc_wire_response(status, message[..], lpm_response[..], ctx, res);
+        build_grpc_wire_response(st.code, st.message[..], lpm_response[..], ctx, res);
     }
 
     return true;
@@ -1146,7 +1227,7 @@ fn slice_grpc_h2_headers_fragment(payload: const u8[:], flags: u8) -> const u8[:
 }
 
 fn execute_grpc_server_unary<
-    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
     server:    HttpServer&,
     d:         const GrpcServerDispatcher&,
@@ -1192,7 +1273,7 @@ fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, pa
 }
 
 fn handle_grpc_h2_wire_frame<
-    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
     conn:      i64,
     server:    HttpServer&,
@@ -1259,9 +1340,39 @@ fn handle_grpc_h2_wire_frame<
     return hdr.frame_type != rfc::H2_FRAME_GOAWAY;
 }
 
+fn drain_grpc_h2_frames<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
+>(
+    conn_fd:   i64,
+    server:    HttpServer&,
+    d:         const GrpcServerDispatcher&,
+    peer_ip:   const u8[:],
+    hpack_dec: internal::DynamicTable&,
+    hpack_enc: internal::DynamicTable&,
+    pending:   Request&,
+    in_buf:    u8[..65536]&,
+    out_wire:  u8[..65536]&,
+) -> bool {
+    var cursor: i64 = 0;
+    var is_running = true;
+    while is_running {
+        let hdr, payload, ok_frame = wire::read_wire_h2_frame(in_buf[..], cursor);
+        if !ok_frame {
+            break;
+        }
+        is_running = handle_grpc_h2_wire_frame(
+            conn_fd, server, d, peer_ip, hpack_dec, hpack_enc, pending, hdr, payload, out_wire, HandlerFn,
+        );
+    }
+    if cursor > 0 {
+        core::compact_wire_buffer(in_buf, cursor);
+    }
+    return is_running;
+}
+
 // Serves a gRPC over HTTP/2 connection session on `conn_fd` through `server.pipeline` and `d`.
 fn serve_grpc_h2_connection<
-    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
     server:      HttpServer&,
     d:           const GrpcServerDispatcher&,
@@ -1280,34 +1391,21 @@ fn serve_grpc_h2_connection<
     var hpack_enc = internal::new_dynamic_table(4096);
     var pending = new_request("POST", "/helloworld.Greeter/SayHello");
 
-    var in_buf:   u8[>..]     = [];
+    var in_buf:   u8[..65536] = [];
     var out_wire: u8[..65536] = [];
-    var rem:      u8[>..]     = [];
     var chunk:    u8[..4096]  = [];
 
     if initial_buf.len > 24 {
-        in_buf.append(initial_buf[24..]);
+        let rem = initial_buf[24..];
+        guard rem.len <= in_buf.cap else { return; }
+        in_buf.append(rem);
     }
 
     var is_running = true;
     while is_running {
-        var cursor: i64 = 0;
-        while is_running {
-            let hdr, payload, ok_frame = wire::read_wire_h2_frame(in_buf[..], cursor);
-            if !ok_frame {
-                break;
-            }
-            is_running = handle_grpc_h2_wire_frame(
-                conn_fd, server, d, peer_ip[..], hpack_dec, hpack_enc, pending, hdr, payload, out_wire, HandlerFn,
-            );
-        }
-
-        if cursor > 0 {
-            rem.clear();
-            rem.append(in_buf[cursor..]);
-            in_buf.clear();
-            in_buf.append(rem[..]);
-        }
+        is_running = drain_grpc_h2_frames(
+            conn_fd, server, d, peer_ip[..], hpack_dec, hpack_enc, pending, in_buf, out_wire, HandlerFn,
+        );
         if !is_running {
             break;
         }
@@ -1317,24 +1415,23 @@ fn serve_grpc_h2_connection<
         if recvd == -2 {
             continue;
         }
-        if recvd <= 0 {
+        guard try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;
         }
-        in_buf.append(chunk[..recvd]);
     }
 }
 
 // Processes a gRPC-Web HTTP/1.1 request wire buffer through `server.pipeline` and `d`,
 // sending the serialized response over `conn_fd`.
 fn serve_grpc_web_http1<
-    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
     server:  HttpServer&,
     d:       const GrpcServerDispatcher&,
     conn_fd: i64,
     req_raw: const u8[:],
 ) {
-    var out_wire: u8[>..] = [];
+    var out_wire: u8[..65536] = [];
     var req = new_request("GET", "");
     let ok_parse, _ = parse_http1_wire_request(req_raw, req);
     guard ok_parse else {
@@ -1351,4 +1448,82 @@ fn serve_grpc_web_http1<
 
     serialize_http1_response(res, server.server_name[..], out_wire);
     let _ = tcp_send(conn_fd, out_wire[..]);
+}
+
+fn try_dispatch_grpc_connection_turn<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
+>(
+    server:  HttpServer&,
+    d:       const GrpcServerDispatcher&,
+    conn_fd: i64,
+    in_buf:  const u8[:],
+) -> bool {
+    guard !is_partial_h2_client_preface(in_buf) else {
+        return false;
+    }
+    if is_h2_client_preface(in_buf) {
+        serve_grpc_h2_connection(server, d, conn_fd, in_buf, HandlerFn);
+        return true;
+    }
+    guard has_ready_http1_request(in_buf) else {
+        return false;
+    }
+    if core::starts_with(in_buf, "GET /shutdown") {
+        var out_wire: u8[..4096] = [];
+        let _, _ = handle_connection_wire(server, "127.0.0.1", in_buf, 0, out_wire);
+        let _ = tcp_send(conn_fd, out_wire[..]);
+        server.is_running = false;
+        return true;
+    }
+    serve_grpc_web_http1(server, d, conn_fd, in_buf, HandlerFn);
+    return true;
+}
+
+// Serves a gRPC connection (HTTP/2 h2c, gRPC-Web HTTP/1.1, or `/shutdown` probe) on `conn_fd`.
+fn serve_grpc_connection<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
+>(
+    server:  HttpServer&,
+    d:       const GrpcServerDispatcher&,
+    conn_fd: i64,
+) {
+    var in_buf:     u8[..65536] = [];
+    var chunk:      u8[..4096]  = [];
+    var wait_ticks: u64         = 0;
+
+    while wait_ticks < 20 {
+        chunk.clear();
+        let recvd = tcp_recv(conn_fd, chunk, 4096, 100);
+        if recvd == -2 {
+            wait_ticks = core::add_sat_u64(wait_ticks, 1);
+            continue;
+        }
+        guard try_append_recv_chunk(recvd, chunk, in_buf) else {
+            break;
+        }
+        wait_ticks = 0;
+
+        if try_dispatch_grpc_connection_turn(server, d, conn_fd, in_buf[..], HandlerFn) {
+            return;
+        }
+    }
+}
+
+// Runs the accept loop on `listener_fd`, serving gRPC (h2c and gRPC-Web) connections.
+fn serve_grpc_listener<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
+>(
+    listener_fd: i64,
+    server:      HttpServer&,
+    d:           const GrpcServerDispatcher&,
+) {
+    server.is_running = true;
+    while server.is_running {
+        let conn = tcp_accept(listener_fd, 200);
+        if conn < 0 {
+            continue;
+        }
+        serve_grpc_connection(server, d, conn, HandlerFn);
+        tcp_close(conn);
+    }
 }

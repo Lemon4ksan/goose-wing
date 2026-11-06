@@ -375,18 +375,15 @@ fn test_h1_client_last_response_header_preserved_seam() {
 }
 
 fn seam_grpc_echo_handler(
-    route_tag:  u16,
-    ctx:        wing::GrpcServerContext&,
-    payload:    const u8[:],
-    out_body:   u8[>..]&,
-    out_status: wing::GrpcStatusCode&,
-    out_msg:    u8[..256]&,
-) {
+    route_tag: u16,
+    ctx:       wing::GrpcServerContext&,
+    payload:   const u8[:],
+    out_body:  u8[>..]&,
+) -> wing::GrpcStatus {
     let _ = route_tag;
     let _ = ctx;
     out_body.append(payload);
-    out_status = wing::GrpcStatusCode.Ok;
-    let _ = out_msg.try_set("OK");
+    return wing::grpc_ok();
 }
 
 // Seam 12, 13 & 14:

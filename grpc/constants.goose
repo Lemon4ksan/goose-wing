@@ -127,3 +127,9 @@ struct GrpcMetadata {
     key:   u8[..64]  = [],
     value: u8[..256] = [],
 }
+
+// Value-returned gRPC status outcome for unary and streaming RPC handlers.
+struct GrpcStatus {
+    code:    GrpcStatusCode = GrpcStatusCode.Ok,
+    message: u8[..256]      = [],
+}

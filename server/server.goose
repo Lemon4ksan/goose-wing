@@ -1930,6 +1930,7 @@ inline fn serialize_and_init_ws_upgrade<B>(
 
     session.compress_mode = route_behavior.compression;
     session.permessage_deflate = compress_active;
+    session.max_payload_length = route_behavior.max_payload_length;
     session.max_backpressure = route_behavior.max_backpressure;
     session.close_on_backpressure_limit = route_behavior.close_on_backpressure_limit;
     session.idle_timeout_s = route_behavior.idle_timeout_s;
@@ -2035,6 +2036,7 @@ fn complete_ws_upgrade<Req, B>(
     var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
     guard ok_upg else { return false; }
 
+    sess.max_payload_length = entry.behavior.max_payload_length;
     sess.max_backpressure = entry.behavior.max_backpressure;
     sess.close_on_backpressure_limit = entry.behavior.close_on_backpressure_limit;
     sess.idle_timeout_s = entry.behavior.idle_timeout_s;
@@ -2613,69 +2615,440 @@ fn dispatch_server_request_with_stage<UserStage>(
     return outcome;
 }
 
-// Runs a persistent HTTP/2 server session loop over an accepted TCP connection `conn_fd` (RFC 9113).
-// Processes `initial_buf` (which begins with the 24-byte client preface) and subsequent frames until GOAWAY or EOF.
-fn serve_h2_connection(
+// Probes buffered HTTP/1.1 wire bytes after `\r\n\r\n` (`hdr_end`) to check if the full request body has arrived.
+// Returns true immediately on header parse errors or smuggling conflicts so the main parser emits 400 Bad Request.
+fn is_http1_request_ready(in_buf: const u8[:], hdr_end: i64) -> bool {
+    let body_start = core::add_sat_i64(hdr_end, 4);
+    var tracker = HeaderPresenceTracker { .. };
+    var parsed_start: i64 = 0;
+    var probe_req = Request { .. };
+    guard parse_http1_request_headers(in_buf, probe_req, tracker, parsed_start) else {
+        return true;
+    }
+    let has_te = (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    if has_te && has_cl {
+        return true;
+    }
+    if has_cl {
+        return in_buf.len >= core::add_sat_i64(body_start, tracker.parsed_cl);
+    }
+    if has_te {
+        guard body_start <= in_buf.len else { return false; }
+        return find(in_buf[body_start..], "0\r\n\r\n") >= 0;
+    }
+    return true;
+}
+
+// Executes one ingress step of an HTTP/2 server session and flushes any outbound frames.
+inline fn step_h2_server_session_buf<InBuf, OutBuf>(
+    conn_fd:  i64,
+    server:   HttpServer&,
+    h2_idx:   i64,
+    peer_ip:  const u8[:],
+    h2_in:    InBuf&,
+    now_ms:   u64,
+    out_wire: OutBuf&,
+) -> bool {
+    out_wire.clear();
+    let consumed, ok = internal::handle_h2_server_ingress(
+        g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer, peer_ip, h2_in[..], now_ms, out_wire,
+    );
+    if out_wire.len > 0 {
+        let _ = tcp_send(conn_fd, out_wire[..]);
+    }
+    guard ok else { return false; }
+    if consumed > 0 {
+        server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+        core::compact_wire_buffer(h2_in, consumed);
+    }
+    return true;
+}
+
+// Appends `recvd` bytes from `chunk` into `in_buf` if valid and within 16 MB wire limit.
+inline fn try_append_recv_chunk<InBuf, ChunkBuf>(recvd: i32, chunk: const ChunkBuf&, in_buf: InBuf&) -> bool {
+    guard recvd > 0 else { return false; }
+    let n = recvd as i64;
+    guard core::add_sat_i64(in_buf.len, n) <= 16777216 else { return false; }
+    in_buf.append(chunk[..n]);
+    return true;
+}
+
+// Runs a persistent HTTP/2 server session loop over `conn_fd` using caller-supplied `h2_in` buffer (RFC 9113).
+fn serve_h2_connection_buf<InBuf>(
     server:          HttpServer&,
     conn_fd:         i64,
-    initial_buf:     const u8[:],
+    h2_in:           InBuf&,
     recv_timeout_ms: u32 = 500,
 ) -> bool {
     guard conn_fd > 0 else { return false; }
-    if server.trust_proxy_headers {
-        server.pipeline.trust_proxy_headers = true;
-    }
+    server.pipeline.trust_proxy_headers = server.pipeline.trust_proxy_headers || server.trust_proxy_headers;
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 1000000000);
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
     var peer_ip: u8[..64] = [];
     tcp_get_peer_ip(conn_fd, peer_ip);
 
-    var h2_in:    u8[>..]     = [];
-    var out_wire: u8[..65536] = [];
-    var rem:      u8[>..]     = [];
-    var chunk:    u8[..4096]  = [];
-    h2_in.append(initial_buf);
-
-    var now_ms:     u64 = 1000;
-    var idle_ticks: u32 = 0;
+    var out_wire:   u8[..65536] = [];
+    var chunk:      u8[..4096]  = [];
+    var now_ms:     u64         = 1000;
+    var idle_ticks: u64         = 0;
     loop {
-        out_wire.clear();
-        let consumed, ok = internal::handle_h2_server_ingress(
-            g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer, peer_ip[..], h2_in[..], now_ms, out_wire,
-        );
-        if out_wire.len > 0 {
-            let _ = tcp_send(conn_fd, out_wire[..]);
-        }
-        if !ok {
+        if !step_h2_server_session_buf(conn_fd, server, h2_idx, peer_ip[..], h2_in, now_ms, out_wire) {
             chunk.clear();
             let _ = tcp_recv(conn_fd, chunk, 4096, 10);
             return false;
         }
-        if consumed > 0 {
-            server.requests_processed++;
-            rem.clear();
-            rem.append(h2_in[consumed..]);
-            h2_in.clear();
-            h2_in.append(rem[..]);
-        }
         chunk.clear();
         let recvd = tcp_recv(conn_fd, chunk, 4096, recv_timeout_ms);
         if recvd == -2 {
-            idle_ticks++;
-            if idle_ticks >= 2 {
-                break;
-            }
+            idle_ticks = core::add_sat_u64(idle_ticks, 1);
+            if idle_ticks >= 2 { break; }
             continue;
         }
-        if recvd <= 0 {
+        if !try_append_recv_chunk(recvd, chunk, h2_in) {
             break;
         }
         idle_ticks = 0;
-        h2_in.append(chunk[..recvd]);
-        now_ms += 10;
+        now_ms = core::add_sat_u64(now_ms, 10);
     }
     return true;
+}
+
+// Completes an RFC 6455 HTTP/1.1 WebSocket upgrade on `conn_fd`, wires route behavior limits,
+// compacts `in_buf` past the HTTP request, and drives the WebSocket frame loop.
+fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
+    conn_fd:     i64,
+    server:      HttpServer&,
+    req:         const Request&,
+    consumed:    i64,
+    stage:       Stage&,
+    in_buf:      InBuf&,
+    ws_frag_buf: FragBuf&,
+    out_wire:    OutBuf&,
+) -> bool {
+    let r_idx = find_ws_route(server, req.url[..]);
+    guard server.ws_route_count == 0 || r_idx >= 0 else { return false; }
+    let behavior = if r_idx >= 0 {
+        server.ws_routes[r_idx as i64].behavior
+    } else {
+        WsBehavior { .. }
+    };
+    var ws_res = Response { .. };
+    var ws, ok_ws = ws_upgrade_request(req, ws_res, behavior.subprotocol[..]);
+    guard ok_ws else { return false; }
+    ws.max_payload_length = behavior.max_payload_length;
+    ws.max_backpressure = behavior.max_backpressure;
+    ws.close_on_backpressure_limit = behavior.close_on_backpressure_limit;
+    ws.idle_timeout_s = behavior.idle_timeout_s;
+    ws.max_lifetime_s = behavior.max_lifetime_s;
+    ws.send_pings_automatically = behavior.send_pings_automatically;
+    ws.reset_idle_timeout_on_send = behavior.reset_idle_timeout_on_send;
+    out_wire.clear();
+    serialize_http1_response(ws_res, server.server_name[..], out_wire);
+    let _ = tcp_send(conn_fd, out_wire[..]);
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+    core::compact_wire_buffer(in_buf, consumed);
+    serve_ws_session_buf(conn_fd, ws, stage, in_buf, ws_frag_buf, out_wire);
+    return true;
+}
+
+// Dispatches a single parsed HTTP/1.1 request through `server` and `stage`, writes the response,
+// updates `server.is_running` on `/shutdown` (`200 OK`), and returns true if keep-alive should continue.
+fn dispatch_http1_connection_turn<Stage, OutBuf>(
+    conn_fd:  i64,
+    server:   HttpServer&,
+    peer_ip:  const u8[:],
+    req:      const Request&,
+    stage:    Stage&,
+    out_wire: OutBuf&,
+) -> bool {
+    var res = Response { .. };
+    let now_ns = core::as_nanos(core::monotonic_now());
+    let _ = dispatch_server_request_with_stage(server, peer_ip, req, now_ns, res, stage);
+    if req.url[..] == "/shutdown" && res.status_code == 200 {
+        server.is_running = false;
+    }
+    let conn_hdr = res.header("Connection");
+    let wants_ka = server.is_running && core::eq_ascii_fold(conn_hdr, "keep-alive");
+    if !wants_ka && conn_hdr.len == 0 {
+        set_header(res, "Connection", "close");
+    }
+    out_wire.clear();
+    serialize_http1_response(res, server.server_name[..], out_wire);
+    let _ = tcp_send(conn_fd, out_wire[..]);
+    return wants_ka;
+}
+
+// Serves an auxiliary concurrent connection accepted while a primary connection is idle pre-preface (h2spec).
+fn serve_idle_aux_connection(listener_fd: i64, server: HttpServer&, recv_timeout_ms: u32) -> bool {
+    guard listener_fd > 0 else { return false; }
+    let aux_conn = tcp_accept(listener_fd, 0);
+    guard aux_conn > 0 else { return false; }
+    var aux_in:    u8[..65536] = [];
+    var aux_chunk: u8[..4096]  = [];
+    var ticks:     u64         = 0;
+    while ticks < 10 {
+        aux_chunk.clear();
+        let recvd = tcp_recv(aux_conn, aux_chunk, 4096, 15);
+        if recvd == -2 {
+            ticks = core::add_sat_u64(ticks, 1);
+            continue;
+        }
+        if !try_append_recv_chunk(recvd, aux_chunk, aux_in) {
+            break;
+        }
+        ticks = 0;
+        if !is_partial_h2_client_preface(aux_in[..]) {
+            if is_h2_client_preface(aux_in[..]) {
+                let _ = serve_h2_connection_buf(server, aux_conn, aux_in, recv_timeout_ms);
+            }
+            break;
+        }
+    }
+    tcp_close(aux_conn);
+    return true;
+}
+
+// Processes a complete buffered HTTP/1.1 request in `in_buf` (WebSocket upgrade or HTTP/1.1 pipeline turn).
+// Returns true if the connection loop should continue reading another keep-alive request.
+fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
+    conn_fd:     i64,
+    server:      HttpServer&,
+    peer_ip:     const u8[:],
+    stage:       Stage&,
+    in_buf:      InBuf&,
+    ws_frag_buf: FragBuf&,
+    out_wire:    OutBuf&,
+    ka_count:    i64&,
+) -> bool {
+    var req = new_request("GET", "");
+    let ok_req, consumed = parse_http1_wire_request(in_buf[..], req);
+    guard ok_req && consumed > 0 else {
+        out_wire.clear();
+        serialize_bad_request_error(server.server_name[..], out_wire);
+        let _ = tcp_send(conn_fd, out_wire[..]);
+        return false;
+    }
+    if is_websocket_upgrade_request(req) {
+        if serve_http1_upgraded_ws(conn_fd, server, req, consumed, stage, in_buf, ws_frag_buf, out_wire) {
+            return false;
+        }
+    }
+    let wants_ka = dispatch_http1_connection_turn(conn_fd, server, peer_ip, req, stage, out_wire);
+    core::compact_wire_buffer(in_buf, consumed);
+    ka_count = core::add_sat_i64(ka_count, 1);
+    return wants_ka && ka_count < 4;
+}
+
+// Checks whether `in_buf` contains a complete HTTP/1.1 request ready for dispatch (when not an H2 preface).
+inline fn has_ready_http1_request(in_buf: const u8[:]) -> bool {
+    guard !is_partial_h2_client_preface(in_buf) && !is_h2_client_preface(in_buf) else { return false; }
+    let hdr_end = core::fast_find_crlfcrlf(in_buf);
+    guard hdr_end >= 0 else { return false; }
+    return is_http1_request_ready(in_buf, hdr_end);
+}
+
+// Handles a newly received HTTP/2 preface or invalid PRI prefix in `in_buf`.
+// Returns true if the connection was handled/terminated as HTTP/2 or invalid PRI.
+fn try_dispatch_h2_or_invalid_preface_buf<InBuf>(
+    server:          HttpServer&,
+    conn_fd:         i64,
+    in_buf:          InBuf&,
+    recv_timeout_ms: u32,
+) -> bool {
+    guard !is_partial_h2_client_preface(in_buf[..]) else { return false; }
+    if is_h2_client_preface(in_buf[..]) {
+        let _ = serve_h2_connection_buf(server, conn_fd, in_buf, recv_timeout_ms);
+        return true;
+    }
+    return in_buf.len >= 4 && in_buf[..4] == "PRI ";
+}
+
+// Handles an idle poll timeout (`recvd == -2`) on `conn_fd`, polling `listener_fd` for auxiliary connections.
+inline fn step_idle_connection_poll(
+    listener_fd:     i64,
+    server:          HttpServer&,
+    in_buf_len:      i64,
+    recv_timeout_ms: u32,
+    idle_ticks:      u64&,
+) {
+    if in_buf_len == 0 && serve_idle_aux_connection(listener_fd, server, recv_timeout_ms) {
+        idle_ticks = 0;
+        return;
+    }
+    idle_ticks = core::add_sat_u64(idle_ticks, 1);
+}
+
+// Polls `conn_fd` once and appends received bytes to `in_buf`, handling idle timeouts and HTTP/2 prefaces.
+// Returns true if the caller should continue polling `conn_fd`, or false if the connection is complete/closed.
+fn poll_http_connection_ingress_buf<InBuf>(
+    listener_fd:     i64,
+    conn_fd:         i64,
+    server:          HttpServer&,
+    in_buf:          InBuf&,
+    poll_ms:         u32,
+    recv_timeout_ms: u32,
+    idle_ticks:      u64&,
+) -> bool {
+    var chunk: u8[..4096] = [];
+    let recvd = tcp_recv(conn_fd, chunk, 4096, poll_ms);
+    if recvd == -2 {
+        step_idle_connection_poll(listener_fd, server, in_buf.len, recv_timeout_ms, idle_ticks);
+        return idle_ticks < 25;
+    }
+    guard try_append_recv_chunk(recvd, chunk, in_buf) else { return false; }
+    idle_ticks = 0;
+    return !try_dispatch_h2_or_invalid_preface_buf(server, conn_fd, in_buf, recv_timeout_ms);
+}
+
+// Drives an HTTP/1.1, HTTP/2 (`h2c`), or WebSocket connection on `conn_fd` using caller-supplied buffers.
+fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
+    listener_fd:     i64,
+    conn_fd:         i64,
+    server:          HttpServer&,
+    stage:           Stage&,
+    in_buf:          InBuf&,
+    ws_frag_buf:     FragBuf&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    guard conn_fd > 0 else { return server.is_running; }
+    in_buf.clear();
+    var peer_ip:    u8[..64] = [];
+    var idle_ticks: u64      = 0;
+    var ka_count:   i64      = 0;
+    tcp_get_peer_ip(conn_fd, peer_ip);
+    let poll_ms: u32 = min(max(recv_timeout_ms, 1), 100);
+
+    loop {
+        if has_ready_http1_request(in_buf[..]) {
+            idle_ticks = 0;
+            if process_ready_http1_connection_buf(
+                conn_fd, server, peer_ip[..], stage, in_buf, ws_frag_buf, out_wire, ka_count,
+            ) {
+                continue;
+            }
+            break;
+        }
+        if !poll_http_connection_ingress_buf(
+            listener_fd, conn_fd, server, in_buf, poll_ms, recv_timeout_ms, idle_ticks,
+        ) {
+            break;
+        }
+    }
+    return server.is_running;
+}
+
+// Drives an HTTP/1.1, HTTP/2 (`h2c`), or WebSocket connection on `conn_fd` using caller-supplied buffers.
+fn serve_http_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
+    conn_fd:         i64,
+    server:          HttpServer&,
+    stage:           Stage&,
+    in_buf:          InBuf&,
+    ws_frag_buf:     FragBuf&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    return serve_http_connection_on_listener_buf(
+        -1, conn_fd, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms,
+    );
+}
+
+// Drives an HTTP/1.1, HTTP/2 (`h2c`), or WebSocket connection with caller buffers and default `wire::NoOpStage`.
+fn serve_http_connection_buf<InBuf, FragBuf, OutBuf>(
+    conn_fd:         i64,
+    server:          HttpServer&,
+    in_buf:          InBuf&,
+    ws_frag_buf:     FragBuf&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    var stage = wire::NoOpStage {};
+    return serve_http_connection_buf(conn_fd, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms);
+}
+
+// Drives an HTTP/1.1, HTTP/2 (`h2c`), or WebSocket connection with 64 KB stack buffers and `<Stage>`.
+fn serve_http_connection<Stage>(
+    conn_fd:         i64,
+    server:          HttpServer&,
+    stage:           Stage&,
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    var in_buf:      u8[..65536] = [];
+    var ws_frag_buf: u8[..65536] = [];
+    var out_wire:    u8[..65536] = [];
+    return serve_http_connection_buf(conn_fd, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms);
+}
+
+// Drives an HTTP/1.1, HTTP/2 (`h2c`), or WebSocket connection with 64 KB stack buffers and `wire::NoOpStage`.
+fn serve_http_connection(
+    conn_fd:         i64,
+    server:          HttpServer&,
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    var stage = wire::NoOpStage {};
+    return serve_http_connection(conn_fd, server, stage, recv_timeout_ms);
+}
+
+// Accepts and serves HTTP/1.1, HTTP/2 (`h2c`), and WebSocket connections on `listener_fd` using caller buffers.
+fn serve_http_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
+    listener_fd:     i64,
+    server:          HttpServer&,
+    stage:           Stage&,
+    in_buf:          InBuf&,
+    ws_frag_buf:     FragBuf&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32 = 500,
+) {
+    guard listener_fd > 0 else { return; }
+    server.is_running = true;
+    while server.is_running {
+        let conn = tcp_accept(listener_fd, 200);
+        if conn <= 0 {
+            continue;
+        }
+        let _ = serve_http_connection_on_listener_buf(
+            listener_fd, conn, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms,
+        );
+        tcp_close(conn);
+    }
+}
+
+// Accepts and serves HTTP/1.1, HTTP/2 (`h2c`), and WebSocket connections with caller buffers and `wire::NoOpStage`.
+fn serve_http_listener_buf<InBuf, FragBuf, OutBuf>(
+    listener_fd:     i64,
+    server:          HttpServer&,
+    in_buf:          InBuf&,
+    ws_frag_buf:     FragBuf&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32 = 500,
+) {
+    var stage = wire::NoOpStage {};
+    serve_http_listener_buf(listener_fd, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms);
+}
+
+// Accepts and serves HTTP/1.1, HTTP/2 (`h2c`), and WebSocket connections with 64 KB stack buffers and `<Stage>`.
+fn serve_http_listener<Stage>(
+    listener_fd:     i64,
+    server:          HttpServer&,
+    stage:           Stage&,
+    recv_timeout_ms: u32 = 500,
+) {
+    var in_buf:      u8[..65536] = [];
+    var ws_frag_buf: u8[..65536] = [];
+    var out_wire:    u8[..65536] = [];
+    serve_http_listener_buf(listener_fd, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms);
+}
+
+// Accepts and serves HTTP/1.1, HTTP/2 (`h2c`), and WebSocket connections with 64 KB stack buffers.
+fn serve_http_listener(
+    listener_fd:     i64,
+    server:          HttpServer&,
+    recv_timeout_ms: u32 = 500,
+) {
+    var stage = wire::NoOpStage {};
+    serve_http_listener(listener_fd, server, stage, recv_timeout_ms);
 }
 
 inline fn response_wire_has_connection_close(wire: const u8[:]) -> bool {

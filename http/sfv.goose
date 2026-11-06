@@ -682,7 +682,7 @@ fn sf_dict_get_int(dict_str: const u8[:], key: const u8[:], default_val: i64 = 0
         return default_val;
     }
     for &entry in entries {
-        if entry.key == key && entry.item.kind == SfType.Integer {
+        if entry.key == key && !entry.is_inner_list && entry.item.kind == SfType.Integer {
             return entry.item.int_val;
         }
     }
@@ -698,7 +698,7 @@ fn sf_dict_get_bool(dict_str: const u8[:], key: const u8[:], default_val: bool =
     }
     for &entry in entries {
         if entry.key == key {
-            if entry.item.kind == SfType.Boolean {
+            if !entry.is_inner_list && entry.item.kind == SfType.Boolean {
                 return entry.item.bool_val;
             }
         }
@@ -713,7 +713,8 @@ fn sf_dict_get_token(dict_str: const u8[:], key: const u8[:]) -> const u8[:] {
         return "";
     }
     for &entry in entries {
-        if entry.key == key && (entry.item.kind == SfType.Token || entry.item.kind == SfType.String) {
+        let is_str = entry.item.kind == SfType.Token || entry.item.kind == SfType.String;
+        if entry.key == key && !entry.is_inner_list && is_str {
             return entry.item.str_val;
         }
     }

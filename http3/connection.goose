@@ -1072,7 +1072,9 @@ fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> 
         counts.pseudo_scheme, counts.pseudo_path, counts.pseudo_authority,
         counts.is_connect, counts.pseudo_protocol,
     );
-    guard ok_pseudos else {
+    let bad_asterisk = conn.role == H3ConnRole.Server && conn.streams[s_idx].req_path[..] == "*"
+        && conn.streams[s_idx].req_method[..] != "OPTIONS";
+    guard ok_pseudos && !bad_asterisk else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
         return rfc::H3_ERR_GENERAL_PROTOCOL;

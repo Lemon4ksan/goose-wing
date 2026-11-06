@@ -8,6 +8,8 @@ Wire parsing and serialization routines do not allocate on the heap (`[>..]`). S
 
 Raw network bytes are validated once at the ingress boundary: the L4 socket driver, the TLS 1.3 record framer, or the HTTP frame decoder. Internal state machines operate on validated structs without repeating bounds checks.
 
+Core decoders enforce strict RFC conformance and do not include compatibility workarounds for non-compliant servers or middleboxes. Because every protocol layer is built from slice-driven (`const u8[:]`) Sans-IO codecs (`wire/`) and composable L7 pipeline stages (`WirePipeline`), callers that need to interoperate with non-standard endpoints can preprocess raw buffers or substitute specific framing and L7 stages at the application boundary without forking `goose-wing`.
+
 ## Module layout
 
 `core.goose` exports foundational utilities used across all protocol layers:

@@ -13,16 +13,12 @@ fn service_unary_handler(
     ctx:         wing::GrpcServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-    out_status:  wing::GrpcStatusCode&,
-    out_message: u8[..256]&,
-) {
+) -> wing::GrpcStatus {
     if handler_id == 1 {
         // Greeter.SayHello
         let auth = wing::get_metadata(ctx, "authorization");
         if auth.len == 0 {
-            out_status = wing::GrpcStatusCode.Unauthenticated;
-            out_message.append("Missing required Bearer token");
-            return;
+            return wing::grpc_error(wing::GrpcStatusCode.Unauthenticated, "Missing required Bearer token");
         }
 
         wing::add_response_metadata(ctx, "x-server-version", "goose-wing-grpc/2.0");
@@ -30,16 +26,15 @@ fn service_unary_handler(
         res_payload.append("Hello, ");
         res_payload.append(req_payload);
         res_payload.append("! Welcome to goose-wing gRPC engine.");
-        out_status = wing::GrpcStatusCode.Ok;
-    } else if handler_id == 2 {
+        return wing::grpc_ok();
+    }
+    if handler_id == 2 {
         // PaymentService.ProcessPayment
         wing::add_response_metadata(ctx, "x-payment-gw", "eu-central-wing");
         res_payload.append("{\"transaction_id\":\"tx_grpc_778899\",\"status\":\"SETTLED\"}");
-        out_status = wing::GrpcStatusCode.Ok;
-    } else {
-        out_status = wing::GrpcStatusCode.Unimplemented;
-        out_message.append("RPC method not implemented");
+        return wing::grpc_ok();
     }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "RPC method not implemented");
 }
 
 fn main() {

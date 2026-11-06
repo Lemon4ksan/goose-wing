@@ -201,13 +201,18 @@ fn quic_fc_record_recv_reset(
     s:          QuicStream&,
     final_size: u64,
 ) -> bool, u64 {
+    // RFC 9000 §4.5: Final size cannot change once known or fall below received/consumed offsets
+    if s.has_recv_final_size {
+        guard final_size == s.recv_final_size else {
+            return false, rfc::QUIC_ERR_FINAL_SIZE;
+        }
+    }
+    guard final_size >= s.bytes_recv && final_size >= s.recv_consumed else {
+        return false, rfc::QUIC_ERR_FINAL_SIZE;
+    }
     // RFC 9000 §4.5: Final size cannot exceed 2^62 - 1 or the advertised stream limit
     guard final_size <= rfc::QUIC_VARINT_MAX && final_size <= s.recv_max_data else {
         return false, rfc::QUIC_ERR_FLOW_CONTROL;
-    }
-    // RFC 9000 §4.5: Final size cannot be smaller than bytes already received on stream
-    guard final_size >= s.bytes_recv else {
-        return false, rfc::QUIC_ERR_FINAL_SIZE;
     }
 
     let additional_bytes = final_size - s.bytes_recv;

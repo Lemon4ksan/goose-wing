@@ -2100,6 +2100,1038 @@ fn test_quic_version2(t: lit::T&) {
     };
 }
 
+// --- Component: ngtcp2_and_quinn_vendor_conformance ---
+// Ported test vectors from vendor/ngtcp2 (tests/ngtcp2_conv_test.c,
+// tests/ngtcp2_pkt_test.c, tests/ngtcp2_acktr_test.c) and vendor/quinn:
+// - Exact varint boundary roundtrips (0, 63, 64, 16383, 16384, 1073741823, 1073741824, 4611686018427387903)
+//   and truncation rejection at every byte prefix 1..len-1
+// - Long/Short header encoding/decoding with max CID length (20B) and oversized CID (21B) rejection
+// - Exhaustive frame prefix truncation loops (ngtcp2_pkt_test.c) for ACK, RESET_STREAM, STOP_SENDING,
+//   CONNECTION_CLOSE (transport & app), MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS, DATA_BLOCKED,
+//   STREAM_DATA_BLOCKED, STREAMS_BLOCKED, NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, NEW_TOKEN
+fn test_ngtcp2_and_quinn_vendor_conformance(t: lit::T&) {
+    t.run("NGTCP2-CONV-01: Exhaustive VarInt Boundary Roundtrip & Prefix Truncation (test_ngtcp2_put_uvarint)") { sub =>
+        let vals: u64[8] = [
+            0,
+            63,
+            64,
+            16383,
+            16384,
+            1073741823,
+            1073741824,
+            4611686018427387903,
+        ];
+        let exp_lens: i64[8] = [1, 1, 2, 2, 4, 4, 8, 8];
+
+        for i in 8 {
+            var buf: u8[..16] = [];
+            let ok_enc = internal::quic_encode_varint(buf, vals[i]);
+            sub.assert_true(ok_enc, "varint boundary encodes cleanly");
+            sub.assert_eq(buf.len, exp_lens[i], "encoded wire length matches RFC 9000 Table 4");
+
+            // Every truncated prefix 0..buf.len-1 MUST fail decoding
+            var trunc_len: i64 = 0;
+            while trunc_len < buf.len {
+                var cur_t: i64 = 0;
+                let _, ok_t = internal::quic_decode_varint_cursor(buf[..trunc_len], cur_t);
+                sub.assert_false(ok_t, "truncated varint prefix must be rejected");
+                sub.assert_eq(cur_t, 0, "cursor unchanged on truncated varint");
+                trunc_len += 1;
+            }
+
+            // Full slice decodes to exact value
+            var cur: i64 = 0;
+            let dec_val, ok_dec = internal::quic_decode_varint_cursor(buf[..], cur);
+            sub.assert_true(ok_dec, "full varint decodes cleanly");
+            sub.assert_eq(dec_val, vals[i], "decoded varint value matches input");
+            sub.assert_eq(cur, buf.len, "cursor advanced by exact varint length");
+        }
+    };
+
+    t.run("NGTCP2-PKT-01: Max CID (20B) Long/Short Header Roundtrip & Oversized CID (21B) Rejection") { sub =>
+        let max_dcid: u8[20] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        ];
+        let max_scid: u8[20] = [
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        ];
+
+        var hs_hdr = internal::QuicHeader {
+            header_type:    internal::QuicHeaderType.Handshake,
+            version:        0xECEEEFF0,
+            payload_length: 16383,
+            packet_number:  0xE1E2E301,
+            ..
+        };
+        hs_hdr.dcid.append(max_dcid[..]);
+        hs_hdr.scid.append(max_scid[..]);
+
+        var wire_hs: u8[..128] = [];
+        sub.assert_false(internal::encode_quic_header(wire_hs, hs_hdr, 4), "reject Handshake header encode with unknown version 0xECEEEFF0");
+
+        // Unknown version 0xECEEEFF0 in raw wire must also be rejected by strict v1/v2 parser
+        var raw_unk_ver: u8[..64] = [];
+        raw_unk_ver.push(0xE0); // Handshake
+        core::append_u32_be(raw_unk_ver, 0xECEEEFF0);
+        raw_unk_ver.push(8); // DCID len
+        for _ in 30 { raw_unk_ver.push(0xAA); }
+        let _, ok_unk_ver = internal::parse_quic_header(raw_unk_ver[..], 0);
+        sub.assert_false(ok_unk_ver, "unknown QUIC version rejected by long header parser");
+
+        // Now test with QUIC_VERSION_1 and 20B CIDs
+        hs_hdr.version = rfc::QUIC_VERSION_1;
+        hs_hdr.payload_length = 8;
+        wire_hs.clear();
+        sub.assert_true(internal::encode_quic_header(wire_hs, hs_hdr, 4), "encode v1 Handshake with 20B CIDs");
+        let hdr_end = wire_hs.len;
+        for _ in 4 { wire_hs.push(0xBB); } // 4B PN + 4B payload = 8B payload_length
+
+        let parsed_hs, ok_hs = internal::parse_quic_header(wire_hs[..], 0);
+        sub.assert_true(ok_hs, "parse v1 Handshake with 20B CIDs");
+        sub.assert_eq(parsed_hs.dcid[..], max_dcid[..], "20B DCID preserved");
+        sub.assert_eq(parsed_hs.scid[..], max_scid[..], "20B SCID preserved");
+        sub.assert_eq(parsed_hs.packet_number, 0xE1E2E301, "4-byte PN preserved");
+        sub.assert_eq(parsed_hs.header_len as i64, hdr_end, "header_len matches encoded header");
+
+        // Oversized DCID (21 bytes > QUIC_MAX_CID_LEN) in raw wire must fail
+        var bad_cid_wire: u8[..64] = [];
+        bad_cid_wire.push(0xE0); // Handshake
+        core::append_u32_be(bad_cid_wire, rfc::QUIC_VERSION_1);
+        bad_cid_wire.push(21); // DCID len = 21 (illegal!)
+        for _ in 30 { bad_cid_wire.push(0x01); }
+        let _, ok_bad_cid = internal::parse_quic_header(bad_cid_wire[..], 0);
+        sub.assert_false(ok_bad_cid, "Long header with DCID len 21 (> 20) rejected");
+    };
+
+    t.run("NGTCP2-PKT-02: Exhaustive Control & Flow Frame Truncation Loops (ngtcp2_pkt_test.c)") { sub =>
+        // 1. RESET_STREAM: stream_id=1000000007, app_error_code=0xE1E2 (57826 -> 4B varint), final_size=0x31F2F3F4F5F6F7F8
+        var rst_wire: u8[..64] = [];
+        sub.assert_true(
+            internal::encode_reset_stream_frame(rst_wire, 1000000007, 0xE1E2, 0x31F2F3F4F5F6F7F8),
+            "encode ngtcp2 RESET_STREAM vector",
+        );
+        sub.assert_eq(rst_wire.len, 1 + 4 + 4 + 8, "RESET_STREAM wire length is 17 bytes");
+        var i: i64 = 1;
+        while i < rst_wire.len {
+            var cur_t: i64 = 0;
+            let _, ok_t = internal::decode_quic_frame_cursor(rst_wire[..i], cur_t);
+            sub.assert_false(ok_t, "truncated RESET_STREAM frame rejected");
+            i += 1;
+        }
+        var cur_rst: i64 = 0;
+        let dec_rst, ok_rst = internal::decode_quic_frame_cursor(rst_wire[..], cur_rst);
+        sub.assert_true(ok_rst, "full RESET_STREAM decoded");
+        sub.assert_eq(dec_rst.stream_id, 1000000007, "stream_id matches");
+        sub.assert_eq(dec_rst.error_code, 0xE1E2, "error_code matches");
+        sub.assert_eq(dec_rst.final_size, 0x31F2F3F4F5F6F7F8, "final_size matches");
+
+        // 2. STOP_SENDING: stream_id=0xF1F2F3F4, app_error_code=0xE1E2
+        var ss_wire: u8[..64] = [];
+        sub.assert_true(internal::encode_stop_sending_frame(ss_wire, 0xF1F2F3F4, 0xE1E2), "encode ngtcp2 STOP_SENDING vector");
+        i = 1;
+        while i < ss_wire.len {
+            var cur_t: i64 = 0;
+            let _, ok_t = internal::decode_quic_frame_cursor(ss_wire[..i], cur_t);
+            sub.assert_false(ok_t, "truncated STOP_SENDING frame rejected");
+            i += 1;
+        }
+        var cur_ss: i64 = 0;
+        let dec_ss, ok_ss = internal::decode_quic_frame_cursor(ss_wire[..], cur_ss);
+        sub.assert_true(ok_ss, "full STOP_SENDING decoded");
+        sub.assert_eq(dec_ss.stream_id, 0xF1F2F3F4, "stream_id matches");
+        sub.assert_eq(dec_ss.error_code, 0xE1E2, "error_code matches");
+
+        // 3. CONNECTION_CLOSE (Transport 0x1C & Application 0x1D)
+        var cc_wire: u8[..64] = [];
+        sub.assert_true(
+            internal::encode_connection_close_frame(cc_wire, 0xF1F2, 0x06, "tls handshake failure", false),
+            "encode transport CONNECTION_CLOSE",
+        );
+        i = 1;
+        while i < cc_wire.len {
+            var cur_t: i64 = 0;
+            let _, ok_t = internal::decode_quic_frame_cursor(cc_wire[..i], cur_t);
+            sub.assert_false(ok_t, "truncated transport CONNECTION_CLOSE rejected");
+            i += 1;
+        }
+        var cur_cc: i64 = 0;
+        let dec_cc, ok_cc = internal::decode_quic_frame_cursor(cc_wire[..], cur_cc);
+        sub.assert_true(ok_cc, "full transport CONNECTION_CLOSE decoded");
+        sub.assert_eq(dec_cc.error_code, 0xF1F2, "close error_code matches");
+        sub.assert_eq(dec_cc.payload, "tls handshake failure", "close reason matches");
+
+        // 4. NEW_CONNECTION_ID: seq=1000000009, retire_prior_to=1000000007, 16B CID, 16B reset token
+        var ncid_wire: u8[..64] = [];
+        let cid16: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let srt16: u8[16] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF];
+        sub.assert_true(
+            internal::encode_new_conn_id_frame(ncid_wire, 1000000009, 1000000007, cid16[..], srt16),
+            "encode NEW_CONNECTION_ID",
+        );
+        i = 1;
+        while i < ncid_wire.len {
+            var cur_t: i64 = 0;
+            let _, ok_t = internal::decode_quic_frame_cursor(ncid_wire[..i], cur_t);
+            sub.assert_false(ok_t, "truncated NEW_CONNECTION_ID rejected");
+            i += 1;
+        }
+        var cur_ncid: i64 = 0;
+        let dec_ncid, ok_ncid = internal::decode_quic_frame_cursor(ncid_wire[..], cur_ncid);
+        sub.assert_true(ok_ncid, "full NEW_CONNECTION_ID decoded");
+        sub.assert_eq(dec_ncid.frame_type, internal::QuicFrameType.NewConnectionId, "frame_type is NewConnectionId");
+
+        // Illegal NEW_CONNECTION_ID where retire_prior_to > seq MUST fail encoding and decoding
+        var bad_ncid: u8[..64] = [];
+        sub.assert_false(
+            internal::encode_new_conn_id_frame(bad_ncid, 5, 10, cid16[..], srt16),
+            "NEW_CONNECTION_ID with retire_prior_to > seq rejected",
+        );
+
+        // 5. NEW_TOKEN empty token rejection & truncation loop
+        var empty_nt: u8[..16] = [];
+        sub.assert_false(internal::encode_new_token_frame(empty_nt, ""), "empty NEW_TOKEN rejected on encode");
+        let raw_empty_nt: u8[2] = [0x07, 0x00]; // type 0x07, len 0
+        var cur_ent: i64 = 0;
+        let _, ok_ent = internal::decode_quic_frame_cursor(raw_empty_nt[..], cur_ent);
+        sub.assert_false(ok_ent, "0-length NEW_TOKEN rejected on decode per RFC 9000 §19.7");
+    };
+
+    t.run("NGTCP2-ACK-01: Multi-Range ACK Frame Codec & Truncation Loop (test_ngtcp2_pkt_encode_ack_frame)") { sub =>
+        // Largest Acked = 0xF1F2F3F4, Ack Delay = 0xE1E2, First Range = 0xD1D2,
+        // Range 1: Gap = 11, Len = 0xC1C2
+        var ack = internal::AckFrame {
+            is_ecn:          false,
+            largest_acked:   0xF1F2F3F4,
+            ack_delay:       0xE1E2,
+            first_ack_range: 0xD1D2,
+            ..
+        };
+        ack.ranges.push(internal::AckRange { gap: 11, ack_range: 0xC1C2 });
+
+        var wire: u8[..64] = [];
+        sub.assert_true(internal::encode_ack_frame(wire, ack), "encode multi-range ACK frame");
+
+        var i: i64 = 1;
+        while i < wire.len {
+            let _, _, ok_t = internal::decode_ack_frame(wire[..i], 0);
+            sub.assert_false(ok_t, "truncated multi-range ACK frame rejected");
+            i += 1;
+        }
+
+        let dec, read_len, ok_dec = internal::decode_ack_frame(wire[..], 0);
+        sub.assert_true(ok_dec, "full multi-range ACK frame decoded");
+        sub.assert_eq(read_len as i64, wire.len, "consumed exact wire length");
+        sub.assert_eq(dec.largest_acked, 0xF1F2F3F4, "largest_acked matches");
+        sub.assert_eq(dec.ack_delay, 0xE1E2, "ack_delay matches");
+        sub.assert_eq(dec.first_ack_range, 0xD1D2, "first_ack_range matches");
+        sub.assert_eq(dec.ranges.len, 1, "1 additional ACK range decoded");
+        sub.assert_eq(dec.ranges[0].gap, 11, "range 0 gap is 11");
+        sub.assert_eq(dec.ranges[0].ack_range, 0xC1C2, "range 0 len is 0xC1C2");
+    };
+}
+
+// 32. Ported Reassembly, ACK Interval Merging & Loss Recovery Vectors (vendor/ngtcp2/tests/ngtcp2_rob_test.c, ngtcp2_acktr_test.c, ngtcp2_rtb_test.c)
+fn test_ngtcp2_conn_and_recovery_semantics(t: lit::T&) {
+    t.run("NGTCP2-ROB-01: Reverse-Order & Overlapping Fragment Reassembly (ngtcp2_rob_test.c)") { sub =>
+        var rbuf = internal::new_reassembly_buffer(65536);
+
+        // Push 8 4-byte fragments in strictly reverse order: offsets 28, 24, 20, 16, 12, 8, 4
+        let chunks: const u8[:][8] = ["0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777"];
+        var idx: i64 = 7;
+        while idx >= 1 {
+            let off = (idx * 4) as u64;
+            let is_fin = idx == 7;
+            sub.assert_true(internal::insert_fragment(rbuf, off, chunks[idx], is_fin), "insert reverse-order fragment");
+            sub.assert_eq(rbuf.consumed_offset, 0, "cannot consume before offset 0 arrives");
+            idx -= 1;
+        }
+        sub.assert_eq(rbuf.final_size, 32, "FIN recorded from last fragment at offset 28..32 (final_size is 32)");
+
+        // Now deliver missing head fragment at offset 0 ("0000")
+        sub.assert_true(internal::insert_fragment(rbuf, 0, chunks[0], false), "insert head fragment at offset 0");
+
+        var assembled: u8[..64] = [];
+        let n_read = internal::read_contiguous(rbuf, assembled);
+        sub.assert_eq(n_read, 32, "all 32 bytes become contiguous once offset 0 arrives");
+        sub.assert_eq(assembled[..], "00001111222233334444555566667777", "reassembled payload matches exact sequence");
+        sub.assert_eq(rbuf.consumed_offset, 32, "consumed_offset advanced to 32");
+
+        // Retransmitted / duplicate fragment below consumed_offset (offset 4, len 4) is accepted idempotently
+        sub.assert_true(internal::insert_fragment(rbuf, 4, "1111", false), "duplicate old fragment below consumed_offset accepted");
+        sub.assert_eq(rbuf.consumed_offset, 32, "consumed_offset unchanged at 32");
+
+        // Conflicting FIN at offset 16 (final_size 20 != 32) must be rejected
+        sub.assert_false(internal::insert_fragment(rbuf, 16, "4444", true), "conflicting FIN at offset 20 != 32 rejected");
+    };
+
+    t.run("NGTCP2-ACKTR-01: Comb-Pattern Gap Bridging & ACK Range Compaction (ngtcp2_acktr_test.c)") { sub =>
+        var ranges: internal::AckInterval[..64] = [];
+
+        // 1. Receive 10 even packet numbers: 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 -> 10 separate 1-packet intervals
+        var i: u64 = 0;
+        while i < 10 {
+            internal::record_received_pn(ranges, i * 2);
+            i += 1;
+        }
+        sub.assert_eq(ranges.len, 10, "10 disjoint even packet intervals recorded");
+        sub.assert_eq(ranges[0].largest, 18, "highest interval is [18..18]");
+        sub.assert_eq(ranges[9].smallest, 0, "lowest interval is [0..0]");
+
+        // 2. Fill all odd gaps: 1, 3, 5, 7, 9, 11, 13, 15, 17 -> must coalesce into a single interval [0..18]
+        var j: u64 = 0;
+        while j < 9 {
+            internal::record_received_pn(ranges, j * 2 + 1);
+            j += 1;
+        }
+        sub.assert_eq(ranges.len, 1, "all 10 intervals coalesced into 1 contiguous range");
+        sub.assert_eq(ranges[0].smallest, 0, "coalesced range smallest is 0");
+        sub.assert_eq(ranges[0].largest, 18, "coalesced range largest is 18");
+
+        let ack_frame, ok_build = internal::build_ack_frame(ranges, 80, true);
+        sub.assert_true(ok_build, "build_ack_frame from coalesced interval");
+        sub.assert_eq(ack_frame.largest_acked, 18, "largest_acked is 18");
+        sub.assert_eq(ack_frame.first_ack_range, 18, "first_ack_range covers [0..18]");
+        sub.assert_eq(ack_frame.ranges.len, 0, "0 gap ranges after full coalescing");
+    };
+
+    t.run("NGTCP2-RTB-01: Packet Threshold & Time Threshold Loss Detection (ngtcp2_rtb_test.c & quinn)") { sub =>
+        var space = internal::PnSpaceState {
+            space_id:          internal::PnSpaceId.ApplicationData,
+            has_acked_packets: true,
+            largest_acked_pn:  20,
+            ..
+        };
+        // Send packets PN 15..19 at t = 10_000 us
+        var pn: u64 = 15;
+        while pn < 20 {
+            space.sent_packets.push(internal::SentPacketMeta {
+                pn:            pn,
+                time_sent_us:  10000,
+                ack_eliciting: true,
+                in_flight:     true,
+            });
+            pn += 1;
+        }
+        var rtt = internal::RttState {
+            smoothed_rtt_us: 40000,
+            latest_rtt_us:   40000,
+            rttvar_us:       10000,
+            ..
+        };
+
+        // At t = 20_000 us (elapsed 10ms < time_threshold 45ms):
+        // Only packets with largest_acked (20) >= pn + 3 (i.e. PN 15, 16, 17) are lost by packet threshold!
+        // PN 18 and 19 remain in flight and arm loss_time_us.
+        var lost1: internal::SentPacketMeta[..64] = [];
+        internal::detect_lost_packets(space, rtt, 20000, lost1);
+        sub.assert_eq(lost1.len, 3, "PN 15, 16, 17 declared lost by kPacketThreshold=3");
+        sub.assert_eq(lost1[0].pn, 15, "lost[0] is PN 15");
+        sub.assert_eq(lost1[1].pn, 16, "lost[1] is PN 16");
+        sub.assert_eq(lost1[2].pn, 17, "lost[2] is PN 17");
+        sub.assert_true(space.loss_time_us > 0, "loss_time_us armed for remaining unacked PN 18, 19");
+
+        // At t = 60_000 us (elapsed 50ms >= 9/8 * 40ms = 45ms):
+        // Remaining PN 18 and 19 are declared lost by time threshold!
+        var lost2: internal::SentPacketMeta[..64] = [];
+        internal::detect_lost_packets(space, rtt, 60000, lost2);
+        sub.assert_eq(lost2.len, 2, "PN 18 and 19 declared lost by kTimeThreshold (9/8 RTT)");
+        sub.assert_eq(lost2[0].pn, 18, "lost2[0] is PN 18");
+        sub.assert_eq(lost2[1].pn, 19, "lost2[1] is PN 19");
+    };
+
+    t.run("NGTCP2-PKT-02: Packet Number Reconstruction Wrap-Around & RFC 9000 Table 3 Frame Matrix (ngtcp2_pkt_test.c)") { sub =>
+        // 1. test_ngtcp2_pkt_adjust_pkt_num (ngtcp2_pkt_test.c & RFC 9000 Appendix A.3):
+        // RFC 9000 A.3 vector: largest_acked = 0xa82f30ea, truncated = 0x9b32 (16-bit) -> 0xa82f9b32
+        let pn_a3, ok_a3 = internal::decode_packet_number_checked(0xa82f30ea, 0x9b32, 2);
+        sub.assert_true(ok_a3, "RFC 9000 A.3 PN reconstruction ok");
+        sub.assert_eq(pn_a3, 0xa82f9b32, "reconstructed 0xa82f9b32");
+
+        // Window wrap-around upward: largest_acked = 0x00ff, truncated = 0x01 (8-bit) -> 0x0101
+        let pn_up, ok_up = internal::decode_packet_number_checked(0x00ff, 0x01, 1);
+        sub.assert_true(ok_up, "8-bit upward wrap-around ok");
+        sub.assert_eq(pn_up, 0x0101, "0x00ff + 0x01 (8-bit) -> 0x0101");
+
+        // Window wrap-around downward: largest_acked = 0x0100, truncated = 0xff (8-bit) -> 0x00ff
+        let pn_dn, ok_dn = internal::decode_packet_number_checked(0x0100, 0xff, 1);
+        sub.assert_true(ok_dn, "8-bit downward wrap-around ok");
+        sub.assert_eq(pn_dn, 0x00ff, "0x0100 + 0xff (8-bit) -> 0x00ff");
+
+        // Boundary at QUIC_MAX_PN (2^62 - 1 = 0x3fffffffffffffff)
+        let pn_max, ok_max = internal::decode_packet_number_checked(0x3ffffffffffffff0, 0xff, 1);
+        sub.assert_true(ok_max, "PN at QUIC_MAX_PN (2^62 - 1) valid");
+        sub.assert_eq(pn_max, 0x3fffffffffffffff, "reconstructed 2^62 - 1");
+
+        // Boundary clamp at (1 << 62) - pn_win (RFC 9000 Appendix A.3 & test_ngtcp2_pkt_adjust_pkt_num):
+        // largest_acked = 0x3ffffffffffffff0, truncated = 0x00 (8-bit) does NOT wrap to 2^62; stays at 0x3fffffffffffff00
+        let pn_clamp, ok_clamp = internal::decode_packet_number_checked(0x3ffffffffffffff0, 0x00, 1);
+        sub.assert_true(ok_clamp, "PN near 2^62 clamps below 2^62 per RFC 9000 A.3");
+        sub.assert_eq(pn_clamp, 0x3fffffffffffff00, "clamped to 0x3fffffffffffff00 instead of 2^62");
+
+        // Overflow past QUIC_MAX_PN when largest_acked == QUIC_MAX_PN (2^62 - 1) and truncated = 0x80 -> rejected
+        let _, ok_ovf = internal::decode_packet_number_checked(0x3fffffffffffffff, 0x80, 1);
+        sub.assert_false(ok_ovf, "PN exceeding QUIC_MAX_PN (2^62 - 1) rejected");
+
+        // 2. RFC 9000 §12.5 Table 3 frame-in-packet matrix
+        sub.assert_true(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Crypto, internal::QuicHeaderType.Initial),
+            "CRYPTO allowed in Initial",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Stream, internal::QuicHeaderType.Initial),
+            "STREAM forbidden in Initial",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.ConnectionCloseApp, internal::QuicHeaderType.Handshake),
+            "APPLICATION_CLOSE (0x1D) forbidden in Handshake",
+        );
+        sub.assert_true(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Stream, internal::QuicHeaderType.ZeroRtt),
+            "STREAM allowed in 0-RTT",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Ack, internal::QuicHeaderType.ZeroRtt),
+            "ACK forbidden in 0-RTT",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Crypto, internal::QuicHeaderType.ZeroRtt),
+            "CRYPTO forbidden in 0-RTT",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.HandshakeDone, internal::QuicHeaderType.ZeroRtt),
+            "HANDSHAKE_DONE forbidden in 0-RTT",
+        );
+        sub.assert_false(
+            internal::quic_is_frame_allowed_in_packet(internal::QuicFrameType.Ping, internal::QuicHeaderType.Retry),
+            "all frames forbidden in Retry packet",
+        );
+    };
+}
+
+// --- Component: ngtcp2_and_quinn_connection_dynamics ---
+// Ported end-to-end connection lifecycle, multi-space recovery, stream directionality,
+// coalesced encryption, and PTO/BBRv3 test vectors from vendor/ngtcp2/tests/ngtcp2_conn_test.c,
+// ngtcp2_rtb_test.c, ngtcp2_acktr_test.c, and vendor/quinn/quinn-proto/src/connection/:
+fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
+    t.run("QUINN-CONN-01: Coalesced Encrypted Datagrams (Initial + Handshake + 1-RTT) & Cipher Matrix") { sub =>
+        let orig_dcid: u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let cli_scid:  u8[4] = [0xC1, 0xC2, 0xC3, 0xC4];
+        var cli = internal::new_quic_client_connection(orig_dcid[..], cli_scid[..]);
+        var srv = internal::new_quic_server_connection(orig_dcid[..]);
+
+        // Install Initial keys (AES-128-GCM) + Handshake keys (ChaCha20-Poly1305) + 1-RTT keys (AES-256-GCM)
+        sub.assert_true(internal::quic_conn_install_initial_keys(cli, orig_dcid[..]), "cli initial keys");
+        sub.assert_true(internal::quic_conn_install_initial_keys(srv, orig_dcid[..]), "srv initial keys");
+
+        let hs_hp:   u8[32] = [0x21; 32];
+        let hs_key:  u8[32] = [0x22; 32];
+        let hs_iv:   u8[12] = [0x23; 12];
+        let app_hp:  u8[32] = [0x31; 32];
+        let app_key: u8[32] = [0x32; 32];
+        let app_iv:  u8[12] = [0x33; 12];
+
+        sub.assert_true(
+            internal::quic_install_pn_space_keys(cli.tx_handshake_space, hs_hp[..], hs_key[..], hs_iv[..], rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256),
+            "cli tx handshake keys (ChaCha20-Poly1305)",
+        );
+        sub.assert_true(
+            internal::quic_install_pn_space_keys(srv.handshake_space, hs_hp[..], hs_key[..], hs_iv[..], rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256),
+            "srv rx handshake keys (ChaCha20-Poly1305)",
+        );
+        sub.assert_true(
+            internal::quic_install_pn_space_keys(cli.tx_app_space, app_hp[..], app_key[..], app_iv[..], rfc::TLS_CIPHER_AES_256_GCM_SHA384),
+            "cli tx 1-RTT keys (AES-256-GCM)",
+        );
+        sub.assert_true(
+            internal::quic_install_pn_space_keys(srv.app_space, app_hp[..], app_key[..], app_iv[..], rfc::TLS_CIPHER_AES_256_GCM_SHA384),
+            "srv rx 1-RTT keys (AES-256-GCM)",
+        );
+
+        // Build a single coalesced UDP datagram containing:
+        //   [Packet 1: Encrypted Initial (CRYPTO "CH")] +
+        //   [Packet 2: Encrypted Handshake (CRYPTO "FIN")] +
+        //   [Packet 3: Encrypted 1-RTT Short Header (STREAM 0 "GET /") padded to >=1200 total]
+        var coalesced: u8[..1500] = [];
+
+        // 1. Seal Initial packet
+        var plain_init: u8[..64] = [];
+        sub.assert_true(internal::encode_crypto_frame(plain_init, 0, "CH-Flight"), "encode Initial CRYPTO");
+        var hdr_init = internal::QuicHeader {
+            header_type:   internal::QuicHeaderType.Initial,
+            version:       rfc::QUIC_VERSION_1,
+            packet_number: 0,
+            ..
+        };
+        hdr_init.dcid.append(orig_dcid[..]);
+        hdr_init.scid.append(cli_scid[..]);
+        var pkt_init: u8[..256] = [];
+        sub.assert_true(internal::quic_seal_packet(cli.tx_initial_space, hdr_init, 2, plain_init[..], pkt_init), "seal Initial");
+        coalesced.append(pkt_init[..]);
+
+        // 2. Seal Handshake packet (ChaCha20-Poly1305)
+        var plain_hs: u8[..64] = [];
+        sub.assert_true(internal::encode_crypto_frame(plain_hs, 0, "ClientFinished"), "encode Handshake CRYPTO");
+        var hdr_hs = internal::QuicHeader {
+            header_type:   internal::QuicHeaderType.Handshake,
+            version:       rfc::QUIC_VERSION_1,
+            packet_number: 0,
+            ..
+        };
+        hdr_hs.dcid.append(orig_dcid[..]);
+        hdr_hs.scid.append(cli_scid[..]);
+        var pkt_hs: u8[..256] = [];
+        sub.assert_true(internal::quic_seal_packet(cli.tx_handshake_space, hdr_hs, 2, plain_hs[..], pkt_hs), "seal Handshake");
+        coalesced.append(pkt_hs[..]);
+
+        // 3. Seal 1-RTT Short Header packet (AES-256-GCM), padded so total coalesced datagram >= 1200 bytes
+        var plain_app: u8[..1200] = [];
+        sub.assert_true(
+            internal::encode_stream_frame(plain_app, 0, 0, "GET /index.html", internal::QuicStreamFlags { fin: true, with_len: true }),
+            "encode 1-RTT STREAM 0",
+        );
+        sub.assert_true(internal::encode_padding_frame(plain_app, 1100), "pad 1-RTT payload");
+        var hdr_app = internal::QuicHeader {
+            header_type:   internal::QuicHeaderType.OneRtt,
+            packet_number: 0,
+            ..
+        };
+        hdr_app.dcid.append(orig_dcid[..]);
+        var pkt_app: u8[..1300] = [];
+        sub.assert_true(internal::quic_seal_packet(cli.tx_app_space, hdr_app, 2, plain_app[..], pkt_app), "seal 1-RTT Short");
+        coalesced.append(pkt_app[..]);
+        sub.assert_true(coalesced.len >= 1200, "coalesced UDP datagram >= 1200 bytes");
+
+        var ack_out = internal::AckFrame { .. };
+        let ok_coal, needs_ack = internal::quic_conn_process_datagram(srv, coalesced[..], 10000, ack_out);
+        sub.assert_true(ok_coal, "server processed 3-packet coalesced encrypted datagram");
+        sub.assert_true(needs_ack, "coalesced datagram is ACK-eliciting");
+        sub.assert_true(srv.validated_address, "peer address implicitly validated by Handshake/1-RTT packet");
+        sub.assert_true(srv.state == internal::QuicConnState.Established, "connection transitioned Initial -> Handshake -> Established");
+        sub.assert_eq(srv.dcid[..], cli_scid[..], "server learned peer SCID as its outbound DCID");
+        sub.assert_eq(srv.initial_crypto.buf[..], "CH-Flight", "Initial CRYPTO stream reassembled");
+        sub.assert_eq(srv.handshake_crypto.buf[..], "ClientFinished", "Handshake CRYPTO stream reassembled");
+
+        let st0_idx = internal::quic_table_find_stream(srv.stream_table, 0);
+        sub.assert_true(st0_idx >= 0, "stream 0 opened from 1-RTT packet");
+        sub.assert_eq(srv.stream_table.streams[st0_idx as i64].bytes_recv, 15, "stream 0 received 15 bytes");
+        sub.assert_true(
+            srv.stream_table.streams[st0_idx as i64].recv_state == internal::QuicRecvState.DataRecvd,
+            "stream 0 transitioned to DataRecvd on FIN",
+        );
+
+        // Wrong DCID on Server Short header must be rejected (payload >= 4 bytes for 16B HP sample)
+        var wrong_hdr = internal::QuicHeader {
+            header_type:   internal::QuicHeaderType.OneRtt,
+            packet_number: 1,
+            ..
+        };
+        let bad_dcid: u8[8] = [0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99];
+        wrong_hdr.dcid.append(bad_dcid[..]);
+        var wrong_pkt: u8[..128] = [];
+        sub.assert_true(internal::quic_seal_packet(cli.tx_app_space, wrong_hdr, 2, "0123", wrong_pkt), "seal wrong DCID pkt");
+        let ok_wrong, _ = internal::quic_conn_process_datagram(srv, wrong_pkt[..], 11000, ack_out);
+        sub.assert_false(ok_wrong, "Short header with mismatched DCID rejected by server");
+    };
+
+    t.run("QUINN-CONN-02: Out-of-Order STREAM + Early FIN + Conflicting RESET_STREAM Final-Size Guard (RFC 9000 §4.5)") { sub =>
+        let scid: u8[4] = [0x10, 0x20, 0x30, 0x40];
+        var srv = internal::new_quic_server_connection(scid[..]);
+        var ack_out = internal::AckFrame { .. };
+
+        // 1. Arrive out-of-order tail fragment [offset=10, len=5, fin=true] -> establishes final_size = 15 (SizeKnown)
+        var dgram1: u8[..64] = [];
+        dgram1.push(0x40);
+        dgram1.append(scid[..]);
+        dgram1.push(0x01);
+        sub.assert_true(
+            internal::encode_stream_frame(dgram1, 0, 10, "KLMNO", internal::QuicStreamFlags { fin: true, with_len: true }),
+            "encode tail FIN fragment at offset 10..15",
+        );
+        let ok1, _ = internal::quic_conn_process_datagram(srv, dgram1[..], 1000, ack_out);
+        sub.assert_true(ok1, "tail FIN fragment accepted");
+        let idx = internal::quic_table_find_stream(srv.stream_table, 0);
+        sub.assert_true(idx >= 0, "stream 0 created");
+        sub.assert_true(
+            srv.stream_table.streams[idx as i64].recv_state == internal::QuicRecvState.SizeKnown,
+            "stream 0 in SizeKnown (missing 0..10)",
+        );
+        sub.assert_eq(srv.stream_table.streams[idx as i64].recv_final_size, 15, "recv_final_size locked at 15");
+        sub.assert_eq(srv.flow_ctrl.bytes_recv_total, 15, "flow control committed 15 bytes");
+
+        // 2. Arrive middle fragment [offset=5, len=5, fin=false] -> still SizeKnown (missing 0..5)
+        var dgram2: u8[..64] = [];
+        dgram2.push(0x40);
+        dgram2.append(scid[..]);
+        dgram2.push(0x02);
+        sub.assert_true(
+            internal::encode_stream_frame(dgram2, 0, 5, "FGHIJ", internal::QuicStreamFlags { fin: false, with_len: true }),
+            "encode middle fragment 5..10",
+        );
+        let ok2, _ = internal::quic_conn_process_datagram(srv, dgram2[..], 1010, ack_out);
+        sub.assert_true(ok2, "middle fragment accepted");
+        sub.assert_true(
+            srv.stream_table.streams[idx as i64].recv_state == internal::QuicRecvState.SizeKnown,
+            "still SizeKnown until head arrives",
+        );
+
+        // 3. Conflicting RESET_STREAM with final_size = 25 (!= 15) when max_data_local = 20:
+        //    Must fail with QUIC_ERR_FINAL_SIZE (0x06), NOT QUIC_ERR_FLOW_CONTROL (0x03),
+        //    and MUST NOT corrupt srv.flow_ctrl.bytes_recv_total!
+        var srv_conflict = srv;
+        srv_conflict.flow_ctrl.max_data_local = 20;
+        var dgram_bad_rst: u8[..64] = [];
+        dgram_bad_rst.push(0x40);
+        dgram_bad_rst.append(scid[..]);
+        dgram_bad_rst.push(0x03);
+        sub.assert_true(
+            internal::encode_reset_stream_frame(dgram_bad_rst, 0, 0x42, 25),
+            "encode conflicting RESET_STREAM final_size=25",
+        );
+        let ok_bad_rst, _ = internal::quic_conn_process_datagram(srv_conflict, dgram_bad_rst[..], 1020, ack_out);
+        sub.assert_false(ok_bad_rst, "conflicting RESET_STREAM final_size=25 (!= 15) rejected");
+        sub.assert_eq(
+            srv_conflict.close_code,
+            rfc::QUIC_ERR_FINAL_SIZE,
+            "closed with FINAL_SIZE_ERROR (0x06), not FLOW_CONTROL_ERROR",
+        );
+        sub.assert_eq(srv_conflict.flow_ctrl.bytes_recv_total, 15, "bytes_recv_total uncorrupted on rejected RESET_STREAM");
+
+        // 4. Conflicting STREAM frame exceeding established FIN [offset=12, len=5 -> end=17 > 15] -> FINAL_SIZE_ERROR
+        var srv_past_fin = srv;
+        var dgram_past: u8[..64] = [];
+        dgram_past.push(0x40);
+        dgram_past.append(scid[..]);
+        dgram_past.push(0x03);
+        sub.assert_true(
+            internal::encode_stream_frame(dgram_past, 0, 12, "PQRST", internal::QuicStreamFlags { fin: false, with_len: true }),
+            "encode STREAM past established FIN",
+        );
+        let ok_past, _ = internal::quic_conn_process_datagram(srv_past_fin, dgram_past[..], 1020, ack_out);
+        sub.assert_false(ok_past, "STREAM past established final_size rejected");
+        sub.assert_eq(srv_past_fin.close_code, rfc::QUIC_ERR_FINAL_SIZE, "closed with FINAL_SIZE_ERROR (0x06)");
+
+        // 5. Deliver missing head fragment [offset=0, len=5, fin=false] on valid connection -> transitions SizeKnown -> DataRecvd!
+        var dgram3: u8[..64] = [];
+        dgram3.push(0x40);
+        dgram3.append(scid[..]);
+        dgram3.push(0x03);
+        sub.assert_true(
+            internal::encode_stream_frame(dgram3, 0, 0, "ABCDE", internal::QuicStreamFlags { fin: false, with_len: true }),
+            "encode head fragment 0..5",
+        );
+        let ok3, _ = internal::quic_conn_process_datagram(srv, dgram3[..], 1030, ack_out);
+        sub.assert_true(ok3, "head fragment 0..5 accepted");
+        sub.assert_true(
+            srv.stream_table.streams[idx as i64].recv_state == internal::QuicRecvState.DataRecvd,
+            "stream 0 transitioned SizeKnown -> DataRecvd once all 15 bytes arrived",
+        );
+
+        sub.assert_eq(
+            srv.stream_table.streams[idx as i64].contiguous_recv_bytes,
+            15,
+            "all 15 bytes contiguous in stream recv_ranges",
+        );
+        sub.assert_eq(srv.stream_table.streams[idx as i64].recv_ranges.len, 1, "recv_ranges coalesced into 1 interval [0..15]");
+        sub.assert_true(
+            internal::quic_stream_on_app_read(srv.stream_table.streams[idx as i64], 15),
+            "app read transitions DataRecvd -> DataRead",
+        );
+        sub.assert_true(
+            srv.stream_table.streams[idx as i64].recv_state == internal::QuicRecvState.DataRead,
+            "terminal state is DataRead",
+        );
+    };
+
+    t.run("NGTCP2-CONN-03: Stream Directionality & Role Polarity Matrix (RFC 9000 §19.4, §19.5, §19.8, §19.10, §19.13)") { sub =>
+        let scid: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        var ack_out = internal::AckFrame { .. };
+
+        // Case A: Server receives STREAM on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR (cannot receive on send-only stream)
+        var srv_a = internal::new_quic_server_connection(scid[..]);
+        let sid_a, _, ok_open_s3 = internal::quic_table_open_local_stream(srv_a.stream_table, false);
+        sub.assert_true(ok_open_s3, "server opens its own Uni stream 3");
+        sub.assert_eq(sid_a, 3, "server local Uni stream ID is 3");
+        var d_s3: u8[..64] = [];
+        d_s3.push(0x40);
+        d_s3.append(scid[..]);
+        d_s3.push(0x01);
+        internal::encode_stream_frame(d_s3, 3, 0, "illegal", internal::QuicStreamFlags { fin: false, with_len: true });
+        let ok_a, _ = internal::quic_conn_process_datagram(srv_a, d_s3[..], 1000, ack_out);
+        sub.assert_false(ok_a, "Server rejects inbound STREAM on Server-Uni stream 3");
+        sub.assert_eq(srv_a.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+
+        // Case B: Server receives STREAM on unopened Server-Initiated Bidi stream (ID 1) -> STREAM_STATE_ERROR
+        var srv_b = internal::new_quic_server_connection(scid[..]);
+        var d_s1: u8[..64] = [];
+        d_s1.push(0x40);
+        d_s1.append(scid[..]);
+        d_s1.push(0x01);
+        internal::encode_stream_frame(d_s1, 1, 0, "unopened-local", internal::QuicStreamFlags { fin: false, with_len: true });
+        let ok_b, _ = internal::quic_conn_process_datagram(srv_b, d_s1[..], 1000, ack_out);
+        sub.assert_false(ok_b, "Server rejects inbound STREAM on unopened local Bidi stream 1");
+        sub.assert_eq(srv_b.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+
+        // Case C: Server receives STOP_SENDING on Client-Initiated Uni stream (ID 2, recv-only for server) -> STREAM_STATE_ERROR
+        var srv_c = internal::new_quic_server_connection(scid[..]);
+        var d_ss2: u8[..64] = [];
+        d_ss2.push(0x40);
+        d_ss2.append(scid[..]);
+        d_ss2.push(0x01);
+        internal::encode_stop_sending_frame(d_ss2, 2, 0x01);
+        let ok_c, _ = internal::quic_conn_process_datagram(srv_c, d_ss2[..], 1000, ack_out);
+        sub.assert_false(ok_c, "Server rejects STOP_SENDING on Client-Uni stream 2 (server has no send side)");
+        sub.assert_eq(srv_c.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+
+        // Case D: Server receives MAX_STREAM_DATA on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
+        var srv_d = internal::new_quic_server_connection(scid[..]);
+        var d_msd2: u8[..64] = [];
+        d_msd2.push(0x40);
+        d_msd2.append(scid[..]);
+        d_msd2.push(0x01);
+        internal::encode_max_stream_data_frame(d_msd2, 2, 65536);
+        let ok_d, _ = internal::quic_conn_process_datagram(srv_d, d_msd2[..], 1000, ack_out);
+        sub.assert_false(ok_d, "Server rejects MAX_STREAM_DATA on recv-only Client-Uni stream 2");
+        sub.assert_eq(srv_d.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+
+        // Case E: Server receives STREAM_DATA_BLOCKED on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR
+        var srv_e = internal::new_quic_server_connection(scid[..]);
+        let _, _, _ = internal::quic_table_open_local_stream(srv_e.stream_table, false);
+        var d_sdb3: u8[..64] = [];
+        d_sdb3.push(0x40);
+        d_sdb3.append(scid[..]);
+        d_sdb3.push(0x01);
+        internal::encode_stream_data_blocked_frame(d_sdb3, 3, 1024);
+        let ok_e, _ = internal::quic_conn_process_datagram(srv_e, d_sdb3[..], 1000, ack_out);
+        sub.assert_false(ok_e, "Server rejects STREAM_DATA_BLOCKED on send-only Server-Uni stream 3");
+        sub.assert_eq(srv_e.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+
+        // Case F: Client connection receives STREAM on Server-Initiated Uni stream (ID 3) -> VALID!
+        var cli_f = internal::new_quic_client_connection(scid[..], scid[..]);
+        var d_cli3: u8[..64] = [];
+        d_cli3.push(0x40);
+        d_cli3.append(scid[..]);
+        d_cli3.push(0x01);
+        internal::encode_stream_frame(d_cli3, 3, 0, "server-push-uni", internal::QuicStreamFlags { fin: true, with_len: true });
+        let ok_f, _ = internal::quic_conn_process_datagram(cli_f, d_cli3[..], 1000, ack_out);
+        sub.assert_true(ok_f, "Client accepts inbound STREAM on Server-Uni stream 3");
+
+        // Case G: Client connection receives RESET_STREAM on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
+        var cli_g = internal::new_quic_client_connection(scid[..], scid[..]);
+        let _, _, _ = internal::quic_table_open_local_stream(cli_g.stream_table, false);
+        var d_rst2: u8[..64] = [];
+        d_rst2.push(0x40);
+        d_rst2.append(scid[..]);
+        d_rst2.push(0x02);
+        internal::encode_reset_stream_frame(d_rst2, 2, 0x01, 0);
+        let ok_g, _ = internal::quic_conn_process_datagram(cli_g, d_rst2[..], 1010, ack_out);
+        sub.assert_false(ok_g, "Client rejects inbound RESET_STREAM on its own send-only Uni stream 2");
+        sub.assert_eq(cli_g.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
+    };
+
+    t.run("NGTCP2-CONN-04: Multi-Space Loss Recovery, RTT Clamping & BBRv3 Round-Trip Gating (ngtcp2_rtb_test.c)") { sub =>
+        let scid: u8[4] = [0x51, 0x52, 0x53, 0x54];
+        var conn = internal::new_quic_server_connection(scid[..]);
+        conn.state = internal::QuicConnState.Established;
+
+        // Force BBR out of Startup into Drain so we can verify round_done gating on cycle transitions
+        conn.bbr.mode = internal::BbrMode.Drain;
+        conn.bbr.bw_hi_bps = 100000000; // 100 Mbps
+        conn.bbr.min_rtt_us = 20000;    // 20 ms
+
+        // Send 3 packets in ApplicationData space: PN 0, PN 1, PN 2 at t = 10_000 us
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 0, 1200, true, 10000);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 1, 1200, true, 10000);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 2, 1200, true, 10000);
+        sub.assert_eq(conn.app_space.largest_sent_pn, 2, "largest_sent_pn is 2");
+
+        // 1. Partial ACK for PN 0 only (largest_acked_pn = 0 < largest_sent_pn = 2 -> round_done == false):
+        //    BBR must stay in Drain because the round trip has not completed!
+        let ack_partial = internal::AckFrame {
+            is_ecn:          false,
+            largest_acked:   0,
+            ack_delay:       100, // 800 us
+            first_ack_range: 0,
+            ..
+        };
+        sub.assert_true(
+            internal::quic_conn_on_ack(conn, ack_partial, 30000, internal::PnSpaceId.ApplicationData),
+            "process partial ACK for PN 0",
+        );
+        sub.assert_eq(conn.rtt.latest_rtt_us, 20000, "latest_rtt_us is 20ms");
+        sub.assert_eq(conn.rtt.min_rtt_us, 20000, "min_rtt_us initialized to 20ms");
+        sub.assert_true(
+            conn.bbr.mode == internal::BbrMode.Drain,
+            "BBR remains in Drain on partial ACK (round_done == false)",
+        );
+
+        // 2. Full ACK covering PN 2 (largest_acked_pn = 2 >= largest_sent_pn = 2 -> round_done == true):
+        //    BBR advances Drain -> ProbeBwCruise!
+        let ack_full = internal::AckFrame {
+            is_ecn:          false,
+            largest_acked:   2,
+            ack_delay:       100,
+            first_ack_range: 2,
+            ..
+        };
+        sub.assert_true(
+            internal::quic_conn_on_ack(conn, ack_full, 35000, internal::PnSpaceId.ApplicationData),
+            "process full ACK up to PN 2",
+        );
+        sub.assert_true(
+            conn.bbr.mode == internal::BbrMode.ProbeBwCruise,
+            "BBR advanced Drain -> ProbeBwCruise once round_done == true",
+        );
+
+        // 3. ECN-CE congestion signal on PN 3 updates ecn_alpha_scaled and reduces cwnd without being overwritten
+        let cwnd_before_ecn = conn.bbr.cwnd_bytes;
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 3, 12000, true, 40000);
+        let ack_ecn = internal::AckFrame {
+            is_ecn:          true,
+            largest_acked:   3,
+            ack_delay:       0,
+            first_ack_range: 0,
+            ecn_ce_count:    2,
+            ..
+        };
+        sub.assert_true(
+            internal::quic_conn_on_ack(conn, ack_ecn, 60000, internal::PnSpaceId.ApplicationData),
+            "process ECN-CE ACK for PN 3",
+        );
+        sub.assert_true(conn.bbr.ecn_alpha_scaled > 0, "ECN-CE updated ecn_alpha_scaled");
+        sub.assert_true(
+            conn.bbr.cwnd_bytes < cwnd_before_ecn,
+            "ECN-CE reduced cwnd_bytes (preserved after update_bbr_on_ack)",
+        );
+
+        // 4. Packet-threshold loss (>2% loss rate: PN 4 lost when PN 7 acked) transitions ProbeBwCruise -> ProbeBwDown
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 4, 12000, true, 65000);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 5, 1200, true, 65000);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 6, 1200, true, 65000);
+        internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 7, 1200, true, 65000);
+        let ack_loss = internal::AckFrame {
+            is_ecn:          false,
+            largest_acked:   7,
+            ack_delay:       0,
+            first_ack_range: 2, // ACKs PN 5, 6, 7 -> PN 4 is lost by kPacketThreshold=3!
+            ..
+        };
+        sub.assert_true(
+            internal::quic_conn_on_ack(conn, ack_loss, 85000, internal::PnSpaceId.ApplicationData),
+            "process ACK for PN 5..7 triggering loss of PN 4",
+        );
+        sub.assert_true(
+            conn.bbr.mode == internal::BbrMode.ProbeBwDown,
+            ">2% packet loss signal transitioned BBR from ProbeBwCruise to ProbeBwDown",
+        );
+    };
+
+    t.run("NGTCP2-CONN-05: 5-Priority PTO & Loss Timer Matrix Across Spaces (RFC 9002 §6.2)") { sub =>
+        let scid: u8[4] = [0x61, 0x62, 0x63, 0x64];
+        var srv = internal::new_quic_server_connection(scid[..]);
+
+        // 1. Client with 0 in-flight before address validation -> AntiDeadlock armed
+        var spaces_cli: internal::PnSpaceState[3] = [
+            srv.initial_space,
+            srv.handshake_space,
+            srv.app_space,
+        ];
+        let t_deadlock = internal::evaluate_pto_timer(
+            spaces_cli,
+            srv.rtt,
+            0,
+            50000,
+            internal::PtoContext {
+                is_server:                      false,
+                is_amplification_limited:       false,
+                peer_completed_addr_validation: false,
+                handshake_confirmed:            false,
+            },
+        );
+        sub.assert_true(
+            t_deadlock.mode == internal::PtoTimerMode.AntiDeadlock,
+            "Client with 0 in-flight before address validation arms AntiDeadlock timer",
+        );
+        sub.assert_true(t_deadlock.target_time_us > 50000, "AntiDeadlock deadline in the future");
+
+        // 2. Server at 3x anti-amplification limit before address validation -> AntiAmplification
+        let t_amp = internal::evaluate_pto_timer(
+            spaces_cli,
+            srv.rtt,
+            0,
+            10000,
+            internal::PtoContext {
+                is_server:                true,
+                is_amplification_limited: true,
+            },
+        );
+        sub.assert_true(
+            t_amp.mode == internal::PtoTimerMode.AntiAmplification,
+            "Server at 3x limit before address validation returns AntiAmplification",
+        );
+
+        // 3. Explicit loss_time_us in Handshake space preempts PTO -> Priority 1 LossTime
+        internal::quic_conn_record_sent(srv, internal::PnSpaceId.Handshake, 0, 1200, true, 12000);
+        srv.handshake_space.loss_time_us = 18000;
+        var spaces_srv: internal::PnSpaceState[3] = [
+            srv.initial_space,
+            srv.handshake_space,
+            srv.app_space,
+        ];
+        let t_loss = internal::evaluate_pto_timer(
+            spaces_srv,
+            srv.rtt,
+            0,
+            15000,
+            internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+            },
+        );
+        sub.assert_true(
+            t_loss.mode == internal::PtoTimerMode.LossTime,
+            "Armed loss_time_us takes Priority 1 (LossTime) over PTO",
+        );
+        sub.assert_eq(t_loss.target_time_us, 18000, "LossTime deadline matches earliest loss_time_us (18000)");
+        sub.assert_true(t_loss.space_id == internal::PnSpaceId.Handshake, "LossTime space is Handshake");
+
+        // 4. ClearInitial & Handshake in-flight; ApplicationData in-flight is ignored BEFORE handshake_confirmed
+        srv.handshake_space.loss_time_us = 0;
+        srv.handshake_space.sent_packets.clear();
+        internal::quic_conn_record_sent(srv, internal::PnSpaceId.ApplicationData, 0, 1200, true, 11000);
+        var spaces_unconf: internal::PnSpaceState[3] = [
+            srv.initial_space,
+            srv.handshake_space,
+            srv.app_space,
+        ];
+        let t_unconf = internal::evaluate_pto_timer(
+            spaces_unconf,
+            srv.rtt,
+            0,
+            15000,
+            internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+                handshake_confirmed:            false,
+            },
+        );
+        sub.assert_true(
+            t_unconf.mode == internal::PtoTimerMode.None,
+            "ApplicationData PTO ignored before handshake_confirmed (RFC 9002 §6.2.1)",
+        );
+
+        // 5. Once handshake_confirmed = true, ApplicationData arms StandardPto with 2^pto_count backoff
+        let t_std0 = internal::evaluate_pto_timer(
+            spaces_unconf,
+            srv.rtt,
+            0,
+            15000,
+            internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+                handshake_confirmed:            true,
+            },
+        );
+        sub.assert_true(
+            t_std0.mode == internal::PtoTimerMode.StandardPto,
+            "ApplicationData arms StandardPto after handshake_confirmed",
+        );
+        let t_std1 = internal::evaluate_pto_timer(
+            spaces_unconf,
+            srv.rtt,
+            1,
+            15000,
+            internal::PtoContext {
+                is_server:                      true,
+                peer_completed_addr_validation: true,
+                handshake_confirmed:            true,
+            },
+        );
+        sub.assert_true(
+            t_std1.target_time_us > t_std0.target_time_us,
+            "PTO deadline doubles on pto_count backoff",
+        );
+    };
+
+    t.run("QUINN-CONN-06: NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, NEW_TOKEN & Role Violations (ngtcp2_conn_test.c)") { sub =>
+        let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        var ack_out = internal::AckFrame { .. };
+
+        // 1. Valid NEW_CONNECTION_ID (seq=2, retire_prior_to=1 <= seq) on connection with non-empty peer DCID
+        var srv1 = internal::new_quic_client_connection(scid[..], scid[..]);
+        var d_ncid_ok: u8[..64] = [];
+        d_ncid_ok.push(0x40);
+        d_ncid_ok.append(scid[..]);
+        d_ncid_ok.push(0x01);
+        let new_cid:   u8[8]  = [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8];
+        let reset_tok: u8[16] = [0xEE; 16];
+        sub.assert_true(
+            internal::encode_new_conn_id_frame(d_ncid_ok, 2, 1, new_cid[..], reset_tok),
+            "encode valid NEW_CONNECTION_ID",
+        );
+        let ok_ncid, _ = internal::quic_conn_process_datagram(srv1, d_ncid_ok[..], 1000, ack_out);
+        sub.assert_true(ok_ncid, "valid NEW_CONNECTION_ID accepted");
+
+        // 1b. NEW_CONNECTION_ID on endpoint with 0-length peer DCID -> PROTOCOL_VIOLATION (RFC 9000 §19.15)
+        var srv1_zero_dcid = internal::new_quic_server_connection(scid[..]); // dcid is initially empty
+        let ok_ncid_zero, _ = internal::quic_conn_process_datagram(srv1_zero_dcid, d_ncid_ok[..], 1000, ack_out);
+        sub.assert_false(ok_ncid_zero, "NEW_CONNECTION_ID rejected when peer DCID is 0-length (RFC 9000 §19.15)");
+        sub.assert_eq(srv1_zero_dcid.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
+
+        // 2. Invalid NEW_CONNECTION_ID with retire_prior_to (5) > seq_num (3) -> rejected at frame decode as FRAME_ENCODING_ERROR
+        var srv2 = internal::new_quic_server_connection(scid[..]);
+        var d_ncid_bad: u8[..64] = [];
+        d_ncid_bad.push(0x40);
+        d_ncid_bad.append(scid[..]);
+        d_ncid_bad.push(0x01);
+        d_ncid_bad.push(0x18); // NEW_CONNECTION_ID
+        d_ncid_bad.push(0x03); // seq_num = 3
+        d_ncid_bad.push(0x05); // retire_prior_to = 5 (> 3, illegal per RFC 9000 §19.15)
+        d_ncid_bad.push(0x04); // cid len = 4
+        d_ncid_bad.append("1234");
+        d_ncid_bad.append(reset_tok[..]);
+        let ok_ncid_bad, _ = internal::quic_conn_process_datagram(srv2, d_ncid_bad[..], 1000, ack_out);
+        sub.assert_false(ok_ncid_bad, "NEW_CONNECTION_ID with retire_prior_to > seq_num rejected");
+        sub.assert_eq(srv2.close_code, rfc::QUIC_ERR_FRAME_ENCODING, "FRAME_ENCODING_ERROR (0x07)");
+
+        // 3. Server receiving NEW_TOKEN (0x07) -> PROTOCOL_VIOLATION (RFC 9000 §19.7: only client may receive NEW_TOKEN)
+        var srv3 = internal::new_quic_server_connection(scid[..]);
+        var d_nt_srv: u8[..64] = [];
+        d_nt_srv.push(0x40);
+        d_nt_srv.append(scid[..]);
+        d_nt_srv.push(0x01);
+        internal::encode_new_token_frame(d_nt_srv, "address-validation-token");
+        let ok_nt_srv, _ = internal::quic_conn_process_datagram(srv3, d_nt_srv[..], 1000, ack_out);
+        sub.assert_false(ok_nt_srv, "Server rejects inbound NEW_TOKEN frame");
+        sub.assert_eq(srv3.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
+
+        // 4. Client receiving NEW_TOKEN + HANDSHAKE_DONE -> accepted and sets handshake_confirmed = true
+        var cli4 = internal::new_quic_client_connection(scid[..], scid[..]);
+        var d_cli_ok: u8[..64] = [];
+        d_cli_ok.push(0x40);
+        d_cli_ok.append(scid[..]);
+        d_cli_ok.push(0x01);
+        internal::encode_new_token_frame(d_cli_ok, "address-validation-token");
+        internal::encode_handshake_done_frame(d_cli_ok);
+        let ok_cli, needs_ack_cli = internal::quic_conn_process_datagram(cli4, d_cli_ok[..], 1000, ack_out);
+        sub.assert_true(ok_cli, "Client accepts NEW_TOKEN + HANDSHAKE_DONE");
+        sub.assert_true(needs_ack_cli, "HANDSHAKE_DONE is ACK-eliciting");
+        sub.assert_true(cli4.state == internal::QuicConnState.Established, "Client state is Established");
+
+        // 5. RETIRE_CONNECTION_ID on connection with 0-length local SCID -> PROTOCOL_VIOLATION (RFC 9000 §19.16)
+        let empty_cid: u8[0] = [];
+        var srv5 = internal::new_quic_server_connection(empty_cid[..]);
+        var d_ret: u8[..32] = [];
+        d_ret.push(0x40);
+        d_ret.push(0x01);
+        d_ret.push(0x19); // RETIRE_CONNECTION_ID (0x19)
+        d_ret.push(0x00); // sequence_number = 0
+        let ok_ret_empty, _ = internal::quic_conn_process_datagram(srv5, d_ret[..], 1000, ack_out);
+        sub.assert_false(ok_ret_empty, "RETIRE_CONNECTION_ID on 0-len SCID connection rejected");
+        sub.assert_eq(srv5.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", lit::Verbosity.Verbose);
 
@@ -2133,6 +3165,9 @@ fn main() {
     lit::run_case(runner, "28. DPLPMTUD Probe Generator & State Machine (RFC 8899)", test_dplpmtud);
     lit::run_case(runner, "29. Cross-Module QUIC Integration & RFC Conformance Fixes", test_quic_cross_module_bug_fixes);
     lit::run_case(runner, "30. RFC 9369 QUIC v2", test_quic_version2);
+    lit::run_case(runner, "31. ngtcp2 & quinn Vendor Conformance Vectors", test_ngtcp2_and_quinn_vendor_conformance);
+    lit::run_case(runner, "32. ngtcp2 & quinn Reassembly, ACK Compaction & Loss Recovery", test_ngtcp2_conn_and_recovery_semantics);
+    lit::run_case(runner, "33. ngtcp2 & quinn Connection Lifecycle, Stream Polarity & BBRv3/PTO", test_ngtcp2_and_quinn_connection_dynamics);
 
     let ok = lit::finish(runner);
     assert(ok);

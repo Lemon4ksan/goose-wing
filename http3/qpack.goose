@@ -426,7 +426,7 @@ inline fn validate_qpack_entry_name(name: const u8[:]) -> bool {
 
 inline fn validate_qpack_field_val(val: const u8[:]) -> bool {
     for b in val {
-        if b == 0 || b == '\r' || b == '\n' {
+        if (b < 0x20 && b != '\t') || b == 0x7F {
             return false;
         }
     }

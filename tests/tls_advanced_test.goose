@@ -1664,6 +1664,292 @@ fn test_crypto_jar_container(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// 6. Vendor Conformance Vectors (rustls handshake_test.rs & record_layer.rs)
+// ----------------------------------------------------------------------------
+
+fn test_rustls_vendor_conformance(t: lit::T&) {
+    t.run("RUSTLS-HS-01: Client & Server Handshake FSM Out-of-Order Rejection Matrix (rustls)") { sub =>
+        // Client in ClientWaitSH must reject EE, Cert, CV, Finished, KeyUpdate, NST
+        let forbidden_in_wait_sh: u8[6] = [
+            rfc::TLS_HS_ENCRYPTED_EXTENSIONS,
+            rfc::TLS_HS_CERTIFICATE,
+            rfc::TLS_HS_CERTIFICATE_VERIFY,
+            rfc::TLS_HS_FINISHED,
+            rfc::TLS_HS_KEY_UPDATE,
+            rfc::TLS_HS_NEW_SESSION_TICKET,
+        ];
+        for msg_t in forbidden_in_wait_sh {
+            let _, ok_step = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, msg_t, wing::HandshakeMode.Full, false);
+            sub.assert_false(ok_step, "ClientWaitSH rejects non-ServerHello message");
+        }
+        // Synthetic message_hash (254) rejected from wire in any state
+        let _, ok_mh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_MESSAGE_HASH, wing::HandshakeMode.Full, false);
+        sub.assert_false(ok_mh, "ClientWaitSH rejects synthetic message_hash (254) from wire");
+
+        // HelloRetryRequest in ClientWaitSH stays in ClientWaitSH (waiting for ServerHello2, not ClientWaitEE)
+        let s_sh2, ok_hrr = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO, wing::HandshakeMode.Full, true);
+        sub.assert_true(ok_hrr, "ClientWaitSH accepts HRR");
+        sub.assert_eq(s_sh2, wing::HsState.ClientWaitSH, "HRR stays in ClientWaitSH waiting for ServerHello2");
+
+        // PSK mode in ClientWaitCertCr transitions directly to ClientWaitFinished on Finished
+        let s_psk_fin, ok_psk_fin = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_FINISHED, wing::HandshakeMode.Psk, false);
+        sub.assert_true(ok_psk_fin, "ClientWaitCertCr in PSK mode accepts Finished directly");
+        sub.assert_eq(s_psk_fin, wing::HsState.Connected, "PSK Finished transitions to Connected");
+        let _, ok_full_skip = wing::validate_client_handshake_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_FINISHED, wing::HandshakeMode.Full, false);
+        sub.assert_false(ok_full_skip, "ClientWaitCertCr in Full mode rejects Finished without Certificate");
+
+        // Valid transition path: ClientWaitSH -> ClientWaitEE -> ClientWaitCertCr -> ClientWaitCert -> ClientWaitCV -> ClientWaitFinished -> Connected
+        let s_ee, ok_sh = wing::validate_client_handshake_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_sh, "ClientWaitSH accepts ServerHello");
+        sub.assert_eq(s_ee, wing::HsState.ClientWaitEE, "transitions to ClientWaitEE");
+
+        let s_ccr, ok_ee = wing::validate_client_handshake_transition(s_ee, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_ee, "ClientWaitEE accepts EncryptedExtensions");
+        sub.assert_eq(s_ccr, wing::HsState.ClientWaitCertCr, "transitions to ClientWaitCertCr");
+
+        // Optional CertificateRequest in ClientWaitCertCr transitions to ClientWaitCert
+        let s_cert, ok_cr = wing::validate_client_handshake_transition(s_ccr, rfc::TLS_HS_CERTIFICATE_REQUEST, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_cr, "ClientWaitCertCr accepts CertificateRequest");
+        sub.assert_eq(s_cert, wing::HsState.ClientWaitCert, "transitions to ClientWaitCert");
+
+        // Duplicate CertificateRequest in ClientWaitCert must be rejected
+        let _, ok_dup_cr = wing::validate_client_handshake_transition(s_cert, rfc::TLS_HS_CERTIFICATE_REQUEST, wing::HandshakeMode.Full, false);
+        sub.assert_false(ok_dup_cr, "ClientWaitCert rejects duplicate CertificateRequest");
+
+        let s_cv, ok_c = wing::validate_client_handshake_transition(s_cert, rfc::TLS_HS_CERTIFICATE, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_c, "ClientWaitCert accepts Certificate");
+        sub.assert_eq(s_cv, wing::HsState.ClientWaitCV, "transitions to ClientWaitCV");
+
+        // Skipping CertificateVerify directly to Finished must be rejected
+        let _, ok_skip_cv = wing::validate_client_handshake_transition(s_cv, rfc::TLS_HS_FINISHED, wing::HandshakeMode.Full, false);
+        sub.assert_false(ok_skip_cv, "ClientWaitCV rejects Finished before CertificateVerify");
+
+        let s_fin, ok_cv = wing::validate_client_handshake_transition(s_cv, rfc::TLS_HS_CERTIFICATE_VERIFY, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_cv, "ClientWaitCV accepts CertificateVerify");
+        sub.assert_eq(s_fin, wing::HsState.ClientWaitFinished, "transitions to ClientWaitFinished");
+
+        let s_conn, ok_fin = wing::validate_client_handshake_transition(s_fin, rfc::TLS_HS_FINISHED, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_fin, "ClientWaitFinished accepts Finished");
+        sub.assert_eq(s_conn, wing::HsState.Connected, "transitions to Connected");
+
+        // Connected accepts NewSessionTicket and KeyUpdate, rejects re-handshake ServerHello
+        let s_nst, ok_nst = wing::validate_client_handshake_transition(s_conn, rfc::TLS_HS_NEW_SESSION_TICKET, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_nst, "Connected accepts NewSessionTicket");
+        sub.assert_eq(s_nst, wing::HsState.Connected, "remains Connected after NST");
+
+        let s_ku, ok_ku = wing::validate_client_handshake_transition(s_conn, rfc::TLS_HS_KEY_UPDATE, wing::HandshakeMode.Full, false);
+        sub.assert_true(ok_ku, "Connected accepts KeyUpdate");
+        sub.assert_eq(s_ku, wing::HsState.Connected, "remains Connected after KeyUpdate");
+
+        let _, ok_re_sh = wing::validate_client_handshake_transition(s_conn, rfc::TLS_HS_SERVER_HELLO, wing::HandshakeMode.Full, false);
+        sub.assert_false(ok_re_sh, "Connected rejects unexpected ServerHello");
+    };
+
+    t.run("RUSTLS-MSG-01: Handshake Message Byte-by-Byte Truncation & Malformed Extensions (handshake_test.rs)") { sub =>
+        // 1. CertificateRequest byte-by-byte truncation loop
+        var cr_wire: u8[..128] = [];
+        let schemes: u16[2] = [rfc::SIG_SCHEME_ED25519, rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256];
+        sub.assert_true(wing::encode_certificate_request(cr_wire, "ctx", schemes[..]), "encode CertificateRequest with context");
+        var i: i64 = 0;
+        while i < cr_wire.len - 1 {
+            var tmp_cr = wing::CertificateRequestMsg { .. };
+            // Post-handshake allow non-empty context (true)
+            let ok_t = wing::parse_certificate_request(cr_wire[..i], true, tmp_cr);
+            sub.assert_false(ok_t, "truncated CertificateRequest rejected");
+            i += 1;
+        }
+        // Non-empty context in initial handshake (post_handshake = false) must be rejected per RFC 8446 §4.3.2
+        var init_cr = wing::CertificateRequestMsg { .. };
+        sub.assert_false(wing::parse_certificate_request(cr_wire[..], false, init_cr), "non-empty context in initial handshake rejected");
+        sub.assert_true(wing::parse_certificate_request(cr_wire[..], true, init_cr), "non-empty context in post-handshake accepted");
+
+        // 2. CertificateVerify byte-by-byte truncation loop
+        var cv_wire: u8[..128] = [];
+        let dummy_sig: u8[64] = [0x42; 64];
+        sub.assert_true(wing::encode_client_certificate_verify(cv_wire, rfc::SIG_SCHEME_ED25519, dummy_sig[..]), "encode CertificateVerify");
+        var j: i64 = 0;
+        while j < cv_wire.len - 1 {
+            let _, _, ok_cv_t = wing::parse_certificate_verify(cv_wire[..j]);
+            sub.assert_false(ok_cv_t, "truncated CertificateVerify rejected");
+            j += 1;
+        }
+
+        // 3. CompressedCertificate (RFC 8879) malformed header & truncation checks via both wing::parse_compressed_certificate and internal::parse_compressed_certificate_msg
+        let comp_bytes = "compressed_payload_bytes";
+        var cc_msg = internal::CompressedCertificate {
+            algorithm:                      rfc::CERT_COMPRESSION_ZSTD,
+            uncompressed_length:            128,
+            compressed_certificate_message: comp_bytes,
+        };
+        var cc_wire: u8[..128] = [];
+        sub.assert_true(internal::encode_compressed_certificate(cc_msg, cc_wire), "encode CompressedCertificate message");
+        var pub_cc_wire: u8[>..] = [];
+        wing::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes);
+        sub.assert_bytes_eq(pub_cc_wire[..], cc_wire[..], "public and internal RFC 8879 encoders produce identical 8B+data wire format");
+
+        var k: i64 = 0;
+        while k < cc_wire.len {
+            var tmp_cc = internal::CompressedCertificate { .. };
+            let ok_cc_t = internal::parse_compressed_certificate_msg(cc_wire[..k], tmp_cc);
+            sub.assert_false(ok_cc_t, "truncated CompressedCertificate rejected by internal parser");
+            let _, ok_pub_t = wing::parse_compressed_certificate(pub_cc_wire[..k]);
+            sub.assert_false(ok_pub_t, "truncated CompressedCertificate rejected by public wing::parse_compressed_certificate");
+            k += 1;
+        }
+        var full_cc = internal::CompressedCertificate { .. };
+        sub.assert_true(internal::parse_compressed_certificate_msg(cc_wire[..], full_cc), "full CompressedCertificate parsed");
+        sub.assert_eq(full_cc.algorithm, rfc::CERT_COMPRESSION_ZSTD, "algorithm matches Zstd");
+        sub.assert_eq(full_cc.uncompressed_length, 128, "uncompressed_length matches 128");
+        let full_pub_cc, ok_full_pub = wing::parse_compressed_certificate(pub_cc_wire[..]);
+        sub.assert_true(ok_full_pub, "full CompressedCertificate parsed by public API");
+        sub.assert_eq(full_pub_cc.uncompressed_len, 128, "public API uncompressed_len matches 128");
+
+        // Unknown compression algorithm (0x9999) rejected
+        var bad_algo_wire: u8[..128] = [];
+        bad_algo_wire.append(cc_wire[..]);
+        bad_algo_wire[0] = 0x99;
+        bad_algo_wire[1] = 0x99;
+        var bad_cc = internal::CompressedCertificate { .. };
+        sub.assert_false(internal::parse_compressed_certificate_msg(bad_algo_wire[..], bad_cc), "unknown compression algorithm 0x9999 rejected");
+
+        // Zero uncompressed_len (0) rejected per RFC 8879 §4
+        var zero_ulen_wire: u8[..128] = [];
+        zero_ulen_wire.append(cc_wire[..]);
+        zero_ulen_wire[2] = 0x00;
+        zero_ulen_wire[3] = 0x00;
+        zero_ulen_wire[4] = 0x00;
+        sub.assert_false(internal::parse_compressed_certificate_msg(zero_ulen_wire[..], bad_cc), "uncompressed_len == 0 rejected");
+    };
+
+    t.run("RUSTLS-X509-01: SAN Exact Label Boundaries & Leap-Year ASN.1 Time Vectors") { sub =>
+        // Exact 63-char label is valid per RFC 1035; 64-char label is invalid
+        var label_63: u8[..128] = [];
+        for _ in 63 { label_63.push('a'); }
+        label_63.append(".example.com");
+        sub.assert_true(wing::validate_san_dns_name(label_63[..]), "exact 63-byte label accepted");
+
+        // Leap year date: 2024-02-29 23:59:59 UTC is valid; 2023-02-29 is invalid
+        let _, ok_leap_2024 = wing::parse_asn1_time(rfc::ASN1_TAG_GENERALIZED_TIME, "20240229235959Z");
+        sub.assert_true(ok_leap_2024, "2024-02-29 (leap year) is valid");
+
+        let _, ok_nonleap_2023 = wing::parse_asn1_time(rfc::ASN1_TAG_GENERALIZED_TIME, "20230229235959Z");
+        sub.assert_false(ok_nonleap_2023, "2023-02-29 (non-leap year) rejected");
+
+        // 30-day month boundary: April 31 (04-31) rejected
+        let _, ok_apr31 = wing::parse_asn1_time(rfc::ASN1_TAG_GENERALIZED_TIME, "20260431120000Z");
+        sub.assert_false(ok_apr31, "2026-04-31 rejected");
+    };
+
+    t.run("RUSTLS-REC-01: TLS 1.3 Record AEAD Sequence Desync & AAD Header Tamper Defense") { sub =>
+        let key: u8[16] = [0x3A; 16];
+        let iv:  u8[12] = [0x7C; 12];
+        let msg = "rustls record layer test payload";
+
+        var ct_buf: u8[128] = [0; 128];
+        let sealed_len, alert_seal, ok_enc = wing::tls_record_seal_into(
+            rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+            key[..],
+            iv,
+            42,
+            0x17,
+            msg,
+            ct_buf[..],
+        );
+        sub.assert_true(ok_enc, "seal TLS 1.3 record at seq=42");
+        sub.assert_eq(wing::tls_alert_to_u8(alert_seal), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "seal alert is CloseNotify");
+        sub.assert_eq(sealed_len, 5 + msg.len + 1 + 16, "5B header + payload + 1B inner type + 16B tag");
+
+        let ct_out = ct_buf[..sealed_len];
+
+        // 1. Decrypt with matching seq=42 succeeds
+        var pt_out: u8[>..] = [];
+        let inner_t, alert_ok = wing::tls_record_decrypt_aes128_gcm(key, iv, 42, ct_out[..5], ct_out[5..], pt_out);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "decrypt succeeds at seq=42");
+        sub.assert_eq(inner_t, 0x17, "inner type is 0x17");
+        sub.assert_bytes_eq(pt_out[..], msg, "decrypted payload matches");
+
+        // 2. Decrypt with mismatched sequence number (seq=43) fails with BadRecordMac
+        var pt_bad_seq: u8[>..] = [];
+        let _, alert_seq = wing::tls_record_decrypt_aes128_gcm(key, iv, 43, ct_out[..5], ct_out[5..], pt_bad_seq);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_seq), wing::tls_alert_to_u8(wing::TlsAlert.BadRecordMac), "wrong seq number fails with BadRecordMac");
+
+        // 3. Decrypt with tampered legacy_record_version in 5-byte AAD header (0x0301 instead of 0x0303) fails with BadRecordMac
+        let tampered_hdr: u8[5] = [ct_out[0], 0x03, 0x01, ct_out[3], ct_out[4]];
+        var pt_bad_aad: u8[>..] = [];
+        let _, alert_aad = wing::tls_record_decrypt_aes128_gcm(key, iv, 42, tampered_hdr[..], ct_out[5..], pt_bad_aad);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_aad), wing::tls_alert_to_u8(wing::TlsAlert.BadRecordMac), "tampered AAD header version fails with BadRecordMac");
+    };
+
+    t.run("RUSTLS-EXT-01: Duplicate Extensions, SupportedVersions & NewSessionTicket Validation (handshake_test.rs)") { sub =>
+        // 1. Duplicate extensions in parse_extensions_block must be rejected (RFC 8446 §4.2)
+        // Two extensions with type 0x002B (supported_versions)
+        let dup_ext_block: u8[14] = [
+            0x00, 0x0C,
+            0x00, 0x2B, 0x00, 0x02, 0x03, 0x04,
+            0x00, 0x2B, 0x00, 0x02, 0x03, 0x03,
+        ];
+        var ext_entries: wing::TlsExtensionEntry[..32] = [];
+        sub.assert_false(wing::parse_extensions_block(dup_ext_block[..], ext_entries), "duplicate extension 0x002B rejected");
+
+        // Trailing byte after extension block length rejected
+        let trailing_ext_block: u8[9] = [0x00, 0x06, 0x00, 0x2B, 0x00, 0x02, 0x03, 0x04, 0xFF];
+        sub.assert_false(wing::parse_extensions_block(trailing_ext_block[..], ext_entries), "trailing byte after extensions block rejected");
+
+        // 2. parse_client_supported_versions edge cases (RFC 8446 §4.2.1)
+        let sv_valid: u8[5] = [0x04, 0x03, 0x04, 0x03, 0x03];
+        let has_13, ok_sv = wing::parse_client_supported_versions(sv_valid[..]);
+        sub.assert_true(ok_sv && has_13, "valid client supported_versions [0x0304, 0x0303] accepted");
+
+        let sv_dup: u8[5] = [0x04, 0x03, 0x04, 0x03, 0x04];
+        let _, ok_sv_dup = wing::parse_client_supported_versions(sv_dup[..]);
+        sub.assert_false(ok_sv_dup, "duplicate version 0x0304 in supported_versions rejected");
+
+        let sv_empty: u8[1] = [0x00];
+        let _, ok_sv_empty = wing::parse_client_supported_versions(sv_empty[..]);
+        sub.assert_false(ok_sv_empty, "empty supported_versions list rejected");
+
+        let sv_odd: u8[4] = [0x03, 0x03, 0x04, 0x03];
+        let _, ok_sv_odd = wing::parse_client_supported_versions(sv_odd[..]);
+        sub.assert_false(ok_sv_odd, "odd byte length in supported_versions rejected");
+
+        // 3. NewSessionTicket validation (RFC 8446 §4.6.1):
+        // Valid ticket with max_early_data_size = 16384
+        var valid_nst_wire: u8[..64] = [];
+        sub.assert_true(
+            wing::encode_new_session_ticket(valid_nst_wire, 3600, 0x11223344, "nonce1", "ticket-bytes-01", 16384),
+            "encode valid NewSessionTicket",
+        );
+        var parsed_nst = wing::NewSessionTicketMsg { .. };
+        sub.assert_true(wing::parse_new_session_ticket(valid_nst_wire[..], parsed_nst), "parse valid NewSessionTicket");
+        sub.assert_true(parsed_nst.has_early_data, "has_early_data is true");
+        sub.assert_eq(parsed_nst.max_early_data_size, 16384, "max_early_data_size is 16384");
+
+        // Lifetime > 604800s (7 days) rejected
+        var bad_life_wire: u8[..64] = [];
+        core::append_u32_be(bad_life_wire, 604801);
+        core::append_u32_be(bad_life_wire, 1);
+        bad_life_wire.push(1); bad_life_wire.push(0xAA);
+        core::append_u16_be(bad_life_wire, 1); bad_life_wire.push(0xBB);
+        core::append_u16_be(bad_life_wire, 0);
+        sub.assert_false(wing::parse_new_session_ticket(bad_life_wire[..], parsed_nst), "ticket_lifetime > 604800 rejected");
+
+        // Empty ticket (ticket<1..2^16-1> with length 0) rejected
+        var empty_tkt_wire: u8[..64] = [];
+        core::append_u32_be(empty_tkt_wire, 300);
+        core::append_u32_be(empty_tkt_wire, 1);
+        empty_tkt_wire.push(1); empty_tkt_wire.push(0xAA);
+        core::append_u16_be(empty_tkt_wire, 0); // ticket length = 0 (illegal)
+        core::append_u16_be(empty_tkt_wire, 0);
+        sub.assert_false(wing::parse_new_session_ticket(empty_tkt_wire[..], parsed_nst), "zero-length ticket in NST rejected");
+
+        // Duplicate ticket_nonce in SessionTicketCache rejected
+        var cache = wing::SessionTicketCache { .. };
+        sub.assert_true(wing::cache_session_ticket(cache, parsed_nst), "first NST cached");
+        sub.assert_false(wing::cache_session_ticket(cache, parsed_nst), "duplicate NST nonce/ticket rejected by cache");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Suite Runner
 // ----------------------------------------------------------------------------
 
@@ -1696,6 +1982,7 @@ fn main() {
     lit::run_case(runner, "24. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
     lit::run_case(runner, "25. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
     lit::run_case(runner, "26. RFC 9849 ECH constants", test_ech_rfc9849_citations);
+    lit::run_case(runner, "27. Vendor Conformance Vectors (rustls Handshake, Extensions & Record Layer)", test_rustls_vendor_conformance);
 
     let ok = lit::finish(runner);
     assert(ok);

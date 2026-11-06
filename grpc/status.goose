@@ -10,6 +10,27 @@ import core from "..";
 import grpc.constants;
 import http.headers;
 
+// ---- Value-Returned GrpcStatus Constructors -----------------------------
+
+fn grpc_ok() -> GrpcStatus {
+    return GrpcStatus {
+        code:    GrpcStatusCode.Ok,
+        message: [],
+    };
+}
+
+fn grpc_error(code: GrpcStatusCode, message: const u8[:]) -> GrpcStatus {
+    var status = GrpcStatus {
+        code:    code,
+        message: [],
+    };
+    let take_len = min(message.len, 256);
+    if take_len > 0 {
+        status.message.append(message[..take_len]);
+    }
+    return status;
+}
+
 // ---- Hex Helpers & Percent Codec for grpc-message ------------------------
 
 inline fn grpc_hex_val(c: u8) -> i32 {

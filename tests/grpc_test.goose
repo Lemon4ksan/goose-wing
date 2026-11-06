@@ -505,6 +505,55 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
     };
 }
 
+fn test_protobuf_wire_helpers(t: lit::T&) {
+    t.run("1. GrpcStatus Value Constructors (grpc_ok & grpc_error)") { sub =>
+        let st_ok = wing::grpc_ok();
+        sub.assert_eq(st_ok.code, wing::GrpcStatusCode.Ok, "grpc_ok returns Ok");
+        sub.assert_eq(st_ok.message.len, 0, "grpc_ok has empty message");
+
+        let st_err = wing::grpc_error(wing::GrpcStatusCode.InvalidArgument, "missing field");
+        sub.assert_eq(st_err.code, wing::GrpcStatusCode.InvalidArgument, "grpc_error sets code");
+        sub.assert_bytes_eq(st_err.message[..], "missing field", "grpc_error sets message");
+    };
+
+    t.run("2. Multi-Byte LEB128 Varint & >= 128B Bytes Field Roundtrip") { sub =>
+        var wire: u8[..512] = [];
+        sub.assert_true(wing::pb_write_varint_field(1, 300, wire), "Write varint field 1 = 300");
+
+        var long_str: u8[..200] = [];
+        for i in 160 {
+            long_str.push(('A' + ((i % 26) as u8)));
+        }
+        sub.assert_true(wing::pb_write_bytes_field(2, long_str[..], wire), "Write 160B bytes field 2");
+        sub.assert_true(wing::pb_write_varint_field(3, 9876543210, wire), "Write varint field 3");
+
+        let v1, ok1 = wing::pb_read_varint_field(wire[..], 1);
+        sub.assert_true(ok1, "Read varint field 1");
+        sub.assert_eq(v1, 300, "Field 1 == 300");
+
+        let b2, ok2 = wing::pb_read_bytes_field(wire[..], 2);
+        sub.assert_true(ok2, "Read 160B bytes field 2 (skips field 1)");
+        sub.assert_bytes_eq(b2, long_str[..], "160B multi-byte varint length payload matches");
+
+        let v3, ok3 = wing::pb_read_varint_field(wire[..], 3);
+        sub.assert_true(ok3, "Read varint field 3 (skips fields 1 & 2)");
+        sub.assert_eq(v3, 9876543210, "Field 3 matches");
+    };
+
+    t.run("3. Transactional Cursor Rollback & Capacity Overflow Guards") { sub =>
+        let trunc_varint: u8[2] = [0x80, 0x80];
+        var pos: i64 = 0;
+        let _, ok_v = wing::pb_read_varint(trunc_varint[..], pos);
+        sub.assert_false(ok_v, "Truncated varint rejected");
+        sub.assert_eq(pos, 0, "Cursor preserved on error");
+
+        var tiny: u8[..2] = [];
+        sub.assert_false(wing::pb_write_varint_field(1, 300, tiny), "Overflow varint field rejected");
+        sub.assert_eq(tiny.len, 0, "Tiny buffer untouched on overflow");
+        sub.assert_false(wing::pb_write_bytes_field(0, "abc", tiny), "Field 0 rejected");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("gRPC over HTTP/2, HTTP/3 & gRPC-Web Test Suite", lit::Verbosity.Verbose);
 
@@ -513,6 +562,7 @@ fn main() {
     lit::run_case(runner, "3. gRPC Status Codes, Timeout & Percent-Encoded Messages", test_grpc_status_and_metadata);
     lit::run_case(runner, "4. gRPC-Web Binary & Base64 Text Framing", test_grpc_web_framing);
     lit::run_case(runner, "5. gRPC Client Unary & Streaming RPC Exchange", test_grpc_client_rpc_exchange);
+    lit::run_case(runner, "6. Protobuf LEB128 Wire Field Helpers & GrpcStatus", test_protobuf_wire_helpers);
 
     let ok = lit::finish(runner);
     assert(ok);
