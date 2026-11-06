@@ -50,7 +50,23 @@ HEADER_LINES = [
     "Copyright (c) 2026 Lemon4ksan",
 ]
 
+GOOSEMARKLINT_HEADER_LINES = [
+    "SPDX-License-Identifier: Apache-2.0",
+    "Copyright (c) 2026 Yujie Teo (yujieteo)",
+    "Copyright (c) 2026 Lemon4ksan",
+]
+
+ALL_HEADER_MARKERS = set(HEADER_LINES) | set(GOOSEMARKLINT_HEADER_LINES)
+
 COMMENT_MARKERS = ("//", "#", "::", "--")
+
+
+def get_header_lines(file_path: Path) -> list[str]:
+    """Returns expected license header lines for the given file."""
+    parts = [p.lower() for p in file_path.parts]
+    if "goosemarklint" in parts:
+        return GOOSEMARKLINT_HEADER_LINES
+    return HEADER_LINES
 
 
 def is_header_comment(line: str) -> bool:
@@ -59,7 +75,7 @@ def is_header_comment(line: str) -> bool:
     s_lower = s.lower()
     return (
         s_lower.startswith(("rem ", "rem\t")) or any(s.startswith(m) for m in COMMENT_MARKERS)
-    ) and any(h in s for h in HEADER_LINES)
+    ) and any(h in s for h in ALL_HEADER_MARKERS)
 
 
 def get_tracked_files(repo_root: Path) -> list[Path]:
@@ -106,30 +122,31 @@ def has_license_header(file_path: Path, content: str, prefix: str) -> bool:
     if not lines:
         return False
 
+    header_lines = get_header_lines(file_path)
+    expected = [f"{prefix} {h}" for h in header_lines]
+    n_hdr = len(expected)
     is_licensing_tool = file_path.name == "licensing.py"
 
     if lines[0].startswith("#!"):
-        if len(lines) < 4:
+        if len(lines) < 2 + n_hdr:
             return False
         if lines[1].strip() != "":
             return False
-        if lines[2].rstrip() != f"{prefix} {HEADER_LINES[0]}":
+        for idx, exp in enumerate(expected):
+            if lines[2 + idx].rstrip() != exp:
+                return False
+        if len(lines) > 2 + n_hdr and lines[2 + n_hdr].strip() != "":
             return False
-        if lines[3].rstrip() != f"{prefix} {HEADER_LINES[1]}":
-            return False
-        if len(lines) > 4 and lines[4].strip() != "":
-            return False
-        header_end = 4
+        header_end = 2 + n_hdr
     else:
-        if len(lines) < 2:
+        if len(lines) < n_hdr:
             return False
-        if lines[0].rstrip() != f"{prefix} {HEADER_LINES[0]}":
+        for idx, exp in enumerate(expected):
+            if lines[idx].rstrip() != exp:
+                return False
+        if len(lines) > n_hdr and lines[n_hdr].strip() != "":
             return False
-        if lines[1].rstrip() != f"{prefix} {HEADER_LINES[1]}":
-            return False
-        if len(lines) > 2 and lines[2].strip() != "":
-            return False
-        header_end = 2
+        header_end = n_hdr
 
     if not is_licensing_tool:
         for line in lines[header_end:]:
@@ -139,7 +156,7 @@ def has_license_header(file_path: Path, content: str, prefix: str) -> bool:
     return True
 
 
-def format_file_content(content: str, prefix: str, newline: str) -> str:
+def format_file_content(file_path: Path, content: str, prefix: str, newline: str) -> str:
     """Formats file content with canonical license header placement and clean spacing."""
     raw_lines = content.splitlines()
     shebang = ""
@@ -170,7 +187,7 @@ def format_file_content(content: str, prefix: str, newline: str) -> str:
     while filtered and filtered[-1].strip() == "":
         filtered.pop()
 
-    header_block = [f"{prefix} {h}" for h in HEADER_LINES]
+    header_block = [f"{prefix} {h}" for h in get_header_lines(file_path)]
 
     result_lines: list[str] = []
     if shebang:
@@ -219,7 +236,7 @@ def process_file(
         return False, "missing or malformed license header"
 
     newline = detect_newline(content)
-    new_content = format_file_content(content, prefix, newline)
+    new_content = format_file_content(file_path, content, prefix, newline)
 
     if dry_run:
         return True, "would update license header"

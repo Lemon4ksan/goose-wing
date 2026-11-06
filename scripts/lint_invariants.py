@@ -95,12 +95,14 @@ def main() -> int:
             for d_line in res.stdout.splitlines():
                 if d_line.startswith("+++ b/"):
                     current_rel = d_line[6:].strip()
-                    if current_rel.endswith(".goose"):
+                    if current_rel.endswith(".goose") and not current_rel.startswith(
+                        "tools/goosemarklint/"
+                    ):
                         staged_lines_by_file[current_rel] = set()
                         full_p = (root / current_rel).resolve()
                         if full_p.exists() and full_p not in files_to_scan:
                             files_to_scan.append(full_p)
-                elif d_line.startswith("@@ ") and current_rel and current_rel.endswith(".goose"):
+                elif d_line.startswith("@@ ") and current_rel in staged_lines_by_file:
                     m = re.search(r"\+(\d+)(?:,(\d+))?", d_line)
                     if m:
                         s_start = int(m.group(1))
@@ -116,6 +118,7 @@ def main() -> int:
                 bad in s_path
                 for bad in [
                     f"{os.sep}vendor{os.sep}",
+                    f"{os.sep}goosemarklint{os.sep}",
                     f"{os.sep}scratch{os.sep}",
                     f"{os.sep}.gemini{os.sep}",
                     f"{os.sep}.worktrees{os.sep}",
