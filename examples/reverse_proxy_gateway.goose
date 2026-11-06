@@ -42,8 +42,9 @@ fn main() {
     print("    Original Host: api.example.com");
 
     // 3. Dispatch and serialize 3 consecutive proxy requests (verifying Round-Robin LB)
+    var upstream_wire: u8[..4096] = [];
     for req_num in 3 {
-        var upstream_wire: u8[>..] = [];
+        upstream_wire.clear();
         let body = "{\"action\":\"query\",\"id\":42}";
 
         let target_idx, ok = wing::prepare_proxy_request(

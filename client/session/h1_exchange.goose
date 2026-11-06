@@ -104,18 +104,13 @@ fn parse_h1_status_line(
     line: const u8[:],
     resp: Response&,
 ) -> bool {
+    guard starts_with(line, "HTTP/1.1 ") || starts_with(line, "HTTP/1.0 ") else { return false; }
     guard line.len >= 12 else { return false; }
-    guard starts_with(line, "HTTP/") else { return false; }
-
-    let sp1_idx = core::index_of_byte(line, ' ');
-    guard sp1_idx > 5 && (sp1_idx + 4) <= line.len else { return false; }
 
     resp.protocol.clear();
-    resp.protocol.append(line[..sp1_idx]);
+    resp.protocol.append(line[..8]);
 
-    let code_start = sp1_idx + 1;
-    let code_end = sp1_idx + 4;
-    let code = parse_h1_status_code(line[code_start..code_end]);
+    let code = parse_h1_status_code(line[9..12]);
     guard code >= 100 && code <= 599 else { return false; }
     resp.status_code = code;
     return true;
@@ -154,7 +149,7 @@ fn parse_h1_header_block(
 
         guard line.len > 0 else { continue; }
         let col = core::index_of_byte(line, ':');
-        guard col > 0 else { continue; }
+        guard col > 0 else { return false; }
 
         let hname = line[..col];
         let raw_val = line[(col + 1)..];
@@ -165,6 +160,12 @@ fn parse_h1_header_block(
         let v_len = v_trim.len;
         let hval = line[v_start..(v_start + v_len)];
 
+        guard is_valid_header_name(hname) && is_valid_header_value(hval) else { return false; }
+        if eq_ascii_fold(hname, "content-length") {
+            let _, cl_ok = core::parse_u64_dec(hval);
+            let prev_cl = header(resp, "Content-Length");
+            guard cl_ok && (prev_cl.len == 0 || prev_cl == hval) else { return false; }
+        }
         guard append_header(resp.headers, hname, hval) else { return false; }
         update_response_presence(resp, hname);
     }
@@ -222,10 +223,9 @@ inline fn record_chunk_trailers(
     consumed:        i64,
     remaining:       const u8[:],
     trailer_buf:     u8[..4096]&,
-) {
-    guard is_trailer_mode && consumed > 0 && trailer_buf.len < trailer_buf.cap else { return; }
-    let n = core::ct_min_i64(consumed, trailer_buf.cap - trailer_buf.len);
-    trailer_buf.append(remaining[..n]);
+) -> bool {
+    guard is_trailer_mode && consumed > 0 else { return true; }
+    return trailer_buf.try_append(remaining[..consumed]);
 }
 
 fn feed_chunk_slice(
@@ -233,29 +233,31 @@ fn feed_chunk_slice(
     buf:         const u8[:],
     resp:        Response&,
     trailer_buf: u8[..4096]&,
+    out_cursor:  i64&,
 ) -> bool, bool {
-    var cursor: i64 = 0;
-    while cursor < buf.len {
+    out_cursor = 0;
+    while out_cursor < buf.len {
         let is_tr = (dec.state & 0x1000000000000000) != 0;
-        let remaining = buf[cursor..];
+        let remaining = buf[out_cursor..];
         let st, consumed, chunk = internal::chunk_fsm_feed(dec, remaining);
         if is_tr {
-            record_chunk_trailers(true, consumed, remaining, trailer_buf);
+            guard record_chunk_trailers(true, consumed, remaining, trailer_buf) else { return true, false; }
         } else if (dec.state & 0x1000000000000000) != 0 || st == internal::ChunkFsmStatus.Complete {
             let nl = core::index_of_byte(remaining[..consumed], '\n');
             if nl >= 0 && (nl + 1) < consumed {
                 let tr_slice = remaining[(nl + 1)..consumed];
-                record_chunk_trailers(true, tr_slice.len, tr_slice, trailer_buf);
+                guard record_chunk_trailers(true, tr_slice.len, tr_slice, trailer_buf) else { return true, false; }
             }
         }
-        cursor += consumed;
+        out_cursor += consumed;
         if chunk.len > 0 {
             resp.body.append(chunk);
         }
         if st == internal::ChunkFsmStatus.Complete {
             if trailer_buf.len > 0 {
                 var tr_cur: i64 = 0;
-                parse_chunked_trailers_with_out(trailer_buf[..], tr_cur, resp.trailers);
+                let tr_err = parse_chunked_trailers_with_out(trailer_buf[..], tr_cur, resp.trailers);
+                guard tr_err == ChunkedDecodeError.None else { return true, false; }
             }
             return true, true;
         }
@@ -273,18 +275,29 @@ fn pump_h1_chunked_body(
     resp:       Response&,
     timeout_ms: u32,
 ) -> bool {
-    var trailer_buf: u8[..4096] = [];
+    var trailer_buf:  u8[..4096] = [];
+    var consumed_cur: i64        = 0;
     if leftover.len > 0 {
-        let done, ok = feed_chunk_slice(dec, leftover, resp, trailer_buf);
-        if done { return ok; }
+        let done, ok = feed_chunk_slice(dec, leftover, resp, trailer_buf, consumed_cur);
+        if done {
+            if ok && consumed_cur < leftover.len {
+                let _ = conn.rx_buf.try_append(leftover[consumed_cur..]);
+            }
+            return ok;
+        }
     }
 
     var wire_buf: u8[4096] = [0; 4096];
     loop {
         let recvd = conn.transport.recv_slice(wire_buf[..], timeout_ms);
         guard recvd > 0 else { return false; }
-        let done, ok = feed_chunk_slice(dec, wire_buf[..recvd], resp, trailer_buf);
-        if done { return ok; }
+        let done, ok = feed_chunk_slice(dec, wire_buf[..recvd], resp, trailer_buf, consumed_cur);
+        if done {
+            if ok && consumed_cur < recvd {
+                let _ = conn.rx_buf.try_append(wire_buf[consumed_cur..recvd]);
+            }
+            return ok;
+        }
     }
     return true;
 }
@@ -432,7 +445,7 @@ fn execute_h1_exchange(
     reset_response(resp);
     guard send_h1_request(conn, req, url_val) else { return false, false; }
 
-    loop {
+    for interim_step in 6 {
         let hdr_end_idx, ok_hdr = read_response_headers(conn, timeout_ms);
         guard ok_hdr && hdr_end_idx >= 0 else { return false, false; }
 
@@ -440,7 +453,7 @@ fn execute_h1_exchange(
         let leftover_start = hdr_end_idx + 4;
 
         // RFC 9112 §6.3 / RFC 9110 §15.2: 1xx informational responses (except 101 Switching Protocols)
-        // must be consumed while continuing to wait for final response.
+        // must be consumed while continuing to wait for final response (max 5 interim responses).
         let is_interim = resp.status_code >= rfc::STATUS_CONTINUE &&
             resp.status_code < rfc::STATUS_OK &&
             resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS;

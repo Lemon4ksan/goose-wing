@@ -14,6 +14,7 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
 import core.compress.deflate;
 import core.compress.brotli_dict;
 
@@ -46,6 +47,75 @@ const COPY_LENGTH_BASE: u32[24] = [
 const COPY_LENGTH_EXTRA_BITS: u8[24] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
     5, 5, 6, 7, 8, 9, 10, 24,
+];
+
+// RFC 7932 Section 6: Block length base offsets and extra bits
+const BROTLI_BLOCK_LEN_BASE: u32[26] = [
+    1, 5, 9, 13, 17, 25, 33, 41, 49, 65, 81, 97, 113,
+    145, 177, 209, 241, 305, 369, 497, 753, 1265, 2289, 4337, 8433, 16625,
+];
+
+const BROTLI_BLOCK_LEN_EXTRA: u8[26] = [
+    2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5,
+    5, 5, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 24,
+];
+
+// RFC 7932 Section 7.1: Context lookup tables for UTF8 (LUT_0, LUT_1) and Signed (LUT_2) modes
+const BROTLI_CONTEXT_LUT_0: u8[256] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    8, 12, 16, 12, 12, 20, 12, 16, 24, 28, 12, 12, 32, 12, 36, 12,
+    44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 32, 32, 24, 40, 28, 12,
+    12, 48, 52, 52, 52, 48, 52, 52, 52, 48, 52, 52, 52, 52, 52, 48,
+    52, 52, 52, 52, 52, 48, 52, 52, 52, 52, 52, 24, 12, 28, 12, 12,
+    12, 56, 60, 60, 60, 56, 60, 60, 60, 56, 60, 60, 60, 60, 60, 56,
+    60, 60, 60, 60, 60, 56, 60, 60, 60, 60, 60, 24, 12, 28, 12, 0,
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+    2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+    2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+    2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+    2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+];
+
+const BROTLI_CONTEXT_LUT_1: u8[256] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1,
+    1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+    1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+];
+
+const BROTLI_CONTEXT_LUT_2: u8[256] = [
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7,
 ];
 
 // RFC 7932 Section 5: Cell mappings for 704-command alphabet
@@ -119,9 +189,6 @@ inline fn brotli_read_bits(r: BrotliBitReader&, n: u32) -> u32 {
 inline fn brotli_peek_bits(r: BrotliBitReader&, n: u32) -> u32 {
     if r.bit_count < n {
         brotli_fill_bits(r);
-        if r.bit_count < n {
-            r.underflow = true;
-        }
     }
     let mask = if n >= 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << n) - 1 };
     return (r.bit_buf & mask) as u32;
@@ -1057,22 +1124,262 @@ fn decode_brotli_window_bits(r: BrotliBitReader&, out_wbits: u32&) -> CompressEr
     return CompressError.None;
 }
 
-fn read_brotli_block_prefix_tables(
+struct BrotliBlockState {
+    num_block_types: u32[3]                 = [1, 1, 1],
+    block_type:      u32[3]                 = [0, 0, 0],
+    prev_type0:      u32[3]                 = [0, 0, 0],
+    prev_type1:      u32[3]                 = [1, 1, 1],
+    block_len:       u32[3]                 = [0, 0, 0],
+    bt_tables:       BrotliHuffmanTable[3]  = [BrotliHuffmanTable { .. }; 3],
+    bl_tables:       BrotliHuffmanTable[3]  = [BrotliHuffmanTable { .. }; 3],
+    context_modes:   u8[256]                = [0; 256],
+    c_map_lit:       u8[16384]              = [0; 16384],
+    c_map_dist:      u8[1024]               = [0; 1024],
+    num_lit_htrees:  u32                    = 1,
+    num_dist_htrees: u32                    = 1,
+    lit_tables:      BrotliHuffmanTable[64] = [BrotliHuffmanTable { .. }; 64],
+    cmd_tables:      BrotliHuffmanTable[64] = [BrotliHuffmanTable { .. }; 64],
+    dist_tables:     BrotliHuffmanTable[64] = [BrotliHuffmanTable { .. }; 64],
+}
+
+// Decodes a block length from `bl_table` and extra bits (RFC 7932 Section 6).
+//
+// Example:
+//   bl_table.single_symbol = 0, extra = 0
+//   returns: len = 1, ok = true
+fn decode_brotli_block_len(
+    r:        BrotliBitReader&,
+    bl_table: const BrotliHuffmanTable&,
+) -> u32, bool {
+    let code, ok = decode_brotli_symbol(r, bl_table);
+    guard ok && code >= 0 && code < 26 else { return 0, false; }
+    let eb = BROTLI_BLOCK_LEN_EXTRA[code as i64] as u32;
+    let extra = if eb > 0 { brotli_read_bits(r, eb) } else { 0 };
+    return add_sat_u32(BROTLI_BLOCK_LEN_BASE[code as i64], extra), !r.underflow;
+}
+
+// Switches to the next block of category `cat` (`0` = literal, `1` = command, `2` = distance)
+// when `bs.block_len[cat]` reaches 0 (RFC 7932 Section 6).
+//
+// Example:
+//   cat = 0, bs.num_block_types[0] = 2
+//   returns: true
+fn switch_brotli_block(
+    r:   BrotliBitReader&,
+    bs:  BrotliBlockState&,
+    cat: i64,
+) -> bool {
+    let nbt = bs.num_block_types[cat];
+    guard nbt >= 2 else {
+        bs.block_len[cat] = 0x10000000;
+        return true;
+    }
+    let tcode, ok_t = decode_brotli_symbol(r, bs.bt_tables[cat]);
+    guard ok_t && tcode >= 0 else { return false; }
+    let tc = tcode as u32;
+    var next_type: u32 = 0;
+    if tc == 0 {
+        next_type = bs.prev_type0[cat];
+    } else if tc == 1 {
+        let inc = add_sat_u32(bs.block_type[cat], 1);
+        next_type = if inc >= nbt { 0 } else { inc };
+    } else {
+        next_type = sub_sat_u32(tc, 2);
+        guard next_type < nbt else { return false; }
+    }
+    bs.prev_type0[cat] = bs.prev_type1[cat];
+    bs.prev_type1[cat] = next_type;
+    bs.block_type[cat] = next_type;
+
+    let blen, ok_l = decode_brotli_block_len(r, bs.bl_tables[cat]);
+    guard ok_l else { return false; }
+    bs.block_len[cat] = blen;
+    return true;
+}
+
+fn read_brotli_block_types(r: BrotliBitReader&, bs: BrotliBlockState&) -> CompressError {
+    for i in 3 {
+        let nbt = add_sat_u32(decode_varlen_uint8(r), 1);
+        bs.num_block_types[i] = nbt;
+        bs.block_type[i] = 0;
+        bs.prev_type0[i] = 0;
+        bs.prev_type1[i] = 1;
+        if nbt >= 2 {
+            let bt_alpha = add_sat_u32(nbt, 2) as i32;
+            let ok_bt = read_brotli_prefix_code(r, bt_alpha, bs.bt_tables[i]);
+            guard ok_bt else { return CompressError.InvalidHuffmanCode; }
+            let ok_bl = read_brotli_prefix_code(r, 26, bs.bl_tables[i]);
+            guard ok_bl else { return CompressError.InvalidHuffmanCode; }
+            let blen, ok_len = decode_brotli_block_len(r, bs.bl_tables[i]);
+            guard ok_len else { return CompressError.CorruptedBitstream; }
+            bs.block_len[i] = blen;
+        } else {
+            bs.block_len[i] = 0x10000000;
+        }
+    }
+    return CompressError.None;
+}
+
+fn read_literal_context_modes(r: BrotliBitReader&, bs: BrotliBlockState&) {
+    let count = bs.num_block_types[0];
+    for i in count {
+        let mode = brotli_read_bits(r, 2) as u8;
+        if (i as i64) < 256 {
+            bs.context_modes[i as i64] = mode;
+        }
+    }
+}
+
+fn inverse_move_to_front_transform(v: u8[:]) {
+    var mtf: u8[256] = [0; 256];
+    for i in 256 {
+        mtf[i] = i as u8;
+    }
+    for i in v.len {
+        let idx = v[i] as i64;
+        let val = mtf[idx];
+        v[i] = val;
+        for k in idx {
+            let dst = sub_sat_i64(idx, k);
+            let src = sub_sat_i64(dst, 1);
+            mtf[dst] = mtf[src];
+        }
+        mtf[0] = val;
+    }
+}
+
+// Decodes RLE-encoded context map entries using `cmap_table` (RFC 7932 Section 7.3).
+//
+// Example:
+//   rlemax = 2, map_size = 4, symbols = [1 (0 bits), 3, 4]
+//   returns: true, out_map = [0, 0, 1, 2]
+fn decode_context_map_entries(
+    r:          BrotliBitReader&,
+    cmap_table: const BrotliHuffmanTable&,
+    rlemax:     u32,
+    map_size:   i64,
+    out_map:    u8[:],
+) -> bool {
+    var i: i64 = 0;
+    while i < map_size {
+        let code, ok = decode_brotli_symbol(r, cmap_table);
+        guard ok && code >= 0 else { return false; }
+        let c = code as u32;
+        if c == 0 {
+            out_map[i] = 0;
+            i = add_sat_i64(i, 1);
+        } else if c <= rlemax {
+            let base_rep = (shl_sat_u64(1, c) & 0xFFFF) as u32;
+            let reps = add_sat_u32(base_rep, brotli_read_bits(r, c));
+            let run_end = add_sat_i64(i, reps);
+            guard run_end <= map_size else { return false; }
+            for _ in reps {
+                out_map[i] = 0;
+                i = add_sat_i64(i, 1);
+            }
+        } else {
+            out_map[i] = sub_sat_u32(c, rlemax) as u8;
+            i = add_sat_i64(i, 1);
+        }
+    }
+    return true;
+}
+
+// Decodes a context map of size `map_size` mapping contexts to `0..num_trees - 1` (RFC 7932 Section 7.3).
+//
+// Example:
+//   num_trees = 1, map_size = 64
+//   returns: true (all entries set to 0)
+fn decode_brotli_context_map(
+    r:         BrotliBitReader&,
+    num_trees: u32,
+    map_size:  i64,
+    out_map:   u8[:],
+) -> bool {
+    guard map_size <= out_map.len else { return false; }
+    if num_trees <= 1 {
+        for i in map_size {
+            out_map[i] = 0;
+        }
+        return true;
+    }
+
+    let use_rle = brotli_read_bits(r, 1) != 0;
+    let rlemax = if use_rle { add_sat_u32(brotli_read_bits(r, 4), 1) } else { 0 };
+    let alphabet_size = add_sat_u32(num_trees, rlemax) as i32;
+
+    var cmap_table = BrotliHuffmanTable { .. };
+    guard read_brotli_prefix_code(r, alphabet_size, cmap_table) else { return false; }
+    guard decode_context_map_entries(r, cmap_table, rlemax, map_size, out_map) else { return false; }
+
+    let imtf_bit = brotli_read_bits(r, 1);
+    if imtf_bit != 0 {
+        inverse_move_to_front_transform(out_map[..map_size]);
+    }
+    return !r.underflow;
+}
+
+// Computes the 6-bit literal context ID (0..63) from the previous two uncompressed bytes `p1` and `p2`
+// under `mode` (`0` = LSB6, `1` = MSB6, `2` = UTF8, `3` = Signed) per RFC 7932 Section 7.1.
+//
+// Example:
+//   p1 = 0x41, p2 = 0x20, mode = 0
+//   returns: 1
+inline fn compute_brotli_literal_context(p1: u8, p2: u8, mode: u8) -> i64 {
+    if mode == 0 {
+        return p1 & 0x3F;
+    }
+    if mode == 1 {
+        return p1 >> 2;
+    }
+    if mode == 2 {
+        return (BROTLI_CONTEXT_LUT_0[p1 as i64] | BROTLI_CONTEXT_LUT_1[p2]);
+    }
+    return ((BROTLI_CONTEXT_LUT_2[p1 as i64] << 3) | BROTLI_CONTEXT_LUT_2[p2]);
+}
+
+inline fn resolve_literal_htree_idx(bs: const BrotliBlockState&, p1: u8, p2: u8) -> i64 {
+    if bs.num_lit_htrees <= 1 {
+        return 0;
+    }
+    let btype = (bs.block_type[0] & 0xFF) as i64;
+    let mode = bs.context_modes[btype];
+    let ctx = compute_brotli_literal_context(p1, p2, mode) & 63;
+    let map_idx = ((btype << 6) | ctx) & 16383;
+    return bs.c_map_lit[map_idx] & 63;
+}
+
+inline fn resolve_distance_htree_idx(bs: const BrotliBlockState&, copy_len: u32) -> i64 {
+    if bs.num_dist_htrees <= 1 {
+        return 0;
+    }
+    let dctx = if copy_len > 4 { 3 } else { (sub_sat_u32(copy_len, 2) & 3) as i64 };
+    let btype = (bs.block_type[2] & 0xFF) as i64;
+    let map_idx = ((btype << 2) | dctx) & 1023;
+    return bs.c_map_dist[map_idx] & 63;
+}
+
+fn read_brotli_tree_arrays(
     r:        BrotliBitReader&,
     ndirect:  u32,
     npostfix: u32,
-    out_lit:  BrotliHuffmanTable&,
-    out_cmd:  BrotliHuffmanTable&,
-    out_dist: BrotliHuffmanTable&,
+    bs:       BrotliBlockState&,
 ) -> bool {
-    let ok_lit = read_brotli_prefix_code(r, 256, out_lit);
-    guard ok_lit else { return false; }
-
-    let ok_cmd = read_brotli_prefix_code(r, 704, out_cmd);
-    guard ok_cmd else { return false; }
-
-    let dist_alphabet_size = (16 + ndirect + (48 << npostfix)) as i32;
-    return read_brotli_prefix_code(r, dist_alphabet_size, out_dist);
+    guard bs.num_lit_htrees <= 64 && bs.num_block_types[1] <= 64 && bs.num_dist_htrees <= 64 else {
+        return false;
+    }
+    for i in bs.num_lit_htrees {
+        guard read_brotli_prefix_code(r, 256, bs.lit_tables[i as i64]) else { return false; }
+    }
+    for i in bs.num_block_types[1] {
+        guard read_brotli_prefix_code(r, 704, bs.cmd_tables[i as i64]) else { return false; }
+    }
+    let post_sh = (shl_sat_u64(48, npostfix & 3) & 0xFFFF) as u32;
+    let dist_alphabet_size = add_sat_u32(add_sat_u32(16, ndirect), post_sh) as i32;
+    for i in bs.num_dist_htrees {
+        guard read_brotli_prefix_code(r, dist_alphabet_size, bs.dist_tables[i as i64]) else { return false; }
+    }
+    return true;
 }
 
 // Decodes an RFC 7932 Section 9.2 metadata meta-block.
@@ -1163,27 +1470,6 @@ fn decode_meta_block_length(r: BrotliBitReader&, mnibbles: u32) -> u32, bool {
     return mlen + 1, true;
 }
 
-fn skip_literal_context_modes(r: BrotliBitReader&, count: u32) {
-    for i in count {
-        let _ = brotli_read_bits(r, 2);
-    }
-}
-
-fn read_brotli_block_types(r: BrotliBitReader&, num_block_types: u32[3]&) -> CompressError {
-    for i in 3 {
-        num_block_types[i] = decode_varlen_uint8(r) + 1;
-        if num_block_types[i] >= 2 {
-            var bt_table = BrotliHuffmanTable { .. };
-            let ok_bt = read_brotli_prefix_code(r, (num_block_types[i] + 2) as i32, bt_table);
-            guard ok_bt else { return CompressError.InvalidHuffmanCode; }
-            var bl_table = BrotliHuffmanTable { .. };
-            let ok_bl = read_brotli_prefix_code(r, 26, bl_table);
-            guard ok_bl else { return CompressError.InvalidHuffmanCode; }
-        }
-    }
-    return CompressError.None;
-}
-
 fn apply_brotli_copy<B>(
     out:                  B&,
     distance:             u32,
@@ -1242,17 +1528,23 @@ fn apply_brotli_copy<B>(
 fn insert_brotli_literals<B>(
     r:                BrotliBitReader&,
     ins_len:          u32,
-    lit_table:        const BrotliHuffmanTable&,
+    bs:               BrotliBlockState&,
     max_output_bytes: i64,
     prev_p1:          u8&,
     prev_p2:          u8&,
     out:              B&,
 ) -> CompressError {
-    if max_output_bytes >= 0 && (out.len + (ins_len as i64)) > max_output_bytes {
+    if max_output_bytes >= 0 && add_sat_i64(out.len, ins_len as i64) > max_output_bytes {
         return CompressError.OutputBufferOverflow;
     }
     for i in ins_len {
-        let lit, ok_l = decode_brotli_symbol(r, lit_table);
+        if bs.block_len[0] == 0 {
+            guard switch_brotli_block(r, bs, 0) else { return CompressError.CorruptedBitstream; }
+        }
+        bs.block_len[0] = sub_sat_u32(bs.block_len[0], 1);
+
+        let htree_idx = resolve_literal_htree_idx(bs, prev_p1, prev_p2);
+        let lit, ok_l = decode_brotli_symbol(r, bs.lit_tables[htree_idx]);
         guard ok_l && lit >= 0 else { return CompressError.CorruptedBitstream; }
         let lit_byte = lit as u8;
         out.push(lit_byte);
@@ -1263,17 +1555,24 @@ fn insert_brotli_literals<B>(
 }
 
 fn read_brotli_command_distance(
-    r:          BrotliBitReader&,
-    dist_zero:  bool,
-    dist_table: const BrotliHuffmanTable&,
-    npostfix:   u32,
-    ndirect:    u32,
-    dist_ring:  u32[4]&,
+    r:         BrotliBitReader&,
+    dist_zero: bool,
+    copy_len:  u32,
+    bs:        BrotliBlockState&,
+    npostfix:  u32,
+    ndirect:   u32,
+    dist_ring: u32[4]&,
 ) -> u32, CompressError {
     if dist_zero {
         return dist_ring[0], CompressError.None;
     }
-    let dcode, ok_d = decode_brotli_symbol(r, dist_table);
+    if bs.block_len[2] == 0 {
+        guard switch_brotli_block(r, bs, 2) else { return 0, CompressError.CorruptedBitstream; }
+    }
+    bs.block_len[2] = sub_sat_u32(bs.block_len[2], 1);
+
+    let htree_idx = resolve_distance_htree_idx(bs, copy_len);
+    let dcode, ok_d = decode_brotli_symbol(r, bs.dist_tables[htree_idx]);
     guard ok_d && dcode >= 0 else { return 0, CompressError.CorruptedBitstream; }
     let distance = decode_brotli_distance(r, dcode as u32, npostfix, ndirect, dist_ring);
     guard distance > 0 else { return 0, CompressError.DistanceOutOfBounds; }
@@ -1292,6 +1591,20 @@ inline fn read_brotli_cmd_lengths(r: BrotliBitReader&, cmd_code: u32) -> u32, u3
     return ins_len, copy_len, dist_zero;
 }
 
+fn read_next_brotli_cmd_code(r: BrotliBitReader&, bs: BrotliBlockState&) -> u32, bool {
+    if bs.block_len[1] == 0 {
+        guard switch_brotli_block(r, bs, 1) else { return 0, false; }
+    }
+    bs.block_len[1] = sub_sat_u32(bs.block_len[1], 1);
+
+    let cmd_btype = (bs.block_type[1] & 63) as i64;
+    let cmd_code, ok_c = decode_brotli_symbol(r, bs.cmd_tables[cmd_btype]);
+    guard ok_c && cmd_code >= 0 && cmd_code < 704 else {
+        return 0, false;
+    }
+    return cmd_code as u32, true;
+}
+
 // Decodes Brotli commands and applies literal insertions and distance copies.
 //
 // Example:
@@ -1300,9 +1613,7 @@ inline fn read_brotli_cmd_lengths(r: BrotliBitReader&, cmd_code: u32) -> u32, u3
 fn decode_brotli_commands<B>(
     r:                   BrotliBitReader&,
     mlen:                u32,
-    lit_table:           const BrotliHuffmanTable&,
-    cmd_table:           const BrotliHuffmanTable&,
-    dist_table:          const BrotliHuffmanTable&,
+    bs:                  BrotliBlockState&,
     npostfix:            u32,
     ndirect:             u32,
     max_window_distance: u32,
@@ -1314,30 +1625,28 @@ fn decode_brotli_commands<B>(
 ) -> CompressError {
     var meta_block_remaining = mlen;
     while meta_block_remaining > 0 {
-        let cmd_code, ok_c = decode_brotli_symbol(r, cmd_table);
-        guard ok_c && cmd_code >= 0 && cmd_code < 704 else {
-            return CompressError.CorruptedBitstream;
-        }
+        let cmd_code, ok_c = read_next_brotli_cmd_code(r, bs);
+        guard ok_c else { return CompressError.CorruptedBitstream; }
 
-        let ins_len, copy_len, dist_zero = read_brotli_cmd_lengths(r, cmd_code as u32);
+        let ins_len, copy_len, dist_zero = read_brotli_cmd_lengths(r, cmd_code);
 
         guard meta_block_remaining >= ins_len else {
             return CompressError.CorruptedBitstream;
         }
-        let ins_err = insert_brotli_literals(r, ins_len, lit_table, max_output_bytes, prev_p1, prev_p2, out);
+        let ins_err = insert_brotli_literals(r, ins_len, bs, max_output_bytes, prev_p1, prev_p2, out);
         guard ins_err == CompressError.None else { return ins_err; }
 
-        meta_block_remaining -= ins_len;
+        meta_block_remaining = sub_sat_u32(meta_block_remaining, ins_len);
         if meta_block_remaining == 0 {
             break;
         }
 
         var dist_ring_prev = dist_ring;
-        let distance, dist_err = read_brotli_command_distance(r, dist_zero, dist_table, npostfix, ndirect, dist_ring);
+        let distance, dist_err = read_brotli_command_distance(r, dist_zero, copy_len, bs, npostfix, ndirect, dist_ring);
         guard dist_err == CompressError.None else { return dist_err; }
 
         let out_u32 = out.len as u32;
-        let max_allowed_backward = if out_u32 < max_window_distance { out_u32 } else { max_window_distance };
+        let max_allowed_backward = min(out_u32, max_window_distance);
 
         let copy_err = apply_brotli_copy(
             out,
@@ -1352,6 +1661,41 @@ fn decode_brotli_commands<B>(
             prev_p2,
         );
         guard copy_err == CompressError.None else { return copy_err; }
+    }
+    return CompressError.None;
+}
+
+fn read_brotli_meta_block_header(
+    r:            BrotliBitReader&,
+    bs:           BrotliBlockState&,
+    out_npostfix: u32&,
+    out_ndirect:  u32&,
+) -> CompressError {
+    let bt_err = read_brotli_block_types(r, bs);
+    guard bt_err == CompressError.None else { return bt_err; }
+
+    let dist_params = brotli_read_bits(r, 6);
+    let npostfix = dist_params & 3;
+    let ndirect = (shl_sat_u64(dist_params >> 2, npostfix) as u32) & 0xFFFF;
+    out_npostfix = npostfix;
+    out_ndirect = ndirect;
+
+    read_literal_context_modes(r, bs);
+
+    bs.num_lit_htrees = add_sat_u32(decode_varlen_uint8(r), 1);
+    let lit_map_size = (shl_sat_u64(bs.num_block_types[0] & 255, 6) & 32767) as i64;
+    guard decode_brotli_context_map(r, bs.num_lit_htrees, lit_map_size, bs.c_map_lit[..]) else {
+        return CompressError.CorruptedBitstream;
+    }
+
+    bs.num_dist_htrees = add_sat_u32(decode_varlen_uint8(r), 1);
+    let dist_map_size = (shl_sat_u64(bs.num_block_types[2] & 255, 2) & 2047) as i64;
+    guard decode_brotli_context_map(r, bs.num_dist_htrees, dist_map_size, bs.c_map_dist[..]) else {
+        return CompressError.CorruptedBitstream;
+    }
+
+    guard read_brotli_tree_arrays(r, ndirect, npostfix, bs) else {
+        return CompressError.InvalidHuffmanCode;
     }
     return CompressError.None;
 }
@@ -1387,7 +1731,7 @@ fn decode_brotli_meta_block<B>(
     let mlen, ok_len = decode_meta_block_length(r, mnibbles);
     guard ok_len else { return CompressError.CorruptedBitstream; }
 
-    if max_output_bytes >= 0 && (out.len + (mlen as i64)) > max_output_bytes {
+    if max_output_bytes >= 0 && add_sat_i64(out.len, mlen as i64) > max_output_bytes {
         return CompressError.OutputBufferOverflow;
     }
 
@@ -1399,32 +1743,19 @@ fn decode_brotli_meta_block<B>(
         return decode_brotli_uncompressed_block(r, mlen, out, prev_p1, prev_p2);
     }
 
-    var num_block_types: u32[3] = [0, 0, 0];
-    let bt_err = read_brotli_block_types(r, num_block_types);
-    guard bt_err == CompressError.None else { return bt_err; }
-
-    let dist_params = brotli_read_bits(r, 6);
-    let npostfix = dist_params & 3;
-    let ndirect = (dist_params >> 2) << npostfix;
-
-    skip_literal_context_modes(r, num_block_types[0]);
-
-    let num_lit_htrees = decode_varlen_uint8(r) + 1;
-    let num_dist_htrees = decode_varlen_uint8(r) + 1;
-
-    var lit_table = BrotliHuffmanTable { .. };
-    var cmd_table = BrotliHuffmanTable { .. };
-    var dist_table = BrotliHuffmanTable { .. };
-    guard read_brotli_block_prefix_tables(r, ndirect, npostfix, lit_table, cmd_table, dist_table) else {
-        return CompressError.InvalidHuffmanCode;
+    reusable var bs_pool: BrotliBlockState[>..] = [];
+    if bs_pool.len == 0 {
+        bs_pool.push(BrotliBlockState { .. });
     }
+    var npostfix: u32 = 0;
+    var ndirect:  u32 = 0;
+    let hdr_err = read_brotli_meta_block_header(r, bs_pool[0], npostfix, ndirect);
+    guard hdr_err == CompressError.None else { return hdr_err; }
 
     return decode_brotli_commands(
         r,
         mlen,
-        lit_table,
-        cmd_table,
-        dist_table,
+        bs_pool[0],
         npostfix,
         ndirect,
         max_window_distance,

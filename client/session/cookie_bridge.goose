@@ -110,6 +110,7 @@ fn prepare_hop_cookie_header(
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: ctx.is_main_frame,
             is_safe_method:          safe_method,
+            had_cross_site_hop:      samesite_eval.had_cross_site_hop,
         },
         ctx.headers,
     );

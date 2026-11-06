@@ -133,7 +133,7 @@ fn is_cookie_sendable_for_samesite(
             if access.is_safe_method {
                 true
             } else {
-                is_in_lax_allowing_unsafe_window(cookie_val, now_us)
+                !access.had_cross_site_hop && is_in_lax_allowing_unsafe_window(cookie_val, now_us)
             }
         },
         Unknown => false,

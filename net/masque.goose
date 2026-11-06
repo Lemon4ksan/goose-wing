@@ -489,9 +489,9 @@ fn new_connect_udp_tunnel(
         state:             MasqueTunnelState.Idle,
         ..
     };
-    s.config.proxy_url.append(proxy_url);
+    let _ = s.config.proxy_url.try_append(proxy_url);
     s.config.mode = MasqueProtocolMode.ConnectUdp;
-    s.config.target_host.append(target_host);
+    let _ = s.config.target_host.try_append(target_host);
     s.config.target_port = target_port;
     s.config.use_quic_datagrams = use_datagrams;
     return s;
@@ -508,7 +508,7 @@ fn new_connect_ip_tunnel(
         state:             MasqueTunnelState.Idle,
         ..
     };
-    s.config.proxy_url.append(proxy_url);
+    let _ = s.config.proxy_url.try_append(proxy_url);
     s.config.mode = MasqueProtocolMode.ConnectIp;
     s.config.use_quic_datagrams = use_datagrams;
     return s;

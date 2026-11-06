@@ -431,6 +431,11 @@ fn ::try_append<A, S>(arr: A&, slice: S) -> bool {
     return true;
 }
 
+fn ::try_append(arr: u8[>..]&, slice: const u8[:]) -> bool {
+    arr.append(slice);
+    return true;
+}
+
 fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
     guard slice.len <= arr.cap else { return false; }
     arr.clear();

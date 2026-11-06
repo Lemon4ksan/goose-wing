@@ -67,7 +67,7 @@ fn append_h1_request_headers<B>(
     filter_mode: H1HeaderFilterMode,
     flags:       H1HeaderScanFlags&,
     out:         B&,
-) {
+) -> bool {
     for &e in headers.entries {
         let name = wing::entry_name(headers, e);
         let val = wing::entry_value(headers, e);
@@ -77,11 +77,14 @@ fn append_h1_request_headers<B>(
         if core::eq_ascii_fold(name, "host") { flags.has_host = true; }
         if core::eq_ascii_fold(name, "content-length") { flags.has_cl = true; }
         if core::eq_ascii_fold(name, "transfer-encoding") { flags.has_te = true; }
-        out.append(name);
-        out.append(": ");
-        out.append(val);
-        out.append("\r\n");
+        guard out.try_append(name) &&
+              out.try_append(": ") &&
+              out.try_append(val) &&
+              out.try_append("\r\n") else {
+            return false;
+        }
     }
+    return true;
 }
 
 // Serializes an HTTP/1.1 request head and optional body into `out` (RFC 9112 §3).
@@ -110,31 +113,45 @@ fn encode_h1_request<B>(
         return false;
     }
 
-    out.append(method);
-    out.append(" ");
-    out.append(eff_target);
-    out.append(" ");
-    out.append(eff_ver);
-    out.append("\r\n");
+    guard out.try_append(method) &&
+          out.try_append(" ") &&
+          out.try_append(eff_target) &&
+          out.try_append(" ") &&
+          out.try_append(eff_ver) &&
+          out.try_append("\r\n") else {
+        out.clear();
+        return false;
+    }
 
     var flags = H1HeaderScanFlags { .. };
-    append_h1_request_headers(headers, filter_mode, flags, out);
+    guard append_h1_request_headers(headers, filter_mode, flags, out) else {
+        out.clear();
+        return false;
+    }
 
     if !flags.has_host && host.len > 0 {
-        out.append("Host: ");
-        out.append(host);
-        out.append("\r\n");
+        guard out.try_append("Host: ") &&
+              out.try_append(host) &&
+              out.try_append("\r\n") else {
+            out.clear();
+            return false;
+        }
     }
 
     if !flags.has_cl && !flags.has_te && body.len > 0 {
-        out.append("Content-Length: ");
-        core::format_u64_dec(body.len as u64, out);
-        out.append("\r\n");
+        var cl_str: u8[..32] = [];
+        core::format_u64_dec(body.len as u64, cl_str);
+        guard out.try_append("Content-Length: ") &&
+              out.try_append(cl_str[..]) &&
+              out.try_append("\r\n") else {
+            out.clear();
+            return false;
+        }
     }
 
-    out.append("\r\n");
-    if body.len > 0 {
-        out.append(body);
+    guard out.try_append("\r\n") && out.try_append(body) else {
+        out.clear();
+        return false;
     }
     return true;
 }

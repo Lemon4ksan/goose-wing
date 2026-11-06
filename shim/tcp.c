@@ -852,6 +852,24 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     } else {
         addr.sin_addr.s_addr = inet_addr(host_str);
+        if (addr.sin_addr.s_addr == INADDR_NONE) {
+#if !defined(__wasm__)
+            struct addrinfo hints;
+            struct addrinfo *res_info = NULL;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
+                closesocket(s);
+                return -1;
+            }
+            addr.sin_addr = ((struct sockaddr_in *)res_info->ai_addr)->sin_addr;
+            freeaddrinfo(res_info);
+#else
+            closesocket(s);
+            return -1;
+#endif
+        }
     }
 
     if (timeout_ms == 0) {
@@ -1743,6 +1761,22 @@ int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host,
         addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     } else {
         addr.sin_addr.s_addr = inet_addr(host_str);
+        if (addr.sin_addr.s_addr == INADDR_NONE) {
+#if !defined(__wasm__)
+            struct addrinfo hints;
+            struct addrinfo *res_info = NULL;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+            if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
+                return -1;
+            }
+            addr.sin_addr = ((struct sockaddr_in *)res_info->ai_addr)->sin_addr;
+            freeaddrinfo(res_info);
+#else
+            return -1;
+#endif
+        }
     }
 
     int res = sendto(s, (const char *)data.data, (int)data.len, MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof(addr));

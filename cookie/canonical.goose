@@ -16,6 +16,7 @@ struct CookieAccessOptions {
     is_same_site:            bool = true,
     is_top_level_navigation: bool = true,
     is_safe_method:          bool = true,
+    had_cross_site_hop:      bool = false,
 }
 
 // Source options for cookie insertion and security validation.

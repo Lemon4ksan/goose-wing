@@ -156,6 +156,7 @@ fn stage_client_cookie_load<Jar>(
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: is_main_frame,
             is_safe_method:          safe_method,
+            had_cross_site_hop:      samesite_eval.had_cross_site_hop,
         },
         headers,
     );

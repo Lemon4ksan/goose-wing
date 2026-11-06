@@ -137,6 +137,11 @@ fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Res
     var req = new_request("POST", url);
     set_header(req, "Transfer-Encoding", "chunked");
     req.body.append(writer.buffer[..]);
+    if writer.buffer.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(writer.buffer[..]);
+    } else {
+        req.rewindable = false;
+    }
     return do(session, req);
 }
 
@@ -148,6 +153,11 @@ fn put_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Resp
     var req = new_request("PUT", url);
     set_header(req, "Transfer-Encoding", "chunked");
     req.body.append(writer.buffer[..]);
+    if writer.buffer.len <= req.rewind_buf.cap {
+        req.rewind_buf.append(writer.buffer[..]);
+    } else {
+        req.rewindable = false;
+    }
     return do(session, req);
 }
 
@@ -157,6 +167,7 @@ fn download_stream<F: fn(const StreamProgress&)>(
     chunk_size: i64,
     out_body:   u8[>..]&,
 ) -> Response, Error {
+    out_body.clear();
     let resp, err = get(session, url);
     guard ok(err) else { return resp, err; }
 
@@ -166,6 +177,7 @@ fn download_stream<F: fn(const StreamProgress&)>(
     loop {
         let st, is_eof = read_chunk(reader, chunk_size, chunk_buf);
         if st == StreamReadStatus.Error {
+            out_body.clear();
             var resp_err = resp;
             let err = make_error(
                 rfc::STATUS_BAD_GATEWAY, "stream", "chunked stream decode failure", ErrorKind.Stream,
@@ -191,14 +203,14 @@ fn download_stream<F: fn(const StreamProgress&)>(
 // Normalizes ws:// and wss:// into http:// and https:// for HTTP pipeline
 fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
     out.clear();
-    if starts_with(url, "ws://") {
-        out.append("http://");
-        out.append(url[5..]);
-    } else if starts_with(url, "wss://") {
-        out.append("https://");
-        out.append(url[6..]);
+    if starts_with_fold(url, "ws://") {
+        let _ = out.try_append("http://");
+        let _ = out.try_append(url[5..]);
+    } else if starts_with_fold(url, "wss://") {
+        let _ = out.try_append("https://");
+        let _ = out.try_append(url[6..]);
     } else {
-        out.append(url);
+        let _ = out.try_append(url);
     }
 }
 
@@ -274,15 +286,18 @@ fn ws_perform_handshake(
     let proto = header(resp, "Sec-WebSocket-Protocol");
     if proto.len > 0 {
         let req_proto = header(req, "Sec-WebSocket-Protocol");
-        if req_proto.len == 0 || !header_has_token(req_proto, proto) {
+        let valid_proto = req_proto.len > 0 &&
+            !core::contains_byte(proto, ',') &&
+            has_subprotocol_token(req_proto, proto) &&
+            proto.len <= ws_sess.subprotocol.cap;
+        if !valid_proto {
             return new_websocket_session(true), resp, make_error(
                 rfc::STATUS_BAD_REQUEST,
                 "websocket_handshake",
                 "server returned Sec-WebSocket-Protocol not offered by client",
             );
         }
-        let n = if proto.len > ws_sess.subprotocol.cap { ws_sess.subprotocol.cap } else { proto.len };
-        ws_sess.subprotocol.append(proto[..n]);
+        ws_sess.subprotocol.append(proto);
     }
 
     return ws_sess, resp, Error { .. };
@@ -299,11 +314,13 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    var seed:  u64    = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    let _ = native_crypto_random_bytes(nonce[..]);
+    var seed: u64 = (session.virtual_clock_us as u64) ^ session.creds.nonce_counter ^ 0x5DEECE66D;
     for i in 16 {
         seed = seed * 6364136223846793005 + 1442695040888963407;
-        nonce[i] = ((seed >> 33) & 0xFF) as u8;
+        nonce[i] = nonce[i] ^ (((seed >> 33) & 0xFF) as u8);
     }
+    session.creds.nonce_counter = (seed & 0xFFFFFFFF) as u32;
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
@@ -322,11 +339,13 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    var seed:  u64    = (session.virtual_clock_us as u64) ^ 0x5DEECE66D;
+    let _ = native_crypto_random_bytes(nonce[..]);
+    var seed: u64 = (session.virtual_clock_us as u64) ^ (session.creds.nonce_counter as u64) ^ 0x5DEECE66D;
     for i in 16 {
         seed = seed * 6364136223846793005 + 1442695040888963407;
-        nonce[i] = ((seed >> 33) & 0xFF) as u8;
+        nonce[i] = nonce[i] ^ (((seed >> 33) & 0xFF) as u8);
     }
+    session.creds.nonce_counter = (seed & 0xFFFFFFFF) as u32;
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
@@ -447,7 +466,10 @@ fn connect_udp(
     build_masque_connect_request(tunnel, req_headers, req_path);
 
     var full_url: u8[..2048] = [];
-    guard proxy_url.len + req_path.len <= full_url.cap else {
+    guard proxy_url.len > 0 && proxy_url.len <= 256 &&
+          target_host.len > 0 && target_host.len <= 128 &&
+          target_port > 0 &&
+          proxy_url.len + req_path.len <= full_url.cap else {
         tunnel.state = MasqueTunnelState.Failed;
         return tunnel, Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "masque", "proxy_url exceeds capacity");
     }
@@ -497,7 +519,8 @@ fn connect_ip(
     build_masque_connect_request(tunnel, req_headers, req_path);
 
     var full_url: u8[..2048] = [];
-    guard proxy_url.len + req_path.len <= full_url.cap else {
+    guard proxy_url.len > 0 && proxy_url.len <= 256 &&
+          proxy_url.len + req_path.len <= full_url.cap else {
         tunnel.state = MasqueTunnelState.Failed;
         return tunnel, Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "masque", "proxy_url exceeds capacity");
     }

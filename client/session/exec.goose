@@ -831,6 +831,7 @@ fn encode_h2_client_request<B>(
     if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
     let q_str = core::search(current_url);
     if q_str.len > 0 { path_buf.append(q_str); }
+    guard path_buf.len <= 1024 else { return false; }
 
     var pseudo = internal::H2PseudoHeaders {
         has_method:    true,
@@ -882,6 +883,7 @@ fn process_h2_response_frame<B>(
     hdr:       const internal::FrameHeader&,
     payload:   const u8[:],
     stream_id: u32,
+    is_head:   bool,
     dec_dt:    internal::DynamicTable&,
     resp:      Response&,
     got_hdrs:  bool&,
@@ -904,6 +906,8 @@ fn process_h2_response_frame<B>(
         }
         return true, false;
     }
+    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == stream_id { return false, false; }
+    if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return false, false; }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
         let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
@@ -921,7 +925,9 @@ fn process_h2_response_frame<B>(
             let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
             guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         }
-        return true, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
+        let end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
+            (got_hdrs && (is_head || rfc::is_empty_body_status(resp.status_code)));
+        return true, end_stream;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
@@ -952,6 +958,7 @@ fn shift_consumed_rx_bytes<B>(rx_accum: B&, consumed: i64) {
 fn drain_h2_response_frames<B1, B2>(
     rx_accum:  B1&,
     stream_id: u32,
+    is_head:   bool,
     dec_dt:    internal::DynamicTable&,
     resp:      Response&,
     got_hdrs:  bool&,
@@ -960,12 +967,14 @@ fn drain_h2_response_frames<B1, B2>(
     var consumed: i64 = 0;
     while rx_accum.len - consumed >= 9 {
         let hdr, h_err = internal::parse_frame_header(rx_accum[consumed..], 16384);
-        guard h_err == rfc::H2_ERR_NO_ERROR else { break; }
+        guard h_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         let frame_total = 9 + (hdr.length as i64);
         guard rx_accum.len - consumed >= frame_total else { break; }
         let payload = rx_accum[consumed + 9..consumed + frame_total];
         consumed += frame_total;
-        let ok_f, done = process_h2_response_frame(hdr, payload, stream_id, dec_dt, resp, got_hdrs, out_ctrl);
+        let ok_f, done = process_h2_response_frame(
+            hdr, payload, stream_id, is_head, dec_dt, resp, got_hdrs, out_ctrl,
+        );
         guard ok_f else {
             shift_consumed_rx_bytes(rx_accum, consumed);
             return false, false;
@@ -982,6 +991,7 @@ fn drain_h2_response_frames<B1, B2>(
 fn recv_h2_response_loop(
     tp:          Transport&,
     stream_id:   u32,
+    is_head:     bool,
     dec_dt:      internal::DynamicTable&,
     eff_timeout: u32,
     resp:        Response&,
@@ -993,12 +1003,13 @@ fn recv_h2_response_loop(
     for step in 4096 {
         let n = tp.recv_slice(chunk[..], eff_timeout);
         if n > 0 {
-            let _ = rx_accum.try_append(chunk[..n]);
+            guard rx_accum.try_append(chunk[..n]) else { return false; }
         }
         var ctrl_out: u8[..256] = [];
         let ok_f, done = drain_h2_response_frames(
             rx_accum,
             stream_id,
+            is_head,
             dec_dt,
             resp,
             got_hdrs,
@@ -1058,9 +1069,11 @@ fn dispatch_pooled_h2_hop(
     resp.protocol.clear();
     resp.protocol.append("HTTP/2");
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+    let is_head = curr_method == "HEAD";
     let got_hdrs = recv_h2_response_loop(
         session.pool.conns[c_idx].transport,
         stream_id,
+        is_head,
         session.pool.conns[c_idx].hpack_dec,
         eff_timeout,
         resp,
@@ -1086,6 +1099,7 @@ fn encode_h3_client_request<B>(
     if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
     let q_str = core::search(current_url);
     if q_str.len > 0 { path_buf.append(q_str); }
+    guard path_buf.len <= 1024 else { return false; }
 
     let has_body = ctx.body.len > 0;
     guard internal::send_request_headers(
@@ -1112,6 +1126,10 @@ fn execute_live_h3_hop(
 ) -> bool {
     let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { core::hostname(current_url) };
     let target_port = if h3_ep.port > 0 { h3_ep.port } else { core::effective_port(current_url) as u16 };
+    if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network &&
+        (is_private_or_reserved_ip(target_host) || is_dangerous_service_port(target_port)) {
+        return false;
+    }
     let udp_fd = udp_bind("0.0.0.0", 0);
     guard udp_fd > 0 else { return false; }
 

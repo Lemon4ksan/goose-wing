@@ -655,7 +655,7 @@ fn tls_transport_close(fd: i64, slot_idx: u16) {
 // ---- Zero-Allocation Handshake Record Stream Reader ------------------------
 
 struct HandshakeRecordReader {
-    current_record_plain: u8[..16640] = [],
+    current_record_plain: u8[..32768] = [],
     current_offset:       i64         = 0,
     seq_num:              u64         = 0,
 }
@@ -678,6 +678,24 @@ fn try_read_handshake_msg(
     out_msg_body.append(slice[4..total_len]);
     r.current_offset += total_len;
     return true;
+}
+
+fn compact_handshake_reader(r: HandshakeRecordReader&) {
+    let remaining_plain = core::sub_sat_i64(r.current_record_plain.len, r.current_offset);
+    if remaining_plain > 0 && r.current_offset > 0 {
+        var k: i64 = 0;
+        while k < remaining_plain {
+            let src_idx = core::add_sat_i64(r.current_offset, k);
+            r.current_record_plain[k] = r.current_record_plain[src_idx];
+            k = core::add_sat_i64(k, 1);
+        }
+        while r.current_record_plain.len > remaining_plain {
+            r.current_record_plain.pop();
+        }
+    } else if remaining_plain <= 0 {
+        r.current_record_plain.clear();
+    }
+    r.current_offset = 0;
 }
 
 // Consumes the next handshake message from the reader, reading and decrypting
@@ -718,8 +736,11 @@ fn next_handshake_message(
         }
         guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return false; }
 
-        r.current_record_plain.clear();
-        while r.current_record_plain.len < payload_len { r.current_record_plain.push(0); }
+        compact_handshake_reader(r);
+        let base_len = r.current_record_plain.len;
+        let needed_len = core::add_sat_i64(base_len, payload_len);
+        guard needed_len <= r.current_record_plain.cap else { return false; }
+        while r.current_record_plain.len < needed_len { r.current_record_plain.push(0); }
         let dec_len, inner_type, alert_dec, ok_dec = tls_record_decrypt_into(
             cipher_suite,
             key,
@@ -727,15 +748,15 @@ fn next_handshake_message(
             r.seq_num,
             hdr_buf[..],
             ct_payload[..payload_len],
-            r.current_record_plain[..],
+            r.current_record_plain[base_len..],
         );
         guard ok_dec && inner_type == rfc::TLS_CONTENT_HANDSHAKE else { return false; }
         increment_record_seq_num(r.seq_num);
 
-        while r.current_record_plain.len > dec_len {
+        let final_len = core::add_sat_i64(base_len, dec_len);
+        while r.current_record_plain.len > final_len {
             r.current_record_plain.pop();
         }
-        r.current_offset = 0;
     }
     return false;
 }
@@ -1080,7 +1101,8 @@ fn build_tls13_client_hello_payload<B>(
         rfc::GROUP_SECP256R1,
         rfc::GROUP_SECP384R1,
     ];
-    encode_supported_groups_extension(ext_buf, groups[..]);
+    let group_start = if enable_pq { 0 } else { 1 };
+    encode_supported_groups_extension(ext_buf, groups[group_start..]);
 
     core::append_u16_be(ext_buf, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
     core::append_u16_be(ext_buf, 12);
@@ -1338,14 +1360,14 @@ fn verify_server_cert_and_signature(
     guard ok_chain else { return false; }
     var leaf_cert = ParsedCert { .. };
     guard parse_x509_certificate(chain_slices[0], leaf_cert) else { return false; }
-    if slot_idx != 0xFFFF {
-        let _ = tls_populate_slot_san_hosts_from_der(slot_idx, chain_slices[0]);
-    }
+    if slot_idx != 0xFFFF { let _ = tls_populate_slot_san_hosts_from_der(slot_idx, chain_slices[0]); }
 
     var chain_parsed: ParsedCert[..8] = [];
     guard chain_parsed.try_push(leaf_cert) else { return false; }
+
     var idx: i64 = 1;
-    while idx < chain_slices.len {
+    let parse_limit = if config.insecure_skip_verify { 1 } else { chain_slices.len };
+    while idx < parse_limit {
         var c_parsed = ParsedCert { .. };
         guard parse_x509_certificate(chain_slices[idx], c_parsed) else { return false; }
         guard chain_parsed.try_push(c_parsed) else { return false; }
@@ -1364,16 +1386,13 @@ fn verify_server_cert_and_signature(
 
         if config.server_name.len > 0 {
             var sans: SanEntry[..16] = [];
-            let ok_san = get_cert_san_extension(leaf_cert, chain_slices[0], sans) &&
-                match_any_san(sans, config.server_name[..]);
-            guard ok_san else { return false; }
+            let ok_san = get_cert_san_extension(leaf_cert, chain_slices[0], sans);
+            guard ok_san && match_any_san(sans, config.server_name[..]) else { return false; }
         }
     }
 
     var leaf_pub = span_slice(chain_slices[0], leaf_cert.spki_pubkey);
-    if leaf_pub.len >= 2 && leaf_pub[0] == 0 {
-        leaf_pub = leaf_pub[1..];
-    }
+    if leaf_pub.len >= 2 && leaf_pub[0] == 0 { leaf_pub = leaf_pub[1..]; }
 
     let sig_scheme, sig_bytes, ok_parse_cv = parse_certificate_verify(cv_body);
     guard ok_parse_cv else { return false; }
