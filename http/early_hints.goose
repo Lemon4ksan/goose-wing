@@ -98,7 +98,7 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
     }
 
     var p_tok = make_byte_tokenizer(after_uri, ';');
-    while true {
+    loop {
         let param_token, tok_ok = p_tok.token_next();
         guard tok_ok else { break; }
         let p_trim = param_token.trim_lws();

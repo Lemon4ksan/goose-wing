@@ -258,7 +258,7 @@ fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch
     let trimmed = if raw_query.len > 0 && raw_query[0] == '?' { raw_query[1..] } else { raw_query };
     var tok = make_byte_tokenizer(trimmed, '&');
 
-    while true {
+    loop {
         let pair, ok = tok.token_next();
         guard ok else { break; }
         if pair.len == 0 { continue; }

@@ -618,7 +618,7 @@ fn fse_build_dtable(
 
 fn read_fse_zero_repeats(r: ForwardBitReader&) -> i32 {
     var repeats: i32 = 0;
-    while true {
+    loop {
         let code = fwd_peek(r, 2);
         fwd_consume(r, 2);
         if code == 3 {

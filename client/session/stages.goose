@@ -614,6 +614,58 @@ fn run_client_pre_hop_stages<UserStage>(
     return wire::StageVerdict.Continue;
 }
 
+// Executes a single built-in post-hop client egress stage by slot ID (`0..5`).
+fn dispatch_client_egress_stage(
+    stage_id:             u8,
+    session:              Client&,
+    ctx:                  RequestExecutionContext&,
+    req:                  const Request&,
+    current_url:          const core::Url&,
+    samesite_eval:        const SameSiteCookieContext&,
+    safe_method:          bool,
+    cache_ts:             CacheTimestamps&,
+    cache_revalidate_idx: i64,
+    out_resp:             Response&,
+    out_err:              Error&,
+) -> wire::StageVerdict {
+    if stage_id == wire::STAGE_ID_CLI_OUT_AUTH_CHALLENGE {
+        let auth_v = stage_client_auth_challenge(session, ctx, current_url, samesite_eval, safe_method, out_resp);
+        ctx.body_consumed = true;
+        return auth_v;
+    }
+    if stage_id == wire::STAGE_ID_CLI_OUT_COOKIE_STORE {
+        var part_key: u8[..256] = [];
+        compute_hop_partition_key(ctx, current_url, part_key);
+        return stage_client_cookie_store(
+            out_resp.headers,
+            current_url,
+            samesite_eval,
+            ctx.is_main_frame,
+            part_key[..],
+            session.virtual_clock_us,
+            session.jar,
+            session.enable_cookie_jar,
+        );
+    }
+    if stage_id == wire::STAGE_ID_CLI_OUT_CACHE_STORE {
+        let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
+        return stage_client_cache_store(
+            req,
+            current_url,
+            ctx.current_method[..],
+            out_resp,
+            cache_ts,
+            eff_reval_idx,
+            session.cache,
+            session.enable_cache,
+        );
+    }
+    if stage_id == wire::STAGE_ID_CLI_OUT_REDIRECT {
+        return stage_client_redirect(session, ctx, out_resp, current_url, out_err);
+    }
+    return wire::StageVerdict.Continue;
+}
+
 // Runs all enabled post-hop client egress stages in `session.wire_pipeline.egress_stages` order.
 fn run_client_post_hop_stages<UserStage>(
     session:              Client&,
@@ -649,48 +701,28 @@ fn run_client_post_hop_stages<UserStage>(
         return p.verdict;
     }
 
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_AUTH_CHALLENGE) {
-        let auth_v = stage_client_auth_challenge(session, ctx, current_url, samesite_eval, safe_method, out_resp);
-        if !p.step(auth_v) {
+    for i in session.wire_pipeline.egress_stages.len {
+        let stage_id = session.wire_pipeline.egress_stages[i];
+        guard wire::is_egress_stage_enabled(session.wire_pipeline, stage_id) else { continue; }
+        let v = dispatch_client_egress_stage(
+            stage_id,
+            session,
+            ctx,
+            req,
+            current_url,
+            samesite_eval,
+            safe_method,
+            cache_ts,
+            cache_revalidate_idx,
+            out_resp,
+            out_err,
+        );
+        if !p.step(v) {
             return p.verdict;
         }
     }
 
     ctx.body_consumed = true;
-
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_COOKIE_STORE) {
-        var part_key: u8[..256] = [];
-        compute_hop_partition_key(ctx, current_url, part_key);
-        let _ = stage_client_cookie_store(
-            out_resp.headers,
-            current_url,
-            samesite_eval,
-            ctx.is_main_frame,
-            part_key[..],
-            session.virtual_clock_us,
-            session.jar,
-            session.enable_cookie_jar,
-        );
-    }
-
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_CACHE_STORE) {
-        let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
-        let _ = stage_client_cache_store(
-            req,
-            current_url,
-            ctx.current_method[..],
-            out_resp,
-            cache_ts,
-            eff_reval_idx,
-            session.cache,
-            session.enable_cache,
-        );
-    }
-
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_REDIRECT) {
-        return stage_client_redirect(session, ctx, out_resp, current_url, out_err);
-    }
-
     finalize_success_response(ctx, out_resp);
     return wire::StageVerdict.Continue;
 }

@@ -1424,13 +1424,14 @@ fn is_stream_finished(conn: const H3Connection&, stream_id: u64) -> bool {
     return false;
 }
 
-// Encodes a server HTTP/3 response (HEADERS + optional DATA frame) onto `out` (RFC 9114 §4.1).
-fn send_response_headers_and_body<B>(
+// Encodes a server HTTP/3 response (HEADERS + optional DATA + optional trailing HEADERS) onto `out` (RFC 9114 §4.1).
+fn send_response_headers_body_and_trailers<B>(
     conn:          H3Connection&,
     stream_id:     u64,
     status_code:   i32,
     extra_headers: const wing::HeaderMap&,
     body:          const u8[:],
+    trailers:      const wing::HeaderMap&,
     out:           B&,
 ) -> bool {
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
@@ -1461,6 +1462,20 @@ fn send_response_headers_and_body<B>(
     conn.streams[s_idx].headers_sent = true;
     if body.len > 0 {
         guard encode_h3_data_frame(out, body) else { return false; }
+    }
+    if trailers.entries.len > 0 {
+        let tr_base = conn.qpack_table.insert_count;
+        var tr_max_dyn: u64 = 0;
+        var tr_used_dyn = false;
+        var tr_fields: u8[..4096] = [];
+        encode_h3_extra_headers(
+            conn.qpack_table, stream_id, tr_base, trailers,
+            tr_fields, conn.encoder_stream_buf, tr_max_dyn, tr_used_dyn,
+        );
+        var tr_payload: u8[..4096] = [];
+        prepend_qpack_section_prefix(conn.qpack_table, stream_id, tr_base, tr_max_dyn, tr_used_dyn, tr_payload);
+        guard tr_payload.try_append(tr_fields[..]) else { return false; }
+        guard encode_h3_headers_frame(out, tr_payload[..]) else { return false; }
     }
     conn.streams[s_idx].fin_sent = true;
     conn.streams[s_idx].state = H3StreamState.Closed;

@@ -26,6 +26,25 @@ extern fn native_udp_recvfrom(
     peer_port:  u16&,
 ) -> i32 = "wing_udp_recvfrom";
 
+// Binds a UDP socket on `host:port` after initializing the platform socket subsystem.
+// If `port` is 0, the OS allocates an ephemeral UDP port (retrieve with `tcp_getsockname_port`).
+fn udp_bind(host: const u8[:], port: u16 = 0) -> i64 {
+    tcp_init();
+    return native_udp_bind(host, port);
+}
+
+// Receives a UDP datagram into `buf` with `timeout_ms` timeout, populating `peer_ip4` and `peer_port`.
+fn udp_recvfrom(
+    sock_fd:    i64,
+    buf:        u8[:],
+    timeout_ms: u32,
+    peer_ip4:   u32&,
+    peer_port:  u16&,
+) -> i32 {
+    guard sock_fd > 0 && buf.len > 0 else { return -1; }
+    return native_udp_recvfrom(sock_fd, buf, timeout_ms, peer_ip4, peer_port);
+}
+
 // Closed polymorphism for L4 and security transports (24 bytes inline POD).
 enum Transport {
     Disconnected,

@@ -163,7 +163,7 @@ fn download_stream<F: fn(const StreamProgress&)>(
     var reader = new_stream_reader(resp);
     var chunk_buf: u8[>..] = [];
 
-    while true {
+    loop {
         let st, is_eof = read_chunk(reader, chunk_size, chunk_buf);
         if st == StreamReadStatus.Error {
             var resp_err = resp;

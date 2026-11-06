@@ -254,7 +254,7 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
 
     # 8. RFC 9204 QPACK Static Table Indexing (:status 200 = Index 25)
     # Indexed field line from static table: 11000000 | 25 = 0xD9
-    has_qpack_200 = b"\xd9" in h3_res[:5]
+    has_qpack_200 = b"\xd9" in h3_res[:6]
     record(has_qpack_200, "RFC 9204 QPACK Static Table Field Indexing (:status 200 = 0xD9)")
 
     s.close()

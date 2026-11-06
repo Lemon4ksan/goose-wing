@@ -7,174 +7,167 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-fn handle_tls_connection(conn: i64) {
-    var in_buf: u8[>..] = [];
-    var is_running = true;
+fn parse_client_hello_sni_alpn(
+    ch_payload: const u8[:],
+    sni_str:    u8[..255]&,
+    out_alpn:   wing::NegotiatedAlpn&,
+) {
+    guard ch_payload.len > 34 else { return; }
+    let sess_id_len = ch_payload[34] as i64;
+    let mut_idx = 35 + sess_id_len;
+    guard ch_payload.len >= mut_idx + 2 else { return; }
 
-    while is_running {
-        let recvd = wing::tcp_recv(conn, in_buf, 4096, 500);
+    let cs_len = (((ch_payload[mut_idx] as u16) << 8) | ch_payload[mut_idx + 1]) as i64;
+    let comp_idx = mut_idx + 2 + cs_len;
+    guard ch_payload.len > comp_idx else { return; }
+
+    let comp_len = ch_payload[comp_idx] as i64;
+    let ext_start = comp_idx + 1 + comp_len;
+    guard ch_payload.len >= ext_start + 2 else { return; }
+
+    let ext_total_len = (((ch_payload[ext_start] as u16) << 8) | ch_payload[ext_start + 1]) as i64;
+    guard ch_payload.len >= ext_start + 2 + ext_total_len else { return; }
+
+    let exts_slice = ch_payload[ext_start..(ext_start + 2 + ext_total_len)];
+    var entries: wing::TlsExtensionEntry[..32] = [];
+    guard wing::parse_extensions_block(exts_slice, entries) else { return; }
+
+    let sni_raw, has_sni = wing::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    if has_sni {
+        let _ = wing::parse_sni_extension(sni_raw, sni_str);
+    }
+
+    let alpn_raw, has_alpn = wing::find_extension(entries, rfc::TLS_EXT_ALPN);
+    if has_alpn {
+        out_alpn = wing::negotiate_alpn(alpn_raw, false);
+    }
+}
+
+fn send_tls13_server_hello(conn: i64) {
+    var sh_builder = core::builder_init();
+    core::put_u16(sh_builder, 0x0303); // Legacy version
+
+    for _ in 32 {
+        core::put_u8(sh_builder, 0x5A);
+    }
+
+    core::put_u8(sh_builder, 0);
+    core::put_u16(sh_builder, 0x1301); // TLS_AES_128_GCM_SHA256
+    core::put_u8(sh_builder, 0);
+
+    core::start_u16_prefix(sh_builder);
+    core::put_u16(sh_builder, 43); // EXT_SUPPORTED_VERSIONS
+    core::start_u16_prefix(sh_builder);
+    core::put_u16(sh_builder, 0x0304); // TLS 1.3
+    core::finish_u16_prefix(sh_builder);
+    core::finish_u16_prefix(sh_builder);
+
+    var hs_msg: u8[>..] = [];
+    hs_msg.push(rfc::TLS_HS_SERVER_HELLO);
+    let sh_len = sh_builder.buf.len as u32;
+    hs_msg.push(((sh_len >> 16) & 0xFF) as u8);
+    hs_msg.push(((sh_len >> 8) & 0xFF) as u8);
+    hs_msg.push((sh_len & 0xFF) as u8);
+    hs_msg.append(sh_builder.buf[..]);
+
+    var record_out: u8[>..] = [];
+    record_out.push(0x16); // Handshake
+    record_out.push(0x03);
+    record_out.push(0x03);
+    let rec_len = hs_msg.len as u16;
+    record_out.push(((rec_len >> 8) & 0xFF) as u8);
+    record_out.push((rec_len & 0xFF) as u8);
+    record_out.append(hs_msg[..]);
+
+    // Append ChangeCipherSpec (RFC 8446 Appendix D.4 compatibility)
+    record_out.push(0x14);
+    record_out.push(0x03);
+    record_out.push(0x03);
+    record_out.push(0x00);
+    record_out.push(0x01);
+    record_out.push(0x01);
+
+    wing::tcp_send(conn, record_out[..]);
+}
+
+fn handle_tls_handshake_record(
+    conn:           i64,
+    server:         const wing::HttpServer&,
+    record_payload: const u8[:],
+) {
+    guard record_payload.len >= 4 else { return; }
+    let msg_type = record_payload[0];
+    let msg_len = ((record_payload[1] as u32) << 16) | ((record_payload[2] as u32) << 8) | record_payload[3];
+    guard msg_type == rfc::TLS_HS_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) else {
+        return;
+    }
+
+    let ch_payload = record_payload[4..4 + (msg_len as i64)];
+    var sni_str: u8[..255] = [];
+    var negotiated_alpn = wing::NegotiatedAlpn.None;
+    parse_client_hello_sni_alpn(ch_payload, sni_str, negotiated_alpn);
+    let _ = negotiated_alpn;
+
+    if sni_str.len > 0 {
+        let _, ok_sni = wing::resolve_sni_credentials(server, sni_str[..]);
+        guard ok_sni else { return; }
+    }
+
+    send_tls13_server_hello(conn);
+}
+
+fn handle_tls_connection(conn: i64, server: wing::HttpServer&) -> bool {
+    var in_buf:   u8[>..]    = [];
+    var out_wire: u8[..256]  = [];
+    var rem:      u8[>..]    = [];
+    var chunk:    u8[..4096] = [];
+
+    while true {
+        chunk.clear();
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
         if recvd == -2 {
             continue;
         }
         if recvd <= 0 {
             break;
         }
+        in_buf.append(chunk[..recvd]);
 
-        // Check for plain HTTP /shutdown trigger
         if in_buf.len >= 14 && in_buf[..14] == "GET /shutdown " {
-            let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
-            wing::tcp_send(conn, resp);
-            return;
+            let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
+            if hdr_end >= 0 {
+                out_wire.clear();
+                let _ = wing::handle_connection_wire(server, "127.0.0.1", in_buf[..], 0, out_wire);
+                wing::tcp_send(conn, out_wire[..]);
+                return false;
+            }
+            continue;
         }
 
-        // Validate TLS Record Header:
-        // Byte 0: ContentType (0x16 = Handshake, 0x17 = AppData, 0x15 = Alert)
-        // Bytes 1..2: Legacy Version (0x0301 or 0x0303)
-        // Bytes 3..4: Length (Big-endian u16)
         if in_buf.len < 5 {
             continue;
         }
 
         let content_type = in_buf[0];
-        let legacy_ver = ((in_buf[1] as u16) << 8) | in_buf[2];
         let record_len = ((in_buf[3] as u16) << 8) | in_buf[4];
-
         let total_record_len = 5 + (record_len as i64);
         if in_buf.len < total_record_len {
-            continue; // Wait for full record
+            continue;
         }
 
         let record_payload = in_buf[5..total_record_len];
-
-        if content_type == 0x16 { // Handshake
-            if record_payload.len >= 4 {
-                let msg_type = record_payload[0];
-                let msg_len = ((record_payload[1] as u32) << 16) | ((record_payload[2] as u32) << 8) | record_payload[3];
-
-                if msg_type == rfc::TLS_HS_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) {
-                    let ch_payload = record_payload[4..4 + (msg_len as i64)];
-
-                    // Parse ClientHello:
-                    // ClientHello starts at byte 34 (after 2-byte legacy_ver + 32-byte client_random)
-                    var sni_str: u8[..255] = [];
-                    var negotiated_alpn = wing::NegotiatedAlpn.None;
-
-                    // Scan for extensions in ClientHello
-                    if ch_payload.len > 34 {
-                        let sess_id_len = ch_payload[34] as i64;
-                        let mut_idx = 35 + sess_id_len;
-                        if ch_payload.len >= mut_idx + 2 {
-                            let cs_len = (((ch_payload[mut_idx] as u16) << 8) | ch_payload[mut_idx + 1]) as i64;
-                            let comp_idx = mut_idx + 2 + cs_len;
-                            if ch_payload.len > comp_idx {
-                                let comp_len = ch_payload[comp_idx] as i64;
-                                let ext_start = comp_idx + 1 + comp_len;
-
-                                if ch_payload.len >= ext_start + 2 {
-                                    let ext_total_len = (((ch_payload[ext_start] as u16) << 8) | ch_payload[ext_start + 1]) as i64;
-                                    if ch_payload.len >= ext_start + 2 + ext_total_len {
-                                        let exts_slice = ch_payload[ext_start..(ext_start + 2 + ext_total_len)];
-
-                                        var entries: wing::TlsExtensionEntry[..32] = [];
-                                        let ok_exts = wing::parse_extensions_block(exts_slice, entries);
-                                        if ok_exts {
-                                            let sni_raw, has_sni = wing::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
-                                            if has_sni {
-                                                wing::parse_sni_extension(sni_raw, sni_str);
-                                            }
-
-                                            let alpn_raw, has_alpn = wing::find_extension(entries, rfc::TLS_EXT_ALPN);
-                                            if has_alpn {
-                                                negotiated_alpn = wing::negotiate_alpn(alpn_raw, false);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Build ServerHello Response (TLS 1.3, RFC 8446)
-                    // ServerHello:
-                    // Record Header (5B): [0x16, 0x03, 0x03, len(2B)]
-                    // Handshake Header (4B): [0x02, len(3B)]
-                    // Server Version: 0x0303 (Legacy)
-                    // Random (32B)
-                    // Legacy Session ID (Echo Client's)
-                    // Cipher Suite: TLS_AES_128_GCM_SHA256 (0x1301)
-                    // Legacy Compression: 0x00
-                    // Extensions:
-                    //   supported_versions (0x002B): [0x03, 0x04] (TLS 1.3)
-                    //   key_share (0x0033)
-                    var sh_builder = core::builder_init();
-                    core::put_u16(sh_builder, 0x0303); // Legacy version
-
-                    // 32-byte server random
-                    for _ in 32 {
-                        core::put_u8(sh_builder, 0x5A);
-                    }
-
-                    // Echo session ID length 0
-                    core::put_u8(sh_builder, 0);
-
-                    // Selected Cipher Suite: TLS_AES_128_GCM_SHA256 (0x1301)
-                    core::put_u16(sh_builder, 0x1301);
-
-                    // Compression method: 0
-                    core::put_u8(sh_builder, 0);
-
-                    // Extensions block
-                    core::start_u16_prefix(sh_builder);
-
-                    // 1. supported_versions extension (0x002B) -> TLS 1.3 (0x0304)
-                    core::put_u16(sh_builder, 43); // EXT_SUPPORTED_VERSIONS
-                    core::start_u16_prefix(sh_builder);
-                    core::put_u16(sh_builder, 0x0304); // TLS 1.3
-                    core::finish_u16_prefix(sh_builder);
-
-                    core::finish_u16_prefix(sh_builder);
-
-                    // Wrap in Handshake Header (type = 2 / ServerHello)
-                    var hs_msg: u8[>..] = [];
-                    hs_msg.push(rfc::TLS_HS_SERVER_HELLO);
-                    let sh_len = sh_builder.buf.len as u32;
-                    hs_msg.push(((sh_len >> 16) & 0xFF) as u8);
-                    hs_msg.push(((sh_len >> 8) & 0xFF) as u8);
-                    hs_msg.push((sh_len & 0xFF) as u8);
-                    hs_msg.append(sh_builder.buf[..]);
-
-                    // Wrap in TLS Record Header
-                    var record_out: u8[>..] = [];
-                    record_out.push(0x16); // Handshake
-                    record_out.push(0x03);
-                    record_out.push(0x03);
-                    let rec_len = hs_msg.len as u16;
-                    record_out.push(((rec_len >> 8) & 0xFF) as u8);
-                    record_out.push((rec_len & 0xFF) as u8);
-                    record_out.append(hs_msg[..]);
-
-                    // Append ChangeCipherSpec (RFC 8446 Appendix D.4 compatibility)
-                    record_out.push(0x14); // ChangeCipherSpec
-                    record_out.push(0x03);
-                    record_out.push(0x03);
-                    record_out.push(0x00);
-                    record_out.push(0x01);
-                    record_out.push(0x01); // 1 byte payload
-
-                    wing::tcp_send(conn, record_out[..]);
-                }
-            }
-        } else if content_type == 0x15 { // Alert
-            // Client closed connection cleanly
+        if content_type == 0x16 {
+            handle_tls_handshake_record(conn, server, record_payload);
+        } else if content_type == 0x15 {
             break;
         }
 
-        // Advance buffer
-        var rem: u8[>..] = [];
+        rem.clear();
         rem.append(in_buf[total_record_len..]);
         in_buf.clear();
         in_buf.append(rem[..]);
     }
+    return true;
 }
 
 fn main() {
@@ -185,6 +178,13 @@ fn main() {
         return;
     }
     let port = wing::tcp_getsockname_port(listener);
+
+    var server = wing::new_http_server("0.0.0.0", port);
+    let _ = server.server_name.try_set("goose-tls/1.3");
+    let _ = wing::add_server_name(server, "goose-wing.local", "CERT-GOOSE-WING", "KEY-GOOSE-WING");
+    let _ = wing::add_server_name(server, "*.goose-wing.local", "CERT-WILDCARD-GOOSE-WING", "KEY-WILDCARD-GOOSE-WING");
+    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+
     print("READY_PORT:", port, "\n");
 
     var is_running = true;
@@ -194,7 +194,7 @@ fn main() {
             continue;
         }
 
-        handle_tls_connection(conn);
+        is_running = handle_tls_connection(conn, server);
         wing::tcp_close(conn);
     }
 

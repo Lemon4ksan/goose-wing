@@ -125,7 +125,7 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
         }
 
         // Read all remaining bytes from server
-        while true {
+        loop {
             var tmp: u8[..1024] = [];
             let r = wing::tcp_recv(server_conn, tmp, 1024, 200);
             if r <= 0 {

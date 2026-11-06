@@ -2593,6 +2593,83 @@ fn handle_connection_pipe<B>(
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, g_reactor_h2_sessions[h2_idx]);
 }
 
+// Dispatches an HTTP `Request` through `server.pipeline` with a compile-time `<UserStage>` hook.
+fn dispatch_server_request_with_stage<UserStage>(
+    server:     HttpServer&,
+    client_ip:  const u8[:],
+    req:        const Request&,
+    now_ns:     u64,
+    res:        Response&,
+    user_stage: UserStage&,
+) -> PipelineOutcome {
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    var future = internal::new_inline_handler_future(0);
+    let outcome = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, client_ip, req, now_ns, res, future, user_stage,
+    );
+    server.requests_processed++;
+    return outcome;
+}
+
+// Runs a persistent HTTP/2 server session loop over an accepted TCP connection `conn_fd` (RFC 9113).
+// Processes `initial_buf` (which begins with the 24-byte client preface) and subsequent frames until GOAWAY or EOF.
+fn serve_h2_connection(
+    server:          HttpServer&,
+    conn_fd:         i64,
+    initial_buf:     const u8[:],
+    recv_timeout_ms: u32 = 500,
+) -> bool {
+    guard conn_fd > 0 else { return false; }
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    var sess = internal::new_h2_server_session(server.server_name[..], 1000);
+    defer internal::cleanup_h2_server_session(sess, server.pipeline);
+
+    var peer_ip: u8[..64] = [];
+    tcp_get_peer_ip(conn_fd, peer_ip);
+
+    var h2_in:    u8[>..]     = [];
+    var out_wire: u8[..65536] = [];
+    var rem:      u8[>..]     = [];
+    var chunk:    u8[..4096]  = [];
+    h2_in.append(initial_buf);
+
+    var now_ms: u64 = 1000;
+    loop {
+        out_wire.clear();
+        let consumed, ok = internal::handle_h2_server_ingress(
+            sess, server.pipeline, server.timer, peer_ip[..], h2_in[..], now_ms, out_wire,
+        );
+        if out_wire.len > 0 {
+            let _ = tcp_send(conn_fd, out_wire[..]);
+        }
+        if !ok {
+            return false;
+        }
+        if consumed > 0 {
+            server.requests_processed++;
+            rem.clear();
+            rem.append(h2_in[consumed..]);
+            h2_in.clear();
+            h2_in.append(rem[..]);
+        }
+        chunk.clear();
+        let recvd = tcp_recv(conn_fd, chunk, 4096, recv_timeout_ms);
+        if recvd == -2 {
+            continue;
+        }
+        if recvd <= 0 {
+            break;
+        }
+        h2_in.append(chunk[..recvd]);
+        now_ms += 10;
+    }
+    return true;
+}
+
 inline fn response_wire_has_connection_close(wire: const u8[:]) -> bool {
     let hdr_end = core::fast_find_crlfcrlf(wire);
     let hdr_slice = if hdr_end >= 0 { wire[..(hdr_end + 2)] } else { wire };
@@ -2634,7 +2711,7 @@ fn serve_page_ring_loop(
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
 
-        while true {
+        loop {
             let recvd = core::page_ring_recv(ring, conn, 65536, 5000);
             if recvd <= 0 {
                 break;
@@ -2681,7 +2758,7 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
         let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
         defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
-        while true {
+        loop {
             let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
             if recvd <= 0 {
                 break;

@@ -203,7 +203,7 @@ fn parse_security_txt(content: const u8[:], now_epoch: i64 = 0) -> SecurityTxt {
     var sec = SecurityTxt { .. };
     var tok = core::make_byte_tokenizer(content, '\n');
 
-    while true {
+    loop {
         let line, ok = tok.token_next();
         guard ok else { break; }
 

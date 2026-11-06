@@ -1085,3 +1085,258 @@ fn dispatch_grpc_bidi_streaming(
     conn.pending_send_bytes = writer.wire_buf.len as u32;
     return true;
 }
+
+// ---- Public Server Pipeline & Transport Integration ---------------------
+
+fn emit_grpc_h2_response_frames<B>(
+    hpack_enc: internal::DynamicTable&,
+    stream_id: u32,
+    res:       const Response&,
+    out:       B&,
+) {
+    let end_hdr = res.body.len == 0 && res.trailers.entries.len == 0;
+    let status_pseudo = internal::H2PseudoHeaders {
+        status:     200,
+        has_status: true,
+        ..
+    };
+    let _ = wire::encode_h2_headers_frame_from_map(
+        hpack_enc, stream_id, status_pseudo, res.headers, end_hdr, out,
+    );
+
+    if res.body.len > 0 {
+        let end_data = res.trailers.entries.len == 0;
+        let _ = wire::encode_data_frame(stream_id, res.body[..], end_data, out);
+    }
+
+    if res.trailers.entries.len > 0 {
+        let tr_pseudo = internal::H2PseudoHeaders {
+            is_trailer: true,
+            ..
+        };
+        let _ = wire::encode_h2_headers_frame_from_map(
+            hpack_enc, stream_id, tr_pseudo, res.trailers, true, out,
+        );
+    }
+}
+
+fn slice_grpc_h2_headers_fragment(payload: const u8[:], flags: u8) -> const u8[:], bool {
+    var pad_offset: i64 = 0;
+    var pay_end:    i64 = payload.len;
+    if (flags & rfc::H2_FLAG_PADDED) != 0 {
+        guard payload.len > 0 else { return "", false; }
+        let pad_len = payload[0] as i64;
+        pad_offset += 1;
+        pay_end -= pad_len;
+    }
+    if (flags & rfc::H2_FLAG_PRIORITY) != 0 {
+        pad_offset += 5;
+    }
+    guard pad_offset <= pay_end else { return "", false; }
+    return payload[pad_offset..pay_end], true;
+}
+
+fn execute_grpc_server_unary<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+>(
+    server:    HttpServer&,
+    d:         const GrpcServerDispatcher&,
+    client_ip: const u8[:],
+    req:       const Request&,
+    res:       Response&,
+) {
+    let now_ns = core::as_nanos(core::monotonic_now());
+    var future = internal::new_inline_handler_future(0);
+    let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    server.requests_processed++;
+    if outcome == PipelineOutcome.Handled || outcome == PipelineOutcome.RouteNotFound {
+        let _ = dispatch_grpc_unary(d, req, now_ns, res, HandlerFn);
+    }
+}
+
+fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, payload: const u8[:]) -> bool {
+    if hdr.frame_type == rfc::H2_FRAME_SETTINGS {
+        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+            var ack: u8[..16] = [];
+            let ack_hdr = wire::WireFrameHeader {
+                length:     0,
+                frame_type: rfc::H2_FRAME_SETTINGS,
+                flags:      rfc::H2_FLAG_ACK,
+                stream_id:  0,
+            };
+            let _ = wire::encode_frame_header(ack_hdr, ack);
+            let _ = tcp_send(conn, ack[..]);
+        }
+        return true;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_PING {
+        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && payload.len == 8 {
+            var ping_data: u8[8] = [0; 8];
+            for p in 8 { ping_data[p] = payload[p]; }
+            var pong: u8[..24] = [];
+            let _ = wire::encode_ping_frame(ping_data, true, pong);
+            let _ = tcp_send(conn, pong[..]);
+        }
+        return true;
+    }
+    return false;
+}
+
+fn handle_grpc_h2_wire_frame<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+>(
+    conn:      i64,
+    server:    HttpServer&,
+    d:         const GrpcServerDispatcher&,
+    client_ip: const u8[:],
+    hpack_dec: internal::DynamicTable&,
+    hpack_enc: internal::DynamicTable&,
+    pending:   Request&,
+    hdr:       const wire::WireFrameHeader&,
+    payload:   const u8[:],
+    out_wire:  u8[..65536]&,
+) -> bool {
+    if handle_grpc_h2_control_frame(conn, hdr, payload) {
+        return true;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS {
+        let frag, ok_frag = slice_grpc_h2_headers_fragment(payload, hdr.flags);
+        if ok_frag {
+            var pseudo = internal::H2PseudoHeaders { .. };
+            reset_server_request_fast(pending);
+            let _ = pending.method.try_set("POST");
+            let _ = wire::decode_hpack_to_map(
+                hpack_dec, frag, pseudo, pending.headers, 8192, false,
+            );
+            if pseudo.path.len > 0 {
+                let _ = pending.url.try_set(pseudo.path[..]);
+            } else {
+                let _ = pending.url.try_set("/helloworld.Greeter/SayHello");
+            }
+        }
+        if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
+            var res = Response { .. };
+            execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
+            out_wire.clear();
+            emit_grpc_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
+            if out_wire.len > 0 {
+                let _ = tcp_send(conn, out_wire[..]);
+            }
+        }
+        return true;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_DATA {
+        if pending.url.len == 0 {
+            let _ = pending.method.try_set("POST");
+            let _ = pending.url.try_set("/helloworld.Greeter/SayHello");
+            let _ = append_header(pending.headers, "content-type", "application/grpc");
+        }
+        pending.body.append(payload);
+        if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 || payload.len > 0 {
+            var res = Response { .. };
+            execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
+            out_wire.clear();
+            emit_grpc_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
+            if out_wire.len > 0 {
+                let _ = tcp_send(conn, out_wire[..]);
+            }
+            reset_server_request_fast(pending);
+        }
+        return true;
+    }
+    return hdr.frame_type != rfc::H2_FRAME_GOAWAY;
+}
+
+// Serves a gRPC over HTTP/2 connection session on `conn_fd` through `server.pipeline` and `d`.
+fn serve_grpc_h2_connection<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+>(
+    server:      HttpServer&,
+    d:           const GrpcServerDispatcher&,
+    conn_fd:     i64,
+    initial_buf: const u8[:],
+) {
+    let empty_settings: wire::WireSetting[0] = [];
+    var srv_set_wire: u8[..16] = [];
+    let _ = wire::encode_settings_frame(empty_settings[..], srv_set_wire);
+    let _ = tcp_send(conn_fd, srv_set_wire[..]);
+
+    var peer_ip: u8[..64] = [];
+    tcp_get_peer_ip(conn_fd, peer_ip);
+
+    var hpack_dec = internal::new_dynamic_table(4096);
+    var hpack_enc = internal::new_dynamic_table(4096);
+    var pending = new_request("POST", "/helloworld.Greeter/SayHello");
+
+    var in_buf:   u8[>..]     = [];
+    var out_wire: u8[..65536] = [];
+    var rem:      u8[>..]     = [];
+    var chunk:    u8[..4096]  = [];
+
+    if initial_buf.len > 24 {
+        in_buf.append(initial_buf[24..]);
+    }
+
+    var is_running = true;
+    while is_running {
+        var cursor: i64 = 0;
+        while is_running {
+            let hdr, payload, ok_frame = wire::read_wire_h2_frame(in_buf[..], cursor);
+            if !ok_frame {
+                break;
+            }
+            is_running = handle_grpc_h2_wire_frame(
+                conn_fd, server, d, peer_ip[..], hpack_dec, hpack_enc, pending, hdr, payload, out_wire, HandlerFn,
+            );
+        }
+
+        if cursor > 0 {
+            rem.clear();
+            rem.append(in_buf[cursor..]);
+            in_buf.clear();
+            in_buf.append(rem[..]);
+        }
+        if !is_running {
+            break;
+        }
+
+        chunk.clear();
+        let recvd = tcp_recv(conn_fd, chunk, 4096, 50);
+        if recvd == -2 {
+            continue;
+        }
+        if recvd <= 0 {
+            break;
+        }
+        in_buf.append(chunk[..recvd]);
+    }
+}
+
+// Processes a gRPC-Web HTTP/1.1 request wire buffer through `server.pipeline` and `d`,
+// sending the serialized response over `conn_fd`.
+fn serve_grpc_web_http1<
+    HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&, GrpcStatusCode&, u8[..256]&),
+>(
+    server:  HttpServer&,
+    d:       const GrpcServerDispatcher&,
+    conn_fd: i64,
+    req_raw: const u8[:],
+) {
+    var out_wire: u8[>..] = [];
+    var req = new_request("GET", "");
+    let ok_parse, _ = parse_http1_wire_request(req_raw, req);
+    guard ok_parse else {
+        serialize_bad_request_error(server.server_name[..], out_wire);
+        let _ = tcp_send(conn_fd, out_wire[..]);
+        return;
+    }
+
+    var peer_ip: u8[..64] = [];
+    tcp_get_peer_ip(conn_fd, peer_ip);
+
+    var res = Response { .. };
+    execute_grpc_server_unary(server, d, peer_ip[..], req, res, HandlerFn);
+
+    serialize_http1_response(res, server.server_name[..], out_wire);
+    let _ = tcp_send(conn_fd, out_wire[..]);
+}

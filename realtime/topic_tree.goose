@@ -43,7 +43,7 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
     var p_cur: i64 = 0;
     var t_cur: i64 = 0;
 
-    while true {
+    loop {
         let p_next = scan_topic_segment_end(pattern, p_cur);
         let p_seg = pattern[p_cur..p_next];
         if p_seg == "#" { return true; }

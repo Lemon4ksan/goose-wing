@@ -1678,7 +1678,7 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
 fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
     guard list.len > 0 && target.len > 0 else { return false; }
     var tok = make_byte_tokenizer(list, ',');
-    while true {
+    loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
         if core::eq_ascii_fold(part.trim_lws(), target) {
@@ -1693,7 +1693,7 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
 fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
     guard list.len > 0 && target.len > 0 else { return false; }
     var tok = make_byte_tokenizer(list, ',');
-    while true {
+    loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
         if part.trim_lws() == target {

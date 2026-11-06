@@ -290,11 +290,11 @@ fn default_client_pipeline() -> WirePipeline {
     p.ingress_stages.push(STAGE_ID_CLI_IN_DICT_NEGOTIATE);
     p.ingress_stages.push(STAGE_ID_CLI_IN_INTERCEPTOR_AUTH);
 
-    p.egress_stages.push(STAGE_ID_CLI_OUT_COOKIE_STORE);
     p.egress_stages.push(STAGE_ID_CLI_OUT_ALT_SVC);
     p.egress_stages.push(STAGE_ID_CLI_OUT_DECOMPRESS);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_CACHE_STORE);
     p.egress_stages.push(STAGE_ID_CLI_OUT_AUTH_CHALLENGE);
+    p.egress_stages.push(STAGE_ID_CLI_OUT_COOKIE_STORE);
+    p.egress_stages.push(STAGE_ID_CLI_OUT_CACHE_STORE);
     p.egress_stages.push(STAGE_ID_CLI_OUT_REDIRECT);
     return p;
 }

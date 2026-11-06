@@ -275,7 +275,7 @@ fn pump_h1_chunked_body(
     }
 
     var wire_buf: u8[4096] = [0; 4096];
-    while true {
+    loop {
         let recvd = conn.transport.recv_slice(wire_buf[..], timeout_ms);
         guard recvd > 0 else { return false; }
         let done, ok = feed_chunk_slice(dec, wire_buf[..recvd], resp, trailer_buf);
@@ -402,7 +402,7 @@ fn pump_response_body(
         resp.body.append(leftover);
     }
     var raw_recv: u8[4096] = [0; 4096];
-    while true {
+    loop {
         let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
         if recvd <= 0 { break; }
         resp.body.append(raw_recv[..recvd]);
@@ -421,7 +421,7 @@ fn execute_h1_exchange(
     conn.rx_buf.clear();
     guard send_h1_request(conn, req, url_val) else { return false, false; }
 
-    while true {
+    loop {
         let hdr_end_idx, ok_hdr = read_response_headers(conn, timeout_ms);
         guard ok_hdr && hdr_end_idx >= 0 else { return false, false; }
 

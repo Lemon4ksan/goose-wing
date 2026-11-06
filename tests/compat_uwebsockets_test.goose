@@ -807,7 +807,7 @@ fn test_epoll_reactor_multiplexer(t: lit::T&) {
         sub.assert_gt(n_accept, 0, "Accept readiness harvested by epoll_wait");
 
         var accepted_socks: i64[..8] = [];
-        while true {
+        loop {
             let s = wing::tcp_accept_nonblocking(listener);
             if s <= 0 { break; }
             wing::tcp_set_nonblocking(s, true);

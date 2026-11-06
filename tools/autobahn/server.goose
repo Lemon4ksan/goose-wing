@@ -7,25 +7,6 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
-    var cursor: i64 = 0;
-    while cursor < headers_block.len {
-        let rel_end = find(headers_block[cursor..], "\r\n");
-        if rel_end < 0 { break; }
-        let line = headers_block[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        if colon > 0 {
-            let hname = line[..colon];
-            if core::eq_ascii_fold(hname, target_header) {
-                let hval = core::trim_lws(line[(colon + 1)..]);
-                return hval, true;
-            }
-        }
-        cursor += rel_end + 2;
-    }
-    return "", false;
-}
-
 fn drain_and_close(conn: i64) {
     var dummy: u8[..4096] = [];
     var loops = 0;
@@ -39,23 +20,16 @@ fn drain_and_close(conn: i64) {
     wing::tcp_close(conn);
 }
 
-fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
-    var accept_key: u8[>..] = [];
-    wing::compute_websocket_accept(client_key, accept_key);
-
+fn handle_websocket_session(
+    conn:   i64,
+    server: const wing::HttpServer&,
+    ws_res: wing::Response&,
+    ws:     wing::WebSocketSession&,
+) {
     var handshake_resp: u8[>..] = [];
-    format(
-        handshake_resp,
-        "HTTP/1.1 101 Switching Protocols\r\n",
-        "Upgrade: websocket\r\n",
-        "Connection: Upgrade\r\n",
-        "Sec-WebSocket-Accept: ",
-        accept_key[..],
-        "\r\n\r\n",
-    );
+    wing::serialize_http1_response(ws_res, server.server_name[..], handshake_resp);
     wing::tcp_send(conn, handshake_resp[..]);
 
-    var ws = wing::new_websocket_session(false);
     wing::set_max_payload_length(ws, 16777216); // 16 MB for Autobahn Case 9.x large payload tests
 
     var ws_buf:    u8[>..] = [];
@@ -132,6 +106,51 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     }
 }
 
+fn serve_autobahn_connection(
+    conn:     i64,
+    server:   wing::HttpServer&,
+    in_buf:   u8[>..]&,
+    out_wire: u8[>..]&,
+) -> bool {
+    in_buf.clear();
+    var chunk: u8[..4096] = [];
+    loop {
+        chunk.clear();
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
+        if recvd <= 0 {
+            break;
+        }
+        in_buf.append(chunk[..recvd]);
+
+        guard core::fast_find_crlfcrlf(in_buf[..]) >= 0 else { continue; }
+
+        var req = wing::new_request("GET", "");
+        let ok_req, _ = wing::parse_http1_wire_request(in_buf[..], req);
+        if ok_req {
+            if wing::is_websocket_upgrade_request(req) {
+                var ws_res = wing::Response { .. };
+                var ws, ok_ws = wing::ws_upgrade_request(req, ws_res, "");
+                if ok_ws {
+                    handle_websocket_session(conn, server, ws_res, ws);
+                    return true;
+                }
+            }
+            if req.url[..] == "/shutdown" {
+                out_wire.clear();
+                let _ = wing::handle_connection_wire(server, "127.0.0.1", in_buf[..], 0, out_wire);
+                wing::tcp_send(conn, out_wire[..]);
+                return false;
+            }
+        }
+
+        out_wire.clear();
+        wing::serialize_bad_request_error(server.server_name[..], out_wire);
+        wing::tcp_send(conn, out_wire[..]);
+        break;
+    }
+    return true;
+}
+
 fn main() {
     let port_env = wing::get_env_port(0);
     let listener = wing::tcp_listen("0.0.0.0", port_env, 128);
@@ -140,51 +159,24 @@ fn main() {
         return;
     }
     let port = wing::tcp_getsockname_port(listener);
+
+    var server = wing::new_http_server("0.0.0.0", port);
+    let _ = server.server_name.try_set("goose-autobahn/1.0");
+    let ws_behavior = wing::WsBehavior { .. };
+    let _ = wing::add_ws_route(server, "/", ws_behavior);
+    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+
     print("READY_PORT:", port, "\n");
 
+    var in_buf:   u8[>..] = [];
+    var out_wire: u8[>..] = [];
     var is_running = true;
     while is_running {
         let conn = wing::tcp_accept(listener, 200);
         if conn <= 0 {
             continue;
         }
-
-        var in_buf: u8[>..] = [];
-        while true {
-            var chunk: u8[..4096] = [];
-            let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
-            if recvd <= 0 {
-                break;
-            }
-            in_buf.append(chunk[..recvd]);
-
-            let hdr_end = find(in_buf[..], "\r\n\r\n");
-            if hdr_end >= 0 {
-                let body_start = hdr_end + 4;
-                let upgrade_val, has_upgrade = extract_header_val(in_buf[..body_start], "upgrade");
-                if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
-                    let sec_key, has_key = extract_header_val(in_buf[..body_start], "sec-websocket-key");
-                    if has_key {
-                        handle_websocket_session(conn, sec_key);
-                        break;
-                    }
-                }
-
-                // Check for /shutdown
-                if find(in_buf[..body_start], "GET /shutdown") >= 0 {
-                    let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
-                    wing::tcp_send(conn, resp);
-                    is_running = false;
-                    break;
-                }
-
-                // Non-websocket request: 400 Bad Request
-                let err_resp: const u8[:] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBAD_REQUEST";
-                wing::tcp_send(conn, err_resp);
-                break;
-            }
-        }
-
+        is_running = serve_autobahn_connection(conn, server, in_buf, out_wire);
         wing::tcp_close(conn);
     }
 

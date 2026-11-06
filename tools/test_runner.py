@@ -145,12 +145,15 @@ def main() -> int:
                 print(red(err))
             return 1
 
-    # Check examples
-    example_files = sorted(examples_dir.glob("*.goose"))
+    # Check examples and tools E2E servers
+    example_files = sorted(examples_dir.glob("*.goose")) + sorted(
+        (root_dir / "tools").glob("*/*.goose")
+    )
     for ex in example_files:
+        rel_ex = ex.relative_to(root_dir).as_posix()
         code, out, err = run_command([goose, "check", str(ex)], cwd=root_dir)
         if code != 0:
-            print(red(f"FATAL: goose check examples/{ex.name} failed!"))
+            print(red(f"FATAL: goose check {rel_ex} failed!"))
             if out:
                 print(yellow(out))
             if err:

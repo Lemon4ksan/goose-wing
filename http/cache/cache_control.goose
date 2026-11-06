@@ -196,7 +196,7 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow
     guard s.len > 0 else { return; }
 
     var tok = make_byte_tokenizer(s, ',');
-    while true {
+    loop {
         let name_tok, ok = tok.token_next();
         guard ok else { break; }
         let trimmed_name = name_tok.trim_lws();
@@ -369,7 +369,7 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
 // Checks if a Pragma header contains the no-cache directive.
 fn contains_pragma_no_cache(pragma_val: const u8[:]) -> bool {
     var tok = make_byte_tokenizer(pragma_val, ',');
-    while true {
+    loop {
         let item, ok = tok.token_next();
         guard ok else { break; }
         if item.trim_lws().eq_ascii_fold("no-cache") {

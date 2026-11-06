@@ -109,6 +109,7 @@ struct TlsCipherSlot {
     resumed:            bool               = false,
     negotiated_alpn:    u8[..32]           = [],
     server_name:        u8[..256]          = [],
+    san_hosts:          u8[..128][..8]     = [],
     rx_plain_buf:       u8[..16384]        = [],
     rx_plain_pos:       i64                = 0,
     key_update_tracker: KeyUpdateTracker   = KeyUpdateTracker { .. },
@@ -239,6 +240,7 @@ fn alloc_tls_cipher_slot() -> u16 {
             g_tls_cipher_slots[i].resumed = false;
             g_tls_cipher_slots[i].negotiated_alpn.clear();
             g_tls_cipher_slots[i].server_name.clear();
+            g_tls_cipher_slots[i].san_hosts.clear();
             g_tls_cipher_slots[i].rx_plain_buf.clear();
             g_tls_cipher_slots[i].rx_plain_pos = 0;
             g_tls_cipher_slots[i].key_update_tracker = KeyUpdateTracker { .. };
@@ -261,9 +263,39 @@ fn free_tls_cipher_slot(slot_idx: u16) {
     core::secure_zeroize_48(g_tls_cipher_slots[idx].tx_traffic_secret);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].exporter_secret);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].resumption_secret);
+    g_tls_cipher_slots[idx].san_hosts.clear();
     g_tls_cipher_slots[idx].rx_plain_buf.clear();
     g_tls_cipher_slots[idx].rx_plain_pos = 0;
     g_tls_cipher_slots[idx].in_use = false;
+}
+
+// Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
+fn tls_populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> bool {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
+    var leaf_cert = ParsedCert { .. };
+    guard parse_x509_certificate(cert_der, leaf_cert) else { return false; }
+    var sans: SanEntry[..16] = [];
+    guard get_cert_san_extension(leaf_cert, cert_der, sans) else { return false; }
+    g_tls_cipher_slots[idx].san_hosts.clear();
+    for &san in sans {
+        guard san.san_type == SanType.Dns else { continue; }
+        var h_buf: u8[..128] = [];
+        if h_buf.try_set(san.val) {
+            let _ = g_tls_cipher_slots[idx].san_hosts.try_push(h_buf);
+        }
+    }
+    return true;
+}
+
+// Copies verified DNS SubjectAltName entries from `slot_idx` into `out_sans` for HTTP/2 connection coalescing.
+fn tls_copy_slot_san_hosts(slot_idx: u16, out_sans: u8[..128][..8]&) {
+    out_sans.clear();
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return; }
+    for &san in g_tls_cipher_slots[idx].san_hosts {
+        let _ = out_sans.try_push(copy(san));
+    }
 }
 
 // Reads exactly dst.len bytes from socket, returning false on error or clean EOF before full read.
@@ -597,7 +629,7 @@ fn tls_transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 
     let drained = tls_drain_rx_buf(idx, dst);
     if drained > 0 { return drained; }
 
-    while true {
+    loop {
         let res = tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
         if res != 0 { return res; }
         if g_tls_cipher_slots[idx].peer_closed { return 0; }
@@ -664,7 +696,7 @@ fn next_handshake_message(
     out_msg_body: u8[..16384]&,
     timeout_ms:   u32,
 ) -> bool {
-    while true {
+    loop {
         if try_read_handshake_msg(r, msg_type, out_msg_body) {
             return true;
         }
@@ -1299,12 +1331,16 @@ fn verify_server_cert_and_signature(
     cv_body:            const u8[:],
     transcript_to_cert: const u8[:],
     config:             const TlsClientHandshakeConfig&,
+    slot_idx:           u16 = 0xFFFF,
 ) -> bool {
     var chain_slices: const u8[:][..8] = [];
     let leaf_ocsp, ok_chain = parse_tls13_certificate_chain_and_ocsp(cert_body, chain_slices);
     guard ok_chain else { return false; }
     var leaf_cert = ParsedCert { .. };
     guard parse_x509_certificate(chain_slices[0], leaf_cert) else { return false; }
+    if slot_idx != 0xFFFF {
+        let _ = tls_populate_slot_san_hosts_from_der(slot_idx, chain_slices[0]);
+    }
 
     var chain_parsed: ParsedCert[..8] = [];
     guard chain_parsed.try_push(leaf_cert) else { return false; }
@@ -1368,6 +1404,7 @@ fn tls_client_process_server_flight(
     psk_resumed:           bool,
     out_alpn:              u8[..32]&,
     out_cert_req_received: bool&,
+    slot_idx:              u16 = 0xFFFF,
 ) -> bool {
     out_cert_req_received = false;
     var msg_ee:  u8          = 0;
@@ -1421,7 +1458,7 @@ fn tls_client_process_server_flight(
 
         var h_to_cert: u8[..48] = [];
         transcript_current_hash(transcript, ks.hash_id, h_to_cert);
-        let ok_v = verify_server_cert_and_signature(cert_body_slice, cv_body[..], h_to_cert[..], config);
+        let ok_v = verify_server_cert_and_signature(cert_body_slice, cv_body[..], h_to_cert[..], config, slot_idx);
         guard ok_v else { return false; }
         transcript_update_msg(transcript, msg_cv, cv_body[..]);
     }
@@ -1823,7 +1860,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     let ok_flight = tls_client_process_server_flight(
         hs_reader, fd, cipher_suite, server_hs_key[..klen],
         server_hs_iv, ks, transcript, config, psk_resumed, neg_alpn,
-        cert_req_received,
+        cert_req_received, slot_idx,
     );
     guard ok_flight else {
         free_tls_cipher_slot(slot_idx);
@@ -1961,21 +1998,43 @@ fn verify_client_hello_psk_entry(
     return true;
 }
 
-// Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, and PSK.
+// Extracts the 32-byte X25519 key share from a parsed KeyShareEntry list.
+//
+// Example:
+//   shares = [0x00, 0x1D, 0x00, 0x20, ...32 bytes...]
+//   returns: true, out_client_pub = [32 bytes]
+fn extract_x25519_client_share(shares: const u8[:], out_client_pub: u8[32]&) -> bool {
+    var sc = core::cursor_from(shares);
+    while sc.buf.len > 0 {
+        let group, ok_g = core::read_u16(sc);
+        guard ok_g else { return false; }
+        let kex_bytes, ok_k = core::read_u16_prefixed(sc);
+        guard ok_k else { return false; }
+        if group == rfc::GROUP_X25519 && kex_bytes.len == 32 {
+            for i in 32 { out_client_pub[i] = kex_bytes[i]; }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, SNI, and PSK.
 //
 // Example:
 //   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, 0x00, 0x13, 0x01]
-//   returns: true, out_session_id = [], out_client_pub = [32 bytes]
-fn parse_client_hello_for_server(
+//   returns: true, out_session_id = [], out_client_pub = [32 bytes], out_sni = "api.example.com"
+fn parse_client_hello_for_server_sni(
     payload:         const u8[:],
     server_alpn_csv: const u8[:],
     out_session_id:  u8[..32]&,
     out_client_pub:  u8[32]&,
     out_alpn:        u8[..32]&,
+    out_sni:         u8[..255]&,
     out_psk_resumed: bool&,
     out_psk_secret:  u8[32]&,
 ) -> bool {
     out_alpn.clear();
+    out_sni.clear();
     out_psk_resumed = false;
     var c = core::cursor_from(payload);
     let hs_type, ok_t = core::read_u8(c);
@@ -1999,25 +2058,16 @@ fn parse_client_hello_for_server(
     var entries: TlsExtensionEntry[..32] = [];
     guard parse_extensions_block(bc.buf, entries) else { return false; }
 
+    let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    if has_sni {
+        guard parse_sni_extension(sni_ext, out_sni) else { return false; }
+    }
+
     let ks_data, has_ks = find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
     guard has_ks else { return false; }
     var shares: u8[..4096] = [];
-    guard parse_key_share_client_extension(ks_data, shares) else { return false; }
-
-    var sc = core::cursor_from(shares[..]);
-    var found_share = false;
-    while sc.buf.len > 0 {
-        let group, ok_g = core::read_u16(sc);
-        guard ok_g else { return false; }
-        let kex_bytes, ok_k = core::read_u16_prefixed(sc);
-        guard ok_k else { return false; }
-        if group == rfc::GROUP_X25519 && kex_bytes.len == 32 {
-            for i in 32 { out_client_pub[i] = kex_bytes[i]; }
-            found_share = true;
-            break;
-        }
-    }
-    guard found_share else { return false; }
+    guard parse_key_share_client_extension(ks_data, shares) &&
+        extract_x25519_client_share(shares[..], out_client_pub) else { return false; }
 
     let alpn_ext, has_alpn = find_extension(entries, rfc::TLS_EXT_ALPN);
     if has_alpn {
@@ -2030,6 +2080,27 @@ fn parse_client_hello_for_server(
         out_psk_resumed = true;
     }
     return out_session_id.try_set(sid);
+}
+
+// Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, and PSK.
+//
+// Example:
+//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, 0x00, 0x13, 0x01]
+//   returns: true, out_session_id = [], out_client_pub = [32 bytes]
+fn parse_client_hello_for_server(
+    payload:         const u8[:],
+    server_alpn_csv: const u8[:],
+    out_session_id:  u8[..32]&,
+    out_client_pub:  u8[32]&,
+    out_alpn:        u8[..32]&,
+    out_psk_resumed: bool&,
+    out_psk_secret:  u8[32]&,
+) -> bool {
+    var unused_sni: u8[..255] = [];
+    return parse_client_hello_for_server_sni(
+        payload, server_alpn_csv, out_session_id, out_client_pub,
+        out_alpn, unused_sni, out_psk_resumed, out_psk_secret,
+    );
 }
 
 // Builds a minimal TLS 1.3 ServerHello wire payload echoing session ID and offering X25519 share.
@@ -2227,18 +2298,20 @@ fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16
     var transcript = TlsTranscript { .. };
     transcript_update(transcript, ch_msg[..]);
 
-    var session_id:  u8[..32] = [];
-    var client_pub:  u8[32]   = [0; 32];
-    var neg_alpn:    u8[..32] = [];
-    var psk_resumed: bool     = false;
-    var psk_secret:  u8[32]   = [0; 32];
-    guard parse_client_hello_for_server(
+    var session_id:  u8[..32]  = [];
+    var client_pub:  u8[32]    = [0; 32];
+    var neg_alpn:    u8[..32]  = [];
+    var client_sni:  u8[..255] = [];
+    var psk_resumed: bool      = false;
+    var psk_secret:  u8[32]    = [0; 32];
+    guard parse_client_hello_for_server_sni(
         ch_msg[..], config.alpn[..], session_id, client_pub,
-        neg_alpn, psk_resumed, psk_secret,
+        neg_alpn, client_sni, psk_resumed, psk_secret,
     ) else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    let _ = g_tls_cipher_slots[idx].server_name.try_set(client_sni[..]);
 
     let server_random = tls_random_bytes_32();
     let server_priv = tls_random_bytes_32();

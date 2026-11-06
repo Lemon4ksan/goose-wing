@@ -683,7 +683,7 @@ fn exchange_prepared_wire_on_conn(
     guard send_all(conn.transport, wire_req) else { return false, false; }
 
     var dummy_req = new_request(method, "/");
-    while true {
+    loop {
         let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, out_resp, timeout_ms);
         let rx = conn.rx_buf[..];
         guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else { return false, false; }

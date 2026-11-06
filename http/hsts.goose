@@ -74,7 +74,7 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     guard raw.len > 0 else { return d, false; }
 
     var tok = make_byte_tokenizer(raw, ';');
-    while true {
+    loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
         let trimmed = part.trim_lws();
@@ -360,7 +360,7 @@ fn load_hsts_cache(cache: HstsCache&, data: const u8[:], now_sec: i64) -> i64 {
     guard data.len > 0 else { return 0; }
     var loaded: i64 = 0;
     var tok = make_byte_tokenizer(data, '\n');
-    while true {
+    loop {
         let line, ok = tok.token_next();
         guard ok else { break; }
         let entry, entry_ok = parse_hsts_cache_line(line, now_sec);

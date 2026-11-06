@@ -870,12 +870,14 @@ fn register_connection(
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
     let cid = register_connection(pool, key, proto, resolved_ip, max_streams, now_ns, respect_limits);
-    if cid > 0 {
-        let idx = pool.find_connection_index(cid);
-        if idx >= 0 {
-            pool.conns[idx].transport = t;
-            return cid;
-        }
+    let idx = if cid > 0 { pool.find_connection_index(cid) } else { -1 };
+    if idx >= 0 {
+        pool.conns[idx].transport = t;
+        match t {
+            Tls tl => tls_copy_slot_san_hosts(tl.cipher_slot, pool.conns[idx].san_hosts),
+            _ => {},
+        };
+        return cid;
     }
     var t_cleanup = t;
     t_cleanup.close();

@@ -7,34 +7,31 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-fn extract_header_val(headers_block: const u8[:], target_header: const u8[:]) -> const u8[:], bool {
-    var cursor: i64 = 0;
-    while cursor < headers_block.len {
-        let rel_end = find(headers_block[cursor..], "\r\n");
-        if rel_end < 0 { break; }
-        let line = headers_block[cursor..(cursor + rel_end)];
-        let colon = core::index_of_byte(line, ':');
-        if colon > 0 {
-            let hname = line[..colon];
-            if core::eq_ascii_fold(hname, target_header) {
-                let hval = core::trim_lws(line[(colon + 1)..]);
-                return hval, true;
-            }
-        }
-        cursor += rel_end + 2;
-    }
-    return "", false;
+struct ChaosEchoStage {
+    active: bool = true,
 }
 
-fn extract_content_length(headers_block: const u8[:]) -> i64, bool {
-    let val, found = extract_header_val(headers_block, "content-length");
-    if found {
-        let cl, ok = core::parse_i64_dec(val);
-        if ok && cl >= 0 {
-            return cl, true;
+fn wing::on_server_stage(
+    _stage: ChaosEchoStage&,
+    phase:  wire::ServerHookPhase,
+    _cfg:   wing::ServerPipelineConfig&,
+    req:    const wing::Request&,
+    _ctx:   wing::ServerStageCtx&,
+    res:    wing::Response&,
+) -> wire::StageVerdict {
+    if phase == wire::ServerHookPhase.PostAuth && req.url[..] != "/shutdown" {
+        res.status_code = 200;
+        wing::set_header(res, "Content-Type", "text/plain");
+        res.body.clear();
+        if req.url[..] == "/echo" {
+            res.body.append("ECHO:");
+            res.body.append(req.body[..]);
+        } else {
+            res.body.append("OK");
         }
+        return wire::StageVerdict.ShortCircuit { status_code: 200 };
     }
-    return 0, false;
+    return wire::StageVerdict.Continue;
 }
 
 fn drain_and_close(conn: i64) {
@@ -50,23 +47,15 @@ fn drain_and_close(conn: i64) {
     wing::tcp_close(conn);
 }
 
-fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
-    var accept_key: u8[>..] = [];
-    wing::compute_websocket_accept(client_key, accept_key);
-
+fn handle_websocket_session(conn: i64, server: const wing::HttpServer&, req: const wing::Request&) {
+    var ws_res = wing::Response { .. };
+    var ws, ok_ws = wing::ws_upgrade_request(req, ws_res, "");
+    if !ok_ws {
+        return;
+    }
     var handshake_resp: u8[>..] = [];
-    format(
-        handshake_resp,
-        "HTTP/1.1 101 Switching Protocols\r\n",
-        "Upgrade: websocket\r\n",
-        "Connection: Upgrade\r\n",
-        "Sec-WebSocket-Accept: ",
-        accept_key[..],
-        "\r\n\r\n",
-    );
+    wing::serialize_http1_response(ws_res, server.server_name[..], handshake_resp);
     wing::tcp_send(conn, handshake_resp[..]);
-
-    var ws = wing::new_websocket_session(false);
     var ws_buf:    u8[>..] = [];
     var frag_buf:  u8[>..] = [];
     var reply:     u8[>..] = [];
@@ -119,7 +108,6 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
             }
         }
 
-        // Advance buffer past consumed frames
         if cursor > 0 {
             if cursor >= ws_buf.len {
                 ws_buf.clear();
@@ -133,44 +121,103 @@ fn handle_websocket_session(conn: i64, client_key: const u8[:]) {
     }
 }
 
-fn handle_h2_session(conn: i64, initial_buf: const u8[:]) {
-    var sess = internal::new_h2_server_session("goose-chaos/1.0", 1000);
-    var pipeline = wing::new_default_server_pipeline_config("127.0.0.1");
-    var timer = internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "GET", "/ping", 101);
-    wing::add_route(pipeline.router, "POST", "/echo", 202);
+fn is_http1_request_ready(in_buf: const u8[:], hdr_end: i64) -> bool {
+    let body_start = hdr_end + 4;
+    var tracker = wing::HeaderPresenceTracker { .. };
+    var parsed_start: i64 = 0;
+    var probe_req = wing::Request { .. };
+    guard wing::parse_http1_request_headers(in_buf, probe_req, tracker, parsed_start) else {
+        return true;
+    }
+    let has_te = (tracker.mask & wing::HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (tracker.mask & wing::HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    if has_te && has_cl {
+        return true;
+    }
+    if has_cl {
+        return in_buf.len >= body_start + tracker.parsed_cl;
+    }
+    if has_te {
+        return find(in_buf[body_start..], "0\r\n\r\n") >= 0;
+    }
+    return true;
+}
 
-    var h2_in: u8[..65536] = [];
-    h2_in.append(initial_buf);
+fn handle_chaos_http1_request(
+    conn:       i64,
+    server:     wing::HttpServer&,
+    in_buf:     const u8[:],
+    echo_stage: ChaosEchoStage&,
+    is_running: bool&,
+) {
+    var req = wing::new_request("GET", "");
+    var out_wire: u8[>..] = [];
+    let ok_req, _ = wing::parse_http1_wire_request(in_buf, req);
+    guard ok_req else {
+        wing::serialize_bad_request_error(server.server_name[..], out_wire);
+        wing::tcp_send(conn, out_wire[..]);
+        return;
+    }
 
-    var now_ms: u64 = 1000;
-    while true {
-        var out_wire: u8[..65536] = [];
-        let consumed, ok = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h2_in[..], now_ms, out_wire);
+    if wing::is_websocket_upgrade_request(req) {
+        handle_websocket_session(conn, server, req);
+        return;
+    }
 
-        if out_wire.len > 0 {
-            wing::tcp_send(conn, out_wire[..]);
+    var res = wing::Response { .. };
+    let now_ns = core::as_nanos(core::monotonic_now());
+    let _ = wing::dispatch_server_request_with_stage(server, "127.0.0.1", req, now_ns, res, echo_stage);
+    wing::set_header(res, "Connection", "close");
+    wing::serialize_http1_response(res, server.server_name[..], out_wire);
+    wing::tcp_send(conn, out_wire[..]);
+
+    if req.url[..] == "/shutdown" {
+        is_running = false;
+    }
+}
+
+fn serve_chaos_connection(
+    conn:       i64,
+    server:     wing::HttpServer&,
+    in_buf:     u8[>..]&,
+    echo_stage: ChaosEchoStage&,
+    is_running: bool&,
+) {
+    in_buf.clear();
+    var idle_count = 0;
+    var chunk: u8[..4096] = [];
+    while in_buf.len < 65000 {
+        chunk.clear();
+        let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
+        if recvd == -2 {
+            idle_count++;
+            if idle_count >= 6 {
+                break;
+            }
+            continue;
         }
-
-        if !ok {
-            // Anti-DoS triggered (EnhanceYourCalm / ProtocolError / Goaway)
-            break;
-        }
-
-        if consumed > 0 {
-            var rem: u8[..65536] = [];
-            rem.append(h2_in[consumed..]);
-            h2_in.clear();
-            h2_in.append(rem[..]);
-        }
-
-        var chunk: u8[..4096] = [];
-        let recvd = wing::tcp_recv(conn, chunk, 4096, 2000);
         if recvd <= 0 {
             break;
         }
-        h2_in.append(chunk[..]);
-        now_ms += 10;
+        idle_count = 0;
+        in_buf.append(chunk[..recvd]);
+
+        if wing::is_partial_h2_client_preface(in_buf[..]) {
+            continue;
+        }
+        if wing::is_h2_client_preface(in_buf[..]) {
+            let _ = wing::serve_h2_connection(server, conn, in_buf[..], 2000);
+            break;
+        }
+        if in_buf.len >= 4 && in_buf[..4] == "PRI " {
+            break;
+        }
+
+        let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
+        if hdr_end >= 0 && is_http1_request_ready(in_buf[..], hdr_end) {
+            handle_chaos_http1_request(conn, server, in_buf[..], echo_stage, is_running);
+            break;
+        }
     }
 }
 
@@ -182,6 +229,15 @@ fn main() {
         return;
     }
     let port = wing::tcp_getsockname_port(listener);
+
+    var server = wing::new_http_server("0.0.0.0", port);
+    let _ = server.server_name.try_set("goose-chaos/1.0");
+    wing::add_static_get_route(server, "/ping", "text/plain", "OK", 101);
+    wing::add_post_route(server, "/echo", 202);
+    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+
+    var echo_stage = ChaosEchoStage { .. };
+    var in_buf: u8[>..] = [];
     print("READY_PORT:", port, "\n");
 
     var is_running = true;
@@ -190,108 +246,7 @@ fn main() {
         if conn <= 0 {
             continue;
         }
-
-        var in_buf: u8[>..] = [];
-
-        var idle_count = 0;
-        while in_buf.len < 65000 {
-            var chunk: u8[..4096] = [];
-            let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
-            if recvd == -2 {
-                idle_count++;
-                if idle_count >= 6 { // 3 seconds Slowloris timeout
-                    break;
-                }
-                continue;
-            }
-            if recvd <= 0 {
-                break;
-            }
-            idle_count = 0;
-            in_buf.append(chunk[..recvd]);
-
-            // 1. Check for HTTP/2 Connection Preface (wait if a sliced prefix arrived)
-            if wing::is_partial_h2_client_preface(in_buf[..]) {
-                continue;
-            }
-            if wing::is_h2_client_preface(in_buf[..]) {
-                handle_h2_session(conn, in_buf[..]);
-                break;
-            }
-
-            // Reject invalid HTTP/2 preface immediately
-            if in_buf.len >= 4 && in_buf[..4] == "PRI " {
-                break;
-            }
-
-            // 2. Check for HTTP/1.1 or WebSocket
-            let hdr_end = find(in_buf[..], "\r\n\r\n");
-            if hdr_end >= 0 {
-                let body_start = hdr_end + 4;
-
-                // Check for WebSocket Upgrade
-                let upgrade_val, has_upgrade = extract_header_val(in_buf[..body_start], "upgrade");
-                if has_upgrade && core::eq_ascii_fold(upgrade_val, "websocket") {
-                    let sec_key, has_key = extract_header_val(in_buf[..body_start], "sec-websocket-key");
-                    if has_key {
-                        handle_websocket_session(conn, sec_key);
-                        break;
-                    }
-                }
-
-                let has_te_hdr = find(in_buf[..body_start], "transfer-encoding") >= 0 || find(in_buf[..body_start], "Transfer-Encoding") >= 0;
-                let cl, has_cl = extract_content_length(in_buf[..body_start]);
-                if has_te_hdr && has_cl {
-                    // RFC 9112 Section 6.1: Reject TE.CL / CL.TE conflict immediately with 400 Bad Request
-                    let err_resp: const u8[:] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBAD_REQUEST";
-                    wing::tcp_send(conn, err_resp);
-                    break;
-                }
-                if has_cl && in_buf.len < body_start + cl {
-                    continue;
-                }
-
-                let is_chunked = find(in_buf[..body_start], "chunked") >= 0;
-                if is_chunked && find(in_buf[body_start..], "0\r\n\r\n") < 0 {
-                    continue;
-                }
-
-                var req = wing::Request {};
-                let ok_req, consumed = wing::parse_http1_wire_request(in_buf[..], req);
-                if ok_req {
-                    if req.url[..] == "/shutdown" {
-                        let resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nBYE\n";
-                        wing::tcp_send(conn, resp);
-                        is_running = false;
-                        break;
-                    }
-
-                    var resp_body: u8[..16384] = [];
-                    if req.url[..] == "/echo" {
-                        resp_body.append("ECHO:");
-                        resp_body.append(req.body[..]);
-                    } else {
-                        resp_body.append("OK");
-                    }
-
-                    var resp_wire: u8[..32768] = [];
-                    format(
-                        resp_wire,
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ",
-                        resp_body.len,
-                        "\r\nConnection: close\r\n\r\n",
-                        resp_body[..],
-                    );
-                    wing::tcp_send(conn, resp_wire[..]);
-                    break;
-                } else {
-                    let err_resp: const u8[:] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBAD_REQUEST";
-                    wing::tcp_send(conn, err_resp);
-                    break;
-                }
-            }
-        }
-
+        serve_chaos_connection(conn, server, in_buf, echo_stage, is_running);
         wing::tcp_close(conn);
     }
 

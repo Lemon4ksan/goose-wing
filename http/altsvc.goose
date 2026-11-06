@@ -75,7 +75,7 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
 //   populates ep parameters
 fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
     var p_tok = make_byte_tokenizer(params_part, ';');
-    while true {
+    loop {
         let param_token, tok_ok = p_tok.token_next();
         guard tok_ok else { break; }
         let p_trim = param_token.trim_lws();

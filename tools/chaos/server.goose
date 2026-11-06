@@ -11,9 +11,9 @@ fn main() {
     let port_env = wing::get_env_port(0);
 
     var server = wing::new_http_server();
-    wing::add_route(server.pipeline.router, "GET", "/", 1);
-    wing::add_route(server.pipeline.router, "POST", "/echo", 2);
-    wing::add_route(server.pipeline.router, "GET", "/health", 3);
+    wing::add_static_get_route(server, "/", "text/plain", "OK", 1);
+    wing::add_post_route(server, "/echo", 2);
+    wing::add_static_get_route(server, "/health", "text/plain", "HEALTHY", 3);
 
     let listener = wing::tcp_listen("0.0.0.0", port_env, 4096);
     guard listener > 0 else {

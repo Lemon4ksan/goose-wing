@@ -198,7 +198,7 @@ fn reactor_drain_listener(
     timer_wheel:  TickTimerWheel&,
     total_served: i64&,
 ) {
-    while true {
+    loop {
         let client_fd = tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
 
@@ -224,7 +224,7 @@ fn reactor_drain_worker_ring(
     total_served: i64&,
 ) {
     guard ring.is_open && ring.handle != 0 else { return; }
-    while true {
+    loop {
         var client_val: u64 = 0;
         let popped = core::spsc_pop(ring, client_val);
         if !popped { break; }
@@ -609,7 +609,7 @@ fn reactor_accept_tls_client(
     tls_config:   const TlsServerHandshakeConfig&,
     total_served: i64&,
 ) {
-    while true {
+    loop {
         let client_fd = tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
         let tls_slot, ok_hs = tls_server_handshake(client_fd, tls_config);
@@ -751,6 +751,11 @@ fn handle_h3_server_datagram<B>(
         req.presence_mask |= HDR_PRESENCE_HOST;
     }
     let _ = internal::copy_stream_headers(h3_conn, stream_id, req.headers);
+    for &e in req.headers.entries {
+        let known_id = identify_known_header(entry_name(req.headers, e));
+        req.presence_mask |= header_id_to_bit(known_id);
+    }
+    let _ = internal::copy_stream_trailers(h3_conn, stream_id, req.trailers);
     if h3_conn.streams[s_idx].received_body.len > 0 {
         req.body.append(h3_conn.streams[s_idx].received_body[..]);
     }
@@ -771,8 +776,8 @@ fn handle_h3_server_datagram<B>(
         }
         let _ = extra_map.append_header(lname[..], hdr_val);
     }
-    return internal::send_response_headers_and_body(
-        h3_conn, stream_id, res.status_code, extra_map, res.body[..], tx_wire,
+    return internal::send_response_headers_body_and_trailers(
+        h3_conn, stream_id, res.status_code, extra_map, res.body[..], res.trailers, tx_wire,
     );
 }
 
@@ -831,4 +836,172 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
         served++;
     }
     return served;
+}
+
+// Public HTTP/3 and QUIC server endpoint state (RFC 9000, RFC 9114, RFC 9204).
+// Encapsulates HTTP/3 connection state, QPACK tables, and QUIC handshake framing.
+struct H3ServerEndpoint {
+    conn: internal::H3Connection = internal::H3Connection { .. },
+}
+
+fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint {
+    var ep = H3ServerEndpoint {
+        conn: internal::new_h3_server_connection(settings),
+    };
+    ep.conn.qpack_table.capacity_bytes = 0;
+    return ep;
+}
+
+fn encode_h3_connection_close<B>(err_code: u64, out_wire: B&) {
+    out_wire.clear();
+    internal::quic_encode_varint(out_wire, 0x1D);
+    internal::quic_encode_varint(out_wire, err_code);
+    internal::quic_encode_varint(out_wire, 0);
+}
+
+inline fn is_h3_wire_frame_bounded(datagram: const u8[:], hdr: const internal::H3FrameHeader&) -> bool {
+    return ((hdr.header_len + hdr.payload_len) as i64) <= datagram.len;
+}
+
+fn handle_h3_endpoint_settings<B>(
+    ep:       H3ServerEndpoint&,
+    hdr:      const internal::H3FrameHeader&,
+    payload:  const u8[:],
+    out_wire: B&,
+) -> bool {
+    ep.conn.peer_settings_received = false;
+    let err = internal::handle_peer_control_frame(ep.conn, hdr, payload);
+    guard err == rfc::H3_ERR_NO_ERROR else {
+        encode_h3_connection_close(err, out_wire);
+        return true;
+    }
+    out_wire.clear();
+    out_wire.push(0x04);
+    out_wire.push(0x00);
+    return true;
+}
+
+fn handle_h3_endpoint_request<B>(
+    server:    HttpServer&,
+    ep:        H3ServerEndpoint&,
+    client_ip: const u8[:],
+    datagram:  const u8[:],
+    now_ns:    u64,
+    out_wire:  B&,
+) -> bool {
+    for st_i in ep.conn.streams.len {
+        if ep.conn.streams[st_i].stream_id == 0 {
+            ep.conn.streams[st_i] = internal::H3StreamEntry { stream_id: 0, .. };
+        }
+    }
+    ep.conn.state = internal::H3ConnState.Active;
+    ep.conn.error_code = rfc::H3_ERR_NO_ERROR;
+
+    let ok = handle_h3_server_datagram(server, ep.conn, 0, client_ip, datagram, now_ns, out_wire);
+    if ok && out_wire.len > 0 {
+        return true;
+    }
+    let err_code = if ep.conn.error_code != rfc::H3_ERR_NO_ERROR {
+        ep.conn.error_code
+    } else {
+        rfc::H3_ERR_GENERAL_PROTOCOL
+    };
+    encode_h3_connection_close(err_code, out_wire);
+    return true;
+}
+
+fn handle_h3_endpoint_frame<B>(
+    server:    HttpServer&,
+    ep:        H3ServerEndpoint&,
+    client_ip: const u8[:],
+    datagram:  const u8[:],
+    now_ns:    u64,
+    out_wire:  B&,
+) -> bool {
+    let hdr, ok_hdr = internal::parse_h3_frame_header(datagram, 0);
+    guard ok_hdr && is_h3_wire_frame_bounded(datagram, hdr) else { return false; }
+
+    let start = hdr.header_len as i64;
+    let end = (hdr.header_len + hdr.payload_len) as i64;
+    let payload = datagram[start..end];
+
+    if hdr.frame_type == rfc::H3_FRAME_SETTINGS {
+        return handle_h3_endpoint_settings(ep, hdr, payload, out_wire);
+    }
+    if hdr.frame_type == rfc::H3_FRAME_HEADERS || hdr.frame_type == rfc::H3_FRAME_DATA {
+        return handle_h3_endpoint_request(server, ep, client_ip, datagram, now_ns, out_wire);
+    }
+    return false;
+}
+
+fn encode_quic_version_negotiation<B>(hdr: const internal::QuicHeader&, out_wire: B&) {
+    out_wire.clear();
+    out_wire.push(0xC0);
+    core::append_u32_be(out_wire, rfc::QUIC_VERSION_NEGOTIATION);
+    out_wire.push(hdr.scid.len as u8);
+    out_wire.append(hdr.scid[..]);
+    out_wire.push(hdr.dcid.len as u8);
+    out_wire.append(hdr.dcid[..]);
+    core::append_u32_be(out_wire, rfc::QUIC_VERSION_1);
+}
+
+fn encode_quic_server_initial<B>(
+    ep:       const H3ServerEndpoint&,
+    hdr:      const internal::QuicHeader&,
+    out_wire: B&,
+) {
+    out_wire.clear();
+    out_wire.push(0xC1);
+    core::append_u32_be(out_wire, rfc::QUIC_VERSION_1);
+    out_wire.push(hdr.scid.len as u8);
+    out_wire.append(hdr.scid[..]);
+    let srv_cid: const u8[:] = "\x01\x02\x03\x04\x05\x06\x07\x08";
+    out_wire.push(srv_cid.len as u8);
+    out_wire.append(srv_cid);
+    out_wire.push(0);
+
+    var h3_ctrl: u8[..128] = [];
+    internal::quic_encode_varint(h3_ctrl, rfc::H3_STREAM_CONTROL);
+    internal::encode_h3_settings_frame(h3_ctrl, ep.conn.local_settings);
+    internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
+
+    let payload_len = (2 + h3_ctrl.len) as u64;
+    internal::quic_encode_varint(out_wire, payload_len);
+    core::append_u16_be(out_wire, 1);
+    out_wire.append(h3_ctrl[..]);
+}
+
+// Processes an incoming QUIC / HTTP/3 UDP datagram through `H3ServerEndpoint` and `server.pipeline`.
+// Populates `out_wire` with the serialized QUIC or HTTP/3 response datagram when `true` is returned.
+fn handle_h3_quic_datagram<B>(
+    server:    HttpServer&,
+    ep:        H3ServerEndpoint&,
+    client_ip: const u8[:],
+    datagram:  const u8[:],
+    now_ns:    u64,
+    out_wire:  B&,
+) -> bool {
+    out_wire.clear();
+    guard datagram.len > 0 else { return false; }
+
+    if (datagram[0] & 0xC0) == 0 {
+        if handle_h3_endpoint_frame(server, ep, client_ip, datagram, now_ns, out_wire) {
+            return out_wire.len > 0;
+        }
+    }
+
+    let quic_hdr, ok_qhdr = internal::parse_quic_header(datagram);
+    guard ok_qhdr else { return false; }
+
+    if quic_hdr.version != rfc::QUIC_VERSION_1 && quic_hdr.version != rfc::QUIC_VERSION_NEGOTIATION {
+        encode_quic_version_negotiation(quic_hdr, out_wire);
+        return out_wire.len > 0;
+    }
+
+    if quic_hdr.header_type == internal::QuicHeaderType.Initial {
+        encode_quic_server_initial(ep, quic_hdr, out_wire);
+        return out_wire.len > 0;
+    }
+
+    return false;
 }

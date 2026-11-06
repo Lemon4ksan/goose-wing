@@ -867,10 +867,7 @@ fn process_h2_response_frame<B>(
     if hdr.frame_type == rfc::H2_FRAME_SETTINGS && hdr.stream_id == 0 {
         if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
             let ack_hdr = wire::WireFrameHeader {
-                length:     0,
-                frame_type: rfc::H2_FRAME_SETTINGS,
-                flags:      rfc::H2_FLAG_ACK,
-                stream_id:  0,
+                length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: rfc::H2_FLAG_ACK, stream_id: 0,
             };
             let _ = wire::encode_frame_header(ack_hdr, out_ctrl);
         }
@@ -884,24 +881,24 @@ fn process_h2_response_frame<B>(
         }
         return true, false;
     }
-    if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE {
-        return true, false;
-    }
+    if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
         let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
         guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         var pseudo = internal::H2PseudoHeaders { .. };
-        let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
-        guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
-        if pseudo.status > 0 {
-            resp.status_code = pseudo.status;
+        if !got_hdrs {
+            let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
+            guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+            if pseudo.status > 0 { resp.status_code = pseudo.status; }
+            for &e in resp.headers.entries {
+                update_response_presence(resp, entry_name(resp.headers, e));
+            }
+            if pseudo.status < 100 || pseudo.status >= 200 { got_hdrs = true; }
+        } else {
+            let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
+            guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         }
-        for &e in resp.headers.entries {
-            update_response_presence(resp, entry_name(resp.headers, e));
-        }
-        got_hdrs = true;
-        let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
-        return true, done;
+        return true, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
@@ -912,19 +909,29 @@ fn process_h2_response_frame<B>(
             let _ = wire::encode_window_update_frame(0, inc, out_ctrl);
             let _ = wire::encode_window_update_frame(stream_id, inc, out_ctrl);
         }
-        let done = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
-        return true, done;
+        return true, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
     }
     return true, false;
 }
 
-fn drain_h2_response_frames<B>(
-    rx_accum:  const u8[:],
+fn shift_consumed_rx_bytes<B>(rx_accum: B&, consumed: i64) {
+    guard consumed > 0 else { return; }
+    let rem = rx_accum.len - consumed;
+    for i in rem {
+        rx_accum[i] = rx_accum[consumed + i];
+    }
+    while rx_accum.len > rem {
+        rx_accum.pop();
+    }
+}
+
+fn drain_h2_response_frames<B1, B2>(
+    rx_accum:  B1&,
     stream_id: u32,
     dec_dt:    internal::DynamicTable&,
     resp:      Response&,
     got_hdrs:  bool&,
-    out_ctrl:  B&,
+    out_ctrl:  B2&,
 ) -> bool, bool {
     var consumed: i64 = 0;
     while rx_accum.len - consumed >= 9 {
@@ -935,9 +942,16 @@ fn drain_h2_response_frames<B>(
         let payload = rx_accum[consumed + 9..consumed + frame_total];
         consumed += frame_total;
         let ok_f, done = process_h2_response_frame(hdr, payload, stream_id, dec_dt, resp, got_hdrs, out_ctrl);
-        guard ok_f else { return false, false; }
-        if done { return true, true; }
+        guard ok_f else {
+            shift_consumed_rx_bytes(rx_accum, consumed);
+            return false, false;
+        }
+        if done {
+            shift_consumed_rx_bytes(rx_accum, consumed);
+            return true, true;
+        }
     }
+    shift_consumed_rx_bytes(rx_accum, consumed);
     return true, false;
 }
 
@@ -956,26 +970,18 @@ fn recv_h2_response_loop(
         if n > 0 {
             let _ = rx_accum.try_append(chunk[..n]);
         }
-        var hdrs_now = false;
-        var body_tmp = Response { .. };
         var ctrl_out: u8[..256] = [];
         let ok_f, done = drain_h2_response_frames(
-            rx_accum[..],
+            rx_accum,
             stream_id,
             dec_dt,
-            body_tmp,
-            hdrs_now,
+            resp,
+            got_hdrs,
             ctrl_out,
         );
         guard ok_f else { return false; }
         if ctrl_out.len > 0 {
             let _ = tp.send(ctrl_out[..]);
-        }
-        if hdrs_now {
-            resp.status_code = body_tmp.status_code;
-            resp.headers = copy(body_tmp.headers);
-            resp.body = copy(body_tmp.body);
-            got_hdrs = true;
         }
         if done || n <= 0 { break; }
     }
@@ -1039,6 +1045,34 @@ fn dispatch_pooled_h2_hop(
     return true;
 }
 
+fn encode_h3_client_request<B>(
+    h3_conn:     internal::H3Connection&,
+    sid:         u64,
+    ctx:         const RequestExecutionContext&,
+    current_url: const core::Url&,
+    out_wire:    B&,
+) -> bool {
+    out_wire.clear();
+    var path_buf: u8[..2048] = [];
+    let p_str = core::pathname(current_url);
+    if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
+    let q_str = core::search(current_url);
+    if q_str.len > 0 { path_buf.append(q_str); }
+
+    let has_body = ctx.body.len > 0;
+    guard internal::send_request_headers(
+        h3_conn, sid, ctx.current_method[..], "https", core::host(current_url),
+        path_buf[..], ctx.headers, !has_body, out_wire,
+    ) else { return false; }
+
+    if has_body {
+        guard internal::send_request_data(h3_conn, sid, ctx.body[..], true, out_wire) else {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn execute_live_h3_hop(
     session:     Session&,
     ctx:         RequestExecutionContext&,
@@ -1061,15 +1095,11 @@ fn execute_live_h3_hop(
         return false;
     }
     var req_wire: u8[..4096] = [];
-    let curr_path = core::pathname(current_url);
-    let eff_path: const u8[:] = if curr_path.len > 0 { curr_path } else { "/" };
-    let ok_h = internal::send_request_headers(
-        h3_conn, sid, ctx.current_method[..], "https", core::host(current_url),
-        eff_path, ctx.headers, ctx.body.len == 0, req_wire,
-    );
-    if ok_h && ctx.body.len > 0 {
-        let _ = internal::send_request_data(h3_conn, sid, ctx.body[..], true, req_wire);
+    guard encode_h3_client_request(h3_conn, sid, ctx, current_url, req_wire) else {
+        tcp_close(udp_fd);
+        return false;
     }
+    let curr_path = core::pathname(current_url);
     let sent = native_udp_sendto(udp_fd, req_wire[..], target_host, target_port);
     if sent <= 0 {
         tcp_close(udp_fd);
@@ -1447,7 +1477,7 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     let has_retry = find_retry_policy(session.pipeline, max_retries, retry_5xx);
 
     var attempts: i32 = 0;
-    while true {
+    loop {
         // Phase -1: Application Interceptors (Request Hook) per attempt
         var active_req = copy(req);
         apply_app_interceptors_request(session.pipeline, active_req, session.virtual_clock_us);

@@ -377,8 +377,8 @@ def test_payload_too_large_413(host: str, port: int):
     try:
         s.sendall(oversized_req)
         resp = recv_all(s, timeout=2.0)
-        assert b"413 Payload Too Large" in resp, (
-            f"Expected 413 Payload Too Large, got: {resp[:128]!r}"
+        assert (b"413 Content Too Large" in resp) or (b"413 Payload Too Large" in resp), (
+            f"Expected 413 Content/Payload Too Large, got: {resp[:128]!r}"
         )
     finally:
         s.close()
