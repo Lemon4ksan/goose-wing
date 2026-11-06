@@ -268,16 +268,11 @@ fn tcp_recv_shared(fd: i64, buf: u8[..65536]&, max_len: i32 = 65536, timeout_ms:
 fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 else { return -1; }
     var buf: u8[16384] = [0; 16384];
-    let eff_max = if max_len > 16384 {
-        16384
-    } else if max_len < 1 {
-        1
-    } else {
-        max_len
-    };
+    let eff_max = min(16384, max(1, max_len));
     let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
-        out.append(buf[..recvd]);
+        let copy_len = min(recvd as i64, max(0, out.cap - out.len));
+        out.append(buf[..copy_len]);
     }
     return recvd;
 }
@@ -855,7 +850,8 @@ fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
     var buf: u8[16384] = [0; 16384];
     let recvd = native_tcp_recv_nonblocking(fd, buf[..16384]);
     if recvd > 0 {
-        out.append(buf[..recvd]);
+        let copy_len = min(recvd as i64, max(0, out.cap - out.len));
+        out.append(buf[..copy_len]);
     }
     return recvd;
 }

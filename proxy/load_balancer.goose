@@ -56,7 +56,7 @@ fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 =
 
 fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
     guard cluster.targets.len < cluster.targets.cap else { return false; }
-    guard host.len <= 64 else { return false; }
+    guard host.len > 0 && host.len <= 64 else { return false; }
 
     var target = UpstreamTarget {
         port:       port,
@@ -312,6 +312,7 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
             cluster.circuit_open = false;
         } else {
             cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
+            cluster.circuit_open = false;
         }
     } else {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Up;

@@ -673,6 +673,102 @@ fn test_p0f_pattern_matching(t: lit::T&) {
     };
 }
 
+fn test_fingerprint_bug_regressions(t: lit::T&) {
+    t.run("1. Akamai priority exclusive bounds rejection") { sub =>
+        let _, bad_excl = wing::parse_akamai_fingerprint("1:65536|1000|3:2:0:201|m,a,s,p");
+        sub.assert_false(bad_excl, "Must reject invalid priority exclusive flag value >= 2");
+    };
+
+    t.run("2. Akamai pseudo-headers character validation") { sub =>
+        let _, bad_pseudo = wing::parse_akamai_fingerprint("1:65536|1000|0|m,x,y,z");
+        sub.assert_false(bad_pseudo, "Must reject invalid pseudo-header characters");
+    };
+
+    t.run("3. Akamai Curl pseudo-header anomaly detection") { sub =>
+        var spoofed_curl = wing::akamai_chrome_preset();
+        spoofed_curl.window_update = 0;
+        let anomaly, _ = wing::detect_akamai_anomaly("curl/8.6.0", spoofed_curl);
+        sub.assert_eq(anomaly, wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Must detect Curl claiming Chrome pseudo-headers");
+    };
+
+    t.run("4. Akamai family classification for Curl") { sub =>
+        var curl_custom = wing::akamai_curl_preset();
+        curl_custom.settings.clear();
+        curl_custom.settings.push(wing::AkamaiSetting { id: 1, val: 8192 });
+        let fam = wing::identify_akamai_family(curl_custom);
+        sub.assert_eq(fam, wing::AkamaiBrowserFamily.Curl, "Must identify Curl family by pseudo-headers maps");
+    };
+
+    t.run("5. p0f options length and syntax validation") { sub =>
+        let raw_too_many = "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop:df,id+:0";
+        let _, ok_too_many = wing::parse_p0f(raw_too_many);
+        sub.assert_false(ok_too_many, "Must reject signature with > 16 options");
+
+        let raw_empty_opt = "*:64:0:*:mss*20,10:mss,,ws:df,id+:0";
+        let _, ok_empty_opt = wing::parse_p0f(raw_empty_opt);
+        sub.assert_false(ok_empty_opt, "Must reject empty option token");
+    };
+
+    t.run("6. p0f negative window size rejection") { sub =>
+        let _, ok_neg = wing::parse_p0f("*:64:0:*:mss*-20,10:mss,ws:df:0");
+        sub.assert_false(ok_neg, "Must reject negative window multiplier");
+    };
+
+    t.run("7. Akamai large fingerprint capacity safety") { sub =>
+        var fp = wing::AkamaiFingerprint {
+            window_update: 15663105,
+            ..
+        };
+        for i in 16 {
+            fp.settings.push(wing::AkamaiSetting { id: (i as u16) + 1, val: 6291456 });
+        }
+        for i in 8 {
+            fp.priority_frames.push(wing::AkamaiPriorityFrame {
+                stream_id:     (i as u32) + 3,
+                exclusive:     0,
+                dep_stream_id: 0,
+                weight:        201,
+            });
+        }
+        fp.pseudo_headers.push('m');
+        fp.pseudo_headers.push('a');
+        fp.pseudo_headers.push('s');
+        fp.pseudo_headers.push('p');
+
+        let s = wing::akamai_fingerprint_to_string(fp);
+        sub.assert_true(s.len > 256, "Large Akamai fingerprint exceeds 256 bytes");
+
+        var hash_buf: u8[..32] = [];
+        wing::compute_akamai_hash(fp, hash_buf);
+        sub.assert_eq(hash_buf.len, 32, "MD5 hash computes cleanly on large fingerprint");
+    };
+
+    t.run("8. p0f dense signature formatting capacity safety") { sub =>
+        var sig = wing::wing_p0f_signature();
+        for i in 11 {
+            sig.options.push(wing::P0fTcpOption.Nop);
+        }
+        wing::p0f_set_quirk(sig, "df", true);
+        wing::p0f_set_quirk(sig, "id+", true);
+        wing::p0f_set_quirk(sig, "ecn", true);
+        wing::p0f_set_quirk(sig, "0+", true);
+        wing::p0f_set_quirk(sig, "flow", true);
+        wing::p0f_set_quirk(sig, "seq-", true);
+        wing::p0f_set_quirk(sig, "ack+", true);
+        wing::p0f_set_quirk(sig, "uptr+", true);
+        wing::p0f_set_quirk(sig, "urgf+", true);
+        wing::p0f_set_quirk(sig, "pushf+", true);
+        wing::p0f_set_quirk(sig, "ts1-", true);
+        wing::p0f_set_quirk(sig, "ts2+", true);
+        wing::p0f_set_quirk(sig, "opt+", true);
+        wing::p0f_set_quirk(sig, "expt", true);
+        wing::p0f_set_quirk(sig, "bad", true);
+
+        let formatted = wing::format_p0f(sig);
+        sub.assert_true(formatted.len > 100, "Formatted dense p0f signature exceeds 100 bytes");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Client Fingerprinting Verification Suite (JA4, Akamai, p0f)", lit::Verbosity.Verbose);
 
@@ -689,6 +785,7 @@ fn main() {
     lit::run_case(runner, "11. p0f: Wing Authentic TCP SYN Identity", test_wing_authentic_p0f);
     lit::run_case(runner, "12. p0f: Standard p0f v3 Parser & Roundtrip", test_p0f_parser_and_roundtrip);
     lit::run_case(runner, "13. p0f: Pattern Matching & Discrimination", test_p0f_pattern_matching);
+    lit::run_case(runner, "14. Fingerprint Security & Bounds Regression Suite", test_fingerprint_bug_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

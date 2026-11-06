@@ -272,12 +272,13 @@ inline fn sync_cluster_target_health(cluster: UpstreamCluster&, target_idx: i32,
 }
 
 inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: UpstreamHealthState) {
-    if cluster_state != UpstreamHealthState.Up && slot.health.state == HealthState.Up {
-        slot.health.state = if cluster_state == UpstreamHealthState.Probing {
-            HealthState.Probing
-        } else {
-            HealthState.Down
-        };
+    if cluster_state == UpstreamHealthState.Down {
+        if slot.health.state != HealthState.Down {
+            slot.health.state = HealthState.Down;
+            slot.health.consecutive_successes = 0;
+        }
+    } else if cluster_state == UpstreamHealthState.Probing && slot.health.state == HealthState.Up {
+        slot.health.state = HealthState.Probing;
         slot.health.consecutive_successes = 0;
     }
 }
@@ -289,6 +290,9 @@ fn on_probe_success(
     target_idx: i32,
     rtt_us:     u32,
 ) -> HealthState {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else {
+        return HealthState.Down;
+    }
     let slot_idx = find_probe_slot(checker, target_idx);
     guard slot_idx != HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
         return HealthState.Down;
@@ -307,6 +311,9 @@ fn on_probe_failure(
     cluster:    UpstreamCluster&,
     target_idx: i32,
 ) -> HealthState {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else {
+        return HealthState.Down;
+    }
     let slot_idx = find_probe_slot(checker, target_idx);
     guard slot_idx != HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
         return HealthState.Down;
@@ -333,17 +340,19 @@ fn check_probe_timeouts(
     let n = checker.slots.len as i32;
 
     for i in n {
-        if checker.slots[i].in_use && checker.slots[i].active_in_flight {
-            let elapsed = core::sub_sat_u64(now_ms, checker.slots[i].probe_start_ms);
-            if elapsed >= checker.config.timeout_ms {
-                let t_idx = checker.slots[i].target_idx;
-                sync_slot_from_cluster(checker.slots[i], cluster.targets[t_idx].health_state);
-                clear_in_flight(checker.slots[i]);
-                let new_state = record_probe_failure(checker.slots[i].health, checker.config);
-                sync_cluster_target_health(cluster, t_idx, new_state);
-                inc_timeouts_count(timed_out_count);
-            }
+        guard checker.slots[i].in_use && checker.slots[i].active_in_flight else { continue; }
+        let elapsed = core::sub_sat_u64(now_ms, checker.slots[i].probe_start_ms);
+        guard elapsed >= checker.config.timeout_ms else { continue; }
+        let t_idx = checker.slots[i].target_idx;
+        guard t_idx >= 0 && t_idx < cluster.targets.len else {
+            clear_in_flight(checker.slots[i]);
+            continue;
         }
+        sync_slot_from_cluster(checker.slots[i], cluster.targets[t_idx].health_state);
+        clear_in_flight(checker.slots[i]);
+        let new_state = record_probe_failure(checker.slots[i].health, checker.config);
+        sync_cluster_target_health(cluster, t_idx, new_state);
+        inc_timeouts_count(timed_out_count);
     }
     return timed_out_count;
 }

@@ -157,10 +157,9 @@ fn append_p0f_options<B>(options: const P0fTcpOption[:], out: B&) {
 }
 
 // Formats a p0f signature structure into the standard 8-field p0f v3 string.
-fn format_p0f(sig: const P0fSignature&) -> u8[..128] {
-    var out: u8[..128] = [];
+fn format_p0f(sig: const P0fSignature&) -> u8[..256] {
+    var out: u8[..256] = [];
 
-    // 1. ip_version
     if sig.ip_version == 4 {
         out.push('4');
     } else if sig.ip_version == 6 {
@@ -170,18 +169,15 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..128] {
     }
     out.push(':');
 
-    // 2. ttl
     format(out, sig.ttl as i64);
     if sig.has_ttl_minus {
         out.push('-');
     }
     out.push(':');
 
-    // 3. ip_opt_len
     format(out, sig.ip_opt_len as i64);
     out.push(':');
 
-    // 4. mss
     if sig.mss == -1 {
         out.push('*');
     } else {
@@ -189,7 +185,6 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..128] {
     }
     out.push(':');
 
-    // 5. window_type & scale
     match sig.window_type {
         Any => {
             out.append("*,-1");
@@ -220,11 +215,9 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..128] {
     }
     out.push(':');
 
-    // 6. options
     append_p0f_options(sig.options[..], out);
     out.push(':');
 
-    // 7. quirks
     var first_quirk = true;
     if sig.quirks.df { if !first_quirk { out.push(','); } out.append("df"); first_quirk = false; }
     if sig.quirks.id_plus { if !first_quirk { out.push(','); } out.append("id+"); first_quirk = false; }
@@ -245,7 +238,6 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..128] {
     if sig.quirks.bad { if !first_quirk { out.push(','); } out.append("bad"); first_quirk = false; }
     out.push(':');
 
-    // 8. payload
     out.append(sig.payload[..]);
 
     return out;
@@ -296,29 +288,29 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
         sig.window_scale = -1;
     } else {
         let sc_val, sc_ok = parse_int(scale_str);
-        guard sc_ok else { return false; }
+        guard sc_ok && sc_val >= -1 && sc_val <= 14 else { return false; }
         sig.window_scale = sc_val as i16;
     }
 
     if starts_with(ws_str, "mss*") {
         sig.window_type = P0fWindowType.Mss;
         let m_val, m_ok = parse_int(ws_str[4..]);
-        guard m_ok else { return false; }
+        guard m_ok && m_val >= 0 else { return false; }
         sig.window_size = m_val as i32;
     } else if starts_with(ws_str, "mtu*") {
         sig.window_type = P0fWindowType.Mtu;
         let m_val, m_ok = parse_int(ws_str[4..]);
-        guard m_ok else { return false; }
+        guard m_ok && m_val >= 0 else { return false; }
         sig.window_size = m_val as i32;
     } else if starts_with(ws_str, "mod*") {
         sig.window_type = P0fWindowType.Mod;
         let m_val, m_ok = parse_int(ws_str[4..]);
-        guard m_ok else { return false; }
+        guard m_ok && m_val >= 0 else { return false; }
         sig.window_size = m_val as i32;
     } else if starts_with(ws_str, "%") {
         sig.window_type = P0fWindowType.Mod;
         let m_val, m_ok = parse_int(ws_str[1..]);
-        guard m_ok else { return false; }
+        guard m_ok && m_val >= 0 else { return false; }
         sig.window_size = m_val as i32;
     } else if ws_str == "*" {
         sig.window_type = P0fWindowType.Any;
@@ -326,9 +318,22 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
     } else {
         sig.window_type = P0fWindowType.Normal;
         let w_val, w_ok = parse_int(ws_str);
-        guard w_ok else { return false; }
+        guard w_ok && w_val >= 0 else { return false; }
         sig.window_size = w_val as i32;
     }
+    return true;
+}
+
+fn push_parsed_option(sig: P0fSignature&, token: const u8[:]) -> bool {
+    guard token.len > 0 && sig.options.len < sig.options.cap else { return false; }
+    if token == "eol" || starts_with(token, "eol+") { sig.options.push(P0fTcpOption.Eol); }
+    else if token == "nop" { sig.options.push(P0fTcpOption.Nop); }
+    else if token == "mss" { sig.options.push(P0fTcpOption.Mss); }
+    else if token == "ws" { sig.options.push(P0fTcpOption.Ws); }
+    else if token == "sok" { sig.options.push(P0fTcpOption.Sok); }
+    else if token == "sack" { sig.options.push(P0fTcpOption.Sack); }
+    else if token == "ts" { sig.options.push(P0fTcpOption.Ts); }
+    else { sig.options.push(P0fTcpOption.Unknown); }
     return true;
 }
 
@@ -337,20 +342,19 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
 // Example:
 //   f5 = "mss,sok,ts,nop,ws"
 //   populates sig.options with corresponding P0fOption entries
-fn parse_p0f_options_field(f5: const u8[:], sig: P0fSignature&) {
-    guard f5.len > 0 else { return; }
+fn parse_p0f_options_field(f5: const u8[:], sig: P0fSignature&) -> bool {
+    guard f5.len > 0 else { return true; }
     var start_idx: i64 = 0;
     for i in f5.len {
         if f5[i] == ',' {
             let token = f5[start_idx..i];
-            push_parsed_option(sig, token);
+            guard push_parsed_option(sig, token) else { return false; }
             start_idx = i + 1;
         }
     }
-    if start_idx < f5.len {
-        let token = f5[start_idx..];
-        push_parsed_option(sig, token);
-    }
+    guard start_idx < f5.len else { return false; }
+    let token = f5[start_idx..];
+    return push_parsed_option(sig, token);
 }
 
 // Parses comma-separated TCP quirks into signature quirk bitflags (f6).
@@ -409,7 +413,6 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
         payload:       [],
     };
 
-    // 1. IP version
     if f0 == "4" {
         sig.ip_version = 4;
     } else if f0 == "6" {
@@ -420,7 +423,6 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
         return dummy, false;
     }
 
-    // 2. TTL
     var ttl_slice = f1;
     if ends_with(ttl_slice, "-") {
         sig.has_ttl_minus = true;
@@ -430,12 +432,10 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     guard ttl_ok && ttl_val >= 0 && ttl_val <= 255 else { return dummy, false; }
     sig.ttl = ttl_val as u8;
 
-    // 3. IP Option Length
     let olen_val, olen_ok = parse_int(f2);
     guard olen_ok && olen_val >= 0 && olen_val <= 255 else { return dummy, false; }
     sig.ip_opt_len = olen_val as u8;
 
-    // 4. MSS
     if f3 == "*" {
         sig.mss = -1;
     } else {
@@ -444,32 +444,14 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
         sig.mss = mss_val as i32;
     }
 
-    // 5. Window & Scale
     guard parse_p0f_window(f4, sig) else { return dummy, false; }
-
-    // 6. Options layout
-    parse_p0f_options_field(f5, sig);
-
-    // 7. Quirks
+    guard parse_p0f_options_field(f5, sig) else { return dummy, false; }
     parse_p0f_quirks_field(f6, sig);
 
-    // 8. Payload
     guard f7.len <= sig.payload.cap else { return dummy, false; }
     sig.payload.append(f7);
 
     return sig, true;
-}
-
-fn push_parsed_option(sig: P0fSignature&, token: const u8[:]) {
-    guard sig.options.len < sig.options.cap else { return; }
-    if token == "eol" || starts_with(token, "eol+") { sig.options.push(P0fTcpOption.Eol); }
-    else if token == "nop" { sig.options.push(P0fTcpOption.Nop); }
-    else if token == "mss" { sig.options.push(P0fTcpOption.Mss); }
-    else if token == "ws" { sig.options.push(P0fTcpOption.Ws); }
-    else if token == "sok" { sig.options.push(P0fTcpOption.Sok); }
-    else if token == "sack" { sig.options.push(P0fTcpOption.Sack); }
-    else if token == "ts" { sig.options.push(P0fTcpOption.Ts); }
-    else { sig.options.push(P0fTcpOption.Unknown); }
 }
 
 fn apply_parsed_quirk(sig: P0fSignature&, token: const u8[:]) {
@@ -497,12 +479,10 @@ fn apply_parsed_quirk(sig: P0fSignature&, token: const u8[:]) {
 // Matches an observed TCP SYN signature against a target pattern signature.
 // Supports wildcards ('*', '64-', '*,-1', mss/mtu multipliers).
 fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
-    // 1. IP version (wildcard 0 matches anything)
     if target.ip_version != 0 && actual.ip_version != 0 {
         guard actual.ip_version == target.ip_version else { return false; }
     }
 
-    // 2. TTL matching
     if target.has_ttl_minus {
         let min_ttl = if target.ttl > 35 { target.ttl - 35 } else { 1 };
         guard actual.ttl <= target.ttl && actual.ttl >= min_ttl else { return false; }
@@ -510,15 +490,12 @@ fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
         guard actual.ttl == target.ttl else { return false; }
     }
 
-    // 3. IP options length
     guard actual.ip_opt_len == target.ip_opt_len else { return false; }
 
-    // 4. MSS (target.mss == -1 is wildcard)
     if target.mss != -1 {
         guard actual.mss == target.mss else { return false; }
     }
 
-    // 5. Window & scale
     match target.window_type {
         Any => {},
         Mss => {
@@ -550,10 +527,8 @@ fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
         guard actual.window_scale == target.window_scale else { return false; }
     }
 
-    // 6. Options layout
     guard match_p0f_options(actual.options[..], target.options[..]) else { return false; }
 
-    // 7. Quirks
     guard actual.quirks.df == target.quirks.df else { return false; }
     guard actual.quirks.id_plus == target.quirks.id_plus else { return false; }
     guard actual.quirks.id_minus == target.quirks.id_minus else { return false; }
@@ -572,7 +547,6 @@ fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
     guard actual.quirks.expt == target.quirks.expt else { return false; }
     guard actual.quirks.bad == target.quirks.bad else { return false; }
 
-    // 8. Payload
     if target.payload[..] != "*" {
         guard actual.payload[..] == target.payload[..] else { return false; }
     }

@@ -215,3 +215,10 @@ fn is_subresource_allowed(
 
     return true;
 }
+
+// Injects strict same-origin COOP, require-corp COEP, and same-origin CORP headers.
+fn apply_strict_cross_origin_isolation<Res>(res: Res&) {
+    res.headers.set_header("Cross-Origin-Opener-Policy", "same-origin");
+    res.headers.set_header("Cross-Origin-Embedder-Policy", "require-corp");
+    res.headers.set_header("Cross-Origin-Resource-Policy", "same-origin");
+}

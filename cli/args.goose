@@ -353,6 +353,10 @@ fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
     let h_idx = core::index_of_byte(clean, '#');
     if h_idx >= 0 { clean = clean[..h_idx]; }
 
+    if clean.len == 0 || core::ends_with(clean, "/") || core::ends_with(clean, "\\") {
+        return "index.html";
+    }
+
     var last_slash: i64 = -1;
     for i in clean.len {
         if clean[i] == '/' || clean[i] == '\\' { last_slash = i; }
@@ -361,7 +365,7 @@ fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
     if last_slash >= 0 && next_slash < clean.len {
         return clean[next_slash..];
     }
-    return if clean.len > 0 { clean } else { "index.html" };
+    return clean;
 }
 
 fn apply_cli_output_bool_flag(arg: const u8[:], cfg: CliConfig&) -> bool {
@@ -594,6 +598,7 @@ fn apply_parsed_numeric_val(arg: const u8[:], val: const u8[:], num: u64, cfg: C
     if arg == "--timeout" || arg == "-m" || arg == "--max-time" || arg == "--connect-timeout" {
         guard num > 0 else { return set_cli_error(cfg, "invalid timeout value", val); }
         let ms_scaled = if arg == "--timeout" { num } else { core::mul_sat_u64(num, 1000) };
+        guard ms_scaled <= 0x7FFFFFFFFFFFFFFF else { return set_cli_error(cfg, "timeout value exceeds maximum", val); }
         cfg.timeout_ms = ms_scaled as i64;
         return true;
     }
@@ -642,12 +647,14 @@ fn assign_positional_url(arg: const u8[:], cfg: CliConfig&) -> bool {
     }
     let has_scheme = core::starts_with(arg, "http://") || core::starts_with(arg, "https://") ||
         core::starts_with(arg, "ws://") || core::starts_with(arg, "wss://");
-    if !has_scheme {
-        cfg.url.append("http://");
-    }
-    let max_url = cfg.url.cap;
-    guard core::add_sat_i64(cfg.url.len, arg.len) <= max_url else {
+    let prefix = if has_scheme { "" } else { "http://" };
+    let needed = core::add_sat_i64(prefix.len, arg.len);
+    guard needed <= cfg.url.cap else {
         return set_cli_error(cfg, "URL exceeds maximum length");
+    }
+    cfg.url.clear();
+    if prefix.len > 0 {
+        cfg.url.append(prefix);
     }
     cfg.url.append(arg);
     return true;

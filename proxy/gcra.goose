@@ -241,6 +241,7 @@ struct GatewayClientEntry {
 struct GatewayRateLimiter {
     config:         GcraConfig               = GcraConfig { .. },
     entries:        GatewayClientEntry[..64] = [],
+    fallback_cell:  GcraTatCell              = GcraTatCell { .. },
     total_allowed:  u64                      = 0,
     total_rejected: u64                      = 0,
 }
@@ -363,8 +364,7 @@ fn check_gateway_rate_limit(
         return dec;
     }
 
-    var fallback_cell = GcraTatCell { tat_ns: now_ns };
-    let dec = gcra_check(limiter.config, fallback_cell, cost, now_ns);
+    let dec = gcra_check(limiter.config, limiter.fallback_cell, cost, now_ns);
     record_fallback_admission(limiter, dec);
     return dec;
 }
@@ -376,6 +376,10 @@ fn penalize_gateway_client(
     penalty_ns: u64,
     now_ns:     u64,
 ) {
+    guard client_id.len <= 64 else {
+        gcra_penalize(limiter.config, limiter.fallback_cell, penalty_ns, now_ns);
+        return;
+    }
     let slot = find_client_slot(limiter, client_id);
     guard slot >= 0 && slot < limiter.entries.len else { return; }
     gcra_penalize(limiter.config, limiter.entries[slot].cell, penalty_ns, now_ns);
@@ -422,6 +426,7 @@ fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
     for i in n {
         reset_entry_slot(limiter.entries[i]);
     }
+    limiter.fallback_cell.tat_ns = 0;
     limiter.total_allowed = 0;
     limiter.total_rejected = 0;
 }

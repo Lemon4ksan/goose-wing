@@ -45,7 +45,7 @@ struct OriginEndpoint {
 
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
     var ep = OriginEndpoint { port: port_num, .. };
-    ep.host.append(host_str);
+    guard ep.host.try_append(host_str) else { return ep; }
     to_lower(ep.host[..]);
     return ep;
 }
@@ -63,7 +63,7 @@ struct ProxyServer {
 
 fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u16) -> ProxyServer {
     var ps = ProxyServer { scheme: scheme_val, port: port_num, .. };
-    ps.host.append(host_str);
+    guard ps.host.try_append(host_str) else { return ps; }
     to_lower(ps.host[..]);
     return ps;
 }
@@ -123,7 +123,7 @@ fn new_network_anonymization_key(
         worker_session_id:           worker_id,
         ..
     };
-    nak.top_frame_site.append(top_site);
+    guard nak.top_frame_site.try_append(top_site) else { return nak; }
     to_lower(nak.top_frame_site[..]);
     return nak;
 }
@@ -832,7 +832,7 @@ fn register_connection(
         cert_valid:             true,
         ..
     };
-    conn.resolved_ip.append(resolved_ip);
+    guard conn.resolved_ip.try_append(resolved_ip) else { return -1; }
 
     if slot_idx >= 0 {
         pool.conns[slot_idx] = conn;
@@ -986,13 +986,11 @@ fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bo
     for i in pool.entries.len {
         if pool.entries[i].fd == fd && pool.entries[i].healthy {
             pool.entries[i].epoll_events = events;
+            matched = true;
             if is_epoll_rdhup_signaled(events) && !pool.entries[i].in_use {
                 close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.evicted_rdhup += 1;
-                matched = true;
-            } else if !is_epoll_rdhup_signaled(events) {
-                matched = true;
             }
         }
     }
@@ -1027,8 +1025,9 @@ fn release_upstream_conn(pool: UpstreamPool&, fd: i32, events: u32 = 0) -> bool 
     for i in pool.entries.len {
         if pool.entries[i].fd == fd && pool.entries[i].in_use {
             pool.entries[i].in_use = false;
-            pool.entries[i].epoll_events = events;
-            if is_epoll_rdhup_signaled(events) {
+            let effective_events = events | pool.entries[i].epoll_events;
+            pool.entries[i].epoll_events = effective_events;
+            if is_epoll_rdhup_signaled(effective_events) {
                 close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.evicted_rdhup += 1;

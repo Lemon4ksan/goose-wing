@@ -76,16 +76,15 @@ fn wing_default_profile() -> ClientProfile {
         ..
     };
 
-    // 1. Authentic Wing User-Agent
     p.user_agent.append("Wing/1.0 (Goose Zero-Heap Systems Engine) NetStack/7.0");
 
-    // 2. Standard content negotiation (advertising native RFC 8878 Zstandard)
+    // Standard content negotiation (advertising native RFC 8878 Zstandard)
     p.accept.append("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
     p.accept_encoding.append("zstd, gzip, br");
     p.accept_language.append("en-US,en;q=0.9");
     p.upgrade_insecure_requests.append("1");
 
-    // 3. Wing TLS Spec: Pure modern high-security suites (clean, deterministic)
+    // Wing TLS Spec: Pure modern high-security suites (clean, deterministic)
     p.tls.supported_versions.push(0x0304); // TLS 1.3
     p.tls.supported_versions.push(0x0303); // TLS 1.2
 
@@ -124,7 +123,7 @@ fn wing_default_profile() -> ClientProfile {
 
     p.tls.alpn.append("h2");
 
-    // 4. Canonical Wing Header Ordering (for HTTP/1.1 & JA4H)
+    // Canonical Wing Header Ordering (for HTTP/1.1 & JA4H)
     push_header_order(p, "host");
     push_header_order(p, "user-agent");
     push_header_order(p, "accept");
@@ -243,8 +242,7 @@ fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
         return;
     }
     if eq_ascii_fold(name, "upgrade-insecure-requests") {
-        profile.upgrade_insecure_requests.clear();
-        profile.upgrade_insecure_requests.append(value);
+        let _ = profile.upgrade_insecure_requests.try_set(value);
         return;
     }
     set_header(profile.extra_headers, name, value);
@@ -252,26 +250,22 @@ fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
 
 // Sets a custom User-Agent in the profile.
 fn set_user_agent(profile: BrowserProfile&, ua: const u8[:]) {
-    profile.user_agent.clear();
-    profile.user_agent.append(ua);
+    let _ = profile.user_agent.try_set(ua);
 }
 
 // Sets Accept header in the profile.
 fn set_accept(profile: BrowserProfile&, accept_str: const u8[:]) {
-    profile.accept.clear();
-    profile.accept.append(accept_str);
+    let _ = profile.accept.try_set(accept_str);
 }
 
 // Sets Accept-Encoding header in the profile.
 fn set_accept_encoding(profile: BrowserProfile&, enc: const u8[:]) {
-    profile.accept_encoding.clear();
-    profile.accept_encoding.append(enc);
+    let _ = profile.accept_encoding.try_set(enc);
 }
 
 // Sets Accept-Language header in the profile.
 fn set_accept_language(profile: BrowserProfile&, lang: const u8[:]) {
-    profile.accept_language.clear();
-    profile.accept_language.append(lang);
+    let _ = profile.accept_language.try_set(lang);
 }
 
 // Configures the p0f TCP SYN signature for this profile.
@@ -280,7 +274,7 @@ fn set_p0f(profile: BrowserProfile&, sig: const P0fSignature&) {
 }
 
 // Computes the p0f v3 format string for this profile.
-fn p0f(profile: const BrowserProfile&) -> u8[..128] {
+fn p0f(profile: const BrowserProfile&) -> u8[..256] {
     return format_p0f(profile.p0f);
 }
 
@@ -290,7 +284,7 @@ fn set_akamai(profile: BrowserProfile&, fp: const AkamaiFingerprint&) {
 }
 
 // Formats the Akamai HTTP/2 fingerprint string for this profile.
-fn akamai(profile: const BrowserProfile&) -> u8[..256] {
+fn akamai(profile: const BrowserProfile&) -> u8[..512] {
     return akamai_fingerprint_to_string(profile.akamai);
 }
 

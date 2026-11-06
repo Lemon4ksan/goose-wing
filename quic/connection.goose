@@ -93,10 +93,14 @@ fn new_quic_client_connection(server_dcid: const u8[:], client_scid: const u8[:]
 }
 
 inline fn calc_amplification_limit(rx: u64) -> u64 {
+    if rx > (0xFFFFFFFFFFFFFFFF / 3) {
+        return 0xFFFFFFFFFFFFFFFF;
+    }
     return rx * 3;
 }
 
 inline fn is_within_amplification_budget(sent: u64, extra: u64, limit: u64) -> bool {
+    guard 0xFFFFFFFFFFFFFFFF - sent >= extra else { return false; }
     return (sent + extra) <= limit;
 }
 
@@ -273,6 +277,12 @@ fn process_space_ack(
     let _ = detect_lost_packets(space, conn.rtt, now_us, lost_pkts);
     let lost_bytes = calc_lost_bytes(lost_pkts);
 
+    var new_ecn_ce: u64 = 0;
+    if ack_frame.is_ecn && ack_frame.ecn_ce_count > space.largest_acked_ce {
+        new_ecn_ce = ack_frame.ecn_ce_count - space.largest_acked_ce;
+        space.largest_acked_ce = ack_frame.ecn_ce_count;
+    }
+
     bbr_check_probe_rtt(conn.bbr, now_us, eff_rtt);
     let round_done = space.largest_acked_pn >= space.largest_sent_pn;
     update_bbr_on_ack(
@@ -280,7 +290,7 @@ fn process_space_ack(
         in_flight_bytes,
         lost_bytes,
         acked_bytes,
-        ack_frame.ecn_ce_count,
+        new_ecn_ce,
         new_acked_pkts,
         round_done,
     );
@@ -312,7 +322,7 @@ fn quic_conn_record_sent(
     ack_eliciting: bool,
     now_us:        u64,
 ) {
-    conn.bytes_sent = conn.bytes_sent + size_bytes;
+    conn.bytes_sent = core::add_sat_u64(conn.bytes_sent, size_bytes);
     conn.packets_tx = conn.packets_tx + 1;
 
     let meta = SentPacketMeta {
@@ -391,7 +401,7 @@ inline fn get_bounded_payload(
 fn get_packet_payload(dgram: const u8[:], hdr: const QuicHeader&) -> u8[:] {
     let start: i64 = hdr.header_len;
     guard start <= dgram.len else { return dgram[..0]; }
-    if hdr.payload_length > hdr.pn_length {
+    if hdr.header_type != QuicHeaderType.OneRtt {
         return get_bounded_payload(dgram, start, hdr.payload_length, hdr.pn_length);
     }
     return dgram[start..];
@@ -1274,7 +1284,7 @@ fn quic_conn_process_datagram(
     out_ack: AckFrame&,
 ) -> bool, bool {
     guard dgram.len > 0 else { return false, false; }
-    conn.bytes_received = conn.bytes_received + (dgram.len as u64);
+    conn.bytes_received = core::add_sat_u64(conn.bytes_received, dgram.len as u64);
 
     var offset: i64 = 0;
     var any_handled = false;

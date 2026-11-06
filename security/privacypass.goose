@@ -226,6 +226,9 @@ fn parse_challenge_params(
     temp_max_age:   i64&,
 ) -> const u8[:], bool {
     var challenge_slice = params_str[..0];
+    var seen_challenge = false;
+    var seen_token_key = false;
+    var seen_max_age = false;
     var idx: i64 = 0;
     while idx < params_str.len {
         let rem = params_str[idx..].trim_start_bytes(" \t,");
@@ -239,10 +242,19 @@ fn parse_challenge_params(
         let val, ok_v = parse_param_val(params_str, idx);
         guard ok_v else { return "", false; }
 
-        let chal, ok_param = apply_challenge_param(key, val, temp_token_key, temp_max_age);
-        guard ok_param else { return "", false; }
-        if chal.len > 0 {
-            challenge_slice = chal;
+        if eq_ascii_fold(key, "challenge") {
+            guard !seen_challenge && val.len > 0 else { return "", false; }
+            seen_challenge = true;
+            challenge_slice = val;
+        } else if eq_ascii_fold(key, "token-key") {
+            guard !seen_token_key && decode_token_key_param(val, temp_token_key) else { return "", false; }
+            seen_token_key = true;
+        } else if eq_ascii_fold(key, "max-age") {
+            guard !seen_max_age else { return "", false; }
+            let secs, ok_sec = val.parse_i64_dec();
+            guard ok_sec && secs >= 0 else { return "", false; }
+            seen_max_age = true;
+            temp_max_age = secs;
         }
     }
     return challenge_slice, challenge_slice.len > 0;
@@ -308,13 +320,22 @@ fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) {
 // ---- Private Token Cache & Redemption Management -------------------------
 
 fn find_free_token_slot(cache: const PrivateTokenCache&, now_sec: i64) -> i64 {
+    var earliest_idx: i64 = 0;
+    var earliest_exp: i64 = 9223372036854775807;
     for i in cache.entries.len {
         let entry = &cache.entries[i];
         if entry.used || (entry.expires_at_sec > 0 && now_sec > entry.expires_at_sec) {
             return i;
         }
+        if entry.expires_at_sec > 0 && entry.expires_at_sec < earliest_exp {
+            earliest_exp = entry.expires_at_sec;
+            earliest_idx = i;
+        }
     }
-    return -1;
+    if cache.entries.len < cache.entries.cap {
+        return -1;
+    }
+    return earliest_idx;
 }
 
 // Puts a pre-issued or blinded token into cache for a challenge.
@@ -331,12 +352,8 @@ fn put_private_token(
     var target_idx = find_free_token_slot(cache, now_sec);
 
     if target_idx == -1 {
-        if cache.entries.len < cache.entries.cap {
-            target_idx = cache.entries.len;
-            cache.entries.push(CachedToken { .. });
-        } else {
-            target_idx = 0;
-        }
+        target_idx = cache.entries.len;
+        cache.entries.push(CachedToken { .. });
     }
 
     let entry = &cache.entries[target_idx];
@@ -385,6 +402,27 @@ fn get_private_token(
 
     out_token = Token { .. };
     out_raw.clear();
+    return false;
+}
+
+// Pops and consumes a single-use token matching the challenge digest (RFC 9577 §2.1.4 single-spend).
+fn pop_private_token<B>(
+    cache:            PrivateTokenCache&,
+    challenge_digest: const u8[32]&,
+    now_sec:          i64,
+    out_raw_token:    B&,
+) -> bool {
+    for i in cache.entries.len {
+        let entry = &cache.entries[i];
+        if entry_matches_challenge(entry, challenge_digest, now_sec) {
+            guard entry.raw_token.len <= out_raw_token.cap else { return false; }
+            out_raw_token.clear();
+            out_raw_token.append(entry.raw_token[..]);
+            cache.entries[i].used = true;
+            return true;
+        }
+    }
+    out_raw_token.clear();
     return false;
 }
 

@@ -102,14 +102,16 @@ fn load_serve_rules(cfg: const CliConfig&, stage: ProgrammableServerStage&) -> i
     }
 
     for &line in cfg.inline_routes {
-        if stage.rules.len < stage.rules.cap {
-            var r = RouteRule { .. };
-            if parse_route_rule_line(line[..], r) {
-                stage.rules.push(r);
-            } else {
-                write_stderr(str("wing serve: invalid --route syntax: ", line[..], "\n"));
-                return 2;
-            }
+        guard stage.rules.len < stage.rules.cap else {
+            write_stderr("wing serve: too many route rules (max 32)\n");
+            return 2;
+        }
+        var r = RouteRule { .. };
+        if parse_route_rule_line(line[..], r) {
+            stage.rules.push(r);
+        } else {
+            write_stderr(str("wing serve: invalid --route syntax: ", line[..], "\n"));
+            return 2;
         }
     }
     return 0;

@@ -469,8 +469,8 @@ fn parse_jwk_key_field(
     key_item:  JwksKey&,
 ) {
     if field_key == "d" || field_key == "p" || field_key == "q" ||
-       field_key == "dp" || field_key == "dq" || field_key == "qi" {
-        // RFC 7517 §4: Public JWKs MUST NOT contain private key parameters
+       field_key == "dp" || field_key == "dq" || field_key == "qi" || field_key == "oth" {
+        // RFC 7517 §4 & RFC 7518 §6.3.2.7: Public JWKs MUST NOT contain private key parameters
         key_item.has_invalid_type = true;
         json::skip(reader);
         return;

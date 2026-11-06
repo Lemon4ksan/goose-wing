@@ -103,7 +103,7 @@ fn format_akamai_pseudo_headers<B>(pseudos: const u8[:], out: B&) {
 
 // Formats the canonical Akamai HTTP/2 fingerprint string:
 // `SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS`
-fn format_akamai_fingerprint(fp: const AkamaiFingerprint&, out: u8[..256]&) {
+fn format_akamai_fingerprint(fp: const AkamaiFingerprint&, out: u8[..512]&) {
     out.clear();
     format_akamai_settings(fp.settings[..], out);
     out.push('|');
@@ -115,15 +115,15 @@ fn format_akamai_fingerprint(fp: const AkamaiFingerprint&, out: u8[..256]&) {
 }
 
 // Formats the canonical Akamai fingerprint string returning a bounded buffer.
-fn akamai_fingerprint_to_string(fp: const AkamaiFingerprint&) -> u8[..256] {
-    var out: u8[..256] = [];
+fn akamai_fingerprint_to_string(fp: const AkamaiFingerprint&) -> u8[..512] {
+    var out: u8[..512] = [];
     format_akamai_fingerprint(fp, out);
     return out;
 }
 
 // Computes the 32-character hexadecimal MD5 hash of the Akamai fingerprint string.
 fn compute_akamai_hash<B>(fp: const AkamaiFingerprint&, dst: B&) {
-    var raw: u8[..256] = [];
+    var raw: u8[..512] = [];
     format_akamai_fingerprint(fp, raw);
     let digest = core::md5(raw[..]);
     dst.clear();
@@ -273,8 +273,10 @@ fn parse_priority_token(token: const u8[:]) -> AkamaiPriorityFrame, bool {
     var colons: i64[4] = [-1; 4];
     var c_cnt = 0;
     for k in token.len {
-        if token[k] == ':' && c_cnt < 3 {
-            colons[c_cnt] = k;
+        if token[k] == ':' {
+            if c_cnt < 3 {
+                colons[c_cnt] = k;
+            }
             c_cnt += 1;
         }
     }
@@ -283,11 +285,11 @@ fn parse_priority_token(token: const u8[:]) -> AkamaiPriorityFrame, bool {
     let excl, ok2 = parse_u32_dec(token[(colons[0] + 1)..colons[1]]);
     let dep, ok3 = parse_u32_dec(token[(colons[1] + 1)..colons[2]]);
     let w, ok4 = parse_u32_dec(token[(colons[2] + 1)..token.len]);
-    guard ok1 && ok2 && ok3 && ok4 && w >= 1 && w <= 256 else { return dummy, false; }
+    guard ok1 && ok2 && ok3 && ok4 && excl <= 1 && w >= 1 && w <= 256 else { return dummy, false; }
 
     return AkamaiPriorityFrame {
         stream_id:     s_id,
-        exclusive:     (excl & 1) as u8,
+        exclusive:     excl as u8,
         dep_stream_id: dep,
         weight:        w as u16,
     }, true;
@@ -377,10 +379,12 @@ fn parse_akamai_priorities(prio_part: const u8[:], fp: AkamaiFingerprint&) -> bo
 fn parse_akamai_pseudo_headers(pseudo_part: const u8[:], fp: AkamaiFingerprint&) -> bool {
     guard pseudo_part.len > 0 else { return true; }
     for b in pseudo_part {
-        if b != ',' && b != ' ' {
-            guard fp.pseudo_headers.len < fp.pseudo_headers.cap else { return false; }
-            fp.pseudo_headers.push(b);
+        if b == ',' || b == ' ' {
+            continue;
         }
+        guard b == 'm' || b == 'a' || b == 's' || b == 'p' else { return false; }
+        guard fp.pseudo_headers.len < fp.pseudo_headers.cap else { return false; }
+        fp.pseudo_headers.push(b);
     }
     return true;
 }
@@ -505,6 +509,9 @@ fn identify_akamai_family(fp: const AkamaiFingerprint&) -> AkamaiBrowserFamily {
         if fp.pseudo_headers[..] == "msap" {
             return AkamaiBrowserFamily.Safari;
         }
+        if fp.pseudo_headers[..] == "maps" {
+            return AkamaiBrowserFamily.Curl;
+        }
     }
 
     return AkamaiBrowserFamily.Unknown;
@@ -576,6 +583,10 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
 
     // Curl validation rules:
     if is_curl {
+        if fp.pseudo_headers[..] != "maps" {
+            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
+                "User-Agent claims curl but pseudo-headers exhibit non-curl ordering";
+        }
         if fp.window_update != 0 {
             return AkamaiAnomaly.BotPattern, "User-Agent claims curl but connection sent browser-like WINDOW_UPDATE";
         }

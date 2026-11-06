@@ -1062,7 +1062,6 @@ struct DPoPJtiEntry {
 
 struct DPoPReplayCache {
     entries: DPoPJtiEntry[..128] = [],
-    head:    i64                 = 0,
 }
 
 // Checks whether a DPoP jti has been seen before; if not, records it until now_sec + ttl_sec + max_skew_sec.

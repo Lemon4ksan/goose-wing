@@ -597,7 +597,7 @@ fn enforce_chips_quota(
 ) -> i64 {
     guard partition_key.len > 0 else { return 0; }
 
-    var candidate_indices: u16[..180] = [];
+    var candidate_indices: u16[..512] = [];
     var total_bytes:       i64        = 0;
     jar.gather_chips_candidates(partition_key, etld_plus_one, candidate_indices, total_bytes);
 
@@ -607,7 +607,7 @@ fn enforce_chips_quota(
         jar.cookies[idx_a as i64].chips_lra_candidate_less(jar.cookies[idx_b as i64])
     };
 
-    var to_delete_seqs: i64[..180] = [];
+    var to_delete_seqs: i64[..512] = [];
     var evicted_count:  i64        = 0;
 
     for i in candidate_indices.len {
@@ -709,7 +709,7 @@ fn gather_chips_candidates(
     jar:               const CanonicalCookieJar&,
     partition_key:     const u8[:],
     etld_plus_one:     const u8[:],
-    candidate_indices: u16[..180]&,
+    candidate_indices: u16[..512]&,
     total_bytes:       i64&,
 ) {
     candidate_indices.clear();
@@ -718,7 +718,7 @@ fn gather_chips_candidates(
            cookie_val.partition_key[..] == partition_key &&
            cookie_val.matches_effective_domain(etld_plus_one) {
             total_bytes = core::add_sat_i64(total_bytes, cookie_val.payload_size());
-            guard candidate_indices.len < 180 else { break; }
+            guard candidate_indices.len < candidate_indices.cap else { break; }
             candidate_indices.push(idx as u16);
         }
     }
@@ -922,7 +922,7 @@ fn purge_domain_priority_round(
     protect_sec:   bool,
     quota_allowed: i64,
 ) -> i64 {
-    var candidate_indices: u16[..180] = [];
+    var candidate_indices: u16[..512] = [];
     for &cookie_val, idx in jar.cookies {
         if cookie_val.matches_effective_domain(etld_plus_one) &&
            cookie_val.priority == target_prio &&
@@ -937,7 +937,7 @@ fn purge_domain_priority_round(
         jar.cookies[idx_a as i64].domain_gc_candidate_less(jar.cookies[idx_b as i64])
     };
 
-    var to_delete_seqs: i64[..180] = [];
+    var to_delete_seqs: i64[..512] = [];
     let evict_count = min(min(quota_allowed, candidate_indices.len), to_delete_seqs.cap);
     for i in evict_count {
         to_delete_seqs.push(jar.cookies[candidate_indices[i] as i64].creation_seq);
@@ -964,7 +964,7 @@ fn deduct_domain_priority_excess(
 }
 
 fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], need_to_evict: i64) -> i64 {
-    var candidate_indices: u16[..180] = [];
+    var candidate_indices: u16[..512] = [];
     for &cookie_val, idx in jar.cookies {
         if cookie_val.matches_effective_domain(etld_plus_one) {
             guard candidate_indices.len < candidate_indices.cap else { break; }
@@ -977,7 +977,7 @@ fn purge_domain_fallback(jar: CanonicalCookieJar&, etld_plus_one: const u8[:], n
         jar.cookies[idx_a as i64].fallback_gc_candidate_less(jar.cookies[idx_b as i64])
     };
 
-    var fallback_seqs: i64[..180] = [];
+    var fallback_seqs: i64[..512] = [];
     let evict_fallback = min(min(need_to_evict, candidate_indices.len), fallback_seqs.cap);
     for i in evict_fallback {
         fallback_seqs.push(jar.cookies[candidate_indices[i] as i64].creation_seq);

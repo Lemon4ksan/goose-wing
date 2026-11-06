@@ -349,10 +349,7 @@ fn decode_webtransport_close_session(
     let reason = payload[4..];
     guard reason.len <= out.reason.cap && core::validate_utf8(reason) else { return false; }
 
-    var code: u32 = (payload[0] as u32) << 24;
-    code |= (payload[1] as u32) << 16;
-    code |= (payload[2] as u32) << 8;
-    code |= payload[3];
+    let code = core::read_be_u32(payload, 0);
     out.error_code = code;
 
     out.reason.clear();

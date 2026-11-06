@@ -1386,6 +1386,10 @@ fn verify_jwt_hmac(
     let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
+    if temp_header.alg != JwtAlg.HS256 && temp_header.alg != JwtAlg.HS384 && temp_header.alg != JwtAlg.HS512 {
+        return JwtError.AlgorithmMismatch;
+    }
+
     var sig_bytes: u8[..128] = [];
     let sig_start = core::add_sat_i64(dot2, 1);
     guard token.len - sig_start <= 172 else {

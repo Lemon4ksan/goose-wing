@@ -125,7 +125,7 @@ fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u3
     guard payload.len >= 2 else {
         return H2AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    let origin_len = (((payload[0] as i64) << 8) | payload[1]);
+    let origin_len = core::read_be_u16(payload, 0) as i64;
     let origin_end = 2 + origin_len;
     guard origin_end <= payload.len else {
         return H2AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;

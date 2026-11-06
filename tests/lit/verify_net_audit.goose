@@ -248,6 +248,84 @@ fn main() {
     let _ = internal::uring_has_fast_poll(-1);
 
     print("F010_HE_ISO_OK: ", he_mgr.attempts.len);
+
+    // F011: MASQUE empty payload fail-open rejection and apply_assigned_ip protection
+    let empty_payload: const u8[:] = "";
+    let _, ok_empty_assign = wing::decode_address_assign_capsule(empty_payload);
+    assert(!ok_empty_assign);
+    let _, ok_empty_req = wing::decode_address_request_capsule(empty_payload);
+    assert(!ok_empty_req);
+    let _, ok_empty_route = wing::decode_route_advertisement_capsule(empty_payload);
+    assert(!ok_empty_route);
+    var tun_assigned = wing::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
+    tun_assigned.state = wing::MasqueTunnelState.Established;
+    tun_assigned.assigned_ip.append("192.168.1.100");
+    tun_assigned.assigned_prefix_len = 24;
+    assert(!wing::apply_assigned_ip(tun_assigned, empty_payload));
+    assert(tun_assigned.assigned_ip[..] == "192.168.1.100");
+    print("F011_MASQUE_REJECT_EMPTY: 1");
+
+    // F012: UpstreamPool EPOLLRDHUP notification while in_use and release preservation
+    var up_test = wing::UpstreamPool { .. };
+    let ep_test = wing::new_origin_endpoint("backend.test", 443);
+    assert(wing::register_upstream_conn(up_test, 77, ep_test, 0x1122, 100));
+    let fd_borrowed, acq_ok = wing::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
+    assert(acq_ok && fd_borrowed == 77);
+    assert(wing::notify_upstream_epoll_events(up_test, 77, wing::EPOLLRDHUP));
+    assert(!wing::release_upstream_conn(up_test, 77, 0));
+    let _, reacq_ok = wing::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
+    assert(!reacq_ok);
+    print("F012_UPSTREAM_RDHUP_IN_USE: 1");
+
+    // F013: DoH URL query separator (? vs &)
+    var doh_query_url: u8[..256] = [];
+    assert(wing::build_doh_get_url("https://dns.google/dns-query?client=app", "example.com", 1, doh_query_url));
+    assert(find(doh_query_url[..], "?client=app&dns=") >= 0);
+    print("F013_DOH_URL_SEP: 1");
+
+    // F014: DNS cache lookup with negative elapsed time and saturated TTL addition
+    var dcache = wing::DnsCache { .. };
+    var dentry = wing::DnsCacheEntry {
+        inserted_at_sec: 1000,
+        ttl_sec:         300,
+        stale_ttl_sec:   86400,
+        ..
+    };
+    dentry.domain.append("example.com");
+    wing::dns_cache_insert(dcache, dentry);
+    var out_entry = wing::DnsCacheEntry { .. };
+    let skew_stat = wing::dns_cache_lookup(dcache, "example.com", 1, 500, out_entry);
+    assert(skew_stat == wing::DnsCacheStatus.Expired);
+    print("F014_DNS_CACHE_SKEW: 1");
+
+    // F015: bind_winner_attempt rejects Failed or Cancelled attempts
+    var amgr = wing::new_attempt_manager(250);
+    var amgr_cands: wing::DnsCandidate[..1] = [];
+    amgr_cands.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "1.1.1.1", 80));
+    wing::start_attempt_race(amgr, amgr_cands[..], 0);
+    amgr.attempts[0].state = wing::AttemptState.Failed;
+    assert(!wing::bind_winner_attempt(amgr, amgr.attempts[0].attempt_id));
+    assert(amgr.attempts[0].state == wing::AttemptState.Failed);
+    print("F015_BIND_WINNER_FAILED: 1");
+
+    // F016: format_driver_int formats negative integers correctly
+    var drv_neg: u8[..32] = [];
+    internal::format_driver_int(drv_neg, -42);
+    assert(drv_neg[..] == "-42");
+    print("F016_DRIVER_INT_NEG: 1");
+
+    // F017: Capacity protection on new_origin_endpoint, new_dns_candidate, and format_partitioned_key
+    var big_host: u8[..300] = [];
+    for _ in 280 { big_host.push('x'); }
+    let ep_big = wing::new_origin_endpoint(big_host[..], 80);
+    assert(ep_big.host.len <= 256);
+    let cand_big = wing::new_dns_candidate(wing::AddressFamily.IPv4, big_host[..], 80);
+    assert(cand_big.ip.len <= 64);
+    var tiny_part: u8[..4] = [];
+    let nik_test = wing::new_network_isolation_key("https://a.com", "https://b.com");
+    wing::format_partitioned_key("base", nik_test, tiny_part);
+    assert(tiny_part.len <= 4);
+    print("F017_CAP_GUARDS_OK: 1");
 }
 
 // CHECK: F001_TICK_SLOT: 20
@@ -260,3 +338,10 @@ fn main() {
 // CHECK: F008_PROXY_OK: 1
 // CHECK: F009_DNS_OK: 1
 // CHECK: F010_HE_ISO_OK: 1
+// CHECK: F011_MASQUE_REJECT_EMPTY: 1
+// CHECK: F012_UPSTREAM_RDHUP_IN_USE: 1
+// CHECK: F013_DOH_URL_SEP: 1
+// CHECK: F014_DNS_CACHE_SKEW: 1
+// CHECK: F015_BIND_WINNER_FAILED: 1
+// CHECK: F016_DRIVER_INT_NEG: 1
+// CHECK: F017_CAP_GUARDS_OK: 1

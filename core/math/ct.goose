@@ -128,7 +128,9 @@ inline fn ct_max_i64(a: i64, b: i64) -> i64 {
 // Branchless absolute value for i64 without branching.
 inline fn ct_abs_i64(x: i64) -> i64 {
     let mask = x >> 63;
-    return (x ^ mask) - mask;
+    let ux = x as! u64;
+    let umask = mask as! u64;
+    return (((ux ^ umask) - umask) as! i64);
 }
 
 // Branchless signed minimum (32-bit).

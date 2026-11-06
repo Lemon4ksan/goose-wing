@@ -107,19 +107,34 @@ fn read_status_param_name(raw: const u8[:], idx: i64&) -> const u8[:] {
     return raw[start..idx];
 }
 
-// Reads double-quoted parameter string value.
+// Reads double-quoted parameter string value with backslash-escapes.
 // Advances `idx` past closing quote.
 //
 // Example:
 //   raw = "\"xyzzy\"", idx = 0
 //   returns: "xyzzy", idx becomes 7
 fn read_quoted_status_val(raw: const u8[:], idx: i64&) -> const u8[:], bool {
-    idx += 1; // skip opening quote
-    let v_start = idx;
-    let rel_quote = core::index_of_byte(raw[idx..], '"');
-    guard rel_quote >= 0 else { return raw[..0], false; }
-    let val = raw[v_start..idx + rel_quote];
-    idx += rel_quote + 1; // skip closing quote
+    let start_idx = idx;
+    var p = idx + 1; // skip opening quote
+    let v_start = p;
+    var escaped = false;
+    while p < raw.len {
+        let b = raw[p];
+        if escaped {
+            escaped = false;
+        } else if b == '\\' {
+            escaped = true;
+        } else if b == '"' {
+            break;
+        }
+        p += 1;
+    }
+    guard p < raw.len && raw[p] == '"' && !escaped else {
+        idx = start_idx;
+        return raw[..0], false;
+    }
+    let val = raw[v_start..p];
+    idx = p + 1; // skip closing quote
     return val, true;
 }
 

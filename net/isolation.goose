@@ -23,8 +23,9 @@ struct NetworkIsolationKey {
 // Constructs a clean NetworkIsolationKey
 fn new_network_isolation_key(top_level: const u8[:], frame: const u8[:]) -> NetworkIsolationKey {
     var nik = NetworkIsolationKey { is_empty: false, .. };
-    nik.top_level_site.append(top_level);
-    nik.frame_site.append(frame);
+    guard nik.top_level_site.try_append(top_level) && nik.frame_site.try_append(frame) else {
+        return empty_network_isolation_key();
+    }
     nik.is_cross_site = !core::eq_ascii_fold(nik.top_level_site[..], nik.frame_site[..]);
     return nik;
 }

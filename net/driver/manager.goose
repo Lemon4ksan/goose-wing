@@ -387,20 +387,5 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
 }
 
 fn format_driver_int<B>(out: B&, val: i64) {
-    if val == 0 {
-        out.push('0' as u8);
-        return;
-    }
-    var v = val;
-    var digits: u8[..32] = [];
-    while v > 0 {
-        let d = (v % 10) as u8;
-        digits.push(('0' as u8) + d);
-        v /= 10;
-    }
-    var i = digits.len;
-    while i > 0 {
-        i -= 1;
-        out.push(digits[i]);
-    }
+    core::format_i64_dec(val, out);
 }

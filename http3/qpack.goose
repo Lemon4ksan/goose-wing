@@ -1344,11 +1344,9 @@ inline fn emit_qpack_field_to_map(
     guard wing::append_header(out_headers, name, val) else {
         return QpackError.HeaderListTooLarge;
     }
-    if never_index {
-        let idx = wing::find_header_index(out_headers, name);
-        if idx >= 0 {
-            out_headers.entries[idx].flags = out_headers.entries[idx].flags | wing::HEADER_FLAG_SENSITIVE;
-        }
+    if never_index && out_headers.entries.len > 0 {
+        let last_idx = out_headers.entries.len - 1;
+        out_headers.entries[last_idx].flags = out_headers.entries[last_idx].flags | wing::HEADER_FLAG_SENSITIVE;
     }
     return QpackError.None;
 }
@@ -1688,44 +1686,40 @@ fn encode_qpack_dynamic_insert<B>(
     use_huffman: bool = true,
 ) -> u64, bool {
     guard tbl.capacity_bytes > 0 else { return 0, false; }
-    let start_enc = out_enc.len;
     let s_idx_name, _ = find_qpack_static_field(name, "");
     let has_static_name = s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE
         && name == QPACK_STATIC_TABLE[s_idx_name as i64].name;
 
+    var ins_buf: u8[..4096] = [];
+    var ins_ok = false;
     if has_static_name {
-        let new_abs = tbl.insert_count;
+        let enc_ok = internal::hpack_encode_int(ins_buf, s_idx_name, 6, 0xC0) &&
+            internal::encode_hpack_string_literal(ins_buf, val, use_huffman);
+        guard enc_ok else { return 0, false; }
+        guard (out_enc.len + ins_buf.len) <= out_enc.cap else { return 0, false; }
         guard qpack_insert_named_static(tbl, s_idx_name, val) else { return 0, false; }
-        let enc_ok = internal::hpack_encode_int(out_enc, s_idx_name, 6, 0xC0) &&
-            internal::encode_hpack_string_literal(out_enc, val, use_huffman);
-        guard enc_ok else {
-            out_enc.resize(start_enc);
-            return new_abs, false;
-        }
-        return new_abs, true;
-    }
-
-    let new_abs = tbl.insert_count;
-    guard qpack_insert_literal(tbl, name, val) else { return 0, false; }
-    var enc_ok = false;
-    if use_huffman {
-        let huff_len = internal::huff_encoded_byte_len(name);
-        if huff_len < (name.len as u64) {
-            enc_ok = internal::hpack_encode_int(out_enc, huff_len, 5, 0x60) &&
-                internal::huff_encode_bytes(name, out_enc);
-        } else {
-            enc_ok = internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40) &&
-                out_enc.try_append(name);
-        }
+        ins_ok = true;
     } else {
-        enc_ok = internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40) &&
-            out_enc.try_append(name);
+        let huff_len = if use_huffman { internal::huff_encoded_byte_len(name) } else { name.len as u64 };
+        let is_huff = use_huffman && huff_len < (name.len as u64);
+        var enc_ok = false;
+        if is_huff {
+            enc_ok = internal::hpack_encode_int(ins_buf, huff_len, 5, 0x60);
+            enc_ok = enc_ok && internal::huff_encode_bytes(name, ins_buf);
+        } else {
+            enc_ok = internal::hpack_encode_int(ins_buf, name.len as u64, 5, 0x40);
+            enc_ok = enc_ok && ins_buf.try_append(name);
+        }
+        guard enc_ok && internal::encode_hpack_string_literal(ins_buf, val, use_huffman) else {
+            return 0, false;
+        }
+        guard (out_enc.len + ins_buf.len) <= out_enc.cap else { return 0, false; }
+        guard qpack_insert_literal(tbl, name, val) else { return 0, false; }
+        ins_ok = true;
     }
-    guard enc_ok && internal::encode_hpack_string_literal(out_enc, val, use_huffman) else {
-        out_enc.resize(start_enc);
-        return new_abs, false;
-    }
-    return new_abs, true;
+    guard ins_ok else { return 0, false; }
+    out_enc.append(ins_buf[..]);
+    return tbl.insert_count - 1, true;
 }
 
 // Encodes a single field line using Static Table, Dynamic Table lookup/insertion, or Literal fallback (RFC 9204 §4.5).

@@ -33,8 +33,9 @@ fn encode_chunk_end<B>(out: B&) {
     out.push('\n');
 }
 
-// Encodes trailer header: `<name>: <value>\r\n`
+// Encodes trailer header: `<name>: <value>\r\n` (RFC 9112 §7.1.2)
 fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) {
+    guard !rfc::is_disallowed_trailer_field(name) else { return; }
     out.append(name);
     out.push(':');
     out.push(' ');

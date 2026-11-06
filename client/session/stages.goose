@@ -633,7 +633,9 @@ fn dispatch_client_egress_stage(
 ) -> wire::StageVerdict {
     if stage_id == wire::STAGE_ID_CLI_OUT_AUTH_CHALLENGE {
         let auth_v = stage_client_auth_challenge(session, ctx, current_url, samesite_eval, safe_method, out_resp);
-        ctx.body_consumed = true;
+        if auth_v != wire::StageVerdict.RetryAuth {
+            ctx.body_consumed = true;
+        }
         return auth_v;
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_COOKIE_STORE {

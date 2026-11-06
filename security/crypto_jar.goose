@@ -18,6 +18,14 @@ const K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
 const K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
 const MAX_COOKIE_NAME_LEN:     i64 = 4096; // RFC 6265 §6.1
 
+inline fn can_fit<B>(buf: const B&, needed: i64) -> bool {
+    return needed <= buf.cap;
+}
+
+inline fn can_fit(buf: const u8[>..]&, needed: i64) -> bool {
+    return true;
+}
+
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
 // Binds creation timestamp and cookie name to prevent replay and context swapping.
@@ -136,7 +144,7 @@ fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
 
 // Validates cookie creation timestamp against clock skew tolerance and max age TTL.
 fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i64) -> bool {
-    guard now_sec > 0 else { return true; }
+    guard now_sec > 0 else { return false; }
     guard cookie_sec >= 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec >= 0 else {
         return false;
     }
@@ -214,6 +222,7 @@ fn seal_binary_hkdf_aes<B>(
 ) -> bool {
     out.clear();
     guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard can_fit(out, K_OVERHEAD_HKDF_AES_GCM + plaintext.len) else { return false; }
 
     out.push(WIRE_VER_HKDF_AES_GCM);
     core::write_be_u32(out, slot.key_id);
@@ -249,6 +258,7 @@ fn seal_binary_xchacha20<B>(
 ) -> bool {
     out.clear();
     guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard can_fit(out, K_OVERHEAD_XCHACHA20 + plaintext.len) else { return false; }
 
     out.push(WIRE_VER_XCHACHA20);
     core::write_be_u32(out, slot.key_id);
@@ -300,9 +310,11 @@ fn open_binary_xchacha20<B>(
     now_sec:       i64,
     out_plaintext: B&,
 ) -> bool {
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
-    guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN && raw_wire.len >= K_OVERHEAD_XCHACHA20 else {
+        return false;
+    }
     let ct_len = raw_wire.len - K_OVERHEAD_XCHACHA20;
+    guard can_fit(out_plaintext, ct_len) else { return false; }
 
     let ts = core::read_be_u64(raw_wire, 5);
     let cookie_sec = ts as! i64;
@@ -336,9 +348,12 @@ fn open_binary_hkdf_aes<B>(
     now_sec:       i64,
     out_plaintext: B&,
 ) -> bool {
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
-    guard raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else { return false; }
+    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN &&
+        raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else {
+        return false;
+    }
     let ct_len = raw_wire.len - K_OVERHEAD_HKDF_AES_GCM;
+    guard can_fit(out_plaintext, ct_len) else { return false; }
 
     var salt32: u8[32] = [0; 32];
     for i in 32 { salt32[i] = raw_wire[5 + i]; }
@@ -454,7 +469,7 @@ fn signed_jar_seal_binary<B>(
 ) -> bool {
     out.clear();
     guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
-    guard payload.len <= 0x7FFFFFFF else { return false; }
+    guard payload.len <= 0x7FFFFFFF && can_fit(out, K_OVERHEAD_HMAC_SHA256 + payload.len) else { return false; }
 
     var slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
@@ -521,6 +536,7 @@ fn signed_jar_open_binary<B>(
     let mac_ok = core::ct_eq_tag32(expected_mac, tag);
     core::secure_zeroize_32(expected_mac);
     guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else { return false; }
+    guard can_fit(out_payload, payload_len) else { return false; }
     out_payload.append(payload);
     return true;
 }

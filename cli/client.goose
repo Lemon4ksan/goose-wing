@@ -273,11 +273,27 @@ fn write_cli_output_file(cfg: const CliConfig&, res: const wing::Response&, resu
     if cfg.output_file.len == 0 {
         return true;
     }
-    let ok_w = if resume_off > 0 && res.status_code == 206 {
-        append_file(cfg.output_file[..], res.body[..])
-    } else {
-        write_file(cfg.output_file[..], res.body[..])
-    };
+    if resume_off > 0 {
+        if res.status_code == 206 {
+            guard append_file(cfg.output_file[..], res.body[..]) else {
+                if !cfg.silent { write_stderr(str("wing: failed to append to output file: ", cfg.output_file[..], "\n")); }
+                return false;
+            }
+            return true;
+        }
+        if res.status_code == 200 {
+            guard write_file(cfg.output_file[..], res.body[..]) else {
+                if !cfg.silent { write_stderr(str("wing: failed to write output file: ", cfg.output_file[..], "\n")); }
+                return false;
+            }
+            return true;
+        }
+        if res.status_code == 416 {
+            return true;
+        }
+        return false;
+    }
+    let ok_w = write_file(cfg.output_file[..], res.body[..]);
     if ok_w {
         return true;
     }

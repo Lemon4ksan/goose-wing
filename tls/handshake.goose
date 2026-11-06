@@ -1287,6 +1287,7 @@ inline fn on_key_update_app_data(tracker: KeyUpdateTracker&) {
 fn encode_key_update<B>(out: B&, request_update: u8) -> bool {
     let is_valid = request_update == rfc::KEY_UPDATE_NOT_REQUESTED || request_update == rfc::KEY_UPDATE_REQUESTED;
     guard is_valid else { return false; }
+    guard core::add_sat_i64(out.len, 1) <= out.cap else { return false; }
     out.push(request_update);
     return true;
 }

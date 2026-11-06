@@ -17,13 +17,8 @@ fn test_quic_conn_bbr_ack_integration() {
     conn.state = internal::QuicConnState.Established;
     conn.validated_address = true;
 
-    // Record 4 in-flight ApplicationData packets (1200 bytes each) across rounds
+    // Record and acknowledge 4 in-flight ApplicationData packets across sequential rounds
     internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 1, 1200, true, 10000);
-    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 2, 1200, true, 20000);
-    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 3, 1200, true, 30000);
-    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 4, 1200, true, 40000);
-
-    // Acknowledge packets 1..3 in 3 sequential ACK events to advance BBR Startup -> Drain
     let ack1 = internal::AckFrame {
         largest_acked:   1,
         ack_delay:       0,
@@ -32,6 +27,7 @@ fn test_quic_conn_bbr_ack_integration() {
     };
     let ok1 = internal::quic_conn_on_ack(conn, ack1, 30000, internal::PnSpaceId.ApplicationData);
 
+    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 2, 1200, true, 20000);
     let ack2 = internal::AckFrame {
         largest_acked:   2,
         ack_delay:       0,
@@ -40,6 +36,7 @@ fn test_quic_conn_bbr_ack_integration() {
     };
     let ok2 = internal::quic_conn_on_ack(conn, ack2, 45000, internal::PnSpaceId.ApplicationData);
 
+    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 3, 1200, true, 30000);
     let ack3 = internal::AckFrame {
         largest_acked:   3,
         ack_delay:       0,
@@ -48,7 +45,7 @@ fn test_quic_conn_bbr_ack_integration() {
     };
     let ok3 = internal::quic_conn_on_ack(conn, ack3, 60000, internal::PnSpaceId.ApplicationData);
 
-    // Trigger congestion signal via ECN-CE on packet 4 ACK
+    internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 4, 1200, true, 40000);
     let ack4 = internal::AckFrame {
         is_ecn:          true,
         largest_acked:   4,

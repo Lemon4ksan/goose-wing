@@ -416,7 +416,7 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
             conn.error_code = rfc::H3_ERR_FRAME_ERROR;
             return rfc::H3_ERR_FRAME_ERROR;
         }
-        if conn.role == H3ConnRole.Client && (max_sid & 0x03) != 0 {
+        if (max_sid & 0x03) != 0 {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_ID_ERROR;
             return rfc::H3_ERR_ID_ERROR;
@@ -779,6 +779,11 @@ fn get_or_create_bidi_stream(conn: H3Connection&, stream_id: u64) -> i32, u64 {
     if found {
         return s_idx, rfc::H3_ERR_NO_ERROR;
     }
+    if conn.role == H3ConnRole.Client {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_STREAM_CREATION;
+        return -1, rfc::H3_ERR_STREAM_CREATION;
+    }
     var reuse_slot: i32 = -1;
     for i in conn.streams.len {
         if conn.streams[i].state == H3StreamState.Closed {
@@ -1024,6 +1029,40 @@ fn process_h3_regular_field(
     return rfc::H3_ERR_NO_ERROR;
 }
 
+fn validate_single_h3_header(
+    conn:         H3Connection&,
+    s_idx:        i32,
+    field:        const HeaderField&,
+    seen_regular: bool&,
+    counts:       H3HeaderCounts&,
+    auth_val:     u8[..256]&,
+    host_val:     u8[..256]&,
+) -> u64 {
+    if has_ctl_chars(field.value[..]) {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
+    }
+
+    let is_pseudo = field.name.len > 0 && field.name[0] == ':';
+    if is_pseudo {
+        guard !seen_regular else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
+        }
+        return process_h3_pseudo_field(conn, s_idx, field, counts, auth_val);
+    }
+
+    seen_regular = true;
+    if is_forbidden_connection_header(field.name[..], field.value[..]) {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+        return rfc::H3_ERR_GENERAL_PROTOCOL;
+    }
+    return process_h3_regular_field(conn, s_idx, field, counts, host_val);
+}
+
 fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> u64 {
     var seen_regular = false;
     var counts = H3HeaderCounts { .. };
@@ -1031,36 +1070,20 @@ fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> 
     var host_val: u8[..256] = [];
 
     for field in fields {
-        if has_ctl_chars(field.value[..]) {
-            conn.state = H3ConnState.Closed;
-            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
-            return rfc::H3_ERR_GENERAL_PROTOCOL;
-        }
-
-        let is_pseudo = field.name.len > 0 && field.name[0] == ':';
-        if is_pseudo {
-            guard !seen_regular else {
-                conn.state = H3ConnState.Closed;
-                conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
-                return rfc::H3_ERR_GENERAL_PROTOCOL;
-            }
-            let p_err = process_h3_pseudo_field(conn, s_idx, field, counts, auth_val);
-            guard p_err == rfc::H3_ERR_NO_ERROR else { return p_err; }
-            continue;
-        }
-
-        seen_regular = true;
-        if is_forbidden_connection_header(field.name[..], field.value[..]) {
-            conn.state = H3ConnState.Closed;
-            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
-            return rfc::H3_ERR_GENERAL_PROTOCOL;
-        }
-        let r_err = process_h3_regular_field(conn, s_idx, field, counts, host_val);
-        guard r_err == rfc::H3_ERR_NO_ERROR else { return r_err; }
+        let h_err = validate_single_h3_header(conn, s_idx, field, seen_regular, counts, auth_val, host_val);
+        guard h_err == rfc::H3_ERR_NO_ERROR else { return h_err; }
     }
 
     if counts.pseudo_authority > 0 && counts.host > 0 {
         if !core::eq_ascii_fold(auth_val[..], host_val[..]) {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
+        }
+    }
+
+    if conn.role == H3ConnRole.Server && !counts.is_connect {
+        guard counts.pseudo_authority > 0 || counts.host > 0 else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;

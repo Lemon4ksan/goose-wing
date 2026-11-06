@@ -569,9 +569,6 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
     let ok_body = tls_read_exact(fd, ct_payload[..payload_len], timeout_ms);
     guard ok_body else { return -1; }
 
-    if ct == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC {
-        return 0;
-    }
     guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return -1; }
 
     var plain_dec: u8[..16640] = [];
@@ -1943,7 +1940,8 @@ fn select_server_alpn_from_ext(
     out_alpn:        u8[..32]&,
 ) -> bool {
     out_alpn.clear();
-    guard server_alpn_csv.len > 0 && alpn_ext.len >= 3 else { return true; }
+    guard alpn_ext.len >= 3 else { return false; }
+    guard server_alpn_csv.len > 0 else { return true; }
     var c = core::cursor_from(alpn_ext);
     let list_bytes, ok_l = core::read_u16_prefixed(c);
     guard ok_l && c.buf.len == 0 && list_bytes.len >= 1 else { return false; }

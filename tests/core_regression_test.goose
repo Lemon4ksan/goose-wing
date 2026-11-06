@@ -283,6 +283,57 @@ fn test_regress_core_sync_and_io(t: lit::T&) {
 }
 
 // ============================================================================
+// 6. Core Audit Defect Regressions (ByteBuilder, Signed Overflow, Host ZoneID)
+// ============================================================================
+fn test_regress_core_audit_bugs(t: lit::T&) {
+    t.run("Bug 23: ByteBuilder offset stack leak on oversized frame failure") { sub =>
+        var b = core::ByteBuilder { offsets: [], buf: [] };
+
+        let started = core::start_u8_prefix(b);
+        sub.assert_true(started, "start_u8_prefix succeeded");
+        sub.assert_eq(b.offsets.len, 1, "offset pushed");
+
+        for _ in 0..256 {
+            core::put_u8(b, 0xAA);
+        }
+
+        let ok_fin = core::finish_u8_prefix(b);
+        sub.assert_false(ok_fin, "finish_u8_prefix returns false for body > 255");
+        sub.assert_eq(b.offsets.len, 0, "offsets stack is popped even on overflow failure");
+
+        for _ in 0..8 {
+            let ok_start = core::start_u8_prefix(b);
+            sub.assert_true(ok_start, "can start new prefix after overflow rejection");
+            let ok_done = core::finish_u8_prefix(b);
+            sub.assert_true(ok_done, "can finish empty prefix");
+        }
+    };
+
+    t.run("Bug 24: ct_abs_i64 branchless absolute value on I64_MIN") { sub =>
+        let min_val = -9223372036854775807 - 1;
+        let abs_min = core::ct_abs_i64(min_val);
+        sub.assert_eq(abs_min, min_val, "ct_abs_i64(I64_MIN) returns I64_MIN without abort");
+
+        let res = core::mul_checked_i64(min_val, 1);
+        sub.assert_false(res.overflow, "I64_MIN * 1 does not overflow");
+        sub.assert_eq(res.value, min_val, "I64_MIN * 1 == I64_MIN");
+    };
+
+    t.run("Bug 25: strip_ipv6_zone_id preserves non-bracketed hostnames containing %25") { sub =>
+        var out: u8[..128] = [];
+
+        core::strip_ipv6_zone_id("sub%25domain.example.com", out);
+        sub.assert_eq(out[..], "sub%25domain.example.com", "hostname with %25 preserved without truncation");
+
+        core::strip_ipv6_zone_id("[fe80::1%25eth0]", out);
+        sub.assert_eq(out[..], "[fe80::1]", "IPv6 ZoneID stripped from bracketed address");
+
+        core::strip_ipv6_zone_id("[2001:db8::1]", out);
+        sub.assert_eq(out[..], "[2001:db8::1]", "clean IPv6 address preserved");
+    };
+}
+
+// ============================================================================
 // Main Runner Entrypoint
 // ============================================================================
 fn main() {
@@ -293,6 +344,7 @@ fn main() {
     lit::run_case(runner, "3. Core Crypto: Ed25519 Torsion, X25519 & AEAD Zeroize", test_regress_core_crypto);
     lit::run_case(runner, "4. Core Compress: Deflate Rollback, Zstream & Zstd", test_regress_core_compress);
     lit::run_case(runner, "5. Core Sync & IO: SingleFlight & Guarded Memory Bounds", test_regress_core_sync_and_io);
+    lit::run_case(runner, "6. Core Audit: ByteBuilder Leak, ct_abs_i64 & Host ZoneID", test_regress_core_audit_bugs);
 
     let ok = lit::finish(runner);
     assert(ok);

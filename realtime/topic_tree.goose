@@ -765,7 +765,7 @@ fn flush_node_palette_messages(tree: const TopicTree&, n_i64: i64, fd: i64, coun
     var sent_total: i64 = 0;
     for i in count {
         let msg_idx = tree.nodes[n_i64].message_indices[i] as i64;
-        if msg_idx >= 0 && msg_idx < tree.palette.len {
+        if msg_idx >= 0 && msg_idx < tree.palette_len {
             let sent = tcp_send(fd, tree.palette[msg_idx].wire[..]);
             if sent > 0 {
                 sent_total += 1;

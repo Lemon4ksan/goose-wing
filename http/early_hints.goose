@@ -77,6 +77,31 @@ fn find_link_entry_end(s: const u8[:]) -> i64 {
     return s.len;
 }
 
+fn read_next_link_param(rem: const u8[:]) -> const u8[:], const u8[:] {
+    let s = rem.trim_start_bytes(" \t;");
+    guard s.len > 0 else { return "", ""; }
+    let p_len = s.find_unquoted_byte(';');
+    let param = s[..p_len].trim_lws();
+    let next_rem = if p_len < s.len { s[p_len + 1..] } else { s[..0] };
+    return param, next_rem;
+}
+
+// Parses RFC 8288 semicolon-separated link parameters.
+//
+// Example:
+//   params_str = "; rel=preload; as=style"
+//   returns: true, link populated with rel="preload", as_type="style"
+fn parse_link_params(params_str: const u8[:], link: EarlyHintLink&) -> bool {
+    var rem = params_str;
+    while rem.len > 0 {
+        let param, next_rem = read_next_link_param(rem);
+        guard param.len > 0 else { break; }
+        guard parse_link_param(param, link) else { return false; }
+        rem = next_rem;
+    }
+    return true;
+}
+
 // Parses a single Link element enclosed in angle brackets with parameters.
 //
 // Example:
@@ -96,17 +121,7 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
     if after_uri.len > 0 {
         guard after_uri[0] == ';' else { return false; }
     }
-
-    var p_tok = make_byte_tokenizer(after_uri, ';');
-    loop {
-        let param_token, tok_ok = p_tok.token_next();
-        guard tok_ok else { break; }
-        let p_trim = param_token.trim_lws();
-        if p_trim.len > 0 {
-            guard parse_link_param(p_trim, link) else { return false; }
-        }
-    }
-    return true;
+    return parse_link_params(after_uri, link);
 }
 
 // Parses RFC 8288 `Link` header: `<uri>; rel=...; as=...`

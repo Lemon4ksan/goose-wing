@@ -113,6 +113,7 @@ fn get_metadata(ctx: const GrpcServerContext&, key: const u8[:]) -> const u8[:] 
 
 fn add_response_metadata(ctx: GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
     guard ctx.response_metadata.len < ctx.response_metadata.cap else { return false; }
+    guard key.len <= 64 && value.len <= 256 else { return false; }
     var item = GrpcMetadata { .. };
     item.key.append(key);
     item.value.append(value);
@@ -122,6 +123,7 @@ fn add_response_metadata(ctx: GrpcServerContext&, key: const u8[:], value: const
 
 fn add_response_trailer(ctx: GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
     guard ctx.response_trailers.len < ctx.response_trailers.cap else { return false; }
+    guard key.len <= 64 && value.len <= 256 else { return false; }
     var item = GrpcMetadata { .. };
     item.key.append(key);
     item.value.append(value);
@@ -148,7 +150,7 @@ enum GrpcMethodType {
 struct GrpcMethodEntry {
     service:     u8[..64]       = [],
     method:      u8[..64]       = [],
-    full_path:   u8[..128]      = [],
+    full_path:   u8[..160]      = [],
     method_type: GrpcMethodType = GrpcMethodType.Unary,
     handler_id:  u16            = 0,
 }
@@ -175,6 +177,7 @@ fn register_method(
     handler_id:  u16,
 ) -> bool {
     guard d.methods.len < d.methods.cap else { return false; }
+    guard service.len <= 64 && method.len <= 64 else { return false; }
     var entry = GrpcMethodEntry {
         method_type: method_type,
         handler_id:  handler_id,
@@ -395,9 +398,10 @@ inline fn process_grpc_request_header(
         return true;
     }
     guard out_ctx.metadata.len < out_ctx.metadata.cap else { return false; }
+    guard n.len <= 64 && v.len <= 256 else { return false; }
     var item = GrpcMetadata { .. };
-    item.key.append(n);
-    item.value.append(v);
+    let _ = item.key.try_set(n);
+    let _ = item.value.try_set(v);
     out_ctx.metadata.push(item);
     return true;
 }
@@ -565,7 +569,7 @@ fn decode_and_validate_single_lpm(
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
             return false;
         }
-    } else if wire_bytes.len > 0 {
+    } else {
         build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Incomplete 5-byte LPM header", ctx, res);
         return false;
     }
@@ -631,7 +635,7 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     }
 
     // 4. Match Registered Service & Method
-    var path_buf: u8[..128] = [];
+    var path_buf: u8[..160] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -716,7 +720,7 @@ fn prepare_grpc_unary_dispatch(
         build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
         return 0, false;
     }
-    var path_buf: u8[..128] = [];
+    var path_buf: u8[..160] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -803,7 +807,7 @@ fn dispatch_grpc_server_streaming<
         return true;
     }
 
-    var path_buf: u8[..128] = [];
+    var path_buf: u8[..160] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -943,7 +947,7 @@ fn dispatch_grpc_client_streaming<
         return true;
     }
 
-    var path_buf: u8[..128] = [];
+    var path_buf: u8[..160] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -1301,7 +1305,7 @@ fn handle_grpc_h2_wire_frame<
             if pseudo.path.len > 0 {
                 let _ = pending.url.try_set(pseudo.path[..]);
             } else {
-                let _ = pending.url.try_set("/helloworld.Greeter/SayHello");
+                pending.url.clear();
             }
             if pseudo.authority.len > 0 && header(pending, "host").len == 0 {
                 let _ = append_header(pending.headers, "host", pseudo.authority[..]);
@@ -1315,15 +1319,11 @@ fn handle_grpc_h2_wire_frame<
             if out_wire.len > 0 {
                 let _ = tcp_send(conn, out_wire[..]);
             }
+            reset_server_request_fast(pending);
         }
         return true;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA {
-        if pending.url.len == 0 {
-            let _ = pending.method.try_set("POST");
-            let _ = pending.url.try_set("/helloworld.Greeter/SayHello");
-            let _ = append_header(pending.headers, "content-type", "application/grpc");
-        }
         pending.body.append(payload);
         if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
             var res = Response { .. };
@@ -1389,7 +1389,7 @@ fn serve_grpc_h2_connection<
 
     var hpack_dec = internal::new_dynamic_table(4096);
     var hpack_enc = internal::new_dynamic_table(4096);
-    var pending = new_request("POST", "/helloworld.Greeter/SayHello");
+    var pending = new_request("POST", "");
 
     var in_buf:   u8[..65536] = [];
     var out_wire: u8[..65536] = [];

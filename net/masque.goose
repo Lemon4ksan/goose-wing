@@ -287,12 +287,12 @@ fn decode_address_request_entry(payload: const u8[:], cur: i64&, out_req: IpAddr
 //   returns: req.request_id = 1, req.ip_version = 4, req.requested_ip = [10, 0, 0, 1], req.prefix_len = 32, ok = true
 fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, bool {
     var req = IpAddressRequest { .. };
-    guard payload.len > 0 else { return req, true; }
+    guard payload.len > 0 else { return req, false; }
     var cur: i64 = 0;
     while cur < payload.len {
         guard decode_address_request_entry(payload, cur, req) else { return req, false; }
     }
-    return req, cur == payload.len;
+    return req, cur == payload.len && req.requested_ip.len > 0;
 }
 
 // Encodes an ADDRESS_ASSIGN Capsule (RFC 9484 Section 4.7.1):
@@ -363,12 +363,12 @@ fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAd
 //            assign.assigned_ip = [10, 0, 0, 1], assign.prefix_len = 32, ok = true
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
-    guard payload.len > 0 else { return assign, true; }
+    guard payload.len > 0 else { return assign, false; }
     var cur: i64 = 0;
     while cur < payload.len {
         guard decode_address_assign_entry(payload, cur, assign) else { return assign, false; }
     }
-    return assign, cur == payload.len;
+    return assign, cur == payload.len && assign.assigned_ip.len > 0;
 }
 
 // Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.7.3):
@@ -432,12 +432,12 @@ fn decode_route_entry(payload: const u8[:], cur: i64&, out_route: RouteAdvertise
 //   returns: route.ip_version = 4, start_ip = 10.0.0.0, end_ip = 10.0.0.255, ip_protocol = 0, ok = true
 fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisement, bool {
     var route = RouteAdvertisement { .. };
-    guard payload.len > 0 else { return route, true; }
+    guard payload.len > 0 else { return route, false; }
     var cur: i64 = 0;
     while cur < payload.len {
         guard decode_route_entry(payload, cur, route) else { return route, false; }
     }
-    return route, cur == payload.len;
+    return route, cur == payload.len && route.start_ip.len > 0;
 }
 
 // ---- MASQUE Tunnel Session Manager ---------------------------------------
@@ -581,7 +581,7 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
 
 fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool {
     let assign, ok_a = decode_address_assign_capsule(payload);
-    guard ok_a else { return false; }
+    guard ok_a && assign.assigned_ip.len > 0 else { return false; }
     tunnel.assigned_ip.clear();
     tunnel.assigned_ip.append(assign.assigned_ip[..]);
     tunnel.assigned_prefix_len = assign.prefix_len;

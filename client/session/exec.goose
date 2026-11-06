@@ -444,6 +444,10 @@ fn ingest_compression_dict_header(
     guard dict_hdr.len > 0 else { return; }
     let d_params, ok_p = parse_use_as_dictionary_header(dict_hdr);
     guard ok_p else { return; }
+    let enc = header(resp, "Content-Encoding");
+    if enc.len > 0 {
+        guard decode_body_with_dictionary(resp, dict_cache) else { return; }
+    }
     let pat = if d_params.match_pattern.len > 0 {
         d_params.match_pattern[..]
     } else {
@@ -589,7 +593,9 @@ fn dispatch_pooled_h1_hop(
     ingest_transport_response_headers(
         session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
     );
-    if keep_alive {
+    if resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
+        session.pool.close_pooled_connection(conn_id);
+    } else if keep_alive {
         session.pool.release_connection(conn_id, now_ns);
     } else {
         session.pool.close_pooled_connection(conn_id);
@@ -1009,7 +1015,7 @@ fn recv_h2_response_loop(
         if n > 0 {
             guard rx_accum.try_append(chunk[..n]) else { return false; }
         }
-        var ctrl_out: u8[..256] = [];
+        var ctrl_out: u8[..4096] = [];
         let ok_f, done = drain_h2_response_frames(
             rx_accum,
             stream_id,
@@ -1398,6 +1404,7 @@ fn compute_401_auth_header(
     www_auth:        const u8[:],
     auth_header_val: u8[..4096]&,
 ) -> bool {
+    auth_header_val.clear();
     if starts_with_fold(www_auth, "Digest") {
         let chal, ok_c = parse_digest_challenge(www_auth);
         guard ok_c else { return false; }
@@ -1495,6 +1502,7 @@ inline fn prepare_auth_retry_hop(
         ctx.body.clear();
         ctx.body.append(ctx.rewind_buf[..]);
     }
+    ctx.body_consumed = false;
     if session.enable_cookie_jar {
         ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.headers);
         remove_header_by_name(ctx.headers, "Cookie");

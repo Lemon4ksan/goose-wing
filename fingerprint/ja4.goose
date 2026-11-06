@@ -44,7 +44,7 @@ fn append_hex4<B>(val: u16, out: B&) {
 }
 
 fn append_two_digits<B>(n: i64, out: B&) {
-    let clamped = if n < 0 { 0 } else if n > 99 { 99 } else { n };
+    let clamped = min(max(n, 0), 99);
     out.push(('0' as i64 + (clamped / 10)) as u8);
     out.push(('0' as i64 + (clamped % 10)) as u8);
 }
@@ -174,36 +174,22 @@ fn compute_ja4<B>(
     is_quic:            bool,
     out:                B&,
 ) {
-    // 1. Protocol prefix: 't' for TCP TLS, 'q' for QUIC
     out.push(if is_quic { 'q' } else { 't' });
-
-    // 2. TLS Version (2 chars)
     out.append(ja4_version_string(supported_versions));
-
-    // 3. SNI indicator: 'd' for domain, 'i' for IP / none
     out.push(if sni { 'd' } else { 'i' });
 
-    // 4. Filter and count non-GREASE ciphers
     var filtered_ciphers: u16[>..] = [];
     filter_grease_u16(ciphers, filtered_ciphers);
     append_two_digits(filtered_ciphers.len, out);
 
-    // 5. Filter and count non-GREASE extensions
     var filtered_exts: u16[>..] = [];
     filter_grease_u16(extensions, filtered_exts);
     append_two_digits(filtered_exts.len, out);
 
-    // 6. ALPN (2 chars)
     ja4_alpn_string(alpn_protocol, out);
-
     out.push('_');
-
-    // 7. Cipher Hash
     append_ja4_ciphers_hash(filtered_ciphers, out);
-
     out.push('_');
-
-    // 8. Extension Hash
     append_ja4_extensions_hash(filtered_exts[..], sig_algorithms, out);
 }
 
@@ -309,7 +295,6 @@ fn append_ja4h_cookies_hash<B>(
     for i in cookie_names.len { order.push(i); }
     sort_cookie_indices(cookie_names, order);
 
-    // 8. Cookie Names Hash
     var cbuf: u8[>..] = [];
     for i in order.len {
         if i > 0 { cbuf.push(','); }
@@ -319,7 +304,6 @@ fn append_ja4h_cookies_hash<B>(
 
     out.push('_');
 
-    // 9. Cookie Values Hash (sorted name=value pairs)
     var vbuf: u8[>..] = [];
     for i in order.len {
         if i > 0 { vbuf.push(','); }
@@ -346,7 +330,6 @@ fn compute_ja4h<B>(
     cookie_values:   const u8[:][:],
     out:             B&,
 ) {
-    // 1. Method (2 chars lowercased)
     if method.len >= 2 {
         out.push(if method[0] >= 'A' && method[0] <= 'Z' { method[0] + 32 } else { method[0] });
         out.push(if method[1] >= 'A' && method[1] <= 'Z' { method[1] + 32 } else { method[1] });
@@ -354,7 +337,6 @@ fn compute_ja4h<B>(
         out.append("00");
     }
 
-    // 2. Protocol version (2 chars)
     if proto == "HTTP/1.0" {
         out.append("10");
     } else if proto == "HTTP/1.1" {
@@ -367,13 +349,9 @@ fn compute_ja4h<B>(
         out.append("00");
     }
 
-    // 3. Cookie present ('c' / 'n')
     out.push(if flags.has_cookie { 'c' } else { 'n' });
-
-    // 4. Referer present ('r' / 'n')
     out.push(if flags.has_referer { 'r' } else { 'n' });
 
-    // 5. Header count (excluding Cookie and Referer, 2 digits)
     var filtered_headers: const u8[:][>..] = [];
     for h in header_names {
         if !eq_ascii_fold(h, "cookie") && !eq_ascii_fold(h, "referer") {
@@ -381,18 +359,10 @@ fn compute_ja4h<B>(
         }
     }
     append_two_digits(filtered_headers.len, out);
-
-    // 6. Language code (4 chars)
     append_ja4h_language(accept_language, out);
-
     out.push('_');
-
-    // 7. Headers Hash
     append_ja4h_headers_hash(filtered_headers[..], out);
-
     out.push('_');
-
-    // 8. Cookie Names & 9. Cookie Values
     append_ja4h_cookies_hash(cookie_names, cookie_values, out);
 }
 

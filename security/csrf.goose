@@ -189,9 +189,12 @@ fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool 
 
 fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> bool {
     for &p in guard_cfg.exempt_paths {
-        if p[..] == path_str {
-            return true;
-        }
+        let prefix = p[..];
+        guard core::starts_with(path_str, prefix) else { continue; }
+        let plen = prefix.len;
+        if path_str.len == plen { return true; }
+        if core::ends_with(prefix, "/") { return true; }
+        if path_str[plen] == '/' { return true; }
     }
     return false;
 }
@@ -425,8 +428,13 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
 // Example:
 //   req.method = "POST", target_host = "api.example.com"
 //   returns: ctx with method = "POST", target_host = "api.example.com"
-fn extract_fetch_context<Req>(req: const Req&, target_host: const u8[:]) -> FetchContext {
+fn extract_fetch_context<Req>(
+    req:              const Req&,
+    target_host:      const u8[:],
+    is_sensitive_nav: bool = false,
+) -> FetchContext {
     var ctx = FetchContext { .. };
+    ctx.is_sensitive_navigation_route = is_sensitive_nav;
     ctx.method.clear();
     let m_len = min(req.method.len, ctx.method.cap);
     ctx.method.append(req.method[..m_len]);

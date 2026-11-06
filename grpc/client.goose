@@ -30,8 +30,8 @@ struct GrpcCallConfig {
 
 fn new_grpc_call_config(service: const u8[:], method: const u8[:]) -> GrpcCallConfig {
     var cfg = GrpcCallConfig { .. };
-    cfg.service.append(service);
-    cfg.method.append(method);
+    let _ = cfg.service.try_set(service);
+    let _ = cfg.method.try_set(method);
     return cfg;
 }
 
@@ -61,7 +61,7 @@ fn build_grpc_request_headers(
     append_header(out_headers, ":method", "POST");
     append_header(out_headers, ":scheme", scheme);
 
-    var path_buf: u8[..256] = [];
+    var path_buf: u8[..288] = [];
     path_buf.push('/');
     path_buf.append(cfg.service[..]);
     path_buf.push('/');
@@ -272,13 +272,13 @@ fn parse_grpc_unary_response(
 //   status_val = "0"
 //   returns: 0
 fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
-    var status_int: u32 = 0;
-    for b in trim_lws(status_val) {
-        if b >= '0' && b <= '9' {
-            status_int = status_int * 10 + (b - '0');
-        }
+    let trimmed = trim_lws(status_val);
+    guard trimmed.len > 0 else { return 2; }
+    let status_int, ok_code = core::parse_u32_dec(trimmed);
+    if ok_code {
+        return status_int;
     }
-    return status_int;
+    return 2;
 }
 
 // Processes incoming gRPC-Web response body and trailers.

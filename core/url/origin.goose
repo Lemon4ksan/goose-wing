@@ -29,16 +29,22 @@ inline fn find_substring(s: const u8[:], needle: const u8[:]) -> i64 {
 //   returns: out = "[fe80::1]"
 fn strip_ipv6_zone_id<B>(host_str: const u8[:], out: B&) {
     out.clear();
-    let pct_idx = find_substring(host_str, "%25");
-    if pct_idx >= 0 {
-        out.append(host_str[..pct_idx]);
-        let close_b = core::index_of_byte(host_str[pct_idx..], ']');
-        if close_b >= 0 {
-            out.append(host_str[(pct_idx + close_b)..]);
-        }
-    } else {
+    guard host_str.len > 0 && host_str[0] == '[' else {
         out.append(host_str);
+        return;
     }
+    let pct_idx = find_substring(host_str, "%25");
+    guard pct_idx >= 0 else {
+        out.append(host_str);
+        return;
+    }
+    let close_b = core::index_of_byte(host_str[pct_idx..], ']');
+    guard close_b >= 0 else {
+        out.append(host_str);
+        return;
+    }
+    out.append(host_str[..pct_idx]);
+    out.append(host_str[(pct_idx + close_b)..]);
 }
 
 // Formats an outgoing Host header wire string from a URL, stripping any IPv6 ZoneID (RFC 6874 §4).

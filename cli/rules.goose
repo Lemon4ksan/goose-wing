@@ -70,10 +70,12 @@ fn parse_status_spec(
         out_rule.fail_status = f_code as i32;
         out_rule.fail_count = f_cnt as u32;
 
-        let next_tok = next_ws_token(rest, pos);
+        var peek_pos = pos;
+        let next_tok = next_ws_token(rest, peek_pos);
         if next_tok.len > 0 {
             let final_code, ok3 = core::parse_u64_dec(next_tok);
             if ok3 && final_code >= 100 && final_code <= 599 {
+                pos = peek_pos;
                 out_rule.status_code = final_code as i32;
                 return true;
             }
@@ -120,22 +122,23 @@ fn parse_route_modifiers(trimmed: const u8[:], pos: i64&, out_rule: RouteRule&) 
 // Example:
 //   body_raw = "{\"ok\":true}"
 //   sets out_rule.body = "{\"ok\":true}", out_rule.content_type = "application/json"
-fn parse_route_body_spec(body_raw: const u8[:], out_rule: RouteRule&) {
+fn parse_route_body_spec(body_raw: const u8[:], out_rule: RouteRule&) -> bool {
     if body_raw.len >= 2 {
         let is_dquote = core::starts_with(body_raw, "\"") && core::ends_with(body_raw, "\"");
         let is_squote = core::starts_with(body_raw, "'") && core::ends_with(body_raw, "'");
         if is_dquote || is_squote {
             let end_idx = core::sub_sat_i64(body_raw.len, 1);
-            let _ = out_rule.body.try_set(body_raw[1..end_idx]);
-            return;
+            guard out_rule.body.try_set(body_raw[1..end_idx]) else { return false; }
+            return true;
         }
     }
     if body_raw.len > 0 {
-        let _ = out_rule.body.try_set(body_raw);
-        if body_raw[0] == '{' || body_raw[0] == '[' {
+        guard out_rule.body.try_set(body_raw) else { return false; }
+        if (body_raw[0] == '{' || body_raw[0] == '[') && out_rule.content_type == "text/plain" {
             let _ = out_rule.content_type.try_set("application/json");
         }
     }
+    return true;
 }
 
 // Parses a single scenario rule line into `out_rule`.
@@ -167,7 +170,7 @@ fn parse_route_rule_line(line: const u8[:], out_rule: RouteRule&) -> bool {
     guard parse_status_spec(status_tok, trimmed, pos, out_rule) else { return false; }
 
     parse_route_modifiers(trimmed, pos, out_rule);
-    parse_route_body_spec(core::trim_lws(trimmed[pos..]), out_rule);
+    guard parse_route_body_spec(core::trim_lws(trimmed[pos..]), out_rule) else { return false; }
     return true;
 }
 
@@ -224,7 +227,7 @@ fn append_json_escaped_bytes(src: const u8[:], out: u8[>..]&) {
             out.append("\\r");
         } else if b == '\t' {
             out.append("\\t");
-        } else if b >= 0x20 && b <= 0x7E {
+        } else if b >= 0x20 && b != 0x7F {
             out.push(b);
         }
     }
@@ -528,7 +531,7 @@ fn handle_builtin_httpbin(
         wing::set_header(res, "Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"user-agent\": \"");
-        res.body.append(req.header("User-Agent"));
+        append_json_escaped_bytes(req.header("User-Agent"), res.body);
         res.body.append("\"}\n");
         return true;
     }
@@ -538,7 +541,7 @@ fn handle_builtin_httpbin(
         wing::set_header(res, "Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"cookies\": \"");
-        res.body.append(req.header("Cookie"));
+        append_json_escaped_bytes(req.header("Cookie"), res.body);
         res.body.append("\"}\n");
         return true;
     }

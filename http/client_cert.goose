@@ -143,6 +143,7 @@ fn parse_client_cert_chain(
     reject_client_cert_chain(out_certs, out_lens, out_count);
 
     var rem = raw.trim_lws();
+    guard rem.len > 0 else { return false; }
     while rem.len > 0 {
         let b64, rest, ok = scan_sf_byte_sequence(rem);
         guard ok else {

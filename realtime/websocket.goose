@@ -807,11 +807,11 @@ enum WsHeartbeatAction {
 // Arms connection slot timeouts in modular tick wheel (uSockets loop.c / uWebSockets pattern)
 fn arm_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) {
     if ws.idle_timeout_s > 0 {
-        let idle_sec = if ws.idle_timeout_s > 239 { 239 as u8 } else { ws.idle_timeout_s as u8 };
+        let idle_sec = min(ws.idle_timeout_s, 239) as u8;
         ws.timeout_slot = tick_timer_arm(wheel, idle_sec);
         if ws.send_pings_automatically && ws.idle_timeout_s > 1 {
-            let ping_delay = ((ws.idle_timeout_s / 2) % 240) as u8;
-            ws.ping_slot = tick_timer_arm(wheel, if ping_delay > 0 { ping_delay } else { 1 });
+            let ping_delay = max(1, idle_sec / 2);
+            ws.ping_slot = tick_timer_arm(wheel, ping_delay);
         } else {
             ws.ping_slot = TICK_TIMER_DISARMED;
         }
@@ -860,7 +860,8 @@ fn tick_heartbeat<B>(ws: WebSocketSession&, wheel: const TickTimerWheel&, out_wi
     let action = check_heartbeat(ws, wheel);
     if action == WsHeartbeatAction.SendPing {
         send_ping(ws, "", out_wire);
-        let ping_delay = if ws.idle_timeout_s > 1 { ((ws.idle_timeout_s / 2) % 240) as u8 } else { 1 as u8 };
+        let idle_sec = min(ws.idle_timeout_s, 239) as u8;
+        let ping_delay = if ws.idle_timeout_s > 1 { max(1, idle_sec / 2) } else { 1 };
         ws.ping_slot = tick_timer_arm(wheel, ping_delay);
     } else if action == WsHeartbeatAction.CloseIdle {
         close(ws, rfc::WS_STATUS_NORMAL, "Idle timeout", out_wire);
@@ -2035,6 +2036,14 @@ inline fn flush_ws_wire(conn_fd: i64, wire: const u8[:]) {
     }
 }
 
+inline fn ws_buf_cap<B>(b: const B&) -> i64 {
+    return b.cap;
+}
+
+inline fn ws_buf_cap(b: const u8[>..]&) -> i64 {
+    return 0x7FFFFFFF;
+}
+
 // Consumes and dispatches all complete WebSocket frames currently buffered in `in_slice`.
 // Returns the total number of bytes consumed from `in_slice`.
 fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
@@ -2049,8 +2058,9 @@ fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
     var reply:  u8[..1024] = [];
     while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
         reply.clear();
+        let eff_frag_cap = min(ws_buf_cap(frag_buf), ws.max_payload_length as i64);
         let consumed, handled, view = consume_frame_view_into(
-            ws, in_slice[cursor..], frag_buf, ws.max_payload_length as i64, reply,
+            ws, in_slice[cursor..], frag_buf, eff_frag_cap, reply,
         );
         if !handled || consumed <= 0 {
             break;
@@ -2096,7 +2106,7 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
         if recvd == 0 {
             continue;
         }
-        let max_wire_cap = core::add_sat_i64(ws.max_payload_length as i64, 65536);
+        let max_wire_cap = min(ws_buf_cap(in_buf), core::add_sat_i64(ws.max_payload_length as i64, 65536));
         guard core::add_sat_i64(in_buf.len, recvd) <= max_wire_cap else {
             close_reply.clear();
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "frame exceeds wire buffer capacity", close_reply);

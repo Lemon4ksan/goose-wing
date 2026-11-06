@@ -89,7 +89,7 @@ fn new_dns_candidate(
         precedence: prec,
         ..
     };
-    c.ip.append(ip_str);
+    guard c.ip.try_append(ip_str) else { return c; }
     return c;
 }
 
@@ -420,6 +420,9 @@ fn bind_winner_attempt(manager: AttemptManager&, winner_id: i32, is_alternative_
     var found = false;
     for &att in manager.attempts {
         if att.attempt_id == winner_id {
+            guard att.state != AttemptState.Failed && att.state != AttemptState.Cancelled else {
+                return false;
+            }
             att.state = AttemptState.Connected;
             manager.winner_attempt_id = winner_id;
             manager.has_winner = true;

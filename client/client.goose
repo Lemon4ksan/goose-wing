@@ -54,11 +54,11 @@ struct ClientConfig {
 type SessionConfig = ClientConfig;
 
 struct ClientCredentials {
-    username:        u8[..64] = [],
-    password:        u8[..64] = [],
-    has_credentials: bool     = false,
-    nonce_counter:   u32      = 1,
-    cnonce:          u8[..32] = "f2/IZUnWe0rEzWeA",
+    username:        u8[..128] = [],
+    password:        u8[..128] = [],
+    has_credentials: bool      = false,
+    nonce_counter:   u32       = 1,
+    cnonce:          u8[..32]  = "f2/IZUnWe0rEzWeA",
 }
 
 struct Client {
@@ -222,7 +222,8 @@ fn new_session<F: fn(Client&)>() -> Client {
 
 fn set_base_url(session: Session&, url: const u8[:]) {
     session.base_url.clear();
-    session.base_url.append(url);
+    let n = min(url.len, session.base_url.cap);
+    session.base_url.append(url[..n]);
 }
 
 fn apply_profile(client: Client&, profile: const BrowserProfile&) {
@@ -290,11 +291,11 @@ fn ja4(session: const Session&) -> u8[..64] {
     return ja4(session.profile_spec);
 }
 
-fn p0f(session: const Session&) -> u8[..128] {
+fn p0f(session: const Session&) -> u8[..256] {
     return p0f(session.profile_spec);
 }
 
-fn akamai(session: const Session&) -> u8[..256] {
+fn akamai(session: const Session&) -> u8[..512] {
     return akamai(session.profile_spec);
 }
 
@@ -304,7 +305,8 @@ fn akamai_hash(session: const Session&) -> u8[..32] {
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
     session.proxy_url.clear();
-    session.proxy_url.append(proxy_url);
+    let n = min(proxy_url.len, session.proxy_url.cap);
+    session.proxy_url.append(proxy_url[..n]);
 }
 
 fn set_timeout_ms(session: Session&, ms: i64) {
@@ -326,7 +328,8 @@ fn set_redirect_mode(session: Session&, mode: RedirectMode) {
 fn enable_doh(session: Session&, endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) {
     session.enable_doh = true;
     session.doh.endpoint.clear();
-    session.doh.endpoint.append(endpoint);
+    let n = min(endpoint.len, session.doh.endpoint.cap);
+    session.doh.endpoint.append(endpoint[..n]);
     session.doh.use_post = use_post;
 }
 
@@ -559,13 +562,17 @@ fn clear_pipeline_logs(session: Session&) {
 
 // ---- authentication credentials configuration (rfc 7616 digest & basic) ----
 
-fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) {
+fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) -> bool {
+    guard username.len <= session.creds.username.cap && password.len <= session.creds.password.cap else {
+        return false;
+    }
     session.creds.username.clear();
     session.creds.username.append(username);
     session.creds.password.clear();
     session.creds.password.append(password);
     session.creds.has_credentials = true;
     session.creds.nonce_counter = 1;
+    return true;
 }
 
 fn clear_credentials(session: Session&) {
@@ -601,29 +608,39 @@ fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
     return load_hsts_cache(session.hsts, data, now_sec);
 }
 
-fn allow_port(session: Session&, port_num: i32) {
-    if session.ssrf_guard.allowed_ports.len < 16 {
-        session.ssrf_guard.allowed_ports.push(port_num);
+fn allow_port(session: Session&, port_num: i32) -> bool {
+    guard !session.ssrf_guard.allowed_ports.contains(port_num) else { return true; }
+    guard session.ssrf_guard.allowed_ports.len < session.ssrf_guard.allowed_ports.cap else {
+        return false;
     }
+    session.ssrf_guard.allowed_ports.push(port_num);
+    return true;
 }
 
-fn deny_port(session: Session&, port_num: i32) {
-    if session.ssrf_guard.denied_ports.len < 16 {
-        session.ssrf_guard.denied_ports.push(port_num);
+fn deny_port(session: Session&, port_num: i32) -> bool {
+    guard !session.ssrf_guard.denied_ports.contains(port_num) else { return true; }
+    guard session.ssrf_guard.denied_ports.len < session.ssrf_guard.denied_ports.cap else {
+        return false;
     }
+    session.ssrf_guard.denied_ports.push(port_num);
+    return true;
 }
 
 fn set_clock_us(session: Session&, now_us: i64) {
     session.virtual_clock_us = now_us;
 }
 
-fn trust_location_host(session: Session&, host_name: const u8[:]) {
-    if session.trusted_location_hosts.len < 8 {
-        var host_buf: u8[..128] = [];
-        host_buf.append(host_name);
-        to_lower(host_buf[..]);
-        session.trusted_location_hosts.push(host_buf);
+fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
+    guard host_name.len > 0 && host_name.len <= 128 else { return false; }
+    guard !is_trusted_location_host(session, host_name) else { return true; }
+    guard session.trusted_location_hosts.len < session.trusted_location_hosts.cap else {
+        return false;
     }
+    var host_buf: u8[..128] = [];
+    host_buf.append(host_name);
+    to_lower(host_buf[..]);
+    session.trusted_location_hosts.push(host_buf);
+    return true;
 }
 
 fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {

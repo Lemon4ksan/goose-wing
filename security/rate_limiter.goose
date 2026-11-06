@@ -255,10 +255,10 @@ fn check_rate_limit(
         }
     }
 
-    // Allocate slot in shard or evict expired TAT
+    // Allocate slot in shard: prefer inactive slot, then grow capacity, then evict expired TAT
     var slot_idx: i32 = -1;
     for idx in limiter.shards[shard_idx].slots.len {
-        if !limiter.shards[shard_idx].slots[idx].active || limiter.shards[shard_idx].slots[idx].cell.tat_ns <= now_ns {
+        if !limiter.shards[shard_idx].slots[idx].active {
             slot_idx = idx as i32;
             break;
         }
@@ -268,6 +268,15 @@ fn check_rate_limit(
         var new_slot = KeyedGcraSlot { active: false, .. };
         limiter.shards[shard_idx].slots.push(new_slot);
         slot_idx = (limiter.shards[shard_idx].slots.len - 1) as i32;
+    }
+
+    if slot_idx < 0 {
+        for idx in limiter.shards[shard_idx].slots.len {
+            if limiter.shards[shard_idx].slots[idx].cell.tat_ns <= now_ns {
+                slot_idx = idx as i32;
+                break;
+            }
+        }
     }
 
     if slot_idx >= 0 {
@@ -323,25 +332,34 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
     pgcra.rng_state ^= pgcra.rng_state >> 27;
 
     let sampled = (pgcra.rng_state % rate) == 0;
-    if !sampled {
-        let tat_curr = pgcra.cell.tat_ns;
-        let rem = gcra_remaining_burst(
-            pgcra.quota.delay_tolerance_ns,
-            pgcra.quota.emission_interval_ns,
-            pgcra.quota.burst,
-            tat_curr,
-            now_ns,
-        );
-        let reset_after = if tat_curr > now_ns { core::sub_sat_u64(tat_curr, now_ns) } else { 0 };
-        return RateLimitDecision.Allowed {
-            remaining_burst: rem,
-            new_tat_ns:      tat_curr,
-            reset_after_ns:  reset_after,
+    guard !sampled else {
+        let scaled_cost = core::mul_sat_u64(cost_n, rate);
+        return gcra_check_n(pgcra.quota, pgcra.cell, scaled_cost, now_ns);
+    }
+
+    let tat_curr = pgcra.cell.tat_ns;
+    let limit_window = core::add_sat_u64(pgcra.quota.delay_tolerance_ns, max(pgcra.quota.emission_interval_ns, 1));
+    let t_allow = core::sub_sat_u64(tat_curr, limit_window);
+    guard now_ns >= t_allow else {
+        return RateLimitDecision.Rejected {
+            retry_after_ns: t_allow - now_ns,
+            current_tat_ns: tat_curr,
         };
     }
 
-    let scaled_cost = core::mul_sat_u64(cost_n, rate);
-    return gcra_check_n(pgcra.quota, pgcra.cell, scaled_cost, now_ns);
+    let rem = gcra_remaining_burst(
+        pgcra.quota.delay_tolerance_ns,
+        pgcra.quota.emission_interval_ns,
+        pgcra.quota.burst,
+        tat_curr,
+        now_ns,
+    );
+    let reset_after = core::sub_sat_u64(tat_curr, now_ns);
+    return RateLimitDecision.Allowed {
+        remaining_burst: rem,
+        new_tat_ns:      tat_curr,
+        reset_after_ns:  reset_after,
+    };
 }
 
 // ---- ietf ratelimit header formatting --------------------------------------

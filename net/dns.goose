@@ -515,10 +515,19 @@ fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16
 
     var encoded_q: u8[..1024] = [];
     core::base64url_encode(raw_query[..], encoded_q);
-    guard out_url.len + server_url.len + 5 + encoded_q.len <= out_url.cap else { return false; }
+
+    let sep: const u8[:] = if !core::contains_byte(server_url, '?') {
+        "?dns="
+    } else if server_url[server_url.len - 1] == '?' || server_url[server_url.len - 1] == '&' {
+        "dns="
+    } else {
+        "&dns="
+    };
+
+    guard out_url.len + server_url.len + sep.len + encoded_q.len <= out_url.cap else { return false; }
 
     out_url.append(server_url);
-    out_url.append("?dns=");
+    out_url.append(sep);
     out_url.append(encoded_q[..]);
     return true;
 }
@@ -563,10 +572,14 @@ fn dns_cache_lookup(
     for &e in cache.entries {
         if e.valid && e.qtype == qtype && core::eq_ascii_fold(e.domain[..], domain) {
             let elapsed = now_sec - e.inserted_at_sec;
-            if elapsed < e.ttl_sec {
+            guard elapsed >= 0 else { return DnsCacheStatus.Expired; }
+            let ttl_i64:   i64 = e.ttl_sec;
+            let stale_i64: i64 = e.stale_ttl_sec;
+            let total_ttl_i64 = core::add_sat_i64(ttl_i64, stale_i64);
+            if elapsed < ttl_i64 {
                 out_entry = e;
                 return DnsCacheStatus.Fresh;
-            } else if elapsed < (e.ttl_sec + e.stale_ttl_sec) {
+            } else if elapsed < total_ttl_i64 {
                 out_entry = e;
                 return DnsCacheStatus.Stale;
             } else {

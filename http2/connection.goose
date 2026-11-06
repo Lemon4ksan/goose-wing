@@ -467,11 +467,7 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if !found {
         if hdr.stream_id <= s.last_peer_stream_id {
-            let _, was_closed = find_closed_h2_stream_idx(s, hdr.stream_id);
-            if was_closed {
-                return rfc::H2_ERR_STREAM_CLOSED;
-            }
-            return rfc::H2_ERR_PROTOCOL_ERROR;
+            return rfc::H2_ERR_STREAM_CLOSED;
         }
 
         // RFC 9113 Section 6.8 & Go #82365:
@@ -621,6 +617,10 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
 
 // RFC 9113 Section 6.8 & Go #82365: Ingests GOAWAY frame (last_stream_id and error_code).
 fn apply_goaway(s: H2Connection&, last_stream_id: u32, error_code: u32) -> u32 {
+    let sender_is_client = s.is_server;
+    guard rfc::validate_goaway_last_stream_id(last_stream_id, sender_is_client) else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     s.goaway_received = true;
     s.goaway_last_stream_id = last_stream_id & 0x7FFFFFFF;
     s.goaway_error_code = error_code;

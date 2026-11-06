@@ -29,7 +29,7 @@ struct CorsPolicy {
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }
-    guard origin_pattern.len <= 128 else { return false; }
+    guard origin_pattern.len > 0 && origin_pattern.len <= 128 else { return false; }
     var entry: u8[..128] = [];
     entry.append(origin_pattern);
     policy.allowed_origins.push(entry);
@@ -144,6 +144,11 @@ fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
     return false;
 }
 
+// Validates policy configuration invariants (Fetch §3.2.2 forbids '*' with allow_credentials).
+fn validate_cors_policy(policy: const CorsPolicy&) -> bool {
+    return !(policy.allow_credentials && has_wildcard_origin(policy));
+}
+
 // Checks whether a comma-separated HTTP header value contains a specific token (case-insensitive, RFC 9110 §5.6.1).
 inline fn header_list_has_token(header_val: const u8[:], token: const u8[:]) -> bool {
     var rest = header_val;
@@ -199,7 +204,7 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
     guard origin.len > 0 else { return CorsResult.NoCors; }
 
     // Check configuration validity: allow_credentials == true with wildcard "*" origin is invalid (Fetch §3.2.2)
-    if policy.allow_credentials && has_wildcard_origin(policy) {
+    if !validate_cors_policy(policy) {
         return CorsResult.InvalidConfig;
     }
 

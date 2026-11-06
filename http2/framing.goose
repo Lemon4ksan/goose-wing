@@ -228,8 +228,13 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
     if param_id == rfc::H2_SETTING_MAX_FRAME_SIZE && (val < 16384 || val > 16777215) {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
-    if param_id == rfc::H2_SETTING_ENABLE_CONNECT_PROTO && val != 0 && val != 1 {
-        return rfc::H2_ERR_PROTOCOL_ERROR;
+    if param_id == rfc::H2_SETTING_ENABLE_CONNECT_PROTO {
+        if !receiver_is_client {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+        if val != 0 && val != 1 {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
     }
     if param_id == rfc::H2_SETTING_NO_RFC7540_PRIORITIES && val != 0 && val != 1 {
         return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -254,16 +259,16 @@ fn parse_priority_update_payload(
         return 0, p, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
 
-    let p0 = ((payload[0] & 0x7F) as u32) << 24;
-    let p1 = (payload[1] as u32) << 16;
-    let p2 = (payload[2] as u32) << 8;
-    let prioritized_stream_id = p0 | p1 | p2 | payload[3];
+    let prioritized_stream_id = core::read_be_u32(payload, 0) & 0x7FFFFFFF;
 
     guard prioritized_stream_id != 0 else {
         return 0, p, rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
     let field_value = payload[4..];
+    if core::trim_ascii_space(field_value).len == 0 {
+        return prioritized_stream_id, p, rfc::H2_ERR_NO_ERROR;
+    }
     let parsed, ok = wing::parse_http_priority(field_value, default_incremental);
     guard ok else {
         return prioritized_stream_id, p, rfc::H2_ERR_PROTOCOL_ERROR;

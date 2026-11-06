@@ -405,7 +405,6 @@ fn decompress_dcz_payload<B>(
         out_buf.append(decompressed[..]);
         return true;
     }
-    out_buf.clear();
     return false;
 }
 
@@ -432,7 +431,6 @@ fn decompress_dcb_payload<B>(
         out_buf.append(decompressed[..]);
         return true;
     }
-    out_buf.clear();
     return false;
 }
 

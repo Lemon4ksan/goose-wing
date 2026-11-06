@@ -38,8 +38,8 @@ fn read_nvs_value(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
     guard cursor < raw.len else { return "", false; }
 
     if raw[cursor] == '(' {
-        let rel_close = core::index_of_byte(raw[cursor..], ')');
-        guard rel_close >= 0 else { return "", false; }
+        let rel_close = raw[cursor..].find_unquoted_byte(')');
+        guard rel_close < raw[cursor..].len else { return "", false; }
         let list_end = cursor + rel_close + 1;
         let val_slice = raw[cursor..list_end];
         cursor = list_end;
@@ -172,11 +172,22 @@ fn read_next_quoted_string(s: const u8[:], cursor: i64&) -> const u8[:], bool, b
     }
     guard s[cursor] == '"' else { return "", false, false; }
     let start = cursor + 1;
-    let rel_q = core::index_of_byte(s[start..], '"');
-    guard rel_q >= 0 else { return "", false, false; }
-    let end = start + rel_q;
-    cursor = end + 1;
-    return s[start..end], true, true;
+    var p = cursor + 1;
+    var escaped = false;
+    while p < s.len {
+        let b = s[p];
+        if escaped {
+            escaped = false;
+        } else if b == '\\' {
+            escaped = true;
+        } else if b == '"' {
+            break;
+        }
+        p += 1;
+    }
+    guard p < s.len && s[p] == '"' && !escaped else { return "", false, false; }
+    cursor = p + 1;
+    return s[start..p], true, true;
 }
 
 // Parses space-separated quoted strings enclosed in parentheses.

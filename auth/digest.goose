@@ -636,7 +636,7 @@ fn sync_digest_stale_challenge(
     nc:       u32&,
 ) -> bool {
     guard stored.valid && incoming.valid && incoming.stale else { return false; }
-    guard creds.username.len > 0 && creds.password.len > 0 else { return false; }
+    guard creds.username.len > 0 else { return false; }
     guard incoming.nonce.len > 0 && stored.nonce.try_set(incoming.nonce[..]) else { return false; }
     guard sync_opt_buf(stored.opaque, incoming.opaque[..]) else { return false; }
     guard sync_opt_buf(stored.realm, incoming.realm[..]) else { return false; }

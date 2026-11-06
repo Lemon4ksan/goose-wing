@@ -47,17 +47,23 @@ inline fn grpc_hex_char(n: u8) -> u8 {
     return (core::add_sat_u64('0', n)) as u8;
 }
 
+inline fn is_grpc_message_unencoded(b: u8) -> bool {
+    return b >= 0x20 && b <= 0x7E && b != '%';
+}
+
 // Percent-encodes message string for `grpc-message` header.
 // Characters in 0x20..0x7E except '%' remain unescaped; all others are %XX encoded.
-fn encode_grpc_message<B>(raw: const u8[:], out: B&) {
+fn encode_grpc_message<B>(raw: const u8[:], out: B&, max_out_len: i64 = -1) {
     for b in raw {
-        if b >= 0x20 && b <= 0x7E && b != '%' {
+        if is_grpc_message_unencoded(b) {
+            if max_out_len >= 0 && out.len >= max_out_len { break; }
             out.push(b);
-        } else {
-            out.push('%');
-            out.push(grpc_hex_char((b >> 4) & 0x0F));
-            out.push(grpc_hex_char(b & 0x0F));
+            continue;
         }
+        if max_out_len >= 0 && core::add_sat_i64(out.len, 3) > max_out_len { break; }
+        out.push('%');
+        out.push(grpc_hex_char((b >> 4) & 0x0F));
+        out.push(grpc_hex_char(b & 0x0F));
     }
 }
 
@@ -66,6 +72,7 @@ inline fn combine_hex_nibbles(h: i32, l: i32) -> u8 {
 }
 
 // Percent-decodes `grpc-message` header value into raw message bytes.
+// Clamps decoded output to 256 bytes to prevent bounded-array overflow.
 //
 // Example:
 //   encoded = "unknown%20error"
@@ -75,6 +82,7 @@ fn decode_grpc_message<B>(encoded: const u8[:], out: B&) {
     var i: u64 = 0;
     let total = encoded.len as u64;
     while i < total {
+        guard out.len < 256 else { break; }
         let idx = i as i64;
         if encoded[idx] == '%' && core::add_sat_u64(i, 2) < total {
             let i1 = core::add_sat_u64(i, 1) as i64;
@@ -280,6 +288,7 @@ inline fn write_protowire_varint(val: u64, dst: u8[:], pos: u64&) {
 //   code = 3, msg = "bad", dst = [0; 16]
 //   returns: (7, true), dst[0..7] = [0x08, 0x03, 0x12, 0x03, 'b', 'a', 'd']
 fn build_grpc_status_details(code: i32, msg: const u8[:], dst: u8[:]) -> i32, bool {
+    guard code >= 0 else { return 0, false; }
     let code_u64 = code as u64;
     let code_len = if code != 0 { core::add_sat_u64(1, protowire_varint_len(code_u64)) } else { 2 };
     let msg_len_u64 = msg.len as u64;

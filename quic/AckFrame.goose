@@ -54,6 +54,7 @@ struct PnSpaceState {
     largest_sent_pn:               u64                   = 0,
     has_sent_packets:              bool                  = false,
     largest_acked_pn:              u64                   = 0,
+    largest_acked_ce:              u64                   = 0,
     has_acked_packets:             bool                  = false,
     largest_recv_pn:               u64                   = 0,
     has_recv_packets:              bool                  = false,

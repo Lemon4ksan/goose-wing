@@ -315,15 +315,14 @@ fn start_u8_prefix(b: ByteBuilder&) -> bool {
 fn finish_u8_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
+    b.offsets.pop();
     guard start >= 0 && start < b.buf.len else {
-        b.offsets.pop();
         return false;
     }
     let body_len = b.buf.len - start - 1;
     guard body_len >= 0 && body_len <= 255 else {
         return false;
     }
-    b.offsets.pop();
     b.buf[start] = body_len as u8;
     return true;
 }
@@ -341,15 +340,14 @@ fn start_u16_prefix(b: ByteBuilder&) -> bool {
 fn finish_u16_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
+    b.offsets.pop();
     guard start >= 0 && start + 1 < b.buf.len else {
-        b.offsets.pop();
         return false;
     }
     let body_len = b.buf.len - start - 2;
     guard body_len >= 0 && body_len <= 65535 else {
         return false;
     }
-    b.offsets.pop();
     b.buf[start] = ((body_len >> 8) & 0xFF) as u8;
     b.buf[start + 1] = (body_len & 0xFF) as u8;
     return true;
@@ -369,15 +367,14 @@ fn start_u24_prefix(b: ByteBuilder&) -> bool {
 fn finish_u24_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
+    b.offsets.pop();
     guard start >= 0 && start + 2 < b.buf.len else {
-        b.offsets.pop();
         return false;
     }
     let body_len = b.buf.len - start - 3;
     guard body_len >= 0 && body_len <= 16777215 else {
         return false;
     }
-    b.offsets.pop();
     b.buf[start] = ((body_len >> 16) & 0xFF) as u8;
     b.buf[start + 1] = ((body_len >> 8) & 0xFF) as u8;
     b.buf[start + 2] = (body_len & 0xFF) as u8;

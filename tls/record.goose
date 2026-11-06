@@ -536,7 +536,10 @@ fn tls_record_decrypt_aes128_gcm_into(
     let dec_len, ok_open = core::fused_aes_gcm_decrypt(
         key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
     );
-    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+    guard ok_open && dec_len == ct_len else {
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.BadRecordMac, false;
+    }
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
@@ -768,7 +771,10 @@ fn tls_record_decrypt_aes256_gcm_into(
     let dec_len, ok_open = core::aes256_gcm_open_into(
         key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
     );
-    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+    guard ok_open && dec_len == ct_len else {
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.BadRecordMac, false;
+    }
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
@@ -820,7 +826,10 @@ fn tls_record_decrypt_chacha20_poly1305_into(
     let dec_len, ok_open = core::chacha20_poly1305_open_into(
         key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
     );
-    guard ok_open && dec_len == ct_len else { return 0, 0, TlsAlert.BadRecordMac, false; }
+    guard ok_open && dec_len == ct_len else {
+        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        return 0, 0, TlsAlert.BadRecordMac, false;
+    }
 
     let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
@@ -957,17 +966,14 @@ fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_e
 }
 
 // Encodes the 5-byte TLSCiphertext record header (RFC 8446 §5.2).
-// In TLS 1.3, TLSCiphertext outer content type MUST be application_data (0x17)
-// or change_cipher_spec (0x14) for middlebox compatibility.
+// In TLS 1.3, TLSCiphertext outer content type MUST be application_data (0x17).
 // Length MUST be at least 17 bytes (1 byte inner content type + 16 bytes AEAD tag)
 // and at most rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN (16640 bytes).
 inline fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len: u16) -> bool {
     guard ciphertext_len >= 17 && (ciphertext_len as i64) <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
         return false;
     }
-    let is_app = content_type == rfc::TLS_CONTENT_APPLICATION_DATA;
-    let is_ccs = content_type == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC;
-    guard is_app || is_ccs else {
+    guard content_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
         return false;
     }
     guard core::add_sat_i64(out.len, 5) <= out.cap else {

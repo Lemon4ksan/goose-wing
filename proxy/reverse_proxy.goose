@@ -76,6 +76,7 @@ inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
     if eq_ascii_fold(name, "forwarded") { return true; }
     if eq_ascii_fold(name, "client-cert") { return true; }
     if eq_ascii_fold(name, "client-cert-chain") { return true; }
+    if eq_ascii_fold(name, "via") { return true; }
     return false;
 }
 
@@ -197,7 +198,13 @@ fn inject_via_header(
     pseudonym:    const u8[:],
     http_version: const u8[:],
 ) -> bool {
-    guard pseudonym.len > 0 else { return true; }
+    guard pseudonym.len > 0 else {
+        let orig = get_header(in_headers, "Via");
+        if orig.len > 0 {
+            return append_header(out_headers, "Via", orig);
+        }
+        return true;
+    }
     var via_buf: u8[..64] = [];
     guard format_via(via_buf, pseudonym, http_version) else { return false; }
     let existing = get_header(in_headers, "Via");
@@ -205,7 +212,7 @@ fn inject_via_header(
         return append_header(out_headers, "Via", via_buf[..]);
     }
     let needed = core::add_sat_u64(core::add_sat_u64(existing.len as u64, 2), via_buf.len as u64);
-    var combined: u8[..256] = [];
+    var combined: u8[..1024] = [];
     guard needed <= (combined.cap as u64) else { return false; }
     combined.append(existing);
     combined.append(", ");
@@ -276,9 +283,15 @@ fn filter_and_forward_headers(
 
     // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
     let cert_der_len = config.client_cert_der_len;
-    if config.forward_client_cert && cert_der_len > 0 && cert_der_len <= CLIENT_CERT_MAX_DER_LEN {
+    let actual_der_len = config.client_cert_der.len as i32;
+    let eff_der_len = if cert_der_len > 0 && cert_der_len <= actual_der_len {
+        cert_der_len
+    } else {
+        actual_der_len
+    };
+    if config.forward_client_cert && eff_der_len > 0 && eff_der_len <= CLIENT_CERT_MAX_DER_LEN {
         var enc: u8[..8192] = [];
-        let n = encode_client_cert(config.client_cert_der[..cert_der_len], enc);
+        let n = encode_client_cert(config.client_cert_der[..eff_der_len], enc);
         if n > 0 {
             guard append_header(out_headers, "Client-Cert", enc[..n]) else { return false; }
         }
@@ -465,6 +478,7 @@ fn prepare_proxy_request_at<B>(
         proxy.config,
     ) else {
         release_upstream_connection(proxy.cluster, target_idx);
+        record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
 
@@ -475,6 +489,7 @@ fn prepare_proxy_request_at<B>(
         core::format_u64_dec(body.len as u64, cl_buf);
         guard append_header(forward_headers, "Content-Length", cl_buf[..]) else {
             release_upstream_connection(proxy.cluster, target_idx);
+            record_proxy_dropped(proxy);
             return PROXY_TARGET_NONE, false;
         }
     }

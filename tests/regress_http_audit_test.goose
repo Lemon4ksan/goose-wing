@@ -643,10 +643,65 @@ fn test_f015_h2_dict_forwarded_hsts_trace(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// F016: Diagnostics Escapes, NVS Quotes/Parens, Hints Semicolons & Cert Chain
+// ----------------------------------------------------------------------------
+fn test_f016_diagnostics_nvs_hints_cert(t: lit::T&) {
+    t.run("parse_proxy_status_header handles escaped quotes in details") { sub =>
+        var entries: wing::ProxyStatusEntry[..8] = [];
+        let raw = "edge1; error=connection_refused; details=\"upstream \\\"backend-1\\\" rst\"";
+        let count = wing::parse_proxy_status_header(raw, entries);
+        sub.assert_eq(count, 1, "Proxy-Status with escaped quotes in details must parse 1 entry");
+        sub.assert_bytes_eq(entries[0].details[..], "upstream \\\"backend-1\\\" rst", "Details must preserve escaped quotes");
+    };
+
+    t.run("parse_no_vary_search handles parens and escaped quotes inside inner list") { sub =>
+        let nvs1, ok1 = wing::parse_no_vary_search("params=(\"user(id)\" \"session\")");
+        sub.assert_true(ok1, "NVS with parens inside quoted string must parse successfully");
+        sub.assert_eq(nvs1.params.len, 2, "NVS params must contain 2 items");
+
+        let nvs2, ok2 = wing::parse_no_vary_search("params=(\"foo\\\"bar\")");
+        sub.assert_true(ok2, "NVS with escaped quote inside string must parse successfully");
+        sub.assert_eq(nvs2.params.len, 1, "NVS params must contain 1 item");
+    };
+
+    t.run("parse_link_header preserves semicolons inside quoted parameter values") { sub =>
+        var links: wing::EarlyHintLink[..8] = [];
+        let raw = "</style.css>; rel=preload; as=style; extra=\"foo;rel=tampered\"";
+        let ok = wing::parse_link_header(raw, links);
+        sub.assert_true(ok, "Link header with quoted semicolon parameter must parse successfully");
+        sub.assert_eq(links.len, 1, "One link element parsed");
+        sub.assert_bytes_eq(links[0].rel[..], "preload", "rel attribute MUST not be overwritten by quoted param containing semicolon");
+    };
+
+    t.run("parse_client_cert_chain rejects empty or whitespace-only inputs") { sub =>
+        var certs: u8[..4096][..4] = [];
+        var lens:  i32[..4]        = [];
+        var count: i32             = 0;
+        let ok_empty = wing::parse_client_cert_chain("", certs, lens, count);
+        sub.assert_false(ok_empty, "Empty client cert chain must be rejected per RFC 9440 / RFC 8941");
+
+        let ok_ws = wing::parse_client_cert_chain("   ", certs, lens, count);
+        sub.assert_false(ok_ws, "Whitespace client cert chain must be rejected");
+    };
+
+    t.run("decompress_dcz_payload and dcb preserve caller buffer on failure") { sub =>
+        var buf: u8[..64] = [];
+        buf.append("prefix");
+        let ok_z = wing::decompress_dcz_payload("corrupted-zstd", "dict", buf);
+        sub.assert_false(ok_z, "Invalid zstd payload MUST fail");
+        sub.assert_bytes_eq(buf[..], "prefix", "Existing caller data in buf MUST NOT be cleared on zstd failure");
+
+        let ok_b = wing::decompress_dcb_payload("corrupted-brotli", "dict", buf);
+        sub.assert_false(ok_b, "Invalid brotli payload MUST fail");
+        sub.assert_bytes_eq(buf[..], "prefix", "Existing caller data in buf MUST NOT be cleared on brotli failure");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Main Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = lit::new_runner("HTTP Bug Hunter Regression Suite (F001 - F015)", lit::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP Bug Hunter Regression Suite (F001 - F016)", lit::Verbosity.Verbose);
 
     lit::run_case(runner, "1. F001 Compression Dictionary Bounds & Safety", test_f001_compression_dict_bounds);
     lit::run_case(runner, "2. F002 Status Diagnostics Bounds & Safety", test_f002_status_diagnostics_bounds_and_safety);
@@ -663,6 +718,7 @@ fn main() {
     lit::run_case(runner, "13. F013 HTTP Cache Invariants & ETag Validation", test_f013_http_cache_invariants);
     lit::run_case(runner, "14. F014 SFV Unclosed Inner List & HTTP Signatures", test_f014_sfv_and_signatures);
     lit::run_case(runner, "15. F015 H2 Continuation, Dict, Forwarded & Tracestate", test_f015_h2_dict_forwarded_hsts_trace);
+    lit::run_case(runner, "16. F016 Diagnostics Escapes, NVS Quotes, Hints Semicolons & Certs", test_f016_diagnostics_nvs_hints_cert);
 
     let ok = lit::finish(runner);
     assert(ok);
