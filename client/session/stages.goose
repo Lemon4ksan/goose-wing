@@ -429,7 +429,7 @@ fn run_client_preflight_stages<UserStage>(
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_CACHE_LOOKUP) {
         let v_cache = stage_client_cache_lookup(
             req,
-            raw_eff_url[..],
+            parsed_initial.href[..],
             cache_ts.now,
             ctx.headers,
             out_resp,

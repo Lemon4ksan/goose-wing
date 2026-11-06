@@ -467,11 +467,13 @@ def main():
             "up",
             "--build",
             "--abort-on-container-exit",
+            "--exit-code-from",
+            "autobahn-fuzzer",
         ]
         print(f"[*] Running Autobahn via docker-compose ({compose_file.name})...")
         res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR))
-        print_summary_table(DEFAULT_OUT_DIR)
-        sys.exit(res.returncode)
+        total, _, failed = print_summary_table(DEFAULT_OUT_DIR)
+        sys.exit(0 if res.returncode == 0 and total > 0 and failed == 0 else 1)
 
     rc = run_autobahn(
         cases=args.cases,

@@ -364,6 +364,9 @@ fn pump_cl_body(
     if init_bytes > 0 {
         resp.body.append(leftover[..init_bytes]);
     }
+    if leftover.len > init_bytes {
+        let _ = conn.rx_buf.try_append(leftover[init_bytes..]);
+    }
     let init_u64 = init_bytes as u64;
     var remaining_cl = if cl_val > init_u64 { cl_val - init_u64 } else { 0 };
     return pump_h1_fixed_body(conn, remaining_cl, resp, timeout_ms);
@@ -382,6 +385,9 @@ fn pump_response_body(
     let keep_alive = !is_conn_close && (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
 
     if req.method == "HEAD" || rfc::is_empty_body_status(resp.status_code) {
+        if keep_alive && leftover.len > 0 {
+            let _ = conn.rx_buf.try_append(leftover);
+        }
         return true, keep_alive;
     }
 
@@ -423,7 +429,7 @@ fn execute_h1_exchange(
     resp:       Response&,
     timeout_ms: u32 = 5000,
 ) -> bool, bool {
-    conn.rx_buf.clear();
+    reset_response(resp);
     guard send_h1_request(conn, req, url_val) else { return false, false; }
 
     loop {
@@ -443,8 +449,10 @@ fn execute_h1_exchange(
             continue;
         }
 
-        let leftover = conn.rx_buf[leftover_start..];
-        return pump_response_body(conn, req, resp, leftover, timeout_ms);
+        var leftover: u8[..8192] = [];
+        leftover.append(conn.rx_buf[leftover_start..]);
+        conn.rx_buf.clear();
+        return pump_response_body(conn, req, resp, leftover[..], timeout_ms);
     }
     return false, false;
 }

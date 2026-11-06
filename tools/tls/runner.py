@@ -44,6 +44,35 @@ TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "tls" / "server.goose"
 SERVER_EXE = BIN_DIR / ("tls_server.exe" if sys.platform == "win32" else "tls_server")
+CLIENT_SRC = TOOLS_DIR / "tls" / "client.goose"
+CLIENT_EXE = BIN_DIR / ("tls_client.exe" if sys.platform == "win32" else "tls_client")
+
+
+def ensure_client_binary(force_rebuild: bool = False) -> Path:
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    if not force_rebuild and CLIENT_EXE.is_file():
+        return CLIENT_EXE
+
+    print(f"[*] Building native TLS client: {CLIENT_SRC} -> {CLIENT_EXE}...")
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
+        if gcc_wrapper.is_file():
+            env["GOOSE_CC"] = str(gcc_wrapper)
+    cmd = ["goose", "build", str(CLIENT_SRC), "-o", str(CLIENT_EXE), "-O2"]
+    res = subprocess.run(
+        cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env
+    )
+    if res.returncode != 0:
+        print("[!] Failed to build TLS client:", file=sys.stderr)
+        if res.stdout:
+            print(res.stdout, file=sys.stderr)
+        if res.stderr:
+            print(res.stderr, file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[+] Successfully built {CLIENT_EXE.name}")
+    return CLIENT_EXE
 
 
 def ensure_server_binary(force_rebuild: bool = False) -> Path:
@@ -303,6 +332,37 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     s4.close()
     record(True, "RFC 8446 Alert CloseNotify Clean Session Termination")
 
+    # 5-7. Native Goose Client (wing::Client) Full TLS 1.3 + ALPN h2 E2E Suite
+    client_exe = ensure_client_binary(force_rebuild=False)
+    env = os.environ.copy()
+    env["WING_PORT"] = str(port)
+    env["PORT"] = str(port)
+    cli_res = subprocess.run(
+        [str(client_exe)],
+        cwd=str(ROOT_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15.0,
+        check=False,
+    )
+    cli_out = cli_res.stdout or ""
+    record(
+        "TLS_CLI_UNTRUSTED_REJECT: PASS" in cli_out,
+        "Native Goose TLS 1.3 Client: Untrusted Self-Signed Certificate Rejection",
+        cli_out.strip(),
+    )
+    record(
+        "TLS_CLI_VERIFIED_H2: PASS" in cli_out,
+        "Native Goose TLS 1.3 Client: Full Handshake, Ed25519 PKI + IP SAN Verification & ALPN h2 GET",
+        cli_out.strip(),
+    )
+    record(
+        "TLS_CLI_H2_STREAM_REUSE: PASS" in cli_out,
+        "Native Goose TLS 1.3 Client: Pooled TLS 1.3 + HTTP/2 Stream Multiplexing (Stream 3 POST)",
+        cli_out.strip(),
+    )
+
     return passed, failed
 
 
@@ -317,7 +377,7 @@ def main():
     parser.add_argument("--rebuild", action="store_true", help="Rebuild TLS server executable")
     args = parser.parse_args()
 
-    if args.compose:
+    if args.compose or args.docker:
         compose_file = TOOLS_DIR / "tls" / "docker-compose.yml"
         cmd = [
             "docker",
@@ -327,6 +387,8 @@ def main():
             "up",
             "--build",
             "--abort-on-container-exit",
+            "--exit-code-from",
+            "tls-runner",
         ]
         print(f"[*] Running TLS suite via docker compose ({compose_file.name})...")
         sys.exit(subprocess.run(cmd, check=False, cwd=str(ROOT_DIR)).returncode)
@@ -338,6 +400,7 @@ def main():
         sys.exit(0 if failed == 0 and total > 0 else 1)
 
     server_exe = ensure_server_binary(force_rebuild=args.rebuild)
+    ensure_client_binary(force_rebuild=args.rebuild)
     server = NativeTlsServer(server_exe)
     print(f"[*] Starting native Goose TLS 1.3 server ({server_exe.name})...")
     port = server.start()

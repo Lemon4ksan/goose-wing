@@ -1105,8 +1105,17 @@ fn emit_grpc_h2_response_frames<B>(
     );
 
     if res.body.len > 0 {
-        let end_data = res.trailers.entries.len == 0;
-        let _ = wire::encode_data_frame(stream_id, res.body[..], end_data, out);
+        let has_trailers = res.trailers.entries.len > 0;
+        var offset: i64 = 0;
+        while offset < res.body.len {
+            let chunk_len = min(res.body.len - offset, rfc::H2_DEFAULT_MAX_FRAME_SIZE as i64);
+            let is_last = (offset + chunk_len) >= res.body.len;
+            let end_data = is_last && !has_trailers;
+            let _ = wire::encode_data_frame(
+                stream_id, res.body[offset..offset + chunk_len], end_data, out,
+            );
+            offset += chunk_len;
+        }
     }
 
     if res.trailers.entries.len > 0 {
@@ -1213,6 +1222,9 @@ fn handle_grpc_h2_wire_frame<
             } else {
                 let _ = pending.url.try_set("/helloworld.Greeter/SayHello");
             }
+            if pseudo.authority.len > 0 && header(pending, "host").len == 0 {
+                let _ = append_header(pending.headers, "host", pseudo.authority[..]);
+            }
         }
         if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
             var res = Response { .. };
@@ -1232,7 +1244,7 @@ fn handle_grpc_h2_wire_frame<
             let _ = append_header(pending.headers, "content-type", "application/grpc");
         }
         pending.body.append(payload);
-        if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 || payload.len > 0 {
+        if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
             var res = Response { .. };
             execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
             out_wire.clear();

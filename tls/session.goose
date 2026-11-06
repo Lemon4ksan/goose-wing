@@ -335,8 +335,8 @@ fn tls_send_encrypted_record(
 
     guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
     var ct_buf: u8[..16640] = [];
-    guard payload.len + 21 <= ct_buf.cap else { return false; }
-    while ct_buf.len < payload.len + 21 {
+    guard payload.len + 22 <= ct_buf.cap else { return false; }
+    while ct_buf.len < payload.len + 22 {
         ct_buf.push(0);
     }
     let klen = g_tls_cipher_slots[idx].key_len as i64;
@@ -1113,7 +1113,7 @@ fn build_tls13_client_hello_payload<B>(
     shares.append(client_pub[..]);
     encode_key_share_client_extension(ext_buf, shares[..]);
 
-    if server_name.len > 0 && server_name.len <= 255 {
+    if validate_sni_host_bytes(server_name) {
         core::append_u16_be(ext_buf, rfc::TLS_EXT_SERVER_NAME);
         let sni_len = (server_name.len + 3) as u16;
         core::append_u16_be(ext_buf, sni_len + 2);
@@ -1353,11 +1353,12 @@ fn verify_server_cert_and_signature(
     }
 
     if !config.insecure_skip_verify {
-        let alert = verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, config.virtual_clock_sec);
+        let eff_clock = if config.virtual_clock_sec > 0 { config.virtual_clock_sec } else { core::now().wall_sec };
+        let alert = verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
         guard alert == TlsAlert.CloseNotify else { return false; }
 
         if leaf_ocsp.len > 0 {
-            let ocsp_alert = validate_ocsp_stapling(leaf_ocsp, leaf_cert, chain_slices[0], config.virtual_clock_sec);
+            let ocsp_alert = validate_ocsp_stapling(leaf_ocsp, leaf_cert, chain_slices[0], eff_clock);
             guard ocsp_alert == TlsAlert.CloseNotify else { return false; }
         }
 
@@ -2284,19 +2285,18 @@ fn tls_setup_server_cipher_slot(
     for i in 48 { g_tls_cipher_slots[idx].resumption_secret[i] = ks.resumption_secret[i]; }
 }
 
-// Executes full TLS 1.3 server handshake over raw TCP socket, returning slot index (RFC 8446 §4).
-fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16, bool {
+// Executes full TLS 1.3 server handshake given an already-read ClientHello handshake message (RFC 8446 §4).
+fn tls_server_handshake_with_ch(
+    fd:     i64,
+    ch_msg: const u8[:],
+    config: const TlsServerHandshakeConfig&,
+) -> u16, bool {
     let slot_idx = alloc_tls_cipher_slot();
     guard slot_idx != 0xFFFF else { return 0xFFFF, false; }
     let idx = slot_idx as i64;
 
-    var ch_msg: u8[..16384] = [];
-    guard read_plaintext_handshake_record(fd, ch_msg) else {
-        free_tls_cipher_slot(slot_idx);
-        return 0xFFFF, false;
-    }
     var transcript = TlsTranscript { .. };
-    transcript_update(transcript, ch_msg[..]);
+    transcript_update(transcript, ch_msg);
 
     var session_id:  u8[..32]  = [];
     var client_pub:  u8[32]    = [0; 32];
@@ -2305,7 +2305,7 @@ fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
     guard parse_client_hello_for_server_sni(
-        ch_msg[..], config.alpn[..], session_id, client_pub,
+        ch_msg, config.alpn[..], session_id, client_pub,
         neg_alpn, client_sni, psk_resumed, psk_secret,
     ) else {
         free_tls_cipher_slot(slot_idx);
@@ -2459,4 +2459,13 @@ fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16
     g_tls_cipher_slots[idx].resumed = psk_resumed;
     let _ = g_tls_cipher_slots[idx].negotiated_alpn.try_set(neg_alpn[..]);
     return slot_idx, true;
+}
+
+// Executes full TLS 1.3 server handshake over raw TCP socket, returning slot index (RFC 8446 §4).
+fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16, bool {
+    var ch_msg: u8[..16384] = [];
+    guard read_plaintext_handshake_record(fd, ch_msg) else {
+        return 0xFFFF, false;
+    }
+    return tls_server_handshake_with_ch(fd, ch_msg[..], config);
 }

@@ -441,7 +441,7 @@ fn socks5_client_handshake(
     guard tcp_send(sock_fd, greet[..]) == (greet.len as i32) else { return Socks5Error.ServerFailure; }
 
     var reply_raw: u8[64] = [0; 64];
-    let n1 = tcp_recv_slice(sock_fd, reply_raw[..], timeout_ms);
+    let n1 = tcp_recv_slice(sock_fd, reply_raw[..2], timeout_ms);
     guard n1 >= 2 else { return Socks5Error.BufferTruncated; }
     let method, g_err = parse_socks5_greeting_reply(reply_raw[..n1]);
     guard g_err == Socks5Error.None else { return g_err; }
@@ -451,7 +451,7 @@ fn socks5_client_handshake(
         let a_err = build_socks5_rfc1929_auth(username, password, auth_buf);
         guard a_err == Socks5Error.None else { return a_err; }
         guard tcp_send(sock_fd, auth_buf[..]) == (auth_buf.len as i32) else { return Socks5Error.AuthFailed; }
-        let n_auth = tcp_recv_slice(sock_fd, reply_raw[..], timeout_ms);
+        let n_auth = tcp_recv_slice(sock_fd, reply_raw[..2], timeout_ms);
         guard n_auth >= 2 else { return Socks5Error.BufferTruncated; }
         let auth_res = parse_socks5_rfc1929_reply(reply_raw[..n_auth]);
         guard auth_res == Socks5Error.None else { return auth_res; }

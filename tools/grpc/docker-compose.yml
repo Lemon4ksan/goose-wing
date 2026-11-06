@@ -22,8 +22,9 @@ services:
       context: ../..
       dockerfile: tools/grpc/Dockerfile
     container_name: goose-wing-grpc-runner
+    network_mode: "service:grpc-server"
     depends_on:
       grpc-server:
         condition: service_healthy
-    entrypoint: ["python3", "/app/tools/grpc/runner.py", "--host", "grpc-server", "--port", "50051"]
+    entrypoint: ["python3", "/app/tools/grpc/runner.py", "--host", "127.0.0.1", "--port", "50051"]
     restart: "no"

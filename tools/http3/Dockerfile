@@ -22,9 +22,10 @@ RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/a
 # 3. Copy repository tree
 COPY . /app
 
-# 4. Compile native HTTP/3 & QUIC server with Goose & GCC -O2
+# 4. Compile native HTTP/3 & QUIC server and client with Goose & GCC -O2
 RUN mkdir -p /app/tools/bin && \
-    goose build tools/http3/server.goose -o /app/tools/bin/http3_server -O2
+    goose build tools/http3/server.goose -o /app/tools/bin/http3_server -O2 && \
+    goose build tools/http3/client.goose -o /app/tools/bin/http3_client -O2
 
 # 5. Normalize line endings and permissions for entrypoint
 RUN sed -i 's/\r$//' /app/tools/http3/entrypoint.sh && \

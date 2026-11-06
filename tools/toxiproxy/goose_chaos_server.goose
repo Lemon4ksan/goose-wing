@@ -8,8 +8,51 @@ import core from "../..";
 import wing from "../..";
 
 struct ChaosEchoStage {
-    active:      bool = true,
-    flaky_calls: i32  = 0,
+    active:           bool = true,
+    flaky_calls:      i32  = 0,
+    flaky_post_calls: i32  = 0,
+}
+
+fn handle_digest_chaos_stage(req: const wing::Request&, res: wing::Response&) -> wire::StageVerdict {
+    let auth_hdr = req.header("Authorization");
+    if auth_hdr.len == 0 {
+        res.status_code = 401;
+        wing::set_header(
+            res,
+            "WWW-Authenticate",
+            "Digest realm=\"chaos-realm\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", algorithm=SHA-256, opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"",
+        );
+        wing::set_header(res, "Set-Cookie", "auth_sid=dig_77; Path=/");
+        res.body.append("NEED_DIGEST");
+        return wire::StageVerdict.ShortCircuit { status_code: 401 };
+    }
+    let ok_d = find(auth_hdr, "username=\"admin\"") >= 0 &&
+        find(auth_hdr, "realm=\"chaos-realm\"") >= 0 &&
+        find(auth_hdr, "algorithm=SHA-256") >= 0 &&
+        find(auth_hdr, "uri=\"/digest-chaos\"") >= 0 &&
+        find(auth_hdr, "response=\"") >= 0;
+    let ck = req.header("Cookie");
+    if ok_d && find(ck, "auth_sid=dig_77") >= 0 {
+        res.body.append("DIGEST_CHAOS_OK");
+        return wire::StageVerdict.ShortCircuit { status_code: 200 };
+    }
+    res.status_code = 403;
+    res.body.append("BAD_DIGEST_OR_COOKIE");
+    return wire::StageVerdict.ShortCircuit { status_code: 403 };
+}
+
+fn handle_cache_chaos_stage(req: const wing::Request&, res: wing::Response&) -> wire::StageVerdict {
+    wing::set_header(res, "ETag", "\"chaos-etag-v1\"");
+    if req.header("If-None-Match") == "\"chaos-etag-v1\"" {
+        res.status_code = 304;
+        wing::set_header(res, "Cache-Control", "max-age=60");
+        wing::set_header(res, "X-Revalidated", "yes");
+        return wire::StageVerdict.ShortCircuit { status_code: 304 };
+    }
+    wing::set_header(res, "Cache-Control", "max-age=10");
+    wing::set_header(res, "X-Revalidated", "no");
+    res.body.append("CACHED_CHAOS_BODY_V1");
+    return wire::StageVerdict.ShortCircuit { status_code: 200 };
 }
 
 fn wing::on_server_stage(
@@ -50,6 +93,36 @@ fn wing::on_server_stage(
                 return wire::StageVerdict.ShortCircuit { status_code: 503 };
             }
             res.body.append("RETRY_RECOVERED_OK");
+        } else if req.url[..] == "/flaky-post" {
+            stage.flaky_post_calls += 1;
+            if (stage.flaky_post_calls % 2) == 1 {
+                res.status_code = 503;
+                res.body.append("TEMP_POST_ERR");
+                return wire::StageVerdict.ShortCircuit { status_code: 503 };
+            }
+            if req.header("Idempotency-Key") == "idem-chaos-88" {
+                res.body.append("IDEM_POST_OK:");
+                res.body.append(req.body[..]);
+            } else {
+                res.status_code = 400;
+                res.body.append("MISSING_IDEM_KEY");
+                return wire::StageVerdict.ShortCircuit { status_code: 400 };
+            }
+        } else if req.url[..] == "/digest-chaos" {
+            return handle_digest_chaos_stage(req, res);
+        } else if req.url[..] == "/cache-chaos" {
+            return handle_cache_chaos_stage(req, res);
+        } else if req.url[..] == "/proxy-up" {
+            let xff = req.header("X-Forwarded-For");
+            let via = req.header("Via");
+            let dropped = req.header("X-Hop-Drop");
+            if find(xff, "203.0.113.9") >= 0 && via.len > 0 && dropped.len == 0 {
+                res.body.append("PROXY_FAILOVER_OK");
+            } else {
+                res.status_code = 400;
+                res.body.append("BAD_PROXY_HEADERS");
+                return wire::StageVerdict.ShortCircuit { status_code: 400 };
+            }
         } else if req.url[..] == "/keepalive" {
             res.body.append("KEEPALIVE_OK");
         } else {
@@ -198,7 +271,18 @@ fn handle_chaos_http1_request(
         wing::tcp_send(conn, raw_chunked);
         return;
     }
-    if req.url[..] == "/keepalive" {
+    if req.url[..] == "/sse-chaos" {
+        if req.header("Last-Event-ID") == "ev-chaos-1" {
+            let raw_sse2 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nid: ev-chaos-2\nevent: done\ndata: resumed-part\n\n";
+            wing::tcp_send(conn, raw_sse2);
+        } else {
+            let raw_sse1 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nretry: 1200\nid: ev-chaos-1\nevent: update\ndata: line1\ndata: line2\n\n";
+            wing::tcp_send(conn, raw_sse1);
+        }
+        return;
+    }
+    let is_ka_url = req.url[..] == "/keepalive" || req.url[..] == "/digest-chaos" || req.url[..] == "/cache-chaos";
+    if is_ka_url {
         wing::set_header(res, "Connection", "keep-alive");
     } else {
         wing::set_header(res, "Connection", "close");
@@ -251,7 +335,9 @@ fn serve_chaos_connection(
 
         let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
         if hdr_end >= 0 && is_http1_request_ready(in_buf[..], hdr_end) {
-            let is_ka = core::starts_with(in_buf[..], "GET /keepalive ");
+            let is_ka = core::starts_with(in_buf[..], "GET /keepalive ") ||
+                core::starts_with(in_buf[..], "GET /digest-chaos ") ||
+                core::starts_with(in_buf[..], "GET /cache-chaos ");
             handle_chaos_http1_request(conn, server, in_buf[..], echo_stage, is_running);
             if is_ka {
                 ka_count++;
@@ -278,6 +364,7 @@ fn main() {
     let _ = server.server_name.try_set("goose-chaos/1.0");
     wing::add_static_get_route(server, "/ping", "text/plain", "OK", 101);
     wing::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "ECHO:H2ClientSlicedPayload_777", 202);
+    wing::add_static_route(server.pipeline.router, "POST", "/h2-large", "text/plain", "H2_LARGE_MULTIFRAME_OK", 203);
     wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
 
     var echo_stage = ChaosEchoStage { .. };

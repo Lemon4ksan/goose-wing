@@ -516,6 +516,14 @@ fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const H2PseudoHea
     if pseudo.has_authority {
         guard st.authority.try_set(pseudo.authority[..]) else { return false; }
     }
+    if pseudo.has_protocol {
+        guard wing::append_header(st.headers, ":protocol", pseudo.protocol[..]) &&
+              wing::append_header(st.headers, ":scheme", pseudo.scheme[..]) &&
+              wing::append_header(st.headers, ":path", pseudo.path[..]) &&
+              wing::append_header(st.headers, ":authority", pseudo.authority[..]) else {
+            return false;
+        }
+    }
     st.headers_received = true;
     return true;
 }

@@ -116,7 +116,56 @@ fn handle_tls_handshake_record(
     send_tls13_server_hello(conn);
 }
 
-fn handle_tls_connection(conn: i64, server: wing::HttpServer&) -> bool {
+fn is_synthetic_wire_client_hello(record_payload: const u8[:]) -> bool {
+    guard record_payload.len >= 38 else { return false; }
+    return record_payload[6] == 0x42 &&
+        record_payload[7] == 0x42 &&
+        record_payload[8] == 0x42 &&
+        record_payload[9] == 0x42;
+}
+
+fn serve_live_tls13_session(
+    conn:           i64,
+    server:         wing::HttpServer&,
+    tls_cfg:        const wing::TlsServerHandshakeConfig&,
+    record_payload: const u8[:],
+) {
+    let slot_idx, ok_hs = wing::tls_server_handshake_with_ch(conn, record_payload, tls_cfg);
+    guard ok_hs else { return; }
+
+    var pipe = core::new_pipe_buffer();
+    var cork = core::new_cork_buffer();
+    let h2_idx = wing::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+
+    loop {
+        let recvd = wing::tls_recv_pipe(conn, slot_idx, pipe, 4096, 2000);
+        if recvd <= 0 { break; }
+
+        let now_ns = core::as_nanos(core::monotonic_now());
+        let _, ok = wing::handle_connection_pipe(
+            server, "127.0.0.1", pipe, now_ns, cork, wing::g_reactor_h2_sessions[h2_idx],
+        );
+        let should_close = !ok || wing::response_wire_has_connection_close(core::cork_as_slice(cork));
+        if !ok {
+            if cork.cork_pending() > 0 { wing::tls_flush_cork(conn, slot_idx, cork); }
+            break;
+        }
+        if cork.cork_pending() > 0 {
+            let sent = wing::tls_flush_cork(conn, slot_idx, cork);
+            if sent <= 0 || should_close { break; }
+        } else if should_close {
+            break;
+        }
+    }
+    wing::free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    wing::free_tls_cipher_slot(slot_idx);
+}
+
+fn handle_tls_connection(
+    conn:    i64,
+    server:  wing::HttpServer&,
+    tls_cfg: const wing::TlsServerHandshakeConfig&,
+) -> bool {
     var in_buf:   u8[>..]    = [];
     var out_wire: u8[..256]  = [];
     var rem:      u8[>..]    = [];
@@ -157,7 +206,12 @@ fn handle_tls_connection(conn: i64, server: wing::HttpServer&) -> bool {
 
         let record_payload = in_buf[5..total_record_len];
         if content_type == 0x16 {
-            handle_tls_handshake_record(conn, server, record_payload);
+            if is_synthetic_wire_client_hello(record_payload) {
+                handle_tls_handshake_record(conn, server, record_payload);
+            } else {
+                serve_live_tls13_session(conn, server, tls_cfg, record_payload);
+                break;
+            }
         } else if content_type == 0x15 {
             break;
         }
@@ -183,7 +237,19 @@ fn main() {
     let _ = server.server_name.try_set("goose-tls/1.3");
     let _ = wing::add_server_name(server, "goose-wing.local", "CERT-GOOSE-WING", "KEY-GOOSE-WING");
     let _ = wing::add_server_name(server, "*.goose-wing.local", "CERT-WILDCARD-GOOSE-WING", "KEY-WILDCARD-GOOSE-WING");
+    wing::add_static_get_route(server, "/secure-hello", "text/plain", "Hello over TLS 1.3!", 1);
+    let _ = wing::add_static_route(server.pipeline.router, "POST", "/secure-echo", "text/plain", "TLS_ECHO_OK", 2);
     wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+
+    let seed: u8[32] = [0x42; 32];
+    var cert_der: u8[..2048] = [];
+    let _ = wing::build_test_ed25519_cert_der(seed, "goose-wing.local", "goose-wing.local", "127.0.0.1", cert_der);
+    var tls_cfg = wing::TlsServerHandshakeConfig {
+        priv_seed: seed,
+        ..
+    };
+    tls_cfg.cert_der.append(cert_der[..]);
+    tls_cfg.alpn.append("h2,http/1.1");
 
     print("READY_PORT:", port, "\n");
 
@@ -194,7 +260,7 @@ fn main() {
             continue;
         }
 
-        is_running = handle_tls_connection(conn, server);
+        is_running = handle_tls_connection(conn, server, tls_cfg);
         wing::tcp_close(conn);
     }
 

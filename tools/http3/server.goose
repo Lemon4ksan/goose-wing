@@ -82,6 +82,10 @@ fn main() {
     let port = wing::tcp_getsockname_port(sock);
     var server = wing::new_http_server("0.0.0.0", port);
     wing::add_static_get_route(server, "/", "text/plain", "Hello from goose-wing HTTP/3!", 1);
+    wing::add_static_get_route(
+        server, "/api/info", "application/json", "{\"protocol\":\"h3\",\"engine\":\"goose-wing\"}", 2,
+    );
+    let _ = wing::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "H3_POST_ACK", 3);
 
     let settings = wing::H3Settings {
         qpack_max_table_capacity: 4096,

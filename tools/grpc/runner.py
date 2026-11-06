@@ -45,35 +45,45 @@ TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "grpc" / "server.goose"
 SERVER_EXE = BIN_DIR / ("grpc_server.exe" if sys.platform == "win32" else "grpc_server")
+CLIENT_SRC = TOOLS_DIR / "grpc" / "client.goose"
+CLIENT_EXE = BIN_DIR / ("grpc_client.exe" if sys.platform == "win32" else "grpc_client")
 
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
 
-def ensure_server_binary(force_rebuild: bool = False) -> Path:
+def ensure_binary(src: Path, exe: Path, label: str, force_rebuild: bool = False) -> Path:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file():
-        return SERVER_EXE
+    if not force_rebuild and exe.is_file():
+        return exe
 
-    print(f"[*] Building native gRPC server: {SERVER_SRC} -> {SERVER_EXE}...")
+    print(f"[*] Building native {label}: {src} -> {exe}...")
     env = os.environ.copy()
     if sys.platform == "win32":
         gcc_wrapper = ROOT_DIR / "tools" / "gcc_noavx.cmd"
         if gcc_wrapper.is_file():
             env["GOOSE_CC"] = str(gcc_wrapper)
-    cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), "-O2"]
+    cmd = ["goose", "build", str(src), "-o", str(exe), "-O2"]
     res = subprocess.run(
         cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env
     )
     if res.returncode != 0:
-        print("[!] Failed to build gRPC server:", file=sys.stderr)
+        print(f"[!] Failed to build {label}:", file=sys.stderr)
         if res.stdout:
             print(res.stdout, file=sys.stderr)
         if res.stderr:
             print(res.stderr, file=sys.stderr)
         sys.exit(1)
 
-    print(f"[+] Successfully built {SERVER_EXE.name}")
-    return SERVER_EXE
+    print(f"[+] Successfully built {exe.name}")
+    return exe
+
+
+def ensure_server_binary(force_rebuild: bool = False) -> Path:
+    return ensure_binary(SERVER_SRC, SERVER_EXE, "gRPC server", force_rebuild)
+
+
+def ensure_client_binary(force_rebuild: bool = False) -> Path:
+    return ensure_binary(CLIENT_SRC, CLIENT_EXE, "gRPC HTTP/2 client", force_rebuild)
 
 
 class NativeGrpcServer:
@@ -329,6 +339,47 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
         f"recvd_len={len(msg_lg)}",
     )
 
+    # 9-13. Native Goose Client (wing::Session over HTTP/2) E2E Suite
+    client_exe = ensure_client_binary(force_rebuild=False)
+    env = os.environ.copy()
+    env["WING_PORT"] = str(port)
+    env["PORT"] = str(port)
+    cli_res = subprocess.run(
+        [str(client_exe)],
+        cwd=str(ROOT_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15.0,
+        check=False,
+    )
+    cli_out = cli_res.stdout or ""
+    record(
+        "GRPC_H2_SAY_HELLO: PASS" in cli_out,
+        "Native Goose HTTP/2 Client: Unary SayHello & Trailers (grpc-status: 0)",
+        cli_out.strip(),
+    )
+    record(
+        "GRPC_H2_METADATA_ECHO: PASS" in cli_out,
+        "Native Goose HTTP/2 Client: Custom Metadata Reflection (x-echo-*)",
+        cli_out.strip(),
+    )
+    record(
+        "GRPC_H2_UNAUTHENTICATED: PASS" in cli_out,
+        "Native Goose HTTP/2 Client: Unauthenticated Trailer Status (16)",
+        cli_out.strip(),
+    )
+    record(
+        "GRPC_H2_PERMISSION_DENIED: PASS" in cli_out,
+        "Native Goose HTTP/2 Client: PermissionDenied Trailer Status (7)",
+        cli_out.strip(),
+    )
+    record(
+        "GRPC_H2_LARGE_32KB: PASS" in cli_out,
+        "Native Goose HTTP/2 Client: Multi-DATA Frame 32 KB LPM Roundtrip",
+        cli_out.strip(),
+    )
+
     return passed, failed
 
 
@@ -345,7 +396,7 @@ def main():
     parser.add_argument("--rebuild", action="store_true", help="Rebuild gRPC server executable")
     args = parser.parse_args()
 
-    if args.compose:
+    if args.compose or args.docker:
         compose_file = TOOLS_DIR / "grpc" / "docker-compose.yml"
         cmd = [
             "docker",
@@ -355,6 +406,8 @@ def main():
             "up",
             "--build",
             "--abort-on-container-exit",
+            "--exit-code-from",
+            "grpc-runner",
         ]
         print(f"[*] Running gRPC suite via docker compose ({compose_file.name})...")
         sys.exit(subprocess.run(cmd, check=False, cwd=str(ROOT_DIR)).returncode)
@@ -366,6 +419,7 @@ def main():
         sys.exit(0 if failed == 0 and total > 0 else 1)
 
     server_exe = ensure_server_binary(force_rebuild=args.rebuild)
+    ensure_client_binary(force_rebuild=args.rebuild)
     server = NativeGrpcServer(server_exe)
     print(f"[*] Starting native Goose gRPC server ({server_exe.name})...")
     port = server.start()

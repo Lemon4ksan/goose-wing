@@ -193,6 +193,11 @@ fn encode_hpack_pseudo_fields<B>(
             return false;
         }
     }
+    if pseudo.has_protocol {
+        guard internal::encode_hpack_field(dt, out, ":protocol", pseudo.protocol[..], inc, use_huffman) else {
+            return false;
+        }
+    }
     if pseudo.has_scheme {
         guard internal::encode_hpack_field(dt, out, ":scheme", pseudo.scheme[..], inc, use_huffman) else {
             return false;
@@ -208,15 +213,13 @@ fn encode_hpack_pseudo_fields<B>(
             return false;
         }
     }
-    if pseudo.has_protocol {
-        guard internal::encode_hpack_field(dt, out, ":protocol", pseudo.protocol[..], inc, use_huffman) else {
-            return false;
-        }
-    }
     return true;
 }
 
 inline fn should_skip_h2_entry(raw_name: const u8[:], val: const u8[:]) -> bool {
+    if raw_name.len > 0 && raw_name[0] == ':' {
+        return true;
+    }
     if is_h2_skipped_header_name(raw_name) {
         return true;
     }

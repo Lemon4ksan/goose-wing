@@ -140,10 +140,23 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install docker compose
+      - name: Install docker compose, Goose compiler, and h2spec
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker-compose-plugin
+          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates docker-compose-plugin
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          mkdir -p tools/bin
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz | tar -xz -C tools/bin
+          chmod +x tools/bin/h2spec
+
+      - name: Test HTTP/2 Conformance (h2spec)
+        run: |
+          python tools/h2spec.py all
+
+      - name: Test WebSocket Conformance (Autobahn)
+        run: |
+          python tools/autobahn.py --compose
 
       - name: Test gRPC
         run: |

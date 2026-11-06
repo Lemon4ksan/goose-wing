@@ -42,6 +42,7 @@ from toxiproxy import (
     ResetPeerToxic,
     SlicerToxic,
     SlowCloseToxic,
+    TimeoutToxic,
 )
 
 _default_bin = "goose_chaos_server.exe" if sys.platform == "win32" else "goose_chaos_server"
@@ -843,6 +844,89 @@ async def main():
             "PASS:MODE6_TRUNCATION_EVICTION" in out6,
             "Native Goose Client mid-stream response truncation detection & pool socket eviction under LimitData",
             out6,
+        )
+
+        # 6.7 Blackhole read-timeout enforcement & dead socket eviction under TimeoutToxic
+        proxy.clear_toxics()
+        proxy.add_toxic(TimeoutToxic("cli_to7", timeout_ms=0, stream="downstream"))
+        out7 = await asyncio.to_thread(run_native_client_mode, proxy_port, 7)
+        record(
+            "PASS:MODE7_TIMEOUT_EVICTION" in out7,
+            "Native Goose Client blackhole read-timeout enforcement & dead socket eviction under TimeoutToxic",
+            out7,
+        )
+
+        # 6.8 Idempotent POST body rewind (Idempotency-Key + rewind_buf) across 503 failure under Slicer + Latency
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s8", min_bytes=2, max_bytes=5, delay_ms=1, stream="both"))
+        proxy.add_toxic(LatencyToxic("cli_l8", latency_ms=8, jitter_ms=3, stream="both"))
+        out8 = await asyncio.to_thread(run_native_client_mode, proxy_port, 8)
+        record(
+            "PASS:MODE8_IDEM_POST_REWIND" in out8,
+            "Native Goose Client POST Idempotency-Key + rewind_buf body rewind across 503 under Slicer + Latency",
+            out8,
+        )
+
+        # 6.9 401 Digest SHA-256 Challenge-Response + Set-Cookie persistence over Keep-Alive under 2..5B Slicer
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s9", min_bytes=2, max_bytes=5, delay_ms=1, stream="both"))
+        proxy.add_toxic(LatencyToxic("cli_l9", latency_ms=6, jitter_ms=3, stream="both"))
+        out9 = await asyncio.to_thread(run_native_client_mode, proxy_port, 9)
+        record(
+            "PASS:MODE9_DIGEST_AUTH_SLICER" in out9,
+            "Native Goose Client 401 Digest SHA-256 Challenge-Response + CookieJar over Keep-Alive under Slicer",
+            out9,
+        )
+
+        # 6.10 RFC 9111 HTTP Cache conditional revalidation (ETag -> If-None-Match -> 304) under Slicer + Bandwidth
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s10", min_bytes=2, max_bytes=6, delay_ms=1, stream="both"))
+        proxy.add_toxic(BandwidthToxic("cli_bw10", rate_kib=64, stream="both"))
+        out10 = await asyncio.to_thread(run_native_client_mode, proxy_port, 10)
+        record(
+            "PASS:MODE10_CACHE_REVAL_SLICER" in out10,
+            "Native Goose Client RFC 9111 HTTP Cache (200 -> FreshHit -> 304 Revalidation) under Slicer + Bandwidth",
+            out10,
+        )
+
+        # 6.11 Large multi-frame HTTP/2 upload (> 20 KB across multiple DATA frames + 64 KB slab promotion) under Slicer
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s11", min_bytes=64, max_bytes=256, delay_ms=1, stream="both"))
+        out11 = await asyncio.to_thread(run_native_client_mode, proxy_port, 11)
+        record(
+            "PASS:MODE11_H2_LARGE_MULTIFRAME" in out11,
+            "Native Goose HTTP/2 Client >20 KB multi-DATA frame upload + server 64 KB slab promotion under Slicer",
+            out11,
+        )
+
+        # 6.12 Stale half-closed Keep-Alive pool socket eviction & transparent reconnect on 3rd request
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s12", min_bytes=3, max_bytes=8, delay_ms=1, stream="both"))
+        out12 = await asyncio.to_thread(run_native_client_mode, proxy_port, 12)
+        record(
+            "PASS:MODE12_STALE_KA_RECONNECT" in out12,
+            "Native Goose Client stale Keep-Alive socket eviction & transparent retry reconnect under Slicer",
+            out12,
+        )
+
+        # 6.13 Native ReverseProxy + LoadBalancer dead-target failover into Toxiproxy Slicer upstream
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s13", min_bytes=2, max_bytes=6, delay_ms=1, stream="both"))
+        out13 = await asyncio.to_thread(run_native_client_mode, proxy_port, 13)
+        record(
+            "PASS:MODE13_REVERSE_PROXY_FAILOVER" in out13,
+            "Native Goose ReverseProxy + LoadBalancer dead-target failover & XFF/Via injection under Slicer",
+            out13,
+        )
+
+        # 6.14 Native W3C SSE (SseSubscription) event stream + Last-Event-ID reconnect under 1..4B Slicer
+        proxy.clear_toxics()
+        proxy.add_toxic(SlicerToxic("cli_s14", min_bytes=1, max_bytes=4, delay_ms=1, stream="both"))
+        out14 = await asyncio.to_thread(run_native_client_mode, proxy_port, 14)
+        record(
+            "PASS:MODE14_SSE_SLICED_RECONNECT" in out14,
+            "Native Goose SSE (SseSubscription) multi-line stream + Last-Event-ID reconnect under 1..4B Slicer",
+            out14,
         )
 
     finally:

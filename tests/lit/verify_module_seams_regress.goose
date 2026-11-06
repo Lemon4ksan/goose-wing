@@ -374,6 +374,157 @@ fn test_h1_client_last_response_header_preserved_seam() {
     print("SEAM_H1_LAST_RESPONSE_HEADER: OK");
 }
 
+fn seam_grpc_echo_handler(
+    route_tag:  u16,
+    ctx:        wing::GrpcServerContext&,
+    payload:    const u8[:],
+    out_body:   u8[>..]&,
+    out_status: wing::GrpcStatusCode&,
+    out_msg:    u8[..256]&,
+) {
+    let _ = route_tag;
+    let _ = ctx;
+    out_body.append(payload);
+    out_status = wing::GrpcStatusCode.Ok;
+    let _ = out_msg.try_set("OK");
+}
+
+// Seam 12, 13 & 14:
+// - `build_tls13_client_hello_payload` with IP literal ("127.0.0.1") must NOT emit illegal
+//   RFC 6066 SNI HostName extension that `parse_client_hello_for_server_sni` rejects.
+// - `emit_grpc_h2_response_frames` must split payloads > 16384 bytes across multiple DATA frames.
+// - `handle_grpc_h2_wire_frame` must wait for `H2_FLAG_END_STREAM` across multi-DATA frames.
+fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
+    let rnd:   u8[32] = [0x11; 32];
+    let pub_k: u8[32] = [0x22; 32];
+    var ch_body: u8[..512] = [];
+    wing::build_tls13_client_hello_payload(rnd, pub_k, "127.0.0.1", "h2", ch_body);
+    var ch_hs: u8[..520] = [];
+    ch_hs.push(rfc::TLS_HS_CLIENT_HELLO);
+    core::append_u24_be(ch_hs, ch_body.len as u32);
+    ch_hs.append(ch_body[..]);
+    var sid:         u8[..32]  = [];
+    var out_pub:     u8[32]    = [0; 32];
+    var out_alpn:    u8[..32]  = [];
+    var out_sni:     u8[..255] = [];
+    var psk_resumed: bool      = false;
+    var psk_secret:  u8[32]    = [0; 32];
+    assert(wing::parse_client_hello_for_server_sni(
+        ch_hs[..], "h2,http/1.1", sid, out_pub, out_alpn, out_sni, psk_resumed, psk_secret,
+    ));
+    assert(out_sni.len == 0);
+
+    var enc = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var big_res = wing::Response { status_code: 200, .. };
+    let _ = wing::append_header(big_res.headers, "content-type", "application/grpc");
+    let _ = wing::append_header(big_res.trailers, "grpc-status", "0");
+    for i in 20000 {
+        let _ = i;
+        big_res.body.push('A');
+    }
+    var out_frames: u8[..32768] = [];
+    wing::emit_grpc_h2_response_frames(enc, 1, big_res, out_frames);
+    var pos:              i64 = 0;
+    var data_frame_count: i64 = 0;
+    while pos + 9 <= out_frames.len {
+        let fhdr, _, ok_fh = wire::parse_frame_header(out_frames[pos..pos + 9]);
+        assert(ok_fh);
+        if fhdr.frame_type == rfc::H2_FRAME_DATA {
+            data_frame_count++;
+            assert(fhdr.length <= rfc::H2_DEFAULT_MAX_FRAME_SIZE);
+        }
+        pos += 9 + (fhdr.length as i64);
+    }
+    assert(data_frame_count == 2);
+
+    var disp = wing::GrpcServerDispatcher { .. };
+    let _ = wing::register_unary(disp, "test.Echo", "Unary", 1);
+    var hdec = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var henc = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var pending = wing::Request { .. };
+    let _ = pending.method.try_set("POST");
+    let _ = pending.url.try_set("/test.Echo/Unary");
+    let _ = wing::append_header(pending.headers, "content-type", "application/grpc");
+    var wire_out: u8[..65536] = [];
+    let hdr_part1 = wire::WireFrameHeader { length: 5, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
+    let lpm_prefix: u8[5] = [0, 0, 0, 0, 4];
+    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, hdr_part1, lpm_prefix[..], wire_out, seam_grpc_echo_handler));
+    assert(wire_out.len == 0);
+    let hdr_part2 = wire::WireFrameHeader { length: 4, frame_type: rfc::H2_FRAME_DATA, flags: rfc::H2_FLAG_END_STREAM, stream_id: 1 };
+    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, hdr_part2, "PING", wire_out, seam_grpc_echo_handler));
+    assert(wire_out.len > 0);
+
+    // Seam 18: `tls_send_encrypted_record` must allocate `payload.len + 22` bytes (5-byte header + 1-byte inner type + 16-byte tag)
+    let lfd_tls = wing::tcp_listen("127.0.0.1", 0);
+    assert(lfd_tls > 0);
+    let tls_port = wing::tcp_getsockname_port(lfd_tls);
+    let cfd_tls = wing::tcp_connect("127.0.0.1", tls_port, 200);
+    let sfd_tls = wing::tcp_accept(lfd_tls, 200);
+    assert(cfd_tls > 0 && sfd_tls > 0);
+    let slot_t = wing::alloc_tls_cipher_slot();
+    wing::g_tls_cipher_slots[slot_t as i64].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+    wing::g_tls_cipher_slots[slot_t as i64].key_len = 16;
+    assert(wing::tls_send_encrypted_record(cfd_tls, slot_t, rfc::TLS_CONTENT_APPLICATION_DATA, "HELLO_TLS13"));
+    wing::free_tls_cipher_slot(slot_t);
+    wing::tcp_close(cfd_tls);
+    wing::tcp_close(sfd_tls);
+    wing::tcp_close(lfd_tls);
+    print("SEAM_GRPC_H2_LARGE_AND_SNI_IP: OK");
+}
+
+// Seam 19, 20 & 21:
+// - `run_client_preflight_stages` must pass canonical `parsed_initial.href` to `stage_client_cache_lookup`
+//   so root URLs without trailing slash ("http://127.0.0.1:8080") match `stage_client_cache_store`.
+// - `encode_h2_client_request` + `should_skip_h2_entry` + `H2ServerSession` must support RFC 8441
+//   Extended CONNECT (`:protocol = websocket`) without duplicating `:method`/`:protocol` after
+//   pseudo-headers, and `H2ServerSession` must preserve `:protocol`, `:scheme`, `:path`, `:authority`
+//   on `req.headers` for `validate_h2_websocket_handshake`.
+fn test_proxy_cache_h2_extended_connect_seams() {
+    g_seam_session = wing::Client { .. };
+    g_seam_session.virtual_clock_us = 0;
+    g_seam_session.enable_cache = true;
+    let parsed_root = core::new_url("http://127.0.0.1:18080");
+    var req_root = wing::new_request("GET", "http://127.0.0.1:18080");
+    var cached_resp = wing::Response { status_code: 200, .. };
+    let _ = wing::append_header(cached_resp.headers, "Cache-Control", "max-age=60");
+    let _ = wing::append_header(cached_resp.headers, "ETag", "\"v1\"");
+    cached_resp.body.append("CACHED_ROOT_PAYLOAD");
+    var ts = wing::CacheTimestamps { .. };
+    let _ = wing::stage_client_cache_store(
+        req_root, parsed_root, "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
+    );
+
+    let early_resp, early_err = wing::execute_request(g_seam_session, req_root);
+    assert(wing::ok(early_err) && early_resp.status_code == 200);
+    assert(early_resp.body[..] == "CACHED_ROOT_PAYLOAD");
+
+    var ws_req = wing::Request { .. };
+    wing::format_h2_websocket_request(ws_req, "/ws", "127.0.0.1:18080", "http", "chat");
+    var ws_ctx = wing::RequestExecutionContext { .. };
+    wing::copy_headers(ws_req.headers, ws_ctx.headers);
+    let u_ws = core::new_url("http://127.0.0.1:18080/ws");
+    var dt_cli = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var h2_wire: u8[..4096] = [];
+    assert(wing::encode_h2_client_request("CONNECT", u_ws, false, ws_ctx, dt_cli, 1, false, h2_wire));
+
+    var fhdr, _, ok_fh = wire::parse_frame_header(h2_wire[..9]);
+    assert(ok_fh && fhdr.frame_type == rfc::H2_FRAME_HEADERS);
+    var dt_srv = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var dec_pseudo = internal::H2PseudoHeaders { .. };
+    var dec_map = wing::HeaderMap { .. };
+    let dec_err = wire::decode_hpack_to_map(dt_srv, h2_wire[9..9 + (fhdr.length as i64)], dec_pseudo, dec_map);
+    assert(dec_err == rfc::H2_ERR_NO_ERROR);
+    assert(dec_pseudo.has_protocol && dec_pseudo.protocol[..] == "websocket");
+
+    var st = internal::H2ServerStream { stream_id: 1, active: true, .. };
+    assert(internal::apply_decoded_pseudo_to_stream(st, dec_pseudo));
+    wing::append_all_headers(dec_map, st.headers);
+    var srv_req = wing::new_request(st.method[..], st.path[..]);
+    internal::copy_stream_headers_and_trailers(st, srv_req);
+    assert(wing::validate_h2_websocket_request(srv_req));
+    print("SEAM_PROXY_CACHE_H2_EXT_CONNECT: OK");
+}
+
 fn main() {
     test_client_h2_trailers_and_incremental_drain();
     test_h3_query_and_trailers_seam();
@@ -384,6 +535,8 @@ fn main() {
     test_h2_server_flow_window_and_closed_stream_seams();
     test_h2_client_sliced_stream_recv_seam();
     test_h1_client_last_response_header_preserved_seam();
+    test_grpc_h2_large_multiframe_and_sni_ip_seam();
+    test_proxy_cache_h2_extended_connect_seams();
 }
 
 // CHECK: SEAM_H2_CLIENT_TRAILERS_DRAIN: OK
@@ -395,3 +548,5 @@ fn main() {
 // CHECK-NEXT: SEAM_H2_FLOW_AND_CLOSED_STREAMS: OK
 // CHECK-NEXT: SEAM_H2_CLIENT_SLICED_STREAM: OK
 // CHECK-NEXT: SEAM_H1_LAST_RESPONSE_HEADER: OK
+// CHECK-NEXT: SEAM_GRPC_H2_LARGE_AND_SNI_IP: OK
+// CHECK-NEXT: SEAM_PROXY_CACHE_H2_EXT_CONNECT: OK

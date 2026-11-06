@@ -28,9 +28,10 @@ RUN curl -sSL --retry 5 -o /usr/local/bin/toxiproxy-server https://github.com/Sh
 # 4. Copy repository sources
 COPY . /app
 
-# 5. Compile standalone goose_chaos_server
+# 5. Compile standalone goose_chaos_server and goose_chaos_client
 RUN mkdir -p /app/tools/bin && \
     goose build tools/toxiproxy/goose_chaos_server.goose -o /app/tools/bin/goose_chaos_server -O2 && \
+    goose build tools/toxiproxy/goose_chaos_client.goose -o /app/tools/bin/goose_chaos_client -O2 && \
     ln -s /usr/local/bin/toxiproxy-server /app/tools/bin/toxiproxy-server && \
     ln -s /usr/local/bin/toxiproxy-cli /app/tools/bin/toxiproxy-cli
 

@@ -22,9 +22,10 @@ RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/a
 # 3. Copy repository tree
 COPY . /app
 
-# 4. Compile native TLS 1.3 server with Goose & GCC -O2
+# 4. Compile native TLS 1.3 server and client with Goose & GCC -O2
 RUN mkdir -p /app/tools/bin && \
-    goose build tools/tls/server.goose -o /app/tools/bin/tls_server -O2
+    goose build tools/tls/server.goose -o /app/tools/bin/tls_server -O2 && \
+    goose build tools/tls/client.goose -o /app/tools/bin/tls_client -O2
 
 # 5. Normalize line endings and permissions for entrypoint
 RUN sed -i 's/\r$//' /app/tools/tls/entrypoint.sh && \

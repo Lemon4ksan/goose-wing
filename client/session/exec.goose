@@ -768,13 +768,29 @@ fn dial_live_tcp_or_proxy(
         let p_user = core::username(p_url);
         let p_pass = core::password(p_url);
         if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
-            let s_err = socks5_client_handshake(sock, ps.scheme, host_str, port_num, p_user, p_pass, eff_timeout);
+            let use_ip = ps.scheme == ProxyScheme.Socks5 && candidates.len > 0;
+            let t_host = if use_ip { candidates[0].ip[..] } else { host_str };
+            let s_err = socks5_client_handshake(sock, ps.scheme, t_host, port_num, p_user, p_pass, eff_timeout);
             if s_err != Socks5Error.None {
                 native_tcp_close(sock);
                 return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
             }
         } else {
-            let c_err = http_connect_client_handshake(sock, host_str, port_num, "", "goose-wing/1.0", eff_timeout);
+            var proxy_auth: u8[..256] = [];
+            if p_user.len > 0 {
+                var cred_raw: u8[..160] = [];
+                cred_raw.append(p_user);
+                cred_raw.push(':');
+                cred_raw.append(p_pass);
+                var cred_b64: u8[..224] = [];
+                core::base64_encode(cred_raw[..], cred_b64);
+                core::secure_zeroize_slice(cred_raw[..]);
+                proxy_auth.append("Basic ");
+                proxy_auth.append(cred_b64[..]);
+            }
+            let c_err = http_connect_client_handshake(
+                sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
+            );
             if c_err != ConnectTunnelError.None {
                 native_tcp_close(sock);
                 return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
@@ -783,15 +799,12 @@ fn dial_live_tcp_or_proxy(
         out_ip.append(ps.host[..]);
         return sock, Error { .. };
     }
-
     var mgr = new_attempt_manager();
     mgr.start_attempt_race(candidates, now_ms);
     for &cand in candidates {
         let sock = native_tcp_connect(cand.ip[..], cand.port, eff_timeout);
         if sock > 0 {
-            if mgr.attempts.len > 0 {
-                let _ = mgr.bind_winner_attempt(mgr.attempts[0].attempt_id, false);
-            }
+            if mgr.attempts.len > 0 { let _ = mgr.bind_winner_attempt(mgr.attempts[0].attempt_id, false); }
             out_ip.append(cand.ip[..]);
             return sock, Error { .. };
         }
@@ -800,7 +813,7 @@ fn dial_live_tcp_or_proxy(
     return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
 }
 
-fn encode_h2_client_request(
+fn encode_h2_client_request<B>(
     curr_method:  const u8[:],
     current_url:  const core::Url&,
     is_https:     bool,
@@ -808,7 +821,7 @@ fn encode_h2_client_request(
     enc_dt:       internal::DynamicTable&,
     stream_id:    u32,
     send_preface: bool,
-    out_wire:     u8[..8192]&,
+    out_wire:     B&,
 ) -> bool {
     out_wire.clear();
     let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
@@ -830,6 +843,11 @@ fn encode_h2_client_request(
     pseudo.scheme.append(scheme_str);
     pseudo.authority.append(auth_str);
     pseudo.path.append(path_buf[..]);
+    let proto_hdr = find_header(ctx.headers, ":protocol");
+    if proto_hdr.len > 0 {
+        pseudo.has_protocol = true;
+        pseudo.protocol.append(proto_hdr);
+    }
 
     if send_preface {
         guard out_wire.try_append(rfc::H2_CLIENT_PREFACE) else { return false; }
@@ -848,10 +866,14 @@ fn encode_h2_client_request(
         16384,
     ) else { return false; }
 
-    if has_body {
-        guard wire::encode_data_frame(stream_id, ctx.body[..], true, out_wire) else {
+    var rem = ctx.body[..];
+    while rem.len > 0 {
+        let chunk_len = min(rem.len, rfc::H2_DEFAULT_MAX_FRAME_SIZE as i64);
+        let is_last = chunk_len >= rem.len;
+        guard wire::encode_data_frame(stream_id, rem[..chunk_len], is_last, out_wire) else {
             return false;
         }
+        rem = rem[chunk_len..];
     }
     return true;
 }
@@ -963,7 +985,7 @@ fn recv_h2_response_loop(
     eff_timeout: u32,
     resp:        Response&,
 ) -> bool {
-    var rx_accum: u8[..16384] = [];
+    var rx_accum: u8[..65536] = [];
     var chunk:    u8[4096]    = [0; 4096];
     var got_hdrs = false;
     var is_done = false;
@@ -1011,7 +1033,7 @@ fn dispatch_pooled_h2_hop(
     guard c_idx >= 0 else { return false; }
     let stream_id = session.pool.conns[c_idx].next_h2_stream_id;
     let send_preface = !session.pool.conns[c_idx].h2_preface_sent;
-    var wire_out: u8[..8192] = [];
+    var wire_out: u8[..65536] = [];
     guard encode_h2_client_request(
         curr_method,
         current_url,
@@ -1089,7 +1111,7 @@ fn execute_live_h3_hop(
 ) -> bool {
     let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { core::hostname(current_url) };
     let target_port = if h3_ep.port > 0 { h3_ep.port } else { core::effective_port(current_url) as u16 };
-    let udp_fd = native_udp_bind("0.0.0.0", 0);
+    let udp_fd = udp_bind("0.0.0.0", 0);
     guard udp_fd > 0 else { return false; }
 
     let h3_settings = H3Settings { .. };
@@ -1172,6 +1194,9 @@ fn execute_live_network_hop(
     }
 
     let proxy_chain = resolve_hop_proxy_chain(session);
+    if !proxy_chain.is_direct {
+        sanitize_tunnel_headers_for_origin(ctx.headers);
+    }
     if has_h3 && is_https && proxy_chain.is_direct && session.enable_protocol_racing {
         if execute_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp) {
             session.altsvc.record_success(origin_buf);
@@ -1220,7 +1245,7 @@ fn execute_live_network_hop(
             tls_cfg.alpn.append("h2,http/1.1");
             tls_cfg.trust_store = session.trust_store;
             tls_cfg.insecure_skip_verify = effective_insecure_skip;
-            tls_cfg.virtual_clock_sec = now_sec;
+            tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
             if ech_list.len > 0 {
                 tls_cfg.ech_config_list.append(ech_list[..]);
             }

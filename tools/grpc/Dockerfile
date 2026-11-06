@@ -22,9 +22,10 @@ RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/a
 # 3. Copy repository tree
 COPY . /app
 
-# 4. Compile native gRPC server with Goose & GCC -O2
+# 4. Compile native gRPC server and client with Goose & GCC -O2
 RUN mkdir -p /app/tools/bin && \
-    goose build tools/grpc/server.goose -o /app/tools/bin/grpc_server -O2
+    goose build tools/grpc/server.goose -o /app/tools/bin/grpc_server -O2 && \
+    goose build tools/grpc/client.goose -o /app/tools/bin/grpc_client -O2
 
 # 5. Normalize line endings and permissions for entrypoint
 RUN sed -i 's/\r$//' /app/tools/grpc/entrypoint.sh && \
