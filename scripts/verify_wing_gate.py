@@ -109,47 +109,11 @@ def main() -> int:
         if gate_res.returncode == 0:
             print_colored("  Complexity gate passed.", "green")
         else:
-            baseline_file = root / ".lit" / "baseline"
-            rel_posix = target_path.relative_to(root).as_posix()
-            rel_win = str(target_path.relative_to(root))
-            in_baseline = False
-            if baseline_file.exists():
-                btxt = baseline_file.read_text(encoding="utf-8", errors="ignore").lower()
-                if rel_posix.lower() in btxt or rel_win.lower() in btxt:
-                    in_baseline = True
-            if in_baseline:
-                print_colored(
-                    f"  Info: {rel_posix} has grandfathered baseline entries; checking ratchet delta...",
-                    "cyan",
-                )
-                ratchet_res = subprocess.run(
-                    [
-                        str(lit_bin),
-                        "crap",
-                        str(target_path),
-                        "--baseline",
-                        str(baseline_file),
-                        "--cov",
-                        str(args.sim_cov),
-                        "--delta",
-                        "5.0",
-                    ],
-                    text=True,
-                )
-                if ratchet_res.returncode == 0:
-                    print_colored("  Complexity ratchet gate passed.", "green")
-                else:
-                    print_colored(
-                        f"  Ratchet gate rejected for {target_path} (exit {ratchet_res.returncode}).",
-                        "red",
-                    )
-                    return 1
-            else:
-                print_colored(
-                    f"  Complexity gate rejected for {target_path} (exit {gate_res.returncode}).",
-                    "red",
-                )
-                return 1
+            print_colored(
+                f"  Complexity gate rejected for {target_path} (exit {gate_res.returncode}).",
+                "red",
+            )
+            return 1
     except Exception as exc:
         print_colored(f"  goose-lit not available ({exc}). Skipping complexity gate.", "yellow")
         lit_bin = None

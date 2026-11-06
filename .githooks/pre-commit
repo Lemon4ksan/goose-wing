@@ -108,31 +108,28 @@ fi
     fi
 
     if [ -f "$LIT_BIN" ] || command -v "$LIT_BIN" >/dev/null 2>&1; then
-        echo "[pre-commit] Enforcing G-CRAP complexity gate (ceiling: 25)..."
+        echo "[pre-commit] Enforcing G-CRAP complexity gate..."
+        GATE_FILES=""
         for file in $STAGED_FILES; do
-            # Enforce gate on production source files (excluding tests/ and examples/)
             case "$file" in
                 tests/*|examples/*|bench/*|tools/goosemarklint/*)
                     continue
                     ;;
                 *)
                     if [ -f "$file" ]; then
-                        $LIT_BIN gate "$file" 25 --cov 0.85 >/dev/null 2>&1
-                        RC=$?
-                        if [ $RC -ne 0 ]; then
-                            # If file is grandfathered in baseline, ratchet enforces delta below
-                            if [ -f "$BASELINE_FILE" ] && grep -F -i "$file" "$BASELINE_FILE" >/dev/null 2>&1; then
-                                echo "[pre-commit] INFO: $file contains grandfathered baseline entries; ratchet will enforce zero regression."
-                            else
-                                $LIT_BIN gate "$file" 25 --cov 0.85
-                                echo "[pre-commit] GATE REJECTED: $file exceeds G-CRAP ceiling or contains bounds safety violations."
-                                exit 1
-                            fi
-                        fi
+                        GATE_FILES="$GATE_FILES $file"
                     fi
                     ;;
             esac
         done
+
+        if [ -n "$GATE_FILES" ]; then
+            if ! $LIT_BIN gate $GATE_FILES 25 --cov 0.85 >/dev/null 2>&1; then
+                $LIT_BIN gate $GATE_FILES 25 --cov 0.85
+                echo "[pre-commit] GATE REJECTED: staged files exceed G-CRAP ceiling or contain bounds safety violations."
+                exit 1
+            fi
+        fi
 
         if [ -f "$BASELINE_FILE" ]; then
             echo "[pre-commit] Evaluating G-CRAP ratchet against baseline..."

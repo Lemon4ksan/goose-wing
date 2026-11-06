@@ -938,10 +938,11 @@ fn process_h2_response_frame<B>(
 }
 
 fn shift_consumed_rx_bytes<B>(rx_accum: B&, consumed: i64) {
-    guard consumed > 0 else { return; }
-    let rem = rx_accum.len - consumed;
-    for i in rem {
-        rx_accum[i] = rx_accum[consumed + i];
+    guard consumed > 0 && consumed <= rx_accum.len else { return; }
+    let tail = rx_accum[consumed..];
+    let rem = tail.len;
+    for b, i in tail {
+        rx_accum[i] = b;
     }
     while rx_accum.len > rem {
         rx_accum.pop();

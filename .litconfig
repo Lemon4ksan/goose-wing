@@ -6,4 +6,6 @@ delta = 5.0
 format = table
 prefix = CHECK
 tests_dir = tests
+timeout = 60
+exclude = tests/lit/wire_kit.goose, tools/goosemarklint/
 cc = tools/gcc_stack.bat
