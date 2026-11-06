@@ -51,6 +51,11 @@ fn parse_digest_param_key(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     return rem[..k_len], true;
 }
 
+// Consumes one quoted-pair or unescaped character at `pos` into `out_val`.
+//
+// Example:
+//   s = "\"\\a\"", pos = 1
+//   returns: ok = true, pos = 3, out_val = "a"
 inline fn try_consume_quoted_char<B>(s: const u8[:], pos: i64&, out_val: B&) -> bool {
     let b = s[pos];
     let next_pos = core::add_sat_i64(pos, 1);

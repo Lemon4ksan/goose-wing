@@ -20,7 +20,7 @@ You are a **Goose Bug Hunter Subagent** auditing slice `<SLICE_ID>` in repositor
 
 ### 2. Scope & Boundaries
 - **Finding Scope (`finding_scope_root`)**: File new candidate bugs ONLY for functions listed in your assigned slice `<SLICE_ID>` inside `<LEDGER_PATH>`.
-- **Context Scope (`context_roots`)**: You have read-only access to the entire repository (`<REPO_ROOT>`) to trace callers, callees, struct definitions (`T[..N]`, `T[>..]`, `reusable var`), and upstream guards.
+- **Context Scope (`context_roots`)**: You have read-only access to the entire repository (`<REPO_ROOT>`) to trace callers, callees, struct definitions (`T[..N]`, `T[>..]`, `root struct`, `slot_pool<T>`, `slice_pool<T>`, `reusable var`), and upstream guards.
 - **Read-Only Rule**: Do NOT edit any repository files or ledger files.
 
 ### 3. Assigned Function Units (`<SLICE_ID>`)
@@ -35,7 +35,7 @@ For each assigned `unit_id`:
    - Narrowing casts (`as u8`, `as u16`, `as u32`, `as i32`, `as!`), signed overflow (debug abort vs. release wrap), or `mul_sat_u64` / `add_sat_u64` in state/PRNG math.
    - Non-transactional mutations (`idx: i64&`, sequence numbers, table deletes) before validation succeeds, or unintended reference aliasing (`let b = a` on `T[>..]`).
    - Discarded error tuples (`let x, _ =`) or fallback-to-valid enum variants in parsers.
-   - `reusable` pool stale-slot access without generation checks, `realloc_slice` offset invalidation, or early `guard` returns leaking acquired slots/resources (Goose has no RAII/`defer`).
+   - `slot_pool` / `slice_pool` / `reusable` pool stale-slot access without generation checks, `realloc_slice` offset invalidation, or early `guard` returns leaking acquired slots/resources (Goose has no automatic RAII destructors, so leaks occur whenever no `defer` or explicit release is present).
 
 ### 5. Required Return Format (Send via `send_message`)
 Return a single fenced `json` block with this exact structure:

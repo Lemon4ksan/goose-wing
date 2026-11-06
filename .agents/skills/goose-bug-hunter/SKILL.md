@@ -1,13 +1,18 @@
 ---
 name: goose-bug-hunter
 description: "Use when auditing any Goose (.goose) codebase, package, or file for bugs, memory/bounds truncation, integer/SWAR wrap-around, state machine flaws, reusable pool leaks, cryptographic/FFI defects, or specification compliance, or when verifying external audit reports against .goose source code."
+license: Apache-2.0
+metadata:
+  author: Lemon4ksan
 ---
 
 # Goose Bug Hunter (`goose-bug-hunter`)
 
+> Copyright (c) 2026 Lemon4ksan. Licensed under the [Apache-2.0 License](file:///LICENSE).
+
 A project-agnostic bug-hunting, bounds-verification, and specification-compliance skill for any codebase written in the **Goose programming language (`.goose`)**.
 
-It combines a deterministic zero-dependency Python scanner (`scripts/goose_audit_scanner.py`) with Goose's exact language semantics (stack-bounded arrays `T[..N]`, data-stack growable vectors `T[>..]`, `reusable` pools, `checkfree` compile-time BCE, explicit casts `as` / `as!`, saturating arithmetic, and thread-local `thread_fn` globals) and a 6-gate false-positive refutation protocol (`fp-check`).
+It combines a deterministic zero-dependency Python scanner (`scripts/goose_audit_scanner.py`) with Goose's exact language semantics (stack-bounded arrays `T[..N]`, data-stack growable vectors `T[>..]`, `slot_pool<T>` / `slice_pool<T>` and `reusable` pools, `root struct`, `defer` block exits, `checkfree` compile-time BCE, explicit casts `as` / `as!`, saturating arithmetic, and thread-local `thread_fn` globals) and a 6-gate false-positive refutation protocol (`fp-check`).
 
 ---
 
@@ -19,6 +24,7 @@ Load companion references from `file:///.agents/skills/goose-bug-hunter/` **only
 - [`references/fp-gate-checklist.md`](file:///.agents/skills/goose-bug-hunter/references/fp-gate-checklist.md) — **Always read before verifying/reporting**: The 6 Verification Gates, the 8 Goose False-Positive Traps, and exact JSON schemas (`run-metadata.json`, `coverage-ledger.json`, `findings.json`).
 - [`references/crypto-and-protocols.md`](file:///.agents/skills/goose-bug-hunter/references/crypto-and-protocols.md) — **Read only when auditing crypto, auth, or network/wire protocols**: Constant-time `ct_eq_bytes`, early-return secret zeroization, order-of-operations, normalization bypasses, and RFC/spec atomic compliance.
 - [`references/subagent-prompts.md`](file:///.agents/skills/goose-bug-hunter/references/subagent-prompts.md) — **Read only in `Full Pipeline Mode`**: Copy-paste prompt contracts for Sliced Hunter and Module-Batched Refuter subagents.
+- [`../goose/SKILL.md`](file:///.agents/skills/goose/SKILL.md) and [`../goose/references/`](file:///.agents/skills/goose/references/) — **Read when verifying Goose language semantics, compiler diagnostics, memory placement rules, or standard library signatures** (`language.md`, `memory.md`, `stdlib.md`, `patterns.md`, `tooling.md`, `diagnostics.md`).
 
 ---
 
@@ -87,7 +93,7 @@ Check `recommended_mode` and `total_units` in the JSON output:
 | `GOOSE-BUG-4` | **Non-Transactional State & `T[>..]` Aliasing** | Mutating `idx: i64&`, `seq += 1`, or evicting table entries before verification succeeds; `let b = a` on `T[>..]` aliasing by reference instead of copying (`copy(a)`). |
 | `GOOSE-BUG-5` | **Discarded Tuples & Enum Fallbacks** | `let val, _ = parse_foo(...)` ignoring error flag; parser mapping unknown strings/codes to a valid operational enum variant. |
 | `GOOSE-BUG-6` | **Order-Dependent Checks & Normalization** | Cross-field validation inside an unordered loop; checking host/IP/path before normalizing case, trailing `.`, or IPv6 `[::1]`. |
-| `GOOSE-BUG-7` | **`reusable` Pools, Leaks, & Global State** | Stale slot index after `pool.free(idx)` without generation check; `realloc_slice` invalidating sub-slices; early `guard` return leaking resources (no RAII/`defer`); single-thread global re-entrancy or `thread_fn` global copy isolation. |
+| `GOOSE-BUG-7` | **`slot_pool` / `slice_pool` / `reusable` Pools, Leaks, & Global State** | Stale slot index/ref after `pool.free(idx)` / `free_ref` without generation check; `realloc_slice` invalidating sub-slices; early `guard` return leaking resources when no `defer` is registered (or on `abort`/`exit`); single-thread global re-entrancy or `thread_fn` global copy isolation. |
 | `GOOSE-BUG-8` | **Outer-Loop `T[>..]` Growth & BCE Risks** | Growing `var buf: T[>..]` declared outside a loop without `.clear()`; `checkfree` / BCE index masks or `assert`s failing on short slices; $O(N)$ per-frame rebuilds. |
 
 ---

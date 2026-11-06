@@ -51,11 +51,11 @@ VERIFY_FN_NAME_RE = re.compile(
 )
 
 RESOURCE_ACQUIRE_RE = re.compile(
-    r"\b(?:alloc_index|alloc_slice|open|connect|accept|acquire|"
-    r"create_session|alloc_stream|reserve_slot)\s*\("
+    r"\b(?:alloc_index|alloc_ref|alloc_with|alloc_index_with|alloc_slice|alloc_copy|"
+    r"open|connect|accept|acquire|create_session|alloc_stream|reserve_slot)\s*\("
 )
 RESOURCE_RELEASE_RE = re.compile(
-    r"\b(?:free|free_slice|close|release|destroy|reset|cleanup|remove_stream)\s*\("
+    r"\b(?:free|free_ref|free_slice|recycle_all|close|release|destroy|reset|cleanup|remove_stream)\s*\("
 )
 
 
@@ -297,9 +297,12 @@ def detect_static_signals(
     if re.search(r"\b(?:mul_sat_|add_sat_|sub_sat_)[A-Za-z0-9_]*\s*\(", body_joined):
         signals.append("SATURATING_OR_SIGNED_OVERFLOW")
 
-    # 7. REUSABLE_POOL_OR_GLOBAL_STATE: `reusable` pool ops (`alloc_index`, `free`, `realloc_slice`) or module global access
+    # 7. REUSABLE_POOL_OR_GLOBAL_STATE: `slot_pool` / `slice_pool` / `reusable` pool ops or module global access
     has_reusable_ops = bool(
-        re.search(r"\b(?:alloc_index|realloc_slice|free_slice)\s*\(|\breusable\b", body_joined)
+        re.search(
+            r"\b(?:alloc_index|alloc_ref|alloc_with|alloc_index_with|alloc_slice|alloc_copy|realloc_slice|free_slice|free_ref)\s*\(|\b(?:reusable|slot_pool|slice_pool)\b",
+            body_joined,
+        )
     )
     uses_module_global = False
     for _, gname in module_globals:
@@ -309,12 +312,13 @@ def detect_static_signals(
     if has_reusable_ops or uses_module_global:
         signals.append("REUSABLE_POOL_OR_GLOBAL_STATE")
 
-    # 8. EARLY_RETURN_RESOURCE_LEAK: acquires resource/slot and has early `guard ... else { return` before release
+    # 8. EARLY_RETURN_RESOURCE_LEAK: acquires resource/slot and has early `guard ... else { return` before release (without `defer`)
     if RESOURCE_ACQUIRE_RE.search(body_joined):
         has_early_guard_return = bool(
             re.search(r"\bguard\b[^\{]*\belse\s*\{\s*return\b|\breturn\b[^;]*\bfrom\b", body_joined)
         )
-        if has_early_guard_return:
+        has_defer = bool(re.search(r"\bdefer\b", body_joined))
+        if has_early_guard_return and not has_defer:
             signals.append("EARLY_RETURN_RESOURCE_LEAK")
 
     # 9. SWAR_ARITHMETIC: 64-bit word magic masks combined with `+` or `-`

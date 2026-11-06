@@ -12,11 +12,11 @@ Load this reference when auditing `.goose` modules that implement cryptography, 
 - **Length Leak Check**: Check whether `ct_eq_bytes` is preceded by an asymmetric length guard that leaks secret length rather than expected public tag length.
 
 ### 1.2 Secret Zeroization Across All Return Paths
-- **Rule**: Goose has **no destructors (`Drop`) and no `defer`**. Any local stack array (`var secret: u8[32]`, `var shared_key: u8[..64]`, `var key_material: u8[..128]`) or session struct holding private keys, shared secrets, or plaintext passwords must be zeroized on **every** exit path.
+- **Rule**: Goose has **no destructors (`Drop`)**, and `defer` only runs if explicitly written in the scope (and never runs on `abort`, `exit`, or failed runtime checks). Any local stack array (`var secret: u8[32]`, `var shared_key: u8[..64]`, `var key_material: u8[..128]`) or session struct holding private keys, shared secrets, or plaintext passwords must be zeroized on **every** exit path (either via an explicit `defer core::secure_zeroize_*(secret);` immediately after declaration or before every `return`).
 - **Audit Checklist**:
   1. Locate every `var` holding key material or intermediate HMAC/HKDF state.
-  2. Trace every `guard ... else { return ...; }` and `if ... { return ...; }` between the secret's population and the end of the function.
-  3. Flag any early return path that exits before calling `zeroize*` on the secret buffer.
+  2. Trace every `guard ... else { return ...; }`, `if ... { return ...; }`, and `return E from f` between the secret's population and the end of the function.
+  3. Flag any early return path that exits before calling `zeroize*` on the secret buffer (unless covered by an active `defer` in the same block).
 
 ### 1.3 Secret-Dependent Branching, Indexing, & Division
 - In cryptographic primitives (Ed25519, X25519, ChaCha20, Poly1305, AES, SHA/HKDF):

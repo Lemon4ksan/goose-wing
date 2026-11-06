@@ -122,6 +122,27 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
 
 ## Goose language rules
 
+- **Data-stack memory model and size classes**:
+  - Goose has no heap allocator, no garbage collector, no reference counting, no destructors (RAII), and no lifetime annotations. Memory consists of the native call stack, static data, and a fixed compile-time count of **data stacks** (virtual-memory reservations with bump pointers that pop en masse on scope exit).
+  - Every type belongs to one of three size classes:
+    - **Fixed** (compile-time size): scalars, `T[k]`, `T[..k]`, structs of fixed fields, references (`T&`), slices (`T[:]`), fixed-mode enums (`Shape`). Allowed anywhere.
+    - **Variable** (construction-time size, then frozen): `T[]`, `T[varint]`, `T[..]`, variable-mode enums (`Shape..`). Allowed in locals, globals, parameters, results, and any struct field position; arrays of variable-size elements (`u8[][>..]`, `Shape..[>..]`) are **sequential** (iterable only, not indexable; keep a side array `(T&)[>..]` for random access).
+    - **Resizable** (growable on a data stack): `T[>..]` (grow-only; references into it remain valid across pushes because it sits at the top of its data stack and never reallocates/moves) and `T[>..<]` (grow-shrink; references into it may live only in local variables, never in storage). At most one resizable value is live per data stack, and an ordinary struct may contain at most one resizable field as its **final field**.
+  - **Root owners (`root struct`)**: When a container needs multiple independently growing fields (such as `slot_pool<T>` and `slice_pool<T>`), declare it as a `root struct`. A root owner may only be declared as a local or global variable (never as a field, array element, or return value) and is passed by reference (`Pool&`).
+- **References, inferred roots, and copy semantics**:
+  - References (`T&`) and nullable references (`T?`, narrowed via `if x`, `guard x`, `while x`, or `assert(x)`) are transparent (no `*` or `->`). Use `.=` to bind or retarget a reference (`let r .= xs[0]; r .= xs[1];`) and `.==` / `.!=` to compare reference identity.
+  - Every reference and slice carries a static **root** (the variable owning its target) and may not outlive it. Liveness is tracked to the **last use** of the view, not the end of its lexical block.
+  - **Fixed-size values copy implicitly** on `=` and in `for x in xs`. To mutate fixed-size array elements in place or take a slice that outlives a loop iteration (such as a `dictionary<const u8[:], V>` key viewing an inline `u8[..k]` field), iterate by reference: `for &x in xs`.
+  - **Non-fixed values never copy implicitly**: `var b = a;` on a `T[>..]` binds `b` by reference to `a`. Write `copy(a)` for an explicit $O(n)$ copy.
+  - **Relative references**: `T&<u32>` stores a position-independent 4-byte self-relative offset within the same enclosing array (enabling zero-copy `to_bytes` / `from_bytes` serialization); `T&<u32 in pool>` stores an offset relative to a global array. Self-relative nodes cannot be copied—construct them in place via `push` or `alloc_with() { ... self ... }` and bind with `.=`.
+- **Arithmetic, casts, and control-flow semantics**:
+  - Arithmetic runs at the operands' width with no implicit cross-width promotion (`u8 + u8` is `u8`; `u32 + i32` is a type error).
+  - Unsigned overflow wraps in all builds. **Signed overflow aborts in `--debug` builds and wraps in release builds.**
+  - **`%` is Euclidean** (`-7 % 3 == 2`, always in `[0, |b|)`). Integer `/` truncates toward zero; `std` provides `rem(a, b)` (truncating remainder) and `div_euclid(a, b)`.
+  - Narrowing and sign changes require `as` (range-checked in `--debug`, wraps/truncates in release) or `as!` (unchecked).
+  - Statement-form `defer cleanup();` runs at every lexical block exit (latest-first), including `return`, `break`, `continue`, and `return E from f`, but does **not** run on `abort`, `exit`, or failed runtime checks.
+  - `checkfree fn` does not disable bounds checks; it makes any bounds check that the compiler cannot statically eliminate via Bounds Check Elimination (BCE) a **compile error** (inspect with `goose check --stats` or `--bce-lines`).
+  - Threads (`thread_fn`) share no memory: each worker has its own data stacks and its own copies of globals, communicating flat values (no references or slices) over typed queues (`qput`, `qget<T>`, `qpoll<T>`) and requiring `goose build`.
 - **Extern declarations (Goose §7.10)**:
   - Write extern symbol names after the signature:
     ```goose
@@ -147,16 +168,18 @@ Adapted engineering invariants to preserve zero-allocation networking performanc
     `(0xFF as u64)`. Hex literals in `0x8000000000000000..0xFFFFFFFFFFFFFFFF` receive type `u64`; cast
     explicitly `(lit as! i64)` if assigning to `i64`.
   - **Zero heap allocators or object graphs**: Goose has no `malloc`, `free`, `new`, `make`, `Box`, `Vec`,
-    or garbage collection. Never invent heap allocation calls. Memory lives on the stack or compiler-sized
-    data stacks (`reusable var pool: T[>..] = []`).
+    `String`, `HashMap`, `Option`, or `Result`. Never invent heap allocation calls. Memory lives on the stack
+    or compiler-sized data stacks (`slot_pool<T>`, `slice_pool<T>`, or `reusable var pool: T[>..] = []`).
   - **Zero OOP traits, interfaces, or virtual dispatch**: Goose has no `trait`, `impl`, `interface`,
-    virtual methods, or dynamic dispatch. Dynamic polymorphism is algebraic (`enum` + `match`).
-  - **Zero imaginary standard library imports**: Goose standard library is compact. Never import Go
-    (`strings`, `bytes`, `io`), Rust (`std::collections`, `anyhow`), or nonexistent packages. Use only
-    valid Goose modules (`std`, `core`, `core::*`, `http`, etc.).
+    virtual methods, closures stored in structs, or dynamic dispatch. Dynamic polymorphism is algebraic
+    (`enum` + `match` or exhaustive variant case functions `fn area(s: Shape.Circle)`).
+  - **Zero imaginary standard library imports**: Goose standard library is compact (`std`, `dictionary`,
+    `slot_pool`, `slice_pool`, `vec`, `math`, `os`, `ffi`, `binary`, `base64`, `csv`, `json`, `regex`,
+    `exception`). Never import Go (`strings`, `bytes`, `io`), Rust (`std::collections`, `anyhow`), or
+    nonexistent packages.
   - **Zero dynamic arrays (`u8[>..]`) in mid-struct definitions**: Struct fields of growable array type
-    (`u8[>..]`) may only appear as the final field of a struct, never followed by other fields. Prefer
-    bounded arrays (`u8[..N]`).
+    (`u8[>..]`) may only appear as the final field of an ordinary struct, never followed by other fields.
+    Prefer bounded arrays (`u8[..N]`), or `root struct` when multiple growable pools are required at top level.
   - **Zero `usize` or `isize` types (No pointer-sized integer keywords)**: Goose does not have `usize`
     or `isize` (attempting `let x: usize` produces `unknown type: usize`; casting `x as usize` fails with
     `as can only convert between numeric types, not to usize`). Slice and buffer `.len` is strictly `i64`,

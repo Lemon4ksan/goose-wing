@@ -46,9 +46,10 @@ jobs:
         run: |
           python tools/licensing.py --check
 
-      - name: Run ruff
+      - name: Run ruff and static invariant linter
         run: |
-          ruff check tools/
+          ruff check tools/ scripts/ .agents/
+          python scripts/lint_invariants.py --strict-examples
 
       - name: Build and run goosemarklint
         run: |
@@ -98,10 +99,9 @@ jobs:
           curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
           sudo ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
 
-      - name: Typecheck core and wing libraries
+      - name: Typecheck core, wing, examples, and test suites
         run: |
-          goose check core.goose
-          goose check wing.goose
+          python tools/test_runner.py --check-only
 
       - name: Clone and build goose-lit
         run: |

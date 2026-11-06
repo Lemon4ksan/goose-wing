@@ -229,14 +229,14 @@ rg -n "eq_bytes\s*\([^,]+,\s*\"(?:http|localhost|127\.|169\.254)"
 
 ---
 
-## `GOOSE-BUG-7`: `reusable` Pool Stale-Slot / `realloc_slice` Invalidation, Early-Return Leaks, & Global State Hazards
+## `GOOSE-BUG-7`: `slot_pool` / `slice_pool` / `reusable` Pool Stale-Slot / `realloc_slice` Invalidation, Early-Return Leaks, & Global State Hazards
 
 ### Goose Language & Systems Mechanism
-1. **`reusable var` Pool Stale Indices & `realloc_slice` Offset Moves**:
-   - In Goose, `reusable var pool: T[>..] = []` supports `alloc_index(pool)` and `free(pool, idx)`. Calling `free(pool, idx)` puts slot `idx` on a freelist while keeping the underlying array live; holding an old `idx` without a generation counter reads or overwrites a *newly reallocated* item (`use-after-reallocate`).
-   - In `reusable[]` slice pools (`alloc_slice`, `realloc_slice`, `free_slice`), `realloc_slice` may relocate the byte run in the backing arena, invalidating any previously saved sub-slice views or offsets.
-2. **Early-Return Resource Leaks (No RAII / No `defer`)**:
-   - Goose has **no destructors (RAII) and no `defer` statement**. Any function that acquires a pool slot, file descriptor, socket, or native handle and then exits early via `guard ... else { return ...; }` or `return E from f` without explicitly releasing the resource leaks the slot permanently.
+1. **`slot_pool<T>`, `slice_pool<T>`, and `reusable var` Pool Stale Indices & `realloc_slice` Offset Moves**:
+   - In Goose (`slot_pool<T>` or legacy `reusable var pool: T[>..] = []`), calling `pool.free(idx)` or `pool.free_ref(r)` releases no memory—it pushes `idx` onto a freelist while keeping `pool.items` live and initialized (`pool.items.len` is the high-water mark, including freed slots). Holding a stale index or reference across a free/realloc without a generation counter reads or overwrites a *newly reallocated* item (`use-after-reallocate`).
+   - In `slice_pool<T>` (or legacy `reusable[]`) slice pools (`alloc_slice`, `alloc_copy`, `realloc_slice`, `free_slice`), `realloc_slice` may relocate the contiguous run in the backing arena, invalidating any previously saved sub-slice views or references (callers must keep offsets, not slices, across `realloc_slice`).
+2. **Early-Return Resource Leaks (No Destructors / Missing `defer`)**:
+   - Goose has **no destructors (RAII)**. While statement-form `defer cleanup();` runs at normal block exits (`return`, `break`, `continue`, `return E from f`), it is not automatic unless explicitly written, and `defer` does **not** run on `abort`, `exit`, or failed runtime checks (and is unavailable on older plain `v2026.3` compilers). Any function that acquires a pool slot, file descriptor, socket, or native handle and then exits early via `guard ... else { return ...; }` or `return E from f` without either a registered `defer` or explicit release on that path leaks the slot permanently.
 3. **Module-Level `var` Globals (Single-Thread Re-Entrancy & `thread_fn` Copy Isolation)**:
    - Goose has **no shared mutable memory between threads**: every `thread_fn` is compiled with its own separate data stack and **its own thread-local copy of every global it uses**.
    - Therefore, mutating a global inside a `thread_fn` expecting `main` to see the change is a logic bug (the mutation affects only the worker's copy). Conversely, on a single thread, sharing a module-level `var g_scratch` buffer across re-entrant callbacks or interleaved state machines corrupts state across calls.
@@ -248,7 +248,7 @@ reusable var g_sessions: Session[>..] = [];
 pub fn open_authenticated_session(pkt: const u8[:]) -> i64, bool {
     let slot_idx = g_sessions.alloc_index();
     g_sessions[slot_idx].active = true;
-    // BUG: Early guard return leaks `slot_idx` in `g_sessions` because Goose has no RAII/defer!
+    // BUG: Early guard return leaks `slot_idx` in `g_sessions` when no `defer` or explicit `free` runs!
     guard verify_packet_mac(pkt) else {
         return -1, false;
     }
@@ -261,7 +261,7 @@ pub fn open_authenticated_session(pkt: const u8[:]) -> i64, bool {
 reusable var g_sessions: Session[>..] = [];
 
 pub fn open_authenticated_session(pkt: const u8[:]) -> i64, bool {
-    // Validate untrusted input BEFORE allocating from the reusable pool
+    // Validate untrusted input BEFORE allocating from the pool
     guard verify_packet_mac(pkt) else {
         return -1, false;
     }
@@ -274,7 +274,7 @@ pub fn open_authenticated_session(pkt: const u8[:]) -> i64, bool {
 
 ### Variant Hunting Queries (`rg`)
 ```bash
-rg -n "\b(?:alloc_index|alloc_slice|realloc_slice|free_slice)\b|\breusable\s+var\b"
+rg -n "\b(?:alloc_index|alloc_ref|alloc_with|alloc_index_with|alloc_slice|alloc_copy|realloc_slice|free_slice|free_ref|slot_pool|slice_pool)\b|\breusable\s+var\b"
 rg -n "^\s*(?:pub\s+)?var\s+[A-Za-z0-9_]+"
 ```
 
