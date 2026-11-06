@@ -1598,18 +1598,25 @@ fn encode_qpack_field<B>(
     val:         const u8[:],
     use_huffman: bool = true,
 ) {
+    let start_len = out.len;
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {
         // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-        internal::hpack_encode_int(out, s_idx, 6, 0xC0);
+        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else {
+            out.resize(start_len);
+            return;
+        }
         return;
     }
 
     let s_idx_name, _ = find_qpack_static_field(name, "");
     if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
         // Literal with Static Name: 01NTxxxx (4-bit prefix, T=1)
-        internal::hpack_encode_int(out, s_idx_name, 4, 0x50);
-        internal::encode_hpack_string_literal(out, val, use_huffman);
+        guard internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
+              internal::encode_hpack_string_literal(out, val, use_huffman) else {
+            out.resize(start_len);
+            return;
+        }
         return;
     }
 
@@ -1617,17 +1624,21 @@ fn encode_qpack_field<B>(
     if use_huffman {
         let huff_len = internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            internal::hpack_encode_int(out, huff_len, 3, 0x28);
-            internal::huff_encode_bytes(name, out);
-        } else {
-            internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
-            out.append(name);
+            guard internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
+                  internal::huff_encode_bytes(name, out) &&
+                  internal::encode_hpack_string_literal(out, val, use_huffman) else {
+                out.resize(start_len);
+                return;
+            }
+            return;
         }
-    } else {
-        internal::hpack_encode_int(out, name.len as u64, 3, 0x20);
-        out.append(name);
     }
-    internal::encode_hpack_string_literal(out, val, use_huffman);
+    guard internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
+          out.try_append(name) &&
+          internal::encode_hpack_string_literal(out, val, use_huffman) else {
+        out.resize(start_len);
+        return;
+    }
 }
 
 // Searches the dynamic table for an entry matching `name` and `val` (or `name` only).
@@ -1664,8 +1675,7 @@ fn find_qpack_dynamic_field(
 // and updates `tbl.capacity_bytes` (RFC 9204 §4.3.1).
 fn encode_qpack_set_capacity<B>(tbl: QpackTable&, new_cap: u64, out_enc: B&) -> bool {
     guard qpack_set_capacity(tbl, new_cap) else { return false; }
-    internal::hpack_encode_int(out_enc, new_cap, 5, 0x20);
-    return true;
+    return internal::hpack_encode_int(out_enc, new_cap, 5, 0x20);
 }
 
 // Emits an Encoder Stream insertion instruction (Insert with Static Name Reference 11xxxxxx
@@ -1678,33 +1688,44 @@ fn encode_qpack_dynamic_insert<B>(
     use_huffman: bool = true,
 ) -> u64, bool {
     guard tbl.capacity_bytes > 0 else { return 0, false; }
+    let start_enc = out_enc.len;
     let s_idx_name, _ = find_qpack_static_field(name, "");
     let has_static_name = s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE
         && name == QPACK_STATIC_TABLE[s_idx_name as i64].name;
 
     if has_static_name {
+        let new_abs = tbl.insert_count;
         guard qpack_insert_named_static(tbl, s_idx_name, val) else { return 0, false; }
-        internal::hpack_encode_int(out_enc, s_idx_name, 6, 0xC0);
-        internal::encode_hpack_string_literal(out_enc, val, use_huffman);
-        return tbl.insert_count - 1, true;
+        let enc_ok = internal::hpack_encode_int(out_enc, s_idx_name, 6, 0xC0) &&
+            internal::encode_hpack_string_literal(out_enc, val, use_huffman);
+        guard enc_ok else {
+            out_enc.resize(start_enc);
+            return new_abs, false;
+        }
+        return new_abs, true;
     }
 
+    let new_abs = tbl.insert_count;
     guard qpack_insert_literal(tbl, name, val) else { return 0, false; }
+    var enc_ok = false;
     if use_huffman {
         let huff_len = internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            internal::hpack_encode_int(out_enc, huff_len, 5, 0x60);
-            internal::huff_encode_bytes(name, out_enc);
+            enc_ok = internal::hpack_encode_int(out_enc, huff_len, 5, 0x60) &&
+                internal::huff_encode_bytes(name, out_enc);
         } else {
-            internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40);
-            out_enc.append(name);
+            enc_ok = internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40) &&
+                out_enc.try_append(name);
         }
     } else {
-        internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40);
-        out_enc.append(name);
+        enc_ok = internal::hpack_encode_int(out_enc, name.len as u64, 5, 0x40) &&
+            out_enc.try_append(name);
     }
-    internal::encode_hpack_string_literal(out_enc, val, use_huffman);
-    return tbl.insert_count - 1, true;
+    guard enc_ok && internal::encode_hpack_string_literal(out_enc, val, use_huffman) else {
+        out_enc.resize(start_enc);
+        return new_abs, false;
+    }
+    return new_abs, true;
 }
 
 // Encodes a single field line using Static Table, Dynamic Table lookup/insertion, or Literal fallback (RFC 9204 §4.5).
@@ -1741,6 +1762,7 @@ fn encode_qpack_field_dynamic<B1, B2>(
             return;
         }
 
+        let prev_ic = tbl.insert_count;
         let new_abs, ins_ok = encode_qpack_dynamic_insert(tbl, name, val, out_enc_stream, use_huffman);
         if ins_ok {
             let _ = qpack_track_stream_ref(tbl, stream_id, new_abs);
@@ -1754,6 +1776,7 @@ fn encode_qpack_field_dynamic<B1, B2>(
             }
             return;
         }
+        guard tbl.insert_count == prev_ic else { return; }
     }
 
     encode_qpack_field(out_section, name, val, use_huffman);

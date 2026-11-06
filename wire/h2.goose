@@ -13,6 +13,9 @@ import .hpack;
 
 // Appends 9 serialized header bytes to any buffer (RFC 9113 Section 4.1).
 fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
+    guard hdr.length <= rfc::H2_MAX_FRAME_SIZE_LIMIT && hdr.stream_id <= 0x7FFFFFFF else {
+        return false;
+    }
     let bytes: u8[9] = [
         ((hdr.length >> 16) & 0xFF) as u8,
         ((hdr.length >> 8) & 0xFF) as u8,
@@ -37,7 +40,7 @@ fn patch_frame_header_slice(
     stream_id:  u32,
 ) -> bool {
     let payload_start = offset + 9;
-    guard offset >= 0 && payload_start <= buf.len else {
+    guard offset >= 0 && payload_start <= buf.len && stream_id <= 0x7FFFFFFF else {
         return false;
     }
     let tail = buf[payload_start..];
@@ -85,6 +88,8 @@ fn parse_frame_header(buf: const u8[:]) -> WireFrameHeader, u32, bool {
 // Encodes an HTTP/2 SETTINGS frame with explicit parameter list (RFC 9113 Section 6.5).
 fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     let payload_len = (settings.len as u32) * 6;
+    guard settings.len <= 2796202 else { return false; }
+    let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     payload_len,
         frame_type: rfc::H2_FRAME_SETTINGS,
@@ -101,14 +106,20 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
             ((s.val >> 8) & 0xFF) as u8,
             (s.val & 0xFF) as u8,
         ];
-        guard out.try_append(entry[..]) else { return false; }
+        guard out.try_append(entry[..]) else {
+            out.resize(start_len);
+            return false;
+        }
     }
     return true;
 }
 
 // Encodes a WINDOW_UPDATE frame with explicit stream ID and increment (RFC 9113 Section 6.9).
 fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> bool {
-    guard increment >= 1 && increment <= rfc::H2_MAX_WINDOW_SIZE else { return false; }
+    guard stream_id <= 0x7FFFFFFF && increment >= 1 && increment <= rfc::H2_MAX_WINDOW_SIZE else {
+        return false;
+    }
+    let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
@@ -123,15 +134,19 @@ fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> boo
         ((inc >> 8) & 0xFF) as u8,
         (inc & 0xFF) as u8,
     ];
-    guard out.try_append(bytes[..]) else { return false; }
+    guard out.try_append(bytes[..]) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
 inline fn format_urgency_byte(urgency: u8) -> u8 {
-    return '0' + (urgency & 0x07);
+    return '0' + urgency;
 }
 
 inline fn format_priority_params<B>(urgency: u8, incremental: bool, out: B&) -> bool {
+    guard urgency <= 7 else { return false; }
     let u_byte = format_urgency_byte(urgency);
     guard out.try_append("u=") else { return false; }
     guard out.try_push(u_byte) else { return false; }
@@ -147,10 +162,11 @@ inline fn calc_priority_payload_len(val_len: i64) -> u32 {
 
 // Encodes an RFC 9218 PRIORITY_UPDATE frame on stream 0 (RFC 9218 Section 7.1).
 fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incremental: bool, out: B&) -> bool {
-    guard prioritized_stream_id != 0 else { return false; }
+    guard prioritized_stream_id > 0 && prioritized_stream_id <= 0x7FFFFFFF else { return false; }
     var p_val: u8[..32] = [];
     guard format_priority_params(urgency, incremental, p_val) else { return false; }
 
+    let start_len = out.len;
     let payload_len = calc_priority_payload_len(p_val.len);
     let hdr = WireFrameHeader {
         length:     payload_len,
@@ -166,14 +182,17 @@ fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incr
         ((psid >> 8) & 0xFF) as u8,
         (psid & 0xFF) as u8,
     ];
-    guard out.try_append(psid_bytes[..]) else { return false; }
-    guard out.try_append(p_val[..]) else { return false; }
+    guard out.try_append(psid_bytes[..]) && out.try_append(p_val[..]) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
 // Encodes a RST_STREAM frame (RFC 9113 Section 6.4).
 fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool {
-    guard stream_id != 0 else { return false; }
+    guard stream_id > 0 && stream_id <= 0x7FFFFFFF else { return false; }
+    let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_RST_STREAM,
@@ -181,10 +200,14 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool 
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    guard out.try_push(((error_code >> 24) & 0xFF) as u8) &&
-          out.try_push(((error_code >> 16) & 0xFF) as u8) &&
-          out.try_push(((error_code >> 8) & 0xFF) as u8) &&
-          out.try_push((error_code & 0xFF) as u8) else {
+    let err_bytes: u8[4] = [
+        ((error_code >> 24) & 0xFF) as u8,
+        ((error_code >> 16) & 0xFF) as u8,
+        ((error_code >> 8) & 0xFF) as u8,
+        (error_code & 0xFF) as u8,
+    ];
+    guard out.try_append(err_bytes[..]) else {
+        out.resize(start_len);
         return false;
     }
     return true;
@@ -192,6 +215,7 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool 
 
 // Encodes a PING frame with 8-byte payload (RFC 9113 Section 6.7).
 fn encode_ping_frame<B>(payload: const u8[8], is_ack: bool, out: B&) -> bool {
+    let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_PING,
@@ -199,7 +223,10 @@ fn encode_ping_frame<B>(payload: const u8[8], is_ack: bool, out: B&) -> bool {
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    guard out.try_append(payload[..]) else { return false; }
+    guard out.try_append(payload[..]) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
@@ -209,7 +236,11 @@ inline fn select_data_frame_flags(end_stream: bool) -> u8 {
 
 // Encodes a DATA frame (RFC 9113 Section 6.1).
 fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, out: B&) -> bool {
-    guard stream_id != 0 else { return false; }
+    guard stream_id > 0 && stream_id <= 0x7FFFFFFF &&
+          payload.len <= (rfc::H2_MAX_FRAME_SIZE_LIMIT as i64) else {
+        return false;
+    }
+    let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     payload.len as u32,
         frame_type: rfc::H2_FRAME_DATA,
@@ -217,7 +248,10 @@ fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, 
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    guard out.try_append(payload) else { return false; }
+    guard out.try_append(payload) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
@@ -298,11 +332,15 @@ fn encode_h2_headers_frame_from_map<B>(
     out:            B&,
     max_frame_size: u32 = 16384,
 ) -> bool {
-    guard stream_id != 0 else { return false; }
-    var hpack_buf: u8[..8192] = [];
+    guard stream_id > 0 && stream_id <= 0x7FFFFFFF &&
+          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
+        return false;
+    }
+    var hpack_buf: u8[..16384] = [];
     guard encode_hpack_from_map(dt, pseudo, headers, hpack_buf, true) else { return false; }
 
-    let max_chunk = max(16384, max_frame_size as i64);
+    let start_len = out.len;
+    let max_chunk = max_frame_size as i64;
     var offset: i64 = 0;
     var first = true;
     while first || offset < hpack_buf.len {
@@ -317,6 +355,7 @@ fn encode_h2_headers_frame_from_map<B>(
             stream_id:  stream_id,
         };
         guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..offset + chunk_len]) else {
+            out.resize(start_len);
             return false;
         }
         offset += chunk_len;

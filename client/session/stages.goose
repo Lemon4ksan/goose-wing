@@ -144,6 +144,8 @@ fn stage_client_cookie_load<Jar>(
 ) -> wire::StageVerdict {
     guard enable_jar else { return wire::StageVerdict.Continue; }
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
+    let is_top_nav = is_main_frame
+        && (samesite_eval.context_type != SameSiteContextType.CrossSite || samesite_eval.had_cross_site_hop);
     let _ = jar.encode_cookie_header_to_map(
         current_url.hostname(),
         current_url.pathname(),
@@ -154,7 +156,7 @@ fn stage_client_cookie_load<Jar>(
         now_us,
         CookieAccessOptions {
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
-            is_top_level_navigation: is_main_frame,
+            is_top_level_navigation: is_top_nav,
             is_safe_method:          safe_method,
             had_cross_site_hop:      samesite_eval.had_cross_site_hop,
         },
@@ -648,6 +650,30 @@ fn dispatch_client_egress_stage(
             session.enable_cookie_jar,
         );
     }
+    if stage_id == wire::STAGE_ID_CLI_OUT_ALT_SVC {
+        let is_https = current_url.is_secure_scheme();
+        var origin_buf: u8[..128] = [];
+        format_url_origin(current_url, origin_buf);
+        let curr_path = core::pathname(current_url);
+        let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+        return stage_client_alt_svc(
+            out_resp,
+            current_url,
+            is_https,
+            origin_buf[..],
+            curr_path,
+            now_sec,
+            session.altsvc,
+            session.enable_altsvc,
+            session.hsts,
+            session.enable_hsts,
+            session.dict_cache,
+            session.enable_compression_dict,
+        );
+    }
+    if stage_id == wire::STAGE_ID_CLI_OUT_DECOMPRESS {
+        return stage_client_decompress(out_resp, session.dict_cache);
+    }
     if stage_id == wire::STAGE_ID_CLI_OUT_CACHE_STORE {
         let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
         return stage_client_cache_store(
@@ -822,7 +848,7 @@ fn execute_single_client_hop_iteration<UserStage>(
     var current_url = ctx.url_chain[chain_len - 1];
     let safe_method = rfc::is_safe_http_method(ctx.current_method[..]);
     var samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
 
     let pre_hop_v = run_client_pre_hop_stages(
         session,
@@ -896,7 +922,7 @@ fn execute_client_pipeline_with_stage<UserStage>(
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
-    let req_time = session.virtual_clock_us / 1000000;
+    let req_time = div_euclid(session.virtual_clock_us, 1000000);
     let req_time_ns = ((session.virtual_clock_us % 1000000) * 1000) as u32;
     var cache_ts = CacheTimestamps {
         request_time: core::unix(req_time, req_time_ns),

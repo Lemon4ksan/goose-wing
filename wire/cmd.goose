@@ -54,7 +54,7 @@ struct WireCommandBuffer {
     headers_frame_offset:  i64                    = -1,
     active_headers_stream: u32                    = 0,
     active_headers_flags:  u8                     = 0,
-    arena_offset:          i64                    = 0,
+    arena_offset:          i64                    = -1,
     arena_capacity:        i64                    = WIRE_CMD_BUFFER_CAP,
 }
 
@@ -80,6 +80,8 @@ fn commit_command_buffer_to_arena(
 ) -> const u8[:], bool {
     let end_off = cmd.arena_offset + cmd.buf.len;
     guard pool.is_valid &&
+          !cmd.has_error &&
+          (cmd.state == WireCommandBufferState.Executable || cmd.state == WireCommandBufferState.Recording) &&
           cmd.arena_offset >= 0 &&
           cmd.buf.len <= cmd.arena_capacity &&
           end_off <= pool.arena.len else {
@@ -122,13 +124,13 @@ fn free_command_buffer(pool: WireCommandPool&, cmd: WireCommandBuffer&) {
     let prev_offset = cmd.arena_offset;
     cmd.arena_offset = -1;
 
-    guard pool.is_valid && pool.allocated_count > 0 else { return; }
+    guard pool.is_valid && prev_offset >= 0 && pool.allocated_count > 0 else { return; }
     pool.allocated_count -= 1;
     if pool.allocated_count == 0 {
         pool.arena.clear();
         return;
     }
-    if prev_offset >= 0 && expected_end == pool.arena.len {
+    if expected_end == pool.arena.len {
         pool.arena.resize(prev_offset);
     }
 }
@@ -143,6 +145,8 @@ fn new_command_buffer() -> WireCommandBuffer {
         headers_frame_offset:  -1,
         active_headers_stream: 0,
         active_headers_flags:  0,
+        arena_offset:          -1,
+        arena_capacity:        WIRE_CMD_BUFFER_CAP,
     };
 }
 
@@ -414,7 +418,10 @@ inline fn rollback_headers_frame_on_error(cmd: WireCommandBuffer&) {
 
 // Begins a dynamic HEADERS frame block by reserving 9 bytes in-place at `cmd.headers_frame_offset`.
 fn begin_h2_headers(cmd: WireCommandBuffer&, stream_id: u32, flags: u8) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error && stream_id > 0 else {
+    guard cmd.state == WireCommandBufferState.Recording &&
+          !cmd.has_error &&
+          stream_id > 0 &&
+          stream_id <= 0x7FFFFFFF else {
         cmd.has_error = true;
         return false;
     }
@@ -576,8 +583,10 @@ fn cmd_encode_h3_headers_map<B>(
         return false;
     }
     let start_len = cmd.buf.len;
+    let start_enc = out_enc_stream.len;
     guard encode_h3_headers_from_map(tbl, stream_id, pseudo, headers, out_enc_stream, cmd.buf) else {
         cmd.buf.resize(start_len);
+        out_enc_stream.resize(start_enc);
         cmd.has_error = true;
         return false;
     }

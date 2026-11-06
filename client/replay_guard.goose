@@ -17,7 +17,7 @@ enum EarlyDataDecision {
 
 // Inspects outbound request for 0-RTT early data eligibility
 fn evaluate_early_data_request(method: const u8[:], allow_mutating_override: bool = false) -> EarlyDataDecision {
-    if rfc::is_safe_for_early_data(method) || allow_mutating_override {
+    if rfc::is_safe_http_method(method) || allow_mutating_override {
         return EarlyDataDecision.Allow;
     }
     return EarlyDataDecision.RejectMutating;

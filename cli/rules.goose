@@ -212,6 +212,24 @@ fn extract_query_string(url: const u8[:]) -> const u8[:] {
     return if q >= 0 && next_q < url.len { url[next_q..] } else { "" };
 }
 
+fn append_json_escaped_bytes(src: const u8[:], out: u8[>..]&) {
+    for b in src {
+        if b == '"' {
+            out.append("\\\"");
+        } else if b == '\\' {
+            out.append("\\\\");
+        } else if b == '\n' {
+            out.append("\\n");
+        } else if b == '\r' {
+            out.append("\\r");
+        } else if b == '\t' {
+            out.append("\\t");
+        } else if b >= 0x20 && b <= 0x7E {
+            out.push(b);
+        }
+    }
+}
+
 // Formats a request reflection payload in httpbin JSON format.
 fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:], out: u8[>..]&) {
     out.clear();
@@ -230,9 +248,9 @@ fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:]
         let h_name = wing::entry_name(req.headers, e);
         let h_val = wing::entry_value(req.headers, e);
         out.append("    \"");
-        out.append(h_name);
+        append_json_escaped_bytes(h_name, out);
         out.append("\": \"");
-        out.append(h_val);
+        append_json_escaped_bytes(h_val, out);
         out.push('"');
         if i < last_idx {
             out.push(',');
@@ -240,7 +258,7 @@ fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:]
         out.push('\n');
     }
     out.append("  },\n  \"data\": \"");
-    out.append(req.body[..]);
+    append_json_escaped_bytes(req.body[..], out);
     out.append("\"\n}\n");
 }
 
@@ -297,13 +315,137 @@ fn handle_httpbin_status_or_redirect(path: const u8[:], res: wing::Response&) ->
     return false;
 }
 
+fn generate_synthetic_alphabet_bytes(total_len: i64, out: u8[>..]&) {
+    let alphabet = "abcdefghijklmnopqrstuvwxyz";
+    out.clear();
+    var rem = total_len;
+    while rem > 0 {
+        let take = min(rem, alphabet.len);
+        out.append(alphabet[..take]);
+        rem = core::sub_sat_i64(rem, take);
+    }
+}
+
+fn try_serve_range_slice(
+    range_hdr: const u8[:],
+    full_buf:  const u8[:],
+    res:       wing::Response&,
+) -> bool {
+    let total_len = full_buf.len;
+    guard range_hdr.len > 0 && total_len > 0 else { return false; }
+    let rs, r_err = wing::parse_range_header(range_hdr, total_len);
+    guard wing::is_ok(r_err) && rs.is_satisfiable && rs.ranges.len > 0 else { return false; }
+    let r0 = rs.ranges[0];
+    res.status_code = 206;
+    var cr_hdr: u8[..64] = [];
+    wing::format_content_range(r0.start, r0.end_pos, total_len, cr_hdr);
+    wing::set_header(res, "Content-Range", cr_hdr[..]);
+    wing::set_header(res, "Accept-Ranges", "bytes");
+    wing::set_header(res, "Content-Type", "application/octet-stream");
+    res.body.clear();
+    let slice_end = min(total_len, core::add_sat_i64(r0.end_pos, 1));
+    if r0.start >= 0 && r0.start < slice_end {
+        res.body.append(full_buf[r0.start..slice_end]);
+    }
+    return true;
+}
+
+fn handle_httpbin_range_or_bytes(
+    path: const u8[:],
+    req:  const wing::Request&,
+    res:  wing::Response&,
+) -> bool {
+    let is_bytes = core::starts_with(path, "/bytes/") && path.len > 7;
+    let is_range = core::starts_with(path, "/range/") && path.len > 7;
+    guard is_bytes || is_range else { return false; }
+
+    let n_raw, ok = core::parse_u64_dec(path[7..]);
+    guard ok && n_raw <= 65536 else { return false; }
+    let total_len = n_raw as i64;
+
+    var full_buf: u8[>..] = [];
+    generate_synthetic_alphabet_bytes(total_len, full_buf);
+
+    if try_serve_range_slice(req.header("Range"), full_buf[..], res) {
+        return true;
+    }
+
+    res.status_code = 200;
+    wing::set_header(res, "Accept-Ranges", "bytes");
+    wing::set_header(res, "Content-Type", "application/octet-stream");
+    res.body.clear();
+    res.body.append(full_buf[..]);
+    return true;
+}
+
+fn handle_httpbin_auth_routes(
+    path: const u8[:],
+    req:  const wing::Request&,
+    res:  wing::Response&,
+) -> bool {
+    if path == "/bearer" {
+        let auth = req.header("Authorization");
+        if core::starts_with_fold(auth, "Bearer ") && auth.len > 7 {
+            res.status_code = 200;
+            wing::set_header(res, "Content-Type", "application/json");
+            res.body.clear();
+            res.body.append("{\"authenticated\": true, \"token\": \"");
+            append_json_escaped_bytes(auth[7..], res.body);
+            res.body.append("\"}\n");
+            return true;
+        }
+        res.status_code = 401;
+        wing::set_header(res, "WWW-Authenticate", "Bearer");
+        res.body.clear();
+        return true;
+    }
+
+    if core::starts_with(path, "/basic-auth/") && path.len > 12 {
+        let creds_part = path[12..];
+        let sl = core::index_of_byte(creds_part, '/');
+        guard sl > 0 && core::add_sat_i64(sl, 1) < creds_part.len else { return false; }
+        let exp_user = creds_part[..sl];
+        let exp_pass = creds_part[core::add_sat_i64(sl, 1)..];
+
+        var raw_up: u8[..160] = [];
+        let _ = raw_up.try_append(exp_user);
+        let _ = raw_up.try_push(':');
+        let _ = raw_up.try_append(exp_pass);
+        var exp_b64: u8[..256] = "Basic ";
+        core::base64_encode(raw_up[..], exp_b64);
+
+        let auth = req.header("Authorization");
+        if auth == exp_b64[..] {
+            res.status_code = 200;
+            wing::set_header(res, "Content-Type", "application/json");
+            res.body.clear();
+            res.body.append("{\"authenticated\": true, \"user\": \"");
+            append_json_escaped_bytes(exp_user, res.body);
+            res.body.append("\"}\n");
+            return true;
+        }
+        res.status_code = 401;
+        wing::set_header(res, "WWW-Authenticate", "Basic realm=\"Fake Realm\"");
+        res.body.clear();
+        return true;
+    }
+    return false;
+}
+
 fn handle_httpbin_dynamic_routes(
     stage: ProgrammableServerStage&,
     path:  const u8[:],
     query: const u8[:],
+    req:   const wing::Request&,
     res:   wing::Response&,
 ) -> bool {
     if handle_httpbin_status_or_redirect(path, res) {
+        return true;
+    }
+    if handle_httpbin_range_or_bytes(path, req, res) {
+        return true;
+    }
+    if handle_httpbin_auth_routes(path, req, res) {
         return true;
     }
 
@@ -412,5 +554,5 @@ fn handle_builtin_httpbin(
         return true;
     }
 
-    return handle_httpbin_dynamic_routes(stage, path, query, res);
+    return handle_httpbin_dynamic_routes(stage, path, query, req, res);
 }

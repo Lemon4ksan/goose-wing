@@ -64,6 +64,7 @@ inline fn step(p: PipelineState&, next: StageVerdict) -> bool {
 enum ServerHookPhase {
     PreRoute,
     PostAuth,
+    RouteHandler,
     PreSerialize,
 }
 

@@ -91,12 +91,12 @@ fn test_s2(t: lit::T&) {
         sub.assert_eq(consumed, (req_wire.len - 9) as i64, "Consumed complete frames, left 9-byte incomplete RST_STREAM");
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
-        if wire_out.len >= 35 {
+        if wire_out.len >= 22 {
             var resp_dt = internal::new_dynamic_table(4096);
             var resp_pseudo = internal::H2PseudoHeaders { .. };
             var resp_list = wing::HeaderMap { .. };
-            let h_len = ((wire_out[26] as i64) << 16) | ((wire_out[27] as i64) << 8) | (wire_out[28] as i64);
-            let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[35..(35 + h_len)], resp_pseudo, resp_list);
+            let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
+            let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
             sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
             sub.assert_true(resp_pseudo.has_status, "First response field is :status");
             sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");

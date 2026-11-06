@@ -1088,12 +1088,12 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_eq(consumed, (req_wire.len - 9) as i64, "Consumed complete frames, left 9-byte incomplete RST_STREAM");
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
-        // Decode response HEADERS frame from wire_out (starts at offset 26 after two 13-byte WINDOW_UPDATE frames)
+        // Decode response HEADERS frame from wire_out (starts at offset 13 after one 13-byte conn WINDOW_UPDATE frame)
         var resp_dt = internal::new_dynamic_table(4096);
         var resp_pseudo = internal::H2PseudoHeaders { .. };
         var resp_list = wing::HeaderMap { .. };
-        let h_len = ((wire_out[26] as i64) << 16) | ((wire_out[27] as i64) << 8) | (wire_out[28] as i64);
-        let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[35..(35 + h_len)], resp_pseudo, resp_list);
+        let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
+        let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
         sub.assert_true(resp_pseudo.has_status, "First response field is :status");
         sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1282,6 +1282,167 @@ fn test_server_audit_regressions(t: lit::T&) {
     };
 }
 
+struct PlodStyleStage {
+    seen_route: u8[..64] = [],
+}
+
+struct PlodUserDto {
+    id:   u8[..32] = [],
+    role: u8[..32] = [],
+    ip:   u8[..48] = [],
+}
+
+fn wing::on_server_stage(
+    stage: PlodStyleStage&,
+    phase: wire::ServerHookPhase,
+    cfg:   wing::ServerPipelineConfig&,
+    req:   const wing::Request&,
+    ctx:   wing::ServerStageCtx&,
+    res:   wing::Response&,
+) -> wire::StageVerdict {
+    if phase == wire::ServerHookPhase.RouteHandler {
+        if ctx.handler_id == 101 {
+            let user_id, ok_id = cfg.route_param(ctx, "id");
+            let role_val = cfg.route_param_or(ctx, "role", "member");
+            if !ok_id || user_id == "0" {
+                res.respond_problem(400, "Invalid User ID", "User ID cannot be zero", "https://example.com/probs/id");
+                return wire::StageVerdict.Continue;
+            }
+            var dto = PlodUserDto { .. };
+            let _ = dto.id.try_set(user_id);
+            let _ = dto.role.try_set(role_val);
+            let _ = dto.ip.try_set(cfg.peer_ip(ctx));
+            wing::respond_json(res, 200, dto);
+        } else if ctx.handler_id == 102 {
+            let sub = cfg.auth_subject(ctx);
+            let claims = cfg.auth_claims(ctx);
+            let tenant = wing::claim_str(claims, "tenant");
+            let sess = cfg.session_data(ctx);
+            var out_txt: u8[..128] = [];
+            out_txt.append(sub);
+            out_txt.push(':');
+            out_txt.append(tenant);
+            out_txt.push(':');
+            out_txt.append(sess);
+            wing::respond_text(res, 200, out_txt[..]);
+        } else if ctx.handler_id == 103 {
+            wing::respond_json_str(res, 201, "{\"created\":true}");
+        }
+    } else if phase == wire::ServerHookPhase.PreSerialize {
+        let idx = ctx.ext_slot_idx;
+        if idx >= 0 && idx < cfg.ext_pool.slots.len {
+            let _ = stage.seen_route.try_set(cfg.ext_pool.slots[idx].matched_route[..]);
+        }
+    }
+    return wire::StageVerdict.Continue;
+}
+
+fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
+    t.run("1. RouteHandler phase, route_param, respond_json, respond_problem & PreSerialize ext") { sub =>
+        var server = wing::new_http_server("example.com", 8080);
+        server.pipeline.enable_csrf_guard = false;
+        server.pipeline.server_pso_capabilities |= wing::STAGE_EGRESS_ACCESS_LOG | wing::STAGE_EGRESS_METRICS;
+        wing::add_route(
+            server.pipeline.router,
+            "GET",
+            "/users/:id",
+            101,
+            internal::ENTRY_PARAMS,
+            wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_EGRESS_ACCESS_LOG | wing::STAGE_EGRESS_METRICS,
+        );
+        wing::add_post_route(server, "/items", 103);
+
+        var stage = PlodStyleStage { .. };
+        var wire_out: u8[>..] = [];
+        let req_ok = "GET /users/42 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let outcome, ok_w = wing::handle_connection_wire(server, "198.51.100.7", req_ok, 5000000000, wire_out, stage);
+        sub.assert_true(ok_w && outcome == wing::PipelineOutcome.Handled, "RouteHandler executed via handle_connection_wire");
+        sub.assert_contains(wire_out[..], "HTTP/1.1 200 OK\r\n", "200 OK status");
+        sub.assert_contains(wire_out[..], "Content-Type: application/json\r\n", "application/json header");
+        sub.assert_contains(wire_out[..], "{\"id\":\"42\",\"role\":\"member\",\"ip\":\"198.51.100.7\"}", "serialized DTO");
+        sub.assert_contains(wire_out[..], "X-Matched-Route: /users/42\r\n", "X-Matched-Route preserved from real ext");
+        sub.assert_eq(stage.seen_route[..], "/users/42", "PreSerialize accessed live RequestExtensions slot");
+
+        // Problem response on id == 0
+        var prob_wire: u8[>..] = [];
+        let req_bad = "GET /users/0 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let _, ok_p = wing::handle_connection_wire(server, "127.0.0.1", req_bad, 6000000000, prob_wire, stage);
+        sub.assert_true(ok_p, "Problem response serialized");
+        sub.assert_contains(prob_wire[..], "HTTP/1.1 400 Bad Request\r\n", "400 status from respond_problem");
+        sub.assert_contains(prob_wire[..], "Content-Type: application/problem+json\r\n", "problem+json content type");
+        sub.assert_contains(prob_wire[..], "\"title\":\"Invalid User ID\"", "problem title");
+
+        // Pipe with stage on POST /items (respond_json_str 201)
+        var pipe = core::new_pipe_buffer();
+        core::write(pipe, "POST /items HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n");
+        var pipe_wire: u8[>..] = [];
+        let cnt_p, ok_pipe = wing::handle_connection_pipe_with_stage(
+            server, "127.0.0.1", pipe, 7000000000, pipe_wire, stage,
+        );
+        sub.assert_true(ok_pipe && cnt_p == 1, "handle_connection_pipe_with_stage handled 1 request");
+        sub.assert_contains(pipe_wire[..], "HTTP/1.1 201 Created\r\n", "201 Created preserved without overwrite to 200");
+        sub.assert_contains(pipe_wire[..], "{\"created\":true}", "respond_json_str body");
+
+        sub.assert_eq(wing::serve_with_stage(server, -1, stage, 1), 0, "serve_with_stage invalid fd");
+        sub.assert_eq(wing::serve_reactor_with_stage(server, -1, stage, 1), 0, "serve_reactor_with_stage invalid fd");
+    };
+
+    t.run("2. CORS reject_non_matching_origin & JWT raw_payload + auth_claims") { sub =>
+        var server = wing::new_http_server("example.com", 8080);
+        server.pipeline.enable_csrf_guard = false;
+        server.pipeline.cors_policy.reject_non_matching_origin = true;
+        wing::add_allowed_origin(server.pipeline.cors_policy, "https://trusted.example.com");
+        wing::add_get_route(server, "/protected", 102);
+
+        var stage = PlodStyleStage { .. };
+        var req_evil = wing::new_get("/protected");
+        wing::set_header(req_evil, "Origin", "https://evil.example.org");
+        var res_evil = wing::Response { .. };
+        let out_evil = wing::dispatch_server_request_with_stage(
+            server, "127.0.0.1", req_evil, 1000000000, res_evil, stage,
+        );
+        sub.assert_true(out_evil == wing::PipelineOutcome.CsrfRejected, "Disallowed origin rejected on GET");
+        sub.assert_eq(res_evil.status_code, 403, "403 Forbidden on disallowed origin");
+
+        // Verify JWT auth_claims and raw_payload preservation
+        let secret = "0123456789abcdef0123456789abcdef";
+        let _ = wing::add_symmetric_key(server.pipeline.jwks, "k1", wing::JwtAlg.HS256, secret);
+        server.pipeline.jwt_options = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        server.pipeline.server_pso_capabilities |= wing::STAGE_INGRESS_AUTH_JWT;
+        wing::add_route(
+            server.pipeline.router,
+            "GET",
+            "/jwt-info",
+            102,
+            internal::ENTRY_SECURITY,
+            wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_INGRESS_AUTH_JWT,
+        );
+
+        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "k1");
+        var claims = wing::JwtClaims { exp: 2000000000, .. };
+        let _ = claims.sub.try_set("alice");
+        let _ = wing::set_claim(claims, "tenant", "acme");
+        var token: u8[..512] = [];
+        let ok_sign = wing::sign_jwt_hmac(hdr, claims, secret, token);
+        sub.assert_true(ok_sign, "signed HS256 token");
+
+        var req_jwt = wing::new_get("/jwt-info");
+        req_jwt.bearer(token[..]);
+        var res_jwt = wing::Response { .. };
+        let out_jwt = wing::dispatch_server_request_with_stage(
+            server, "127.0.0.1", req_jwt, 1000000000, res_jwt, stage,
+        );
+        sub.assert_true(out_jwt == wing::PipelineOutcome.Handled, "JWT route handled");
+        sub.assert_eq(res_jwt.status_code, 200, "200 OK from JWT route");
+        sub.assert_eq(res_jwt.text(), "alice:acme:", "auth_subject and custom claim 'tenant' extracted");
+
+        var parsed_c = wing::JwtClaims { .. };
+        let ok_raw = wing::parse_jwt_claims_json("{\"sub\":\"bob\",\"nested\":{\"a\":1}}", parsed_c);
+        sub.assert_true(ok_raw, "parse_jwt_claims_json with nested object succeeds");
+        sub.assert_contains(parsed_c.raw_payload[..], "\"nested\":{\"a\":1}", "raw_payload preserved on JwtClaims");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", lit::Verbosity.Verbose);
 
@@ -1298,6 +1459,7 @@ fn main() {
     lit::run_case(runner, "11. Target & Host Invariants", test_server_target_and_host_invariants);
     lit::run_case(runner, "12. NGINX Reverse Proxy Harmony (X-Real-IP, Connection Close, SSE)", test_nginx_harmony_invariants);
     lit::run_case(runner, "13. Server Audit Regressions", test_server_audit_regressions);
+    lit::run_case(runner, "14. RouteHandler Hook, Context Accessors & Response Builders", test_route_handler_stage_and_ergonomics);
 
     let ok = lit::finish(runner);
     assert(ok);

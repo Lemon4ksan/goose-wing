@@ -57,6 +57,7 @@ struct RequestExtensions {
     cors_origin:       u8[..128]             = [],
     auth_subject:      u8[..64]              = [],
     auth_scopes:       u64                   = 0,
+    jwt_claims:        wing::JwtClaims       = wing::JwtClaims { .. },
     start_time_ns:     u64                   = 0,
     effective_pso:     u64                   = 0,
     populated_entries: u32                   = 0,
@@ -81,6 +82,7 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
             pool.slots[idx].cors_origin.clear();
             pool.slots[idx].auth_subject.clear();
             pool.slots[idx].auth_scopes = 0;
+            pool.slots[idx].jwt_claims = wing::JwtClaims { .. };
             pool.slots[idx].start_time_ns = 0;
             pool.slots[idx].effective_pso = 0;
             pool.slots[idx].populated_entries = 0;
@@ -104,6 +106,7 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].cors_origin.clear();
     pool.slots[s_idx].auth_subject.clear();
     pool.slots[s_idx].auth_scopes = 0;
+    pool.slots[s_idx].jwt_claims = wing::JwtClaims { .. };
     pool.slots[s_idx].start_time_ns = 0;
     pool.slots[s_idx].effective_pso = 0;
     pool.slots[s_idx].populated_entries = 0;

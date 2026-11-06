@@ -77,7 +77,14 @@ fn edge_rule_matches(
     guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
     var canon_path: u8[..512] = [];
     guard canonicalize_route_path(path, canon_path) else { return true; }
-    guard core::starts_with(canon_path[..], rule.path_prefix[..]) else {
+    let raw_pfx = rule.path_prefix[..];
+    let pfx = if raw_pfx.len > 1 && raw_pfx[raw_pfx.len - 1] == '/' {
+        raw_pfx[..raw_pfx.len - 1]
+    } else {
+        raw_pfx
+    };
+    guard core::starts_with(canon_path[..], pfx)
+        && (pfx == "/" || canon_path.len == pfx.len || canon_path[pfx.len] == '/') else {
         return false;
     }
     if rule.required_header.len > 0 {

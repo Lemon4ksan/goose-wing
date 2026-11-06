@@ -23,7 +23,10 @@ inline fn is_valid_h1_request_target(target: const u8[:]) -> bool {
 
 inline fn is_valid_h1_host_value(host: const u8[:]) -> bool {
     for b in host {
-        guard b != '\r' && b != '\n' && b != 0x00 && b != 0x7F else { return false; }
+        guard b > 0x20 && b < 0x7F &&
+              b != '/' && b != '?' && b != '#' && b != '\\' && b != '@' else {
+            return false;
+        }
     }
     return true;
 }
@@ -113,19 +116,20 @@ fn encode_h1_request<B>(
         return false;
     }
 
+    let start_len = out.len;
     guard out.try_append(method) &&
           out.try_append(" ") &&
           out.try_append(eff_target) &&
           out.try_append(" ") &&
           out.try_append(eff_ver) &&
           out.try_append("\r\n") else {
-        out.clear();
+        out.resize(start_len);
         return false;
     }
 
     var flags = H1HeaderScanFlags { .. };
     guard append_h1_request_headers(headers, filter_mode, flags, out) else {
-        out.clear();
+        out.resize(start_len);
         return false;
     }
 
@@ -133,7 +137,7 @@ fn encode_h1_request<B>(
         guard out.try_append("Host: ") &&
               out.try_append(host) &&
               out.try_append("\r\n") else {
-            out.clear();
+            out.resize(start_len);
             return false;
         }
     }
@@ -144,13 +148,13 @@ fn encode_h1_request<B>(
         guard out.try_append("Content-Length: ") &&
               out.try_append(cl_str[..]) &&
               out.try_append("\r\n") else {
-            out.clear();
+            out.resize(start_len);
             return false;
         }
     }
 
     guard out.try_append("\r\n") && out.try_append(body) else {
-        out.clear();
+        out.resize(start_len);
         return false;
     }
     return true;
@@ -161,7 +165,7 @@ fn append_h1_response_headers<B>(
     is_empty_status: bool,
     flags:           H1HeaderScanFlags&,
     out:             B&,
-) {
+) -> bool {
     for &e in headers.entries {
         let name = wing::entry_name(headers, e);
         let val = wing::entry_value(headers, e);
@@ -172,11 +176,14 @@ fn append_h1_response_headers<B>(
         if core::eq_ascii_fold(name, "server") { flags.has_server = true; }
         if core::eq_ascii_fold(name, "content-length") { flags.has_cl = true; }
         if core::eq_ascii_fold(name, "transfer-encoding") { flags.has_te = true; }
-        out.append(name);
-        out.append(": ");
-        out.append(val);
-        out.append("\r\n");
+        guard out.try_append(name) &&
+              out.try_append(": ") &&
+              out.try_append(val) &&
+              out.try_append("\r\n") else {
+            return false;
+        }
     }
+    return true;
 }
 
 // Serializes an HTTP/1.1 response status line, headers, and optional body into `out` (RFC 9112 §4).
@@ -202,31 +209,49 @@ fn encode_h1_response<B>(
         return false;
     }
 
-    out.append("HTTP/1.1 ");
-    core::format_u64_dec(status_code as u64, out);
-    out.append(" ");
-    out.append(eff_reason);
-    out.append("\r\n");
+    let start_len = out.len;
+    var sc_str: u8[..16] = [];
+    core::format_u64_dec(status_code as u64, sc_str);
+    guard out.try_append("HTTP/1.1 ") &&
+          out.try_append(sc_str[..]) &&
+          out.try_append(" ") &&
+          out.try_append(eff_reason) &&
+          out.try_append("\r\n") else {
+        out.resize(start_len);
+        return false;
+    }
 
     let is_empty_status = rfc::is_empty_body_status(status_code as i32);
     var flags = H1HeaderScanFlags { .. };
-    append_h1_response_headers(headers, is_empty_status, flags, out);
+    guard append_h1_response_headers(headers, is_empty_status, flags, out) else {
+        out.resize(start_len);
+        return false;
+    }
 
     if !flags.has_server && server_name.len > 0 {
-        out.append("Server: ");
-        out.append(server_name);
-        out.append("\r\n");
+        guard out.try_append("Server: ") &&
+              out.try_append(server_name) &&
+              out.try_append("\r\n") else {
+            out.resize(start_len);
+            return false;
+        }
     }
 
     if !is_empty_status && !flags.has_cl && !flags.has_te {
-        out.append("Content-Length: ");
-        core::format_u64_dec(body.len as u64, out);
-        out.append("\r\n");
+        var cl_str: u8[..32] = [];
+        core::format_u64_dec(body.len as u64, cl_str);
+        guard out.try_append("Content-Length: ") &&
+              out.try_append(cl_str[..]) &&
+              out.try_append("\r\n") else {
+            out.resize(start_len);
+            return false;
+        }
     }
 
-    out.append("\r\n");
-    if !is_head_request && !is_empty_status && body.len > 0 {
-        out.append(body);
+    let body_to_emit = if !is_head_request && !is_empty_status { body } else { "" };
+    guard out.try_append("\r\n") && out.try_append(body_to_emit) else {
+        out.resize(start_len);
+        return false;
     }
     return true;
 }
@@ -283,20 +308,14 @@ fn decode_h1_response_head(
 
     let status_line, headers_no_end, has_crlf = core::split_once(head_no_end, "\r\n");
     if !has_crlf {
-        guard head_no_end.len >= 12 else {
+        guard head_no_end.len >= 12 && parse_h1_wire_status_line(head_no_end, out_status) else {
             return 0, wing::HeaderParseError.MalformedStatusLine;
-        }
-        guard parse_h1_wire_status_line(head_no_end, out_status) else {
-            return 0, wing::HeaderParseError.InvalidHeaderName;
         }
         return body_offset, wing::HeaderParseError.None;
     }
 
-    guard status_line.len >= 12 else {
+    guard status_line.len >= 12 && parse_h1_wire_status_line(status_line, out_status) else {
         return 0, wing::HeaderParseError.MalformedStatusLine;
-    }
-    guard parse_h1_wire_status_line(status_line, out_status) else {
-        return 0, wing::HeaderParseError.InvalidHeaderName;
     }
 
     if headers_no_end.len == 0 {

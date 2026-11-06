@@ -174,3 +174,7 @@ fn push(cb: CorkBuffer&, b: u8) {
 fn clear(cb: CorkBuffer&) {
     cork_reset(cb);
 }
+
+fn resize(cb: CorkBuffer&, new_len: i64) {
+    cb.len = clamp(new_len, 0, CORK_BUFFER_CAP);
+}

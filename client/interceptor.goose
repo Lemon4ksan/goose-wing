@@ -112,11 +112,9 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             AuthBearer => {
-                guard entry.header_val.len <= pipeline.bearer_token.cap else { return false; }
-                pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
-                pipeline.bearer_token.clear();
-                pipeline.bearer_token.append(entry.header_val[..]);
-                return true;
+                let raw_tok = entry.header_val[..];
+                let stripped = if starts_with_fold(raw_tok, "Bearer ") { raw_tok[7..] } else { raw_tok };
+                return add_bearer_auth(pipeline, stripped);
             },
             Header => {
                 guard entry.header_name.len <= pipeline.app_header_name.cap else { return false; }
@@ -129,17 +127,15 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             RequestId => {
+                guard entry.prefix.len <= pipeline.req_id_prefix.cap else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
                 pipeline.req_id_prefix.clear();
                 pipeline.req_id_prefix.append(entry.prefix[..]);
-                pipeline.req_id_counter = entry.counter;
+                pipeline.req_id_counter = if entry.counter > 0 { entry.counter } else { 1 };
                 return true;
             },
             Traceparent => {
-                guard entry.prefix.len <= pipeline.traceparent_flag.cap else { return false; }
-                pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
-                pipeline.traceparent_flag.clear();
-                pipeline.traceparent_flag.append(entry.prefix[..]);
+                guard add_traceparent(pipeline, entry.prefix[..]) else { return false; }
                 pipeline.traceparent_counter = if entry.counter > 0 { entry.counter } else { 1 };
                 return true;
             },
@@ -246,7 +242,11 @@ fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") 
 }
 
 fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
-    guard sample_flag.len <= pipeline.traceparent_flag.cap else { return false; }
+    guard sample_flag.len == 2
+        && core::is_ascii_hexdigit(sample_flag[0])
+        && core::is_ascii_hexdigit(sample_flag[1]) else {
+        return false;
+    }
     pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
     pipeline.traceparent_flag.clear();
     pipeline.traceparent_flag.append(sample_flag);
@@ -297,22 +297,29 @@ fn generate_traceparent<B>(counter: u64, clock_us: i64, flag: const u8[:], out: 
 fn push_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {
     guard pipeline.record_logs && pipeline.log_entries.len < pipeline.log_entries.cap else { return; }
     var entry: u8[..128] = [];
-    entry.append(msg);
+    let n = min(msg.len, entry.cap);
+    entry.append(msg[..n]);
     pipeline.log_entries.push(entry);
 }
 
 fn log_interceptor_request(pipeline: InterceptorPipeline&, req: const Request&, lvl: LogLevel) {
     guard lvl != LogLevel.None else { return; }
     var line: u8[..256] = [];
-    format(line, "--> ", req.method[..], " ", req.url[..]);
+    let u_len = min(req.url.len, 180);
+    format(line, "--> ", req.method[..], " ", req.url[..u_len]);
     push_log(pipeline, line[..]);
 
     if lvl == LogLevel.Headers || lvl == LogLevel.Body {
         for &e in req.headers.entries {
             let h_name = entry_name(req.headers, e);
-            let h_val = entry_value(req.headers, e);
+            let h_val = if is_sensitive(e) || is_heuristic_sensitive_header(h_name) {
+                "[REDACTED]"
+            } else {
+                entry_value(req.headers, e)
+            };
+            let v_len = min(h_val.len, 160);
             var h_line: u8[..256] = [];
-            format(h_line, "--> ", h_name, ": ", h_val);
+            format(h_line, "--> ", h_name, ": ", h_val[..v_len]);
             push_log(pipeline, h_line[..]);
         }
     }
@@ -335,16 +342,22 @@ fn log_interceptor_response(
     if ok(err) {
         format(line, "<-- ", resp.status_code, " (", duration_us, " us)");
     } else {
-        format(line, "<-- FAILED (", err.message[..], ")");
+        let m_len = min(err.message.len, 180);
+        format(line, "<-- FAILED (", err.message[..m_len], ")");
     }
     push_log(pipeline, line[..]);
 
     if ok(err) && (lvl == LogLevel.Headers || lvl == LogLevel.Body) {
         for &e in resp.headers.entries {
             let h_name = entry_name(resp.headers, e);
-            let h_val = entry_value(resp.headers, e);
+            let h_val = if is_sensitive(e) || is_heuristic_sensitive_header(h_name) {
+                "[REDACTED]"
+            } else {
+                entry_value(resp.headers, e)
+            };
+            let v_len = min(h_val.len, 160);
             var h_line: u8[..256] = [];
-            format(h_line, "<-- ", h_name, ": ", h_val);
+            format(h_line, "<-- ", h_name, ": ", h_val[..v_len]);
             push_log(pipeline, h_line[..]);
         }
     }
@@ -365,15 +378,21 @@ fn log_network_interceptor_request(
 ) {
     guard lvl != LogLevel.None else { return; }
     var line: u8[..256] = [];
-    format(line, "--> (net hop ", hop_index, ") ", method, " ", target_url);
+    let u_len = min(target_url.len, 160);
+    format(line, "--> (net hop ", hop_index, ") ", method, " ", target_url[..u_len]);
     push_log(pipeline, line[..]);
 
     if lvl == LogLevel.Headers || lvl == LogLevel.Body {
         for &e in headers.entries {
             let h_name = entry_name(headers, e);
-            let h_val = entry_value(headers, e);
+            let h_val = if is_sensitive(e) || is_heuristic_sensitive_header(h_name) {
+                "[REDACTED]"
+            } else {
+                entry_value(headers, e)
+            };
+            let v_len = min(h_val.len, 150);
             var h_line: u8[..256] = [];
-            format(h_line, "--> (net) ", h_name, ": ", h_val);
+            format(h_line, "--> (net) ", h_name, ": ", h_val[..v_len]);
             push_log(pipeline, h_line[..]);
         }
     }

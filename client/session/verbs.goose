@@ -450,6 +450,23 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 
 // ---- masque connect-udp & connect-ip tunnels (rfc 9298, rfc 9484) -----------
 
+// Normalizes a MASQUE target host by stripping IPv6 brackets and percent-encoding ':' as '%3A' (RFC 9298 §2).
+//
+// Example:
+//   target_host = "[2001:db8::1]"
+//   returns: out_host = "2001%3Adb8%3A%3A1", ok = true
+fn encode_masque_target_host(target_host: const u8[:], out_host: u8[..128]&) -> bool {
+    out_host.clear();
+    let has_brackets = target_host.len >= 2 && target_host[0] == '[' && target_host[target_host.len - 1] == ']';
+    let clean_host = if has_brackets { target_host[1..target_host.len - 1] } else { target_host };
+    guard clean_host.len > 0 else { return false; }
+    for b in clean_host {
+        let ok_b = if b == ':' { out_host.try_append("%3A") } else { out_host.try_push(b) };
+        guard ok_b else { return false; }
+    }
+    return true;
+}
+
 fn connect_udp(
     session:       Session&,
     proxy_url:     const u8[:],
@@ -458,7 +475,12 @@ fn connect_udp(
     stream_id:     u64  = 0,
     use_datagrams: bool = true,
 ) -> MasqueTunnelSession, Response, Error {
-    var tunnel = new_connect_udp_tunnel(proxy_url, target_host, target_port, stream_id, use_datagrams);
+    var enc_host: u8[..128] = [];
+    guard encode_masque_target_host(target_host, enc_host) else {
+        var bad_tun = MasqueTunnelSession { state: MasqueTunnelState.Failed, .. };
+        return bad_tun, Response { .. }, make_error(rfc::STATUS_BAD_REQUEST, "masque", "target_host exceeds capacity");
+    }
+    var tunnel = new_connect_udp_tunnel(proxy_url, enc_host[..], target_port, stream_id, use_datagrams);
     tunnel.state = MasqueTunnelState.Connecting;
 
     var req_path:    u8[..256] = [];
@@ -467,7 +489,7 @@ fn connect_udp(
 
     var full_url: u8[..2048] = [];
     guard proxy_url.len > 0 && proxy_url.len <= 256 &&
-          target_host.len > 0 && target_host.len <= 128 &&
+          enc_host.len > 0 && enc_host.len <= 128 &&
           target_port > 0 &&
           proxy_url.len + req_path.len <= full_url.cap else {
         tunnel.state = MasqueTunnelState.Failed;

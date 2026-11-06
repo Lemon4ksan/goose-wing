@@ -42,6 +42,7 @@ fn alloc_reactor_h2_session(
 ) -> i16 {
     for i in 8 {
         if !g_reactor_h2_in_use[i] {
+            internal::cleanup_h2_server_session(g_reactor_h2_sessions[i], pipeline);
             g_reactor_h2_in_use[i] = true;
             internal::reset_h2_server_session_inplace(g_reactor_h2_sessions[i], server_name, now_ms);
             return i as i16;
@@ -262,6 +263,9 @@ fn reactor_read_bounded_turns(conn: i64, chunk: ReactorIngressBuf&) -> bool, boo
         guard available > 0 else { break; }
         let recvd = reactor_read_single_turn(conn, chunk, available);
         if recvd == 0 || recvd == -1 {
+            if any_recvd || chunk.len > 0 {
+                return true, false;
+            }
             return false, true;
         }
         if recvd < 0 {
@@ -329,7 +333,7 @@ inline fn reactor_send_slot_wire(table: const SoAConnTable&, slot: i64, conn: i6
     return reactor_drain_cork_wire(conn, wire);
 }
 
-fn reactor_handle_h2_ingress(
+fn reactor_handle_h2_ingress<Stage>(
     server:    HttpServer&,
     conn:      i64,
     table:     SoAConnTable&,
@@ -338,6 +342,7 @@ fn reactor_handle_h2_ingress(
     now_ns:    u64,
     chunk:     ReactorIngressBuf&,
     cork_wire: u8[..65536]&,
+    stage:     Stage&,
 ) -> bool {
     let now_ms = now_ns / 1000000;
     cork_wire.clear();
@@ -349,7 +354,7 @@ fn reactor_handle_h2_ingress(
     tcp_get_peer_ip(conn, peer_ip);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer,
-        peer_ip[..], chunk.bytes[..chunk.len], now_ms, cork_wire,
+        peer_ip[..], chunk.bytes[..chunk.len], now_ms, cork_wire, stage,
     );
     if cork_wire.len > 0 {
         if !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) {
@@ -385,8 +390,11 @@ fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chu
         guard available > 0 else { return false, false; }
         let tr = table.slot_transport(slot);
         let recvd = tr.recv_slice(chunk.bytes[chunk.len..], 50);
-        if recvd <= 0 {
-            return false, true;
+        if recvd == 0 || recvd == -1 {
+            return chunk.len > 0, chunk.len == 0;
+        }
+        if recvd < 0 {
+            return chunk.len > 0, false;
         }
         chunk.len += recvd;
         return true, false;
@@ -395,7 +403,7 @@ fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chu
 }
 
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
-fn reactor_handle_ingress(
+fn reactor_handle_ingress<Stage>(
     server:       HttpServer&,
     epfd:         i64,
     table:        SoAConnTable&,
@@ -407,6 +415,7 @@ fn reactor_handle_ingress(
     chunk:        ReactorIngressBuf&,
     cork_wire:    u8[..65536]&,
     total_served: i64&,
+    stage:        Stage&,
 ) {
     let conn = table.fds[slot];
     let prev_len = table.leftover_lens[slot] as i64;
@@ -425,7 +434,7 @@ fn reactor_handle_ingress(
     }
 
     if table.is_h2[slot] || is_h2_client_preface(chunk.bytes[..chunk.len]) {
-        let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire);
+        let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire, stage);
         if !ok_h2 {
             reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
         }
@@ -442,7 +451,7 @@ fn reactor_handle_ingress(
     tcp_get_peer_ip(conn, peer_ip);
     cork_wire.clear();
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
-        server, peer_ip[..], chunk.bytes[..chunk.len], now_ns, cork_wire,
+        server, peer_ip[..], chunk.bytes[..chunk.len], now_ns, cork_wire, stage,
     );
 
     let should_close = !ok || wants_close;
@@ -465,8 +474,8 @@ fn reactor_handle_ingress(
     }
 }
 
-// Dispatches ready epoll events for reactor connection slots.
-fn reactor_dispatch_events(
+// Dispatches ready epoll events for reactor connection slots with `<Stage>`.
+fn reactor_dispatch_events<Stage>(
     server:       HttpServer&,
     epfd:         i64,
     listener_fd:  i64,
@@ -479,6 +488,7 @@ fn reactor_dispatch_events(
     chunk:        ReactorIngressBuf&,
     cork_wire:    u8[..65536]&,
     total_served: i64&,
+    stage:        Stage&,
 ) {
     for i in ready_udata.len {
         let udata = ready_udata[i];
@@ -504,6 +514,7 @@ fn reactor_dispatch_events(
             chunk,
             cork_wire,
             total_served,
+            stage,
         );
     }
 }
@@ -544,9 +555,13 @@ inline fn reactor_poll_sweep(
     );
 }
 
-// Executes a share-nothing reactor loop with epoll.
-// Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
-fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+// Executes a share-nothing reactor loop with epoll and a custom `<Stage>` hook.
+fn serve_reactor_with_stage<Stage>(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    stage:           Stage&,
+    max_connections: i64 = 0,
+) -> i64 {
     guard listener_fd > 0 || server.worker_ring.is_open else { return 0; }
 
     let epfd = epoll_create();
@@ -591,13 +606,20 @@ fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0
         if n > 0 {
             reactor_dispatch_events(
                 server, epfd, listener_fd, g_reactor_table, g_reactor_leftovers[..], g_reactor_free_slots,
-                timer_wheel, ready_udata[..n], cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served,
+                timer_wheel, ready_udata[..n], cached_now_ns, g_reactor_chunk, g_reactor_cork, total_served, stage,
             );
         }
     }
 
     reactor_cleanup_all(epfd, g_reactor_table, g_reactor_free_slots);
     return total_served;
+}
+
+// Executes a share-nothing reactor loop with epoll.
+// Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
+fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    var noop = wire::NoOpStage {};
+    return serve_reactor_with_stage(server, listener_fd, noop, max_connections);
 }
 
 fn reactor_accept_tls_client(
@@ -659,9 +681,10 @@ fn reactor_dispatch_tls_events(
         }
         let slot = udata as i64;
         if slot >= 0 && slot < 1024 && table.fds[slot] > 0 {
+            var noop = wire::NoOpStage {};
             reactor_handle_ingress(
                 server, epfd, table, leftovers, slot, free_slots,
-                timer_wheel, now_ns, chunk, cork_wire, total_served,
+                timer_wheel, now_ns, chunk, cork_wire, total_served, noop,
             );
         }
     }
@@ -735,16 +758,8 @@ fn handle_h3_server_datagram<B>(
     guard found && s_idx >= 0 && s_idx < h3_conn.streams.len else { return false; }
     guard h3_conn.streams[s_idx].headers_received else { return false; }
 
-    let method = if h3_conn.streams[s_idx].req_method.len > 0 {
-        h3_conn.streams[s_idx].req_method[..]
-    } else {
-        "GET"
-    };
-    let path = if h3_conn.streams[s_idx].req_path.len > 0 {
-        h3_conn.streams[s_idx].req_path[..]
-    } else {
-        "/"
-    };
+    let method = if h3_conn.streams[s_idx].req_method.len > 0 { h3_conn.streams[s_idx].req_method[..] } else { "GET" };
+    let path = if h3_conn.streams[s_idx].req_path.len > 0 { h3_conn.streams[s_idx].req_path[..] } else { "/" };
     var req = new_request(method, path);
     if h3_conn.streams[s_idx].req_authority.len > 0 {
         let _ = append_header(req.headers, "host", h3_conn.streams[s_idx].req_authority[..]);
@@ -769,7 +784,8 @@ fn handle_h3_server_datagram<B>(
     for &e in res.headers.entries {
         let hdr_name = entry_name(res.headers, e);
         let hdr_val = entry_value(res.headers, e);
-        var lname: u8[..128] = [];
+        var lname: u8[..256] = [];
+        guard hdr_name.len <= lname.cap else { continue; }
         for b in hdr_name {
             let c = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
             lname.push(c);

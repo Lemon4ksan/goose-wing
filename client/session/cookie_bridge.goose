@@ -97,6 +97,8 @@ fn prepare_hop_cookie_header(
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
+    let is_top_nav = ctx.is_main_frame
+        && (samesite_eval.context_type != SameSiteContextType.CrossSite || samesite_eval.had_cross_site_hop);
     let _ = encode_cookie_header_to_map(
         session.jar,
         current_url.hostname(),
@@ -108,7 +110,7 @@ fn prepare_hop_cookie_header(
         session.virtual_clock_us,
         CookieAccessOptions {
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
-            is_top_level_navigation: ctx.is_main_frame,
+            is_top_level_navigation: is_top_nav,
             is_safe_method:          safe_method,
             had_cross_site_hop:      samesite_eval.had_cross_site_hop,
         },

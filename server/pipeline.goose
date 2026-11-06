@@ -88,6 +88,58 @@ struct ServerStageCtx {
     outcome:      PipelineOutcome = PipelineOutcome.Handled,
 }
 
+// Extracts a route path parameter by name from the active request extension slot (`:id`, `*wildcard`).
+fn route_param(
+    cfg:  const ServerPipelineConfig&,
+    ctx:  const ServerStageCtx&,
+    name: const u8[:],
+) -> const u8[:], bool {
+    guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else {
+        return "", false;
+    }
+    let idx = ctx.ext_slot_idx;
+    return param_by_name(cfg.ext_pool.slots[idx].params, name, cfg.ext_pool.slots[idx].canon_url[..]);
+}
+
+// Extracts a route path parameter by name, returning `default_val` if absent.
+fn route_param_or(
+    cfg:         const ServerPipelineConfig&,
+    ctx:         const ServerStageCtx&,
+    name:        const u8[:],
+    default_val: const u8[:],
+) -> const u8[:] {
+    let val, ok = route_param(cfg, ctx, name);
+    return if ok { val } else { default_val };
+}
+
+// Returns the effective client IP address for the active request extension slot.
+fn peer_ip(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:] {
+    guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else { return ""; }
+    return cfg.ext_pool.slots[ctx.ext_slot_idx].peer_ip[..];
+}
+
+// Returns the verified JWT `sub` claim populated by `stage_server_auth_jwt`.
+fn auth_subject(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:] {
+    guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else { return ""; }
+    return cfg.ext_pool.slots[ctx.ext_slot_idx].auth_subject[..];
+}
+
+// Returns the verified `JwtClaims` populated by `stage_server_auth_jwt`.
+fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const JwtClaims& {
+    let idx = if ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len {
+        ctx.ext_slot_idx
+    } else {
+        0
+    };
+    return cfg.ext_pool.slots[idx].jwt_claims;
+}
+
+// Returns the decrypted `PrivateJar` session cookie payload populated by `stage_server_auth_cookie`.
+fn session_data(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:] {
+    guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else { return ""; }
+    return cfg.ext_pool.slots[ctx.ext_slot_idx].session_data[..];
+}
+
 // Default zero-cost no-op server hook implementation for `wire::NoOpStage` by `ServerHookPhase`.
 inline fn on_server_stage(
     _stage: wire::NoOpStage&,
@@ -264,7 +316,8 @@ fn stage_server_cors(
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
     if cors_res == CorsResult.RejectedOrigin || cors_res == CorsResult.InvalidConfig {
-        if req.method[..] == "OPTIONS" && header(req, "access-control-request-method").len > 0 {
+        let is_preflight = req.method[..] == "OPTIONS" && header(req, "access-control-request-method").len > 0;
+        if is_preflight || cors_policy.reject_non_matching_origin {
             res.status_code = 403;
             return wire::StageVerdict.ShortCircuit { status_code: 403 };
         }
@@ -382,33 +435,42 @@ fn stage_server_auth_jwt(
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
+    ext.jwt_claims = out_claims;
     ext.populated_entries |= internal::ENTRY_SECURITY;
     return wire::StageVerdict.Continue;
 }
 
+inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&) -> wire::StageVerdict {
+    res.status_code = 200;
+    res.body.clear();
+    res.body.append(cache.wire[..]);
+    if cache.content_type.len > 0 {
+        set_header(res, "Content-Type", cache.content_type[..]);
+    }
+    return wire::StageVerdict.ShortCircuit { status_code: 200 };
+}
+
 // Stage 10 (Server Ingress): Coalescing route cache lookup via UFCS `cache.cache_lookup(now_ms)`.
-fn stage_server_cache_lookup<Cache>(
-    cache:  const Cache&,
-    req:    const Request&,
-    now_ms: u64,
-    res:    Response&,
+fn stage_server_cache_lookup(
+    cache:      HttpRouteCache&,
+    req:        const Request&,
+    now_ms:     u64,
+    res:        Response&,
+    handler_id: i32 = -1,
 ) -> wire::StageVerdict {
     guard req.method[..] == "GET" || req.method[..] == "HEAD" else {
         return wire::StageVerdict.Continue;
     }
-    let lookup = cache.cache_lookup(now_ms);
+    let lookup = cache.cache_lookup(now_ms, handler_id);
     return match lookup {
-        HitFresh => {
-            res.status_code = 200;
-            res.body.clear();
-            res.body.append(cache.wire[..]);
-            wire::StageVerdict.ShortCircuit { status_code: 200 }
-        },
+        HitFresh => populate_cached_response(cache, res),
         HitStaleNeedsUpdate => {
-            res.status_code = 200;
-            res.body.clear();
-            res.body.append(cache.wire[..]);
-            wire::StageVerdict.ShortCircuit { status_code: 200 }
+            if !cache.is_updating {
+                cache.is_updating = true;
+                wire::StageVerdict.Continue
+            } else {
+                populate_cached_response(cache, res)
+            }
         },
         Miss => wire::StageVerdict.Continue,
     };
@@ -443,9 +505,64 @@ fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict 
     return wire::StageVerdict.Continue;
 }
 
-inline fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool {
-    guard accept_enc.len > 0 else { return false; }
-    return core::contains(accept_enc, token);
+fn is_zero_qvalue(params: const u8[:]) -> bool {
+    var pos: i64 = 0;
+    while pos < params.len {
+        let semi = core::index_of_byte(params[pos..], ';');
+        let seg = if semi >= 0 {
+            params[pos..pos + semi]
+        } else {
+            params[pos..]
+        };
+        let p = core::trim_lws(seg);
+        if p.len >= 3 && (p[0] == 'q' || p[0] == 'Q') && p[1] == '=' {
+            let qv = core::trim_lws(p[2..]);
+            if qv == "0" || qv == "0." || qv == "0.0" || qv == "0.00" || qv == "0.000" {
+                return true;
+            }
+        }
+        if semi < 0 { break; }
+        pos += semi + 1;
+    }
+    return false;
+}
+
+fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool {
+    guard accept_enc.len > 0 && token.len > 0 else { return false; }
+    var pos: i64 = 0;
+    while pos < accept_enc.len {
+        let comma = core::index_of_byte(accept_enc[pos..], ',');
+        let item = if comma >= 0 {
+            accept_enc[pos..pos + comma]
+        } else {
+            accept_enc[pos..]
+        };
+        let trimmed = core::trim_lws(item);
+        let semi = core::index_of_byte(trimmed, ';');
+        let coding = if semi >= 0 {
+            core::trim_lws(trimmed[..semi])
+        } else {
+            trimmed
+        };
+        let params = if semi >= 0 { trimmed[semi + 1..] } else { "" };
+        if eq_ascii_fold(coding, token) && !is_zero_qvalue(params) {
+            return true;
+        }
+        if comma < 0 { break; }
+        pos += comma + 1;
+    }
+    return false;
+}
+
+inline fn append_vary_accept_encoding(res: Response&) {
+    let cur = header(res, "Vary");
+    if cur.len == 0 {
+        set_header(res, "Vary", "Accept-Encoding");
+    } else if !core::contains_fold(cur, "accept-encoding") {
+        var vbuf: u8[..128] = [];
+        guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
+        set_header(res, "Vary", vbuf[..]);
+    }
 }
 
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
@@ -470,7 +587,7 @@ fn stage_server_compress(
             res.body.clear();
             res.body.append(compressed[..]);
             set_header(res, "Content-Encoding", "zstd");
-            set_header(res, "Vary", "Accept-Encoding");
+            append_vary_accept_encoding(res);
             return wire::StageVerdict.Continue;
         }
     }
@@ -480,7 +597,7 @@ fn stage_server_compress(
             res.body.clear();
             res.body.append(compressed[..]);
             set_header(res, "Content-Encoding", "br");
-            set_header(res, "Vary", "Accept-Encoding");
+            append_vary_accept_encoding(res);
             return wire::StageVerdict.Continue;
         }
     }
@@ -490,7 +607,7 @@ fn stage_server_compress(
             res.body.clear();
             res.body.append(compressed[..]);
             set_header(res, "Content-Encoding", "gzip");
-            set_header(res, "Vary", "Accept-Encoding");
+            append_vary_accept_encoding(res);
             return wire::StageVerdict.Continue;
         }
     }
@@ -498,13 +615,14 @@ fn stage_server_compress(
 }
 
 // Stage 4 (Server Egress): Coalescing route cache store via UFCS `cache.cache_store(now_ms, body)`.
-fn stage_server_cache_store<Cache>(
-    cache:  Cache&,
-    now_ms: u64,
-    res:    const Response&,
+fn stage_server_cache_store(
+    cache:      HttpRouteCache&,
+    now_ms:     u64,
+    res:        const Response&,
+    handler_id: i32 = -1,
 ) -> wire::StageVerdict {
     if res.status_code == 200 && res.body.len > 0 {
-        let _ = cache.cache_store(now_ms, res.body[..]);
+        let _ = cache.cache_store(now_ms, res.body[..], handler_id, header(res, "content-type"));
     }
     return wire::StageVerdict.Continue;
 }
@@ -655,25 +773,30 @@ fn dispatch_ingress_pipeline(
 
 // Executes post-handler egress stages matching the effective PSO or server egress mask.
 fn dispatch_egress_pipeline(
-    cfg:    ServerPipelineConfig&,
-    req:    const Request&,
-    res:    Response&,
-    mask:   u64,
-    now_ns: u64 = 0,
+    cfg:          ServerPipelineConfig&,
+    req:          const Request&,
+    res:          Response&,
+    mask:         u64,
+    now_ns:       u64 = 0,
+    ext_slot_idx: i32 = -1,
 ) {
-    if (mask & STAGE_EGRESS_ETAG) != 0 {
-        let _ = stage_server_etag(req, res);
-    }
     let compress_bits = STAGE_EGRESS_COMPRESS_GZIP | STAGE_EGRESS_COMPRESS_BROTLI | STAGE_EGRESS_COMPRESS_ZSTD;
     if (mask & compress_bits) != 0 {
         let _ = stage_server_compress(req, res, mask);
+    }
+    if (mask & STAGE_EGRESS_ETAG) != 0 {
+        let _ = stage_server_etag(req, res);
     }
     if (mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 {
         let _ = stage_server_security_headers(res);
     }
     if (mask & (STAGE_EGRESS_METRICS | STAGE_EGRESS_ACCESS_LOG)) != 0 {
-        var dummy_ext = internal::RequestExtensions { start_time_ns: now_ns, .. };
-        let _ = stage_server_metrics_log(dummy_ext, res, mask, now_ns);
+        if ext_slot_idx >= 0 && ext_slot_idx < cfg.ext_pool.slots.len {
+            let _ = stage_server_metrics_log(cfg.ext_pool.slots[ext_slot_idx], res, mask, now_ns);
+        } else {
+            var dummy_ext = internal::RequestExtensions { start_time_ns: now_ns, .. };
+            let _ = stage_server_metrics_log(dummy_ext, res, mask, now_ns);
+        }
     }
 }
 
@@ -682,7 +805,7 @@ fn apply_route_payload(cfg: const ServerPipelineConfig&, handler_id: i32, res: R
     let _ = get_static_route_payload(cfg.router, handler_id, res);
 }
 
-fn execute_found_route_handler(
+fn execute_found_route_handler<UserStage>(
     cfg:          ServerPipelineConfig&,
     req:          const Request&,
     now_ns:       u64,
@@ -690,27 +813,25 @@ fn execute_found_route_handler(
     out_future:   internal::InlineHandlerFuture&,
     f:            const RouteMatchFound&,
     ext_slot_idx: i32,
+    sctx:         ServerStageCtx&,
+    user_stage:   UserStage&,
 ) -> PipelineOutcome {
-    let e_idx = ext_slot_idx as i64;
     if req.method[..] == "QUERY" && header(req, "Content-Type").len == 0 {
-        internal::release_extensions(cfg.ext_pool, ext_slot_idx);
         res.status_code = 400; // Bad Request
         return PipelineOutcome.Handled;
     }
 
     let wants_cookie = (f.entries_mask & internal::ENTRY_COOKIES) != 0;
-    let cookie_unpopulated = (cfg.ext_pool.slots[e_idx].populated_entries & internal::ENTRY_COOKIES) == 0;
+    let cookie_unpopulated = (cfg.ext_pool.slots[ext_slot_idx].populated_entries & internal::ENTRY_COOKIES) == 0;
     if wants_cookie && cookie_unpopulated {
-        let _ = stage_server_auth_cookie(cfg.private_jar, req, cfg.ext_pool.slots[e_idx], now_ns);
+        let _ = stage_server_auth_cookie(cfg.private_jar, req, cfg.ext_pool.slots[ext_slot_idx], now_ns);
     }
 
     let now_ms = now_ns / 1000000;
     if (f.ingress_mask & wire::STAGE_SRV_IN_CACHE_LOOKUP) != 0 {
-        let c_v = stage_server_cache_lookup(cfg.route_cache, req, now_ms, res);
+        let c_v = stage_server_cache_lookup(cfg.route_cache, req, now_ms, res, f.handler_id);
         let is_cached = match c_v { ShortCircuit _ => true, _ => false };
         if is_cached {
-            handle_head_method_suppression(req.method[..], res);
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.Handled;
         }
     }
@@ -718,17 +839,31 @@ fn execute_found_route_handler(
     out_future = internal::new_inline_handler_future(f.handler_id as u16);
     internal::poll_future(out_future);
 
-    res.status_code = 200;
-    apply_route_payload(cfg, f.handler_id, res);
-    if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 {
-        let _ = stage_server_cache_store(cfg.route_cache, now_ms, res);
+    res.status_code = 0;
+    let route_v = user_stage.on_server_stage(wire::ServerHookPhase.RouteHandler, cfg, req, sctx, res);
+    match route_v {
+        ShortCircuit sc => {
+            if res.status_code == 0 {
+                res.status_code = sc.status_code as i32;
+            }
+        },
+        Abort _ => {
+            return PipelineOutcome.CsrfRejected;
+        },
+        _ => {},
+    };
+
+    if res.status_code == 0 {
+        res.status_code = 200;
+        apply_route_payload(cfg, f.handler_id, res);
     }
-    handle_head_method_suppression(req.method[..], res);
-    internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+    if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 {
+        let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id);
+    }
     return PipelineOutcome.Handled;
 }
 
-fn dispatch_matched_route(
+fn dispatch_matched_route<UserStage>(
     cfg:          ServerPipelineConfig&,
     req:          const Request&,
     now_ns:       u64,
@@ -736,21 +871,23 @@ fn dispatch_matched_route(
     out_future:   internal::InlineHandlerFuture&,
     match_res:    RouteMatchResult,
     ext_slot_idx: i32,
+    sctx:         ServerStageCtx&,
+    user_stage:   UserStage&,
 ) -> PipelineOutcome {
     match match_res {
         NotFound => {
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             res.status_code = 404; // Not Found
             return PipelineOutcome.RouteNotFound;
         },
         MethodNotAllowed mna => {
             res.status_code = 405; // Method Not Allowed
             set_header(res, "Allow", mna.allow_header[..]);
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
-            return execute_found_route_handler(cfg, req, now_ns, res, out_future, f, ext_slot_idx);
+            return execute_found_route_handler(
+                cfg, req, now_ns, res, out_future, f, ext_slot_idx, sctx, user_stage,
+            );
         },
     };
 }
@@ -879,6 +1016,19 @@ inline fn resolve_route_effective_pso(res: RouteMatchResult, caps: u64) -> u64 {
     };
 }
 
+// Updates `sctx` fields (`handler_id`, `entries_mask`, `ingress_mask`, `egress_mask`) from `match_res`.
+inline fn sync_stage_ctx_with_route(sctx: ServerStageCtx&, match_res: RouteMatchResult) {
+    match match_res {
+        Found f => {
+            sctx.handler_id = f.handler_id;
+            sctx.entries_mask = f.entries_mask;
+            sctx.ingress_mask = f.ingress_mask;
+            sctx.egress_mask = f.egress_mask;
+        },
+        _ => {},
+    };
+}
+
 // Finalizes slowloris request lifecycle tracking.
 inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: internal::ConnectionTimer&) {
     if timer_enabled {
@@ -913,6 +1063,9 @@ fn execute_server_pipeline_with_stage<UserStage>(
         res.status_code = 503; // Service Unavailable / Pool Exhausted
         return PipelineOutcome.RateLimited;
     }
+    defer internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+    defer notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
+
     let e_idx = ext_slot_idx as i64;
     let _ = cfg.ext_pool.slots[e_idx].peer_ip.try_set(eff_ip[..min(eff_ip.len, 48)]);
     cfg.ext_pool.slots[e_idx].canon_url.clear();
@@ -933,13 +1086,9 @@ fn execute_server_pipeline_with_stage<UserStage>(
             if res.status_code == 0 {
                 res.status_code = sc.status_code as i32;
             }
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
             return PipelineOutcome.Handled;
         },
         Abort _ => {
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
             return PipelineOutcome.CsrfRejected;
         },
         _ => {},
@@ -947,6 +1096,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
 
     var match_res = RouteMatchResult.NotFound;
     let _ = stage_server_route_match(cfg.router, req, cfg.ext_pool.slots[e_idx], match_res, res);
+    sync_stage_ctx_with_route(sctx, match_res);
 
     let effective_pso = resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);
     cfg.ext_pool.slots[e_idx].effective_pso = effective_pso;
@@ -962,8 +1112,6 @@ fn execute_server_pipeline_with_stage<UserStage>(
             now_ns,
         );
         if is_terminal {
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
             return ingress_outcome;
         }
     }
@@ -974,22 +1122,21 @@ fn execute_server_pipeline_with_stage<UserStage>(
             if res.status_code == 0 {
                 res.status_code = sc.status_code as i32;
             }
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
             return PipelineOutcome.Handled;
         },
         Abort _ => {
-            internal::release_extensions(cfg.ext_pool, ext_slot_idx);
-            notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
             return PipelineOutcome.CsrfRejected;
         },
         _ => {},
     };
 
-    let outcome = dispatch_matched_route(cfg, req, now_ns, res, out_future, match_res, ext_slot_idx);
+    let outcome = dispatch_matched_route(
+        cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, sctx, user_stage,
+    );
+    sctx.outcome = outcome;
 
     if outcome == PipelineOutcome.Handled {
-        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns);
+        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
         let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
         match user_out_v {
             ShortCircuit sc => {
@@ -999,10 +1146,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
         };
     }
 
-    notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
-    if req.method[..] == "HEAD" {
-        res.body.clear();
-    }
+    handle_head_method_suppression(req.method[..], res);
     return outcome;
 }
 

@@ -91,10 +91,14 @@ fn dispatch_queue_send(q: WireQueue&, data: const u8[:]) -> i64, bool {
     return drain_send_slice(q.fd, data);
 }
 
+inline fn is_submittable_cmd(cmd: const WireCommandBuffer&) -> bool {
+    return !cmd.has_error &&
+        (cmd.state == WireCommandBufferState.Executable || cmd.state == WireCommandBufferState.Recording);
+}
+
 // Submits a recorded command buffer to the physical transport queue (RFC 9113).
 fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool {
-    guard q.is_connected else { return 0, false; }
-    guard !cmd.has_error && cmd.state != WireCommandBufferState.RecordingHeaders else { return 0, false; }
+    guard q.is_connected && is_submittable_cmd(cmd) else { return 0, false; }
     let data = cmd.buf[..];
     guard data.len > 0 else { return 0, true; }
 
@@ -110,7 +114,7 @@ fn submit_to_transport(q: WireQueue&, cmd: const WireCommandBuffer&, transport: 
     guard wing::is_connected(transport) else {
         return WireResult.ErrorInitializationFailed;
     }
-    guard !cmd.has_error && cmd.state != WireCommandBufferState.RecordingHeaders else {
+    guard is_submittable_cmd(cmd) else {
         return WireResult.ErrorCommandBufferLocked;
     }
     let data = cmd.buf[..];
@@ -134,7 +138,7 @@ fn submit_to_transport(q: WireQueue&, t: wing::Transport&, cmd: const WireComman
 
 // Appends a recorded command buffer's wire frames directly into a `core::CorkBuffer` for zero-copy coalescing.
 fn submit_to_cork(cmd: const WireCommandBuffer&, cork: core::CorkBuffer&) -> bool {
-    guard !cmd.has_error && cmd.state != WireCommandBufferState.RecordingHeaders else { return false; }
+    guard is_submittable_cmd(cmd) else { return false; }
     let data = cmd.buf[..];
     guard data.len > 0 else { return true; }
     return core::cork_write_exact(cork, data) == core::IoError.None;
@@ -147,7 +151,7 @@ fn submit_to_cork(
     cork:      wing::ServerCork&,
     transport: wing::Transport&,
 ) -> WireResult {
-    guard !cmd.has_error && cmd.state != WireCommandBufferState.RecordingHeaders else {
+    guard wing::is_connected(transport) && is_submittable_cmd(cmd) else {
         return WireResult.ErrorCommandBufferLocked;
     }
     let data = cmd.buf[..];
@@ -192,7 +196,7 @@ fn submit_slice(q: WireQueue&, data: const u8[:]) -> i64, bool {
 }
 
 inline fn submit_single_batch_cmd(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool {
-    guard !cmd.has_error && cmd.state != WireCommandBufferState.RecordingHeaders else { return 0, false; }
+    guard is_submittable_cmd(cmd) else { return 0, false; }
     let data = cmd.buf[..];
     guard data.len > 0 else { return 0, true; }
     return dispatch_queue_send(q, data);

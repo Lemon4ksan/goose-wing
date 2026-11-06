@@ -328,6 +328,7 @@ fn ::cork_reset(cb: core::CorkBuffer&) { core::cork_reset(cb); }
 fn ::append(cb: core::CorkBuffer&, src: const u8[:]) { core::append(cb, src); }
 fn ::push(cb: core::CorkBuffer&, b: u8) { core::push(cb, b); }
 fn ::clear(cb: core::CorkBuffer&) { core::clear(cb); }
+fn ::resize(cb: core::CorkBuffer&, new_len: i64) { core::resize(cb, new_len); }
 
 // ---- bytes & stringview ufcs bridges ----------------------------------------
 
@@ -421,6 +422,11 @@ fn ::fence_wire_slice(buf: u8[:], length: i64) -> bool { return core::fence_wire
 
 fn ::try_push<A, T>(arr: A&, item: T) -> bool {
     guard arr.len < arr.cap else { return false; }
+    arr.push(item);
+    return true;
+}
+
+fn ::try_push(arr: u8[>..]&, item: u8) -> bool {
     arr.push(item);
     return true;
 }

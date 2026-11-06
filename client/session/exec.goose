@@ -138,15 +138,15 @@ fn build_effective_url(
     let parsed_base = core::new_url(base_url);
     if parsed_base.valid {
         let eff_url = resolve_endpoint(parsed_base, req_url);
-        out.append(href(eff_url));
+        out.try_append(href(eff_url));
     } else if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
-        out.append(req_url);
+        out.try_append(req_url);
     } else {
-        out.append(base_url);
+        out.try_append(base_url);
         if base_url.len > 0 && base_url[base_url.len - 1] != '/' && (req_url.len == 0 || req_url[0] != '/') {
-            out.push('/');
+            out.try_push('/');
         }
-        out.append(req_url);
+        out.try_append(req_url);
     }
 
     append_query_params_preserving_fragment(out, query_params);
@@ -196,10 +196,13 @@ fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response
     resp.redirect_count = ctx.redirect_count;
     resp.final_method.clear();
     resp.final_method.append(ctx.current_method[..]);
+    resp.url_chain.clear();
     for &hop_u in ctx.url_chain {
         guard resp.url_chain.len < resp.url_chain.cap else { break; }
         var u_str: u8[..256] = [];
-        u_str.append(href(hop_u));
+        let h = href(hop_u);
+        let n = min(h.len, u_str.cap);
+        u_str.append(h[..n]);
         resp.url_chain.push(u_str);
     }
 }
@@ -384,17 +387,9 @@ fn append_available_dict_header(headers: HeaderMap&, dict_b64: const u8[:]) {
     set_header(headers, "Available-Dictionary", dict_b64);
     let val = find_header(headers, "accept-encoding");
     guard val.len > 0 else { return; }
-    var already_has = false;
-    if val.len >= 3 {
-        for k in val.len - 2 {
-            if val[k] == 'd' && val[k + 1] == 'c' && val[k + 2] == 'b' {
-                already_has = true;
-                break;
-            }
-        }
-    }
-    if !already_has {
+    if !header_has_token(val, "dcb") {
         var new_ae: u8[..256] = [];
+        guard val.len + 10 <= new_ae.cap else { return; }
         new_ae.append(val);
         new_ae.append(", dcb, dcz");
         set_header(headers, "Accept-Encoding", new_ae[..]);
@@ -761,9 +756,7 @@ fn dial_live_tcp_or_proxy(
     if !proxy_chain.is_direct && proxy_chain.servers.len > 0 {
         let ps = proxy_chain.servers[0];
         let sock = native_tcp_connect(ps.host[..], ps.port, eff_timeout);
-        guard sock > 0 else {
-            return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed");
-        }
+        guard sock > 0 else { return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed"); }
         let p_url = core::new_url(proxy_url);
         let p_user = core::username(p_url);
         let p_pass = core::password(p_url);
@@ -779,18 +772,20 @@ fn dial_live_tcp_or_proxy(
             var proxy_auth: u8[..256] = [];
             if p_user.len > 0 {
                 var cred_raw: u8[..160] = [];
-                cred_raw.append(p_user);
-                cred_raw.push(':');
-                cred_raw.append(p_pass);
+                cred_raw.try_append(p_user);
+                cred_raw.try_push(':');
+                cred_raw.try_append(p_pass);
                 var cred_b64: u8[..224] = [];
                 core::base64_encode(cred_raw[..], cred_b64);
                 core::secure_zeroize_slice(cred_raw[..]);
                 proxy_auth.append("Basic ");
                 proxy_auth.append(cred_b64[..]);
+                core::secure_zeroize_slice(cred_b64[..]);
             }
             let c_err = http_connect_client_handshake(
                 sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
             );
+            core::secure_zeroize_slice(proxy_auth[..]);
             if c_err != ConnectTunnelError.None {
                 native_tcp_close(sock);
                 return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
@@ -879,6 +874,23 @@ fn encode_h2_client_request<B>(
     return true;
 }
 
+fn process_h2_control_frame<B>(
+    hdr:     const internal::FrameHeader&,
+    payload: const u8[:],
+    out:     B&,
+) {
+    if hdr.frame_type == rfc::H2_FRAME_SETTINGS && (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+        let ack_hdr = wire::WireFrameHeader {
+            length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: rfc::H2_FLAG_ACK, stream_id: 0,
+        };
+        let _ = wire::encode_frame_header(ack_hdr, out);
+    } else if hdr.frame_type == rfc::H2_FRAME_PING && (hdr.flags & rfc::H2_FLAG_ACK) == 0 && payload.len == 8 {
+        var ping_data: u8[8] = [0; 8];
+        for i in 8 { ping_data[i] = payload[i]; }
+        let _ = wire::encode_ping_frame(ping_data, true, out);
+    }
+}
+
 fn process_h2_response_frame<B>(
     hdr:       const internal::FrameHeader&,
     payload:   const u8[:],
@@ -889,21 +901,8 @@ fn process_h2_response_frame<B>(
     got_hdrs:  bool&,
     out_ctrl:  B&,
 ) -> bool, bool {
-    if hdr.frame_type == rfc::H2_FRAME_SETTINGS && hdr.stream_id == 0 {
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
-            let ack_hdr = wire::WireFrameHeader {
-                length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: rfc::H2_FLAG_ACK, stream_id: 0,
-            };
-            let _ = wire::encode_frame_header(ack_hdr, out_ctrl);
-        }
-        return true, false;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_PING && hdr.stream_id == 0 {
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && payload.len == 8 {
-            var ping_data: u8[8] = [0; 8];
-            for i in 8 { ping_data[i] = payload[i]; }
-            let _ = wire::encode_ping_frame(ping_data, true, out_ctrl);
-        }
+    if hdr.stream_id == 0 && (hdr.frame_type == rfc::H2_FRAME_SETTINGS || hdr.frame_type == rfc::H2_FRAME_PING) {
+        process_h2_control_frame(hdr, payload, out_ctrl);
         return true, false;
     }
     if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == stream_id { return false, false; }
@@ -920,7 +919,12 @@ fn process_h2_response_frame<B>(
             for &e in resp.headers.entries {
                 update_response_presence(resp, entry_name(resp.headers, e));
             }
-            if pseudo.status < 100 || pseudo.status >= 200 { got_hdrs = true; }
+            if pseudo.status >= 100 && pseudo.status < 200 {
+                resp.headers.clear();
+                resp.presence_mask = 0;
+            } else {
+                got_hdrs = true;
+            }
         } else {
             let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
             guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
@@ -1431,14 +1435,18 @@ fn compute_401_auth_header(
         // RFC 7617 §2: username MUST NOT contain colon
         guard core::index_of_byte(session.creds.username[..], ':') < 0 else { return false; }
         var user_pass: u8[..140] = [];
-        user_pass.append(session.creds.username[..]);
-        user_pass.push(':');
-        user_pass.append(session.creds.password[..]);
+        guard user_pass.try_append(session.creds.username[..])
+            && user_pass.try_push(':')
+            && user_pass.try_append(session.creds.password[..]) else {
+            core::secure_zeroize_slice(user_pass[..]);
+            return false;
+        }
         var b64_user_pass: u8[..200] = [];
         core::base64_encode(user_pass[..], b64_user_pass);
         core::secure_zeroize_slice(user_pass[..]);
         auth_header_val.append("Basic ");
         auth_header_val.append(b64_user_pass[..]);
+        core::secure_zeroize_slice(b64_user_pass[..]);
         return true;
     }
     return false;
@@ -1489,6 +1497,7 @@ inline fn prepare_auth_retry_hop(
     }
     if session.enable_cookie_jar {
         ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.headers);
+        remove_header_by_name(ctx.headers, "Cookie");
         prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
     }
     set_header(ctx.headers, "Authorization", auth_val, true);

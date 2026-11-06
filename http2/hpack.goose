@@ -736,7 +736,7 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
 
         while nbits >= 8 {
             nbits -= 8;
-            out.push(((acc >> nbits) & 0xFF) as u8);
+            guard out.try_push(((acc >> nbits) & 0xFF) as u8) else { return false; }
         }
     }
 
@@ -744,7 +744,7 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
     if nbits > 0 {
         let pad_bits = 8 - nbits;
         acc = (acc << pad_bits) | (((1 as u64) << pad_bits) - 1);
-        out.push((acc & 0xFF) as u8);
+        guard out.try_push((acc & 0xFF) as u8) else { return false; }
     }
     return true;
 }
@@ -806,19 +806,17 @@ fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> b
     let max_prefix = (((1 as u64) << prefix_bits) - 1);
 
     if val < max_prefix {
-        out.push(prefix_mask | (val as u8));
-        return true;
+        return out.try_push(prefix_mask | (val as u8));
     }
 
-    out.push(prefix_mask | (max_prefix as u8));
     var rem = val - max_prefix;
+    guard out.try_push(prefix_mask | (max_prefix as u8)) else { return false; }
 
     while rem >= 128 {
-        out.push((0x80 | (rem & 0x7F)) as u8);
+        guard out.try_push((0x80 | (rem & 0x7F)) as u8) else { return false; }
         rem = rem >> 7;
     }
-    out.push((rem & 0x7F) as u8);
-    return true;
+    return out.try_push((rem & 0x7F) as u8);
 }
 
 // ---- static table (rfc 7541 appendix a) ---------------------------------
@@ -1340,7 +1338,7 @@ struct H2PseudoHeaders {
     method:             u8[..16]   = [],
     scheme:             u8[..16]   = [],
     authority:          u8[..256]  = [],
-    path:               u8[..1024] = [],
+    path:               u8[..2048] = [],
     protocol:           u8[..64]   = [],
     status:             i32        = 0,
     has_method:         bool       = false,
@@ -1921,6 +1919,7 @@ fn encode_hpack_field<B>(
     indexing:    HpackIndexing = HpackIndexing.Incremental,
     use_huffman: bool          = true,
 ) -> bool {
+    let start_len = out.len;
     let is_never = (indexing == HpackIndexing.NeverIndexed);
     let is_inc = (indexing == HpackIndexing.Incremental);
 
@@ -1929,21 +1928,30 @@ fn encode_hpack_field<B>(
         let s_idx, exact_s = find_hpack_static_field(name, val);
         if s_idx > 0 && exact_s {
             // Indexed field (1xxxxxxx)
-            hpack_encode_int(out, s_idx, 7, 0x80);
+            guard hpack_encode_int(out, s_idx, 7, 0x80) else {
+                out.resize(start_len);
+                return false;
+            }
             return true;
         }
 
         // 2. Check for O(1) direct-mapped hash hit in dynamic table
         let fast_idx, fast_ok = hpack_hash_lookup(dt, name, val);
         if fast_ok && fast_idx >= 62 {
-            hpack_encode_int(out, fast_idx as u64, 7, 0x80);
+            guard hpack_encode_int(out, fast_idx as u64, 7, 0x80) else {
+                out.resize(start_len);
+                return false;
+            }
             return true;
         }
 
         // 3. Fallback scan for name-only match or collision resolution in dynamic table
         let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
         if d_exact {
-            hpack_encode_int(out, d_match_idx, 7, 0x80);
+            guard hpack_encode_int(out, d_match_idx, 7, 0x80) else {
+                out.resize(start_len);
+                return false;
+            }
             return true;
         }
     }
@@ -1961,13 +1969,22 @@ fn encode_hpack_field<B>(
 
     let name_ref_idx = if s_idx > 0 { s_idx } else { d_match_idx };
     if name_ref_idx > 0 {
-        hpack_encode_int(out, name_ref_idx, prefix_bits, prefix_mask);
+        guard hpack_encode_int(out, name_ref_idx, prefix_bits, prefix_mask) else {
+            out.resize(start_len);
+            return false;
+        }
     } else {
-        hpack_encode_int(out, 0, prefix_bits, prefix_mask);
-        encode_hpack_string_literal(out, name, use_huffman);
+        guard hpack_encode_int(out, 0, prefix_bits, prefix_mask) &&
+              encode_hpack_string_literal(out, name, use_huffman) else {
+            out.resize(start_len);
+            return false;
+        }
     }
 
-    encode_hpack_string_literal(out, val, use_huffman);
+    guard encode_hpack_string_literal(out, val, use_huffman) else {
+        out.resize(start_len);
+        return false;
+    }
 
     if is_inc {
         insert_header(dt, name, val, false);
@@ -1975,16 +1992,13 @@ fn encode_hpack_field<B>(
     return true;
 }
 
-fn encode_hpack_string_literal<B>(out: B&, raw: const u8[:], use_huffman: bool) {
+fn encode_hpack_string_literal<B>(out: B&, raw: const u8[:], use_huffman: bool) -> bool {
     if use_huffman {
         let huff_len = huff_encoded_byte_len(raw);
         if huff_len < (raw.len as u64) {
-            hpack_encode_int(out, huff_len, 7, 0x80); // Set H bit
-            huff_encode_bytes(raw, out);
-            return;
+            return hpack_encode_int(out, huff_len, 7, 0x80) && huff_encode_bytes(raw, out);
         }
     }
     // Raw octets
-    hpack_encode_int(out, raw.len as u64, 7, 0x00);
-    out.append(raw);
+    return hpack_encode_int(out, raw.len as u64, 7, 0x00) && out.try_append(raw);
 }

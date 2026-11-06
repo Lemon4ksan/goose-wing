@@ -35,7 +35,7 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
             guard pb >= '0' && pb <= '9' else { return false; }
         }
         let p_val, p_ok = core::parse_u64_dec(port_slice);
-        return p_ok && p_val <= 65535;
+        return p_ok && p_val >= 1 && p_val <= 65535;
     }
     let close_idx = core::index_of_byte(host_val, ']');
     guard close_idx > 1 else { return false; }
@@ -53,7 +53,7 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
         guard pb >= '0' && pb <= '9' else { return false; }
     }
     let p_num, p_ok = core::parse_u64_dec(port_part);
-    return p_ok && p_num <= 65535;
+    return p_ok && p_num >= 1 && p_num <= 65535;
 }
 
 // Appends transfer-encoding header value with comma delimiter.
@@ -236,7 +236,10 @@ fn parse_http1_request_line<Req>(
 
 fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     for b in host_val {
-        guard b != '/' && b != '?' && b != '#' && b != '@' && b != ',' && b != ' ' && b != '\t' else {
+        guard b > 0x20 && b < 0x7F else { return false; }
+        guard b != '/' && b != '?' && b != '#' && b != '@' && b != ','
+            && b != '\\' && b != '<' && b != '>' && b != '"' && b != '^'
+            && b != '|' && b != '`' && b != '{' && b != '}' else {
             return false;
         }
     }
@@ -467,6 +470,13 @@ fn parse_http1_request_headers<Req>(
         return false;
     }
 
+    if (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
+        guard validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
+            clear_request_headers_state(out_req);
+            return false;
+        }
+    }
+
     body_start_idx = req_offset + header_end_idx;
     return true;
 }
@@ -505,10 +515,10 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
             out_req.body,
             out_req.trailers,
         );
-        if dec_err != ChunkedDecodeError.None {
+        if dec_err != ChunkedDecodeError.None || out_req.body.len > MAX_SERVER_BODY_LIMIT {
             out_req.body.clear();
             out_req.trailers.clear();
-            if dec_err != ChunkedDecodeError.UnexpectedEof {
+            if dec_err != ChunkedDecodeError.UnexpectedEof && dec_err != ChunkedDecodeError.None {
                 clear_request_headers_state(out_req);
             }
             return false, 0;
@@ -518,8 +528,10 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         return true, total_consumed;
     }
 
-    // Guard against signed integer addition overflow
-    guard cl_len >= 0 && cl_len <= 0x7FFFFFFF && wire.len >= body_start_idx + cl_len else { return false, 0; }
+    // Guard against signed integer addition overflow and enforce MAX_SERVER_BODY_LIMIT (10 MB)
+    guard cl_len >= 0 && cl_len <= MAX_SERVER_BODY_LIMIT && wire.len >= body_start_idx + cl_len else {
+        return false, 0;
+    }
     let total_consumed = body_start_idx + cl_len;
 
     if cl_len > 0 {
@@ -671,7 +683,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     guard wire.len >= 4 else { return false, 0; }
 
     let hdr_end = core::fast_find_crlfcrlf(wire);
-    guard hdr_end >= 0 && hdr_end <= 8192 else { return false, 0; }
+    guard hdr_end >= 0 && hdr_end + 4 <= 8192 else { return false, 0; }
     let header_end_idx = hdr_end + 4;
     let header_bytes = wire[..header_end_idx];
 
@@ -778,6 +790,9 @@ fn serialize_http1_chunked_response<Res, B>(
 ) {
     serialize_status_line(res.status_code, out_wire);
     serialize_server_header(server_name, out_wire);
+    if !res.has_header("date") {
+        out_wire.append(get_cached_http_date_header(0));
+    }
     out_wire.append("Transfer-Encoding: chunked\r\n");
 
     if res.trailers.entries.len > 0 {
@@ -973,7 +988,9 @@ fn serialize_http1_headers<Res, B>(
 
     let is_default_srv = server_name == "goose-wing" || server_name == "goose-wing/1.0";
     if res.status_code == 200 && is_default_srv {
-        if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.entries.len == 1 && res.trailers.entries.len == 0 {
+        if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.entries.len == 1 && res.trailers.entries.len == 0
+            && eq_ascii_fold(entry_name(res.headers, res.headers.entries[0]), "content-type")
+        {
             if server_name == "goose-wing" {
                 out_wire.append(g_compat_date.fast_prefix[..]);
             } else {
@@ -1114,13 +1131,25 @@ fn send_http1_response_iov<Res, B>(
     guard fd > 0 else { return 0; }
     var arr = core::new_iovec_array();
     core::iovec_push(arr, wire_headers[..]);
+    var total_sent: i32 = 0;
     for i in n {
         let chunk = core::iovec_get(body_iov, i);
         if chunk.len > 0 {
+            if core::iovec_count(arr) >= 16 {
+                let sent = tcp_sendv(fd, arr);
+                guard sent >= 0 else { return sent; }
+                total_sent += sent;
+                arr = core::new_iovec_array();
+            }
             core::iovec_push(arr, chunk);
         }
     }
-    return tcp_sendv(fd, arr);
+    if core::iovec_count(arr) > 0 {
+        let sent = tcp_sendv(fd, arr);
+        guard sent >= 0 else { return sent; }
+        total_sent += sent;
+    }
+    return total_sent;
 }
 
 // Ends the response without emitting a body payload (RFC 9110 §9.3.2 / §15.4.5 & uWebSockets endWithoutBody pattern).
@@ -1336,6 +1365,11 @@ fn begin_http_stream_request<Req>(
         consumer.is_chunked = true;
         consumer.content_length = -1;
     } else if has_cl {
+        guard tracker.parsed_cl >= 0 && tracker.parsed_cl <= MAX_SERVER_BODY_LIMIT else {
+            consumer.is_headers_parsed = false;
+            clear_request_headers_state(out_req);
+            return false, 0;
+        }
         consumer.is_chunked = false;
         consumer.content_length = tracker.parsed_cl;
         if consumer.content_length == 0 {
@@ -1448,6 +1482,12 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
     consumer: HttpStreamConsumer&,
     incoming: const u8[:],
 ) -> i64, bool, bool {
+    let is_empty_done = consumer.is_headers_parsed && consumer.is_finished &&
+        consumer.content_length == 0 && consumer.bytes_received == 0;
+    if is_empty_done {
+        Callback("", true);
+        return 0, true, true;
+    }
     guard consumer.is_headers_parsed && !consumer.is_finished else { return 0, false, false; }
     guard incoming.len > 0 else { return 0, false, true; }
 
@@ -1620,9 +1660,17 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
 
 // Registers a declarative WebSocket route on the server instance (uWebSockets app.ws pattern)
 fn add_ws_route(server: HttpServer&, path: const u8[:], behavior: const WsBehavior& = WsBehavior { .. }) -> bool {
-    guard path.len > 0 && path.len <= 128 && server.ws_route_count < server.ws_routes.len as i32 else { return false; }
+    guard path.len > 0 && path.len <= 128 else { return false; }
     var canon_path: u8[..128] = [];
     guard canonicalize_route_path(path, canon_path) else { return false; }
+    for i in server.ws_routes.len {
+        if server.ws_routes[i].in_use && server.ws_routes[i].path[..] == canon_path[..] {
+            server.ws_routes[i].behavior = behavior;
+            add_get_route(server, canon_path[..], behavior.handler_id);
+            return true;
+        }
+    }
+    guard server.ws_route_count < server.ws_routes.len as i32 else { return false; }
     for i in server.ws_routes.len {
         if !server.ws_routes[i].in_use {
             let _ = server.ws_routes[i].path.try_set(canon_path[..]);
@@ -1683,6 +1731,7 @@ fn add_server_name(
     for i in server.sni_registry.entries.len {
         let entry_pat = x509_strip_trailing_dot(server.sni_registry.entries[i].pattern[..]);
         if server.sni_registry.entries[i].in_use && eq_ascii_fold(entry_pat, p_norm) {
+            core::secure_zeroize_slice(server.sni_registry.entries[i].key_pem[..]);
             let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
             let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
             return true;
@@ -1714,6 +1763,7 @@ fn remove_server_name(server: HttpServer&, pattern: const u8[:]) -> bool {
             entry.in_use = false;
             entry.pattern.clear();
             entry.cert_pem.clear();
+            core::secure_zeroize_slice(entry.key_pem[..]);
             entry.key_pem.clear();
             server.sni_registry.count -= 1;
             return true;
@@ -1877,7 +1927,7 @@ fn defer_ws_upgrade(
     }
     let subprotocol = req.headers.find_header("Sec-WebSocket-Protocol");
     let extensions = req.headers.find_header("Sec-WebSocket-Extensions");
-    guard subprotocol.len <= 64 && extensions.len <= 64 else {
+    guard subprotocol.len <= 64 && extensions.len <= 256 else {
         return WsPendingUpgrade { .. }, false;
     }
 
@@ -2045,13 +2095,13 @@ fn complete_ws_upgrade<Req, B>(
     sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
 
     let ua_upg = req.header("user-agent");
-    let allow_comp = entry.behavior.compression == WS_COMPRESS_SHARED_COMPRESSOR
+    let allow_comp = entry.behavior.compression != WS_COMPRESS_DISABLED
         && !ws_has_broken_compression(ua_upg);
     if allow_comp {
         let client_ext = req.header("sec-websocket-extensions");
         if core::contains_fold(client_ext, "permessage-deflate") {
             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-            enable_permessage_deflate(sess, WS_COMPRESS_SHARED_COMPRESSOR);
+            enable_permessage_deflate(sess, entry.behavior.compression);
         }
     }
     serialize_http1_response(ws_res, server.server_name[..], wire_out);
@@ -2060,13 +2110,14 @@ fn complete_ws_upgrade<Req, B>(
 }
 
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
-// executing the server pipeline, and serializing the wire response.
-fn handle_connection_wire<B>(
+// executing the server pipeline with `<Stage>`, and serializing the wire response.
+fn handle_connection_wire<Stage, B>(
     server:    HttpServer&,
     client_ip: const u8[:],
     wire_in:   const u8[:],
     now_ns:    u64,
     wire_out:  B&,
+    stage:     Stage&,
 ) -> PipelineOutcome, bool {
     wire_out.clear();
 
@@ -2104,7 +2155,7 @@ fn handle_connection_wire<B>(
         var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
         defer internal::cleanup_h2_server_session(sess, server.pipeline);
         let _, ok_h2 = internal::handle_h2_server_ingress(
-            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out,
+            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out, stage,
         );
         if ok_h2 {
             server.requests_processed++;
@@ -2134,7 +2185,9 @@ fn handle_connection_wire<B>(
 
     var res = Response { .. };
     var future = internal::new_inline_handler_future(0);
-    let outcome = execute_pipeline(server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future);
+    let outcome = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future, stage,
+    );
 
     check_and_apply_connection_close(req, res);
 
@@ -2144,8 +2197,27 @@ fn handle_connection_wire<B>(
     return outcome, true;
 }
 
-fn is_possible_http_method_prefix(stream: const u8[:]) -> bool {
-    guard stream.len > 0 else { return true; }
+// Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
+// executing the server pipeline, and serializing the wire response.
+fn handle_connection_wire<B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
+) -> PipelineOutcome, bool {
+    var noop = wire::NoOpStage {};
+    return handle_connection_wire(server, client_ip, wire_in, now_ns, wire_out, noop);
+}
+
+fn is_possible_http_method_prefix(stream_in: const u8[:]) -> bool {
+    guard stream_in.len > 0 else { return true; }
+    var stream = stream_in;
+    if stream.len == 1 && stream[0] == '\r' { return true; }
+    if stream.len >= 2 && stream[0] == '\r' && stream[1] == '\n' {
+        stream = stream[2..];
+        guard stream.len > 0 else { return true; }
+    }
     if core::starts_with(stream, "GET") { return true; }
     if core::starts_with(stream, "POST") { return true; }
     if core::starts_with(stream, "HEAD") { return true; }
@@ -2230,7 +2302,7 @@ fn handle_pipelined_parse_failure<B>(
     let hdr_end = core::fast_find_crlfcrlf(stream);
     let is_valid_prefix = is_possible_http_method_prefix(stream);
 
-    if hdr_end >= 0 && stream.len <= 8192 && is_valid_prefix && req.headers.entries.len > 0 {
+    if hdr_end >= 0 && hdr_end + 4 <= 8192 && is_valid_prefix && req.headers.entries.len > 0 {
         // If both TE and CL are present, reject immediately as smuggling attempt (RFC 9112 §6.1, §6.3)
         let te_str = req.header("transfer-encoding");
         let cl_str = req.header("content-length");
@@ -2324,17 +2396,20 @@ inline fn reset_server_request(sreq: ServerRequest&) {
     sreq.raw_header_arena.clear();
 }
 
-fn dispatch_pipelined_request<B>(
+fn dispatch_pipelined_request<Stage, B>(
     server:    HttpServer&,
     client_ip: const u8[:],
     req:       Request&,
     res:       Response&,
     now_ns:    u64,
     wire_out:  B&,
+    stage:     Stage&,
 ) -> bool {
     reset_server_response_fast(res);
     var future = internal::new_inline_handler_future(0);
-    let _ = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    let _ = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, client_ip, req, now_ns, res, future, stage,
+    );
 
     let wants_close = check_and_apply_connection_close(req, res);
     serialize_http1_response(res, server.server_name[..], wire_out);
@@ -2342,7 +2417,7 @@ fn dispatch_pipelined_request<B>(
     return wants_close;
 }
 
-fn process_pipelined_pipe_step<B>(
+fn process_pipelined_pipe_step<Stage, B>(
     server:        HttpServer&,
     client_ip:     const u8[:],
     pipe:          core::PipeBuffer&,
@@ -2351,6 +2426,7 @@ fn process_pipelined_pipe_step<B>(
     now_ns:        u64,
     total_handled: i64&,
     wire_out:      B&,
+    stage:         Stage&,
 ) -> PipeStepResult {
     let stream = core::readable_slice(pipe);
     reset_server_request_fast(req);
@@ -2374,7 +2450,7 @@ fn process_pipelined_pipe_step<B>(
         return PipeStepResult.Stop;
     }
 
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
     total_handled++;
     core::advance_to(pipe, consumed, consumed);
 
@@ -2392,7 +2468,7 @@ enum StreamTurnResult {
     KeepStreamFail,
 }
 
-fn process_pipelined_stream_turn<B>(
+fn process_pipelined_stream_turn<Stage, B>(
     server:           HttpServer&,
     client_ip:        const u8[:],
     stream:           const u8[:],
@@ -2405,6 +2481,7 @@ fn process_pipelined_stream_turn<B>(
     total_handled:    i64&,
     total_consumed:   i64&,
     conn_wants_close: bool&,
+    stage:            Stage&,
 ) -> StreamTurnResult {
     guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop; }
 
@@ -2423,7 +2500,7 @@ fn process_pipelined_stream_turn<B>(
         return StreamTurnResult.Stop;
     }
 
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
     total_handled++;
     total_consumed += consumed;
     step_consumed = consumed;
@@ -2437,14 +2514,15 @@ fn process_pipelined_stream_turn<B>(
     return StreamTurnResult.Continue;
 }
 
-// Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
-fn handle_connection_wire_pipelined_stream<B>(
+fn handle_connection_wire_pipelined_stream<Stage, B>(
     server:    HttpServer&,
     client_ip: const u8[:],
     wire_in:   const u8[:],
     now_ns:    u64,
     wire_out:  B&,
+    stage:     Stage&,
 ) -> i64, i64, bool, bool {
     if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
@@ -2463,7 +2541,7 @@ fn handle_connection_wire_pipelined_stream<B>(
         var step_consumed: i64 = 0;
         let turn_res = process_pipelined_stream_turn(
             server, client_ip, stream, now_ns, req, res,
-            wire_out, wire_in.len, step_consumed, total_handled, total_consumed, conn_wants_close,
+            wire_out, wire_in.len, step_consumed, total_handled, total_consumed, conn_wants_close, stage,
         );
         match turn_res {
             Continue => {
@@ -2484,6 +2562,34 @@ fn handle_connection_wire_pipelined_stream<B>(
     return total_handled, total_consumed, true, conn_wants_close;
 }
 
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
+// Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
+fn handle_connection_wire_pipelined_stream<B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
+) -> i64, i64, bool, bool {
+    var noop = wire::NoOpStage {};
+    return handle_connection_wire_pipelined_stream(server, client_ip, wire_in, now_ns, wire_out, noop);
+}
+
+// Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
+fn handle_connection_wire_pipelined<Stage, B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    wire_in:   const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
+    stage:     Stage&,
+) -> i64, bool {
+    let count, _, ok, _ = handle_connection_wire_pipelined_stream(
+        server, client_ip, wire_in, now_ns, wire_out, stage,
+    );
+    return count, ok;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests (RFC 9112 Section 9.3).
 // Concatenates all serialized responses into wire_out and returns (total_requests_processed, ok).
 fn handle_connection_wire_pipelined<B>(
@@ -2497,7 +2603,7 @@ fn handle_connection_wire_pipelined<B>(
     return count, ok;
 }
 
-inline fn handle_h2_pipe_ingress<B>(
+inline fn handle_h2_pipe_ingress<Stage, B>(
     server:     HttpServer&,
     client_ip:  const u8[:],
     pipe:       core::PipeBuffer&,
@@ -2505,10 +2611,11 @@ inline fn handle_h2_pipe_ingress<B>(
     now_ms:     u64,
     unread_len: i64,
     wire_out:   B&,
+    stage:      Stage&,
 ) -> i64, bool {
     let stream = core::readable_slice(pipe);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
-        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out,
+        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out, stage,
     );
     if ok_h2 {
         core::advance_to(pipe, consumed_h2, consumed_h2);
@@ -2517,6 +2624,59 @@ inline fn handle_h2_pipe_ingress<B>(
     }
     core::advance_to(pipe, consumed_h2, unread_len);
     return 0, false;
+}
+
+// Incremental Sans-IO pipeline handler using PipeBuffer and `<Stage>`.
+fn handle_connection_pipe<Stage, B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    pipe:      core::PipeBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+    h2_sess:   internal::H2ServerSession&,
+    stage:     Stage&,
+) -> i64, bool {
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+    let unread_len = pipe.readable_len();
+    guard unread_len > 0 else { return 0, true; }
+
+    let now_ms = (now_ns / 1000000) as u64;
+    var total_handled: i64 = 0;
+
+    if h2_sess.preface_handled {
+        return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out, stage);
+    }
+
+    // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
+    if pipe.consumed == 0 && is_partial_h2_client_preface(core::readable_slice(pipe)) {
+        return 0, true;
+    }
+
+    // Check for HTTP/2 connection preface if at the very start of the stream
+    if pipe.consumed == 0 && unread_len >= 24 {
+        let stream = core::readable_slice(pipe);
+        if is_h2_client_preface(stream) {
+            return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out, stage);
+        }
+    }
+
+    var req = new_request("GET", "");
+    var res = Response { .. };
+
+    while pipe.readable_len() > 0 {
+        let res_step = process_pipelined_pipe_step(
+            server, client_ip, pipe, req, res, now_ns, total_handled, wire_out, stage,
+        );
+        if res_step == PipeStepResult.Error {
+            return total_handled, false;
+        } else if res_step == PipeStepResult.Stop {
+            break;
+        }
+    }
+
+    return total_handled, true;
 }
 
 // Incremental Sans-IO pipeline handler using PipeBuffer (RFC 9112 & System.IO.Pipelines model).
@@ -2531,47 +2691,8 @@ fn handle_connection_pipe<B>(
     wire_out:  B&,
     h2_sess:   internal::H2ServerSession&,
 ) -> i64, bool {
-    if server.trust_proxy_headers {
-        server.pipeline.trust_proxy_headers = true;
-    }
-    let unread_len = pipe.readable_len();
-    guard unread_len > 0 else { return 0, true; }
-
-    let now_ms = (now_ns / 1000000) as u64;
-    var total_handled: i64 = 0;
-
-    if h2_sess.preface_handled {
-        return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out);
-    }
-
-    // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
-    if pipe.consumed == 0 && is_partial_h2_client_preface(core::readable_slice(pipe)) {
-        return 0, true;
-    }
-
-    // Check for HTTP/2 connection preface if at the very start of the stream
-    if pipe.consumed == 0 && unread_len >= 24 {
-        let stream = core::readable_slice(pipe);
-        if is_h2_client_preface(stream) {
-            return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ms, unread_len, wire_out);
-        }
-    }
-
-    var req = new_request("GET", "");
-    var res = Response { .. };
-
-    while pipe.readable_len() > 0 {
-        let res_step = process_pipelined_pipe_step(
-            server, client_ip, pipe, req, res, now_ns, total_handled, wire_out,
-        );
-        if res_step == PipeStepResult.Error {
-            return total_handled, false;
-        } else if res_step == PipeStepResult.Stop {
-            break;
-        }
-    }
-
-    return total_handled, true;
+    var noop = wire::NoOpStage {};
+    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, h2_sess, noop);
 }
 
 inline fn alloc_temp_h2_session(
@@ -2583,6 +2704,19 @@ inline fn alloc_temp_h2_session(
     return clamp(idx, 0, 7);
 }
 
+fn handle_connection_pipe_with_stage<Stage, B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    pipe:      core::PipeBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+    stage:     Stage&,
+) -> i64, bool {
+    let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
+    defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, g_reactor_h2_sessions[h2_idx], stage);
+}
+
 fn handle_connection_pipe<B>(
     server:    HttpServer&,
     client_ip: const u8[:],
@@ -2590,9 +2724,8 @@ fn handle_connection_pipe<B>(
     now_ns:    u64,
     wire_out:  B&,
 ) -> i64, bool {
-    let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
-    defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
-    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, g_reactor_h2_sessions[h2_idx]);
+    var noop = wire::NoOpStage {};
+    return handle_connection_pipe_with_stage(server, client_ip, pipe, now_ns, wire_out, noop);
 }
 
 // Dispatches an HTTP `Request` through `server.pipeline` with a compile-time `<UserStage>` hook.
@@ -2635,7 +2768,22 @@ fn is_http1_request_ready(in_buf: const u8[:], hdr_end: i64) -> bool {
     }
     if has_te {
         guard body_start <= in_buf.len else { return false; }
-        return find(in_buf[body_start..], "0\r\n\r\n") >= 0;
+        let chunk_slice = in_buf[body_start..];
+        var cur: i64 = 0;
+        loop {
+            var csize: u64 = 0;
+            let err = read_chunk_size_line(chunk_slice, cur, csize);
+            if err == ChunkedDecodeError.UnexpectedEof { return false; }
+            guard err == ChunkedDecodeError.None && csize <= (MAX_SERVER_BODY_LIMIT as u64) else { return true; }
+            if csize == 0 {
+                let tr_err = parse_chunked_trailers(chunk_slice, cur);
+                return tr_err != ChunkedDecodeError.UnexpectedEof;
+            }
+            let sz_i = csize as i64;
+            if cur + sz_i + 2 > chunk_slice.len { return false; }
+            guard chunk_slice[cur + sz_i] == '\r' && chunk_slice[cur + sz_i + 1] == '\n' else { return true; }
+            cur += sz_i + 2;
+        }
     }
     return true;
 }
@@ -2744,6 +2892,14 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     ws.max_lifetime_s = behavior.max_lifetime_s;
     ws.send_pings_automatically = behavior.send_pings_automatically;
     ws.reset_idle_timeout_on_send = behavior.reset_idle_timeout_on_send;
+    let ua_upg = req.header("user-agent");
+    if behavior.compression != WS_COMPRESS_DISABLED && !ws_has_broken_compression(ua_upg) {
+        let client_ext = req.header("sec-websocket-extensions");
+        if core::contains_fold(client_ext, "permessage-deflate") {
+            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
+            enable_permessage_deflate(ws, behavior.compression);
+        }
+    }
     out_wire.clear();
     serialize_http1_response(ws_res, server.server_name[..], out_wire);
     let _ = tcp_send(conn_fd, out_wire[..]);
@@ -3070,12 +3226,13 @@ fn adopt_socket(server: HttpServer&, raw_fd: i64) -> i64 {
     return adopt_socket(raw_fd);
 }
 
-// Executes a live TCP accept and dispatch loop using hardware page-mirrored ring buffer (PageRingBuffer).
-fn serve_page_ring_loop(
+// Executes a live TCP accept and dispatch loop using hardware page-mirrored ring buffer (PageRingBuffer) and `<Stage>`.
+fn serve_page_ring_loop<Stage>(
     server:          HttpServer&,
     listener_fd:     i64,
     max_connections: i64,
     ring:            core::PageRingBuffer&,
+    stage:           Stage&,
 ) -> i64 {
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
@@ -3099,7 +3256,7 @@ fn serve_page_ring_loop(
             }
 
             let now_ns = core::as_nanos(core::monotonic_now());
-            let count, ok_handle = handle_connection_page_ring(server, peer_ip[..], ring, now_ns, cork);
+            let count, ok_handle = handle_connection_page_ring(server, peer_ip[..], ring, now_ns, cork, stage);
             let should_close = !ok_handle || response_wire_has_connection_close(core::cork_as_slice(cork));
             if !ok_handle {
                 if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
@@ -3119,8 +3276,24 @@ fn serve_page_ring_loop(
     return total_served;
 }
 
-// Executes a live TCP accept and dispatch loop using standard PipeBuffer.
-fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+// Executes a live TCP accept and dispatch loop using hardware page-mirrored ring buffer (PageRingBuffer).
+fn serve_page_ring_loop(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    max_connections: i64,
+    ring:            core::PageRingBuffer&,
+) -> i64 {
+    var noop = wire::NoOpStage {};
+    return serve_page_ring_loop(server, listener_fd, max_connections, ring, noop);
+}
+
+// Executes a live TCP accept and dispatch loop using standard PipeBuffer and `<Stage>`.
+fn serve_pipe_loop<Stage>(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    max_connections: i64,
+    stage:           Stage&,
+) -> i64 {
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
@@ -3147,7 +3320,7 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
 
             let now_ns = core::as_nanos(core::monotonic_now());
             let count, ok = handle_connection_pipe(
-                server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx],
+                server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx], stage,
             );
             let should_close = !ok || response_wire_has_connection_close(core::cork_as_slice(cork));
             if !ok {
@@ -3168,20 +3341,37 @@ fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 =
     return total_served;
 }
 
-// Executes a live TCP accept and dispatch loop.
-// Transparently uses high-performance hardware page-mirrored ring buffer (PageRingBuffer)
-// with seamless fallback to PipeBuffer for restricted environments.
-fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+// Executes a live TCP accept and dispatch loop using standard PipeBuffer.
+fn serve_pipe_loop(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    var noop = wire::NoOpStage {};
+    return serve_pipe_loop(server, listener_fd, max_connections, noop);
+}
+
+// Executes a live TCP accept and dispatch loop with a custom `<Stage>` hook.
+fn serve_with_stage<Stage>(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    stage:           Stage&,
+    max_connections: i64 = 0,
+) -> i64 {
     guard listener_fd > 0 else { return 0; }
 
     var ring = core::PageRingBuffer { .. };
     let ok_ring = core::page_ring_init(ring, 65536);
     if ok_ring {
         defer core::page_ring_close(ring);
-        return serve_page_ring_loop(server, listener_fd, max_connections, ring);
+        return serve_page_ring_loop(server, listener_fd, max_connections, ring, stage);
     }
 
-    return serve_pipe_loop(server, listener_fd, max_connections);
+    return serve_pipe_loop(server, listener_fd, max_connections, stage);
+}
+
+// Executes a live TCP accept and dispatch loop.
+// Transparently uses high-performance hardware page-mirrored ring buffer (PageRingBuffer)
+// with seamless fallback to PipeBuffer for restricted environments.
+fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
+    var noop = wire::NoOpStage {};
+    return serve_with_stage(server, listener_fd, noop, max_connections);
 }
 
 fn tls_recv_pipe(
@@ -3267,9 +3457,9 @@ fn serve_tls(
 // Hardware Virtual Memory Page Pipeline Handlers
 // ---------------------------------------------------------------------------
 
-// Incremental Sans-IO pipeline handler using hardware page-mirrored ring buffer (PageRingBuffer).
+// Incremental Sans-IO pipeline handler using hardware page-mirrored ring buffer (PageRingBuffer) and `<Stage>`.
 // Eliminates buffer wraparound splitting and memmove compaction during streaming request processing.
-inline fn handle_page_ring_h2_preface<B>(
+inline fn handle_page_ring_h2_preface<Stage, B>(
     server:     HttpServer&,
     client_ip:  const u8[:],
     ring:       core::PageRingBuffer&,
@@ -3278,6 +3468,7 @@ inline fn handle_page_ring_h2_preface<B>(
     wire_out:   B&,
     out_done:   bool&,
     out_ok:     bool&,
+    stage:      Stage&,
 ) -> i64 {
     if is_partial_h2_client_preface(peek_slice) {
         out_done = true;
@@ -3300,6 +3491,7 @@ inline fn handle_page_ring_h2_preface<B>(
         peek_slice,
         now_ms,
         wire_out,
+        stage,
     );
     out_done = true;
     out_ok = ok_h2;
@@ -3312,12 +3504,13 @@ inline fn handle_page_ring_h2_preface<B>(
     return 0;
 }
 
-fn handle_connection_page_ring<B>(
+fn handle_connection_page_ring<Stage, B>(
     server:    HttpServer&,
     client_ip: const u8[:],
     ring:      core::PageRingBuffer&,
     now_ns:    u64,
     wire_out:  B&,
+    stage:     Stage&,
 ) -> i64, bool {
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
@@ -3337,7 +3530,7 @@ fn handle_connection_page_ring<B>(
             var h2_done = false;
             var h2_ok = true;
             let h2_cnt = handle_page_ring_h2_preface(
-                server, client_ip, ring, peek_buf[..peek_n], now_ns, wire_out, h2_done, h2_ok,
+                server, client_ip, ring, peek_buf[..peek_n], now_ns, wire_out, h2_done, h2_ok, stage,
             );
             if h2_done {
                 return h2_cnt, h2_ok;
@@ -3363,7 +3556,7 @@ fn handle_connection_page_ring<B>(
             break;
         }
 
-        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out);
+        let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
         total_handled++;
         core::page_ring_discard(ring, consumed);
 
@@ -3374,6 +3567,17 @@ fn handle_connection_page_ring<B>(
     }
 
     return total_handled, true;
+}
+
+fn handle_connection_page_ring<B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    ring:      core::PageRingBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+) -> i64, bool {
+    var noop = wire::NoOpStage {};
+    return handle_connection_page_ring(server, client_ip, ring, now_ns, wire_out, noop);
 }
 
 // Executes a live TCP accept and dispatch loop explicitly using PageRingBuffer.
@@ -3429,7 +3633,11 @@ fn serve_static_mmap_file<B>(
         wire_out.append(chunk_buf[..n]);
         offset = offset + (n as u64);
     }
-    return verify_mmap_transfer_complete(offset, mf.size, prev_len, hdr_buf.len, wire_out.len);
+    let ok_done = verify_mmap_transfer_complete(offset, mf.size, prev_len, hdr_buf.len, wire_out.len);
+    if !ok_done {
+        wire_out.resize(prev_len);
+    }
+    return ok_done;
 }
 
 // Sends a static file directly from kernel memory-mapped pages to a socket with zero user-space copying.
@@ -3463,6 +3671,15 @@ fn send_static_mmap_file(
 
 // ---- rfc 9842 compression dictionary transport negotiation -----------------
 
+inline fn is_valid_sf_string_value(s: const u8[:]) -> bool {
+    for b in s {
+        if b < 0x20 || b >= 0x7F || b == '"' || b == '\\' {
+            return false;
+        }
+    }
+    return true;
+}
+
 // RFC 9842 Section 2.1: Use-As-Dictionary - Attaches `Use-As-Dictionary` response header advertising
 // the current response payload as a shared compression dictionary for future matching requests.
 fn set_use_as_dictionary_response(
@@ -3471,7 +3688,8 @@ fn set_use_as_dictionary_response(
     id_str:        const u8[:] = "",
     ttl_sec:       u32         = 86400,
 ) {
-    guard match_pattern.len <= 128 && id_str.len <= 64 else { return; }
+    guard match_pattern.len > 0 && match_pattern.len <= 128 && id_str.len <= 64 else { return; }
+    guard is_valid_sf_string_value(match_pattern) && is_valid_sf_string_value(id_str) else { return; }
     var hdr_val: u8[..512] = [];
     format_use_as_dictionary_header(hdr_val, match_pattern, id_str, ttl_sec);
     set_header(res, "Use-As-Dictionary", hdr_val[..]);
@@ -3519,11 +3737,13 @@ fn negotiate_compression_dictionary(
         return "", false;
     }
 
+    let id_hdr = find_header(req.headers, "Dictionary-ID").trim_lws();
     if expected_id.len > 0 {
-        let id_hdr = find_header(req.headers, "Dictionary-ID").trim_lws();
         var exp_id_wire: u8[..128] = [];
         format_dictionary_id_header(exp_id_wire, expected_id);
         guard id_hdr == exp_id_wire[..] else { return "", false; }
+    } else {
+        guard id_hdr.len == 0 else { return "", false; }
     }
 
     let ae = find_header(req.headers, "Accept-Encoding");

@@ -397,11 +397,12 @@ fn pump_response_body(
     let is_conn_close = header_has_token(conn_hdr, "close") || header_has_token(req_conn, "close");
     let keep_alive = !is_conn_close && (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
 
-    if req.method == "HEAD" || rfc::is_empty_body_status(resp.status_code) {
-        if keep_alive && leftover.len > 0 {
+    let is_upgrade = resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS;
+    if req.method == "HEAD" || is_upgrade || rfc::is_empty_body_status(resp.status_code) {
+        if (keep_alive || is_upgrade) && leftover.len > 0 {
             let _ = conn.rx_buf.try_append(leftover);
         }
-        return true, keep_alive;
+        return true, keep_alive || is_upgrade;
     }
 
     let te = resp.header("Transfer-Encoding");

@@ -164,3 +164,26 @@ fn new_problem_response(problem: const ProblemDetails&) -> Response {
     serialize_problem_details(problem, res.body);
     return res;
 }
+
+// Populates an existing server `Response` in-place with an RFC 9457 `application/problem+json` body.
+fn write_problem_response(res: Response&, problem: const ProblemDetails&) {
+    res.status_code = problem.status;
+    set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
+    res.body.clear();
+    serialize_problem_details(problem, res.body);
+}
+
+// Populates `res` in-place with an RFC 9457 problem response constructed from `status_code`, `title`, and `detail`.
+fn respond_problem(
+    res:         Response&,
+    status_code: i32,
+    title:       const u8[:],
+    detail:      const u8[:] = "",
+    type_uri:    const u8[:] = "",
+) {
+    var prob = ProblemDetails { status: status_code, .. };
+    let _ = prob.title.try_set(title);
+    let _ = prob.detail.try_set(detail);
+    let _ = prob.type_uri.try_set(type_uri);
+    write_problem_response(res, prob);
+}

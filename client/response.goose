@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import json;
+import client.request;
 import http.compression_dict;
 import http.headers;
 
@@ -173,11 +174,29 @@ fn update_response_presence(res: Response&, name: const u8[:]) {
 
 fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.headers, name, value, false);
-    update_response_presence(res, name);
+    if has_header(res.headers, name) {
+        update_response_presence(res, name);
+    }
 }
 
 fn remove_header(res: Response&, name: const u8[:]) -> bool {
-    return remove_header(res.headers, name);
+    let removed = remove_header(res.headers, name);
+    if removed {
+        if core::eq_ascii_fold(name, "date") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_DATE);
+        } else if core::eq_ascii_fold(name, "content-length") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
+        } else if core::eq_ascii_fold(name, "content-type") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_TYPE);
+        } else if core::eq_ascii_fold(name, "connection") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONNECTION);
+        } else if core::eq_ascii_fold(name, "transfer-encoding") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
+        } else if core::eq_ascii_fold(name, "server") {
+            res.presence_mask = res.presence_mask & (~RES_PRESENCE_SERVER);
+        }
+    }
+    return removed;
 }
 
 fn sent_header(res: const Response&, name: const u8[:]) -> const u8[:] {
@@ -371,4 +390,38 @@ fn decode_json<T>(res: const Response&) -> T, Error {
     var out = T { .. };
     let err = json(res, out);
     return out, err;
+}
+
+// ---- response builders -----------------------------------------------------
+
+// Populates an HTTP response with a plain-text body and Content-Type header.
+fn respond_text(res: Response&, status_code: i32, body_str: const u8[:]) {
+    res.status_code = status_code;
+    set_header(res, "Content-Type", "text/plain; charset=utf-8");
+    res.body.clear();
+    res.body.append(body_str);
+}
+
+// Populates an HTTP response with a pre-serialized JSON string and Content-Type header.
+fn respond_json_str(res: Response&, status_code: i32, json_str: const u8[:]) {
+    res.status_code = status_code;
+    set_header(res, "Content-Type", "application/json");
+    res.body.clear();
+    res.body.append(json_str);
+}
+
+// Serializes struct `payload` as a JSON object into the HTTP response body.
+fn respond_json<T>(res: Response&, status_code: i32, payload: const T&) {
+    res.status_code = status_code;
+    set_header(res, "Content-Type", "application/json");
+    res.body.clear();
+    res.body.push('{');
+    var first = true;
+    const for <Name, Acc> in fields<T> {
+        if !first { res.body.push(','); }
+        first = false;
+        json::format_key(res.body, Name);
+        write_json_field(res.body, payload.Acc);
+    }
+    res.body.push('}');
 }

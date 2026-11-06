@@ -60,24 +60,35 @@ inline fn hpack_encode_indexed<B>(out: B&, index: u64) -> bool {
 
 // Encodes an uncompressed octet sequence string with 7-bit prefix length (RFC 7541 Section 5.2).
 fn hpack_encode_string<B>(out: B&, str: const u8[:]) -> bool {
-    guard hpack_encode_int(out, str.len as u64, 7, 0x00) else { return false; }
-    guard out.try_append(str) else { return false; }
+    let start_len = out.len;
+    guard hpack_encode_int(out, str.len as u64, 7, 0x00) && out.try_append(str) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
 // Encodes a literal header field without indexing (RFC 7541 Section 6.2.2).
 fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
-    guard out.try_push(0x00) else { return false; }
-    guard hpack_encode_string(out, name) else { return false; }
-    guard hpack_encode_string(out, val) else { return false; }
+    let start_len = out.len;
+    guard out.try_push(0x00) &&
+          hpack_encode_string(out, name) &&
+          hpack_encode_string(out, val) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
 // Encodes a literal header field never indexed (RFC 7541 Section 6.2.3).
 fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
-    guard out.try_push(0x10) else { return false; }
-    guard hpack_encode_string(out, name) else { return false; }
-    guard hpack_encode_string(out, val) else { return false; }
+    let start_len = out.len;
+    guard out.try_push(0x10) &&
+          hpack_encode_string(out, name) &&
+          hpack_encode_string(out, val) else {
+        out.resize(start_len);
+        return false;
+    }
     return true;
 }
 
@@ -183,7 +194,8 @@ fn encode_hpack_pseudo_fields<B>(
 ) -> bool {
     guard !pseudo.is_trailer else { return true; }
     let inc = internal::HpackIndexing.Incremental;
-    if pseudo.has_status && pseudo.status > 0 {
+    if pseudo.has_status {
+        guard pseudo.status >= 100 && pseudo.status <= 599 else { return false; }
         var st_buf: u8[..16] = [];
         core::format_u64_dec(pseudo.status as u64, st_buf);
         return internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
@@ -262,10 +274,15 @@ fn encode_hpack_from_map<B>(
     out:         B&,
     use_huffman: bool = true,
 ) -> bool {
-    guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else { return false; }
+    let start_len = out.len;
+    guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else {
+        out.resize(start_len);
+        return false;
+    }
 
     for &e in headers.entries {
         guard encode_single_hpack_map_entry(dt, headers, e, out, use_huffman) else {
+            out.resize(start_len);
             return false;
         }
     }

@@ -394,10 +394,8 @@ fn parse_content_length_value(cl: const u8[:]) -> i64, bool {
 
 fn new_stream_reader(resp: const Response&) -> StreamReader {
     var reader = StreamReader { .. };
-    reader.raw_data.append(resp.body[..]);
-
     let te = header(resp, "Transfer-Encoding");
-    if eq_ascii_fold(te, "chunked") {
+    if header_has_token(te, "chunked") {
         reader.is_chunked = true;
     }
 
@@ -410,6 +408,12 @@ fn new_stream_reader(resp: const Response&) -> StreamReader {
             reader.content_length = -1;
         }
     }
+    let body_len = if !reader.is_chunked && reader.content_length >= 0 {
+        min(resp.body.len, reader.content_length)
+    } else {
+        resp.body.len
+    };
+    reader.raw_data.append(resp.body[..body_len]);
     return reader;
 }
 

@@ -260,6 +260,11 @@ fn set_profile(session: Session&, profile: Profile) {
         session.default_headers.clear();
         return;
     }
+    if profile == Profile.Custom {
+        let p = custom_profile();
+        apply_profile(session, p);
+        return;
+    }
     if profile == Profile.Wing {
         let p = wing_default_profile();
         apply_profile(session, p);
@@ -360,13 +365,18 @@ fn doh_query(
     doh_client.virtual_clock_us = session.virtual_clock_us;
     doh_client.proxy_url.append(session.proxy_url[..]);
     doh_client.timeout_ms = session.timeout_ms;
+    doh_client.trust_store = copy(session.trust_store);
+    doh_client.insecure_skip_verify = session.insecure_skip_verify;
     doh_client.ssrf_guard = copy(session.ssrf_guard);
     doh_client.mock_routes = copy(session.mock_routes);
 
     let res, err = do(doh_client, req);
     guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
 
-    return parse_dns_response(res.body[..], out_resp);
+    guard parse_dns_response(res.body[..], out_resp) else { return false; }
+    guard out_resp.rcode == rfc::DNS_RCODE_NOERROR else { return false; }
+    guard !session.doh.use_post || out_resp.tx_id == tx_id else { return false; }
+    return true;
 }
 
 fn lookup_cached_ech_config(
@@ -380,6 +390,7 @@ fn lookup_cached_ech_config(
     if cache_status == DnsCacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
+                out_ech.clear();
                 out_ech.append(rec.ech_config_list[..]);
                 return true;
             }
@@ -401,14 +412,15 @@ fn discover_and_cache_ech_config(
     // RFC 8484 §4.1: DoH clients SHOULD set DNS ID to 0 for maximum HTTP cacheability
     guard doh_query(session, domain, rfc::DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
 
+    let eff_ttl = if dns_resp.min_ttl_sec > 0 { dns_resp.min_ttl_sec } else { 300 };
     var cache_entry = DnsCacheEntry {
         qtype:           rfc::DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
-        ttl_sec:         300,
+        ttl_sec:         eff_ttl,
         valid:           true,
         ..
     };
-    cache_entry.domain.append(domain);
+    guard cache_entry.domain.try_set(domain) else { return false; }
 
     var found_ech = false;
     for &rec in dns_resp.https_records {
@@ -416,6 +428,7 @@ fn discover_and_cache_ech_config(
             cache_entry.https_records.push(rec);
         }
         if rec.has_ech && rec.ech_config_list.len > 0 && !found_ech {
+            out_ech.clear();
             out_ech.append(rec.ech_config_list[..]);
             found_ech = true;
         }
@@ -442,7 +455,7 @@ fn resolve_ech_config(
     }
     // Fallback: If discovery failed, check if a stale entry is available
     var cached = DnsCacheEntry { .. };
-    let stale_status = dns_cache_lookup(session.dns_cache, domain, rfc::DNS_QTYPE_HTTPS, 0, cached);
+    let stale_status = dns_cache_lookup(session.dns_cache, domain, rfc::DNS_QTYPE_HTTPS, now_sec, cached);
     if stale_status == DnsCacheStatus.Fresh || stale_status == DnsCacheStatus.Stale {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
@@ -687,11 +700,11 @@ fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: 
 
 fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
     guard session.mock_routes.len < session.mock_routes.cap else { return; }
-    guard sample_events.len <= 2048 else { return; }
     var route = MockExchange {
         status_code: rfc::STATUS_OK,
         ..
     };
+    guard sample_events.len <= route.body.cap && url_pattern.len <= route.pattern_url.cap else { return; }
     route.method.append("GET");
     route.pattern_url.append(url_pattern);
     set_header(route.headers, "Content-Type", "text/event-stream");
@@ -706,7 +719,8 @@ fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: cons
 // ---- cookie & default header helpers ---------------------------------------
 
 fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
-    var raw_hdr: u8[..2048] = [];
+    var raw_hdr: u8[..4128] = [];
+    guard name.len + 1 + value.len + 8 <= raw_hdr.cap else { return; }
     raw_hdr.append(name);
     raw_hdr.push('=');
     raw_hdr.append(value);
@@ -782,22 +796,7 @@ fn process_dictionary_response<B>(
     raw_body:         const u8[:],
     out_decoded:      B&,
 ) -> bool {
-    let now_sec = session.virtual_clock_us / 1000000;
-    if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
-        let params, ok_p = parse_use_as_dictionary_header(use_as_dict_hdr);
-        if ok_p {
-            dictionary_cache_insert(
-                session.dict_cache,
-                origin,
-                params.match_pattern[..],
-                params.id[..],
-                raw_body,
-                params.ttl_sec,
-                now_sec,
-            );
-        }
-    }
-
+    let prev_len = out_decoded.len;
     if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcz_header(raw_body, dict_hash);
@@ -809,10 +808,10 @@ fn process_dictionary_response<B>(
         guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
             return false;
         }
-        return decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded);
-    }
-
-    if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCB) {
+        guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
+            return false;
+        }
+    } else if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCB) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -823,10 +822,28 @@ fn process_dictionary_response<B>(
         guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
             return false;
         }
-        return decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded);
+        guard decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded) else {
+            return false;
+        }
+    } else {
+        guard out_decoded.len + raw_body.len <= out_decoded.cap else { return false; }
+        out_decoded.append(raw_body);
     }
 
-    guard out_decoded.len + raw_body.len <= out_decoded.cap else { return false; }
-    out_decoded.append(raw_body);
+    if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
+        let params, ok_p = parse_use_as_dictionary_header(use_as_dict_hdr);
+        if ok_p {
+            let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+            dictionary_cache_insert(
+                session.dict_cache,
+                origin,
+                params.match_pattern[..],
+                params.id[..],
+                out_decoded[prev_len..],
+                params.ttl_sec,
+                now_sec,
+            );
+        }
+    }
     return true;
 }

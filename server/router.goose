@@ -373,19 +373,65 @@ fn traverse_or_insert_static(tree: RadixTree&, cur_idx: i32&, seg: const u8[:]) 
     return true;
 }
 
-// Locates a parameter '{param}' or catch-all '{*param}' delimiter in the remaining route pattern.
-fn find_param_delimiter(rem: const u8[:], param_start: i64&, param_end: i64&, is_catchall: bool&) {
+// Validates that a route pattern has balanced, non-nested `{...}` delimiters without `/` inside parameter names.
+fn has_valid_route_braces(path: const u8[:]) -> bool {
+    var in_brace = false;
+    for i in path.len {
+        let b = path[i];
+        if b == '{' {
+            if in_brace { return false; }
+            in_brace = true;
+        } else if b == '}' {
+            if !in_brace { return false; }
+            in_brace = false;
+        } else if in_brace && b == '/' {
+            return false;
+        }
+    }
+    return !in_brace;
+}
+
+// Locates the first parameter (`{param}` or `:param`) or catch-all (`{*param}` or `*param`) delimiter
+// in the remaining route pattern.
+//
+// Example:
+//   rem = "/users/:id/posts"
+//   returns: param_start = 7, param_end = 10, is_catchall = false, is_brace = false
+fn find_param_delimiter(
+    rem:         const u8[:],
+    param_start: i64&,
+    param_end:   i64&,
+    is_catchall: bool&,
+    is_brace:    bool&,
+) {
     param_start = -1;
     param_end = -1;
     is_catchall = false;
+    is_brace = false;
 
     for i in rem.len {
-        if rem[i] == '{' {
+        let b = rem[i];
+        if b == '{' && param_start < 0 {
             param_start = i;
+            is_brace = true;
             is_catchall = (i + 1 < rem.len && rem[i + 1] == '*');
-        } else if rem[i] == '}' && param_start >= 0 {
+        } else if b == '}' && param_start >= 0 && is_brace {
             param_end = i;
-            break;
+            return;
+        } else if (b == ':' || b == '*') && param_start < 0 {
+            param_start = i;
+            is_brace = false;
+            is_catchall = (b == '*');
+            if is_catchall {
+                param_end = rem.len;
+                return;
+            }
+            var j = i + 1;
+            while j < rem.len && rem[j] != '/' && rem[j] != '.' && rem[j] != ':' && rem[j] != '{' {
+                j += 1;
+            }
+            param_end = j;
+            return;
         }
     }
 }
@@ -491,9 +537,7 @@ fn insert_route(
     ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
     egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) -> bool {
-    guard path.len > 0 && path[0] == '/' else { return false; }
-    guard tree.root_idx >= 0 else { return false; }
-
+    guard path.len > 0 && path[0] == '/' && has_valid_route_braces(path) && tree.root_idx >= 0 else { return false; }
     var cur_idx = tree.root_idx;
     var rem = path;
 
@@ -503,7 +547,8 @@ fn insert_route(
         var param_start = -1;
         var param_end = -1;
         var is_catchall = false;
-        find_param_delimiter(rem, param_start, param_end, is_catchall);
+        var is_brace = false;
+        find_param_delimiter(rem, param_start, param_end, is_catchall, is_brace);
 
         if param_start < 0 {
             guard traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
@@ -520,10 +565,10 @@ fn insert_route(
             param_start = 0;
         }
 
-        let name_start = if is_catchall { 2 } else { 1 };
+        let name_start = if is_brace && is_catchall { 2 } else { 1 };
         guard param_end > name_start else { return false; }
         let name = rem[name_start..param_end];
-        let suffix_after = rem[calc_next_char_pos(param_end)..];
+        let suffix_after = rem[if is_brace { calc_next_char_pos(param_end) } else { param_end }..];
 
         if is_catchall {
             return insert_catch_all_child(
@@ -532,9 +577,7 @@ fn insert_route(
         }
 
         var param_node_idx: i32 = -1;
-        guard insert_or_update_param_child(tree, cur_idx, name, suffix_after, param_node_idx) else {
-            return false;
-        }
+        guard insert_or_update_param_child(tree, cur_idx, name, suffix_after, param_node_idx) else { return false; }
 
         if suffix_after.len > 0 {
             cur_idx = param_node_idx;
@@ -770,35 +813,6 @@ inline fn resolve_effective_route_path<B>(path: const u8[:], out: B&) -> const u
     return out[..], true;
 }
 
-// Attempts wildcard fallback (Param or CatchAll child) at `node_idx`.
-fn try_match_wildcard_fallback(
-    tree:          const RadixTree&,
-    node_idx:      i32,
-    eff_path:      const u8[:],
-    cursor_in:     u16,
-    params:        ZeroAllocParams&,
-    out_next_node: i32&,
-    out_cursor:    u16&,
-    out_ca_res:    RouteMatchResult&,
-) -> bool, bool {
-    let rem = eff_path[(cursor_in as i64)..];
-    let p_idx = tree.nodes[node_idx as i64].param_child;
-    if p_idx >= 0 {
-        var val_len: i64 = 0;
-        if match_param_child(tree, p_idx, rem, cursor_in, params, val_len) {
-            out_cursor = cursor_in + (val_len as u16);
-            out_next_node = p_idx;
-            return true, false;
-        }
-    }
-    let ca_idx = tree.nodes[node_idx as i64].catch_all_child;
-    if ca_idx >= 0 {
-        out_ca_res = match_catch_all_child(tree, ca_idx, rem, cursor_in, params);
-        return true, true;
-    }
-    return false, false;
-}
-
 inline fn make_found_route(n: const RadixNode&) -> RouteMatchResult {
     return RouteMatchResult.Found {
         handler_id:   n.handler_id,
@@ -809,59 +823,104 @@ inline fn make_found_route(n: const RadixNode&) -> RouteMatchResult {
     };
 }
 
-fn resolve_wildcard_backtrack(
-    tree:     const RadixTree&,
-    bt_node:  i32,
-    eff_path: const u8[:],
-    bt_cur:   u16,
-    bt_plen:  i64,
-    params:   ZeroAllocParams&,
-) -> RouteMatchResult {
-    guard bt_node >= 0 else { return RouteMatchResult.NotFound; }
-    params.len = bt_plen;
-    var next_w: i32 = -1;
-    var next_c: u16 = 0;
-    var ca_res = RouteMatchResult.NotFound;
-    let ok_w, is_ca = try_match_wildcard_fallback(tree, bt_node, eff_path, bt_cur, params, next_w, next_c, ca_res);
-    guard ok_w else { return RouteMatchResult.NotFound; }
-    if is_ca { return ca_res; }
-    guard next_c == eff_path.len && tree.nodes[next_w as i64].handler_id >= 0 else {
-        return RouteMatchResult.NotFound;
-    }
-    return make_found_route(tree.nodes[next_w as i64]);
+struct RouteBacktrackEntry {
+    node_idx:    i32  = -1,
+    cursor:      u16  = 0,
+    param_len:   i64  = 0,
+    tried_param: bool = false,
 }
 
-inline fn step_wildcard_or_backtrack(
+inline fn try_backtrack_param_branch(
+    tree:     const RadixTree&,
+    rem:      const u8[:],
+    bt:       const RouteBacktrackEntry&,
+    top_i:    i64,
+    bt_stack: RouteBacktrackEntry[..8]&,
+    cur_idx:  i32&,
+    cursor:   u16&,
+    params:   ZeroAllocParams&,
+) -> bool {
+    guard !bt.tried_param else { return false; }
+    bt_stack[top_i].tried_param = true;
+    let p_idx = tree.nodes[bt.node_idx as i64].param_child;
+    guard p_idx >= 0 else { return false; }
+    var val_len: i64 = 0;
+    guard match_param_child(tree, p_idx, rem, bt.cursor, params, val_len) else { return false; }
+    if tree.nodes[bt.node_idx as i64].catch_all_child < 0 {
+        bt_stack.resize(top_i);
+    }
+    cur_idx = p_idx;
+    cursor = bt.cursor + (val_len as u16);
+    return true;
+}
+
+inline fn pop_route_backtrack(
     tree:       const RadixTree&,
     eff_path:   const u8[:],
+    bt_stack:   RouteBacktrackEntry[..8]&,
     cur_idx:    i32&,
     cursor:     u16&,
-    bt_node:    i32&,
-    bt_cur:     u16,
-    bt_plen:    i64,
     params:     ZeroAllocParams&,
     out_ca_res: RouteMatchResult&,
 ) -> bool, bool {
-    var next_w: i32 = -1;
-    var next_c: u16 = 0;
-    let ok_w, is_ca = try_match_wildcard_fallback(tree, cur_idx, eff_path, cursor, params, next_w, next_c, out_ca_res);
-    if ok_w {
-        cur_idx = next_w;
-        cursor = next_c;
-        return true, is_ca;
+    while bt_stack.len > 0 {
+        let top_i = bt_stack.len - 1;
+        let bt = bt_stack[top_i];
+        params.len = bt.param_len;
+        let rem = eff_path[(bt.cursor as i64)..];
+
+        if try_backtrack_param_branch(tree, rem, bt, top_i, bt_stack, cur_idx, cursor, params) {
+            return true, false;
+        }
+
+        bt_stack.resize(top_i);
+        let ca_idx = tree.nodes[bt.node_idx as i64].catch_all_child;
+        if ca_idx >= 0 {
+            out_ca_res = match_catch_all_child(tree, ca_idx, rem, bt.cursor, params);
+            if is_match_found(out_ca_res) {
+                return true, true;
+            }
+        }
     }
-    guard bt_node >= 0 else { return false, false; }
-    cur_idx = bt_node;
-    cursor = bt_cur;
-    params.len = bt_plen;
-    bt_node = -1;
-    let ok_bt, is_ca_bt = try_match_wildcard_fallback(
-        tree, cur_idx, eff_path, cursor, params, next_w, next_c, out_ca_res,
-    );
-    guard ok_bt else { return false, false; }
-    cur_idx = next_w;
-    cursor = next_c;
-    return true, is_ca_bt;
+    return false, false;
+}
+
+inline fn check_node_prefix_advance(
+    tree:     const RadixTree&,
+    eff_path: const u8[:],
+    cur_idx:  i32,
+    cursor:   u16&,
+    skip_pfx: bool&,
+) -> bool {
+    if skip_pfx {
+        skip_pfx = false;
+        return true;
+    }
+    let prefix = tree.nodes[cur_idx as i64].prefix[..];
+    guard prefix.len > 0 else { return true; }
+    let rem_before = eff_path[(cursor as i64)..];
+    guard rem_before.len >= prefix.len && rem_before[..prefix.len] == prefix else { return false; }
+    cursor += prefix.len as u16;
+    return true;
+}
+
+inline fn push_wildcard_backtrack_if_any(
+    tree:      const RadixTree&,
+    cur_idx:   i32,
+    cursor:    u16,
+    param_len: i64,
+    bt_stack:  RouteBacktrackEntry[..8]&,
+) {
+    let has_wild = tree.nodes[cur_idx as i64].param_child >= 0
+        || tree.nodes[cur_idx as i64].catch_all_child >= 0;
+    if has_wild && bt_stack.len < 8 {
+        bt_stack.push(RouteBacktrackEntry {
+            node_idx:    cur_idx,
+            cursor:      cursor,
+            param_len:   param_len,
+            tried_param: false,
+        });
+    }
 }
 
 // Matches path against the RadixTree, recording parameter spans into params.
@@ -876,48 +935,36 @@ fn match_path<B>(
     params.clear();
 
     var cur_idx = tree.root_idx;
-    var cursor:  u16 = 0;
-    var bt_node: i32 = -1;
-    var bt_cur:  u16 = 0;
-    var bt_plen: i64 = 0;
+    var cursor:   u16                      = 0;
+    var bt_stack: RouteBacktrackEntry[..8] = [];
+    var skip_pfx = false;
 
     while cur_idx >= 0 {
-        let prefix = tree.nodes[cur_idx as i64].prefix[..];
-        let rem_before = eff_path[(cursor as i64)..];
-        if prefix.len > 0 {
-            if rem_before.len < prefix.len || rem_before[..prefix.len] != prefix { break; }
-            cursor += prefix.len as u16;
-        }
-
+        let pfx_ok = check_node_prefix_advance(tree, eff_path, cur_idx, cursor, skip_pfx);
         let rem = eff_path[(cursor as i64)..];
-        if rem.len == 0 {
-            let n = tree.nodes[cur_idx as i64];
-            if n.handler_id < 0 { break; }
-            return make_found_route(n);
+        if pfx_ok && rem.len == 0 && tree.nodes[cur_idx as i64].handler_id >= 0 {
+            return make_found_route(tree.nodes[cur_idx as i64]);
         }
-
-        let has_wild = tree.nodes[cur_idx as i64].param_child >= 0 || tree.nodes[cur_idx as i64].catch_all_child >= 0;
-        let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
-        let next_pfx = if next_child >= 0 { tree.nodes[next_child as i64].prefix[..] } else { "" };
-        if next_child >= 0 && rem.len >= next_pfx.len && rem[..next_pfx.len] == next_pfx {
-            if has_wild {
-                bt_node = cur_idx;
-                bt_cur = cursor;
-                bt_plen = params.len;
+        if pfx_ok && rem.len > 0 {
+            push_wildcard_backtrack_if_any(tree, cur_idx, cursor, params.len, bt_stack);
+            let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
+            let next_pfx = if next_child >= 0 { tree.nodes[next_child as i64].prefix[..] } else { "" };
+            if next_child >= 0 && rem.len >= next_pfx.len && rem[..next_pfx.len] == next_pfx {
+                cur_idx = next_child;
+                continue;
             }
-            cur_idx = next_child;
-            continue;
         }
 
         var ca_res = RouteMatchResult.NotFound;
-        let ok_step, is_ca = step_wildcard_or_backtrack(
-            tree, eff_path, cur_idx, cursor, bt_node, bt_cur, bt_plen, params, ca_res,
+        let ok_bt, is_ca = pop_route_backtrack(
+            tree, eff_path, bt_stack, cur_idx, cursor, params, ca_res,
         );
-        if !ok_step { break; }
+        if !ok_bt { break; }
         if is_ca { return ca_res; }
+        skip_pfx = true;
     }
 
-    return resolve_wildcard_backtrack(tree, bt_node, eff_path, bt_cur, bt_plen, params);
+    return RouteMatchResult.NotFound;
 }
 
 fn match_path(
@@ -1206,7 +1253,16 @@ fn add_static_route(
     body:         const u8[:],
     handler_id:   i32 = 0,
 ) -> bool {
+    guard content_type.len <= 64 && body.len <= 512 else { return false; }
     let eff_id = if handler_id != 0 { handler_id } else { 2048 | (router.static_payloads.len as i32) };
+    var has_existing = false;
+    for idx in router.static_payloads.len {
+        if router.static_payloads[idx].handler_id == eff_id {
+            has_existing = true;
+            break;
+        }
+    }
+    guard has_existing || router.static_payloads.len < router.static_payloads.cap else { return false; }
     guard add_route(router, method, path, eff_id, 0, DEFAULT_ROUTE_PSO_MASK) else { return false; }
     return set_static_route_payload(router, eff_id, content_type, body);
 }

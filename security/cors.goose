@@ -17,12 +17,13 @@ enum CorsResult {
 }
 
 struct CorsPolicy {
-    allow_credentials: bool            = false,
-    allowed_origins:   u8[..128][..16] = [],
-    allowed_methods:   u8[..128]       = "GET, POST, PUT, DELETE, PATCH, OPTIONS, QUERY",
-    allowed_headers:   u8[..256]       = "Content-Type, Authorization, X-Requested-With, X-API-Key",
-    expose_headers:    u8[..256]       = "Content-Length, X-Trace-Id, RateLimit-Limit, RateLimit-Reset",
-    max_age_sec:       i64             = 86400, // 24 hours preflight cache
+    allow_credentials:          bool            = false,
+    reject_non_matching_origin: bool            = false,
+    allowed_origins:            u8[..128][..16] = [],
+    allowed_methods:            u8[..128]       = "GET, POST, PUT, DELETE, PATCH, OPTIONS, QUERY",
+    allowed_headers:            u8[..256]       = "Content-Type, Authorization, X-Requested-With, X-API-Key",
+    expose_headers:             u8[..256]       = "Content-Length, X-Trace-Id, RateLimit-Limit, RateLimit-Reset",
+    max_age_sec:                i64             = 86400, // 24 hours preflight cache
 }
 
 // Appends an allowed origin pattern to the CORS policy.

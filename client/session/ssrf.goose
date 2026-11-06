@@ -147,6 +147,11 @@ fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
 
 fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
     let colon_idx = core::index_of_byte(suffix, ':');
+    if colon_idx < 0 {
+        let val_low = parse_hex_u16(suffix);
+        guard val_low >= 0 else { return false; }
+        return is_private_ipv4_4octets(0, 0, (val_low >> 8) & 0xFF, val_low & 0xFF);
+    }
     guard colon_idx > 0 && colon_idx + 1 < suffix.len else { return false; }
     if core::last_index_of_byte(suffix, ':') != colon_idx { return false; }
 
@@ -156,6 +161,7 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
 
     let val1 = parse_hex_u16(part1);
     let val2 = parse_hex_u16(part2);
+    guard val1 >= 0 && val2 >= 0 else { return false; }
 
     let octet0 = (val1 >> 8) & 0xFF;
     let octet1 = val1 & 0xFF;
@@ -328,13 +334,12 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     }
 
     clean_ip = core::trim_end_byte(clean_ip, '.');
+    guard clean_ip.len <= 256 else { return true; }
 
     var lower_buf: u8[..256] = [];
-    if clean_ip.len <= 256 {
-        lower_buf.append(clean_ip);
-        to_lower(lower_buf[..]);
-    }
-    let norm_ip = if lower_buf.len > 0 { lower_buf[..] } else { clean_ip };
+    lower_buf.append(clean_ip);
+    to_lower(lower_buf[..]);
+    let norm_ip = lower_buf[..];
 
     if is_localhost_name(norm_ip) || norm_ip == "::1" || norm_ip == "::" {
         return true;

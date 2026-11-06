@@ -339,6 +339,7 @@ struct JwtClaims {
     nbf:           i64                = -1,
     iat:           i64                = -1,
     custom_claims: JwtClaimItem[..16] = [],
+    raw_payload:   u8[..1024]         = [],
 }
 
 fn set_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
@@ -819,6 +820,8 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     out_claims.nbf = -1;
     out_claims.iat = -1;
     out_claims.custom_claims.clear();
+    out_claims.raw_payload.clear();
+    let _ = out_claims.raw_payload.try_set(json_bytes[..min(json_bytes.len, 1024)]);
     var had_error = false;
 
     var seen_iss = false;

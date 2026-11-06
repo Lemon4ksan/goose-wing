@@ -25,21 +25,23 @@ fn new_backoff(base: core::Duration, max_delay: core::Duration, factor: f64 = 2.
 
 // The retry delay for an attempt (0-indexed), capped at max_ns.
 fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
-    let cap_ns = backoff.max_ns;
-    if attempt <= 0 {
-        let initial = if backoff.base_ns > cap_ns { cap_ns } else { backoff.base_ns };
-        return core::Duration { nanos: initial };
+    let cap_ns = max(0, backoff.max_ns);
+    let base_ns = max(0, backoff.base_ns);
+    if attempt <= 0 || cap_ns == 0 || base_ns == 0 {
+        return core::Duration { nanos: min(base_ns, cap_ns) };
     }
-    let safe_attempt = if attempt > 60 { 60 } else { attempt };
-    var current: f64 = backoff.base_ns;
+    let eff_factor = if backoff.factor >= 1.0 { backoff.factor } else { 1.0 };
+    let safe_attempt = min(attempt, 60);
+    var current: f64 = base_ns;
+    let cap_f64: f64 = cap_ns;
     for step_idx in safe_attempt {
-        current *= backoff.factor;
-        if current >= cap_ns {
+        current *= eff_factor;
+        if !(current < cap_f64) {
             return core::Duration { nanos: cap_ns };
         }
     }
     let res = current as i64;
-    return core::Duration { nanos: if res > cap_ns { cap_ns } else { res } };
+    return core::Duration { nanos: min(max(0, res), cap_ns) };
 }
 
 // ---- token bucket rate limiter ---------------------------------------------
@@ -64,11 +66,13 @@ fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
 
 // Attempts to consume one token using an explicit monotonic timestamp (for deterministic testing).
 fn allow(limiter: RateLimiter&, now_mono: i64) -> bool {
-    guard now_mono >= limiter.last_update_mono_ns else { return false; }
+    guard now_mono >= limiter.last_update_mono_ns && limiter.rate_per_sec > 0.0 && limiter.burst_capacity >= 1.0 else {
+        return false;
+    }
     let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;
     limiter.last_update_mono_ns = now_mono;
     limiter.tokens += elapsed_sec * limiter.rate_per_sec;
-    if limiter.tokens > limiter.burst_capacity {
+    if !(limiter.tokens <= limiter.burst_capacity) {
         limiter.tokens = limiter.burst_capacity;
     }
     if limiter.tokens >= 1.0 {
