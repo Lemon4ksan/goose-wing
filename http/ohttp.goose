@@ -342,11 +342,13 @@ fn ohttp_seal_response(
     out:            u8[..8192]&,
     out_len:        i32&,
 ) -> bool {
+    guard response_nonce.len + response.len + rfc::OHTTP_AEAD_TAG_LEN <= out.cap else { return false; }
+
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];
     guard ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
-    var ct: u8[>..] = [];
+    var ct: u8[..8192] = [];
     for i in response.len { ct.push(0); }
     var seal_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
@@ -368,7 +370,6 @@ fn ohttp_seal_response(
     core::secure_zeroize_32(key);
     guard seal_ok else { return false; }
 
-    guard response_nonce.len + ct.len <= out.cap else { return false; }
     out.clear();
     out.append(response_nonce);
     out.append(ct[..]);

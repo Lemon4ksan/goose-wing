@@ -135,19 +135,49 @@ fn dafsa_get_next_offset(pos: i64&, offset: i64&) -> bool {
     return offset >= 0 && offset < PSL_DAFSA_LEN;
 }
 
-// Consumes intermediate plain-ASCII characters (`0x1F..0x7F`) of a DAFSA node label against `key`.
+// Evaluates a single DAFSA node character against `key_byte` in ASCII or `0x1F` multibyte UTF-8 mode.
+//
+// Example:
+//   key_byte = 'c', mb_mode = false, node_char = 'c' -> returns true
+fn dafsa_is_match(key_byte: u8, mb_mode: bool&, node_char: u8) -> bool {
+    if mb_mode {
+        if (node_char & 0x80) != 0 {
+            if (key_byte ^ 0xC0) == node_char {
+                mb_mode = false;
+                return true;
+            }
+        } else {
+            if (key_byte ^ 0x80) == node_char {
+                return true;
+            }
+        }
+        return false;
+    }
+    return key_byte == node_char;
+}
+
+// Consumes intermediate plain-ASCII or `0x1F` multibyte characters of a DAFSA node label against `key`.
 // Stops when `node_pos` reaches a terminal byte (`>= 0x80`) or when `key_idx` reaches `key.len`.
 //
 // Example:
 //   key = "co.uk", key_idx = 0, node_pos = 109 ('o', 'r' | 0x80)
 //   returns: true (when prefix matches up to terminal byte)
-fn dafsa_consume_prefix_label(key: const u8[:], key_idx: i64&, node_pos: i64&) -> bool {
+fn dafsa_consume_prefix_label(key: const u8[:], key_idx: i64&, node_pos: i64&, mb_mode: bool&) -> bool {
     while node_pos >= 0 && node_pos < PSL_DAFSA_LEN {
         let b = PSL_DAFSA_GRAPH[node_pos];
+        if !mb_mode && b == DAFSA_KEY_MIN_CHAR {
+            mb_mode = true;
+            node_pos = core::add_sat_i64(node_pos, 1);
+            continue;
+        }
         if b < DAFSA_KEY_MIN_CHAR || b >= DAFSA_KEY_MAX_CHAR {
             return true;
         }
-        guard key_idx < key.len && key[key_idx] == b else {
+        guard key_idx < key.len else {
+            return false;
+        }
+        let kb = key[key_idx];
+        guard dafsa_is_match(kb, mb_mode, b) else {
             return false;
         }
         key_idx = core::add_sat_i64(key_idx, 1);
@@ -162,12 +192,18 @@ fn dafsa_consume_prefix_label(key: const u8[:], key_idx: i64&, node_pos: i64&) -
 // Example:
 //   key = "uk", key_idx = 1, node_pos = 197 ('k' | 0x80, 0x80)
 //   returns: 1, out_ret = 0, key_idx = 2, node_pos = 198
-fn dafsa_eval_node_terminal(key: const u8[:], key_idx: i64&, node_pos: i64&, out_ret: i32&) -> i32 {
-    guard dafsa_consume_prefix_label(key, key_idx, node_pos) && node_pos < PSL_DAFSA_LEN else {
+fn dafsa_eval_node_terminal(
+    key:      const u8[:],
+    key_idx:  i64&,
+    node_pos: i64&,
+    mb_mode:  bool&,
+    out_ret:  i32&,
+) -> i32 {
+    guard dafsa_consume_prefix_label(key, key_idx, node_pos, mb_mode) && node_pos < PSL_DAFSA_LEN else {
         return 0;
     }
     let term = PSL_DAFSA_GRAPH[node_pos];
-    if term >= DAFSA_RETURN_MIN && term <= DAFSA_RETURN_MAX {
+    if !mb_mode && term >= DAFSA_RETURN_MIN && term <= DAFSA_RETURN_MAX {
         guard key_idx == key.len else {
             return 0;
         }
@@ -175,7 +211,12 @@ fn dafsa_eval_node_terminal(key: const u8[:], key_idx: i64&, node_pos: i64&, out
         out_ret = v;
         return 1;
     }
-    guard term >= DAFSA_END_CHAR_MIN && key_idx < key.len && key[key_idx] == (term & DAFSA_CHAR_MASK) else {
+    guard term >= DAFSA_END_CHAR_MIN && key_idx < key.len else {
+        return 0;
+    }
+    let kb = key[key_idx];
+    let term_char = if mb_mode { term } else { term & DAFSA_CHAR_MASK };
+    guard dafsa_is_match(kb, mb_mode, term_char) else {
         return 0;
     }
     key_idx = core::add_sat_i64(key_idx, 1);
@@ -194,15 +235,17 @@ fn dafsa_lookup_string(key: const u8[:]) -> i32 {
     guard key.len > 0 else {
         return PSL_DAFSA_NOT_FOUND;
     }
-    var pos:     i64 = 0;
-    var offset:  i64 = 0;
-    var key_idx: i64 = 0;
+    var pos:     i64  = 0;
+    var offset:  i64  = 0;
+    var key_idx: i64  = 0;
+    var mb_mode: bool = false;
 
     while dafsa_get_next_offset(pos, offset) {
         var node_pos = offset;
         var saved_key_idx = key_idx;
+        var saved_mb_mode = mb_mode;
         var out_ret: i32 = PSL_DAFSA_NOT_FOUND;
-        let step = dafsa_eval_node_terminal(key, key_idx, node_pos, out_ret);
+        let step = dafsa_eval_node_terminal(key, key_idx, node_pos, mb_mode, out_ret);
         if step == 1 {
             return out_ret;
         }
@@ -211,6 +254,7 @@ fn dafsa_lookup_string(key: const u8[:]) -> i32 {
             offset = node_pos;
         } else {
             key_idx = saved_key_idx;
+            mb_mode = saved_mb_mode;
         }
     }
     return PSL_DAFSA_NOT_FOUND;
@@ -283,6 +327,221 @@ fn dafsa_find_public_suffix(norm: const u8[:]) -> const u8[:], bool, bool, bool 
     return norm[0..0], false, false, false;
 }
 
+const PUNYCODE_BASE:         u64 = 36;
+const PUNYCODE_TMIN:         u64 = 1;
+const PUNYCODE_TMAX:         u64 = 26;
+const PUNYCODE_SKEW:         u64 = 38;
+const PUNYCODE_DAMP:         u64 = 700;
+const PUNYCODE_INITIAL_BIAS: u64 = 72;
+const PUNYCODE_INITIAL_N:    u64 = 128;
+const PUNYCODE_DIGITS: u8[36] = [
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+];
+
+fn punycode_div_u64(n: u64, d: u64) -> u64, u64 {
+    guard d > 0 && n >= d else { return 0, n; }
+    var cur_d = d;
+    var cur_q: u64 = 1;
+    let half_n = n >> 1;
+    while cur_d <= half_n {
+        cur_d = core::add_sat_u64(cur_d, cur_d);
+        cur_q = core::add_sat_u64(cur_q, cur_q);
+    }
+    var rem_n = n;
+    var quotient: u64 = 0;
+    while cur_q > 0 {
+        if rem_n >= cur_d {
+            rem_n = core::sub_sat_u64(rem_n, cur_d);
+            quotient = quotient | cur_q;
+        }
+        cur_d = cur_d >> 1;
+        cur_q = cur_q >> 1;
+    }
+    return quotient, rem_n;
+}
+
+fn punycode_adapt(delta_in: u64, numpoints: u64, firsttime: bool) -> u64 {
+    var d0 = delta_in >> 1;
+    if firsttime {
+        let q0, _ = punycode_div_u64(delta_in, PUNYCODE_DAMP);
+        d0 = q0;
+    }
+    let d1, _ = punycode_div_u64(d0, max(numpoints, 1));
+    var delta = core::add_sat_u64(d0, d1);
+    let base_minus_tmin: u64 = 35;
+    let threshold:       u64 = 455;
+    var k: u64 = 0;
+    while delta > threshold {
+        let q, _ = punycode_div_u64(delta, base_minus_tmin);
+        delta = q;
+        k = core::add_sat_u64(k, PUNYCODE_BASE);
+    }
+    let num = core::mul_sat_u64(36, delta);
+    let den = core::add_sat_u64(delta, PUNYCODE_SKEW);
+    let tail, _ = punycode_div_u64(num, den);
+    return core::add_sat_u64(k, tail);
+}
+
+fn punycode_emit_delta(q_in: u64, bias: u64, out_ace: u8[..63]&) -> bool {
+    var q = q_in;
+    var k = PUNYCODE_BASE;
+    while true {
+        let bias_plus_tmax = core::add_sat_u64(bias, PUNYCODE_TMAX);
+        let t = if k <= bias {
+            PUNYCODE_TMIN
+        } else if k >= bias_plus_tmax {
+            PUNYCODE_TMAX
+        } else {
+            core::sub_sat_u64(k, bias)
+        };
+        if q < t { break; }
+        let base_minus_t = core::sub_sat_u64(PUNYCODE_BASE, t);
+        let q_minus_t = core::sub_sat_u64(q, t);
+        let q_next, rem = punycode_div_u64(q_minus_t, base_minus_t);
+        let digit = min(core::add_sat_u64(t, rem), 35) as i64;
+        let ch = PUNYCODE_DIGITS[digit];
+        guard out_ace.try_push(ch) else { return false; }
+        q = q_next;
+        k = core::add_sat_u64(k, PUNYCODE_BASE);
+    }
+    let final_digit = min(q, 35) as i64;
+    let final_ch = PUNYCODE_DIGITS[final_digit];
+    return out_ace.try_push(final_ch);
+}
+
+fn punycode_extract_codepoints(utf8_label: const u8[:], cps: u64[..63]&, has_non_ascii: bool&) -> bool {
+    var idx: i64 = 0;
+    while idx < utf8_label.len {
+        let cp, sz, ok = core::decode_utf8(utf8_label[idx..]);
+        guard ok && sz > 0 && cps.len < cps.cap else { return false; }
+        var norm_cp = cp as u64;
+        if norm_cp < 0x80 {
+            let b = norm_cp as u8;
+            guard b > 0x20 && b != 0x7F && b != 0x2E else { return false; }
+            norm_cp = core::to_lower_ascii_byte(b);
+        } else {
+            has_non_ascii = true;
+        }
+        cps.push(norm_cp);
+        idx = core::add_sat_i64(idx, sz);
+    }
+    return cps.len > 0;
+}
+
+fn punycode_copy_basic_codepoints(cps: const u64[:], out_ace: u8[..63]&) -> u64, bool {
+    var basic_count: u64 = 0;
+    for c in cps {
+        if c < 0x80 {
+            guard out_ace.try_push(c as u8) else { return 0, false; }
+            basic_count = core::add_sat_u64(basic_count, 1);
+        }
+    }
+    if basic_count > 0 {
+        guard out_ace.try_push('-') else { return 0, false; }
+    }
+    return basic_count, true;
+}
+
+fn punycode_find_next_min_cp(cps: const u64[:], n: u64) -> u64 {
+    var m: u64 = 0xFFFFFFFF;
+    for c in cps {
+        if c >= n && c < m { m = c; }
+    }
+    return m;
+}
+
+fn punycode_step_non_basic(
+    cps:         const u64[:],
+    n:           u64,
+    basic_count: u64,
+    delta:       u64&,
+    bias:        u64&,
+    h:           u64&,
+    out_ace:     u8[..63]&,
+) -> bool {
+    for c in cps {
+        if c < n {
+            delta = core::add_sat_u64(delta, 1);
+            guard delta <= 0xFFFFFFFF else { return false; }
+        } else if c == n {
+            guard punycode_emit_delta(delta, bias, out_ace) else { return false; }
+            let next_h = core::add_sat_u64(h, 1);
+            bias = punycode_adapt(delta, next_h, h == basic_count);
+            delta = 0;
+            h = next_h;
+        }
+    }
+    return true;
+}
+
+// Encodes a single UTF-8 domain label into an ASCII/ACE Punycode label (`xn--...`, RFC 3492).
+//
+// Example:
+//   utf8_label = "\xE4\xB8\xAD\xE5\x9B\xBD" ("中国"), out_ace = []
+//   returns: true, out_ace = "xn--fiqs8s"
+fn punycode_encode_label(utf8_label: const u8[:], out_ace: u8[..63]&) -> bool {
+    out_ace.clear();
+    guard utf8_label.len > 0 && core::validate_utf8(utf8_label) else { return false; }
+    var cps: u64[..63] = [];
+    var has_non_ascii = false;
+    guard punycode_extract_codepoints(utf8_label, cps, has_non_ascii) else { return false; }
+    if !has_non_ascii {
+        for c in cps {
+            guard out_ace.try_push(c as u8) else { return false; }
+        }
+        return true;
+    }
+    guard out_ace.try_append("xn--") else { return false; }
+    let basic_count, ok_basic = punycode_copy_basic_codepoints(cps[..], out_ace);
+    guard ok_basic else { return false; }
+
+    var n = PUNYCODE_INITIAL_N;
+    var delta: u64 = 0;
+    var bias = PUNYCODE_INITIAL_BIAS;
+    var h = basic_count;
+    let total_cp = cps.len as u64;
+    while h < total_cp {
+        let m = punycode_find_next_min_cp(cps[..], n);
+        let step_mul = core::mul_sat_u64(core::sub_sat_u64(m, n), core::add_sat_u64(h, 1));
+        delta = core::add_sat_u64(delta, step_mul);
+        guard delta <= 0xFFFFFFFF else { return false; }
+        n = m;
+        guard punycode_step_non_basic(cps[..], n, basic_count, delta, bias, h, out_ace) else { return false; }
+        delta = core::add_sat_u64(delta, 1);
+        n = core::add_sat_u64(n, 1);
+    }
+    return true;
+}
+
+// Normalizes a UTF-8 or ASCII domain into lowercase Punycode/ACE (`xn--...`) labels (RFC 3492).
+//
+// Example:
+//   utf8_domain = "Example.\xE4\xB8\xAD\xE5\x9B\xBD", out_ace = []
+//   returns: true, out_ace = "example.xn--fiqs8s"
+fn punycode_encode_domain(utf8_domain: const u8[:], out_ace: u8[..256]&) -> bool {
+    out_ace.clear();
+    guard utf8_domain.len > 0 && utf8_domain.len <= 256 else { return false; }
+    guard core::validate_utf8(utf8_domain) else { return false; }
+    let last_idx = core::sub_sat_i64(utf8_domain.len, 1);
+    guard utf8_domain[0] != 0x2E && utf8_domain[last_idx] != 0x2E else { return false; }
+    guard !core::is_ip_address_literal(utf8_domain) else { return false; }
+    var start: i64 = 0;
+    while start < utf8_domain.len {
+        let dot = dafsa_scan_to_next_dot(utf8_domain, start);
+        guard dot > start else { return false; }
+        var label_ace: u8[..63] = [];
+        guard punycode_encode_label(utf8_domain[start..dot], label_ace) else { return false; }
+        if out_ace.len > 0 {
+            guard out_ace.try_push('.') else { return false; }
+        }
+        guard out_ace.try_append(label_ace[..]) else { return false; }
+        start = core::add_sat_i64(dot, 1);
+    }
+    return out_ace.len > 0;
+}
+
 // Validates that `domain` is non-empty, <= 256 bytes, valid UTF-8, has no leading
 // or trailing '.', has no empty '..' labels, is not an IP literal, and normalizes to lowercase.
 //
@@ -294,8 +553,15 @@ fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bo
     guard domain.len > 0 && domain.len <= 256 else {
         return false;
     }
-    guard core::validate_utf8(domain) else {
-        return false;
+    var has_non_ascii = false;
+    for b in domain {
+        if b >= 0x80 {
+            has_non_ascii = true;
+            break;
+        }
+    }
+    if has_non_ascii {
+        return punycode_encode_domain(domain, out);
     }
     let last_idx = core::sub_sat_i64(domain.len, 1);
     guard domain[0] != 0x2E && domain[last_idx] != 0x2E else {
@@ -379,6 +645,14 @@ struct PslDatabase {
     rules:     PslRule[..64] = [],
 }
 
+struct PslMatch {
+    suffix:             u8[..256] = [],
+    registrable_domain: u8[..256] = [],
+    is_icann:           bool      = false,
+    is_private:         bool      = false,
+    is_known:           bool      = false,
+}
+
 fn new_psl_rule(pattern: const u8[:], rule_type: PslRuleType, section: PslSection) -> PslRule {
     var new_rule = PslRule { rule_type: rule_type, section: section, .. };
     guard new_rule.pattern.try_set(pattern) else { return new_rule; }
@@ -397,11 +671,23 @@ fn new_psl_database() -> PslDatabase {
 
 // ---- public suffix query and matching engine -------------------------------
 
-// Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase.
+//Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase or Punycode.
 fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
     let trimmed = core::trim_byte(core::trim_byte(core::trim_byte(domain, '.'), '['), ']');
     guard trimmed.len > 0 && trimmed.len <= 256 else { return false; }
+    var has_non_ascii = false;
+    for b in trimmed {
+        if b >= 0x80 {
+            has_non_ascii = true;
+            break;
+        }
+    }
+    if has_non_ascii {
+        var ace_buf: u8[..256] = [];
+        guard punycode_encode_domain(trimmed, ace_buf) else { return false; }
+        return out.try_set(ace_buf[..]);
+    }
     guard out.try_set(trimmed) else { return false; }
     to_lower(out[..]);
     return true;
@@ -532,62 +818,90 @@ fn psl_find_custom_exception(db: const PslDatabase&, norm: const u8[:]) -> const
 // Returns (has_suffix, is_icann).
 fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -> bool, bool {
     out.clear();
-    var norm_buf: u8[..256] = [];
-    guard psl_normalize_domain(domain, norm_buf) else {
-        return false, false;
-    }
-    let norm = norm_buf[..];
-    guard !core::is_ip_address_literal(norm) else {
-        return false, false;
-    }
+    let res, ok = match_public_suffix(db, domain);
+    guard ok else { return false, false; }
+    out.append(res.suffix[..]);
+    return true, res.is_icann;
+}
 
-    // 1. Exception rules in custom runtime rules take precedence (!pattern)
+fn psl_find_known_suffix(db: const PslDatabase&, norm: const u8[:]) -> const u8[:], bool, bool {
     let exc_suf, exc_ok, exc_icann = psl_find_custom_exception(db, norm);
     if exc_ok {
-        out.append(exc_suf);
-        return true, exc_icann;
+        return exc_suf, true, exc_icann;
     }
-
-    // Exception rules in compiled DAFSA also take precedence over normal/wildcard rules
+    var dafsa_suf = norm[0..0];
+    var dafsa_matched = false;
+    var dafsa_icann = false;
+    var dafsa_is_exc = false;
     if db.use_dafsa {
-        let dafsa_suf, dafsa_matched, dafsa_icann, dafsa_is_exc = dafsa_find_public_suffix(norm);
-        if dafsa_matched && dafsa_is_exc {
-            out.append(dafsa_suf);
-            return true, dafsa_icann;
-        }
+        let ds, dm, di, de = dafsa_find_public_suffix(norm);
+        dafsa_suf = ds;
+        dafsa_matched = dm;
+        dafsa_icann = di;
+        dafsa_is_exc = de;
     }
-
-    // 2. Normal and Wildcard rules in custom runtime rules
+    if dafsa_matched && dafsa_is_exc {
+        return dafsa_suf, true, dafsa_icann;
+    }
     var best_start: i64 = 0;
     var best_sec = PslSection.Icann;
     if psl_find_best_rule(db, norm, best_start, best_sec) {
         let custom_suf = norm[best_start..];
-        if db.use_dafsa {
-            let dafsa_suf, dafsa_matched, dafsa_icann, _ = dafsa_find_public_suffix(norm);
-            if dafsa_matched && dafsa_suf.len > custom_suf.len {
-                out.append(dafsa_suf);
-                return true, dafsa_icann;
-            }
+        if dafsa_matched && dafsa_suf.len > custom_suf.len {
+            return dafsa_suf, true, dafsa_icann;
         }
-        out.append(custom_suf);
-        return true, (best_sec == PslSection.Icann);
+        return custom_suf, true, (best_sec == PslSection.Icann);
+    }
+    if dafsa_matched {
+        return dafsa_suf, true, dafsa_icann;
+    }
+    return norm[0..0], false, false;
+}
+
+// Evaluates `domain` against `db` and returns a `PslMatch` distinguishing explicitly listed
+// suffixes (`is_known == true`) from the implicit `*` fallback rule (`is_known == false`).
+fn match_public_suffix(db: const PslDatabase&, domain: const u8[:]) -> PslMatch, bool {
+    var m = PslMatch { .. };
+    var norm_buf: u8[..256] = [];
+    guard psl_normalize_domain(domain, norm_buf) else { return m, false; }
+    let norm = norm_buf[..];
+    guard !core::is_ip_address_literal(norm) else { return m, false; }
+
+    let known_suf, matched_known, is_icann = psl_find_known_suffix(db, norm);
+    if matched_known {
+        let _ = m.suffix.try_set(known_suf);
+        m.is_known = true;
+        m.is_icann = is_icann;
+        m.is_private = !is_icann;
+    } else {
+        let last_dot = core::last_index_of_byte(norm, '.');
+        let next_dot = core::add_sat_i64(last_dot, 1);
+        let tld_start = if last_dot >= 0 { next_dot } else { 0 };
+        let _ = m.suffix.try_set(norm[tld_start..]);
+        m.is_known = false;
+        m.is_icann = true;
+        m.is_private = false;
     }
 
-    // 3. Evaluate compiled Chromium/libpsl DAFSA when enabled
-    if db.use_dafsa {
-        let dafsa_suf, dafsa_matched, dafsa_icann, _ = dafsa_find_public_suffix(norm);
-        if dafsa_matched {
-            out.append(dafsa_suf);
-            return true, dafsa_icann;
+    if norm.len > m.suffix.len && core::count_byte(norm, '.') > 0 {
+        let reg_start = psl_find_registrable_start(norm, m.suffix.len);
+        if reg_start >= 0 && reg_start <= norm.len {
+            let _ = m.registrable_domain.try_set(norm[reg_start..]);
         }
     }
+    return m, true;
+}
 
-    // 4. Fallback rule: if no rules match, the default rule is * (highest-level TLD)
-    let last_dot = core::last_index_of_byte(norm, '.');
-    let next_dot = core::add_sat_i64(last_dot, 1);
-    let tld_start = if last_dot >= 0 { next_dot } else { 0 };
-    out.append(norm[tld_start..]);
-    return true, true;
+// Whether `domain` is an explicitly listed public suffix in `db` (`PSL_TYPE_NO_STAR_RULE` / `Suffix::is_known`),
+// excluding synthetic fallback `*` matches on unknown TLDs or single-label intranet hosts.
+fn is_known_public_suffix(db: const PslDatabase&, domain: const u8[:]) -> bool {
+    var norm_buf: u8[..256] = [];
+    guard psl_normalize_domain(domain, norm_buf) else { return false; }
+    let norm = norm_buf[..];
+    guard !core::is_ip_address_literal(norm) else { return false; }
+    let m, ok = match_public_suffix(db, norm);
+    guard ok && m.is_known && m.suffix.len > 0 else { return false; }
+    return eq_ascii_fold(norm, m.suffix[..]);
 }
 
 // Whether domain is itself a public suffix in the database.

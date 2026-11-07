@@ -240,11 +240,11 @@ fn main() {
         ..
     };
     for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
-    for i in 1152 { client_share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
+    for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
 
     var pq_wire: u8[>..] = [];
     client_share.format_hybrid_key_share(pq_wire);
-    print("  PQ Client Share Wire:  ", pq_wire.len, " bytes (expected 1188)\n");
+    print("  PQ Client Share Wire:  ", pq_wire.len, " bytes (expected 1220)\n");
 
     var parsed_pq = internal::PostQuantumKeyShare { .. };
     let ok_pq_parse = parsed_pq.parse_hybrid_key_share(pq_wire[..]);

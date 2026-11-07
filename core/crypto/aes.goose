@@ -46,6 +46,17 @@ struct Aes256KeySchedule {
     round_keys: u32[60] = [0; 60],
 }
 
+// Zeroizes an AES-256 round key schedule in place.
+// crap:ignore
+inline fn zeroize_aes256_ks(ks: Aes256KeySchedule&) {
+    var z_bytes: u8[32] = [0; 32];
+    secure_zeroize_32(z_bytes);
+    let z_word: u32 = z_bytes[0];
+    for i in 60 {
+        ks.round_keys[i] = z_word;
+    }
+}
+
 fn aes256_key_schedule(key: const u8[32]&) -> Aes256KeySchedule {
     var ks = Aes256KeySchedule { .. };
     for i in 8 {
@@ -133,6 +144,17 @@ fn aes_encrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[1
 
 struct Aes128KeySchedule {
     round_keys: u32[44] = [0; 44],
+}
+
+// Zeroizes an AES-128 round key schedule in place.
+// crap:ignore
+inline fn zeroize_aes128_ks(ks: Aes128KeySchedule&) {
+    var z_bytes: u8[16] = [0; 16];
+    secure_zeroize_16(z_bytes);
+    let z_word: u32 = z_bytes[0];
+    for i in 44 {
+        ks.round_keys[i] = z_word;
+    }
 }
 
 fn aes128_key_schedule(key: const u8[16]&) -> Aes128KeySchedule {
@@ -309,7 +331,7 @@ fn aes256_gcm_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
-    let ks = aes256_key_schedule(key);
+    var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -317,6 +339,7 @@ fn aes256_gcm_open_inplace(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes256_ks(ks);
         secure_zeroize_slice(in_out);
         return 0, false;
     }
@@ -333,6 +356,7 @@ fn aes256_gcm_open_inplace(
         }
         offset += take;
     }
+    zeroize_aes256_ks(ks);
     return in_out.len, true;
 }
 
@@ -344,7 +368,7 @@ fn aes256_gcm_seal_inplace(
     in_out:  u8[:],
     aad:     const u8[:],
 ) -> u8[16], bool {
-    let ks = aes256_key_schedule(key);
+    var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -364,6 +388,7 @@ fn aes256_gcm_seal_inplace(
 
     let enc_j0 = aes_encrypt_block(ks, j0);
     let tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
+    zeroize_aes256_ks(ks);
     return tag, true;
 }
 
@@ -377,7 +402,7 @@ fn aes256_gcm_open_into(
     dst:        u8[:],
 ) -> i64, bool {
     guard dst.len >= ciphertext.len else { return 0, false; }
-    let ks = aes256_key_schedule(key);
+    var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -385,6 +410,7 @@ fn aes256_gcm_open_into(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes256_ks(ks);
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
@@ -401,6 +427,7 @@ fn aes256_gcm_open_into(
         }
         offset += take;
     }
+    zeroize_aes256_ks(ks);
     return ciphertext.len, true;
 }
 
@@ -414,7 +441,7 @@ fn aes256_gcm_seal(
 ) -> u8[16], i64, bool {
     var empty_tag: u8[16] = [0; 16];
     guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
-    let ks = aes256_key_schedule(key);
+    var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -434,6 +461,7 @@ fn aes256_gcm_seal(
 
     let enc_j0 = aes_encrypt_block(ks, j0);
     let tag = aes_gcm_compute_tag(h, enc_j0, aad, dst[..plaintext.len]);
+    zeroize_aes256_ks(ks);
     return tag, plaintext.len, true;
 }
 
@@ -445,7 +473,7 @@ fn aes256_gcm_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
-    let ks = aes256_key_schedule(key);
+    var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -453,6 +481,7 @@ fn aes256_gcm_open<B>(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes256_ks(ks);
         return false;
     }
 
@@ -469,6 +498,7 @@ fn aes256_gcm_open<B>(
         }
         offset += take;
     }
+    zeroize_aes256_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         out_plaintext.clear();
         return false;
@@ -485,7 +515,7 @@ fn aes128_gcm_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
-    let ks = aes128_key_schedule(key);
+    var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -493,6 +523,7 @@ fn aes128_gcm_open_inplace(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes128_ks(ks);
         secure_zeroize_slice(in_out);
         return 0, false;
     }
@@ -509,6 +540,7 @@ fn aes128_gcm_open_inplace(
         }
         offset += take;
     }
+    zeroize_aes128_ks(ks);
     return in_out.len, true;
 }
 
@@ -520,7 +552,7 @@ fn aes128_gcm_seal_inplace(
     in_out:  u8[:],
     aad:     const u8[:],
 ) -> u8[16], bool {
-    let ks = aes128_key_schedule(key);
+    var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -540,6 +572,7 @@ fn aes128_gcm_seal_inplace(
 
     let enc_j0 = aes128_encrypt_block(ks, j0);
     let tag = aes_gcm_compute_tag(h, enc_j0, aad, in_out);
+    zeroize_aes128_ks(ks);
     return tag, true;
 }
 
@@ -553,7 +586,7 @@ fn aes128_gcm_open_into(
     dst:        u8[:],
 ) -> i64, bool {
     guard dst.len >= ciphertext.len else { return 0, false; }
-    let ks = aes128_key_schedule(key);
+    var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -561,6 +594,7 @@ fn aes128_gcm_open_into(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes128_ks(ks);
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
@@ -577,6 +611,7 @@ fn aes128_gcm_open_into(
         }
         offset += take;
     }
+    zeroize_aes128_ks(ks);
     return ciphertext.len, true;
 }
 
@@ -590,7 +625,7 @@ fn aes128_gcm_seal(
 ) -> u8[16], i64, bool {
     var empty_tag: u8[16] = [0; 16];
     guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
-    let ks = aes128_key_schedule(key);
+    var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -610,6 +645,7 @@ fn aes128_gcm_seal(
 
     let enc_j0 = aes128_encrypt_block(ks, j0);
     let tag = aes_gcm_compute_tag(h, enc_j0, aad, dst[..plaintext.len]);
+    zeroize_aes128_ks(ks);
     return tag, plaintext.len, true;
 }
 
@@ -621,7 +657,7 @@ fn aes128_gcm_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
-    let ks = aes128_key_schedule(key);
+    var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
     let h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
@@ -629,6 +665,7 @@ fn aes128_gcm_open<B>(
     let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
+        zeroize_aes128_ks(ks);
         return false;
     }
 
@@ -645,6 +682,7 @@ fn aes128_gcm_open<B>(
         }
         offset += take;
     }
+    zeroize_aes128_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         out_plaintext.clear();
         return false;

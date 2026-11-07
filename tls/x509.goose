@@ -48,7 +48,7 @@ fn read_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool 
     var i:      i64 = 0;
     while i < num_bytes {
         var b: u8 = 0;
-        guard get_u8(c, b) else { return false; }
+        guard c.get_u8(b) else { return false; }
         guard i != 0 || b != 0x00 else { return false; }
         length = (length << 8) | b;
         i++;
@@ -60,7 +60,7 @@ fn read_asn1_long_length(c: ByteCursor&, num_bytes: i64, out_len: i64&) -> bool 
 
 fn get_asn1_length(c: ByteCursor&, out_len: i64&) -> bool {
     var b0: u8 = 0;
-    if !get_u8(c, b0) { return false; }
+    if !c.get_u8(b0) { return false; }
 
     if (b0 & 0x80) == 0 {
         out_len = b0;
@@ -70,16 +70,16 @@ fn get_asn1_length(c: ByteCursor&, out_len: i64&) -> bool {
     guard b0 != 0x80 && b0 != 0xFF else { return false; }
     let num_bytes = (b0 & 0x7F) as i64;
     guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
-    guard cursor_len(c) >= num_bytes else { return false; }
+    guard c.cursor_len() >= num_bytes else { return false; }
     return read_asn1_long_length(c, num_bytes, out_len);
 }
 
 // Consumes any ASN.1 TLV element, returning tag and value cursor.
 fn get_any_asn1_element(c: ByteCursor&, out_tag: u8&, out_val: ByteCursor&) -> bool {
-    if !get_u8(c, out_tag) { return false; }
+    if !c.get_u8(out_tag) { return false; }
     var length: i64 = 0;
     if !get_asn1_length(c, length) { return false; }
-    return get_bytes(c, out_val, length);
+    return c.get_bytes(out_val, length);
 }
 
 // Consumes an ASN.1 element with an expected tag.
@@ -127,7 +127,7 @@ inline fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> boo
 // - Redundant negative sign extension forbidden: if len > 1 and byte 0 is 0xFF, byte 1 bit 7 must be 0.
 // - Evaluates two's complement value into signed 64-bit integer.
 fn get_asn1_integer(c: ByteCursor&, out_val: i64&) -> bool {
-    var raw = cursor_from(c.buf[..0]);
+    var raw = core::cursor_from(c.buf[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_INTEGER, raw) { return false; }
     guard raw.buf.len >= 1 && raw.buf.len <= 8 else { return false; }
     guard asn1_check_der_integer_padding(raw.buf) else { return false; }
@@ -160,7 +160,7 @@ inline fn validate_asn1_bit_string(val: const u8[:]) -> bool {
 
 // Consumes an ASN.1 BIT STRING element, validating DER unused bits rules and extracting bit payload.
 fn get_asn1_bit_string(c: ByteCursor&, out_bits: ByteCursor&, out_unused: u8&) -> bool {
-    var raw = cursor_from(c.buf[..0]);
+    var raw = core::cursor_from(c.buf[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_BIT_STRING, raw) { return false; }
     guard validate_asn1_bit_string(raw.buf) else { return false; }
     out_unused = raw.buf[0];
@@ -373,7 +373,7 @@ struct ParsedCert {
 }
 
 fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var serial = cursor_from(raw_cert[..0]);
+    var serial = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_INTEGER, serial) { return false; }
     if !validate_asn1_integer(serial.buf, true) { return false; }
     out.serial_number = make_span(raw_cert, serial.buf);
@@ -381,25 +381,25 @@ fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&
 }
 
 fn read_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var sig_alg = cursor_from(raw_cert[..0]);
+    var sig_alg = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg) { return false; }
-    var sig_oid = cursor_from(raw_cert[..0]);
+    var sig_oid = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) { return false; }
     out.sig_alg_oid = make_span(raw_cert, sig_oid.buf);
     return true;
 }
 
 fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var validity = cursor_from(raw_cert[..0]);
+    var validity = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, validity) { return false; }
-    var nb_val = cursor_from(raw_cert[..0]);
+    var nb_val = core::cursor_from(raw_cert[..0]);
     var nb_tag: u8 = 0;
     if !get_any_asn1_element(validity, nb_tag, nb_val) { return false; }
     let nb_time, ok_nb = parse_asn1_time(nb_tag, nb_val.buf);
     guard ok_nb else { return false; }
     out.validity_not_before = nb_time;
 
-    var na_val = cursor_from(raw_cert[..0]);
+    var na_val = core::cursor_from(raw_cert[..0]);
     var na_tag: u8 = 0;
     if !get_any_asn1_element(validity, na_tag, na_val) { return false; }
     let na_time, ok_na = parse_asn1_time(na_tag, na_val.buf);
@@ -412,23 +412,23 @@ fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
 }
 
 fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var spki = cursor_from(raw_cert[..0]);
+    var spki = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, spki) { return false; }
     out.spki_raw = make_span(raw_cert, spki.buf);
 
-    var spki_alg = cursor_from(raw_cert[..0]);
+    var spki_alg = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) { return false; }
-    var spki_oid = cursor_from(raw_cert[..0]);
+    var spki_oid = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_oid) { return false; }
 
-    var spki_curve = cursor_from(raw_cert[..0]);
+    var spki_curve = core::cursor_from(raw_cert[..0]);
     if spki_oid.buf == rfc::OID_EC_PUBLIC_KEY[..] && get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) {
         out.spki_alg_oid = make_span(raw_cert, spki_curve.buf);
     } else {
         out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
     }
 
-    var spki_pubkey = cursor_from(raw_cert[..0]);
+    var spki_pubkey = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pubkey) { return false; }
     if !validate_asn1_bit_string(spki_pubkey.buf) { return false; }
     out.spki_pubkey = make_span(raw_cert, spki_pubkey.buf);
@@ -436,17 +436,17 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) 
 }
 
 fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    while cursor_len(tbs_seq) > 0 {
-        var ext_container = cursor_from(raw_cert[..0]);
+    while tbs_seq.cursor_len() > 0 {
+        var ext_container = core::cursor_from(raw_cert[..0]);
         var ext_tag: u8 = 0;
         if !get_any_asn1_element(tbs_seq, ext_tag, ext_container) {
             out.has_unsupported_critical = true;
             return false;
         }
         if ext_tag == 0xA3 { // [3] EXPLICIT
-            var ext_seq = cursor_from(raw_cert[..0]);
+            var ext_seq = core::cursor_from(raw_cert[..0]);
             guard get_asn1_element(ext_container, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
-                cursor_len(ext_container) == 0 && cursor_len(ext_seq) > 0 else {
+                ext_container.cursor_len() == 0 && ext_seq.cursor_len() > 0 else {
                 out.has_unsupported_critical = true;
                 return false;
             }
@@ -461,9 +461,9 @@ fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedC
 
 fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> bool {
     guard raw_cert.len > 0 && raw_cert.len <= 65535 else { return false; }
-    var cert_cursor = cursor_from(raw_cert);
+    var cert_cursor = core::cursor_from(raw_cert);
     if !get_asn1_element(cert_cursor, rfc::ASN1_TAG_SEQUENCE, cert_seq) { return false; }
-    return cursor_len(cert_cursor) == 0;
+    return cert_cursor.cursor_len() == 0;
 }
 
 // Parses raw X.509 certificate DER into zero-allocation ParsedCert descriptor (RFC 5280 Section 4.1).
@@ -474,12 +474,12 @@ fn x509_read_outer_sequence(raw_cert: const u8[:], cert_seq: ByteCursor&) -> boo
 //   returns: true, out.raw_len = 292, out.signature_value.length = 64
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     out.raw_len = raw_cert.len as u32;
-    var cert_seq = cursor_from(raw_cert[..0]);
+    var cert_seq = core::cursor_from(raw_cert[..0]);
     guard x509_read_outer_sequence(raw_cert, cert_seq) else { return false; }
 
     // TBSCertificate SEQUENCE
     let tbs_raw_start = cert_seq.buf;
-    var tbs_seq = cursor_from(raw_cert[..0]);
+    var tbs_seq = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, rfc::ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, cert_seq.buf.len);
     out.tbs_cert = make_span(raw_cert, tbs_raw_start[..tbs_tlv_len]);
@@ -496,29 +496,29 @@ fn x509_read_tbs_components(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: Pa
 }
 
 fn x509_read_outer_signature(raw_cert: const u8[:], cert_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    guard cursor_len(cert_seq) > 0 else { return false; }
-    var outer_sig_alg = cursor_from(raw_cert[..0]);
+    guard cert_seq.cursor_len() > 0 else { return false; }
+    var outer_sig_alg = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) { return false; }
-    var outer_sig_oid = cursor_from(raw_cert[..0]);
+    var outer_sig_oid = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) { return false; }
 
     // RFC 5280 §4.1.2.3: Outer and inner signature algorithms MUST match
     let inner_sig_oid = span_slice(raw_cert, out.sig_alg_oid);
     guard outer_sig_oid.buf == inner_sig_oid else { return false; }
 
-    var sig_bits = cursor_from(raw_cert[..0]);
+    var sig_bits = core::cursor_from(raw_cert[..0]);
     var unused_bits: u8 = 0;
     if !get_asn1_bit_string(cert_seq, sig_bits, unused_bits) { return false; }
     guard unused_bits == 0 && sig_bits.buf.len > 0 else { return false; }
     out.signature_value = make_span(raw_cert, sig_bits.buf);
 
-    guard cursor_len(cert_seq) == 0 else { return false; }
+    guard cert_seq.cursor_len() == 0 else { return false; }
     return true;
 }
 
 fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
-    if cursor_len(tbs_seq) > 0 && tbs_seq.buf[0] == 0xA0 {
-        var maybe_version = cursor_from(tbs_seq.buf[..0]);
+    if tbs_seq.cursor_len() > 0 && tbs_seq.buf[0] == 0xA0 {
+        var maybe_version = core::cursor_from(tbs_seq.buf[..0]);
         var tag: u8 = 0;
         return get_any_asn1_element(tbs_seq, tag, maybe_version);
     }
@@ -526,13 +526,13 @@ fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
 }
 
 fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var issuer = cursor_from(raw_cert[..0]);
+    var issuer = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, issuer) { return false; }
     out.issuer_raw = make_span(raw_cert, issuer.buf);
 
     if !read_tbs_validity(raw_cert, tbs_seq, out) { return false; }
 
-    var subject = cursor_from(raw_cert[..0]);
+    var subject = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, subject) { return false; }
     out.subject_raw = make_span(raw_cert, subject.buf);
 
@@ -541,8 +541,8 @@ fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
 }
 
 fn x509_parse_bc_ca_bool(bc_seq: ByteCursor&, cert: ParsedCert&) {
-    guard cursor_len(bc_seq) > 0 && bc_seq.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return; }
-    var ca_bool = cursor_from(bc_seq.buf[..0]);
+    guard bc_seq.cursor_len() > 0 && bc_seq.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return; }
+    var ca_bool = core::cursor_from(bc_seq.buf[..0]);
     guard get_asn1_element(bc_seq, rfc::ASN1_TAG_BOOLEAN, ca_bool) else { return; }
     if ca_bool.buf.len > 0 && ca_bool.buf[0] != 0 {
         cert.is_ca = true;
@@ -550,7 +550,7 @@ fn x509_parse_bc_ca_bool(bc_seq: ByteCursor&, cert: ParsedCert&) {
 }
 
 fn x509_parse_bc_path_len(bc_seq: ByteCursor&, cert: ParsedCert&) {
-    guard cursor_len(bc_seq) > 0 && bc_seq.buf[0] == rfc::ASN1_TAG_INTEGER else { return; }
+    guard bc_seq.cursor_len() > 0 && bc_seq.buf[0] == rfc::ASN1_TAG_INTEGER else { return; }
     var path_len: i64 = 0;
     guard get_asn1_integer(bc_seq, path_len) else {
         cert.has_unsupported_critical = true;
@@ -572,14 +572,14 @@ fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
         return;
     }
     cert.has_basic_constraints = true;
-    var bc_seq = cursor_from(ext_val.buf[..0]);
+    var bc_seq = core::cursor_from(ext_val.buf[..0]);
     guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) else {
         cert.has_unsupported_critical = true;
         return;
     }
     x509_parse_bc_ca_bool(bc_seq, cert);
     x509_parse_bc_path_len(bc_seq, cert);
-    if cursor_len(bc_seq) > 0 {
+    if bc_seq.cursor_len() > 0 {
         cert.has_unsupported_critical = true;
     }
 }
@@ -590,7 +590,7 @@ fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
         return;
     }
     cert.has_key_usage = true;
-    var ku_bits = cursor_from(ext_val.buf[..0]);
+    var ku_bits = core::cursor_from(ext_val.buf[..0]);
     guard get_asn1_element(ext_val, rfc::ASN1_TAG_BIT_STRING, ku_bits) else {
         cert.has_unsupported_critical = true;
         return;
@@ -608,10 +608,10 @@ fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
 }
 
 fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
-    var akid_seq = cursor_from(ext_val.buf[..0]);
+    var akid_seq = core::cursor_from(ext_val.buf[..0]);
     guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, akid_seq) else { return; }
-    guard cursor_len(akid_seq) > 0 && akid_seq.buf[0] == 0x80 else { return; }
-    var akid_key = cursor_from(akid_seq.buf[..0]);
+    guard akid_seq.cursor_len() > 0 && akid_seq.buf[0] == 0x80 else { return; }
+    var akid_key = core::cursor_from(akid_seq.buf[..0]);
     guard get_asn1_element(akid_seq, 0x80, akid_key) else { return; }
     guard akid_key.buf.len > 0 && akid_key.buf.len <= 64 else { return; }
     cert.has_akid = true;
@@ -619,7 +619,7 @@ fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: Parsed
 }
 
 fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
-    var skid_oct = cursor_from(ext_val.buf[..0]);
+    var skid_oct = core::cursor_from(ext_val.buf[..0]);
     guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, skid_oct) else { return; }
     guard skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 else { return; }
     cert.has_skid = true;
@@ -631,15 +631,15 @@ inline fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
 }
 
 fn x509_parse_policy_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
-    var pc_seq = cursor_from(ext_val.buf[..0]);
-    if !get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) || cursor_len(pc_seq) == 0 {
+    var pc_seq = core::cursor_from(ext_val.buf[..0]);
+    if !get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) || pc_seq.cursor_len() == 0 {
         cert.has_malformed_policy_constraints = true;
         return;
     }
 
-    while cursor_len(pc_seq) > 0 {
+    while pc_seq.cursor_len() > 0 {
         var pc_tag: u8 = 0;
-        var pc_elem = cursor_from(pc_seq.buf[..0]);
+        var pc_elem = core::cursor_from(pc_seq.buf[..0]);
         if !get_any_asn1_element(pc_seq, pc_tag, pc_elem) {
             cert.has_malformed_policy_constraints = true;
             return;
@@ -659,17 +659,17 @@ fn x509_parse_policy_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
 //   ext_val = [0x30, 0x03, 0x02, 0x01, 0x05]
 //   returns: true, cert.has_must_staple = true
 fn x509_parse_tls_feature_ext(ext_val: const u8[:], cert: ParsedCert&) -> bool {
-    var c = cursor_from(ext_val);
-    var feat_seq = cursor_from(ext_val[..0]);
-    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, feat_seq) && cursor_len(c) == 0 else {
+    var c = core::cursor_from(ext_val);
+    var feat_seq = core::cursor_from(ext_val[..0]);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, feat_seq) && c.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return false;
     }
-    guard cursor_len(feat_seq) > 0 else {
+    guard feat_seq.cursor_len() > 0 else {
         cert.has_unsupported_critical = true;
         return false;
     }
-    while cursor_len(feat_seq) > 0 {
+    while feat_seq.cursor_len() > 0 {
         var feat_id: i64 = 0;
         guard get_asn1_integer(feat_seq, feat_id) && feat_id >= 0 && feat_id <= 65535 else {
             cert.has_unsupported_critical = true;
@@ -698,27 +698,27 @@ inline fn pack_sct_timestamp_ms(ts_hi: u32, ts_lo: u32) -> u64 {
 //   returns: true, out.version = 0, out.hash_alg = 4, out.sig_alg = 3, out.signature.length = 2
 fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
     guard raw.len >= SCT_V1_HEADER_MIN_LEN && raw.len <= 65535 else { return false; }
-    var c = cursor_from(raw);
+    var c = core::cursor_from(raw);
     var ver: u8 = 0;
-    guard get_u8(c, ver) && ver == SCT_VERSION_V1 else { return false; }
+    guard c.get_u8(ver) && ver == SCT_VERSION_V1 else { return false; }
 
-    var log_cursor = cursor_from(raw[..0]);
-    guard get_bytes(c, log_cursor, SCT_LOG_ID_LEN) else { return false; }
+    var log_cursor = core::cursor_from(raw[..0]);
+    guard c.get_bytes(log_cursor, SCT_LOG_ID_LEN) else { return false; }
 
     var ts_hi: u32 = 0;
     var ts_lo: u32 = 0;
-    guard get_u32(c, ts_hi) && get_u32(c, ts_lo) else { return false; }
+    guard c.get_u32(ts_hi) && c.get_u32(ts_lo) else { return false; }
 
-    var ext_cursor = cursor_from(raw[..0]);
-    guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
+    var ext_cursor = core::cursor_from(raw[..0]);
+    guard c.get_u16_length_prefixed(ext_cursor) else { return false; }
 
     var hash_alg: u8 = 0;
     var sig_alg:  u8 = 0;
-    guard get_u8(c, hash_alg) && get_u8(c, sig_alg) else { return false; }
+    guard c.get_u8(hash_alg) && c.get_u8(sig_alg) else { return false; }
 
-    var sig_cursor = cursor_from(raw[..0]);
-    guard get_u16_length_prefixed(c, sig_cursor) &&
-        sig_cursor.buf.len > 0 && cursor_len(c) == 0 else { return false; }
+    var sig_cursor = core::cursor_from(raw[..0]);
+    guard c.get_u16_length_prefixed(sig_cursor) &&
+        sig_cursor.buf.len > 0 && c.cursor_len() == 0 else { return false; }
 
     out.version = ver;
     core::ct_copy_bytes(out.log_id[..], log_cursor.buf);
@@ -736,14 +736,14 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
 //   returns: true, out_scts.len = 1
 fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
     out_scts.clear();
-    var c = cursor_from(raw_list);
-    var list_cursor = cursor_from(raw_list[..0]);
-    guard get_u16_length_prefixed(c, list_cursor) &&
-        cursor_len(c) == 0 && cursor_len(list_cursor) > 0 else { return false; }
+    var c = core::cursor_from(raw_list);
+    var list_cursor = core::cursor_from(raw_list[..0]);
+    guard c.get_u16_length_prefixed(list_cursor) &&
+        c.cursor_len() == 0 && list_cursor.cursor_len() > 0 else { return false; }
 
-    while cursor_len(list_cursor) > 0 {
-        var sct_cursor = cursor_from(list_cursor.buf[..0]);
-        guard get_u16_length_prefixed(list_cursor, sct_cursor) &&
+    while list_cursor.cursor_len() > 0 {
+        var sct_cursor = core::cursor_from(list_cursor.buf[..0]);
+        guard list_cursor.get_u16_length_prefixed(sct_cursor) &&
             sct_cursor.buf.len > 0 && out_scts.len < out_scts.cap else { return false; }
         var sct = ParsedSct { .. };
         guard parse_sct_entry(sct_cursor.buf, sct) else { return false; }
@@ -757,8 +757,8 @@ fn x509_parse_sct_ext(ext_val: ByteCursor&, cert: ParsedCert&) -> bool {
         cert.has_unsupported_critical = true;
         return false;
     }
-    var sct_oct = cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, sct_oct) && cursor_len(ext_val) == 0 else {
+    var sct_oct = core::cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, sct_oct) && ext_val.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return false;
     }
@@ -799,19 +799,19 @@ fn x509_parse_eku_ext(ext_val: const u8[:], cert: ParsedCert&) -> bool {
         cert.has_unsupported_critical = true;
         return false;
     }
-    var c = cursor_from(ext_val);
-    var eku_seq = cursor_from(ext_val[..0]);
-    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, eku_seq) && cursor_len(c) == 0 else {
+    var c = core::cursor_from(ext_val);
+    var eku_seq = core::cursor_from(ext_val[..0]);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, eku_seq) && c.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return false;
     }
-    guard cursor_len(eku_seq) > 0 else {
+    guard eku_seq.cursor_len() > 0 else {
         cert.has_unsupported_critical = true;
         return false;
     }
     cert.has_eku = true;
-    while cursor_len(eku_seq) > 0 {
-        var kp_oid = cursor_from(eku_seq.buf[..0]);
+    while eku_seq.cursor_len() > 0 {
+        var kp_oid = core::cursor_from(eku_seq.buf[..0]);
         guard get_asn1_element(eku_seq, rfc::ASN1_TAG_OID, kp_oid) && kp_oid.buf.len > 0 else {
             cert.has_unsupported_critical = true;
             return false;
@@ -873,8 +873,8 @@ fn x509_dispatch_extension(raw_cert: const u8[:], oid: const u8[:], ext_val: Byt
 }
 
 inline fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
-    guard cursor_len(single_ext) > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return false; }
-    var maybe_crit = cursor_from(single_ext.buf[..0]);
+    guard single_ext.cursor_len() > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return false; }
+    var maybe_crit = core::cursor_from(single_ext.buf[..0]);
     if get_asn1_element(single_ext, rfc::ASN1_TAG_BOOLEAN, maybe_crit) {
         return maybe_crit.buf.len > 0 && maybe_crit.buf[0] != 0;
     }
@@ -882,7 +882,7 @@ inline fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
 }
 
 fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCursor&, cert: ParsedCert&) -> bool {
-    var oid = cursor_from(single_ext.buf[..0]);
+    var oid = core::cursor_from(single_ext.buf[..0]);
     if !get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) {
         cert.has_unsupported_critical = true;
         return false;
@@ -890,13 +890,13 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
 
     let is_critical = x509_check_ext_critical(single_ext);
 
-    var ext_val = cursor_from(single_ext.buf[..0]);
+    var ext_val = core::cursor_from(single_ext.buf[..0]);
     if !get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_val) {
         cert.has_unsupported_critical = true;
         return false;
     }
 
-    if cursor_len(single_ext) > 0 {
+    if single_ext.cursor_len() > 0 {
         cert.has_unsupported_critical = true;
         return false;
     }
@@ -914,8 +914,8 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
 fn read_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: ParsedCert&) -> bool {
-    while cursor_len(ext_seq) > 0 {
-        var single_ext = cursor_from(ext_seq.buf[..0]);
+    while ext_seq.cursor_len() > 0 {
+        var single_ext = core::cursor_from(ext_seq.buf[..0]);
         if !get_asn1_element(ext_seq, rfc::ASN1_TAG_SEQUENCE, single_ext) {
             cert.has_unsupported_critical = true;
             return false;
@@ -1237,7 +1237,7 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
 // Example:
 fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> bool {
     var tag: u8 = 0;
-    var elem = cursor_from(names_seq.buf[..0]);
+    var elem = core::cursor_from(names_seq.buf[..0]);
     guard get_any_asn1_element(names_seq, tag, elem) else { return false; }
 
     let tag_num = tag & 0x1F;
@@ -1256,14 +1256,14 @@ fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> b
 //   san_der = 0x30 0x0E 0x82 0x0C "example.com"
 //   returns: ok = true, out_sans contains SanType.Dns "example.com"
 fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool {
-    var c = cursor_from(san_der);
-    var names_seq = cursor_from(san_der[..0]);
+    var c = core::cursor_from(san_der);
+    var names_seq = core::cursor_from(san_der[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, names_seq) { return false; }
-    guard cursor_len(c) == 0 else { return false; }
-    guard cursor_len(names_seq) > 0 else { return false; }
+    guard c.cursor_len() == 0 else { return false; }
+    guard names_seq.cursor_len() > 0 else { return false; }
 
     var count: i64 = 0;
-    while cursor_len(names_seq) > 0 {
+    while names_seq.cursor_len() > 0 {
         guard x509_parse_single_san(names_seq, out_sans) else { return false; }
         count++;
     }
@@ -1553,9 +1553,9 @@ inline fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: ByteCursor&) ->
 }
 
 inline fn x509_parse_general_subtree_bounds(subtree: ByteCursor&) -> bool {
-    while cursor_len(subtree) > 0 {
+    while subtree.cursor_len() > 0 {
         var opt_tag: u8 = 0;
-        var opt_elem = cursor_from(subtree.buf[..0]);
+        var opt_elem = core::cursor_from(subtree.buf[..0]);
         if !get_any_asn1_element(subtree, opt_tag, opt_elem) { return false; }
         guard x509_validate_subtree_bound_opt(opt_tag, opt_elem) else { return false; }
     }
@@ -1569,7 +1569,7 @@ fn x509_parse_general_subtree(
     out_constraints: NameConstraintEntry[..16]&,
 ) -> bool {
     var st = SanType.Other;
-    var base_elem = cursor_from(nc_der[..0]);
+    var base_elem = core::cursor_from(nc_der[..0]);
     guard x509_parse_general_subtree_base(subtree, st, base_elem) else { return false; }
     guard x509_parse_general_subtree_bounds(subtree) else { return false; }
 
@@ -1590,16 +1590,16 @@ fn x509_parse_subtrees_sequence(
     out_constraints: NameConstraintEntry[..16]&,
     count:           i64&,
 ) -> bool {
-    var subtrees_seq = cursor_from(subtrees_elem.buf[..0]);
-    if cursor_len(subtrees_elem) > 0 && subtrees_elem.buf[0] == rfc::ASN1_TAG_SEQUENCE {
+    var subtrees_seq = core::cursor_from(subtrees_elem.buf[..0]);
+    if subtrees_elem.cursor_len() > 0 && subtrees_elem.buf[0] == rfc::ASN1_TAG_SEQUENCE {
         if !get_asn1_element(subtrees_elem, rfc::ASN1_TAG_SEQUENCE, subtrees_seq) { return false; }
     } else {
         subtrees_seq = subtrees_elem;
     }
-    guard cursor_len(subtrees_seq) > 0 else { return false; }
+    guard subtrees_seq.cursor_len() > 0 else { return false; }
 
-    while cursor_len(subtrees_seq) > 0 {
-        var subtree = cursor_from(subtrees_seq.buf[..0]);
+    while subtrees_seq.cursor_len() > 0 {
+        var subtree = core::cursor_from(subtrees_seq.buf[..0]);
         if !get_asn1_element(subtrees_seq, rfc::ASN1_TAG_SEQUENCE, subtree) { return false; }
         guard x509_parse_general_subtree(nc_der, subtree, is_excluded, out_constraints) else { return false; }
         count++;
@@ -1613,16 +1613,16 @@ fn x509_parse_subtrees_sequence(
 //   nc_der = 0x30 ... (DER encoded NameConstraints sequence)
 //   returns: ok = true, out_constraints filled with permitted/excluded subtrees
 fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEntry[..16]&) -> bool {
-    var c = cursor_from(nc_der);
-    var nc_seq = cursor_from(nc_der[..0]);
+    var c = core::cursor_from(nc_der);
+    var nc_seq = core::cursor_from(nc_der[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, nc_seq) { return false; }
-    guard cursor_len(c) == 0 else { return false; }
-    guard cursor_len(nc_seq) > 0 else { return false; } // RFC 5280: empty NameConstraints is forbidden!
+    guard c.cursor_len() == 0 else { return false; }
+    guard nc_seq.cursor_len() > 0 else { return false; } // RFC 5280: empty NameConstraints is forbidden!
 
     var count: i64 = 0;
-    while cursor_len(nc_seq) > 0 {
+    while nc_seq.cursor_len() > 0 {
         var tag: u8 = 0;
-        var subtrees_elem = cursor_from(nc_seq.buf[..0]);
+        var subtrees_elem = core::cursor_from(nc_seq.buf[..0]);
         if !get_any_asn1_element(nc_seq, tag, subtrees_elem) { return false; }
 
         let is_excluded = (tag == 0xA1);
@@ -2019,27 +2019,27 @@ fn x509_parse_ocsp_cert_id(
     raw_ocsp:    const u8[:],
     out:         ParsedOcspResponse&,
 ) -> bool {
-    var cert_id_seq = cursor_from(single_resp.buf[..0]);
+    var cert_id_seq = core::cursor_from(single_resp.buf[..0]);
     if !get_asn1_element(single_resp, rfc::ASN1_TAG_SEQUENCE, cert_id_seq) { return false; }
 
-    var hash_alg = cursor_from(cert_id_seq.buf[..0]);
+    var hash_alg = core::cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_SEQUENCE, hash_alg) { return false; }
-    if cursor_len(hash_alg) > 0 {
-        var hash_oid = cursor_from(hash_alg.buf[..0]);
+    if hash_alg.cursor_len() > 0 {
+        var hash_oid = core::cursor_from(hash_alg.buf[..0]);
         if get_asn1_element(hash_alg, rfc::ASN1_TAG_OID, hash_oid) {
             out.hash_alg_oid = make_span(raw_ocsp, hash_oid.buf);
         }
     }
 
-    var name_hash = cursor_from(cert_id_seq.buf[..0]);
+    var name_hash = core::cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_OCTET_STRING, name_hash) { return false; }
     out.issuer_name_hash = make_span(raw_ocsp, name_hash.buf);
 
-    var key_hash = cursor_from(cert_id_seq.buf[..0]);
+    var key_hash = core::cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_OCTET_STRING, key_hash) { return false; }
     out.issuer_key_hash = make_span(raw_ocsp, key_hash.buf);
 
-    var serial = cursor_from(cert_id_seq.buf[..0]);
+    var serial = core::cursor_from(cert_id_seq.buf[..0]);
     if !get_asn1_element(cert_id_seq, rfc::ASN1_TAG_INTEGER, serial) { return false; }
     if !validate_asn1_integer(serial.buf, true) { return false; }
     out.serial_number = make_span(raw_ocsp, serial.buf);
@@ -2048,7 +2048,7 @@ fn x509_parse_ocsp_cert_id(
 
 fn x509_parse_ocsp_cert_status(single_resp: ByteCursor&, out_status: OcspCertStatus&) -> bool {
     var cert_status_tag: u8 = 0;
-    var cert_status_elem = cursor_from(single_resp.buf[..0]);
+    var cert_status_elem = core::cursor_from(single_resp.buf[..0]);
     if !get_any_asn1_element(single_resp, cert_status_tag, cert_status_elem) { return false; }
     guard (cert_status_tag & 0xC0) == 0x80 else { return false; }
     let cs_num = cert_status_tag & 0x1F;
@@ -2068,11 +2068,11 @@ fn x509_parse_ocsp_cert_status(single_resp: ByteCursor&, out_status: OcspCertSta
 }
 
 fn x509_parse_ocsp_next_update(single_resp: ByteCursor&, out: ParsedOcspResponse&) -> bool {
-    guard cursor_len(single_resp) > 0 && single_resp.buf[0] == 0xA0 else { return true; }
-    var next_up_ctx = cursor_from(single_resp.buf[..0]);
+    guard single_resp.cursor_len() > 0 && single_resp.buf[0] == 0xA0 else { return true; }
+    var next_up_ctx = core::cursor_from(single_resp.buf[..0]);
     guard get_asn1_element(single_resp, 0xA0, next_up_ctx) else { return false; }
     var next_up_tag: u8 = 0;
-    var next_up_elem = cursor_from(next_up_ctx.buf[..0]);
+    var next_up_elem = core::cursor_from(next_up_ctx.buf[..0]);
     guard get_any_asn1_element(next_up_ctx, next_up_tag, next_up_elem) else { return false; }
     let next_time, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
     guard ok_next else { return false; }
@@ -2086,15 +2086,15 @@ fn x509_parse_ocsp_single_response(
     raw_ocsp:      const u8[:],
     out:           ParsedOcspResponse&,
 ) -> bool {
-    guard cursor_len(responses_seq) > 0 else { return false; }
-    var single_resp = cursor_from(responses_seq.buf[..0]);
+    guard responses_seq.cursor_len() > 0 else { return false; }
+    var single_resp = core::cursor_from(responses_seq.buf[..0]);
     if !get_asn1_element(responses_seq, rfc::ASN1_TAG_SEQUENCE, single_resp) { return false; }
 
     guard x509_parse_ocsp_cert_id(single_resp, raw_ocsp, out) else { return false; }
     guard x509_parse_ocsp_cert_status(single_resp, out.cert_status) else { return false; }
 
     var this_up_tag: u8 = 0;
-    var this_up_elem = cursor_from(single_resp.buf[..0]);
+    var this_up_elem = core::cursor_from(single_resp.buf[..0]);
     if !get_any_asn1_element(single_resp, this_up_tag, this_up_elem) { return false; }
     let this_time, ok_this = parse_asn1_time(this_up_tag, this_up_elem.buf);
     guard ok_this else { return false; }
@@ -2104,25 +2104,25 @@ fn x509_parse_ocsp_single_response(
 }
 
 fn x509_skip_ocsp_version_and_id(tbs_resp_data: ByteCursor&) -> bool {
-    if cursor_len(tbs_resp_data) > 0 && tbs_resp_data.buf[0] == 0xA0 {
-        var ver_elem = cursor_from(tbs_resp_data.buf[..0]);
+    if tbs_resp_data.cursor_len() > 0 && tbs_resp_data.buf[0] == 0xA0 {
+        var ver_elem = core::cursor_from(tbs_resp_data.buf[..0]);
         get_asn1_element(tbs_resp_data, 0xA0, ver_elem);
     }
     var resp_id_tag: u8 = 0;
-    var resp_id = cursor_from(tbs_resp_data.buf[..0]);
+    var resp_id = core::cursor_from(tbs_resp_data.buf[..0]);
     return get_any_asn1_element(tbs_resp_data, resp_id_tag, resp_id);
 }
 
 fn x509_ocsp_read_basic_sig(basic_seq: ByteCursor&, raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
-    guard cursor_len(basic_seq) > 0 else { return true; }
-    var sig_alg_seq = cursor_from(basic_seq.buf[..0]);
+    guard basic_seq.cursor_len() > 0 else { return true; }
+    var sig_alg_seq = core::cursor_from(basic_seq.buf[..0]);
     guard get_asn1_element(basic_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg_seq) else { return false; }
-    var sig_oid = cursor_from(sig_alg_seq.buf[..0]);
+    var sig_oid = core::cursor_from(sig_alg_seq.buf[..0]);
     guard get_asn1_element(sig_alg_seq, rfc::ASN1_TAG_OID, sig_oid) else { return false; }
     out.sig_alg_oid = make_span(raw_ocsp, sig_oid.buf);
 
-    guard cursor_len(basic_seq) > 0 else { return false; }
-    var sig_bits = cursor_from(basic_seq.buf[..0]);
+    guard basic_seq.cursor_len() > 0 else { return false; }
+    var sig_bits = core::cursor_from(basic_seq.buf[..0]);
     var unused_bits: u8 = 0;
     guard get_asn1_bit_string(basic_seq, sig_bits, unused_bits) &&
         unused_bits == 0 && sig_bits.buf.len > 0 else { return false; }
@@ -2135,28 +2135,28 @@ fn x509_parse_ocsp_basic_response(
     raw_ocsp:       const u8[:],
     out:            ParsedOcspResponse&,
 ) -> bool {
-    var resp_type_oid = cursor_from(resp_bytes_seq.buf[..0]);
+    var resp_type_oid = core::cursor_from(resp_bytes_seq.buf[..0]);
     if !get_asn1_element(resp_bytes_seq, rfc::ASN1_TAG_OID, resp_type_oid) { return false; }
     guard resp_type_oid.buf == rfc::OID_OCSP_BASIC[..] else { return false; }
 
-    var resp_oct = cursor_from(resp_bytes_seq.buf[..0]);
+    var resp_oct = core::cursor_from(resp_bytes_seq.buf[..0]);
     if !get_asn1_element(resp_bytes_seq, rfc::ASN1_TAG_OCTET_STRING, resp_oct) { return false; }
 
-    var basic_seq = cursor_from(resp_oct.buf[..0]);
+    var basic_seq = core::cursor_from(resp_oct.buf[..0]);
     if !get_asn1_element(resp_oct, rfc::ASN1_TAG_SEQUENCE, basic_seq) { return false; }
 
     let tbs_raw_start = basic_seq.buf;
-    var tbs_resp_data = cursor_from(basic_seq.buf[..0]);
+    var tbs_resp_data = core::cursor_from(basic_seq.buf[..0]);
     if !get_asn1_element(basic_seq, rfc::ASN1_TAG_SEQUENCE, tbs_resp_data) { return false; }
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, basic_seq.buf.len);
     out.tbs_raw = make_span(raw_ocsp, tbs_raw_start[..tbs_tlv_len]);
 
     guard x509_skip_ocsp_version_and_id(tbs_resp_data) else { return false; }
 
-    var prod_time = cursor_from(tbs_resp_data.buf[..0]);
+    var prod_time = core::cursor_from(tbs_resp_data.buf[..0]);
     if !get_asn1_element(tbs_resp_data, rfc::ASN1_TAG_GENERALIZED_TIME, prod_time) { return false; }
 
-    var responses_seq = cursor_from(tbs_resp_data.buf[..0]);
+    var responses_seq = core::cursor_from(tbs_resp_data.buf[..0]);
     if !get_asn1_element(tbs_resp_data, rfc::ASN1_TAG_SEQUENCE, responses_seq) { return false; }
 
     guard x509_parse_ocsp_single_response(responses_seq, raw_ocsp, out) else { return false; }
@@ -2169,12 +2169,12 @@ fn x509_parse_ocsp_basic_response(
 //   raw_ocsp = 0x30 ... (DER encoded OCSPResponse)
 //   returns: ok = true, out filled with status and cert status
 fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
-    var c = cursor_from(raw_ocsp);
-    var ocsp_seq = cursor_from(raw_ocsp[..0]);
+    var c = core::cursor_from(raw_ocsp);
+    var ocsp_seq = core::cursor_from(raw_ocsp[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, ocsp_seq) { return false; }
-    guard cursor_len(c) == 0 else { return false; }
+    guard c.cursor_len() == 0 else { return false; }
 
-    var status_oct = cursor_from(ocsp_seq.buf[..0]);
+    var status_oct = core::cursor_from(ocsp_seq.buf[..0]);
     if !get_asn1_element(ocsp_seq, rfc::ASN1_TAG_ENUMERATED, status_oct) { return false; }
     guard status_oct.buf.len == 1 else { return false; }
 
@@ -2183,11 +2183,11 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
         return true;
     }
 
-    guard cursor_len(ocsp_seq) > 0 else { return false; }
-    var resp_bytes_ctx = cursor_from(ocsp_seq.buf[..0]);
+    guard ocsp_seq.cursor_len() > 0 else { return false; }
+    var resp_bytes_ctx = core::cursor_from(ocsp_seq.buf[..0]);
     if !get_asn1_element(ocsp_seq, 0xA0, resp_bytes_ctx) { return false; }
 
-    var resp_bytes_seq = cursor_from(resp_bytes_ctx.buf[..0]);
+    var resp_bytes_seq = core::cursor_from(resp_bytes_ctx.buf[..0]);
     if !get_asn1_element(resp_bytes_ctx, rfc::ASN1_TAG_SEQUENCE, resp_bytes_seq) { return false; }
 
     return x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, out);
@@ -2289,10 +2289,10 @@ fn x509_verify_ocsp_signature(
 
 // Unwraps TLS 1.3 / TLS 1.2 status_request extension wire framing (opaque OCSPResponse<1..2^24-1>).
 fn unwrap_tls_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool {
-    var c = cursor_from(ext_data);
+    var c = core::cursor_from(ext_data);
     var resp_len: u32 = 0;
-    if !get_u24(c, resp_len) { return "", false; }
-    guard resp_len > 0 && resp_len == cursor_len(c) else { return "", false; }
+    if !c.get_u24(resp_len) { return "", false; }
+    guard resp_len > 0 && resp_len == c.cursor_len() else { return "", false; }
     return c.buf, true;
 }
 
@@ -2459,13 +2459,13 @@ fn parse_crl_entry_serial(serial_bytes: const u8[:], out: ParsedCrl&) -> bool {
 //   entry_raw = [0x02, 0x01, 0x05, 0x17, 0x0D], out = ParsedCrl { .. }
 //   returns: true
 fn parse_crl_single_entry_raw(entry_raw: const u8[:], out: ParsedCrl&) -> bool {
-    var entry_seq = cursor_from(entry_raw);
-    var serial_elem = cursor_from(entry_seq.buf[..0]);
+    var entry_seq = core::cursor_from(entry_raw);
+    var serial_elem = core::cursor_from(entry_seq.buf[..0]);
     guard get_asn1_element(entry_seq, rfc::ASN1_TAG_INTEGER, serial_elem) else { return false; }
     guard parse_crl_entry_serial(serial_elem.buf, out) else { return false; }
 
     var rev_time_tag: u8 = 0;
-    var rev_time_elem = cursor_from(entry_seq.buf[..0]);
+    var rev_time_elem = core::cursor_from(entry_seq.buf[..0]);
     guard get_any_asn1_element(entry_seq, rev_time_tag, rev_time_elem) else { return false; }
     let _, ok_time = parse_asn1_time(rev_time_tag, rev_time_elem.buf);
     return ok_time;
@@ -2478,9 +2478,9 @@ fn parse_crl_single_entry_raw(entry_raw: const u8[:], out: ParsedCrl&) -> bool {
 //   revoked_raw = [0x30, ...] (DER SEQUENCE OF RevokedCertificate)
 //   returns: ok = true, populates out.serials in sorted order
 fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool {
-    var revoked_seq = cursor_from(revoked_raw);
-    while cursor_len(revoked_seq) > 0 {
-        var entry_seq = cursor_from(revoked_seq.buf[..0]);
+    var revoked_seq = core::cursor_from(revoked_raw);
+    while revoked_seq.cursor_len() > 0 {
+        var entry_seq = core::cursor_from(revoked_seq.buf[..0]);
         guard get_asn1_element(revoked_seq, rfc::ASN1_TAG_SEQUENCE, entry_seq) else {
             return false;
         }
@@ -2492,19 +2492,19 @@ fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool 
 }
 
 fn x509_crl_read_outer_sig(crl_seq: ByteCursor&, raw_crl: const u8[:], out: ParsedCrl&) -> bool {
-    guard cursor_len(crl_seq) > 0 else { return false; }
-    var outer_sig_alg = cursor_from(crl_seq.buf[..0]);
+    guard crl_seq.cursor_len() > 0 else { return false; }
+    var outer_sig_alg = core::cursor_from(crl_seq.buf[..0]);
     guard get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) else { return false; }
-    var outer_sig_oid = cursor_from(outer_sig_alg.buf[..0]);
+    var outer_sig_oid = core::cursor_from(outer_sig_alg.buf[..0]);
     guard get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) else { return false; }
     out.sig_alg_oid = make_span(raw_crl, outer_sig_oid.buf);
 
-    guard cursor_len(crl_seq) > 0 else { return false; }
-    var sig_bits = cursor_from(crl_seq.buf[..0]);
+    guard crl_seq.cursor_len() > 0 else { return false; }
+    var sig_bits = core::cursor_from(crl_seq.buf[..0]);
     var unused_bits: u8 = 0;
     guard get_asn1_bit_string(crl_seq, sig_bits, unused_bits) && unused_bits == 0 else { return false; }
     out.signature = make_span(raw_crl, sig_bits.buf);
-    return cursor_len(crl_seq) == 0;
+    return crl_seq.cursor_len() == 0;
 }
 
 // Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
@@ -2519,40 +2519,40 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     out.serials.clear();
     out.serial_count = 0;
 
-    var c = cursor_from(raw_crl);
-    var crl_seq = cursor_from(raw_crl[..0]);
-    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, crl_seq) && cursor_len(c) == 0 else {
+    var c = core::cursor_from(raw_crl);
+    var crl_seq = core::cursor_from(raw_crl[..0]);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, crl_seq) && c.cursor_len() == 0 else {
         return false;
     }
 
     let tbs_raw_start = crl_seq.buf;
-    var tbs_cert_list = cursor_from(crl_seq.buf[..0]);
+    var tbs_cert_list = core::cursor_from(crl_seq.buf[..0]);
     guard get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, tbs_cert_list) else {
         return false;
     }
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, crl_seq.buf.len);
     out.tbs_raw = make_span(raw_crl, tbs_raw_start[..tbs_tlv_len]);
 
-    if cursor_len(tbs_cert_list) > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_INTEGER {
-        var ver_elem = cursor_from(tbs_cert_list.buf[..0]);
+    if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_INTEGER {
+        var ver_elem = core::cursor_from(tbs_cert_list.buf[..0]);
         guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_INTEGER, ver_elem) else {
             return false;
         }
     }
 
-    var sig_alg = cursor_from(tbs_cert_list.buf[..0]);
+    var sig_alg = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, sig_alg) else {
         return false;
     }
 
-    var issuer_seq = cursor_from(tbs_cert_list.buf[..0]);
+    var issuer_seq = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, issuer_seq) else {
         return false;
     }
     out.issuer = issuer_seq.buf;
 
     var this_up_tag: u8 = 0;
-    var this_up_elem = cursor_from(tbs_cert_list.buf[..0]);
+    var this_up_elem = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_any_asn1_element(tbs_cert_list, this_up_tag, this_up_elem) else {
         return false;
     }
@@ -2561,11 +2561,11 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         return false;
     }
 
-    if cursor_len(tbs_cert_list) > 0 {
+    if tbs_cert_list.cursor_len() > 0 {
         let next_tag = tbs_cert_list.buf[0];
         if next_tag == rfc::ASN1_TAG_UTC_TIME || next_tag == rfc::ASN1_TAG_GENERALIZED_TIME {
             var next_up_tag: u8 = 0;
-            var next_up_elem = cursor_from(tbs_cert_list.buf[..0]);
+            var next_up_elem = core::cursor_from(tbs_cert_list.buf[..0]);
             guard get_any_asn1_element(tbs_cert_list, next_up_tag, next_up_elem) else {
                 return false;
             }
@@ -2576,8 +2576,8 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         }
     }
 
-    if cursor_len(tbs_cert_list) > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_SEQUENCE {
-        var revoked_seq = cursor_from(tbs_cert_list.buf[..0]);
+    if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_SEQUENCE {
+        var revoked_seq = core::cursor_from(tbs_cert_list.buf[..0]);
         guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, revoked_seq) else {
             return false;
         }

@@ -21,6 +21,83 @@ fn reentrant_task_cb(tag: u64, user_data: u64, task_id: u32, el: wing::EventLoop
     }
 }
 
+fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
+    assert(internal::URING_OP_SEND_ZC == 47);
+    assert(internal::URING_CQE_F_NOTIF == 8);
+    assert(internal::URING_RECV_MULTISHOT == 2);
+
+    var r_state = internal::new_ring_queue_state(32);
+    assert(internal::uring_prep_recv_multishot(r_state, 10, 7, 1234));
+    assert(r_state.staged_sqes[0].buf_index == 7 && r_state.staged_sqes[0].ioprio == internal::URING_RECV_MULTISHOT);
+
+    var br = internal::UringBufRing { .. };
+    internal::uring_buf_ring_recycle(br, 5, 0x1000, 2048);
+    assert(br.tail == 1 && br.entries[0].bid == 5);
+    let cqe_buf = internal::UringCqe { user_data: 1, res: 64, flags: (5 << 16) | internal::URING_CQE_F_BUFFER };
+    let sel_bid, has_bid = internal::extract_uring_cqe_buffer_id(cqe_buf);
+    assert(has_bid && sel_bid == 5);
+
+    var rio_res: internal::RioResult[..64] = [];
+    let _ = internal::rio_drain_completions(0, rio_res);
+    rio_res.push(internal::RioResult { status: 0, bytes_transferred: 128, socket_context: 9001, request_context: 1 });
+    var p_rio = wing::new_poller(p_cfg);
+    wing::register_socket(p_rio, 88, 9001, wing::PollInterest.Read, wing::PollTrigger.Level);
+    var rio_evs: wing::PollReadyEvent[..64] = [];
+    let mapped_rio = wing::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
+    assert(mapped_rio == 1 && rio_evs[0].fd == 88 && rio_evs[0].bytes_available == 128);
+    wing::close_poller(p_rio);
+
+    let sock_opts = internal::SocketOptions {
+        keepalive_idle_secs:      60,
+        keepalive_interval_secs:  10,
+        keepalive_probes:         3,
+        ipv6_only:                true,
+        win_skip_iocp_on_success: true,
+        ..
+    };
+    assert(internal::apply_socket_options(-1, sock_opts));
+
+    var dpdk_ctx = internal::DpdkContext { .. };
+    let mbuf_batch: u64[5] = [101, 102, 103, 104, 105];
+    let staged_dpdk = internal::dpdk_stage_tx_burst(dpdk_ctx, mbuf_batch[..]);
+    assert(staged_dpdk == 5 && dpdk_ctx.tx_burst[4] == 105);
+
+    var xsk_ring = internal::XskRingState { prod_head: 62, cons_head: 60, .. };
+    let xsk_enq = internal::xsk_fill_ring_enqueue_burst(xsk_ring, mbuf_batch[..]);
+    assert(xsk_enq == 5 && xsk_ring.entries[62] == 101 && xsk_ring.entries[0] == 103);
+
+    var fmt_dict: u8[..64] = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00];
+    fmt_dict.append("shared-dictionary-prefix-content-for-rfc9842-dcz!");
+    let plain_dcz = "shared-dictionary-prefix-content-for-rfc9842-dcz! trailing payload";
+    let dict_sha = core::sha256(fmt_dict[..]);
+    var dcz_wire: u8[..512] = [];
+    assert(wing::encode_dcz_response(dcz_wire, dict_sha, plain_dcz, fmt_dict[..]));
+    var parsed_sha: u8[32] = [0; 32];
+    let dcz_zstd, dcz_hdr_ok = wing::decode_dcz_header(dcz_wire[..], parsed_sha);
+    assert(dcz_hdr_ok && core::ct_eq_bytes(parsed_sha[..], dict_sha[..]));
+    var dcz_decoded: u8[..512] = [];
+    assert(wing::decompress_dcz_payload(dcz_zstd, fmt_dict[..], dcz_decoded));
+    assert(dcz_decoded[..] == plain_dcz);
+
+    var z_frames: u8[..512] = [];
+    assert(core::zstd_compress("frame-one|", z_frames));
+    assert(core::zstd_compress("frame-two", z_frames));
+    var z_stream = core::new_zstream_decompressor(core::ContainerFormat.Zstd);
+    var z_stream_out: u8[..512] = [];
+    let z_err1 = core::zstream_decompress_write_limit(z_stream, z_frames[..10], z_stream_out, 512);
+    assert(z_err1 == core::CompressError.None);
+    let z_err2 = core::zstream_decompress_write_limit(z_stream, z_frames[10..], z_stream_out, 512);
+    assert(z_err2 == core::CompressError.None && z_stream_out[..] == "frame-one|frame-two");
+
+    var zc = core::new_zstream_compressor(core::ContainerFormat.Zlib, 6);
+    var zc_out: u8[..128] = [];
+    assert(core::write(zc, "hello", zc_out));
+    assert(core::sync_flush(zc, zc_out));
+    assert(core::full_flush(zc, zc_out));
+    assert(core::finish(zc, zc_out));
+    print("IOCOMP_TRACK_E_OK: 1");
+}
+
 fn main() {
     // F001: tick_timer_arm u8 wrap-around when current_tick + delay_sec >= 256
     var wheel = wing::TickTimerWheel { current_tick: 200, .. };
@@ -326,6 +403,8 @@ fn main() {
     wing::format_partitioned_key("base", nik_test, tiny_part);
     assert(tiny_part.len <= 4);
     print("F017_CAP_GUARDS_OK: 1");
+
+    verify_iocomp_track_e(p_cfg);
 }
 
 // CHECK: F001_TICK_SLOT: 20
@@ -345,3 +424,4 @@ fn main() {
 // CHECK: F015_BIND_WINNER_FAILED: 1
 // CHECK: F016_DRIVER_INT_NEG: 1
 // CHECK: F017_CAP_GUARDS_OK: 1
+// CHECK: IOCOMP_TRACK_E_OK: 1

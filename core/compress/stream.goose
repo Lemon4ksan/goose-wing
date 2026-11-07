@@ -389,6 +389,34 @@ fn parse_stream_header(d: ZStreamDecompressor&) -> CompressError {
     return CompressError.None;
 }
 
+// Incrementally decompresses complete Zstd frames in `d.in_buf` and compacts consumed frames.
+fn zstream_decompress_zstd_step<B>(
+    d:                ZStreamDecompressor&,
+    out:              B&,
+    max_output_bytes: i64,
+) -> CompressError {
+    var temp_out: u8[>..] = [];
+    let produced = d.total_out as i64;
+    if max_output_bytes > 0 && produced >= max_output_bytes {
+        return CompressError.OutputBufferOverflow;
+    }
+    let z_limit = if max_output_bytes > 0 { sub_sat_i64(max_output_bytes, produced) } else { -1 };
+    let consumed, err = zstd_decompress_frames_incremental(d.in_buf[..], temp_out, z_limit, d.dict);
+    if err == CompressError.InputBufferTruncated {
+        return CompressError.None;
+    }
+    guard err == CompressError.None else { return err; }
+
+    out.append(temp_out[..]);
+    d.total_out = add_sat_u64(d.total_out, temp_out.len as u64);
+    drain_in_buf(d, consumed);
+    if d.in_buf.len == 0 {
+        d.deflate_finished = true;
+        d.is_finished = true;
+    }
+    return CompressError.None;
+}
+
 // Resumable streaming decompression feeding arbitrary byte chunks (from 1 byte to multi-KB TCP slices).
 // Buffers incoming data, rolls back partial blocks on truncation, and enforces output quota guard.
 recursive fn zstream_decompress_write_limit<B>(
@@ -413,20 +441,7 @@ recursive fn zstream_decompress_write_limit<B>(
 
     // Phase 1.5: Zstandard Frame Streaming
     if d.format == ContainerFormat.Zstd {
-        var temp_out: u8[>..] = [];
-        let z_limit = if max_output_bytes > 0 { max_output_bytes } else { -1 };
-        let ok_z, err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
-        if err == CompressError.InputBufferTruncated {
-            return CompressError.None; // Partial frame: wait for more bytes
-        }
-        guard ok_z else { return err; }
-
-        out.append(temp_out[..]);
-        d.total_out += temp_out.len as u64;
-        drain_in_buf(d, d.in_buf.len);
-        d.deflate_finished = true;
-        d.is_finished = true;
-        return CompressError.None;
+        return zstream_decompress_zstd_step(d, out, max_output_bytes);
     }
 
     // Phase 2: Decompress Deflate payload

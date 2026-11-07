@@ -186,11 +186,11 @@ fn main() {
     print("OCSP_MALFORMED_HASH_LEN_REJECTED: OK");
 
     // 10. Regression: Post-Quantum X25519+ML-KEM-768 parser must reject non-X25519 hybrid group 0x11EB (SecP256r1MLKEM768)
-    var fake_pq_buf: u8[1188] = [0; 1188];
+    var fake_pq_buf: u8[1220] = [0; 1220];
     fake_pq_buf[0] = 0x11;
     fake_pq_buf[1] = 0xEB; // GROUP_SECP256R1_MLKEM768
     fake_pq_buf[2] = 0x04;
-    fake_pq_buf[3] = 0xA0; // len = 1184
+    fake_pq_buf[3] = 0xC0; // len = 1216
     var out_cli_pq = internal::PostQuantumKeyShare { .. };
     let ok_fake_pq = internal::parse_hybrid_key_share(out_cli_pq, fake_pq_buf[..]);
     assert(!ok_fake_pq);
@@ -360,6 +360,14 @@ fn main() {
     let opened_tkt, ok_open_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1005000);
     assert(ok_open_tkt && opened_tkt.in_use && opened_tkt.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
     assert(core::ct_eq_bytes(opened_tkt.psk[..], psk_in[..]));
+    // 48-byte SHA-384 PSK stateless ticket round-trip without truncation
+    var psk_48: u8[..48] = [];
+    for i in 48 { psk_48.push((0x80 + i) as u8); }
+    var sealed_ticket_48: u8[..128] = [];
+    assert(wing::seal_stateless_tls13_ticket(ring, psk_48, rfc::TLS_CIPHER_AES_256_GCM_SHA384, 1000000, ticket_iv, sealed_ticket_48));
+    let opened_tkt_48, ok_open_48 = wing::open_stateless_tls13_ticket(ring, sealed_ticket_48[..], 1005000);
+    assert(ok_open_48 && opened_tkt_48.psk.len == 48 && opened_tkt_48.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384);
+    assert(core::ct_eq_bytes(opened_tkt_48.psk[..], psk_48[..]));
     // Expired ticket must be rejected
     let _, ok_exp_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1000000 + 3600001);
     assert(!ok_exp_tkt);

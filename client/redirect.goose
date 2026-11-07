@@ -223,8 +223,8 @@ fn inherit_target_fragment(
     clean_loc:                         const u8[:],
     preserve_fragment_on_redirect_url: const u8[:],
 ) {
-    let target_hash = hash(target_url);
-    let curr_hash = hash(current_url);
+    let target_hash = target_url.hash();
+    let curr_hash = current_url.hash();
     if target_hash.len == 0 && curr_hash.len > 0 {
         if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
             guard target_url.href.len + curr_hash.len <= target_url.href.cap else {
@@ -247,7 +247,7 @@ fn compute_redirect_site_for_cookies(
     options:                  RedirectSiteOptions,
 ) -> SiteForCookies, bool {
     let same_site_step = is_schemeful_same_site(
-        core::scheme(current_url), core::hostname(current_url),
+        current_url.scheme(), core::hostname(current_url),
         core::scheme(new_url), core::hostname(new_url),
     );
     let initiator_ok = !options.has_initiator || (
@@ -259,7 +259,7 @@ fn compute_redirect_site_for_cookies(
 
     if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
         // Subresources / background requests: once tainted, remains null forever
-        let is_first_p = is_first_party(current_site_for_cookies, href(new_url), true);
+        let is_first_p = is_first_party(current_site_for_cookies, core::href(new_url), true);
 
         if options.had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
             return null_site_for_cookies(), true;
@@ -318,8 +318,8 @@ fn classify_redirect_origin_relation(
     out_is_port_changed: bool&,
 ) {
     let same_orig = core::is_same_origin_url(current_url, target_url);
-    let is_downgrade = (scheme(current_url) == "https" && scheme(target_url) == "http");
-    let port_changed = effective_port(current_url) != effective_port(target_url);
+    let is_downgrade = (current_url.scheme() == "https" && target_url.scheme() == "http");
+    let port_changed = current_url.effective_port() != target_url.effective_port();
     out_is_downgrade = is_downgrade;
     out_is_cross_origin = !same_orig || is_downgrade;
     out_is_port_changed = port_changed;
@@ -432,11 +432,11 @@ fn is_origin_only_referrer(policy: ReferrerPolicy, is_cross_origin: bool) -> boo
 }
 
 fn serialize_stripped_full_referrer<B>(source_url: const core::Url&, out: B&) {
-    out.append(scheme(source_url));
+    out.append(source_url.scheme());
     out.append("://");
-    out.append(host(source_url));
-    out.append(pathname(source_url));
-    out.append(search(source_url));
+    out.append(source_url.host());
+    out.append(source_url.pathname());
+    out.append(source_url.search());
 }
 
 fn compute_new_referrer<B>(

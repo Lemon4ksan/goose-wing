@@ -892,7 +892,69 @@ fn fuzz_target_url_cookie_sfv_compress(data: const u8[:]) -> u64 {
     return fuzz_bhttp_ohttp_privacypass(data, sig);
 }
 
-// Runs all 12 OSS-Fuzz targets on a single input slice `data` and returns the combined state signature.
+// Structure-aware compression decoder & streaming chunk-split differential fuzz target (`IOCOMP-08`).
+fn fuzz_target_compress_decoders(data: const u8[:]) -> u64 {
+    var sig: u64 = 0xD000;
+    var fdp = new_fdp(data);
+    let step_raw = (fdp_consume_u8(fdp) & 0x1F) as i64;
+    let chunk_step = max(1, step_raw);
+    let payload = fdp_consume_remaining(fdp);
+
+    var out_oneshot: u8[>..] = [];
+    let ok_z, _ = core::zstd_decompress_with_limit(payload, out_oneshot, 4096);
+    if ok_z {
+        sig = fuzz_mix_state(sig, 0xD001 ^ (out_oneshot.len as u64));
+        var zd = core::new_zstream_decompressor(core::ContainerFormat.Zstd);
+        var out_stream: u8[>..] = [];
+        var pos:        i64     = 0;
+        while pos < payload.len {
+            let end = min(payload.len, core::add_sat_i64(pos, chunk_step));
+            let _ = core::zstream_decompress_write_limit(zd, payload[pos..end], out_stream, 4096);
+            pos = end;
+        }
+        assert(out_stream[..] == out_oneshot[..]);
+    }
+
+    out_oneshot.clear();
+    let ok_d, _ = core::inflate_with_limit(payload, out_oneshot, 4096);
+    if ok_d {
+        sig = fuzz_mix_state(sig, 0xD002 ^ (out_oneshot.len as u64));
+    }
+    return sig;
+}
+
+// Structure-aware RFC 9842 Compression Dictionary (`dcz`/`dcb` & Zstd dict) roundtrip fuzz target (`IOCOMP-08`).
+fn fuzz_target_compression_dict_roundtrip(data: const u8[:]) -> u64 {
+    var sig: u64 = 0xE000;
+    var fdp = new_fdp(data);
+    let dict_slice = fdp_consume_bytes(fdp, 64);
+    let plain_slice = fdp_consume_bytes(fdp, 128);
+
+    var comp_z:   u8[..4096] = [];
+    var decomp_z: u8[..4096] = [];
+    if core::zstd_compress_with_dict(plain_slice, dict_slice, comp_z, 3) {
+        let ok_dec, _ = core::zstd_decompress_with_dict(comp_z[..], dict_slice, decomp_z, 4096);
+        assert(ok_dec && decomp_z[..] == plain_slice);
+        sig = fuzz_mix_state(sig, 0xE001 ^ (comp_z.len as u64));
+    }
+
+    if dict_slice.len > 0 {
+        let dict_hash = core::sha256(dict_slice);
+        var dcz_wire: u8[..4096] = [];
+        if wing::encode_dcz_response(dcz_wire, dict_hash, plain_slice, dict_slice) {
+            var parsed_hash: u8[32] = [0; 32];
+            let zstd_body, ok_hdr = wing::decode_dcz_header(dcz_wire[..], parsed_hash);
+            assert(ok_hdr && core::ct_eq_bytes(parsed_hash[..], dict_hash[..]));
+            var dcz_out: u8[..4096] = [];
+            let ok_dcz = wing::decompress_dcz_payload(zstd_body, dict_slice, dcz_out);
+            assert(ok_dcz && dcz_out[..] == plain_slice);
+            sig = fuzz_mix_state(sig, 0xE002 ^ (dcz_out.len as u64));
+        }
+    }
+    return sig;
+}
+
+// Runs all OSS-Fuzz targets on a single input slice `data` and returns the combined state signature.
 fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     var sig: u64 = 0xCBF29CE484222325;
     sig = fuzz_mix_state(sig, fuzz_target_http1(data));
@@ -907,6 +969,8 @@ fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     sig = fuzz_mix_state(sig, fuzz_target_x509_asn1(data));
     sig = fuzz_mix_state(sig, fuzz_target_websocket_and_grpc(data));
     sig = fuzz_mix_state(sig, fuzz_target_url_cookie_sfv_compress(data));
+    sig = fuzz_mix_state(sig, fuzz_target_compress_decoders(data));
+    sig = fuzz_mix_state(sig, fuzz_target_compression_dict_roundtrip(data));
     return sig;
 }
 

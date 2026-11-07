@@ -64,12 +64,13 @@ const URING_OP_ASYNC_CANCEL: u8 = 14;
 const URING_OP_CONNECT:      u8 = 16;
 const URING_OP_SEND:         u8 = 26;
 const URING_OP_RECV:         u8 = 27;
-const URING_OP_SEND_ZC:      u8 = 31; // Zero-copy send
+const URING_OP_SEND_ZC:      u8 = 47; // Zero-copy send (Linux IORING_OP_SEND_ZC)
 
 // io_uring register opcodes & kernel feature flags (uSockets io_uring engine)
 const URING_REGISTER_BUFFERS:   u32 = 0;
 const URING_UNREGISTER_BUFFERS: u32 = 1;
 const URING_ACCEPT_MULTISHOT:   u16 = 1 << 0;
+const URING_RECV_MULTISHOT:     u16 = 1 << 1; // IORING_RECV_MULTISHOT
 const URING_FEAT_FAST_POLL:     u32 = 1 << 5;
 
 // io_uring SQE flags
@@ -84,6 +85,7 @@ const URING_SQE_BUFFER_SELECT: u8 = 1 << 5;
 const URING_CQE_F_BUFFER:        u32 = 1 << 0;
 const URING_CQE_F_MORE:          u32 = 1 << 1;
 const URING_CQE_F_SOCK_NONEMPTY: u32 = 1 << 2;
+const URING_CQE_F_NOTIF:         u32 = 1 << 3; // IORING_CQE_F_NOTIF (zero-copy DMA unpin notification)
 
 // io_uring submission queue entry (SQE)
 struct UringSqe {
@@ -208,13 +210,73 @@ fn uring_register_buf_ring(ring_fd: i32, entries: u16, bgid: u16, ring_addr: u64
     return native_uring_register_pbuf_ring(ring_fd, ring_addr, entries, bgid) == 0;
 }
 
+// Provided buffer ring entry (struct io_uring_buf).
+struct UringBufEntry {
+    addr: u64 = 0,
+    len:  u32 = 0,
+    bid:  u16 = 0,
+    resv: u16 = 0,
+}
+
+// Provided buffer ring state (struct io_uring_buf_ring) for zero-syscall multishot recv recycling.
+struct UringBufRing {
+    entries: UringBufEntry[..64] = [],
+    tail:    u16                 = 0,
+    mask:    u16                 = 63,
+    bgid:    u16                 = 0,
+}
+
+// Republishes a consumed buffer descriptor back to the provided buffer ring tail (`io_uring_buf_ring_add` + advance).
+fn uring_buf_ring_recycle(br: UringBufRing&, bid: u16, addr: u64, len: u32) {
+    if br.entries.len < 64 {
+        br.entries.resize(64, UringBufEntry { .. });
+    }
+    let idx = (br.tail & br.mask & 63) as i64;
+    br.entries[idx] = UringBufEntry {
+        addr: addr,
+        len:  len,
+        bid:  bid,
+        resv: 0,
+    };
+    br.tail = br.tail + 1;
+}
+
+// Extracts the 16-bit provided buffer ID selected by the kernel when `URING_CQE_F_BUFFER` is set.
+//
+// Example:
+//   cqe = UringCqe { flags: (42 << 16) | URING_CQE_F_BUFFER, .. }
+//   returns: 42, true
+fn extract_uring_cqe_buffer_id(cqe: const UringCqe&) -> u32, bool {
+    let bid = cqe.flags >> 16;
+    let has_buf = (cqe.flags & URING_CQE_F_BUFFER) != 0;
+    return if has_buf { bid } else { 0 }, has_buf;
+}
+
 // Ring submission and completion tracking state
 struct RingQueueState {
-    ring_size:         u32 = DEFAULT_RING_SIZE,
-    submissions_total: u64 = 0,
-    completions_total: u64 = 0,
-    active_pending:    u32 = 0,
-    ring_fd:           i64 = -1,
+    ring_size:         u32            = DEFAULT_RING_SIZE,
+    submissions_total: u64            = 0,
+    completions_total: u64            = 0,
+    active_pending:    u32            = 0,
+    ring_fd:           i64            = -1,
+    staged_sqes:       UringSqe[..32] = [],
+}
+
+// Prepares and stages a multishot receive SQE with provided buffer selection (`IORING_RECV_MULTISHOT`).
+fn uring_prep_recv_multishot(ring: RingQueueState&, fd: i32, bgid: u16, user_data: u64) -> bool {
+    guard fd >= 0 && ring.staged_sqes.len < ring.staged_sqes.cap else { return false; }
+    let sqe = UringSqe {
+        opcode:    URING_OP_RECV,
+        flags:     URING_SQE_BUFFER_SELECT,
+        ioprio:    URING_RECV_MULTISHOT,
+        fd:        fd,
+        off:       0,
+        addr:      0,
+        len:       0,
+        user_data: user_data,
+        buf_index: bgid,
+    };
+    return ring.staged_sqes.try_push(sqe);
 }
 
 fn new_ring_queue_state(size: u32, ring_fd: i64 = -1) -> RingQueueState {

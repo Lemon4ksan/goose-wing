@@ -473,13 +473,49 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 
 // ---- Polling Execution --------------------------------------------------
 
-inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64) {
+// Maps a slice of Windows RIO `RioResult` items into `PollReadyEvent` entries on `out_events`.
+fn rio_map_completions_to_events(
+    p:          Poller&,
+    results:    const internal::RioResult[:],
+    out_events: PollReadyEvent[..64]&,
+) -> u64 {
+    var added: u64 = 0;
+    for res in results {
+        guard out_events.len < out_events.cap else { break; }
+        let reg_idx = find_by_tag(p, res.socket_context);
+        let fd_val: i32 = if reg_idx >= 0 && reg_idx < p.registrations.len { p.registrations[reg_idx].fd } else { -1 };
+        let ev_flags: u32 = if res.status != 0 {
+            POLL_ERROR
+        } else if res.bytes_transferred == 0 {
+            POLL_READ | POLL_HANGUP
+        } else {
+            POLL_READ
+        };
+        let _ = out_events.try_push(PollReadyEvent {
+            tag:             res.socket_context,
+            fd:              fd_val,
+            events:          ev_flags,
+            bytes_available: res.bytes_transferred,
+            is_eof:          res.status == 0 && res.bytes_transferred == 0,
+            is_timer:        false,
+        });
+        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
+        added = core::add_sat_u64(added, 1);
+    }
+    return added;
+}
+
+inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64, out_events: PollReadyEvent[..64]&) {
     if p.kqueue_fd >= 0 {
         internal::native_kqueue_kevent(p.kqueue_fd, 0, 0, 0, 64, timeout_ms * 1000000);
     } else if p.uring_ring_fd >= 0 {
         internal::native_uring_enter(p.uring_ring_fd, 0, 1, 0);
     } else if p.rio_cq_id != 0 {
-        internal::native_rio_dequeue_completion(p.rio_cq_id, 0, 64);
+        var rio_results: internal::RioResult[..64] = [];
+        let n = internal::rio_drain_completions(p.rio_cq_id, rio_results);
+        if n > 0 {
+            let _ = rio_map_completions_to_events(p, rio_results[..], out_events);
+        }
     }
 }
 
@@ -493,7 +529,7 @@ fn poll_events(
 ) -> i32 {
     out_events.clear();
     p.total_polls += 1;
-    poller_poll_native_drivers(p, timeout_ms);
+    poller_poll_native_drivers(p, timeout_ms, out_events);
     check_expired_timers(p, now_ns, out_events);
     check_coarse_timeouts(p, now_ns, out_events);
 

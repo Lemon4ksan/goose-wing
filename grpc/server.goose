@@ -48,10 +48,22 @@ fn is_grpc_web_text(ct: const u8[:]) -> bool {
     return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
-// Inspects an incoming Request to determine if it is a gRPC call
+// Returns true if `req` is a Connect Protocol unary HTTP GET request (`connect=v1` in query).
+fn is_connect_get_request(req: const Request&) -> bool {
+    guard eq_ascii_fold(req.method[..], "GET") else { return false; }
+    let q_idx = core::index_of_byte(req.url[..], '?');
+    guard q_idx >= 0 else { return false; }
+    let query = req.url[core::add_sat_i64(q_idx, 1)..];
+    return core::find(query, "connect=v1") >= 0 || core::find(query, "connect=") >= 0;
+}
+
+// Inspects an incoming Request to determine if it is a gRPC or Connect GET call.
 fn is_grpc_request(req: const Request&) -> bool {
     let ct = req.header("content-type");
-    return ct.len > 0 && is_grpc_content_type(ct);
+    if ct.len > 0 && is_grpc_content_type(ct) {
+        return true;
+    }
+    return is_connect_get_request(req);
 }
 
 inline fn is_valid_grpc_path_segment(seg: const u8[:]) -> bool {
@@ -111,6 +123,7 @@ struct GrpcServerContext {
     deadline_mono_ns:  u64                = 0,
     is_web:            bool               = false,
     is_web_text:       bool               = false,
+    res_is_web_text:   bool               = false,
     metadata:          GrpcMetadata[..16] = [],
     response_metadata: GrpcMetadata[..16] = [],
     response_trailers: GrpcMetadata[..16] = [],
@@ -163,26 +176,83 @@ enum GrpcMethodType {
     BidiStreaming,
 }
 
+enum GrpcIdempotency {
+    Default,
+    Idempotent,
+    NoSideEffects,
+}
+
+enum GrpcServingStatus {
+    Unknown,
+    Serving,
+    NotServing,
+    ServiceUnknown,
+}
+
+struct GrpcHealthServiceEntry {
+    service: u8[..64]          = [],
+    status:  GrpcServingStatus = GrpcServingStatus.Serving,
+}
+
 struct GrpcMethodEntry {
-    service:     u8[..64]       = [],
-    method:      u8[..64]       = [],
-    full_path:   u8[..160]      = [],
-    method_type: GrpcMethodType = GrpcMethodType.Unary,
-    handler_id:  u16            = 0,
+    service:     u8[..64]        = [],
+    method:      u8[..64]        = [],
+    full_path:   u8[..160]       = [],
+    method_type: GrpcMethodType  = GrpcMethodType.Unary,
+    idempotency: GrpcIdempotency = GrpcIdempotency.Default,
+    handler_id:  u16             = 0,
 }
 
 struct GrpcServerDispatcher {
-    methods:          GrpcMethodEntry[..64] = [],
-    max_message_size: u32                   = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
-    enable_web:       bool                  = true,
+    methods:          GrpcMethodEntry[..64]        = [],
+    health_entries:   GrpcHealthServiceEntry[..32] = [],
+    max_message_size: u32                          = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    enable_web:       bool                         = true,
 }
 
 fn new_grpc_server_dispatcher(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcServerDispatcher {
     return GrpcServerDispatcher {
         methods:          [],
+        health_entries:   [],
         max_message_size: max_msg_size,
         enable_web:       true,
     };
+}
+
+// Registers or updates the serving status of a service for `/grpc.health.v1.Health/Check` (gRFC A66).
+fn set_grpc_service_health(
+    d:       GrpcServerDispatcher&,
+    service: const u8[:],
+    status:  GrpcServingStatus,
+) -> bool {
+    guard service.len <= 64 else { return false; }
+    for i in d.health_entries.len {
+        if d.health_entries[i].service[..] == service {
+            d.health_entries[i].status = status;
+            return true;
+        }
+    }
+    guard d.health_entries.len < d.health_entries.cap else { return false; }
+    var entry = GrpcHealthServiceEntry { status: status, .. };
+    entry.service.append(service);
+    d.health_entries.push(entry);
+    return true;
+}
+
+// Looks up the serving status for a service in `d.health_entries` (gRFC A66).
+fn lookup_grpc_service_health(
+    d:       const GrpcServerDispatcher&,
+    service: const u8[:],
+) -> GrpcServingStatus, bool {
+    for &entry in d.health_entries {
+        if entry.service[..] == service {
+            return entry.status, true;
+        }
+    }
+    if service.len == 0 && d.health_entries.len == 0 {
+        return GrpcServingStatus.Serving, true;
+    }
+    return GrpcServingStatus.ServiceUnknown, false;
 }
 
 fn register_method(
@@ -191,11 +261,13 @@ fn register_method(
     method:      const u8[:],
     method_type: GrpcMethodType,
     handler_id:  u16,
+    idempotency: GrpcIdempotency = GrpcIdempotency.Default,
 ) -> bool {
     guard d.methods.len < d.methods.cap else { return false; }
     guard service.len <= 64 && method.len <= 64 else { return false; }
     var entry = GrpcMethodEntry {
         method_type: method_type,
+        idempotency: idempotency,
         handler_id:  handler_id,
         ..
     };
@@ -212,12 +284,13 @@ fn register_method(
 }
 
 fn register_unary(
-    d:          GrpcServerDispatcher&,
-    service:    const u8[:],
-    method:     const u8[:],
-    handler_id: u16,
+    d:           GrpcServerDispatcher&,
+    service:     const u8[:],
+    method:      const u8[:],
+    handler_id:  u16,
+    idempotency: GrpcIdempotency = GrpcIdempotency.Default,
 ) -> bool {
-    return register_method(d, service, method, GrpcMethodType.Unary, handler_id);
+    return register_method(d, service, method, GrpcMethodType.Unary, handler_id, idempotency);
 }
 
 fn register_server_streaming(
@@ -291,7 +364,11 @@ fn build_grpc_trailers_only_response(
 
     if ctx.is_web {
         // gRPC-Web: Trailers are framed in body with flag 0x80
-        let ct_val = if ctx.is_web_text { rfc::GRPC_WEB_TEXT_CONTENT_TYPE } else { rfc::GRPC_WEB_CONTENT_TYPE_PROTO };
+        let ct_val = if ctx.res_is_web_text {
+            rfc::GRPC_WEB_TEXT_CONTENT_TYPE
+        } else {
+            rfc::GRPC_WEB_CONTENT_TYPE_PROTO
+        };
         let _ = append_header(out_res.headers, "content-type", ct_val);
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
@@ -299,7 +376,7 @@ fn build_grpc_trailers_only_response(
         var raw_trailers: u8[>..] = [];
         encode_grpc_web_trailers_with_meta(status, message, ctx.response_trailers[..], raw_trailers);
 
-        if ctx.is_web_text {
+        if ctx.res_is_web_text {
             encode_grpc_web_text(raw_trailers[..], out_res.body);
         } else {
             out_res.body.append(raw_trailers[..]);
@@ -340,7 +417,11 @@ fn build_grpc_wire_response(
 
     if ctx.is_web {
         // gRPC-Web
-        let ct_val = if ctx.is_web_text { rfc::GRPC_WEB_TEXT_CONTENT_TYPE } else { rfc::GRPC_WEB_CONTENT_TYPE_PROTO };
+        let ct_val = if ctx.res_is_web_text {
+            rfc::GRPC_WEB_TEXT_CONTENT_TYPE
+        } else {
+            rfc::GRPC_WEB_CONTENT_TYPE_PROTO
+        };
         let _ = append_header(out_res.headers, "content-type", ct_val);
 
         append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
@@ -349,7 +430,7 @@ fn build_grpc_wire_response(
         web_body.append(raw_lpm_body);
         encode_grpc_web_trailers_with_meta(status, message, ctx.response_trailers[..], web_body);
 
-        if ctx.is_web_text {
+        if ctx.res_is_web_text {
             encode_grpc_web_text(web_body[..], out_res.body);
         } else {
             out_res.body.append(web_body[..]);
@@ -405,7 +486,14 @@ inline fn process_grpc_request_header(
     req_start_mono_ns: u64,
 ) -> bool {
     if eq_ascii_fold(n, "content-type") {
+        if v.len == 0 { return true; }
         return is_grpc_content_type(v);
+    }
+    if eq_ascii_fold(n, "accept") {
+        if is_grpc_web_text(v) {
+            out_ctx.res_is_web_text = true;
+        }
+        return true;
     }
     if eq_ascii_fold(n, rfc::HEADER_GRPC_TIMEOUT) {
         let ms, ok_to = parse_grpc_timeout(v);
@@ -431,6 +519,8 @@ inline fn init_grpc_context_transport(req: const Request&, out_ctx: GrpcServerCo
     let ct = req.header("content-type");
     out_ctx.is_web = is_grpc_web(ct);
     out_ctx.is_web_text = is_grpc_web_text(ct);
+    let accept_hdr = req.header("accept");
+    out_ctx.res_is_web_text = out_ctx.is_web_text || is_grpc_web_text(accept_hdr);
 }
 
 // Extracts service, method, timeout, and metadata from incoming HTTP request.
@@ -453,8 +543,11 @@ fn extract_grpc_server_context(
     out_ctx.deadline_mono_ns = 0;
     init_grpc_context_transport(req, out_ctx);
 
-    // Parse path: `/{service}/{method}`
-    let ok_path = parse_grpc_path(req.url[..], out_ctx.service, out_ctx.method);
+    // Parse path: `/{service}/{method}` (stripping query string for Connect GET)
+    let raw_url = req.url[..];
+    let q_idx = core::index_of_byte(raw_url, '?');
+    let path_only = if q_idx >= 0 && is_connect_get_request(req) { raw_url[..q_idx] } else { raw_url };
+    let ok_path = parse_grpc_path(path_only, out_ctx.service, out_ctx.method);
     guard ok_path else { return false; }
 
     for &e in req.headers.entries {
@@ -564,6 +657,26 @@ inline fn is_supported_grpc_encoding(enc: const u8[:]) -> bool {
     return eq_ascii_fold(trimmed, "gzip") || eq_ascii_fold(trimmed, "identity");
 }
 
+// Validates received message compression flag (`0x01`) against the `grpc-encoding` header.
+// Per gRPC compression spec (`grpc-go` `checkRecvPayload` / `tonic` `decode_chunk`),
+// setting `Compressed-Flag = 1` when `grpc-encoding` is empty or `"identity"` is an `Internal` error.
+fn validate_recv_compression(is_compressed: bool, enc: const u8[:], is_server: bool) -> GrpcStatusCode {
+    let trimmed = trim_lws(enc);
+    if !is_compressed {
+        if is_supported_grpc_encoding(trimmed) {
+            return GrpcStatusCode.Ok;
+        }
+        return if is_server { GrpcStatusCode.Unimplemented } else { GrpcStatusCode.Internal };
+    }
+    if trimmed.len == 0 || eq_ascii_fold(trimmed, "identity") {
+        return GrpcStatusCode.Internal;
+    }
+    if eq_ascii_fold(trimmed, "gzip") {
+        return GrpcStatusCode.Ok;
+    }
+    return if is_server { GrpcStatusCode.Unimplemented } else { GrpcStatusCode.Internal };
+}
+
 // Validates single-message LPM request body for Unary and ServerStreaming RPCs.
 //
 // Example:
@@ -590,14 +703,13 @@ fn decode_and_validate_single_lpm(
             );
             return false;
         }
-    } else {
-        wire_bytes.append(req.body[..]);
     }
+    let wire_slice = if ctx.is_web_text { wire_bytes[..] } else { req.body[..] };
 
     var is_compressed = false;
-    if wire_bytes.len >= rfc::GRPC_LPM_HEADER_LEN {
-        let ok_lpm, consumed = decode_grpc_lpm(wire_bytes[..], 0, req_payload, is_compressed);
-        if !ok_lpm || consumed != wire_bytes.len {
+    if wire_slice.len >= rfc::GRPC_LPM_HEADER_LEN {
+        let ok_lpm, consumed = decode_grpc_lpm(wire_slice, 0, req_payload, is_compressed);
+        if !ok_lpm || consumed != wire_slice.len {
             build_grpc_trailers_only_response(GrpcStatusCode.InvalidArgument, "Malformed LPM framing", ctx, res);
             return false;
         }
@@ -606,13 +718,15 @@ fn decode_and_validate_single_lpm(
         return false;
     }
 
+    let comp_st = validate_recv_compression(is_compressed, enc, true);
+    guard comp_st == GrpcStatusCode.Ok else {
+        build_grpc_trailers_only_response(
+            comp_st, "Compressed frame without compression encoding", ctx, res,
+        );
+        return false;
+    }
+
     if is_compressed {
-        guard eq_ascii_fold(enc, "gzip") else {
-            build_grpc_trailers_only_response(
-                GrpcStatusCode.Internal, "Compressed frame without compression encoding", ctx, res,
-            );
-            return false;
-        }
         var decomp_buf: u8[>..] = [];
         let ok_gz, gz_err = core::gzip_decompress_with_limit(req_payload[..], decomp_buf, d.max_message_size);
         guard ok_gz else {
@@ -640,6 +754,129 @@ fn decode_and_validate_single_lpm(
     return true;
 }
 
+// Built-in handler for `/grpc.health.v1.Health/Check` (gRFC A66).
+fn handle_builtin_grpc_health_check(
+    d:   const GrpcServerDispatcher&,
+    req: const Request&,
+    ctx: const GrpcServerContext&,
+    res: Response&,
+) -> bool {
+    var req_payload: u8[>..] = [];
+    guard decode_and_validate_single_lpm(d, req, ctx, res, req_payload) else {
+        return true;
+    }
+    let svc_slice, ok_svc = pb_read_bytes_field(req_payload[..], 1);
+    let target_svc = if ok_svc { svc_slice } else { "" };
+    let serving_st, found = lookup_grpc_service_health(d, target_svc);
+    if !found {
+        build_grpc_trailers_only_response(GrpcStatusCode.NotFound, "unknown service", ctx, res);
+        return true;
+    }
+    var res_payload: u8[..16] = [];
+    if serving_st != GrpcServingStatus.Unknown {
+        let code_u64: u64 = match serving_st {
+            Unknown => 0,
+            Serving => 1,
+            NotServing => 2,
+            ServiceUnknown => 3,
+        };
+        let _ = pb_write_varint_field(1, code_u64, res_payload);
+    }
+    var lpm_response: u8[>..] = [];
+    encode_grpc_lpm(res_payload[..], lpm_response, false);
+    build_grpc_wire_response(GrpcStatusCode.Ok, "", lpm_response[..], ctx, res);
+    return true;
+}
+
+// Builds a Connect Protocol unary response for HTTP GET requests.
+fn build_connect_unary_get_response(
+    st:          const GrpcStatus&,
+    res_payload: const u8[:],
+    encoding:    const u8[:],
+    ctx:         const GrpcServerContext&,
+    out_res:     Response&,
+) {
+    out_res.headers.clear();
+    out_res.trailers.clear();
+    out_res.body.clear();
+    out_res.presence_mask = 0;
+
+    append_grpc_metadata_headers(out_res.headers, ctx.response_metadata[..]);
+    if st.code == GrpcStatusCode.Ok {
+        out_res.status_code = rfc::STATUS_OK;
+        let ct = if encoding == "json" { CONNECT_MIME_JSON } else { CONNECT_MIME_PROTO };
+        let _ = append_header(out_res.headers, "content-type", ct);
+        out_res.body.append(res_payload);
+        return;
+    }
+
+    out_res.status_code = match st.code {
+        InvalidArgument => 400,
+        Unauthenticated => 401,
+        PermissionDenied => 403,
+        NotFound => 404,
+        Unimplemented => 404,
+        AlreadyExists => 409,
+        Aborted => 409,
+        ResourceExhausted => 429,
+        Cancelled => 499,
+        DeadlineExceeded => 504,
+        Unavailable => 503,
+        _ => 500,
+    };
+    let _ = append_header(out_res.headers, "content-type", CONNECT_MIME_JSON);
+    out_res.body.append("{\"code\":\"");
+    out_res.body.append(connect_status_name(st.code));
+    out_res.body.append("\"");
+    if st.message.len > 0 {
+        out_res.body.append(",\"message\":");
+        var msg_json: u8[..512] = [];
+        let _ = append_connect_json_quoted(st.message[..], msg_json);
+        out_res.body.append(msg_json[..]);
+    }
+    out_res.body.push('}');
+}
+
+// Dispatches a Connect Protocol unary HTTP GET request for idempotent (`NoSideEffects`) methods.
+fn dispatch_connect_unary_get<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus>(
+    d:           const GrpcServerDispatcher&,
+    req:         const Request&,
+    entry:       const GrpcMethodEntry&,
+    now_mono_ns: u64,
+    ctx:         GrpcServerContext&,
+    res:         Response&,
+) -> bool {
+    if entry.idempotency != GrpcIdempotency.NoSideEffects {
+        res.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
+        let _ = append_header(res.headers, "allow", "POST");
+        return true;
+    }
+    if is_deadline_exceeded(ctx, now_mono_ns) {
+        let dl_st = grpc_error(GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch");
+        build_connect_unary_get_response(dl_st, "", "proto", ctx, res);
+        return true;
+    }
+    let q_idx = core::index_of_byte(req.url[..], '?');
+    let query_slice = if q_idx >= 0 { req.url[core::add_sat_i64(q_idx, 1)..] } else { "" };
+    var params = ConnectUnaryGetParams { .. };
+    var req_payload: u8[>..] = [];
+    let q_code = parse_connect_get_query(query_slice, params, req_payload);
+    if q_code != GrpcStatusCode.Ok {
+        let q_err = grpc_error(q_code, "Invalid Connect GET query parameters");
+        build_connect_unary_get_response(q_err, "", "json", ctx, res);
+        return true;
+    }
+    if (req_payload.len as u32) > d.max_message_size {
+        let sz_err = grpc_error(GrpcStatusCode.ResourceExhausted, "Message exceeds max size");
+        build_connect_unary_get_response(sz_err, "", params.encoding[..], ctx, res);
+        return true;
+    }
+    var res_payload: u8[>..] = [];
+    let st = HandlerFn(entry.handler_id, ctx, req_payload[..], res_payload);
+    build_connect_unary_get_response(st, res_payload[..], params.encoding[..], ctx, res);
+    return true;
+}
+
 // Unary RPC Dispatcher:
 // Executes a single Request-Response RPC cycle conforming to RFC gRPC over HTTP/2 and gRPC-Web.
 fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus>(
@@ -655,8 +892,9 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     var ctx = GrpcServerContext { .. };
     init_grpc_context_transport(req, ctx);
 
-    // 2. Validate HTTP Method (RFC gRPC mandates POST)
-    if !eq_ascii_fold(req.method[..], "POST") {
+    let is_conn_get = is_connect_get_request(req);
+    // 2. Validate HTTP Method (RFC gRPC mandates POST; Connect allows GET with connect=v1)
+    if !eq_ascii_fold(req.method[..], "POST") && !is_conn_get {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
         return true;
     }
@@ -675,6 +913,16 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     path_buf.push('/');
     path_buf.append(ctx.method[..]);
 
+    if path_buf[..] == "/grpc.health.v1.Health/Check" && !is_conn_get {
+        if is_deadline_exceeded(ctx, now_mono_ns) {
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.DeadlineExceeded, "Deadline exceeded before handler dispatch", ctx, res,
+            );
+            return true;
+        }
+        return handle_builtin_grpc_health_check(d, req, ctx, res);
+    }
+
     let method_idx = find_method(d, path_buf[..]);
     if method_idx < 0 {
         var err_msg: u8[..256] = [];
@@ -692,6 +940,10 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     if entry.method_type != GrpcMethodType.Unary {
         build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Method type mismatch", ctx, res);
         return true;
+    }
+
+    if is_conn_get {
+        return dispatch_connect_unary_get(d, req, entry, now_mono_ns, ctx, res, HandlerFn);
     }
 
     // 5. Check Deadline Expiration
@@ -1553,7 +1805,8 @@ fn try_dispatch_grpc_connection_turn<
         serve_grpc_h2_connection(server, d, conn_fd, in_buf, HandlerFn);
         return true;
     }
-    guard has_ready_http1_request(in_buf) else {
+    var hdr_scan_cursor: i64 = 0;
+    guard has_ready_http1_request(in_buf, hdr_scan_cursor) else {
         return false;
     }
     if core::starts_with(in_buf, "GET /shutdown") {

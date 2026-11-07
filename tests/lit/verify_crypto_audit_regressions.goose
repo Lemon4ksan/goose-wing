@@ -173,6 +173,14 @@ fn test_f012_sha512_256_fips_vector() {
     );
     assert(digest[..] == expected[..]);
     print("F012_SHA512_256_OK: 1");
+
+    // P-384 RFC 6979 deterministic signing & Shamir verification roundtrip
+    var priv384: u8[48] = [0x01; 48];
+    priv384[47] = 0x05;
+    let pub384 = core::ecdsa_p384_public_key(priv384);
+    let sig384 = core::ecdsa_p384_sign(priv384, "p384-monty-ct-zeroize-test");
+    assert(core::ecdsa_p384_verify(pub384[..], "p384-monty-ct-zeroize-test", sig384[..]));
+    assert(!core::ecdsa_p384_verify(pub384[..], "tampered", sig384[..]));
 }
 
 fn main() {

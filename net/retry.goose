@@ -182,7 +182,7 @@ fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64,
     let parsed_time, ok_t = core::parse_http_date(clean);
     guard ok_t else { return 0, false; }
 
-    let target_unix_ms = unix_milli(parsed_time);
+    let target_unix_ms = parsed_time.unix_milli();
     if target_unix_ms <= now_unix_ms {
         return 0, true;
     }

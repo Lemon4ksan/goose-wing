@@ -251,4 +251,85 @@ fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
         out.append("; Priority=");
         out.append(priority_to_string(cookie_val.priority));
     }
+    if cookie_val.persistent && cookie_val.expires_utc <= 0 {
+        out.append("; Max-Age=0");
+    }
+}
+
+// Converts `c` into a removal cookie in-place (clears value, marks persistent, and sets expires_utc = 0)
+// so `format` emits `name=; Path=...; Max-Age=0`.
+fn make_removal(c: CanonicalCookie&) {
+    c.value.clear();
+    c.persistent = true;
+    c.expires_utc = 0;
+}
+
+const COOKIE_DELTA_ORIGINAL: u8 = 0;
+const COOKIE_DELTA_ADDED:    u8 = 1;
+const COOKIE_DELTA_REMOVED:  u8 = 2;
+
+// Bounded server-side cookie jar tracking request `original` cookies versus response `added` / `removed` deltas.
+struct ServerCookieDeltaJar {
+    cookies: CanonicalCookie[..64] = [],
+    states:  u8[..64]              = [],
+}
+
+fn find_delta_cookie_idx(jar: const ServerCookieDeltaJar&, name: const u8[:]) -> i64 {
+    for idx in jar.cookies.len {
+        if jar.cookies[idx].name[..] == name {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+// Records a cookie parsed from an incoming HTTP `Cookie` request header without marking it as a response delta.
+fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+    let idx = find_delta_cookie_idx(jar, c.name[..]);
+    if idx >= 0 {
+        jar.cookies[idx] = c;
+        jar.states[idx] = COOKIE_DELTA_ORIGINAL;
+        return true;
+    }
+    guard jar.cookies.len < jar.cookies.cap && jar.states.len < jar.states.cap else { return false; }
+    jar.cookies.push(c);
+    jar.states.push(COOKIE_DELTA_ORIGINAL);
+    return true;
+}
+
+// Adds or updates a cookie in the server jar and marks it for emission in `Set-Cookie` response deltas.
+fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+    let idx = find_delta_cookie_idx(jar, c.name[..]);
+    if idx >= 0 {
+        jar.cookies[idx] = c;
+        jar.states[idx] = COOKIE_DELTA_ADDED;
+        return true;
+    }
+    guard jar.cookies.len < jar.cookies.cap && jar.states.len < jar.states.cap else { return false; }
+    jar.cookies.push(c);
+    jar.states.push(COOKIE_DELTA_ADDED);
+    return true;
+}
+
+// Removes a cookie from the server jar. If the cookie was present in `original` cookies, converts it into
+// a removal cookie (`Max-Age=0`) in the response delta; otherwise deletes it from the jar.
+fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+    let idx = find_delta_cookie_idx(jar, c.name[..]);
+    guard idx >= 0 else { return false; }
+    let cur_state = jar.states[idx];
+    if cur_state == COOKIE_DELTA_ORIGINAL || cur_state == COOKIE_DELTA_REMOVED {
+        var rem = c;
+        make_removal(rem);
+        jar.cookies[idx] = rem;
+        jar.states[idx] = COOKIE_DELTA_REMOVED;
+        return true;
+    }
+    let last_idx = core::sub_sat_i64(jar.cookies.len, 1);
+    if idx < last_idx {
+        jar.cookies[idx] = jar.cookies[last_idx];
+        jar.states[idx] = jar.states[last_idx];
+    }
+    let _ = jar.cookies.pop();
+    let _ = jar.states.pop();
+    return true;
 }

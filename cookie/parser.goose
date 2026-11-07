@@ -168,9 +168,9 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     var parsed_url = CanonicalCookieURL { .. };
     let parsed = core::new_url(raw_url);
     if parsed.valid {
-        let _ = parsed_url.scheme.try_set(scheme(parsed));
-        parsed_url.is_secure = is_secure_scheme(parsed);
-        let h_str = hostname(parsed);
+        let _ = parsed_url.scheme.try_set(parsed.scheme());
+        parsed_url.is_secure = parsed.is_secure_scheme();
+        let h_str = parsed.hostname();
         let clean_h = if h_str.len > 2 && h_str[0] == '[' && h_str[h_str.len - 1] == ']' {
             h_str[1..h_str.len - 1]
         } else {
@@ -178,9 +178,9 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
         };
         let _ = parsed_url.host.try_set(clean_h);
         to_lower(parsed_url.host[..]);
-        let p_str = pathname(parsed);
+        let p_str = parsed.pathname();
         let _ = parsed_url.path.try_set(if p_str.len > 0 { p_str } else { "/" });
-        parsed_url.port = effective_port(parsed);
+        parsed_url.port = parsed.effective_port();
         return parsed_url;
     }
 
@@ -316,7 +316,7 @@ fn is_valid_cookie_calendar_date(
     second: i64,
 ) -> bool {
     guard month >= 1 && month <= 12 else { return false; }
-    guard day >= 1 && day <= days_in_month(year, month) else { return false; }
+    guard day >= 1 && day <= core::days_in_month(year, month) else { return false; }
     guard year >= 1601 && year <= 9999 else { return false; }
     guard hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 else { return false; }
     return true;
@@ -358,13 +358,23 @@ fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i
 }
 
 fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
-    guard token.len >= 1 && token[0] >= '0' && token[0] <= '9' else { return false; }
-    let d1 = token.len >= 2 && token[1] >= '0' && token[1] <= '9';
-    let d2 = token.len >= 3 && token[2] >= '0' && token[2] <= '9';
+    guard token.len >= 1 else { return false; }
+    let b0 = token[0];
+    guard b0 >= '0' && b0 <= '9' else { return false; }
+    var d1 = false;
+    if token.len >= 2 {
+        let b1 = token[1];
+        d1 = b1 >= '0' && b1 <= '9';
+    }
+    var d2 = false;
+    if token.len >= 3 {
+        let b2 = token[2];
+        d2 = b2 >= '0' && b2 <= '9';
+    }
     guard !d2 else { return false; }
     let digits = if d1 { token[..2] } else { token[..1] };
     let day_val, day_ok = parse_int(digits);
-    guard day_ok else { return false; }
+    guard day_ok && day_val >= 1 && day_val <= 31 else { return false; }
     day = day_val;
     return true;
 }
@@ -377,27 +387,35 @@ fn try_parse_cookie_month(token: const u8[:], month: i64&) -> bool {
 }
 
 fn try_parse_cookie_year(token: const u8[:], year: i64&) -> bool {
-    guard token.len == 2 || token.len == 4 else { return false; }
-    for char_byte in token {
-        if char_byte < '0' || char_byte > '9' { return false; }
+    var digit_len: i64 = 0;
+    while digit_len < token.len && digit_len < 5 {
+        let ch = token[digit_len];
+        if ch >= '0' && ch <= '9' {
+            digit_len = core::add_sat_i64(digit_len, 1);
+        } else {
+            break;
+        }
     }
-    let year_val, year_ok = parse_int(token);
+    guard digit_len >= 2 && digit_len <= 4 else { return false; }
+    let year_val, year_ok = parse_int(token[..digit_len]);
     guard year_ok else { return false; }
-    year = year_val;
+    let norm_yr = normalize_cookie_year(year_val);
+    guard norm_yr >= 1601 else { return false; }
+    year = norm_yr;
     return true;
 }
 
 fn normalize_cookie_year(year: i64) -> i64 {
-    if year >= 70 && year <= 99 { return year + 1900; }
-    if year >= 0 && year <= 69 { return year + 2000; }
+    if year >= 70 && year <= 99 { return core::add_sat_i64(year, 1900); }
+    if year >= 0 && year <= 69 { return core::add_sat_i64(year, 2000); }
     return year;
 }
 
-// Parses a three-letter or full month name to 1-based month index (RFC 6265 §5.1.1).
+// Parses a three-letter, abbreviated, or full month name to 1-based month index (RFC 6265 §5.1.1).
 //
 // Example:
-//   token = "Jan"
-//   returns: 1
+//   token = "Sept"
+//   returns: 9
 fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     guard token.len >= 3 else { return 0; }
 
@@ -409,7 +427,7 @@ fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     if eq_ascii_fold(token, "jun") || eq_ascii_fold(token, "june") { return 6; }
     if eq_ascii_fold(token, "jul") || eq_ascii_fold(token, "july") { return 7; }
     if eq_ascii_fold(token, "aug") || eq_ascii_fold(token, "august") { return 8; }
-    if eq_ascii_fold(token, "sep") || eq_ascii_fold(token, "september") { return 9; }
+    if eq_ascii_fold(token, "sep") || eq_ascii_fold(token, "sept") || eq_ascii_fold(token, "september") { return 9; }
     if eq_ascii_fold(token, "oct") || eq_ascii_fold(token, "october") { return 10; }
     if eq_ascii_fold(token, "nov") || eq_ascii_fold(token, "november") { return 11; }
     if eq_ascii_fold(token, "dec") || eq_ascii_fold(token, "december") { return 12; }
@@ -797,4 +815,55 @@ fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:],
         }
     }
     return "", false;
+}
+
+// Percent-decodes a cookie name or value into `out` and validates that the decoded
+// bytes form valid UTF-8 (cookie-rs `parse_encoded` compatibility).
+//
+// Example:
+//   src = "hello%20world%21", out = []
+//   returns: true, out = "hello world!"
+fn decode_cookie_percent(src: const u8[:], out: u8[..4096]&) -> bool {
+    out.clear();
+    guard core::percent_decode(src, out) else {
+        out.clear();
+        return false;
+    }
+    guard core::validate_utf8(out[..]) else {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+const COOKIE_UPPER_HEX: u8[16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+];
+
+// Percent-encodes bytes outside RFC 6265 `cookie-octet` (or '%') into `%XX` uppercase hex.
+//
+// Example:
+//   src = "a b;c", out = []
+//   returns: true, out = "a%20b%3Bc"
+fn encode_cookie_percent(src: const u8[:], out: u8[..4096]&) -> bool {
+    out.clear();
+    for b in src {
+        if is_cookie_octet(b) && b != '%' {
+            guard out.try_push(b) else {
+                out.clear();
+                return false;
+            }
+        } else {
+            let hi = ((b >> 4) & 0x0F) as i64;
+            let lo = (b & 0x0F) as i64;
+            let hi_ch = COOKIE_UPPER_HEX[hi];
+            let lo_ch = COOKIE_UPPER_HEX[lo];
+            guard out.try_push('%') && out.try_push(hi_ch) && out.try_push(lo_ch) else {
+                out.clear();
+                return false;
+            }
+        }
+    }
+    return true;
 }

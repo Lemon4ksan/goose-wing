@@ -379,12 +379,12 @@ fn is_dangerous_service_port(port_num: i32) -> bool {
 fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
 
-    if policy.https_only && scheme(url_val) != "https" {
+    if policy.https_only && url_val.scheme() != "https" {
         return RedirectError.SchemeDowngradeBlocked;
     }
 
     let raw_port = url_val.port;
-    let port_val = if raw_port == 0 { 0 } else { effective_port(url_val) };
+    let port_val = if raw_port == 0 { 0 } else { url_val.effective_port() };
     if policy.denied_ports.contains(port_val) {
         return RedirectError.SsrfBlockedUrl;
     }
@@ -396,7 +396,7 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
         return RedirectError.SsrfBlockedUrl;
     }
 
-    let host_str = hostname(url_val);
+    let host_str = url_val.hostname();
     if policy.deny_local_network {
         if is_private_or_reserved_ip(host_str) {
             return RedirectError.SsrfBlockedIp;

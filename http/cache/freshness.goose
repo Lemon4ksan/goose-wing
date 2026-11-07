@@ -111,7 +111,7 @@ fn compute_apparent_age(response_time: core::Time, date_value: core::Time) -> i6
 fn compute_response_delay(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = core::duration_since(ts.response_mono, ts.request_mono);
-        return core::ct_max_i64(0, as_secs(dur));
+        return core::ct_max_i64(0, dur.as_secs());
     }
     let diff = core::unix(ts.response_time) - core::unix(ts.request_time);
     return core::ct_max_i64(0, diff);
@@ -127,7 +127,7 @@ fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay
 fn compute_resident_time(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = core::duration_since(ts.now_mono, ts.response_mono);
-        return core::ct_max_i64(0, as_secs(dur));
+        return core::ct_max_i64(0, dur.as_secs());
     }
     let diff = core::unix(ts.now) - core::unix(ts.response_time);
     return core::ct_max_i64(0, diff);

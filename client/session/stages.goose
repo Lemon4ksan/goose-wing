@@ -76,7 +76,7 @@ fn stage_client_ssrf_guard(
     https_only:  bool,
     policy:      const SsrfGuardPolicy&,
 ) -> wire::StageVerdict {
-    if https_only && scheme(current_url) != "https" {
+    if https_only && current_url.scheme() != "https" {
         return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_REQUEST };
     }
     let ssrf_err = validate_url_against_ssrf(current_url, policy);

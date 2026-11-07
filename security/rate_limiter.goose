@@ -7,6 +7,7 @@ namespace wing;
 import std;
 import core from "..";
 import rfc.http;
+import proxy.gcra;
 
 // ---- quota specification & decisions ---------------------------------------
 
@@ -38,7 +39,7 @@ fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> Gcr
 enum RateLimitDecision {
     Allowed { remaining_burst: u64, new_tat_ns: u64, reset_after_ns: u64 },
     Reserved { wait_ns: u64, new_tat_ns: u64 },
-    Rejected { retry_after_ns: u64, current_tat_ns: u64 },
+    Rejected { retry_after_ns: u64, current_tat_ns: u64, insufficient_capacity: bool = false },
 }
 
 fn is_allowed(decision: const RateLimitDecision&) -> bool {
@@ -93,8 +94,9 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
         let excess = delta - limit_window;
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
         return RateLimitDecision.Rejected {
-            retry_after_ns: core::add_sat_u64(base_wait, excess),
-            current_tat_ns: tat_old,
+            retry_after_ns:        core::add_sat_u64(base_wait, excess),
+            current_tat_ns:        tat_old,
+            insufficient_capacity: true,
         };
     }
 
@@ -148,8 +150,9 @@ fn gcra_reserve_n(
         let excess = delta - limit_window;
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
         return RateLimitDecision.Rejected {
-            retry_after_ns: core::add_sat_u64(base_wait, excess),
-            current_tat_ns: tat_old,
+            retry_after_ns:        core::add_sat_u64(base_wait, excess),
+            current_tat_ns:        tat_old,
+            insufficient_capacity: true,
         };
     }
 
@@ -230,6 +233,26 @@ inline fn find_existing_slot(slots: const KeyedGcraSlot[..16]&, key_str: const u
     return -1;
 }
 
+// Allocates or reclaims a slot in `shard` when no active matching slot exists.
+fn allocate_shard_slot(shard: GcraShard&, now_ns: u64) -> i32 {
+    for idx in shard.slots.len {
+        if !shard.slots[idx].active {
+            return idx as i32;
+        }
+    }
+    if shard.slots.len < shard.slots.cap {
+        var new_slot = KeyedGcraSlot { active: false, .. };
+        shard.slots.push(new_slot);
+        return (core::sub_sat_i64(shard.slots.len, 1)) as i32;
+    }
+    for idx in shard.slots.len {
+        if shard.slots[idx].cell.tat_ns <= now_ns {
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
 // Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
 fn check_rate_limit(
     limiter: ShardedGcraLimiter&,
@@ -238,7 +261,6 @@ fn check_rate_limit(
     now_ns:  u64,
 ) -> RateLimitDecision {
     let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
-    // Fast-path lookup without buffer copying for common keys (IPs / client IDs <= 64 bytes)
     if key_str.len <= 64 {
         let existing = find_existing_slot(limiter.shards[shard_idx].slots, key_str);
         if existing >= 0 {
@@ -253,27 +275,7 @@ fn check_rate_limit(
             return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
         }
     }
-    // Allocate slot in shard: prefer inactive slot, then grow capacity, then evict expired TAT
-    var slot_idx: i32 = -1;
-    for idx in limiter.shards[shard_idx].slots.len {
-        if !limiter.shards[shard_idx].slots[idx].active {
-            slot_idx = idx as i32;
-            break;
-        }
-    }
-    if slot_idx < 0 && limiter.shards[shard_idx].slots.len < limiter.shards[shard_idx].slots.cap {
-        var new_slot = KeyedGcraSlot { active: false, .. };
-        limiter.shards[shard_idx].slots.push(new_slot);
-        slot_idx = (limiter.shards[shard_idx].slots.len - 1) as i32;
-    }
-    if slot_idx < 0 {
-        for idx in limiter.shards[shard_idx].slots.len {
-            if limiter.shards[shard_idx].slots[idx].cell.tat_ns <= now_ns {
-                slot_idx = idx as i32;
-                break;
-            }
-        }
-    }
+    let slot_idx = allocate_shard_slot(limiter.shards[shard_idx], now_ns);
     if slot_idx >= 0 {
         limiter.shards[shard_idx].slots[slot_idx].key.clear();
         limiter.shards[shard_idx].slots[slot_idx].key.append(eff_key[..]);
@@ -322,7 +324,7 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         pgcra.rng_state = 0x853c49e6748fea9b;
     }
     pgcra.rng_state ^= pgcra.rng_state >> 12;
-    pgcra.rng_state ^= pgcra.rng_state << 25;
+    pgcra.rng_state ^= pgcra.rng_state & 0x7FFFFFFFFFFFFFFF;
     pgcra.rng_state ^= pgcra.rng_state >> 27;
 
     let t = max(pgcra.quota.emission_interval_ns, 1);
@@ -335,7 +337,9 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         pgcra.cell.tat_ns = tat_curr;
     }
 
-    let sampled = (pgcra.rng_state % rate) == 0;
+    let q_samp = fast_div_u64(pgcra.rng_state, rate);
+    let rem_samp = core::sub_sat_u64(pgcra.rng_state, core::mul_sat_u64(q_samp, rate));
+    let sampled = rem_samp == 0;
     if sampled {
         let dec = gcra_check_n(pgcra.quota, pgcra.cell, cost_n, now_ns);
         guard is_allowed(dec) else { return dec; }
@@ -352,7 +356,7 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
     let t_allow = core::sub_sat_u64(tat_curr, limit_window);
     guard now_ns >= t_allow else {
         return RateLimitDecision.Rejected {
-            retry_after_ns: t_allow - now_ns,
+            retry_after_ns: core::sub_sat_u64(t_allow, now_ns),
             current_tat_ns: tat_curr,
         };
     }
@@ -401,4 +405,125 @@ fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: c
             res.status_code = rfc::STATUS_TOO_MANY_REQUESTS;
         },
     };
+}
+
+// ---- jitter, capacity inspection & shard retention (COOKIERL-07 / COOKIERL-08) ----
+
+struct GcraJitter {
+    min_ns: i64 = 0,
+    max_ns: i64 = 0,
+}
+
+// Converts a `RateLimitDecision` into a flat `GcraDecision` record.
+fn to_gcra_decision(decision: const RateLimitDecision&) -> GcraDecision {
+    return match decision {
+        Allowed a => GcraDecision {
+            allowed:               true,
+            remaining_burst:       a.remaining_burst,
+            retry_after_ns:        0,
+            reset_after_ns:        a.reset_after_ns,
+            wait_ns:               0,
+            tat_ns:                a.new_tat_ns,
+            insufficient_capacity: false,
+        },
+        Reserved r => GcraDecision {
+            allowed:               true,
+            remaining_burst:       0,
+            retry_after_ns:        r.wait_ns,
+            reset_after_ns:        0,
+            wait_ns:               (min(r.wait_ns, 0x7FFFFFFFFFFFFFFF)) as i64,
+            tat_ns:                r.new_tat_ns,
+            insufficient_capacity: false,
+        },
+        Rejected rej => GcraDecision {
+            allowed:               false,
+            remaining_burst:       0,
+            retry_after_ns:        rej.retry_after_ns,
+            reset_after_ns:        0,
+            wait_ns:               (min(rej.retry_after_ns, 0x7FFFFFFFFFFFFFFF)) as i64,
+            tat_ns:                rej.current_tat_ns,
+            insufficient_capacity: rej.insufficient_capacity,
+        },
+    };
+}
+
+// Samples a uniform random nanosecond offset in `[jitter.min_ns, jitter.max_ns)` using XorShift64.
+fn sample_gcra_jitter_ns(jitter: const GcraJitter&, prng_state: u64&) -> i64 {
+    let min_val = max(jitter.min_ns, 0);
+    guard jitter.max_ns > min_val else { return min_val; }
+    if prng_state == 0 {
+        prng_state = 0x853c49e6748fea9b;
+    }
+    prng_state ^= prng_state >> 12;
+    prng_state ^= prng_state >> 25;
+    prng_state ^= prng_state >> 27;
+    let mixed = core::add_sat_u64(prng_state, 0x9e3779b97f4a7c15);
+    prng_state = mixed;
+    let span = (core::sub_sat_i64(jitter.max_ns, min_val)) as u64;
+    let q = fast_div_u64(mixed, span);
+    let rem = core::sub_sat_u64(mixed, core::mul_sat_u64(q, span));
+    let offset = (min(rem, 0x7FFFFFFFFFFFFFFF)) as i64;
+    return core::add_sat_i64(min_val, offset);
+}
+
+// Applies a random jitter offset to `d.wait_ns` and `d.retry_after_ns` when rate-limited or waiting.
+fn apply_jitter_to_decision(d: GcraDecision&, jitter: const GcraJitter&, prng_state: u64&) {
+    guard !d.allowed || d.wait_ns > 0 else { return; }
+    let offset = sample_gcra_jitter_ns(jitter, prng_state);
+    guard offset > 0 else { return; }
+    d.wait_ns = core::add_sat_i64(d.wait_ns, offset);
+    d.retry_after_ns = core::add_sat_u64(d.retry_after_ns, offset as u64);
+}
+
+// Applies a random jitter offset directly to a `RateLimitDecision` (`Reserved` or `Rejected`).
+fn apply_jitter_to_decision(d: RateLimitDecision&, jitter: const GcraJitter&, prng_state: u64&) {
+    let offset = sample_gcra_jitter_ns(jitter, prng_state);
+    guard offset > 0 else { return; }
+    let off_u = offset as u64;
+    match d {
+        Allowed _ => {},
+        Reserved r => {
+            d = RateLimitDecision.Reserved {
+                wait_ns:    core::add_sat_u64(r.wait_ns, off_u),
+                new_tat_ns: r.new_tat_ns,
+            };
+        },
+        Rejected rej => {
+            d = RateLimitDecision.Rejected {
+                retry_after_ns:        core::add_sat_u64(rej.retry_after_ns, off_u),
+                current_tat_ns:        rej.current_tat_ns,
+                insufficient_capacity: rej.insufficient_capacity,
+            };
+        },
+    };
+}
+
+// Whether a `RateLimitDecision` was rejected specifically due to cost exceeding maximum bucket capacity.
+fn is_insufficient_capacity(decision: const RateLimitDecision&) -> bool {
+    return match decision {
+        Rejected rej => rej.insufficient_capacity,
+        _ => false,
+    };
+}
+
+// Sweeps all 256 shards and reclaims active slots whose TAT is older than or equal to `drop_below_ns`.
+// Returns the total number of reclaimed slots.
+fn retain_recent_shards(limiter: ShardedGcraLimiter&, drop_below_ns: i64) -> i64 {
+    guard drop_below_ns >= 0 else { return 0; }
+    let threshold = drop_below_ns as u64;
+    var reclaimed: i64 = 0;
+    for s_idx in 256 {
+        let n_slots = limiter.shards[s_idx].slots.len;
+        for idx in n_slots {
+            let is_act = limiter.shards[s_idx].slots[idx].active;
+            let tat = limiter.shards[s_idx].slots[idx].cell.tat_ns;
+            if is_act && tat <= threshold {
+                limiter.shards[s_idx].slots[idx].active = false;
+                limiter.shards[s_idx].slots[idx].key.clear();
+                limiter.shards[s_idx].slots[idx].cell.tat_ns = 0;
+                reclaimed = core::add_sat_i64(reclaimed, 1);
+            }
+        }
+    }
+    return reclaimed;
 }

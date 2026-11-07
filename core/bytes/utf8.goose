@@ -146,6 +146,92 @@ inline fn step_utf8_multibyte(
     return 0, false;
 }
 
+// Bjoern Hoehrmann's 364-byte UTF-8 DFA table (UTF8_ACCEPT = 0, UTF8_REJECT = 12).
+// First 256 bytes map raw bytes to character classes (0..11).
+// Remaining 108 bytes map (state + char_class) to the next automaton state.
+const UTF8_DFA_ACCEPT: u8 = 0;
+const UTF8_DFA_REJECT: u8 = 12;
+
+let UTF8_DFA_TABLE: const u8[364] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    8, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    10, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 3, 3,
+    11, 6, 6, 6, 5, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+    0, 12, 24, 36, 60, 96, 84, 12, 12, 12, 48, 72, 12, 12, 12, 12,
+    12, 12, 12, 12, 12, 12, 12, 12, 12, 0, 12, 12, 12, 12, 12, 0,
+    12, 0, 12, 12, 12, 24, 12, 12, 12, 12, 12, 24, 12, 24, 12, 12,
+    12, 12, 12, 12, 12, 12, 12, 24, 12, 12, 12, 12, 12, 24, 12, 12,
+    12, 12, 12, 12, 12, 24, 12, 12, 12, 12, 12, 12, 12, 12, 12, 36,
+    12, 36, 12, 12, 12, 36, 12, 12, 12, 12, 12, 36, 12, 36, 12, 12,
+    12, 36, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+];
+
+inline fn skip_utf8_dfa_ascii_run(data: const u8[:], n: i64, start_i: i64) -> i64 {
+    var i = start_i;
+    while core::add_sat_i64(i, 16) <= n {
+        let w1 = core::read_be_u64(data, i);
+        let w2 = core::read_be_u64(data, core::add_sat_i64(i, 8));
+        if ((w1 | w2) & 0x8080808080808080) != 0 {
+            break;
+        }
+        i = core::add_sat_i64(i, 16);
+    }
+    if core::add_sat_i64(i, 8) <= n {
+        let w = core::read_be_u64(data, i);
+        if (w & 0x8080808080808080) == 0 {
+            i = core::add_sat_i64(i, 8);
+        }
+    }
+    return i;
+}
+
+inline fn step_utf8_dfa_byte(s: u8, b: u8) -> u8 {
+    let char_cls = UTF8_DFA_TABLE[b as i64];
+    let offset = core::add_sat_i64(s, char_cls);
+    let trans_idx = min(core::add_sat_i64(256, offset), 363);
+    return UTF8_DFA_TABLE[trans_idx];
+}
+
+// Validates a streaming UTF-8 chunk in-place using Bjoern Hoehrmann's 364-byte DFA
+// without requiring fragment reassembly across split codepoint boundaries (RFC 3629 & RFC 6455 §8.1).
+// Uses a 16-byte SWAR ASCII fast-path whenever `state == 0` (`UTF8_DFA_ACCEPT`).
+fn validate_utf8_dfa_chunk(data: const u8[:], state: u8&, is_fin: bool) -> bool {
+    let n = data.len;
+    var s = state;
+    guard s != UTF8_DFA_REJECT else { return false; }
+
+    var i: i64 = 0;
+    while i < n {
+        if s == UTF8_DFA_ACCEPT {
+            i = skip_utf8_dfa_ascii_run(data, n, i);
+            if i >= n {
+                break;
+            }
+        }
+        s = step_utf8_dfa_byte(s, data[i]);
+        guard s != UTF8_DFA_REJECT else {
+            state = UTF8_DFA_REJECT;
+            return false;
+        }
+        i = core::add_sat_i64(i, 1);
+    }
+
+    state = s;
+    return !is_fin || s == UTF8_DFA_ACCEPT;
+}
+
 // Validates a streaming UTF-8 buffer across fragment boundaries (RFC 3629 & RFC 6455 §8.1).
 // When `is_final` is false, allows a valid 1..3 byte prefix of an incomplete multi-byte codepoint
 // at the end of `data`, returning the byte offset up to which complete codepoints were verified.

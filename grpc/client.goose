@@ -10,6 +10,7 @@ import core from "..";
 import grpc.constants;
 import grpc.framing;
 import grpc.status;
+import grpc.server;
 import http.headers;
 import client.profile;
 import client.request;
@@ -36,11 +37,12 @@ fn new_grpc_call_config(service: const u8[:], method: const u8[:]) -> GrpcCallCo
 }
 
 struct GrpcResponse {
-    status:           GrpcStatusCode = GrpcStatusCode.Ok,
-    message:          u8[..256]      = [],
-    is_compressed:    bool           = false,
-    is_trailers_only: bool           = false,
-    payload:          u8[>..]        = [],
+    status:           GrpcStatusCode       = GrpcStatusCode.Ok,
+    message:          u8[..256]            = [],
+    details:          GrpcErrorDetail[..4] = [],
+    is_compressed:    bool                 = false,
+    is_trailers_only: bool                 = false,
+    payload:          u8[>..]              = [],
 }
 
 fn is_grpc_success(res: const GrpcResponse&) -> bool {
@@ -72,6 +74,7 @@ fn build_grpc_request_headers(
 
     if cfg.is_web_text {
         append_header(out_headers, "content-type", rfc::GRPC_WEB_TEXT_PROTO);
+        append_header(out_headers, "accept", rfc::GRPC_WEB_TEXT_PROTO);
     } else if cfg.is_web {
         append_header(out_headers, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
     } else {
@@ -132,6 +135,7 @@ fn build_grpc_http_request(
 
     if cfg.is_web_text {
         set_header(out_req, "content-type", rfc::GRPC_WEB_TEXT_PROTO);
+        set_header(out_req, "accept", rfc::GRPC_WEB_TEXT_PROTO);
     } else if cfg.is_web {
         set_header(out_req, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
     } else {
@@ -266,6 +270,7 @@ fn parse_grpc_unary_response(
 ) -> bool {
     out_resp.payload.clear();
     out_resp.message.clear();
+    out_resp.details.clear();
     out_resp.is_compressed = false;
     out_resp.is_trailers_only = false;
 
@@ -275,11 +280,26 @@ fn parse_grpc_unary_response(
 
     // Native HTTP/2 or HTTP/3 gRPC
     let has_wire_status = extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
+    var details_b64 = get_header(res_trailers, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+    if details_b64.len == 0 {
+        details_b64 = get_header(res_headers, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+    }
+    if details_b64.len > 0 {
+        let _ = decode_grpc_status_details(
+            details_b64, out_resp.status, out_resp.status, out_resp.message, out_resp.details,
+        );
+    }
     if body.len >= 5 {
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(body, 0, out_resp.payload, comp);
         guard ok_lpm && consumed == body.len else { return false; }
         out_resp.is_compressed = comp;
+        let enc_hdr = get_header(res_headers, rfc::HEADER_GRPC_ENCODING);
+        let comp_st = validate_recv_compression(comp, enc_hdr, false);
+        if comp_st != GrpcStatusCode.Ok {
+            out_resp.status = comp_st;
+            return false;
+        }
         if comp {
             var decomp_buf: u8[>..] = [];
             let ok_gz, _ = core::gzip_decompress_with_limit(
@@ -359,6 +379,7 @@ fn grpc_unary_call(
 ) -> bool {
     out_resp.payload.clear();
     out_resp.message.clear();
+    out_resp.details.clear();
     out_resp.is_compressed = false;
     out_resp.is_trailers_only = false;
 
@@ -367,9 +388,22 @@ fn grpc_unary_call(
 
     let res, err = do(session, req);
     guard ok(err) else {
-        out_resp.status = GrpcStatusCode.Unavailable;
+        let rst_hdr = trailer(res, "x-wing-h2-rst-code");
+        if rst_hdr.len > 0 {
+            let rst_code, ok_rst = core::parse_u32_dec(rst_hdr);
+            out_resp.status = if ok_rst { h2_error_to_grpc_status(rst_code) } else { GrpcStatusCode.Unavailable };
+        } else {
+            out_resp.status = GrpcStatusCode.Unavailable;
+        }
         let take_err = min(err.message.len, out_resp.message.cap);
         out_resp.message.append(err.message[..take_err]);
+        return false;
+    }
+
+    let rst_after = trailer(res, "x-wing-h2-rst-code");
+    if rst_after.len > 0 {
+        let rst_code, ok_rst = core::parse_u32_dec(rst_after);
+        out_resp.status = if ok_rst { h2_error_to_grpc_status(rst_code) } else { GrpcStatusCode.Internal };
         return false;
     }
 
@@ -391,6 +425,15 @@ fn grpc_unary_call(
         if msg_val.len > 0 {
             decode_grpc_message(msg_val, out_resp.message);
         }
+        var details_b64 = trailer(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+        if details_b64.len == 0 {
+            details_b64 = header(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+        }
+        if details_b64.len > 0 {
+            let _ = decode_grpc_status_details(
+                details_b64, out_resp.status, out_resp.status, out_resp.message, out_resp.details,
+            );
+        }
     } else {
         out_resp.status = grpc_status_from_http(res.status_code);
     }
@@ -406,6 +449,12 @@ fn grpc_unary_call(
         let ok_lpm, consumed = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
         guard ok_lpm && consumed == res.body.len else { return false; }
         out_resp.is_compressed = comp;
+        let enc_hdr = header(res, rfc::HEADER_GRPC_ENCODING);
+        let comp_st = validate_recv_compression(comp, enc_hdr, false);
+        if comp_st != GrpcStatusCode.Ok {
+            out_resp.status = comp_st;
+            return false;
+        }
         if comp {
             var decomp_buf: u8[>..] = [];
             let ok_gz, _ = core::gzip_decompress_with_limit(

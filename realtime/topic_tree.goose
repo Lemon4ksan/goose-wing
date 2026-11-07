@@ -69,10 +69,26 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
 
 struct TopicBucket {
     topic_pattern:    u8[..64] = [],
+    pattern_hash:     u32      = 0,
+    first_seg_hash:   u32      = 0,
     head_sub:         i32      = -1,
     subscriber_count: i32      = 0,
     has_wildcard:     bool     = false,
     in_use:           bool     = false,
+}
+
+enum PubSubError {
+    None,
+    InvalidTopic,
+    MessageTooLarge,
+    CapacityExceeded,
+}
+
+struct RetainedEntry {
+    active:    bool       = false,
+    is_binary: bool       = false,
+    topic:     u8[..128]  = [],
+    payload:   u8[..1024] = [],
 }
 
 // Fixed-capacity palette message for single-serialization broadcast (uWebSockets TopicTree pattern)
@@ -108,6 +124,7 @@ struct TopicTree {
     buckets:                  TopicBucket[..256]        = [TopicBucket { .. }; 256],
     nodes:                    SubscriptionNode[..4096]  = [SubscriptionNode { .. }; 4096],
     palette:                  TopicPaletteMessage[..64] = [TopicPaletteMessage { .. }; 64],
+    retained:                 RetainedEntry[..64]       = [RetainedEntry { .. }; 64],
     palette_len:              i32                       = 0,
     drainable_head:           i32                       = -1,
     active_buckets:           i32                       = 0,
@@ -151,10 +168,36 @@ fn is_valid_topic_filter(pattern: const u8[:]) -> bool {
     return true;
 }
 
+inline fn compute_topic_first_seg_hash(s: const u8[:]) -> u32 {
+    let seg_end = scan_topic_segment_end(s, 0);
+    let seg = s[..seg_end];
+    if seg == "+" || seg == "#" {
+        return 0;
+    }
+    return core::fnv1a_32(seg);
+}
+
+inline fn does_bucket_match_topic(
+    b_entry:    const TopicBucket&,
+    topic:      const u8[:],
+    t_hash:     u32,
+    t_seg_hash: u32,
+) -> bool {
+    if !b_entry.has_wildcard {
+        return b_entry.pattern_hash == t_hash && b_entry.topic_pattern[..] == topic;
+    }
+    if b_entry.first_seg_hash != 0 && b_entry.first_seg_hash != t_seg_hash {
+        return false;
+    }
+    return match_topic(b_entry.topic_pattern[..], topic);
+}
+
 // Finds the index of a bucket matching the given topic pattern, or -1 if not found.
 fn find_topic_bucket(tree: const TopicTree&, pattern: const u8[:]) -> i32 {
+    let p_hash = core::fnv1a_32(pattern);
     for i in tree.buckets.len {
-        if tree.buckets[i].in_use && tree.buckets[i].topic_pattern[..] == pattern {
+        let b_entry = tree.buckets[i];
+        if b_entry.in_use && b_entry.pattern_hash == p_hash && b_entry.topic_pattern[..] == pattern {
             return i as i32;
         }
     }
@@ -170,10 +213,15 @@ fn get_or_create_topic_bucket(tree: TopicTree&, pattern: const u8[:]) -> i32 {
         return existing;
     }
 
+    let p_hash = core::fnv1a_32(pattern);
+    let seg_hash = compute_topic_first_seg_hash(pattern);
     for i in tree.buckets.len {
-        if !tree.buckets[i].in_use {
+        let in_use = tree.buckets[i].in_use;
+        if !in_use {
             tree.buckets[i].topic_pattern.clear();
             tree.buckets[i].topic_pattern.append(pattern);
+            tree.buckets[i].pattern_hash = p_hash;
+            tree.buckets[i].first_seg_hash = seg_hash;
             tree.buckets[i].head_sub = -1;
             tree.buckets[i].subscriber_count = 0;
             let has_plus = core::index_of_byte(pattern, '+') >= 0;
@@ -597,19 +645,23 @@ fn find_subscribers_checked(tree: const TopicTree&, topic: const u8[:], out_fds:
     guard is_valid_publish_topic(topic) else { return 0, false; }
     out_fds.clear();
     var seen_mask: u64[4] = [0, 0, 0, 0];
+    let t_hash = core::fnv1a_32(topic);
+    let t_seg_hash = compute_topic_first_seg_hash(topic);
 
     for b in tree.buckets.len {
-        guard tree.buckets[b].in_use && tree.buckets[b].subscriber_count > 0 else { continue; }
-        guard match_topic(tree.buckets[b].topic_pattern[..], topic) else { continue; }
+        let b_entry = tree.buckets[b];
+        guard b_entry.in_use && b_entry.subscriber_count > 0 else { continue; }
+        guard does_bucket_match_topic(b_entry, topic, t_hash, t_seg_hash) else { continue; }
 
-        var cur = tree.buckets[b].head_sub;
+        var cur = b_entry.head_sub;
         while cur >= 0 {
             let cur_i64 = cur as i64;
-            if tree.nodes[cur_i64].in_use {
-                let _, add_ok = add_distinct_subscriber(out_fds, seen_mask, tree.nodes[cur_i64].sock_fd);
+            let n_entry = tree.nodes[cur_i64];
+            if n_entry.in_use {
+                let _, add_ok = add_distinct_subscriber(out_fds, seen_mask, n_entry.sock_fd);
                 guard add_ok else { return out_fds.len, false; }
             }
-            cur = tree.nodes[cur_i64].next_sub;
+            cur = n_entry.next_sub;
         }
     }
     return out_fds.len, true;
@@ -958,11 +1010,14 @@ fn publish_batch(
     var seen_fds:  i64[..512] = [];
     var seen_mask: u64[4]     = [0, 0, 0, 0];
     var queued:    i64        = 0;
+    let t_hash = core::fnv1a_32(topic);
+    let t_seg_hash = compute_topic_first_seg_hash(topic);
     for b in tree.buckets.len {
-        guard tree.buckets[b].in_use && tree.buckets[b].subscriber_count > 0 else { continue; }
-        guard match_topic(tree.buckets[b].topic_pattern[..], topic) else { continue; }
+        let b_entry = tree.buckets[b];
+        guard b_entry.in_use && b_entry.subscriber_count > 0 else { continue; }
+        guard does_bucket_match_topic(b_entry, topic, t_hash, t_seg_hash) else { continue; }
 
-        var cur = tree.buckets[b].head_sub;
+        var cur = b_entry.head_sub;
         while cur >= 0 {
             if queue_subscriber_batch(tree, cur, msg_idx, sender_fd, seen_fds, seen_mask) {
                 queued += 1;
@@ -1011,4 +1066,106 @@ fn subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
         }
     }
     return total;
+}
+
+inline fn find_retained_slot_for_topic(tree: const TopicTree&, topic: const u8[:]) -> i64 {
+    var free_slot: i64 = -1;
+    for i in tree.retained.len {
+        let entry = tree.retained[i];
+        if entry.active && entry.topic[..] == topic {
+            return i;
+        }
+        if !entry.active && free_slot < 0 {
+            free_slot = i;
+        }
+    }
+    return free_slot;
+}
+
+// Publishes a retained message on `topic` (OASIS MQTT v5.0 §3.3.1.3 & mosquitto retain__store pattern).
+// - When `payload.len == 0`, deletes any existing retained message on `topic` and returns `(0, PubSubError.None)`.
+// - When `payload.len > 0`, stores or overwrites the retained message and fans out to current subscribers.
+fn publish_retained(
+    tree:      TopicTree&,
+    topic:     const u8[:],
+    payload:   const u8[:],
+    is_binary: bool,
+) -> u32, PubSubError {
+    guard is_valid_publish_topic(topic) else { return 0, PubSubError.InvalidTopic; }
+
+    if payload.len == 0 {
+        for i in tree.retained.len {
+            let is_match = tree.retained[i].active && tree.retained[i].topic[..] == topic;
+            if is_match {
+                tree.retained[i].active = false;
+                tree.retained[i].is_binary = false;
+                tree.retained[i].topic.clear();
+                tree.retained[i].payload.clear();
+            }
+        }
+        return 0, PubSubError.None;
+    }
+
+    guard payload.len <= 1024 else { return 0, PubSubError.MessageTooLarge; }
+
+    let slot = find_retained_slot_for_topic(tree, topic);
+    guard slot >= 0 else { return 0, PubSubError.CapacityExceeded; }
+
+    guard tree.retained[slot].topic.try_set(topic) && tree.retained[slot].payload.try_set(payload) else {
+        return 0, PubSubError.MessageTooLarge;
+    }
+    tree.retained[slot].is_binary = is_binary;
+    tree.retained[slot].active = true;
+
+    let opcode = if is_binary { rfc::WS_OPCODE_BINARY } else { rfc::WS_OPCODE_TEXT };
+    let queued = publish_batch(tree, topic, payload, opcode, -1);
+    return max(0, queued) as u32, PubSubError.None;
+}
+
+inline fn enqueue_retained_to_subscriber(
+    tree:      TopicTree&,
+    sub_fd:    i64,
+    payload:   const u8[:],
+    is_binary: bool,
+) {
+    var node_idx: i32 = -1;
+    for i in tree.nodes.len {
+        let n_entry = tree.nodes[i];
+        if n_entry.in_use && n_entry.sock_fd == sub_fd {
+            node_idx = i as i32;
+            break;
+        }
+    }
+    guard node_idx >= 0 else { return; }
+
+    if tree.palette_len >= (tree.palette.cap as i32) {
+        drain(tree);
+    }
+
+    let msg_idx = tree.palette_len as i64;
+    tree.palette[msg_idx].wire.clear();
+    let opcode = if is_binary { rfc::WS_OPCODE_BINARY } else { rfc::WS_OPCODE_TEXT };
+    let no_mask: u8[4] = [0, 0, 0, 0];
+    encode_ws_frame(tree.palette[msg_idx].wire, opcode, payload, false, no_mask, true);
+    tree.palette_len = (core::add_sat_i64(msg_idx, 1)) as i32;
+
+    var seen_fds:  i64[..512] = [];
+    var seen_mask: u64[4]     = [0, 0, 0, 0];
+    let _ = queue_subscriber_batch(tree, node_idx, msg_idx, -1, seen_fds, seen_mask);
+}
+
+// Subscribes `sub_id` to `pattern` and immediately replays all matching retained messages
+// into `sub_id`'s outgoing 32-slot message palette (OASIS MQTT v5.0 §3.3.1.3).
+fn subscribe_with_retained(tree: TopicTree&, sub_id: u64, pattern: const u8[:]) -> PubSubError {
+    guard sub_id > 0 && is_valid_topic_filter(pattern) else { return PubSubError.InvalidTopic; }
+    let sub_fd = sub_id as i64;
+    guard subscribe(tree, sub_fd, pattern) else { return PubSubError.CapacityExceeded; }
+
+    for i in tree.retained.len {
+        let entry = tree.retained[i];
+        if entry.active && match_topic(pattern, entry.topic[..]) {
+            enqueue_retained_to_subscriber(tree, sub_fd, entry.payload[..], entry.is_binary);
+        }
+    }
+    return PubSubError.None;
 }

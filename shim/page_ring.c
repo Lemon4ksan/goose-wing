@@ -16,6 +16,16 @@
 #include <string.h>
 #include <stdlib.h>
 
+typedef struct {
+    uint8_t *data;
+    int64_t len;
+} wing_bytes_rw;
+
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
+
 #if defined(__wasm__)
 #include <stdlib.h>
 #include <string.h>
@@ -58,16 +68,6 @@ typedef PVOID(WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T,
 #include <fcntl.h>
 #endif
 
-typedef struct {
-    uint8_t *data;
-    int64_t len;
-} wing_bytes_rw;
-
-typedef struct {
-    const uint8_t *data;
-    int64_t len;
-} wing_bytes_ro;
-
 // Forward declaration from shim/simd.c
 int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice);
 int64_t wing_simd_find_crlf(wing_bytes_ro slice);
@@ -75,13 +75,13 @@ int64_t wing_simd_find_crlf(wing_bytes_ro slice);
 typedef struct {
     uint8_t *base;
     uint32_t capacity;
-#if defined(_WIN32)
+#if defined(__wasm__)
+    int dummy;
+#elif defined(_WIN32)
     HANDLE mapping_handle;
     int is_placeholder;
 #elif defined(__APPLE__)
     int is_mach_vm;
-#elif defined(__wasm__)
-    int dummy;
 #else
     int shm_fd;
 #endif

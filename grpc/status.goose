@@ -8,6 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 import grpc.constants;
+import grpc.framing;
 import http.headers;
 
 // ---- Value-Returned GrpcStatus Constructors -----------------------------
@@ -368,4 +369,120 @@ fn build_grpc_status_details(code: i32, msg: const u8[:], dst: u8[:]) -> i32, bo
     }
 
     return pos as i32, true;
+}
+
+// Decodes a single `google.protobuf.Any` submessage (`field 1 = type_url`, `field 2 = value`).
+//
+// Example:
+//   wire = [0x0A, 0x04, 't', 'y', 'p', 'e', 0x12, 0x02, 0x01, 0x02]
+//   returns: true, out_detail.type_url = "type", out_detail.value = [0x01, 0x02]
+fn decode_grpc_any_detail(wire: const u8[:], out_detail: GrpcErrorDetail&) -> bool {
+    out_detail.type_url.clear();
+    out_detail.value.clear();
+    let type_slice, ok_type = pb_read_bytes_field(wire, 1);
+    if ok_type {
+        guard out_detail.type_url.try_set(type_slice) else { return false; }
+    }
+    let val_slice, ok_val = pb_read_bytes_field(wire, 2);
+    if ok_val {
+        guard out_detail.value.try_set(val_slice) else { return false; }
+    }
+    return ok_type || ok_val;
+}
+
+// Parses a single wire field from a `google.rpc.Status` protobuf payload.
+//
+// Example:
+//   wire = [0x08, 0x03], pos = 0
+//   returns: true, pos = 2, out_code = 3
+fn parse_grpc_status_proto_field(
+    wire:        const u8[:],
+    pos:         i64&,
+    out_code:    u32&,
+    out_msg:     u8[..256]&,
+    out_details: GrpcErrorDetail[..4]&,
+) -> bool {
+    let tag, ok_tag = pb_read_varint(wire, pos);
+    let raw_fnum = tag >> 3;
+    guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return false; }
+    let fnum = raw_fnum as u32;
+    let wtype = (tag & 0x07) as u32;
+    if fnum == 1 && wtype == PB_WIRE_VARINT {
+        let v, ok_v = pb_read_varint(wire, pos);
+        guard ok_v else { return false; }
+        out_code = v as u32;
+        return true;
+    }
+    guard (fnum == 2 || fnum == 3) && wtype == PB_WIRE_LEN else {
+        return pb_skip_field(wire, pos, wtype);
+    }
+    let len_u64, ok_l = pb_read_varint(wire, pos);
+    let rem = core::sub_sat_i64(wire.len, pos);
+    guard ok_l && len_u64 <= (rem as u64) else { return false; }
+    let end_pos = core::add_sat_i64(pos, len_u64 as i64);
+    let slice = wire[pos..end_pos];
+    pos = end_pos;
+    if fnum == 2 {
+        out_msg.clear();
+        let take_len = min(slice.len, out_msg.cap);
+        out_msg.append(slice[..take_len]);
+        return true;
+    }
+    guard out_details.len < out_details.cap else { return true; }
+    var detail = GrpcErrorDetail { .. };
+    if decode_grpc_any_detail(slice, detail) {
+        out_details.push(detail);
+    }
+    return true;
+}
+
+// Decodes Base64-encoded `grpc-status-details-bin` (`google.rpc.Status`) trailer.
+// Enforces the `grpc-go` security invariant: if `google.rpc.Status.code` disagrees with
+// `expected_code` (`grpc-status` trailer), `out_status` is overridden to `GrpcStatusCode.Internal`.
+//
+// Example:
+//   b64_val = "CAMSA2JhZA==", expected_code = GrpcStatusCode.InvalidArgument
+//   returns: true, out_status = InvalidArgument, out_msg = "bad"
+fn decode_grpc_status_details(
+    b64_val:       const u8[:],
+    expected_code: GrpcStatusCode,
+    out_status:    GrpcStatusCode&,
+    out_msg:       u8[..256]&,
+    out_details:   GrpcErrorDetail[..4]&,
+) -> bool {
+    let trimmed = trim_lws(b64_val);
+    guard trimmed.len > 0 else { return false; }
+    var raw_pb: u8[..1024] = [];
+    var ok_b64 = core::base64_decode(trimmed, raw_pb);
+    if !ok_b64 {
+        ok_b64 = core::base64url_decode(trimmed, raw_pb);
+    }
+    guard ok_b64 else { return false; }
+
+    var proto_code:  u32                  = 0;
+    var tmp_msg:     u8[..256]            = [];
+    var tmp_details: GrpcErrorDetail[..4] = [];
+    let wire = raw_pb[..];
+    var pos: i64 = 0;
+    while pos < wire.len {
+        guard parse_grpc_status_proto_field(wire, pos, proto_code, tmp_msg, tmp_details) else {
+            return false;
+        }
+    }
+
+    if proto_code != grpc_status_to_code(expected_code) {
+        out_status = GrpcStatusCode.Internal;
+        let _ = out_msg.try_set("grpc: status code mismatch in grpc-status-details-bin");
+        out_details.clear();
+        return true;
+    }
+    out_status = expected_code;
+    if tmp_msg.len > 0 {
+        let _ = out_msg.try_set(tmp_msg[..]);
+    }
+    out_details.clear();
+    for &d in tmp_details {
+        out_details.push(d);
+    }
+    return true;
 }

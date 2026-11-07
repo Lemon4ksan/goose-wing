@@ -272,7 +272,7 @@ fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
 //   returns: true, params contains only "b=2"
 fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch&, params: QueryParam[..128]&) -> bool {
     let trimmed = if raw_query.len > 0 && raw_query[0] == '?' { raw_query[1..] } else { raw_query };
-    var tok = make_byte_tokenizer(trimmed, '&');
+    var tok = core::make_byte_tokenizer(trimmed, '&');
 
     loop {
         let pair, ok = tok.token_next();

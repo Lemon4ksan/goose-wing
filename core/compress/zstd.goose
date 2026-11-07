@@ -13,6 +13,7 @@ import core.compress.deflate;
 // ---- rfc 8878 constants ---------------------------------------------------
 
 const ZSTD_MAGIC:                 u32 = 0xFD2FB528;
+const ZSTD_MAGIC_DICTIONARY:      u32 = 0xEC30A437; // RFC 8878 §5 Formatted Dictionary Magic
 const ZSTD_MAGIC_SKIPPABLE_START: u32 = 0x184D2A50;
 const ZSTD_MAGIC_SKIPPABLE_END:   u32 = 0x184D2A5F;
 const ZSTD_BLOCKSIZE_MAX:         i64 = 131072; // 128 KB
@@ -2440,6 +2441,7 @@ fn zstd_decompress_frame_blocks<B>(
     frame_content_size: i64,
     initial_out_len:    i64,
     max_output_bytes:   i64,
+    dict_prefix_len:    i64 = 0,
 ) -> CompressError {
     var rep: u32[3] = [1, 4, 8];
     var huf_table = HufTable {};
@@ -2448,6 +2450,12 @@ fn zstd_decompress_frame_blocks<B>(
     var of_table = FseTable {};
 
     let frame_start_out = out_buf.len;
+    let match_start_out = sub_sat_i64(frame_start_out, dict_prefix_len);
+    let eff_win = if dict_prefix_len > 0 && window_size > 0 {
+        add_sat_i64(window_size, dict_prefix_len)
+    } else {
+        window_size
+    };
     var last_block = false;
 
     while !last_block {
@@ -2462,9 +2470,9 @@ fn zstd_decompress_frame_blocks<B>(
             ll_table,
             ml_table,
             of_table,
-            window_size,
+            eff_win,
             initial_out_len,
-            frame_start_out,
+            match_start_out,
             max_output_bytes,
         );
         if err != CompressError.None {
@@ -2490,6 +2498,7 @@ fn decompress_single_zstd_frame<B>(
     lit_buf:          u8[>..]&,
     initial_out_len:  i64,
     max_output_bytes: i64,
+    dict_prefix_len:  i64 = 0,
 ) -> CompressError {
     if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
     let magic = read_le_u32(src, offset);
@@ -2536,6 +2545,7 @@ fn decompress_single_zstd_frame<B>(
         frame_content_size,
         initial_out_len,
         max_output_bytes,
+        dict_prefix_len,
     );
     if blk_err != CompressError.None {
         return blk_err;
@@ -2557,8 +2567,13 @@ fn decompress_single_zstd_frame<B>(
     return CompressError.None;
 }
 
-// Internal frame decompressor (RFC 8878 section 3.1.1) with output limit guard.
-fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> CompressError {
+// Internal frame decompressor (RFC 8878 section 3.1.1) with output limit and dictionary prefix guard.
+fn zstd_decompress_with_limit_impl<B>(
+    src:              const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64 = -1,
+    dict_prefix_len:  i64 = 0,
+) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var offset: i64 = 0;
     let initial_out_len = out_buf.len;
@@ -2566,7 +2581,7 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
 
     while offset < src.len {
         let err = decompress_single_zstd_frame(
-            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes,
+            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, dict_prefix_len,
         );
         if err != CompressError.None {
             return err;
@@ -2574,6 +2589,82 @@ fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_
     }
 
     return CompressError.None;
+}
+
+// Incrementally decompresses complete Zstandard frames from `src` and returns consumed bytes.
+// Stops cleanly at frame boundaries if a trailing frame is still truncated, returning `CompressError.None`
+// when at least one frame was consumed or `CompressError.InputBufferTruncated` when the first frame is incomplete.
+fn zstd_decompress_frames_incremental<B>(
+    src:              const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
+) -> i64, CompressError {
+    guard src.len > 0 else { return 0, CompressError.InputBufferTruncated; }
+    let raw_dict = extract_zstd_dict_prefix(dict);
+    var window_buf: u8[>..] = [];
+    if raw_dict.len > 0 {
+        window_buf.append(raw_dict);
+    }
+    let dict_len = window_buf.len;
+    var offset:  i64     = 0;
+    var lit_buf: u8[>..] = [];
+
+    while offset < src.len {
+        let saved_offset = offset;
+        let saved_out_len = window_buf.len;
+        let err = decompress_single_zstd_frame(
+            src, offset, window_buf, lit_buf, dict_len, max_output_bytes, dict_len,
+        );
+        if err == CompressError.InputBufferTruncated {
+            window_buf.resize(saved_out_len);
+            if saved_offset > 0 {
+                out_buf.append(window_buf[dict_len..]);
+                return saved_offset, CompressError.None;
+            }
+            return 0, CompressError.InputBufferTruncated;
+        }
+        if err != CompressError.None {
+            return saved_offset, err;
+        }
+    }
+
+    out_buf.append(window_buf[dict_len..]);
+    return offset, CompressError.None;
+}
+
+// Strips RFC 8878 §5 formatted dictionary header (`ZSTD_MAGIC_DICTIONARY` + 4-byte `Dictionary_ID`) if present.
+//
+// Example:
+//   dict = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00, 'a', 'b']
+//   returns: "ab"
+fn extract_zstd_dict_prefix(dict: const u8[:]) -> const u8[:] {
+    if dict.len >= 8 && read_le_u32(dict, 0) == ZSTD_MAGIC_DICTIONARY {
+        return dict[8..];
+    }
+    return dict;
+}
+
+// Decompresses RFC 8878 Zstandard frame with a raw or formatted prefix dictionary (RFC 8878 §5, RFC 9842 §6).
+fn zstd_decompress_with_dict<B>(
+    src:              const u8[:],
+    dict:             const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64 = -1,
+) -> bool, CompressError {
+    let raw_dict = extract_zstd_dict_prefix(dict);
+    if raw_dict.len == 0 {
+        return zstd_decompress_with_limit(src, out_buf, max_output_bytes);
+    }
+    var window_buf: u8[>..] = [];
+    window_buf.append(raw_dict);
+    let dict_len = window_buf.len;
+    let err = zstd_decompress_with_limit_impl(src, window_buf, max_output_bytes, dict_len);
+    guard err == CompressError.None else {
+        return false, err;
+    }
+    out_buf.append(window_buf[dict_len..]);
+    return true, CompressError.None;
 }
 
 // Decompresses RFC 8878 Zstandard frame from src into out_buf with output limit guard.
@@ -3126,4 +3217,63 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
 // Compresses input slice using Zstandard frame container (level 3 by default).
 fn zstd_compress<B>(src: const u8[:], out_buf: B&, include_checksum: bool = true) -> bool {
     return zstd_compress_level(src, out_buf, 3, include_checksum);
+}
+
+// Compresses input slice using Zstandard frame container with an external raw or formatted dictionary (RFC 8878 §5).
+fn zstd_compress_with_dict<B>(
+    src:              const u8[:],
+    dict:             const u8[:],
+    out_buf:          B&,
+    level:            i32  = 3,
+    include_checksum: bool = true,
+) -> bool {
+    let raw_dict = extract_zstd_dict_prefix(dict);
+    if raw_dict.len < 4 || level <= 0 || src.len < 4 || src.len > ZSTD_BLOCKSIZE_MAX {
+        return zstd_compress_level(src, out_buf, level, include_checksum);
+    }
+    let total = src.len;
+    let d_len = min(raw_dict.len, 32768);
+    let d_slice = raw_dict[sub_sat_i64(raw_dict.len, d_len)..];
+    let prefix_match = count_match_len(d_slice, 0, 0, min(d_slice.len, total));
+    let rem_len = sub_sat_i64(total, prefix_match);
+    guard prefix_match >= 4 && rem_len < 32 else {
+        return zstd_compress_level(src, out_buf, level, include_checksum);
+    }
+
+    emit_zstd_magic_number(out_buf);
+    emit_zstd_frame_header(total, include_checksum, out_buf);
+    init_global_ctables();
+
+    var rep:  u32[3]       = [1, 4, 8];
+    var seqs: ZstdSeq[>..] = [];
+    var lits: u8[>..]      = [];
+    seqs.push(ZstdSeq {
+        lit_len:   0,
+        match_len: min(prefix_match, 131072) as u32,
+        offset:    min(d_slice.len, 32768) as u32,
+    });
+    if prefix_match < total {
+        lits.append(src[prefix_match..]);
+    }
+
+    var lit_sec: u8[>..] = [];
+    let lit_hdr_byte = min(mul_sat_u64(rem_len as u64, 8), 255) as u8;
+    lit_sec.push(lit_hdr_byte);
+    lit_sec.append(lits[..]);
+
+    var seq_sec: u8[>..] = [];
+    encode_sequences(seqs[..], rep, seq_sec);
+    let b_size = min(add_sat_i64(lit_sec.len, seq_sec.len), 131072) as u64;
+    let hdr_val = add_sat_u64(5, mul_sat_u64(b_size, 8));
+    let lo16 = min(hdr_val & 0xFFFF, 65535) as u16;
+    let hi8 = min((hdr_val >> 16) & 0xFF, 255) as u8;
+    write_le_u16(out_buf, lo16);
+    out_buf.push(hi8);
+    out_buf.append(lit_sec[..]);
+    out_buf.append(seq_sec[..]);
+
+    if include_checksum {
+        write_le_u32(out_buf, xxh64_digest_32(src));
+    }
+    return true;
 }

@@ -20,7 +20,8 @@ fn compute_hop_samesite_context(
     safe_method: bool,
 ) -> SameSiteCookieContext {
     var samesite_ctx_type = SameSiteContextType.CrossSite;
-    let is_first_p = !ctx.site_for_cookies.is_null && is_first_party(ctx.site_for_cookies, href(current_url), true);
+    let is_first_p = !ctx.site_for_cookies.is_null &&
+        is_first_party(ctx.site_for_cookies, core::href(current_url), true);
     let init_same_site = !ctx.has_initiator || (
         ctx.initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
             ctx.initiator.scheme[..], ctx.initiator.host[..],

@@ -442,20 +442,31 @@ fn decompress_dcz_payload<B>(
     out_buf:            B&,
 ) -> bool {
     var decompressed: u8[..16384] = [];
-    let ok_z, _ = core::zstd_decompress(compressed_payload, decompressed);
+    let ok_z, _ = core::zstd_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_z else { return false; }
     out_buf.append(decompressed[..]);
     return true;
 }
 
+// Compresses a payload with Zstandard using `dictionary_content` for RFC 9842 `dcz` encoding.
+fn compress_dcz_payload<B>(
+    raw_content:        const u8[:],
+    dictionary_content: const u8[:],
+    out_buf:            B&,
+    level:              i32 = 3,
+) -> bool {
+    return core::zstd_compress_with_dict(raw_content, dictionary_content, out_buf, level);
+}
+
 // High-level helper to encode a test server response with DCZ
 fn encode_dcz_response<B>(
-    out:         B&,
-    dict_hash:   const u8[32]&,
-    raw_content: const u8[:],
+    out:                B&,
+    dict_hash:          const u8[32]&,
+    raw_content:        const u8[:],
+    dictionary_content: const u8[:] = "",
 ) -> bool {
     var compressed_zstd: u8[..16384] = [];
-    guard core::zstd_compress(raw_content, compressed_zstd) else { return false; }
+    guard compress_dcz_payload(raw_content, dictionary_content, compressed_zstd, 3) else { return false; }
     return encode_dcz_frame(out, dict_hash, compressed_zstd[..]);
 }
 
@@ -466,7 +477,7 @@ fn decompress_dcb_payload<B>(
     out_buf:            B&,
 ) -> bool {
     var decompressed: u8[..16384] = [];
-    let ok_b, _ = core::brotli_decompress(compressed_payload, decompressed);
+    let ok_b, _ = core::brotli_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_b else { return false; }
     out_buf.append(decompressed[..]);
     return true;

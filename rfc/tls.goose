@@ -349,16 +349,16 @@ inline fn is_post_quantum_group(group: u16) -> bool {
 const X25519_KEY_LEN:             i64 = 32;   // RFC 7748 Section 5
 const SECP256R1_POINT_LEN:        i64 = 65;   // RFC 8446 Section 4.2.8.2
 const SECP384R1_POINT_LEN:        i64 = 97;   // RFC 8446 Section 4.2.8.2
-const MLKEM768_PUBLIC_LEN:        i64 = 1152; // FIPS 203 / RFC 10024 Section 3
+const MLKEM768_PUBLIC_LEN:        i64 = 1184; // FIPS 203 / RFC 10024 Section 3
 const MLKEM768_CIPHERTEXT_LEN:    i64 = 1088; // FIPS 203 / RFC 10024 Section 3
 const MLKEM768_SECRET_KEY_LEN:    i64 = 2400; // FIPS 203
 const MLKEM768_SHARED_SECRET_LEN: i64 = 32;   // FIPS 203
 const MLKEM1024_PUBLIC_LEN:       i64 = 1568; // FIPS 203 / RFC 10024 Section 3
 const MLKEM1024_CIPHERTEXT_LEN:   i64 = 1568; // FIPS 203 / RFC 10024 Section 3
 
-const HYBRID_CLIENT_SHARE_LEN:              i64 = 1184; // 32 + 1152 (RFC 10024 Section 7.1)
+const HYBRID_CLIENT_SHARE_LEN:              i64 = 1216; // 32 + 1184 (RFC 10024 Section 7.1)
 const HYBRID_SERVER_SHARE_LEN:              i64 = 1120; // 32 + 1088 (RFC 10024 Section 7.1)
-const SECP256R1_MLKEM768_CLIENT_SHARE_LEN:  i64 = 1217; // 65 + 1152 (RFC 10024 Section 7.2)
+const SECP256R1_MLKEM768_CLIENT_SHARE_LEN:  i64 = 1249; // 65 + 1184 (RFC 10024 Section 7.2)
 const SECP256R1_MLKEM768_SERVER_SHARE_LEN:  i64 = 1153; // 65 + 1088 (RFC 10024 Section 7.2)
 const SECP384R1_MLKEM1024_CLIENT_SHARE_LEN: i64 = 1665; // 97 + 1568 (RFC 10024 Section 7.3)
 const SECP384R1_MLKEM1024_SERVER_SHARE_LEN: i64 = 1665; // 97 + 1568 (RFC 10024 Section 7.3)

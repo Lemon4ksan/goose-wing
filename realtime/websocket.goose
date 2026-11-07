@@ -229,12 +229,10 @@ fn encode_ws_frame<B>(
     };
     hdr.encode(out);
 
+    let payload_start = out.len;
+    out.append(eff_payload);
     if is_client {
-        for i in eff_payload.len {
-            out.push(eff_payload[i] ^ mask_key[i & 3]);
-        }
-    } else {
-        out.append(eff_payload);
+        mask_websocket_payload(out[payload_start..out.len], mask_key);
     }
 }
 
@@ -530,12 +528,10 @@ fn encode_ws_frame_compressed<B>(
         ..
     };
     hdr.encode(out);
+    let payload_start = out.len;
+    out.append(eff_payload);
     if masked {
-        for i in eff_payload.len {
-            out.push(eff_payload[i] ^ mask_key[i % 4]);
-        }
-    } else {
-        out.append(eff_payload);
+        mask_websocket_payload(out[payload_start..out.len], mask_key);
     }
 }
 
@@ -726,8 +722,11 @@ struct WebSocketSession {
     is_client:          bool     = true,
     subprotocol:        u8[..64] = [],
     is_closed:          bool     = false,
+    close_sent:         bool     = false, // RFC 6455 §5.5.1: Local close frame sent
     close_received:     bool     = false, // RFC 6455 §5.5.1: Peer close frame received
     close_code:         u16      = 0,
+    close_sent_ms:      u64      = 0,
+    close_timeout_ms:   u64      = 5000,
     max_payload_length: u64      = 65536, // Maximum allowed frame payload length (0 = unlimited)
     mask_rng_state:     u32      = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
 
@@ -735,6 +734,7 @@ struct WebSocketSession {
     frag_opcode:      u8          = 0,     // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
     frag_compressed:  bool        = false, // RFC 7692: remembers if initial fragment had RSV1 set
     frag_utf8_offset: i64         = 0,     // Validated UTF-8 prefix byte offset across streaming fragments
+    utf8_dfa_state:   u8          = 0,     // Bjoern Hoehrmann 364-byte DFA state across streaming text fragments
     frag_buffer:      u8[..65536] = [],    // Assembly buffer for fragmented messages
 
     // RFC 7692 PerMessageDeflate configuration (uWebSockets pattern)
@@ -778,6 +778,179 @@ fn set_max_payload_length(ws: WebSocketSession&, max_len: u64) {
 struct WsContextTakeoverOptions {
     server_no_context: bool = false,
     client_no_context: bool = false,
+}
+
+// RFC 7692 §7.1: PerMessageDeflate negotiation parameters (sliding window bits & context takeover)
+struct PerMessageDeflateConfig {
+    server_max_window_bits:     u8   = 15,
+    client_max_window_bits:     u8   = 15,
+    server_no_context_takeover: bool = false,
+    client_no_context_takeover: bool = false,
+}
+
+const PMD_SEEN_SERVER_NO_CTX:  u8 = 1;
+const PMD_SEEN_CLIENT_NO_CTX:  u8 = 2;
+const PMD_SEEN_SERVER_MAX_WIN: u8 = 4;
+const PMD_SEEN_CLIENT_MAX_WIN: u8 = 8;
+
+// Parses a strict RFC 7692 §7.1 window_bits value (base-10 integer in 8..15, no leading '0' or '+').
+// Clamps window_bits == 8 to 9 for raw deflate compatibility (uWebSockets / libwebsockets pattern).
+//
+// Example:
+//   raw = "\"12\""
+//   returns: bits = 12, ok = true
+fn parse_pmd_window_bits(raw: const u8[:]) -> u8, bool {
+    var val = raw.trim_lws();
+    if val.len >= 2 {
+        let last_idx = core::sub_sat_i64(val.len, 1);
+        if val[0] == '"' && val[last_idx] == '"' {
+            val = val[1..last_idx];
+        }
+    }
+    if val.len == 1 {
+        let b0 = val[0];
+        guard b0 == '8' || b0 == '9' else { return 0, false; }
+        return 9, true;
+    }
+    guard val.len == 2 else { return 0, false; }
+    let b0 = val[0];
+    let b1 = val[1];
+    guard b0 == '1' && b1 >= '0' && b1 <= '5' else { return 0, false; }
+    return (core::add_sat_i64(10, core::sub_sat_i64(b1, '0'))) as u8, true;
+}
+
+inline fn apply_pmd_window_param(
+    key:        const u8[:],
+    val:        const u8[:],
+    has_eq:     bool,
+    server_cfg: const PerMessageDeflateConfig&,
+    seen_mask:  u8&,
+    out_cfg:    PerMessageDeflateConfig&,
+) -> bool {
+    if key == "server_max_window_bits" {
+        guard has_eq && (seen_mask & PMD_SEEN_SERVER_MAX_WIN) == 0 else { return false; }
+        let bits, ok_b = parse_pmd_window_bits(val);
+        guard ok_b else { return false; }
+        seen_mask |= PMD_SEEN_SERVER_MAX_WIN;
+        out_cfg.server_max_window_bits = min(out_cfg.server_max_window_bits, bits);
+        return true;
+    }
+    if key == "client_max_window_bits" {
+        guard (seen_mask & PMD_SEEN_CLIENT_MAX_WIN) == 0 else { return false; }
+        seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
+        if has_eq {
+            let bits, ok_b = parse_pmd_window_bits(val);
+            guard ok_b else { return false; }
+            out_cfg.client_max_window_bits = min(server_cfg.client_max_window_bits, bits);
+        } else {
+            out_cfg.client_max_window_bits = max(9, min(server_cfg.client_max_window_bits, 15));
+        }
+        return true;
+    }
+    return false;
+}
+
+inline fn apply_pmd_param(
+    key:        const u8[:],
+    val:        const u8[:],
+    has_eq:     bool,
+    server_cfg: const PerMessageDeflateConfig&,
+    seen_mask:  u8&,
+    out_cfg:    PerMessageDeflateConfig&,
+) -> bool {
+    guard key.len > 0 else { return false; }
+    if key == "server_no_context_takeover" {
+        guard !has_eq && (seen_mask & PMD_SEEN_SERVER_NO_CTX) == 0 else { return false; }
+        seen_mask |= PMD_SEEN_SERVER_NO_CTX;
+        out_cfg.server_no_context_takeover = true;
+        return true;
+    }
+    if key == "client_no_context_takeover" {
+        guard !has_eq && (seen_mask & PMD_SEEN_CLIENT_NO_CTX) == 0 else { return false; }
+        seen_mask |= PMD_SEEN_CLIENT_NO_CTX;
+        out_cfg.client_no_context_takeover = true;
+        return true;
+    }
+    return apply_pmd_window_param(key, val, has_eq, server_cfg, seen_mask, out_cfg);
+}
+
+// Parses a single RFC 7692 `permessage-deflate` extension offer and its `;`-delimited parameters.
+//
+// Example:
+//   offer_raw = "permessage-deflate; server_no_context_takeover", server_cfg = PerMessageDeflateConfig { .. }
+//   returns: PerMessageDeflateConfig { server_no_context_takeover: true, .. }, ok = true
+inline fn parse_single_pmd_offer(
+    offer_raw:  const u8[:],
+    server_cfg: const PerMessageDeflateConfig&,
+) -> PerMessageDeflateConfig, bool {
+    let offer = offer_raw.trim_lws();
+    let ext_name, rest_params, has_params = core::split_once_unquoted_byte(offer, ';');
+    guard ext_name.trim_lws() == "permessage-deflate" else {
+        return PerMessageDeflateConfig { .. }, false;
+    }
+
+    var cfg = PerMessageDeflateConfig {
+        server_max_window_bits:     max(9, min(server_cfg.server_max_window_bits, 15)),
+        client_max_window_bits:     15,
+        server_no_context_takeover: server_cfg.server_no_context_takeover,
+        client_no_context_takeover: server_cfg.client_no_context_takeover,
+    };
+
+    var seen_mask: u8 = 0;
+    var rem = rest_params;
+    var more = has_params;
+    while more {
+        let param_raw, next_rem, has_next = core::split_once_unquoted_byte(rem, ';');
+        let param = param_raw.trim_lws();
+        guard param.len > 0 else { return PerMessageDeflateConfig { .. }, false; }
+        let k_raw, v_raw, has_eq = core::split_once_unquoted_byte(param, '=');
+        guard apply_pmd_param(k_raw.trim_lws(), v_raw.trim_lws(), has_eq, server_cfg, seen_mask, cfg) else {
+            return PerMessageDeflateConfig { .. }, false;
+        }
+        rem = next_rem;
+        more = has_next;
+    }
+    return cfg, true;
+}
+
+// Negotiates RFC 7692 `permessage-deflate` from a `Sec-WebSocket-Extensions` header.
+// Evaluates comma-separated extension offers in preference order and returns the first valid offer.
+fn negotiate_permessage_deflate(
+    ext_header: const u8[:],
+    server_cfg: const PerMessageDeflateConfig&,
+) -> PerMessageDeflateConfig, bool {
+    let hdr = ext_header.trim_lws();
+    guard hdr.len > 0 else { return PerMessageDeflateConfig { .. }, false; }
+
+    var rem = hdr;
+    var more = true;
+    while more {
+        let offer_raw, next_rem, has_next = core::split_once_unquoted_byte(rem, ',');
+        let cfg, ok = parse_single_pmd_offer(offer_raw, server_cfg);
+        if ok {
+            return cfg, true;
+        }
+        rem = next_rem;
+        more = has_next;
+    }
+    return PerMessageDeflateConfig { .. }, false;
+}
+
+// Formats negotiated RFC 7692 `permessage-deflate` response parameters into `out`.
+fn append_permessage_deflate_response<B>(cfg: const PerMessageDeflateConfig&, out: B&) {
+    out.append("permessage-deflate");
+    if cfg.server_no_context_takeover {
+        out.append("; server_no_context_takeover");
+    }
+    if cfg.client_no_context_takeover {
+        out.append("; client_no_context_takeover");
+    }
+    if cfg.server_max_window_bits >= 8 && cfg.server_max_window_bits < 15 {
+        format(out, "; server_max_window_bits=", cfg.server_max_window_bits as u64);
+    }
+    if cfg.client_max_window_bits >= 8 && cfg.client_max_window_bits < 15 {
+        format(out, "; client_max_window_bits=", cfg.client_max_window_bits as u64);
+    }
 }
 
 // RFC 7692 §7.1.1: Configures sliding window context takeover boundaries
@@ -967,7 +1140,7 @@ fn set_max_backpressure(ws: WebSocketSession&, max_bytes: u64, close_on_limit: b
 // Notifies the session of outbound bytes buffered for delivery.
 // Enforces max_backpressure and overflow drop/close policies.
 fn notify_buffered<B>(ws: WebSocketSession&, bytes_added: u64, out_close: B&) -> WsSendStatus {
-    guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     if bytes_added > ws.max_backpressure || ws.buffered_amount > ws.max_backpressure - bytes_added {
         if ws.close_on_backpressure_limit {
             close(ws, rfc::WS_STATUS_POLICY_VIOLATION, "backpressure limit exceeded", out_close);
@@ -1056,8 +1229,8 @@ fn build_handshake_request<B>(
 
 // High-level method: sends UTF-8 text message
 fn send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
-    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close received, drop outgoing message writes
-    guard !ws.is_closed && !ws.close_received else { return; }
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_TEXT, text, ws.is_client, mask, true);
 }
@@ -1069,7 +1242,7 @@ fn send_text_with_status<B>(
     out:      B&,
     compress: bool = false,
 ) -> WsSendStatus {
-    guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
@@ -1088,7 +1261,7 @@ fn send_text_compressed_with_status<B>(
     out:         B&,
     compress:    bool = true,
 ) -> WsSendStatus {
-    guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && text.len > 0 {
@@ -1116,8 +1289,8 @@ fn send_text_compressed_with_status<B>(
 
 // High-level method: sends binary message
 fn send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
-    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close received, drop outgoing message writes
-    guard !ws.is_closed && !ws.close_received else { return; }
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_BINARY, data, ws.is_client, mask, true);
 }
@@ -1129,7 +1302,7 @@ fn send_binary_with_status<B>(
     out:      B&,
     compress: bool = false,
 ) -> WsSendStatus {
-    guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
@@ -1148,7 +1321,7 @@ fn send_binary_compressed_with_status<B>(
     out:         B&,
     compress:    bool = true,
 ) -> WsSendStatus {
-    guard !ws.is_closed && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && data.len > 0 {
@@ -1176,8 +1349,8 @@ fn send_binary_compressed_with_status<B>(
 
 // High-level method: sends Ping heartbeat
 fn send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
-    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close received, drop outgoing heartbeat writes
-    guard !ws.is_closed && !ws.close_received else { return; }
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing heartbeat writes
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_PING, ping_payload, ws.is_client, mask, true);
     ws.pings_sent += 1;
@@ -1185,15 +1358,45 @@ fn send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
 
 // High-level method: sends Pong heartbeat response
 fn send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
-    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close received, drop outgoing heartbeat writes
-    guard !ws.is_closed && !ws.close_received else { return; }
+    // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing heartbeat writes
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_PONG, pong_payload, ws.is_client, mask, true);
 }
 
+// High-level method: sends a fragmented message frame (initial or continuation fragment)
+fn send_fragment<B>(ws: WebSocketSession&, opcode: u8, payload: const u8[:], fin: bool, out: B&) {
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, opcode, payload, ws.is_client, mask, fin);
+}
+
+// High-level method: initiates active Close handshake (half-closed CloseSent state) and records timestamp
+fn close_at<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], now_ms: u64, out: B&) {
+    guard !ws.is_closed && !ws.close_sent else { return; }
+    var payload: u8[..128] = [];
+    if rfc::is_valid_ws_close_code(status_code) {
+        let eff_reason = if reason.len > 0 && core::validate_utf8(reason) { reason } else { "" };
+        encode_close_payload(payload, status_code, eff_reason);
+    }
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    encode_ws_frame(out, rfc::WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
+    ws.close_sent = true;
+    ws.close_sent_ms = now_ms;
+    ws.is_closed = ws.close_received;
+    ws.close_code = status_code;
+}
+
+// Returns true when an active Close handshake has been waiting for the peer's Close ACK
+// longer than `ws.close_timeout_ms` (RFC 6455 §7.1.2).
+fn is_close_handshake_expired(ws: const WebSocketSession&, now_ms: u64) -> bool {
+    return ws.close_sent && !ws.close_received && now_ms > ws.close_sent_ms &&
+        (now_ms - ws.close_sent_ms) >= ws.close_timeout_ms;
+}
+
 // High-level method: sends Close handshake
 fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
-    guard !ws.is_closed else { return; }
+    guard !ws.is_closed && !ws.close_sent else { return; }
     var payload: u8[..128] = [];
     // RFC 6455 §7.4.1 / Autobahn 7.1.x:
     // Status codes 1005 (No Status), 1006 (Abnormal), and 0 are internal and MUST NOT be sent on the wire.
@@ -1205,11 +1408,13 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
     }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
+    ws.close_sent = true;
     ws.is_closed = true;
     ws.close_code = status_code;
     ws.frag_opcode = 0;
     ws.frag_compressed = false;
     ws.frag_utf8_offset = 0;
+    ws.utf8_dfa_state = 0;
     ws.frag_buffer.clear();
 }
 
@@ -1449,7 +1654,7 @@ fn receive_view_into<B, F>(
             out_view.close_code = code;
             out_view.close_reason = reason;
             out_view.is_valid = true;
-            if !ws.is_closed {
+            if !ws.is_closed && !ws.close_sent {
                 // RFC 6455 §7.1.5: If received close contains no body (code 1005), response contains no body
                 let reply_code = if code == rfc::WS_STATUS_NO_STATUS { rfc::WS_STATUS_NO_STATUS } else { code };
                 close(ws, reply_code, reason, out_reply);
@@ -1459,6 +1664,7 @@ fn receive_view_into<B, F>(
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
             ws.frag_utf8_offset = 0;
+            ws.utf8_dfa_state = 0;
             frag_buf.clear();
             return true, out_view;
         }
@@ -1505,6 +1711,7 @@ fn receive_view_into<B, F>(
         ws.frag_opcode = hdr.opcode;
         ws.frag_compressed = hdr.rsv1;
         ws.frag_utf8_offset = 0;
+        ws.utf8_dfa_state = 0;
         frag_buf.clear();
         let max_len_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
         let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
@@ -1519,14 +1726,15 @@ fn receive_view_into<B, F>(
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
             ws.frag_utf8_offset = 0;
+            ws.utf8_dfa_state = 0;
             frag_buf.clear();
             return true, out_view;
         }
         frag_buf.append(payload);
 
-        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation on initial fragment
+        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 DFA validation on initial fragment
         if ws.frag_opcode == rfc::WS_OPCODE_TEXT && !ws.frag_compressed {
-            let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[..], false);
+            let ok_u8 = core::validate_utf8_dfa_chunk(payload, ws.utf8_dfa_state, false);
             if !ok_u8 {
                 close(ws, rfc::WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in initial fragment", out_reply);
                 ws.is_closed = true;
@@ -1534,10 +1742,11 @@ fn receive_view_into<B, F>(
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
                 ws.frag_utf8_offset = 0;
+                ws.utf8_dfa_state = 0;
                 frag_buf.clear();
                 return true, out_view;
             }
-            ws.frag_utf8_offset = valid_len;
+            ws.frag_utf8_offset = frag_buf.len;
         }
 
         out_view.is_valid = false;
@@ -1563,14 +1772,15 @@ fn receive_view_into<B, F>(
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
             ws.frag_utf8_offset = 0;
+            ws.utf8_dfa_state = 0;
             frag_buf.clear();
             return true, out_view;
         }
         frag_buf.append(payload);
 
-        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 validation across fragment boundary
+        // RFC 6455 §8.1 / Autobahn 6.4.x: Fast streaming UTF-8 DFA validation across fragment boundary
         if ws.frag_opcode == rfc::WS_OPCODE_TEXT && !ws.frag_compressed {
-            let valid_len, ok_u8 = core::validate_utf8_streaming(frag_buf[ws.frag_utf8_offset..], hdr.fin);
+            let ok_u8 = core::validate_utf8_dfa_chunk(payload, ws.utf8_dfa_state, hdr.fin);
             if !ok_u8 {
                 let err_msg = if hdr.fin { "invalid UTF-8 in assembled message" } else { "invalid UTF-8 in fragment" };
                 close(ws, rfc::WS_STATUS_INVALID_PAYLOAD, err_msg, out_reply);
@@ -1579,10 +1789,11 @@ fn receive_view_into<B, F>(
                 ws.frag_opcode = 0;
                 ws.frag_compressed = false;
                 ws.frag_utf8_offset = 0;
+                ws.utf8_dfa_state = 0;
                 frag_buf.clear();
                 return true, out_view;
             }
-            ws.frag_utf8_offset += valid_len;
+            ws.frag_utf8_offset = frag_buf.len;
         }
 
         if hdr.fin {
@@ -1595,6 +1806,7 @@ fn receive_view_into<B, F>(
             ws.frag_opcode = 0;
             ws.frag_compressed = false;
             ws.frag_utf8_offset = 0;
+            ws.utf8_dfa_state = 0;
             return true, out_view;
         } else {
             out_view.is_valid = false;
@@ -1688,7 +1900,7 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
 // Checks if a requested token is present in the comma-separated header value list (RFC 6455 §4.2.1).
 fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
     guard list.len > 0 && target.len > 0 else { return false; }
-    var tok = make_byte_tokenizer(list, ',');
+    var tok = core::make_byte_tokenizer(list, ',');
     loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
@@ -1706,7 +1918,7 @@ fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
     for b in target {
         guard core::is_tchar(b) else { return false; }
     }
-    var tok = make_byte_tokenizer(list, ',');
+    var tok = core::make_byte_tokenizer(list, ',');
     loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
@@ -1750,6 +1962,112 @@ fn req_has_subprotocol(req: const Request&, subprotocol: const u8[:]) -> bool {
         }
     }
     return false;
+}
+
+// Client-side RFC 6455 §4.1 handshake verification error codes.
+enum WsError {
+    None,
+    InvalidStatusCode,
+    MissingUpgradeHeader,
+    MissingConnectionHeader,
+    InvalidAcceptKey,
+    InvalidSubprotocol,
+}
+
+inline fn resolve_hdr_entry_name(map: const HeaderMap&, raw_buf: const u8[:], e: const HeaderEntry&) -> const u8[:] {
+    if raw_buf.len > 0 && e.name_end <= raw_buf.len {
+        return raw_buf[(e.name_begin as i64)..(e.name_end as i64)];
+    }
+    if e.name_end <= map.raw_buf.len {
+        return map.raw_buf[(e.name_begin as i64)..(e.name_end as i64)];
+    }
+    return "";
+}
+
+inline fn resolve_hdr_entry_val(map: const HeaderMap&, raw_buf: const u8[:], e: const HeaderEntry&) -> const u8[:] {
+    if raw_buf.len > 0 && e.values_end <= raw_buf.len {
+        return raw_buf[(e.values_begin as i64)..(e.values_end as i64)];
+    }
+    if e.values_end <= map.raw_buf.len {
+        return map.raw_buf[(e.values_begin as i64)..(e.values_end as i64)];
+    }
+    return "";
+}
+
+fn map_has_header_token(
+    map:         const HeaderMap&,
+    raw_buf:     const u8[:],
+    header_name: const u8[:],
+    token:       const u8[:],
+) -> bool {
+    for &e in map.entries {
+        if core::eq_ascii_fold(resolve_hdr_entry_name(map, raw_buf, e), header_name) {
+            if has_header_token_fold(resolve_hdr_entry_val(map, raw_buf, e), token) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn map_extract_single_header(
+    map:         const HeaderMap&,
+    raw_buf:     const u8[:],
+    header_name: const u8[:],
+) -> const u8[:], i64 {
+    var first_idx: i64 = -1;
+    var count:     i64 = 0;
+    for i in map.entries.len {
+        let e = map.entries[i];
+        if core::eq_ascii_fold(resolve_hdr_entry_name(map, raw_buf, e), header_name) {
+            count = core::add_sat_i64(count, 1);
+            if count == 1 {
+                first_idx = i;
+            }
+        }
+    }
+    if first_idx >= 0 {
+        let first_e = map.entries[first_idx];
+        return resolve_hdr_entry_val(map, raw_buf, first_e).trim_lws(), count;
+    }
+    return "", count;
+}
+
+// Validates an HTTP/1.1 101 Switching Protocols server response for a client WebSocket handshake (RFC 6455 §4.1).
+// Returns `(negotiated_subprotocol, WsError.None)` on success.
+fn validate_client_upgrade_response(
+    status_code:       u16,
+    headers:           const HeaderMap&,
+    raw_buf:           const u8[:],
+    client_key:        const u8[:],
+    offered_protocols: const u8[:],
+) -> const u8[:], WsError {
+    guard status_code == 101 else { return "", WsError.InvalidStatusCode; }
+    guard map_has_header_token(headers, raw_buf, "upgrade", "websocket") else {
+        return "", WsError.MissingUpgradeHeader;
+    }
+    guard map_has_header_token(headers, raw_buf, "connection", "upgrade") else {
+        return "", WsError.MissingConnectionHeader;
+    }
+
+    let accept_val, accept_cnt = map_extract_single_header(headers, raw_buf, "sec-websocket-accept");
+    guard accept_cnt == 1 && validate_websocket_accept(client_key, accept_val) else {
+        return "", WsError.InvalidAcceptKey;
+    }
+
+    let proto_val, proto_cnt = map_extract_single_header(headers, raw_buf, "sec-websocket-protocol");
+    guard proto_cnt <= 1 else { return "", WsError.InvalidSubprotocol; }
+    if proto_cnt == 1 {
+        guard proto_val.len > 0 && offered_protocols.len > 0 else {
+            return "", WsError.InvalidSubprotocol;
+        }
+        guard core::index_of_byte(proto_val, ',') < 0 && has_subprotocol_token(offered_protocols, proto_val) else {
+            return "", WsError.InvalidSubprotocol;
+        }
+        return proto_val, WsError.None;
+    }
+
+    return "", WsError.None;
 }
 
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.

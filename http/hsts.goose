@@ -336,7 +336,7 @@ fn parse_hsts_cache_line(line: const u8[:], now_sec: i64) -> HstsEntry, bool {
     let trimmed = line.trim_bytes(" \t\r\n");
     guard trimmed.len > 0 && trimmed[0] != '#' else { return entry, false; }
 
-    var tok = make_byte_tokenizer(trimmed, '\t');
+    var tok = core::make_byte_tokenizer(trimmed, '\t');
     let host_part, ok_h = tok.token_next();
     let exp_part, ok_e = tok.token_next();
     let sub_part, ok_s = tok.token_next();
@@ -370,7 +370,7 @@ fn upsert_hsts_entry(cache: HstsCache&, entry: const HstsEntry&, now_sec: i64) {
 fn load_hsts_cache(cache: HstsCache&, data: const u8[:], now_sec: i64) -> i64 {
     guard data.len > 0 else { return 0; }
     var loaded: i64 = 0;
-    var tok = make_byte_tokenizer(data, '\n');
+    var tok = core::make_byte_tokenizer(data, '\n');
     loop {
         let line, ok = tok.token_next();
         guard ok else { break; }

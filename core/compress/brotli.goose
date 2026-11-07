@@ -1470,8 +1470,17 @@ fn decode_meta_block_length(r: BrotliBitReader&, mnibbles: u32) -> u32, bool {
     return mlen + 1, true;
 }
 
+inline fn brotli_read_backward_byte<B>(out: const B&, dict: const u8[:], dist_offset: i64) -> u8 {
+    if dist_offset <= out.len {
+        return out[sub_sat_i64(out.len, dist_offset)];
+    }
+    let dict_back = sub_sat_i64(dist_offset, out.len);
+    return dict[sub_sat_i64(dict.len, dict_back)];
+}
+
 fn apply_brotli_copy<B>(
     out:                  B&,
+    dict:                 const u8[:],
     distance:             u32,
     copy_len:             u32,
     max_allowed_backward: u32,
@@ -1486,17 +1495,15 @@ fn apply_brotli_copy<B>(
         guard meta_block_remaining >= copy_len else {
             return CompressError.CorruptedBitstream;
         }
-        if max_output_bytes >= 0 && (out.len + (copy_len as i64)) > max_output_bytes {
+        if max_output_bytes >= 0 && add_sat_i64(out.len, copy_len as i64) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         let dist_offset = distance as i64;
-        guard dist_offset <= out.len else { return CompressError.DistanceOutOfBounds; }
-        var copy_pos = out.len - dist_offset;
+        guard dist_offset <= add_sat_i64(out.len, dict.len) else { return CompressError.DistanceOutOfBounds; }
 
         for k in copy_len {
-            let b = out[copy_pos];
+            let b = brotli_read_backward_byte(out, dict, dist_offset);
             out.push(b);
-            copy_pos += 1;
             prev_p2 = prev_p1;
             prev_p1 = b;
         }
@@ -1622,6 +1629,7 @@ fn decode_brotli_commands<B>(
     prev_p1:             u8&,
     prev_p2:             u8&,
     out:                 B&,
+    dict:                const u8[:] = "",
 ) -> CompressError {
     var meta_block_remaining = mlen;
     while meta_block_remaining > 0 {
@@ -1645,11 +1653,12 @@ fn decode_brotli_commands<B>(
         let distance, dist_err = read_brotli_command_distance(r, dist_zero, copy_len, bs, npostfix, ndirect, dist_ring);
         guard dist_err == CompressError.None else { return dist_err; }
 
-        let out_u32 = out.len as u32;
-        let max_allowed_backward = min(out_u32, max_window_distance);
+        let total_hist_u32 = add_sat_i64(out.len, dict.len) as u32;
+        let max_allowed_backward = min(total_hist_u32, max_window_distance);
 
         let copy_err = apply_brotli_copy(
             out,
+            dict,
             distance,
             copy_len,
             max_allowed_backward,
@@ -1714,6 +1723,7 @@ fn decode_brotli_meta_block<B>(
     prev_p2:             u8&,
     out:                 B&,
     is_last:             bool&,
+    dict:                const u8[:] = "",
 ) -> CompressError {
     is_last = brotli_read_bits(r, 1) != 0;
     if is_last {
@@ -1764,14 +1774,22 @@ fn decode_brotli_meta_block<B>(
         prev_p1,
         prev_p2,
         out,
+        dict,
     );
 }
 
-// Internal Brotli decompressor (RFC 7932) with max output limit protection.
+inline fn brotli_dict_tail_bytes(dict: const u8[:]) -> u8, u8 {
+    let p1 = if dict.len > 0 { dict[sub_sat_i64(dict.len, 1)] } else { 0 };
+    let p2 = if dict.len > 1 { dict[sub_sat_i64(dict.len, 2)] } else { 0 };
+    return p1, p2;
+}
+
+// Internal Brotli decompressor (RFC 7932) with optional shared dictionary and max output limit protection.
 fn brotli_decompress_with_limit_impl<B>(
     src:              const u8[:],
     out:              B&,
-    max_output_bytes: i64 = -1,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
 ) -> CompressError {
     guard src.len > 0 else {
         return CompressError.InputBufferTruncated;
@@ -1785,8 +1803,7 @@ fn brotli_decompress_with_limit_impl<B>(
 
     let max_window_distance = ((1 as u32) << wbits) - 16;
     var dist_ring: u32[4] = [4, 11, 15, 16];
-    var prev_p1:   u8     = 0;
-    var prev_p2:   u8     = 0;
+    var prev_p1, prev_p2 = brotli_dict_tail_bytes(dict);
 
     var is_last = false;
     while !is_last {
@@ -1799,6 +1816,7 @@ fn brotli_decompress_with_limit_impl<B>(
             prev_p2,
             out,
             is_last,
+            dict,
         );
         guard meta_err == CompressError.None else { return meta_err; }
         guard !r.underflow else { return CompressError.InputBufferTruncated; }
@@ -1824,7 +1842,18 @@ fn brotli_decompress_with_limit<B>(
     out:              B&,
     max_output_bytes: i64 = -1,
 ) -> bool, CompressError {
-    let err = brotli_decompress_with_limit_impl(src, out, max_output_bytes);
+    let err = brotli_decompress_with_limit_impl(src, out, max_output_bytes, "");
+    return err == CompressError.None, err;
+}
+
+// Decompresses an RFC 7932 Brotli stream using a shared dictionary (RFC 9842 `dcb`) with max output limit protection.
+fn brotli_decompress_with_dict<B>(
+    src:              const u8[:],
+    dict:             const u8[:],
+    out:              B&,
+    max_output_bytes: i64 = -1,
+) -> bool, CompressError {
+    let err = brotli_decompress_with_limit_impl(src, out, max_output_bytes, dict);
     return err == CompressError.None, err;
 }
 

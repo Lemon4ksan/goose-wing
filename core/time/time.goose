@@ -147,8 +147,7 @@ fn weekday(time_val: Time) -> Weekday {
     if local_secs < 0 && (local_secs % 86400 != 0) {
         days_count -= 1;
     }
-    var weekday_num = (days_count + 4) % 7;
-    if weekday_num < 0 { weekday_num += 7; }
+    let weekday_num = (days_count + 4) % 7;
     return weekday_from_number(weekday_num);
 }
 
@@ -346,10 +345,7 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
     if (time_val.wall_sec > -max_sec || (time_val.wall_sec == -max_sec && time_val.nsec >= 0)) &&
        (time_val.wall_sec < max_sec || (time_val.wall_sec == max_sec && time_val.nsec <= 854775807)) {
         let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-        var rem = total_nanos % dur.nanos;
-        if total_nanos < 0 && rem != 0 {
-            rem -= dur.nanos;
-        }
+        let rem = total_nanos % dur.nanos;
         let base_nanos = total_nanos - rem;
         var truncated_time = unix(0, base_nanos);
         truncated_time.tz_offset = time_val.tz_offset;

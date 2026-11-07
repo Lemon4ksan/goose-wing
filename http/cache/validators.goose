@@ -144,7 +144,7 @@ fn evaluate_cache_if_range(
     }
 
     let parsed_date, ok_date = core::parse_http_date(s);
-    if ok_date && !is_zero(cached_last_modified) {
+    if ok_date && !cached_last_modified.is_zero() {
         return core::unix(parsed_date) == core::unix(cached_last_modified);
     }
     return false;

@@ -315,6 +315,197 @@ fn find_two_way(haystack: const u8[:], needle: const u8[:]) -> i64 {
     };
 }
 
+// Advances reverse suffix critical factorization by one comparison step.
+//
+// Example:
+//   s = "abacaba", maximal = false, best = 6, period = 1, candidate = 5, offset = 0
+//   returns: ok = true, best = 6, period = 2, candidate = 4, offset = 0
+inline fn reverse_suffix_step(
+    s:         const u8[:],
+    maximal:   bool,
+    best:      i64&,
+    period:    i64&,
+    candidate: i64&,
+    offset:    i64&,
+) -> bool {
+    guard offset <= candidate else { return false; }
+    let idx_x = sub_sat_i64(best, offset);
+    let idx_y = sub_sat_i64(candidate, offset);
+    guard idx_x >= 0 && idx_x < s.len && idx_y >= 0 && idx_y < s.len else { return false; }
+    let x = s[idx_x];
+    let y = s[idx_y];
+    if x == y {
+        if add_sat_i64(offset, 1) == period {
+            guard candidate >= period else { return false; }
+            candidate = sub_sat_i64(candidate, period);
+            offset = 0;
+        } else {
+            offset = add_sat_i64(offset, 1);
+        }
+        return true;
+    }
+    if (maximal && y > x) || (!maximal && y < x) {
+        best = candidate;
+        guard candidate >= 1 else { return false; }
+        candidate = sub_sat_i64(candidate, 1);
+        period = 1;
+        offset = 0;
+        return true;
+    }
+    let adv = add_sat_i64(offset, 1);
+    guard candidate >= adv else { return false; }
+    candidate = sub_sat_i64(candidate, adv);
+    offset = 0;
+    period = sub_sat_i64(best, candidate);
+    return true;
+}
+
+inline fn reverse_suffix(s: const u8[:], maximal: bool) -> i64, i64 {
+    let slen = s.len;
+    var best = sub_sat_i64(slen, 1);
+    var period: i64 = 1;
+    var candidate = sub_sat_i64(slen, 2);
+    var offset: i64 = 0;
+    while candidate >= 0 && candidate < slen {
+        let cont = reverse_suffix_step(s, maximal, best, period, candidate, offset);
+        if !cont { break; }
+    }
+    let crit = sub_sat_i64(sub_sat_i64(slen, 1), best);
+    return crit, period;
+}
+
+inline fn make_reverse_two_way(s: const u8[:]) -> TwoWay {
+    let a, ap = reverse_suffix(s, false);
+    let b, bp = reverse_suffix(s, true);
+    let crit_rev = max(a, b);
+    var period = if a > b { ap } else { bp };
+    let slen = s.len;
+    let rem_crit = sub_sat_i64(slen, crit_rev);
+    var small = crit_rev < rem_crit;
+    if small {
+        let s1 = rem_crit;
+        let s2 = sub_sat_i64(rem_crit, period);
+        let e2 = sub_sat_i64(slen, period);
+        if s1 >= 0 && s2 >= 0 && e2 <= slen && s2 <= e2 {
+            small = s[s1..] == s[s2..e2];
+        } else {
+            small = false;
+        }
+    }
+    if !small {
+        period = max(crit_rev, rem_crit);
+    }
+    var bits: u64 = 0;
+    let rest_len = if small { min(period, slen) } else { slen };
+    var idx: i64 = 0;
+    while idx >= 0 && idx < rest_len && idx < slen {
+        let byte = s[idx];
+        let shift = (byte & 63) as u32;
+        bits |= shl_sat_u64(1, shift);
+        idx = add_sat_i64(idx, 1);
+    }
+    let mem_val = sub_sat_i64(slen, period);
+    return TwoWay {
+        critical: rem_crit,
+        period:   period,
+        memory:   if small { mem_val } else { 0 },
+        bytes:    bits,
+    };
+}
+
+inline fn rfind_match_left(haystack: const u8[:], needle: const u8[:], base: i64, start_i: i64) -> i64 {
+    var i = start_i;
+    while i > 0 {
+        let idx = sub_sat_i64(i, 1);
+        let h_idx = add_sat_i64(base, idx);
+        guard idx >= 0 && idx < needle.len && h_idx >= 0 && h_idx < haystack.len else { break; }
+        let nl_b = needle[idx];
+        let wn_b = haystack[h_idx];
+        if nl_b != wn_b { break; }
+        i = idx;
+    }
+    return i;
+}
+
+inline fn rfind_match_right(
+    haystack: const u8[:],
+    needle:   const u8[:],
+    base:     i64,
+    start_j:  i64,
+    stop:     i64,
+) -> i64 {
+    var j = start_j;
+    while j < stop {
+        let h_idx = add_sat_i64(base, j);
+        guard j >= 0 && j < needle.len && h_idx >= 0 && h_idx < haystack.len else { break; }
+        let nl_b = needle[j];
+        let wn_b = haystack[h_idx];
+        if nl_b != wn_b { break; }
+        j = add_sat_i64(j, 1);
+    }
+    return j;
+}
+
+inline fn rfind_two_way_step(
+    haystack: const u8[:],
+    needle:   const u8[:],
+    two:      const TwoWay&,
+    periodic: bool,
+    base:     i64&,
+    memory:   i64&,
+) -> bool {
+    let nlen = needle.len;
+    let ucrit = two.critical;
+    let first_b = haystack[base];
+    let shift = (first_b & 63) as u32;
+    if (two.bytes & shl_sat_u64(1, shift)) == 0 {
+        base = sub_sat_i64(base, nlen);
+        memory = nlen;
+        return false;
+    }
+    let start_i = if periodic { min(ucrit, memory) } else { ucrit };
+    let i = rfind_match_left(haystack, needle, base, start_i);
+    if i > 0 {
+        let step = add_sat_i64(sub_sat_i64(ucrit, i), 1);
+        base = sub_sat_i64(base, step);
+        memory = nlen;
+        return false;
+    }
+    let stop = if periodic { memory } else { nlen };
+    let j = rfind_match_right(haystack, needle, base, ucrit, stop);
+    if j >= stop { return true; }
+    base = sub_sat_i64(base, two.period);
+    memory = sub_sat_i64(nlen, two.memory);
+    return false;
+}
+
+fn rfind_two_way_scan(haystack: const u8[:], needle: const u8[:], two: const TwoWay&, periodic: bool) -> i64 {
+    let nlen = needle.len;
+    let hlen = haystack.len;
+    var memory = nlen;
+    var base = sub_sat_i64(hlen, nlen);
+    while base >= 0 && base < hlen {
+        let matched = rfind_two_way_step(haystack, needle, two, periodic, base, memory);
+        if matched { return base; }
+    }
+    return -1;
+}
+
+// Searches for needle in haystack in reverse using Crochemore-Perrin Two-Way factorization.
+//
+// Example:
+//   haystack = "aaabbbccc---long_boundary_needle_33_bytes---xx---long_boundary_needle_33_bytes---zz"
+//   needle = "---long_boundary_needle_33_bytes---"
+//   returns: 46
+fn rfind_two_way(haystack: const u8[:], needle: const u8[:]) -> i64 {
+    let two = make_reverse_two_way(needle);
+    return if two.memory > 0 {
+        rfind_two_way_scan(haystack, needle, two, true)
+    } else {
+        rfind_two_way_scan(haystack, needle, two, false)
+    };
+}
+
 // Searches for needle in haystack using SIMD packed-pair (< 32 bytes) or Two-Way (> 32 bytes).
 // Returns the 0-based byte index of the first match, or -1 if not found.
 fn find(haystack: const u8[:], needle: const u8[:]) -> i64 {
@@ -342,12 +533,7 @@ fn rfind(haystack: const u8[:], needle: const u8[:]) -> i64 {
         let a, b = rare_pair(needle);
         return native_simd_rfind_pair(haystack, needle[a], a, needle[b], b, needle);
     }
-    var pos: i64 = haystack.len - needle.len;
-    while pos >= 0 {
-        if haystack[pos..pos + needle.len] == needle { return pos; }
-        pos--;
-    }
-    return -1;
+    return rfind_two_way(haystack, needle);
 }
 
 // Checks whether haystack contains needle as a contiguous subslice.

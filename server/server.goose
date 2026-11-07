@@ -2166,28 +2166,26 @@ fn complete_ws_upgrade<Req, B>(
 inline fn strip_required_proxy_preface<B>(
     server:       const HttpServer&,
     wire_in:      const u8[:],
-    raw_stream:   const u8[:]&,
     effective_ip: u8[..64]&,
     wire_out:     B&,
-) -> bool {
+) -> const u8[:], bool {
     var proxy_hdr = ProxyHeader { .. };
     guard detect_proxy_protocol(wire_in) != ProxyProtocolVersion.None else {
         // uWS #1927 / HAProxy spec: When PROXY protocol is required, connections
         // without a valid PROXY preface MUST NOT fall through to plain HTTP.
         serialize_bad_request_error(server.server_name[..], wire_out);
-        return false;
+        return wire_in, false;
     }
     let stripped, has_proxy = detect_and_strip_proxy_header(wire_in, proxy_hdr);
     guard has_proxy else {
         serialize_bad_request_error(server.server_name[..], wire_out);
-        return false;
+        return wire_in, false;
     }
-    raw_stream = stripped;
     if proxy_hdr.src_ip_str.len > 0 {
         effective_ip.clear();
         effective_ip.append(proxy_hdr.src_ip_str[..]);
     }
-    return true;
+    return stripped, true;
 }
 
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
@@ -2207,9 +2205,11 @@ fn handle_connection_wire<Stage, B>(
     var raw_stream = wire_in;
 
     if server.accept_proxy_protocol {
-        guard strip_required_proxy_preface(server, wire_in, raw_stream, effective_ip, wire_out) else {
+        let stripped, ok_proxy = strip_required_proxy_preface(server, wire_in, effective_ip, wire_out);
+        guard ok_proxy else {
             return PipelineOutcome.Handled, false;
         }
+        raw_stream = stripped;
     }
 
     if is_h2_client_preface(raw_stream) {

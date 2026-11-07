@@ -136,3 +136,33 @@ fn dpdk_rx_burst(dev: const DpdkDevice&, queue_id: u16, out_mbufs: u64[..32]&, m
     }
     return safe_n as u16;
 }
+
+// Cache-line isolated DPDK poll-mode staging ring context (`rte_ring` / `rte_eth_dev_tx_buffer`).
+struct DpdkContext {
+    port_id:          u16     = 0,
+    queue_id:         u16     = 0,
+    rx_count:         u32     = 0,
+    rx_burst:         u64[64] = [0; 64],
+    _pad_rx:          u64[4]  = [0; 4],
+    tx_count:         u32     = 0,
+    tx_burst:         u64[64] = [0; 64],
+    _pad_tx:          u64[4]  = [0; 4],
+    rx_packets_total: u64     = 0,
+    tx_packets_total: u64     = 0,
+    tx_dropped_total: u64     = 0,
+}
+
+// Stages a burst of mbuf pointers into `ctx.tx_burst` using bounded contiguous slice copying.
+fn dpdk_stage_tx_burst(ctx: DpdkContext&, mbufs: const u64[:]) -> u32 {
+    guard mbufs.len > 0 else { return 0; }
+    var idx = min(ctx.tx_count as u64, 64);
+    var staged: u64 = 0;
+    for m in mbufs {
+        guard idx < 64 else { break; }
+        ctx.tx_burst[idx] = m;
+        idx = core::add_sat_u64(idx, 1);
+        staged = core::add_sat_u64(staged, 1);
+    }
+    ctx.tx_count = idx as u32;
+    return staged as u32;
+}

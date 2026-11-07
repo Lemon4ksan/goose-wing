@@ -18,12 +18,23 @@
 #include <string.h>
 #include <stdlib.h>
 
+typedef struct {
+    uint8_t *data;
+    int64_t len;
+} wing_bytes_rw;
+
+typedef struct {
+    const uint8_t *data;
+    int64_t len;
+} wing_bytes_ro;
+
 #if defined(__wasm__)
 // WebAssembly portability environment
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-int32_t wing_tcp_send(int64_t sock_fd, const uint8_t *data, int64_t len);
+int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
 
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -47,16 +58,6 @@ int32_t wing_tcp_send(int64_t sock_fd, const uint8_t *data, int64_t len);
 #include <unistd.h>
 #include <fcntl.h>
 #endif
-
-typedef struct {
-    uint8_t *data;
-    int64_t len;
-} wing_bytes_rw;
-
-typedef struct {
-    const uint8_t *data;
-    int64_t len;
-} wing_bytes_ro;
 
 // Flags for guarded arena allocation
 #define WING_PAGE_GUARD_PAGE 0x01
@@ -184,9 +185,11 @@ void wing_guarded_arena_destroy(uint64_t handle) {
     }
 
     if (arena->is_locked) {
-#if defined(_WIN32)
+#if defined(__wasm__)
+        // No physical page lock in WebAssembly
+#elif defined(_WIN32)
         VirtualUnlock(arena->base, arena->capacity);
-#elif !defined(__wasm__)
+#else
         munlock(arena->base, arena->capacity);
 #endif
         arena->is_locked = false;
@@ -331,13 +334,13 @@ int32_t wing_page_unlock(uint64_t handle, uint64_t offset, uint64_t len) {
 typedef struct {
     uint8_t *base;
     uint64_t file_size;
-#if defined(_WIN32)
+#if defined(__wasm__)
+    int is_malloc;
+#elif defined(_WIN32)
     HANDLE file_handle;
     HANDLE mapping_handle;
-#elif !defined(__wasm__)
-    int file_fd;
 #else
-    int is_malloc;
+    int file_fd;
 #endif
 } wing_mmap_file_t;
 

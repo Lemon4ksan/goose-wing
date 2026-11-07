@@ -129,9 +129,95 @@ fn u256_sub_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
     return diff;
 }
 
-// Bitwise shift-and-add modular multiplication: (a * b) mod m.
+// Constant-time 256-bit integer selection.
+// crap:ignore
+inline fn u256_select(bit: u32, if_true: U256, if_false: U256) -> U256 {
+    let mask = 0 - (bit & 1);
+    var out = U256 { .. };
+    for i in 8 {
+        out.v[i] = (if_false.v[i] & (~mask)) | (if_true.v[i] & mask);
+    }
+    return out;
+}
+
+// Zeroizes a 256-bit secret scalar in place.
+// crap:ignore
+inline fn zeroize_u256(val: U256&) {
+    var z_bytes: u8[32] = [0; 32];
+    secure_zeroize_32(z_bytes);
+    val = u256_from_be(z_bytes);
+}
+
+// 32-bit CIOS Montgomery multiplication step on 8-limb U256: `(a * b * R^-1) mod m` where `R = 2^256`.
+// crap:ignore
+fn u256_monty_mul(a: U256, b: U256, m: const u32[8]&, m0i: u32) -> U256 {
+    var t: u32[10] = [0; 10];
+    for i in 8 {
+        var carry1: u64 = 0;
+        let ai = a.v[i] as u64;
+        for j in 8 {
+            let prod = ai * b.v[j] + t[j] + carry1;
+            t[j] = (prod & 0xFFFFFFFF) as u32;
+            carry1 = prod >> 32;
+        }
+        let sum1 = t[8] + carry1;
+        t[8] = (sum1 & 0xFFFFFFFF) as u32;
+        t[9] = (sum1 >> 32) as u32;
+
+        let q = (t[0] * m0i) as u64;
+        var carry2: u64 = (q * m[0] + t[0]) >> 32;
+        var j:      i64 = 1;
+        while j < 8 {
+            let prod = q * m[j] + t[j] + carry2;
+            t[j - 1] = (prod & 0xFFFFFFFF) as u32;
+            carry2 = prod >> 32;
+            j += 1;
+        }
+        let sum2 = t[8] + carry2;
+        t[7] = (sum2 & 0xFFFFFFFF) as u32;
+        let top_carry = (sum2 >> 32) + t[9];
+        t[8] = (top_carry & 0xFFFFFFFF) as u32;
+        t[9] = 0;
+    }
+    var out = U256 { .. };
+    for i in 8 {
+        out.v[i] = t[i];
+    }
+    if t[8] != 0 || u256_cmp(out, m) >= 0 {
+        var borrow: i64 = 0;
+        for j in 8 {
+            let d = (out.v[j] as i64) - m[j] - borrow;
+            out.v[j] = (d & 0xFFFFFFFF) as u32;
+            borrow = if d < 0 { 1 } else { 0 };
+        }
+    }
+    return out;
+}
+
+// Fast 8x8 limb Montgomery modular multiplication: `(a * b) mod m`.
+// Uses precomputed `R^2 mod m` and `-m[0]^-1 mod 2^32` for P-256 prime and group order.
 // crap:ignore
 fn u256_mul_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
+    if m[0] == 0xFFFFFFFF {
+        let r2_p = U256 {
+            v: [
+                0x00000003, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFB,
+                0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0x00000004,
+            ],
+        };
+        let a_mont = u256_monty_mul(a, r2_p, m, 1);
+        return u256_monty_mul(a_mont, b, m, 1);
+    }
+    if m[0] == 0xFC632551 {
+        let r2_n = U256 {
+            v: [
+                0xBE79EEA2, 0x83244C95, 0x49BD6FA6, 0x4699799C,
+                0x2B6BEC59, 0x2845B239, 0xF3D95620, 0x66E12D94,
+            ],
+        };
+        let a_mont = u256_monty_mul(a, r2_n, m, 0xEE00BC4F);
+        return u256_monty_mul(a_mont, b, m, 0xEE00BC4F);
+    }
     var res = U256 { .. };
     var cur = a;
     for i in 256 {
@@ -161,9 +247,9 @@ fn u256_inv_mod(a: U256, m: const u32[8]&) -> U256 {
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((exp.v[limb] >> bit) & 1) == 1 {
-            res = u256_mul_mod(res, base, m);
-        }
+        let bit_val = (exp.v[limb] >> bit) & 1;
+        let prod = u256_mul_mod(res, base, m);
+        res = u256_select(bit_val, prod, res);
         base = u256_mul_mod(base, base, m);
     }
     return res;
@@ -180,6 +266,20 @@ struct P256Jacobian {
     y:        U256 = U256 { .. },
     z:        U256 = U256 { .. },
     infinity: bool = true,
+}
+
+// Constant-time P-256 Jacobian point selection.
+// crap:ignore
+inline fn p256_jacobian_select(bit: u32, if_true: P256Jacobian, if_false: P256Jacobian) -> P256Jacobian {
+    let mask = 0 - (bit & 1);
+    let inf_t: u32 = if if_true.infinity { 1 } else { 0 };
+    let inf_f: u32 = if if_false.infinity { 1 } else { 0 };
+    return P256Jacobian {
+        x:        u256_select(bit, if_true.x, if_false.x),
+        y:        u256_select(bit, if_true.y, if_false.y),
+        z:        u256_select(bit, if_true.z, if_false.z),
+        infinity: ((inf_f & (~mask)) | (inf_t & mask)) != 0,
+    };
 }
 
 // crap:ignore
@@ -290,6 +390,7 @@ fn p256_point_add(p1: P256Point, p2: P256Point) -> P256Point {
     return p256_jacobian_to_affine(p256_jacobian_add(p256_to_jacobian(p1), p256_to_jacobian(p2)));
 }
 
+// Constant-time scalar multiplication: `[scalar] * pt` using branchless Jacobian selection.
 // crap:ignore
 fn p256_scalar_mul(pt: P256Point, scalar: U256) -> P256Point {
     var acc = P256Jacobian { .. };
@@ -297,9 +398,9 @@ fn p256_scalar_mul(pt: P256Point, scalar: U256) -> P256Point {
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((scalar.v[limb] >> bit) & 1) == 1 {
-            acc = p256_jacobian_add(acc, addend);
-        }
+        let bit_val = (scalar.v[limb] >> bit) & 1;
+        let sum = p256_jacobian_add(acc, addend);
+        acc = p256_jacobian_select(bit_val, sum, acc);
         addend = p256_jacobian_double(addend);
     }
     return p256_jacobian_to_affine(acc);
@@ -474,13 +575,14 @@ fn ecdsa_p256_encode_der_sig(raw_sig: const u8[64]&, out: u8[..72]&) -> bool {
 // Derives the 65-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 32-byte P-256 private scalar.
 // crap:ignore
 fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
-    let d = u256_from_be(priv_key);
+    var d = u256_from_be(priv_key);
     let g = P256Point {
         x:        U256 { v: P256_GX },
         y:        U256 { v: P256_GY },
         infinity: false,
     };
     let pub_pt = p256_scalar_mul(g, d);
+    zeroize_u256(d);
     let xb = u256_to_be(pub_pt.x);
     let yb = u256_to_be(pub_pt.y);
     var out: u8[65] = [0; 65];
@@ -490,6 +592,30 @@ fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
         out[33 + i] = yb[i];
     }
     return out;
+}
+
+// Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA256 DRBG state.
+// crap:ignore
+fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[..97]&, retry: bool) -> U256 {
+    if retry {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+    }
+    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+    var k_scalar = u256_from_be(v_hmac);
+    while u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+        k_scalar = u256_from_be(v_hmac);
+    }
+    return k_scalar;
 }
 
 // Deterministic RFC 6979 ECDSA P-256 SHA-256 signature generation returning 64-byte `r || s`.
@@ -505,7 +631,7 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     if u256_cmp(d, P256_ORDER) >= 0 {
         d = u256_sub_mod(d, ord, P256_ORDER);
     }
-    let x_be = u256_to_be(d);
+    var x_be = u256_to_be(d);
     let z_be = u256_to_be(z);
     var v_hmac:   u8[32]   = [0x01; 32];
     var k_hmac:   u8[32]   = [0x00; 32];
@@ -523,30 +649,30 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     seed_buf.append(z_be[..]);
     k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
-    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
 
-    var k_scalar = u256_from_be(v_hmac);
-    while u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
-        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
-        v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
-        k_scalar = u256_from_be(v_hmac);
+    let g = P256Point { x: U256 { v: P256_GX }, y: U256 { v: P256_GY }, infinity: false };
+    var r_val = U256 { .. };
+    var s_val = U256 { .. };
+    var retry = false;
+    while u256_is_zero(r_val) || u256_is_zero(s_val) {
+        var k_scalar = rfc6979_p256_next_k(k_hmac, v_hmac, seed_buf, retry);
+        retry = true;
+        let r_pt = p256_scalar_mul(g, k_scalar);
+        r_val = r_pt.x;
+        if u256_cmp(r_val, P256_ORDER) >= 0 {
+            r_val = u256_sub_mod(r_val, ord, P256_ORDER);
+        }
+        var k_inv = u256_inv_mod(k_scalar, P256_ORDER);
+        let z_plus_rd = u256_add_mod(z, u256_mul_mod(r_val, d, P256_ORDER), P256_ORDER);
+        s_val = u256_mul_mod(k_inv, z_plus_rd, P256_ORDER);
+        zeroize_u256(k_scalar);
+        zeroize_u256(k_inv);
     }
     secure_zeroize_slice(seed_buf[..]);
     secure_zeroize_32(k_hmac);
     secure_zeroize_32(v_hmac);
-    let g = P256Point { x: U256 { v: P256_GX }, y: U256 { v: P256_GY }, infinity: false };
-    let r_pt = p256_scalar_mul(g, k_scalar);
-    var r_val = r_pt.x;
-    if u256_cmp(r_val, P256_ORDER) >= 0 {
-        r_val = u256_sub_mod(r_val, ord, P256_ORDER);
-    }
-    let k_inv = u256_inv_mod(k_scalar, P256_ORDER);
-    let z_plus_rd = u256_add_mod(z, u256_mul_mod(r_val, d, P256_ORDER), P256_ORDER);
-    let s_val = u256_mul_mod(k_inv, z_plus_rd, P256_ORDER);
+    secure_zeroize_32(x_be);
+    zeroize_u256(d);
 
     let r_be = u256_to_be(r_val);
     let s_be = u256_to_be(s_val);
@@ -738,8 +864,97 @@ fn u384_sub_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
     return diff;
 }
 
+// Constant-time 384-bit integer selection.
+// crap:ignore
+inline fn u384_select(bit: u32, if_true: U384, if_false: U384) -> U384 {
+    let mask = 0 - (bit & 1);
+    var out = U384 { .. };
+    for i in 12 {
+        out.v[i] = (if_false.v[i] & (~mask)) | (if_true.v[i] & mask);
+    }
+    return out;
+}
+
+// Zeroizes a 384-bit secret scalar in place.
+// crap:ignore
+inline fn zeroize_u384(val: U384&) {
+    var z_bytes: u8[48] = [0; 48];
+    secure_zeroize_48(z_bytes);
+    val = u384_from_be(z_bytes);
+}
+
+// 32-bit CIOS Montgomery multiplication step on 12-limb U384: `(a * b * R^-1) mod m` where `R = 2^384`.
+// crap:ignore
+fn u384_monty_mul(a: U384, b: U384, m: const u32[12]&, m0i: u32) -> U384 {
+    var t: u32[14] = [0; 14];
+    for i in 12 {
+        var carry1: u64 = 0;
+        let ai = a.v[i] as u64;
+        for j in 12 {
+            let prod = ai * b.v[j] + t[j] + carry1;
+            t[j] = (prod & 0xFFFFFFFF) as u32;
+            carry1 = prod >> 32;
+        }
+        let sum1 = t[12] + carry1;
+        t[12] = (sum1 & 0xFFFFFFFF) as u32;
+        t[13] = (sum1 >> 32) as u32;
+
+        let q = (t[0] * m0i) as u64;
+        var carry2: u64 = (q * m[0] + t[0]) >> 32;
+        var j:      i64 = 1;
+        while j < 12 {
+            let prod = q * m[j] + t[j] + carry2;
+            t[j - 1] = (prod & 0xFFFFFFFF) as u32;
+            carry2 = prod >> 32;
+            j += 1;
+        }
+        let sum2 = t[12] + carry2;
+        t[11] = (sum2 & 0xFFFFFFFF) as u32;
+        let top_carry = (sum2 >> 32) + t[13];
+        t[12] = (top_carry & 0xFFFFFFFF) as u32;
+        t[13] = 0;
+    }
+    var out = U384 { .. };
+    for i in 12 {
+        out.v[i] = t[i];
+    }
+    if t[12] != 0 || u384_cmp(out, m) >= 0 {
+        var borrow: i64 = 0;
+        for j in 12 {
+            let d = (out.v[j] as i64) - m[j] - borrow;
+            out.v[j] = (d & 0xFFFFFFFF) as u32;
+            borrow = if d < 0 { 1 } else { 0 };
+        }
+    }
+    return out;
+}
+
+// Fast 12x12 limb Montgomery modular multiplication: `(a * b) mod m`.
+// Uses precomputed `R^2 mod m` and `-m[0]^-1 mod 2^32` for P-384 prime and group order.
 // crap:ignore
 fn u384_mul_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
+    if m[0] == 0xFFFFFFFF {
+        let r2_p = U384 {
+            v: [
+                0x00000001, 0xFFFFFFFE, 0x00000000, 0x00000002,
+                0x00000000, 0xFFFFFFFE, 0x00000000, 0x00000002,
+                0x00000001, 0x00000000, 0x00000000, 0x00000000,
+            ],
+        };
+        let a_mont = u384_monty_mul(a, r2_p, m, 1);
+        return u384_monty_mul(a_mont, b, m, 1);
+    }
+    if m[0] == 0xCCC52973 {
+        let r2_n = U384 {
+            v: [
+                0x19B409A9, 0x2D319B24, 0xDF1AA419, 0xFF3D81E5,
+                0xFCB82947, 0xBC3E483A, 0x4AAB1CC5, 0xD40D4917,
+                0x28266895, 0x3FB05B7A, 0x2B39BF21, 0x0C84EE01,
+            ],
+        };
+        let a_mont = u384_monty_mul(a, r2_n, m, 0xE88FDC45);
+        return u384_monty_mul(a_mont, b, m, 0xE88FDC45);
+    }
     var res = U384 { .. };
     var cur = a;
     for i in 384 {
@@ -768,9 +983,9 @@ fn u384_inv_mod(a: U384, m: const u32[12]&) -> U384 {
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((exp.v[limb] >> bit) & 1) == 1 {
-            res = u384_mul_mod(res, base, m);
-        }
+        let bit_val = (exp.v[limb] >> bit) & 1;
+        let prod = u384_mul_mod(res, base, m);
+        res = u384_select(bit_val, prod, res);
         base = u384_mul_mod(base, base, m);
     }
     return res;
@@ -787,6 +1002,20 @@ struct P384Jacobian {
     y:        U384 = U384 { .. },
     z:        U384 = U384 { .. },
     infinity: bool = true,
+}
+
+// Constant-time P-384 Jacobian point selection.
+// crap:ignore
+inline fn p384_jacobian_select(bit: u32, if_true: P384Jacobian, if_false: P384Jacobian) -> P384Jacobian {
+    let mask = 0 - (bit & 1);
+    let inf_t: u32 = if if_true.infinity { 1 } else { 0 };
+    let inf_f: u32 = if if_false.infinity { 1 } else { 0 };
+    return P384Jacobian {
+        x:        u384_select(bit, if_true.x, if_false.x),
+        y:        u384_select(bit, if_true.y, if_false.y),
+        z:        u384_select(bit, if_true.z, if_false.z),
+        infinity: ((inf_f & (~mask)) | (inf_t & mask)) != 0,
+    };
 }
 
 // crap:ignore
@@ -897,6 +1126,7 @@ fn p384_point_add(p1: P384Point, p2: P384Point) -> P384Point {
     return p384_jacobian_to_affine(p384_jacobian_add(p384_to_jacobian(p1), p384_to_jacobian(p2)));
 }
 
+// Constant-time scalar multiplication: `[scalar] * pt` using branchless Jacobian selection.
 // crap:ignore
 fn p384_scalar_mul(pt: P384Point, scalar: U384) -> P384Point {
     var acc = P384Jacobian { .. };
@@ -904,9 +1134,9 @@ fn p384_scalar_mul(pt: P384Point, scalar: U384) -> P384Point {
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((scalar.v[limb] >> bit) & 1) == 1 {
-            acc = p384_jacobian_add(acc, addend);
-        }
+        let bit_val = (scalar.v[limb] >> bit) & 1;
+        let sum = p384_jacobian_add(acc, addend);
+        acc = p384_jacobian_select(bit_val, sum, acc);
         addend = p384_jacobian_double(addend);
     }
     return p384_jacobian_to_affine(acc);
@@ -1014,13 +1244,14 @@ fn ecdsa_p384_decode_der_sig(der_sig: const u8[:], out_raw: u8[96]&) -> bool {
 // Derives the 97-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 48-byte P-384 private scalar.
 // crap:ignore
 fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
-    let d = u384_from_be(priv_key);
+    var d = u384_from_be(priv_key);
     let g = P384Point {
         x:        U384 { v: P384_GX },
         y:        U384 { v: P384_GY },
         infinity: false,
     };
     let pub_pt = p384_scalar_mul(g, d);
+    zeroize_u384(d);
     let xb = u384_to_be(pub_pt.x);
     let yb = u384_to_be(pub_pt.y);
     var out: u8[97] = [0; 97];
@@ -1030,6 +1261,30 @@ fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
         out[49 + i] = yb[i];
     }
     return out;
+}
+
+// Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA384 DRBG state.
+// crap:ignore
+fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[..145]&, retry: bool) -> U384 {
+    if retry {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+    }
+    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+    var k_scalar = u384_from_be(v_hmac);
+    while u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
+        seed_buf.clear();
+        seed_buf.append(v_hmac[..]);
+        seed_buf.push(0x00);
+        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+        k_scalar = u384_from_be(v_hmac);
+    }
+    return k_scalar;
 }
 
 // Deterministic RFC 6979 ECDSA P-384 SHA-384 signature generation returning 96-byte `r || s`.
@@ -1045,7 +1300,7 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     if u384_cmp(d, P384_ORDER) >= 0 {
         d = u384_sub_mod(d, ord, P384_ORDER);
     }
-    let x_be = u384_to_be(d);
+    var x_be = u384_to_be(d);
     let z_be = u384_to_be(z);
     var v_hmac:   u8[48]    = [0x01; 48];
     var k_hmac:   u8[48]    = [0x00; 48];
@@ -1063,30 +1318,30 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     seed_buf.append(z_be[..]);
     k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
-    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
 
-    var k_scalar = u384_from_be(v_hmac);
-    while u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
-        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
-        v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
-        k_scalar = u384_from_be(v_hmac);
+    let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
+    var r_val = U384 { .. };
+    var s_val = U384 { .. };
+    var retry = false;
+    while u384_is_zero(r_val) || u384_is_zero(s_val) {
+        var k_scalar = rfc6979_p384_next_k(k_hmac, v_hmac, seed_buf, retry);
+        retry = true;
+        let r_pt = p384_scalar_mul(g, k_scalar);
+        r_val = r_pt.x;
+        if u384_cmp(r_val, P384_ORDER) >= 0 {
+            r_val = u384_sub_mod(r_val, ord, P384_ORDER);
+        }
+        var k_inv = u384_inv_mod(k_scalar, P384_ORDER);
+        let z_plus_rd = u384_add_mod(z, u384_mul_mod(r_val, d, P384_ORDER), P384_ORDER);
+        s_val = u384_mul_mod(k_inv, z_plus_rd, P384_ORDER);
+        zeroize_u384(k_scalar);
+        zeroize_u384(k_inv);
     }
     secure_zeroize_slice(seed_buf[..]);
     secure_zeroize_48(k_hmac);
     secure_zeroize_48(v_hmac);
-    let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
-    let r_pt = p384_scalar_mul(g, k_scalar);
-    var r_val = r_pt.x;
-    if u384_cmp(r_val, P384_ORDER) >= 0 {
-        r_val = u384_sub_mod(r_val, ord, P384_ORDER);
-    }
-    let k_inv = u384_inv_mod(k_scalar, P384_ORDER);
-    let z_plus_rd = u384_add_mod(z, u384_mul_mod(r_val, d, P384_ORDER), P384_ORDER);
-    let s_val = u384_mul_mod(k_inv, z_plus_rd, P384_ORDER);
+    secure_zeroize_48(x_be);
+    zeroize_u384(d);
 
     let r_be = u384_to_be(r_val);
     let s_be = u384_to_be(s_val);

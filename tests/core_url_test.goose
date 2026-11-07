@@ -242,42 +242,42 @@ fn test_swift_style_file_and_path_api(t: lit::T&) {
 
     t.run("last_path_component & path_extension (Swift-style)") { sub =>
         let url_file = core::new_file_url("C:\\Projects\\app\\report.final.pdf");
-        sub.assert_bytes_eq(core::last_path_component(url_file), "report.final.pdf", "lastPathComponent with dots");
-        sub.assert_bytes_eq(core::path_extension(url_file), "pdf", "pathExtension is pdf");
+        sub.assert_bytes_eq(url_file.last_path_component(), "report.final.pdf", "lastPathComponent with dots");
+        sub.assert_bytes_eq(url_file.path_extension(), "pdf", "pathExtension is pdf");
 
         // Multi-extension archive
         let url_tar = core::new_url("https://archive.org/data.tar.gz");
-        sub.assert_bytes_eq(core::last_path_component(url_tar), "data.tar.gz", "last component is data.tar.gz");
-        sub.assert_bytes_eq(core::path_extension(url_tar), "gz", "extension is gz");
+        sub.assert_bytes_eq(url_tar.last_path_component(), "data.tar.gz", "last component is data.tar.gz");
+        sub.assert_bytes_eq(url_tar.path_extension(), "gz", "extension is gz");
 
         // Hidden file without extension (.gitignore)
         let url_hidden = core::new_file_url("C:\\Repo\\.gitignore");
-        sub.assert_bytes_eq(core::last_path_component(url_hidden), ".gitignore", "last component is .gitignore");
-        sub.assert_bytes_eq(core::path_extension(url_hidden), "", "hidden file leading dot has no extension");
+        sub.assert_bytes_eq(url_hidden.last_path_component(), ".gitignore", "last component is .gitignore");
+        sub.assert_bytes_eq(url_hidden.path_extension(), "", "hidden file leading dot has no extension");
 
         // Folder with trailing slash
         let url_dir = core::new_file_url("C:\\Projects\\src\\");
-        sub.assert_bytes_eq(core::last_path_component(url_dir), "src", "trailing slash ignored for lastPathComponent");
-        sub.assert_bytes_eq(core::path_extension(url_dir), "", "directory has no extension");
+        sub.assert_bytes_eq(url_dir.last_path_component(), "src", "trailing slash ignored for lastPathComponent");
+        sub.assert_bytes_eq(url_dir.path_extension(), "", "directory has no extension");
 
         // Root path
         let url_root = core::new_url("file:///");
-        sub.assert_bytes_eq(core::last_path_component(url_root), "/", "root lastPathComponent is /");
+        sub.assert_bytes_eq(url_root.last_path_component(), "/", "root lastPathComponent is /");
     };
 
     t.run("deleting_path_extension & deleting_last_path_component") { sub =>
         let url1 = core::new_file_url("C:\\Docs\\report.pdf");
-        let no_ext = core::deleting_path_extension(url1);
-        sub.assert_bytes_eq(core::pathname(no_ext), "/C:/Docs/report", "deletingPathExtension removes .pdf");
-        sub.assert_bytes_eq(core::path_extension(no_ext), "", "now has no extension");
+        let no_ext = url1.deleting_path_extension();
+        sub.assert_bytes_eq(no_ext.pathname(), "/C:/Docs/report", "deletingPathExtension removes .pdf");
+        sub.assert_bytes_eq(no_ext.path_extension(), "", "now has no extension");
 
         // Deleting last component moves to parent folder
-        let parent = core::deleting_last_path_component(url1);
-        sub.assert_bytes_eq(core::pathname(parent), "/C:/Docs/", "deletingLastPathComponent points to parent folder");
+        let parent = url1.deleting_last_path_component();
+        sub.assert_bytes_eq(parent.pathname(), "/C:/Docs/", "deletingLastPathComponent points to parent folder");
 
         // Chained navigation up
-        let grandparent = core::deleting_last_path_component(parent);
-        sub.assert_bytes_eq(core::pathname(grandparent), "/C:/", "grandparent points to drive root");
+        let grandparent = parent.deleting_last_path_component();
+        sub.assert_bytes_eq(grandparent.pathname(), "/C:/", "grandparent points to drive root");
     };
 
     t.run("appending_path_component, appending_path, appending_path_extension") { sub =>
@@ -312,9 +312,9 @@ fn test_swift_style_file_and_path_api(t: lit::T&) {
     t.run("Swift-Style UFCS Method Chaining") { sub =>
         // url.appending(...).appending_path_extension(...)
         let base = core::new_file_url("C:\\Workspace");
-        let final_url = base.appending("build")
-                            .appending("release")
-                            .appending("binary")
+        let final_url = base.appending_path_component("build")
+                            .appending_path_component("release")
+                            .appending_path_component("binary")
                             .appending_path_extension("exe");
 
         sub.assert_bytes_eq(core::pathname(final_url), "/C:/Workspace/build/release/binary.exe", "fluent chained path construction");

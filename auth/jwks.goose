@@ -44,6 +44,10 @@ fn parse_jwk_key_type(s: const u8[:]) -> JwkKeyType {
     return JwkKeyType.Unknown;
 }
 
+const JWK_OP_SIGN:    u8 = 1;
+const JWK_OP_VERIFY:  u8 = 2;
+const JWK_OP_ENCRYPT: u8 = 4;
+
 struct JwksKey {
     kty:              JwkKeyType = JwkKeyType.Unknown,
     crv:              u8[..32]   = "",
@@ -56,6 +60,8 @@ struct JwksKey {
     ec_y:             u8[..48]   = [],
     rsa_n:            u8[..512]  = [],
     rsa_e:            u8[..8]    = [],
+    x5t_s256:         u8[..44]   = [],
+    key_ops:          u8         = 0,
     valid:            bool       = false,
     has_invalid_type: bool       = false,
 }
@@ -343,11 +349,6 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
     out.append("]}");
 }
 
-// Parses core JWK type fields ("kty", "crv", "alg") from JSON reader (RFC 7517 §4).
-//
-// Example:
-//   field_key = "kty", json string = "OKP"
-//   sets: key_item.kty = OKP, returns: true
 inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, invalid: bool&) {
     guard json::peek(reader) == '"' else {
         json::skip(reader);
@@ -362,6 +363,11 @@ inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst
     }
 }
 
+// Parses core JWK type fields ("kty", "crv", "alg") from JSON reader (RFC 7517 §4).
+//
+// Example:
+//   field_key = "kty", json string = "OKP"
+//   sets: key_item.kty = OKP, returns: true
 fn parse_jwk_key_core_type(
     field_key: const u8[:],
     reader:    json::Reader&,
@@ -391,7 +397,44 @@ fn parse_jwk_key_core_type(
     return false;
 }
 
-// Parses JWK identity and usage fields ("use", "kid") from JSON reader (RFC 7517 §4.2, §4.5).
+// Parses JWK "key_ops" array into key_item.key_ops bitmask (RFC 7517 §4.3).
+//
+// Example:
+//   reader at "[\"sign\",\"verify\"]"
+//   sets: key_item.key_ops = JWK_OP_SIGN | JWK_OP_VERIFY
+inline fn parse_jwk_key_ops_array(reader: json::Reader&, scratch: u8[>..]&, key_item: JwksKey&) {
+    guard json::peek(reader) == '[' else {
+        json::skip(reader);
+        key_item.has_invalid_type = true;
+        return;
+    }
+    var count: i64 = 0;
+    json::each_element(reader) {
+        count = core::add_sat_i64(count, 1);
+        guard json::peek(reader) == '"' else {
+            json::skip(reader);
+            key_item.has_invalid_type = true;
+            return;
+        }
+        scratch.clear();
+        let op = json::read_string(reader, scratch);
+        if op == "sign" {
+            key_item.key_ops = key_item.key_ops | JWK_OP_SIGN;
+        } else if op == "verify" {
+            key_item.key_ops = key_item.key_ops | JWK_OP_VERIFY;
+        } else if op == "encrypt" || op == "decrypt" || op == "wrapKey" || op == "unwrapKey" ||
+                  op == "deriveKey" || op == "deriveBits" {
+            key_item.key_ops = key_item.key_ops | JWK_OP_ENCRYPT;
+        } else {
+            key_item.has_invalid_type = true;
+        }
+    };
+    if count == 0 {
+        key_item.has_invalid_type = true;
+    }
+}
+
+// Parses JWK identity and usage fields ("use", "kid", "key_ops", "x5t#S256") from JSON reader (RFC 7517 §4).
 //
 // Example:
 //   field_key = "kid", json string = "key-1"
@@ -410,18 +453,65 @@ fn parse_jwk_key_ident(
         read_nonempty_jwk_str(reader, scratch, key_item.kid, key_item.has_invalid_type);
         return true;
     }
+    if field_key == "key_ops" {
+        parse_jwk_key_ops_array(reader, scratch, key_item);
+        return true;
+    }
+    if field_key == "x5t#S256" {
+        read_nonempty_jwk_str(reader, scratch, key_item.x5t_s256, key_item.has_invalid_type);
+        return true;
+    }
     return false;
 }
 
 struct JwkRawMaterial {
-    raw_x: u8[..128]  = [],
-    raw_y: u8[..128]  = [],
-    raw_k: u8[..128]  = [],
-    raw_n: u8[..1024] = [],
-    raw_e: u8[..32]   = [],
+    raw_x:        u8[..128]  = [],
+    raw_y:        u8[..128]  = [],
+    raw_k:        u8[..128]  = [],
+    raw_n:        u8[..1024] = [],
+    raw_e:        u8[..32]   = [],
+    raw_x5c_leaf: u8[..2048] = [],
+    has_x5c:      bool       = false,
 }
 
-// Parses JWK cryptographic material fields ("x", "y", "k", "n", "e") from JSON reader (RFC 7517 §4).
+// Parses JWK "x5c" certificate chain array and extracts the leaf DER Base64 string (RFC 7517 §4.7).
+//
+// Example:
+//   reader at "[\"MIIB...\"]"
+//   sets: mat.has_x5c = true, mat.raw_x5c_leaf = "MIIB..."
+inline fn parse_jwk_x5c_array(
+    reader:   json::Reader&,
+    scratch:  u8[>..]&,
+    mat:      JwkRawMaterial&,
+    key_item: JwksKey&,
+) {
+    guard json::peek(reader) == '[' else {
+        json::skip(reader);
+        key_item.has_invalid_type = true;
+        return;
+    }
+    mat.has_x5c = true;
+    var idx: i64 = 0;
+    json::each_element(reader) {
+        if json::peek(reader) != '"' {
+            json::skip(reader);
+            key_item.has_invalid_type = true;
+        } else {
+            scratch.clear();
+            let cert_b64 = json::read_string(reader, scratch);
+            let bad_leaf = idx == 0 && (cert_b64.len == 0 || !mat.raw_x5c_leaf.try_set(cert_b64));
+            if bad_leaf || cert_b64.len == 0 {
+                key_item.has_invalid_type = true;
+            }
+        }
+        idx = core::add_sat_i64(idx, 1);
+    };
+    if idx == 0 {
+        key_item.has_invalid_type = true;
+    }
+}
+
+// Parses JWK cryptographic material fields ("x", "y", "k", "n", "e", "x5c") from JSON reader (RFC 7517 §4).
 //
 // Example:
 //   field_key = "x", json string = "base64url..."
@@ -471,6 +561,10 @@ fn parse_jwk_key_material(
             mat.raw_e.clear();
             key_item.has_invalid_type = true;
         }
+        return true;
+    }
+    if field_key == "x5c" {
+        parse_jwk_x5c_array(reader, scratch, mat, key_item);
         return true;
     }
     return false;
@@ -602,11 +696,39 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) 
     return true;
 }
 
+inline fn validate_jwk_x5c_and_ops(mat: const JwkRawMaterial&, key_item: JwksKey&) -> bool {
+    // RFC 7517 §4.3: "use" and "key_ops" MUST NOT be used together unless consistent
+    if key_item.use[..] == "sig" && (key_item.key_ops & JWK_OP_ENCRYPT) != 0 {
+        return false;
+    }
+    if key_item.use[..] == "enc" && (key_item.key_ops & (JWK_OP_SIGN | JWK_OP_VERIFY)) != 0 {
+        return false;
+    }
+    if mat.has_x5c {
+        var leaf_der: u8[..1536] = [];
+        guard core::base64_decode(mat.raw_x5c_leaf[..], leaf_der) && leaf_der.len > 0 else {
+            return false;
+        }
+        let digest = core::sha256(leaf_der[..]);
+        var computed_x5t: u8[..44] = [];
+        core::base64url_encode(digest[..], computed_x5t);
+        if key_item.x5t_s256.len > 0 {
+            guard core::ct_eq_bytes(computed_x5t[..], key_item.x5t_s256[..]) else {
+                return false;
+            }
+        } else {
+            let _ = key_item.x5t_s256.try_set(computed_x5t[..]);
+        }
+    }
+    return true;
+}
+
 fn finalize_jwk_key(
     mat:      const JwkRawMaterial&,
     key_item: JwksKey&,
 ) -> bool {
     guard !key_item.has_invalid_type else { return false; }
+    guard validate_jwk_x5c_and_ops(mat, key_item) else { return false; }
     return match key_item.kty {
         OKP => mat.raw_y.len == 0 && mat.raw_k.len == 0 && mat.raw_n.len == 0 && mat.raw_e.len == 0 &&
                finalize_okp_key(mat.raw_x[..], key_item),
@@ -715,6 +837,9 @@ fn validate_jwks_key_compatibility(
     allow_none: bool,
 ) -> JwtError {
     guard is_valid_key_use(key.use[..]) else {
+        return JwtError.UnsupportedAlgorithm;
+    }
+    if key.key_ops != 0 && (key.key_ops & JWK_OP_VERIFY) == 0 {
         return JwtError.UnsupportedAlgorithm;
     }
     if header_alg == JwtAlg.Unknown {

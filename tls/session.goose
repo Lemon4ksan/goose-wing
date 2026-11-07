@@ -123,7 +123,7 @@ struct Tls13CachedSessionTicket {
     in_use:       bool      = false,
     server_name:  u8[..256] = [],
     ticket:       u8[..256] = [],
-    psk:          u8[32]    = [0; 32],
+    psk:          u8[..48]  = [],
     age_add:      u32       = 0,
     lifetime:     u32       = 0,
     cipher_suite: u16       = 0,
@@ -253,7 +253,12 @@ fn unpack_stateless_ticket_plaintext(
         return false;
     }
     out.in_use = true;
-    core::ct_copy_bytes(out.psk[..], pt[1..33]);
+    out.psk.clear();
+    if psk_len == 32 {
+        out.psk.append(pt[1..33]);
+    } else {
+        out.psk.append(pt[1..49]);
+    }
     out.cipher_suite = cs;
     out.issued_at_ms = issued_ms;
     out.lifetime = lifetime;
@@ -300,22 +305,25 @@ fn open_stateless_tls13_ticket(
     return out, true;
 }
 
-// Stores a derived TLS 1.3 resumption PSK and ticket identity for a server hostname.
+// Stores a derived TLS 1.3 resumption PSK (32 or 48 bytes) and ticket identity for a server hostname.
 fn store_tls13_session_ticket(
-    server_name: const u8[:],
-    ticket:      const u8[:],
-    psk:         const u8[32]&,
-    age_add:     u32,
-    lifetime:    u32,
+    server_name:  const u8[:],
+    ticket:       const u8[:],
+    psk:          const u8[:],
+    age_add:      u32,
+    lifetime:     u32,
+    cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
     guard ticket.len > 0 && ticket.len <= 256 && lifetime > 0 else { return; }
+    guard psk.len == 32 || psk.len == 48 else { return; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
             let _ = g_tls13_tickets[i].ticket.try_set(ticket);
-            for j in 32 { g_tls13_tickets[i].psk[j] = psk[j]; }
+            let _ = g_tls13_tickets[i].psk.try_set(psk);
             g_tls13_tickets[i].age_add = age_add;
             g_tls13_tickets[i].lifetime = lifetime;
+            g_tls13_tickets[i].cipher_suite = cipher_suite;
             return;
         }
     }
@@ -324,20 +332,45 @@ fn store_tls13_session_ticket(
             g_tls13_tickets[i].in_use = true;
             let _ = g_tls13_tickets[i].server_name.try_set(server_name);
             let _ = g_tls13_tickets[i].ticket.try_set(ticket);
-            for j in 32 { g_tls13_tickets[i].psk[j] = psk[j]; }
+            let _ = g_tls13_tickets[i].psk.try_set(psk);
             g_tls13_tickets[i].age_add = age_add;
             g_tls13_tickets[i].lifetime = lifetime;
+            g_tls13_tickets[i].cipher_suite = cipher_suite;
             return;
         }
     }
     let _ = g_tls13_tickets[0].server_name.try_set(server_name);
     let _ = g_tls13_tickets[0].ticket.try_set(ticket);
-    for j in 32 { g_tls13_tickets[0].psk[j] = psk[j]; }
+    let _ = g_tls13_tickets[0].psk.try_set(psk);
     g_tls13_tickets[0].age_add = age_add;
     g_tls13_tickets[0].lifetime = lifetime;
+    g_tls13_tickets[0].cipher_suite = cipher_suite;
 }
 
-// Looks up a cached TLS 1.3 session ticket by server hostname.
+// Looks up a cached TLS 1.3 session ticket by server hostname, returning the full PSK and cipher suite.
+fn lookup_tls13_session_ticket_full(
+    server_name:      const u8[:],
+    out_ticket:       u8[..256]&,
+    out_psk:          u8[..48]&,
+    out_age_add:      u32&,
+    out_cipher_suite: u16&,
+) -> bool {
+    guard server_name.len > 0 else { return false; }
+    for i in 16 {
+        if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
+            guard out_ticket.try_set(g_tls13_tickets[i].ticket[..]) &&
+                out_psk.try_set(g_tls13_tickets[i].psk[..]) else {
+                return false;
+            }
+            out_age_add = g_tls13_tickets[i].age_add;
+            out_cipher_suite = g_tls13_tickets[i].cipher_suite;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Looks up a cached TLS 1.3 session ticket by server hostname (32-byte PSK view).
 fn lookup_tls13_session_ticket(
     server_name: const u8[:],
     out_ticket:  u8[..256]&,
@@ -347,8 +380,11 @@ fn lookup_tls13_session_ticket(
     guard server_name.len > 0 else { return false; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
-            guard out_ticket.try_set(g_tls13_tickets[i].ticket[..]) else { return false; }
-            for j in 32 { out_psk[j] = g_tls13_tickets[i].psk[j]; }
+            guard g_tls13_tickets[i].psk.len >= 32 &&
+                out_ticket.try_set(g_tls13_tickets[i].ticket[..]) else {
+                return false;
+            }
+            core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             out_age_add = g_tls13_tickets[i].age_add;
             return true;
         }
@@ -364,7 +400,8 @@ fn lookup_tls13_ticket_by_identity(
     guard ticket_id.len > 0 else { return false; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && core::ct_eq_bytes(g_tls13_tickets[i].ticket[..], ticket_id) {
-            for j in 32 { out_psk[j] = g_tls13_tickets[i].psk[j]; }
+            guard g_tls13_tickets[i].psk.len >= 32 else { return false; }
+            core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             return true;
         }
     }
@@ -374,7 +411,8 @@ fn lookup_tls13_ticket_by_identity(
 // Clears all cached TLS 1.3 session tickets and wipes their PSKs.
 fn clear_tls13_session_tickets() {
     for i in 16 {
-        core::secure_zeroize_32(g_tls13_tickets[i].psk);
+        core::secure_zeroize_slice(g_tls13_tickets[i].psk[..]);
+        g_tls13_tickets[i].psk.clear();
         g_tls13_tickets[i].ticket.clear();
         g_tls13_tickets[i].server_name.clear();
         g_tls13_tickets[i].in_use = false;
@@ -635,15 +673,14 @@ fn tls_send_new_session_ticket(
         };
         let h_len = g_tls_cipher_slots[idx].hash_len as i64;
         var psk_full: u8[48] = [0; 48];
-        if internal::ks_derive_resumption_psk(ks_res, ticket_nonce, psk_full[..h_len]) {
-            var psk: u8[32] = [0; 32];
-            for j in 32 { psk[j] = psk_full[j]; }
+        if (h_len == 32 || h_len == 48) &&
+            internal::ks_derive_resumption_psk(ks_res, ticket_nonce, psk_full[..h_len]) {
             let sni = if g_tls_cipher_slots[idx].server_name.len > 0 {
                 g_tls_cipher_slots[idx].server_name[..]
             } else {
                 "server"
             };
-            store_tls13_session_ticket(sni, ticket, psk, 0, ticket_lifetime);
+            store_tls13_session_ticket(sni, ticket, psk_full[..h_len], 0, ticket_lifetime);
         }
     }
     return true;
@@ -720,15 +757,15 @@ fn tls_process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     };
     let h_len = g_tls_cipher_slots[idx].hash_len as i64;
     var psk_full: u8[48] = [0; 48];
-    if internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
-        var psk: u8[32] = [0; 32];
-        for j in 32 { psk[j] = psk_full[j]; }
+    if (h_len == 32 || h_len == 48) &&
+        internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
         store_tls13_session_ticket(
             g_tls_cipher_slots[idx].server_name[..],
             nst.ticket[..],
-            psk,
+            psk_full[..h_len],
             nst.ticket_age_add,
             nst.ticket_lifetime,
+            g_tls_cipher_slots[idx].cipher_suite,
         );
     }
     return true;
@@ -738,9 +775,9 @@ fn tls_dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8
     guard hs_bytes.len >= 4 else { return false; }
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
-    var c_hs = cursor_from(hs_bytes);
-    while cursor_len(c_hs) > 0 {
-        guard cursor_len(c_hs) >= 4 else { return false; }
+    var c_hs = core::cursor_from(hs_bytes);
+    while c_hs.cursor_len() > 0 {
+        guard c_hs.cursor_len() >= 4 else { return false; }
         let msg_type, msg_len, ok_m = parse_handshake_header(c_hs.buf);
         guard ok_m else { return false; }
         let full_msg_len = core::add_sat_i64(4, msg_len);
@@ -995,162 +1032,162 @@ fn build_test_ed25519_cert_der(
     out_der.clear();
     let kp = core::ed25519_keypair(seed);
 
-    var b_tbs = builder_init();
+    var b_tbs = core::builder_init();
 
     // version [0] EXPLICIT INTEGER v3 (2)
-    put_u8(b_tbs, 0xA0);
-    put_u8(b_tbs, 3);
-    put_u8(b_tbs, 0x02);
-    put_u8(b_tbs, 1);
-    put_u8(b_tbs, 2);
+    b_tbs.put_u8(0xA0);
+    b_tbs.put_u8(3);
+    b_tbs.put_u8(0x02);
+    b_tbs.put_u8(1);
+    b_tbs.put_u8(2);
 
     // serialNumber (INTEGER: 1)
-    put_u8(b_tbs, 0x02);
-    put_u8(b_tbs, 1);
-    put_u8(b_tbs, 1);
+    b_tbs.put_u8(0x02);
+    b_tbs.put_u8(1);
+    b_tbs.put_u8(1);
 
     // signature (AlgorithmIdentifier: OID_ED25519)
-    put_u8(b_tbs, 0x30);
-    put_u8(b_tbs, 5);
-    put_u8(b_tbs, 0x06);
-    put_u8(b_tbs, 3);
-    put_bytes(b_tbs, "\x2B\x65\x70");
+    b_tbs.put_u8(0x30);
+    b_tbs.put_u8(5);
+    b_tbs.put_u8(0x06);
+    b_tbs.put_u8(3);
+    b_tbs.put_bytes("\x2B\x65\x70");
 
     // issuer (SEQUENCE OF SET OF SEQUENCE { OID_COMMON_NAME, UTF8String })
-    var b_cn = builder_init();
-    put_u8(b_cn, 0x30);
-    put_u8(b_cn, (2 + 3 + 2 + common_name.len) as u8);
-    put_u8(b_cn, 0x06);
-    put_u8(b_cn, 3);
-    put_bytes(b_cn, "\x55\x04\x03");
-    put_u8(b_cn, 0x0C);
-    put_u8(b_cn, common_name.len as u8);
-    put_bytes(b_cn, common_name);
+    var b_cn = core::builder_init();
+    b_cn.put_u8(0x30);
+    b_cn.put_u8((2 + 3 + 2 + common_name.len) as u8);
+    b_cn.put_u8(0x06);
+    b_cn.put_u8(3);
+    b_cn.put_bytes("\x55\x04\x03");
+    b_cn.put_u8(0x0C);
+    b_cn.put_u8(common_name.len as u8);
+    b_cn.put_bytes(common_name);
 
-    var b_issuer = builder_init();
-    put_u8(b_issuer, 0x30);
-    put_u8(b_issuer, (2 + b_cn.buf.len) as u8);
-    put_u8(b_issuer, 0x31);
-    put_u8(b_issuer, b_cn.buf.len as u8);
-    put_bytes(b_issuer, b_cn.buf[..]);
-    put_bytes(b_tbs, b_issuer.buf[..]);
+    var b_issuer = core::builder_init();
+    b_issuer.put_u8(0x30);
+    b_issuer.put_u8((2 + b_cn.buf.len) as u8);
+    b_issuer.put_u8(0x31);
+    b_issuer.put_u8(b_cn.buf.len as u8);
+    b_issuer.put_bytes(b_cn.buf[..]);
+    b_tbs.put_bytes(b_issuer.buf[..]);
 
     // validity: 2024-01-01 to 2035-12-31
-    put_u8(b_tbs, 0x30);
-    put_u8(b_tbs, 30);
-    put_u8(b_tbs, 0x17);
-    put_u8(b_tbs, 13);
-    put_bytes(b_tbs, "240101000000Z");
-    put_u8(b_tbs, 0x17);
-    put_u8(b_tbs, 13);
-    put_bytes(b_tbs, "351231235959Z");
+    b_tbs.put_u8(0x30);
+    b_tbs.put_u8(30);
+    b_tbs.put_u8(0x17);
+    b_tbs.put_u8(13);
+    b_tbs.put_bytes("240101000000Z");
+    b_tbs.put_u8(0x17);
+    b_tbs.put_u8(13);
+    b_tbs.put_bytes("351231235959Z");
 
     // subject (same as issuer)
-    put_bytes(b_tbs, b_issuer.buf[..]);
+    b_tbs.put_bytes(b_issuer.buf[..]);
 
     // SPKI: SubjectPublicKeyInfo
-    put_u8(b_tbs, 0x30);
-    put_u8(b_tbs, 42);
-    put_u8(b_tbs, 0x30);
-    put_u8(b_tbs, 5);
-    put_u8(b_tbs, 0x06);
-    put_u8(b_tbs, 3);
-    put_bytes(b_tbs, "\x2B\x65\x70");
-    put_u8(b_tbs, 0x03);
-    put_u8(b_tbs, 33);
-    put_u8(b_tbs, 0x00);
-    put_bytes(b_tbs, kp.public_key[..]);
+    b_tbs.put_u8(0x30);
+    b_tbs.put_u8(42);
+    b_tbs.put_u8(0x30);
+    b_tbs.put_u8(5);
+    b_tbs.put_u8(0x06);
+    b_tbs.put_u8(3);
+    b_tbs.put_bytes("\x2B\x65\x70");
+    b_tbs.put_u8(0x03);
+    b_tbs.put_u8(33);
+    b_tbs.put_u8(0x00);
+    b_tbs.put_bytes(kp.public_key[..]);
 
     // extensions [3] EXPLICIT
-    var b_ext_body = builder_init();
+    var b_ext_body = core::builder_init();
 
     // Extension 1: BasicConstraints (cA = true)
-    put_u8(b_ext_body, 0x30);
-    put_u8(b_ext_body, 12);
-    put_u8(b_ext_body, 0x06);
-    put_u8(b_ext_body, 3);
-    put_bytes(b_ext_body, "\x55\x1D\x13");
-    put_u8(b_ext_body, 0x04);
-    put_u8(b_ext_body, 5);
-    put_u8(b_ext_body, 0x30);
-    put_u8(b_ext_body, 3);
-    put_u8(b_ext_body, 0x01);
-    put_u8(b_ext_body, 1);
-    put_u8(b_ext_body, 0xFF);
+    b_ext_body.put_u8(0x30);
+    b_ext_body.put_u8(12);
+    b_ext_body.put_u8(0x06);
+    b_ext_body.put_u8(3);
+    b_ext_body.put_bytes("\x55\x1D\x13");
+    b_ext_body.put_u8(0x04);
+    b_ext_body.put_u8(5);
+    b_ext_body.put_u8(0x30);
+    b_ext_body.put_u8(3);
+    b_ext_body.put_u8(0x01);
+    b_ext_body.put_u8(1);
+    b_ext_body.put_u8(0xFF);
 
     // Extension 2: SubjectAltName (if dns_san or ip_san present)
     if dns_san.len > 0 || ip_san.len > 0 {
-        var b_san_names = builder_init();
+        var b_san_names = core::builder_init();
         if dns_san.len > 0 {
-            put_u8(b_san_names, 0x82);
-            put_u8(b_san_names, dns_san.len as u8);
-            put_bytes(b_san_names, dns_san);
+            b_san_names.put_u8(0x82);
+            b_san_names.put_u8(dns_san.len as u8);
+            b_san_names.put_bytes(dns_san);
         }
         if ip_san.len == 4 {
-            put_u8(b_san_names, 0x87);
-            put_u8(b_san_names, 4);
-            put_bytes(b_san_names, ip_san);
+            b_san_names.put_u8(0x87);
+            b_san_names.put_u8(4);
+            b_san_names.put_bytes(ip_san);
         } else if ip_san.len > 0 {
             var ip4: u8[4] = [0; 4];
             if parse_ipv4_literal(ip_san, ip4) {
-                put_u8(b_san_names, 0x87);
-                put_u8(b_san_names, 4);
-                put_bytes(b_san_names, ip4[..]);
+                b_san_names.put_u8(0x87);
+                b_san_names.put_u8(4);
+                b_san_names.put_bytes(ip4[..]);
             }
         }
 
-        var b_san_seq = builder_init();
-        put_u8(b_san_seq, 0x30);
-        put_u8(b_san_seq, b_san_names.buf.len as u8);
-        put_bytes(b_san_seq, b_san_names.buf[..]);
+        var b_san_seq = core::builder_init();
+        b_san_seq.put_u8(0x30);
+        b_san_seq.put_u8(b_san_names.buf.len as u8);
+        b_san_seq.put_bytes(b_san_names.buf[..]);
 
-        put_u8(b_ext_body, 0x30);
+        b_ext_body.put_u8(0x30);
         let ext_len = 2 + 3 + 2 + b_san_seq.buf.len;
-        put_u8(b_ext_body, ext_len as u8);
-        put_u8(b_ext_body, 0x06);
-        put_u8(b_ext_body, 3);
-        put_bytes(b_ext_body, "\x55\x1D\x11");
-        put_u8(b_ext_body, 0x04);
-        put_u8(b_ext_body, b_san_seq.buf.len as u8);
-        put_bytes(b_ext_body, b_san_seq.buf[..]);
+        b_ext_body.put_u8(ext_len as u8);
+        b_ext_body.put_u8(0x06);
+        b_ext_body.put_u8(3);
+        b_ext_body.put_bytes("\x55\x1D\x11");
+        b_ext_body.put_u8(0x04);
+        b_ext_body.put_u8(b_san_seq.buf.len as u8);
+        b_ext_body.put_bytes(b_san_seq.buf[..]);
     }
 
-    var b_ext_full = builder_init();
-    put_u8(b_ext_full, 0xA3);
+    var b_ext_full = core::builder_init();
+    b_ext_full.put_u8(0xA3);
     let ext_seq_len = 2 + b_ext_body.buf.len;
-    put_u8(b_ext_full, ext_seq_len as u8);
-    put_u8(b_ext_full, 0x30);
-    put_u8(b_ext_full, b_ext_body.buf.len as u8);
-    put_bytes(b_ext_full, b_ext_body.buf[..]);
-    put_bytes(b_tbs, b_ext_full.buf[..]);
+    b_ext_full.put_u8(ext_seq_len as u8);
+    b_ext_full.put_u8(0x30);
+    b_ext_full.put_u8(b_ext_body.buf.len as u8);
+    b_ext_full.put_bytes(b_ext_body.buf[..]);
+    b_tbs.put_bytes(b_ext_full.buf[..]);
 
-    var b_tbs_full = builder_init();
-    put_u8(b_tbs_full, 0x30);
+    var b_tbs_full = core::builder_init();
+    b_tbs_full.put_u8(0x30);
     if b_tbs.buf.len >= 256 {
-        put_u8(b_tbs_full, 0x82);
-        put_u8(b_tbs_full, (b_tbs.buf.len >> 8) as u8);
-        put_u8(b_tbs_full, (b_tbs.buf.len & 0xFF) as u8);
+        b_tbs_full.put_u8(0x82);
+        b_tbs_full.put_u8((b_tbs.buf.len >> 8) as u8);
+        b_tbs_full.put_u8((b_tbs.buf.len & 0xFF) as u8);
     } else if b_tbs.buf.len >= 128 {
-        put_u8(b_tbs_full, 0x81);
-        put_u8(b_tbs_full, b_tbs.buf.len as u8);
+        b_tbs_full.put_u8(0x81);
+        b_tbs_full.put_u8(b_tbs.buf.len as u8);
     } else {
-        put_u8(b_tbs_full, b_tbs.buf.len as u8);
+        b_tbs_full.put_u8(b_tbs.buf.len as u8);
     }
-    put_bytes(b_tbs_full, b_tbs.buf[..]);
+    b_tbs_full.put_bytes(b_tbs.buf[..]);
 
     let sig = core::ed25519_sign(seed, b_tbs_full.buf[..]);
 
-    var b_cert_inner = builder_init();
-    put_bytes(b_cert_inner, b_tbs_full.buf[..]);
-    put_u8(b_cert_inner, 0x30);
-    put_u8(b_cert_inner, 5);
-    put_u8(b_cert_inner, 0x06);
-    put_u8(b_cert_inner, 3);
-    put_bytes(b_cert_inner, "\x2B\x65\x70");
-    put_u8(b_cert_inner, 0x03);
-    put_u8(b_cert_inner, 65);
-    put_u8(b_cert_inner, 0x00);
-    put_bytes(b_cert_inner, sig[..]);
+    var b_cert_inner = core::builder_init();
+    b_cert_inner.put_bytes(b_tbs_full.buf[..]);
+    b_cert_inner.put_u8(0x30);
+    b_cert_inner.put_u8(5);
+    b_cert_inner.put_u8(0x06);
+    b_cert_inner.put_u8(3);
+    b_cert_inner.put_bytes("\x2B\x65\x70");
+    b_cert_inner.put_u8(0x03);
+    b_cert_inner.put_u8(65);
+    b_cert_inner.put_u8(0x00);
+    b_cert_inner.put_bytes(sig[..]);
 
     out_der.push(0x30);
     if b_cert_inner.buf.len >= 256 {
@@ -1883,7 +1920,7 @@ fn regenerate_client_hrr_keyshare(
     client_priv:    u8[32]&,
     client_pub:     u8[32]&,
     pq_priv:        u8[2400]&,
-    pq_pub:         u8[1152]&,
+    pq_pub:         u8[1184]&,
 ) -> bool, bool {
     guard selected_group != 0 else { return enable_pq_cfg, true; }
     if selected_group == rfc::GROUP_X25519 {
@@ -1900,7 +1937,7 @@ fn regenerate_client_hrr_keyshare(
     let pq_z = tls_random_bytes_32();
     let ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
     pq_priv = dk;
-    core::ct_copy_bytes(pq_pub[..], ek[0..1152]);
+    pq_pub = ek;
     return true, true;
 }
 
@@ -1923,7 +1960,7 @@ fn handle_client_hrr_transition(
     client_priv:   u8[32]&,
     client_pub:    u8[32]&,
     pq_priv:       u8[2400]&,
-    pq_pub:        u8[1152]&,
+    pq_pub:        u8[1184]&,
     ech_ext_raw:   const u8[:],
     transcript:    TlsTranscript&,
     hrr_raw_msg:   const u8[:],
@@ -1980,13 +2017,13 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     var client_pub = core::x25519_base_scalarmult(client_priv);
 
     var pq_priv: u8[2400] = [0; 2400];
-    var pq_pub:  u8[1152] = [0; 1152];
+    var pq_pub:  u8[1184] = [0; 1184];
     if config.enable_pq_hybrid {
         let pq_d = tls_random_bytes_32();
         let pq_z = tls_random_bytes_32();
         let ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
         pq_priv = dk;
-        core::ct_copy_bytes(pq_pub[..], ek[0..1152]);
+        pq_pub = ek;
     }
 
     var psk_ticket:  u8[..256] = [];

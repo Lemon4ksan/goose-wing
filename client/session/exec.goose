@@ -137,8 +137,8 @@ fn build_effective_url(
     out.clear();
     let parsed_base = core::new_url(base_url);
     if parsed_base.valid {
-        let eff_url = resolve_endpoint(parsed_base, req_url);
-        out.try_append(href(eff_url));
+        let eff_url = parsed_base.resolve_endpoint(req_url);
+        out.try_append(core::href(eff_url));
     } else if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
         out.try_append(req_url);
     } else {
@@ -182,7 +182,7 @@ struct RequestExecutionContext {
 }
 
 fn validate_hop_prerequisites(session: const Session&, current_url: const core::Url&) -> Error {
-    if session.https_only && scheme(current_url) != "https" {
+    if session.https_only && current_url.scheme() != "https" {
         return make_error(rfc::STATUS_BAD_REQUEST, "ssrf_guard", "https_only policy violated");
     }
     let ssrf_err = validate_url_against_ssrf(current_url, session.ssrf_guard);
@@ -200,7 +200,7 @@ fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response
     for &hop_u in ctx.url_chain {
         guard resp.url_chain.len < resp.url_chain.cap else { break; }
         var u_str: u8[..256] = [];
-        let h = href(hop_u);
+        let h = core::href(hop_u);
         let n = min(h.len, u_str.cap);
         u_str.append(h[..n]);
         resp.url_chain.push(u_str);
@@ -236,7 +236,7 @@ fn apply_redirect_transition(
         ctx.body_consumed = false;
     }
 
-    let is_trusted = is_trusted_location_host(session, hostname(redirect_info.new_url));
+    let is_trusted = is_trusted_location_host(session, redirect_info.new_url.hostname());
     sanitize_headers_on_redirect(
         ctx.headers,
         redirect_info,
@@ -535,7 +535,7 @@ fn try_match_mock_route(
     out_dns_err: RedirectError&,
     out_resp:    Response&,
 ) -> bool {
-    let curr_href = href(current_url);
+    let curr_href = core::href(current_url);
     let curr_method = ctx.current_method[..];
     let is_https = current_url.is_secure_scheme();
 
@@ -638,11 +638,11 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     }
     let p_url = core::new_url(session.proxy_url[..]);
     guard p_url.valid else { return new_direct_proxy_chain(); }
-    let p_scheme = if scheme(p_url) == "https" {
+    let p_scheme = if p_url.scheme() == "https" {
         ProxyScheme.Https
-    } else if scheme(p_url) == "socks5h" {
+    } else if p_url.scheme() == "socks5h" {
         ProxyScheme.Socks5h
-    } else if scheme(p_url) == "socks5" {
+    } else if p_url.scheme() == "socks5" {
         ProxyScheme.Socks5
     } else {
         ProxyScheme.Http
@@ -657,7 +657,7 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     } else {
         80
     };
-    let ps = new_proxy_server(p_scheme, hostname(p_url), p_port);
+    let ps = new_proxy_server(p_scheme, p_url.hostname(), p_port);
     return new_single_proxy_chain(ps);
 }
 
@@ -926,6 +926,14 @@ fn process_h2_control_frame<B>(
     }
 }
 
+inline fn record_h2_rst_stream_error(payload: const u8[:], resp: Response&) {
+    guard payload.len >= 4 else { return; }
+    let rst_code = core::read_be_u32(payload, 0);
+    var rst_buf: u8[..16] = [];
+    core::format_u64_dec(rst_code, rst_buf);
+    let _ = append_header(resp.trailers, "x-wing-h2-rst-code", rst_buf[..]);
+}
+
 fn process_h2_response_frame<B>(
     hdr:       const internal::FrameHeader&,
     payload:   const u8[:],
@@ -940,7 +948,10 @@ fn process_h2_response_frame<B>(
         process_h2_control_frame(hdr, payload, out_ctrl);
         return true, false;
     }
-    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == stream_id { return false, false; }
+    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == stream_id {
+        record_h2_rst_stream_error(payload, resp);
+        return false, false;
+    }
     if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return false, false; }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {

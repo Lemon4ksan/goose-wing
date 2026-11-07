@@ -205,6 +205,10 @@ fn test_bug4_sha384_nst_resumption_psk() {
     let found = wing::lookup_tls13_session_ticket("sha384.example.com", out_ticket, out_psk, out_age);
     assert(found);
     assert(out_ticket[..] == "sha384-ticket-01");
+    var out_psk_full: u8[..48] = [];
+    var out_cs:       u16      = 0;
+    assert(wing::lookup_tls13_session_ticket_full("sha384.example.com", out_ticket, out_psk_full, out_age, out_cs));
+    assert(out_psk_full.len == 48 && out_cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384);
     wing::free_tls_cipher_slot(slot_idx);
     print("BUG4_SHA384_NST_PSK_CACHED: OK");
 }

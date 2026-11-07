@@ -58,18 +58,18 @@ struct EchClientState {
 //   returns: ok = true, out.cipher_suites populated
 fn read_ech_cipher_suites(contents: ByteCursor&, out: EchConfig&) -> bool {
     var cs_cursor = ByteCursor { buf: contents.buf[..0] };
-    guard get_u16_length_prefixed(contents, cs_cursor) else { return false; }
-    guard cursor_len(cs_cursor) >= 4 && (cursor_len(cs_cursor) % 4) == 0 else { return false; }
+    guard contents.get_u16_length_prefixed(cs_cursor) else { return false; }
+    guard cs_cursor.cursor_len() >= 4 && (cs_cursor.cursor_len() % 4) == 0 else { return false; }
 
     out.cipher_suites.clear();
-    while cursor_len(cs_cursor) >= 4 {
+    while cs_cursor.cursor_len() >= 4 {
         var kdf:  u16 = 0;
         var aead: u16 = 0;
-        guard get_u16(cs_cursor, kdf) && get_u16(cs_cursor, aead) else { return false; }
+        guard cs_cursor.get_u16(kdf) && cs_cursor.get_u16(aead) else { return false; }
         guard out.cipher_suites.len < out.cipher_suites.cap else { return false; }
         out.cipher_suites.push(EchCipherSuite { kdf_id: kdf, aead_id: aead });
     }
-    guard cursor_len(cs_cursor) == 0 else { return false; }
+    guard cs_cursor.cursor_len() == 0 else { return false; }
     return out.cipher_suites.len > 0;
 }
 
@@ -116,8 +116,8 @@ fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
 //   returns: ok = true, out.public_name populated
 fn read_ech_public_name(contents: ByteCursor&, out: EchConfig&) -> bool {
     var pub_cursor = ByteCursor { buf: contents.buf[..0] };
-    guard get_u8_length_prefixed(contents, pub_cursor) else { return false; }
-    let pub_len = cursor_len(pub_cursor);
+    guard contents.get_u8_length_prefixed(pub_cursor) else { return false; }
+    let pub_len = pub_cursor.cursor_len();
     guard pub_len >= 1 && pub_len <= 255 && pub_len <= out.public_name.cap else { return false; }
 
     guard validate_ech_public_name_bytes(pub_cursor.buf) else { return false; }
@@ -135,9 +135,9 @@ fn read_ech_public_name(contents: ByteCursor&, out: EchConfig&) -> bool {
 //   contents = [0x01, 0x00, 0x20, ...], out = EchConfig { .. }
 //   returns: ok = true, out.config_id and out.public_key populated
 fn read_ech_key_config(contents: ByteCursor&, out: EchConfig&) -> bool {
-    guard get_u8(contents, out.config_id) && get_u16(contents, out.kem_id) else { return false; }
+    guard contents.get_u8(out.config_id) && contents.get_u16(out.kem_id) else { return false; }
     var pk_cursor = ByteCursor { buf: contents.buf[..0] };
-    guard get_u16_length_prefixed(contents, pk_cursor) && cursor_len(pk_cursor) == 32 else { return false; }
+    guard contents.get_u16_length_prefixed(pk_cursor) && pk_cursor.cursor_len() == 32 else { return false; }
     for i in 32 { out.public_key[i] = pk_cursor.buf[i]; }
     return read_ech_cipher_suites(contents, out);
 }
@@ -156,10 +156,10 @@ fn copy_ech_raw_bytes(raw: const u8[:], total_len: i64, out: EchConfig&) {
 //   returns: ok = true, out populated with version, kem_id, public_key, etc.
 fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     guard raw.len >= 4 else { return false; }
-    var c = cursor_from(raw);
+    var c = core::cursor_from(raw);
 
-    guard get_u16(c, out.version) && out.version == rfc::ECH_VERSION_RFC9849 else { return false; }
-    guard get_u16(c, out.length) && out.length <= cursor_len(c) else { return false; }
+    guard c.get_u16(out.version) && out.version == rfc::ECH_VERSION_RFC9849 else { return false; }
+    guard c.get_u16(out.length) && out.length <= c.cursor_len() else { return false; }
 
     let total_len = 4 + (out.length as i64);
     guard total_len <= raw.len && total_len <= out.raw_bytes.cap else { return false; }
@@ -167,14 +167,14 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     copy_ech_raw_bytes(raw, total_len, out);
 
     var contents = ByteCursor { buf: raw[..0] };
-    guard get_bytes(c, contents, out.length) else { return false; }
+    guard c.get_bytes(contents, out.length) else { return false; }
 
     guard read_ech_key_config(contents, out) else { return false; }
-    guard get_u8(contents, out.maximum_name_length) else { return false; }
+    guard contents.get_u8(out.maximum_name_length) else { return false; }
     guard read_ech_public_name(contents, out) else { return false; }
 
     var ext_cursor = ByteCursor { buf: raw[..0] };
-    guard get_u16_length_prefixed(contents, ext_cursor) && cursor_len(contents) == 0 else { return false; }
+    guard contents.get_u16_length_prefixed(ext_cursor) && contents.cursor_len() == 0 else { return false; }
     return true;
 }
 
@@ -185,13 +185,13 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
 //   returns: ok = true, advance list_cursor
 fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool {
     let entry_start = list_cursor.buf;
-    var probe = cursor_from(entry_start);
+    var probe = core::cursor_from(entry_start);
     var ver:  u16 = 0;
     var elen: u16 = 0;
-    guard get_u16(probe, ver) && get_u16(probe, elen) else { return false; }
+    guard probe.get_u16(ver) && probe.get_u16(elen) else { return false; }
 
     let total_entry = 4 + (elen as i64);
-    guard total_entry <= cursor_len(list_cursor) else { return false; }
+    guard total_entry <= list_cursor.cursor_len() else { return false; }
 
     if ver == rfc::ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
@@ -212,18 +212,18 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
 //   returns: ok = true, out populated with supported configs
 fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
     guard raw.len >= 4 else { return false; }
-    var c = cursor_from(raw);
+    var c = core::cursor_from(raw);
 
     var list_cursor = ByteCursor { buf: raw[..0] };
-    guard get_u16_length_prefixed(c, list_cursor) else { return false; }
-    guard cursor_len(c) == 0 && cursor_len(list_cursor) >= 4 else { return false; }
+    guard c.get_u16_length_prefixed(list_cursor) else { return false; }
+    guard c.cursor_len() == 0 && list_cursor.cursor_len() >= 4 else { return false; }
 
     out.configs.clear();
-    while cursor_len(list_cursor) >= 4 {
+    while list_cursor.cursor_len() >= 4 {
         guard read_ech_config_entry(list_cursor, out) else { return false; }
     }
 
-    guard cursor_len(list_cursor) == 0 else { return false; }
+    guard list_cursor.cursor_len() == 0 else { return false; }
     return out.configs.len > 0;
 }
 

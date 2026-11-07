@@ -6,6 +6,8 @@
 namespace wing;
 
 import std;
+import rfc.h2;
+import rfc.grpc;
 
 // ---- Canonical gRPC Status Codes (RFC / gRPC Core) ----------------------
 
@@ -101,6 +103,11 @@ fn grpc_status_from_code(code: u32) -> GrpcStatusCode {
     };
 }
 
+const CONNECT_FLAG_END_STREAM: u8          = 0x02; // Connect Protocol streaming EndStream envelope flag
+const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+";
+const CONNECT_MIME_PROTO:      const u8[:] = "application/proto";
+const CONNECT_MIME_JSON:       const u8[:] = "application/json";
+
 // Maps standard HTTP status codes to canonical gRPC status codes when grpc-status is missing.
 // Follows gRPC HTTP/2 transport mapping specifications:
 // HTTP 200 without grpc-status maps to Unknown (success requires explicit grpc-status: 0).
@@ -123,13 +130,79 @@ fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
     };
 }
 
+// Maps HTTP/2 RST_STREAM error codes (RFC 9113 §7) to canonical gRPC status codes.
+fn h2_error_to_grpc_status(h2_err: u32) -> GrpcStatusCode {
+    if h2_err == rfc::H2_ERR_REFUSED_STREAM { return GrpcStatusCode.Unavailable; }
+    if h2_err == rfc::H2_ERR_CANCEL { return GrpcStatusCode.Cancelled; }
+    if h2_err == rfc::H2_ERR_ENHANCE_YOUR_CALM { return GrpcStatusCode.ResourceExhausted; }
+    if h2_err == rfc::H2_ERR_INADEQUATE_SECURITY { return GrpcStatusCode.PermissionDenied; }
+    if h2_err <= rfc::H2_ERR_SETTINGS_TIMEOUT ||
+       h2_err == rfc::H2_ERR_FRAME_SIZE_ERROR ||
+       h2_err == rfc::H2_ERR_COMPRESSION_ERROR ||
+       h2_err == rfc::H2_ERR_CONNECT_ERROR {
+        return GrpcStatusCode.Internal;
+    }
+    return GrpcStatusCode.Unknown;
+}
+
+// Converts a GrpcStatusCode to its Connect Protocol snake_case error code string.
+fn connect_status_name(code: GrpcStatusCode) -> const u8[:] {
+    return match code {
+        Ok => "ok",
+        Cancelled => "canceled",
+        Unknown => "unknown",
+        InvalidArgument => "invalid_argument",
+        DeadlineExceeded => "deadline_exceeded",
+        NotFound => "not_found",
+        AlreadyExists => "already_exists",
+        PermissionDenied => "permission_denied",
+        ResourceExhausted => "resource_exhausted",
+        FailedPrecondition => "failed_precondition",
+        Aborted => "aborted",
+        OutOfRange => "out_of_range",
+        Unimplemented => "unimplemented",
+        Internal => "internal",
+        Unavailable => "unavailable",
+        DataLoss => "data_loss",
+        Unauthenticated => "unauthenticated",
+        _ => "unknown",
+    };
+}
+
+// Parses a Connect Protocol snake_case error code string into a GrpcStatusCode.
+//
+// Example:
+//   name = "resource_exhausted"
+//   returns: GrpcStatusCode.ResourceExhausted, true
+fn parse_connect_status_code(name: const u8[:]) -> GrpcStatusCode, bool {
+    if name == "canceled" || name == "cancelled" {
+        return GrpcStatusCode.Cancelled, true;
+    }
+    var i: u32 = 1;
+    while i <= 16 {
+        let candidate = grpc_status_from_code(i);
+        if name == connect_status_name(candidate) {
+            return candidate, true;
+        }
+        i = core::add_sat_u32(i, 1);
+    }
+    return GrpcStatusCode.Unknown, false;
+}
+
 struct GrpcMetadata {
     key:   u8[..64]  = [],
     value: u8[..256] = [],
 }
 
+// Structured error detail extracted from `google.rpc.Status.details` (`google.protobuf.Any`).
+struct GrpcErrorDetail {
+    type_url: u8[..128] = [],
+    value:    u8[..256] = [],
+}
+
 // Value-returned gRPC status outcome for unary and streaming RPC handlers.
 struct GrpcStatus {
-    code:    GrpcStatusCode = GrpcStatusCode.Ok,
-    message: u8[..256]      = [],
+    code:    GrpcStatusCode       = GrpcStatusCode.Ok,
+    message: u8[..256]            = [],
+    details: GrpcErrorDetail[..4] = [],
 }

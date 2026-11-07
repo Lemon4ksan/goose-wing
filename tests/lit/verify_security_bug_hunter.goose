@@ -429,6 +429,38 @@ fn test_gcra_clock_drift_persist_and_probabilistic_low_burst() {
     }
     assert(sampled_admitted);
 
+    // COOKIERL-05: HKDF-SHA256 Master Key Domain Separation in KeyStore
+    var kstore = wing::KeyStore { .. };
+    var master_secret: u8[32] = [0x42; 32];
+    let kslot = core::new_key_slot(7, master_secret[..], 1700000000, 1700100000);
+    assert(wing::add_key(kstore, kslot));
+    let act_slot, ok_act = wing::active_key(kstore);
+    assert(ok_act);
+    assert(act_slot.signing_key[..] != act_slot.encryption_key[..]);
+    assert(act_slot.signing_key[..] != act_slot.master_key[..]);
+    assert(!wing::needs_rotation(kslot, 1700000000));
+    assert(wing::needs_rotation(act_slot, 1700050000));
+
+    // COOKIERL-07 & COOKIERL-08: GCRA Jitter, insufficient_capacity & retain_recent_shards
+    let cap_dec = wing::gcra_check_n(quota, cell, 999, now_backward + 200000000);
+    assert(wing::is_insufficient_capacity(cap_dec));
+    var gdec = wing::to_gcra_decision(cap_dec);
+    assert(gdec.insufficient_capacity && !gdec.allowed);
+
+    let jitter = wing::GcraJitter { min_ns: 1000, max_ns: 5000 };
+    var prng: u64 = 123456789;
+    let wait_before = gdec.wait_ns;
+    wing::apply_jitter_to_decision(gdec, jitter, prng);
+    assert(gdec.wait_ns >= wait_before + 1000 && gdec.wait_ns < wait_before + 5000);
+    var rdec = cap_dec;
+    wing::apply_jitter_to_decision(rdec, jitter, prng);
+
+    var sh_lim = wing::new_sharded_limiter(quota);
+    let _ = wing::check_rate_limit(sh_lim, "tenant_1", 1, 1000);
+    let _ = wing::check_rate_limit(sh_lim, "tenant_2", 1, 1000);
+    let reclaimed = wing::retain_recent_shards(sh_lim, 5000000000);
+    assert(reclaimed == 2);
+
     print("GCRA_DRIFT_AND_PROBABILISTIC_LOW_BURST: OK");
 }
 

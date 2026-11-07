@@ -121,9 +121,15 @@ fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out:
 
 // Reports whether a stored response belongs to the given group.
 // Names compare character-by-character, case sensitive (RFC 9875 §2.1).
+// Evaluates `entry.headers.get_header("cache-groups")` on demand to avoid storing a 2.1 KB tag array per CachedEntry.
 fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
-    for slot in 0..entry.group_count {
-        if entry.groups[slot].name[..] == group { return true; }
+    let raw_cg = entry.headers.get_header("cache-groups");
+    guard raw_cg.len > 0 else { return false; }
+    var tags:  CacheGroupTag[..32] = [];
+    var count: i32                 = 0;
+    guard parse_cache_group_list(raw_cg, tags, count) && count > 0 else { return false; }
+    for slot in 0..count {
+        if tags[slot].name[..] == group { return true; }
     }
     return false;
 }

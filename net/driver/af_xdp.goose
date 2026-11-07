@@ -180,3 +180,31 @@ fn af_xdp_close(sock: AfXdpSocket&) {
         sock.umem.is_registered = false;
     }
 }
+
+// AF_XDP Fill/Completion ring state with wrap-split burst enqueueing (`rte_ring_elem_pvt.h` pattern).
+struct XskRingState {
+    entries:   u64[64] = [0; 64],
+    prod_head: u32     = 0,
+    cons_head: u32     = 0,
+    mask:      u32     = 63,
+    capacity:  u32     = 64,
+    _pad:      u64[4]  = [0; 4],
+}
+
+// Enqueues a burst of UMEM frame addresses into `ring` using bounded ring slot staging.
+fn xsk_fill_ring_enqueue_burst(ring: XskRingState&, addrs: const u64[:]) -> u32 {
+    guard addrs.len > 0 else { return 0; }
+    var prod = ring.prod_head as u64;
+    let cons = ring.cons_head as u64;
+    var used = core::sub_sat_u64(prod, cons);
+    var staged: u64 = 0;
+    for addr in addrs {
+        guard used < 64 else { break; }
+        ring.entries[prod & 63] = addr;
+        prod = core::add_sat_u64(prod, 1);
+        used = core::add_sat_u64(used, 1);
+        staged = core::add_sat_u64(staged, 1);
+    }
+    ring.prod_head = prod as u32;
+    return staged as u32;
+}

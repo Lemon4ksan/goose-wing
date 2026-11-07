@@ -42,7 +42,7 @@ inline fn pq_hybrid_server_share_len(group: u16) -> i64 {
 struct PostQuantumKeyShare {
     group:           u16      = rfc::GROUP_X25519_MLKEM768,
     x25519_public:   u8[32]   = [0; 32],
-    mlkem768_public: u8[1152] = [0; 1152],
+    mlkem768_public: u8[1184] = [0; 1184],
 }
 
 struct PostQuantumServerShare {
@@ -54,7 +54,7 @@ struct PostQuantumServerShare {
 struct SecP256r1MLKEM768KeyShare {
     group:            u16      = rfc::GROUP_SECP256R1_MLKEM768,
     secp256r1_public: u8[65]   = [0; 65],
-    mlkem768_public:  u8[1152] = [0; 1152],
+    mlkem768_public:  u8[1184] = [0; 1184],
 }
 
 struct SecP256r1MLKEM768ServerShare {
@@ -78,8 +78,8 @@ struct SecP384r1MLKEM1024ServerShare {
 // ---- Wire Formatting and Parsing (RFC 10024 §3) ---------------------------
 
 // Formats a KeyShareEntry for ClientHello:
-// For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1152B) || Classical (32B).
-// For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1152B).
+// For GROUP_X25519_MLKEM768 (0x11EC): RFC 10024 Section 7.1 orders PQ (1184B) || Classical (32B).
+// For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1184B).
 fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
     guard rfc::is_x25519_pq_group(share.group) else { return; }
     core::write_be_u16(out, share.group);
@@ -94,10 +94,10 @@ fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
 }
 
 // Parses a hybrid ClientHello KeyShareEntry from raw bytes.
-// Enforces exact RFC 10024 wire length (1188 bytes) to prevent smuggling trailing data.
+// Enforces exact RFC 10024 wire length (1220 bytes) to prevent smuggling trailing data.
 //
 // Example:
-//   raw = [0x11, 0xEC, 0x04, 0x90, ...], share = PostQuantumKeyShare { .. }
+//   raw = [0x11, 0xEC, 0x04, 0xC0, ...], share = PostQuantumKeyShare { .. }
 //   returns: ok = true, share populated with group and public keys
 fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::HYBRID_CLIENT_SHARE_LEN else { return false; }
@@ -110,11 +110,11 @@ fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool
 
     share.group = group;
     if group == rfc::GROUP_X25519_MLKEM768 {
-        core::ct_copy_bytes(share.mlkem768_public[..], raw[4..1156]);
-        core::ct_copy_bytes(share.x25519_public[..], raw[1156..1188]);
+        core::ct_copy_bytes(share.mlkem768_public[..], raw[4..1188]);
+        core::ct_copy_bytes(share.x25519_public[..], raw[1188..1220]);
     } else {
         core::ct_copy_bytes(share.x25519_public[..], raw[4..36]);
-        core::ct_copy_bytes(share.mlkem768_public[..], raw[36..1188]);
+        core::ct_copy_bytes(share.mlkem768_public[..], raw[36..1220]);
     }
 
     return true;
@@ -175,8 +175,8 @@ fn format_secp256r1_mlkem768_key_share<B>(share: const SecP256r1MLKEM768KeyShare
 // RFC 10024 Section 3: Key Exchange Messages - Parses SecP256r1+ML-KEM-768 Client KeyShareEntry
 //
 // Example:
-//   raw = [0x11, 0xEB, 0x04, 0xC1, 0x04, ... (1217 bytes key)]
-//   returns: ok = true, share.group = 0x11EB, share.secp256r1_public = 65B, share.mlkem768_public = 1152B
+//   raw = [0x11, 0xEB, 0x04, 0xE1, 0x04, ... (1249 bytes key)]
+//   returns: ok = true, share.group = 0x11EB, share.secp256r1_public = 65B, share.mlkem768_public = 1184B
 fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: const u8[:]) -> bool {
     guard raw.len == 4 + rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN else { return false; }
 
@@ -189,7 +189,7 @@ fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: co
 
     share.group = group;
     core::ct_copy_bytes(share.secp256r1_public[..], raw[4..69]);
-    core::ct_copy_bytes(share.mlkem768_public[..], raw[69..1221]);
+    core::ct_copy_bytes(share.mlkem768_public[..], raw[69..1253]);
 
     return true;
 }

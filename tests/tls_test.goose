@@ -111,19 +111,19 @@ fn test_record_layer_and_dos(t: lit::T&) {
         let v13_hdr: u8[5] = [0x17, 0x03, 0x04, 0x00, 0x10];
         let _, _, _, alert_ver, ok_ver = wing::parse_tls_record_header(v13_hdr[..]);
         sub.assert_false(ok_ver, "legacy version 0x0304 rejected");
-        sub.assert_eq(wing::tls_alert_to_u8(alert_ver), wing::tls_alert_to_u8(wing::TlsAlert.ProtocolVersion), "protocol version alert");
+        sub.assert_eq(alert_ver.tls_alert_to_u8(), wing::TlsAlert.ProtocolVersion.tls_alert_to_u8(), "protocol version alert");
 
         // Non-compliant version: 0x0300 (SSL 3.0)
         let v30_hdr: u8[5] = [0x17, 0x03, 0x00, 0x00, 0x10];
         let _, _, _, alert_v30, ok_v30 = wing::parse_tls_record_header(v30_hdr[..]);
         sub.assert_false(ok_v30, "legacy version 0x0300 rejected");
-        sub.assert_eq(wing::tls_alert_to_u8(alert_v30), wing::tls_alert_to_u8(wing::TlsAlert.ProtocolVersion), "protocol version alert");
+        sub.assert_eq(alert_v30.tls_alert_to_u8(), wing::TlsAlert.ProtocolVersion.tls_alert_to_u8(), "protocol version alert");
 
         // Invalid record content type (0x42 not in 0x14..0x17)
         let bad_ct_hdr: u8[5] = [0x42, 0x03, 0x03, 0x00, 0x10];
         let _, _, _, alert_ct, ok_ct = wing::parse_tls_record_header(bad_ct_hdr[..]);
         sub.assert_false(ok_ct, "unknown content type rejected");
-        sub.assert_eq(wing::tls_alert_to_u8(alert_ct), wing::tls_alert_to_u8(wing::TlsAlert.UnexpectedMessage), "unexpected message alert");
+        sub.assert_eq(alert_ct.tls_alert_to_u8(), wing::TlsAlert.UnexpectedMessage.tls_alert_to_u8(), "unexpected message alert");
 
         // Header encoder bounds: rejecting ciphertext > 16640 and bad content type
         var enc_out: u8[..64] = [];
@@ -2447,17 +2447,17 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
             ..
         };
         for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1152 { client_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+        for i in 1184 { client_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
 
         var wire: u8[>..] = [];
         client_share.format_hybrid_key_share(wire);
-        sub.assert_eq(wire.len, 1188, "Client KeyShareEntry wire length is 1188 bytes");
+        sub.assert_eq(wire.len, 1220, "Client KeyShareEntry wire length is 1220 bytes");
 
         var parsed = internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Client hybrid key share parsed");
-        sub.assert_bytes_eq(wire[4..1156], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
-        sub.assert_bytes_eq(wire[1156..1188], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
+        sub.assert_bytes_eq(wire[4..1188], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
+        sub.assert_bytes_eq(wire[1188..1220], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
 
         // Draft 0x6399 (Classical || PQ) ordering verification
         var draft_share = internal::PostQuantumKeyShare {
@@ -2465,12 +2465,12 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
             ..
         };
         for i in 32 { draft_share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1152 { draft_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+        for i in 1184 { draft_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
         var draft_wire: u8[>..] = [];
         draft_share.format_hybrid_key_share(draft_wire);
-        sub.assert_eq(draft_wire.len, 1188, "Draft 0x6399 wire length 1188");
+        sub.assert_eq(draft_wire.len, 1220, "Draft 0x6399 wire length 1220");
         sub.assert_bytes_eq(draft_wire[4..36], draft_share.x25519_public[..], "0x6399 starts with X25519 (Classical || PQ)");
-        sub.assert_bytes_eq(draft_wire[36..1188], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
+        sub.assert_bytes_eq(draft_wire[36..1220], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
         var parsed_draft = internal::PostQuantumKeyShare { .. };
         sub.assert_true(parsed_draft.parse_hybrid_key_share(draft_wire[..]), "Draft share parsed");
         sub.assert_eq(parsed_draft.group, rfc::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
@@ -2617,12 +2617,12 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         // Key share wire lengths (RFC 10024 Section 3)
         sub.assert_eq(rfc::SECP256R1_POINT_LEN, 65, "P-256 uncompressed point is 65 bytes");
         sub.assert_eq(rfc::SECP384R1_POINT_LEN, 97, "P-384 uncompressed point is 97 bytes");
-        sub.assert_eq(rfc::MLKEM768_PUBLIC_LEN, 1152, "ML-KEM-768 public key is 1152 bytes");
+        sub.assert_eq(rfc::MLKEM768_PUBLIC_LEN, 1184, "ML-KEM-768 public key is 1184 bytes");
         sub.assert_eq(rfc::MLKEM768_CIPHERTEXT_LEN, 1088, "ML-KEM-768 ciphertext is 1088 bytes");
         sub.assert_eq(rfc::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
         sub.assert_eq(rfc::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
 
-        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11EB), 1217, "SecP256r1+ML-KEM-768 client share 1217B");
+        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11EB), 1249, "SecP256r1+ML-KEM-768 client share 1249B");
         sub.assert_eq(internal::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
         sub.assert_eq(internal::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
         sub.assert_eq(internal::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
@@ -2631,11 +2631,11 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var client_share = internal::SecP256r1MLKEM768KeyShare { .. };
         client_share.secp256r1_public[0] = 0x04;
         for i in 64 { client_share.secp256r1_public[1 + i] = ((i * 5 + 3) & 0xFF) as u8; }
-        for i in 1152 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0xFF) as u8; }
+        for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0xFF) as u8; }
 
         var wire: u8[>..] = [];
         internal::format_secp256r1_mlkem768_key_share(client_share, wire);
-        sub.assert_eq(wire.len, 4 + 1217, "Client key share wire length is exactly 1221 bytes");
+        sub.assert_eq(wire.len, 4 + 1249, "Client key share wire length is exactly 1253 bytes");
 
         var parsed_client = internal::SecP256r1MLKEM768KeyShare { .. };
         let ok_parse = internal::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
@@ -4255,7 +4255,7 @@ fn test_live_tls_transport_session(t: lit::T&) {
         wing::clear_tls13_session_tickets();
 
         let psk: u8[32] = [0x42; 32];
-        wing::store_tls13_session_ticket("example.com", "ticket-id-01", psk, 0x11223344, 3600);
+        wing::store_tls13_session_ticket("example.com", "ticket-id-01", psk[..], 0x11223344, 3600);
 
         var out_ticket: u8[..256] = [];
         var out_psk:    u8[32]    = [0; 32];

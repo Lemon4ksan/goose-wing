@@ -464,10 +464,10 @@ fn validate_sni_host_bytes(raw: const u8[:]) -> bool {
 
 fn read_sni_entry(list_cursor: ByteCursor&, found_host_name: bool&, out_sni: u8[..255]&) -> bool {
     var name_type: u8 = 0;
-    guard get_u8(list_cursor, name_type) else { return false; }
+    guard list_cursor.get_u8(name_type) else { return false; }
 
-    var name_bytes = cursor_from(list_cursor.buf[..0]);
-    guard get_u16_length_prefixed(list_cursor, name_bytes) else { return false; }
+    var name_bytes = core::cursor_from(list_cursor.buf[..0]);
+    guard list_cursor.get_u16_length_prefixed(name_bytes) else { return false; }
 
     if name_type == 0 { // host_name
         guard !found_host_name else { return false; }
@@ -485,14 +485,14 @@ fn read_sni_entry(list_cursor: ByteCursor&, found_host_name: bool&, out_sni: u8[
 //   ext_bytes = 0x00 0x0E 0x00 0x00 0x0B "example.com"
 //   returns: ok = true, out_sni = "example.com"
 fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
-    var cursor = cursor_from(ext_bytes);
-    var list_cursor = cursor_from(ext_bytes[..0]);
-    guard get_u16_length_prefixed(cursor, list_cursor) else { return false; }
-    guard cursor_len(list_cursor) > 0 && cursor_len(cursor) == 0 else { return false; }
+    var cursor = core::cursor_from(ext_bytes);
+    var list_cursor = core::cursor_from(ext_bytes[..0]);
+    guard cursor.get_u16_length_prefixed(list_cursor) else { return false; }
+    guard list_cursor.cursor_len() > 0 && cursor.cursor_len() == 0 else { return false; }
 
     var found_host_name = false;
 
-    while cursor_len(list_cursor) > 0 {
+    while list_cursor.cursor_len() > 0 {
         guard read_sni_entry(list_cursor, found_host_name, out_sni) else { return false; }
     }
     return found_host_name;
@@ -512,17 +512,17 @@ enum NegotiatedAlpn {
 // Checks list bounds (2..2^16-1), non-empty protocol names (1..255), no NUL bytes,
 // and no trailing unparsed data.
 fn validate_alpn_extension(alpn_ext_bytes: const u8[:]) -> bool {
-    var cursor = cursor_from(alpn_ext_bytes);
-    var list_cursor = cursor_from(alpn_ext_bytes[..0]);
-    guard get_u16_length_prefixed(cursor, list_cursor) else { return false; }
+    var cursor = core::cursor_from(alpn_ext_bytes);
+    var list_cursor = core::cursor_from(alpn_ext_bytes[..0]);
+    guard cursor.get_u16_length_prefixed(list_cursor) else { return false; }
     // RFC 7301 Section 3.1: ProtocolName protocol_name_list<2..2^16-1>;
-    guard cursor_len(list_cursor) >= 2 else { return false; }
-    guard cursor_len(cursor) == 0 else { return false; }
+    guard list_cursor.cursor_len() >= 2 else { return false; }
+    guard cursor.cursor_len() == 0 else { return false; }
 
     var count = 0;
-    while cursor_len(list_cursor) > 0 {
-        var proto_cursor = cursor_from(alpn_ext_bytes[..0]);
-        guard get_u8_length_prefixed(list_cursor, proto_cursor) else { return false; }
+    while list_cursor.cursor_len() > 0 {
+        var proto_cursor = core::cursor_from(alpn_ext_bytes[..0]);
+        guard list_cursor.get_u8_length_prefixed(proto_cursor) else { return false; }
         let proto = proto_cursor.buf;
         guard proto.len >= 1 && proto.len <= 255 else { return false; }
         for b in proto {
@@ -530,7 +530,7 @@ fn validate_alpn_extension(alpn_ext_bytes: const u8[:]) -> bool {
         }
         count++;
     }
-    return count > 0 && cursor_len(list_cursor) == 0;
+    return count > 0 && list_cursor.cursor_len() == 0;
 }
 
 inline fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
@@ -582,24 +582,24 @@ fn select_alpn_result(c: AlpnCandidates) -> NegotiatedAlpn {
 // For QUIC (is_quic == true): strictly requires "h3" (RFC 9001 Section 8.1).
 // For TCP (is_quic == false): prefers "h2", then "http/1.1".
 fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn {
-    var cursor = cursor_from(alpn_ext_bytes);
-    var list_cursor = cursor_from(alpn_ext_bytes[..0]);
-    if !get_u16_length_prefixed(cursor, list_cursor) {
+    var cursor = core::cursor_from(alpn_ext_bytes);
+    var list_cursor = core::cursor_from(alpn_ext_bytes[..0]);
+    if !cursor.get_u16_length_prefixed(list_cursor) {
         return NegotiatedAlpn.None;
     }
     // RFC 7301 Section 3.1: ProtocolName protocol_name_list<2..2^16-1>;
-    guard cursor_len(list_cursor) >= 2 else { return NegotiatedAlpn.None; }
+    guard list_cursor.cursor_len() >= 2 else { return NegotiatedAlpn.None; }
     // Reject trailing data in extension
-    guard cursor_len(cursor) == 0 else { return NegotiatedAlpn.None; }
+    guard cursor.cursor_len() == 0 else { return NegotiatedAlpn.None; }
 
     var has_h3 = false;
     var has_h2 = false;
     var has_http11 = false;
     var has_any = false;
 
-    while cursor_len(list_cursor) > 0 {
-        var proto_cursor = cursor_from(alpn_ext_bytes[..0]);
-        if !get_u8_length_prefixed(list_cursor, proto_cursor) {
+    while list_cursor.cursor_len() > 0 {
+        var proto_cursor = core::cursor_from(alpn_ext_bytes[..0]);
+        if !list_cursor.get_u8_length_prefixed(proto_cursor) {
             return NegotiatedAlpn.None;
         }
         if !match_alpn_protocol(proto_cursor.buf, has_h3, has_h2, has_http11) {
@@ -608,7 +608,7 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
         has_any = true;
     }
 
-    guard cursor_len(list_cursor) == 0 else { return NegotiatedAlpn.None; }
+    guard list_cursor.cursor_len() == 0 else { return NegotiatedAlpn.None; }
     return select_alpn_result(AlpnCandidates {
         is_quic:    is_quic,
         has_h3:     has_h3,
@@ -627,11 +627,11 @@ fn parse_tls_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool
     out_cookie.clear();
     // RFC 8446 Section 4.2.2 & OpenSSL #30868: cookie<1..2^16-1> forbids zero-length values.
     guard ext_bytes.len >= 3 else { return false; }
-    var cursor = cursor_from(ext_bytes);
+    var cursor = core::cursor_from(ext_bytes);
     var cookie_len: u16 = 0;
-    guard get_u16(cursor, cookie_len) else { return false; }
+    guard cursor.get_u16(cookie_len) else { return false; }
     guard cookie_len >= 1 else { return false; }
-    guard cursor_len(cursor) == (cookie_len as i64) else { return false; }
+    guard cursor.cursor_len() == (cookie_len as i64) else { return false; }
     guard cookie_len <= out_cookie.cap else { return false; }
     for i in cookie_len {
         out_cookie.push(cursor.buf[i]);
@@ -660,22 +660,22 @@ fn serialize_tls_cookie_extension<B>(out: B&, cookie: const u8[:]) -> bool {
 fn validate_certificate_authorities_extension(ext_bytes: const u8[:]) -> bool {
     // RFC 8446 Section 4.2.4 & OpenSSL #32211: authorities<3..2^16-1> strictly forbids vectors < 3 bytes.
     guard ext_bytes.len >= 5 else { return false; }
-    var cursor = cursor_from(ext_bytes);
+    var cursor = core::cursor_from(ext_bytes);
     var authorities_len: u16 = 0;
-    guard get_u16(cursor, authorities_len) else { return false; }
+    guard cursor.get_u16(authorities_len) else { return false; }
     guard authorities_len >= 3 else { return false; }
-    guard cursor_len(cursor) == authorities_len else { return false; }
+    guard cursor.cursor_len() == authorities_len else { return false; }
 
-    var auth_cursor = cursor_from(cursor.buf);
-    while cursor_len(auth_cursor) > 0 {
+    var auth_cursor = core::cursor_from(cursor.buf);
+    while auth_cursor.cursor_len() > 0 {
         var dn_len: u16 = 0;
-        guard get_u16(auth_cursor, dn_len) else { return false; }
+        guard auth_cursor.get_u16(dn_len) else { return false; }
         // Each DistinguishedName<1..2^16-1> must be at least 1 byte
         guard dn_len >= 1 else { return false; }
-        guard cursor_len(auth_cursor) >= dn_len else { return false; }
+        guard auth_cursor.cursor_len() >= dn_len else { return false; }
         auth_cursor.buf = auth_cursor.buf[dn_len..];
     }
-    return cursor_len(auth_cursor) == 0;
+    return auth_cursor.cursor_len() == 0;
 }
 
 // ---- Extensions Parser Combinator ----------------------------------------
@@ -710,25 +710,25 @@ fn parse_extensions_block(
     entries:         TlsExtensionEntry[..32]&,
 ) -> bool {
     entries.clear();
-    var cursor = cursor_from(ext_block_bytes);
-    var extensions_cursor = cursor_from(ext_block_bytes[..0]);
+    var cursor = core::cursor_from(ext_block_bytes);
+    var extensions_cursor = core::cursor_from(ext_block_bytes[..0]);
 
-    if !get_u16_length_prefixed(cursor, extensions_cursor) {
+    if !cursor.get_u16_length_prefixed(extensions_cursor) {
         return false;
     }
     // Trailing bytes after extensions block strictly forbidden
-    guard cursor_len(cursor) == 0 else { return false; }
+    guard cursor.cursor_len() == 0 else { return false; }
 
-    while cursor_len(extensions_cursor) > 0 {
+    while extensions_cursor.cursor_len() > 0 {
         var ext_type: u16 = 0;
-        if !get_u16(extensions_cursor, ext_type) { return false; }
+        if !extensions_cursor.get_u16(ext_type) { return false; }
 
-        var ext_data = cursor_from(ext_block_bytes[..0]);
-        if !get_u16_length_prefixed(extensions_cursor, ext_data) { return false; }
+        var ext_data = core::cursor_from(ext_block_bytes[..0]);
+        if !extensions_cursor.get_u16_length_prefixed(ext_data) { return false; }
 
         guard check_and_add_extension(entries, ext_type, ext_data.buf) else { return false; }
     }
-    guard cursor_len(extensions_cursor) == 0 else { return false; }
+    guard extensions_cursor.cursor_len() == 0 else { return false; }
     return true;
 }
 
@@ -763,21 +763,21 @@ fn check_and_add_version(seen_versions: u16[..127]&, ver: u16) -> bool {
 //   ext_bytes = [0x02, 0x03, 0x04]
 //   returns: supports_tls13 = true, ok = true
 fn parse_client_supported_versions(ext_bytes: const u8[:]) -> bool, bool {
-    var cursor = cursor_from(ext_bytes);
-    var list_cursor = cursor_from(ext_bytes[..0]);
-    guard get_u8_length_prefixed(cursor, list_cursor) else { return false, false; }
-    guard cursor_len(cursor) == 0 else { return false, false; }
+    var cursor = core::cursor_from(ext_bytes);
+    var list_cursor = core::cursor_from(ext_bytes[..0]);
+    guard cursor.get_u8_length_prefixed(list_cursor) else { return false, false; }
+    guard cursor.cursor_len() == 0 else { return false, false; }
 
-    let list_len = cursor_len(list_cursor);
+    let list_len = list_cursor.cursor_len();
     // RFC 8446 Section 4.2.1: versions<2..254>, must be even length
     guard list_len >= 2 && list_len <= 254 && (list_len % 2) == 0 else { return false, false; }
 
     var seen_versions: u16[..127] = [];
     var has_tls13 = false;
 
-    while cursor_len(list_cursor) > 0 {
+    while list_cursor.cursor_len() > 0 {
         var ver: u16 = 0;
-        guard get_u16(list_cursor, ver) else { return false, false; }
+        guard list_cursor.get_u16(ver) else { return false, false; }
         guard check_and_add_version(seen_versions, ver) else { return false, false; }
 
         if ver == rfc::TLS_VERSION_1_3 {
@@ -797,10 +797,10 @@ fn parse_client_supported_versions(ext_bytes: const u8[:]) -> bool, bool {
 //   returns: selected_version = 0x0304, ok = true
 fn parse_server_supported_versions(ext_bytes: const u8[:]) -> u16, bool {
     guard ext_bytes.len == 2 else { return 0, false; }
-    var cursor = cursor_from(ext_bytes);
+    var cursor = core::cursor_from(ext_bytes);
     var selected_ver: u16 = 0;
-    guard get_u16(cursor, selected_ver) else { return 0, false; }
-    guard cursor_len(cursor) == 0 else { return 0, false; }
+    guard cursor.get_u16(selected_ver) else { return 0, false; }
+    guard cursor.cursor_len() == 0 else { return 0, false; }
 
     // Strict TLS 1.3 requirement: ServerHello MUST only negotiate TLS 1.3 (0x0304)
     guard selected_ver == rfc::TLS_VERSION_1_3 else { return 0, false; }
@@ -1082,22 +1082,22 @@ fn read_server_hello_preamble(
     out:      ParsedServerHello&,
 ) -> const u8[:], bool {
     var c = core::cursor_from(payload);
-    let hs_type, ok_t = core::read_u8(c);
+    let hs_type, ok_t = c.read_u8();
     guard ok_t && hs_type == rfc::TLS_HS_SERVER_HELLO else { return "", false; }
-    let body, ok_b = core::read_u24_prefixed(c);
+    let body, ok_b = c.read_u24_prefixed();
     guard ok_b && c.buf.len == 0 else { return "", false; }
 
     var bc = core::cursor_from(body);
-    let ver, ok_v = core::read_u16(bc);
+    let ver, ok_v = bc.read_u16();
     guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 else { return "", false; }
     let srv_rand, ok_r = core::read_bytes(bc, 32);
     guard ok_r else { return "", false; }
     core::ct_copy_bytes(rand_arr[..], srv_rand);
     out.is_hrr = is_hello_retry_request(rand_arr);
 
-    let _, ok_sid = core::read_u8_prefixed(bc);
-    let cs, ok_cs = core::read_u16(bc);
-    let comp, ok_cm = core::read_u8(bc);
+    let _, ok_sid = bc.read_u8_prefixed();
+    let cs, ok_cs = bc.read_u16();
+    let comp, ok_cm = bc.read_u8();
     guard ok_sid && ok_cs && rfc::is_supported_tls13_cipher_suite(cs) && ok_cm && comp == 0 else {
         return "", false;
     }
@@ -1191,9 +1191,9 @@ struct SessionTicketCache {
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS 1.3 extensions.
 fn read_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
     // RFC 8446 Section 4.2.10: In NewSessionTicket, early_data MUST be uint32 max_early_data_size
-    guard cursor_len(ext_data) == 4 else { return false; }
+    guard ext_data.cursor_len() == 4 else { return false; }
     var max_size: u32 = 0;
-    guard get_u32(ext_data, max_size) else { return false; }
+    guard ext_data.get_u32(max_size) else { return false; }
     // RFC 8446 Section 4.2.10: Servers MUST NOT offer early_data with max_early_data_size = 0.
     // Client receiving this MUST terminate connection with illegal_parameter.
     guard max_size > 0 else { return false; }
@@ -1205,12 +1205,12 @@ fn read_ticket_early_data(ext_data: ByteCursor&, out: NewSessionTicketMsg&) -> b
 
 fn read_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: NewSessionTicketMsg&) -> bool {
     var seen_types: u16[..16] = [];
-    while cursor_len(ext_cursor) > 0 {
+    while ext_cursor.cursor_len() > 0 {
         var ext_type: u16 = 0;
-        guard get_u16(ext_cursor, ext_type) else { return false; }
+        guard ext_cursor.get_u16(ext_type) else { return false; }
 
-        var ext_data = cursor_from(payload[..0]);
-        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
+        var ext_data = core::cursor_from(payload[..0]);
+        guard ext_cursor.get_u16_length_prefixed(ext_data) else { return false; }
 
         // RFC 8446 Section 4.2: Extensions MUST NOT contain duplicates
         guard !seen_types.contains(ext_type) else { return false; }
@@ -1224,13 +1224,13 @@ fn read_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: Ne
             guard read_ticket_early_data(ext_data, out) else { return false; }
         }
     }
-    return cursor_len(ext_cursor) == 0;
+    return ext_cursor.cursor_len() == 0;
 }
 
 fn read_ticket_nonce(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
-    var nonce_cursor = cursor_from(c.buf[..0]);
-    guard get_u8_length_prefixed(c, nonce_cursor) else { return false; }
-    let nonce_len = cursor_len(nonce_cursor);
+    var nonce_cursor = core::cursor_from(c.buf[..0]);
+    guard c.get_u8_length_prefixed(nonce_cursor) else { return false; }
+    let nonce_len = nonce_cursor.cursor_len();
     guard nonce_len <= 255 && nonce_len <= out.ticket_nonce.cap else { return false; }
     for i in nonce_len {
         out.ticket_nonce.push(nonce_cursor.buf[i]);
@@ -1239,9 +1239,9 @@ fn read_ticket_nonce(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
 }
 
 fn read_ticket_bytes(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
-    var ticket_cursor = cursor_from(c.buf[..0]);
-    guard get_u16_length_prefixed(c, ticket_cursor) else { return false; }
-    let ticket_len = cursor_len(ticket_cursor);
+    var ticket_cursor = core::cursor_from(c.buf[..0]);
+    guard c.get_u16_length_prefixed(ticket_cursor) else { return false; }
+    let ticket_len = ticket_cursor.cursor_len();
     guard ticket_len > 0 && ticket_len <= out.ticket.cap else { return false; }
     for i in ticket_len {
         out.ticket.push(ticket_cursor.buf[i]);
@@ -1260,18 +1260,18 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
     out.has_early_data = false;
     out.max_early_data_size = 0;
 
-    var c = cursor_from(payload);
-    guard get_u32(c, out.ticket_lifetime) else { return false; }
+    var c = core::cursor_from(payload);
+    guard c.get_u32(out.ticket_lifetime) else { return false; }
     // RFC 8446 Section 4.6.1: Servers MUST NOT use lifetime > 7 days (604800s)
     guard out.ticket_lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else { return false; }
 
-    guard get_u32(c, out.ticket_age_add) else { return false; }
+    guard c.get_u32(out.ticket_age_add) else { return false; }
     guard read_ticket_nonce(c, out) else { return false; }
     guard read_ticket_bytes(c, out) else { return false; }
 
-    var ext_cursor = cursor_from(payload[..0]);
-    guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
-    guard cursor_len(c) == 0 else { return false; }
+    var ext_cursor = core::cursor_from(payload[..0]);
+    guard c.get_u16_length_prefixed(ext_cursor) else { return false; }
+    guard c.cursor_len() == 0 else { return false; }
 
     guard read_ticket_extensions(ext_cursor, payload, out) else { return false; }
 
@@ -1455,13 +1455,13 @@ struct CertificateRequestMsg {
 
 fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) -> bool {
     out.has_signature_algorithms = true;
-    var alg_cursor = cursor_from(ext_data.buf[..0]);
-    guard get_u16_length_prefixed(ext_data, alg_cursor) && cursor_len(ext_data) == 0 else { return false; }
-    let bytes_len = cursor_len(alg_cursor);
+    var alg_cursor = core::cursor_from(ext_data.buf[..0]);
+    guard ext_data.get_u16_length_prefixed(alg_cursor) && ext_data.cursor_len() == 0 else { return false; }
+    let bytes_len = alg_cursor.cursor_len();
     guard bytes_len >= 2 && (bytes_len % 2) == 0 else { return false; }
-    while cursor_len(alg_cursor) > 0 {
+    while alg_cursor.cursor_len() > 0 {
         var alg: u16 = 0;
-        guard get_u16(alg_cursor, alg) else { return false; }
+        guard alg_cursor.get_u16(alg) else { return false; }
         guard out.sig_algorithms.len < out.sig_algorithms.cap else { return false; }
         out.sig_algorithms.push(alg);
     }
@@ -1472,10 +1472,10 @@ fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) ->
 // In initial handshake: context MUST be 0 length. In post-handshake: context MUST be non-empty and <= 32 bytes.
 // signature_algorithms extension is mandatory; absence MUST cause rejection.
 fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: CertificateRequestMsg&) -> bool {
-    var ctx_cursor = cursor_from(c.buf[..0]);
-    guard get_u8_length_prefixed(c, ctx_cursor) else { return false; }
+    var ctx_cursor = core::cursor_from(c.buf[..0]);
+    guard c.get_u8_length_prefixed(ctx_cursor) else { return false; }
 
-    let ctx_len = cursor_len(ctx_cursor);
+    let ctx_len = ctx_cursor.cursor_len();
     // RFC 8446 Section 4.3.2: context MUST be <= 32 bytes
     guard ctx_len <= 32 && ctx_len <= out.context.cap else { return false; }
     if is_post_handshake {
@@ -1500,12 +1500,12 @@ fn encode_post_handshake_auth_extension<B>(out: B&) {
 
 fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: CertificateRequestMsg&) -> bool {
     var seen_types: u16[..16] = [];
-    while cursor_len(ext_cursor) > 0 {
+    while ext_cursor.cursor_len() > 0 {
         var ext_type: u16 = 0;
-        guard get_u16(ext_cursor, ext_type) else { return false; }
+        guard ext_cursor.get_u16(ext_type) else { return false; }
 
-        var ext_data = cursor_from(payload[..0]);
-        guard get_u16_length_prefixed(ext_cursor, ext_data) else { return false; }
+        var ext_data = core::cursor_from(payload[..0]);
+        guard ext_cursor.get_u16_length_prefixed(ext_data) else { return false; }
 
         // RFC 8446 Section 4.2: Extensions - There MUST NOT be more than one extension
         // of the same type in a given extension block.
@@ -1524,7 +1524,7 @@ fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: 
             guard validate_certificate_authorities_extension(ext_data.buf) else { return false; }
         }
     }
-    return cursor_len(ext_cursor) == 0;
+    return ext_cursor.cursor_len() == 0;
 }
 
 // Parses and validates CertificateRequest message (RFC 8446 Section 4.3.2).
@@ -1542,13 +1542,13 @@ fn parse_certificate_request(
     out.has_signature_algorithms = false;
     out.sig_algorithms.clear();
 
-    var c = cursor_from(payload);
+    var c = core::cursor_from(payload);
     guard read_cert_req_context(c, is_post_handshake, out) else { return false; }
 
-    var ext_cursor = cursor_from(payload[..0]);
-    guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
+    var ext_cursor = core::cursor_from(payload[..0]);
+    guard c.get_u16_length_prefixed(ext_cursor) else { return false; }
     // RFC 8446 Section 4.3.2: extensions<2..2^16-1>
-    guard cursor_len(ext_cursor) >= 2 && cursor_len(c) == 0 else { return false; }
+    guard ext_cursor.cursor_len() >= 2 && c.cursor_len() == 0 else { return false; }
 
     guard read_cert_req_extensions(ext_cursor, payload, out) else { return false; }
 
@@ -1563,16 +1563,16 @@ fn parse_certificate_request(
 //   payload = [0x00, 0x00, 0x00, 0x00]
 //   returns: is_empty = true, ok = true
 fn parse_certificate_header_is_empty(payload: const u8[:]) -> bool, bool {
-    var c = cursor_from(payload);
-    var ctx_cursor = cursor_from(payload[..0]);
-    guard get_u8_length_prefixed(c, ctx_cursor) else { return false, false; }
-    guard cursor_len(ctx_cursor) <= 32 else { return false, false; }
+    var c = core::cursor_from(payload);
+    var ctx_cursor = core::cursor_from(payload[..0]);
+    guard c.get_u8_length_prefixed(ctx_cursor) else { return false, false; }
+    guard ctx_cursor.cursor_len() <= 32 else { return false, false; }
 
-    guard cursor_len(c) >= 3 else { return false, false; }
+    guard c.cursor_len() >= 3 else { return false, false; }
     var b0: u8 = 0; var b1: u8 = 0; var b2: u8 = 0;
-    guard get_u8(c, b0) && get_u8(c, b1) && get_u8(c, b2) else { return false, false; }
+    guard c.get_u8(b0) && c.get_u8(b1) && c.get_u8(b2) else { return false, false; }
     let list_len = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2;
-    guard (cursor_len(c) as u32) == list_len else { return false, false; }
+    guard (c.cursor_len() as u32) == list_len else { return false, false; }
     return list_len == 0, true;
 }
 

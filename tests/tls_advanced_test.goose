@@ -620,8 +620,7 @@ fn test_ech_protocol(t: lit::T&) {
 
         var enc:        u8[32]    = [0; 32];
         var ciphertext: u8[..512] = [];
-        let ok_seal = wing::seal_ech_inner(
-            config,
+        let ok_seal = config.seal_ech_inner(
             cs,
             outer_aad,
             inner_padded[..],
@@ -923,18 +922,18 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         sub.assert_false(rfc::is_post_quantum_group(0x0017), "0x0017 (secp256r1) is NOT PQ group");
     };
 
-    t.run("Hybrid 1184-Byte Client Key Share Wire Codec") { sub =>
+    t.run("Hybrid 1216-Byte Client Key Share Wire Codec") { sub =>
         var share = internal::PostQuantumKeyShare {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
         for i in 32 { share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1152 { share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
+        for i in 1184 { share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
 
         var wire: u8[>..] = [];
         share.format_hybrid_key_share(wire);
-        // group (2) + len (2) + 1184 = 1188 bytes total
-        sub.assert_eq(wire.len, 1188, "Wire length is exactly 1188 bytes");
+        // group (2) + len (2) + 1216 = 1220 bytes total
+        sub.assert_eq(wire.len, 1220, "Wire length is exactly 1220 bytes");
 
         var parsed = internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
@@ -943,13 +942,13 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         sub.assert_bytes_eq(parsed.x25519_public[..], share.x25519_public[..], "X25519 component matches");
 
         var mlkem_match = true;
-        for i in 1152 {
+        for i in 1184 {
             if parsed.mlkem768_public[i] != share.mlkem768_public[i] {
                 mlkem_match = false;
                 break;
             }
         }
-        sub.assert_true(mlkem_match, "ML-KEM-768 1152-byte component matches verbatim");
+        sub.assert_true(mlkem_match, "ML-KEM-768 1184-byte component matches verbatim");
 
         // Edge cases
         var bad_parsed = internal::PostQuantumKeyShare { .. };

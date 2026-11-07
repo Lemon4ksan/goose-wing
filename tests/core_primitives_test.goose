@@ -103,9 +103,9 @@ fn test_duration_arithmetic_and_bounds(t: lit::T&) {
         let d2 = core::secs(10);
         let d3 = core::secs(5);
 
-        sub.assert_eq(core::compare(d1, d2), -1);
-        sub.assert_eq(core::compare(d2, d1), 1);
-        sub.assert_eq(core::compare(d1, d3), 0);
+        sub.assert_eq(d1.compare(d2), -1);
+        sub.assert_eq(d2.compare(d1), 1);
+        sub.assert_eq(d1.compare(d3), 0);
     };
 }
 
@@ -434,6 +434,10 @@ fn test_time_construction_and_pre1970(t: lit::T&) {
         sub.assert_eq(tm_pre.second(), 59);
         sub.assert_eq(tm_pre.weekday(), core::Weekday.Wednesday);
 
+        // 1969-12-25 12:00:00 UTC is days_count = -7 (days_count + 4 = -3 < 0) -> Thursday
+        let tm_pre_week = core::date(1969, core::Month.December, 25, 12, 0, 0, 0, 0);
+        sub.assert_eq(tm_pre_week.weekday(), core::Weekday.Thursday);
+
         // Normalization of negative fractional nanoseconds
         let tm_norm = core::unix(100, -250000000);
         sub.assert_eq(tm_norm.unix(), 99, "negative nanos must decrement sec");
@@ -592,6 +596,16 @@ fn test_time_truncation_rounding_and_timezones(t: lit::T&) {
         let tm_pre = core::unix(-3600, 0);
         let round_pre = tm_pre.round(core::mins(15));
         sub.assert_eq(round_pre.unix(), -3600);
+
+        // Negative timestamp truncation (pre-1970) must round down towards -infinity
+        let tm_pre_sec = core::unix(-1, 500000000); // -0.5s
+        let trunc_pre_sec = tm_pre_sec.truncate(core::secs(10));
+        sub.assert_eq(trunc_pre_sec.unix(), -10);
+        sub.assert_eq(trunc_pre_sec.nanosecond(), 0);
+
+        let trunc_pre_general = tm_pre_sec.truncate(core::millis(1500)); // 1.5s general branch
+        sub.assert_eq(trunc_pre_general.unix(), -2);
+        sub.assert_eq(trunc_pre_general.nanosecond(), 500000000); // -1.5s == unix(-2, 500_000_000)
 
         // Post-2262 date truncation without nanosecond overflow
         let t_2500 = core::date(2500, core::Month.January, 1, 14, 25, 45, 0, 0);

@@ -866,7 +866,6 @@ fn test_cache_groups(t: lit::T&) {
         wing::on_response(cache, req, resp, ts);
 
         sub.assert_eq(cache.entries.len, 1, "Grouped response stored");
-        sub.assert_eq(cache.entries[0].group_count, 1, "Stored entry carries one group");
         sub.assert_true(wing::entry_has_group(cache.entries[0], "scripts"), "entry_has_group matches scripts");
         // RFC 9875 §2.1: group names compare case-sensitive
         sub.assert_false(wing::entry_has_group(cache.entries[0], "Scripts"), "Group names are case-sensitive");

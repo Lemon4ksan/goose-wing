@@ -80,15 +80,34 @@ fn build_signed_to_sign<B>(
 
 // ---- multi-key rotation container (KeyStore) -------------------------------
 
+// Domain-separated key slot holding independent signing and encryption subkeys derived via HKDF-SHA256.
+struct KeySlot {
+    key_id:         u32    = 0,
+    master_key:     u8[32] = [0; 32],
+    signing_key:    u8[32] = [0; 32],
+    encryption_key: u8[32] = [0; 32],
+    created_at_sec: i64    = 0,
+    expires_at_sec: i64    = 0,
+    revoked:        bool   = false,
+}
+
+fn zeroize_jar_key_slot(slot: KeySlot&) {
+    core::secure_zeroize_32(slot.master_key);
+    core::secure_zeroize_32(slot.signing_key);
+    core::secure_zeroize_32(slot.encryption_key);
+    slot.revoked = true;
+}
+
 // Key rotation store supporting an active primary key and retired keys.
 struct KeyStore {
-    keys:                     core::KeySlot[..8] = [],
-    active_idx:               i64                = 0,
-    max_age_sec:              i64                = 2592000, // 30 days default session lifetime
-    clock_skew_tolerance_sec: i64                = 300,     // 5 minutes skew tolerance
+    keys:                     KeySlot[..8] = [],
+    active_idx:               i64          = 0,
+    max_age_sec:              i64          = 2592000, // 30 days default session lifetime
+    clock_skew_tolerance_sec: i64          = 300,     // 5 minutes skew tolerance
 }
 
 // Appends a KeySlot to the store if capacity permits and key_id is not already active.
+// Derives domain-separated signing and encryption subkeys via HKDF-SHA256.
 fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     guard store.keys.len < store.keys.cap else { return false; }
     for idx in store.keys.len {
@@ -96,17 +115,26 @@ fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
             return false;
         }
     }
-    store.keys.push(slot);
+    var derived = KeySlot {
+        key_id:         slot.key_id,
+        master_key:     slot.master_key,
+        signing_key:    core::hkdf_sha256_32(slot.master_key, "", "WING-COOKIE-SIGN-HMAC-SHA256"),
+        encryption_key: core::hkdf_sha256_32(slot.master_key, "", "WING-COOKIE-ENC-AEAD-256"),
+        created_at_sec: slot.created_at_sec,
+        expires_at_sec: slot.expires_at_sec,
+        revoked:        slot.revoked,
+    };
+    store.keys.push(derived);
     return true;
 }
 
 // Returns the currently active, non-revoked KeySlot.
-fn active_key(store: const KeyStore&) -> core::KeySlot, bool {
+fn active_key(store: const KeyStore&) -> KeySlot, bool {
     guard store.active_idx >= 0 && store.active_idx < store.keys.len else {
-        return core::KeySlot { .. }, false;
+        return KeySlot { .. }, false;
     }
     let slot = store.keys[store.active_idx];
-    guard !slot.revoked else { return core::KeySlot { .. }, false; }
+    guard !slot.revoked else { return KeySlot { .. }, false; }
     return slot, true;
 }
 
@@ -122,13 +150,13 @@ fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool {
 }
 
 // Looks up a non-revoked KeySlot by key_id for decryption or verification.
-fn find_key(store: const KeyStore&, key_id: u32) -> core::KeySlot, bool {
+fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool {
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id && !store.keys[idx].revoked {
             return store.keys[idx], true;
         }
     }
-    return core::KeySlot { .. }, false;
+    return KeySlot { .. }, false;
 }
 
 // Zeroizes and revokes all slots matching key_id in the store.
@@ -136,7 +164,7 @@ fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
     var found = false;
     for idx in store.keys.len {
         if store.keys[idx].key_id == key_id {
-            core::zeroize_key_slot(store.keys[idx]);
+            zeroize_jar_key_slot(store.keys[idx]);
             found = true;
         }
     }
@@ -144,10 +172,16 @@ fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
 }
 
 // Checks if a key needs proactive rotation (starts >= 24 hours before expiration).
+fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
+    guard slot.expires_at_sec > 0 && now_sec >= 0 && !slot.revoked else { return false; }
+    if now_sec >= slot.expires_at_sec { return true; }
+    return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
+}
+
 fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
     guard slot.expires_at_sec > 0 && now_sec >= 0 && !slot.revoked else { return false; }
     if now_sec >= slot.expires_at_sec { return true; }
-    return (slot.expires_at_sec - now_sec) <= 86400;
+    return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
 }
 
 // Validates cookie creation timestamp against clock skew tolerance and max age TTL.
@@ -159,7 +193,7 @@ fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_u: u64, now_sec: i64
     let skew_u = store.clock_skew_tolerance_sec as u64;
     let max_age_u = store.max_age_sec as u64;
     if cookie_u > core::add_sat_u64(now_u, skew_u) { return false; }
-    if now_u > cookie_u && (now_u - cookie_u) > max_age_u { return false; }
+    if now_u > cookie_u && core::sub_sat_u64(now_u, cookie_u) > max_age_u { return false; }
     return true;
 }
 
@@ -224,7 +258,7 @@ inline fn init_hkdf_salt_nonce(
 }
 
 fn seal_binary_hkdf_aes<B>(
-    slot:        const core::KeySlot&,
+    slot:        const KeySlot&,
     cookie_name: const u8[:],
     plaintext:   const u8[:],
     now_sec:     i64,
@@ -249,7 +283,7 @@ fn seal_binary_hkdf_aes<B>(
     let ct_start = out.len;
     for i in plaintext.len { out.push(0); }
     let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
-        slot.master_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
+        slot.encryption_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
     );
     guard ok_seal else {
         out.clear();
@@ -260,7 +294,7 @@ fn seal_binary_hkdf_aes<B>(
 }
 
 fn seal_binary_xchacha20<B>(
-    slot:        const core::KeySlot&,
+    slot:        const KeySlot&,
     cookie_name: const u8[:],
     plaintext:   const u8[:],
     now_sec:     i64,
@@ -286,7 +320,7 @@ fn seal_binary_xchacha20<B>(
 
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
-    let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], out);
+    let tag = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
     out.append(tag[..]);
     return true;
 }
@@ -310,13 +344,13 @@ fn private_jar_seal_binary<B>(
     } else {
         seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
     };
-    core::zeroize_key_slot(slot);
+    zeroize_jar_key_slot(slot);
     return ok;
 }
 
 fn open_binary_xchacha20<B>(
     jar:           const PrivateJar&,
-    slot:          const core::KeySlot&,
+    slot:          const KeySlot&,
     cookie_name:   const u8[:],
     raw_wire:      const u8[:],
     now_sec:       i64,
@@ -340,7 +374,7 @@ fn open_binary_xchacha20<B>(
 
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack);
-    guard core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
+    guard core::xchacha20_poly1305_open(slot.encryption_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
         out_plaintext.clear();
         return false;
     }
@@ -353,7 +387,7 @@ fn open_binary_xchacha20<B>(
 
 fn open_binary_hkdf_aes<B>(
     jar:           const PrivateJar&,
-    slot:          const core::KeySlot&,
+    slot:          const KeySlot&,
     cookie_name:   const u8[:],
     raw_wire:      const u8[:],
     now_sec:       i64,
@@ -382,7 +416,7 @@ fn open_binary_hkdf_aes<B>(
 
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack);
-    guard core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
+    guard core::hkdf_aes256_gcm_open(slot.encryption_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
         out_plaintext.clear();
         return false;
     }
@@ -415,7 +449,7 @@ fn private_jar_open_binary<B>(
     } else if ver == WIRE_VER_HKDF_AES_GCM {
         ok = open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out_plaintext);
     }
-    core::zeroize_key_slot(slot);
+    zeroize_jar_key_slot(slot);
     return ok;
 }
 
@@ -495,13 +529,13 @@ fn signed_jar_seal_binary<B>(
     var to_sign_stack: u8[..8320] = [];
     if (19 + cookie_name.len + payload.len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, now_u, cookie_name, payload, to_sign_stack);
-        mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        mac = core::hmac_sha256(slot.signing_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, now_u, cookie_name, payload, to_sign_dyn);
-        mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        mac = core::hmac_sha256(slot.signing_key[..], to_sign_dyn[..]);
     }
-    core::zeroize_key_slot(slot);
+    zeroize_jar_key_slot(slot);
     out.append(mac[..]);
     core::secure_zeroize_32(mac);
     return true;
@@ -538,13 +572,13 @@ fn signed_jar_open_binary<B>(
     var to_sign_stack: u8[..8320] = [];
     if (19 + cookie_name.len + payload_len) <= to_sign_stack.cap {
         build_signed_to_sign(slot.key_id, cookie_u, cookie_name, payload, to_sign_stack);
-        expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
+        expected_mac = core::hmac_sha256(slot.signing_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
         build_signed_to_sign(slot.key_id, cookie_u, cookie_name, payload, to_sign_dyn);
-        expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
+        expected_mac = core::hmac_sha256(slot.signing_key[..], to_sign_dyn[..]);
     }
-    core::zeroize_key_slot(slot);
+    zeroize_jar_key_slot(slot);
     let mac_ok = core::ct_eq_tag32(expected_mac, tag);
     core::secure_zeroize_32(expected_mac);
     guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_u, now_sec) else { return false; }

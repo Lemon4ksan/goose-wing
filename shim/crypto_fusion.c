@@ -17,6 +17,17 @@ typedef struct {
     int64_t len;
 } wing_slice;
 
+// Zeroize sensitive stack buffers and unauthenticated plaintext without Dead Store Elimination (DSE).
+static inline void wing_fusion_zeroize(volatile void *ptr, size_t len) {
+    volatile uint8_t *vp = (volatile uint8_t *)ptr;
+    for (size_t i = 0; i < len; i++) {
+        vp[i] = 0;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : : "r"(ptr) : "memory");
+#endif
+}
+
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #include <wmmintrin.h>
@@ -239,6 +250,7 @@ static int32_t wing_aes128_gcm_decrypt_aesni(const uint8_t *key_ptr, const uint8
         for (int64_t i = 0; i < rem; i++) {
             dst_ptr[offset + i] = c_pad[i] ^ ks_bytes[i];
         }
+        wing_fusion_zeroize(ks_bytes, sizeof(ks_bytes));
         __m128i c_vec = _mm_loadu_si128((const __m128i *)c_pad);
         ghash_acc = wing_gf128_mul_pclmul(_mm_xor_si128(ghash_acc, wing_bswap128(c_vec)), h_swp);
     }
@@ -255,6 +267,7 @@ static int32_t wing_aes128_gcm_decrypt_aesni(const uint8_t *key_ptr, const uint8
     __m128i tag_vec = _mm_xor_si128(wing_bswap128(ghash_acc), j0_enc);
     uint8_t computed_tag[16];
     _mm_storeu_si128((__m128i *)computed_tag, tag_vec);
+    wing_fusion_zeroize(rk, sizeof(rk));
 
     // Constant-time tag comparison (Invariant 11)
     const uint8_t *wire_tag = src_ptr + ct_len;
@@ -262,11 +275,10 @@ static int32_t wing_aes128_gcm_decrypt_aesni(const uint8_t *key_ptr, const uint8
     for (int i = 0; i < 16; i++) {
         diff |= (computed_tag[i] ^ wire_tag[i]);
     }
+    wing_fusion_zeroize(computed_tag, sizeof(computed_tag));
     if (diff != 0) {
-        // Zeroize output buffer on authentication failure
-        for (int64_t i = 0; i < ct_len; i++) {
-            dst_ptr[i] = 0;
-        }
+        // Zeroize output buffer on authentication failure (DSE-resistant)
+        wing_fusion_zeroize(dst_ptr, (size_t)ct_len);
         return -1;
     }
 
@@ -405,6 +417,7 @@ static int32_t wing_aes128_gcm_decrypt_scalar(const uint8_t *key_ptr, const uint
             y[i] ^= c_byte;
             dst_ptr[offset + i] = c_byte ^ ks[i];
         }
+        wing_fusion_zeroize(ks, sizeof(ks));
         wing_ghash_scalar_mul(y, h_blk);
         offset += blk_len;
     }
@@ -414,6 +427,8 @@ static int32_t wing_aes128_gcm_decrypt_scalar(const uint8_t *key_ptr, const uint
         y[8 + i] ^= (uint8_t)(c_bits >> (56 - 8 * i));
     }
     wing_ghash_scalar_mul(y, h_blk);
+    wing_fusion_zeroize(rk, sizeof(rk));
+    wing_fusion_zeroize(h_blk, sizeof(h_blk));
 
     uint8_t diff = 0;
     const uint8_t *wire_tag = src_ptr + ct_len;
@@ -421,9 +436,10 @@ static int32_t wing_aes128_gcm_decrypt_scalar(const uint8_t *key_ptr, const uint
         uint8_t calc_t = y[i] ^ j0_enc[i];
         diff |= (calc_t ^ wire_tag[i]);
     }
+    wing_fusion_zeroize(j0_enc, sizeof(j0_enc));
+    wing_fusion_zeroize(y, sizeof(y));
     if (diff != 0) {
-        for (int64_t i = 0; i < ct_len; i++)
-            dst_ptr[i] = 0;
+        wing_fusion_zeroize(dst_ptr, (size_t)ct_len);
         return -1;
     }
     return (int32_t)ct_len;

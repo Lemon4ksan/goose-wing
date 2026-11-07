@@ -126,3 +126,56 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
 }
+
+// Cross-platform Layer 4 socket option configuration (TCP keepalive, dual-stack IPv6, and Windows IOCP bypass).
+struct SocketOptions {
+    reuse_addr:               bool = true,
+    reuse_port:               bool = false,
+    tcp_nodelay:              bool = true,
+    recv_buf_size:            i32  = 0,
+    send_buf_size:            i32  = 0,
+    tcp_quickack:             bool = false,
+    tcp_cork:                 bool = false,
+    tcp_fastopen:             i32  = 0,
+    keepalive_idle_secs:      i32  = 0,
+    keepalive_interval_secs:  i32  = 0,
+    keepalive_probes:         i32  = 0,
+    ipv6_only:                bool = false,
+    win_skip_iocp_on_success: bool = true,
+}
+
+inline fn is_valid_socket_options(opts: const SocketOptions&) -> bool {
+    return opts.recv_buf_size >= 0 && opts.send_buf_size >= 0 && opts.tcp_fastopen >= 0 &&
+           opts.keepalive_idle_secs >= 0 && opts.keepalive_interval_secs >= 0 && opts.keepalive_probes >= 0;
+}
+
+inline fn apply_tcp_keepalive_option(fd: i64, opts: const SocketOptions&) {
+    guard opts.keepalive_idle_secs > 0 else { return; }
+    let intvl = max(opts.keepalive_interval_secs, 1);
+    let cnt = max(opts.keepalive_probes, 1);
+    let _ = wing::native_tcp_set_keepalive_params(fd, opts.keepalive_idle_secs, intvl, cnt);
+}
+
+// Validates and applies `SocketOptions` to a socket descriptor `fd` (or validates configuration when `fd <= 0`).
+fn apply_socket_options(fd: i64, opts: const SocketOptions&) -> bool {
+    guard is_valid_socket_options(opts) else { return false; }
+    guard fd > 0 else { return true; }
+    let reuse_flag:   i32 = if opts.reuse_addr { 1 } else { 0 };
+    let nodelay_flag: i32 = if opts.tcp_nodelay { 1 } else { 0 };
+    let _ = wing::native_tcp_set_reuseaddr(fd, reuse_flag);
+    if opts.reuse_port {
+        let _ = wing::native_tcp_set_reuseport(fd, 1);
+    }
+    let _ = wing::native_tcp_set_nodelay(fd, nodelay_flag);
+    if opts.tcp_quickack {
+        let _ = wing::native_tcp_set_quickack(fd, 1);
+    }
+    if opts.tcp_cork {
+        let _ = wing::native_tcp_set_cork(fd, 1);
+    }
+    if opts.tcp_fastopen > 0 {
+        let _ = wing::native_tcp_set_fastopen(fd, opts.tcp_fastopen);
+    }
+    apply_tcp_keepalive_option(fd, opts);
+    return true;
+}

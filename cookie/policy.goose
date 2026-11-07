@@ -240,8 +240,8 @@ fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
 
 fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> SiteForCookies {
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    let _ = site.scheme.try_set(scheme(url_val));
-    psl_extract_etld_plus_one(hostname(url_val), site.registrable_domain);
+    let _ = site.scheme.try_set(url_val.scheme());
+    psl_extract_etld_plus_one(url_val.hostname(), site.registrable_domain);
     return site;
 }
 

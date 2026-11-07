@@ -92,11 +92,13 @@ struct GcraTatCell {
 
 // Result of a GCRA rate check
 struct GcraDecision {
-    allowed:         bool = false,
-    remaining_burst: u64  = 0,
-    retry_after_ns:  u64  = 0,
-    reset_after_ns:  u64  = 0,
-    tat_ns:          u64  = 0,
+    allowed:               bool = false,
+    remaining_burst:       u64  = 0,
+    retry_after_ns:        u64  = 0,
+    reset_after_ns:        u64  = 0,
+    wait_ns:               i64  = 0,
+    tat_ns:                u64  = 0,
+    insufficient_capacity: bool = false,
 }
 
 // Clamps TAT if system clock drifted or jumped backward into the past.

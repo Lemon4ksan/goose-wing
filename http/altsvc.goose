@@ -93,6 +93,58 @@ fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
     }
 }
 
+// Validates host component in Alt-Svc authority (RFC 7838 §3 & RFC 3986 §3.2.2).
+// Bracketed IPv6 literals must start with '[', end with ']', and contain no interior brackets;
+// non-bracketed hostnames must not contain ':' or brackets.
+inline fn is_valid_altsvc_host(host_part: const u8[:]) -> bool {
+    guard host_part.len > 0 else { return true; }
+    if host_part[0] == '[' {
+        let last_idx = core::sub_sat_i64(host_part.len, 1);
+        guard host_part.len >= 3 && host_part[last_idx] == ']' else { return false; }
+        let inner = host_part[1..last_idx];
+        guard inner.index_of_byte('[') < 0 && inner.index_of_byte(']') < 0 else { return false; }
+        return inner.index_of_byte(':') >= 0;
+    }
+    return host_part.index_of_byte(':') < 0 &&
+           host_part.index_of_byte('[') < 0 &&
+           host_part.index_of_byte(']') < 0;
+}
+
+// Percent-decodes an Alt-Svc ALPN protocol-id token (RFC 7838 §3), rejecting control bytes.
+//
+// Example:
+//   proto_token = "h3%2D29"
+//   returns: true, out_proto = "h3-29"
+fn decode_altsvc_proto_id(proto_token: const u8[:], out_proto: u8[..16]&) -> bool {
+    guard core::percent_decode_query(proto_token, out_proto) && out_proto.len > 0 else {
+        out_proto.clear();
+        return false;
+    }
+    var i: u64 = 0;
+    let total = proto_token.len as u64;
+    while i < total {
+        let b = proto_token[i as i64];
+        if b == '%' {
+            let i1 = core::add_sat_u64(i, 1);
+            let i2 = core::add_sat_u64(i, 2);
+            guard i2 < total else { return false; }
+            let hi = core::hex_digit_to_val(proto_token[i1 as i64]);
+            let lo = core::hex_digit_to_val(proto_token[i2 as i64]);
+            guard hi >= 0 && lo >= 0 else { return false; }
+            i = core::add_sat_u64(i, 3);
+        } else {
+            i = core::add_sat_u64(i, 1);
+        }
+    }
+    for dec_b in out_proto {
+        guard dec_b > 0x20 && dec_b < 0x7F else {
+            out_proto.clear();
+            return false;
+        }
+    }
+    return true;
+}
+
 // Parses host:port authority from Alt-Svc quoted string.
 //
 // Example:
@@ -100,7 +152,7 @@ fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
 //   returns: true, ep.host="alt.example.com", ep.port=8443
 fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
-    guard has_colon else { return false; }
+    guard has_colon && is_valid_altsvc_host(host_part) else { return false; }
 
     if host_part.len > 0 {
         guard host_part.len <= ep.host.cap else { return false; }
@@ -125,8 +177,7 @@ fn parse_single_altsvc_entry(entry_str: const u8[:], ep: AltSvcEndpoint&) -> boo
     let proto_token = proto_token_raw.trim_lws();
     let rem_entry = rem_entry_raw.trim_lws();
 
-    guard proto_token.len <= ep.proto.cap else { return false; }
-    ep.proto.append(proto_token);
+    guard decode_altsvc_proto_id(proto_token, ep.proto) else { return false; }
 
     // Find authority inside quotes: "host:port"
     guard rem_entry.len >= 2 && rem_entry[0] == '"' else { return false; }

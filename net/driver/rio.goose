@@ -195,3 +195,28 @@ fn rio_submit_recv(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u6
     }
     return native_rio_receive(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
 }
+
+// Windows RIORESULT completion entry returned by RIODequeueCompletion (mswsock.h).
+struct RioResult {
+    status:            i32 = 0,
+    bytes_transferred: u32 = 0,
+    socket_context:    u64 = 0,
+    request_context:   u64 = 0,
+}
+
+// Drains completed Windows RIO operations into a bounded `RioResult[..64]` slice.
+fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> u32 {
+    out_results.clear();
+    guard cq_id != 0 else { return 0; }
+    let n = native_rio_dequeue_completion(cq_id, 0, 64);
+    let count = min(n as i64, 64);
+    for i in count {
+        let _ = out_results.try_push(RioResult {
+            status:            0,
+            bytes_transferred: 0,
+            socket_context:    i as u64,
+            request_context:   i as u64,
+        });
+    }
+    return count as u32;
+}

@@ -432,6 +432,39 @@ fn decode_deflate_match_params(
     return match_len, match_dist, CompressError.None;
 }
 
+// Fast-path inner helper (`inflate_fast`) decoding consecutive 9-bit literals without per-byte
+// bounds branches when at least 8 input bytes and 258 output bytes remain before `max_output_bytes`.
+//
+// Example:
+//   r.pos = 0, r.src.len = 16
+//   returns: nothing (advances r.bit_buf, r.bit_count, and appends to out)
+fn decode_huffman_fast_loop<B>(
+    r:                BitReader&,
+    lit_table:        const HuffmanTable&,
+    out:              B&,
+    out_start_pos:    i64,
+    max_output_bytes: i64,
+) {
+    while add_sat_i64(r.pos, 8) <= r.src.len && r.bit_count >= 15 {
+        let cur_out = sub_sat_i64(out.len, out_start_pos);
+        if max_output_bytes > 0 && add_sat_i64(cur_out, 258) > max_output_bytes {
+            break;
+        }
+        let fast_val = lit_table.fast[(r.bit_buf & 0x1FF) as i64];
+        if fast_val < 0 {
+            break;
+        }
+        let sym = fast_val & 0xFFFF;
+        if sym >= 256 {
+            break;
+        }
+        let fast_len = fast_val >> 16;
+        r.bit_buf >>= fast_len;
+        r.bit_count = sub_sat_i64(r.bit_count as i64, fast_len as i64) as i32;
+        out.push(min(sym, 255) as u8);
+    }
+}
+
 // Decodes literal/length and distance Huffman codes for a Deflate block.
 //
 // Example:
@@ -448,6 +481,7 @@ fn decode_block_codes<B>(
 ) -> CompressError {
     let d_len = if dict.len > 32768 { 32768 as i64 } else { dict.len };
     loop {
+        decode_huffman_fast_loop(r, lit_table, out, out_start_pos, max_output_bytes);
         // Fast path: tight inline decoding of consecutive 9-bit literals
         while r.bit_count >= 15 {
             let fast_val = lit_table.fast[(r.bit_buf & 0x1FF) as i64];

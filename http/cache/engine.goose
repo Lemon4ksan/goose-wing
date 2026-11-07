@@ -32,24 +32,22 @@ struct CacheOptions {
 
 // Cached HTTP representation including headers, body, Vary invariants, and intrusive LRU pointers.
 struct CachedEntry {
-    url_hash:        u32                 = 0,
-    url:             u8[..2048]          = [],
-    method:          u8[..16]            = "GET",
-    status_code:     i32                 = 200,
-    headers:         HeaderMap           = HeaderMap { .. },
-    cc:              CacheControl        = CacheControl { .. },
-    etag:            EntityTag           = EntityTag { .. },
-    last_modified:   core::Time          = core::Time { .. },
-    timestamps:      CacheTimestamps     = CacheTimestamps { .. },
-    vary:            VarySnapshot        = VarySnapshot { .. },
-    body:            u8[..4096]          = [],
-    head_only:       bool                = false,
-    security_zeroed: bool                = false,
-    is_valid:        bool                = false,
-    group_count:     i32                 = 0,
-    groups:          CacheGroupTag[..32] = [],
-    prev_lru:        i32                 = -1,
-    next_lru:        i32                 = -1,
+    url_hash:        u32             = 0,
+    url:             u8[..2048]      = [],
+    method:          u8[..16]        = "GET",
+    status_code:     i32             = 200,
+    headers:         HeaderMap       = HeaderMap { .. },
+    cc:              CacheControl    = CacheControl { .. },
+    etag:            EntityTag       = EntityTag { .. },
+    last_modified:   core::Time      = core::Time { .. },
+    timestamps:      CacheTimestamps = CacheTimestamps { .. },
+    vary:            VarySnapshot    = VarySnapshot { .. },
+    body:            u8[..4096]      = [],
+    head_only:       bool            = false,
+    security_zeroed: bool            = false,
+    is_valid:        bool            = false,
+    prev_lru:        i32             = -1,
+    next_lru:        i32             = -1,
 }
 
 // Constructs an empty, uninitialized CachedEntry.
@@ -816,13 +814,6 @@ fn on_response(
     entry.url.append(req.url[..]);
     entry.method.append(req.method[..]);
     entry.body.append(resp.body[..]);
-
-    var group_tags:  CacheGroupTag[..32] = [];
-    var group_count: i32                 = 0;
-    if parse_cache_group_list(resp.header("Cache-Groups"), group_tags, group_count) {
-        entry.groups = group_tags;
-        entry.group_count = group_count;
-    }
 
     let store_idx = cache.upsert_cache_entry(entry, req.headers);
     cache.total_stores++;
