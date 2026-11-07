@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.worktrees
+.lit/cache
+.ruff_cache
+scratch
+vendor
+reports
+bin
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.log
