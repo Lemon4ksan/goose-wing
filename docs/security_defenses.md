@@ -1,21 +1,31 @@
 # Goose-wing security defenses
 
-This document lists the RFC requirements and vulnerability defenses implemented in goose-wing, with the source file for each area. Runtime semantics and caller requirements are in [CALLER_REFERENCE.md](CALLER_REFERENCE.md).
+This document lists the RFC requirements and vulnerability defenses implemented
+in goose-wing, with the source file for each area. Runtime semantics and caller
+requirements are in [caller_reference.md](caller_reference.md).
 
 ## 1. Allocation model
 
-goose-wing does not use a garbage collector. The design rules below apply to all modules:
+goose-wing does not use a garbage collector. The design rules below apply to all
+modules:
 
-1. Parsing HTTP headers, status lines, query strings, URLs, cookies, and multipart boundaries does 0 heap allocations. Slices and string views point into pre-allocated buffers or pooled slabs.
-2. Every variable-length container has a compile-time capacity cap (`u8[..2048]`, `HeaderMap` with 64 dynamic slots and 64 well-known static slots, 16 range intervals, 70-byte multipart boundaries). Inputs that exceed a cap fail closed.
-3. Timers and cancellation trackers (`Stopwatch`, `Deadline`) are stack value types that read `clock_ns()` directly. There are no background timer threads, channels, or timer heaps.
+1. Parsing HTTP headers, status lines, query strings, URLs, cookies, and
+   multipart boundaries does 0 heap allocations. Slices and string views point
+   into pre-allocated buffers or pooled slabs.
+2. Every variable-length container has a compile-time capacity cap
+   (`u8[..2048]`, `HeaderMap` with 64 dynamic slots and 64 well-known static
+   slots, 16 range intervals, 70-byte multipart boundaries). Inputs that exceed
+   a cap fail closed.
+3. Timers and cancellation trackers (`Stopwatch`, `Deadline`) are stack value
+   types that read `monotonic_now()` directly. There are no background timer
+   threads, channels, or timer heaps.
 
 ## 2. Core time and calendar (`core/time.goose`)
 
 | Component | Failure mode in other implementations | goose-wing behavior |
 | :--- | :--- | :--- |
-| Monotonic vs Wall Clock | Packing monotonic and wall clocks together; serialization stripping monotonic readings; NTP adjustments causing non-monotonic elapsed intervals. | Separate types: `Time` (wall clock), `Stopwatch` (`clock_ns()`), and `Deadline`. Monotonic measurements do not change with NTP slew, leap seconds, or system time adjustments. |
-| Timer / Ticker Leaks | Allocating timers in a runtime heap that linger until expiration, causing memory accumulation in tight polling or select loops. | `Deadline` and `Stopwatch` are stack-allocated value types. Checking `dl.is_expired()` is a single CPU register comparison (`clock_ns() >= target_ns`). No allocation and no background threads. |
+| Monotonic vs Wall Clock | Packing monotonic and wall clocks together; serialization stripping monotonic readings; NTP adjustments causing non-monotonic elapsed intervals. | Separate types: `Time` (wall clock), `Stopwatch` (`monotonic_now()`), and `Deadline`. Monotonic measurements do not change with NTP slew, leap seconds, or system time adjustments. |
+| Timer / Ticker Leaks | Allocating timers in a runtime heap that linger until expiration, causing memory accumulation in tight polling or select loops. | `Deadline` and `Stopwatch` are stack-allocated value types. Checking `dl.is_expired()` is a single CPU register comparison against monotonic time (`monotonic_now()`). No allocation and no background threads. |
 | `INT64_MIN` Sign Inversion | Passing negative nanoseconds via `-nano_count` in two's complement overflows `INT64_MIN` (`-9223372036854775808`), flipping past timestamps into the future. | `unix(sec, nsec)` uses direct integer division and modulo without negation; this normalizes every `int64` nanosecond value, including `INT64_MIN`. |
 | Duration Truncation | Negating `dur.nanos` in `truncate` on `INT64_MIN` causes overflow, returning a positive duration. | `truncate` checks for `min_i64`, rounding toward zero without sign inversion. |
 | Multi-Century Subtraction Overflow | Dates separated by $> 292$ years overflow 64-bit nanoseconds in duration subtraction, producing incorrect negative durations. | `Time.sub()` implements saturated arithmetic, clamping to `max_i64` or `min_i64` without integer overflow. |
@@ -80,7 +90,7 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | Cross-Origin Port Isolation | RFC 6265 §8.5 | Binds cookies to specific origin ports when configured, preventing port-based cross-application session leakage on `localhost`. |
 | Chromium 6-Round GC | Chromium `CookieMonster` | Enforces asymmetric eviction (Round 4 domain cookies purged before host cookies, Round 5 host cookies, Round 6 global LRU), respecting 30-day purge immunity. |
 
-## 7. HTTP/2 framing state machine (`http/h2_framer.goose`)
+## 7. HTTP/2 framing state machine (`http2/framing.goose`, `http2/connection.goose`)
 
 | Issue | Specification or CVE | goose-wing behavior |
 | :--- | :--- | :--- |
@@ -89,7 +99,7 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 | `SETTINGS_MAX_FRAME_SIZE = 0` | Parser lockup / infinite loops | Enforces RFC 9113 bounds on `SETTINGS_MAX_FRAME_SIZE` ($16,384 \le \text{size} \le 16,777,215$). Setting a zero or invalid frame size is rejected with `PROTOCOL_ERROR`. |
 | Stream ID Parity Invariants | RFC 9113 §5.1.1 | Client-initiated streams must have odd-numbered IDs; server-initiated push streams must have even-numbered IDs; stream ID 0 is reserved for connection-level frames. |
 
-## 8. Constant-time code and CryptoJar (`security/ct.goose`, `security/crypto_jar.goose`)
+## 8. Constant-time code and CryptoJar (`core/crypto/ct.goose`, `core/math/ct.goose`, `security/crypto_jar.goose`)
 
 | Component | Failure mode in other implementations | goose-wing behavior |
 | :--- | :--- | :--- |
@@ -233,11 +243,31 @@ goose-wing does not use a garbage collector. The design rules below apply to all
 
 ## 18. Test coverage
 
-The defenses in this document are tested by 88 test suites across `tests/`:
+The defenses in this document are tested across unit and LIT verification suites
+in `tests/` and `tests/lit/`:
 
-- Protocol tracking suites: `tests/red_issues_tracker_phase5_test.goose`, `tests/red_issues_tracker_phase6_test.goose`, `tests/red_issues_tracker_phase7_test.goose`, `tests/red_issues_tracker_phase8_test.goose`, `tests/red_issues_tracker_phase9_test.goose`, `tests/red_issues_tracker_phase10_test.goose`, `tests/red_issues_tracker_phase11_test.goose`.
-- HTTP/2 reference suites: `tests/http2_suite_test.goose`, `tests/sec_h2_test.goose`, `tests/http2_stream_fsm_test.goose`.
-- HTTP/3 and WebTransport suites: `tests/http3_test.goose`, `tests/webtransport_test.goose`.
-- WebSocket and realtime suites: `tests/websocket_test.goose`, `tests/uwebsockets_bugs_regression_test.goose`.
-- Security and perimeter suites: `tests/sec_cve_test.goose`, `tests/sec_smuggler_test.goose`, `tests/sec_csrf_test.goose`, `tests/sec_rate_limiter_test.goose`, `tests/sec_ct_test.goose`, `tests/sec_cookie_test.goose`.
-- Core transport and pool suites: `tests/net_pool_test.goose`, `tests/net_proxy_test.goose`, `tests/net_happy_eyeballs_test.goose`, `tests/net_retry_test.goose`.
+- Protocol regression suites: `tests/regress_issues_batch1_test.goose`,
+  `tests/regress_issues_batch2_test.goose`,
+  `tests/regress_issues_batch3_test.goose`,
+  `tests/regress_issues_batch4_test.goose`,
+  `tests/regress_http_audit_test.goose`.
+- HTTP/2 reference suites: `tests/http2_test.goose`,
+  `tests/lit/verify_h2_spec.goose`,
+  `tests/lit/verify_h2_continuation_fsm.goose`,
+  `tests/lit/verify_h2_control_frames.goose`,
+  `tests/lit/verify_http2_audit_regressions.goose`.
+- HTTP/3, QUIC, and WebTransport suites: `tests/http3_test.goose`,
+  `tests/quic_test.goose`, `tests/lit/verify_http3_framing.goose`,
+  `tests/lit/verify_quic_frames_rfc9000.goose`,
+  `tests/lit/verify_quic_ecn_and_amplification_regress.goose`.
+- WebSocket and realtime suites: `tests/websocket_test.goose`,
+  `tests/compat_uwebsockets_test.goose`, `tests/lit/verify_ws_autobahn.goose`,
+  `tests/lit/verify_ws_autobahn_exhaustive.goose`.
+- Security and perimeter suites: `tests/security_cve_test.goose`,
+  `tests/security_historical_bugs_test.goose`,
+  `tests/security_perimeter_test.goose`, `tests/adversarial_wire_test.goose`,
+  `tests/cookie_test.goose`, `tests/lit/verify_historical_cves.goose`,
+  `tests/lit/verify_security_bug_hunter.goose`.
+- Core transport and pool suites: `tests/net_infra_test.goose`,
+  `tests/net_proxy_test.goose`, `tests/net_tcp_test.goose`,
+  `tests/proxy_test.goose`, `tests/lit/verify_proxy_regressions.goose`.

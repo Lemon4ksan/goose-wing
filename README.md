@@ -1,22 +1,49 @@
 # goose-wing
 
-Vulkan-style, zero-allocation web framework and HTTP/1.1, HTTP/2, HTTP/3 protocol stack for Goose.
+Vulkan-style, zero-allocation web framework and HTTP/1.1, HTTP/2, HTTP/3
+protocol stack for Goose.
 
-[![Goose Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
+[![Goose
+Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
 [![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)
 
 ## Design and scope
 
-High-throughput networking hits the same hardware bottlenecks that graphics APIs hit a decade ago: memory bandwidth, L1/L2 cache misses, per-call heap allocations, and OS context switches. `wing` applies the explicit resource model of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
+High-throughput networking hits the same hardware bottlenecks that graphics APIs
+hit a decade ago: memory bandwidth, L1/L2 cache misses, per-call heap
+allocations, and OS context switches. `wing` applies the explicit resource model
+of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
 
-- Caller-owned memory and descriptor pools: Functions take caller-allocated slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The engine does 0 heap allocations on packet paths and event loops.
-- Buffer views instead of string copies: Protocol parsers do not allocate strings or header objects. `HeaderSpan` stores a 9-byte offset-and-length view (`name_pos: u16, name_len: u16, val_pos: u16, val_len: u16, id: u8`) over the raw packet buffer, while `presence_mask: u32` and a 256-bit `HeaderBloomFilter` (four `u64` registers) reject missing headers in 1 to 3 CPU cycles before reading memory.
-- Command batching and explicit state machines: Outbound writes batch into `CorkBuffer` and OS ring queues (`io_uring`, Windows RIO) to amortize syscalls. Decoders use SIMD and 64-bit SWAR scanners and return explicit cursor offsets and error states rather than throwing exceptions.
-- Strict RFC conformance and composable stages: Core parsers enforce RFC wire rules and reject non-compliant framing, ambiguous delimiters, and broken server quirks at the ingress boundary. Instead of adding compatibility workarounds to core decoders, `wing` exposes slice-driven (`const u8[:]`) Sans-IO codecs (`wire/`) and bitmask-configured L7 pipelines (`WirePipeline`, `StageVerdict`). Applications that need to talk to non-compliant endpoints can normalize wire buffers or replace individual pipeline stages without forking the project.
+- Caller-owned memory and descriptor pools: Functions take caller-allocated
+  slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring
+  buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The
+  engine does 0 heap allocations on packet paths and event loops.
+- Buffer views instead of string copies: Protocol parsers do not allocate
+  strings or header objects. `HeaderSpan` stores a 9-byte offset-and-length view
+  (`name_pos: u16, name_len: u16, val_pos: u16, val_len: u16, id: u8`) over the
+  raw packet buffer, while `presence_mask: u32` and a 256-bit
+  `HeaderBloomFilter` (four `u64` registers) reject missing headers in 1 to 3
+  CPU cycles before reading memory.
+- Command batching and explicit state machines: Outbound writes batch into
+  `CorkBuffer` and OS ring queues (`io_uring`, Windows RIO) to amortize
+  syscalls. Decoders use SIMD and 64-bit SWAR scanners and return explicit
+  cursor offsets and error states rather than throwing exceptions.
+- Strict RFC conformance and composable stages: Core parsers enforce RFC wire
+  rules and reject non-compliant framing, ambiguous delimiters, and broken
+  server quirks at the ingress boundary. Instead of adding compatibility
+  workarounds to core decoders, `wing` exposes slice-driven (`const u8[:]`)
+  Sans-IO codecs (`wire/`) and bitmask-configured L7 pipelines (`WirePipeline`,
+  `StageVerdict`). Applications that need to talk to non-compliant endpoints can
+  normalize wire buffers or replace individual pipeline stages without forking
+  the project.
 
-This makes `wing` suited for reverse proxies, gateways, and edge services where predictable clock cycles and zero allocations are required (a complete HTTP/1.1 request-response cycle takes ~820 cycles on x86_64).
+This makes `wing` suited for reverse proxies, gateways, and edge services where
+predictable clock cycles and zero allocations are required (a complete HTTP/1.1
+request-response cycle takes ~820 cycles on x86_64).
 
-It is not a high-level HTTP client like Python's `requests`. Sending a request requires setting up buffers, arenas, and transport state. High-level application APIs belong in separate libraries built on top of `wing`.
+It is not a high-level HTTP client like Python's `requests`. Sending a request
+requires setting up buffers, arenas, and transport state. High-level application
+APIs belong in separate libraries built on top of `wing`.
 
 ## Subsystems
 
@@ -88,7 +115,7 @@ fn main() {
 import core;
 import wing;
 
-fn stream_websocket_frame() {
+fn main() {
     var hdr = wing::WsFrameHeader {
         fin: true,
         opcode: wing::WS_OPCODE_TEXT,
@@ -129,7 +156,8 @@ Measured on an Intel Core i5-12400F in an Ubuntu 24.04 container:
 
 ### CPU clock cycles (RDTSC, Intel i5-12400F @ 4.4 GHz)
 
-Hardware instruction and cycle breakdown per request across pipeline stages (`bench/prof.exe`, 50,000 samples per stage):
+Hardware instruction and cycle breakdown per request across pipeline stages
+(`bench/prof.exe`, 50,000 samples per stage):
 
 | Pipeline stage | Plaintext GET (50k) | Param JSON (50k) | 10-Header POST (50k) |
 | :--- | :---: | :---: | :---: |
@@ -146,12 +174,22 @@ Hardware instruction and cycle breakdown per request across pipeline stages (`be
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md): Memory model, ingress boundaries, module layout, and request/response data flow.
-- [Features and nuances](docs/FEATURES_AND_NUANCES.md): Buffer budgets, algorithm complexities, fail-closed thresholds, and edge cases.
-- [Security defenses](docs/SECURITY_DEFENSES.md): CVE defenses, protocol attack mitigations, constant-time arithmetic, and zero-heap invariants.
-- [Caller reference](docs/CALLER_REFERENCE.md): Container capacities, time arithmetic, and concurrency primitives.
-- [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md): Development workflow, coding standards, and vulnerability disclosure.
+- [Architecture](docs/architecture.md): Memory model, ingress boundaries, module
+  layout, and request/response data flow.
+- [Features and nuances](docs/features_and_nuances.md): Buffer budgets,
+  algorithm complexities, fail-closed thresholds, and edge cases.
+- [Security defenses](docs/security_defenses.md): CVE defenses, protocol attack
+  mitigations, constant-time arithmetic, and zero-heap invariants.
+- [Caller reference](docs/caller_reference.md): Container capacities, time
+  arithmetic, and concurrency primitives.
+- [RFC conformance](docs/rfc_conformance.md): IETF RFC compliance matrix and
+  test vectors.
+- [Benchmarks](docs/benchmarks.md): Hardware cycle breakdowns and load-testing
+  methods.
+- [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md):
+  Development workflow, coding standards, and vulnerability disclosure.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for
+details.

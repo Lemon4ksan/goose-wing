@@ -24,6 +24,10 @@ if [ -n "$STAGED_MD_FILES" ] && { [ -f "$GML_BIN" ] || command -v "$GML_BIN" >/d
     if ! "$GML_BIN" check $STAGED_MD_FILES; then
         exit 1
     fi
+    if ! "$GML_BIN" fmt --check $STAGED_MD_FILES; then
+        echo "[pre-commit] ERROR: Markdown formatting check failed. Run: goosemarklint fmt ."
+        exit 1
+    fi
 fi
 
 # Find all staged .goose files

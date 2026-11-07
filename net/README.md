@@ -1,117 +1,387 @@
 # `net`
 
-Package `net` delivers the low-level, zero-allocation networking foundations of `goose-wing`. It provides high-performance TCP socket operations, an event loop reactor, connection pooling, Happy Eyeballs v3 (RFC 8305 / RFC 9460), DNS-over-HTTPS (RFC 8484), MASQUE HTTP datagram tunneling (RFC 9297, RFC 9298, RFC 9484), HAProxy PROXY protocol v1/v2, SOCKS5 proxying, and adaptive retry/circuit breaking.
+Package `net` provides zero-allocation TCP and UDP socket primitives, I/O event
+multiplexing, Happy Eyeballs v3 racing, DNS-over-HTTPS resolution, MASQUE
+tunneling, PROXY protocol framing, and connection pooling for `goose-wing`.
 
-All parsers and serializers operate with zero dynamic heap allocations on the hot path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices (`const u8[:]`).
+All parsers and serializers operate without dynamic heap allocations on the hot
+path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
+(`const u8[:]`).
+
+```goose
+var poller = new_poller(internal::auto_transport_driver_config());
+let fd = tcp_connect("93.184.216.34", 80, 5000);
+register_socket(poller, fd as i32, PollInterest.ReadWrite, 1);
+tcp_close(fd);
+close_poller(poller);
+```
 
 ## Public API Reference
 
-### 1. TCP Sockets and I/O (`net/tcp.goose`)
+### 1. TCP Sockets and Async Corking (`net/tcp.goose`)
 
-Low-level POSIX and Windows socket operations with corking, vectored writes, keepalive tuning, and RFC 1122 abortive teardowns.
+```goose
+struct BackPressure { pending: u8[>..], high_water_mark: i64, corked: bool }
+fn async_socket_write(fd: i64, bp: BackPressure&, data: const u8[:]) -> i64
+fn async_socket_uncork(fd: i64, bp: BackPressure&) -> i64
+fn async_socket_drain(fd: i64, bp: BackPressure&) -> i64
+fn tcp_init() -> bool
+fn tcp_cleanup()
+fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64
+fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64
+fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64
+fn tcp_connect_unix(path: const u8[:]) -> i64
+fn tcp_close(fd: i64)
+fn tcp_abort(fd: i64)
+fn tcp_send(fd: i64, data: const u8[:]) -> i64
+fn tcp_send2(fd: i64, h: const u8[:], b: const u8[:]) -> i64
+fn tcp_sendv(fd: i64, chunks: const u8[:][..16], count: i32) -> i64
+fn tcp_recv(fd: i64, buf: u8[:]) -> i64
+fn tcp_set_nodelay(fd: i64, enable: bool) -> bool
+fn tcp_set_cork(fd: i64, enable: bool) -> bool
+fn tcp_set_quickack(fd: i64, enable: bool) -> bool
+fn tcp_set_keepalive(fd: i64, enable: bool, idle_sec: i32 = 60, interval_sec: i32 = 10, count: i32 = 3) -> bool
+fn tcp_set_fastopen(fd: i64, enable: bool) -> bool
+fn tcp_send_fastopen(fd: i64, host: const u8[:], port: u16, syn_payload: const u8[:]) -> i64
+fn tcp_set_tos(fd: i64, dscp: u8, ecn: u8 = 0) -> bool
+fn tcp_set_ecn(fd: i64, ecn_bits: u8) -> bool
+```
 
-- **`fn tcp_init() -> bool`**: Initializes socket subsystem.
-- **`fn tcp_cleanup()`**: Cleans up socket subsystem.
-- **`fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64`**: Binds and listens on TCP port.
-- **`fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64`**: Binds and listens on UNIX domain socket.
-- **`fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64`**: Connects to remote TCP endpoint.
-- **`fn tcp_connect_unix(path: const u8[:]) -> i64`**: Connects to UNIX domain socket.
-- **`fn tcp_close(fd: i64)`**: Gracefully closes socket file descriptor.
-- **`fn tcp_abort(fd: i64)`**: RFC 1122 §4.2.2.13 immediate abortive RST teardown.
-- **`fn tcp_send(fd: i64, data: const u8[:]) -> i64`**: Sends byte buffer over socket.
-- **`fn tcp_send2(fd: i64, h: const u8[:], b: const u8[:]) -> i64`**: Vectored send combining header and body buffers.
-- **`fn tcp_recv(fd: i64, buf: u8[:]) -> i64`**: Receives bytes into buffer.
-- **`fn tcp_set_nodelay(fd: i64, enable: bool) -> bool`**: Toggles TCP_NODELAY (Nagle algorithm disable).
-- **`fn tcp_set_cork(fd: i64, enable: bool) -> bool`**: Toggles TCP_CORK packet coalescing.
-- **`fn tcp_set_quickack(fd: i64, enable: bool) -> bool`**: Toggles TCP_QUICKACK.
-- **`fn tcp_set_keepalive(fd: i64, enable: bool, idle_sec: i32 = 60, interval_sec: i32 = 10, count: i32 = 3) -> bool`**: Configures keepalive probes.
-- **`fn tcp_set_fastopen(fd: i64, enable: bool) -> bool`**: Toggles TCP Fast Open.
+`BackPressure` coalesces user-space writes until `pending.len` reaches
+`high_water_mark` or the caller invokes `async_socket_uncork`. `tcp_sendv` packs
+up to 16 slices (`const u8[:][..16]`) into a single scatter-gather vectored
+write, while `tcp_abort` forces an immediate RFC 1122 §4.2.2.13 RST teardown
+(`SO_LINGER` with timeout 0) without waiting for `TIME_WAIT`. TCP Fast Open
+(RFC 7413) attaches initial application bytes to the SYN packet via
+`tcp_send_fastopen`, and `tcp_set_ecn` updates IPv4/IPv6 ECN bits while
+preserving the active DSCP traffic class.
 
-### 2. Poller & Event Reactor (`net/poller.goose`)
+### 2. Unified Transport Handle (`net/transport.goose`)
 
-Cross-platform I/O multiplexer dispatching across kernel-bypass and OS backends (io_uring, kqueue, Windows RIO, or standard poll).
+```goose
+struct Transport { fd: i64, is_tls: bool }
+fn udp_bind(host: const u8[:], port: u16 = 0) -> i64
+fn udp_recvfrom(fd: i64, buf: u8[:], out_ip: u8[..64]&, out_port: u16&) -> i64
+fn is_connected(t: const Transport&) -> bool
+fn send(t: Transport&, data: const u8[:]) -> i64
+fn recv_slice(t: Transport&, buf: u8[:]) -> i64
+fn close(t: Transport&)
+```
 
-- **`enum PollInterest`**: Socket event interest (`None`, `Read`, `Write`, `ReadWrite`).
-- **`struct PollReadyEvent`**: Readiness event holding socket fd, user tag, readable/writable flags, and error status.
-- **`struct Poller`**: Cross-platform I/O multiplexer.
-- **`fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller`**: Constructs event poller.
-- **`fn close_poller(p: Poller&)`**: Closes poller and frees underlying OS resources.
-- **`fn register_socket(p: Poller&, fd: i32, interest: PollInterest, tag: u64 = 0) -> bool`**: Registers socket interest.
-- **`fn modify_socket(p: Poller&, fd: i32, interest: PollInterest) -> bool`**: Modifies registered socket interest.
-- **`fn deregister_socket(p: Poller&, fd: i32) -> bool`**: Deregisters socket from poller.
-- **`fn poll_events(p: Poller&, timeout_ms: i32, out_events: PollReadyEvent[..64]&) -> i32`**: Polls ready I/O events.
+`Transport` wraps a raw socket descriptor (`fd >= 0` when connected) and tracks
+TLS session layering. `close` is idempotent: it closes the active descriptor and
+resets `t.fd = -1`. `udp_recvfrom` writes the formatted peer IP literal into the
+64-byte `out_ip` buffer and returns the received payload length or `-1` on
+error.
 
-### 3. DNS & DoH Resolution (`net/dns.goose`)
+### 3. Batch UDP Datagrams (`net/udp.goose`)
 
-RFC 1035 wire decoding, RFC 8484 DNS-over-HTTPS (DoH), RFC 9460 HTTPS/SVCB service binding parameters, and stale-while-revalidate caching (RFC 5861).
+```goose
+struct UdpDatagram { peer_ip: u8[..64], peer_port: u16, payload: u8[..1500], gso_size: u16, ecn: u8 }
+struct UdpBatchQueue { packets: UdpDatagram[..64], total_bytes: u64, drops: u64 }
+fn build_udp_datagram(ip: const u8[:], port: u16, data: const u8[:], gso: u16 = 0) -> UdpDatagram
+fn enqueue_udp_datagram(q: UdpBatchQueue&, ip: const u8[:], port: u16, data: const u8[:]) -> bool
+fn batch_send_messages(fd: i64, q: UdpBatchQueue&) -> i32
+fn batch_recv_messages(fd: i64, out_q: UdpBatchQueue&, max_packets: i32 = 64) -> i32
+```
 
-- **`enum DnsCacheStatus`**: Cache freshness status (`Fresh`, `Stale`, `Expired`).
-- **`struct HttpsRecord`**: RFC 9460 HTTPS/SVCB service binding parameters.
-- **`struct DnsResponse`**: Parsed DNS wire response holding IP addresses and HTTPS records.
-- **`struct DohResolver`**: DNS-over-HTTPS resolver client.
-- **`fn parse_dns_response(raw: const u8[:]) -> DnsResponse, bool`**: Zero-copy parser for RFC 1035 DNS wire responses.
-- **`fn serialize_doh_query<B>(domain: const u8[:], qtype: u16, out: B&) -> bool`**: Serializes RFC 8484 DoH query.
+`UdpBatchQueue` models `sendmmsg` and `recvmmsg` semantics over a bounded
+64-packet ring (`UdpDatagram[..64]`) where each datagram holds an Ethernet MTU
+payload (`u8[..1500]`), Generic Segmentation Offload segment size (`gso_size`),
+and ECN bits. When `enqueue_udp_datagram` is called on a full 64-slot queue, it
+increments `q.drops` and returns `false`.
 
-### 4. Happy Eyeballs v3 (`net/happy_eyeballs.goose`)
+### 4. Poller, Event Reactor & Driver Facade (`net/poller.goose`, `net/driver.goose`)
 
-RFC 8305 dual-stack IPv4/IPv6 candidate racing augmented with RFC 9460 HTTPS/SVCB protocol interleaving (HEv3) for QUIC/HTTP/3 vs TCP/HTTP/2 promotion.
+```goose
+enum PollInterest { None, Read, Write, ReadWrite }
+struct PollReadyEvent { fd: i32, tag: u64, readable: bool, writable: bool, is_error: bool }
+struct Poller { ... }
+fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller
+fn close_poller(p: Poller&)
+fn register_socket(p: Poller&, fd: i32, interest: PollInterest, tag: u64 = 0) -> bool
+fn modify_socket(p: Poller&, fd: i32, interest: PollInterest) -> bool
+fn deregister_socket(p: Poller&, fd: i32) -> bool
+fn poll_events(p: Poller&, timeout_ms: i32, out_events: PollReadyEvent[..64]&) -> i32
+```
 
-- **`enum AddressFamily`**: Network address family (`IPv4`, `IPv6`).
-- **`enum L4Protocol`**: Transport layer protocol (`Tcp`, `Quic`).
-- **`struct DnsCandidate`**: Resolved network endpoint candidate.
-- **`fn interleave_candidates_he(ipv6: const DnsCandidate[:], ipv4: const DnsCandidate[:], out: DnsCandidate[..32]&)`**: RFC 8305 IPv4/IPv6 address interleaving.
-- **`fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidate[..32]&)`**: RFC 9460 protocol interleaving.
+`Poller` multiplexes socket readiness across OS and kernel-bypass drivers
+configured in `net/driver.goose`. `poll_events` harvests up to 64 ready events
+per call into `out_events`, preserving the caller's 64-bit `tag` for
+constant-time connection table lookup.
 
-### 5. Connection Pooling & HTTP/2 Coalescing (`net/pool.goose`)
+### 5. Socket Options & TCP/IP Stack Fingerprinting (`net/sockopt.goose`)
 
-L4/L7 connection multiplexing, IP coalescing for HTTP/2 SAN matching, and cross-site partition keying.
+```goose
+enum SocketP0fProfile { OSDefault, LinuxModern, Windows11, MacOS14, iOS17, Android14 }
+struct SocketOptions {
+    recv_buf_size: i32, send_buf_size: i32, ip_ttl: u8, tcp_mss: u16,
+    tcp_window_clamp: i32, tcp_wscale: u8, ip_dont_fragment: bool,
+    tcp_timestamps: bool, tcp_sack: bool, tcp_nodelay: bool, tcp_fastopen: bool
+}
+fn p0f_socket_config(profile: SocketP0fProfile) -> SocketOptions
+fn validate_p0f_socket_invariants(opts: const SocketOptions&) -> bool
+fn format_socket_p0f_summary<B>(opts: const SocketOptions&, out: B&)
+fn apply_socket_options(fd: i64, opts: const SocketOptions&) -> bool
+```
 
-- **`enum PoolScheme`**: Connection protocol scheme (`Http`, `Https`, `Ws`, `Wss`).
-- **`struct OriginEndpoint`**: Target endpoint identifier.
-- **`struct StreamPool`**: Multiplexed connection pool.
-- **`fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint`**: Constructs origin endpoint.
-- **`fn new_stream_pool(max_idle_per_host: i64 = 6, idle_timeout_sec: u64 = 90) -> StreamPool`**: Constructs connection pool.
-- **`fn acquire_pooled_connection(pool: StreamPool&, key: const PoolKey&) -> i64, bool`**: Acquires pooled connection matching key.
-- **`fn release_connection(pool: StreamPool&, conn_id: i64, reusable: bool)`**: Releases connection back to pool.
+`p0f_socket_config` returns preset TCP/IP stack parameters (TTL, MSS, window
+clamp, window scaling shift `0..14`, and `IP_DONTFRAG`) matching passive OS
+fingerprinting profiles. `validate_p0f_socket_invariants` rejects out-of-range
+TTL (`0`), invalid MSS (`< 536` or `> 9000`), or RFC 7323 window scale shifts
+exceeding `14` before `apply_socket_options` configures the live socket.
 
-### 6. MASQUE HTTP Datagram Tunneling (`net/masque.goose`)
+### 6. DNS, DoH Resolution & IDNA Validation (`net/dns.goose`)
 
-RFC 9297 Capsule Protocol, RFC 9298 CONNECT-UDP, and RFC 9484 CONNECT-IP tunneling primitives over HTTP/2 and HTTP/3.
+```goose
+enum DnsCacheStatus { Fresh, StaleWhileRevalidate, Expired, Miss }
+struct HttpsRecord {
+    priority: u16, target_name: u8[..256], alpn_h3: bool, alpn_h2: bool,
+    port: u16, ech_config: u8[..256], ipv4_hints: u8[..64][..4], ipv6_hints: u8[..64][..4]
+}
+struct DnsResponse { ... }
+struct DnsCacheEntry { ... }
+struct DnsCache { entries: DnsCacheEntry[..64] }
+fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[..512]&) -> bool
+fn build_doh_post_body(domain: const u8[:], qtype: u16, out_body: u8[..512]&) -> bool
+fn build_doh_get_url(endpoint_url: const u8[:], domain: const u8[:], qtype: u16, out_url: u8[..1024]&) -> bool
+fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool
+fn parse_https_svc_params(rdata: const u8[:], pos: i64, rdlen: i64, rec: HttpsRecord&) -> bool
+fn validate_punycode_label(label: const u8[:]) -> bool
+fn validate_idna_domain_bounds(domain: const u8[:]) -> bool
+fn dns_cache_lookup(cache: const DnsCache&, domain: const u8[:], now_ms: i64, out_resp: DnsResponse&) -> DnsCacheStatus
+fn dns_cache_insert(cache: DnsCache&, domain: const u8[:], resp: const DnsResponse&, now_ms: i64, swr_window_sec: u32 = 60)
+```
 
-- **`struct HttpCapsule`**: Parsed RFC 9297 Capsule Protocol frame.
-- **`struct MasqueTunnelConfig`**: MASQUE proxy tunnel configuration.
-- **`fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool`**: Parses capsule frame.
-- **`fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> bool`**: Serializes capsule frame.
-- **`fn parse_connect_udp_path(path: const u8[:]) -> const u8[:], u16, bool`**: Parses RFC 9298 CONNECT-UDP request URI.
+`build_dns_query` and `build_doh_post_body` serialize RFC 1035 DNS packets into
+512-byte buffers (`u8[..512]`), while `build_doh_get_url` formats RFC 8484
+Base64url `?dns=` request URLs up to 1024 bytes. `parse_dns_response` enforces
+pointer-compression hop limits to block compression loop bombs and extracts RFC
+9460 `HTTPS` (`TYPE=65`) service bindings via `parse_https_svc_params`.
+`validate_idna_domain_bounds` and `validate_punycode_label` enforce RFC 1035
+63-octet label limits, 253-octet total domain length limits, and RFC 5891 `xn--`
+ASCII-Compatible Encoding invariants. `DnsCache` holds 64 entries and supports
+RFC 5861 `StaleWhileRevalidate` lookups when a record's primary TTL has elapsed
+but `now_ms` falls within `swr_window_sec`.
 
-### 7. PROXY Protocol v1 & v2 (`net/proxy_protocol.goose`)
+### 7. Happy Eyeballs v3 (`net/happy_eyeballs.goose`)
 
-Zero-copy HAProxy PROXY Protocol v1 (text) and v2 (binary with TLV extensions) framer and parser.
+```goose
+enum AddressFamily { IPv6, IPv4 }
+enum L4Protocol { Tcp, QuicUdp }
+struct DnsCandidate {
+    family: AddressFamily, l4_proto: L4Protocol, ip: u8[..64],
+    port: u16, scope_id: u32, precedence: i32
+}
+struct DnsRaceTask { ... }
+struct AttemptManager { ... }
+fn new_dns_race_task(now_ms: i64, resolution_delay_ms: i64 = rfc::HE_RESOLUTION_DELAY_MS) -> DnsRaceTask
+fn on_dns_aaaa_response(task: DnsRaceTask&, count: i32, now_ms: i64)
+fn on_dns_a_response(task: DnsRaceTask&, count: i32, now_ms: i64)
+fn check_dns_resolution_delay_tick(task: DnsRaceTask&, now_ms: i64) -> bool
+fn new_attempt_manager(cad_ms: i64 = rfc::HE_DEFAULT_CAD_MS) -> AttemptManager
+fn start_attempt_race(mgr: AttemptManager&, candidates: const DnsCandidate[:], now_ms: i64)
+fn tick_attempt_manager(mgr: AttemptManager&, now_ms: i64) -> i32
+fn bind_winner_attempt(mgr: AttemptManager&, idx: i32, now_ms: i64) -> bool
+fn compute_effective_cad_ms(observed_rtt_ms: i64, rtt_known: bool, min_cad_ms: i64 = rfc::HE_MIN_CAD_MS, max_cad_ms: i64 = rfc::HE_MAX_CAD_MS) -> i64
+fn interleave_candidates_he(ipv6_list: const DnsCandidate[:], ipv4_list: const DnsCandidate[:], out: DnsCandidate[..32]&, first_family_count: i32 = rfc::HE_FIRST_ADDRESS_FAMILY_COUNT)
+fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidate[..32]&)
+```
 
-- **`enum ProxyProtocolVersion`**: Wire version (`V1_Text`, `V2_Binary`).
-- **`enum ProxyCommand`**: Command mode (`Local`, `Proxy`).
-- **`enum ProxyTransportProtocol`**: Transport protocol (`Unspec`, `Stream`, `Dgram`).
-- **`struct ProxyHeader`**: Parsed PROXY protocol header with source and destination addresses.
-- **`fn parse_proxy_header(raw: const u8[:]) -> ProxyHeader, i64, bool`**: Zero-copy parser for PROXY v1/v2 headers.
-- **`fn serialize_proxy_v1_header<B>(header: const ProxyHeader&, out: B&) -> bool`**: Serializes PROXY v1 text header.
-- **`fn serialize_proxy_v2_header<B>(header: const ProxyHeader&, out: B&) -> bool`**: Serializes PROXY v2 binary header.
+Happy Eyeballs v3 combines RFC 8305 dual-stack address interleaving with RFC
+9460 `HTTPS` service binding prioritization. `DnsRaceTask` enforces the 50 ms
+Resolution Delay (`rfc::HE_RESOLUTION_DELAY_MS`) when `A` records arrive before
+`AAAA`. `interleave_candidates_he` and `interleave_protocols_hev3` order up to
+32 candidates (`DnsCandidate[..32]`) so QUIC (`L4Protocol.QuicUdp`) and IPv6
+candidates lead TCP and IPv4 fallbacks, while `AttemptManager` spaces parallel
+connection attempts by the Connection Attempt Delay (`10 ms..2000 ms`, default
+`250 ms`) and cancels in-flight losers when `bind_winner_attempt` succeeds.
 
-### 8. Retry, Backoff, and Circuit Breakers (`net/retry.goose`)
+### 8. Connection Pooling & HTTP/2 Coalescing (`net/pool.goose`)
 
-RFC 9110 Retry-After parser, decorrelated jitter backoff, token-bucket retry budget limits, and host-level circuit breakers.
+```goose
+enum PoolScheme { Http, Https, Socks5, Masque }
+struct NetworkAnonymizationKey {
+    top_frame_site: u8[..128], frame_site: u8[..128], is_cross_site: bool, nonce: u64
+}
+struct PoolKey {
+    scheme: PoolScheme, host: u8[..256], port: u16, alpn: u8[..16],
+    proxy_url: u8[..256], nak: NetworkAnonymizationKey
+}
+struct OriginEndpoint { host: u8[..256], port: u16, is_tls: bool, resolved_ip: u8[..64] }
+struct StreamPool { ... }
+struct UpstreamPool { entries: UpstreamKeepAliveEntry[..128] }
+fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint
+fn new_stream_pool(max_idle_per_host: i64 = 6, idle_timeout_sec: u64 = 90) -> StreamPool
+fn acquire_pooled_connection(pool: StreamPool&, key: const PoolKey&, resolved_ip: const u8[:], now_ms: u64) -> i64, bool
+fn release_connection(pool: StreamPool&, idx: i64, now_ms: u64)
+fn acquire_upstream_conn(pool: UpstreamPool&, host: const u8[:], port: u16, is_tls: bool, now_ms: u64) -> i64
+fn release_upstream_conn(pool: UpstreamPool&, fd: i64, host: const u8[:], port: u16, is_tls: bool, now_ms: u64) -> bool
+```
 
-- **`enum JitterStrategy`**: Jitter algorithm (`Full`, `Equal`, `Decorrelated`).
-- **`struct BackoffConfig`**: Exponential backoff and jitter configuration.
-- **`struct HostCircuitBreaker`**: Host-level circuit breaker state machine.
-- **`fn compute_backoff_jitter_ms(cfg: const BackoffConfig&, attempt: u32, rng_state: u64&) -> u64`**: Calculates decorrelated jitter delay.
-- **`fn try_parse_retry_after_http(header_val: const u8[:], now_epoch_sec: u64) -> u64, bool`**: Parses RFC 9110 Retry-After header.
-- **`fn evaluate_tier1_retry<Req>(req: const Req&, err_code: i32, bytes_sent: i64) -> bool`**: Evaluates request idempotency for retry safety.
+`StreamPool` partitions client connections by `PoolKey` (including
+`NetworkAnonymizationKey` to prevent cross-site timing leaks) and supports RFC
+9113 §9.1.1 HTTP/2 connection coalescing when two origins share a resolved IP
+and SAN certificate coverage. `UpstreamPool` maintains up to 128 idle backend
+keep-alive sockets (`UpstreamKeepAliveEntry[..128]`) for reverse proxy reuse;
+`acquire_upstream_conn` returns `-1` on a cache miss.
 
-### 9. Network Isolation Keys (`net/isolation.goose`)
+### 9. MASQUE HTTP Datagram & IP Tunneling (`net/masque.goose`)
 
-Cross-site tracking defense via partitioned cache keys according to modern browser privacy partitioning standards.
+```goose
+struct HttpCapsule { capsule_type: u64, payload: u8[..1500] }
+struct IpAddressRequest { request_id: u64, ip_version: u8, address: u8[16], prefix_len: u8 }
+struct IpAddressAssign { request_id: u64, ip_version: u8, address: u8[16], prefix_len: u8 }
+struct RouteAdvertisement { ip_version: u8, start_address: u8[16], end_address: u8[16], ip_protocol: u8 }
+struct MasqueTunnelSession { ... }
+fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> bool
+fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool
+fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool
+fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool
+fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u16)
+fn new_connect_udp_tunnel(stream_id: u64, host: const u8[:], port: u16) -> MasqueTunnelSession
+fn new_connect_ip_tunnel(stream_id: u64, target: const u8[:] = "*") -> MasqueTunnelSession
+fn build_masque_connect_request(sess: const MasqueTunnelSession&, authority: const u8[:], out_req: Request&)
+fn send_packet<B>(sess: MasqueTunnelSession&, packet: const u8[:], use_h3_dgram: bool, out_wire: B&) -> bool
+fn receive_capsule(sess: MasqueTunnelSession&, wire: const u8[:], idx: i64&, out_packet: u8[..1500]&) -> bool, bool
+fn receive_quic_datagram(sess: MasqueTunnelSession&, wire: const u8[:], out_packet: u8[..1500]&) -> bool
+```
 
-- **`struct NetworkIsolationKey`**: Partitioned isolation key holding top-level origin and frame origin.
-- **`fn new_network_isolation_key(top_level: const u8[:], frame: const u8[:]) -> NetworkIsolationKey`**: Constructs isolation key.
-- **`fn empty_network_isolation_key() -> NetworkIsolationKey`**: Returns empty isolation key.
-- **`fn format_partitioned_key<B>(base_key: const u8[:], nik: const NetworkIsolationKey&, out: B&)`**: Serializes partitioned cache key.
+Implements RFC 9297 HTTP Datagrams and the Capsule Protocol alongside RFC 9298
+(`connect-udp`) and RFC 9484 (`connect-ip`). `receive_capsule` advances `idx`
+past a complete RFC 9297 variable-length integer capsule frame, updating `sess`
+on `ADDRESS_ASSIGN`, `ADDRESS_REQUEST`, or `ROUTE_ADVERTISEMENT` capsules and
+copying forwarded packets into `out_packet` (`u8[..1500]`); if `wire` is
+truncated or malformed, `idx` is left at the failing offset and the trailing
+`bool` is `false`.
+
+### 10. PROXY Protocol v1 & v2 (`net/proxy_protocol.goose`, `net/proxy_protocol_internal.goose`)
+
+```goose
+enum ProxyProtocolVersion { None, V1, V2 }
+enum ProxyCommand { Local, Proxy }
+enum ProxyTransportProtocol { Unspec, Stream, Datagram }
+struct ProxyHeader {
+    version: ProxyProtocolVersion, command: ProxyCommand,
+    transport: ProxyTransportProtocol, src_ip: u8[..64], dst_ip: u8[..64],
+    src_port: u16, dst_port: u16, alpn: u8[..32], sni_authority: u8[..256],
+    tls_cipher: u8[..64], crc32c: u32, has_crc32c: bool,
+    unique_id: u8[..128], netns: u8[..128]
+}
+fn parse_proxy_header(wire: const u8[:]) -> ProxyHeader, i64, bool
+fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool
+fn parse_proxy_v2(wire: const u8[:]) -> ProxyHeader, i64, bool
+fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool
+fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool
+fn append_proxy_v2_crc32c<B>(out: B&) -> bool
+fn compute_proxy_v2_crc32c(wire_hdr: const u8[:]) -> u32
+fn detect_and_strip_proxy_header(wire: const u8[:], out_hdr: ProxyHeader&) -> const u8[:], bool
+```
+
+`parse_proxy_header`, `parse_proxy_v1`, and `parse_proxy_v2` inspect leading
+ingress bytes (`net/proxy_protocol.goose`, `net/proxy_protocol_internal.goose`)
+and return `(hdr, consumed_bytes, ok)`, returning `consumed_bytes = 0` and
+`ok = false` on malformed headers or failed RFC 3720 Castagnoli CRC32c
+(`PP2_TYPE_CRC32C`) verification. `detect_and_strip_proxy_header` populates
+`out_hdr` and returns the remaining zero-copy payload slice following the PROXY
+header.
+
+### 11. Forward Proxies & Slowloris Defense (`net/proxy.goose`)
+
+```goose
+enum ProxyScheme { Direct, Http, Https, Socks4, Socks4a, Socks5, Socks5h }
+enum Socks5Error {
+    None, InvalidVersion, NoAcceptableAuth, AuthFailed, InvalidAuthResponse,
+    InvalidReplyHeader, ServerFailure, ConnectionNotAllowed, NetworkUnreachable,
+    HostUnreachable, ConnectionRefused, TtlExpired, CommandNotSupported,
+    AddressTypeNotSupported, BufferTruncated
+}
+enum ConnectTunnelError {
+    None, InvalidStatusLine, ProxyAuthRequired, ConnectFailed,
+    TunnelBufferedTooManyBytes, MalformedHeaders
+}
+enum SlowlorisViolation {
+    None, HeaderTimeoutExpired, ExpectContinueTimeoutExpired,
+    MaxHeaderBytesExceeded, MinIngressRateViolated, MaxHeaderCountExceeded
+}
+struct SlowlorisDefenseConfig { ... }
+struct HeaderReader { ... }
+fn socks5_client_handshake(sock_fd: i64, scheme: ProxyScheme, target_host: const u8[:], target_port: u16, username: const u8[:], password: const u8[:], timeout_ms: u32 = 5000) -> Socks5Error
+fn http_connect_client_handshake(sock_fd: i64, target_host: const u8[:], target_port: u16, proxy_auth: const u8[:], user_agent: const u8[:], timeout_ms: u32 = 5000) -> ConnectTunnelError
+fn sanitize_tunnel_headers_for_origin(headers: HeaderMap&)
+fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderReader
+fn feed_header_bytes(reader: HeaderReader&, chunk: const u8[:], now_mono_ns: i64) -> SlowlorisViolation
+```
+
+`socks5_client_handshake` runs RFC 1928 negotiation and optional RFC 1929
+username/password authentication, while `http_connect_client_handshake`
+establishes an RFC 9110 §9.3.6 `CONNECT` tunnel and
+`sanitize_tunnel_headers_for_origin` strips `Proxy-Authorization` and
+`Proxy-Connection` before origin forwarding. `HeaderReader` accumulates ingress
+header bytes up to `\r\n\r\n` and returns a `SlowlorisViolation` if the header
+deadline, minimum byte rate, total header byte ceiling, or field count limit is
+breached.
+
+### 12. Retry, Backoff, and Circuit Breakers (`net/retry.goose`)
+
+```goose
+enum JitterStrategy { None, FullJitter, EqualJitter, DecorrelatedJitter }
+struct BackoffConfig { base_ms: i64, cap_ms: i64, strategy: JitterStrategy }
+struct AdaptiveRetryBudget { ... }
+struct HostCircuitBreaker { ... }
+struct Tier1Decision { retry_immediately: bool, disable_alternative_services: bool }
+fn new_backoff_config(base: i64 = 100, cap: i64 = 10000, strat: JitterStrategy = JitterStrategy.FullJitter) -> BackoffConfig
+fn compute_backoff_jitter_ms(cfg: const BackoffConfig&, attempt: i64, prev_sleep_ms: i64&, rng_seed: u64&) -> i64
+fn new_adaptive_retry_budget(max_retry_ratio: f64 = 0.2, min_retries_per_sec: i32 = 10) -> AdaptiveRetryBudget
+fn record_primary_request(budget: AdaptiveRetryBudget&, now_ms: i64)
+fn allow_retry_budget(budget: AdaptiveRetryBudget&, now_ms: i64) -> bool
+fn new_host_circuit_breaker(failure_threshold: i32 = 5, open_duration_ms: i64 = 30000) -> HostCircuitBreaker
+fn trip_circuit_breaker_if_exceeded(cb: HostCircuitBreaker&, consecutive_failures: i32, now_ms: i64) -> bool
+fn is_host_circuit_broken(cb: HostCircuitBreaker&, now_ms: i64) -> bool
+fn should_retry_tier1_stale_socket<Req>(reused_connection: bool, req: const Req&, headers_received: bool = false) -> bool
+fn evaluate_tier1_retry<Req>(err_code: i32, reused_connection: bool, req: const Req&, headers_received: bool = false) -> Tier1Decision
+fn parse_retry_after_ms(header_raw: const u8[:], now_unix_ms: i64) -> i64, bool
+fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool
+fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64, bool
+```
+
+`compute_backoff_jitter_ms` updates `prev_sleep_ms` and `rng_seed` in place to
+compute exponential or decorrelated-jitter delays bounded by `cfg.cap_ms`.
+`evaluate_tier1_retry` permits zero-delay replay on a fresh socket when a pooled
+connection fails before response headers arrive, and disables broken QUIC
+alternative services on `ERR_QUIC_PROTOCOL_ERROR`. `parse_retry_after_ms` parses
+RFC 9110 §10.2.3 `Retry-After` headers in either delta-seconds
+(`try_parse_retry_after_seconds`) or IMF-fixdate
+(`try_parse_retry_after_http_date`) format into non-negative milliseconds.
+
+### 13. Hierarchical Tick Timer Wheel (`net/tick_timer.goose`)
+
+```goose
+struct TickTimerWheel { slots: u64[64], current_tick: u64, tick_resolution_ms: u64 }
+fn new_tick_timer_wheel(resolution_ms: u64 = 100, start_ms: u64 = 0) -> TickTimerWheel
+fn tick_timer_arm(wheel: TickTimerWheel&, conn_id: i32, timeout_ticks: u64) -> u8
+fn tick_timer_disarm(wheel: TickTimerWheel&, conn_id: i32, slot: u8)
+fn tick_timer_advance(wheel: TickTimerWheel&, now_ms: u64) -> u64
+fn tick_timer_is_expired(expired_mask: u64, conn_id: i32) -> bool
+```
+
+`TickTimerWheel` tracks up to 64 concurrent connection IDs (`0..63`) across 64
+bitmask slots (`u64[64]`) in constant time. `tick_timer_advance` steps
+`current_tick` to `now_ms`, clears traversed slots, and returns the bitwise OR
+mask of expired connection IDs.
+
+### 14. Network Isolation Keys (`net/isolation.goose`)
+
+```goose
+struct NetworkIsolationKey {
+    top_level_site: u8[..128], frame_site: u8[..128], is_cross_site: bool, is_opaque: bool
+}
+fn new_network_isolation_key(top_level_url: const u8[:], frame_url: const u8[:]) -> NetworkIsolationKey
+fn empty_network_isolation_key() -> NetworkIsolationKey
+fn format_partitioned_key<B>(nik: const NetworkIsolationKey&, target_url: const u8[:], out: B&)
+```
+
+`NetworkIsolationKey` extracts registrable eTLD+1 sites from `top_level_url` and
+`frame_url` into 128-byte buffers (`u8[..128]`) and formats partitioned
+`nik=<top>|<frame>|<cs>|url=<target>` cache lookup keys via
+`format_partitioned_key`.

@@ -1,6 +1,9 @@
 # Goose LIT: LLVM-grade wire & protocol verification
 
-This directory houses native LLVM-style LIT (`goose-lit`) verification suites for `goose-wing`. Tests here verify wire framing, RFC conformance, protocol state machines (FSM), partial reads, and edge cases under zero-allocation memory constraints.
+This directory houses native LLVM-style LIT (`goose-lit`) verification suites
+for `goose-wing` that verify wire framing, RFC conformance, protocol state
+machines (FSM), partial reads, and edge cases under zero-allocation memory
+constraints.
 
 ## Table of contents
 
@@ -13,12 +16,15 @@ This directory houses native LLVM-style LIT (`goose-lit`) verification suites fo
 
 ## Design principles
 
-Standard unit tests rely on private helper assertions (`assert(x == y)`). This leaves hidden bugs in streaming parsers:
+Standard unit tests rely on private helper assertions (`assert(x == y)`). This
+leaves hidden bugs in streaming parsers:
 
-1. **Partial reads**: Real sockets deliver frames split across arbitrary 1-byte chunks.
-2. **Silent state corruption**: Internal FSMs may enter unhandled states without failing immediate return values.
-3. **Off-by-one pointer errors**: Buffers with trailing bytes or missing delimiters can trigger silent out-of-bounds access.
-4. **Vector vs. scalar divergence**: AVX2/NEON scanners can disagree with scalar fallbacks on unaligned boundaries.
+| Failure Mode | Description |
+| :--- | :--- |
+| Partial reads | Real sockets deliver frames split across arbitrary 1-byte chunks. |
+| Silent state corruption | Internal FSMs may enter unhandled states without failing immediate return values. |
+| Off-by-one pointer errors | Buffers with trailing bytes or missing delimiters can trigger silent out-of-bounds access. |
+| Vector vs. scalar divergence | AVX2/NEON scanners can disagree with scalar fallbacks on unaligned boundaries. |
 
 Goose LIT adopts the LLVM testing paradigm:
 
@@ -26,11 +32,13 @@ Goose LIT adopts the LLVM testing paradigm:
 - Pipe stdout streams through `FileCheck` pattern matchers.
 - Trace every FSM state transition and cursor movement explicitly.
 - Exercise all prefix slices `1..N-1` through `wire_kit::verify_split_stream`.
-- Mutate wire streams via in-process deterministic fuzzing (`wire_kit::fuzz_payload`).
+- Mutate wire streams via in-process deterministic fuzzing
+  (`wire_kit::fuzz_payload`).
 
 ## Directive reference
 
-Directives are parsed directly from comments at the top of each `.goose` test file.
+Directives are parsed directly from comments at the top of each `.goose` test
+file.
 
 ### Runner directives
 
@@ -57,7 +65,8 @@ Directives are parsed directly from comments at the top of each `.goose` test fi
 
 ### 1. Deterministic FSM state tracing
 
-Instead of checking a single boolean outcome, emit state machine transitions and frame decodes to stdout:
+Instead of checking a single boolean outcome, emit state machine transitions and
+frame decodes to stdout:
 
 ```goose
 // CHECK-LABEL: === H2_FSM_TRANSITION ===
@@ -70,35 +79,38 @@ Instead of checking a single boolean outcome, emit state machine transitions and
 
 ### 2. Prefix fragmentation verification
 
-Every wire parser must be validated against incremental packet arrivals. Using `wire_kit`:
+Every wire parser must be validated against incremental packet arrivals. Using
+`wire_kit`:
 
 ```goose
-fn parse_step(buf: const u8[:]) -> i64 {
-    let _, ok = wing::parse_frame(buf);
-    if !ok { return -1; }
-    return 0;
+fn decode_grpc_lpm_len(buf: const u8[:]) -> i32 {
+    let payload_slice, _, _, ok = wing::decode_grpc_lpm_slice(buf, 0);
+    guard ok else { return -1; }
+    return payload_slice.len as! i32;
 }
 
-// Tests buf[..1], buf[..2], ..., buf[..N-1] return -1, buf[..N] returns 0
-assert(wire_kit::verify_split_stream<parse_step>(valid_wire[..], -1, 0));
+// Tests buf[..1], buf[..2], ..., buf[..N-1] return -1, buf[..N] returns 11
+assert(wire_kit::verify_split_stream<decode_grpc_lpm_len>(valid_wire[..], -1, 11));
 print("SPLIT_STREAM: OK");
 // CHECK: SPLIT_STREAM: OK
 ```
 
 ### 3. In-process deterministic chaos fuzzing
 
-Exercise thousands of bit-flips, swaps, and boundary bytes (`0x00`, `0xFF`, `0x7F`, `0x80`) without external fuzzing daemons:
+Exercise thousands of bit-flips, swaps, and boundary bytes (`0x00`, `0xFF`,
+`0x7F`, `0x80`) without external fuzzing daemons:
 
 ```goose
 // Runs 10,000 deterministic mutations using xorshift64
-assert(wire_kit::fuzz_payload<parse_step>(valid_wire[..], 10000));
+assert(wire_kit::fuzz_payload<decode_grpc_lpm_len>(valid_wire[..], 10000));
 print("CHAOS_FUZZ: OK");
 // CHECK: CHAOS_FUZZ: OK
 ```
 
 ### 4. Dual-engine verification (AVX2 vs. scalar)
 
-Validate that optimized SIMD routines match scalar fallbacks on all boundary conditions:
+Validate that optimized SIMD routines match scalar fallbacks on all boundary
+conditions:
 
 ```goose
 // RUN: goose build --cc gcc -O2 -o %t.opt.exe %s
@@ -117,12 +129,13 @@ goose-lit gate auth/pkce.goose 25 --cov 0.85
 
 ### 6. Bug regression reproducers
 
-Every fixed bug receives a dedicated reproducer block with a unique `HIST_` or `BUG_` label:
+Every fixed bug receives a dedicated reproducer block with a unique `HIST_` or
+`BUG_` label:
 
 ```goose
 // CVE or bug fix regression
-let malicious_input = "...";
-assert(wing::safe_decoder(malicious_input) == -1);
+let _, bad_swar = wing::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
+assert(!bad_swar);
 print("HIST_BUG_123: DEFENDED");
 // CHECK: HIST_BUG_123: DEFENDED
 ```
@@ -133,8 +146,8 @@ print("HIST_BUG_123: DEFENDED");
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// tests/lit/verify_example_protocol.goose
-// Verification of Example Protocol wire parsing and streaming FSM.
+// tests/lit/verify_wire_framing.goose
+// Verification of wire framing primitives: gRPC LPM, TLS record headers, and SIMD CRLFCRLF scanning.
 //
 // RUN: goose build --cc gcc -O2 -o %t.exe %s
 // RUN: %t.exe | %FileCheck %s
@@ -144,29 +157,29 @@ import core from "../..";
 import wing from "../..";
 import wire_kit from ".";
 
-fn parse_packet(buf: const u8[:]) -> i64 {
-    let pkt, ok = wing::parse_my_packet(buf);
+fn decode_grpc_lpm_len(buf: const u8[:]) -> i32 {
+    let payload_slice, _, _, ok = wing::decode_grpc_lpm_slice(buf, 0);
     guard ok else { return -1; }
-    return pkt.payload_len as! i64;
+    return payload_slice.len as! i32;
 }
 
 fn main() {
     print("=== EXAMPLE_PROTOCOL_VERIFICATION ===");
 
     var valid_packet: u8[>..] = [];
-    assert(wire_kit::parse_hex("0100000568656C6C6F", valid_packet));
+    assert(wire_kit::parse_hex("000000000568656C6C6F", valid_packet));
 
     // Pillar 1: Valid frame decode & FSM trace
-    let len = parse_packet(valid_packet[..]);
+    let len = decode_grpc_lpm_len(valid_packet[..]);
     assert(len == 5);
     print("FRAME_PAYLOAD_LEN: ", len);
 
     // Pillar 2: Incremental prefix streaming
-    assert(wire_kit::verify_split_stream<parse_packet>(valid_packet[..], -1, 5));
+    assert(wire_kit::verify_split_stream<decode_grpc_lpm_len>(valid_packet[..], -1, 5));
     print("STREAM_SLICING: PASS");
 
     // Pillar 3: Mutation fuzzing
-    assert(wire_kit::fuzz_payload<parse_packet>(valid_packet[..], 5000));
+    assert(wire_kit::fuzz_payload<decode_grpc_lpm_len>(valid_packet[..], 5000));
     print("MUTATION_FUZZ: PASS");
 }
 
@@ -208,7 +221,8 @@ python tools/test_runner.py --lit --jobs 8
 
 ## Hardware complexity gate
 
-Use `goose-lit gate` to enforce the G-CRAP complexity ceiling and bounds-check elimination invariants on production modules:
+Use `goose-lit gate` to enforce the G-CRAP complexity ceiling and bounds-check
+elimination invariants on production modules:
 
 ```bash
 goose-lit gate auth/jwks.goose 25 --cov 0.85

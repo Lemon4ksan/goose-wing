@@ -1,6 +1,9 @@
 # Autobahn WebSocket Conformance Testsuite for goose-wing
 
-Automated verification suite validating 100% compliance with **RFC 6455** using the official [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) test specifications via native runner (`kosoku` / `wstest`).
+Automated verification suite validating 100% compliance with **RFC 6455** using
+the official
+[Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) test
+specifications via native runner (`kosoku` / `wstest`).
 
 ## Verification Scope (301 RFC 6455 Cases)
 
@@ -47,7 +50,8 @@ python tools/autobahn.py -i "5.19"
 
 ### 3. Run in Docker (Docker Compose)
 
-Run the entire Autobahn testsuite in isolated Docker containers (native `goose-wing` WebSocket server + official `crossbario/autobahn-testsuite`):
+Run the entire Autobahn testsuite in isolated Docker containers (native
+`goose-wing` WebSocket server + official `crossbario/autobahn-testsuite`):
 
 ```powershell
 docker compose -f tools/autobahn/docker-compose.yml up --build --abort-on-container-exit
@@ -67,4 +71,5 @@ If you change `tools/autobahn/server.goose`, rebuild locally with:
 python tools/autobahn.py --rebuild
 ```
 
-Reports are automatically saved in `reports/autobahn/index.html` and `reports/autobahn/index.json`.
+Reports are automatically saved in `reports/autobahn/index.html` and
+`reports/autobahn/index.json`.

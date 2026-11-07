@@ -1,1 +1,0 @@
-Follow the project guidelines, engineering invariants, and Goose language rules defined in [.agents/AGENTS.md](file:///.agents/AGENTS.md).

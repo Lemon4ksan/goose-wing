@@ -1,17 +1,26 @@
 # Toxiproxy integration
 
-This package integrates the [Shopify Toxiproxy](https://github.com/Shopify/toxiproxy) daemon (v2.13.0+) for network anomaly injection and chaos testing in goose-wing.
+This package integrates the [Shopify
+Toxiproxy](https://github.com/Shopify/toxiproxy) daemon (v2.13.0+) for network
+anomaly injection and chaos testing in goose-wing.
 
 ## Architecture
 
 - `tools/bin/toxiproxy-server.exe`: Toxiproxy daemon binary.
 - `tools/bin/toxiproxy-cli.exe`: Toxiproxy CLI utility.
-- `tools/bin/goose_chaos_server.exe`: Standalone Goose server supporting HTTP/1.1, WebSocket, and HTTP/2.
+- `tools/bin/goose_chaos_server.exe`: Standalone Goose server supporting
+  HTTP/1.1, WebSocket, and HTTP/2.
 - `tools/toxiproxy/server.py`: Lifecycle manager and health checker.
-- `tools/toxiproxy/client.py`: Python REST client for the Toxiproxy HTTP API (`localhost:8474`).
-- `tools/toxiproxy/toxics.py`: Toxic definitions (`LatencyToxic`, `BandwidthToxic`, `SlicerToxic`, `ResetPeerToxic`, `TimeoutToxic`, `SlowCloseToxic`, `LimitDataToxic`).
-- `tools/toxiproxy/proxy.py`: `ChaosProxy` session manager with context managers for toxic injection.
-- `tools/toxiproxy/stress_all_goose.py`: 43-stage chaos and attack stress runner testing HTTP/1.1 smuggling, HTTP/2 flow control, WebSocket invariants, and L4 network anomalies.
+- `tools/toxiproxy/client.py`: Python REST client for the Toxiproxy HTTP API
+  (`localhost:8474`).
+- `tools/toxiproxy/toxics.py`: Toxic definitions (`LatencyToxic`,
+  `BandwidthToxic`, `SlicerToxic`, `ResetPeerToxic`, `TimeoutToxic`,
+  `SlowCloseToxic`, `LimitDataToxic`).
+- `tools/toxiproxy/proxy.py`: `ChaosProxy` session manager with context managers
+  for toxic injection.
+- `tools/toxiproxy/stress_all_goose.py`: 43-stage chaos and attack stress runner
+  testing HTTP/1.1 smuggling, HTTP/2 flow control, WebSocket invariants, and L4
+  network anomalies.
 
 ## Usage
 

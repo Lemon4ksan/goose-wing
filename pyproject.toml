@@ -4,23 +4,23 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = [
-    "E",     # pycodestyle errors
-    "W",     # pycodestyle warnings
-    "F",     # pyflakes
-    "I",     # isort
-    "B",     # flake8-bugbear
-    "UP",    # pyupgrade
-    "SIM",   # flake8-simplify
-    "PIE",   # flake8-pie
-    "RUF",   # ruff-specific rules
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+  "PIE", # flake8-pie
+  "RUF", # ruff-specific rules
 ]
 ignore = [
-    "E402",   # module level import not at top of file (sys.path manipulation in test harnesses)
-    "E501",   # line length (handled by ruff format)
-    "SIM105", # use contextlib.suppress (test teardowns explicitly use try-except-pass)
-    "SIM108", # use ternary operator instead of if-else-block
-    "BLE001", # blind except in test runners and socket cleanup routines
-    "S110",   # try-except-pass in socket teardown hooks
+  "E402",   # module level import not at top of file (sys.path manipulation in test harnesses)
+  "E501",   # line length (handled by ruff format)
+  "SIM105", # use contextlib.suppress (test teardowns explicitly use try-except-pass)
+  "SIM108", # use ternary operator instead of if-else-block
+  "BLE001", # blind except in test runners and socket cleanup routines
+  "S110",   # try-except-pass in socket teardown hooks
 ]
 
 [tool.ruff.lint.isort]
@@ -38,13 +38,11 @@ pythonPlatform = "Windows"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false
 extraPaths = [
-    "tools/autobahn",
-    "tools/chaos",
-    "tools/grpc",
-    "tools/h2spec",
-    "tools/http3",
-    "tools/tls",
-    "tools/toxiproxy",
+  "tools/autobahn",
+  "tools/chaos",
+  "tools/grpc",
+  "tools/h2spec",
+  "tools/http3",
+  "tools/tls",
+  "tools/toxiproxy",
 ]
-
-

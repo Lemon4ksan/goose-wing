@@ -25,22 +25,14 @@ typedef struct {
 } wing_prof_stage_t;
 
 static wing_prof_stage_t g_prof_stages[WING_MAX_PROF_STAGES] = {
-    { "0. Framing (CRLFCRLF)", 0, 0, UINT64_MAX, 0 },
-    { "1. Request Line Parse", 0, 0, UINT64_MAX, 0 },
-    { "2. Headers Tokenize",   0, 0, UINT64_MAX, 0 },
-    { "3. Host & Framing Val", 0, 0, UINT64_MAX, 0 },
-    { "4. Pipeline & GCRA",    0, 0, UINT64_MAX, 0 },
-    { "5. Radix Router Match", 0, 0, UINT64_MAX, 0 },
-    { "6. Handler Execution",  0, 0, UINT64_MAX, 0 },
-    { "7. Resp Serialization", 0, 0, UINT64_MAX, 0 },
-    { "8. Output Buffer Copy", 0, 0, UINT64_MAX, 0 },
-    { "9. Socket Recv Syscall",0, 0, UINT64_MAX, 0 },
-    { "10. Socket Send/Flush", 0, 0, UINT64_MAX, 0 },
-    { "11. Misc/Overhead",     0, 0, UINT64_MAX, 0 },
-    { "12. Extra 1",           0, 0, UINT64_MAX, 0 },
-    { "13. Extra 2",           0, 0, UINT64_MAX, 0 },
-    { "14. Extra 3",           0, 0, UINT64_MAX, 0 },
-    { "15. Extra 4",           0, 0, UINT64_MAX, 0 },
+    {"0. Framing (CRLFCRLF)", 0, 0, UINT64_MAX, 0}, {"1. Request Line Parse", 0, 0, UINT64_MAX, 0},
+    {"2. Headers Tokenize", 0, 0, UINT64_MAX, 0},   {"3. Host & Framing Val", 0, 0, UINT64_MAX, 0},
+    {"4. Pipeline & GCRA", 0, 0, UINT64_MAX, 0},    {"5. Radix Router Match", 0, 0, UINT64_MAX, 0},
+    {"6. Handler Execution", 0, 0, UINT64_MAX, 0},  {"7. Resp Serialization", 0, 0, UINT64_MAX, 0},
+    {"8. Output Buffer Copy", 0, 0, UINT64_MAX, 0}, {"9. Socket Recv Syscall", 0, 0, UINT64_MAX, 0},
+    {"10. Socket Send/Flush", 0, 0, UINT64_MAX, 0}, {"11. Misc/Overhead", 0, 0, UINT64_MAX, 0},
+    {"12. Extra 1", 0, 0, UINT64_MAX, 0},           {"13. Extra 2", 0, 0, UINT64_MAX, 0},
+    {"14. Extra 3", 0, 0, UINT64_MAX, 0},           {"15. Extra 4", 0, 0, UINT64_MAX, 0},
 };
 
 uint64_t wing_rdtsc(void) {
@@ -112,24 +104,20 @@ void wing_prof_print_summary(void) {
     printf("\n========================================================================================\n");
     printf("              GOOSE-WING SERVER PIPELINE CPU CLOCK CYCLE PROFILING REPORT               \n");
     printf("========================================================================================\n");
-    printf("%-26s | %10s | %12s | %10s | %10s | %6s\n",
-           "Pipeline Stage", "Samples", "Total Cycles", "Avg Cycles", "Min Cycles", "Pct %");
+    printf("%-26s | %10s | %12s | %10s | %10s | %6s\n", "Pipeline Stage", "Samples", "Total Cycles", "Avg Cycles",
+           "Min Cycles", "Pct %");
     printf("---------------------------+------------+--------------+------------+------------+--------\n");
 
     for (int i = 0; i < WING_MAX_PROF_STAGES; i++) {
         if (g_prof_stages[i].count == 0) continue;
         double pct = ((double)g_prof_stages[i].total_cycles * 100.0) / (double)grand_total;
         double avg = (double)g_prof_stages[i].total_cycles / (double)g_prof_stages[i].count;
-        printf("%-26s | %10llu | %12llu | %10.1f | %10llu | %5.1f%%\n",
-               g_prof_stages[i].name,
-               (unsigned long long)g_prof_stages[i].count,
-               (unsigned long long)g_prof_stages[i].total_cycles,
-               avg,
-               (unsigned long long)g_prof_stages[i].min_cycles,
-               pct);
+        printf("%-26s | %10llu | %12llu | %10.1f | %10llu | %5.1f%%\n", g_prof_stages[i].name,
+               (unsigned long long)g_prof_stages[i].count, (unsigned long long)g_prof_stages[i].total_cycles, avg,
+               (unsigned long long)g_prof_stages[i].min_cycles, pct);
     }
     printf("---------------------------+------------+--------------+------------+------------+--------\n");
-    printf("%-26s | %10s | %12llu | %10s | %10s | 100.0%%\n",
-           "TOTAL PIPELINE CYCLES", "-", (unsigned long long)grand_total, "-", "-");
+    printf("%-26s | %10s | %12llu | %10s | %10s | 100.0%%\n", "TOTAL PIPELINE CYCLES", "-",
+           (unsigned long long)grand_total, "-", "-");
     printf("========================================================================================\n\n");
 }

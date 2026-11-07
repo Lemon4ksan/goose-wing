@@ -49,14 +49,14 @@ typedef struct {
 #define WING_URING_MAX_RINGS 16
 
 typedef struct {
-    int64_t  ring_fd;
-    void    *sq_ring_ptr;
-    void    *cq_ring_ptr;
+    int64_t ring_fd;
+    void *sq_ring_ptr;
+    void *cq_ring_ptr;
     struct io_uring_sqe *sqes_ptr;
-    size_t   sq_ring_sz;
-    size_t   cq_ring_sz;
-    size_t   sqes_sz;
-    int32_t  single_mmap;
+    size_t sq_ring_sz;
+    size_t cq_ring_sz;
+    size_t sqes_sz;
+    int32_t single_mmap;
     uint32_t *sq_head;
     uint32_t *sq_tail;
     uint32_t *sq_ring_mask;
@@ -138,10 +138,12 @@ int64_t wing_uring_create(uint32_t entries, uint32_t flags) {
         ctx->cq_ring_sz = cring_sz;
         ctx->sqes_sz = params.sq_entries * sizeof(struct io_uring_sqe);
 
-        ctx->sq_ring_ptr = mmap(NULL, sring_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd, IORING_OFF_SQ_RING);
+        ctx->sq_ring_ptr =
+            mmap(NULL, sring_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd, IORING_OFF_SQ_RING);
         if (ctx->sq_ring_ptr != MAP_FAILED) {
-            ctx->cq_ring_ptr = ctx->single_mmap ? ctx->sq_ring_ptr :
-                mmap(NULL, cring_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, (int)fd, IORING_OFF_CQ_RING);
+            ctx->cq_ring_ptr = ctx->single_mmap ? ctx->sq_ring_ptr
+                                                : mmap(NULL, cring_sz, PROT_READ | PROT_WRITE,
+                                                       MAP_SHARED | MAP_POPULATE, (int)fd, IORING_OFF_CQ_RING);
             ctx->sqes_ptr = (struct io_uring_sqe *)mmap(NULL, ctx->sqes_sz, PROT_READ | PROT_WRITE,
                                                         MAP_SHARED | MAP_POPULATE, (int)fd, IORING_OFF_SQES);
             if (ctx->cq_ring_ptr != MAP_FAILED && ctx->sqes_ptr != MAP_FAILED) {
@@ -165,9 +167,8 @@ int64_t wing_uring_create(uint32_t entries, uint32_t flags) {
     return (int64_t)fd;
 }
 
-int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio,
-                              int32_t fd, uint64_t off, uint64_t addr, uint32_t len,
-                              uint64_t user_data, uint16_t buf_index) {
+int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio, int32_t fd, uint64_t off,
+                              uint64_t addr, uint32_t len, uint64_t user_data, uint16_t buf_index) {
     wing_uring_mmap_ctx *ctx = find_uring_ctx(ring_fd);
     if (!ctx) {
         return -EBADF;
@@ -317,9 +318,8 @@ int64_t wing_uring_create(uint32_t entries, uint32_t flags) {
     (void)flags;
     return -ENOSYS;
 }
-int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio,
-                              int32_t fd, uint64_t off, uint64_t addr, uint32_t len,
-                              uint64_t user_data, uint16_t buf_index) {
+int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio, int32_t fd, uint64_t off,
+                              uint64_t addr, uint32_t len, uint64_t user_data, uint16_t buf_index) {
     (void)ring_fd;
     (void)opcode;
     (void)flags;

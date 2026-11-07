@@ -36,13 +36,12 @@ uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_siz
     if (g_dpdk_mbuf_pool != NULL) {
         return (uint64_t)(uintptr_t)g_dpdk_mbuf_pool;
     }
-    g_dpdk_mbuf_pool = rte_pktmbuf_pool_create("wing_mbuf_pool", n_elements, 256, 0,
-                                               (uint16_t)element_size, socket_id);
+    g_dpdk_mbuf_pool = rte_pktmbuf_pool_create("wing_mbuf_pool", n_elements, 256, 0, (uint16_t)element_size, socket_id);
     return (uint64_t)(uintptr_t)g_dpdk_mbuf_pool;
 }
 
-int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues,
-                                    uint16_t rx_ring_size, uint16_t tx_ring_size, int32_t promiscuous) {
+int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues, uint16_t rx_ring_size,
+                                    uint16_t tx_ring_size, int32_t promiscuous) {
     (void)rx_ring_size;
     (void)tx_ring_size;
     if (!g_dpdk_eal_ready && wing_dpdk_eal_init() != 0) {
@@ -60,13 +59,9 @@ int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16
     return 0;
 }
 
-int32_t wing_dpdk_eth_dev_start(uint16_t port_id) {
-    return rte_eth_dev_start(port_id);
-}
+int32_t wing_dpdk_eth_dev_start(uint16_t port_id) { return rte_eth_dev_start(port_id); }
 
-void wing_dpdk_eth_dev_stop(uint16_t port_id) {
-    rte_eth_dev_stop(port_id);
-}
+void wing_dpdk_eth_dev_stop(uint16_t port_id) { rte_eth_dev_stop(port_id); }
 
 uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_out, uint16_t nb_pkts) {
     if (!pkts_out || nb_pkts == 0) {
@@ -85,16 +80,16 @@ uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t 
 #else
 
 #define WING_DPDK_MAX_PORTS 16
-#define WING_DPDK_RING_CAP  256
+#define WING_DPDK_RING_CAP 256
 
 typedef struct {
     uint16_t rx_queues;
     uint16_t tx_queues;
     uint16_t rx_ring_size;
     uint16_t tx_ring_size;
-    int32_t  promiscuous;
-    int32_t  configured;
-    int32_t  started;
+    int32_t promiscuous;
+    int32_t configured;
+    int32_t started;
     uint64_t loopback_ring[WING_DPDK_RING_CAP];
     uint32_t head;
     uint32_t tail;
@@ -123,8 +118,8 @@ uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_siz
     return h;
 }
 
-int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues,
-                                    uint16_t rx_ring_size, uint16_t tx_ring_size, int32_t promiscuous) {
+int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues, uint16_t rx_ring_size,
+                                    uint16_t tx_ring_size, int32_t promiscuous) {
     if (port_id >= WING_DPDK_MAX_PORTS || rx_queues == 0 || tx_queues == 0) {
         return -1;
     }

@@ -12,15 +12,15 @@ check:
 
 # Run test suites matching a pattern (defaults to all tests) via goose-lit
 test pattern="tests":
-    goose-lit "{{pattern}}"
+    goose-lit "{{ pattern }}"
 
 # Run native Goose LIT test suites matching a pattern
 lit pattern="tests":
-    goose-lit "{{pattern}}"
+    goose-lit "{{ pattern }}"
 
 # Enforce hardware complexity gate on a file
 gate target max_gcrap="25":
-    python scripts/verify_wing_gate.py "{{target}}" --max-gcrap {{max_gcrap}}
+    python scripts/verify_wing_gate.py "{{ target }}" --max-gcrap {{ max_gcrap }}
 
 # Verify G-CRAP regression ratchet against baseline
 ratchet:
@@ -28,7 +28,7 @@ ratchet:
 
 # Run static G-CRAP complexity radar
 crap target="." threshold="25.0":
-    goose-lit crap "{{target}}" --threshold {{threshold}}
+    goose-lit crap "{{ target }}" --threshold {{ threshold }}
 
 # Enforce strict code clarity and anti-bloat invariants
 lint-invariants target="":
@@ -56,15 +56,15 @@ lint:
 
 # Lint Markdown documentation with goosemarklint (ASD-STE100, LLM tells, and markdownlint)
 md-lint *paths=".":
-    goosemarklint check {{paths}}
+    goosemarklint check {{ paths }}
 
 # Format Markdown documentation with goosemarklint
 md-fmt *paths=".":
-    goosemarklint fmt {{paths}}
+    goosemarklint fmt {{ paths }}
 
 # Verify Markdown formatting without modifying files
 md-fmt-check *paths=".":
-    goosemarklint fmt --check {{paths}}
+    goosemarklint fmt --check {{ paths }}
 
 # Configure git to use repository pre-commit hooks
 install-hooks:
@@ -72,11 +72,11 @@ install-hooks:
 
 # Run Autobahn WebSocket conformance testsuite
 autobahn *args:
-    python tools/autobahn.py {{args}}
+    python tools/autobahn.py {{ args }}
 
 # Run performance benchmark matrix
 bench scenario="pipelined" duration="5":
-    python tools/bench-vs-uwebsockets/run_cli.py --scenario {{scenario}} --duration {{duration}}
+    python tools/bench-vs-uwebsockets/run_cli.py --scenario {{ scenario }} --duration {{ duration }}
 
 # Compile C acceleration shims with strict warning flags
 [unix]

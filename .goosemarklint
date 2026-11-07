@@ -3,14 +3,12 @@ exclude = [
     "worktrees/",
     "scratch/",
     "AGENTS.md",
-    "CLAUDE.md",
     ".agents/",
-    ".gemini/"
+    ".gemini/",
+    ".github/",
+    "tools/goosemarklint/"
 ]
 disable = [
-    "llm-bold-label",
-    "readme-run-block",
-    "readme-purpose",
     "ste-passive",
     "ste-ing",
     "ste-semicolon",

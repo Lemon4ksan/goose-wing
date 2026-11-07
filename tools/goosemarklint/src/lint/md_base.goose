@@ -12,6 +12,8 @@ let LINE_FENCE = 1;
 let LINE_CODE = 2;
 let LINE_HTML = 3;
 let LINE_FRONT = 4;
+let LINE_TABLE = 5;
+let LINE_HEADING = 6;
 
 fn last_line(L: Lint&) -> i64 { L.lines.len - 1 }
 
@@ -58,6 +60,8 @@ fn index_kinds(L: Lint&) {
             FrontMatter => mark_lines(L, node.line, node.end_line, LINE_FRONT),
             HtmlBlock => mark_lines(L, node.line, node.end_line, LINE_HTML),
             CodeBlock => mark_code(L, n),
+            Table => mark_lines(L, node.line, node.end_line, LINE_TABLE),
+            Heading => mark_lines(L, node.line, node.end_line, LINE_HEADING),
             _ => {},
         }
         n = next_in(L.d, n, 0);
@@ -66,7 +70,9 @@ fn index_kinds(L: Lint&) {
 
 fn is_code_line(L: Lint&, ln: i64) -> bool { L.kinds[ln] == LINE_FENCE || L.kinds[ln] == LINE_CODE }
 
-fn is_markdown_line(L: Lint&, ln: i64) -> bool { L.kinds[ln] == LINE_TEXT }
+fn is_markdown_line(L: Lint&, ln: i64) -> bool {
+    L.kinds[ln] == LINE_TEXT || L.kinds[ln] == LINE_TABLE || L.kinds[ln] == LINE_HEADING
+}
 
 fn without_comments(s: const u8[:]) -> u8[>..] {
     var out: u8[>..] = [];

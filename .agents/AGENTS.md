@@ -369,6 +369,12 @@ Structural formatting rules designed to work in mathematical synergy with `goose
 
 ## Documentation and style
 
+- **File naming**:
+  - Documentation files inside `docs/` must use lowercase `snake_case` matching upstream `goose` conventions (`docs/architecture.md`, `docs/caller_reference.md`, `docs/features_and_nuances.md`, `docs/security_defenses.md`, `docs/rfc_conformance.md`, `docs/benchmarks.md`).
+  - Root repository meta-files (`README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`) and per-module `README.md` files use standard `UPPERCASE`.
+- **80-column hard-wrap and `goosemarklint` enforcement**:
+  - Prose paragraphs, blockquotes, and list items in Markdown files must hard-wrap at **80 columns** (enforced via `MD013` and formatted automatically by `goosemarklint fmt .`). Tables, code blocks, headings, and unbreakable single-token code spans or URLs are exempt from `MD013`.
+  - Run `goosemarklint fmt .` and `goosemarklint check .` (or `just md-fmt` and `just md-lint`) after editing any `.md` file.
 - Write documentation, comments, and commit messages concisely and factually without AI buzzwords, corporate fluff, or melodrama.
 - Headings must use sentence case (`Commit conventions and releases`, not `Commit Conventions And Releases`).
 - Use straight quotes (`'` and `"`) instead of curly quotes.

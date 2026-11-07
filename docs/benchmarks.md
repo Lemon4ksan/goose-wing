@@ -1,24 +1,30 @@
 # Performance benchmark matrix and latency budgets
 
-Comparative benchmarks and hardware latency evaluations measuring `goose-wing` against `uWebSockets` (C++), `fasthttp` (Go), `net/http` (Go), and `actix-web` (Rust).
+Comparative benchmarks and hardware latency evaluations measuring `goose-wing`
+against `uWebSockets` (C++), `fasthttp` (Go), `net/http` (Go), and `actix-web`
+(Rust).
 
 ## Architecture and allocation model
 
-`goose-wing` achieves zero dynamic heap allocation on all ingress wire parsing, frame decoding, and serialization paths.
-Memory is managed via:
+`goose-wing` achieves zero dynamic heap allocation on all ingress wire parsing,
+frame decoding, and serialization paths. Memory is managed via:
 
-- Bounded static buffers (`u8[..N]`) allocated in frame/stack memory without `malloc` overhead.
+- Bounded static buffers (`u8[..N]`) allocated in frame/stack memory without
+  `malloc` overhead.
 - Direct non-owning byte slices (`u8[:]`) referencing network ring buffers.
 - SWAR 64-bit word scanners and AVX2 vector primitives for delimiter searches.
-- Linear state machines for HTTP/1.1 chunking, HTTP/2 HPACK, HTTP/3 QPACK, and QUIC packet number decryption.
+- Linear state machines for HTTP/1.1 chunking, HTTP/2 HPACK, HTTP/3 QPACK, and
+  QUIC packet number decryption.
 
 ## Hardware test environment
 
-- **CPU**: AMD Ryzen 9 7950X (16 cores, 32 threads, 4.5 GHz base, 5.7 GHz boost) / Intel Core i9-14900K.
-- **RAM**: 64 GB DDR5-6000 CL30.
-- **OS**: Windows 11 Enterprise (Build 26100) / Ubuntu 24.04 LTS (Kernel 6.8).
-- **Toolchain**: Native Goose compiler with GCC 14.2 (`-O2 -march=native`), Clang 18.1.
-- **Load generators**: `wrk` with pipelining scripts (`tools/bench-vs-uwebsockets/pipeline.lua`) and native burst tester (`tools/bench-vs-uwebsockets/bench_burst.c`).
+| Component | Specification |
+| :--- | :--- |
+| CPU | AMD Ryzen 9 7950X (16 cores, 32 threads, 4.5 GHz base, 5.7 GHz boost) / Intel Core i9-14900K |
+| RAM | 64 GB DDR5-6000 CL30 |
+| OS | Windows 11 Enterprise (Build 26100) / Ubuntu 24.04 LTS (Kernel 6.8) |
+| Toolchain | Native Goose compiler with GCC 14.2 (`-O2 -march=native`), Clang 18.1 |
+| Load generators | `wrk` with pipelining scripts (`tools/bench-vs-uwebsockets/pipeline.lua`) and native burst tester (`tools/bench-vs-uwebsockets/bench_burst.c`) |
 
 ## HTTP/1.1 pipelined throughput (16 connections, 64 pipeline depth)
 
@@ -51,7 +57,8 @@ Memory is managed via:
 
 ## Microbenchmark wire latency budgets
 
-Verified on every CI run via [tests/lit/verify_wire_benchmarks.goose](file:///tests/lit/verify_wire_benchmarks.goose):
+Verified on every CI run via
+[tests/lit/verify_wire_benchmarks.goose](file:///tests/lit/verify_wire_benchmarks.goose):
 
 | Component / Function | Specification | Budget limit | Measured average | Allocations |
 | :--- | :--- | :--- | :--- | :--- |

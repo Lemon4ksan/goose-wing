@@ -1,6 +1,8 @@
 # goose-wing vs uWebSockets Benchmark Harness
 
-Reproducible Docker benchmark environment comparing **`goose-wing`** (written in pure Goose) and **`uWebSockets`** (written in C++ by uNetworking) under identical network, hardware, and kernel conditions.
+Reproducible Docker benchmark environment comparing **`goose-wing`** (written in
+pure Goose) and **`uWebSockets`** (written in C++ by uNetworking) under
+identical network, hardware, and kernel conditions.
 
 ## 1. Quick Start
 
@@ -13,13 +15,16 @@ docker compose up --build
 
 Once started, open **`http://localhost:8080`** in your browser.
 
-- **Port 8080**: Interactive Web Benchmark Console & Orchestrator
-- **Port 3001**: `goose-wing` Zero-Allocation HTTP/1.1 & WebSocket Server
-- **Port 3002**: `uWebSockets` C++ Server (`uWS::App`)
+| Port | Service |
+| :--- | :--- |
+| 8080 | Interactive Web Benchmark Console & Orchestrator |
+| 3001 | `goose-wing` Zero-Allocation HTTP/1.1 & WebSocket Server |
+| 3002 | `uWebSockets` C++ Server (`uWS::App`) |
 
 ### Automated Headless CLI Benchmark
 
-To run the automated test suite directly in terminal without a browser (ideal for CI/CD):
+To run the automated test suite directly in terminal without a browser (ideal
+for CI/CD):
 
 ```bash
 docker compose run --rm benchmark --cli
@@ -38,7 +43,8 @@ docker compose run --rm benchmark --cli
 
 ## 3. Empirical Reference Benchmarks
 
-Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on Linux x86_64 (Ubuntu 24.04 container, GCC -O3 -flto):
+Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on
+Linux x86_64 (Ubuntu 24.04 container, GCC -O3 -flto):
 
 ### Table 2. Benchmarks vs. uWebSockets
 
@@ -80,28 +86,41 @@ Conducted on an **Intel Core i5-12400F @ 4.4 GHz (6 P-Cores / 12 Threads)** on L
 
 ### 1. Zero-Heap Allocation Invariant (0 B malloc)
 
-- **`uWebSockets`**: Uses standard C++ dynamic memory (`std::string`, `uWS::HttpResponseData`, per-connection socket buffers). Under high concurrency (1k–10k connections), glibc's `ptmalloc` experiences thread arena lock contention, page fragmentation, and unbound RSS growth.
-- **`goose-wing`**: Allocates **0 bytes from the dynamic heap** during request handling. State machines, URL parameter maps (`ZeroAllocParams`), and header tokenizers execute on statically bounded compiler-managed data stacks.
+- **`uWebSockets`**: Uses standard C++ dynamic memory (`std::string`,
+  `uWS::HttpResponseData`, per-connection socket buffers). Under high
+  concurrency (1k–10k connections), glibc's `ptmalloc` experiences thread arena
+  lock contention, page fragmentation, and unbound RSS growth.
+- **`goose-wing`**: Allocates **0 bytes from the dynamic heap** during request
+  handling. State machines, URL parameter maps (`ZeroAllocParams`), and header
+  tokenizers execute on statically bounded compiler-managed data stacks.
 
 ### 2. Tail Latency Predictability (p99 / p99.9)
 
-- By eliminating runtime memory allocator locks, cache churn from dynamic pointers, and garbage collection pauses, `goose-wing` maintains sub-microsecond (**0.81 µs**) tail latency even under heavy pipelining.
+- By eliminating runtime memory allocator locks, cache churn from dynamic
+  pointers, and garbage collection pauses, `goose-wing` maintains
+  sub-microsecond (**0.81 µs**) tail latency even under heavy pipelining.
 
 ### 3. 64-bit SWAR Lexical Tokenizer
 
-- Instead of scanning HTTP request streams byte-by-byte with a traditional state machine, `goose-wing` checks 8 bytes per CPU instruction cycle via 64-bit SWAR (SIMD Within A Register) operations to scan CRLF boundaries, methods, and header colons.
+- Instead of scanning HTTP request streams byte-by-byte with a traditional state
+  machine, `goose-wing` checks 8 bytes per CPU instruction cycle via 64-bit SWAR
+  (SIMD Within A Register) operations to scan CRLF boundaries, methods, and
+  header colons.
 
 ### 4. Vectorized WebSocket Masking
 
-- RFC 6455 requires all client-to-server WebSocket frames to be masked with a 4-byte key. `goose-wing` implements an unrolled 64-bit SIMD/SWAR XOR loop that processes 64 bytes per iteration directly in-place on data stacks, avoiding intermediate buffer copies.
+- RFC 6455 requires all client-to-server WebSocket frames to be masked with a
+  4-byte key. `goose-wing` implements an unrolled 64-bit SIMD/SWAR XOR loop that
+  processes 64 bytes per iteration directly in-place on data stacks, avoiding
+  intermediate buffer copies.
 
 ### 5. Built-in Defense-in-Depth
 
 - `goose-wing` enforces wire-level defenses against:
-  - **CVE-2023-44487** (HTTP/2 Rapid Reset)
-  - **CONTINUATION Flood** attacks
-  - **RFC 9112 Section 6.1** Request Smuggling (TE.CL / CL.TE conflict detection)
-  - **Slowloris** socket tarpits via bounded nanosecond timer wheels.
+  - CVE-2023-44487 (HTTP/2 Rapid Reset)
+  - CONTINUATION Flood attacks
+  - RFC 9112 Section 6.1 Request Smuggling (TE.CL / CL.TE conflict detection)
+  - Slowloris socket tarpits via bounded nanosecond timer wheels.
 
 ## 5. Local Reproduction Without Docker
 

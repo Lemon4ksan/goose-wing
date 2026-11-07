@@ -11,6 +11,7 @@ import fmt.emit;
 
 let CLOSERS = ")]\"'*_";
 let OPENERS = "\"'([*_`!";
+let MAX_LINE_COLS = 80;
 
 struct Flow { s: u8[>..]&, map: i64[>..]&, nl: bool[>..]&, safe: Span[>..]&, breaks: i64[>..]&, keep: bool, from: i64 = 0 }
 
@@ -22,7 +23,9 @@ fn collect_safe(d: Doc&, flow: Flow&, para: i64) {
     while n >= 0 {
         let t = d.nodes[n].content;
         let k = d.nodes[n].kind;
-        if k == Kind.Text && t.at >= c.at && t.at + t.len <= c.at + c.len { flow.safe.push(t); }
+        if k == Kind.Text && t.at >= c.at && t.at + t.len <= c.at + c.len {
+            flow.safe.push(t);
+        }
         if k == Kind.SoftBreak || k == Kind.LineBreak { flow.breaks.push(t.at); }
         n = next_in_order(d, n, para);
     }
@@ -64,20 +67,71 @@ fn boundary(flow: Flow&, k: i64) -> i64 {
     return w;
 }
 
+fn can_wrap_at(flow: Flow&, k: i64) -> i64 {
+    let s = flow.s;
+    guard is_blank_char(s[k]) else { return -1; }
+    var w = k;
+    while w < s.len && is_blank_char(s[w]) { w++; }
+    guard w < s.len && !starts_block(s[w..]) else { return -1; }
+    guard !starts_with(s[w..], "#") && !starts_with(s[w..], ">") && !starts_with(s[w..], "|") else { return -1; }
+    guard !(s[w] == '-' && (w + 1 == s.len || is_blank_char(s[w + 1]) || starts_with(s[w..], "--"))) else { return -1; }
+    guard !(s[w] == '+' && (w + 1 == s.len || is_blank_char(s[w + 1]))) else { return -1; }
+    let joined = any(flow.nl[k..w]) { it };
+    guard joined || (in_safe(flow, flow.map[k]) && in_safe(flow, flow.map[w - 1])) else { return -1; }
+    return w;
+}
+
+fn col_count(s: const u8[:]) -> i64 {
+    var n = 0;
+    for c in s { if (c & 0xC0) != 0x80 { n++; } }
+    return n;
+}
+
 fn put_flow(f: Fmt&, flow: Flow&, suffix: const u8[:]) {
+    if flow.keep {
+        put_line(f, str(flow.s[flow.from..], suffix));
+        flow.from = flow.s.len;
+        return;
+    }
     var start = flow.from;
-    var k = if flow.keep { flow.s.len } else { flow.from };
-    while k < flow.s.len {
-        let w = boundary(flow, k);
-        if w >= 0 {
-            put_line(f, trim_space_end(flow.s[start..w]));
-            start = w;
-            k = w;
-        } else {
+    while start < flow.s.len {
+        let prefix = line_prefix_width(f);
+        let rem = trim_space_end(flow.s[start..]);
+        let total = prefix + col_count(rem) + col_count(suffix);
+        if total <= MAX_LINE_COLS {
+            put_line(f, str(rem, suffix));
+            break;
+        }
+        var best_k = -1;
+        var best_w = -1;
+        var first_k = -1;
+        var first_w = -1;
+        var cols = prefix;
+        var k = start;
+        while k < flow.s.len {
+            let w = can_wrap_at(flow, k);
+            if w >= 0 {
+                if cols <= MAX_LINE_COLS {
+                    best_k = k;
+                    best_w = w;
+                } else if first_k < 0 {
+                    first_k = k;
+                    first_w = w;
+                    break;
+                }
+            }
+            if (flow.s[k] & 0xC0) != 0x80 { cols++; }
             k++;
         }
+        let split_k = if best_k >= 0 { best_k } else { first_k };
+        let split_w = if best_k >= 0 { best_w } else { first_w };
+        if split_k < 0 {
+            put_line(f, str(rem, suffix));
+            break;
+        }
+        put_line(f, trim_space_end(flow.s[start..split_k]));
+        start = split_w;
     }
-    put_line(f, str(flow.s[start..], suffix));
     flow.from = flow.s.len;
 }
 

@@ -103,17 +103,17 @@ struct wing_xdp_desc {
 #define WING_XSK_MAX_SOCKETS 16
 
 typedef struct {
-    void     *map_ptr;
-    size_t    map_sz;
+    void *map_ptr;
+    size_t map_sz;
     uint32_t *producer;
     uint32_t *consumer;
-    void     *descs;
-    uint32_t  mask;
+    void *descs;
+    uint32_t mask;
 } wing_xsk_ring_view;
 
 typedef struct {
-    int64_t            xsk_fd;
-    int32_t            mapped;
+    int64_t xsk_fd;
+    int32_t mapped;
     wing_xsk_ring_view fill;
     wing_xsk_ring_view comp;
     wing_xsk_ring_view rx;
@@ -180,9 +180,12 @@ int32_t wing_af_xdp_mmap_rings(int64_t xsk_fd, uint32_t entries) {
     ctx->xsk_fd = xsk_fd;
 
     if (map_one_xsk_ring((int)xsk_fd, entries, sizeof(uint64_t), XDP_UMEM_PGOFF_FILL_RING, &off.fr, &ctx->fill) < 0 ||
-        map_one_xsk_ring((int)xsk_fd, entries, sizeof(uint64_t), XDP_UMEM_PGOFF_COMPLETION_RING, &off.cr, &ctx->comp) < 0 ||
-        map_one_xsk_ring((int)xsk_fd, entries, sizeof(struct wing_xdp_desc), XDP_PGOFF_RX_RING, &off.rx, &ctx->rx) < 0 ||
-        map_one_xsk_ring((int)xsk_fd, entries, sizeof(struct wing_xdp_desc), XDP_PGOFF_TX_RING, &off.tx, &ctx->tx) < 0) {
+        map_one_xsk_ring((int)xsk_fd, entries, sizeof(uint64_t), XDP_UMEM_PGOFF_COMPLETION_RING, &off.cr, &ctx->comp) <
+            0 ||
+        map_one_xsk_ring((int)xsk_fd, entries, sizeof(struct wing_xdp_desc), XDP_PGOFF_RX_RING, &off.rx, &ctx->rx) <
+            0 ||
+        map_one_xsk_ring((int)xsk_fd, entries, sizeof(struct wing_xdp_desc), XDP_PGOFF_TX_RING, &off.tx, &ctx->tx) <
+            0) {
         unmap_xsk_ring(&ctx->fill);
         unmap_xsk_ring(&ctx->comp);
         unmap_xsk_ring(&ctx->rx);

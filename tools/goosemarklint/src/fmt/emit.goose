@@ -72,6 +72,21 @@ fn put_spaced(f: Fmt&, pending: i64, s: const u8[:]) {
     f.out.append(s);
 }
 
+fn line_prefix_width(f: Fmt&) -> i64 {
+    var pending = 0;
+    for i in f.depth {
+        let l = f.levels[i];
+        if l.quote {
+            pending += 2;
+        } else if l.used {
+            pending += l.width;
+        } else {
+            pending += l.marker.len + 1;
+        }
+    }
+    return pending;
+}
+
 fn put_line(f: Fmt&, s: const u8[:]) {
     var pending = 0;
     for i in f.depth {

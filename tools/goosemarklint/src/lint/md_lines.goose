@@ -9,6 +9,7 @@ import lint.md_base;
 
 let BR_SPACES = 2;
 let MAX_BLANK_LINES = 1;
+let MAX_LINE_LENGTH = 80;
 
 fn check_trailing_spaces(L: Lint&, ln: i64) {
     guard L.kinds[ln] != LINE_CODE;
@@ -118,6 +119,50 @@ fn in_code_span(t: const u8[:], at: i64) -> bool {
     return ticks % 2 == 1;
 }
 
+fn has_breakable_space(t: const u8[:]) -> bool {
+    var i = 0;
+    while i < t.len {
+        let c = t[i];
+        if c == ' ' || c == '\t' || c == '>' {
+            i++;
+        } else if (c == '-' || c == '*' || c == '+') && i + 1 < t.len && (t[i + 1] == ' ' || t[i + 1] == '\t') {
+            i += 2;
+        } else if c >= '0' && c <= '9' {
+            var j = i;
+            while j < t.len && t[j] >= '0' && t[j] <= '9' { j++; }
+            if j < t.len && (t[j] == '.' || t[j] == ')') && j + 1 < t.len && (t[j + 1] == ' ' || t[j + 1] == '\t') {
+                i = j + 2;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    let body = trim_end(t[i..]);
+    var ticks = 0;
+    var in_dest = false;
+    for ch, idx in body {
+        if ch == '`' { ticks++; }
+        if ticks % 2 == 0 {
+            if idx > 0 && body[idx - 1] == ']' && ch == '(' { in_dest = true; }
+            if in_dest && ch == ')' && (idx == 0 || body[idx - 1] != '\\') { in_dest = false; }
+            if !in_dest && (ch == ' ' || ch == '\t') { return true; }
+        }
+    }
+    return false;
+}
+
+fn check_line_length(L: Lint&, ln: i64) {
+    guard L.kinds[ln] == LINE_TEXT;
+    let t = trim_end(line_text(L, ln));
+    guard !starts_with(trim_start(t), "<!--") && !starts_with(trim_start(t), "[");
+    var cols = 0;
+    for c in t { if (c & 0xC0) != 0x80 { cols++; } }
+    guard cols > MAX_LINE_LENGTH && has_breakable_space(t);
+    report_at(L, ln, MAX_LINE_LENGTH + 1, "MD013", str("line length ", cols, " exceeds ", MAX_LINE_LENGTH, " columns: wrap the line"));
+}
+
 fn check_final_newline(L: Lint&) {
     let n = last_line(L);
     guard !blank_at(L, n);
@@ -133,6 +178,7 @@ fn check_lines(L: Lint&) {
         check_missing_space_atx(L, ln);
         check_closed_atx_space(L, ln);
         check_reversed_links(L, ln);
+        check_line_length(L, ln);
     }
     check_blank_runs(L);
     check_final_newline(L);
