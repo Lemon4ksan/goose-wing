@@ -35,10 +35,48 @@ enum QuicFrameType {
     PathChallenge,
     PathResponse,
     HandshakeDone,
+    ImmediateAck,
     ConnectionClose,
     ConnectionCloseApp,
     Datagram,
+    AckFrequency,
     Unknown,
+}
+
+// draft-ietf-quic-ack-frequency Section 4.1: ACK_FREQUENCY Frame (0xaf)
+struct QuicAckFrequencyFrame {
+    seq:                      u64 = 0,
+    ack_eliciting_threshold:  u64 = 1,
+    request_max_ack_delay_us: u64 = 0,
+    reordering_threshold:     u64 = 0,
+}
+
+// RFC 9000 Section 18.2 & RFC 9368 Section 3: QUIC Transport Parameters
+struct QuicTransportParams {
+    original_destination_connection_id:  u8[..20] = [],
+    max_idle_timeout:                    u64      = 0,
+    stateless_reset_token:               u8[16]   = [0; 16],
+    has_stateless_reset_token:           bool     = false,
+    max_udp_payload_size:                u64      = 65527,
+    initial_max_data:                    u64      = 0,
+    initial_max_stream_data_bidi_local:  u64      = 0,
+    initial_max_stream_data_bidi_remote: u64      = 0,
+    initial_max_stream_data_uni:         u64      = 0,
+    initial_max_streams_bidi:            u64      = 0,
+    initial_max_streams_uni:             u64      = 0,
+    ack_delay_exponent:                  u64      = 3,
+    max_ack_delay:                       u64      = 25,
+    disable_active_migration:            bool     = false,
+    preferred_address:                   u8[..64] = [],
+    active_connection_id_limit:          u64      = 2,
+    initial_source_connection_id:        u8[..20] = [],
+    retry_source_connection_id:          u8[..20] = [],
+    chosen_version:                      u32      = 0,
+    available_versions:                  u32[..8] = [],
+    max_datagram_frame_size:             u64      = 0,
+    grease_quic_bit:                     bool     = false,
+    min_ack_delay_us:                    u64      = 0,
+    seen_mask:                           u64      = 0,
 }
 
 // RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload structure
@@ -412,6 +450,28 @@ fn encode_path_response_frame<B>(out: B&, data: const u8[8]&) -> bool {
 // Encodes a HANDSHAKE_DONE frame (0x1E) (RFC 9000 Section 19.20).
 fn encode_handshake_done_frame<B>(out: B&) -> bool {
     guard quic_encode_varint(out, rfc::QUIC_FRAME_HANDSHAKE_DONE) else { return false; }
+    return true;
+}
+
+// Encodes an ACK_FREQUENCY frame (0xAF) (draft-ietf-quic-ack-frequency Section 4.1).
+fn encode_ack_frequency_frame<B>(out: B&, f: const QuicAckFrequencyFrame&) -> bool {
+    guard f.ack_eliciting_threshold >= 1 && f.ack_eliciting_threshold <= rfc::QUIC_VARINT_MAX else {
+        return false;
+    }
+    guard f.seq <= rfc::QUIC_VARINT_MAX
+        && f.request_max_ack_delay_us <= rfc::QUIC_VARINT_MAX
+        && f.reordering_threshold <= rfc::QUIC_VARINT_MAX else {
+        return false;
+    }
+    let orig_len = out.len;
+    guard quic_encode_varint(out, rfc::QUIC_FRAME_ACK_FREQUENCY)
+        && quic_encode_varint(out, f.seq)
+        && quic_encode_varint(out, f.ack_eliciting_threshold)
+        && quic_encode_varint(out, f.request_max_ack_delay_us)
+        && quic_encode_varint(out, f.reordering_threshold) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
     return true;
 }
 
@@ -822,6 +882,53 @@ inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> QuicPathFra
     return frame, true;
 }
 
+// Decodes an ACK_FREQUENCY frame payload (draft-ietf-quic-ack-frequency Section 4.1) from a ByteCursor.
+// Rejects `ack_eliciting_threshold == 0` with `false` (FRAME_ENCODING_ERROR).
+//
+// Example:
+//   c.buf = [0x01, 0x02, 0x40, 0x64, 0x03] (seq=1, threshold=2, max_delay=100, reorder=3)
+//   returns: true, out.seq = 1, out.ack_eliciting_threshold = 2, out.request_max_ack_delay_us = 100
+fn decode_ack_frequency_frame(c: core::ByteCursor&, out: QuicAckFrequencyFrame&) -> bool {
+    var idx: i64 = 0;
+    let seq, ok1 = quic_decode_varint_cursor(c.buf, idx);
+    guard ok1 else { return false; }
+    let thresh, ok2 = quic_decode_varint_cursor(c.buf, idx);
+    guard ok2 && thresh >= 1 else { return false; }
+    let max_delay, ok3 = quic_decode_varint_cursor(c.buf, idx);
+    guard ok3 else { return false; }
+    let reorder, ok4 = quic_decode_varint_cursor(c.buf, idx);
+    guard ok4 else { return false; }
+    c.buf = c.buf[idx..];
+    out = QuicAckFrequencyFrame {
+        seq:                      seq,
+        ack_eliciting_threshold:  thresh,
+        request_max_ack_delay_us: max_delay,
+        reordering_threshold:     reorder,
+    };
+    return true;
+}
+
+// Decodes an ACK_FREQUENCY frame (0xAF) into QuicFrame using an in-out index cursor.
+//
+// Example:
+//   src = [0x01, 0x02, 0x40, 0x64, 0x03], idx = 0
+//   returns: QuicFrame { frame_type: AckFrequency, stream_id: 1, length: 2, max_data: 100, offset: 3 }, ok = true
+inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let seq, ok1 = quic_decode_varint_cursor(src, idx);
+    let thresh, ok2 = quic_decode_varint_cursor(src, idx);
+    let max_delay, ok3 = quic_decode_varint_cursor(src, idx);
+    let reorder, ok4 = quic_decode_varint_cursor(src, idx);
+    guard ok1 && ok2 && ok3 && ok4 && thresh >= 1 else { return QuicFrame { .. }, false; }
+    return QuicFrame {
+        frame_type: QuicFrameType.AckFrequency,
+        raw_type:   rfc::QUIC_FRAME_ACK_FREQUENCY,
+        stream_id:  seq,
+        length:     thresh,
+        max_data:   max_delay,
+        offset:     reorder,
+    }, true;
+}
+
 // ---- Frame Demuxer Dispatch Subroutines ----------------------------------
 
 // Demuxes MAX_DATA (0x10) or MAX_STREAM_DATA (0x11) frame.
@@ -1053,7 +1160,7 @@ inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame
     }, true;
 }
 
-// Dispatches connection management frames (0x1A - 0x1E).
+// Dispatches connection management frames (0x1A - 0x1F).
 //
 // Example:
 //   src = [], idx = 0, ftype = QUIC_FRAME_HANDSHAKE_DONE (0x1E)
@@ -1061,6 +1168,9 @@ inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame
 fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
     if ftype == rfc::QUIC_FRAME_HANDSHAKE_DONE {
         return QuicFrame { frame_type: QuicFrameType.HandshakeDone, raw_type: ftype }, true;
+    }
+    if ftype == rfc::QUIC_FRAME_IMMEDIATE_ACK {
+        return QuicFrame { frame_type: QuicFrameType.ImmediateAck, raw_type: ftype }, true;
     }
     if ftype == rfc::QUIC_FRAME_PATH_CHALLENGE || ftype == rfc::QUIC_FRAME_PATH_RESPONSE {
         return demux_path_frame(src, idx, ftype);
@@ -1106,10 +1216,12 @@ fn decode_quic_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
         frame, ok = demux_streams_limit_frame(src, idx, ftype);
     } else if ftype == rfc::QUIC_FRAME_DATA_BLOCKED || ftype == rfc::QUIC_FRAME_STREAM_DATA_BLOCKED {
         frame, ok = demux_blocked_frame(src, idx, ftype);
-    } else if ftype <= 0x1E {
+    } else if ftype <= rfc::QUIC_FRAME_IMMEDIATE_ACK {
         frame, ok = demux_session_frame(src, idx, ftype);
     } else if ftype == rfc::QUIC_FRAME_DATAGRAM || ftype == rfc::QUIC_FRAME_DATAGRAM_LEN {
         frame, ok = decode_datagram_frame(src, idx, ftype);
+    } else if ftype == rfc::QUIC_FRAME_ACK_FREQUENCY {
+        frame, ok = demux_ack_frequency_frame(src, idx);
     } else {
         frame = QuicFrame { raw_type: ftype, frame_type: QuicFrameType.Unknown };
         ok = false;
@@ -1137,4 +1249,486 @@ fn decode_quic_frame(src: const u8[:], offset: u64) -> QuicFrame, u64, bool {
     let frame, ok = decode_quic_frame_cursor(src, idx);
     guard ok else { return frame, offset, false; }
     return frame, idx as u64, true;
+}
+
+// ---- QUIC Transport Parameters Codec (RFC 9000 §18, RFC 9368 §3) ----------
+
+const QUIC_TP_BIT_ODCID:            u64 = (1 as u64) << 0;
+const QUIC_TP_BIT_IDLE_TIMEOUT:     u64 = (1 as u64) << 1;
+const QUIC_TP_BIT_SR_TOKEN:         u64 = (1 as u64) << 2;
+const QUIC_TP_BIT_MAX_UDP_PAYLOAD:  u64 = (1 as u64) << 3;
+const QUIC_TP_BIT_MAX_DATA:         u64 = (1 as u64) << 4;
+const QUIC_TP_BIT_MAX_SD_BIDI_LOC:  u64 = (1 as u64) << 5;
+const QUIC_TP_BIT_MAX_SD_BIDI_REM:  u64 = (1 as u64) << 6;
+const QUIC_TP_BIT_MAX_SD_UNI:       u64 = (1 as u64) << 7;
+const QUIC_TP_BIT_MAX_STREAMS_BIDI: u64 = (1 as u64) << 8;
+const QUIC_TP_BIT_MAX_STREAMS_UNI:  u64 = (1 as u64) << 9;
+const QUIC_TP_BIT_ACK_DELAY_EXP:    u64 = (1 as u64) << 10;
+const QUIC_TP_BIT_MAX_ACK_DELAY:    u64 = (1 as u64) << 11;
+const QUIC_TP_BIT_DISABLE_MIG:      u64 = (1 as u64) << 12;
+const QUIC_TP_BIT_PREF_ADDR:        u64 = (1 as u64) << 13;
+const QUIC_TP_BIT_ACTIVE_CID_LIM:   u64 = (1 as u64) << 14;
+const QUIC_TP_BIT_ISCID:            u64 = (1 as u64) << 15;
+const QUIC_TP_BIT_RSCID:            u64 = (1 as u64) << 16;
+const QUIC_TP_BIT_VERSION_INFO:     u64 = (1 as u64) << 17;
+const QUIC_TP_BIT_MAX_DATAGRAM:     u64 = (1 as u64) << 18;
+const QUIC_TP_BIT_GREASE_QUIC_BIT:  u64 = (1 as u64) << 19;
+const QUIC_TP_BIT_MIN_ACK_DELAY:    u64 = (1 as u64) << 20;
+
+// Appends a varint-valued transport parameter `(id, varint_len(val), val)` into `out`.
+fn encode_tp_varint<B>(out: B&, id: u64, val: u64) -> bool {
+    var vbuf: u8[..8] = [];
+    guard quic_encode_varint(vbuf, val) else { return false; }
+    guard quic_encode_varint(out, id)
+        && quic_encode_varint(out, vbuf.len as u64)
+        && out.try_append(vbuf[..]) else {
+        return false;
+    }
+    return true;
+}
+
+// Appends a raw byte-slice transport parameter `(id, bytes.len, bytes)` into `out`.
+fn encode_tp_bytes<B>(out: B&, id: u64, bytes: const u8[:]) -> bool {
+    guard quic_encode_varint(out, id)
+        && quic_encode_varint(out, bytes.len as u64)
+        && out.try_append(bytes) else {
+        return false;
+    }
+    return true;
+}
+
+// Encodes connection-level and stream data flow-control transport parameters (`0x01`, `0x03..0x07`).
+fn encode_tp_flow_data<B>(out: B&, tp: const QuicTransportParams&) -> bool {
+    if tp.max_idle_timeout > 0 {
+        guard encode_tp_varint(out, rfc::QUIC_TP_MAX_IDLE_TIMEOUT, tp.max_idle_timeout) else { return false; }
+    }
+    if tp.max_udp_payload_size != 65527 {
+        guard tp.max_udp_payload_size >= rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN else { return false; }
+        guard encode_tp_varint(out, rfc::QUIC_TP_MAX_UDP_PAYLOAD_SIZE, tp.max_udp_payload_size) else { return false; }
+    }
+    if tp.initial_max_data > 0 {
+        guard encode_tp_varint(out, rfc::QUIC_TP_INITIAL_MAX_DATA, tp.initial_max_data) else { return false; }
+    }
+    if tp.initial_max_stream_data_bidi_local > 0 {
+        let id = rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL;
+        guard encode_tp_varint(out, id, tp.initial_max_stream_data_bidi_local) else { return false; }
+    }
+    if tp.initial_max_stream_data_bidi_remote > 0 {
+        let id = rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE;
+        guard encode_tp_varint(out, id, tp.initial_max_stream_data_bidi_remote) else { return false; }
+    }
+    if tp.initial_max_stream_data_uni > 0 {
+        let id = rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI;
+        guard encode_tp_varint(out, id, tp.initial_max_stream_data_uni) else { return false; }
+    }
+    return true;
+}
+
+// Encodes stream-count and ACK timing transport parameters (`0x08..0x0c`).
+fn encode_tp_streams_and_ack<B>(out: B&, tp: const QuicTransportParams&) -> bool {
+    if tp.initial_max_streams_bidi > 0 {
+        guard tp.initial_max_streams_bidi <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
+        let id = rfc::QUIC_TP_INITIAL_MAX_STREAMS_BIDI;
+        guard encode_tp_varint(out, id, tp.initial_max_streams_bidi) else { return false; }
+    }
+    if tp.initial_max_streams_uni > 0 {
+        guard tp.initial_max_streams_uni <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
+        let id = rfc::QUIC_TP_INITIAL_MAX_STREAMS_UNI;
+        guard encode_tp_varint(out, id, tp.initial_max_streams_uni) else { return false; }
+    }
+    if tp.ack_delay_exponent != 3 {
+        guard tp.ack_delay_exponent <= 20 else { return false; }
+        guard encode_tp_varint(out, rfc::QUIC_TP_ACK_DELAY_EXPONENT, tp.ack_delay_exponent) else { return false; }
+    }
+    if tp.max_ack_delay != 25 {
+        guard tp.max_ack_delay < 16384 else { return false; }
+        guard encode_tp_varint(out, rfc::QUIC_TP_MAX_ACK_DELAY, tp.max_ack_delay) else { return false; }
+    }
+    if tp.disable_active_migration {
+        guard encode_tp_bytes(out, rfc::QUIC_TP_DISABLE_ACTIVE_MIGRATION, "") else { return false; }
+    }
+    return true;
+}
+
+// Encodes CID limit and extension transport parameters (`0x0e`, `0x20`, `0x2ab2`, `0xde1a`).
+fn encode_tp_extensions<B>(out: B&, tp: const QuicTransportParams&) -> bool {
+    if tp.active_connection_id_limit != 2 {
+        guard tp.active_connection_id_limit >= 2 else { return false; }
+        let id = rfc::QUIC_TP_ACTIVE_CONNECTION_ID_LIMIT;
+        guard encode_tp_varint(out, id, tp.active_connection_id_limit) else { return false; }
+    }
+    if tp.max_datagram_frame_size > 0 {
+        let id = rfc::QUIC_TP_MAX_DATAGRAM_FRAME_SIZE;
+        guard encode_tp_varint(out, id, tp.max_datagram_frame_size) else { return false; }
+    }
+    if tp.grease_quic_bit {
+        guard encode_tp_bytes(out, rfc::QUIC_TP_GREASE_QUIC_BIT, "") else { return false; }
+    }
+    if tp.min_ack_delay_us > 0 {
+        guard encode_tp_varint(out, rfc::QUIC_TP_MIN_ACK_DELAY, tp.min_ack_delay_us) else { return false; }
+    }
+    return true;
+}
+
+// Encodes RFC 9368 `version_information` (`0x11`) transport parameter into `out`.
+fn encode_tp_version_info<B>(out: B&, tp: const QuicTransportParams&) -> bool {
+    guard tp.chosen_version != 0 else { return true; }
+    var vbuf: u8[..40] = [];
+    core::append_u32_be(vbuf, tp.chosen_version);
+    for i in tp.available_versions.len {
+        let av = tp.available_versions[i];
+        guard av != 0 else { return false; }
+        core::append_u32_be(vbuf, av);
+    }
+    return encode_tp_bytes(out, rfc::QUIC_TP_VERSION_INFORMATION, vbuf[..]);
+}
+
+// Encodes server-only and CID transport parameters into `out`.
+fn encode_tp_cids_and_server<B>(out: B&, tp: const QuicTransportParams&, is_server: bool) -> bool {
+    if !is_server {
+        return !tp.has_stateless_reset_token
+            && tp.preferred_address.len == 0
+            && tp.original_destination_connection_id.len == 0
+            && tp.retry_source_connection_id.len == 0;
+    }
+    if tp.original_destination_connection_id.len > 0 {
+        let id = rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID;
+        guard encode_tp_bytes(out, id, tp.original_destination_connection_id[..]) else { return false; }
+    }
+    if tp.has_stateless_reset_token {
+        guard encode_tp_bytes(out, rfc::QUIC_TP_STATELESS_RESET_TOKEN, tp.stateless_reset_token[..]) else {
+            return false;
+        }
+    }
+    if tp.preferred_address.len > 0 {
+        guard encode_tp_bytes(out, rfc::QUIC_TP_PREFERRED_ADDRESS, tp.preferred_address[..]) else {
+            return false;
+        }
+    }
+    if tp.retry_source_connection_id.len > 0 {
+        let id = rfc::QUIC_TP_RETRY_SOURCE_CONNECTION_ID;
+        guard encode_tp_bytes(out, id, tp.retry_source_connection_id[..]) else { return false; }
+    }
+    return true;
+}
+
+// Encodes QUIC transport parameters (RFC 9000 §18, RFC 9368 §3) into `out`.
+fn encode_quic_transport_params<B>(
+    out:       B&,
+    tp:        const QuicTransportParams&,
+    is_server: bool,
+) -> bool {
+    let orig_len = out.len;
+    guard encode_tp_cids_and_server(out, tp, is_server) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
+    if tp.initial_source_connection_id.len > 0 {
+        let id = rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID;
+        guard encode_tp_bytes(out, id, tp.initial_source_connection_id[..]) else {
+            out.resize(orig_len, 0);
+            return false;
+        }
+    }
+    guard encode_tp_flow_data(out, tp)
+        && encode_tp_streams_and_ack(out, tp)
+        && encode_tp_extensions(out, tp)
+        && encode_tp_version_info(out, tp) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
+    return true;
+}
+
+// Decodes a single exact-fitting varint from a transport parameter value slice.
+//
+// Example:
+//   val = [0x44, 0xB0] (varint 1200)
+//   returns: v = 1200, ok = true
+inline fn decode_tp_exact_varint(val: const u8[:]) -> u64, bool {
+    var v_idx: i64 = 0;
+    let v, ok = quic_decode_varint_cursor(val, v_idx);
+    guard ok && v_idx == val.len else { return 0, false; }
+    return v, true;
+}
+
+// Marks `bit` in `seen_mask`, returning `false` on duplicate transport parameter ID.
+inline fn mark_tp_seen(seen_mask: u64&, bit: u64) -> bool {
+    guard (seen_mask & bit) == 0 else { return false; }
+    seen_mask = seen_mask | bit;
+    return true;
+}
+
+// Decodes RFC 9368 `version_information` (`0x11`) transport parameter value slice.
+//
+// Example:
+//   val = [0x00, 0x00, 0x00, 0x01, 0x6b, 0x33, 0x43, 0xcf]
+//   returns: true, tp.chosen_version = 1, tp.available_versions = [0x6b3343cf]
+//
+// crap:trusted-bounds
+inline fn decode_tp_version_info(val: const u8[:], tp: QuicTransportParams&) -> bool {
+    guard val.len >= 4 && (val.len & 3) == 0 else { return false; }
+    var cur = core::cursor_from(val);
+    let chosen, ok_c = core::read_u32(cur);
+    guard ok_c && chosen != 0 else { return false; }
+    tp.chosen_version = chosen;
+    tp.available_versions.clear();
+    while cur.buf.len >= 4 {
+        let av, ok_a = core::read_u32(cur);
+        guard ok_a && av != 0 else { return false; }
+        guard tp.available_versions.len < tp.available_versions.cap else { return false; }
+        tp.available_versions.push(av);
+    }
+    return true;
+}
+
+// Validates RFC 9000 §18.2 `preferred_address` (`0x0d`) wire structure and copies into `tp`.
+//
+// Example:
+//   val = [4B ipv4, 2B port, 16B ipv6, 2B port, cid_len=4, 1, 2, 3, 4, 16B reset_token]
+//   returns: true, tp.preferred_address = val
+//
+// crap:trusted-bounds
+inline fn decode_tp_preferred_addr(val: const u8[:], tp: QuicTransportParams&) -> bool {
+    var cur = core::cursor_from(val);
+    let _, ok_hdr = core::read_bytes(cur, 24);
+    let cid_slice, ok_cid = core::read_u8_prefixed(cur);
+    let _, ok_tok = core::read_bytes(cur, 16);
+    guard ok_hdr && ok_cid && ok_tok && cur.buf.len == 0 else { return false; }
+    guard cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
+    return tp.preferred_address.try_set(val);
+}
+
+// Decodes connection and stream data flow-control parameters (`0x01`, `0x03..0x06`).
+//
+// Example:
+//   id = 0x03 (max_udp_payload_size), val = [0x45, 0xDC] (1500)
+//   returns: true, tp.max_udp_payload_size = 1500
+fn decode_tp_flow_data(id: u64, v: u64, tp: QuicTransportParams&) -> bool {
+    if id == rfc::QUIC_TP_MAX_IDLE_TIMEOUT {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_IDLE_TIMEOUT) else { return false; }
+        tp.max_idle_timeout = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_MAX_UDP_PAYLOAD_SIZE {
+        guard v >= rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN else { return false; }
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_UDP_PAYLOAD) else { return false; }
+        tp.max_udp_payload_size = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_DATA {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_DATA) else { return false; }
+        tp.initial_max_data = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_SD_BIDI_LOC) else { return false; }
+        tp.initial_max_stream_data_bidi_local = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_SD_BIDI_REM) else { return false; }
+        tp.initial_max_stream_data_bidi_remote = v;
+        return true;
+    }
+    return false;
+}
+
+// Decodes unidirectional stream data and stream count transport parameters (`0x07..0x09`).
+//
+// Example:
+//   id = 0x08 (initial_max_streams_bidi), val = [0x40, 0x64] (100)
+//   returns: true, tp.initial_max_streams_bidi = 100
+fn decode_tp_flow_param(id: u64, val: const u8[:], tp: QuicTransportParams&) -> bool {
+    let v, ok = decode_tp_exact_varint(val);
+    guard ok else { return false; }
+    if id <= rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE {
+        return decode_tp_flow_data(id, v, tp);
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_SD_UNI) else { return false; }
+        tp.initial_max_stream_data_uni = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_STREAMS_BIDI {
+        guard v <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_STREAMS_BIDI) else { return false; }
+        tp.initial_max_streams_bidi = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_INITIAL_MAX_STREAMS_UNI {
+        guard v <= rfc::QUIC_MAX_STREAMS_LIMIT else { return false; }
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_STREAMS_UNI) else { return false; }
+        tp.initial_max_streams_uni = v;
+        return true;
+    }
+    return false;
+}
+
+// Copies a 16-byte stateless reset token slice into `tp`.
+//
+// crap:trusted-bounds
+inline fn set_tp_stateless_reset_token(val: const u8[:], tp: QuicTransportParams&) -> bool {
+    guard val.len == 16 else { return false; }
+    for i in 16 {
+        tp.stateless_reset_token[i] = val[i];
+    }
+    tp.has_stateless_reset_token = true;
+    return true;
+}
+
+// Decodes server-only and CID transport parameters (`0x00`, `0x02`, `0x0d`, `0x0f`, `0x10`).
+//
+// Example:
+//   id = 0x0f (initial_source_connection_id), val = [1, 2, 3, 4], is_server = true
+//   returns: true, tp.initial_source_connection_id = [1, 2, 3, 4]
+fn decode_tp_cid_or_server_param(
+    id:        u64,
+    val:       const u8[:],
+    is_server: bool,
+    tp:        QuicTransportParams&,
+) -> bool {
+    if id == rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ISCID) else { return false; }
+        return tp.initial_source_connection_id.try_set(val);
+    }
+    guard is_server else { return false; }
+    if id == rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ODCID) else { return false; }
+        return tp.original_destination_connection_id.try_set(val);
+    }
+    if id == rfc::QUIC_TP_STATELESS_RESET_TOKEN {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_SR_TOKEN) else { return false; }
+        return set_tp_stateless_reset_token(val, tp);
+    }
+    if id == rfc::QUIC_TP_PREFERRED_ADDRESS {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_PREF_ADDR) else { return false; }
+        return decode_tp_preferred_addr(val, tp);
+    }
+    if id == rfc::QUIC_TP_RETRY_SOURCE_CONNECTION_ID {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_RSCID) else { return false; }
+        return tp.retry_source_connection_id.try_set(val);
+    }
+    return false;
+}
+
+// Decodes standard ACK timing and migration transport parameters (`0x0a..0x0c`, `0x0e`).
+//
+// Example:
+//   id = 0x0a (ack_delay_exponent), val = [0x04]
+//   returns: true, tp.ack_delay_exponent = 4
+fn decode_tp_ack_and_mig(id: u64, val: const u8[:], tp: QuicTransportParams&) -> bool {
+    if id == rfc::QUIC_TP_DISABLE_ACTIVE_MIGRATION {
+        guard val.len == 0 && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_DISABLE_MIG) else { return false; }
+        tp.disable_active_migration = true;
+        return true;
+    }
+    let v, ok = decode_tp_exact_varint(val);
+    guard ok else { return false; }
+    if id == rfc::QUIC_TP_ACK_DELAY_EXPONENT {
+        guard v <= 20 && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ACK_DELAY_EXP) else { return false; }
+        tp.ack_delay_exponent = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_MAX_ACK_DELAY {
+        guard v < 16384 && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_ACK_DELAY) else { return false; }
+        tp.max_ack_delay = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_ACTIVE_CONNECTION_ID_LIMIT {
+        guard v >= 2 && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ACTIVE_CID_LIM) else { return false; }
+        tp.active_connection_id_limit = v;
+        return true;
+    }
+    return false;
+}
+
+// Decodes extension transport parameters (`0x11`, `0x20`, `0x2ab2`, `0xde1a`).
+//
+// Example:
+//   id = 0x2ab2 (grease_quic_bit), val = []
+//   returns: true, tp.grease_quic_bit = true
+fn decode_tp_ext_param(id: u64, val: const u8[:], tp: QuicTransportParams&) -> bool {
+    if id <= rfc::QUIC_TP_ACTIVE_CONNECTION_ID_LIMIT {
+        return decode_tp_ack_and_mig(id, val, tp);
+    }
+    if id == rfc::QUIC_TP_VERSION_INFORMATION {
+        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_VERSION_INFO) else { return false; }
+        return decode_tp_version_info(val, tp);
+    }
+    if id == rfc::QUIC_TP_MAX_DATAGRAM_FRAME_SIZE {
+        let v, ok = decode_tp_exact_varint(val);
+        guard ok && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MAX_DATAGRAM) else { return false; }
+        tp.max_datagram_frame_size = v;
+        return true;
+    }
+    if id == rfc::QUIC_TP_GREASE_QUIC_BIT {
+        guard val.len == 0 && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_GREASE_QUIC_BIT) else { return false; }
+        tp.grease_quic_bit = true;
+        return true;
+    }
+    if id == rfc::QUIC_TP_MIN_ACK_DELAY {
+        let v, ok = decode_tp_exact_varint(val);
+        guard ok && mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_MIN_ACK_DELAY) else { return false; }
+        tp.min_ack_delay_us = v;
+        return true;
+    }
+    return true;
+}
+
+// Decodes a single transport parameter `(id, val)` into `tp`.
+//
+// Example:
+//   id = 0x04 (initial_max_data), val = [0x44, 0x00], is_server = true
+//   returns: true, tp.initial_max_data = 1024
+inline fn decode_single_tp(
+    id:        u64,
+    val:       const u8[:],
+    is_server: bool,
+    tp:        QuicTransportParams&,
+) -> bool {
+    if id == rfc::QUIC_TP_MAX_IDLE_TIMEOUT
+        || (id >= rfc::QUIC_TP_MAX_UDP_PAYLOAD_SIZE && id <= rfc::QUIC_TP_INITIAL_MAX_STREAMS_UNI) {
+        return decode_tp_flow_param(id, val, tp);
+    }
+    if id == rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID
+        || id == rfc::QUIC_TP_STATELESS_RESET_TOKEN
+        || id == rfc::QUIC_TP_PREFERRED_ADDRESS
+        || id == rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID
+        || id == rfc::QUIC_TP_RETRY_SOURCE_CONNECTION_ID {
+        return decode_tp_cid_or_server_param(id, val, is_server, tp);
+    }
+    return decode_tp_ext_param(id, val, tp);
+}
+
+// Decodes QUIC transport parameters from TLS extension `0x0039` payload (RFC 9000 §18, RFC 9368 §3).
+// `is_server` indicates whether the encoded parameters were sent by a server (`true`) or client (`false`).
+//
+// Example:
+//   src = [0x03, 0x02, 0x45, 0xDC, 0x0c, 0x00], is_server = true
+//   returns: true, out_tp.max_udp_payload_size = 1500, out_tp.disable_active_migration = true
+//
+// crap:trusted-bounds
+fn decode_quic_transport_params(
+    src:       const u8[:],
+    is_server: bool,
+    out_tp:    QuicTransportParams&,
+) -> bool {
+    var tp = QuicTransportParams { .. };
+    var cur = core::cursor_from(src);
+    while cur.buf.len > 0 {
+        var idx: i64 = 0;
+        let id, ok_id = quic_decode_varint_cursor(cur.buf, idx);
+        let vlen, ok_len = quic_decode_varint_cursor(cur.buf, idx);
+        guard ok_id && ok_len else { return false; }
+        cur.buf = cur.buf[idx..];
+        let val, ok_val = core::read_bytes(cur, vlen as i64);
+        guard ok_val && decode_single_tp(id, val, is_server, tp) else { return false; }
+    }
+    if (tp.seen_mask & QUIC_TP_BIT_MIN_ACK_DELAY) != 0 {
+        let max_delay_us = core::mul_sat_u64(tp.max_ack_delay, 1000);
+        guard tp.min_ack_delay_us <= max_delay_us else { return false; }
+    }
+    out_tp = tp;
+    return true;
 }

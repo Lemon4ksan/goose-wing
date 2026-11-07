@@ -488,6 +488,25 @@ fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
     return encode_packet_number(out, hdr.packet_number, pn_len);
 }
 
+// Encodes an RFC 9000 §10.3 Stateless Reset packet (at least 21 bytes: 0b01xxxxxx first byte,
+// unpredictable random bytes >= 5 total, and 16-byte Stateless Reset Token).
+fn encode_stateless_reset_packet<B>(
+    out:        B&,
+    rand_bytes: const u8[:],
+    token:      const u8[16]&,
+) -> bool {
+    guard rand_bytes.len >= 5 else { return false; }
+    let orig_len = out.len;
+    let first_byte = (rand_bytes[0] & 0x3F) | 0x40;
+    guard out.try_push(first_byte)
+        && out.try_append(rand_bytes[1..])
+        && out.try_append(token[..]) else {
+        out.resize(orig_len, 0);
+        return false;
+    }
+    return true;
+}
+
 // ---- header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
 
 // Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
@@ -511,6 +530,68 @@ fn chacha20_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) ->
     for i in 12 { nonce12[i] = sample[4 + i]; }
     let blk = core::chacha20_block(hp_key, counter, nonce12);
     return [blk[0], blk[1], blk[2], blk[3], blk[4]];
+}
+
+inline fn compute_batch_aes128_masks(
+    hp_key:    const u8[:],
+    samples:   const u8[16][:],
+    out_masks: u8[5][:],
+    n:         i64,
+) -> i64 {
+    guard hp_key.len == 16 else { return 0; }
+    var k16: u8[16] = [0; 16];
+    for i in 16 { k16[i] = hp_key[i]; }
+    let ks = core::aes128_key_schedule(k16);
+    core::secure_zeroize_16(k16);
+    for b in n {
+        let enc = core::aes128_encrypt_block(ks, samples[b]);
+        out_masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
+    }
+    return n;
+}
+
+inline fn compute_batch_aes256_masks(
+    hp_key:    const u8[:],
+    samples:   const u8[16][:],
+    out_masks: u8[5][:],
+    n:         i64,
+) -> i64 {
+    guard hp_key.len == 32 else { return 0; }
+    var k32: u8[32] = [0; 32];
+    for i in 32 { k32[i] = hp_key[i]; }
+    let ks = core::aes256_key_schedule(k32);
+    core::secure_zeroize_32(k32);
+    for b in n {
+        let enc = core::aes_encrypt_block(ks, samples[b]);
+        out_masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
+    }
+    return n;
+}
+
+// Computes up to 8 5-byte QUIC header protection masks in a batch (RFC 9001 §5.4).
+fn compute_quic_hp_masks_batch(
+    cipher_suite: u16,
+    hp_key:       const u8[:],
+    samples:      const u8[16][:],
+    out_masks:    u8[5][:],
+) -> i64 {
+    let n = min(min(samples.len, out_masks.len), 8);
+    guard n > 0 else { return 0; }
+    if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
+        return compute_batch_aes128_masks(hp_key, samples, out_masks, n);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        return compute_batch_aes256_masks(hp_key, samples, out_masks, n);
+    }
+    if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        guard hp_key.len == 32 else { return 0; }
+        var k32: u8[32] = [0; 32];
+        for i in 32 { k32[i] = hp_key[i]; }
+        for b in n { out_masks[b] = chacha20_header_protect_mask(k32, samples[b]); }
+        core::secure_zeroize_32(k32);
+        return n;
+    }
+    return 0;
 }
 
 inline fn toggle_first_byte_protection(pkt: u8[:], is_long: bool, m0: u8) {

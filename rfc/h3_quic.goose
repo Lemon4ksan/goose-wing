@@ -63,8 +63,34 @@ const QUIC_FRAME_PATH_RESPONSE:        u64 = 0x1B;
 const QUIC_FRAME_CONNECTION_CLOSE:     u64 = 0x1C;
 const QUIC_FRAME_CONNECTION_CLOSE_APP: u64 = 0x1D;
 const QUIC_FRAME_HANDSHAKE_DONE:       u64 = 0x1E;
+const QUIC_FRAME_IMMEDIATE_ACK:        u64 = 0x1F; // draft-ietf-quic-ack-frequency Section 4.2
 const QUIC_FRAME_DATAGRAM:             u64 = 0x30; // RFC 9221 Section 3
 const QUIC_FRAME_DATAGRAM_LEN:         u64 = 0x31; // RFC 9221 Section 3
+const QUIC_FRAME_ACK_FREQUENCY:        u64 = 0xAF; // draft-ietf-quic-ack-frequency Section 4.1
+
+// ---- QUIC Transport Parameters (RFC 9000 Section 18, RFC 9221, RFC 9287, RFC 9368) -
+
+const QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID:  u64 = 0x00;   // RFC 9000 Section 18.2
+const QUIC_TP_MAX_IDLE_TIMEOUT:                    u64 = 0x01;   // RFC 9000 Section 18.2
+const QUIC_TP_STATELESS_RESET_TOKEN:               u64 = 0x02;   // RFC 9000 Section 18.2
+const QUIC_TP_MAX_UDP_PAYLOAD_SIZE:                u64 = 0x03;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_DATA:                    u64 = 0x04;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL:  u64 = 0x05;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE: u64 = 0x06;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI:         u64 = 0x07;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_STREAMS_BIDI:            u64 = 0x08;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_MAX_STREAMS_UNI:             u64 = 0x09;   // RFC 9000 Section 18.2
+const QUIC_TP_ACK_DELAY_EXPONENT:                  u64 = 0x0A;   // RFC 9000 Section 18.2
+const QUIC_TP_MAX_ACK_DELAY:                       u64 = 0x0B;   // RFC 9000 Section 18.2
+const QUIC_TP_DISABLE_ACTIVE_MIGRATION:            u64 = 0x0C;   // RFC 9000 Section 18.2
+const QUIC_TP_PREFERRED_ADDRESS:                   u64 = 0x0D;   // RFC 9000 Section 18.2
+const QUIC_TP_ACTIVE_CONNECTION_ID_LIMIT:          u64 = 0x0E;   // RFC 9000 Section 18.2
+const QUIC_TP_INITIAL_SOURCE_CONNECTION_ID:        u64 = 0x0F;   // RFC 9000 Section 18.2
+const QUIC_TP_RETRY_SOURCE_CONNECTION_ID:          u64 = 0x10;   // RFC 9000 Section 18.2
+const QUIC_TP_VERSION_INFORMATION:                 u64 = 0x11;   // RFC 9368 Section 3
+const QUIC_TP_MAX_DATAGRAM_FRAME_SIZE:             u64 = 0x20;   // RFC 9221 Section 3
+const QUIC_TP_GREASE_QUIC_BIT:                     u64 = 0x2AB2; // RFC 9287 Section 3
+const QUIC_TP_MIN_ACK_DELAY:                       u64 = 0xDE1A; // draft-ietf-quic-ack-frequency Section 3
 
 // ---- HTTP/3 & QPACK Constants (RFC 9114 & RFC 9204) ----------------------
 

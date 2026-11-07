@@ -9,6 +9,13 @@ import std;
 
 // ---- Frame Headers and Settings Structures -------------------------------
 
+const H3_FRAME_ORIGIN:                       u64 = 0x0c;       // RFC 9412 §2
+const H3_SETTINGS_H3_DATAGRAM:               u64 = 0x33;       // RFC 9297 §2.1.1
+const H3_SETTINGS_H3_DATAGRAM_DRAFT00:       u64 = 0x276;      // draft-ietf-masque-h3-datagram-00
+const H3_SETTINGS_ENABLE_WEBTRANSPORT:       u64 = 0x2b603742; // draft-ietf-webtrans-http3
+const H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64 = 0xc671706a; // draft-ietf-webtrans-http3 §3.1
+const H3_MAX_SETTINGS_PAYLOAD_SIZE:          i64 = 256;        // RFC 9114 §7.2.4
+
 struct H3FrameHeader {
     frame_type:  u64 = 0,
     payload_len: u64 = 0,
@@ -92,7 +99,7 @@ fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u
 // Encodes a SETTINGS frame (Type 0x04).
 fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
     // Build payload first in a temporary stack buffer
-    var payload: u8[..64] = [];
+    var payload: u8[..128] = [];
 
     // 1. QPACK_MAX_TABLE_CAPACITY (0x01)
     quic_encode_varint(payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
@@ -110,6 +117,24 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
     if settings.enable_connect_protocol > 0 {
         quic_encode_varint(payload, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
         quic_encode_varint(payload, settings.enable_connect_protocol);
+    }
+
+    // 5. H3_DATAGRAM (0x33)
+    if settings.h3_datagram > 0 {
+        quic_encode_varint(payload, H3_SETTINGS_H3_DATAGRAM);
+        quic_encode_varint(payload, settings.h3_datagram);
+    }
+
+    // 6. ENABLE_WEBTRANSPORT (0x2b603742)
+    if settings.enable_webtransport > 0 {
+        quic_encode_varint(payload, H3_SETTINGS_ENABLE_WEBTRANSPORT);
+        quic_encode_varint(payload, settings.enable_webtransport);
+    }
+
+    // 7. WEBTRANSPORT_MAX_SESSIONS (0xc671706a)
+    if settings.webtransport_max_sessions > 0 {
+        quic_encode_varint(payload, H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS);
+        quic_encode_varint(payload, settings.webtransport_max_sessions);
     }
 
     var hdr: u8[..16] = [];
@@ -133,8 +158,44 @@ fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
     return true;
 }
 
+inline fn apply_parsed_h3_setting(id: u64, val: u64, out_settings: H3Settings&) -> bool {
+    if id == rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY {
+        out_settings.qpack_max_table_capacity = val;
+        return true;
+    }
+    if id == rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE {
+        out_settings.max_field_section_size = val;
+        return true;
+    }
+    if id == rfc::H3_SETTING_QPACK_BLOCKED_STREAMS {
+        out_settings.qpack_blocked_streams = val;
+        return true;
+    }
+    if id == rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL {
+        guard val <= 1 else { return false; }
+        out_settings.enable_connect_protocol = val;
+        return true;
+    }
+    if id == H3_SETTINGS_H3_DATAGRAM || id == H3_SETTINGS_H3_DATAGRAM_DRAFT00 {
+        guard val <= 1 else { return false; }
+        out_settings.h3_datagram = val;
+        return true;
+    }
+    if id == H3_SETTINGS_ENABLE_WEBTRANSPORT {
+        guard val <= 1 else { return false; }
+        out_settings.enable_webtransport = val;
+        return true;
+    }
+    if id == H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS {
+        out_settings.webtransport_max_sessions = val;
+        return true;
+    }
+    return true;
+}
+
 // Parses and validates a SETTINGS frame payload.
 // Returns H3_ERR_NO_ERROR (0x0100) on success, or appropriate error code:
+// - H3_ERR_EXCESSIVE_LOAD (0x0107) on oversized payload (> H3_MAX_SETTINGS_PAYLOAD_SIZE)
 // - H3_ERR_SETTINGS_ERROR (0x0109) on duplicate settings or forbidden HTTP/2 settings (0x02..0x05)
 // - H3_ERR_FRAME_ERROR (0x0106) on truncated payload.
 //
@@ -142,6 +203,9 @@ fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
 //   payload = [0x06, 0x40, 0x00], out_settings = H3Settings { .. }
 //   returns: H3_ERR_NO_ERROR (0x0100), populates out_settings
 fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u64 {
+    guard payload.len <= H3_MAX_SETTINGS_PAYLOAD_SIZE else {
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
     var offset: u64 = 0;
     let total = payload.len as u64;
     var seen_ids: u64[..64] = [];
@@ -155,29 +219,10 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 
         offset = off2;
 
-        // RFC 9114 Section 7.2.4.1: An endpoint that receives any reserved HTTP/2 setting identifier
-        // (0x00, 0x02, 0x03, 0x04, 0x05) MUST treat this as a connection error of type H3_SETTINGS_ERROR.
-        if rfc::is_h2_reserved_setting_in_h3(id) {
+        guard !rfc::is_h2_reserved_setting_in_h3(id) &&
+              record_setting_identifier(seen_ids, id) &&
+              apply_parsed_h3_setting(id, val, out_settings) else {
             return rfc::H3_ERR_SETTINGS_ERROR;
-        }
-
-        // Duplicate checks (RFC 9114 Section 7.2.4):
-        // The same setting identifier MUST NOT occur more than once.
-        guard record_setting_identifier(seen_ids, id) else {
-            return rfc::H3_ERR_SETTINGS_ERROR;
-        }
-
-        if id == rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY {
-            out_settings.qpack_max_table_capacity = val;
-        } else if id == rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE {
-            out_settings.max_field_section_size = val;
-        } else if id == rfc::H3_SETTING_QPACK_BLOCKED_STREAMS {
-            out_settings.qpack_blocked_streams = val;
-        } else if id == rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL {
-            if val != 0 && val != 1 { return rfc::H3_ERR_SETTINGS_ERROR; }
-            out_settings.enable_connect_protocol = val;
-        } else {
-            // Unknown or GREASE settings identifiers are ignored (RFC 9114 Section 7.2.4.1)
         }
     }
 
@@ -312,4 +357,45 @@ fn parse_h3_priority_update_push(
     let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
     guard ok_prio else { return push_id, prio, false; }
     return push_id, parsed, true;
+}
+
+// ---- RFC 9412 ORIGIN Frame for HTTP/3 ------------------------------------
+
+// Encodes an HTTP/3 ORIGIN frame (Type 0x0c, RFC 9412 §2).
+fn encode_h3_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
+    var payload: u8[..2048] = [];
+    for org in origins {
+        let rem = core::sub_sat_i64(payload.cap, payload.len);
+        guard org.len > 0 && org.len <= 0xFFFF && core::sub_sat_i64(rem, 2) >= org.len else {
+            return false;
+        }
+        core::append_u16_be(payload, org.len as u16);
+        payload.append(org);
+    }
+    var hdr: u8[..16] = [];
+    guard encode_h3_frame_header(hdr, H3_FRAME_ORIGIN, payload.len as u64) else { return false; }
+    return append_h3_frame_parts(out, hdr[..], payload[..]);
+}
+
+// Parses an HTTP/3 ORIGIN frame payload (RFC 9412 §2).
+// Rejects truncated 2-byte big-endian Origin-Len or 0-length entries.
+//
+// Example:
+//   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm']
+//   returns: true, out_origins = ["ex.com"]
+fn parse_h3_origin_frame(payload: const u8[:], out_origins: u8[..128][..16]&) -> bool {
+    var rem = payload;
+    while rem.len > 0 {
+        guard rem.len >= 2 else { return false; }
+        let olen = core::read_be_u16(rem, 0) as i64;
+        let after_hdr = rem[2..];
+        guard olen > 0 && olen <= 128 && olen <= after_hdr.len && out_origins.len < out_origins.cap else {
+            return false;
+        }
+        var entry: u8[..128] = [];
+        entry.append(after_hdr[..olen]);
+        out_origins.push(entry);
+        rem = after_hdr[olen..];
+    }
+    return true;
 }

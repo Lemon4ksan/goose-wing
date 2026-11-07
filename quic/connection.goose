@@ -32,33 +32,35 @@ enum QuicConnState {
 }
 
 struct QuicConnection {
-    role:               QuicRole               = QuicRole.Server,
-    state:              QuicConnState          = QuicConnState.Initial,
-    scid:               u8[..20]               = [],
-    dcid:               u8[..20]               = [],
-    original_dcid:      u8[..20]               = [],
-    initial_space:      PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    handshake_space:    PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    app_space:          PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    tx_initial_space:   PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    tx_handshake_space: PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    tx_app_space:       PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    initial_crypto:     wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    handshake_crypto:   wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    app_crypto:         wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    rtt:                RttState               = RttState { .. },
-    pacer:              Pacer                  = Pacer { .. },
-    bbr:                BbrState               = BbrState { .. },
-    stream_table:       QuicStreamTable        = QuicStreamTable { .. },
-    flow_ctrl:          QuicFlowControl        = QuicFlowControl { .. },
-    bytes_received:     u64                    = 0,
-    bytes_sent:         u64                    = 0,
-    validated_address:  bool                   = false,
-    packets_rx:         u64                    = 0,
-    packets_tx:         u64                    = 0,
-    close_code:         u64                    = 0,
-    migration:          QuicMigrationManager   = QuicMigrationManager { .. },
-    dplpmtud:           Dplpmtud               = Dplpmtud { .. },
+    role:                  QuicRole               = QuicRole.Server,
+    state:                 QuicConnState          = QuicConnState.Initial,
+    scid:                  u8[..20]               = [],
+    dcid:                  u8[..20]               = [],
+    original_dcid:         u8[..20]               = [],
+    initial_space:         PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    handshake_space:       PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    app_space:             PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    tx_initial_space:      PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    tx_handshake_space:    PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    tx_app_space:          PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    initial_crypto:        wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
+    handshake_crypto:      wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
+    app_crypto:            wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
+    rtt:                   RttState               = RttState { .. },
+    pacer:                 Pacer                  = Pacer { .. },
+    bbr:                   BbrState               = BbrState { .. },
+    stream_table:          QuicStreamTable        = QuicStreamTable { .. },
+    flow_ctrl:             QuicFlowControl        = QuicFlowControl { .. },
+    bytes_received:        u64                    = 0,
+    bytes_sent:            u64                    = 0,
+    validated_address:     bool                   = false,
+    packets_rx:            u64                    = 0,
+    packets_tx:            u64                    = 0,
+    close_code:            u64                    = 0,
+    allow_grease_quic_bit: bool                   = false,
+    peer_reset_tokens:     u8[16][..8]            = [],
+    migration:             QuicMigrationManager   = QuicMigrationManager { .. },
+    dplpmtud:              Dplpmtud               = Dplpmtud { .. },
 }
 
 fn new_quic_server_connection(scid: const u8[:]) -> QuicConnection {
@@ -133,6 +135,9 @@ fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
     if meta.ack_eliciting {
         space.time_of_last_ack_eliciting_us = meta.time_sent_us;
     }
+    if meta.ecn_marked {
+        space.tx_ect0_sent = core::add_sat_u64(space.tx_ect0_sent, 1);
+    }
     space.sent_packets.push(meta);
 }
 
@@ -154,26 +159,49 @@ fn generate_space_ack(space: PnSpaceState&, out_ack: AckFrame&) -> bool {
     return false;
 }
 
-fn match_pn_in_ack_ranges(pn: u64, ranges: const AckInterval[..65]&) -> bool {
-    for r_idx in ranges.len {
-        if pn >= ranges[r_idx].smallest && pn <= ranges[r_idx].largest {
-            return true;
+inline fn advance_ack_range_cursor(ranges: const AckInterval[..65]&, r_idx: u64&, has_range: bool&, pn: u64) {
+    while has_range && ranges[r_idx as i64].largest < pn {
+        if r_idx == 0 {
+            has_range = false;
+        } else {
+            r_idx = core::sub_sat_u64(r_idx, 1);
         }
     }
-    return false;
 }
 
-// Marks packets matching `ranges` as acknowledged, removing them from `sent_packets`
-// and returning `(acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts)`.
+inline fn record_acked_packet_stats(
+    pkt:            const SentPacketMeta&,
+    largest_target: u64,
+    is_new_largest: bool,
+    now_us:         u64,
+    acked_bytes:    u64&,
+    largest_rtt_us: u64&,
+    new_acked_pkts: u64&,
+    ecn_acked_pkts: u64&,
+    any_ack_el:     bool&,
+) {
+    new_acked_pkts = core::add_sat_u64(new_acked_pkts, 1);
+    if pkt.ecn_marked { ecn_acked_pkts = core::add_sat_u64(ecn_acked_pkts, 1); }
+    if pkt.in_flight { acked_bytes = core::add_sat_u64(acked_bytes, pkt.size_bytes); }
+    if pkt.ack_eliciting { any_ack_el = true; }
+    if pkt.pn == largest_target && is_new_largest {
+        largest_rtt_us = core::sub_sat_u64(now_us, pkt.time_sent_us);
+    }
+}
+
+// Marks packets matching `ranges` as acknowledged using a monotone two-pointer sweep,
+// compacting `sent_packets` in-place and returning
+// `(acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts, ecn_acked_pkts)`.
 fn mark_acked_packets_in_space(
     space:  PnSpaceState&,
     ranges: const AckInterval[..65]&,
     now_us: u64,
-) -> u64, u64, u64, u64 {
+) -> u64, u64, u64, u64, u64 {
     var acked_bytes:     u64 = 0;
     var largest_rtt_us:  u64 = 0;
     var in_flight_bytes: u64 = 0;
     var new_acked_pkts:  u64 = 0;
+    var ecn_acked_pkts:  u64 = 0;
     var any_ack_el = false;
 
     let is_new_largest = !space.has_acked_packets || ranges[0].largest >= space.largest_acked_pn;
@@ -182,30 +210,33 @@ fn mark_acked_packets_in_space(
         space.has_acked_packets = true;
     }
 
-    var i: i64 = 0;
-    while i < space.sent_packets.len {
+    var has_range = ranges.len > 0;
+    var r_idx = core::sub_sat_u64(ranges.len as u64, 1);
+    var write_idx: u64 = 0;
+    for i in space.sent_packets.len {
         let pkt = space.sent_packets[i];
-        if match_pn_in_ack_ranges(pkt.pn, ranges) {
-            new_acked_pkts += 1;
-            if pkt.in_flight {
-                acked_bytes += pkt.size_bytes;
-            }
-            if pkt.ack_eliciting {
-                any_ack_el = true;
-            }
-            if pkt.pn == ranges[0].largest && is_new_largest {
-                largest_rtt_us = if now_us >= pkt.time_sent_us { now_us - pkt.time_sent_us } else { 0 };
-            }
-            space.sent_packets.remove_at(i);
+        advance_ack_range_cursor(ranges, r_idx, has_range, pkt.pn);
+        if has_range && pkt.pn >= ranges[r_idx as i64].smallest {
+            record_acked_packet_stats(
+                pkt,
+                ranges[0].largest,
+                is_new_largest,
+                now_us,
+                acked_bytes,
+                largest_rtt_us,
+                new_acked_pkts,
+                ecn_acked_pkts,
+                any_ack_el,
+            );
         } else {
-            if pkt.in_flight {
-                in_flight_bytes += pkt.size_bytes;
-            }
-            i += 1;
+            if pkt.in_flight { in_flight_bytes = core::add_sat_u64(in_flight_bytes, pkt.size_bytes); }
+            space.sent_packets[write_idx as i64] = pkt;
+            write_idx = core::add_sat_u64(write_idx, 1);
         }
     }
+    space.sent_packets.resize(write_idx as i64, SentPacketMeta { .. });
     let latest_rtt_us = if any_ack_el { largest_rtt_us } else { 0 };
-    return acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts;
+    return acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts, ecn_acked_pkts;
 }
 
 fn calc_lost_bytes(lost_pkts: const SentPacketMeta[..128]&) -> u64 {
@@ -268,7 +299,7 @@ fn process_space_ack(
         return false;
     }
 
-    let acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts =
+    let acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts, ecn_acked_pkts =
         mark_acked_packets_in_space(space, acked_ranges, now_us);
 
     if new_acked_pkts > 0 && latest_rtt_us > 0 {
@@ -284,11 +315,7 @@ fn process_space_ack(
     let _ = detect_lost_packets(space, conn.rtt, now_us, lost_pkts);
     let lost_bytes = calc_lost_bytes(lost_pkts);
 
-    var new_ecn_ce: u64 = 0;
-    if ack_frame.is_ecn && ack_frame.ecn_ce_count > space.largest_acked_ce {
-        new_ecn_ce = ack_frame.ecn_ce_count - space.largest_acked_ce;
-        space.largest_acked_ce = ack_frame.ecn_ce_count;
-    }
+    let _, new_ecn_ce = validate_space_ecn(space, ack_frame, ecn_acked_pkts);
 
     bbr_check_probe_rtt(conn.bbr, now_us, eff_rtt);
     let round_done = space.largest_acked_pn >= space.largest_sent_pn;
@@ -639,6 +666,24 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     return true, true;
 }
 
+inline fn register_peer_reset_token(conn: QuicConnection&, frame: const QuicFrame&) {
+    guard frame.length >= 1 && frame.length <= 20 else { return; }
+    let cid_len = frame.length as i64;
+    guard frame.payload.len >= 17 else { return; }
+    let tok_start = core::sub_sat_u64(frame.payload.len as u64, 16) as i64;
+    guard tok_start == cid_len else { return; }
+    let token_slice = frame.payload[tok_start..];
+    for i in conn.peer_reset_tokens.len {
+        if core::ct_eq_bytes(conn.peer_reset_tokens[i][..], token_slice) { return; }
+    }
+    if conn.peer_reset_tokens.len >= conn.peer_reset_tokens.cap {
+        conn.peer_reset_tokens.remove_at(0);
+    }
+    var tok: u8[16] = [0; 16];
+    for i in 16 { tok[i] = token_slice[i]; }
+    conn.peer_reset_tokens.push(tok);
+}
+
 inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     if frame.frame_type == QuicFrameType.NewConnectionId {
         // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
@@ -646,6 +691,7 @@ inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&)
             quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
+        register_peer_reset_token(conn, frame);
         return true, true;
     }
     if frame.frame_type == QuicFrameType.RetireConnectionId {
@@ -1249,20 +1295,37 @@ inline fn conn_inc_packets_rx(conn: QuicConnection&) {
     conn.packets_rx = conn.packets_rx + 1;
 }
 
+// Verifies whether an incoming short-header datagram matches any registered peer
+// Stateless Reset Token in constant time (RFC 9000 §10.3).
+fn is_stateless_reset_datagram(conn: const QuicConnection&, dgram: const u8[:]) -> bool {
+    guard dgram.len >= 21 && (dgram[0] & 0x80) == 0 else { return false; }
+    let tail_offset = core::sub_sat_u64(dgram.len as u64, 16) as i64;
+    guard tail_offset >= 5 && tail_offset <= dgram.len else { return false; }
+    let tail = dgram[tail_offset..];
+    var matched = false;
+    for i in conn.peer_reset_tokens.len {
+        if core::ct_eq_bytes(tail, conn.peer_reset_tokens[i][..]) {
+            matched = true;
+        }
+    }
+    return matched;
+}
+
 // Reads a QUIC packet header before header protection removal by clearing masked reserved bits on byte 0
-// when packet number space keys are installed (RFC 9001 §5.4).
+// when packet number space keys are installed (RFC 9001 §5.4, RFC 9287).
 //
 // Example:
 //   pkt_slice = [0xC5, 0x00, 0x00, 0x00, 0x01, ...], dcid_len = 8 (initial keys installed)
 //   returns: QuicHeader { header_type: Initial, version: 1, ... }, ok = true
 fn parse_quic_packet_pre_hp(conn: const QuicConnection&, pkt_slice: const u8[:], dcid_len: u8) -> QuicHeader, bool {
     guard pkt_slice.len > 0 else { return QuicHeader { .. }, false; }
-    let b0 = pkt_slice[0];
+    let raw_b0 = pkt_slice[0];
+    let b0 = if conn.allow_grease_quic_bit { raw_b0 | 0x40 } else { raw_b0 };
     if (b0 & 0x80) != 0 {
         guard pkt_slice.len >= 5 else { return QuicHeader { .. }, false; }
         let ver = read_version_u32_be(pkt_slice);
         if ver == rfc::QUIC_VERSION_NEGOTIATION {
-            return parse_quic_long_header(pkt_slice, b0);
+            return parse_quic_long_header(pkt_slice, raw_b0);
         }
         let type_bits = (b0 >> 4) & 0x03;
         let ht, ok_ver = quic_long_header_type(ver, type_bits);
@@ -1288,7 +1351,12 @@ fn process_single_coalesced_packet(
 
     let dcid_len = get_dcid_len(conn.scid.len);
     var hdr, ok = parse_quic_packet_pre_hp(conn, pkt_slice, dcid_len);
-    guard ok else { return 0, false, false; }
+    guard ok else {
+        if is_stateless_reset_datagram(conn, pkt_slice) {
+            conn.state = QuicConnState.Closed;
+        }
+        return 0, false, false;
+    }
 
     let pkt_wire_len, len_ok = calc_coalesced_packet_wire_len(pkt_slice, hdr);
     guard len_ok else { return 0, false, false; }
@@ -1303,6 +1371,9 @@ fn process_single_coalesced_packet(
     let space_id = header_type_to_space_id(hdr.header_type);
     var plaintext_payload: u8[..16384] = [];
     guard verify_and_decrypt_packet(conn, space_id, pkt_slice, pkt_wire_len, hdr, plaintext_payload) else {
+        if hdr.header_type == QuicHeaderType.OneRtt && is_stateless_reset_datagram(conn, pkt_slice) {
+            conn.state = QuicConnState.Closed;
+        }
         return 0, false, false;
     }
 

@@ -494,6 +494,172 @@ fn test_quic_stream_mutation_fuzzing() {
     print("STREAM_MUTATION_FUZZ: split_ok=true fuzz_200_iters=true");
 }
 
+// ---- Section 8: QUICC-01 Transport Parameters & RFC 9368 Version Info ------
+
+// crap:trusted-bounds
+fn test_quic_transport_params_rfc9000() {
+    var tp = internal::QuicTransportParams {
+        max_idle_timeout:                    30000,
+        has_stateless_reset_token:           true,
+        max_udp_payload_size:                1452,
+        initial_max_data:                    1048576,
+        initial_max_stream_data_bidi_local:  262144,
+        initial_max_stream_data_bidi_remote: 262144,
+        initial_max_stream_data_uni:         131072,
+        initial_max_streams_bidi:            100,
+        initial_max_streams_uni:             100,
+        ack_delay_exponent:                  4,
+        max_ack_delay:                       20,
+        disable_active_migration:            true,
+        active_connection_id_limit:          4,
+        chosen_version:                      rfc::QUIC_VERSION_1,
+        max_datagram_frame_size:             1200,
+        grease_quic_bit:                     true,
+        min_ack_delay_us:                    1000,
+        ..
+    };
+    tp.original_destination_connection_id.append([0x01, 0x02, 0x03, 0x04]);
+    tp.initial_source_connection_id.append([0x05, 0x06, 0x07, 0x08]);
+    tp.retry_source_connection_id.append([0x09, 0x0A, 0x0B, 0x0C]);
+    for i in 16 { tp.stateless_reset_token[i] = (0xA0 + i) as u8; }
+    tp.available_versions.push(rfc::QUIC_VERSION_2);
+    tp.available_versions.push(rfc::QUIC_VERSION_1);
+
+    // Client cannot encode server-only parameters
+    var bad_cli_buf: u8[..256] = [];
+    assert(!internal::encode_quic_transport_params(bad_cli_buf, tp, false));
+
+    // Server encodes full transport parameters
+    var srv_buf: u8[..256] = [];
+    assert(internal::encode_quic_transport_params(srv_buf, tp, true));
+
+    var dec_tp = internal::QuicTransportParams { .. };
+    assert(internal::decode_quic_transport_params(srv_buf[..], true, dec_tp));
+    assert(dec_tp.max_idle_timeout == 30000 && dec_tp.max_udp_payload_size == 1452);
+    assert(dec_tp.ack_delay_exponent == 4 && dec_tp.max_ack_delay == 20);
+    assert(dec_tp.disable_active_migration && dec_tp.grease_quic_bit);
+    assert(dec_tp.active_connection_id_limit == 4 && dec_tp.min_ack_delay_us == 1000);
+    assert(dec_tp.chosen_version == rfc::QUIC_VERSION_1 && dec_tp.available_versions.len == 2);
+    assert(dec_tp.available_versions[0] == rfc::QUIC_VERSION_2);
+    assert(dec_tp.has_stateless_reset_token && dec_tp.stateless_reset_token[0] == 0xA0);
+
+    // Reject server-only parameters when decoded with is_server = false
+    var bad_dec = internal::QuicTransportParams { .. };
+    assert(!internal::decode_quic_transport_params(srv_buf[..], false, bad_dec));
+
+    // Reject boundary violations: ack_delay_exponent > 20, max_ack_delay >= 16384, max_udp_payload_size < 1200, active_cid_limit < 2
+    let bad_ade: const u8[3] = [0x0A, 0x01, 21];
+    assert(!internal::decode_quic_transport_params(bad_ade[..], true, bad_dec));
+    let bad_mad: const u8[4] = [0x0B, 0x02, 0x80, 0x00];
+    assert(!internal::decode_quic_transport_params(bad_mad[..], true, bad_dec));
+    let bad_mtu: const u8[4] = [0x03, 0x02, 0x44, 0xAF]; // 1199 < 1200
+    assert(!internal::decode_quic_transport_params(bad_mtu[..], true, bad_dec));
+    let bad_cid_lim: const u8[3] = [0x0E, 0x01, 1];
+    assert(!internal::decode_quic_transport_params(bad_cid_lim[..], true, bad_dec));
+    let bad_ver: const u8[6] = [0x11, 0x04, 0x00, 0x00, 0x00, 0x00]; // chosen_version == 0
+    assert(!internal::decode_quic_transport_params(bad_ver[..], true, bad_dec));
+
+    print("QUICC_01_TP: srv_roundtrip=true bounds_enforced=true version_info_ok=true");
+}
+
+// ---- Section 9: QUICC-05 Server Preferred Address & Migration --------------
+
+// crap:trusted-bounds
+fn test_quic_preferred_address_migration() {
+    var raw_pref: u8[..64] = [];
+    // IPv4: 198.51.100.42:8443 (0x20FB)
+    raw_pref.append([198, 51, 100, 42, 0x20, 0xFB]);
+    // IPv6: 2001:db8::1, port 9443 (0x24E3)
+    raw_pref.append([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    raw_pref.append([0x24, 0xE3]);
+    // CID len = 4, CID = [0xAA, 0xBB, 0xCC, 0xDD]
+    raw_pref.append([4, 0xAA, 0xBB, 0xCC, 0xDD]);
+    // 16-byte stateless reset token
+    for i in 16 { raw_pref.push((0x10 + i) as u8); }
+
+    var pref = internal::QuicPreferredAddress { .. };
+    assert(internal::decode_preferred_address(raw_pref[..], pref));
+    assert(pref.ipv4[0] == 198 && pref.ipv4_port == 8443);
+    assert(pref.ipv6[0] == 0x20 && pref.ipv6_port == 9443);
+    assert(pref.cid.len == 4 && pref.cid[0] == 0xAA);
+    assert(pref.stateless_reset_token[0] == 0x10);
+
+    // Reject truncated or zero-length CID preferred_address
+    var bad_pref = internal::QuicPreferredAddress { .. };
+    assert(!internal::decode_preferred_address(raw_pref[..40], bad_pref));
+
+    let init_addr = internal::new_quic_endpoint_addr([192, 0, 2, 1], 443);
+    var mgr = internal::new_quic_migration_manager(init_addr);
+    let tok: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    // Probe IPv6 preferred address
+    assert(internal::quic_migration_probe_preferred_address(mgr, pref, true, tok));
+    assert(mgr.has_probing_path && mgr.probing_path.remote_addr.port == 9443);
+
+    // Probe IPv4 preferred address
+    assert(internal::quic_migration_probe_preferred_address(mgr, pref, false, tok));
+    assert(mgr.has_probing_path && mgr.probing_path.remote_addr.port == 8443);
+    internal::quic_migration_fail_probing(mgr);
+    assert(!mgr.has_probing_path);
+
+    // When migration_disabled is true, probing is rejected
+    mgr.migration_disabled = true;
+    assert(!internal::quic_migration_probe_preferred_address(mgr, pref, true, tok));
+
+    print("QUICC_05_PREF_ADDR: decoded=true v6_probe=true v4_probe=true disable_mig_honored=true");
+}
+
+// ---- Section 10: QUICC-06 & QUICH3-05 ACK_FREQUENCY & IMMEDIATE_ACK --------
+
+// crap:trusted-bounds
+fn test_quic_ack_frequency_frames() {
+    var flow_pkt: u8[..64] = [];
+    assert(internal::encode_max_streams_frame(flow_pkt, 100, true));
+    assert(internal::encode_data_blocked_frame(flow_pkt, 65536));
+    assert(internal::encode_streams_blocked_frame(flow_pkt, 50, false));
+    var f_idx: i64 = 0;
+    let mf1, mok1 = internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
+    let mf2, mok2 = internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
+    let mf3, mok3 = internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
+    assert(mok1 && mf1.frame_type == internal::QuicFrameType.MaxStreamsBidi);
+    assert(mok2 && mf2.frame_type == internal::QuicFrameType.DataBlocked);
+    assert(mok3 && mf3.frame_type == internal::QuicFrameType.StreamsBlockedUni);
+
+    var pkt: u8[..64] = [];
+    // 1. IMMEDIATE_ACK (0x1F)
+    pkt.push(0x1F);
+    // 2. ACK_FREQUENCY (0xAF)
+    let af_in = internal::QuicAckFrequencyFrame {
+        seq:                      7,
+        ack_eliciting_threshold:  10,
+        request_max_ack_delay_us: 15000,
+        reordering_threshold:     3,
+    };
+    assert(internal::encode_ack_frequency_frame(pkt, af_in));
+
+    var idx: i64 = 0;
+    let f1, ok1 = internal::decode_quic_frame_cursor(pkt[..], idx);
+    assert(ok1 && f1.frame_type == internal::QuicFrameType.ImmediateAck);
+    assert(idx == 1);
+
+    let f2, ok2 = internal::decode_quic_frame_cursor(pkt[..], idx);
+    assert(ok2 && f2.frame_type == internal::QuicFrameType.AckFrequency);
+    assert(f2.stream_id == 7 && f2.length == 10 && f2.max_data == 15000 && f2.offset == 3);
+    assert(idx == pkt.len);
+
+    // Reject ack_eliciting_threshold == 0 in both encoder and decoder
+    let bad_af = internal::QuicAckFrequencyFrame { seq: 1, ack_eliciting_threshold: 0, .. };
+    var bad_out: u8[..32] = [];
+    assert(!internal::encode_ack_frequency_frame(bad_out, bad_af));
+
+    let bad_wire: const u8[4] = [0x01, 0x00, 0x10, 0x01]; // threshold = 0
+    var cur = core::cursor_from(bad_wire[..]);
+    var af_out = internal::QuicAckFrequencyFrame { .. };
+    assert(!internal::decode_ack_frequency_frame(cur, af_out));
+
+    print("QUICC_06_ACK_FREQ: immediate_ack=true ack_freq_roundtrip=true zero_thresh_rejected=true");
+}
+
 // ---- Main Entry Point ------------------------------------------------------
 
 // crap:trusted-bounds
@@ -506,6 +672,9 @@ fn main() {
     test_quic_stream_reassembly_chaos();
     test_quic_control_frames_demux();
     test_quic_stream_mutation_fuzzing();
+    test_quic_transport_params_rfc9000();
+    test_quic_preferred_address_migration();
+    test_quic_ack_frequency_frames();
 }
 
 // CHECK: === LIT RFC 9000 QUIC Frames Pathological Verification ===
@@ -516,3 +685,6 @@ fn main() {
 // CHECK-NEXT: STREAM_REASSEMBLY: gap_handled=true final_size_enforced=true overlap_merged=true
 // CHECK-NEXT: CONTROL_FRAMES_DEMUX: frames_parsed=6 all_consumed=true
 // CHECK-NEXT: STREAM_MUTATION_FUZZ: split_ok=true fuzz_200_iters=true
+// CHECK-NEXT: QUICC_01_TP: srv_roundtrip=true bounds_enforced=true version_info_ok=true
+// CHECK-NEXT: QUICC_05_PREF_ADDR: decoded=true v6_probe=true v4_probe=true disable_mig_honored=true
+// CHECK-NEXT: QUICC_06_ACK_FREQ: immediate_ack=true ack_freq_roundtrip=true zero_thresh_rejected=true

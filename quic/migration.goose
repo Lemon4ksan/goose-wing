@@ -57,9 +57,59 @@ struct QuicPath {
 
 // RFC 9000 Section 9: Connection Migration - Connection migration state machine manager
 struct QuicMigrationManager {
-    active_path:      QuicPath = QuicPath { state: PathValidationState.Validated, .. },
-    probing_path:     QuicPath = QuicPath { .. },
-    has_probing_path: bool     = false,
+    active_path:        QuicPath = QuicPath { state: PathValidationState.Validated, .. },
+    probing_path:       QuicPath = QuicPath { .. },
+    has_probing_path:   bool     = false,
+    migration_disabled: bool     = false,
+}
+
+// RFC 9000 Section 9.6 & Section 18.2: Server's Preferred Address transport parameter (0x0d)
+struct QuicPreferredAddress {
+    ipv4:                  u8[4]    = [0; 4],
+    ipv4_port:             u16      = 0,
+    ipv6:                  u8[16]   = [0; 16],
+    ipv6_port:             u16      = 0,
+    cid:                   u8[..20] = [],
+    stateless_reset_token: u8[16]   = [0; 16],
+}
+
+// Decodes RFC 9000 §18.2 `preferred_address` (0x0d) transport parameter payload.
+// Wire layout: ipv4 (4B) || ipv4_port (2B BE) || ipv6 (16B) || ipv6_port (2B BE)
+//              || cid_len (1B, 1..20) || cid (cid_len B) || stateless_reset_token (16B).
+//
+// Example:
+//   src = [192, 0, 2, 1, 0x01, 0xBB, ...16B ipv6..., 0x00, 0x00, 4, 1, 2, 3, 4, ...16B token...]
+//   returns: true, out.ipv4 = [192, 0, 2, 1], out.ipv4_port = 443, out.cid = [1, 2, 3, 4]
+//
+// crap:trusted-bounds
+fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> bool {
+    var cur = core::cursor_from(src);
+    let v4_slice, ok_v4 = core::read_bytes(cur, 4);
+    let v4_port, ok_p4 = core::read_u16(cur);
+    let v6_slice, ok_v6 = core::read_bytes(cur, 16);
+    let v6_port, ok_p6 = core::read_u16(cur);
+    guard ok_v4 && ok_p4 && ok_v6 && ok_p6 else { return false; }
+
+    let cid_slice, ok_cid = core::read_u8_prefixed(cur);
+    guard ok_cid && cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
+    let tok_slice, ok_tok = core::read_bytes(cur, 16);
+    guard ok_tok && cur.buf.len == 0 else { return false; }
+
+    var parsed = QuicPreferredAddress {
+        ipv4_port: v4_port,
+        ipv6_port: v6_port,
+        ..
+    };
+    for i in 4 {
+        parsed.ipv4[i] = v4_slice[i];
+    }
+    for i in 16 {
+        parsed.ipv6[i] = v6_slice[i];
+        parsed.stateless_reset_token[i] = tok_slice[i];
+    }
+    parsed.cid.append(cid_slice);
+    out = parsed;
+    return true;
 }
 
 // RFC 9000 Section 9: Connection Migration - Creates a new migration manager with initial active path
@@ -133,6 +183,29 @@ fn quic_migration_start_probing(
         max_retries:    3,
     };
     mgr.has_probing_path = true;
+}
+
+// RFC 9000 Section 9.6: Server's Preferred Address - Initiates client probing toward server preferred address
+fn quic_migration_probe_preferred_address(
+    mgr:         QuicMigrationManager&,
+    pref:        const QuicPreferredAddress&,
+    prefer_ipv6: bool,
+    token:       const u8[8]&,
+) -> bool {
+    guard !mgr.migration_disabled && pref.cid.len >= 1 else { return false; }
+
+    let has_v6 = pref.ipv6_port != 0;
+    let has_v4 = pref.ipv4_port != 0;
+    guard has_v6 || has_v4 else { return false; }
+
+    let use_v6 = if prefer_ipv6 && has_v6 { true } else { !has_v4 };
+    let target = if use_v6 {
+        new_quic_endpoint_addr(pref.ipv6[..], pref.ipv6_port)
+    } else {
+        new_quic_endpoint_addr(pref.ipv4[..], pref.ipv4_port)
+    };
+    quic_migration_start_probing(mgr, target, token);
+    return true;
 }
 
 // RFC 9000 Section 8.2.2: Path Validation Responses - Handles received PATH_RESPONSE frame

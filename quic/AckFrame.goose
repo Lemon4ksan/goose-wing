@@ -18,6 +18,13 @@ enum PnSpaceId {
     ApplicationData,
 }
 
+enum QuicEcnState {
+    Testing,
+    Unknown,
+    Capable,
+    Failed,
+}
+
 // ACK Range interval [smallest, largest], inclusive
 struct AckInterval {
     smallest: u64 = 0,
@@ -47,6 +54,7 @@ struct SentPacketMeta {
     size_bytes:    u64  = 0,
     ack_eliciting: bool = false,
     in_flight:     bool = false,
+    ecn_marked:    bool = false,
 }
 
 struct PnSpaceState {
@@ -54,7 +62,11 @@ struct PnSpaceState {
     largest_sent_pn:               u64                   = 0,
     has_sent_packets:              bool                  = false,
     largest_acked_pn:              u64                   = 0,
+    largest_acked_ect0:            u64                   = 0,
+    largest_acked_ect1:            u64                   = 0,
     largest_acked_ce:              u64                   = 0,
+    tx_ect0_sent:                  u64                   = 0,
+    ecn_state:                     QuicEcnState          = QuicEcnState.Testing,
     has_acked_packets:             bool                  = false,
     largest_recv_pn:               u64                   = 0,
     has_recv_packets:              bool                  = false,
@@ -400,7 +412,70 @@ fn update_rtt(
 
 // ---- packet & time threshold loss detection (rfc 9002 section 6.1) -------
 
-// Detects and removes lost packets in pn_space using packet and time thresholds.
+// Validates ECN counts on an incoming ACK/ACK_ECN frame per RFC 9000 §13.4.2.1 and Appendix A.4.
+// Returns (ecn_ok, newly_acked_ce_count). Transitions `space.ecn_state` to `Failed` on mangling/bleaching.
+fn validate_space_ecn(
+    space:          PnSpaceState&,
+    ack:            const AckFrame&,
+    ecn_acked_pkts: u64,
+) -> bool, u64 {
+    if space.ecn_state == QuicEcnState.Failed {
+        return false, 0;
+    }
+    if !ack.is_ecn {
+        if ecn_acked_pkts > 0 {
+            space.ecn_state = QuicEcnState.Failed;
+            return false, 0;
+        }
+        return true, 0;
+    }
+    if ack.ect0_count < space.largest_acked_ect0
+        || ack.ect1_count < space.largest_acked_ect1
+        || ack.ecn_ce_count < space.largest_acked_ce {
+        space.ecn_state = QuicEcnState.Failed;
+        return false, 0;
+    }
+    let ect0_delta = core::sub_sat_u64(ack.ect0_count, space.largest_acked_ect0);
+    let ce_delta = core::sub_sat_u64(ack.ecn_ce_count, space.largest_acked_ce);
+    let total_delta = core::add_sat_u64(ect0_delta, ce_delta);
+    if total_delta < ecn_acked_pkts || ack.ect1_count > space.largest_acked_ect1 {
+        space.ecn_state = QuicEcnState.Failed;
+        return false, 0;
+    }
+    if space.tx_ect0_sent > 0 && ack.ect0_count > space.tx_ect0_sent {
+        space.ecn_state = QuicEcnState.Failed;
+        return false, 0;
+    }
+    space.largest_acked_ect0 = ack.ect0_count;
+    space.largest_acked_ect1 = ack.ect1_count;
+    space.largest_acked_ce = ack.ecn_ce_count;
+    if total_delta > 0 && space.ecn_state != QuicEcnState.Capable {
+        space.ecn_state = QuicEcnState.Capable;
+    }
+    return true, ce_delta;
+}
+
+inline fn calc_space_loss_delay(rtt: const RttState&) -> u64 {
+    let max_rtt = max(rtt.latest_rtt_us, rtt.smoothed_rtt_us);
+    let scaled = core::mul_sat_u64(max_rtt, rfc::QUIC_LOSS_TIME_NUMERATOR) >> 3;
+    return max(scaled, rfc::QUIC_TIMER_GRANULARITY_US);
+}
+
+inline fn is_sent_packet_lost(pkt: const SentPacketMeta&, largest_acked_pn: u64, lost_send_time: u64) -> bool {
+    guard pkt.pn <= largest_acked_pn else { return false; }
+    let pkt_thresh = core::add_sat_u64(pkt.pn, rfc::QUIC_LOSS_PACKET_THRESHOLD);
+    return largest_acked_pn >= pkt_thresh || pkt.time_sent_us <= lost_send_time;
+}
+
+inline fn update_space_next_loss_time(space: PnSpaceState&, pkt: const SentPacketMeta&, loss_delay: u64) {
+    guard pkt.pn <= space.largest_acked_pn else { return; }
+    let next_loss_time = core::add_sat_u64(pkt.time_sent_us, loss_delay);
+    if space.loss_time_us == 0 || next_loss_time < space.loss_time_us {
+        space.loss_time_us = next_loss_time;
+    }
+}
+
+// Detects and removes lost packets in pn_space using packet and time thresholds in a single pass.
 fn detect_lost_packets<B>(
     space:    PnSpaceState&,
     rtt:      const RttState&,
@@ -410,40 +485,21 @@ fn detect_lost_packets<B>(
     guard space.has_acked_packets else { return true; }
     space.loss_time_us = 0;
 
-    let max_rtt = if rtt.latest_rtt_us > rtt.smoothed_rtt_us {
-        rtt.latest_rtt_us
-    } else {
-        rtt.smoothed_rtt_us
-    };
-    var loss_delay = (max_rtt * rfc::QUIC_LOSS_TIME_NUMERATOR) / rfc::QUIC_LOSS_TIME_DENOMINATOR;
-    if loss_delay < rfc::QUIC_TIMER_GRANULARITY_US {
-        loss_delay = rfc::QUIC_TIMER_GRANULARITY_US;
-    }
-    let lost_send_time = if now_us > loss_delay { now_us - loss_delay } else { 0 };
+    let loss_delay = calc_space_loss_delay(rtt);
+    let lost_send_time = core::sub_sat_u64(now_us, loss_delay);
 
-    var i = 0;
-    while i < space.sent_packets.len {
+    var write_idx: u64 = 0;
+    for i in space.sent_packets.len {
         let pkt = space.sent_packets[i];
-        if pkt.pn > space.largest_acked_pn {
-            i++;
-            continue;
-        }
-
-        let is_packet_threshold = space.largest_acked_pn >= pkt.pn + rfc::QUIC_LOSS_PACKET_THRESHOLD;
-        let is_time_threshold = pkt.time_sent_us <= lost_send_time;
-
-        if is_packet_threshold || is_time_threshold {
-            guard out_lost.len < out_lost.cap else { return false; }
-            out_lost.push(pkt);
-            space.sent_packets.remove_at(i);
+        if is_sent_packet_lost(pkt, space.largest_acked_pn, lost_send_time) {
+            guard out_lost.try_push(pkt) else { return false; }
         } else {
-            let next_loss_time = pkt.time_sent_us + loss_delay;
-            if space.loss_time_us == 0 || next_loss_time < space.loss_time_us {
-                space.loss_time_us = next_loss_time;
-            }
-            i++;
+            update_space_next_loss_time(space, pkt, loss_delay);
+            space.sent_packets[write_idx as i64] = pkt;
+            write_idx = core::add_sat_u64(write_idx, 1);
         }
     }
+    space.sent_packets.resize(write_idx as i64, SentPacketMeta { .. });
     return true;
 }
 

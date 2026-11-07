@@ -26,10 +26,13 @@ struct H2Settings {
 
 // HTTP/3 protocol settings for the persona.
 struct H3Settings {
-    qpack_max_table_capacity: u64 = 4096,
-    max_field_section_size:   u64 = 65536,
-    qpack_blocked_streams:    u64 = 16,
-    enable_connect_protocol:  u64 = 1,
+    qpack_max_table_capacity:  u64 = 4096,
+    max_field_section_size:    u64 = 65536,
+    qpack_blocked_streams:     u64 = 16,
+    enable_connect_protocol:   u64 = 1,
+    h3_datagram:               u64 = 0,
+    enable_webtransport:       u64 = 0,
+    webtransport_max_sessions: u64 = 0,
 }
 
 // TLS ClientHello specification for JA4 fingerprinting and transport configuration.

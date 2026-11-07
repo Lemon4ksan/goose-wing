@@ -243,24 +243,77 @@ fn get_qpack_static_field(idx: u64) -> QpackStaticEntry, bool {
     return QPACK_STATIC_TABLE[idx as i64], true;
 }
 
-// Searches static table for matching name and optional value.
+const QPACK_MIN_STATIC_NAME_LEN: i64 = 3;
+const QPACK_MAX_STATIC_NAME_LEN: i64 = 32;
+
+// Candidate index slices in `QPACK_LENGTH_CANDIDATES` grouped by header name length (0..32).
+// Packed as `(offset << 8) | count`.
+const QPACK_NAME_BUCKET_OFFSETS: u16[33] = [
+    0x0000, 0x0000, 0x0000, 0x0001, 0x0105, 0x0602, 0x0805, 0x0D1A,
+    0x2702, 0x2902, 0x2B04, 0x2F00, 0x2F0B, 0x3A0A, 0x4401, 0x4505,
+    0x4A03, 0x4D01, 0x4E00, 0x4E02, 0x5000, 0x5000, 0x5001, 0x5101,
+    0x5200, 0x5204, 0x5600, 0x5601, 0x5706, 0x5D03, 0x6001, 0x6100,
+    0x6102,
+];
+
+// Static table indices (0..98) ordered by `name.len` and ascending static table index.
+const QPACK_LENGTH_CANDIDATES: u8[99] = [
+    2,
+    6, 7, 11, 59, 60,
+    1, 55,
+    5, 29, 30, 90, 92,
+    13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 63, 64, 65, 66, 67, 68, 69, 70, 71, 83, 91,
+    12, 89,
+    87, 88,
+    0, 14, 86, 95,
+    44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
+    9, 10, 32, 36, 37, 38, 39, 40, 41, 84,
+    4,
+    31, 72, 96, 97, 98,
+    42, 43, 62,
+    8,
+    3, 93,
+    61,
+    85,
+    56, 57, 58, 94,
+    35,
+    33, 34, 75, 76, 77, 78,
+    79, 81, 82,
+    80,
+    73, 74,
+];
+
+// Resolves the candidate slice bounds `[start, end)` in `QPACK_LENGTH_CANDIDATES` for `name_len`.
+inline fn qpack_candidate_range(name_len: i64) -> i64, i64 {
+    guard name_len >= QPACK_MIN_STATIC_NAME_LEN && name_len <= QPACK_MAX_STATIC_NAME_LEN else {
+        return 0, 0;
+    }
+    let bucket: u16 = QPACK_NAME_BUCKET_OFFSETS[name_len];
+    let start:  i64 = bucket >> 8;
+    let end:    i64 = core::add_sat_i64(start, bucket & 0xFF);
+    return start, min(end, 99);
+}
+
+// Searches static table for matching name and optional value via O(1) name-length bucket dispatch.
 // Returns (0-based index, exact_value_match).
 fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
+    let start, end = qpack_candidate_range(name.len);
     var matched_name_idx: u64 = 0;
     var name_found = false;
-    var idx: u64 = 0;
-    while idx < rfc::QPACK_STATIC_TABLE_SIZE {
-        let entry = QPACK_STATIC_TABLE[idx as i64];
+    var i = max(0, start);
+    while i < end {
+        let idx: i64 = min(QPACK_LENGTH_CANDIDATES[i] as i64, 98);
+        let entry = QPACK_STATIC_TABLE[idx];
         if entry.name == name {
             if entry.val == val {
-                return idx, true;
+                return idx as u64, true;
             }
             if !name_found {
-                matched_name_idx = idx;
+                matched_name_idx = idx as u64;
                 name_found = true;
             }
         }
-        idx++;
+        i = core::add_sat_i64(i, 1);
     }
     return matched_name_idx, false;
 }

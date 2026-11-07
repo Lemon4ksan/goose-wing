@@ -131,7 +131,9 @@ fn is_webtransport_connect_request(req: const Request&) -> bool {
     if req.method[..] != "CONNECT" { return false; }
     if !req.has_header(":protocol") { return false; }
     if req.header(":protocol") != rfc::WEBTRANSPORT_PROTOCOL { return false; }
-    return true;
+    let view, err = core::parse_url_view(req.url[..]);
+    if !core::is_ok(err) || !view.valid { return false; }
+    return core::eq_ascii_fold(view.scheme, "https") && view.host.len > 0 && view.pathname.len > 0;
 }
 
 // Formats an HTTP/3 response accepting a WebTransport session

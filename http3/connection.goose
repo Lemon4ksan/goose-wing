@@ -33,26 +33,28 @@ enum H3StreamState {
 }
 
 struct H3StreamEntry {
-    stream_id:         u64                 = 0,
-    kind:              H3StreamKind        = H3StreamKind.Request,
-    state:             H3StreamState       = H3StreamState.Idle,
-    is_bidi:           bool                = true,
-    headers_sent:      bool                = false,
-    headers_received:  bool                = false,
-    trailers_received: bool                = false,
-    fin_sent:          bool                = false,
-    fin_received:      bool                = false,
-    status_code:       i32                 = 0,
-    body_received_len: u64                 = 0,
-    content_length:    i64                 = -1,
-    priority:          wing::PriorityParam = wing::PriorityParam { urgency: 3, incremental: false },
-    priority_updated:  bool                = false,
-    req_method:        u8[..16]            = [],
-    req_path:          u8[..1024]          = [],
-    req_authority:     u8[..256]           = [],
-    headers:           wing::HeaderMap     = wing::HeaderMap { .. },
-    trailers:          wing::HeaderMap     = wing::HeaderMap { .. },
-    received_body:     u8[..4096]          = [],
+    stream_id:            u64                 = 0,
+    kind:                 H3StreamKind        = H3StreamKind.Request,
+    state:                H3StreamState       = H3StreamState.Idle,
+    is_bidi:              bool                = true,
+    headers_sent:         bool                = false,
+    headers_received:     bool                = false,
+    trailers_received:    bool                = false,
+    fin_sent:             bool                = false,
+    fin_received:         bool                = false,
+    status_code:          i32                 = 0,
+    body_received_len:    u64                 = 0,
+    content_length:       i64                 = -1,
+    priority:             wing::PriorityParam = wing::PriorityParam { urgency: 3, incremental: false },
+    priority_updated:     bool                = false,
+    tx_pending_bytes:     u64                 = 0,
+    last_scheduled_cycle: u64                 = 0,
+    req_method:           u8[..16]            = [],
+    req_path:             u8[..1024]          = [],
+    req_authority:        u8[..256]           = [],
+    headers:              wing::HeaderMap     = wing::HeaderMap { .. },
+    trailers:             wing::HeaderMap     = wing::HeaderMap { .. },
+    received_body:        u8[..4096]          = [],
 }
 
 enum H3ConnRole {
@@ -104,6 +106,10 @@ struct H3Connection {
     has_promised_push_id:      bool                = false,
     max_promised_push_id:      u64                 = 0,
     empty_frame_streak:        u32                 = 0,
+    control_glitch_count:      u32                 = 0,
+    max_control_glitches:      u32                 = 256,
+    sched_cycle:               u64                 = 0,
+    peer_origins:              u8[..128][..16]     = [],
     error_code:                u64                 = rfc::H3_ERR_NO_ERROR,
     local_settings:            wing::H3Settings    = wing::H3Settings { .. },
     peer_settings:             wing::H3Settings    = wing::H3Settings { .. },
@@ -381,6 +387,28 @@ fn send_request_data<B>(
 
 // ---- Inbound Frame and Stream Processing ---------------------------------
 
+fn handle_peer_origin_or_glitch(conn: H3Connection&, frame_type: u64, payload: const u8[:]) -> u64 {
+    if frame_type == H3_FRAME_ORIGIN {
+        guard conn.role != H3ConnRole.Server else {
+            return rfc::H3_ERR_NO_ERROR;
+        }
+        guard parse_h3_origin_frame(payload, conn.peer_origins) else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
+        }
+        return rfc::H3_ERR_NO_ERROR;
+    }
+
+    conn.control_glitch_count = min(conn.control_glitch_count, 0xFFFFFFFE) + 1;
+    guard conn.control_glitch_count <= conn.max_control_glitches else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
+
 // Handles frames received on the peer control stream.
 fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, payload: const u8[:]) -> u64 {
     // First frame on Control Stream MUST be SETTINGS (RFC 9114 §6.2.1 & §7.2.4)
@@ -522,7 +550,7 @@ fn handle_peer_control_frame(conn: H3Connection&, hdr: const H3FrameHeader&, pay
         return rfc::H3_ERR_NO_ERROR;
     }
 
-    return rfc::H3_ERR_NO_ERROR;
+    return handle_peer_origin_or_glitch(conn, hdr.frame_type, payload);
 }
 
 // RFC 9114 Section 4.3.1: Request Pseudo-Header Fields - All HTTP/3 requests MUST include exactly one value for the :method, :scheme, and :path pseudo-header fields, unless the request is a CONNECT request; see Section 4.4.
@@ -1617,4 +1645,39 @@ fn get_stream_priority(conn: const H3Connection&, stream_id: u64) -> wing::Prior
         return wing::priority_default(false), false;
     }
     return conn.streams[s_idx].priority, true;
+}
+
+inline fn is_better_h3_tx_candidate(
+    cand: const H3StreamEntry&,
+    best: const H3StreamEntry&,
+) -> bool {
+    if cand.priority.urgency != best.priority.urgency {
+        return cand.priority.urgency < best.priority.urgency;
+    }
+    if cand.priority.incremental {
+        if cand.last_scheduled_cycle != best.last_scheduled_cycle {
+            return cand.last_scheduled_cycle < best.last_scheduled_cycle;
+        }
+    }
+    return cand.stream_id < best.stream_id;
+}
+
+// Selects the next writable request stream according to RFC 9218 Extensible Priorities.
+// Scans streams with `tx_pending_bytes > 0`, selecting minimum `priority.urgency` (`0..7`),
+// breaking ties by `stream_id` when `!priority.incremental` and by `last_scheduled_cycle`
+// when `priority.incremental`.
+fn select_next_h3_tx_stream(conn: H3Connection&) -> u64, bool {
+    let next_cycle = min(conn.sched_cycle, 0xFFFFFFFFFFFFFFFE) + 1;
+    var best_idx: i64 = -1;
+    for i in conn.streams.len {
+        if conn.streams[i].tx_pending_bytes > 0 {
+            if best_idx < 0 || is_better_h3_tx_candidate(conn.streams[i], conn.streams[best_idx]) {
+                best_idx = i;
+            }
+        }
+    }
+    guard best_idx >= 0 && best_idx < conn.streams.len else { return 0, false; }
+    conn.sched_cycle = next_cycle;
+    conn.streams[best_idx].last_scheduled_cycle = next_cycle;
+    return conn.streams[best_idx].stream_id, true;
 }

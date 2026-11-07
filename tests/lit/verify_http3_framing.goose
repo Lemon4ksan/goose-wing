@@ -149,11 +149,127 @@ fn test_h3_control_frames_roundtrip() {
     print("H3_CONTROL_FRAMES: OK");
 }
 
+fn test_quich3_origin_frame_and_coalescing() {
+    let origins: (const u8[:])[2] = ["https://example.com", "https://api.example.com:8443"];
+    var wire: u8[..128] = [];
+    assert(internal::encode_h3_origin_frame(wire, origins[..]));
+
+    let hdr, ok_hdr = internal::parse_h3_frame_header(wire[..], 0);
+    assert(ok_hdr);
+    assert(hdr.frame_type == internal::H3_FRAME_ORIGIN);
+
+    var parsed: u8[..128][..16] = [];
+    assert(internal::parse_h3_origin_frame(wire[hdr.header_len..], parsed));
+    assert(parsed.len == 2);
+    assert(parsed[0][..] == "https://example.com");
+    assert(parsed[1][..] == "https://api.example.com:8443");
+
+    // Reject zero-length origin entry and truncated length
+    let zero_entry: u8[2] = [0x00, 0x00];
+    var bad_out: u8[..128][..16] = [];
+    assert(!internal::parse_h3_origin_frame(zero_entry[..], bad_out));
+    let trunc_entry: u8[3] = [0x00, 0x05, 'a'];
+    assert(!internal::parse_h3_origin_frame(trunc_entry[..], bad_out));
+
+    // Client control stream stores peer_origins; Server ignores ORIGIN frame
+    let settings = wing::H3Settings { .. };
+    var cli_conn = internal::new_h3_client_connection(settings);
+    var ctrl_wire: u8[..256] = [];
+    internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+    internal::encode_h3_settings_frame(ctrl_wire, settings);
+    ctrl_wire.append(wire[..]);
+    assert(internal::handle_stream_data(cli_conn, 3, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    assert(cli_conn.peer_origins.len == 2);
+    assert(cli_conn.peer_origins[0][..] == "https://example.com");
+
+    var srv_conn = internal::new_h3_server_connection(settings);
+    assert(internal::handle_stream_data(srv_conn, 2, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    assert(srv_conn.peer_origins.len == 0);
+    print("H3_ORIGIN_FRAME: OK");
+}
+
+fn test_quich3_priority_scheduler() {
+    let settings = wing::H3Settings { .. };
+    var conn = internal::new_h3_client_connection(settings);
+    let sid0, _ = internal::open_request_stream(conn);
+    let sid4, _ = internal::open_request_stream(conn);
+    let sid8, _ = internal::open_request_stream(conn);
+
+    conn.streams[0].tx_pending_bytes = 512;
+    conn.streams[0].priority = wing::PriorityParam { urgency: 4, incremental: false };
+    conn.streams[1].tx_pending_bytes = 512;
+    conn.streams[1].priority = wing::PriorityParam { urgency: 1, incremental: true };
+    conn.streams[2].tx_pending_bytes = 512;
+    conn.streams[2].priority = wing::PriorityParam { urgency: 1, incremental: true };
+
+    let next1, ok1 = internal::select_next_h3_tx_stream(conn);
+    assert(ok1 && next1 == sid4);
+    let next2, ok2 = internal::select_next_h3_tx_stream(conn);
+    assert(ok2 && next2 == sid8);
+    let next3, ok3 = internal::select_next_h3_tx_stream(conn);
+    assert(ok3 && next3 == sid4);
+
+    conn.streams[1].tx_pending_bytes = 0;
+    conn.streams[2].tx_pending_bytes = 0;
+    let next4, ok4 = internal::select_next_h3_tx_stream(conn);
+    assert(ok4 && next4 == sid0);
+    print("H3_PRIORITY_SCHEDULER: OK");
+}
+
+fn test_quich3_webtransport_settings_and_glitch() {
+    let wt_set = wing::H3Settings {
+        qpack_max_table_capacity:  4096,
+        max_field_section_size:    16384,
+        qpack_blocked_streams:     16,
+        enable_connect_protocol:   1,
+        h3_datagram:               1,
+        enable_webtransport:       1,
+        webtransport_max_sessions: 8,
+    };
+    var out_buf: u8[..128] = [];
+    assert(internal::encode_h3_settings_frame(out_buf, wt_set));
+    let hdr, ok_hdr = internal::parse_h3_frame_header(out_buf[..], 0);
+    assert(ok_hdr);
+    var parsed = wing::H3Settings { .. };
+    assert(internal::parse_h3_settings_frame(out_buf[hdr.header_len..], parsed) == rfc::H3_ERR_NO_ERROR);
+    assert(parsed.h3_datagram == 1 && parsed.enable_webtransport == 1 && parsed.webtransport_max_sessions == 8);
+
+    // Reject boolean setting > 1 and oversized SETTINGS > 256B
+    var bad_bool: u8[..16] = [];
+    internal::quic_encode_varint(bad_bool, internal::H3_SETTINGS_H3_DATAGRAM);
+    internal::quic_encode_varint(bad_bool, 2);
+    assert(internal::parse_h3_settings_frame(bad_bool[..], parsed) == rfc::H3_ERR_SETTINGS_ERROR);
+
+    var huge_set: u8[300] = [0; 300];
+    assert(internal::parse_h3_settings_frame(huge_set[..], parsed) == rfc::H3_ERR_EXCESSIVE_LOAD);
+
+    // WebTransport connect request validation & control glitch limiter
+    var wt_req = wing::Request { .. };
+    wing::format_webtransport_connect_request(wt_req, "https://wt.example.com/session");
+    assert(wing::is_webtransport_connect_request(wt_req));
+    wing::format_webtransport_connect_request(wt_req, "http://wt.example.com/session");
+    assert(!wing::is_webtransport_connect_request(wt_req));
+
+    var conn = internal::new_h3_client_connection(wt_set);
+    conn.max_control_glitches = 2;
+    var ctrl: u8[..128] = [];
+    internal::quic_encode_varint(ctrl, rfc::H3_STREAM_CONTROL);
+    internal::encode_h3_settings_frame(ctrl, wt_set);
+    for _ in 3 {
+        internal::encode_h3_frame_header(ctrl, 0x21, 0);
+    }
+    assert(internal::handle_stream_data(conn, 3, false, ctrl[..], false) == rfc::H3_ERR_EXCESSIVE_LOAD);
+    print("H3_WT_SETTINGS_AND_GLITCH: OK");
+}
+
 fn main() {
     test_h3_frame_headers();
     test_h3_grease_and_h2_reserved();
     test_h3_settings_frame();
     test_h3_control_frames_roundtrip();
+    test_quich3_origin_frame_and_coalescing();
+    test_quich3_priority_scheduler();
+    test_quich3_webtransport_settings_and_glitch();
     print("HTTP3_FRAMING: ALL INVARIANTS PASS");
 }
 
@@ -161,4 +277,7 @@ fn main() {
 // CHECK: H3_RULES_AND_GREASE: OK
 // CHECK: H3_SETTINGS_CONFORMANCE: OK
 // CHECK: H3_CONTROL_FRAMES: OK
+// CHECK: H3_ORIGIN_FRAME: OK
+// CHECK: H3_PRIORITY_SCHEDULER: OK
+// CHECK: H3_WT_SETTINGS_AND_GLITCH: OK
 // CHECK: HTTP3_FRAMING: ALL INVARIANTS PASS

@@ -86,10 +86,36 @@ fn main() {
 
     assert(calc_varint_step(31, 10, 7) == 1311);
     assert(derive_hpack_mask(5) == 31);
+
+    // Verify O(1) QPACK static table bucket lookup across all 99 entries + non-matching headers
+    var q_idx: u64 = 0;
+    while q_idx < 99 {
+        let entry, ok = internal::get_qpack_static_field(q_idx);
+        assert(ok);
+        let found_idx, exact = internal::find_qpack_static_field(entry.name, entry.val);
+        assert(exact);
+        assert(found_idx == q_idx);
+
+        let name_idx, exact_miss = internal::find_qpack_static_field(entry.name, "__nonexistent_val__");
+        assert(!exact_miss);
+        let first_entry, ok_first = internal::get_qpack_static_field(name_idx);
+        assert(ok_first);
+        assert(first_entry.name == entry.name);
+        q_idx++;
+    }
+    let miss_short, ex_short = internal::find_qpack_static_field("x", "1");
+    assert(!ex_short && miss_short == 0);
+    let miss_long, ex_long = internal::find_qpack_static_field("x-custom-very-long-header-name-35ch", "1");
+    assert(!ex_long && miss_long == 0);
+    let miss_mid, ex_mid = internal::find_qpack_static_field("x-custom-hdr", "1");
+    assert(!ex_mid && miss_mid == 0);
+    print("QPACK_STATIC_BUCKET_LOOKUP: OK");
+
     print("HPACK_QPACK_ALL: PASS");
 }
 
 // CHECK: HPACK_VARINT_5: OK
 // CHECK: HPACK_VARINT_7: OK
 // CHECK: HPACK_STRING_FRAMING: OK
+// CHECK: QPACK_STATIC_BUCKET_LOOKUP: OK
 // CHECK: HPACK_QPACK_ALL: PASS
