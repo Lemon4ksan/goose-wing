@@ -20,6 +20,14 @@ enum ChunkedDecodeError {
     UnexpectedEof,
     MalformedChunkEnding,
     DisallowedTrailer,
+    ExcessiveFramingOverhead,
+}
+
+const CHUNK_OVERHEAD_MIN_BYTES: i64 = 102400;
+
+inline fn is_chunk_overhead_excessive(total_read: i64, total_overhead: i64) -> bool {
+    return total_overhead >= CHUNK_OVERHEAD_MIN_BYTES &&
+           core::sub_sat_i64(total_read, total_overhead) < (total_read >> 2);
 }
 
 fn skip_bws(s: const u8[:], cursor: i64&) {
@@ -381,8 +389,10 @@ fn decode_chunked_body_with_trailers(
     out_trailers.clear();
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
 
-    var cursor: i64 = 0;
+    var cursor:         i64 = 0;
+    var total_overhead: i64 = 0;
     while cursor < raw.len {
+        let header_start = cursor;
         var chunk_size: u64 = 0;
         let line_err = read_chunk_size_line(raw, cursor, chunk_size);
         guard line_err == ChunkedDecodeError.None else {
@@ -390,15 +400,23 @@ fn decode_chunked_body_with_trailers(
             out_trailers.clear();
             return line_err, 0;
         }
+        total_overhead = core::add_sat_i64(total_overhead, core::sub_sat_i64(cursor, header_start));
 
         if chunk_size == 0 {
+            let tr_start = cursor;
             let tr_err = parse_chunked_trailers_with_out(raw, cursor, out_trailers);
-            if tr_err == ChunkedDecodeError.None {
-                return ChunkedDecodeError.None, cursor;
+            guard tr_err == ChunkedDecodeError.None else {
+                out_body.clear();
+                out_trailers.clear();
+                return tr_err, 0;
             }
-            out_body.clear();
-            out_trailers.clear();
-            return tr_err, 0;
+            total_overhead = core::add_sat_i64(total_overhead, core::sub_sat_i64(cursor, tr_start));
+            guard !is_chunk_overhead_excessive(cursor, total_overhead) else {
+                out_body.clear();
+                out_trailers.clear();
+                return ChunkedDecodeError.ExcessiveFramingOverhead, 0;
+            }
+            return ChunkedDecodeError.None, cursor;
         }
 
         let data_err = consume_chunk_data(raw, cursor, chunk_size, out_body);
@@ -406,6 +424,12 @@ fn decode_chunked_body_with_trailers(
             out_body.clear();
             out_trailers.clear();
             return data_err, 0;
+        }
+        total_overhead = core::add_sat_i64(total_overhead, 2);
+        if is_chunk_overhead_excessive(cursor, total_overhead) {
+            out_body.clear();
+            out_trailers.clear();
+            return ChunkedDecodeError.ExcessiveFramingOverhead, 0;
         }
     }
 

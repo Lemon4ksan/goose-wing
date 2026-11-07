@@ -35,6 +35,9 @@ struct ServerPipelineConfig {
     enable_slowloris_timer:  bool                     = true,
     trust_proxy_headers:     bool                     = false,
     server_pso_capabilities: u64                      = 0xFFFFFFFFFFFFFFFF,
+    hdr_scan_cursor:         i64                      = 0,
+    last_valid_host:         u8[..128]                = [],
+    has_valid_host:          bool                     = false,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
@@ -56,6 +59,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         deadline_ns:             30000000000,
         trust_proxy_headers:     false,
         server_pso_capabilities: 0xFFFFFFFFFFFFFFFF,
+        ..
     };
     let _ = cfg.target_host.try_set(target_host);
     return cfg;
@@ -78,14 +82,17 @@ enum PipelineOutcome {
 
 // Per-request server stage execution context passed to custom `<UserStage>` hooks.
 struct ServerStageCtx {
-    ext_slot_idx: i32             = -1,
-    handler_id:   i32             = -1,
-    entries_mask: u32             = 0,
-    pso_mask:     u64             = 0,
-    ingress_mask: u64             = wire::STAGE_SRV_IN_DEFAULT_MASK,
-    egress_mask:  u64             = wire::STAGE_SRV_OUT_DEFAULT_MASK,
-    now_ns:       u64             = 0,
-    outcome:      PipelineOutcome = PipelineOutcome.Handled,
+    ext_slot_idx:    i32             = -1,
+    handler_id:      i32             = -1,
+    entries_mask:    u32             = 0,
+    pso_mask:        u64             = 0,
+    ingress_mask:    u64             = wire::STAGE_SRV_IN_DEFAULT_MASK,
+    egress_mask:     u64             = wire::STAGE_SRV_OUT_DEFAULT_MASK,
+    now_ns:          u64             = 0,
+    outcome:         PipelineOutcome = PipelineOutcome.Handled,
+    hdr_scan_cursor: i64             = 0,
+    last_valid_host: u8[..128]       = [],
+    has_valid_host:  bool            = false,
 }
 
 // Extracts a route path parameter by name from the active request extension slot (`:id`, `*wildcard`).
@@ -1110,6 +1117,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
         egress_mask:  cfg.wire_pipeline.egress_mask,
         now_ns:       now_ns,
         outcome:      PipelineOutcome.Handled,
+        ..
     };
 
     let pre_route_v = user_stage.on_server_stage(wire::ServerHookPhase.PreRoute, cfg, req, sctx, res);

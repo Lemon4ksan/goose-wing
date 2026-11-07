@@ -1058,6 +1058,11 @@ inline fn slice_contains_comma(s: const u8[:]) -> bool {
     return false;
 }
 
+enum H1ResponseParseMode {
+    Strict,
+    ClientCompat,
+}
+
 // Parses a single wire header line (name: value) into HeaderMap.
 //
 // Example:
@@ -1068,6 +1073,7 @@ fn parse_single_header_line(
     cursor:    i64,
     map:       HeaderMap&,
     is_dup_cl: bool&,
+    mode:      H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
     let colon_pos = find_any(line, COLON_SET);
     guard colon_pos > 0 else {
@@ -1075,8 +1081,10 @@ fn parse_single_header_line(
         return HeaderParseError.InvalidHeaderName;
     }
 
-    let raw_name = line[..colon_pos];
-    if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
+    var raw_name = line[..colon_pos];
+    if mode == H1ResponseParseMode.ClientCompat {
+        raw_name = trim_lws_end(raw_name);
+    } else if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
         map.valid = false;
         return HeaderParseError.InvalidHeaderName;
     }
@@ -1103,7 +1111,7 @@ fn parse_single_header_line(
     guard !is_dup_cl else { return HeaderParseError.None; }
 
     let name_begin_off = cursor as u16;
-    let name_end_off = (cursor + colon_pos) as u16;
+    let name_end_off = (cursor + raw_name.len) as u16;
 
     let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
     let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
@@ -1225,6 +1233,7 @@ fn process_header_line(
     map:             HeaderMap&,
     is_first_header: bool&,
     prev_was_dup_cl: bool&,
+    mode:            H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
     let line = raw_buf[cursor..line_end];
     if is_line_whitespace_only(line) {
@@ -1243,7 +1252,7 @@ fn process_header_line(
         guard is_ok(fold_err) else { return fold_err; }
     } else {
         var is_dup_cl = false;
-        let line_err = parse_single_header_line(line, cursor, map, is_dup_cl);
+        let line_err = parse_single_header_line(line, cursor, map, is_dup_cl, mode);
         guard is_ok(line_err) else { return line_err; }
         if is_dup_cl {
             prev_was_dup_cl = true;
@@ -1262,7 +1271,12 @@ fn process_header_line(
 // Example:
 //   raw_input = "Host: example.com\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
 //   returns: HeaderParseError.None, populates map.entries
-fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
+fn parse_headers(
+    raw_input:      const u8[:],
+    map:            HeaderMap&,
+    allow_obs_fold: bool                = false,
+    mode:           H1ResponseParseMode = H1ResponseParseMode.Strict,
+) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
@@ -1298,7 +1312,7 @@ fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool =
         let rel_end = find_any(map.raw_buf[cursor..], CRLF_SET);
         let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
         let line_err = process_header_line(
-            map.raw_buf[..], cursor, line_end, allow_obs_fold, map, is_first_header, prev_was_dup_cl,
+            map.raw_buf[..], cursor, line_end, allow_obs_fold, map, is_first_header, prev_was_dup_cl, mode,
         );
         guard is_ok(line_err) else { return line_err; }
 
@@ -1429,7 +1443,23 @@ fn parse_http_status_line(
     major:       i32&,
     minor:       i32&,
     code:        i32&,
+    mode:        H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
+    if mode == H1ResponseParseMode.ClientCompat && status_line.len >= 7 && eq_ascii_fold(status_line[..4], "ICY ") {
+        let sc_slice = trim_lws_start(status_line[4..]);
+        guard sc_slice.len >= 3 && (sc_slice.len == 3 || sc_slice[3] == ' ') else {
+            return HeaderParseError.MalformedStatusLine;
+        }
+        let sc_val, ok_sc = core::parse_i32_dec(sc_slice[..3]);
+        guard ok_sc && sc_val >= 100 && sc_val <= 599 else {
+            return HeaderParseError.MalformedStatusLine;
+        }
+        major = 1;
+        minor = 0;
+        code = sc_val;
+        return HeaderParseError.None;
+    }
+
     guard status_line.len >= 12 else {
         return HeaderParseError.MalformedStatusLine;
     }
@@ -1470,49 +1500,57 @@ fn parse_http_status_line(
     return HeaderParseError.None;
 }
 
-// Parses full HTTP/1.1 response status line and header block
+// Parses full HTTP/1.1 response status line and header block with configurable compatibility mode.
 //
 // Example:
-//   raw_input = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
+//   raw_input = "ICY 200 OK\r\nicy-name : stream\r\n\r\n", map = HeaderMap { .. }, mode = H1ResponseParseMode.ClientCompat
 //   returns: HeaderParseError.None, map.status_code = 200
-fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
+fn parse_response_headers_with_mode(
+    raw_input:      const u8[:],
+    map:            HeaderMap&,
+    mode:           H1ResponseParseMode,
+    allow_obs_fold: bool = false,
+) -> HeaderParseError {
     guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
-    // Status line: HTTP/1.x 200 OK
     var line_end: i64 = 0;
     while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
-        line_end++;
+        line_end = core::add_sat_i64(line_end, 1);
     }
 
     var major: i32 = 0;
     var minor: i32 = 0;
     var code:  i32 = 0;
-    let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code);
+    let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code, mode);
     guard is_ok(st_err) else {
         map.valid = false;
         return st_err;
     }
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' {
-        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            map.valid = false;
-            return HeaderParseError.MalformedStatusLine;
-        }
-        header_start += 2;
-    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
-        header_start++;
+    guard advance_crlf(raw_input, header_start, line_end) else {
+        map.valid = false;
+        return HeaderParseError.MalformedStatusLine;
     }
 
-    let err = parse_headers(raw_input[header_start..], map, allow_obs_fold);
+    let err = parse_headers(raw_input[header_start..], map, allow_obs_fold, mode);
     map.status_code = code;
     map.http_major = major;
     map.http_minor = minor;
     return err;
+}
+
+// Parses full HTTP/1.1 response status line and header block
+//
+// Example:
+//   raw_input = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
+//   returns: HeaderParseError.None, map.status_code = 200
+fn parse_response_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
+    return parse_response_headers_with_mode(raw_input, map, H1ResponseParseMode.Strict, allow_obs_fold);
 }
 
 // Parses full HTTP/1.1 response status line and header block with overflow spill fallback.
@@ -1564,6 +1602,16 @@ fn parse_response_headers_with_overflow(
     return err;
 }
 
+inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
+    if raw.len >= 2 && raw[0] == '\r' && raw[1] == '\n' {
+        return 2;
+    }
+    if raw.len >= 1 && raw[0] == '\n' {
+        return 1;
+    }
+    return 0;
+}
+
 // Parses full HTTP/1.1 request line (METHOD /path HTTP/1.1) and header block
 //
 // Example:
@@ -1576,7 +1624,7 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
         return HeaderParseError.EmbeddedNull;
     }
 
-    var line_end: i64 = 0;
+    var line_end = skip_single_preamble_empty_line(raw_input);
     while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
         line_end++;
     }
@@ -1612,7 +1660,7 @@ fn parse_request_headers_with_overflow(
         return HeaderParseError.EmbeddedNull;
     }
 
-    var line_end: i64 = 0;
+    var line_end = skip_single_preamble_empty_line(raw_input);
     while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
         line_end++;
     }

@@ -696,14 +696,37 @@ fn huff_decode_step(
     return out_idx, true;
 }
 
-// Decodes a Huffman-encoded byte slice directly into any appendable buffer.
+// Decodes a Huffman-encoded byte slice directly into any appendable buffer without stack scratch zeroing.
+//
+// Example:
+//   src = [0x9C, 0xC5], out = []
+//   returns: ok = true, out = "www"
 fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
-    var ctx = new_huff_context();
-    var tmp: u8[8192] = [0; 8192];
-    let written, ok = huff_decode_step(ctx, tmp[..], 0, src, true);
-    guard ok else { return false; }
-    guard out.len + (written as i64) <= out.cap else { return false; }
-    out.append(tmp[..written as i64]);
+    let start_len = out.len;
+    var state: u8  = 0;
+    var flags: u8  = HUFF_ACCEPTED;
+    var i:     u64 = 0;
+    let src_len = src.len as u64;
+    var last_sym_byte: u64 = 0;
+
+    while i < src_len {
+        let c = src[i];
+        let next_i = core::add_sat_u64(i, 1);
+        let s1, _, ok1 = huff_apply_nibble(state, c >> 4, next_i, last_sym_byte, out);
+        let s2, f2, ok2 = huff_apply_nibble(s1, c & 0x0F, next_i, last_sym_byte, out);
+        if !ok1 || !ok2 {
+            rollback_hpack_out(out, start_len);
+            return false;
+        }
+        state = s2;
+        flags = f2;
+        i = next_i;
+    }
+
+    if (flags & HUFF_ACCEPTED) == 0 || (src_len > 0 && last_sym_byte != src_len) {
+        rollback_hpack_out(out, start_len);
+        return false;
+    }
     return true;
 }
 
@@ -2029,7 +2052,79 @@ fn encode_hpack_field<B>(
     return true;
 }
 
+inline fn rollback_hpack_out<B>(out: B&, start_len: i64) {
+    while out.len > start_len {
+        let _ = out.pop();
+    }
+}
+
+inline fn huff_apply_nibble<B>(
+    state:         u8,
+    nibble:        u8,
+    byte_idx:      u64,
+    last_sym_byte: u64&,
+    out:           B&,
+) -> u8, u8, bool {
+    let t = huff_decode_lookup(state, nibble);
+    guard (t.flags & HUFF_FAIL) == 0 else { return 0, 0, false; }
+    if (t.flags & HUFF_SYM) != 0 {
+        guard out.try_push(t.sym) else { return 0, 0, false; }
+        last_sym_byte = byte_idx;
+    }
+    return t.fstate, t.flags, true;
+}
+
+inline fn is_hpack_volatile_header(name: const u8[:]) -> bool {
+    return eq_ascii_fold(name, ":path") ||
+           eq_ascii_fold(name, "age") ||
+           eq_ascii_fold(name, "content-length") ||
+           eq_ascii_fold(name, "etag") ||
+           eq_ascii_fold(name, "if-modified-since") ||
+           eq_ascii_fold(name, "if-none-match") ||
+           eq_ascii_fold(name, "location") ||
+           eq_ascii_fold(name, "set-cookie");
+}
+
+// Selects the HPACK indexing representation for a header field (RFC 7541 §7.1).
+// Protects sensitive credentials with NeverIndexed and omits volatile or oversized entries from the dynamic table.
+fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i64) -> HpackIndexing {
+    if eq_ascii_fold(name, "authorization") || eq_ascii_fold(name, "proxy-authorization") {
+        return HpackIndexing.NeverIndexed;
+    }
+    if eq_ascii_fold(name, "cookie") && val.len < 20 {
+        return HpackIndexing.NeverIndexed;
+    }
+    let entry_size = core::add_sat_i64(core::add_sat_i64(name.len, val.len), 32);
+    let q_size = max(0, max_table_size) >> 2;
+    let threshold = core::add_sat_i64(core::add_sat_i64(q_size, q_size), q_size);
+    if is_hpack_volatile_header(name) || entry_size > threshold {
+        return HpackIndexing.None;
+    }
+    return HpackIndexing.Incremental;
+}
+
+inline fn try_encode_hpack_huffman_short<B>(out: B&, raw: const u8[:]) -> bool, bool {
+    let hdr_idx = out.len;
+    guard out.try_push(0 as u8) else { return false, true; }
+    if huff_encode_bytes(raw, out) {
+        let enc_len = core::sub_sat_i64(core::sub_sat_i64(out.len, hdr_idx), 1);
+        if enc_len < raw.len && hdr_idx >= 0 && hdr_idx < out.len {
+            out[hdr_idx] = 0x80 | (enc_len as u8);
+            return true, true;
+        }
+    }
+    rollback_hpack_out(out, hdr_idx);
+    return false, false;
+}
+
 fn encode_hpack_string_literal<B>(out: B&, raw: const u8[:], use_huffman: bool) -> bool {
+    if use_huffman && raw.len > 0 && raw.len < 127 {
+        let ok_short, handled = try_encode_hpack_huffman_short(out, raw);
+        if handled {
+            return ok_short;
+        }
+        return hpack_encode_int(out, raw.len as u64, 7, 0x00) && out.try_append(raw);
+    }
     if use_huffman {
         let huff_len = huff_encoded_byte_len(raw);
         if huff_len < (raw.len as u64) {

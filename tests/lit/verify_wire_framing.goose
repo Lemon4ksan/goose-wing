@@ -26,7 +26,45 @@ fn validate_tls_record_header(buf: const u8[:]) -> i32 {
         }
         return -1;
     }
-    return ctype as! i32;
+    return ctype;
+}
+
+fn verify_h1_wire_parsers() {
+    var st_code: u16 = 0;
+    assert(wire::parse_h1_wire_status_line("HTTP/1.1 200", st_code) && st_code == 200);
+    let fn_len, fn_ok = wire::scan_h1_wire_field_name("X-Valid-Header: val\r\n");
+    assert(fn_ok && fn_len == 14);
+    let _, bad_fn = wire::scan_h1_wire_field_name("Bad@Header-Name: val\r\n");
+    assert(!bad_fn);
+    let _, bad_swar = wing::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
+    assert(!bad_swar);
+
+    let m_conn, l_conn, ok_conn = wing::match_http_method_u32("CONNECT authority:443 HTTP/1.1\r\n");
+    assert(ok_conn && m_conn == "CONNECT" && l_conn == 8);
+    let m_opt, l_opt, ok_opt = wing::match_http_method_u32("OPTIONS * HTTP/1.1\r\n");
+    assert(ok_opt && m_opt == "OPTIONS" && l_opt == 8);
+    let m_trc, l_trc, ok_trc = wing::match_http_method_u32("TRACE / HTTP/1.1\r\n");
+    assert(ok_trc && m_trc == "TRACE" && l_trc == 6);
+    let m_pat, l_pat, ok_pat = wing::match_http_method_u32("PATCH /item HTTP/1.1\r\n");
+    assert(ok_pat && m_pat == "PATCH" && l_pat == 6);
+
+    var req_map = wing::HeaderMap { .. };
+    let req_err = wing::parse_request_headers("\r\nGET / HTTP/1.1\r\nHost: example.com\r\n\r\n", req_map);
+    assert(req_err == wing::HeaderParseError.None && wing::get_header(req_map, "host") == "example.com");
+
+    var res_map = wing::HeaderMap { .. };
+    let res_err = wing::parse_response_headers_with_mode(
+        "ICY 200 OK\r\nicy-name : stream\r\n\r\n",
+        res_map,
+        wing::H1ResponseParseMode.ClientCompat,
+    );
+    assert(res_err == wing::HeaderParseError.None && res_map.status_code == 200);
+    assert(wing::get_header(res_map, "icy-name") == "stream");
+
+    assert(wing::is_chunk_overhead_excessive(120000, 102400));
+    assert(!wing::is_chunk_overhead_excessive(500000, 102400));
+    assert(internal::is_chunk_overhead_excessive(120000, 102400));
+    print("H1_WIRE_PARSERS: OK");
 }
 
 fn main() {
@@ -68,6 +106,7 @@ fn main() {
     );
     assert(ok_dec && dec_len == 4 && inner_t == rfc::TLS_CONTENT_APPLICATION_DATA && dec[..4] == "ping");
     print("TLS_SEAL_ROUNDTRIP_LEN: ", dec_len);
+    verify_h1_wire_parsers();
 }
 
 // CHECK: GRPC_LPM_LEN: 11
@@ -75,3 +114,4 @@ fn main() {
 // CHECK: TLS_OVERFLOW_ALERT: 22
 // CHECK: CRLFCRLF_OFFSET: 40
 // CHECK: TLS_SEAL_ROUNDTRIP_LEN: 4
+// CHECK: H1_WIRE_PARSERS: OK

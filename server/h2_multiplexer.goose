@@ -23,6 +23,7 @@ struct H2ServerStream {
     response_sent:           bool            = false,
     pending_has_trailers:    bool            = false,
     declared_content_length: i64             = -1,
+    unclaimed_local_window:  i64             = 0,
     spill_slab_idx:          i32             = -1,
     slab_lease_deadline_ns:  u64             = 0,
     method:                  u8[..16]        = [],
@@ -52,6 +53,7 @@ fn reset_server_stream(st: H2ServerStream&) {
     st.trailers.clear();
     st.body.clear();
     st.declared_content_length = -1;
+    st.unclaimed_local_window = 0;
 }
 
 // ---- Server Connection Session -------------------------------------------
@@ -66,6 +68,7 @@ struct H2ServerSession {
     pending_settings_ack:      bool                 = false,
     pending_dyn_size_update:   bool                 = false,
     pending_min_dyn_size:      u64                  = 4096,
+    min_pending_max_size:      i64                  = 4096,
     server_name:               u8[..64]             = "goose-wing/1.0",
     header_accumulator:        u8[..16384]          = [],
     header_accum_stream_id:    u32                  = 0,
@@ -145,6 +148,9 @@ fn reset_h2_server_session_inplace(
     sess.conn.last_peer_stream_id = 0;
     sess.conn.is_server = true;
     sess.conn.enable_push = false;
+    sess.conn.enable_connect_protocol = 1;
+    sess.conn.unclaimed_recv_window = 0;
+    sess.conn.coalesce_window_updates = false;
     sess.conn.streams.clear();
     sess.conn.continuation_stream_id = 0;
     sess.conn.continuation_frames_cnt = 0;
@@ -170,6 +176,8 @@ fn reset_h2_server_session_inplace(
     sess.conn.bucket_prefer_incremental = [false; 8];
     sess.conn.bucket_last_inc_idx = [-1; 8];
     reset_h2_stream_nodes_inplace(sess.conn);
+    sess.conn.shutdown_notice_sent = false;
+    sess.conn.shutdown_ping_opaque = 0x57494E47474F4157;
     sess.conn.goaway_sent = false;
     sess.conn.goaway_received = false;
     sess.conn.goaway_last_stream_id = 0;
@@ -182,6 +190,7 @@ fn reset_h2_server_session_inplace(
     sess.pending_settings_ack = false;
     sess.pending_dyn_size_update = false;
     sess.pending_min_dyn_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
+    sess.min_pending_max_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE as i64;
     let _ = sess.server_name.try_set(server_name_str[..min(server_name_str.len, 64)]);
     sess.header_accumulator.clear();
     sess.header_accum_stream_id = 0;
@@ -317,6 +326,30 @@ fn emit_goaway<B>(last_stream_id: u32, error_code: u32, out: B&) {
     core::append_u32_be(out, error_code);
 }
 
+// Emits a final GOAWAY frame with `sess.conn.last_peer_stream_id` and sets `goaway_sent = true`.
+fn emit_goaway<B>(sess: H2ServerSession&, error_code: u32, out: B&) {
+    emit_goaway(sess.conn.last_peer_stream_id, error_code, out);
+    sess.conn.goaway_sent = true;
+    sess.conn.goaway_last_stream_id = sess.conn.last_peer_stream_id;
+    sess.conn.goaway_error_code = error_code;
+}
+
+// Initiates RFC 9113 §6.8 two-phase graceful shutdown by sending GOAWAY(2^31-1, NO_ERROR)
+// followed by a non-ACK PING frame carrying `shutdown_ping_opaque`.
+fn initiate_graceful_shutdown<B>(sess: H2ServerSession&, out: B&) {
+    guard !sess.conn.shutdown_notice_sent && !sess.conn.goaway_sent else { return; }
+    emit_goaway(0x7FFFFFFF, rfc::H2_ERR_NO_ERROR, out);
+    let ping_hdr = FrameHeader {
+        length:     8,
+        frame_type: rfc::H2_FRAME_PING,
+        flags:      0,
+        stream_id:  0,
+    };
+    encode_frame_header_to(ping_hdr, out);
+    core::append_u64_be(out, sess.conn.shutdown_ping_opaque);
+    sess.conn.shutdown_notice_sent = true;
+}
+
 inline fn is_h2_forbidden_hop_header(name_slice: const u8[:]) -> bool {
     return eq_ascii_fold(name_slice, "connection") ||
            eq_ascii_fold(name_slice, "keep-alive") ||
@@ -328,12 +361,18 @@ inline fn is_h2_forbidden_hop_header(name_slice: const u8[:]) -> bool {
 
 inline fn emit_pending_dyn_size_updates<B>(sess: H2ServerSession&, hpack_block: B&) {
     guard sess.pending_dyn_size_update else { return; }
-    if sess.pending_min_dyn_size < sess.hpack_enc.current_max_size {
-        let _ = hpack_encode_int(hpack_block, sess.pending_min_dyn_size, 5, 0x20);
+    let min_sz = if sess.min_pending_max_size >= 0 && (sess.min_pending_max_size as u64) < sess.pending_min_dyn_size {
+        sess.min_pending_max_size as u64
+    } else {
+        sess.pending_min_dyn_size
+    };
+    if min_sz < sess.hpack_enc.current_max_size {
+        let _ = hpack_encode_int(hpack_block, min_sz, 5, 0x20);
     }
     let _ = hpack_encode_int(hpack_block, sess.hpack_enc.current_max_size, 5, 0x20);
     sess.pending_dyn_size_update = false;
     sess.pending_min_dyn_size = sess.hpack_enc.current_max_size;
+    sess.min_pending_max_size = sess.hpack_enc.current_max_size as i64;
 }
 
 // Encodes HTTP/2 Response HEADERS using HPACK
@@ -346,14 +385,17 @@ fn emit_response_headers<B>(
 ) {
     var hpack_block: u8[..16384] = [];
     emit_pending_dyn_size_updates(sess, hpack_block);
+    let max_tbl = sess.hpack_enc.current_max_size as i64;
 
     var status_buf: u8[..16] = [];
     format(status_buf, res.status_code as i64);
-    encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], HpackIndexing.Incremental, false);
+    let st_idx_mode = select_hpack_indexing(":status", status_buf[..], max_tbl);
+    encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], st_idx_mode, true);
 
     if sess.server_name.len > 0 && !res.has_header("server") {
+        let srv_idx_mode = select_hpack_indexing("server", sess.server_name[..], max_tbl);
         encode_hpack_field(
-            sess.hpack_enc, hpack_block, "server", sess.server_name[..], HpackIndexing.Incremental, false,
+            sess.hpack_enc, hpack_block, "server", sess.server_name[..], srv_idx_mode, true,
         );
     }
 
@@ -362,7 +404,8 @@ fn emit_response_headers<B>(
     if !is_grpc && !has_cl && res.status_code >= 200 && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
         format(cl_buf, res.body.len);
-        encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], HpackIndexing.Incremental, false);
+        let cl_idx_mode = select_hpack_indexing("content-length", cl_buf[..], max_tbl);
+        encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], cl_idx_mode, true);
     }
 
     for &e in res.headers.entries {
@@ -375,8 +418,9 @@ fn emit_response_headers<B>(
             let lc = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
             lower_name.push(lc);
         }
+        let hdr_idx_mode = select_hpack_indexing(lower_name[..], val_slice, max_tbl);
         encode_hpack_field(
-            sess.hpack_enc, hpack_block, lower_name[..], val_slice, HpackIndexing.Incremental, false,
+            sess.hpack_enc, hpack_block, lower_name[..], val_slice, hdr_idx_mode, true,
         );
     }
 
@@ -597,9 +641,24 @@ fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: wing::ServerPipel
     }
 }
 
-inline fn validate_request_pseudo_headers(pseudo: const H2PseudoHeaders&, end_stream: bool) -> bool {
+inline fn validate_request_pseudo_headers(
+    pseudo:                  const H2PseudoHeaders&,
+    end_stream:              bool,
+    enable_connect_protocol: u32 = 1,
+) -> bool {
     let is_connect = pseudo.has_method && pseudo.method[..] == "CONNECT";
-    if !pseudo.has_method || (!is_connect && (!pseudo.has_scheme || !pseudo.has_path)) {
+    if pseudo.has_protocol {
+        if !is_connect || enable_connect_protocol != 1 {
+            return false;
+        }
+        if !pseudo.has_scheme || !pseudo.has_path || !pseudo.has_authority {
+            return false;
+        }
+    } else if is_connect {
+        if !pseudo.has_authority || pseudo.has_scheme || pseudo.has_path {
+            return false;
+        }
+    } else if !pseudo.has_method || !pseudo.has_scheme || !pseudo.has_path {
         return false;
     }
     if end_stream && pseudo.has_content_length && pseudo.content_length_val != 0 {
@@ -670,9 +729,13 @@ fn process_ingress_altsvc<B>(
 
 inline fn apply_header_table_size_setting(sess: H2ServerSession&, param_val: u32) {
     let allowed_max = min(param_val as u64, HPACK_MAX_ARENA_BYTES);
+    let clamped_i64 = allowed_max as i64;
     sess.hpack_enc.max_allowed_size = allowed_max;
     if !sess.pending_dyn_size_update || allowed_max < sess.pending_min_dyn_size {
         sess.pending_min_dyn_size = allowed_max;
+    }
+    if !sess.pending_dyn_size_update || clamped_i64 < sess.min_pending_max_size {
+        sess.min_pending_max_size = clamped_i64;
     }
     if sess.hpack_enc.current_max_size != allowed_max {
         sess.hpack_enc.current_max_size = allowed_max;
@@ -742,6 +805,10 @@ fn process_ingress_settings<B>(
 }
 
 inline fn apply_request_priority_header(conn: H2Connection&, stream_id: u32, headers: const wing::HeaderMap&) {
+    let s_idx, found = find_session_stream_idx(conn, stream_id);
+    if found && conn.streams[s_idx].has_explicit_priority_update {
+        return;
+    }
     let prio_hdr = wing::get_header(headers, "priority");
     guard prio_hdr.len > 0 else { return; }
     let parsed_prio, ok_prio = wing::parse_http_priority(prio_hdr, false);
@@ -870,7 +937,9 @@ fn process_ingress_headers<B>(
         return true;
     }
 
-    guard validate_request_pseudo_headers(pseudo, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0) else {
+    guard validate_request_pseudo_headers(
+        pseudo, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0, sess.conn.enable_connect_protocol,
+    ) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -977,7 +1046,9 @@ fn process_ingress_continuation<B>(
         return true;
     }
 
-    guard validate_request_pseudo_headers(pseudo, sess.header_accum_end_stream) else {
+    guard validate_request_pseudo_headers(
+        pseudo, sess.header_accum_end_stream, sess.conn.enable_connect_protocol,
+    ) else {
         // RFC 9113 §8.1.1: Malformed requests MUST be treated as a stream error of type PROTOCOL_ERROR
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
@@ -1101,6 +1172,48 @@ inline fn replenish_closed_stream_conn_window<B>(
     return true;
 }
 
+inline fn replenish_ingress_data_windows<B>(
+    sess:               H2ServerSession&,
+    s_idx:              i32,
+    stream_id:          u32,
+    frame_len:          u32,
+    skip_stream_window: bool,
+    out_wire:           B&,
+) {
+    guard frame_len > 0 else { return; }
+    let f_len = frame_len as i64;
+    let threshold: i64 = if sess.conn.coalesce_window_updates && sess.conn.local_initial_window_size > 0 {
+        ((sess.conn.local_initial_window_size as u64) >> 1) as i64
+    } else {
+        1
+    };
+    sess.conn.unclaimed_recv_window = core::add_sat_i64(sess.conn.unclaimed_recv_window, f_len);
+    if sess.conn.unclaimed_recv_window >= threshold {
+        let conn_inc = sess.conn.unclaimed_recv_window;
+        emit_window_update(0, conn_inc as u32, out_wire);
+        sess.conn.conn_recv_window = core::add_sat_i64(sess.conn.conn_recv_window, conn_inc);
+        sess.conn.unclaimed_recv_window = 0;
+    }
+    guard !skip_stream_window else { return; }
+    let st_idx = s_idx as i64;
+    guard st_idx >= 0 && st_idx < sess.streams.len else { return; }
+    sess.streams[st_idx].unclaimed_local_window = core::add_sat_i64(
+        sess.streams[st_idx].unclaimed_local_window, f_len,
+    );
+    guard sess.streams[st_idx].unclaimed_local_window >= threshold else { return; }
+    let st_inc = sess.streams[st_idx].unclaimed_local_window;
+    emit_window_update(stream_id, st_inc as u32, out_wire);
+    sess.streams[st_idx].unclaimed_local_window = 0;
+    let c_idx, c_found = find_session_stream_idx(sess.conn, stream_id);
+    guard c_found else { return; }
+    let c_slot = c_idx as i64;
+    if c_slot >= 0 && c_slot < sess.conn.streams.len {
+        sess.conn.streams[c_slot].recv_window = core::add_sat_i64(
+            sess.conn.streams[c_slot].recv_window, st_inc,
+        );
+    }
+}
+
 fn process_ingress_data<B>(
     sess:          H2ServerSession&,
     pipeline:      wing::ServerPipelineConfig&,
@@ -1186,21 +1299,13 @@ fn process_ingress_data<B>(
             return true;
         }
     }
+    //
+    //
+    //
     let promoted_now = !had_slab && sess.streams[s_idx].spill_slab_idx >= 0;
     let is_end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
 
-    // Replenish receive windows if consumed and non-zero
-    if frame_payload.len > 0 {
-        emit_window_update(0, frame_payload.len as u32, out_wire);
-        sess.conn.conn_recv_window += hdr.length as i64;
-        if !promoted_now && !is_end_stream {
-            emit_window_update(hdr.stream_id, frame_payload.len as u32, out_wire);
-            let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
-            if c_found {
-                sess.conn.streams[c_idx].recv_window += hdr.length as i64;
-            }
-        }
-    }
+    replenish_ingress_data_windows(sess, s_idx, hdr.stream_id, hdr.length, promoted_now || is_end_stream, out_wire);
 
     if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
         let dec_cl = sess.streams[s_idx].declared_content_length;
@@ -1298,6 +1403,25 @@ inline fn process_ingress_priority<B>(
     return true;
 }
 
+inline fn process_ingress_ping<B>(
+    sess:          H2ServerSession&,
+    hdr:           const FrameHeader&,
+    frame_payload: const u8[:],
+    out_wire:      B&,
+) {
+    guard frame_payload.len == 8 else { return; }
+    if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+        var opaque: u8[8] = [0; 8];
+        for i in 8 { opaque[i] = frame_payload[i]; }
+        emit_ping_ack(opaque, out_wire);
+        return;
+    }
+    let rx_opaque = core::read_be_u64(frame_payload, 0);
+    if sess.conn.shutdown_notice_sent && !sess.conn.goaway_sent && rx_opaque == sess.conn.shutdown_ping_opaque {
+        emit_goaway(sess, rfc::H2_ERR_NO_ERROR, out_wire);
+    }
+}
+
 fn dispatch_ingress_frame<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
@@ -1311,11 +1435,7 @@ fn dispatch_ingress_frame<B>(
     } else if hdr.frame_type == rfc::H2_FRAME_GOAWAY {
         return process_ingress_goaway(sess, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PING {
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && frame_payload.len == 8 {
-            var opaque: u8[8] = [0; 8];
-            for i in 8 { opaque[i] = frame_payload[i]; }
-            emit_ping_ack(opaque, out_wire);
-        }
+        process_ingress_ping(sess, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY {
         return process_ingress_priority(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {

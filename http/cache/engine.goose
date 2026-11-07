@@ -151,6 +151,24 @@ struct ResponseDecision {
 
 // ---- writers / single-flight request collapsing ----------------------------
 
+enum CacheLockStatus {
+    Idle,
+    Waiting,
+    Done,
+    TransientError,
+    GiveUp,
+    AgeTimeout,
+}
+
+struct WriterSlot {
+    key_hash:       u64             = 0,
+    active:         bool            = false,
+    acquired_at_ms: i64             = 0,
+    age_timeout_ms: i64             = 10000,
+    status:         CacheLockStatus = CacheLockStatus.Idle,
+    stale_writer:   bool            = false,
+}
+
 struct CacheWriterFlight {
     key:          u8[..256] = [],
     is_active:    bool      = false,
@@ -160,9 +178,10 @@ struct CacheWriterFlight {
     aborted:      bool      = false,
 }
 
-// Single-flight coordinator for concurrent network transactions (Chromium HttpCache::Writers parity).
+// Single-flight coordinator for concurrent network transactions (Chromium & Pingora parity).
 struct CacheWriters {
     flights: CacheWriterFlight[..16] = [],
+    slots:   WriterSlot[..64]        = [],
     group:   core::SingleflightGroup = core::SingleflightGroup { .. },
 }
 
@@ -220,6 +239,75 @@ fn abort_writer(writers: CacheWriters&, flight_idx: i64) {
     guard flight_idx >= 0 && flight_idx < writers.flights.len else { return; }
     writers.flights[flight_idx].aborted = true;
     writers.flights[flight_idx].is_active = false;
+}
+
+inline fn try_acquire_matching_slot(slot: WriterSlot&, now_ms: i64, eff_timeout: i64) -> bool {
+    if slot.active && slot.status == CacheLockStatus.Waiting {
+        let elapsed = core::sub_sat_i64(now_ms, slot.acquired_at_ms);
+        guard elapsed >= slot.age_timeout_ms else { return false; }
+        slot.status = CacheLockStatus.Waiting;
+        slot.acquired_at_ms = now_ms;
+        slot.age_timeout_ms = eff_timeout;
+        slot.stale_writer = true;
+        return true;
+    }
+    if slot.status == CacheLockStatus.GiveUp {
+        return true;
+    }
+    slot.active = true;
+    slot.acquired_at_ms = now_ms;
+    slot.age_timeout_ms = eff_timeout;
+    slot.status = CacheLockStatus.Waiting;
+    slot.stale_writer = false;
+    return true;
+}
+
+// Acquires a cache stampede write lock for `hash` at `now_ms` with `age_timeout_ms` expiration.
+// Preempts any expired `Waiting` lock (`now_ms - acquired_at_ms >= age_timeout_ms`) or `GiveUp` slot.
+fn acquire_at(writers: CacheWriters&, hash: u64, now_ms: i64, age_timeout_ms: i64) -> bool {
+    let eff_timeout = if age_timeout_ms > 0 { age_timeout_ms } else { 10000 };
+    for &slot in writers.slots {
+        if slot.key_hash == hash {
+            return try_acquire_matching_slot(slot, now_ms, eff_timeout);
+        }
+    }
+    for &slot in writers.slots {
+        if !slot.active {
+            slot.key_hash = hash;
+            slot.active = true;
+            slot.acquired_at_ms = now_ms;
+            slot.age_timeout_ms = eff_timeout;
+            slot.status = CacheLockStatus.Waiting;
+            slot.stale_writer = false;
+            return true;
+        }
+    }
+    guard writers.slots.len < writers.slots.cap else { return false; }
+    writers.slots.push(WriterSlot {
+        key_hash:       hash,
+        active:         true,
+        acquired_at_ms: now_ms,
+        age_timeout_ms: eff_timeout,
+        status:         CacheLockStatus.Waiting,
+        stale_writer:   false,
+    });
+    return true;
+}
+
+// Acquires a cache stampede write lock for `hash` with default age timeout.
+fn acquire(writers: CacheWriters&, hash: u64) -> bool {
+    return writers.acquire_at(hash, 0, 10000);
+}
+
+// Releases a cache stampede write lock for `hash` and records terminal `status` (`Done`, `GiveUp`, etc.).
+fn release_with_status(writers: CacheWriters&, hash: u64, status: CacheLockStatus) {
+    for &slot in writers.slots {
+        if slot.key_hash == hash {
+            slot.active = false;
+            slot.status = status;
+            return;
+        }
+    }
 }
 
 // ---- http cache engine container -------------------------------------------

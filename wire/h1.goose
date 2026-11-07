@@ -6,7 +6,6 @@ namespace wire;
 
 import std;
 import core from "..";
-import http.headers;
 
 enum H1HeaderFilterMode {
     PreserveAll,
@@ -296,12 +295,39 @@ inline fn is_valid_h1_reason_phrase(reason: const u8[:]) -> bool {
     return true;
 }
 
+// Scans header field name characters up to ':', validating RFC 9110 tchars via 8-byte SWAR chunks.
+//
+// Example:
+//   src = "Content-Type: text/plain\r\n"
+//   returns: 12, ok = true (points to ':')
+fn scan_h1_wire_field_name(src: const u8[:]) -> i64, bool {
+    guard src.len > 0 else { return 0, false; }
+    var i: i64 = 0;
+    while core::add_sat_i64(i, 8) <= src.len {
+        if !wing::is_valid_token_word_swar(src, i) {
+            break;
+        }
+        i = core::add_sat_i64(i, 8);
+    }
+    while i < src.len {
+        let b = src[i];
+        if b == ':' {
+            guard i > 0 else { return 0, false; }
+            return i, true;
+        }
+        guard wing::is_tchar(b) else { return 0, false; }
+        i = core::add_sat_i64(i, 1);
+    }
+    return 0, false;
+}
+
 // Parses an HTTP/1.x status line (RFC 9112 §4) and extracts the 3-digit status code into `out_status`.
 //
 // Example:
 //   line = "HTTP/1.1 200 OK"
 //   returns: true, out_status = 200
 fn parse_h1_wire_status_line(line: const u8[:], out_status: u16&) -> bool {
+    guard line.len >= 12 else { return false; }
     let ver_str, rest, has_sp1 = core::split_once_byte(line, ' ');
     guard has_sp1 && (ver_str == "HTTP/1.1" || ver_str == "HTTP/1.0") else { return false; }
 

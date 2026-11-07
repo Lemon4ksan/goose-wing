@@ -316,6 +316,173 @@ fn test_f005_and_f006_health_and_gcra() {
     print("F005_F006_HEALTH_AND_GCRA: ok\n");
 }
 
+// 13. SRVPROXY-01 & SRVPROXY-02: 103 Early Hints serializer, no-early-hints: 1 suppression, CASPer cookie & proxy 103 capture
+fn test_srvproxy_01_02_early_hints_and_casper() {
+    let hints, ok_hints = wing::parse_early_hints(
+        103, "</style.css>; rel=preload; as=style; crossorigin, </app.js>; rel=preload; as=script",
+    );
+    assert(ok_hints && hints.links.len == 2);
+
+    var out_103: u8[..512] = [];
+    assert(!wing::format_early_hints_http1(hints, "1", out_103));
+    assert(out_103.len == 0);
+    assert(wing::format_early_hints_http1(hints, "", out_103));
+    assert(core::contains(out_103[..], "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload; as=style; crossorigin\r\n"));
+
+    var cset = wing::CasperSet { .. };
+    assert(!wing::casper_lookup_and_insert(cset, "/style.css", "v1"));
+    assert(wing::casper_lookup_and_insert(cset, "/style.css", "v1"));
+    assert(!wing::casper_lookup_and_insert(cset, "/app.js", "v2"));
+
+    var cookie_buf: u8[..128] = [];
+    assert(wing::encode_casper_cookie(cset, cookie_buf));
+    assert(cookie_buf.len > 0);
+
+    var decoded_set = wing::CasperSet { .. };
+    assert(wing::decode_casper_cookie(cookie_buf[..], decoded_set));
+    assert(decoded_set.keys.len == cset.keys.len);
+    assert(wing::casper_lookup_and_insert(decoded_set, "/style.css", "v1"));
+
+    var conn_103 = wing::PooledConnection {
+        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+        ..
+    };
+    conn_103.rx_buf.append("HTTP/1.1 103 Early Hints\r\nLink: </hero.webp>; rel=preload; as=image\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+    var up_resp = wing::UpstreamResponse { .. };
+    var early_hints = wing::EarlyHintsResponse { .. };
+    var has_eh = false;
+    let ok_ex, ka_ex = wing::exchange_prepared_wire_on_conn_with_hints(
+        conn_103, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", up_resp.resp, early_hints, has_eh, 100,
+    );
+    up_resp.early_hints = early_hints;
+    up_resp.has_early_hints = has_eh;
+    assert(ok_ex && ka_ex);
+    assert(up_resp.has_early_hints);
+    assert(up_resp.early_hints.links.len == 1);
+    assert(up_resp.early_hints.links[0].uri[..] == "/hero.webp");
+    assert(up_resp.resp.status_code == 200);
+    print("SRVPROXY_01_02_EARLY_HINTS_CASPER: ok\n");
+}
+
+// 14. SRVPROXY-03 & SRVPROXY-04: Ketama consistent hashing ring & cache stampede AgeTimeout / GiveUp
+fn test_srvproxy_03_04_ketama_and_cache_lock() {
+    var cluster = wing::new_upstream_cluster(wing::LbPolicy.ConsistentHash, 3);
+    assert(wing::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
+    assert(wing::add_upstream_target(cluster, "10.0.0.2", 8080, 2));
+    assert(wing::add_upstream_target(cluster, "10.0.0.3", 8080, 1));
+
+    var ring = wing::KetamaRing { .. };
+    wing::build_ketama_ring(cluster, ring);
+    assert(ring.points.len > 0);
+
+    let idx1, ok1 = wing::select_consistent_backend(cluster, ring, "/users/42", 1000);
+    let idx2, ok2 = wing::select_consistent_backend(cluster, ring, "/users/42", 1000);
+    assert(ok1 && ok2 && idx1 == idx2);
+
+    cluster.targets[idx1].ejected_until_ms = 5000;
+    let idx_failover, ok_fo = wing::select_consistent_backend(cluster, ring, "/users/42", 2000);
+    assert(ok_fo && idx_failover != idx1);
+
+    let idx_recovered, ok_rec = wing::select_consistent_backend(cluster, ring, "/users/42", 6000);
+    assert(ok_rec && idx_recovered == idx1);
+
+    var writers = wing::CacheWriters { .. };
+    let is_ldr, fl_idx = wing::start_writer_or_join(writers, "/asset");
+    assert(is_ldr && fl_idx >= 0);
+    wing::abort_writer(writers, fl_idx);
+    assert(wing::acquire_at(writers, 0xABCD, 1000, 5000));
+    assert(!wing::acquire_at(writers, 0xABCD, 3000, 5000));
+    // Preempt expired lock after age_timeout_ms (1000 + 5000 <= 6000)
+    assert(wing::acquire_at(writers, 0xABCD, 6000, 5000));
+    wing::release_with_status(writers, 0xABCD, wing::CacheLockStatus.GiveUp);
+    assert(wing::acquire(writers, 0xABCD));
+    wing::release_with_status(writers, 0xABCD, wing::CacheLockStatus.Done);
+    print("SRVPROXY_03_04_KETAMA_CACHE_LOCK: ok\n");
+}
+
+// 15. SRVPROXY-05..08: X-Accel-* filtering, Location rewrite, empty POST CL:0, 304 CL, PROXYv2 CRC32C & FastHTTP Host/CRLF
+fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
+    var up_hdrs = wing::HeaderMap { .. };
+    assert(wing::append_header(up_hdrs, "X-Accel-Buffering", "no"));
+    assert(wing::append_header(up_hdrs, "X-Accel-Expires", "120"));
+    assert(wing::append_header(up_hdrs, "X-Accel-Limit-Rate", "65536"));
+    assert(wing::append_header(up_hdrs, "X-Accel-Redirect", "/internal/files/a.bin"));
+    assert(wing::append_header(up_hdrs, "Location", "http://10.0.0.1:8080/app/login"));
+    assert(wing::append_header(up_hdrs, "Content-Type", "text/plain"));
+
+    var client_hdrs = wing::HeaderMap { .. };
+    var loc_buf: u8[..512] = [];
+    var accel = wing::UpstreamAccelControl { .. };
+    assert(wing::process_and_filter_upstream_response_headers(
+        up_hdrs, "http://10.0.0.1:8080/app", "https://example.com/public", client_hdrs, loc_buf, accel,
+    ));
+    assert(accel.disable_buffering && accel.has_accel_expires && accel.accel_expires_sec == 120);
+    assert(accel.limit_rate_bps == 65536 && accel.accel_redirect[..] == "/internal/files/a.bin");
+    assert(wing::get_header(client_hdrs, "X-Accel-Buffering") == "");
+    assert(wing::get_header(client_hdrs, "Location") == "https://example.com/public/login");
+
+    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+    assert(wing::add_upstream_target(proxy.cluster, "backend.internal", 8080, 1));
+    var post_hdr = wing::HeaderMap { .. };
+    assert(wing::append_header(post_hdr, "Host", "edge.example.com"));
+    var post_wire: u8[>..] = [];
+    let _, ok_post = wing::prepare_proxy_request_at(proxy, "POST", "/empty", post_hdr, "192.0.2.1", "http", "", post_wire, 1000);
+    assert(ok_post && core::contains(post_wire[..], "Content-Length: 0\r\n"));
+
+    var res_304 = wing::Response { status_code: 304, .. };
+    res_304.set_header("Content-Length", "4096");
+    res_304.set_header("ETag", "\"v1\"");
+    var wire_304: u8[..512] = [];
+    wing::serialize_http1_response(res_304, "wing", wire_304);
+    assert(core::contains(wire_304[..], "Content-Length: 4096\r\n"));
+
+    var pp2_hdr = wing::ProxyHeader {
+        version:  wing::ProxyProtocolVersion.V2,
+        command:  wing::ProxyCommand.Proxy,
+        family:   wing::ProxyAddressFamily.Inet4,
+        src_ipv4: [192, 0, 2, 10],
+        dst_ipv4: [198, 51, 100, 1],
+        src_port: 54321,
+        dst_port: 443,
+        ..
+    };
+    var pp2_wire: u8[..128] = [];
+    assert(wing::format_proxy_v2(pp2_hdr, pp2_wire));
+    assert(wing::append_proxy_v2_crc32c(pp2_wire));
+    let parsed_pp2, consumed_pp2, ok_pp2 = wing::parse_proxy_v2(pp2_wire[..]);
+    assert(ok_pp2 && consumed_pp2 == pp2_wire.len && parsed_pp2.src_port == 54321);
+    pp2_wire[pp2_wire.len - 1] = pp2_wire[pp2_wire.len - 1] ^ 0xFF;
+    let _, _, ok_bad = wing::parse_proxy_v2(pp2_wire[..]);
+    assert(!ok_bad);
+
+    var last_host: u8[..128] = [];
+    var has_host = false;
+    assert(wing::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+    assert(has_host && last_host[..] == "edge.example.com");
+    assert(wing::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+
+    var scan_cur: i64 = 0;
+    let partial_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n";
+    assert(wing::scan_crlfcrlf_incremental(partial_req, scan_cur) == -1 && scan_cur == partial_req.len);
+    let full_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n\r\n";
+    assert(wing::scan_crlfcrlf_incremental(full_req, scan_cur) == 38 && scan_cur == 0);
+
+    var date_buf: u8[..64] = [];
+    wing::format_local_http_date(date_buf, 1700000000);
+    var srv = wing::new_http_server_with_quota("127.0.0.1", 8080, wing::new_gcra_quota(100, core::secs(1), 10));
+    wing::refresh_http_server_date(srv, 1700000000);
+    wing::add_put_route(srv, "/put", 1);
+    wing::add_delete_route(srv, "/del", 2);
+    var stg_req = wing::new_request("PUT", "/put");
+    var stg_match = wing::RouteMatchResult.NotFound;
+    let _ = wing::stage_server_route_match(srv.pipeline.router, stg_req, srv.pipeline.ext_pool.slots[0], stg_match, res_304);
+    var te_buf: u8[..64] = [];
+    let _ = wing::collect_transfer_encoding_headers(stg_req.headers, te_buf);
+    assert(wing::serve_page_ring(srv, -1, 0) == 0);
+    assert(!wing::send_static_mmap_file(-1, "/nonexistent", "text/plain"));
+    print("SRVPROXY_05_06_07_08_ALL: ok\n");
+}
+
 fn main() {
     test_lb_down_hysteresis();
     // CHECK: LB_DOWN_HYSTERESIS: ok
@@ -341,6 +508,12 @@ fn main() {
     // CHECK: F004_EXCHANGE_1XX_AND_RX_BUF: ok
     test_f005_and_f006_health_and_gcra();
     // CHECK: F005_F006_HEALTH_AND_GCRA: ok
+    test_srvproxy_01_02_early_hints_and_casper();
+    // CHECK: SRVPROXY_01_02_EARLY_HINTS_CASPER: ok
+    test_srvproxy_03_04_ketama_and_cache_lock();
+    // CHECK: SRVPROXY_03_04_KETAMA_CACHE_LOCK: ok
+    test_srvproxy_05_06_07_08_headers_crc32c_and_memo();
+    // CHECK: SRVPROXY_05_06_07_08_ALL: ok
     print("ALL_PROXY_REGRESSIONS_PASS\n");
     // CHECK: ALL_PROXY_REGRESSIONS_PASS
 }

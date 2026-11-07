@@ -76,19 +76,20 @@ enum H2StreamState {
 }
 
 struct H2Stream {
-    stream_id:               u32                 = 0,
-    state:                   H2StreamState       = H2StreamState.Idle,
-    send_window:             i64                 = 65535, // Signed 64-bit integer to support negative deltas
-    recv_window:             i64                 = 65535,
-    priority:                wing::PriorityParam = wing::PriorityParam { .. },
-    pending_send_bytes:      u32                 = 0,
-    declared_content_length: i64                 = -1,
-    received_data_bytes:     i64                 = 0,
-    headers_received:        bool                = false,
-    trailers_received:       bool                = false,
-    closed_by_rst:           bool                = false,
-    status_code:             i32                 = 0,
-    active:                  bool                = false,
+    stream_id:                    u32                 = 0,
+    state:                        H2StreamState       = H2StreamState.Idle,
+    send_window:                  i64                 = 65535, // Signed 64-bit integer to support negative deltas
+    recv_window:                  i64                 = 65535,
+    priority:                     wing::PriorityParam = wing::PriorityParam { .. },
+    has_explicit_priority_update: bool                = false,
+    pending_send_bytes:           u32                 = 0,
+    declared_content_length:      i64                 = -1,
+    received_data_bytes:          i64                 = 0,
+    headers_received:             bool                = false,
+    trailers_received:            bool                = false,
+    closed_by_rst:                bool                = false,
+    status_code:                  i32                 = 0,
+    active:                       bool                = false,
 }
 
 // RFC 9218 Section 4: Priority Parameters - Array-indexed intrusive linked-list node for O(1) priority buckets.
@@ -114,6 +115,9 @@ struct H2Connection {
     last_peer_stream_id:       u32          = 0,
     is_server:                 bool         = false,
     enable_push:               bool         = true,
+    enable_connect_protocol:   u32          = 1,
+    unclaimed_recv_window:     i64          = 0,
+    coalesce_window_updates:   bool         = false,
 
     // Active streams table (bounded inline storage)
     streams: H2Stream[..128] = [],
@@ -148,6 +152,8 @@ struct H2Connection {
     stream_nodes:              StreamNode[128] = [StreamNode { .. }; 128],
 
     // Shutdown / GOAWAY tracking
+    shutdown_notice_sent:  bool = false,
+    shutdown_ping_opaque:  u64  = 0x57494E47474F4157,
     goaway_sent:           bool = false,
     goaway_received:       bool = false,
     goaway_last_stream_id: u32  = 0,
@@ -471,8 +477,8 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
         }
 
         // RFC 9113 Section 6.8 & Go #82365:
-        // After receiving GOAWAY, any new stream with ID > goaway_last_stream_id must be refused
-        if s.goaway_received && hdr.stream_id > s.goaway_last_stream_id {
+        // After receiving or sending final GOAWAY, any new stream with ID > goaway_last_stream_id must be refused
+        if (s.goaway_received || s.goaway_sent) && hdr.stream_id > s.goaway_last_stream_id {
             return rfc::H2_ERR_REFUSED_STREAM;
         }
 
@@ -867,6 +873,7 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
         final_prio.incremental = true;
     }
     s.streams[s_idx].priority = final_prio;
+    s.streams[s_idx].has_explicit_priority_update = true;
     sync_stream_urgency_node(s, s_idx);
     return rfc::H2_ERR_NO_ERROR;
 }

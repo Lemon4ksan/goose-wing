@@ -179,3 +179,243 @@ fn early_hint_is_preconnect(link: const EarlyHintLink&) -> bool {
 fn early_hint_is_preload(link: const EarlyHintLink&) -> bool {
     return eq_ascii_fold(link.rel[..], "preload");
 }
+
+// ---- Server-Side 103 Early Hints Serializer & CASPer Cookie Digest --------
+
+// Formats a single `EarlyHintLink` into an HTTP `Link: <uri>; ...` header line.
+fn format_single_early_hint_link<B>(link: const EarlyHintLink&, out: B&) -> bool {
+    guard link.uri.len > 0 else { return false; }
+    let base_needed = core::add_sat_u64(link.uri.len as u64, 64);
+    guard core::add_sat_u64(out.len as u64, base_needed) <= (out.cap as u64) else { return false; }
+    out.append("Link: <");
+    out.append(link.uri[..]);
+    out.push('>');
+    if link.rel.len > 0 {
+        out.append("; rel=");
+        out.append(link.rel[..]);
+    }
+    if link.as_type.len > 0 {
+        out.append("; as=");
+        out.append(link.as_type[..]);
+    }
+    if link.crossorigin {
+        out.append("; crossorigin");
+    }
+    out.append("\r\n");
+    return true;
+}
+
+// Serializes an HTTP/1.1 `103 Early Hints` response block (RFC 8297 §2).
+// Suppresses output and returns `false` if the client sent `no-early-hints: 1`
+// or if `hints.links` is empty.
+fn format_early_hints_http1<B>(
+    hints:              const EarlyHintsResponse&,
+    req_no_early_hints: const u8[:],
+    out:                B&,
+) -> bool {
+    let trimmed_opt = req_no_early_hints.trim_lws();
+    guard trimmed_opt != "1" && hints.links.len > 0 else { return false; }
+    var scratch: u8[..2048] = [];
+    scratch.append("HTTP/1.1 103 Early Hints\r\n");
+    for &link in hints.links {
+        guard format_single_early_hint_link(link, scratch) else { return false; }
+    }
+    guard core::add_sat_u64(scratch.len as u64, 2) <= (scratch.cap as u64) else { return false; }
+    scratch.append("\r\n");
+    guard core::add_sat_u64(out.len as u64, scratch.len as u64) <= (out.cap as u64) else { return false; }
+    out.append(scratch[..]);
+    return true;
+}
+
+// H2O CASPer (Cache-Aware Server Push / Early Hints) Golomb-Coded Set state.
+struct CasperSet {
+    keys:           u64[..128] = [],
+    capacity_bits:  u8         = 13,
+    remainder_bits: u8         = 6,
+}
+
+// Computes truncated fingerprint for (path, etag) bounded by `(capacity_bits + remainder_bits)` bits.
+fn compute_casper_key(set: const CasperSet&, path: const u8[:], etag: const u8[:]) -> u64 {
+    let h_path = core::fnv1a_64(path);
+    let h_etag = core::fnv1a_64(etag);
+    let combined = core::hash_combine_u64(h_path, h_etag);
+    let total_bits = min(core::add_sat_u64(set.capacity_bits, set.remainder_bits), 14);
+    let drop_bits = core::sub_sat_u64(64, total_bits);
+    let mask = if total_bits == 0 { 0 } else { 0xFFFFFFFFFFFFFFFF >> drop_bits };
+    return combined & mask;
+}
+
+// Looks up `key` in sorted `set.keys`; returns `(found, insert_idx)`.
+fn find_casper_key_slot(set: const CasperSet&, key: u64) -> bool, i64 {
+    var lo: u64 = 0;
+    var hi: u64 = set.keys.len as u64;
+    while lo < hi {
+        let mid = core::add_sat_u64(lo, core::sub_sat_u64(hi, lo) >> 1);
+        let cur = set.keys[mid as i64];
+        if cur == key {
+            return true, mid as i64;
+        }
+        if cur < key {
+            lo = core::add_sat_u64(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+    return false, lo as i64;
+}
+
+// Checks whether `(path, etag)` is already present in `set`.
+// Returns `true` if already present (caller should suppress duplicate hint),
+// or `false` if newly inserted (caller should emit hint).
+fn casper_lookup_and_insert(set: CasperSet&, path: const u8[:], etag: const u8[:]) -> bool {
+    let key = compute_casper_key(set, path, etag);
+    let found, ins_idx = find_casper_key_slot(set, key);
+    if found {
+        return true;
+    }
+    guard set.keys.len < set.keys.cap else { return false; }
+    set.keys.push(key);
+    var pos: u64 = core::sub_sat_u64(set.keys.len as u64, 1);
+    let target = ins_idx as u64;
+    while pos > target {
+        let prev = core::sub_sat_u64(pos, 1);
+        set.keys[pos as i64] = set.keys[prev as i64];
+        pos = prev;
+    }
+    set.keys[target as i64] = key;
+    return false;
+}
+
+inline fn append_casper_bit<B>(out: B&, cur_byte: u64&, bit_pos: u64&, bit: u64) -> bool {
+    cur_byte = ((cur_byte << 1) | (bit & 1)) & 0xFF;
+    bit_pos = core::add_sat_u64(bit_pos, 1);
+    if bit_pos == 8 {
+        guard out.len < out.cap else { return false; }
+        let b_val: u8 = if cur_byte == 0 { 0 } else { (cur_byte & 0xFF) as u8 };
+        out.push(b_val);
+        cur_byte = 0;
+        bit_pos = 0;
+    }
+    return true;
+}
+
+// Encodes sorted `CasperSet` keys using Golomb-Rice delta coding into Base64URL cookie value.
+//
+// Example:
+//   set.keys = [10, 25], out_cookie = []
+//   returns: true, out_cookie populated with Base64URL Golomb-Rice bitstream
+fn encode_casper_cookie<B>(set: const CasperSet&, out_cookie: B&) -> bool {
+    var raw_bits: u8[..256] = [];
+    var cur_byte: u64       = 0;
+    var bit_pos:  u64       = 0;
+    let rem_bits = min(set.remainder_bits as u64, 16);
+    guard rem_bits > 0 else { return false; }
+    let r_mask = 0xFFFFFFFFFFFFFFFF >> core::sub_sat_u64(64, rem_bits);
+    var prev: u64 = 0;
+    for k in set.keys {
+        let delta = if k >= prev { core::sub_sat_u64(k, prev) } else { 0 };
+        prev = k;
+        let q = delta >> rem_bits;
+        let r = delta & r_mask;
+        guard q <= 512 else { return false; }
+        var q_rem: u64 = q;
+        while q_rem > 0 {
+            q_rem = core::sub_sat_u64(q_rem, 1);
+            guard append_casper_bit(raw_bits, cur_byte, bit_pos, 1) else { return false; }
+        }
+        guard append_casper_bit(raw_bits, cur_byte, bit_pos, 0) else { return false; }
+        var b_idx: u64 = rem_bits;
+        while b_idx > 0 {
+            b_idx = core::sub_sat_u64(b_idx, 1);
+            let bit = (r >> b_idx) & 1;
+            guard append_casper_bit(raw_bits, cur_byte, bit_pos, bit) else { return false; }
+        }
+    }
+    if bit_pos > 0 {
+        let pad_shift = core::sub_sat_u64(8, bit_pos);
+        let padded = (cur_byte << pad_shift) & 0xFF;
+        guard raw_bits.len < raw_bits.cap else { return false; }
+        raw_bits.push(padded as u8);
+    }
+    out_cookie.clear();
+    let enc_cap = core::add_sat_u64(raw_bits.len as u64, raw_bits.len as u64);
+    guard enc_cap <= (out_cookie.cap as u64) else { return false; }
+    core::base64url_encode(raw_bits[..], out_cookie);
+    return true;
+}
+
+inline fn read_casper_bit(raw: const u8[:], byte_idx: i64&, bit_pos: u64&) -> u64, bool {
+    guard byte_idx < raw.len else { return 0, false; }
+    let shift = core::sub_sat_u64(7, bit_pos);
+    let bit = (raw[byte_idx] as u64 >> shift) & 1;
+    bit_pos = core::add_sat_u64(bit_pos, 1);
+    if bit_pos == 8 {
+        bit_pos = 0;
+        byte_idx = core::add_sat_i64(byte_idx, 1);
+    }
+    return bit, true;
+}
+
+// Decodes a single Golomb-Rice delta step from `raw` at `(byte_idx, bit_pos)`.
+//
+// Example:
+//   raw = [0x40], rem_bits = 6, byte_idx = 0, bit_pos = 0
+//   returns: delta = 16, has_val = true, valid = true, byte_idx = 0, bit_pos = 7
+inline fn decode_casper_golomb_step(
+    raw:      const u8[:],
+    rem_bits: u64,
+    byte_idx: i64&,
+    bit_pos:  u64&,
+) -> u64, bool, bool {
+    var q: u64 = 0;
+    var got_zero = false;
+    while byte_idx < raw.len {
+        let b, ok_b = read_casper_bit(raw, byte_idx, bit_pos);
+        guard ok_b else { break; }
+        if b == 0 {
+            got_zero = true;
+            break;
+        }
+        q = core::add_sat_u64(q, 1);
+        guard q <= 512 else { return 0, false, false; }
+    }
+    guard got_zero else { return 0, false, true; }
+    var r:     u64 = 0;
+    var r_idx: u64 = rem_bits;
+    while r_idx > 0 {
+        r_idx = core::sub_sat_u64(r_idx, 1);
+        let rb, ok_r = read_casper_bit(raw, byte_idx, bit_pos);
+        guard ok_r else { return 0, false, true; }
+        r = core::add_sat_u64(core::add_sat_u64(r, r), rb);
+    }
+    var q_scaled: u64 = q;
+    var s_idx:    u64 = rem_bits;
+    while s_idx > 0 {
+        s_idx = core::sub_sat_u64(s_idx, 1);
+        q_scaled = core::add_sat_u64(q_scaled, q_scaled);
+    }
+    return core::add_sat_u64(q_scaled, r), true, true;
+}
+
+// Decodes a Base64URL Golomb-Rice CASPer cookie into `set.keys`.
+//
+// Example:
+//   cookie = "B9A", set = CasperSet { .. }
+//   returns: true, set.keys populated with decoded sorted keys
+fn decode_casper_cookie(cookie: const u8[:], set: CasperSet&) -> bool {
+    var raw_bits: u8[..256] = [];
+    guard core::base64url_decode(cookie, raw_bits) else { return false; }
+    let rem_bits = min(set.remainder_bits as u64, 16);
+    guard rem_bits > 0 else { return false; }
+    var byte_idx: i64 = 0;
+    var bit_pos:  u64 = 0;
+    var cur_key:  u64 = 0;
+    while byte_idx < raw_bits.len && set.keys.len < set.keys.cap {
+        let delta, has_val, valid = decode_casper_golomb_step(raw_bits[..], rem_bits, byte_idx, bit_pos);
+        guard valid else { return false; }
+        guard has_val else { break; }
+        cur_key = core::add_sat_u64(cur_key, delta);
+        set.keys.push(cur_key);
+    }
+    return true;
+}

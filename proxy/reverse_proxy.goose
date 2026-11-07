@@ -10,6 +10,7 @@ import std;
 import core from "..";
 import http.headers;
 import http.client_cert;
+import http.early_hints;
 import net.tcp;
 import net.transport;
 import net.pool;
@@ -445,15 +446,28 @@ fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, 
 }
 
 // Validates that forwarded Content-Length matches body.len or injects Content-Length when needed (RFC 9112 §6.2).
-fn ensure_forwarded_body_framing(forward_headers: HeaderMap&, body: const u8[:]) -> bool {
-    if has_header(forward_headers, "content-length") {
+// Emits `Content-Length: 0` on empty `POST`, `PUT`, or `PATCH` requests lacking Transfer-Encoding.
+fn ensure_forwarded_body_framing(
+    forward_headers: HeaderMap&,
+    body:            const u8[:],
+    method:          const u8[:] = "",
+) -> bool {
+    let has_cl = has_header(forward_headers, "content-length");
+    if has_cl {
         var parsed_cl: i64 = 0;
         guard validate_content_length_value(get_header(forward_headers, "content-length"), parsed_cl) else {
             return false;
         }
         return parsed_cl == body.len;
     }
-    guard body.len > 0 && !has_header(forward_headers, "transfer-encoding") else { return true; }
+    let has_te = has_header(forward_headers, "transfer-encoding");
+    if body.len == 0 && !has_cl && !has_te {
+        if method == "POST" || method == "PUT" || method == "PATCH" {
+            return append_header(forward_headers, "Content-Length", "0");
+        }
+        return true;
+    }
+    guard body.len > 0 && !has_te else { return true; }
     var cl_buf: u8[..32] = [];
     core::format_u64_dec(body.len as u64, cl_buf);
     return append_header(forward_headers, "Content-Length", cl_buf[..]);
@@ -506,7 +520,7 @@ fn prepare_proxy_request_at<B>(
     let target = proxy.cluster.targets[target_idx];
     let ok_prep = format_upstream_authority(target.host[..], target.port, proxy.config.preserve_host, host_buf)
         && filter_and_forward_headers(in_headers, forward_headers, client_ip, proto, host_buf[..], proxy.config)
-        && ensure_forwarded_body_framing(forward_headers, body)
+        && ensure_forwarded_body_framing(forward_headers, body, method)
         && serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
     guard ok_prep else {
         release_upstream_connection(proxy.cluster, target_idx);
@@ -712,7 +726,25 @@ fn exchange_prepared_wire_on_conn(
     out_resp:   Response&,
     timeout_ms: u32,
 ) -> bool, bool {
+    var early_hints = EarlyHintsResponse { .. };
+    var has_eh = false;
+    return exchange_prepared_wire_on_conn_with_hints(
+        conn, method, wire_req, out_resp, early_hints, has_eh, timeout_ms,
+    );
+}
+
+fn exchange_prepared_wire_on_conn_with_hints(
+    conn:            PooledConnection&,
+    method:          const u8[:],
+    wire_req:        const u8[:],
+    out_resp:        Response&,
+    out_early_hints: EarlyHintsResponse&,
+    has_early_hints: bool&,
+    timeout_ms:      u32,
+) -> bool, bool {
     reset_response(out_resp);
+    out_early_hints = EarlyHintsResponse { .. };
+    has_early_hints = false;
     guard send_all(conn.transport, wire_req) else { return false, false; }
 
     var dummy_req = new_request(method, "/");
@@ -724,6 +756,12 @@ fn exchange_prepared_wire_on_conn(
         guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else { return false, false; }
         let is_interim = out_resp.status_code >= 100 && out_resp.status_code < 200 && out_resp.status_code != 101;
         if is_interim {
+            if out_resp.status_code == 103 {
+                var up_tmp = UpstreamResponse { early_hints: out_early_hints, has_early_hints: has_early_hints, .. };
+                capture_upstream_early_hints(out_resp, up_tmp);
+                out_early_hints = up_tmp.early_hints;
+                has_early_hints = up_tmp.has_early_hints;
+            }
             drain_rx_buf(conn.rx_buf, leftover_start);
             continue;
         }
@@ -733,6 +771,133 @@ fn exchange_prepared_wire_on_conn(
         return pump_response_body(conn, dummy_req, out_resp, leftover[..], timeout_ms);
     }
     return false, false;
+}
+
+// ---- Upstream `X-Accel-*` Control Headers, `Location` Rewriting & `103` Capture ----
+
+struct UpstreamAccelControl {
+    disable_buffering: bool      = false,
+    has_accel_expires: bool      = false,
+    accel_expires_sec: i64       = 0,
+    limit_rate_bps:    u64       = 0,
+    accel_redirect:    u8[..256] = [],
+}
+
+struct UpstreamResponse {
+    early_hints:     EarlyHintsResponse   = EarlyHintsResponse { .. },
+    has_early_hints: bool                 = false,
+    accel:           UpstreamAccelControl = UpstreamAccelControl { .. },
+    resp:            Response             = Response { .. },
+}
+
+// Parses `X-Accel-*` control header values into `accel` (Nginx `ngx_http_upstream_headers_in` parity).
+//
+// Example:
+//   name = "X-Accel-Buffering", val = "no"
+//   returns: true (is X-Accel header), accel.disable_buffering = true
+fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: UpstreamAccelControl&) -> bool {
+    let trimmed = core::trim_lws(val);
+    if eq_ascii_fold(name, "x-accel-buffering") {
+        if eq_ascii_fold(trimmed, "no") {
+            accel.disable_buffering = true;
+        } else if eq_ascii_fold(trimmed, "yes") {
+            accel.disable_buffering = false;
+        }
+        return true;
+    }
+    if eq_ascii_fold(name, "x-accel-expires") {
+        if eq_ascii_fold(trimmed, "off") {
+            accel.has_accel_expires = true;
+            accel.accel_expires_sec = 0;
+        } else {
+            let s_slice = if trimmed.len > 1 && trimmed[0] == '@' { trimmed[1..] } else { trimmed };
+            let secs, ok = core::parse_u64_dec(s_slice);
+            if ok {
+                accel.has_accel_expires = true;
+                accel.accel_expires_sec = secs as i64;
+            }
+        }
+        return true;
+    }
+    if eq_ascii_fold(name, "x-accel-limit-rate") {
+        let rate, ok = core::parse_u64_dec(trimmed);
+        if ok {
+            accel.limit_rate_bps = rate;
+        }
+        return true;
+    }
+    if eq_ascii_fold(name, "x-accel-redirect") {
+        let _ = accel.accel_redirect.try_set(trimmed);
+        return true;
+    }
+    return starts_with_fold(name, "x-accel-");
+}
+
+// Rewrites an upstream `Location` header if it starts with `backend_url_prefix`.
+fn rewrite_upstream_location_header(
+    loc_val:            const u8[:],
+    backend_url_prefix: const u8[:],
+    public_url_prefix:  const u8[:],
+    out_location_buf:   u8[..512]&,
+) -> const u8[:] {
+    guard backend_url_prefix.len > 0 && starts_with(loc_val, backend_url_prefix) else {
+        return loc_val;
+    }
+    let suffix = loc_val[backend_url_prefix.len..];
+    let needed = core::add_sat_u64(public_url_prefix.len as u64, suffix.len as u64);
+    guard needed <= (out_location_buf.cap as u64) else { return loc_val; }
+    out_location_buf.clear();
+    out_location_buf.append(public_url_prefix);
+    out_location_buf.append(suffix);
+    return out_location_buf[..];
+}
+
+// Parses `X-Accel-*` control headers, strips hop-by-hop and `X-Accel-*` headers,
+// and rewrites `Location` prefixes matching `backend_url_prefix` to `public_url_prefix`.
+fn process_and_filter_upstream_response_headers(
+    in_headers:         const HeaderMap&,
+    backend_url_prefix: const u8[:],
+    public_url_prefix:  const u8[:],
+    out_headers:        HeaderMap&,
+    out_location_buf:   u8[..512]&,
+    accel:              UpstreamAccelControl&,
+) -> bool {
+    out_headers.clear();
+    accel = UpstreamAccelControl { .. };
+    for &entry in in_headers.entries {
+        let name = entry_name(in_headers, entry);
+        let val = entry_value(in_headers, entry);
+        if parse_x_accel_control_header(name, val, accel) {
+            continue;
+        }
+        if is_hop_by_hop_header_name(name) || is_token_in_connection_header_map(in_headers, name) {
+            continue;
+        }
+        if eq_ascii_fold(name, "location") {
+            let rewritten = rewrite_upstream_location_header(
+                val, backend_url_prefix, public_url_prefix, out_location_buf,
+            );
+            guard append_header(out_headers, name, rewritten) else { return false; }
+            continue;
+        }
+        guard append_header(out_headers, name, val) else { return false; }
+    }
+    return true;
+}
+
+// Captures `Link` headers from an upstream `103 Early Hints` interim response into `out_upstream`.
+fn capture_upstream_early_hints(in_resp: const Response&, out_upstream: UpstreamResponse&) {
+    guard in_resp.status_code == 103 else { return; }
+    for &entry in in_resp.headers.entries {
+        let name = entry_name(in_resp.headers, entry);
+        if eq_ascii_fold(name, "link") {
+            let val = entry_value(in_resp.headers, entry);
+            if parse_link_header(val, out_upstream.early_hints.links) {
+                out_upstream.early_hints.is_valid = out_upstream.early_hints.links.len > 0;
+                out_upstream.has_early_hints = out_upstream.early_hints.is_valid;
+            }
+        }
+    }
 }
 
 // Executes a full reverse proxy exchange over `StreamPool`: selects an upstream target,

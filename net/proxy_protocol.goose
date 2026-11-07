@@ -621,6 +621,34 @@ fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
     return sub_offset == val.len;
 }
 
+// Updates a CRC32c (Castagnoli, reflected polynomial 0x82F63B78) accumulator over `slice`.
+const CRC32C_CASTAGNOLI_POLY: u32 = 0x82F63B78;
+
+fn crc32c_update_bytes(crc_in: u32, slice: const u8[:]) -> u32 {
+    var crc = crc_in;
+    for b in slice {
+        crc = crc ^ b;
+        for _ in 8 {
+            let mask: u32 = if (crc & 1) != 0 { CRC32C_CASTAGNOLI_POLY } else { 0 };
+            crc = (crc >> 1) ^ mask;
+        }
+    }
+    return crc;
+}
+
+// Computes the PROXYv2 CRC32c checksum over `frame[..tlv_limit]` with the 4-byte field at `zero_offset` zeroed.
+fn compute_proxy_v2_crc32c(frame: const u8[:], tlv_limit: i64, zero_offset: i64) -> u32 {
+    guard zero_offset >= 0 && core::add_sat_i64(zero_offset, 4) <= tlv_limit && tlv_limit <= frame.len else {
+        return 0;
+    }
+    let zeros: const u8[4] = [0, 0, 0, 0];
+    var crc: u32 = 0xFFFFFFFF;
+    crc = crc32c_update_bytes(crc, frame[..zero_offset]);
+    crc = crc32c_update_bytes(crc, zeros[..]);
+    crc = crc32c_update_bytes(crc, frame[core::add_sat_i64(zero_offset, 4)..tlv_limit]);
+    return crc ^ 0xFFFFFFFF;
+}
+
 // Parses PROXY v2 TLV vector from tlv_offset up to tlv_limit (HAProxy §2.2).
 //
 // Example:
@@ -646,6 +674,11 @@ fn parse_proxy_v2_tlvs(
             guard hdr.alpn.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_AUTHORITY {
             guard hdr.authority.try_set(val) else { return false; }
+        } else if tlv_type == internal::PP2_TYPE_CRC32C {
+            guard tlv_len == 4 else { return false; }
+            let expected_crc = core::read_be_u32(val, 0);
+            let actual_crc = compute_proxy_v2_crc32c(wire, tlv_limit, val_start);
+            guard actual_crc == expected_crc else { return false; }
         } else if tlv_type == internal::PP2_TYPE_UNIQUE_ID {
             guard hdr.unique_id.try_set(val) else { return false; }
         } else if tlv_type == internal::PP2_TYPE_NETNS {
@@ -822,6 +855,37 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     out.push((total_payload & 0xFF) as u8);
     out.append(payload_buf[..]);
 
+    return true;
+}
+
+// Appends a 7-byte `PP2_TYPE_CRC32C` (`0x03`) TLV to an already-formatted PROXYv2 header in `out`
+// and updates the 16-bit payload length at `out[14..16]` (HAProxy §2.2.7).
+fn append_proxy_v2_crc32c<B>(out: B&) -> bool {
+    guard out.len >= 16 && core::add_sat_u64(out.len as u64, 7) <= (out.cap as u64) else {
+        return false;
+    }
+    let old_payload = core::read_be_u16(out[..], 14) as u64;
+    let expected_len = core::add_sat_u64(old_payload, 16);
+    let next_payload_u64 = core::add_sat_u64(old_payload, 7);
+    guard expected_len == (out.len as u64) && next_payload_u64 <= 65535 else {
+        return false;
+    }
+    let new_payload = next_payload_u64 as u16;
+    out[14] = ((new_payload >> 8) & 0xFF) as u8;
+    out[15] = (new_payload & 0xFF) as u8;
+    out.push(internal::PP2_TYPE_CRC32C);
+    out.push(0x00);
+    out.push(0x04);
+    let crc_offset = out.len;
+    out.push(0);
+    out.push(0);
+    out.push(0);
+    out.push(0);
+    let crc = compute_proxy_v2_crc32c(out[..], out.len, crc_offset);
+    out[crc_offset] = ((crc >> 24) & 0xFF) as u8;
+    out[core::add_sat_i64(crc_offset, 1)] = ((crc >> 16) & 0xFF) as u8;
+    out[core::add_sat_i64(crc_offset, 2)] = ((crc >> 8) & 0xFF) as u8;
+    out[core::add_sat_i64(crc_offset, 3)] = (crc & 0xFF) as u8;
     return true;
 }
 

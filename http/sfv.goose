@@ -36,8 +36,10 @@ struct SfParameter {
 }
 
 struct SfParameterizedItem {
-    item:   SfItem           = SfItem { .. },
-    params: SfParameter[..8] = [],
+    item:          SfItem           = SfItem { .. },
+    params:        SfParameter[..8] = [],
+    is_inner_list: bool             = false,
+    inner_items:   SfItem[..8]      = [],
 }
 
 struct SfDictEntry {
@@ -134,28 +136,30 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     if pos >= src.len || src[pos] != ':' {
         return false;
     }
-    let start = pos + 1;
-    var p = pos + 1;
-    var eq_count: i64 = 0;
+    let start = core::add_sat_i64(pos, 1);
+    var p = core::add_sat_i64(pos, 1);
+    var eq_count:   i64 = 0;
+    var data_count: i64 = 0;
     while p < src.len {
         let ch = src[p];
         if ch == ':' {
-            let b64_len = p - start;
-            guard (b64_len % 4) == 0 && eq_count <= 2 else { return false; }
+            let b64_len = core::sub_sat_i64(p, start);
+            guard (b64_len & 3) == 0 && eq_count <= 2 && (eq_count == 0 || data_count > 0) else { return false; }
             out_item.kind = SfType.Binary;
             out_item.str_val = src[start..p];
-            out_next = p + 1;
+            out_next = core::add_sat_i64(p, 1);
             return true;
         }
         if ch == '=' {
-            eq_count += 1;
+            eq_count = core::add_sat_i64(eq_count, 1);
         } else {
             guard eq_count == 0 else { return false; }
             guard core::is_ascii_alpha(ch) || core::is_ascii_digit(ch) || ch == '+' || ch == '/' else {
                 return false;
             }
+            data_count = core::add_sat_i64(data_count, 1);
         }
-        p = p + 1;
+        p = core::add_sat_i64(p, 1);
     }
     return false;
 }
@@ -224,22 +228,31 @@ fn sf_parse_fraction(
     var frac_accum: i64 = 0;
     var frac_count: i32 = 0;
     var frac_end:   i64 = 0;
-    let next_p = dot_pos + 1;
+    let next_p = core::add_sat_i64(dot_pos, 1);
     let ok = sf_scan_digits(src, next_p, 3, frac_accum, frac_count, frac_end);
     if !ok {
         return false;
     }
     var factor: f64 = 1.0;
-    if frac_count == 1 { factor = 0.1; }
-    if frac_count == 2 { factor = 0.01; }
-    if frac_count == 3 { factor = 0.001; }
+    var scaled_frac = frac_accum;
+    if frac_count == 1 {
+        factor = 0.1;
+        scaled_frac = core::mul_sat_i64(frac_accum, 100);
+    } else if frac_count == 2 {
+        factor = 0.01;
+        scaled_frac = core::mul_sat_i64(frac_accum, 10);
+    } else if frac_count == 3 {
+        factor = 0.001;
+    }
 
     let frac_f = frac_accum * factor;
     var total_f = int_accum + frac_f;
+    let abs_milli = core::add_sat_i64(core::mul_sat_i64(int_accum, 1000), scaled_frac);
     if is_neg {
         total_f = -total_f;
     }
     out_item.kind = SfType.Decimal;
+    out_item.int_val = if is_neg { core::sub_sat_i64(0, abs_milli) } else { abs_milli };
     out_item.dec_val = total_f;
     out_next = frac_end;
     return true;
@@ -298,41 +311,172 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&) 
     return true;
 }
 
+const SF_LC_HEX_LUT: const u8[256] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+const UTF8_DFA_CLASS: const i64[256] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    8, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    10, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 3, 3, 11, 6, 6, 6, 5, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+];
+
+const UTF8_DFA_TRANS: const i64[108] = [
+    0, 12, 24, 36, 60, 96, 84, 12, 12, 12, 48, 72, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+    12, 0, 12, 12, 12, 12, 12, 0, 12, 0, 12, 12, 12, 24, 12, 12, 12, 12, 12, 24, 12, 24, 12, 12,
+    12, 12, 12, 12, 12, 12, 12, 24, 12, 12, 12, 12, 12, 24, 12, 12, 12, 12, 12, 12, 12, 24, 12, 12,
+    12, 12, 12, 12, 12, 12, 12, 36, 12, 36, 12, 12, 12, 36, 12, 12, 12, 12, 12, 36, 12, 36, 12, 12,
+    12, 36, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+];
+
+checkfree inline fn sf_hex_lc_val(c: u8) -> u8, bool {
+    let v = SF_LC_HEX_LUT[c];
+    return v, v != 255;
+}
+
+checkfree inline fn sf_decode_pct_hex(hi: u8, lo: u8) -> u8, bool {
+    let v1, ok1 = sf_hex_lc_val(hi);
+    let v2, ok2 = sf_hex_lc_val(lo);
+    return (v1 * 16) | v2, ok1 && ok2;
+}
+
+inline fn sf_step_utf8_dfa(b: u8, state: i64&) -> bool {
+    let cls = UTF8_DFA_CLASS[b];
+    let idx = core::add_sat_i64(state, cls);
+    guard idx >= 0 && idx < 108 else { return false; }
+    state = UTF8_DFA_TRANS[idx];
+    return state != 12;
+}
+
 fn validate_display_string(raw_str: const u8[:]) -> bool {
-    var decoded: u8[..512] = [];
-    var i:       i64       = 0;
+    var state: i64 = 0;
+    var i:     i64 = 0;
     while i < raw_str.len {
         let b = raw_str[i];
         if b == '%' {
-            guard i + 2 < raw_str.len else { return false; }
-            let c1 = raw_str[i + 1];
-            let c2 = raw_str[i + 2];
-            let v1 = if c1 >= '0' && c1 <= '9' {
-                (c1 - '0') as i32
-            } else if c1 >= 'a' && c1 <= 'f' {
-                (c1 - 'a' + 10) as i32
-            } else {
-                -1
-            };
-            let v2 = if c2 >= '0' && c2 <= '9' {
-                (c2 - '0') as i32
-            } else if c2 >= 'a' && c2 <= 'f' {
-                (c2 - 'a' + 10) as i32
-            } else {
-                -1
-            };
-            guard v1 >= 0 && v2 >= 0 else { return false; }
-            guard decoded.len < decoded.cap else { return false; }
-            decoded.push(((v1 << 4) | v2) as u8);
-            i += 3;
+            let i1 = core::add_sat_i64(i, 1);
+            let i2 = core::add_sat_i64(i, 2);
+            guard i2 < raw_str.len else { return false; }
+            let dec_b, hex_ok = sf_decode_pct_hex(raw_str[i1], raw_str[i2]);
+            guard hex_ok && sf_step_utf8_dfa(dec_b, state) else { return false; }
+            i = core::add_sat_i64(i, 3);
         } else {
             guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
-            guard decoded.len < decoded.cap else { return false; }
-            decoded.push(b);
-            i += 1;
+            guard sf_step_utf8_dfa(b, state) else { return false; }
+            i = core::add_sat_i64(i, 1);
         }
     }
-    return core::validate_utf8(decoded[..]);
+    return state == 0;
+}
+
+// Unescapes an RFC 9651 Structured Field String body (handling `\"` and `\\`) into `out`.
+//
+// Example:
+//   raw = "hello \\\"world\\\"", out = []
+//   returns: true, out = "hello \"world\""
+fn sf_unescape_string<B>(raw: const u8[:], out: B&) -> bool {
+    out.clear();
+    var i: i64 = 0;
+    while i < raw.len {
+        let ch = raw[i];
+        if ch == '\\' {
+            let next_i = core::add_sat_i64(i, 1);
+            guard next_i < raw.len else {
+                out.clear();
+                return false;
+            }
+            let esc = raw[next_i];
+            guard esc == '"' || esc == '\\' else {
+                out.clear();
+                return false;
+            }
+            guard out.len < out.cap else {
+                out.clear();
+                return false;
+            }
+            out.push(esc);
+            i = core::add_sat_i64(i, 2);
+        } else if ch == '"' || !core::is_ascii_printable(ch) {
+            out.clear();
+            return false;
+        } else {
+            guard out.len < out.cap else {
+                out.clear();
+                return false;
+            }
+            out.push(ch);
+            i = core::add_sat_i64(i, 1);
+        }
+    }
+    return true;
+}
+
+// Decodes an RFC 9651 Display String body (percent-decoding `%xx` and validating UTF-8) into `out`.
+//
+// Example:
+//   raw = "hello%20%c3%bc", out = []
+//   returns: true, out = "hello \xc3\xbc"
+fn sf_decode_display_string<B>(raw: const u8[:], out: B&) -> bool {
+    out.clear();
+    var state: i64 = 0;
+    var i:     i64 = 0;
+    while i < raw.len {
+        let b = raw[i];
+        var dec_b: u8  = 0;
+        var step:  i64 = 1;
+        if b == '%' {
+            let i1 = core::add_sat_i64(i, 1);
+            let i2 = core::add_sat_i64(i, 2);
+            guard i2 < raw.len else {
+                out.clear();
+                return false;
+            }
+            let pct_b, hex_ok = sf_decode_pct_hex(raw[i1], raw[i2]);
+            guard hex_ok else {
+                out.clear();
+                return false;
+            }
+            dec_b = pct_b;
+            step = 3;
+        } else {
+            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else {
+                out.clear();
+                return false;
+            }
+            dec_b = b;
+        }
+        guard sf_step_utf8_dfa(dec_b, state) && out.len < out.cap else {
+            out.clear();
+            return false;
+        }
+        out.push(dec_b);
+        i = core::add_sat_i64(i, step);
+    }
+    if state != 0 {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // Parses an RFC 9651 Section 3.3.4 Display String: %"..."
@@ -491,43 +635,51 @@ fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
 }
 
 // Helper: parses inner list contents (item1 item2 ...) per RFC 8941 §4.2.1.2
-fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next: i64&) -> bool {
-    entry.is_inner_list = true;
-    var p = pos + 1; // skip '('
+fn sf_parse_inner_list_items(
+    src:         const u8[:],
+    pos:         i64,
+    inner_items: SfItem[..8]&,
+    out_next:    i64&,
+) -> bool {
+    var p = core::add_sat_i64(pos, 1); // skip '('
     while p < src.len {
         while p < src.len && src[p] == ' ' {
-            p = p + 1;
+            p = core::add_sat_i64(p, 1);
         }
         if p < src.len && src[p] == ')' {
-            out_next = p + 1;
+            out_next = core::add_sat_i64(p, 1);
             return true;
         }
+        let item_start = p;
         var inner_item = SfItem { .. };
-        var in_next: i64 = 0;
-        if !sf_parse_bare_item(src, p, inner_item, in_next) {
-            return false;
-        }
+        var in_next:     i64              = 0;
         var item_params: SfParameter[..8] = [];
         var params_next: i64              = 0;
-        if !sf_parse_parameters(src, in_next, item_params, params_next) {
+        guard sf_parse_bare_item(src, p, inner_item, in_next) &&
+              sf_parse_parameters(src, in_next, item_params, params_next) &&
+              inner_items.len < 8 else {
             return false;
         }
-        if item_params.len == 1 && item_params[0].key == "req" &&
-           item_params[0].item.kind == SfType.Boolean && item_params[0].item.bool_val &&
-           in_next + 4 == params_next && src[p] == '"' && src[in_next - 1] == '"' {
-            inner_item.str_val = src[p + 1..params_next];
+        if item_params.len == 1 && item_params[0].key == "req" && src[item_start] == '"' {
+            let req_end = core::add_sat_i64(in_next, 4);
+            if req_end <= src.len && src[in_next..req_end] == ";req" {
+                inner_item.str_val = src[core::add_sat_i64(item_start, 1)..req_end];
+            }
         }
-        if entry.inner_items.len < 8 {
-            entry.inner_items.push(inner_item);
-        } else {
-            return false;
+        p = in_next;
+        while p < params_next && src[p] != ' ' && src[p] != ')' {
+            p = core::add_sat_i64(p, 1);
         }
-        p = params_next;
-        if p >= src.len || (src[p] != ' ' && src[p] != ')') {
-            return false;
-        }
+        inner_items.push(inner_item);
+        guard p < src.len && (src[p] == ' ' || src[p] == ')') else { return false; }
     }
     return false;
+}
+
+// Helper: parses inner list contents (item1 item2 ...) per RFC 8941 §4.2.1.2
+fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next: i64&) -> bool {
+    entry.is_inner_list = true;
+    return sf_parse_inner_list_items(src, pos, entry.inner_items, out_next);
 }
 
 // Parses a single dictionary entry value and its parameters
@@ -631,14 +783,21 @@ fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
     return true;
 }
 
-// Helper: parses a single list entry
+// Helper: parses a single list entry (bare item or inner list)
 fn sf_parse_single_list_entry(src: const u8[:], pos: i64, p_item: SfParameterizedItem&, out_next: i64&) -> bool {
-    var item = SfItem { .. };
     var i_next: i64 = 0;
-    if !sf_parse_bare_item(src, pos, item, i_next) {
-        return false;
+    if pos < src.len && src[pos] == '(' {
+        p_item.is_inner_list = true;
+        if !sf_parse_inner_list_items(src, pos, p_item.inner_items, i_next) {
+            return false;
+        }
+    } else {
+        var item = SfItem { .. };
+        if !sf_parse_bare_item(src, pos, item, i_next) {
+            return false;
+        }
+        p_item.item = item;
     }
-    p_item.item = item;
 
     var params_next: i64 = 0;
     if !sf_parse_parameters(src, i_next, p_item.params, params_next) {

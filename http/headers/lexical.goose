@@ -201,6 +201,13 @@ checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
     return HEADER_VAL_LUT[b];
 }
 
+const HTTP_METHOD_CONN_LE:   u32 = 0x4E4E4F43; // "CONN"
+const HTTP_METHOD_ECT_SP_LE: u32 = 0x20544345; // "ECT "
+const HTTP_METHOD_OPTI_LE:   u32 = 0x4954504F; // "OPTI"
+const HTTP_METHOD_ONS_SP_LE: u32 = 0x20534E4F; // "ONS "
+const HTTP_METHOD_TRAC_LE:   u32 = 0x43415254; // "TRAC"
+const HTTP_METHOD_PATC_LE:   u32 = 0x43544150; // "PATC"
+
 // RFC 9112 Section 3: Request Line - Matches common HTTP methods via 32-bit little-endian integer bitcasting.
 // Returns (method_slice, consumed_len_including_space, ok).
 //
@@ -210,23 +217,32 @@ checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
 fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
     guard raw.len >= 4 else { return "", 0, false; }
     let w = core::read_le_u32(raw, 0);
-    if w == rfc::METHOD_GET_U32 {
+    if w == rfc::METHOD_GET_U32 || w == rfc::METHOD_PUT_U32 {
         return raw[0..3], 4, true;
     }
-    if w == rfc::METHOD_PUT_U32 {
-        return raw[0..3], 4, true;
-    }
-    if w == rfc::METHOD_POST_U32 {
+    if w == rfc::METHOD_POST_U32 || w == rfc::METHOD_HEAD_U32 {
         guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
         return raw[0..4], 5, true;
     }
-    if w == rfc::METHOD_HEAD_U32 {
-        guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
-        return raw[0..4], 5, true;
+    if w == HTTP_METHOD_TRAC_LE {
+        guard raw.len >= 6 && raw[4] == 'E' && raw[5] == ' ' else { return "", 0, false; }
+        return raw[0..5], 6, true;
+    }
+    if w == HTTP_METHOD_PATC_LE {
+        guard raw.len >= 6 && raw[4] == 'H' && raw[5] == ' ' else { return "", 0, false; }
+        return raw[0..5], 6, true;
     }
     if w == rfc::METHOD_DELE_U32 {
         guard raw.len >= 7 && raw[4] == 'T' && raw[5] == 'E' && raw[6] == ' ' else { return "", 0, false; }
         return raw[0..6], 7, true;
+    }
+    if w == HTTP_METHOD_CONN_LE {
+        guard raw.len >= 8 && core::read_le_u32(raw, 4) == HTTP_METHOD_ECT_SP_LE else { return "", 0, false; }
+        return raw[0..7], 8, true;
+    }
+    if w == HTTP_METHOD_OPTI_LE {
+        guard raw.len >= 8 && core::read_le_u32(raw, 4) == HTTP_METHOD_ONS_SP_LE else { return "", 0, false; }
+        return raw[0..7], 8, true;
     }
     return "", 0, false;
 }
@@ -558,12 +574,11 @@ fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
 fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
     guard src.len > 0 else { return 0, false; }
     var i: i64 = 0;
-    while i + 8 <= src.len {
-        let w = core::read_le_u64(src, i);
-        if swar_has_byte(w, ':') || swar_has_ctl_or_del(w) || swar_has_byte(w, ' ') {
+    while core::add_sat_i64(i, 8) <= src.len {
+        if !is_valid_token_word_swar(src, i) {
             break;
         }
-        i += 8;
+        i = core::add_sat_i64(i, 8);
     }
     while i < src.len {
         let b = src[i];
@@ -572,7 +587,7 @@ fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
             return i, true;
         }
         guard is_tchar(b) else { return 0, false; }
-        i++;
+        i = core::add_sat_i64(i, 1);
     }
     return 0, false;
 }

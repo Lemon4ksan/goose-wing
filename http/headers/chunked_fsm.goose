@@ -52,21 +52,50 @@ enum ChunkFsmStatus {
 }
 
 struct ChunkFsmDecoder {
-    state:         u64      = 0,
-    ext_bytes:     u32      = 0,
-    trailer_bytes: u32      = 0,
-    trailer_name:  u8[..64] = [],
+    state:          u64      = 0,
+    ext_bytes:      u32      = 0,
+    trailer_bytes:  u32      = 0,
+    total_read:     i64      = 0,
+    total_overhead: i64      = 0,
+    trailer_name:   u8[..64] = [],
 }
 
 fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
-    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0, .. };
+    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0, total_read: 0, total_overhead: 0, .. };
 }
 
 fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.state = 0;
     dec.ext_bytes = 0;
     dec.trailer_bytes = 0;
+    dec.total_read = 0;
+    dec.total_overhead = 0;
     dec.trailer_name.clear();
+}
+
+const CHUNK_FSM_OVERHEAD_MIN_BYTES: i64 = 102400;
+
+inline fn is_chunk_overhead_excessive(total_read: i64, total_overhead: i64) -> bool {
+    return total_overhead >= CHUNK_FSM_OVERHEAD_MIN_BYTES &&
+           core::sub_sat_i64(total_read, total_overhead) < (total_read >> 2);
+}
+
+inline fn record_chunk_fsm_overhead(
+    dec:          ChunkFsmDecoder&,
+    st:           ChunkFsmStatus,
+    consumed_len: i64,
+    payload_len:  i64,
+) -> ChunkFsmStatus {
+    guard st != ChunkFsmStatus.Error else { return st; }
+    let read_add = max(0, consumed_len);
+    let ovh_add = core::sub_sat_i64(read_add, max(0, payload_len));
+    dec.total_read = core::add_sat_i64(dec.total_read, read_add);
+    dec.total_overhead = core::add_sat_i64(dec.total_overhead, ovh_add);
+    if is_chunk_overhead_excessive(dec.total_read, dec.total_overhead) {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return ChunkFsmStatus.Error;
+    }
+    return st;
 }
 
 checkfree inline fn chunk_fsm_size(state: u64) -> u64 {
@@ -492,7 +521,7 @@ fn chunk_fsm_feed(
         // 1. Trailer mode
         if (dec.state & CHUNK_STATE_TRAILER_MODE) != 0 {
             let st = feed_chunk_trailer(dec, data, offset);
-            return st, offset, data[..0];
+            return record_chunk_fsm_overhead(dec, st, offset, 0), offset, data[..0];
         }
 
         // 2. Consume chunk hex size and extensions
@@ -505,16 +534,16 @@ fn chunk_fsm_feed(
                 continue;
             }
             if !chunk_fsm_has_size(dec.state) {
-                return ChunkFsmStatus.NeedMore, offset, data[..0];
+                return record_chunk_fsm_overhead(dec, ChunkFsmStatus.NeedMore, offset, 0), offset, data[..0];
             }
         }
 
         // 3. Emit chunk body payload
         let st_body, chunk = feed_chunk_body(dec, data, offset);
         if st_body == ChunkFsmStatus.YieldChunk || st_body == ChunkFsmStatus.Error {
-            return st_body, offset, chunk;
+            return record_chunk_fsm_overhead(dec, st_body, offset, chunk.len), offset, chunk;
         }
     }
 
-    return ChunkFsmStatus.NeedMore, offset, data[..0];
+    return record_chunk_fsm_overhead(dec, ChunkFsmStatus.NeedMore, offset, 0), offset, data[..0];
 }

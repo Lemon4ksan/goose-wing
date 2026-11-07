@@ -14,6 +14,23 @@ enum LbPolicy {
     RoundRobin,
     RandomTwoChoice,
     LeastConnections,
+    ConsistentHash,
+}
+
+enum LbStrategy {
+    RoundRobin,
+    RandomTwoChoice,
+    LeastConnections,
+    ConsistentHash,
+}
+
+struct KetamaPoint {
+    hash:        u32 = 0,
+    backend_idx: u16 = 0,
+}
+
+struct KetamaRing {
+    points: KetamaPoint[..1024] = [],
 }
 
 enum UpstreamHealthState {
@@ -34,6 +51,7 @@ struct UpstreamTarget {
     healthy_threshold:   i32                 = 2,
     unhealthy_threshold: i32                 = 3,
     total_requests:      u64                 = 0,
+    ejected_until_ms:    i64                 = 0,
 }
 
 struct UpstreamCluster {
@@ -43,6 +61,7 @@ struct UpstreamCluster {
     max_fails:    i32                  = 3,
     circuit_open: bool                 = false,
     rng_state:    u64                  = 0x123456789abcdef0,
+    ketama_ring:  KetamaRing           = KetamaRing { .. },
 }
 
 fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 = 3) -> UpstreamCluster {
@@ -66,6 +85,9 @@ fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, 
     };
     target.host.append(host);
     cluster.targets.push(target);
+    if cluster.policy == LbPolicy.ConsistentHash {
+        build_ketama_ring(cluster, cluster.ketama_ring);
+    }
     return true;
 }
 
@@ -204,6 +226,12 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
     }
     if cluster.policy == LbPolicy.LeastConnections {
         return select_least_connections(cluster, n);
+    }
+    if cluster.policy == LbPolicy.ConsistentHash && cluster.ketama_ring.points.len > 0 {
+        let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, "default", 0);
+        if ok_ch {
+            return idx64 as i32, true;
+        }
     }
     return select_p2c(cluster, n);
 }
@@ -378,4 +406,118 @@ fn set_target_health_thresholds(
     cluster.targets[target_idx].healthy_threshold = if healthy_thresh > 0 { healthy_thresh } else { 1 };
     cluster.targets[target_idx].unhealthy_threshold = if unhealthy_thresh > 0 { unhealthy_thresh } else { 1 };
     return true;
+}
+
+// ---- Ketama Consistent Hashing Continuum (Pingora Parity) -----------------
+
+const KETAMA_POINTS_PER_WEIGHT: u32 = 16;
+
+// Checks whether a backend target is healthy/probing and not outlier-ejected at `now_ms`.
+inline fn is_backend_routable(target: const UpstreamTarget&, now_ms: i64) -> bool {
+    if target.ejected_until_ms > 0 && now_ms < target.ejected_until_ms {
+        return false;
+    }
+    return is_target_selectable(target);
+}
+
+// Inserts `pt` into sorted `ring.points`, deduplicating identical 32-bit hash positions.
+fn insert_ketama_point(ring: KetamaRing&, pt: KetamaPoint) {
+    var lo: u64 = 0;
+    var hi: u64 = ring.points.len as u64;
+    while lo < hi {
+        let mid = core::add_sat_u64(lo, core::sub_sat_u64(hi, lo) >> 1);
+        let cur = ring.points[mid as i64].hash;
+        if cur == pt.hash {
+            return;
+        }
+        if cur < pt.hash {
+            lo = core::add_sat_u64(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+    guard ring.points.len < ring.points.cap else { return; }
+    ring.points.push(pt);
+    var pos: u64 = core::sub_sat_u64(ring.points.len as u64, 1);
+    while pos > lo {
+        let prev = core::sub_sat_u64(pos, 1);
+        ring.points[pos as i64] = ring.points[prev as i64];
+        pos = prev;
+    }
+    ring.points[lo as i64] = pt;
+}
+
+// Builds a Pingora-compatible Ketama consistent hashing continuum from `pool.targets`.
+fn build_ketama_ring(pool: const UpstreamCluster&, ring: KetamaRing&) {
+    ring.points.clear();
+    for idx in pool.targets.len {
+        let target = pool.targets[idx];
+        let w = if target.weight > 0 { target.weight as u32 } else { 1 };
+        let num_pts = core::mul_sat_u64(w, KETAMA_POINTS_PER_WEIGHT) as i64;
+        var base_key: u8[..96] = [];
+        base_key.append(target.host[..]);
+        base_key.push(0);
+        core::format_u64_dec(target.port, base_key);
+        let base_crc = core::crc32(base_key[..]);
+        var prev_hash: u32 = 0;
+        for _ in num_pts {
+            var le_bytes: u8[4] = [
+                (prev_hash & 0xFF) as u8,
+                ((prev_hash >> 8) & 0xFF) as u8,
+                ((prev_hash >> 16) & 0xFF) as u8,
+                ((prev_hash >> 24) & 0xFF) as u8,
+            ];
+            let h = core::crc32_update(base_crc, le_bytes[..]);
+            insert_ketama_point(ring, KetamaPoint { hash: h, backend_idx: idx as u16 });
+            prev_hash = h;
+        }
+    }
+}
+
+// Binary-searches `ring.points` for the first point with `hash >= key_hash`, wrapping to index 0.
+fn find_ketama_start_idx(ring: const KetamaRing&, key_hash: u32) -> i64 {
+    var lo: u64 = 0;
+    var hi: u64 = ring.points.len as u64;
+    while lo < hi {
+        let mid = core::add_sat_u64(lo, core::sub_sat_u64(hi, lo) >> 1);
+        let cur = ring.points[mid as i64].hash;
+        if cur < key_hash {
+            lo = core::add_sat_u64(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+    if lo >= (ring.points.len as u64) {
+        return 0;
+    }
+    return lo as i64;
+}
+
+// Selects a routable backend from `pool` via Ketama consistent hashing over `key`,
+// stepping clockwise up to 32 probes on the ring if the primary node is unhealthy or ejected.
+fn select_consistent_backend(
+    pool:   UpstreamCluster&,
+    ring:   const KetamaRing&,
+    key:    const u8[:],
+    now_ms: i64,
+) -> i64, bool {
+    guard !pool.circuit_open && pool.targets.len > 0 && ring.points.len > 0 else {
+        return NO_UPSTREAM_TARGET, false;
+    }
+    let key_hash = core::crc32(key);
+    let ring_len = ring.points.len as u64;
+    var ring_idx = find_ketama_start_idx(ring, key_hash) as u64;
+    let max_probes = min(ring_len, 32);
+    for _ in (max_probes as i64) {
+        let b_idx = ring.points[ring_idx as i64].backend_idx as i64;
+        if b_idx >= 0 && b_idx < pool.targets.len {
+            if is_backend_routable(pool.targets[b_idx], now_ms) {
+                record_target_dispatch(pool.targets[b_idx]);
+                return b_idx, true;
+            }
+        }
+        let next_idx = core::add_sat_u64(ring_idx, 1);
+        ring_idx = if next_idx >= ring_len { 0 } else { next_idx };
+    }
+    return NO_UPSTREAM_TARGET, false;
 }
