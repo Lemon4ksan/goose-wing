@@ -374,7 +374,7 @@ fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
     guard !d2 else { return false; }
     let digits = if d1 { token[..2] } else { token[..1] };
     let day_val, day_ok = parse_int(digits);
-    guard day_ok && day_val >= 1 && day_val <= 31 else { return false; }
+    guard day_ok else { return false; }
     day = day_val;
     return true;
 }

@@ -49,12 +49,12 @@ fn test_client_h2_trailers_and_incremental_drain() {
     var ctrl_out: u8[..256] = [];
 
     rx_accum.append(chunk1[..]);
-    let ok1, done1 = wing::drain_h2_response_frames(rx_accum, 1, dec_dt, resp, got_hdrs, ctrl_out);
+    let ok1, done1 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
     assert(ok1 && !done1 && got_hdrs);
     assert(rx_accum.len == 0); // Must drain consumed frame bytes so read 2 does not re-decode chunk1!
 
     rx_accum.append(chunk2[..]);
-    let ok2, done2 = wing::drain_h2_response_frames(rx_accum, 1, dec_dt, resp, got_hdrs, ctrl_out);
+    let ok2, done2 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
     assert(ok2 && done2);
     assert(resp.status_code == 200);
     assert(wing::header(resp, "content-type") == "application/grpc");
@@ -265,7 +265,7 @@ fn test_h2_server_flow_window_and_closed_stream_seams() {
     assert(out2.len == 13 && out2[3] == rfc::H2_FRAME_DATA && (out2[4] & rfc::H2_FLAG_END_STREAM) != 0);
     assert(g_h2_srv_sess.conn.active_stream_count == 0);
 
-    // Sending smaller stream ID (3 < 5) that was never opened must emit GOAWAY(PROTOCOL_ERROR)
+    // Sending smaller stream ID (3 < 5) that was implicitly closed by opening stream 5 (RFC 9113 §5.1.1) returns STREAM_CLOSED
     let small_hdr = internal::FrameHeader {
         length:     req_hblock.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
@@ -273,7 +273,7 @@ fn test_h2_server_flow_window_and_closed_stream_seams() {
         stream_id:  3,
     };
     let err_small = internal::on_ingress_frame_header(g_h2_srv_sess.conn, small_hdr, 1020);
-    assert(err_small == rfc::H2_ERR_PROTOCOL_ERROR);
+    assert(err_small == rfc::H2_ERR_STREAM_CLOSED);
     print("SEAM_H2_FLOW_AND_CLOSED_STREAMS: OK");
 }
 
@@ -317,7 +317,7 @@ fn test_h2_client_sliced_stream_recv_seam() {
     var tp: wing::Transport = wing::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 };
     var cli_dec = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var resp = wing::Response { .. };
-    let ok_h2 = wing::recv_h2_response_loop(tp, 1, cli_dec, 200, resp);
+    let ok_h2 = wing::recv_h2_response_loop(tp, 1, false, cli_dec, 200, resp);
     wing::tcp_close(cli_fd);
     wing::tcp_close(srv_fd);
 
@@ -488,7 +488,7 @@ fn test_proxy_cache_h2_extended_connect_seams() {
     cached_resp.body.append("CACHED_ROOT_PAYLOAD");
     var ts = wing::CacheTimestamps { .. };
     let _ = wing::stage_client_cache_store(
-        req_root, parsed_root, "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
+        req_root, req_root.headers, parsed_root, "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
     );
 
     let early_resp, early_err = wing::execute_request(g_seam_session, req_root);

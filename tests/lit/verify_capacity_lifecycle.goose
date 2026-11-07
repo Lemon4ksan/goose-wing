@@ -99,8 +99,11 @@ fn test_h3_capacity_lifecycle() {
     let err_ctrl = server_conn.handle_stream_data(3, false, ctrl_wire[..], false);
     assert(err_ctrl == rfc::H3_ERR_NO_ERROR);
 
-    // QPACK static block: :method GET (0xD1), :scheme https (0xD7), :path / (0xC1)
-    let qpack_sec: u8[5] = [0x00, 0x00, 0xD1, 0xD7, 0xC1];
+    // QPACK static block: :method GET (0xD1), :scheme https (0xD7), :path / (0xC1), :authority example.com (0x50 0x0B "example.com")
+    let qpack_sec: u8[18] = [
+        0x00, 0x00, 0xD1, 0xD7, 0xC1, 0x50, 0x0B,
+        'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+    ];
     var req_wire: u8[..64] = [];
     assert(internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
     req_wire.append(qpack_sec[..]);

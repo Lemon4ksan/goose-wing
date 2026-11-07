@@ -138,11 +138,19 @@ fn test_dynamic_promotion_and_reassembly() {
     wire_out.clear();
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h_wire[..], 1000, wire_out);
 
-    // Chunk 1: 16384 bytes (> 8192 -> triggers promotion to SpillSlab!)
+    // Chunk 1: 8192 bytes + 1 byte (> 8192 -> triggers promotion to SpillSlab within 8192 initial window!)
+    var chunk1a: u8[>..] = [];
+    for i in 8192 { chunk1a.push('B'); }
+    var d1a_wire: u8[>..] = [];
+    build_frame_header(d1a_wire, 8192, 0x00, 0x00, 1);
+    d1a_wire.append(chunk1a[..]);
+    wire_out.clear();
+    internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d1a_wire[..], 1000, wire_out);
+
     var chunk1: u8[>..] = [];
-    for i in 16384 { chunk1.push('B'); }
+    for i in 8192 { chunk1.push('B'); }
     var d1_wire: u8[>..] = [];
-    build_frame_header(d1_wire, 16384, 0x00, 0x00, 1); // DATA (no END_STREAM)
+    build_frame_header(d1_wire, 8192, 0x00, 0x00, 1); // DATA (no END_STREAM, total 16384 -> triggers promotion!)
     d1_wire.append(chunk1[..]);
 
     wire_out.clear();
@@ -190,15 +198,19 @@ fn test_maximum_capacity_overflow() {
     h_wire.append(h_block[..]);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h_wire[..], 1000, wire_out);
 
-    // Send 4 frames of 16384 bytes = 65536 bytes (fits exactly in 64 KiB slab)
+    // Send 8 frames of 8192 bytes = 65536 bytes (fits exactly in 64 KiB slab within 8192 initial window)
     var chunk: u8[>..] = [];
-    for i in 16384 { chunk.push('X'); }
-    for step in 4 {
+    for i in 8192 { chunk.push('X'); }
+    for step in 8 {
         var d_wire: u8[>..] = [];
-        build_frame_header(d_wire, 16384, 0x00, 0x00, 1);
+        build_frame_header(d_wire, 8192, 0x00, 0x00, 1);
         d_wire.append(chunk[..]);
         internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d_wire[..], 1000, wire_out);
     }
+
+    // Grant stream window credit for the 65537th byte so slab capacity check (not flow control) fires
+    let c_idx, c_found = internal::find_session_stream_idx(sess.conn, 1);
+    if c_found { sess.conn.streams[c_idx].recv_window += 4096; }
 
     // Now send 1 extra byte (65537 > 65536 max slab capacity)
     var overflow_wire: u8[>..] = [];
@@ -245,11 +257,18 @@ fn test_pool_saturation_rejection() {
     h_wire.append(h_block[..]);
     internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", h_wire[..], 1000, wire_out);
 
-    // Stream 1 sends 10,000 bytes (> 8192 inline buffer, but pool is saturated!)
+    // Stream 1 sends 8192 bytes + 1808 bytes = 10,000 bytes (> 8192 inline buffer, but pool is saturated!)
+    var chunk8k: u8[>..] = [];
+    for i in 8192 { chunk8k.push('S'); }
+    var d8k_wire: u8[>..] = [];
+    build_frame_header(d8k_wire, 8192, 0x00, 0x00, 1);
+    d8k_wire.append(chunk8k[..]);
+    internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", d8k_wire[..], 1000, wire_out);
+
     var chunk: u8[>..] = [];
-    for i in 10000 { chunk.push('S'); }
+    for i in 1808 { chunk.push('S'); }
     var d_wire: u8[>..] = [];
-    build_frame_header(d_wire, 10000, 0x00, 0x00, 1);
+    build_frame_header(d_wire, 1808, 0x00, 0x00, 1);
     d_wire.append(chunk[..]);
 
     wire_out.clear();
