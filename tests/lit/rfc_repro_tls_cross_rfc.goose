@@ -235,12 +235,142 @@ fn test_bug5_post_handshake_server_rejects_client_nst() {
     print("BUG5_SERVER_REJECTS_CLIENT_NST: OK");
 }
 
+fn test_tlsc01_tls_feature_must_staple() {
+    assert(wing::is_known_extension_oid(rfc::OID_TLS_FEATURE[..]));
+    let feat_der: u8[5] = [0x30, 0x03, 0x02, 0x01, 0x05];
+    var cert = wing::ParsedCert { .. };
+    assert(wing::x509_parse_tls_feature_ext(feat_der[..], cert));
+    assert(cert.has_must_staple);
+    assert(!cert.has_unsupported_critical);
+
+    let empty_seq: u8[2] = [0x30, 0x00];
+    var bad_cert = wing::ParsedCert { .. };
+    assert(!wing::x509_parse_tls_feature_ext(empty_seq[..], bad_cert));
+    assert(bad_cert.has_unsupported_critical);
+    print("TLSC01_MUST_STAPLE_EXT: OK");
+}
+
+fn test_tlsc02_sct_list_parsing() {
+    assert(wing::is_known_extension_oid(rfc::OID_CT_PRECERT_SCTS[..]));
+    // Build a 49-byte v1 SerializedSCT:
+    // version(1)=0, log_id(32)=0xAA.., timestamp(8)=0x0000018E00000001, ext_len(2)=0, hash(1)=4, sig(1)=3, sig_len(2)=2, sig=[0xDE,0xAD]
+    var sct_bytes: u8[..64] = [];
+    sct_bytes.push(0x00);
+    for _ in 32 {
+        sct_bytes.push(0xAA);
+    }
+    let ts_and_tail: u8[16] = [
+        0x00, 0x00, 0x01, 0x8E, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00,
+        0x04, 0x03, 0x00, 0x02, 0xDE, 0xAD,
+    ];
+    sct_bytes.append(ts_and_tail[..]);
+
+    var single_sct = wing::ParsedSct { .. };
+    assert(wing::parse_sct_entry(sct_bytes[..], single_sct));
+    assert(single_sct.version == 0);
+    assert(single_sct.log_id[0] == 0xAA && single_sct.log_id[31] == 0xAA);
+    assert(single_sct.timestamp_ms == 0x0000018E00000001);
+    assert(single_sct.hash_alg == 4 && single_sct.sig_alg == 3);
+    assert(single_sct.signature.length == 2);
+
+    var sct_list_raw: u8[..80] = [];
+    core::append_u16_be(sct_list_raw, (sct_bytes.len + 2) as u16);
+    core::append_u16_be(sct_list_raw, sct_bytes.len as u16);
+    sct_list_raw.append(sct_bytes[..]);
+
+    var scts: wing::ParsedSct[..8] = [];
+    assert(wing::parse_sct_list(sct_list_raw[..], scts));
+    assert(scts.len == 1);
+
+    // Dispatch via X.509 OCTET STRING wrapper
+    var ext_oct: u8[..96] = [];
+    ext_oct.push(rfc::ASN1_TAG_OCTET_STRING);
+    ext_oct.push(sct_list_raw.len as u8);
+    ext_oct.append(sct_list_raw[..]);
+    var ext_cur = core::cursor_from(ext_oct[..]);
+    var cert = wing::ParsedCert { .. };
+    wing::x509_dispatch_extension(ext_oct[..], rfc::OID_CT_PRECERT_SCTS[..], ext_cur, cert);
+    assert(cert.has_sct_list && cert.sct_count == 1);
+    print("TLSC02_SCT_LIST_PARSED: OK");
+}
+
+fn test_tlsc04_eku_parsing_and_enforcement() {
+    assert(wing::is_known_extension_oid(rfc::OID_EXT_KEY_USAGE[..]));
+    // SEQUENCE { id-kp-serverAuth, id-kp-clientAuth }
+    let eku_srv_cli: u8[22] = [
+        0x30, 0x14,
+        0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01,
+        0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02,
+    ];
+    var cert_ok = wing::ParsedCert { .. };
+    assert(wing::x509_parse_eku_ext(eku_srv_cli[..], cert_ok));
+    assert(cert_ok.has_eku);
+    assert(cert_ok.eku_mask == (wing::EKU_SERVER_AUTH | wing::EKU_CLIENT_AUTH));
+    assert(wing::validate_end_entity_constraints(cert_ok) == wing::TlsAlert.CloseNotify);
+
+    // SEQUENCE { id-kp-OCSPSigning } -> leaf cert must fail end-entity TLS constraint check
+    let eku_ocsp_only: u8[12] = [
+        0x30, 0x0A,
+        0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09,
+    ];
+    var cert_ocsp = wing::ParsedCert { .. };
+    assert(wing::x509_parse_eku_ext(eku_ocsp_only[..], cert_ocsp));
+    assert(cert_ocsp.has_eku && cert_ocsp.eku_mask == wing::EKU_OCSP_SIGNING);
+    assert(wing::validate_end_entity_constraints(cert_ocsp) == wing::TlsAlert.UnsupportedCertificate);
+
+    // Empty EKU SEQUENCE MUST be rejected
+    let empty_eku: u8[2] = [0x30, 0x00];
+    var cert_empty = wing::ParsedCert { .. };
+    assert(!wing::x509_parse_eku_ext(empty_eku[..], cert_empty));
+    print("TLSC04_EKU_ENFORCED: OK");
+}
+
+fn test_tlsc05_email_name_constraints() {
+    // 1. Exact mailbox constraint (local part case-sensitive, host part case-insensitive)
+    assert(wing::match_email_name_constraint("alice@Example.COM", "alice@example.com"));
+    assert(!wing::match_email_name_constraint("Alice@example.com", "alice@example.com"));
+
+    // 2. Leading-dot domain suffix constraint (.example.com)
+    assert(wing::match_email_name_constraint("bob@mail.example.com", ".example.com"));
+    assert(!wing::match_email_name_constraint("bob@example.com", ".example.com"));
+
+    // 3. Exact host constraint after '@' (example.com)
+    assert(wing::match_email_name_constraint("carol@EXAMPLE.COM", "example.com"));
+    assert(!wing::match_email_name_constraint("carol@sub.example.com", "example.com"));
+
+    // 4. End-to-end SAN [1] + NameConstraints [1] evaluation
+    let san_der: u8[19] = [
+        0x30, 0x11,
+        0x81, 0x0F, 'u', 's', 'e', 'r', '@', 's', 'u', 'b', '.', 'o', 'r', 'g', '.', 'u', 'k',
+    ];
+    var sans: wing::SanEntry[..16] = [];
+    assert(wing::parse_san_extension(san_der[..], sans));
+    assert(sans.len == 1 && sans[0].san_type == wing::SanType.Email);
+
+    let nc_permitted_der: u8[17] = [
+        0x30, 0x0F,
+        0xA0, 0x0D,
+        0x30, 0x0B,
+        0x30, 0x09,
+        0x81, 0x07, '.', 'o', 'r', 'g', '.', 'u', 'k',
+    ];
+    var nc_list: wing::NameConstraintEntry[..16] = [];
+    assert(wing::parse_name_constraints(nc_permitted_der[..], nc_list));
+    assert(wing::check_name_constraints(nc_list, sans[0]));
+    print("TLSC05_EMAIL_NAME_CONSTRAINTS: OK");
+}
+
 fn main() {
     test_bug1_x509_empty_sig_and_unsigned_ocsp_crl();
     test_bug2_x509_malformed_extensions_bypass();
     test_bug3_handshake_forbidden_extensions_and_ch_rules();
     test_bug4_sha384_nst_resumption_psk();
     test_bug5_post_handshake_server_rejects_client_nst();
+    test_tlsc01_tls_feature_must_staple();
+    test_tlsc02_sct_list_parsing();
+    test_tlsc04_eku_parsing_and_enforcement();
+    test_tlsc05_email_name_constraints();
 }
 
 // CHECK: BUG1_X509_EMPTY_SIG_REJECTED: OK
@@ -252,3 +382,7 @@ fn main() {
 // CHECK: BUG3_CH_INVALID_COMPRESSION_REJECTED: OK
 // CHECK: BUG4_SHA384_NST_PSK_CACHED: OK
 // CHECK: BUG5_SERVER_REJECTS_CLIENT_NST: OK
+// CHECK: TLSC01_MUST_STAPLE_EXT: OK
+// CHECK: TLSC02_SCT_LIST_PARSED: OK
+// CHECK: TLSC04_EKU_ENFORCED: OK
+// CHECK: TLSC05_EMAIL_NAME_CONSTRAINTS: OK

@@ -312,6 +312,135 @@ fn main() {
     wing::x509_parse_basic_constraints_ext(bc_cur, bc_cert);
     assert(bc_cert.path_len_constraint == 255 || bc_cert.has_unsupported_critical);
     print("RECORD_AND_X509_BC_GUARDS: OK");
+
+    // 22. Wave 1 Track D [TLSC-03]: Post-Handshake CertificateRequest non-empty context & PHA extension
+    var pha_ext: u8[..8] = [];
+    wing::encode_post_handshake_auth_extension(pha_ext);
+    assert(pha_ext.len == 4 && pha_ext[0] == 0x00 && pha_ext[1] == 0x31 && pha_ext[2] == 0x00 && pha_ext[3] == 0x00);
+    let sig_ed: u16[1] = [rfc::SIG_SCHEME_ED25519];
+    var cr_empty_ctx: u8[..64] = [];
+    assert(wing::encode_certificate_request(cr_empty_ctx, "", sig_ed[..]));
+    var parsed_pha_cr = wing::CertificateRequestMsg { .. };
+    assert(!wing::parse_certificate_request(cr_empty_ctx[..], true, parsed_pha_cr));
+    assert(wing::parse_certificate_request(cr_empty_ctx[..], false, parsed_pha_cr));
+    var cr_nonempty_ctx: u8[..64] = [];
+    assert(wing::encode_certificate_request(cr_nonempty_ctx, "pha-ctx-1", sig_ed[..]));
+    assert(wing::parse_certificate_request(cr_nonempty_ctx[..], true, parsed_pha_cr));
+    assert(parsed_pha_cr.context[..] == "pha-ctx-1");
+    print("POST_HANDSHAKE_AUTH_CONTEXT_GUARD: OK");
+
+    // 23. Wave 1 Track D [TLSC-06]: Stateless STEK Ticket Seal/Open & Dual-Key Rotation
+    var ring = wing::TlsTicketKeyRing {
+        keys: [
+            wing::TlsTicketStek {
+                key_name:     [0xAA, 0xBB, 0xCC, 0x01],
+                aead_key:     [0x11; 32],
+                created_sec:  1000,
+                lifetime_sec: 3600,
+                active:       true,
+            },
+            wing::TlsTicketStek {
+                key_name:     [0xAA, 0xBB, 0xCC, 0x02],
+                aead_key:     [0x22; 32],
+                created_sec:  2000,
+                lifetime_sec: 3600,
+                active:       true,
+            },
+        ],
+        current_idx: 0,
+    };
+    var psk_in: u8[..48] = [];
+    for i in 32 { psk_in.push((i + 1) as u8); }
+    let ticket_iv: u8[12] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
+    var sealed_ticket: u8[..128] = [];
+    assert(wing::seal_stateless_tls13_ticket(ring, psk_in, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 1000000, ticket_iv, sealed_ticket));
+    assert(sealed_ticket.len == 95);
+    // Rotate active key to slot 1; ticket sealed under slot 0 must still open cleanly
+    ring.current_idx = 1;
+    let opened_tkt, ok_open_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1005000);
+    assert(ok_open_tkt && opened_tkt.in_use && opened_tkt.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    assert(core::ct_eq_bytes(opened_tkt.psk[..], psk_in[..]));
+    // Expired ticket must be rejected
+    let _, ok_exp_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1000000 + 3600001);
+    assert(!ok_exp_tkt);
+    print("STATELESS_STEK_ROTATION: OK");
+
+    // 24. Wave 1 Track D [TLSMOD-002]: HRR Cookie & 2-Byte KeyShare Group Parsing
+    var hrr_wire: u8[..256] = [];
+    hrr_wire.push(rfc::TLS_HS_SERVER_HELLO);
+    var hrr_body: u8[..256] = [];
+    core::append_u16_be(hrr_body, rfc::TLS_LEGACY_VERSION_1_2);
+    hrr_body.append(rfc::HRR_RANDOM[..]);
+    hrr_body.push(0); // empty session_id
+    core::append_u16_be(hrr_body, rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    hrr_body.push(0); // compression method 0
+    var hrr_exts: u8[..128] = [];
+    // supported_versions (43) -> TLS 1.3
+    core::append_u16_be(hrr_exts, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    core::append_u16_be(hrr_exts, 2);
+    core::append_u16_be(hrr_exts, rfc::TLS_VERSION_1_3);
+    // key_share (51) -> 2-byte selected_group (X25519)
+    core::append_u16_be(hrr_exts, rfc::TLS_EXT_KEY_SHARE);
+    core::append_u16_be(hrr_exts, 2);
+    core::append_u16_be(hrr_exts, rfc::GROUP_X25519);
+    // cookie (44) -> "stateless-hrr-cookie"
+    assert(wing::serialize_tls_cookie_extension(hrr_exts, "stateless-hrr-cookie"));
+    core::append_u16_be(hrr_body, hrr_exts.len as u16);
+    hrr_body.append(hrr_exts[..]);
+    core::append_u24_be(hrr_wire, hrr_body.len as u32);
+    hrr_wire.append(hrr_body[..]);
+
+    var parsed_hrr = wing::ParsedServerHello { .. };
+    assert(wing::parse_live_server_hello(hrr_wire[..], parsed_hrr));
+    assert(parsed_hrr.is_hrr && parsed_hrr.selected_group == rfc::GROUP_X25519);
+    assert(parsed_hrr.hrr_cookie[..] == "stateless-hrr-cookie");
+    print("HRR_COOKIE_AND_GROUP_PARSE: OK");
+
+    // 25. Wave 1 Track D [TLSMOD-004 & TLSMOD-007 & TLSMOD-008]: Dynamic Record Sizing, In-Place AEAD & Pre-Compressed Cert
+    assert(wing::TLS_SINGLE_MSS_PLAINTEXT_LEN == 1378);
+    assert(wing::TLS_DYNAMIC_RESIZE_THRESHOLD_BYTES == 65536);
+    let rec_key: u8[16] = [0x33; 16];
+    let rec_iv:  u8[12] = [0x44; 12];
+    var rec_ct: u8[64] = [0; 64];
+    let sealed_n, _, ok_rec_seal = wing::tls_record_seal_aes128_gcm_into(
+        rec_key, rec_iv, 7, rfc::TLS_CONTENT_APPLICATION_DATA, "inplace-payload", rec_ct[..],
+    );
+    assert(ok_rec_seal && sealed_n == 5 + 15 + 1 + 16);
+    var rec_pt: u8[64] = [0; 64];
+    let dec_n, dec_inner, _, ok_rec_dec = wing::tls_record_decrypt_aes128_gcm_into(
+        rec_key, rec_iv, 7, rec_ct[0..5], rec_ct[5..sealed_n], rec_pt[..],
+    );
+    assert(ok_rec_dec && dec_n == 15 && dec_inner == rfc::TLS_CONTENT_APPLICATION_DATA);
+    assert(rec_pt[..dec_n] == "inplace-payload");
+
+    let ch_rand: u8[32] = [0x11; 32];
+    let ch_pub:  u8[32] = [0x22; 32];
+    var ch_pay: u8[..1024] = [];
+    wing::build_tls13_client_hello_payload(
+        ch_rand, ch_pub, "example.com", "h2", ch_pay, "", 0, false, "", "", "cookie123", true,
+    );
+    var ch_full: u8[..1028] = [];
+    ch_full.push(rfc::TLS_HS_CLIENT_HELLO);
+    core::append_u24_be(ch_full, ch_pay.len as u32);
+    ch_full.append(ch_pay[..]);
+    let sel_comp = wing::select_server_cert_comp_algo(ch_full[..], rfc::CERT_COMPRESSION_BROTLI);
+    assert(sel_comp == rfc::CERT_COMPRESSION_BROTLI);
+    var srv_cfg = wing::TlsServerHandshakeConfig {
+        compressed_cert_algo: rfc::CERT_COMPRESSION_BROTLI,
+        ..
+    };
+    let _ = srv_cfg.cert_der.try_set("DUMMY_DER_CERT");
+    let _ = srv_cfg.compressed_cert_data.try_set("COMPRESSED_BYTES");
+    var comp_cert_hs: u8[..4096] = [];
+    assert(wing::encode_server_cert_or_compressed_msg(srv_cfg, sel_comp, comp_cert_hs));
+    assert(comp_cert_hs[0] == rfc::TLS_HS_COMPRESSED_CERTIFICATE);
+    let exp_slot = wing::alloc_tls_cipher_slot();
+    assert(exp_slot != 0xFFFF);
+    var exp_out: u8[..256] = [];
+    assert(wing::tls_session_export_keying_material(exp_slot, "EXPORTER-Channel-Binding", "ctx", 32, exp_out));
+    assert(exp_out.len == 32);
+    wing::free_tls_cipher_slot(exp_slot);
+    print("DYNAMIC_RECORD_AND_COMPRESSED_CERT: OK");
 }
 
 // CHECK-LABEL: === TLS_HANDSHAKE_AND_RECORD_VERIFICATION ===
@@ -341,3 +470,7 @@ fn main() {
 // CHECK-NEXT: ECH_AND_EARLY_DATA_GUARDS: OK
 // CHECK-NEXT: HPKE_AND_STRIKE_REGISTER_GUARDS: OK
 // CHECK-NEXT: RECORD_AND_X509_BC_GUARDS: OK
+// CHECK-NEXT: POST_HANDSHAKE_AUTH_CONTEXT_GUARD: OK
+// CHECK-NEXT: STATELESS_STEK_ROTATION: OK
+// CHECK-NEXT: HRR_COOKIE_AND_GROUP_PARSE: OK
+// CHECK-NEXT: DYNAMIC_RECORD_AND_COMPRESSED_CERT: OK

@@ -175,53 +175,160 @@ struct P256Point {
     infinity: bool = true,
 }
 
+struct P256Jacobian {
+    x:        U256 = U256 { .. },
+    y:        U256 = U256 { .. },
+    z:        U256 = U256 { .. },
+    infinity: bool = true,
+}
+
 // crap:ignore
-fn p256_point_double(pt: P256Point) -> P256Point {
+inline fn p256_to_jacobian(pt: P256Point) -> P256Jacobian {
+    if pt.infinity {
+        return P256Jacobian { .. };
+    }
+    var one = U256 { .. };
+    one.v[0] = 1;
+    return P256Jacobian { x: pt.x, y: pt.y, z: one, infinity: false };
+}
+
+// Doubles a P-256 point in Jacobian coordinates (X : Y : Z) using the a = -3 formula (4M + 4S, 0 inversions).
+// crap:ignore
+fn p256_jacobian_double(pt: P256Jacobian) -> P256Jacobian {
     if pt.infinity || u256_is_zero(pt.y) {
+        return P256Jacobian { .. };
+    }
+    let y2 = u256_mul_mod(pt.y, pt.y, P256_MOD);
+    let two_y2 = u256_add_mod(y2, y2, P256_MOD);
+    let four_y2 = u256_add_mod(two_y2, two_y2, P256_MOD);
+    let s = u256_mul_mod(pt.x, four_y2, P256_MOD);
+
+    let z2 = u256_mul_mod(pt.z, pt.z, P256_MOD);
+    let x_minus_z2 = u256_sub_mod(pt.x, z2, P256_MOD);
+    let x_plus_z2 = u256_add_mod(pt.x, z2, P256_MOD);
+    let prod = u256_mul_mod(x_minus_z2, x_plus_z2, P256_MOD);
+    let two_prod = u256_add_mod(prod, prod, P256_MOD);
+    let m = u256_add_mod(two_prod, prod, P256_MOD);
+
+    let m2 = u256_mul_mod(m, m, P256_MOD);
+    let two_s = u256_add_mod(s, s, P256_MOD);
+    let x3 = u256_sub_mod(m2, two_s, P256_MOD);
+
+    let four_y4 = u256_mul_mod(two_y2, two_y2, P256_MOD);
+    let eight_y4 = u256_add_mod(four_y4, four_y4, P256_MOD);
+    let s_minus_x3 = u256_sub_mod(s, x3, P256_MOD);
+    let y3 = u256_sub_mod(u256_mul_mod(m, s_minus_x3, P256_MOD), eight_y4, P256_MOD);
+
+    let yz = u256_mul_mod(pt.y, pt.z, P256_MOD);
+    let z3 = u256_add_mod(yz, yz, P256_MOD);
+    return P256Jacobian { x: x3, y: y3, z: z3, infinity: false };
+}
+
+// Adds two P-256 points in Jacobian coordinates (12M + 4S, 0 inversions).
+// crap:ignore
+fn p256_jacobian_add(p1: P256Jacobian, p2: P256Jacobian) -> P256Jacobian {
+    if p1.infinity { return p2; }
+    if p2.infinity { return p1; }
+
+    let z1_sq = u256_mul_mod(p1.z, p1.z, P256_MOD);
+    let z2_sq = u256_mul_mod(p2.z, p2.z, P256_MOD);
+    let u1 = u256_mul_mod(p1.x, z2_sq, P256_MOD);
+    let u2 = u256_mul_mod(p2.x, z1_sq, P256_MOD);
+
+    let z1_cu = u256_mul_mod(p1.z, z1_sq, P256_MOD);
+    let z2_cu = u256_mul_mod(p2.z, z2_sq, P256_MOD);
+    let s1 = u256_mul_mod(p1.y, z2_cu, P256_MOD);
+    let s2 = u256_mul_mod(p2.y, z1_cu, P256_MOD);
+
+    if u256_cmp(u1, u2.v) == 0 {
+        if u256_cmp(s1, s2.v) == 0 {
+            return p256_jacobian_double(p1);
+        }
+        return P256Jacobian { .. };
+    }
+
+    let h = u256_sub_mod(u2, u1, P256_MOD);
+    let r = u256_sub_mod(s2, s1, P256_MOD);
+    let h2 = u256_mul_mod(h, h, P256_MOD);
+    let h3 = u256_mul_mod(h, h2, P256_MOD);
+    let u1_h2 = u256_mul_mod(u1, h2, P256_MOD);
+
+    let r2 = u256_mul_mod(r, r, P256_MOD);
+    let two_u1_h2 = u256_add_mod(u1_h2, u1_h2, P256_MOD);
+    let x3 = u256_sub_mod(u256_sub_mod(r2, h3, P256_MOD), two_u1_h2, P256_MOD);
+
+    let u1_h2_minus_x3 = u256_sub_mod(u1_h2, x3, P256_MOD);
+    let s1_h3 = u256_mul_mod(s1, h3, P256_MOD);
+    let y3 = u256_sub_mod(u256_mul_mod(r, u1_h2_minus_x3, P256_MOD), s1_h3, P256_MOD);
+
+    let z1_z2 = u256_mul_mod(p1.z, p2.z, P256_MOD);
+    let z3 = u256_mul_mod(z1_z2, h, P256_MOD);
+    return P256Jacobian { x: x3, y: y3, z: z3, infinity: false };
+}
+
+// Converts a Jacobian P-256 point (X : Y : Z) to affine (X / Z^2, Y / Z^3) with a single modular inversion.
+// crap:ignore
+fn p256_jacobian_to_affine(pt: P256Jacobian) -> P256Point {
+    if pt.infinity || u256_is_zero(pt.z) {
         return P256Point { .. };
     }
-    var three = U256 { .. };
-    three.v[0] = 3;
-    let x_sq = u256_mul_mod(pt.x, pt.x, P256_MOD);
-    let num = u256_sub_mod(u256_mul_mod(three, x_sq, P256_MOD), three, P256_MOD);
-    let two_y = u256_add_mod(pt.y, pt.y, P256_MOD);
-    let lam = u256_mul_mod(num, u256_inv_mod(two_y, P256_MOD), P256_MOD);
-    let x3 = u256_sub_mod(u256_sub_mod(u256_mul_mod(lam, lam, P256_MOD), pt.x, P256_MOD), pt.x, P256_MOD);
-    let y3 = u256_sub_mod(u256_mul_mod(lam, u256_sub_mod(pt.x, x3, P256_MOD), P256_MOD), pt.y, P256_MOD);
-    return P256Point { x: x3, y: y3, infinity: false };
+    let z_inv = u256_inv_mod(pt.z, P256_MOD);
+    let z_inv2 = u256_mul_mod(z_inv, z_inv, P256_MOD);
+    let z_inv3 = u256_mul_mod(z_inv2, z_inv, P256_MOD);
+    let x = u256_mul_mod(pt.x, z_inv2, P256_MOD);
+    let y = u256_mul_mod(pt.y, z_inv3, P256_MOD);
+    return P256Point { x: x, y: y, infinity: false };
+}
+
+// crap:ignore
+fn p256_point_double(pt: P256Point) -> P256Point {
+    return p256_jacobian_to_affine(p256_jacobian_double(p256_to_jacobian(pt)));
 }
 
 // crap:ignore
 fn p256_point_add(p1: P256Point, p2: P256Point) -> P256Point {
-    if p1.infinity { return p2; }
-    if p2.infinity { return p1; }
-    if u256_cmp(p1.x, p2.x.v) == 0 {
-        if u256_cmp(p1.y, p2.y.v) == 0 {
-            return p256_point_double(p1);
-        }
-        return P256Point { .. };
-    }
-    let dy = u256_sub_mod(p2.y, p1.y, P256_MOD);
-    let dx = u256_sub_mod(p2.x, p1.x, P256_MOD);
-    let lam = u256_mul_mod(dy, u256_inv_mod(dx, P256_MOD), P256_MOD);
-    let x3 = u256_sub_mod(u256_sub_mod(u256_mul_mod(lam, lam, P256_MOD), p1.x, P256_MOD), p2.x, P256_MOD);
-    let y3 = u256_sub_mod(u256_mul_mod(lam, u256_sub_mod(p1.x, x3, P256_MOD), P256_MOD), p1.y, P256_MOD);
-    return P256Point { x: x3, y: y3, infinity: false };
+    return p256_jacobian_to_affine(p256_jacobian_add(p256_to_jacobian(p1), p256_to_jacobian(p2)));
 }
 
 // crap:ignore
 fn p256_scalar_mul(pt: P256Point, scalar: U256) -> P256Point {
-    var acc = P256Point { .. };
-    var addend = pt;
+    var acc = P256Jacobian { .. };
+    var addend = p256_to_jacobian(pt);
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
         if ((scalar.v[limb] >> bit) & 1) == 1 {
-            acc = p256_point_add(acc, addend);
+            acc = p256_jacobian_add(acc, addend);
         }
-        addend = p256_point_double(addend);
+        addend = p256_jacobian_double(addend);
     }
-    return acc;
+    return p256_jacobian_to_affine(acc);
+}
+
+// Computes `u1 * G + u2 * Q` via Shamir's trick in Jacobian coordinates with a single final inversion.
+// crap:ignore
+fn p256_muladd_shamir(g: P256Point, u1: U256, q: P256Point, u2: U256) -> P256Point {
+    let g_jac = p256_to_jacobian(g);
+    let q_jac = p256_to_jacobian(q);
+    let gq_jac = p256_jacobian_add(g_jac, q_jac);
+
+    var acc = P256Jacobian { .. };
+    for i in 256 {
+        let bit_idx = 255 - i;
+        acc = p256_jacobian_double(acc);
+        let limb = bit_idx >> 5;
+        let bit = bit_idx & 31;
+        let b1 = (u1.v[limb] >> bit) & 1;
+        let b2 = (u2.v[limb] >> bit) & 1;
+        if b1 == 1 && b2 == 1 {
+            acc = p256_jacobian_add(acc, gq_jac);
+        } else if b1 == 1 {
+            acc = p256_jacobian_add(acc, g_jac);
+        } else if b2 == 1 {
+            acc = p256_jacobian_add(acc, q_jac);
+        }
+    }
+    return p256_jacobian_to_affine(acc);
 }
 
 // crap:ignore
@@ -495,9 +602,7 @@ fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
         y:        U256 { v: P256_GY },
         infinity: false,
     };
-    let p1 = p256_scalar_mul(g, u1);
-    let p2 = p256_scalar_mul(q_pt, u2);
-    let pt = p256_point_add(p1, p2);
+    let pt = p256_muladd_shamir(g, u1, q_pt, u2);
     guard !pt.infinity else { return false; }
 
     var v = pt.x;
@@ -677,53 +782,160 @@ struct P384Point {
     infinity: bool = true,
 }
 
+struct P384Jacobian {
+    x:        U384 = U384 { .. },
+    y:        U384 = U384 { .. },
+    z:        U384 = U384 { .. },
+    infinity: bool = true,
+}
+
 // crap:ignore
-fn p384_point_double(pt: P384Point) -> P384Point {
+inline fn p384_to_jacobian(pt: P384Point) -> P384Jacobian {
+    if pt.infinity {
+        return P384Jacobian { .. };
+    }
+    var one = U384 { .. };
+    one.v[0] = 1;
+    return P384Jacobian { x: pt.x, y: pt.y, z: one, infinity: false };
+}
+
+// Doubles a P-384 point in Jacobian coordinates (X : Y : Z) using the a = -3 formula (4M + 4S, 0 inversions).
+// crap:ignore
+fn p384_jacobian_double(pt: P384Jacobian) -> P384Jacobian {
     if pt.infinity || u384_is_zero(pt.y) {
+        return P384Jacobian { .. };
+    }
+    let y2 = u384_mul_mod(pt.y, pt.y, P384_MOD);
+    let two_y2 = u384_add_mod(y2, y2, P384_MOD);
+    let four_y2 = u384_add_mod(two_y2, two_y2, P384_MOD);
+    let s = u384_mul_mod(pt.x, four_y2, P384_MOD);
+
+    let z2 = u384_mul_mod(pt.z, pt.z, P384_MOD);
+    let x_minus_z2 = u384_sub_mod(pt.x, z2, P384_MOD);
+    let x_plus_z2 = u384_add_mod(pt.x, z2, P384_MOD);
+    let prod = u384_mul_mod(x_minus_z2, x_plus_z2, P384_MOD);
+    let two_prod = u384_add_mod(prod, prod, P384_MOD);
+    let m = u384_add_mod(two_prod, prod, P384_MOD);
+
+    let m2 = u384_mul_mod(m, m, P384_MOD);
+    let two_s = u384_add_mod(s, s, P384_MOD);
+    let x3 = u384_sub_mod(m2, two_s, P384_MOD);
+
+    let four_y4 = u384_mul_mod(two_y2, two_y2, P384_MOD);
+    let eight_y4 = u384_add_mod(four_y4, four_y4, P384_MOD);
+    let s_minus_x3 = u384_sub_mod(s, x3, P384_MOD);
+    let y3 = u384_sub_mod(u384_mul_mod(m, s_minus_x3, P384_MOD), eight_y4, P384_MOD);
+
+    let yz = u384_mul_mod(pt.y, pt.z, P384_MOD);
+    let z3 = u384_add_mod(yz, yz, P384_MOD);
+    return P384Jacobian { x: x3, y: y3, z: z3, infinity: false };
+}
+
+// Adds two P-384 points in Jacobian coordinates (12M + 4S, 0 inversions).
+// crap:ignore
+fn p384_jacobian_add(p1: P384Jacobian, p2: P384Jacobian) -> P384Jacobian {
+    if p1.infinity { return p2; }
+    if p2.infinity { return p1; }
+
+    let z1_sq = u384_mul_mod(p1.z, p1.z, P384_MOD);
+    let z2_sq = u384_mul_mod(p2.z, p2.z, P384_MOD);
+    let u1 = u384_mul_mod(p1.x, z2_sq, P384_MOD);
+    let u2 = u384_mul_mod(p2.x, z1_sq, P384_MOD);
+
+    let z1_cu = u384_mul_mod(p1.z, z1_sq, P384_MOD);
+    let z2_cu = u384_mul_mod(p2.z, z2_sq, P384_MOD);
+    let s1 = u384_mul_mod(p1.y, z2_cu, P384_MOD);
+    let s2 = u384_mul_mod(p2.y, z1_cu, P384_MOD);
+
+    if u384_cmp(u1, u2.v) == 0 {
+        if u384_cmp(s1, s2.v) == 0 {
+            return p384_jacobian_double(p1);
+        }
+        return P384Jacobian { .. };
+    }
+
+    let h = u384_sub_mod(u2, u1, P384_MOD);
+    let r = u384_sub_mod(s2, s1, P384_MOD);
+    let h2 = u384_mul_mod(h, h, P384_MOD);
+    let h3 = u384_mul_mod(h, h2, P384_MOD);
+    let u1_h2 = u384_mul_mod(u1, h2, P384_MOD);
+
+    let r2 = u384_mul_mod(r, r, P384_MOD);
+    let two_u1_h2 = u384_add_mod(u1_h2, u1_h2, P384_MOD);
+    let x3 = u384_sub_mod(u384_sub_mod(r2, h3, P384_MOD), two_u1_h2, P384_MOD);
+
+    let u1_h2_minus_x3 = u384_sub_mod(u1_h2, x3, P384_MOD);
+    let s1_h3 = u384_mul_mod(s1, h3, P384_MOD);
+    let y3 = u384_sub_mod(u384_mul_mod(r, u1_h2_minus_x3, P384_MOD), s1_h3, P384_MOD);
+
+    let z1_z2 = u384_mul_mod(p1.z, p2.z, P384_MOD);
+    let z3 = u384_mul_mod(z1_z2, h, P384_MOD);
+    return P384Jacobian { x: x3, y: y3, z: z3, infinity: false };
+}
+
+// Converts a Jacobian P-384 point (X : Y : Z) to affine (X / Z^2, Y / Z^3) with a single modular inversion.
+// crap:ignore
+fn p384_jacobian_to_affine(pt: P384Jacobian) -> P384Point {
+    if pt.infinity || u384_is_zero(pt.z) {
         return P384Point { .. };
     }
-    var three = U384 { .. };
-    three.v[0] = 3;
-    let x_sq = u384_mul_mod(pt.x, pt.x, P384_MOD);
-    let num = u384_sub_mod(u384_mul_mod(three, x_sq, P384_MOD), three, P384_MOD);
-    let two_y = u384_add_mod(pt.y, pt.y, P384_MOD);
-    let lam = u384_mul_mod(num, u384_inv_mod(two_y, P384_MOD), P384_MOD);
-    let x3 = u384_sub_mod(u384_sub_mod(u384_mul_mod(lam, lam, P384_MOD), pt.x, P384_MOD), pt.x, P384_MOD);
-    let y3 = u384_sub_mod(u384_mul_mod(lam, u384_sub_mod(pt.x, x3, P384_MOD), P384_MOD), pt.y, P384_MOD);
-    return P384Point { x: x3, y: y3, infinity: false };
+    let z_inv = u384_inv_mod(pt.z, P384_MOD);
+    let z_inv2 = u384_mul_mod(z_inv, z_inv, P384_MOD);
+    let z_inv3 = u384_mul_mod(z_inv2, z_inv, P384_MOD);
+    let x = u384_mul_mod(pt.x, z_inv2, P384_MOD);
+    let y = u384_mul_mod(pt.y, z_inv3, P384_MOD);
+    return P384Point { x: x, y: y, infinity: false };
+}
+
+// crap:ignore
+fn p384_point_double(pt: P384Point) -> P384Point {
+    return p384_jacobian_to_affine(p384_jacobian_double(p384_to_jacobian(pt)));
 }
 
 // crap:ignore
 fn p384_point_add(p1: P384Point, p2: P384Point) -> P384Point {
-    if p1.infinity { return p2; }
-    if p2.infinity { return p1; }
-    if u384_cmp(p1.x, p2.x.v) == 0 {
-        if u384_cmp(p1.y, p2.y.v) == 0 {
-            return p384_point_double(p1);
-        }
-        return P384Point { .. };
-    }
-    let dy = u384_sub_mod(p2.y, p1.y, P384_MOD);
-    let dx = u384_sub_mod(p2.x, p1.x, P384_MOD);
-    let lam = u384_mul_mod(dy, u384_inv_mod(dx, P384_MOD), P384_MOD);
-    let x3 = u384_sub_mod(u384_sub_mod(u384_mul_mod(lam, lam, P384_MOD), p1.x, P384_MOD), p2.x, P384_MOD);
-    let y3 = u384_sub_mod(u384_mul_mod(lam, u384_sub_mod(p1.x, x3, P384_MOD), P384_MOD), p1.y, P384_MOD);
-    return P384Point { x: x3, y: y3, infinity: false };
+    return p384_jacobian_to_affine(p384_jacobian_add(p384_to_jacobian(p1), p384_to_jacobian(p2)));
 }
 
 // crap:ignore
 fn p384_scalar_mul(pt: P384Point, scalar: U384) -> P384Point {
-    var acc = P384Point { .. };
-    var addend = pt;
+    var acc = P384Jacobian { .. };
+    var addend = p384_to_jacobian(pt);
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
         if ((scalar.v[limb] >> bit) & 1) == 1 {
-            acc = p384_point_add(acc, addend);
+            acc = p384_jacobian_add(acc, addend);
         }
-        addend = p384_point_double(addend);
+        addend = p384_jacobian_double(addend);
     }
-    return acc;
+    return p384_jacobian_to_affine(acc);
+}
+
+// Computes `u1 * G + u2 * Q` via Shamir's trick in Jacobian coordinates with a single final inversion.
+// crap:ignore
+fn p384_muladd_shamir(g: P384Point, u1: U384, q: P384Point, u2: U384) -> P384Point {
+    let g_jac = p384_to_jacobian(g);
+    let q_jac = p384_to_jacobian(q);
+    let gq_jac = p384_jacobian_add(g_jac, q_jac);
+
+    var acc = P384Jacobian { .. };
+    for i in 384 {
+        let bit_idx = 383 - i;
+        acc = p384_jacobian_double(acc);
+        let limb = bit_idx >> 5;
+        let bit = bit_idx & 31;
+        let b1 = (u1.v[limb] >> bit) & 1;
+        let b2 = (u2.v[limb] >> bit) & 1;
+        if b1 == 1 && b2 == 1 {
+            acc = p384_jacobian_add(acc, gq_jac);
+        } else if b1 == 1 {
+            acc = p384_jacobian_add(acc, g_jac);
+        } else if b2 == 1 {
+            acc = p384_jacobian_add(acc, q_jac);
+        }
+    }
+    return p384_jacobian_to_affine(acc);
 }
 
 // crap:ignore
@@ -930,9 +1142,7 @@ fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
         y:        U384 { v: P384_GY },
         infinity: false,
     };
-    let p1 = p384_scalar_mul(g, u1);
-    let p2 = p384_scalar_mul(q_pt, u2);
-    let pt = p384_point_add(p1, p2);
+    let pt = p384_muladd_shamir(g, u1, q_pt, u2);
     guard !pt.infinity else { return false; }
 
     var v = pt.x;

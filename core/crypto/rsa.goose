@@ -9,7 +9,7 @@ import std;
 import core.crypto.ct;
 import core.crypto.sha;
 
-// ---- Big-Endian Multi-Precision Modular Arithmetic (up to 4096 bits) -----
+// ---- Big-Endian & 32-Bit Limb Montgomery Modular Arithmetic (up to 4096 bits) -----
 
 // Compares two equal-length big-endian byte slices `a` and `b`.
 // crap:ignore
@@ -21,67 +21,198 @@ inline fn rsa_be_cmp(a: const u8[:], b: const u8[:]) -> i32 {
     return 0;
 }
 
-// Computes `acc = (acc + addend) mod m` on equal-length big-endian slices `acc[0..k]`.
+// Computes the 32-bit negative modular inverse `-m0^-1 mod 2^32` for an odd limb `m0` via Newton-Raphson.
 // crap:ignore
-fn rsa_be_add_mod(acc: u8[:], addend: const u8[:], m: const u8[:]) {
-    let k = m.len;
-    var carry: u32 = 0;
-    var idx:   i64 = k - 1;
+inline fn rsa_ninv32(m0: u32) -> u32 {
+    var inv: u32 = 1;
+    for _ in 5 {
+        inv = inv * (2 - m0 * inv);
+    }
+    return 0 - inv;
+}
+
+// Compares two little-endian limb arrays of length `n_limbs`.
+// crap:ignore
+inline fn rsa_limbs_cmp(a: const u32[:], b: const u32[:], n_limbs: i64) -> i32 {
+    var idx = n_limbs - 1;
     while idx >= 0 {
-        let s = (acc[idx] as u32) + addend[idx] + carry;
-        acc[idx] = (s & 0xFF) as u8;
-        carry = s >> 8;
+        if a[idx] > b[idx] { return 1; }
+        if a[idx] < b[idx] { return -1; }
         idx -= 1;
     }
-    if carry != 0 || rsa_be_cmp(acc, m) >= 0 {
-        var borrow: i32 = 0;
-        var j:      i64 = k - 1;
-        while j >= 0 {
-            let d = (acc[j] as i32) - m[j] - borrow;
-            acc[j] = (d & 0xFF) as u8;
+    return 0;
+}
+
+// Decodes a big-endian byte slice of length `k <= 512` into `n_limbs = (k + 3) / 4` little-endian u32 limbs.
+// crap:ignore
+fn rsa_be_to_limbs(src: const u8[:], out: u32[..128]&) {
+    out.clear();
+    let k = src.len;
+    let n_limbs = (k + 3) >> 2;
+    for i in n_limbs {
+        let end_pos = k - (i << 2);
+        var w:     u32 = 0;
+        var shift: u32 = 0;
+        for b in 4 {
+            let pos = end_pos - 1 - b;
+            if pos >= 0 {
+                w |= (src[pos] as u32) << shift;
+            }
+            shift += 8;
+        }
+        out.push(w);
+    }
+}
+
+// Encodes little-endian `u32` limbs back into a big-endian byte buffer of exact length `k`.
+// crap:ignore
+fn rsa_limbs_to_be(limbs: const u32[:], k: i64, out: u8[..512]&) {
+    out.clear();
+    for idx in k {
+        let byte_from_lsb = (k - 1) - idx;
+        let limb_idx = byte_from_lsb >> 2;
+        let shift = ((byte_from_lsb & 3) << 3) as u32;
+        let b = if limb_idx < limbs.len {
+            ((limbs[limb_idx] >> shift) & 0xFF) as u8
+        } else {
+            0
+        };
+        out.push(b);
+    }
+}
+
+// Subtracts modulus `m` from `t[0..n_limbs]` in place when `t >= m` (or `top_carry != 0`).
+// crap:ignore
+fn rsa_monty_cond_sub(t: u32[:], m: const u32[:], n_limbs: i64, top_carry: u64) {
+    if top_carry != 0 || rsa_limbs_cmp(t, m, n_limbs) >= 0 {
+        var borrow: i64 = 0;
+        for j in n_limbs {
+            let d = (t[j] as i64) - m[j] - borrow;
+            t[j] = (d & 0xFFFFFFFF) as u32;
             borrow = if d < 0 { 1 } else { 0 };
-            j -= 1;
         }
     }
 }
 
-// Computes `out = (a * b) mod m` on equal-length big-endian buffers of length `k <= 512`.
+// Performs 32-bit CIOS Montgomery multiplication: `out = (a * b * R^-1) mod m` where `R = 2^(32 * n_limbs)`.
+// crap:ignore
+fn rsa_monty_mul(a: const u32[:], b: const u32[:], m: const u32[:], m0i: u32, out: u32[..128]&) {
+    let n_limbs = m.len;
+    var t: u32[130] = [0; 130];
+    for i in n_limbs {
+        var carry1: u64 = 0;
+        let ai = a[i] as u64;
+        for j in n_limbs {
+            let prod = ai * b[j] + t[j] + carry1;
+            t[j] = (prod & 0xFFFFFFFF) as u32;
+            carry1 = prod >> 32;
+        }
+        let sum1 = t[n_limbs] + carry1;
+        t[n_limbs] = (sum1 & 0xFFFFFFFF) as u32;
+        t[n_limbs + 1] = (sum1 >> 32) as u32;
+
+        let q = (t[0] * m0i) as u64;
+        var carry2: u64 = (q * m[0] + t[0]) >> 32;
+        var j:      i64 = 1;
+        while j < n_limbs {
+            let prod = q * m[j] + t[j] + carry2;
+            t[j - 1] = (prod & 0xFFFFFFFF) as u32;
+            carry2 = prod >> 32;
+            j += 1;
+        }
+        let sum2 = t[n_limbs] + carry2;
+        t[n_limbs - 1] = (sum2 & 0xFFFFFFFF) as u32;
+        let top_carry = t[n_limbs + 1] + (sum2 >> 32);
+        t[n_limbs] = (top_carry & 0xFFFFFFFF) as u32;
+        t[n_limbs + 1] = 0;
+    }
+    rsa_monty_cond_sub(t[0..n_limbs], m, n_limbs, t[n_limbs]);
+    out.clear();
+    out.append(t[0..n_limbs]);
+}
+
+// Doubles a little-endian limb integer modulo `m` (`limbs = (2 * limbs) mod m`).
+// crap:ignore
+fn rsa_limbs_double_mod(limbs: u32[..128]&, m: const u32[:]) {
+    let n_limbs = m.len;
+    var carry: u64 = 0;
+    for i in n_limbs {
+        let s = ((limbs[i] as u64) << 1) | carry;
+        limbs[i] = (s & 0xFFFFFFFF) as u32;
+        carry = s >> 32;
+    }
+    rsa_monty_cond_sub(limbs[..], m, n_limbs, carry);
+}
+
+// Computes `R mod m` (`2^(32 * n_limbs) mod m`) and `R^2 mod m` for Montgomery domain conversion.
+// crap:ignore
+fn rsa_compute_monty_r2(m: const u32[:], out_r: u32[..128]&, out_r2: u32[..128]&) {
+    let n_limbs = m.len;
+    out_r.clear();
+    for _ in n_limbs {
+        out_r.push(0);
+    }
+    out_r[0] = 1;
+    let total_bits = n_limbs << 5;
+    for _ in total_bits {
+        rsa_limbs_double_mod(out_r, m);
+    }
+    out_r2.clear();
+    out_r2.append(out_r[..]);
+    for _ in total_bits {
+        rsa_limbs_double_mod(out_r2, m);
+    }
+}
+
+// Computes `out = (a * b) mod m` on equal-length big-endian buffers (`k <= 512`) via CIOS Montgomery multiplication.
 // crap:ignore
 fn rsa_be_mul_mod(a: const u8[:], b: const u8[:], m: const u8[:], out: u8[..512]&) {
     let k = m.len;
-    var res: u8[512] = [0; 512];
-    for i in k {
-        let byte_a = a[i];
-        var bit: i32 = 7;
-        while bit >= 0 {
-            rsa_be_add_mod(res[0..k], res[0..k], m);
-            if ((byte_a >> bit) & 1) == 1 {
-                rsa_be_add_mod(res[0..k], b, m);
-            }
-            bit -= 1;
-        }
+    guard k > 0 && k <= 512 && a.len == k && b.len == k && (m[k - 1] & 1) == 1 else {
+        out.clear();
+        return;
     }
-    out.clear();
-    out.append(res[0..k]);
+    var m_limbs:  u32[..128] = [];
+    var a_limbs:  u32[..128] = [];
+    var b_limbs:  u32[..128] = [];
+    var r_mod:    u32[..128] = [];
+    var r2_mod:   u32[..128] = [];
+    var a_mont:   u32[..128] = [];
+    var prod_raw: u32[..128] = [];
+    rsa_be_to_limbs(m, m_limbs);
+    rsa_be_to_limbs(a, a_limbs);
+    rsa_be_to_limbs(b, b_limbs);
+    let m0i = rsa_ninv32(m_limbs[0]);
+    rsa_compute_monty_r2(m_limbs[..], r_mod, r2_mod);
+    rsa_monty_mul(a_limbs[..], r2_mod[..], m_limbs[..], m0i, a_mont);
+    rsa_monty_mul(a_mont[..], b_limbs[..], m_limbs[..], m0i, prod_raw);
+    rsa_limbs_to_be(prod_raw[..], k, out);
 }
 
-// Advances one exponent bit during left-to-right binary modular exponentiation.
+// Advances one exponent bit during Montgomery modular exponentiation.
 // crap:ignore
-fn rsa_mod_exp_step(acc: u8[..512]&, base: const u8[:], m: const u8[:], b_val: u8, started: bool&) {
-    var tmp: u8[..512] = [];
+fn rsa_monty_exp_step(
+    acc:     u32[..128]&,
+    base_m:  const u32[:],
+    m_limbs: const u32[:],
+    m0i:     u32,
+    b_val:   u8,
+    started: bool&,
+) {
+    var tmp: u32[..128] = [];
     if started {
-        rsa_be_mul_mod(acc[..], acc[..], m, tmp);
+        rsa_monty_mul(acc[..], acc[..], m_limbs, m0i, tmp);
         acc.clear();
         acc.append(tmp[..]);
     }
     guard b_val == 1 else { return; }
     if !started {
         acc.clear();
-        acc.append(base);
+        acc.append(base_m);
         started = true;
         return;
     }
-    rsa_be_mul_mod(acc[..], base, m, tmp);
+    rsa_monty_mul(acc[..], base_m, m_limbs, m0i, tmp);
     acc.clear();
     acc.append(tmp[..]);
 }
@@ -95,11 +226,18 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     guard (m[k - 1] & 1) == 1 && (m[0] & 0x80) != 0 else { return false; }
     guard rsa_be_cmp(base, m) < 0 else { return false; }
 
-    var acc: u8[..512] = [];
-    for z in k - 1 {
-        acc.push(0);
-    }
-    acc.push(1);
+    var m_limbs:    u32[..128] = [];
+    var base_limbs: u32[..128] = [];
+    var r_mod:      u32[..128] = [];
+    var r2_mod:     u32[..128] = [];
+    var base_mont:  u32[..128] = [];
+    var acc_mont:   u32[..128] = [];
+    rsa_be_to_limbs(m, m_limbs);
+    rsa_be_to_limbs(base, base_limbs);
+    let m0i = rsa_ninv32(m_limbs[0]);
+    rsa_compute_monty_r2(m_limbs[..], r_mod, r2_mod);
+    rsa_monty_mul(base_limbs[..], r2_mod[..], m_limbs[..], m0i, base_mont);
+    acc_mont.append(r_mod[..]);
 
     var started = false;
     for i in exp.len {
@@ -107,13 +245,22 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
         var bit: i32 = 7;
         while bit >= 0 {
             let b_val = (eb >> bit) & 1;
-            rsa_mod_exp_step(acc, base, m, b_val, started);
+            rsa_monty_exp_step(acc_mont, base_mont[..], m_limbs[..], m0i, b_val, started);
             bit -= 1;
         }
     }
     guard started else { return false; }
-    out.clear();
-    out.append(acc[..]);
+
+    var one_limbs: u32[..128] = [];
+    one_limbs.push(1);
+    var z: i64 = 1;
+    while z < m_limbs.len {
+        one_limbs.push(0);
+        z += 1;
+    }
+    var res_limbs: u32[..128] = [];
+    rsa_monty_mul(acc_mont[..], one_limbs[..], m_limbs[..], m0i, res_limbs);
+    rsa_limbs_to_be(res_limbs[..], k, out);
     return true;
 }
 

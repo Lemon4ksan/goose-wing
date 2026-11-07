@@ -11,6 +11,12 @@ import .record;
 
 // ---- ASN.1 Universal Tags and OIDs ---------------------------------------
 
+inline fn is_known_pki_extension_oid(oid: const u8[:]) -> bool {
+    return oid == rfc::OID_EXT_KEY_USAGE[..] ||
+        oid == rfc::OID_TLS_FEATURE[..] ||
+        oid == rfc::OID_CT_PRECERT_SCTS[..];
+}
+
 // id-at-commonName (2.5.4.3): 55 04 03
 inline fn is_known_extension_oid(oid: const u8[:]) -> bool {
     if oid == rfc::OID_BASIC_CONSTRAINTS[..] ||
@@ -23,7 +29,7 @@ inline fn is_known_extension_oid(oid: const u8[:]) -> bool {
        oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
         return true;
     }
-    return false;
+    return is_known_pki_extension_oid(oid);
 }
 
 // ---- Strict Canonical ASN.1 DER Parser -----------------------------------
@@ -312,6 +318,24 @@ fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
     return Span16 { offset: 0, length: 0 };
 }
 
+const EKU_SERVER_AUTH:  u8 = 1; // RFC 5280 Section 4.2.1.12
+const EKU_CLIENT_AUTH:  u8 = 2; // RFC 5280 Section 4.2.1.12
+const EKU_OCSP_SIGNING: u8 = 4; // RFC 5280 Section 4.2.1.12
+const EKU_ANY:          u8 = 8; // RFC 5280 Section 4.2.1.12
+
+const SCT_VERSION_V1:        u8  = 0;  // RFC 6962 Section 3.2
+const SCT_V1_HEADER_MIN_LEN: i64 = 43; // RFC 6962 Section 3.2: version(1) + log_id(32) + timestamp(8) + ext_len(2)
+const SCT_LOG_ID_LEN:        i64 = 32; // RFC 6962 Section 3.2: SHA-256 log ID
+
+struct ParsedSct {
+    version:      u8     = 0,
+    log_id:       u8[32] = [0; 32],
+    timestamp_ms: u64    = 0,
+    hash_alg:     u8     = 0,
+    sig_alg:      u8     = 0,
+    signature:    Span16 = Span16 { offset: 0, length: 0 },
+}
+
 struct ParsedCert {
     raw_len:                          u32    = 0,
     tbs_cert:                         Span16 = Span16 { offset: 0, length: 0 },
@@ -340,6 +364,11 @@ struct ParsedCert {
     name_constraints_raw:             Span16 = Span16 { offset: 0, length: 0 },
     has_name_constraints:             bool   = false,
     has_malformed_policy_constraints: bool   = false,
+    has_must_staple:                  bool   = false,
+    has_sct_list:                     bool   = false,
+    sct_count:                        u8     = 0,
+    has_eku:                          bool   = false,
+    eku_mask:                         u8     = 0,
     signature_value:                  Span16 = Span16 { offset: 0, length: 0 },
 }
 
@@ -623,6 +652,185 @@ fn x509_parse_policy_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     }
 }
 
+// Parses RFC 7633 §4 X.509 TLS Feature extension (`Features ::= SEQUENCE OF INTEGER`).
+// Sets `cert.has_must_staple = true` when feature identifier 5 (`status_request`) is present.
+//
+// Example:
+//   ext_val = [0x30, 0x03, 0x02, 0x01, 0x05]
+//   returns: true, cert.has_must_staple = true
+fn x509_parse_tls_feature_ext(ext_val: const u8[:], cert: ParsedCert&) -> bool {
+    var c = cursor_from(ext_val);
+    var feat_seq = cursor_from(ext_val[..0]);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, feat_seq) && cursor_len(c) == 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    guard cursor_len(feat_seq) > 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    while cursor_len(feat_seq) > 0 {
+        var feat_id: i64 = 0;
+        guard get_asn1_integer(feat_seq, feat_id) && feat_id >= 0 && feat_id <= 65535 else {
+            cert.has_unsupported_critical = true;
+            return false;
+        }
+        if feat_id == rfc::TLS_EXT_STATUS_REQUEST {
+            cert.has_must_staple = true;
+        }
+    }
+    return true;
+}
+
+// Packs two big-endian 32-bit halves into an RFC 6962 §3.2 64-bit millisecond timestamp.
+//
+// Example:
+//   ts_hi = 0x0000018E, ts_lo = 0x00000001
+//   returns: 0x0000018E00000001
+inline fn pack_sct_timestamp_ms(ts_hi: u32, ts_lo: u32) -> u64 {
+    return ((ts_hi as u64) << 32) | ts_lo;
+}
+
+// Parses a single RFC 6962 §3.2 v1 SignedCertificateTimestamp entry from `raw`.
+//
+// Example:
+//   raw = [0x00, <32B log_id>, <8B timestamp_ms>, 0x00, 0x00, 0x04, 0x03, 0x00, 0x02, 0xAA, 0xBB]
+//   returns: true, out.version = 0, out.hash_alg = 4, out.sig_alg = 3, out.signature.length = 2
+fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
+    guard raw.len >= SCT_V1_HEADER_MIN_LEN && raw.len <= 65535 else { return false; }
+    var c = cursor_from(raw);
+    var ver: u8 = 0;
+    guard get_u8(c, ver) && ver == SCT_VERSION_V1 else { return false; }
+
+    var log_cursor = cursor_from(raw[..0]);
+    guard get_bytes(c, log_cursor, SCT_LOG_ID_LEN) else { return false; }
+
+    var ts_hi: u32 = 0;
+    var ts_lo: u32 = 0;
+    guard get_u32(c, ts_hi) && get_u32(c, ts_lo) else { return false; }
+
+    var ext_cursor = cursor_from(raw[..0]);
+    guard get_u16_length_prefixed(c, ext_cursor) else { return false; }
+
+    var hash_alg: u8 = 0;
+    var sig_alg:  u8 = 0;
+    guard get_u8(c, hash_alg) && get_u8(c, sig_alg) else { return false; }
+
+    var sig_cursor = cursor_from(raw[..0]);
+    guard get_u16_length_prefixed(c, sig_cursor) &&
+        sig_cursor.buf.len > 0 && cursor_len(c) == 0 else { return false; }
+
+    out.version = ver;
+    core::ct_copy_bytes(out.log_id[..], log_cursor.buf);
+    out.timestamp_ms = pack_sct_timestamp_ms(ts_hi, ts_lo);
+    out.hash_alg = hash_alg;
+    out.sig_alg = sig_alg;
+    out.signature = make_span(raw, sig_cursor.buf);
+    return true;
+}
+
+// Parses an RFC 6962 §3.3 `SignedCertificateTimestampList` into `out_scts`.
+//
+// Example:
+//   raw_list = [0x00, 0x31, 0x00, 0x2F, <47B v1 SerializedSCT>]
+//   returns: true, out_scts.len = 1
+fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
+    out_scts.clear();
+    var c = cursor_from(raw_list);
+    var list_cursor = cursor_from(raw_list[..0]);
+    guard get_u16_length_prefixed(c, list_cursor) &&
+        cursor_len(c) == 0 && cursor_len(list_cursor) > 0 else { return false; }
+
+    while cursor_len(list_cursor) > 0 {
+        var sct_cursor = cursor_from(list_cursor.buf[..0]);
+        guard get_u16_length_prefixed(list_cursor, sct_cursor) &&
+            sct_cursor.buf.len > 0 && out_scts.len < out_scts.cap else { return false; }
+        var sct = ParsedSct { .. };
+        guard parse_sct_entry(sct_cursor.buf, sct) else { return false; }
+        out_scts.push(sct);
+    }
+    return out_scts.len > 0;
+}
+
+fn x509_parse_sct_ext(ext_val: ByteCursor&, cert: ParsedCert&) -> bool {
+    if cert.has_sct_list {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    var sct_oct = cursor_from(ext_val.buf[..0]);
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, sct_oct) && cursor_len(ext_val) == 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    var scts: ParsedSct[..8] = [];
+    guard parse_sct_list(sct_oct.buf, scts) else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    cert.has_sct_list = true;
+    cert.sct_count = scts.len as u8;
+    return true;
+}
+
+inline fn x509_classify_eku_oid(oid: const u8[:]) -> u8 {
+    if oid == rfc::OID_EKU_SERVER_AUTH[..] {
+        return EKU_SERVER_AUTH;
+    }
+    if oid == rfc::OID_EKU_CLIENT_AUTH[..] {
+        return EKU_CLIENT_AUTH;
+    }
+    if oid == rfc::OID_EKU_OCSP_SIGNING[..] {
+        return EKU_OCSP_SIGNING;
+    }
+    if oid == rfc::OID_EKU_ANY[..] {
+        return EKU_ANY;
+    }
+    return 0;
+}
+
+// Parses RFC 5280 §4.2.1.12 ExtendedKeyUsage (`SEQUENCE SIZE (1..MAX) OF KeyPurposeId`).
+// Rejects empty sequences, duplicate extensions, and non-OID elements.
+//
+// Example:
+//   ext_val = [0x30, 0x0A, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]
+//   returns: true, cert.has_eku = true, cert.eku_mask = 1 (EKU_SERVER_AUTH)
+fn x509_parse_eku_ext(ext_val: const u8[:], cert: ParsedCert&) -> bool {
+    if cert.has_eku {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    var c = cursor_from(ext_val);
+    var eku_seq = cursor_from(ext_val[..0]);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, eku_seq) && cursor_len(c) == 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    guard cursor_len(eku_seq) > 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    cert.has_eku = true;
+    while cursor_len(eku_seq) > 0 {
+        var kp_oid = cursor_from(eku_seq.buf[..0]);
+        guard get_asn1_element(eku_seq, rfc::ASN1_TAG_OID, kp_oid) && kp_oid.buf.len > 0 else {
+            cert.has_unsupported_critical = true;
+            return false;
+        }
+        cert.eku_mask = cert.eku_mask | x509_classify_eku_oid(kp_oid.buf);
+    }
+    return true;
+}
+
+fn x509_dispatch_pki_extension(oid: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
+    if oid == rfc::OID_EXT_KEY_USAGE[..] {
+        let _ = x509_parse_eku_ext(ext_val.buf, cert);
+    } else if oid == rfc::OID_TLS_FEATURE[..] {
+        let _ = x509_parse_tls_feature_ext(ext_val.buf, cert);
+    } else if oid == rfc::OID_CT_PRECERT_SCTS[..] {
+        let _ = x509_parse_sct_ext(ext_val, cert);
+    }
+}
+
 fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: ByteCursor&, cert: ParsedCert&) {
     if oid == rfc::OID_POLICY_CONSTRAINTS[..] {
         x509_parse_policy_constraints_ext(ext_val, cert);
@@ -631,6 +839,8 @@ fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: ByteCursor&, cert: 
         if !get_asn1_integer(ext_val, val) || val < 0 {
             cert.has_malformed_policy_constraints = true;
         }
+    } else {
+        x509_dispatch_pki_extension(oid, ext_val, cert);
     }
 }
 
@@ -788,6 +998,10 @@ fn validate_end_entity_constraints(cert: const ParsedCert&) -> TlsAlert {
     if cert.has_key_usage && (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) != 0 {
         return TlsAlert.UnsupportedCertificate;
     }
+    // RFC 5280 §4.2.1.12: End-entity EKU must permit serverAuth, clientAuth, or anyExtendedKeyUsage
+    if cert.has_eku && (cert.eku_mask & (EKU_SERVER_AUTH | EKU_CLIENT_AUTH | EKU_ANY)) == 0 {
+        return TlsAlert.UnsupportedCertificate;
+    }
     // RFC 5280 §4.2.1.10: Name constraints MUST NOT be used in end-entity certificates
     if cert.has_name_constraints {
         return TlsAlert.BadCertificate;
@@ -893,6 +1107,7 @@ enum SanType {
     Dns,
     Ip,
     Uri,
+    Email,
     Other,
 }
 
@@ -987,6 +1202,11 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
 }
 
 inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
+    if tag_num == 1 { // rfc822Name [1] IA5String
+        guard elem_buf.len > 0 && !core::contains_byte(elem_buf, 0) else { return false; }
+        out_type = SanType.Email;
+        return true;
+    }
     if tag_num == 2 { // dNSName [2] IA5String
         guard validate_san_dns_name(elem_buf) else { return false; }
         out_type = SanType.Dns;
@@ -1275,11 +1495,38 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     return match_dns_name_constraint(host_part, constraint);
 }
 
+// RFC 5280 §4.2.1.10: rfc822Name (email) name constraint matching.
+// - With `@`: local-part matches case-sensitively and host matches case-insensitively.
+// - Leading `.`: candidate host after `@` ends with `constraint` case-insensitively.
+// - Otherwise: candidate host after `@` matches `constraint` case-insensitively.
+fn match_email_name_constraint(candidate_email: const u8[:], constraint: const u8[:]) -> bool {
+    guard candidate_email.len > 0 && constraint.len > 0 else { return false; }
+    guard !core::contains_byte(candidate_email, 0) && !core::contains_byte(constraint, 0) else { return false; }
+
+    let cand_local, cand_host, has_cand_at = core::split_once_byte(candidate_email, '@');
+    guard has_cand_at && cand_local.len > 0 && cand_host.len > 0 else { return false; }
+    guard !core::contains_byte(cand_host, '@') else { return false; }
+
+    let cons_local, cons_host, has_cons_at = core::split_once_byte(constraint, '@');
+    if has_cons_at {
+        guard cons_local.len > 0 && cons_host.len > 0 else { return false; }
+        return cand_local == cons_local && eq_ascii_fold(cand_host, cons_host);
+    }
+
+    if core::starts_with(constraint, ".") {
+        return x509_match_dns_dotted_constraint(cand_host, constraint);
+    }
+    return eq_ascii_fold(cand_host, constraint);
+}
+
 fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
     var base_tag: u8 = 0;
     if !get_any_asn1_element(subtree, base_tag, out_val) { return false; }
     let tag_num = base_tag & 0x1F;
-    if tag_num == 2 { // dNSName
+    if tag_num == 1 { // rfc822Name [1]
+        out_type = SanType.Email;
+        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
+    } else if tag_num == 2 { // dNSName
         out_type = SanType.Dns;
         guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
     } else if tag_num == 7 { // iPAddress
@@ -1398,6 +1645,9 @@ inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const
     }
     if nc.san_type == SanType.Uri {
         return match_uri_name_constraint(san.val, nc.val);
+    }
+    if nc.san_type == SanType.Email {
+        return match_email_name_constraint(san.val, nc.val);
     }
     return false;
 }

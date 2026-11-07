@@ -114,19 +114,20 @@ fn derive_secret(
 // ---- KeySchedule Struct and Lifecycle Transitions ------------------------
 
 struct KeySchedule {
-    cipher_suite:         u16    = 0,
-    hash_id:              u8     = 1,
-    hash_len:             u8     = 32,
-    stage:                u8     = 0,
-    current_secret:       u8[48] = [0; 48],
-    client_early_traffic: u8[48] = [0; 48],
-    client_hs_traffic:    u8[48] = [0; 48],
-    server_hs_traffic:    u8[48] = [0; 48],
-    client_ap_traffic:    u8[48] = [0; 48],
-    server_ap_traffic:    u8[48] = [0; 48],
-    exporter_secret:      u8[48] = [0; 48],
-    resumption_secret:    u8[48] = [0; 48],
-    binder_key:           u8[48] = [0; 48],
+    cipher_suite:          u16      = 0,
+    hash_id:               u8       = 1,
+    hash_len:              u8       = 32,
+    stage:                 u8       = 0,
+    current_secret:        u8[48]   = [0; 48],
+    client_early_traffic:  u8[48]   = [0; 48],
+    early_exporter_secret: u8[..48] = [],
+    client_hs_traffic:     u8[48]   = [0; 48],
+    server_hs_traffic:     u8[48]   = [0; 48],
+    client_ap_traffic:     u8[48]   = [0; 48],
+    server_ap_traffic:     u8[48]   = [0; 48],
+    exporter_secret:       u8[48]   = [0; 48],
+    resumption_secret:     u8[48]   = [0; 48],
+    binder_key:            u8[48]   = [0; 48],
 }
 
 fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
@@ -184,10 +185,11 @@ fn ks_init_early_secret(ks: KeySchedule&, psk: const u8[:]) -> bool {
 }
 
 // client_early_traffic_secret = Derive-Secret(Early Secret, "c e traffic", ClientHello)
+// early_exporter_master_secret = Derive-Secret(Early Secret, "e exp master", ClientHello)
 fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> bool {
     guard ks.stage == KS_STAGE_EARLY else { return false; }
     guard client_hello_hash.len == ks.hash_len else { return false; }
-    return derive_secret(
+    let ok_ce = derive_secret(
         ks.hash_id,
         ks.hash_len,
         ks.current_secret[..ks.hash_len],
@@ -195,6 +197,18 @@ fn ks_derive_early_traffic(ks: KeySchedule&, client_hello_hash: const u8[:]) -> 
         client_hello_hash,
         ks.client_early_traffic[..ks.hash_len],
     );
+    var ee_sec: u8[48] = [0; 48];
+    let ok_ee = derive_secret(
+        ks.hash_id,
+        ks.hash_len,
+        ks.current_secret[..ks.hash_len],
+        "e exp master",
+        client_hello_hash,
+        ee_sec[..ks.hash_len],
+    );
+    let ok_set = ks.early_exporter_secret.try_set(ee_sec[..ks.hash_len]);
+    core::secure_zeroize_48(ee_sec);
+    return ok_ce && ok_ee && ok_set;
 }
 
 // Handshake Secret = HKDF-Extract(Derive-Secret(Early Secret, "derived", ""), (EC)DHE)
@@ -349,7 +363,7 @@ fn ks_advance_to_resumption(ks: KeySchedule&, finished_transcript_hash: const u8
 // TLS-Exporter(label, context_value, key_length) =
 //     HKDF-Expand-Label(Derive-Secret(Secret, label, ""),
 //                       "exporter", Hash(context_value), key_length)
-// Context value is bounded to <= 255 bytes (RFC 8446 §7.5).
+// Arbitrary-length context_value is hashed via SHA-256/SHA-384 before entering HkdfLabel (RFC 8446 §7.5).
 // When context is empty (""), Hash("") is used.
 fn ks_export_keying_material(
     ks:         const KeySchedule&,
@@ -360,7 +374,6 @@ fn ks_export_keying_material(
 ) -> bool {
     guard ks.stage >= KS_STAGE_MASTER else { return false; }
     guard label.len > 0 && label.len <= 245 else { return false; }
-    guard context.len <= 255 else { return false; }
     guard key_length > 0 else { return false; }
     guard out.len >= key_length else { return false; }
 
@@ -522,6 +535,8 @@ fn ks_update_traffic_secret(hash_id: u8, hash_len: u8, traffic_secret: u8[:]) ->
 fn ks_zeroize(ks: KeySchedule&) {
     core::secure_zeroize_48(ks.current_secret);
     core::secure_zeroize_48(ks.client_early_traffic);
+    core::secure_zeroize_slice(ks.early_exporter_secret[..]);
+    ks.early_exporter_secret.clear();
     core::secure_zeroize_48(ks.client_hs_traffic);
     core::secure_zeroize_48(ks.server_hs_traffic);
     core::secure_zeroize_48(ks.client_ap_traffic);

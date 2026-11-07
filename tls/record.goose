@@ -340,6 +340,11 @@ type ByteBuilder = core::ByteBuilder;
 const RECORD_BUFSIZE_IN:  i64 = 16709; // 16384 + 325 (BearSSL BR_SSL_BUFSIZE_INPUT)
 const RECORD_BUFSIZE_OUT: i64 = 16469; // 16384 + 85 (BearSSL BR_SSL_BUFSIZE_OUTPUT)
 
+// RFC 8446 §5.1 / BoringSSL single-MSS TCP Slow Start record size (1460 - 60 - 22).
+const TLS_SINGLE_MSS_PLAINTEXT_LEN: i64 = 1378;
+// 64 KB Slow Start threshold before scaling to 16 KB records.
+const TLS_DYNAMIC_RESIZE_THRESHOLD_BYTES: u64 = 65536;
+
 const MAX_EMPTY_RECORDS:      i32 = 32;    // BoringSSL kMaxEmptyRecords DoS defense
 const MAX_EARLY_DATA_SKIPPED: i64 = 16384; // BoringSSL kMaxEarlyDataSkipped
 
@@ -442,19 +447,19 @@ fn tls_record_seal_aes128_gcm_into(
     plaintext:      const u8[:],
     out_ciphertext: u8[:],
 ) -> i64, TlsAlert, bool {
+    let inner_len = core::add_sat_i64(plaintext.len, 1);
+    let ct_body_len = core::add_sat_i64(inner_len, rfc::TLS_AEAD_TAG_LEN);
+    let ct_body_u16 = (ct_body_len & 0xFFFF) as u16;
+    let total_len = core::add_sat_i64(5, ct_body_len);
+    let plain_end = core::add_sat_i64(5, plaintext.len);
+    let inner_end = core::add_sat_i64(5, inner_len);
     guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow, false;
     }
     guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return 0, TlsAlert.UnexpectedMessage, false;
     }
-    var inner_buf: u8[..16640] = [];
-    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    var tag_dummy:       u8[16]      = [0; 16];
-    var encrypted_dummy: u8[..16640] = [];
-    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+    guard out_ciphertext.len >= total_len else {
         return 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -467,27 +472,27 @@ fn tls_record_seal_aes128_gcm_into(
     guard encode_tls_ciphertext_header(
         hdr_buf,
         rfc::TLS_CONTENT_APPLICATION_DATA,
-        encrypted_dummy.len as u16,
+        ct_body_u16,
     ) else {
         return 0, TlsAlert.InternalError, false;
     }
 
-    let tag, ok_seal = core::aes128_gcm_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[..5], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[5..plain_end], plaintext);
+    out_ciphertext[plain_end] = inner_type;
+
+    let tag, ok_seal = core::aes128_gcm_seal_inplace(
+        key,
+        nonce,
+        out_ciphertext[5..inner_end],
+        out_ciphertext[..5],
+    );
     guard ok_seal else {
+        core::secure_zeroize_slice(out_ciphertext[..total_len]);
         return 0, TlsAlert.InternalError, false;
     }
-
-    var record_buf: u8[..16640] = [];
-    guard record_buf.try_append(hdr_buf[..]) &&
-          record_buf.try_append(inner_buf[..]) &&
-          record_buf.try_append(tag[..]) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    guard out_ciphertext.len >= record_buf.len else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
-    return record_buf.len, TlsAlert.CloseNotify, true;
+    core::ct_copy_bytes(out_ciphertext[inner_end..total_len], tag[..]);
+    return total_len, TlsAlert.CloseNotify, true;
 }
 
 // Decrypts and authenticates a TLS 1.3 record payload into a caller-provided bounded
@@ -519,7 +524,7 @@ fn tls_record_decrypt_aes128_gcm_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -532,28 +537,22 @@ fn tls_record_decrypt_aes128_gcm_into(
     guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
     for i in 16 { tag[i] = tag_slice[i]; }
 
-    var temp_dec: u8[16624] = [0; 16624];
     let dec_len, ok_open = core::fused_aes_gcm_decrypt(
-        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+        key, nonce, ciphertext, record_header, tag, out_plaintext[..ct_len],
     );
     guard ok_open && dec_len == ct_len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, TlsAlert.BadRecordMac, false;
     }
 
-    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(out_plaintext[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, alert, false;
     }
 
-    guard out_plaintext.len >= plain.len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
-        return 0, 0, TlsAlert.RecordOverflow, false;
-    }
-    for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    core::secure_zeroize_slice(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(out_plaintext[plain_len..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 
@@ -633,19 +632,19 @@ fn tls_record_seal_aes256_gcm_into(
     plaintext:      const u8[:],
     out_ciphertext: u8[:],
 ) -> i64, TlsAlert, bool {
+    let inner_len = core::add_sat_i64(plaintext.len, 1);
+    let ct_body_len = core::add_sat_i64(inner_len, rfc::TLS_AEAD_TAG_LEN);
+    let ct_body_u16 = (ct_body_len & 0xFFFF) as u16;
+    let total_len = core::add_sat_i64(5, ct_body_len);
+    let plain_end = core::add_sat_i64(5, plaintext.len);
+    let inner_end = core::add_sat_i64(5, inner_len);
     guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow, false;
     }
     guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return 0, TlsAlert.UnexpectedMessage, false;
     }
-    var inner_buf: u8[..16640] = [];
-    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    var tag_dummy:       u8[16]      = [0; 16];
-    var encrypted_dummy: u8[..16640] = [];
-    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+    guard out_ciphertext.len >= total_len else {
         return 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -658,27 +657,27 @@ fn tls_record_seal_aes256_gcm_into(
     guard encode_tls_ciphertext_header(
         hdr_buf,
         rfc::TLS_CONTENT_APPLICATION_DATA,
-        encrypted_dummy.len as u16,
+        ct_body_u16,
     ) else {
         return 0, TlsAlert.InternalError, false;
     }
 
-    let tag, ok_seal = core::aes256_gcm_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[..5], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[5..plain_end], plaintext);
+    out_ciphertext[plain_end] = inner_type;
+
+    let tag, ok_seal = core::aes256_gcm_seal_inplace(
+        key,
+        nonce,
+        out_ciphertext[5..inner_end],
+        out_ciphertext[..5],
+    );
     guard ok_seal else {
+        core::secure_zeroize_slice(out_ciphertext[..total_len]);
         return 0, TlsAlert.InternalError, false;
     }
-
-    var record_buf: u8[..16640] = [];
-    guard record_buf.try_append(hdr_buf[..]) &&
-          record_buf.try_append(inner_buf[..]) &&
-          record_buf.try_append(tag[..]) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    guard out_ciphertext.len >= record_buf.len else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
-    return record_buf.len, TlsAlert.CloseNotify, true;
+    core::ct_copy_bytes(out_ciphertext[inner_end..total_len], tag[..]);
+    return total_len, TlsAlert.CloseNotify, true;
 }
 
 fn tls_record_seal_chacha20_poly1305_into(
@@ -689,19 +688,19 @@ fn tls_record_seal_chacha20_poly1305_into(
     plaintext:      const u8[:],
     out_ciphertext: u8[:],
 ) -> i64, TlsAlert, bool {
+    let inner_len = core::add_sat_i64(plaintext.len, 1);
+    let ct_body_len = core::add_sat_i64(inner_len, rfc::TLS_AEAD_TAG_LEN);
+    let ct_body_u16 = (ct_body_len & 0xFFFF) as u16;
+    let total_len = core::add_sat_i64(5, ct_body_len);
+    let plain_end = core::add_sat_i64(5, plaintext.len);
+    let inner_end = core::add_sat_i64(5, inner_len);
     guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return 0, TlsAlert.RecordOverflow, false;
     }
     guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return 0, TlsAlert.UnexpectedMessage, false;
     }
-    var inner_buf: u8[..16640] = [];
-    guard inner_buf.try_append(plaintext) && inner_buf.try_push(inner_type) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    var tag_dummy:       u8[16]      = [0; 16];
-    var encrypted_dummy: u8[..16640] = [];
-    guard encrypted_dummy.try_append(inner_buf[..]) && encrypted_dummy.try_append(tag_dummy[..]) else {
+    guard out_ciphertext.len >= total_len else {
         return 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -714,27 +713,27 @@ fn tls_record_seal_chacha20_poly1305_into(
     guard encode_tls_ciphertext_header(
         hdr_buf,
         rfc::TLS_CONTENT_APPLICATION_DATA,
-        encrypted_dummy.len as u16,
+        ct_body_u16,
     ) else {
         return 0, TlsAlert.InternalError, false;
     }
 
-    let tag, ok_seal = core::chacha20_poly1305_seal_inplace(key, nonce, inner_buf[..], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[..5], hdr_buf[..]);
+    core::ct_copy_bytes(out_ciphertext[5..plain_end], plaintext);
+    out_ciphertext[plain_end] = inner_type;
+
+    let tag, ok_seal = core::chacha20_poly1305_seal_inplace(
+        key,
+        nonce,
+        out_ciphertext[5..inner_end],
+        out_ciphertext[..5],
+    );
     guard ok_seal else {
+        core::secure_zeroize_slice(out_ciphertext[..total_len]);
         return 0, TlsAlert.InternalError, false;
     }
-
-    var record_buf: u8[..16640] = [];
-    guard record_buf.try_append(hdr_buf[..]) &&
-          record_buf.try_append(inner_buf[..]) &&
-          record_buf.try_append(tag[..]) else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    guard out_ciphertext.len >= record_buf.len else {
-        return 0, TlsAlert.RecordOverflow, false;
-    }
-    core::ct_copy_bytes(out_ciphertext[..record_buf.len], record_buf[..]);
-    return record_buf.len, TlsAlert.CloseNotify, true;
+    core::ct_copy_bytes(out_ciphertext[inner_end..total_len], tag[..]);
+    return total_len, TlsAlert.CloseNotify, true;
 }
 
 fn tls_record_decrypt_aes256_gcm_into(
@@ -754,7 +753,7 @@ fn tls_record_decrypt_aes256_gcm_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -767,28 +766,22 @@ fn tls_record_decrypt_aes256_gcm_into(
     guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
     for i in 16 { tag[i] = tag_slice[i]; }
 
-    var temp_dec: u8[16624] = [0; 16624];
     let dec_len, ok_open = core::aes256_gcm_open_into(
-        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+        key, nonce, ciphertext, record_header, tag, out_plaintext[..ct_len],
     );
     guard ok_open && dec_len == ct_len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, TlsAlert.BadRecordMac, false;
     }
 
-    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(out_plaintext[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, alert, false;
     }
 
-    guard out_plaintext.len >= plain.len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
-        return 0, 0, TlsAlert.RecordOverflow, false;
-    }
-    for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    core::secure_zeroize_slice(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(out_plaintext[plain_len..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 
@@ -809,7 +802,7 @@ fn tls_record_decrypt_chacha20_poly1305_into(
     }
 
     let ct_len = record_payload.len - rfc::TLS_AEAD_TAG_LEN;
-    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN else {
+    guard ct_len <= rfc::TLS_MAX_INNER_PLAINTEXT_LEN && out_plaintext.len >= ct_len else {
         return 0, 0, TlsAlert.RecordOverflow, false;
     }
 
@@ -822,28 +815,22 @@ fn tls_record_decrypt_chacha20_poly1305_into(
     guard tag_slice.len == 16 else { return 0, 0, TlsAlert.DecodeError, false; }
     for i in 16 { tag[i] = tag_slice[i]; }
 
-    var temp_dec: u8[16624] = [0; 16624];
     let dec_len, ok_open = core::chacha20_poly1305_open_into(
-        key, nonce, ciphertext, record_header, tag, temp_dec[..ct_len],
+        key, nonce, ciphertext, record_header, tag, out_plaintext[..ct_len],
     );
     guard ok_open && dec_len == ct_len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, TlsAlert.BadRecordMac, false;
     }
 
-    let plain, inner_type, alert = unpack_tls_inner_plaintext(temp_dec[..ct_len]);
+    let plain, inner_type, alert = unpack_tls_inner_plaintext(out_plaintext[..ct_len]);
     guard alert == TlsAlert.CloseNotify else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
+        core::secure_zeroize_slice(out_plaintext[..ct_len]);
         return 0, 0, alert, false;
     }
 
-    guard out_plaintext.len >= plain.len else {
-        core::secure_zeroize_slice(temp_dec[..ct_len]);
-        return 0, 0, TlsAlert.RecordOverflow, false;
-    }
-    for i in plain.len { out_plaintext[i] = plain[i]; }
     let plain_len = plain.len;
-    core::secure_zeroize_slice(temp_dec[..ct_len]);
+    core::secure_zeroize_slice(out_plaintext[plain_len..ct_len]);
     return plain_len, inner_type, TlsAlert.CloseNotify, true;
 }
 

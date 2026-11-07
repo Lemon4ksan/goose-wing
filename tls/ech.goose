@@ -8,9 +8,15 @@ namespace wing;
 import std;
 import core from "..";
 import .record;
+import .key_schedule;
 import .hpke;
 
 // ---- ECH Constants & Identifiers -----------------------------------------
+
+const TLS_EXT_ECH_OUTER_EXTENSIONS: u16 = 0xFD00; // RFC 9849 §5.1
+const ECH_ACCEPT_CONFIRM_LEN:       u16 = 8;      // RFC 9849 §7.2
+const ECH_SH_CONFIRM_START:         i64 = 30;     // RFC 9849 §7.2: 4B hs hdr + 2B version + 24B random prefix
+const ECH_SH_MIN_HEADER_LEN:        i64 = 38;     // RFC 9849 §7.2: 4B hs hdr + 2B version + 32B random
 
 struct EchCipherSuite {
     kdf_id:  u16 = rfc::HPKE_KDF_HKDF_SHA256,
@@ -325,6 +331,149 @@ fn build_ech_outer_extension<B>(
 // Type = 0x01 (inner), empty payload.
 fn build_ech_inner_extension<B>(out: B&) {
     out.push(rfc::ECH_CLIENT_INNER);
+}
+
+// Encodes the RFC 9849 §5.1 `ech_outer_extensions` (`0xFD00`) TLS extension entry.
+// Rejects empty lists, lists > 127 entries, duplicate entries, or forbidden ECH/outer_extensions types.
+//
+// Example:
+//   ext_types = [0x000A, 0x000D, 0x0033], out = []
+//   returns: ok = true, out = [0xFD, 0x00, 0x00, 0x07, 0x06, 0x00, 0x0A, 0x00, 0x0D, 0x00, 0x33]
+fn encode_ech_outer_extensions<B>(out: B&, ext_types: const u16[:]) -> bool {
+    guard ext_types.len >= 1 && ext_types.len <= 127 else { return false; }
+    for i in ext_types.len {
+        let t = ext_types[i];
+        guard t != rfc::EXT_ENCRYPTED_CLIENT_HELLO && t != TLS_EXT_ECH_OUTER_EXTENSIONS else { return false; }
+        for j in i {
+            guard ext_types[j] != t else { return false; }
+        }
+    }
+    let vec_bytes = core::add_sat_i64(ext_types.len, ext_types.len);
+    let total_needed = core::add_sat_i64(5, vec_bytes);
+    guard core::add_sat_i64(out.len, total_needed) <= out.cap else { return false; }
+
+    core::append_u16_be(out, TLS_EXT_ECH_OUTER_EXTENSIONS);
+    core::append_u16_be(out, core::add_sat_i64(1, vec_bytes) as u16);
+    out.push(vec_bytes as u8);
+    for t in ext_types {
+        core::append_u16_be(out, t);
+    }
+    return true;
+}
+
+fn append_ech_inner_sni_and_alpn<B>(ext_buf: B&, inner_sni: const u8[:], inner_alpn: const u8[:]) -> bool {
+    if inner_sni.len > 0 {
+        guard inner_sni.len <= 255 else { return false; }
+        let sni_entry_len = core::add_sat_i64(inner_sni.len, 3) as u16;
+        core::append_u16_be(ext_buf, rfc::TLS_EXT_SERVER_NAME);
+        core::append_u16_be(ext_buf, core::add_sat_i64(inner_sni.len, 5) as u16);
+        core::append_u16_be(ext_buf, sni_entry_len);
+        ext_buf.push(0);
+        core::append_u16_be(ext_buf, inner_sni.len as u16);
+        ext_buf.append(inner_sni);
+    }
+    if inner_alpn.len > 0 {
+        guard inner_alpn.len <= 255 else { return false; }
+        let alpn_list_len = core::add_sat_i64(inner_alpn.len, 1) as u16;
+        core::append_u16_be(ext_buf, rfc::TLS_EXT_ALPN);
+        core::append_u16_be(ext_buf, core::add_sat_i64(inner_alpn.len, 3) as u16);
+        core::append_u16_be(ext_buf, alpn_list_len);
+        ext_buf.push(inner_alpn.len as u8);
+        ext_buf.append(inner_alpn);
+    }
+    return true;
+}
+
+// Constructs a deterministic RFC 9849 §5.1 `EncodedClientHelloInner` payload padded per RFC 9849 §6.1.3.
+//
+// Example:
+//   inner_random = [0x11; 32], inner_sni = "secret.example.com", inner_alpn = "h2",
+//   outer_ext_types = [0x000A, 0x0033], max_name_len = 64
+//   returns: ok = true, out populated with 32-byte aligned EncodedClientHelloInner
+fn build_encoded_client_hello_inner<B>(
+    out:             B&,
+    inner_random:    const u8[32]&,
+    inner_sni:       const u8[:],
+    inner_alpn:      const u8[:],
+    outer_ext_types: const u16[:],
+    max_name_len:    u8,
+) -> bool {
+    var ext_buf: u8[..768] = [];
+    guard append_ech_inner_sni_and_alpn(ext_buf, inner_sni, inner_alpn) else { return false; }
+
+    // supported_versions (0x002B): strictly TLS 1.3 (0x0304) in ClientHelloInner (RFC 9849 §5.1)
+    core::append_u16_be(ext_buf, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    core::append_u16_be(ext_buf, 3);
+    ext_buf.push(2);
+    core::append_u16_be(ext_buf, rfc::TLS_VERSION_1_3);
+
+    // encrypted_client_hello (0xFE0D): inner marker (type = 1)
+    core::append_u16_be(ext_buf, rfc::EXT_ENCRYPTED_CLIENT_HELLO);
+    core::append_u16_be(ext_buf, 1);
+    build_ech_inner_extension(ext_buf);
+
+    if outer_ext_types.len > 0 {
+        guard encode_ech_outer_extensions(ext_buf, outer_ext_types) else { return false; }
+    }
+
+    var raw_inner: u8[..1024] = [];
+    core::append_u16_be(raw_inner, rfc::TLS_LEGACY_VERSION_1_2);
+    raw_inner.append(inner_random[..]);
+    raw_inner.push(0); // legacy_session_id MUST be empty in EncodedClientHelloInner (RFC 9849 §5.1)
+    core::append_u16_be(raw_inner, 6);
+    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_AES_256_GCM_SHA384);
+    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256);
+    raw_inner.push(1);
+    raw_inner.push(0);
+    core::append_u16_be(raw_inner, ext_buf.len as u16);
+    raw_inner.append(ext_buf[..]);
+
+    return pad_ech_inner(raw_inner[..], max_name_len, inner_sni.len, out);
+}
+
+// Computes the 8-byte RFC 9849 §7.2 ECH transcript acceptance confirmation signal.
+// Zeroes bytes [30..38] (the last 8 bytes of ServerHello.random) in the transcript hash,
+// extracts PRK = HKDF-Extract(0, ClientHelloInner.random), and expands with label
+// "ech accept confirmation" (or "hrr ech accept confirmation" when `is_hrr == true`).
+//
+// Example:
+//   inner_random = [0x22; 32], ch_inner_bytes = [0x01, ...],
+//   sh_msg_with_hdr = [0x02, 0x00, 0x00, 0x26, ...], is_hrr = false
+//   returns: confirm = [8 bytes], ok = true
+fn compute_ech_accept_confirmation(
+    inner_random:    const u8[32]&,
+    ch_inner_bytes:  const u8[:],
+    sh_msg_with_hdr: const u8[:],
+    is_hrr:          bool,
+) -> u8[8], bool {
+    var confirm: u8[8] = [0; 8];
+    guard ch_inner_bytes.len > 0 else { return confirm, false; }
+    guard sh_msg_with_hdr.len >= ECH_SH_MIN_HEADER_LEN else { return confirm, false; }
+
+    var sha_ctx = core::Sha256Ctx { .. };
+    core::sha256_update(sha_ctx, ch_inner_bytes);
+    core::sha256_update(sha_ctx, sh_msg_with_hdr[0..ECH_SH_CONFIRM_START]);
+    let zero8: u8[8] = [0; 8];
+    core::sha256_update(sha_ctx, zero8[..]);
+    if sh_msg_with_hdr.len > ECH_SH_MIN_HEADER_LEN {
+        core::sha256_update(sha_ctx, sh_msg_with_hdr[ECH_SH_MIN_HEADER_LEN..]);
+    }
+    let transcript_hash = core::sha256_final(sha_ctx);
+
+    let zero_salt: u8[32] = [0; 32];
+    var prk = core::hkdf_extract(zero_salt[..], inner_random[..]);
+    let label = if is_hrr { "hrr ech accept confirmation" } else { "ech accept confirmation" };
+    let ok = internal::hkdf_expand_label(
+        internal::HASH_SHA256,
+        prk[..],
+        label,
+        transcript_hash[..],
+        ECH_ACCEPT_CONFIRM_LEN,
+        confirm[..],
+    );
+    core::secure_zeroize_32(prk);
+    return confirm, ok;
 }
 
 // Seals the padded ClientHelloInner using HPKE and the selected ECHConfig.

@@ -639,6 +639,22 @@ fn parse_tls_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool
     return true;
 }
 
+// Serializes a TLS 1.3 Cookie extension (RFC 8446 Section 4.2.2) into `out`.
+// cookie<1..2^16-1> strictly forbids zero-length values.
+fn serialize_tls_cookie_extension<B>(out: B&, cookie: const u8[:]) -> bool {
+    let needed = core::add_sat_i64(6, cookie.len);
+    let ext_len = core::add_sat_i64(cookie.len, 2);
+    let ext_len_u16 = (ext_len & 0xFFFF) as u16;
+    let cookie_len_u16 = (cookie.len & 0xFFFF) as u16;
+    guard cookie.len >= 1 && cookie.len <= 65533 else { return false; }
+    guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
+    core::append_u16_be(out, rfc::TLS_EXT_COOKIE);
+    core::append_u16_be(out, ext_len_u16);
+    core::append_u16_be(out, cookie_len_u16);
+    out.append(cookie);
+    return true;
+}
+
 // Validates a TLS 1.3 certificate_authorities extension (RFC 8446 Section 4.2.4 & OpenSSL #32211).
 // authorities<3..2^16-1> strictly forbids vectors smaller than 3 octets.
 fn validate_certificate_authorities_extension(ext_bytes: const u8[:]) -> bool {
@@ -819,6 +835,27 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
     }
 }
 
+// Parses the client's `compress_certificate` extension payload (RFC 8879 Section 3).
+//
+// Example:
+//   ext_bytes = [0x04, 0x00, 0x02, 0x00, 0x03]
+//   returns: ok = true, out_algos = [2, 3]
+fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) -> bool {
+    out_algos.clear();
+    guard ext_bytes.len >= 3 else { return false; }
+    let list_len = ext_bytes[0] as i64;
+    let expected_len = core::add_sat_i64(1, list_len);
+    guard list_len >= 2 && (list_len & 1) == 0 && ext_bytes.len == expected_len else { return false; }
+    let count = list_len >> 1;
+    guard count <= out_algos.cap else { return false; }
+    var offset: i64 = 1;
+    for i in count {
+        out_algos.push(core::read_be_u16(ext_bytes, offset));
+        offset = core::add_sat_i64(offset, 2);
+    }
+    return true;
+}
+
 // Parses a CompressedCertificate handshake message payload (RFC 8879 Section 4)
 // Example:
 //   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x28, 0xB5, 0x2F, 0xFD]
@@ -983,6 +1020,122 @@ fn parse_key_share_server_extension(
     out_key_exchange.clear();
     out_key_exchange.append(data[4..]);
     return true;
+}
+
+struct ParsedServerHello {
+    cipher_suite:   u16        = 0,
+    is_hrr:         bool       = false,
+    selected_group: u16        = 0,
+    server_share:   u8[..2048] = [],
+    hrr_cookie:     u8[..256]  = [],
+    psk_resumed:    bool       = false,
+}
+
+fn validate_sh_or_hrr_extensions(entries: const TlsExtensionEntry[:], is_hrr: bool) -> bool {
+    for e in entries {
+        if is_hrr {
+            guard !rfc::is_forbidden_hrr_extension(e.ext_type) else { return false; }
+        } else {
+            guard !rfc::is_forbidden_sh_extension(e.ext_type) else { return false; }
+        }
+    }
+    return true;
+}
+
+fn apply_hrr_server_hello_exts(
+    entries: const TlsExtensionEntry[..32]&,
+    out:     ParsedServerHello&,
+) -> bool {
+    let ks_data, has_ks = find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
+    if has_ks {
+        guard ks_data.len == 2 else { return false; }
+        out.selected_group = core::read_be_u16(ks_data, 0);
+    }
+    let cookie_data, has_cookie = find_extension(entries, rfc::TLS_EXT_COOKIE);
+    if has_cookie {
+        guard parse_tls_cookie_extension(cookie_data, out.hrr_cookie) else { return false; }
+    }
+    return has_ks || has_cookie;
+}
+
+fn apply_regular_server_hello_exts(
+    entries:  const TlsExtensionEntry[..32]&,
+    rand_arr: const u8[32]&,
+    out:      ParsedServerHello&,
+) -> bool {
+    guard validate_server_random_downgrade(rand_arr, rfc::TLS_VERSION_1_3, true) else { return false; }
+    let ks_data, has_ks = find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
+    guard has_ks && parse_key_share_server_extension(ks_data, out.selected_group, out.server_share) else {
+        return false;
+    }
+    let psk_data, has_psk = find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
+    if has_psk {
+        guard psk_data.len == 2 && core::read_be_u16(psk_data, 0) == 0 else { return false; }
+        out.psk_resumed = true;
+    }
+    return true;
+}
+
+fn read_server_hello_preamble(
+    payload:  const u8[:],
+    rand_arr: u8[32]&,
+    out:      ParsedServerHello&,
+) -> const u8[:], bool {
+    var c = core::cursor_from(payload);
+    let hs_type, ok_t = core::read_u8(c);
+    guard ok_t && hs_type == rfc::TLS_HS_SERVER_HELLO else { return "", false; }
+    let body, ok_b = core::read_u24_prefixed(c);
+    guard ok_b && c.buf.len == 0 else { return "", false; }
+
+    var bc = core::cursor_from(body);
+    let ver, ok_v = core::read_u16(bc);
+    guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 else { return "", false; }
+    let srv_rand, ok_r = core::read_bytes(bc, 32);
+    guard ok_r else { return "", false; }
+    core::ct_copy_bytes(rand_arr[..], srv_rand);
+    out.is_hrr = is_hello_retry_request(rand_arr);
+
+    let _, ok_sid = core::read_u8_prefixed(bc);
+    let cs, ok_cs = core::read_u16(bc);
+    let comp, ok_cm = core::read_u8(bc);
+    guard ok_sid && ok_cs && rfc::is_supported_tls13_cipher_suite(cs) && ok_cm && comp == 0 else {
+        return "", false;
+    }
+    out.cipher_suite = cs;
+    return bc.buf, true;
+}
+
+// Parses a live ServerHello or HelloRetryRequest handshake message (RFC 8446 §4.1.3, §4.1.4),
+// extracting key_share (or 2-byte HRR selected_group), cookie, and pre_shared_key extensions.
+//
+// Example:
+//   payload = [0x02, 0x00, 0x00, 0x46, 0x03, 0x03, ...32B random..., 0x00, 0x13, 0x01, 0x00, ...]
+//   returns: ok = true, out.cipher_suite = 0x1301, out.is_hrr = false
+fn parse_live_server_hello(payload: const u8[:], out: ParsedServerHello&) -> bool {
+    out.cipher_suite = 0;
+    out.is_hrr = false;
+    out.selected_group = 0;
+    out.server_share.clear();
+    out.hrr_cookie.clear();
+    out.psk_resumed = false;
+
+    var rand_arr: u8[32] = [0; 32];
+    let ext_bytes, ok_pre = read_server_hello_preamble(payload, rand_arr, out);
+    guard ok_pre else { return false; }
+
+    var entries: TlsExtensionEntry[..32] = [];
+    guard parse_extensions_block(ext_bytes, entries) else { return false; }
+    guard validate_sh_or_hrr_extensions(entries, out.is_hrr) else { return false; }
+
+    let ver_data, has_ver = find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    guard has_ver else { return false; }
+    let negotiated_ver, ok_ver = parse_server_supported_versions(ver_data);
+    guard ok_ver && negotiated_ver == rfc::TLS_VERSION_1_3 else { return false; }
+
+    if out.is_hrr {
+        return apply_hrr_server_hello_exts(entries, out);
+    }
+    return apply_regular_server_hello_exts(entries, rand_arr, out);
 }
 
 // Splits a TLS ClientHello into multiple TLS records (RFC 8446 Section 5.1).
@@ -1316,7 +1469,7 @@ fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) ->
 }
 
 // Parses and validates CertificateRequest message (RFC 8446 Section 4.3.2).
-// In initial handshake: context MUST be 0 length. In post-handshake: context MUST be <= 32 bytes.
+// In initial handshake: context MUST be 0 length. In post-handshake: context MUST be non-empty and <= 32 bytes.
 // signature_algorithms extension is mandatory; absence MUST cause rejection.
 fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: CertificateRequestMsg&) -> bool {
     var ctx_cursor = cursor_from(c.buf[..0]);
@@ -1325,7 +1478,10 @@ fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: Certifica
     let ctx_len = cursor_len(ctx_cursor);
     // RFC 8446 Section 4.3.2: context MUST be <= 32 bytes
     guard ctx_len <= 32 && ctx_len <= out.context.cap else { return false; }
-    if !is_post_handshake {
+    if is_post_handshake {
+        // RFC 8446 Section 4.3.2: A post-handshake CertificateRequest context MUST be non-empty
+        guard ctx_len > 0 else { return false; }
+    } else {
         // RFC 8446 Section 4.3.2: In initial handshake, context MUST be 0 length
         guard ctx_len == 0 else { return false; }
     }
@@ -1333,6 +1489,13 @@ fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: Certifica
         out.context.push(ctx_cursor.buf[i]);
     }
     return true;
+}
+
+// Encodes the client's `post_handshake_auth` extension (RFC 8446 Section 4.2.6).
+// The extension_data field of the "post_handshake_auth" extension is zero length.
+fn encode_post_handshake_auth_extension<B>(out: B&) {
+    core::append_u16_be(out, rfc::TLS_EXT_POST_HANDSHAKE_AUTH);
+    core::append_u16_be(out, 0);
 }
 
 fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: CertificateRequestMsg&) -> bool {
