@@ -70,7 +70,7 @@ inline fn backoff_decorrelated_jitter_ms(rng: WyRand&, base_ms: u64, cap_ms: u64
     } else {
         0
     };
-    return add_sat_u64(base_ms, rnd);
+    return ct_min_u64(cap_ms, add_sat_u64(base_ms, rnd));
 }
 
 // Normalizes and clamps Happy Eyeballs Connection Attempt Delay (RFC 8305).

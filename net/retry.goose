@@ -182,10 +182,6 @@ fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64,
     let parsed_time, ok_t = core::parse_http_date(clean);
     guard ok_t else { return 0, false; }
 
-    var formatted_back: u8[..64] = [];
-    format_http(formatted_back, parsed_time);
-    guard eq_ascii_fold(formatted_back[..], clean) else { return 0, false; }
-
     let target_unix_ms = unix_milli(parsed_time);
     if target_unix_ms <= now_unix_ms {
         return 0, true;
@@ -256,7 +252,7 @@ fn trip_circuit_breaker_if_exceeded(
 
     for &h in breaker.hosts {
         if core::eq_ascii_fold(h.host[..], host_str) {
-            h.blocked_until_mono_ns = unblock_at;
+            h.blocked_until_mono_ns = max(h.blocked_until_mono_ns, unblock_at);
             h.is_blocked = true;
             return true;
         }

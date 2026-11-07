@@ -57,13 +57,12 @@ fn encode_grpc_message<B>(raw: const u8[:], out: B&, max_out_len: i64 = -1) {
     for b in raw {
         if is_grpc_message_unencoded(b) {
             if max_out_len >= 0 && out.len >= max_out_len { break; }
-            out.push(b);
+            guard out.try_push(b) else { break; }
             continue;
         }
         if max_out_len >= 0 && core::add_sat_i64(out.len, 3) > max_out_len { break; }
-        out.push('%');
-        out.push(grpc_hex_char((b >> 4) & 0x0F));
-        out.push(grpc_hex_char(b & 0x0F));
+        var esc: u8[3] = ['%', grpc_hex_char((b >> 4) & 0x0F), grpc_hex_char(b & 0x0F)];
+        guard out.try_append(esc[..]) else { break; }
     }
 }
 
@@ -72,7 +71,7 @@ inline fn combine_hex_nibbles(h: i32, l: i32) -> u8 {
 }
 
 // Percent-decodes `grpc-message` header value into raw message bytes.
-// Clamps decoded output to 256 bytes to prevent bounded-array overflow.
+// Clamps decoded output to 256 bytes and target buffer capacity to prevent overflow.
 //
 // Example:
 //   encoded = "unknown%20error"
@@ -90,12 +89,12 @@ fn decode_grpc_message<B>(encoded: const u8[:], out: B&) {
             let h = grpc_hex_val(encoded[i1]);
             let l = grpc_hex_val(encoded[i2]);
             if h >= 0 && l >= 0 {
-                out.push(combine_hex_nibbles(h, l));
+                guard out.try_push(combine_hex_nibbles(h, l)) else { break; }
                 i = core::add_sat_u64(i, 3);
                 continue;
             }
         }
-        out.push(encoded[idx]);
+        guard out.try_push(encoded[idx]) else { break; }
         i = core::add_sat_u64(i, 1);
     }
 }
@@ -131,33 +130,63 @@ fn grpc_div_u64(n: u64, d: u64) -> u64 {
     return quotient;
 }
 
-// Formats millisecond duration into standard gRPC timeout string.
+// Formats millisecond duration into standard gRPC timeout string (max 8 digits per gRPC spec).
 fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
     guard timeout_ms > 0 else { return; }
 
+    var tmp: u8[..16] = [];
+    let max_val: u64 = 99999999;
     let hours = grpc_div_u64(timeout_ms, 3600000);
-    if core::mul_sat_u64(hours, 3600000) == timeout_ms {
-        core::format_u64_dec(hours, out);
-        out.push('H');
+    if hours <= max_val && core::mul_sat_u64(hours, 3600000) == timeout_ms {
+        core::format_u64_dec(hours, tmp);
+        tmp.push('H');
+        let _ = out.try_append(tmp[..]);
         return;
     }
 
     let mins = grpc_div_u64(timeout_ms, 60000);
-    if core::mul_sat_u64(mins, 60000) == timeout_ms {
-        core::format_u64_dec(mins, out);
-        out.push('M');
+    if mins <= max_val && core::mul_sat_u64(mins, 60000) == timeout_ms {
+        core::format_u64_dec(mins, tmp);
+        tmp.push('M');
+        let _ = out.try_append(tmp[..]);
         return;
     }
 
     let secs = grpc_div_u64(timeout_ms, 1000);
-    if core::mul_sat_u64(secs, 1000) == timeout_ms {
-        core::format_u64_dec(secs, out);
-        out.push('S');
+    if secs <= max_val && core::mul_sat_u64(secs, 1000) == timeout_ms {
+        core::format_u64_dec(secs, tmp);
+        tmp.push('S');
+        let _ = out.try_append(tmp[..]);
         return;
     }
 
-    core::format_u64_dec(timeout_ms, out);
-    out.push('m');
+    if timeout_ms <= max_val {
+        core::format_u64_dec(timeout_ms, tmp);
+        tmp.push('m');
+        let _ = out.try_append(tmp[..]);
+        return;
+    }
+
+    let ceil_secs = grpc_div_u64(core::add_sat_u64(timeout_ms, 999), 1000);
+    if ceil_secs <= max_val {
+        core::format_u64_dec(ceil_secs, tmp);
+        tmp.push('S');
+        let _ = out.try_append(tmp[..]);
+        return;
+    }
+
+    let ceil_mins = grpc_div_u64(core::add_sat_u64(timeout_ms, 59999), 60000);
+    if ceil_mins <= max_val {
+        core::format_u64_dec(ceil_mins, tmp);
+        tmp.push('M');
+        let _ = out.try_append(tmp[..]);
+        return;
+    }
+
+    let ceil_hours = min(grpc_div_u64(core::add_sat_u64(timeout_ms, 3599999), 3600000), max_val);
+    core::format_u64_dec(ceil_hours, tmp);
+    tmp.push('H');
+    let _ = out.try_append(tmp[..]);
 }
 
 // Converts parsed numeric timeout and unit character into milliseconds.
@@ -200,6 +229,21 @@ fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
 
 // ---- Status Extraction from Headers & Trailers --------------------------
 
+inline fn resolve_effective_http_status(headers: const HeaderMap&) -> i32 {
+    if headers.status_code != 200 {
+        return headers.status_code as u16;
+    }
+    let pseudo_st = trim_lws(get_header(headers, ":status"));
+    if pseudo_st.len > 0 {
+        let code_u32, ok_st = core::parse_u32_dec(pseudo_st);
+        if ok_st && code_u32 >= 100 && code_u32 <= 599 {
+            return code_u32 as i32;
+        }
+        return 500;
+    }
+    return 200;
+}
+
 // Extracts gRPC status and message from trailers (or headers in Trailers-Only responses).
 // Returns true if a wire grpc-status header was explicitly found.
 // If absent, falls back to mapping the HTTP status code and returns false.
@@ -214,15 +258,19 @@ fn extract_grpc_status(
     out_message: u8[..256]&,
 ) -> bool {
     out_message.clear();
+    let http_code = resolve_effective_http_status(headers);
 
     // 1. Check trailers first
     let trailer_status = get_header(trailers, rfc::HEADER_GRPC_STATUS);
-    if trailer_status.len > 0 {
+    if trailer_status.len > 0 || has_header(trailers, rfc::HEADER_GRPC_STATUS) {
         let code_int, ok_code = core::parse_u32_dec(trim_lws(trailer_status));
         if ok_code {
             out_status = grpc_status_from_code(code_int);
         } else {
             out_status = GrpcStatusCode.Unknown;
+        }
+        if http_code != 200 && out_status == GrpcStatusCode.Ok {
+            out_status = grpc_status_from_http(http_code);
         }
 
         let trailer_msg = get_header(trailers, rfc::HEADER_GRPC_MESSAGE);
@@ -234,12 +282,15 @@ fn extract_grpc_status(
 
     // 2. Check headers (Trailers-Only response)
     let header_status = get_header(headers, rfc::HEADER_GRPC_STATUS);
-    if header_status.len > 0 {
+    if header_status.len > 0 || has_header(headers, rfc::HEADER_GRPC_STATUS) {
         let code_int, ok_code = core::parse_u32_dec(trim_lws(header_status));
         if ok_code {
             out_status = grpc_status_from_code(code_int);
         } else {
             out_status = GrpcStatusCode.Unknown;
+        }
+        if http_code != 200 && out_status == GrpcStatusCode.Ok {
+            out_status = grpc_status_from_http(http_code);
         }
 
         let header_msg = get_header(headers, rfc::HEADER_GRPC_MESSAGE);
@@ -250,7 +301,7 @@ fn extract_grpc_status(
     }
 
     // 3. Fallback to HTTP status mapping
-    out_status = grpc_status_from_http(headers.status_code);
+    out_status = grpc_status_from_http(http_code);
     return false;
 }
 

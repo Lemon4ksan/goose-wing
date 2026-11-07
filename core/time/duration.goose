@@ -152,9 +152,9 @@ fn format_subsecond_duration<B>(out: B&, total_nanos: i64) -> bool {
         return true;
     }
     let millis_val = total_nanos / MILLISECOND;
-    let fraction_micros = (total_nanos % MILLISECOND) / MICROS_PER_MILLI;
+    let fraction_nanos = total_nanos % MILLISECOND;
     format(out, millis_val);
-    append_trimmed_fraction(out, fraction_micros, 3);
+    append_trimmed_fraction(out, fraction_nanos, 6);
     out.append("ms");
     return true;
 }
@@ -225,6 +225,9 @@ fn format<B>(out: B&, dur: Duration) {
 fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     let text = trim(raw_str);
     guard text.len > 0 else { return Duration { 0 }, false; }
+    if text == DURATION_MIN_FORMATTED {
+        return Duration { nanos: DURATION_MIN_NANOS }, true;
+    }
 
     var is_neg = false;
     var cursor = 0;

@@ -93,39 +93,42 @@ fn apply_security_txt_expires(val: const u8[:], now_epoch: i64, sec: SecurityTxt
 }
 
 fn apply_security_txt_canonical(val: const u8[:], sec: SecurityTxt&) -> bool {
-    guard val.starts_with("https://") else {
+    guard val.starts_with_fold("https://") && val.len <= 256 else {
         sec.status = SEC_TXT_ERR_INVALID_CANONICAL;
         return false;
     }
-    guard sec.canonical.len < 4 && val.len <= 256 else { return true; }
+    guard sec.canonical.len < 4 else { return true; }
     sec.canonical.push(val);
     return true;
 }
 
 fn apply_security_txt_metadata(name: const u8[:], val: const u8[:], sec: SecurityTxt&) -> bool {
     if name.eq_ascii_fold("encryption") {
-        guard sec.encryption.len < 4 && val.len <= 256 else { return true; }
+        guard val.len <= 256 else { return false; }
+        guard sec.encryption.len < 4 else { return true; }
         sec.encryption.push(val);
         return true;
     }
     if name.eq_ascii_fold("acknowledgments") || name.eq_ascii_fold("acknowledgements") {
-        guard sec.acknowledgments.len < 4 && val.len <= 256 else { return true; }
+        guard val.len <= 256 else { return false; }
+        guard sec.acknowledgments.len < 4 else { return true; }
         sec.acknowledgments.push(val);
         return true;
     }
     if name.eq_ascii_fold("policy") {
-        guard sec.policy.len < 4 && val.len <= 256 else { return true; }
+        guard val.len <= 256 else { return false; }
+        guard sec.policy.len < 4 else { return true; }
         sec.policy.push(val);
         return true;
     }
     if name.eq_ascii_fold("hiring") {
-        guard sec.hiring.len < 4 && val.len <= 256 else { return true; }
+        guard val.len <= 256 else { return false; }
+        guard sec.hiring.len < 4 else { return true; }
         sec.hiring.push(val);
         return true;
     }
     if name.eq_ascii_fold("preferred-languages") {
-        guard val.len <= 64 else { return true; }
-        sec.preferred_languages.clear();
+        guard sec.preferred_languages.len == 0 && val.len > 0 && val.len <= 64 else { return false; }
         sec.preferred_languages.append(val);
         return true;
     }

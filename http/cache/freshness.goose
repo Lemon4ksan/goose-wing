@@ -251,6 +251,7 @@ fn evaluate_stale_allowance(
 ) -> bool {
     out_swr = false;
     guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
+    guard current_age >= lifetime else { return false; }
 
     let stale_sec = current_age - lifetime;
 
@@ -281,6 +282,7 @@ fn evaluate_stale_if_error(
     policy:      FreshnessPolicy,
 ) -> bool {
     guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
+    guard current_age >= lifetime else { return false; }
     let stale_sec = current_age - lifetime;
 
     var max_sie: i32 = -1;
@@ -324,20 +326,20 @@ fn evaluate_freshness(
     );
 
     let basic_fresh = metrics.current_age_sec < metrics.freshness_lifetime_sec;
-    var req_max_age_ok = true;
+    var req_max_age_ok = !has_invalid_freshness(req_cc);
     if has_max_age(req_cc) && req_cc.max_age >= 0 {
-        req_max_age_ok = (metrics.current_age_sec <= req_cc.max_age);
+        req_max_age_ok = req_max_age_ok && (metrics.current_age_sec <= req_cc.max_age);
     }
 
-    var req_min_fresh_ok = true;
+    var req_min_fresh_ok = !has_invalid_freshness(req_cc);
     if has_min_fresh(req_cc) && req_cc.min_fresh >= 0 {
         let remaining = metrics.freshness_lifetime_sec - metrics.current_age_sec;
-        req_min_fresh_ok = (remaining >= req_cc.min_fresh);
+        req_min_fresh_ok = req_min_fresh_ok && (remaining >= req_cc.min_fresh);
     }
 
     metrics.is_fresh = basic_fresh && req_max_age_ok && req_min_fresh_ok;
 
-    if !metrics.is_fresh {
+    if !metrics.is_fresh && !basic_fresh && req_max_age_ok && req_min_fresh_ok {
         var is_swr = false;
         metrics.stale_allowed = evaluate_stale_allowance(
             resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, policy, is_swr,

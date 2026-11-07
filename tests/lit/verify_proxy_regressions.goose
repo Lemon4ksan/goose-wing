@@ -171,6 +171,151 @@ fn test_health_check_probing_sync() {
     print("HEALTH_CHECK_PROBING_SYNC: ok\n");
 }
 
+// 8. F001: prepare_proxy_request_at must fail closed on wire buffer overflow, bad URI, or Content-Length mismatch
+fn test_f001_wire_serialization_and_cl_mismatch() {
+    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+    assert(wing::add_upstream_target(proxy.cluster, "backend.internal", 8080, 1));
+
+    var in_headers = wing::HeaderMap { .. };
+    assert(wing::append_header(in_headers, "Host", "public.example.com"));
+
+    //Tiny wire buffer that overflows during encode_h1_request
+    var tiny_wire: u8[..16] = [];
+    let idx_over, ok_over = wing::prepare_proxy_request_at(
+        proxy, "GET", "/api/v1/resource", in_headers, "192.0.2.10", "https", "", tiny_wire, 1000000000,
+    );
+    assert(!ok_over && idx_over == wing::PROXY_TARGET_NONE);
+    assert(proxy.cluster.targets[0].active_conns == 0);
+    assert(proxy.total_forwarded == 0 && proxy.total_dropped == 1);
+
+    // Content-Length header in in_headers contradicting actual body length (RFC 9112 §6.2)
+    var bad_cl_headers = wing::HeaderMap { .. };
+    assert(wing::append_header(bad_cl_headers, "Host", "public.example.com"));
+    assert(wing::append_header(bad_cl_headers, "Content-Length", "999"));
+    var full_wire: u8[>..] = [];
+    let idx_cl, ok_cl = wing::prepare_proxy_request_at(
+        proxy, "POST", "/submit", bad_cl_headers, "192.0.2.10", "https", "hello", full_wire, 1000000000,
+    );
+    assert(!ok_cl && idx_cl == wing::PROXY_TARGET_NONE);
+    assert(proxy.cluster.targets[0].active_conns == 0);
+    print("F001_WIRE_AND_CL_GUARD: ok\n");
+}
+
+// 9. F002: Multi-header Via preservation (RFC 9110 §7.6.3) and XFF overflow fail-closed
+fn test_f002_multi_via_and_xff_overflow() {
+    var in_headers = wing::HeaderMap { .. };
+    assert(wing::append_header(in_headers, "Host", "api.example.com"));
+    assert(wing::append_header(in_headers, "Via", "1.1 edge-proxy"));
+    assert(wing::append_header(in_headers, "Via", "1.1 mesh-proxy"));
+
+    var out_headers = wing::HeaderMap { .. };
+    var cfg = wing::ProxyConfig { .. };
+    cfg.via_pseudonym.clear();
+    cfg.via_pseudonym.append("wing-gw");
+
+    assert(wing::filter_and_forward_headers(in_headers, out_headers, "192.0.2.1", "https", "backend:8080", cfg));
+    let v = wing::get_header(out_headers, "Via");
+    assert(v == "1.1 edge-proxy, 1.1 mesh-proxy, 1.1 wing-gw");
+
+    // Multi-header XFF exceeding 1024 bytes when trust_incoming_xff = true must fail closed (not panic or drop hops)
+    var xff_headers = wing::HeaderMap { .. };
+    assert(wing::append_header(xff_headers, "Host", "api.example.com"));
+    assert(wing::append_header(xff_headers, "X-Forwarded-For", "10.0.0.1"));
+    var big_xff: u8[..600] = [];
+    for _ in 550 { big_xff.push('1'); }
+    assert(wing::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
+    assert(wing::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
+    cfg.trust_incoming_xff = true;
+    var out_xff = wing::HeaderMap { .. };
+    let ok_xff = wing::filter_and_forward_headers(xff_headers, out_xff, "192.0.2.1", "https", "backend:8080", cfg);
+    assert(!ok_xff);
+    print("F002_MULTI_VIA_AND_XFF_GUARD: ok\n");
+}
+
+// 10. F003: Reject Connection: content-length / host and format bare IPv6 / pre-ported upstream Host cleanly
+fn test_f003_connection_smuggle_and_ipv6_host() {
+    var smuggle_cl = wing::HeaderMap { .. };
+    assert(wing::append_header(smuggle_cl, "Host", "api.example.com"));
+    assert(wing::append_header(smuggle_cl, "Connection", "keep-alive, content-length"));
+    assert(wing::append_header(smuggle_cl, "Content-Length", "5"));
+    var out_smuggle = wing::HeaderMap { .. };
+    var cfg = wing::ProxyConfig { .. };
+    assert(!wing::filter_and_forward_headers(smuggle_cl, out_smuggle, "192.0.2.1", "http", "backend:8080", cfg));
+
+    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+    assert(wing::add_upstream_target(proxy.cluster, "2001:db8::1", 8080, 1));
+    var in_hdr = wing::HeaderMap { .. };
+    assert(wing::append_header(in_hdr, "Host", "edge.example.com"));
+    var wire: u8[>..] = [];
+    let _, ok_v6 = wing::prepare_proxy_request_at(proxy, "GET", "/v6", in_hdr, "192.0.2.1", "http", "", wire, 1000000000);
+    assert(ok_v6);
+    assert(core::contains(wire[..], "Host: [2001:db8::1]:8080\r\n"));
+    print("F003_CONN_SMUGGLE_AND_IPV6_HOST: ok\n");
+}
+
+// 11. F004: exchange_prepared_wire_on_conn caps 1xx responses (RFC 9110 §15.2) and drains conn.rx_buf
+fn test_f004_exchange_interim_and_rx_buf() {
+    var conn_flood = wing::PooledConnection {
+        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+        ..
+    };
+    for _ in 7 {
+        conn_flood.rx_buf.append("HTTP/1.1 100 Continue\r\n\r\n");
+    }
+    conn_flood.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+    var resp_flood = wing::Response { .. };
+    let ok_flood, _ = wing::exchange_prepared_wire_on_conn(conn_flood, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_flood, 100);
+    assert(!ok_flood);
+
+    var conn_clean = wing::PooledConnection {
+        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+        ..
+    };
+    conn_clean.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nPONG");
+    var resp_clean = wing::Response { .. };
+    resp_clean.body.append("STALE_BODY");
+    let ok_clean, ka = wing::exchange_prepared_wire_on_conn(conn_clean, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_clean, 100);
+    assert(ok_clean && ka);
+    assert(resp_clean.body[..] == "PONG");
+    assert(conn_clean.rx_buf.len == 0);
+    print("F004_EXCHANGE_1XX_AND_RX_BUF: ok\n");
+}
+
+// 12. F005 & F006: Health check Probing/Up sync + status parser & GCRA slot reuse / penalty
+fn test_f005_and_f006_health_and_gcra() {
+    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
+    assert(wing::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
+    var checker = wing::new_cluster_health_checker(wing::new_health_check_config(1000, 500, 2, 2));
+    assert(!wing::register_target_for_probing(checker, -1));
+    assert(wing::register_target_for_probing(checker, 0));
+
+    let _, ok_4digit = wing::parse_probe_status_code("HTTP/1.1 2000 OK\r\n\r\n");
+    assert(!ok_4digit);
+
+    wing::on_probe_failure(checker, cluster, 0);
+    wing::on_probe_failure(checker, cluster, 0);
+    assert(cluster.circuit_open);
+    // 1st probe success enters Probing and must reopen circuit for trial traffic
+    wing::on_probe_success(checker, cluster, 0, 200);
+    assert(!cluster.circuit_open);
+    // Passive recovery to Up must sync back to slot so next probe success keeps target Up
+    wing::record_upstream_success(cluster, 0);
+    assert(cluster.targets[0].is_healthy);
+    wing::on_probe_success(checker, cluster, 0, 200);
+    assert(cluster.targets[0].is_healthy);
+
+    var limiter = wing::new_gateway_rate_limiter(10, 1);
+    let _ = wing::check_gateway_rate_limit(limiter, "10.0.0.1", 1, 1000000000);
+    assert(wing::evict_idle_gateway_clients(limiter, 100, 5000000000) == 1);
+    let _ = wing::check_gateway_rate_limit(limiter, "10.0.0.2", 1, 5000000000);
+    assert(limiter.entries.len == 1);
+    wing::penalize_gateway_client(limiter, "10.0.0.99", 5000000000, 5000000000);
+    assert(!wing::check_gateway_rate_limit(limiter, "10.0.0.99", 1, 5100000000).allowed);
+    wing::reset_gateway_rate_limiter(limiter);
+    assert(limiter.entries.len == 0);
+    print("F005_F006_HEALTH_AND_GCRA: ok\n");
+}
+
 fn main() {
     test_lb_down_hysteresis();
     // CHECK: LB_DOWN_HYSTERESIS: ok
@@ -186,6 +331,16 @@ fn main() {
     // CHECK: ADD_TARGET_EMPTY_HOST: ok
     test_health_check_probing_sync();
     // CHECK: HEALTH_CHECK_PROBING_SYNC: ok
+    test_f001_wire_serialization_and_cl_mismatch();
+    // CHECK: F001_WIRE_AND_CL_GUARD: ok
+    test_f002_multi_via_and_xff_overflow();
+    // CHECK: F002_MULTI_VIA_AND_XFF_GUARD: ok
+    test_f003_connection_smuggle_and_ipv6_host();
+    // CHECK: F003_CONN_SMUGGLE_AND_IPV6_HOST: ok
+    test_f004_exchange_interim_and_rx_buf();
+    // CHECK: F004_EXCHANGE_1XX_AND_RX_BUF: ok
+    test_f005_and_f006_health_and_gcra();
+    // CHECK: F005_F006_HEALTH_AND_GCRA: ok
     print("ALL_PROXY_REGRESSIONS_PASS\n");
     // CHECK: ALL_PROXY_REGRESSIONS_PASS
 }

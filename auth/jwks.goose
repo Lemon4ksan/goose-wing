@@ -86,6 +86,17 @@ fn add_ed25519_key(
     return true;
 }
 
+// Validates that (x, y) are 32-byte coordinates on the NIST P-256 curve (RFC 7518 §6.2.1).
+inline fn is_valid_jwk_ec_p256_coords(x: const u8[:], y: const u8[:]) -> bool {
+    guard x.len == 32 && y.len == 32 else { return false; }
+    var pub_pt: u8[..65] = [];
+    pub_pt.push(0x04);
+    pub_pt.append(x);
+    pub_pt.append(y);
+    let _, ok_pt = core::decode_p256_public_key(pub_pt[..]);
+    return ok_pt;
+}
+
 // Registers an asymmetric ECDSA P-256 public key in the key set (RFC 7518 §6.2).
 fn add_es256_key(
     jwks: Jwks&,
@@ -94,7 +105,7 @@ fn add_es256_key(
     y:    const u8[:],
 ) -> bool {
     guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 && x.len == 32 && y.len == 32 else { return false; }
+    guard kid.len <= 64 && is_valid_jwk_ec_p256_coords(x, y) else { return false; }
     var key = JwksKey {
         kty:   JwkKeyType.EC,
         crv:   "P-256",
@@ -191,11 +202,18 @@ fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
 // - EC  (RFC 7638 §3.2): "crv", "kty", "x", "y"
 // - RSA (RFC 7638 §3.2): "e", "kty", "n"
 // - Ignores optional members (alg, use, kid)
+inline fn has_nonzero_byte_32(buf: const u8[32]) -> bool {
+    var acc: u8 = 0;
+    for b in buf { acc = acc | b; }
+    return acc != 0;
+}
+
 fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
-    let is_okp = key.kty == JwkKeyType.OKP && key.crv.len > 0;
-    let is_oct = key.kty == JwkKeyType.Oct && key.symmetric_key.len > 0;
-    let is_ec = key.kty == JwkKeyType.EC && key.crv.len > 0 && key.ec_x.len > 0 && key.ec_y.len > 0;
-    let is_rsa = key.kty == JwkKeyType.RSA && key.rsa_n.len > 0 && key.rsa_e.len > 0;
+    let is_okp = key.kty == JwkKeyType.OKP && key.crv[..] == "Ed25519" && has_nonzero_byte_32(key.public_key);
+    let is_oct = key.kty == JwkKeyType.Oct && key.symmetric_key.len >= 16;
+    let is_ec_curve = key.kty == JwkKeyType.EC && key.crv[..] == "P-256";
+    let is_ec = is_ec_curve && is_valid_jwk_ec_p256_coords(key.ec_x[..], key.ec_y[..]);
+    let is_rsa = key.kty == JwkKeyType.RSA && is_canonical_jwk_rsa_params(key.rsa_n[..], key.rsa_e[..]);
     guard is_okp || is_oct || is_ec || is_rsa else { return false; }
 
     out.clear();
@@ -330,6 +348,20 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
 // Example:
 //   field_key = "kty", json string = "OKP"
 //   sets: key_item.kty = OKP, returns: true
+inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, invalid: bool&) {
+    guard json::peek(reader) == '"' else {
+        json::skip(reader);
+        dst.clear();
+        invalid = true;
+        return;
+    }
+    let s = json::read_string(reader, scratch);
+    if s.len == 0 || !dst.try_set(s) {
+        dst.clear();
+        invalid = true;
+    }
+}
+
 fn parse_jwk_key_core_type(
     field_key: const u8[:],
     reader:    json::Reader&,
@@ -345,11 +377,7 @@ fn parse_jwk_key_core_type(
         return true;
     }
     if field_key == "crv" {
-        let crv_str = json::read_string(reader, scratch);
-        if !key_item.crv.try_set(crv_str) {
-            key_item.crv.clear();
-            key_item.has_invalid_type = true;
-        }
+        read_nonempty_jwk_str(reader, scratch, key_item.crv, key_item.has_invalid_type);
         return true;
     }
     if field_key == "alg" {
@@ -375,19 +403,11 @@ fn parse_jwk_key_ident(
     key_item:  JwksKey&,
 ) -> bool {
     if field_key == "use" {
-        let use_str = json::read_string(reader, scratch);
-        if !key_item.use.try_set(use_str) {
-            key_item.use.clear();
-            key_item.has_invalid_type = true;
-        }
+        read_nonempty_jwk_str(reader, scratch, key_item.use, key_item.has_invalid_type);
         return true;
     }
     if field_key == "kid" {
-        let kid_str = json::read_string(reader, scratch);
-        if !key_item.kid.try_set(kid_str) {
-            key_item.kid.clear();
-            key_item.has_invalid_type = true;
-        }
+        read_nonempty_jwk_str(reader, scratch, key_item.kid, key_item.has_invalid_type);
         return true;
     }
     return false;
@@ -555,7 +575,7 @@ fn finalize_ec_key(raw_x: const u8[:], raw_y: const u8[:], key_item: JwksKey&) -
     var decoded_x: u8[..64] = [];
     var decoded_y: u8[..64] = [];
     guard core::base64url_decode(raw_x, decoded_x) && core::base64url_decode(raw_y, decoded_y) else { return false; }
-    guard decoded_x.len == 32 && decoded_y.len == 32 else { return false; }
+    guard is_valid_jwk_ec_p256_coords(decoded_x[..], decoded_y[..]) else { return false; }
     key_item.ec_x.clear();
     key_item.ec_x.append(decoded_x[..]);
     key_item.ec_y.clear();
@@ -588,10 +608,14 @@ fn finalize_jwk_key(
 ) -> bool {
     guard !key_item.has_invalid_type else { return false; }
     return match key_item.kty {
-        OKP => finalize_okp_key(mat.raw_x[..], key_item),
-        Oct => finalize_oct_key(mat.raw_k[..], key_item),
-        EC => finalize_ec_key(mat.raw_x[..], mat.raw_y[..], key_item),
-        RSA => finalize_rsa_key(mat.raw_n[..], mat.raw_e[..], key_item),
+        OKP => mat.raw_y.len == 0 && mat.raw_k.len == 0 && mat.raw_n.len == 0 && mat.raw_e.len == 0 &&
+               finalize_okp_key(mat.raw_x[..], key_item),
+        Oct => key_item.crv.len == 0 && mat.raw_x.len == 0 && mat.raw_y.len == 0 &&
+               mat.raw_n.len == 0 && mat.raw_e.len == 0 && finalize_oct_key(mat.raw_k[..], key_item),
+        EC => mat.raw_k.len == 0 && mat.raw_n.len == 0 && mat.raw_e.len == 0 &&
+              finalize_ec_key(mat.raw_x[..], mat.raw_y[..], key_item),
+        RSA => key_item.crv.len == 0 && mat.raw_x.len == 0 && mat.raw_y.len == 0 &&
+               mat.raw_k.len == 0 && finalize_rsa_key(mat.raw_n[..], mat.raw_e[..], key_item),
         Unknown => false,
     };
 }
@@ -600,26 +624,28 @@ fn finalize_jwk_key(
 //
 // Example:
 //   reader positioned at {"kty":"OKP", ...}
-//   appends validated key to out_jwks
+//   appends validated key to out_jwks, returns: true
 fn parse_single_jwk_element(
     reader:   json::Reader&,
     scratch:  u8[>..]&,
     out_jwks: Jwks&,
-) {
+) -> bool {
     guard out_jwks.keys.len < out_jwks.keys.cap else {
         json::skip(reader);
-        return;
+        return false;
     }
 
     var key_item = JwksKey { .. };
     var mat = JwkRawMaterial { .. };
 
     parse_jwk_key_fields(reader, scratch, mat, key_item);
-    if finalize_jwk_key(mat, key_item) {
+    let ok = finalize_jwk_key(mat, key_item);
+    if ok {
         out_jwks.keys.push(key_item);
     }
     zeroize_jwks_key(key_item);
     core::secure_zeroize_slice(mat.raw_k[..]);
+    return ok;
 }
 
 // Parses an RFC 7517 JWKS JSON document into Jwks struct.
@@ -641,7 +667,8 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
         } else if root_key == "keys" && !seen_keys_root && json::peek(reader) == '[' {
             seen_keys_root = true;
             json::each_element(reader) {
-                parse_single_jwk_element(reader, scratch, out_jwks);
+                let elem_ok = parse_single_jwk_element(reader, scratch, out_jwks);
+                had_error = had_error || !elem_ok;
             };
         } else {
             if root_key == "keys" { had_error = true; }
@@ -724,12 +751,13 @@ fn verify_jwks_ec_key(
 fn dispatch_jwks_verification(
     token:        const u8[:],
     key:          const JwksKey&,
+    header_alg:   JwtAlg,
     options:      const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
-    let compat_err = validate_jwks_key_compatibility(key, out_header.alg, options.allow_none_alg);
+    let compat_err = validate_jwks_key_compatibility(key, header_alg, options.allow_none_alg);
     guard compat_err == JwtError.None else { return compat_err; }
 
     return match key.kty {
@@ -751,10 +779,11 @@ fn verify(
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
-    let parse_err = parse_jwt_header_only(token, out_header);
+    var temp_header = JwtHeader { .. };
+    let parse_err = parse_jwt_header_only(token, temp_header);
     guard parse_err == JwtError.None else { return parse_err; }
 
-    let key_idx = resolve_jwks_key_index(jwks, out_header.kid[..]);
+    let key_idx = resolve_jwks_key_index(jwks, temp_header.kid[..]);
     guard key_idx >= 0 && key_idx < jwks.keys.len else {
         return JwtError.KeyNotFound;
     }
@@ -762,7 +791,9 @@ fn verify(
     let matched_key = jwks.keys[key_idx];
     guard matched_key.valid else { return JwtError.KeyNotFound; }
 
-    return dispatch_jwks_verification(token, matched_key, options, now_unix_sec, out_header, out_claims);
+    return dispatch_jwks_verification(
+        token, matched_key, temp_header.alg, options, now_unix_sec, out_header, out_claims,
+    );
 }
 
 // Securely wipes cryptographic keys and invalidates a JWK key entry.
@@ -770,6 +801,14 @@ fn zeroize_jwks_key(key: JwksKey&) {
     core::secure_zeroize_slice(key.symmetric_key[..]);
     key.symmetric_key.clear();
     core::secure_zeroize_32(key.public_key);
+    core::secure_zeroize_slice(key.ec_x[..]);
+    key.ec_x.clear();
+    core::secure_zeroize_slice(key.ec_y[..]);
+    key.ec_y.clear();
+    core::secure_zeroize_slice(key.rsa_n[..]);
+    key.rsa_n.clear();
+    core::secure_zeroize_slice(key.rsa_e[..]);
+    key.rsa_e.clear();
     key.valid = false;
 }
 
@@ -798,11 +837,13 @@ inline fn is_cgnat_100(host: const u8[:]) -> bool {
     guard core::starts_with(host, "100.") && host.len >= 7 else { return false; }
     let b4 = host[4];
     let b5 = host[5];
-    if (b4 >= '6' && b4 <= '9') && (b5 >= '0' && b5 <= '9') && host[6] == '.' { return true; }
-    if b4 == '1' && (b5 >= '0' && b5 <= '2') && host[6] >= '0' && host[6] <= '7' {
-        if host.len >= 8 && host[7] == '.' { return true; }
-    }
-    return false;
+    let is_64_69 = b4 == '6' && (b5 >= '4' && b5 <= '9') && host[6] == '.';
+    let is_70_99 = (b4 >= '7' && b4 <= '9') && (b5 >= '0' && b5 <= '9') && host[6] == '.';
+    if is_64_69 || is_70_99 { return true; }
+    guard b4 == '1' && host.len >= 8 && host[7] == '.' else { return false; }
+    let is_100_119 = (b5 == '0' || b5 == '1') && (host[6] >= '0' && host[6] <= '9');
+    let is_120_127 = b5 == '2' && (host[6] >= '0' && host[6] <= '7');
+    return is_100_119 || is_120_127;
 }
 
 inline fn is_private_or_loopback_ipv4(host: const u8[:]) -> bool {

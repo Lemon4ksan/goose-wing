@@ -196,6 +196,9 @@ struct Socks5Reply {
 
 // Calculates expected wire length of SOCKS5 connect reply based on ATYP (RFC 1928 Section 5).
 fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
+    if buf[2] != 0 {
+        return 0, Socks5Error.InvalidReplyHeader;
+    }
     if atyp != rfc::SOCKS5_ATYP_IPV4 && atyp != rfc::SOCKS5_ATYP_IPV6 && atyp != rfc::SOCKS5_ATYP_DOMAIN {
         return 0, Socks5Error.AddressTypeNotSupported;
     }
@@ -275,7 +278,7 @@ inline fn has_crlf_or_null(s: const u8[:]) -> bool {
 }
 
 fn append_connect_line(out: u8[..1024]&, host: const u8[:], port: u16) {
-    if !has_crlf_or_null(host) && host.len > 0 {
+    if host.len > 0 && !has_crlf_or_null(host) && !core::contains_byte(host, ' ') && !core::contains_byte(host, '\t') {
         format(out, "CONNECT ", host, ":", port, " HTTP/1.1\r\n");
         format(out, "Host: ", host, ":", port, "\r\n");
     }
@@ -299,6 +302,7 @@ fn build_http_connect_request(
 ) {
     out.clear();
     append_connect_line(out, target_host, target_port);
+    guard out.len > 0 else { return; }
     append_sanitized_header(out, "Proxy-Authorization: ", proxy_auth);
     append_sanitized_header(out, "User-Agent: ", user_agent);
     out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
@@ -329,12 +333,13 @@ fn is_token_in_connection_headers(headers: const HeaderMap&, target_name: const 
 //   headers contains [("Proxy-Authorization", "Basic ..."), ("Host", "example.com")]
 //   after: headers contains only [("Host", "example.com")]
 fn sanitize_tunnel_headers_for_origin(headers: HeaderMap&) {
+    let orig_headers = headers;
     var write_entry_i: i64 = 0;
     var write_raw_pos: u16 = 0;
-    let total_entries = headers.entries.len;
+    let total_entries = orig_headers.entries.len;
     for read_i in total_entries {
-        let h_name = entry_name(headers, headers.entries[read_i]);
-        let drop = is_hop_by_hop_header_name(h_name) || is_token_in_connection_headers(headers, h_name);
+        let h_name = entry_name(orig_headers, orig_headers.entries[read_i]);
+        let drop = is_hop_by_hop_header_name(h_name) || is_token_in_connection_headers(orig_headers, h_name);
         if !drop {
             compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
         }
@@ -449,6 +454,7 @@ fn socks5_client_handshake(
     if method == rfc::SOCKS5_AUTH_USERPASS {
         var auth_buf: u8[..520] = [];
         let a_err = build_socks5_rfc1929_auth(username, password, auth_buf);
+        defer core::secure_zeroize_slice(auth_buf[..]);
         guard a_err == Socks5Error.None else { return a_err; }
         guard tcp_send(sock_fd, auth_buf[..]) == (auth_buf.len as i32) else { return Socks5Error.AuthFailed; }
         let n_auth = tcp_recv_slice(sock_fd, reply_raw[..2], timeout_ms);
@@ -549,7 +555,7 @@ fn check_slowloris_deadlines(reader: HeaderReader&, elapsed_ns: i64) -> Slowlori
 }
 
 inline fn detect_header_end_across_chunks(reader: HeaderReader&, chunk: const u8[:]) -> bool {
-    if core::find(chunk, "\r\n\r\n") >= 0 || core::find(chunk, "\n\n") >= 0 {
+    if core::find(chunk, "\r\n\r\n") >= 0 {
         return true;
     }
     var window: u8[..6] = [];
@@ -558,7 +564,7 @@ inline fn detect_header_end_across_chunks(reader: HeaderReader&, chunk: const u8
     if take_head > 0 {
         window.append(chunk[..take_head]);
     }
-    if core::find(window[..], "\r\n\r\n") >= 0 || core::find(window[..], "\n\n") >= 0 {
+    if core::find(window[..], "\r\n\r\n") >= 0 {
         return true;
     }
     var combined: u8[..6] = [];

@@ -468,7 +468,7 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
         // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
         guard (imported_count as i64) < internal::K_MAX_COOKIES else { return imported_count; }
         var parsed_cookie = CanonicalCookie { .. };
-        read_canonical_cookie_json_object(json_reader, parsed_cookie);
+        let read_ok = read_canonical_cookie_json_object(json_reader, parsed_cookie);
 
         // CTL-08: Corrupted cookies containing control chars purged upon loading
         let has_ctl = has_prohibited_cookie_ctl(parsed_cookie.name[..])
@@ -479,7 +479,7 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
         // CRY-02: SQLite kValuesExistInBothEncryptedAndPlaintext rejection
         let both_encrypted_and_plain = parsed_cookie.value.len > 0 && parsed_cookie.encrypted_value.len > 0;
 
-        let is_valid = !has_ctl && has_payload && !both_encrypted_and_plain;
+        let is_valid = read_ok && !has_ctl && has_payload && !both_encrypted_and_plain;
         let src_opts = CookieSourceOptions { is_http_api: true, url_is_secure: parsed_cookie.secure };
         if is_valid && set_canonical_cookie(jar, parsed_cookie, src_opts, now_us) {
             imported_count += 1;
@@ -631,8 +631,10 @@ fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const
     let scheme_match = cookie_a.source_scheme == CookieSourceScheme.Unset
         || cookie_b.source_scheme == CookieSourceScheme.Unset
         || cookie_a.source_scheme == cookie_b.source_scheme;
+    let clean_dom_a = core::trim_byte(cookie_a.domain[..], '.');
+    let clean_dom_b = core::trim_byte(cookie_b.domain[..], '.');
     return cookie_a.name[..] == cookie_b.name[..] &&
-           eq_ascii_fold(cookie_a.domain[..], cookie_b.domain[..]) &&
+           eq_ascii_fold(clean_dom_a, clean_dom_b) &&
            cookie_a.path[..] == cookie_b.path[..] &&
            cookie_a.host_only == cookie_b.host_only &&
            cookie_a.partition_key[..] == cookie_b.partition_key[..] &&
@@ -763,11 +765,13 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     return true;
 }
 
-fn read_canonical_cookie_json_object(json_reader: json::Reader&, parsed_cookie: CanonicalCookie&) {
+fn read_canonical_cookie_json_object(json_reader: json::Reader&, parsed_cookie: CanonicalCookie&) -> bool {
     var scratch: u8[>..] = [];
+    var ok = true;
     json::each_member(json_reader) { key =>
-        read_json_cookie_member(json_reader, key, parsed_cookie, scratch);
+        read_json_cookie_member(json_reader, key, parsed_cookie, scratch, ok);
     };
+    return ok;
 }
 
 fn read_json_cookie_member(
@@ -775,33 +779,24 @@ fn read_json_cookie_member(
     key:         const u8[:],
     cookie_ref:  CanonicalCookie&,
     scratch:     u8[>..]&,
+    ok:          bool&,
 ) {
     scratch.clear();
     if key == "name" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.name.cap else { return; }
-        cookie_ref.name.clear();
-        cookie_ref.name.append(s);
+        guard cookie_ref.name.try_set(s) else { ok = false; return; }
     } else if key == "value" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.value.cap else { return; }
-        cookie_ref.value.clear();
-        cookie_ref.value.append(s);
+        guard cookie_ref.value.try_set(s) else { ok = false; return; }
     } else if key == "encrypted_value" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.encrypted_value.cap else { return; }
-        cookie_ref.encrypted_value.clear();
-        cookie_ref.encrypted_value.append(s);
+        guard cookie_ref.encrypted_value.try_set(s) else { ok = false; return; }
     } else if key == "domain" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.domain.cap else { return; }
-        cookie_ref.domain.clear();
-        cookie_ref.domain.append(s);
+        guard cookie_ref.domain.try_set(s) else { ok = false; return; }
     } else if key == "path" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.path.cap else { return; }
-        cookie_ref.path.clear();
-        cookie_ref.path.append(s);
+        guard cookie_ref.path.try_set(s) else { ok = false; return; }
         if s.len > 0 {
             cookie_ref.has_path_attr = true;
         }
@@ -829,9 +824,7 @@ fn read_json_cookie_member(
         cookie_ref.partitioned = json::read_bool(json_reader);
     } else if key == "partition_key" {
         let s = json::read_string(json_reader, scratch);
-        guard s.len <= cookie_ref.partition_key.cap else { return; }
-        cookie_ref.partition_key.clear();
-        cookie_ref.partition_key.append(s);
+        guard cookie_ref.partition_key.try_set(s) else { ok = false; return; }
     } else if key == "same_site" {
         cookie_ref.same_site = parse_cookie_same_site(json::read_string(json_reader, scratch));
     } else if key == "priority" {

@@ -214,6 +214,7 @@ fn apply_redirect_transition(
 ) -> Error {
     ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
     ctx.site_for_cookies = redirect_info.new_site_for_cookies;
+    ctx.auth_retried = false;
     ctx.current_method.clear();
     ctx.current_method.append(redirect_info.new_method[..]);
     ctx.current_referrer.clear();
@@ -329,6 +330,18 @@ fn init_execution_context(
     return ctx;
 }
 
+// RFC 9110 Section 15.4: Redirection 3xx - Checks whether response headers contain conflicting Location fields.
+fn has_conflicting_location_headers(headers: const HeaderMap&, loc_hdr: const u8[:]) -> bool {
+    let expected_loc = core::trim_lws(loc_hdr);
+    for &e in headers.entries {
+        guard eq_ascii_fold(entry_name(headers, e), "location") else { continue; }
+        if core::trim_lws(entry_value(headers, e)) != expected_loc {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn process_redirect_hop(
     session:     Session&,
     ctx:         RequestExecutionContext&,
@@ -342,19 +355,34 @@ fn process_redirect_hop(
     if ctx.redirect_mode == RedirectMode.Error {
         return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "redirects disabled by mode");
     }
-    if ctx.redirect_count >= ctx.max_redirects {
+    if ctx.redirect_count >= ctx.max_redirects || ctx.url_chain.len >= ctx.url_chain.cap {
         return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
     }
-    guard ctx.url_chain.len < ctx.url_chain.cap else {
-        return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", "maximum redirect hops exceeded");
+    if has_conflicting_location_headers(resp.headers, loc_hdr) {
+        return false, make_error(
+            rfc::STATUS_BAD_GATEWAY, "redirect", redirect_error_to_string(RedirectError.MultipleLocationHeaders),
+        );
     }
 
+    // RFC 6797 Section 8.3: URI Loading and Port Mapping - Upgrade http:// redirect target for known HSTS hosts.
+    var upgraded_loc_buf: u8[..2048] = [];
+    var hsts_upgraded = false;
+    let hsts_stage_on = wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_URL_HSTS);
+    if session.enable_hsts && hsts_stage_on && loc_hdr.len > 0 {
+        let prelim_target, prelim_err = core::parse_url_with_base(core::trim_lws(loc_hdr), current_url);
+        if prelim_err == core::UrlParseError.None && prelim_target.valid && !prelim_target.is_secure_scheme() {
+            let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+            hsts_upgraded = hsts_upgrade_url(session.hsts, prelim_target.href[..], now_sec, upgraded_loc_buf);
+        }
+    }
+    let eff_loc = if hsts_upgraded { upgraded_loc_buf[..] } else { loc_hdr };
+
     let ref_policy_hdr = header(resp, "Referrer-Policy");
-    let redirect_info = compute_redirect_info(
+    var redirect_info = compute_redirect_info(
         resp.status_code,
         ctx.current_method[..],
         current_url,
-        loc_hdr,
+        eff_loc,
         ref_policy_hdr,
         ctx.current_referrer_policy,
         ctx.current_referrer[..],
@@ -370,6 +398,7 @@ fn process_redirect_hop(
             had_cross_site_hop: ctx.had_cross_site_hop,
         },
     );
+    redirect_info.insecure_scheme_was_upgraded = hsts_upgraded;
 
     guard redirect_info.error == RedirectError.None else {
         return false, make_error(rfc::STATUS_BAD_REQUEST, "redirect", redirect_error_to_string(redirect_info.error));
@@ -473,6 +502,10 @@ fn ingest_transport_response_headers(
     now_sec:     i64,
     resp:        Response&,
 ) {
+    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
+        let _ = stage_client_decompress(resp, session.dict_cache);
+    }
+
     if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_ALT_SVC) {
         let _ = stage_client_alt_svc(
             resp,
@@ -488,10 +521,6 @@ fn ingest_transport_response_headers(
             session.dict_cache,
             session.enable_compression_dict,
         );
-    }
-
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
-        let _ = stage_client_decompress(resp, session.dict_cache);
     }
 }
 
@@ -926,14 +955,17 @@ fn process_h2_response_frame<B>(
                 update_response_presence(resp, entry_name(resp.headers, e));
             }
             if pseudo.status >= 100 && pseudo.status < 200 {
+                guard (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 else { return false, false; }
                 resp.headers.clear();
                 resp.presence_mask = 0;
             } else {
                 got_hdrs = true;
             }
         } else {
+            guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
+            pseudo.is_trailer = true;
             let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
-            guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+            guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
         }
         let end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
             (got_hdrs && (is_head || rfc::is_empty_body_status(resp.status_code)));
@@ -943,8 +975,8 @@ fn process_h2_response_frame<B>(
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
-        if d_slice.len > 0 {
-            let inc = d_slice.len as u32;
+        if hdr.length > 0 {
+            let inc = hdr.length;
             let _ = wire::encode_window_update_frame(0, inc, out_ctrl);
             let _ = wire::encode_window_update_frame(stream_id, inc, out_ctrl);
         }
@@ -1363,6 +1395,7 @@ fn execute_mock_or_echo_hop(
         );
     } else {
         remove_header_by_name(ctx.headers, "Available-Dictionary");
+        remove_header_by_name(ctx.headers, "Dictionary-ID");
     }
 
     var resp = Response { .. };
@@ -1397,6 +1430,14 @@ fn execute_mock_or_echo_hop(
     return resp, make_error(rfc::STATUS_BAD_GATEWAY, "mock", "no matching mock route for request");
 }
 
+// RFC 9110 Section 11.1: Authentication Scheme - Checks that `hdr` begins with `scheme_tok`
+// followed by end-of-string or BWS/SP delimiter (`' '` or `'\t'`).
+inline fn has_auth_scheme_prefix(hdr: const u8[:], scheme_tok: const u8[:]) -> bool {
+    let s = core::trim_lws(hdr);
+    guard starts_with_fold(s, scheme_tok) else { return false; }
+    return s.len == scheme_tok.len || s[scheme_tok.len] == ' ' || s[scheme_tok.len] == '\t';
+}
+
 fn compute_401_auth_header(
     session:         Client&,
     ctx:             RequestExecutionContext&,
@@ -1405,7 +1446,7 @@ fn compute_401_auth_header(
     auth_header_val: u8[..4096]&,
 ) -> bool {
     auth_header_val.clear();
-    if starts_with_fold(www_auth, "Digest") {
+    if has_auth_scheme_prefix(www_auth, "Digest") {
         let chal, ok_c = parse_digest_challenge(www_auth);
         guard ok_c else { return false; }
         let uri_path = core::pathname(current_url);
@@ -1438,17 +1479,17 @@ fn compute_401_auth_header(
         session.creds.nonce_counter += 1;
         return true;
     }
-    if starts_with_fold(www_auth, "Basic") {
-        // RFC 7617 §2: username MUST NOT contain colon
+    if has_auth_scheme_prefix(www_auth, "Basic") {
+        // RFC 7617 Section 2: The 'Basic' Authentication Scheme - user-id MUST NOT contain a colon.
         guard core::index_of_byte(session.creds.username[..], ':') < 0 else { return false; }
-        var user_pass: u8[..140] = [];
+        var user_pass: u8[..260] = [];
         guard user_pass.try_append(session.creds.username[..])
             && user_pass.try_push(':')
             && user_pass.try_append(session.creds.password[..]) else {
             core::secure_zeroize_slice(user_pass[..]);
             return false;
         }
-        var b64_user_pass: u8[..200] = [];
+        var b64_user_pass: u8[..360] = [];
         core::base64_encode(user_pass[..], b64_user_pass);
         core::secure_zeroize_slice(user_pass[..]);
         auth_header_val.append("Basic ");
@@ -1470,7 +1511,7 @@ fn find_auth_header_from_response(
     for &e in resp.headers.entries {
         let h_name = entry_name(resp.headers, e);
         let h_val = entry_value(resp.headers, e);
-        if eq_ascii_fold(h_name, "WWW-Authenticate") && starts_with_fold(h_val, "Digest") {
+        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, "Digest") {
             if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
                 return true;
             }
@@ -1479,7 +1520,7 @@ fn find_auth_header_from_response(
     for &e in resp.headers.entries {
         let h_name = entry_name(resp.headers, e);
         let h_val = entry_value(resp.headers, e);
-        if eq_ascii_fold(h_name, "WWW-Authenticate") && starts_with_fold(h_val, "Basic") {
+        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, "Basic") {
             if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
                 return true;
             }

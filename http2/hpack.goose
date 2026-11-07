@@ -1188,6 +1188,9 @@ fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_i
         dt.arena_write_pos = 0;
     }
     evict_overlapping_arena_range(dt, dt.arena_write_pos, dt.arena_write_pos + total_raw);
+    while dt.count >= HPACK_MAX_RING_ENTRIES {
+        evict_oldest_entry(dt);
+    }
 
     let insert_idx = (dt.head + dt.count) & HPACK_RING_MASK;
     let name_off, val_off = pack_header_into_arena(dt, name, val);
@@ -1446,6 +1449,36 @@ inline fn is_forbidden_path_byte(b: u8) -> bool {
         || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}';
 }
 
+fn is_valid_h2_scheme(val: const u8[:]) -> bool {
+    guard val.len > 0 else { return false; }
+    let b0 = val[0];
+    guard (b0 >= 'a' && b0 <= 'z') || (b0 >= 'A' && b0 <= 'Z') else { return false; }
+    for b in val[1..] {
+        let ok = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+            || (b >= '0' && b <= '9') || b == '+' || b == '-' || b == '.';
+        guard ok else { return false; }
+    }
+    return true;
+}
+
+fn is_valid_h2_authority(val: const u8[:]) -> bool {
+    guard val.len > 0 else { return false; }
+    for b in val {
+        guard !is_forbidden_authority_byte(b) else { return false; }
+    }
+    return true;
+}
+
+fn is_valid_h2_path(val: const u8[:]) -> bool {
+    guard val.len > 0 else { return false; }
+    if val == "*" { return true; }
+    guard val[0] == '/' else { return false; }
+    for b in val {
+        guard !is_forbidden_path_byte(b) else { return false; }
+    }
+    return true;
+}
+
 fn validate_h2_pseudo_status_code(pseudo: const H2PseudoHeaders&, val: const u8[:], out_code: i32&) -> u32 {
     let sc, ok_sc = core::parse_i32_dec(val);
     guard val.len == 3 && ok_sc && sc >= 100 && sc <= 599 && sc != 101 else {
@@ -1603,7 +1636,7 @@ fn validate_regular_header_to_map(
     if pseudo.is_trailer {
         let is_forbidden_trailer = name == "content-length" || name == "transfer-encoding"
             || name == "host" || name == "connection" || name == "keep-alive"
-            || name == "upgrade" || name == "trailer";
+            || name == "upgrade" || name == "trailer" || rfc::is_disallowed_trailer_field(name);
         guard !is_forbidden_trailer else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         guard name != "te" || val == "trailers" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
@@ -1750,8 +1783,7 @@ fn decode_hpack_field_step_to_map(
             max_header_list_size,
             validate_http2_rules,
         );
-        guard err == rfc::H2_ERR_NO_ERROR else { return offset, err; }
-        return next_off, rfc::H2_ERR_NO_ERROR;
+        return next_off, err;
     }
 
     // 2. Literal Header Field with Incremental Indexing: 01xxxxxx (6-bit prefix)
@@ -1762,6 +1794,7 @@ fn decode_hpack_field_step_to_map(
         let val_next_off, err_dec = decode_literal_field_slices(dt, src, offset, 6, name_buf, val_buf);
         guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
+        insert_header(dt, name_buf[..], val_buf[..], false);
         let err = append_decoded_header_to_map(
             out_pseudo,
             out_headers,
@@ -1770,10 +1803,7 @@ fn decode_hpack_field_step_to_map(
             max_header_list_size,
             validate_http2_rules,
         );
-        guard err == rfc::H2_ERR_NO_ERROR else { return offset, err; }
-
-        insert_header(dt, name_buf[..], val_buf[..], false);
-        return val_next_off, rfc::H2_ERR_NO_ERROR;
+        return val_next_off, err;
     }
 
     // 3. Dynamic Table Size Update: 001xxxxx (5-bit prefix)
@@ -1806,8 +1836,7 @@ fn decode_hpack_field_step_to_map(
         max_header_list_size,
         validate_http2_rules,
     );
-    guard err == rfc::H2_ERR_NO_ERROR else { return offset, err; }
-    return val_next_off, rfc::H2_ERR_NO_ERROR;
+    return val_next_off, err;
 }
 
 // RFC 9113 Section 8.3.1 & 8.3.2: Verify mandatory pseudo-headers in non-trailer header blocks
@@ -1856,6 +1885,7 @@ fn decode_hpack_to_map(
     let src_len = src.len as u64;
     var updates_allowed = true;
     var update_count: u32 = 0;
+    var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
 
     clear_h2_pseudo_headers(out_pseudo, true);
     out_headers.clear();
@@ -1872,9 +1902,16 @@ fn decode_hpack_to_map(
             max_header_list_size,
             validate_http2_rules,
         );
-        guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+        if err == rfc::H2_ERR_COMPRESSION_ERROR {
+            return err;
+        }
+        if err != rfc::H2_ERR_NO_ERROR && first_err == rfc::H2_ERR_NO_ERROR {
+            first_err = err;
+        }
         offset = next_off;
     }
+
+    guard first_err == rfc::H2_ERR_NO_ERROR else { return first_err; }
 
     if validate_http2_rules && !out_pseudo.is_trailer {
         let v_err = validate_mandatory_pseudo_headers(out_pseudo);

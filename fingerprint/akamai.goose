@@ -103,7 +103,7 @@ fn format_akamai_pseudo_headers<B>(pseudos: const u8[:], out: B&) {
 
 // Formats the canonical Akamai HTTP/2 fingerprint string:
 // `SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS`
-fn format_akamai_fingerprint(fp: const AkamaiFingerprint&, out: u8[..512]&) {
+fn format_akamai_fingerprint<B>(fp: const AkamaiFingerprint&, out: B&) {
     out.clear();
     format_akamai_settings(fp.settings[..], out);
     out.push('|');
@@ -115,15 +115,15 @@ fn format_akamai_fingerprint(fp: const AkamaiFingerprint&, out: u8[..512]&) {
 }
 
 // Formats the canonical Akamai fingerprint string returning a bounded buffer.
-fn akamai_fingerprint_to_string(fp: const AkamaiFingerprint&) -> u8[..512] {
-    var out: u8[..512] = [];
+fn akamai_fingerprint_to_string(fp: const AkamaiFingerprint&) -> u8[..640] {
+    var out: u8[..640] = [];
     format_akamai_fingerprint(fp, out);
     return out;
 }
 
 // Computes the 32-character hexadecimal MD5 hash of the Akamai fingerprint string.
 fn compute_akamai_hash<B>(fp: const AkamaiFingerprint&, dst: B&) {
-    var raw: u8[..512] = [];
+    var raw: u8[..640] = [];
     format_akamai_fingerprint(fp, raw);
     let digest = core::md5(raw[..]);
     dst.clear();
@@ -263,6 +263,8 @@ fn bytes_eq(a: const u8[:], b: const u8[:]) -> bool {
     return true;
 }
 
+const H2_MAX_STREAM_ID: u32 = 0x7FFFFFFF; // RFC 9113 §4.1 (31-bit stream identifier)
+
 // Parses a single Akamai priority token `stream_id:exclusive:dep_stream_id:weight` (RFC 7540 §6.3).
 //
 // Example:
@@ -286,6 +288,7 @@ fn parse_priority_token(token: const u8[:]) -> AkamaiPriorityFrame, bool {
     let dep, ok3 = parse_u32_dec(token[(colons[1] + 1)..colons[2]]);
     let w, ok4 = parse_u32_dec(token[(colons[2] + 1)..token.len]);
     guard ok1 && ok2 && ok3 && ok4 && excl <= 1 && w >= 1 && w <= 256 else { return dummy, false; }
+    guard s_id > 0 && s_id <= H2_MAX_STREAM_ID && dep <= H2_MAX_STREAM_ID && s_id != dep else { return dummy, false; }
 
     return AkamaiPriorityFrame {
         stream_id:     s_id,
@@ -327,19 +330,18 @@ fn parse_akamai_settings(settings_part: const u8[:], fp: AkamaiFingerprint&) -> 
     var start: i64 = 0;
     var idx:   i64 = 0;
     while idx <= settings_part.len {
+        let next_idx = idx + 1;
         let is_sep = idx == settings_part.len || settings_part[idx] == ';';
         if !is_sep {
-            idx += 1;
+            idx = next_idx;
             continue;
         }
-        if idx > start {
-            let setting, ok = parse_akamai_setting_token(settings_part[start..idx]);
-            guard ok else { return false; }
-            guard fp.settings.len < fp.settings.cap else { return false; }
-            fp.settings.push(setting);
-        }
-        start = idx + 1;
-        idx += 1;
+        guard idx > start && fp.settings.len < fp.settings.cap else { return false; }
+        let setting, ok = parse_akamai_setting_token(settings_part[start..idx]);
+        guard ok else { return false; }
+        fp.settings.push(setting);
+        start = next_idx;
+        idx = next_idx;
     }
     return true;
 }
@@ -354,19 +356,18 @@ fn parse_akamai_priorities(prio_part: const u8[:], fp: AkamaiFingerprint&) -> bo
     var start: i64 = 0;
     var idx:   i64 = 0;
     while idx <= prio_part.len {
+        let next_idx = idx + 1;
         let is_sep = idx == prio_part.len || prio_part[idx] == ',';
         if !is_sep {
-            idx += 1;
+            idx = next_idx;
             continue;
         }
-        if idx > start {
-            let frame, ok = parse_priority_token(prio_part[start..idx]);
-            guard ok else { return false; }
-            guard fp.priority_frames.len < fp.priority_frames.cap else { return false; }
-            fp.priority_frames.push(frame);
-        }
-        start = idx + 1;
-        idx += 1;
+        guard idx > start && fp.priority_frames.len < fp.priority_frames.cap else { return false; }
+        let frame, ok = parse_priority_token(prio_part[start..idx]);
+        guard ok else { return false; }
+        fp.priority_frames.push(frame);
+        start = next_idx;
+        idx = next_idx;
     }
     return true;
 }
@@ -378,15 +379,25 @@ fn parse_akamai_priorities(prio_part: const u8[:], fp: AkamaiFingerprint&) -> bo
 //   appends: ['m', 'a', 's', 'p'] to fp.pseudo_headers, returns: true
 fn parse_akamai_pseudo_headers(pseudo_part: const u8[:], fp: AkamaiFingerprint&) -> bool {
     guard pseudo_part.len > 0 else { return true; }
+    var expect_char = true;
     for b in pseudo_part {
-        if b == ',' || b == ' ' {
+        if b == ' ' {
             continue;
         }
-        guard b == 'm' || b == 'a' || b == 's' || b == 'p' else { return false; }
+        if b == ',' {
+            guard !expect_char else { return false; }
+            expect_char = true;
+            continue;
+        }
+        guard expect_char && (b == 'm' || b == 'a' || b == 's' || b == 'p') else { return false; }
+        for existing in fp.pseudo_headers {
+            guard existing != b else { return false; }
+        }
         guard fp.pseudo_headers.len < fp.pseudo_headers.cap else { return false; }
         fp.pseudo_headers.push(b);
+        expect_char = false;
     }
-    return true;
+    return !expect_char;
 }
 
 // Parses a canonical Akamai string `SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS` into an AkamaiFingerprint.
@@ -423,11 +434,10 @@ fn parse_akamai_fingerprint(raw: const u8[:]) -> AkamaiFingerprint, bool {
     guard parse_akamai_settings(settings_part, fp) else { return fp, false; }
 
     // 2. Parse Window Update
-    if wu_part.len > 0 {
-        let wu_val, ok_wu = parse_u32_dec(wu_part);
-        guard ok_wu else { return fp, false; }
-        fp.window_update = wu_val;
-    }
+    guard wu_part.len > 0 else { return fp, false; }
+    let wu_val, ok_wu = parse_u32_dec(wu_part);
+    guard ok_wu && wu_val <= rfc::H2_MAX_WINDOW_SIZE else { return fp, false; }
+    fp.window_update = wu_val;
 
     // 3. Parse Priority
     guard parse_akamai_priorities(prio_part, fp) else { return fp, false; }
@@ -526,9 +536,21 @@ inline fn has_setting_value(settings: const AkamaiSetting[:], id: u16, val: u32)
     return false;
 }
 
+inline fn has_all_four_pseudo_headers(pseudos: const u8[:]) -> bool {
+    guard pseudos.len == 4 else { return false; }
+    var mask: u8 = 0;
+    for b in pseudos {
+        if b == 'm' { mask = mask | 1; }
+        else if b == 'a' { mask = mask | 2; }
+        else if b == 's' { mask = mask | 4; }
+        else if b == 'p' { mask = mask | 8; }
+    }
+    return mask == 0x0F;
+}
+
 // Detects passive fingerprint anomalies between User-Agent declarations and HTTP/2 wire profile.
 fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) -> AkamaiAnomaly, const u8[:] {
-    guard fp.pseudo_headers.len == 4 else {
+    guard has_all_four_pseudo_headers(fp.pseudo_headers[..]) else {
         return AkamaiAnomaly.MissingPseudoHeaders, "Missing or incomplete HTTP/2 pseudo-headers";
     }
 
@@ -577,6 +599,10 @@ fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) 
         if fp.pseudo_headers[..] != "msap" {
             return AkamaiAnomaly.PseudoHeaderOrderMismatch,
                 "User-Agent claims Safari but pseudo-headers exhibit non-WebKit ordering";
+        }
+        if fp.window_update == 0 {
+            return AkamaiAnomaly.WindowUpdateAnomaly,
+                "User-Agent claims Safari but connection WINDOW_UPDATE is omitted";
         }
         return AkamaiAnomaly.None, "Authentic Safari profile";
     }
@@ -629,7 +655,9 @@ fn process_akamai_priority_frame(
         | ((payload[2] as u32) << 8)
         | payload[3];
     let weight = (payload[4] as u16) + 1;
-    guard fp.priority_frames.len < fp.priority_frames.cap else { return false; }
+    guard hdr.stream_id > 0 && hdr.stream_id != dep_id && fp.priority_frames.len < fp.priority_frames.cap else {
+        return false;
+    }
     fp.priority_frames.push(AkamaiPriorityFrame {
         stream_id:     hdr.stream_id,
         exclusive:     exclusive,
@@ -661,8 +689,8 @@ fn extract_akamai_from_wire(
 
     while (wire_bytes.len - offset) >= 9 {
         let hdr, err = internal::parse_frame_header(wire_bytes[offset..wire_bytes.len]);
-        if err != rfc::H2_ERR_NO_ERROR {
-            break;
+        if err != rfc::H2_ERR_NO_ERROR || internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
+            return fp, false;
         }
         let frame_total_len = 9 + (hdr.length as i64);
         guard (wire_bytes.len - offset) >= frame_total_len else { break; }
@@ -686,6 +714,7 @@ fn extract_akamai_from_wire(
                 | ((payload[1] as u32) << 16)
                 | ((payload[2] as u32) << 8)
                 | payload[3];
+            guard inc > 0 else { return fp, false; }
             fp.window_update = inc;
         }
 
@@ -697,15 +726,7 @@ fn extract_akamai_from_wire(
         offset += frame_total_len;
     }
 
-    guard found_settings else { return fp, false; }
-
-    // Assign pseudo-headers (filtering commas and whitespace)
-    for b in pseudo_headers_order {
-        if b != ',' && b != ' ' {
-            guard fp.pseudo_headers.len < fp.pseudo_headers.cap else { return fp, false; }
-            fp.pseudo_headers.push(b);
-        }
-    }
+    guard found_settings && parse_akamai_pseudo_headers(pseudo_headers_order, fp) else { return fp, false; }
 
     return fp, true;
 }
@@ -744,7 +765,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
         };
         internal::encode_frame_header_to(wu_hdr, out);
 
-        let inc = fp.window_update & 0x7FFFFFFF;
+        let inc = fp.window_update & H2_MAX_STREAM_ID;
         out.push(((inc >> 24) & 0x7F) as u8);
         out.push(((inc >> 16) & 0xFF) as u8);
         out.push(((inc >> 8) & 0xFF) as u8);
@@ -757,19 +778,20 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
             length:     5,
             frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,
-            stream_id:  p.stream_id,
+            stream_id:  p.stream_id & H2_MAX_STREAM_ID,
         };
         internal::encode_frame_header_to(p_hdr, out);
 
         let excl_bit = ((p.exclusive & 1) as u32) << 31;
-        let dep = (p.dep_stream_id & 0x7FFFFFFF) | excl_bit;
+        let dep = (p.dep_stream_id & H2_MAX_STREAM_ID) | excl_bit;
 
         out.push(((dep >> 24) & 0xFF) as u8);
         out.push(((dep >> 16) & 0xFF) as u8);
         out.push(((dep >> 8) & 0xFF) as u8);
         out.push((dep & 0xFF) as u8);
 
-        let w_byte = if p.weight > 0 { (p.weight - 1) as u8 } else { 0 };
+        let w_clamped = min(max(p.weight, 1), 256);
+        let w_byte = (w_clamped - 1) as u8;
         out.push(w_byte);
     }
 }
@@ -786,15 +808,20 @@ fn order_pseudo_headers(
     out:       HeaderMap&,
 ) {
     out.clear();
+    var seen_mask: u8 = 0;
     for b in fp.pseudo_headers {
         guard out.entries.len < 4 else { break; }
-        if b == 'm' {
+        if b == 'm' && (seen_mask & 1) == 0 {
+            seen_mask = seen_mask | 1;
             let _ = append_header(out, ":method", method);
-        } else if b == 'a' {
+        } else if b == 'a' && (seen_mask & 2) == 0 {
+            seen_mask = seen_mask | 2;
             let _ = append_header(out, ":authority", authority);
-        } else if b == 's' {
+        } else if b == 's' && (seen_mask & 4) == 0 {
+            seen_mask = seen_mask | 4;
             let _ = append_header(out, ":scheme", scheme);
-        } else if b == 'p' {
+        } else if b == 'p' && (seen_mask & 8) == 0 {
+            seen_mask = seen_mask | 8;
             let _ = append_header(out, ":path", path);
         }
     }

@@ -157,15 +157,17 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
     orig.scheme.append(scheme);
     to_lower(orig.scheme[..]);
 
+    var bracketed: u8[..256] = [];
     if contains_byte(host, ':') && (host.len < 2 || host[0] != '[' || host[host.len - 1] != ']') {
-        guard host.len + 2 <= orig.host.cap else { return new_opaque_origin(); }
-        orig.host.push('[');
-        orig.host.append(host);
-        orig.host.push(']');
+        guard host.len + 2 <= bracketed.cap else { return new_opaque_origin(); }
+        bracketed.push('[');
+        bracketed.append(host);
+        bracketed.push(']');
     } else {
-        guard host.len <= orig.host.cap else { return new_opaque_origin(); }
-        orig.host.append(host);
+        guard host.len <= bracketed.cap else { return new_opaque_origin(); }
+        bracketed.append(host);
     }
+    strip_ipv6_zone_id(bracketed[..], orig.host);
     to_lower(orig.host[..]);
     return orig;
 }
@@ -348,7 +350,7 @@ inline fn trim_default_http_port_len(sh_buf: const u8[:], scheme_len: i64, is_ht
     let port_pos = add_sat_i64(scheme_len, colon_idx);
     guard port_pos >= 0 && port_pos <= sh_buf.len else { return sh_buf.len; }
     let port_str = sh_buf[port_pos..];
-    if (!is_https && port_str == ":80") || (is_https && port_str == ":443") {
+    if port_str == ":" || (!is_https && port_str == ":80") || (is_https && port_str == ":443") {
         return port_pos;
     }
     return sh_buf.len;
@@ -372,7 +374,9 @@ fn normalize_http_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
 
     var sh_buf: u8[..256] = [];
     to_lower_ascii(raw_uri[..scheme_host_end], sh_buf);
+    guard sh_buf[scheme_len] != ':' else { return false; }
     let emit_len = trim_default_http_port_len(sh_buf[..], scheme_len, is_https);
+    guard emit_len > scheme_len else { return false; }
     let path_slice: const u8[:] = if path_start >= 0 && path_start <= end_idx && end_idx <= raw_uri.len {
         raw_uri[path_start..end_idx]
     } else {

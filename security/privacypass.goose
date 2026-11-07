@@ -168,38 +168,10 @@ fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
 // Example:
 //   val = "ZXhhbXBsZQ"
 //   returns: ok = true, temp_token_key = "example"
-fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..128]&) -> bool {
-    var raw_key: u8[..128] = [];
+fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..512]&) -> bool {
+    var raw_key: u8[..512] = [];
     guard core::base64url_decode(val, raw_key) else { return false; }
     return temp_token_key.try_set(raw_key[..]);
-}
-
-// Applies a single parsed PrivateToken auth-param (`challenge`, `token-key`, `max-age`).
-//
-// Example:
-//   key = "challenge", val = "AQIDBA", temp_token_key = [], temp_max_age = 0
-//   returns: "AQIDBA", ok = true
-fn apply_challenge_param(
-    key:            const u8[:],
-    val:            const u8[:],
-    temp_token_key: u8[..128]&,
-    temp_max_age:   i64&,
-) -> const u8[:], bool {
-    if eq_ascii_fold(key, "challenge") {
-        guard val.len > 0 else { return "", false; }
-        return val, true;
-    }
-    if eq_ascii_fold(key, "token-key") {
-        guard decode_token_key_param(val, temp_token_key) else { return "", false; }
-        return "", true;
-    }
-    if eq_ascii_fold(key, "max-age") {
-        let secs, ok_sec = val.parse_i64_dec();
-        guard ok_sec && secs >= 0 else { return "", false; }
-        temp_max_age = secs;
-        return "", true;
-    }
-    return "", true;
 }
 
 // Scans an auth-param key token up to `=`, `,`, or whitespace.
@@ -222,7 +194,7 @@ fn read_param_key(rem: const u8[:]) -> const u8[:] {
 //   returns: "xyz", ok = true
 fn parse_challenge_params(
     params_str:     const u8[:],
-    temp_token_key: u8[..128]&,
+    temp_token_key: u8[..512]&,
     temp_max_age:   i64&,
 ) -> const u8[:], bool {
     var challenge_slice = params_str[..0];
@@ -265,10 +237,10 @@ fn parse_challenge_params(
 // Example:
 //   header_val = "PrivateToken challenge=\"AQIDBA\", token-key=\"xyz\""
 //   returns: ok = true
-fn parse_private_token_challenge(
+fn parse_private_token_challenge<B>(
     header_val:      const u8[:],
     out_challenge:   TokenChallenge&,
-    out_token_key:   u8[..128]&,
+    out_token_key:   B&,
     out_max_age_sec: i64&,
 ) -> bool {
     out_challenge = TokenChallenge { .. };
@@ -282,7 +254,7 @@ fn parse_private_token_challenge(
     let sep = clean[scheme_len];
     guard sep == ' ' || sep == '\t' else { return false; }
 
-    var temp_token_key: u8[..128] = [];
+    var temp_token_key: u8[..512] = [];
     var temp_max_age:   i64       = 0;
     let challenge_slice, ok_params = parse_challenge_params(
         clean[scheme_len + 1..].trim_lws(),
@@ -297,6 +269,7 @@ fn parse_private_token_challenge(
     var temp_chal = TokenChallenge { .. };
     guard unmarshal_token_challenge(raw_challenge[..], temp_chal) else { return false; }
 
+    guard can_fit(out_token_key, temp_token_key.len) else { return false; }
     out_token_key.append(temp_token_key[..]);
     out_max_age_sec = temp_max_age;
     out_challenge = temp_chal;
@@ -347,7 +320,7 @@ fn put_private_token(
     ttl_sec:   i64,
     now_sec:   i64,
 ) -> bool {
-    guard raw_token.len <= 512 else { return false; }
+    guard raw_token.len > 0 && raw_token.len <= 512 && ttl_sec >= 0 && now_sec >= 0 else { return false; }
     let digest = compute_challenge_digest(challenge);
     var target_idx = find_free_token_slot(cache, now_sec);
 
@@ -361,7 +334,7 @@ fn put_private_token(
     entry.token = token;
     entry.raw_token.clear();
     entry.raw_token.append(raw_token);
-    if ttl_sec > 0 && now_sec >= 0 {
+    if ttl_sec > 0 {
         let sum_u = core::add_sat_u64(now_sec as u64, ttl_sec as u64);
         entry.expires_at_sec = min(sum_u, 9223372036854775807) as! i64;
     } else {

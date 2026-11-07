@@ -78,18 +78,23 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
 //   out becomes "foo\\r\\nbar\\x01"
 fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
     for b in input {
-        if b == '\r' {
-            out.append("\\r");
-        } else if b == '\n' {
-            out.append("\\n");
-        } else if b == '\t' {
-            out.append("\\t");
+        if b == '\r' || b == '\n' || b == '\t' {
+            guard out.len + 2 <= out.cap else { return; }
+            if b == '\r' {
+                out.append("\\r");
+            } else if b == '\n' {
+                out.append("\\n");
+            } else {
+                out.append("\\t");
+            }
         } else if b < 0x20 || b >= 0x7F {
+            guard out.len + 4 <= out.cap else { return; }
             out.append("\\x");
             let hex_chars: const u8[:] = "0123456789ABCDEF";
             out.push(hex_chars[(b >> 4) & 0x0F]);
             out.push(hex_chars[b & 0x0F]);
         } else {
+            guard out.len < out.cap else { return; }
             out.push(b);
         }
     }
@@ -251,6 +256,7 @@ fn is_ok(err: HeaderParseError) -> bool {
 fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
     out.clear();
     for b in input {
+        guard out.len < out.cap else { return; }
         if b >= 0x20 && b <= 0x7E && b != '\\' && b != '"' {
             out.push(b);
         } else {
@@ -649,6 +655,9 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
     // Authentication challenges
     if id == WellKnownHeader.WwwAuthenticate || id == WellKnownHeader.ProxyAuthenticate {
         flags |= HEADER_FLAG_NO_COMMA_FOLD | HEADER_FLAG_SENSITIVE | HEADER_FLAG_CHALLENGE;
+        if id == WellKnownHeader.ProxyAuthenticate {
+            flags |= HEADER_FLAG_NON_CACHEABLE;
+        }
         return flags;
     }
 
@@ -834,6 +843,10 @@ struct ObsFoldPolicy {
 }
 
 fn validate_folded_framing(buf: const u8[:], begin: u16, end: u16, wk: u8) -> bool {
+    let host_slot = well_known_to_slot(WellKnownHeader.Host) as u8;
+    if wk == host_slot {
+        return false;
+    }
     let cl_slot = well_known_to_slot(WellKnownHeader.ContentLength) as u8;
     let te_slot = well_known_to_slot(WellKnownHeader.TransferEncoding) as u8;
     if wk == cl_slot {
@@ -854,15 +867,39 @@ fn handle_obs_fold_arena(
     arena:                OverflowArena&,
     in_spill:             bool,
 ) -> HeaderParseError {
+    let orig_name = if in_spill {
+        resolve_entry_name(arena.spill_entries[arena.spill_entries.len - 1], map, arena)
+    } else {
+        resolve_entry_name(map.entries[map.entries.len - 1], map, arena)
+    };
     let orig_val = if in_spill {
         resolve_entry_value(arena.spill_entries[arena.spill_entries.len - 1], map, arena)
     } else {
         resolve_entry_value(map.entries[map.entries.len - 1], map, arena)
     };
-    let needed = orig_val.len + 1 + trimmed_continuation.len;
+    let migrate_name = if in_spill {
+        arena.spill_entries[arena.spill_entries.len - 1].reserved != HEADER_SRC_ARENA
+    } else {
+        map.entries[map.entries.len - 1].reserved != HEADER_SRC_ARENA
+    };
+    let name_bytes = if migrate_name { orig_name.len } else { 0 };
+    let needed = name_bytes + orig_val.len + 1 + trimmed_continuation.len;
     guard (arena.spill_raw.len + needed) <= 65535 else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
+    }
+
+    if migrate_name {
+        let n_begin = arena.spill_raw.len as u16;
+        arena.spill_raw.append(orig_name);
+        let n_end = arena.spill_raw.len as u16;
+        if in_spill {
+            arena.spill_entries[arena.spill_entries.len - 1].name_begin = n_begin;
+            arena.spill_entries[arena.spill_entries.len - 1].name_end = n_end;
+        } else {
+            map.entries[map.entries.len - 1].name_begin = n_begin;
+            map.entries[map.entries.len - 1].name_end = n_end;
+        }
     }
 
     let new_begin = arena.spill_raw.len as u16;
@@ -1408,16 +1445,22 @@ fn parse_http_status_line(
         return HeaderParseError.MalformedStatusLine;
     }
 
+    guard status_line[8] == ' ' else {
+        return HeaderParseError.MalformedStatusLine;
+    }
     var sp_idx: i64 = 8;
     while sp_idx < status_line.len && status_line[sp_idx] == ' ' { sp_idx++; }
     guard sp_idx + 3 <= status_line.len else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+    guard sp_idx + 3 == status_line.len || status_line[sp_idx + 3] == ' ' else {
         return HeaderParseError.MalformedStatusLine;
     }
 
     let c0 = status_line[sp_idx] - '0';
     let c1 = status_line[sp_idx + 1] - '0';
     let c2 = status_line[sp_idx + 2] - '0';
-    guard c0 >= 0 && c0 <= 9 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else {
+    guard c0 >= 1 && c0 <= 5 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else {
         return HeaderParseError.MalformedStatusLine;
     }
 
@@ -1599,8 +1642,8 @@ fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool {
     let hname = hash_header_name(name);
     for &entry in map.entries {
         if entry.name_hash == hname {
-            let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-            if eq_ascii_fold(entry_name, name) {
+            let ename = entry_name(map, entry);
+            if eq_ascii_fold(ename, name) {
                 return true;
             }
         }
@@ -1615,7 +1658,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
         let idx = map.inline_slots[slot];
         if idx != 0xFF {
             let entry = map.entries[idx as i64];
-            return map.raw_buf[entry.values_begin..entry.values_end];
+            return entry_value(map, entry);
         }
         return "";
     }
@@ -1623,9 +1666,9 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     let hname = hash_header_name(name);
     for &entry in map.entries {
         if entry.name_hash == hname {
-            let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-            if eq_ascii_fold(entry_name, name) {
-                return map.raw_buf[entry.values_begin..entry.values_end];
+            let ename = entry_name(map, entry);
+            if eq_ascii_fold(ename, name) {
+                return entry_value(map, entry);
             }
         }
     }
@@ -1683,8 +1726,26 @@ fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: co
 
 // Case-insensitive presence check for a header resolving from either stack map or arena spill storage.
 fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> bool {
-    let val = get_header_spill(map, arena, name);
-    return val.len > 0;
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let idx = map.inline_slots[slot];
+        if idx != 0xFF && idx < map.entries.len {
+            return true;
+        }
+    }
+    let hname = hash_header_name(name);
+    for &entry in map.entries {
+        if entry.name_hash == hname && eq_ascii_fold(resolve_entry_name(entry, map, arena), name) {
+            return true;
+        }
+    }
+    for &entry in arena.spill_entries {
+        if entry.name_hash == hname && eq_ascii_fold(resolve_entry_name(entry, map, arena), name) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
@@ -1809,11 +1870,15 @@ fn shift_raw_buf_left(map: HeaderMap&, from_offset: u16, delta: u16) {
         popped += 1;
     }
     for i in map.entries.len {
-        if map.entries[i].reserved == HEADER_SRC_STACK && map.entries[i].name_begin >= from_offset {
-            map.entries[i].name_begin -= delta;
-            map.entries[i].name_end -= delta;
-            map.entries[i].values_begin -= delta;
-            map.entries[i].values_end -= delta;
+        if map.entries[i].reserved == HEADER_SRC_STACK {
+            if map.entries[i].name_begin >= from_offset {
+                map.entries[i].name_begin -= delta;
+                map.entries[i].name_end -= delta;
+            }
+            if map.entries[i].values_begin >= from_offset {
+                map.entries[i].values_begin -= delta;
+                map.entries[i].values_end -= delta;
+            }
         }
     }
 }
@@ -1933,13 +1998,12 @@ fn rebuild_inline_slots_and_chains(map: HeaderMap&) {
             continue;
         }
         let hname = map.entries[i].name_hash;
-        let nb_i = map.entries[i].name_begin;
-        let ne_i = map.entries[i].name_end;
+        let name_i = entry_name(map, map.entries[i]);
+        guard name_i.len > 0 else { continue; }
         for prev_i in i {
             guard map.entries[prev_i].name_hash == hname else { continue; }
-            let nb_p = map.entries[prev_i].name_begin;
-            let ne_p = map.entries[prev_i].name_end;
-            let match_name = eq_ascii_fold(map.raw_buf[nb_p..ne_p], map.raw_buf[nb_i..ne_i]);
+            let name_p = entry_name(map, map.entries[prev_i]);
+            let match_name = name_p.len > 0 && eq_ascii_fold(name_p, name_i);
             guard match_name else { continue; }
             var cur = prev_i as u8;
             while map.entries[cur as i64].next_idx != 0xFF {
@@ -2422,7 +2486,10 @@ fn persist_headers(src: const HeaderMap&, dst: HeaderMap&, flags: u32) {
             continue;
         }
 
-        dst.append_header(name, val);
+        let ok = dst.append_header(name, val);
+        if ok && (entry.flags & HEADER_FLAG_SENSITIVE) != 0 && dst.entries.len > 0 {
+            dst.entries[dst.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
+        }
     }
 }
 
@@ -2513,7 +2580,10 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
             continue;
         }
 
-        dst.append_header(name, val);
+        let ok = dst.append_header(name, val);
+        if ok && (entry.flags & HEADER_FLAG_SENSITIVE) != 0 && dst.entries.len > 0 {
+            dst.entries[dst.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
+        }
     }
 }
 

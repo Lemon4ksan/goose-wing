@@ -317,6 +317,14 @@ fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], n
     let existing_idx = find_client_slot(limiter, client_id);
     guard existing_idx == GATEWAY_LIMITER_NONE else { return existing_idx; }
 
+    let n = limiter.entries.len as i32;
+    for i in n {
+        if !limiter.entries[i].in_use {
+            guard populate_entry(limiter.entries[i], client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
+            return i;
+        }
+    }
+
     if limiter.entries.len < limiter.entries.cap {
         return push_new_client_slot(limiter, client_id, now_ns);
     }
@@ -376,13 +384,13 @@ fn penalize_gateway_client(
     penalty_ns: u64,
     now_ns:     u64,
 ) {
-    guard client_id.len <= 64 else {
-        gcra_penalize(limiter.config, limiter.fallback_cell, penalty_ns, now_ns);
+    let slot = allocate_client_entry(limiter, client_id, now_ns);
+    if slot >= 0 && slot < limiter.entries.len {
+        limiter.entries[slot].last_seen_ns = now_ns;
+        gcra_penalize(limiter.config, limiter.entries[slot].cell, penalty_ns, now_ns);
         return;
     }
-    let slot = find_client_slot(limiter, client_id);
-    guard slot >= 0 && slot < limiter.entries.len else { return; }
-    gcra_penalize(limiter.config, limiter.entries[slot].cell, penalty_ns, now_ns);
+    gcra_penalize(limiter.config, limiter.fallback_cell, penalty_ns, now_ns);
 }
 
 inline fn should_evict_client(entry: const GatewayClientEntry&, max_idle_ns: u64, now_ns: u64) -> bool {
@@ -426,6 +434,7 @@ fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
     for i in n {
         reset_entry_slot(limiter.entries[i]);
     }
+    limiter.entries.clear();
     limiter.fallback_cell.tat_ns = 0;
     limiter.total_allowed = 0;
     limiter.total_rejected = 0;

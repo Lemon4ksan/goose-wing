@@ -270,11 +270,13 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
 fn get_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> const u8[:] {
     for tok in tokens.tokens {
         let raw_key = query_token_key(tok, tokens.wire);
-        var matches = (raw_key == key_str);
-        if !matches && query_token_has_escape(tok) {
+        var matches = false;
+        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
             var dec_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_key, dec_key);
             matches = dec_ok && (dec_key[..] == key_str);
+        } else {
+            matches = (raw_key == key_str);
         }
         if matches {
             return query_token_val(tok, tokens.wire);
@@ -287,11 +289,13 @@ fn get_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> const u8
 fn has_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> bool {
     for tok in tokens.tokens {
         let raw_key = query_token_key(tok, tokens.wire);
-        var matches = (raw_key == key_str);
-        if !matches && query_token_has_escape(tok) {
+        var matches = false;
+        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
             var dec_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_key, dec_key);
             matches = dec_ok && (dec_key[..] == key_str);
+        } else {
+            matches = (raw_key == key_str);
         }
         if matches {
             return true;
@@ -306,11 +310,13 @@ fn get_query_param_decoded<B>(tokens: const QueryTokens&, key_str: const u8[:], 
     out.clear();
     for tok in tokens.tokens {
         let raw_key = query_token_key(tok, tokens.wire);
-        var matches = (raw_key == key_str);
-        if !matches && query_token_has_escape(tok) {
+        var matches = false;
+        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
             var dec_key: u8[..64] = [];
             let dec_ok = percent_decode_query(raw_key, dec_key);
             matches = dec_ok && (dec_key[..] == key_str);
+        } else {
+            matches = (raw_key == key_str);
         }
         if matches {
             if query_token_is_valueless(tok) {
@@ -337,6 +343,7 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
         q = q[..hash_idx];
     }
     guard q.len > 0 else { return true; }
+    guard max_allowed >= 1 else { return false; }
     var count:     i64 = 1;
     var token_len: i64 = 0;
     for b in q {

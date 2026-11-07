@@ -11,6 +11,9 @@ inline fn equal_short(s: const u8[:], needle: const u8[:]) -> bool {
     guard s.len == needle.len else { return false; }
     let n = needle.len;
     guard n >= 1 else { return true; }
+    if n > 32 {
+        return s == needle;
+    }
     if n >= 16 {
         return ((read_le_u64(s, 0) ^ read_le_u64(needle, 0)) |
             (read_le_u64(s, 8) ^ read_le_u64(needle, 8)) |

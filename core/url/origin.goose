@@ -224,7 +224,12 @@ fn is_known_private_two_level_suffix(suffix_str: const u8[:]) -> bool {
            suffix_str == "herokuapp.com" ||
            suffix_str == "azurewebsites.net" ||
            suffix_str == "cloudfront.net" ||
-           suffix_str == "myshopify.com";
+           suffix_str == "myshopify.com" ||
+           suffix_str == "onrender.com" ||
+           suffix_str == "firebaseapp.com" ||
+           suffix_str == "web.app" ||
+           suffix_str == "run.app" ||
+           suffix_str == "ngrok.io";
 }
 
 fn find_trailing_dot_positions(
@@ -372,11 +377,15 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
 //   appends: "example.co.uk"
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
-    let clean_host = trim_byte(host, '.');
-    guard clean_host.len > 0 && clean_host.len <= 256 else { return; }
+    let trimmed = trim_byte(host, '.');
+    guard trimmed.len > 0 && trimmed.len <= 256 else { return; }
+    var no_zone: u8[..256] = [];
+    strip_ipv6_zone_id(trimmed, no_zone);
+    let clean_host = no_zone[..];
 
     if is_ip_address_literal(clean_host) || count_byte(clean_host, '.') == 0 {
         out.try_append(clean_host);
+        to_lower(out[..]);
         return;
     }
 
@@ -385,6 +394,7 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
 
     if suffix.len == 0 || eq_ascii_fold(clean_host, suffix[..]) {
         out.try_append(clean_host);
+        to_lower(out[..]);
         return;
     }
 
@@ -415,6 +425,15 @@ fn registrable_site_from_url(url_val: const Url&) -> RegistrableSite {
     var site = RegistrableSite { .. };
     guard url_val.valid else { return site; }
     let scheme_str = scheme(url_val);
+    if scheme_str == "blob" {
+        let inner_url, _ = parse_url(pathname(url_val));
+        guard inner_url.valid else { return site; }
+        let inner_scheme = scheme(inner_url);
+        guard is_tuple_origin_scheme(inner_scheme) else { return site; }
+        site.scheme.append(inner_scheme);
+        extract_etld_plus_one(hostname(inner_url), site.registrable_domain);
+        return site;
+    }
     site.scheme.append(scheme_str);
 
     let host_str = hostname(url_val);

@@ -312,8 +312,14 @@ fn parse_multipart_part(
         return MultipartError.ExceededMaxParts;
     }
 
+    let next_delim_pos = find_next_boundary_delim(body, cursor, part_delim[..], shift_table);
+    guard next_delim_pos >= 0 else {
+        return MultipartError.PrematureEOF;
+    }
+
     var header_delim_len: i64 = 0;
-    let header_end = resolve_part_header_end(body, cursor, options.max_header_bytes, header_delim_len);
+    let part_slice = body[..next_delim_pos];
+    let header_end = resolve_part_header_end(part_slice, cursor, options.max_header_bytes, header_delim_len);
     guard header_end >= 0 else {
         return MultipartError.InvalidPartHeaders;
     }
@@ -339,11 +345,6 @@ fn parse_multipart_part(
     }
 
     cursor = header_end + header_delim_len;
-
-    let next_delim_pos = find_next_boundary_delim(body, cursor, part_delim[..], shift_table);
-    guard next_delim_pos >= 0 else {
-        return MultipartError.PrematureEOF;
-    }
 
     var part_end = next_delim_pos;
     if next_delim_pos > cursor && body[next_delim_pos - 1] == '\r' {
@@ -825,6 +826,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     out_body:         u8[>..]&,
 ) {
     reset_for_keep_alive(out_headers);
+    out_body.clear();
     insert_header(out_headers, "accept-ranges", "bytes");
 
     // Check If-Range if present
@@ -918,6 +920,7 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
     out_headers:  HeaderMap&,
     out_body:     u8[>..]&,
 ) {
+    out_body.clear();
     if !rs.is_satisfiable || rs.ranges.len == 0 || !validate_range_set_bounds(rs.ranges) {
         out_status = 416;
         var cr_val: u8[..64] = [];

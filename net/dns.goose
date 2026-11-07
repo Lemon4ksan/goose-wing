@@ -46,21 +46,12 @@ fn validate_punycode_label(label: const u8[:]) -> bool {
     // RFC 952 / RFC 1123: labels MUST NOT start or end with a hyphen
     guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
     for b in label {
-        let is_lower = b >= 'a' && b <= 'z';
-        let is_upper = b >= 'A' && b <= 'Z';
-        let is_digit = b >= '0' && b <= '9';
-        let is_valid = is_lower || is_upper || is_digit || b == '-' || b == '_';
+        let is_valid = core::is_ascii_alphanumeric(b) || b == '-' || b == '_';
         guard is_valid else { return false; }
     }
-    guard label.len >= 4 else { return true; }
-    // Check if label begins with "xn--" or "XN--"
-    let is_xn = (label[0] == 'x' || label[0] == 'X') &&
-                (label[1] == 'n' || label[1] == 'N') &&
-                label[2] == '-' && label[3] == '-';
-    if is_xn {
-        guard label.len > 4 else { return false; }
-    }
-    return true;
+    guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
+    guard core::starts_with_fold(label, "xn--") else { return false; }
+    return label[4] != '-' && !core::contains_byte(label[4..], '_');
 }
 
 // CVE-2026-97044 defense: Validates FQDN wire bounds for internationalized domain names.
@@ -380,12 +371,14 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
             guard parse_ipv6_hints(val, rec) else { return false; }
         } else if key == rfc::SVC_PARAM_ECH {
             // Raw wire bytes of ECHConfigList (RFC 9460 §5)
-            guard rec.ech_config_list.try_set(val) else { return false; }
+            guard val.len > 0 && rec.ech_config_list.try_set(val) else { return false; }
             rec.has_ech = true;
         }
     }
     guard off == rdata.len else { return false; }
     guard (mandatory_mask & seen_mask) == mandatory_mask else { return false; }
+    // RFC 9460 §7.1.1 & §2.4.3: no-default-alpn requires alpn to be present
+    guard !rec.no_default_alpn || rec.alpns.len > 0 else { return false; }
     return true;
 }
 
@@ -405,28 +398,29 @@ fn parse_dns_answer_record(
 ) -> bool {
     let rdata = raw[rdata_start..rdata_start + rdlength];
     if rtype == rfc::DNS_QTYPE_A {
-        guard rdlength == 4 && out.a_records.len < out.a_records.cap else { return false; }
+        guard rdlength == 4 else { return false; }
         let ip_hi = ((rdata[0] as u32) << 24) | ((rdata[1] as u32) << 16);
         let ip_lo = ((rdata[2] as u32) << 8) | rdata[3];
-        out.a_records.push(ip_hi | ip_lo);
+        let _ = out.a_records.try_push(ip_hi | ip_lo);
     } else if rtype == rfc::DNS_QTYPE_AAAA {
-        guard rdlength == 16 && out.aaaa_records.len < out.aaaa_records.cap else { return false; }
+        guard rdlength == 16 else { return false; }
         var ip6: u8[16] = [0; 16];
         for i in 16 { ip6[i] = rdata[i]; }
-        out.aaaa_records.push(ip6);
-    } else if rtype == rfc::DNS_QTYPE_HTTPS || rtype == rfc::DNS_QTYPE_SVCB {
-        guard rdlength >= 3 && out.https_records.len < out.https_records.cap else { return false; }
+        let _ = out.aaaa_records.try_push(ip6);
+    } else if rtype == rfc::DNS_QTYPE_HTTPS {
+        guard rdlength >= 3 else { return false; }
         var rec = HttpsRecord { .. };
         rec.priority = ((rdata[0] as u16) << 8) | rdata[1];
         var target_off = rdata_start + 2;
         let rdata_end = rdata_start + rdlength;
         guard dns_decode_uncompressed_name(raw, target_off, rdata_end, rec.target_name) else { return false; }
         guard target_off <= rdata_end else { return false; }
-        if target_off < rdata_end {
+        // RFC 9460 §2.4.2: In AliasMode (priority == 0), recipients MUST ignore any SvcParams
+        if target_off < rdata_end && rec.priority != 0 {
             let svc_params = raw[target_off..rdata_end];
             guard parse_https_svc_params(svc_params, rec) else { return false; }
         }
-        out.https_records.push(rec);
+        let _ = out.https_records.try_push(rec);
     }
     return true;
 }
@@ -455,8 +449,10 @@ fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
 
         let rtype = ((raw[off] as u16) << 8) | raw[off + 1];
         let rclass = ((raw[off + 2] as u16) << 8) | raw[off + 3];
-        let ttl = ((raw[off + 4] as u32) << 24) | ((raw[off + 5] as u32) << 16) |
-                  ((raw[off + 6] as u32) << 8) | raw[off + 7];
+        let ttl_hi = ((raw[off + 4] as u32) << 24) | ((raw[off + 5] as u32) << 16);
+        let raw_ttl = ttl_hi | ((raw[off + 6] as u32) << 8) | raw[off + 7];
+        // RFC 2181 §8: If MSB (0x80000000) is set, treat TTL as 0
+        let ttl: u32 = if (raw_ttl & 0x80000000) != 0 { 0 } else { raw_ttl };
         let rdlength = (((raw[off + 8] as u16) << 8) | raw[off + 9]) as i64;
         off += 10;
         guard off + rdlength <= raw.len else { return false; }
@@ -572,7 +568,7 @@ fn dns_cache_lookup(
     for &e in cache.entries {
         if e.valid && e.qtype == qtype && core::eq_ascii_fold(e.domain[..], domain) {
             let elapsed = now_sec - e.inserted_at_sec;
-            guard elapsed >= 0 else { return DnsCacheStatus.Expired; }
+            guard e.ttl_sec > 0 && elapsed >= 0 else { return DnsCacheStatus.Expired; }
             let ttl_i64:   i64 = e.ttl_sec;
             let stale_i64: i64 = e.stale_ttl_sec;
             let total_ttl_i64 = core::add_sat_i64(ttl_i64, stale_i64);

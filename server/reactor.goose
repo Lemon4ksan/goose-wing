@@ -263,10 +263,10 @@ fn reactor_read_bounded_turns(conn: i64, chunk: ReactorIngressBuf&) -> bool, boo
         guard available > 0 else { break; }
         let recvd = reactor_read_single_turn(conn, chunk, available);
         if recvd == 0 || recvd == -1 {
-            if any_recvd || chunk.len > 0 {
+            if any_recvd {
                 return true, false;
             }
-            return false, true;
+            return chunk.len > 0, true;
         }
         if recvd < 0 {
             break;

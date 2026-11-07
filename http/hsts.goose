@@ -61,6 +61,17 @@ fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
         d.valid = true;
         return true;
     }
+    guard key.len > 0 else { return false; }
+    for b in key {
+        guard core::is_tchar(b) else { return false; }
+    }
+    if has_val {
+        let v_trim = val.trim_lws();
+        guard v_trim.len > 0 else { return false; }
+        if v_trim[0] == '"' {
+            guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return false; }
+        }
+    }
     return true;
 }
 
@@ -73,13 +84,13 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     var d = HstsDirective { .. };
     guard raw.len > 0 else { return d, false; }
 
-    var tok = make_byte_tokenizer(raw, ';');
-    loop {
-        let part, ok = tok.token_next();
-        guard ok else { break; }
-        let trimmed = part.trim_lws();
-        guard trimmed.len > 0 else { continue; }
-        guard apply_hsts_directive(d, trimmed) else { return d, false; }
+    var rem = raw;
+    while rem.len > 0 {
+        let semi_idx = rem.find_unquoted_byte(';');
+        let part = rem[..semi_idx].trim_lws();
+        rem = if semi_idx < rem.len { rem[semi_idx + 1..] } else { rem[..0] };
+        guard part.len > 0 else { continue; }
+        guard apply_hsts_directive(d, part) else { return d, false; }
     }
 
     return d, d.valid;
@@ -322,7 +333,7 @@ fn save_hsts_cache<B>(cache: const HstsCache&, now_sec: i64, out: B&) -> i64 {
 //   returns: entry with host="example.com", expiry_epoch_sec=1700003600, ok = true
 fn parse_hsts_cache_line(line: const u8[:], now_sec: i64) -> HstsEntry, bool {
     var entry = HstsEntry { .. };
-    let trimmed = line.trim_lws();
+    let trimmed = line.trim_bytes(" \t\r\n");
     guard trimmed.len > 0 && trimmed[0] != '#' else { return entry, false; }
 
     var tok = make_byte_tokenizer(trimmed, '\t');
@@ -438,7 +449,7 @@ fn split_authority_components(auth: const u8[:]) -> const u8[:], const u8[:], co
 //   returns: host = "example.com", port = "8080", rem = "/api?q=1", ok = true
 fn split_http_url(raw_url: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
     guard raw_url.len >= 7 else { return "", "", "", false; }
-    guard starts_with(raw_url, "http://") else { return "", "", "", false; }
+    guard starts_with_fold(raw_url, "http://") else { return "", "", "", false; }
 
     let auth_end = find_authority_end(raw_url);
     let auth = raw_url[7..auth_end];
@@ -456,7 +467,8 @@ fn hsts_upgrade_url<B>(
     now_sec: i64,
     out_url: B&,
 ) -> bool {
-    guard raw_url.len >= 7 && starts_with(raw_url, "http://") else { return false; }
+    guard raw_url.len >= 7 && starts_with_fold(raw_url, "http://") else { return false; }
+    guard raw_url.len + 1 <= out_url.cap else { return false; }
     let auth_end = find_authority_end(raw_url);
     let auth = raw_url[7..auth_end];
     let userinfo, host, port, ok = split_authority_components(auth);

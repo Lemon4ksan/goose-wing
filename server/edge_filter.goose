@@ -75,8 +75,10 @@ fn edge_rule_matches(
     headers: const HeaderMap&,
 ) -> bool {
     guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
-    var canon_path: u8[..512] = [];
-    guard canonicalize_route_path(path, canon_path) else { return true; }
+    var canon_path: u8[..2048] = [];
+    guard canonicalize_route_path(path, canon_path) else {
+        return rule.verdict != EdgeFilterVerdict.Pass;
+    }
     let raw_pfx = rule.path_prefix[..];
     let pfx = if raw_pfx.len > 1 && raw_pfx[raw_pfx.len - 1] == '/' {
         raw_pfx[..raw_pfx.len - 1]

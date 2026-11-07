@@ -54,22 +54,27 @@ fn read_nvs_value(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
 }
 
 fn apply_nvs_params(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    if !has_val {
+    if !has_val || val == "?1" {
         nvs.ignore_all_params = true;
+        nvs.params.clear();
         return true;
     }
     if val.len >= 2 && val[0] == '(' {
+        nvs.ignore_all_params = false;
+        nvs.params.clear();
         return parse_inner_string_list(val, nvs.params);
     }
     if val == "?0" {
         nvs.ignore_all_params = false;
+        nvs.params.clear();
         return true;
     }
     return false;
 }
 
 fn apply_nvs_except(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    guard has_val && val.len >= 2 && val[0] == '(' else { return false; }
+    guard nvs.ignore_all_params && has_val && val.len >= 2 && val[0] == '(' else { return false; }
+    nvs.except_params.clear();
     return parse_inner_string_list(val, nvs.except_params);
 }
 
@@ -274,13 +279,15 @@ fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch
         guard ok else { break; }
         if pair.len == 0 { continue; }
 
+        let k_raw, _, _ = pair.split_once_byte('=');
+        if is_param_ignored(nvs, k_raw) {
+            continue;
+        }
+
         var p = QueryParam { .. };
         guard parse_single_query_param(pair, p) else { return false; }
-
-        if !is_param_ignored(nvs, p.key[..]) {
-            guard params.len < params.cap else { return false; }
-            params.push(p);
-        }
+        guard params.len < params.cap else { return false; }
+        params.push(p);
     }
     return true;
 }

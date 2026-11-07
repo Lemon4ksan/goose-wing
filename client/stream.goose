@@ -451,7 +451,10 @@ fn read_chunk_chunked<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> Stre
     if is_eof {
         return StreamReadStatus.Eof, true;
     }
-    return StreamReadStatus.Data, false;
+    // RFC 9112 Section 7.1: Chunked Transfer Coding - Premature EOF before terminating 0-chunk is a framing error.
+    reader.chunk_decoder.state = ChunkedStreamState.Error;
+    reader.finished = true;
+    return StreamReadStatus.Error, false;
 }
 
 fn read_chunk_identity<B>(reader: StreamReader&, max_bytes: i64, remaining: i64, out: B&) -> StreamReadStatus, bool {
@@ -502,11 +505,17 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
         let prev_len = out.len;
         let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], out, -1);
         reader.cursor += consumed;
+        reader.finished = true;
+        // RFC 9112 Section 7.1: Chunked Transfer Coding - Reject incomplete or malformed chunked stream and roll back out.
+        if !ok_dec || !is_complete(reader.chunk_decoder) {
+            reader.chunk_decoder.state = ChunkedStreamState.Error;
+            while out.len > prev_len {
+                out.pop();
+            }
+            return 0;
+        }
         let emitted = (out.len - prev_len) as! u64;
         reader.bytes_read += emitted;
-        if is_complete(reader.chunk_decoder) || !ok_dec {
-            reader.finished = true;
-        }
         return emitted;
     }
 

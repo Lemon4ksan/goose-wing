@@ -385,11 +385,11 @@ fn update_rtt(
 
     var eff_delay: u64 = 0;
     if handshake_confirmed {
-        eff_delay = if ack_delay > rtt.max_ack_delay_us { rtt.max_ack_delay_us } else { ack_delay };
+        eff_delay = min(ack_delay, rtt.max_ack_delay_us);
     }
 
     var adjusted_rtt = latest_rtt;
-    if latest_rtt >= rtt.min_rtt_us + eff_delay {
+    if latest_rtt >= core::add_sat_u64(rtt.min_rtt_us, eff_delay) {
         adjusted_rtt = latest_rtt - eff_delay;
     }
 

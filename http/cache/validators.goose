@@ -186,15 +186,14 @@ fn extract_vary_value(
     out_val:      u8[..256]&,
     is_oversized: bool&,
 ) -> bool {
+    guard has_header(req_headers, field_name) else { return false; }
     var val_buf: u8[..512] = [];
     let ok_c = get_combined(req_headers, field_name, val_buf, 512);
-    let raw = if ok_c && val_buf.len > 0 {
-        trim_lws(val_buf[..])
-    } else if has_header(req_headers, field_name) {
-        trim_lws(get_header(req_headers, field_name))
-    } else {
-        return false; // Absent
-    };
+    guard ok_c else {
+        is_oversized = true;
+        return false;
+    }
+    let raw = trim_lws(val_buf[..]);
 
     if raw.len > out_val.cap {
         is_oversized = true;
@@ -263,11 +262,8 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
 
         incoming_buf.clear();
         let ok_c = get_combined(incoming_req_headers, field_name, incoming_buf, 512);
-        let incoming_val = if ok_c && incoming_buf.len > 0 {
-            trim_lws(incoming_buf[..])
-        } else {
-            trim_lws(get_header(incoming_req_headers, field_name))
-        };
+        guard ok_c else { return false; }
+        let incoming_val = trim_lws(incoming_buf[..]);
 
         if !eq_ascii_fold(incoming_val, item.value[..]) { return false; }
     }
@@ -298,8 +294,16 @@ fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc:
        eq_ascii_fold(name, "clear-site-data")) {
         return true;
     }
-    if shared && is_private_field(cc, name) && cc.private_fields.len > 0 { return true; }
-    if is_no_cache_field(cc, name) && cc.no_cache_fields.len > 0 { return true; }
+    if shared && (cc.flags & CC_PRIVATE) != 0 {
+        for &f in cc.private_fields {
+            if eq_ascii_fold(f[..], name) { return true; }
+        }
+    }
+    if (cc.flags & CC_NO_CACHE) != 0 {
+        for &f in cc.no_cache_fields {
+            if eq_ascii_fold(f[..], name) { return true; }
+        }
+    }
     return false;
 }
 
@@ -341,12 +345,22 @@ fn merge_cached_headers_304(cached: HeaderMap&, resp_304: const HeaderMap&) {
     for entry in resp_304.entries {
         let name = resp_304.raw_buf[entry.name_begin..entry.name_end];
         let val = resp_304.raw_buf[entry.values_begin..entry.values_end];
+        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
+            continue;
+        }
+        if should_update_header_304(entry.flags, name) {
+            remove_header(cached, name);
+        }
+    }
+    for entry in resp_304.entries {
+        let name = resp_304.raw_buf[entry.name_begin..entry.name_end];
+        let val = resp_304.raw_buf[entry.values_begin..entry.values_end];
 
         if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
             continue;
         }
         if should_update_header_304(entry.flags, name) {
-            insert_header(cached, name, val);
+            append_header(cached, name, val);
         }
     }
 }

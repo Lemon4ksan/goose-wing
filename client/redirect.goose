@@ -246,12 +246,20 @@ fn compute_redirect_site_for_cookies(
     initiator:                const core::Origin&,
     options:                  RedirectSiteOptions,
 ) -> SiteForCookies, bool {
-    let same_site_step = core::is_schemeful_same_site_urls(current_url, new_url);
+    let same_site_step = is_schemeful_same_site(
+        core::scheme(current_url), core::hostname(current_url),
+        core::scheme(new_url), core::hostname(new_url),
+    );
+    let initiator_ok = !options.has_initiator || (
+        initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
+            initiator.scheme[..], initiator.host[..],
+            core::scheme(new_url), core::hostname(new_url),
+        )
+    );
 
     if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
         // Subresources / background requests: once tainted, remains null forever
         let is_first_p = is_first_party(current_site_for_cookies, href(new_url), true);
-        let initiator_ok = !options.has_initiator || core::is_same_site_origin_url(initiator, new_url);
 
         if options.had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
             return null_site_for_cookies(), true;
@@ -261,12 +269,12 @@ fn compute_redirect_site_for_cookies(
 
     // Main-frame top-level navigation: SiteForCookies updates to target
     let new_site = site_for_cookies_from_parsed_url(new_url);
-    var chain_tainted = options.had_cross_site_hop || !same_site_step;
-    if options.has_initiator && !core::is_same_site_origin_url(initiator, new_url) {
-        chain_tainted = true;
-    }
+    var chain_tainted = options.had_cross_site_hop || !same_site_step || !initiator_ok;
     for &hop_url in url_chain {
-        if !core::is_schemeful_same_site_urls(hop_url, new_url) {
+        if !is_schemeful_same_site(
+            core::scheme(hop_url), core::hostname(hop_url),
+            core::scheme(new_url), core::hostname(new_url),
+        ) {
             chain_tainted = true;
         }
     }

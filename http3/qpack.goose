@@ -680,10 +680,8 @@ fn qpack_unpin_entry(tbl: QpackTable&, abs_idx: u64) -> bool {
 // Tracks an unacknowledged stream section with its Required Insert Count (RFC 9204 §4.4.1).
 fn qpack_track_unacked_stream(tbl: QpackTable&, stream_id: u64, ric: u64) -> bool {
     for i in tbl.unacked_sections.len {
-        if tbl.unacked_sections[i].stream_id == stream_id {
-            if ric > tbl.unacked_sections[i].ric {
-                tbl.unacked_sections[i].ric = ric;
-            }
+        if tbl.unacked_sections[i].stream_id == stream_id && tbl.unacked_sections[i].ric == 0 {
+            tbl.unacked_sections[i].ric = ric;
             return true;
         }
     }
@@ -706,7 +704,7 @@ fn qpack_track_stream_ref(tbl: QpackTable&, stream_id: u64, abs_idx: u64) -> boo
         return false;
     }
     for i in tbl.unacked_sections.len {
-        if tbl.unacked_sections[i].stream_id == stream_id {
+        if tbl.unacked_sections[i].stream_id == stream_id && tbl.unacked_sections[i].ric == 0 {
             guard tbl.unacked_sections[i].ref_entries.try_push(abs_idx) else {
                 qpack_unpin_entry(tbl, abs_idx);
                 return false;
@@ -1293,28 +1291,30 @@ inline fn emit_qpack_field_to_map(
             return QpackError.None;
         }
         if name == ":method" {
-            guard !out_pseudo.has_method && val.len > 0 && out_pseudo.method.try_set(val) else {
+            guard !out_pseudo.has_method && is_valid_http_method_token(val) && out_pseudo.method.try_set(val) else {
                 return QpackError.MessageError;
             }
             out_pseudo.has_method = true;
             return QpackError.None;
         }
         if name == ":scheme" {
-            guard !out_pseudo.has_scheme && val.len > 0 && out_pseudo.scheme.try_set(val) else {
+            guard !out_pseudo.has_scheme && is_valid_uri_scheme(val) && out_pseudo.scheme.try_set(val) else {
                 return QpackError.MessageError;
             }
             out_pseudo.has_scheme = true;
             return QpackError.None;
         }
         if name == ":authority" {
-            guard !out_pseudo.has_authority && val.len > 0 && out_pseudo.authority.try_set(val) else {
+            let valid_auth = is_valid_authority_or_host(val);
+            guard !out_pseudo.has_authority && valid_auth && out_pseudo.authority.try_set(val) else {
                 return QpackError.MessageError;
             }
             out_pseudo.has_authority = true;
             return QpackError.None;
         }
         if name == ":path" {
-            guard !out_pseudo.has_path && val.len > 0 && out_pseudo.path.try_set(val) else {
+            let valid_p = val.len > 0 && (val[0] == '/' || (val[0] == '*' && val.len == 1));
+            guard !out_pseudo.has_path && valid_p && out_pseudo.path.try_set(val) else {
                 return QpackError.MessageError;
             }
             out_pseudo.has_path = true;
@@ -1330,8 +1330,22 @@ inline fn emit_qpack_field_to_map(
         return QpackError.MessageError;
     }
 
+    guard !is_forbidden_connection_header(name, val) else { return QpackError.MessageError; }
+    if out_pseudo.is_trailer {
+        guard name != "content-length" && name != "host" && name != "trailer" && name != "te" else {
+            return QpackError.MessageError;
+        }
+    }
+    if name == "host" {
+        guard is_valid_authority_or_host(val) else { return QpackError.MessageError; }
+        if out_pseudo.has_authority && !eq_ascii_fold(out_pseudo.authority[..], val) {
+            return QpackError.MessageError;
+        }
+    }
+
     out_pseudo.has_regular_header = true;
     if name == "content-length" {
+        guard !out_pseudo.has_status || out_pseudo.status >= 200 else { return QpackError.MessageError; }
         let cl, ok_cl = core::parse_i64_dec(val);
         let _, ok_u = core::parse_u64_dec(val);
         guard ok_cl && ok_u else { return QpackError.MessageError; }

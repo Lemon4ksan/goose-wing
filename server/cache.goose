@@ -24,6 +24,7 @@ struct HttpRouteCache {
     upper_expiry_ms: u64         = 5000,
     handler_id:      i32         = -1,
     content_type:    u8[..64]    = [],
+    url_key:         u8[..256]   = [],
     wire:            u8[..16384] = [],
     is_valid:        bool        = false,
     is_updating:     bool        = false,
@@ -42,11 +43,19 @@ fn new_http_route_cache(lower_expiry_ms: u64 = 1000, upper_expiry_ms: u64 = 5000
 }
 
 // Looks up cached wire response at time now_ms
-fn cache_lookup(c: const HttpRouteCache&, now_ms: u64, handler_id: i32 = -1) -> CacheLookup {
+fn cache_lookup(
+    c:          const HttpRouteCache&,
+    now_ms:     u64,
+    handler_id: i32         = -1,
+    url_key:    const u8[:] = "",
+) -> CacheLookup {
     guard c.is_valid && c.wire.len > 0 else {
         return CacheLookup.Miss;
     }
     if handler_id >= 0 && c.handler_id >= 0 && c.handler_id != handler_id {
+        return CacheLookup.Miss;
+    }
+    if url_key.len > 0 && (url_key.len > c.url_key.cap || (c.url_key.len > 0 && c.url_key[..] != url_key)) {
         return CacheLookup.Miss;
     }
     let age = if now_ms >= c.created_ms { now_ms - c.created_ms } else { 0 };
@@ -66,21 +75,28 @@ fn cache_store(
     wire_data:    const u8[:],
     handler_id:   i32         = -1,
     content_type: const u8[:] = "",
+    url_key:      const u8[:] = "",
 ) -> bool {
-    guard wire_data.len <= c.wire.cap && content_type.len <= c.content_type.cap else { return false; }
+    c.is_updating = false;
+    guard wire_data.len <= c.wire.cap && content_type.len <= c.content_type.cap && url_key.len <= c.url_key.cap else {
+        return false;
+    }
     c.wire.clear();
     c.wire.append(wire_data);
     c.content_type.clear();
     c.content_type.append(content_type);
+    c.url_key.clear();
+    c.url_key.append(url_key);
     c.handler_id = handler_id;
     c.created_ms = now_ms;
     c.is_valid = true;
-    c.is_updating = false;
     return true;
 }
 
 // Invalidates cache
 fn cache_invalidate(c: HttpRouteCache&) {
     c.is_valid = false;
+    c.is_updating = false;
+    c.url_key.clear();
     c.wire.clear();
 }

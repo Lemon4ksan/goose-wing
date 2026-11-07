@@ -43,9 +43,18 @@ fn is_default_port(scheme: const u8[:], port: i32) -> bool {
 //   returns: true, out populated with "example.com"
 fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024]&) -> bool {
     let view, err = core::parse_url_view(url_str);
-    guard view.valid else { return false; }
+    guard view.valid else {
+        out.clear();
+        return false;
+    }
     if eq_ascii_fold(comp, "@authority") {
+        guard view.host.len + 8 <= out.cap else {
+            out.clear();
+            return false;
+        }
+        out.clear();
         out.append(view.host);
+        to_lower(out[..]);
         if view.port > 0 && !is_default_port(view.scheme, view.port) {
             out.push(':');
             core::format_i64_dec(view.port, out);
@@ -53,15 +62,40 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         return true;
     }
     if eq_ascii_fold(comp, "@path") {
-        out.append(if view.pathname.len > 0 { view.pathname } else { "/" });
+        let p = if view.pathname.len > 0 { view.pathname } else { "/" };
+        guard out.try_set(p) else {
+            out.clear();
+            return false;
+        }
         return true;
     }
     if eq_ascii_fold(comp, "@query") {
-        out.append(if view.search.len > 0 { view.search } else { "?" });
+        let q = if view.search.len > 0 { view.search } else { "?" };
+        guard out.try_set(q) else {
+            out.clear();
+            return false;
+        }
+        return true;
+    }
+    if eq_ascii_fold(comp, "@request-target") {
+        let p = if view.pathname.len > 0 { view.pathname } else { "/" };
+        guard p.len + view.search.len <= out.cap else {
+            out.clear();
+            return false;
+        }
+        out.clear();
+        out.append(p);
+        if view.search.len > 0 {
+            out.append(view.search);
+        }
         return true;
     }
     if eq_ascii_fold(comp, "@scheme") {
-        out.append(view.scheme);
+        guard out.try_set(view.scheme) else {
+            out.clear();
+            return false;
+        }
+        to_lower(out[..]);
         return true;
     }
     out.clear();
@@ -70,19 +104,22 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
 
 fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
     let trimmed = val.trim_lws_start().trim_end_bytes(" \t\r\n");
-    guard trimmed.len > 0 else { return false; }
+    if trimmed.len == 0 {
+        return true;
+    }
     var prev_space = false;
     for i in trimmed.len {
         let ch = trimmed[i];
-        if ch == ' ' || ch == '\t' {
-            if !prev_space {
-                out.push(' ' as u8);
-                prev_space = true;
-            }
-        } else {
-            out.push(ch);
-            prev_space = false;
+        let is_ws = ch == ' ' || ch == '\t';
+        if is_ws && prev_space {
+            continue;
         }
+        guard out.len < out.cap else {
+            out.clear();
+            return false;
+        }
+        out.push(if is_ws { ' ' as u8 } else { ch });
+        prev_space = is_ws;
     }
     return true;
 }
@@ -97,9 +134,20 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
     for &e in headers.entries {
         guard eq_ascii_fold(entry_name(headers, e), name) else { continue; }
         var norm_buf: u8[..1024] = [];
-        guard normalize_header_value(entry_value(headers, e), norm_buf) else { continue; }
+        guard normalize_header_value(entry_value(headers, e), norm_buf) else {
+            out.clear();
+            return false;
+        }
         if found {
+            guard out.len + 2 <= out.cap else {
+                out.clear();
+                return false;
+            }
             out.append(", ");
+        }
+        guard out.len + norm_buf.len <= out.cap else {
+            out.clear();
+            return false;
         }
         out.append(norm_buf[..]);
         found = true;
@@ -113,18 +161,22 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
 //   req has method "GET", comp = "@method"
 //   returns: true, out populated with "GET"
 fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
-    out.clear();
     if eq_ascii_fold(comp, "@method") {
+        out.clear();
         out.append(req.method[..]);
         return true;
     }
     if eq_ascii_fold(comp, "@target-uri") {
-        out.append(req.url[..]);
+        guard out.try_set(req.url[..]) else {
+            out.clear();
+            return false;
+        }
         return true;
     }
     if comp.len > 0 && comp[0] == '@' {
         return extract_url_component(req.url[..], comp, out);
     }
+    out.clear();
     return extract_combined_header_value(req.headers, comp, out);
 }
 
@@ -445,7 +497,26 @@ fn verify_signature_input_label(
         guard entry.inner_items.len == params.components.len else { return false; }
         for i in params.components.len {
             let item = entry.inner_items[i];
-            guard item.kind == SfType.String && item.str_val == params.components[i][..] else { return false; }
+            let exp_comp = params.components[i][..];
+            if item.str_val == exp_comp {
+                guard item.kind == SfType.String else { return false; }
+            } else {
+                let base_comp, has_req = strip_req_component_suffix(item.str_val);
+                guard has_req && item.kind == SfType.String && item.str_val == exp_comp else { return false; }
+            }
+        }
+        for &p in entry.params {
+            if p.key == "alg" {
+                guard p.item.kind == SfType.String && p.item.str_val == params.alg[..] else { return false; }
+            } else if p.key == "keyid" {
+                guard p.item.kind == SfType.String && p.item.str_val == params.key_id[..] else { return false; }
+            } else if p.key == "created" {
+                guard p.item.kind == SfType.Integer && p.item.int_val == params.created else { return false; }
+            } else if p.key == "expires" {
+                guard p.item.kind == SfType.Integer && p.item.int_val == params.expires else { return false; }
+            } else if p.key == "nonce" {
+                guard p.item.kind == SfType.String && p.item.str_val == params.nonce[..] else { return false; }
+            }
         }
         return true;
     }
@@ -466,10 +537,14 @@ fn verify_http_signature(
     var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
-    let sig_input_val = req.header(rfc::HEADER_SIGNATURE_INPUT);
+    var comb_in: u8[..1024] = [];
+    let ok_in = req.headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
+    let sig_input_val = if ok_in { comb_in[..] } else { req.header(rfc::HEADER_SIGNATURE_INPUT) };
     guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
 
-    let sig_header_val = req.header(rfc::HEADER_SIGNATURE);
+    var comb_sig: u8[..1024] = [];
+    let ok_sig = req.headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
+    let sig_header_val = if ok_sig { comb_sig[..] } else { req.header(rfc::HEADER_SIGNATURE) };
     guard sig_header_val.len > 0 else { return false; }
 
     let received_b64, ok = extract_signature_value(sig_header_val, label);
@@ -517,10 +592,14 @@ fn verify_http_response_signature(
     var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
-    let sig_input_val = res.header(rfc::HEADER_SIGNATURE_INPUT);
+    var comb_in: u8[..1024] = [];
+    let ok_in = res.headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
+    let sig_input_val = if ok_in { comb_in[..] } else { res.header(rfc::HEADER_SIGNATURE_INPUT) };
     guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
 
-    let sig_header_val = res.header(rfc::HEADER_SIGNATURE);
+    var comb_sig: u8[..1024] = [];
+    let ok_sig = res.headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
+    let sig_header_val = if ok_sig { comb_sig[..] } else { res.header(rfc::HEADER_SIGNATURE) };
     guard sig_header_val.len > 0 else { return false; }
 
     let received_b64, ok = extract_signature_value(sig_header_val, label);

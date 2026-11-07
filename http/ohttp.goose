@@ -87,6 +87,7 @@ fn ohttp_derive_response_aead(
     let nk = session.ctx.key_len;
     let nn = session.ctx.nonce_len;
     let exp_len = if nk > nn { nk } else { nn };
+    guard nk > 0 && nk <= 32 && nn > 0 && nn <= 12 else { return false; }
     guard response_nonce.len == exp_len else { return false; }
     guard session.enc_len == 32 && session.enc.len == 32 else { return false; }
 
@@ -302,6 +303,7 @@ fn ohttp_open_request(
     var enc: u8[32] = [0; 32];
     for i in 32 { enc[i] = enc_request[rfc::OHTTP_HDR_LEN + i]; }
     let ct = enc_request[rfc::OHTTP_HDR_LEN + 32..];
+    guard ct.len - rfc::OHTTP_AEAD_TAG_LEN <= out.cap else { return false; }
 
     var sk: u8[32] = [0; 32];
     for i in 32 { sk[i] = skR[i]; }
@@ -310,7 +312,12 @@ fn ohttp_open_request(
     guard ok_setup else { return false; }
 
     out.clear();
-    guard hpke_open(session.ctx, [], ct, out) else { return false; }
+    guard hpke_open(session.ctx, [], ct, out) else {
+        core::secure_zeroize_32(session.ctx.exporter_secret);
+        core::secure_zeroize_32(session.ctx.key);
+        session.ctx = HpkeContext { .. };
+        return false;
+    }
     session.enc.clear();
     session.enc.append(enc[..]);
     session.enc_len = 32;
@@ -388,6 +395,7 @@ fn ohttp_open_response(
 
     let response_nonce = enc_response[..exp_len];
     let ct = enc_response[exp_len..];
+    guard ct.len - rfc::OHTTP_AEAD_TAG_LEN <= out.cap else { return false; }
 
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];

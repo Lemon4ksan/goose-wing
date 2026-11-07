@@ -167,9 +167,12 @@ fn submit_to_cork(
     let pending = core::cork_as_slice(cork.buffer);
     if pending.len > 0 {
         let n_flush = transport.send(pending) as i64;
+        if n_flush > 0 && n_flush < pending.len {
+            core::cork_consume(cork.buffer, n_flush);
+        }
         guard n_flush == pending.len else { return WireResult.ErrorDeviceLost; }
-        core::cork_reset(cork.buffer);
     }
+    core::cork_reset(cork.buffer);
 
     if data.len >= core::CORK_BUFFER_CAP {
         let n_direct = transport.send(data) as i64;
@@ -217,6 +220,11 @@ fn queue_submit_batch(
 ) -> i64, WireResult {
     guard q.is_connected else {
         return 0, WireResult.ErrorInitializationFailed;
+    }
+    for i in 0..cmd_bufs.len {
+        guard is_submittable_cmd(cmd_bufs[i]) else {
+            return 0, WireResult.ErrorCommandBufferLocked;
+        }
     }
     var total_batch_bytes: i64 = 0;
     for i in 0..cmd_bufs.len {

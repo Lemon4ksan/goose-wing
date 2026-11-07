@@ -77,7 +77,10 @@ fn skip_lws_at(raw: const u8[:], idx: i64&) {
 // Example:
 //   raw = "OriginCache; hit", idx = 0
 //   returns: "OriginCache", idx becomes 11
-fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:] {
+fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:], bool {
+    if idx < raw.len && raw[idx] == '"' {
+        return read_quoted_status_val(raw, idx);
+    }
     let start = idx;
     while idx < raw.len {
         let b = raw[idx];
@@ -86,7 +89,7 @@ fn read_status_target_name(raw: const u8[:], idx: i64&) -> const u8[:] {
         }
         idx += 1;
     }
-    return raw[start..idx];
+    return raw[start..idx], idx > start;
 }
 
 // Reads parameter name token up to '=' or delimiter.
@@ -186,24 +189,30 @@ fn read_status_param(raw: const u8[:], idx: i64&) -> const u8[:], const u8[:], b
 
 // ---- RFC 9211 Cache-Status Parser and Formatter --------------------------
 
-fn apply_cache_status_flags(entry: CacheStatusEntry&, name: const u8[:]) -> bool {
+fn apply_cache_status_flags(entry: CacheStatusEntry&, name: const u8[:], val: const u8[:]) -> bool, bool {
+    let is_true = val.len == 0 || val == "?1";
+    let is_false = val == "?0";
     if core::eq_ascii_fold(name, "hit") {
-        entry.hit = true;
-        return true;
+        guard is_true || is_false else { return true, false; }
+        entry.hit = is_true;
+        return true, true;
     }
     if core::eq_ascii_fold(name, "stored") {
-        entry.stored = true;
-        return true;
+        guard is_true || is_false else { return true, false; }
+        entry.stored = is_true;
+        return true, true;
     }
     if core::eq_ascii_fold(name, "collapsed") {
-        entry.collapsed = true;
-        return true;
+        guard is_true || is_false else { return true, false; }
+        entry.collapsed = is_true;
+        return true, true;
     }
-    return false;
+    return false, true;
 }
 
 fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: const u8[:]) -> bool {
-    guard !apply_cache_status_flags(entry, name) else { return true; }
+    let matched_flag, flag_ok = apply_cache_status_flags(entry, name, val);
+    if matched_flag { return flag_ok; }
 
     if core::eq_ascii_fold(name, "ttl") {
         let ttl_v, ok = core::parse_i64_dec(val);
@@ -240,8 +249,8 @@ fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: Cache
     guard idx < raw.len else { return false; }
 
     out_entry = CacheStatusEntry { .. };
-    let name = read_status_target_name(raw, idx);
-    guard name.len <= out_entry.cache_name.cap else { return false; }
+    let name, name_ok = read_status_target_name(raw, idx);
+    guard name_ok && name.len <= out_entry.cache_name.cap else { return false; }
     out_entry.cache_name.append(name);
 
     while idx < raw.len && raw[idx] != ',' {
@@ -261,10 +270,16 @@ fn parse_cache_status_header(
     raw:         const u8[:],
     out_entries: CacheStatusEntry[..8]&,
 ) -> i64 {
+    out_entries.clear();
     var idx = 0;
     while idx < raw.len && out_entries.len < out_entries.cap {
+        skip_status_list_delims(raw, idx);
+        if idx >= raw.len { break; }
         var entry = CacheStatusEntry { .. };
-        guard parse_single_cache_status_entry(raw, idx, entry) else { break; }
+        guard parse_single_cache_status_entry(raw, idx, entry) else {
+            out_entries.clear();
+            return 0;
+        }
         out_entries.push(entry);
     }
     return out_entries.len;
@@ -280,7 +295,7 @@ fn format_cache_status_flags<B>(entry: const CacheStatusEntry&, out: B&) {
     if entry.collapsed {
         out.append("; collapsed");
     }
-    if entry.ttl > 0 {
+    if entry.ttl != 0 {
         out.append("; ttl=");
         core::format_i64_dec(entry.ttl, out);
     }
@@ -348,8 +363,8 @@ fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: Proxy
     guard idx < raw.len else { return false; }
 
     out_entry = ProxyStatusEntry { .. };
-    let name = read_status_target_name(raw, idx);
-    guard name.len <= out_entry.proxy_name.cap else { return false; }
+    let name, name_ok = read_status_target_name(raw, idx);
+    guard name_ok && name.len <= out_entry.proxy_name.cap else { return false; }
     out_entry.proxy_name.append(name);
 
     while idx < raw.len && raw[idx] != ',' {
@@ -369,10 +384,16 @@ fn parse_proxy_status_header(
     raw:         const u8[:],
     out_entries: ProxyStatusEntry[..8]&,
 ) -> i64 {
+    out_entries.clear();
     var idx = 0;
     while idx < raw.len && out_entries.len < out_entries.cap {
+        skip_status_list_delims(raw, idx);
+        if idx >= raw.len { break; }
         var entry = ProxyStatusEntry { .. };
-        guard parse_single_proxy_status_entry(raw, idx, entry) else { break; }
+        guard parse_single_proxy_status_entry(raw, idx, entry) else {
+            out_entries.clear();
+            return 0;
+        }
         out_entries.push(entry);
     }
     return out_entries.len;

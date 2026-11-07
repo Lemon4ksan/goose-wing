@@ -252,7 +252,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
             return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[slash_count..]);
         }
         if colon_idx > 0 {
-            if has_base && scheme_str == scheme(base_url) && slash_count > 0 {
+            if has_base && scheme_str == scheme(base_url) {
                 return resolve_relative_path_against_base(out_url, base_url, remainder);
             }
             if slash_count < remainder.len {
@@ -354,6 +354,12 @@ fn apply_canonical_host_and_port(
         return extract_err;
     }
 
+    if is_file && port_val >= 0 {
+        return UrlParseError.InvalidPort;
+    }
+
+    to_lower(raw_host[..]);
+
     // In WHATWG URL, "localhost" on a file: URL normalizes to an empty host ("")
     if is_file && raw_host == "localhost" {
         raw_host.clear();
@@ -362,8 +368,6 @@ fn apply_canonical_host_and_port(
     guard raw_host.len > 0 || is_file || !is_spec else {
         return UrlParseError.MissingHost;
     }
-
-    to_lower(raw_host[..]);
 
     out_url.host_start = out_url.href.len as i32;
     guard out_url.href.try_append(raw_host[..]) else {
@@ -1216,11 +1220,24 @@ fn ensure_trailing_slash_if_needed(
     path_start_offset: i64,
     needs_slash:       bool,
 ) -> UrlParseError {
-    guard needs_slash else { return UrlParseError.None; }
-    if out_url.href.len == path_start_offset || out_url.href[out_url.href.len - 1] != '/' {
+    if needs_slash && (out_url.href.len == path_start_offset || out_url.href[out_url.href.len - 1] != '/') {
         guard out_url.href.try_push('/') else {
             return UrlParseError.InputTooLong;
         }
+    }
+    if out_url.host_start < 0 && out_url.href.len - path_start_offset >= 2 &&
+       out_url.href[path_start_offset] == '/' && out_url.href[path_start_offset + 1] == '/' {
+        let old_len = out_url.href.len;
+        guard old_len + 2 <= out_url.href.cap else { return UrlParseError.InputTooLong; }
+        out_url.href.push(0);
+        out_url.href.push(0);
+        var move_idx = old_len - 1;
+        while move_idx >= path_start_offset {
+            out_url.href[move_idx + 2] = out_url.href[move_idx];
+            move_idx--;
+        }
+        out_url.href[path_start_offset] = '/';
+        out_url.href[path_start_offset + 1] = '.';
     }
     return UrlParseError.None;
 }
@@ -1279,7 +1296,9 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) -
     }
 
     let needs_slash = has_trailing_slash || (out_url.href.len == path_start_offset && is_spec);
-    return ensure_trailing_slash_if_needed(out_url, path_start_offset, needs_slash);
+    let slash_err = ensure_trailing_slash_if_needed(out_url, path_start_offset, needs_slash);
+    guard slash_err == UrlParseError.None else { return slash_err; }
+    return UrlParseError.None;
 }
 
 fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond: const u8[:]) -> UrlParseError {

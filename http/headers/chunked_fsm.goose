@@ -140,6 +140,11 @@ fn feed_chunk_trailer(
 
 // Consumes a single character of chunk hex size or delimiter (RFC 9112 §7.1.1).
 inline fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
+    dec.ext_bytes++;
+    if dec.ext_bytes > 1024 {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return false;
+    }
     if c == ' ' || c == '\t' {
         // RFC 9112 Section 7.1.1: BWS preceding semicolon in chunk extension
         guard (dec.state & CHUNK_STATE_SEEN_HEX) != 0 else {
@@ -259,12 +264,14 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
         dec.state |= CHUNK_STATE_EXTENSION_IN_NAME;
     } else if (dec.state & CHUNK_STATE_EXTENSION_IN_NAME) != 0 {
         if c == '=' {
-            dec.state &= ~CHUNK_STATE_EXTENSION_IN_NAME;
+            dec.state &= ~(CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_SEEN_BWS);
             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_VAL;
         } else if c == ';' {
-            dec.state &= ~CHUNK_STATE_EXTENSION_IN_NAME;
+            dec.state &= ~(CHUNK_STATE_EXTENSION_IN_NAME | CHUNK_STATE_SEEN_BWS);
             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
-        } else if !core::is_tchar(c) {
+        } else if c == ' ' || c == '\t' {
+            dec.state |= CHUNK_STATE_SEEN_BWS;
+        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 || !core::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }

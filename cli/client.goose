@@ -7,35 +7,10 @@ import os;
 import core from "..";
 import wing from "..";
 import args;
+import rules;
 import term;
 
 const MULTIPART_BOUNDARY: const u8[:] = "------------------------WingFormBoundary7MA4YWxkTrZu0gW";
-
-// Parses a dotted-quad IPv4 string into a big-endian u32 for `wing::DnsCacheEntry`.
-//
-// Example:
-//   raw = "127.0.0.1"
-//   returns: 0x7F000001, true
-fn parse_ipv4_be_u32(raw: const u8[:]) -> u32, bool {
-    var acc: u64 = 0;
-    var rem = raw;
-    for part_idx in 4 {
-        var part = rem;
-        if part_idx < 3 {
-            let dot = core::index_of_byte(rem, '.');
-            guard dot > 0 else { return 0, false; }
-            let next_start = core::add_sat_i64(dot, 1);
-            part = rem[..dot];
-            rem = rem[next_start..];
-        } else {
-            rem = rem[rem.len..];
-        }
-        let oct, ok = core::parse_u64_dec(part);
-        guard ok && oct <= 255 else { return 0, false; }
-        acc = (core::shl_sat_u64(acc, 8) | oct) & 0xFFFFFFFF;
-    }
-    return acc as u32, rem.len == 0;
-}
 
 fn apply_resolve_overrides(sess: wing::Client&, cfg: const CliConfig&) {
     let now_sec = core::as_secs(core::micros(max(0, sess.virtual_clock_us)));
@@ -54,36 +29,6 @@ fn apply_resolve_overrides(sess: wing::Client&, cfg: const CliConfig&) {
             wing::dns_cache_insert(sess.dns_cache, entry);
         }
     }
-}
-
-fn host_matches_noproxy_token(host: const u8[:], token: const u8[:]) -> bool {
-    let clean = core::trim_lws(token);
-    guard clean.len > 0 else { return false; }
-    if clean == "*" { return true; }
-    let dom = if clean[0] == '.' { clean[1..] } else { clean };
-    if core::eq_ascii_fold(host, dom) { return true; }
-    if host.len > dom.len {
-        let suffix_start = core::sub_sat_i64(host.len, dom.len);
-        let dot_pos = core::sub_sat_i64(suffix_start, 1);
-        if host[dot_pos] == '.' && core::eq_ascii_fold(host[suffix_start..], dom) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn is_host_bypassed_by_no_proxy(host: const u8[:], no_proxy_list: const u8[:]) -> bool {
-    guard host.len > 0 && no_proxy_list.len > 0 else { return false; }
-    var rem = no_proxy_list;
-    while rem.len > 0 {
-        let c_idx = core::index_of_byte(rem, ',');
-        let item = if c_idx >= 0 { rem[..c_idx] } else { rem };
-        rem = if c_idx >= 0 { rem[core::add_sat_i64(c_idx, 1)..] } else { rem[rem.len..] };
-        if host_matches_noproxy_token(host, item) {
-            return true;
-        }
-    }
-    return false;
 }
 
 fn resolve_effective_proxy(cfg: const CliConfig&, out_proxy: u8[..256]&) {
@@ -144,8 +89,8 @@ fn append_multipart_field_part(
     body_out.append("--");
     body_out.append(MULTIPART_BOUNDARY);
     body_out.append("\r\nContent-Disposition: ");
-    var disp: u8[..512] = [];
-    let fn_slice = if f.is_file { f.filename[..] } else { "" };
+    var disp: u8[..1024] = [];
+    let fn_slice = if f.filename.len > 0 { f.filename[..] } else { "" };
     guard wing::format_content_disposition(f.name[..], fn_slice, disp) else { return false; }
     body_out.append(disp[..]);
     body_out.append("\r\n");
@@ -160,7 +105,8 @@ fn append_multipart_field_part(
 
     if f.is_file {
         var f_bytes: u8[>..] = [];
-        guard read_file(f.value[..], f_bytes) else {
+        let ok_read = if f.value[..] == "-" { read_stdin(f_bytes) } else { read_file(f.value[..], f_bytes) };
+        guard ok_read else {
             if !silent {
                 write_stderr(str("wing: cannot read form file: ", f.value[..], "\n"));
             }
@@ -227,9 +173,12 @@ fn apply_basic_auth_header(cfg: const CliConfig&, req: wing::Request&) {
     raw_cred.append(cfg.basic_pass[..]);
     var b64_cred: u8[..256] = [];
     core::base64_encode(raw_cred[..], b64_cred);
+    core::secure_zeroize_slice(raw_cred[..]);
     var auth_hdr: u8[..320] = "Basic ";
     auth_hdr.append(b64_cred[..]);
+    core::secure_zeroize_slice(b64_cred[..]);
     wing::sensitive_header(req, "Authorization", auth_hdr[..]);
+    core::secure_zeroize_slice(auth_hdr[..]);
 }
 
 fn build_cli_request(cfg: const CliConfig&, req: wing::Request&, out_resume_off: i64&) -> bool {
@@ -273,6 +222,9 @@ fn write_cli_output_file(cfg: const CliConfig&, res: const wing::Response&, resu
     if cfg.output_file.len == 0 {
         return true;
     }
+    if cfg.fail_on_error && res.status_code >= 400 {
+        return true;
+    }
     if resume_off > 0 {
         if res.status_code == 206 {
             guard append_file(cfg.output_file[..], res.body[..]) else {
@@ -288,7 +240,7 @@ fn write_cli_output_file(cfg: const CliConfig&, res: const wing::Response&, resu
             }
             return true;
         }
-        if res.status_code == 416 {
+        if res.status_code == 416 || res.status_code >= 400 {
             return true;
         }
         return false;
@@ -334,6 +286,12 @@ fn load_and_save_cookie_jars(sess: wing::Client&, cfg: const CliConfig&, save_ph
                 let _ = wing::import_netscape(sess.jar, raw_jar[..], sess.virtual_clock_us);
             }
         }
+        seed_inline_cookies_to_jar(sess.jar, cfg.url[..], cfg.cookie_header[..], sess.virtual_clock_us);
+        for &h in cfg.headers {
+            if core::eq_ascii_fold(h.name[..], "Cookie") {
+                seed_inline_cookies_to_jar(sess.jar, cfg.url[..], h.value[..], sess.virtual_clock_us);
+            }
+        }
         return;
     }
     if cfg.cookie_jar_out.len > 0 {
@@ -361,6 +319,10 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
         ..
     });
     defer wing::close(sess);
+    let real_now_us = core::unix_micro(core::now());
+    if real_now_us > 0 {
+        sess.virtual_clock_us = real_now_us;
+    }
 
     sess.ssrf_guard.enabled = false;
     sess.max_redirects = cfg.max_redirects;
@@ -405,7 +367,9 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
     }
 
     load_and_save_cookie_jars(sess, cfg, true);
-    let _ = write_dump_headers_file(cfg, res);
+    if !write_dump_headers_file(cfg, res) && !cfg.silent {
+        write_stderr(str("wing: failed to write dump header file: ", cfg.dump_header_file[..], "\n"));
+    }
     guard write_cli_output_file(cfg, res, resume_off) else { return 1; }
 
     print_client_response(cfg, req, res, elapsed_ms);

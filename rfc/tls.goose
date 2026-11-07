@@ -138,6 +138,75 @@ inline fn is_forbidden_nst_extension(ext_type: u16) -> bool {
     return rfc::is_known_tls_extension(ext_type);
 }
 
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates oid_filters is only permitted in CertificateRequest.
+inline fn is_forbidden_ch_extension(ext_type: u16) -> bool {
+    return ext_type == rfc::TLS_EXT_OID_FILTERS;
+}
+
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in ServerHello.
+inline fn is_permitted_sh_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        rfc::TLS_EXT_KEY_SHARE => true,
+        rfc::TLS_EXT_PRE_SHARED_KEY => true,
+        rfc::TLS_EXT_SUPPORTED_VERSIONS => true,
+        rfc::EXT_ENCRYPTED_CLIENT_HELLO => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - Forbidden extension in ServerHello.
+inline fn is_forbidden_sh_extension(ext_type: u16) -> bool {
+    if rfc::is_permitted_sh_extension(ext_type) {
+        return false;
+    }
+    return rfc::is_known_tls_extension(ext_type);
+}
+
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in HelloRetryRequest.
+inline fn is_permitted_hrr_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        rfc::TLS_EXT_KEY_SHARE => true,
+        rfc::TLS_EXT_COOKIE => true,
+        rfc::TLS_EXT_SUPPORTED_VERSIONS => true,
+        rfc::EXT_ENCRYPTED_CLIENT_HELLO => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - Forbidden extension in HelloRetryRequest.
+inline fn is_forbidden_hrr_extension(ext_type: u16) -> bool {
+    if rfc::is_permitted_hrr_extension(ext_type) {
+        return false;
+    }
+    return rfc::is_known_tls_extension(ext_type);
+}
+
+// RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in EncryptedExtensions.
+inline fn is_permitted_ee_extension(ext_type: u16) -> bool {
+    return match ext_type {
+        rfc::TLS_EXT_SERVER_NAME => true,
+        rfc::TLS_EXT_MAX_FRAGMENT_LENGTH => true,
+        rfc::TLS_EXT_SUPPORTED_GROUPS => true,
+        rfc::TLS_EXT_USE_SRTP => true,
+        rfc::TLS_EXT_HEARTBEAT => true,
+        rfc::TLS_EXT_ALPN => true,
+        rfc::TLS_EXT_CLIENT_CERTIFICATE_TYPE => true,
+        rfc::TLS_EXT_SERVER_CERTIFICATE_TYPE => true,
+        rfc::TLS_EXT_EARLY_DATA => true,
+        rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS => true,
+        rfc::EXT_ENCRYPTED_CLIENT_HELLO => true,
+        _ => false,
+    };
+}
+
+// RFC 8446 Section 4.2: Extensions - Forbidden extension in EncryptedExtensions.
+inline fn is_forbidden_ee_extension(ext_type: u16) -> bool {
+    if rfc::is_permitted_ee_extension(ext_type) {
+        return false;
+    }
+    return rfc::is_known_tls_extension(ext_type);
+}
+
 // ---- TLS Alert Description Codes (RFC 8446 Section 6.2) ------------------
 
 const TLS_ALERT_CLOSE_NOTIFY:                    u8 = 0;

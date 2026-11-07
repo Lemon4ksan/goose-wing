@@ -85,16 +85,12 @@ fn format_want_digest_header<B>(out: B&, want_algorithms: const u8[:] = "sha-256
 
 // Attaches RFC 9530 Want-Content-Digest header to Request.
 fn set_want_content_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
-    var val: u8[..64] = [];
-    format_want_digest_header(val, want_algorithms);
-    set_header(req, rfc::HEADER_WANT_CONTENT_DIGEST, val[..]);
+    set_header(req, rfc::HEADER_WANT_CONTENT_DIGEST, want_algorithms);
 }
 
 // Attaches RFC 9530 Want-Repr-Digest header to Request.
 fn set_want_repr_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
-    var val: u8[..64] = [];
-    format_want_digest_header(val, want_algorithms);
-    set_header(req, rfc::HEADER_WANT_REPR_DIGEST, val[..]);
+    set_header(req, rfc::HEADER_WANT_REPR_DIGEST, want_algorithms);
 }
 
 // Computes and attaches RFC 9530 Content-Digest header to Response.
@@ -151,28 +147,36 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
 
 // Verifies Request Content-Digest header against req.body.
 fn verify_request_content_digest(req: const Request&) -> bool {
-    let hdr = req.header(rfc::HEADER_CONTENT_DIGEST);
+    var combined: u8[..512] = [];
+    let ok = req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
+    let hdr = if ok { combined[..] } else { req.header(rfc::HEADER_CONTENT_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, req.body[..]);
 }
 
 // Verifies Request Repr-Digest header against req.body.
 fn verify_request_repr_digest(req: const Request&) -> bool {
-    let hdr = req.header(rfc::HEADER_REPR_DIGEST);
+    var combined: u8[..512] = [];
+    let ok = req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
+    let hdr = if ok { combined[..] } else { req.header(rfc::HEADER_REPR_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, req.body[..]);
 }
 
 // Verifies Response Content-Digest header against res.body.
 fn verify_response_content_digest(res: const Response&) -> bool {
-    let hdr = res.header(rfc::HEADER_CONTENT_DIGEST);
+    var combined: u8[..512] = [];
+    let ok = res.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
+    let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_CONTENT_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
 }
 
 // Verifies Response Repr-Digest header against res.body.
 fn verify_response_repr_digest(res: const Response&) -> bool {
-    let hdr = res.header(rfc::HEADER_REPR_DIGEST);
+    var combined: u8[..512] = [];
+    let ok = res.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
+    let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_REPR_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
 }

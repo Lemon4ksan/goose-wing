@@ -29,9 +29,10 @@ struct CorsPolicy {
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     guard policy.allowed_origins.len < policy.allowed_origins.cap else { return false; }
-    guard origin_pattern.len > 0 && origin_pattern.len <= 128 else { return false; }
+    let trimmed = trim_lws(origin_pattern);
+    guard trimmed.len > 0 && trimmed.len <= 128 else { return false; }
     var entry: u8[..128] = [];
-    entry.append(origin_pattern);
+    entry.append(trimmed);
     policy.allowed_origins.push(entry);
     return true;
 }
@@ -121,7 +122,7 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
     }
 
     for idx in policy.allowed_origins.len {
-        let pat = policy.allowed_origins[idx][..];
+        let pat = trim_lws(policy.allowed_origins[idx][..]);
         // Wildcard origin is forbidden when credentials are enabled
         if policy.allow_credentials && pat == "*" {
             continue;
@@ -137,7 +138,7 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
 fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
     guard policy.allowed_origins.len > 0 else { return false; }
     for idx in policy.allowed_origins.len {
-        if policy.allowed_origins[idx][..] == "*" {
+        if trim_lws(policy.allowed_origins[idx][..]) == "*" {
             return true;
         }
     }

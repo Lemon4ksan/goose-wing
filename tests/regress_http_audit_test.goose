@@ -698,10 +698,289 @@ fn test_f016_diagnostics_nvs_hints_cert(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
+// F017-F023: HeaderMap Overflow Obs-Fold, Empty Host Smuggling, Shift & Chunked
+// ----------------------------------------------------------------------------
+fn test_f017_f023_headers_chunked_forwarded(t: lit::T&) {
+    t.run("F017: handle_obs_fold_arena migrates name to spill_raw so resolve_entry_name does not panic") { sub =>
+        var raw: u8[>..] = [];
+        for i in 128 {
+            raw.append("X-P: 1\r\n");
+        }
+        raw.append("X-Fold: val1\r\n val2\r\nHost: example.com\r\n\r\n");
+
+        var map = wing::HeaderMap { .. };
+        var arena = wing::OverflowArena { .. };
+        let err = wing::parse_headers_with_overflow(raw[..], map, arena, true);
+        sub.assert_true(wing::is_ok(err), "Obs-fold on 129th header followed by Host must succeed without OOB");
+        sub.assert_bytes_eq(wing::get_header_spill(map, arena, "X-Fold"), "val1 val2", "Folded 129th header value resolved");
+    };
+
+    t.run("F018: duplicate Host header rejected even when first Host value is empty") { sub =>
+        var map = wing::HeaderMap { .. };
+        let err = wing::parse_headers("Host: \r\nHost: evil.com\r\n\r\n", map, false);
+        sub.assert_false(wing::is_ok(err), "Duplicate Host after empty Host MUST be rejected per RFC 9112 §3.2");
+    };
+
+    t.run("F019: shift_raw_buf_left updates obs-folded values_begin when earlier header folded at tail") { sub =>
+        var map = wing::HeaderMap { .. };
+        let err = wing::parse_headers("X-Fold: a\r\n b\r\nX-Next: longvalue\r\n\r\n", map, true);
+        sub.assert_true(wing::is_ok(err), "Initial obs-fold parse succeeds");
+        wing::set_header(map, "X-Next", "v");
+        sub.assert_bytes_eq(wing::get_header(map, "X-Fold"), "a b", "Obs-folded header value remains valid after in-place shrink");
+    };
+
+    t.run("F020: remove_sensitive_headers does not panic on HEADER_SRC_ARENA entries when raw > 8KB") { sub =>
+        var raw: u8[>..] = [];
+        raw.append("Authorization: Bearer secret\r\nX-Custom: 1\r\nX-Custom: 2\r\n");
+        for i in 100 {
+            raw.append("X-Pad: 01234567890123456789012345678901234567890123456789012345678901234567890123456789\r\n");
+        }
+        raw.append("\r\n");
+        var map = wing::HeaderMap { .. };
+        var arena = wing::OverflowArena { .. };
+        let err = wing::parse_headers_with_overflow(raw[..], map, arena, false);
+        sub.assert_true(wing::is_ok(err), "Large >8KB header block parsed");
+        wing::remove_sensitive_headers(map);
+        sub.assert_false(wing::has_header_spill(map, arena, "Authorization"), "Sensitive Authorization removed without OOB");
+    };
+
+    t.run("F021: Host obs-fold smuggling, status-line SP/range, Proxy-Authenticate non-cacheable & 304 capacity") { sub =>
+        var map1 = wing::HeaderMap { .. };
+        let err1 = wing::parse_headers("Host: example.com\r\n , evil.com\r\n\r\n", map1, true);
+        sub.assert_false(wing::is_ok(err1), "Obs-fold injecting space/comma into Host MUST be rejected");
+
+        var map2 = wing::HeaderMap { .. };
+        sub.assert_false(wing::is_ok(wing::parse_response_headers("HTTP/1.1200 OK\r\n\r\n", map2)), "Missing SP after HTTP/1.1 must fail");
+        sub.assert_false(wing::is_ok(wing::parse_response_headers("HTTP/1.1 2000 OK\r\n\r\n", map2)), "4-digit status code must fail");
+        sub.assert_false(wing::is_ok(wing::parse_response_headers("HTTP/1.1 000 OK\r\n\r\n", map2)), "Status code < 100 must fail");
+
+        var src = wing::HeaderMap { .. };
+        wing::append_header(src, "Proxy-Authenticate", "Basic realm=\"p\"");
+        var dst = wing::HeaderMap { .. };
+        wing::persist_headers(src, dst, wing::PERSIST_SANS_NON_CACHEABLE);
+        sub.assert_false(wing::has_header(dst, "Proxy-Authenticate"), "Proxy-Authenticate MUST be stripped as non-cacheable");
+    };
+
+    t.run("F022-F023: Forwarded duplicate param & malformed element rejection, ChunkFsm BWS before = & TE params") { sub =>
+        var elems: wing::ForwardedElement[..8] = [];
+        sub.assert_eq(wing::parse_forwarded_header("for=1.2.3.4;for=5.6.7.8", elems), 0, "Duplicate for= in Forwarded element MUST fail per RFC 7239 §4");
+        sub.assert_eq(wing::parse_forwarded_header("bad_elem, for=1.2.3.4", elems), 0, "Malformed Forwarded element MUST reject header");
+
+        var dec = internal::ChunkFsmDecoder { .. };
+        let st, consumed, chunk = internal::chunk_fsm_feed(dec, "4;ext =val\r\nWiki\r\n0\r\n\r\n");
+        sub.assert_false(st == internal::ChunkFsmStatus.Error, "BWS before '=' in chunk-ext MUST be accepted per RFC 9112 §7.1.1");
+
+        sub.assert_false(wing::validate_transfer_encoding_value("gzip;===, chunked"), "Malformed transfer-parameter gzip;=== MUST be rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F024-F028: HSTS, Alt-Svc, Early Hints, Incremental, BHTTP, Dict & Digest
+// ----------------------------------------------------------------------------
+fn test_f024_f028_hsts_altsvc_bhttp_dict_digest(t: lit::T&) {
+    t.run("F024: HSTS quoted semicolon extension, uppercase HTTP:// upgrade, and CRLF cache line") { sub =>
+        let dir, ok = wing::parse_hsts_header("ext=\"x; includeSubDomains\"; max-age=31536000");
+        sub.assert_true(ok, "Quoted semicolon in HSTS extension directive must parse");
+        sub.assert_false(dir.include_subdomains, "Quoted '; includeSubDomains' inside ext MUST NOT set include_subdomains");
+
+        var cache = wing::HstsCache { .. };
+        sub.assert_true(wing::load_hsts_cache(cache, "example.com\t9999999999\t1\t1\r\n", 1000) == 1, "Load CRLF HSTS line");
+        sub.assert_true(cache.entries[0].is_preload, "CRLF line must preserve is_preload == true");
+
+        var up_url: u8[..128] = [];
+        let upgraded = wing::hsts_upgrade_url(cache, "HTTP://example.com/login", 1000, up_url);
+        sub.assert_true(upgraded, "Uppercase HTTP:// scheme MUST be upgraded by HSTS per RFC 6797 §8.3");
+        sub.assert_bytes_eq(up_url[..], "https://example.com/login", "Upgraded URL normalized to https://");
+    };
+
+    t.run("F025: Alt-Svc quoted ';', Link first-rel & escaped quote comma, Incremental trailing/multi-line") { sub =>
+        var cache = wing::AltSvcCache { .. };
+        wing::update(cache, "example.com:443", "h3=\":443\"; ext=\"a;ma=0\"; ma=3600", 1000);
+        var ep = wing::AltSvcEndpoint { .. };
+        sub.assert_true(wing::lookup_h3(cache, "example.com:443", 1500, ep), "Quoted ';ma=0' inside ext must not zero ma=3600");
+
+        var links: wing::EarlyHintLink[..8] = [];
+        sub.assert_true(wing::parse_link_header("</a.js>; rel=preload; rel=nofollow", links), "Parse Link with duplicate rel");
+        sub.assert_bytes_eq(links[0].rel[..], "preload", "First rel parameter MUST win per RFC 8288 §3.3");
+
+        let inc_val, inc_ok = wing::parse_incremental_header("?1 ?0");
+        sub.assert_false(inc_ok, "Incremental header with trailing '?0' MUST be rejected");
+    };
+
+    t.run("F026: BHTTP lowercase field names, Known-Length 1xx informational response, and method reset") { sub =>
+        let raw_1xx: u8[9] = [
+            0x01,       // Known-Length Response
+            0x40, 0x67, // 103 Early Hints (2-byte varint = 103)
+            0x00,       // empty 1xx field section
+            0x40, 0xC8, // 200 OK
+            0x00,       // empty final field section
+            0x00,       // empty body
+            0x00,       // empty trailer section
+        ];
+        var resp = wing::BhttpResponse { .. };
+        sub.assert_true(wing::bhttp_decode_response(raw_1xx[..], resp), "Known-length BHTTP response with 103 before 200 MUST succeed per RFC 9292 §3.5.1");
+        sub.assert_eq(resp.status, 200, "Final status code is 200");
+
+        let bad_req: u8[7] = [0x00, 0x03, 'G', 'E', 'T', 0x05, 'h'];
+        var req = wing::BhttpRequest { .. };
+        sub.assert_false(wing::bhttp_decode_request(bad_req[..], req), "Truncated scheme fails");
+        sub.assert_eq(req.method.len, 0, "req.method MUST be cleared on partial failure");
+    };
+
+    t.run("F027-F028: Compression dict empty-id collision & longest match, Digest multi-line verification") { sub =>
+        var dcache = wing::DictionaryCache { .. };
+        sub.assert_true(wing::dictionary_cache_insert(dcache, "https://ex.com", "/a/*", "", "dict-short", 3600, 100), "Insert short dict");
+        sub.assert_true(wing::dictionary_cache_insert(dcache, "https://ex.com", "/a/b/*", "", "dict-long", 3600, 101), "Insert long dict without id");
+        sub.assert_eq(dcache.entries.len, 2, "Second nameless dictionary with distinct match_pattern MUST NOT overwrite first");
+
+        var matched_hash: u8[..64] = [];
+        sub.assert_true(wing::dictionary_lookup_for_request(dcache, "https://ex.com", "/a/b/app.js", 110, matched_hash), "Lookup dict");
+        sub.assert_bytes_eq(matched_hash[..], dcache.entries[1].sha256_base64[..], "Longest match_pattern MUST take precedence per RFC 9842 §2.2.3");
+
+        let p_bad, ok_bad = wing::parse_use_as_dictionary_header("match=\"/a/*\", type=unknown");
+        sub.assert_false(ok_bad, "Unknown dictionary type MUST be rejected per RFC 9842 §2.1.4");
+
+        var req = wing::new_request("POST", "https://ex.com/upload");
+        req.body.append("hello");
+        var valid_dig: u8[..128] = [];
+        sub.assert_true(wing::format_digest_field_value("sha-256", "hello", valid_dig), "Format valid digest");
+        wing::append_header(req.headers, "Content-Digest", valid_dig[..]);
+        wing::append_header(req.headers, "Content-Digest", "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+        sub.assert_false(wing::verify_request_content_digest(req), "Bad sha-256 on second Content-Digest header line MUST fail verification");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F029-F031: HTTP Cache Freshness, Validators, Cache Groups & Targeted Cache
+// ----------------------------------------------------------------------------
+fn test_f029_f031_http_cache_and_targeted_cache(t: lit::T&) {
+    t.run("F029: SWR must not override client max-age or min-fresh when response is still fresh") { sub =>
+        var resp_cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-age=3600, stale-while-revalidate=60", resp_cc);
+        var req_cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-age=10", req_cc);
+        let hdrs = wing::HeaderMap { .. };
+        let ts = wing::CacheTimestamps {
+            request_time:  core::Time { wall_sec: 1000, .. },
+            response_time: core::Time { wall_sec: 1000, .. },
+            now:           core::Time { wall_sec: 1100, .. },
+            ..
+        };
+        let metrics = wing::evaluate_freshness(resp_cc, req_cc, hdrs, ts);
+        sub.assert_false(metrics.is_fresh, "Age 100s > client max-age=10s is not fresh");
+        sub.assert_false(metrics.stale_allowed, "Server SWR MUST NOT override client max-age when response is not yet stale (age 100 < lifetime 3600)");
+        sub.assert_true(metrics.requires_revalidation, "Must require revalidation when client max-age is exceeded");
+    };
+
+    t.run("F030: Sanitize no-cache=\"X-Foo\", no-cache and multi-line 304 header merge") { sub =>
+        var src = wing::HeaderMap { .. };
+        wing::append_header(src, "Content-Type", "text/plain");
+        wing::append_header(src, "X-Foo", "secret");
+        var cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("no-cache=\"X-Foo\", no-cache", cc);
+        var dst = wing::HeaderMap { .. };
+        wing::sanitize_for_storage(src, dst, false, cc);
+        sub.assert_bytes_eq(wing::get_header(dst, "Content-Type"), "text/plain", "Unqualified no-cache after no-cache=\"X-Foo\" MUST NOT strip Content-Type from storage");
+        sub.assert_bytes_eq(wing::get_header(dst, "X-Foo"), "", "Qualified X-Foo is stripped");
+
+        var cached = wing::HeaderMap { .. };
+        wing::append_header(cached, "X-Custom", "old");
+        var resp_304 = wing::HeaderMap { .. };
+        wing::append_header(resp_304, "X-Custom", "v1");
+        wing::append_header(resp_304, "X-Custom", "v2");
+        wing::merge_cached_headers_304(cached, resp_304);
+        var comb: u8[..128] = [];
+        sub.assert_true(wing::get_combined(cached, "X-Custom", comb), "Combined 304 X-Custom");
+        sub.assert_bytes_eq(comb[..], "v1, v2", "Multi-line 304 headers of same name MUST both be preserved");
+    };
+
+    t.run("F031: Cross-origin Cache-Group-Invalidation isolation & invalid Targeted Cache-Control fallback") { sub =>
+        var cache = wing::new_http_cache();
+        let ts = wing::CacheTimestamps {
+            request_time:  core::Time { wall_sec: 1000, .. },
+            response_time: core::Time { wall_sec: 1000, .. },
+            now:           core::Time { wall_sec: 1000, .. },
+            ..
+        };
+        var req_a = wing::new_request("GET", "https://victim.example/asset.js");
+        var resp_a = wing::Response { status_code: 200, .. };
+        resp_a.set_header("Cache-Control", "max-age=3600");
+        resp_a.set_header("Cache-Groups", "\"shared-tag\"");
+        resp_a.body.append("victim");
+        let dec_a = wing::on_response(cache, req_a, resp_a, ts);
+        sub.assert_true(dec_a.kind == wing::ResponseDecisionKind.StoreAndReturn, "Stored victim entry");
+
+        var req_evil = wing::new_request("POST", "https://attacker.example/purge");
+        var resp_evil = wing::Response { status_code: 200, .. };
+        resp_evil.set_header("Cache-Group-Invalidation", "\"shared-tag\"");
+        let _ = wing::on_response(cache, req_evil, resp_evil, ts);
+        sub.assert_true(cache.entries[dec_a.entry_idx].is_valid, "Cross-origin Cache-Group-Invalidation MUST NOT evict victim.example entry per RFC 9875 §3");
+
+        var tmap = wing::HeaderMap { .. };
+        wing::append_header(tmap, "Cache-Control", "no-store");
+        wing::append_header(tmap, "CDN-Cache-Control", "@invalid");
+        let tcc = wing::parse_targeted_cache_control_headers(tmap, "fastly");
+        sub.assert_true(wing::is_no_store(tcc), "Unrecognized/empty CDN-Cache-Control MUST fall back to Cache-Control: no-store per RFC 9213 §2.1");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F032-F037: OHTTP, NVS, MIME, Problem, Multipart, SFV, Signatures & Status
+// ----------------------------------------------------------------------------
+fn test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures(t: lit::T&) {
+    t.run("F032-F034: NVS oversized ignored param & params=?1, MIME interior quote & duplicate param") { sub =>
+        let nvs1, ok_nvs1 = wing::parse_no_vary_search("params=?1");
+        sub.assert_true(ok_nvs1 && nvs1.ignore_all_params, "No-Vary-Search params=?1 MUST be accepted as boolean true");
+
+        let _, ok_nvs_bad = wing::parse_no_vary_search("except=(\"id\")");
+        sub.assert_false(ok_nvs_bad, "No-Vary-Search except without params MUST be rejected");
+
+        var big_q: u8[..400] = [];
+        big_q.append("utm_source=");
+        for i in 300 { big_q.push('x'); }
+        big_q.append("&id=42");
+        var norm_q: u8[..128] = [];
+        wing::normalize_query_for_cache(big_q[..], nvs1, norm_q);
+        sub.assert_bytes_eq(norm_q[..], "", "All params ignored");
+
+        let nvs_exc, ok_exc = wing::parse_no_vary_search("params, except=(\"id\")");
+        sub.assert_true(ok_exc, "Parse params, except=(\"id\")");
+        wing::normalize_query_for_cache(big_q[..], nvs_exc, norm_q);
+        sub.assert_bytes_eq(norm_q[..], "id=42", "Oversized ignored param MUST NOT abort normalization of retained id=42");
+
+        var unq_out: u8[..32] = [];
+        sub.assert_false(wing::strict_unquote("\"a\"b\"", unq_out), "Unescaped interior quote MUST fail strict_unquote per RFC 9110 §5.6.4");
+
+        let _, ok_mt = wing::parse_media_type("text/plain; charset=utf-8; charset=iso-8859-1");
+        sub.assert_false(ok_mt, "Duplicate media type parameter charset MUST be rejected per RFC 9110 §5.6.6");
+    };
+
+    t.run("F035-F037: Problem oversized field & control escape, SFV inner list SP, Signatures & Cache-Status") { sub =>
+        var big_json: u8[..400] = [];
+        big_json.append("{\"title\":\"");
+        for i in 200 { big_json.push('A'); }
+        big_json.append("\",\"status\":400}");
+        var prob = wing::ProblemDetails { .. };
+        sub.assert_false(wing::parse_problem_details(big_json[..], prob), "Oversized ProblemDetails title (>128B) MUST fail closed instead of corrupting JSON reader");
+
+        var entries: wing::SfDictEntry[..16] = [];
+        sub.assert_false(wing::parse_sf_dict("sig1=(\"a\"\"b\")", entries), "Adjacent inner-list items without SP MUST be rejected per RFC 8941 §4.2.1.2");
+        sub.assert_true(wing::parse_sf_dict("sig1=(\"@authority\";req)", entries), "Inner-list item with ;req parameter MUST be accepted per RFC 9421 §2.2.8");
+
+        var c_entries: wing::CacheStatusEntry[..8] = [];
+        let n_cs = wing::parse_cache_status_header("OriginCache; hit=?0", c_entries);
+        sub.assert_eq(n_cs, 1, "Parsed Cache-Status with hit=?0");
+        sub.assert_false(c_entries[0].hit, "hit=?0 MUST set hit=false per RFC 9211 §2.1");
+
+        sub.assert_false(wing::is_valid_tracestate_val("abc "), "Trailing space in tracestate value MUST be rejected per W3C §3.3.1.2");
+    };
+}
+
+// ----------------------------------------------------------------------------
 // Main Suite Runner
 // ----------------------------------------------------------------------------
 fn main() {
-    var runner = lit::new_runner("HTTP Bug Hunter Regression Suite (F001 - F016)", lit::Verbosity.Verbose);
+    var runner = lit::new_runner("HTTP Bug Hunter Regression Suite (F001 - F037)", lit::Verbosity.Verbose);
 
     lit::run_case(runner, "1. F001 Compression Dictionary Bounds & Safety", test_f001_compression_dict_bounds);
     lit::run_case(runner, "2. F002 Status Diagnostics Bounds & Safety", test_f002_status_diagnostics_bounds_and_safety);
@@ -719,6 +998,10 @@ fn main() {
     lit::run_case(runner, "14. F014 SFV Unclosed Inner List & HTTP Signatures", test_f014_sfv_and_signatures);
     lit::run_case(runner, "15. F015 H2 Continuation, Dict, Forwarded & Tracestate", test_f015_h2_dict_forwarded_hsts_trace);
     lit::run_case(runner, "16. F016 Diagnostics Escapes, NVS Quotes, Hints Semicolons & Certs", test_f016_diagnostics_nvs_hints_cert);
+    lit::run_case(runner, "17. F017-F023 HeaderMap Arena Obs-Fold, Host Smuggling & Chunked", test_f017_f023_headers_chunked_forwarded);
+    lit::run_case(runner, "18. F024-F028 HSTS, Alt-Svc, Early Hints, BHTTP, Dict & Digest", test_f024_f028_hsts_altsvc_bhttp_dict_digest);
+    lit::run_case(runner, "19. F029-F031 HTTP Cache Freshness, Validators, Groups & Targeted", test_f029_f031_http_cache_and_targeted_cache);
+    lit::run_case(runner, "20. F032-F037 OHTTP, NVS, MIME, Problem, SFV, Signatures & Status", test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures);
 
     let ok = lit::finish(runner);
     assert(ok);

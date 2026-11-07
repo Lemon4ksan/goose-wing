@@ -215,7 +215,7 @@ fn bbr_on_congestion_signal(
     new_acked_packets: u64,
 ) {
     var has_loss_signal = false;
-    if total_acked_bytes > 0 && (loss_bytes * 100) > (total_acked_bytes * 2) {
+    if total_acked_bytes > 0 && core::mul_sat_u64(loss_bytes, 100) > core::mul_sat_u64(total_acked_bytes, 2) {
         has_loss_signal = true; // Loss rate exceeded 2% threshold
     }
 
@@ -223,17 +223,18 @@ fn bbr_on_congestion_signal(
     if new_acked_packets > 0 && ecn_ce_count > 0 {
         has_ecn_signal = true;
         // DCTCP/L4S EWMA: alpha = (15 * alpha + (ce_packets * 1024 / acked)) / 16
-        let frac = (ecn_ce_count * 1024) / new_acked_packets;
-        bbr.ecn_alpha_scaled = (bbr.ecn_alpha_scaled * 15 + frac) / 16;
+        let ce_clamped = min(ecn_ce_count, new_acked_packets);
+        let frac = core::mul_sat_u64(ce_clamped, 1024) / new_acked_packets;
+        bbr.ecn_alpha_scaled = min((bbr.ecn_alpha_scaled * 15 + frac) / 16, 1024);
         let ecn_cut = (bbr.ecn_alpha_scaled / 2); // alpha / 2
         let mult = if ecn_cut < 1024 { 1024 - ecn_cut } else { 512 };
-        let new_cwnd = (bbr.cwnd_bytes * mult) / 1024;
+        let new_cwnd = core::mul_sat_u64(bbr.cwnd_bytes, mult) / 1024;
         bbr.cwnd_bytes = max(new_cwnd, BBR_MIN_CWND_BYTES);
     }
 
     if has_loss_signal {
-        bbr.inflight_hi_bytes = (bytes_in_flight * BBR_BETA_NUM) / BBR_BETA_DENOM;
-        bbr.bw_lo_bps = (bbr.bw_hi_bps * BBR_BETA_NUM) / BBR_BETA_DENOM;
+        bbr.inflight_hi_bytes = core::mul_sat_u64(bytes_in_flight, BBR_BETA_NUM) / BBR_BETA_DENOM;
+        bbr.bw_lo_bps = core::mul_sat_u64(bbr.bw_hi_bps, BBR_BETA_NUM) / BBR_BETA_DENOM;
         if bbr.mode == BbrMode.ProbeBwCruise || bbr.mode == BbrMode.ProbeBwUp {
             bbr.mode = BbrMode.ProbeBwDown;
         }

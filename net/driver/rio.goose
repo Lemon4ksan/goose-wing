@@ -58,7 +58,11 @@ fn new_rio_buffer(id: u64, len: u32) -> RioBufferDescriptor {
 fn rio_sub_buffer(parent: const RioBufferDescriptor&, off: u64, len: u32) -> RioBufferDescriptor {
     let parent_end = parent.offset + parent.length;
     let sub_end = off + len;
-    guard parent.is_registered && off >= parent.offset && sub_end <= parent_end else {
+    guard parent.is_registered &&
+          parent_end >= parent.offset &&
+          sub_end >= off &&
+          off >= parent.offset &&
+          sub_end <= parent_end else {
         return RioBufferDescriptor { .. };
     }
     return RioBufferDescriptor {

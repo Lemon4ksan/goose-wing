@@ -21,14 +21,24 @@ struct ProblemDetails {
 }
 
 fn append_json_escaped_string<B>(s: const u8[:], out: B&) {
+    let hex = "0123456789abcdef";
     for b in s {
-        match b {
-            '"' => { out.push('\\'); out.push('"'); },
-            '\\' => { out.push('\\'); out.push('\\'); },
-            '\r' => { out.push('\\'); out.push('r'); },
-            '\n' => { out.push('\\'); out.push('n'); },
-            '\t' => { out.push('\\'); out.push('t'); },
-            _ => { out.push(b); },
+        if b == '"' {
+            out.append("\\\"");
+        } else if b == '\\' {
+            out.append("\\\\");
+        } else if b == '\r' {
+            out.append("\\r");
+        } else if b == '\n' {
+            out.append("\\n");
+        } else if b == '\t' {
+            out.append("\\t");
+        } else if b < 0x20 {
+            out.append("\\u00");
+            out.push(hex[(b >> 4) as i64]);
+            out.push(hex[(b & 0x0F) as i64]);
+        } else {
+            out.push(b);
         }
     }
 }
@@ -76,14 +86,19 @@ fn parse_problem_core_fields(
     reader:  json::Reader&,
     scratch: u8[>..]&,
     out:     ProblemDetails&,
+    out_err: bool&,
 ) -> bool {
     if key == "status" {
         out.status = json::read_int(reader) as i32;
         return true;
     }
     if key == "type" {
+        scratch.clear();
         let s = json::read_string(reader, scratch);
-        guard s.len <= out.type_uri.cap else { return false; }
+        if s.len > out.type_uri.cap {
+            out_err = true;
+            return true;
+        }
         out.type_uri.clear();
         out.type_uri.append(s);
         return true;
@@ -101,24 +116,37 @@ fn parse_problem_descriptive_fields(
     reader:  json::Reader&,
     scratch: u8[>..]&,
     out:     ProblemDetails&,
+    out_err: bool&,
 ) -> bool {
     if key == "title" {
+        scratch.clear();
         let s = json::read_string(reader, scratch);
-        guard s.len <= out.title.cap else { return false; }
+        if s.len > out.title.cap {
+            out_err = true;
+            return true;
+        }
         out.title.clear();
         out.title.append(s);
         return true;
     }
     if key == "detail" {
+        scratch.clear();
         let s = json::read_string(reader, scratch);
-        guard s.len <= out.detail.cap else { return false; }
+        if s.len > out.detail.cap {
+            out_err = true;
+            return true;
+        }
         out.detail.clear();
         out.detail.append(s);
         return true;
     }
     if key == "instance" {
+        scratch.clear();
         let s = json::read_string(reader, scratch);
-        guard s.len <= out.instance.cap else { return false; }
+        if s.len > out.instance.cap {
+            out_err = true;
+            return true;
+        }
         out.instance.clear();
         out.instance.append(s);
         return true;
@@ -142,15 +170,16 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
     guard json_src.len > 0 else { return false; }
     var reader = json::reader(json_src);
     var scratch: u8[>..] = [];
+    var field_err = false;
 
     json::each_member(reader) { key =>
-        if !parse_problem_core_fields(key, reader, scratch, out) &&
-           !parse_problem_descriptive_fields(key, reader, scratch, out) {
+        if !parse_problem_core_fields(key, reader, scratch, out, field_err) &&
+           !parse_problem_descriptive_fields(key, reader, scratch, out, field_err) {
             json::skip(reader);
         }
     };
 
-    guard json::finish(reader) else { return false; }
+    guard !field_err && json::finish(reader) else { return false; }
     if out.type_uri.len == 0 {
         out.type_uri.append("about:blank");
     }

@@ -63,10 +63,7 @@ fn is_capsule_protocol_negotiated(header_val: const u8[:]) -> bool {
     if trimmed == "?1" {
         return true;
     }
-    if starts_with(trimmed, "?1;") || starts_with(trimmed, "?1,") {
-        return true;
-    }
-    return false;
+    return starts_with(trimmed, "?1;") && !core::contains_byte(trimmed, ',');
 }
 
 // Checks if Capsule-Protocol header is negotiated in a HeaderMap
@@ -81,7 +78,8 @@ fn has_capsule_protocol(headers: const HeaderMap&) -> bool {
 // Format: Quarter Stream ID (VarInt) || Context ID (VarInt) || HTTP Datagram Payload
 fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool {
     var hdr: u8[..16] = [];
-    guard internal::quic_encode_varint(hdr, quarter_stream_id) else { return false; }
+    guard quarter_stream_id <= 0x0FFFFFFFFFFFFFFF &&
+          internal::quic_encode_varint(hdr, quarter_stream_id) else { return false; }
     guard internal::quic_encode_varint(hdr, context_id) else { return false; }
     guard out.len + hdr.len + payload.len <= out.cap else { return false; }
     out.append(hdr[..]);
@@ -98,7 +96,7 @@ fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, pay
 fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
     guard wire.len > 0 else { return 0, 0, wire[..0], false; }
     let q_id, off1, ok1 = internal::quic_decode_varint(wire, 0);
-    guard ok1 else { return 0, 0, wire[..0], false; }
+    guard ok1 && q_id <= 0x0FFFFFFFFFFFFFFF else { return 0, 0, wire[..0], false; }
     let ctx_id, off2, ok2 = internal::quic_decode_varint(wire, off1);
     guard ok2 else { return 0, 0, wire[..0], false; }
     let payload = wire[(off2 as i64)..];
@@ -111,10 +109,45 @@ fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
 // e.g. `/.well-known/masque/udp/1.1.1.1/53/`
 fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u16) {
     out.append("/.well-known/masque/udp/");
-    out.append(target_host);
+    for b in target_host {
+        if b == ':' {
+            out.append("%3A");
+        } else {
+            out.push(b);
+        }
+    }
     out.push('/');
     core::format_u64_dec(target_port as u64, out);
     out.push('/');
+}
+
+inline fn is_forbidden_connect_udp_host_byte(b: u8) -> bool {
+    return b <= 0x20 || b == 0x7F || b == '?' || b == '#' || b == '@' || b == ':' || b == '[' || b == ']';
+}
+
+// Decodes and validates a MASQUE CONNECT-UDP target_host path segment (RFC 9298 §3).
+//
+// Example:
+//   host_part = "2001%3Adb8%3A%3A1"
+//   returns: true, out_host = "2001:db8::1"
+fn decode_connect_udp_target_host(host_part: const u8[:], out_host: u8[..128]&) -> bool {
+    var pct_state: u8 = 0;
+    for b in host_part {
+        if pct_state == 0 {
+            if b == '%' {
+                pct_state = 1;
+            } else {
+                guard !is_forbidden_connect_udp_host_byte(b) && out_host.try_push(b) else { return false; }
+            }
+        } else if pct_state == 1 {
+            guard b == '3' else { return false; }
+            pct_state = 2;
+        } else {
+            guard core::to_lower_ascii_byte(b) == 'a' && out_host.try_push(':') else { return false; }
+            pct_state = 0;
+        }
+    }
+    return pct_state == 0 && out_host.len > 0;
 }
 
 // Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok) (RFC 9298 §2).
@@ -131,15 +164,7 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     let rem = path[prefix.len..];
     let host_part, rem_after_host, host_ok = core::split_once_byte(rem, '/');
     guard host_ok && host_part.len > 0 else { return out_host, 0, false; }
-    guard host_part.len <= out_host.cap else { return out_host, 0, false; }
-
-    // Host cannot contain whitespace, control characters, or URI delimiters
-    for b in host_part {
-        if b <= 0x20 || b == 0x7F || b == '?' || b == '#' || b == '@' {
-            return out_host, 0, false;
-        }
-    }
-    out_host.append(host_part);
+    guard decode_connect_udp_target_host(host_part, out_host) else { return out_host, 0, false; }
 
     var port_part = rem_after_host;
     if port_part.len > 0 && port_part[port_part.len - 1] == '/' {
@@ -371,9 +396,19 @@ fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool 
     return assign, cur == payload.len && assign.assigned_ip.len > 0;
 }
 
+fn is_valid_ip_range(start_ip: const u8[:], end_ip: const u8[:]) -> bool {
+    guard start_ip.len > 0 && start_ip.len == end_ip.len else { return false; }
+    for i in start_ip.len {
+        if start_ip[i] < end_ip[i] { return true; }
+        if start_ip[i] > end_ip[i] { return false; }
+    }
+    return true;
+}
+
 // Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.7.3):
 // Format: IP Version (u8) || Start IP (4 or 16) || End IP (4 or 16) || IP Protocol (u8)
 fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisement&) -> bool {
+    guard is_valid_ip_range(route.start_ip[..], route.end_ip[..]) else { return false; }
     var body: u8[..128] = [];
     body.push(route.ip_version);
     if route.ip_version == 4 {
@@ -437,7 +472,7 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     while cur < payload.len {
         guard decode_route_entry(payload, cur, route) else { return route, false; }
     }
-    return route, cur == payload.len && route.start_ip.len > 0;
+    return route, cur == payload.len && is_valid_ip_range(route.start_ip[..], route.end_ip[..]);
 }
 
 // ---- MASQUE Tunnel Session Manager ---------------------------------------
@@ -532,19 +567,19 @@ fn build_masque_connect_request(
     var scheme_buf: u8[..16]  = [];
     var auth_buf:   u8[..256] = [];
     if view.valid && view.scheme.len > 0 {
-        scheme_buf.append(view.scheme);
+        let _ = scheme_buf.try_append(view.scheme);
     } else {
         scheme_buf.append("https");
     }
 
     if view.valid && view.host.len > 0 {
-        auth_buf.append(view.host);
-        if view.port > 0 {
+        let _ = auth_buf.try_append(view.host);
+        if view.port > 0 && auth_buf.len <= 249 {
             auth_buf.push(':');
             core::format_u64_dec(view.port as u64, auth_buf);
         }
     } else if tunnel.config.proxy_url.len > 0 {
-        auth_buf.append(tunnel.config.proxy_url[..]);
+        let _ = auth_buf.try_append(tunnel.config.proxy_url[..]);
     }
 
     out_headers.set_header(":method", "CONNECT");
@@ -610,7 +645,8 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     }
 
     if c.capsule_type == rfc::CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == rfc::CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
-        return true;
+        let _, ok_r = decode_route_advertisement_capsule(c.payload);
+        return ok_r;
     }
 
     // RFC 9297 §3.2: Endpoints which receive a capsule with an unknown capsule type MUST silently ignore that capsule.

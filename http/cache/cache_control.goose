@@ -217,13 +217,21 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow
 // Applies boolean or field-list Cache-Control directives.
 fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheControl&) -> bool {
     if eq_ascii_fold(name, "no-store") {
-        cc.flags |= CC_NO_STORE;
+        if val != "?0" {
+            cc.flags |= CC_NO_STORE;
+        }
         return true;
     }
     if eq_ascii_fold(name, "no-cache") {
+        if val == "?0" { return true; }
         cc.flags |= CC_NO_CACHE;
-        if val.len > 0 {
-            let s = val.trim_lws().trim_byte('"').trim_lws();
+        if val.len > 0 && val != "?1" {
+            let v_trim = val.trim_lws();
+            if v_trim[0] == '"' && (v_trim.len < 2 || v_trim[v_trim.len - 1] != '"') {
+                cc.no_cache_overflow = true;
+                return true;
+            }
+            let s = v_trim.trim_byte('"').trim_lws();
             if s.len > 0 {
                 parse_field_names(val, cc.no_cache_fields, cc.no_cache_overflow);
             } else {
@@ -235,25 +243,31 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
         return true;
     }
     if eq_ascii_fold(name, "must-revalidate") {
-        cc.flags |= CC_MUST_REVALIDATE;
+        if val != "?0" { cc.flags |= CC_MUST_REVALIDATE; }
         return true;
     }
     if eq_ascii_fold(name, "proxy-revalidate") {
-        cc.flags |= CC_PROXY_REVALIDATE;
+        if val != "?0" { cc.flags |= CC_PROXY_REVALIDATE; }
         return true;
     }
     if eq_ascii_fold(name, "must-understand") {
-        cc.flags |= CC_MUST_UNDERSTAND;
+        if val != "?0" { cc.flags |= CC_MUST_UNDERSTAND; }
         return true;
     }
     if eq_ascii_fold(name, "public") {
-        cc.flags |= CC_PUBLIC;
+        if val != "?0" { cc.flags |= CC_PUBLIC; }
         return true;
     }
     if eq_ascii_fold(name, "private") {
+        if val == "?0" { return true; }
         cc.flags |= CC_PRIVATE;
-        if val.len > 0 {
-            let s = val.trim_lws().trim_byte('"').trim_lws();
+        if val.len > 0 && val != "?1" {
+            let v_trim = val.trim_lws();
+            if v_trim[0] == '"' && (v_trim.len < 2 || v_trim[v_trim.len - 1] != '"') {
+                cc.private_overflow = true;
+                return true;
+            }
+            let s = v_trim.trim_byte('"').trim_lws();
             if s.len > 0 {
                 parse_field_names(val, cc.private_fields, cc.private_overflow);
             } else {
@@ -265,15 +279,15 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
         return true;
     }
     if eq_ascii_fold(name, "immutable") {
-        cc.flags |= CC_IMMUTABLE;
+        if val != "?0" { cc.flags |= CC_IMMUTABLE; }
         return true;
     }
     if eq_ascii_fold(name, "only-if-cached") {
-        cc.flags |= CC_ONLY_IF_CACHED;
+        if val != "?0" { cc.flags |= CC_ONLY_IF_CACHED; }
         return true;
     }
     if eq_ascii_fold(name, "no-transform") {
-        cc.flags |= CC_NO_TRANSFORM;
+        if val != "?0" { cc.flags |= CC_NO_TRANSFORM; }
         return true;
     }
     return false;

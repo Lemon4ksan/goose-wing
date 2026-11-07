@@ -274,6 +274,9 @@ fn parse_h3_priority_update_request(
     let stream_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
+    if core::trim_ascii_space(field_value).len == 0 {
+        return stream_id, prio, true;
+    }
     let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
     guard ok_prio else { return stream_id, prio, false; }
     return stream_id, parsed, true;
@@ -303,6 +306,9 @@ fn parse_h3_priority_update_push(
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
+    if core::trim_ascii_space(field_value).len == 0 {
+        return push_id, prio, true;
+    }
     let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
     guard ok_prio else { return push_id, prio, false; }
     return push_id, parsed, true;

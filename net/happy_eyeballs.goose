@@ -69,7 +69,7 @@ struct ConnectionEndpointMetadata {
 struct DnsCandidate {
     family:     AddressFamily = AddressFamily.IPv6,
     l4_proto:   L4Protocol    = L4Protocol.Tcp,
-    ip:         u8[..64]      = [],
+    ip:         u8[..256]     = [],
     port:       u16           = 80,
     scope_id:   i32           = 0,
     precedence: i32           = 40,
@@ -208,7 +208,7 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         }
 
         // If AAAA already arrived, we are ready to connect
-        if task.aaaa_status == DnsQueryStatus.Success || task.aaaa_status == DnsQueryStatus.Negative {
+        if task.aaaa_status != DnsQueryStatus.Pending && task.aaaa_status != DnsQueryStatus.InFlight {
             task.ready_to_connect = true;
         } else {
             // A arrived first! Arm Resolution Delay (RD = 50 ms) to wait for AAAA
@@ -286,7 +286,7 @@ struct AttemptManager {
 
 fn new_attempt_manager(cad_ms: i64 = rfc::HE_DEFAULT_CAD_MS) -> AttemptManager {
     return AttemptManager {
-        effective_cad_ms: cad_ms,
+        effective_cad_ms: max(cad_ms, rfc::HE_ABSOLUTE_FLOOR_CAD_MS),
         ..
     };
 }
@@ -352,8 +352,8 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
 // Synthesizes a NAT64 IPv6 address prefix 64:ff9b::/96 per RFC 7050 from IPv4 candidate.
 fn synthesize_nat64_candidate(manager: AttemptManager&) {
     guard manager.pending_candidates.len < manager.pending_candidates.cap else { return; }
-    var v4_ip:   u8[..64] = [];
-    var v4_port: u16      = 443;
+    var v4_ip:   u8[..256] = [];
+    var v4_port: u16       = 443;
     var v4_proto = L4Protocol.Tcp;
     var v4_prec: i32 = 30;
     var found_v4 = false;
@@ -380,10 +380,10 @@ fn synthesize_nat64_candidate(manager: AttemptManager&) {
             }
         }
     }
-    var syn_ip: u8[..64] = [];
+    var syn_ip: u8[..256] = [];
     if found_v4 {
         syn_ip.append("64:ff9b::");
-        syn_ip.append(v4_ip[..]);
+        let _ = syn_ip.try_append(v4_ip[..]);
     } else {
         syn_ip.append("64:ff9b::192.0.2.1");
     }

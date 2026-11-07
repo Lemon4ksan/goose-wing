@@ -518,7 +518,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
         if dec_err != ChunkedDecodeError.None || out_req.body.len > MAX_SERVER_BODY_LIMIT {
             out_req.body.clear();
             out_req.trailers.clear();
-            if dec_err != ChunkedDecodeError.UnexpectedEof && dec_err != ChunkedDecodeError.None {
+            if dec_err != ChunkedDecodeError.UnexpectedEof &&
+               dec_err != ChunkedDecodeError.EmptyInput &&
+               dec_err != ChunkedDecodeError.None {
                 clear_request_headers_state(out_req);
             }
             return false, 0;
@@ -656,6 +658,9 @@ fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) ->
     }
     if status_line.len > 12 {
         guard status_line[12] == ' ' else { return false; }
+        for b in status_line[13..] {
+            guard is_valid_header_value_byte(b) else { return false; }
+        }
     }
 
     guard status_line[9] >= '1' && status_line[9] <= '5' &&
@@ -917,6 +922,10 @@ fn detect_response_presence_mask(headers: const HeaderMap&) -> u16 {
             if (hname[0] == 'd' || hname[0] == 'D') && eq_ascii_fold(hname, "date") {
                 mask = mask | RES_PRESENCE_DATE;
             }
+        } else if nlen == 6 {
+            if (hname[0] == 's' || hname[0] == 'S') && eq_ascii_fold(hname, "server") {
+                mask = mask | RES_PRESENCE_SERVER;
+            }
         } else if nlen == 10 {
             if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "connection") {
                 mask = mask | RES_PRESENCE_CONNECTION;
@@ -938,17 +947,18 @@ fn detect_response_presence_mask(headers: const HeaderMap&) -> u16 {
     return mask;
 }
 
-fn serialize_response_headers_list<B>(headers: const HeaderMap&, is_empty_status: bool, out: B&) {
+fn serialize_response_headers_list<B>(headers: const HeaderMap&, status_code: i32, has_te: bool, out: B&) {
+    let is_no_cl_status = (status_code >= 100 && status_code < 200) || status_code == 204;
+    let is_no_te_status = is_no_cl_status || status_code == 304;
     for &e in headers.entries {
         let hname = entry_name(headers, e);
         let hval = entry_value(headers, e);
         let nlen = hname.len;
-        if is_empty_status {
-            let is_suppressed = (nlen == 14 && eq_ascii_fold(hname, "content-length"))
-                || (nlen == 17 && eq_ascii_fold(hname, "transfer-encoding"));
-            if is_suppressed {
-                continue;
-            }
+        if (is_no_cl_status || has_te) && nlen == 14 && eq_ascii_fold(hname, "content-length") {
+            continue;
+        }
+        if is_no_te_status && nlen == 17 && eq_ascii_fold(hname, "transfer-encoding") {
+            continue;
         }
 
         if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-type") {
@@ -1014,11 +1024,13 @@ fn serialize_http1_headers<Res, B>(
             return;
         }
     }
-    if res.status_code == 200 && server_name == "goose-wing" {
+    if res.status_code == 200 && server_name == "goose-wing" && (mask & RES_PRESENCE_SERVER) == 0 {
         out_wire.append(HTTP1_200_SERVER_GOOSE);
     } else {
         serialize_status_line(res.status_code, out_wire);
-        serialize_server_header(server_name, out_wire);
+        if (mask & RES_PRESENCE_SERVER) == 0 {
+            serialize_server_header(server_name, out_wire);
+        }
     }
 
     // Emit RFC 7231 Date header if not explicitly overridden by response
@@ -1027,13 +1039,14 @@ fn serialize_http1_headers<Res, B>(
     }
 
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
+    let has_te = (mask & RES_PRESENCE_TRANSFER_ENCODING) != 0;
     if !is_empty_status {
-        if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && (mask & RES_PRESENCE_TRANSFER_ENCODING) == 0 {
+        if (mask & RES_PRESENCE_CONTENT_LENGTH) == 0 && !has_te {
             serialize_content_length_header(eff_body_len, out_wire);
         }
     }
 
-    serialize_response_headers_list(res.headers, is_empty_status, out_wire);
+    serialize_response_headers_list(res.headers, res.status_code, has_te, out_wire);
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn {
@@ -1503,7 +1516,7 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
     while cursor < incoming.len {
         let data_slice, has_data, is_last, ok = step_chunked_http_stream_frame(consumer, incoming, cursor);
         guard ok else { return cursor, false, false; }
-        if has_data {
+        if has_data || is_last {
             Callback(data_slice, is_last);
         }
         if is_last || !has_data {
@@ -2266,6 +2279,33 @@ fn check_pipelined_content_length<B>(
     return false;
 }
 
+// Scans chunk headers in `chunk_slice` to accumulate total declared payload bytes and detect framing errors.
+//
+// Example:
+//   chunk_slice = "5\r\nhello\r\n0\r\n\r\n"
+//   returns: total_sz = 5, err = ChunkedDecodeError.None
+fn scan_chunked_cumulative_size(chunk_slice: const u8[:]) -> u64, ChunkedDecodeError {
+    var cur:      i64 = 0;
+    var total_sz: u64 = 0;
+    while cur < chunk_slice.len {
+        var chunk_sz: u64 = 0;
+        let sz_err = read_chunk_size_line(chunk_slice, cur, chunk_sz);
+        guard sz_err == ChunkedDecodeError.None else { return total_sz, sz_err; }
+        total_sz = core::add_sat_u64(total_sz, chunk_sz);
+        if total_sz > (MAX_SERVER_BODY_LIMIT as u64) || chunk_sz == 0 {
+            return total_sz, ChunkedDecodeError.None;
+        }
+        let data_end = core::add_sat_i64(cur, chunk_sz as i64);
+        let next_cur = core::add_sat_i64(data_end, 2);
+        guard next_cur <= chunk_slice.len else { return total_sz, ChunkedDecodeError.UnexpectedEof; }
+        guard chunk_slice[data_end] == '\r' && chunk_slice[core::add_sat_i64(data_end, 1)] == '\n' else {
+            return total_sz, ChunkedDecodeError.MalformedChunkEnding;
+        }
+        cur = next_cur;
+    }
+    return total_sz, ChunkedDecodeError.UnexpectedEof;
+}
+
 inline fn check_pipelined_chunked_head<B>(
     stream:      const u8[:],
     hdr_end:     i64,
@@ -2273,16 +2313,16 @@ inline fn check_pipelined_chunked_head<B>(
     wire_out:    B&,
     out_keep:    bool&,
 ) -> bool {
-    let chunk_slice = stream[(hdr_end + 4)..];
-    var chunk_cur:      i64 = 0;
-    var first_chunk_sz: u64 = 0;
-    let sz_err = read_chunk_size_line(chunk_slice, chunk_cur, first_chunk_sz);
-    if sz_err == ChunkedDecodeError.None && first_chunk_sz > (MAX_SERVER_BODY_LIMIT as u64) {
+    let chunk_slice = stream[core::add_sat_i64(hdr_end, 4)..];
+    let total_sz, sz_err = scan_chunked_cumulative_size(chunk_slice);
+    if total_sz > (MAX_SERVER_BODY_LIMIT as u64) {
         serialize_payload_too_large_error(server_name, wire_out);
         out_keep = false;
         return false;
     }
-    if sz_err != ChunkedDecodeError.None && sz_err != ChunkedDecodeError.UnexpectedEof {
+    if sz_err != ChunkedDecodeError.None &&
+       sz_err != ChunkedDecodeError.UnexpectedEof &&
+       sz_err != ChunkedDecodeError.EmptyInput {
         serialize_bad_request_error(server_name, wire_out);
         out_keep = false;
         return false;
@@ -2817,9 +2857,8 @@ inline fn step_h2_server_session_buf<InBuf, OutBuf>(
 inline fn try_append_recv_chunk<InBuf, ChunkBuf>(recvd: i32, chunk: const ChunkBuf&, in_buf: InBuf&) -> bool {
     guard recvd > 0 else { return false; }
     let n = recvd as i64;
-    guard core::add_sat_i64(in_buf.len, n) <= 16777216 else { return false; }
-    in_buf.append(chunk[..n]);
-    return true;
+    guard n <= chunk.len && core::add_sat_i64(in_buf.len, n) <= 16777216 else { return false; }
+    return in_buf.try_append(chunk[..n]);
 }
 
 // Runs a persistent HTTP/2 server session loop over `conn_fd` using caller-supplied `h2_in` buffer (RFC 9113).
@@ -2876,12 +2915,8 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     out_wire:    OutBuf&,
 ) -> bool {
     let r_idx = find_ws_route(server, req.url[..]);
-    guard server.ws_route_count == 0 || r_idx >= 0 else { return false; }
-    let behavior = if r_idx >= 0 {
-        server.ws_routes[r_idx as i64].behavior
-    } else {
-        WsBehavior { .. }
-    };
+    guard r_idx >= 0 else { return false; }
+    let behavior = server.ws_routes[r_idx as i64].behavior;
     var ws_res = Response { .. };
     var ws, ok_ws = ws_upgrade_request(req, ws_res, behavior.subprotocol[..]);
     guard ok_ws else { return false; }
@@ -3208,9 +3243,7 @@ fn serve_http_listener(
 }
 
 inline fn response_wire_has_connection_close(wire: const u8[:]) -> bool {
-    let hdr_end = core::fast_find_crlfcrlf(wire);
-    let hdr_slice = if hdr_end >= 0 { wire[..(hdr_end + 2)] } else { wire };
-    return core::contains_fold(hdr_slice, "\r\nconnection: close\r\n");
+    return core::contains_fold(wire, "\r\nconnection: close\r\n");
 }
 
 // Binds and listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets app.listen(path) pattern).
@@ -3615,9 +3648,7 @@ fn serve_static_mmap_file<B>(
     hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
     hdr_buf.append(content_type);
     hdr_buf.append("\r\nContent-Length: ");
-    var num_buf: u8[..32] = [];
-    core::fast_u64toa(mf.size, num_buf);
-    hdr_buf.append(num_buf[..]);
+    core::format_u64_dec(mf.size, hdr_buf);
     hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
 
     let prev_len = wire_out.len;
@@ -3656,9 +3687,7 @@ fn send_static_mmap_file(
     hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
     hdr_buf.append(content_type);
     hdr_buf.append("\r\nContent-Length: ");
-    var num_buf: u8[..32] = [];
-    core::fast_u64toa(mf.size, num_buf);
-    hdr_buf.append(num_buf[..]);
+    core::format_u64_dec(mf.size, hdr_buf);
     hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
 
     let sent_hdr = native_tcp_send(sock_fd, hdr_buf[..]);
@@ -3701,15 +3730,15 @@ fn accept_encoding_has_token(ae: const u8[:], target_token: const u8[:]) -> bool
     while cursor < ae.len {
         var comma_idx = cursor;
         while comma_idx < ae.len && ae[comma_idx] != ',' {
-            comma_idx++;
+            comma_idx += 1;
         }
         let item = ae[cursor..comma_idx].trim_lws();
         var semi_idx: i64 = 0;
         while semi_idx < item.len && item[semi_idx] != ';' {
-            semi_idx++;
+            semi_idx += 1;
         }
         let coding = item[..semi_idx].trim_lws();
-        if coding.len > 0 && core::eq_ascii_fold(coding, target_token) {
+        if coding.len > 0 && core::eq_ascii_fold(coding, target_token) && !is_zero_qvalue(item[semi_idx..]) {
             return true;
         }
         cursor = comma_idx + 1;

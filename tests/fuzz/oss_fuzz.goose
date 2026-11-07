@@ -223,7 +223,10 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
     if ok_sig { s = fuzz_mix_state(s, 0x1040); }
 
     var dpop_claims = wing::DPoPClaims { .. };
-    if wing::parse_dpop_claims(data, dpop_claims) { s = fuzz_mix_state(s, 0x1050); }
+    if wing::parse_dpop_claims(data, dpop_claims) {
+        assert(dpop_claims.jti.len > 0 && dpop_claims.htm.len > 0 && dpop_claims.htu.len > 0);
+        s = fuzz_mix_state(s, 0x1050);
+    }
     let _ = wing::verify_dpop_proof(data, "", "GET", "https://example.com/ resource");
 
     var jwks = wing::Jwks { .. };
@@ -233,7 +236,10 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
     }
 
     var jwt_hdr = wing::JwtHeader { .. };
-    if wing::parse_jwt_header_json(data, jwt_hdr) { s = fuzz_mix_state(s, 0x100A); }
+    if wing::parse_jwt_header_json(data, jwt_hdr) {
+        assert(jwt_hdr.alg != wing::JwtAlg.None);
+        s = fuzz_mix_state(s, 0x100A);
+    }
     var jwt_claims = wing::JwtClaims { .. };
     if wing::parse_jwt_claims_json(data, jwt_claims) { s = fuzz_mix_state(s, 0x100B); }
     return s;
@@ -308,7 +314,9 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
     var dt = internal::new_dynamic_table(max_cap);
     var hdrs = wing::HeaderMap { .. };
     var pseudo = internal::H2PseudoHeaders { .. };
-    if internal::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true) == rfc::H2_ERR_NO_ERROR {
+    let hpack_err = internal::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true);
+    assert(dt.used_bytes <= dt.current_max_size && dt.current_max_size <= dt.max_allowed_size && dt.count <= 128);
+    if hpack_err == rfc::H2_ERR_NO_ERROR {
         sig = fuzz_mix_state(sig, 0x2001 ^ (hdrs.entries.len as u64));
     }
 
@@ -378,6 +386,8 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     var steps: i64 = 0;
     while off < (enc_bytes.len as u64) && steps < 32 {
         let next_off, err = internal::qpack_process_encoder_instruction(tbl, enc_bytes, off);
+        assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.capacity_bytes <= tbl.max_capacity_bytes);
+        assert(tbl.draining_index <= tbl.insert_count);
         steps = core::add_sat_i64(steps, 1);
         if err != internal::QpackError.None || next_off <= off {
             break;
@@ -389,6 +399,7 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     var map = wing::HeaderMap { .. };
     var pseudo = internal::H3PseudoHeaders { .. };
     let qerr = internal::decode_or_block_qpack_to_map(tbl, 0, block_bytes, pseudo, map, 65536);
+    assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.draining_index <= tbl.insert_count);
     if qerr == internal::QpackError.None {
         sig = fuzz_mix_state(sig, 0x4020 ^ (map.entries.len as u64));
     }
@@ -445,8 +456,11 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0x6020 ^ (cur as u64));
     }
 
-    let _, _, ok_ack = internal::decode_ack_frame(data, 0);
-    if ok_ack { sig = fuzz_mix_state(sig, 0x6030); }
+    let ack_f, _, ok_ack = internal::decode_ack_frame(data, 0);
+    if ok_ack {
+        assert(ack_f.largest_acked >= ack_f.first_ack_range);
+        sig = fuzz_mix_state(sig, 0x6030);
+    }
     return sig;
 }
 
@@ -471,6 +485,10 @@ fn dispatch_quic_stream_fuzz_op(
         let _, _ = internal::quic_stream_on_recv_reset(tbl.streams[s_idx], offset, offset);
     } else if op == 3 {
         let _, _ = internal::quic_stream_on_recv_stop_sending(tbl.streams[s_idx], offset, internal::QuicRole.Server);
+    }
+    assert(tbl.streams[s_idx].bytes_recv <= tbl.streams[s_idx].recv_max_data);
+    if tbl.streams[s_idx].has_recv_final_size {
+        assert(tbl.streams[s_idx].bytes_recv <= tbl.streams[s_idx].recv_final_size);
     }
 }
 
@@ -552,11 +570,28 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     var sh_share: u8[..2048] = [];
     var sh_psk_resumed = false;
     if wing::parse_server_hello_or_hrr(data, sh_cipher, sh_is_hrr, sh_group, sh_share, sh_psk_resumed) {
+        assert(rfc::is_supported_tls13_cipher_suite(sh_cipher));
+        if sh_is_hrr { assert(sh_share.len == 0); }
         sig = fuzz_mix_state(sig, 0x9020 ^ (sh_cipher as u64));
     }
 
     var ee_alpn: u8[..32] = [];
     if wing::parse_encrypted_extensions_alpn(data, ee_alpn) { sig = fuzz_mix_state(sig, 0x9030); }
+
+    // Structure-aware extension placement oracle (RFC 8446 §4.2 Table 2)
+    var fdp = new_fdp(data);
+    let ext_type = fdp_consume_u16(fdp);
+    let ext_val = fdp_consume_bytes(fdp, 16);
+    var synth_ee: u8[..32] = [];
+    let ext_block_len = core::add_sat_i64(4, ext_val.len) as u16;
+    core::write_be_u16(synth_ee, ext_block_len);
+    core::write_be_u16(synth_ee, ext_type);
+    core::write_be_u16(synth_ee, ext_val.len as u16);
+    synth_ee.append(ext_val);
+    let ok_synth_ee = wing::parse_encrypted_extensions_alpn(synth_ee[..], ee_alpn);
+    if rfc::is_forbidden_ee_extension(ext_type) {
+        assert(!ok_synth_ee);
+    }
 
     var cert_req = wing::CertificateRequestMsg { .. };
     if wing::parse_certificate_request(data, true, cert_req) { sig = fuzz_mix_state(sig, 0x9040); }
@@ -581,6 +616,36 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     return sig;
 }
 
+fn fuzz_x509_tamper_oracle(data: const u8[:]) {
+    guard data.len >= 2 else { return; }
+    let seed: u8[32] = [0x5A; 32];
+    var valid_der: u8[..2048] = [];
+    guard wing::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", valid_der) else {
+        return;
+    }
+    var valid_cert = wing::ParsedCert { .. };
+    guard wing::parse_x509_certificate(valid_der[..], valid_cert) else { return; }
+
+    var tampered_der: u8[..2048] = [];
+    tampered_der.append(valid_der[..]);
+    let tbs_start = valid_cert.tbs_cert.offset as u64;
+    let last_idx = core::sub_sat_u64(tampered_der.len as u64, 1);
+    guard tbs_start <= last_idx else { return; }
+    var fdp = new_fdp(data);
+    let flip_idx = fdp_consume_u64_in_range(fdp, tbs_start, last_idx) as i64;
+    guard flip_idx >= 0 && flip_idx < tampered_der.len else { return; }
+    let delta: u8 = fdp_consume_u8(fdp) | 1;
+    tampered_der[flip_idx] = tampered_der[flip_idx] ^ delta;
+
+    var tampered_cert = wing::ParsedCert { .. };
+    if wing::parse_x509_certificate(tampered_der[..], tampered_cert) {
+        let alert = wing::x509_verify_cert_signature(
+            tampered_cert, tampered_der[..], valid_cert, valid_der[..],
+        );
+        assert(alert != wing::TlsAlert.CloseNotify);
+    }
+}
+
 // ---- Target 10: X.509 ASN.1 DER Certificate, CRL & OCSP Parser -------------
 // Ported from vendor/picotls/fuzz/fuzz-asn1.c & boringssl/fuzz/parse_certificate_fuzzer.cc
 fn fuzz_target_x509_asn1(data: const u8[:]) -> u64 {
@@ -588,6 +653,16 @@ fn fuzz_target_x509_asn1(data: const u8[:]) -> u64 {
     var cert = wing::ParsedCert { .. };
     let ok = wing::parse_x509_certificate(data, cert);
     if ok {
+        assert(cert.signature_value.length > 0 && cert.tbs_cert.length > 0);
+        if cert.has_unsupported_critical {
+            var chain_p: wing::ParsedCert[..8] = [];
+            var chain_s: (const u8[:])[..8]    = [];
+            let _ = chain_p.try_push(cert);
+            let _ = chain_s.try_push(data);
+            let store = wing::TrustAnchorStore { .. };
+            let alert = wing::verify_certificate_chain(chain_p, chain_s, store, 1735689600);
+            assert(alert != wing::TlsAlert.CloseNotify);
+        }
         sig = fuzz_mix_state(sig, 0xA010);
         var sans: wing::SanEntry[..16] = [];
         if wing::get_cert_san_extension(cert, data, sans) {
@@ -597,10 +672,19 @@ fn fuzz_target_x509_asn1(data: const u8[:]) -> u64 {
     }
 
     var crl = wing::ParsedCrl { .. };
-    if wing::parse_x509_crl(data, crl) { sig = fuzz_mix_state(sig, 0xA030); }
+    if wing::parse_x509_crl(data, crl) {
+        assert(crl.signature.length > 0 && crl.tbs_raw.length > 0);
+        sig = fuzz_mix_state(sig, 0xA030);
+    }
 
     var ocsp = wing::ParsedOcspResponse { .. };
-    if wing::parse_ocsp_response(data, ocsp) { sig = fuzz_mix_state(sig, 0xA040); }
+    if wing::parse_ocsp_response(data, ocsp) {
+        if ocsp.status == wing::OcspResponseStatus.Successful {
+            assert(ocsp.signature.length > 0 && ocsp.tbs_raw.length > 0);
+        }
+        sig = fuzz_mix_state(sig, 0xA040);
+    }
+    fuzz_x509_tamper_oracle(data);
     return sig;
 }
 
@@ -644,13 +728,20 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
     let hdr, ok_ws = wing::parse_ws_frame_header(data);
     let hlen = hdr.header_len as i64;
     if ok_ws {
+        if hdr.opcode >= 8 {
+            assert(hdr.fin && hdr.payload_len <= 125);
+        }
         sig = fuzz_mix_state(sig, 0xB001 ^ (hdr.opcode as u64));
         if hdr.opcode == 8 && hlen <= data.len {
-            let _, _, _ = wing::parse_close_payload(data[hlen..data.len]);
+            let _, reason_in, ok_ci = wing::parse_close_payload(data[hlen..data.len]);
+            if ok_ci { assert(core::validate_utf8(reason_in)); }
         }
     }
-    let _, _, ok_cls = wing::parse_close_payload(data);
-    if ok_cls { sig = fuzz_mix_state(sig, 0xB010); }
+    let _, reason_cls, ok_cls = wing::parse_close_payload(data);
+    if ok_cls {
+        assert(core::validate_utf8(reason_cls));
+        sig = fuzz_mix_state(sig, 0xB010);
+    }
 
     var ws_comp = wing::SharedWsCompressor { .. };
     var decomp_ws: u8[..4096] = [];
@@ -658,8 +749,11 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0xB020 ^ (decomp_ws.len as u64));
     }
 
-    let _, _, _, ok_lpm = wing::decode_grpc_lpm_slice(data, 0);
-    if ok_lpm { sig = fuzz_mix_state(sig, 0xB030); }
+    let lpm_slice, _, comp_flag, ok_lpm = wing::decode_grpc_lpm_slice(data, 0);
+    if ok_lpm {
+        assert(comp_flag <= 1 && lpm_slice.len <= data.len);
+        sig = fuzz_mix_state(sig, 0xB030);
+    }
     var web_payload: u8[..2048] = [];
     var is_trailers = false;
     var is_comp = false;
@@ -768,7 +862,13 @@ fn fuzz_target_url_cookie_sfv_compress(data: const u8[:]) -> u64 {
     let uview, _ = core::parse_url_view(data);
     if uview.valid { sig = fuzz_mix_state(sig, 0xC020 ^ (uview.host.len as u64)); }
     var norm_url: u8[..1024] = [];
-    if core::normalize_http_target_uri(data, norm_url) { sig = fuzz_mix_state(sig, 0xC021); }
+    if core::normalize_http_target_uri(data, norm_url) {
+        assert(norm_url.len > 0);
+        var norm_url2: u8[..1024] = [];
+        let ok_n2 = core::normalize_http_target_uri(norm_url[..], norm_url2);
+        assert(ok_n2 && norm_url2[..] == norm_url[..]);
+        sig = fuzz_mix_state(sig, 0xC021);
+    }
 
     var decomp_buf: u8[>..] = [];
     let _, err_inf = core::inflate(data, decomp_buf);

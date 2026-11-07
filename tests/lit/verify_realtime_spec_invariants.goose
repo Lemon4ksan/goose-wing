@@ -486,6 +486,96 @@ fn test_webtransport_regressions() {
     // CHECK: WT_DEMUX_REUSE_70_STREAMS: all_routed=true
 }
 
+// ---- 9. Cross-Component & RFC Edge-Case Regressions -----------------------
+
+fn test_cross_component_and_rfc_edge_regressions() {
+    print("--- 9. Cross-Component & RFC Edge-Case Regressions ---\n");
+
+    // 9.1 (F001) RFC 7692 §7.2.3 BFINAL=0 sync-flush vectors & bounded buffer capacity
+    var shared_c = wing::SharedWsCompressor { .. };
+    var ded_c = wing::new_dedicated_ws_compressor(32);
+    let rfc7692_hello: u8[7] = [0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]; // §7.2.3.1
+    let rfc7692_win:   u8[5] = [0xf2, 0x00, 0x11, 0x00, 0x00];             // §7.2.3.2
+    let rfc7692_empty: u8[1] = [0x00];                                     // §7.2.3.6
+    var plain1:  u8[..64] = [];
+    var plain2:  u8[..64] = [];
+    var plain_e: u8[..16] = [];
+    let ok_s1 = wing::ws_inflate_message(shared_c, rfc7692_hello[..], plain1);
+    let ok_d1 = wing::inflate_message_dedicated(ded_c, rfc7692_hello[..], plain1);
+    let ok_d2 = wing::inflate_message_dedicated(ded_c, rfc7692_win[..], plain2);
+    let ok_se = wing::ws_inflate_message(shared_c, rfc7692_empty[..], plain_e);
+    var tiny_plain: u8[..3] = [];
+    let ok_tiny = wing::ws_inflate_message(shared_c, rfc7692_hello[..], tiny_plain, 65536);
+    var tiny_wire: u8[..2] = [];
+    let ok_tiny_def = wing::deflate_message_dedicated(ded_c, "HelloHelloHello", tiny_wire);
+    print(
+        "F001_RFC7692_DEFLATE: s1=", ok_s1 && plain1[..] == "Hello",
+        " d12=", ok_d1 && ok_d2 && plain2[..] == "Hello",
+        " empty=", ok_se && plain_e.len == 0,
+        " tiny_inf=", ok_tiny, " tiny_def=", ok_tiny_def, "\n",
+    );
+    // CHECK: F001_RFC7692_DEFLATE: s1=true d12=true empty=true tiny_inf=false tiny_def=false
+
+    // 9.2 (F002) RFC 6455 §4.1 & §4.2.1 HTTP/1.0 rejection, duplicate key/version, subprotocol tchar
+    var req_h10 = wing::new_request("GET", "/ws");
+    req_h10.is_http10 = true;
+    wing::set_header(req_h10, "Host", "example.com");
+    wing::set_header(req_h10, "Upgrade", "websocket");
+    wing::set_header(req_h10, "Connection", "Upgrade");
+    wing::set_header(req_h10, "Sec-WebSocket-Version", "13");
+    wing::set_header(req_h10, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    var resp_h10 = wing::Response { .. };
+    let _, ok_h10 = wing::ws_upgrade_request(req_h10, resp_h10);
+
+    var req_dup = wing::new_request("GET", "/ws");
+    wing::set_header(req_dup, "Host", "example.com");
+    wing::set_header(req_dup, "Upgrade", "websocket");
+    wing::set_header(req_dup, "Connection", "Upgrade");
+    wing::set_header(req_dup, "Sec-WebSocket-Version", "13");
+    wing::set_header(req_dup, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    let _ = wing::append_header(req_dup.headers, "Sec-WebSocket-Key", "AQIDBAUGBwgJCgsMDQ4PEA==");
+    var resp_dup = wing::Response { .. };
+    let _, ok_dup = wing::ws_upgrade_request(req_dup, resp_dup);
+    let bad_sub = wing::has_subprotocol_token("chat, bad proto", "bad proto");
+    print("F002_WS_HANDSHAKE: h10=", ok_h10, " dup_key=", ok_dup, " bad_sub=", bad_sub, "\n");
+    // CHECK: F002_WS_HANDSHAKE: h10=false dup_key=false bad_sub=false
+
+    // 9.3 (F003) TopicTree batch FIFO order across overlapping wildcard buckets & unsubscribe migration
+    var tt = wing::TopicTree { .. };
+    let _ = wing::subscribe(tt, 55, "sport/tennis/+");
+    let _ = wing::subscribe(tt, 55, "sport/#");
+    let _ = wing::publish_batch(tt, "sport/tennis/p1", "first");
+    let _ = wing::publish_batch(tt, "sport/swim", "second");
+    let head_idx = tt.drainable_head as i64;
+    let fifo_ok = head_idx >= 0 &&
+        tt.nodes[head_idx].num_message_indices == 2 &&
+        tt.nodes[head_idx].message_indices[0] == 0 &&
+        tt.nodes[head_idx].message_indices[1] == 1;
+    let _ = wing::unsubscribe(tt, 55, "sport/tennis/+");
+    let retained_after_unsub = wing::subscriber_queued_messages(tt, 55);
+    print("F003_TOPIC_BATCH: fifo=", fifo_ok, " retained=", retained_after_unsub, "\n");
+    // CHECK: F003_TOPIC_BATCH: fifo=true retained=2
+
+    // 9.4 (F004) W3C EventSource §9.2.6 uncommitted id: discarded on sse_flush & prepare_request sanitize
+    var sse_p = wing::SseParser { .. };
+    var sse_evs: wing::SseEvent[..4] = [];
+    wing::sse_feed(sse_p, "id: committed-1\ndata: ok\n\nid: uncommitted-2\ndata: partial", sse_evs);
+    wing::sse_flush(sse_p, sse_evs);
+    let id_preserved = sse_p.last_event_id[..] == "committed-1";
+
+    // 9.5 (F005) WebTransport QUIC datagram bounded cap, session re-register clean & response reopen
+    let dgram_big: u8[7] = [0x31, 0x05, 'A', 'B', 'C', 'D', 'E'];
+    var small_dgram_out: u8[..3] = [];
+    let ok_small_dg = wing::decode_quic_datagram_frame(dgram_big[..], small_dgram_out);
+    var wt_sess = wing::WebTransportSession { is_active: false, is_draining: true, close_code: 99, .. };
+    var wt_res = wing::Response { .. };
+    wt_res.status_code = 200;
+    let _ = wing::handle_webtransport_response(wt_res, wt_sess);
+    let wt_reopened = wing::is_webtransport_session_open(wt_sess) && wt_sess.close_code == 0;
+    print("F004_F005_SSE_WT: id_ok=", id_preserved, " small_dg=", ok_small_dg, " wt_open=", wt_reopened, "\n");
+    // CHECK: F004_F005_SSE_WT: id_ok=true small_dg=false wt_open=true
+}
+
 fn main() {
     test_ws_control_frame_invariants();
     test_ws_rsv_bit_invariants();
@@ -495,6 +585,7 @@ fn main() {
     test_topic_tree_regressions();
     test_websocket_regressions();
     test_webtransport_regressions();
+    test_cross_component_and_rfc_edge_regressions();
     print("ALL REALTIME SPEC INVARIANTS VERIFIED\n");
 }
 

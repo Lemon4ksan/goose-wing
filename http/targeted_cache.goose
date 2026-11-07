@@ -31,6 +31,7 @@ fn parse_named_cache_control(
     cc:                CacheControl&,
     ignore_cargo_cult: bool,
 ) -> bool {
+    var parsed = CacheControl { .. };
     var found = false;
     for entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
@@ -38,11 +39,16 @@ fn parse_named_cache_control(
             let val = map.raw_buf[entry.values_begin..entry.values_end];
             if !is_empty_or_whitespace_value(val) {
                 found = true;
-                parse_cache_control_str(val, cc, ignore_cargo_cult);
+                parse_cache_control_str(val, parsed, ignore_cargo_cult);
             }
         }
     }
-    return found;
+    let has_recognized = parsed.flags != 0 || parsed.no_cache_fields.len > 0 || parsed.private_fields.len > 0;
+    if found && has_recognized {
+        cc = parsed;
+        return true;
+    }
+    return false;
 }
 
 fn check_target_cache_control(

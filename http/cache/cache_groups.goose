@@ -128,14 +128,25 @@ fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
     return false;
 }
 
-// Invalidates every valid stored response carrying the given group; returns entries invalidated
-// (group invalidation per RFC 9875 §2.2.1). Applies the same entry reset as invalidate_matching_url
-// (invalid, security-zeroed, LRU-detached) so group purges and URL purges leave identical slot states.
-fn invalidate_group(cache: HttpCache&, group: const u8[:]) -> i64 {
+// Invalidates every valid stored response carrying the given group on the same origin; returns
+// entries invalidated (group invalidation per RFC 9875 §2.1 & §3). Applies the same entry reset as
+// invalidate_matching_url (invalid, security-zeroed, LRU-detached).
+fn invalidate_group(
+    cache:     HttpCache&,
+    group:     const u8[:],
+    base_orig: core::Origin = core::Origin { .. },
+) -> i64 {
     var count: i64 = 0;
+    let check_origin = base_orig.scheme.len > 0;
     for &entry, idx in cache.entries {
         if !entry.is_valid { continue; }
         if !entry_has_group(entry, group) { continue; }
+        if check_origin {
+            let entry_url, err_u = core::parse_url(entry.url[..]);
+            if err_u != core::UrlParseError.None || !entry_url.valid { continue; }
+            let entry_orig = core::origin_from_url(entry_url);
+            if !core::is_same_origin(entry_orig, base_orig) { continue; }
+        }
         entry.is_valid = false;
         entry.security_zeroed = true;
         cache.lru_detach(idx as i32);

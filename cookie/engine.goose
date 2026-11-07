@@ -7,6 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .limits;
 import .constants;
 import .canonical;
 import .psl;
@@ -103,8 +104,9 @@ fn cookie_matches_deletion_filter(cookie_val: const CanonicalCookie&, filter: co
     if filter.end_utc > 0 && cookie_val.creation_utc > filter.end_utc { return false; }
     if filter.session_only && cookie_val.persistent { return false; }
     if filter.domain.len > 0 {
-        let clean_filter_domain = if filter.domain[0] == '.' { filter.domain[1..] } else { filter.domain[..] };
-        if !eq_ascii_fold(cookie_val.domain[..], clean_filter_domain) { return false; }
+        let clean_filter_domain = core::trim_byte(filter.domain[..], '.');
+        let clean_cookie_domain = core::trim_byte(cookie_val.domain[..], '.');
+        if !eq_ascii_fold(clean_cookie_domain, clean_filter_domain) { return false; }
     }
     if filter.name.len > 0 && cookie_val.name[..] != filter.name[..] { return false; }
     return cookie_matches_deletion_partition_and_security(cookie_val, filter);
@@ -200,9 +202,9 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 // ---- ingestion & insertion pipeline ----------------------------------------
 
 fn insert_fresh_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, now_us: i64) {
-    new_cookie.creation_utc = now_us;
-    new_cookie.last_update_utc = now_us;
-    new_cookie.last_access_utc = now_us;
+    if new_cookie.creation_utc <= 0 { new_cookie.creation_utc = now_us; }
+    if new_cookie.last_update_utc <= 0 { new_cookie.last_update_utc = now_us; }
+    if new_cookie.last_access_utc <= 0 { new_cookie.last_access_utc = now_us; }
     new_cookie.creation_seq = jar.seq_counter;
     jar.seq_counter = core::add_sat_i64(jar.seq_counter, 1);
     jar.cookies.push(new_cookie);
@@ -284,20 +286,16 @@ fn set_cookie_header(
 
     if parsed_cookie.partitioned {
         if partition_key.len > 0 {
-            parsed_cookie.partition_key.clear();
-            parsed_cookie.partition_key.append(partition_key);
+            guard parsed_cookie.partition_key.try_set(partition_key) else { return false; }
         } else if parsed_cookie.partition_key.len == 0 {
             parsed_cookie.partition_key.clear();
             let sch = if parsed_url.is_secure { "https" } else { "http" };
-            parsed_cookie.partition_key.append(sch);
-            parsed_cookie.partition_key.append("://");
+            let _ = parsed_cookie.partition_key.try_append(sch);
+            let _ = parsed_cookie.partition_key.try_append("://");
             var etld: u8[..128] = [];
             psl_extract_etld_plus_one(parsed_url.host[..], etld);
-            if etld.len > 0 {
-                parsed_cookie.partition_key.append(etld[..]);
-            } else {
-                parsed_cookie.partition_key.append(parsed_url.host[..]);
-            }
+            let host_part = if etld.len > 0 { etld[..] } else { parsed_url.host[..] };
+            guard parsed_cookie.partition_key.try_append(host_part) else { return false; }
         }
     }
 
@@ -740,14 +738,16 @@ fn matches_effective_domain(cookie_val: const CanonicalCookie&, target_etld_plus
 }
 
 fn find_canonical_cookie_collision_index(jar: const CanonicalCookieJar&, new_cookie: const CanonicalCookie&) -> i64 {
+    let clean_new_domain = core::trim_byte(new_cookie.domain[..], '.');
     for &existing, cookie_idx in jar.cookies {
         let port_match = existing.source_port == -1 || new_cookie.source_port == -1
             || existing.source_port == new_cookie.source_port;
         let scheme_match = existing.source_scheme == CookieSourceScheme.Unset
             || new_cookie.source_scheme == CookieSourceScheme.Unset
             || existing.source_scheme == new_cookie.source_scheme;
+        let clean_existing_domain = core::trim_byte(existing.domain[..], '.');
         if existing.name[..] == new_cookie.name[..] &&
-           eq_ascii_fold(existing.domain[..], new_cookie.domain[..]) &&
+           eq_ascii_fold(clean_existing_domain, clean_new_domain) &&
            existing.path[..] == new_cookie.path[..] &&
            existing.host_only == new_cookie.host_only &&
            existing.partition_key[..] == new_cookie.partition_key[..] &&
@@ -1023,8 +1023,8 @@ fn evict_global_lru_fallback_cookies(jar: CanonicalCookieJar&, need_to_evict: i6
             candidate_indices.push(idx as i32);
         }
     }
-    // Hard ceiling breach (K_MAX_COOKIES = 3300): must evict even secure/medium cookies to prevent memory breach
-    if candidate_indices.len == 0 && jar.cookies.len >= internal::K_MAX_COOKIES {
+    // Hard ceiling breach: must evict even secure/medium cookies to prevent memory breach
+    if candidate_indices.len == 0 && jar.cookies.len > jar.max_cookies_global {
         for &cookie_val, idx in jar.cookies {
             guard candidate_indices.len < candidate_indices.cap else { break; }
             candidate_indices.push(idx as i32);

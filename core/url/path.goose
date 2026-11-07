@@ -11,25 +11,23 @@ import std;
 fn percent_decode<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
     guard input_bytes.len > 0 else { return true; }
-    guard input_bytes.len <= out.cap else { return false; }
     if index_of_byte(input_bytes, '%') < 0 {
+        guard input_bytes.len <= out.cap else { return false; }
         out.append(input_bytes);
         return true;
     }
     var scan_idx = 0;
     while scan_idx < input_bytes.len {
-        if input_bytes[scan_idx] == '%' && scan_idx + 2 < input_bytes.len {
-            let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
-            let low_nibble = hex_digit_to_val(input_bytes[scan_idx + 2]);
-            if high_nibble >= 0 && low_nibble >= 0 {
-                let decoded_char = ((high_nibble << 4) | low_nibble) as u8;
-                out.push(decoded_char);
-                scan_idx += 3;
-                continue;
-            }
+        let has_hex = input_bytes[scan_idx] == '%' && scan_idx + 2 < input_bytes.len;
+        let hi = if has_hex { hex_digit_to_val(input_bytes[scan_idx + 1]) } else { -1 };
+        let lo = if has_hex { hex_digit_to_val(input_bytes[scan_idx + 2]) } else { -1 };
+        let is_esc = hi >= 0 && lo >= 0;
+        let decoded_char = if is_esc { ((hi << 4) | lo) as u8 } else { input_bytes[scan_idx] };
+        guard out.try_push(decoded_char) else {
+            out.clear();
+            return false;
         }
-        out.push(input_bytes[scan_idx]);
-        scan_idx++;
+        scan_idx += if is_esc { 3 } else { 1 };
     }
     return true;
 }

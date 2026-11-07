@@ -41,6 +41,11 @@ struct DPoPConfig {
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool {
     out.clear();
     guard raw_uri.len > 0 else { return false; }
+    for b in raw_uri {
+        guard b != '\\' && b != '"' && core::is_ascii_vchar(b) else { return false; }
+    }
+    let view, err = core::parse_url_view(raw_uri);
+    guard err == core::UrlParseError.None && view.valid && view.host.len > 0 else { return false; }
     return core::normalize_http_target_uri(raw_uri, out);
 }
 
@@ -150,11 +155,42 @@ struct DPoPJwkInfo {
     kty_ok:          bool      = false,
     has_private_key: bool      = false,
     kty:             u8[..8]   = [],
+    alg:             u8[..16]  = [],
     crv:             u8[..16]  = [],
     x:               u8[..64]  = [],
     y:               u8[..64]  = [],
     n:               u8[..768] = [],
     e:               u8[..16]  = [],
+}
+
+// Validates decoded JWK public key parameters for OKP, EC P-256, or RSA (RFC 7517, RFC 7518, RFC 8037).
+fn validate_dpop_jwk_params(info: const DPoPJwkInfo&) -> bool {
+    let no_rsa = info.n.len == 0 && info.e.len == 0;
+    let is_okp_shape = info.crv[..] == "Ed25519" && info.x.len > 0 && info.y.len == 0 && no_rsa;
+    let is_ec_shape = info.crv[..] == "P-256" && info.x.len > 0 && info.y.len > 0 && no_rsa;
+    let is_rsa_shape = info.crv.len == 0 && info.n.len > 0 && info.e.len > 0 && info.x.len == 0 && info.y.len == 0;
+    if info.kty[..] == "OKP" {
+        guard is_okp_shape else { return false; }
+        var decoded_x: u8[..64] = [];
+        return core::base64url_decode(info.x[..], decoded_x) && decoded_x.len == 32;
+    }
+    if info.kty[..] == "EC" {
+        guard is_ec_shape else { return false; }
+        var decoded_x: u8[..64] = [];
+        var decoded_y: u8[..64] = [];
+        guard core::base64url_decode(info.x[..], decoded_x) else { return false; }
+        guard core::base64url_decode(info.y[..], decoded_y) else { return false; }
+        return is_valid_jwk_ec_p256_coords(decoded_x[..], decoded_y[..]);
+    }
+    if info.kty[..] == "RSA" {
+        guard is_rsa_shape else { return false; }
+        var decoded_n: u8[..512] = [];
+        var decoded_e: u8[..8]   = [];
+        guard core::base64url_decode(info.n[..], decoded_n) else { return false; }
+        guard core::base64url_decode(info.e[..], decoded_e) else { return false; }
+        return is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]);
+    }
+    return false;
 }
 
 // Reads a single JSON string JWK coordinate field into `dst` and tracks duplicates.
@@ -172,7 +208,7 @@ fn parse_dpop_jwk_coord<B>(
     if seen { valid = false; }
     seen = true;
     let val = json::read_string(reader, scratch);
-    if core::index_of_byte(val, '=') != -1 || !dst.try_set(val) {
+    if val.len == 0 || core::index_of_byte(val, '=') != -1 || !dst.try_set(val) {
         valid = false;
     }
 }
@@ -183,6 +219,8 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
         return false;
     }
     var seen_kty = false;
+    var seen_use = false;
+    var seen_alg = false;
     var seen_crv = false;
     var seen_x = false;
     var seen_y = false;
@@ -195,10 +233,7 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
             info.valid = false;
             json::skip(reader);
         } else if jwk_key == "d" || jwk_key == "p" || jwk_key == "q" ||
-                  jwk_key == "dp" || jwk_key == "dq" || jwk_key == "qi" || jwk_key == "oth" {
-            info.has_private_key = true;
-            json::skip(reader);
-        } else if jwk_key == "k" {
+                  jwk_key == "dp" || jwk_key == "dq" || jwk_key == "qi" || jwk_key == "oth" || jwk_key == "k" {
             info.has_private_key = true;
             json::skip(reader);
         } else if jwk_key == "kty" {
@@ -212,6 +247,13 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
             } else if core::eq_ascii_fold(kty_val, "oct") {
                 info.has_private_key = true;
             }
+        } else if jwk_key == "use" {
+            if seen_use { info.valid = false; }
+            seen_use = true;
+            let use_val = json::read_string(reader, scratch);
+            if use_val != "sig" { info.valid = false; }
+        } else if jwk_key == "alg" {
+            parse_dpop_jwk_coord(reader, scratch, seen_alg, info.alg, info.valid);
         } else if jwk_key == "crv" {
             parse_dpop_jwk_coord(reader, scratch, seen_crv, info.crv, info.valid);
         } else if jwk_key == "x" {
@@ -227,15 +269,7 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
         }
     };
 
-    var params_ok = false;
-    if info.kty[..] == "OKP" {
-        params_ok = seen_crv && info.crv[..] == "Ed25519" && seen_x && info.x.len > 0 && !seen_y && !seen_n && !seen_e;
-    } else if info.kty[..] == "EC" {
-        let has_xy = seen_x && info.x.len > 0 && seen_y && info.y.len > 0;
-        params_ok = seen_crv && info.crv[..] == "P-256" && has_xy && !seen_n && !seen_e;
-    } else if info.kty[..] == "RSA" {
-        params_ok = !seen_crv && seen_n && info.n.len > 0 && seen_e && info.e.len > 0 && !seen_x && !seen_y;
-    }
+    let params_ok = validate_dpop_jwk_params(info);
     info.valid = info.valid && seen_kty && info.kty_ok && params_ok && !info.has_private_key;
     return info.valid;
 }
@@ -275,6 +309,22 @@ fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> b
     return true;
 }
 
+// Checks whether JOSE `alg` matches the embedded JWK `kty`, `crv`, and optional `alg` (RFC 9449 §4.3).
+fn is_dpop_alg_jwk_compatible(alg: const u8[:], info: const DPoPJwkInfo&) -> bool {
+    guard info.alg.len == 0 || info.alg[..] == alg else { return false; }
+    if alg == "EdDSA" {
+        return info.kty[..] == "OKP" && info.crv[..] == "Ed25519";
+    }
+    if alg == "ES256" {
+        return info.kty[..] == "EC" && info.crv[..] == "P-256";
+    }
+    if alg == "RS256" || alg == "RS384" || alg == "RS512" ||
+       alg == "PS256" || alg == "PS384" || alg == "PS512" {
+        return info.kty[..] == "RSA";
+    }
+    return false;
+}
+
 // Extracts the JOSE algorithm and JWK structure from a DPoP header JSON.
 //
 // Example:
@@ -305,7 +355,8 @@ fn parse_dpop_header_jwk_info(header_json: const u8[:], out_alg: u8[..16]&, out_
             json::skip(reader);
         }
     };
-    return json::finish(reader) && !had_dup && seen_alg && seen_jwk && out_jwk.valid;
+    let ok_base = json::finish(reader) && !had_dup && seen_alg && seen_jwk && out_jwk.valid;
+    return ok_base && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk);
 }
 
 // Creates an RFC 9449 signed DPoP Proof JWT using an asymmetric key pair (EdDSA / Ed25519).
@@ -490,7 +541,8 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
     var seen_jwk = false;
     var had_dup = false;
     var has_crit = false;
-    var scratch: u8[>..] = [];
+    var hdr_alg: u8[..16] = [];
+    var scratch: u8[>..]  = [];
     var jwk_info = DPoPJwkInfo { .. };
 
     json::each_member(reader) { key =>
@@ -512,7 +564,7 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
             if seen_alg { had_dup = true; }
             seen_alg = true;
             let alg_val = json::read_string(reader, scratch);
-            if is_matching_dpop_alg(alg_val, expected_alg) {
+            if is_matching_dpop_alg(alg_val, expected_alg) && hdr_alg.try_set(alg_val) {
                 valid_alg = true;
             }
         } else if key == "jwk" {
@@ -523,7 +575,8 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
             json::skip(reader);
         }
     };
-    return json::finish(reader) && !had_dup && !has_crit && valid_typ && valid_alg && seen_jwk && jwk_info.valid;
+    let ok_base = json::finish(reader) && !had_dup && !has_crit && valid_typ && valid_alg && seen_jwk && jwk_info.valid;
+    return ok_base && is_dpop_alg_jwk_compatible(hdr_alg[..], jwk_info);
 }
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], pub_key: const u8[32]) -> bool {
@@ -599,6 +652,32 @@ inline fn parse_dpop_iat_field(reader: json::Reader&, out: DPoPClaims&, had_erro
     out.has_iat = true;
 }
 
+// Reads a JSON string claim into `dst`, flagging duplicates or empty/non-string values.
+//
+// Example:
+//   reader at "\"GET\"", seen = false
+//   sets dst = "GET", seen = true, had_error = false
+inline fn parse_dpop_claim_str<B>(
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    dst:       B&,
+    seen:      bool&,
+    had_dup:   bool&,
+    had_error: bool&,
+) {
+    if seen { had_dup = true; }
+    seen = true;
+    guard json::peek(reader) == '"' else {
+        json::skip(reader);
+        had_error = true;
+        return;
+    }
+    let val = json::read_string(reader, scratch);
+    if val.len == 0 || !dst.try_set(val) {
+        had_error = true;
+    }
+}
+
 // Parses decoded JSON payload into a typed DPoPClaims struct in a single pass.
 // Defends against duplicate key injection (had_dup) and claim spoofing.
 //
@@ -633,39 +712,22 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
             had_error = true;
             json::skip(reader);
         } else if key == "jti" {
-            if seen_jti { had_dup = true; }
-            seen_jti = true;
-            let val = json::read_string(reader, scratch);
-            if !out.jti.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.jti, seen_jti, had_dup, had_error);
         } else if key == "htm" {
-            if seen_htm { had_dup = true; }
-            seen_htm = true;
-            let val = json::read_string(reader, scratch);
-            if !out.htm.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.htm, seen_htm, had_dup, had_error);
         } else if key == "htu" {
-            if seen_htu { had_dup = true; }
-            seen_htu = true;
-            let val = json::read_string(reader, scratch);
-            if !out.htu.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.htu, seen_htu, had_dup, had_error);
         } else if key == "iat" {
             if seen_iat { had_dup = true; }
             seen_iat = true;
             parse_dpop_iat_field(reader, out, had_error);
         } else if key == "nonce" {
-            if seen_nonce { had_dup = true; }
-            seen_nonce = true;
-            let val = json::read_string(reader, scratch);
-            if !out.nonce.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.nonce, seen_nonce, had_dup, had_error);
+            if !rfc::is_valid_dpop_nonce(out.nonce[..]) { had_error = true; }
         } else if key == "ath" {
-            if seen_ath { had_dup = true; }
-            seen_ath = true;
-            let val = json::read_string(reader, scratch);
-            if !out.ath.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.ath, seen_ath, had_dup, had_error);
         } else if key == "jkt" {
-            if seen_jkt { had_dup = true; }
-            seen_jkt = true;
-            let val = json::read_string(reader, scratch);
-            if !out.jkt.try_set(val) { had_error = true; }
+            parse_dpop_claim_str(reader, scratch, out.jkt, seen_jkt, had_dup, had_error);
         } else {
             json::skip(reader);
         }
@@ -987,9 +1049,10 @@ fn verify_dpop_proof(
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json[..], claims) else { return false; }
 
-    if expected_jkt.len > 0 {
-        // RFC 9449 Section 4.3: Checking DPoP Proofs - confirm that the public key matches expected_jkt
-        guard matches_dpop_jkt_thumbprint_jwk(jwk_info, claims.jkt[..], expected_jkt) else { return false; }
+    let target_jkt = if expected_jkt.len > 0 { expected_jkt } else { claims.jkt[..] };
+    if target_jkt.len > 0 {
+        // RFC 9449 Section 4.3 & 6.1: Confirm that the public key matches expected_jkt / claims.jkt
+        guard matches_dpop_jkt_thumbprint_jwk(jwk_info, claims.jkt[..], target_jkt) else { return false; }
     }
 
     return verify_dpop_claims(
@@ -1010,8 +1073,14 @@ fn verify_dpop_proof(
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     guard proof.len > 0 && proof.len <= 2048 else { return; }
+    for b in proof {
+        guard core::is_ascii_vchar(b) else { return; }
+    }
     if access_token.len > 0 {
         guard access_token.len <= 2040 else { return; }
+        for b in access_token {
+            guard core::is_ascii_vchar(b) else { return; }
+        }
         var auth_val: u8[..2048] = [];
         auth_val.append("DPoP ");
         auth_val.append(access_token);

@@ -109,40 +109,52 @@ struct UringCqe {
 fn uring_prep_send(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, zero_copy: bool) {
     sqe.opcode = if zero_copy { URING_OP_SEND_ZC } else { URING_OP_SEND };
     sqe.flags = 0;
+    sqe.ioprio = 0;
     sqe.fd = fd;
+    sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
     sqe.user_data = tag;
+    sqe.buf_index = 0;
 }
 
 // Prepares an SQE for receive (standard or multishot provided buffer)
 fn uring_prep_recv(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, multishot: bool) {
     sqe.opcode = URING_OP_RECV;
     sqe.flags = if multishot { URING_SQE_BUFFER_SELECT } else { 0 };
+    sqe.ioprio = 0;
     sqe.fd = fd;
+    sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
     sqe.user_data = tag;
+    sqe.buf_index = 0;
 }
 
 // Prepares an SQE for accepting connections
 fn uring_prep_accept(sqe: UringSqe&, fd: i32, tag: u64) {
     sqe.opcode = URING_OP_ACCEPT;
     sqe.flags = 0;
+    sqe.ioprio = 0;
     sqe.fd = fd;
+    sqe.off = 0;
     sqe.addr = 0;
     sqe.len = 0;
     sqe.user_data = tag;
+    sqe.buf_index = 0;
 }
 
 // Prepares an SQE for asynchronous cancellation of inflight operations
 fn uring_prep_cancel(sqe: UringSqe&, tag_to_cancel: u64) {
     sqe.opcode = URING_OP_ASYNC_CANCEL;
     sqe.flags = 0;
+    sqe.ioprio = 0;
     sqe.fd = -1;
+    sqe.off = 0;
     sqe.addr = tag_to_cancel;
     sqe.len = 0;
     sqe.user_data = 0;
+    sqe.buf_index = 0;
 }
 
 // Prepares an SQE for multishot accept (IORING_ACCEPT_MULTISHOT) matching uSockets io_uring
@@ -152,9 +164,11 @@ fn uring_prep_accept_multishot(sqe: UringSqe&, fd: i32, tag: u64) {
     sqe.flags = 0;
     sqe.ioprio = URING_ACCEPT_MULTISHOT;
     sqe.fd = fd;
+    sqe.off = 0;
     sqe.addr = 0;
     sqe.len = 0;
     sqe.user_data = tag;
+    sqe.buf_index = 0;
 }
 
 // Registers fixed preallocated buffers with io_uring (IORING_REGISTER_BUFFERS).

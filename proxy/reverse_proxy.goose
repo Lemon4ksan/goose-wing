@@ -128,6 +128,11 @@ inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&)
 // Duplicate differing Content-Length headers, duplicate Transfer-Encoding headers, or
 // conflicting Content-Length + Transfer-Encoding headers are rejected (Smuggling Protection).
 fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
+    // RFC 9110 Section 7.6.1: Connection — A sender MUST NOT send a connection option corresponding
+    // to an end-to-end framing or routing field such as Content-Length or Host.
+    guard !is_token_in_connection_header_map(in_headers, "content-length") else { return false; }
+    guard !is_token_in_connection_header_map(in_headers, "host") else { return false; }
+
     var first_cl_found = false;
     var first_cl_val: i64 = 0;
     var has_te = false;
@@ -198,23 +203,20 @@ fn inject_via_header(
     pseudonym:    const u8[:],
     http_version: const u8[:],
 ) -> bool {
+    var combined: u8[..1024] = [];
+    let has_existing = has_header(in_headers, "Via");
+    if has_existing {
+        guard get_combined(in_headers, "Via", combined, 950) else { return false; }
+    }
     guard pseudonym.len > 0 else {
-        let orig = get_header(in_headers, "Via");
-        if orig.len > 0 {
-            return append_header(out_headers, "Via", orig);
-        }
-        return true;
+        guard combined.len > 0 else { return true; }
+        return append_header(out_headers, "Via", combined[..]);
     }
     var via_buf: u8[..64] = [];
     guard format_via(via_buf, pseudonym, http_version) else { return false; }
-    let existing = get_header(in_headers, "Via");
-    if existing.len == 0 {
+    guard combined.len > 0 else {
         return append_header(out_headers, "Via", via_buf[..]);
     }
-    let needed = core::add_sat_u64(core::add_sat_u64(existing.len as u64, 2), via_buf.len as u64);
-    var combined: u8[..1024] = [];
-    guard needed <= (combined.cap as u64) else { return false; }
-    combined.append(existing);
     combined.append(", ");
     combined.append(via_buf[..]);
     return append_header(out_headers, "Via", combined[..]);
@@ -227,16 +229,12 @@ fn append_forwarded_metadata_xff(
     client_ip:          const u8[:],
     trust_incoming_xff: bool,
 ) -> bool {
-    if !trust_incoming_xff {
+    guard trust_incoming_xff && has_header(in_headers, "X-Forwarded-For") else {
         return append_forwarded_for(out_headers, "", client_ip);
     }
     var combined_buf: u8[..1024] = [];
-    if get_combined(in_headers, "X-Forwarded-For", combined_buf) {
-        return append_forwarded_for(out_headers, combined_buf[..], client_ip);
-    } else {
-        let existing = get_header(in_headers, "X-Forwarded-For");
-        return append_forwarded_for(out_headers, existing, client_ip);
-    }
+    guard get_combined(in_headers, "X-Forwarded-For", combined_buf, 1024) else { return false; }
+    return append_forwarded_for(out_headers, combined_buf[..], client_ip);
 }
 
 // Injects standard proxy forwarding headers (RFC 7239 / de facto).
@@ -328,9 +326,9 @@ fn serialize_upstream_request<B>(
     body:         const u8[:],
     out:          B&,
     http_version: const u8[:] = "HTTP/1.1",
-) {
+) -> bool {
     out.clear();
-    let _ = wire::encode_h1_request(
+    return wire::encode_h1_request(
         method,
         uri,
         "",
@@ -417,6 +415,50 @@ fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
     proxy.rate_limiter.config = new_gcra_config(rps, burst);
 }
 
+// Formats upstream Host authority per RFC 9110 §7.2 and RFC 3986 §3.2.2,
+// bracketing bare IPv6 literals and avoiding duplicate :port suffixes.
+fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, out: u8[..128]&) -> bool {
+    guard host.len > 0 && host.len <= 112 else { return false; }
+    out.clear();
+    let _, after_colon, has_colon = core::split_once_byte(host, ':');
+    let is_bracketed = starts_with(host, "[");
+    let is_bare_ipv6 = !is_bracketed && has_colon && find(after_colon, ":") >= 0;
+    if is_bare_ipv6 {
+        out.push('[');
+        out.append(host);
+        out.push(']');
+    } else {
+        out.append(host);
+    }
+    let has_port = if is_bare_ipv6 {
+        false
+    } else if is_bracketed {
+        find(host, "]:") >= 0
+    } else {
+        has_colon
+    };
+    if !preserve_host && !has_port && port != 80 && port != 443 && port > 0 {
+        out.append(":");
+        core::format_u64_dec(port, out);
+    }
+    return true;
+}
+
+// Validates that forwarded Content-Length matches body.len or injects Content-Length when needed (RFC 9112 §6.2).
+fn ensure_forwarded_body_framing(forward_headers: HeaderMap&, body: const u8[:]) -> bool {
+    if has_header(forward_headers, "content-length") {
+        var parsed_cl: i64 = 0;
+        guard validate_content_length_value(get_header(forward_headers, "content-length"), parsed_cl) else {
+            return false;
+        }
+        return parsed_cl == body.len;
+    }
+    guard body.len > 0 && !has_header(forward_headers, "transfer-encoding") else { return true; }
+    var cl_buf: u8[..32] = [];
+    core::format_u64_dec(body.len as u64, cl_buf);
+    return append_header(forward_headers, "Content-Length", cl_buf[..]);
+}
+
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
 // rewrites headers, and serializes forward wire request.
 fn prepare_proxy_request_at<B>(
@@ -462,40 +504,16 @@ fn prepare_proxy_request_at<B>(
     var forward_headers = HeaderMap { .. };
     var host_buf: u8[..128] = [];
     let target = proxy.cluster.targets[target_idx];
-    host_buf.append(target.host[..]);
-    if !proxy.config.preserve_host && target.port != 80 && target.port != 443 && target.port > 0 {
-        host_buf.append(":");
-        core::format_u64_dec(target.port as u64, host_buf);
-    }
-    let upstream_host = host_buf[..];
-
-    guard filter_and_forward_headers(
-        in_headers,
-        forward_headers,
-        client_ip,
-        proto,
-        upstream_host,
-        proxy.config,
-    ) else {
+    let ok_prep = format_upstream_authority(target.host[..], target.port, proxy.config.preserve_host, host_buf)
+        && filter_and_forward_headers(in_headers, forward_headers, client_ip, proto, host_buf[..], proxy.config)
+        && ensure_forwarded_body_framing(forward_headers, body)
+        && serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
+    guard ok_prep else {
         release_upstream_connection(proxy.cluster, target_idx);
         record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
 
-    let has_cl_or_te = has_header(forward_headers, "content-length")
-        || has_header(forward_headers, "transfer-encoding");
-    if body.len > 0 && !has_cl_or_te {
-        var cl_buf: u8[..32] = [];
-        core::format_u64_dec(body.len as u64, cl_buf);
-        guard append_header(forward_headers, "Content-Length", cl_buf[..]) else {
-            release_upstream_connection(proxy.cluster, target_idx);
-            record_proxy_dropped(proxy);
-            return PROXY_TARGET_NONE, false;
-        }
-    }
-
-    // 5. Upstream wire serialization
-    serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
     record_proxy_forwarded(proxy);
     return target_idx, true;
 }
@@ -694,11 +712,13 @@ fn exchange_prepared_wire_on_conn(
     out_resp:   Response&,
     timeout_ms: u32,
 ) -> bool, bool {
-    conn.rx_buf.clear();
+    reset_response(out_resp);
     guard send_all(conn.transport, wire_req) else { return false, false; }
 
     var dummy_req = new_request(method, "/");
-    loop {
+    // RFC 9110 Section 15.2: Informational 1xx — Cap consecutive 1xx interim responses to 5.
+    for interim_step in 6 {
+        guard interim_step < 5 else { return false, false; }
         let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, out_resp, timeout_ms);
         let rx = conn.rx_buf[..];
         guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else { return false, false; }
@@ -707,7 +727,10 @@ fn exchange_prepared_wire_on_conn(
             drain_rx_buf(conn.rx_buf, leftover_start);
             continue;
         }
-        return pump_response_body(conn, dummy_req, out_resp, rx[leftover_start..], timeout_ms);
+        var leftover: u8[..8192] = [];
+        guard leftover.try_set(rx[leftover_start..]) else { return false, false; }
+        conn.rx_buf.clear();
+        return pump_response_body(conn, dummy_req, out_resp, leftover[..], timeout_ms);
     }
     return false, false;
 }
@@ -750,10 +773,11 @@ fn execute_proxy_exchange(
         return false;
     }
 
+    pool.conns[c_idx].rx_buf.clear();
     let ok_ex, keep_alive = exchange_prepared_wire_on_conn(
         pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
     );
-    if ok_ex && keep_alive {
+    if ok_ex && keep_alive && pool.conns[c_idx].rx_buf.len == 0 {
         pool.release_connection(conn_id, now_i64);
     } else {
         pool.close_pooled_connection(conn_id);

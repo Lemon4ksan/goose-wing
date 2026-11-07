@@ -22,11 +22,18 @@ struct NetworkIsolationKey {
 
 // Constructs a clean NetworkIsolationKey
 fn new_network_isolation_key(top_level: const u8[:], frame: const u8[:]) -> NetworkIsolationKey {
-    var nik = NetworkIsolationKey { is_empty: false, .. };
-    guard nik.top_level_site.try_append(top_level) && nik.frame_site.try_append(frame) else {
+    guard top_level.len > 0 || frame.len > 0 else {
         return empty_network_isolation_key();
     }
-    nik.is_cross_site = !core::eq_ascii_fold(nik.top_level_site[..], nik.frame_site[..]);
+    guard top_level.len <= 128 && frame.len <= 128 else {
+        return empty_network_isolation_key();
+    }
+    var nik = NetworkIsolationKey { is_empty: false, .. };
+    nik.top_level_site.append(top_level);
+    to_lower(nik.top_level_site[..]);
+    nik.frame_site.append(frame);
+    to_lower(nik.frame_site[..]);
+    nik.is_cross_site = nik.top_level_site[..] != nik.frame_site[..];
     return nik;
 }
 
@@ -39,12 +46,12 @@ fn empty_network_isolation_key() -> NetworkIsolationKey {
 // If NIK is empty, writes `base_key`.
 // If NIK is active, writes `base_key{top_level_site,frame_site}`.
 fn format_partitioned_key<B>(base_key: const u8[:], nik: const NetworkIsolationKey&, out: B&) {
-    out.append(base_key);
+    let _ = out.try_append(base_key);
     if !nik.is_empty {
-        out.push('{');
-        out.append(nik.top_level_site[..]);
-        out.push(',');
-        out.append(nik.frame_site[..]);
-        out.push('}');
+        let _ = out.try_append("{");
+        let _ = out.try_append(nik.top_level_site[..]);
+        let _ = out.try_append(",");
+        let _ = out.try_append(nik.frame_site[..]);
+        let _ = out.try_append("}");
     }
 }

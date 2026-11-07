@@ -103,9 +103,14 @@ fn stage_client_cache_lookup<Cache>(
     var lookup_req = copy(req);
     lookup_req.url.clear();
     lookup_req.url.append(eff_url);
+    lookup_req.headers = copy(headers);
     let lookup_dec = cache.lookup(lookup_req, now_ts);
     if lookup_dec.kind == LookupResultKind.Hit {
         out_resp = copy(lookup_dec.cached_response);
+        for &e in out_resp.headers.entries {
+            update_response_presence(out_resp, entry_name(out_resp.headers, e));
+        }
+        copy_headers(headers, out_resp.sent_headers);
         return wire::StageVerdict.ShortCircuit { status_code: out_resp.status_code as u16 };
     }
     if lookup_dec.kind == LookupResultKind.Fail504 {
@@ -144,8 +149,7 @@ fn stage_client_cookie_load<Jar>(
 ) -> wire::StageVerdict {
     guard enable_jar else { return wire::StageVerdict.Continue; }
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
-    let is_top_nav = is_main_frame
-        && (samesite_eval.context_type != SameSiteContextType.CrossSite || samesite_eval.had_cross_site_hop);
+    let is_top_nav = is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite;
     let _ = jar.encode_cookie_header_to_map(
         current_url.hostname(),
         current_url.pathname(),
@@ -165,7 +169,7 @@ fn stage_client_cookie_load<Jar>(
     return wire::StageVerdict.Continue;
 }
 
-// Negotiates compression dictionary transport (`Available-Dictionary` and `Accept-Encoding: dcb, dcz`).
+// Negotiates compression dictionary transport (`Available-Dictionary` and `Dictionary-ID`).
 fn stage_client_dict_negotiate(
     headers:     HeaderMap&,
     dict_cache:  DictionaryCache&,
@@ -176,10 +180,19 @@ fn stage_client_dict_negotiate(
     now_sec:     i64,
 ) -> wire::StageVerdict {
     remove_header_by_name(headers, "Available-Dictionary");
+    remove_header_by_name(headers, "Dictionary-ID");
     guard enable_dict && is_https else { return wire::StageVerdict.Continue; }
-    var matched_dict_b64: u8[..64] = [];
-    if dictionary_lookup_for_request(dict_cache, origin_buf, curr_path, now_sec, matched_dict_b64) {
-        append_available_dict_header(headers, matched_dict_b64[..]);
+    for &entry in dict_cache.entries {
+        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
+            append_available_dict_header(headers, entry.sha256_base64[..]);
+            // RFC 9842 Section 2.3: Dictionary-ID - Send Dictionary-ID when stored dictionary has an id parameter.
+            if entry.id.len > 0 {
+                var id_hdr: u8[..128] = [];
+                format_dictionary_id_header(id_hdr, entry.id[..]);
+                set_header(headers, "Dictionary-ID", id_hdr[..]);
+            }
+            break;
+        }
     }
     return wire::StageVerdict.Continue;
 }
@@ -289,6 +302,7 @@ fn stage_client_decompress(
 // Updates RFC 9111 HTTP cache and handles 304 Not Modified freshening via UFCS `cache.on_response(...)`.
 fn stage_client_cache_store<Cache>(
     req:            const Request&,
+    headers:        const HeaderMap&,
     current_url:    const core::Url&,
     method:         const u8[:],
     out_resp:       Response&,
@@ -304,9 +318,13 @@ fn stage_client_cache_store<Cache>(
     hop_req.url.append(current_url.href[..]);
     hop_req.method.clear();
     hop_req.method.append(method);
+    hop_req.headers = copy(headers);
     let resp_dec = cache.on_response(hop_req, out_resp, cache_ts, revalidate_idx);
     if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
         out_resp = copy(resp_dec.response);
+        for &e in out_resp.headers.entries {
+            update_response_presence(out_resp, entry_name(out_resp.headers, e));
+        }
     }
     return wire::StageVerdict.Continue;
 }
@@ -430,16 +448,31 @@ fn run_client_preflight_stages<UserStage>(
     ctx = init_execution_context(session, req, parsed_initial);
 
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_CACHE_LOOKUP) {
+        var cache_hdrs = copy(ctx.headers);
+        let cookie_stage_on = wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_COOKIE_LOAD);
+        if session.enable_cookie_jar && cookie_stage_on {
+            var tmp_ctx = copy(ctx);
+            let safe_m = rfc::is_safe_http_method(tmp_ctx.current_method[..]);
+            let ss_eval = compute_hop_samesite_context(tmp_ctx, parsed_initial, safe_m);
+            prepare_hop_cookie_header(session, tmp_ctx, parsed_initial, ss_eval, safe_m);
+            cache_hdrs = copy(tmp_ctx.headers);
+        }
         let v_cache = stage_client_cache_lookup(
             req,
             parsed_initial.href[..],
             cache_ts.now,
-            ctx.headers,
+            cache_hdrs,
             out_resp,
             cache_revalidate_idx,
             session.cache,
             session.enable_cache,
         );
+        if cache_revalidate_idx >= 0 {
+            let inm = get_header(cache_hdrs, "If-None-Match");
+            if inm.len > 0 { set_header(ctx.headers, "If-None-Match", inm); }
+            let ims = get_header(cache_hdrs, "If-Modified-Since");
+            if ims.len > 0 { set_header(ctx.headers, "If-Modified-Since", ims); }
+        }
         match v_cache {
             ShortCircuit _ => {
                 out_err = Error { .. };
@@ -680,6 +713,7 @@ fn dispatch_client_egress_stage(
         let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
         return stage_client_cache_store(
             req,
+            ctx.headers,
             current_url,
             ctx.current_method[..],
             out_resp,

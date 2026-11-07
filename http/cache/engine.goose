@@ -409,6 +409,8 @@ fn lookup(
     if cur_mono.nanos > 0 {
         ts.now_mono = cur_mono;
         ts.has_monotonic = true;
+    } else {
+        advance_monotonic_for_age(ts, cur_now, matched_entry.timestamps.now);
     }
 
     let metrics = evaluate_freshness(
@@ -463,6 +465,11 @@ fn freshen_cached_entry_304(
     }
 
     var entry = &cache.entries[revalidate_entry_idx];
+    guard entry.is_valid && !entry.security_zeroed else {
+        dec.kind = ResponseDecisionKind.PassThrough;
+        dec.response = copy(resp);
+        return dec;
+    }
     let resp_304_headers = resp.response_headers_to_map();
     entry.headers.merge_cached_headers_304(resp_304_headers);
     let vary_raw = entry.headers.get_header("vary");
@@ -474,7 +481,9 @@ fn freshen_cached_entry_304(
     entry.timestamps.request_mono = ts.request_mono;
     entry.timestamps.response_time = ts.response_time;
     entry.timestamps.response_mono = ts.response_mono;
+    entry.timestamps.now = ts.response_time;
     if ts.has_monotonic {
+        entry.timestamps.now_mono = ts.response_mono;
         entry.timestamps.has_monotonic = true;
     }
     entry.cc = parse_cache_control_headers(
@@ -606,8 +615,8 @@ fn on_response(
         return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req.headers);
     }
 
-    // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error
-    let is_gateway_error = resp.status_code >= 500 && resp.status_code <= 504;
+    // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error (500, 502, 503, 504)
+    let is_gateway_error = resp.status_code == 500 || (resp.status_code >= 502 && resp.status_code <= 504);
     let valid_reval_idx = revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len;
     if is_gateway_error && valid_reval_idx {
         let entry = cache.entries[revalidate_entry_idx];
@@ -678,13 +687,18 @@ fn on_response(
         return dec;
     }
 
-    var vary_combined: u8[..512] = [];
-    get_combined(resp_headers, "vary", vary_combined, 512);
-    let vary_slice = if vary_combined.len > 0 { vary_combined[..] } else { resp_headers.get_header("vary") };
-    let vary_snap = record_vary_snapshot(vary_slice, req.headers);
-    guard !vary_snap.has_star && vary_snap.valid else {
-        dec.kind = ResponseDecisionKind.PassThrough;
-        return dec;
+    var vary_snap = VarySnapshot { .. };
+    if resp_headers.has_header("vary") {
+        var vary_combined: u8[..512] = [];
+        guard get_combined(resp_headers, "vary", vary_combined, 512) else {
+            dec.kind = ResponseDecisionKind.PassThrough;
+            return dec;
+        }
+        vary_snap = record_vary_snapshot(vary_combined[..], req.headers);
+        guard !vary_snap.has_star && vary_snap.valid else {
+            dec.kind = ResponseDecisionKind.PassThrough;
+            return dec;
+        }
     }
 
     var sanitized = HeaderMap { .. };
@@ -768,9 +782,10 @@ fn invalidate_target_if_same_origin(
 fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Response&) -> i64 {
     var count = cache.invalidate_matching_url(req.url[..]);
 
+    var base_orig = core::Origin { .. };
     let parsed_base, err_base = core::parse_url(req.url[..]);
     if err_base == core::UrlParseError.None && parsed_base.valid {
-        let base_orig = core::origin_from_url(parsed_base);
+        base_orig = core::origin_from_url(parsed_base);
         count += invalidate_target_if_same_origin(cache, resp.header("Location"), parsed_base, base_orig);
         count += invalidate_target_if_same_origin(cache, resp.header("Content-Location"), parsed_base, base_orig);
     }
@@ -781,7 +796,7 @@ fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Respon
     var group_count: i32                 = 0;
     if parse_cache_group_list(resp.header("Cache-Group-Invalidation"), group_tags, group_count) {
         for slot in 0..group_count {
-            count = add_invalidated_entries(count, cache.invalidate_group(group_tags[slot].name[..]));
+            count = add_invalidated_entries(count, cache.invalidate_group(group_tags[slot].name[..], base_orig));
         }
     }
 

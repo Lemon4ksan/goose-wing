@@ -20,16 +20,26 @@ fn compute_hop_samesite_context(
     safe_method: bool,
 ) -> SameSiteCookieContext {
     var samesite_ctx_type = SameSiteContextType.CrossSite;
-    let is_first_p = is_first_party(ctx.site_for_cookies, href(current_url), true);
+    let is_first_p = !ctx.site_for_cookies.is_null && is_first_party(ctx.site_for_cookies, href(current_url), true);
+    let init_same_site = !ctx.has_initiator || (
+        ctx.initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
+            ctx.initiator.scheme[..], ctx.initiator.host[..],
+            core::scheme(current_url), core::hostname(current_url),
+        )
+    );
 
-    if ctx.is_main_frame {
-        if ctx.had_cross_site_hop {
+    if ctx.site_for_cookies.is_null {
+        samesite_ctx_type = SameSiteContextType.CrossSite;
+    } else if ctx.is_main_frame {
+        if ctx.first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL && !is_first_p {
+            samesite_ctx_type = SameSiteContextType.CrossSite;
+        } else if ctx.had_cross_site_hop {
             samesite_ctx_type = if safe_method {
                 SameSiteContextType.SameSiteLax
             } else {
                 SameSiteContextType.CrossSite
             };
-        } else if is_first_p {
+        } else if is_first_p && init_same_site {
             samesite_ctx_type = SameSiteContextType.SameSiteStrict;
         } else if safe_method {
             samesite_ctx_type = SameSiteContextType.SameSiteLax;
@@ -37,7 +47,7 @@ fn compute_hop_samesite_context(
             samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
         }
     } else {
-        if ctx.had_cross_site_hop || !is_first_p {
+        if ctx.had_cross_site_hop || !is_first_p || !init_same_site {
             samesite_ctx_type = SameSiteContextType.CrossSite;
         } else {
             samesite_ctx_type = SameSiteContextType.SameSiteStrict;
@@ -65,23 +75,23 @@ fn compute_hop_partition_key<B>(
     out.clear();
     if ctx.top_frame_origin.host.len > 0 {
         let sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { "https" };
-        out.append(sch);
-        out.append("://");
-        out.append(ctx.top_frame_origin.host[..]);
+        let _ = out.try_append(sch);
+        let _ = out.try_append("://");
+        let _ = out.try_append(ctx.top_frame_origin.host[..]);
     } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
         let sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { "https" };
-        out.append(sch);
-        out.append("://");
-        out.append(ctx.site_for_cookies.registrable_domain[..]);
+        let _ = out.try_append(sch);
+        let _ = out.try_append("://");
+        let _ = out.try_append(ctx.site_for_cookies.registrable_domain[..]);
     } else {
-        out.append(current_url.scheme());
-        out.append("://");
+        let _ = out.try_append(current_url.scheme());
+        let _ = out.try_append("://");
         var etld: u8[..128] = [];
         psl_extract_etld_plus_one(current_url.hostname(), etld);
         if etld.len > 0 {
-            out.append(etld[..]);
+            let _ = out.try_append(etld[..]);
         } else {
-            out.append(current_url.hostname());
+            let _ = out.try_append(current_url.hostname());
         }
     }
 }
@@ -97,8 +107,7 @@ fn prepare_hop_cookie_header(
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
-    let is_top_nav = ctx.is_main_frame
-        && (samesite_eval.context_type != SameSiteContextType.CrossSite || samesite_eval.had_cross_site_hop);
+    let is_top_nav = ctx.is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite;
     let _ = encode_cookie_header_to_map(
         session.jar,
         current_url.hostname(),

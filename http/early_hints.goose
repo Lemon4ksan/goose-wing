@@ -46,12 +46,12 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     var p_val = p_val_raw.trim_lws().trim_byte('"');
 
     if eq_ascii_fold(p_name, "rel") {
+        guard link.rel.len == 0 else { return true; }
         guard p_val.len <= link.rel.cap else { return false; }
-        link.rel.clear();
         link.rel.append(p_val);
     } else if eq_ascii_fold(p_name, "as") {
+        guard link.as_type.len == 0 else { return true; }
         guard p_val.len <= link.as_type.cap else { return false; }
-        link.as_type.clear();
         link.as_type.append(p_val);
     } else if eq_ascii_fold(p_name, "crossorigin") {
         link.crossorigin = true;
@@ -62,8 +62,17 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
 fn find_link_entry_end(s: const u8[:]) -> i64 {
     var in_quotes = false;
     var in_angle = false;
+    var escaped = false;
     for i in s.len {
         let b = s[i];
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_quotes && b == '\\' {
+            escaped = true;
+            continue;
+        }
         if b == '"' && !in_angle {
             in_quotes = !in_quotes;
         } else if b == '<' && !in_quotes {

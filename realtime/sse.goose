@@ -24,14 +24,16 @@ struct SseEvent {
 }
 
 struct SseParser {
-    cur_event:     u8[..64]   = [],
-    cur_data:      u8[..4096] = [],
-    last_event_id: u8[..128]  = [],
-    retry_ms:      u32        = 3000,
-    line_buf:      u8[..4112] = [],
-    prev_was_cr:   bool       = false,
-    has_data:      bool       = false,
-    bom_checked:   bool       = false,
+    cur_event:      u8[..64]   = [],
+    cur_data:       u8[..4096] = [],
+    last_event_id:  u8[..128]  = [],
+    pending_id:     u8[..128]  = [],
+    retry_ms:       u32        = 3000,
+    line_buf:       u8[..4112] = [],
+    prev_was_cr:    bool       = false,
+    has_data:       bool       = false,
+    has_pending_id: bool       = false,
+    bom_checked:    bool       = false,
 }
 
 // ---- Line Dispatch and Event Dispatch (W3C Section 6) -------------------
@@ -75,15 +77,16 @@ fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8
             }
         }
     } else if field_name == "id" {
-        // Must not contain NUL byte
+        // Must not contain NUL byte (W3C EventSource §9.2.6)
         var has_null = false;
         for b in field_val {
             if b == 0 { has_null = true; break; }
         }
         if !has_null {
-            p.last_event_id.clear();
-            let copy_len = min(field_val.len, p.last_event_id.cap);
-            p.last_event_id.append(field_val[..copy_len]);
+            p.pending_id.clear();
+            let copy_len = min(field_val.len, p.pending_id.cap);
+            p.pending_id.append(field_val[..copy_len]);
+            p.has_pending_id = true;
         }
     } else if field_name == "retry" {
         let num, ok = parse_sse_retry(field_val);
@@ -107,6 +110,12 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
 
     // Empty line indicates event boundary (W3C Section 6 / §9.2.6: dispatch the event)
     if line.len == 0 {
+        // W3C §9.2.6 Step 1: Set the last event ID string of the event source to the value of the last event ID buffer
+        if p.has_pending_id {
+            p.last_event_id.clear();
+            p.last_event_id.append(p.pending_id[..]);
+            p.has_pending_id = false;
+        }
         if p.has_data {
             var ev = SseEvent {
                 retry_ms: p.retry_ms,
@@ -189,8 +198,10 @@ fn sse_flush<E>(p: SseParser&, out_events: E&) {
     p.line_buf.clear();
     p.cur_event.clear();
     p.cur_data.clear();
+    p.pending_id.clear();
     p.prev_was_cr = false;
     p.has_data = false;
+    p.has_pending_id = false;
     p.bom_checked = false;
 }
 
@@ -324,7 +335,11 @@ fn prepare_request(sub: const SseSubscription&, req: Request&) {
     set_header(req, "Cache-Control", "no-cache");
     set_header(req, "Connection", "keep-alive");
     if sub.parser.last_event_id.len > 0 {
-        set_header(req, "Last-Event-ID", sub.parser.last_event_id[..]);
+        let raw_id = sub.parser.last_event_id[..];
+        let clean_id = raw_id[..sse_clean_token_len(raw_id)];
+        if clean_id.len > 0 {
+            set_header(req, "Last-Event-ID", clean_id);
+        }
     }
 }
 

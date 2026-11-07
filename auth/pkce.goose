@@ -160,6 +160,7 @@ fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool {
 // S256: BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) without padding.
 // Method MUST be case-sensitive ("S256" or "plain", RFC 7636 Section 4.3). Defaults to 'plain'.
 fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&) -> bool {
+    out.clear();
     guard is_valid_code_verifier(verifier) else {
         return false;
     }
@@ -172,7 +173,6 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
         return false;
     }
 
-    out.clear();
     if eff_method == rfc::PKCE_METHOD_S256 {
         let digest = core::sha256(verifier);
         core::base64url_encode(digest[..], out);
@@ -207,11 +207,12 @@ fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method
 
 // Creates a complete PKCE challenge pair. Returns false if entropy or method is invalid.
 fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool {
-    var pair = PkcePair { .. };
+    var pair = PkcePair { method: "", .. };
+    let empty_pair = PkcePair { method: "", .. };
     let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
-    guard pair.method.try_set(eff_method) else { return pair, false; }
-    guard generate_code_verifier(pair.verifier, entropy) else { return pair, false; }
-    guard compute_code_challenge(pair.verifier[..], eff_method, pair.challenge) else { return pair, false; }
+    guard pair.method.try_set(eff_method) else { return empty_pair, false; }
+    guard generate_code_verifier(pair.verifier, entropy) else { return empty_pair, false; }
+    guard compute_code_challenge(pair.verifier[..], eff_method, pair.challenge) else { return empty_pair, false; }
     return pair, true;
 }
 

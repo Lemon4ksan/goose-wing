@@ -386,12 +386,19 @@ fn stage_server_auth_cookie<Jar>(
     let now_sec = (now_ns / 1000000000) as i64;
     for &e in req.headers.entries {
         guard eq_ascii_fold(entry_name(req.headers, e), "Cookie") else { continue; }
-        let session_val = extract_session_cookie_value(entry_value(req.headers, e));
-        guard session_val.len > 0 else { continue; }
-        ext.session_data.clear();
-        guard jar.private_jar_open("session", session_val, now_sec, ext.session_data) else { continue; }
-        ext.populated_entries |= internal::ENTRY_COOKIES;
-        return wire::StageVerdict.Continue;
+        var rem = entry_value(req.headers, e);
+        while rem.len > 0 {
+            let session_val = extract_session_cookie_value(rem);
+            guard session_val.len > 0 else { break; }
+            ext.session_data.clear();
+            if jar.private_jar_open("session", session_val, now_sec, ext.session_data) {
+                ext.populated_entries |= internal::ENTRY_COOKIES;
+                return wire::StageVerdict.Continue;
+            }
+            let semi = core::index_of_byte(rem, ';');
+            guard semi >= 0 else { break; }
+            rem = rem[core::add_sat_i64(semi, 1)..];
+        }
     }
     return wire::StageVerdict.Continue;
 }
@@ -461,7 +468,7 @@ fn stage_server_cache_lookup(
     guard req.method[..] == "GET" || req.method[..] == "HEAD" else {
         return wire::StageVerdict.Continue;
     }
-    let lookup = cache.cache_lookup(now_ms, handler_id);
+    let lookup = cache.cache_lookup(now_ms, handler_id, req.url[..]);
     return match lookup {
         HitFresh => populate_cached_response(cache, res),
         HitStaleNeedsUpdate => {
@@ -565,6 +572,21 @@ inline fn append_vary_accept_encoding(res: Response&) {
     }
 }
 
+inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], suffix: const u8[:]) {
+    set_header(res, "Content-Encoding", encoding);
+    remove_header(res, "Content-Length");
+    let etag = header(res, "ETag");
+    let last_idx = core::sub_sat_i64(etag.len, 1);
+    if etag.len >= 2 && etag[last_idx] == '"' && core::add_sat_i64(etag.len, suffix.len) <= 64 {
+        var new_etag: u8[..64] = [];
+        new_etag.append(etag[..last_idx]);
+        new_etag.append(suffix);
+        new_etag.push('"');
+        set_header(res, "ETag", new_etag[..]);
+    }
+    append_vary_accept_encoding(res);
+}
+
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
 fn stage_server_compress(
     req:  const Request&,
@@ -586,8 +608,7 @@ fn stage_server_compress(
         if core::zstd_compress(res.body[..], compressed) && compressed.len > 0 {
             res.body.clear();
             res.body.append(compressed[..]);
-            set_header(res, "Content-Encoding", "zstd");
-            append_vary_accept_encoding(res);
+            finalize_compressed_response(res, "zstd", "-zstd");
             return wire::StageVerdict.Continue;
         }
     }
@@ -596,8 +617,7 @@ fn stage_server_compress(
         if core::brotli_compress(res.body[..], compressed, 1) && compressed.len > 0 {
             res.body.clear();
             res.body.append(compressed[..]);
-            set_header(res, "Content-Encoding", "br");
-            append_vary_accept_encoding(res);
+            finalize_compressed_response(res, "br", "-br");
             return wire::StageVerdict.Continue;
         }
     }
@@ -606,8 +626,7 @@ fn stage_server_compress(
         if core::gzip_compress(res.body[..], compressed, 6) && compressed.len > 0 {
             res.body.clear();
             res.body.append(compressed[..]);
-            set_header(res, "Content-Encoding", "gzip");
-            append_vary_accept_encoding(res);
+            finalize_compressed_response(res, "gzip", "-gzip");
             return wire::StageVerdict.Continue;
         }
     }
@@ -619,10 +638,13 @@ fn stage_server_cache_store(
     cache:      HttpRouteCache&,
     now_ms:     u64,
     res:        const Response&,
-    handler_id: i32 = -1,
+    handler_id: i32         = -1,
+    url_key:    const u8[:] = "",
 ) -> wire::StageVerdict {
     if res.status_code == 200 && res.body.len > 0 {
-        let _ = cache.cache_store(now_ms, res.body[..], handler_id, header(res, "content-type"));
+        let _ = cache.cache_store(now_ms, res.body[..], handler_id, header(res, "content-type"), url_key);
+    } else {
+        cache.is_updating = false;
     }
     return wire::StageVerdict.Continue;
 }
@@ -749,9 +771,9 @@ fn dispatch_ingress_pipeline(
     }
 
     // Stage: CORS preflight and Fetch Metadata CSRF isolation
-    let has_cors_csrf = (mask & (STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF)) != 0;
-    if has_cors_csrf && (cfg.enable_cors || cfg.enable_csrf_guard) {
-        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res, mask);
+    let cors_csrf_mask = mask & (STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF);
+    if cors_csrf_mask != 0 && (cfg.enable_cors || cfg.enable_csrf_guard) {
+        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res, cors_csrf_mask);
         guard !is_term else { return sec_outcome, true; }
     }
 
@@ -780,22 +802,23 @@ fn dispatch_egress_pipeline(
     now_ns:       u64 = 0,
     ext_slot_idx: i32 = -1,
 ) {
+    let egress_mask = mask & 0xFFFFFFFF00000000;
     let compress_bits = STAGE_EGRESS_COMPRESS_GZIP | STAGE_EGRESS_COMPRESS_BROTLI | STAGE_EGRESS_COMPRESS_ZSTD;
-    if (mask & compress_bits) != 0 {
-        let _ = stage_server_compress(req, res, mask);
+    if (egress_mask & compress_bits) != 0 {
+        let _ = stage_server_compress(req, res, egress_mask);
     }
-    if (mask & STAGE_EGRESS_ETAG) != 0 {
+    if (egress_mask & STAGE_EGRESS_ETAG) != 0 {
         let _ = stage_server_etag(req, res);
     }
-    if (mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 {
+    if (egress_mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 {
         let _ = stage_server_security_headers(res);
     }
-    if (mask & (STAGE_EGRESS_METRICS | STAGE_EGRESS_ACCESS_LOG)) != 0 {
+    if (egress_mask & (STAGE_EGRESS_METRICS | STAGE_EGRESS_ACCESS_LOG)) != 0 {
         if ext_slot_idx >= 0 && ext_slot_idx < cfg.ext_pool.slots.len {
-            let _ = stage_server_metrics_log(cfg.ext_pool.slots[ext_slot_idx], res, mask, now_ns);
+            let _ = stage_server_metrics_log(cfg.ext_pool.slots[ext_slot_idx], res, egress_mask, now_ns);
         } else {
             var dummy_ext = internal::RequestExtensions { start_time_ns: now_ns, .. };
-            let _ = stage_server_metrics_log(dummy_ext, res, mask, now_ns);
+            let _ = stage_server_metrics_log(dummy_ext, res, egress_mask, now_ns);
         }
     }
 }
@@ -848,6 +871,7 @@ fn execute_found_route_handler<UserStage>(
             }
         },
         Abort _ => {
+            cfg.route_cache.is_updating = false;
             return PipelineOutcome.CsrfRejected;
         },
         _ => {},
@@ -858,7 +882,9 @@ fn execute_found_route_handler<UserStage>(
         apply_route_payload(cfg, f.handler_id, res);
     }
     if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 {
-        let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id);
+        let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id, req.url[..]);
+    } else {
+        cfg.route_cache.is_updating = false;
     }
     return PipelineOutcome.Handled;
 }
@@ -948,18 +974,23 @@ fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
 //   fwd = "for=\"192.0.2.60:4711\";proto=http, for=198.51.100.17"
 //   returns: "192.0.2.60"
 fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
-    guard fwd.len > 0 else { return ""; }
-    let comma_idx = core::find_unquoted_byte(fwd, ',');
-    let elem = if comma_idx >= 0 { fwd[..comma_idx] } else { fwd };
+    var rem = fwd;
+    while rem.len > 0 {
+        let comma_idx = core::find_unquoted_byte(rem, ',');
+        let elem = rem[..comma_idx];
+        rem = if comma_idx < rem.len { rem[core::add_sat_i64(comma_idx, 1)..] } else { "" };
 
-    var pos: i64 = 0;
-    while pos < elem.len {
-        let sc = core::find_unquoted_byte(elem[pos..], ';');
-        let pair = if sc >= 0 { elem[pos..(pos + sc)] } else { elem[pos..] };
-        pos = if sc >= 0 { pos + sc + 1 } else { elem.len };
+        var elem_rem = elem;
+        while elem_rem.len > 0 {
+            let sc = core::find_unquoted_byte(elem_rem, ';');
+            let pair = elem_rem[..sc];
+            elem_rem = if sc < elem_rem.len { elem_rem[core::add_sat_i64(sc, 1)..] } else { "" };
 
-        let ip = parse_forwarded_pair(pair);
-        guard ip.len == 0 else { return ip; }
+            let ip = parse_forwarded_pair(pair);
+            if ip.len > 0 {
+                return ip;
+            }
+        }
     }
     return "";
 }
@@ -989,18 +1020,19 @@ fn extract_effective_client_ip(
             return fwd_ip;
         }
     }
-    let real_ip = core::trim_lws(header(req, "x-real-ip"));
+    let real_ip = normalize_forwarded_ip(core::trim_lws(header(req, "x-real-ip")));
     if real_ip.len > 0 && real_ip.len <= 48 {
         return real_ip;
     }
     let xff = header(req, "x-forwarded-for");
     if xff.len > 0 {
         let comma_idx = core::index_of_byte(xff, ',');
-        let first_ip = if comma_idx >= 0 {
+        let raw_first = if comma_idx >= 0 {
             core::trim_lws(xff[..comma_idx])
         } else {
             core::trim_lws(xff)
         };
+        let first_ip = normalize_forwarded_ip(raw_first);
         if first_ip.len > 0 && first_ip.len <= 48 {
             return first_ip;
         }
@@ -1012,7 +1044,7 @@ fn extract_effective_client_ip(
 inline fn resolve_route_effective_pso(res: RouteMatchResult, caps: u64) -> u64 {
     return match res {
         Found f => f.pso_mask & caps,
-        _ => caps,
+        _ => (DEFAULT_ROUTE_PSO_MASK | STAGE_INGRESS_CORS_PREFLIGHT) & caps,
     };
 }
 
@@ -1094,8 +1126,19 @@ fn execute_server_pipeline_with_stage<UserStage>(
         _ => {},
     };
 
-    var match_res = RouteMatchResult.NotFound;
-    let _ = stage_server_route_match(cfg.router, req, cfg.ext_pool.slots[e_idx], match_res, res);
+    let match_res = cfg.router.match_route(
+        req.method[..],
+        req.url[..],
+        cfg.ext_pool.slots[e_idx].params,
+        cfg.ext_pool.slots[e_idx].canon_url,
+    );
+    match match_res {
+        Found _ => {
+            let c_len = min(cfg.ext_pool.slots[e_idx].canon_url.len, 64);
+            let _ = cfg.ext_pool.slots[e_idx].matched_route.try_set(cfg.ext_pool.slots[e_idx].canon_url[..c_len]);
+        },
+        _ => {},
+    };
     sync_stage_ctx_with_route(sctx, match_res);
 
     let effective_pso = resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);

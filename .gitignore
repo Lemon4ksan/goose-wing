@@ -26,3 +26,4 @@ tests/wasm_runner.c
 
 # goose-lit artifacts
 .lit/cache/
+.gemini/

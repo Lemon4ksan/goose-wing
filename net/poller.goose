@@ -494,14 +494,9 @@ fn poll_events(
     out_events.clear();
     p.total_polls += 1;
     poller_poll_native_drivers(p, timeout_ms);
-
-    // 1. Process Expired High-Resolution Timers First
     check_expired_timers(p, now_ns, out_events);
-
-    // 2. Process Coarse Socket Timeouts (uSockets 4-second pattern)
     check_coarse_timeouts(p, now_ns, out_events);
 
-    // 3. Reap Socket Readiness Events
     for i in p.registrations.len {
         guard p.registrations[i].in_use else { continue; }
         guard out_events.len < out_events.cap else { break; }
@@ -510,7 +505,6 @@ fn poll_events(
         var ready = p.registrations[i].sim.ready;
         var triggered: u32 = POLL_NONE;
 
-        // Match against registered interest
         if (ready & POLL_READ) != 0 && (interest == PollInterest.Read || interest == PollInterest.ReadWrite) {
             triggered |= POLL_READ;
         }
@@ -536,12 +530,10 @@ fn poll_events(
             out_events.push(ev);
             p.total_events_dispatched += 1;
 
-            // Edge-triggered reset: clear simulated ready bits once reported
             if p.registrations[i].trigger == PollTrigger.Edge {
-                p.registrations[i].sim.ready = POLL_NONE;
+                p.registrations[i].sim.ready &= ~triggered;
                 p.registrations[i].sim.bytes = 0;
             } else {
-                // Level-triggered: write readiness is transient, read readiness remains until drained
                 p.registrations[i].sim.ready &= ~POLL_WRITE;
             }
         }

@@ -147,8 +147,10 @@ fn bhttp_decode_field_line(
         // Pseudo-fields must precede regular fields; reserved names are invalid (Section 3.6).
         guard !seen_regular else { return false; }
         guard !rfc::bhttp_is_reserved_pseudo(name) else { return false; }
+        guard is_valid_header_name_h2(name) && is_valid_header_value(val) else { return false; }
     } else {
         seen_regular = true;
+        guard is_valid_header_name_h2(name) && is_valid_header_value(val) else { return false; }
     }
     guard headers.append_header(name, val) else { return false; }
     idx = val_end;
@@ -174,7 +176,7 @@ fn bhttp_decode_trailer_line(sec: const u8[:], idx: i64&) -> bool {
     let val = sec[scan..val_end];
 
     guard !rfc::is_disallowed_trailer_field(name) else { return false; }
-    guard (is_valid_header_name(name) || is_valid_header_name_h2(name)) && is_valid_header_value(val) else {
+    guard is_valid_header_name_h2(name) && is_valid_header_value(val) else {
         return false;
     }
     idx = val_end;
@@ -285,7 +287,6 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
 
     let method, ok1 = bhttp_read_len_bytes(raw, idx);
     guard ok1 && method.len >= 1 && method.len <= 16 else { return false; }
-    out.method.append(method);
 
     let scheme, ok2 = bhttp_read_len_bytes(raw, idx);
     guard ok2 else { return false; }
@@ -293,9 +294,9 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
     guard ok3 else { return false; }
     let path, ok4 = bhttp_read_len_bytes(raw, idx);
     guard ok4 && path.len <= 2048 else {
-        out.method.clear();
         return false;
     }
+    out.method.append(method);
     out.target.append(path);
 
     if !bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len) {
@@ -345,8 +346,28 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
     guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
 
-    let status, ok1 = internal::quic_decode_varint_cursor(raw, idx);
-    guard ok1 && status >= 200 && status <= 599 else { return false; }
+    var status: u64 = 0;
+    loop {
+        let st, ok1 = internal::quic_decode_varint_cursor(raw, idx);
+        guard ok1 && st >= 100 && st <= 599 else { return false; }
+        status = st;
+        guard status < 200 else { break; }
+        guard idx < raw.len else { return false; }
+        let sec_len, ok_sec = internal::quic_decode_varint_cursor(raw, idx);
+        guard ok_sec && sec_len <= ((raw.len - idx) as u64) else { return false; }
+        let sec_end = idx + (sec_len as i64);
+        let sec = raw[idx..sec_end];
+        var jdx: i64 = 0;
+        var seen_regular = false;
+        while jdx < sec.len {
+            guard bhttp_decode_field_line(sec, jdx, out.headers, seen_regular) else {
+                out.headers.reset_for_keep_alive();
+                return false;
+            }
+        }
+        out.headers.reset_for_keep_alive();
+        idx = sec_end;
+    }
     out.status = status as i32;
 
     if !bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len) {

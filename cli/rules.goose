@@ -237,11 +237,11 @@ fn append_json_escaped_bytes(src: const u8[:], out: u8[>..]&) {
 fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:], out: u8[>..]&) {
     out.clear();
     out.append("{\n  \"method\": \"");
-    out.append(req.method[..]);
+    append_json_escaped_bytes(req.method[..], out);
     out.append("\",\n  \"url\": \"");
-    out.append(req.url[..]);
+    append_json_escaped_bytes(req.url[..], out);
     out.append("\",\n  \"origin\": \"");
-    out.append(if peer_ip.len > 0 { peer_ip } else { "127.0.0.1" });
+    append_json_escaped_bytes(if peer_ip.len > 0 { peer_ip } else { "127.0.0.1" }, out);
     out.append("\",\n  \"headers\": {\n");
 
     let n_hdrs = req.headers.entries.len;
@@ -273,9 +273,9 @@ fn build_httpbin_headers_json(req: const wing::Request&, out: u8[>..]&) {
     for i in n_hdrs {
         let e = req.headers.entries[i];
         out.append("    \"");
-        out.append(wing::entry_name(req.headers, e));
+        append_json_escaped_bytes(wing::entry_name(req.headers, e), out);
         out.append("\": \"");
-        out.append(wing::entry_value(req.headers, e));
+        append_json_escaped_bytes(wing::entry_value(req.headers, e), out);
         out.push('"');
         if i < last_idx { out.push(','); }
         out.push('\n');
@@ -335,8 +335,19 @@ fn try_serve_range_slice(
     res:       wing::Response&,
 ) -> bool {
     let total_len = full_buf.len;
-    guard range_hdr.len > 0 && total_len > 0 else { return false; }
+    guard range_hdr.len > 0 else { return false; }
     let rs, r_err = wing::parse_range_header(range_hdr, total_len);
+    let is_bytes_unit = core::starts_with_fold(core::trim_lws(range_hdr), "bytes=");
+    if r_err == wing::RangeError.Unsatisfiable || (total_len == 0 && is_bytes_unit) {
+        res.status_code = 416;
+        var cr_416: u8[..64] = [];
+        wing::format_content_range(-1, -1, total_len, cr_416);
+        wing::set_header(res, "Content-Range", cr_416[..]);
+        wing::set_header(res, "Accept-Ranges", "bytes");
+        wing::set_header(res, "Content-Type", "application/octet-stream");
+        res.body.clear();
+        return true;
+    }
     guard wing::is_ok(r_err) && rs.is_satisfiable && rs.ranges.len > 0 else { return false; }
     let r0 = rs.ranges[0];
     res.status_code = 206;
@@ -389,13 +400,16 @@ fn handle_httpbin_auth_routes(
     if path == "/bearer" {
         let auth = req.header("Authorization");
         if core::starts_with_fold(auth, "Bearer ") && auth.len > 7 {
-            res.status_code = 200;
-            wing::set_header(res, "Content-Type", "application/json");
-            res.body.clear();
-            res.body.append("{\"authenticated\": true, \"token\": \"");
-            append_json_escaped_bytes(auth[7..], res.body);
-            res.body.append("\"}\n");
-            return true;
+            let tok = core::trim_lws(auth[7..]);
+            if tok.len > 0 {
+                res.status_code = 200;
+                wing::set_header(res, "Content-Type", "application/json");
+                res.body.clear();
+                res.body.append("{\"authenticated\": true, \"token\": \"");
+                append_json_escaped_bytes(tok, res.body);
+                res.body.append("\"}\n");
+                return true;
+            }
         }
         res.status_code = 401;
         wing::set_header(res, "WWW-Authenticate", "Bearer");
@@ -410,15 +424,23 @@ fn handle_httpbin_auth_routes(
         let exp_user = creds_part[..sl];
         let exp_pass = creds_part[core::add_sat_i64(sl, 1)..];
 
-        var raw_up: u8[..160] = [];
-        let _ = raw_up.try_append(exp_user);
-        let _ = raw_up.try_push(':');
-        let _ = raw_up.try_append(exp_pass);
-        var exp_b64: u8[..256] = "Basic ";
+        var raw_up: u8[..256] = [];
+        guard raw_up.try_append(exp_user) && raw_up.try_push(':') && raw_up.try_append(exp_pass) else {
+            return false;
+        }
+        var exp_b64: u8[..384] = [];
         core::base64_encode(raw_up[..], exp_b64);
+        core::secure_zeroize_slice(raw_up[..]);
 
         let auth = req.header("Authorization");
-        if auth == exp_b64[..] {
+        var matched = false;
+        if core::starts_with_fold(auth, "Basic ") && auth.len > 6 {
+            let b64_part = core::trim_lws(auth[6..]);
+            matched = core::ct_eq_bytes(b64_part, exp_b64[..]);
+        }
+        core::secure_zeroize_slice(exp_b64[..]);
+
+        if matched {
             res.status_code = 200;
             wing::set_header(res, "Content-Type", "application/json");
             res.body.clear();
@@ -521,7 +543,7 @@ fn handle_builtin_httpbin(
         wing::set_header(res, "Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"origin\": \"");
-        res.body.append(if peer_ip.len > 0 { peer_ip } else { "127.0.0.1" });
+        append_json_escaped_bytes(if peer_ip.len > 0 { peer_ip } else { "127.0.0.1" }, res.body);
         res.body.append("\"}\n");
         return true;
     }
@@ -558,4 +580,133 @@ fn handle_builtin_httpbin(
     }
 
     return handle_httpbin_dynamic_routes(stage, path, query, req, res);
+}
+
+fn apply_matched_scenario_rule(
+    r:        RouteRule&,
+    res:      wing::Response&,
+    out_note: u8[..64]&,
+) {
+    r.calls = core::add_sat_u64(r.calls, 1);
+    wing::set_header(res, "Content-Type", r.content_type[..]);
+
+    if r.fail_count > 0 && r.calls <= r.fail_count {
+        res.status_code = r.fail_status;
+        res.body.clear();
+        res.body.append("SCENARIO_FAIL_");
+        core::format_i64_dec(r.fail_status, res.body);
+        res.body.push('\n');
+
+        out_note.append("flaky ");
+        core::format_u64_dec(r.calls, out_note);
+        out_note.push('/');
+        core::format_u64_dec(r.fail_count, out_note);
+        return;
+    }
+
+    res.status_code = r.status_code;
+    if r.location.len > 0 {
+        wing::set_header(res, "Location", r.location[..]);
+    }
+    if r.set_cookie.len > 0 {
+        wing::set_header(res, "Set-Cookie", r.set_cookie[..]);
+    }
+    res.body.clear();
+    res.body.append(r.body[..]);
+    out_note.append("rule");
+}
+
+fn finalize_programmable_response(
+    stage: ProgrammableServerStage&,
+    req:   const wing::Request&,
+    res:   wing::Response&,
+) {
+    if stage.max_reqs > 0 && stage.served_reqs >= stage.max_reqs {
+        wing::set_header(res, "Connection", "close");
+    }
+    if core::eq_ascii_fold(req.method[..], "HEAD") {
+        if !rfc::is_empty_body_status(res.status_code) && res.header("Content-Length").len == 0 {
+            var cl_buf: u8[..32] = [];
+            core::format_i64_dec(res.body.len, cl_buf);
+            wing::set_header(res, "Content-Length", cl_buf[..]);
+        }
+        res.body.clear();
+    }
+}
+
+fn eval_programmable_server_stage(
+    stage:    ProgrammableServerStage&,
+    phase:    wire::ServerHookPhase,
+    req:      const wing::Request&,
+    res:      wing::Response&,
+    out_note: u8[..64]&,
+) -> wire::StageVerdict {
+    out_note.clear();
+    guard phase == wire::ServerHookPhase.PreRoute else {
+        return wire::StageVerdict.Continue;
+    }
+    let req_path = strip_query_path(req.url[..]);
+    if req_path == "/shutdown" {
+        out_note.append("shutdown");
+        return wire::StageVerdict.Continue;
+    }
+
+    stage.served_reqs = core::add_sat_u64(stage.served_reqs, 1);
+    let is_head = core::eq_ascii_fold(req.method[..], "HEAD");
+
+    for &r in stage.rules {
+        let is_wildcard = r.method[..] == "*" || r.method[..] == "ANY";
+        let method_ok = is_wildcard ||
+            core::eq_ascii_fold(r.method[..], req.method[..]) ||
+            (is_head && core::eq_ascii_fold(r.method[..], "GET"));
+        if method_ok && r.path[..] == req_path {
+            apply_matched_scenario_rule(r, res, out_note);
+            finalize_programmable_response(stage, req, res);
+            return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
+        }
+    }
+
+    if handle_builtin_httpbin(stage, req, "127.0.0.1", res) {
+        out_note.append("httpbin");
+        finalize_programmable_response(stage, req, res);
+        return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
+    }
+
+    out_note.append("not found");
+    res.status_code = 404;
+    wing::set_header(res, "Content-Type", "application/json");
+    res.body.clear();
+    res.body.append("{\"error\": \"route not found\", \"path\": \"");
+    append_json_escaped_bytes(req_path, res.body);
+    res.body.append("\"}\n");
+    finalize_programmable_response(stage, req, res);
+    return wire::StageVerdict.ShortCircuit { status_code: 404 };
+}
+
+// Parses a semicolon-delimited `Cookie` request header (`k1=v1; k2=v2`) and seeds each
+// pair into `jar` for `req_url` so `STAGE_ID_CLI_IN_COOKIE_LOAD` preserves inline `-b` cookies.
+//
+// Example:
+//   req_url = "http://example.com/api", cookie_hdr = "a=1; b=2"
+//   seeds a=1 and b=2 into `jar` for host "example.com" with Path=/
+fn seed_inline_cookies_to_jar(
+    jar:        wing::CanonicalCookieJar&,
+    req_url:    const u8[:],
+    cookie_hdr: const u8[:],
+    now_us:     i64,
+) {
+    guard cookie_hdr.len > 0 && req_url.len > 0 else { return; }
+    var pos: i64 = 0;
+    while pos < cookie_hdr.len {
+        let rel_semi = core::index_of_byte(cookie_hdr[pos..], ';');
+        let end = if rel_semi >= 0 { core::add_sat_i64(pos, rel_semi) } else { cookie_hdr.len };
+        let pair = core::trim_lws(cookie_hdr[pos..end]);
+        pos = core::add_sat_i64(end, 1);
+        let eq = core::index_of_byte(pair, '=');
+        guard eq > 0 else { continue; }
+        var set_str: u8[..1024] = [];
+        if set_str.try_set(pair) && set_str.try_append("; Path=/") {
+            let _ = wing::set_cookie_header(jar, req_url, set_str[..], now_us, "");
+        }
+    }
 }

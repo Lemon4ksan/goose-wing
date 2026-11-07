@@ -44,25 +44,52 @@ inline fn should_skip_h1_header(
     return wing::is_token_in_connection_header_map(headers, name);
 }
 
-inline fn validate_h1_header_entries(headers: const wing::HeaderMap&, filter_mode: H1HeaderFilterMode) -> bool {
-    for &e in headers.entries {
-        let name = wing::entry_name(headers, e);
-        let val = wing::entry_value(headers, e);
-        if should_skip_h1_header(headers, name, val, filter_mode) {
-            continue;
-        }
-        guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
-            return false;
-        }
-    }
-    return true;
-}
-
 struct H1HeaderScanFlags {
     has_host:   bool = false,
     has_server: bool = false,
     has_cl:     bool = false,
     has_te:     bool = false,
+    cl_val:     i64  = -1,
+}
+
+fn record_h1_framing_header(name: const u8[:], val: const u8[:], flags: H1HeaderScanFlags&) -> bool {
+    if core::eq_ascii_fold(name, "transfer-encoding") {
+        guard !flags.has_cl && core::trim_lws(val).len > 0 else { return false; }
+        flags.has_te = true;
+        return true;
+    }
+    if core::eq_ascii_fold(name, "content-length") {
+        guard !flags.has_te else { return false; }
+        let trimmed_cl = core::trim_lws(val);
+        let parsed_cl, ok_cl = core::parse_i64_dec(trimmed_cl);
+        let _, ok_u = core::parse_u64_dec(trimmed_cl);
+        guard ok_cl && ok_u && parsed_cl >= 0 else { return false; }
+        if flags.has_cl && flags.cl_val != parsed_cl {
+            return false;
+        }
+        flags.has_cl = true;
+        flags.cl_val = parsed_cl;
+    }
+    return true;
+}
+
+fn check_and_record_h1_header_entry(
+    name:       const u8[:],
+    val:        const u8[:],
+    is_request: bool,
+    flags:      H1HeaderScanFlags&,
+) -> bool {
+    guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
+        return false;
+    }
+    if is_request && core::eq_ascii_fold(name, "host") {
+        guard !flags.has_host && is_valid_h1_host_value(core::trim_lws(val)) else { return false; }
+        flags.has_host = true;
+    }
+    if core::eq_ascii_fold(name, "server") {
+        flags.has_server = true;
+    }
+    return record_h1_framing_header(name, val, flags);
 }
 
 fn append_h1_request_headers<B>(
@@ -77,9 +104,7 @@ fn append_h1_request_headers<B>(
         if should_skip_h1_header(headers, name, val, filter_mode) {
             continue;
         }
-        if core::eq_ascii_fold(name, "host") { flags.has_host = true; }
-        if core::eq_ascii_fold(name, "content-length") { flags.has_cl = true; }
-        if core::eq_ascii_fold(name, "transfer-encoding") { flags.has_te = true; }
+        guard check_and_record_h1_header_entry(name, val, true, flags) else { return false; }
         guard out.try_append(name) &&
               out.try_append(": ") &&
               out.try_append(val) &&
@@ -108,11 +133,11 @@ fn encode_h1_request<B>(
 ) -> bool {
     let eff_target = if target.len > 0 { target } else { "/" };
     let eff_ver = if http_version.len > 0 { http_version } else { "HTTP/1.1" };
+    let valid_ver = eff_ver == "HTTP/1.1" || eff_ver == "HTTP/1.0";
     guard wing::is_valid_header_name(method) &&
           is_valid_h1_request_target(eff_target) &&
           is_valid_h1_host_value(host) &&
-          is_valid_h1_request_target(eff_ver) &&
-          validate_h1_header_entries(headers, filter_mode) else {
+          valid_ver else {
         return false;
     }
 
@@ -129,6 +154,10 @@ fn encode_h1_request<B>(
 
     var flags = H1HeaderScanFlags { .. };
     guard append_h1_request_headers(headers, filter_mode, flags, out) else {
+        out.resize(start_len);
+        return false;
+    }
+    if flags.has_cl && body.len > 0 && flags.cl_val != body.len {
         out.resize(start_len);
         return false;
     }
@@ -171,11 +200,12 @@ fn append_h1_response_headers<B>(
         let val = wing::entry_value(headers, e);
         if is_empty_status &&
            (core::eq_ascii_fold(name, "content-length") || core::eq_ascii_fold(name, "transfer-encoding")) {
+            guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
+                return false;
+            }
             continue;
         }
-        if core::eq_ascii_fold(name, "server") { flags.has_server = true; }
-        if core::eq_ascii_fold(name, "content-length") { flags.has_cl = true; }
-        if core::eq_ascii_fold(name, "transfer-encoding") { flags.has_te = true; }
+        guard check_and_record_h1_header_entry(name, val, false, flags) else { return false; }
         guard out.try_append(name) &&
               out.try_append(": ") &&
               out.try_append(val) &&
@@ -204,8 +234,7 @@ fn encode_h1_response<B>(
     guard status_code >= 100 && status_code <= 599 else { return false; }
     let eff_reason = if reason.len > 0 { reason } else { rfc::status_phrase(status_code as i32) };
     guard wing::is_valid_header_value(eff_reason) &&
-          wing::is_valid_header_value(server_name) &&
-          validate_h1_header_entries(headers, H1HeaderFilterMode.PreserveAll) else {
+          wing::is_valid_header_value(server_name) else {
         return false;
     }
 
@@ -224,6 +253,10 @@ fn encode_h1_response<B>(
     let is_empty_status = rfc::is_empty_body_status(status_code as i32);
     var flags = H1HeaderScanFlags { .. };
     guard append_h1_response_headers(headers, is_empty_status, flags, out) else {
+        out.resize(start_len);
+        return false;
+    }
+    if !is_head_request && !is_empty_status && flags.has_cl && body.len > 0 && flags.cl_val != body.len {
         out.resize(start_len);
         return false;
     }
@@ -311,21 +344,32 @@ fn decode_h1_response_head(
         guard head_no_end.len >= 12 && parse_h1_wire_status_line(head_no_end, out_status) else {
             return 0, wing::HeaderParseError.MalformedStatusLine;
         }
+        out_headers.status_code = out_status;
+        out_headers.http_major = 1;
+        out_headers.http_minor = if core::starts_with(head_no_end, "HTTP/1.0 ") { 0 } else { 1 };
         return body_offset, wing::HeaderParseError.None;
     }
 
     guard status_line.len >= 12 && parse_h1_wire_status_line(status_line, out_status) else {
         return 0, wing::HeaderParseError.MalformedStatusLine;
     }
+    let minor: u8 = if core::starts_with(status_line, "HTTP/1.0 ") { 0 } else { 1 };
 
     if headers_no_end.len == 0 {
+        out_headers.status_code = out_status;
+        out_headers.http_major = 1;
+        out_headers.http_minor = minor;
         return body_offset, wing::HeaderParseError.None;
     }
 
     let err = wing::parse_headers(headers_no_end, out_headers, allow_obs_fold);
     guard err == wing::HeaderParseError.None else {
+        out_status = 0;
         out_headers.clear();
         return 0, err;
     }
+    out_headers.status_code = out_status;
+    out_headers.http_major = 1;
+    out_headers.http_minor = minor;
     return body_offset, wing::HeaderParseError.None;
 }

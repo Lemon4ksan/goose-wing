@@ -209,6 +209,31 @@ inline fn is_header_key_present(name: const u8[:], seen: const SeenHeaderKey[:])
     return false;
 }
 
+// Reads a non-empty JSON string header parameter into `dst` and rejects duplicates.
+//
+// Example:
+//   reader at "\"JWT\"", seen = false
+//   sets dst = "JWT", seen = true, had_error = false
+inline fn parse_jwt_header_str<B>(
+    reader:    json::Reader&,
+    scratch:   u8[>..]&,
+    dst:       B&,
+    seen:      bool&,
+    had_error: bool&,
+) {
+    if seen { had_error = true; }
+    seen = true;
+    guard json::peek(reader) == '"' else {
+        json::skip(reader);
+        had_error = true;
+        return;
+    }
+    let val = json::read_string(reader, scratch);
+    if val.len == 0 || !dst.try_set(val) {
+        had_error = true;
+    }
+}
+
 // Parses a single member of a JWT header JSON object.
 //
 // Example:
@@ -228,25 +253,16 @@ inline fn parse_jwt_header_member(
     had_error:   bool&,
 ) {
     if key == "alg" {
-        if seen_alg { had_error = true; }
+        if seen_alg || json::peek(reader) != '"' { had_error = true; }
         seen_alg = true;
         let alg_str = json::read_string(reader, scratch);
         out_header.alg = parse_jwt_alg(alg_str);
     } else if key == "typ" {
-        if seen_typ { had_error = true; }
-        seen_typ = true;
-        let typ_str = json::read_string(reader, scratch);
-        if !out_header.typ.try_set(typ_str) { had_error = true; }
+        parse_jwt_header_str(reader, scratch, out_header.typ, seen_typ, had_error);
     } else if key == "kid" {
-        if seen_kid { had_error = true; }
-        seen_kid = true;
-        let kid_str = json::read_string(reader, scratch);
-        if !out_header.kid.try_set(kid_str) { had_error = true; }
+        parse_jwt_header_str(reader, scratch, out_header.kid, seen_kid, had_error);
     } else if key == "cty" {
-        if seen_cty { had_error = true; }
-        seen_cty = true;
-        let cty_str = json::read_string(reader, scratch);
-        if !out_header.cty.try_set(cty_str) { had_error = true; }
+        parse_jwt_header_str(reader, scratch, out_header.cty, seen_cty, had_error);
     } else if key == "crit" {
         if seen_crit { had_error = true; }
         seen_crit = true;
@@ -585,7 +601,7 @@ inline fn try_append_audience_element(
     }
     scratch.clear();
     let s = json::read_string(reader, scratch);
-    guard s.len <= 128 && out_claims.audiences.len < out_claims.audiences.cap else {
+    guard s.len > 0 && s.len <= 128 && out_claims.audiences.len < out_claims.audiences.cap else {
         return false;
     }
     if out_claims.aud.len == 0 {
@@ -611,7 +627,8 @@ inline fn parse_aud_claim(
     let p = json::peek(reader);
     if p == '"' {
         let s = json::read_string(reader, scratch);
-        guard s.len <= out_claims.aud.cap && out_claims.audiences.len < out_claims.audiences.cap && s.len <= 128 else {
+        let fits = s.len > 0 && s.len <= out_claims.aud.cap && s.len <= 128;
+        guard fits && out_claims.audiences.len < out_claims.audiences.cap else {
             had_error = true;
             return;
         }
@@ -1245,7 +1262,7 @@ fn parse_jwt_header_only(
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
-    guard split_jwt_parts(token, dot1, dot2) else {
+    guard split_jwt_parts(token, dot1, dot2) && core::index_of_byte(token, '=') == -1 else {
         return JwtError.MalformedToken;
     }
     return decode_jwt_header(token[..dot1], out_header);
@@ -1263,15 +1280,22 @@ fn parse_jwt_unverified(
 ) -> JwtError {
     var dot1: i64 = 0;
     var dot2: i64 = 0;
-    guard split_jwt_parts(token, dot1, dot2) else {
+    guard split_jwt_parts(token, dot1, dot2) && core::index_of_byte(token, '=') == -1 else {
         return JwtError.MalformedToken;
     }
 
-    let hdr_err = decode_jwt_header(token[..dot1], out_header);
+    var temp_header = JwtHeader { .. };
+    let hdr_err = decode_jwt_header(token[..dot1], temp_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
 
+    var temp_claims = JwtClaims { .. };
     let clm_start = core::add_sat_i64(dot1, 1);
-    return decode_jwt_claims(token[clm_start..dot2], out_claims);
+    let clm_err = decode_jwt_claims(token[clm_start..dot2], temp_claims);
+    guard clm_err == JwtError.None else { return clm_err; }
+
+    out_header = copy(temp_header);
+    out_claims = copy(temp_claims);
+    return JwtError.None;
 }
 
 fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bool) -> JwtError {
@@ -1288,16 +1312,17 @@ fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bo
 }
 
 fn is_matching_jwt_typ(header_typ: const u8[:], expected_typ: const u8[:]) -> bool {
+    guard header_typ.len > 0 && expected_typ.len > 0 else { return false; }
     if core::eq_ascii_fold(header_typ, expected_typ) {
         return true;
     }
-    // Handle "application/" media type prefix equivalence per RFC 8725 §3.11
-    if core::starts_with(expected_typ, "application/") {
+    // Handle "application/" media type prefix equivalence when no other '/' appears (RFC 7515 §4.1.9 / RFC 8725 §3.11)
+    if core::starts_with_fold(expected_typ, "application/") && !core::contains_byte(expected_typ[12..], '/') {
         if core::eq_ascii_fold(header_typ, expected_typ[12..]) {
             return true;
         }
     }
-    if core::starts_with(header_typ, "application/") {
+    if core::starts_with_fold(header_typ, "application/") && !core::contains_byte(header_typ[12..], '/') {
         if core::eq_ascii_fold(header_typ[12..], expected_typ) {
             return true;
         }

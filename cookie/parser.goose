@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .limits;
 import .constants;
 import .canonical;
 import .psl;
@@ -38,7 +39,8 @@ fn parse_canonical_set_cookie(
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
-    guard parsed_cookie.domain.try_set(default_domain) else {
+    let clean_def_domain = core::trim_byte(core::trim_byte(default_domain, '['), ']');
+    guard parsed_cookie.domain.try_set(clean_def_domain) else {
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
     to_lower(parsed_cookie.domain[..]);
@@ -53,11 +55,11 @@ fn parse_canonical_set_cookie(
     var has_max_age = false;
     if unparsed_attrs.len > 0 {
         each_split(unparsed_attrs, ';') { raw_attr =>
-            apply_parsed_cookie_attribute(parsed_cookie, raw_attr, has_max_age, default_path, now_us);
+            apply_parsed_cookie_attribute(parsed_cookie, raw_attr, has_max_age, clean_def_domain, default_path, now_us);
         };
     }
 
-    if !validate_parsed_cookie_domain(parsed_cookie, default_domain) {
+    if !validate_parsed_cookie_domain(parsed_cookie, clean_def_domain) {
         return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
     }
 
@@ -149,11 +151,11 @@ fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
 
 // CanonicalCookieURL represents a dissected URL for cookie routing and origin binding.
 struct CanonicalCookieURL {
-    scheme:    u8[..16]  = [],
-    host:      u8[..256] = [],
-    path:      u8[..256] = "/",
-    port:      i32       = 80,
-    is_secure: bool      = false,
+    scheme:    u8[..16]   = [],
+    host:      u8[..256]  = [],
+    path:      u8[..2048] = "/",
+    port:      i32        = 80,
+    is_secure: bool       = false,
 }
 
 // Parses a URL into CanonicalCookieURL components, normalizing IPv6 brackets
@@ -330,19 +332,23 @@ fn is_cookie_date_delimiter(char_byte: u8) -> bool {
 
 fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i64&) -> bool {
     guard token.len >= 5 else { return false; }
-    var colon_pos1 = -1;
-    var colon_pos2 = -1;
-    for char_idx in token.len {
-        if token[char_idx] == ':' {
-            if colon_pos1 < 0 { colon_pos1 = char_idx; }
-            else if colon_pos2 < 0 { colon_pos2 = char_idx; break; }
-        }
-    }
-    guard colon_pos1 > 0 && colon_pos2 > colon_pos1 else { return false; }
+    let colon_pos1 = core::index_of_byte(token, ':');
+    guard colon_pos1 == 1 || colon_pos1 == 2 else { return false; }
+    let after_h = if colon_pos1 == 1 { token[2..] } else { token[3..] };
+    let min_len = core::index_of_byte(after_h, ':');
+    guard min_len == 1 || min_len == 2 else { return false; }
+    let sec_part = if min_len == 1 { after_h[2..] } else { after_h[3..] };
+    guard sec_part.len >= 1 else { return false; }
+
+    let s1 = sec_part.len >= 2 && sec_part[1] >= '0' && sec_part[1] <= '9';
+    let s2 = sec_part.len >= 3 && sec_part[2] >= '0' && sec_part[2] <= '9';
+    guard !s2 else { return false; }
+    let sec_slice = if s1 { sec_part[..2] } else { sec_part[..1] };
+    guard token[0] >= '0' && after_h[0] >= '0' && sec_slice[0] >= '0' else { return false; }
 
     let hour_val, hour_ok = parse_int(token[..colon_pos1]);
-    let minute_val, minute_ok = parse_int(token[colon_pos1 + 1..colon_pos2]);
-    let second_val, second_ok = parse_int(token[colon_pos2 + 1..]);
+    let minute_val, minute_ok = parse_int(after_h[..min_len]);
+    let second_val, second_ok = parse_int(sec_slice);
     guard hour_ok && minute_ok && second_ok else { return false; }
 
     hour = hour_val;
@@ -352,12 +358,13 @@ fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i
 }
 
 fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
-    guard token.len == 1 || token.len == 2 else { return false; }
-    for char_byte in token {
-        if char_byte < '0' || char_byte > '9' { return false; }
-    }
-    let day_val, day_ok = parse_int(token);
-    guard day_ok && day_val >= 1 && day_val <= 31 else { return false; }
+    guard token.len >= 1 && token[0] >= '0' && token[0] <= '9' else { return false; }
+    let d1 = token.len >= 2 && token[1] >= '0' && token[1] <= '9';
+    let d2 = token.len >= 3 && token[2] >= '0' && token[2] <= '9';
+    guard !d2 else { return false; }
+    let digits = if d1 { token[..2] } else { token[..1] };
+    let day_val, day_ok = parse_int(digits);
+    guard day_ok else { return false; }
     day = day_val;
     return true;
 }
@@ -481,11 +488,12 @@ fn parse_cookie_payload_pair(
 }
 
 fn apply_parsed_cookie_attribute(
-    cookie_ref:   CanonicalCookie&,
-    raw_attr:     const u8[:],
-    has_max_age:  bool&,
-    default_path: const u8[:],
-    now_us:       i64,
+    cookie_ref:     CanonicalCookie&,
+    raw_attr:       const u8[:],
+    has_max_age:    bool&,
+    default_domain: const u8[:],
+    default_path:   const u8[:],
+    now_us:         i64,
 ) {
     let clean_attr = trim(raw_attr);
     guard clean_attr.len > 0 else { return; }
@@ -511,7 +519,7 @@ fn apply_parsed_cookie_attribute(
         cookie_ref.priority = parse_cookie_priority(attr_val);
     } else if eq_ascii_fold(attr_name, "domain") {
         cookie_ref.has_domain_attr = true;
-        apply_parsed_domain_attribute(cookie_ref, attr_val);
+        apply_parsed_domain_attribute(cookie_ref, attr_val, default_domain);
     } else if eq_ascii_fold(attr_name, "path") {
         apply_parsed_path_attribute(cookie_ref, attr_val, default_path);
     } else if eq_ascii_fold(attr_name, "max-age") {
@@ -521,12 +529,19 @@ fn apply_parsed_cookie_attribute(
     }
 }
 
-fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:]) {
+fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:], default_domain: const u8[:]) {
+    cookie_ref.host_only = true;
+    let _ = cookie_ref.domain.try_set(default_domain);
+    to_lower(cookie_ref.domain[..]);
     guard attr_val.len > 0 else { return; }
     let clean_domain = if attr_val[0] == '.' { attr_val[1..] } else { attr_val };
     // RFC 6265 Section 5.2.3: If domain still begins with '.', ignore the domain attribute
     guard clean_domain.len > 0 && clean_domain[0] != '.' else { return; }
-    guard cookie_ref.domain.try_set(clean_domain) else { return; }
+    guard cookie_ref.domain.try_set(clean_domain) else {
+        cookie_ref.domain.clear();
+        cookie_ref.host_only = false;
+        return;
+    }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = false;
 }

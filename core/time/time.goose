@@ -192,8 +192,19 @@ fn add(time_val: Time, dur: Duration) -> Time {
 // The duration elapsed between two Time points (time_val - other_time).
 // Clamps to Duration.max or Duration.min if the difference exceeds the representable range.
 fn sub(time_val: Time, other_time: Time) -> Duration {
+    let nsec_diff: i64 = (time_val.nsec as i64) - other_time.nsec;
+    if time_val.wall_sec >= 0 && other_time.wall_sec < 0 {
+        let udiff = (time_val.wall_sec as! u64) - (other_time.wall_sec as! u64);
+        if udiff > (MAX_WALL_SEC_FOR_NANOS as u64) {
+            return Duration { nanos: DURATION_MAX_NANOS };
+        }
+    } else if time_val.wall_sec < 0 && other_time.wall_sec >= 0 {
+        let udiff = (other_time.wall_sec as! u64) - (time_val.wall_sec as! u64);
+        if udiff > (MAX_WALL_SEC_FOR_NANOS as u64) {
+            return Duration { nanos: DURATION_MIN_NANOS };
+        }
+    }
     let sec_diff = time_val.wall_sec - other_time.wall_sec;
-    let nsec_diff: i64 = time_val.nsec - other_time.nsec;
 
     // Saturated arithmetic preventing integer overflow across large time deltas
     if sec_diff > MAX_WALL_SEC_FOR_NANOS || (sec_diff == MAX_WALL_SEC_FOR_NANOS && nsec_diff > 854775807) {
@@ -332,9 +343,13 @@ fn truncate(time_val: Time, dur: Duration) -> Time {
 
     // General case: bounded within ~292 years
     let max_sec: i64 = 9223372036;
-    if time_val.wall_sec >= -max_sec && time_val.wall_sec <= max_sec {
+    if (time_val.wall_sec > -max_sec || (time_val.wall_sec == -max_sec && time_val.nsec >= 0)) &&
+       (time_val.wall_sec < max_sec || (time_val.wall_sec == max_sec && time_val.nsec <= 854775807)) {
         let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-        let rem = total_nanos % dur.nanos;
+        var rem = total_nanos % dur.nanos;
+        if total_nanos < 0 && rem != 0 {
+            rem -= dur.nanos;
+        }
         let base_nanos = total_nanos - rem;
         var truncated_time = unix(0, base_nanos);
         truncated_time.tz_offset = time_val.tz_offset;
@@ -348,10 +363,16 @@ fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
     let step_secs = dur_nanos / NANOS_PER_SEC;
     guard step_secs > 0 else { return time_val; }
     let is_neg = time_val.wall_sec < 0;
-    let abs_sec = if is_neg { -time_val.wall_sec } else { time_val.wall_sec };
+    let has_pos_nsec = is_neg && time_val.nsec > 0;
+    let abs_sec = if is_neg {
+        if has_pos_nsec { (-time_val.wall_sec) - 1 } else { -time_val.wall_sec }
+    } else {
+        time_val.wall_sec
+    };
+    let abs_nsec = if has_pos_nsec { NANOS_PER_SEC - time_val.nsec } else { time_val.nsec as i64 };
     let rem = abs_sec % step_secs;
     var base_sec = abs_sec - rem;
-    let rem_nanos = rem * NANOS_PER_SEC + (if is_neg { -(time_val.nsec as i64) } else { time_val.nsec as i64 });
+    let rem_nanos = rem * NANOS_PER_SEC + abs_nsec;
     if rem_nanos >= (dur_nanos + 1) / 2 {
         base_sec += step_secs;
     }
@@ -368,7 +389,12 @@ fn round_subsecond_divisor(time_val: Time, dur_nanos: i64) -> Time {
     let rem = nsec_64 % dur_nanos;
     var base_nsec = quotient * dur_nanos;
     var sec_add: i64 = 0;
-    if rem >= (dur_nanos + 1) / 2 {
+    let round_up = if time_val.wall_sec < 0 {
+        rem > dur_nanos / 2
+    } else {
+        rem >= (dur_nanos + 1) / 2
+    };
+    if round_up {
         base_nsec += dur_nanos;
         if base_nsec >= NANOS_PER_SEC {
             base_nsec -= NANOS_PER_SEC;
@@ -383,7 +409,11 @@ fn round_subsecond_divisor(time_val: Time, dur_nanos: i64) -> Time {
 }
 
 fn round_general_nanos(time_val: Time, dur_nanos: i64) -> Time {
-    if time_val.wall_sec >= -MAX_WALL_SEC_FOR_NANOS && time_val.wall_sec <= MAX_WALL_SEC_FOR_NANOS {
+    let above_min = time_val.wall_sec > -MAX_WALL_SEC_FOR_NANOS ||
+        (time_val.wall_sec == -MAX_WALL_SEC_FOR_NANOS && time_val.nsec >= 0);
+    let below_max = time_val.wall_sec < MAX_WALL_SEC_FOR_NANOS ||
+        (time_val.wall_sec == MAX_WALL_SEC_FOR_NANOS && time_val.nsec <= 854775807);
+    if above_min && below_max {
         let total_nanos = time_val.wall_sec * NANOS_PER_SEC + time_val.nsec;
         let is_neg = total_nanos < 0;
         let abs_nanos = if is_neg { -total_nanos } else { total_nanos };

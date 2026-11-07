@@ -10,40 +10,6 @@ import args;
 import rules;
 import term;
 
-fn apply_matched_scenario_rule(
-    r:        RouteRule&,
-    res:      wing::Response&,
-    out_note: u8[..64]&,
-) {
-    r.calls = core::add_sat_u64(r.calls, 1);
-    wing::set_header(res, "Content-Type", r.content_type[..]);
-
-    if r.fail_count > 0 && r.calls <= r.fail_count {
-        res.status_code = r.fail_status;
-        res.body.clear();
-        res.body.append("SCENARIO_FAIL_");
-        core::format_i64_dec(r.fail_status, res.body);
-        res.body.push('\n');
-
-        out_note.append("flaky ");
-        core::format_u64_dec(r.calls, out_note);
-        out_note.push('/');
-        core::format_u64_dec(r.fail_count, out_note);
-        return;
-    }
-
-    res.status_code = r.status_code;
-    if r.location.len > 0 {
-        wing::set_header(res, "Location", r.location[..]);
-    }
-    if r.set_cookie.len > 0 {
-        wing::set_header(res, "Set-Cookie", r.set_cookie[..]);
-    }
-    res.body.clear();
-    res.body.append(r.body[..]);
-    out_note.append("rule");
-}
-
 fn wing::on_server_stage(
     stage: ProgrammableServerStage&,
     phase: wire::ServerHookPhase,
@@ -52,43 +18,13 @@ fn wing::on_server_stage(
     _ctx:  wing::ServerStageCtx&,
     res:   wing::Response&,
 ) -> wire::StageVerdict {
-    guard phase == wire::ServerHookPhase.PreRoute else {
-        return wire::StageVerdict.Continue;
+    var note: u8[..64] = [];
+    let verdict = eval_programmable_server_stage(stage, phase, req, res, note);
+    if note.len > 0 && !stage.quiet {
+        let log_code = if note[..] == "shutdown" { 200 } else { res.status_code };
+        log_server_exchange(req.method[..], req.url[..], log_code, note[..], stage.no_color);
     }
-    let req_path = strip_query_path(req.url[..]);
-    if req_path == "/shutdown" {
-        log_server_exchange(req.method[..], req.url[..], 200, "shutdown", stage.no_color);
-        return wire::StageVerdict.Continue;
-    }
-
-    stage.served_reqs = core::add_sat_u64(stage.served_reqs, 1);
-
-    // 1. Match user-defined scenario rules first
-    for &r in stage.rules {
-        let is_wildcard = r.method[..] == "*" || r.method[..] == "ANY";
-        let method_ok = is_wildcard || core::eq_ascii_fold(r.method[..], req.method[..]);
-        if method_ok && r.path[..] == req_path {
-            var note: u8[..64] = [];
-            apply_matched_scenario_rule(r, res, note);
-            log_server_exchange(req.method[..], req.url[..], res.status_code, note[..], stage.no_color);
-            return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
-        }
-    }
-
-    // 2. Match built-in httpbin endpoints
-    if handle_builtin_httpbin(stage, req, "127.0.0.1", res) {
-        log_server_exchange(req.method[..], req.url[..], res.status_code, "httpbin", stage.no_color);
-        return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
-    }
-
-    log_server_exchange(req.method[..], req.url[..], 404, "not found", stage.no_color);
-    res.status_code = 404;
-    wing::set_header(res, "Content-Type", "application/json");
-    res.body.clear();
-    res.body.append("{\"error\": \"route not found\", \"path\": \"");
-    res.body.append(req_path);
-    res.body.append("\"}\n");
-    return wire::StageVerdict.ShortCircuit { status_code: 404 };
+    return verdict;
 }
 
 fn load_serve_rules(cfg: const CliConfig&, stage: ProgrammableServerStage&) -> i64 {
@@ -120,6 +56,7 @@ fn load_serve_rules(cfg: const CliConfig&, stage: ProgrammableServerStage&) -> i
 fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
     var stage = ProgrammableServerStage {
         max_reqs: cfg.max_reqs,
+        quiet:    cfg.silent,
         no_color: cfg.no_color,
         ..
     };

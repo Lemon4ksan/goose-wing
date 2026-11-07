@@ -69,6 +69,27 @@ inline fn pso_mask_to_srv_egress(pso_mask: u64) -> u64 {
     return m;
 }
 
+// Maps role-scoped server ingress_mask and egress_mask to a combined 64-bit PSO mask.
+inline fn srv_masks_to_pso_mask(ingress_mask: u64, egress_mask: u64) -> u64 {
+    var pso: u64 = 0;
+    if (ingress_mask & wire::STAGE_SRV_IN_SLOWLORIS) != 0 { pso |= STAGE_INGRESS_SLOWLORIS; }
+    if (ingress_mask & wire::STAGE_SRV_IN_EXPECT_100) != 0 { pso |= STAGE_INGRESS_EXPECT_100; }
+    if (ingress_mask & wire::STAGE_SRV_IN_RATELIMIT_IP) != 0 { pso |= STAGE_INGRESS_IP_RATELIMIT; }
+    if (ingress_mask & wire::STAGE_SRV_IN_RATELIMIT_ROUTE) != 0 { pso |= STAGE_INGRESS_ROUTE_RATELIMIT; }
+    if (ingress_mask & wire::STAGE_SRV_IN_CORS) != 0 { pso |= STAGE_INGRESS_CORS_PREFLIGHT; }
+    if (ingress_mask & wire::STAGE_SRV_IN_CSRF) != 0 { pso |= STAGE_INGRESS_FETCH_CSRF; }
+    if (ingress_mask & wire::STAGE_SRV_IN_AUTH_COOKIE) != 0 { pso |= STAGE_INGRESS_AUTH_COOKIE; }
+    if (ingress_mask & wire::STAGE_SRV_IN_AUTH_JWT) != 0 { pso |= STAGE_INGRESS_AUTH_JWT; }
+    if (egress_mask & wire::STAGE_SRV_OUT_ETAG) != 0 { pso |= STAGE_EGRESS_ETAG; }
+    if (egress_mask & wire::STAGE_SRV_OUT_COMPRESS_GZIP) != 0 { pso |= STAGE_EGRESS_COMPRESS_GZIP; }
+    if (egress_mask & wire::STAGE_SRV_OUT_COMPRESS_BR) != 0 { pso |= STAGE_EGRESS_COMPRESS_BROTLI; }
+    if (egress_mask & wire::STAGE_SRV_OUT_COMPRESS_ZSTD) != 0 { pso |= STAGE_EGRESS_COMPRESS_ZSTD; }
+    if (egress_mask & wire::STAGE_SRV_OUT_SECURITY_HEADERS) != 0 { pso |= STAGE_EGRESS_SECURITY_HEADERS; }
+    if (egress_mask & wire::STAGE_SRV_OUT_METRICS) != 0 { pso |= STAGE_EGRESS_METRICS; }
+    if (egress_mask & wire::STAGE_SRV_OUT_ACCESS_LOG) != 0 { pso |= STAGE_EGRESS_ACCESS_LOG; }
+    return pso;
+}
+
 enum NodeType {
     Root,
     Static,
@@ -571,6 +592,7 @@ fn insert_route(
         let suffix_after = rem[if is_brace { calc_next_char_pos(param_end) } else { param_end }..];
 
         if is_catchall {
+            guard suffix_after.len == 0 else { return false; }
             return insert_catch_all_child(
                 tree, cur_idx, name, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask,
             );
@@ -713,15 +735,31 @@ fn is_match_found(res: const RouteMatchResult&) -> bool {
     };
 }
 
+// Verifies that `rem_seg` matches a chain of static children starting at `child_idx`.
+fn matches_static_suffix_chain(tree: const RadixTree&, child_idx: i32, rem_seg: const u8[:]) -> bool {
+    var cur = child_idx;
+    var off: i64 = 0;
+    while off < rem_seg.len && cur >= 0 {
+        let pfx = tree.nodes[cur as i64].prefix[..];
+        let tail = rem_seg[off..];
+        if tail.len <= pfx.len {
+            return pfx[..tail.len] == tail;
+        }
+        guard tail[..pfx.len] == pfx else { return false; }
+        off = core::add_sat_i64(off, pfx.len);
+        guard off < rem_seg.len else { break; }
+        cur = find_child_by_byte(tree, cur, rem_seg[off]);
+    }
+    return off >= rem_seg.len;
+}
+
 // Scans current path segment for a static child suffix attached to `p_idx`.
 fn find_param_suffix_split(tree: const RadixTree&, p_idx: i32, rem: const u8[:], seg_end: i64) -> i64 {
     for i in seg_end {
         guard i > 0 else { continue; }
         let child_idx = find_child_by_byte(tree, p_idx, rem[i]);
         guard child_idx >= 0 else { continue; }
-        let child_pfx = tree.nodes[child_idx as i64].prefix[..];
-        let rem_after = rem[i..];
-        if rem_after.len >= child_pfx.len && rem_after[..child_pfx.len] == child_pfx {
+        if matches_static_suffix_chain(tree, child_idx, rem[i..seg_end]) {
             return i;
         }
     }
@@ -972,7 +1010,7 @@ fn match_path(
     path:   const u8[:],
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
-    var canon_path: u8[..512] = [];
+    var canon_path: u8[..2048] = [];
     return match_path(tree, path, params, canon_path);
 }
 
@@ -1215,7 +1253,8 @@ fn add_route_pso(
     ingress_mask: u64,
     egress_mask:  u64,
 ) -> bool {
-    return add_route_masks(router, method, path, handler_id, 0, DEFAULT_ROUTE_PSO_MASK, ingress_mask, egress_mask);
+    let pso_mask = srv_masks_to_pso_mask(ingress_mask, egress_mask);
+    return add_route_masks(router, method, path, handler_id, 0, pso_mask, ingress_mask, egress_mask);
 }
 
 // Attaches or updates a static payload for a given `handler_id` in `router.static_payloads`.
@@ -1408,7 +1447,7 @@ fn match_route<B>(
         }
     }
 
-    if target_tree_idx >= 0 {
+    if target_tree_idx >= 0 && clean_path != "*" {
         let fast_res = try_match_l0_slot(router.l0_table, target_tree_idx as u8, clean_path, params, out_canon_path);
         if match fast_res { Found _ => true, _ => false } {
             return fast_res;
@@ -1423,7 +1462,7 @@ fn match_route<B>(
 
     // Automatic HEAD routing: if method is HEAD and no explicit HEAD route matched,
     // route to GET handler if a GET route matches (RFC 9110 §9.3.2).
-    if method == "HEAD" && router.trees[0].method[..] == "GET" {
+    if method == "HEAD" && clean_path != "*" && router.trees[0].method[..] == "GET" {
         let fast_head = try_match_l0_slot(router.l0_table, 0, clean_path, params, out_canon_path);
         if match fast_head { Found _ => true, _ => false } {
             return fast_head;
@@ -1450,6 +1489,6 @@ fn match_route(
     path:   const u8[:],
     params: ZeroAllocParams&,
 ) -> RouteMatchResult {
-    var canon_path: u8[..512] = [];
+    var canon_path: u8[..2048] = [];
     return match_route(router, method, path, params, canon_path);
 }

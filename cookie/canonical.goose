@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .limits;
 import .constants;
 import .policy;
 

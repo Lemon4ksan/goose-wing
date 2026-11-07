@@ -171,11 +171,13 @@ fn mark_acked_packets_in_space(
     now_us: u64,
 ) -> u64, u64, u64, u64 {
     var acked_bytes:     u64 = 0;
-    var latest_rtt_us:   u64 = 0;
+    var largest_rtt_us:  u64 = 0;
     var in_flight_bytes: u64 = 0;
     var new_acked_pkts:  u64 = 0;
+    var any_ack_el = false;
 
-    if !space.has_acked_packets || ranges[0].largest > space.largest_acked_pn {
+    let is_new_largest = !space.has_acked_packets || ranges[0].largest >= space.largest_acked_pn;
+    if is_new_largest {
         space.largest_acked_pn = ranges[0].largest;
         space.has_acked_packets = true;
     }
@@ -188,8 +190,11 @@ fn mark_acked_packets_in_space(
             if pkt.in_flight {
                 acked_bytes += pkt.size_bytes;
             }
-            if pkt.pn == ranges[0].largest && pkt.ack_eliciting {
-                latest_rtt_us = if now_us >= pkt.time_sent_us { now_us - pkt.time_sent_us } else { 0 };
+            if pkt.ack_eliciting {
+                any_ack_el = true;
+            }
+            if pkt.pn == ranges[0].largest && is_new_largest {
+                largest_rtt_us = if now_us >= pkt.time_sent_us { now_us - pkt.time_sent_us } else { 0 };
             }
             space.sent_packets.remove_at(i);
         } else {
@@ -199,6 +204,7 @@ fn mark_acked_packets_in_space(
             i += 1;
         }
     }
+    let latest_rtt_us = if any_ack_el { largest_rtt_us } else { 0 };
     return acked_bytes, latest_rtt_us, in_flight_bytes, new_acked_pkts;
 }
 
@@ -266,8 +272,9 @@ fn process_space_ack(
         mark_acked_packets_in_space(space, acked_ranges, now_us);
 
     if new_acked_pkts > 0 && latest_rtt_us > 0 {
-        let ack_delay_us = ack_frame.ack_delay << 3;
-        update_rtt(conn.rtt, latest_rtt_us, ack_delay_us, is_app && conn.state == QuicConnState.Established, now_us);
+        let ack_delay_us = core::mul_sat_u64(ack_frame.ack_delay, 8);
+        let confirmed = is_app && (conn.state == QuicConnState.Established || conn.state == QuicConnState.Handshake);
+        update_rtt(conn.rtt, latest_rtt_us, ack_delay_us, confirmed, now_us);
     }
 
     let eff_rtt = if latest_rtt_us > 0 { latest_rtt_us } else { conn.rtt.smoothed_rtt_us };
@@ -430,6 +437,9 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
     }
+    if quic_table_is_evicted_closed_stream(conn.stream_table, frame.stream_id) {
+        return true, true;
+    }
 
     // RFC 9000 Section 19.8: STREAM Frames - Ingress STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
@@ -452,6 +462,8 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         return false, false;
     }
 
+    let prev_s_recv = conn.stream_table.streams[idx].bytes_recv;
+    let prev_conn_recv = conn.flow_ctrl.bytes_recv_total;
     let fc_ok, fc_err = quic_fc_record_recv_stream(
         conn.flow_ctrl,
         conn.stream_table.streams[idx],
@@ -470,6 +482,8 @@ fn dispatch_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bo
         frame.fin,
     );
     guard st_ok else {
+        conn.stream_table.streams[idx].bytes_recv = prev_s_recv;
+        conn.flow_ctrl.bytes_recv_total = prev_conn_recv;
         quic_conn_close(conn, st_err);
         return false, false;
     }
@@ -481,6 +495,9 @@ fn dispatch_reset_stream_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     guard quic_stream_can_recv(frame.stream_id, conn.role) else {
         quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
+    }
+    if quic_table_is_evicted_closed_stream(conn.stream_table, frame.stream_id) {
+        return true, true;
     }
 
     // RFC 9000 §19.4: Ingress RESET_STREAM frame for unopened locally-initiated stream is STREAM_STATE_ERROR
@@ -518,6 +535,9 @@ fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
         return false, false;
     }
+    if quic_table_is_evicted_closed_stream(conn.stream_table, frame.stream_id) {
+        return true, true;
+    }
 
     // RFC 9000 §19.5: Ingress STOP_SENDING frame for unopened locally-initiated stream is STREAM_STATE_ERROR
     if !is_peer_initiated_stream(frame.stream_id, conn.role) {
@@ -543,56 +563,79 @@ fn dispatch_stop_sending_inbound(conn: QuicConnection&, frame: const QuicFrame&)
     return true, true;
 }
 
+fn dispatch_max_stream_data_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    guard quic_stream_can_send(frame.stream_id, conn.role) else {
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
+        return false, false;
+    }
+    if quic_table_is_evicted_closed_stream(conn.stream_table, frame.stream_id) {
+        return true, true;
+    }
+    // RFC 9000 §19.10: Ingress MAX_STREAM_DATA frame for unopened locally-initiated stream is STREAM_STATE_ERROR
+    if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+        let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        guard sid_found >= 0 else {
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+    }
+    let idx, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
+    guard ok else {
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_LIMIT);
+        return false, false;
+    }
+    quic_fc_update_stream_send_max_data(conn.stream_table.streams[idx], frame.max_data);
+    return true, true;
+}
+
+fn dispatch_stream_data_blocked_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
+    // RFC 9000 §19.13: "An endpoint that receives a STREAM_DATA_BLOCKED frame for a send-only
+    // stream MUST terminate the connection with error STREAM_STATE_ERROR."
+    guard quic_stream_can_recv(frame.stream_id, conn.role) else {
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
+        return false, false;
+    }
+    if quic_table_is_evicted_closed_stream(conn.stream_table, frame.stream_id) {
+        return true, true;
+    }
+    if !is_peer_initiated_stream(frame.stream_id, conn.role) {
+        let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
+        guard sid_found >= 0 else {
+            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
+            return false, false;
+        }
+    }
+    let _, ok = quic_table_get_or_open_stream(conn.stream_table, frame.stream_id, conn.flow_ctrl.local_window_size);
+    guard ok else {
+        quic_conn_close(conn, rfc::QUIC_ERR_STREAM_LIMIT);
+        return false, false;
+    }
+    return true, true;
+}
+
 fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     if frame.frame_type == QuicFrameType.MaxData {
         quic_fc_update_remote_max_data(conn.flow_ctrl, frame.max_data);
         return true, true;
     }
-
     if frame.frame_type == QuicFrameType.MaxStreamData {
-        guard quic_stream_can_send(frame.stream_id, conn.role) else {
-            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
-            return false, false;
-        }
-        // RFC 9000 §19.10: Ingress MAX_STREAM_DATA frame for unopened locally-initiated stream is STREAM_STATE_ERROR
-        if !is_peer_initiated_stream(frame.stream_id, conn.role) {
-            let sid_found = quic_table_find_stream(conn.stream_table, frame.stream_id);
-            guard sid_found >= 0 else {
-                quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
-                return false, false;
-            }
-        }
-        let idx = quic_table_find_stream(conn.stream_table, frame.stream_id);
-        if idx >= 0 {
-            quic_fc_update_stream_send_max_data(conn.stream_table.streams[idx], frame.max_data);
-        }
-        return true, true;
+        return dispatch_max_stream_data_inbound(conn, frame);
     }
-
     if frame.frame_type == QuicFrameType.MaxStreamsBidi {
         if frame.max_data > conn.stream_table.max_streams_bidi {
             conn.stream_table.max_streams_bidi = frame.max_data;
         }
         return true, true;
     }
-
     if frame.frame_type == QuicFrameType.MaxStreamsUni {
         if frame.max_data > conn.stream_table.max_streams_uni {
             conn.stream_table.max_streams_uni = frame.max_data;
         }
         return true, true;
     }
-
     if frame.frame_type == QuicFrameType.StreamDataBlocked {
-        // RFC 9000 §19.13: "An endpoint that receives a STREAM_DATA_BLOCKED frame for a send-only
-        // stream MUST terminate the connection with error STREAM_STATE_ERROR."
-        guard quic_stream_can_recv(frame.stream_id, conn.role) else {
-            quic_conn_close(conn, rfc::QUIC_ERR_STREAM_STATE);
-            return false, false;
-        }
-        return true, true;
+        return dispatch_stream_data_blocked_inbound(conn, frame);
     }
-
     return true, true;
 }
 
@@ -1222,7 +1265,8 @@ fn parse_quic_packet_pre_hp(conn: const QuicConnection&, pkt_slice: const u8[:],
             return parse_quic_long_header(pkt_slice, b0);
         }
         let type_bits = (b0 >> 4) & 0x03;
-        let ht, _ = quic_long_header_type(ver, type_bits);
+        let ht, ok_ver = quic_long_header_type(ver, type_bits);
+        guard ok_ver else { return QuicHeader { .. }, false; }
         let sp_id = header_type_to_space_id(ht);
         let eff_b0 = if get_rx_space_keys_installed(conn, sp_id) { b0 & 0xF3 } else { b0 };
         return parse_quic_long_header(pkt_slice, eff_b0);
@@ -1270,9 +1314,9 @@ fn process_single_coalesced_packet(
     if conn.state == QuicConnState.Closing || conn.state == QuicConnState.Closed {
         return pkt_wire_len, true, false;
     }
-    let handled_pkt, needs_ack_pkt = dispatch_packet_type(conn, hdr, out_ack);
+    let handled_pkt, _ = dispatch_packet_type(conn, hdr, out_ack);
     guard handled_pkt else { return 0, false, false; }
-    return pkt_wire_len, true, (needs_ack_pkt || frame_ack_el);
+    return pkt_wire_len, true, frame_ack_el;
 }
 
 // RFC 9000 Section 12.2: Coalescing Packets - Processes an inbound UDP datagram containing one or more coalesced QUIC packets.

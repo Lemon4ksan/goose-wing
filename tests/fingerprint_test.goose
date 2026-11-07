@@ -767,6 +767,92 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         let formatted = wing::format_p0f(sig);
         sub.assert_true(formatted.len > 100, "Formatted dense p0f signature exceeds 100 bytes");
     };
+
+    t.run("9. Akamai max-width 514-byte capacity & RFC 9113 stream/window/pseudo invariants") { sub =>
+        var max_fp = wing::AkamaiFingerprint {};
+        for i in 16 {
+            max_fp.settings.push(wing::AkamaiSetting { id: (65500 + i) as u16, val: 4294967295 });
+        }
+        max_fp.window_update = 2147483647;
+        for i in 8 {
+            max_fp.priority_frames.push(wing::AkamaiPriorityFrame {
+                stream_id:     (2147483600 + i) as u32,
+                exclusive:     1,
+                dep_stream_id: (2147483500 + i) as u32,
+                weight:        256,
+            });
+        }
+        max_fp.pseudo_headers.push('m');
+        max_fp.pseudo_headers.push('a');
+        max_fp.pseudo_headers.push('s');
+        max_fp.pseudo_headers.push('p');
+
+        let max_str = wing::akamai_fingerprint_to_string(max_fp);
+        sub.assert_true(max_str.len > 512, "Max valid Akamai fingerprint exceeds 512 bytes without aborting");
+        var max_hash: u8[..32] = [];
+        wing::compute_akamai_hash(max_fp, max_hash);
+        sub.assert_eq(max_hash.len, 32, "MD5 hash succeeds on >512-byte Akamai fingerprint");
+
+        let _, ok1 = wing::parse_akamai_fingerprint("1:65536||0|m,a,s,p");
+        sub.assert_false(ok1, "Empty window_update field must fail");
+        let _, ok2 = wing::parse_akamai_fingerprint("1:65536|2147483648|0|m,a,s,p");
+        sub.assert_false(ok2, "32-bit window_update > 2^31-1 must fail");
+        let _, ok3 = wing::parse_akamai_fingerprint("1:65536;;2:0|0|0|m,a,s,p");
+        sub.assert_false(ok3, "Empty settings token must fail");
+        let _, ok4 = wing::parse_akamai_fingerprint("1:65536|0|0:0:0:16|m,a,s,p");
+        sub.assert_false(ok4, "PRIORITY on stream 0 must fail");
+        let _, ok5 = wing::parse_akamai_fingerprint("1:65536|0|3:0:3:16|m,a,s,p");
+        sub.assert_false(ok5, "PRIORITY self-dependency must fail");
+        let _, ok6 = wing::parse_akamai_fingerprint("1:65536|0|2147483648:0:0:16|m,a,s,p");
+        sub.assert_false(ok6, "PRIORITY 32-bit stream_id > 2^31-1 must fail");
+        let _, ok7 = wing::parse_akamai_fingerprint("1:65536|0|0|m,m,a,s");
+        sub.assert_false(ok7, "Duplicate pseudo-header must fail");
+        let _, ok8 = wing::parse_akamai_fingerprint("1:65536|0|0|,,,");
+        sub.assert_false(ok8, "Empty pseudo-header tokens must fail");
+
+        var bad_safari = wing::akamai_safari_preset();
+        bad_safari.window_update = 0;
+        let anom, _ = wing::detect_akamai_anomaly("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) Version/17.4 Safari/605.1.15", bad_safari);
+        sub.assert_true(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Safari with 0 window_update must trigger anomaly");
+    };
+
+    t.run("10. JA4/JA4H & Profile cross-component protocol/language/pseudo-header invariants") { sub =>
+        let ciphers: u16[2] = [0x1301, 0x1302];
+        let exts:    u16[2] = [0x0000, 0x0010];
+        let vers:    u16[2] = [0x0304, 0x7f1c];
+        let sigs:    u16[1] = [0x0403];
+
+        let ja4_csv = wing::compute_ja4(ciphers[..], exts[..], vers[..], true, "h2,http/1.1", sigs[..], false);
+        sub.assert_bytes_eq(ja4_csv[..11], "t13d0202h2_", "JA4 parses first ALPN from CSV and ignores draft version 0x7f1c");
+
+        let hdrs:    const u8[:][4] = [":method", ":path", "Host", "Accept-Language"];
+        let cookies: const u8[:][1] = ["session_id"];
+        let ja4h_res = wing::compute_ja4h("GET", "h2", hdrs[..], wing::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..]);
+        sub.assert_bytes_eq(ja4h_res[..12], "ge20cn02en00", "JA4H maps h2->20, sets cookie flag, strips :pseudo, and stops language at ';'");
+
+        var prof = wing::new_client_profile(wing::Profile.Wing);
+        let ff_fp = wing::akamai_firefox_preset();
+        wing::set_akamai(prof, ff_fp);
+        sub.assert_eq(prof.h2.initial_window_size as i64, 131072, "set_akamai syncs BrowserProfile.h2 settings");
+    };
+
+    t.run("11. p0f wildcard scale round-trip, MTU match, and integer overflow defense") { sub =>
+        let p_any, ok_any = wing::parse_p0f("4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
+        sub.assert_true(ok_any, "Wildcard window with scale 8 parses");
+        let fmt_any = wing::format_p0f(p_any);
+        sub.assert_bytes_eq(fmt_any[..], "4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0", "Wildcard window preserves scale on format");
+
+        var target_mtu, ok_mtu = wing::parse_p0f("4:64-:0:*:mtu*4,7:mss,sok,ts,nop,ws:df:0");
+        sub.assert_true(ok_mtu, "mtu*4 target parses");
+        var actual_pkt, ok_pkt = wing::parse_p0f("4:60:0:1460:6000,7:mss,sok,ts,nop,ws:df:0");
+        sub.assert_true(ok_pkt, "actual packet with window 6000 = (1460+40)*4 parses");
+        sub.assert_true(wing::match_p0f(actual_pkt, target_mtu), "match_p0f matches Normal 6000 against mtu*4 with mss 1460");
+
+        let _, ok_ovf = wing::parse_p0f("4:64:0:999999999999:65535,8:mss:df:0");
+        sub.assert_false(ok_ovf, "Out-of-range MSS > 65535 must return false without aborting");
+        let _, ok_bad_quirk = wing::parse_p0f("4:64:0:1460:65535,8:mss:df,unknown_quirk:0");
+        sub.assert_false(ok_bad_quirk, "Unknown quirk token must return false");
+    };
 }
 
 fn main() {

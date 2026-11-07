@@ -232,10 +232,21 @@ struct WirePipeline {
     is_valid:       bool                  = true,
 }
 
+inline fn contains_stage_id(stages: const u8[:], stage_id: u8) -> bool {
+    for id in stages {
+        if id == stage_id {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Appends a stage slot ID to `pipe.ingress_stages` and enables its corresponding bit in `pipe.ingress_mask`.
 fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
     guard pipe.ingress_stages.len < pipe.ingress_stages.cap && stage_id < 64 else { return false; }
-    pipe.ingress_stages.push(stage_id);
+    if !contains_stage_id(pipe.ingress_stages[..], stage_id) {
+        pipe.ingress_stages.push(stage_id);
+    }
     pipe.ingress_mask = pipe.ingress_mask | ((1 as u64) << stage_id);
     return true;
 }
@@ -243,7 +254,9 @@ fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
 // Appends a stage slot ID to `pipe.egress_stages` and enables its corresponding bit in `pipe.egress_mask`.
 fn add_egress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
     guard pipe.egress_stages.len < pipe.egress_stages.cap && stage_id < 64 else { return false; }
-    pipe.egress_stages.push(stage_id);
+    if !contains_stage_id(pipe.egress_stages[..], stage_id) {
+        pipe.egress_stages.push(stage_id);
+    }
     pipe.egress_mask = pipe.egress_mask | ((1 as u64) << stage_id);
     return true;
 }

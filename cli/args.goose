@@ -5,6 +5,7 @@
 import std;
 import os;
 import core from "..";
+import wing from "..";
 
 enum CliMode {
     Help,
@@ -111,6 +112,9 @@ fn parse_header_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     let next_idx = core::add_sat_i64(col, 1);
     let name = core::trim_lws(raw[..col]);
     let val = core::trim_lws(raw[next_idx..]);
+    guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
+        return set_cli_error(cfg, "invalid header name or value", raw);
+    }
     var pair = HeaderPair { .. };
     guard pair.name.try_set(name) && pair.value.try_set(val) else {
         return set_cli_error(cfg, "header name or value exceeds buffer capacity");
@@ -167,6 +171,84 @@ fn parse_user_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     return true;
 }
 
+// Parses a dotted-quad IPv4 string into a big-endian u32 for `wing::DnsCacheEntry`.
+//
+// Example:
+//   raw = "127.0.0.1"
+//   returns: 0x7F000001, true
+fn parse_ipv4_be_u32(raw: const u8[:]) -> u32, bool {
+    var acc: u64 = 0;
+    var rem = raw;
+    for part_idx in 4 {
+        var part = rem;
+        if part_idx < 3 {
+            let dot = core::index_of_byte(rem, '.');
+            guard dot > 0 else { return 0, false; }
+            let next_start = core::add_sat_i64(dot, 1);
+            part = rem[..dot];
+            rem = rem[next_start..];
+        } else {
+            rem = rem[rem.len..];
+        }
+        let oct, ok = core::parse_u64_dec(part);
+        guard ok && oct <= 255 else { return 0, false; }
+        acc = (core::shl_sat_u64(acc, 8) | oct) & 0xFFFFFFFF;
+    }
+    return acc as u32, rem.len == 0;
+}
+
+fn normalize_noproxy_host(raw: const u8[:]) -> const u8[:] {
+    var h = core::trim_lws(raw);
+    if h.len >= 2 && h[0] == '[' {
+        let close_br = core::index_of_byte(h, ']');
+        if close_br > 1 {
+            h = h[1..close_br];
+        }
+    } else {
+        let col = core::index_of_byte(h, ':');
+        if col > 0 && core::index_of_byte(h[core::add_sat_i64(col, 1)..], ':') < 0 {
+            h = h[..col];
+        }
+    }
+    while core::ends_with(h, ".") {
+        h = h[..core::sub_sat_i64(h.len, 1)];
+    }
+    return h;
+}
+
+fn host_matches_noproxy_token(host: const u8[:], token: const u8[:]) -> bool {
+    let clean = core::trim_lws(token);
+    guard clean.len > 0 else { return false; }
+    if clean == "*" { return true; }
+    let raw_dom = if clean[0] == '.' { clean[1..] } else { clean };
+    let dom = normalize_noproxy_host(raw_dom);
+    let norm_host = normalize_noproxy_host(host);
+    guard dom.len > 0 && norm_host.len > 0 else { return false; }
+    if core::eq_ascii_fold(norm_host, dom) { return true; }
+    if norm_host.len > dom.len {
+        let suffix_start = core::sub_sat_i64(norm_host.len, dom.len);
+        let dot_pos = core::sub_sat_i64(suffix_start, 1);
+        if norm_host[dot_pos] == '.' && core::eq_ascii_fold(norm_host[suffix_start..], dom) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_host_bypassed_by_no_proxy(host: const u8[:], no_proxy_list: const u8[:]) -> bool {
+    guard host.len > 0 && no_proxy_list.len > 0 else { return false; }
+    var rem = no_proxy_list;
+    while rem.len > 0 {
+        let c_idx = core::index_of_byte(rem, ',');
+        let item = if c_idx >= 0 { rem[..c_idx] } else { rem };
+        rem = if c_idx >= 0 { rem[core::add_sat_i64(c_idx, 1)..] } else { rem[rem.len..] };
+        if host_matches_noproxy_token(host, item) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Parses curl-style `--resolve host:port:ip` entry.
 //
 // Example:
@@ -191,8 +273,9 @@ fn parse_resolve_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     let port_part = rest[..c2];
     let ip_part = rest[next2..];
     let port_u64, ok_p = core::parse_u64_dec(port_part);
-    guard ok_p && port_u64 > 0 && port_u64 <= 65535 else {
-        return set_cli_error(cfg, "invalid port in --resolve", raw);
+    let _, ok_ip = parse_ipv4_be_u32(ip_part);
+    guard ok_p && port_u64 > 0 && port_u64 <= 65535 && ok_ip else {
+        return set_cli_error(cfg, "invalid port or IPv4 in --resolve", raw);
     }
     var entry = ResolveEntry { port: port_u64 as u16, .. };
     guard entry.host.try_set(host_part) && entry.ip.try_set(ip_part) else {
@@ -202,7 +285,7 @@ fn parse_resolve_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     return true;
 }
 
-fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) {
+fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) -> bool {
     var rem_mod = modifiers;
     while rem_mod.len > 0 {
         let s_idx = core::index_of_byte(rem_mod, ';');
@@ -210,11 +293,18 @@ fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) {
         rem_mod = if s_idx >= 0 { rem_mod[core::add_sat_i64(s_idx, 1)..] } else { rem_mod[rem_mod.len..] };
         let trimmed = core::trim_lws(item);
         if core::starts_with_fold(trimmed, "type=") {
-            let _ = field.content_type.try_set(trimmed[5..]);
+            let ct_val = trimmed[5..];
+            guard wing::is_valid_header_value(ct_val) && field.content_type.try_set(ct_val) else {
+                return false;
+            }
         } else if core::starts_with_fold(trimmed, "filename=") {
-            let _ = field.filename.try_set(trimmed[9..]);
+            let fn_val = trimmed[9..];
+            guard wing::is_valid_header_value(fn_val) && field.filename.try_set(fn_val) else {
+                return false;
+            }
         }
     }
+    return true;
 }
 
 // Parses a curl-style `-F / --form` specification (`name=value` or `name=@file;type=...;filename=...`).
@@ -222,7 +312,7 @@ fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) {
 // Example:
 //   raw = "avatar=@photo.png;type=image/png;filename=avatar.png"
 //   returns: true, pushes FormFieldSpec { name: "avatar", value: "photo.png", is_file: true, ... }
-fn parse_form_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
+fn parse_form_flag(raw: const u8[:], cfg: CliConfig&, literal_only: bool = false) -> bool {
     guard cfg.form_fields.len < cfg.form_fields.cap else {
         return set_cli_error(cfg, "too many -F form fields (max 16)");
     }
@@ -238,27 +328,31 @@ fn parse_form_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     }
 
     var rhs = raw[next_eq..];
-    let semi = core::index_of_byte(rhs, ';');
-    let modifiers = if semi >= 0 { rhs[core::add_sat_i64(semi, 1)..] } else { rhs[rhs.len..] };
-    if semi >= 0 {
-        rhs = rhs[..semi];
+    var modifiers = rhs[rhs.len..];
+    if !literal_only {
+        let semi = core::index_of_byte(rhs, ';');
+        if semi >= 0 {
+            modifiers = rhs[core::add_sat_i64(semi, 1)..];
+            rhs = rhs[..semi];
+        }
     }
 
-    if rhs.len > 1 && rhs[0] == '@' {
+    if !literal_only && rhs.len > 0 && rhs[0] == '@' {
         field.is_file = true;
         let fpath = rhs[1..];
-        guard field.value.try_set(fpath) else {
-            return set_cli_error(cfg, "-F file path too long");
+        let base_fn = extract_path_basename(fpath);
+        guard fpath.len > 0 && field.value.try_set(fpath) && field.filename.try_set(base_fn) else {
+            return set_cli_error(cfg, "-F file path invalid or too long");
         }
-        let base_fn = extract_remote_filename(fpath);
-        let _ = field.filename.try_set(base_fn);
     } else {
         guard field.value.try_set(rhs) else {
             return set_cli_error(cfg, "-F value too long");
         }
     }
 
-    apply_form_modifiers(modifiers, field);
+    guard apply_form_modifiers(modifiers, field) else {
+        return set_cli_error(cfg, "invalid -F modifier");
+    }
     cfg.form_fields.push(field);
     if !cfg.has_explicit_m {
         let _ = cfg.method.try_set("POST");
@@ -268,8 +362,11 @@ fn parse_form_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
 
 fn read_source_bytes(raw: const u8[:], allow_at_file: bool, out: u8[>..]&, cfg: CliConfig&) -> bool {
     out.clear();
-    if allow_at_file && raw.len > 1 && raw[0] == '@' {
+    if allow_at_file && raw.len > 0 && raw[0] == '@' {
         let path = raw[1..];
+        guard path.len > 0 else {
+            return set_cli_error(cfg, "empty payload file path");
+        }
         if path == "-" {
             read_stdin(out);
             return true;
@@ -341,6 +438,26 @@ fn apply_data_urlencode_arg(raw: const u8[:], cfg: CliConfig&) -> bool {
     return true;
 }
 
+// Extracts the trailing filename segment from a filesystem or URL path without stripping `?` or `#`.
+//
+// Example:
+//   clean = "dir/#notes.txt"
+//   returns: "#notes.txt"
+fn extract_path_basename(clean: const u8[:]) -> const u8[:] {
+    if clean.len == 0 || core::ends_with(clean, "/") || core::ends_with(clean, "\\") {
+        return "index.html";
+    }
+    var last_slash: i64 = -1;
+    for i in clean.len {
+        if clean[i] == '/' || clean[i] == '\\' { last_slash = i; }
+    }
+    let seg = if last_slash >= 0 { clean[core::add_sat_i64(last_slash, 1)..] } else { clean };
+    if seg.len == 0 || seg == "." || seg == ".." {
+        return "index.html";
+    }
+    return seg;
+}
+
 // Extracts the trailing filename segment from a URL or file path for `-O / --remote-name`.
 //
 // Example:
@@ -353,19 +470,16 @@ fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
     let h_idx = core::index_of_byte(clean, '#');
     if h_idx >= 0 { clean = clean[..h_idx]; }
 
-    if clean.len == 0 || core::ends_with(clean, "/") || core::ends_with(clean, "\\") {
-        return "index.html";
+    let scheme_end = core::find(clean, "://");
+    if scheme_end >= 0 {
+        let after_scheme = clean[core::add_sat_i64(scheme_end, 3)..];
+        let path_slash = core::index_of_byte(after_scheme, '/');
+        if path_slash < 0 {
+            return "index.html";
+        }
+        clean = after_scheme[core::add_sat_i64(path_slash, 1)..];
     }
-
-    var last_slash: i64 = -1;
-    for i in clean.len {
-        if clean[i] == '/' || clean[i] == '\\' { last_slash = i; }
-    }
-    let next_slash = core::add_sat_i64(last_slash, 1);
-    if last_slash >= 0 && next_slash < clean.len {
-        return clean[next_slash..];
-    }
-    return clean;
+    return extract_path_basename(clean);
 }
 
 fn apply_cli_output_bool_flag(arg: const u8[:], cfg: CliConfig&) -> bool {
@@ -555,13 +669,14 @@ fn apply_cli_data_opt(arg: const u8[:], val: const u8[:], cfg: CliConfig&) -> bo
 
 fn apply_cli_upload_or_route_opt(arg: const u8[:], val: const u8[:], cfg: CliConfig&) -> bool, bool {
     if arg == "-F" || arg == "--form" || arg == "--form-string" {
-        return true, parse_form_flag(val, cfg);
+        return true, parse_form_flag(val, cfg, arg == "--form-string");
     }
     if arg == "-T" || arg == "--upload-file" {
-        guard cfg.upload_file.try_set(val) else {
-            return true, set_cli_error(cfg, "upload-file path too long");
+        let clean_val = if core::starts_with(val, "@") { val[1..] } else { val };
+        guard clean_val.len > 0 && cfg.upload_file.try_set(clean_val) else {
+            return true, set_cli_error(cfg, "upload-file path invalid or too long");
         }
-        guard load_data_arg(str("@", val), true, cfg) else { return true, false; }
+        guard load_data_arg(str("@", clean_val), true, cfg) else { return true, false; }
         if !cfg.has_explicit_m { let _ = cfg.method.try_set("PUT"); }
         return true, true;
     }
@@ -586,11 +701,15 @@ fn apply_cli_payload_opt(arg: const u8[:], val: const u8[:], cfg: CliConfig&) ->
 fn apply_continue_at_opt(val: const u8[:], cfg: CliConfig&) -> bool {
     if val == "-" {
         cfg.auto_resume = true;
+        cfg.resume_from = 0;
         return true;
     }
     let off, ok_o = core::parse_u64_dec(val);
-    guard ok_o else { return set_cli_error(cfg, "invalid -C offset", val); }
-    cfg.resume_from = (off & 0x7FFFFFFFFFFFFFFF) as i64;
+    guard ok_o && off <= 0x7FFFFFFFFFFFFFFF else {
+        return set_cli_error(cfg, "invalid -C offset", val);
+    }
+    cfg.auto_resume = false;
+    cfg.resume_from = off as i64;
     return true;
 }
 
@@ -645,8 +764,8 @@ fn assign_positional_url(arg: const u8[:], cfg: CliConfig&) -> bool {
     guard cfg.url.len == 0 else {
         return set_cli_error(cfg, "unexpected positional argument", arg);
     }
-    let has_scheme = core::starts_with(arg, "http://") || core::starts_with(arg, "https://") ||
-        core::starts_with(arg, "ws://") || core::starts_with(arg, "wss://");
+    let has_scheme = core::starts_with_fold(arg, "http://") || core::starts_with_fold(arg, "https://") ||
+        core::starts_with_fold(arg, "ws://") || core::starts_with_fold(arg, "wss://");
     let prefix = if has_scheme { "" } else { "http://" };
     let needed = core::add_sat_i64(prefix.len, arg.len);
     guard needed <= cfg.url.cap else {
@@ -706,19 +825,31 @@ fn step_cli_arg<S>(argv: const S[:], idx: i64&, cfg: CliConfig&) -> bool {
 }
 
 fn finalize_get_query_mode(cfg: CliConfig&) -> bool {
-    guard cfg.get_query_mode && cfg.has_body && cfg.body.len > 0 else { return true; }
-    let sep: u8 = if core::index_of_byte(cfg.url[..], '?') >= 0 { '&' } else { '?' };
+    guard cfg.get_query_mode else { return true; }
+    if !cfg.has_explicit_m {
+        let _ = cfg.method.try_set("GET");
+    }
+    guard cfg.has_body && cfg.body.len > 0 else {
+        cfg.has_body = false;
+        return true;
+    }
     let needed = core::add_sat_i64(core::add_sat_i64(cfg.url.len, 1), cfg.body.len);
     guard needed <= cfg.url.cap else {
         return set_cli_error(cfg, "URL + query string exceeds maximum length");
     }
-    cfg.url.push(sep);
-    cfg.url.append(cfg.body[..]);
+    let h_idx = core::index_of_byte(cfg.url[..], '#');
+    let base_end = if h_idx >= 0 { h_idx } else { cfg.url.len };
+    let sep: u8 = if core::index_of_byte(cfg.url[..base_end], '?') >= 0 { '&' } else { '?' };
+    var rebuilt: u8[..2048] = [];
+    rebuilt.append(cfg.url[..base_end]);
+    rebuilt.push(sep);
+    rebuilt.append(cfg.body[..]);
+    if h_idx >= 0 {
+        rebuilt.append(cfg.url[h_idx..]);
+    }
+    let _ = cfg.url.try_set(rebuilt[..]);
     cfg.body.clear();
     cfg.has_body = false;
-    if !cfg.has_explicit_m {
-        let _ = cfg.method.try_set("GET");
-    }
     return true;
 }
 

@@ -92,7 +92,17 @@ fn build_grpc_request_headers(
     append_header(out_headers, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
 
     for i in cfg.metadata.len {
-        append_header(out_headers, cfg.metadata[i].key[..], cfg.metadata[i].value[..]);
+        if is_valid_grpc_custom_metadata(cfg.metadata[i].key[..], cfg.metadata[i].value[..]) {
+            append_header(out_headers, cfg.metadata[i].key[..], cfg.metadata[i].value[..]);
+        }
+    }
+}
+
+inline fn append_grpc_custom_metadata_to_request(req: Request&, meta: const GrpcMetadata[:]) {
+    for &m in meta {
+        if is_valid_grpc_custom_metadata(m.key[..], m.value[..]) {
+            set_header(req, m.key[..], m.value[..]);
+        }
     }
 }
 
@@ -107,20 +117,18 @@ fn build_grpc_http_request(
     out_req.method.append("POST");
 
     out_req.url.clear();
-    out_req.url.append(base_url);
-    if out_req.url.len > 0 && out_req.url[out_req.url.len - 1] == '/' {
-        out_req.url.append(cfg.service[..]);
-        out_req.url.push('/');
-        out_req.url.append(cfg.method[..]);
-    } else {
-        out_req.url.push('/');
-        out_req.url.append(cfg.service[..]);
-        out_req.url.push('/');
-        out_req.url.append(cfg.method[..]);
+    let _ = out_req.url.try_append(base_url);
+    let last_idx = core::sub_sat_i64(out_req.url.len, 1);
+    if out_req.url.len == 0 || out_req.url[last_idx] != '/' {
+        let _ = out_req.url.try_push('/');
     }
+    let _ = out_req.url.try_append(cfg.service[..]);
+    let _ = out_req.url.try_push('/');
+    let _ = out_req.url.try_append(cfg.method[..]);
 
-    // Reset headers for reliable O(1) header lookup
+    // Reset headers and presence mask for reliable O(1) header lookup
     out_req.headers.clear();
+    out_req.presence_mask = 0;
 
     if cfg.is_web_text {
         set_header(out_req, "content-type", rfc::GRPC_WEB_TEXT_PROTO);
@@ -142,10 +150,7 @@ fn build_grpc_http_request(
         set_header(out_req, rfc::HEADER_GRPC_ENCODING, "gzip");
     }
     set_header(out_req, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
-
-    for i in cfg.metadata.len {
-        set_header(out_req, cfg.metadata[i].key[..], cfg.metadata[i].value[..]);
-    }
+    append_grpc_custom_metadata_to_request(out_req, cfg.metadata[..]);
 
     // Body LPM encoding
     out_req.body.clear();
@@ -163,6 +168,8 @@ fn build_grpc_http_request(
 inline fn append_grpc_web_data_frame(frame_payload: const u8[:], is_comp: bool, out_resp: GrpcResponse&) -> bool {
     out_resp.is_compressed = is_comp;
     if !is_comp {
+        let next_len = core::add_sat_i64(out_resp.payload.len, frame_payload.len);
+        guard next_len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
         out_resp.payload.append(frame_payload);
         return true;
     }
@@ -170,6 +177,33 @@ inline fn append_grpc_web_data_frame(frame_payload: const u8[:], is_comp: bool, 
         frame_payload, out_resp.payload, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
     );
     return ok_gz;
+}
+
+// Decodes an uncompressed or Gzip-compressed gRPC-Web trailer frame payload.
+//
+// Example:
+//   frame_payload = "grpc-status: 0\r\n", is_comp = false
+//   returns: true, out_resp.status = GrpcStatusCode.Ok
+inline fn decode_grpc_web_trailer_frame(
+    frame_payload: const u8[:],
+    is_comp:       bool,
+    out_resp:      GrpcResponse&,
+) -> bool {
+    if !is_comp {
+        if !parse_grpc_web_trailers(frame_payload, out_resp.status, out_resp.message) {
+            out_resp.status = GrpcStatusCode.Unknown;
+        }
+        return true;
+    }
+    var tr_decomp: u8[>..] = [];
+    let ok_gz, _ = core::gzip_decompress_with_limit(
+        frame_payload, tr_decomp, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    );
+    guard ok_gz else { return false; }
+    if !parse_grpc_web_trailers(tr_decomp[..], out_resp.status, out_resp.message) {
+        out_resp.status = GrpcStatusCode.Unknown;
+    }
+    return true;
 }
 
 // Parses a gRPC-Web response body into payload and trailers.
@@ -202,7 +236,7 @@ fn parse_grpc_web_unary_body(
         guard ok_frame else { return false; }
 
         if is_trailers {
-            parse_grpc_web_trailers(frame_payload[..], out_resp.status, out_resp.message);
+            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else { return false; }
             found_trailer = true;
         } else {
             guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
@@ -212,6 +246,8 @@ fn parse_grpc_web_unary_body(
 
     if !found_trailer {
         extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
+    } else if resolve_effective_http_status(res_headers) != 200 && out_resp.status == GrpcStatusCode.Ok {
+        out_resp.status = grpc_status_from_http(resolve_effective_http_status(res_headers));
     }
     return true;
 }
@@ -241,8 +277,8 @@ fn parse_grpc_unary_response(
     let has_wire_status = extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
     if body.len >= 5 {
         var comp = false;
-        let ok_lpm, _ = decode_grpc_lpm(body, 0, out_resp.payload, comp);
-        guard ok_lpm else { return false; }
+        let ok_lpm, consumed = decode_grpc_lpm(body, 0, out_resp.payload, comp);
+        guard ok_lpm && consumed == body.len else { return false; }
         out_resp.is_compressed = comp;
         if comp {
             var decomp_buf: u8[>..] = [];
@@ -252,6 +288,8 @@ fn parse_grpc_unary_response(
             guard ok_gz else { return false; }
             out_resp.payload.clear();
             out_resp.payload.append(decomp_buf[..]);
+        } else {
+            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
         }
         return true;
     }
@@ -285,7 +323,7 @@ fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
 fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcResponse&) -> bool {
     var wire_bytes: u8[>..] = [];
     if starts_with_fold(ct, rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
-        decode_grpc_web_text(body, wire_bytes);
+        guard decode_grpc_web_text(body, wire_bytes) else { return false; }
     } else {
         wire_bytes.append(body);
     }
@@ -297,10 +335,10 @@ fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcR
         var is_trailers = false;
         var is_comp = false;
         let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-        guard ok_frame else { break; }
+        guard ok_frame else { return false; }
 
         if is_trailers {
-            parse_grpc_web_trailers(frame_payload[..], out_resp.status, out_resp.message);
+            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else { return false; }
         } else {
             out_resp.payload.clear();
             guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
@@ -319,14 +357,19 @@ fn grpc_unary_call(
     request_msg: const u8[:],
     out_resp:    GrpcResponse&,
 ) -> bool {
+    out_resp.payload.clear();
+    out_resp.message.clear();
+    out_resp.is_compressed = false;
+    out_resp.is_trailers_only = false;
+
     var req = new_request("POST", "");
     build_grpc_http_request(cfg, base_url, request_msg, req);
 
     let res, err = do(session, req);
     guard ok(err) else {
         out_resp.status = GrpcStatusCode.Unavailable;
-        out_resp.message.clear();
-        out_resp.message.append(err.message[..]);
+        let take_err = min(err.message.len, out_resp.message.cap);
+        out_resp.message.append(err.message[..take_err]);
         return false;
     }
 
@@ -341,6 +384,9 @@ fn grpc_unary_call(
     if status_val.len > 0 {
         let status_int = parse_grpc_status_code(status_val);
         out_resp.status = grpc_status_from_code(status_int);
+        if res.status_code != 200 && out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = grpc_status_from_http(res.status_code);
+        }
 
         if msg_val.len > 0 {
             decode_grpc_message(msg_val, out_resp.message);
@@ -349,7 +395,7 @@ fn grpc_unary_call(
         out_resp.status = grpc_status_from_http(res.status_code);
     }
 
-    if cfg.is_web {
+    if cfg.is_web || cfg.is_web_text {
         let ct = header(res, "content-type");
         return process_grpc_web_response(res.body[..], ct, out_resp);
     }
@@ -357,8 +403,8 @@ fn grpc_unary_call(
     // Native gRPC body
     if res.body.len >= 5 {
         var comp = false;
-        let ok_lpm, _ = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
-        guard ok_lpm else { return false; }
+        let ok_lpm, consumed = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
+        guard ok_lpm && consumed == res.body.len else { return false; }
         out_resp.is_compressed = comp;
         if comp {
             var decomp_buf: u8[>..] = [];
@@ -368,11 +414,18 @@ fn grpc_unary_call(
             guard ok_gz else { return false; }
             out_resp.payload.clear();
             out_resp.payload.append(decomp_buf[..]);
+        } else {
+            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
         }
         return true;
     }
 
-    return true;
+    if res.body.len == 0 {
+        out_resp.is_trailers_only = true;
+        return true;
+    }
+
+    return false;
 }
 
 // ---- Streaming RPC Client Session (Bidi & Server Streaming) --------------
@@ -419,12 +472,11 @@ fn read_stream_message<B>(stream: GrpcClientStream&, out_payload: B&, out_compre
     if out_compressed {
         var decomp_buf: u8[>..] = [];
         let ok_gz, _ = core::gzip_decompress_with_limit(out_payload[..], decomp_buf, stream.parser.max_size);
-        guard ok_gz else {
+        out_payload.clear();
+        guard ok_gz && out_payload.try_append(decomp_buf[..]) else {
             out_payload.clear();
             return false;
         }
-        out_payload.clear();
-        out_payload.append(decomp_buf[..]);
     }
     return true;
 }

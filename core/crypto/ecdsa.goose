@@ -320,7 +320,16 @@ fn ecdsa_p256_decode_der_sig(der_sig: const u8[:], out_raw: u8[64]&) -> bool {
     guard idx + seq_len == der_sig.len else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[0..32]) else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[32..64]) else { return false; }
-    return idx == der_sig.len;
+    guard idx == der_sig.len else { return false; }
+    var r_bytes: u8[32] = [0; 32];
+    var s_bytes: u8[32] = [0; 32];
+    for i in 32 {
+        r_bytes[i] = out_raw[i];
+        s_bytes[i] = out_raw[32 + i];
+    }
+    let r = u256_from_be(r_bytes);
+    let s = u256_from_be(s_bytes);
+    return !u256_is_zero(r) && u256_cmp(r, P256_ORDER) < 0 && !u256_is_zero(s) && u256_cmp(s, P256_ORDER) < 0;
 }
 
 // Encodes a 64-byte raw `r || s` P-256 signature into ASN.1 DER `SEQUENCE { r, s }` format.
@@ -380,26 +389,31 @@ fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
 // crap:ignore
 fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     let msg_hash = sha256(message);
+    let ord = U256 { v: P256_ORDER };
     var z = u256_from_be(msg_hash);
     if u256_cmp(z, P256_ORDER) >= 0 {
-        let ord = U256 { v: P256_ORDER };
         z = u256_sub_mod(z, ord, P256_ORDER);
     }
-    let d = u256_from_be(priv_key);
+    var d = u256_from_be(priv_key);
+    if u256_cmp(d, P256_ORDER) >= 0 {
+        d = u256_sub_mod(d, ord, P256_ORDER);
+    }
+    let x_be = u256_to_be(d);
+    let z_be = u256_to_be(z);
     var v_hmac:   u8[32]   = [0x01; 32];
     var k_hmac:   u8[32]   = [0x00; 32];
     var seed_buf: u8[..97] = [];
     seed_buf.append(v_hmac[..]);
     seed_buf.push(0x00);
-    seed_buf.append(priv_key[..]);
-    seed_buf.append(msg_hash[..]);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
     k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
     seed_buf.clear();
     seed_buf.append(v_hmac[..]);
     seed_buf.push(0x01);
-    seed_buf.append(priv_key[..]);
-    seed_buf.append(msg_hash[..]);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
     k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
@@ -417,20 +431,14 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     secure_zeroize_slice(seed_buf[..]);
     secure_zeroize_32(k_hmac);
     secure_zeroize_32(v_hmac);
-    let g = P256Point {
-        x:        U256 { v: P256_GX },
-        y:        U256 { v: P256_GY },
-        infinity: false,
-    };
+    let g = P256Point { x: U256 { v: P256_GX }, y: U256 { v: P256_GY }, infinity: false };
     let r_pt = p256_scalar_mul(g, k_scalar);
     var r_val = r_pt.x;
     if u256_cmp(r_val, P256_ORDER) >= 0 {
-        let ord = U256 { v: P256_ORDER };
         r_val = u256_sub_mod(r_val, ord, P256_ORDER);
     }
     let k_inv = u256_inv_mod(k_scalar, P256_ORDER);
-    let rd = u256_mul_mod(r_val, d, P256_ORDER);
-    let z_plus_rd = u256_add_mod(z, rd, P256_ORDER);
+    let z_plus_rd = u256_add_mod(z, u256_mul_mod(r_val, d, P256_ORDER), P256_ORDER);
     let s_val = u256_mul_mod(k_inv, z_plus_rd, P256_ORDER);
 
     let r_be = u256_to_be(r_val);
@@ -779,7 +787,16 @@ fn ecdsa_p384_decode_der_sig(der_sig: const u8[:], out_raw: u8[96]&) -> bool {
     guard idx + seq_len == der_sig.len else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[0..48]) else { return false; }
     guard parse_der_ecdsa_int(der_sig, idx, out_raw[48..96]) else { return false; }
-    return idx == der_sig.len;
+    guard idx == der_sig.len else { return false; }
+    var r_bytes: u8[48] = [0; 48];
+    var s_bytes: u8[48] = [0; 48];
+    for i in 48 {
+        r_bytes[i] = out_raw[i];
+        s_bytes[i] = out_raw[48 + i];
+    }
+    let r = u384_from_be(r_bytes);
+    let s = u384_from_be(s_bytes);
+    return !u384_is_zero(r) && u384_cmp(r, P384_ORDER) < 0 && !u384_is_zero(s) && u384_cmp(s, P384_ORDER) < 0;
 }
 
 // Derives the 97-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 48-byte P-384 private scalar.
@@ -807,26 +824,31 @@ fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
 // crap:ignore
 fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     let msg_hash = sha384(message);
+    let ord = U384 { v: P384_ORDER };
     var z = u384_from_be(msg_hash);
     if u384_cmp(z, P384_ORDER) >= 0 {
-        let ord = U384 { v: P384_ORDER };
         z = u384_sub_mod(z, ord, P384_ORDER);
     }
-    let d = u384_from_be(priv_key);
+    var d = u384_from_be(priv_key);
+    if u384_cmp(d, P384_ORDER) >= 0 {
+        d = u384_sub_mod(d, ord, P384_ORDER);
+    }
+    let x_be = u384_to_be(d);
+    let z_be = u384_to_be(z);
     var v_hmac:   u8[48]    = [0x01; 48];
     var k_hmac:   u8[48]    = [0x00; 48];
     var seed_buf: u8[..145] = [];
     seed_buf.append(v_hmac[..]);
     seed_buf.push(0x00);
-    seed_buf.append(priv_key[..]);
-    seed_buf.append(msg_hash[..]);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
     k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
     seed_buf.clear();
     seed_buf.append(v_hmac[..]);
     seed_buf.push(0x01);
-    seed_buf.append(priv_key[..]);
-    seed_buf.append(msg_hash[..]);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
     k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
@@ -844,20 +866,14 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     secure_zeroize_slice(seed_buf[..]);
     secure_zeroize_48(k_hmac);
     secure_zeroize_48(v_hmac);
-    let g = P384Point {
-        x:        U384 { v: P384_GX },
-        y:        U384 { v: P384_GY },
-        infinity: false,
-    };
+    let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
     let r_pt = p384_scalar_mul(g, k_scalar);
     var r_val = r_pt.x;
     if u384_cmp(r_val, P384_ORDER) >= 0 {
-        let ord = U384 { v: P384_ORDER };
         r_val = u384_sub_mod(r_val, ord, P384_ORDER);
     }
     let k_inv = u384_inv_mod(k_scalar, P384_ORDER);
-    let rd = u384_mul_mod(r_val, d, P384_ORDER);
-    let z_plus_rd = u384_add_mod(z, rd, P384_ORDER);
+    let z_plus_rd = u384_add_mod(z, u384_mul_mod(r_val, d, P384_ORDER), P384_ORDER);
     let s_val = u384_mul_mod(k_inv, z_plus_rd, P384_ORDER);
 
     let r_be = u384_to_be(r_val);

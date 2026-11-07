@@ -397,10 +397,10 @@ fn new_psl_database() -> PslDatabase {
 
 // ---- public suffix query and matching engine -------------------------------
 
-// Normalizes domain: strips leading/trailing dots and converts to lowercase.
+// Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase.
 fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
-    let trimmed = core::trim_byte(domain, '.');
+    let trimmed = core::trim_byte(core::trim_byte(core::trim_byte(domain, '.'), '['), ']');
     guard trimmed.len > 0 && trimmed.len <= 256 else { return false; }
     guard out.try_set(trimmed) else { return false; }
     to_lower(out[..]);
@@ -679,8 +679,8 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
-    let clean_host = core::trim_byte(host, '.');
-    let clean_domain = core::trim_byte(cookie_domain, '.');
+    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
+    let clean_domain = core::trim_byte(core::trim_byte(core::trim_byte(cookie_domain, '.'), '['), ']');
 
     if eq_ascii_fold(clean_host, clean_domain) {
         return true;
@@ -700,15 +700,22 @@ fn cookie_domain_match(db: const PslDatabase&, host: const u8[:], cookie_domain:
 fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
     out.clear();
     if uri_path.len == 0 || uri_path[0] != '/' {
-        out.push('/');
+        let _ = out.try_push('/');
         return;
     }
     let last_slash_idx = core::last_index_of_byte(uri_path, '/');
     if last_slash_idx <= 0 {
-        out.push('/');
+        let _ = out.try_push('/');
         return;
     }
-    out.append(uri_path[..last_slash_idx]);
+    let bounded_len = min(last_slash_idx, out.cap);
+    let prefix = if bounded_len < last_slash_idx {
+        let prev_slash = core::last_index_of_byte(uri_path[..bounded_len], '/');
+        if prev_slash > 0 { uri_path[..prev_slash] } else { "/" }
+    } else {
+        uri_path[..last_slash_idx]
+    };
+    let _ = out.try_set(prefix);
 }
 
 // Whether request path matches cookie path prefix (RFC 6265 Section 5.1.4).

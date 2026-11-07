@@ -30,8 +30,8 @@ fn parse_incremental_header(val: const u8[:]) -> bool, bool {
 
     // If parameters exist after semicolon, ignore them per RFC 10036 Section 2
     if s.len > 2 {
-        let next_ch = s[2];
-        guard next_ch == ';' || next_ch == ' ' || next_ch == '\t' else { return false, false; }
+        let rem = s[2..].trim_lws();
+        guard rem.len == 0 || rem[0] == ';' else { return false, false; }
     }
 
     return b == '1', true;
@@ -39,7 +39,9 @@ fn parse_incremental_header(val: const u8[:]) -> bool, bool {
 
 // Inspects a HeaderMap to determine whether incremental forwarding was requested.
 fn is_incremental_requested(headers: const HeaderMap&) -> bool {
-    let val = get_header(headers, rfc::HEADER_INCREMENTAL);
+    var combined: u8[..256] = [];
+    let ok_comb = headers.get_combined(rfc::HEADER_INCREMENTAL, combined);
+    let val = if ok_comb { combined[..] } else { get_header(headers, rfc::HEADER_INCREMENTAL) };
     guard val.len > 0 else { return false; }
     let is_inc, ok = parse_incremental_header(val);
     return ok && is_inc;

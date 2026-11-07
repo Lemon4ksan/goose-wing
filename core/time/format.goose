@@ -174,8 +174,9 @@ fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
     }
 
     if comma_idx > 0 {
+        guard comma_idx + 1 < text.len && text[comma_idx + 1] == ' ' else { return Time { .. }, false; }
         let day_prefix = text[..comma_idx];
-        let rest = trim(text[comma_idx + 1..]);
+        let rest = text[comma_idx + 2..];
         var has_dash = false;
         for scan_idx in rest.len {
             if rest[scan_idx] == '-' { has_dash = true; break; }
@@ -258,7 +259,6 @@ fn is_valid_weekday_short(token: const u8[:]) -> bool {
 }
 
 fn is_valid_weekday_name(token: const u8[:]) -> bool {
-    if is_valid_weekday_short(token) { return true; }
     guard token.len >= 6 && token.len <= 9 else { return false; }
     var clean_buf: u8[9] = [0; 9];
     for char_idx in token.len {
@@ -475,7 +475,7 @@ fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
     for scan_idx in rest.len {
         if rest[scan_idx] == '-' { first_dash = scan_idx; break; }
     }
-    guard first_dash >= 1 && first_dash <= 2 else { return Time { .. }, false; }
+    guard first_dash == 2 else { return Time { .. }, false; }
 
     let day_val, ok_day = parse_digits(rest[..first_dash]);
     guard ok_day else { return Time { .. }, false; }
@@ -518,8 +518,9 @@ fn parse_asctime_date(text: const u8[:]) -> Time, bool {
     let month_val = parse_month_name(text[4..7]);
     guard month_val > 0 else { return Time { .. }, false; }
 
-    let day_part = trim(text[8..10]);
-    guard text[8] == ' ' || (text[8] >= '0' && text[8] <= '9') else { return Time { .. }, false; }
+    let day_part = if text[8] == ' ' { text[9..10] } else { text[8..10] };
+    let valid_d0 = text[8] == ' ' || (text[8] >= '0' && text[8] <= '9');
+    guard valid_d0 && text[9] >= '0' && text[9] <= '9' else { return Time { .. }, false; }
     let day_val, ok_day = parse_digits(day_part);
     guard ok_day else { return Time { .. }, false; }
 

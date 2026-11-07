@@ -171,26 +171,29 @@ struct CrossOriginGuard {
 
 fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> bool {
     guard guard_cfg.trusted_origins.len < guard_cfg.trusted_origins.cap else { return false; }
-    guard origin_str.len <= 128 else { return false; }
+    let trimmed = trim_lws(origin_str);
+    guard trimmed.len > 0 && trimmed.len <= 128 else { return false; }
     var entry: u8[..128] = [];
-    entry.append(origin_str);
+    entry.append(trimmed);
     guard_cfg.trusted_origins.push(entry);
     return true;
 }
 
 fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool {
     guard guard_cfg.exempt_paths.len < guard_cfg.exempt_paths.cap else { return false; }
-    guard path_str.len <= 128 else { return false; }
+    let trimmed = trim_lws(path_str);
+    guard trimmed.len > 0 && trimmed.len <= 128 && trimmed[0] == '/' else { return false; }
     var entry: u8[..128] = [];
-    entry.append(path_str);
+    entry.append(trimmed);
     guard_cfg.exempt_paths.push(entry);
     return true;
 }
 
 fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> bool {
+    guard path_str.len > 0 else { return false; }
     for &p in guard_cfg.exempt_paths {
         let prefix = p[..];
-        guard core::starts_with(path_str, prefix) else { continue; }
+        guard prefix.len > 0 && core::starts_with(path_str, prefix) else { continue; }
         let plen = prefix.len;
         if path_str.len == plen { return true; }
         if core::ends_with(prefix, "/") { return true; }
@@ -311,11 +314,12 @@ fn evaluate_samesite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 }
 
 fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
+    if ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..]) {
+        return CsrfDecision.Allow;
+    }
+
     // Unsafe state mutations across sites are unconditionally blocked
     if !ctx.method_is_safe {
-        if ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..]) {
-            return CsrfDecision.Allow;
-        }
         return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteStateMutation };
     }
 
@@ -451,7 +455,9 @@ fn extract_fetch_context<Req>(
     ctx.target_host.append(target_host[..th_len]);
 
     let req_path = extract_path_from_url(req.url[..]);
-    ctx.path.try_set(req_path);
+    if !canonicalize_route_path(req_path, ctx.path) {
+        ctx.path.clear();
+    }
 
     for &e in req.headers.entries {
         let name = entry_name(req.headers, e);

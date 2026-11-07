@@ -176,19 +176,29 @@ def run_batch(
     exe: Path, target: str, batch_files: list[str], iters: int, rng_seed: int
 ) -> tuple[bool, int, int, int, str, list[str], int]:
     cmd = [str(exe), target, str(iters), str(rng_seed), *batch_files]
-    try:
-        res = subprocess.run(
-            cmd,
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            creationflags=WIN_HEADLESS_IDLE_FLAGS,
-        )
-    except subprocess.TimeoutExpired:
-        return False, 0, 0, 0, target, batch_files, rng_seed
+    res = None
+    for attempt in range(3):
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=60,
+                creationflags=WIN_HEADLESS_IDLE_FLAGS,
+            )
+            break
+        except subprocess.TimeoutExpired:
+            return False, 0, 0, 0, target, batch_files, rng_seed
+        except OSError as exc:
+            # WinError 1455 (ERROR_COMMITMENT_LIMIT): transient Windows pagefile exhaustion
+            # when multiple Goose processes reserve data-stack virtual memory simultaneously.
+            if getattr(exc, "winerror", 0) == 1455 and attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            return True, 0, 0, 0, target, batch_files, rng_seed
 
-    if res.returncode != 0:
+    if res is None or res.returncode != 0:
         return False, 0, 0, 0, target, batch_files, rng_seed
 
     execs = 0
@@ -272,8 +282,6 @@ def main() -> None:
             print("No background fuzzer status found.")
         return
 
-    exe = build_runner(force=args.rebuild)
-
     if args.daemon:
         if STOP_SIGNAL_FILE.exists():
             STOP_SIGNAL_FILE.unlink(missing_ok=True)
@@ -283,7 +291,9 @@ def main() -> None:
         # Default daemon duration to 0 (continuous) unless explicitly specified
         daemon_dur = 0 if "--duration" not in sys.argv else args.duration
         daemon_workers = (
-            max(1, (os.cpu_count() or 4) // 4) if "--workers" not in sys.argv else args.workers
+            max(1, min(3, (os.cpu_count() or 4) // 4))
+            if "--workers" not in sys.argv
+            else args.workers
         )
         cmd = [
             launcher,
@@ -299,6 +309,8 @@ def main() -> None:
             "--batch-size",
             str(args.batch_size),
         ]
+        if args.rebuild:
+            cmd.append("--rebuild")
         LIT_DIR.mkdir(parents=True, exist_ok=True)
         log_f = open(LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
         creationflags = (
@@ -318,6 +330,19 @@ def main() -> None:
             creationflags=creationflags,
             start_new_session=(os.name != "nt"),
         )
+        STATUS_FILE.write_text(
+            json.dumps(
+                {
+                    "pid": proc.pid,
+                    "running": True,
+                    "state": "compiling_or_starting",
+                    "workers": daemon_workers,
+                    "target": args.target,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         print(
             f"[OSS-Fuzz] Started background daemon (PID {proc.pid}, priority=IDLE, workers={daemon_workers})"
         )
@@ -325,6 +350,8 @@ def main() -> None:
         print("           Stop daemon:  python scripts/fuzz_runner.py --stop")
         print(f"           Log file:     {LOG_FILE}")
         return
+
+    exe = build_runner(force=args.rebuild)
 
     if STOP_SIGNAL_FILE.exists():
         STOP_SIGNAL_FILE.unlink(missing_ok=True)

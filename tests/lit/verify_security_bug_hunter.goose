@@ -256,9 +256,180 @@ fn test_rate_limiter_probabilistic_saturation() {
 fn test_cors_empty_origin_rejected() {
     var policy = wing::CorsPolicy { .. };
     assert(!wing::add_allowed_origin(policy, ""));
+    assert(!wing::add_allowed_origin(policy, "   \t "));
     assert(wing::add_allowed_origin(policy, "https://example.com"));
 
+    // FIND-0001: LWS-padded wildcard must be recognized as "*" and rejected when allow_credentials = true
+    var cred_policy = wing::CorsPolicy { allow_credentials: true, .. };
+    assert(wing::add_allowed_origin(cred_policy, " * "));
+    assert(!wing::validate_cors_policy(cred_policy));
+    assert(!wing::is_origin_allowed(cred_policy, "https://evil.example"));
+
+    var req = wing::new_request("GET", "/api/secret");
+    wing::set_header(req, "Origin", "https://evil.example");
+    var res = wing::Response { .. };
+    assert(wing::evaluate_cors(cred_policy, req, res) == wing::CorsResult.InvalidConfig);
+
     print("CORS_EMPTY_ORIGIN_REJECTED: OK");
+}
+
+fn test_cross_origin_isolation_edge_cases() {
+    // FIND-0002: Leading ';' or comma-folded multi-item headers must map to Unknown, not None/UnsafeNone
+    assert(wing::parse_corp(";same-origin") == wing::CorpPolicy.Unknown);
+    assert(wing::parse_corp("same-origin; report-to=\"a\", cross-origin") == wing::CorpPolicy.Unknown);
+    assert(wing::parse_coop(";same-origin") == wing::CoopPolicy.Unknown);
+    assert(wing::parse_coep(";require-corp") == wing::CoepPolicy.Unknown);
+
+    var ctx = wing::CrossOriginIsolationContext { .. };
+    wing::update_isolation_context(ctx, "unsafe-none", "unsafe-none", "https://app.example.com");
+    assert(!wing::is_subresource_allowed(ctx, "https://cdn.evil.com", ";same-origin"));
+
+    // FIND-0003: Backslash-@ userinfo smuggling, IPv6 trailing host injection, and non-HTTP schemes
+    var iso_ctx = wing::CrossOriginIsolationContext { .. };
+    wing::update_isolation_context(iso_ctx, "same-origin", "require-corp", "https://app.example.com");
+    assert(!wing::is_subresource_allowed(iso_ctx, "https://example.com\\@evil.com", "same-site"));
+    assert(!wing::is_subresource_allowed(iso_ctx, "ftp://app.example.com", "same-site"));
+
+    var v6_ctx = wing::CrossOriginIsolationContext { .. };
+    wing::update_isolation_context(v6_ctx, "same-origin", "require-corp", "https://[::1]:8443");
+    assert(!wing::is_subresource_allowed(v6_ctx, "https://[::1].evil.com", "same-site"));
+
+    print("CROSS_ORIGIN_ISOLATION_EDGE_CASES: OK");
+}
+
+fn test_cryptojar_base64_and_debug_cast_bounds() {
+    var store = wing::KeyStore { .. };
+    var raw_key: u8[32] = [0x33; 32];
+    let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+    assert(wing::add_key(store, slot));
+
+    let pjar = wing::new_private_jar(store, false);
+    let sjar = wing::new_signed_jar(store);
+
+    // FIND-0005: Undersized u8[..N] Base64URL output buffer must fail, not silently truncate
+    var tiny_b64: u8[..32] = [];
+    assert(!wing::private_jar_seal(pjar, "sid", "secret_payload", 1700000000, 777, tiny_b64));
+    assert(!wing::signed_jar_seal(sjar, "sid", "secret_payload", 1700000000, tiny_b64));
+
+    // FIND-0004: Negative/zero now_sec on seal must be rejected, and high-bit wire timestamps (>= 53/65 bytes) must not abort in debug builds
+    var valid_b64: u8[..256] = [];
+    assert(!wing::private_jar_seal(pjar, "sid", "secret_payload", 0, 777, valid_b64));
+    assert(!wing::private_jar_seal(pjar, "sid", "secret_payload", -5, 777, valid_b64));
+    assert(!wing::signed_jar_seal(sjar, "sid", "secret_payload", -5, valid_b64));
+
+    var forged_xchacha: u8[..64] = [];
+    forged_xchacha.push(0x02); // WIRE_VER_XCHACHA20_POLY1305
+    core::append_u32_be(forged_xchacha, 1);
+    core::append_u64_be(forged_xchacha, 0x8000000000000001); // negative i64 when cast
+    for i in 48 { forged_xchacha.push(0xBB); } // total 61 bytes >= 53
+    var out_plain: u8[..64] = [];
+    assert(!wing::private_jar_open_binary(pjar, "sid", forged_xchacha[..], 1700000000, out_plain));
+
+    print("CRYPTOJAR_BASE64_AND_DEBUG_CAST: OK");
+}
+
+fn test_csrf_canonical_path_and_trusted_cors() {
+    var guard_cfg = wing::CrossOriginGuard { .. };
+    // FIND-0006: Empty exempt path or empty trusted origin must be rejected
+    assert(!wing::add_exempt_path(guard_cfg, ""));
+    assert(!wing::add_exempt_path(guard_cfg, "relative/path"));
+    assert(!wing::add_trusted_origin(guard_cfg, ""));
+
+    assert(wing::add_exempt_path(guard_cfg, "/api/webhook"));
+    assert(wing::add_trusted_origin(guard_cfg, "https://partner.example.com"));
+
+    // FIND-0008: Path traversal "/api/webhook/../../admin/transfer" must canonicalize to "/admin/transfer" and NOT match "/api/webhook"
+    var req_trav = wing::new_request("POST", "/api/webhook/../../admin/transfer");
+    wing::set_header(req_trav, "Sec-Fetch-Site", "cross-site");
+    let ctx_trav = wing::extract_fetch_context(req_trav, "app.example.com");
+    assert(ctx_trav.path[..] == "/admin/transfer");
+    let dec_trav = wing::evaluate_fetch_metadata(guard_cfg, ctx_trav);
+    assert(!wing::is_allowed(dec_trav));
+
+    var req_pct = wing::new_request("POST", "/api/webhook/%2e%2e/%2e%2e/admin/transfer");
+    wing::set_header(req_pct, "Sec-Fetch-Site", "cross-site");
+    let ctx_pct = wing::extract_fetch_context(req_pct, "app.example.com");
+    assert(ctx_pct.path[..] == "/admin/transfer");
+    let dec_pct = wing::evaluate_fetch_metadata(guard_cfg, ctx_pct);
+    assert(!wing::is_allowed(dec_pct));
+
+    // FIND-0007: Safe cross-site CORS subresource request from a trusted origin must be allowed
+    var req_cors_get = wing::new_request("GET", "/api/data");
+    wing::set_header(req_cors_get, "Sec-Fetch-Site", "cross-site");
+    wing::set_header(req_cors_get, "Sec-Fetch-Mode", "cors");
+    wing::set_header(req_cors_get, "Sec-Fetch-Dest", "empty");
+    wing::set_header(req_cors_get, "Origin", "https://partner.example.com");
+    let ctx_cors_get = wing::extract_fetch_context(req_cors_get, "app.example.com");
+    let dec_cors_get = wing::evaluate_fetch_metadata(guard_cfg, ctx_cors_get);
+    assert(wing::is_allowed(dec_cors_get));
+
+    print("CSRF_CANONICAL_AND_TRUSTED_CORS: OK");
+}
+
+fn test_privacypass_rsa_spki_and_negative_ttl() {
+    // FIND-0009: RFC 9577 / RFC 9578 Type 0x0002 2048-bit Blind RSA SPKI token-key is 342 bytes (> 128 bytes)
+    var ch = wing::TokenChallenge { .. };
+    ch.issuer_name.append("issuer.example.com");
+    var ch_wire: u8[>..] = [];
+    wing::marshal_token_challenge(ch, ch_wire);
+    var ch_b64: u8[..256] = [];
+    core::base64url_encode(ch_wire[..], ch_b64);
+
+    var raw_spki: u8[342]   = [0x30; 342];
+    var spki_b64: u8[..512] = [];
+    core::base64url_encode(raw_spki[..], spki_b64);
+
+    var hdr: u8[..1024] = [];
+    hdr.append("PrivateToken challenge=\"");
+    hdr.append(ch_b64[..]);
+    hdr.append("\", token-key=\"");
+    hdr.append(spki_b64[..]);
+    hdr.append("\", max-age=120");
+
+    var out_ch = wing::TokenChallenge { .. };
+    var out_key: u8[..512] = [];
+    var out_age: i64       = 0;
+    assert(wing::parse_private_token_challenge(hdr[..], out_ch, out_key, out_age));
+    assert(out_key.len == 342);
+    assert(out_age == 120);
+
+    // FIND-0010: Negative ttl_sec or empty raw_token must be rejected by put_private_token, not stored as perpetual
+    var cache = wing::PrivateTokenCache { .. };
+    var tok = wing::Token { .. };
+    assert(!wing::put_private_token(cache, ch, tok, "valid_raw_tok", -10, 1000));
+    assert(!wing::put_private_token(cache, ch, tok, "", 300, 1000));
+
+    print("PRIVACYPASS_RSA_SPKI_AND_TTL: OK");
+}
+
+fn test_gcra_clock_drift_persist_and_probabilistic_low_burst() {
+    // FIND-0011: Backward clock jump exceeding GCRA_MAX_CLOCK_DRIFT_NS must persist clamped tat_ns in cell
+    let quota = wing::new_gcra_quota(10, core::seconds(1), 2);
+    var cell = wing::GcraCell { tat_ns: 60000000000 };
+    let now_backward: u64 = 10000000000;
+    let dec1 = wing::gcra_check_n(quota, cell, 1, now_backward);
+    assert(!wing::is_allowed(dec1));
+    // Without manual intervention, advancing by 200ms after the backward jump must recover and allow
+    let dec2 = wing::gcra_check_n(quota, cell, 1, now_backward + 200000000);
+    assert(wing::is_allowed(dec2));
+
+    // FIND-0012: ProbabilisticGcra with burst < sample_rate (e.g. burst = 2, sample_rate = 20)
+    // must admit sampled requests when idle and update cell.tat_ns
+    let p_quota = wing::new_gcra_quota(10, core::seconds(1), 2);
+    var pgcra = wing::new_probabilistic_gcra(p_quota, 20);
+    pgcra.rng_state = 1; // Force next xorshift step to sample (or test across 100 steps)
+    var sampled_admitted = false;
+    for i in 100 {
+        let tat_before = pgcra.cell.tat_ns;
+        let d = wing::check_rate_limit(pgcra, 1, 1000000000 + (i as u64) * 500000000);
+        if pgcra.cell.tat_ns > tat_before && wing::is_allowed(d) {
+            sampled_admitted = true;
+            break;
+        }
+    }
+    assert(sampled_admitted);
+
+    print("GCRA_DRIFT_AND_PROBABILISTIC_LOW_BURST: OK");
 }
 
 fn main() {
@@ -272,6 +443,11 @@ fn main() {
     test_privacypass_cache_eviction_perpetual_tokens();
     test_rate_limiter_probabilistic_saturation();
     test_cors_empty_origin_rejected();
+    test_cross_origin_isolation_edge_cases();
+    test_cryptojar_base64_and_debug_cast_bounds();
+    test_csrf_canonical_path_and_trusted_cors();
+    test_privacypass_rsa_spki_and_negative_ttl();
+    test_gcra_clock_drift_persist_and_probabilistic_low_burst();
 
     print("ALL_SECURITY_BUG_HUNTER_TESTS_PASSED");
 }
@@ -286,4 +462,9 @@ fn main() {
 // CHECK-NEXT: PRIVACYPASS_PERPETUAL_TOKEN_EVICTION: OK
 // CHECK-NEXT: PROBABILISTIC_GCRA_SATURATION: OK
 // CHECK-NEXT: CORS_EMPTY_ORIGIN_REJECTED: OK
+// CHECK-NEXT: CROSS_ORIGIN_ISOLATION_EDGE_CASES: OK
+// CHECK-NEXT: CRYPTOJAR_BASE64_AND_DEBUG_CAST: OK
+// CHECK-NEXT: CSRF_CANONICAL_AND_TRUSTED_CORS: OK
+// CHECK-NEXT: PRIVACYPASS_RSA_SPKI_AND_TTL: OK
+// CHECK-NEXT: GCRA_DRIFT_AND_PROBABILISTIC_LOW_BURST: OK
 // CHECK-NEXT: ALL_SECURITY_BUG_HUNTER_TESTS_PASSED

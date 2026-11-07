@@ -295,7 +295,7 @@ fn p0f(session: const Session&) -> u8[..256] {
     return p0f(session.profile_spec);
 }
 
-fn akamai(session: const Session&) -> u8[..512] {
+fn akamai(session: const Session&) -> u8[..640] {
     return akamai(session.profile_spec);
 }
 

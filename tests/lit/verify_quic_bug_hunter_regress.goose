@@ -535,6 +535,129 @@ fn test_f023_to_f027_stream_invariants() {
     print("REGRESS_F023_TO_F027_STREAM: OK");
 }
 
+fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
+    // F028: Non-ACK-eliciting packet (PADDING-only) MUST NOT set needs_ack = true (RFC 9000 §13.2.1)
+    var conn_pad = internal::new_quic_server_connection("scid");
+    var pad_pkt: u8[..64] = [];
+    var hdr_pad = internal::QuicHeader {
+        header_type:   internal::QuicHeaderType.OneRtt,
+        packet_number: 0,
+        pn_length:     1,
+        ..
+    };
+    hdr_pad.dcid.append("scid");
+    assert(internal::encode_quic_header(pad_pkt, hdr_pad, 1));
+    pad_pkt.push(0x00); // PADDING frame only
+    var out_ack_pad = internal::AckFrame { .. };
+    let handled_pad, needs_ack_pad = internal::quic_conn_process_datagram(conn_pad, pad_pkt[..], 1000, out_ack_pad);
+    assert(handled_pad);
+    assert(!needs_ack_pad);
+
+    // F029a: RTT sample generated when largest_acked is non-ack-eliciting if batch has ack-eliciting (RFC 9002 §5.1)
+    var conn_rtt = internal::new_quic_client_connection("scid", "dcid");
+    conn_rtt.state = internal::QuicConnState.Handshake;
+    conn_rtt.rtt.first_sample_time_us = 1;
+    conn_rtt.rtt.min_rtt_us = 10000;
+    conn_rtt.rtt.smoothed_rtt_us = 22000;
+    internal::quic_conn_record_sent(conn_rtt, internal::PnSpaceId.ApplicationData, 0, 1200, true, 10000);
+    internal::quic_conn_record_sent(conn_rtt, internal::PnSpaceId.ApplicationData, 1, 64, false, 20000);
+    // Inbound OneRtt packet carrying ACK for [0..1] with ack_delay = 1000 (8000 us)
+    var pkt_ack: u8[..64] = [];
+    var hdr_ack = internal::QuicHeader {
+        header_type:   internal::QuicHeaderType.OneRtt,
+        packet_number: 0,
+        pn_length:     1,
+        ..
+    };
+    hdr_ack.dcid.append("scid");
+    assert(internal::encode_quic_header(pkt_ack, hdr_ack, 1));
+    let ack_f = internal::AckFrame {
+        largest_acked:   1,
+        ack_delay:       1000,
+        first_ack_range: 1,
+        ..
+    };
+    assert(internal::encode_ack_frame(pkt_ack, ack_f));
+    var out_ack_rtt = internal::AckFrame { .. };
+    let handled_ack, needs_ack_ack = internal::quic_conn_process_datagram(conn_rtt, pkt_ack[..], 50000, out_ack_rtt);
+    assert(handled_ack);
+    assert(!needs_ack_ack);
+    // latest_rtt = 50000 - 20000 = 30000; OneRtt transitions conn to Established before ACK processing,
+    // so ack_delay (8000 us) is subtracted: smoothed_rtt = 30000 - 8000 = 22000
+    assert(conn_rtt.rtt.latest_rtt_us == 30000);
+    assert(conn_rtt.rtt.smoothed_rtt_us == 22000);
+
+    // F029b: Huge ack_delay (0x3FFFFFFFFFFFFFFF) must not wrap u64 on << 3
+    internal::quic_conn_record_sent(conn_rtt, internal::PnSpaceId.ApplicationData, 2, 1200, true, 60000);
+    let ack_huge = internal::AckFrame {
+        largest_acked:   2,
+        ack_delay:       0x3FFFFFFFFFFFFFFF,
+        first_ack_range: 0,
+        ..
+    };
+    assert(internal::quic_conn_on_ack(conn_rtt, ack_huge, 100000, internal::PnSpaceId.ApplicationData));
+
+    // F030: BBR ECN-CE surge saturation (ecn_ce_count > new_acked_packets and 2^54 overflow)
+    var bbr = internal::new_bbr_state();
+    let init_cwnd = bbr.cwnd_bytes;
+    internal::bbr_on_congestion_signal(bbr, init_cwnd, 0, 1200, 0x0040000000000000, 1);
+    assert(bbr.ecn_alpha_scaled <= 1024);
+    assert(bbr.ecn_alpha_scaled > 0);
+    assert(bbr.cwnd_bytes < init_cwnd);
+
+    print("REGRESS_F028_TO_F030_ACK_RTT_BBR: OK");
+}
+
+fn test_f031_to_f033_cross_component_stream_fc_packet() {
+    // F031a: STREAM_DATA_BLOCKED on unopened locally-initiated stream -> STREAM_STATE_ERROR (RFC 9000 §19.13)
+    var conn1 = internal::new_quic_server_connection("scid");
+    var buf1: u8[..32] = [0x15, 0x01, 0x44, 0x00];
+    let ok1, _ = internal::quic_conn_process_payload(conn1, buf1[..]);
+    assert(!ok1);
+    assert(conn1.close_code == rfc::QUIC_ERR_STREAM_STATE);
+
+    // F031b: MAX_STREAM_DATA on peer-initiated stream exceeding max_streams_bidi -> STREAM_LIMIT_ERROR (RFC 9000 §19.10)
+    var conn2 = internal::new_quic_server_connection("scid");
+    conn2.stream_table.max_streams_bidi = 1;
+    var buf2: u8[..32] = [];
+    assert(internal::encode_max_stream_data_frame(buf2, 4, 8192));
+    let ok2, _ = internal::quic_conn_process_payload(conn2, buf2[..]);
+    assert(!ok2);
+    assert(conn2.close_code == rfc::QUIC_ERR_STREAM_LIMIT);
+
+    // F032: Reusing a terminal stream table slot MUST NOT allow retransmitted frames on the closed stream
+    // to re-open it as a new stream and double-charge connection flow control (RFC 9000 §3.2, §4.1)
+    var conn3 = internal::new_quic_server_connection("scid");
+    var s0_buf: u8[..32] = [];
+    assert(internal::encode_stream_frame(s0_buf, 0, 0, "hello", internal::QuicStreamFlags { fin: true, .. }));
+    let ok_s0, _ = internal::quic_conn_process_payload(conn3, s0_buf[..]);
+    assert(ok_s0);
+    assert(conn3.flow_ctrl.bytes_recv_total == 5);
+    // Transition stream 0 to terminal (recv DataRead + send DataRecvd)
+    assert(internal::quic_stream_on_app_read(conn3.stream_table.streams[0], 5));
+    conn3.stream_table.streams[0].send_state = internal::QuicSendState.DataRecvd;
+    assert(internal::quic_stream_is_terminal(conn3.stream_table.streams[0], internal::QuicRole.Server));
+    // Open stream 4, which reuses slot 0
+    var s4_buf: u8[..32] = [];
+    assert(internal::encode_stream_frame(s4_buf, 4, 0, "abc", internal::QuicStreamFlags { fin: false, .. }));
+    let ok_s4, _ = internal::quic_conn_process_payload(conn3, s4_buf[..]);
+    assert(ok_s4);
+    assert(conn3.flow_ctrl.bytes_recv_total == 8);
+    // Late retransmission of stream 0 arrives: must NOT double-charge conn3.flow_ctrl.bytes_recv_total!
+    let ok_s0_dup, _ = internal::quic_conn_process_payload(conn3, s0_buf[..]);
+    assert(ok_s0_dup);
+    assert(conn3.flow_ctrl.bytes_recv_total == 8);
+
+    // F033: Long header packet with unsupported QUIC version (0xBAADF00D) must be rejected by connection
+    var conn4 = internal::new_quic_server_connection("scid");
+    var unk_ver_pkt: u8[..32] = [0xC0, 0xBA, 0xAD, 0xF0, 0x0D, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01];
+    var out_ack4 = internal::AckFrame { .. };
+    let handled4, _ = internal::quic_conn_process_datagram(conn4, unk_ver_pkt[..], 1000, out_ack4);
+    assert(!handled4);
+
+    print("REGRESS_F031_TO_F033_STREAM_FC_PKT: OK");
+}
+
 fn main() {
     test_fc_recv_reset_smaller_than_bytes_recv();
     test_fc_credit_renewal_threshold_and_bounds();
@@ -555,6 +678,8 @@ fn main() {
     test_f008_to_f012_conn_and_dplpmtud();
     test_f013_to_f022_frames_migration_packet();
     test_f023_to_f027_stream_invariants();
+    test_f028_to_f030_cross_component_ack_rtt_bbr();
+    test_f031_to_f033_cross_component_stream_fc_packet();
 }
 
 // CHECK: REGRESS_FC_RESET_FINAL_SIZE: OK
@@ -576,3 +701,5 @@ fn main() {
 // CHECK: REGRESS_F008_TO_F012_CONN_DPLPMTUD: OK
 // CHECK: REGRESS_F013_TO_F022_FRAMES_PACKET: OK
 // CHECK: REGRESS_F023_TO_F027_STREAM: OK
+// CHECK: REGRESS_F028_TO_F030_ACK_RTT_BBR: OK
+// CHECK: REGRESS_F031_TO_F033_STREAM_FC_PKT: OK

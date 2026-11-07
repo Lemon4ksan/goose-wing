@@ -136,16 +136,24 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
     }
     let start = pos + 1;
     var p = pos + 1;
+    var eq_count: i64 = 0;
     while p < src.len {
         let ch = src[p];
         if ch == ':' {
+            let b64_len = p - start;
+            guard (b64_len % 4) == 0 && eq_count <= 2 else { return false; }
             out_item.kind = SfType.Binary;
             out_item.str_val = src[start..p];
             out_next = p + 1;
             return true;
         }
-        guard core::is_ascii_alpha(ch) || core::is_ascii_digit(ch) || ch == '+' || ch == '/' || ch == '=' else {
-            return false;
+        if ch == '=' {
+            eq_count += 1;
+        } else {
+            guard eq_count == 0 else { return false; }
+            guard core::is_ascii_alpha(ch) || core::is_ascii_digit(ch) || ch == '+' || ch == '/' else {
+                return false;
+            }
         }
         p = p + 1;
     }
@@ -482,32 +490,44 @@ fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
     return result, true;
 }
 
-// Helper: parses inner list contents (item1 item2 ...)
+// Helper: parses inner list contents (item1 item2 ...) per RFC 8941 §4.2.1.2
 fn sf_parse_inner_list(src: const u8[:], pos: i64, entry: SfDictEntry&, out_next: i64&) -> bool {
     entry.is_inner_list = true;
     var p = pos + 1; // skip '('
-    while p < src.len && src[p] != ')' {
-        p = sf_skip_ws(src, p);
+    while p < src.len {
+        while p < src.len && src[p] == ' ' {
+            p = p + 1;
+        }
         if p < src.len && src[p] == ')' {
-            break;
+            out_next = p + 1;
+            return true;
         }
         var inner_item = SfItem { .. };
         var in_next: i64 = 0;
         if !sf_parse_bare_item(src, p, inner_item, in_next) {
             return false;
         }
+        var item_params: SfParameter[..8] = [];
+        var params_next: i64              = 0;
+        if !sf_parse_parameters(src, in_next, item_params, params_next) {
+            return false;
+        }
+        if item_params.len == 1 && item_params[0].key == "req" &&
+           item_params[0].item.kind == SfType.Boolean && item_params[0].item.bool_val &&
+           in_next + 4 == params_next && src[p] == '"' && src[in_next - 1] == '"' {
+            inner_item.str_val = src[p + 1..params_next];
+        }
         if entry.inner_items.len < 8 {
             entry.inner_items.push(inner_item);
         } else {
             return false;
         }
-        p = in_next;
+        p = params_next;
+        if p >= src.len || (src[p] != ' ' && src[p] != ')') {
+            return false;
+        }
     }
-    if p >= src.len || src[p] != ')' {
-        return false;
-    }
-    out_next = p + 1; // skip ')'
-    return true;
+    return false;
 }
 
 // Parses a single dictionary entry value and its parameters
@@ -740,6 +760,23 @@ fn sf_dict_has_key(dict_str: const u8[:], key: const u8[:]) -> bool {
 fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
     if item.kind == SfType.Integer {
         core::format_i64_dec(item.int_val, out);
+    } else if item.kind == SfType.Decimal {
+        let sign = if item.int_val < 0 { -1 } else { 1 };
+        let abs_milli = if item.int_val < 0 { -item.int_val } else { item.int_val };
+        if sign < 0 { out.push('-' as u8); }
+        core::format_i64_dec(abs_milli / 1000, out);
+        out.push('.' as u8);
+        var frac = abs_milli % 1000;
+        if (frac % 100) == 0 {
+            core::format_i64_dec(frac / 100, out);
+        } else if (frac % 10) == 0 {
+            if frac < 100 { out.push('0' as u8); }
+            core::format_i64_dec(frac / 10, out);
+        } else {
+            if frac < 100 { out.push('0' as u8); }
+            if frac < 10 { out.push('0' as u8); }
+            core::format_i64_dec(frac, out);
+        }
     } else if item.kind == SfType.Boolean {
         out.append(if item.bool_val { "?1" } else { "?0" });
     } else if item.kind == SfType.Token {

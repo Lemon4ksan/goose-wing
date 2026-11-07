@@ -59,7 +59,10 @@ inline fn tick_timer_disarm() -> u8 {
 fn tick_timer_advance(wheel: TickTimerWheel&, elapsed_seconds: u32 = 1) -> u8 {
     wheel.prev_tick = wheel.current_tick;
     wheel.last_elapsed = elapsed_seconds;
-    wheel.current_tick = ((wheel.current_tick + elapsed_seconds) % TICK_TIMER_MODULO) as u8;
+    let cur: u64 = wheel.current_tick;
+    let el:  u64 = elapsed_seconds;
+    let m:   u64 = TICK_TIMER_MODULO;
+    wheel.current_tick = ((cur + el) % m) as u8;
     return wheel.current_tick;
 }
 

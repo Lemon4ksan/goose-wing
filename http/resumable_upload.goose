@@ -95,23 +95,30 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
     guard res.status_code == 201 || res.status_code == 200 else { return false; }
 
     var has_loc = false;
+    var loc_buf: u8[..256] = [];
+    var new_offset = state.offset;
+    var new_complete = state.complete;
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, "location") {
-            guard val.len <= state.upload_url.cap else { return false; }
-            state.upload_url.clear();
-            state.upload_url.append(val);
+            guard val.len > 0 && loc_buf.try_set(val) else { return false; }
             has_loc = true;
         } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
-            if off_ok { state.offset = off_val; }
+            guard off_ok else { return false; }
+            new_offset = off_val;
         } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
-            if comp_ok { state.complete = comp_val; }
+            guard comp_ok else { return false; }
+            new_complete = comp_val;
         }
     }
-    return has_loc;
+    guard has_loc else { return false; }
+    let _ = state.upload_url.try_set(loc_buf[..]);
+    state.offset = new_offset;
+    state.complete = new_complete;
+    return true;
 }
 
 // Formats a PATCH request to append a data chunk to the upload URL
@@ -146,21 +153,26 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
     guard res.status_code == 204 || res.status_code == 200 else { return false; }
 
     var found_offset = false;
+    var new_offset = state.offset;
+    var new_complete = state.complete;
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
-            if off_ok {
-                state.offset = off_val;
-                found_offset = true;
-            }
+            guard off_ok else { return false; }
+            new_offset = off_val;
+            found_offset = true;
         } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
-            if comp_ok { state.complete = comp_val; }
+            guard comp_ok else { return false; }
+            new_complete = comp_val;
         }
     }
-    return found_offset;
+    guard found_offset else { return false; }
+    state.offset = new_offset;
+    state.complete = new_complete;
+    return true;
 }
 
 // Formats a HEAD request to query the server's current offset after connection interruption
@@ -176,19 +188,24 @@ fn handle_offset_query_response(res: const Response&, state: ResumableUploadStat
     guard res.status_code == 204 || res.status_code == 200 else { return false; }
 
     var found_offset = false;
+    var new_offset = state.offset;
+    var new_complete = state.complete;
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
         if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
-            if off_ok {
-                state.offset = off_val;
-                found_offset = true;
-            }
+            guard off_ok else { return false; }
+            new_offset = off_val;
+            found_offset = true;
         } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
-            if comp_ok { state.complete = comp_val; }
+            guard comp_ok else { return false; }
+            new_complete = comp_val;
         }
     }
-    return found_offset;
+    guard found_offset else { return false; }
+    state.offset = new_offset;
+    state.complete = new_complete;
+    return true;
 }

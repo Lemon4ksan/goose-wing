@@ -870,6 +870,7 @@ fn decode_fse_huf_weights(
         let e1 = weight_fse_table.entries[state1];
         weights[num_symbols] = e1.symbol;
         num_symbols++;
+        if num_symbols >= 255 { break; }
         state1 = (e1.new_state as i64) + zstd_read_bits(r, e1.nb_bits);
         if r.underflow {
             let e2 = weight_fse_table.entries[state2];
@@ -881,6 +882,7 @@ fn decode_fse_huf_weights(
         let e2 = weight_fse_table.entries[state2];
         weights[num_symbols] = e2.symbol;
         num_symbols++;
+        if num_symbols >= 255 { break; }
         state2 = (e2.new_state as i64) + zstd_read_bits(r, e2.nb_bits);
         if r.underflow {
             let e1_final = weight_fse_table.entries[state1];
@@ -962,9 +964,12 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
         }
         i++;
     }
+    guard num_symbols < 256 && weight_total > 0 else { return false; }
     let table_log = zstd_high_bit(weight_total) + 1;
+    guard table_log <= 11 else { return false; }
     let total: u32 = (1 as u32) << (table_log as u32);
     let rest:  u32 = total - weight_total;
+    guard rest > 0 && (rest & (rest - 1)) == 0 else { return false; }
     let last_weight = (zstd_high_bit(rest) + 1) as u8;
     weights[num_symbols] = last_weight;
     num_symbols++;
@@ -2193,13 +2198,13 @@ fn decode_sequences<B>(
         let high_bit = zstd_high_bit(last_byte as u32);
         var bits_consumed = (8 - high_bit) as u32;
 
-        let state_ll = ((bit_container << (bits_consumed & 63)) >> ((64 - ll_table.table_log) & 63)) as i64;
+        let state_ll = zstd_extract_bits(bit_container, bits_consumed, ll_table.table_log as u32) as i64;
         bits_consumed += ll_table.table_log as u32;
 
-        let state_of = ((bit_container << (bits_consumed & 63)) >> ((64 - of_table.table_log) & 63)) as i64;
+        let state_of = zstd_extract_bits(bit_container, bits_consumed, of_table.table_log as u32) as i64;
         bits_consumed += of_table.table_log as u32;
 
-        let state_ml = ((bit_container << (bits_consumed & 63)) >> ((64 - ml_table.table_log) & 63)) as i64;
+        let state_ml = zstd_extract_bits(bit_container, bits_consumed, ml_table.table_log as u32) as i64;
         bits_consumed += ml_table.table_log as u32;
 
         let err = decode_fast_sequence_streams(
@@ -2554,6 +2559,7 @@ fn decompress_single_zstd_frame<B>(
 
 // Internal frame decompressor (RFC 8878 section 3.1.1) with output limit guard.
 fn zstd_decompress_with_limit_impl<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> CompressError {
+    guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var offset: i64 = 0;
     let initial_out_len = out_buf.len;
     var lit_buf: u8[>..] = [];

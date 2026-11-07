@@ -7,6 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .limits;
 import .constants;
 import .canonical;
 import .psl;
@@ -14,10 +15,10 @@ import .parser;
 
 // ---- http method & origin trust --------------------------------------------
 
-// Whether host is a local loopback origin (localhost, 127.0.0.1, ::1).
+// Whether host is a local loopback origin (localhost, 127.0.0.1, ::1, [::1]).
 fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
-    let clean_host = if host.len > 0 && host[0] == '.' { host[1..] } else { host };
-    return clean_host == "localhost" || clean_host == "127.0.0.1" || clean_host == "::1";
+    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
+    return eq_ascii_fold(clean_host, "localhost") || clean_host == "127.0.0.1" || clean_host == "::1";
 }
 
 // ---- origin-bound adjustment -----------------------------------------------
@@ -62,12 +63,19 @@ fn validate_canonical_cookie_security(
     opts:       CookieSourceOptions = CookieSourceOptions { .. },
 ) -> bool {
     let cookie_name = cookie_val.name[..];
+    if core::add_sat_i64(cookie_name.len, cookie_val.value.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+        return false;
+    }
 
     // Reject control characters
     if has_prohibited_cookie_ctl(cookie_name) ||
        has_prohibited_cookie_ctl(cookie_val.value[..]) ||
        has_prohibited_cookie_ctl(cookie_val.domain[..]) ||
        has_prohibited_cookie_ctl(cookie_val.path[..]) {
+        return false;
+    }
+
+    if !cookie_val.host_only && is_public_suffix_domain(cookie_val.domain[..]) {
         return false;
     }
 
@@ -352,8 +360,8 @@ fn can_set_canonical_cookie_for_context(
     context:    const SameSiteCookieContext&,
     opts:       CookieInclusionOptions = CookieInclusionOptions { .. },
 ) -> bool, i64 {
-    // Cross-site subresources or non-main frame navigations cannot set SameSite cookies
-    if !opts.is_main_frame && context.context_type == SameSiteContextType.CrossSite {
+    // Cross-site contexts cannot set SameSite cookies (RFC 6265bis Section 5.5 Step 19)
+    if context.context_type == SameSiteContextType.CrossSite {
         match cookie_val.same_site {
             Strict => { return false, EXCLUDE_SAMESITE_STRICT; },
             Lax => { return false, EXCLUDE_SAMESITE_LAX; },

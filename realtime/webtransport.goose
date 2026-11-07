@@ -147,6 +147,9 @@ fn handle_webtransport_response(res: const Response&, session: WebTransportSessi
         return false;
     }
     session.is_active = true;
+    session.is_draining = false;
+    session.close_code = 0;
+    session.close_reason.clear();
     return true;
 }
 
@@ -285,10 +288,13 @@ fn decode_quic_datagram_frame<B>(
     var payload_end = wire.len;
     if frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
-        guard ok_l && idx <= wire.len && len <= ((wire.len - idx) as u64) else { return false; }
-        payload_end = idx + (len as i64);
+        guard ok_l && idx <= wire.len && len <= (core::sub_sat_i64(wire.len, idx) as u64) else {
+            return false;
+        }
+        payload_end = core::add_sat_i64(idx, len as i64);
     }
 
+    guard core::sub_sat_i64(payload_end, idx) <= ws_buf_cap(out_payload) else { return false; }
     out_payload.append(wire[idx..payload_end]);
     return true;
 }
@@ -621,27 +627,38 @@ fn find_session_entry_index(demuxer: const WebTransportDemuxer&, session_id: u64
     return -1, false;
 }
 
-// Registers a new active session into the demuxer, reusing closed session slots if full
-fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
-    for i in demuxer.sessions.len {
-        if demuxer.sessions[i].session_id == session_id {
-            demuxer.sessions[i].state = WebTransportSessionState.Active;
-            demuxer.sessions[i].close_code = 0;
-            demuxer.sessions[i].close_reason.clear();
-            return true;
+fn close_session_streams(demuxer: WebTransportDemuxer&, session_id: u64) {
+    for i in demuxer.streams.len {
+        if demuxer.streams[i].session_id == session_id {
+            demuxer.streams[i].is_open = false;
         }
     }
+}
+
+// Registers a new active session into the demuxer, reusing closed session slots if full
+fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
     let entry = WebTransportSessionEntry {
         session_id: session_id,
         state:      WebTransportSessionState.Active,
         ..
     };
+    for i in demuxer.sessions.len {
+        if demuxer.sessions[i].session_id == session_id {
+            demuxer.sessions[i] = entry;
+            close_session_streams(demuxer, session_id);
+            return true;
+        }
+    }
     if demuxer.sessions.len < demuxer.sessions.cap {
         demuxer.sessions.push(entry);
+        close_session_streams(demuxer, session_id);
         return true;
     }
     for i in demuxer.sessions.len {
         if demuxer.sessions[i].state == WebTransportSessionState.Closed {
+            let old_sid = demuxer.sessions[i].session_id;
+            close_session_streams(demuxer, old_sid);
+            close_session_streams(demuxer, session_id);
             demuxer.sessions[i] = entry;
             return true;
         }
@@ -658,6 +675,9 @@ fn set_webtransport_session_state(
     let s_idx, has_s = find_session_entry_index(demuxer, session_id);
     guard has_s else { return false; }
     demuxer.sessions[s_idx].state = state;
+    if state == WebTransportSessionState.Closed {
+        close_session_streams(demuxer, session_id);
+    }
     return true;
 }
 

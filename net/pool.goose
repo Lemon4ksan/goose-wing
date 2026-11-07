@@ -267,30 +267,27 @@ fn is_queue_empty(q: const WantQueue&) -> bool {
 }
 
 inline fn compact_want_queue(q: WantQueue&) {
-    if q.head_pos > 0 {
-        let unread = q.head.len - q.head_pos;
-        for i in unread {
-            q.head[i] = q.head[q.head_pos + i];
-        }
-        while q.head.len > unread {
-            q.head.pop();
-        }
-        q.head_pos = 0;
-    }
-    var moved: i64 = 0;
-    while q.head.len < q.head.cap && moved < q.tail.len {
-        q.head.push(q.tail[moved]);
-        moved += 1;
-    }
-    if moved > 0 {
-        let remaining_tail = q.tail.len - moved;
-        for i in remaining_tail {
-            q.tail[i] = q.tail[moved + i];
-        }
-        while q.tail.len > remaining_tail {
-            q.tail.pop();
+    var new_head: WantConn[..32] = [];
+    if q.head_pos < q.head.len {
+        for &item in q.head[q.head_pos..] {
+            if !item.cancelled {
+                new_head.push(copy(item));
+            }
         }
     }
+    var new_tail: WantConn[..32] = [];
+    for &t_item in q.tail {
+        if !t_item.cancelled {
+            if new_head.len < 32 {
+                new_head.push(copy(t_item));
+            } else {
+                new_tail.push(copy(t_item));
+            }
+        }
+    }
+    q.head = new_head;
+    q.head_pos = 0;
+    q.tail = new_tail;
 }
 
 // Appends a connection requirement to the tail slice.
@@ -337,17 +334,19 @@ fn pop_want(q: WantQueue&) -> WantConn, bool {
     return WantConn { .. }, false;
 }
 
-// Cancels a waiter by request ID without shifting elements in the queue.
+// Cancels a waiter by request ID and compacts cancelled entries.
 fn cancel_want(q: WantQueue&, req_id: u64) -> bool {
     for &item in q.head[q.head_pos..] {
-        if item.req_id == req_id {
+        if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
+            compact_want_queue(q);
             return true;
         }
     }
     for &item in q.tail {
-        if item.req_id == req_id {
+        if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
+            compact_want_queue(q);
             return true;
         }
     }
@@ -440,28 +439,23 @@ fn is_connection_healthy(
 
 // Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
 fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
-    // Reject candidate host containing wildcard '*'
-    guard !core::contains_byte(target_host, '*') else { return false; }
+    let pat = core::trim_end_byte(pattern, '.');
+    let host = core::trim_end_byte(target_host, '.');
+    guard pat.len > 0 && host.len > 0 && !core::contains_byte(host, '*') else { return false; }
 
-    if eq_ascii_fold(pattern, target_host) {
+    if eq_ascii_fold(pat, host) {
         return true;
     }
     // Wildcard SAN check (*.example.com) per RFC 6125 §6.4.3
-    if starts_with(pattern, "*.") && target_host.len > 2 {
-        let suffix = pattern[2..];
-        // Wildcards MUST NOT apply to top-level domains (*.com)
-        guard core::contains_byte(suffix, '.') else { return false; }
-
-        var dot_idx = -1;
-        for i in target_host.len {
-            if target_host[i] == '.' { dot_idx = i; break; }
-        }
-        if dot_idx > 0 {
-            let host_suffix = target_host[dot_idx + 1..];
-            return eq_ascii_fold(suffix, host_suffix);
-        }
+    guard starts_with(pat, "*.") else { return false; }
+    let suffix = pat[2..];
+    let label, host_suffix, has_dot = core::split_once_byte(host, '.');
+    let _, tld, _ = core::rsplit_once_byte(host, '.');
+    let _, is_numeric_tld = core::parse_digits(tld);
+    guard has_dot && label.len > 0 && !is_numeric_tld && core::contains_byte(suffix, '.') else {
+        return false;
     }
-    return false;
+    return eq_ascii_fold(suffix, host_suffix);
 }
 
 // HTTP/2 IP-based connection coalescing (JobController & AttemptManager parity).
@@ -472,10 +466,11 @@ fn can_coalesce_h2_connection(
     target_key:         const PoolKey&,
     target_resolved_ip: const u8[:],
 ) -> bool, bool {
-    // Both must be HTTPS over HTTP/2
+    // Both must be HTTPS over HTTP/2 on the same authoritative port (RFC 9113 §9.1.1)
     guard conn.protocol == NegotiatedProtocol.Http2 &&
           conn.key.scheme == PoolScheme.Https &&
-          target_key.scheme == PoolScheme.Https else {
+          target_key.scheme == PoolScheme.Https &&
+          conn.key.origin_endpoint.port == target_key.origin_endpoint.port else {
         return false, false;
     }
 
@@ -985,9 +980,9 @@ fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bo
     var matched = false;
     for i in pool.entries.len {
         if pool.entries[i].fd == fd && pool.entries[i].healthy {
-            pool.entries[i].epoll_events = events;
+            pool.entries[i].epoll_events |= events;
             matched = true;
-            if is_epoll_rdhup_signaled(events) && !pool.entries[i].in_use {
+            if is_epoll_rdhup_signaled(pool.entries[i].epoll_events) && !pool.entries[i].in_use {
                 close_upstream_entry_fd(pool.entries[i]);
                 pool.entries[i].healthy = false;
                 pool.evicted_rdhup += 1;

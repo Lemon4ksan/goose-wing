@@ -278,13 +278,21 @@ fn p0f(profile: const BrowserProfile&) -> u8[..256] {
     return format_p0f(profile.p0f);
 }
 
-// Configures the Akamai HTTP/2 fingerprint for this profile.
+// Configures the Akamai HTTP/2 fingerprint for this profile and synchronizes H2Settings.
 fn set_akamai(profile: BrowserProfile&, fp: const AkamaiFingerprint&) {
     profile.akamai = fp;
+    for &s in fp.settings {
+        if s.id == 1 { profile.h2.header_table_size = s.val; }
+        else if s.id == 2 { profile.h2.enable_push = s.val; }
+        else if s.id == 3 { profile.h2.max_concurrent_streams = s.val; }
+        else if s.id == 4 { profile.h2.initial_window_size = s.val; }
+        else if s.id == 5 { profile.h2.max_frame_size = s.val; }
+        else if s.id == 6 { profile.h2.max_header_list_size = s.val; }
+    }
 }
 
 // Formats the Akamai HTTP/2 fingerprint string for this profile.
-fn akamai(profile: const BrowserProfile&) -> u8[..512] {
+fn akamai(profile: const BrowserProfile&) -> u8[..640] {
     return akamai_fingerprint_to_string(profile.akamai);
 }
 

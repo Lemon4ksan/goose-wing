@@ -235,6 +235,9 @@ fn subscribe_ex(
             tree.nodes[i].sock_fd = sock_fd;
             tree.nodes[i].next_sub = tree.buckets[b_idx as i64].head_sub;
             tree.nodes[i].in_use = true;
+            tree.nodes[i].num_message_indices = 0;
+            tree.nodes[i].prev_drainable = -1;
+            tree.nodes[i].next_drainable = -1;
 
             let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
             let new_cnt = old_cnt + 1;
@@ -307,8 +310,26 @@ fn unlink_drainable_node(tree: TopicTree&, node_idx: i32) {
     tree.nodes[n_i64].next_drainable = -1;
 }
 
+fn migrate_drainable_queue_if_subscribed(tree: TopicTree&, cur: i32, cur_i64: i64, fd: i64) {
+    let count = tree.nodes[cur_i64].num_message_indices;
+    unlink_drainable_node(tree, cur);
+    tree.nodes[cur_i64].num_message_indices = 0;
+    for i in tree.nodes.len {
+        if i != cur_i64 && tree.nodes[i].in_use && tree.nodes[i].sock_fd == fd &&
+            tree.nodes[i].num_message_indices == 0 {
+            for m in count as i64 {
+                tree.nodes[i].message_indices[m] = tree.nodes[cur_i64].message_indices[m];
+            }
+            tree.nodes[i].num_message_indices = count;
+            link_drainable_head(tree, i as i32, i);
+            return;
+        }
+    }
+}
+
 fn release_subscription_node(tree: TopicTree&, b: i64, prev: i32, cur: i32) -> i32, i32 {
     let cur_i64 = cur as i64;
+    let fd = tree.nodes[cur_i64].sock_fd;
     let next = tree.nodes[cur_i64].next_sub;
     if prev < 0 {
         tree.buckets[b].head_sub = next;
@@ -317,8 +338,7 @@ fn release_subscription_node(tree: TopicTree&, b: i64, prev: i32, cur: i32) -> i
     }
 
     if tree.nodes[cur_i64].num_message_indices > 0 {
-        unlink_drainable_node(tree, cur);
-        tree.nodes[cur_i64].num_message_indices = 0;
+        migrate_drainable_queue_if_subscribed(tree, cur, cur_i64, fd);
     }
 
     tree.nodes[cur_i64].in_use = false;
@@ -859,6 +879,18 @@ fn link_drainable_head(tree: TopicTree&, cur: i32, c_i64: i64) {
     tree.drainable_head = cur;
 }
 
+fn find_drainable_node_for_fd(tree: const TopicTree&, fd: i64, fallback: i32) -> i32 {
+    var d_cur = tree.drainable_head;
+    while d_cur >= 0 {
+        let d_i64 = d_cur as i64;
+        if tree.nodes[d_i64].in_use && tree.nodes[d_i64].sock_fd == fd {
+            return d_cur;
+        }
+        d_cur = tree.nodes[d_i64].next_drainable;
+    }
+    return fallback;
+}
+
 // Enqueues a message index to a single subscriber node if matching and not already queued in this batch.
 fn queue_subscriber_batch(
     tree:      TopicTree&,
@@ -868,13 +900,15 @@ fn queue_subscriber_batch(
     seen_fds:  i64[..512]&,
     seen_mask: u64[4]&,
 ) -> bool {
-    let c_i64 = cur as i64;
-    guard tree.nodes[c_i64].in_use && tree.nodes[c_i64].sock_fd != sender_fd else { return false; }
-    let fd = tree.nodes[c_i64].sock_fd;
+    let raw_i64 = cur as i64;
+    guard tree.nodes[raw_i64].in_use && tree.nodes[raw_i64].sock_fd != sender_fd else { return false; }
+    let fd = tree.nodes[raw_i64].sock_fd;
 
     var already_queued, ok_seen = check_and_mark_batch_seen(fd, seen_fds, seen_mask);
     guard ok_seen else { return false; }
 
+    let target_node = find_drainable_node_for_fd(tree, fd, cur);
+    let c_i64 = target_node as i64;
     let num = tree.nodes[c_i64].num_message_indices as i64;
     if num > 0 {
         if tree.nodes[c_i64].message_indices[num - 1] == (msg_idx as u16) {
@@ -885,7 +919,7 @@ fn queue_subscriber_batch(
     guard !already_queued else { return false; }
 
     if tree.nodes[c_i64].num_message_indices >= 32 {
-        drain_subscriber(tree, cur);
+        drain_subscriber(tree, target_node);
     }
 
     let cur_num = tree.nodes[c_i64].num_message_indices as i64;
@@ -893,7 +927,7 @@ fn queue_subscriber_batch(
     tree.nodes[c_i64].num_message_indices += 1;
 
     if tree.nodes[c_i64].num_message_indices == 1 {
-        link_drainable_head(tree, cur, c_i64);
+        link_drainable_head(tree, target_node, c_i64);
     }
     return true;
 }

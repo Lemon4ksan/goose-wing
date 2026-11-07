@@ -115,6 +115,7 @@ fn track_known_header_presence(
             true
         },
         TransferEncoding => {
+            guard validate_transfer_encoding_value(val) else { return false; }
             if (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
                 tracker.has_duplicate_te = true;
                 return false;
@@ -407,12 +408,28 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
         return semi_idx == trimmed.len;
     }
 
-    // If parameters present, ensure valid characters (no control chars or CRLF)
-    if semi_idx < trimmed.len {
-        for b in trimmed[semi_idx..] {
-            if b < 0x20 && b != 0x09 { return false; }
-            if b == 0x7F { return false; }
+    // If parameters present, validate transfer-parameter = token BWS "=" BWS ( token / quoted-string )
+    guard semi_idx < trimmed.len else { return true; }
+    var rem = trimmed[semi_idx + 1..];
+    while rem.len > 0 {
+        let p_end = core::find_unquoted_byte(rem, ';');
+        let p_str = trim_lws(rem[..p_end]);
+        guard p_str.len > 0 else { return false; }
+        let k_raw, v_raw, has_eq = core::split_once_byte(p_str, '=');
+        guard has_eq else { return false; }
+        let k = trim_lws(k_raw);
+        let v = trim_lws(v_raw);
+        guard k.len > 0 && v.len > 0 && is_valid_token_swar(k) else { return false; }
+        if v[0] == '"' {
+            guard v.len >= 2 && v[v.len - 1] == '"' else { return false; }
+            for b in v {
+                guard (b >= 0x20 || b == 0x09) && b != 0x7F else { return false; }
+            }
+        } else {
+            guard is_valid_token_swar(v) else { return false; }
         }
+        if p_end >= rem.len { break; }
+        rem = rem[p_end + 1..];
     }
 
     return true;

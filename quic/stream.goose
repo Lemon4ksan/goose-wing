@@ -419,6 +419,7 @@ fn quic_stream_is_terminal(s: const QuicStream&, role: QuicRole) -> bool {
 
 struct QuicStreamTable {
     streams:            QuicStream[..128] = [],
+    evicted_closed_ids: u64[..64]         = [],
     max_streams_bidi:   u64               = 100,
     max_streams_uni:    u64               = 100,
     next_local_bidi_id: u64               = 0,
@@ -470,12 +471,6 @@ inline fn validate_peer_stream_limit(tbl: const QuicStreamTable&, stream_id: u64
     return stream_idx < tbl.max_streams_bidi;
 }
 
-// Helper to check table capacity and peer stream limit before opening stream.
-inline fn can_open_ingress_stream(tbl: const QuicStreamTable&, stream_id: u64) -> bool {
-    guard tbl.streams.len < tbl.streams.cap else { return false; }
-    return validate_peer_stream_limit(tbl, stream_id);
-}
-
 // Appends and initializes new stream into table.
 inline fn quic_table_insert_stream(
     tbl:               QuicStreamTable&,
@@ -486,6 +481,29 @@ inline fn quic_table_insert_stream(
     let st = new_quic_stream(stream_id, default_recv_flow);
     quic_table_push_stream(tbl, st);
     return new_idx;
+}
+
+// Records an evicted terminal stream ID in a bounded ring so late retransmissions cannot re-open it.
+inline fn record_evicted_closed_stream(tbl: QuicStreamTable&, stream_id: u64) {
+    for i in tbl.evicted_closed_ids.len {
+        if tbl.evicted_closed_ids[i] == stream_id {
+            return;
+        }
+    }
+    if tbl.evicted_closed_ids.len == tbl.evicted_closed_ids.cap {
+        tbl.evicted_closed_ids.remove_at(0);
+    }
+    tbl.evicted_closed_ids.push(stream_id);
+}
+
+// Returns true if `stream_id` was previously closed in a terminal state and evicted from `tbl.streams`.
+fn quic_table_is_evicted_closed_stream(tbl: const QuicStreamTable&, stream_id: u64) -> bool {
+    for i in tbl.evicted_closed_ids.len {
+        if tbl.evicted_closed_ids[i] == stream_id {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Looks up existing stream or inserts new stream.
@@ -504,18 +522,21 @@ fn quic_table_get_or_open_stream(
     guard is_peer_initiated_stream(stream_id, tbl.role) else {
         return 0, false;
     }
+    guard validate_peer_stream_limit(tbl, stream_id) else {
+        return 0, false;
+    }
+    if tbl.streams.len < tbl.streams.cap {
+        let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
+        return new_idx, true;
+    }
     for i in tbl.streams.len {
         if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
-            guard validate_peer_stream_limit(tbl, stream_id) else { return 0, false; }
+            record_evicted_closed_stream(tbl, tbl.streams[i].stream_id);
             tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
             return i as i32, true;
         }
     }
-    guard can_open_ingress_stream(tbl, stream_id) else {
-        return 0, false;
-    }
-    let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
-    return new_idx, true;
+    return 0, false;
 }
 
 // Advances the local stream counter by 4 according to RFC 9000 stream ID rules.
@@ -541,17 +562,18 @@ fn quic_table_open_local_stream(
     guard next_id <= rfc::QUIC_VARINT_MAX && (next_id >> 2) < limit else {
         return 0, 0, false;
     }
+    if tbl.streams.len < tbl.streams.cap {
+        let stream_id = advance_stream_counter(tbl, is_bidi);
+        let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
+        return stream_id, new_idx, true;
+    }
     for i in tbl.streams.len {
         if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
+            record_evicted_closed_stream(tbl, tbl.streams[i].stream_id);
             let stream_id = advance_stream_counter(tbl, is_bidi);
             tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
             return stream_id, i as i32, true;
         }
     }
-    guard tbl.streams.len < tbl.streams.cap else {
-        return 0, 0, false;
-    }
-    let stream_id = advance_stream_counter(tbl, is_bidi);
-    let new_idx = quic_table_insert_stream(tbl, stream_id, default_recv_flow);
-    return stream_id, new_idx, true;
+    return 0, 0, false;
 }

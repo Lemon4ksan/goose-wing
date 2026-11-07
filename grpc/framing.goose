@@ -20,15 +20,19 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
     if compressed {
         var gz_buf: u8[>..] = [];
         if core::gzip_compress(payload, gz_buf, 6) {
-            out.push(rfc::GRPC_FLAG_COMPRESSED);
-            core::write_be_u32(out, gz_buf.len as u32);
-            out.append(gz_buf[..]);
+            var hdr_c: u8[..8] = [];
+            hdr_c.push(rfc::GRPC_FLAG_COMPRESSED);
+            core::write_be_u32(hdr_c, gz_buf.len as u32);
+            guard out.try_append(hdr_c[..]) else { return; }
+            let _ = out.try_append(gz_buf[..]);
             return;
         }
     }
-    out.push(0x00);
-    core::write_be_u32(out, payload.len as u32);
-    out.append(payload);
+    var hdr_u: u8[..8] = [];
+    hdr_u.push(0x00);
+    core::write_be_u32(hdr_u, payload.len as u32);
+    guard out.try_append(hdr_u[..]) else { return; }
+    let _ = out.try_append(payload);
 }
 
 // Decodes a single LPM frame starting at offset in wire bytes without buffer copying.
@@ -64,7 +68,7 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
     let payload_slice, is_comp, consumed, ok = decode_grpc_lpm_slice(wire, offset);
     guard ok else { return false, 0; }
     out_payload.clear();
-    out_payload.append(payload_slice);
+    guard out_payload.try_append(payload_slice) else { return false, 0; }
     out_compressed = is_comp;
     return true, consumed;
 }
@@ -89,7 +93,9 @@ fn reset(p: GrpcStreamParser&) {
 }
 
 fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
-    guard ((p.buf.len + chunk.len) as u64) <= p.max_size else { return false; }
+    let cur_total = core::add_sat_u64(p.buf.len as u64, chunk.len as u64);
+    let max_wire = core::add_sat_u64(p.max_size, rfc::GRPC_LPM_HEADER_LEN);
+    guard cur_total <= max_wire else { return false; }
     p.buf.append(chunk);
     return true;
 }
@@ -100,20 +106,39 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
 
     let flag = p.buf[0];
     guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return false; }
-    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
     let len_val_i64 = (core::read_be_u32(p.buf[..], 1)) as i64;
-    let total_len = rfc::GRPC_LPM_HEADER_LEN + len_val_i64;
-    guard p.buf.len >= total_len else { return false; }
+    let total_len = core::add_sat_i64(rfc::GRPC_LPM_HEADER_LEN, len_val_i64);
+    guard len_val_i64 <= (p.max_size as i64) && p.buf.len >= total_len else { return false; }
 
     out_payload.clear();
     let hdr_len_i64: i64 = rfc::GRPC_LPM_HEADER_LEN;
-    out_payload.append(p.buf[hdr_len_i64..total_len]);
+    guard out_payload.try_append(p.buf[hdr_len_i64..total_len]) else { return false; }
+    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
     core::compact_wire_buffer(p.buf, total_len);
     return true;
 }
 
 // ---- gRPC-Web Framing (Trailers-in-Body) ---------------------------------
+
+// Returns true when `key` and `val` are safe custom gRPC metadata / trailer fields
+// (valid HTTP token key, printable HTTP field value without CR/LF/NUL, and not a
+// reserved protocol control header).
+fn is_valid_grpc_custom_metadata(key: const u8[:], val: const u8[:]) -> bool {
+    guard key.len > 0 && key[0] != ':' else { return false; }
+    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_STATUS) else { return false; }
+    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_MESSAGE) else { return false; }
+    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_STATUS_DETAILS_BIN) else { return false; }
+    guard !core::eq_ascii_fold(key, "content-type") else { return false; }
+    guard !core::eq_ascii_fold(key, "te") else { return false; }
+    for b in key {
+        guard core::is_tchar(b) else { return false; }
+    }
+    for v in val {
+        guard v == '\t' || (v >= 0x20 && v <= 0x7E) || v >= 0x80 else { return false; }
+    }
+    return true;
+}
 
 // Encodes gRPC-Web trailers frame into body payload with flag 0x80.
 // Trailer format: "grpc-status: <status>\r\ngrpc-message: <message>\r\n[custom-trailers]\r\n"
@@ -132,7 +157,7 @@ fn encode_grpc_web_trailers_with_meta<B>(
         var enc_msg: u8[>..] = [];
         encode_grpc_message(message, enc_msg);
         let max_msg_bytes = (trailer_body.cap - trailer_body.len - 18) as i64;
-        var take_len = if enc_msg.len > max_msg_bytes { max_msg_bytes } else { enc_msg.len };
+        var take_len = min(enc_msg.len, max_msg_bytes);
         if take_len < enc_msg.len && take_len >= 1 && enc_msg[take_len - 1] == '%' {
             take_len -= 1;
         } else if take_len < enc_msg.len && take_len >= 2 && enc_msg[take_len - 2] == '%' {
@@ -146,8 +171,9 @@ fn encode_grpc_web_trailers_with_meta<B>(
     }
 
     for &m in extra_trailers {
-        let line_len = m.key.len + m.value.len + 4;
-        if (trailer_body.cap - trailer_body.len) as i64 >= (line_len as i64) {
+        let line_len = core::add_sat_i64(core::add_sat_i64(m.key.len, m.value.len), 4);
+        let rem_cap = core::sub_sat_i64(trailer_body.cap, trailer_body.len);
+        if is_valid_grpc_custom_metadata(m.key[..], m.value[..]) && rem_cap >= line_len {
             trailer_body.append(m.key[..]);
             trailer_body.append(": ");
             trailer_body.append(m.value[..]);
@@ -155,9 +181,11 @@ fn encode_grpc_web_trailers_with_meta<B>(
         }
     }
 
-    out.push(rfc::GRPC_WEB_FLAG_TRAILERS);
-    core::write_be_u32(out, trailer_body.len as u32);
-    out.append(trailer_body[..]);
+    var tr_hdr: u8[..8] = [];
+    tr_hdr.push(rfc::GRPC_WEB_FLAG_TRAILERS);
+    core::write_be_u32(tr_hdr, trailer_body.len as u32);
+    guard out.try_append(tr_hdr[..]) else { return; }
+    let _ = out.try_append(trailer_body[..]);
 }
 
 fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out: B&) {
@@ -178,21 +206,22 @@ fn decode_grpc_web_frame<B>(
     out_compressed:  bool&,
 ) -> bool, u32 {
     let off = offset as i64;
-    guard off >= 0 && (wire.len - off) >= 5 else { return false, 0; }
+    let rem = core::sub_sat_i64(wire.len, off);
+    guard off >= 0 && rem >= 5 else { return false, 0; }
 
     let flag = wire[off];
     guard (flag & ~(rfc::GRPC_FLAG_COMPRESSED | rfc::GRPC_WEB_FLAG_TRAILERS)) == 0 else { return false, 0; }
-    out_is_trailers = (flag & rfc::GRPC_WEB_FLAG_TRAILERS) != 0;
-    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
-    let total_len = 5 + len_val_i64;
-    guard (wire.len - off) >= total_len else { return false, 0; }
+    let len_val_i64 = (core::read_be_u32(wire, core::add_sat_i64(off, 1))) as i64;
+    let total_len = core::add_sat_i64(5, len_val_i64);
+    guard len_val_i64 <= 0xFFFFFFFA && rem >= total_len else { return false, 0; }
 
     out_payload.clear();
-    let start_idx = off + 5;
-    let end_idx = off + total_len;
-    out_payload.append(wire[start_idx..end_idx]);
+    let start_idx = core::add_sat_i64(off, 5);
+    let end_idx = core::add_sat_i64(off, total_len);
+    guard out_payload.try_append(wire[start_idx..end_idx]) else { return false, 0; }
+    out_is_trailers = (flag & rfc::GRPC_WEB_FLAG_TRAILERS) != 0;
+    out_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
     return true, total_len as u32;
 }
@@ -212,7 +241,12 @@ fn parse_grpc_web_trailer_line(
     let val = core::trim_lws(raw_val);
     if core::eq_ascii_fold(name, "grpc-status") {
         let status_int, ok_code = core::parse_u32_dec(val);
-        guard ok_code else { return false; }
+        if !ok_code {
+            if val.len > 0 {
+                out_status = GrpcStatusCode.Unknown;
+            }
+            return false;
+        }
         out_status = grpc_status_from_code(status_int);
         return true;
     }
@@ -266,12 +300,36 @@ fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {
 }
 
 // Decodes application/grpc-web-text Base64 stream into raw binary LPM stream.
+// Supports both single Base64 blocks and concatenated 4-byte-aligned padded chunks.
 //
 // Example:
 //   b64_stream = "AAAAAAA="
 //   returns: true, out = [0, 0, 0, 0, 0]
 fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
-    return core::base64_decode(b64_stream, out);
+    out.clear();
+    let total = b64_stream.len as u64;
+    guard (total & 3) == 0 else { return false; }
+    guard total > 0 else { return true; }
+
+    var seg_start: i64     = 0;
+    var chunk_buf: u8[>..] = [];
+    var q:         u64     = 0;
+    while q < total {
+        let idx2 = core::add_sat_u64(q, 2) as i64;
+        let idx3 = core::add_sat_u64(q, 3) as i64;
+        let is_padded_end = b64_stream[idx3] == '=' || b64_stream[idx2] == '=';
+        q = core::add_sat_u64(q, 4);
+        if is_padded_end || q == total {
+            let seg_end = q as i64;
+            chunk_buf.clear();
+            if !core::base64_decode(b64_stream[seg_start..seg_end], chunk_buf) || !out.try_append(chunk_buf[..]) {
+                out.clear();
+                return false;
+            }
+            seg_start = seg_end;
+        }
+    }
+    return true;
 }
 
 // ---- Zero-Copy Base-128 Varint Protobuf Wire Primitives -----------------
@@ -374,8 +432,9 @@ fn pb_read_varint_field(wire: const u8[:], field_num: u32) -> u64, bool {
     var pos: i64 = 0;
     while pos < wire.len {
         let tag, ok_tag = pb_read_varint(wire, pos);
-        guard ok_tag && tag > 0 else { return 0, false; }
-        let fnum = (tag >> 3) as u32;
+        let raw_fnum = tag >> 3;
+        guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return 0, false; }
+        let fnum = raw_fnum as u32;
         let wtype = (tag & 0x07) as u32;
         if fnum == field_num && wtype == PB_WIRE_VARINT {
             return pb_read_varint(wire, pos);
@@ -405,8 +464,9 @@ fn pb_read_bytes_field(wire: const u8[:], field_num: u32) -> const u8[:], bool {
     var pos: i64 = 0;
     while pos < wire.len {
         let tag, ok_tag = pb_read_varint(wire, pos);
-        guard ok_tag && tag > 0 else { return "", false; }
-        let fnum = (tag >> 3) as u32;
+        let raw_fnum = tag >> 3;
+        guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return "", false; }
+        let fnum = raw_fnum as u32;
         let wtype = (tag & 0x07) as u32;
         if fnum == field_num && wtype == PB_WIRE_LEN {
             let len_u64, ok_len = pb_read_varint(wire, pos);

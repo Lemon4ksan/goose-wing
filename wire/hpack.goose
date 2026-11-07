@@ -55,6 +55,7 @@ fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> b
 
 // Encodes an indexed header field representation (RFC 7541 Section 6.1).
 inline fn hpack_encode_indexed<B>(out: B&, index: u64) -> bool {
+    guard index > 0 else { return false; }
     return hpack_encode_int(out, index, 7, 0x80);
 }
 
@@ -70,6 +71,7 @@ fn hpack_encode_string<B>(out: B&, str: const u8[:]) -> bool {
 
 // Encodes a literal header field without indexing (RFC 7541 Section 6.2.2).
 fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
+    guard internal::validate_h2_field_syntax(name, val) else { return false; }
     let start_len = out.len;
     guard out.try_push(0x00) &&
           hpack_encode_string(out, name) &&
@@ -82,6 +84,7 @@ fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: con
 
 // Encodes a literal header field never indexed (RFC 7541 Section 6.2.3).
 fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
+    guard internal::validate_h2_field_syntax(name, val) else { return false; }
     let start_len = out.len;
     guard out.try_push(0x10) &&
           hpack_encode_string(out, name) &&
@@ -186,20 +189,50 @@ inline fn is_h2_skipped_header_name(name: const u8[:]) -> bool {
         || core::eq_ascii_fold(name, "upgrade");
 }
 
+fn is_valid_h2_request_pseudo_fields(pseudo: const internal::H2PseudoHeaders&) -> bool {
+    guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
+    if pseudo.has_authority {
+        guard internal::is_valid_h2_authority(pseudo.authority[..]) else { return false; }
+    }
+    if pseudo.has_protocol {
+        guard pseudo.method[..] == "CONNECT" && pseudo.protocol.len > 0
+            && internal::validate_h2_field_syntax(":protocol", pseudo.protocol[..]) else {
+            return false;
+        }
+    }
+    let is_classic_connect = pseudo.method[..] == "CONNECT" && !pseudo.has_protocol;
+    if is_classic_connect {
+        return pseudo.has_authority && !pseudo.has_scheme && !pseudo.has_path;
+    }
+    guard pseudo.has_scheme && internal::is_valid_h2_scheme(pseudo.scheme[..]) else { return false; }
+    guard pseudo.has_path && internal::is_valid_h2_path(pseudo.path[..]) else { return false; }
+    if pseudo.path[..] == "*" {
+        return pseudo.method[..] == "OPTIONS";
+    }
+    return true;
+}
+
 fn encode_hpack_pseudo_fields<B>(
     dt:          internal::DynamicTable&,
     pseudo:      const internal::H2PseudoHeaders&,
     out:         B&,
     use_huffman: bool,
 ) -> bool {
-    guard !pseudo.is_trailer else { return true; }
+    let has_req_pseudo = pseudo.has_method || pseudo.has_scheme || pseudo.has_path
+        || pseudo.has_authority || pseudo.has_protocol;
+    if pseudo.is_trailer {
+        return !pseudo.has_status && !has_req_pseudo;
+    }
     let inc = internal::HpackIndexing.Incremental;
     if pseudo.has_status {
-        guard pseudo.status >= 100 && pseudo.status <= 599 else { return false; }
+        guard !has_req_pseudo && pseudo.status >= 100 && pseudo.status <= 599 && pseudo.status != 101 else {
+            return false;
+        }
         var st_buf: u8[..16] = [];
         core::format_u64_dec(pseudo.status as u64, st_buf);
         return internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
     }
+    guard is_valid_h2_request_pseudo_fields(pseudo) else { return false; }
     if pseudo.has_method {
         guard internal::encode_hpack_field(dt, out, ":method", pseudo.method[..], inc, use_huffman) else {
             return false;
@@ -228,26 +261,36 @@ fn encode_hpack_pseudo_fields<B>(
     return true;
 }
 
-inline fn should_skip_h2_entry(raw_name: const u8[:], val: const u8[:]) -> bool {
+inline fn should_skip_h2_entry(
+    headers:  const wing::HeaderMap&,
+    raw_name: const u8[:],
+    val:      const u8[:],
+) -> bool {
     if raw_name.len > 0 && raw_name[0] == ':' {
         return true;
     }
-    if is_h2_skipped_header_name(raw_name) {
+    if is_h2_skipped_header_name(raw_name) || wing::is_token_in_connection_header_map(headers, raw_name) {
         return true;
     }
     return core::eq_ascii_fold(raw_name, "te") && !core::eq_ascii_fold(core::trim_lws(val), "trailers");
+}
+
+inline fn is_forbidden_h2_trailer_field(lower_name: const u8[:]) -> bool {
+    return lower_name == "content-length" || lower_name == "host"
+        || lower_name == "trailer" || lower_name == "te";
 }
 
 fn encode_single_hpack_map_entry<B>(
     dt:          internal::DynamicTable&,
     headers:     const wing::HeaderMap&,
     e:           const wing::HeaderEntry&,
+    is_trailer:  bool,
     out:         B&,
     use_huffman: bool,
 ) -> bool {
     let raw_name = wing::entry_name(headers, e);
     let val = wing::entry_value(headers, e);
-    if should_skip_h2_entry(raw_name, val) {
+    if should_skip_h2_entry(headers, raw_name, val) {
         return true;
     }
     var lower_name: u8[..256] = [];
@@ -255,9 +298,14 @@ fn encode_single_hpack_map_entry<B>(
     for b in raw_name {
         lower_name.push(core::to_lower_ascii_byte(b));
     }
+    if is_trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
+        return false;
+    }
+    let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
+    guard internal::validate_h2_field_syntax(lower_name[..], eff_val) else { return false; }
     let is_sens = wing::is_sensitive(e);
     let idx_mode = if is_sens { internal::HpackIndexing.NeverIndexed } else { internal::HpackIndexing.Incremental };
-    return internal::encode_hpack_field(dt, out, lower_name[..], val, idx_mode, use_huffman);
+    return internal::encode_hpack_field(dt, out, lower_name[..], eff_val, idx_mode, use_huffman);
 }
 
 // Encodes HTTP/2 pseudo-headers and regular headers from `headers: const wing::HeaderMap&`
@@ -275,14 +323,17 @@ fn encode_hpack_from_map<B>(
     use_huffman: bool = true,
 ) -> bool {
     let start_len = out.len;
+    let saved_dt = dt;
     guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else {
         out.resize(start_len);
+        dt = saved_dt;
         return false;
     }
 
     for &e in headers.entries {
-        guard encode_single_hpack_map_entry(dt, headers, e, out, use_huffman) else {
+        guard encode_single_hpack_map_entry(dt, headers, e, pseudo.is_trailer, out, use_huffman) else {
             out.resize(start_len);
+            dt = saved_dt;
             return false;
         }
     }

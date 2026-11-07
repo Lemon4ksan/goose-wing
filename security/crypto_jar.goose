@@ -26,6 +26,14 @@ inline fn can_fit(buf: const u8[>..]&, needed: i64) -> bool {
     return true;
 }
 
+inline fn can_fit_base64url<B>(buf: const B&, raw_len: i64) -> bool {
+    return core::mul_sat_i64(raw_len, 4) <= core::mul_sat_i64(buf.cap, 3);
+}
+
+inline fn can_fit_base64url(buf: const u8[>..]&, raw_len: i64) -> bool {
+    return true;
+}
+
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
 // Binds creation timestamp and cookie name to prevent replay and context swapping.
@@ -36,13 +44,13 @@ inline fn can_fit(buf: const u8[>..]&, needed: i64) -> bool {
 fn build_cookie_aad<B>(
     ver:           u8,
     key_id:        u32,
-    timestamp_sec: i64,
+    timestamp_sec: u64,
     cookie_name:   const u8[:],
     out:           B&,
 ) {
     out.push(ver);
     core::write_be_u32(out, key_id);
-    core::write_be_u64(out, timestamp_sec as u64);
+    core::write_be_u64(out, timestamp_sec);
     core::write_be_u16(out, cookie_name.len as u16);
     out.append(cookie_name);
 }
@@ -56,14 +64,14 @@ fn build_cookie_aad<B>(
 //   out becomes [0x03, 0,0,0,1, 0,0,0,0,0x65,0x53,0xF1,0x00, 0,3, 's','i','d', 0,0,0,2, 'o','k']
 fn build_signed_to_sign<B>(
     key_id:      u32,
-    cookie_sec:  i64,
+    cookie_sec:  u64,
     cookie_name: const u8[:],
     payload:     const u8[:],
     out:         B&,
 ) {
     out.push(WIRE_VER_HMAC_SHA256);
     core::write_be_u32(out, key_id);
-    core::write_be_u64(out, cookie_sec as u64);
+    core::write_be_u64(out, cookie_sec);
     core::write_be_u16(out, cookie_name.len as u16);
     out.append(cookie_name);
     core::write_be_u32(out, payload.len as u32);
@@ -143,18 +151,21 @@ fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
 }
 
 // Validates cookie creation timestamp against clock skew tolerance and max age TTL.
-fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i64) -> bool {
-    guard now_sec > 0 else { return false; }
-    guard cookie_sec >= 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec >= 0 else {
+fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_u: u64, now_sec: i64) -> bool {
+    guard now_sec > 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec >= 0 else {
         return false;
     }
     let now_u = now_sec as u64;
-    let cookie_u = cookie_sec as u64;
     let skew_u = store.clock_skew_tolerance_sec as u64;
     let max_age_u = store.max_age_sec as u64;
     if cookie_u > core::add_sat_u64(now_u, skew_u) { return false; }
     if now_u > cookie_u && (now_u - cookie_u) > max_age_u { return false; }
     return true;
+}
+
+fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i64) -> bool {
+    guard cookie_sec >= 0 else { return false; }
+    return is_cookie_timestamp_valid(store, cookie_sec as u64, now_sec);
 }
 
 // ---- privatejar (authenticated encryption with context binding) -------------
@@ -221,7 +232,7 @@ fn seal_binary_hkdf_aes<B>(
     out:         B&,
 ) -> bool {
     out.clear();
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard now_sec > 0 && cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, K_OVERHEAD_HKDF_AES_GCM + plaintext.len) else { return false; }
 
     out.push(WIRE_VER_HKDF_AES_GCM);
@@ -234,7 +245,7 @@ fn seal_binary_hkdf_aes<B>(
     out.append(nonce12[..]);
 
     var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec, cookie_name, aad_stack);
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec as u64, cookie_name, aad_stack);
     let ct_start = out.len;
     for i in plaintext.len { out.push(0); }
     let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
@@ -257,12 +268,13 @@ fn seal_binary_xchacha20<B>(
     out:         B&,
 ) -> bool {
     out.clear();
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard now_sec > 0 && cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, K_OVERHEAD_XCHACHA20 + plaintext.len) else { return false; }
 
+    let now_u = now_sec as u64;
     out.push(WIRE_VER_XCHACHA20);
     core::write_be_u32(out, slot.key_id);
-    core::write_be_u64(out, now_sec as u64);
+    core::write_be_u64(out, now_u);
 
     var entropy = generate_jar_entropy(nonce_seed, now_sec, 0x7863686163686132);
     var nonce24: u8[24] = [0; 24];
@@ -273,7 +285,7 @@ fn seal_binary_xchacha20<B>(
     out.append(nonce24[..]);
 
     var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_sec, cookie_name, aad_stack);
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
     let tag = core::xchacha20_poly1305_seal(slot.master_key, nonce24, plaintext, aad_stack[..], out);
     out.append(tag[..]);
     return true;
@@ -317,7 +329,6 @@ fn open_binary_xchacha20<B>(
     guard can_fit(out_plaintext, ct_len) else { return false; }
 
     let ts = core::read_be_u64(raw_wire, 5);
-    let cookie_sec = ts as! i64;
 
     var nonce24: u8[24] = [0; 24];
     for i in 24 { nonce24[i] = raw_wire[13 + i]; }
@@ -328,12 +339,12 @@ fn open_binary_xchacha20<B>(
     for i in 16 { tag[i] = raw_wire[37 + ct_len + i]; }
 
     var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, cookie_sec, cookie_name, aad_stack);
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack);
     guard core::xchacha20_poly1305_open(slot.master_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
         out_plaintext.clear();
         return false;
     }
-    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else {
+    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
         out_plaintext.clear();
         return false;
     }
@@ -363,7 +374,6 @@ fn open_binary_hkdf_aes<B>(
 
     var ts: u64 = 0;
     for i in 8 { ts |= (salt32[8 + i] as u64) << (i * 8); }
-    let cookie_sec = ts as! i64;
 
     let ct = raw_wire[49..49 + ct_len];
 
@@ -371,12 +381,12 @@ fn open_binary_hkdf_aes<B>(
     for i in 16 { tag[i] = raw_wire[49 + ct_len + i]; }
 
     var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, cookie_sec, cookie_name, aad_stack);
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack);
     guard core::hkdf_aes256_gcm_open(slot.master_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
         out_plaintext.clear();
         return false;
     }
-    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else {
+    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
         out_plaintext.clear();
         return false;
     }
@@ -423,6 +433,7 @@ fn private_jar_seal<B>(
     guard private_jar_seal_binary(jar, cookie_name, plaintext, now_sec, nonce_seed, raw_wire) else {
         return false;
     }
+    guard can_fit_base64url(out, raw_wire.len) else { return false; }
     core::base64url_encode(raw_wire[..], out);
     return true;
 }
@@ -468,25 +479,26 @@ fn signed_jar_seal_binary<B>(
     out:         B&,
 ) -> bool {
     out.clear();
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard now_sec > 0 && cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard payload.len <= 0x7FFFFFFF && can_fit(out, K_OVERHEAD_HMAC_SHA256 + payload.len) else { return false; }
 
     var slot, ok_key = active_key(jar.store);
     guard ok_key else { return false; }
 
+    let now_u = now_sec as u64;
     out.push(WIRE_VER_HMAC_SHA256);
     core::write_be_u32(out, slot.key_id);
-    core::write_be_u64(out, now_sec as u64);
+    core::write_be_u64(out, now_u);
     out.append(payload);
 
     var mac:           u8[32]     = [0; 32];
     var to_sign_stack: u8[..8320] = [];
     if (19 + cookie_name.len + payload.len) <= to_sign_stack.cap {
-        build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_stack);
+        build_signed_to_sign(slot.key_id, now_u, cookie_name, payload, to_sign_stack);
         mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
-        build_signed_to_sign(slot.key_id, now_sec, cookie_name, payload, to_sign_dyn);
+        build_signed_to_sign(slot.key_id, now_u, cookie_name, payload, to_sign_dyn);
         mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
     }
     core::zeroize_key_slot(slot);
@@ -516,7 +528,7 @@ fn signed_jar_open_binary<B>(
     var slot, ok_key = find_key(jar.store, key_id);
     guard ok_key else { return false; }
 
-    let cookie_sec = core::read_be_u64(raw_wire, 5) as! i64;
+    let cookie_u = core::read_be_u64(raw_wire, 5);
     let payload = raw_wire[13..13 + payload_len];
 
     var tag: u8[32] = [0; 32];
@@ -525,17 +537,17 @@ fn signed_jar_open_binary<B>(
     var expected_mac:  u8[32]     = [0; 32];
     var to_sign_stack: u8[..8320] = [];
     if (19 + cookie_name.len + payload_len) <= to_sign_stack.cap {
-        build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_stack);
+        build_signed_to_sign(slot.key_id, cookie_u, cookie_name, payload, to_sign_stack);
         expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_stack[..]);
     } else {
         var to_sign_dyn: u8[>..] = [];
-        build_signed_to_sign(slot.key_id, cookie_sec, cookie_name, payload, to_sign_dyn);
+        build_signed_to_sign(slot.key_id, cookie_u, cookie_name, payload, to_sign_dyn);
         expected_mac = core::hmac_sha256(slot.master_key[..], to_sign_dyn[..]);
     }
     core::zeroize_key_slot(slot);
     let mac_ok = core::ct_eq_tag32(expected_mac, tag);
     core::secure_zeroize_32(expected_mac);
-    guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_sec, now_sec) else { return false; }
+    guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_u, now_sec) else { return false; }
     guard can_fit(out_payload, payload_len) else { return false; }
     out_payload.append(payload);
     return true;
@@ -551,6 +563,7 @@ fn signed_jar_seal<B>(
     out.clear();
     var raw_wire: u8[>..] = [];
     guard signed_jar_seal_binary(jar, cookie_name, payload, now_sec, raw_wire) else { return false; }
+    guard can_fit_base64url(out, raw_wire.len) else { return false; }
     core::base64url_encode(raw_wire[..], out);
     return true;
 }

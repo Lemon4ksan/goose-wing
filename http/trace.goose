@@ -191,10 +191,11 @@ fn is_valid_tracestate_key(key: const u8[:]) -> bool {
     return true;
 }
 
-// Value validation conforming to W3C Section 3.3:
-// 1..256 printable ASCII chars excluding comma ',' and equal '='
+// Value validation conforming to W3C Section 3.3.1.2:
+// 0..255 nblk-chr / chr followed by 1 nblk-chr (0x21..0x7E excluding ',' and '=')
 fn is_valid_tracestate_val(val: const u8[:]) -> bool {
     guard val.len >= 1 && val.len <= 256 else { return false; }
+    guard val[val.len - 1] != ' ' else { return false; }
     for b in val {
         guard b >= 0x20 && b <= 0x7E && b != ',' && b != '=' else { return false; }
     }

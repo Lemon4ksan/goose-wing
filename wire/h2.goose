@@ -85,10 +85,28 @@ fn parse_frame_header(buf: const u8[:]) -> WireFrameHeader, u32, bool {
     return hdr, 0, true;
 }
 
+inline fn is_valid_wire_setting(s: const WireSetting&) -> bool {
+    if s.id == rfc::H2_SETTING_ENABLE_PUSH
+        || s.id == rfc::H2_SETTING_ENABLE_CONNECT_PROTO
+        || s.id == rfc::H2_SETTING_NO_RFC7540_PRIORITIES {
+        return s.val <= 1;
+    }
+    if s.id == rfc::H2_SETTING_INITIAL_WINDOW_SIZE {
+        return s.val <= rfc::H2_MAX_WINDOW_SIZE;
+    }
+    if s.id == rfc::H2_SETTING_MAX_FRAME_SIZE {
+        return s.val >= rfc::H2_DEFAULT_MAX_FRAME_SIZE && s.val <= rfc::H2_MAX_FRAME_SIZE_LIMIT;
+    }
+    return true;
+}
+
 // Encodes an HTTP/2 SETTINGS frame with explicit parameter list (RFC 9113 Section 6.5).
 fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     let payload_len = (settings.len as u32) * 6;
     guard settings.len <= 2796202 else { return false; }
+    for s in settings {
+        guard is_valid_wire_setting(s) else { return false; }
+    }
     let start_len = out.len;
     let hdr = WireFrameHeader {
         length:     payload_len,
@@ -336,6 +354,7 @@ fn encode_h2_headers_frame_from_map<B>(
           max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
         return false;
     }
+    let saved_dt = dt;
     var hpack_buf: u8[..16384] = [];
     guard encode_hpack_from_map(dt, pseudo, headers, hpack_buf, true) else { return false; }
 
@@ -356,6 +375,7 @@ fn encode_h2_headers_frame_from_map<B>(
         };
         guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..offset + chunk_len]) else {
             out.resize(start_len);
+            dt = saved_dt;
             return false;
         }
         offset += chunk_len;
@@ -374,8 +394,11 @@ fn decode_h2_frame_header(raw: const u8[:], max_frame_size: u32 = 16384) -> Wire
     guard ok else {
         return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    guard hdr.length <= max_frame_size else {
-        return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    return hdr, rfc::H2_ERR_NO_ERROR;
+    let f_hdr = internal::FrameHeader {
+        length:     hdr.length,
+        frame_type: hdr.frame_type,
+        flags:      hdr.flags,
+        stream_id:  hdr.stream_id,
+    };
+    return hdr, internal::validate_frame_header_rules(f_hdr, max_frame_size);
 }

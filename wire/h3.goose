@@ -12,6 +12,62 @@ import http3.framing;
 import http3.connection;
 import .hpack;
 
+fn is_valid_h3_request_pseudo_fields(pseudo: const internal::H3PseudoHeaders&) -> bool {
+    guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
+    if pseudo.has_authority {
+        guard internal::is_valid_h2_authority(pseudo.authority[..]) else { return false; }
+    }
+    if pseudo.has_protocol {
+        guard pseudo.method[..] == "CONNECT" && pseudo.protocol.len > 0
+            && internal::validate_h2_field_syntax(":protocol", pseudo.protocol[..]) else {
+            return false;
+        }
+    }
+    let is_classic_connect = pseudo.method[..] == "CONNECT" && !pseudo.has_protocol;
+    if is_classic_connect {
+        return pseudo.has_authority && !pseudo.has_scheme && !pseudo.has_path;
+    }
+    guard pseudo.has_scheme && internal::is_valid_h2_scheme(pseudo.scheme[..]) else { return false; }
+    guard pseudo.has_path && internal::is_valid_h2_path(pseudo.path[..]) else { return false; }
+    if pseudo.path[..] == "*" {
+        return pseudo.method[..] == "OPTIONS";
+    }
+    return true;
+}
+
+fn is_valid_h3_pseudo_fields(pseudo: const internal::H3PseudoHeaders&) -> bool {
+    let has_req_pseudo = pseudo.has_method || pseudo.has_scheme || pseudo.has_path
+        || pseudo.has_authority || pseudo.has_protocol;
+    if pseudo.is_trailer {
+        return !pseudo.has_status && !has_req_pseudo;
+    }
+    if pseudo.has_status {
+        return !has_req_pseudo && pseudo.status >= 100 && pseudo.status <= 599 && pseudo.status != 101;
+    }
+    return is_valid_h3_request_pseudo_fields(pseudo);
+}
+
+fn encode_qpack_sensitive_field<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
+    let start_len = out.len;
+    let s_idx_name, _ = internal::find_qpack_static_field(name, "");
+    if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE
+        && name == internal::QPACK_STATIC_TABLE[s_idx_name as i64].name {
+        guard internal::hpack_encode_int(out, s_idx_name, 4, 0x70)
+            && internal::encode_hpack_string_literal(out, val, false) else {
+            out.resize(start_len);
+            return false;
+        }
+        return true;
+    }
+    guard internal::hpack_encode_int(out, name.len as u64, 3, 0x30)
+        && out.try_append(name)
+        && internal::encode_hpack_string_literal(out, val, false) else {
+        out.resize(start_len);
+        return false;
+    }
+    return true;
+}
+
 fn encode_h3_pseudo_fields<B1, B2>(
     tbl:            internal::QpackTable&,
     stream_id:      u64,
@@ -22,9 +78,9 @@ fn encode_h3_pseudo_fields<B1, B2>(
     max_dyn_abs:    u64&,
     used_any_dyn:   bool&,
 ) -> bool {
+    guard is_valid_h3_pseudo_fields(pseudo) else { return false; }
     guard !pseudo.is_trailer else { return true; }
     if pseudo.has_status {
-        guard pseudo.status >= 100 && pseudo.status <= 599 else { return false; }
         var st_buf: u8[..16] = [];
         core::format_u64_dec(pseudo.status as u64, st_buf);
         let prev_len = body_fields.len;
@@ -83,6 +139,7 @@ fn encode_single_h3_map_entry<B1, B2>(
     base:           u64,
     headers:        const wing::HeaderMap&,
     e:              const wing::HeaderEntry&,
+    is_trailer:     bool,
     body_fields:    B1&,
     out_enc_stream: B2&,
     max_dyn_abs:    u64&,
@@ -90,7 +147,7 @@ fn encode_single_h3_map_entry<B1, B2>(
 ) -> bool {
     let raw_name = wing::entry_name(headers, e);
     let val = wing::entry_value(headers, e);
-    if should_skip_h2_entry(raw_name, val) {
+    if should_skip_h2_entry(headers, raw_name, val) {
         return true;
     }
     var lower_name: u8[..256] = [];
@@ -98,9 +155,17 @@ fn encode_single_h3_map_entry<B1, B2>(
     for b in raw_name {
         lower_name.push(core::to_lower_ascii_byte(b));
     }
+    if is_trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
+        return false;
+    }
+    let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
+    guard internal::validate_h2_field_syntax(lower_name[..], eff_val) else { return false; }
+    if wing::is_sensitive(e) {
+        return encode_qpack_sensitive_field(body_fields, lower_name[..], eff_val);
+    }
     let prev_body = body_fields.len;
     internal::encode_qpack_field_dynamic(
-        tbl, stream_id, base, lower_name[..], val,
+        tbl, stream_id, base, lower_name[..], eff_val,
         body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, false,
     );
     return body_fields.len > prev_body;
@@ -122,6 +187,7 @@ fn encode_h3_headers_from_map<B1, B2>(
 ) -> bool {
     let start_enc = out_enc_stream.len;
     let start_frame = out_frame.len;
+    let saved_tbl = tbl;
     let base = tbl.insert_count;
     var max_dyn_abs: u64 = 0;
     var used_any_dyn = false;
@@ -133,16 +199,18 @@ fn encode_h3_headers_from_map<B1, B2>(
     ) else {
         out_enc_stream.resize(start_enc);
         out_frame.resize(start_frame);
+        tbl = saved_tbl;
         return false;
     }
 
     for &e in headers.entries {
         guard encode_single_h3_map_entry(
-            tbl, stream_id, base, headers, e,
+            tbl, stream_id, base, headers, e, pseudo.is_trailer,
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn,
         ) else {
             out_enc_stream.resize(start_enc);
             out_frame.resize(start_frame);
+            tbl = saved_tbl;
             return false;
         }
     }
@@ -153,6 +221,7 @@ fn encode_h3_headers_from_map<B1, B2>(
           internal::encode_h3_headers_frame(out_frame, qpack_payload[..]) else {
         out_enc_stream.resize(start_enc);
         out_frame.resize(start_frame);
+        tbl = saved_tbl;
         return false;
     }
     return true;
@@ -171,7 +240,7 @@ fn decode_h3_headers_to_map(
     out_headers:       wing::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> internal::QpackError {
-    return internal::decode_or_block_qpack_to_map(
+    let err = internal::decode_or_block_qpack_to_map(
         tbl,
         stream_id,
         qpack_payload,
@@ -179,6 +248,11 @@ fn decode_h3_headers_to_map(
         out_headers,
         max_field_section,
     );
+    guard err == internal::QpackError.None else { return err; }
+    guard is_valid_h3_pseudo_fields(out_pseudo) else {
+        return internal::QpackError.MessageError;
+    }
+    return internal::QpackError.None;
 }
 
 // Encodes an HTTP/3 DATA frame (Type 0x00) into `out` (RFC 9114 §7.2.1).

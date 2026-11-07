@@ -51,11 +51,11 @@ fn acme_key_authorization(
     thumbprint_b64url: const u8[:],
     out:               u8[..256]&,
 ) -> i32 {
+    out.clear();
     let token_valid = acme_validate_token(token);
     let thumb_valid = acme_validate_token(thumbprint_b64url);
     let total = token.len + thumbprint_b64url.len;
     guard token_valid && thumb_valid && total < out.cap else { return -1; }
-    out.clear();
     out.append(token);
     out.push('.');
     out.append(thumbprint_b64url);
@@ -71,10 +71,10 @@ fn acme_key_authorization(
 //   token = "tok", out = []
 //   returns: 31, out = "/.well-known/acme-challenge/tok"
 fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
+    out.clear();
     let token_valid = acme_validate_token(token);
     let total = rfc::ACME_HTTP01_PREFIX.len + token.len;
     guard token_valid && total <= out.cap else { return -1; }
-    out.clear();
     out.append(rfc::ACME_HTTP01_PREFIX[..]);
     out.append(token);
     return total as i32;
@@ -95,6 +95,16 @@ fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool {
     return core::ct_eq_bytes(path[rfc::ACME_HTTP01_PREFIX.len..], token);
 }
 
+inline fn is_valid_acme_challenge_slot(ch: const AcmeChallenge&) -> bool {
+    let tok_len = ch.token.len;
+    let thumb_idx = core::add_sat_i64(tok_len, 1);
+    guard ch.key_auth_len > 0 && ch.key_auth.len == ch.key_auth_len && ch.key_auth.len > thumb_idx else {
+        return false;
+    }
+    guard ch.key_auth[..tok_len] == ch.token[..] && ch.key_auth[tok_len] == '.' else { return false; }
+    return acme_validate_token(ch.key_auth[thumb_idx..]);
+}
+
 // HTTP-01 responder helper: linear-scans up to 8 challenge slots, matches the
 // request path against each stored token, and on a hit copies the stored key
 // authorization into out_body. Returns false with out_len untouched on miss.
@@ -110,8 +120,8 @@ fn acme_find_challenge(
     out_len:  i32&,
 ) -> bool {
     for &ch in table {
-        let matched = ch.key_auth_len > 0 && acme_match_http01(path, ch.token[..]);
-        let fits = ch.key_auth_len <= ch.key_auth.len && ch.key_auth_len <= out_body.cap;
+        let matched = is_valid_acme_challenge_slot(ch) && acme_match_http01(path, ch.token[..]);
+        let fits = ch.key_auth_len <= out_body.cap;
         if matched && fits {
             out_body.clear();
             out_body.append(ch.key_auth[..ch.key_auth_len]);

@@ -12,15 +12,16 @@ import core from "..";
 // ---- Digest Models -------------------------------------------------------
 
 struct DigestChallenge {
-    realm:     u8[..128] = [],
-    nonce:     u8[..128] = [],
-    algorithm: u8[..32]  = "MD5", // RFC 7616 §3.4 default when omitted
-    qop:       u8[..32]  = [],    // Empty by default (RFC 2069 legacy mode when omitted)
-    opaque:    u8[..128] = [],
-    domain:    u8[..128] = [],
-    stale:     bool      = false,
-    userhash:  bool      = false,
-    valid:     bool      = false,
+    realm:             u8[..128] = [],
+    nonce:             u8[..128] = [],
+    algorithm:         u8[..32]  = "MD5", // RFC 7616 §3.4 default when omitted
+    qop:               u8[..32]  = [],    // Empty by default (RFC 2069 legacy mode when omitted)
+    opaque:            u8[..128] = [],
+    domain:            u8[..128] = [],
+    stale:             bool      = false,
+    userhash:          bool      = false,
+    has_explicit_algo: bool      = false,
+    valid:             bool      = false,
 }
 
 struct DigestCredentials {
@@ -51,6 +52,10 @@ fn parse_digest_param_key(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     return rem[..k_len], true;
 }
 
+inline fn is_valid_quoted_digest_byte(b: u8) -> bool {
+    return core::is_ascii_printable(b) || b >= 0x80;
+}
+
 // Consumes one quoted-pair or unescaped character at `pos` into `out_val`.
 //
 // Example:
@@ -60,12 +65,12 @@ inline fn try_consume_quoted_char<B>(s: const u8[:], pos: i64&, out_val: B&) -> 
     let b = s[pos];
     let next_pos = core::add_sat_i64(pos, 1);
     if b == '\\' && next_pos < s.len {
-        pos = next_pos;
-        guard out_val.try_push(s[pos]) else { return false; }
-        pos = core::add_sat_i64(pos, 1);
+        let esc = s[next_pos];
+        guard is_valid_quoted_digest_byte(esc) && out_val.try_push(esc) else { return false; }
+        pos = core::add_sat_i64(next_pos, 1);
         return true;
     }
-    guard out_val.try_push(b) else { return false; }
+    guard b != '\\' && is_valid_quoted_digest_byte(b) && out_val.try_push(b) else { return false; }
     pos = next_pos;
     return true;
 }
@@ -135,50 +140,78 @@ fn parse_digest_param_val<B>(raw: const u8[:], idx: i64&, out_val: B&) -> bool {
     return true;
 }
 
+inline fn try_mark_digest_param(seen_mask: u32&, bit: u32) -> bool {
+    guard (seen_mask & bit) == 0 else { return false; }
+    seen_mask = seen_mask | bit;
+    return true;
+}
+
 // Matches and stores core challenge attributes (realm, nonce, algorithm, qop).
 // Returns (handled: bool, ok: bool).
-fn apply_digest_core_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool, bool {
+fn apply_digest_core_param(
+    chal:      DigestChallenge&,
+    key:       const u8[:],
+    val:       const u8[:],
+    seen_mask: u32&,
+) -> bool, bool {
     if eq_ascii_fold(key, "realm") {
-        return true, chal.realm.try_set(val);
+        return true, try_mark_digest_param(seen_mask, 1) && chal.realm.try_set(val);
     }
     if eq_ascii_fold(key, "nonce") {
-        return true, chal.nonce.try_set(val);
+        return true, try_mark_digest_param(seen_mask, 2) && chal.nonce.try_set(val);
     }
     if eq_ascii_fold(key, "algorithm") {
-        return true, chal.algorithm.try_set(val);
+        chal.has_explicit_algo = true;
+        return true, try_mark_digest_param(seen_mask, 4) && chal.algorithm.try_set(val);
     }
     if eq_ascii_fold(key, "qop") {
-        return true, chal.qop.try_set(val);
+        return true, try_mark_digest_param(seen_mask, 8) && val.len > 0 && chal.qop.try_set(val);
     }
     return false, true;
 }
 
-// Matches and stores optional challenge attributes (opaque, domain, stale, userhash).
-fn apply_digest_opt_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
+// Matches and stores optional challenge attributes (opaque, domain, stale, userhash, charset).
+fn apply_digest_opt_param(
+    chal:      DigestChallenge&,
+    key:       const u8[:],
+    val:       const u8[:],
+    seen_mask: u32&,
+) -> bool {
     if eq_ascii_fold(key, "opaque") {
-        return chal.opaque.try_set(val);
+        return try_mark_digest_param(seen_mask, 16) && chal.opaque.try_set(val);
     }
     if eq_ascii_fold(key, "domain") {
-        return chal.domain.try_set(val);
+        return try_mark_digest_param(seen_mask, 32) && chal.domain.try_set(val);
     }
     if eq_ascii_fold(key, "stale") {
+        guard try_mark_digest_param(seen_mask, 64) else { return false; }
         chal.stale = eq_ascii_fold(val, "true");
         return true;
     }
     if eq_ascii_fold(key, "userhash") {
-        chal.userhash = eq_ascii_fold(val, "true");
+        let is_true = eq_ascii_fold(val, "true");
+        guard try_mark_digest_param(seen_mask, 128) && (is_true || eq_ascii_fold(val, "false")) else { return false; }
+        chal.userhash = is_true;
         return true;
+    }
+    if eq_ascii_fold(key, "charset") {
+        return try_mark_digest_param(seen_mask, 256) && eq_ascii_fold(val, "UTF-8");
     }
     return true;
 }
 
 // Dispatches a challenge parameter key-value pair to core or optional field storage.
-fn apply_digest_param(chal: DigestChallenge&, key: const u8[:], val: const u8[:]) -> bool {
-    let handled, ok_core = apply_digest_core_param(chal, key, val);
+fn apply_digest_param(
+    chal:      DigestChallenge&,
+    key:       const u8[:],
+    val:       const u8[:],
+    seen_mask: u32&,
+) -> bool {
+    let handled, ok_core = apply_digest_core_param(chal, key, val, seen_mask);
     if handled {
         return ok_core;
     }
-    return apply_digest_opt_param(chal, key, val);
+    return apply_digest_opt_param(chal, key, val, seen_mask);
 }
 
 // Advances `idx` past any leading whitespace, commas, or line breaks (RFC 7616 §3.3).
@@ -210,7 +243,8 @@ inline fn skip_digest_scheme(raw: const u8[:], idx: i64&) {
 //   returns: DigestChallenge { realm: "api@example.com", nonce: "dcd98b..." }, ok = true
 fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
     var chal = DigestChallenge { .. };
-    var idx: i64 = 0;
+    var idx:       i64 = 0;
+    var seen_mask: u32 = 0;
 
     skip_whitespace_and_commas(raw_header, idx);
     skip_digest_scheme(raw_header, idx);
@@ -220,12 +254,12 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         guard idx < raw_header.len else { break; }
 
         let key, key_ok = parse_digest_param_key(raw_header, idx);
-        guard key_ok else { return chal, false; }
+        guard key_ok else { return DigestChallenge { .. }, false; }
 
         var val: u8[..128] = [];
-        guard parse_digest_param_val(raw_header, idx, val) else { return chal, false; }
+        guard parse_digest_param_val(raw_header, idx, val) else { return DigestChallenge { .. }, false; }
 
-        guard apply_digest_param(chal, key, val[..]) else { return chal, false; }
+        guard apply_digest_param(chal, key, val[..], seen_mask) else { return DigestChallenge { .. }, false; }
     }
 
     chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && rfc::is_supported_digest_algo(chal.algorithm[..]));
@@ -575,10 +609,6 @@ fn resolve_digest_user(
     return out_user;
 }
 
-inline fn is_qop_token_char(b: u8) -> bool {
-    return b != ',' && b != '"' && b != ' ' && b != '\t';
-}
-
 // Scans the byte length of a single qop token up to comma, quote, or whitespace (RFC 7616 §3.3).
 //
 // Example:
@@ -586,14 +616,15 @@ inline fn is_qop_token_char(b: u8) -> bool {
 //   returns: 8 ("auth-int")
 fn scan_qop_token_len(s: const u8[:]) -> i64 {
     var n: i64 = 0;
-    while n < s.len && is_qop_token_char(s[n]) {
+    while n < s.len && core::is_tchar(s[n]) {
         n = core::add_sat_i64(n, 1);
     }
     return n;
 }
 
 fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
-    var idx: i64 = 0;
+    var idx:   i64  = 0;
+    var found: bool = false;
     while idx < raw_qop.len {
         let rem = raw_qop[idx..].trim_start_bytes(" \t,\"");
         guard rem.len > 0 else { break; }
@@ -603,14 +634,14 @@ fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
         let after_tok = rem[tok_len..].trim_start_bytes(" \t\"");
         guard after_tok.len == 0 || after_tok[0] == ',' else { return false; }
         if eq_ascii_fold(tok, target) {
-            return true;
+            found = true;
         }
         idx = core::sub_sat_i64(raw_qop.len, after_tok.len);
         if idx < raw_qop.len && raw_qop[idx] == ',' {
             idx = core::add_sat_i64(idx, 1);
         }
     }
-    return false;
+    return found;
 }
 
 // Synchronizes an optional challenge buffer: preserves destination when source is empty,
@@ -618,6 +649,22 @@ fn qop_list_has_token(raw_qop: const u8[:], target: const u8[:]) -> bool {
 inline fn sync_opt_buf<B>(dst: B&, src: const u8[:]) -> bool {
     guard src.len > 0 else { return true; }
     return dst.try_set(src);
+}
+
+inline fn is_md5_digest_algo(algo: const u8[:]) -> bool {
+    return eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5) || eq_ascii_fold(algo, rfc::DIGEST_ALGO_MD5_SESS);
+}
+
+inline fn resolve_stale_digest_algo(stored_algo: const u8[:], incoming: const DigestChallenge&) -> const u8[:], bool {
+    let is_implicit_md5 = !incoming.has_explicit_algo && eq_ascii_fold(incoming.algorithm[..], rfc::DIGEST_ALGO_MD5);
+    if is_implicit_md5 && stored_algo.len > 0 {
+        return stored_algo, rfc::is_supported_digest_algo(stored_algo);
+    }
+    guard rfc::is_supported_digest_algo(incoming.algorithm[..]) else { return "", false; }
+    if stored_algo.len > 0 && !is_md5_digest_algo(stored_algo) && is_md5_digest_algo(incoming.algorithm[..]) {
+        return "", false;
+    }
+    return incoming.algorithm[..], true;
 }
 
 // Synchronizes stored Digest challenge state when an upstream 401 response includes `stale=true`
@@ -635,17 +682,18 @@ fn sync_digest_stale_challenge(
     creds:    const DigestCredentials&,
     nc:       u32&,
 ) -> bool {
-    guard stored.valid && incoming.valid && incoming.stale else { return false; }
-    guard creds.username.len > 0 else { return false; }
-    guard incoming.nonce.len > 0 && stored.nonce.try_set(incoming.nonce[..]) else { return false; }
-    guard sync_opt_buf(stored.opaque, incoming.opaque[..]) else { return false; }
-    guard sync_opt_buf(stored.realm, incoming.realm[..]) else { return false; }
-    guard sync_opt_buf(stored.algorithm, incoming.algorithm[..]) else { return false; }
-    guard sync_opt_buf(stored.qop, incoming.qop[..]) else { return false; }
-    guard sync_opt_buf(stored.domain, incoming.domain[..]) else { return false; }
-    stored.userhash = incoming.userhash;
-    stored.stale = false;
-    stored.valid = true;
+    guard stored.valid && incoming.valid && incoming.stale && creds.username.len > 0 else { return false; }
+    let eff_algo, algo_ok = resolve_stale_digest_algo(stored.algorithm[..], incoming);
+    var next = copy(stored);
+    guard incoming.nonce.len > 0 && next.nonce.try_set(incoming.nonce[..]) && algo_ok else { return false; }
+    guard next.algorithm.try_set(eff_algo) && sync_opt_buf(next.opaque, incoming.opaque[..]) else { return false; }
+    guard sync_opt_buf(next.realm, incoming.realm[..]) else { return false; }
+    guard sync_opt_buf(next.qop, incoming.qop[..]) else { return false; }
+    guard sync_opt_buf(next.domain, incoming.domain[..]) else { return false; }
+    next.userhash = incoming.userhash;
+    next.stale = false;
+    next.valid = true;
+    stored = copy(next);
     nc = 1;
     return true;
 }

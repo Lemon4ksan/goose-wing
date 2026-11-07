@@ -45,9 +45,15 @@ struct CrossOriginIsolationContext {
 // ---- Policy Parsers ------------------------------------------------------
 
 // Extracts the primary token before any RFC 8941 structured field parameters (';').
+// Rejects unquoted commas (multi-item lists) and leading semicolons without a token.
 inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
-    let head, _, _ = split_once(val, ";");
-    return trim_lws(head);
+    guard core::find_unquoted_byte(val, ',') < 0 else { return ";"; }
+    let head, _, has_semi = split_once(val, ";");
+    let clean = trim_lws(head);
+    if has_semi && clean.len == 0 {
+        return ";";
+    }
+    return clean;
 }
 
 // Parses Cross-Origin-Opener-Policy header value (W3C HTML §7.2).
@@ -110,25 +116,22 @@ fn parse_corp(val: const u8[:]) -> CorpPolicy {
 //   returns: "example.com"
 fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     var s = trim_lws(origin_or_url);
-    if starts_with_fold(s, "https://") { s = s[8..]; }
-    else if starts_with_fold(s, "http://") { s = s[7..]; }
-    guard s.len > 0 else { return ""; }
-
-    var end_idx = s.len;
-    for i in s.len {
-        let b = s[i];
-        if b == '/' || b == '?' || b == '#' || b == '\\' {
-            end_idx = i;
-            break;
-        }
+    if starts_with_fold(s, "https://") {
+        s = s[8..];
+    } else if starts_with_fold(s, "http://") {
+        s = s[7..];
+    } else {
+        return "";
     }
-    let auth = s[..end_idx];
-    guard auth.len > 0 && !core::contains_byte(auth, '@') else { return ""; }
+    let delim = core::find_byteset(s, "/?#");
+    let auth = if delim >= 0 { s[..delim] } else { s };
+    guard auth.len > 0 && !core::contains_byte(auth, '@') && !core::contains_byte(auth, '\\') else { return ""; }
 
     if auth[0] == '[' {
         let close_idx = core::index_of_byte(auth, ']');
-        guard close_idx > 1 else { return ""; }
-        return auth[..close_idx + 1];
+        let end_bracket = core::add_sat_i64(close_idx, 1);
+        guard close_idx > 1 && (end_bracket == auth.len || auth[end_bracket] == ':') else { return ""; }
+        return auth[..end_bracket];
     }
     let colon_idx = core::index_of_byte(auth, ':');
     if colon_idx >= 0 {

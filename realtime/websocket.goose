@@ -312,7 +312,9 @@ fn ws_deflate_message<B>(
     reset_window: bool = true,
 ) -> bool {
     let comp_slice, ok = ws_deflate_message_slice(shared, raw, reset_window);
-    guard ok else { return false; }
+    guard ok && core::add_sat_i64(out_wire.len, comp_slice.len) <= ws_buf_cap(out_wire) else {
+        return false;
+    }
     out_wire.append(comp_slice);
     return true;
 }
@@ -327,16 +329,18 @@ fn ws_inflate_message<B>(
     reset_window: bool = true,
 ) -> bool {
     out_plain.clear();
-    guard compressed.len > 0 else { return false; }
+    let eff_limit = min(max_payload, ws_buf_cap(out_plain));
+    guard compressed.len > 0 && eff_limit > 0 else { return false; }
     shared.decompress_buf.clear();
 
-    // RFC 7692 Section 7.2.2: Restore 4-byte tail 0x00 0x00 0xFF 0xFF
-    guard compressed.len + 4 <= shared.decompress_buf.cap else { return false; }
+    // RFC 7692 §7.2.2: Restore 4-byte sync-flush tail 0x00 0x00 0xFF 0xFF followed by a 2-byte
+    // BFINAL=1 empty Fixed Huffman block (0x03 0x00) so BFINAL=0 sync-flush streams terminate cleanly.
+    guard compressed.len + 6 <= shared.decompress_buf.cap else { return false; }
     shared.decompress_buf.append(compressed);
-    let tail: u8[4] = [0x00, 0x00, 0xFF, 0xFF];
+    let tail: u8[6] = [0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00];
     shared.decompress_buf.append(tail[..]);
 
-    let ok_d, err = core::inflate_with_limit(shared.decompress_buf[..], out_plain, max_payload);
+    let ok_d, err = core::inflate_with_limit(shared.decompress_buf[..], out_plain, eff_limit);
     if !ok_d {
         out_plain.clear();
         // OutputBufferOverflow indicates a decompression bomb exceeding max_payload: abort immediately!
@@ -348,7 +352,7 @@ fn ws_inflate_message<B>(
             return false;
         }
         // Fallback: try direct inflate without appended tail
-        let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, max_payload);
+        let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, eff_limit);
         if !ok_raw {
             out_plain.clear();
             if reset_window {
@@ -429,15 +433,20 @@ fn deflate_message_dedicated<B>(
     var eff_len = dedicated.compress_buf.len;
     // RFC 7692 §7.2.1: Strip 4 trailing bytes 0x00 0x00 0xFF 0xFF
     if eff_len >= 4 {
-        let b0 = dedicated.compress_buf[eff_len - 4];
-        let b1 = dedicated.compress_buf[eff_len - 3];
-        let b2 = dedicated.compress_buf[eff_len - 2];
-        let b3 = dedicated.compress_buf[eff_len - 1];
+        let base_idx = core::sub_sat_i64(eff_len, 4);
+        let b0 = dedicated.compress_buf[base_idx];
+        let b1 = dedicated.compress_buf[core::add_sat_i64(base_idx, 1)];
+        let b2 = dedicated.compress_buf[core::add_sat_i64(base_idx, 2)];
+        let b3 = dedicated.compress_buf[core::add_sat_i64(base_idx, 3)];
         if b0 == 0x00 && b1 == 0x00 && b2 == 0xFF && b3 == 0xFF {
-            eff_len -= 4;
+            eff_len = base_idx;
         }
     }
 
+    guard core::add_sat_i64(out_wire.len, eff_len) <= ws_buf_cap(out_wire) else {
+        dedicated.compress_buf.clear();
+        return false;
+    }
     out_wire.append(dedicated.compress_buf[..eff_len]);
     dedicated.total_compressed += eff_len as u64;
     dedicated.total_uncompressed += raw.len as u64;
@@ -459,23 +468,24 @@ fn inflate_message_dedicated<B>(
     reset_window: bool = false,
 ) -> bool {
     out_plain.clear();
-    guard compressed.len > 0 else { return false; }
+    let eff_limit = min(max_payload, ws_buf_cap(out_plain));
+    guard compressed.len > 0 && eff_limit > 0 else { return false; }
     dedicated.decompress_buf.clear();
 
-    guard compressed.len + 4 <= dedicated.decompress_buf.cap else { return false; }
+    guard compressed.len + 6 <= dedicated.decompress_buf.cap else { return false; }
     dedicated.decompress_buf.append(compressed);
-    let tail: u8[4] = [0x00, 0x00, 0xFF, 0xFF];
+    let tail: u8[6] = [0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00];
     dedicated.decompress_buf.append(tail[..]);
 
     let dict = if reset_window { "" } else { dedicated.history[..] };
-    let ok_d, err = core::inflate_with_dict_limit(dedicated.decompress_buf[..], out_plain, dict, max_payload);
+    let ok_d, err = core::inflate_with_dict_limit(dedicated.decompress_buf[..], out_plain, dict, eff_limit);
     if !ok_d {
         out_plain.clear();
         if err == core::CompressError.OutputBufferOverflow {
             dedicated.decompress_buf.clear();
             return false;
         }
-        let ok_raw, _ = core::inflate_with_dict_limit(compressed, out_plain, dict, max_payload);
+        let ok_raw, _ = core::inflate_with_dict_limit(compressed, out_plain, dict, eff_limit);
         if !ok_raw {
             out_plain.clear();
             dedicated.decompress_buf.clear();
@@ -1690,9 +1700,12 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
 }
 
 // Checks if a requested subprotocol is present in the comma-separated Sec-WebSocket-Protocol
-// header list (RFC 6455 §4.2.2).
+// header list and consists exclusively of valid RFC 6455 §4.2.1 / RFC 9110 `tchar` token characters.
 fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
     guard list.len > 0 && target.len > 0 else { return false; }
+    for b in target {
+        guard core::is_tchar(b) else { return false; }
+    }
     var tok = make_byte_tokenizer(list, ',');
     loop {
         let part, ok = tok.token_next();
@@ -1702,6 +1715,17 @@ fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
         }
     }
     return false;
+}
+
+// Counts the number of header fields in `req` matching `header_name` (case-insensitive).
+fn req_count_header(req: const Request&, header_name: const u8[:]) -> i64 {
+    var count: i64 = 0;
+    for &e in req.headers.entries {
+        if core::eq_ascii_fold(entry_name(req.headers, e), header_name) {
+            count = core::add_sat_i64(count, 1);
+        }
+    }
+    return count;
 }
 
 // Helper to search for a token inside a specified HTTP header across all matching lines.
@@ -1739,6 +1763,12 @@ fn ws_upgrade_request(
         return WebSocketSession { .. }, false;
     }
 
+    // RFC 6455 §4.2.1 item 1: Request MUST be HTTP/1.1 or higher
+    guard !req.is_http10 else {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
     // RFC 6455 §4.2.1 item 2: Request MUST contain a Host header field or absolute URI authority
     var has_host = req.headers.find_header("Host").len > 0;
     if !has_host && req.url.len > 0 {
@@ -1759,6 +1789,13 @@ fn ws_upgrade_request(
     }
 
     guard req_has_header_token(req, "connection", "upgrade") else {
+        out_resp.status_code = 400;
+        return WebSocketSession { .. }, false;
+    }
+
+    // RFC 6455 §4.1: Sec-WebSocket-Version and Sec-WebSocket-Key MUST NOT appear more than once
+    guard req_count_header(req, "sec-websocket-version") <= 1 &&
+        req_count_header(req, "sec-websocket-key") == 1 else {
         out_resp.status_code = 400;
         return WebSocketSession { .. }, false;
     }
@@ -1806,7 +1843,7 @@ fn ws_upgrade_request(
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request
 fn is_websocket_upgrade_request(req: const Request&) -> bool {
-    guard req.method[..] == "GET" else { return false; }
+    guard req.method[..] == "GET" && !req.is_http10 else { return false; }
     let ws_mask = HDR_PRESENCE_HOST | HDR_PRESENCE_UPGRADE | HDR_PRESENCE_CONNECTION | HDR_PRESENCE_SEC_WEBSOCKET_KEY;
     if req.presence_mask != 0 {
         guard (req.presence_mask & ws_mask) == ws_mask else { return false; }
@@ -1816,6 +1853,10 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     guard host.len > 0 else { return false; }
     guard req_has_header_token(req, "upgrade", "websocket") else { return false; }
     guard req_has_header_token(req, "connection", "upgrade") else { return false; }
+    guard req_count_header(req, "sec-websocket-version") == 1 &&
+        req_count_header(req, "sec-websocket-key") == 1 else {
+        return false;
+    }
     let ver = req.headers.find_header("Sec-WebSocket-Version");
     guard ver == "13" else { return false; }
     let key = req.headers.find_header("Sec-WebSocket-Key");
@@ -1830,6 +1871,7 @@ fn is_h2_websocket_request(req: const Request&) -> bool {
     guard req.method[..] == "CONNECT" else { return false; }
     let proto = req.headers.find_header(":protocol");
     guard core::eq_ascii_fold(proto, "websocket") else { return false; }
+    guard req_count_header(req, "sec-websocket-version") == 1 else { return false; }
     let ver = req.headers.find_header("sec-websocket-version");
     guard ver == "13" else { return false; }
     return true;

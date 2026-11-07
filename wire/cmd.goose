@@ -51,11 +51,44 @@ struct WireCommandBuffer {
     has_error:             bool                   = false,
     state:                 WireCommandBufferState = WireCommandBufferState.Initial,
     flags:                 u32                    = 0,
+    pool_generation:       u32                    = 0,
     headers_frame_offset:  i64                    = -1,
     active_headers_stream: u32                    = 0,
     active_headers_flags:  u8                     = 0,
     arena_offset:          i64                    = -1,
     arena_capacity:        i64                    = WIRE_CMD_BUFFER_CAP,
+}
+
+inline fn find_free_pool_slot_offset(slot_mask: u8) -> i64, i64, u8 {
+    if (slot_mask & 1) == 0 {
+        return 0, 16384, 1;
+    }
+    if (slot_mask & 2) == 0 {
+        return 16384, 32768, 2;
+    }
+    if (slot_mask & 4) == 0 {
+        return 32768, 49152, 4;
+    }
+    if (slot_mask & 8) == 0 {
+        return 49152, 65536, 8;
+    }
+    return -1, -1, 0;
+}
+
+inline fn pool_slot_bit_for_offset(offset: i64) -> u8 {
+    if offset == 0 {
+        return 1;
+    }
+    if offset == 16384 {
+        return 2;
+    }
+    if offset == 32768 {
+        return 4;
+    }
+    if offset == 49152 {
+        return 8;
+    }
+    return 0;
 }
 
 // Carves a contiguous zero-copy slice of `req_bytes` directly from `pool.arena` (u8[..65536]).
@@ -72,6 +105,15 @@ fn allocate_pool_arena_slice(pool: WireCommandPool&, req_bytes: i64) -> const u8
     return view, start_off, true;
 }
 
+inline fn is_valid_pool_slot_for_cmd(pool: const WireCommandPool&, cmd: const WireCommandBuffer&) -> bool {
+    if cmd.pool_generation == 0 {
+        return true;
+    }
+    guard cmd.pool_generation == pool.generation else { return false; }
+    let bit = pool_slot_bit_for_offset(cmd.arena_offset);
+    return bit != 0 && (pool.slot_mask & bit) != 0;
+}
+
 // Commits a recorded command buffer's wire frames directly into its carved region in `pool.arena`,
 // returning the zero-copy arena slice view (`const u8[:]`).
 fn commit_command_buffer_to_arena(
@@ -80,6 +122,7 @@ fn commit_command_buffer_to_arena(
 ) -> const u8[:], bool {
     let end_off = cmd.arena_offset + cmd.buf.len;
     guard pool.is_valid &&
+          is_valid_pool_slot_for_cmd(pool, cmd) &&
           !cmd.has_error &&
           (cmd.state == WireCommandBufferState.Executable || cmd.state == WireCommandBufferState.Recording) &&
           cmd.arena_offset >= 0 &&
@@ -91,21 +134,47 @@ fn commit_command_buffer_to_arena(
     return pool.arena[cmd.arena_offset..end_off], true;
 }
 
+inline fn clear_pool_slot_bit(slot_mask: u8, offset: i64) -> u8 {
+    if offset == 0 {
+        return slot_mask & 0xFE;
+    }
+    if offset == 16384 {
+        return slot_mask & 0xFD;
+    }
+    if offset == 32768 {
+        return slot_mask & 0xFB;
+    }
+    if offset == 49152 {
+        return slot_mask & 0xF7;
+    }
+    return slot_mask;
+}
+
+fn claim_pool_command_slot(pool: WireCommandPool&, next_len: i64, bit: u8) {
+    pool.allocated_count += 1;
+    pool.slot_mask = pool.slot_mask | bit;
+    if pool.arena.len < next_len {
+        pool.arena.resize(next_len, 0);
+    }
+}
+
 // Allocates a command buffer backed by a 16 KB region in `pool.arena` (VkAllocateCommandBuffers).
 // Fails closed with `WireResult.ErrorOutOfDeviceMemory` if all 65,536 bytes of `pool.arena` are exhausted.
 fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireResult {
     guard pool.is_valid else {
         return WireCommandBuffer { .. }, WireResult.ErrorInitializationFailed;
     }
-    let _, start_off, ok = allocate_pool_arena_slice(pool, WIRE_CMD_BUFFER_CAP);
-    guard ok else {
+    let start_off, next_len, bit = find_free_pool_slot_offset(pool.slot_mask);
+    guard bit != 0 else {
         return WireCommandBuffer { .. }, WireResult.ErrorOutOfDeviceMemory;
     }
+    claim_pool_command_slot(pool, next_len, bit);
     return WireCommandBuffer {
         buf:                   [],
         has_error:             false,
         state:                 WireCommandBufferState.Initial,
         flags:                 0,
+        pool_generation:       pool.generation,
         headers_frame_offset:  -1,
         active_headers_stream: 0,
         active_headers_flags:  0,
@@ -114,23 +183,29 @@ fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireRes
     }, WireResult.Success;
 }
 
-// Frees a command buffer back to its parent pool, reclaiming its arena region on LIFO release (VkFreeCommandBuffers).
+// Frees a command buffer back to its parent pool, reclaiming its arena region (VkFreeCommandBuffers).
 fn free_command_buffer(pool: WireCommandPool&, cmd: WireCommandBuffer&) {
     let expected_end = cmd.arena_offset + cmd.arena_capacity;
+    let prev_offset = cmd.arena_offset;
+    let slot_valid = is_valid_pool_slot_for_cmd(pool, cmd);
     cmd.state = WireCommandBufferState.Invalid;
     cmd.buf.clear();
     cmd.has_error = false;
     cmd.headers_frame_offset = -1;
-    let prev_offset = cmd.arena_offset;
+    cmd.active_headers_stream = 0;
+    cmd.active_headers_flags = 0;
     cmd.arena_offset = -1;
+    cmd.pool_generation = 0;
 
-    guard pool.is_valid && prev_offset >= 0 && pool.allocated_count > 0 else { return; }
+    guard pool.is_valid && slot_valid && prev_offset >= 0 && pool.allocated_count > 0 else { return; }
+    pool.slot_mask = clear_pool_slot_bit(pool.slot_mask, prev_offset);
     pool.allocated_count -= 1;
     if pool.allocated_count == 0 {
+        pool.slot_mask = 0;
         pool.arena.clear();
         return;
     }
-    if expected_end == pool.arena.len {
+    if expected_end == pool.arena.len && pool.slot_mask == 0 {
         pool.arena.resize(prev_offset);
     }
 }
@@ -413,7 +488,12 @@ inline fn rollback_headers_frame_on_error(cmd: WireCommandBuffer&) {
         cmd.buf.resize(cmd.headers_frame_offset);
     }
     cmd.headers_frame_offset = -1;
+    cmd.active_headers_stream = 0;
+    cmd.active_headers_flags = 0;
     cmd.has_error = true;
+    if cmd.state == WireCommandBufferState.RecordingHeaders {
+        cmd.state = WireCommandBufferState.Recording;
+    }
 }
 
 // Begins a dynamic HEADERS frame block by reserving 9 bytes in-place at `cmd.headers_frame_offset`.

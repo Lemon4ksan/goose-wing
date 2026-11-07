@@ -107,22 +107,22 @@ inline fn ct_max_u64(a: u64, b: u64) -> u64 {
 
 // Branchless signed minimum (64-bit).
 inline fn ct_min_i64(a: i64, b: i64) -> i64 {
-    let diff = a - b;
-    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 63) & 1;
-    let mask = 0 - s;
     let ua = a as! u64;
     let ub = b as! u64;
-    return ((ub & (~mask as! u64)) | (ua & (mask as! u64))) as! i64;
+    let diff = (ua - ub) as! i64;
+    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 63) & 1;
+    let mask = 0 - (s as! u64);
+    return ((ub & (~mask)) | (ua & mask)) as! i64;
 }
 
 // Branchless signed maximum (64-bit).
 inline fn ct_max_i64(a: i64, b: i64) -> i64 {
-    let diff = b - a;
-    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 63) & 1;
-    let mask = 0 - s;
     let ua = a as! u64;
     let ub = b as! u64;
-    return ((ub & (~mask as! u64)) | (ua & (mask as! u64))) as! i64;
+    let diff = (ub - ua) as! i64;
+    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 63) & 1;
+    let mask = 0 - (s as! u64);
+    return ((ub & (~mask)) | (ua & mask)) as! i64;
 }
 
 // Branchless absolute value for i64 without branching.
@@ -135,22 +135,22 @@ inline fn ct_abs_i64(x: i64) -> i64 {
 
 // Branchless signed minimum (32-bit).
 inline fn ct_min_i32(a: i32, b: i32) -> i32 {
-    let diff = a - b;
-    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 31) & 1;
-    let mask = 0 - s;
     let ua = a as! u32;
     let ub = b as! u32;
-    return ((ub & (~mask as! u32)) | (ua & (mask as! u32))) as! i32;
+    let diff = (ua - ub) as! i32;
+    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 31) & 1;
+    let mask = 0 - (s as! u32);
+    return ((ub & (~mask)) | (ua & mask)) as! i32;
 }
 
 // Branchless signed maximum (32-bit).
 inline fn ct_max_i32(a: i32, b: i32) -> i32 {
-    let diff = b - a;
-    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 31) & 1;
-    let mask = 0 - s;
     let ua = a as! u32;
     let ub = b as! u32;
-    return ((ub & (~mask as! u32)) | (ua & (mask as! u32))) as! i32;
+    let diff = (ub - ua) as! i32;
+    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 31) & 1;
+    let mask = 0 - (s as! u32);
+    return ((ub & (~mask)) | (ua & mask)) as! i32;
 }
 
 // Clamps signed 32-bit value into [low, high].

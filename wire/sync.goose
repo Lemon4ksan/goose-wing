@@ -42,14 +42,15 @@ fn create_wire_fence(dev: const WireDevice&, info: const WireFenceCreateInfo&) -
     guard dev.is_active else {
         return WireFence { .. }, WireResult.ErrorInitializationFailed;
     }
-    let init_status = if (info.flags & WIRE_FENCE_CREATE_SIGNALED_BIT) != 0 {
+    let is_signaled = (info.flags & WIRE_FENCE_CREATE_SIGNALED_BIT) != 0;
+    let init_status = if is_signaled {
         WireFenceStatus.Signaled
     } else {
         WireFenceStatus.Unsignaled
     };
     return WireFence {
         status:       init_status,
-        signaled_val: 0,
+        signaled_val: if is_signaled { 1 } else { 0 },
         is_valid:     true,
     }, WireResult.Success;
 }
@@ -60,6 +61,7 @@ fn reset_wire_fence(fence: WireFence&) -> WireResult {
         return WireResult.ErrorInitializationFailed;
     }
     fence.status = WireFenceStatus.Unsignaled;
+    fence.signaled_val = 0;
     return WireResult.Success;
 }
 
@@ -91,6 +93,7 @@ fn get_wire_fence_status(fence: const WireFence&) -> WireResult {
 fn destroy_wire_fence(fence: WireFence&) {
     fence.is_valid = false;
     fence.status = WireFenceStatus.Unsignaled;
+    fence.signaled_val = 0;
 }
 
 // Type classification for synchronization semaphores (VkSemaphoreType).
@@ -130,6 +133,9 @@ fn create_wire_semaphore(
 // Signals a semaphore to target value (VkSignalSemaphore).
 fn signal_wire_semaphore(sem: WireSemaphore&, val: u64) -> WireResult {
     guard sem.is_valid else {
+        return WireResult.ErrorInitializationFailed;
+    }
+    if sem.semaphore_type == WireSemaphoreType.Timeline && val < sem.value {
         return WireResult.ErrorInitializationFailed;
     }
     sem.value = val;

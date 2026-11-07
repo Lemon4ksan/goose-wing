@@ -56,7 +56,15 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
     guard ok else { return; }
 
     let p_name = p_name_raw.trim_lws();
-    var p_val = p_val_raw.trim_lws().trim_byte('"');
+    let v_trim = p_val_raw.trim_lws();
+    guard v_trim.len > 0 else { return; }
+    var p_val = v_trim;
+    if v_trim[0] == '"' {
+        guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return; }
+        p_val = v_trim[1..v_trim.len - 1];
+    } else {
+        guard v_trim[v_trim.len - 1] != '"' else { return; }
+    }
 
     if p_name == "ma" {
         let num, num_ok = p_val.parse_u32_dec();
@@ -74,11 +82,11 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
 //   params_part = "; ma=86400; persist=1"
 //   populates ep parameters
 fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
-    var p_tok = make_byte_tokenizer(params_part, ';');
-    loop {
-        let param_token, tok_ok = p_tok.token_next();
-        guard tok_ok else { break; }
-        let p_trim = param_token.trim_lws();
+    var rem = params_part;
+    while rem.len > 0 {
+        let semi_idx = rem.find_unquoted_byte(';');
+        let p_trim = rem[..semi_idx].trim_lws();
+        rem = if semi_idx < rem.len { rem[semi_idx + 1..] } else { rem[..0] };
         if p_trim.len > 0 {
             parse_altsvc_param(p_trim, ep);
         }

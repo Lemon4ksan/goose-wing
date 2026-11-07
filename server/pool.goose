@@ -53,7 +53,7 @@ struct RequestExtensions {
     request_seq:       u64                   = 0,
     params:            wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
     session_data:      u8[..512]             = [],
-    canon_url:         u8[..512]             = [],
+    canon_url:         u8[..2048]            = [],
     cors_origin:       u8[..128]             = [],
     auth_subject:      u8[..64]              = [],
     auth_scopes:       u64                   = 0,
@@ -77,6 +77,7 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
             pool.slots[idx].conn_id = 0;
             pool.slots[idx].request_seq = 0;
             pool.slots[idx].params.clear();
+            core::secure_zeroize_slice(pool.slots[idx].session_data[..]);
             pool.slots[idx].session_data.clear();
             pool.slots[idx].canon_url.clear();
             pool.slots[idx].cors_origin.clear();
@@ -101,6 +102,7 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[s_idx].conn_id = 0;
     pool.slots[s_idx].request_seq = 0;
     pool.slots[s_idx].params.clear();
+    core::secure_zeroize_slice(pool.slots[s_idx].session_data[..]);
     pool.slots[s_idx].session_data.clear();
     pool.slots[s_idx].canon_url.clear();
     pool.slots[s_idx].cors_origin.clear();
@@ -222,7 +224,6 @@ fn notify_request_start(timer: ConnectionTimer&) {
 
 fn notify_request_end(timer: ConnectionTimer&) {
     timer.in_flight_handler = false;
-    timer.last_observed_seq = timer.active_req_seq;
 }
 
 inline fn is_connection_tick_due(timer: const ConnectionTimer&, now_ns: u64) -> bool {

@@ -40,7 +40,11 @@ fn strict_unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> b
             out.push(next_b);
             i += 2;
         } else {
-            // Rejects CTLs except HTAB
+            // Rejects unescaped interior double-quote and CTLs except HTAB (RFC 9110 §5.6.4)
+            if b == '"' {
+                out.clear();
+                return false;
+            }
             if b < 0x20 {
                 guard b == '\t' else { out.clear(); return false; }
             } else if b == 0x7F {
@@ -109,7 +113,10 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
     if p_val_raw.len > 0 && p_val_raw[0] == '"' {
         guard strict_unquote(p_val_raw, p_item.value, 256) else { return false; }
     } else {
-        guard is_valid_header_value(p_val_raw) else { return false; }
+        guard p_val_raw.len > 0 && is_valid_header_value(p_val_raw) else { return false; }
+        for b in p_val_raw {
+            guard b != '"' && b != ' ' && b != '\t' else { return false; }
+        }
         guard p_val_raw.len <= p_item.value.cap else { return false; }
         p_item.value.append(p_val_raw);
     }
@@ -138,8 +145,8 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
             continue;
         }
 
-        // RFC 2046 / Go #82343: Duplicate boundary parameter MUST be rejected
-        if p_item.name[..] == "boundary" && has_param_name(mt.params, "boundary") {
+        // RFC 9110 §5.6.6 / RFC 2046 / Go #82343: Duplicate media type parameters MUST be rejected
+        if has_param_name(mt.params, p_item.name[..]) {
             return false;
         }
 

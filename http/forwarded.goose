@@ -78,26 +78,22 @@ fn apply_forwarded_param(param_str: const u8[:], out: ForwardedElement&) -> bool
     let val = val_raw.trim_lws().trim_byte('"');
 
     if core::eq_ascii_fold(key, "by") {
-        guard val.len <= out.by.cap else { return false; }
-        out.by.clear();
+        guard out.by.len == 0 && val.len > 0 && val.len <= out.by.cap else { return false; }
         out.by.append(val);
         return true;
     }
     if core::eq_ascii_fold(key, "for") {
-        guard val.len <= out.for_node.cap else { return false; }
-        out.for_node.clear();
+        guard out.for_node.len == 0 && val.len > 0 && val.len <= out.for_node.cap else { return false; }
         out.for_node.append(val);
         return true;
     }
     if core::eq_ascii_fold(key, "host") {
-        guard val.len <= out.host.cap else { return false; }
-        out.host.clear();
+        guard out.host.len == 0 && val.len > 0 && val.len <= out.host.cap else { return false; }
         out.host.append(val);
         return true;
     }
     if core::eq_ascii_fold(key, "proto") {
-        guard val.len <= out.proto.cap else { return false; }
-        out.proto.clear();
+        guard out.proto.len == 0 && val.len > 0 && val.len <= out.proto.cap else { return false; }
         out.proto.append(val);
         return true;
     }
@@ -152,9 +148,11 @@ fn parse_forwarded_header(raw: const u8[:], out_elements: ForwardedElement[..8]&
         rem = rem[elem_len..];
 
         var elem = ForwardedElement { .. };
-        if parse_forwarded_element(elem_str, elem) {
-            out_elements.push(elem);
+        guard parse_forwarded_element(elem_str, elem) else {
+            out_elements.clear();
+            return 0;
         }
+        out_elements.push(elem);
     }
     return out_elements.len;
 }

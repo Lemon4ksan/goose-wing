@@ -78,7 +78,7 @@ fn find_dict_item_end(s: const u8[:]) -> i64 {
 
 fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
     let k_raw, v_raw, has_eq = item.split_once_byte('=');
-    guard has_eq else { return true; }
+    guard has_eq else { return false; }
     let k = k_raw.trim_lws();
     let v = v_raw.trim_lws().trim_byte('"');
 
@@ -99,9 +99,13 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
         p.id.append(v);
     } else if core::eq_ascii_fold(k, "ttl") {
         let ttl_val, ttl_ok = v.parse_u32_dec();
-        if ttl_ok { p.ttl_sec = ttl_val; }
+        guard ttl_ok else {
+            p.valid = false;
+            return false;
+        }
+        p.ttl_sec = ttl_val;
     } else if core::eq_ascii_fold(k, "type") {
-        guard v.len <= p.dict_type.cap else {
+        guard v == "raw" && v.len <= p.dict_type.cap else {
             p.valid = false;
             return false;
         }
@@ -178,6 +182,19 @@ fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
 // Encodes a DCZ (Dictionary-Compressed Zstandard) frame:
 // [0xFF, 'D', 'C', 'Z'] || [32-byte Dictionary SHA-256] || [Compressed Zstandard Payload]
 fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
+    guard out.len + 36 + compressed_payload.len <= out.cap else { return false; }
+    out.push(rfc::DCZ_MAGIC_BYTE0);
+    out.push(rfc::DCZ_MAGIC_BYTE1);
+    out.push(rfc::DCZ_MAGIC_BYTE2);
+    out.push(rfc::DCZ_MAGIC_BYTE3);
+    for b in dict_hash {
+        out.push(b);
+    }
+    out.append(compressed_payload);
+    return true;
+}
+
+fn encode_dcz_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
     out.push(rfc::DCZ_MAGIC_BYTE0);
     out.push(rfc::DCZ_MAGIC_BYTE1);
     out.push(rfc::DCZ_MAGIC_BYTE2);
@@ -192,6 +209,19 @@ fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 // Encodes a DCB (Dictionary-Compressed Brotli) frame:
 // [0xFF, 'D', 'C', 'B'] || [32-byte Dictionary SHA-256] || [Compressed Brotli Payload]
 fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
+    guard out.len + 36 + compressed_payload.len <= out.cap else { return false; }
+    out.push(rfc::DCB_MAGIC_BYTE0);
+    out.push(rfc::DCB_MAGIC_BYTE1);
+    out.push(rfc::DCB_MAGIC_BYTE2);
+    out.push(rfc::DCB_MAGIC_BYTE3);
+    for b in dict_hash {
+        out.push(b);
+    }
+    out.append(compressed_payload);
+    return true;
+}
+
+fn encode_dcb_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
     out.push(rfc::DCB_MAGIC_BYTE0);
     out.push(rfc::DCB_MAGIC_BYTE1);
     out.push(rfc::DCB_MAGIC_BYTE2);
@@ -251,7 +281,7 @@ fn find_matching_dict_entry_index(
     for i in cache.entries.len {
         let entry = &cache.entries[i];
         if entry.valid && entry.origin[..] == origin &&
-           (entry.id[..] == id_str || entry.match_pattern[..] == match_pattern) {
+           ((id_str.len > 0 && entry.id[..] == id_str) || entry.match_pattern[..] == match_pattern) {
             return i;
         }
     }
@@ -367,12 +397,24 @@ fn dictionary_lookup_for_request(
     now_sec:         i64,
     out_base64_hash: u8[..64]&,
 ) -> bool {
-    for &entry in cache.entries {
+    var best_idx:  i64 = -1;
+    var best_len:  i64 = -1;
+    var best_time: i64 = -1;
+    for i in cache.entries.len {
+        let entry = &cache.entries[i];
         if dict_entry_matches_request(entry, origin, url_path, now_sec) {
-            out_base64_hash.clear();
-            out_base64_hash.append(entry.sha256_base64[..]);
-            return true;
+            let pat_len = entry.match_pattern.len;
+            if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
+                best_idx = i;
+                best_len = pat_len;
+                best_time = entry.inserted_at_sec;
+            }
         }
+    }
+    if best_idx >= 0 && best_idx < cache.entries.len {
+        out_base64_hash.clear();
+        out_base64_hash.append(cache.entries[best_idx].sha256_base64[..]);
+        return true;
     }
     out_base64_hash.clear();
     return false;
@@ -401,11 +443,9 @@ fn decompress_dcz_payload<B>(
 ) -> bool {
     var decompressed: u8[..16384] = [];
     let ok_z, _ = core::zstd_decompress(compressed_payload, decompressed);
-    if ok_z {
-        out_buf.append(decompressed[..]);
-        return true;
-    }
-    return false;
+    guard ok_z else { return false; }
+    out_buf.append(decompressed[..]);
+    return true;
 }
 
 // High-level helper to encode a test server response with DCZ
@@ -427,11 +467,9 @@ fn decompress_dcb_payload<B>(
 ) -> bool {
     var decompressed: u8[..16384] = [];
     let ok_b, _ = core::brotli_decompress(compressed_payload, decompressed);
-    if ok_b {
-        out_buf.append(decompressed[..]);
-        return true;
-    }
-    return false;
+    guard ok_b else { return false; }
+    out_buf.append(decompressed[..]);
+    return true;
 }
 
 // High-level helper to encode a test server response with DCB

@@ -199,7 +199,10 @@ fn zstream_write<B>(s: ZStreamCompressor&, chunk: const u8[:], out: B&, flush: F
 
     let is_final = (flush == FlushMode.Finish);
     if chunk.len > 0 || (is_final && !s.is_finished) {
-        let hist = if s.window_len > 0 { s.window[..s.window_len] } else { s.dict };
+        if s.window_len == 0 && s.dict.len > 0 {
+            update_stream_sliding_window(s, s.dict);
+        }
+        let hist = s.window[..s.window_len];
         let ok = deflate_block(chunk, out, s.w, s.level, is_final, hist);
         guard ok else { return false; }
         update_stream_sliding_window(s, chunk);
@@ -320,11 +323,24 @@ fn update_sliding_window(d: ZStreamDecompressor&, temp_out: const u8[:]) {
 //   returns: CompressError.None
 fn parse_stream_header(d: ZStreamDecompressor&) -> CompressError {
     if d.format == ContainerFormat.Auto {
-        if d.in_buf.len < 4 {
+        if d.in_buf.len < 2 {
+            return CompressError.None;
+        }
+        let b0 = d.in_buf[0];
+        let b1 = d.in_buf[1];
+        if b0 == 0x28 && d.in_buf.len < 4 {
+            return CompressError.None;
+        }
+        if b0 == 0x1F && b1 == 0x8B && d.in_buf.len < 10 {
+            return CompressError.None;
+        }
+        let cmf = b0 as u32;
+        let flg = b1 as u32;
+        if (cmf & 0x0F) == 8 && ((cmf >> 4) & 0x0F) <= 7 && (((cmf * 256 + flg) % 31) == 0) && d.in_buf.len < 6 {
             return CompressError.None;
         }
         let detected = detect_container_format(d.in_buf[..]);
-        if detected == ContainerFormat.Auto || (detected == ContainerFormat.Raw && d.in_buf.len < 10) {
+        if detected == ContainerFormat.Auto {
             return CompressError.None;
         }
         d.format = detected;
@@ -375,7 +391,7 @@ fn parse_stream_header(d: ZStreamDecompressor&) -> CompressError {
 
 // Resumable streaming decompression feeding arbitrary byte chunks (from 1 byte to multi-KB TCP slices).
 // Buffers incoming data, rolls back partial blocks on truncation, and enforces output quota guard.
-fn zstream_decompress_write_limit<B>(
+recursive fn zstream_decompress_write_limit<B>(
     d:                ZStreamDecompressor&,
     chunk:            const u8[:],
     out:              B&,
@@ -397,28 +413,28 @@ fn zstream_decompress_write_limit<B>(
 
     // Phase 1.5: Zstandard Frame Streaming
     if d.format == ContainerFormat.Zstd {
-        if !d.is_finished {
-            var temp_out: u8[>..] = [];
-            let z_limit = if max_output_bytes > 0 { max_output_bytes } else { -1 };
-            let ok_z, err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
-            if err == CompressError.InputBufferTruncated {
-                return CompressError.None; // Partial frame: wait for more bytes
-            }
-            guard ok_z else { return err; }
-
-            out.append(temp_out[..]);
-            d.total_out += temp_out.len as u64;
-            drain_in_buf(d, d.in_buf.len);
-            d.deflate_finished = true;
-            d.is_finished = true;
-            return CompressError.None;
+        var temp_out: u8[>..] = [];
+        let z_limit = if max_output_bytes > 0 { max_output_bytes } else { -1 };
+        let ok_z, err = zstd_decompress_with_limit(d.in_buf[..], temp_out, z_limit);
+        if err == CompressError.InputBufferTruncated {
+            return CompressError.None; // Partial frame: wait for more bytes
         }
+        guard ok_z else { return err; }
+
+        out.append(temp_out[..]);
+        d.total_out += temp_out.len as u64;
+        drain_in_buf(d, d.in_buf.len);
+        d.deflate_finished = true;
+        d.is_finished = true;
         return CompressError.None;
     }
 
     // Phase 2: Decompress Deflate payload
     if !d.deflate_finished {
-        let hist = if d.window_len > 0 { d.window[..d.window_len] } else { d.dict };
+        if d.window_len == 0 && d.dict.len > 0 {
+            update_sliding_window(d, d.dict);
+        }
+        let hist = d.window[..d.window_len];
         var temp_out: u8[>..] = [];
         let stream_limit = if max_output_bytes > 0 {
             let produced = d.total_out as i64;
@@ -456,7 +472,6 @@ fn zstream_decompress_write_limit<B>(
             let expected_adler = read_be_u32(d.in_buf[..], 0);
             guard d.adler == expected_adler else { return CompressError.ChecksumMismatch; }
             drain_in_buf(d, 4);
-            // RFC 1950 exact finality: Zlib stream trailer ends at Adler-32
             guard d.in_buf.len == 0 else { return CompressError.CorruptedBitstream; }
             d.is_finished = true;
         } else if d.format == ContainerFormat.Gzip {
@@ -466,10 +481,20 @@ fn zstream_decompress_write_limit<B>(
             let expected_crc = read_le_u32(d.in_buf[..], 0);
             let expected_isize = read_le_u32(d.in_buf[..], 4);
             guard d.crc == expected_crc else { return CompressError.ChecksumMismatch; }
-            let actual_isize = (d.total_out & 0xFFFFFFFF) as u32;
+            let member_start = d.adler - 1;
+            let actual_isize = ((d.total_out & 0xFFFFFFFF) as u32) - member_start;
             guard actual_isize == expected_isize else { return CompressError.SizeMismatch; }
             drain_in_buf(d, 8);
-            d.is_finished = true;
+            if d.in_buf.len == 0 {
+                d.is_finished = true;
+                return CompressError.None;
+            }
+            d.header_parsed = false;
+            d.deflate_finished = false;
+            d.crc = 0;
+            d.window_len = 0;
+            d.adler = ((d.total_out & 0xFFFFFFFF) as u32) + 1;
+            return zstream_decompress_write_limit(d, "", out, max_output_bytes);
         } else {
             d.is_finished = true;
         }

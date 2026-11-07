@@ -130,14 +130,15 @@ fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..
 //   wire = "HTTP/1.1 200 OK\r\n"
 //   returns: 200, true
 fn parse_probe_status_code(wire: const u8[:]) -> u16, bool {
+    // RFC 9112 Section 4: Status-Line — status-line = HTTP-version SP status-code SP [ reason-phrase ] CRLF
     guard wire.len >= 12 else { return 0, false; }
-    guard wire[0] == 'H' && wire[1] == 'T' && wire[2] == 'T' && wire[3] == 'P' && wire[4] == '/' else {
-        return 0, false;
-    }
-    guard wire[8] == ' ' else { return 0, false; }
+    let ok_ver = wire[..8] == "HTTP/1.1" || wire[..8] == "HTTP/1.0";
+    guard ok_ver && wire[8] == ' ' else { return 0, false; }
+    let ok_delim = wire.len == 12 || wire[12] == ' ' || wire[12] == '\r' || wire[12] == '\n';
+    guard ok_delim else { return 0, false; }
 
     let status_u32, ok = core::parse_u32_dec(wire[9..12]);
-    guard ok else { return 0, false; }
+    guard ok && status_u32 >= 100 && status_u32 <= 599 else { return 0, false; }
     return status_u32 as u16, true;
 }
 
@@ -190,6 +191,7 @@ inline fn init_probe_slot(slot: TargetProbeSlot&, target_idx: i32) {
 }
 
 fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) -> bool {
+    guard target_idx >= 0 && target_idx < 16 else { return false; }
     let existing = find_probe_slot(checker, target_idx);
     guard existing == HEALTH_SLOT_NONE else { return true; }
     guard checker.slots.len < checker.slots.cap else { return false; }
@@ -264,6 +266,8 @@ inline fn sync_cluster_target_health(cluster: UpstreamCluster&, target_idx: i32,
         cluster.circuit_open = false;
     } else if new_state == HealthState.Probing {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
+        cluster.targets[target_idx].successes = 1;
+        cluster.circuit_open = false;
     } else {
         cluster.targets[target_idx].fails = cluster.max_fails;
         cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
@@ -280,6 +284,9 @@ inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: Upstream
     } else if cluster_state == UpstreamHealthState.Probing && slot.health.state == HealthState.Up {
         slot.health.state = HealthState.Probing;
         slot.health.consecutive_successes = 0;
+    } else if cluster_state == UpstreamHealthState.Up && slot.health.state != HealthState.Up {
+        slot.health.state = HealthState.Up;
+        slot.health.consecutive_failures = 0;
     }
 }
 

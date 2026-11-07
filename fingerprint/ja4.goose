@@ -63,20 +63,38 @@ fn hash_12_hex<B>(data: const u8[:], out: B&) {
     }
 }
 
-// Maps highest supported TLS version to 2-character JA4 code.
+inline fn ja4_version_rank(v: u16) -> i32 {
+    if v == 0x0304 || v == 0xFEFC { return 6; }
+    if v == 0x0303 || v == 0xFEFD { return 5; }
+    if v == 0x0302 { return 4; }
+    if v == 0x0301 || v == 0xFEFF { return 3; }
+    if v == 0x0300 { return 2; }
+    if v == 0x0002 { return 1; }
+    return 0;
+}
+
+// Maps highest supported TLS/DTLS version to 2-character JA4 code.
 fn ja4_version_string(supported_versions: const u16[:]) -> const u8[:] {
-    var highest: u16 = 0;
+    var best_ver:  u16 = 0;
+    var best_rank: i32 = 0;
     for v in supported_versions {
-        if !rfc::is_grease_u16(v) && v > highest {
-            highest = v;
+        if !rfc::is_grease_u16(v) {
+            let r = ja4_version_rank(v);
+            if r > best_rank {
+                best_rank = r;
+                best_ver = v;
+            }
         }
     }
-    if highest == 0x0304 { return "13"; } // TLS 1.3
-    if highest == 0x0303 { return "12"; } // TLS 1.2
-    if highest == 0x0302 { return "11"; } // TLS 1.1
-    if highest == 0x0301 { return "10"; } // TLS 1.0
-    if highest == 0x0300 { return "s3"; } // SSL 3.0
-    if highest == 0x0002 { return "s2"; } // SSL 2.0
+    if best_ver == 0x0304 { return "13"; } // TLS 1.3
+    if best_ver == 0x0303 { return "12"; } // TLS 1.2
+    if best_ver == 0x0302 { return "11"; } // TLS 1.1
+    if best_ver == 0x0301 { return "10"; } // TLS 1.0
+    if best_ver == 0x0300 { return "s3"; } // SSL 3.0
+    if best_ver == 0x0002 { return "s2"; } // SSL 2.0
+    if best_ver == 0xFEFC { return "d3"; } // DTLS 1.3
+    if best_ver == 0xFEFD { return "d2"; } // DTLS 1.2
+    if best_ver == 0xFEFF { return "d1"; } // DTLS 1.0
     return "00";
 }
 
@@ -85,25 +103,28 @@ fn is_ja4_alnum(b: u8) -> bool {
 }
 
 // Extracts 2-character ALPN code (first and last char of first protocol).
-// Falls back to first/last hex nibble if characters are non-alphanumeric.
+// Falls back to first/last hex nibble if either character is non-alphanumeric.
 fn ja4_alpn_string<B>(alpn_protocol: const u8[:], out: B&) {
-    if alpn_protocol.len == 0 {
+    var first_len = alpn_protocol.len;
+    for i in alpn_protocol.len {
+        if alpn_protocol[i] == ',' {
+            first_len = i;
+            break;
+        }
+    }
+    if first_len == 0 {
         out.append("00");
         return;
     }
     let hex_chars = "0123456789abcdef";
     let b_first = alpn_protocol[0];
-    let b_last = alpn_protocol[alpn_protocol.len - 1];
+    let b_last = alpn_protocol[first_len - 1];
 
-    if is_ja4_alnum(b_first) {
+    if is_ja4_alnum(b_first) && is_ja4_alnum(b_last) {
         out.push(b_first);
-    } else {
-        out.push(hex_chars[((b_first >> 4) & 0x0F) as i64]);
-    }
-
-    if is_ja4_alnum(b_last) {
         out.push(b_last);
     } else {
+        out.push(hex_chars[((b_first >> 4) & 0x0F) as i64]);
         out.push(hex_chars[(b_last & 0x0F) as i64]);
     }
 }
@@ -174,6 +195,7 @@ fn compute_ja4<B>(
     is_quic:            bool,
     out:                B&,
 ) {
+    out.clear();
     out.push(if is_quic { 'q' } else { 't' });
     out.append(ja4_version_string(supported_versions));
     out.push(if sni { 'd' } else { 'i' });
@@ -245,7 +267,7 @@ fn append_ja4h_language<B>(accept_lang: const u8[:], out: B&) {
     }
     var count = 0;
     for b in accept_lang {
-        if count == 4 { break; }
+        if count == 4 || b == ',' || b == ';' { break; }
         if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') {
             out.push(b);
             count++;
@@ -317,6 +339,20 @@ fn append_ja4h_cookies_hash<B>(
     hash_12_hex(vbuf[..], out);
 }
 
+inline fn ja4h_proto_string(proto: const u8[:]) -> const u8[:] {
+    if eq_ascii_fold(proto, "HTTP/1.0") || proto == "1.0" { return "10"; }
+    if eq_ascii_fold(proto, "HTTP/1.1") || proto == "1.1" { return "11"; }
+    let is_h2 = eq_ascii_fold(proto, "HTTP/2") || eq_ascii_fold(proto, "HTTP/2.0") || eq_ascii_fold(proto, "h2");
+    if is_h2 || proto == "2" || proto == "2.0" {
+        return "20";
+    }
+    let is_h3 = eq_ascii_fold(proto, "HTTP/3") || eq_ascii_fold(proto, "HTTP/3.0") || eq_ascii_fold(proto, "h3");
+    if is_h3 || proto == "3" || proto == "3.0" {
+        return "30";
+    }
+    return "00";
+}
+
 // Computes the FoxIO JA4H HTTP client fingerprint in format:
 // {method}{version}{cookie}{referer}{header_count}{lang}_{headers_hash}_{cookie_names}_{cookie_values}
 // E.g.: "ge20cn04enus_1c8f3b0e29d1_000000000000_000000000000"
@@ -330,6 +366,7 @@ fn compute_ja4h<B>(
     cookie_values:   const u8[:][:],
     out:             B&,
 ) {
+    out.clear();
     if method.len >= 2 {
         out.push(if method[0] >= 'A' && method[0] <= 'Z' { method[0] + 32 } else { method[0] });
         out.push(if method[1] >= 'A' && method[1] <= 'Z' { method[1] + 32 } else { method[1] });
@@ -337,27 +374,28 @@ fn compute_ja4h<B>(
         out.append("00");
     }
 
-    if proto == "HTTP/1.0" {
-        out.append("10");
-    } else if proto == "HTTP/1.1" {
-        out.append("11");
-    } else if proto == "HTTP/2" {
-        out.append("20");
-    } else if proto == "HTTP/3" {
-        out.append("30");
-    } else {
-        out.append("00");
-    }
+    out.append(ja4h_proto_string(proto));
 
-    out.push(if flags.has_cookie { 'c' } else { 'n' });
-    out.push(if flags.has_referer { 'r' } else { 'n' });
-
+    var has_cookie = flags.has_cookie || cookie_names.len > 0;
+    var has_referer = flags.has_referer;
     var filtered_headers: const u8[:][>..] = [];
     for h in header_names {
-        if !eq_ascii_fold(h, "cookie") && !eq_ascii_fold(h, "referer") {
-            filtered_headers.push(h);
+        if h.len == 0 || h[0] == ':' {
+            continue;
         }
+        if eq_ascii_fold(h, "cookie") {
+            has_cookie = true;
+            continue;
+        }
+        if eq_ascii_fold(h, "referer") {
+            has_referer = true;
+            continue;
+        }
+        filtered_headers.push(h);
     }
+
+    out.push(if has_cookie { 'c' } else { 'n' });
+    out.push(if has_referer { 'r' } else { 'n' });
     append_two_digits(filtered_headers.len, out);
     append_ja4h_language(accept_language, out);
     out.push('_');

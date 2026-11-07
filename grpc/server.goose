@@ -20,7 +20,11 @@ inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool 
     guard starts_with_fold(ct, prefix) else { return false; }
     if ct.len == prefix.len { return true; }
     let next_byte = ct[prefix.len];
-    return next_byte == '+' || next_byte == ';' || next_byte == ' ' || next_byte == '\t';
+    let suffix_idx = core::add_sat_i64(prefix.len, 1);
+    if next_byte == '+' {
+        return ct.len > suffix_idx && core::is_tchar(ct[suffix_idx]);
+    }
+    return next_byte == ';' || next_byte == ' ' || next_byte == '\t';
 }
 
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
@@ -48,6 +52,14 @@ fn is_grpc_web_text(ct: const u8[:]) -> bool {
 fn is_grpc_request(req: const Request&) -> bool {
     let ct = req.header("content-type");
     return ct.len > 0 && is_grpc_content_type(ct);
+}
+
+inline fn is_valid_grpc_path_segment(seg: const u8[:]) -> bool {
+    guard seg.len > 0 && seg.len <= 64 else { return false; }
+    for b in seg {
+        guard b > 0x20 && b < 0x7F && b != '/' && b != '?' && b != '#' else { return false; }
+    }
+    return true;
 }
 
 // Parses standard gRPC URI path: `/{service}/{method}` or `/{package}.{service}/{method}`.
@@ -80,7 +92,9 @@ fn parse_grpc_path(
     let service_part = path[1..slash2];
     let method_part = path[method_start..];
 
-    guard service_part.len <= 64 && method_part.len <= 64 else { return false; }
+    guard is_valid_grpc_path_segment(service_part) && is_valid_grpc_path_segment(method_part) else {
+        return false;
+    }
 
     out_service.append(service_part);
     out_method.append(method_part);
@@ -114,6 +128,7 @@ fn get_metadata(ctx: const GrpcServerContext&, key: const u8[:]) -> const u8[:] 
 fn add_response_metadata(ctx: GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
     guard ctx.response_metadata.len < ctx.response_metadata.cap else { return false; }
     guard key.len <= 64 && value.len <= 256 else { return false; }
+    guard is_valid_grpc_custom_metadata(key, value) else { return false; }
     var item = GrpcMetadata { .. };
     item.key.append(key);
     item.value.append(value);
@@ -124,6 +139,7 @@ fn add_response_metadata(ctx: GrpcServerContext&, key: const u8[:], value: const
 fn add_response_trailer(ctx: GrpcServerContext&, key: const u8[:], value: const u8[:]) -> bool {
     guard ctx.response_trailers.len < ctx.response_trailers.cap else { return false; }
     guard key.len <= 64 && value.len <= 256 else { return false; }
+    guard is_valid_grpc_custom_metadata(key, value) else { return false; }
     var item = GrpcMetadata { .. };
     item.key.append(key);
     item.value.append(value);
@@ -254,7 +270,9 @@ fn find_method_by_name(d: const GrpcServerDispatcher&, service: const u8[:], met
 // Appends gRPC metadata entries into a response header or trailer list.
 fn append_grpc_metadata_headers(target: HeaderMap&, metadata: const GrpcMetadata[:]) {
     for &m in metadata {
-        let _ = append_header(target, m.key[..], m.value[..]);
+        if is_valid_grpc_custom_metadata(m.key[..], m.value[..]) {
+            let _ = append_header(target, m.key[..], m.value[..]);
+        }
     }
 }
 
@@ -269,6 +287,7 @@ fn build_grpc_trailers_only_response(
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
+    out_res.presence_mask = 0;
 
     if ctx.is_web {
         // gRPC-Web: Trailers are framed in body with flag 0x80
@@ -288,6 +307,7 @@ fn build_grpc_trailers_only_response(
     } else {
         // Native HTTP/2 gRPC: Trailers-Only sent in single initial HEADERS frame
         let _ = append_header(out_res.headers, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        let _ = append_header(out_res.headers, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
 
         var st_val: u8[..32] = [];
         format(st_val, grpc_status_to_code(status) as i64);
@@ -316,6 +336,7 @@ fn build_grpc_wire_response(
     out_res.headers.clear();
     out_res.trailers.clear();
     out_res.body.clear();
+    out_res.presence_mask = 0;
 
     if ctx.is_web {
         // gRPC-Web
@@ -360,7 +381,10 @@ fn build_grpc_wire_response(
 // ---- Request Ingress Context Extraction ----------------------------------
 
 inline fn compute_safe_grpc_deadline(base_ns: u64, ms: u64) -> u64 {
-    guard base_ns > 0 && ms > 0 else { return 0; }
+    guard base_ns > 0 else { return 0; }
+    if ms == 0 {
+        return if base_ns > 1 { core::sub_sat_u64(base_ns, 1) } else { 1 };
+    }
     let nanos = core::mul_sat_u64(ms, NANOS_PER_MILLI);
     return core::add_sat_u64(base_ns, nanos);
 }
@@ -381,17 +405,14 @@ inline fn process_grpc_request_header(
     req_start_mono_ns: u64,
 ) -> bool {
     if eq_ascii_fold(n, "content-type") {
-        out_ctx.is_web = is_grpc_web(v);
-        out_ctx.is_web_text = is_grpc_web_text(v);
-        return true;
+        return is_grpc_content_type(v);
     }
     if eq_ascii_fold(n, rfc::HEADER_GRPC_TIMEOUT) {
         let ms, ok_to = parse_grpc_timeout(v);
-        if ok_to {
-            out_ctx.timeout_ms = ms;
-            let base_ns = if req_start_mono_ns > 0 { req_start_mono_ns } else { now_mono_ns };
-            out_ctx.deadline_mono_ns = compute_safe_grpc_deadline(base_ns, ms);
-        }
+        guard ok_to else { return false; }
+        out_ctx.timeout_ms = ms;
+        let base_ns = if req_start_mono_ns > 0 { req_start_mono_ns } else { now_mono_ns };
+        out_ctx.deadline_mono_ns = compute_safe_grpc_deadline(base_ns, ms);
         return true;
     }
     if is_reserved_grpc_header(n) {
@@ -404,6 +425,12 @@ inline fn process_grpc_request_header(
     let _ = item.value.try_set(v);
     out_ctx.metadata.push(item);
     return true;
+}
+
+inline fn init_grpc_context_transport(req: const Request&, out_ctx: GrpcServerContext&) {
+    let ct = req.header("content-type");
+    out_ctx.is_web = is_grpc_web(ct);
+    out_ctx.is_web_text = is_grpc_web_text(ct);
 }
 
 // Extracts service, method, timeout, and metadata from incoming HTTP request.
@@ -424,8 +451,7 @@ fn extract_grpc_server_context(
     out_ctx.response_trailers.clear();
     out_ctx.timeout_ms = 0;
     out_ctx.deadline_mono_ns = 0;
-    out_ctx.is_web = false;
-    out_ctx.is_web_text = false;
+    init_grpc_context_transport(req, out_ctx);
 
     // Parse path: `/{service}/{method}`
     let ok_path = parse_grpc_path(req.url[..], out_ctx.service, out_ctx.method);
@@ -550,6 +576,12 @@ fn decode_and_validate_single_lpm(
     res:         Response&,
     req_payload: u8[>..]&,
 ) -> bool {
+    let enc = trim_lws(get_metadata(ctx, rfc::HEADER_GRPC_ENCODING));
+    guard is_supported_grpc_encoding(enc) else {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
+        return false;
+    }
+
     var wire_bytes: u8[>..] = [];
     if ctx.is_web_text {
         guard decode_grpc_web_text(req.body[..], wire_bytes) else {
@@ -575,9 +607,10 @@ fn decode_and_validate_single_lpm(
     }
 
     if is_compressed {
-        let enc = get_metadata(ctx, rfc::HEADER_GRPC_ENCODING);
-        guard is_supported_grpc_encoding(enc) else {
-            build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
+        guard eq_ascii_fold(enc, "gzip") else {
+            build_grpc_trailers_only_response(
+                GrpcStatusCode.Internal, "Compressed frame without compression encoding", ctx, res,
+            );
             return false;
         }
         var decomp_buf: u8[>..] = [];
@@ -620,6 +653,7 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     guard is_grpc_request(req) else { return false; }
 
     var ctx = GrpcServerContext { .. };
+    init_grpc_context_transport(req, ctx);
 
     // 2. Validate HTTP Method (RFC gRPC mandates POST)
     if !eq_ascii_fold(req.method[..], "POST") {
@@ -712,6 +746,7 @@ fn prepare_grpc_unary_dispatch(
     ctx:               GrpcServerContext&,
     res:               Response&,
 ) -> u16, bool {
+    init_grpc_context_transport(req, ctx);
     if !eq_ascii_fold(req.method[..], "POST") {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
         return 0, false;
@@ -795,6 +830,7 @@ fn dispatch_grpc_server_streaming<
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
     var ctx = GrpcServerContext { .. };
+    init_grpc_context_transport(req, ctx);
 
     if !eq_ascii_fold(req.method[..], "POST") {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
@@ -889,15 +925,15 @@ fn validate_and_decompress_client_stream(
     ctx:      const GrpcServerContext&,
     res:      Response&,
 ) -> bool {
-    let enc = get_metadata(ctx, rfc::HEADER_GRPC_ENCODING);
+    let enc = trim_lws(get_metadata(ctx, rfc::HEADER_GRPC_ENCODING));
+    guard is_supported_grpc_encoding(enc) else {
+        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
+        return false;
+    }
     var any_compressed = false;
     for &span in reader.spans {
         if span.compressed {
             any_compressed = true;
-            guard is_supported_grpc_encoding(enc) else {
-                build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
-                return false;
-            }
         } else if span.len > max_size {
             build_grpc_trailers_only_response(
                 GrpcStatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
@@ -906,6 +942,12 @@ fn validate_and_decompress_client_stream(
         }
     }
     guard any_compressed else { return true; }
+    guard eq_ascii_fold(enc, "gzip") else {
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.Internal, "Compressed frame without compression encoding", ctx, res,
+        );
+        return false;
+    }
 
     var new_wire:  u8[>..]               = [];
     var new_spans: GrpcMessageSpan[..32] = [];
@@ -935,6 +977,7 @@ fn dispatch_grpc_client_streaming<
 ) -> bool {
     guard is_grpc_request(req) else { return false; }
     var ctx = GrpcServerContext { .. };
+    init_grpc_context_transport(req, ctx);
 
     if !eq_ascii_fold(req.method[..], "POST") {
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
@@ -1138,18 +1181,22 @@ fn dispatch_grpc_bidi_streaming(
     guard conn.state == H2StreamState.Open || conn.state == H2StreamState.HalfClosedRemote else {
         return false;
     }
-    let in_len = reader.wire_buf.len;
-    guard in_len >= 0 && conn.recv_window >= in_len else { return false; }
+    let start_cursor = reader.read_cursor;
+    let prev_out = writer.wire_buf.len;
+    let prev_count = writer.message_count;
 
     let limit = if reader.max_msg_size > 0 {
         reader.max_msg_size
     } else {
         rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE
     };
+    var consumed_in: i64 = 0;
     while reader.read_cursor < reader.spans.len {
         let span = reader.spans[reader.read_cursor];
         let msg, ok = read_next_grpc_lpm(reader);
         guard ok else { return false; }
+        let frame_in = core::add_sat_i64(5, span.len);
+        consumed_in = core::add_sat_i64(consumed_in, frame_in);
         if span.compressed {
             var decomp_buf: u8[..16384] = [];
             let ok_gz, _ = core::gzip_decompress_with_limit(msg, decomp_buf, limit);
@@ -1160,13 +1207,21 @@ fn dispatch_grpc_bidi_streaming(
         }
     }
 
-    let total_out = writer.wire_buf.len;
-    guard total_out >= 0 && conn.send_window >= total_out else { return false; }
+    let delta_out = core::sub_sat_i64(writer.wire_buf.len, prev_out);
+    if conn.recv_window < consumed_in || conn.send_window < delta_out {
+        reader.read_cursor = start_cursor;
+        let saved_out = writer.wire_buf[..prev_out];
+        var rollback_buf: u8[..16384] = [];
+        rollback_buf.append(saved_out);
+        writer.wire_buf = rollback_buf;
+        writer.message_count = prev_count;
+        return false;
+    }
 
-    let next_recvd = core::add_sat_u64(conn.received_data_bytes as u64, in_len as u64);
+    let next_recvd = core::add_sat_u64(conn.received_data_bytes as u64, consumed_in as u64);
     conn.received_data_bytes = next_recvd as i64;
-    conn.recv_window = (core::sub_sat_u64(conn.recv_window as u64, in_len as u64)) as i64;
-    conn.send_window = (core::sub_sat_u64(conn.send_window as u64, total_out as u64)) as i64;
+    conn.recv_window = (core::sub_sat_u64(conn.recv_window as u64, consumed_in as u64)) as i64;
+    conn.send_window = (core::sub_sat_u64(conn.send_window as u64, delta_out as u64)) as i64;
     conn.pending_send_bytes = writer.wire_buf.len as u32;
     return true;
 }
@@ -1180,8 +1235,9 @@ fn emit_grpc_h2_response_frames<B>(
     out:       B&,
 ) {
     let end_hdr = res.body.len == 0 && res.trailers.entries.len == 0;
+    let code_val = if res.status_code > 0 { res.status_code as i32 } else { 200 };
     let status_pseudo = internal::H2PseudoHeaders {
-        status:     200,
+        status:     code_val,
         has_status: true,
         ..
     };
@@ -1239,17 +1295,29 @@ fn execute_grpc_server_unary<
     req:       const Request&,
     res:       Response&,
 ) {
+    server.pipeline.trust_proxy_headers = server.trust_proxy_headers;
     let now_ns = core::as_nanos(core::monotonic_now());
     var future = internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
     server.requests_processed++;
-    if outcome == PipelineOutcome.Handled || outcome == PipelineOutcome.RouteNotFound {
+    if outcome == PipelineOutcome.RouteNotFound {
         let _ = dispatch_grpc_unary(d, req, now_ns, res, HandlerFn);
     }
 }
 
+inline fn is_valid_h2_settings_frame(hdr: const wire::WireFrameHeader&) -> bool {
+    let pay_u64: u64 = hdr.length;
+    let is_mult6 = core::mul_sat_u64(grpc_div_u64(pay_u64, 6), 6) == pay_u64;
+    guard hdr.stream_id == 0 else { return false; }
+    if (hdr.flags & rfc::H2_FLAG_ACK) != 0 {
+        return pay_u64 == 0;
+    }
+    return is_mult6;
+}
+
 fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, payload: const u8[:]) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_SETTINGS {
+        guard is_valid_h2_settings_frame(hdr) && payload.len == hdr.length else { return false; }
         if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
             var ack: u8[..16] = [];
             let ack_hdr = wire::WireFrameHeader {
@@ -1264,7 +1332,8 @@ fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, pa
         return true;
     }
     if hdr.frame_type == rfc::H2_FRAME_PING {
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && payload.len == 8 {
+        guard hdr.stream_id == 0 && payload.len == 8 else { return false; }
+        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
             var ping_data: u8[8] = [0; 8];
             for p in 8 { ping_data[p] = payload[p]; }
             var pong: u8[..24] = [];
@@ -1274,6 +1343,17 @@ fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, pa
         return true;
     }
     return false;
+}
+
+inline fn slice_grpc_h2_data_payload(payload: const u8[:], flags: u8) -> const u8[:], bool {
+    if (flags & rfc::H2_FLAG_PADDED) == 0 {
+        return payload, true;
+    }
+    guard payload.len > 0 else { return "", false; }
+    let pad_len = payload[0] as i64;
+    let data_end = core::sub_sat_i64(payload.len, pad_len);
+    guard 1 <= data_end && pad_len < payload.len else { return "", false; }
+    return payload[1..data_end], true;
 }
 
 fn handle_grpc_h2_wire_frame<
@@ -1290,26 +1370,30 @@ fn handle_grpc_h2_wire_frame<
     payload:   const u8[:],
     out_wire:  u8[..65536]&,
 ) -> bool {
-    if handle_grpc_h2_control_frame(conn, hdr, payload) {
-        return true;
+    if hdr.frame_type == rfc::H2_FRAME_SETTINGS || hdr.frame_type == rfc::H2_FRAME_PING {
+        return handle_grpc_h2_control_frame(conn, hdr, payload);
     }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS {
+        guard hdr.stream_id > 0 else { return false; }
         let frag, ok_frag = slice_grpc_h2_headers_fragment(payload, hdr.flags);
-        if ok_frag {
-            var pseudo = internal::H2PseudoHeaders { .. };
-            reset_server_request_fast(pending);
-            let _ = pending.method.try_set("POST");
-            let _ = wire::decode_hpack_to_map(
-                hpack_dec, frag, pseudo, pending.headers, 8192, false,
-            );
-            if pseudo.path.len > 0 {
-                let _ = pending.url.try_set(pseudo.path[..]);
-            } else {
-                pending.url.clear();
-            }
-            if pseudo.authority.len > 0 && header(pending, "host").len == 0 {
-                let _ = append_header(pending.headers, "host", pseudo.authority[..]);
-            }
+        guard ok_frag else { return false; }
+        var pseudo = internal::H2PseudoHeaders { .. };
+        reset_server_request_fast(pending);
+        let _ = pending.method.try_set("POST");
+        let hpack_res = internal::decode_hpack_to_map(
+            hpack_dec, frag, pseudo, pending.headers, 8192, false,
+        );
+        guard hpack_res == rfc::H2_ERR_NO_ERROR else { return false; }
+        if pseudo.method.len > 0 {
+            let _ = pending.method.try_set(pseudo.method[..]);
+        }
+        if pseudo.path.len > 0 {
+            let _ = pending.url.try_set(pseudo.path[..]);
+        } else {
+            pending.url.clear();
+        }
+        if pseudo.authority.len > 0 && header(pending, "host").len == 0 {
+            let _ = append_header(pending.headers, "host", pseudo.authority[..]);
         }
         if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
             var res = Response { .. };
@@ -1324,7 +1408,10 @@ fn handle_grpc_h2_wire_frame<
         return true;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA {
-        pending.body.append(payload);
+        guard hdr.stream_id > 0 else { return false; }
+        let data_slice, ok_data = slice_grpc_h2_data_payload(payload, hdr.flags);
+        guard ok_data else { return false; }
+        pending.body.append(data_slice);
         if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
             var res = Response { .. };
             execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
@@ -1415,7 +1502,8 @@ fn serve_grpc_h2_connection<
         if recvd == -2 {
             continue;
         }
-        guard try_append_recv_chunk(recvd, chunk, in_buf) else {
+        let next_in = core::add_sat_i64(in_buf.len, recvd as i64);
+        guard next_in <= in_buf.cap && try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;
         }
     }
@@ -1498,7 +1586,8 @@ fn serve_grpc_connection<
             wait_ticks = core::add_sat_u64(wait_ticks, 1);
             continue;
         }
-        guard try_append_recv_chunk(recvd, chunk, in_buf) else {
+        let next_in = core::add_sat_i64(in_buf.len, recvd as i64);
+        guard next_in <= in_buf.cap && try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;
         }
         wait_ticks = 0;

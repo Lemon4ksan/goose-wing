@@ -338,7 +338,7 @@ fn rsa_mgf1_xor(seed: const u8[:], hash_len: i64, dst: u8[:]) {
 fn verify_emsa_pss(em: const u8[:], m_hash: const u8[:], mod_first_byte: u8) -> bool {
     let h_len = m_hash.len;
     let em_len = em.len;
-    guard (h_len == 32 || h_len == 48 || h_len == 64) && (mod_first_byte & 0x80) != 0 else { return false; }
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte > 1 else { return false; }
     guard em_len >= h_len + h_len + 2 && em_len <= 512 else { return false; }
     guard em[em_len - 1] == 0xBC else { return false; }
 
@@ -441,7 +441,7 @@ fn encode_emsa_pss(
 ) -> bool {
     let h_len = m_hash.len;
     let s_len = salt.len;
-    guard (h_len == 32 || h_len == 48 || h_len == 64) && (mod_first_byte & 0x80) != 0 else { return false; }
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte > 1 else { return false; }
     guard s_len == h_len && em_len >= h_len + s_len + 2 && em_len <= 512 else { return false; }
 
     var m_prime: u8[..136] = [];

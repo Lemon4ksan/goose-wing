@@ -62,8 +62,8 @@ struct ProxyHeader {
     src_port:   u16                    = 0,
     dst_port:   u16                    = 0,
     alpn:       u8[..32]               = [],
-    authority:  u8[..128]              = [],
-    unique_id:  u8[..64]               = [],
+    authority:  u8[..256]              = [],
+    unique_id:  u8[..128]              = [],
     netns:      u8[..64]               = [],
     ssl:        ProxySslInfo           = ProxySslInfo { .. },
 }
@@ -331,7 +331,7 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     let consumed = crlf_idx + 2;
 
     // Check for "UNKNOWN" protocol (must be "UNKNOWN" or followed by space)
-    if line == "UNKNOWN" || (line.len > 7 && line[..8] == "UNKNOWN ") {
+    if (line == "UNKNOWN" || core::starts_with(line, "UNKNOWN ")) && !core::contains_byte(line, 0) {
         hdr.command = ProxyCommand.Local;
         hdr.family = ProxyAddressFamily.Unspec;
         hdr.transport = ProxyTransportProtocol.Unspec;
@@ -807,7 +807,9 @@ fn format_proxy_v2<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     }
 
     var trans_nibble: u8 = internal::PP2_TRANS_UNSPEC;
-    if hdr.transport == ProxyTransportProtocol.Stream {
+    if hdr.family == ProxyAddressFamily.Unspec {
+        trans_nibble = internal::PP2_TRANS_UNSPEC;
+    } else if hdr.transport == ProxyTransportProtocol.Stream {
         trans_nibble = internal::PP2_TRANS_STREAM;
     } else if hdr.transport == ProxyTransportProtocol.Datagram {
         trans_nibble = internal::PP2_TRANS_DGRAM;
