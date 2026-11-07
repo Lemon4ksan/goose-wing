@@ -284,54 +284,54 @@ fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
 
 fn serialize_jwk_key<B>(k: const JwksKey&, out: B&) {
     out.append("{\"kty\":");
-    json::format_string(out, jwk_key_type_to_string(k.kty));
+    core::format_json_string(out, jwk_key_type_to_string(k.kty));
 
     if k.kty == JwkKeyType.OKP {
         out.append(",\"crv\":");
-        json::format_string(out, k.crv[..]);
+        core::format_json_string(out, k.crv[..]);
         out.append(",\"x\":");
         var x_b64: u8[..64] = [];
         core::base64url_encode(k.public_key[..], x_b64);
-        json::format_string(out, x_b64[..]);
+        core::format_json_string(out, x_b64[..]);
     } else if k.kty == JwkKeyType.EC {
         out.append(",\"crv\":");
-        json::format_string(out, k.crv[..]);
+        core::format_json_string(out, k.crv[..]);
         out.append(",\"x\":");
         var x_b64: u8[..64] = [];
         core::base64url_encode(k.ec_x[..], x_b64);
-        json::format_string(out, x_b64[..]);
+        core::format_json_string(out, x_b64[..]);
         out.append(",\"y\":");
         var y_b64: u8[..64] = [];
         core::base64url_encode(k.ec_y[..], y_b64);
-        json::format_string(out, y_b64[..]);
+        core::format_json_string(out, y_b64[..]);
     } else if k.kty == JwkKeyType.RSA {
         out.append(",\"n\":");
         var n_b64: u8[..768] = [];
         core::base64url_encode(k.rsa_n[..], n_b64);
-        json::format_string(out, n_b64[..]);
+        core::format_json_string(out, n_b64[..]);
         out.append(",\"e\":");
         var e_b64: u8[..16] = [];
         core::base64url_encode(k.rsa_e[..], e_b64);
-        json::format_string(out, e_b64[..]);
+        core::format_json_string(out, e_b64[..]);
     } else {
         out.append(",\"k\":");
         var k_b64: u8[..128] = [];
         core::base64url_encode(k.symmetric_key[..], k_b64);
-        json::format_string(out, k_b64[..]);
+        core::format_json_string(out, k_b64[..]);
         core::secure_zeroize_slice(k_b64[..]);
     }
 
     if k.alg != JwtAlg.Unspecified && k.alg != JwtAlg.None && k.alg != JwtAlg.Unknown {
         out.append(",\"alg\":");
-        json::format_string(out, jwt_alg_to_string(k.alg));
+        core::format_json_string(out, jwt_alg_to_string(k.alg));
     }
     if k.use.len > 0 {
         out.append(",\"use\":");
-        json::format_string(out, k.use[..]);
+        core::format_json_string(out, k.use[..]);
     }
     if k.kid.len > 0 {
         out.append(",\"kid\":");
-        json::format_string(out, k.kid[..]);
+        core::format_json_string(out, k.kid[..]);
     }
     out.push('}');
 }
@@ -349,15 +349,14 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
     out.append("]}");
 }
 
-inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, invalid: bool&) {
+inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, dst: B&, invalid: bool&) {
     guard json::peek(reader) == '"' else {
         json::skip(reader);
         dst.clear();
         invalid = true;
         return;
     }
-    let s = json::read_string(reader, scratch);
-    if s.len == 0 || !dst.try_set(s) {
+    if !core::read_json_string_into(reader, dst) || dst.len == 0 {
         dst.clear();
         invalid = true;
     }
@@ -371,24 +370,33 @@ inline fn read_nonempty_jwk_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst
 fn parse_jwk_key_core_type(
     field_key: const u8[:],
     reader:    json::Reader&,
-    scratch:   u8[>..]&,
     key_item:  JwksKey&,
 ) -> bool {
     if field_key == "kty" {
-        let kty_str = json::read_string(reader, scratch);
-        key_item.kty = parse_jwk_key_type(kty_str);
+        var kty_buf: u8[..16] = [];
+        if !core::read_json_string_into(reader, kty_buf) {
+            key_item.kty = JwkKeyType.Unknown;
+            key_item.has_invalid_type = true;
+            return true;
+        }
+        key_item.kty = parse_jwk_key_type(kty_buf[..]);
         if key_item.kty == JwkKeyType.Unknown {
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "crv" {
-        read_nonempty_jwk_str(reader, scratch, key_item.crv, key_item.has_invalid_type);
+        read_nonempty_jwk_str(reader, key_item.crv, key_item.has_invalid_type);
         return true;
     }
     if field_key == "alg" {
-        let alg_str = json::read_string(reader, scratch);
-        key_item.alg = parse_jwt_alg(alg_str);
+        var alg_buf: u8[..16] = [];
+        if !core::read_json_string_into(reader, alg_buf) {
+            key_item.alg = JwtAlg.Unknown;
+            key_item.has_invalid_type = true;
+            return true;
+        }
+        key_item.alg = parse_jwt_alg(alg_buf[..]);
         if key_item.alg == JwtAlg.Unknown || key_item.alg == JwtAlg.None {
             key_item.has_invalid_type = true;
         }
@@ -402,7 +410,7 @@ fn parse_jwk_key_core_type(
 // Example:
 //   reader at "[\"sign\",\"verify\"]"
 //   sets: key_item.key_ops = JWK_OP_SIGN | JWK_OP_VERIFY
-inline fn parse_jwk_key_ops_array(reader: json::Reader&, scratch: u8[>..]&, key_item: JwksKey&) {
+inline fn parse_jwk_key_ops_array(reader: json::Reader&, key_item: JwksKey&) {
     guard json::peek(reader) == '[' else {
         json::skip(reader);
         key_item.has_invalid_type = true;
@@ -416,8 +424,12 @@ inline fn parse_jwk_key_ops_array(reader: json::Reader&, scratch: u8[>..]&, key_
             key_item.has_invalid_type = true;
             return;
         }
-        scratch.clear();
-        let op = json::read_string(reader, scratch);
+        var op_buf: u8[..16] = [];
+        if !core::read_json_string_into(reader, op_buf) {
+            key_item.has_invalid_type = true;
+            return;
+        }
+        let op = op_buf[..];
         if op == "sign" {
             key_item.key_ops = key_item.key_ops | JWK_OP_SIGN;
         } else if op == "verify" {
@@ -442,23 +454,22 @@ inline fn parse_jwk_key_ops_array(reader: json::Reader&, scratch: u8[>..]&, key_
 fn parse_jwk_key_ident(
     field_key: const u8[:],
     reader:    json::Reader&,
-    scratch:   u8[>..]&,
     key_item:  JwksKey&,
 ) -> bool {
     if field_key == "use" {
-        read_nonempty_jwk_str(reader, scratch, key_item.use, key_item.has_invalid_type);
+        read_nonempty_jwk_str(reader, key_item.use, key_item.has_invalid_type);
         return true;
     }
     if field_key == "kid" {
-        read_nonempty_jwk_str(reader, scratch, key_item.kid, key_item.has_invalid_type);
+        read_nonempty_jwk_str(reader, key_item.kid, key_item.has_invalid_type);
         return true;
     }
     if field_key == "key_ops" {
-        parse_jwk_key_ops_array(reader, scratch, key_item);
+        parse_jwk_key_ops_array(reader, key_item);
         return true;
     }
     if field_key == "x5t#S256" {
-        read_nonempty_jwk_str(reader, scratch, key_item.x5t_s256, key_item.has_invalid_type);
+        read_nonempty_jwk_str(reader, key_item.x5t_s256, key_item.has_invalid_type);
         return true;
     }
     return false;
@@ -474,6 +485,18 @@ struct JwkRawMaterial {
     has_x5c:      bool       = false,
 }
 
+// Validates a non-empty JSON string token in `reader` without copying its contents.
+inline fn skip_nonempty_json_string(reader: json::Reader&) -> bool {
+    let start = core::add_sat_i64(reader.pos, 1);
+    let end, escaped = json::scan_string(reader.text, start);
+    guard end > start && (!escaped || json::valid_escapes(reader.text, start, end)) else {
+        json::fail(reader, "bad string");
+        return false;
+    }
+    reader.pos = core::add_sat_i64(end, 1);
+    return true;
+}
+
 // Parses JWK "x5c" certificate chain array and extracts the leaf DER Base64 string (RFC 7517 §4.7).
 //
 // Example:
@@ -481,7 +504,6 @@ struct JwkRawMaterial {
 //   sets: mat.has_x5c = true, mat.raw_x5c_leaf = "MIIB..."
 inline fn parse_jwk_x5c_array(
     reader:   json::Reader&,
-    scratch:  u8[>..]&,
     mat:      JwkRawMaterial&,
     key_item: JwksKey&,
 ) {
@@ -496,13 +518,12 @@ inline fn parse_jwk_x5c_array(
         if json::peek(reader) != '"' {
             json::skip(reader);
             key_item.has_invalid_type = true;
-        } else {
-            scratch.clear();
-            let cert_b64 = json::read_string(reader, scratch);
-            let bad_leaf = idx == 0 && (cert_b64.len == 0 || !mat.raw_x5c_leaf.try_set(cert_b64));
-            if bad_leaf || cert_b64.len == 0 {
+        } else if idx == 0 {
+            if !core::read_json_string_into(reader, mat.raw_x5c_leaf) || mat.raw_x5c_leaf.len == 0 {
                 key_item.has_invalid_type = true;
             }
+        } else if !skip_nonempty_json_string(reader) {
+            key_item.has_invalid_type = true;
         }
         idx = core::add_sat_i64(idx, 1);
     };
@@ -519,52 +540,46 @@ inline fn parse_jwk_x5c_array(
 fn parse_jwk_key_material(
     field_key: const u8[:],
     reader:    json::Reader&,
-    scratch:   u8[>..]&,
     mat:       JwkRawMaterial&,
     key_item:  JwksKey&,
 ) -> bool {
     if field_key == "x" {
-        let x_str = json::read_string(reader, scratch);
-        if !mat.raw_x.try_set(x_str) {
+        if !core::read_json_string_into(reader, mat.raw_x) {
             mat.raw_x.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "y" {
-        let y_str = json::read_string(reader, scratch);
-        if !mat.raw_y.try_set(y_str) {
+        if !core::read_json_string_into(reader, mat.raw_y) {
             mat.raw_y.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "k" {
-        let k_str = json::read_string(reader, scratch);
-        if !mat.raw_k.try_set(k_str) {
+        if !core::read_json_string_into(reader, mat.raw_k) {
             mat.raw_k.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "n" {
-        let n_str = json::read_string(reader, scratch);
-        if !mat.raw_n.try_set(n_str) {
+        if !core::read_json_string_into(reader, mat.raw_n) {
             mat.raw_n.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "e" {
-        let e_str = json::read_string(reader, scratch);
-        if !mat.raw_e.try_set(e_str) {
+        if !core::read_json_string_into(reader, mat.raw_e) {
             mat.raw_e.clear();
             key_item.has_invalid_type = true;
         }
         return true;
     }
     if field_key == "x5c" {
-        parse_jwk_x5c_array(reader, scratch, mat, key_item);
+        parse_jwk_x5c_array(reader, mat, key_item);
         return true;
     }
     return false;
@@ -578,7 +593,6 @@ fn parse_jwk_key_material(
 fn parse_jwk_key_field(
     field_key: const u8[:],
     reader:    json::Reader&,
-    scratch:   u8[>..]&,
     mat:       JwkRawMaterial&,
     key_item:  JwksKey&,
 ) {
@@ -589,11 +603,11 @@ fn parse_jwk_key_field(
         json::skip(reader);
         return;
     }
-    if parse_jwk_key_core_type(field_key, reader, scratch, key_item) {
+    if parse_jwk_key_core_type(field_key, reader, key_item) {
         // Matched kty, crv, or alg
-    } else if parse_jwk_key_ident(field_key, reader, scratch, key_item) {
+    } else if parse_jwk_key_ident(field_key, reader, key_item) {
         // Matched use or kid
-    } else if parse_jwk_key_material(field_key, reader, scratch, mat, key_item) {
+    } else if parse_jwk_key_material(field_key, reader, mat, key_item) {
         // Matched x, y, k, n, or e
     } else {
         json::skip(reader);
@@ -607,13 +621,11 @@ fn parse_jwk_key_field(
 //   populates key_item and mat
 fn parse_jwk_key_fields(
     reader:   json::Reader&,
-    scratch:  u8[>..]&,
     mat:      JwkRawMaterial&,
     key_item: JwksKey&,
 ) {
     var seen_keys: SeenHeaderKey[..16] = [];
     json::each_member(reader) { field_key =>
-        scratch.clear();
         if field_key.contains('\\') || is_header_key_present(field_key, seen_keys[..]) {
             key_item.has_invalid_type = true;
         }
@@ -624,7 +636,7 @@ fn parse_jwk_key_fields(
         } else {
             key_item.has_invalid_type = true;
         }
-        parse_jwk_key_field(field_key, reader, scratch, mat, key_item);
+        parse_jwk_key_field(field_key, reader, mat, key_item);
     };
 }
 
@@ -749,7 +761,6 @@ fn finalize_jwk_key(
 //   appends validated key to out_jwks, returns: true
 fn parse_single_jwk_element(
     reader:   json::Reader&,
-    scratch:  u8[>..]&,
     out_jwks: Jwks&,
 ) -> bool {
     guard out_jwks.keys.len < out_jwks.keys.cap else {
@@ -760,7 +771,7 @@ fn parse_single_jwk_element(
     var key_item = JwksKey { .. };
     var mat = JwkRawMaterial { .. };
 
-    parse_jwk_key_fields(reader, scratch, mat, key_item);
+    parse_jwk_key_fields(reader, mat, key_item);
     let ok = finalize_jwk_key(mat, key_item);
     if ok {
         out_jwks.keys.push(key_item);
@@ -778,7 +789,6 @@ fn parse_single_jwk_element(
 fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
     out_jwks.keys.clear();
     var reader = json::reader(json_bytes);
-    var scratch: u8[>..] = [];
     var seen_keys_root = false;
     var had_error = false;
 
@@ -789,7 +799,7 @@ fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
         } else if root_key == "keys" && !seen_keys_root && json::peek(reader) == '[' {
             seen_keys_root = true;
             json::each_element(reader) {
-                let elem_ok = parse_single_jwk_element(reader, scratch, out_jwks);
+                let elem_ok = parse_single_jwk_element(reader, out_jwks);
                 had_error = had_error || !elem_ok;
             };
         } else {

@@ -199,21 +199,20 @@ fn validate_dpop_jwk_params(info: const DPoPJwkInfo&) -> bool {
 //   reader at "\"base64url...\"", seen = false
 //   sets seen = true, populates dst
 fn parse_dpop_jwk_coord<B>(
-    reader:  json::Reader&,
-    scratch: u8[>..]&,
-    seen:    bool&,
-    dst:     B&,
-    valid:   bool&,
+    reader: json::Reader&,
+    seen:   bool&,
+    dst:    B&,
+    valid:  bool&,
 ) {
     if seen { valid = false; }
     seen = true;
-    let val = json::read_string(reader, scratch);
-    if val.len == 0 || core::index_of_byte(val, '=') != -1 || !dst.try_set(val) {
+    if !core::read_json_string_into(reader, dst) || dst.len == 0 || core::index_of_byte(dst[..], '=') != -1 {
+        dst.clear();
         valid = false;
     }
 }
 
-fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&) -> bool {
+fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
     guard json::peek(reader) == '{' else {
         json::skip(reader);
         return false;
@@ -228,7 +227,6 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
     var seen_e = false;
 
     json::each_member(reader) { jwk_key =>
-        scratch.clear();
         if jwk_key.contains('\\') {
             info.valid = false;
             json::skip(reader);
@@ -239,31 +237,37 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
         } else if jwk_key == "kty" {
             if seen_kty { info.valid = false; }
             seen_kty = true;
-            let kty_val = json::read_string(reader, scratch);
-            let is_supported = (kty_val == "OKP" || kty_val == "EC" || kty_val == "RSA");
+            var kty_buf: u8[..16] = [];
+            let kty_read_ok = core::read_json_string_into(reader, kty_buf);
+            let kty_val = kty_buf[..];
+            let is_supported = kty_read_ok && (kty_val == "OKP" || kty_val == "EC" || kty_val == "RSA");
             info.kty_ok = is_supported;
-            if is_supported {
-                info.kty.try_set(kty_val);
+            if !kty_read_ok {
+                info.valid = false;
+            } else if is_supported {
+                let _ = info.kty.try_set(kty_val);
             } else if core::eq_ascii_fold(kty_val, "oct") {
                 info.has_private_key = true;
             }
         } else if jwk_key == "use" {
             if seen_use { info.valid = false; }
             seen_use = true;
-            let use_val = json::read_string(reader, scratch);
-            if use_val != "sig" { info.valid = false; }
+            var use_buf: u8[..16] = [];
+            if !core::read_json_string_into(reader, use_buf) || use_buf[..] != "sig" {
+                info.valid = false;
+            }
         } else if jwk_key == "alg" {
-            parse_dpop_jwk_coord(reader, scratch, seen_alg, info.alg, info.valid);
+            parse_dpop_jwk_coord(reader, seen_alg, info.alg, info.valid);
         } else if jwk_key == "crv" {
-            parse_dpop_jwk_coord(reader, scratch, seen_crv, info.crv, info.valid);
+            parse_dpop_jwk_coord(reader, seen_crv, info.crv, info.valid);
         } else if jwk_key == "x" {
-            parse_dpop_jwk_coord(reader, scratch, seen_x, info.x, info.valid);
+            parse_dpop_jwk_coord(reader, seen_x, info.x, info.valid);
         } else if jwk_key == "y" {
-            parse_dpop_jwk_coord(reader, scratch, seen_y, info.y, info.valid);
+            parse_dpop_jwk_coord(reader, seen_y, info.y, info.valid);
         } else if jwk_key == "n" {
-            parse_dpop_jwk_coord(reader, scratch, seen_n, info.n, info.valid);
+            parse_dpop_jwk_coord(reader, seen_n, info.n, info.valid);
         } else if jwk_key == "e" {
-            parse_dpop_jwk_coord(reader, scratch, seen_e, info.e, info.valid);
+            parse_dpop_jwk_coord(reader, seen_e, info.e, info.valid);
         } else {
             json::skip(reader);
         }
@@ -281,19 +285,17 @@ fn verify_dpop_jwk(reader: json::Reader&, scratch: u8[>..]&, info: DPoPJwkInfo&)
 //   returns: true, out_pub populated with 32-byte public key
 fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> bool {
     var reader = json::reader(header_json);
-    var scratch: u8[>..] = [];
     var jwk_info = DPoPJwkInfo { .. };
     var seen_jwk = false;
     var had_dup = false;
     json::each_member(reader) { key =>
-        scratch.clear();
         if key.contains('\\') {
             had_dup = true;
             json::skip(reader);
         } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
-            verify_dpop_jwk(reader, scratch, jwk_info);
+            verify_dpop_jwk(reader, jwk_info);
         } else {
             json::skip(reader);
         }
@@ -333,24 +335,23 @@ fn is_dpop_alg_jwk_compatible(alg: const u8[:], info: const DPoPJwkInfo&) -> boo
 fn parse_dpop_header_jwk_info(header_json: const u8[:], out_alg: u8[..16]&, out_jwk: DPoPJwkInfo&) -> bool {
     out_alg.clear();
     var reader = json::reader(header_json);
-    var scratch: u8[>..] = [];
     var seen_jwk = false;
     var seen_alg = false;
     var had_dup = false;
     json::each_member(reader) { key =>
-        scratch.clear();
         if key.contains('\\') {
             had_dup = true;
             json::skip(reader);
         } else if key == "alg" {
             if seen_alg { had_dup = true; }
             seen_alg = true;
-            let alg_val = json::read_string(reader, scratch);
-            if !out_alg.try_set(alg_val) { had_dup = true; }
+            if !core::read_json_string_into(reader, out_alg) {
+                had_dup = true;
+            }
         } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
-            verify_dpop_jwk(reader, scratch, out_jwk);
+            verify_dpop_jwk(reader, out_jwk);
         } else {
             json::skip(reader);
         }
@@ -542,11 +543,9 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
     var had_dup = false;
     var has_crit = false;
     var hdr_alg: u8[..16] = [];
-    var scratch: u8[>..]  = [];
     var jwk_info = DPoPJwkInfo { .. };
 
     json::each_member(reader) { key =>
-        scratch.clear();
         if key.contains('\\') {
             had_dup = true;
             json::skip(reader);
@@ -556,21 +555,24 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
         } else if key == "typ" {
             if seen_typ { had_dup = true; }
             seen_typ = true;
-            let typ_val = json::read_string(reader, scratch);
-            if core::eq_ascii_fold(typ_val, "dpop+jwt") || core::eq_ascii_fold(typ_val, "application/dpop+jwt") {
+            var typ_buf: u8[..32] = [];
+            let typ_ok = core::read_json_string_into(reader, typ_buf);
+            let typ_val = typ_buf[..];
+            let is_dpop_typ = core::eq_ascii_fold(typ_val, "dpop+jwt") ||
+                core::eq_ascii_fold(typ_val, "application/dpop+jwt");
+            if typ_ok && is_dpop_typ {
                 valid_typ = true;
             }
         } else if key == "alg" {
             if seen_alg { had_dup = true; }
             seen_alg = true;
-            let alg_val = json::read_string(reader, scratch);
-            if is_matching_dpop_alg(alg_val, expected_alg) && hdr_alg.try_set(alg_val) {
+            if core::read_json_string_into(reader, hdr_alg) && is_matching_dpop_alg(hdr_alg[..], expected_alg) {
                 valid_alg = true;
             }
         } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
-            verify_dpop_jwk(reader, scratch, jwk_info);
+            verify_dpop_jwk(reader, jwk_info);
         } else {
             json::skip(reader);
         }
@@ -659,7 +661,6 @@ inline fn parse_dpop_iat_field(reader: json::Reader&, out: DPoPClaims&, had_erro
 //   sets dst = "GET", seen = true, had_error = false
 inline fn parse_dpop_claim_str<B>(
     reader:    json::Reader&,
-    scratch:   u8[>..]&,
     dst:       B&,
     seen:      bool&,
     had_dup:   bool&,
@@ -672,8 +673,7 @@ inline fn parse_dpop_claim_str<B>(
         had_error = true;
         return;
     }
-    let val = json::read_string(reader, scratch);
-    if val.len == 0 || !dst.try_set(val) {
+    if !core::read_json_string_into(reader, dst) || dst.len == 0 {
         had_error = true;
     }
 }
@@ -704,30 +704,28 @@ fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool {
     var seen_jkt = false;
     var had_dup = false;
     var had_error = false;
-    var scratch: u8[>..] = [];
 
     json::each_member(reader) { key =>
-        scratch.clear();
         if key.contains('\\') {
             had_error = true;
             json::skip(reader);
         } else if key == "jti" {
-            parse_dpop_claim_str(reader, scratch, out.jti, seen_jti, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.jti, seen_jti, had_dup, had_error);
         } else if key == "htm" {
-            parse_dpop_claim_str(reader, scratch, out.htm, seen_htm, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.htm, seen_htm, had_dup, had_error);
         } else if key == "htu" {
-            parse_dpop_claim_str(reader, scratch, out.htu, seen_htu, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.htu, seen_htu, had_dup, had_error);
         } else if key == "iat" {
             if seen_iat { had_dup = true; }
             seen_iat = true;
             parse_dpop_iat_field(reader, out, had_error);
         } else if key == "nonce" {
-            parse_dpop_claim_str(reader, scratch, out.nonce, seen_nonce, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.nonce, seen_nonce, had_dup, had_error);
             if !rfc::is_valid_dpop_nonce(out.nonce[..]) { had_error = true; }
         } else if key == "ath" {
-            parse_dpop_claim_str(reader, scratch, out.ath, seen_ath, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.ath, seen_ath, had_dup, had_error);
         } else if key == "jkt" {
-            parse_dpop_claim_str(reader, scratch, out.jkt, seen_jkt, had_dup, had_error);
+            parse_dpop_claim_str(reader, out.jkt, seen_jkt, had_dup, had_error);
         } else {
             json::skip(reader);
         }

@@ -8,6 +8,7 @@ namespace wing;
 
 import std;
 import json;
+import core from "..";
 
 // ---- Waterfall Timing Model ---------------------------------------------
 
@@ -65,29 +66,29 @@ struct HarEntry {
 // Serializes a single entry object conforming to HTTP Archive (HAR 1.2) specification
 fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
     out.append("{\"startedDateTime\":");
-    json::format_string(out, entry.started_iso8601[..]);
+    core::format_json_string(out, entry.started_iso8601[..]);
     out.append(",\"time\":");
     let total_us = compute_total_timing_us(entry.timings);
     format_us_as_ms(total_us, out);
 
     out.append(",\"request\":{\"method\":");
-    json::format_string(out, entry.method[..]);
+    core::format_json_string(out, entry.method[..]);
     out.append(",\"url\":");
-    json::format_string(out, entry.url[..]);
+    core::format_json_string(out, entry.url[..]);
     out.append(",\"httpVersion\":");
-    json::format_string(out, entry.http_version[..]);
+    core::format_json_string(out, entry.http_version[..]);
     out.append(",\"bodySize\":");
-    format(out, entry.request_bytes);
+    core::format_i64_dec(entry.request_bytes, out);
     out.append("}");
 
     out.append(",\"response\":{\"status\":");
-    format(out, entry.status as u32);
+    core::format_u32_dec(entry.status as u32, out);
     out.append(",\"statusText\":");
-    json::format_string(out, entry.status_text[..]);
+    core::format_json_string(out, entry.status_text[..]);
     out.append(",\"httpVersion\":");
-    json::format_string(out, entry.http_version[..]);
+    core::format_json_string(out, entry.http_version[..]);
     out.append(",\"bodySize\":");
-    format(out, entry.response_bytes);
+    core::format_i64_dec(entry.response_bytes, out);
     out.append("}");
 
     // Timings object

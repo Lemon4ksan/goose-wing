@@ -6,6 +6,7 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
+import json;
 import core from "../..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
@@ -220,11 +221,68 @@ fn test_url_regressions(t: lit::T&) {
     };
 }
 
+fn test_json_bounded_primitives(t: lit::T&) {
+    t.run("RFC 8259 §7 format_json_string & format_json_key into stack-bounded u8[..N]") { sub =>
+        var out: u8[..128] = [];
+        out.push('{');
+        core::format_json_key(out, "plain");
+        core::format_json_string(out, "hello_world");
+        out.push(',');
+        core::format_json_key(out, "esc\"key");
+        core::format_json_string(out, "line1\n\r\t\x08\x0c\"\\/\x01");
+        out.push('}');
+        sub.assert_eq(
+            out[..],
+            "{\"plain\":\"hello_world\",\"esc\\\"key\":\"line1\\n\\r\\t\\b\\f\\\"\\\\/\\u0001\"}",
+            "format_json_key and format_json_string escape RFC 8259 characters",
+        );
+    };
+
+    t.run("RFC 8259 §7 read_json_string_into unescaped, escaped, UTF-16 surrogates & capacity bounds") { sub =>
+        // 1. Unescaped fast path
+        var r1 = json::reader("\"HS256\"");
+        var dst1: u8[..16] = [];
+        sub.assert_true(core::read_json_string_into(r1, dst1), "unescaped string read succeeds");
+        sub.assert_eq(dst1[..], "HS256", "unescaped string matches");
+
+        // 2. Short escapes + BMP \uXXXX (U+0041 'A', U+00E9 'é', U+20AC '€') + surrogate pair \uD83D\uDE00 (U+1F600 '😀')
+        var r2 = json::reader("\"a\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\u00e9\\u20ac\\uD83D\\uDE00\"");
+        var dst2: u8[..64] = [];
+        sub.assert_true(core::read_json_string_into(r2, dst2), "escaped unicode string read succeeds");
+        let expected_utf8: u8[20] = [
+            'a', '"', '\\', '/', 8, 12, '\n', '\r', '\t', 'A',
+            0xC3, 0xA9,
+            0xE2, 0x82, 0xAC,
+            0xF0, 0x9F, 0x98, 0x80,
+            '!',
+        ];
+        sub.assert_eq(dst2[..], expected_utf8[..19], "decoded escapes and UTF-8 scalars match");
+
+        // 3. Capacity overflow rejected cleanly without partial dirty buffer
+        var r3 = json::reader("\"0123456789\"");
+        var dst_tiny: u8[..4] = [];
+        sub.assert_false(core::read_json_string_into(r3, dst_tiny), "unescaped string exceeding cap returns false");
+        sub.assert_eq(dst_tiny.len, 0, "dst cleared on unescaped overflow");
+
+        var r4 = json::reader("\"abcd\\n\"");
+        var dst_tiny2: u8[..4] = [];
+        sub.assert_false(core::read_json_string_into(r4, dst_tiny2), "escaped string exceeding cap returns false");
+        sub.assert_eq(dst_tiny2.len, 0, "dst cleared on escaped overflow");
+
+        // 4. Invalid escape rejected and sets reader.error
+        var r5 = json::reader("\"bad\\xescape\"");
+        var dst5: u8[..32] = [];
+        sub.assert_false(core::read_json_string_into(r5, dst5), "invalid \\x escape returns false");
+        sub.assert_true(r5.error.len > 0, "reader.error populated on invalid escape");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core Cross-Component & RFC Edge Case Regressions", lit::Verbosity.Verbose);
     lit::run_case(runner, "1. Math & Crypto Regressions", test_math_and_crypto_regressions);
     lit::run_case(runner, "2. Compress & Time Regressions", test_compress_and_time_regressions);
     lit::run_case(runner, "3. URL Regressions", test_url_regressions);
+    lit::run_case(runner, "4. Bounded JSON Primitives", test_json_bounded_primitives);
     let ok = lit::finish(runner);
     assert(ok);
 }

@@ -351,11 +351,28 @@ fn read_json_field(reader: json::Reader&, dst: bool&) {
 }
 
 fn read_json_field(reader: json::Reader&, dst) {
-    var scratch: u8[>..] = [];
-    let str_val = json::read_string(reader, scratch);
     dst.clear();
-    let n = core::ct_min_i64(str_val.len, dst.cap);
-    dst.append(str_val[..n]);
+    guard json::peek(reader) == '"' else {
+        json::fail(reader, "expected a string");
+        return;
+    }
+    let start = core::add_sat_i64(reader.pos, 1);
+    let end, escaped = json::scan_string(reader.text, start);
+    guard end >= 0 else {
+        json::fail(reader, "bad string");
+        return;
+    }
+    reader.pos = core::add_sat_i64(end, 1);
+    if !escaped {
+        let raw = reader.text[start..end];
+        let n = core::ct_min_i64(raw.len, dst.cap);
+        dst.append(raw[..n]);
+        return;
+    }
+    if !core::decode_json_string_into(reader.text, start, end, dst) && !json::valid_escapes(reader.text, start, end) {
+        reader.pos = core::sub_sat_i64(start, 1);
+        json::fail(reader, "bad escape");
+    }
 }
 
 // ---- json response decoding -------------------------------------------------

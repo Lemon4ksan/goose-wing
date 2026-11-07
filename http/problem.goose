@@ -20,58 +20,32 @@ struct ProblemDetails {
     instance: u8[..256] = [],
 }
 
-fn append_json_escaped_string<B>(s: const u8[:], out: B&) {
-    let hex = "0123456789abcdef";
-    for b in s {
-        if b == '"' {
-            out.append("\\\"");
-        } else if b == '\\' {
-            out.append("\\\\");
-        } else if b == '\r' {
-            out.append("\\r");
-        } else if b == '\n' {
-            out.append("\\n");
-        } else if b == '\t' {
-            out.append("\\t");
-        } else if b < 0x20 {
-            out.append("\\u00");
-            out.push(hex[(b >> 4) as i64]);
-            out.push(hex[(b & 0x0F) as i64]);
-        } else {
-            out.push(b);
-        }
-    }
-}
-
 // Formats a ProblemDetails structure into an RFC 9457 JSON byte buffer.
 //
 // Example:
 //   problem = ProblemDetails { status: 404, title: "Resource Not Found" }
 //   returns: {"type":"about:blank","status":404,"title":"Resource Not Found"}
 fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
-    out.append("{\"type\":\"");
+    out.append("{\"type\":");
     if problem.type_uri.len > 0 {
-        append_json_escaped_string(problem.type_uri[..], out);
+        core::format_json_string(out, problem.type_uri[..]);
     } else {
-        out.append("about:blank");
+        out.append("\"about:blank\"");
     }
-    out.append("\",\"status\":");
+    out.append(",\"status\":");
     core::format_i64_dec(problem.status as i64, out);
 
     if problem.title.len > 0 {
-        out.append(",\"title\":\"");
-        append_json_escaped_string(problem.title[..], out);
-        out.push('"');
+        out.append(",\"title\":");
+        core::format_json_string(out, problem.title[..]);
     }
     if problem.detail.len > 0 {
-        out.append(",\"detail\":\"");
-        append_json_escaped_string(problem.detail[..], out);
-        out.push('"');
+        out.append(",\"detail\":");
+        core::format_json_string(out, problem.detail[..]);
     }
     if problem.instance.len > 0 {
-        out.append(",\"instance\":\"");
-        append_json_escaped_string(problem.instance[..], out);
-        out.push('"');
+        out.append(",\"instance\":");
+        core::format_json_string(out, problem.instance[..]);
     }
     out.push('}');
 }
@@ -84,7 +58,6 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
 fn parse_problem_core_fields(
     key:     const u8[:],
     reader:  json::Reader&,
-    scratch: u8[>..]&,
     out:     ProblemDetails&,
     out_err: bool&,
 ) -> bool {
@@ -93,14 +66,9 @@ fn parse_problem_core_fields(
         return true;
     }
     if key == "type" {
-        scratch.clear();
-        let s = json::read_string(reader, scratch);
-        if s.len > out.type_uri.cap {
+        if !core::read_json_string_into(reader, out.type_uri) {
             out_err = true;
-            return true;
         }
-        out.type_uri.clear();
-        out.type_uri.append(s);
         return true;
     }
     return false;
@@ -114,41 +82,25 @@ fn parse_problem_core_fields(
 fn parse_problem_descriptive_fields(
     key:     const u8[:],
     reader:  json::Reader&,
-    scratch: u8[>..]&,
     out:     ProblemDetails&,
     out_err: bool&,
 ) -> bool {
     if key == "title" {
-        scratch.clear();
-        let s = json::read_string(reader, scratch);
-        if s.len > out.title.cap {
+        if !core::read_json_string_into(reader, out.title) {
             out_err = true;
-            return true;
         }
-        out.title.clear();
-        out.title.append(s);
         return true;
     }
     if key == "detail" {
-        scratch.clear();
-        let s = json::read_string(reader, scratch);
-        if s.len > out.detail.cap {
+        if !core::read_json_string_into(reader, out.detail) {
             out_err = true;
-            return true;
         }
-        out.detail.clear();
-        out.detail.append(s);
         return true;
     }
     if key == "instance" {
-        scratch.clear();
-        let s = json::read_string(reader, scratch);
-        if s.len > out.instance.cap {
+        if !core::read_json_string_into(reader, out.instance) {
             out_err = true;
-            return true;
         }
-        out.instance.clear();
-        out.instance.append(s);
         return true;
     }
     return false;
@@ -169,12 +121,11 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
 
     guard json_src.len > 0 else { return false; }
     var reader = json::reader(json_src);
-    var scratch: u8[>..] = [];
     var field_err = false;
 
     json::each_member(reader) { key =>
-        if !parse_problem_core_fields(key, reader, scratch, out, field_err) &&
-           !parse_problem_descriptive_fields(key, reader, scratch, out, field_err) {
+        if !parse_problem_core_fields(key, reader, out, field_err) &&
+           !parse_problem_descriptive_fields(key, reader, out, field_err) {
             json::skip(reader);
         }
     };
