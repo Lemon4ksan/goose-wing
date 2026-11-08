@@ -1,69 +1,62 @@
 # goose-wing
 
-Vulkan-style, zero-allocation web framework and HTTP/1.1, HTTP/2, HTTP/3
-protocol stack for Goose.
+Zero-allocation HTTP/1.1, HTTP/2, HTTP/3, and TLS 1.3 protocol engine and web
+framework for [Goose](https://github.com/aardappel/goose).
 
-[![Goose
-Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose)
-[![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)
+## Architecture
 
-## Design and scope
+`goose-wing` pairs session and server APIs with a fixed-capacity wire stack.
+Every protocol parser, header container, and connection table lives inline in
+compile-time bounded `u8[..N]` buffers on the stack or in static arenas, doing
+zero heap allocations on packet paths and event loops.
 
-High-throughput networking hits the same hardware bottlenecks that graphics APIs
-hit a decade ago: memory bandwidth, L1/L2 cache misses, per-call heap
-allocations, and OS context switches. `wing` applies the explicit resource model
-of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
+The reactor tracks 1,024 concurrent connections in a Structure-of-Arrays table,
+`SoAConnTable`, which separates 1-byte timeout ticks and 8-byte file descriptors
+from the 8 KB per-connection leftover buffers. During the 1-second Slowloris
+sweep, the reactor scans all 1,024 connection deadlines across 1 KB of L1D cache
+without touching payload memory. Outbound frames assemble in place inside 16 KB
+`WireCommandBuffer` regions carved from a 64 KB `WireCommandPool` arena and
+flush in batches over `io_uring`, `epoll`, `kqueue`, or Windows RIO.
 
-- Caller-owned memory and descriptor pools: Functions take caller-allocated
-  slices and fixed-capacity buffers (`u8[..N]`). Connection states and ring
-  buffers (`SoAConnTable`, `PageRingBuffer`) are pre-allocated upfront. The
-  engine does 0 heap allocations on packet paths and event loops.
-- Buffer views instead of string copies: Protocol parsers do not allocate
-  strings or header objects. `HeaderSpan` stores a 9-byte offset-and-length view
-  (`name_pos: u16, name_len: u16, val_pos: u16, val_len: u16, id: u8`) over the
-  raw packet buffer, while `presence_mask: u32` and a 256-bit
-  `HeaderBloomFilter` (four `u64` registers) reject missing headers in 1 to 3
-  CPU cycles before reading memory.
-- Command batching and explicit state machines: Outbound writes batch into
-  `CorkBuffer` and OS ring queues (`io_uring`, Windows RIO) to amortize
-  syscalls. Decoders use SIMD and 64-bit SWAR scanners and return explicit
-  cursor offsets and error states rather than throwing exceptions.
-- Strict RFC conformance and composable stages: Core parsers enforce RFC wire
-  rules and reject non-compliant framing, ambiguous delimiters, and broken
-  server quirks at the ingress boundary. Instead of adding compatibility
-  workarounds to core decoders, `wing` exposes slice-driven (`const u8[:]`)
-  Sans-IO codecs (`wire/`) and bitmask-configured L7 pipelines (`WirePipeline`,
-  `StageVerdict`). Applications that need to talk to non-compliant endpoints can
-  normalize wire buffers or replace individual pipeline stages without forking
-  the project.
+Protocol decoders read borrowed `const u8[:]` slices and write 9-byte
+`HeaderSpan` offsets and 16-byte `HeaderEntry` records that index directly into
+an 8 KB `HeaderMap` buffer. A 64-slot `inline_slots` index resolves standard
+HTTP headers in $O(1)$ using 32-bit and 64-bit SWAR case-folded word
+comparisons. Before reading `HeaderMap`, a 256-bit `HeaderBloomFilter` hashes
+four case-folded feature bytes from the header name by multiplier `1843993368`
+across four `u64` registers to reject missing headers in 1 to 3 CPU cycles.
 
-This makes `wing` suited for reverse proxies, gateways, and edge services where
-predictable clock cycles and zero allocations are required (a complete HTTP/1.1
-L0 request-response turn takes ~397 cycles, or ~44 cycles/req when pipelined on
-x86_64).
+Core parsers validate RFC framing rules once at the ingress boundary and contain
+no compatibility workarounds for broken peers. The `wire` package splits
+protocol framing and L7 middleware into two composable tiers:
 
-It is not a high-level HTTP client like Python's `requests`. Sending a request
-requires setting up buffers, arenas, and transport state. High-level application
-APIs belong in separate libraries built on top of `wing`.
+- Tier 1 provides stateless slice-to-slice Sans-IO codecs for HTTP/1.1, HPACK,
+  HTTP/2, and QPACK/HTTP/3, together with in-place 9-byte HTTP/2 frame header
+  backpatching in `WireCommandBuffer`.
+- Tier 2 drives client and server L7 execution through `WirePipeline`, selecting
+  active stages via 64-bit `ingress_mask` and `egress_mask` bitsets and
+  compile-time `StageChain` hooks returning `StageVerdict`.
+
+Applications talking to non-compliant endpoints can normalize raw wire slices
+before Tier 1 decoding or toggle and replace Tier 2 stages in `WirePipeline`
+without modifying the core decoders.
 
 ## Subsystems
 
-| Subsystem | Standards and capabilities |
+| Subsystem | Implementation scope |
 | :--- | :--- |
-| L4 transport and OS drivers | Windows Registered I/O (RIO), Linux `io_uring` (SQ/CQ rings, fixed buffers), Linux `epoll` with `SO_REUSEPORT`, macOS `kqueue`, POSIX/WinSock, non-blocking reactor loops. |
-| HTTP/1.1 wire stack | HeaderMap with 64 static/dynamic slots, 64-bit SWAR lexical tokenizer, RFC 9112 chunked transfer coding and trailers, TE.CL / CL.TE request smuggling defenses (CVE-2023-39326). |
-| HTTP caching and Cache Groups | RFC 9111 HTTP caching engine, RFC 9875 HTTP Cache Groups tag parsing and group invalidation (`Cache-Groups`, `Cache-Group-Invalidation`), RFC 5861 stale-while-revalidate / stale-if-error. |
-| HTTP/2 protocol stack | RFC 9113 9-byte frame codec, RFC 7541 HPACK 256-state Huffman L1 FSM, signed 64-bit flow control, RFC 9218 stream prioritization, Rapid Reset DoS defense (CVE-2023-44487). |
-| HTTP/3 and QUIC engine | RFC 9000 QUIC packet wire codec, RFC 9369 QUIC Version 2 (`0x6b3343cf`) wire framing, salts, and header types, RFC 9204 QPACK encoder/decoder, BBR congestion control, RFC 9221 datagrams, RFC 7838 Alt-Svc racing, W3C WebTransport over H3. |
-| TLS 1.3 and PKI | RFC 8446 record layer and key schedule, X.509 ASN.1 DER parser, RFC 9849 Encrypted Client Hello (ECH / HPKE RFC 9180), RFC 8555 ACME HTTP-01 key authorization and challenge responder, RFC 8879 Zstd certificate compression, Hybrid ML-KEM-768. |
-| Streaming and RPC | RFC 6455 WebSocket with unrolled 64-bit XOR masking, RFC 8441 Extended CONNECT over H2/H3, W3C EventSource (SSE), gRPC over HTTP/2, and gRPC-Web (binary and base64 text). |
-| Compression suite | RFC 7932 Brotli with 122 KB static dictionary in `.rodata`, RFC 9842 Dictionary-Compressed Brotli (DCB) and DCZ, RFC 8478 Zstandard, Deflate, Gzip, and Zlib. |
-| Application security | W3C Fetch Metadata decision matrix ($\pi_{FM}$ CSRF protection), CORS origin matcher, GCRA rate limiter with TAT, 3-tier SSRF and DNS rebinding guard, Privacy Pass tokens. |
-| Oblivious HTTP and Binary HTTP | RFC 9458 Oblivious HTTP (OHTTP) request/response encapsulation over HPKE (RFC 9180), RFC 9292 Binary Representation of HTTP Messages (bhttp) zero-allocation codec. |
-| Authentication and tokens | RFC 7519 JWT / RFC 7515 JWS (HS256..512, EdDSA), RFC 7517 JWKS with rotation, RFC 9449 OAuth 2.0 DPoP, RFC 7636/9700 PKCE, RFC 7616 Digest, RFC 9421 HTTP Message Signatures. |
-| Chromium CookieMonster | RFC 6265bis engine, CHIPS (partitioned cookies), prefixes (`__Host-`, `__Secure-`), Mozilla Public Suffix List (PSL), 6-round garbage collection, SQLite v24 persistence. |
-| Tunneling and proxies | RFC 9440 Client-Cert and Client-Cert-Chain header codec and reverse proxy sanitization, SOCKS5 / SOCKS5h (RFC 1928/1929 ATYP=0x03 DNS leak prevention), HTTP CONNECT tunneling, HAProxy PROXY Protocol v1 and v2 (TLV parsing), Slowloris tarpit defenses. |
-| Server engine and router | Compressed Radix Trie (`ZeroAllocParams`, insertion-order independence), Tako v2 connection pool, HTTP/2 server frame multiplexer, gRPC server dispatcher. |
+| L4 transport and OS drivers | Non-blocking reactor over Windows Registered I/O, Linux `io_uring` SQ/CQ rings and fixed buffers, Linux `epoll` with `SO_REUSEPORT`, macOS `kqueue`, and POSIX/WinSock sockets. |
+| HTTP/1.1 wire stack | `HeaderMap` with 64 static and dynamic slots, 64-bit SWAR lexical tokenizer, RFC 9112 chunked transfer coding and trailer FSM, TE.CL and CL.TE desync rejection for CVE-2023-39326. |
+| HTTP caching | RFC 9111 cache engine, RFC 9875 `Cache-Groups` and `Cache-Group-Invalidation` header parser and group invalidation, RFC 5861 `stale-while-revalidate` and `stale-if-error`. |
+| HTTP/2 protocol stack | RFC 9113 9-byte frame codec and `CONTINUATION` FSM, RFC 7541 HPACK codec with 256-state Huffman L1 table, signed 64-bit flow control, RFC 9218 stream prioritization, CVE-2023-44487 Rapid Reset defense. |
+| HTTP/3 and QUIC codecs | RFC 9000 QUIC v1 and RFC 9369 QUIC v2 packet framing, salts, and ACK/loss trackers, RFC 9114 HTTP/3 frame codec, RFC 9204 QPACK encoder and blocked-stream decoder, BBR congestion control state machine. |
+| TLS 1.3 and X.509 | RFC 8446 record framer and handshake state machine, X.509 ASN.1 DER validator, RFC 9849 Encrypted Client Hello extension and RFC 9180 HPKE key schedule, RFC 8879 Zstd certificate compression, RFC 8555 ACME HTTP-01 responder. |
+| Realtime and RPC framing | RFC 6455 WebSocket frame codec and fragmentation FSM with 64-bit XOR masking, RFC 8441 Extended CONNECT over H2/H3, W3C Server-Sent Events line parser, length-prefixed gRPC and gRPC-Web codecs. |
+| Compression codecs | RFC 7932 Brotli decoder and encoder with 122 KB static `.rodata` dictionary, RFC 9842 Dictionary-Compressed Brotli and Zstandard framing, RFC 8478 Zstandard, Deflate, Gzip, and Zlib. |
+| L7 security and auth | W3C Fetch Metadata CSRF guard, CORS policy matcher, GCRA rate limiter, 3-tier SSRF IP and DNS guard, RFC 7519 JWT and RFC 7515 JWS with HS256..512 and EdDSA, RFC 7517 JWKS, RFC 9449 DPoP, RFC 7636 PKCE, RFC 7616 Digest, RFC 9421 HTTP Message Signatures. |
+| OHTTP and Binary HTTP | RFC 9458 Oblivious HTTP request and response encapsulation over RFC 9180 HPKE, RFC 9292 Binary HTTP known-length and indeterminate-length message codec. |
+| Cookie storage | RFC 6265bis cookie jar, CHIPS partitioned cookies, `__Host-` and `__Secure-` prefix enforcement, Mozilla Public Suffix List matcher, 6-round eviction, SQLite v24 schema persistence. |
+| Proxies and routing | Insertion-order independent compressed Radix Trie with `ZeroAllocParams`, Tako v2 connection pool, RFC 1928/1929 SOCKS5 and SOCKS5h client handshake, HTTP CONNECT, HAProxy PROXY Protocol v1 and v2 TLV parser, RFC 9440 `Client-Cert` header sanitizer. |
 
 ## Quick start
 
@@ -92,7 +85,7 @@ fn main() {
 }
 ```
 
-### 2. Radix router and HTTP server
+### 2. Non-blocking HTTP reactor server
 
 ```goose
 import std;
@@ -100,13 +93,15 @@ import core;
 import wing;
 
 fn main() {
+    let listener = wing::tcp_listen("127.0.0.1", 8080, 128);
+    guard listener > 0 else { return; }
+    defer wing::tcp_close(listener);
+
     var server = wing::new_http_server("127.0.0.1", 8080);
+    server.add_static_get_route("/health", "application/json", "{\"ok\":true}", 1);
+    server.add_get_route("/api/v1/users/{id}", 2);
 
-    // Register routes with zero-allocation parameters
-    server.add_get_route("/api/v1/users/{id}", 1);
-    server.add_post_route("/api/v1/orders", 2);
-
-    print("Wing Server listening on http://127.0.0.1:8080 (HTTP/1.1 & HTTP/2)...");
+    server.serve_reactor(listener);
 }
 ```
 
@@ -135,11 +130,37 @@ fn main() {
 }
 ```
 
+## Build and test
+
+Typecheck the core libraries, examples, and test suites, then run the native LIT
+verification suites:
+
+```bash
+python tools/test_runner.py --check-only
+goose-lit tests
+```
+
+With [`just`](https://github.com/casey/just) installed:
+
+```bash
+just check
+just lit
+just shims
+```
+
+Run the standalone `wing` CLI directly from source:
+
+```bash
+goose run cli/main.goose -- https://example.com
+goose run cli/main.goose -- serve --port 8080
+```
+
 ## Benchmarks
 
-### Benchmarks vs. uWebSockets (Linux epoll, GCC -O3 -flto, 12 cores)
+### Benchmarks vs. uWebSockets
 
-Measured on an Intel Core i5-12400F in an Ubuntu 24.04 container:
+Measured on an Intel Core i5-12400F with 12 hardware threads in an Ubuntu 24.04
+container using Linux `epoll` and `gcc -O3 -flto`:
 
 | Workload / Benchmark Suite | goose-wing (Goose) | uWebSockets (C++) | Delta |
 | :--- | :---: | :---: | :---: |
@@ -152,10 +173,11 @@ Measured on an Intel Core i5-12400F in an Ubuntu 24.04 container:
 | Heap allocations per request | 0 B (0 allocs) | 0 B (0 allocs) | Parity |
 | Process RSS footprint | 3.1 MB | 18.2 MB | 5.9x lower |
 
-### L0 and L7 pipeline CPU clock cycles (`bench/server_profiling_benchmark.goose`)
+### L0 and L7 pipeline CPU clock cycles
 
 Serialized `rdtscp` cycle count, throughput, and three-channel Goose data-stack
-watermarks across HTTP/1.1 framing and L7 security/caching stages:
+watermarks from `bench/server_profiling_benchmark.goose` across HTTP/1.1 framing
+and L7 security and caching stages:
 
 | Benchmark scenario | Latency (`ns/op`) | Cycles (`cyc/op`) | Throughput (`MB/s`) | Net / Scratch (`B/op`) | `allocs/op` |
 | :--- | :---: | :---: | :---: | :---: | :---: |
