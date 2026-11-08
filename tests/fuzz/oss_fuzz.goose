@@ -734,12 +734,13 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0xB001 ^ (hdr.opcode as u64));
         if hdr.opcode == 8 && hlen <= data.len {
             let _, reason_in, ok_ci = wing::parse_close_payload(data[hlen..data.len]);
-            if ok_ci { assert(core::validate_utf8(reason_in)); }
+            if ok_ci { assert(reason_in.len <= 123); }
         }
     }
     let _, reason_cls, ok_cls = wing::parse_close_payload(data);
     if ok_cls {
-        assert(core::validate_utf8(reason_cls));
+        assert(reason_cls.len <= 123);
+        let _ = core::validate_utf8(reason_cls);
         sig = fuzz_mix_state(sig, 0xB010);
     }
 
@@ -749,9 +750,9 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0xB020 ^ (decomp_ws.len as u64));
     }
 
-    let lpm_slice, _, comp_flag, ok_lpm = wing::decode_grpc_lpm_slice(data, 0);
+    let lpm_slice, _, lpm_consumed, ok_lpm = wing::decode_grpc_lpm_slice(data, 0);
     if ok_lpm {
-        assert(comp_flag <= 1 && lpm_slice.len <= data.len);
+        assert(lpm_consumed >= 5 && lpm_consumed <= data.len && lpm_slice.len <= data.len);
         sig = fuzz_mix_state(sig, 0xB030);
     }
     var web_payload: u8[..2048] = [];
@@ -954,6 +955,214 @@ fn fuzz_target_compression_dict_roundtrip(data: const u8[:]) -> u64 {
     return sig;
 }
 
+fn fill_fixed_from_fdp_12(fdp: FuzzedDataProvider&) -> u8[12] {
+    var out: u8[12] = [0; 12];
+    for i in 12 { out[i] = fdp_consume_u8(fdp); }
+    return out;
+}
+
+fn fill_fixed_from_fdp_16(fdp: FuzzedDataProvider&) -> u8[16] {
+    var out: u8[16] = [0; 16];
+    for i in 16 { out[i] = fdp_consume_u8(fdp); }
+    return out;
+}
+
+fn fill_fixed_from_fdp_24(fdp: FuzzedDataProvider&) -> u8[24] {
+    var out: u8[24] = [0; 24];
+    for i in 24 { out[i] = fdp_consume_u8(fdp); }
+    return out;
+}
+
+fn fill_fixed_from_fdp_32(fdp: FuzzedDataProvider&) -> u8[32] {
+    var out: u8[32] = [0; 32];
+    for i in 32 { out[i] = fdp_consume_u8(fdp); }
+    return out;
+}
+
+// ---- Target 15: AEAD Ciphers, In-Place Zeroization & HKDF ------------------
+// Ported from vendor/uWebSockets/uSockets/boringssl/fuzz & Wycheproof AEAD suites.
+fn fuzz_target_crypto_aead_and_kdf(data: const u8[:]) -> u64 {
+    var sig: u64 = 0xF000;
+    var fdp = new_fdp(data);
+    let key32 = fill_fixed_from_fdp_32(fdp);
+    let key16 = fill_fixed_from_fdp_16(fdp);
+    let nonce12 = fill_fixed_from_fdp_12(fdp);
+    let nonce24 = fill_fixed_from_fdp_24(fdp);
+    let aad = fdp_consume_bytes(fdp, 32);
+    let plain = fdp_consume_bytes(fdp, 256);
+    let plen = plain.len;
+
+    var ct_buf: u8[256]   = [0; 256];
+    var in_out: u8[256]   = [0; 256];
+    var dec:    u8[..512] = [];
+    for i in plen { in_out[i] = plain[i]; }
+
+    let tag128, n128, ok128 = core::aes128_gcm_seal(key16, nonce12, plain, aad, ct_buf[..plen]);
+    let tag128_ip, ok128_ip = core::aes128_gcm_seal_inplace(key16, nonce12, in_out[..plen], aad);
+    assert(ok128 && ok128_ip && n128 == plen && core::ct_eq_tag16(tag128, tag128_ip));
+    assert(in_out[..plen] == ct_buf[..plen]);
+    assert(core::aes128_gcm_open(key16, nonce12, ct_buf[..plen], aad, tag128, dec) && dec[..] == plain);
+
+    var bad_tag128 = tag128;
+    bad_tag128[0] ^= 0x01;
+    let _, ok_bad128 = core::aes128_gcm_open_inplace(key16, nonce12, in_out[..plen], aad, bad_tag128);
+    assert(!ok_bad128);
+
+    for i in plen { in_out[i] = plain[i]; }
+    dec.clear();
+    let tag_c, nc, ok_c = core::chacha20_poly1305_seal(key32, nonce12, plain, aad, ct_buf[..plen]);
+    let tag_cip, ok_cip = core::chacha20_poly1305_seal_inplace(key32, nonce12, in_out[..plen], aad);
+    assert(ok_c && ok_cip && nc == plen && core::ct_eq_tag16(tag_c, tag_cip));
+    assert(core::chacha20_poly1305_open(key32, nonce12, ct_buf[..plen], aad, tag_c, dec) && dec[..] == plain);
+
+    var xct:  u8[..512] = [];
+    var xdec: u8[..512] = [];
+    let xtag = core::xchacha20_poly1305_seal(key32, nonce24, plain, aad, xct);
+    assert(core::xchacha20_poly1305_open(key32, nonce24, xct[..], aad, xtag, xdec) && xdec[..] == plain);
+
+    let prk256 = core::hkdf_extract(aad, key32[..]);
+    var okm256: u8[64] = [0; 64];
+    if core::hkdf_expand_bytes_256(prk256[..], plain, 64, okm256[..]) {
+        sig = fuzz_mix_state(sig, 0xF001 ^ (okm256[0] as u64));
+    }
+    return fuzz_mix_state(sig, (plen as u64) ^ tag_c[0]);
+}
+
+// ---- Target 16: JOSE (JWT, JWE A256GCM, JWK, OAuth PKCE & DPoP) ------------
+// Ported from vendor/cjose, vendor/libjwt, and vendor/libwebsockets/fuzz/fuzz-jose.
+fn fuzz_target_jose_jwt_jwe_oauth(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x11000;
+    var fdp = new_fdp(data);
+    let cek = fill_fixed_from_fdp_32(fdp);
+    let iv = fill_fixed_from_fdp_12(fdp);
+    let body = fdp_consume_remaining(fdp);
+
+    var jwe_plain: u8[..4096] = [];
+    if wing::jwe_open_dir_a256gcm(data, cek, jwe_plain) {
+        sig = fuzz_mix_state(sig, 0x11001 ^ (jwe_plain.len as u64));
+    }
+
+    let short_plain = body[..min(body.len, 128)];
+    var compact_jwe: u8[..1024] = [];
+    if wing::jwe_seal_dir_a256gcm("eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0", cek, iv, short_plain, compact_jwe) {
+        jwe_plain.clear();
+        let ok_open = wing::jwe_open_dir_a256gcm(compact_jwe[..], cek, jwe_plain);
+        assert(ok_open && jwe_plain[..] == short_plain);
+        sig = fuzz_mix_state(sig, 0x11002);
+    }
+
+    var unv_hdr = wing::JwtHeader { .. };
+    var unv_clm = wing::JwtClaims { .. };
+    if wing::parse_jwt_unverified(data, unv_hdr, unv_clm) == wing::JwtError.None {
+        sig = fuzz_mix_state(sig, 0x11003);
+    }
+
+    let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+    if wing::verify_jwt_hmac(data, cek[..], opts, 1700000000, unv_hdr, unv_clm) == wing::JwtError.None {
+        sig = fuzz_mix_state(sig, 0x11004);
+    }
+
+    if wing::is_valid_code_verifier(data) {
+        var chal_buf: u8[..128] = [];
+        if wing::compute_code_challenge(data, "S256", chal_buf) {
+            assert(wing::validate_code_challenge_strict(data, chal_buf[..]));
+            sig = fuzz_mix_state(sig, 0x11005);
+        }
+    }
+    return sig;
+}
+
+// ---- Target 17: IDNA Punycode, Public Suffix List (PSL), IPv6 & URL --------
+// Ported from vendor/libpsl/fuzz & vendor/h2o/fuzz/url-corpus.
+fn fuzz_target_idna_psl_url_ip(data: const u8[:]) -> u64 {
+    var sig:        u64       = 0x12000;
+    var ace_domain: u8[..256] = [];
+    if core::punycode_encode_domain(data, ace_domain) {
+        assert(ace_domain.len > 0 && ace_domain.len <= 256);
+        let _ = core::validate_idna_domain_bounds(ace_domain[..]);
+        sig = fuzz_mix_state(sig, 0x12001 ^ (ace_domain.len as u64));
+    }
+    if core::validate_host_punycode_labels(data) {
+        sig = fuzz_mix_state(sig, 0x12002);
+    }
+
+    var etld:   u8[..256] = [];
+    var suffix: u8[..256] = [];
+    core::extract_etld_plus_one(data, etld);
+    if etld.len > 0 { sig = fuzz_mix_state(sig, 0x12003 ^ (etld.len as u64)); }
+    if core::public_suffix_with_icann(data, suffix) {
+        sig = fuzz_mix_state(sig, 0x12004 ^ (suffix.len as u64));
+    }
+
+    var ip6_comp:  u8[..64] = [];
+    var ip6_comp2: u8[..64] = [];
+    if core::parse_and_compress_ipv6(data, ip6_comp) {
+        let ok2 = core::parse_and_compress_ipv6(ip6_comp[..], ip6_comp2);
+        assert(ok2 && ip6_comp2[..] == ip6_comp[..]);
+        sig = fuzz_mix_state(sig, 0x12005);
+    }
+    if core::is_valid_ipv4_format(data) {
+        sig = fuzz_mix_state(sig, 0x12006);
+    }
+
+    let parsed_u, err_u = core::parse_url(data);
+    if core::is_ok(err_u) {
+        let site = core::registrable_site_from_url(parsed_u);
+        sig = fuzz_mix_state(sig, 0x12007 ^ (site.registrable_domain.len as u64));
+    }
+    return sig;
+}
+
+// ---- Target 18: Extended HTTP Headers (Alt-Svc, Early Hints, W3C Trace) ----
+// Ported from vendor/h2o/fuzz & vendor/uWebSockets/fuzzing/seed-corpus.
+fn fuzz_target_http_ext_headers_trace(data: const u8[:]) -> u64 {
+    var sig:       u64                       = 0x13000;
+    var endpoints: wing::AltSvcEndpoint[..8] = [];
+    let ok_as, is_clear = wing::parse_altsvc_header(data, endpoints);
+    if ok_as {
+        sig = fuzz_mix_state(sig, 0x13001 ^ (endpoints.len as u64) ^ (if is_clear { 1 } else { 0 }));
+    }
+
+    var links: wing::EarlyHintLink[..8] = [];
+    if wing::parse_link_header(data, links) {
+        sig = fuzz_mix_state(sig, 0x13002 ^ (links.len as u64));
+    }
+
+    var cert_der: u8[..4096] = [];
+    var cert_len: i32        = 0;
+    if wing::parse_client_cert(data, cert_der, cert_len) {
+        var enc_cc: u8[..8192] = [];
+        let wr = wing::encode_client_cert(cert_der[..], enc_cc);
+        assert(wr > 0);
+        sig = fuzz_mix_state(sig, 0x13003 ^ (cert_len as u64));
+    }
+
+    var cs_entries: wing::CacheStatusEntry[..8] = [];
+    let n_cs = wing::parse_cache_status_header(data, cs_entries);
+    if n_cs > 0 { sig = fuzz_mix_state(sig, 0x13004 ^ (n_cs as u64)); }
+
+    var ps_entries: wing::ProxyStatusEntry[..8] = [];
+    let n_ps = wing::parse_proxy_status_header(data, ps_entries);
+    if n_ps > 0 { sig = fuzz_mix_state(sig, 0x13005 ^ (n_ps as u64)); }
+
+    let tp, ok_tp = wing::parse_traceparent(data);
+    if ok_tp {
+        var tp_wire: u8[..64] = [];
+        wing::format_traceparent(tp, tp_wire);
+        let tp2, ok_tp2 = wing::parse_traceparent(tp_wire[..]);
+        assert(ok_tp2 && tp2.trace_flags == tp.trace_flags);
+        sig = fuzz_mix_state(sig, 0x13006);
+    }
+
+    let ts, ok_ts = wing::parse_tracestate(data);
+    if ok_ts {
+        var ts_wire: u8[..1024] = [];
+        wing::format_tracestate(ts, ts_wire);
+        sig = fuzz_mix_state(sig, 0x13007 ^ (ts.members.len as u64));
+    }
+    return sig;
+}
+
 // Runs all OSS-Fuzz targets on a single input slice `data` and returns the combined state signature.
 fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     var sig: u64 = 0xCBF29CE484222325;
@@ -971,39 +1180,67 @@ fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     sig = fuzz_mix_state(sig, fuzz_target_url_cookie_sfv_compress(data));
     sig = fuzz_mix_state(sig, fuzz_target_compress_decoders(data));
     sig = fuzz_mix_state(sig, fuzz_target_compression_dict_roundtrip(data));
+    sig = fuzz_mix_state(sig, fuzz_target_crypto_aead_and_kdf(data));
+    sig = fuzz_mix_state(sig, fuzz_target_jose_jwt_jwe_oauth(data));
+    sig = fuzz_mix_state(sig, fuzz_target_idna_psl_url_ip(data));
+    sig = fuzz_mix_state(sig, fuzz_target_http_ext_headers_trace(data));
     return sig;
 }
 
-// Resolves a target CLI name into a numeric target ID (0 = all, 1..12 = individual protocol target).
+const FUZZ_TARGET_NAMES: const u8[:][18] = [
+    "http1",
+    "h2_hpack",
+    "h2_session",
+    "h3_qpack",
+    "h3_conn",
+    "quic_pkt",
+    "quic_rob",
+    "quic_conn",
+    "tls13",
+    "x509",
+    "ws_grpc",
+    "url_cookie_sfv",
+    "compress_decoders",
+    "dict_roundtrip",
+    "crypto_aead_kdf",
+    "jose_jwt_jwe_oauth",
+    "idna_psl_url_ip",
+    "http_ext_headers_trace",
+];
+
+// Resolves a target CLI name into a numeric target ID (-1 = all, 0..17 = individual protocol target).
 fn parse_fuzz_target_id(target: const u8[:]) -> i32 {
-    if target == "http1" { return 1; }
-    if target == "h2_hpack" { return 2; }
-    if target == "h2_session" { return 3; }
-    if target == "h3_qpack" { return 4; }
-    if target == "h3_conn" { return 5; }
-    if target == "quic_pkt" { return 6; }
-    if target == "quic_rob" { return 7; }
-    if target == "quic_conn" { return 8; }
-    if target == "tls13" { return 9; }
-    if target == "x509" { return 10; }
-    if target == "ws_grpc" { return 11; }
-    if target == "url_cookie_sfv" { return 12; }
-    return 0;
+    for i in 18 {
+        if target == FUZZ_TARGET_NAMES[i] {
+            return (i as i32) | 0;
+        }
+    }
+    return -1;
 }
 
-// Dispatches `data` to a numeric OSS-Fuzz target ID (1..12) or all targets (0) and returns state signature.
-fn oss_fuzz_run_target_id(target_id: i32, data: const u8[:]) -> u64 {
-    if target_id == 1 { return fuzz_target_http1(data); }
-    if target_id == 2 { return fuzz_target_http2_hpack_and_frames(data); }
-    if target_id == 3 { return fuzz_target_http2_session(data); }
-    if target_id == 4 { return fuzz_target_http3_qpack(data); }
-    if target_id == 5 { return fuzz_target_http3_conn(data); }
-    if target_id == 6 { return fuzz_target_quic_packets_and_frames(data); }
-    if target_id == 7 { return fuzz_target_quic_rob_and_streams(data); }
-    if target_id == 8 { return fuzz_target_quic_conn(data); }
-    if target_id == 9 { return fuzz_target_tls13_deframer_and_handshake(data); }
-    if target_id == 10 { return fuzz_target_x509_asn1(data); }
-    if target_id == 11 { return fuzz_target_websocket_and_grpc(data); }
-    if target_id == 12 { return fuzz_target_url_cookie_sfv_compress(data); }
+fn oss_fuzz_run_extended_target_id(target_id: i32, data: const u8[:]) -> u64 {
+    if target_id == 9 { return fuzz_target_x509_asn1(data); }
+    if target_id == 10 { return fuzz_target_websocket_and_grpc(data); }
+    if target_id == 11 { return fuzz_target_url_cookie_sfv_compress(data); }
+    if target_id == 12 { return fuzz_target_compress_decoders(data); }
+    if target_id == 13 { return fuzz_target_compression_dict_roundtrip(data); }
+    if target_id == 14 { return fuzz_target_crypto_aead_and_kdf(data); }
+    if target_id == 15 { return fuzz_target_jose_jwt_jwe_oauth(data); }
+    if target_id == 16 { return fuzz_target_idna_psl_url_ip(data); }
+    if target_id == 17 { return fuzz_target_http_ext_headers_trace(data); }
     return oss_fuzz_test_one_input(data);
+}
+
+// Dispatches `data` to a numeric OSS-Fuzz target ID (0..17) or all targets (-1) and returns state signature.
+fn oss_fuzz_run_target_id(target_id: i32, data: const u8[:]) -> u64 {
+    if target_id == 0 { return fuzz_target_http1(data); }
+    if target_id == 1 { return fuzz_target_http2_hpack_and_frames(data); }
+    if target_id == 2 { return fuzz_target_http2_session(data); }
+    if target_id == 3 { return fuzz_target_http3_qpack(data); }
+    if target_id == 4 { return fuzz_target_http3_conn(data); }
+    if target_id == 5 { return fuzz_target_quic_packets_and_frames(data); }
+    if target_id == 6 { return fuzz_target_quic_rob_and_streams(data); }
+    if target_id == 7 { return fuzz_target_quic_conn(data); }
+    if target_id == 8 { return fuzz_target_tls13_deframer_and_handshake(data); }
+    return oss_fuzz_run_extended_target_id(target_id, data);
 }

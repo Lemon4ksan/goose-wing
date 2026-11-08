@@ -2975,7 +2975,7 @@ fn encode_sequences(seqs: const ZstdSeq[:], rep_initial: u32[3], out_buf: u8[>..
 }
 
 fn count_match_len(src: const u8[:], p: i64, curr: i64, n: i64) -> i64 {
-    var m: i64 = 4;
+    var m: i64 = 0;
     while curr + m < n && src[p + m] == src[curr + m] {
         m++;
     }
@@ -3234,7 +3234,11 @@ fn zstd_compress_with_dict<B>(
     let total = src.len;
     let d_len = min(raw_dict.len, 32768);
     let d_slice = raw_dict[sub_sat_i64(raw_dict.len, d_len)..];
-    let prefix_match = count_match_len(d_slice, 0, 0, min(d_slice.len, total));
+    var combined: u8[>..] = [];
+    combined.append(d_slice);
+    combined.append(src);
+    let max_match = min(d_slice.len, total);
+    let prefix_match = count_match_len(combined[..], 0, d_slice.len, add_sat_i64(d_slice.len, max_match));
     let rem_len = sub_sat_i64(total, prefix_match);
     guard prefix_match >= 4 && rem_len < 32 else {
         return zstd_compress_level(src, out_buf, level, include_checksum);

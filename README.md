@@ -155,6 +155,20 @@ goose run cli/main.goose -- https://example.com
 goose run cli/main.goose -- serve --port 8080
 ```
 
+Synchronize upstream reference corpora and Wycheproof vectors in `vendor/`, then
+run coverage-guided fuzzing, differential reference comparison, constant-time
+machine-code and Dudect verification, BoGo and x509-limbo conformance vectors,
+and live TCP reactor soak tests:
+
+```bash
+python scripts/vendor_fuzz.py --sync
+python scripts/sancov_runner.py --execs 5000
+python scripts/diff_fuzz.py --rounds 100
+python scripts/verify_ct_asm.py
+goose-lit tests/lit/verify_bogo_x509_limbo.goose
+python scripts/soak_test.py
+```
+
 ## Benchmarks
 
 ### Benchmarks vs. uWebSockets

@@ -4,9 +4,9 @@
 
 """
 Multi-core native OSS-Fuzz orchestrator and background daemon for goose-wing.
-Compiles `tests/fuzz/background_runner.goose` with `-O2`, discovers all 2,430+ real
-OSS-Fuzz binary corpus seeds in `vendor/`, and continuously fuzzes all 12 protocol
-targets across CPU cores.
+Compiles `tests/fuzz/background_runner.goose` with `-O2`, discovers OSS-Fuzz binary
+corpus seeds across `vendor/`, and continuously fuzzes all 18 protocol, codec, and
+cryptographic targets across CPU cores.
 """
 
 import argparse
@@ -48,18 +48,46 @@ ALL_TARGETS = [
     "x509",
     "ws_grpc",
     "url_cookie_sfv",
+    "compress_decoders",
+    "dict_roundtrip",
+    "crypto_aead_kdf",
+    "jose_jwt_jwe_oauth",
+    "idna_psl_url_ip",
+    "http_ext_headers_trace",
 ]
 
 CORPUS_ROOTS = {
-    "h3_conn": [ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_http3serverreq"],
-    "h3_qpack": [ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_qpackdecoder"],
-    "quic_pkt": [ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus"],
-    "quic_rob": [ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus"],
-    "quic_conn": [ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus"],
+    "h3_conn": [
+        ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_http3serverreq",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http3-corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "qpack_decode",
+    ],
+    "h3_qpack": [
+        ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_qpackdecoder",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "qpack_decode",
+    ],
+    "quic_pkt": [
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "deps" / "quicly" / "fuzz" / "packet-corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_server",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_client",
+    ],
+    "quic_rob": [
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "deps" / "quicly" / "fuzz" / "packet-corpus",
+    ],
+    "quic_conn": [
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_server",
+    ],
     "tls13": [
         ROOT / "vendor" / "rustls" / "fuzz" / "corpus",
         ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-client-hello-corpus",
         ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-server-hello-corpus",
+        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_client_hello_recv_test",
+        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_server_hello_recv_test",
+        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "client_corpus",
+        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "server_corpus",
     ],
     "x509": [
         ROOT
@@ -69,21 +97,64 @@ CORPUS_ROOTS = {
         / "boringssl"
         / "fuzz"
         / "parse_certificate_fuzzer_corpus",
+        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "cert_corpus",
+        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_x509_validator_test",
     ],
     "ws_grpc": [
         ROOT / "vendor" / "tungstenite" / "fuzz" / "seeds" / "read_message_server",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "WebSocket_seed_corpus",
+        ROOT
+        / "vendor"
+        / "libwebsockets"
+        / "minimal-examples-lowlevel"
+        / "raw"
+        / "minimal-raw-vhost"
+        / "fuzz",
     ],
     "url_cookie_sfv": [
         ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "url-corpus",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "TopicTree_seed_corpus",
     ],
     "http1": [
         ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "Http_seed_corpus",
     ],
     "h2_hpack": [
         ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_qpackdecoder",
+        ROOT / "vendor" / "nghttp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http2-corpus",
     ],
     "h2_session": [
         ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_http3serverreq",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http2-corpus",
+        ROOT / "vendor" / "nghttp2" / "fuzz" / "corpus",
+    ],
+    "compress_decoders": [
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+    ],
+    "dict_roundtrip": [
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "url-corpus",
+    ],
+    "crypto_aead_kdf": [
+        ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-client-hello-corpus",
+        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_tls13_keys_test",
+    ],
+    "jose_jwt_jwe_oauth": [
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "url-corpus",
+    ],
+    "idna_psl_url_ip": [
+        ROOT / "vendor" / "libpsl" / "fuzz" / "libpsl_load_dafsa_fuzzer.in",
+        ROOT / "vendor" / "libpsl" / "fuzz" / "libpsl_fuzzer.in",
+        ROOT / "vendor" / "h2o" / "fuzz" / "url-corpus",
+    ],
+    "http_ext_headers_trace": [
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
     ],
 }
 
@@ -105,6 +176,7 @@ def discover_corpus() -> dict[str, list[str]]:
         for d in dirs:
             if not d.exists():
                 continue
+            count = 0
             for p in d.rglob("*"):
                 if p.is_file():
                     s = str(p)
@@ -112,6 +184,9 @@ def discover_corpus() -> dict[str, list[str]]:
                     if s not in seen:
                         all_files.append(s)
                         seen.add(s)
+                    count += 1
+                    if count >= 600:
+                        break
 
     by_target["all"] = all_files
     return by_target
