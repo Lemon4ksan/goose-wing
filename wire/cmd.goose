@@ -36,6 +36,27 @@ enum WireCommandBufferState {
     Invalid,
 }
 
+inline fn can_begin_command_buffer(s: WireCommandBufferState.Initial) -> bool { return true; }
+inline fn can_begin_command_buffer(s: WireCommandBufferState.Executable) -> bool { return true; }
+inline fn can_begin_command_buffer(s: WireCommandBufferState.Recording) -> bool { return false; }
+inline fn can_begin_command_buffer(s: WireCommandBufferState.RecordingHeaders) -> bool { return false; }
+inline fn can_begin_command_buffer(s: WireCommandBufferState.Pending) -> bool { return false; }
+inline fn can_begin_command_buffer(s: WireCommandBufferState.Invalid) -> bool { return false; }
+
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Executable) -> bool { return true; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Recording) -> bool { return true; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Initial) -> bool { return false; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.RecordingHeaders) -> bool { return false; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Pending) -> bool { return false; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Invalid) -> bool { return false; }
+
+inline fn can_record_wire_cmd(s: WireCommandBufferState.Recording) -> bool { return true; }
+inline fn can_record_wire_cmd(s: WireCommandBufferState.Initial) -> bool { return false; }
+inline fn can_record_wire_cmd(s: WireCommandBufferState.RecordingHeaders) -> bool { return false; }
+inline fn can_record_wire_cmd(s: WireCommandBufferState.Executable) -> bool { return false; }
+inline fn can_record_wire_cmd(s: WireCommandBufferState.Pending) -> bool { return false; }
+inline fn can_record_wire_cmd(s: WireCommandBufferState.Invalid) -> bool { return false; }
+
 // Command Buffer Usage Flags (matching VkCommandBufferUsageFlagBits).
 const WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT:  u32 = 0x00000001;
 const WIRE_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT: u32 = 0x00000002;
@@ -110,7 +131,7 @@ fn commit_command_buffer_to_arena(
     guard pool.is_valid &&
           is_valid_pool_slot_for_cmd(pool, cmd) &&
           !cmd.has_error &&
-          (cmd.state == WireCommandBufferState.Executable || cmd.state == WireCommandBufferState.Recording) &&
+          can_commit_command_buffer(cmd.state) &&
           cmd.arena_offset >= 0 &&
           cmd.buf.len <= cmd.arena_capacity &&
           end_off <= pool.arena.len else {
@@ -204,7 +225,7 @@ fn begin_command_buffer(
     cmd:  WireCommandBuffer&,
     info: const WireCommandBufferBeginInfo&,
 ) -> WireResult {
-    guard cmd.state == WireCommandBufferState.Initial || cmd.state == WireCommandBufferState.Executable else {
+    guard can_begin_command_buffer(cmd.state) else {
         cmd.has_error = true;
         return WireResult.ErrorCommandRecordingActive;
     }
@@ -220,7 +241,7 @@ fn begin_command_buffer(
 
 // Completes recording of a command buffer (VkEndCommandBuffer).
 fn end_command_buffer(cmd: WireCommandBuffer&) -> WireResult {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard can_record_wire_cmd(cmd.state) else {
         cmd.has_error = true;
         return WireResult.ErrorCommandNotRecording;
     }

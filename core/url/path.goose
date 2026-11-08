@@ -474,13 +474,9 @@ inline fn find_scheme_colon(s: const u8[:]) -> i64 {
 }
 
 inline fn find_query_or_hash_start(s: const u8[:]) -> i64 {
-    for scan_idx in s.len {
-        let char_byte = s[scan_idx];
-        if char_byte == '?' || char_byte == '#' {
-            return scan_idx;
-        }
-    }
-    return s.len;
+    let before_q, _, _ = partition_byte(s, '?');
+    let before_h, _, _ = partition_byte(before_q, '#');
+    return before_h.len;
 }
 
 inline fn skip_leading_slashes(s: const u8[:]) -> i64 {
@@ -556,11 +552,13 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
         return Url { valid: false, .. }, UrlParseError.InputTooLong;
     }
 
-    if combined.len == 0 || combined[combined.len - 1] != '/' {
+    if !ends_with(combined[..], "/") {
         guard combined.try_push('/') else {
             return Url { valid: false, .. }, UrlParseError.InputTooLong;
         }
     }
+    let prefix_len = collapse_repeats_in_place(combined[..], '/');
+    combined.resize(prefix_len);
 
     let sub_start = skip_leading_slashes(raw_subpath);
     guard combined.try_append(raw_subpath[sub_start..]) else {

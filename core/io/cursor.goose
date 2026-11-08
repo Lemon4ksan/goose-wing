@@ -249,6 +249,120 @@ fn read_u24_prefixed(c: ByteCursor&) -> const u8[:], bool {
     return sub, true;
 }
 
+// Consumes `len` bytes from `c` and returns a bounded `ByteCursor` over that exact slice.
+// Leaves `c` unchanged on framing error.
+//
+// Example:
+//   c.buf = "hello", len = 3
+//   returns: sub.buf = "hel", ok = true, c.buf = "lo"
+fn read_sub_cursor(c: ByteCursor&, len: i64) -> ByteCursor, bool {
+    let sub, ok = read_bytes(c, len);
+    guard ok else { return ByteCursor { buf: c.buf[..0] }, false; }
+    return ByteCursor { buf: sub }, true;
+}
+
+// Reads an 8-bit length prefix and returns a bounded `ByteCursor` over that nested frame.
+// Leaves `c` unchanged on framing error.
+//
+// Example:
+//   c.buf = [0x02, 0xAA, 0xBB, 0xCC]
+//   returns: sub.buf = [0xAA, 0xBB], ok = true, c.buf = [0xCC]
+fn read_u8_sub_cursor(c: ByteCursor&) -> ByteCursor, bool {
+    let saved = c.buf;
+    let length, ok_len = read_u8(c);
+    guard ok_len else { return ByteCursor { buf: c.buf[..0] }, false; }
+    let sub, ok = read_sub_cursor(c, length);
+    guard ok else {
+        c.buf = saved;
+        return ByteCursor { buf: c.buf[..0] }, false;
+    }
+    return sub, true;
+}
+
+// Reads a 16-bit big-endian length prefix and returns a bounded `ByteCursor` over that nested frame.
+// Leaves `c` unchanged on framing error.
+//
+// Example:
+//   c.buf = [0x00, 0x02, 0xAA, 0xBB]
+//   returns: sub.buf = [0xAA, 0xBB], ok = true, c.buf = []
+fn read_u16_sub_cursor(c: ByteCursor&) -> ByteCursor, bool {
+    let saved = c.buf;
+    let length, ok_len = read_u16(c);
+    guard ok_len else { return ByteCursor { buf: c.buf[..0] }, false; }
+    let sub, ok = read_sub_cursor(c, length);
+    guard ok else {
+        c.buf = saved;
+        return ByteCursor { buf: c.buf[..0] }, false;
+    }
+    return sub, true;
+}
+
+// Reads a 24-bit big-endian length prefix and returns a bounded `ByteCursor` over that nested frame.
+// Leaves `c` unchanged on framing error.
+//
+// Example:
+//   c.buf = [0x00, 0x00, 0x02, 0xAA, 0xBB]
+//   returns: sub.buf = [0xAA, 0xBB], ok = true, c.buf = []
+fn read_u24_sub_cursor(c: ByteCursor&) -> ByteCursor, bool {
+    let saved = c.buf;
+    let length, ok_len = read_u24(c);
+    guard ok_len else { return ByteCursor { buf: c.buf[..0] }, false; }
+    let sub, ok = read_sub_cursor(c, length);
+    guard ok else {
+        c.buf = saved;
+        return ByteCursor { buf: c.buf[..0] }, false;
+    }
+    return sub, true;
+}
+
+// Zero-allocation MSB-first bit stream reader over an immutable byte slice.
+struct BitStreamReader {
+    src:      const u8[:] = [],
+    byte_pos: i64         = 0,
+    bit_buf:  u64         = 0,
+    bit_cnt:  i64         = 0,
+}
+
+// Initializes a zero-allocation `BitStreamReader` wrapping `src`.
+inline fn make_bit_reader(src: const u8[:]) -> BitStreamReader {
+    return BitStreamReader {
+        src:      src,
+        byte_pos: 0,
+        bit_buf:  0,
+        bit_cnt:  0,
+    };
+}
+
+// Reads `width` MSB-first bits (0..56) from `br`, refilling `bit_buf` from `src` on demand.
+// Leaves `br` unchanged if fewer than `width` bits are available.
+//
+// Example:
+//   br = make_bit_reader([0xA5]), width = 4
+//   returns: val = 0x0A, ok = true, br.bit_cnt = 4
+fn read_bits(br: BitStreamReader&, width: i64) -> u64, bool {
+    guard width >= 0 && width <= 56 && br.byte_pos >= 0 && br.bit_cnt >= 0 else { return 0, false; }
+    let saved_pos = br.byte_pos;
+    let saved_buf = br.bit_buf;
+    let saved_cnt = br.bit_cnt;
+    while br.bit_cnt < width && br.byte_pos >= 0 && br.byte_pos < br.src.len {
+        let rem = br.src[br.byte_pos..];
+        guard rem.len > 0 else { break; }
+        br.bit_buf = shl_sat_u64(br.bit_buf, 8) | rem[0];
+        br.byte_pos = add_sat_i64(br.byte_pos, 1);
+        br.bit_cnt = add_sat_i64(br.bit_cnt, 8);
+    }
+    guard br.bit_cnt >= width else {
+        br.byte_pos = saved_pos;
+        br.bit_buf = saved_buf;
+        br.bit_cnt = saved_cnt;
+        return 0, false;
+    }
+    br.bit_cnt = sub_sat_i64(br.bit_cnt, width);
+    let mask = sub_sat_u64(shl_sat_u64(1, width as u32), 1);
+    let shift = min(br.bit_cnt as u64, 63);
+    return (br.bit_buf >> shift) & mask, true;
+}
+
 // Extracts the trailing byte from the cursor without scanning.
 //
 // Example:

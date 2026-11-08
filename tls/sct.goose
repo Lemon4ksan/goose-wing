@@ -40,7 +40,7 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
     let log_id, ok_l = c.read_bytes(rfc::SCT_LOG_ID_LEN);
     let ts_hi, ok_th = c.read_u32();
     let ts_lo, ok_tl = c.read_u32();
-    let _, ok_ext = c.read_u16_prefixed();
+    let _, ok_ext = c.read_u16_sub_cursor();
     let hash_alg, ok_h = c.read_u8();
     let sig_alg, ok_s = c.read_u8();
     let sig_bytes, ok_sig = c.read_u16_prefixed();
@@ -64,15 +64,14 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
 fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
     out_scts.clear();
     var c = core::cursor_from(raw_list);
-    let list_bytes, ok_l = c.read_u16_prefixed();
-    guard ok_l && c.buf.len == 0 && list_bytes.len > 0 else { return false; }
+    var list_cursor, ok_l = c.read_u16_sub_cursor();
+    guard ok_l && c.buf.len == 0 && list_cursor.buf.len > 0 else { return false; }
 
-    var list_cursor = core::cursor_from(list_bytes);
     while list_cursor.buf.len > 0 {
-        let sct_bytes, ok_s = list_cursor.read_u16_prefixed();
-        guard ok_s && sct_bytes.len > 0 else { return false; }
+        let sct_cursor, ok_s = list_cursor.read_u16_sub_cursor();
+        guard ok_s && sct_cursor.buf.len > 0 else { return false; }
         var sct = ParsedSct { .. };
-        guard parse_sct_entry(sct_bytes, sct) && out_scts.try_push(sct) else { return false; }
+        guard parse_sct_entry(sct_cursor.buf, sct) && out_scts.try_push(sct) else { return false; }
     }
     return out_scts.len > 0;
 }

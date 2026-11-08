@@ -40,9 +40,23 @@ enum PollInterest {
     ReadWrite,
 }
 
+inline fn interest_to_poll_flags(i: PollInterest.None) -> u32 { return POLL_NONE; }
+inline fn interest_to_poll_flags(i: PollInterest.Read) -> u32 { return POLL_READ; }
+inline fn interest_to_poll_flags(i: PollInterest.Write) -> u32 { return POLL_WRITE; }
+inline fn interest_to_poll_flags(i: PollInterest.ReadWrite) -> u32 { return POLL_READ | POLL_WRITE; }
+
 enum PollTrigger {
     Level, // Level-triggered: persists until condition drained
     Edge,  // Edge-triggered: notified only on state transition (EPOLLET / EV_CLEAR)
+}
+
+inline fn apply_trigger_clear_mask(t: PollTrigger.Edge, sim: SimulatedReadyState&, triggered: u32) {
+    sim.ready &= ~triggered;
+    sim.bytes = 0;
+}
+
+inline fn apply_trigger_clear_mask(t: PollTrigger.Level, sim: SimulatedReadyState&, triggered: u32) {
+    sim.ready &= ~POLL_WRITE;
 }
 
 struct PollReadyEvent {
@@ -527,22 +541,9 @@ fn poll_events(
     for i in p.registrations.len {
         guard p.registrations[i].in_use else { continue; }
 
-        let interest = p.registrations[i].interest;
-        var ready = p.registrations[i].sim.ready;
-        var triggered: u32 = POLL_NONE;
-
-        if (ready & POLL_READ) != 0 && (interest == PollInterest.Read || interest == PollInterest.ReadWrite) {
-            triggered |= POLL_READ;
-        }
-        if (ready & POLL_WRITE) != 0 && (interest == PollInterest.Write || interest == PollInterest.ReadWrite) {
-            triggered |= POLL_WRITE;
-        }
-        if (ready & POLL_ERROR) != 0 {
-            triggered |= POLL_ERROR;
-        }
-        if (ready & POLL_HANGUP) != 0 {
-            triggered |= POLL_HANGUP;
-        }
+        let interest_mask = interest_to_poll_flags(p.registrations[i].interest) | POLL_ERROR | POLL_HANGUP;
+        let ready = p.registrations[i].sim.ready;
+        let triggered: u32 = ready & interest_mask;
 
         if triggered != POLL_NONE {
             let ev = PollReadyEvent {
@@ -555,13 +556,7 @@ fn poll_events(
             };
             guard out_events.try_push(ev) else { break; }
             p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
-
-            if p.registrations[i].trigger == PollTrigger.Edge {
-                p.registrations[i].sim.ready &= ~triggered;
-                p.registrations[i].sim.bytes = 0;
-            } else {
-                p.registrations[i].sim.ready &= ~POLL_WRITE;
-            }
+            apply_trigger_clear_mask(p.registrations[i].trigger, p.registrations[i].sim, triggered);
         }
     }
 

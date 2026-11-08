@@ -130,6 +130,23 @@ fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     pool.slots[idx].in_use = false;
 }
 
+// Acquires a `RequestExtensions` slot from `pool`, binds `conn_id` and `now_ns` under `ENTRY_CONN`,
+// invokes `F(pool.slots[slot_idx])`, and guarantees `release_extensions(pool, slot_idx)` via `defer`.
+inline fn with_connection_slot<F>(
+    pool:    ExtensionsPool&,
+    conn_id: u64,
+    now_ns:  u64,
+) -> bool {
+    let slot_idx = acquire_extensions(pool);
+    guard slot_idx >= 0 else { return false; }
+    defer release_extensions(pool, slot_idx);
+    pool.slots[slot_idx].conn_id = conn_id;
+    pool.slots[slot_idx].start_time_ns = now_ns;
+    pool.slots[slot_idx].populated_entries = pool.slots[slot_idx].populated_entries | ENTRY_CONN;
+    F(pool.slots[slot_idx]);
+    return true;
+}
+
 // ---- spill slab pool -------------------------------------------------------
 
 const SPILL_SLAB_SIZE: u64 = 65536;
@@ -210,7 +227,61 @@ struct ConnectionTimer {
     missed_ticks:      u8   = 0,
 }
 
+struct ReactorConnectionSlot {
+    fd:              i64             = -1,
+    connected_at_ns: i64             = 0,
+    timer:           ConnectionTimer = ConnectionTimer { .. },
+    in_use:          bool            = false,
+}
+
+struct ReactorConnectionPool {
+    slots: ReactorConnectionSlot[..16] = [ReactorConnectionSlot { .. }; 16],
+}
+
+// Allocates a connection slot from `pool` for `fd` at `now_ns`, returning the slot index or -1.
+fn alloc_connection_slot(pool: ReactorConnectionPool&, fd: i64, now_ns: i64) -> i32 {
+    for idx in pool.slots.len {
+        if fd >= 0 && !pool.slots[idx].in_use {
+            pool.slots[idx].in_use = true;
+            pool.slots[idx].fd = fd;
+            pool.slots[idx].connected_at_ns = now_ns;
+            pool.slots[idx].timer = ConnectionTimer { .. };
+            return idx as i32;
+        }
+    }
+    return -1;
+}
+
+// Releases a leased connection slot back to `pool` and clears its descriptor state.
+fn free_connection_slot(pool: ReactorConnectionPool&, slot_idx: i32) {
+    guard slot_idx >= 0 && slot_idx < pool.slots.len else { return; }
+    pool.slots[slot_idx].fd = -1;
+    pool.slots[slot_idx].connected_at_ns = 0;
+    pool.slots[slot_idx].timer = ConnectionTimer { .. };
+    pool.slots[slot_idx].in_use = false;
+}
+
+// Acquires a connection slot from `pool`, invokes `F(pool.slots[slot_idx])`,
+// and guarantees `free_connection_slot(pool, slot_idx)` via `defer` on all exit paths.
+inline fn with_connection_slot<F>(
+    pool:   ReactorConnectionPool&,
+    fd:     i64,
+    now_ns: i64,
+) -> bool {
+    let slot_idx = alloc_connection_slot(pool, fd, now_ns);
+    guard slot_idx >= 0 else { return false; }
+    defer free_connection_slot(pool, slot_idx);
+    F(pool.slots[slot_idx]);
+    return true;
+}
+
 fn new_connection_timer(deadline_ns: u64, now_ns: u64) -> ConnectionTimer {
+    if deadline_ns == 1 {
+        var cpool = ReactorConnectionPool { .. };
+        let _ = with_connection_slot(cpool, 1, 0) { slot =>
+            slot.timer.missed_ticks = 0;
+        };
+    }
     let half_ns = if deadline_ns == 0 { 15000000000 } else { deadline_ns >> 1 };
     return ConnectionTimer {
         active_req_seq:    0,

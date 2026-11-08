@@ -508,9 +508,10 @@ fn quic_table_get_or_open_stream(
         return new_idx, true;
     }
     for i in tbl.streams.len {
-        if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
-            record_evicted_closed_stream(tbl, tbl.streams[i].stream_id);
-            tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
+        let slot .= tbl.streams[i];
+        if quic_stream_is_terminal(slot, tbl.role) {
+            record_evicted_closed_stream(tbl, slot.stream_id);
+            slot = new_quic_stream(stream_id, default_recv_flow);
             return i as i32, true;
         }
     }
@@ -546,10 +547,11 @@ fn quic_table_open_local_stream(
         return stream_id, new_idx, true;
     }
     for i in tbl.streams.len {
-        if quic_stream_is_terminal(tbl.streams[i], tbl.role) {
-            record_evicted_closed_stream(tbl, tbl.streams[i].stream_id);
+        let slot .= tbl.streams[i];
+        if quic_stream_is_terminal(slot, tbl.role) {
+            record_evicted_closed_stream(tbl, slot.stream_id);
             let stream_id = advance_stream_counter(tbl, is_bidi);
-            tbl.streams[i] = new_quic_stream(stream_id, default_recv_flow);
+            slot = new_quic_stream(stream_id, default_recv_flow);
             return stream_id, i as i32, true;
         }
     }

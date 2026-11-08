@@ -591,13 +591,14 @@ fn acquire_connection_slot(pool: StreamPool&, now_ns: i64) -> i32 {
 fn group_record_closed(pool: StreamPool&, key: const PoolKey&, active: bool) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
+    let grp .= pool.groups[grp_idx];
     if active {
-        if pool.groups[grp_idx].active_conns > 0 {
-            pool.groups[grp_idx].active_conns -= 1;
+        if grp.active_conns > 0 {
+            grp.active_conns -= 1;
         }
     } else {
-        if pool.groups[grp_idx].idle_conns > 0 {
-            pool.groups[grp_idx].idle_conns -= 1;
+        if grp.idle_conns > 0 {
+            grp.idle_conns -= 1;
         }
     }
 }
@@ -605,19 +606,21 @@ fn group_record_closed(pool: StreamPool&, key: const PoolKey&, active: bool) {
 fn group_record_acquired(pool: StreamPool&, key: const PoolKey&) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
-    pool.groups[grp_idx].active_conns += 1;
-    if pool.groups[grp_idx].idle_conns > 0 {
-        pool.groups[grp_idx].idle_conns -= 1;
+    let grp .= pool.groups[grp_idx];
+    grp.active_conns += 1;
+    if grp.idle_conns > 0 {
+        grp.idle_conns -= 1;
     }
 }
 
 fn group_record_released(pool: StreamPool&, key: const PoolKey&) {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 else { return; }
-    if pool.groups[grp_idx].active_conns > 0 {
-        pool.groups[grp_idx].active_conns -= 1;
+    let grp .= pool.groups[grp_idx];
+    if grp.active_conns > 0 {
+        grp.active_conns -= 1;
     }
-    pool.groups[grp_idx].idle_conns += 1;
+    grp.idle_conns += 1;
 }
 
 // Marks a pooled connection as closed, freeing it for slot reclamation.
@@ -651,11 +654,12 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     }
 
     if oldest_idx >= 0 {
-        group_record_closed(pool, pool.conns[oldest_idx].key, false);
-        pool.conns[oldest_idx].transport.close();
-        pool.conns[oldest_idx].rx_buf.clear();
-        pool.conns[oldest_idx].closed = true;
-        pool.conns[oldest_idx].no_new_exchanges = true;
+        let victim .= pool.conns[oldest_idx];
+        group_record_closed(pool, victim.key, false);
+        victim.transport.close();
+        victim.rx_buf.clear();
+        victim.closed = true;
+        victim.no_new_exchanges = true;
         return true;
     }
     return false;
@@ -676,11 +680,12 @@ fn evict_oldest_idle_in_group(pool: StreamPool&, key: const PoolKey&) -> bool {
     }
 
     guard oldest_idx >= 0 else { return false; }
-    group_record_closed(pool, pool.conns[oldest_idx].key, false);
-    pool.conns[oldest_idx].transport.close();
-    pool.conns[oldest_idx].rx_buf.clear();
-    pool.conns[oldest_idx].closed = true;
-    pool.conns[oldest_idx].no_new_exchanges = true;
+    let victim .= pool.conns[oldest_idx];
+    group_record_closed(pool, victim.key, false);
+    victim.transport.close();
+    victim.rx_buf.clear();
+    victim.closed = true;
+    victim.no_new_exchanges = true;
     return true;
 }
 
@@ -715,23 +720,25 @@ fn evict_oldest_idle_for_proxy(pool: StreamPool&, proxy_chain: const ProxyChain&
     }
 
     guard oldest_idx >= 0 else { return false; }
-    group_record_closed(pool, pool.conns[oldest_idx].key, false);
-    pool.conns[oldest_idx].transport.close();
-    pool.conns[oldest_idx].rx_buf.clear();
-    pool.conns[oldest_idx].closed = true;
-    pool.conns[oldest_idx].no_new_exchanges = true;
+    let victim .= pool.conns[oldest_idx];
+    group_record_closed(pool, victim.key, false);
+    victim.transport.close();
+    victim.rx_buf.clear();
+    victim.closed = true;
+    victim.no_new_exchanges = true;
     return true;
 }
 
 fn enforce_group_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 && pool.max_sockets_per_group > 0 else { return true; }
-    let total_grp = core::add_sat_i64(pool.groups[grp_idx].active_conns, pool.groups[grp_idx].idle_conns);
+    let grp .= pool.groups[grp_idx];
+    let total_grp = core::add_sat_i64(grp.active_conns, grp.idle_conns);
     guard total_grp >= pool.max_sockets_per_group else { return true; }
-    if pool.groups[grp_idx].idle_conns > 0 {
+    if grp.idle_conns > 0 {
         let _ = evict_oldest_idle_in_group(pool, key);
     }
-    return pool.groups[grp_idx].active_conns < pool.max_sockets_per_group;
+    return grp.active_conns < pool.max_sockets_per_group;
 }
 
 fn enforce_proxy_chain_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
@@ -760,13 +767,14 @@ fn can_allocate_group_socket(
 // Closes and evicts all connections from the stream pool, resetting buffers.
 fn drain_stream_pool(pool: StreamPool&) {
     for i in pool.conns.len {
-        if !pool.conns[i].closed {
-            group_record_closed(pool, pool.conns[i].key, pool.conns[i].active_allocations > 0);
-            pool.conns[i].transport.close();
-            pool.conns[i].rx_buf.clear();
-            pool.conns[i].closed = true;
-            pool.conns[i].no_new_exchanges = true;
-            pool.conns[i].active_allocations = 0;
+        let c .= pool.conns[i];
+        if !c.closed {
+            group_record_closed(pool, c.key, c.active_allocations > 0);
+            c.transport.close();
+            c.rx_buf.clear();
+            c.closed = true;
+            c.no_new_exchanges = true;
+            c.active_allocations = 0;
         }
     }
 }
@@ -957,9 +965,10 @@ fn register_connection(
     let cid = register_connection(pool, key, proto, resolved_ip, max_streams, now_ns, respect_limits);
     let idx = if cid > 0 { pool.find_connection_index(cid) } else { -1 };
     if idx >= 0 {
-        pool.conns[idx].transport = t;
+        let conn .= pool.conns[idx];
+        conn.transport = t;
         match t {
-            Tls tl => tls_copy_slot_san_hosts(tl.cipher_slot, pool.conns[idx].san_hosts),
+            Tls tl => tls_copy_slot_san_hosts(tl.cipher_slot, conn.san_hosts),
             _ => {},
         };
         return cid;
@@ -1101,9 +1110,10 @@ fn register_upstream_conn(
         healthy:         true,
     };
     for i in pool.entries.len {
-        if !pool.entries[i].healthy && !pool.entries[i].in_use {
-            close_upstream_entry_fd(pool.entries[i]);
-            pool.entries[i] = entry;
+        let cur .= pool.entries[i];
+        if !cur.healthy && !cur.in_use {
+            close_upstream_entry_fd(cur);
+            cur = entry;
             return true;
         }
     }
@@ -1118,12 +1128,13 @@ fn register_upstream_conn(
 fn notify_upstream_epoll_events(pool: UpstreamPool&, fd: i32, events: u32) -> bool {
     var matched = false;
     for i in pool.entries.len {
-        if pool.entries[i].fd == fd && pool.entries[i].healthy {
-            pool.entries[i].epoll_events |= events;
+        let cur .= pool.entries[i];
+        if cur.fd == fd && cur.healthy {
+            cur.epoll_events |= events;
             matched = true;
-            if is_epoll_rdhup_signaled(pool.entries[i].epoll_events) && !pool.entries[i].in_use {
-                close_upstream_entry_fd(pool.entries[i]);
-                pool.entries[i].healthy = false;
+            if is_epoll_rdhup_signaled(cur.epoll_events) && !cur.in_use {
+                close_upstream_entry_fd(cur);
+                cur.healthy = false;
                 pool.evicted_rdhup += 1;
             }
         }
@@ -1140,14 +1151,15 @@ fn acquire_upstream_conn(
     nik:             u64,
 ) -> i32, bool {
     for i in pool.entries.len {
-        if pool.entries[i].healthy && !pool.entries[i].in_use {
-            if is_epoll_rdhup_signaled(pool.entries[i].epoll_events) {
-                close_upstream_entry_fd(pool.entries[i]);
-                pool.entries[i].healthy = false;
+        let cur .= pool.entries[i];
+        if cur.healthy && !cur.in_use {
+            if is_epoll_rdhup_signaled(cur.epoll_events) {
+                close_upstream_entry_fd(cur);
+                cur.healthy = false;
                 pool.evicted_rdhup += 1;
-            } else if matches_upstream_partition(pool.entries[i], endpoint, tls_fingerprint, nik) {
-                pool.entries[i].in_use = true;
-                return pool.entries[i].fd, true;
+            } else if matches_upstream_partition(cur, endpoint, tls_fingerprint, nik) {
+                cur.in_use = true;
+                return cur.fd, true;
             }
         }
     }
@@ -1157,17 +1169,18 @@ fn acquire_upstream_conn(
 // Releases an acquired upstream connection back to the idle pool if healthy.
 fn release_upstream_conn(pool: UpstreamPool&, fd: i32, events: u32 = 0) -> bool {
     for i in pool.entries.len {
-        if pool.entries[i].fd == fd && pool.entries[i].in_use {
-            pool.entries[i].in_use = false;
-            let effective_events = events | pool.entries[i].epoll_events;
-            pool.entries[i].epoll_events = effective_events;
+        let cur .= pool.entries[i];
+        if cur.fd == fd && cur.in_use {
+            cur.in_use = false;
+            let effective_events = events | cur.epoll_events;
+            cur.epoll_events = effective_events;
             if is_epoll_rdhup_signaled(effective_events) {
-                close_upstream_entry_fd(pool.entries[i]);
-                pool.entries[i].healthy = false;
+                close_upstream_entry_fd(cur);
+                cur.healthy = false;
                 pool.evicted_rdhup += 1;
                 return false;
             }
-            return pool.entries[i].healthy;
+            return cur.healthy;
         }
     }
     return false;

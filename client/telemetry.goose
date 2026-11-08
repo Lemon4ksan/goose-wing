@@ -7,7 +7,6 @@
 namespace wing;
 
 import std;
-import json;
 import core from "..";
 
 // ---- Waterfall Timing Model ---------------------------------------------
@@ -24,13 +23,11 @@ struct RequestTimings {
 
 // Computes total roundtrip duration in microseconds
 fn compute_total_timing_us(t: const RequestTimings&) -> i64 {
-    return max(0, t.blocked_us) +
-        max(0, t.dns_us) +
-        max(0, t.connect_us) +
-        max(0, t.ssl_us) +
-        max(0, t.send_us) +
-        max(0, t.wait_us) +
-        max(0, t.receive_us);
+    var total: i64 = 0;
+    const for <N, A> in fields<RequestTimings> {
+        total = core::add_sat_i64(total, max(t.A, 0));
+    }
+    return total;
 }
 
 // Converts microsecond duration to milliseconds with 2 fractional digits: e.g. 1520 us -> 1.52 ms
@@ -41,10 +38,10 @@ fn format_us_as_ms<B>(us: i64, out: B&) {
     }
     let ms_int = us / 1000;
     let frac = (us % 1000) / 10; // 2 digits
-    format(out, ms_int);
+    ms_int.format_i64_dec(out);
     out.push('.');
     if frac < 10 { out.push('0'); }
-    format(out, frac);
+    frac.format_i64_dec(out);
 }
 
 // ---- HAR 1.2 Entry Serialization ----------------------------------------
@@ -90,19 +87,14 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
     out.append("}");
 
     // Timings object
-    out.append(",\"timings\":{\"blocked\":");
-    format_us_as_ms(entry.timings.blocked_us, out);
-    out.append(",\"dns\":");
-    format_us_as_ms(entry.timings.dns_us, out);
-    out.append(",\"connect\":");
-    format_us_as_ms(entry.timings.connect_us, out);
-    out.append(",\"ssl\":");
-    format_us_as_ms(entry.timings.ssl_us, out);
-    out.append(",\"send\":");
-    format_us_as_ms(entry.timings.send_us, out);
-    out.append(",\"wait\":");
-    format_us_as_ms(entry.timings.wait_us, out);
-    out.append(",\"receive\":");
-    format_us_as_ms(entry.timings.receive_us, out);
+    out.append(",\"timings\":{");
+    var first = true;
+    const for <N, A> in fields<RequestTimings> {
+        if !first { out.push(','); }
+        first = false;
+        let key, _ = N.strip_suffix("_us");
+        core::format_json_key(out, key);
+        format_us_as_ms(entry.timings.A, out);
+    }
     out.append("}}");
 }

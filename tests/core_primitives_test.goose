@@ -1855,6 +1855,59 @@ fn test_ring_buffer(t: lit::T&) {
         sub.assert_eq(r_wrap, 8, "Read 8 bytes across edge");
         sub.assert_eq(r_wrap_err, core::IoError.None, "Wrap read ok");
         sub.assert_eq(wrap_out[..], "ABCDEFGH", "Wrapped bytes read in exact order");
+        sub.assert_eq(rb.head, 0, "Head auto-reset to 0 when read drains buffer");
+        sub.assert_eq(rb.tail, 0, "Tail auto-reset to 0 when read drains buffer");
+    };
+
+    t.run("Three-Reversal rotate_left_in_place, realign_ring & contiguous_readable_slice") { sub =>
+        // 1. Direct rotate_left_in_place verification
+        var rot_buf: u8[6] = ['D', 'E', 'F', 'A', 'B', 'C'];
+        core::rotate_left_in_place(rot_buf[..], 3);
+        sub.assert_eq(rot_buf[..], "ABCDEF", "rotate_left_in_place by 3 restores ABCDEF");
+
+        // Edge cases: 0 and len rotations are no-ops
+        core::rotate_left_in_place(rot_buf[..], 0);
+        sub.assert_eq(rot_buf[..], "ABCDEF", "rotate_left_in_place by 0 is no-op");
+        core::rotate_left_in_place(rot_buf[..], 6);
+        sub.assert_eq(rot_buf[..], "ABCDEF", "rotate_left_in_place by len is no-op");
+
+        // 2. realign_ring on empty buffer with non-zero head
+        var rb = core::new_ring_buffer();
+        sub.assert_eq(rb.cap(), 4096, "RingBuffer capacity is 4096");
+        rb.head = 128;
+        rb.tail = 128;
+        rb.count = 0;
+        core::realign_ring(rb);
+        sub.assert_eq(rb.head, 0, "realign_ring resets head to 0 on empty");
+        sub.assert_eq(rb.tail, 0, "realign_ring resets tail to 0 on empty");
+        sub.assert_eq(rb.contiguous_readable_slice(), "", "empty contiguous_readable_slice returns empty slice");
+
+        // 3. realign_ring on contiguous non-zero head (head + count <= 4096)
+        rb.write("prefix_HELLO_WORLD");
+        rb.discard(7);
+        sub.assert_eq(rb.head, 7, "Head advanced to 7");
+        sub.assert_eq(rb.count, 11, "Count is 11");
+        core::realign_ring(rb);
+        sub.assert_eq(rb.head, 0, "realign_ring shifted head to 0");
+        sub.assert_eq(rb.tail, 11, "realign_ring updated tail to 11");
+        sub.assert_eq(rb.contiguous_readable_slice(), "HELLO_WORLD", "contiguous slice matches after linear shift");
+
+        // 4. realign_ring & contiguous_readable_slice on wrapped unread span (head + count > 4096)
+        rb.clear();
+        rb.head = 4090;
+        rb.tail = 4090;
+        rb.count = 0;
+        let w_n, w_err = rb.write("0123456789ABCDEF");
+        sub.assert_eq(w_n, 16, "Wrote 16 bytes across wraparound boundary");
+        sub.assert_eq(w_err, core::IoError.None, "Wrapped write succeeded");
+        sub.assert_eq(rb.head, 4090, "Head before realign is 4090");
+        sub.assert_eq(rb.tail, 10, "Tail wrapped to 10");
+
+        let full_slice = rb.contiguous_readable_slice();
+        sub.assert_eq(full_slice, "0123456789ABCDEF", "contiguous_readable_slice realigns wrapped span in-place");
+        sub.assert_eq(rb.head, 0, "Head reset to 0 after wraparound realign");
+        sub.assert_eq(rb.tail, 16, "Tail set to 16 after wraparound realign");
+        sub.assert_eq(rb.count, 16, "Count preserved at 16");
     };
 }
 

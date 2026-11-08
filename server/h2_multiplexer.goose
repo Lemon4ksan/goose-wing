@@ -1118,10 +1118,6 @@ fn process_stream_data_ingress<B>(
         sess.streams[st_idx].body.clear();
         // RFC 9113 Section 6.9: WINDOW_UPDATE - Grant remaining credit up to 64 KiB
         emit_window_update(stream_id, 57344, out_wire);
-        let c_idx, c_found = find_session_stream_idx(sess.conn, stream_id);
-        if c_found {
-            sess.conn.streams[c_idx].recv_window += 57344;
-        }
     }
 
     // 3. Bounds Check Elimination (BCE) guarded append with lease deadline check
@@ -1251,6 +1247,16 @@ fn process_ingress_data<B>(
     }
 
     let d_len: i64 = if d_start <= d_end && d_end <= frame_payload.len { d_end - d_start } else { 0 };
+
+    if sess.streams[s_idx].spill_slab_idx < 0 &&
+       core::add_sat_i64(sess.streams[s_idx].body.len, d_len) > 8192 {
+        let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
+        if c_found {
+            sess.conn.streams[c_idx].recv_window = core::add_sat_i64(
+                sess.conn.streams[c_idx].recv_window, 57344,
+            );
+        }
+    }
 
     // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
     // while connection and stream flow-control windows account for the full frame payload (hdr.length).

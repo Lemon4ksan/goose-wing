@@ -511,10 +511,58 @@ struct DnsCacheEntry {
     ttl_sec:         u32              = 300,
     stale_ttl_sec:   u32              = 86400, // 24-hour max stale grace period
     valid:           bool             = false,
+    lru_prev:        i32              = -1,
+    lru_next:        i32              = -1,
 }
 
 struct DnsCache {
-    entries: DnsCacheEntry[..64] = [],
+    entries:  DnsCacheEntry[..64] = [],
+    lru_head: i32                 = -1,
+    lru_tail: i32                 = -1,
+}
+
+// Detaches `idx` from the intrusive doubly-linked DNS LRU list in O(1).
+fn detach_dns_lru(cache: DnsCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    let node .= cache.entries[idx as i64];
+    let prev = node.lru_prev;
+    let next = node.lru_next;
+    if prev >= 0 {
+        cache.entries[prev as i64].lru_next = next;
+    } else if cache.lru_head == idx {
+        cache.lru_head = next;
+    }
+    if next >= 0 {
+        cache.entries[next as i64].lru_prev = prev;
+    } else if cache.lru_tail == idx {
+        cache.lru_tail = prev;
+    }
+    node.lru_prev = -1;
+    node.lru_next = -1;
+}
+
+// Appends `idx` to the MRU tail (`lru_tail`) of the intrusive DNS LRU list in O(1).
+fn attach_dns_lru_tail(cache: DnsCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    let node .= cache.entries[idx as i64];
+    node.lru_prev = cache.lru_tail;
+    node.lru_next = -1;
+    if cache.lru_tail >= 0 {
+        cache.entries[cache.lru_tail as i64].lru_next = idx;
+    } else {
+        cache.lru_head = idx;
+    }
+    cache.lru_tail = idx;
+}
+
+// Promotes `idx` to the MRU tail in O(1) (`OrderedDict.move_to_end` equivalent).
+fn touch_dns_lru(cache: DnsCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    if cache.lru_tail == idx {
+        return;
+    }
+    detach_dns_lru(cache, idx);
+    attach_dns_lru_tail(cache, idx);
 }
 
 fn dns_cache_lookup(
@@ -526,8 +574,8 @@ fn dns_cache_lookup(
 ) -> DnsCacheStatus {
     for &e in cache.entries {
         if e.valid && e.qtype == qtype && e.domain[..].eq_ascii_fold(domain) {
-            let elapsed = now_sec - e.inserted_at_sec;
-            guard e.ttl_sec > 0 && elapsed >= 0 else { return DnsCacheStatus.Expired; }
+            guard e.ttl_sec > 0 && now_sec >= e.inserted_at_sec else { return DnsCacheStatus.Expired; }
+            let elapsed = core::sub_sat_i64(now_sec, e.inserted_at_sec);
             let ttl_i64:   i64 = e.ttl_sec;
             let stale_i64: i64 = e.stale_ttl_sec;
             let total_ttl_i64 = core::add_sat_i64(ttl_i64, stale_i64);
@@ -546,31 +594,38 @@ fn dns_cache_lookup(
 }
 
 fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
-    // Check if domain and qtype already exist
     for i in cache.entries.len {
-        let is_match = cache.entries[i].valid &&
-            cache.entries[i].qtype == entry.qtype &&
-            cache.entries[i].domain[..].eq_ascii_fold(entry.domain[..]);
+        let cur .= cache.entries[i];
+        let is_match = cur.valid &&
+            cur.qtype == entry.qtype &&
+            cur.domain[..].eq_ascii_fold(entry.domain[..]);
         if is_match {
-            cache.entries[i] = entry;
-            cache.entries[i].valid = true;
+            let prev = cur.lru_prev;
+            let next = cur.lru_next;
+            cur = entry;
+            cur.valid = true;
+            cur.lru_prev = prev;
+            cur.lru_next = next;
+            touch_dns_lru(cache, i as i32);
             return;
         }
     }
 
-    // Insert new entry or overwrite oldest if full
+    let new_idx = cache.entries.len as i32;
     var copy = entry;
     copy.valid = true;
-    if !cache.entries.try_push(copy) {
-        // Evict entry with oldest inserted_at_sec
-        var oldest_idx: i64 = 0;
-        var oldest_time = cache.entries[0].inserted_at_sec;
-        for i in 1..64 {
-            if cache.entries[i].inserted_at_sec < oldest_time {
-                oldest_time = cache.entries[i].inserted_at_sec;
-                oldest_idx = i;
-            }
-        }
-        cache.entries[oldest_idx] = copy;
+    copy.lru_prev = -1;
+    copy.lru_next = -1;
+    if cache.entries.try_push(copy) {
+        attach_dns_lru_tail(cache, new_idx);
+    } else {
+        let victim_idx: i32 = if cache.lru_head >= 0 && cache.lru_head < cache.entries.len {
+            cache.lru_head
+        } else {
+            0
+        };
+        detach_dns_lru(cache, victim_idx);
+        cache.entries[victim_idx as i64] = copy;
+        attach_dns_lru_tail(cache, victim_idx);
     }
 }

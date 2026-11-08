@@ -57,6 +57,11 @@ inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
     return clean;
 }
 
+inline fn wire_token(v: CoopPolicy.Unknown) -> const u8[:] { return ""; }
+inline fn wire_token(v: CoopPolicy.UnsafeNone) -> const u8[:] { return "unsafe-none"; }
+inline fn wire_token(v: CoopPolicy.SameOriginAllowPopups) -> const u8[:] { return "same-origin-allow-popups"; }
+inline fn wire_token(v: CoopPolicy.SameOrigin) -> const u8[:] { return "same-origin"; }
+
 // Parses Cross-Origin-Opener-Policy header value (W3C HTML §7.2).
 //
 // Example:
@@ -64,15 +69,22 @@ inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
 //   returns: CoopPolicy.SameOrigin
 fn parse_coop(val: const u8[:]) -> CoopPolicy {
     let clean = strip_sf_parameters(val);
-    if clean.len == 0 || clean.eq_ascii_fold("unsafe-none") {
-        return CoopPolicy.UnsafeNone;
-    } else if clean.eq_ascii_fold("same-origin") {
-        return CoopPolicy.SameOrigin;
-    } else if clean.eq_ascii_fold("same-origin-allow-popups") {
-        return CoopPolicy.SameOriginAllowPopups;
+    if clean.len == 0 { return CoopPolicy.UnsafeNone; }
+    const for <N, V> in variants<CoopPolicy> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: CoopPolicy = v;
+            return candidate;
+        }
     }
     return CoopPolicy.Unknown;
 }
+
+inline fn wire_token(v: CoepPolicy.Unknown) -> const u8[:] { return ""; }
+inline fn wire_token(v: CoepPolicy.UnsafeNone) -> const u8[:] { return "unsafe-none"; }
+inline fn wire_token(v: CoepPolicy.Credentialless) -> const u8[:] { return "credentialless"; }
+inline fn wire_token(v: CoepPolicy.RequireCorp) -> const u8[:] { return "require-corp"; }
 
 // Parses Cross-Origin-Embedder-Policy header value (W3C HTML §7.2).
 //
@@ -81,15 +93,23 @@ fn parse_coop(val: const u8[:]) -> CoopPolicy {
 //   returns: CoepPolicy.RequireCorp
 fn parse_coep(val: const u8[:]) -> CoepPolicy {
     let clean = strip_sf_parameters(val);
-    if clean.len == 0 || clean.eq_ascii_fold("unsafe-none") {
-        return CoepPolicy.UnsafeNone;
-    } else if clean.eq_ascii_fold("require-corp") {
-        return CoepPolicy.RequireCorp;
-    } else if clean.eq_ascii_fold("credentialless") {
-        return CoepPolicy.Credentialless;
+    if clean.len == 0 { return CoepPolicy.UnsafeNone; }
+    const for <N, V> in variants<CoepPolicy> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: CoepPolicy = v;
+            return candidate;
+        }
     }
     return CoepPolicy.Unknown;
 }
+
+inline fn wire_token(v: CorpPolicy.Unknown) -> const u8[:] { return ""; }
+inline fn wire_token(v: CorpPolicy.None) -> const u8[:] { return ""; }
+inline fn wire_token(v: CorpPolicy.SameOrigin) -> const u8[:] { return "same-origin"; }
+inline fn wire_token(v: CorpPolicy.SameSite) -> const u8[:] { return "same-site"; }
+inline fn wire_token(v: CorpPolicy.CrossOrigin) -> const u8[:] { return "cross-origin"; }
 
 // Parses Cross-Origin-Resource-Policy header value (W3C Fetch §4.5).
 //
@@ -98,14 +118,14 @@ fn parse_coep(val: const u8[:]) -> CoepPolicy {
 //   returns: CorpPolicy.SameOrigin
 fn parse_corp(val: const u8[:]) -> CorpPolicy {
     let clean = strip_sf_parameters(val);
-    if clean.len == 0 {
-        return CorpPolicy.None;
-    } else if clean.eq_ascii_fold("same-origin") {
-        return CorpPolicy.SameOrigin;
-    } else if clean.eq_ascii_fold("same-site") {
-        return CorpPolicy.SameSite;
-    } else if clean.eq_ascii_fold("cross-origin") {
-        return CorpPolicy.CrossOrigin;
+    if clean.len == 0 { return CorpPolicy.None; }
+    const for <N, V> in variants<CorpPolicy> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: CorpPolicy = v;
+            return candidate;
+        }
     }
     return CorpPolicy.Unknown;
 }
@@ -220,7 +240,7 @@ fn is_subresource_allowed(
 
 // Injects strict same-origin COOP, require-corp COEP, and same-origin CORP headers.
 fn apply_strict_cross_origin_isolation<Res>(res: Res&) {
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY, rfc::SEC_FETCH_SITE_SAME_ORIGIN);
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY, "require-corp");
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_RESOURCE_POLICY, rfc::SEC_FETCH_SITE_SAME_ORIGIN);
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY, wire_token(default<CoopPolicy.SameOrigin>()));
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY, wire_token(default<CoepPolicy.RequireCorp>()));
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_RESOURCE_POLICY, wire_token(default<CorpPolicy.SameOrigin>()));
 }

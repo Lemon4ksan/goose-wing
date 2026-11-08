@@ -85,7 +85,9 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   `s.strip_prefix(p)`, `s.strip_suffix(sfx)`, `s.strip_prefix_fold(p)`,
   `s.strip_suffix_fold(sfx)` -> `(rest, bool)`; `s.split_once_byte('=')`,
   `s.rsplit_once_byte('/')`, `s.split_once("::")`, `s.split_once_fold(": ")` ->
-  `(prefix, suffix, bool)`.
+  `(prefix, suffix, bool)`; `s.partition_byte('?') -> (head, sep, tail)`;
+  `core::collapse_repeats_in_place(buf, '/') -> i64`; `core::each_pair<T, F>(xs)`,
+  `core::each_window<T, F>(xs, k)`.
 - **Quote-aware RFC parameter splitting (honors `\"` and `\\` inside `"..."`)**:
   `s.find_unquoted_byte(';') -> i64`,
   `s.split_once_unquoted_byte(';') -> (head, tail, bool)`.
@@ -137,11 +139,14 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   `core::KeySlot` (`core::zeroize_key_slot(slot)`),
   `core::base64_decode(src, dst)`, `core::base64url_decode(src, dst)`.
 - **Binary cursors, rings, & URLs**: `core::ByteCursor` (`read_u8/u16/u24/u32`,
-  `read_bytes`, `read_u16_prefixed`, `read_u24_prefixed`), `core::ByteBuilder`
-  (`start_u16_prefix`, `finish_u16_prefix`, `start_u24_prefix`,
-  `finish_u24_prefix`), `core::RingBuffer`, `core::PipeBuffer`,
-  `core::CorkBuffer`, `core::PageRingBuffer`, `core::GuardedArena`,
-  `core::parse_url(raw)`, `core::normalize_http_target_uri(raw, out)`,
+  `read_bytes`, `read_u16_prefixed`, `read_u24_prefixed`, `read_sub_cursor`,
+  `read_u8/u16/u24_sub_cursor`), `core::BitStreamReader` (`make_bit_reader`,
+  `read_bits`), `core::ByteBuilder` (`start_u16_prefix`, `finish_u16_prefix`,
+  `start_u24_prefix`, `finish_u24_prefix`), `core::RingBuffer`
+  (`rotate_left_in_place`, `realign_ring`, `contiguous_readable_slice`),
+  `core::PipeBuffer`, `core::CorkBuffer`, `core::PageRingBuffer`,
+  `core::GuardedArena`, `core::parse_url(raw)`,
+  `core::normalize_http_target_uri(raw, out)`,
   `raw_query.get_query_param_fast(key, out)`,
   `raw_query.has_query_param_fast(key)`.
 
@@ -169,7 +174,9 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 ### 2. References, copies, arithmetic, and `checkfree fn` BCE
 
 - References (`T&`) and nullable references (`T?`, narrowed via `if x`,
-  `guard x`, `while x`, `assert(x)`) are transparent. Use `.=` to rebind and
+  `guard x`, `while x`, `assert(x)`) are transparent. Use `.=` to bind or
+  rebind a reference (`let conn .= pool.conns[idx];` binds an 8-byte reference
+  without copying `PooledConnection` and mutates `pool.conns[idx]` in place) and
   `.==` / `.!=` for identity.
 - Fixed-size values copy implicitly on `=` and in `for x in xs`. Iterate by
   reference (`for &x in xs`) to mutate elements in place or take slices that

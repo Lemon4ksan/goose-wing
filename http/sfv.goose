@@ -868,52 +868,71 @@ fn sf_dict_has_key(dict_str: const u8[:], key: const u8[:]) -> bool {
 
 // ---- Serialization Helpers -----------------------------------------------
 
-fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
-    if item.kind == SfType.Integer {
-        item.int_val.format_i64_dec(out);
-    } else if item.kind == SfType.Decimal {
-        let sign = if item.int_val < 0 { -1 } else { 1 };
-        let abs_milli = if item.int_val < 0 { -item.int_val } else { item.int_val };
-        if sign < 0 { out.push('-' as u8); }
-        (abs_milli / 1000).format_i64_dec(out);
-        out.push('.' as u8);
-        var frac = abs_milli % 1000;
-        if (frac % 100) == 0 {
-            (frac / 100).format_i64_dec(out);
-        } else if (frac % 10) == 0 {
-            if frac < 100 { out.push('0' as u8); }
-            (frac / 10).format_i64_dec(out);
-        } else {
-            if frac < 100 { out.push('0' as u8); }
-            if frac < 10 { out.push('0' as u8); }
-            frac.format_i64_dec(out);
-        }
-    } else if item.kind == SfType.Boolean {
-        out.append(if item.bool_val { "?1" } else { "?0" });
-    } else if item.kind == SfType.Token {
-        out.append(item.str_val);
-    } else if item.kind == SfType.String {
-        out.push('"' as u8);
-        for i in item.str_val.len {
-            let ch = item.str_val[i];
-            if ch == '"' || ch == '\\' {
-                out.push('\\' as u8);
-            }
-            out.push(ch);
-        }
-        out.push('"' as u8);
-    } else if item.kind == SfType.Binary {
-        out.push(':' as u8);
-        out.append(item.str_val);
-        out.push(':' as u8);
-    } else if item.kind == SfType.Date {
-        out.push('@' as u8);
-        item.int_val.format_i64_dec(out);
-    } else if item.kind == SfType.DisplayString {
-        out.append("%\"");
-        out.append(item.str_val);
-        out.push('"' as u8);
+inline fn sf_serialize_item<B>(kind: SfType.Integer, item: const SfItem&, out: B&) {
+    item.int_val.format_i64_dec(out);
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.Decimal, item: const SfItem&, out: B&) {
+    let abs_milli: u64 = if item.int_val < 0 {
+        core::sub_sat_i64(0, item.int_val) as u64
+    } else {
+        item.int_val as u64
+    };
+    if item.int_val < 0 { out.push('-' as u8); }
+    (abs_milli / 1000).format_u64_dec(out);
+    out.push('.' as u8);
+    let frac: u64 = abs_milli % 1000;
+    if (frac % 100) == 0 {
+        (frac / 100).format_u64_dec(out);
+    } else if (frac % 10) == 0 {
+        if frac < 100 { out.push('0' as u8); }
+        (frac / 10).format_u64_dec(out);
+    } else {
+        if frac < 100 { out.push('0' as u8); }
+        if frac < 10 { out.push('0' as u8); }
+        frac.format_u64_dec(out);
     }
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.Boolean, item: const SfItem&, out: B&) {
+    out.append(if item.bool_val { "?1" } else { "?0" });
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.Token, item: const SfItem&, out: B&) {
+    out.append(item.str_val);
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.String, item: const SfItem&, out: B&) {
+    out.push('"' as u8);
+    for i in item.str_val.len {
+        let ch = item.str_val[i];
+        if ch == '"' || ch == '\\' {
+            out.push('\\' as u8);
+        }
+        out.push(ch);
+    }
+    out.push('"' as u8);
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.Binary, item: const SfItem&, out: B&) {
+    out.push(':' as u8);
+    out.append(item.str_val);
+    out.push(':' as u8);
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.Date, item: const SfItem&, out: B&) {
+    out.push('@' as u8);
+    item.int_val.format_i64_dec(out);
+}
+
+inline fn sf_serialize_item<B>(kind: SfType.DisplayString, item: const SfItem&, out: B&) {
+    out.append("%\"");
+    out.append(item.str_val);
+    out.push('"' as u8);
+}
+
+fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
+    sf_serialize_item(item.kind, item, out);
 }
 
 fn sf_serialize_parameters<B>(params: const SfParameter[:], out: B&) {

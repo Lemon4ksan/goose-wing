@@ -1139,35 +1139,36 @@ fn dispatch_pooled_h2_hop(
     var released = false;
     defer if !released { session.pool.close_pooled_connection(conn_id); };
 
-    let stream_id = session.pool.conns[c_idx].next_h2_stream_id;
-    let send_preface = !session.pool.conns[c_idx].h2_preface_sent;
+    let conn .= session.pool.conns[c_idx];
+    let stream_id = conn.next_h2_stream_id;
+    let send_preface = !conn.h2_preface_sent;
     var wire_out: u8[..65536] = [];
     guard encode_h2_client_request(
         curr_method,
         current_url,
         is_https,
         ctx,
-        session.pool.conns[c_idx].hpack_enc,
+        conn.hpack_enc,
         stream_id,
         send_preface,
         wire_out,
     ) else {
         return false;
     }
-    guard send_all(session.pool.conns[c_idx].transport, wire_out[..]) else {
+    guard send_all(conn.transport, wire_out[..]) else {
         return false;
     }
-    session.pool.conns[c_idx].h2_preface_sent = true;
-    session.pool.conns[c_idx].next_h2_stream_id += 2;
+    conn.h2_preface_sent = true;
+    conn.next_h2_stream_id += 2;
     reset_response(resp);
     let _ = resp.protocol.try_set("HTTP/2");
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
     let is_head = curr_method == "HEAD";
     let got_hdrs = recv_h2_response_loop(
-        session.pool.conns[c_idx].transport,
+        conn.transport,
         stream_id,
         is_head,
-        session.pool.conns[c_idx].hpack_dec,
+        conn.hpack_dec,
         eff_timeout,
         resp,
     );

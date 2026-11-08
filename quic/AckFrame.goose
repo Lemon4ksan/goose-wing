@@ -152,6 +152,18 @@ fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
     return true;
 }
 
+// Computes the next descending ACK interval `[smallest, largest]` from `prev_smallest`, `gap`, and `ack_range`
+// per RFC 9000 Section 19.3.1, rejecting underflow.
+inline fn step_descending_ack_range(prev_smallest: u64, gap: u64, ack_range: u64) -> AckInterval, bool {
+    guard prev_smallest >= 2 && core::sub_sat_u64(prev_smallest, 2) >= gap else {
+        return AckInterval {}, false;
+    }
+    let cur_largest = core::sub_sat_u64(core::sub_sat_u64(prev_smallest, 2), gap);
+    guard cur_largest >= ack_range else { return AckInterval {}, false; }
+    let cur_smallest = core::sub_sat_u64(cur_largest, ack_range);
+    return AckInterval { smallest: cur_smallest, largest: cur_largest }, true;
+}
+
 // Decodes sequential ACK gap and range fields.
 //
 // Example:
@@ -165,7 +177,7 @@ fn decode_ack_ranges(
     first_range:   u64,
     ack:           AckFrame&,
 ) -> bool {
-    var cur_smallest = largest_acked - first_range;
+    var cur_smallest = core::sub_sat_u64(largest_acked, first_range);
     var r_idx: u64 = 0;
     while r_idx < range_cnt {
         let gap, next_cur_g, okg = quic_decode_varint(src, cur);
@@ -175,14 +187,12 @@ fn decode_ack_ranges(
         guard okr else { return false; }
         cur = next_cur_r;
 
-        // RFC 9000 §19.3.1: Enforce descending bounds and avoid underflow
-        guard cur_smallest >= 2 && (cur_smallest - 2) >= gap else { return false; }
-        let cur_largest = cur_smallest - gap - 2;
-        guard cur_largest >= rlen else { return false; }
-        cur_smallest = cur_largest - rlen;
+        let iv, ok_iv = step_descending_ack_range(cur_smallest, gap, rlen);
+        guard ok_iv else { return false; }
+        cur_smallest = iv.smallest;
 
         guard ack.ranges.try_push(AckRange { gap: gap, ack_range: rlen }) else { return false; }
-        r_idx++;
+        r_idx = core::add_sat_u64(r_idx, 1);
     }
     return true;
 }
@@ -263,18 +273,20 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
         is_ecn:          is_ecn,
         largest_acked:   largest,
         ack_delay:       ack_delay,
-        first_ack_range: largest - ranges[0].smallest,
+        first_ack_range: core::sub_sat_u64(largest, ranges[0].smallest),
         ..
     };
 
     var prev_smallest = ranges[0].smallest;
     for i in 1..ranges.len {
         let cur_range = ranges[i];
-        guard prev_smallest >= 2 && (prev_smallest - 2) >= cur_range.largest else { return AckFrame {}, false; }
-        let gap = prev_smallest - cur_range.largest - 2;
+        guard prev_smallest >= 2 && core::sub_sat_u64(prev_smallest, 2) >= cur_range.largest else {
+            return AckFrame {}, false;
+        }
+        let gap = core::sub_sat_u64(core::sub_sat_u64(prev_smallest, 2), cur_range.largest);
         guard cur_range.largest >= cur_range.smallest else { return AckFrame {}, false; }
-        let rlen = cur_range.largest - cur_range.smallest;
-        ack.ranges.push(AckRange { gap: gap, ack_range: rlen });
+        let rlen = core::sub_sat_u64(cur_range.largest, cur_range.smallest);
+        guard ack.ranges.try_push(AckRange { gap: gap, ack_range: rlen }) else { return AckFrame {}, false; }
         prev_smallest = cur_range.smallest;
     }
     return ack, true;
@@ -298,7 +310,7 @@ fn parse_and_validate_ack<B>(
     guard ack.largest_acked >= ack.first_ack_range else { return false; }   // Underflow!
 
     out_intervals.clear();
-    let first_smallest = ack.largest_acked - ack.first_ack_range;
+    let first_smallest = core::sub_sat_u64(ack.largest_acked, ack.first_ack_range);
     guard out_intervals.try_push(AckInterval { smallest: first_smallest, largest: ack.largest_acked }) else {
         return false;
     }
@@ -306,21 +318,12 @@ fn parse_and_validate_ack<B>(
     var cur_smallest = first_smallest;
     for i in ack.ranges.len {
         let r = ack.ranges[i];
-        guard cur_smallest >= 2 && (cur_smallest - 2) >= r.gap else {
+        let iv, ok_iv = step_descending_ack_range(cur_smallest, r.gap, r.ack_range);
+        guard ok_iv && out_intervals.try_push(iv) else {
             out_intervals.clear();
             return false;
         }
-        let cur_largest = cur_smallest - r.gap - 2;
-        guard cur_largest >= r.ack_range else {
-            out_intervals.clear();
-            return false;
-        }
-        cur_smallest = cur_largest - r.ack_range;
-
-        guard out_intervals.try_push(AckInterval { smallest: cur_smallest, largest: cur_largest }) else {
-            out_intervals.clear();
-            return false;
-        }
+        cur_smallest = iv.smallest;
     }
     return true;
 }
@@ -328,20 +331,21 @@ fn parse_and_validate_ack<B>(
 // Records received packet number into descending non-overlapping interval set.
 fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
     guard pn <= rfc::QUIC_MAX_PN else { return false; }
-    var i = 0;
+    var i: i64 = 0;
     while i < ranges.len {
         let r = ranges[i];
-        if pn > r.largest + 1 {
+        let next_above = core::add_sat_u64(r.largest, 1);
+        if pn > next_above {
             if ranges.len >= ranges.cap {
                 ranges.pop();
             }
             ranges.insert_at(i, AckInterval { smallest: pn, largest: pn });
             return true;
         }
-        if pn == r.largest + 1 {
+        if pn == next_above {
             ranges[i].largest = pn;
             // Check if merges with preceding range
-            if i > 0 && ranges[i - 1].smallest == pn + 1 {
+            if i > 0 && ranges[i - 1].smallest == core::add_sat_u64(pn, 1) {
                 ranges[i - 1].smallest = ranges[i].smallest;
                 ranges.remove_at(i);
             }
@@ -350,28 +354,29 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
         if pn >= r.smallest && pn <= r.largest {
             return true; // Duplicate packet
         }
-        if pn + 1 == r.smallest {
+        if core::add_sat_u64(pn, 1) == r.smallest {
             ranges[i].smallest = pn;
             // Check if merges with following range
-            if (i + 1) < ranges.len && ranges[i + 1].largest + 1 == pn {
-                ranges[i].smallest = ranges[i + 1].smallest;
-                ranges.remove_at(i + 1);
+            let next_i = core::add_sat_i64(i, 1);
+            if next_i < ranges.len && core::add_sat_u64(ranges[next_i].largest, 1) == pn {
+                ranges[i].smallest = ranges[next_i].smallest;
+                ranges.remove_at(next_i);
             }
             return true;
         }
-        i++;
+        i = core::add_sat_i64(i, 1);
     }
     if ranges.len >= ranges.cap {
         return true;
     }
-    ranges.push(AckInterval { smallest: pn, largest: pn });
+    let _ = ranges.try_push(AckInterval { smallest: pn, largest: pn });
     return true;
 }
 
 // ---- rtt estimation (rfc 9002 section 5.3) --------------------------------
 
 inline fn rtt_abs_diff(a: u64, b: u64) -> u64 {
-    return if a >= b { a - b } else { b - a };
+    return core::sub_sat_u64(max(a, b), min(a, b));
 }
 
 // Updates smoothed_rtt, rttvar, and min_rtt upon receiving an ACK with ack-eliciting sample.
@@ -387,14 +392,12 @@ fn update_rtt(
     if rtt.first_sample_time_us == 0 {
         rtt.min_rtt_us = latest_rtt;
         rtt.smoothed_rtt_us = latest_rtt;
-        rtt.rttvar_us = latest_rtt / 2;
+        rtt.rttvar_us = latest_rtt >> 1;
         rtt.first_sample_time_us = max(now_us, 1);
         return;
     }
 
-    if latest_rtt < rtt.min_rtt_us {
-        rtt.min_rtt_us = latest_rtt;
-    }
+    rtt.min_rtt_us = min(rtt.min_rtt_us, latest_rtt);
 
     var eff_delay: u64 = 0;
     if handshake_confirmed {
@@ -403,12 +406,12 @@ fn update_rtt(
 
     var adjusted_rtt = latest_rtt;
     if latest_rtt >= core::add_sat_u64(rtt.min_rtt_us, eff_delay) {
-        adjusted_rtt = latest_rtt - eff_delay;
+        adjusted_rtt = core::sub_sat_u64(latest_rtt, eff_delay);
     }
 
     let diff = rtt_abs_diff(rtt.smoothed_rtt_us, adjusted_rtt);
-    rtt.rttvar_us = (3 * rtt.rttvar_us + diff) / 4;
-    rtt.smoothed_rtt_us = (7 * rtt.smoothed_rtt_us + adjusted_rtt) / 8;
+    rtt.rttvar_us = core::add_sat_u64(core::mul_sat_u64(rtt.rttvar_us, 3), diff) >> 2;
+    rtt.smoothed_rtt_us = core::add_sat_u64(core::mul_sat_u64(rtt.smoothed_rtt_us, 7), adjusted_rtt) >> 3;
 }
 
 // ---- packet & time threshold loss detection (rfc 9002 section 6.1) -------
@@ -537,13 +540,13 @@ fn get_earliest_loss_time(spaces: const PnSpaceState[3]&) -> u64, PnSpaceId {
 
 // Computes probe timeout duration with exponential backoff (RFC 9002 Sec 6.2.1).
 fn compute_pto_duration(rtt: const RttState&, pto_count: u32, is_app_data: bool) -> u64 {
-    let var4 = max(4 * rtt.rttvar_us, rfc::QUIC_TIMER_GRANULARITY_US);
-    var dur = rtt.smoothed_rtt_us + var4;
+    let var4 = max(core::mul_sat_u64(rtt.rttvar_us, 4), rfc::QUIC_TIMER_GRANULARITY_US);
+    var dur = core::add_sat_u64(rtt.smoothed_rtt_us, var4);
     if is_app_data {
-        dur += rtt.max_ack_delay_us;
+        dur = core::add_sat_u64(dur, rtt.max_ack_delay_us);
     }
     let shift = min(pto_count, 16);
-    return dur * ((1 as u64) << shift);
+    return core::shl_sat_u64(dur, shift);
 }
 
 struct PtoContext {
@@ -560,7 +563,9 @@ fn count_in_flight_eliciting(spaces: const PnSpaceState[3]&, handshake_confirmed
             continue;
         }
         for p in spaces[s].sent_packets.len {
-            if spaces[s].sent_packets[p].ack_eliciting { count++; }
+            if spaces[s].sent_packets[p].ack_eliciting {
+                count = core::add_sat_u64(count, 1);
+            }
         }
     }
     return count;
@@ -587,7 +592,7 @@ fn find_earliest_standard_pto(
 
         let is_app = space.space_id == PnSpaceId.ApplicationData;
         let dur = compute_pto_duration(rtt, pto_count, is_app);
-        let t = space.time_of_last_ack_eliciting_us + dur;
+        let t = core::add_sat_u64(space.time_of_last_ack_eliciting_us, dur);
         if earliest_pto == 0 || t < earliest_pto {
             earliest_pto = t;
             out_target_sp = space.space_id;
@@ -628,7 +633,7 @@ fn evaluate_pto_timer(
         let sp = if spaces[1].has_sent_packets { PnSpaceId.Handshake } else { PnSpaceId.Initial };
         return PtoTimerDecision {
             mode:           PtoTimerMode.AntiDeadlock,
-            target_time_us: now_us + dur,
+            target_time_us: core::add_sat_u64(now_us, dur),
             space_id:       sp,
         };
     }

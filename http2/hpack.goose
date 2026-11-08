@@ -1699,7 +1699,13 @@ fn validate_header_ordering_and_rules(
     }
 
     if name[0] == ':' {
-        return validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
+        let err = validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
+        guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+        if validate_http2_rules && (name == ":path" || name == ":scheme") &&
+           out_pseudo.has_method && out_pseudo.method[..] == "CONNECT" && !out_pseudo.has_protocol {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+        return rfc::H2_ERR_NO_ERROR;
     }
 
     if validate_http2_rules {
@@ -1727,6 +1733,12 @@ fn append_decoded_header_to_map(
     out_pseudo.wireframe_size += field_size;
     guard out_pseudo.wireframe_size <= max_header_list_size else {
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+    }
+    if name.len > 0 && name[0] == ':' {
+        if validate_http2_rules && !validate_h2_field_syntax(name, val) {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+        return validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
     }
     return validate_header_ordering_and_rules(out_pseudo, out_headers, name, val, validate_http2_rules);
 }

@@ -280,9 +280,28 @@ const DEFAULT_SRV_OUT_STAGES: const u8[9] = [
     STAGE_ID_SRV_OUT_ACCESS_LOG,
 ];
 
+// Returns true when every set bit in `sub` is also set in `sup`.
+inline fn stage_mask_subset_of(sub: u64, sup: u64) -> bool {
+    return (sub & (~sup)) == 0;
+}
+
+// Returns the number of active stage bits set within `VALID_STAGE_MASK`.
+inline fn count_enabled_stages(mask: u64) -> i64 {
+    return popcount(mask & VALID_STAGE_MASK);
+}
+
+// Invokes `F(stage_id)` for each enabled stage bit in `mask` in ascending slot order in O(popcount) steps.
+inline fn each_enabled_stage<F>(var mask: u64) {
+    while mask != 0 {
+        let stage_id = (ctz(mask) as u8);
+        F(stage_id);
+        mask = mask & core::sub_sat_u64(mask, 1);
+    }
+}
+
 // Validates that `mask` contains only defined stage slot bits within `VALID_STAGE_MASK` (`FlagBoundary.STRICT`).
 inline fn is_valid_stage_mask(mask: u64) -> bool {
-    return (mask & (~VALID_STAGE_MASK)) == 0;
+    return stage_mask_subset_of(mask, VALID_STAGE_MASK) && count_enabled_stages(mask) <= 24;
 }
 
 // Appends a stage slot ID to `pipe.ingress_stages` and enables its corresponding bit in `pipe.ingress_mask`.
@@ -378,6 +397,12 @@ fn create_wire_pipeline(
     pipe.layout = info.layout;
     pipe.ingress_mask = info.ingress_mask;
     pipe.egress_mask = info.egress_mask;
+    each_enabled_stage(info.ingress_mask) { stage_id =>
+        let _ = add_ingress_stage(pipe, stage_id);
+    };
+    each_enabled_stage(info.egress_mask) { stage_id =>
+        let _ = add_egress_stage(pipe, stage_id);
+    };
     pipe.is_valid = true;
     return pipe, WireResult.Success;
 }

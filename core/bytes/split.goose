@@ -6,6 +6,21 @@ namespace core;
 
 import std;
 
+// Partitions `s` around the first occurrence of delimiter byte `sep`.
+// Returns `(head, matched_sep, tail)` when `sep` is present, or `(s, "", "")` when absent.
+//
+// Example:
+//   s = "host:8080", sep = ':'
+//   returns: "host", ":", "8080"
+fn partition_byte(s: const u8[:], sep: u8) -> const u8[:], const u8[:], const u8[:] {
+    let idx = index_of_byte(s, sep);
+    let next_idx = add_sat_i64(idx, 1);
+    if idx >= 0 && next_idx <= s.len {
+        return s[..idx], s[idx..next_idx], s[next_idx..];
+    }
+    return s, "", "";
+}
+
 // Splits s around the first occurrence of delimiter byte delim.
 // Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
 // otherwise returns (s, "", false). Delimiter byte is omitted from both returned slices.
@@ -14,11 +29,8 @@ import std;
 //   s = "key=value", delim = '='
 //   returns: "key", "value", ok = true
 fn split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
-    let idx = index_of_byte(s, delim);
-    if idx >= 0 {
-        return s[..idx], s[idx + 1..], true;
-    }
-    return s, "", false;
+    let head, sep, tail = partition_byte(s, delim);
+    return head, tail, sep.len > 0;
 }
 
 // Splits s around the last occurrence of delimiter byte delim.
@@ -30,8 +42,9 @@ fn split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool 
 //   returns: "a/b", "c", ok = true
 fn rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     let idx = last_index_of_byte(s, delim);
-    if idx >= 0 {
-        return s[..idx], s[idx + 1..], true;
+    let next_idx = add_sat_i64(idx, 1);
+    if idx >= 0 && next_idx <= s.len {
+        return s[..idx], s[next_idx..], true;
     }
     return s, "", false;
 }
@@ -46,8 +59,9 @@ fn rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool
 fn split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     guard delim.len > 0 else { return s, "", false; }
     let idx = find(s, delim);
-    if idx >= 0 {
-        return s[..idx], s[idx + delim.len..], true;
+    let next_idx = add_sat_i64(idx, delim.len);
+    if idx >= 0 && next_idx <= s.len {
+        return s[..idx], s[next_idx..], true;
     }
     return s, "", false;
 }
@@ -61,11 +75,54 @@ fn split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], b
 //   returns: "Content-Type", "text/plain", ok = true
 fn split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     guard delim.len > 0 else { return s, "", false; }
-    let idx = index_of_fold(s, delim);
-    if idx >= 0 {
-        return s[..idx], s[idx + delim.len..], true;
-    }
+    each_window(s, delim.len) { win, idx =>
+        if eq_ascii_fold(win, delim) {
+            let after_idx = add_sat_i64(idx, delim.len);
+            return s[..idx], s[after_idx..], true;
+        }
+    };
     return s, "", false;
+}
+
+// Invokes `F(xs[i], xs[i + 1])` for each adjacent pair in `xs` (zero-allocation `itertools.pairwise`).
+inline fn each_pair<T, F>(xs: const T[:]) {
+    guard xs.len >= 2 else { return; }
+    let limit = sub_sat_i64(xs.len, 1);
+    var i: i64 = 0;
+    while i < limit {
+        let next_i = add_sat_i64(i, 1);
+        F(xs[i], xs[next_i]);
+        i = next_i;
+    }
+}
+
+// Invokes `F(xs[i..i + width], i)` over each contiguous sliding window of length `width` in `xs`.
+inline fn each_window<T, F>(xs: const T[:], width: i64) {
+    guard width > 0 && xs.len >= width else { return; }
+    let limit = add_sat_i64(sub_sat_i64(xs.len, width), 1);
+    var i: i64 = 0;
+    while i < limit {
+        let end_i = add_sat_i64(i, width);
+        F(xs[i..end_i], i);
+        i = add_sat_i64(i, 1);
+    }
+}
+
+// Collapses consecutive runs of `target` in-place in `buf` and returns the new compacted length.
+//
+// Example:
+//   buf = "//a///b//", target = '/'
+//   returns: 5 (buf[..5] == "/a/b/")
+fn collapse_repeats_in_place(buf: u8[:], target: u8) -> i64 {
+    guard buf.len > 1 else { return buf.len; }
+    var write_idx: i64 = 1;
+    each_pair(buf) { prev, curr =>
+        if prev != target || curr != target {
+            buf[write_idx] = curr;
+            write_idx = add_sat_i64(write_idx, 1);
+        }
+    };
+    return write_idx;
 }
 
 // Removes `prefix` from the start of `s` if present.

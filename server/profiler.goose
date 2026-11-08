@@ -82,6 +82,11 @@ struct BenchSuite {
     target_ns:  i64      = 50000000,
 }
 
+struct BenchPostPassSchedule {
+    steady_state_n: i64 = 1,
+    watermark_n:    i64 = 1,
+}
+
 fn new_bench_suite(suite_name: const u8[:], target_ms: i64 = 50) -> BenchSuite {
     let eff_ns = max(target_ms, 1) * 1000000;
     var s = BenchSuite { target_ns: eff_ns, .. };
@@ -90,11 +95,7 @@ fn new_bench_suite(suite_name: const u8[:], target_ms: i64 = 50) -> BenchSuite {
     return s;
 }
 
-fn bench<F: fn(Bench&)>(suite: BenchSuite&, case_name: const u8[:]) {
-    guard wing_bench_should_run(case_name) != 0 else { return; }
-    let _ = wing_bench_consume_has_sub();
-    var b = Bench { target_ns: suite.target_ns, .. };
-    let _ = b.name.try_set(case_name);
+inline fn execute_bench_passes<F: fn(Bench&)>(b: Bench&) {
     var cur_n: i64 = 1;
     while true {
         let _ = wing_bench_begin_pass(b.name[..], 0, b.target_ns);
@@ -106,21 +107,28 @@ fn bench<F: fn(Bench&)>(suite: BenchSuite&, case_name: const u8[:]) {
             cur_n = res_n;
             break;
         }
-        cur_n = -res_n;
+        cur_n = core::sub_sat_i64(0, res_n);
     }
 
-    let _ = wing_bench_begin_pass(b.name[..], 1, b.target_ns);
-    b.n = cur_n;
-    b.pass_kind = 1;
-    F(b);
-    let _ = wing_bench_end_pass(1, cur_n, b.target_ns);
-
-    let _ = wing_bench_begin_pass(b.name[..], 2, b.target_ns);
-    b.n = 1;
-    b.pass_kind = 2;
-    F(b);
-    let _ = wing_bench_end_pass(2, 1, b.target_ns);
+    let schedule = BenchPostPassSchedule { steady_state_n: cur_n, watermark_n: 1 };
+    const for <N, A> in fields<BenchPostPassSchedule> {
+        let pass_idx: i32 = if N == "steady_state_n" { 1 } else { 2 };
+        let pass_n = schedule.A;
+        let _ = wing_bench_begin_pass(b.name[..], pass_idx, b.target_ns);
+        b.n = pass_n;
+        b.pass_kind = pass_idx;
+        F(b);
+        let _ = wing_bench_end_pass(pass_idx, pass_n, b.target_ns);
+    }
     wing_bench_commit(b.name[..], cur_n, b.bytes_per_op);
+}
+
+fn bench<F: fn(Bench&)>(suite: BenchSuite&, case_name: const u8[:]) {
+    guard wing_bench_should_run(case_name) != 0 else { return; }
+    let _ = wing_bench_consume_has_sub();
+    var b = Bench { target_ns: suite.target_ns, .. };
+    let _ = b.name.try_set(case_name);
+    execute_bench_passes(b) { it => F(it); };
 
     if wing_bench_consume_has_sub() != 0 {
         b.n = 0;
@@ -142,32 +150,7 @@ fn run<F: fn(Bench&)>(parent: Bench&, sub_name: const u8[:]) {
 
     var b = Bench { target_ns: parent.target_ns, .. };
     let _ = b.name.try_set(full_name[..]);
-    var cur_n: i64 = 1;
-    while true {
-        let _ = wing_bench_begin_pass(b.name[..], 0, b.target_ns);
-        b.n = cur_n;
-        b.pass_kind = 0;
-        F(b);
-        let res_n = wing_bench_end_pass(0, cur_n, b.target_ns);
-        if res_n > 0 {
-            cur_n = res_n;
-            break;
-        }
-        cur_n = -res_n;
-    }
-
-    let _ = wing_bench_begin_pass(b.name[..], 1, b.target_ns);
-    b.n = cur_n;
-    b.pass_kind = 1;
-    F(b);
-    let _ = wing_bench_end_pass(1, cur_n, b.target_ns);
-
-    let _ = wing_bench_begin_pass(b.name[..], 2, b.target_ns);
-    b.n = 1;
-    b.pass_kind = 2;
-    F(b);
-    let _ = wing_bench_end_pass(2, 1, b.target_ns);
-    wing_bench_commit(b.name[..], cur_n, b.bytes_per_op);
+    execute_bench_passes(b) { it => F(it); };
 }
 
 inline fn reset_timer(b: Bench&) {

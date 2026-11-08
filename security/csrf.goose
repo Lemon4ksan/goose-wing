@@ -78,6 +78,13 @@ struct FetchContext {
     is_sensitive_navigation_route: bool         = false,
 }
 
+inline fn wire_token(v: SecFetchSite.Unknown) -> const u8[:] { return ""; }
+inline fn wire_token(v: SecFetchSite.SameOrigin) -> const u8[:] { return rfc::SEC_FETCH_SITE_SAME_ORIGIN; }
+inline fn wire_token(v: SecFetchSite.SameSite) -> const u8[:] { return rfc::SEC_FETCH_SITE_SAME_SITE; }
+inline fn wire_token(v: SecFetchSite.CrossSite) -> const u8[:] { return rfc::SEC_FETCH_SITE_CROSS_SITE; }
+inline fn wire_token(v: SecFetchSite.None) -> const u8[:] { return rfc::SEC_FETCH_SITE_NONE; }
+inline fn wire_token(v: SecFetchSite.Missing) -> const u8[:] { return ""; }
+
 // Parses Sec-Fetch-Site string value.
 //
 // Example:
@@ -86,12 +93,23 @@ struct FetchContext {
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = val.trim_lws();
     if clean.len == 0 { return SecFetchSite.Missing; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_SAME_ORIGIN) { return SecFetchSite.SameOrigin; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_SAME_SITE) { return SecFetchSite.SameSite; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_CROSS_SITE) { return SecFetchSite.CrossSite; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_NONE) { return SecFetchSite.None; }
+    const for <N, V> in variants<SecFetchSite> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: SecFetchSite = v;
+            return candidate;
+        }
+    }
     return SecFetchSite.Unknown;
 }
+
+inline fn wire_token(v: SecFetchMode.Navigate) -> const u8[:] { return rfc::SEC_FETCH_MODE_NAVIGATE; }
+inline fn wire_token(v: SecFetchMode.SameOrigin) -> const u8[:] { return rfc::SEC_FETCH_MODE_SAME_ORIGIN; }
+inline fn wire_token(v: SecFetchMode.Cors) -> const u8[:] { return rfc::SEC_FETCH_MODE_CORS; }
+inline fn wire_token(v: SecFetchMode.NoCors) -> const u8[:] { return rfc::SEC_FETCH_MODE_NO_CORS; }
+inline fn wire_token(v: SecFetchMode.WebSocket) -> const u8[:] { return rfc::SEC_FETCH_MODE_WEBSOCKET; }
+inline fn wire_token(v: SecFetchMode.Other) -> const u8[:] { return ""; }
 
 // Parses Sec-Fetch-Mode string value.
 //
@@ -100,13 +118,29 @@ fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
 //   returns: SecFetchMode.Navigate
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
     let clean = val.trim_lws();
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_NAVIGATE) { return SecFetchMode.Navigate; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_SAME_ORIGIN) { return SecFetchMode.SameOrigin; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_CORS) { return SecFetchMode.Cors; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_NO_CORS) { return SecFetchMode.NoCors; }
-    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_WEBSOCKET) { return SecFetchMode.WebSocket; }
+    const for <N, V> in variants<SecFetchMode> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: SecFetchMode = v;
+            return candidate;
+        }
+    }
     return SecFetchMode.Other;
 }
+
+inline fn wire_token(v: SecFetchDest.Document) -> const u8[:] { return "document"; }
+inline fn wire_token(v: SecFetchDest.NestedDocument) -> const u8[:] { return "nested-document"; }
+inline fn wire_token(v: SecFetchDest.Iframe) -> const u8[:] { return "iframe"; }
+inline fn wire_token(v: SecFetchDest.Frame) -> const u8[:] { return "frame"; }
+inline fn wire_token(v: SecFetchDest.Embed) -> const u8[:] { return "embed"; }
+inline fn wire_token(v: SecFetchDest.Object) -> const u8[:] { return "object"; }
+inline fn wire_token(v: SecFetchDest.Script) -> const u8[:] { return "script"; }
+inline fn wire_token(v: SecFetchDest.Image) -> const u8[:] { return "image"; }
+inline fn wire_token(v: SecFetchDest.Style) -> const u8[:] { return "style"; }
+inline fn wire_token(v: SecFetchDest.Font) -> const u8[:] { return "font"; }
+inline fn wire_token(v: SecFetchDest.Empty) -> const u8[:] { return "empty"; }
+inline fn wire_token(v: SecFetchDest.Other) -> const u8[:] { return ""; }
 
 // Parses Sec-Fetch-Dest string value.
 //
@@ -115,17 +149,14 @@ fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
 //   returns: SecFetchDest.Document
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
     let clean = val.trim_lws();
-    if clean.eq_ascii_fold("document") { return SecFetchDest.Document; }
-    if clean.eq_ascii_fold("nested-document") { return SecFetchDest.NestedDocument; }
-    if clean.eq_ascii_fold("iframe") { return SecFetchDest.Iframe; }
-    if clean.eq_ascii_fold("frame") { return SecFetchDest.Frame; }
-    if clean.eq_ascii_fold("embed") { return SecFetchDest.Embed; }
-    if clean.eq_ascii_fold("object") { return SecFetchDest.Object; }
-    if clean.eq_ascii_fold("script") { return SecFetchDest.Script; }
-    if clean.eq_ascii_fold("image") { return SecFetchDest.Image; }
-    if clean.eq_ascii_fold("style") { return SecFetchDest.Style; }
-    if clean.eq_ascii_fold("font") { return SecFetchDest.Font; }
-    if clean.eq_ascii_fold("empty") { return SecFetchDest.Empty; }
+    const for <N, V> in variants<SecFetchDest> {
+        let v = default<V>();
+        let tok = wire_token(v);
+        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+            let candidate: SecFetchDest = v;
+            return candidate;
+        }
+    }
     return SecFetchDest.Other;
 }
 
@@ -140,15 +171,11 @@ fn is_static_asset_dest(dest: SecFetchDest) -> bool {
 }
 
 fn csrf_reject_reason_to_string(reason: CsrfRejectReason) -> const u8[:] {
-    return match reason {
-        CrossSiteStateMutation => "CrossSiteStateMutation",
-        DisallowedSameSiteSubdomain => "DisallowedSameSiteSubdomain",
-        CrossSiteFramingOrXssi => "CrossSiteFramingOrXssi",
-        CrossSiteUnauthorizedSubresource => "CrossSiteUnauthorizedSubresource",
-        OriginHostMismatch => "OriginHostMismatch",
-        MissingBrowserHeadersWithSessionCookie => "MissingBrowserHeadersWithSessionCookie",
-        MissingUserActivationOnSensitiveNav => "MissingUserActivationOnSensitiveNav",
-    };
+    const for <N, V> in variants<CsrfRejectReason> {
+        let v: CsrfRejectReason = default<V>();
+        if reason == v { return N; }
+    }
+    return "Unknown";
 }
 
 fn is_allowed(decision: const CsrfDecision&) -> bool {

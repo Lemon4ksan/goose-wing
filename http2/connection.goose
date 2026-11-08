@@ -221,7 +221,7 @@ fn find_session_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool 
 fn find_closed_h2_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
     var idx: i32 = 0;
     while idx < (s.streams.len as i32) {
-        let st = s.streams[idx];
+        let st .= s.streams[idx];
         if !st.active && st.state == H2StreamState.Closed && st.stream_id == stream_id {
             return idx, true;
         }
@@ -271,14 +271,15 @@ fn close_local_stream(s: H2Connection&, stream_id: u32) {
     let s_idx, found = find_session_stream_idx(s, stream_id);
     guard found else { return; }
 
-    if s.streams[s_idx].state == H2StreamState.HalfClosedRemote {
-        s.streams[s_idx].state = H2StreamState.Closed;
-        s.streams[s_idx].active = false;
+    let st .= s.streams[s_idx];
+    if st.state == H2StreamState.HalfClosedRemote {
+        st.state = H2StreamState.Closed;
+        st.active = false;
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }
-    } else if s.streams[s_idx].state == H2StreamState.Open {
-        s.streams[s_idx].state = H2StreamState.HalfClosedLocal;
+    } else if st.state == H2StreamState.Open {
+        st.state = H2StreamState.HalfClosedLocal;
     }
     sync_stream_urgency_node(s, s_idx);
 }
@@ -288,9 +289,10 @@ fn reset_session_stream(s: H2Connection&, stream_id: u32) {
     let s_idx, found = find_session_stream_idx(s, stream_id);
     guard found else { return; }
 
-    s.streams[s_idx].state = H2StreamState.Closed;
-    s.streams[s_idx].closed_by_rst = true;
-    s.streams[s_idx].active = false;
+    let st .= s.streams[s_idx];
+    st.state = H2StreamState.Closed;
+    st.closed_by_rst = true;
+    st.active = false;
     if s.active_stream_count > 0 {
         s.active_stream_count--;
     }
@@ -299,14 +301,15 @@ fn reset_session_stream(s: H2Connection&, stream_id: u32) {
 
 // Handles remote END_STREAM transition for an active stream.
 inline fn apply_stream_end_remote(s: H2Connection&, s_idx: i32) {
-    if s.streams[s_idx].state == H2StreamState.HalfClosedLocal {
-        s.streams[s_idx].state = H2StreamState.Closed;
-        s.streams[s_idx].active = false;
+    let st .= s.streams[s_idx];
+    if st.state == H2StreamState.HalfClosedLocal {
+        st.state = H2StreamState.Closed;
+        st.active = false;
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }
     } else {
-        s.streams[s_idx].state = H2StreamState.HalfClosedRemote;
+        st.state = H2StreamState.HalfClosedRemote;
     }
     sync_stream_urgency_node(s, s_idx);
 }
@@ -399,9 +402,10 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
     }
 
     if found {
-        s.streams[s_idx].state = H2StreamState.Closed;
-        s.streams[s_idx].closed_by_rst = true;
-        s.streams[s_idx].active = false;
+        let st .= s.streams[s_idx];
+        st.state = H2StreamState.Closed;
+        st.closed_by_rst = true;
+        st.active = false;
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }
@@ -422,26 +426,27 @@ inline fn calc_headers_hpack_len(hdr: const FrameHeader&) -> u32 {
 }
 
 fn handle_existing_stream_headers(s: H2Connection&, s_idx: i32, flags: u8) -> u32 {
-    if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
-       s.streams[s_idx].state == H2StreamState.Closed {
+    let st .= s.streams[s_idx];
+    if st.state == H2StreamState.HalfClosedRemote ||
+       st.state == H2StreamState.Closed {
         return rfc::H2_ERR_STREAM_CLOSED;
     }
-    if s.streams[s_idx].headers_received {
-        if s.streams[s_idx].trailers_received {
+    if st.headers_received {
+        if st.trailers_received {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
         // RFC 9113 Section 8.1: A HEADERS frame for trailers MUST carry END_STREAM
         if (flags & rfc::H2_FLAG_END_STREAM) == 0 {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
-        let dec_len = s.streams[s_idx].declared_content_length;
-        if dec_len >= 0 && dec_len != s.streams[s_idx].received_data_bytes {
+        let dec_len = st.declared_content_length;
+        if dec_len >= 0 && dec_len != st.received_data_bytes {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
-        s.streams[s_idx].trailers_received = true;
+        st.trailers_received = true;
         apply_stream_end_remote(s, s_idx);
     } else {
-        s.streams[s_idx].headers_received = true;
+        st.headers_received = true;
         if (flags & rfc::H2_FLAG_END_STREAM) != 0 {
             apply_stream_end_remote(s, s_idx);
         }
@@ -660,15 +665,16 @@ fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 
     }
 
     // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams
-    if s.streams[s_idx].state == H2StreamState.Closed {
+    let st .= s.streams[s_idx];
+    if st.state == H2StreamState.Closed {
         return rfc::H2_ERR_NO_ERROR;
     }
 
-    let next_stream = s.streams[s_idx].send_window + inc;
+    let next_stream = st.send_window + inc;
     if next_stream > rfc::H2_MAX_WINDOW_SIZE {
         return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
-    s.streams[s_idx].send_window = next_stream;
+    st.send_window = next_stream;
     sync_stream_urgency_node(s, s_idx);
     return rfc::H2_ERR_NO_ERROR;
 }
@@ -709,28 +715,29 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    if s.streams[s_idx].state == H2StreamState.HalfClosedRemote ||
-       s.streams[s_idx].state == H2StreamState.Closed ||
-       s.streams[s_idx].trailers_received {
+    let st .= s.streams[s_idx];
+    if st.state == H2StreamState.HalfClosedRemote ||
+       st.state == H2StreamState.Closed ||
+       st.trailers_received {
         return rfc::H2_ERR_STREAM_CLOSED;
     }
 
     // RFC 9113 §8.1.1 & §8.8: Status 204, 304, or 1xx MUST NOT contain message body / DATA frames
-    let sc = s.streams[s_idx].status_code;
+    let sc = st.status_code;
     if sc == 204 || sc == 304 || (sc >= 100 && sc < 200) {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    s.streams[s_idx].recv_window -= total_consumed;
-    if s.streams[s_idx].recv_window < 0 {
+    st.recv_window -= total_consumed;
+    if st.recv_window < 0 {
         return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
-    s.streams[s_idx].received_data_bytes += payload_len;
+    st.received_data_bytes += payload_len;
 
     // RFC 9113 §8.1.2: Check if incoming DATA causes total data to exceed declared Content-Length
-    let dec_len = s.streams[s_idx].declared_content_length;
-    if dec_len >= 0 && s.streams[s_idx].received_data_bytes > dec_len {
+    let dec_len = st.declared_content_length;
+    if dec_len >= 0 && st.received_data_bytes > dec_len {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
@@ -738,7 +745,7 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
         apply_stream_end_remote(s, s_idx);
 
         // Verify Content-Length match if declared (Go #32728 / #46071)
-        if dec_len >= 0 && dec_len != s.streams[s_idx].received_data_bytes {
+        if dec_len >= 0 && dec_len != st.received_data_bytes {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     }
@@ -759,8 +766,9 @@ fn ack_control_frame_flushed(s: H2Connection&) {
 fn unlink_stream_from_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
     guard s_idx >= 0 && s_idx < 128 && u <= 7 else { return; }
     let u_idx = u as i64;
-    let prev = s.stream_nodes[s_idx].prev;
-    let next = s.stream_nodes[s_idx].next;
+    let node .= s.stream_nodes[s_idx];
+    let prev = node.prev;
+    let next = node.next;
     let is_head = (s.urgency_heads[u_idx] == s_idx);
     let is_tail = (s.urgency_tails[u_idx] == s_idx);
     guard is_head || is_tail || prev >= 0 || next >= 0 else { return; }
@@ -777,8 +785,8 @@ fn unlink_stream_from_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
         s.urgency_tails[u_idx] = prev;
     }
 
-    s.stream_nodes[s_idx].prev = -1;
-    s.stream_nodes[s_idx].next = -1;
+    node.prev = -1;
+    node.next = -1;
 
     if s.urgency_heads[u_idx] < 0 {
         s.urgency_tails[u_idx] = -1;
@@ -791,15 +799,16 @@ fn link_stream_to_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
     guard s_idx >= 0 && s_idx < 128 && u <= 7 else { return; }
     unlink_stream_from_urgency_bucket(s, s_idx, u);
     let u_idx = u as i64;
-    s.stream_nodes[s_idx].stream_id = s.streams[s_idx].stream_id;
-    s.stream_nodes[s_idx].next = -1;
+    let node .= s.stream_nodes[s_idx];
+    node.stream_id = s.streams[s_idx].stream_id;
+    node.next = -1;
     let tail = s.urgency_tails[u_idx];
     if tail >= 0 {
-        s.stream_nodes[s_idx].prev = tail;
+        node.prev = tail;
         s.stream_nodes[tail].next = s_idx;
         s.urgency_tails[u_idx] = s_idx;
     } else {
-        s.stream_nodes[s_idx].prev = -1;
+        node.prev = -1;
         s.urgency_heads[u_idx] = s_idx;
         s.urgency_tails[u_idx] = s_idx;
     }
@@ -809,13 +818,14 @@ fn link_stream_to_urgency_bucket(s: H2Connection&, s_idx: i32, u: u8) {
 // Synchronizes stream node membership across the 8 urgency buckets based on send readiness.
 fn sync_stream_urgency_node(s: H2Connection&, s_idx: i32) {
     guard s_idx >= 0 && s_idx < (s.streams.len as i32) else { return; }
-    let u = s.streams[s_idx].priority.urgency;
+    let stream .= s.streams[s_idx];
+    let u = stream.priority.urgency;
     guard u <= 7 else { return; }
-    let st = s.streams[s_idx].state;
+    let st = stream.state;
     let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-    let ready = s.streams[s_idx].active && can_send
-        && s.streams[s_idx].pending_send_bytes > 0
-        && s.streams[s_idx].send_window > 0;
+    let ready = stream.active && can_send
+        && stream.pending_send_bytes > 0
+        && stream.send_window > 0;
     if ready {
         link_stream_to_urgency_bucket(s, s_idx, u);
     } else {
@@ -835,14 +845,16 @@ fn refresh_active_urgency_buckets(s: H2Connection&) {
     var idx: i32 = 0;
     let count = s.streams.len as i32;
     while idx < count {
-        s.stream_nodes[idx].prev = -1;
-        s.stream_nodes[idx].next = -1;
-        s.stream_nodes[idx].stream_id = s.streams[idx].stream_id;
-        let st = s.streams[idx].state;
+        let node .= s.stream_nodes[idx];
+        let stream .= s.streams[idx];
+        node.prev = -1;
+        node.next = -1;
+        node.stream_id = stream.stream_id;
+        let st = stream.state;
         let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-        if s.streams[idx].active && can_send && s.streams[idx].pending_send_bytes > 0
-            && s.streams[idx].send_window > 0 && s.streams[idx].priority.urgency <= 7 {
-            link_stream_to_urgency_bucket(s, idx, s.streams[idx].priority.urgency);
+        if stream.active && can_send && stream.pending_send_bytes > 0
+            && stream.send_window > 0 && stream.priority.urgency <= 7 {
+            link_stream_to_urgency_bucket(s, idx, stream.priority.urgency);
         }
         idx++;
     }
@@ -863,7 +875,8 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
     guard found else { return rfc::H2_ERR_NO_ERROR; }
 
-    let old_u = s.streams[s_idx].priority.urgency;
+    let stream .= s.streams[s_idx];
+    let old_u = stream.priority.urgency;
     unlink_stream_from_urgency_bucket(s, s_idx, old_u);
 
     var final_prio = prio;
@@ -871,8 +884,8 @@ fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: win
         final_prio.urgency = 3;
         final_prio.incremental = true;
     }
-    s.streams[s_idx].priority = final_prio;
-    s.streams[s_idx].has_explicit_priority_update = true;
+    stream.priority = final_prio;
+    stream.has_explicit_priority_update = true;
     sync_stream_urgency_node(s, s_idx);
     return rfc::H2_ERR_NO_ERROR;
 }
@@ -897,11 +910,12 @@ inline fn commit_stream_send_quota(
     chosen_idx:    i32,
     max_frame_len: u32,
 ) -> u32, u32, bool {
-    let target_stream_id = s.streams[chosen_idx].stream_id;
+    let chosen .= s.streams[chosen_idx];
+    let target_stream_id = chosen.stream_id;
     let quota = compute_stream_send_quota(s, target_stream_id);
     guard quota > 0 else { return 0, 0, false; }
 
-    let stream_pending = s.streams[chosen_idx].pending_send_bytes;
+    let stream_pending = chosen.pending_send_bytes;
     let quota_u32 = quota as u32;
     let quota_cap = min(
         stream_pending,
@@ -914,13 +928,13 @@ inline fn commit_stream_send_quota(
     let send_len = min(quota_cap, frame_cap);
 
     // Deduct from pending and windows
-    s.streams[chosen_idx].pending_send_bytes -= send_len;
-    s.streams[chosen_idx].send_window -= send_len;
+    chosen.pending_send_bytes -= send_len;
+    chosen.send_window -= send_len;
     s.conn_send_window -= send_len;
     sync_stream_urgency_node(s, chosen_idx);
 
     // Update anti-starvation streak tracking
-    if s.streams[chosen_idx].priority.urgency < 3 {
+    if chosen.priority.urgency < 3 {
         s.urgency_streak_count++;
     } else {
         s.urgency_streak_count = 0;
@@ -936,10 +950,11 @@ fn has_lower_urgency_ready(s: const H2Connection&) -> bool {
     var chk: i32 = 0;
     let stream_count = s.streams.len as i32;
     while chk < stream_count {
-        let st = s.streams[chk].state;
+        let cur .= s.streams[chk];
+        let st = cur.state;
         let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-        if s.streams[chk].active && can_send && s.streams[chk].pending_send_bytes > 0
-            && s.streams[chk].send_window > 0 && s.streams[chk].priority.urgency >= 3 {
+        if cur.active && can_send && cur.pending_send_bytes > 0
+            && cur.send_window > 0 && cur.priority.urgency >= 3 {
             return true;
         }
         chk++;
@@ -951,11 +966,12 @@ fn find_non_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
     let u_idx = u as i64;
     var node_idx = s.urgency_heads[u_idx];
     while node_idx >= 0 {
-        let st = s.streams[node_idx].state;
+        let cur .= s.streams[node_idx];
+        let st = cur.state;
         let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-        if s.streams[node_idx].active && can_send && s.streams[node_idx].pending_send_bytes > 0
-            && s.streams[node_idx].send_window > 0 && s.streams[node_idx].priority.urgency == u
-            && !s.streams[node_idx].priority.incremental {
+        if cur.active && can_send && cur.pending_send_bytes > 0
+            && cur.send_window > 0 && cur.priority.urgency == u
+            && !cur.priority.incremental {
             return node_idx;
         }
         node_idx = s.stream_nodes[node_idx].next;
@@ -963,11 +979,12 @@ fn find_non_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
     var idx: i32 = 0;
     let stream_count = s.streams.len as i32;
     while idx < stream_count {
-        let st = s.streams[idx].state;
+        let cur .= s.streams[idx];
+        let st = cur.state;
         let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-        if s.streams[idx].active && can_send && s.streams[idx].pending_send_bytes > 0
-            && s.streams[idx].send_window > 0 && s.streams[idx].priority.urgency == u
-            && !s.streams[idx].priority.incremental {
+        if cur.active && can_send && cur.pending_send_bytes > 0
+            && cur.send_window > 0 && cur.priority.urgency == u
+            && !cur.priority.incremental {
             return idx;
         }
         idx++;
@@ -985,11 +1002,12 @@ fn find_incremental_candidate(s: const H2Connection&, u: u8) -> i32 {
     while step <= stream_count {
         let candidate = if last_inc < 0 { step - 1 } else { (last_inc + step) % stream_count };
         if candidate >= 0 && candidate < stream_count {
-            let st = s.streams[candidate].state;
+            let cur .= s.streams[candidate];
+            let st = cur.state;
             let can_send = (st == H2StreamState.Open || st == H2StreamState.HalfClosedRemote);
-            if s.streams[candidate].active && can_send && s.streams[candidate].pending_send_bytes > 0
-                && s.streams[candidate].send_window > 0 && s.streams[candidate].priority.urgency == u
-                && s.streams[candidate].priority.incremental {
+            if cur.active && can_send && cur.pending_send_bytes > 0
+                && cur.send_window > 0 && cur.priority.urgency == u
+                && cur.priority.incremental {
                 return candidate;
             }
         }
@@ -1043,6 +1061,23 @@ inline fn apply_urgency_anti_starvation(s: H2Connection&, mask: u8) -> u8 {
     return mask;
 }
 
+inline fn scan_urgency_mask_for_write(
+    s:             H2Connection&,
+    initial_mask:  u8,
+    max_frame_len: u32,
+) -> u32, u32, bool {
+    var mask = initial_mask;
+    while mask != 0 {
+        let u = ctz_urgency_mask(mask);
+        let target_stream_id, send_len, ok = select_and_commit_stream(s, u, max_frame_len);
+        if ok {
+            return target_stream_id, send_len, true;
+        }
+        mask &= core::sub_sat_u64(mask, 1) as u8;
+    }
+    return 0, 0, false;
+}
+
 // Schedules next stream for DATA frame transmission according to RFC 9218 urgency 0..7.
 // Alternates between incremental and non-incremental streams to prevent starvation.
 // Implements Round-Robin fair interleaving among concurrent incremental streams within a bucket.
@@ -1055,28 +1090,14 @@ fn schedule_next_write(s: H2Connection&, max_frame_len: u32) -> u32, u32, bool {
     }
     guard s.active_urgency_mask != 0 else { return 0, 0, false; }
 
-    var search_mask = apply_urgency_anti_starvation(s, s.active_urgency_mask);
-    var pass: i32 = 0;
-    while pass < 2 {
-        var mask = search_mask;
-        while mask != 0 {
-            let u = ctz_urgency_mask(mask);
-            let target_stream_id, send_len, ok = select_and_commit_stream(s, u, max_frame_len);
-            if ok {
-                return target_stream_id, send_len, true;
-            }
-            mask &= ~(1 << u);
-        }
-        if pass == 0 && search_mask != s.active_urgency_mask {
-            search_mask = s.active_urgency_mask;
-            s.urgency_streak_count = 0;
-            pass++;
-        } else {
-            break;
-        }
+    let search_mask = apply_urgency_anti_starvation(s, s.active_urgency_mask);
+    let sid1, len1, ok1 = scan_urgency_mask_for_write(s, search_mask, max_frame_len);
+    if ok1 {
+        return sid1, len1, true;
     }
-
-    return 0, 0, false;
+    guard search_mask != s.active_urgency_mask else { return 0, 0, false; }
+    s.urgency_streak_count = 0;
+    return scan_urgency_mask_for_write(s, s.active_urgency_mask, max_frame_len);
 }
 
 // RFC 9218 Section 4: Priority Parameters - O(1) priority scheduler overload using `ctz_urgency_mask`

@@ -47,6 +47,9 @@ fn ::index_of_byte(s: const u8[:], b: u8) -> i64 { return core::index_of_byte(s,
 fn ::last_index_of_byte(s: const u8[:], b: u8) -> i64 { return core::last_index_of_byte(s, b); }
 fn ::count_byte(s: const u8[:], b: u8) -> i64 { return core::count_byte(s, b); }
 
+fn ::partition_byte(s: const u8[:], sep: u8) -> const u8[:], const u8[:], const u8[:] {
+    return core::partition_byte(s, sep);
+}
 fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     return core::split_once_byte(s, delim);
 }

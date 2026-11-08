@@ -42,17 +42,24 @@ inline fn record_expired_conn(dst: i64[:], current_count: i64, slot: i64) -> i64
     return core::add_sat_i64(current_count, 1);
 }
 
+inline fn reset_soa_column_slot<T>(col: T[1024]&, slot: i64) {
+    col[slot] = default<T>();
+}
+
+inline fn reset_soa_column_slot(col: i64&, slot: i64) {
+    let _ = col;
+    let _ = slot;
+}
+
+// Resets all parallel SoA columns for `slot` via compile-time struct field reflection.
 inline fn reset_soa_slot_fields(table: SoAConnTable&, slot: i64, fd: i64, timeout_tick: u8) {
+    const for <N, A> in fields<SoAConnTable> {
+        reset_soa_column_slot(table.A, slot);
+    }
     table.fds[slot] = fd;
     table.timeout_ticks[slot] = timeout_tick;
-    table.leftover_lens[slot] = 0;
-    table.is_h2[slot] = false;
     table.h2_slot_map[slot] = -1;
-    table.has_tls[slot] = false;
     table.tls_slots[slot] = 0xFFFF;
-    table.has_peer_ip[slot] = false;
-    table.peer_ip_hashes[slot] = 0;
-    table.peer_ips[slot].clear();
 }
 
 // Allocates an active connection slot in the SoA table.
