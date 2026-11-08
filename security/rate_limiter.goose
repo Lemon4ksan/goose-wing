@@ -253,32 +253,18 @@ fn allocate_shard_slot(shard: GcraShard&, now_ns: u64) -> i32 {
     return -1;
 }
 
-// Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
-fn check_rate_limit(
-    limiter: ShardedGcraLimiter&,
-    key_str: const u8[:],
-    cost_n:  u64,
-    now_ns:  u64,
+// Admits a new rate-limit key into `shard_idx` or rejects fail-closed if all slots are active and unexpired.
+fn admit_or_reject_new_rate_limit_slot(
+    limiter:   ShardedGcraLimiter&,
+    shard_idx: i64,
+    eff_key:   const u8[:],
+    cost_n:    u64,
+    now_ns:    u64,
 ) -> RateLimitDecision {
-    let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
-    if key_str.len <= 64 {
-        let existing = find_existing_slot(limiter.shards[shard_idx].slots, key_str);
-        if existing >= 0 {
-            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
-        }
-    }
-    var eff_key: u8[..64] = [];
-    format_gcra_key(key_str, eff_key);
-    if key_str.len > 64 {
-        let existing = find_existing_slot(limiter.shards[shard_idx].slots, eff_key[..]);
-        if existing >= 0 {
-            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
-        }
-    }
     let slot_idx = allocate_shard_slot(limiter.shards[shard_idx], now_ns);
     if slot_idx >= 0 {
         limiter.shards[shard_idx].slots[slot_idx].key.clear();
-        limiter.shards[shard_idx].slots[slot_idx].key.append(eff_key[..]);
+        limiter.shards[shard_idx].slots[slot_idx].key.append(eff_key);
         limiter.shards[shard_idx].slots[slot_idx].cell.tat_ns = now_ns;
         limiter.shards[shard_idx].slots[slot_idx].active = true;
         return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[slot_idx].cell, cost_n, now_ns);
@@ -296,6 +282,30 @@ fn check_rate_limit(
         retry_after_ns: if retry_ns > 0 { retry_ns } else { limiter.quota.emission_interval_ns },
         current_tat_ns: min_tat,
     };
+}
+
+// Checks and updates rate limit for a specific client key (IP, API-Key, Tenant).
+fn check_rate_limit(
+    limiter: ShardedGcraLimiter&,
+    key_str: const u8[:],
+    cost_n:  u64,
+    now_ns:  u64,
+) -> RateLimitDecision {
+    let shard_idx = (core::fnv1a_64(key_str) & 0xFF) as i64;
+    if key_str.len <= 64 {
+        let existing = find_existing_slot(limiter.shards[shard_idx].slots, key_str);
+        if existing >= 0 {
+            return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
+        }
+        return admit_or_reject_new_rate_limit_slot(limiter, shard_idx, key_str, cost_n, now_ns);
+    }
+    var eff_key: u8[..64] = [];
+    format_gcra_key(key_str, eff_key);
+    let existing = find_existing_slot(limiter.shards[shard_idx].slots, eff_key[..]);
+    if existing >= 0 {
+        return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
+    }
+    return admit_or_reject_new_rate_limit_slot(limiter, shard_idx, eff_key[..], cost_n, now_ns);
 }
 
 // ---- probabilistic sampled gcra -------------------------------------------
@@ -380,21 +390,42 @@ inline fn ceil_ns_to_sec(ns: u64) -> u64 {
     return fast_div_u64(core::add_sat_u64(ns, 999999999), 1000000000);
 }
 
-fn has_header_hash_match(map: const HeaderMap&, name: const u8[:], hname: u32, wk_id: u8) -> bool {
+fn find_header_hash_entry_idx(map: const HeaderMap&, name: const u8[:], hname: u32, wk_id: u8) -> i64 {
     if wk_id != 0xFF {
-        return map.inline_slots[wk_id as i64] != 0xFF;
+        let slot_idx = map.inline_slots[wk_id as i64];
+        return if slot_idx != 0xFF && slot_idx < map.entries.len { slot_idx } else { -1 };
     }
-    for &e in map.entries {
+    for i in map.entries.len {
+        let e = map.entries[i];
         if e.name_hash == hname && eq_ascii_fold(entry_name(map, e), name) {
-            return true;
+            return i;
         }
     }
-    return false;
+    return -1;
+}
+
+inline fn try_overwrite_ratelimit_entry_same_len(map: HeaderMap&, idx: i64, val_str: const u8[:]) -> bool {
+    guard idx >= 0 && idx < map.entries.len else { return false; }
+    let e = map.entries[idx];
+    guard e.next_idx == 0xFF && e.reserved == HEADER_SRC_STACK && e.values_end <= map.raw_buf.len else {
+        return false;
+    }
+    let v_begin = e.values_begin as i64;
+    let v_end = e.values_end as i64;
+    guard core::sub_sat_i64(v_end, v_begin) == val_str.len else { return false; }
+    if map.raw_buf[v_begin..v_end] == val_str {
+        return true;
+    }
+    for k in val_str.len {
+        map.raw_buf[core::add_sat_i64(v_begin, k)] = val_str[k];
+    }
+    return true;
 }
 
 fn set_ratelimit_u64_header(map: HeaderMap&, name: const u8[:], hname: u32, wk_id: u8, val: u64) {
+    let idx = find_header_hash_entry_idx(map, name, hname, wk_id);
     let needed = core::add_sat_i64(name.len, 24);
-    if !has_header_hash_match(map, name, hname, wk_id) &&
+    if idx < 0 &&
         map.entries.len < 128 &&
         core::add_sat_i64(map.raw_buf.len, needed) <= 8192 {
         let n_begin = map.raw_buf.len as u16;
@@ -420,8 +451,11 @@ fn set_ratelimit_u64_header(map: HeaderMap&, name: const u8[:], hname: u32, wk_i
         map.header_contains_comma.push(false);
         return;
     }
-    var val_str: u8[..32] = [];
+    var val_str: u8[..24] = [];
     core::format_u64_dec(val, val_str);
+    if try_overwrite_ratelimit_entry_same_len(map, idx, val_str[..]) {
+        return;
+    }
     let _ = set_or_replace(map, name, val_str[..], false);
 }
 

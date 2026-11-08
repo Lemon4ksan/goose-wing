@@ -50,18 +50,25 @@ Linux x86_64 (Ubuntu 24.04 container, GCC -O3 -flto):
 
 | Workload / Benchmark Suite | goose-wing (Goose) | uWebSockets (C++) | Delta |
 | :--- | :---: | :---: | :---: |
-| **HTTP/1.1 Plaintext GET** (wrk, 4 threads, 64 conns, 5s) | **183,658 req/s** | 153,084 req/s | **+20.0%** |
-| • *Median latency (p50)* | **321.0 µs** | 390.0 µs | **-17.7%** |
-| • *Tail latency (p99)* | **749.0 µs** | 920.0 µs | **-18.6%** |
-| • *Transfer rate* | **23.65 MB/s** | 22.34 MB/s | **+5.9%** |
-| **Multi-Core Peak 1M Target** (6 workers, wrk 128x pipeline, 512 conns) | **954,939 req/s** | 785,073 req/s | **+21.6%** |
-| • *Median latency (p50)* | **314.0 µs** | 395.0 µs | **-20.5%** |
-| • *Tail latency (p99)* | **5,510.0 µs** | 7,710.0 µs | **-28.5%** |
-| • *Transfer rate* | **122.94 MB/s** | 114.55 MB/s | **+7.3%** |
-| **Unbounded Line-Rate Burst** (6 workers, dedicated C burst, 512 conns) | **9,688,950 req/s** | 7,884,619 req/s | **+22.9%** |
-| • *Transfer rate* | **1,247.41 MB/s** | 1,150.46 MB/s | **+8.4%** |
-| **Heap allocations per request** | **0 B (0 allocs)** | 0 B (0 allocs) | Parity |
-| **Process RSS Footprint** | **3.1 MB** | **18.2 MB** | **5.9x lower** |
+| 1 Worker: Standard Ping-Pong (`wrk`, 4 threads, 64 conns) | 165,874 req/s | 148,306 req/s | +11.8% |
+| • Median latency (p50) | 358.0 µs | 407.0 µs | -12.0% |
+| • Transfer rate | 25.15 MB/s | 21.64 MB/s | +16.2% |
+| 1 Worker: 32x Pipelined (`wrk`, 4 threads, 64 conns) | 177,853 req/s | 140,557 req/s | +26.5% |
+| • Tail latency (p99) | 756.0 µs | 930.0 µs | -18.7% |
+| • Transfer rate | 26.98 MB/s | 20.51 MB/s | +31.5% |
+| Multi-Core Peak 1M Target (6 workers, `wrk` 128x pipeline, 512 conns) | 954,939 req/s | 785,073 req/s | +21.6% |
+| • Median latency (p50) | 298.0 µs | 319.0 µs | -6.6% |
+| • Tail latency (p99) | 2,090.0 µs | 3,980.0 µs | -47.5% |
+| • Transfer rate | 123.92 MB/s | 119.98 MB/s | +3.3% |
+| 6 Workers: Unbounded Line-Rate Burst (`bench_burst`, 384 conns) | 25,016,380 req/s | 7,922,812 req/s | +215.8% (3.16x) |
+| • Transfer rate | 3,793.34 MB/s | 1,156.03 MB/s | +228.1% |
+| 6 Workers: Unbounded Line-Rate Burst (`bench_burst`, 512 conns) | 24,039,728 req/s | 7,631,240 req/s | +215.0% (3.15x) |
+| • Transfer rate | 3,645.25 MB/s | 1,113.49 MB/s | +227.4% |
+| 8 Workers: High-Concurrency (`wrk`, 256 conns, 64x) | 420,205 req/s | 404,932 req/s | +3.8% |
+| • Tail latency (p99) | 651.0 µs | 664.0 µs | -2.0% |
+| • Transfer rate | 63.72 MB/s | 59.08 MB/s | +7.9% |
+| Heap allocations per request | 0 B (0 allocs) | 0 B (0 allocs) | Parity |
+| Process RSS Footprint | 3.1 MB | 18.2 MB | 5.9x lower |
 
 ```text
 ==================================================================================
@@ -69,14 +76,15 @@ Linux x86_64 (Ubuntu 24.04 container, GCC -O3 -flto):
 ==================================================================================
 | Metric / Scenario                       |         goose-wing |        uWebSockets |            Delta |
 |-----------------------------------------|--------------------|--------------------|------------------|
-| Plaintext GET (wrk, 4 thr, 64 conns)    |        183,658 req |        153,084 req |          +20.0%  |
-| Plaintext GET Latency p50               |           321.0 us |           390.0 us |  -17.7% (1.21x)  |
-| Plaintext GET Latency p99               |           749.0 us |           920.0 us |  -18.6% (1.23x)  |
+| 1W Plaintext Ping-Pong (wrk, 64 conns)  |        165,874 req |        148,306 req |          +11.8%  |
+| 1W 32x Pipelined (wrk, 64 conns)        |        177,853 req |        140,557 req |          +26.5%  |
 | Multi-Core Peak 1M Target (6w, 128x)    |        954,939 req |        785,073 req |          +21.6%  |
-| Multi-Core Peak 1M Latency p50          |           314.0 us |           395.0 us |  -20.5% (1.26x)  |
-| Multi-Core Peak 1M Latency p99          |         5,510.0 us |         7,710.0 us |  -28.5% (1.40x)  |
-| Line-Rate C Burst (6 workers, 512 conns)|      9,688,950 req |      7,884,619 req |          +22.9%  |
-| Line-Rate C Burst Transfer Rate         |       1,247.4 MB/s |       1,150.5 MB/s |           +8.4%  |
+| Multi-Core Peak 1M Latency p99          |         2,090.0 us |         3,980.0 us |  -47.5% (1.90x)  |
+| Line-Rate C Burst (6w, 384 conns)       |     25,016,380 req |      7,922,812 req |  +215.8% (3.16x) |
+| Line-Rate C Burst Transfer (384 conns)  |       3,793.3 MB/s |       1,156.0 MB/s |         +228.1%  |
+| Line-Rate C Burst (6w, 512 conns)       |     24,039,728 req |      7,631,240 req |  +215.0% (3.15x) |
+| Line-Rate C Burst Transfer (512 conns)  |       3,645.3 MB/s |       1,113.5 MB/s |         +227.4%  |
+| 8W High-Concurrency (wrk, 256 conns)    |        420,205 req |        404,932 req |           +3.8%  |
 | Heap Allocations per request            |         0 B / 0 al |         0 B / 0 al |          Parity  |
 | Process RSS Footprint                   |             3.1 MB |            18.2 MB |      5.9x lower  |
 ==================================================================================

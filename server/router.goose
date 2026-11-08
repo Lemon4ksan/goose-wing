@@ -833,10 +833,10 @@ inline fn has_non_root_trailing_slash(path: const u8[:]) -> bool {
 inline fn is_already_canonical_route_path(path: const u8[:]) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
     guard !has_non_root_trailing_slash(path) else { return false; }
-    for i in path.len {
+    for i in 1..path.len {
         let b = path[i];
         if b == '.' || b == '?' || b == '#' || b == '%' { return false; }
-        if b == '/' && i > 0 && path[i - 1] == '/' { return false; }
+        if b == '/' && path[i - 1] == '/' { return false; }
     }
     return true;
 }
@@ -943,22 +943,65 @@ inline fn check_node_prefix_advance(
 }
 
 inline fn push_wildcard_backtrack_if_any(
-    tree:      const RadixTree&,
-    cur_idx:   i32,
-    cursor:    u16,
-    param_len: i64,
-    bt_stack:  RouteBacktrackEntry[..8]&,
+    tree:        const RadixTree&,
+    cur_idx:     i32,
+    cursor:      u16,
+    param_len:   i64,
+    bt_stack:    RouteBacktrackEntry[..8]&,
+    tried_param: bool = false,
 ) {
-    let has_wild = tree.nodes[cur_idx as i64].param_child >= 0
+    let has_wild = (!tried_param && tree.nodes[cur_idx as i64].param_child >= 0)
         || tree.nodes[cur_idx as i64].catch_all_child >= 0;
     if has_wild && bt_stack.len < 8 {
         bt_stack.push(RouteBacktrackEntry {
             node_idx:    cur_idx,
             cursor:      cursor,
             param_len:   param_len,
-            tried_param: false,
+            tried_param: tried_param,
         });
     }
+}
+
+inline fn commit_matched_route_node(
+    cur_idx:     i32&,
+    cursor:      u16&,
+    skip_pfx:    bool&,
+    next_idx:    i32,
+    advance_len: i64,
+) {
+    cur_idx = next_idx;
+    cursor += advance_len as u16;
+    skip_pfx = true;
+}
+
+inline fn try_advance_static_or_param_node(
+    tree:     const RadixTree&,
+    rem:      const u8[:],
+    cur_idx:  i32&,
+    cursor:   u16&,
+    skip_pfx: bool&,
+    params:   ZeroAllocParams&,
+    bt_stack: RouteBacktrackEntry[..8]&,
+) -> bool {
+    let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
+    let next_pfx = if next_child >= 0 { tree.nodes[next_child as i64].prefix[..] } else { "" };
+    if next_child >= 0 && rem.len >= next_pfx.len && rem[..next_pfx.len] == next_pfx {
+        push_wildcard_backtrack_if_any(tree, cur_idx, cursor, params.len, bt_stack, false);
+        commit_matched_route_node(cur_idx, cursor, skip_pfx, next_child, next_pfx.len);
+        return true;
+    }
+    let p_idx = tree.nodes[cur_idx as i64].param_child;
+    let saved_param_len = params.len;
+    if p_idx >= 0 {
+        var val_len: i64 = 0;
+        if match_param_child(tree, p_idx, rem, cursor, params, val_len) {
+            push_wildcard_backtrack_if_any(tree, cur_idx, cursor, saved_param_len, bt_stack, true);
+            commit_matched_route_node(cur_idx, cursor, skip_pfx, p_idx, val_len);
+            return true;
+        }
+    }
+    push_wildcard_backtrack_if_any(tree, cur_idx, cursor, saved_param_len, bt_stack, true);
+    return false;
 }
 
 // Matches path against the RadixTree, recording parameter spans into params.
@@ -983,14 +1026,9 @@ fn match_path<B>(
         if pfx_ok && rem.len == 0 && tree.nodes[cur_idx as i64].handler_id >= 0 {
             return make_found_route(tree.nodes[cur_idx as i64]);
         }
-        if pfx_ok && rem.len > 0 {
-            push_wildcard_backtrack_if_any(tree, cur_idx, cursor, params.len, bt_stack);
-            let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
-            let next_pfx = if next_child >= 0 { tree.nodes[next_child as i64].prefix[..] } else { "" };
-            if next_child >= 0 && rem.len >= next_pfx.len && rem[..next_pfx.len] == next_pfx {
-                cur_idx = next_child;
-                continue;
-            }
+        if pfx_ok && rem.len > 0 &&
+            try_advance_static_or_param_node(tree, rem, cur_idx, cursor, skip_pfx, params, bt_stack) {
+            continue;
         }
 
         var ca_res = RouteMatchResult.NotFound;
@@ -1341,6 +1379,38 @@ fn add_static_route(
     return set_static_route_payload(router, eff_id, content_type, body);
 }
 
+const HASH_HDR_CONTENT_TYPE: u32 = 0xFCF70995; // "content-type"
+
+inline fn set_static_response_content_type(res: Response&, ct: const u8[:]) {
+    let ct_slot = well_known_to_slot(WellKnownHeader.ContentType);
+    if res.headers.inline_slots[ct_slot] == 0xFF
+        && res.headers.entries.len < 128
+        && core::add_sat_i64(res.headers.raw_buf.len, core::add_sat_i64(12, ct.len)) <= 8192 {
+        let n_begin = res.headers.raw_buf.len as u16;
+        res.headers.raw_buf.append(rfc::HEADER_CONTENT_TYPE);
+        let n_end = res.headers.raw_buf.len as u16;
+        res.headers.raw_buf.append(ct);
+        let v_end = res.headers.raw_buf.len as u16;
+        let new_idx = res.headers.entries.len as u8;
+        res.headers.inline_slots[ct_slot] = new_idx;
+        res.headers.entries.push(HeaderEntry {
+            name_begin:    n_begin,
+            name_end:      n_end,
+            values_begin:  n_end,
+            values_end:    v_end,
+            next_idx:      0xFF,
+            flags:         0,
+            well_known_id: ct_slot as u8,
+            reserved:      0,
+            name_hash:     HASH_HDR_CONTENT_TYPE,
+        });
+        res.headers.header_contains_comma.push(false);
+        res.presence_mask |= RES_PRESENCE_CONTENT_TYPE;
+        return;
+    }
+    set_header(res, rfc::HEADER_CONTENT_TYPE, ct);
+}
+
 fn get_static_route_payload(
     router:     const RadixRouter&,
     handler_id: i32,
@@ -1349,7 +1419,7 @@ fn get_static_route_payload(
     for idx in router.static_payloads.len {
         if router.static_payloads[idx].handler_id == handler_id {
             if router.static_payloads[idx].content_type.len > 0 {
-                set_header(res, "Content-Type", router.static_payloads[idx].content_type[..]);
+                set_static_response_content_type(res, router.static_payloads[idx].content_type[..]);
             }
             res.body.clear();
             res.body.append(router.static_payloads[idx].body[..]);
@@ -1494,6 +1564,19 @@ inline fn match_tree_with_l0<B>(
     return match_path(router.trees[tree_idx as i64].tree, clean_path, params, out_canon_path);
 }
 
+fn resolve_method_not_allowed_or_not_found(
+    router:          const RadixRouter&,
+    target_tree_idx: i32,
+    method:          const u8[:],
+    clean_path:      const u8[:],
+) -> RouteMatchResult {
+    var allow_buf: u8[..64] = [];
+    if build_allow_header(router, target_tree_idx, method, clean_path, allow_buf) {
+        return RouteMatchResult.MethodNotAllowed { allow_header: allow_buf };
+    }
+    return RouteMatchResult.NotFound;
+}
+
 // Matches a request method and path against registered routes.
 // Automatically canonicalizes path before matching.
 // Automatic HEAD routing: if a route matches GET, HEAD requests route to GET handler (RFC 9110 §9.3.2).
@@ -1521,12 +1604,7 @@ fn match_route<B>(
         if is_match_found(res_get) { return res_get; }
     }
 
-    var allow_buf: u8[..64] = [];
-    if build_allow_header(router, target_tree_idx, method, clean_path, allow_buf) {
-        return RouteMatchResult.MethodNotAllowed { allow_header: allow_buf };
-    }
-
-    return RouteMatchResult.NotFound;
+    return resolve_method_not_allowed_or_not_found(router, target_tree_idx, method, clean_path);
 }
 
 fn match_route(

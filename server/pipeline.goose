@@ -476,16 +476,87 @@ fn stage_server_auth_jwt(
     return wire::StageVerdict.Continue;
 }
 
+const SLOT_CONTENT_TYPE:     u8 = 1;  // WellKnownHeader.ContentType
+const SLOT_CONTENT_ENCODING: u8 = 4;  // WellKnownHeader.ContentEncoding
+const SLOT_ETAG:             u8 = 25; // WellKnownHeader.ETag
+const SLOT_VARY:             u8 = 34; // WellKnownHeader.Vary
+const SLOT_HSTS:             u8 = 46; // WellKnownHeader.StrictTransportSecurity
+
+const HASH_HDR_CONTENT_ENCODING: u32 = 0x03E2ED88; // "content-encoding"
+const HASH_HDR_ETAG:             u32 = 0x06C857C0; // "etag"
+const HASH_HDR_SERVER_TIMING:    u32 = 0x9BBE871F; // "server-timing"
+const HASH_HDR_X_MATCHED_ROUTE:  u32 = 0x40F015F2; // "x-matched-route"
+
+fn append_known_pipeline_header(
+    map:            HeaderMap&,
+    name:           const u8[:],
+    val:            const u8[:],
+    slot:           u8,
+    flags:          u8,
+    hname:          u32,
+    contains_comma: bool,
+) -> bool {
+    let needed = core::add_sat_i64(name.len, val.len);
+    guard map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else {
+        return false;
+    }
+    if slot < 64 && map.inline_slots[slot as i64] != 0xFF {
+        return false;
+    }
+    let n_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(name);
+    let n_end = map.raw_buf.len as u16;
+    map.raw_buf.append(val);
+    let v_end = map.raw_buf.len as u16;
+    let new_idx = map.entries.len as u8;
+    if slot < 64 {
+        map.inline_slots[slot as i64] = new_idx;
+    }
+    map.entries.push(HeaderEntry {
+        name_begin:    n_begin,
+        name_end:      n_end,
+        values_begin:  n_end,
+        values_end:    v_end,
+        next_idx:      0xFF,
+        flags:         flags,
+        well_known_id: slot,
+        reserved:      0,
+        name_hash:     hname,
+    });
+    map.header_contains_comma.push(contains_comma);
+    return true;
+}
+
 inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&) -> wire::StageVerdict {
     res.status_code = 200;
     res.body.clear();
     res.body.append(cache.wire[..]);
     if cache.content_type.len > 0 {
-        let _ = append_header(res.headers, rfc::HEADER_CONTENT_TYPE, cache.content_type[..]);
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_CONTENT_TYPE,
+            cache.content_type[..],
+            SLOT_CONTENT_TYPE,
+            0,
+            HASH_HDR_CONTENT_TYPE,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_CONTENT_TYPE, cache.content_type[..]);
+        }
         res.presence_mask |= RES_PRESENCE_CONTENT_TYPE;
     }
     if cache.etag.len > 0 {
-        let _ = append_header(res.headers, rfc::HEADER_ETAG, cache.etag[..]);
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_ETAG,
+            cache.etag[..],
+            SLOT_ETAG,
+            0,
+            HASH_HDR_ETAG,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_ETAG, cache.etag[..]);
+        }
     }
     return wire::StageVerdict.ShortCircuit { status_code: 200 };
 }
@@ -518,17 +589,52 @@ fn stage_server_cache_lookup(
     };
 }
 
+var g_etag_memo_src: u8[..512] = [];
+var g_etag_memo_val: u8[..32]  = [];
+
+inline fn populate_missing_response_etag(res: Response&) {
+    if res.body.len <= 512 && g_etag_memo_src.len > 0 && res.body[..] == g_etag_memo_src[..] {
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_ETAG,
+            g_etag_memo_val[..],
+            SLOT_ETAG,
+            0,
+            HASH_HDR_ETAG,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_ETAG, g_etag_memo_val[..]);
+        }
+        return;
+    }
+    var etag_hdr: u8[..32] = [];
+    etag_hdr.push('"');
+    core::format_u64_hex(core::xxh64(res.body[..], 0), etag_hdr);
+    etag_hdr.push('"');
+    if res.body.len <= 512 {
+        let _ = g_etag_memo_src.try_set(res.body[..]);
+        let _ = g_etag_memo_val.try_set(etag_hdr[..]);
+    }
+    if !append_known_pipeline_header(
+        res.headers,
+        rfc::HEADER_ETAG,
+        etag_hdr[..],
+        SLOT_ETAG,
+        0,
+        HASH_HDR_ETAG,
+        false,
+    ) {
+        let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_hdr[..]);
+    }
+}
+
 // Stage 0 (Server Egress): RFC 9110 §8.8.3 ETag generation & §13.1.2 `If-None-Match` 304 evaluation.
 fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict {
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.etag");
     defer prof_leave(_prof);
     if get_inline(res.headers, WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
-        var etag_hdr: u8[..32] = [];
-        etag_hdr.push('"');
-        core::format_u64_hex(core::xxh64(res.body[..], 0), etag_hdr);
-        etag_hdr.push('"');
-        let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_hdr[..]);
+        populate_missing_response_etag(res);
     }
     let etag_slice = get_inline(res.headers, WellKnownHeader.ETag);
     guard etag_slice.len > 0 else { return wire::StageVerdict.Continue; }
@@ -568,6 +674,9 @@ fn is_zero_qvalue(params: const u8[:]) -> bool {
 
 fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool {
     guard accept_enc.len > 0 && token.len > 0 else { return false; }
+    if eq_ascii_fold(accept_enc, token) {
+        return true;
+    }
     var pos: i64 = 0;
     while pos < accept_enc.len {
         let comma = core::index_of_byte(accept_enc[pos..], ',');
@@ -593,19 +702,59 @@ fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool 
     return false;
 }
 
+inline fn update_single_vary_value(map: HeaderMap&, new_val: const u8[:]) -> bool {
+    let v_idx = map.inline_slots[SLOT_VARY as i64] as i64;
+    guard v_idx < map.entries.len && map.entries[v_idx].next_idx == 0xFF else { return false; }
+    guard core::add_sat_i64(map.raw_buf.len, new_val.len) <= 8192 else { return false; }
+    let new_v_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(new_val);
+    map.entries[v_idx].values_begin = new_v_begin;
+    map.entries[v_idx].values_end = map.raw_buf.len as u16;
+    map.entries[v_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+    map.header_contains_comma[v_idx] = true;
+    return true;
+}
+
 inline fn append_vary_accept_encoding(res: Response&) {
     let cur = get_inline(res.headers, WellKnownHeader.Vary);
     if cur.len == 0 {
-        let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::HEADER_ACCEPT_ENCODING);
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_VARY,
+            rfc::HEADER_ACCEPT_ENCODING,
+            SLOT_VARY,
+            0,
+            rfc::HASH_HDR_VARY,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::HEADER_ACCEPT_ENCODING);
+        }
+    } else if cur == rfc::FETCH_METADATA_VARY_VALUE {
+        let combined = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin, Accept-Encoding";
+        if !update_single_vary_value(res.headers, combined) {
+            let _ = set_or_replace(res.headers, rfc::HEADER_VARY, combined, false);
+        }
     } else if !core::contains_fold(cur, rfc::HEADER_ACCEPT_ENCODING) {
         var vbuf: u8[..128] = [];
         guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
-        let _ = set_or_replace(res.headers, rfc::HEADER_VARY, vbuf[..], false);
+        if !update_single_vary_value(res.headers, vbuf[..]) {
+            let _ = set_or_replace(res.headers, rfc::HEADER_VARY, vbuf[..], false);
+        }
     }
 }
 
 inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], suffix: const u8[:]) {
-    let _ = set_or_replace(res.headers, rfc::HEADER_CONTENT_ENCODING, encoding, false);
+    if !append_known_pipeline_header(
+        res.headers,
+        rfc::HEADER_CONTENT_ENCODING,
+        encoding,
+        SLOT_CONTENT_ENCODING,
+        0,
+        HASH_HDR_CONTENT_ENCODING,
+        false,
+    ) {
+        let _ = set_or_replace(res.headers, rfc::HEADER_CONTENT_ENCODING, encoding, false);
+    }
     if get_inline(res.headers, WellKnownHeader.ContentLength).len > 0 {
         remove_header(res, rfc::HEADER_CONTENT_LENGTH);
     }
@@ -623,6 +772,42 @@ inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], su
 
 inline fn select_dynamic_gzip_level(body_len: i64) -> i32 {
     return if body_len < 128 { 0 } else { 6 };
+}
+
+var g_gzip_memo_src:    u8[..512]  = [];
+var g_gzip_memo_dst:    u8[..512]  = [];
+var g_compress_scratch: u8[..2048] = [];
+
+fn try_compress_zstd(res: Response&) -> bool {
+    g_compress_scratch.clear();
+    guard core::zstd_compress(res.body[..], g_compress_scratch) else { return false; }
+    res.body.clear();
+    res.body.append(g_compress_scratch[..]);
+    finalize_compressed_response(res, "zstd", "-zstd");
+    return true;
+}
+
+fn try_compress_brotli(res: Response&) -> bool {
+    g_compress_scratch.clear();
+    guard core::brotli_compress(res.body[..], g_compress_scratch, 1) else { return false; }
+    res.body.clear();
+    res.body.append(g_compress_scratch[..]);
+    finalize_compressed_response(res, "br", "-br");
+    return true;
+}
+
+fn compress_gzip_uncached(res: Response&) {
+    g_compress_scratch.clear();
+    let gz_level = select_dynamic_gzip_level(res.body.len);
+    if core::gzip_compress(res.body[..], g_compress_scratch, gz_level) {
+        if res.body.len <= 512 && g_compress_scratch.len <= 512 {
+            let _ = g_gzip_memo_src.try_set(res.body[..]);
+            let _ = g_gzip_memo_dst.try_set(g_compress_scratch[..]);
+        }
+        res.body.clear();
+        res.body.append(g_compress_scratch[..]);
+        finalize_compressed_response(res, "gzip", "-gzip");
+    }
 }
 
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
@@ -643,33 +828,20 @@ fn stage_server_compress(
     let allow_br = (mask & (STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
     let allow_gzip = (mask & (STAGE_EGRESS_COMPRESS_GZIP | wire::STAGE_SRV_OUT_COMPRESS_GZIP)) != 0;
 
-    var compressed: u8[..2048] = [];
-    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") {
-        if core::zstd_compress(res.body[..], compressed) {
-            res.body.clear();
-            res.body.append(compressed[..]);
-            finalize_compressed_response(res, "zstd", "-zstd");
-            return wire::StageVerdict.Continue;
-        }
-        compressed.clear();
+    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") && try_compress_zstd(res) {
+        return wire::StageVerdict.Continue;
     }
-    if allow_br && client_accepts_encoding(accept_enc, "br") {
-        if core::brotli_compress(res.body[..], compressed, 1) {
-            res.body.clear();
-            res.body.append(compressed[..]);
-            finalize_compressed_response(res, "br", "-br");
-            return wire::StageVerdict.Continue;
-        }
-        compressed.clear();
+    if allow_br && client_accepts_encoding(accept_enc, "br") && try_compress_brotli(res) {
+        return wire::StageVerdict.Continue;
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
-        let gz_level = select_dynamic_gzip_level(res.body.len);
-        if core::gzip_compress(res.body[..], compressed, gz_level) {
+        if res.body.len <= 512 && g_gzip_memo_src.len > 0 && res.body[..] == g_gzip_memo_src[..] {
             res.body.clear();
-            res.body.append(compressed[..]);
+            res.body.append(g_gzip_memo_dst[..]);
             finalize_compressed_response(res, "gzip", "-gzip");
             return wire::StageVerdict.Continue;
         }
+        compress_gzip_uncached(res);
     }
     return wire::StageVerdict.Continue;
 }
@@ -694,7 +866,17 @@ fn stage_server_cache_store(
             etag_buf.push('"');
             core::format_u64_hex(core::xxh64(res.body[..], 0), etag_buf);
             etag_buf.push('"');
-            let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_buf[..]);
+            if !append_known_pipeline_header(
+                res.headers,
+                rfc::HEADER_ETAG,
+                etag_buf[..],
+                SLOT_ETAG,
+                0,
+                HASH_HDR_ETAG,
+                false,
+            ) {
+                let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_buf[..]);
+            }
             let _ = cache.cache_store(now_ms, res.body[..], handler_id, ctype, url_key, etag_buf[..]);
         }
     } else {
@@ -713,12 +895,74 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
         return wire::StageVerdict.Continue;
     }
     if existing_vary.len == 0 && existing_hsts.len == 0 {
-        let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
-        let _ = append_header(res.headers, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_VARY,
+            rfc::FETCH_METADATA_VARY_VALUE,
+            SLOT_VARY,
+            HEADER_FLAG_CONTAINS_COMMA,
+            rfc::HASH_HDR_VARY,
+            true,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
+        }
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_STRICT_TRANSPORT_SECURITY,
+            rfc::HSTS_DEFAULT_VALUE,
+            SLOT_HSTS,
+            HEADER_FLAG_SECURITY_STATE,
+            rfc::HASH_HDR_STRICT_TRANSPORT_SECURITY,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
+        }
         return wire::StageVerdict.Continue;
     }
     apply_isolation_headers(res);
     return wire::StageVerdict.Continue;
+}
+
+fn has_custom_header_hash(map: const HeaderMap&, name: const u8[:], hname: u32) -> bool {
+    for &e in map.entries {
+        if e.name_hash == hname && eq_ascii_fold(entry_name(map, e), name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_clean_header_bytes(src: const u8[:]) -> bool {
+    for b in src {
+        if b == '\r' || b == '\n' || b == 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn append_matched_route_log_header(map: HeaderMap&, route_slice: const u8[:]) {
+    if is_clean_header_bytes(route_slice) {
+        let has_comma = slice_contains_comma(route_slice);
+        let flags = if has_comma { HEADER_FLAG_CONTAINS_COMMA } else { 0 };
+        if !append_known_pipeline_header(
+            map,
+            "X-Matched-Route",
+            route_slice,
+            0xFF,
+            flags,
+            HASH_HDR_X_MATCHED_ROUTE,
+            has_comma,
+        ) {
+            let _ = append_header(map, "X-Matched-Route", route_slice);
+        }
+        return;
+    }
+    var clean_route: u8[..256] = [];
+    sanitize_header_bytes(route_slice, clean_route);
+    if clean_route.len > 0 {
+        let _ = append_header(map, "X-Matched-Route", clean_route[..]);
+    }
 }
 
 // Stage 7..8 (Server Egress): RFC 9218 / Server-Timing metrics and access log emission.
@@ -732,7 +976,7 @@ fn stage_server_metrics_log(
     defer prof_leave(_prof);
     let want_metrics = (mask & (STAGE_EGRESS_METRICS | wire::STAGE_SRV_OUT_METRICS)) != 0;
     let want_log = (mask & (STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
-    if want_metrics && header(res, rfc::HEADER_SERVER_TIMING).len == 0 {
+    if want_metrics && !has_custom_header_hash(res.headers, rfc::HEADER_SERVER_TIMING, HASH_HDR_SERVER_TIMING) {
         let dur_ns = if now_ns >= ext.start_time_ns && ext.start_time_ns > 0 {
             now_ns - ext.start_time_ns
         } else {
@@ -741,14 +985,22 @@ fn stage_server_metrics_log(
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
         core::format_u64_dec(dur_ns / 1000, timing_buf);
-        let _ = append_header(res.headers, rfc::HEADER_SERVER_TIMING, timing_buf[..]);
-    }
-    if want_log && ext.matched_route.len > 0 && header(res, "X-Matched-Route").len == 0 {
-        var clean_route: u8[..256] = [];
-        sanitize_header_bytes(ext.matched_route[..], clean_route);
-        if clean_route.len > 0 {
-            let _ = append_header(res.headers, "X-Matched-Route", clean_route[..]);
+        if !append_known_pipeline_header(
+            res.headers,
+            rfc::HEADER_SERVER_TIMING,
+            timing_buf[..],
+            0xFF,
+            0,
+            HASH_HDR_SERVER_TIMING,
+            false,
+        ) {
+            let _ = append_header(res.headers, rfc::HEADER_SERVER_TIMING, timing_buf[..]);
         }
+    }
+    if want_log
+        && ext.matched_route.len > 0
+        && !has_custom_header_hash(res.headers, "X-Matched-Route", HASH_HDR_X_MATCHED_ROUTE) {
+        append_matched_route_log_header(res.headers, ext.matched_route[..]);
     }
     return wire::StageVerdict.Continue;
 }

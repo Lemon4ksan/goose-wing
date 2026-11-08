@@ -39,7 +39,8 @@ of Vulkan and DPDK to the HTTP/1.1, HTTP/2, and HTTP/3 protocol stack:
 
 This makes `wing` suited for reverse proxies, gateways, and edge services where
 predictable clock cycles and zero allocations are required (a complete HTTP/1.1
-request-response cycle takes ~820 cycles on x86_64).
+L0 request-response turn takes ~397 cycles, or ~44 cycles/req when pipelined on
+x86_64).
 
 It is not a high-level HTTP client like Python's `requests`. Sending a request
 requires setting up buffers, arenas, and transport state. High-level application
@@ -142,35 +143,27 @@ Measured on an Intel Core i5-12400F in an Ubuntu 24.04 container:
 
 | Workload / Benchmark Suite | goose-wing (Goose) | uWebSockets (C++) | Delta |
 | :--- | :---: | :---: | :---: |
-| **HTTP/1.1 Plaintext GET** (wrk, 4 threads, 64 conns, 5s) | **183,658 req/s** | 153,084 req/s | **+20.0%** |
-| • *Median latency (p50)* | **321.0 µs** | 390.0 µs | **-17.7%** |
-| • *Tail latency (p99)* | **749.0 µs** | 920.0 µs | **-18.6%** |
-| • *Transfer rate* | **23.65 MB/s** | 22.34 MB/s | **+5.9%** |
-| **Multi-Core Peak 1M Target** (6 workers, wrk 128x pipeline, 512 conns) | **954,939 req/s** | 785,073 req/s | **+21.6%** |
-| • *Median latency (p50)* | **314.0 µs** | 395.0 µs | **-20.5%** |
-| • *Tail latency (p99)* | **5,510.0 µs** | 7,710.0 µs | **-28.5%** |
-| • *Transfer rate* | **122.94 MB/s** | 114.55 MB/s | **+7.3%** |
-| **Unbounded Line-Rate Burst** (6 workers, dedicated C burst, 512 conns) | **9,688,950 req/s** | 7,884,619 req/s | **+22.9%** |
-| • *Transfer rate* | **1,247.41 MB/s** | 1,150.46 MB/s | **+8.4%** |
-| **Heap allocations per request** | **0 B (0 allocs)** | 0 B (0 allocs) | Parity |
+| 1 Worker: Standard Ping-Pong (`wrk`, 64 conns) | 165,874 req/s (25.15 MB/s) | 148,306 req/s (21.64 MB/s) | +11.8% (p50: 358 µs vs 407 µs, -12.0%) |
+| 1 Worker: 32x Pipelined (`wrk`, 64 conns) | 177,853 req/s (26.98 MB/s) | 140,557 req/s (20.51 MB/s) | +26.5% (p99: 756 µs vs 930 µs, -18.7%) |
+| Multi-Core Peak 1M Target (6 workers, `wrk` 128x, 512 conns) | 954,939 req/s (122.94 MB/s) | 785,073 req/s (114.55 MB/s) | +21.6% (p99: 2,090 µs vs 3,980 µs, -47.5%) |
+| 6 Workers: Unbounded C Burst (`bench_burst`, 384 conns) | 25,016,380 req/s (3,793.34 MB/s) | 7,922,812 req/s (1,156.03 MB/s) | +215.8% / 3.16x (+228.1% transfer) |
+| 6 Workers: Unbounded C Burst (`bench_burst`, 512 conns) | 24,039,728 req/s (3,645.25 MB/s) | 7,631,240 req/s (1,113.49 MB/s) | +215.0% / 3.15x (+227.4% transfer) |
+| 8 Workers: High-Concurrency (`wrk`, 256 conns, 64x) | 420,205 req/s (63.72 MB/s) | 404,932 req/s (59.08 MB/s) | +3.8% (+7.9% transfer, p99: 651 µs) |
+| Heap allocations per request | 0 B (0 allocs) | 0 B (0 allocs) | Parity |
+| Process RSS footprint | 3.1 MB | 18.2 MB | 5.9x lower |
 
-### CPU clock cycles (RDTSC, Intel i5-12400F @ 4.4 GHz)
+### L0 and L7 pipeline CPU clock cycles (`bench/server_profiling_benchmark.goose`)
 
-Hardware instruction and cycle breakdown per request across pipeline stages
-(`bench/prof.exe`, 50,000 samples per stage):
+Serialized `rdtscp` cycle count, throughput, and three-channel Goose data-stack
+watermarks across HTTP/1.1 framing and L7 security/caching stages:
 
-| Pipeline stage | Plaintext GET (50k) | Param JSON (50k) | 10-Header POST (50k) |
-| :--- | :---: | :---: | :---: |
-| 0. CRLFCRLF delimiter search | 59.0 cycles | 82.8 cycles | 91.9 cycles |
-| 1. Request-line SWAR parse | 55.8 cycles | 57.9 cycles | 53.0 cycles |
-| 2. Header tokenization & spans | 274.8 cycles | 296.9 cycles | 643.5 cycles |
-| 3. Host validation & RFC checks | 30.6 cycles | 30.4 cycles | 34.4 cycles |
-| 4. GCRA rate limiter & pipeline | 68.6 cycles | 67.0 cycles | 61.1 cycles |
-| 5. Radix router route match | 62.9 cycles | 57.8 cycles | 57.0 cycles |
-| 6. Handler execution | 58.5 cycles | 57.4 cycles | 59.5 cycles |
-| 7. HTTP/1.1 response serialization | 167.7 cycles | 148.0 cycles | 155.1 cycles |
-| 8. Output buffer / cork append | 47.1 cycles | 47.0 cycles | 46.1 cycles |
-| **Total pipeline CPU cycles** | **~824 cycles/req** | **~845 cycles/req** | **~1,201 cycles/req** |
+| Benchmark scenario | Latency (`ns/op`) | Cycles (`cyc/op`) | Throughput (`MB/s`) | Net / Scratch (`B/op`) | `allocs/op` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `L0_Plaintext_GET` | 159.1 ns | 397.1 cyc | 729.1 MB/s | 0 B / 0 B | 0 |
+| `HTTP1_Pipelined_16x` (16 reqs/op) | 283.0 ns (17.7 ns/req) | 706.3 cyc (44.1 cyc/req) | 6,559.2 MB/s | 0 B / 0 B | 0 |
+| `Full_Pipeline_Auth_Cache_Hit` (15 stages) | 1,139.9 ns | 2,845.1 cyc | 114.9 MB/s | 0 B / 0 B | 0 |
+| `Full_Pipeline_Auth_Cache_Miss` (17 stages) | 1,167.7 ns | 2,914.5 cyc | 112.2 MB/s | 0 B / 0 B | 0 |
+| `Full_Pipeline_Gzip_Compress` (15 stages) | 1,159.4 ns | 2,893.8 cyc | 103.5 MB/s | 0 B / 0 B | 0 |
 
 ## Documentation
 

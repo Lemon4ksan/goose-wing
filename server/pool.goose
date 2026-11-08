@@ -68,25 +68,55 @@ struct ExtensionsPool {
     slots: RequestExtensions[..16] = [RequestExtensions { .. }; 16],
 }
 
+fn reset_slot_jwt_claims(claims: wing::JwtClaims&) {
+    claims.iss.clear();
+    claims.sub.clear();
+    claims.aud.clear();
+    claims.audiences.clear();
+    claims.jti.clear();
+    claims.exp = -1;
+    claims.nbf = -1;
+    claims.iat = -1;
+    claims.custom_claims.clear();
+    claims.raw_payload.clear();
+}
+
+inline fn is_jwt_claims_dirty(slot: const RequestExtensions&) -> bool {
+    return (slot.populated_entries & ENTRY_SECURITY) != 0
+        || slot.jwt_claims.raw_payload.len > 0
+        || slot.jwt_claims.sub.len > 0
+        || slot.jwt_claims.iss.len > 0
+        || slot.jwt_claims.exp != -1
+        || slot.jwt_claims.custom_claims.len > 0;
+}
+
+fn clear_extension_slot_fields(slot: RequestExtensions&) {
+    slot.peer_ip.clear();
+    slot.matched_route.clear();
+    slot.conn_id = 0;
+    slot.request_seq = 0;
+    slot.params.clear();
+    if (slot.populated_entries & ENTRY_COOKIES) != 0 || slot.session_data.len > 0 {
+        core::secure_zeroize_slice(slot.session_data[..]);
+        slot.session_data.clear();
+    }
+    slot.canon_url.clear();
+    slot.cors_origin.clear();
+    slot.auth_subject.clear();
+    slot.auth_scopes = 0;
+    if is_jwt_claims_dirty(slot) {
+        reset_slot_jwt_claims(slot.jwt_claims);
+    }
+    slot.start_time_ns = 0;
+    slot.effective_pso = 0;
+    slot.populated_entries = 0;
+}
+
 fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
     for idx in pool.slots.len {
         if !pool.slots[idx].in_use {
             pool.slots[idx].in_use = true;
-            pool.slots[idx].peer_ip.clear();
-            pool.slots[idx].matched_route.clear();
-            pool.slots[idx].conn_id = 0;
-            pool.slots[idx].request_seq = 0;
-            pool.slots[idx].params.clear();
-            core::secure_zeroize_slice(pool.slots[idx].session_data[..]);
-            pool.slots[idx].session_data.clear();
-            pool.slots[idx].canon_url.clear();
-            pool.slots[idx].cors_origin.clear();
-            pool.slots[idx].auth_subject.clear();
-            pool.slots[idx].auth_scopes = 0;
-            pool.slots[idx].jwt_claims = wing::JwtClaims { .. };
-            pool.slots[idx].start_time_ns = 0;
-            pool.slots[idx].effective_pso = 0;
-            pool.slots[idx].populated_entries = 0;
+            clear_extension_slot_fields(pool.slots[idx]);
             return idx as i32;
         }
     }
@@ -96,23 +126,8 @@ fn acquire_extensions(pool: ExtensionsPool&) -> i32 {
 // Sanitizes and returns extension slot to pool, preventing state leak across requests
 fn release_extensions(pool: ExtensionsPool&, idx: i32) {
     guard idx >= 0 && idx < pool.slots.len else { return; }
-    let s_idx = idx;
-    pool.slots[s_idx].peer_ip.clear();
-    pool.slots[s_idx].matched_route.clear();
-    pool.slots[s_idx].conn_id = 0;
-    pool.slots[s_idx].request_seq = 0;
-    pool.slots[s_idx].params.clear();
-    core::secure_zeroize_slice(pool.slots[s_idx].session_data[..]);
-    pool.slots[s_idx].session_data.clear();
-    pool.slots[s_idx].canon_url.clear();
-    pool.slots[s_idx].cors_origin.clear();
-    pool.slots[s_idx].auth_subject.clear();
-    pool.slots[s_idx].auth_scopes = 0;
-    pool.slots[s_idx].jwt_claims = wing::JwtClaims { .. };
-    pool.slots[s_idx].start_time_ns = 0;
-    pool.slots[s_idx].effective_pso = 0;
-    pool.slots[s_idx].populated_entries = 0;
-    pool.slots[s_idx].in_use = false;
+    clear_extension_slot_fields(pool.slots[idx]);
+    pool.slots[idx].in_use = false;
 }
 
 // ---- spill slab pool -------------------------------------------------------

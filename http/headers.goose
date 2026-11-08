@@ -744,12 +744,20 @@ struct HeaderMap {
 }
 
 fn reset_for_keep_alive(map: HeaderMap&) {
+    if map.entries.len > 0 && map.entries.len < 32 {
+        for &e in map.entries {
+            if e.well_known_id < 64 {
+                map.inline_slots[e.well_known_id as i64] = 0xFF;
+            }
+        }
+    } else if map.entries.len >= 32 {
+        for i in 64 {
+            map.inline_slots[i] = 0xFF;
+        }
+    }
     map.raw_buf.clear();
     map.entries.clear();
     map.header_contains_comma.clear();
-    for i in 64 {
-        map.inline_slots[i] = 0xFF;
-    }
     map.status_code = 200;
     map.http_major = 1;
     map.http_minor = 1;
@@ -2006,7 +2014,23 @@ fn set_or_replace(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sen
     return ok;
 }
 
+inline fn needs_header_byte_sanitization(s: const u8[:]) -> bool {
+    for b in s {
+        if b == '\r' || b == '\n' || b == 0 {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn set_header(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) {
+    if !needs_header_byte_sanitization(name) && !needs_header_byte_sanitization(value) {
+        guard name.len > 0 else { return; }
+        let cname = name[..min(name.len, 128)];
+        let cval = value[..min(value.len, 4096)];
+        let _ = set_or_replace(map, cname, cval, is_sensitive);
+        return;
+    }
     var clean_name: u8[..128]  = [];
     var clean_val:  u8[..4096] = [];
     sanitize_header_bytes(name, clean_name);

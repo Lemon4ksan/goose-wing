@@ -427,6 +427,16 @@ var g_last_contains_comma:   bool[..32]            = [];
 var g_last_presence_mask:    u32                   = 0;
 var g_last_presence_tracker: HeaderPresenceTracker = HeaderPresenceTracker { .. };
 
+inline fn is_headers_cache_already_loaded<Req>(out_req: const Req&) -> bool {
+    guard out_req.headers.valid
+        && out_req.headers.entries.len == g_last_entries.len
+        && out_req.headers.raw_buf.len == g_last_raw_buf.len
+        && out_req.presence_mask == g_last_presence_mask else {
+        return false;
+    }
+    return out_req.headers.raw_buf[..] == g_last_raw_buf[..];
+}
+
 inline fn try_restore_cached_headers_stream<Req>(
     rest_headers:     const u8[:],
     out_req:          Req&,
@@ -435,6 +445,11 @@ inline fn try_restore_cached_headers_stream<Req>(
     guard g_last_rest_headers.len > 0 && rest_headers == g_last_rest_headers[..] else {
         return false;
     }
+    if is_headers_cache_already_loaded(out_req) {
+        presence_tracker = g_last_presence_tracker;
+        return true;
+    }
+    clear_request_headers_state(out_req);
     out_req.headers.raw_buf.append(g_last_raw_buf[..]);
     out_req.headers.entries.append(g_last_entries[..]);
     out_req.headers.inline_slots = g_last_inline_slots;
@@ -480,6 +495,7 @@ fn parse_http1_headers_stream<Req>(
     if try_restore_cached_headers_stream(rest_headers, out_req, presence_tracker) {
         return true;
     }
+    clear_request_headers_state(out_req);
     var cursor: i64 = 0;
     while cursor < rest_headers.len {
         // Empty line reached (RFC 9112 Section 2.1)
@@ -498,23 +514,20 @@ fn parse_http1_headers_stream<Req>(
     return true;
 }
 
-// Parses HTTP/1.1 request-line and headers up to the body boundary.
-// Enforces RFC 9112 Section 3.1, 3.2, 5.1 and Section 6.1 (smuggling protection).
-// Returns true on valid headers, populating `presence_tracker` and `body_start_idx`.
+// Validates HTTP/1.1 framing limits and parses the request line up to the start of headers.
 //
 // Example:
-//   wire = "POST /api HTTP/1.1\r\nHost: loc\r\n\r\n..."
-//   returns: ok = true, body_start_idx = 33
-fn parse_http1_request_headers<Req>(
-    wire:             const u8[:],
-    out_req:          Req&,
-    presence_tracker: HeaderPresenceTracker&,
-    body_start_idx:   i64&,
-) -> bool {
-    guard wire.len >= 4 else { return false; }
+//   wire = "GET / HTTP/1.1\r\nHost: a\r\n\r\n"
+//   returns: rest_headers = "Host: a\r\n\r\n", base_offset = 16, ok = true, body_start_idx = 27
+fn parse_http1_request_preamble<Req>(
+    wire:           const u8[:],
+    out_req:        Req&,
+    body_start_idx: i64&,
+) -> const u8[:], i64, bool {
+    guard wire.len >= 4 else { return "", 0, false; }
 
     // RFC 9112 Section 3.1: No whitespace is allowed before the method name
-    guard wire[0] != ' ' && wire[0] != '\t' else { return false; }
+    guard wire[0] != ' ' && wire[0] != '\t' else { return "", 0, false; }
 
     // RFC 9112 Section 2.2: A server that is expecting to receive a request-line
     // SHOULD ignore at least one empty line (CRLF) received prior to any request-line.
@@ -522,9 +535,9 @@ fn parse_http1_request_headers<Req>(
     var req_offset: i64 = 0;
     if wire.len >= 2 && wire[0] == '\r' && wire[1] == '\n' {
         req_offset = 2;
-        guard req_offset < wire.len else { return false; }
+        guard req_offset < wire.len else { return "", 0, false; }
         guard wire[req_offset] != '\r' && wire[req_offset] != '\n' &&
-              wire[req_offset] != ' ' && wire[req_offset] != '\t' else { return false; }
+              wire[req_offset] != ' ' && wire[req_offset] != '\t' else { return "", 0, false; }
     }
 
     let active_wire = wire[req_offset..];
@@ -535,30 +548,50 @@ fn parse_http1_request_headers<Req>(
     prof_leave(_pf);
     // RFC 9112 Section 2.1 & uWS #1658: Total header block must not exceed 8192 bytes
     if hdr_end > 8192 || (hdr_end < 0 && active_wire.len > 8192) {
-        return false;
+        return "", 0, false;
     }
-    guard hdr_end >= 0 else { return false; }
-    let header_end_idx = hdr_end + 4;
-    guard header_end_idx <= 8192 else { return false; }
+    guard hdr_end >= 0 else { return "", 0, false; }
+    let header_end_idx = core::add_sat_i64(hdr_end, 4);
+    guard header_end_idx <= 8192 else { return "", 0, false; }
     let header_bytes = active_wire[..header_end_idx];
 
     // Find end of request line
     let line_end = find(header_bytes, "\r\n");
-    guard line_end > 0 else { return false; }
-    guard parse_http1_request_line(header_bytes[..line_end], out_req) else { return false; }
+    guard line_end > 0 else { return "", 0, false; }
+    guard parse_http1_request_line(header_bytes[..line_end], out_req) else { return "", 0, false; }
+
+    let rest_start = core::add_sat_i64(line_end, 2);
+    body_start_idx = core::add_sat_i64(req_offset, header_end_idx);
+    return header_bytes[rest_start..], core::add_sat_i64(req_offset, rest_start), true;
+}
+
+// Parses HTTP/1.1 request-line and headers up to the body boundary without shrinking `out_req.body`.
+// Enforces RFC 9112 Section 3.1, 3.2, 5.1 and Section 6.1 (smuggling protection).
+//
+// Example:
+//   wire = "POST /api HTTP/1.1\r\nHost: loc\r\n\r\n..."
+//   returns: ok = true, body_start_idx = 33
+fn parse_http1_request_headers_fixed<Req>(
+    wire:             const u8[:],
+    out_req:          Req&,
+    presence_tracker: HeaderPresenceTracker&,
+    body_start_idx:   i64&,
+) -> bool {
+    var next_body_start: i64 = 0;
+    let rest_headers, base_offset, ok_pre = parse_http1_request_preamble(wire, out_req, next_body_start);
+    guard ok_pre else {
+        clear_request_headers_state(out_req);
+        return false;
+    }
 
     // Parse headers
-    let rest_headers = header_bytes[(line_end + 2)..];
-    clear_request_headers_state(out_req);
     presence_tracker = HeaderPresenceTracker { .. };
-    let base_offset = req_offset + line_end + 2;
     guard parse_http1_headers_stream(rest_headers, out_req, presence_tracker, base_offset) else {
         clear_request_headers_state(out_req);
         return false;
     }
 
     out_req.trailers.clear();
-    out_req.body.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
     let _phv = prof_enter("http1.host_val");
@@ -583,7 +616,27 @@ fn parse_http1_request_headers<Req>(
         }
     }
 
-    body_start_idx = req_offset + header_end_idx;
+    body_start_idx = next_body_start;
+    return true;
+}
+
+// Parses HTTP/1.1 request-line and headers up to the body boundary.
+// Enforces RFC 9112 Section 3.1, 3.2, 5.1 and Section 6.1 (smuggling protection).
+// Returns true on valid headers, populating `presence_tracker` and `body_start_idx`.
+//
+// Example:
+//   wire = "POST /api HTTP/1.1\r\nHost: loc\r\n\r\n..."
+//   returns: ok = true, body_start_idx = 33
+fn parse_http1_request_headers<Req>(
+    wire:             const u8[:],
+    out_req:          Req&,
+    presence_tracker: HeaderPresenceTracker&,
+    body_start_idx:   i64&,
+) -> bool {
+    guard parse_http1_request_headers_fixed(wire, out_req, presence_tracker, body_start_idx) else {
+        return false;
+    }
+    out_req.body.clear();
     return true;
 }
 
@@ -2271,6 +2324,138 @@ inline fn strip_required_proxy_preface<B>(
     return stripped, true;
 }
 
+var g_turn_req:    Request  = Request { .. };
+var g_turn_res:    Response = Response { .. };
+var g_turn_in_use: bool     = false;
+
+inline fn reset_server_response_fixed(res: Response&) {
+    res.status_code = 200;
+    res.presence_mask = 0;
+    res.headers.clear();
+    res.trailers.clear();
+}
+
+inline fn reset_server_request_fixed(req: Request&) {
+    req.method.clear();
+    req.url.clear();
+    req.trailers.clear();
+    req.query_params.clear();
+    req.is_http10 = false;
+}
+
+inline fn is_turn_scratch_ready() -> bool {
+    return !g_turn_in_use && g_turn_req.body.len == 0 && g_turn_res.body.len == 0;
+}
+
+fn try_prepare_single_h1_wire_turn(raw_stream: const u8[:]) -> bool {
+    guard is_turn_scratch_ready() else { return false; }
+
+    reset_server_request_fixed(g_turn_req);
+    var presence_tracker = HeaderPresenceTracker { .. };
+    var body_start_idx: i64 = 0;
+    guard parse_http1_request_headers_fixed(raw_stream, g_turn_req, presence_tracker, body_start_idx) else {
+        return false;
+    }
+
+    let has_te = (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (presence_tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    let cl_len = if has_cl { presence_tracker.parsed_cl } else { 0 };
+    let total_consumed = core::add_sat_i64(body_start_idx, cl_len);
+    guard !has_te && cl_len >= 0 && cl_len <= MAX_SERVER_BODY_LIMIT && raw_stream.len >= total_consumed else {
+        return false;
+    }
+    if cl_len > 0 {
+        let _pbf = prof_enter("http1.body_framing");
+        g_turn_req.body.append(raw_stream[body_start_idx..total_consumed]);
+        prof_leave(_pbf);
+    }
+    return true;
+}
+
+fn finish_single_h1_wire_turn<Stage, B>(
+    server:       HttpServer&,
+    effective_ip: const u8[:],
+    now_ns:       u64,
+    wire_out:     B&,
+    stage:        Stage&,
+) -> PipelineOutcome {
+    g_turn_in_use = true;
+    if server.ws_route_count > 0
+        && (g_turn_req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
+        && is_websocket_upgrade_request(g_turn_req) {
+        let ws_idx = find_ws_route(server, g_turn_req.url[..]);
+        if ws_idx >= 0 && complete_ws_upgrade(server, g_turn_req, server.ws_routes[ws_idx as i64], wire_out) {
+            g_turn_req.body.clear();
+            g_turn_in_use = false;
+            return PipelineOutcome.Handled;
+        }
+    }
+
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+
+    reset_server_response_fixed(g_turn_res);
+    var future = internal::new_inline_handler_future(0);
+    let out_outcome = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future, stage,
+    );
+
+    check_and_apply_connection_close(g_turn_req, g_turn_res);
+    serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+
+    g_turn_req.body.clear();
+    g_turn_res.body.clear();
+    g_turn_in_use = false;
+    return out_outcome;
+}
+
+fn execute_single_h1_wire_turn<Stage, B>(
+    server:       HttpServer&,
+    effective_ip: const u8[:],
+    raw_stream:   const u8[:],
+    now_ns:       u64,
+    req:          Request&,
+    res:          Response&,
+    wire_out:     B&,
+    stage:        Stage&,
+) -> PipelineOutcome, bool {
+    reset_server_request_fast(req);
+    let ok_parse, _ = parse_http1_wire_request(raw_stream, req);
+    guard ok_parse else {
+        serialize_bad_request_error(server.server_name[..], wire_out);
+        return PipelineOutcome.Handled, false;
+    }
+
+    // WebSocket Upgrade Interception (uWebSockets app.ws pattern)
+    if server.ws_route_count > 0
+        && (req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
+        && is_websocket_upgrade_request(req) {
+        let ws_idx = find_ws_route(server, req.url[..]);
+        if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
+            return PipelineOutcome.Handled, true;
+        }
+    }
+
+    if server.trust_proxy_headers {
+        server.pipeline.trust_proxy_headers = true;
+    }
+
+    reset_server_response_fast(res);
+    var future = internal::new_inline_handler_future(0);
+    let outcome = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, effective_ip, req, now_ns, res, future, stage,
+    );
+
+    check_and_apply_connection_close(req, res);
+
+    serialize_http1_response(res, server.server_name[..], wire_out);
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+
+    return outcome, true;
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline with `<Stage>`, and serializing the wire response.
 fn handle_connection_wire<Stage, B>(
@@ -2311,37 +2496,16 @@ fn handle_connection_wire<Stage, B>(
         return PipelineOutcome.Handled, false;
     }
 
-    var req = new_request("GET", "");
-    let ok_parse, _ = parse_http1_wire_request(raw_stream, req);
-    guard ok_parse else {
-        serialize_bad_request_error(server.server_name[..], wire_out);
-        return PipelineOutcome.Handled, false;
+    let is_fast = try_prepare_single_h1_wire_turn(raw_stream);
+    if !is_fast {
+        var req = new_request("GET", "");
+        var res = Response { .. };
+        return execute_single_h1_wire_turn(
+            server, effective_ip[..], raw_stream, now_ns, req, res, wire_out, stage,
+        );
     }
-
-    // WebSocket Upgrade Interception (uWebSockets app.ws pattern)
-    if is_websocket_upgrade_request(req) {
-        let ws_idx = find_ws_route(server, req.url[..]);
-        if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
-            return PipelineOutcome.Handled, true;
-        }
-    }
-
-    if server.trust_proxy_headers {
-        server.pipeline.trust_proxy_headers = true;
-    }
-
-    var res = Response { .. };
-    var future = internal::new_inline_handler_future(0);
-    let outcome = execute_server_pipeline_with_stage(
-        server.pipeline, server.timer, effective_ip[..], req, now_ns, res, future, stage,
-    );
-
-    check_and_apply_connection_close(req, res);
-
-    serialize_http1_response(res, server.server_name[..], wire_out);
-    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
-
-    return outcome, true;
+    let fast_outcome = finish_single_h1_wire_turn(server, effective_ip[..], now_ns, wire_out, stage);
+    return fast_outcome, true;
 }
 
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
@@ -2534,6 +2698,7 @@ fn try_handle_pipelined_websocket<B>(
     req:      const Request&,
     wire_out: B&,
 ) -> bool {
+    guard server.ws_route_count > 0 && (req.presence_mask & HDR_PRESENCE_UPGRADE) != 0 else { return false; }
     guard is_websocket_upgrade_request(req) else { return false; }
     let ws_idx = find_ws_route(server, req.url[..]);
     guard ws_idx >= 0 else { return false; }
@@ -2551,8 +2716,6 @@ inline fn reset_server_response_fast(res: Response&) {
 inline fn reset_server_request_fast(req: Request&) {
     req.method.clear();
     req.url.clear();
-    req.presence_mask = 0;
-    req.headers.clear();
     req.trailers.clear();
     req.query_params.clear();
     req.body.clear();
@@ -3051,6 +3214,134 @@ fn process_pipelined_stream_turn<Stage, B>(
     return StreamTurnResult.Continue;
 }
 
+fn drain_pipelined_stream_turns<Stage, B>(
+    server:           HttpServer&,
+    client_ip:        const u8[:],
+    stream_in:        const u8[:],
+    wire_in_len:      i64,
+    now_ns:           u64,
+    req:              Request&,
+    res:              Response&,
+    wire_out:         B&,
+    total_handled:    i64&,
+    total_consumed:   i64&,
+    conn_wants_close: bool&,
+    stage:            Stage&,
+) -> bool {
+    var stream = stream_in;
+    while stream.len > 0 {
+        stream = strip_pipelined_crlf(stream, total_consumed);
+        if stream.len == 0 { break; }
+
+        var step_consumed: i64 = 0;
+        let turn_res = process_pipelined_stream_turn(
+            server, client_ip, stream, now_ns, req, res,
+            wire_out, wire_in_len, step_consumed, total_handled, total_consumed, conn_wants_close, stage,
+        );
+        match turn_res {
+            Continue => {
+                stream = stream[step_consumed..];
+            },
+            Stop => {
+                break;
+            },
+            ParseFail => {
+                conn_wants_close = true;
+                return false;
+            },
+            KeepStreamFail => {
+                conn_wants_close = false;
+                return true;
+            },
+        };
+    }
+    return true;
+}
+
+fn try_prepare_single_pipeline_turn<B>(
+    stream_in:      const u8[:],
+    wire_out:       const B&,
+    total_consumed: i64&,
+    out_has_req:    bool&,
+) -> bool {
+    guard is_turn_scratch_ready() && core::add_sat_i64(wire_out.len, 256) <= wire_out.cap else {
+        return false;
+    }
+
+    var probe_consumed = total_consumed;
+    let stream = strip_pipelined_crlf(stream_in, probe_consumed);
+    if stream.len == 0 {
+        total_consumed = probe_consumed;
+        out_has_req = false;
+        return true;
+    }
+
+    reset_server_request_fixed(g_turn_req);
+    var presence_tracker = HeaderPresenceTracker { .. };
+    var body_start_idx: i64 = 0;
+    guard parse_http1_request_headers_fixed(stream, g_turn_req, presence_tracker, body_start_idx) else {
+        return false;
+    }
+
+    let has_te = (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (presence_tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    let cl_len = if has_cl { presence_tracker.parsed_cl } else { 0 };
+    let expected_end = core::add_sat_i64(body_start_idx, cl_len);
+    guard !has_te && cl_len >= 0 && cl_len <= MAX_SERVER_BODY_LIMIT && expected_end == stream.len else {
+        return false;
+    }
+
+    let consumed = stream.len;
+    if cl_len > 0 {
+        let _pbf = prof_enter("http1.body_framing");
+        g_turn_req.body.append(stream[body_start_idx..consumed]);
+        prof_leave(_pbf);
+    }
+
+    total_consumed = core::add_sat_i64(probe_consumed, consumed);
+    out_has_req = true;
+    return true;
+}
+
+fn finish_single_pipeline_turn<Stage, B>(
+    server:           HttpServer&,
+    local_ip:         const u8[:],
+    wire_in_len:      i64,
+    now_ns:           u64,
+    wire_out:         B&,
+    total_handled:    i64&,
+    total_consumed:   i64&,
+    conn_wants_close: bool&,
+    stage:            Stage&,
+) {
+    total_handled = core::add_sat_i64(total_handled, 1);
+    g_turn_in_use = true;
+    if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
+        g_turn_req.body.clear();
+        g_turn_in_use = false;
+        return;
+    }
+
+    reset_server_response_fixed(g_turn_res);
+    var future = internal::new_inline_handler_future(0);
+    let _ = execute_server_pipeline_with_stage(
+        server.pipeline, server.timer, local_ip, g_turn_req, now_ns, g_turn_res, future, stage,
+    );
+
+    let wants_close = check_and_apply_connection_close(g_turn_req, g_turn_res);
+    serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+
+    if wants_close || g_turn_req.method[..] == "CONNECT" {
+        conn_wants_close = true;
+        if g_turn_req.method[..] == "CONNECT" { total_consumed = wire_in_len; }
+    }
+
+    g_turn_req.body.clear();
+    g_turn_res.body.clear();
+    g_turn_in_use = false;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<Stage, B>(
@@ -3063,6 +3354,7 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
 ) -> i64, i64, bool, bool {
     if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
+    let wire_in_len = wire_in.len;
     var stream = wire_in;
     var total_handled:    i64  = 0;
     var total_consumed:   i64  = 0;
@@ -3078,34 +3370,26 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
         stream = rem_stream;
     }
 
-    var req = new_request("GET", "");
-    var res = Response { .. };
-
-    while stream.len > 0 {
-        stream = strip_pipelined_crlf(stream, total_consumed);
-        if stream.len == 0 { break; }
-
-        var step_consumed: i64 = 0;
-        let turn_res = process_pipelined_stream_turn(
-            server, client_ip, stream, now_ns, req, res,
-            wire_out, wire_in.len, step_consumed, total_handled, total_consumed, conn_wants_close, stage,
+    var has_fast_req = false;
+    let is_fast = try_prepare_single_pipeline_turn(stream, wire_out, total_consumed, has_fast_req);
+    var local_ip: u8[..64] = [];
+    let _ = local_ip.try_set(client_ip[..min(client_ip.len, 64)]);
+    if !is_fast {
+        var req = new_request("GET", "");
+        var res = Response { .. };
+        let ok = drain_pipelined_stream_turns(
+            server, local_ip[..], stream, wire_in_len, now_ns,
+            req, res, wire_out,
+            total_handled, total_consumed, conn_wants_close, stage,
         );
-        match turn_res {
-            Continue => {
-                stream = stream[step_consumed..];
-            },
-            Stop => {
-                break;
-            },
-            ParseFail => {
-                return total_handled, total_consumed, false, true;
-            },
-            KeepStreamFail => {
-                return total_handled, total_consumed, true, false;
-            },
-        };
+        return total_handled, total_consumed, ok, conn_wants_close;
     }
-
+    if has_fast_req {
+        finish_single_pipeline_turn(
+            server, local_ip[..], wire_in_len, now_ns, wire_out,
+            total_handled, total_consumed, conn_wants_close, stage,
+        );
+    }
     return total_handled, total_consumed, true, conn_wants_close;
 }
 
