@@ -186,8 +186,21 @@ inline fn reactor_register_client_slot(
     table.h2_slot_map[slot] = -1;
     table.has_tls[slot] = false;
     table.tls_slots[slot] = 0xFFFF;
+    table.has_peer_ip[slot] = false;
+    table.peer_ip_hashes[slot] = 0;
+    table.peer_ips[slot].clear();
     table.count = advance_high_water_mark(table.count, slot);
     epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
+}
+
+// Lazily resolves and caches the peer IP for a connection slot in SoAConnTable.
+inline fn reactor_resolve_slot_peer_ip(table: SoAConnTable&, slot: i64, conn: i64) -> const u8[:] {
+    if !table.has_peer_ip[slot] {
+        var resolved_ip: u8[..64] = [];
+        tcp_get_peer_ip(conn, resolved_ip);
+        table.soa_table_set_peer_ip(slot, resolved_ip[..]);
+    }
+    return table.soa_table_get_peer_ip(slot);
 }
 
 // Drains non-blocking listener queue and accepts ready incoming connections into free slots.
@@ -350,11 +363,10 @@ fn reactor_handle_h2_ingress<Stage>(
         server.pipeline.trust_proxy_headers = true;
     }
     let h2_idx = table.ensure_h2_session(slot, server.pipeline, server.server_name[..], now_ms);
-    var peer_ip: u8[..64] = [];
-    tcp_get_peer_ip(conn, peer_ip);
+    let peer_ip_slice = reactor_resolve_slot_peer_ip(table, slot, conn);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer,
-        peer_ip[..], chunk.bytes[..chunk.len], now_ms, cork_wire, stage,
+        peer_ip_slice, chunk.bytes[..chunk.len], now_ms, cork_wire, stage,
     );
     if cork_wire.len > 0 {
         if !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) {
@@ -449,14 +461,14 @@ fn reactor_handle_ingress<Stage>(
         return;
     }
 
-    var peer_ip: u8[..64] = [];
     let need_peer_ip = server.pipeline.enable_rate_limiter
         || server.trust_proxy_headers
         || server.pipeline.trust_proxy_headers;
-    if need_peer_ip {
-        tcp_get_peer_ip(conn, peer_ip);
-    }
-    let client_ip_slice: const u8[:] = if need_peer_ip { peer_ip[..] } else { "127.0.0.1" };
+    let client_ip_slice: const u8[:] = if need_peer_ip {
+        reactor_resolve_slot_peer_ip(table, slot, conn)
+    } else {
+        "127.0.0.1"
+    };
     cork_wire.clear();
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
         server, client_ip_slice, chunk.bytes[..chunk.len], now_ns, cork_wire, stage,

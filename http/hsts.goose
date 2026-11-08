@@ -12,6 +12,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 
 // ---- HSTS Directive Model ------------------------------------------------
 
@@ -43,17 +44,17 @@ fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
 fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
     let name, val, has_val = trimmed.split_once_byte('=');
     let key = name.trim_lws();
-    if eq_ascii_fold(key, "includesubdomains") {
+    if eq_ascii_fold(key, rfc::HSTS_DIR_INCLUDE_SUBDOMAINS) {
         guard !has_val && !d.include_subdomains else { return false; }
         d.include_subdomains = true;
         return true;
     }
-    if eq_ascii_fold(key, "preload") {
+    if eq_ascii_fold(key, rfc::HSTS_DIR_PRELOAD) {
         guard !has_val && !d.preload else { return false; }
         d.preload = true;
         return true;
     }
-    if eq_ascii_fold(key, "max-age") {
+    if eq_ascii_fold(key, rfc::HSTS_DIR_MAX_AGE) {
         guard !d.valid && has_val else { return false; }
         let parsed_age, age_ok = parse_hsts_max_age(val.trim_lws());
         guard age_ok else { return false; }

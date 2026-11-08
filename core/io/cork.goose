@@ -28,27 +28,27 @@ fn new_cork_buffer() -> CorkBuffer {
 }
 
 // Returns the number of buffered bytes waiting to be flushed.
-fn cork_pending(cb: const CorkBuffer&) -> i64 {
+inline fn cork_pending(cb: const CorkBuffer&) -> i64 {
     guard cb.len >= 0 else { return 0; }
     return cb.len;
 }
 
 // Returns remaining available capacity in the cork buffer.
-fn cork_available(cb: const CorkBuffer&) -> i64 {
+inline fn cork_available(cb: const CorkBuffer&) -> i64 {
     let rem = CORK_BUFFER_CAP - cb.len;
     return if rem > 0 { rem } else { 0 };
 }
 
-fn cork_is_empty(cb: const CorkBuffer&) -> bool {
+inline fn cork_is_empty(cb: const CorkBuffer&) -> bool {
     return cb.len == 0;
 }
 
-fn cork_is_full(cb: const CorkBuffer&) -> bool {
+inline fn cork_is_full(cb: const CorkBuffer&) -> bool {
     return cb.len >= CORK_BUFFER_CAP;
 }
 
 // Yields buffered bytes as a contiguous slice for sending.
-fn cork_as_slice(cb: const CorkBuffer&) -> const u8[:] {
+inline fn cork_as_slice(cb: const CorkBuffer&) -> const u8[:] {
     let end = cb.len;
     return cb.storage[..end];
 }
@@ -61,17 +61,17 @@ extern fn native_fast_cork_append(
 ) -> i64 = "wing_fast_cork_append";
 
 // Writes a slice into the cork buffer. Returns (bytes_written, IoError).
-fn cork_write(cb: CorkBuffer&, src: const u8[:]) -> i64, IoError {
+inline fn cork_write(cb: CorkBuffer&, src: const u8[:]) -> i64, IoError {
     guard src.len > 0 else { return 0, IoError.None; }
+    guard !cork_is_full(cb) else { return 0, IoError.BufferFull; }
     let avail = cork_available(cb);
-    guard avail > 0 else { return 0, IoError.BufferFull; }
-    let to_copy = if src.len < avail { src.len } else { avail };
+    let to_copy = min(src.len, avail);
     cb.len = native_fast_cork_append(0, cb.storage[..], cb.len, src[..to_copy]);
     return to_copy, if to_copy < src.len { IoError.ShortWrite } else { IoError.None };
 }
 
 // Writes exactly src.len bytes, failing with BufferFull if capacity is insufficient.
-fn cork_write_exact(cb: CorkBuffer&, src: const u8[:]) -> IoError {
+inline fn cork_write_exact(cb: CorkBuffer&, src: const u8[:]) -> IoError {
     guard cork_available(cb) >= src.len else {
         return IoError.BufferFull;
     }
@@ -83,7 +83,7 @@ fn cork_write_exact(cb: CorkBuffer&, src: const u8[:]) -> IoError {
 
 // Appends single byte to cork buffer.
 fn cork_write_u8(cb: CorkBuffer&, b: u8) -> IoError {
-    guard cork_available(cb) >= 1 else {
+    guard !cork_is_full(cb) else {
         return IoError.BufferFull;
     }
     cb.storage[cb.len] = b;

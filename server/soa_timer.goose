@@ -17,14 +17,17 @@ const SOA_INVALID_TICK: u8  = 255;
 
 // Structure-of-Arrays connection state table.
 struct SoAConnTable {
-    fds:           i64[1024]  = [-1; 1024],
-    timeout_ticks: u8[1024]   = [255; 1024],
-    leftover_lens: u16[1024]  = [0; 1024],
-    is_h2:         bool[1024] = [false; 1024],
-    h2_slot_map:   i16[1024]  = [-1; 1024],
-    has_tls:       bool[1024] = [false; 1024],
-    tls_slots:     u16[1024]  = [0xFFFF; 1024],
-    count:         i64        = 0,
+    fds:            i64[1024]      = [-1; 1024],
+    timeout_ticks:  u8[1024]       = [255; 1024],
+    leftover_lens:  u16[1024]      = [0; 1024],
+    is_h2:          bool[1024]     = [false; 1024],
+    h2_slot_map:    i16[1024]      = [-1; 1024],
+    has_tls:        bool[1024]     = [false; 1024],
+    tls_slots:      u16[1024]      = [0xFFFF; 1024],
+    has_peer_ip:    bool[1024]     = [false; 1024],
+    peer_ip_hashes: u64[1024]      = [0; 1024],
+    peer_ips:       u8[..64][1024] = [[]; 1024],
+    count:          i64            = 0,
 }
 
 // Advances high-water mark for allocated connection slots.
@@ -51,6 +54,9 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
             table.h2_slot_map[i] = -1;
             table.has_tls[i] = false;
             table.tls_slots[i] = 0xFFFF;
+            table.has_peer_ip[i] = false;
+            table.peer_ip_hashes[i] = 0;
+            table.peer_ips[i].clear();
             table.count = advance_high_water_mark(table.count, i);
             return i;
         }
@@ -78,7 +84,25 @@ fn soa_table_free(table: SoAConnTable&, slot: i64) {
     table.h2_slot_map[slot] = -1;
     table.has_tls[slot] = false;
     table.tls_slots[slot] = 0xFFFF;
+    table.has_peer_ip[slot] = false;
+    table.peer_ip_hashes[slot] = 0;
+    table.peer_ips[slot].clear();
     trim_soa_high_water_mark(table);
+}
+
+// Caches per-connection peer IP and its 64-bit FNV-1a hash in the SoA slot.
+fn soa_table_set_peer_ip(table: SoAConnTable&, slot: i64, ip: const u8[:]) {
+    guard slot >= 0 && slot < table.fds.len else { return; }
+    let resolved_ip = if ip.len > 0 { ip } else { "0.0.0.0" };
+    let _ = table.peer_ips[slot].try_set(resolved_ip);
+    table.peer_ip_hashes[slot] = core::fnv1a_64(resolved_ip);
+    table.has_peer_ip[slot] = true;
+}
+
+// Returns cached peer IP slice for an active SoA slot, or empty slice if unpopulated.
+inline fn soa_table_get_peer_ip(table: const SoAConnTable&, slot: i64) -> const u8[:] {
+    guard slot >= 0 && slot < table.fds.len && table.has_peer_ip[slot] else { return ""; }
+    return table.peer_ips[slot][..];
 }
 
 // Updates the timeout tick for an active connection slot (activity refresh).

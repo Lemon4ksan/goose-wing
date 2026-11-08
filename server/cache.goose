@@ -24,6 +24,7 @@ struct HttpRouteCache {
     upper_expiry_ms: u64         = 5000,
     handler_id:      i32         = -1,
     content_type:    u8[..64]    = [],
+    etag:            u8[..64]    = [],
     url_key:         u8[..256]   = [],
     wire:            u8[..16384] = [],
     is_valid:        bool        = false,
@@ -76,9 +77,13 @@ fn cache_store(
     handler_id:   i32         = -1,
     content_type: const u8[:] = "",
     url_key:      const u8[:] = "",
+    etag:         const u8[:] = "",
 ) -> bool {
     c.is_updating = false;
-    guard wire_data.len <= c.wire.cap && content_type.len <= c.content_type.cap && url_key.len <= c.url_key.cap else {
+    guard wire_data.len <= c.wire.cap
+        && content_type.len <= c.content_type.cap
+        && url_key.len <= c.url_key.cap
+        && etag.len <= c.etag.cap else {
         return false;
     }
     c.wire.clear();
@@ -87,6 +92,8 @@ fn cache_store(
     c.content_type.append(content_type);
     c.url_key.clear();
     c.url_key.append(url_key);
+    c.etag.clear();
+    c.etag.append(etag);
     c.handler_id = handler_id;
     c.created_ms = now_ms;
     c.is_valid = true;
@@ -97,6 +104,7 @@ fn cache_store(
 fn cache_invalidate(c: HttpRouteCache&) {
     c.is_valid = false;
     c.is_updating = false;
+    c.etag.clear();
     c.url_key.clear();
     c.wire.clear();
 }

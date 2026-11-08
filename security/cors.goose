@@ -167,30 +167,30 @@ inline fn header_list_has_token(header_val: const u8[:], token: const u8[:]) -> 
 
 // Injects Vary: Origin header on dynamic CORS responses (RFC 9111 / WHATWG Fetch §3.2.4).
 inline fn apply_cors_vary_header<Res>(res: Res&) {
-    let existing_vary = res.headers.find_header("Vary");
+    let existing_vary = res.headers.find_header(rfc::HEADER_VARY);
     if existing_vary.len == 0 {
-        res.headers.set_header("Vary", "Origin");
-    } else if !header_list_has_token(existing_vary, "Origin") {
+        res.headers.set_header(rfc::HEADER_VARY, rfc::HEADER_ORIGIN);
+    } else if !header_list_has_token(existing_vary, rfc::HEADER_ORIGIN) {
         guard existing_vary.len + 8 <= 2048 else { return; }
         var new_vary: u8[..2048] = [];
         new_vary.append(existing_vary);
         new_vary.append(", Origin");
-        res.headers.set_header("Vary", new_vary[..]);
+        res.headers.set_header(rfc::HEADER_VARY, new_vary[..]);
     }
 }
 
 // Populates preflight response headers and sets 204 No Content status.
 fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
     if policy.allowed_methods.len > 0 {
-        res.headers.set_header("Access-Control-Allow-Methods", policy.allowed_methods[..]);
+        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_METHODS, policy.allowed_methods[..]);
     }
     if policy.allowed_headers.len > 0 {
-        res.headers.set_header("Access-Control-Allow-Headers", policy.allowed_headers[..]);
+        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_HEADERS, policy.allowed_headers[..]);
     }
     if policy.max_age_sec > 0 {
         var age_str: u8[..32] = [];
         core::format_i64_dec(policy.max_age_sec, age_str);
-        res.headers.set_header("Access-Control-Max-Age", age_str[..]);
+        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_MAX_AGE, age_str[..]);
     }
     res.status_code = rfc::STATUS_NO_CONTENT;
 }
@@ -199,7 +199,7 @@ fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
 fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&) -> CorsResult {
-    let origin_raw = req.headers.find_header("Origin");
+    let origin_raw = req.headers.find_header(rfc::HEADER_ORIGIN);
     guard origin_raw.len > 0 else { return CorsResult.NoCors; }
     let origin = trim_lws(origin_raw);
     guard origin.len > 0 else { return CorsResult.NoCors; }
@@ -215,24 +215,24 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
 
     let is_wildcard_allow = !policy.allow_credentials && has_wildcard_origin(policy);
     let allow_origin_val = if is_wildcard_allow { "*" } else { origin };
-    res.headers.set_header("Access-Control-Allow-Origin", allow_origin_val);
+    res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin_val);
 
     if !is_wildcard_allow {
         apply_cors_vary_header(res);
     }
 
     if policy.allow_credentials {
-        res.headers.set_header("Access-Control-Allow-Credentials", "true");
+        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS, "true");
     }
 
-    let req_method_hdr = trim_lws(req.headers.find_header("Access-Control-Request-Method"));
-    if req.method[..] == "OPTIONS" && req_method_hdr.len > 0 {
+    let req_method_hdr = trim_lws(req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD));
+    if req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0 {
         apply_cors_preflight_headers(policy, res);
         return CorsResult.AllowedPreflight;
     }
 
     if policy.expose_headers.len > 0 {
-        res.headers.set_header("Access-Control-Expose-Headers", policy.expose_headers[..]);
+        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_EXPOSE_HEADERS, policy.expose_headers[..]);
     }
 
     return CorsResult.AllowedActual;

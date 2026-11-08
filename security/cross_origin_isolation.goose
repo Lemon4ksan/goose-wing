@@ -8,6 +8,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 
 // ---- Policy Enumerations -------------------------------------------------
 
@@ -168,8 +169,8 @@ fn update_from_headers(
     headers:         const HeaderMap&,
     document_origin: const u8[:],
 ) -> bool {
-    let coop = headers.get_header("cross-origin-opener-policy");
-    let coep = headers.get_header("cross-origin-embedder-policy");
+    let coop = headers.get_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY);
+    let coep = headers.get_header(rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY);
     return update_isolation_context(ctx, coop, coep, document_origin);
 }
 
@@ -221,7 +222,7 @@ fn is_subresource_allowed(
 
 // Injects strict same-origin COOP, require-corp COEP, and same-origin CORP headers.
 fn apply_strict_cross_origin_isolation<Res>(res: Res&) {
-    res.headers.set_header("Cross-Origin-Opener-Policy", "same-origin");
-    res.headers.set_header("Cross-Origin-Embedder-Policy", "require-corp");
-    res.headers.set_header("Cross-Origin-Resource-Policy", "same-origin");
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY, rfc::SEC_FETCH_SITE_SAME_ORIGIN);
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY, "require-corp");
+    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_RESOURCE_POLICY, rfc::SEC_FETCH_SITE_SAME_ORIGIN);
 }

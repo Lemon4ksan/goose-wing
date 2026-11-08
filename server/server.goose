@@ -334,6 +334,9 @@ inline fn has_smuggling_conflict(mask: u32) -> bool {
     return (mask & both) == both;
 }
 
+var g_last_valid_host: u8[..128] = [];
+var g_has_valid_host:  bool      = false;
+
 fn validate_request_host_presence<Req>(
     out_req:          const Req&,
     presence_tracker: const HeaderPresenceTracker&,
@@ -343,7 +346,9 @@ fn validate_request_host_presence<Req>(
         guard has_host else { return false; }
     }
     if has_host {
-        guard validate_span_host_header(out_req.headers, presence_tracker.host_idx) else {
+        guard validate_span_host_header_memoized(
+            out_req.headers, presence_tracker.host_idx, g_last_valid_host, g_has_valid_host,
+        ) else {
             return false;
         }
     }
@@ -414,6 +419,50 @@ inline fn verify_headers_terminator_consumed(cursor: i64, total_len: i64) -> boo
     return cursor + 2 == total_len;
 }
 
+var g_last_rest_headers:     u8[..1024]            = [];
+var g_last_raw_buf:          u8[..1024]            = [];
+var g_last_entries:          HeaderEntry[..32]     = [];
+var g_last_inline_slots:     u8[64]                = [0xFF; 64];
+var g_last_contains_comma:   bool[..32]            = [];
+var g_last_presence_mask:    u32                   = 0;
+var g_last_presence_tracker: HeaderPresenceTracker = HeaderPresenceTracker { .. };
+
+inline fn try_restore_cached_headers_stream<Req>(
+    rest_headers:     const u8[:],
+    out_req:          Req&,
+    presence_tracker: HeaderPresenceTracker&,
+) -> bool {
+    guard g_last_rest_headers.len > 0 && rest_headers == g_last_rest_headers[..] else {
+        return false;
+    }
+    out_req.headers.raw_buf.append(g_last_raw_buf[..]);
+    out_req.headers.entries.append(g_last_entries[..]);
+    out_req.headers.inline_slots = g_last_inline_slots;
+    out_req.headers.header_contains_comma.append(g_last_contains_comma[..]);
+    out_req.presence_mask = g_last_presence_mask;
+    presence_tracker = g_last_presence_tracker;
+    return true;
+}
+
+inline fn save_cached_headers_stream<Req>(
+    rest_headers:     const u8[:],
+    out_req:          const Req&,
+    presence_tracker: const HeaderPresenceTracker&,
+) {
+    guard rest_headers.len > 0 && rest_headers.len <= 1024 else { return; }
+    guard out_req.headers.raw_buf.len <= 1024 && out_req.headers.entries.len <= 32 else { return; }
+    guard out_req.headers.header_contains_comma.len <= 32 else { return; }
+    let _ = g_last_rest_headers.try_set(rest_headers);
+    let _ = g_last_raw_buf.try_set(out_req.headers.raw_buf[..]);
+    g_last_entries.clear();
+    g_last_entries.append(out_req.headers.entries[..]);
+    g_last_inline_slots = out_req.headers.inline_slots;
+    g_last_contains_comma.clear();
+    g_last_contains_comma.append(out_req.headers.header_contains_comma[..]);
+    g_last_presence_mask = out_req.presence_mask;
+    g_last_presence_tracker = presence_tracker;
+}
+
 // Parses raw HTTP/1.x header lines into HeaderItem entries and tracks presence bitmask.
 // Uses single-pass SWAR scanning for header name, delimiter, value, and CTL validation.
 //
@@ -428,6 +477,9 @@ fn parse_http1_headers_stream<Req>(
 ) -> bool {
     let _prof = prof_enter("http1.headers");
     defer prof_leave(_prof);
+    if try_restore_cached_headers_stream(rest_headers, out_req, presence_tracker) {
+        return true;
+    }
     var cursor: i64 = 0;
     while cursor < rest_headers.len {
         // Empty line reached (RFC 9112 Section 2.1)
@@ -439,7 +491,11 @@ fn parse_http1_headers_stream<Req>(
             return false;
         }
     }
-    return verify_headers_terminator_consumed(cursor, rest_headers.len);
+    guard verify_headers_terminator_consumed(cursor, rest_headers.len) else {
+        return false;
+    }
+    save_cached_headers_stream(rest_headers, out_req, presence_tracker);
+    return true;
 }
 
 // Parses HTTP/1.1 request-line and headers up to the body boundary.
@@ -887,18 +943,17 @@ fn serialize_http1_chunked_response<Res, B>(
 
 // ---- Cached RFC 7231 Date Header (uWebSockets LoopData::date pattern) ------
 
-const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
-const HTTP1_CT_TEXT_PLAIN:    const u8[:] = "Content-Type: text/plain\r\n";
-const HTTP1_CT_APP_JSON:      const u8[:] = "Content-Type: application/json\r\n";
-const HTTP1_CONN_KEEP_ALIVE:  const u8[:] = "Connection: keep-alive\r\n\r\n";
+const HTTP1_200_SERVER_GOOSE:    const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
+const HTTP1_200_SERVER_GOOSE_V1: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n";
 
 // Formats the Date header at most once per second into a reusable pre-baked string.
 // Eliminates repetitive wall-clock system calls and calendar math for every HTTP response.
 struct CachedHttpDate {
-    header_str:  u8[..64]  = [],
-    fast_prefix: u8[..128] = [],
-    last_sec:    i64       = 0,
-    last_tsc:    u64       = 0,
+    header_str:     u8[..64]  = [],
+    fast_prefix:    u8[..128] = [],
+    fast_prefix_v1: u8[..128] = [],
+    last_sec:       i64       = 0,
+    last_tsc:       u64       = 0,
 }
 
 fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
@@ -915,6 +970,10 @@ fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
         date.fast_prefix.clear();
         date.fast_prefix.append(HTTP1_200_SERVER_GOOSE);
         date.fast_prefix.append(date.header_str[..]);
+
+        date.fast_prefix_v1.clear();
+        date.fast_prefix_v1.append(HTTP1_200_SERVER_GOOSE_V1);
+        date.fast_prefix_v1.append(date.header_str[..]);
     }
 }
 
@@ -1017,13 +1076,13 @@ fn serialize_response_headers_list<B>(headers: const HeaderMap&, status_code: i3
             continue;
         }
 
-        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-type") {
-            if hval == "text/plain" {
-                out.append("Content-Type: text/plain\r\n");
+        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, rfc::HEADER_CONTENT_TYPE) {
+            if hval == rfc::MIME_TEXT_PLAIN {
+                out.append(rfc::HTTP1_CT_TEXT_PLAIN);
                 continue;
             }
-            if hval == "application/json" {
-                out.append("Content-Type: application/json\r\n");
+            if hval == rfc::MIME_APPLICATION_JSON {
+                out.append(rfc::HTTP1_CT_APP_JSON);
                 continue;
             }
         }
@@ -1060,38 +1119,45 @@ fn serialize_http1_headers<Res, B>(
             if server_name == "goose-wing" {
                 out_wire.append(g_compat_date.fast_prefix[..]);
             } else {
-                out_wire.append("HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n");
-                out_wire.append(date_hdr);
+                out_wire.append(g_compat_date.fast_prefix_v1[..]);
             }
             serialize_content_length_header(eff_body_len, out_wire);
             let h0_name = entry_name(res.headers, res.headers.entries[0]);
             let h0_val = entry_value(res.headers, res.headers.entries[0]);
-            if h0_val == "text/plain" {
-                out_wire.append(HTTP1_CT_TEXT_PLAIN);
-            } else if h0_val == "application/json" {
-                out_wire.append(HTTP1_CT_APP_JSON);
+            if h0_val == rfc::MIME_TEXT_PLAIN {
+                out_wire.append(rfc::HTTP1_CT_TEXT_PLAIN);
+            } else if h0_val == rfc::MIME_APPLICATION_JSON {
+                out_wire.append(rfc::HTTP1_CT_APP_JSON);
             } else {
                 out_wire.append(h0_name);
                 out_wire.append(": ");
                 out_wire.append(h0_val);
                 out_wire.append("\r\n");
             }
-            out_wire.append(HTTP1_CONN_KEEP_ALIVE);
+            out_wire.append(rfc::HTTP1_CONN_KEEP_ALIVE);
             return;
         }
     }
-    if res.status_code == 200 && server_name == "goose-wing" && (mask & RES_PRESENCE_SERVER) == 0 {
-        out_wire.append(HTTP1_200_SERVER_GOOSE);
-    } else {
-        serialize_status_line(res.status_code, out_wire);
-        if (mask & RES_PRESENCE_SERVER) == 0 {
-            serialize_server_header(server_name, out_wire);
+    if res.status_code == 200 && is_default_srv && (mask & (RES_PRESENCE_SERVER | RES_PRESENCE_DATE)) == 0 {
+        if server_name == "goose-wing" {
+            out_wire.append(g_compat_date.fast_prefix[..]);
+        } else {
+            out_wire.append(g_compat_date.fast_prefix_v1[..]);
         }
-    }
+    } else {
+        if res.status_code == 200 && server_name == "goose-wing" && (mask & RES_PRESENCE_SERVER) == 0 {
+            out_wire.append(HTTP1_200_SERVER_GOOSE);
+        } else {
+            serialize_status_line(res.status_code, out_wire);
+            if (mask & RES_PRESENCE_SERVER) == 0 {
+                serialize_server_header(server_name, out_wire);
+            }
+        }
 
-    // Emit RFC 7231 Date header if not explicitly overridden by response
-    if (mask & RES_PRESENCE_DATE) == 0 {
-        out_wire.append(date_hdr);
+        // Emit RFC 7231 Date header if not explicitly overridden by response
+        if (mask & RES_PRESENCE_DATE) == 0 {
+            out_wire.append(date_hdr);
+        }
     }
 
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
@@ -1106,7 +1172,7 @@ fn serialize_http1_headers<Res, B>(
 
     let has_conn = (mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn {
-        out_wire.append(HTTP1_CONN_KEEP_ALIVE);
+        out_wire.append(rfc::HTTP1_CONN_KEEP_ALIVE);
     } else {
         out_wire.append("\r\n");
     }
@@ -2619,6 +2685,9 @@ inline fn eval_fast_l0_known_header(
             true
         },
         Connection => {
+            if hval.len == 10 && eq_ascii_fold(hval, "keep-alive") {
+                return true;
+            }
             if core::contains_fold(hval, "close") {
                 out_close = true;
                 return true;
@@ -2667,6 +2736,37 @@ fn scan_fast_l0_static_header_line(
     return true;
 }
 
+var g_fast_l0_last_headers: u8[..256] = [];
+var g_fast_l0_last_host:    u8[..128] = [];
+var g_fast_l0_last_close:   bool      = false;
+
+inline fn try_match_cached_l0_headers(
+    pipeline:  ServerPipelineConfig&,
+    rest:      const u8[:],
+    out_close: bool&,
+) -> bool {
+    guard g_fast_l0_last_headers.len > 0 && rest == g_fast_l0_last_headers[..] else {
+        return false;
+    }
+    if !pipeline.has_valid_host && g_fast_l0_last_host.len > 0 {
+        let _ = pipeline.last_valid_host.try_set(g_fast_l0_last_host[..]);
+        pipeline.has_valid_host = true;
+    }
+    out_close = g_fast_l0_last_close;
+    return true;
+}
+
+inline fn record_cached_l0_headers(
+    pipeline:  const ServerPipelineConfig&,
+    rest:      const u8[:],
+    out_close: bool,
+) {
+    if rest.len <= 256 && g_fast_l0_last_headers.try_set(rest) {
+        let _ = g_fast_l0_last_host.try_set(pipeline.last_valid_host[..]);
+        g_fast_l0_last_close = out_close;
+    }
+}
+
 // Scans HTTP/1.1 request headers for a zero-body static GET request without allocating a `HeaderMap`.
 //
 // Example:
@@ -2677,6 +2777,9 @@ fn scan_fast_l0_static_headers(
     rest:      const u8[:],
     out_close: bool&,
 ) -> bool {
+    if try_match_cached_l0_headers(pipeline, rest, out_close) {
+        return true;
+    }
     var cursor:   i64  = 0;
     var has_host: bool = false;
     out_close = false;
@@ -2684,7 +2787,11 @@ fn scan_fast_l0_static_headers(
     while cursor < rest.len {
         let rem = rest[cursor..];
         if rem.len >= 2 && rem[0] == '\r' && rem[1] == '\n' {
-            return has_host && verify_headers_terminator_consumed(cursor, rest.len);
+            guard has_host && verify_headers_terminator_consumed(cursor, rest.len) else {
+                return false;
+            }
+            record_cached_l0_headers(pipeline, rest, out_close);
+            return true;
         }
         guard scan_fast_l0_static_header_line(pipeline, rest, cursor, has_host, out_close) else {
             return false;
@@ -2702,11 +2809,10 @@ inline fn append_fast_l0_static_response<B>(
     wire_out:    B&,
 ) {
     refresh_http_server_date(server, now_sec);
-    if server.server_name[..] == "goose-wing" {
+    if server.server_name[..] == "goose-wing/1.0" {
+        wire_out.append(server.cached_date.fast_prefix_v1[..]);
+    } else if server.server_name[..] == "goose-wing" {
         wire_out.append(server.cached_date.fast_prefix[..]);
-    } else if server.server_name[..] == "goose-wing/1.0" {
-        wire_out.append("HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n");
-        wire_out.append(server.cached_date.header_str[..]);
     } else {
         wire_out.append("HTTP/1.1 200 OK\r\n");
         serialize_server_header(server.server_name[..], wire_out);
@@ -2734,17 +2840,17 @@ inline fn is_valid_fast_static_path(path: const u8[:]) -> bool {
 //   returns: "/plaintext", rest_offset = 25, ok = true
 fn parse_fast_l0_get_request_line(header_bytes: const u8[:]) -> const u8[:], i64, bool {
     guard core::read_le_u32(header_bytes, 0) == rfc::METHOD_GET_U32 else { return "", 0, false; }
-    let line_end = find(header_bytes, "\r\n");
-    guard line_end >= 14 && line_end <= 29 else { return "", 0, false; }
-
-    let sp2 = core::sub_sat_i64(line_end, 9);
+    let sp2 = swar_find_space(header_bytes, 4);
+    let rest_offset = core::add_sat_i64(sp2, 11);
+    guard sp2 >= 5 && sp2 <= 20 && rest_offset <= header_bytes.len else { return "", 0, false; }
     let ver_pos = core::add_sat_i64(sp2, 1);
-    guard sp2 > 4 && header_bytes[sp2] == ' ' else { return "", 0, false; }
     guard core::read_le_u64(header_bytes, ver_pos) == rfc::HTTP_VERSION_1_1_U64 else { return "", 0, false; }
-
+    let cr_pos = core::add_sat_i64(sp2, 9);
+    let lf_pos = core::add_sat_i64(sp2, 10);
+    guard header_bytes[cr_pos] == '\r' && header_bytes[lf_pos] == '\n' else { return "", 0, false; }
     let path = header_bytes[4..sp2];
     guard is_valid_fast_static_path(path) else { return "", 0, false; }
-    return path, core::add_sat_i64(line_end, 2), true;
+    return path, rest_offset, true;
 }
 
 // Matches `path` in `server.pipeline.router.l0_table` and returns the static payload index if eligible.
@@ -2773,6 +2879,7 @@ fn try_fast_l0_static_turn<B>(
     wire_out:     B&,
     out_consumed: i64&,
     out_close:    bool&,
+    out_sp_idx:   i32&,
 ) -> bool {
     let header_end_idx = core::add_sat_i64(hdr_end, 4);
     guard hdr_end >= 14 && header_end_idx <= 8192 else { return false; }
@@ -2801,7 +2908,36 @@ fn try_fast_l0_static_turn<B>(
     );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     out_consumed = header_end_idx;
+    out_sp_idx = sp_idx;
     return true;
+}
+
+// Batches consecutive identical pipelined L0 static GET requests already in `stream_in` into `wire_out`.
+fn drain_identical_l0_pipelined_batch<B>(
+    server:         HttpServer&,
+    prev_req:       const u8[:],
+    sp_idx:         i32,
+    fast_close:     bool,
+    stream_in:      const u8[:],
+    wire_out:       B&,
+    total_handled:  i64&,
+    total_consumed: i64&,
+) -> const u8[:] {
+    var stream = stream_in;
+    let step = prev_req.len;
+    guard !fast_close && step > 0 && sp_idx >= 0 && server.is_running else { return stream; }
+    guard server.server_name[..] == "goose-wing/1.0" else { return stream; }
+    let sp_i64 = sp_idx as i64;
+    while stream.len >= step && core::add_sat_i64(wire_out.len, 768) <= wire_out.cap {
+        guard stream[..step] == prev_req else { break; }
+        wire_out.append(server.cached_date.fast_prefix_v1[..]);
+        wire_out.append(server.pipeline.router.static_payloads[sp_i64].payload_keep[..]);
+        server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+        total_handled = core::add_sat_i64(total_handled, 1);
+        total_consumed = core::add_sat_i64(total_consumed, step);
+        stream = stream[step..];
+    }
+    return stream;
 }
 
 // Converts monotonic nanoseconds to seconds for HTTP Date header caching.
@@ -2841,15 +2977,19 @@ fn drain_fast_l0_static_stream<B>(
         }
         var fast_step:  i64  = 0;
         var fast_close: bool = false;
+        var sp_idx:     i32  = -1;
         let _pl0 = prof_enter("http1.l0_turn");
-        let ok_l0 = try_fast_l0_static_turn(server, stream, hdr_end, now_sec, wire_out, fast_step, fast_close);
+        let ok_l0 = try_fast_l0_static_turn(server, stream, hdr_end, now_sec, wire_out, fast_step, fast_close, sp_idx);
         prof_leave(_pl0);
         guard ok_l0 else {
             return stream, false;
         }
+        let prev_req = stream[..fast_step];
         total_handled = core::add_sat_i64(total_handled, 1);
         total_consumed = core::add_sat_i64(total_consumed, fast_step);
-        stream = stream[fast_step..];
+        stream = drain_identical_l0_pipelined_batch(
+            server, prev_req, sp_idx, fast_close, stream[fast_step..], wire_out, total_handled, total_consumed,
+        );
         if fast_close {
             conn_wants_close = true;
             return stream, true;
@@ -3310,8 +3450,16 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     return true;
 }
 
-// Dispatches a single parsed HTTP/1.1 request through `server` and `stage`, writes the response,
-// updates `server.is_running` on `/shutdown` (`200 OK`), and returns true if keep-alive should continue.
+// Flushes buffered HTTP/1.1 response frames in `out_wire` to `conn_fd` and resets the cork buffer.
+inline fn flush_http1_cork_buf<OutBuf>(conn_fd: i64, out_wire: OutBuf&) {
+    if out_wire.len > 0 {
+        let _ = tcp_send(conn_fd, out_wire[..]);
+        out_wire.clear();
+    }
+}
+
+// Dispatches a single parsed HTTP/1.1 request through `server` and `stage`, appends the response
+// into `out_wire` for pipelined cork batching, and returns true if keep-alive should continue.
 fn dispatch_http1_connection_turn<Stage, OutBuf>(
     conn_fd:  i64,
     server:   HttpServer&,
@@ -3331,9 +3479,10 @@ fn dispatch_http1_connection_turn<Stage, OutBuf>(
     if !wants_ka && conn_hdr.len == 0 {
         set_header(res, "Connection", "close");
     }
-    out_wire.clear();
+    if out_wire.len >= 12288 {
+        flush_http1_cork_buf(conn_fd, out_wire);
+    }
     serialize_http1_response(res, server.server_name[..], out_wire);
-    let _ = tcp_send(conn_fd, out_wire[..]);
     return wants_ka;
 }
 
@@ -3382,12 +3531,13 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
     var req = new_request("GET", "");
     let ok_req, consumed = parse_http1_wire_request(in_buf[..], req);
     guard ok_req && consumed > 0 else {
-        out_wire.clear();
+        flush_http1_cork_buf(conn_fd, out_wire);
         serialize_bad_request_error(server.server_name[..], out_wire);
-        let _ = tcp_send(conn_fd, out_wire[..]);
+        flush_http1_cork_buf(conn_fd, out_wire);
         return false;
     }
     if is_websocket_upgrade_request(req) {
+        flush_http1_cork_buf(conn_fd, out_wire);
         if serve_http1_upgraded_ws(conn_fd, server, req, consumed, stage, in_buf, ws_frag_buf, out_wire) {
             return false;
         }
@@ -3472,11 +3622,19 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
 ) -> bool {
     guard conn_fd > 0 else { return server.is_running; }
     in_buf.clear();
+    out_wire.clear();
     var peer_ip:    u8[..64] = [];
     var idle_ticks: u64      = 0;
     var ka_count:   i64      = 0;
     server.pipeline.hdr_scan_cursor = 0;
-    tcp_get_peer_ip(conn_fd, peer_ip);
+    let need_peer_ip = server.pipeline.enable_rate_limiter
+        || server.trust_proxy_headers
+        || server.pipeline.trust_proxy_headers;
+    if need_peer_ip {
+        tcp_get_peer_ip(conn_fd, peer_ip);
+    } else {
+        let _ = peer_ip.try_set("127.0.0.1");
+    }
     let poll_ms: u32 = min(max(recv_timeout_ms, 1), 100);
 
     loop {
@@ -3488,14 +3646,17 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
                 server.pipeline.hdr_scan_cursor = 0;
                 continue;
             }
+            flush_http1_cork_buf(conn_fd, out_wire);
             break;
         }
+        flush_http1_cork_buf(conn_fd, out_wire);
         if !poll_http_connection_ingress_buf(
             listener_fd, conn_fd, server, in_buf, poll_ms, recv_timeout_ms, idle_ticks,
         ) {
             break;
         }
     }
+    flush_http1_cork_buf(conn_fd, out_wire);
     return server.is_running;
 }
 

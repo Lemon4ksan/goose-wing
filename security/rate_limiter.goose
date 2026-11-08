@@ -372,36 +372,102 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
 
 // ---- ietf ratelimit header formatting --------------------------------------
 
+const SLOT_RETRY_AFTER: u8 = 60;
+
+inline fn ceil_ns_to_sec(ns: u64) -> u64 {
+    if ns == 0 { return 0; }
+    if ns <= 1000000000 { return 1; }
+    return fast_div_u64(core::add_sat_u64(ns, 999999999), 1000000000);
+}
+
+fn has_header_hash_match(map: const HeaderMap&, name: const u8[:], hname: u32, wk_id: u8) -> bool {
+    if wk_id != 0xFF {
+        return map.inline_slots[wk_id as i64] != 0xFF;
+    }
+    for &e in map.entries {
+        if e.name_hash == hname && eq_ascii_fold(entry_name(map, e), name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn set_ratelimit_u64_header(map: HeaderMap&, name: const u8[:], hname: u32, wk_id: u8, val: u64) {
+    let needed = core::add_sat_i64(name.len, 24);
+    if !has_header_hash_match(map, name, hname, wk_id) &&
+        map.entries.len < 128 &&
+        core::add_sat_i64(map.raw_buf.len, needed) <= 8192 {
+        let n_begin = map.raw_buf.len as u16;
+        map.raw_buf.append(name);
+        let n_end = map.raw_buf.len as u16;
+        core::format_u64_dec(val, map.raw_buf);
+        let v_end = map.raw_buf.len as u16;
+        let new_idx = map.entries.len as u8;
+        if wk_id != 0xFF {
+            map.inline_slots[wk_id as i64] = new_idx;
+        }
+        map.entries.push(HeaderEntry {
+            name_begin:    n_begin,
+            name_end:      n_end,
+            values_begin:  n_end,
+            values_end:    v_end,
+            next_idx:      0xFF,
+            flags:         0,
+            well_known_id: wk_id,
+            reserved:      0,
+            name_hash:     hname,
+        });
+        map.header_contains_comma.push(false);
+        return;
+    }
+    var val_str: u8[..32] = [];
+    core::format_u64_dec(val, val_str);
+    let _ = set_or_replace(map, name, val_str[..], false);
+}
+
 fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: const RateLimitDecision&) {
-    var limit_str: u8[..32] = [];
-    core::format_u64_dec(quota.limit, limit_str);
-    res.headers.set_header("RateLimit-Limit", limit_str[..]);
+    set_ratelimit_u64_header(
+        res.headers, rfc::HEADER_RATELIMIT_LIMIT, rfc::HASH_HDR_RATELIMIT_LIMIT, 0xFF, quota.limit,
+    );
 
     match decision {
         Allowed a => {
-            var rem_str: u8[..32] = [];
-            core::format_u64_dec(a.remaining_burst, rem_str);
-            res.headers.set_header("RateLimit-Remaining", rem_str[..]);
-
-            var reset_str: u8[..32] = [];
-            let reset_sec = core::add_sat_u64(a.reset_after_ns, 999999999) / 1000000000;
-            core::format_u64_dec(reset_sec, reset_str);
-            res.headers.set_header("RateLimit-Reset", reset_str[..]);
+            set_ratelimit_u64_header(
+                res.headers,
+                rfc::HEADER_RATELIMIT_REMAINING,
+                rfc::HASH_HDR_RATELIMIT_REMAINING,
+                0xFF,
+                a.remaining_burst,
+            );
+            let reset_sec = ceil_ns_to_sec(a.reset_after_ns);
+            set_ratelimit_u64_header(
+                res.headers, rfc::HEADER_RATELIMIT_RESET, rfc::HASH_HDR_RATELIMIT_RESET, 0xFF, reset_sec,
+            );
         },
         Reserved r => {
-            res.headers.set_header("RateLimit-Remaining", "0");
-            var reset_str: u8[..32] = [];
-            let reset_sec = core::add_sat_u64(r.wait_ns, 999999999) / 1000000000;
-            core::format_u64_dec(reset_sec, reset_str);
-            res.headers.set_header("RateLimit-Reset", reset_str[..]);
+            set_ratelimit_u64_header(
+                res.headers, rfc::HEADER_RATELIMIT_REMAINING, rfc::HASH_HDR_RATELIMIT_REMAINING, 0xFF, 0,
+            );
+            let reset_sec = ceil_ns_to_sec(r.wait_ns);
+            set_ratelimit_u64_header(
+                res.headers, rfc::HEADER_RATELIMIT_RESET, rfc::HASH_HDR_RATELIMIT_RESET, 0xFF, reset_sec,
+            );
         },
         Rejected rej => {
-            res.headers.set_header("RateLimit-Remaining", "0");
-            let retry_sec = core::add_sat_u64(rej.retry_after_ns, 999999999) / 1000000000;
-            var retry_str: u8[..32] = [];
-            core::format_u64_dec(retry_sec, retry_str);
-            res.headers.set_header("RateLimit-Reset", retry_str[..]);
-            res.headers.set_header("Retry-After", retry_str[..]);
+            set_ratelimit_u64_header(
+                res.headers, rfc::HEADER_RATELIMIT_REMAINING, rfc::HASH_HDR_RATELIMIT_REMAINING, 0xFF, 0,
+            );
+            let retry_sec = ceil_ns_to_sec(rej.retry_after_ns);
+            set_ratelimit_u64_header(
+                res.headers, rfc::HEADER_RATELIMIT_RESET, rfc::HASH_HDR_RATELIMIT_RESET, 0xFF, retry_sec,
+            );
+            set_ratelimit_u64_header(
+                res.headers,
+                rfc::HEADER_RETRY_AFTER,
+                rfc::HASH_HDR_RETRY_AFTER,
+                SLOT_RETRY_AFTER,
+                retry_sec,
+            );
             res.status_code = rfc::STATUS_TOO_MANY_REQUESTS;
         },
     };

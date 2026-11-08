@@ -86,10 +86,10 @@ struct FetchContext {
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = trim_lws(val);
     if clean.len == 0 { return SecFetchSite.Missing; }
-    if core::eq_ascii_fold(clean, "same-origin") { return SecFetchSite.SameOrigin; }
-    if core::eq_ascii_fold(clean, "same-site") { return SecFetchSite.SameSite; }
-    if core::eq_ascii_fold(clean, "cross-site") { return SecFetchSite.CrossSite; }
-    if core::eq_ascii_fold(clean, "none") { return SecFetchSite.None; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_SAME_ORIGIN) { return SecFetchSite.SameOrigin; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_SAME_SITE) { return SecFetchSite.SameSite; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_CROSS_SITE) { return SecFetchSite.CrossSite; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_NONE) { return SecFetchSite.None; }
     return SecFetchSite.Unknown;
 }
 
@@ -100,11 +100,11 @@ fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
 //   returns: SecFetchMode.Navigate
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
     let clean = trim_lws(val);
-    if core::eq_ascii_fold(clean, "navigate") { return SecFetchMode.Navigate; }
-    if core::eq_ascii_fold(clean, "same-origin") { return SecFetchMode.SameOrigin; }
-    if core::eq_ascii_fold(clean, "cors") { return SecFetchMode.Cors; }
-    if core::eq_ascii_fold(clean, "no-cors") { return SecFetchMode.NoCors; }
-    if core::eq_ascii_fold(clean, "websocket") { return SecFetchMode.WebSocket; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_NAVIGATE) { return SecFetchMode.Navigate; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_SAME_ORIGIN) { return SecFetchMode.SameOrigin; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_CORS) { return SecFetchMode.Cors; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_NO_CORS) { return SecFetchMode.NoCors; }
+    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_WEBSOCKET) { return SecFetchMode.WebSocket; }
     return SecFetchMode.Other;
 }
 
@@ -463,32 +463,32 @@ fn extract_fetch_context<Req>(
         let name = entry_name(req.headers, e);
         let val = trim_lws(entry_value(req.headers, e));
 
-        if core::eq_ascii_fold(name, "Sec-Fetch-Site") {
+        if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_SITE) {
             let parsed_site = parse_sec_fetch_site(val);
             if ctx.site == SecFetchSite.Missing {
                 ctx.site = parsed_site;
             } else if parsed_site != ctx.site {
                 ctx.site = SecFetchSite.CrossSite;
             }
-        } else if core::eq_ascii_fold(name, "Sec-Fetch-Mode") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_MODE) {
             ctx.mode = parse_sec_fetch_mode(val);
-        } else if core::eq_ascii_fold(name, "Sec-Fetch-Dest") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_DEST) {
             ctx.dest = parse_sec_fetch_dest(val);
-        } else if core::eq_ascii_fold(name, "Sec-Fetch-User") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_USER) {
             ctx.user_activated = (val == "?1");
-        } else if core::eq_ascii_fold(name, "Origin") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_ORIGIN) {
             if !ctx.has_origin {
                 ctx.has_origin = true;
                 ctx.origin.try_set(val);
             }
-        } else if core::eq_ascii_fold(name, "Referer") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_REFERER) {
             if !ctx.has_referer {
                 ctx.has_referer = true;
                 ctx.referer.try_set(val);
             }
-        } else if core::eq_ascii_fold(name, "Cookie") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_COOKIE) {
             ctx.has_session_cookie = true;
-        } else if core::eq_ascii_fold(name, "Authorization") || core::eq_ascii_fold(name, "X-API-Key") {
+        } else if core::eq_ascii_fold(name, rfc::HEADER_AUTHORIZATION) || core::eq_ascii_fold(name, "X-API-Key") {
             ctx.has_explicit_auth = true;
         }
     }
@@ -496,26 +496,127 @@ fn extract_fetch_context<Req>(
     return ctx;
 }
 
+const CSRF_VARY_SLOT: u8 = 34;
+const CSRF_HSTS_SLOT: u8 = 46;
+
+// RFC 9110 §9.2.1 & RFC 10008 §2: safe HTTP methods.
+inline fn is_csrf_safe_method(m: const u8[:]) -> bool {
+    return m == rfc::METHOD_GET || m == rfc::METHOD_HEAD || m == rfc::METHOD_OPTIONS || m == rfc::METHOD_QUERY;
+}
+
+// Scans request headers for `Sec-Fetch-Site` without materializing `FetchContext`.
+// Returns `SecFetchSite.Missing` when absent, or `SecFetchSite.CrossSite` on conflicting duplicates.
+//
+// Example:
+//   req with header "Sec-Fetch-Site: same-origin"
+//   returns: SecFetchSite.SameOrigin
+fn scan_request_sec_fetch_site<Req>(req: const Req&) -> SecFetchSite {
+    var site = SecFetchSite.Missing;
+    for &e in req.headers.entries {
+        guard e.well_known_id == 0xFF else { continue; }
+        let name = entry_name(req.headers, e);
+        guard name.len == 14 && core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_SITE) else { continue; }
+        let parsed = parse_sec_fetch_site(trim_lws(entry_value(req.headers, e)));
+        if site == SecFetchSite.Missing {
+            site = parsed;
+        } else if parsed != site {
+            site = SecFetchSite.CrossSite;
+        }
+    }
+    return site;
+}
+
+// Evaluates Fetch Metadata CSRF policy directly against an incoming request.
+// Fast-paths safe methods (`GET`, `HEAD`, `OPTIONS`, `QUERY`) when `Sec-Fetch-Site` is not cross-site.
+fn evaluate_request_csrf<Req>(
+    guard_cfg:        const CrossOriginGuard&,
+    req:              const Req&,
+    target_host:      const u8[:],
+    is_sensitive_nav: bool = false,
+) -> CsrfDecision {
+    if guard_cfg.exempt_paths.len == 0 && is_csrf_safe_method(req.method[..]) {
+        let site = scan_request_sec_fetch_site(req);
+        if site != SecFetchSite.CrossSite && site != SecFetchSite.Unknown {
+            return CsrfDecision.Allow;
+        }
+    }
+    let ctx = extract_fetch_context(req, target_host, is_sensitive_nav);
+    return evaluate_fetch_metadata(guard_cfg, ctx);
+}
+
+fn append_known_isolation_header(
+    map:            HeaderMap&,
+    name:           const u8[:],
+    val:            const u8[:],
+    slot:           u8,
+    flags:          u8,
+    hname:          u32,
+    contains_comma: bool,
+) -> bool {
+    let needed = core::add_sat_i64(name.len, val.len);
+    guard map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else {
+        return false;
+    }
+    let n_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(name);
+    let n_end = map.raw_buf.len as u16;
+    map.raw_buf.append(val);
+    let v_end = map.raw_buf.len as u16;
+    let new_idx = map.entries.len as u8;
+    map.inline_slots[slot as i64] = new_idx;
+    map.entries.push(HeaderEntry {
+        name_begin:    n_begin,
+        name_end:      n_end,
+        values_begin:  n_end,
+        values_end:    v_end,
+        next_idx:      0xFF,
+        flags:         flags,
+        well_known_id: slot,
+        reserved:      0,
+        name_hash:     hname,
+    });
+    map.header_contains_comma.push(contains_comma);
+    return true;
+}
+
 // Injects Vary and HSTS headers on protected responses to prevent proxy cache desynchronization.
 fn apply_isolation_headers<Res>(res: Res&) {
-    let vary_key = "Vary";
-    let vary_val = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";
-
-    let existing_vary = res.headers.find_header(vary_key);
-    if existing_vary.len > 0 {
-        if !header_list_has_token(existing_vary, "Sec-Fetch-Site") &&
-            existing_vary.len + 2 + vary_val.len <= 2048 {
+    if res.headers.inline_slots[CSRF_VARY_SLOT as i64] == 0xFF {
+        if !append_known_isolation_header(
+            res.headers,
+            rfc::HEADER_VARY,
+            rfc::FETCH_METADATA_VARY_VALUE,
+            CSRF_VARY_SLOT,
+            HEADER_FLAG_CONTAINS_COMMA,
+            rfc::HASH_HDR_VARY,
+            true,
+        ) {
+            set_header(res, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
+        }
+    } else {
+        let existing_vary = res.headers.find_header(rfc::HEADER_VARY);
+        if existing_vary != rfc::FETCH_METADATA_VARY_VALUE &&
+            !header_list_has_token(existing_vary, rfc::HEADER_SEC_FETCH_SITE) &&
+            existing_vary.len + 2 + rfc::FETCH_METADATA_VARY_VALUE.len <= 2048 {
             var merged: u8[..2048] = [];
             merged.append(existing_vary);
             merged.append(", ");
-            merged.append(vary_val);
-            set_header(res, vary_key, merged[..]);
+            merged.append(rfc::FETCH_METADATA_VARY_VALUE);
+            set_header(res, rfc::HEADER_VARY, merged[..]);
         }
-    } else {
-        set_header(res, vary_key, vary_val);
     }
 
-    if !has_header(res, "Strict-Transport-Security") {
-        set_header(res, "Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    if res.headers.inline_slots[CSRF_HSTS_SLOT as i64] == 0xFF {
+        if !append_known_isolation_header(
+            res.headers,
+            rfc::HEADER_STRICT_TRANSPORT_SECURITY,
+            rfc::HSTS_DEFAULT_VALUE,
+            CSRF_HSTS_SLOT,
+            HEADER_FLAG_SECURITY_STATE,
+            rfc::HASH_HDR_STRICT_TRANSPORT_SECURITY,
+            false,
+        ) {
+            set_header(res, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
+        }
     }
 }

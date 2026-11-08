@@ -7,6 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 import .router;
 import .pool;
 import .edge_filter;
@@ -184,9 +185,9 @@ fn validate_pipeline_expect_header(req: const Request&) -> bool {
         return true;
     }
     for &e in req.headers.entries {
-        if eq_ascii_fold(entry_name(req.headers, e), "expect") {
+        if eq_ascii_fold(entry_name(req.headers, e), rfc::HEADER_EXPECT) {
             let exp_val = entry_value(req.headers, e);
-            if !eq_ascii_fold(exp_val, "100-continue") {
+            if !eq_ascii_fold(exp_val, rfc::EXPECT_100_CONTINUE) {
                 return false;
             }
         }
@@ -289,7 +290,7 @@ fn stage_server_route_match<Router>(
         },
         MethodNotAllowed mna => {
             res.status_code = 405;
-            set_header(res, "Allow", mna.allow_header[..]);
+            set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
             wire::StageVerdict.ShortCircuit { status_code: 405 }
         },
         Found _ => {
@@ -338,7 +339,8 @@ fn stage_server_cors(
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
     if cors_res == CorsResult.RejectedOrigin || cors_res == CorsResult.InvalidConfig {
-        let is_preflight = req.method[..] == "OPTIONS" && header(req, "access-control-request-method").len > 0;
+        let has_acrm = header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
+        let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
         if is_preflight || cors_policy.reject_non_matching_origin {
             res.status_code = 403;
             return wire::StageVerdict.ShortCircuit { status_code: 403 };
@@ -358,8 +360,7 @@ fn stage_server_csrf(
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.csrf");
     defer prof_leave(_prof);
-    let fetch_ctx = extract_fetch_context(req, target_host);
-    let csrf_res = evaluate_fetch_metadata(csrf_guard, fetch_ctx);
+    let csrf_res = evaluate_request_csrf(csrf_guard, req, target_host);
     apply_isolation_headers(res);
     return match csrf_res {
         RejectForbidden _ => {
@@ -411,7 +412,7 @@ fn stage_server_auth_cookie<Jar>(
     defer prof_leave(_prof);
     let now_sec = (now_ns / 1000000000) as i64;
     for &e in req.headers.entries {
-        guard eq_ascii_fold(entry_name(req.headers, e), "Cookie") else { continue; }
+        guard eq_ascii_fold(entry_name(req.headers, e), rfc::HEADER_COOKIE) else { continue; }
         var rem = entry_value(req.headers, e);
         while rem.len > 0 {
             let session_val = extract_session_cookie_value(rem);
@@ -453,11 +454,11 @@ fn stage_server_auth_jwt(
     guard jwks.keys.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.auth_jwt");
     defer prof_leave(_prof);
-    let auth_val = header(req, "Authorization");
+    let auth_val = header(req, rfc::HEADER_AUTHORIZATION);
     let token = extract_bearer_token(auth_val);
     guard token.len > 0 else {
         res.status_code = 401;
-        set_header(res, "WWW-Authenticate", "Bearer");
+        set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
     var out_hdr = JwtHeader { .. };
@@ -466,7 +467,7 @@ fn stage_server_auth_jwt(
     let err = verify(token, jwks, jwt_options, now_sec, out_hdr, out_claims);
     guard err == JwtError.None else {
         res.status_code = 401;
-        set_header(res, "WWW-Authenticate", "Bearer error=\"invalid_token\"");
+        set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
@@ -480,7 +481,11 @@ inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&)
     res.body.clear();
     res.body.append(cache.wire[..]);
     if cache.content_type.len > 0 {
-        set_header(res, "Content-Type", cache.content_type[..]);
+        let _ = append_header(res.headers, rfc::HEADER_CONTENT_TYPE, cache.content_type[..]);
+        res.presence_mask |= RES_PRESENCE_CONTENT_TYPE;
+    }
+    if cache.etag.len > 0 {
+        let _ = append_header(res.headers, rfc::HEADER_ETAG, cache.etag[..]);
     }
     return wire::StageVerdict.ShortCircuit { status_code: 200 };
 }
@@ -518,23 +523,18 @@ fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict 
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.etag");
     defer prof_leave(_prof);
-    var etag_hdr: u8[..64] = [];
-    let existing_etag = header(res, "ETag");
-    if existing_etag.len > 0 {
-        let _ = etag_hdr.try_set(existing_etag);
-    } else if res.body.len > 0 {
-        let hash = core::xxh64(res.body[..], 0);
-        var hex_buf: u8[..32] = [];
-        core::format_u64_hex(hash, hex_buf);
+    if get_inline(res.headers, WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
+        var etag_hdr: u8[..32] = [];
         etag_hdr.push('"');
-        etag_hdr.append(hex_buf[..]);
+        core::format_u64_hex(core::xxh64(res.body[..], 0), etag_hdr);
         etag_hdr.push('"');
-        set_header(res, "ETag", etag_hdr[..]);
+        let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_hdr[..]);
     }
-    guard etag_hdr.len > 0 else { return wire::StageVerdict.Continue; }
-    let inm = header(req, "If-None-Match");
+    let etag_slice = get_inline(res.headers, WellKnownHeader.ETag);
+    guard etag_slice.len > 0 else { return wire::StageVerdict.Continue; }
+    let inm = get_inline(req.headers, WellKnownHeader.IfNoneMatch);
     if inm.len > 0 && (req.method[..] == "GET" || req.method[..] == "HEAD") {
-        let parsed = parse_etag(etag_hdr[..]);
+        let parsed = parse_etag(etag_slice);
         if match_if_none_match(inm, parsed) {
             res.status_code = 304;
             res.body.clear();
@@ -594,29 +594,35 @@ fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool 
 }
 
 inline fn append_vary_accept_encoding(res: Response&) {
-    let cur = header(res, "Vary");
+    let cur = get_inline(res.headers, WellKnownHeader.Vary);
     if cur.len == 0 {
-        set_header(res, "Vary", "Accept-Encoding");
-    } else if !core::contains_fold(cur, "accept-encoding") {
+        let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::HEADER_ACCEPT_ENCODING);
+    } else if !core::contains_fold(cur, rfc::HEADER_ACCEPT_ENCODING) {
         var vbuf: u8[..128] = [];
         guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
-        set_header(res, "Vary", vbuf[..]);
+        let _ = set_or_replace(res.headers, rfc::HEADER_VARY, vbuf[..], false);
     }
 }
 
 inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], suffix: const u8[:]) {
-    set_header(res, "Content-Encoding", encoding);
-    remove_header(res, "Content-Length");
-    let etag = header(res, "ETag");
+    let _ = set_or_replace(res.headers, rfc::HEADER_CONTENT_ENCODING, encoding, false);
+    if get_inline(res.headers, WellKnownHeader.ContentLength).len > 0 {
+        remove_header(res, rfc::HEADER_CONTENT_LENGTH);
+    }
+    let etag = get_inline(res.headers, WellKnownHeader.ETag);
     let last_idx = core::sub_sat_i64(etag.len, 1);
     if etag.len >= 2 && etag[last_idx] == '"' && core::add_sat_i64(etag.len, suffix.len) <= 64 {
         var new_etag: u8[..64] = [];
         new_etag.append(etag[..last_idx]);
         new_etag.append(suffix);
         new_etag.push('"');
-        set_header(res, "ETag", new_etag[..]);
+        let _ = set_or_replace(res.headers, rfc::HEADER_ETAG, new_etag[..], false);
     }
     append_vary_accept_encoding(res);
+}
+
+inline fn select_dynamic_gzip_level(body_len: i64) -> i32 {
+    return if body_len < 128 { 0 } else { 6 };
 }
 
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
@@ -625,10 +631,10 @@ fn stage_server_compress(
     res:  Response&,
     mask: u64,
 ) -> wire::StageVerdict {
-    guard res.body.len > 0 && header(res, "Content-Encoding").len == 0 else {
+    guard res.body.len > 0 && get_inline(res.headers, WellKnownHeader.ContentEncoding).len == 0 else {
         return wire::StageVerdict.Continue;
     }
-    let accept_enc = header(req, "Accept-Encoding");
+    let accept_enc = get_inline(req.headers, WellKnownHeader.AcceptEncoding);
     guard accept_enc.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.compress");
     defer prof_leave(_prof);
@@ -637,27 +643,28 @@ fn stage_server_compress(
     let allow_br = (mask & (STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
     let allow_gzip = (mask & (STAGE_EGRESS_COMPRESS_GZIP | wire::STAGE_SRV_OUT_COMPRESS_GZIP)) != 0;
 
+    var compressed: u8[..2048] = [];
     if allow_zstd && client_accepts_encoding(accept_enc, "zstd") {
-        var compressed: u8[>..] = [];
-        if core::zstd_compress(res.body[..], compressed) && compressed.len > 0 {
+        if core::zstd_compress(res.body[..], compressed) {
             res.body.clear();
             res.body.append(compressed[..]);
             finalize_compressed_response(res, "zstd", "-zstd");
             return wire::StageVerdict.Continue;
         }
+        compressed.clear();
     }
     if allow_br && client_accepts_encoding(accept_enc, "br") {
-        var compressed: u8[>..] = [];
-        if core::brotli_compress(res.body[..], compressed, 1) && compressed.len > 0 {
+        if core::brotli_compress(res.body[..], compressed, 1) {
             res.body.clear();
             res.body.append(compressed[..]);
             finalize_compressed_response(res, "br", "-br");
             return wire::StageVerdict.Continue;
         }
+        compressed.clear();
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
-        var compressed: u8[>..] = [];
-        if core::gzip_compress(res.body[..], compressed, 6) && compressed.len > 0 {
+        let gz_level = select_dynamic_gzip_level(res.body.len);
+        if core::gzip_compress(res.body[..], compressed, gz_level) {
             res.body.clear();
             res.body.append(compressed[..]);
             finalize_compressed_response(res, "gzip", "-gzip");
@@ -671,14 +678,25 @@ fn stage_server_compress(
 fn stage_server_cache_store(
     cache:      HttpRouteCache&,
     now_ms:     u64,
-    res:        const Response&,
+    res:        Response&,
     handler_id: i32         = -1,
     url_key:    const u8[:] = "",
 ) -> wire::StageVerdict {
     let _prof = prof_enter("stage.cache_store");
     defer prof_leave(_prof);
     if res.status_code == 200 && res.body.len > 0 {
-        let _ = cache.cache_store(now_ms, res.body[..], handler_id, header(res, "content-type"), url_key);
+        let ctype = get_inline(res.headers, WellKnownHeader.ContentType);
+        let existing_etag = get_inline(res.headers, WellKnownHeader.ETag);
+        if existing_etag.len > 0 {
+            let _ = cache.cache_store(now_ms, res.body[..], handler_id, ctype, url_key, existing_etag);
+        } else {
+            var etag_buf: u8[..32] = [];
+            etag_buf.push('"');
+            core::format_u64_hex(core::xxh64(res.body[..], 0), etag_buf);
+            etag_buf.push('"');
+            let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_buf[..]);
+            let _ = cache.cache_store(now_ms, res.body[..], handler_id, ctype, url_key, etag_buf[..]);
+        }
     } else {
         cache.is_updating = false;
     }
@@ -689,6 +707,16 @@ fn stage_server_cache_store(
 fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
     let _prof = prof_enter("stage.security_headers");
     defer prof_leave(_prof);
+    let existing_vary = get_inline(res.headers, WellKnownHeader.Vary);
+    let existing_hsts = get_inline(res.headers, WellKnownHeader.StrictTransportSecurity);
+    if existing_hsts.len > 0 && core::starts_with(existing_vary, rfc::FETCH_METADATA_VARY_VALUE) {
+        return wire::StageVerdict.Continue;
+    }
+    if existing_vary.len == 0 && existing_hsts.len == 0 {
+        let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
+        let _ = append_header(res.headers, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
+        return wire::StageVerdict.Continue;
+    }
     apply_isolation_headers(res);
     return wire::StageVerdict.Continue;
 }
@@ -704,7 +732,7 @@ fn stage_server_metrics_log(
     defer prof_leave(_prof);
     let want_metrics = (mask & (STAGE_EGRESS_METRICS | wire::STAGE_SRV_OUT_METRICS)) != 0;
     let want_log = (mask & (STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
-    if want_metrics && header(res, "Server-Timing").len == 0 {
+    if want_metrics && header(res, rfc::HEADER_SERVER_TIMING).len == 0 {
         let dur_ns = if now_ns >= ext.start_time_ns && ext.start_time_ns > 0 {
             now_ns - ext.start_time_ns
         } else {
@@ -713,10 +741,14 @@ fn stage_server_metrics_log(
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
         core::format_u64_dec(dur_ns / 1000, timing_buf);
-        set_header(res, "Server-Timing", timing_buf[..]);
+        let _ = append_header(res.headers, rfc::HEADER_SERVER_TIMING, timing_buf[..]);
     }
     if want_log && ext.matched_route.len > 0 && header(res, "X-Matched-Route").len == 0 {
-        set_header(res, "X-Matched-Route", ext.matched_route[..]);
+        var clean_route: u8[..256] = [];
+        sanitize_header_bytes(ext.matched_route[..], clean_route);
+        if clean_route.len > 0 {
+            let _ = append_header(res.headers, "X-Matched-Route", clean_route[..]);
+        }
     }
     return wire::StageVerdict.Continue;
 }
@@ -879,7 +911,7 @@ fn execute_found_route_handler<UserStage>(
     sctx:         ServerStageCtx&,
     user_stage:   UserStage&,
 ) -> PipelineOutcome {
-    if req.method[..] == "QUERY" && header(req, "Content-Type").len == 0 {
+    if req.method[..] == rfc::METHOD_QUERY && header(req, rfc::HEADER_CONTENT_TYPE).len == 0 {
         res.status_code = 400; // Bad Request
         return PipelineOutcome.Handled;
     }
@@ -950,7 +982,7 @@ fn dispatch_matched_route<UserStage>(
         },
         MethodNotAllowed mna => {
             res.status_code = 405; // Method Not Allowed
-            set_header(res, "Allow", mna.allow_header[..]);
+            set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
             return PipelineOutcome.MethodNotAllowed;
         },
         Found f => {
@@ -963,11 +995,11 @@ fn dispatch_matched_route<UserStage>(
 
 // RFC 9110 Section 9.3.2: HEAD - Suppress body for HEAD requests while preserving Content-Length.
 fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
-    guard req_method == "HEAD" else { return; }
-    if header(res, "content-length").len == 0 && res.body.len > 0 {
+    guard req_method == rfc::METHOD_HEAD else { return; }
+    if header(res, rfc::HEADER_CONTENT_LENGTH).len == 0 && res.body.len > 0 {
         var cl_buf: u8[..32] = [];
         core::format_i64_dec(res.body.len, cl_buf);
-        set_header(res, "Content-Length", cl_buf[..]);
+        set_header(res, rfc::HEADER_CONTENT_LENGTH, cl_buf[..]);
     }
     res.body.clear();
 }
@@ -1042,6 +1074,15 @@ inline fn is_trusted_proxy_peer(trust_proxy_headers: bool, client_ip: const u8[:
     return trust_proxy_headers || client_ip == "127.0.0.1" || client_ip == "::1";
 }
 
+fn has_custom_forwarding_header(map: const HeaderMap&) -> bool {
+    for &e in map.entries {
+        if e.well_known_id == 0xFF {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
 // Priority: RFC 7239 Forwarded ("for=..."), X-Real-IP, X-Forwarded-For, client_ip.
 //
@@ -1053,21 +1094,22 @@ fn extract_effective_client_ip(
     client_ip:           const u8[:],
     req:                 const Request&,
 ) -> const u8[:] {
-    if !is_trusted_proxy_peer(trust_proxy_headers, client_ip) {
+    guard is_trusted_proxy_peer(trust_proxy_headers, client_ip) &&
+        has_custom_forwarding_header(req.headers) else {
         return client_ip;
     }
-    let fwd = header(req, "forwarded");
+    let fwd = header(req, rfc::HEADER_FORWARDED);
     if fwd.len > 0 {
         let fwd_ip = extract_rfc7239_forwarded_for(fwd);
         if fwd_ip.len > 0 && fwd_ip.len <= 48 {
             return fwd_ip;
         }
     }
-    let real_ip = normalize_forwarded_ip(core::trim_lws(header(req, "x-real-ip")));
+    let real_ip = normalize_forwarded_ip(core::trim_lws(header(req, rfc::HEADER_X_REAL_IP)));
     if real_ip.len > 0 && real_ip.len <= 48 {
         return real_ip;
     }
-    let xff = header(req, "x-forwarded-for");
+    let xff = header(req, rfc::HEADER_X_FORWARDED_FOR);
     if xff.len > 0 {
         let comma_idx = core::index_of_byte(xff, ',');
         let raw_first = if comma_idx >= 0 {

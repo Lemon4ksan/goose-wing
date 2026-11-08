@@ -359,8 +359,27 @@ const HEADER_CACHE_STATUS:        const u8[:] = "Cache-Status";        // RFC 92
 const HEADER_PROXY_STATUS:        const u8[:] = "Proxy-Status";        // RFC 9209 Section 2
 const HEADER_ACCEPT_QUERY:        const u8[:] = "Accept-Query";        // RFC 10008 Section 3
 const HEADER_FORWARDED:           const u8[:] = "Forwarded";           // RFC 7239 Section 4
+const HEADER_X_FORWARDED_FOR:     const u8[:] = "X-Forwarded-For";     // RFC 7239 Section 7.4
+const HEADER_X_REAL_IP:           const u8[:] = "X-Real-IP";
 const HEADER_EARLY_DATA:          const u8[:] = "Early-Data";          // RFC 8470 Section 5.1
 const HEADER_CONTENT_DISPOSITION: const u8[:] = "Content-Disposition"; // RFC 6266 Section 4
+const HEADER_ORIGIN:              const u8[:] = "Origin";              // RFC 6454 Section 7
+const HEADER_REFERER:             const u8[:] = "Referer";             // RFC 9110 Section 10.1.3
+const HEADER_VARY:                const u8[:] = "Vary";                // RFC 9110 Section 12.5.5
+const HEADER_ETAG:                const u8[:] = "ETag";                // RFC 9110 Section 8.8.3
+const HEADER_IF_NONE_MATCH:       const u8[:] = "If-None-Match";       // RFC 9110 Section 13.1.2
+const HEADER_ACCEPT_ENCODING:     const u8[:] = "Accept-Encoding";     // RFC 9110 Section 12.5.3
+const HEADER_CONTENT_ENCODING:    const u8[:] = "Content-Encoding";    // RFC 9110 Section 8.4
+const HEADER_ALLOW:               const u8[:] = "Allow";               // RFC 9110 Section 10.2.1
+const HEADER_WWW_AUTHENTICATE:    const u8[:] = "WWW-Authenticate";    // RFC 9110 Section 11.6.1
+const HEADER_RETRY_AFTER:         const u8[:] = "Retry-After";         // RFC 9110 Section 10.2.3
+const HEADER_EXPECT:              const u8[:] = "Expect";              // RFC 9110 Section 10.1.1
+const EXPECT_100_CONTINUE:        const u8[:] = "100-continue";        // RFC 9110 Section 10.1.1
+const HEADER_SERVER_TIMING:       const u8[:] = "Server-Timing";       // W3C Server Timing Section 3
+
+const HTTP1_CONN_KEEP_ALIVE: const u8[:] = "Connection: keep-alive\r\n\r\n";   // RFC 9112 Section 9.3
+const HTTP1_CT_TEXT_PLAIN:   const u8[:] = "Content-Type: text/plain\r\n";     // RFC 9110 Section 8.3
+const HTTP1_CT_APP_JSON:     const u8[:] = "Content-Type: application/json\r\n"; // RFC 9110 Section 8.3
 
 const MIME_TEXT_PLAIN:               const u8[:] = "text/plain";
 const MIME_TEXT_HTML:                const u8[:] = "text/html";
@@ -606,3 +625,57 @@ inline fn is_grease_token_type(t: u16) -> bool {
     }
     return false;
 }
+
+// ---- W3C Fetch Metadata, HSTS, CORS, Isolation & IETF RateLimit ----------
+
+const HEADER_SEC_FETCH_SITE: const u8[:] = "Sec-Fetch-Site"; // W3C Fetch Metadata Section 2.3
+const HEADER_SEC_FETCH_MODE: const u8[:] = "Sec-Fetch-Mode"; // W3C Fetch Metadata Section 2.2
+const HEADER_SEC_FETCH_DEST: const u8[:] = "Sec-Fetch-Dest"; // W3C Fetch Metadata Section 2.1
+const HEADER_SEC_FETCH_USER: const u8[:] = "Sec-Fetch-User"; // W3C Fetch Metadata Section 2.4
+
+const SEC_FETCH_SITE_SAME_ORIGIN: const u8[:] = "same-origin"; // W3C Fetch Metadata Section 2.3
+const SEC_FETCH_SITE_SAME_SITE:   const u8[:] = "same-site";   // W3C Fetch Metadata Section 2.3
+const SEC_FETCH_SITE_CROSS_SITE:  const u8[:] = "cross-site";  // W3C Fetch Metadata Section 2.3
+const SEC_FETCH_SITE_NONE:        const u8[:] = "none";        // W3C Fetch Metadata Section 2.3
+
+const SEC_FETCH_MODE_NAVIGATE:    const u8[:] = "navigate";    // W3C Fetch Metadata Section 2.2
+const SEC_FETCH_MODE_SAME_ORIGIN: const u8[:] = "same-origin"; // W3C Fetch Metadata Section 2.2
+const SEC_FETCH_MODE_CORS:        const u8[:] = "cors";        // W3C Fetch Metadata Section 2.2
+const SEC_FETCH_MODE_NO_CORS:     const u8[:] = "no-cors";     // W3C Fetch Metadata Section 2.2
+const SEC_FETCH_MODE_WEBSOCKET:   const u8[:] = "websocket";   // W3C Fetch Metadata Section 2.2
+
+// W3C Fetch Metadata Section 5.1 & RFC 6797 Section 6.1
+const FETCH_METADATA_VARY_VALUE: const u8[:] = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin";
+
+const HEADER_STRICT_TRANSPORT_SECURITY: const u8[:] = "Strict-Transport-Security";
+const HSTS_DEFAULT_VALUE:               const u8[:] = "max-age=63072000; includeSubDomains; preload";
+const HSTS_DIR_MAX_AGE:                 const u8[:] = "max-age";           // RFC 6797 Section 6.1.1
+const HSTS_DIR_INCLUDE_SUBDOMAINS:      const u8[:] = "includesubdomains"; // RFC 6797 Section 6.1.2
+const HSTS_DIR_PRELOAD:                 const u8[:] = "preload";
+
+// WHATWG Fetch Section 3.2.2 - 3.2.3: CORS headers
+const HEADER_ACCESS_CONTROL_ALLOW_ORIGIN:      const u8[:] = "Access-Control-Allow-Origin";
+const HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS: const u8[:] = "Access-Control-Allow-Credentials";
+const HEADER_ACCESS_CONTROL_ALLOW_METHODS:     const u8[:] = "Access-Control-Allow-Methods";
+const HEADER_ACCESS_CONTROL_ALLOW_HEADERS:     const u8[:] = "Access-Control-Allow-Headers";
+const HEADER_ACCESS_CONTROL_MAX_AGE:           const u8[:] = "Access-Control-Max-Age";
+const HEADER_ACCESS_CONTROL_EXPOSE_HEADERS:    const u8[:] = "Access-Control-Expose-Headers";
+const HEADER_ACCESS_CONTROL_REQUEST_METHOD:    const u8[:] = "Access-Control-Request-Method";
+const HEADER_ACCESS_CONTROL_REQUEST_HEADERS:   const u8[:] = "Access-Control-Request-Headers";
+
+const HEADER_CROSS_ORIGIN_OPENER_POLICY:   const u8[:] = "Cross-Origin-Opener-Policy";   // W3C HTML Section 7.2
+const HEADER_CROSS_ORIGIN_EMBEDDER_POLICY: const u8[:] = "Cross-Origin-Embedder-Policy"; // W3C HTML Section 7.2
+const HEADER_CROSS_ORIGIN_RESOURCE_POLICY: const u8[:] = "Cross-Origin-Resource-Policy"; // WHATWG Fetch Section 4.5
+
+// draft-ietf-httpapi-ratelimit-headers Section 3.1 - 3.3
+const HEADER_RATELIMIT_LIMIT:     const u8[:] = "RateLimit-Limit";
+const HEADER_RATELIMIT_REMAINING: const u8[:] = "RateLimit-Remaining";
+const HEADER_RATELIMIT_RESET:     const u8[:] = "RateLimit-Reset";
+
+// Precomputed FNV-1a 32-bit lowercase header hashes for O(1) HeaderMap lookups/insertions
+const HASH_HDR_VARY:                      u32 = 0x40ABDE45; // "vary"
+const HASH_HDR_STRICT_TRANSPORT_SECURITY: u32 = 0xF6A71E21; // "strict-transport-security"
+const HASH_HDR_RATELIMIT_LIMIT:           u32 = 0xC31C6A3C; // "ratelimit-limit"
+const HASH_HDR_RATELIMIT_REMAINING:       u32 = 0x982DBE5B; // "ratelimit-remaining"
+const HASH_HDR_RATELIMIT_RESET:           u32 = 0xFBF9DFC8; // "ratelimit-reset"
+const HASH_HDR_RETRY_AFTER:               u32 = 0xC6DA1376; // "retry-after"
