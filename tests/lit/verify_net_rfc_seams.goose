@@ -72,10 +72,10 @@ fn test_r001_dns_rfc_edge_cases() {
     assert(wing::dns_cache_lookup(dcache, "zero.example.com", 1, 1000, out_zero) == wing::DnsCacheStatus.Expired);
 
     // 7. RFC 5891 §4.2.3.1 & CVE-2026-39821 Punycode validation
-    assert(!wing::validate_idna_domain_bounds("xn--test-.example.com"));
-    assert(!wing::validate_idna_domain_bounds("xn---a.example.com"));
-    assert(!wing::validate_idna_domain_bounds("xn--a_b.example.com"));
-    assert(!wing::validate_idna_domain_bounds("ab--cd.example.com"));
+    assert(!core::validate_idna_domain_bounds("xn--test-.example.com"));
+    assert(!core::validate_idna_domain_bounds("xn---a.example.com"));
+    assert(!core::validate_idna_domain_bounds("xn--a_b.example.com"));
+    assert(!core::validate_idna_domain_bounds("ab--cd.example.com"));
     print("R001_DNS_RFC: 1");
 }
 

@@ -255,9 +255,9 @@ fn main() {
     print("F008_PROXY_OK: 1");
 
     // F009: DNS label validation, RFC 9460 mandatory SvcParam verification, and DnsResponse reuse
-    assert(!wing::validate_idna_domain_bounds("-bad.example.com"));
-    assert(!wing::validate_idna_domain_bounds("bad-.example.com"));
-    assert(!wing::validate_idna_domain_bounds("bad space.example.com"));
+    assert(!core::validate_idna_domain_bounds("-bad.example.com"));
+    assert(!core::validate_idna_domain_bounds("bad-.example.com"));
+    assert(!core::validate_idna_domain_bounds("bad space.example.com"));
 
     // Mandatory key 0x0003 (port) declared in Key 0, but Key 3 is missing from SvcParams
     let missing_mandatory_params: const u8[6] = [0x00, 0x00, 0x00, 0x02, 0x00, 0x03];

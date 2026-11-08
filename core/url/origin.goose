@@ -12,41 +12,6 @@ inline fn is_tuple_origin_scheme(s: const u8[:]) -> bool {
     return s == "http" || s == "https" || s == "ws" || s == "wss" || s == "ftp";
 }
 
-inline fn find_substring(s: const u8[:], needle: const u8[:]) -> i64 {
-    guard needle.len <= s.len else { return -1; }
-    for i in (s.len - needle.len + 1) {
-        if s[i..i + needle.len] == needle {
-            return i;
-        }
-    }
-    return -1;
-}
-
-// Strips IPv6 ZoneID (%25...) from host strings (RFC 6874 §4).
-//
-// Example:
-//   host_str = "[fe80::1%25eth0]"
-//   returns: out = "[fe80::1]"
-fn strip_ipv6_zone_id<B>(host_str: const u8[:], out: B&) {
-    out.clear();
-    guard host_str.len > 0 && host_str[0] == '[' else {
-        out.append(host_str);
-        return;
-    }
-    let pct_idx = find_substring(host_str, "%25");
-    guard pct_idx >= 0 else {
-        out.append(host_str);
-        return;
-    }
-    let close_b = core::index_of_byte(host_str[pct_idx..], ']');
-    guard close_b >= 0 else {
-        out.append(host_str);
-        return;
-    }
-    out.append(host_str[..pct_idx]);
-    out.append(host_str[(pct_idx + close_b)..]);
-}
-
 // Formats an outgoing Host header wire string from a URL, stripping any IPv6 ZoneID (RFC 6874 §4).
 //
 // Example:
@@ -99,35 +64,6 @@ fn origin_from_url(url_val: const Url&) -> Origin {
 }
 
 // ---- public suffix & etld+1 extraction -------------------------------------
-
-fn is_valid_ipv4_format(host: const u8[:]) -> bool {
-    var dot_count = 0;
-    var octet_val = 0;
-    var octet_digits = 0;
-
-    for char_byte in host {
-        if char_byte == '.' {
-            if octet_digits == 0 || octet_val > 255 { return false; }
-            dot_count++;
-            octet_val = 0;
-            octet_digits = 0;
-        } else if char_byte >= '0' && char_byte <= '9' {
-            octet_val = octet_val * 10 + (char_byte - '0');
-            octet_digits++;
-            if octet_digits > 3 { return false; }
-        } else {
-            return false;
-        }
-    }
-
-    return dot_count == 3 && octet_digits > 0 && octet_val <= 255;
-}
-
-fn is_ip_address_literal(host: const u8[:]) -> bool {
-    guard host.len > 0 else { return false; }
-    if contains_byte(host, ':') { return true; }
-    return is_valid_ipv4_format(host);
-}
 
 fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
     if domain.len > suffix.len && domain[domain.len - suffix.len - 1] == '.' {

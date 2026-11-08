@@ -103,11 +103,6 @@ fn grpc_status_from_code(code: u32) -> GrpcStatusCode {
     };
 }
 
-const CONNECT_FLAG_END_STREAM: u8          = 0x02; // Connect Protocol streaming EndStream envelope flag
-const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+";
-const CONNECT_MIME_PROTO:      const u8[:] = "application/proto";
-const CONNECT_MIME_JSON:       const u8[:] = "application/json";
-
 // Maps standard HTTP status codes to canonical gRPC status codes when grpc-status is missing.
 // Follows gRPC HTTP/2 transport mapping specifications:
 // HTTP 200 without grpc-status maps to Unknown (success requires explicit grpc-status: 0).
@@ -143,50 +138,6 @@ fn h2_error_to_grpc_status(h2_err: u32) -> GrpcStatusCode {
         return GrpcStatusCode.Internal;
     }
     return GrpcStatusCode.Unknown;
-}
-
-// Converts a GrpcStatusCode to its Connect Protocol snake_case error code string.
-fn connect_status_name(code: GrpcStatusCode) -> const u8[:] {
-    return match code {
-        Ok => "ok",
-        Cancelled => "canceled",
-        Unknown => "unknown",
-        InvalidArgument => "invalid_argument",
-        DeadlineExceeded => "deadline_exceeded",
-        NotFound => "not_found",
-        AlreadyExists => "already_exists",
-        PermissionDenied => "permission_denied",
-        ResourceExhausted => "resource_exhausted",
-        FailedPrecondition => "failed_precondition",
-        Aborted => "aborted",
-        OutOfRange => "out_of_range",
-        Unimplemented => "unimplemented",
-        Internal => "internal",
-        Unavailable => "unavailable",
-        DataLoss => "data_loss",
-        Unauthenticated => "unauthenticated",
-        _ => "unknown",
-    };
-}
-
-// Parses a Connect Protocol snake_case error code string into a GrpcStatusCode.
-//
-// Example:
-//   name = "resource_exhausted"
-//   returns: GrpcStatusCode.ResourceExhausted, true
-fn parse_connect_status_code(name: const u8[:]) -> GrpcStatusCode, bool {
-    if name == "canceled" || name == "cancelled" {
-        return GrpcStatusCode.Cancelled, true;
-    }
-    var i: u32 = 1;
-    while i <= 16 {
-        let candidate = grpc_status_from_code(i);
-        if name == connect_status_name(candidate) {
-            return candidate, true;
-        }
-        i = core::add_sat_u32(i, 1);
-    }
-    return GrpcStatusCode.Unknown, false;
 }
 
 struct GrpcMetadata {

@@ -50,49 +50,15 @@ import client.session.stages;
 
 // ---- url resolution helpers ------------------------------------------------
 
-// Escapes special delimiters and control characters in a query parameter component (RFC 3986 §3.4).
-//
-// Example:
-//   raw = "a&b=c", out = []
-//   returns: true, out = "a%26b%3Dc"
-fn append_query_component(raw: const u8[:], out: u8[..2048]&) -> bool {
-    for b in raw {
-        if b == ' ' {
-            guard out.try_append("%20") else { return false; }
-        } else if b == '&' {
-            guard out.try_append("%26") else { return false; }
-        } else if b == '=' {
-            guard out.try_append("%3D") else { return false; }
-        } else if b == '#' {
-            guard out.try_append("%23") else { return false; }
-        } else if b == '+' {
-            guard out.try_append("%2B") else { return false; }
-        } else if b == '%' {
-            guard out.try_append("%25") else { return false; }
-        } else if b < 0x20 || b >= 0x7F {
-            guard out.try_push('%') else { return false; }
-            let hi = (b >> 4) & 0x0F;
-            let lo = b & 0x0F;
-            let hi_c = if hi < 10 { '0' + hi } else { 'A' + hi - 10 };
-            guard out.try_push(hi_c) else { return false; }
-            let lo_c = if lo < 10 { '0' + lo } else { 'A' + lo - 10 };
-            guard out.try_push(lo_c) else { return false; }
-        } else {
-            guard out.try_push(b) else { return false; }
-        }
-    }
-    return true;
-}
-
 inline fn append_single_query_param(
     query_item: const QueryItem&,
     sep:        u8,
     out:        u8[..2048]&,
 ) -> bool {
     guard out.try_push(sep) else { return false; }
-    guard append_query_component(query_item.key[..], out) else { return false; }
+    guard core::append_query_component(query_item.key[..], out) else { return false; }
     guard out.try_push('=') else { return false; }
-    return append_query_component(query_item.value[..], out);
+    return core::append_query_component(query_item.value[..], out);
 }
 
 // Appends query parameters to a URL buffer, preserving trailing fragment if present (RFC 3986 Section 4.1).
@@ -661,35 +627,6 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     return new_single_proxy_chain(ps);
 }
 
-fn format_ipv4_u32(ip4: u32, out: u8[..64]&) {
-    out.clear();
-    let b0 = ((ip4 >> 24) & 0xFF) as u64;
-    let b1 = ((ip4 >> 16) & 0xFF) as u64;
-    let b2 = ((ip4 >> 8) & 0xFF) as u64;
-    let b3 = (ip4 & 0xFF) as u64;
-    core::format_u64_dec(b0, out);
-    out.push('.');
-    core::format_u64_dec(b1, out);
-    out.push('.');
-    core::format_u64_dec(b2, out);
-    out.push('.');
-    core::format_u64_dec(b3, out);
-}
-
-fn format_ipv6_bytes(ip6: const u8[16]&, out: u8[..64]&) {
-    out.clear();
-    let hex_chars: const u8[:] = "0123456789abcdef";
-    for g in 8 {
-        if g > 0 { out.push(':'); }
-        let hi = ip6[g * 2];
-        let lo = ip6[g * 2 + 1];
-        out.push(hex_chars[((hi >> 4) & 0x0F) as i64]);
-        out.push(hex_chars[(hi & 0x0F) as i64]);
-        out.push(hex_chars[((lo >> 4) & 0x0F) as i64]);
-        out.push(hex_chars[(lo & 0x0F) as i64]);
-    }
-}
-
 fn collect_ipv4_dns_candidates(
     ssrf_guard: const SsrfGuardPolicy&,
     a_entry:    const DnsCacheEntry&,
@@ -698,7 +635,7 @@ fn collect_ipv4_dns_candidates(
 ) -> bool {
     var ip4_buf: u8[..64] = [];
     for ip4 in a_entry.ipv4_hints {
-        format_ipv4_u32(ip4, ip4_buf);
+        core::format_ipv4_u32(ip4, ip4_buf);
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
         }
@@ -717,7 +654,7 @@ fn collect_ipv6_dns_candidates(
 ) -> bool {
     var ip6_buf: u8[..64] = [];
     for &ip6 in aaaa_entry.ipv6_hints {
-        format_ipv6_bytes(ip6, ip6_buf);
+        core::format_ipv6_bytes(ip6, ip6_buf);
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
         }

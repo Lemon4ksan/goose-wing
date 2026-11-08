@@ -179,8 +179,8 @@ fn test_acme_pkce_dpop_jwks_seams() {
     let r21 = !wing::parse_jwt_header_json("{\"alg\":\"EdDSA\",\"kid\":\"\"}", empty_kid_hdr) &&
               !wing::parse_jwt_header_json("{\"alg\":\"HS256\",\"typ\":\"\"}", empty_typ_hdr) &&
               !wing::parse_jwks_json("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"kid\":\"\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}", jwks_empty_kid) &&
-              wing::is_cgnat_100("100.108.0.1") &&
-              !wing::is_cgnat_100("100.60.0.1");
+              !wing::is_safe_remote_jwks_url("https://100.108.0.1/jwks") &&
+              wing::is_safe_remote_jwks_url("https://100.60.0.1/jwks");
 
     // 16. JWKS zeroize_jwks_key wipes EC and RSA key material completely
     var rsa_key = wing::JwksKey { kty: wing::JwkKeyType.RSA, valid: true, .. };

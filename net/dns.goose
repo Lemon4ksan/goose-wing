@@ -37,48 +37,9 @@ struct DnsResponse {
 
 // ---- DNS Name Encoding and Compression Decoding (RFC 1035) --------------
 
-// CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--"
-// and enforces RFC 952 / RFC 1123 LDH label rules on all labels.
-// Per RFC 3492 / RFC 5891 §4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
-// If it encodes pure ASCII characters, it is invalid and must be rejected.
-fn validate_punycode_label(label: const u8[:]) -> bool {
-    guard label.len > 0 && label.len <= 63 else { return false; }
-    // RFC 952 / RFC 1123: labels MUST NOT start or end with a hyphen
-    guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
-    for b in label {
-        let is_valid = core::is_ascii_alphanumeric(b) || b == '-' || b == '_';
-        guard is_valid else { return false; }
-    }
-    guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
-    guard core::starts_with_fold(label, "xn--") else { return false; }
-    return label[4] != '-' && !core::contains_byte(label[4..], '_');
-}
-
-// CVE-2026-97044 defense: Validates FQDN wire bounds for internationalized domain names.
-// Enforces that every label is <= 63 bytes, all Punycode labels are valid non-ASCII encodings,
-// and total encoded domain length does not exceed 253 bytes.
-fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
-    guard domain.len > 0 && domain.len <= 253 else { return false; }
-    guard domain[domain.len - 1] != '.' else { return false; }
-    var start = 0;
-    while start < domain.len {
-        var dot_pos = domain.len;
-        for i in start..domain.len {
-            if domain[i] == '.' {
-                dot_pos = i;
-                break;
-            }
-        }
-        let label = domain[start..dot_pos];
-        guard validate_punycode_label(label) else { return false; }
-        start = dot_pos + 1;
-    }
-    return true;
-}
-
 // Encodes a human-readable domain name (e.g. "example.com") into DNS label wire format.
 fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
-    guard validate_idna_domain_bounds(domain) else { return false; }
+    guard core::validate_idna_domain_bounds(domain) else { return false; }
 
     var start = 0;
     while start < domain.len {
@@ -230,7 +191,7 @@ fn serialize_dns_question<B>(domain: const u8[:], qtype: u16, qclass: u16, out: 
 
 // Builds a standard 12-byte header + question DNS query.
 fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool {
-    guard validate_idna_domain_bounds(domain) else { return false; }
+    guard core::validate_idna_domain_bounds(domain) else { return false; }
     serialize_dns_header(tx_id, 1, 0x0100, out);
     return serialize_dns_question(domain, qtype, 1, out);
 }

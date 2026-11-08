@@ -603,6 +603,9 @@ const PKCE_METHOD_PLAIN:     const u8[:] = "plain"; // RFC 7636 Section 4.2
 const PKCE_MIN_VERIFIER_LEN: i64         = 43;      // RFC 7636 Section 4.1
 const PKCE_MAX_VERIFIER_LEN: i64         = 128;     // RFC 7636 Section 4.1
 
+const DEFAULT_DEVICE_POLL_INTERVAL_SEC: i64 = 5; // RFC 8628 Section 3.2
+const DEVICE_SLOW_DOWN_INCREMENT_SEC:   i64 = 5; // RFC 8628 Section 3.5
+
 const ED25519_KEY_LEN:     i64 = 32; // RFC 8032 Section 5.1.5
 const ED25519_SIG_LEN:     i64 = 64; // RFC 8032 Section 5.1.6
 const HMAC_SHA256_MAC_LEN: i64 = 32; // RFC 7518 Section 3.2

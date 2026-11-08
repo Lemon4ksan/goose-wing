@@ -73,7 +73,7 @@ fn main() {
 
     // COOKIERL-03 & COOKIERL-04: Punycode normalization & is_known_public_suffix
     var ace_dom: u8[..256] = [];
-    assert(wing::punycode_encode_domain("Example.\xE4\xB8\xAD\xE5\x9B\xBD", ace_dom));
+    assert(core::punycode_encode_domain("Example.\xE4\xB8\xAD\xE5\x9B\xBD", ace_dom));
     assert(ace_dom[..] == "example.xn--fiqs8s");
     var psl_db = wing::new_psl_database();
     wing::add_psl_rule(psl_db, "custom.tld", wing::PslRuleType.Normal, wing::PslSection.Icann);

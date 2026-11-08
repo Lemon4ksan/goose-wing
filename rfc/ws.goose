@@ -32,6 +32,12 @@ const WS_STATUS_INTERNAL_ERROR:   u16 = 1011;
 // RFC 6455 Section 1.3: Opening Handshake GUID
 let WS_HANDSHAKE_GUID: const u8[:] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// RFC 6455 Section 4.1 & RFC 7692 Section 7: WebSocket Version & PerMessageDeflate Constants
+const WS_RFC6455_VERSION:     const u8[:] = "13";                 // RFC 6455 Section 4.1
+const WS_PMD_EXTENSION_NAME:  const u8[:] = "permessage-deflate"; // RFC 7692 Section 7
+const WS_PMD_MIN_WINDOW_BITS: u8          = 8;                    // RFC 7692 Section 7.1.2
+const WS_PMD_MAX_WINDOW_BITS: u8          = 15;                   // RFC 7692 Section 7.1.2
+
 // RFC 6455 Section 5.2: Base Framing Protocol - Lookup table of valid WebSocket opcodes.
 const WS_OPCODE_LUT: const bool[256] = [
     true, true, true, false, false, false, false, false, true, true, true, false, false, false, false, false,

@@ -9,7 +9,11 @@ import std;
 import core from "..";
 import .record;
 import .key_schedule;
+import .asn1;
+import .sct;
 import .x509;
+import .ocsp;
+import .crl;
 import .post_quantum;
 import .cert_compression;
 

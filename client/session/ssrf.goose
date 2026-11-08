@@ -355,6 +355,93 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
     return is_private_ipv4(norm_ip);
 }
 
+inline fn is_forbidden_ipv6(host: const u8[:]) -> bool {
+    let last_idx = core::sub_sat_i64(host.len, 1);
+    let h = if core::starts_with(host, "[") && core::ends_with(host, "]") && host.len >= 2 {
+        host[1..last_idx]
+    } else {
+        host
+    };
+    if h == "::1" || h == "::" || h == "0:0:0:0:0:0:0:1" || h == "0:0:0:0:0:0:0:0" { return true; }
+    if core::starts_with(h, "::ffff:") || core::starts_with(h, "0:0:0:0:0:ffff:") { return true; }
+    if core::starts_with(h, "fe8") || core::starts_with(h, "fe9") ||
+       core::starts_with(h, "fea") || core::starts_with(h, "feb") {
+        return true;
+    }
+    if core::starts_with(h, "fc") || core::starts_with(h, "fd") {
+        return true;
+    }
+    return core::starts_with(h, "0::") || core::starts_with(h, "0:0:") || core::starts_with(h, "::");
+}
+
+inline fn is_all_digits_or_dots(host: const u8[:]) -> bool {
+    guard host.len > 0 else { return false; }
+    for b in host {
+        if b != '.' && (b < '0' || b > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn has_hex_prefix(host: const u8[:]) -> bool {
+    guard host.len >= 2 else { return false; }
+    let limit = core::sub_sat_i64(host.len, 1);
+    for i in limit {
+        let next_i = core::add_sat_i64(i, 1);
+        if host[i] == '0' && host[next_i] == 'x' { return true; }
+    }
+    return false;
+}
+
+inline fn is_invalid_ipv4_octet_state(octet_len: i64, first_zero: bool, octet_val: i64) -> bool {
+    return octet_len == 0 || (octet_len > 1 && first_zero) || octet_len > 3 || octet_val > 255;
+}
+
+inline fn is_non_canonical_ipv4(host: const u8[:]) -> bool {
+    if has_hex_prefix(host) { return true; }
+    guard is_all_digits_or_dots(host) else { return false; }
+
+    var dot_cnt:    i64  = 0;
+    var octet_len:  i64  = 0;
+    var octet_val:  i64  = 0;
+    var first_zero: bool = false;
+
+    for b in host {
+        if b == '.' {
+            if is_invalid_ipv4_octet_state(octet_len, first_zero, octet_val) { return true; }
+            dot_cnt = core::add_sat_i64(dot_cnt, 1);
+            octet_len = 0;
+            octet_val = 0;
+            first_zero = false;
+        } else {
+            if octet_len == 0 && b == '0' {
+                first_zero = true;
+            }
+            let d = core::sub_sat_i64(b, '0');
+            octet_val = core::add_sat_i64(core::mul_sat_i64(octet_val, 10), d);
+            octet_len = core::add_sat_i64(octet_len, 1);
+        }
+    }
+    if is_invalid_ipv4_octet_state(octet_len, first_zero, octet_val) { return true; }
+    return dot_cnt != 3;
+}
+
+inline fn is_forbidden_internal_domain(host: const u8[:]) -> bool {
+    if host == "localhost" || host == "metadata.google.internal" || host == "instance-data" { return true; }
+    if core::ends_with(host, ".localhost") || core::ends_with(host, ".local") { return true; }
+    if core::ends_with(host, ".internal") || core::ends_with(host, ".lan") { return true; }
+    if core::ends_with(host, ".corp") { return true; }
+    return false;
+}
+
+inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
+    if is_forbidden_internal_domain(host) { return true; }
+    if is_private_or_reserved_ip(host) { return true; }
+    if is_forbidden_ipv6(host) { return true; }
+    return is_non_canonical_ipv4(host);
+}
+
 fn is_dangerous_service_port(port_num: i32) -> bool {
     return port_num <= 0 ||      // Port 0 (reserved / loopback alias)
            port_num == 21 ||     // FTP

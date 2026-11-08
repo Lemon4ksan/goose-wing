@@ -24,6 +24,7 @@ import rfc.grpc;
 import cookie.limits;
 import cookie.constants;
 import cookie.canonical;
+import cookie.dafsa;
 import cookie.psl;
 import cookie.parser;
 import cookie.policy;
@@ -54,8 +55,13 @@ import http.problem;
 
 import tls.record;
 import tls.key_schedule;
-import tls.handshake;
+import tls.asn1;
+import tls.sct;
 import tls.x509;
+import tls.ocsp;
+import tls.crl;
+import tls.ticket;
+import tls.handshake;
 import tls.hpke;
 import tls.ech;
 import tls.post_quantum;
@@ -157,8 +163,12 @@ import security.cross_origin_isolation;
 
 import auth.digest;
 import auth.pkce;
+import auth.device_grant;
+import auth.introspection;
 import auth.dpop;
 import auth.jwt;
+import auth.jwe;
+import auth.jwk;
 import auth.jwks;
 import auth.acme;
 
@@ -169,6 +179,10 @@ import server.pool;
 import server.edge_filter;
 import server.cache;
 import server.pipeline;
+import server.h1_codec;
+import server.cork;
+import server.stream_consumer;
+import server.sni;
 import server.server;
 import server.reactor;
 import server.h2_multiplexer;
@@ -177,6 +191,8 @@ import server.profiler;
 
 // ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
 
+import realtime.ws_deflate;
+import realtime.ws_handshake;
 import realtime.websocket;
 import realtime.topic_tree;
 import realtime.sse;
@@ -187,6 +203,8 @@ import realtime.webtransport;
 import grpc.constants;
 import grpc.framing;
 import grpc.status;
+import grpc.connect;
+import grpc.health;
 import grpc.client;
 import grpc.server;
 

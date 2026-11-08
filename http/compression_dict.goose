@@ -12,7 +12,10 @@ namespace wing;
 
 import std;
 import core from "..";
+import rfc.http;
 import http.headers;
+import client.request;
+import client.response;
 
 // ---- Normative Constants & Wire Magics (RFC 9842) ------------------------
 
@@ -182,7 +185,8 @@ fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
 // Encodes a DCZ (Dictionary-Compressed Zstandard) frame:
 // [0xFF, 'D', 'C', 'Z'] || [32-byte Dictionary SHA-256] || [Compressed Zstandard Payload]
 fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    guard out.len + 36 + compressed_payload.len <= out.cap else { return false; }
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, 36), compressed_payload.len);
+    guard needed <= out.cap else { return false; }
     out.push(rfc::DCZ_MAGIC_BYTE0);
     out.push(rfc::DCZ_MAGIC_BYTE1);
     out.push(rfc::DCZ_MAGIC_BYTE2);
@@ -209,7 +213,8 @@ fn encode_dcz_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload:
 // Encodes a DCB (Dictionary-Compressed Brotli) frame:
 // [0xFF, 'D', 'C', 'B'] || [32-byte Dictionary SHA-256] || [Compressed Brotli Payload]
 fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    guard out.len + 36 + compressed_payload.len <= out.cap else { return false; }
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, 36), compressed_payload.len);
+    guard needed <= out.cap else { return false; }
     out.push(rfc::DCB_MAGIC_BYTE0);
     out.push(rfc::DCB_MAGIC_BYTE1);
     out.push(rfc::DCB_MAGIC_BYTE2);
@@ -492,4 +497,124 @@ fn encode_dcb_response<B>(
     var compressed_brotli: u8[..16384] = [];
     guard core::brotli_compress(raw_content, compressed_brotli, 0) else { return false; }
     return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
+}
+
+// ---- RFC 9842 Server-Side Dictionary Negotiation -------------------------
+
+inline fn is_valid_sf_string_value(s: const u8[:]) -> bool {
+    for b in s {
+        if b < 0x20 || b >= 0x7F || b == '"' || b == '\\' {
+            return false;
+        }
+    }
+    return true;
+}
+
+// RFC 9842 Section 2.1: Use-As-Dictionary - Attaches `Use-As-Dictionary` response header advertising
+// the current response payload as a shared compression dictionary for future matching requests.
+fn set_use_as_dictionary_response(
+    res:           Response&,
+    match_pattern: const u8[:],
+    id_str:        const u8[:] = "",
+    ttl_sec:       u32         = 86400,
+) {
+    guard match_pattern.len > 0 && match_pattern.len <= 128 && id_str.len <= 64 else { return; }
+    guard is_valid_sf_string_value(match_pattern) && is_valid_sf_string_value(id_str) else { return; }
+    var hdr_val: u8[..512] = [];
+    format_use_as_dictionary_header(hdr_val, match_pattern, id_str, ttl_sec);
+    set_header(res, "Use-As-Dictionary", hdr_val[..]);
+}
+
+// RFC 9842 Section 6: Checks whether a comma-separated `Accept-Encoding` header list contains `target_token`.
+fn accept_encoding_has_token(ae: const u8[:], target_token: const u8[:]) -> bool {
+    var cursor: i64 = 0;
+    while cursor < ae.len {
+        var comma_idx = cursor;
+        while comma_idx < ae.len && ae[comma_idx] != ',' {
+            comma_idx = core::add_sat_i64(comma_idx, 1);
+        }
+        let item = ae[cursor..comma_idx].trim_lws();
+        var semi_idx: i64 = 0;
+        while semi_idx < item.len && item[semi_idx] != ';' {
+            semi_idx = core::add_sat_i64(semi_idx, 1);
+        }
+        let coding = item[..semi_idx].trim_lws();
+        if coding.len > 0 && core::eq_ascii_fold(coding, target_token) && !is_zero_qvalue(item[semi_idx..]) {
+            return true;
+        }
+        cursor = core::add_sat_i64(comma_idx, 1);
+    }
+    return false;
+}
+
+// RFC 9842 Section 2.2 & Section 6: Negotiates Compression Dictionary Transport on an incoming `Request`
+// by verifying `Available-Dictionary` (RFC 9651 `:base64:` byte sequence), `Dictionary-ID`, and `Accept-Encoding`
+// (`dcz` or `dcb`), returning the negotiated Content-Encoding (`"dcz"` or `"dcb"`) and `ok == true`.
+fn negotiate_compression_dictionary(
+    req:           const Request&,
+    expected_hash: const u8[32]&,
+    expected_id:   const u8[:] = "",
+) -> const u8[:], bool {
+    guard expected_id.len <= 126 else { return "", false; }
+    let avail_hdr = find_header(req.headers, "Available-Dictionary").trim_lws();
+    let last_idx = core::sub_sat_i64(avail_hdr.len, 1);
+    guard avail_hdr.len >= 3 && avail_hdr[0] == ':' && avail_hdr[last_idx] == ':' else {
+        return "", false;
+    }
+
+    var expected_b64: u8[..64] = [];
+    format_available_dictionary_header(expected_b64, expected_hash);
+    guard core::ct_eq_bytes(avail_hdr, expected_b64[..]) else {
+        return "", false;
+    }
+
+    let id_hdr = find_header(req.headers, "Dictionary-ID").trim_lws();
+    if expected_id.len > 0 {
+        var exp_id_wire: u8[..128] = [];
+        format_dictionary_id_header(exp_id_wire, expected_id);
+        guard id_hdr == exp_id_wire[..] else { return "", false; }
+    } else {
+        guard id_hdr.len == 0 else { return "", false; }
+    }
+
+    let ae = find_header(req.headers, "Accept-Encoding");
+    if accept_encoding_has_token(ae, rfc::ENCODING_DCZ) {
+        return rfc::ENCODING_DCZ, true;
+    }
+    if accept_encoding_has_token(ae, rfc::ENCODING_DCB) {
+        return rfc::ENCODING_DCB, true;
+    }
+    return "", false;
+}
+
+// RFC 9842 Section 4 & Section 5: Encodes a server `Response` body using `dcz` (`\xFFDCZ` + 32-byte SHA-256)
+// or `dcb` (`\xFFDCB` + 32-byte SHA-256) when negotiated by `negotiate_compression_dictionary`.
+fn apply_negotiated_dictionary_response(
+    req:         const Request&,
+    res:         Response&,
+    dict_hash:   const u8[32]&,
+    raw_content: const u8[:],
+    expected_id: const u8[:] = "",
+) -> bool {
+    let enc, ok = negotiate_compression_dictionary(req, dict_hash, expected_id);
+    guard ok && raw_content.len <= 16300 else { return false; }
+
+    var encoded_body: u8[..16420] = [];
+    if enc == rfc::ENCODING_DCZ {
+        guard encode_dcz_response(encoded_body, dict_hash, raw_content) else { return false; }
+        res.body.clear();
+        res.body.append(encoded_body[..]);
+        set_header(res, "Content-Encoding", rfc::ENCODING_DCZ);
+        set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
+        return true;
+    }
+    if enc == rfc::ENCODING_DCB {
+        guard encode_dcb_response(encoded_body, dict_hash, raw_content) else { return false; }
+        res.body.clear();
+        res.body.append(encoded_body[..]);
+        set_header(res, "Content-Encoding", rfc::ENCODING_DCB);
+        set_header(res, "Vary", "Accept-Encoding, Available-Dictionary");
+        return true;
+    }
+    return false;
 }

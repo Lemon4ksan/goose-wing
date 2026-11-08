@@ -11,12 +11,7 @@ import .record;
 import .key_schedule;
 import .hpke;
 
-// ---- ECH Constants & Identifiers -----------------------------------------
-
-const TLS_EXT_ECH_OUTER_EXTENSIONS: u16 = 0xFD00; // RFC 9849 §5.1
-const ECH_ACCEPT_CONFIRM_LEN:       u16 = 8;      // RFC 9849 §7.2
-const ECH_SH_CONFIRM_START:         i64 = 30;     // RFC 9849 §7.2: 4B hs hdr + 2B version + 24B random prefix
-const ECH_SH_MIN_HEADER_LEN:        i64 = 38;     // RFC 9849 §7.2: 4B hs hdr + 2B version + 32B random
+// ---- ECH Structures ------------------------------------------------------
 
 struct EchCipherSuite {
     kdf_id:  u16 = rfc::HPKE_KDF_HKDF_SHA256,
@@ -343,7 +338,7 @@ fn encode_ech_outer_extensions<B>(out: B&, ext_types: const u16[:]) -> bool {
     guard ext_types.len >= 1 && ext_types.len <= 127 else { return false; }
     for i in ext_types.len {
         let t = ext_types[i];
-        guard t != rfc::EXT_ENCRYPTED_CLIENT_HELLO && t != TLS_EXT_ECH_OUTER_EXTENSIONS else { return false; }
+        guard t != rfc::EXT_ENCRYPTED_CLIENT_HELLO && t != rfc::TLS_EXT_ECH_OUTER_EXTENSIONS else { return false; }
         for j in i {
             guard ext_types[j] != t else { return false; }
         }
@@ -352,7 +347,7 @@ fn encode_ech_outer_extensions<B>(out: B&, ext_types: const u16[:]) -> bool {
     let total_needed = core::add_sat_i64(5, vec_bytes);
     guard core::add_sat_i64(out.len, total_needed) <= out.cap else { return false; }
 
-    core::append_u16_be(out, TLS_EXT_ECH_OUTER_EXTENSIONS);
+    core::append_u16_be(out, rfc::TLS_EXT_ECH_OUTER_EXTENSIONS);
     core::append_u16_be(out, core::add_sat_i64(1, vec_bytes) as u16);
     out.push(vec_bytes as u8);
     for t in ext_types {
@@ -449,15 +444,15 @@ fn compute_ech_accept_confirmation(
 ) -> u8[8], bool {
     var confirm: u8[8] = [0; 8];
     guard ch_inner_bytes.len > 0 else { return confirm, false; }
-    guard sh_msg_with_hdr.len >= ECH_SH_MIN_HEADER_LEN else { return confirm, false; }
+    guard sh_msg_with_hdr.len >= rfc::ECH_SH_MIN_HEADER_LEN else { return confirm, false; }
 
     var sha_ctx = core::Sha256Ctx { .. };
     core::sha256_update(sha_ctx, ch_inner_bytes);
-    core::sha256_update(sha_ctx, sh_msg_with_hdr[0..ECH_SH_CONFIRM_START]);
+    core::sha256_update(sha_ctx, sh_msg_with_hdr[0..rfc::ECH_SH_CONFIRM_START]);
     let zero8: u8[8] = [0; 8];
     core::sha256_update(sha_ctx, zero8[..]);
-    if sh_msg_with_hdr.len > ECH_SH_MIN_HEADER_LEN {
-        core::sha256_update(sha_ctx, sh_msg_with_hdr[ECH_SH_MIN_HEADER_LEN..]);
+    if sh_msg_with_hdr.len > rfc::ECH_SH_MIN_HEADER_LEN {
+        core::sha256_update(sha_ctx, sh_msg_with_hdr[rfc::ECH_SH_MIN_HEADER_LEN..]);
     }
     let transcript_hash = core::sha256_final(sha_ctx);
 
@@ -469,7 +464,7 @@ fn compute_ech_accept_confirmation(
         prk[..],
         label,
         transcript_hash[..],
-        ECH_ACCEPT_CONFIRM_LEN,
+        rfc::ECH_ACCEPT_CONFIRM_LEN,
         confirm[..],
     );
     core::secure_zeroize_32(prk);

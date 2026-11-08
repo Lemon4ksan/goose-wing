@@ -712,7 +712,7 @@ fn fuzz_masque_dns_proxy(data: const u8[:], sig: u64) -> u64 {
     if wing::parse_dns_response(data, dns_res) {
         s = fuzz_mix_state(s, 0xB090 ^ (dns_res.a_records.len as u64) ^ (dns_res.https_records.len as u64));
     }
-    let _ = wing::validate_idna_domain_bounds(data);
+    let _ = core::validate_idna_domain_bounds(data);
 
     let _, consumed_p, ok_p = wing::parse_proxy_header(data);
     if ok_p {

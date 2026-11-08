@@ -1510,12 +1510,12 @@ fn test_query_param_limit_cve_2026_39825(t: lit::T&) {
 
 fn test_punycode_validation_cve_2026_39821_and_97044(t: lit::T&) {
     // CVE-2026-39821: Pure ASCII Punycode label (e.g. xn--test-) must be rejected
-    t.assert_false(wing::validate_punycode_label("xn--test-"), "Pure ASCII xn--test- must be rejected");
-    t.assert_true(wing::validate_punycode_label("xn--fsqu00a"), "Valid Punycode label must pass");
+    t.assert_false(core::validate_punycode_label("xn--test-"), "Pure ASCII xn--test- must be rejected");
+    t.assert_true(core::validate_punycode_label("xn--fsqu00a"), "Valid Punycode label must pass");
 
     // CVE-2026-97044: IDNA domain bounds validation
-    t.assert_true(wing::validate_idna_domain_bounds("example.com"), "Standard domain passes");
-    t.assert_false(wing::validate_idna_domain_bounds("xn--test-.com"), "Domain with pure ASCII Punycode rejected");
+    t.assert_true(core::validate_idna_domain_bounds("example.com"), "Standard domain passes");
+    t.assert_false(core::validate_idna_domain_bounds("xn--test-.com"), "Domain with pure ASCII Punycode rejected");
 }
 
 fn test_x509_uri_zone_id_cve_2024_45341(t: lit::T&) {

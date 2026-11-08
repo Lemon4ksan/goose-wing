@@ -11,6 +11,7 @@ import std;
 import json;
 import core from "..";
 import .jwt;
+import .jwk;
 import .jwks;
 
 // ---- RFC 9449 Constants & Identifiers ------------------------------------

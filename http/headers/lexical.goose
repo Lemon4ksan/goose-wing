@@ -625,3 +625,20 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     }
     return 0, 0, false;
 }
+
+// Checks whether a semicolon-separated quality parameter string (`;q=0`, `;q=0.000`) sets q=0 (RFC 9110 §12.4.2).
+fn is_zero_qvalue(params: const u8[:]) -> bool {
+    var rem = params;
+    while rem.len > 0 {
+        let seg, rest, has_semi = core::split_once_byte(rem, ';');
+        let item = core::trim_lws(if has_semi { seg } else { rem });
+        rem = if has_semi { rest } else { "" };
+        if core::starts_with_fold(item, "q=") {
+            let qv = core::trim_lws(item[2..]);
+            if qv == "0" || qv == "0." || qv == "0.0" || qv == "0.00" || qv == "0.000" {
+                return true;
+            }
+        }
+    }
+    return false;
+}

@@ -7,6 +7,8 @@ namespace core;
 import std;
 
 import core.url.types;
+import core.url.ip;
+import core.url.idna;
 import core.url.path;
 import core.url.origin;
 import core.url.parser;

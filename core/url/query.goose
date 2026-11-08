@@ -466,3 +466,132 @@ fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
     }
     return false;
 }
+
+// ---- Form URL-Encoding (WHATWG / RFC 6749 / RFC 7009 / RFC 7662) ------------
+
+const UPPER_HEX_DIGITS: const u8[16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+];
+
+const FORM_HEX_NIBBLE_LUT: const u8[256] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255,
+    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+const FORM_HEX_HI_LUT: const u8[256] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 255, 255, 255, 255, 255, 255,
+    255, 160, 176, 192, 208, 224, 240, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 160, 176, 192, 208, 224, 240, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+inline fn is_form_urlencode_safe(b: u8) -> bool {
+    if b >= 'A' && b <= 'Z' { return true; }
+    if b >= 'a' && b <= 'z' { return true; }
+    if b >= '0' && b <= '9' { return true; }
+    return b == '-' || b == '.' || b == '_' || b == '*';
+}
+
+inline fn append_form_urlencoded(src: const u8[:], dst: u8[..1024]&) -> bool {
+    var temp: u8[..1024] = [];
+    let rem = sub_sat_i64(dst.cap, dst.len);
+    for b in src {
+        if b == ' ' || is_form_urlencode_safe(b) {
+            guard temp.len < rem else { return false; }
+            temp.push(if b == ' ' { '+' } else { b });
+        } else {
+            guard sub_sat_i64(rem, temp.len) >= 3 else { return false; }
+            temp.push('%');
+            temp.push(UPPER_HEX_DIGITS[((b >> 4) & 0x0F) as i64]);
+            temp.push(UPPER_HEX_DIGITS[(b & 0x0F) as i64]);
+        }
+    }
+    dst.append(temp[..]);
+    return true;
+}
+
+// Decodes an `application/x-www-form-urlencoded` slice into `out`.
+//
+// Example:
+//   src = "a%3Ab+c"
+//   returns: ok = true, out = "a:b c"
+inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
+    out.clear();
+    var temp: u8[..256] = [];
+    var i:    i64       = 0;
+    while i < src.len {
+        guard temp.len < temp.cap else { return false; }
+        let b = src[i];
+        if b == '+' {
+            temp.push(' ');
+            i = add_sat_i64(i, 1);
+        } else if b == '%' {
+            let i1 = add_sat_i64(i, 1);
+            let i2 = add_sat_i64(i, 2);
+            guard i2 < src.len else { return false; }
+            let hi = FORM_HEX_HI_LUT[src[i1]];
+            let lo = FORM_HEX_NIBBLE_LUT[src[i2]];
+            guard hi != 255 && lo <= 15 else { return false; }
+            let decoded = hi | lo;
+            guard decoded != 0 else { return false; }
+            temp.push(decoded);
+            i = add_sat_i64(i, 3);
+        } else {
+            guard b != 0 else { return false; }
+            temp.push(b);
+            i = add_sat_i64(i, 1);
+        }
+    }
+    out.append(temp[..]);
+    secure_zeroize_slice(temp[..]);
+    return true;
+}
+
+inline fn needs_query_component_escape(b: u8) -> bool {
+    if b <= 0x20 || b >= 0x7F { return true; }
+    return b == '&' || b == '=' || b == '#' || b == '+' || b == '%';
+}
+
+// Escapes special delimiters and control characters in a query parameter component (RFC 3986 §3.4).
+//
+// Example:
+//   raw = "a&b=c", out = []
+//   returns: true, out = "a%26b%3Dc"
+fn append_query_component(raw: const u8[:], out: u8[..2048]&) -> bool {
+    for b in raw {
+        if needs_query_component_escape(b) {
+            guard out.try_push('%') else { return false; }
+            guard out.try_push(UPPER_HEX_DIGITS[((b >> 4) & 0x0F) as i64]) else { return false; }
+            guard out.try_push(UPPER_HEX_DIGITS[(b & 0x0F) as i64]) else { return false; }
+        } else {
+            guard out.try_push(b) else { return false; }
+        }
+    }
+    return true;
+}

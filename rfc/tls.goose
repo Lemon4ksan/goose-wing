@@ -313,10 +313,14 @@ inline fn is_within_decompression_ratio(uncompressed_len: u32, compressed_len: u
     return (uncompressed_len >> 10) <= compressed_len;
 }
 
-const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D; // RFC 9849 Section 5
-const ECH_VERSION_RFC9849:        u16 = 0xFE0D; // RFC 9849 Section 4
-const ECH_CLIENT_OUTER:           u8  = 0;      // RFC 9849 Section 5
-const ECH_CLIENT_INNER:           u8  = 1;      // RFC 9849 Section 5
+const EXT_ENCRYPTED_CLIENT_HELLO:   u16 = 0xFE0D; // RFC 9849 Section 5
+const TLS_EXT_ECH_OUTER_EXTENSIONS: u16 = 0xFD00; // RFC 9849 Section 5.1
+const ECH_VERSION_RFC9849:          u16 = 0xFE0D; // RFC 9849 Section 4
+const ECH_CLIENT_OUTER:             u8  = 0;      // RFC 9849 Section 5
+const ECH_CLIENT_INNER:             u8  = 1;      // RFC 9849 Section 5
+const ECH_ACCEPT_CONFIRM_LEN:       u16 = 8;      // RFC 9849 Section 7.2
+const ECH_SH_CONFIRM_START:         i64 = 30;     // RFC 9849 Section 7.2: 4B hs hdr + 2B version + 24B random prefix
+const ECH_SH_MIN_HEADER_LEN:        i64 = 38;     // RFC 9849 Section 7.2: 4B hs hdr + 2B version + 32B random
 
 const HPKE_MODE_BASE:                    u8  = 0;       // RFC 9180 Section 5
 const HPKE_KEM_DHKEM_X25519_HKDF_SHA256: u16 = 0x0020;  // RFC 9180 Section 7.1
@@ -454,7 +458,7 @@ inline fn is_forbidden_cert_signature_algorithm(sig_alg_oid: const u8[:]) -> boo
         || sig_alg_oid == rfc::OID_SIG_SHA1_DSA[..];
 }
 
-// ---- OCSP Response Status (RFC 6960 Section 4.2.1) ------------------------
+// ---- OCSP Response Status & Certificate Transparency (RFC 6960, RFC 6962)
 
 const OCSP_STATUS_SUCCESSFUL:     u8 = 0;
 const OCSP_STATUS_MALFORMED_REQ:  u8 = 1;
@@ -462,6 +466,10 @@ const OCSP_STATUS_INTERNAL_ERROR: u8 = 2;
 const OCSP_STATUS_TRY_LATER:      u8 = 3;
 const OCSP_STATUS_SIG_REQUIRED:   u8 = 5;
 const OCSP_STATUS_UNAUTHORIZED:   u8 = 6;
+
+const SCT_VERSION_V1:        u8  = 0;  // RFC 6962 Section 3.2
+const SCT_V1_HEADER_MIN_LEN: i64 = 43; // RFC 6962 Section 3.2: version(1) + log_id(32) + timestamp(8) + ext_len(2)
+const SCT_LOG_ID_LEN:        i64 = 32; // RFC 6962 Section 3.2: SHA-256 log ID
 
 // ---- TLS GREASE (RFC 8701 Section 2) -------------------------------------
 

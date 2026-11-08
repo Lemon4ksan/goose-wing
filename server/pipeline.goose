@@ -650,28 +650,6 @@ fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict 
     return wire::StageVerdict.Continue;
 }
 
-fn is_zero_qvalue(params: const u8[:]) -> bool {
-    var pos: i64 = 0;
-    while pos < params.len {
-        let semi = core::index_of_byte(params[pos..], ';');
-        let seg = if semi >= 0 {
-            params[pos..pos + semi]
-        } else {
-            params[pos..]
-        };
-        let p = core::trim_lws(seg);
-        if p.len >= 3 && (p[0] == 'q' || p[0] == 'Q') && p[1] == '=' {
-            let qv = core::trim_lws(p[2..]);
-            if qv == "0" || qv == "0." || qv == "0.0" || qv == "0.00" || qv == "0.000" {
-                return true;
-            }
-        }
-        if semi < 0 { break; }
-        pos += semi + 1;
-    }
-    return false;
-}
-
 fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool {
     guard accept_enc.len > 0 && token.len > 0 else { return false; }
     if eq_ascii_fold(accept_enc, token) {

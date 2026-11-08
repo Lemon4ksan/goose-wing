@@ -310,7 +310,7 @@ fn test_tlsc04_eku_parsing_and_enforcement() {
     var cert_ok = wing::ParsedCert { .. };
     assert(wing::x509_parse_eku_ext(eku_srv_cli[..], cert_ok));
     assert(cert_ok.has_eku);
-    assert(cert_ok.eku_mask == (wing::EKU_SERVER_AUTH | wing::EKU_CLIENT_AUTH));
+    assert(cert_ok.eku_mask == (rfc::EKU_SERVER_AUTH | rfc::EKU_CLIENT_AUTH));
     assert(wing::validate_end_entity_constraints(cert_ok) == wing::TlsAlert.CloseNotify);
 
     // SEQUENCE { id-kp-OCSPSigning } -> leaf cert must fail end-entity TLS constraint check
@@ -320,7 +320,7 @@ fn test_tlsc04_eku_parsing_and_enforcement() {
     ];
     var cert_ocsp = wing::ParsedCert { .. };
     assert(wing::x509_parse_eku_ext(eku_ocsp_only[..], cert_ocsp));
-    assert(cert_ocsp.has_eku && cert_ocsp.eku_mask == wing::EKU_OCSP_SIGNING);
+    assert(cert_ocsp.has_eku && cert_ocsp.eku_mask == rfc::EKU_OCSP_SIGNING);
     assert(wing::validate_end_entity_constraints(cert_ocsp) == wing::TlsAlert.UnsupportedCertificate);
 
     // Empty EKU SEQUENCE MUST be rejected

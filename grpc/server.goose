@@ -9,6 +9,8 @@ import std;
 import grpc.constants;
 import grpc.framing;
 import grpc.status;
+import grpc.connect;
+import grpc.health;
 import http.headers;
 import client.request;
 import client.response;
@@ -46,15 +48,6 @@ fn is_grpc_web(ct: const u8[:]) -> bool {
 fn is_grpc_web_text(ct: const u8[:]) -> bool {
     let trimmed = trim_lws(ct);
     return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
-// Returns true if `req` is a Connect Protocol unary HTTP GET request (`connect=v1` in query).
-fn is_connect_get_request(req: const Request&) -> bool {
-    guard eq_ascii_fold(req.method[..], "GET") else { return false; }
-    let q_idx = core::index_of_byte(req.url[..], '?');
-    guard q_idx >= 0 else { return false; }
-    let query = req.url[core::add_sat_i64(q_idx, 1)..];
-    return core::find(query, "connect=v1") >= 0 || core::find(query, "connect=") >= 0;
 }
 
 // Inspects an incoming Request to determine if it is a gRPC or Connect GET call.
@@ -180,18 +173,6 @@ enum GrpcIdempotency {
     Default,
     Idempotent,
     NoSideEffects,
-}
-
-enum GrpcServingStatus {
-    Unknown,
-    Serving,
-    NotServing,
-    ServiceUnknown,
-}
-
-struct GrpcHealthServiceEntry {
-    service: u8[..64]          = [],
-    status:  GrpcServingStatus = GrpcServingStatus.Serving,
 }
 
 struct GrpcMethodEntry {
@@ -765,25 +746,14 @@ fn handle_builtin_grpc_health_check(
     guard decode_and_validate_single_lpm(d, req, ctx, res, req_payload) else {
         return true;
     }
-    let svc_slice, ok_svc = pb_read_bytes_field(req_payload[..], 1);
-    let target_svc = if ok_svc { svc_slice } else { "" };
+    let target_svc = decode_grpc_health_check_service(req_payload[..]);
     let serving_st, found = lookup_grpc_service_health(d, target_svc);
     if !found {
         build_grpc_trailers_only_response(GrpcStatusCode.NotFound, "unknown service", ctx, res);
         return true;
     }
-    var res_payload: u8[..16] = [];
-    if serving_st != GrpcServingStatus.Unknown {
-        let code_u64: u64 = match serving_st {
-            Unknown => 0,
-            Serving => 1,
-            NotServing => 2,
-            ServiceUnknown => 3,
-        };
-        let _ = pb_write_varint_field(1, code_u64, res_payload);
-    }
     var lpm_response: u8[>..] = [];
-    encode_grpc_lpm(res_payload[..], lpm_response, false);
+    encode_grpc_health_check_lpm(serving_st, lpm_response);
     build_grpc_wire_response(GrpcStatusCode.Ok, "", lpm_response[..], ctx, res);
     return true;
 }
@@ -810,31 +780,9 @@ fn build_connect_unary_get_response(
         return;
     }
 
-    out_res.status_code = match st.code {
-        InvalidArgument => 400,
-        Unauthenticated => 401,
-        PermissionDenied => 403,
-        NotFound => 404,
-        Unimplemented => 404,
-        AlreadyExists => 409,
-        Aborted => 409,
-        ResourceExhausted => 429,
-        Cancelled => 499,
-        DeadlineExceeded => 504,
-        Unavailable => 503,
-        _ => 500,
-    };
+    out_res.status_code = connect_error_http_status(st.code);
     let _ = append_header(out_res.headers, "content-type", CONNECT_MIME_JSON);
-    out_res.body.append("{\"code\":\"");
-    out_res.body.append(connect_status_name(st.code));
-    out_res.body.append("\"");
-    if st.message.len > 0 {
-        out_res.body.append(",\"message\":");
-        var msg_json: u8[..512] = [];
-        let _ = append_connect_json_quoted(st.message[..], msg_json);
-        out_res.body.append(msg_json[..]);
-    }
-    out_res.body.push('}');
+    encode_connect_unary_error_json(st, out_res.body);
 }
 
 // Dispatches a Connect Protocol unary HTTP GET request for idempotent (`NoSideEffects`) methods.
