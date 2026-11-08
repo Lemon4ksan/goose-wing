@@ -374,10 +374,6 @@ fn test_header_sorting_and_persistence_key(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: cookie_vectors ---
 // Test vectors for CanonicalCookieJar (RFC 6265, RFC 6265bis, CHIPS).
 
@@ -399,7 +395,7 @@ struct IngestionVector {
 }
 
 // ----------------------------------------------------------------------------
-// 1. Ingestion Matrix: Lexer, Omnomnom, Dates, PSL, IPv6 & OBC
+// 10. Ingestion Matrix: Lexer, Omnomnom, Dates, PSL, IPv6 & OBC
 // ----------------------------------------------------------------------------
 fn run_ingestion_matrix(t: lit::T&) {
     let now_us = 1700000000000000; // Epoch baseline
@@ -649,7 +645,7 @@ fn run_ingestion_matrix(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep
+// 11. Full 33-Byte ASCII Control Character (CTL) Rejection Sweep
 // ----------------------------------------------------------------------------
 fn run_exhaustive_ctl_sweep(t: lit::T&) {
     let now_us = 1700000000000000;
@@ -671,7 +667,7 @@ fn run_exhaustive_ctl_sweep(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules
+// 12. RFC 6265 Section 5.1.4 Path-Matching Engine & Default-Path Rules
 // ----------------------------------------------------------------------------
 struct PathMatchVector {
     id:           const u8[:],
@@ -721,7 +717,7 @@ fn run_path_matching_matrix(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. SameSite, Lax+POST 120s Window & Schemeful Same-Site (SS-01..SS-14)
+// 13. SameSite, Lax+POST 120s Window & Schemeful Same-Site (SS-01..SS-14)
 // ----------------------------------------------------------------------------
 struct SameSiteVector {
     id:               const u8[:],
@@ -779,7 +775,7 @@ fn run_samesite_and_redirect_matrix(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement
+// 14. CHIPS Partition Isolation & 10,240B Byte Quota Enforcement
 // ----------------------------------------------------------------------------
 fn run_chips_partition_quota_and_isolation(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -852,7 +848,7 @@ fn run_chips_partition_quota_and_isolation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity
+// 15. GC OBC (Domain-before-Host) & Global 30-Day Purge Immunity
 // ----------------------------------------------------------------------------
 fn run_gc_obc_domain_before_host_and_global_purge(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -918,7 +914,7 @@ fn run_gc_obc_domain_before_host_and_global_purge(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 7. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing
+// 16. RFC 6265 Section 5.4 Ordering, Server First-Win & SQLite V24 Coalescing
 // ----------------------------------------------------------------------------
 fn run_serialization_server_first_win_and_sqlite_v24(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -982,7 +978,7 @@ fn run_serialization_server_first_win_and_sqlite_v24(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 8. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew
+// 17. Matrix 11: LastAccessDate Throttling, Monotonicity & Clock Skew
 // ----------------------------------------------------------------------------
 fn run_matrix_11_clock_skew_and_throttling(t: lit::T&) {
     t.run("CLK-01 & CLK-02: 60s LastAccessDate Throttling (kDefaultAccessUpdateThresholdSeconds)") { sub =>
@@ -1048,7 +1044,7 @@ fn run_matrix_11_clock_skew_and_throttling(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 9. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context
+// 18. Matrix 13: SiteForCookies Ancestor Frame Hierarchy & Context
 // ----------------------------------------------------------------------------
 fn run_matrix_13_site_for_cookies_and_ancestors(t: lit::T&) {
     t.run("CTX-01 & CTX-02: ABA Framing vs Homogeneous Ancestor Hierarchy") { sub =>
@@ -1067,7 +1063,7 @@ fn run_matrix_13_site_for_cookies_and_ancestors(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 10. Matrix 14: Selective Deletion & Session Cleanup (DEL-01..DEL-05)
+// 19. Matrix 14: Selective Deletion & Session Cleanup (DEL-01..DEL-05)
 // ----------------------------------------------------------------------------
 fn run_matrix_14_selective_deletion(t: lit::T&) {
     t.run("DEL-01: TimeRange Selective Deletion [begin, end]") { sub =>
@@ -1104,7 +1100,7 @@ fn run_matrix_14_selective_deletion(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 11. Matrices 15 & 16: Cryptographic Integrity & Protocol Attacks
+// 20. Matrices 15 & 16: Cryptographic Integrity & Protocol Attacks
 // ----------------------------------------------------------------------------
 fn run_matrix_15_and_16_crypto_and_attacks(t: lit::T&) {
     t.run("CRY-02: Rejection of Tampered Record with Both Plaintext and Encrypted Values") { sub =>
@@ -1143,7 +1139,7 @@ fn run_matrix_15_and_16_crypto_and_attacks(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 12. GC-04: strict_secure_cookies Policy Priority Eviction
+// 21. GC-04: strict_secure_cookies Policy Priority Eviction
 // ----------------------------------------------------------------------------
 fn run_gc_strict_secure_policy(t: lit::T&) {
     let now_us = 1700000000000000;
@@ -1172,7 +1168,7 @@ fn run_gc_strict_secure_policy(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 13. Database Load Sanitization (CTL-08) & Nameless Cookie Import
+// 22. Database Load Sanitization (CTL-08) & Nameless Cookie Import
 // ----------------------------------------------------------------------------
 fn run_ctl_sanitization_and_nameless_import(t: lit::T&) {
     let now_us = 1700000000000000;
@@ -1206,7 +1202,7 @@ fn run_ctl_sanitization_and_nameless_import(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 14. Property-Based PRNG Fuzzing (600 Steps Invariant Check)
+// 23. Property-Based PRNG Fuzzing (600 Steps Invariant Check)
 // ----------------------------------------------------------------------------
 fn run_property_based_fuzzer(t: lit::T&) {
     var rng = lit::new_fuzz_rng(0xCAFEBABE1337BEEF);
@@ -1245,14 +1241,13 @@ fn run_property_based_fuzzer(t: lit::T&) {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: cookie_psl ---
 // Full verification suite for Mozilla Public Suffix List (PSL) Engine
 // and RFC 6265 Cookie Scoping (Normal, Wildcard, Exception, Private, and eTLD+1).
 
+// ----------------------------------------------------------------------------
+// 24. PSL Rule Types and Precedence (Normal, Wildcard, Exception, Private)
+// ----------------------------------------------------------------------------
 fn test_psl_rule_types_and_precedence(t: lit::T&) {
     let db = wing::new_psl_database();
 
@@ -1357,6 +1352,9 @@ fn test_psl_rule_types_and_precedence(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 25. PSL Dynamic Update and RFC 6265 Scoping
+// ----------------------------------------------------------------------------
 fn test_psl_dynamic_update_and_scoping(t: lit::T&) {
     t.run("Case 1: Dynamic update_with_list parsing") { sub =>
         var db = wing::PslDatabase { rules: [] };
@@ -1426,7 +1424,7 @@ fn test_psl_dynamic_update_and_scoping(t: lit::T&) {
 // Security tests for cookie prefixes, SSRF filter bypasses, and port validation.
 
 // ----------------------------------------------------------------------------
-// 1. RFC 6265bis Section 5.6: __Host- & __Secure- Cookie Prefix Enforcement
+// 26. RFC 6265bis Section 5.6: __Host- & __Secure- Cookie Prefix Enforcement
 // ----------------------------------------------------------------------------
 fn test_host_and_secure_cookie_prefix_smuggling(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -1546,7 +1544,7 @@ fn test_host_and_secure_cookie_prefix_smuggling(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. SSRF Filter Bypasses & IPv6 Zone ID / Scope ID Proxy Smuggling
+// 27. SSRF Filter Bypasses & IPv6 Zone ID / Scope ID Proxy Smuggling
 // ----------------------------------------------------------------------------
 fn test_ssrf_filter_bypasses(t: lit::T&) {
     t.run("SSRF-01: NAT64 prefix to 0.0.0.0 (64:ff9b:: and 64:ff9b::0.0.0.0) must be blocked") { sub =>
@@ -1641,7 +1639,7 @@ fn test_ssrf_filter_bypasses(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Dangerous Service Ports & Port 0 SSRF Bypass
+// 28. Dangerous Service Ports & Port 0 SSRF Bypass
 // ----------------------------------------------------------------------------
 fn test_dangerous_service_ports(t: lit::T&) {
     t.run("PORT-01: Dangerous service ports (Port 0, FTP 21, Telnet 23, MySQL 3306, Postgres 5432, MongoDB 27017)") { sub =>
@@ -1690,7 +1688,7 @@ fn test_dangerous_service_ports(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Public Suffix Boundary Attacks & FQDN Edge Cases
+// 29. Public Suffix Boundary Attacks & FQDN Edge Cases
 // ----------------------------------------------------------------------------
 fn test_public_suffix_boundary_attacks(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -1766,7 +1764,7 @@ fn test_public_suffix_boundary_attacks(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. Token Bucket & GCRA Burst / Concurrency Limits
+// 30. Token Bucket & GCRA Burst / Concurrency Limits
 // ----------------------------------------------------------------------------
 fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     t.run("RATE-01: Burst capacity boundary (1/s emission, burst=5 allows 6 requests)") { sub =>
@@ -1872,7 +1870,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. Singleflight Thundering Herd & Cache Stampede Defense
+// 31. Singleflight Thundering Herd & Cache Stampede Defense
 // ----------------------------------------------------------------------------
 fn test_singleflight_thundering_herd(t: lit::T&) {
     t.run("FLIGHT-01: Duplicate call suppression (10 concurrent requests, exactly 1 leader)") { sub =>
@@ -1996,15 +1994,14 @@ fn test_singleflight_thundering_herd(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: cookie_security ---
 // Tests for cookie security prefix enforcement and Max-Age bounds.
 
 // ----------------------------------------------------------------------------
 // Round 1: RFC 6265bis Section 5.6 Insecure Cookie Protection
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 32. RFC 6265bis Section 5.6 Insecure Cookie Protection
 // ----------------------------------------------------------------------------
 fn test_rfc6265bis_sec56_shadowing_protection(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -2038,6 +2035,9 @@ fn test_rfc6265bis_sec56_shadowing_protection(t: lit::T&) {
 
 // ----------------------------------------------------------------------------
 // Round 2: Case-Insensitive Prefix Enforcement
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 33. Case-Insensitive Prefix Enforcement
 // ----------------------------------------------------------------------------
 fn test_case_insensitive_prefix_enforcement(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -2089,6 +2089,9 @@ fn test_case_insensitive_prefix_enforcement(t: lit::T&) {
 
 // ----------------------------------------------------------------------------
 // Round 3: Max-Age Capping and Overflow Protection
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 34. Max-Age Capping and Overflow Protection
 // ----------------------------------------------------------------------------
 fn test_max_age_overflow_and_capping(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -2143,6 +2146,9 @@ fn test_max_age_overflow_and_capping(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Round 4: RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 35. RFC 6265 Section 5.3 Step 11.2 HttpOnly Overwrite Protection
+// ----------------------------------------------------------------------------
 fn test_httponly_script_overwrite_protection(t: lit::T&) {
     var clock = lit::new_mock_clock();
 
@@ -2192,6 +2198,9 @@ fn test_httponly_script_overwrite_protection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Round 5: RFC 6265bis §5.5.7 SameSite=None and §5.1.3 Domain IP Invariants
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 36. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants
+// ----------------------------------------------------------------------------
 fn test_rfc6265bis_samesite_and_domain_ip_rules(t: lit::T&) {
     var clock = lit::new_mock_clock();
 
@@ -2239,6 +2248,9 @@ fn test_rfc6265bis_samesite_and_domain_ip_rules(t: lit::T&) {
 
 // ----------------------------------------------------------------------------
 // Round 6: RFC 6265 §5.3 Step 11.3 Creation-Time Preservation & §5.1.1 Date Lexer
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 37. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer
 // ----------------------------------------------------------------------------
 fn test_rfc6265_creation_time_and_date_lexing(t: lit::T&) {
     var clock = lit::new_mock_clock();
@@ -2378,6 +2390,9 @@ fn test_rfc6265_creation_time_and_date_lexing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Round 7: Cookie Hardening & Cross-Origin Single-Label Protection
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 38. Cookie Hardening & Cross-Origin Single-Label Protection
+// ----------------------------------------------------------------------------
 fn test_cookie_hardening_invariants(t: lit::T&) {
     let now_us: i64 = 1700000000000000;
 
@@ -2444,8 +2459,165 @@ fn test_cookie_hardening_invariants(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// Consolidated Suite Entry Point
+// 39. Cookie Span Iteration
 // ----------------------------------------------------------------------------
+fn test_cookie_span_iteration(t: lit::T&) {
+    t.run("Single Cookie Pair") { sub =>
+        let raw: const u8[:] = "theme=dark";
+        var cursor: i64 = 0;
+
+        let span, ok = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok, "first cookie extracted");
+        sub.assert_eq(wing::cookie_name(raw, span), "theme", "cookie name is 'theme'");
+        sub.assert_eq(wing::cookie_value(raw, span), "dark", "cookie value is 'dark'");
+
+        let span_end, ok_end = wing::next_cookie_span(raw, cursor);
+        sub.assert_false(ok_end, "terminal contract: returns false at EOF");
+    };
+
+    t.run("Multi-Cookie Header with OWS") { sub =>
+        let raw: const u8[:] = "sid=xyz123;   pref=auto; lang=ru-RU  ";
+        var cursor: i64 = 0;
+
+        // 1. sid
+        let s1, ok1 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok1);
+        sub.assert_eq(wing::cookie_name(raw, s1), "sid");
+        sub.assert_eq(wing::cookie_value(raw, s1), "xyz123");
+
+        // 2. pref
+        let s2, ok2 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok2);
+        sub.assert_eq(wing::cookie_name(raw, s2), "pref");
+        sub.assert_eq(wing::cookie_value(raw, s2), "auto");
+
+        // 3. lang
+        let s3, ok3 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok3);
+        sub.assert_eq(wing::cookie_name(raw, s3), "lang");
+        sub.assert_eq(wing::cookie_value(raw, s3), "ru-RU");
+
+        // End
+        let s4, ok4 = wing::next_cookie_span(raw, cursor);
+        sub.assert_false(ok4);
+    };
+
+    t.run("Empty Value and Valueless Flag Cookies") { sub =>
+        let raw: const u8[:] = "flag; empty=; full=1";
+        var cursor: i64 = 0;
+
+        // 1. flag (no '=')
+        let s1, ok1 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok1);
+        sub.assert_eq(wing::cookie_name(raw, s1), "flag");
+        sub.assert_eq(wing::cookie_value(raw, s1), "");
+
+        // 2. empty= (empty value)
+        let s2, ok2 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok2);
+        sub.assert_eq(wing::cookie_name(raw, s2), "empty");
+        sub.assert_eq(wing::cookie_value(raw, s2), "");
+
+        // 3. full=1
+        let s3, ok3 = wing::next_cookie_span(raw, cursor);
+        sub.assert_true(ok3);
+        sub.assert_eq(wing::cookie_name(raw, s3), "full");
+        sub.assert_eq(wing::cookie_value(raw, s3), "1");
+
+        let _, ok4 = wing::next_cookie_span(raw, cursor);
+        sub.assert_false(ok4);
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 40. Fast-Path Cookie Lookup
+// ----------------------------------------------------------------------------
+fn test_cookie_find_value(t: lit::T&) {
+    t.run("Fast-Path find_cookie_value Lookup") { sub =>
+        let raw: const u8[:] = "session=token999; theme=nord; consent=yes";
+
+        let val_theme, ok_theme = wing::find_cookie_value(raw, "theme");
+        sub.assert_true(ok_theme, "find theme succeeds");
+        sub.assert_eq(val_theme, "nord", "theme is nord");
+
+        let val_sess, ok_sess = wing::find_cookie_value(raw, "session");
+        sub.assert_true(ok_sess, "find session succeeds");
+        sub.assert_eq(val_sess, "token999", "session is token999");
+
+        let val_consent, ok_consent = wing::find_cookie_value(raw, "consent");
+        sub.assert_true(ok_consent, "find consent succeeds");
+        sub.assert_eq(val_consent, "yes", "consent is yes");
+
+        let val_missing, ok_missing = wing::find_cookie_value(raw, "nonexistent");
+        sub.assert_false(ok_missing, "missing cookie returns false");
+        sub.assert_eq(val_missing, "", "missing cookie value is empty");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 41. RFC 6265bis §5.1.4: Cookie URL Fallback Path Parsing with Fragment and Default Slash
+// ----------------------------------------------------------------------------
+fn test_cookie_url_fallback_path_fragment(t: lit::T&) {
+    t.run("URL with fragment in fallback path MUST exclude fragment from host and default path to '/'") { sub =>
+        // In fallback path (e.g. invalid port or scheme-less format like "http://example.com#section"):
+        let u = wing::parse_canonical_cookie_url("http://example.com#section");
+        sub.assert_true(u.host[..] == "example.com", "Host must be 'example.com', not contain '#section'");
+        sub.assert_true(u.path[..] == "/", "Default path must be '/' per RFC 6265bis §5.1.4");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 42. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored
+// ----------------------------------------------------------------------------
+fn test_cookie_relative_path_ignored(t: lit::T&) {
+    t.run("Cookie Path attribute without leading slash MUST be ignored (RFC 6265bis §5.4)") { sub =>
+        // RFC 6265bis Section 5.4:
+        // "If the attribute-value is empty or if the first character of the
+        // attribute-value is not %x2F ('/'):
+        //   Let cookie-path be the default-path.
+        // Otherwise:
+        //   Let cookie-path be the attribute-value."
+        var cookie = wing::CanonicalCookie { .. };
+        cookie.path.clear();
+        cookie.path.append("/default/api");
+
+        // Relative path "relative/path" lacks leading '/' -> must be ignored!
+        wing::apply_parsed_path_attribute(cookie, "relative/path");
+        sub.assert_bytes_eq(cookie.path[..], "/default/api", "Relative Path 'relative/path' must be ignored, retaining default path");
+
+        // Relative path "admin" lacks leading '/' -> must be ignored!
+        wing::apply_parsed_path_attribute(cookie, "admin");
+        sub.assert_bytes_eq(cookie.path[..], "/default/api", "Relative Path 'admin' must be ignored, retaining default path");
+
+        // Absolute path "/valid/path" begins with '/' -> must be applied!
+        wing::apply_parsed_path_attribute(cookie, "/valid/path");
+        sub.assert_bytes_eq(cookie.path[..], "/valid/path", "Absolute Path '/valid/path' must be applied");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 43. Cookie Ingestion Quota Enforcement in Netscape Import (Go #75672, CVE-2025-58186)
+// ----------------------------------------------------------------------------
+fn test_cookie_import_cap_defense(t: lit::T&) {
+    t.run("import_netscape caps cookies at K_MAX_COOKIES to prevent memory/CPU exhaustion") { sub =>
+        var jar = wing::CanonicalCookieJar { .. };
+
+        // Generate 3500 valid Netscape cookie lines:
+        // domain \t flag \t path \t secure \t expiration \t name \t value \n
+        var content: u8[>..] = [];
+        for i in 3500 {
+            content.append("example.com\tTRUE\t/\tFALSE\t2000000000\tc");
+            var num_buf: u8[..16] = [];
+            core::format_i64_dec(i, num_buf);
+            content.append(num_buf[..]);
+            content.append("\tv\n");
+        }
+
+        let imported = wing::import_netscape(jar, content[..], 1000000);
+        sub.assert_true(imported <= 3300, "Imported cookies must not exceed K_MAX_COOKIES ceiling (3300)");
+        sub.assert_true(imported >= 3000, "Should import up to capacity");
+    };
+}
 
 fn main() {
     var runner = lit::new_runner("Cookie Engine, PSL, and Security Verification Suite", lit::Verbosity.Verbose);
@@ -2488,6 +2660,11 @@ fn main() {
     lit::run_case(runner, "36. RFC 6265bis SameSite=None and §5.1.3 Domain IP Invariants", test_rfc6265bis_samesite_and_domain_ip_rules);
     lit::run_case(runner, "37. RFC 6265 §5.3 Step 11.3 Creation-Time & §5.1.1 Date Lexer", test_rfc6265_creation_time_and_date_lexing);
     lit::run_case(runner, "38. Cookie Hardening & Cross-Origin Single-Label Protection", test_cookie_hardening_invariants);
+    lit::run_case(runner, "39. Cookie Span Iteration", test_cookie_span_iteration);
+    lit::run_case(runner, "40. Fast-Path Cookie Lookup", test_cookie_find_value);
+    lit::run_case(runner, "41. RFC 6265bis §5.1.4: Cookie URL Fallback Path and Fragment", test_cookie_url_fallback_path_fragment);
+    lit::run_case(runner, "42. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored", test_cookie_relative_path_ignored);
+    lit::run_case(runner, "43. Cookie Ingestion Quota Enforcement in Netscape Import", test_cookie_import_cap_defense);
 
     let ok = lit::finish(runner);
     assert(ok);

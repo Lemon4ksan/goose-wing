@@ -21,6 +21,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // 5. Extreme & Boundary Vectors (Empty, 1-byte, 35KB Sliding Window Wrap)
 // 6. Corrupt Bitstream & Tampering Defenses (Checksum/Size/Truncation detection)
 
+// ----------------------------------------------------------------------------
+// 1. IEEE 802.3 CRC-32 & RFC 1950 Adler-32 Checksums
+// ----------------------------------------------------------------------------
 fn test_checksums(t: lit::T&) {
     t.run("CRC-32 Known Test Vectors") { sub =>
         let empty_buf: u8[0] = [];
@@ -77,6 +80,9 @@ fn test_checksums(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. RFC 1951 Deflate & Inflate (Stored and LZ77 + Fixed)
+// ----------------------------------------------------------------------------
 fn test_deflate_stored_and_fixed(t: lit::T&) {
     t.run("Deflate Stored Blocks (Level 0)") { sub =>
         let msg = "Stored block mode test: no compression, verbatim payload framing.";
@@ -126,6 +132,9 @@ fn test_deflate_stored_and_fixed(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. RFC 1952 Gzip Container & Verification
+// ----------------------------------------------------------------------------
 fn test_gzip_container(t: lit::T&) {
     t.run("Gzip Compression and Decompression Round-Trip") { sub =>
         let payload = "{\"status\":200,\"message\":\"Goose zero-heap compression is lightning fast!\",\"data\":[1,2,3,4,5]}";
@@ -192,6 +201,9 @@ fn test_gzip_container(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. RFC 1950 Zlib Container & Verification
+// ----------------------------------------------------------------------------
 fn test_zlib_container(t: lit::T&) {
     t.run("Zlib Compression and Decompression Round-Trip") { sub =>
         let payload = "Zlib RFC 1950 container format verification with Big-Endian Adler-32.";
@@ -242,6 +254,9 @@ fn test_zlib_container(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 5. Boundary & Sliding Window Wrap Vectors
+// ----------------------------------------------------------------------------
 fn test_boundary_and_large_buffers(t: lit::T&) {
     t.run("Single Byte Round-Trip") { sub =>
         let single: u8[1] = [0x5A];
@@ -303,6 +318,9 @@ fn test_boundary_and_large_buffers(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. Dynamic Huffman Coding & BTYPE Invariants
+// ----------------------------------------------------------------------------
 fn test_dynamic_huffman_and_btypes(t: lit::T&) {
     t.run("BTYPE Bit Header Verification") { sub =>
         let payload = "Deflate block header specification requires bit 0 to be BFINAL, and bits 1-2 to be BTYPE. Level 0 produces stored blocks (BTYPE 00). Level 1-5 produces fixed Huffman (BTYPE 01). Level 6+ produces dynamic Huffman (BTYPE 10) with custom canonical prefix code trees. Deflate block header specification requires bit 0 to be BFINAL, and bits 1-2 to be BTYPE.";
@@ -350,6 +368,9 @@ fn test_dynamic_huffman_and_btypes(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 7. Streaming State Machine & Flush Modes (ZStream)
+// ----------------------------------------------------------------------------
 fn test_streaming_and_flush_modes(t: lit::T&) {
     t.run("ZStream SyncFlush WebSockets Framing") { sub =>
         var stream = core::new_zstream_compressor(core::ContainerFormat.Raw, 6);
@@ -410,6 +431,9 @@ fn test_streaming_and_flush_modes(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. Preset Dictionaries & RFC 1950 FDICT Handling
+// ----------------------------------------------------------------------------
 fn test_preset_dictionary_and_fdict(t: lit::T&) {
     t.run("RFC 1950 FDICT Zlib Compression & Verification") { sub =>
         let dict = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -467,6 +491,9 @@ fn test_preset_dictionary_and_fdict(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. Universal Container Auto-Detection
+// ----------------------------------------------------------------------------
 fn test_universal_autodetect(t: lit::T&) {
     t.run("Auto-Detect Gzip, Zlib, and Raw Deflate") { sub =>
         let original = "Universal automatic decompressor test for Wing stdlib candidate.";
@@ -506,6 +533,9 @@ fn test_universal_autodetect(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. Lazy Matching & Stored Block Cost Selection
+// ----------------------------------------------------------------------------
 fn test_lazy_matching_and_stored_cost_selection(t: lit::T&) {
     t.run("Lazy Matching Ratio Advantage") { sub =>
         var src: u8[>..] = [];
@@ -551,6 +581,9 @@ fn test_lazy_matching_and_stored_cost_selection(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. Concatenated Gzip Members & FHCRC
+// ----------------------------------------------------------------------------
 fn test_concatenated_gzip_and_fhcrc(t: lit::T&) {
     t.run("Concatenated Gzip Members (RFC 1952 multi-member)") { sub =>
         let part1 = "First concatenated gzip archive member. ";
@@ -602,6 +635,9 @@ fn test_concatenated_gzip_and_fhcrc(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Decompression Bomb Quota Guards
+// ----------------------------------------------------------------------------
 fn test_zipbomb_quota_guards(t: lit::T&) {
     t.run("Deflate Quota Overflow Cutoff") { sub =>
         var bomb: u8[>..] = [];
@@ -652,6 +688,9 @@ fn test_zipbomb_quota_guards(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Resumable Arbitrary-Chunk Streaming
+// ----------------------------------------------------------------------------
 fn test_resumable_streaming_chunk_by_chunk(t: lit::T&) {
     t.run("ZStream 1-Byte Slices Feeding") { sub =>
         let message = "Resumable streaming decompressor feeding arbitrary tiny byte slices across network boundaries.";
@@ -728,6 +767,9 @@ const ZSTD_REF_FOX_PANGRAM: u8[63] = [
     0x9A, 0xAA, 0x0C,
 ];
 
+// ----------------------------------------------------------------------------
+// 14. RFC 8878 Zstandard Frame Decompression & Test Vectors
+// ----------------------------------------------------------------------------
 fn test_zstandard_rfc8878(t: lit::T&) {
     t.run("Reference Zstd Empty Frame") { sub =>
         var decomp: u8[>..] = [];
@@ -1075,6 +1117,9 @@ fn test_zstandard_rfc8878(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. RFC 1951 Stored Blocks & Huffman Header Bounds
+// ----------------------------------------------------------------------------
 fn test_rfc1951_bounds_and_error_handling(t: lit::T&) {
     t.run("Stored Block LEN/NLEN Mismatch Rejection") { sub =>
         // BFINAL=1, BTYPE=00 (stored), 5 zero padding bits -> byte 0 = 0x01
@@ -1488,6 +1533,9 @@ const VEC_REPEAT_COMP: const u8[20] = [
 
 // ---- Test Cases -------------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+// 16. Empty Stream and Google Brotli Vectors
+// ----------------------------------------------------------------------------
 fn test_brotli_empty_and_uncompressed(t: lit::T&) {
     t.run("Empty stream and Google Brotli uncompressed vectors") { sub =>
         // 1. Empty stream: Google Brotli vector [59]
@@ -1515,6 +1563,9 @@ fn test_brotli_empty_and_uncompressed(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. Level 0 Uncompressed Round-Trip
+// ----------------------------------------------------------------------------
 fn test_brotli_level0_roundtrip(t: lit::T&) {
     t.run("Level 0 uncompressed encoder and decoder round-trip") { sub =>
         // 1. Short text roundtrip
@@ -1560,6 +1611,9 @@ fn test_brotli_level0_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 18. Compressed Meta-Block Decoding
+// ----------------------------------------------------------------------------
 fn test_brotli_compressed_meta_blocks(t: lit::T&) {
     t.run("Google Brotli LZ77 compressed meta-block decoding") { sub =>
         // VEC_REPEAT_COMP compresses 100 'A's into 20 bytes
@@ -1580,6 +1634,9 @@ fn test_brotli_compressed_meta_blocks(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. Static Built-in Dictionary and Word Transforms
+// ----------------------------------------------------------------------------
 fn test_brotli_static_dictionary_transforms(t: lit::T&) {
     t.run("Static built-in dictionary and word transformations") { sub =>
         // 1. Verify static dictionary is present and non-empty
@@ -1626,6 +1683,9 @@ fn test_brotli_static_dictionary_transforms(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. Decompression Bomb Quota Protection & Errors
+// ----------------------------------------------------------------------------
 fn test_brotli_quota_and_error_handling(t: lit::T&) {
     t.run("Decompression bomb protection and corrupted streams") { sub =>
         // 1. Quota limit exceeded guard
@@ -1675,6 +1735,9 @@ fn test_brotli_quota_and_error_handling(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 21. HTTP Client Response Content-Encoding: br
+// ----------------------------------------------------------------------------
 fn test_brotli_http_client_integration(t: lit::T&) {
     t.run("HTTP Client Response auto-decompression for Content-Encoding: br") { sub =>
         // 1. Compress payload with Level 0 Brotli
@@ -1705,6 +1768,9 @@ fn test_brotli_http_client_integration(t: lit::T&) {
 // - Client automatic dictionary discovery, Available-Dictionary injection & transparent dcz decompression
 // - Origin scoping, pattern matching, TTL expiration, and insecure HTTP rejection
 
+// ----------------------------------------------------------------------------
+// 22. Dictionary Header Parsing & Pattern Matching
+// ----------------------------------------------------------------------------
 fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
     t.run("Use-As-Dictionary Parser: match, id, ttl") { sub =>
         let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=\"raw\"";
@@ -1738,6 +1804,9 @@ fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. DCZ Wire Format Codec & Decompression
+// ----------------------------------------------------------------------------
 fn test_dcz_frame_codec(t: lit::T&) {
     t.run("DCZ Magic, 32-Byte Hash & Payload Codec") { sub =>
         let dict_data = "dictionary_shared_context_v1";
@@ -1770,6 +1839,9 @@ fn test_dcz_frame_codec(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. Client Dictionary Lifecycle & dcz Decompression
+// ----------------------------------------------------------------------------
 fn test_client_dictionary_lifecycle(t: lit::T&) {
     t.run("Request 1 Learns Dictionary, Request 2 Sends Available-Dictionary & Decodes dcz") { sub =>
         var client = wing::new_client();
@@ -1861,6 +1933,188 @@ fn test_client_dictionary_lifecycle(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// F001: Compression Dictionary Bounds and Overflow Rejection
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 25. F001 Compression Dictionary Bounds & Safety
+// ----------------------------------------------------------------------------
+fn test_f001_compression_dict_bounds(t: lit::T&) {
+    t.run("dictionary_cache_insert rejects match_pattern > 128 bytes") { sub =>
+        var cache = wing::DictionaryCache { .. };
+        var long_pat: u8[..200] = [];
+        long_pat.append("/");
+        for i in 150 { long_pat.push('a'); }
+
+        let ok = wing::dictionary_cache_insert(
+            cache,
+            "https://example.com",
+            long_pat[..],
+            "dict1",
+            "dictionary payload content",
+            86400,
+            1700000000,
+        );
+        sub.assert_false(ok, "match_pattern > 128B MUST be rejected rather than aborting on DictionaryEntry.match_pattern append");
+    };
+
+    t.run("dictionary_cache_insert rejects id > 64 bytes") { sub =>
+        var cache = wing::DictionaryCache { .. };
+        var long_id: u8[..100] = [];
+        for i in 80 { long_id.push('b'); }
+
+        let ok = wing::dictionary_cache_insert(
+            cache,
+            "https://example.com",
+            "/assets/*",
+            long_id[..],
+            "dictionary payload content",
+            86400,
+            1700000000,
+        );
+        sub.assert_false(ok, "id > 64B MUST be rejected rather than aborting on DictionaryEntry.id append");
+    };
+
+    t.run("parse_use_as_dictionary_header rejects match_pattern > 128 bytes") { sub =>
+        var raw: u8[..256] = [];
+        raw.append("match=\"/");
+        for i in 150 { raw.push('a'); }
+        raw.append("\", id=\"v1\"");
+
+        let p, ok = wing::parse_use_as_dictionary_header(raw[..]);
+        sub.assert_false(ok, "match_pattern > 128B MUST return ok == false and not overflow DictionaryParams.match_pattern");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 26. Zstandard RFC 8878 RLE Block, SizeMismatch & 0-Sequence Bomb Guards
+// ----------------------------------------------------------------------------
+fn test_zstandard_rfc8878_invariants(t: lit::T&) {
+    t.run("Zstandard RLE_Block decompression repeats 1 byte block_size times") { sub =>
+        // Construct valid Zstandard frame containing an RLE_Block (Block_Type = 1)
+        var frame: u8[>..] = [];
+        // Magic
+        frame.push(0x28); frame.push(0xB5); frame.push(0x2F); frame.push(0xFD);
+        // Frame Header Descriptor: single segment, no checksum, FCS = 2B
+        frame.push(0x20 | 0x40);
+        // Frame_Content_Size = 256 + 100 = 356 bytes
+        core::write_le_u16(frame, 100);
+
+        // Block Header: last_block=1, block_type=RLE(1), block_size=356
+        let last_bit: u32 = 1;
+        let btype:    u32 = 1; // RLE
+        let bsize:    u32 = 356;
+        let b_hdr = last_bit | (btype << 1) | (bsize << 3);
+        frame.push((b_hdr & 0xFF) as u8);
+        frame.push(((b_hdr >> 8) & 0xFF) as u8);
+        frame.push(((b_hdr >> 16) & 0xFF) as u8);
+        // RLE content: exactly 1 byte 'Z' (0x5A)
+        frame.push(0x5A);
+
+        var decomp: u8[>..] = [];
+        let ok, err = core::zstd_decompress(frame[..], decomp);
+        sub.assert_true(ok, "RLE block decompression succeeds");
+        sub.assert_eq(err, core::CompressError.None, "Error is None");
+        sub.assert_eq(decomp.len, 356, "Decompressed size is exactly 356 bytes");
+        var all_z = true;
+        for b in decomp {
+            if b != 0x5A { all_z = false; }
+        }
+        sub.assert_true(all_z, "All 356 bytes are 'Z'");
+    };
+
+    t.run("Zstandard Frame_Content_Size mismatch triggers SizeMismatch") { sub =>
+        // Construct frame with declared Frame_Content_Size = 20, but block only decompresses 10 bytes
+        var frame: u8[>..] = [];
+        frame.push(0x28); frame.push(0xB5); frame.push(0x2F); frame.push(0xFD);
+        frame.push(0x20); // single segment, FCS = 1B (flag 0)
+        frame.push(20);   // Declared FCS = 20
+
+        // Raw block with 10 bytes
+        let b_hdr = 1 | (0 << 1) | (10 << 3);
+        frame.push((b_hdr & 0xFF) as u8);
+        frame.push(((b_hdr >> 8) & 0xFF) as u8);
+        frame.push(((b_hdr >> 16) & 0xFF) as u8);
+        for i in 10 { frame.push('A'); }
+
+        var decomp: u8[>..] = [];
+        let ok, err = core::zstd_decompress(frame[..], decomp);
+        sub.assert_false(ok, "FCS mismatch must fail");
+        sub.assert_eq(err, core::CompressError.SizeMismatch, "Error is SizeMismatch");
+    };
+
+    t.run("Zstandard 0-sequences block respects max_output_bytes quota") { sub =>
+        // Frame with raw block of 50 bytes tested against quota of 20 bytes
+        var frame: u8[>..] = [];
+        frame.push(0x28); frame.push(0xB5); frame.push(0x2F); frame.push(0xFD);
+        frame.push(0x20);
+        frame.push(50);
+
+        let b_hdr = 1 | (0 << 1) | (50 << 3);
+        frame.push((b_hdr & 0xFF) as u8);
+        frame.push(((b_hdr >> 8) & 0xFF) as u8);
+        frame.push(((b_hdr >> 16) & 0xFF) as u8);
+        for i in 50 { frame.push('B'); }
+
+        var decomp: u8[>..] = [];
+        let ok, err = core::zstd_decompress_with_limit(frame[..], decomp, 20);
+        sub.assert_false(ok, "Exceeding quota fails");
+        sub.assert_eq(err, core::CompressError.OutputBufferOverflow, "Error is OutputBufferOverflow");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 27. Deflate RFC 1951 Dynamic Huffman Missing EOB 256 Rejection
+// ----------------------------------------------------------------------------
+fn test_deflate_rfc1951_invariants(t: lit::T&) {
+    t.run("inflate rejects Dynamic Huffman block missing EOB symbol 256 (RFC 1951 §3.2.7)") { sub =>
+        // Construct minimal corrupt Dynamic Huffman bitstream where symbol 256 has code length 0.
+        // Bit 0: BFINAL=1, Bits 1-2: BTYPE=10 (Dynamic)
+        // HLIT = 0 (257 codes: 0..256), HDIST = 0 (1 dist code), HCLEN = 1 (5 code length codes: 16,17,18,0,8)
+        var w = core::BitWriter { bit_buf: 0, bit_count: 0 };
+        var wire: u8[>..] = [];
+
+        core::write_bits(w, 1 | (2 << 1), 3, wire); // BFINAL=1, BTYPE=10
+        core::write_bits(w, 0, 5, wire);             // HLIT: 257 codes (0..256)
+        core::write_bits(w, 0, 5, wire);             // HDIST: 1 code
+        core::write_bits(w, 1, 4, wire);             // HCLEN: 4+1 = 5 code length codes (16, 17, 18, 0, 8)
+
+        // Code length code lengths: for 16, 17, 18, 0, 8
+        // Let code 18 (repeat 11..138 zeros) have length 1 (code 0)
+        core::write_bits(w, 0, 3, wire); // 16: len 0
+        core::write_bits(w, 0, 3, wire); // 17: len 0
+        core::write_bits(w, 1, 3, wire); // 18: len 1 (code 0)
+        core::write_bits(w, 0, 3, wire); // 0: len 0
+        core::write_bits(w, 0, 3, wire); // 8: len 0
+
+        // Now encode HLIT+HDIST = 257 + 1 = 258 code lengths.
+        // Use code 18 twice with 7 extra bits each (repeat zeros):
+        // 1st: code 0 (1 bit) + 127 extra bits -> 138 zeros (codes 0..137)
+        core::write_bits(w, 0, 1, wire);
+        core::write_bits(w, 127, 7, wire);
+        // 2nd: code 0 (1 bit) + 109 extra bits -> 120 zeros (codes 138..257)
+        // Thus ALL symbols 0..256 have length 0, including EOB 256!
+        core::write_bits(w, 0, 1, wire);
+        core::write_bits(w, 109, 7, wire);
+
+        core::flush_bits(w, wire);
+
+        var decomp: u8[>..] = [];
+        let ok, err = core::inflate(wire[..], decomp);
+        sub.assert_false(ok, "Dynamic Huffman missing EOB 256 MUST fail");
+        sub.assert_eq(err, core::CompressError.CodeLengthsIncomplete, "Error is CodeLengthsIncomplete");
+    };
+
+    t.run("get_deflate_config returns valid tuning across all levels 0..9") { sub =>
+        for lvl in 10 {
+            let cfg = core::get_deflate_config(lvl as i32);
+            sub.assert_gt(cfg.max_chain, 0, "max_chain positive");
+            sub.assert_gt(cfg.good_len, 0, "good_len positive");
+            sub.assert_gt(cfg.nice_len, 0, "nice_len positive");
+        }
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core Compression Engine (Deflate, Brotli, Dictionaries) Suite", lit::Verbosity.Verbose);
 
@@ -1888,6 +2142,9 @@ fn main() {
     lit::run_case(runner, "22. Dictionary Header Parsing & Pattern Matching", test_dictionary_header_parsing_and_matching);
     lit::run_case(runner, "23. DCZ Wire Format Codec & Decompression", test_dcz_frame_codec);
     lit::run_case(runner, "24. Client Dictionary Lifecycle & dcz Decompression", test_client_dictionary_lifecycle);
+    lit::run_case(runner, "25. F001 Compression Dictionary Bounds & Safety", test_f001_compression_dict_bounds);
+    lit::run_case(runner, "26. Zstandard RFC 8878 invariants (core/compress/zstd.goose)", test_zstandard_rfc8878_invariants);
+    lit::run_case(runner, "27. Deflate RFC 1951 invariants (core/compress/deflate.goose)", test_deflate_rfc1951_invariants);
 
     let ok = lit::finish(runner);
     assert(ok);

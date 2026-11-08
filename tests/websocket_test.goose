@@ -14,6 +14,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // Team FrameForge Protocol Audit Suite - Round 1
 // Focus: RFC 6455 & RFC 7692 WebSocket Framing, Deflate Compression, RSV Spoofing, Masking, and Close Codes.
 
+// ----------------------------------------------------------------------------
+// 1. WebSocket Invariants & Compression Audit
+// ----------------------------------------------------------------------------
 fn test_frameforge_r1_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Bug 1: RFC 7692 Section 6.1: Compression - Premature UTF-8 validation on raw compressed text wire bytes
@@ -265,6 +268,9 @@ fn test_frameforge_r1_websocket(t: lit::T&) {
 // Focus: RFC 6455 & RFC 7692 Decompression Bomb Defense, Payload Bounds Fast-Fail (1009),
 // Interleaved Control Frames in Compressed Streams, and Close Handshake Idempotence.
 
+// ----------------------------------------------------------------------------
+// 2. WebSocket Frame Protocol Conformance
+// ----------------------------------------------------------------------------
 fn test_frameforge_r2_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Bug 8: RFC 7692 §7.2 & RFC 6455 §7.4.1 (1009): Decompression Bomb Abort
@@ -572,6 +578,9 @@ fn test_frameforge_r2_websocket(t: lit::T&) {
 // RFC 7692 §7.1.1 Permessage-Deflate Sliding Window Context Takeover & Dictionary Retention,
 // and Zero-Allocation SWAR 64-bit/32-bit XOR Payload Masking Loop Boundary Safety.
 
+// ----------------------------------------------------------------------------
+// 3. WebSocket Exhaustive Framing Invariants
+// ----------------------------------------------------------------------------
 fn test_frameforge_r3_websocket(t: lit::T&) {
     // ------------------------------------------------------------------------
     // Item 1: RFC 6455 §5.4 & §8.1: Multibyte UTF-8 Split Across Continuation Frames
@@ -853,6 +862,9 @@ fn test_frameforge_r3_websocket(t: lit::T&) {
 // 2. Control frame length limits (<= 125 bytes) and fragmentation bans (§5.5).
 // 3. Streaming UTF-8 validation across multi-byte character splits, overlong encodings, and surrogates.
 
+// ----------------------------------------------------------------------------
+// 4. Close Payload & Wire Status Code Invariants (§5.5.1 / §7.4)
+// ----------------------------------------------------------------------------
 fn test_ws_close_payload_rfc6455_invariants(t: lit::T&) {
     t.run("WS-SEC-01: Empty Close Payload and 1-Byte Payload Bans (RFC 6455 §5.5.1)") { sub =>
         // Empty payload (0 bytes) is valid: defaults to WS_STATUS_NO_STATUS (1005)
@@ -903,6 +915,9 @@ fn test_ws_close_payload_rfc6455_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 5. Control Frame Limits & Fragmentation Bans (§5.5)
+// ----------------------------------------------------------------------------
 fn test_ws_control_frame_invariants(t: lit::T&) {
     t.run("WS-SEC-04: Control Frame Payload > 125 Bytes Forbidden (RFC 6455 §5.5)") { sub =>
         // PING frame with payload length 126 (0x7E) encoded with extended 16-bit length
@@ -938,6 +953,9 @@ fn test_ws_control_frame_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. Streaming UTF-8 Invariants & Surrogate Rejection
+// ----------------------------------------------------------------------------
 fn test_ws_streaming_utf8_invariants(t: lit::T&) {
     t.run("WS-SEC-07: Overlong Encodings and UTF-16 Surrogates Rejected") { sub =>
         // Overlong 2-byte NUL: 0xC0 0x80
@@ -981,6 +999,9 @@ fn test_ws_streaming_utf8_invariants(t: lit::T&) {
 // tests/websocket_h2_test.goose
 // Verification Suite for RFC 8441: Bootstrapping WebSockets with HTTP/2.
 
+// ----------------------------------------------------------------------------
+// 7. RFC 8441 Client Formatting
+// ----------------------------------------------------------------------------
 fn test_rfc8441_client_formatting(t: lit::T&) {
     t.run("1. Client Request Formatting & Pseudo-Headers") { sub =>
         var req = wing::new_request("GET", "/");
@@ -1002,6 +1023,9 @@ fn test_rfc8441_client_formatting(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. RFC 8441 Validation Invariants
+// ----------------------------------------------------------------------------
 fn test_rfc8441_validation_invariants(t: lit::T&) {
     t.run("1. Strict RFC 8441 Rejections (Forbidden Headers & Missing Fields)") { sub =>
         // 1. Forbidden Upgrade header
@@ -1042,6 +1066,9 @@ fn test_rfc8441_validation_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. RFC 8441 Server Upgrade
+// ----------------------------------------------------------------------------
 fn test_rfc8441_server_upgrade(t: lit::T&) {
     t.run("1. 200 OK Response & Subprotocol Negotiation") { sub =>
         var req = wing::new_request("GET", "/");
@@ -1066,6 +1093,9 @@ fn test_rfc8441_server_upgrade(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. RFC 8441 Stream Data Framing
+// ----------------------------------------------------------------------------
 fn test_rfc8441_data_frame_payload(t: lit::T&) {
     t.run("1. RFC 6455 Frame Encapsulation inside HTTP/2 Stream") { sub =>
         // Once connection is 200 OK, payload of HTTP/2 DATA frames contains RFC 6455 frames
@@ -1086,6 +1116,9 @@ fn test_rfc8441_data_frame_payload(t: lit::T&) {
 // Verification Suite for WebSocket (RFC 6455 / RFC 8441), HTTP/3 PRIORITY_UPDATE (RFC 9218)
 // and Server-Sent Events (W3C EventSource).
 
+// ----------------------------------------------------------------------------
+// 11. WebSocket (RFC 6455 & RFC 8441) Framing and Handshake
+// ----------------------------------------------------------------------------
 fn test_websocket_framing_and_handshake(t: lit::T&) {
     t.run("1. RFC 6455 Section 1.3 Handshake Vector Verification") { sub =>
         let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -1432,6 +1465,9 @@ fn test_websocket_framing_and_handshake(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. HTTP/3 PRIORITY_UPDATE (RFC 9218) Frame Codec
+// ----------------------------------------------------------------------------
 fn test_http3_priority_update(t: lit::T&) {
     t.run("1. HTTP/3 PRIORITY_UPDATE Frame Codec (RFC 9218 Section 7.2)") { sub =>
         let prio = wing::PriorityParam { urgency: 1, incremental: true };
@@ -1465,6 +1501,9 @@ fn test_http3_priority_update(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Server-Sent Events (SSE / W3C EventSource) Engine
+// ----------------------------------------------------------------------------
 fn test_server_sent_events(t: lit::T&) {
     t.run("1. W3C EventSource Standard Streaming Parsing") { sub =>
         let stream_data = "data: first event\n\nevent: custom\ndata: second event line 1\ndata: second event line 2\nid: 42\nretry: 5000\n\n";
@@ -1593,6 +1632,445 @@ fn test_server_sent_events(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. RFC 6455 §8.1 / §7.4.1 / Autobahn 6.4.1: Close Frame Invalid UTF-8 (1007)
+// ----------------------------------------------------------------------------
+fn test_close_frame_invalid_utf8_status_1007(t: lit::T&) {
+    t.run("Close frame with invalid UTF-8 payload must fail with 1007 (not 1002)") { sub =>
+        var ws = wing::new_websocket_session(false);
+
+        var wire: u8[..64] = [];
+        wire.push(0x88); // FIN=1, Opcode=8 (Close)
+        wire.push(0x84); // Masked=1, Len=4
+        wire.push(0x00); wire.push(0x00); wire.push(0x00); wire.push(0x00);
+        wire.push(0x03); wire.push(0xE8); // Status code 1000
+        wire.push(0xFF); wire.push(0xFF); // Invalid UTF-8 bytes
+
+        var out_view = wing::WsMessageView { .. };
+        var out_reply: u8[..256] = [];
+
+        let handled = wing::receive_view(ws, wire[..], out_view, out_reply);
+        sub.assert_true(handled, "Receive handled incoming invalid UTF-8 close frame");
+        sub.assert_true(ws.is_closed, "Connection closed on invalid UTF-8");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_INVALID_PAYLOAD, "Close status code MUST be 1007 (Invalid Payload), NOT 1002");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 15. RFC 7692 §5.1 / uWS #1164: RSV1 Set on Continuation Frame Must Fail (1002)
+// ----------------------------------------------------------------------------
+fn test_continuation_rsv1_rejected(t: lit::T&) {
+    t.run("Continuation frame with RSV1 set must be rejected with protocol error 1002") { sub =>
+        var ws = wing::new_websocket_session(false);
+        wing::enable_permessage_deflate(ws);
+
+        var f1: u8[..64] = [];
+        f1.push(0x41); // FIN=0, RSV1=1, Opcode=1 (Text)
+        f1.push(0x84); // Masked=1, Len=4
+        f1.push(0x00); f1.push(0x00); f1.push(0x00); f1.push(0x00);
+        f1.append("test");
+
+        var out_view = wing::WsMessageView { .. };
+        var out_reply: u8[..256] = [];
+        let ok1 = wing::receive_view(ws, f1[..], out_view, out_reply);
+        sub.assert_true(ok1, "First fragment accepted");
+        sub.assert_false(ws.is_closed, "WS still open after fragment 1");
+
+        var f2: u8[..64] = [];
+        f2.push(0xC0); // FIN=1, RSV1=1, Opcode=0 (Continuation with RSV1!)
+        f2.push(0x84); // Masked=1, Len=4
+        f2.push(0x00); f2.push(0x00); f2.push(0x00); f2.push(0x00);
+        f2.append("data");
+
+        let ok2 = wing::receive_view(ws, f2[..], out_view, out_reply);
+        sub.assert_true(ok2, "Frame 2 processed");
+        sub.assert_true(ws.is_closed, "WebSocket connection MUST be closed on continuation frame with RSV1 set");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Close code MUST be 1002 (Protocol Error)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 16. Go #76635 & RFC 6455 §4.1: Empty Path in WebSocket Handshake Must Default to '/'
+// ----------------------------------------------------------------------------
+fn test_ws_handshake_empty_path_defaults_to_slash(t: lit::T&) {
+    t.run("build_handshake_request with empty path must serialize 'GET / HTTP/1.1'") { sub =>
+        var ws = wing::new_websocket_session(true);
+        var wire_out: u8[..512] = [];
+
+        wing::build_handshake_request(ws, "example.com", "", "dGhlIHNhbXBsZSBub25jZQ==", wire_out);
+
+        let has_double_space = find(wire_out[..], "GET  HTTP/1.1") >= 0;
+        sub.assert_false(has_double_space, "Must NOT format malformed 'GET  HTTP/1.1' with double space");
+
+        let starts_with_get_slash = core::starts_with(wire_out[..], "GET / HTTP/1.1\r\n");
+        sub.assert_true(starts_with_get_slash, "Empty path MUST serialize as 'GET / HTTP/1.1\r\n' (Go #76635 / RFC 6455 §4.1)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 17. RFC 6455 §5.5 & uWS #1407: WebSocket Control Frame Encoding Clamps to <= 125
+// ----------------------------------------------------------------------------
+fn test_ws_control_frame_encoding_size_limit(t: lit::T&) {
+    t.run("send_ping with payload > 125 must NEVER serialize extended length (126/127)") { sub =>
+        // RFC 6455 Section 5.5:
+        // "All control frames MUST have a payload length of 125 bytes or less and MUST NOT be fragmented."
+        // An implementation MUST NOT encode a control frame with payload length > 125.
+        // Currently, encode_ws_frame emits 0x7E (126) or 0x7F (127), which is wire-invalid!
+        var ws = wing::new_websocket_session(true);
+        var big_ping: u8[..256] = [];
+        for i in 130 { big_ping.push('x' as u8); }
+
+        var wire_out: u8[..512] = [];
+        wing::send_ping(ws, big_ping[..], wire_out);
+
+        guard wire_out.len >= 2 else {
+            sub.assert_true(false, "send_ping produced empty wire output");
+            return;
+        }
+
+        // Byte 1 has mask bit and 7-bit length
+        let raw_len = wire_out[1] & 0x7F;
+        sub.assert_true(raw_len <= 125, "Control frame payload length on wire MUST be <= 125 (RFC 6455 §5.5)");
+        sub.assert_true(raw_len != 126 && raw_len != 127, "Control frame MUST NEVER use extended length 126 or 127");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 18. RFC 6455 §5.5, §5.5.1 & uWS #1407: WebSocket Close Frame Reason Payload <= 123 Bytes
+// ----------------------------------------------------------------------------
+fn test_ws_close_frame_reason_clamped(t: lit::T&) {
+    t.run("close with 130-byte reason MUST be clamped to <= 123 bytes reason (<= 125 total payload)") { sub =>
+        // RFC 6455 Section 5.5: "All control frames MUST have a payload length of 125 bytes or less"
+        // RFC 6455 Section 5.5.1: Close frame status code is 2 bytes, so reason can be at most 123 bytes.
+        var ws = wing::new_websocket_session(true);
+        var long_reason: u8[..256] = [];
+        for i in 130 { long_reason.push('z' as u8); }
+
+        var wire_out: u8[..512] = [];
+        wing::close(ws, rfc::WS_STATUS_NORMAL, long_reason[..], wire_out);
+
+        guard wire_out.len >= 2 else {
+            sub.assert_true(false, "close produced empty wire output");
+            return;
+        }
+
+        let raw_len = wire_out[1] & 0x7F;
+        sub.assert_true(raw_len <= 125, "Close frame payload on wire MUST be <= 125 bytes (RFC 6455 §5.5)");
+        sub.assert_true(raw_len != 126 && raw_len != 127, "Close frame MUST NEVER use extended length 126/127");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 19. RFC 6455 §5.5 & Go #7825: WebSocket Empty Payload Ping / Pong Roundtrip
+// ----------------------------------------------------------------------------
+fn test_ws_empty_payload_ping_pong(t: lit::T&) {
+    t.run("WebSocket Ping with 0 payload is accepted and answered with 0-payload Pong") { sub =>
+        // RFC 6455 §5.5.2 & §5.5.3 / Go #7825:
+        // A Ping frame MAY carry an empty application data payload (0 bytes).
+        // The receiver MUST emit a Pong frame with identical 0-byte payload.
+        var ws_sess = wing::new_websocket_session(true); // client
+        var ping_wire: u8[>..] = [];
+        let no_mask: u8[4] = [0, 0, 0, 0];
+        wing::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "", false, no_mask, true);
+
+        // Frame header must have payload_len = 0
+        let hdr, ok_hdr = wing::parse_ws_frame_header(ping_wire[..]);
+        sub.assert_true(ok_hdr, "Empty Ping header parsed");
+        sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_PING, "Opcode is PING");
+        sub.assert_eq(hdr.payload_len, 0, "Payload length is 0");
+
+        var msg = wing::WsMessage { .. };
+        var pong_reply: u8[>..] = [];
+        let handled = ws_sess.receive(ping_wire[..], msg, pong_reply);
+        sub.assert_true(handled, "receive processed empty Ping frame");
+        sub.assert_eq(msg.opcode, rfc::WS_OPCODE_PING, "Message opcode is PING");
+        sub.assert_eq(msg.data.len, 0, "Ping message payload is 0 bytes");
+
+        // Outbound Pong response must also be empty payload
+        sub.assert_ge(pong_reply.len, 2, "Outbound Pong reply frame emitted");
+        let pong_hdr, ok_pong = wing::parse_ws_frame_header(pong_reply[..]);
+        sub.assert_true(ok_pong, "Parsed auto-pong frame header");
+        sub.assert_eq(pong_hdr.opcode, rfc::WS_OPCODE_PONG, "Opcode in auto-reply is PONG");
+        sub.assert_eq(pong_hdr.payload_len, 0, "Pong payload length is 0 bytes");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 20. RFC 6455 §4.2.1: WebSocket Upgrade Handshake Missing Host Header Rejection
+// ----------------------------------------------------------------------------
+fn test_ws_handshake_missing_host_rejection(t: lit::T&) {
+    t.run("WebSocket Upgrade handshake without Host header MUST be rejected with HTTP 400") { sub =>
+        // RFC 6455 Section 4.2.1 item 2:
+        // "The request MUST contain a |Host| header field."
+        // "If the handshake lacks a Host header, the server MUST respond with 400 Bad Request."
+        var req = wing::new_request("GET", "/ws");
+        wing::set_header(req, "Upgrade", "websocket");
+        wing::set_header(req, "Connection", "Upgrade");
+        wing::set_header(req, "Sec-WebSocket-Version", "13");
+        wing::set_header(req, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+        // Omit Host header!
+
+        var resp = wing::Response { .. };
+        let _, ok = wing::ws_upgrade_request(req, resp);
+        sub.assert_false(ok, "Upgrade handshake MUST fail when Host header is missing (RFC 6455 §4.2.1)");
+        sub.assert_eq(resp.status_code, 400, "Response status code MUST be 400 Bad Request");
+
+        sub.assert_false(wing::is_websocket_upgrade_request(req), "is_websocket_upgrade_request MUST return false without Host");
+
+        // With valid Host header, handshake succeeds
+        wing::set_header(req, "Host", "example.com");
+        var resp_ok = wing::Response { .. };
+        let _, ok_with_host = wing::ws_upgrade_request(req, resp_ok);
+        sub.assert_true(ok_with_host, "Upgrade handshake succeeds with Host header present");
+        sub.assert_eq(resp_ok.status_code, 101, "Response status code is 101 Switching Protocols");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 21. RFC 6455 §4.2.2: WebSocket Subprotocol Agreement Verification
+// ----------------------------------------------------------------------------
+fn test_ws_subprotocol_agreement_verification(t: lit::T&) {
+    t.run("Server selecting subprotocol NOT offered by client MUST NOT negotiate it (RFC 6455 §4.2.2)") { sub =>
+        // RFC 6455 Section 4.2.2 item 5:
+        // "If the server does include a |Sec-WebSocket-Protocol| header field in its response,
+        // the value of that field MUST be one of the subprotocols requested by the client."
+        var req = wing::new_request("GET", "/ws");
+        wing::set_header(req, "Host", "example.com");
+        wing::set_header(req, "Upgrade", "websocket");
+        wing::set_header(req, "Connection", "Upgrade");
+        wing::set_header(req, "Sec-WebSocket-Version", "13");
+        wing::set_header(req, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+        wing::set_header(req, "Sec-WebSocket-Protocol", "chat, superchat");
+
+        // Server attempts to negotiate "unsupported_protocol" not offered by client
+        var resp_unmatched = wing::Response { .. };
+        let sess_unmatched, ok1 = wing::ws_upgrade_request(req, resp_unmatched, "unsupported_protocol");
+        sub.assert_true(ok1, "Handshake succeeds");
+        sub.assert_eq(sess_unmatched.subprotocol.len, 0, "Unmatched subprotocol MUST NOT be accepted in session");
+        sub.assert_false(wing::has_header(resp_unmatched, "Sec-WebSocket-Protocol"), "Sec-WebSocket-Protocol header MUST NOT be sent for unoffered protocol");
+
+        // Server selects "chat" which WAS offered by client
+        var resp_matched = wing::Response { .. };
+        let sess_matched, ok2 = wing::ws_upgrade_request(req, resp_matched, "chat");
+        sub.assert_true(ok2, "Handshake succeeds");
+        sub.assert_bytes_eq(sess_matched.subprotocol[..], "chat", "Matched subprotocol 'chat' is negotiated");
+        sub.assert_bytes_eq(wing::header(resp_matched, "Sec-WebSocket-Protocol"), "chat", "Sec-WebSocket-Protocol header contains 'chat'");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 22. WebSocket Protocol Invariants (realtime/websocket.goose)
+// ----------------------------------------------------------------------------
+fn test_websocket_token_and_capacity_invariants(t: lit::T&) {
+    t.run("ws_upgrade_request rejects Connection header with non-token substring") { sub =>
+        var req = wing::new_request("GET", "https://example.com/ws");
+        req.set_header("Upgrade", "websocket");
+        req.set_header("Connection", "not-an-upgrade");
+        req.set_header("Sec-WebSocket-Version", "13");
+        req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+        var resp = wing::Response { .. };
+        let _, ok = wing::ws_upgrade_request(req, resp);
+        sub.assert_false(ok, "Connection: not-an-upgrade MUST NOT match 'Upgrade' token");
+        sub.assert_eq(resp.status_code, 400, "Response status 400 Bad Request");
+    };
+
+    t.run("ws_upgrade_request accepts Upgrade token when multiple Connection headers exist") { sub =>
+        var req = wing::new_request("GET", "https://example.com/ws");
+        req.set_header("Upgrade", "websocket");
+        req.set_header("Connection", "keep-alive");
+        wing::append_header(req.headers, "Connection", "Upgrade");
+        req.set_header("Sec-WebSocket-Version", "13");
+        req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+        var resp = wing::Response { .. };
+        let _, ok = wing::ws_upgrade_request(req, resp);
+        sub.assert_true(ok, "Upgrade token in second Connection header MUST be recognized");
+        sub.assert_eq(resp.status_code, 101, "Response status 101 Switching Protocols");
+    };
+
+    t.run("receive rejects unfragmented message exceeding 16KB with MessageTooBig (1009)") { sub =>
+        var ws = wing::new_websocket_session(true);
+        let no_mask: u8[4] = [0, 0, 0, 0];
+
+        // 20000-byte unfragmented text frame
+        var big_payload: u8[>..] = [];
+        for i in 20000 { big_payload.push('a'); }
+
+        var wire: u8[>..] = [];
+        wing::encode_ws_frame(wire, rfc::WS_OPCODE_TEXT, big_payload[..], false, no_mask, true);
+
+        var msg = wing::WsMessage { .. };
+        var reply: u8[>..] = [];
+        wing::receive(ws, wire[..], msg, reply);
+
+        sub.assert_false(msg.is_valid, "Message exceeding 16KB capacity MUST NOT be marked valid");
+        sub.assert_true(ws.is_closed, "WebSocket session MUST be closed on capacity overflow");
+        sub.assert_eq(ws.close_code, rfc::WS_STATUS_MESSAGE_TOO_BIG, "Close code MUST be 1009 Message Too Big");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 23. Server-Sent Events (realtime/sse.goose)
+// ----------------------------------------------------------------------------
+fn test_sse_w3c_spec_invariants(t: lit::T&) {
+    t.run("W3C EventSource §9.2.6: Event without data field MUST NOT dispatch") { sub =>
+        var parser = wing::SseParser { .. };
+        var events: wing::SseEvent[..16] = [];
+
+        // Stream with event: ping but NO data: line, followed by empty line
+        wing::sse_feed(parser, "event: ping\n\n", events);
+
+        sub.assert_eq(events.len, 0, "Event without data line MUST NOT be dispatched per W3C Section 9.2.6");
+    };
+
+    t.run("SSE retry integer parsing must not overflow into tight reconnect loop") { sub =>
+        var parser = wing::SseParser { .. };
+        var events: wing::SseEvent[..16] = [];
+
+        // 20-digit number exceeding u32::MAX
+        wing::sse_feed(parser, "retry: 99999999999999999999\ndata: ok\n\n", events);
+
+        sub.assert_gt(parser.retry_ms, 0, "retry_ms must remain positive and saturated");
+        sub.assert_eq(parser.retry_ms, 0xFFFFFFFF, "retry_ms saturated to u32::MAX on overflow");
+    };
+
+    t.run("sse_format_event rejects or strips CRLF injection in event_type and id") { sub =>
+        var out: u8[>..] = [];
+        wing::sse_format_event(out, "custom\r\ndata: injected", "hello", "id1\r\nevil: true");
+
+        sub.assert_false(core::contains(out[..], "\r"), "CRLF injection in event_type/id must not produce raw CR");
+        sub.assert_false(core::contains(out[..], "data: injected"), "Injected data line in event_type must not appear");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 24. WebSocket Close UTF-8 Boundary Truncation & Subprotocol Lists
+// ----------------------------------------------------------------------------
+fn test_websocket_close_and_subprotocol(t: lit::T&) {
+    t.run("encode_close_payload preserves UTF-8 integrity on 123-byte boundary") { sub =>
+        // Build reason string of 122 ASCII 'A's + 3-byte Euro sign '€' (0xE2, 0x82, 0xAC)
+        var reason: u8[>..] = [];
+        for i in 122 {
+            reason.push('A');
+        }
+        reason.push(0xE2);
+        reason.push(0x82);
+        reason.push(0xAC); // Total 125 bytes
+
+        var out: u8[>..] = [];
+        wing::encode_close_payload(out, rfc::WS_STATUS_NORMAL, reason[..]);
+
+        sub.assert_eq(out.len, 2 + 122, "Status code (2B) + truncated reason (122B)");
+        let code, reason_slice, ok_parse = wing::parse_close_payload(out[..]);
+        sub.assert_true(ok_parse, "Parse close payload succeeds");
+        sub.assert_eq(code, rfc::WS_STATUS_NORMAL, "Code matches 1000");
+        sub.assert_true(core::validate_utf8(reason_slice), "Truncated reason must be strictly valid UTF-8");
+        sub.assert_eq(reason_slice.len, 122, "Euro symbol split across 123B was peeled back cleanly");
+    };
+
+    t.run("encode_close_payload keeps 3-byte UTF-8 char when ending exactly at 123") { sub =>
+        // 120 ASCII + 3-byte '€' at indices 120..122 -> fits exactly in 123 bytes!
+        var reason: u8[>..] = [];
+        for i in 120 {
+            reason.push('A');
+        }
+        reason.push(0xE2);
+        reason.push(0x82);
+        reason.push(0xAC);
+        reason.push('Z'); // byte 123 (would be 124th byte)
+
+        var out: u8[>..] = [];
+        wing::encode_close_payload(out, rfc::WS_STATUS_NORMAL, reason[..]);
+
+        sub.assert_eq(out.len, 2 + 123, "Status code (2B) + 123B reason");
+        let _, reason_slice, ok_parse = wing::parse_close_payload(out[..]);
+        sub.assert_true(ok_parse, "Parse succeeds");
+        sub.assert_true(core::validate_utf8(reason_slice), "Valid UTF-8");
+        sub.assert_eq(reason_slice[120], 0xE2, "Euro byte 0");
+        sub.assert_eq(reason_slice[121], 0x82, "Euro byte 1");
+        sub.assert_eq(reason_slice[122], 0xAC, "Euro byte 2");
+    };
+
+    t.run("has_subprotocol_token parses comma-separated lists with whitespace") { sub =>
+        let list = "graphql-ws,  chat.v2 , json-rpc";
+        sub.assert_true(wing::has_subprotocol_token(list, "graphql-ws"), "Matches first token");
+        sub.assert_true(wing::has_subprotocol_token(list, "chat.v2"), "Matches trimmed token");
+        sub.assert_true(wing::has_subprotocol_token(list, "json-rpc"), "Matches last token");
+        sub.assert_false(wing::has_subprotocol_token(list, "chat"), "Rejects partial prefix");
+        sub.assert_false(wing::has_subprotocol_token(list, "graphql"), "Rejects partial prefix");
+    };
+
+    t.run("ws_upgrade_request checks multiple Sec-WebSocket-Protocol headers") { sub =>
+        var req = wing::new_request("GET", "https://example.com/ws");
+        req.set_header("Host", "example.com");
+        req.set_header("Upgrade", "websocket");
+        req.set_header("Connection", "Upgrade");
+        req.set_header("Sec-WebSocket-Version", "13");
+        req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+        wing::append_header(req.headers, "Sec-WebSocket-Protocol", "wamp.2.json");
+        wing::append_header(req.headers, "Sec-WebSocket-Protocol", "chat.v1");
+
+        var resp = wing::Response { .. };
+        let ws_sess, ok = wing::ws_upgrade_request(req, resp, "chat.v1");
+        sub.assert_true(ok, "Upgrade accepted with subprotocol from second header");
+        sub.assert_eq(resp.status_code, 101, "Switching Protocols 101");
+        sub.assert_bytes_eq(resp.header("sec-websocket-protocol"), "chat.v1", "Subprotocol header set");
+        sub.assert_bytes_eq(ws_sess.subprotocol[..], "chat.v1", "Session subprotocol populated");
+    };
+
+    t.run("is_websocket_upgrade_request handles comma-separated Connection tokens") { sub =>
+        var req = wing::new_request("GET", "https://example.com/ws");
+        req.set_header("Host", "example.com");
+        req.set_header("Upgrade", "websocket");
+        req.set_header("Connection", "keep-alive, Upgrade");
+        req.set_header("Sec-WebSocket-Version", "13");
+        req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+
+        sub.assert_true(wing::is_websocket_upgrade_request(req), "Recognized as WebSocket upgrade request");
+    };
+
+    t.run("SharedWsCompressor deflate and inflate round-trip with RFC 7692 tail stripping") { sub =>
+        var comp = wing::SharedWsCompressor { .. };
+        let original = "Hello, WebSocket PerMessageDeflate with zero-heap shared reactor context!";
+
+        var wire: u8[>..] = [];
+        let ok_c = wing::ws_deflate_message(comp, original, wire, true);
+        sub.assert_true(ok_c, "Deflate succeeds");
+        sub.assert_gt(wire.len, 0, "Compressed bytes produced");
+
+        var restored: u8[>..] = [];
+        let ok_d = wing::ws_inflate_message(comp, wire[..], restored, 65536, true);
+        sub.assert_true(ok_d, "Inflate succeeds");
+        sub.assert_bytes_eq(restored[..], original, "Restored text matches verbatim");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 25. WebSocket Extended Length & Close Frame Invariants
+// ----------------------------------------------------------------------------
+fn test_websocket_length_overflow(t: lit::T&) {
+    // Header with extended payload length 0x7FFFFFFFFFFFFFFF
+    let bad_ws_hdr: u8[10] = [
+        0x81, 0x7F,
+        0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    var session = wing::new_websocket_session(true);
+    session.max_payload_length = 0;
+    var msg = wing::WsMessage {};
+    var reply: u8[..64] = [];
+    let ok = wing::receive(session, bad_ws_hdr[..], msg, reply);
+    t.assert_false(ok, "Huge 64-bit length frame without wire bytes must return false without overflow");
+
+    // Close frame with illegal 1-byte payload must close with PROTOCOL_ERROR
+    let bad_close: u8[3] = [0x88, 0x01, 0x00];
+    var session2 = wing::new_websocket_session(false);
+    var msg2 = wing::WsMessage {};
+    var reply2: u8[..64] = [];
+    let ok2 = wing::receive(session2, bad_close[..], msg2, reply2);
+    t.assert_true(ok2 && session2.is_closed && session2.close_code == rfc::WS_STATUS_PROTOCOL_ERROR, "Close frame with 1-byte payload must trigger WS_STATUS_PROTOCOL_ERROR");
+}
+
 fn main() {
     var runner = lit::new_runner("WebSocket & Server-Sent Events Verification Suite", lit::Verbosity.Verbose);
 
@@ -1609,6 +2087,18 @@ fn main() {
     lit::run_case(runner, "11. WebSocket (RFC 6455 & RFC 8441) Framing and Handshake", test_websocket_framing_and_handshake);
     lit::run_case(runner, "12. HTTP/3 PRIORITY_UPDATE (RFC 9218) Frame Codec", test_http3_priority_update);
     lit::run_case(runner, "13. Server-Sent Events (SSE / W3C EventSource) Engine", test_server_sent_events);
+    lit::run_case(runner, "14. RFC 6455 §8.1 / §7.4.1 / Autobahn 6.4.1: Close Invalid UTF-8 Status 1007", test_close_frame_invalid_utf8_status_1007);
+    lit::run_case(runner, "15. RFC 7692 §5.1 / uWS #1164: RSV1 on Continuation Frame Rejection", test_continuation_rsv1_rejected);
+    lit::run_case(runner, "16. Go #76635 & RFC 6455 §4.1: Empty Path in WS Handshake Defaults to '/'", test_ws_handshake_empty_path_defaults_to_slash);
+    lit::run_case(runner, "17. RFC 6455 §5.5 & uWS #1407: WebSocket Control Frame Encoding Clamps to <= 125", test_ws_control_frame_encoding_size_limit);
+    lit::run_case(runner, "18. RFC 6455 §5.5 & §5.5.1: WebSocket Close Reason Clamped to <= 123", test_ws_close_frame_reason_clamped);
+    lit::run_case(runner, "19. RFC 6455 §5.5 & Go #7825: WebSocket Empty Payload Ping / Pong Roundtrip", test_ws_empty_payload_ping_pong);
+    lit::run_case(runner, "20. RFC 6455 §4.2.1: WebSocket Upgrade Handshake Missing Host Header Rejection", test_ws_handshake_missing_host_rejection);
+    lit::run_case(runner, "21. RFC 6455 §4.2.2: WebSocket Subprotocol Agreement Verification", test_ws_subprotocol_agreement_verification);
+    lit::run_case(runner, "22. WebSocket token & capacity invariants (realtime/websocket.goose)", test_websocket_token_and_capacity_invariants);
+    lit::run_case(runner, "23. Server-Sent Events W3C spec invariants (realtime/sse.goose)", test_sse_w3c_spec_invariants);
+    lit::run_case(runner, "24. WebSocket Close UTF-8 & Subprotocols (realtime/websocket.goose)", test_websocket_close_and_subprotocol);
+    lit::run_case(runner, "25. WebSocket Extended Length & Close Frame Invariants", test_websocket_length_overflow);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -12,6 +12,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: net_tcp_live ---
 
+// ----------------------------------------------------------------------------
+// 1. Live TCP Loopback Request/Response Roundtrip
+// ----------------------------------------------------------------------------
 fn test_tcp_loopback_echo(t: lit::T&) {
     // 1. Listen on ephemeral port
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -71,6 +74,9 @@ fn test_tcp_loopback_echo(t: lit::T&) {
 // 2. Calling async_socket_uncork while cork is empty but backpressure is pending returns needs_poll=true.
 // 3. Optional async writes (optionally=true) never pollute the backpressure queue on partial/unaccepted sends.
 
+// ----------------------------------------------------------------------------
+// 2. Uncork Backpressure FIFO Ordering
+// ----------------------------------------------------------------------------
 fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
     t.run("Case 1: FIFO Stream Order Preservation on Uncork with Active Backpressure") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -140,6 +146,9 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. Empty Cork Backpressure Polling
+// ----------------------------------------------------------------------------
 fn test_uncork_empty_cork_with_backpressure(t: lit::T&) {
     t.run("Case 2: Uncork Empty Cork Reports Needs-Poll when Backpressure Pending") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -178,6 +187,9 @@ fn test_uncork_empty_cork_with_backpressure(t: lit::T&) {
 // Operates either standalone or through an intermediate ToxiProxy.
 
 // Verifies end-to-end HTTP/1.1 request/response roundtrip with streaming wire parsing
+// ----------------------------------------------------------------------------
+// 4. Live TCP H1 Chunked Roundtrip
+// ----------------------------------------------------------------------------
 fn test_live_h1_roundtrip(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener started");
@@ -227,6 +239,9 @@ fn test_live_h1_roundtrip(t: lit::T&) {
 }
 
 // Verifies server rejects malformed space-before-colon request (CVE-2019-16276)
+// ----------------------------------------------------------------------------
+// 5. Live TCP CVE-2019-16276 Space-Before-Colon Rejection
+// ----------------------------------------------------------------------------
 fn test_live_h1_space_before_colon_rejected(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
@@ -250,6 +265,9 @@ fn test_live_h1_space_before_colon_rejected(t: lit::T&) {
 }
 
 // Verifies server rejects conflicting Content-Length headers over live TCP
+// ----------------------------------------------------------------------------
+// 6. Live TCP Conflicting Content-Length Rejection
+// ----------------------------------------------------------------------------
 fn test_live_h1_conflicting_content_length(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
@@ -272,6 +290,9 @@ fn test_live_h1_conflicting_content_length(t: lit::T&) {
 }
 
 // Verifies server detects connection reset / EOF cleanly
+// ----------------------------------------------------------------------------
+// 7. Live TCP Abrupt Disconnect / EOF Handling
+// ----------------------------------------------------------------------------
 fn test_live_h1_abrupt_disconnect(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     let srv_port = wing::tcp_getsockname_port(listener);
@@ -298,6 +319,9 @@ fn test_live_h1_abrupt_disconnect(t: lit::T&) {
 // - Go net #40738 (TCP connection reset vs clean shutdown semantics on unread buffered data).
 // - POSIX.1-2008 & Berkeley Sockets SO_LINGER zero-abort specification.
 
+// ----------------------------------------------------------------------------
+// 8. RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data
+// ----------------------------------------------------------------------------
 fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
     t.run("Case 1: RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -343,6 +367,9 @@ fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. Explicit Socket Abort RST Teardown
+// ----------------------------------------------------------------------------
 fn test_explicit_socket_abort(t: lit::T&) {
     t.run("Case 2: Explicit tcp_abort and async_socket_abort RST Teardown") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -371,6 +398,9 @@ fn test_explicit_socket_abort(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. TCP Keepalive Boundary Validation
+// ----------------------------------------------------------------------------
 fn test_keepalive_boundary_validation(t: lit::T&) {
     t.run("Case 3: TCP Keepalive Boundary Validation (RFC 1122 §4.2.3.6)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -394,6 +424,9 @@ fn test_keepalive_boundary_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. Backpressure Flow Control State Tracking
+// ----------------------------------------------------------------------------
 fn test_flow_control_state_tracking(t: lit::T&) {
     t.run("Case 4: Backpressure Flow Control State Tracking") { sub =>
         var bp = wing::BackPressure { .. };
@@ -434,6 +467,9 @@ fn test_flow_control_state_tracking(t: lit::T&) {
 // - RFC 9293 Section 3.5: TCP Close sequence & full-duplex half-closed states (CLOSE_WAIT / FIN_WAIT_2).
 // - RFC 1122 Section 4.2.2.13: TCP close and lingering options (SO_LINGER).
 
+// ----------------------------------------------------------------------------
+// 12. Deferred Shutdown on Active Backpressure
+// ----------------------------------------------------------------------------
 fn test_half_close_deferred_shutdown(t: lit::T&) {
     t.run("Case 1: Deferred Shutdown on Active Backpressure & Re-entrant Send Block") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -503,6 +539,9 @@ fn test_half_close_deferred_shutdown(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Peer FIN Half-Close Full-Duplex Ordering
+// ----------------------------------------------------------------------------
 fn test_peer_fin_half_closed_response(t: lit::T&) {
     t.run("Case 2: Peer FIN Handling & Server Response in CLOSE_WAIT State") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -552,6 +591,9 @@ fn test_peer_fin_half_closed_response(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. Live Socket Options Tuning
+// ----------------------------------------------------------------------------
 fn test_socket_options_tuning(t: lit::T&) {
     t.run("Case 3: Live OS Socket Options (SO_LINGER, TCP_NODELAY, SO_REUSEADDR)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -599,6 +641,9 @@ fn test_socket_options_tuning(t: lit::T&) {
 // 6. Zero-copy shared buffer (tcp_recv_shared) and direct slice (tcp_recv_slice).
 // 7. Abrupt TCP RST termination via tcp_abort propagating ECONNRESET to peer.
 
+// ----------------------------------------------------------------------------
+// 15. Non-blocking Recv WouldBlock
+// ----------------------------------------------------------------------------
 fn test_nonblocking_empty_wouldblock(t: lit::T&) {
     t.run("Case 1: Non-blocking Socket Empty Read Returns WouldBlock (-2)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -624,6 +669,9 @@ fn test_nonblocking_empty_wouldblock(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. Non-blocking Data Exchange
+// ----------------------------------------------------------------------------
 fn test_nonblocking_data_exchange(t: lit::T&) {
     t.run("Case 2: Non-blocking Socket Data Reception & Return to WouldBlock") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -658,6 +706,9 @@ fn test_nonblocking_data_exchange(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. Closed Port Connection Refusal
+// ----------------------------------------------------------------------------
 fn test_connect_refused_immediate_failure(t: lit::T&) {
     t.run("Case 3: Connection Refusal on Closed Port Returns Immediate Error") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -696,6 +747,9 @@ fn execute_single_burst_exchange(listener: i64, port: u16) -> bool {
     return true;
 }
 
+// ----------------------------------------------------------------------------
+// 18. Rapid Connection Burst Lifecycle
+// ----------------------------------------------------------------------------
 fn test_rapid_connection_burst(t: lit::T&) {
     t.run("Case 4: Rapid Connection Burst Lifecycle & Zero Descriptor Leaks") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 32);
@@ -710,6 +764,9 @@ fn test_rapid_connection_burst(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. Vectored Send2 Edge Cases
+// ----------------------------------------------------------------------------
 fn test_vectored_send2_edge_cases(t: lit::T&) {
     t.run("Case 5: Vectored I/O (tcp_send2) Edge Cases with Empty Slices") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -751,6 +808,9 @@ fn test_vectored_send2_edge_cases(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. Shared Buffer Recv Zero-Copy
+// ----------------------------------------------------------------------------
 fn test_shared_buffer_recv(t: lit::T&) {
     t.run("Case 6: Zero-Copy Shared Buffer Recv (tcp_recv_shared)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -776,6 +836,9 @@ fn test_shared_buffer_recv(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 21. Direct Slice Recv Zero-Copy
+// ----------------------------------------------------------------------------
 fn test_direct_slice_recv(t: lit::T&) {
     t.run("Case 7: Direct Destination Slice Recv (tcp_recv_slice)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -801,6 +864,9 @@ fn test_direct_slice_recv(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. Peer Abort RST Propagation
+// ----------------------------------------------------------------------------
 fn test_peer_abort_propagation(t: lit::T&) {
     t.run("Case 8: Peer tcp_abort Discard & Immediate Reset Propagation") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -833,6 +899,9 @@ fn test_peer_abort_propagation(t: lit::T&) {
 // - Profile and ClientProfile dispatch overloads
 // - Socket option summary formatting
 
+// ----------------------------------------------------------------------------
+// 23. Socket p0f Profiles
+// ----------------------------------------------------------------------------
 fn test_socket_p0f_profiles(t: lit::T&) {
     t.run("Wing Authentic Zero-Heap NetStack Profile") { sub =>
         let wing_cfg = internal::p0f_socket_config(wing::Profile.Wing);
@@ -864,6 +933,9 @@ fn test_socket_p0f_profiles(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. Socket Invariant Validation
+// ----------------------------------------------------------------------------
 fn test_socket_invariant_validation(t: lit::T&) {
     t.run("Invariant Boundary Checks") { sub =>
         var bad_cfg = internal::p0f_socket_config(wing::Profile.Wing);
@@ -907,6 +979,9 @@ fn test_socket_invariant_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 25. Live OS Socket Tuning & Telemetry
+// ----------------------------------------------------------------------------
 fn test_live_socket_options(t: lit::T&) {
     t.run("OS Socket Option Tuning & Telemetry") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -973,6 +1048,9 @@ fn test_live_socket_options(t: lit::T&) {
 // - Ring compaction under slot pressure
 // - Real kernel TCP socket transmission via tcp_sendv
 
+// ----------------------------------------------------------------------------
+// 26. IoVec Lifecycle & Capacity
+// ----------------------------------------------------------------------------
 fn test_iovec_lifecycle(t: lit::T&) {
     t.run("IoVecArray Lifecycle & Capacity") { sub =>
         var arr = core::new_iovec_array();
@@ -1008,6 +1086,9 @@ fn test_iovec_lifecycle(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 27. IoVec Flatten & Copy
+// ----------------------------------------------------------------------------
 fn test_iovec_flatten_and_copy(t: lit::T&) {
     t.run("IoVecArray Flatten & Copy") { sub =>
         var arr = core::new_iovec_array();
@@ -1034,6 +1115,9 @@ fn test_iovec_flatten_and_copy(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 28. IoVec Consumption & Compact
+// ----------------------------------------------------------------------------
 fn test_iovec_consumption_and_compact(t: lit::T&) {
     t.run("Partial Consumption & Compact") { sub =>
         var arr = core::new_iovec_array();
@@ -1069,6 +1153,9 @@ fn test_iovec_consumption_and_compact(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 29. Kernel TCP tcp_sendv
+// ----------------------------------------------------------------------------
 fn test_tcp_sendv_socket(t: lit::T&) {
     t.run("Kernel TCP Transmission via tcp_sendv") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -1105,6 +1192,9 @@ fn test_tcp_sendv_socket(t: lit::T&) {
 
 // RFC 7413 Section 5: TCP Fast Open Configuration
 // RFC 3168 Section 5: The ECN Field in IP
+// ----------------------------------------------------------------------------
+// 30. TCP Fast Open (RFC 7413) & ECN Options (RFC 3168)
+// ----------------------------------------------------------------------------
 fn test_tcp_fastopen_and_ecn(t: lit::T&) {
     t.run("TCP-01: TCP Fast Open constants and option flags") { sub =>
         sub.assert_eq(wing::TCP_FASTOPEN_DEFAULT_QLEN, 512, "default TFO queue length is 512");

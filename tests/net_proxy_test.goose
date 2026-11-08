@@ -15,6 +15,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // HTTP CONNECT tunneling, credential isolation, and 4-tier Slowloris defenses.
 // CVE-2026-94439, CVE-2026-56866, CVE-2025-4673, and CVE-2021-33197 defenses.
 
+// ----------------------------------------------------------------------------
+// 1. SOCKS5 Greeting & RFC 1929
+// ----------------------------------------------------------------------------
 fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
     t.run("SOCKS5 Phase 1 Greeting and Negotiation") { sub =>
         var greeting_buf: u8[..16] = [];
@@ -117,6 +120,9 @@ fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. SOCKS5 Command & Reply
+// ----------------------------------------------------------------------------
 fn test_socks5_command_and_reply_parsing(t: lit::T&) {
     t.run("socks5h vs socks5 ATYP and Port Serialization") { sub =>
         // socks5h:// MUST use ATYP = 0x03 to delegate DNS resolution to proxy node
@@ -247,6 +253,9 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. HTTP CONNECT Tunnel & Buffer Hygiene
+// ----------------------------------------------------------------------------
 fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
     t.run("CONNECT Header Construction & Credential Isolation (CVE-2025-4673)") { sub =>
         var req_buf: u8[..1024] = [];
@@ -333,6 +342,9 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. Slowloris Tarpit Defenses
+// ----------------------------------------------------------------------------
 fn test_slowloris_tarpit_defenses(t: lit::T&) {
     t.run("4-Tier Slowloris Defense Enforcement") { sub =>
         let cfg = wing::SlowlorisDefenseConfig { .. };
@@ -381,7 +393,7 @@ fn test_slowloris_tarpit_defenses(t: lit::T&) {
 // tests/proxy_protocol_test.goose
 // Verification test suite for HAProxy PROXY Protocol v1 (text) and v2 (binary).
 
-// 1. PROXY Protocol v1 (Text) Conformance
+// 5. PROXY Protocol v1 (Text) Conformance
 fn test_proxy_v1_conformance(t: lit::T&) {
     t.run("PROXY-v1-01: Valid TCP4 line parsing") { sub =>
         let raw = "PROXY TCP4 192.168.0.1 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
@@ -483,7 +495,7 @@ fn test_proxy_v1_conformance(t: lit::T&) {
     };
 }
 
-// 2. PROXY Protocol v2 (Binary) Conformance
+// 6. PROXY Protocol v2 (Binary) Conformance
 fn test_proxy_v2_conformance(t: lit::T&) {
     t.run("PROXY-v2-01: IPv4 TCP binary header parsing") { sub =>
         // Preamble (12) + 0x21 (v2, PROXY) + 0x11 (INET4, STREAM) + len 12 (0x000C)
@@ -573,7 +585,7 @@ fn test_proxy_v2_conformance(t: lit::T&) {
     };
 }
 
-// 3. PROXY Protocol v2 TLV (Type-Length-Value) Metadata
+// 7. PROXY Protocol v2 TLV (Type-Length-Value) Metadata
 fn test_proxy_v2_tlvs(t: lit::T&) {
     t.run("PROXY-v2-TLV-01: ALPN, Authority, and Unique ID") { sub =>
         var hdr = wing::ProxyHeader {
@@ -646,7 +658,7 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
     };
 }
 
-// 4. Stream Stripping & Server Pipeline Integration
+// 8. Stream Stripping & Server Pipeline Integration
 fn test_proxy_server_integration(t: lit::T&) {
     t.run("Auto-Detection and Stream Stripping") { sub =>
         let stream = "PROXY TCP4 203.0.113.195 10.0.0.1 54321 80\r\nGET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -688,6 +700,9 @@ fn test_proxy_server_integration(t: lit::T&) {
 // Active background health check probing, state machine transitions (UP, DOWN, PROBING),
 // consecutive success/failure thresholds, and circuit breaker interlock.
 
+// ----------------------------------------------------------------------------
+// 9. Health State Machine Transitions
+// ----------------------------------------------------------------------------
 fn test_health_state_transitions(t: lit::T&) {
     t.run("Up -> Down on Consecutive Failures") { sub =>
         let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
@@ -744,6 +759,9 @@ fn test_health_state_transitions(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. Probe Wire Formatting and Response Evaluation
+// ----------------------------------------------------------------------------
 fn test_probe_wire_and_response_parsing(t: lit::T&) {
     t.run("Format Health Probe HTTP/1.1 Request") { sub =>
         var wire: u8[>..] = [];
@@ -776,6 +794,9 @@ fn test_probe_wire_and_response_parsing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. Cluster Health Checker Engine
+// ----------------------------------------------------------------------------
 fn test_cluster_health_checker_integration(t: lit::T&) {
     t.run("Cluster Active Health Check Engine") { sub =>
         var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
@@ -847,6 +868,9 @@ fn test_cluster_health_checker_integration(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Reverse Proxy Hardening & Backpressure
+// ----------------------------------------------------------------------------
 fn test_reverse_proxy_hardening(t: lit::T&) {
     t.run("Connection Leak Defense and Lifecycle") { sub =>
         var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
@@ -1049,6 +1073,9 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
 // burst tolerance (tau), emission interval (T), TAT tracking,
 // clock drift protection, and bounded GatewayRateLimiter.
 
+// ----------------------------------------------------------------------------
+// 13. GCRA Core Algorithm & Conformance
+// ----------------------------------------------------------------------------
 fn test_gcra_core_algorithm(t: lit::T&) {
     t.run("GCRA Quota and Single-Cell Conformance") { sub =>
         // 10 rps -> T = 100ms (100,000,000 ns), burst = 2 -> tau = 200ms (200,000,000 ns)
@@ -1137,6 +1164,9 @@ fn test_gcra_core_algorithm(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. Gateway Multi-Client Rate Limiter
+// ----------------------------------------------------------------------------
 fn test_gateway_rate_limiter(t: lit::T&) {
     t.run("Multi-Client Isolation and Limiting") { sub =>
         var limiter = wing::new_gateway_rate_limiter(10, 2);
@@ -1186,7 +1216,7 @@ fn test_gateway_rate_limiter(t: lit::T&) {
 // Tests for GCRA rate limiter, burst tolerance, and sharded storage.
 
 // ----------------------------------------------------------------------------
-// 1. Mathematical GCRA TAT Scheduling & Burst Tolerance
+// 15. Mathematical GCRA TAT Scheduling & Burst Tolerance
 // ----------------------------------------------------------------------------
 fn test_gcra_tat_and_burst(t: lit::T&) {
     t.run("Single-Cell Ingress & Burst Tolerance Exhaustion") { sub =>
@@ -1232,7 +1262,7 @@ fn test_gcra_tat_and_burst(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Anti-Starvation Multi-Cell Priority Reservation (governor #16 Fix)
+// 16. Anti-Starvation Multi-Cell Priority Reservation (governor #16 Fix)
 // ----------------------------------------------------------------------------
 fn test_anti_starvation_reservation(t: lit::T&) {
     t.run("Priority Reservation Preempts Small Subsequent Requests") { sub =>
@@ -1268,7 +1298,7 @@ fn test_anti_starvation_reservation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. 256-Micro-Shard Table & Per-Key Isolation
+// 17. 256-Micro-Shard Table & Per-Key Isolation
 // ----------------------------------------------------------------------------
 fn test_sharded_gcra_limiter(t: lit::T&) {
     t.run("Independent Client Quotas Across Shards") { sub =>
@@ -1320,7 +1350,7 @@ fn test_sharded_gcra_limiter(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Extreme DDoS Probabilistic Sampling (5%)
+// 18. Extreme DDoS Probabilistic Sampling (5%)
 // ----------------------------------------------------------------------------
 fn test_probabilistic_ddos_mitigation(t: lit::T&) {
     t.run("5% Statistical Sampling Under Extreme Load") { sub =>
@@ -1349,7 +1379,7 @@ fn test_probabilistic_ddos_mitigation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. IETF RateLimit-* Header Synthesis
+// 19. IETF RateLimit-* Header Synthesis
 // ----------------------------------------------------------------------------
 fn test_ietf_rate_limit_headers(t: lit::T&) {
     t.run("IETF Headers on Allowed Request") { sub =>
@@ -1391,7 +1421,7 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. GCRA Arithmetic, Overflow & Zero Emission Invariants
+// 20. GCRA Arithmetic, Overflow & Zero Emission Invariants
 // ----------------------------------------------------------------------------
 fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     t.run("Zero Emission Interval Handling & Division by Zero") { sub =>
@@ -1465,10 +1495,6 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Runner
-// ----------------------------------------------------------------------------
-
 // --- Component: net_masque ---
 // Verification suite for MASQUE protocols:
 // - RFC 9297: HTTP Datagrams & Capsule Protocol
@@ -1476,6 +1502,9 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
 // - RFC 9484: Proxying IP in HTTP (CONNECT-IP)
 // - RFC 9221: An Unreliable Datagram Extension to QUIC
 
+// ----------------------------------------------------------------------------
+// 21. RFC 9297 Capsules & HTTP Datagrams
+// ----------------------------------------------------------------------------
 fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     t.run("Capsule Protocol Framing & Zero-Copy Decode") { sub =>
         var wire: u8[..256] = [];
@@ -1529,6 +1558,9 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. RFC 9298 MASQUE CONNECT-UDP
+// ----------------------------------------------------------------------------
 fn test_rfc9298_connect_udp(t: lit::T&) {
     t.run("URI Template Formatting and Parsing") { sub =>
         var path_buf: u8[..256] = [];
@@ -1573,6 +1605,9 @@ fn test_rfc9298_connect_udp(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. RFC 9484 MASQUE CONNECT-IP
+// ----------------------------------------------------------------------------
 fn test_rfc9484_connect_ip(t: lit::T&) {
     t.run("ADDRESS_REQUEST & ADDRESS_ASSIGN Capsules") { sub =>
         // 1. Client creates Address Request
@@ -1649,6 +1684,9 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. MASQUE Client Sessions & Tunneling
+// ----------------------------------------------------------------------------
 fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
     t.run("CONNECT-UDP Handshake & End-to-End Tunneling via Client") { sub =>
         var client = wing::new_client();
@@ -1728,6 +1766,9 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
 // --- Component: net_masque_dns_invariants ---
 // Security invariant tests for MASQUE (RFC 9297, RFC 9298, RFC 9484) and DNS (RFC 1035, RFC 9460).
 
+// ----------------------------------------------------------------------------
+// 25. MASQUE CONNECT-UDP Path Parsing
+// ----------------------------------------------------------------------------
 fn test_masque_connect_udp_path_parsing(t: lit::T&) {
     // 1. Valid RFC 9298 paths
     let h1, p1, ok1 = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/");
@@ -1762,6 +1803,9 @@ fn test_masque_connect_udp_path_parsing(t: lit::T&) {
     t.assert_false(ok_extra, "extra segments after port must be rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 26. MASQUE Capsule Codecs
+// ----------------------------------------------------------------------------
 fn test_masque_capsule_codecs(t: lit::T&) {
     // 1. DATAGRAM capsule encode & decode
     var cap_out: u8[..128] = [];
@@ -1811,6 +1855,9 @@ fn test_masque_capsule_codecs(t: lit::T&) {
     t.assert_false(bad_len_ok, "IPv4 address with rdlength != 4 must be rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 27. DNS Pointer Security
+// ----------------------------------------------------------------------------
 fn test_dns_pointer_security(t: lit::T&) {
     // Valid backward pointer response
     // Header 12B, Question 17B (example.com A IN), Answer 16B (pointer 0xC00C -> example.com)
@@ -1845,6 +1892,9 @@ fn test_dns_pointer_security(t: lit::T&) {
     t.assert_false(ok3, "pointer into header must be rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 28. DNS Record Bounds & HTTPS Target
+// ----------------------------------------------------------------------------
 fn test_dns_record_bounds_and_https_target(t: lit::T&) {
     // Malformed A record: rdlength != 4
     let bad_a_wire: const u8[44] = [
@@ -1885,6 +1935,9 @@ fn test_dns_record_bounds_and_https_target(t: lit::T&) {
 // 9. RFC 7838 Section 2.1 security invariant: Alt-Svc ignored on unencrypted HTTP.
 // 10. Max-age (TTL) expiration.
 
+// ----------------------------------------------------------------------------
+// 29. Alt-Svc Learning & HTTP/3 Promotion
+// ----------------------------------------------------------------------------
 fn test_altsvc_learning_and_h3_promotion(t: lit::T&) {
     t.run("Cold Request Learns Alt-Svc and Next Request Upgrades to HTTP/3") { sub =>
         var client = wing::new_client();
@@ -1916,6 +1969,9 @@ fn test_altsvc_learning_and_h3_promotion(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 30. Protocol Racing & UDP Firewall Fallback
+// ----------------------------------------------------------------------------
 fn test_chromium_protocol_racing_and_udp_fallback(t: lit::T&) {
     t.run("UDP Firewall Block: TCP Wins Race, Zero Error, Backoff Recorded") { sub =>
         var client = wing::new_client();
@@ -1993,6 +2049,9 @@ fn test_chromium_protocol_racing_and_udp_fallback(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 31. Alt-Svc Clear Directive & TTL Expiration
+// ----------------------------------------------------------------------------
 fn test_altsvc_clear_and_ttl_expiration(t: lit::T&) {
     t.run("Alt-Svc: clear Purges Origin from Cache Immediately") { sub =>
         var client = wing::new_client();
@@ -2034,6 +2093,9 @@ fn test_altsvc_clear_and_ttl_expiration(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 32. RFC 7838 Insecure Transport Security & Toggles
+// ----------------------------------------------------------------------------
 fn test_rfc7838_security_and_options(t: lit::T&) {
     t.run("RFC 7838 Section 2.1: Alt-Svc MUST be Ignored on Insecure HTTP") { sub =>
         var client = wing::new_client();
@@ -2068,6 +2130,9 @@ fn test_rfc7838_security_and_options(t: lit::T&) {
 // --- Component: http/client_cert (RFC 9440) ---
 // Client-Cert / Client-Cert-Chain SFV Byte Sequence codec and TTRP sanitization.
 
+// ----------------------------------------------------------------------------
+// 33. RFC 9440 Client-Cert
+// ----------------------------------------------------------------------------
 fn test_client_cert_header(t: lit::T&) {
     t.run("Client-Cert Byte Sequence round-trip on 64-byte DER fixture") { sub =>
         var der: u8[..64] = [];
@@ -2228,6 +2293,331 @@ fn test_client_cert_header(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 34. Load Balancer: Weights, PRNG, and State Transitions
+// ----------------------------------------------------------------------------
+fn test_load_balancer(t: lit::T&) {
+    t.run("LeastConnections respects upstream weights") { sub =>
+        var cluster = wing::new_upstream_cluster(wing::LbPolicy.LeastConnections, 3);
+        sub.assert_true(wing::add_upstream_target(cluster, "srv-weight-1", 80, 1), "add target 1");
+        sub.assert_true(wing::add_upstream_target(cluster, "srv-weight-2", 80, 2), "add target 2");
+
+        // Both targets have 1 active connection.
+        // Target 0 (weight 1): normalized load = 1 / 1 = 1.0
+        // Target 1 (weight 2): normalized load = 1 / 2 = 0.5
+        cluster.targets[0].active_conns = 1;
+        cluster.targets[1].active_conns = 1;
+
+        let chosen, ok = wing::select_upstream(cluster);
+        sub.assert_true(ok, "upstream selected");
+        sub.assert_eq(chosen, 1, "target with weight 2 chosen over weight 1 with equal connections");
+    };
+
+    t.run("PowerOfTwoChoices respects target weights") { sub =>
+        var t1 = wing::UpstreamTarget { active_conns: 2, weight: 1, .. };
+        var t2 = wing::UpstreamTarget { active_conns: 3, weight: 2, .. };
+
+        // t1: 2 conns * 2 weight2 = 4
+        // t2: 3 conns * 1 weight1 = 3 -> t2 has lower weighted load
+        let chosen = wing::evaluate_two_choice(t1, 0, t2, 1);
+        sub.assert_eq(chosen, 1, "P2C selects target 2 due to higher weight capacity");
+    };
+
+    t.run("PRNG preserves non-zero 64-bit entropy") { sub =>
+        var state: u64 = 0x123456789abcdef0;
+        let r1 = wing::next_prng(state);
+        let r2 = wing::next_prng(state);
+        let r3 = wing::next_prng(state);
+
+        sub.assert_ne(r1, r2, "PRNG values differ across steps");
+        sub.assert_ne(r2, r3, "PRNG sequence continues");
+        sub.assert_ne(state, 0, "PRNG state remains non-zero");
+    };
+
+    t.run("Probing target is selectable during recovery") { sub =>
+        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
+        sub.assert_true(wing::add_upstream_target(cluster, "srv-probe", 80, 1), "add target");
+        cluster.targets[0].is_healthy = false;
+        cluster.targets[0].health_state = wing::UpstreamHealthState.Probing;
+
+        let chosen, ok = wing::select_upstream(cluster);
+        sub.assert_true(ok, "probing target is selected for trial traffic");
+        sub.assert_eq(chosen, 0, "target 0 selected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 35. Active Health Check: Prober State Machine & Thresholds
+// ----------------------------------------------------------------------------
+fn test_health_check(t: lit::T&) {
+    t.run("Probing failure immediately trips to Down") { sub =>
+        let config = wing::new_health_check_config(5000, 2000, 2, 3);
+        var health = wing::UpstreamHealth {
+            state:                 wing::HealthState.Probing,
+            consecutive_successes: 1,
+            consecutive_failures:  0,
+            ..
+        };
+
+        let new_state = wing::record_probe_failure(health, config);
+        sub.assert_eq(new_state, wing::HealthState.Down, "failure during Probing immediately trips Down");
+        sub.assert_eq(health.consecutive_successes, 0, "success streak cleared on failure");
+    };
+
+    t.run("Consecutive successes transition Probing to Up") { sub =>
+        let config = wing::new_health_check_config(5000, 2000, 2, 3);
+        var health = wing::UpstreamHealth {
+            state:                 wing::HealthState.Down,
+            consecutive_successes: 0,
+            consecutive_failures:  3,
+            ..
+        };
+
+        // First success transitions Down -> Probing
+        let s1 = wing::record_probe_success(health, 500, config);
+        sub.assert_eq(s1, wing::HealthState.Probing, "first success enters Probing");
+
+        // Second success reaches healthy_threshold (2) -> transitions to Up
+        let s2 = wing::record_probe_success(health, 400, config);
+        sub.assert_eq(s2, wing::HealthState.Up, "second success reaches threshold and enters Up");
+    };
+
+    t.run("Probe HTTP status code parser") { sub =>
+        let wire_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let code_200, ok_200 = wing::parse_probe_status_code(wire_200);
+        sub.assert_true(ok_200, "parse 200 ok");
+        sub.assert_eq(code_200, 200, "status 200");
+
+        let wire_503 = "HTTP/1.1 503 Service Unavailable\r\n\r\n";
+        let code_503, ok_503 = wing::parse_probe_status_code(wire_503);
+        sub.assert_true(ok_503, "parse 503 ok");
+        sub.assert_eq(code_503, 503, "status 503");
+
+        let config = wing::new_health_check_config(5000, 2000, 2, 3);
+        sub.assert_true(wing::evaluate_probe_response(wire_200, 200), "validate expected 200");
+        sub.assert_false(wing::evaluate_probe_response(wire_503, 200), "reject unexpected 503");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 36. GCRA Rate Limiter: Headroom, Burst Headroom, and Buffer Limits
+// ----------------------------------------------------------------------------
+fn test_gcra_rate_limiter(t: lit::T&) {
+    t.run("Burst headroom derivation: tau = T * B") { sub =>
+        // 10 req/sec -> T = 100,000,000 ns (100ms)
+        // burst = 5 -> tau = 100ms * 5 = 500ms
+        // window = tau + T = 600ms
+        let config = wing::new_gcra_config(10, 5);
+        sub.assert_eq(config.emission_interval_ns, 100000000, "T is 100ms");
+        sub.assert_eq(config.tau_ns, 500000000, "tau is 500ms");
+        sub.assert_eq(config.limit_window_ns, 600000000, "limit window is 600ms");
+    };
+
+    t.run("Multi-cell burst allowance at t=0") { sub =>
+        let config = wing::new_gcra_config(10, 2); // T=100ms, tau=200ms, burst=2
+        var cell = wing::GcraTatCell { tat_ns: 0 };
+        let now: u64 = 1000000000; // t=1.0s
+
+        // 1st request admitted
+        let d1 = wing::gcra_check(config, cell, 1, now);
+        sub.assert_true(d1.allowed, "1st request allowed");
+
+        // 2nd request admitted
+        let d2 = wing::gcra_check(config, cell, 1, now);
+        sub.assert_true(d2.allowed, "2nd request allowed");
+
+        // 3rd request admitted
+        let d3 = wing::gcra_check(config, cell, 1, now);
+        sub.assert_true(d3.allowed, "3rd request allowed");
+
+        // 4th request rejected (burst capacity 2 exhausted at instant t=1.0s)
+        let d4 = wing::gcra_check(config, cell, 1, now);
+        sub.assert_false(d4.allowed, "4th request rejected");
+    };
+
+    t.run("Client ID overflow rejected without truncation") { sub =>
+        var limiter = wing::new_gateway_rate_limiter(10, 5);
+        let oversized_key = "012345678901234567890123456789012345678901234567890123456789012345"; // 66 bytes
+
+        let slot = wing::find_client_slot(limiter, oversized_key);
+        sub.assert_eq(slot, wing::GATEWAY_LIMITER_NONE, "oversized client ID rejected by find_client_slot");
+
+        let dec = wing::check_gateway_rate_limit(limiter, oversized_key, 1, 1000000000);
+        sub.assert_true(dec.allowed, "fallback admission handled");
+        sub.assert_eq(limiter.entries.len, 0, "oversized key was NOT inserted into entries table");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 37. Reverse Proxy: Stream Ring Buffer & Zero-Copy Forwarding
+// ----------------------------------------------------------------------------
+fn test_reverse_proxy_streaming(t: lit::T&) {
+    t.run("Stream ring compacting and slice vending") { sub =>
+        var ring = wing::ProxyStreamRing { .. };
+        sub.assert_true(wing::feed_stream_chunk(ring, "Hello, World!"), "feed chunk");
+        sub.assert_eq(ring.buf.len, 13, "buffered length");
+
+        let slice1 = wing::incoming_slice(ring);
+        sub.assert_eq(slice1, "Hello, World!", "incoming slice");
+
+        // Consume 7 bytes ("Hello, ")
+        sub.assert_true(wing::advance_read(ring, 7), "advance read 7 bytes");
+        sub.assert_eq(ring.read_pos, 7, "read cursor at 7");
+
+        let slice2 = wing::incoming_slice(ring);
+        sub.assert_eq(slice2, "World!", "incoming slice after advance");
+
+        // Compact ring
+        wing::compact_stream_ring(ring);
+        sub.assert_eq(ring.read_pos, 0, "read cursor reset to 0 after compaction");
+        sub.assert_eq(ring.buf.len, 6, "compacted length is remaining 6 bytes");
+
+        let slice3 = wing::incoming_slice(ring);
+        sub.assert_eq(slice3, "World!", "incoming slice after compaction");
+    };
+
+    t.run("WebSocket userspace streaming masking") { sub =>
+        var src = wing::ProxyStreamRing { .. };
+        var dst = wing::ProxyStreamRing { .. };
+
+        sub.assert_true(wing::feed_stream_chunk(src, "ping"), "feed plain payload");
+
+        let mask: u8[4] = [0x12, 0x34, 0x56, 0x78];
+        let n, ok = wing::forward_userspace_stream_chunk(src, dst, wing::ProxyTransportKind.WebSocket, mask);
+        sub.assert_true(ok, "forward chunk ok");
+        sub.assert_eq(n, 4, "forwarded 4 bytes");
+
+        let masked_slice = wing::incoming_slice(dst);
+        sub.assert_eq(masked_slice[0], ('p' as u8) ^ 0x12, "byte 0 masked with key[0]");
+        sub.assert_eq(masked_slice[1], ('i' as u8) ^ 0x34, "byte 1 masked with key[1]");
+        sub.assert_eq(masked_slice[2], ('n' as u8) ^ 0x56, "byte 2 masked with key[2]");
+        sub.assert_eq(masked_slice[3], ('g' as u8) ^ 0x78, "byte 3 masked with key[3]");
+    };
+
+    t.run("Live ReverseProxy exchange over StreamPool") { sub =>
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        guard listener > 0 else { return; }
+        let port = wing::tcp_getsockname_port(listener);
+        sub.assert_gt(port as i64, 0, "ephemeral port allocated");
+
+        let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
+        sub.assert_gt(client_sock, 0, "connected to upstream listener");
+        let server_sock = wing::tcp_accept(listener, 2000);
+        sub.assert_gt(server_sock, 0, "accepted upstream socket");
+
+        let canned_resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nUpstream Pong";
+        let _ = wing::tcp_send(server_sock, canned_resp);
+
+        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+        sub.assert_true(wing::add_upstream_target(proxy.cluster, "127.0.0.1", port, 1), "added upstream");
+
+        var pool = wing::new_stream_pool();
+        let pkey = wing::new_pool_key(
+            wing::PoolScheme.Http,
+            "127.0.0.1",
+            port,
+            wing::new_direct_proxy_chain(),
+            wing::NetworkAnonymizationKey { .. },
+            wing::TlsAndDnsPolicy { .. },
+        );
+        let t = wing::Transport.Tcp { fd: client_sock };
+        let cid = wing::register_connection(pool, pkey, wing::NegotiatedProtocol.Http11, t, "127.0.0.1", 1, 1000);
+        sub.assert_gt(cid as i64, 0, "registered warm connection in pool");
+        let _ = wing::release_connection(pool, cid, 1000);
+
+        var in_hdrs = wing::HeaderMap { .. };
+        let _ = wing::append_header(in_hdrs, "Host", "edge.example.com");
+        var resp = wing::Response { .. };
+        let ok_ex = wing::execute_proxy_exchange(
+            proxy, pool, "GET", "/v1/health", in_hdrs, "203.0.113.5", "https", "", resp, 2000, 2000,
+        );
+        sub.assert_true(ok_ex, "execute_proxy_exchange succeeded");
+        sub.assert_eq(resp.status_code, 200, "upstream status 200");
+        sub.assert_bytes_eq(resp.body[..], "Upstream Pong", "upstream body forwarded");
+        sub.assert_eq(proxy.cluster.targets[0].active_conns, 0, "active conns released after exchange");
+        sub.assert_eq(proxy.cluster.targets[0].successes, 1, "upstream success recorded");
+
+        wing::tcp_close(server_sock);
+        wing::tcp_close(listener);
+        wing::close_pooled_connection(pool, cid);
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 38. HAProxy PROXY Protocol v2 §2.2 & uWS #1927 / #1948: PROXY v2 Malformed TLVs
+// ----------------------------------------------------------------------------
+fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: lit::T&) {
+    t.run("PROXY v2 with 2 leftover trailing bytes after TLVs MUST be rejected") { sub =>
+        // Preamble (12B) + ver_cmd (0x21: PROXY) + fam_trans (0x11: TCP4) + len (12B addr + 2B trailing = 14B)
+        var wire: u8[..64] = [];
+        for b in [0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A] {
+            wire.push(b as u8);
+        }
+        wire.push(0x21); // v2, PROXY
+        wire.push(0x11); // TCP4
+        wire.push(0x00); wire.push(14 as u8); // len = 14 bytes (12 bytes IPv4 + 2 trailing bytes)
+
+        // 12-byte IPv4 block: 1.2.3.4 -> 5.6.7.8, port 1000 -> 2000
+        for b in [1, 2, 3, 4, 5, 6, 7, 8, 0x03, 0xE8, 0x07, 0xD0] {
+            wire.push(b as u8);
+        }
+        // 2 trailing unparsed bytes (truncated TLV header)
+        wire.push(0x01); // TLV type 1 (ALPN)
+        wire.push(0x00); // Truncated length (missing second byte and value)
+
+        let hdr, consumed, ok = wing::parse_proxy_v2(wire[..]);
+        sub.assert_false(ok, "PROXY v2 with trailing truncated TLV bytes MUST be rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 39. Connection Pool & Proxies (net/pool.goose, net/proxy.goose)
+// ----------------------------------------------------------------------------
+fn test_pool_and_proxy_san_invariants(t: lit::T&) {
+    t.run("matches_san_pattern rejects TLD wildcard *.com") { sub =>
+        let matches_tld = wing::matches_san_pattern("*.com", "example.com");
+        sub.assert_false(matches_tld, "*.com wildcard MUST NOT match apex domain (RFC 6125 §6.4.3)");
+    };
+
+    t.run("matches_san_pattern rejects candidate hostname with literal wildcard") { sub =>
+        let matches_wild = wing::matches_san_pattern("*.example.com", "*.example.com");
+        sub.assert_false(matches_wild, "Candidate hostname containing literal '*' MUST NOT match");
+    };
+
+    t.run("verify_connect_tunnel_response rejects non-HTTP or 4-digit status codes") { sub =>
+        let err1 = wing::verify_connect_tunnel_response("HTTP/1.1 2000 OK\r\n\r\n");
+        sub.assert_true(err1 == wing::ConnectTunnelError.InvalidStatusLine, "Status code '2000' must be InvalidStatusLine");
+
+        let err2 = wing::verify_connect_tunnel_response("UNKNOWN 200 OK\r\n\r\n");
+        sub.assert_true(err2 == wing::ConnectTunnelError.InvalidStatusLine, "Non-HTTP protocol must be InvalidStatusLine");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 40. PROXY Protocol v1 Token Capacity Guard
+// ----------------------------------------------------------------------------
+fn test_proxy_protocol_overflow(t: lit::T&) {
+    // PROXY v1 with >8 space-separated tokens
+    let bad_line: const u8[:] = "PROXY TCP4 1.1.1.1 2.2.2.2 80 80 EXTRA1 EXTRA2 EXTRA3 EXTRA4\r\n";
+    let hdr, consumed, ok = wing::parse_proxy_v1(bad_line);
+    t.assert_false(ok, "PROXY v1 with >8 tokens must fail safely without buffer overflow");
+}
+
+// ----------------------------------------------------------------------------
+// 41. MASQUE Address Request Capsule Bounds
+// ----------------------------------------------------------------------------
+fn test_masque_address_capsule_bounds(t: lit::T&) {
+    // Address capsule with oversized IP bytes (>16 bytes) per RFC 9484 §4.7.2
+    var payload: u8[..32] = [];
+    payload.push(1);  // request_id = 1
+    payload.push(4);  // ip_version = 4
+    for i in 20 { payload.push(0xAA); } // 20 bytes (> 16 cap)
+    payload.push(32); // prefix_len = 32
+
+    let req, ok = wing::decode_address_request_capsule(payload[..]);
+    t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");
+}
+
 fn main() {
     var runner = lit::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", lit::Verbosity.Verbose);
 
@@ -2264,6 +2654,14 @@ fn main() {
     lit::run_case(runner, "31. Alt-Svc Clear Directive & TTL Expiration", test_altsvc_clear_and_ttl_expiration);
     lit::run_case(runner, "32. RFC 7838 Insecure Transport Security & Toggles", test_rfc7838_security_and_options);
     lit::run_case(runner, "33. RFC 9440 Client-Cert", test_client_cert_header);
+    lit::run_case(runner, "34. Load Balancer: Weights, PRNG, and State Transitions", test_load_balancer);
+    lit::run_case(runner, "35. Active Health Check: Prober State Machine & Thresholds", test_health_check);
+    lit::run_case(runner, "36. GCRA Rate Limiter: Headroom, Burst Headroom, and Buffer Limits", test_gcra_rate_limiter);
+    lit::run_case(runner, "37. Reverse Proxy: Stream Ring Buffer & Zero-Copy Forwarding", test_reverse_proxy_streaming);
+    lit::run_case(runner, "38. HAProxy PROXY Protocol v2 §2.2: Truncated TLVs & Trailing Bytes", test_proxy_v2_truncated_tlv_and_trailing_bytes);
+    lit::run_case(runner, "39. Pool & Proxy SAN invariants (net/pool.goose, net/proxy.goose)", test_pool_and_proxy_san_invariants);
+    lit::run_case(runner, "40. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
+    lit::run_case(runner, "41. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
 
     let ok = lit::finish(runner);
     assert(ok);

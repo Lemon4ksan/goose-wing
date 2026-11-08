@@ -11,6 +11,9 @@ import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
+// ----------------------------------------------------------------------------
+// 1. gRPC LPM Binary Framing & Codec
+// ----------------------------------------------------------------------------
 fn test_grpc_lpm_framing(t: lit::T&) {
     t.run("1. Uncompressed 5-Byte LPM Frame Encoding & Decoding") { sub =>
         let msg = "Hello gRPC Zero-Heap World!";
@@ -136,6 +139,9 @@ fn test_grpc_lpm_framing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. gRPC Incremental Streaming Stream Parser
+// ----------------------------------------------------------------------------
 fn test_grpc_streaming_parser(t: lit::T&) {
     t.run("1. Piecewise Fragmented Ingestion Across DATA Frame Chunks") { sub =>
         var parser = wing::new_grpc_stream_parser();
@@ -198,6 +204,9 @@ fn test_grpc_streaming_parser(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. gRPC Status Codes, Timeout & Percent-Encoded Messages
+// ----------------------------------------------------------------------------
 fn test_grpc_status_and_metadata(t: lit::T&) {
     t.run("1. Canonical Status Code Mapping (0..16)") { sub =>
         sub.assert_eq(wing::grpc_status_to_code(wing::GrpcStatusCode.Ok), 0, "OK code 0");
@@ -314,6 +323,9 @@ fn test_grpc_status_and_metadata(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. gRPC-Web Binary & Base64 Text Framing
+// ----------------------------------------------------------------------------
 fn test_grpc_web_framing(t: lit::T&) {
     t.run("1. Trailers-in-Body Encoding with Flag 0x80") { sub =>
         var web_trailers: u8[>..] = [];
@@ -395,6 +407,9 @@ fn test_grpc_web_framing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 5. gRPC Client Unary & Streaming RPC Exchange
+// ----------------------------------------------------------------------------
 fn test_grpc_client_rpc_exchange(t: lit::T&) {
     t.run("1. Request Header & Pseudo-Header Construction") { sub =>
         var cfg = wing::new_grpc_call_config("helloworld.Greeter", "SayHello");
@@ -505,6 +520,9 @@ fn test_grpc_client_rpc_exchange(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. Protobuf LEB128 Wire Field Helpers & GrpcStatus
+// ----------------------------------------------------------------------------
 fn test_protobuf_wire_helpers(t: lit::T&) {
     t.run("1. GrpcStatus Value Constructors (grpc_ok & grpc_error)") { sub =>
         let st_ok = wing::grpc_ok();
@@ -554,6 +572,792 @@ fn test_protobuf_wire_helpers(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 7. 32-bit LPM Length Overflows & Flag Invariants
+// ----------------------------------------------------------------------------
+fn test_grpc_lpm_integer_overflows(t: lit::T&) {
+    t.run("GRPC-SEC-01: 32-bit Integer Overflow in decode_grpc_lpm_slice") { sub =>
+        // 0xFFFFFFFF (4294967295) length
+        let ovf_hdr: u8[5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+        let _, _, _, ok_ovf = wing::decode_grpc_lpm_slice(ovf_hdr[..], 0);
+        sub.assert_false(ok_ovf, "overflow length 0xFFFFFFFF must not wrap around or succeed");
+
+        // 0xFFFFFFFB (4294967291) length: 5 + 0xFFFFFFFB would wrap to 0 if evaluated in u32
+        let ovf_wrap: u8[5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFB];
+        let _, _, _, ok_wrap = wing::decode_grpc_lpm_slice(ovf_wrap[..], 0);
+        sub.assert_false(ok_wrap, "overflow length 0xFFFFFFFB must not wrap around or succeed");
+    };
+
+    t.run("GRPC-SEC-02: 32-bit Integer Overflow in GrpcStreamParser") { sub =>
+        var parser = wing::new_grpc_stream_parser();
+        let ovf_chunk: u8[5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFB];
+        let ok_feed = wing::feed(parser, ovf_chunk[..]);
+        sub.assert_true(ok_feed, "feeding 5-byte header succeeds");
+
+        var payload: u8[..64] = [];
+        var compressed = false;
+        let ok_msg = wing::next_message(parser, payload, compressed);
+        sub.assert_false(ok_msg, "next_message must not return true on wrapped length");
+    };
+
+    t.run("GRPC-SEC-03: 32-bit Integer Overflow in decode_grpc_web_frame") { sub =>
+        let ovf_web: u8[5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+        var payload: u8[..64] = [];
+        var is_trailers = false;
+        var compressed = false;
+        let ok_web, _ = wing::decode_grpc_web_frame(ovf_web[..], 0, payload, is_trailers, compressed);
+        sub.assert_false(ok_web, "decode_grpc_web_frame must reject overflow length 0xFFFFFFFF");
+    };
+
+    t.run("GRPC-SEC-04: Reserved Flag Bits Validation") { sub =>
+        // Flag 0x02 (reserved, not compressed 0x01)
+        let bad_flag: u8[5] = [0x02, 0x00, 0x00, 0x00, 0x00];
+        let _, _, _, ok_flag = wing::decode_grpc_lpm_slice(bad_flag[..], 0);
+        sub.assert_false(ok_flag, "LPM flag with reserved bits must be rejected");
+
+        // Flag 0xFE (reserved bits set)
+        let bad_flag2: u8[5] = [0xFE, 0x00, 0x00, 0x00, 0x00];
+        let _, _, _, ok_flag2 = wing::decode_grpc_lpm_slice(bad_flag2[..], 0);
+        sub.assert_false(ok_flag2, "LPM flag 0xFE must be rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 8. gRPC-Web Trailers Status Parsing
+// ----------------------------------------------------------------------------
+fn test_grpc_web_trailers_parsing(t: lit::T&) {
+    t.run("GRPC-SEC-05: Valid gRPC-Web Trailers Parsing") { sub =>
+        let trailer_raw = "grpc-status: 0\r\ngrpc-message: OK\r\n";
+        var status = wing::GrpcStatusCode.Internal;
+        var msg: u8[..256] = [];
+        let ok = wing::parse_grpc_web_trailers(trailer_raw, status, msg);
+        sub.assert_true(ok, "parsing valid gRPC-Web trailers succeeds");
+        sub.assert_eq(status, wing::GrpcStatusCode.Ok, "grpc-status is Ok");
+    };
+
+    t.run("GRPC-SEC-06: Error Status and Non-Zero Error Code") { sub =>
+        let trailer_raw = "grpc-status: 14\r\ngrpc-message: Service Unavailable\r\n";
+        var status = wing::GrpcStatusCode.Ok;
+        var msg: u8[..256] = [];
+        let ok = wing::parse_grpc_web_trailers(trailer_raw, status, msg);
+        sub.assert_true(ok, "parsing status 14 succeeds");
+        sub.assert_eq(status, wing::GrpcStatusCode.Unavailable, "status mapped to Unavailable");
+    };
+}
+
+fn dummy_unary_handler(
+    _handler_id: u16,
+    _ctx:        wing::GrpcServerContext&,
+    _req:        const u8[:],
+    _res:        u8[>..]&,
+) -> wing::GrpcStatus {
+    return wing::grpc_ok();
+}
+
+// ----------------------------------------------------------------------------
+// 9. Status & Buffer Bounds Regressions
+// ----------------------------------------------------------------------------
+fn test_grpc_status_regressions(t: lit::T&) {
+    t.run("BUG-1: parse_grpc_status_code rejects non-numeric strings") { sub =>
+        let code = wing::parse_grpc_status_code("UNAVAILABLE");
+        sub.assert_false(code == 0, "non-numeric status string must not parse as OK (0)");
+    };
+
+    t.run("BUG-6: build_grpc_status_details rejects negative code") { sub =>
+        var dst: u8[64] = [0; 64];
+        let n, ok = wing::build_grpc_status_details(-1, "negative status", dst[..]);
+        sub.assert_false(ok, "negative code must be safely rejected");
+        sub.assert_false(n < 0, "returned written length must be 0");
+    };
+
+    t.run("BUG-4: decode_grpc_message bounded buffer safety") { sub =>
+        var long_msg:    u8[300]   = ['a'; 300];
+        var out_bounded: u8[..256] = [];
+        wing::decode_grpc_message(long_msg[..], out_bounded);
+        sub.assert_eq(out_bounded.len, 256, "decode_grpc_message must not exceed out.cap (256)");
+    };
+
+    t.run("BUG-5: encode_grpc_message bounded buffer safety") { sub =>
+        var raw_msg:     u8[500]   = ['%'; 500];
+        var out_bounded: u8[..256] = [];
+        wing::encode_grpc_message(raw_msg[..], out_bounded, out_bounded.cap);
+        sub.assert_true(out_bounded.len <= 256, "encode_grpc_message must not exceed out.cap (256)");
+    };
+}
+// ----------------------------------------------------------------------------
+// 10. Server & Client Regressions
+// ----------------------------------------------------------------------------
+fn test_grpc_server_and_client_regressions(t: lit::T&) {
+    t.run("BUG-2: build_grpc_request_headers with max service and method") { sub =>
+        var s: u8[128] = ['s'; 128];
+        var m: u8[128] = ['m'; 128];
+        var cfg = wing::GrpcCallConfig { .. };
+        let _ = cfg.service.try_set(s[..]);
+        let _ = cfg.method.try_set(m[..]);
+        var headers = wing::HeaderMap { .. };
+        wing::build_grpc_request_headers(cfg, "example.com", "https", headers);
+        let path = wing::get_header(headers, ":path");
+        sub.assert_eq(path.len, 258, "path must not be truncated to 256 bytes");
+    };
+
+    t.run("BUG-3: register_method with 64-byte service and 64-byte method") { sub =>
+        var d = wing::new_grpc_server_dispatcher();
+        var s: u8[64] = ['s'; 64];
+        var m: u8[64] = ['m'; 64];
+        let ok_reg = wing::register_unary(d, s[..], m[..], 1);
+        sub.assert_true(ok_reg, "register_unary for 64-byte service and method must succeed");
+
+        var path_buf: u8[..160] = [];
+        path_buf.push('/');
+        path_buf.append(s[..]);
+        path_buf.push('/');
+        path_buf.append(m[..]);
+        let idx = wing::find_method(d, path_buf[..]);
+        sub.assert_false(idx < 0, "registered method must be found by find_method");
+    };
+
+    t.run("BUG-7: Unary 0-byte body rejected with InvalidArgument") { sub =>
+        var d = wing::new_grpc_server_dispatcher();
+        let _ = wing::register_unary(d, "test.Service", "EmptyUnary", 1);
+        var req = wing::new_request("POST", "/test.Service/EmptyUnary");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        // 0-byte body (no 5-byte LPM header)
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(d, req, 1000, res, dummy_unary_handler);
+        sub.assert_true(handled, "handled");
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "3", "0-byte body must return InvalidArgument (3)");
+    };
+
+    t.run("BUG-8: Protobuf 64-bit tag narrowing & field 0 rejection") { sub =>
+        let hi_varint: u8[7] = [0x88, 0x80, 0x80, 0x80, 0x80, 0x01, 0x2A];
+        let _, ok_v1 = wing::pb_read_varint_field(hi_varint[..], 1);
+        sub.assert_false(ok_v1, "64-bit tag overflowing u32 must not wrap to field 1");
+
+        let zero_fnum: u8[4] = [0x00, 0x01, 0x08, 0x2A];
+        let _, ok_v0 = wing::pb_read_varint_field(zero_fnum[..], 1);
+        sub.assert_false(ok_v0, "field number 0 must be rejected");
+    };
+
+    t.run("BUG-9: gRPC-Web trailer CRLF injection & multi-chunk Base64") { sub =>
+        var ctx = wing::GrpcServerContext { .. };
+        sub.assert_false(wing::add_response_trailer(ctx, "x-inj", "v\r\ngrpc-status: 0"), "CRLF rejected");
+        sub.assert_false(wing::add_response_trailer(ctx, "grpc-status", "0"), "reserved key rejected");
+
+        var f1: u8[>..] = [];
+        wing::encode_grpc_lpm("", f1, false);
+        var b64_1: u8[>..] = [];
+        wing::encode_grpc_web_text(f1[..], b64_1);
+        var f2: u8[>..] = [];
+        wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "ok", f2);
+        var b64_2: u8[>..] = [];
+        wing::encode_grpc_web_text(f2[..], b64_2);
+        var cat: u8[>..] = [];
+        cat.append(b64_1[..]);
+        cat.append(b64_2[..]);
+        var dec: u8[>..] = [];
+        sub.assert_true(wing::decode_grpc_web_text(cat[..], dec), "multi-chunk Base64 decoded");
+    };
+
+    t.run("BUG-10: Timeout >8 digits & 0S deadline & status HTTP fallback") { sub =>
+        var to_buf: u8[..32] = [];
+        wing::encode_grpc_timeout(100000500, to_buf);
+        let _, ok_to = wing::parse_grpc_timeout(to_buf[..]);
+        sub.assert_true(ok_to, "encoded timeout must be <= 8 digits and valid");
+
+        var hdrs = wing::HeaderMap { .. };
+        hdrs.status_code = 503;
+        let _ = wing::append_header(hdrs, rfc::HEADER_GRPC_STATUS, "0");
+        var trs = wing::HeaderMap { .. };
+        var msg: u8[..256] = [];
+        var st = wing::GrpcStatusCode.Ok;
+        let _ = wing::extract_grpc_status(hdrs, trs, st, msg);
+        sub.assert_eq(st, wing::GrpcStatusCode.Unavailable, "HTTP 503 overrides grpc-status: 0");
+    };
+}
+
+// Dummy handler router for test suites
+fn test_unary_handler(
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    req_payload: const u8[:],
+    res_payload: u8[>..]&,
+) -> wing::GrpcStatus {
+    if handler_id == 1 {
+        // Greeter.SayHello
+        let auth = wing::get_metadata(ctx, "authorization");
+        if auth == "Bearer invalid-token" {
+            return wing::grpc_error(wing::GrpcStatusCode.Unauthenticated, "Invalid authorization token");
+        }
+
+        wing::add_response_metadata(ctx, "x-server-version", "wing-grpc-v2");
+
+        res_payload.append("Hello, ");
+        res_payload.append(req_payload);
+        res_payload.push('!');
+        return wing::grpc_ok();
+    }
+    if handler_id == 99 {
+        // Custom error handler
+        return wing::grpc_error(wing::GrpcStatusCode.PermissionDenied, "Access forbidden by security policy");
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
+}
+
+// ----------------------------------------------------------------------------
+// 11. Unary RPC over HTTP/2
+// ----------------------------------------------------------------------------
+fn test_grpc_server_unary_http2(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+
+    t.run("Successful Unary RPC over HTTP/2") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, "authorization", "Bearer valid-token");
+
+        // Body: 5-byte LPM with payload "Alice"
+        wing::encode_grpc_lpm("Alice", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+
+        sub.assert_true(handled, "Request handled by gRPC dispatcher");
+        sub.assert_eq(res.status_code, 200, "HTTP status 200");
+
+        // Validate response headers
+        let res_ct = wing::header(res, "content-type");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_CONTENT_TYPE_PROTO, "Response content-type is application/grpc");
+
+        let srv_ver = wing::header(res, "x-server-version");
+        sub.assert_bytes_eq(srv_ver, "wing-grpc-v2", "Custom response metadata header propagated");
+
+        // Validate response body LPM
+        var decoded_msg: u8[>..] = [];
+        var is_comp = false;
+        let ok_lpm, consumed = wing::decode_grpc_lpm(res.body[..], 0, decoded_msg, is_comp);
+        sub.assert_true(ok_lpm, "Response body contains valid LPM frame");
+        sub.assert_bytes_eq(decoded_msg[..], "Hello, Alice!", "Payload matches greeting");
+        sub.assert_false(is_comp, "Uncompressed payload");
+
+        // Validate response trailers
+        let grpc_st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(grpc_st, "0", "grpc-status is 0 (OK)");
+
+        // Client-side verification: feed headers + trailers + body into parse_grpc_unary_response
+        var hmap = wing::HeaderMap { .. };
+        wing::append_header(hmap, "content-type", res_ct);
+        var tmap = wing::HeaderMap { .. };
+        wing::append_header(tmap, rfc::HEADER_GRPC_STATUS, grpc_st);
+
+        var client_resp = wing::GrpcResponse { .. };
+        let ok_client = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], false, client_resp);
+        sub.assert_true(ok_client, "Client parser parsed response");
+        sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Client status Ok");
+        sub.assert_bytes_eq(client_resp.payload[..], "Hello, Alice!", "Client decoded payload");
+    };
+
+    t.run("Unary RPC Authentication Failure (Unauthenticated)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, "authorization", "Bearer invalid-token");
+
+        wing::encode_grpc_lpm("Bob", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+
+        sub.assert_true(handled, "Dispatched");
+        sub.assert_eq(res.status_code, 200, "HTTP status 200 for gRPC errors");
+
+        // Pure error without payload: must be Trailers-Only in headers!
+        sub.assert_eq(res.body.len, 0, "Trailers-Only response has empty body");
+        let st_hdr = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st_hdr, "16", "grpc-status 16 (Unauthenticated) in headers");
+
+        let msg_hdr = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
+        var decoded_msg: u8[..256] = [];
+        wing::decode_grpc_message(msg_hdr, decoded_msg);
+        sub.assert_bytes_eq(decoded_msg[..], "Invalid authorization token", "Error message preserved");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 12. Unary RPC over gRPC-Web (Binary & Base64 Text)
+// ----------------------------------------------------------------------------
+fn test_grpc_server_unary_web(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+
+    t.run("Binary gRPC-Web (application/grpc-web)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
+
+        wing::encode_grpc_lpm("WebUser", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Dispatched web request");
+
+        let res_ct = wing::header(res, "content-type");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_WEB_CONTENT_TYPE_PROTO, "Response content-type is grpc-web");
+
+        // Verify with client-side gRPC-Web parser
+        var hmap = wing::HeaderMap { .. };
+        wing::append_header(hmap, "content-type", res_ct);
+        var tmap = wing::HeaderMap { .. };
+
+        var client_resp = wing::GrpcResponse { .. };
+        let ok_parse = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], true, client_resp);
+        sub.assert_true(ok_parse, "gRPC-Web response parsed cleanly");
+        sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Status Ok");
+        sub.assert_bytes_eq(client_resp.payload[..], "Hello, WebUser!", "Decoded payload matches");
+    };
+
+    t.run("Base64 Text gRPC-Web (application/grpc-web-text)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
+
+        // Encode LPM into Base64
+        var raw_lpm: u8[>..] = [];
+        wing::encode_grpc_lpm("TextUser", raw_lpm, false);
+        wing::encode_grpc_web_text(raw_lpm[..], req.body);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Dispatched text web request");
+
+        let res_ct = wing::header(res, "content-type");
+        sub.assert_bytes_eq(res_ct, rfc::GRPC_WEB_TEXT_CONTENT_TYPE, "Response content-type is grpc-web-text");
+
+        // Parse with client gRPC-Web parser
+        var hmap = wing::HeaderMap { .. };
+        wing::append_header(hmap, "content-type", res_ct);
+        var tmap = wing::HeaderMap { .. };
+
+        var client_resp = wing::GrpcResponse { .. };
+        let ok_parse = wing::parse_grpc_unary_response(hmap, tmap, res.body[..], true, client_resp);
+        sub.assert_true(ok_parse, "Text gRPC-Web parsed cleanly");
+        sub.assert_eq(client_resp.status, wing::GrpcStatusCode.Ok, "Status Ok");
+        sub.assert_bytes_eq(client_resp.payload[..], "Hello, TextUser!", "Decoded payload matches");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 13. Server-Streaming RPC Dispatch
+// ----------------------------------------------------------------------------
+fn test_server_streaming_handler(
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    req_payload: const u8[:],
+    writer:      wing::GrpcServerStreamWriter&,
+) -> wing::GrpcStatus {
+    let _ = ctx;
+    let _ = req_payload;
+    if handler_id == 2 {
+        // Stream 3 events
+        wing::write_stream_message(writer, "Event 1: Connected", false);
+        wing::write_stream_message(writer, "Event 2: Processing", false);
+        wing::write_stream_message(writer, "Event 3: Complete", false);
+        return wing::grpc_ok();
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
+}
+
+fn test_grpc_server_streaming(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_server_streaming(dispatcher, "event.FeedService", "Subscribe", 2);
+
+    t.run("Server-Streaming produces sequential LPM stream") { sub =>
+        var req = wing::new_request("POST", "/event.FeedService/Subscribe");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        wing::encode_grpc_lpm("channel_general", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_server_streaming(dispatcher, req, 1000000000, res, test_server_streaming_handler);
+        sub.assert_true(handled, "Server streaming dispatched");
+        sub.assert_eq(res.status_code, 200, "HTTP 200");
+
+        // Verify sequential messages from stream
+        var parser = wing::new_grpc_stream_parser();
+        let fed = wing::feed(parser, res.body[..]);
+        sub.assert_true(fed, "Fed response to stream parser");
+
+        var msg1: u8[>..] = [];
+        var comp1 = false;
+        sub.assert_true(wing::next_message(parser, msg1, comp1), "Message 1 received");
+        sub.assert_bytes_eq(msg1[..], "Event 1: Connected", "Msg 1 content");
+
+        var msg2: u8[>..] = [];
+        var comp2 = false;
+        sub.assert_true(wing::next_message(parser, msg2, comp2), "Message 2 received");
+        sub.assert_bytes_eq(msg2[..], "Event 2: Processing", "Msg 2 content");
+
+        var msg3: u8[>..] = [];
+        var comp3 = false;
+        sub.assert_true(wing::next_message(parser, msg3, comp3), "Message 3 received");
+        sub.assert_bytes_eq(msg3[..], "Event 3: Complete", "Msg 3 content");
+
+        var msg4: u8[>..] = [];
+        var comp4 = false;
+        sub.assert_false(wing::next_message(parser, msg4, comp4), "No more messages");
+
+        // Verify final status in trailers
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "Final stream trailer is 0 (OK)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 14. Client-Streaming RPC Dispatch
+// ----------------------------------------------------------------------------
+fn test_client_streaming_handler(
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    reader:      const wing::GrpcClientStreamReader&,
+    res_payload: u8[>..]&,
+) -> wing::GrpcStatus {
+    let _ = ctx;
+    if handler_id == 3 {
+        let count = reader.spans.len;
+        res_payload.append("Received ");
+        format(res_payload, count);
+        res_payload.append(" items");
+        return wing::grpc_ok();
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Handler not found");
+}
+
+fn test_grpc_client_streaming(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_client_streaming(dispatcher, "metric.Collector", "UploadBatch", 3);
+
+    t.run("Client-Streaming collects multiple LPM frames") { sub =>
+        var req = wing::new_request("POST", "/metric.Collector/UploadBatch");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        // Pack 4 messages into request body
+        wing::encode_grpc_lpm("item_1", req.body, false);
+        wing::encode_grpc_lpm("item_2", req.body, false);
+        wing::encode_grpc_lpm("item_3", req.body, false);
+        wing::encode_grpc_lpm("item_4", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_client_streaming(dispatcher, req, 1000000000, res, test_client_streaming_handler);
+        sub.assert_true(handled, "Client streaming dispatched");
+
+        var decoded: u8[>..] = [];
+        var comp = false;
+        let ok_dec, _ = wing::decode_grpc_lpm(res.body[..], 0, decoded, comp);
+        sub.assert_true(ok_dec, "Summary LPM decoded");
+        sub.assert_bytes_eq(decoded[..], "Received 4 items", "Summary response payload");
+
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "grpc-status is OK");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 15. Error Handling & RFC Protocol Invariants
+// ----------------------------------------------------------------------------
+fn test_grpc_server_rfc_invariants(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher(64); // Max message size = 64 bytes
+    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+    wing::register_unary(dispatcher, "secure.Vault", "Access", 99);
+
+    t.run("Unregistered Service or Method returns Unimplemented (12)") { sub =>
+        var req = wing::new_request("POST", "/unknown.Service/UnknownMethod");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::encode_grpc_lpm("test", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+        sub.assert_eq(res.status_code, 200, "HTTP status 200");
+        sub.assert_eq(res.body.len, 0, "Trailers-Only empty body");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "12", "grpc-status 12 (UNIMPLEMENTED)");
+
+        let msg = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
+        sub.assert_contains(msg, "Method not found", "Message contains method not found");
+    };
+
+    t.run("Malformed URI path returns Unimplemented (12)") { sub =>
+        var req = wing::new_request("POST", "/single_slash_path");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "12", "grpc-status 12 (UNIMPLEMENTED)");
+    };
+
+    t.run("Non-POST HTTP method rejected with Internal (13)") { sub =>
+        var req = wing::new_request("GET", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "13", "grpc-status 13 (INTERNAL)");
+    };
+
+    t.run("Non-gRPC Request ignored (returns false)") { sub =>
+        var req = wing::new_request("POST", "/api/v1/users");
+        wing::set_header(req, "content-type", "application/json");
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_false(handled, "Non-gRPC request ignored by gRPC dispatcher");
+    };
+
+    t.run("Message Size Exceeds Limit returns ResourceExhausted (8)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        // 100-byte message when limit is 64
+        let big_msg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+        wing::encode_grpc_lpm(big_msg, req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "8", "grpc-status 8 (RESOURCE_EXHAUSTED)");
+    };
+
+    t.run("Expired Timeout returns DeadlineExceeded (4)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_TIMEOUT, "50m"); // 50 milliseconds
+
+        wing::encode_grpc_lpm("LateUser", req.body, false);
+
+        var res = wing::Response { .. };
+        // Base time: 1000000000 (1.0s), Timeout 50ms -> Deadline is 1.05s (1050000000). Current time is 1.1s (1100000000).
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1100000000, res, 1000000000, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "4", "grpc-status 4 (DEADLINE_EXCEEDED)");
+    };
+
+    t.run("Custom Handler Error returns PermissionDenied (7)") { sub =>
+        var req = wing::new_request("POST", "/secure.Vault/Access");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        wing::encode_grpc_lpm("vault_secret_request", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "7", "grpc-status 7 (PERMISSION_DENIED)");
+
+        let msg = wing::header(res, rfc::HEADER_GRPC_MESSAGE);
+        var decoded_msg: u8[..256] = [];
+        wing::decode_grpc_message(msg, decoded_msg);
+        sub.assert_bytes_eq(decoded_msg[..], "Access forbidden by security policy", "Error message decoded");
+    };
+
+    t.run("Huge Timeout 99999999H does not overflow u64 deadline") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_TIMEOUT, "99999999H");
+
+        wing::encode_grpc_lpm("Alice", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "grpc-status 0 (OK) - deadline was not falsely triggered");
+    };
+
+    t.run("Concatenated LPM frames in Unary RPC rejected with InvalidArgument (3)") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+
+        // Two concatenated LPM messages in unary request
+        wing::encode_grpc_lpm("Msg1", req.body, false);
+        wing::encode_grpc_lpm("Msg2", req.body, false);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Handled");
+
+        let st = wing::header(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "3", "grpc-status 3 (INVALID_ARGUMENT)");
+    };
+
+    t.run("Bogus Content-Type Prefix rejected by boundary parser") { sub =>
+        sub.assert_false(wing::is_grpc_content_type("application/grpc_bogus"), "application/grpc_bogus rejected");
+        sub.assert_false(wing::is_grpc_content_type("application/grpc-web-bogus"), "application/grpc-web-bogus rejected");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc"), "application/grpc accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc+proto"), "application/grpc+proto accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc-web+proto"), "application/grpc-web+proto accepted");
+        sub.assert_true(wing::is_grpc_content_type("application/grpc-web-text+proto"), "application/grpc-web-text+proto accepted");
+    };
+
+    t.run("Gzip Compressed Unary & Client-Streaming Requests Accepted") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::set_header(req, rfc::HEADER_GRPC_ENCODING, "gzip");
+
+        wing::encode_grpc_lpm("GzipUser", req.body, true);
+
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary(dispatcher, req, 1000000000, res, test_unary_handler);
+        sub.assert_true(handled, "Compressed unary request handled");
+
+        let st = wing::trailer(res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(st, "0", "grpc-status 0 (OK)");
+
+        var decoded_msg: u8[>..] = [];
+        var is_comp = false;
+        let ok_lpm, _ = wing::decode_grpc_lpm(res.body[..], 0, decoded_msg, is_comp);
+        sub.assert_true(ok_lpm, "Decoded response LPM");
+        sub.assert_bytes_eq(decoded_msg[..], "Hello, GzipUser!", "Decompressed request payload processed by handler");
+    };
+}
+
+struct TestGrpcStage {
+    call_count: u64 = 0,
+}
+
+fn wing::on_grpc_unary(
+    stage:       TestGrpcStage&,
+    handler_id:  u16,
+    ctx:         wing::GrpcServerContext&,
+    req_payload: const u8[:],
+    res_payload: u8[>..]&,
+) -> wing::GrpcStatus {
+    let _ = ctx;
+    stage.call_count += 1;
+    if handler_id == 1 {
+        res_payload.append("Stage: ");
+        res_payload.append(req_payload);
+        return wing::grpc_ok();
+    }
+    return wing::grpc_error(wing::GrpcStatusCode.Unimplemented, "Unknown stage handler");
+}
+
+// ----------------------------------------------------------------------------
+// 16. Staged Unary Dispatch
+// ----------------------------------------------------------------------------
+fn test_grpc_unary_stage_dispatch(t: lit::T&) {
+    var dispatcher = wing::new_grpc_server_dispatcher();
+    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+
+    t.run("Staged Unary Dispatch invokes custom stage and NoOpStage fallback") { sub =>
+        var req = wing::new_request("POST", "/helloworld.Greeter/SayHello");
+        wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+        wing::encode_grpc_lpm("StageUser", req.body, false);
+
+        var stage = TestGrpcStage { .. };
+        var res = wing::Response { .. };
+        let handled = wing::dispatch_grpc_unary_stage(dispatcher, stage, req, 1000000000, res);
+        sub.assert_true(handled, "Handled by stage dispatcher");
+        sub.assert_eq(stage.call_count, 1, "Stage call_count incremented");
+
+        var decoded_msg: u8[>..] = [];
+        var is_comp = false;
+        let ok_lpm, _ = wing::decode_grpc_lpm(res.body[..], 0, decoded_msg, is_comp);
+        sub.assert_true(ok_lpm, "Decoded stage response LPM");
+        sub.assert_bytes_eq(decoded_msg[..], "Stage: StageUser", "Stage response payload matches");
+
+        var noop_stage = wire::NoOpStage {};
+        var noop_res = wing::Response { .. };
+        let noop_handled = wing::dispatch_grpc_unary_stage(dispatcher, noop_stage, req, 1000000000, noop_res);
+        sub.assert_true(noop_handled, "Handled by NoOpStage fallback");
+        let noop_st = wing::header(noop_res, rfc::HEADER_GRPC_STATUS);
+        sub.assert_bytes_eq(noop_st, "12", "NoOpStage returns UNIMPLEMENTED (12)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 17. Go #21096 & RFC 9110 §7.6.1 / RFC 9113: Forwarding 'TE: trailers' for gRPC
+// ----------------------------------------------------------------------------
+fn test_grpc_te_trailers_preserved(t: lit::T&) {
+    t.run("TE: trailers header must NOT be stripped by strip_hop_by_hop_headers") { sub =>
+        var src = wing::HeaderMap { .. };
+        wing::append_header(src, "TE", "trailers");
+        wing::append_header(src, "Connection", "keep-alive");
+        wing::append_header(src, "X-Custom", "preserve-me");
+
+        var dst = wing::HeaderMap { .. };
+        wing::strip_hop_by_hop_headers(src, dst);
+
+        sub.assert_true(wing::has_header(dst, "TE"), "TE: trailers must be preserved across proxies for gRPC (Go #21096)");
+        let te_val = wing::get_header(dst, "TE");
+        sub.assert_bytes_eq(te_val, "trailers", "TE value must remain 'trailers'");
+        sub.assert_false(wing::has_header(dst, "Connection"), "Connection header must be stripped");
+        sub.assert_true(wing::has_header(dst, "X-Custom"), "Regular headers must be retained");
+    };
+
+    t.run("TE with non-trailers (e.g. TE: gzip, deflate) must be stripped") { sub =>
+        var src = wing::HeaderMap { .. };
+        wing::append_header(src, "TE", "gzip, deflate");
+        wing::append_header(src, "X-Custom", "keep");
+
+        var dst = wing::HeaderMap { .. };
+        wing::strip_hop_by_hop_headers(src, dst);
+
+        sub.assert_false(wing::has_header(dst, "TE"), "TE without 'trailers' must be stripped as hop-by-hop");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 18. gRPC Stream & Status Codecs (grpc/*)
+// ----------------------------------------------------------------------------
+fn test_grpc_stream_truncation_and_status(t: lit::T&) {
+    t.run("parse_client_stream rejects > 32 messages rather than silently dropping 33rd") { sub =>
+        var body: u8[>..] = [];
+        for i in 33 {
+            var msg_buf: u8[..32] = [];
+            msg_buf.append("msg");
+            format(msg_buf, i);
+            wing::encode_grpc_lpm(msg_buf[..], body, false);
+        }
+
+        var reader = wing::GrpcClientStreamReader { .. };
+        let ok = wing::parse_client_stream(body[..], false, reader);
+        sub.assert_false(ok, "parse_client_stream with > 32 messages MUST return false to prevent message loss");
+    };
+
+    t.run("extract_grpc_status with non-numeric grpc-status sets Unknown") { sub =>
+        var hdrs = wing::HeaderMap { .. };
+        var trls = wing::HeaderMap { .. };
+        wing::append_header(trls, "grpc-status", "invalid-code");
+
+        var status = wing::GrpcStatusCode.Ok;
+        var msg: u8[..256] = [];
+        wing::extract_grpc_status(hdrs, trls, status, msg);
+        sub.assert_true(status == wing::GrpcStatusCode.Unknown, "Non-numeric grpc-status MUST map to GrpcStatusCode.Unknown");
+    };
+
+    t.run("parse_grpc_unary_response with truncated 3-byte body returns false") { sub =>
+        var hdrs = wing::HeaderMap { .. };
+        var trls = wing::HeaderMap { .. };
+        let trunc_body: u8[3] = [0x00, 0x00, 0x05]; // Needs 5 bytes LPM header
+
+        var resp = wing::GrpcResponse { .. };
+        let ok = wing::parse_grpc_unary_response(hdrs, trls, trunc_body[..], false, resp);
+        sub.assert_false(ok, "Truncated gRPC body < 5 bytes MUST return false");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("gRPC over HTTP/2, HTTP/3 & gRPC-Web Test Suite", lit::Verbosity.Verbose);
 
@@ -563,6 +1367,18 @@ fn main() {
     lit::run_case(runner, "4. gRPC-Web Binary & Base64 Text Framing", test_grpc_web_framing);
     lit::run_case(runner, "5. gRPC Client Unary & Streaming RPC Exchange", test_grpc_client_rpc_exchange);
     lit::run_case(runner, "6. Protobuf LEB128 Wire Field Helpers & GrpcStatus", test_protobuf_wire_helpers);
+    lit::run_case(runner, "7. 32-bit LPM Length Overflows & Flag Invariants", test_grpc_lpm_integer_overflows);
+    lit::run_case(runner, "8. gRPC-Web Trailers Status Parsing", test_grpc_web_trailers_parsing);
+    lit::run_case(runner, "9. Status & Buffer Bounds Regressions", test_grpc_status_regressions);
+    lit::run_case(runner, "10. Server & Client Regressions", test_grpc_server_and_client_regressions);
+    lit::run_case(runner, "11. Unary RPC over HTTP/2", test_grpc_server_unary_http2);
+    lit::run_case(runner, "12. Unary RPC over gRPC-Web (Binary & Base64 Text)", test_grpc_server_unary_web);
+    lit::run_case(runner, "13. Server-Streaming RPC Dispatch", test_grpc_server_streaming);
+    lit::run_case(runner, "14. Client-Streaming RPC Dispatch", test_grpc_client_streaming);
+    lit::run_case(runner, "15. Error Handling & RFC Invariants", test_grpc_server_rfc_invariants);
+    lit::run_case(runner, "16. Staged Unary Dispatch", test_grpc_unary_stage_dispatch);
+    lit::run_case(runner, "17. Go #21096 & RFC 9110 §7.6.1: Forwarding TE: trailers for gRPC", test_grpc_te_trailers_preserved);
+    lit::run_case(runner, "18. gRPC stream & status codecs (grpc/*)", test_grpc_stream_truncation_and_status);
 
     let ok = lit::finish(runner);
     assert(ok);

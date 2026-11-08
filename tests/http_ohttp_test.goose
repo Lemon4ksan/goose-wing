@@ -12,6 +12,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // --- Component: bhttp --------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+// 1. RFC 9292 Section 3.1/3.3 Known-Length Request Round-Trip
+// ----------------------------------------------------------------------------
 fn test_bhttp_request_roundtrip(t: lit::T&) {
     t.run("RFC 9292 Section 3.1/3.4 Known-Length Request Encode and Decode") { sub =>
         var req = wing::BhttpRequest { .. };
@@ -47,6 +50,9 @@ fn test_bhttp_request_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. RFC 9292 Known-Length Response Round-Trip
+// ----------------------------------------------------------------------------
 fn test_bhttp_response_roundtrip(t: lit::T&) {
     t.run("RFC 9292 Section 3.1/3.5 Known-Length Response Encode and Decode") { sub =>
         var res = wing::BhttpResponse { .. };
@@ -71,6 +77,9 @@ fn test_bhttp_response_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. RFC 9292 Section 3.3/4 Invalid Framing Indicator Rejection
+// ----------------------------------------------------------------------------
 fn test_bhttp_invalid_framing(t: lit::T&) {
     t.run("RFC 9292 Section 3.3/4 Invalid Framing Indicator Rejection") { sub =>
         // 0x04 is outside the four permitted values (0..3) -> invalid per Section 4.
@@ -108,6 +117,9 @@ fn ohttp_test_key_config_bytes() -> u8[45] {
     ];
 }
 
+// ----------------------------------------------------------------------------
+// 4. RFC 9458 Section 3.1/3.2 Key Config Parsing and Collection Discard
+// ----------------------------------------------------------------------------
 fn test_ohttp_key_config(t: lit::T&) {
     t.run("RFC 9458 Section 3.1 Single Key Configuration Layout") { sub =>
         let cfg_bytes = ohttp_test_key_config_bytes();
@@ -208,6 +220,9 @@ fn ohttp_test_ephemeral_sk() -> u8[32] {
     ];
 }
 
+// ----------------------------------------------------------------------------
+// 5. RFC 9458 Section 4.1/4.3 Request Seal/Open Round-Trip and Tamper
+// ----------------------------------------------------------------------------
 fn test_ohttp_request_roundtrip(t: lit::T&) {
     t.run("RFC 9458 Section 4.1/4.3 Request Seal and Open Round-Trip") { sub =>
         let skR = ohttp_test_keypair();
@@ -264,6 +279,9 @@ fn test_ohttp_request_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. RFC 9458 Section 4.4 Response Seal/Open Round-Trip and Tamper
+// ----------------------------------------------------------------------------
 fn test_ohttp_response_roundtrip(t: lit::T&) {
     t.run("RFC 9458 Section 4.4 Response Seal and Open Round-Trip") { sub =>
         let skR = ohttp_test_keypair();
@@ -337,6 +355,9 @@ fn test_ohttp_response_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 7. RFC 9180 Section 5.3 Secret Export Determinism
+// ----------------------------------------------------------------------------
 fn test_hpke_export(t: lit::T&) {
     t.run("RFC 9180 Section 5.3 Secret Export Determinism") { sub =>
         let skR = ohttp_test_keypair();
@@ -379,6 +400,9 @@ fn test_hpke_export(t: lit::T&) {
 
 // --- Component: RFC 9458 Appendix A ------------------------------------------
 
+// ----------------------------------------------------------------------------
+// 8. RFC 9458 Appendix A Complete Request/Response Example
+// ----------------------------------------------------------------------------
 fn test_ohttp_rfc9458_appendix_a(t: lit::T&) {
     t.run("RFC 9458 Appendix A Complete Request and Response Example (byte-for-byte)") { sub =>
         // Appendix A vectors; the corpus contains a complete example, so the
@@ -483,23 +507,236 @@ fn test_ohttp_rfc9458_appendix_a(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. F004 OHTTP Key Configs Safety & Discard
+// ----------------------------------------------------------------------------
+fn test_f004_ohttp_key_configs_discard_and_out(t: lit::T&) {
+    t.run("parse_ohttp_key_configs populates empty bounded vector without panic") { sub =>
+        var cfg_bytes = ohttp_test_key_config_bytes();
+
+        var wire: u8[..128] = [];
+        wire.push(0x00);
+        wire.push(45);
+        wire.append(cfg_bytes[..]);
+
+        var out:       wing::OhttpKeyConfig[..4] = [];
+        var out_count: i32                       = 0;
+        let ok = wing::parse_ohttp_key_configs(wire[..], out, out_count);
+        sub.assert_true(ok, "parse_ohttp_key_configs succeeds with empty vector out");
+        sub.assert_eq(out_count, 1, "out_count is 1");
+        sub.assert_eq(out.len, 1, "out bounded array length updated to 1");
+    };
+
+    t.run("parse_ohttp_key_configs clears out on partial failure") { sub =>
+        var cfg_bytes = ohttp_test_key_config_bytes();
+
+        // 1st config valid, 2nd config truncated
+        var wire: u8[..128] = [];
+        wire.push(0x00);
+        wire.push(45);
+        wire.append(cfg_bytes[..]);
+        wire.push(0x00);
+        wire.push(10);
+        wire.append(cfg_bytes[..10]);
+
+        var out:       wing::OhttpKeyConfig[..4] = [];
+        var out_count: i32                       = 0;
+        let ok = wing::parse_ohttp_key_configs(wire[..], out, out_count);
+        sub.assert_false(ok, "parse_ohttp_key_configs fails on corrupt 2nd config");
+        sub.assert_eq(out_count, 0, "out_count reset to 0");
+        sub.assert_eq(out.len, 0, "out array cleared to 0 elements (all-or-nothing discard)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F012: Binary HTTP (RFC 9292) Varint Bounds, Trailer Validation & Cursor Hygiene
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 10. F012 Binary HTTP (RFC 9292) Varint & Trailer Safety
+// ----------------------------------------------------------------------------
+fn test_f012_bhttp_bounds_and_validation(t: lit::T&) {
+    t.run("bhttp_decode_request rejects 8-byte max varint section length without signed overflow") { sub =>
+        // Framing 0x00, GET, empty scheme, empty authority, "/", then 8-byte varint 0xFFFFFFFFFFFFFFFF (len = 0x3FFFFFFFFFFFFFFF)
+        let raw: u8[17] = [
+            0x00,
+            0x03, 'G', 'E', 'T',
+            0x00,
+            0x00,
+            0x01, '/',
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        var req = wing::BhttpRequest { .. };
+        let ok = wing::bhttp_decode_request(raw[..], req);
+        sub.assert_false(ok, "Max 62-bit varint section length MUST return false without signed i64 overflow");
+        sub.assert_eq(req.method.len, 0, "out request MUST be reset on failure");
+    };
+
+    t.run("bhttp_decode_trailer_line rejects control characters in trailer value") { sub =>
+        let sec: u8[9] = [0x04, 'x', '-', 'o', 'k', 0x03, 'a', 0x00, 'b'];
+        var idx: i64 = 0;
+        let ok = wing::bhttp_decode_trailer_line(sec[..], idx);
+        sub.assert_false(ok, "Trailer value containing NUL byte MUST be rejected");
+        sub.assert_eq(idx, 0, "idx MUST remain unchanged on failure");
+    };
+
+    t.run("bhttp_read_len_bytes leaves idx unchanged when length exceeds remaining bytes") { sub =>
+        let raw: u8[3] = [0x0A, 'a', 'b'];
+        var idx: i64 = 0;
+        let slice, ok = wing::bhttp_read_len_bytes(raw[..], idx);
+        sub.assert_false(ok, "Length 10 on 3-byte buffer fails");
+        sub.assert_eq(idx, 0, "idx MUST remain 0 on failure");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F024-F028: HSTS, Alt-Svc, Early Hints, Incremental, BHTTP, Dict & Digest
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 11. F024-F028 HSTS, Alt-Svc, Early Hints, BHTTP, Dict & Digest
+// ----------------------------------------------------------------------------
+fn test_f024_f028_hsts_altsvc_bhttp_dict_digest(t: lit::T&) {
+    t.run("F024: HSTS quoted semicolon extension, uppercase HTTP:// upgrade, and CRLF cache line") { sub =>
+        let dir, ok = wing::parse_hsts_header("ext=\"x; includeSubDomains\"; max-age=31536000");
+        sub.assert_true(ok, "Quoted semicolon in HSTS extension directive must parse");
+        sub.assert_false(dir.include_subdomains, "Quoted '; includeSubDomains' inside ext MUST NOT set include_subdomains");
+
+        var cache = wing::HstsCache { .. };
+        sub.assert_true(wing::load_hsts_cache(cache, "example.com\t9999999999\t1\t1\r\n", 1000) == 1, "Load CRLF HSTS line");
+        sub.assert_true(cache.entries[0].is_preload, "CRLF line must preserve is_preload == true");
+
+        var up_url: u8[..128] = [];
+        let upgraded = wing::hsts_upgrade_url(cache, "HTTP://example.com/login", 1000, up_url);
+        sub.assert_true(upgraded, "Uppercase HTTP:// scheme MUST be upgraded by HSTS per RFC 6797 §8.3");
+        sub.assert_bytes_eq(up_url[..], "https://example.com/login", "Upgraded URL normalized to https://");
+    };
+
+    t.run("F025: Alt-Svc quoted ';', Link first-rel & escaped quote comma, Incremental trailing/multi-line") { sub =>
+        var cache = wing::AltSvcCache { .. };
+        wing::update(cache, "example.com:443", "h3=\":443\"; ext=\"a;ma=0\"; ma=3600", 1000);
+        var ep = wing::AltSvcEndpoint { .. };
+        sub.assert_true(wing::lookup_h3(cache, "example.com:443", 1500, ep), "Quoted ';ma=0' inside ext must not zero ma=3600");
+
+        var links: wing::EarlyHintLink[..8] = [];
+        sub.assert_true(wing::parse_link_header("</a.js>; rel=preload; rel=nofollow", links), "Parse Link with duplicate rel");
+        sub.assert_bytes_eq(links[0].rel[..], "preload", "First rel parameter MUST win per RFC 8288 §3.3");
+
+        let inc_val, inc_ok = wing::parse_incremental_header("?1 ?0");
+        sub.assert_false(inc_ok, "Incremental header with trailing '?0' MUST be rejected");
+    };
+
+    t.run("F026: BHTTP lowercase field names, Known-Length 1xx informational response, and method reset") { sub =>
+        let raw_1xx: u8[9] = [
+            0x01,       // Known-Length Response
+            0x40, 0x67, // 103 Early Hints (2-byte varint = 103)
+            0x00,       // empty 1xx field section
+            0x40, 0xC8, // 200 OK
+            0x00,       // empty final field section
+            0x00,       // empty body
+            0x00,       // empty trailer section
+        ];
+        var resp = wing::BhttpResponse { .. };
+        sub.assert_true(wing::bhttp_decode_response(raw_1xx[..], resp), "Known-length BHTTP response with 103 before 200 MUST succeed per RFC 9292 §3.5.1");
+        sub.assert_eq(resp.status, 200, "Final status code is 200");
+
+        let bad_req: u8[7] = [0x00, 0x03, 'G', 'E', 'T', 0x05, 'h'];
+        var req = wing::BhttpRequest { .. };
+        sub.assert_false(wing::bhttp_decode_request(bad_req[..], req), "Truncated scheme fails");
+        sub.assert_eq(req.method.len, 0, "req.method MUST be cleared on partial failure");
+    };
+
+    t.run("F027-F028: Compression dict empty-id collision & longest match, Digest multi-line verification") { sub =>
+        var dcache = wing::DictionaryCache { .. };
+        sub.assert_true(wing::dictionary_cache_insert(dcache, "https://ex.com", "/a/*", "", "dict-short", 3600, 100), "Insert short dict");
+        sub.assert_true(wing::dictionary_cache_insert(dcache, "https://ex.com", "/a/b/*", "", "dict-long", 3600, 101), "Insert long dict without id");
+        sub.assert_eq(dcache.entries.len, 2, "Second nameless dictionary with distinct match_pattern MUST NOT overwrite first");
+
+        var matched_hash: u8[..64] = [];
+        sub.assert_true(wing::dictionary_lookup_for_request(dcache, "https://ex.com", "/a/b/app.js", 110, matched_hash), "Lookup dict");
+        sub.assert_bytes_eq(matched_hash[..], dcache.entries[1].sha256_base64[..], "Longest match_pattern MUST take precedence per RFC 9842 §2.2.3");
+
+        let p_bad, ok_bad = wing::parse_use_as_dictionary_header("match=\"/a/*\", type=unknown");
+        sub.assert_false(ok_bad, "Unknown dictionary type MUST be rejected per RFC 9842 §2.1.4");
+
+        var req = wing::new_request("POST", "https://ex.com/upload");
+        req.body.append("hello");
+        var valid_dig: u8[..128] = [];
+        sub.assert_true(wing::format_digest_field_value("sha-256", "hello", valid_dig), "Format valid digest");
+        wing::append_header(req.headers, "Content-Digest", valid_dig[..]);
+        wing::append_header(req.headers, "Content-Digest", "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+        sub.assert_false(wing::verify_request_content_digest(req), "Bad sha-256 on second Content-Digest header line MUST fail verification");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F032-F037: OHTTP, NVS, MIME, Problem, Multipart, SFV, Signatures & Status
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 12. F032-F037 OHTTP, NVS, MIME, Problem, SFV, Signatures & Status
+// ----------------------------------------------------------------------------
+fn test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures(t: lit::T&) {
+    t.run("F032-F034: NVS oversized ignored param & params=?1, MIME interior quote & duplicate param") { sub =>
+        let nvs1, ok_nvs1 = wing::parse_no_vary_search("params=?1");
+        sub.assert_true(ok_nvs1 && nvs1.ignore_all_params, "No-Vary-Search params=?1 MUST be accepted as boolean true");
+
+        let _, ok_nvs_bad = wing::parse_no_vary_search("except=(\"id\")");
+        sub.assert_false(ok_nvs_bad, "No-Vary-Search except without params MUST be rejected");
+
+        var big_q: u8[..400] = [];
+        big_q.append("utm_source=");
+        for i in 300 { big_q.push('x'); }
+        big_q.append("&id=42");
+        var norm_q: u8[..128] = [];
+        wing::normalize_query_for_cache(big_q[..], nvs1, norm_q);
+        sub.assert_bytes_eq(norm_q[..], "", "All params ignored");
+
+        let nvs_exc, ok_exc = wing::parse_no_vary_search("params, except=(\"id\")");
+        sub.assert_true(ok_exc, "Parse params, except=(\"id\")");
+        wing::normalize_query_for_cache(big_q[..], nvs_exc, norm_q);
+        sub.assert_bytes_eq(norm_q[..], "id=42", "Oversized ignored param MUST NOT abort normalization of retained id=42");
+
+        var unq_out: u8[..32] = [];
+        sub.assert_false(wing::strict_unquote("\"a\"b\"", unq_out), "Unescaped interior quote MUST fail strict_unquote per RFC 9110 §5.6.4");
+
+        let _, ok_mt = wing::parse_media_type("text/plain; charset=utf-8; charset=iso-8859-1");
+        sub.assert_false(ok_mt, "Duplicate media type parameter charset MUST be rejected per RFC 9110 §5.6.6");
+    };
+
+    t.run("F035-F037: Problem oversized field & control escape, SFV inner list SP, Signatures & Cache-Status") { sub =>
+        var big_json: u8[..400] = [];
+        big_json.append("{\"title\":\"");
+        for i in 200 { big_json.push('A'); }
+        big_json.append("\",\"status\":400}");
+        var prob = wing::ProblemDetails { .. };
+        sub.assert_false(wing::parse_problem_details(big_json[..], prob), "Oversized ProblemDetails title (>128B) MUST fail closed instead of corrupting JSON reader");
+
+        var entries: wing::SfDictEntry[..16] = [];
+        sub.assert_false(wing::parse_sf_dict("sig1=(\"a\"\"b\")", entries), "Adjacent inner-list items without SP MUST be rejected per RFC 8941 §4.2.1.2");
+        sub.assert_true(wing::parse_sf_dict("sig1=(\"@authority\";req)", entries), "Inner-list item with ;req parameter MUST be accepted per RFC 9421 §2.2.8");
+
+        var c_entries: wing::CacheStatusEntry[..8] = [];
+        let n_cs = wing::parse_cache_status_header("OriginCache; hit=?0", c_entries);
+        sub.assert_eq(n_cs, 1, "Parsed Cache-Status with hit=?0");
+        sub.assert_false(c_entries[0].hit, "hit=?0 MUST set hit=false per RFC 9211 §2.1");
+
+        sub.assert_false(wing::is_valid_tracestate_val("abc "), "Trailing space in tracestate value MUST be rejected per W3C §3.3.1.2");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Binary HTTP (RFC 9292) and Oblivious HTTP (RFC 9458) Suite", lit::Verbosity.Verbose);
 
     lit::run_case(runner, "1. RFC 9292 Section 3.1/3.3 Known-Length Request Round-Trip", test_bhttp_request_roundtrip);
     lit::run_case(runner, "2. RFC 9292 Known-Length Response Round-Trip", test_bhttp_response_roundtrip);
     lit::run_case(runner, "3. RFC 9292 Section 3.3/4 Invalid Framing Indicator Rejection", test_bhttp_invalid_framing);
-    lit::run_case(
-        runner, "4. RFC 9458 Section 3.1/3.2 Key Config Parsing and Collection Discard", test_ohttp_key_config,
-    );
-    lit::run_case(
-        runner, "5. RFC 9458 Section 4.1/4.3 Request Seal/Open Round-Trip and Tamper", test_ohttp_request_roundtrip,
-    );
-    lit::run_case(
-        runner, "6. RFC 9458 Section 4.4 Response Seal/Open Round-Trip and Tamper", test_ohttp_response_roundtrip,
-    );
+    lit::run_case(runner, "4. RFC 9458 Section 3.1/3.2 Key Config Parsing and Collection Discard", test_ohttp_key_config);
+    lit::run_case(runner, "5. RFC 9458 Section 4.1/4.3 Request Seal/Open Round-Trip and Tamper", test_ohttp_request_roundtrip);
+    lit::run_case(runner, "6. RFC 9458 Section 4.4 Response Seal/Open Round-Trip and Tamper", test_ohttp_response_roundtrip);
     lit::run_case(runner, "7. RFC 9180 Section 5.3 Secret Export Determinism", test_hpke_export);
     lit::run_case(runner, "8. RFC 9458 Appendix A Complete Request/Response Example", test_ohttp_rfc9458_appendix_a);
+    lit::run_case(runner, "9. F004 OHTTP Key Configs Safety & Discard", test_f004_ohttp_key_configs_discard_and_out);
+    lit::run_case(runner, "10. F012 Binary HTTP (RFC 9292) Varint & Trailer Safety", test_f012_bhttp_bounds_and_validation);
+    lit::run_case(runner, "11. F024-F028 HSTS, Alt-Svc, Early Hints, BHTTP, Dict & Digest", test_f024_f028_hsts_altsvc_bhttp_dict_digest);
+    lit::run_case(runner, "12. F032-F037 OHTTP, NVS, MIME, Problem, SFV, Signatures & Status", test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures);
 
     let ok = lit::finish(runner);
     assert(ok);

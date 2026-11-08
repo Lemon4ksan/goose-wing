@@ -17,6 +17,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // 3. Dynamic Backpressure Control & Drainage Notifications (drain pattern)
 // 4. Selective Per-Message Compression (compress flag)
 
+// ----------------------------------------------------------------------------
+// 1. Declarative WebSocket Route Registration
+// ----------------------------------------------------------------------------
 fn test_declarative_ws_routing(t: lit::T&) {
     t.run("1. Declarative add_ws_route & 101 Switching Protocols Handshake") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
@@ -77,6 +80,9 @@ fn test_declarative_ws_routing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. Per-Socket Typed UserData / Inline State
+// ----------------------------------------------------------------------------
 fn test_per_socket_user_data(t: lit::T&) {
     t.run("1. Zero-Alloc Inline UserData & UserTag") { sub =>
         var ws = wing::new_websocket_session(false);
@@ -98,6 +104,9 @@ fn test_per_socket_user_data(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. Dynamic Backpressure Control & Drainage Notifications
+// ----------------------------------------------------------------------------
 fn test_backpressure_and_drain(t: lit::T&) {
     t.run("1. Backpressure Watermark Tracking & Drain Event") { sub =>
         var ws = wing::new_websocket_session(false);
@@ -168,6 +177,9 @@ fn test_backpressure_and_drain(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. Selective Per-Message Compression
+// ----------------------------------------------------------------------------
 fn test_selective_compression(t: lit::T&) {
     t.run("1. Selective Compression Flag Toggle") { sub =>
         var ws = wing::new_websocket_session(false);
@@ -209,6 +221,9 @@ fn test_selective_compression(t: lit::T&) {
 // 5. Cross-Thread EventLoop Task Dispatch (loop->defer pattern)
 // 6. Dedicated Sliding-Window Compression (DedicatedWsCompressor pattern)
 
+// ----------------------------------------------------------------------------
+// 5. Heartbeat Daemon & Idle Timeout Sweeper
+// ----------------------------------------------------------------------------
 fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     t.run("1. Auto-Ping Generation & Idle Timeout Reaper") { sub =>
         var wheel = wing::new_tick_timer_wheel(10);
@@ -266,6 +281,9 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. Pub/Sub Subscription Counts & Socket Topics
+// ----------------------------------------------------------------------------
 fn test_subscription_counts_and_topics(t: lit::T&) {
     t.run("1. Subscription Count Lifecycle (Room Creation / Destruction)") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
@@ -318,6 +336,9 @@ fn test_subscription_counts_and_topics(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 7. Asynchronous WebSocket Upgrade & Abort Safety
+// ----------------------------------------------------------------------------
 fn test_async_upgrade_and_aborted(t: lit::T&) {
     t.run("1. Asynchronous Upgrade with UserData & UserTag") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
@@ -379,6 +400,9 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. EventLoop Defer & Dedicated Compressor
+// ----------------------------------------------------------------------------
 fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
     t.run("1. EventLoop Task Deferral (loop.defer)") { sub =>
         var cfg = internal::auto_transport_driver_config();
@@ -429,6 +453,9 @@ fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
 // 3. Zero-Copy WebSocket frame ingress (WsMessageView)
 // 4. Shared receive buffer and direct slice streaming
 
+// ----------------------------------------------------------------------------
+// 9. 256-bit Header BloomFilter
+// ----------------------------------------------------------------------------
 fn test_header_bloom_filter(t: lit::T&) {
     t.run("1. 256-bit Header BloomFilter Bitwise Rejection") { sub =>
         var bf = wing::HeaderBloomFilter { .. };
@@ -467,6 +494,9 @@ fn test_header_bloom_filter(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. Fast HTTP/1.1 Response Serialization
+// ----------------------------------------------------------------------------
 fn test_fast_serialization(t: lit::T&) {
     t.run("1. Pre-formatted 200 OK Status Line & Content-Length 0") { sub =>
         var res = wing::Response { .. };
@@ -482,6 +512,9 @@ fn test_fast_serialization(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. Zero-Copy WebSocket Ingress View
+// ----------------------------------------------------------------------------
 fn test_zero_copy_websocket_view(t: lit::T&) {
     t.run("1. Zero-Copy Ingress via WsMessageView") { sub =>
         var ws = wing::new_websocket_session(false); // server session
@@ -514,6 +547,9 @@ fn test_zero_copy_websocket_view(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Shared TCP Buffer & Direct Slice Recv
+// ----------------------------------------------------------------------------
 fn test_shared_tcp_buffer(t: lit::T&) {
     t.run("1. Live TCP Direct Slice Recv") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -542,6 +578,9 @@ fn test_shared_tcp_buffer(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Native Pub/Sub TopicTree Engine
+// ----------------------------------------------------------------------------
 fn test_topic_tree_pubsub(t: lit::T&) {
     t.run("1. Exact and Wildcard MQTT Pattern Matching") { sub =>
         var tree = wing::TopicTree { .. };
@@ -615,6 +654,9 @@ fn test_topic_tree_pubsub(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. Vectored I/O (tcp_send2 / WSASend)
+// ----------------------------------------------------------------------------
 fn test_vectored_io(t: lit::T&) {
     t.run("1. Zero-Copy HTTP Response via Vectored I/O (tcp_send2)") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -661,6 +703,9 @@ fn test_vectored_io(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. 16 KB CorkBuffer Syscall Coalescing
+// ----------------------------------------------------------------------------
 fn test_server_cork_buffer(t: lit::T&) {
     t.run("1. 16 KB CorkBuffer Syscall Coalescing") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -711,6 +756,9 @@ fn test_server_cork_buffer(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. Unrolled Handshake, Cached Date & SWAR UTF-8
+// ----------------------------------------------------------------------------
 fn test_handshake_and_date_and_swar_utf8(t: lit::T&) {
     t.run("1. Unrolled 2-Block WebSocket Handshake Accept Key") { sub =>
         let test_key = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -751,6 +799,9 @@ fn test_handshake_and_date_and_swar_utf8(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. Fast In-Place Query Parser
+// ----------------------------------------------------------------------------
 fn test_fast_query_parser(t: lit::T&) {
     t.run("1. Zero-Allocation Targeted Query Parameter Lookup") { sub =>
         let query_str = "?filter=active&search=hello+world%21&debug&empty=&limit=50";
@@ -781,6 +832,9 @@ fn test_fast_query_parser(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 18. Share-Nothing Epoll Reactor & Non-blocking Multiplexing
+// ----------------------------------------------------------------------------
 fn test_epoll_reactor_multiplexer(t: lit::T&) {
     t.run("1. Non-blocking Epoll Reactor Multiplexing Across Multiple Sockets") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -866,6 +920,9 @@ fn test_epoll_reactor_multiplexer(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. SWAR 64-bit Parallel Control Character Scanning
+// ----------------------------------------------------------------------------
 fn test_swar_ctl_scanner(t: lit::T&) {
     t.run("1. SWAR hasLess 64-bit Parallel Control Character Scanning") { sub =>
         // Pure printable ASCII
@@ -901,6 +958,9 @@ fn test_swar_ctl_scanner(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. Fast Integer & Hex to ASCII Serializers
+// ----------------------------------------------------------------------------
 fn test_fast_integer_ascii_serializers(t: lit::T&) {
     t.run("1. Fast u64toa and u32toa_hex") { sub =>
         var buf: u8[32] = [0; 32];
@@ -947,6 +1007,9 @@ fn test_fast_integer_ascii_serializers(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 21. In-Place WebSocket Unmasking with Header Overwrite
+// ----------------------------------------------------------------------------
 fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
     t.run("1. In-Place Zero-Copy Unmasking with Header Overwrite") { sub =>
         let mask: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
@@ -977,6 +1040,9 @@ fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. 64-bit Register FSM Chunked Stream Decoder
+// ----------------------------------------------------------------------------
 fn test_chunked_fsm_decoder(t: lit::T&) {
     t.run("1. 64-bit Register FSM Chunked Stream Decoding") { sub =>
         var dec = internal::new_chunk_fsm_decoder();
@@ -1025,6 +1091,9 @@ fn test_chunked_fsm_decoder(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. Dual-Expiry Coalescing HTTP Route Cache
+// ----------------------------------------------------------------------------
 fn test_http_route_cache(t: lit::T&) {
     t.run("1. Dual-Expiry Coalescing HTTP Route Cache") { sub =>
         var cache = wing::new_http_route_cache(1000, 5000);
@@ -1058,6 +1127,9 @@ fn test_http_route_cache(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. 1-Byte Modular Tick Timer Wheel
+// ----------------------------------------------------------------------------
 fn test_tick_timer_wheel(t: lit::T&) {
     t.run("1. 1-Byte Tick Wheel Low-Overhead Timeout Sweeper") { sub =>
         var wheel = wing::new_tick_timer_wheel(10); // 10s default
@@ -1099,6 +1171,9 @@ fn test_tick_timer_wheel(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 25. Wire Buffer Sentinel Fencing
+// ----------------------------------------------------------------------------
 fn test_buffer_fencing_margin(t: lit::T&) {
     t.run("1. Wire Buffer Sentinel Fencing") { sub =>
         var wire_buf: u8[64] = [0; 64];
@@ -1118,6 +1193,9 @@ fn test_buffer_fencing_margin(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 26. TCP QuickACK and Cork Control
+// ----------------------------------------------------------------------------
 fn test_tcp_quickack_and_cork(t: lit::T&) {
     t.run("1. TCP QuickACK and Cork Control") { sub =>
         let listener = wing::tcp_listen("127.0.0.1", 0, 16);
@@ -1156,6 +1234,9 @@ fn test_tcp_quickack_and_cork(t: lit::T&) {
 // Red regression test suite based on & issue tracker.
 // Tracks verified fixes for vulnerabilities, RFC non-conformances, and edge cases.
 
+// ----------------------------------------------------------------------------
+// 27. #1951 Non-ASCII / UTF-8 Request Target Rejection
+// ----------------------------------------------------------------------------
 fn test_uweb_1951_non_ascii_url_rejection(t: lit::T&) {
     // Issue #1951 / RFC 9112 Section 3.2:
     // Request target must only consist of visible ASCII characters (0x21..0x7E).
@@ -1175,6 +1256,9 @@ fn test_uweb_1951_non_ascii_url_rejection(t: lit::T&) {
     t.assert_true(ok3, "Valid visible ASCII path must be accepted");
 }
 
+// ----------------------------------------------------------------------------
+// 28. #1855 Duplicate Content-Length in HEAD Responses
+// ----------------------------------------------------------------------------
 fn test_uweb_1855_head_content_length_duplicate(t: lit::T&) {
     // Issue #1855 / RFC 9110 Section 8.6:
     // When responding to HEAD or providing a manual Content-Length on empty body,
@@ -1204,6 +1288,9 @@ fn test_uweb_1855_head_content_length_duplicate(t: lit::T&) {
     t.assert_eq(count, 1, "Exactly one Content-Length header must be emitted");
 }
 
+// ----------------------------------------------------------------------------
+// 29. #1927 PROXY Protocol Enforcement Without Fallthrough
+// ----------------------------------------------------------------------------
 fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: lit::T&) {
     // Issue #1927 & #1948 / HAProxy PROXY Protocol Specification:
     // When accept_proxy_protocol is enabled, the connection MUST begin with a valid PROXY header.
@@ -1220,6 +1307,9 @@ fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: lit::T&) {
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must return 400 Bad Request on missing PROXY header");
 }
 
+// ----------------------------------------------------------------------------
+// 30. #1407 WebSocket Control Frame Protocol Error (1002)
+// ----------------------------------------------------------------------------
 fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     // Issue #1407 / RFC 6455 Section 5.5:
     // Malformed control frames (payload > 125, fragmented control frame with FIN=0)
@@ -1255,6 +1345,9 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 }
 
+// ----------------------------------------------------------------------------
+// 31. #1933 TopicTree Trailing Wildcard & Safe Zero Publish
+// ----------------------------------------------------------------------------
 fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
     // Issue #1933 & OASIS MQTT v5.0 §4.7.1.3:
     // 'sport/+' MUST match 'sport/' (trailing slash level), but 'sport' MUST NOT match 'sport/'.
@@ -1298,6 +1391,9 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
     t.assert_eq(tree.palette_len, 33, "Palette length must NOT be wiped by drain_subscriber mid-broadcast");
 }
 
+// ----------------------------------------------------------------------------
+// 32. #263 Socket Handle Lifecycle & Inheritance Defense
+// ----------------------------------------------------------------------------
 fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: lit::T&) {
     let listener = wing::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener created with non-inheritable handle");
@@ -1323,6 +1419,9 @@ fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: lit::T&) {
     wing::tcp_close(listener);
 }
 
+// ----------------------------------------------------------------------------
+// 33. #1949 Host Header Invariant Enforcement (RFC 9112 §3.2)
+// ----------------------------------------------------------------------------
 fn test_uweb_1949_host_header_validation(t: lit::T&) {
     // Issue #1949 / RFC 9112 Section 3.2:
     // 1. Missing Host header in HTTP/1.1 must be rejected with 400.
@@ -1361,6 +1460,9 @@ fn test_uweb_1949_host_header_validation(t: lit::T&) {
     t.assert_true(ok6, "Valid Host header must be accepted");
 }
 
+// ----------------------------------------------------------------------------
+// 34. #1370 Status 204 No Content Strip Content-Length
+// ----------------------------------------------------------------------------
 fn test_uweb_1370_204_no_content_length(t: lit::T&) {
     // Issue #1370 / RFC 9110 Section 8.6:
     // A server MUST NOT send a Content-Length header field in any response
@@ -1376,6 +1478,9 @@ fn test_uweb_1370_204_no_content_length(t: lit::T&) {
     t.assert_false(find(wire_str, "Content-Length") >= 0, "204 No Content response must NOT contain Content-Length header");
 }
 
+// ----------------------------------------------------------------------------
+// 35. RFC 6455 §7.4.1 Omit 1005 on Wire in Empty Close Frames
+// ----------------------------------------------------------------------------
 fn test_rfc_6455_1005_empty_close_payload(t: lit::T&) {
     // RFC 6455 Section 7.4.1 / Autobahn 7.1.x:
     // Status code 1005 (No Status Received) is designated for internal use
@@ -1392,6 +1497,9 @@ fn test_rfc_6455_1005_empty_close_payload(t: lit::T&) {
     t.assert_eq(hdr.payload_len, 0, "1005 close frame payload length must be 0 bytes on wire");
 }
 
+// ----------------------------------------------------------------------------
+// 36. #1952 OPTIONS * Acceptance & GET/POST * Rejection
+// ----------------------------------------------------------------------------
 fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: lit::T&) {
     // Issue #1952 / RFC 9112 Section 3.2.4:
     // Asterisk-form ('*') request target is ONLY valid for OPTIONS.
@@ -1412,6 +1520,9 @@ fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: lit::T&) {
     t.assert_false(ok3, "POST * HTTP/1.1 must be rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 37. #1932 Block Outbound WebSocket Sends After Close
+// ----------------------------------------------------------------------------
 fn test_uweb_1932_ws_send_blocked_when_closed(t: lit::T&) {
     // Issue #1932 / RFC 6455 Section 5.5.1:
     // Once a WebSocket session is closed (or closing after backpressure/close frame),
@@ -1432,6 +1543,9 @@ fn test_uweb_1932_ws_send_blocked_when_closed(t: lit::T&) {
     t.assert_eq(wire_out.len, 0, "send_ping must emit 0 bytes after session is closed");
 }
 
+// ----------------------------------------------------------------------------
+// 38. MQTT §4.7.1.2 TopicTree Wildcard Syntax Validation
+// ----------------------------------------------------------------------------
 fn test_mqtt_invalid_multilevel_wildcard_rejection(t: lit::T&) {
     // OASIS MQTT v5.0 §4.7.1.2 & TopicTree Validation:
     // Multi-level wildcard '#' MUST be the last character in the topic pattern,
@@ -1447,6 +1561,9 @@ fn test_mqtt_invalid_multilevel_wildcard_rejection(t: lit::T&) {
     t.assert_true(wing::subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
 }
 
+// ----------------------------------------------------------------------------
+// 39. #1090 TopicTree Wildcard Publish Rejection
+// ----------------------------------------------------------------------------
 fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: lit::T&) {
     // Issue #1090 / OASIS MQTT v5.0 §3.3.2.1:
     // "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters [MQTT-3.3.2-1]."
@@ -1473,6 +1590,9 @@ fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: lit::T&) {
     t.assert_eq(count4, 0, "Publish to wildcard topic '#' MUST be rejected (0 subscribers)");
 }
 
+// ----------------------------------------------------------------------------
+// 40. #1944 Query Lookup with Encoded Keys & Valueless
+// ----------------------------------------------------------------------------
 fn test_uweb_1944_query_lookup_encoded_and_valueless(t: lit::T&) {
     // Issue #1944 / WHATWG URL:
     // Query parameter fast lookup must handle percent-encoded keys and valueless parameters.
@@ -1498,6 +1618,9 @@ fn test_uweb_1944_query_lookup_encoded_and_valueless(t: lit::T&) {
     t.assert_eq(cat_val[..], "news", "Decoded value of 'category/tag' is 'news'");
 }
 
+// ----------------------------------------------------------------------------
+// 41. #1898 Extra Trailing Bytes Connection Poisoning Defense
+// ----------------------------------------------------------------------------
 fn test_uweb_1898_extra_bytes_connection_poisoning(t: lit::T&) {
     // Issue #1898 / RFC 9112 Section 9.3:
     // Extra bytes sent beyond Content-Length must not be ignored or allowed to poison keep-alive.
@@ -1515,6 +1638,9 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: lit::T&) {
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
 }
 
+// ----------------------------------------------------------------------------
+// 42. RFC 6455 §5.2 Non-Minimal WebSocket Length Protocol Error
+// ----------------------------------------------------------------------------
 fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     // RFC 6455 §5.2 & Autobahn Cases 3.1, 3.2, 3.3, 3.4 / #1407:
     // Non-minimal length encodings (e.g. 16-bit length < 126 or 64-bit length <= 65535)
@@ -1547,6 +1673,9 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
 }
 
+// ----------------------------------------------------------------------------
+// 43. #1658 HTTP Header Block 8KB Limit Enforcement
+// ----------------------------------------------------------------------------
 fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
     // #1658 / RFC 9112 §2.1:
     // Total header block size must be bounded (e.g. 8192 bytes).
@@ -1564,6 +1693,9 @@ fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
     t.assert_false(ok, "Headers exceeding 8KB must be rejected per #1658 / RFC 9112 §2.1");
 }
 
+// ----------------------------------------------------------------------------
+// 44. #101 Windows SO_EXCLUSIVEADDRUSE Port Hijack Defense
+// ----------------------------------------------------------------------------
 fn test_usock_101_windows_exclusive_port_defense(t: lit::T&) {
     // Issue #101 / #167:
     // On Windows, listening sockets MUST set SO_EXCLUSIVEADDRUSE rather than SO_REUSEADDR.
@@ -1584,6 +1716,9 @@ fn test_usock_101_windows_exclusive_port_defense(t: lit::T&) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// 45. RFC 6455 §4.2.1 Sec-WebSocket-Key Nonce Validation
+// ----------------------------------------------------------------------------
 fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     // RFC 6455 Section 4.2.1:
     // "The |Sec-WebSocket-Key| MUST be a base64-encoded value that, when decoded, is 16 bytes in length."
@@ -1616,6 +1751,9 @@ fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     t.assert_eq(accept_val, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Correct RFC 6455 Sec-WebSocket-Accept header");
 }
 
+// ----------------------------------------------------------------------------
+// 46. #1948 PROXY v2 Family & LOCAL Command Address Validation
+// ----------------------------------------------------------------------------
 fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     // Issue #1948 / HAProxy PROXY Protocol v2 Specification §2.2:
     // 1. Only exact family/transport combinations 0x00, 0x11, 0x12, 0x21, 0x22, 0x31, 0x32 are valid.
@@ -1662,6 +1800,9 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     t.assert_eq(hdr3.src_ip_str.len, 0, "LOCAL command MUST NOT expose proxied client IP");
 }
 
+// ----------------------------------------------------------------------------
+// 47. #258 Windows Connect RST Immediate Failure via exceptfds
+// ----------------------------------------------------------------------------
 fn test_usock_258_windows_connect_rst_immediate_failure(t: lit::T&) {
     // Issue #258 / #259 & Winsock2 Specification:
     // On Windows, when a non-blocking connect fails (RST / ECONNREFUSED), Winsock2
@@ -1680,6 +1821,9 @@ fn test_usock_258_windows_connect_rst_immediate_failure(t: lit::T&) {
     t.assert_true(dur_ms < 300, "Connect with 50ms timeout must return within bounded time");
 }
 
+// ----------------------------------------------------------------------------
+// 48. #1941 Transfer-Encoding List & Final Chunked Requirement
+// ----------------------------------------------------------------------------
 fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: lit::T&) {
     // Issue #1941 / PR #1943 & RFC 9112 Section 6.1 & 7:
     // Transfer-Encoding can be a comma-separated list of transfer codings (e.g. gzip, identity, br, deflate),
@@ -1715,6 +1859,9 @@ fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: lit::T&) {
     t.assert_contains(wire_out[..], "200 OK", "Server responds 200 OK to valid chunked list form");
 }
 
+// ----------------------------------------------------------------------------
+// 49. #1936 Chunk Extension & Size Whitespace Validation (RFC 9112 §7.1.1)
+// ----------------------------------------------------------------------------
 fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
     // Issue #1936 / Http11Probe & RFC 9112 Section 7.1.1:
     // chunk = chunk-size [ chunk-ext ] CRLF
@@ -1777,6 +1924,9 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
 }
 
 // --- Test 50: PreparedMessage & publishPrepared ---
+// ----------------------------------------------------------------------------
+// 50. PreparedMessage & publishPrepared
+// ----------------------------------------------------------------------------
 fn test_uweb_prepared_message(t: lit::T&) {
     var tree = wing::TopicTree { .. };
     wing::subscribe(tree, 101, "broadcast/tickers");
@@ -1821,6 +1971,9 @@ fn test_uweb_prepared_message(t: lit::T&) {
 }
 
 // --- Test 51: WebSocket maxLifetime Session Timeout ---
+// ----------------------------------------------------------------------------
+// 51. WebSocket maxLifetime Session Timeout
+// ----------------------------------------------------------------------------
 fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
     var wheel = wing::new_tick_timer_wheel(10);
     var ws = wing::new_websocket_session(false);
@@ -1859,6 +2012,9 @@ fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
 }
 
 // --- Test 52: #1347 Safari 15.0-15.3 Broken Compression Workaround ---
+// ----------------------------------------------------------------------------
+// 52. #1347 Safari 15.0-15.3 Broken Compression Workaround
+// ----------------------------------------------------------------------------
 fn test_uweb_safari_15_broken_compression(t: lit::T&) {
     // Safari 15.0..15.3 should return true
     let ua_15_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15";
@@ -1929,6 +2085,9 @@ fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
 }
 
 // --- Test 53: endWithoutBody & HEAD/304 Content-Length Spoofing ---
+// ----------------------------------------------------------------------------
+// 53. endWithoutBody & HEAD/304 Content-Length Spoofing
+// ----------------------------------------------------------------------------
 fn test_uweb_end_without_body(t: lit::T&) {
     var res = wing::Response { status_code: 200, .. };
     var wire: u8[..1024] = [];
@@ -1955,6 +2114,9 @@ fn test_uweb_end_without_body(t: lit::T&) {
 }
 
 // --- Test 54: Streaming Ingress onData / onDataV2 ---
+// ----------------------------------------------------------------------------
+// 54. Streaming Ingress onData / onDataV2
+// ----------------------------------------------------------------------------
 fn test_uweb_streaming_on_data(t: lit::T&) {
     var req = wing::new_request("POST", "/upload/stream");
     var consumer = wing::HttpStreamConsumer { .. };
@@ -1993,6 +2155,9 @@ fn test_uweb_streaming_on_data(t: lit::T&) {
 }
 
 // --- Test 55: Async Backpressure (onWritable) & Abort (onAborted) ---
+// ----------------------------------------------------------------------------
+// 55. Async Backpressure (onWritable) & Abort (onAborted)
+// ----------------------------------------------------------------------------
 fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
     var ctx = wing::HttpAsyncContext {
         sock_fd:          42,
@@ -2026,6 +2191,9 @@ fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
 }
 
 // --- Test 56: Dynamic Runtime SNI Multi-Certificate Registry ---
+// ----------------------------------------------------------------------------
+// 56. Dynamic Runtime SNI Multi-Certificate Registry
+// ----------------------------------------------------------------------------
 fn test_uweb_dynamic_sni_registry(t: lit::T&) {
     var server = wing::new_http_server("test-sni");
 
@@ -2105,6 +2273,9 @@ fn test_uweb_dynamic_sni_registry(t: lit::T&) {
 }
 
 // --- Test 57: Unix Domain Sockets (AF_UNIX) & Socket Adoption ---
+// ----------------------------------------------------------------------------
+// 57. Unix Domain Sockets (AF_UNIX) & Socket Adoption
+// ----------------------------------------------------------------------------
 fn test_uweb_unix_domain_sockets_and_adopt_socket(t: lit::T&) {
     var server = wing::new_http_server("test-uds");
 

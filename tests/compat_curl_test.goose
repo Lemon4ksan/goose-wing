@@ -474,7 +474,7 @@ fn test_curl_expect_100_continue(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 1. Malformed Chunked Hex Sizes (curl test 1941, 1936)
+// 9. Malformed Chunked Hex Sizes (curl test 1941, 1936)
 // Vectors:
 //   - Non-hex chunk length (e.g. 1Z\r\n..., foo\r\n, +5\r\n, 0x10\r\n)
 //   - 64-bit integer overflow in chunk length (FFFFFFFFFFFFFFFF\r\n, oversized hex)
@@ -636,7 +636,7 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Premature Connection Close / Truncated Body (curl test 150, 584)
+// 10. Premature Connection Close / Truncated Body (curl test 150, 584)
 // Vectors:
 //   - Content-Length: 50 with truncated 20-byte payload rejected as unexpected EOF
 //   - Chunked response terminating before terminal 0\r\n\r\n rejected as incomplete
@@ -720,7 +720,7 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Chunked Trailing Headers (curl test 188, 1090)
+// 11. Chunked Trailing Headers (curl test 188, 1090)
 // Vectors:
 //   - Chunked response followed by trailers (Expires, X-Checksum, Server-Timing)
 //   - Multiple trailers extracted and case-insensitively accessible
@@ -832,7 +832,7 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 1. URL Port Boundary Parsing (curl unit1653.c & unit1675.c)
+// 12. URL Port Boundary Parsing (curl unit1653.c & unit1675.c)
 // ----------------------------------------------------------------------------
 fn test_curl_url_port_boundaries(t: lit::T&) {
     t.run("curl unit1653: valid port boundaries and default port stripping") { sub =>
@@ -903,7 +903,7 @@ fn test_curl_url_port_boundaries(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. IPv6 Bracketed and Scoped Addresses (curl test 241, 1056, 1230)
+// 13. IPv6 Bracketed and Scoped Addresses (curl test 241, 1056, 1230)
 // ----------------------------------------------------------------------------
 fn test_curl_ipv6_addresses(t: lit::T&) {
     t.run("curl test 241 & 1230: numerical IPv6 host and custom port parsing") { sub =>
@@ -947,7 +947,7 @@ fn test_curl_ipv6_addresses(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Path and Search Normalization (curl test 40, 42, 1138)
+// 14. Path and Search Normalization (curl test 40, 42, 1138)
 // ----------------------------------------------------------------------------
 fn test_curl_path_and_search_normalization(t: lit::T&) {
     t.run("curl test 42: percent-encoding roundtrip in pathname") { sub =>
@@ -976,11 +976,7 @@ fn test_curl_path_and_search_normalization(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// Main Runner Entrypoint
-// ----------------------------------------------------------------------------
-
-// ----------------------------------------------------------------------------
-// 1. Cookie Header 8KB Limits & Truncation (curl test 427, 442, 443)
+// 15. Cookie Header 8KB Limits & Truncation (curl test 427, 442, 443)
 // ----------------------------------------------------------------------------
 
 fn fill_repeated_pattern<B>(out: B&, count: i32, token: const u8[:]) {
@@ -1034,6 +1030,9 @@ fn test_curl_427_cookie_header_8kb_limit(t: lit::T&) {
 }
 
 // curl test 443: 20 large cookies (500B each) capped cleanly within 8KB.
+// ----------------------------------------------------------------------------
+// 16. 20 Large Cookies Truncation (curl 443)
+// ----------------------------------------------------------------------------
 fn test_curl_443_many_large_cookies_truncation(t: lit::T&) {
     t.run("curl test 443: 20 large cookies (500B each) capped cleanly within 8KB") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -1055,6 +1054,9 @@ fn test_curl_443_many_large_cookies_truncation(t: lit::T&) {
 }
 
 // curl test 442: high cookie count stops cleanly at buffer boundary.
+// ----------------------------------------------------------------------------
+// 17. High Cookie Count Buffer Boundary (curl 442)
+// ----------------------------------------------------------------------------
 fn test_curl_442_cookie_count_buffer_boundary(t: lit::T&) {
     t.run("curl test 442: high cookie count stops cleanly at buffer boundary") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -1072,7 +1074,7 @@ fn test_curl_442_cookie_count_buffer_boundary(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Domain Tailmatching & Prefix Collision Defense (curl test 1216, 1218, 171)
+// 18. Domain Tailmatching & Prefix Collision Defense (curl test 1216, 1218, 171)
 // ----------------------------------------------------------------------------
 
 // curl test 1216 & 1218: RFC 6265 Section 5.1.3 domain tailmatching and prefix defense.
@@ -1131,7 +1133,7 @@ fn test_curl_domain_tailmatching_prefix_defense(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Single-Label Host & IP Address Semantics (curl test 331)
+// 19. Single-Label Host & IP Address Semantics (curl test 331)
 // ----------------------------------------------------------------------------
 
 // curl test 331 & RFC 6265 Section 5.1.3: Unqualified hostnames and IP literal exact equality.
@@ -1173,7 +1175,7 @@ fn test_curl_single_label_and_ip_matching(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Public Suffix List (PSL) Rejection & Acceptance (curl test 1136, 1476)
+// 20. Public Suffix List (PSL) Rejection & Acceptance (curl test 1136, 1476)
 // ----------------------------------------------------------------------------
 
 // curl test 1136 & 1476: Supercookie prevention across ICANN and Private PSL boundaries.
@@ -1220,6 +1222,9 @@ fn test_curl_psl_supercookie_rejection(t: lit::T&) {
 }
 
 // curl test 1136 & 1476: Wildcard and exception rules with mixed-case hostnames.
+// ----------------------------------------------------------------------------
+// 21. PSL Wildcards, Exceptions, and Mixed Case (curl 1136, 1476)
+// ----------------------------------------------------------------------------
 fn test_curl_psl_wildcard_exception_and_case(t: lit::T&) {
     t.run("curl test 1476: Valid eTLD+1 accepted with mixed-case domain property") { sub =>
         var jar = wing::CanonicalCookieJar { .. };
@@ -1257,31 +1262,20 @@ fn test_curl_psl_wildcard_exception_and_case(t: lit::T&) {
 fn main() {
     var runner = lit::new_runner("curl Behavioral Compatibility Suite", lit::Verbosity.Verbose);
 
-    // 1. Redirects & Security
     lit::run_case(runner, "1. Redirect Method Mutation & Payload Stripping (curl 1011, 1076, 1325, 1332)", test_curl_redirect_method_mutation);
     lit::run_case(runner, "2. Cross-Origin Sensitive Credential Stripping (curl 317, 318, 330, 1077)", test_curl_cross_origin_sanitization);
     lit::run_case(runner, "3. Location URL Resolution & Dot Segments (curl 49, 50, 52, 1031, 1314)", test_curl_location_url_resolution);
     lit::run_case(runner, "4. Redirect Loop & Missing Location Guards (curl 25, 54)", test_curl_redirect_guards_and_limits);
-
-    // 2. Cookie Paths, Prefixes & Netscape Format
     lit::run_case(runner, "5. Cookie Path Matching & Security Prefixes (curl 61, 172, 329, 1228, 1561, 2311)", test_curl_cookie_path_matching_and_prefix_rules);
     lit::run_case(runner, "6. Netscape cookies.txt Ingestion (curl 46, 62, 3104)", test_curl_netscape_cookiejar_import);
-
-    // 3. HTTP CONNECT Tunneling & Expect 100-Continue
     lit::run_case(runner, "7. HTTP CONNECT Proxy Tunneling & Response Parsing (curl 80, 1287)", test_curl_connect_tunneling_and_proxy_rules);
     lit::run_case(runner, "8. Expect 100-continue & Fast-Fail Server Evaluation (curl 357, 1129, 1130)", test_curl_expect_100_continue);
-
-    // 4. Chunked Encoding Fuzzing & Premature EOF (Wire)
     lit::run_case(runner, "9. Malformed Chunked Hex Sizes (curl 1941, 1936)", test_curl_malformed_chunk_hex_sizes);
     lit::run_case(runner, "10. Premature Connection Close & Truncated Body (curl 150, 584)", test_curl_premature_close_truncated_body);
     lit::run_case(runner, "11. Chunked Trailing Headers (curl 188, 1090)", test_curl_chunked_trailing_headers);
-
-    // 5. URL Port Boundaries, IPv6 & Path Normalization
     lit::run_case(runner, "12. URL Port Boundary Parsing (curl unit1653, unit1675)", test_curl_url_port_boundaries);
     lit::run_case(runner, "13. IPv6 Bracketed and Scoped Addresses (curl 241, 1056, 1230)", test_curl_ipv6_addresses);
     lit::run_case(runner, "14. Path and Search Normalization (curl 40, 42, 1138)", test_curl_path_and_search_normalization);
-
-    // 6. Cookie 8KB Limits, Domain Tailmatching & PSL Boundaries
     lit::run_case(runner, "15. Cookie Header 8KB Limit (curl 427)", test_curl_427_cookie_header_8kb_limit);
     lit::run_case(runner, "16. 20 Large Cookies Truncation (curl 443)", test_curl_443_many_large_cookies_truncation);
     lit::run_case(runner, "17. High Cookie Count Buffer Boundary (curl 442)", test_curl_442_cookie_count_buffer_boundary);

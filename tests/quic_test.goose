@@ -757,6 +757,9 @@ fn test_bbr_cubic_and_pacing(t: lit::T&) {
 // Test suite for QUIC Transport RFC 9000 Section 19 Frame Codecs,
 // Demuxer, and Section 3 Stream State Machine Invariants.
 
+// ----------------------------------------------------------------------------
+// 8. RFC 9000 §19.8 STREAM Frame Codec
+// ----------------------------------------------------------------------------
 fn test_quic_stream_frame_codec(t: lit::T&) {
     // 1. STREAM frame: Base (stream_id=4, offset=0, no FIN, with length)
     var wire1: u8[..128] = [];
@@ -820,6 +823,9 @@ fn test_quic_stream_frame_codec(t: lit::T&) {
     t.assert_false(ok_bad_enc, "offset + len exceeding 2^62-1 rejected during encoding");
 }
 
+// ----------------------------------------------------------------------------
+// 9. RFC 9000 §19.6 CRYPTO Frame Codec
+// ----------------------------------------------------------------------------
 fn test_quic_crypto_frame_codec(t: lit::T&) {
     var wire: u8[..256] = [];
     let tls_data: const u8[6] = [0x01, 0x00, 0x00, 0x02, 0x03, 0x03];
@@ -841,6 +847,9 @@ fn test_quic_crypto_frame_codec(t: lit::T&) {
     t.assert_false(ok_bad, "crypto offset overflow rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 10. RFC 9000 §19 Control Frames Codec
+// ----------------------------------------------------------------------------
 fn test_quic_control_frames_codec(t: lit::T&) {
     // 1. RESET_STREAM
     var wire_rst: u8[..64] = [];
@@ -900,6 +909,9 @@ fn test_quic_control_frames_codec(t: lit::T&) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// 11. RFC 9000 Zero-Alloc Frame Demuxer
+// ----------------------------------------------------------------------------
 fn test_quic_frame_demuxer(t: lit::T&) {
     // Pack multiple distinct frames into a single datagram payload buffer
     var packet_wire: u8[..512] = [];
@@ -968,6 +980,9 @@ fn test_quic_frame_demuxer(t: lit::T&) {
     t.assert_eq(next_off, 1, "next offset is 1");
 }
 
+// ----------------------------------------------------------------------------
+// 12. RFC 9000 §3.1 Sending Stream State Machine
+// ----------------------------------------------------------------------------
 fn test_quic_stream_state_machine_send(t: lit::T&) {
     var s = internal::new_quic_stream(0, 10000); // Bidi client stream, max recv 10000
     s.send_max_data = 5000;
@@ -1012,6 +1027,9 @@ fn test_quic_stream_state_machine_send(t: lit::T&) {
     t.assert_true(internal::quic_stream_is_send_closed(s2), "sender is closed");
 }
 
+// ----------------------------------------------------------------------------
+// 13. RFC 9000 §3.2 & §4.5 Receiving Stream State Machine
+// ----------------------------------------------------------------------------
 fn test_quic_stream_state_machine_recv(t: lit::T&) {
     var s = internal::new_quic_stream(0, 10000); // Recv limit = 10000
     t.assert_eq(s.recv_state, internal::QuicRecvState.Receive, "initial state is Receive");
@@ -1073,6 +1091,9 @@ fn test_quic_stream_state_machine_recv(t: lit::T&) {
     t.assert_eq(err_ss_bad, rfc::QUIC_ERR_STREAM_STATE, "error is STREAM_STATE_ERROR");
 }
 
+// ----------------------------------------------------------------------------
+// 14. RFC 9000 Zero-Alloc Stream Table
+// ----------------------------------------------------------------------------
 fn test_quic_stream_table(t: lit::T&) {
     var tbl = internal::new_quic_stream_table(internal::QuicRole.Client);
 
@@ -1114,6 +1135,9 @@ fn test_quic_stream_table(t: lit::T&) {
 // auto-window update thresholds, Appendix A packet number reconstruction,
 // and QuicConnection inbound frame demuxing.
 
+// ----------------------------------------------------------------------------
+// 15. Connection Flow Control Budget (RFC 9000 §4.1)
+// ----------------------------------------------------------------------------
 fn test_connection_flow_control_budget(t: lit::T&) {
     var fc = internal::new_quic_flow_control(1000, 65536); // Remote limit 1000
     var s0 = internal::new_quic_stream(0, 65536);
@@ -1153,6 +1177,9 @@ fn test_connection_flow_control_budget(t: lit::T&) {
     t.assert_false(ok_send3, "record send fails when conn budget exceeded");
 }
 
+// ----------------------------------------------------------------------------
+// 16. Monotonic MAX_DATA Limit Updates
+// ----------------------------------------------------------------------------
 fn test_monotonic_remote_max_data(t: lit::T&) {
     var fc = internal::new_quic_flow_control(500, 65536);
     var s = internal::new_quic_stream(0, 65536);
@@ -1183,6 +1210,9 @@ fn test_monotonic_remote_max_data(t: lit::T&) {
     t.assert_true(can_send, "send 200 succeeds after unblocking");
 }
 
+// ----------------------------------------------------------------------------
+// 17. Stream Flow Control Budget (RFC 9000 §4.1)
+// ----------------------------------------------------------------------------
 fn test_stream_flow_control_budget(t: lit::T&) {
     var fc = internal::new_quic_flow_control(100000, 65536); // Unlimited conn credit
     var s = internal::new_quic_stream(0, 65536);
@@ -1217,6 +1247,9 @@ fn test_stream_flow_control_budget(t: lit::T&) {
     t.assert_eq(s.bytes_sent, 350, "stream bytes sent 350");
 }
 
+// ----------------------------------------------------------------------------
+// 18. Ingress Flow Control & FLOW_CONTROL_ERROR
+// ----------------------------------------------------------------------------
 fn test_ingress_flow_control_and_errors(t: lit::T&) {
     var fc = internal::new_quic_flow_control(10000, 1000); // Local conn limit 1000
     var s = internal::new_quic_stream(0, 500); // Local stream limit 500
@@ -1253,6 +1286,9 @@ fn test_ingress_flow_control_and_errors(t: lit::T&) {
     t.assert_eq(err_conn_violation, rfc::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR (0x03)");
 }
 
+// ----------------------------------------------------------------------------
+// 19. RESET_STREAM Final Size Accounting (RFC 9000 §4.5)
+// ----------------------------------------------------------------------------
 fn test_reset_stream_flow_control_accounting(t: lit::T&) {
     var fc = internal::new_quic_flow_control(10000, 1000);
     var s = internal::new_quic_stream(0, 800);
@@ -1276,6 +1312,9 @@ fn test_reset_stream_flow_control_accounting(t: lit::T&) {
     t.assert_eq(err_rst_exceed, rfc::QUIC_ERR_FLOW_CONTROL, "returns FLOW_CONTROL_ERROR");
 }
 
+// ----------------------------------------------------------------------------
+// 20. Window Update Auto-Generation (RFC 9000 §4.2)
+// ----------------------------------------------------------------------------
 fn test_window_update_thresholds(t: lit::T&) {
     // Configure local window of 64KB (65536)
     var fc = internal::new_quic_flow_control(65536, 65536);
@@ -1315,6 +1354,9 @@ fn test_window_update_thresholds(t: lit::T&) {
     t.assert_eq(s_new_limit, 1600, "new stream limit is 600 + 1000 = 1600");
 }
 
+// ----------------------------------------------------------------------------
+// 21. RFC 9000 Appendix A Packet Number Decoding
+// ----------------------------------------------------------------------------
 fn test_rfc9000_packet_number_decoding(t: lit::T&) {
     // Vector 1 from RFC 9000 Appendix A:
     // largest_pn = 0xABE8B, truncated_pn = 0xACEB, pn_nbits = 16 (2 bytes)
@@ -1354,6 +1396,9 @@ fn test_rfc9000_packet_number_decoding(t: lit::T&) {
     t.assert_false(ok_inv5, "5-byte length rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 22. QuicConnection Inbound Frame Demuxing
+// ----------------------------------------------------------------------------
 fn test_connection_datagram_demuxing(t: lit::T&) {
     let scid: u8[4] = [0x01, 0x02, 0x03, 0x04];
     var conn = internal::new_quic_server_connection(scid[..]);
@@ -1411,6 +1456,9 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
 // 2. Optimistic ACK (OACK) attack prevention.
 // 3. QUIC packet header fixed and reserved bits validation.
 
+// ----------------------------------------------------------------------------
+// 23. QUIC ACK Frame Decoding Invariants
+// ----------------------------------------------------------------------------
 fn test_quic_ack_frame_decoding_invariants(t: lit::T&) {
     // 1. Valid ACK Frame
     var ack = internal::AckFrame {
@@ -1443,6 +1491,9 @@ fn test_quic_ack_frame_decoding_invariants(t: lit::T&) {
     t.assert_false(bad_gap_ok, "range gap underflowing PN space must be rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 24. QUIC OACK Attack Prevention
+// ----------------------------------------------------------------------------
 fn test_quic_oack_defense(t: lit::T&) {
     var space = internal::PnSpaceState {
         has_sent_packets: true,
@@ -1473,6 +1524,9 @@ fn test_quic_oack_defense(t: lit::T&) {
     t.assert_eq(intervals[0].largest, 50, "largest is 50");
 }
 
+// ----------------------------------------------------------------------------
+// 25. QUIC Header Security Bits
+// ----------------------------------------------------------------------------
 fn test_quic_header_security_bits(t: lit::T&) {
     // 1. Long Header Fixed Bit (0x40) check: byte 0 = 0x80 (Long=1, Fixed=0)
     let bad_fixed_long: const u8[12] = [0x80, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -1497,6 +1551,9 @@ fn test_quic_header_security_bits(t: lit::T&) {
 
 // RFC 9000 Section 19.17: PATH_CHALLENGE Frames - 8-byte payload test
 // RFC 9000 Section 19.18: PATH_RESPONSE Frames - 8-byte payload test
+// ----------------------------------------------------------------------------
+// 26. QUIC PATH_CHALLENGE & PATH_RESPONSE Codecs (RFC 9000)
+// ----------------------------------------------------------------------------
 fn test_quic_path_frames(t: lit::T&) {
     t.run("PATH-01: PATH_CHALLENGE frame serialization and parsing") { sub =>
         let challenge_token: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -1561,6 +1618,9 @@ fn test_quic_path_frames(t: lit::T&) {
 
 // RFC 9000 Section 9: Connection Migration - State machine test
 // RFC 9000 Section 8.2: Path Validation - Token verification and anti-amplification
+// ----------------------------------------------------------------------------
+// 27. Connection Migration FSM & Anti-Amplification (RFC 9000)
+// ----------------------------------------------------------------------------
 fn test_connection_migration(t: lit::T&) {
     t.run("MIG-01: Path validation lifecycle (Initiated -> Validating -> Validated)") { sub =>
         let initial_addr = internal::new_quic_endpoint_addr("198.51.100.1", 4433);
@@ -1679,6 +1739,9 @@ fn test_connection_migration(t: lit::T&) {
 
 // RFC 8899 Section 3: Probe Packets - Padded probe generation
 // RFC 8899 Section 5.1: State Machine - DPLPMTUD state transitions
+// ----------------------------------------------------------------------------
+// 28. DPLPMTUD Probe Generator & State Machine (RFC 8899)
+// ----------------------------------------------------------------------------
 fn test_dplpmtud(t: lit::T&) {
     t.run("DPL-01: Padded PING probe generation across target sizes") { sub =>
         let sizes: u32[4] = [1200, 1280, 1420, 1500];
@@ -1760,6 +1823,9 @@ fn test_dplpmtud(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 29. Cross-Module QUIC Integration & RFC Conformance Fixes
+// ----------------------------------------------------------------------------
 fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-01: Flow Control & ResetStream field mapping (RFC 9000)") { sub =>
         let scid: u8[4] = [0x11, 0x22, 0x33, 0x44];
@@ -2109,6 +2175,9 @@ fn test_quic_version2(t: lit::T&) {
 // - Exhaustive frame prefix truncation loops (ngtcp2_pkt_test.c) for ACK, RESET_STREAM, STOP_SENDING,
 //   CONNECTION_CLOSE (transport & app), MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS, DATA_BLOCKED,
 //   STREAM_DATA_BLOCKED, STREAMS_BLOCKED, NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, NEW_TOKEN
+// ----------------------------------------------------------------------------
+// 31. ngtcp2 & quinn Vendor Conformance Vectors
+// ----------------------------------------------------------------------------
 fn test_ngtcp2_and_quinn_vendor_conformance(t: lit::T&) {
     t.run("NGTCP2-CONV-01: Exhaustive VarInt Boundary Roundtrip & Prefix Truncation (test_ngtcp2_put_uvarint)") { sub =>
         let vals: u64[8] = [
@@ -2513,6 +2582,9 @@ fn test_ngtcp2_conn_and_recovery_semantics(t: lit::T&) {
 // Ported end-to-end connection lifecycle, multi-space recovery, stream directionality,
 // coalesced encryption, and PTO/BBRv3 test vectors from vendor/ngtcp2/tests/ngtcp2_conn_test.c,
 // ngtcp2_rtb_test.c, ngtcp2_acktr_test.c, and vendor/quinn/quinn-proto/src/connection/:
+// ----------------------------------------------------------------------------
+// 33. ngtcp2 & quinn Connection Lifecycle, Stream Polarity & BBRv3/PTO
+// ----------------------------------------------------------------------------
 fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
     t.run("QUINN-CONN-01: Coalesced Encrypted Datagrams (Initial + Handshake + 1-RTT) & Cipher Matrix") { sub =>
         let orig_dcid: u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
@@ -3132,6 +3204,211 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
     };
 }
 
+// --- Component: regress_issues_batch15 ---
+// Phase 15 RED test suite: HTTP/3 & QUIC Transport Engine RFC Invariants,
+// QPACK Dynamic Table Ring Decoders, Header Protection & Stream Multiplexer Defenses.
+//
+// 1. QUIC Packet Headers, Header Protection & Interval Reassembly (quic/packet.goose)
+// 2. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization (http3/qpack.goose)
+// 3. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads (http3/framing.goose)
+// 4. HTTP/3 Multiplexer, Unidirectional Encoder/Decoder Dispatch & Trailer Defenses (http3/connection.goose)
+
+// ----------------------------------------------------------------------------
+// 34. QUIC Packet Headers, Header Protection & Interval Reassembly
+// ----------------------------------------------------------------------------
+fn test_quic_packet_and_reassembly(t: lit::T&) {
+    t.run("parse_quic_header enforces fixed bit, CID lengths, and plen >= pn_len") { sub =>
+        // 1. Short header with fixed bit cleared (bit 6 = 0) MUST fail per RFC 9000 §17.3
+        let bad_short: u8[16] = [
+            0x00, // Fixed bit (0x40) is not set!
+            0x01, 0x02, 0x03, 0x04,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let _, ok_s = internal::parse_quic_header(bad_short[..], 4);
+        sub.assert_false(ok_s, "Short header with fixed bit 0 rejected");
+
+        // 2. Short header with dcid_len_short > 20 MUST fail
+        let valid_short: u8[16] = [
+            0x40, // Short header, fixed bit 1, pn_len 1
+            0x01, 0x02, 0x03, 0x04,
+            0x2A, // packet number
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let _, ok_dcid_lg = internal::parse_quic_header(valid_short[..], 21);
+        sub.assert_false(ok_dcid_lg, "Short header with dcid > 20 rejected");
+
+        let hdr_s, ok_s_valid = internal::parse_quic_header(valid_short[..], 4);
+        sub.assert_true(ok_s_valid, "Valid short header accepted");
+        sub.assert_eq(hdr_s.header_type, internal::QuicHeaderType.OneRtt, "Header type is OneRtt");
+        sub.assert_eq(hdr_s.pn_length, 1, "PN length is 1");
+
+        // 3. Long header with fixed bit cleared MUST fail per RFC 9000 §17.2
+        var bad_long: u8[..64] = [];
+        bad_long.push(0x80); // Long header, but fixed bit 0x40 NOT set!
+        core::append_u32_be(bad_long, rfc::QUIC_VERSION_1);
+        bad_long.push(4); // DCID len
+        bad_long.append([1, 2, 3, 4]);
+        bad_long.push(4); // SCID len
+        bad_long.append([5, 6, 7, 8]);
+        internal::quic_encode_varint(bad_long, 10); // plen
+        bad_long.push(1); // pn
+        let _, ok_l_fix = internal::parse_quic_header(bad_long[..], 0);
+        sub.assert_false(ok_l_fix, "Long header with fixed bit 0 rejected");
+
+        // 4. Long header with plen < pn_len MUST fail per RFC 9000 §17.2
+        var bad_plen: u8[..64] = [];
+        bad_plen.push(0xC1); // Long header, Initial, pn_len = 2 (bits 0..1 = 1)
+        core::append_u32_be(bad_plen, rfc::QUIC_VERSION_1);
+        bad_plen.push(0); // DCID len 0
+        bad_plen.push(0); // SCID len 0
+        internal::quic_encode_varint(bad_plen, 0); // token len 0
+        internal::quic_encode_varint(bad_plen, 1); // plen = 1, but pn_len = 2!
+        bad_plen.append([0x00, 0x2A]); // 2 bytes PN
+        let _, ok_plen = internal::parse_quic_header(bad_plen[..], 0);
+        sub.assert_false(ok_plen, "Long header with plen < pn_len rejected");
+    };
+
+    t.run("encode_quic_header enforces pn_len bounds and 20-byte CID") { sub =>
+        var hdr = internal::QuicHeader {
+            header_type:    internal::QuicHeaderType.Initial,
+            version:        rfc::QUIC_VERSION_1,
+            payload_length: 64,
+            packet_number:  1,
+            ..
+        };
+        // Valid 20-byte DCID (matches QUIC_MAX_CID_LEN = 20)
+        for i in 20 { hdr.dcid.push(i as u8); }
+
+        var out: u8[..128] = [];
+        let ok_valid = internal::encode_quic_header(out, hdr, 1);
+        sub.assert_true(ok_valid, "encode with DCID == 20 accepted");
+
+        // Invalid pn_len 0 or 5
+        out.clear();
+        sub.assert_false(internal::encode_quic_header(out, hdr, 0), "pn_len 0 rejected");
+        sub.assert_false(internal::encode_quic_header(out, hdr, 5), "pn_len 5 rejected");
+    };
+
+    t.run("apply and remove header protection with truncated buffers") { sub =>
+        let hp_mask: u8[5] = [0x5A, 0x11, 0x22, 0x33, 0x44];
+
+        // Empty buffer
+        var empty_buf: u8[..4] = [];
+        internal::apply_header_protection(empty_buf[..], 0, 1, hp_mask);
+        let pn_len_e, pn_e = internal::remove_header_protection(empty_buf[..], 0, hp_mask);
+        sub.assert_eq(pn_len_e, 0, "remove on empty returns 0");
+        sub.assert_eq(pn_e, 0, "pn on empty returns 0");
+
+        // Truncated buffer where pn_offset + pn_len > pkt.len
+        var trunc_buf: u8[4] = [0xC0, 0x00, 0x00, 0x00];
+        internal::apply_header_protection(trunc_buf[..], 10, 2, hp_mask); // offset 10 > len 4: safe no-op
+        sub.assert_eq(trunc_buf[0], 0xC0, "first byte untouched when out of bounds");
+
+        let pn_len_tr, _ = internal::remove_header_protection(trunc_buf[..], 10, hp_mask);
+        sub.assert_eq(pn_len_tr, 0, "remove out of bounds returns 0");
+        sub.assert_eq(trunc_buf[0], 0xC0, "first byte restored on out-of-bounds");
+
+        // Valid round-trip
+        var valid_pkt: u8[8] = [0xC0, 0x01, 0x02, 0x03, 0x12, 0x34, 0xAA, 0xBB];
+        let orig_first = valid_pkt[0];
+        let orig_pn0 = valid_pkt[4];
+        let orig_pn1 = valid_pkt[5];
+
+        internal::apply_header_protection(valid_pkt[..], 4, 2, hp_mask);
+        sub.assert_ne(valid_pkt[0], orig_first, "first byte masked");
+
+        let dec_pn_len, dec_pn = internal::remove_header_protection(valid_pkt[..], 4, hp_mask);
+        sub.assert_eq(dec_pn_len, 1, "pn_len unmasked is (first & 3) + 1");
+        sub.assert_eq(valid_pkt[0], orig_first, "first byte restored");
+    };
+
+    t.run("decode_packet_number bounds checking and epoch shifts") { sub =>
+        // Out of bounds pn_len
+        let pn_raw = internal::decode_packet_number(100, 42, 0);
+        sub.assert_eq(pn_raw, 42, "pn_len 0 returns truncated");
+        let pn_lg = internal::decode_packet_number(100, 42, 5);
+        sub.assert_eq(pn_lg, 42, "pn_len 5 returns truncated");
+
+        // 1-byte PN decoding near wrap-around
+        let pn1 = internal::decode_packet_number(0xA8252, 0x9B, 1);
+        sub.assert_eq(pn1, 0xA829B, "RFC 9000 Appendix A.3 1-byte decode vector");
+
+        // 2-byte PN decoding
+        let pn2 = internal::decode_packet_number(0xA8252, 0x9B3F, 2);
+        sub.assert_eq(pn2, 0xA9B3F, "RFC 9000 Appendix A.3 2-byte decode vector");
+    };
+
+    t.run("can_send_on_path anti-amplification overflow protection") { sub =>
+        let ip: u8[16] = [0; 16];
+        var path = internal::new_path_state(ip, 443, false);
+
+        // Path received 1000 bytes -> can send up to 3000 bytes
+        internal::on_path_bytes_received(path, 1000);
+        sub.assert_true(internal::can_send_on_path(path, 3000), "3000 <= 3 * 1000 allowed");
+        sub.assert_false(internal::can_send_on_path(path, 3001), "3001 > 3 * 1000 blocked");
+
+        // Test with massive numbers that would overflow 3 * received or sent + packet
+        var path_huge = internal::new_path_state(ip, 443, false);
+        path_huge.bytes_received = 0x7FFFFFFFFFFFFFFF; // 3 * bytes_received overflows u64
+        path_huge.bytes_sent = 0xFFFFFFFFFFFFFFF0;
+        sub.assert_false(internal::can_send_on_path(path_huge, 32), "sent + packet overflow safely blocked");
+
+        // Validated path ignores limit
+        internal::validate_path(path);
+        sub.assert_true(internal::can_send_on_path(path, 1000000), "validated path allows send");
+    };
+
+    t.run("decode_quic_datagram_frame respects packet_end boundary") { sub =>
+        var wire: u8[..32] = [];
+        // DATAGRAM with Length (0x31)
+        sub.assert_true(internal::encode_quic_datagram_frame(wire, "hello", true), "encode datagram len");
+
+        // Normal decode without packet_end
+        let payload1, end1, ok1 = internal::decode_quic_datagram_frame(wire[..], 0, 0);
+        sub.assert_true(ok1, "decode ok without packet_end");
+        sub.assert_bytes_eq(payload1, "hello", "payload matches");
+
+        // Decode with packet_end cutting into datagram length
+        let _, _, ok_trunc = internal::decode_quic_datagram_frame(wire[..], 0, end1 - 1);
+        sub.assert_false(ok_trunc, "datagram exceeding packet_end rejected");
+    };
+
+    t.run("merge_reassembly_interval enforces 64 intervals capacity") { sub =>
+        var r_buf = internal::new_reassembly_buffer(65536);
+
+        // Insert 64 disjunct intervals [0, 1), [2, 3), [4, 5), ...
+        for i in 64 {
+            let s = (i as u64) * 2;
+            let ok = internal::insert_fragment(r_buf, s, "X", false);
+            sub.assert_true(ok, "insert interval");
+        }
+        sub.assert_eq(r_buf.intervals.len, 64, "intervals array full at cap 64");
+
+        // 65th disjunct interval cannot be added
+        let ok_65 = internal::insert_fragment(r_buf, 200, "Y", false);
+        sub.assert_false(ok_65, "65th disjunct interval safely rejected on capacity exhaustion");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 35. QUIC ACK Frame Gap Addition Overflow Defense
+// ----------------------------------------------------------------------------
+fn test_quic_ack_underflow(t: lit::T&) {
+    var ack = internal::AckFrame {};
+    ack.largest_acked = 10;
+    ack.first_ack_range = 10;
+    // Malicious huge gap that would wrap around in gap + 2
+    ack.ranges.push(internal::AckRange { gap: 0xFFFFFFFFFFFFFFFF, ack_range: 0 });
+
+    var space = internal::PnSpaceState {};
+    space.has_sent_packets = true;
+    space.largest_sent_pn = 100;
+    var out_intervals: internal::AckInterval[..64] = [];
+
+    let ok = internal::parse_and_validate_ack(space, ack, out_intervals);
+    t.assert_false(ok, "Huge gap wrapping in gap + 2 must be safely rejected");
+}
+
 fn main() {
     var runner = lit::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", lit::Verbosity.Verbose);
 
@@ -3168,6 +3445,8 @@ fn main() {
     lit::run_case(runner, "31. ngtcp2 & quinn Vendor Conformance Vectors", test_ngtcp2_and_quinn_vendor_conformance);
     lit::run_case(runner, "32. ngtcp2 & quinn Reassembly, ACK Compaction & Loss Recovery", test_ngtcp2_conn_and_recovery_semantics);
     lit::run_case(runner, "33. ngtcp2 & quinn Connection Lifecycle, Stream Polarity & BBRv3/PTO", test_ngtcp2_and_quinn_connection_dynamics);
+    lit::run_case(runner, "34. QUIC Packet Headers, Header Protection & Interval Reassembly", test_quic_packet_and_reassembly);
+    lit::run_case(runner, "35. QUIC ACK Frame Gap Addition Overflow Defense", test_quic_ack_underflow);
 
     let ok = lit::finish(runner);
     assert(ok);

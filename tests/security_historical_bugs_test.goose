@@ -16,6 +16,9 @@ import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
+// ----------------------------------------------------------------------------
+// 1. Go CVE-2026-78667: Range Header Overflow Defense
+// ----------------------------------------------------------------------------
 fn test_cve_2026_78667_range_header_overflow(t: lit::T&) {
     t.run("CVE-2026-78667: Range header exceeding 1024 bytes MUST be rejected") { sub =>
         var oversized: u8[>..] = [];
@@ -37,6 +40,9 @@ fn test_cve_2026_78667_range_header_overflow(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. Go #75557: Content-Disposition CRLF Injection Defenses
+// ----------------------------------------------------------------------------
 fn test_go_75557_content_disposition_crlf_injection(t: lit::T&) {
     t.run("Go #75557: Field name with CRLF injection MUST be rejected") { sub =>
         var out: u8[..256] = [];
@@ -67,6 +73,9 @@ fn test_go_75557_content_disposition_crlf_injection(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. RFC 9113 & Go #81115: HTTP/2 Content-Length Overflow Defense
+// ----------------------------------------------------------------------------
 fn test_http2_content_length_overflow_defense(t: lit::T&) {
     t.run("RFC 9113 & Go #81115: HTTP/2 Content-Length > 19 digits MUST be rejected as PROTOCOL_ERROR") { sub =>
         var dt_enc = internal::new_dynamic_table(4096);
@@ -101,6 +110,9 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. OpenSSL #31392 & Go #71208: URI NameConstraints & IPv6 Zone
+// ----------------------------------------------------------------------------
 fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
     t.run("OpenSSL #31392 / RFC 5280 В§4.2.1.10: URI matching against DNS name constraint") { sub =>
         sub.assert_true(wing::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain matches constraint");
@@ -138,6 +150,9 @@ fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 5. uWebSockets #1876: Control Frame Priority Under Backpressure
+// ----------------------------------------------------------------------------
 fn test_uwebsockets_1876_control_priority_under_backpressure(t: lit::T&) {
     t.run("uWebSockets #1876: Control frames MUST NOT be dropped when backpressure threshold is reached") { sub =>
         var ws = wing::WebSocketSession { .. };
@@ -167,6 +182,9 @@ fn test_uwebsockets_1876_control_priority_under_backpressure(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. RFC 8446 §5.4: TLS 1.3 InnerPlaintext Zero-Length Invariants
+// ----------------------------------------------------------------------------
 fn test_openssl_tls13_zero_length_plaintext_invariants(t: lit::T&) {
     t.run("RFC 8446 В§5.4: Empty Application Data record with padding is permitted") { sub =>
         // Record with inner ContentType = 0x17 (Application Data) followed by zero padding
@@ -191,6 +209,9 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 7. Go #66434 / RFC 7578 §4.7: Content-Transfer-Encoding Rejection
+// ----------------------------------------------------------------------------
 fn test_go_66434_content_transfer_encoding_rejection(t: lit::T&) {
     t.run("Go #66434 & RFC 7578 В§4.7: Content-Transfer-Encoding in multipart part MUST be rejected") { sub =>
         let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--sep--\r\n";
@@ -208,6 +229,9 @@ fn test_go_66434_content_transfer_encoding_rejection(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. uWS #1662 / Autobahn 6.x: Streaming UTF-8 Chunk Boundaries
+// ----------------------------------------------------------------------------
 fn test_uwebsockets_1662_streaming_utf8_continuation(t: lit::T&) {
     t.run("uWS #1662 / Autobahn 6.x: Incomplete multi-byte codepoint split across frame chunks") { sub =>
         // Euro sign в‚¬ is 3 bytes: 0xE2, 0x82, 0xAC
@@ -241,6 +265,9 @@ fn test_uwebsockets_1662_streaming_utf8_continuation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. OpenSSL #33428: ECH Outer vs Inner ALPN Strict Isolation
+// ----------------------------------------------------------------------------
 fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
     t.run("OpenSSL #33428: ECH accepted MUST only permit inner ALPN negotiation") { sub =>
         let inner_alpn = "h2";
@@ -271,6 +298,9 @@ fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. OpenSSL #33332 & Go #82350: Redirect Sensitive Header Purging
+// ----------------------------------------------------------------------------
 fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
     t.run("OpenSSL #33332 & Go #82350: Cross-origin redirect strips sensitive headers and Host") { sub =>
         var headers = wing::HeaderMap { .. };
@@ -320,6 +350,9 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. uWS #1941: Chained Transfer-Encoding List & Chunked Finality
+// ----------------------------------------------------------------------------
 fn test_uweb_1941_chained_transfer_encoding_validation(t: lit::T&) {
     t.run("uWS #1941 / #1943 & RFC 9112 В§6.1: Valid chained transfer codings ending in chunked") { sub =>
         sub.assert_true(wing::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
@@ -336,6 +369,9 @@ fn test_uweb_1941_chained_transfer_encoding_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. CVE-2026-42507: Diagnostic Log CRLF & Control Escaping
+// ----------------------------------------------------------------------------
 fn test_cve_2026_42507_diagnostic_log_injection_defense(t: lit::T&) {
     t.run("CVE-2026-42507 & Go #79346: Escapes CRLF and control characters in untrusted tokens") { sub =>
         var out: u8[..128] = [];
@@ -348,6 +384,9 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. RFC 9113 & CVE-2026-78669: H2 Window Bounds & Throttling
+// ----------------------------------------------------------------------------
 fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
     t.run("RFC 9113 В§6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
         var conn = internal::new_h2_connection(0, 8192, false);
@@ -781,6 +820,9 @@ fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity
+// ----------------------------------------------------------------------------
 fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: lit::T&) {
     t.run("RFC 8439 В§2.5.2: Multi-block Poly1305 2^128 padding integrity across 16-byte boundaries") { sub =>
         let key: u8[32] = [
@@ -838,6 +880,9 @@ fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses
+// ----------------------------------------------------------------------------
 fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: lit::T&) {
     t.run("Full Jitter backoff with U64_MAX cap must not collapse entropy to zero") { sub =>
         var rng = core::new_wyrand(12345);
@@ -869,6 +914,9 @@ fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: lit::T&)
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants
+// ----------------------------------------------------------------------------
 fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: lit::T&) {
     t.run("fe_cswap branchless conditional swap correctness") { sub =>
         var a = core::Fe10 { v: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] };
@@ -977,7 +1025,7 @@ fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 20. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries
+// 25. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries
 // ----------------------------------------------------------------------------
 fn test_compression_header_flags_window_and_stream_boundaries(t: lit::T&) {
     t.run("RFC 1952 Gzip Header with reserved FLG bits rejected") { sub =>
@@ -1071,7 +1119,7 @@ fn test_compression_header_flags_window_and_stream_boundaries(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 21. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality
+// 26. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality
 // ----------------------------------------------------------------------------
 fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: lit::T&) {
     t.run("PipeBuffer completed write rejection") { sub =>
@@ -1149,6 +1197,9 @@ fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 27. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants
+// ----------------------------------------------------------------------------
 fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
     t.run("RFC 9113 §5.1 & §6.9: DATA frame on stream closed via RST_STREAM accounts for connection flow control") { sub =>
         var conn = internal::new_h2_connection(0);
@@ -1225,7 +1276,7 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses
+// 28. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses
 // ----------------------------------------------------------------------------
 fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
     t.run("RFC 8446 §4.2: Duplicate early_data extension in NewSessionTicket MUST be rejected") { sub =>
@@ -1354,7 +1405,7 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 30. RFC 9110 §9.3.1 & RFC 9293: Connection Pool Starvation & Slot Reclamation
+// 29. RFC 9110 §9.3.1 & RFC 9293: Connection Pool Starvation & Slot Reclamation
 // ----------------------------------------------------------------------------
 fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
     t.run("Pool saturation at 64 connections reclaims idle/evicted slots without starvation") { sub =>
@@ -1426,7 +1477,7 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds
+// 30. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds
 // ----------------------------------------------------------------------------
 fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
     t.run("RFC 9204 §4.5.1.2: decode_base correctly computes Base when RIC == 0") { sub =>
@@ -1517,7 +1568,7 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding
+// 31. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding
 // ----------------------------------------------------------------------------
 fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
     let now_sec: i64 = 1770000000;
@@ -1627,7 +1678,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 33. RFC 9293 §3.5 & RFC 1122 §4.2.2.13 TCP Half-Closed Teardown & Drain Deadlock
+// 32. RFC 9293 §3.5 & RFC 1122 §4.2.2.13 TCP Half-Closed Teardown & Drain Deadlock
 // ----------------------------------------------------------------------------
 fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::T&) {
     t.run("Case 1: Peer FIN followed by local shutdown completes full socket teardown") { sub =>
@@ -1817,7 +1868,7 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::
 }
 
 // ----------------------------------------------------------------------------
-// 34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation
+// 33. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation
 // ----------------------------------------------------------------------------
 fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: lit::T&) {
     t.run("RFC 9112 §7.1: Valid split CRLF after chunk body succeeds across packet boundaries") { sub =>
@@ -1912,7 +1963,7 @@ fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants
+// 34. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants
 // ----------------------------------------------------------------------------
 fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
     let key = "super_secret_dpop_key_32_bytes!!";
@@ -2045,7 +2096,7 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 36. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants
+// 35. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants
 // ----------------------------------------------------------------------------
 fn test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses(t: lit::T&) {
     t.run("Case 1: Drain auto-reset eliminates artificial edge wraparound and restores full contiguous span") { sub =>
@@ -2232,17 +2283,17 @@ fn main() {
     lit::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
     lit::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
     lit::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
-    lit::run_case(runner, "26. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
-    lit::run_case(runner, "27. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
-    lit::run_case(runner, "28. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
-    lit::run_case(runner, "29. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
-    lit::run_case(runner, "30. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
-    lit::run_case(runner, "31. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
-    lit::run_case(runner, "32. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
-    lit::run_case(runner, "33. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
-    lit::run_case(runner, "34. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation", test_rfc9112_chunk_fsm_split_crlf_terminator_validation);
-    lit::run_case(runner, "35. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants", test_rfc9449_dpop_proof_validation_and_uri_normalization);
-    lit::run_case(runner, "36. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants", test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses);
+    lit::run_case(runner, "25. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
+    lit::run_case(runner, "26. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);
+    lit::run_case(runner, "27. RFC 9113 §5.1 & §6.9: H2 RST_STREAM In-Flight DATA Flow Control Invariants", test_h2_rst_stream_data_flow_control_invariants);
+    lit::run_case(runner, "28. RFC 8446 §4.2, §4.2.10 & §4.6.1: NewSessionTicket Extensions & Ticket Confusion Defenses", test_rfc8446_nst_extension_validation_and_ticket_confusion);
+    lit::run_case(runner, "29. RFC 9110 & RFC 9293: Connection Pool Starvation & Slot Reclamation", test_rfc9110_connection_pool_starvation_and_slot_reclamation);
+    lit::run_case(runner, "30. RFC 9204 §4.5.1.1 & §4.5.1.2: QPACK Zero-RIC Base Invariants & MaxTableCapacity RIC Bounds", test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound);
+    lit::run_case(runner, "31. RFC 8725 §3.2, §3.6, RFC 8037 §2 & RFC 7517 §4.4: JWKS Key Confusion & Algorithm Binding", test_rfc8725_jwks_key_confusion_and_algorithm_binding);
+    lit::run_case(runner, "32. RFC 9293 §3.5 & RFC 1122: Half-Closed Teardown & Drain Deadlock Defenses", test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses);
+    lit::run_case(runner, "33. RFC 9112 §7.1 & §2.2: Chunked FSM Split CRLF Terminator Non-CR Validation", test_rfc9112_chunk_fsm_split_crlf_terminator_validation);
+    lit::run_case(runner, "34. RFC 9449 §4.2, §4.3 & RFC 8725 §3.1: DPoP Proof Validation & Target URI Invariants", test_rfc9449_dpop_proof_validation_and_uri_normalization);
+    lit::run_case(runner, "35. Circular RingBuffer Wraparound & Zero-Copy Slicing Invariants", test_ring_buffer_wraparound_zero_copy_and_fragmentation_defenses);
 
     let ok = lit::finish(runner);
     assert(ok);

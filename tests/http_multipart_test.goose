@@ -13,6 +13,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // --- Component: http_mime ---
 // Tests for MIME media types, parameter parsing, unquoting, and structured fields.
 
+// ----------------------------------------------------------------------------
+// 1. Chromium HttpUtil::StrictUnquote Invariants
+// ----------------------------------------------------------------------------
 fn test_strict_unquote_invariants(t: lit::T&) {
     t.run("Chromium HttpUtil::StrictUnquote Valid Cases") { sub =>
         var out: u8[>..] = [];
@@ -66,6 +69,9 @@ fn test_strict_unquote_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. RFC 9110 Section 8.3 MediaType & Content-Type
+// ----------------------------------------------------------------------------
 fn test_media_type_parser(t: lit::T&) {
     t.run("Content-Type Parsing and Parameters") { sub =>
         let mt, ok = wing::parse_media_type("text/html; charset=UTF-8; boundary=\"----WebKit123\"");
@@ -101,6 +107,9 @@ fn test_media_type_parser(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. RFC 8941 Section 3.3.1 sf-integer & Section 3.3.2 sf-decimal
+// ----------------------------------------------------------------------------
 fn test_sfv_integers_and_decimals(t: lit::T&) {
     t.run("RFC 8941 Section 3.3.1 sf-integer 15-Digit Bounds") { sub =>
         var item = wing::SfvItem { .. };
@@ -161,6 +170,9 @@ fn test_sfv_integers_and_decimals(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. RFC 8941 Section 3.3.3 sf-string, Section 3.3.5 sf-binary & keys
+// ----------------------------------------------------------------------------
 fn test_sfv_strings_tokens_and_keys(t: lit::T&) {
     t.run("RFC 8941 Section 3.3.3 sf-string Escape Invariants") { sub =>
         var item = wing::SfvItem { .. };
@@ -207,6 +219,9 @@ fn test_sfv_strings_tokens_and_keys(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 5. RFC 9651 sf-date & sf-displaystring (UTF-8)
+// ----------------------------------------------------------------------------
 fn test_sfv_rfc9651_dates_and_display_strings(t: lit::T&) {
     t.run("RFC 9651 Section 3.3.7 sf-date (@epoch)") { sub =>
         var item = wing::SfvItem { .. };
@@ -238,6 +253,9 @@ fn test_sfv_rfc9651_dates_and_display_strings(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. RFC 8941 Section 3.1 Lists & Section 3.2 Dictionaries
+// ----------------------------------------------------------------------------
 fn test_sfv_lists_and_dictionaries(t: lit::T&) {
     t.run("RFC 8941 Section 3.1 List with Standalone and Inner Lists") { sub =>
         var list = wing::SfvList { .. };
@@ -280,6 +298,9 @@ fn test_sfv_lists_and_dictionaries(t: lit::T&) {
 // --- Component: http_multipart ---
 // Tests for multipart/form-data parsing and HTTP range requests.
 
+// ----------------------------------------------------------------------------
+// 7. Streaming Multipart Parsing & Metadata
+// ----------------------------------------------------------------------------
 fn test_streaming_multipart_parsing(t: lit::T&) {
     t.run("Valid Multipart Form-Data with Text and File Parts") { sub =>
         let boundary = "----GooseBoundaryXYZ";
@@ -329,6 +350,9 @@ fn test_streaming_multipart_parsing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. CVE-2026-19484 Boundary Cap & 16-Bit BMH
+// ----------------------------------------------------------------------------
 fn test_cve_2026_19484_boundary_and_bmh_table(t: lit::T&) {
     t.run("Barrier 1: RFC 2046 Section 5.1.1 Boundary Length Cap (252-Byte Boundary Rejection)") { sub =>
         // In CVE-2026-19484 (@fastify/busboy), a 252-byte boundary caused 256-byte needle and 8-bit table overflow.
@@ -363,6 +387,9 @@ fn test_cve_2026_19484_boundary_and_bmh_table(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. RFC 9110 Range Request Forms & 416
+// ----------------------------------------------------------------------------
 fn test_rfc9110_range_requests(t: lit::T&) {
     t.run("Three RFC 9110 Section 14.1.2 Range Specifier Forms") { sub =>
         let file_len: i64 = 10000;
@@ -401,6 +428,9 @@ fn test_rfc9110_range_requests(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. CVE-2011-3192 Apache Killer Defense & Coalescing
+// ----------------------------------------------------------------------------
 fn test_cve_2011_3192_apache_killer_and_coalescing(t: lit::T&) {
     t.run("CVE-2011-3192: 16-Range Ceiling Rejection") { sub =>
         // Attacker sends 20 ranges to amplify CPU and response size
@@ -446,6 +476,9 @@ fn test_cve_2011_3192_apache_killer_and_coalescing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. If-Range & Seconds Truncation
+// ----------------------------------------------------------------------------
 fn test_if_range_and_seconds_truncation(t: lit::T&) {
     t.run("Strong ETag Matches, Weak ETag FORBIDDEN") { sub =>
         let file_time = core::unix(0);
@@ -481,6 +514,9 @@ fn test_if_range_and_seconds_truncation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Window Reader serve_range & Byte-Range PATCH
+// ----------------------------------------------------------------------------
 fn test_serve_range_and_patch_validation(t: lit::T&) {
     t.run("Single-Part 206 Serve via Window Reader Callback") { sub =>
         let source_data = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -527,6 +563,9 @@ fn test_serve_range_and_patch_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Boundary Delimiters & RFC 7578 Disposition Enforcement
+// ----------------------------------------------------------------------------
 fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
     t.run("Incomplete Final Boundary Delimiter (Missing Closing Dashes) Rejected") { sub =>
         // Truncated payload ends with intermediate delimiter --bnd\r\n without closing '--'
@@ -584,6 +623,9 @@ fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. RFC 9110 Coalescing, Overflow Guard & Nested Boundaries
+// ----------------------------------------------------------------------------
 fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
     t.run("Out-of-Order and Overlapping Range Coalescing (RFC 9110 Section 14.1.2)") { sub =>
         let file_len: i64 = 10000;
@@ -722,6 +764,9 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. Boundary Quoting, Byte-Range PATCH & Quotas
+// ----------------------------------------------------------------------------
 fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
     t.run("RFC 7578 / RFC 2046 Quoted Boundary Unquoting and Validation") { sub =>
         // 1. Valid quoted boundary
@@ -851,7 +896,7 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
 // Tests for multipart form-data and HTTP range parser bounds and edge cases.
 
 // ----------------------------------------------------------------------------
-// 1. 64-Bit Integer Overflow in RFC 9110 Range Offsets & parse_i64_slice
+// 16. 64-Bit Integer Overflow in RFC 9110 Range Offsets & parse_i64_slice
 // ----------------------------------------------------------------------------
 fn test_range_offset_i64_overflow(t: lit::T&) {
     t.run("parse_i64_slice Rejects Values >= 2^63 and Multi-Digit Overflows") { sub =>
@@ -920,7 +965,7 @@ fn test_range_offset_i64_overflow(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Multipart Delimiter Search & Line Endings (LF vs CRLF Compliance)
+// 17. Multipart Delimiter Search & Line Endings (LF vs CRLF Compliance)
 // ----------------------------------------------------------------------------
 fn test_multipart_lf_delimiter_and_line_endings(t: lit::T&) {
     t.run("LF-Only Line Endings in Multipart Form-Data") { sub =>
@@ -994,7 +1039,7 @@ fn test_multipart_lf_delimiter_and_line_endings(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Algorithmic Limits & Range Coalescing Edge Cases
+// 18. Algorithmic Limits & Range Coalescing Edge Cases
 // ----------------------------------------------------------------------------
 fn test_range_limits_and_coalescing(t: lit::T&) {
     t.run("RFC 9110 Coalescing with Large 64-Bit Boundaries Without Overflow") { sub =>
@@ -1037,7 +1082,7 @@ fn test_range_limits_and_coalescing(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. MIME Headers Memory Limit Bypass (#81741 / CVE-2026-94440)
+// 19. MIME Headers Memory Limit Bypass (#81741 / CVE-2026-94440)
 // ----------------------------------------------------------------------------
 fn test_mime_headers_memory_limit_bypass(t: lit::T&) {
     t.run("MIME Header Memory Limit Enforced with Remaining Quota < 400 Bytes (#81741 / CVE-2026-94440)") { sub =>
@@ -1101,7 +1146,7 @@ fn test_mime_headers_memory_limit_bypass(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. Range Header Size and Count Limits (#81858 / CVE-2026-78667)
+// 20. Range Header Size and Count Limits (#81858 / CVE-2026-78667)
 // ----------------------------------------------------------------------------
 fn test_range_header_size_and_count_limits(t: lit::T&) {
     t.run("200+ Ranges Requested Rejected in O(1) Time (#81858 / CVE-2026-78667)") { sub =>
@@ -1146,7 +1191,7 @@ fn test_range_header_size_and_count_limits(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. Delimiter Line-Ending Desync and Transport Padding
+// 21. Delimiter Line-Ending Desync and Transport Padding
 // ----------------------------------------------------------------------------
 fn test_delimiter_line_ending_desync(t: lit::T&) {
     t.run("Pure Bare UNIX LF Delimiters Across All Parts") { sub =>
@@ -1202,7 +1247,7 @@ fn test_delimiter_line_ending_desync(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 7. 10,000+ Parts Boundary Flood & Memory Limits (#59153 / CVE-2023-24536)
+// 22. 10,000+ Parts Boundary Flood & Memory Limits (#59153 / CVE-2023-24536)
 // ----------------------------------------------------------------------------
 fn test_multipart_part_count_fuzzing(t: lit::T&) {
     t.run("1,000-Part Request Aborted by Default max_parts (#59153 / CVE-2023-24536)") { sub =>
@@ -1262,7 +1307,7 @@ fn test_multipart_part_count_fuzzing(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 8. Malformed Boundary Quoting and RFC 2046 Validation
+// 23. Malformed Boundary Quoting and RFC 2046 Validation
 // ----------------------------------------------------------------------------
 fn test_malformed_boundary_quoting_and_lexical(t: lit::T&) {
     t.run("RFC 2046 Section 5.1.1 Boundary Length Bounds (0, 70, 71 Chars)") { sub =>
@@ -1341,7 +1386,7 @@ fn test_malformed_boundary_quoting_and_lexical(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 9. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)
+// 24. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)
 // ----------------------------------------------------------------------------
 fn test_redos_and_nested_boundaries(t: lit::T&) {
     t.run("Prefix Collision: Inner Boundary Has Outer Boundary as Prefix (#10616)") { sub =>
@@ -1425,7 +1470,7 @@ fn test_redos_and_nested_boundaries(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 10. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)
+// 25. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)
 // ----------------------------------------------------------------------------
 fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
     t.run("Directory Path Traversal in Multipart Filename (#45789)") { sub =>
@@ -1480,10 +1525,6 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: http_resumable_upload ---
 // Verification suite for IETF draft-ietf-httpbis-resumable-upload-14:
 // - Creation request formatting with Upload-Complete: ?0 and MIME application/partial-upload
@@ -1491,6 +1532,9 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
 // - Chunk append with PATCH, Upload-Offset, and final Upload-Complete: ?1
 // - Interruption offset query with HEAD request (RFC 8941 Structured Fields parsing)
 
+// ----------------------------------------------------------------------------
+// 26. Resumable Uploads for HTTP
+// ----------------------------------------------------------------------------
 fn test_resumable_uploads(t: lit::T&) {
     t.run("Upload Session Initialization & Creation Request") { sub =>
         var state = wing::init_resumable_upload(800000, 500000);
@@ -1571,6 +1615,177 @@ fn test_resumable_uploads(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 27. Go #82343: RFC 2231 Extended Multipart Boundary & Boundary Validation
+// ----------------------------------------------------------------------------
+fn test_multipart_boundary_rfc2231_and_validation(t: lit::T&) {
+    t.run("boundary* extended parameter must be rejected or not override boundary (Go #82343)") { sub =>
+        // In RFC 2231 / Go #82343: Content-Type with boundary*=utf-8''injected%0D%0A
+        // An intermediary WAF sees boundary=normal, but a server honoring boundary* parses injected parts.
+        // RFC 7578 / RFC 2046 strictly restricts boundary characters (1..70 bchars, no CRLF).
+        let ct_header = "multipart/form-data; boundary=safe_boundary; boundary*=utf-8''injected_boundary";
+        let mt, ok = wing::parse_media_type(ct_header);
+        sub.assert_true(ok);
+
+        let chosen_boundary = wing::param(mt, "boundary");
+        sub.assert_bytes_eq(chosen_boundary, "safe_boundary", "RFC 2231 boundary* must NOT override plain boundary parameter");
+        sub.assert_false(wing::has_param(mt, "boundary*"), "boundary* extended notation should not be accepted as a valid parameter");
+    };
+
+    t.run("Boundary containing CRLF or invalid characters must fail parse_media_type") { sub =>
+        // Boundary with CRLF or control characters is a request smuggling vector
+        let ct_crlf = "multipart/form-data; boundary=bad\r\nboundary";
+        let _, ok1 = wing::parse_media_type(ct_crlf);
+        sub.assert_false(ok1, "Media type with CRLF in boundary value must be rejected");
+
+        // Boundary with raw quotes or invalid punctuation
+        let ct_invalid_chars = "multipart/form-data; boundary=bad@boundary#123";
+        let mt2, ok2 = wing::parse_media_type(ct_invalid_chars);
+        let b2 = wing::param(mt2, "boundary");
+        // Boundary chars must conform to RFC 2046 bchars
+        sub.assert_false(wing::validate_boundary_string(b2), "RFC 2046 rejects '@' and '#' in boundary tokens");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 28. MediaType parameter truncation smuggling & duplicate boundary (http/mime.goose)
+// ----------------------------------------------------------------------------
+fn test_mime_parameter_truncation_and_boundary(t: lit::T&) {
+    t.run("MediaType parameter count > 16 MUST fail parsing (no silent drop)") { sub =>
+        // 16 dummy parameters followed by '; boundary=evil_boundary'
+        var raw_mt: u8[..1024] = [];
+        raw_mt.append("multipart/form-data");
+        for i in 16 {
+            raw_mt.append("; p");
+            core::format_u64_dec(i as u64, raw_mt);
+            raw_mt.append("=val");
+        }
+        raw_mt.append("; boundary=evil_boundary");
+
+        let mt, ok = wing::parse_media_type(raw_mt[..]);
+        sub.assert_false(ok, "MediaType with > 16 parameters MUST fail parsing instead of silently dropping boundary");
+    };
+
+    t.run("Duplicate boundary parameter MUST be rejected (RFC 2046 / Go #82343)") { sub =>
+        let raw = "multipart/form-data; boundary=first; boundary=second";
+        let mt, ok = wing::parse_media_type(raw);
+        sub.assert_false(ok, "Duplicate boundary parameter MUST be rejected");
+    };
+
+    t.run("MediaType parameter value > 256 bytes MUST fail safely without abort") { sub =>
+        var raw_long_val: u8[..512] = [];
+        raw_long_val.append("text/plain; charset=\"");
+        for i in 300 { raw_long_val.push('u'); }
+        raw_long_val.append("\"");
+
+        let mt, ok = wing::parse_media_type(raw_long_val[..]);
+        sub.assert_false(ok, "Parameter value > 256 bytes MUST fail parsing safely without abort");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 29. Multipart oversized Content-Type header on part without abort (http/multipart.goose)
+// ----------------------------------------------------------------------------
+fn test_multipart_oversized_content_type_no_abort(t: lit::T&) {
+    t.run("Multipart part with Content-Type > 64 bytes MUST NOT abort") { sub =>
+        var body: u8[..1024] = [];
+        body.append("--myboundary\r\n");
+        body.append("Content-Disposition: form-data; name=\"upload\"; filename=\"test.docx\"\r\n");
+        // 71-byte Content-Type (exceeds part.content_type: u8[..64] capacity)
+        body.append("Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document\r\n\r\n");
+        body.append("payload content\r\n");
+        body.append("--myboundary--\r\n");
+
+        let msg, err = wing::parse_multipart(body[..], "myboundary");
+        sub.assert_true(wing::is_ok(err), "Part with long Content-Type header MUST parse without bounds abort");
+        sub.assert_eq(msg.parts.len, 1, "Parsed 1 part");
+        sub.assert_true(msg.parts[0].content_type.len > 0, "Part content_type must be captured");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 30. MIME & Structured Field Values (http/mime.goose)
+// ----------------------------------------------------------------------------
+fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
+    t.run("parse_sfv_key rejects keys exceeding 64 bytes to prevent collision smuggling") { sub =>
+        // 65-byte key: 64 'a's + 'b'
+        var long_key_entry: u8[..128] = [];
+        for i in 64 { long_key_entry.push('a'); }
+        long_key_entry.append("b=1");
+
+        var dict = wing::SfvDict { .. };
+        let ok = wing::parse_sfv_dict(long_key_entry[..], dict);
+        sub.assert_false(ok, "SFV key > 64B MUST return false and not truncate to 64B");
+    };
+
+    t.run("parse_sfv_token rejects tokens exceeding 1088 bytes") { sub =>
+        var raw_tok: u8[>..] = [];
+        for i in 1100 { raw_tok.push('a'); }
+
+        var item = wing::SfvItem { .. };
+        let ok = wing::parse_sfv_item(raw_tok[..], item);
+        sub.assert_false(ok, "SFV token > 1088 bytes MUST return false");
+    };
+
+    t.run("parse_sfv_binary rejects byte sequences exceeding 1088 bytes") { sub =>
+        var raw_bin: u8[>..] = [];
+        raw_bin.push(':');
+        for i in 1100 { raw_bin.push('A'); }
+        raw_bin.push(':');
+
+        var item = wing::SfvItem { .. };
+        let ok = wing::parse_sfv_item(raw_bin[..], item);
+        sub.assert_false(ok, "SFV binary > 1088 bytes MUST return false");
+    };
+
+    t.run("parse_content_disposition rejects type name > 32 bytes without abort") { sub =>
+        var raw_disp: u8[..128] = [];
+        for i in 40 { raw_disp.push('x'); }
+        raw_disp.append("; filename=\"test.txt\"");
+
+        let mt, ok = wing::parse_content_disposition(raw_disp[..]);
+        sub.assert_false(ok, "Disposition type > 32 bytes MUST return false safely");
+    };
+
+    t.run("decompress_dcz_payload and decompress_dcb_payload reject corrupted payloads") { sub =>
+        let corrupt = "corrupted non-compressed payload bytes";
+        var out_dcz: u8[>..] = [];
+        let ok_dcz = wing::decompress_dcz_payload(corrupt, "dictionary", out_dcz);
+        sub.assert_false(ok_dcz, "decompress_dcz_payload MUST return false on corrupted data");
+        sub.assert_eq(out_dcz.len, 0, "No raw bytes emitted to out_buf on DCZ error");
+
+        var out_dcb: u8[>..] = [];
+        let ok_dcb = wing::decompress_dcb_payload(corrupt, "dictionary", out_dcb);
+        sub.assert_false(ok_dcb, "decompress_dcb_payload MUST return false on corrupted data");
+        sub.assert_eq(out_dcb.len, 0, "No raw bytes emitted to out_buf on DCB error");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 31. Multipart Form-Data (http/multipart.goose)
+// ----------------------------------------------------------------------------
+fn test_multipart_boundary_and_smuggling_invariants(t: lit::T&) {
+    t.run("RFC 2046 §5.1.1: Boundary ending in space is strictly invalid") { sub =>
+        let valid_space = wing::validate_boundary_string("valid-boundary ");
+        sub.assert_false(valid_space, "Boundary with trailing space MUST be rejected per RFC 2046 §5.1.1");
+    };
+
+    t.run("Multipart part with field name > 64B MUST NOT be silently truncated") { sub =>
+        var long_name: u8[>..] = [];
+        for i in 65 { long_name.push('a'); }
+
+        var body: u8[>..] = [];
+        body.append("--myboundary\r\nContent-Disposition: form-data; name=\"");
+        body.append(long_name[..]);
+        body.append("\"\r\n\r\nvalue\r\n--myboundary--\r\n");
+
+        let msg, err = wing::parse_multipart(body[..], "myboundary");
+        // Parameter name > 64B must return InvalidPartHeaders and not truncate to 64 'a's
+        sub.assert_false(wing::is_ok(err), "Field name > 64B must be rejected rather than silently truncated");
+        sub.assert_false(msg.valid, "Message valid flag must be false");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP MIME, Multipart Form-Data, and Byte Ranges Suite", lit::Verbosity.Verbose);
 
@@ -1600,6 +1815,11 @@ fn main() {
     lit::run_case(runner, "24. ReDoS Resistance and Nested Boundary Isolation (#10616, #14085)", test_redos_and_nested_boundaries);
     lit::run_case(runner, "25. Content-Disposition Filename Traversal and Edge Cases (#45789, #63629)", test_mime_disposition_and_filename_traversal);
     lit::run_case(runner, "26. Resumable Uploads for HTTP", test_resumable_uploads);
+    lit::run_case(runner, "27. Go #82343 RFC 2231 Extended Multipart Boundary & Validation", test_multipart_boundary_rfc2231_and_validation);
+    lit::run_case(runner, "28. MediaType parameter truncation & duplicate boundary (http/mime.goose)", test_mime_parameter_truncation_and_boundary);
+    lit::run_case(runner, "29. Multipart oversized Content-Type header on part (http/multipart.goose)", test_multipart_oversized_content_type_no_abort);
+    lit::run_case(runner, "30. MIME & SFV truncation smuggling (http/mime.goose)", test_mime_and_sfv_truncation_smuggling);
+    lit::run_case(runner, "31. Multipart boundary & smuggling invariants (http/multipart.goose)", test_multipart_boundary_and_smuggling_invariants);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -14,6 +14,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // Verification suite for RFC 7616 Digest Access Authentication, RFC 7617 Basic Authentication,
 // and 401 Authenticator Replay Loop.
 
+// ----------------------------------------------------------------------------
+// 1. RFC 7616 Official IETF Test Vector & MD5 Fallback
+// ----------------------------------------------------------------------------
 fn test_rfc7616_official_ietf_vector(t: lit::T&) {
     t.run("RFC 7616 Section 3.9.1 Official SHA-256 Test Vector") { sub =>
         let raw_challenge = "Digest realm=\"http-auth@example.org\", qop=\"auth, auth-int\", algorithm=SHA-256, nonce=\"7ypf/xlj9XXwfDPEoM4URrv/xwf94BcCAzFZH4GiTo0v\", opaque=\"FQhe/qaU925kual Rocco\"";
@@ -79,6 +82,9 @@ fn test_rfc7616_official_ietf_vector(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. 401 Authenticator Replay Loop (Digest & Basic)
+// ----------------------------------------------------------------------------
 fn test_401_authenticator_loop(t: lit::T&) {
     t.run("Client Automatically Resolves 401 Challenge with RFC 7616 Digest") { sub =>
         var client = wing::new_client();
@@ -137,6 +143,9 @@ fn test_401_authenticator_loop(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 3. RFC 7616 Userhash Options
+// ----------------------------------------------------------------------------
 fn test_rfc7616_userhash_options(t: lit::T&) {
     t.run("RFC 7616 Section 3.4.4 userhash=true") { sub =>
         let raw_chal = "Digest realm=\"secure@example.com\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", userhash=true";
@@ -193,7 +202,7 @@ fn test_rfc7616_userhash_options(t: lit::T&) {
 // 5. Integrated JWT Verification against JWKS Key Set
 
 // ----------------------------------------------------------------------------
-// 1. Symmetric HMAC JWS (HS256, HS384, HS512) Signing & Verification
+// 4. Symmetric HMAC JWS (HS256, HS384, HS512) Signing & Verification
 // ----------------------------------------------------------------------------
 fn test_symmetric_hmac_jwt(t: lit::T&) {
     let secret = "super-secret-hmac-key-32byteslong!";
@@ -301,7 +310,7 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Asymmetric Ed25519 JWS (EdDSA / RFC 8037) Signing & Verification
+// 5. Asymmetric Ed25519 JWS (EdDSA / RFC 8037) Signing & Verification
 // ----------------------------------------------------------------------------
 fn test_asymmetric_eddsa_jwt(t: lit::T&) {
     let seed: u8[32] = [
@@ -357,7 +366,7 @@ fn test_asymmetric_eddsa_jwt(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. RFC 8725 BCP Security Defenses
+// 6. RFC 8725 BCP Security Defenses
 // ----------------------------------------------------------------------------
 fn test_jwt_security_defenses(t: lit::T&) {
     let secret = "secret-for-security-tests-123456";
@@ -490,7 +499,7 @@ fn test_jwt_security_defenses(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. RFC 7517 JWKS Serialization, Parsing, and Key Rotation
+// 7. RFC 7517 JWKS Serialization, Parsing, and Key Rotation
 // ----------------------------------------------------------------------------
 fn test_jwks_serialization_and_parsing(t: lit::T&) {
     t.run("JWKS serialize and parse roundtrip") { sub =>
@@ -581,7 +590,7 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. Integrated JWT Verification against JWKS Key Set
+// 8. Integrated JWT Verification against JWKS Key Set
 // ----------------------------------------------------------------------------
 fn test_jwt_verification_against_jwks(t: lit::T&) {
     let now_sec: i64 = 1770000000;
@@ -722,7 +731,7 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints
+// 9. RFC 7519 Claims Parsing, RFC 8725 Defenses & RFC 7638 JWK Thumbprints
 // ----------------------------------------------------------------------------
 fn craft_raw_jwt<B>(header_json: const u8[:], claims_json: const u8[:], secret: const u8[:], out_token: B&) {
     out_token.clear();
@@ -882,7 +891,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 7. RFC 7515 §4.1.11 / RFC 8725 §3.8 Critical Headers & RFC 8725 §3.11 Explicit Typ
+// 10. RFC 7515 §4.1.11 / RFC 8725 §3.8 Critical Headers & RFC 8725 §3.11 Explicit Typ
 // ----------------------------------------------------------------------------
 fn test_jwt_crit_and_typ_validation(t: lit::T&) {
     let secret = "audit-crit-typ-secret-key-32byte";
@@ -1216,10 +1225,6 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Runner
-// ----------------------------------------------------------------------------
-
 // --- Component: auth_dpop_pkce ---
 // Verification suite for OAuth 2.0 PKCE (RFC 7636) and DPoP (RFC 9449):
 // - PKCE code verifier charset and length invariants (43..128 chars)
@@ -1230,6 +1235,9 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
 // - DPoP Proof verification against expected method, URI, access token, and nonce
 // - Request header attachment and response DPoP-Nonce extraction
 
+// ----------------------------------------------------------------------------
+// 11. OAuth 2.0 PKCE (RFC 7636)
+// ----------------------------------------------------------------------------
 fn test_pkce_rfc7636(t: lit::T&) {
     t.run("PKCE Verifier Generation & Invariants") { sub =>
         var verifier: u8[..128] = [];
@@ -1373,6 +1381,9 @@ fn make_test_dpop_token<B>(
     out.append(sig_b64[..]);
 }
 
+// ----------------------------------------------------------------------------
+// 12. OAuth 2.0 DPoP (RFC 9449)
+// ----------------------------------------------------------------------------
 fn test_dpop_rfc9449(t: lit::T&) {
     t.run("DPoP URI Normalization") { sub =>
         var norm: u8[..256] = [];
@@ -1739,6 +1750,9 @@ fn test_dpop_rfc9449(t: lit::T&) {
 // - Request header attachment and response 401 PrivateToken challenge detection
 // - RFC 9577 §6.2.1 GREASE token type verification
 
+// ----------------------------------------------------------------------------
+// 13. TokenChallenge Wire Codec
+// ----------------------------------------------------------------------------
 fn test_token_challenge_roundtrip(t: lit::T&) {
     t.run("TokenChallenge with 32-byte Redemption Context") { sub =>
         var ch = wing::TokenChallenge {
@@ -1790,6 +1804,9 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. Token Binary Wire Codec
+// ----------------------------------------------------------------------------
 fn test_token_wire_roundtrip(t: lit::T&) {
     t.run("Token Binary Wire Codec (RFC 9577 §2.2.1)") { sub =>
         var tok = wing::Token {
@@ -1817,6 +1834,9 @@ fn test_token_wire_roundtrip(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. Privacy Pass Headers & Cache
+// ----------------------------------------------------------------------------
 fn test_privacypass_headers_and_cache(t: lit::T&) {
     t.run("WWW-Authenticate PrivateToken Challenge Parsing") { sub =>
         // Construct challenge wire and base64url
@@ -1907,6 +1927,9 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
 // tests/ed25519_test.goose
 // Verification test suite for Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4).
 
+// ----------------------------------------------------------------------------
+// 16. SHA-512 (FIPS 180-4) Cryptographic Hash Vectors
+// ----------------------------------------------------------------------------
 fn test_sha512_fips(t: lit::T&) {
     t.run("SHA512-01: Empty string NIST vector") { sub =>
         let empty: u8[0] = [];
@@ -1945,6 +1968,9 @@ fn test_sha512_fips(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. Ed25519 (RFC 8032) Digital Signatures & Attacks
+// ----------------------------------------------------------------------------
 fn test_ed25519_rfc8032(t: lit::T&) {
     t.run("ED25519-01: RFC 8032 Section 7.1 Test Vector 1 (Empty Message)") { sub =>
         let seed: u8[32] = [
@@ -2143,6 +2169,9 @@ fn test_ed25519_rfc8032(t: lit::T&) {
 // tests/hpke_test.goose
 // Verification test suite for Curve25519 (RFC 7748) and HPKE (RFC 9180).
 
+// ----------------------------------------------------------------------------
+// 18. Curve25519 (RFC 7748) Test Vectors
+// ----------------------------------------------------------------------------
 fn test_x25519_rfc7748(t: lit::T&) {
     t.run("X25519-01: RFC 7748 Alice/Bob Key Agreement & Test Vectors") { sub =>
         let alice_sk: u8[32] = [
@@ -2195,6 +2224,9 @@ fn test_x25519_rfc7748(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. HPKE (RFC 9180) SetupBase, Seal & Open Vectors
+// ----------------------------------------------------------------------------
 fn test_hpke_rfc9180(t: lit::T&) {
     t.run("HPKE-01: RFC 9180 Section A.1.1 DHKEM(X25519, HKDF-SHA256) + AES-128-GCM") { sub =>
         let skEm: u8[32] = [
@@ -2349,6 +2381,9 @@ fn test_hpke_rfc9180(t: lit::T&) {
 // 3. Parameter injection prevention in Authorization header serialization.
 // 4. CRLF injection prevention in Digest header parameters.
 
+// ----------------------------------------------------------------------------
+// 20. Digest Challenge Buffer Bounds & Syntax
+// ----------------------------------------------------------------------------
 fn test_digest_challenge_buffer_bounds(t: lit::T&) {
     t.run("DIGEST-SEC-01: Algorithm Name Exceeding 32 Bytes Must Not Panic") { sub =>
         // 40-character algorithm string
@@ -2394,6 +2429,9 @@ fn test_has_substr(haystack: const u8[:], needle: const u8[:]) -> bool {
     return false;
 }
 
+// ----------------------------------------------------------------------------
+// 21. Digest Authorization Serialization Defenses
+// ----------------------------------------------------------------------------
 fn test_digest_auth_serialization_security(t: lit::T&) {
     t.run("DIGEST-SEC-05: Injected Quotes in Nonce Must Be Escaped") { sub =>
         var out_hdr: u8[..512] = [];
@@ -2422,6 +2460,9 @@ fn test_digest_auth_serialization_security(t: lit::T&) {
 }
 
 // Invariant 13: Zero silent buffer drops - JWT header unknown keys capacity overflow
+// ----------------------------------------------------------------------------
+// 22. Invariant 13 JWT Header Capacity Rejection
+// ----------------------------------------------------------------------------
 fn test_jwt_header_capacity_rejection(t: lit::T&) {
     t.run("JWT header unknown key overflow triggers parsing error") { sub =>
         var bad_jwt: u8[>..] = "{\"alg\":\"none\",\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9}";
@@ -2431,6 +2472,9 @@ fn test_jwt_header_capacity_rejection(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. RFC 8555 ACME HTTP-01
+// ----------------------------------------------------------------------------
 fn test_acme_http01(t: lit::T&) {
     t.run("RFC 8555 §8.3 HTTP-01 token validation") { sub =>
         sub.assert_true(wing::acme_validate_token("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"), "RFC 8555 §8.3 example token accepted");
@@ -2484,6 +2528,9 @@ fn test_acme_http01(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. ES256 & RS256/PS256 JWT, JWKS, and DPoP Interop
+// ----------------------------------------------------------------------------
 fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
     let now_sec: i64 = 1770000000;
     let ec_priv: u8[32] = [
@@ -2583,6 +2630,239 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// F003: Signature-Input Label Enforcement & Key ID Bounds
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 25. F003 Signature-Input Label Enforcement
+// ----------------------------------------------------------------------------
+fn test_f003_signature_input_verification(t: lit::T&) {
+    t.run("verify_http_signature rejects when label missing from Signature-Input header") { sub =>
+        var req = wing::new_request("GET", "https://example.com/data");
+        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        params.components.push("@method");
+        params.components.push("@target-uri");
+
+        let key = "secret-key-12345678901234567890";
+        sub.assert_true(wing::sign_http_request(req, params, key), "Request signed successfully");
+
+        // Tamper Signature-Input to define a different label "sig_other"
+        wing::set_header(req, "Signature-Input", "sig_other=(\"@method\" \"@target-uri\")");
+
+        // Verification for "sig1" MUST fail because sig1 is not declared in Signature-Input!
+        let ok_ver = wing::verify_http_signature(req, "sig1", params, key);
+        sub.assert_false(ok_ver, "verify_http_signature MUST fail when label does not match Signature-Input");
+    };
+
+    t.run("sign_request_ed25519 rejects key_id > 64 bytes without abort") { sub =>
+        var req = wing::new_request("POST", "https://example.com/api");
+        var long_key_id: u8[..128] = [];
+        for i in 80 { long_key_id.push('k'); }
+
+        let seed: u8[32] = [0x01; 32];
+        let ok = wing::sign_request_ed25519(req, long_key_id[..], seed[..]);
+        sub.assert_false(ok, "key_id > 64B MUST return false and not abort on params.key_id.append");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F014: MIME SFV Unclosed Inner List, SFV Grammar & HTTP Signatures Verification
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 26. F014 SFV Unclosed Inner List & HTTP Signatures
+// ----------------------------------------------------------------------------
+fn test_f014_sfv_and_signatures(t: lit::T&) {
+    t.run("parse_sfv_list and parse_sfv_dict reject unclosed '(' at EOF") { sub =>
+        var list = wing::SfvList { .. };
+        let ok_l = wing::parse_sfv_list("(", list);
+        sub.assert_false(ok_l, "Unclosed '(' in parse_sfv_list MUST return false");
+
+        var dict = wing::SfvDict { .. };
+        let ok_d = wing::parse_sfv_dict("k=(", dict);
+        sub.assert_false(ok_d, "Unclosed 'k=(' in parse_sfv_dict MUST return false");
+    };
+
+    t.run("parse_sf_dict and parse_sf_list reject leading/consecutive commas and invalid base64 binary") { sub =>
+        var entries: wing::SfDictEntry[..16] = [];
+        sub.assert_false(wing::parse_sf_dict(", a=1", entries), "Leading comma in SF dict MUST fail");
+        sub.assert_false(wing::parse_sf_dict("a=1, , b=2", entries), "Empty member in SF dict MUST fail");
+
+        var items: wing::SfParameterizedItem[..16] = [];
+        sub.assert_false(wing::parse_sf_list(":not valid base64!:", items), "Invalid base64 chars in sf-binary MUST fail");
+    };
+
+    t.run("verify_http_signature rejects when Signature-Input component list does not match params") { sub =>
+        var req = wing::new_request("GET", "https://example.com/pay");
+        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        params.components.push("@method");
+        params.components.push("@target-uri");
+
+        let key = "secret-key-12345678901234567890";
+        sub.assert_true(wing::sign_http_request(req, params, key), "Signed request");
+
+        // Tamper Signature-Input to omit @target-uri (empty inner list)
+        wing::set_header(req, "Signature-Input", "sig1=();alg=\"hmac-sha256\"");
+        let ok_ver = wing::verify_http_signature(req, "sig1", params, key);
+        sub.assert_false(ok_ver, "Mismatched component list in Signature-Input MUST fail verification");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 27. RFC 9449 §4.3: DPoP Proof URI Substring Prefix Collision Bypass
+// ----------------------------------------------------------------------------
+fn test_dpop_proof_uri_prefix_collision(t: lit::T&) {
+    t.run("DPoP proof minted for subpath must not authorize parent URI via substring match") { sub =>
+        // RFC 9449 §4.3: The 'htu' claim MUST match the target URI exactly after normalization.
+        // In auth/dpop.goose:261, verify_dpop_uri uses core::contains(claims_json, norm_expected_uri),
+        // allowing a proof minted for 'https://example.com/user-restricted' or 'https://example.com/user.evil.com'
+        // to authenticate requests to 'https://example.com/user'!
+        let claims_with_extended_path: const u8[:] = "{\"htu\":\"https://example.com/user-restricted\",\"htm\":\"GET\"}";
+        let valid = wing::verify_dpop_uri(claims_with_extended_path, "https://example.com/user");
+        sub.assert_false(valid, "DPoP verify_dpop_uri must reject URI prefix mismatch (RFC 9449 §4.3)");
+    };
+
+    t.run("DPoP proof with query string in 'htu' must be rejected") { sub =>
+        // RFC 9449 Section 4.3:
+        // "The htu claim MUST NOT contain a query or fragment. If present, the proof MUST be rejected."
+        let claims_with_query: const u8[:] = "{\"htu\":\"https://example.com/user?leak=1\",\"htm\":\"GET\"}";
+        let valid = wing::verify_dpop_uri(claims_with_query, "https://example.com/user");
+        sub.assert_false(valid, "DPoP proof with query in 'htu' must be rejected per RFC 9449 §4.3");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 28. Digest challenge parameter value > 128B rejection without corruption (auth/digest.goose)
+// ----------------------------------------------------------------------------
+fn test_digest_param_overflow_safety(t: lit::T&) {
+    t.run("Digest challenge with nonce > 128 bytes MUST NOT be silently truncated") { sub =>
+        var long_chal: u8[>..] = [];
+        long_chal.append("Digest realm=\"test\", nonce=\"");
+        for i in 150 { long_chal.push('a'); }
+        long_chal.append("\", qop=\"auth\"");
+
+        let chal, ok = wing::parse_digest_challenge(long_chal[..]);
+        sub.assert_false(ok, "Digest challenge with nonce > 128B MUST return false and not truncate nonce");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 29. JWT claims & header oversized field safety without runtime abort (auth/jwt.goose)
+// ----------------------------------------------------------------------------
+fn test_jwt_oversized_fields_no_abort(t: lit::T&) {
+    t.run("JWT claims with iss > 128 bytes MUST return InvalidClaimsJson without abort") { sub =>
+        var long_iss: u8[>..] = [];
+        long_iss.append("{\"iss\":\"https://accounts.example.com/");
+        for i in 150 { long_iss.push('y'); }
+        long_iss.append("\",\"sub\":\"user1\"}");
+
+        var b64_claims: u8[>..] = [];
+        core::base64url_encode(long_iss[..], b64_claims);
+
+        var claims = wing::JwtClaims { .. };
+        let err = wing::decode_jwt_claims(b64_claims[..], claims);
+        sub.assert_true(err == wing::JwtError.InvalidClaimsJson, "JWT claims with iss > 128B must return InvalidClaimsJson");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 30. Signatures, HSTS, and Trace Context (http/*)
+// ----------------------------------------------------------------------------
+fn test_http_extensions_signatures_hsts_trace(t: lit::T&) {
+    t.run("verify_http_signature must enforce signature label match") { sub =>
+        var req = wing::new_request("GET", "https://example.com/data");
+        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        params.components.push("@method");
+        params.components.push("@target-uri");
+
+        let key = "secret-key-1234";
+        sub.assert_true(wing::sign_http_request(req, params, key), "Request signed successfully");
+
+        // Verify with matching label
+        sub.assert_true(wing::verify_http_signature(req, "sig1", params, key), "Verification with sig1 succeeds");
+
+        // Verify with mismatched label MUST fail
+        sub.assert_false(wing::verify_http_signature(req, "sig2", params, key), "Verification with sig2 MUST fail");
+    };
+
+    t.run("parse_hsts_header supports quoted max-age") { sub =>
+        let dir, ok = wing::parse_hsts_header("max-age=\"31536000\"; includeSubDomains");
+        sub.assert_true(ok, "Quoted max-age must parse successfully per RFC 6797 §6.1");
+        sub.assert_eq(dir.max_age_sec, 31536000, "max-age value matches 31536000");
+        sub.assert_true(dir.include_subdomains, "includeSubDomains matches");
+    };
+
+    t.run("parse_hsts_header rejects duplicate max-age directives") { sub =>
+        let dir, ok = wing::parse_hsts_header("max-age=100; max-age=200");
+        sub.assert_false(ok, "Duplicate max-age directive MUST be rejected per RFC 6797 §6.1");
+    };
+
+    t.run("tracestate parser rejects empty value") { sub =>
+        let ts, ok = wing::parse_tracestate("foo=");
+        sub.assert_false(ok, "Empty tracestate value MUST be rejected per W3C Section 3.3.1.2");
+    };
+
+    t.run("tracestate parser rejects key starting with non-alpha") { sub =>
+        let ts, ok = wing::parse_tracestate("_bad=1");
+        sub.assert_false(ok, "Tracestate key starting with '_' MUST be rejected per W3C Section 3.3.1.1");
+    };
+
+    t.run("hsts rejects IP address literal and trims trailing dot") { sub =>
+        var cache = wing::HstsCache { .. };
+        // RFC 6797 §8.1.1: Rejection of IP address literals
+        sub.assert_false(wing::hsts_cache_update(cache, "192.168.1.1", "max-age=31536000", 1000), "HSTS must reject IPv4 literal");
+        sub.assert_false(wing::hsts_cache_update(cache, "::1", "max-age=31536000", 1000), "HSTS must reject IPv6 literal");
+        sub.assert_false(wing::is_hsts_host(cache, "192.168.1.1", 1000), "IPv4 is not HSTS host");
+        sub.assert_false(wing::is_hsts_host(cache, "127.0.0.1", 1000), "127.0.0.1 is not HSTS host");
+
+        // FQDN trailing dot normalization
+        sub.assert_true(wing::hsts_cache_update(cache, "example.com.", "max-age=31536000", 1000), "HSTS ingests FQDN with trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "example.com", 1000), "Matches without trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "example.com.", 1000), "Matches with trailing dot");
+        sub.assert_true(wing::is_hsts_host(cache, "app.dev.", 1000), "Preloaded TLD matches with trailing dot");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 31. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)
+// ----------------------------------------------------------------------------
+fn test_auth_dpop_digest_privacypass(t: lit::T&) {
+    t.run("verify_dpop_method requires exact method claim match, preventing substring bypass") { sub =>
+        // Claims JSON has DELETE method, but URL contains 'GET'
+        let claims = "{\"htm\":\"DELETE\",\"htu\":\"https://example.com/GET_resource\",\"iat\":1700000000}";
+        let matches_get = wing::verify_dpop_method(claims, "GET");
+        sub.assert_false(matches_get, "DPoP verification for GET MUST NOT pass when claim is DELETE");
+    };
+
+    t.run("parse_digest_challenge rejects unclosed quotes") { sub =>
+        let chal, ok = wing::parse_digest_challenge("Digest realm=\"unclosed, nonce=\"12345\"");
+        sub.assert_false(ok, "Digest challenge with unclosed quote MUST return false");
+    };
+
+    t.run("parse_digest_challenge rejects parameter values > 128 bytes") { sub =>
+        var raw_chal: u8[>..] = [];
+        raw_chal.append("Digest realm=\"test\", nonce=\"");
+        for i in 150 { raw_chal.push('a'); }
+        raw_chal.append("\"");
+
+        let chal, ok = wing::parse_digest_challenge(raw_chal[..]);
+        sub.assert_false(ok, "Digest challenge parameter > 128B MUST return false");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 32. JWT Expiry Integer Overflow Defense
+// ----------------------------------------------------------------------------
+fn test_jwt_exp_overflow(t: lit::T&) {
+    var claims = wing::JwtClaims { .. };
+    // Expiry near i64::MAX
+    claims.exp = 9223372036854775800;
+    var opts = wing::JwtValidationOptions {};
+    opts.leeway_seconds = 60;
+    // Current time 1000 should NOT consider this expired despite addition overflow
+    let err = wing::validate_jwt_claims_rules(claims, opts, 1000);
+    t.assert_eq(err, wing::JwtError.None, "Far future exp must not overflow to expired");
+}
+
 fn main() {
     var runner = lit::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", lit::Verbosity.Verbose);
 
@@ -2610,6 +2890,14 @@ fn main() {
     lit::run_case(runner, "22. Invariant 13 JWT Header Capacity Rejection", test_jwt_header_capacity_rejection);
     lit::run_case(runner, "23. RFC 8555 ACME HTTP-01", test_acme_http01);
     lit::run_case(runner, "24. ES256 & RS256/PS256 JWT, JWKS, and DPoP Interop", test_es256_rsa_jwt_jwks_dpop);
+    lit::run_case(runner, "25. F003 Signature-Input Label Enforcement", test_f003_signature_input_verification);
+    lit::run_case(runner, "26. F014 SFV Unclosed Inner List & HTTP Signatures", test_f014_sfv_and_signatures);
+    lit::run_case(runner, "27. RFC 9449 §4.3: DPoP Proof URI Substring Bypass", test_dpop_proof_uri_prefix_collision);
+    lit::run_case(runner, "28. Digest challenge parameter overflow safety (auth/digest.goose)", test_digest_param_overflow_safety);
+    lit::run_case(runner, "29. JWT oversized fields safety (auth/jwt.goose)", test_jwt_oversized_fields_no_abort);
+    lit::run_case(runner, "30. Signatures, HSTS, Trace Context (http/*)", test_http_extensions_signatures_hsts_trace);
+    lit::run_case(runner, "31. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)", test_auth_dpop_digest_privacypass);
+    lit::run_case(runner, "32. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
 
     let ok = lit::finish(runner);
     assert(ok);

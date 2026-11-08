@@ -18,6 +18,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 // ---- Cache-Control Parsing & Delta-Seconds Clamping ----------------------
 
+// ----------------------------------------------------------------------------
+// 1. Cache-Control Parsing & Delta-Seconds Clamping
+// ----------------------------------------------------------------------------
 fn test_cache_control_parsing_and_overflow(t: lit::T&) {
     t.run("Standard Boolean Directives & Bitmask Compression") { sub =>
         var cc = wing::CacheControl { .. };
@@ -133,6 +136,9 @@ fn test_cache_control_parsing_and_overflow(t: lit::T&) {
 
 // ---- Mathematical Freshness Model & Clock Skew ---------------------------
 
+// ----------------------------------------------------------------------------
+// 2. Mathematical Freshness Model & Clock Skew
+// ----------------------------------------------------------------------------
 fn test_freshness_math_and_clock_skew(t: lit::T&) {
     t.run("RFC 9111 §4.2.3 Age Calculations") { sub =>
         // Time points: request at t=100, response at t=102 (2s delay), date header t=100
@@ -239,6 +245,9 @@ fn test_freshness_math_and_clock_skew(t: lit::T&) {
 
 // ---- EntityTag (ETag) Validators -----------------------------------------
 
+// ----------------------------------------------------------------------------
+// 3. EntityTag (ETag) Validators
+// ----------------------------------------------------------------------------
 fn test_etag_validators(t: lit::T&) {
     t.run("ETag Parsing and Weak/Strong Comparisons") { sub =>
         let tag_strong = wing::parse_etag("\"strong-123\"");
@@ -288,6 +297,9 @@ fn test_etag_validators(t: lit::T&) {
 
 // ---- Vary Normalization & CVE-2026-93750 Defense -------------------------
 
+// ----------------------------------------------------------------------------
+// 4. Vary Normalization & CVE-2026-93750 Defense
+// ----------------------------------------------------------------------------
 fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
     t.run("CVE-2026-93750: Vary: * Unconditional Hard Rejection") { sub =>
         var req_hdrs = wing::HeaderMap { .. };
@@ -331,6 +343,9 @@ fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
 
 // ---- CVE-2026-93748 Defense & Security Zeroing --------------------------
 
+// ----------------------------------------------------------------------------
+// 5. CVE-2026-93748 Defense & Security Zeroing
+// ----------------------------------------------------------------------------
 fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
     t.run("CVE-2026-93748: Blocking max-stale on must-revalidate / s-maxage / security-zeroed") { sub =>
         let t_req = core::unix(100, 0);
@@ -389,6 +404,9 @@ fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
 
 // ---- Cache Transaction Lifecycle, 304 Merge & Sanitization ---------------
 
+// ----------------------------------------------------------------------------
+// 6. Cache Transaction Lifecycle, 304 Merge & Sanitization
+// ----------------------------------------------------------------------------
 fn test_cache_transaction_and_304_merge(t: lit::T&) {
     t.run("Lookup Miss -> Store -> Hit Lifecycle with Age Header") { sub =>
         var cache = wing::new_http_cache();
@@ -511,6 +529,9 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
 
 // ---- RFC 9111 Special Behaviors & Cascade Invalidation -------------------
 
+// ----------------------------------------------------------------------------
+// 7. RFC 9111 Special Behaviors & Cascade Invalidation
+// ----------------------------------------------------------------------------
 fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     t.run("only-if-cached Returns 504 on Cache Miss and Stale") { sub =>
         var cache = wing::new_http_cache();
@@ -739,6 +760,9 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
 // ---- RFC 9875 HTTP Cache Groups -------------------------------------------
 
+// ----------------------------------------------------------------------------
+// 8. RFC 9875 Cache Groups
+// ----------------------------------------------------------------------------
 fn test_cache_groups(t: lit::T&) {
     t.run("Parse Cache-Groups List of Strings (RFC 9875 §2)") { sub =>
         var tags:  wing::CacheGroupTag[..32] = [];
@@ -933,6 +957,9 @@ fn test_cache_groups(t: lit::T&) {
 
 // ---- Single-Flight / Request Collapsing ---------------------------------
 
+// ----------------------------------------------------------------------------
+// 9. Single-Flight Writers Request Collapsing
+// ----------------------------------------------------------------------------
 fn test_request_collapsing(t: lit::T&) {
     t.run("Single-Flight Writers Collapsing Concurrent Requests") { sub =>
         var writers = wing::CacheWriters { .. };
@@ -985,6 +1012,9 @@ fn test_request_collapsing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. RFC 5861 stale-while-revalidate & stale-if-error
+// ----------------------------------------------------------------------------
 fn test_rfc5861_stale_extensions(t: lit::T&) {
     t.run("1. RFC 5861 Section 3: stale-while-revalidate Cache Decision") { sub =>
         var cache = wing::new_http_cache();
@@ -1084,6 +1114,9 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
 // - Structured Dictionaries and fast accessors
 // - Zero-allocation serialization into output buffers
 
+// ----------------------------------------------------------------------------
+// 11. SFV Primitives
+// ----------------------------------------------------------------------------
 fn test_sfv_primitives(t: lit::T&) {
     t.run("SFV Primitives Parsing (RFC 8941 §3.1-§3.3)") { sub =>
         // 1. Boolean
@@ -1139,6 +1172,9 @@ fn test_sfv_primitives(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. SFV Parameters
+// ----------------------------------------------------------------------------
 fn test_sfv_parameters(t: lit::T&) {
     t.run("SFV Parameters on Items (RFC 8941 §3.1.2)") { sub =>
         let p_item, ok = wing::parse_sf_item("text/html;charset=utf-8;q=0.8");
@@ -1157,6 +1193,9 @@ fn test_sfv_parameters(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. SFV Lists & Dicts
+// ----------------------------------------------------------------------------
 fn test_sfv_lists_and_dicts(t: lit::T&) {
     t.run("SFV Lists and Dictionaries (RFC 8941 §3.1-§3.2)") { sub =>
         // 1. Lists
@@ -1206,6 +1245,9 @@ fn test_sfv_lists_and_dicts(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. SFV Serialization
+// ----------------------------------------------------------------------------
 fn test_sfv_serialization(t: lit::T&) {
     t.run("SFV Serialization (RFC 8941 §4.1)") { sub =>
         var out: u8[>..] = [];
@@ -1250,6 +1292,9 @@ fn test_sfv_serialization(t: lit::T&) {
 // - Tampered payload rejection
 // - Strict PKCE plain transformation rejection
 
+// ----------------------------------------------------------------------------
+// 15. RFC 9530 Content-Digest & Repr-Digest
+// ----------------------------------------------------------------------------
 fn test_rfc9530_content_digest(t: lit::T&) {
     t.run("Content-Digest sha-256 Generation & Verification") { sub =>
         var req = wing::Request {
@@ -1329,6 +1374,9 @@ fn test_rfc9530_content_digest(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. RFC 9530 Binding to RFC 9421 Signatures
+// ----------------------------------------------------------------------------
 fn test_rfc9530_with_rfc9421_signatures(t: lit::T&) {
     t.run("RFC 9421 Signature covering Content-Digest") { sub =>
         let seed: u8[32] = [
@@ -1378,6 +1426,9 @@ fn test_rfc9530_with_rfc9421_signatures(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. OAuth 2.1 Strict PKCE
+// ----------------------------------------------------------------------------
 fn test_oauth21_strict_pkce(t: lit::T&) {
     t.run("OAuth 2.1 & RFC 9700 Strict PKCE Enforcement") { sub =>
         let verifier: const u8[:] = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -1406,6 +1457,9 @@ fn test_oauth21_strict_pkce(t: lit::T&) {
 // - End-to-end request signing and cryptographic verification (HMAC-SHA256)
 // - Rejection on tampered headers, modified method, or expired signatures
 
+// ----------------------------------------------------------------------------
+// 18. HTTP Message Signatures
+// ----------------------------------------------------------------------------
 fn test_http_signatures(t: lit::T&) {
     t.run("Canonical Signature Base Construction (RFC 9421 §2.5)") { sub =>
         var req = wing::Request {
@@ -1545,6 +1599,9 @@ fn test_http_signatures(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. Ed25519 Signatures
+// ----------------------------------------------------------------------------
 fn test_ed25519_signatures(t: lit::T&) {
     t.run("Ed25519 Asymmetric HTTP Signatures (RFC 9421 Section 3.3.6: EdDSA Using Curve edwards25519 - Signature verification)") { sub =>
         var seed: u8[32] = [0; 32];
@@ -1593,6 +1650,9 @@ fn test_ed25519_signatures(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. Response Signatures
+// ----------------------------------------------------------------------------
 fn test_response_signatures(t: lit::T&) {
     t.run("HTTP Response Signatures with @status & ;req component chaining") { sub =>
         var req = wing::Request {
@@ -1643,6 +1703,9 @@ fn test_response_signatures(t: lit::T&) {
 // 3. StreamReader for incremental body consumption & progress tracking
 // 4. download_stream with real-time progress callbacks
 
+// ----------------------------------------------------------------------------
+// 21. RFC 9112 Chunk Framing Codec
+// ----------------------------------------------------------------------------
 fn test_chunked_framing_codec(t: lit::T&) {
     t.run("Encode Chunks, Trailers & Terminal 0-Chunk") { sub =>
         var wire: u8[>..] = [];
@@ -1663,6 +1726,9 @@ fn test_chunked_framing_codec(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 22. ChunkWriter for Dynamic Uploads
+// ----------------------------------------------------------------------------
 fn test_chunked_upload_writer(t: lit::T&) {
     t.run("post_chunked with ChunkWriter & Trailers") { sub =>
         var client = wing::new_client();
@@ -1690,6 +1756,9 @@ fn test_chunked_upload_writer(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. StreamReader & Progress Tracking
+// ----------------------------------------------------------------------------
 fn test_incremental_stream_reader(t: lit::T&) {
     t.run("StreamReader reads in chunks and computes progress") { sub =>
         var resp = wing::Response {
@@ -1771,6 +1840,9 @@ fn test_incremental_stream_reader(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. download_stream Incremental Pipeline
+// ----------------------------------------------------------------------------
 fn test_download_stream_with_progress(t: lit::T&) {
     t.run("download_stream streams in 16-byte chunks with progress callback") { sub =>
         var client = wing::new_client();
@@ -1798,6 +1870,9 @@ fn test_download_stream_with_progress(t: lit::T&) {
 // --- Component: http_trace_context ---
 // Verification Suite for W3C Trace Context (RFC 9239).
 
+// ----------------------------------------------------------------------------
+// 25. W3C traceparent Conformance & Invariants
+// ----------------------------------------------------------------------------
 fn test_w3c_traceparent(t: lit::T&) {
     t.run("1. Standard W3C traceparent Vector Parsing & Formatting") { sub =>
         let raw = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
@@ -1853,6 +1928,9 @@ fn test_w3c_traceparent(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 26. W3C tracestate Multi-Vendor Management
+// ----------------------------------------------------------------------------
 fn test_w3c_tracestate(t: lit::T&) {
     t.run("1. Multi-Vendor Tracestate Parsing & Formatting") { sub =>
         let raw = "rojo=1,congo=t61rcWkgMzE";
@@ -1894,6 +1972,413 @@ fn test_w3c_tracestate(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// F008: HTTP Cache Engine Response Body Overflow Protection
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 27. F008 HTTP Cache Engine Response Body Overflow
+// ----------------------------------------------------------------------------
+fn test_f008_cache_engine_oversized_response(t: lit::T&) {
+    t.run("on_response does not cache body exceeding CachedEntry body capacity") { sub =>
+        var cache = wing::HttpCache { .. };
+        cache.options.max_entry_size = 8192; // Configured higher than CachedEntry.body.cap (4096)
+
+        var req = wing::new_request("GET", "https://example.com/large-image");
+        var res = wing::Response { status_code: 200, .. };
+        wing::set_header(res, "Cache-Control", "public, max-age=3600");
+        for i in 5000 {
+            res.body.push('x');
+        }
+
+        var ts = wing::CacheTimestamps { .. };
+        let dec = wing::on_response(cache, req, res, ts, -1);
+        sub.assert_true(
+            dec.kind == wing::ResponseDecisionKind.PassThrough,
+            "Response with body > 4096B MUST pass through without aborting on CachedEntry.body append",
+        );
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F013: HTTP Cache Control, Freshness Overflow, ETag & Engine Invariants
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 28. F013 HTTP Cache Invariants & ETag Validation
+// ----------------------------------------------------------------------------
+fn test_f013_http_cache_invariants(t: lit::T&) {
+    t.run("Cache-Control max-stale=invalid is rejected instead of granting infinite staleness") { sub =>
+        var cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-stale=invalid", cc, true);
+        sub.assert_false(wing::has_max_stale(cc), "Malformed max-stale=invalid MUST NOT set CC_HAS_MAX_STALE with -1");
+    };
+
+    t.run("is_max_stale_blocked ignores s-maxage in private cache") { sub =>
+        var resp_cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-age=10, s-maxage=10", resp_cc, true);
+        let policy = wing::FreshnessPolicy { shared: false, .. };
+        sub.assert_false(wing::is_max_stale_blocked(resp_cc, policy), "s-maxage MUST NOT block max-stale in a private cache");
+    };
+
+    t.run("parse_etag rejects interior double quotes and control characters") { sub =>
+        let etag1 = wing::parse_etag("\"a\", \"b\"");
+        sub.assert_false(etag1.valid, "Interior quotes in ETag MUST be rejected per RFC 9110 §8.8.3");
+
+        let etag2 = wing::parse_etag("\"bad\x7ftag\"");
+        sub.assert_false(etag2.valid, "DEL (0x7F) in ETag MUST be rejected per RFC 9110 §8.8.3");
+    };
+
+    t.run("HEAD response does not overwrite cached GET body in HttpCache") { sub =>
+        var cache = wing::HttpCache { .. };
+        var get_req = wing::new_request("GET", "https://example.com/item");
+        var get_res = wing::Response { status_code: 200, .. };
+        wing::set_header(get_res, "Cache-Control", "max-age=3600");
+        get_res.body.append("cached-get-body");
+
+        var ts = wing::CacheTimestamps { .. };
+        let dec1 = wing::on_response(cache, get_req, get_res, ts, -1);
+        sub.assert_true(dec1.kind == wing::ResponseDecisionKind.StoreAndReturn, "GET stored");
+
+        var head_req = wing::new_request("HEAD", "https://example.com/item");
+        var head_res = wing::Response { status_code: 200, .. };
+        wing::set_header(head_res, "Cache-Control", "max-age=3600");
+        let dec2 = wing::on_response(cache, head_req, head_res, ts, -1);
+
+        let look = wing::lookup(cache, get_req, ts.response_time);
+        sub.assert_true(look.kind == wing::LookupResultKind.Hit, "Subsequent GET must still hit cached GET entry");
+        sub.assert_bytes_eq(look.cached_response.body[..], "cached-get-body", "Cached GET body must remain intact after HEAD");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F016: Diagnostics Escapes, NVS Quotes/Parens, Hints Semicolons & Cert Chain
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 29. F016 Diagnostics Escapes, NVS Quotes, Hints Semicolons & Certs
+// ----------------------------------------------------------------------------
+fn test_f016_diagnostics_nvs_hints_cert(t: lit::T&) {
+    t.run("parse_proxy_status_header handles escaped quotes in details") { sub =>
+        var entries: wing::ProxyStatusEntry[..8] = [];
+        let raw = "edge1; error=connection_refused; details=\"upstream \\\"backend-1\\\" rst\"";
+        let count = wing::parse_proxy_status_header(raw, entries);
+        sub.assert_eq(count, 1, "Proxy-Status with escaped quotes in details must parse 1 entry");
+        sub.assert_bytes_eq(entries[0].details[..], "upstream \\\"backend-1\\\" rst", "Details must preserve escaped quotes");
+    };
+
+    t.run("parse_no_vary_search handles parens and escaped quotes inside inner list") { sub =>
+        let nvs1, ok1 = wing::parse_no_vary_search("params=(\"user(id)\" \"session\")");
+        sub.assert_true(ok1, "NVS with parens inside quoted string must parse successfully");
+        sub.assert_eq(nvs1.params.len, 2, "NVS params must contain 2 items");
+
+        let nvs2, ok2 = wing::parse_no_vary_search("params=(\"foo\\\"bar\")");
+        sub.assert_true(ok2, "NVS with escaped quote inside string must parse successfully");
+        sub.assert_eq(nvs2.params.len, 1, "NVS params must contain 1 item");
+    };
+
+    t.run("parse_link_header preserves semicolons inside quoted parameter values") { sub =>
+        var links: wing::EarlyHintLink[..8] = [];
+        let raw = "</style.css>; rel=preload; as=style; extra=\"foo;rel=tampered\"";
+        let ok = wing::parse_link_header(raw, links);
+        sub.assert_true(ok, "Link header with quoted semicolon parameter must parse successfully");
+        sub.assert_eq(links.len, 1, "One link element parsed");
+        sub.assert_bytes_eq(links[0].rel[..], "preload", "rel attribute MUST not be overwritten by quoted param containing semicolon");
+    };
+
+    t.run("parse_client_cert_chain rejects empty or whitespace-only inputs") { sub =>
+        var certs: u8[..4096][..4] = [];
+        var lens:  i32[..4]        = [];
+        var count: i32             = 0;
+        let ok_empty = wing::parse_client_cert_chain("", certs, lens, count);
+        sub.assert_false(ok_empty, "Empty client cert chain must be rejected per RFC 9440 / RFC 8941");
+
+        let ok_ws = wing::parse_client_cert_chain("   ", certs, lens, count);
+        sub.assert_false(ok_ws, "Whitespace client cert chain must be rejected");
+    };
+
+    t.run("decompress_dcz_payload and dcb preserve caller buffer on failure") { sub =>
+        var buf: u8[..64] = [];
+        buf.append("prefix");
+        let ok_z = wing::decompress_dcz_payload("corrupted-zstd", "dict", buf);
+        sub.assert_false(ok_z, "Invalid zstd payload MUST fail");
+        sub.assert_bytes_eq(buf[..], "prefix", "Existing caller data in buf MUST NOT be cleared on zstd failure");
+
+        let ok_b = wing::decompress_dcb_payload("corrupted-brotli", "dict", buf);
+        sub.assert_false(ok_b, "Invalid brotli payload MUST fail");
+        sub.assert_bytes_eq(buf[..], "prefix", "Existing caller data in buf MUST NOT be cleared on brotli failure");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// F029-F031: HTTP Cache Freshness, Validators, Cache Groups & Targeted Cache
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 30. F029-F031 HTTP Cache Freshness, Validators, Groups & Targeted
+// ----------------------------------------------------------------------------
+fn test_f029_f031_http_cache_and_targeted_cache(t: lit::T&) {
+    t.run("F029: SWR must not override client max-age or min-fresh when response is still fresh") { sub =>
+        var resp_cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-age=3600, stale-while-revalidate=60", resp_cc);
+        var req_cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("max-age=10", req_cc);
+        let hdrs = wing::HeaderMap { .. };
+        let ts = wing::CacheTimestamps {
+            request_time:  core::Time { wall_sec: 1000, .. },
+            response_time: core::Time { wall_sec: 1000, .. },
+            now:           core::Time { wall_sec: 1100, .. },
+            ..
+        };
+        let metrics = wing::evaluate_freshness(resp_cc, req_cc, hdrs, ts);
+        sub.assert_false(metrics.is_fresh, "Age 100s > client max-age=10s is not fresh");
+        sub.assert_false(metrics.stale_allowed, "Server SWR MUST NOT override client max-age when response is not yet stale (age 100 < lifetime 3600)");
+        sub.assert_true(metrics.requires_revalidation, "Must require revalidation when client max-age is exceeded");
+    };
+
+    t.run("F030: Sanitize no-cache=\"X-Foo\", no-cache and multi-line 304 header merge") { sub =>
+        var src = wing::HeaderMap { .. };
+        wing::append_header(src, "Content-Type", "text/plain");
+        wing::append_header(src, "X-Foo", "secret");
+        var cc = wing::CacheControl { .. };
+        wing::parse_cache_control_str("no-cache=\"X-Foo\", no-cache", cc);
+        var dst = wing::HeaderMap { .. };
+        wing::sanitize_for_storage(src, dst, false, cc);
+        sub.assert_bytes_eq(wing::get_header(dst, "Content-Type"), "text/plain", "Unqualified no-cache after no-cache=\"X-Foo\" MUST NOT strip Content-Type from storage");
+        sub.assert_bytes_eq(wing::get_header(dst, "X-Foo"), "", "Qualified X-Foo is stripped");
+
+        var cached = wing::HeaderMap { .. };
+        wing::append_header(cached, "X-Custom", "old");
+        var resp_304 = wing::HeaderMap { .. };
+        wing::append_header(resp_304, "X-Custom", "v1");
+        wing::append_header(resp_304, "X-Custom", "v2");
+        wing::merge_cached_headers_304(cached, resp_304);
+        var comb: u8[..128] = [];
+        sub.assert_true(wing::get_combined(cached, "X-Custom", comb), "Combined 304 X-Custom");
+        sub.assert_bytes_eq(comb[..], "v1, v2", "Multi-line 304 headers of same name MUST both be preserved");
+    };
+
+    t.run("F031: Cross-origin Cache-Group-Invalidation isolation & invalid Targeted Cache-Control fallback") { sub =>
+        var cache = wing::new_http_cache();
+        let ts = wing::CacheTimestamps {
+            request_time:  core::Time { wall_sec: 1000, .. },
+            response_time: core::Time { wall_sec: 1000, .. },
+            now:           core::Time { wall_sec: 1000, .. },
+            ..
+        };
+        var req_a = wing::new_request("GET", "https://victim.example/asset.js");
+        var resp_a = wing::Response { status_code: 200, .. };
+        resp_a.set_header("Cache-Control", "max-age=3600");
+        resp_a.set_header("Cache-Groups", "\"shared-tag\"");
+        resp_a.body.append("victim");
+        let dec_a = wing::on_response(cache, req_a, resp_a, ts);
+        sub.assert_true(dec_a.kind == wing::ResponseDecisionKind.StoreAndReturn, "Stored victim entry");
+
+        var req_evil = wing::new_request("POST", "https://attacker.example/purge");
+        var resp_evil = wing::Response { status_code: 200, .. };
+        resp_evil.set_header("Cache-Group-Invalidation", "\"shared-tag\"");
+        let _ = wing::on_response(cache, req_evil, resp_evil, ts);
+        sub.assert_true(cache.entries[dec_a.entry_idx].is_valid, "Cross-origin Cache-Group-Invalidation MUST NOT evict victim.example entry per RFC 9875 §3");
+
+        var tmap = wing::HeaderMap { .. };
+        wing::append_header(tmap, "Cache-Control", "no-store");
+        wing::append_header(tmap, "CDN-Cache-Control", "@invalid");
+        let tcc = wing::parse_targeted_cache_control_headers(tmap, "fastly");
+        sub.assert_true(wing::is_no_store(tcc), "Unrecognized/empty CDN-Cache-Control MUST fall back to Cache-Control: no-store per RFC 9213 §2.1");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 31. RFC 9110 §13.2.2: parse_field_names Bounded Capacity Overflow Protection
+// ----------------------------------------------------------------------------
+fn test_cache_control_field_names_overflow_protection(t: lit::T&) {
+    t.run("Long header field name > 64 bytes in Cache-Control MUST NOT panic") { sub =>
+        // Capacity of buf in parse_field_names is 64 bytes.
+        // A header field name with 80 bytes would previously exceed capacity and panic.
+        var cc = wing::CacheControl { .. };
+        let long_field = "private=\"x-very-long-custom-header-field-name-that-exceeds-sixty-four-bytes-limit-strictly-for-testing-purposes\"";
+
+        wing::parse_cache_control_str(long_field, cc);
+        sub.assert_true(wing::is_private(cc), "CC_PRIVATE flag must be set");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 32. RFC 9110 §13.2.1: Cache-Control max-age Arithmetic Overflow Clamping
+// ----------------------------------------------------------------------------
+fn test_cache_control_max_age_overflow_clamping(t: lit::T&) {
+    t.run("Huge max-age delta-seconds (20+ digits) must saturate to rfc::MAX_DELTA_SECONDS without wrapping") { sub =>
+        // RFC 9110 Section 13.2.1 & RFC 8941:
+        // Delta-seconds directives with huge number of digits must saturate/clamp to MAX_DELTA_SECONDS
+        // without 64-bit integer overflow wrap to negative numbers.
+        let secs, ok = wing::parse_delta_seconds("99999999999999999999");
+        sub.assert_true(ok, "Huge delta-seconds must parse successfully");
+        sub.assert_gt(secs, 0, "Huge delta-seconds must be positive (no arithmetic wrap)");
+        sub.assert_eq(secs, rfc::MAX_DELTA_SECONDS as i32, "Huge delta-seconds must saturate to rfc::MAX_DELTA_SECONDS (2147483647)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 33. RFC 9111 Vary header > 16 fields cache poisoning defense (http/cache/validators.goose)
+// ----------------------------------------------------------------------------
+fn test_vary_snapshot_capacity_poisoning_defense(t: lit::T&) {
+    t.run("Vary header with > 16 fields MUST invalidate snapshot to prevent cache poisoning") { sub =>
+        var vary_val: u8[..512] = [];
+        for i in 17 {
+            if i > 0 { vary_val.append(", "); }
+            vary_val.append("X-Vary-");
+            format(vary_val, i);
+        }
+
+        var req_headers = wing::HeaderMap { .. };
+        wing::append_header(req_headers, "X-Vary-16", "secret-value");
+
+        let snap = wing::record_vary_snapshot(vary_val[..], req_headers);
+        sub.assert_false(snap.valid, "Vary snapshot with > 16 fields MUST have valid == false (RFC 9111 §4.1)");
+
+        let matches = wing::matches_vary(snap, req_headers);
+        sub.assert_false(matches, "matches_vary MUST return false when snapshot is invalid to prevent poisoning");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 34. No-Vary-Search parameter capacity & key overflow safety (http/novarysearch.goose)
+// ----------------------------------------------------------------------------
+fn test_novarysearch_capacity_safety(t: lit::T&) {
+    t.run("normalize_query_for_cache MUST fail safely on key > 64B without truncating") { sub =>
+        var raw_q: u8[..512] = [];
+        for i in 70 { raw_q.push('x'); }
+        raw_q.append("=val");
+
+        var nvs = wing::NoVarySearch { .. };
+        var out_norm: u8[..512] = [];
+        wing::normalize_query_for_cache(raw_q[..], nvs, out_norm);
+        // Truncation smuggling check: key must not be silently truncated into 64 bytes
+        let has_truncated = out_norm.len >= 64 && out_norm[..64] == raw_q[..64];
+        sub.assert_false(has_truncated, "normalize_query_for_cache MUST NOT silently truncate key > 64B");
+    };
+}
+
+// --- Component: regress_issues_batch12 ---
+// Phase 12 RED test suite: Fixed-Capacity Truncation Smuggling, Protocol Errors & Boundary Hardening
+// Covers 12 target groups from the audit:
+//
+// 1. NoVarySearch 2D array capacity, key truncation smuggling, and trailing query bounds (http/novarysearch.goose)
+// 2. Chunked FSM trailing split CRLF infinite loop and chunk extension syntax (http/headers/chunked_fsm.goose, chunked.goose)
+// 3. HTTP/1.x Content-Length invalid-first smuggling bypass, Host delimiters, and Set-Cookie bounds (http/headers/lexical.goose, headers.goose)
+// 4. MIME & SFV key collision/truncation smuggling, token/binary bounds, and content disposition type length (http/mime.goose)
+// 5. Cache-Control unqualified private override and Vary multi-header & truncation poisoning (http/cache/*)
+// 6. URL origin 128B host bounds, path resolution bounds, Punycode DNS limits, and view validation (core/url/*)
+// 7. HTTP signatures label binding, HSTS quoted max-age & duplicates, and W3C tracestate syntax (http/signatures.goose, hsts.goose, trace.goose)
+// 8. HTTP/2 multiplexer invalid settings rejection, zero-increment flow control, and stream association (server/h2_multiplexer.goose, http/h2_framer.goose)
+// 9. HTTP/3 informational 100/103 multi-HEADERS handling, 101 status rejection, and QPACK field syntax (http3/connection.goose, qpack.goose)
+// 10. gRPC stream reader 32-message truncation smuggling, non-numeric status code handling, and unary framing (grpc/*)
+// 11. DPoP method substring verification bypass, Digest unclosed quotes & algorithm overflow, and PrivateToken bounds (auth/*, security/*)
+// 12. X.509 critical extension enforcement & validity order, HTTP/1 CONNECT tunnel pipelining hygiene, and Akamai capacity bounds (tls/*, server/*, fingerprint/*)
+
+// ----------------------------------------------------------------------------
+// 35. NoVarySearch (http/novarysearch.goose)
+// ----------------------------------------------------------------------------
+fn test_novarysearch_truncation_and_bounds(t: lit::T&) {
+    t.run("No-Vary-Search must reject > 16 parameters rather than silently dropping 17th") { sub =>
+        // Construct header with 17 except parameters: except=("p1" "p2" ... "p17")
+        var raw_hdr: u8[..1024] = [];
+        raw_hdr.append("params, except=(");
+        for i in 17 {
+            if i > 0 { raw_hdr.append(" "); }
+            raw_hdr.push('"');
+            raw_hdr.append("p");
+            format(raw_hdr, i);
+            raw_hdr.push('"');
+        }
+        raw_hdr.push(')');
+
+        let nvs, ok = wing::parse_no_vary_search(raw_hdr[..]);
+        sub.assert_false(ok, "No-Vary-Search with > 16 except params MUST return false to prevent cache poisoning");
+        sub.assert_false(nvs.is_valid, "nvs.is_valid MUST be false on capacity overflow");
+    };
+
+    t.run("No-Vary-Search unclosed quotes in params must return false") { sub =>
+        let nvs, ok = wing::parse_no_vary_search("params=(\"unclosed");
+        sub.assert_false(ok, "Unclosed quote in No-Vary-Search MUST fail parsing");
+        sub.assert_false(nvs.is_valid, "nvs.is_valid MUST be false on unclosed quote");
+    };
+
+    t.run("No-Vary-Search trailing question mark at end of header must not abort") { sub =>
+        let nvs, ok = wing::parse_no_vary_search("params=?");
+        sub.assert_false(ok, "Trailing '?' at EOF MUST return false safely");
+    };
+
+    t.run("No-Vary-Search 2D array parameter length > 16B must succeed without abort") { sub =>
+        // 22-byte parameter name
+        let nvs, ok = wing::parse_no_vary_search("params=(\"utm_campaign_source\")");
+        sub.assert_true(ok, "22-byte parameter name must parse successfully");
+        sub.assert_true(nvs.is_valid, "nvs must be valid");
+        sub.assert_true(wing::is_param_ignored(nvs, "utm_campaign_source"), "utm_campaign_source is ignored");
+    };
+
+    t.run("No-Vary-Search key-order defaults to true per W3C Section 2.1") { sub =>
+        let nvs, ok = wing::parse_no_vary_search("params=(\"utm_source\")");
+        sub.assert_true(ok, "Parse without key-order directive");
+        sub.assert_true(nvs.key_order_matters, "key_order_matters MUST default to true");
+
+        var out_norm: u8[..256] = [];
+        wing::normalize_query_for_cache("b=2&a=1&c=3", nvs, out_norm);
+        sub.assert_bytes_eq(out_norm[..], "b=2&a=1&c=3", "Order preserved when key-order directive is absent");
+
+        let nvs_order, ok_order = wing::parse_no_vary_search("key-order");
+        sub.assert_true(ok_order, "Parse key-order directive");
+        sub.assert_false(nvs_order.key_order_matters, "key-order sets key_order_matters to false");
+
+        var out_sorted: u8[..256] = [];
+        wing::normalize_query_for_cache("b=2&a=1&c=3", nvs_order, out_sorted);
+        sub.assert_bytes_eq(out_sorted[..], "a=1&b=2&c=3", "Order sorted when key-order is present");
+
+        let nvs_q0, ok_q0 = wing::parse_no_vary_search("key-order=?0");
+        sub.assert_true(ok_q0, "Parse key-order=?0");
+        sub.assert_true(nvs_q0.key_order_matters, "key-order=?0 sets key_order_matters to true");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 36. Cache-Control & Vary (http/cache/*)
+// ----------------------------------------------------------------------------
+fn test_cache_control_and_vary_poisoning_rfc9111(t: lit::T&) {
+    t.run("Unqualified private directive following qualified private must make response uncacheable in shared cache") { sub =>
+        var req_map = wing::HeaderMap { .. };
+        wing::append_header(req_map, ":method", "GET");
+
+        var resp_map = wing::HeaderMap { .. };
+        // Qualified private followed by unqualified private
+        wing::append_header(resp_map, "Cache-Control", "private=\"X-Custom\", private");
+
+        let resp_cc = wing::parse_cache_control_headers(
+            resp_map,
+            wing::CacheControlParseOptions { is_request: false, ignore_cargo_cult: false },
+        );
+        sub.assert_true(resp_cc.is_private(), "Response has private flag");
+        sub.assert_true(resp_cc.private_overflow || resp_cc.private_fields.len == 0, "Unqualified private must flag full privacy");
+    };
+
+    t.run("Empty private=\"\" directive must not leave response cacheable in shared cache") { sub =>
+        var resp_map = wing::HeaderMap { .. };
+        wing::append_header(resp_map, "Cache-Control", "private=\"\"");
+
+        let resp_cc = wing::parse_cache_control_headers(
+            resp_map,
+            wing::CacheControlParseOptions { is_request: false, ignore_cargo_cult: false },
+        );
+        sub.assert_true(resp_cc.is_private(), "private=\"\" sets private flag");
+        sub.assert_true(resp_cc.private_overflow || resp_cc.private_fields.len == 0, "Empty private=\"\" must flag full privacy");
+    };
+
+    t.run("Vary snapshot with header value > 256 bytes must invalidate snapshot") { sub =>
+        var req_headers = wing::HeaderMap { .. };
+        var long_val: u8[>..] = [];
+        for i in 300 { long_val.push('k'); }
+        wing::append_header(req_headers, "X-Auth-Token", long_val[..]);
+
+        let snap = wing::record_vary_snapshot("X-Auth-Token", req_headers);
+        sub.assert_false(snap.valid, "Varied request header > 256B MUST invalidate snapshot to prevent truncated cache hits");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Caching (RFC 9111), Structured Fields, and Metadata Suite", lit::Verbosity.Verbose);
 
@@ -1904,25 +2389,35 @@ fn main() {
     lit::run_case(runner, "5. CVE-2026-93748 Defense & Security Zeroing", test_cve_2026_93748_max_stale_guards);
     lit::run_case(runner, "6. Cache Transaction Lifecycle, 304 Merge & Sanitization", test_cache_transaction_and_304_merge);
     lit::run_case(runner, "7. RFC 9111 Special Behaviors & Cascade Invalidation", test_rfc9111_special_behaviors_and_invalidation);
-    lit::run_case(runner, "8. Single-Flight Writers Request Collapsing", test_request_collapsing);
-    lit::run_case(runner, "9. RFC 5861 stale-while-revalidate & stale-if-error", test_rfc5861_stale_extensions);
-    lit::run_case(runner, "10. SFV Primitives", test_sfv_primitives);
-    lit::run_case(runner, "11. SFV Parameters", test_sfv_parameters);
-    lit::run_case(runner, "12. SFV Lists & Dicts", test_sfv_lists_and_dicts);
-    lit::run_case(runner, "13. SFV Serialization", test_sfv_serialization);
-    lit::run_case(runner, "14. RFC 9530 Content-Digest & Repr-Digest", test_rfc9530_content_digest);
-    lit::run_case(runner, "15. RFC 9530 Binding to RFC 9421 Signatures", test_rfc9530_with_rfc9421_signatures);
-    lit::run_case(runner, "16. OAuth 2.1 Strict PKCE", test_oauth21_strict_pkce);
-    lit::run_case(runner, "17. HTTP Message Signatures", test_http_signatures);
-    lit::run_case(runner, "18. Ed25519 Signatures", test_ed25519_signatures);
-    lit::run_case(runner, "19. Response Signatures", test_response_signatures);
-    lit::run_case(runner, "20. RFC 9112 Chunk Framing Codec", test_chunked_framing_codec);
-    lit::run_case(runner, "21. ChunkWriter for Dynamic Uploads", test_chunked_upload_writer);
-    lit::run_case(runner, "22. StreamReader & Progress Tracking", test_incremental_stream_reader);
-    lit::run_case(runner, "23. download_stream Incremental Pipeline", test_download_stream_with_progress);
-    lit::run_case(runner, "24. W3C traceparent Conformance & Invariants", test_w3c_traceparent);
-    lit::run_case(runner, "25. W3C tracestate Multi-Vendor Management", test_w3c_tracestate);
-    lit::run_case(runner, "26. RFC 9875 Cache Groups", test_cache_groups);
+    lit::run_case(runner, "8. RFC 9875 Cache Groups", test_cache_groups);
+    lit::run_case(runner, "9. Single-Flight Writers Request Collapsing", test_request_collapsing);
+    lit::run_case(runner, "10. RFC 5861 stale-while-revalidate & stale-if-error", test_rfc5861_stale_extensions);
+    lit::run_case(runner, "11. SFV Primitives", test_sfv_primitives);
+    lit::run_case(runner, "12. SFV Parameters", test_sfv_parameters);
+    lit::run_case(runner, "13. SFV Lists & Dicts", test_sfv_lists_and_dicts);
+    lit::run_case(runner, "14. SFV Serialization", test_sfv_serialization);
+    lit::run_case(runner, "15. RFC 9530 Content-Digest & Repr-Digest", test_rfc9530_content_digest);
+    lit::run_case(runner, "16. RFC 9530 Binding to RFC 9421 Signatures", test_rfc9530_with_rfc9421_signatures);
+    lit::run_case(runner, "17. OAuth 2.1 Strict PKCE", test_oauth21_strict_pkce);
+    lit::run_case(runner, "18. HTTP Message Signatures", test_http_signatures);
+    lit::run_case(runner, "19. Ed25519 Signatures", test_ed25519_signatures);
+    lit::run_case(runner, "20. Response Signatures", test_response_signatures);
+    lit::run_case(runner, "21. RFC 9112 Chunk Framing Codec", test_chunked_framing_codec);
+    lit::run_case(runner, "22. ChunkWriter for Dynamic Uploads", test_chunked_upload_writer);
+    lit::run_case(runner, "23. StreamReader & Progress Tracking", test_incremental_stream_reader);
+    lit::run_case(runner, "24. download_stream Incremental Pipeline", test_download_stream_with_progress);
+    lit::run_case(runner, "25. W3C traceparent Conformance & Invariants", test_w3c_traceparent);
+    lit::run_case(runner, "26. W3C tracestate Multi-Vendor Management", test_w3c_tracestate);
+    lit::run_case(runner, "27. F008 HTTP Cache Engine Response Body Overflow", test_f008_cache_engine_oversized_response);
+    lit::run_case(runner, "28. F013 HTTP Cache Invariants & ETag Validation", test_f013_http_cache_invariants);
+    lit::run_case(runner, "29. F016 Diagnostics Escapes, NVS Quotes, Hints Semicolons & Certs", test_f016_diagnostics_nvs_hints_cert);
+    lit::run_case(runner, "30. F029-F031 HTTP Cache Freshness, Validators, Groups & Targeted", test_f029_f031_http_cache_and_targeted_cache);
+    lit::run_case(runner, "31. RFC 9110 §13.2.2: Cache-Control Field Names Length Safety", test_cache_control_field_names_overflow_protection);
+    lit::run_case(runner, "32. RFC 9110 §13.2.1: Cache-Control max-age Arithmetic Overflow Clamping", test_cache_control_max_age_overflow_clamping);
+    lit::run_case(runner, "33. RFC 9111 Vary cache poisoning defense (http/cache/validators.goose)", test_vary_snapshot_capacity_poisoning_defense);
+    lit::run_case(runner, "34. No-Vary-Search capacity safety (http/novarysearch.goose)", test_novarysearch_capacity_safety);
+    lit::run_case(runner, "35. NoVarySearch truncation and bounds (http/novarysearch.goose)", test_novarysearch_truncation_and_bounds);
+    lit::run_case(runner, "36. Cache-Control & Vary RFC 9111 (http/cache/*)", test_cache_control_and_vary_poisoning_rfc9111);
 
     let ok = lit::finish(runner);
     assert(ok);

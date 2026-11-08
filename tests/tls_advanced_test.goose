@@ -21,6 +21,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 //   4. RFC 8446 §6 Standard Alert Code (47: illegal_parameter) Non-Recognition
 //   5. TLSCiphertext Truncated Payload (< 17 bytes) Framing DecodeError Bypass (RFC 8446 §5.2, §5.4)
 
+// ----------------------------------------------------------------------------
+// 1. ByteCursor & ByteBuilder Framing Invariants
+// ----------------------------------------------------------------------------
 fn test_wireframer_cursor_and_builder_framing(t: lit::T&) {
     t.run("ByteCursor length-prefixed underflow preserves cursor without desynchronization") { sub =>
         // Vector 1: Truncated u8 length-prefixed field
@@ -80,6 +83,9 @@ fn test_wireframer_cursor_and_builder_framing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. TLS Record Layer Framing & Alert Invariants
+// ----------------------------------------------------------------------------
 fn test_wireframer_tls_record_invariants(t: lit::T&) {
     t.run("Sequence number 2^64 - 1 exhaustion yields unexpected_message (RFC 8446 §5.3)") { sub =>
         let key:     u8[16] = [0x01; 16];
@@ -131,6 +137,9 @@ fn test_wireframer_tls_record_invariants(t: lit::T&) {
 // 4. RFC 8446 §5.2: Outer TLSCiphertext ContentType restriction (only application_data 0x17 or CCS 0x14 allowed)
 // 5. OpenSSL #31533: Early data skipped volume integer overflow defense
 
+// ----------------------------------------------------------------------------
+// 3. RFC 8446 Padding, All-Zero & InnerPlaintext Invariants
+// ----------------------------------------------------------------------------
 fn test_round2_padding_and_empty_record_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.4: Empty records forbidden for handshake, alert, and CCS") { sub =>
         // Vector 1: Decrypted payload with 0 content bytes and inner type Handshake (0x16)
@@ -190,6 +199,9 @@ fn test_round2_padding_and_empty_record_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 4. RFC 8446 Framing, Minimum Size & DoS Invariants
+// ----------------------------------------------------------------------------
 fn test_round2_framing_and_dos_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.2: TLSCiphertext header minimum size and outer type restrictions") { sub =>
         var out: u8[..64] = [];
@@ -257,6 +269,9 @@ fn test_round2_framing_and_dos_invariants(t: lit::T&) {
 // 4. RFC 9000 §19.6: QUIC CRYPTO frame offset varint 2^62 - 1 maximum bounds overflow
 // 5. RFC 9001 §4 & RFC 9000 §19.6: QUIC CRYPTO gateway empty frame and buffer quota limits
 
+// ----------------------------------------------------------------------------
+// 5. RFC 8446 CCS Invariants & Flood Protection
+// ----------------------------------------------------------------------------
 fn test_round3_ccs_and_protected_record_invariants(t: lit::T&) {
     t.run("RFC 8446 §5.4 & Appendix D.4: Protected ChangeCipherSpec inner type strictly forbidden") { sub =>
         // Vector 1: Decrypted inner plaintext with ContentType = ChangeCipherSpec (0x14)
@@ -333,6 +348,9 @@ fn test_round3_ccs_and_protected_record_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. RFC 9001 QUIC Crypto Gateway & Stream Bounds
+// ----------------------------------------------------------------------------
 fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
     t.run("RFC 9001 §5.4.2: QUIC Header Protection sample offset validation") { sub =>
         var pkt: u8[24] = [0; 24];
@@ -393,7 +411,7 @@ fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
 // tests/ech_test.goose
 // Verification test suite for DNS Engine, RFC 9460 HTTPS RR (Type 65), and Encrypted Client Hello (ECH).
 
-// 1. DNS Wire Format & RFC 9460 HTTPS/SVCB Resource Records (Type 65)
+// 7. DNS Wire Format & RFC 9460 HTTPS/SVCB Resource Records (Type 65)
 fn test_dns_and_https_rr(t: lit::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
         var query: u8[..512] = [];
@@ -495,7 +513,7 @@ fn test_dns_and_https_rr(t: lit::T&) {
     };
 }
 
-// 2. Encrypted Client Hello (ECH) Wire Formats & HPKE Privacy Handshake
+// 8. Encrypted Client Hello (ECH) Wire Formats & HPKE Privacy Handshake
 fn test_ech_protocol(t: lit::T&) {
     t.run("ECH-01: ECHConfig & ECHConfigList Parsing") { sub =>
         // Construct a realistic synthetic ECHConfig wire buffer:
@@ -676,6 +694,9 @@ fn test_ech_protocol(t: lit::T&) {
 }
 
 // RFC 9849 ECH wire constants: extension type and ECHConfig.version share 0xFE0D.
+// ----------------------------------------------------------------------------
+// 9. RFC 9849 ECH constants
+// ----------------------------------------------------------------------------
 fn test_ech_rfc9849_citations(t: lit::T&) {
     t.run("RFC 9849 ECH constants match corpus") { sub =>
         // rfc9849.txt: encrypted_client_hello(0xfe0d) extension and ECHConfig case 0xfe0d
@@ -685,7 +706,7 @@ fn test_ech_rfc9849_citations(t: lit::T&) {
     };
 }
 
-// 3. DNS-over-HTTPS (RFC 8484) & Automated ECH Discovery (RFC 9460)
+// 10. DNS-over-HTTPS (RFC 8484) & Automated ECH Discovery (RFC 9460)
 fn test_doh_and_automated_ech_discovery(t: lit::T&) {
     t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
         // POST body
@@ -791,6 +812,9 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
 // - Cryptographic signature verification via Ed25519 against transcript hash
 // - Strict rejection on signature tampering, wrong public key, or context tampering
 
+// ----------------------------------------------------------------------------
+// 11. CertificateRequest Codec
+// ----------------------------------------------------------------------------
 fn test_certificate_request_codec(t: lit::T&) {
     t.run("CertificateRequest Encoding & Parsing (RFC 8446 §4.3.2)") { sub =>
         var req_buf: u8[..256] = [];
@@ -815,6 +839,9 @@ fn test_certificate_request_codec(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Empty Client Certificate
+// ----------------------------------------------------------------------------
 fn test_empty_client_certificate(t: lit::T&) {
     t.run("Empty Client Certificate Handling (RFC 8446 §4.4.2)") { sub =>
         // Client without certificate must send empty Certificate message
@@ -837,6 +864,9 @@ fn test_empty_client_certificate(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. Client CertificateVerify Ed25519
+// ----------------------------------------------------------------------------
 fn test_client_certificate_verify_ed25519(t: lit::T&) {
     t.run("Client CertificateVerify Generation & Verification (Ed25519)") { sub =>
         // 1. Generate Ed25519 client keypair
@@ -914,6 +944,9 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 // - 1120-byte hybrid ServerHello key share wire serialization and deserialization
 // - Hybrid shared secret derivation combiner (RFC 10024 §4)
 
+// ----------------------------------------------------------------------------
+// 14. Post-Quantum TLS 1.3 Key Exchange
+// ----------------------------------------------------------------------------
 fn test_post_quantum_hybrid(t: lit::T&) {
     t.run("IANA NamedGroup Recognition") { sub =>
         sub.assert_true(rfc::is_post_quantum_group(rfc::GROUP_X25519_MLKEM768), "0x11EC is post-quantum group");
@@ -1017,6 +1050,9 @@ fn test_post_quantum_hybrid(t: lit::T&) {
 // Verification Suite for RFC 8879 (TLS Certificate Compression via Zstandard),
 // TLS ClientHello Fragmentation, and DNS Cache with Stale-While-Revalidate.
 
+// ----------------------------------------------------------------------------
+// 15. RFC 8879 TLS Certificate Compression via Zstandard
+// ----------------------------------------------------------------------------
 fn test_rfc8879_certificate_compression(t: lit::T&) {
     t.run("1. RFC 8879 Extension & Handshake Message Codecs") { sub =>
         let algos: u16[2] = [rfc::CERT_COMPRESSION_ZSTD, rfc::CERT_COMPRESSION_BROTLI];
@@ -1052,6 +1088,9 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. TLS ClientHello Fragmentation & DPI Evasion
+// ----------------------------------------------------------------------------
 fn test_tls_client_hello_fragmentation(t: lit::T&) {
     t.run("1. ClientHello Record Fragmentation for Anti-Censorship / DPI Evasion") { sub =>
         let dummy_ch = "ClientHelloPayloadContainingServerNameIndicationSNIAndCiphersAndExtensionsForTesting";
@@ -1083,6 +1122,9 @@ fn test_tls_client_hello_fragmentation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. DNS Cache with Stale-While-Revalidate
+// ----------------------------------------------------------------------------
 fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
     t.run("1. DNS Cache TTL and Stale-While-Revalidate Lifecycle") { sub =>
         var cache = wing::DnsCache { .. };
@@ -1130,6 +1172,9 @@ fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
 // 3. SAN dNSName validation (null bytes, label lengths, hyphen boundaries).
 // 4. ASN.1 UTCTime & GeneralizedTime strict DER canonical parsing.
 
+// ----------------------------------------------------------------------------
+// 18. ASN.1 DER Length Canonicality & Bounds
+// ----------------------------------------------------------------------------
 fn test_asn1_der_length_canonicality(t: lit::T&) {
     t.run("ASN1-SEC-01: Short Form and Long Form Valid Lengths") { sub =>
         // Short form: 0x42 = 66
@@ -1182,6 +1227,9 @@ fn test_asn1_der_length_canonicality(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 19. ASN.1 INTEGER Canonical Rules & Serial Invariants
+// ----------------------------------------------------------------------------
 fn test_asn1_der_integer_and_serial_invariants(t: lit::T&) {
     t.run("ASN1-SEC-05: Empty Integer and Redundant Zero Padding") { sub =>
         let empty_buf: u8[0] = [];
@@ -1225,6 +1273,9 @@ fn test_asn1_der_integer_and_serial_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. X.509 SAN dNSName Hostname Validation
+// ----------------------------------------------------------------------------
 fn test_x509_san_dns_name_validation(t: lit::T&) {
     t.run("ASN1-SEC-08: Valid DNS Names in SAN") { sub =>
         sub.assert_true(wing::validate_san_dns_name("example.com"), "standard domain name valid");
@@ -1260,6 +1311,9 @@ fn test_x509_san_dns_name_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 21. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing
+// ----------------------------------------------------------------------------
 fn test_x509_asn1_time_parsing(t: lit::T&) {
     t.run("ASN1-SEC-12: Valid UTCTime and GeneralizedTime Canonical DER") { sub =>
         // UTCTime: "261028120000Z" (2026-10-28 12:00:00 UTC)
@@ -1327,7 +1381,7 @@ fn bytes_to_hex(bytes: const u8[:], out: u8[>..]&) {
 }
 
 // ----------------------------------------------------------------------------
-// 1. Constant-Time Primitives & KeySlot Redaction
+// 22. Constant-Time Primitives & KeySlot Redaction
 // ----------------------------------------------------------------------------
 fn test_constant_time_primitives(t: lit::T&) {
     t.run("Branchless Equality and Select") { sub =>
@@ -1376,7 +1430,7 @@ fn test_constant_time_primitives(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Dudect Statistical Welch's t-test Simulation
+// 23. Dudect Statistical Welch's t-test Simulation
 // ----------------------------------------------------------------------------
 fn test_dudect_context_and_filtering(t: lit::T&) {
     t.run("Outlier Cropping & Statistical Lockstep") { sub =>
@@ -1400,7 +1454,7 @@ fn test_dudect_context_and_filtering(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. NIST / RFC Cryptographic Primitives
+// 24. NIST / RFC Cryptographic Primitives
 // ----------------------------------------------------------------------------
 fn test_pure_goose_crypto_primitives(t: lit::T&) {
     t.run("SHA-256 NIST Vectors") { sub =>
@@ -1494,7 +1548,7 @@ fn test_pure_goose_crypto_primitives(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. AEAD Authenticated Encryption: XChaCha20-Poly1305 & AES-256-GCM
+// 25. AEAD Authenticated Encryption: XChaCha20-Poly1305 & AES-256-GCM
 // ----------------------------------------------------------------------------
 fn test_aead_ciphers(t: lit::T&) {
     t.run("XChaCha20-Poly1305 Round-Trip & Tamper Resistance") { sub =>
@@ -1552,7 +1606,7 @@ fn test_aead_ciphers(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. CryptoJar Container: PrivateJar & SignedJar with Key Rotation
+// 26. CryptoJar Container: PrivateJar & SignedJar with Key Rotation
 // ----------------------------------------------------------------------------
 fn test_crypto_jar_container(t: lit::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
@@ -1663,7 +1717,7 @@ fn test_crypto_jar_container(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. Vendor Conformance Vectors (rustls handshake_test.rs & record_layer.rs)
+// 27. Vendor Conformance Vectors (rustls handshake_test.rs & record_layer.rs)
 // ----------------------------------------------------------------------------
 
 fn test_rustls_vendor_conformance(t: lit::T&) {
@@ -1949,8 +2003,291 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// Suite Runner
+// 28. X.509, Server CONNECT Hygiene & Akamai (tls/*, server/*, fingerprint/*)
 // ----------------------------------------------------------------------------
+fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
+    t.run("verify_signature_scheme_curve_binding rejects generic EC OID without curve match") { sub =>
+        let ok = wing::verify_signature_scheme_curve_binding(
+            rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
+            rfc::OID_EC_PUBLIC_KEY[..],
+        );
+        sub.assert_false(ok, "Generic id-ecPublicKey without curve binding MUST be rejected");
+    };
+
+    t.run("HTTP/1 CONNECT sets Connection: close and consumes all bytes (CVE-2026-94439)") { sub =>
+        var server = wing::new_http_server("127.0.0.1", 8080);
+
+        var wire_in: u8[..256] = [];
+        wire_in.append("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: example.com\r\n\r\n");
+
+        var wire_out: u8[..1024] = [];
+        let count, total_consumed, ok, wants_close = wing::handle_connection_wire_pipelined_stream(server, "127.0.0.1", wire_in[..], 1000, wire_out);
+        sub.assert_true(ok, "CONNECT request handled");
+        sub.assert_true(wants_close, "CONNECT request must set wants_close");
+        sub.assert_eq(count, 1, "Only the CONNECT request was processed");
+        sub.assert_eq(total_consumed, wire_in.len, "All post-CONNECT tunnel bytes consumed to prevent HTTP/1 pipelining smuggling");
+        sub.assert_true(core::contains(wire_out[..], "connection: close") || core::contains(wire_out[..], "Connection: close"), "CONNECT response must contain Connection: close");
+    };
+
+    t.run("parse_akamai_fingerprint rejects > 16 settings") { sub =>
+        var raw_fp: u8[..512] = [];
+        for i in 17 {
+            if i > 0 { raw_fp.push(';'); }
+            format(raw_fp, i + 1);
+            raw_fp.push(':');
+            raw_fp.append("100");
+        }
+        raw_fp.append("|15663105|0|m,a,s,p");
+
+        let fp, ok = wing::parse_akamai_fingerprint(raw_fp[..]);
+        sub.assert_false(ok, "Akamai fingerprint with > 16 settings MUST return false rather than dropping settings");
+    };
+
+    t.run("order_pseudo_headers handles pseudo_headers > 4 chars without abort") { sub =>
+        var fp = wing::AkamaiFingerprint { .. };
+        fp.pseudo_headers.push('m');
+        fp.pseudo_headers.push('a');
+        fp.pseudo_headers.push('s');
+        fp.pseudo_headers.push('p');
+        fp.pseudo_headers.push('x'); // 5th pseudo header
+
+        var out_hdrs = wing::HeaderMap { .. };
+        wing::order_pseudo_headers(fp, "GET", "example.com", "https", "/", out_hdrs);
+        sub.assert_eq(out_hdrs.entries.len, 4, "Bounded to 4 pseudo headers without abort");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 29. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix
+// ----------------------------------------------------------------------------
+fn test_x509_uri_name_constraints_evasion(t: lit::T&) {
+    t.run("URI name constraints: reject @ in path/query smuggling permitted host") { sub =>
+        // Attacker attempts to bypass name constraints by putting @ in the path:
+        // Host is "evil.com", path contains "@permitted.example.com"
+        let candidate = "https://evil.com/path@permitted.example.com";
+        let res = wing::match_uri_name_constraint(candidate, "permitted.example.com");
+        sub.assert_false(res, "evil.com with @permitted in path MUST NOT match constraint permitted.example.com");
+
+        let candidate_q = "https://evil.com/resource?foo=bar@permitted.example.com";
+        let res_q = wing::match_uri_name_constraint(candidate_q, "permitted.example.com");
+        sub.assert_false(res_q, "evil.com with @permitted in query MUST NOT match constraint permitted.example.com");
+    };
+
+    t.run("URI name constraints: reject ? or # suffix confusion after host") { sub =>
+        // Attacker attempts to smuggle suffix match by ending host with ? or #
+        let candidate_q = "https://evil.com?.permitted.example.com";
+        let res_q = wing::match_uri_name_constraint(candidate_q, "permitted.example.com");
+        sub.assert_false(res_q, "evil.com?.permitted.example.com MUST NOT match permitted.example.com");
+
+        let candidate_h = "https://evil.com#.permitted.example.com";
+        let res_h = wing::match_uri_name_constraint(candidate_h, "permitted.example.com");
+        sub.assert_false(res_h, "evil.com#.permitted.example.com MUST NOT match permitted.example.com");
+    };
+
+    t.run("URI name constraints: reject userinfo in authority and IPv4 literals for dNSName") { sub =>
+        // RFC 5280 §4.2.1.10: URI SAN with userinfo cannot satisfy a DNS name constraint
+        let cand_user = "https://user:pass@permitted.example.com/path";
+        let res_u = wing::match_uri_name_constraint(cand_user, "permitted.example.com");
+        sub.assert_false(res_u, "userinfo in URI authority MUST NOT satisfy DNS constraint");
+
+        // IPv4 address literal cannot satisfy a dNSName constraint
+        let cand_ip = "https://192.168.1.1/path";
+        let res_ip = wing::match_uri_name_constraint(cand_ip, "192.168.1.1");
+        sub.assert_false(res_ip, "IPv4 literal MUST NOT satisfy dNSName constraint");
+    };
+
+    t.run("URI name constraints: valid DNS matches succeed") { sub =>
+        let cand_valid = "https://sub.permitted.example.com/path";
+        let res_v = wing::match_uri_name_constraint(cand_valid, "permitted.example.com");
+        sub.assert_true(res_v, "valid subdomain matches constraint");
+
+        let cand_exact = "https://permitted.example.com/path";
+        let res_e = wing::match_uri_name_constraint(cand_exact, "permitted.example.com");
+        sub.assert_true(res_e, "exact domain matches constraint");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 30. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation
+// ----------------------------------------------------------------------------
+fn test_x509_dns_name_constraint_wildcard_and_empty_labels(t: lit::T&) {
+    t.run("DNS name constraints: reject empty labels and leading dots in candidate") { sub =>
+        // Candidate with empty label: "..example.com"
+        let res_empty = wing::match_dns_name_constraint("..example.com", ".example.com");
+        sub.assert_false(res_empty, "candidate with .. MUST NOT match constraint");
+
+        // Candidate with leading dot: ".example.com"
+        let res_lead = wing::match_dns_name_constraint(".example.com", ".example.com");
+        sub.assert_false(res_lead, "candidate with leading dot MUST NOT match constraint");
+
+        // Candidate with interior empty label: "sub..example.com"
+        let res_inner = wing::match_dns_name_constraint("sub..example.com", "example.com");
+        sub.assert_false(res_inner, "candidate with interior .. MUST NOT match constraint");
+    };
+
+    t.run("DNS name constraints: wildcard matching rules") { sub =>
+        // *.example.com matches constraint .example.com
+        let res_wc = wing::match_dns_name_constraint("*.example.com", ".example.com");
+        sub.assert_true(res_wc, "*.example.com MUST match .example.com");
+
+        // *.example.com matches constraint example.com
+        let res_wc2 = wing::match_dns_name_constraint("*.example.com", "example.com");
+        sub.assert_true(res_wc2, "*.example.com MUST match example.com");
+
+        // *.other.com does not match example.com
+        let res_diff = wing::match_dns_name_constraint("*.other.com", "example.com");
+        sub.assert_false(res_diff, "*.other.com MUST NOT match example.com");
+    };
+
+    t.run("DNS name constraints: apex and subdomain distinction") { sub =>
+        // Constraint .example.com MUST NOT match example.com itself
+        let res_apex = wing::match_dns_name_constraint("example.com", ".example.com");
+        sub.assert_false(res_apex, "example.com MUST NOT match .example.com");
+
+        // Constraint example.com MUST match example.com itself
+        let res_apex2 = wing::match_dns_name_constraint("example.com", "example.com");
+        sub.assert_true(res_apex2, "example.com MUST match example.com");
+
+        // Suffix collision: badexample.com MUST NOT match example.com
+        let res_bad = wing::match_dns_name_constraint("badexample.com", "example.com");
+        sub.assert_false(res_bad, "badexample.com MUST NOT match example.com");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 31. X.509 ASN.1 Time Parsing Bounds & Overflow Defense
+// ----------------------------------------------------------------------------
+fn test_x509_asn1_time_parsing_bounds(t: lit::T&) {
+    t.run("parse_utc_time: reject out-of-bound calendar fields") { sub =>
+        // Valid: "260101120000Z" (2026-01-01 12:00:00 UTC)
+        let _, ok_valid = wing::parse_utc_time("260101120000Z");
+        sub.assert_true(ok_valid, "valid UTC time parsed");
+
+        // Month 00
+        let _, ok_m0 = wing::parse_utc_time("260001120000Z");
+        sub.assert_false(ok_m0, "Month 00 rejected");
+
+        // Month 13
+        let _, ok_m13 = wing::parse_utc_time("261301120000Z");
+        sub.assert_false(ok_m13, "Month 13 rejected");
+
+        // Day 00
+        let _, ok_d0 = wing::parse_utc_time("260100120000Z");
+        sub.assert_false(ok_d0, "Day 00 rejected");
+
+        // Day 32
+        let _, ok_d32 = wing::parse_utc_time("260132120000Z");
+        sub.assert_false(ok_d32, "Day 32 rejected");
+
+        // Hour 24
+        let _, ok_h24 = wing::parse_utc_time("260101240000Z");
+        sub.assert_false(ok_h24, "Hour 24 rejected");
+
+        // Minute 60
+        let _, ok_min60 = wing::parse_utc_time("260101126000Z");
+        sub.assert_false(ok_min60, "Minute 60 rejected");
+
+        // Second 61
+        let _, ok_s61 = wing::parse_utc_time("260101120061Z");
+        sub.assert_false(ok_s61, "Second 61 rejected");
+    };
+
+    t.run("parse_generalized_time: reject out-of-bound calendar fields") { sub =>
+        // Valid: "20260101120000Z"
+        let _, ok_valid = wing::parse_generalized_time("20260101120000Z");
+        sub.assert_true(ok_valid, "valid Generalized time parsed");
+
+        // Month 00
+        let _, ok_m0 = wing::parse_generalized_time("20260001120000Z");
+        sub.assert_false(ok_m0, "Month 00 rejected");
+
+        // Month 13
+        let _, ok_m13 = wing::parse_generalized_time("20261301120000Z");
+        sub.assert_false(ok_m13, "Month 13 rejected");
+
+        // Day 00
+        let _, ok_d0 = wing::parse_generalized_time("20260100120000Z");
+        sub.assert_false(ok_d0, "Day 00 rejected");
+
+        // Day 32
+        let _, ok_d32 = wing::parse_generalized_time("20260132120000Z");
+        sub.assert_false(ok_d32, "Day 32 rejected");
+
+        // Hour 24
+        let _, ok_h24 = wing::parse_generalized_time("20260101240000Z");
+        sub.assert_false(ok_h24, "Hour 24 rejected");
+
+        // Minute 60
+        let _, ok_min60 = wing::parse_generalized_time("20260101126000Z");
+        sub.assert_false(ok_min60, "Minute 60 rejected");
+
+        // Second 61
+        let _, ok_s61 = wing::parse_generalized_time("20260101120061Z");
+        sub.assert_false(ok_s61, "Second 61 rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 32. X.509 Basic Constraints Negative or Non-CA PathLen Defense (RFC 5280 §4.2.1.9)
+// ----------------------------------------------------------------------------
+fn test_x509_basic_constraints_negative_or_non_ca_pathlen(t: lit::T&) {
+    t.run("BasicConstraints: reject negative pathLenConstraint in CA cert") { sub =>
+        // DER sequence: [BOOLEAN TRUE, INTEGER -1]
+        // 30 06:
+        //   01 01 FF (cA: TRUE)
+        //   02 01 FF (pathLen: -1)
+        var bc_der: u8[..8] = [0x30, 0x06, 0x01, 0x01, 0xFF, 0x02, 0x01, 0xFF];
+        var cert = wing::ParsedCert { .. };
+        var c = core::cursor_from(bc_der[..]);
+        wing::x509_parse_basic_constraints_ext(c, cert);
+
+        sub.assert_true(cert.has_unsupported_critical, "negative pathLenConstraint MUST mark cert unsupported/malformed");
+    };
+
+    t.run("BasicConstraints: reject pathLenConstraint when cA is false") { sub =>
+        // DER sequence: [BOOLEAN FALSE, INTEGER 3]
+        // 30 06:
+        //   01 01 00 (cA: FALSE)
+        //   02 01 03 (pathLen: 3)
+        var bc_der: u8[..8] = [0x30, 0x06, 0x01, 0x01, 0x00, 0x02, 0x01, 0x03];
+        var cert = wing::ParsedCert { .. };
+        var c = core::cursor_from(bc_der[..]);
+        wing::x509_parse_basic_constraints_ext(c, cert);
+
+        sub.assert_true(cert.has_unsupported_critical, "pathLenConstraint on non-CA cert MUST mark cert unsupported/malformed");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 33. X.509 Name Constraints Subtree Base dNSName Validation (RFC 5280 §4.2.1.10)
+// ----------------------------------------------------------------------------
+fn test_x509_name_constraints_subtree_dns_nul(t: lit::T&) {
+    t.run("NameConstraints: reject subtree base dNSName with embedded NUL") { sub =>
+        var subtree_buf: u8[..32] = [];
+        // [2] dNSName tag 0x82, length 12: "example\0.com"
+        subtree_buf.push(0x82);
+        subtree_buf.push(12);
+        subtree_buf.append("example\0.com");
+
+        var c = core::cursor_from(subtree_buf[..]);
+        var out_type = wing::SanType.Other;
+        var out_val = core::cursor_from(subtree_buf[..0]);
+        let ok = wing::x509_parse_general_subtree_base(c, out_type, out_val);
+        sub.assert_false(ok, "subtree base dNSName with embedded NUL MUST be rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 34. X.509 DNS SAN TLD Wildcard & IP Literal Defense
+// ----------------------------------------------------------------------------
+fn test_x509_san_tld_wildcard(t: lit::T&) {
+    // TLD wildcard *.com must NOT match evil.com (RFC 6125 §6.4.3)
+    t.assert_false(wing::match_dns_san("*.com", "evil.com"), "*.com must not match evil.com");
+    // Valid wildcard *.example.com must match sub.example.com
+    t.assert_true(wing::match_dns_san("*.example.com", "sub.example.com"), "*.example.com matches sub.example.com");
+    // Wildcard must not match IPv4
+    t.assert_false(wing::match_dns_san("*.168.1.1", "192.168.1.1"), "Wildcard must not match IPv4 literal");
+}
 
 fn main() {
     var runner = lit::new_runner("TLS 1.3 Record Layer, ECH, mTLS, and PKI Extensions Suite", lit::Verbosity.Verbose);
@@ -1963,25 +2300,32 @@ fn main() {
     lit::run_case(runner, "6. RFC 9001 QUIC Crypto Gateway & Stream Bounds", test_round3_quic_crypto_and_framing_invariants);
     lit::run_case(runner, "7. DNS Wire Format & RFC 9460 HTTPS Resource Records", test_dns_and_https_rr);
     lit::run_case(runner, "8. Encrypted Client Hello (ECH) Wire & HPKE Handshake", test_ech_protocol);
-    lit::run_case(runner, "9. DNS-over-HTTPS (DoH RFC 8484) & Automated ECH Discovery", test_doh_and_automated_ech_discovery);
-    lit::run_case(runner, "10. CertificateRequest Codec", test_certificate_request_codec);
-    lit::run_case(runner, "11. Empty Client Certificate", test_empty_client_certificate);
-    lit::run_case(runner, "12. Client CertificateVerify Ed25519", test_client_certificate_verify_ed25519);
-    lit::run_case(runner, "13. Post-Quantum TLS 1.3 Key Exchange", test_post_quantum_hybrid);
-    lit::run_case(runner, "14. RFC 8879 TLS Certificate Compression via Zstandard", test_rfc8879_certificate_compression);
-    lit::run_case(runner, "15. TLS ClientHello Fragmentation & DPI Evasion", test_tls_client_hello_fragmentation);
-    lit::run_case(runner, "16. DNS Cache with Stale-While-Revalidate", test_dns_cache_and_stale_revalidate);
-    lit::run_case(runner, "17. ASN.1 DER Length Canonicality & Bounds", test_asn1_der_length_canonicality);
-    lit::run_case(runner, "18. ASN.1 INTEGER Canonical Rules & Serial Invariants", test_asn1_der_integer_and_serial_invariants);
-    lit::run_case(runner, "19. X.509 SAN dNSName Hostname Validation", test_x509_san_dns_name_validation);
-    lit::run_case(runner, "20. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing", test_x509_asn1_time_parsing);
-    lit::run_case(runner, "21. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
-    lit::run_case(runner, "22. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
-    lit::run_case(runner, "23. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
-    lit::run_case(runner, "24. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
-    lit::run_case(runner, "25. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
-    lit::run_case(runner, "26. RFC 9849 ECH constants", test_ech_rfc9849_citations);
+    lit::run_case(runner, "9. RFC 9849 ECH constants", test_ech_rfc9849_citations);
+    lit::run_case(runner, "10. DNS-over-HTTPS (DoH RFC 8484) & Automated ECH Discovery", test_doh_and_automated_ech_discovery);
+    lit::run_case(runner, "11. CertificateRequest Codec", test_certificate_request_codec);
+    lit::run_case(runner, "12. Empty Client Certificate", test_empty_client_certificate);
+    lit::run_case(runner, "13. Client CertificateVerify Ed25519", test_client_certificate_verify_ed25519);
+    lit::run_case(runner, "14. Post-Quantum TLS 1.3 Key Exchange", test_post_quantum_hybrid);
+    lit::run_case(runner, "15. RFC 8879 TLS Certificate Compression via Zstandard", test_rfc8879_certificate_compression);
+    lit::run_case(runner, "16. TLS ClientHello Fragmentation & DPI Evasion", test_tls_client_hello_fragmentation);
+    lit::run_case(runner, "17. DNS Cache with Stale-While-Revalidate", test_dns_cache_and_stale_revalidate);
+    lit::run_case(runner, "18. ASN.1 DER Length Canonicality & Bounds", test_asn1_der_length_canonicality);
+    lit::run_case(runner, "19. ASN.1 INTEGER Canonical Rules & Serial Invariants", test_asn1_der_integer_and_serial_invariants);
+    lit::run_case(runner, "20. X.509 SAN dNSName Hostname Validation", test_x509_san_dns_name_validation);
+    lit::run_case(runner, "21. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing", test_x509_asn1_time_parsing);
+    lit::run_case(runner, "22. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
+    lit::run_case(runner, "23. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
+    lit::run_case(runner, "24. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
+    lit::run_case(runner, "25. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
+    lit::run_case(runner, "26. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);
     lit::run_case(runner, "27. Vendor Conformance Vectors (rustls Handshake, Extensions & Record Layer)", test_rustls_vendor_conformance);
+    lit::run_case(runner, "28. X.509, Server CONNECT hygiene & Akamai (tls/*, server/*, fingerprint/*)", test_x509_critical_ext_server_connect_and_akamai);
+    lit::run_case(runner, "29. X.509 URI Name Constraints Evasion via @ in Path/Query & ?/# Suffix", test_x509_uri_name_constraints_evasion);
+    lit::run_case(runner, "30. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation", test_x509_dns_name_constraint_wildcard_and_empty_labels);
+    lit::run_case(runner, "31. X.509 ASN.1 Time Parsing Bounds & Overflow Defense", test_x509_asn1_time_parsing_bounds);
+    lit::run_case(runner, "32. X.509 Basic Constraints Negative or Non-CA PathLen Defense", test_x509_basic_constraints_negative_or_non_ca_pathlen);
+    lit::run_case(runner, "33. X.509 Name Constraints Subtree Base dNSName Validation", test_x509_name_constraints_subtree_dns_nul);
+    lit::run_case(runner, "34. X.509 DNS SAN TLD Wildcard & IP Literal Defense", test_x509_san_tld_wildcard);
 
     let ok = lit::finish(runner);
     assert(ok);

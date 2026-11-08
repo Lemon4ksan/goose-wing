@@ -1282,6 +1282,9 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
 // - HTTP/3 error code translation with GREASE skipping
 // - WebTransport capsule codecs (close, drain, reset_stream, stop_sending)
 
+// ----------------------------------------------------------------------------
+// 10. WebTransport Session & Datagrams
+// ----------------------------------------------------------------------------
 fn test_webtransport_session_and_datagrams(t: lit::T&) {
     t.run("Extended CONNECT Initiation (draft-16)") { sub =>
         var req = wing::Request { .. };
@@ -1357,6 +1360,9 @@ fn test_webtransport_session_and_datagrams(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. WebTransport Stream Framing
+// ----------------------------------------------------------------------------
 fn test_webtransport_stream_framing(t: lit::T&) {
     t.run("Unidirectional Stream Framing (Type 0x54)") { sub =>
         let session_id: u64 = 256;
@@ -1407,6 +1413,9 @@ fn test_webtransport_stream_framing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. WebTransport Error Code Mapping
+// ----------------------------------------------------------------------------
 fn test_webtransport_error_mapping(t: lit::T&) {
     t.run("Application Error Translation to HTTP/3 and Back") { sub =>
         let test_codes: u32[7] = [0, 1, 29, 30, 31, 1000, 0xFFFFFFFF];
@@ -1435,6 +1444,9 @@ fn test_webtransport_error_mapping(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. WebTransport Capsule Codecs
+// ----------------------------------------------------------------------------
 fn test_webtransport_capsules(t: lit::T&) {
     t.run("CLOSE_WEBTRANSPORT_SESSION Capsule") { sub =>
         let err_code: u32 = 404;
@@ -1493,6 +1505,9 @@ fn test_webtransport_capsules(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. WebTransport Session Lifecycle
+// ----------------------------------------------------------------------------
 fn test_webtransport_session_lifecycle(t: lit::T&) {
     t.run("Session Transitions: Active -> Draining -> Closed") { sub =>
         var session = wing::WebTransportSession { session_id: 88, is_active: true, .. };
@@ -1511,6 +1526,9 @@ fn test_webtransport_session_lifecycle(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. WebTransport Stream Demuxing & Session Routing
+// ----------------------------------------------------------------------------
 fn test_webtransport_stream_demuxing(t: lit::T&) {
     t.run("1. Bidirectional Stream Wire Demuxing (Signal 0x41 & Direct Session ID)") { sub =>
         // Case A: draft-ietf-webtrans-http3 Section 4.2 with 0x41 signal
@@ -1740,6 +1758,9 @@ fn test_h3_audit_regressions(t: lit::T&) {
 // - Header value SWAR boundary checks at 31B, 32B, 64B (test_nghttp3_check_header_value)
 // - Post-Base Dynamic Indexed Field & Literal Field with Post-Base Name Reference (RFC 9204 §4.5.3, §4.5.5)
 // - Out-of-order stream decoding and stream cancellation instruction (0x40 | stream_id)
+// ----------------------------------------------------------------------------
+// 17. nghttp3 Vendor Conformance Vectors
+// ----------------------------------------------------------------------------
 fn test_nghttp3_vendor_conformance(t: lit::T&) {
     t.run("NGHTTP3-QPACK-01: Required Insert Count (RIC) Modulo Wrap-Around Reconstruction") { sub =>
         // test_nghttp3_qpack_decoder_reconstruct_ricnt (RFC 9204 §4.5.1.1):
@@ -2010,6 +2031,1020 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// F009: Alt-Svc Slot Prioritization for h3 & failed_attempts Saturation
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 19. F009 Alt-Svc Slot Prioritization & Backoff Saturation
+// ----------------------------------------------------------------------------
+fn test_f009_altsvc_slot_prioritization_and_backoff_saturation(t: lit::T&) {
+    t.run("parse_altsvc_header retains h3 when preceded by 4 draft/legacy protocols") { sub =>
+        var cache = wing::AltSvcCache { .. };
+        let origin = "example.com:443";
+        let raw = "h3-Q050=\":443\", h3-Q046=\":443\", h3-27=\":443\", h3-29=\":443\", h3=\":8443\"; ma=3600";
+        wing::update(cache, origin, raw, 1000);
+
+        var ep = wing::AltSvcEndpoint { .. };
+        let found = wing::lookup_h3(cache, origin, 1050, ep);
+        sub.assert_true(found, "5th h3 endpoint MUST NOT be dropped by 4 preceding draft protocols");
+        sub.assert_eq(ep.port as i64, 8443, "Promoted h3 port must be 8443");
+    };
+
+    t.run("record_failure saturates failed_attempts without wrapping u8 to 0") { sub =>
+        var cache = wing::AltSvcCache { .. };
+        let origin = "backoff.example.com:443";
+        wing::update(cache, origin, "h3=\":443\"; ma=86400", 1000);
+
+        for i in 256 {
+            wing::record_failure(cache, origin, 1000);
+        }
+        let attempts = wing::failed_attempts(cache, origin);
+        sub.assert_true(attempts > 0, "failed_attempts MUST saturate (> 0) after 256 failures instead of wrapping to 0");
+        sub.assert_true(wing::is_broken(cache, origin, 1150), "Origin must remain in 160s max backoff at t=1150");
+    };
+
+    t.run("lookup_h3 rejects negative elapsed time on backward clock jump") { sub =>
+        var cache = wing::AltSvcCache { .. };
+        let origin = "clock.example.com:443";
+        wing::update(cache, origin, "h3=\":443\"; ma=60", 1000);
+
+        var ep = wing::AltSvcEndpoint { .. };
+        let found = wing::lookup_h3(cache, origin, 900, ep);
+        sub.assert_false(found, "Negative elapsed time (now_sec < inserted_at_sec) MUST NOT match as fresh");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 20. RFC 9114 §4.2 & RFC 9204 §4.1: HTTP/3 QPACK Uppercase Literal Field Names
+// ----------------------------------------------------------------------------
+fn test_qpack_uppercase_literal_field_name_rejection(t: lit::T&) {
+    t.run("Lowercase literal field name is decoded successfully") { sub =>
+        var tbl = internal::QpackTable { .. };
+        var out_fields: internal::HeaderField[>..] = [];
+
+        // Literal Field Line With Literal Name (001NHxxx):
+        // Byte 0: 0x24 (0010 0100: name len 4)
+        // Name: "host"
+        // Byte: 0x07 (val len 7)
+        // Value: "foo.bar"
+        let wire: const u8[15] = [
+            0x00, 0x00, // RIC=0, Base=0
+            0x24, 'h', 'o', 's', 't',
+            0x07, 'f', 'o', 'o', '.', 'b', 'a', 'r',
+        ];
+
+        let err = internal::decode_qpack_section(tbl, wire[..], out_fields);
+        sub.assert_eq(err, internal::QpackError.None, "Valid lowercase QPACK field accepted");
+        sub.assert_eq(out_fields.len, 1, "1 field decoded");
+        sub.assert_bytes_eq(out_fields[0].name[..], "host", "Field name matches");
+    };
+
+    t.run("Uppercase literal field name MUST be rejected with DecompressionFailed") { sub =>
+        // RFC 9114 Section 4.2: Characters in field names MUST be converted to lowercase prior to encoding.
+        // A request containing uppercase characters in field names MUST be treated as malformed.
+        var tbl = internal::QpackTable { .. };
+        var out_fields: internal::HeaderField[>..] = [];
+
+        let wire: const u8[15] = [
+            0x00, 0x00, // RIC=0, Base=0
+            0x24, 'H', 'o', 's', 't', // "Host" has uppercase 'H'
+            0x07, 'f', 'o', 'o', '.', 'b', 'a', 'r',
+        ];
+
+        let err = internal::decode_qpack_section(tbl, wire[..], out_fields);
+        sub.assert_eq(err, internal::QpackError.DecompressionFailed, "Uppercase field name MUST be rejected per RFC 9114 §4.2");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 21. RFC 9114 §6.2.1 & Go #78102: Duplicate HTTP/3 Control Stream Rejection
+// ----------------------------------------------------------------------------
+fn test_h3_duplicate_control_stream_rejection(t: lit::T&) {
+    t.run("Second H3_STREAM_CONTROL stream MUST be rejected with H3_ERR_STREAM_CREATION (0x0103)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+        // First control stream: Stream ID 3 (unidirectional), Type 0x00 (H3_STREAM_CONTROL)
+        var ctrl1_wire: u8[..16] = [];
+        internal::quic_encode_varint(ctrl1_wire, rfc::H3_STREAM_CONTROL);
+        let err1 = conn.handle_stream_data(3, false, ctrl1_wire[..], false);
+        sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "First control stream accepted");
+        sub.assert_true(conn.peer_control_opened, "Peer control opened flag set");
+
+        // Second control stream: Stream ID 7 (unidirectional), Type 0x00
+        var ctrl2_wire: u8[..16] = [];
+        internal::quic_encode_varint(ctrl2_wire, rfc::H3_STREAM_CONTROL);
+        let err2 = conn.handle_stream_data(7, false, ctrl2_wire[..], false);
+        sub.assert_eq(err2, rfc::H3_ERR_STREAM_CREATION, "Duplicate control stream MUST return H3_ERR_STREAM_CREATION (0x0103)");
+        sub.assert_eq(conn.state, internal::H3ConnState.Closed, "Connection state transitioned to Closed");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 22. RFC 9114 §4.3: HTTP/3 / QPACK Duplicate Pseudo-Headers & Order Invariants
+// ----------------------------------------------------------------------------
+fn test_h3_pseudo_header_invariants(t: lit::T&) {
+    t.run("Duplicate :status or pseudo-headers after regular headers MUST be rejected (RFC 9114 §4.3)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        // Open request stream
+        let s_id, ok_open = conn.open_request_stream();
+        sub.assert_true(ok_open, "Stream opened");
+
+        // Encode QPACK headers with duplicate :status
+        var qpack_dup: u8[>..] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack_dup, ":status", "200");
+        internal::encode_qpack_field(qpack_dup, ":status", "500");
+
+        var wire_dup: u8[>..] = [];
+        internal::encode_h3_headers_frame(wire_dup, qpack_dup[..]);
+
+        let res_dup = conn.handle_stream_data(s_id, true, wire_dup[..], false);
+        sub.assert_eq(res_dup, rfc::H3_ERR_GENERAL_PROTOCOL, "Duplicate :status MUST return H3_ERR_GENERAL_PROTOCOL");
+
+        // Test pseudo-header after regular header
+        var conn2 = internal::new_h3_client_connection(settings);
+        let s_id2, ok_open2 = conn2.open_request_stream();
+        sub.assert_true(ok_open2, "Stream opened");
+
+        var qpack_order: u8[>..] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack_order, "content-type", "text/plain");
+        internal::encode_qpack_field(qpack_order, ":status", "200");
+
+        var wire_order: u8[>..] = [];
+        internal::encode_h3_headers_frame(wire_order, qpack_order[..]);
+
+        let res_order = conn2.handle_stream_data(s_id2, true, wire_order[..], false);
+        sub.assert_eq(res_order, rfc::H3_ERR_GENERAL_PROTOCOL, "Pseudo-header after regular header MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 23. HTTP/3 unknown pseudo-header (:custom) & CTL character rejection (http3/connection.goose)
+// ----------------------------------------------------------------------------
+fn test_h3_pseudo_header_unknown_and_ctl(t: lit::T&) {
+    t.run("HTTP/3 request with unknown pseudo-header :custom MUST return error") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        let s_id, ok_open = conn.open_request_stream();
+        sub.assert_true(ok_open, "Stream opened");
+
+        // Encode QPACK headers with unknown pseudo-header :custom
+        var qpack_buf: u8[>..] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack_buf, ":method", "GET");
+        internal::encode_qpack_field(qpack_buf, ":scheme", "https");
+        internal::encode_qpack_field(qpack_buf, ":path", "/");
+        internal::encode_qpack_field(qpack_buf, ":custom", "invalid");
+
+        var wire_buf: u8[>..] = [];
+        internal::encode_h3_headers_frame(wire_buf, qpack_buf[..]);
+
+        let res = conn.handle_stream_data(s_id, true, wire_buf[..], false);
+        sub.assert_true(res != rfc::H3_ERR_NO_ERROR, "HTTP/3 unknown pseudo-header :custom MUST be rejected with error (RFC 9114 §4.3)");
+    };
+
+    t.run("HTTP/3 header with CTL character MUST return error") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        let s_id, ok_open = conn.open_request_stream();
+        sub.assert_true(ok_open, "Stream opened");
+
+        // Encode QPACK headers with CTL char 0x01 in header value
+        var qpack_buf: u8[>..] = [0x00, 0x00];
+        internal::encode_qpack_field(qpack_buf, ":method", "GET");
+        internal::encode_qpack_field(qpack_buf, ":scheme", "https");
+        internal::encode_qpack_field(qpack_buf, ":path", "/");
+        internal::encode_qpack_field(qpack_buf, "custom", "bad\x01value");
+
+        var wire_buf: u8[>..] = [];
+        internal::encode_h3_headers_frame(wire_buf, qpack_buf[..]);
+
+        let res = conn.handle_stream_data(s_id, true, wire_buf[..], false);
+        sub.assert_true(res != rfc::H3_ERR_NO_ERROR, "HTTP/3 header value with CTL MUST be rejected with error (RFC 9114 §4.2)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 24. Alt-Svc oversized proto/host/endpoint capacity safety (http/altsvc.goose)
+// ----------------------------------------------------------------------------
+fn test_altsvc_oversized_capacity_safety(t: lit::T&) {
+    t.run("Alt-Svc with > 4 endpoints MUST NOT abort on fixed array overflow") { sub =>
+        var endpoints: wing::AltSvcEndpoint[..4] = [];
+        // Header with 5 endpoints
+        let raw = "h3=\":443\", h2=\":443\", h3-29=\":443\", h3-Q050=\":443\", h3-Q046=\":443\"";
+        let ok, is_clear = wing::parse_altsvc_header(raw, endpoints);
+        sub.assert_true(ok, "Alt-Svc with 5 endpoints parsed without aborting");
+        sub.assert_eq(endpoints.len, 4, "Capacity clamped cleanly at 4 without crash");
+    };
+
+    t.run("Alt-Svc with proto > 16 bytes MUST NOT abort") { sub =>
+        var endpoints: wing::AltSvcEndpoint[..4] = [];
+        let raw = "superlongprotonamethatexceeds16bytes=\":443\"";
+        let ok, is_clear = wing::parse_altsvc_header(raw, endpoints);
+        sub.assert_true(ok, "Alt-Svc with long proto parsed without aborting");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 25. HTTP/3 & QPACK (http3/*)
+// ----------------------------------------------------------------------------
+fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
+    t.run("H3 request stream accepts 103 Early Hints followed by 200 final response (Go #80687)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+        let sid, _ = internal::open_request_stream(conn);
+
+        // 1. Ingest 103 Early Hints HEADERS frame
+        var qpack_103: u8[..64] = [];
+        qpack_103.push(0x00); qpack_103.push(0x00);
+        internal::encode_qpack_field(qpack_103, ":status", "103", true);
+
+        var frame_103: u8[..128] = [];
+        internal::encode_h3_headers_frame(frame_103, qpack_103[..]);
+        let err1 = internal::handle_stream_data(conn, sid, true, frame_103[..], false);
+        sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "103 Early Hints HEADERS accepted");
+
+        // 2. Ingest 200 OK final response HEADERS frame
+        var qpack_200: u8[..64] = [];
+        qpack_200.push(0x00); qpack_200.push(0x00);
+        internal::encode_qpack_field(qpack_200, ":status", "200", true);
+
+        var frame_200: u8[..128] = [];
+        internal::encode_h3_headers_frame(frame_200, qpack_200[..]);
+        let err2 = internal::handle_stream_data(conn, sid, true, frame_200[..], true);
+        sub.assert_eq(err2, rfc::H3_ERR_NO_ERROR, "200 OK HEADERS after 103 Early Hints accepted");
+
+        let status, ok_s = internal::get_status_code(conn, sid);
+        sub.assert_true(ok_s, "Status code available");
+        sub.assert_eq(status, 200, "Final status code is 200");
+    };
+
+    t.run("H3 rejects :status 101 Switching Protocols (RFC 9114 §4.3.2)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+        let sid, _ = internal::open_request_stream(conn);
+
+        var qpack_101: u8[..64] = [];
+        qpack_101.push(0x00); qpack_101.push(0x00);
+        internal::encode_qpack_field(qpack_101, ":status", "101", true);
+
+        var frame_101: u8[..128] = [];
+        internal::encode_h3_headers_frame(frame_101, qpack_101[..]);
+        let err = internal::handle_stream_data(conn, sid, true, frame_101[..], false);
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, ":status 101 MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("QPACK emit_field_checked rejects field names with invalid token chars") { sub =>
+        var fields: internal::HeaderField[>..] = [];
+        var budget: u64                        = 4096;
+        let err = internal::emit_field_checked(fields, budget, "bad name", "value", false);
+        sub.assert_true(err == internal::QpackError.DecompressionFailed, "QPACK field name with space MUST fail");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 26. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization
+// ----------------------------------------------------------------------------
+fn test_qpack_invariants_and_token_defenses(t: lit::T&) {
+    t.run("decode_base integer overflow and underflow protection") { sub =>
+        // Sign bit 0: Base = ric + delta_base. Test overflow on ric + delta_base
+        let _, err_ov = internal::decode_base(0, 10, 0xFFFFFFFFFFFFFFFF);
+        sub.assert_eq(err_ov, internal::QpackError.DecompressionFailed, "overflow in base addition rejected");
+
+        // Sign bit 1: Base = ric - delta_base - 1. Test underflow when ric <= delta_base
+        let _, err_un = internal::decode_base(1, 5, 5);
+        sub.assert_eq(err_un, internal::QpackError.DecompressionFailed, "underflow in base subtraction rejected");
+
+        let base_ok, err_ok = internal::decode_base(0, 5, 10);
+        sub.assert_eq(err_ok, internal::QpackError.None, "valid base decoded");
+        sub.assert_eq(base_ok, 15, "base is 15");
+    };
+
+    t.run("emit_field_checked rejects bare colon and non-token characters") { sub =>
+        var fields: internal::HeaderField[>..] = [];
+        var budget: u64                        = 4096;
+
+        // Bare colon ":" must be rejected
+        let err_colon = internal::emit_field_checked(fields, budget, ":", "val", false);
+        sub.assert_eq(err_colon, internal::QpackError.DecompressionFailed, "bare colon rejected");
+
+        // Empty field name
+        let err_empty = internal::emit_field_checked(fields, budget, "", "val", false);
+        sub.assert_eq(err_empty, internal::QpackError.DecompressionFailed, "empty name rejected");
+
+        // Disallowed control char in name
+        let err_ctl = internal::emit_field_checked(fields, budget, "bad\nheader", "val", false);
+        sub.assert_eq(err_ctl, internal::QpackError.DecompressionFailed, "newline in name rejected");
+
+        // Valid pseudo header
+        let err_valid = internal::emit_field_checked(fields, budget, ":status", "200", false);
+        sub.assert_eq(err_valid, internal::QpackError.None, "valid :status accepted");
+        sub.assert_eq(fields.len, 1, "field emitted");
+    };
+
+    t.run("decode_qpack_section enforces RFC 9204 Post-Base index bounds abs_idx < ric") { sub =>
+        var tbl = internal::new_qpack_table(4096, 16);
+        // Insert one dynamic entry: "x-foo" = "bar" -> abs_idx = 0
+        internal::qpack_insert_literal(tbl, "x-foo", "bar");
+        sub.assert_eq(tbl.insert_count, 1, "dynamic table insert_count is 1");
+
+        // Construct section with RIC = 1, Base = 0 (S=1, DeltaBase=0 -> Base = 1 - 0 - 1 = 0)
+        // Then attempt Post-Base index 1 -> abs_idx = Base + 1 = 1 >= RIC (1)
+        // Per RFC 9204 §4.5.3, abs_idx >= ric MUST be treated as decompression error!
+        var sec: u8[..32] = [];
+        // 1. EncodedInsertCount = 1 (enc_ric for ric=1 is 2 when max_entries = 4096/32 = 128)
+        let enc_ric = internal::encode_ric(1, 4096);
+        internal::hpack_encode_int(sec, enc_ric, 8, 0x00);
+        // 2. Sign=1, DeltaBase=0 -> 0x80 | 0 = 0x80
+        sec.push(0x80);
+        // 3. Post-Base Indexed Field Line: 0001xxxx with post_idx = 1 -> 0x11
+        sec.push(0x11);
+
+        var out_fields: internal::HeaderField[>..] = [];
+        let err = internal::decode_qpack_section(tbl, sec[..], out_fields, 4096);
+        sub.assert_eq(err, internal::QpackError.DecompressionFailed, "post_idx resulting in abs_idx >= ric rejected");
+    };
+
+    t.run("decode_qpack_section accepts valid RIC >= max_dyn_abs_used + 1 per RFC 9204 §4.5.1") { sub =>
+        var tbl = internal::new_qpack_table(4096, 16);
+        // Insert two entries: abs_idx 0 ("x-first"), abs_idx 1 ("x-second")
+        internal::qpack_insert_literal(tbl, "x-first", "v1");
+        internal::qpack_insert_literal(tbl, "x-second", "v2");
+        sub.assert_eq(tbl.insert_count, 2, "dynamic table insert_count is 2");
+
+        // Section references ONLY static :status 200 (index 0)
+        // Encoder signals RIC = 2 (TotalNumberOfInserts), Base = 2 (S=0, DeltaBase=0)
+        // Per RFC 9204 §4.5.1, encoder MAY set RIC > 0 even if no dynamic entries referenced
+        var sec: u8[..32] = [];
+        let enc_ric = internal::encode_ric(2, 4096);
+        internal::hpack_encode_int(sec, enc_ric, 8, 0x00);
+        sec.push(0x00); // S=0, DeltaBase=0 -> Base = 2
+        sec.push(0xD9); // Static index 25 (:status 200)
+
+        var out_fields: internal::HeaderField[>..] = [];
+        let err = internal::decode_qpack_section(tbl, sec[..], out_fields, 4096);
+        sub.assert_eq(err, internal::QpackError.None, "RIC > 0 with static-only fields accepted per RFC 9204 §4.5.1");
+        sub.assert_eq(out_fields.len, 1, "1 field decoded");
+        sub.assert_bytes_eq(out_fields[0].name[..], ":status", "name is :status");
+        sub.assert_bytes_eq(out_fields[0].value[..], "200", "value is 200");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 27. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads
+// ----------------------------------------------------------------------------
+fn test_h3_framing_and_settings_invariants(t: lit::T&) {
+    t.run("parse_h3_settings_frame rejects reserved setting 0x00 and duplicates") { sub =>
+        // 1. Reserved setting 0x00 (from HTTP/2) MUST cause H3_SETTINGS_ERROR (RFC 9114 §7.2.4.1)
+        var payload_00: u8[..16] = [];
+        internal::quic_encode_varint(payload_00, 0x00); // Reserved identifier 0x00
+        internal::quic_encode_varint(payload_00, 100);
+
+        var st1 = wing::H3Settings { .. };
+        let err_00 = internal::parse_h3_settings_frame(payload_00[..], st1);
+        sub.assert_eq(err_00, rfc::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
+
+        // 2. Duplicate QPACK_MAX_TABLE_CAPACITY setting MUST cause H3_SETTINGS_ERROR
+        var payload_dup: u8[..32] = [];
+        internal::quic_encode_varint(payload_dup, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, 4096);
+        internal::quic_encode_varint(payload_dup, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
+        internal::quic_encode_varint(payload_dup, 8192);
+
+        var st2 = wing::H3Settings { .. };
+        let err_dup = internal::parse_h3_settings_frame(payload_dup[..], st2);
+        sub.assert_eq(err_dup, rfc::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
+
+        // 3. Invalid ENABLE_CONNECT_PROTOCOL value (must be 0 or 1)
+        var payload_conn: u8[..16] = [];
+        internal::quic_encode_varint(payload_conn, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
+        internal::quic_encode_varint(payload_conn, 2); // Invalid: only 0 or 1 allowed
+
+        var st3 = wing::H3Settings { .. };
+        let err_conn = internal::parse_h3_settings_frame(payload_conn[..], st3);
+        sub.assert_eq(err_conn, rfc::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 28. HTTP/3 Multiplexer, Unidirectional Dispatch & Trailer Defenses
+// ----------------------------------------------------------------------------
+fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
+    t.run("handle_stream_data dispatches QPACK encoder stream instructions and catches errors") { sub =>
+        let settings = wing::H3Settings { qpack_max_table_capacity: 4096, .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        // 1. Establish control stream first (Stream 2)
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        let err_c = conn.handle_stream_data(2, false, ctrl_wire[..], false);
+        sub.assert_eq(err_c, rfc::H3_ERR_NO_ERROR, "control stream established");
+
+        // 2. Open QPACK encoder stream (Stream 6) with valid Set Dynamic Table Capacity instruction (0x20 | 5-bit cap)
+        var enc_wire: u8[..64] = [];
+        internal::quic_encode_varint(enc_wire, rfc::H3_STREAM_QPACK_ENCODER);
+        internal::hpack_encode_int(enc_wire, 2048, 5, 0x20); // Capacity 2048
+        let err_enc = conn.handle_stream_data(6, false, enc_wire[..], false);
+        sub.assert_eq(err_enc, rfc::H3_ERR_NO_ERROR, "encoder stream capacity instruction processed");
+        sub.assert_eq(conn.qpack_table.capacity_bytes, 2048, "dynamic table capacity updated to 2048");
+
+        // 3. Send malformed instruction on encoder stream -> returns H3_ERR_QPACK_ENCODER_STREAM_ERROR
+        var bad_enc_wire: u8[..16] = [];
+        // Capacity larger than max_capacity_bytes (4096)
+        internal::hpack_encode_int(bad_enc_wire, 999999, 5, 0x20);
+        let err_bad_enc = conn.handle_stream_data(6, false, bad_enc_wire[..], false);
+        sub.assert_eq(err_bad_enc, rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR, "invalid encoder instruction closed connection");
+        sub.assert_eq(conn.state, internal::H3ConnState.Closed, "conn state is Closed");
+    };
+
+    t.run("handle_stream_data rejects second trailer section and DATA after trailers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        // Setup control stream
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // Stream 0: Initial response headers (200 OK)
+        var resp_hdrs: u8[..64] = [];
+        var sec1:      u8[..16] = [0x00, 0x00, 0xD9]; // RIC 0, Base 0, :status 200
+        internal::encode_h3_headers_frame(resp_hdrs, sec1[..]);
+        let err_h1 = conn.handle_stream_data(0, true, resp_hdrs[..], false);
+        sub.assert_eq(err_h1, rfc::H3_ERR_NO_ERROR, "initial 200 OK headers accepted");
+
+        // Stream 0: DATA frame
+        var data_frame: u8[..32] = [];
+        internal::encode_h3_data_frame(data_frame, "hello");
+        let err_d1 = conn.handle_stream_data(0, true, data_frame[..], false);
+        sub.assert_eq(err_d1, rfc::H3_ERR_NO_ERROR, "data frame accepted");
+
+        // Stream 0: First trailer section (x-checksum: abc)
+        var trailer1_frame: u8[..64] = [];
+        var sec_tr1:        u8[..32] = [0x00, 0x00];
+        // Literal with literal name: name "x-chk", val "1"
+        sec_tr1.push(0x25);
+        sec_tr1.append("x-chk");
+        sec_tr1.push(0x01);
+        sec_tr1.append("1");
+        internal::encode_h3_headers_frame(trailer1_frame, sec_tr1[..]);
+        let err_tr1 = conn.handle_stream_data(0, true, trailer1_frame[..], false);
+        sub.assert_eq(err_tr1, rfc::H3_ERR_NO_ERROR, "first trailer section accepted");
+
+        // 1. DATA frame AFTER trailers MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
+        var post_tr_data: u8[..32] = [];
+        internal::encode_h3_data_frame(post_tr_data, "illegal");
+        let err_post_d = conn.handle_stream_data(0, true, post_tr_data[..], false);
+        sub.assert_eq(err_post_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA after trailers rejected with H3_FRAME_UNEXPECTED");
+
+        // Reset and test second trailer section rejection
+        var conn2 = internal::new_h3_client_connection(settings);
+        conn2.handle_stream_data(2, false, ctrl_wire[..], false);
+        conn2.handle_stream_data(0, true, resp_hdrs[..], false);
+        conn2.handle_stream_data(0, true, data_frame[..], false);
+        conn2.handle_stream_data(0, true, trailer1_frame[..], false);
+
+        // 2. Second trailer section MUST cause H3_FRAME_UNEXPECTED (RFC 9114 §4.1)
+        let err_tr2 = conn2.handle_stream_data(0, true, trailer1_frame[..], false);
+        sub.assert_eq(err_tr2, rfc::H3_ERR_FRAME_UNEXPECTED, "second trailer section rejected with H3_FRAME_UNEXPECTED");
+    };
+
+    t.run("handle_stream_data validates 3-digit status code and trailer disallowed headers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        // Setup control stream
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // 1. Status code with 4 digits e.g. "0200" MUST fail
+        var sec_bad_st: u8[..32] = [0x00, 0x00];
+        // Literal with static name index 24 (:status) encoded with 4-bit prefix
+        internal::hpack_encode_int(sec_bad_st, 24, 4, 0x50);
+        sec_bad_st.push(4); // len 4
+        sec_bad_st.append("0200");
+
+        var bad_st_frame: u8[..64] = [];
+        internal::encode_h3_headers_frame(bad_st_frame, sec_bad_st[..]);
+        let err_st = conn.handle_stream_data(0, true, bad_st_frame[..], false);
+        sub.assert_eq(err_st, rfc::H3_ERR_GENERAL_PROTOCOL, "4-digit status code rejected");
+
+        // 2. Disallowed content-length in trailer section MUST fail
+        var conn3 = internal::new_h3_client_connection(settings);
+        conn3.handle_stream_data(2, false, ctrl_wire[..], false);
+        var sec_ok:  u8[..16] = [0x00, 0x00, 0xD9]; // :status 200
+        var ok_hdrs: u8[..32] = [];
+        internal::encode_h3_headers_frame(ok_hdrs, sec_ok[..]);
+        conn3.handle_stream_data(0, true, ok_hdrs[..], false);
+
+        var sec_cl_tr: u8[..32] = [0x00, 0x00];
+        // Literal with static name index 4 (content-length)
+        sec_cl_tr.push(0x50 | 4);
+        sec_cl_tr.push(2);
+        sec_cl_tr.append("10");
+
+        var cl_tr_frame: u8[..64] = [];
+        internal::encode_h3_headers_frame(cl_tr_frame, sec_cl_tr[..]);
+        let err_cl_tr = conn3.handle_stream_data(0, true, cl_tr_frame[..], false);
+        sub.assert_eq(err_cl_tr, rfc::H3_ERR_GENERAL_PROTOCOL, "content-length in trailer rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 29. HTTP/3 Stream Data Host vs :authority Conflict & Host Syntax
+// ----------------------------------------------------------------------------
+fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
+    t.run("H3 request: reject conflicting :authority and host headers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        // Establish control stream (Stream 2)
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // Stream 0: Request headers with :authority: "example.com" and host: "evil.com"
+        var sec: u8[..256] = [0x00, 0x00]; // RIC 0, Base 0
+        internal::encode_qpack_field(sec, ":method", "GET", false);
+        internal::encode_qpack_field(sec, ":scheme", "https", false);
+        internal::encode_qpack_field(sec, ":path", "/", false);
+        internal::encode_qpack_field(sec, ":authority", "example.com", false);
+        internal::encode_qpack_field(sec, "host", "evil.com", false);
+
+        var req_frame: u8[..256] = [];
+        internal::encode_h3_headers_frame(req_frame, sec[..]);
+
+        let err = conn.handle_stream_data(0, true, req_frame[..], false);
+        sub.assert_eq(err, rfc::H3_ERR_GENERAL_PROTOCOL, "conflicting :authority and host MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("H3 request: reject duplicate host headers and invalid host syntax") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // Duplicate host headers
+        var sec_dup: u8[..256] = [0x00, 0x00];
+        internal::encode_qpack_field(sec_dup, ":method", "GET", false);
+        internal::encode_qpack_field(sec_dup, ":scheme", "https", false);
+        internal::encode_qpack_field(sec_dup, ":path", "/", false);
+        internal::encode_qpack_field(sec_dup, "host", "example.com", false);
+        internal::encode_qpack_field(sec_dup, "host", "example.com", false);
+
+        var dup_frame: u8[..256] = [];
+        internal::encode_h3_headers_frame(dup_frame, sec_dup[..]);
+
+        let err_dup = conn.handle_stream_data(0, true, dup_frame[..], false);
+        sub.assert_eq(err_dup, rfc::H3_ERR_GENERAL_PROTOCOL, "duplicate host headers MUST return H3_ERR_GENERAL_PROTOCOL");
+
+        // Invalid host syntax (containing '/')
+        var conn2 = internal::new_h3_server_connection(settings);
+        conn2.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        var sec_bad: u8[..256] = [0x00, 0x00];
+        internal::encode_qpack_field(sec_bad, ":method", "GET", false);
+        internal::encode_qpack_field(sec_bad, ":scheme", "https", false);
+        internal::encode_qpack_field(sec_bad, ":path", "/", false);
+        internal::encode_qpack_field(sec_bad, "host", "example.com/evil", false);
+
+        var bad_frame: u8[..256] = [];
+        internal::encode_h3_headers_frame(bad_frame, sec_bad[..]);
+
+        let err_bad = conn2.handle_stream_data(0, true, bad_frame[..], false);
+        sub.assert_eq(err_bad, rfc::H3_ERR_GENERAL_PROTOCOL, "host with slash MUST return H3_ERR_GENERAL_PROTOCOL");
+
+        // Empty :authority
+        var conn3 = internal::new_h3_server_connection(settings);
+        conn3.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        var sec_empty: u8[..256] = [0x00, 0x00];
+        internal::encode_qpack_field(sec_empty, ":method", "GET", false);
+        internal::encode_qpack_field(sec_empty, ":scheme", "https", false);
+        internal::encode_qpack_field(sec_empty, ":path", "/", false);
+        internal::encode_qpack_field(sec_empty, ":authority", "", false);
+
+        var empty_frame: u8[..256] = [];
+        internal::encode_h3_headers_frame(empty_frame, sec_empty[..]);
+
+        let err_empty = conn3.handle_stream_data(0, true, empty_frame[..], false);
+        sub.assert_eq(err_empty, rfc::H3_ERR_GENERAL_PROTOCOL, "empty :authority MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("H3 request: matching case-insensitive :authority and host succeed") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        var sec_ok: u8[..256] = [0x00, 0x00];
+        internal::encode_qpack_field(sec_ok, ":method", "GET", false);
+        internal::encode_qpack_field(sec_ok, ":scheme", "https", false);
+        internal::encode_qpack_field(sec_ok, ":path", "/", false);
+        internal::encode_qpack_field(sec_ok, ":authority", "Example.COM", false);
+        internal::encode_qpack_field(sec_ok, "host", "example.com", false);
+
+        var ok_frame: u8[..256] = [];
+        internal::encode_h3_headers_frame(ok_frame, sec_ok[..]);
+
+        let err_ok = conn.handle_stream_data(0, true, ok_frame[..], false);
+        sub.assert_eq(err_ok, rfc::H3_ERR_NO_ERROR, "case-insensitive matching authority and host accepted");
+    };
+}
+
+// Main Runner
+
+// --- Component: regress_issues_batch17 ---
+// Phase 17 RED test suite: Reducing Load, DoS Mitigation, RFC Conformance,
+// and Protocol Invariants.
+//
+// 1. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx) (RFC 9114 §4.1, Go #81642)
+// 2. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection (RFC 9114 §4.2, §4.3, Go #80683)
+// 3. HTTP/2 :status Pseudo-Header Validation & 101 Prohibition (RFC 9113 §8.3.2, §8.8)
+// 4. HTTP/2 DATA Frame Rejection on Streams with Trailers Received (RFC 9113 §8.1)
+// 5. X.509 DNS Name Constraints Wildcard & Empty/Leading Dot Validation (RFC 5280 §4.2.1.10)
+// 6. X.509 ASN.1 Time Parsing Bounds & Overflow Defense (RFC 5280 §4.1.2.5, OpenSSL #31686)
+
+// ----------------------------------------------------------------------------
+// 30. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx)
+// ----------------------------------------------------------------------------
+fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
+    t.run("H3: reject DATA frame on stream with 204 No Content") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        // Control stream setup
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // 1. Send HEADERS frame with :status = 204
+        var qpack_204: u8[..32] = [];
+        qpack_204.push(0x00); // Required Insert Count = 0
+        qpack_204.push(0x00); // Delta Base = 0
+        internal::encode_qpack_field(qpack_204, ":status", "204", false);
+
+        var wire_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_h, qpack_204[..]);
+
+        let err_h = conn.handle_stream_data(0, true, wire_h[..], false);
+        sub.assert_eq(err_h, rfc::H3_ERR_NO_ERROR, "headers frame accepted");
+        sub.assert_eq(conn.streams[0].status_code, 204, "stream status 204 recorded");
+
+        // 2. Peer attempts to send DATA frame on 204 response
+        var wire_d: u8[..32] = [];
+        internal::encode_h3_data_frame(wire_d, "unexpected body");
+
+        let err_d = conn.handle_stream_data(0, true, wire_d[..], true);
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 204 status MUST return H3_ERR_FRAME_UNEXPECTED");
+    };
+
+    t.run("H3: reject DATA frame on stream with 304 Not Modified") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        var qpack_304: u8[..32] = [];
+        qpack_304.push(0x00);
+        qpack_304.push(0x00);
+        internal::encode_qpack_field(qpack_304, ":status", "304", false);
+
+        var wire_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_h, qpack_304[..]);
+
+        conn.handle_stream_data(4, true, wire_h[..], false);
+
+        var wire_d: u8[..32] = [];
+        internal::encode_h3_data_frame(wire_d, "unexpected body");
+
+        let err_d = conn.handle_stream_data(4, true, wire_d[..], true);
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 304 status MUST return H3_ERR_FRAME_UNEXPECTED");
+    };
+
+    t.run("H3: reject DATA frame on stream with 103 Early Hints") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        var qpack_103: u8[..32] = [];
+        qpack_103.push(0x00);
+        qpack_103.push(0x00);
+        internal::encode_qpack_field(qpack_103, ":status", "103", false);
+
+        var wire_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_h, qpack_103[..]);
+
+        conn.handle_stream_data(8, true, wire_h[..], false);
+
+        var wire_d: u8[..32] = [];
+        internal::encode_h3_data_frame(wire_d, "unexpected body");
+
+        let err_d = conn.handle_stream_data(8, true, wire_d[..], true);
+        sub.assert_eq(err_d, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA frame on 1xx status MUST return H3_ERR_FRAME_UNEXPECTED");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 31. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection
+// ----------------------------------------------------------------------------
+fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
+    t.run("H3: reject prohibited framing headers in trailers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // 1. Initial 200 response headers
+        var qpack_init: u8[..32] = [];
+        qpack_init.push(0x00);
+        qpack_init.push(0x00);
+        internal::encode_qpack_field(qpack_init, ":status", "200", false);
+
+        var wire_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_h, qpack_init[..]);
+        conn.handle_stream_data(0, true, wire_h[..], false);
+
+        // 2. Trailer with prohibited transfer-encoding
+        var qpack_te: u8[..32] = [];
+        qpack_te.push(0x00);
+        qpack_te.push(0x00);
+        internal::encode_qpack_field(qpack_te, "transfer-encoding", "chunked", false);
+
+        var wire_te: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_te, qpack_te[..]);
+
+        let err_te = conn.handle_stream_data(0, true, wire_te[..], true);
+        sub.assert_eq(err_te, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
+
+        // 3. New connection: trailer with prohibited connection: close
+        var conn2 = internal::new_h3_client_connection(settings);
+        conn2.handle_stream_data(2, false, ctrl_wire[..], false);
+        conn2.handle_stream_data(0, true, wire_h[..], false);
+
+        var qpack_conn: u8[..32] = [];
+        qpack_conn.push(0x00);
+        qpack_conn.push(0x00);
+        internal::encode_qpack_field(qpack_conn, "connection", "close", false);
+
+        var wire_conn: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_conn, qpack_conn[..]);
+
+        let err_conn = conn2.handle_stream_data(0, true, wire_conn[..], true);
+        sub.assert_eq(err_conn, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with connection MUST return H3_ERR_GENERAL_PROTOCOL");
+
+        // 4. New connection: trailer with prohibited upgrade
+        var conn3 = internal::new_h3_client_connection(settings);
+        conn3.handle_stream_data(2, false, ctrl_wire[..], false);
+        conn3.handle_stream_data(0, true, wire_h[..], false);
+
+        var qpack_upg: u8[..32] = [];
+        qpack_upg.push(0x00);
+        qpack_upg.push(0x00);
+        internal::encode_qpack_field(qpack_upg, "upgrade", "websocket", false);
+
+        var wire_upg: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_upg, qpack_upg[..]);
+
+        let err_upg = conn3.handle_stream_data(0, true, wire_upg[..], true);
+        sub.assert_eq(err_upg, rfc::H3_ERR_GENERAL_PROTOCOL, "trailer with upgrade MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("QPACK: reject field values with NUL, CR, or LF") { sub =>
+        let tbl = internal::new_qpack_table(0, 0);
+        var fields: internal::HeaderField[>..] = [];
+
+        // Literal with NUL byte in value: "hello\0world"
+        var nul_val_wire: u8[..32] = [];
+        nul_val_wire.push(0x00); // ric 0
+        nul_val_wire.push(0x00); // delta base 0
+        internal::encode_qpack_field(nul_val_wire, "x-custom", "hello\0world", false);
+
+        let err_nul = internal::decode_qpack_section(tbl, nul_val_wire[..], fields);
+        sub.assert_eq(err_nul, internal::QpackError.DecompressionFailed, "field value with NUL MUST return DecompressionFailed");
+
+        // Literal with CR in value: "hello\rworld"
+        var cr_val_wire: u8[..32] = [];
+        cr_val_wire.push(0x00);
+        cr_val_wire.push(0x00);
+        internal::encode_qpack_field(cr_val_wire, "x-custom", "hello\rworld", false);
+
+        let err_cr = internal::decode_qpack_section(tbl, cr_val_wire[..], fields);
+        sub.assert_eq(err_cr, internal::QpackError.DecompressionFailed, "field value with CR MUST return DecompressionFailed");
+
+        // Literal with LF in value: "hello\nworld"
+        var lf_val_wire: u8[..32] = [];
+        lf_val_wire.push(0x00);
+        lf_val_wire.push(0x00);
+        internal::encode_qpack_field(lf_val_wire, "x-custom", "hello\nworld", false);
+
+        let err_lf = internal::decode_qpack_section(tbl, lf_val_wire[..], fields);
+        sub.assert_eq(err_lf, internal::QpackError.DecompressionFailed, "field value with LF MUST return DecompressionFailed");
+    };
+}
+
+// --- Component: regress_issues_batch18 ---
+// Phase 18 RED test suite: Reducing Load, DoS Mitigation, RFC Conformance,
+// and Protocol Invariants.
+//
+// 1. HTTP/3 Server Request Trailers Invariants (RFC 9114 §4.3)
+// 2. HTTP/3 Empty DATA Frame Flooding Defense (CVE-2019-9518, RFC 9114 §10.5)
+// 3. X.509 Basic Constraints Negative or Non-CA PathLen Defense (RFC 5280 §4.2.1.9, OpenSSL #32374)
+// 4. X.509 Name Constraints Subtree Base dNSName Validation (RFC 5280 §4.2.1.10, OpenSSL #31686)
+
+// ----------------------------------------------------------------------------
+// 32. HTTP/3 Server Request Trailers Invariants (RFC 9114 §4.3)
+// ----------------------------------------------------------------------------
+fn test_h3_server_request_trailers_invariants(t: lit::T&) {
+    t.run("H3 Server: reject pseudo-headers in request trailers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        // Client control stream setup on stream 3 (unidirectional client stream)
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(3, false, ctrl_wire[..], false);
+
+        // 1. Client sends initial request HEADERS on stream 0
+        var qpack_req: u8[..128] = [];
+        qpack_req.push(0x00); // ric 0
+        qpack_req.push(0x00); // delta base 0
+        internal::encode_qpack_field(qpack_req, ":method", "POST", false);
+        internal::encode_qpack_field(qpack_req, ":scheme", "https", false);
+        internal::encode_qpack_field(qpack_req, ":authority", "example.com", false);
+        internal::encode_qpack_field(qpack_req, ":path", "/upload", false);
+
+        var wire_req: u8[..128] = [];
+        internal::encode_h3_headers_frame(wire_req, qpack_req[..]);
+        let err_req = conn.handle_stream_data(0, true, wire_req[..], false);
+        sub.assert_eq(err_req, rfc::H3_ERR_NO_ERROR, "initial request headers accepted");
+
+        // 2. Client sends DATA frame on stream 0
+        var wire_d: u8[..32] = [];
+        internal::encode_h3_data_frame(wire_d, "payload-data");
+        let err_d = conn.handle_stream_data(0, true, wire_d[..], false);
+        sub.assert_eq(err_d, rfc::H3_ERR_NO_ERROR, "data frame accepted");
+
+        // 3. Client sends trailers containing forbidden pseudo-header :path
+        var qpack_tr: u8[..64] = [];
+        qpack_tr.push(0x00);
+        qpack_tr.push(0x00);
+        internal::encode_qpack_field(qpack_tr, ":path", "/forbidden", false);
+
+        var wire_tr: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_tr, qpack_tr[..]);
+        let err_tr = conn.handle_stream_data(0, true, wire_tr[..], true);
+        sub.assert_eq(err_tr, rfc::H3_ERR_GENERAL_PROTOCOL, "request trailers with pseudo-header MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("H3 Server: reject prohibited framing headers in request trailers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(3, false, ctrl_wire[..], false);
+
+        var qpack_req: u8[..128] = [];
+        qpack_req.push(0x00);
+        qpack_req.push(0x00);
+        internal::encode_qpack_field(qpack_req, ":method", "POST", false);
+        internal::encode_qpack_field(qpack_req, ":scheme", "https", false);
+        internal::encode_qpack_field(qpack_req, ":authority", "example.com", false);
+        internal::encode_qpack_field(qpack_req, ":path", "/upload", false);
+
+        var wire_req: u8[..128] = [];
+        internal::encode_h3_headers_frame(wire_req, qpack_req[..]);
+        conn.handle_stream_data(0, true, wire_req[..], false);
+
+        // Client sends trailers with prohibited transfer-encoding
+        var qpack_te: u8[..64] = [];
+        qpack_te.push(0x00);
+        qpack_te.push(0x00);
+        internal::encode_qpack_field(qpack_te, "transfer-encoding", "chunked", false);
+
+        var wire_te: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_te, qpack_te[..]);
+        let err_te = conn.handle_stream_data(0, true, wire_te[..], true);
+        sub.assert_eq(err_te, rfc::H3_ERR_GENERAL_PROTOCOL, "request trailers with transfer-encoding MUST return H3_ERR_GENERAL_PROTOCOL");
+    };
+
+    t.run("H3 Server: reject DATA frame or extra HEADERS after request trailers") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_server_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(3, false, ctrl_wire[..], false);
+
+        var qpack_req: u8[..128] = [];
+        qpack_req.push(0x00);
+        qpack_req.push(0x00);
+        internal::encode_qpack_field(qpack_req, ":method", "POST", false);
+        internal::encode_qpack_field(qpack_req, ":scheme", "https", false);
+        internal::encode_qpack_field(qpack_req, ":authority", "example.com", false);
+        internal::encode_qpack_field(qpack_req, ":path", "/upload", false);
+
+        var wire_req: u8[..128] = [];
+        internal::encode_h3_headers_frame(wire_req, qpack_req[..]);
+        conn.handle_stream_data(0, true, wire_req[..], false);
+
+        // Valid trailer: x-checksum
+        var qpack_tr: u8[..64] = [];
+        qpack_tr.push(0x00);
+        qpack_tr.push(0x00);
+        internal::encode_qpack_field(qpack_tr, "x-checksum", "deadbeef", false);
+
+        var wire_tr: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_tr, qpack_tr[..]);
+        let err_tr = conn.handle_stream_data(0, true, wire_tr[..], false);
+        sub.assert_eq(err_tr, rfc::H3_ERR_NO_ERROR, "valid request trailers accepted");
+
+        // Attempt 1: Peer sends DATA frame after trailers
+        var wire_d: u8[..32] = [];
+        internal::encode_h3_data_frame(wire_d, "extra data");
+        let err_data = conn.handle_stream_data(0, true, wire_d[..], false);
+        sub.assert_eq(err_data, rfc::H3_ERR_FRAME_UNEXPECTED, "DATA after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
+
+        // Attempt 2 (new connection): Peer sends a 3rd HEADERS frame after trailers
+        var conn2 = internal::new_h3_server_connection(settings);
+        conn2.handle_stream_data(3, false, ctrl_wire[..], false);
+        conn2.handle_stream_data(0, true, wire_req[..], false);
+        conn2.handle_stream_data(0, true, wire_tr[..], false);
+
+        var wire_extra_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_extra_h, qpack_tr[..]);
+        let err_extra_h = conn2.handle_stream_data(0, true, wire_extra_h[..], true);
+        sub.assert_eq(err_extra_h, rfc::H3_ERR_FRAME_UNEXPECTED, "HEADERS after request trailers MUST return H3_ERR_FRAME_UNEXPECTED");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 33. HTTP/3 Empty DATA Frame Flooding Defense (CVE-2019-9518, RFC 9114 §10.5)
+// ----------------------------------------------------------------------------
+fn test_h3_empty_frame_flooding(t: lit::T&) {
+    t.run("H3: reject flood of empty DATA frames (> 32 streak)") { sub =>
+        let settings = wing::H3Settings { .. };
+        var conn = internal::new_h3_client_connection(settings);
+
+        var ctrl_wire: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_wire, settings);
+        conn.handle_stream_data(2, false, ctrl_wire[..], false);
+
+        // Initial 200 response headers
+        var qpack_resp: u8[..32] = [];
+        qpack_resp.push(0x00);
+        qpack_resp.push(0x00);
+        internal::encode_qpack_field(qpack_resp, ":status", "200", false);
+
+        var wire_h: u8[..64] = [];
+        internal::encode_h3_headers_frame(wire_h, qpack_resp[..]);
+        conn.handle_stream_data(0, true, wire_h[..], false);
+
+        // Prepare empty DATA frame
+        var wire_empty: u8[..16] = [];
+        internal::encode_h3_data_frame(wire_empty, "");
+
+        var err: u64 = rfc::H3_ERR_NO_ERROR;
+        for i in 32 {
+            err = conn.handle_stream_data(0, true, wire_empty[..], false);
+            sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "empty data frame within budget accepted");
+        }
+
+        // The 33rd consecutive empty DATA frame triggers flood defense
+        err = conn.handle_stream_data(0, true, wire_empty[..], false);
+        sub.assert_eq(err, rfc::H3_ERR_EXCESSIVE_LOAD, "empty data frame exceeding streak MUST return H3_ERR_EXCESSIVE_LOAD");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/3 Framing, QPACK, and WebTransport Verification Suite", lit::Verbosity.Verbose);
 
@@ -2031,6 +3066,21 @@ fn main() {
     lit::run_case(runner, "16. HTTP/3 Bug Hunter Audit Regressions (F001-F006)", test_h3_audit_regressions);
     lit::run_case(runner, "17. nghttp3 Vendor Conformance Vectors", test_nghttp3_vendor_conformance);
     lit::run_case(runner, "18. nghttp3 Control Stream, SETTINGS, GOAWAY & Request Ordering", test_nghttp3_conn_and_http_semantics);
+    lit::run_case(runner, "19. F009 Alt-Svc Slot Prioritization & Backoff Saturation", test_f009_altsvc_slot_prioritization_and_backoff_saturation);
+    lit::run_case(runner, "20. RFC 9114 §4.2: QPACK Uppercase Literal Field Names", test_qpack_uppercase_literal_field_name_rejection);
+    lit::run_case(runner, "21. RFC 9114 §6.2.1 & Go #78102: Duplicate HTTP/3 Control Stream Rejection", test_h3_duplicate_control_stream_rejection);
+    lit::run_case(runner, "22. RFC 9114 §4.3: HTTP/3 / QPACK Duplicate Pseudo-Headers & Order Invariants", test_h3_pseudo_header_invariants);
+    lit::run_case(runner, "23. HTTP/3 unknown pseudo-header & CTL character rejection (http3/connection.goose)", test_h3_pseudo_header_unknown_and_ctl);
+    lit::run_case(runner, "24. Alt-Svc oversized proto/host/endpoints capacity safety (http/altsvc.goose)", test_altsvc_oversized_capacity_safety);
+    lit::run_case(runner, "25. HTTP/3 & QPACK RFC 9114 / RFC 9204 (http3/*)", test_h3_and_qpack_rfc9114_rfc9204);
+    lit::run_case(runner, "26. QPACK Modular RIC, Post-Base Bounds & Bare-Colon Token Sanitization", test_qpack_invariants_and_token_defenses);
+    lit::run_case(runner, "27. HTTP/3 Framing, Reserved 0x00 Setting & Malformed Payloads", test_h3_framing_and_settings_invariants);
+    lit::run_case(runner, "28. HTTP/3 Multiplexer, Unidirectional Dispatch & Trailer Defenses", test_h3_multiplexer_and_stream_defenses);
+    lit::run_case(runner, "29. HTTP/3 Stream Data Host vs :authority Conflict & Host Syntax", test_h3_host_authority_conflict_and_syntax);
+    lit::run_case(runner, "30. HTTP/3 DATA Frame Rejection on Bodyless Status Codes (204, 304, 1xx)", test_h3_bodyless_status_data_rejection);
+    lit::run_case(runner, "31. HTTP/3 Prohibited Trailer Framing Headers & QPACK NUL/CR/LF Injection", test_h3_prohibited_trailers_and_qpack_nul_rejection);
+    lit::run_case(runner, "32. HTTP/3 Server Request Trailers Invariants", test_h3_server_request_trailers_invariants);
+    lit::run_case(runner, "33. HTTP/3 Empty DATA Frame Flooding Defense", test_h3_empty_frame_flooding);
 
     let ok = lit::finish(runner);
     assert(ok);

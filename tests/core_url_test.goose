@@ -1161,6 +1161,9 @@ fn test_dual_mode_resolution_rfc_vs_endpoint(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Case 6: Large & Dynamic URLs (UrlView and 2048-Byte Buffer)
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 6. Large & Dynamic URLs (UrlView and 2048-Byte Buffer)
+// ----------------------------------------------------------------------------
 fn test_dynamic_and_large_urls(t: lit::T&) {
     t.run("Case 6.1: 2048-Byte Buffer for Large URLs with JWT Query") { sub =>
         // Construct a 1200-byte URL with a large query token
@@ -1215,6 +1218,9 @@ fn test_dynamic_and_large_urls(t: lit::T&) {
 
 // ----------------------------------------------------------------------------
 // Case 7: RFC 3986 §5.2.4 & WHATWG §4.4 Standards Verification (Trailing Dots, Slashes, Windows Drives, Multicast Zone IDs)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 7. RFC 3986 & WHATWG Standards Edge Cases
 // ----------------------------------------------------------------------------
 fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
     t.run("Case 7.1: WHATWG §4.4 Bare Windows Drive Trailing Slash & Boundary Normalization") { sub =>
@@ -1360,13 +1366,12 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: core_url_security ---
 // Tests for URL and query string parsing edge cases.
 
+// ----------------------------------------------------------------------------
+// 8. Semicolon Query Splitting Defense (CVE-2021-31525)
+// ----------------------------------------------------------------------------
 fn test_semicolon_query_splitting_defense(t: lit::T&) {
     t.run("QUERY-01: Semicolon is treated as literal content, NOT parameter separator (CVE-2021-31525)") { sub =>
         // In naive implementations, before 1.17, "a=1;b=2" was split into two parameters a=1 and b=2.
@@ -1432,6 +1437,9 @@ fn test_semicolon_query_splitting_defense(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. IPv6 Host Security Bypasses (CVE-2026-25679 & CVE-2025-47912)
+// ----------------------------------------------------------------------------
 fn test_ipv6_host_security_bypasses(t: lit::T&) {
     t.run("IPV6-01: Bracketed IPv6 not at start of host rejection (CVE-2026-25679)") { sub =>
         // Host with prefix before bracket: bad[::1]
@@ -1466,6 +1474,9 @@ fn test_ipv6_host_security_bypasses(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 10. Port Number Boundaries & Overflow Defense
+// ----------------------------------------------------------------------------
 fn test_port_number_boundaries_and_overflow(t: lit::T&) {
     t.run("PORT-01: Port > 65535 rejection ") { sub =>
         // Boundary: 65536
@@ -1501,6 +1512,9 @@ fn test_port_number_boundaries_and_overflow(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. Path Traversal & Userinfo Isolation
+// ----------------------------------------------------------------------------
 fn test_path_traversal_and_userinfo(t: lit::T&) {
     t.run("TRAV-01: Mixed percent-encoded dot segments sanitization ") { sub =>
         // .%2e ("..")
@@ -1535,6 +1549,467 @@ fn test_path_traversal_and_userinfo(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 12. Go #78948 / CVE-2026-39825: Query Parameter Truncation & Smuggling
+// ----------------------------------------------------------------------------
+fn test_query_param_truncation_smuggling(t: lit::T&) {
+    t.run("Parameters exceeding 32 must not be silently dropped without indication") { sub =>
+        // Ensure wing native symbols are linked
+        var dummy: u8[..4] = "test";
+        wing::swar_to_lower(dummy[..]);
+
+        // Construct a query string with 35 parameters where the 33rd parameter is a security-sensitive flag.
+        // In fixed-capacity parsers (capacity = 32), parameters beyond 32 are silently ignored.
+        // Downstream backends parsing up to 1024 parameters see admin=true, but the proxy/WAF does not!
+        var raw_query: u8[..1024] = "?";
+        for i in 32 {
+            raw_query.append("p");
+            var num_buf: u8[..8] = [];
+            format(num_buf, i);
+            raw_query.append(num_buf[..]);
+            raw_query.append("=val&");
+        }
+        raw_query.append("admin=true&role=superuser&access=full");
+
+        let q = core::parse_query_params(raw_query[..]);
+
+        // A secure parser must either:
+        // (a) successfully parse parameters beyond 32, OR
+        // (b) report/fail on truncated queries so hidden parameters cannot be smuggled.
+        sub.assert_true(core::has_query_param(q, "admin"), "Critical parameter 'admin' after 32nd item must NOT be silently lost");
+        sub.assert_bytes_eq(core::get_query_param(q, "admin"), "true", "Parameter 'admin' must have value 'true'");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 13. Go #78760 / CVE-2026-39821: Pure ASCII Punycode URL Host Rejection
+// ----------------------------------------------------------------------------
+fn test_pure_ascii_punycode_url_host_rejection(t: lit::T&) {
+    t.run("URL with pure ASCII Punycode host xn--test-.com must be rejected (Go #78760)") { sub =>
+        // Punycode label "xn--test-" contains no non-ASCII delta.
+        // Per UTS 46 Revision 33 & Go #78760, accepting pure ASCII Punycode allows domain validation bypasses.
+        let u = core::new_url("http://xn--test-.com/api");
+        sub.assert_false(u.valid, "URL with pure ASCII Punycode host xn--test-.com MUST be marked invalid");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 14. Go #77108 / CVE-2025-61726: Query Parameter DoS Guard Against Oversized Tokens
+// ----------------------------------------------------------------------------
+fn test_query_param_oversized_token_dos_guard(t: lit::T&) {
+    t.run("validate_query_param_count must reject query strings with tokens > 256 bytes") { sub =>
+        // To prevent fixed-capacity array crashes in parse_query_params (u8[..256] cap),
+        // query validation before parsing MUST check individual parameter lengths (Go #77108).
+        // A single 300-byte token in query string without & passes validate_query_param_count(query, 1024),
+        // but crashes the server parser if length checks are missing!
+        var raw_query: u8[..600] = "?token=";
+        for i in 300 {
+            raw_query.push('A');
+        }
+
+        // The query validator should detect that an individual token exceeds the maximum safe parameter buffer (256 bytes)
+        let is_valid = core::validate_query_param_count(raw_query[..], 1024);
+        sub.assert_false(is_valid, "validate_query_param_count must reject oversized tokens > 256 bytes to prevent parser array abort");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 15. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed IP-Literal Host
+// ----------------------------------------------------------------------------
+fn test_malformed_ip_literal_host_rejection(t: lit::T&) {
+    t.run("Empty IP-literal Host '[]' must be rejected with 400 Bad Request") { sub =>
+        // RFC 9112 §3.2 & RFC 3986 §3.2.2: Host header with empty brackets "[]"
+        // is structurally invalid and must be rejected by the server parser.
+        var req = wing::new_request("GET", "/");
+        let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: []\r\n\r\n";
+        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        sub.assert_false(ok, "Host: [] must be rejected per RFC 3986 §3.2.2 and Go #78172");
+    };
+
+    t.run("Unclosed bracket IP-literal Host '[::1' must be rejected") { sub =>
+        var req = wing::new_request("GET", "/");
+        let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: [::1\r\n\r\n";
+        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        sub.assert_false(ok, "Host: [::1 must be rejected per RFC 3986 §3.2.2 and Go #78172");
+    };
+
+    t.run("Invalid IP-literal characters '[invalid_host]' must be rejected") { sub =>
+        var req = wing::new_request("GET", "/");
+        let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: [invalid_host]\r\n\r\n";
+        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        sub.assert_false(ok, "Host: [invalid_host] must be rejected per RFC 3986 §3.2.2 and Go #78172");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 16. Go #80282 & RFC 3986 §5.2.4: Deep Path Dot-Segment Collapse Truncation
+// ----------------------------------------------------------------------------
+fn test_deep_path_dot_segment_collapse(t: lit::T&) {
+    t.run("Paths deeper than 64 segments must correctly pop with '..'") { sub =>
+        // In core/url/parser.goose:925, seg_starts has fixed capacity 64:
+        //   var seg_starts: i32[..64] = [];
+        // When normalizing a path with 65 segments followed by '/leaf/..',
+        // segment 65 cannot be pushed to seg_starts. A subsequent '..' pops
+        // to seg_starts[63], obliterating segments 64 and 65 entirely!
+        var raw_url: u8[..2000] = "http://example.com";
+        for i in 65 {
+            raw_url.append("/d");
+        }
+        raw_url.append("/leaf/..");
+
+        let u = core::new_url(raw_url[..]);
+        let p = core::pathname(u);
+
+        // Per RFC 3986 §5.2.4, /leaf/.. must pop only /leaf, preserving all 65 /d segments.
+        // It must end with "/d/" (dot-segment pop retains directory context) and retain all 65 segments.
+        sub.assert_true(core::ends_with(p, "/d/"), "Deep path with >64 segments must preserve segment 65 after '..' pop");
+        sub.assert_eq(p.len, 131, "Path must retain all 65 segments (131 bytes)");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 17. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID %25 Acceptance
+// ----------------------------------------------------------------------------
+fn test_scoped_ipv6_link_local_url_acceptance(t: lit::T&) {
+    t.run("URL with RFC 6874 percent-encoded Zone ID [fe80::1%25eth0] must be valid") { sub =>
+        // RFC 6874 Section 2:
+        //   IP-literal = "[" IPv6address "%25" ZoneID "]"
+        // A link-local scoped IPv6 literal with percent-encoded '%25' zone ID is standard
+        // per RFC 6874 and WHATWG URL standard.
+        // In core/url/parser.goose, parse_and_compress_ipv6 rejects any '%' token,
+        // causing valid scoped link-local URLs to be marked invalid!
+        let u = core::new_url("http://[fe80::1%25eth0]:8080/api");
+        sub.assert_true(u.valid, "Scoped IPv6 URL with %25 Zone ID must be valid per RFC 6874 §2 and Go #62235");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 18. Go #78569 & CVE-2026-25679 follow-up: parse_url_view Trailing Garbage on IPv6 Brackets
+// ----------------------------------------------------------------------------
+fn test_parse_url_view_ipv6_bracket_trailing_garbage(t: lit::T&) {
+    t.run("parse_url_view must reject trailing host garbage after closing bracket [::1]evil.com") { sub =>
+        let view, err = core::parse_url_view("http://[::1]evil.com/api");
+        sub.assert_false(view.valid, "parse_url_view MUST reject host with trailing garbage after bracket [::1]evil.com (Go #78569)");
+        sub.assert_true(err != core::UrlParseError.None, "Must return parse error for malformed IPv6 host");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 19. RFC 3986 §3.2.2 & Go #75678 (CVE-2025-47912): parse_url_view Non-IPv6 Bracket Rejection
+// ----------------------------------------------------------------------------
+fn test_parse_url_view_non_ipv6_bracketed_host(t: lit::T&) {
+    t.run("parse_url_view must reject bracketed domain name [google.com]") { sub =>
+        // RFC 3986 Section 3.2.2:
+        // IP-literal = "[" ( IPv6address / IPvFuture ) "]"
+        // Hostnames and IPv4 addresses MUST NOT be enclosed in square brackets.
+        // Currently, parse_url_view accepts 'http://[google.com]/path' with view.valid == true!
+        let view, err = core::parse_url_view("http://[google.com]/path");
+        sub.assert_false(view.valid, "parse_url_view MUST reject hostname in square brackets [google.com] (Go #75678 / CVE-2025-47912)");
+        sub.assert_true(err != core::UrlParseError.None, "Must return parse error for bracketed hostname");
+    };
+
+    t.run("parse_url_view must reject bracketed IPv4 address [127.0.0.1]") { sub =>
+        let view_ip, err_ip = core::parse_url_view("http://[127.0.0.1]/path");
+        sub.assert_false(view_ip.valid, "parse_url_view MUST reject IPv4 address in square brackets [127.0.0.1]");
+        sub.assert_true(err_ip != core::UrlParseError.None, "Must return parse error for bracketed IPv4 address");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 20. RFC 3986 §2 / RFC 9112 §3.2 & CVE-2023-26159: CRLF in URL View Host and Path
+// ----------------------------------------------------------------------------
+fn test_parse_url_view_crlf_rejection(t: lit::T&) {
+    t.run("parse_url_view must reject unencoded CRLF in host") { sub =>
+        // Unencoded CRLF in URL host enables HTTP request smuggling and host header injection.
+        let view, err = core::parse_url_view("http://evil\r\n.com/path");
+        sub.assert_false(view.valid, "parse_url_view MUST reject CRLF in host (CVE-2023-26159)");
+        sub.assert_true(err != core::UrlParseError.None, "Must return parse error for CRLF in host");
+    };
+
+    t.run("parse_url_view must reject unencoded CRLF in path") { sub =>
+        // Unencoded CRLF in URL path enables HTTP request line splitting and header injection.
+        let view, err = core::parse_url_view("http://example.com/path\r\nInjected-Header: 1");
+        sub.assert_false(view.valid, "parse_url_view MUST reject CRLF in path (CVE-2023-26159)");
+        sub.assert_true(err != core::UrlParseError.None, "Must return parse error for CRLF in path");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 21. CVE-2025-61726 & CVE-2026-39825: Query Parameter Key Overflow Defense
+// ----------------------------------------------------------------------------
+fn test_query_param_key_overflow_defense(t: lit::T&) {
+    t.run("parse_query_params with key > 64 bytes MUST safely truncate or handle without buffer overflow") { sub =>
+        // In legacy implementation, QueryParamItem.key capacity was 64 bytes.
+        // With zero-copy token slicing, wire slicing avoids fixed stack arrays, sets overflow flag,
+        // and accurately preserves key/value offsets without buffer overrun.
+        let query = "very_long_param_key_exceeding_sixty_four_bytes_boundary_1234567890_abcdef=val";
+        let list = core::parse_query_params(query);
+        sub.assert_true(list.tokens.len == 1, "Should parse 1 item");
+        sub.assert_true(list.overflow, "Oversized key must set overflow flag");
+        let k = core::query_token_key(list.tokens[0], list.wire);
+        let v = core::query_token_val(list.tokens[0], list.wire);
+        sub.assert_true(k.len > 64, "Zero-copy key slice preserves wire length");
+        sub.assert_bytes_eq(v, "val", "Value must be 'val'");
+    };
+
+    t.run("percent_decode_query with 80-byte input into 64-byte buffer MUST NOT overflow") { sub =>
+        var input: u8[..128] = [];
+        for i in 80 { input.push('k' as u8); }
+        var out_buf: u8[..64] = [];
+        core::percent_decode_query(input[..], out_buf);
+        sub.assert_true(out_buf.len <= 64, "Decoded buffer must not exceed capacity 64");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 22. RFC 3986 §4.2 & Go #81292: Relative URL Double-Slash Path Authority Protection
+// ----------------------------------------------------------------------------
+fn test_relative_url_double_slash_path_protection(t: lit::T&) {
+    t.run("Relative path starting with encoded slashes MUST NOT be converted to authority (Go #81292)") { sub =>
+        // Go #81292 / RFC 3986 Section 4.2:
+        // Percent-encoded slashes in relative paths must not promote a path to a host.
+        let base = core::new_url("https://example.com/api/");
+        let parsed = core::new_url("/relative/path", base);
+        let smuggled = core::new_url("/%2fevil.com/path", base);
+        sub.assert_true(smuggled.valid, "Parsed percent-encoded slash relative URL is valid");
+        sub.assert_bytes_eq(core::hostname(smuggled), "example.com", "Hostname MUST remain example.com, not promote evil.com to authority");
+        sub.assert_true(parsed.valid, "Parsed relative URL is valid");
+        sub.assert_bytes_eq(core::hostname(parsed), "example.com", "Hostname retained as example.com");
+        sub.assert_bytes_eq(core::pathname(parsed), "/relative/path", "Pathname matches /relative/path");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 23. RFC 3986 §3.2.2 & Go #77578 / CVE-2025-47912: URL Bracketed Host Validation
+// ----------------------------------------------------------------------------
+fn test_url_bracketed_host_validation(t: lit::T&) {
+    t.run("IPv4 and non-IP hostnames in brackets MUST be rejected (CVE-2025-47912)") { sub =>
+        let u1 = core::new_url("http://[127.0.0.1]/");
+        sub.assert_false(u1.valid, "http://[127.0.0.1]/ MUST NOT be accepted as valid URL");
+
+        let u2 = core::new_url("http://[example.com]/");
+        sub.assert_false(u2.valid, "http://[example.com]/ MUST NOT be accepted as valid URL");
+
+        let u_valid = core::new_url("http://[::1]/");
+        sub.assert_true(u_valid.valid, "http://[::1]/ is a valid IPv6 URL");
+    };
+
+    t.run("IPv6 brackets not at start of host MUST be rejected (Go #77578 / CVE-2026-25679)") { sub =>
+        let u_bad_pre = core::new_url("http://foo[::1]/");
+        sub.assert_false(u_bad_pre.valid, "http://foo[::1]/ MUST be rejected");
+
+        let u_bad_mid = core::new_url("http://example.com[::1]:80/");
+        sub.assert_false(u_bad_mid.valid, "http://example.com[::1]:80/ MUST be rejected");
+    };
+}
+
+// --- Component: regress_issues_batch10 ---
+// Phase 10 RED test suite: Heapless Fixed-Capacity Buffer Safety & RFC Invariants
+// Tests capacity truncation smuggling, bounds aborts, and RFC protocol non-conformances:
+//
+// 1. Path dot-segment desync when segments exceed buffer capacity (core/url/parser.goose)
+// 2. URL oversized input & scheme handling without runtime abort (core/url/parser.goose)
+// 3. Query parameter smuggling & key truncation false match (core/url/query.goose)
+// 4. MediaType parameter truncation smuggling & duplicate boundary (http/mime.goose)
+// 5. Multipart oversized Content-Type header on part without abort (http/multipart.goose)
+// 6. HPACK literal header with indexed name value > 16B abort (http2/hpack.goose)
+// 7. HTTP/2 :authority whitespace and comma rejection (http2/hpack.goose)
+// 8. HTTP/3 unknown pseudo-header (:custom) & CTL character rejection (http3/connection.goose)
+// 9. Router path capacity truncation smuggling (server/router.goose)
+// 10. Alt-Svc oversized proto/host/endpoint capacity safety (http/altsvc.goose)
+
+// ----------------------------------------------------------------------------
+// 24. Path dot-segment desync on segment capacity overflow (core/url/parser.goose)
+// ----------------------------------------------------------------------------
+fn test_path_dot_segment_capacity_desync(t: lit::T&) {
+    t.run("Path dot-segment normalization MUST NOT desync when segments exceed 256") { sub =>
+        // Construct a URL with 256 's' segments, followed by 'target' and '/..'
+        // E.g.: http://example.com/s/s/.../s/target/..
+        // Total segments before '..': 257.
+        // If segment 257 ('target') is omitted from seg_starts, '/..' pops segment 256 ('s'),
+        // leaving 'target' in the path and deleting an innocent earlier segment!
+        var raw_url: u8[..2048] = [];
+        raw_url.append("http://example.com");
+        for i in 256 {
+            raw_url.append("/s");
+        }
+        raw_url.append("/target/..");
+
+        let parsed = core::new_url(raw_url[..]);
+        sub.assert_true(parsed.valid, "URL with 257 segments should parse or fail safely");
+
+        let path = core::pathname(parsed);
+        // 'target' should have been canceled out by '..'
+        let has_target = find(path, "target") >= 0;
+        sub.assert_false(has_target, "Path segment 'target' MUST be canceled by '/..' and not leak into normalized path");
+
+        // Count how many '/s' segments remain: must be exactly 256!
+        var s_count = 0;
+        var cur: i64 = 0;
+        while cur < path.len {
+            let idx = find(path[cur..], "/s");
+            if idx >= 0 {
+                s_count++;
+                cur += idx + 2;
+            } else {
+                break;
+            }
+        }
+        sub.assert_eq(s_count, 256, "Exactly 256 '/s' segments must remain; segment 256 MUST NOT be popped by target/..");
+    };
+
+    t.run("Fixed-capacity try_push and try_append return false on capacity boundary") { sub =>
+        var arr: i32[..4] = [];
+        sub.assert_true(arr.try_push(10), "try_push 1 should succeed");
+        sub.assert_true(arr.try_push(20), "try_push 2 should succeed");
+        sub.assert_true(arr.try_push(30), "try_push 3 should succeed");
+        sub.assert_true(arr.try_push(40), "try_push 4 should succeed");
+        sub.assert_false(arr.try_push(50), "try_push 5 MUST fail on full buffer");
+        sub.assert_eq(arr.len, 4, "arr.len must remain 4 without truncation corruption");
+
+        var str: u8[..6] = [];
+        sub.assert_true(str.try_append("abc"), "try_append abc should succeed");
+        sub.assert_false(str.try_append("defg"), "try_append defg MUST fail because 3 + 4 > 6");
+        sub.assert_eq(str.len, 3, "str.len must remain 3 after failed try_append");
+        sub.assert_true(str.try_append("def"), "try_append def should succeed exactly filling capacity");
+        sub.assert_eq(str.len, 6, "str.len must be 6");
+    };
+
+    t.run("URL path depth exceeding 1024 segments returns UrlParseError.PathTooDeep") { sub =>
+        var deep_path: u8[..2048] = [];
+        deep_path.append("http://example.com");
+        for i in 1025 {
+            deep_path.push('/');
+        }
+
+        let parsed, err = core::parse_url(deep_path[..]);
+        sub.assert_false(parsed.valid, "URL with > 1024 segments must be invalid");
+        sub.assert_true(err == core::UrlParseError.PathTooDeep, "Error code MUST be UrlParseError.PathTooDeep");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 25. URL oversized input & scheme handling without runtime abort (core/url/parser.goose)
+// ----------------------------------------------------------------------------
+fn test_url_oversized_input_no_abort(t: lit::T&) {
+    t.run("URL with scheme > 64 bytes MUST be rejected gracefully without abort") { sub =>
+        var long_scheme: u8[..128] = [];
+        for i in 70 { long_scheme.push('a'); }
+        long_scheme.append("://example.com/");
+
+        let parsed = core::new_url(long_scheme[..]);
+        sub.assert_false(parsed.valid, "Scheme > 64 bytes MUST be marked invalid without abort");
+    };
+
+    t.run("URL input > 2048 bytes MUST be rejected gracefully without abort") { sub =>
+        var giant_url: u8[>..] = [];
+        giant_url.append("http://example.com/");
+        for i in 2100 { giant_url.push('x'); }
+
+        let parsed = core::new_url(giant_url[..]);
+        sub.assert_false(parsed.valid, "URL input > 2048 bytes MUST be rejected without bounds abort");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 26. Query parameter smuggling & key truncation false match (core/url/query.goose)
+// ----------------------------------------------------------------------------
+fn test_query_parameter_smuggling_and_truncation(t: lit::T&) {
+    t.run("Fast query param lookup MUST NOT falsely match when key exceeds 64 bytes") { sub =>
+        // Construct query: ?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_evil=1
+        // (64 'a's followed by '_evil')
+        var raw_query: u8[..256] = [];
+        raw_query.append("?");
+        for i in 64 { raw_query.push('a'); }
+        raw_query.append("_evil=1");
+
+        // Search for 64 'a's: it MUST NOT match!
+        var search_key: u8[..64] = [];
+        for i in 64 { search_key.push('a'); }
+
+        var out_val: u8[..64] = [];
+        let found, _ = core::get_query_param_fast(raw_query[..], search_key[..], out_val);
+        sub.assert_false(found, "Fast query param lookup MUST NOT falsely match truncated 64-byte key");
+    };
+
+    t.run("Query param parser MUST NOT silently drop parameter 129 (smuggling)") { sub =>
+        // Construct query with 128 benign params followed by '&admin=true'
+        var raw_query: u8[>..] = [];
+        for i in 128 {
+            if i > 0 { raw_query.push('&'); }
+            raw_query.append("p");
+            core::format_u64_dec(i as u64, raw_query);
+            raw_query.append("=val");
+        }
+        raw_query.append("&admin=true");
+
+        // Fixed-capacity protocol decoders must treat buffer overflow as an explicit error
+        let count_valid = core::validate_query_param_count(raw_query[..]);
+        sub.assert_false(count_valid, "validate_query_param_count MUST reject query when parameters exceed capacity 128");
+
+        let list = core::parse_query_params(raw_query[..]);
+        sub.assert_true(list.overflow, "parse_query_params MUST flag overflow when parameters exceed capacity 128");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 27. URL & Origin (core/url/*)
+// ----------------------------------------------------------------------------
+fn test_url_origin_punycode_and_view_validation(t: lit::T&) {
+    t.run("DNS label > 63 bytes in URL must return InvalidHost (CVE-2026-97044)") { sub =>
+        var long_url: u8[..256] = [];
+        long_url.append("http://");
+        for i in 64 { long_url.push('a'); }
+        long_url.append(".com/");
+
+        let parsed, err = core::parse_url(long_url[..]);
+        sub.assert_false(parsed.valid, "URL with host label > 63B MUST be rejected");
+        sub.assert_true(err == core::UrlParseError.InvalidHost, "Error must be InvalidHost");
+    };
+
+    t.run("parse_url_view rejects empty host on special http scheme") { sub =>
+        let view, err = core::parse_url_view("http:///path");
+        sub.assert_false(view.valid, "Empty host for http scheme MUST return valid == false");
+    };
+
+    t.run("parse_url_view rejects forbidden space in host") { sub =>
+        let view, err = core::parse_url_view("http://exa mple.com/path");
+        sub.assert_false(view.valid, "Space in host MUST return valid == false");
+    };
+
+    t.run("compute_public_suffix and extract_etld_plus_one with 180B domain must not abort") { sub =>
+        var long_domain: u8[..256] = [];
+        for i in 10 {
+            long_domain.append("subdomain.");
+        }
+        long_domain.append("example.co.uk");
+
+        var suffix: u8[..256] = [];
+        let is_icann = core::public_suffix_with_icann(long_domain[..], suffix);
+        sub.assert_eq(suffix[..], "co.uk", "Suffix correctly extracted for 180B host");
+
+        var etld: u8[..256] = [];
+        core::extract_etld_plus_one(long_domain[..], etld);
+        sub.assert_eq(etld[..], "example.co.uk", "eTLD+1 correctly extracted for 180B host");
+    };
+
+    t.run("parse_endpoint returns InputTooLong on path overflow without abort") { sub =>
+        var base_url_str: u8[>..] = [];
+        base_url_str.append("http://example.com/");
+        for i in 1500 { base_url_str.push('a'); }
+
+        let base_url, _ = core::parse_url(base_url_str[..]);
+        sub.assert_true(base_url.valid, "Base URL valid");
+
+        var ep: u8[>..] = [];
+        for i in 700 { ep.push('b'); }
+
+        let res_url, err = core::parse_endpoint(base_url, ep[..]);
+        sub.assert_false(res_url.valid, "Oversized combined path must return valid == false");
+        sub.assert_true(err == core::UrlParseError.InputTooLong, "Error must be InputTooLong");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core URL Parser, Normalizer, and Security Verification Suite", lit::Verbosity.Verbose);
 
@@ -1549,6 +2024,22 @@ fn main() {
     lit::run_case(runner, "9. IPv6 Host Security Bypasses (CVE-2026-25679 & CVE-2025-47912)", test_ipv6_host_security_bypasses);
     lit::run_case(runner, "10. Port Number Boundaries & Overflow Defense", test_port_number_boundaries_and_overflow);
     lit::run_case(runner, "11. Path Traversal & Userinfo Isolation", test_path_traversal_and_userinfo);
+    lit::run_case(runner, "12. Go #78948 (CVE-2026-39825) Query Parameter Truncation & Smuggling", test_query_param_truncation_smuggling);
+    lit::run_case(runner, "13. Go #78760 (CVE-2026-39821) Pure ASCII Punycode URL Host Rejection", test_pure_ascii_punycode_url_host_rejection);
+    lit::run_case(runner, "14. Go #77108 (CVE-2025-61726) Query Param Oversized Token DoS Guard", test_query_param_oversized_token_dos_guard);
+    lit::run_case(runner, "15. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed Host", test_malformed_ip_literal_host_rejection);
+    lit::run_case(runner, "16. Go #80282 & RFC 3986 §5.2.4: Deep Path Collapse Truncation", test_deep_path_dot_segment_collapse);
+    lit::run_case(runner, "17. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID", test_scoped_ipv6_link_local_url_acceptance);
+    lit::run_case(runner, "18. Go #78569 & CVE-2026-25679 follow-up: parse_url_view [::1]evil.com Rejection", test_parse_url_view_ipv6_bracket_trailing_garbage);
+    lit::run_case(runner, "19. RFC 3986 §3.2.2 & Go #75678: parse_url_view Non-IPv6 Bracket Rejection", test_parse_url_view_non_ipv6_bracketed_host);
+    lit::run_case(runner, "20. RFC 3986 §2 / RFC 9112 §3.2 & CVE-2023-26159: CRLF in URL View Host and Path", test_parse_url_view_crlf_rejection);
+    lit::run_case(runner, "21. CVE-2025-61726 & CVE-2026-39825: Query Parameter Bounds Guard", test_query_param_key_overflow_defense);
+    lit::run_case(runner, "22. RFC 3986 §4.2 & Go #81292: Relative URL Double-Slash Path Authority Protection", test_relative_url_double_slash_path_protection);
+    lit::run_case(runner, "23. RFC 3986 §3.2.2 & Go #77578 / CVE-2025-47912: URL Bracketed Host Validation", test_url_bracketed_host_validation);
+    lit::run_case(runner, "24. Path dot-segment capacity desync (core/url/parser.goose)", test_path_dot_segment_capacity_desync);
+    lit::run_case(runner, "25. URL oversized input handling without abort (core/url/parser.goose)", test_url_oversized_input_no_abort);
+    lit::run_case(runner, "26. Query parameter smuggling & key truncation (core/url/query.goose)", test_query_parameter_smuggling_and_truncation);
+    lit::run_case(runner, "27. URL & Origin validation & bounds (core/url/*)", test_url_origin_punycode_and_view_validation);
 
     let ok = lit::finish(runner);
     assert(ok);

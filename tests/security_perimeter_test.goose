@@ -16,6 +16,9 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // - W3C HTML5 §7.2 crossOriginIsolated state computation
 // - Subresource embedding permission enforcement under require-corp sandbox
 
+// ----------------------------------------------------------------------------
+// 1. Cross-Origin Isolation & Subresource Policies
+// ----------------------------------------------------------------------------
 fn test_cross_origin_isolation(t: lit::T&) {
     t.run("Policy Header Parsing") { sub =>
         sub.assert_true(wing::parse_coop("same-origin") == wing::CoopPolicy.SameOrigin, "COOP same-origin");
@@ -114,7 +117,7 @@ fn test_cross_origin_isolation(t: lit::T&) {
 // Tests for Fetch Metadata resource isolation and CORS policy validation.
 
 // ----------------------------------------------------------------------------
-// 1. W3C Fetch Metadata 9-Row Decision Matrix
+// 2. W3C Fetch Metadata 9-Row Decision Matrix
 // ----------------------------------------------------------------------------
 fn test_fetch_metadata_decision_matrix(t: lit::T&) {
     t.run("Row 1: Direct User Navigation (Sec-Fetch-Site: none)") { sub =>
@@ -430,7 +433,7 @@ fn test_fetch_metadata_decision_matrix(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. Response Isolation Headers (Vary & HSTS)
+// 3. Response Isolation Headers (Vary & HSTS)
 // ----------------------------------------------------------------------------
 fn test_isolation_headers_injection(t: lit::T&) {
     t.run("Mandatory Vary and HSTS Headers") { sub =>
@@ -447,7 +450,7 @@ fn test_isolation_headers_injection(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 3. Protocol-Specific CORS Matching & Credentials Security
+// 4. Protocol-Specific CORS Matching & Credentials Security
 // ----------------------------------------------------------------------------
 fn test_cors_policy_and_matching(t: lit::T&) {
     t.run("Protocol-Specific Subdomain Wildcard Matching") { sub =>
@@ -547,7 +550,7 @@ fn test_cors_policy_and_matching(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 4. Constant-Time CSRF Token Validation & OTP Mask Verification
+// 5. Constant-Time CSRF Token Validation & OTP Mask Verification
 // ----------------------------------------------------------------------------
 fn test_csrf_constant_time_tokens(t: lit::T&) {
     t.run("Double-Submit Token Validation (subtle_equal)") { sub =>
@@ -601,17 +604,12 @@ fn test_csrf_constant_time_tokens(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Suite Runner
-// ----------------------------------------------------------------------------
-
-// ----------------------------------------------------------------------------
-// Consolidated Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: security_edge_filter ---
 // Test Suite for Goose-Wing Programmable L7 Edge Filter Engine.
 
+// ----------------------------------------------------------------------------
+// 6. Edge Filter Lifecycle and Evaluation
+// ----------------------------------------------------------------------------
 fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
     t.run("Case 1: Edge Filter Rule Registration and Path Filtering") { sub =>
         var filter = wing::EdgeFilter { .. };
@@ -681,6 +679,9 @@ fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
 // 5. Deletion of Known HSTS Host (`max-age=0`)
 // 6. RFC 6797 Section 8.1 Security Invariant: Rejection of HSTS over insecure HTTP
 
+// ----------------------------------------------------------------------------
+// 7. HSTS Header Directive Parsing
+// ----------------------------------------------------------------------------
 fn test_hsts_header_parsing(t: lit::T&) {
     t.run("Parse max-age, includeSubDomains, and preload") { sub =>
         let raw = "max-age=31536000; includeSubDomains; preload";
@@ -700,6 +701,9 @@ fn test_hsts_header_parsing(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 8. Chromium Static Preload List & .dev/.app Auto-Upgrade
+// ----------------------------------------------------------------------------
 fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
     t.run("Chromium Preload List: Google, GitHub & .dev/.app TLDs Auto-Upgraded to HTTPS") { sub =>
         var client = wing::new_client();
@@ -763,6 +767,9 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 9. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants
+// ----------------------------------------------------------------------------
 fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
     t.run("Dynamic Learning: Response Header Upgrades Subsequent Cleartext Requests") { sub =>
         var client = wing::new_client();
@@ -875,6 +882,9 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Round 1: IPv4-Mapped IPv6 SSRF Defense
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 10. IPv4-Mapped IPv6 SSRF Defense
+// ----------------------------------------------------------------------------
 fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
     t.run("IPv4-Mapped IPv6 Loopback and Private Address SSRF Blocking") { sub =>
         var session = wing::new_session();
@@ -942,6 +952,9 @@ fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
 
 // ----------------------------------------------------------------------------
 // Round 2: Scheme Downgrade Header Sanitization
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 11. Scheme Downgrade Header Sanitization
 // ----------------------------------------------------------------------------
 fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
     t.run("sanitize_headers_on_redirect: Scheme Downgrade to Trusted Host Strips Sensitive Headers") { sub =>
@@ -1023,6 +1036,9 @@ fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // Round 3: File URL Windows Drive Compliance
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 12. File URL Windows Drive Compliance
+// ----------------------------------------------------------------------------
 fn test_file_url_windows_drive_compliance(t: lit::T&) {
     t.run("WHATWG URL Section 4.4: Windows Drive Letter Pipe Normalization (| to :)") { sub =>
         // 1. file:///C|/... must normalize to file:///C:/...
@@ -1073,13 +1089,12 @@ fn test_file_url_windows_drive_compliance(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// Consolidated Suite Entry Point
-// ----------------------------------------------------------------------------
-
 // --- Component: security_txt ---
 // Verification Suite for RFC 9116 (A File Format to Aid in Security Vulnerability Disclosure - security.txt).
 
+// ----------------------------------------------------------------------------
+// 13. RFC 9116 security.txt Validation Matrix
+// ----------------------------------------------------------------------------
 fn test_security_txt_valid_matrix(t: lit::T&) {
     t.run("1. Valid security.txt Parsing with Comments and PGP Armor") { sub =>
         let valid_payload = "# RFC 9116 security.txt disclosure policy\n-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nContact: mailto:security@example.com\nContact: https://example.com/security\nExpires: 2030-12-31T23:59:59Z\nEncryption: https://example.com/pgp-key.txt\nCanonical: https://example.com/.well-known/security.txt\nAcknowledgments: https://example.com/hall-of-fame\nPolicy: https://example.com/disclosure-policy\nHiring: https://example.com/security-jobs\nPreferred-Languages: en, ru, de\n\n-----BEGIN PGP SIGNATURE-----\nVersion: OpenPrivacy\n...\n";
@@ -1178,6 +1193,9 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
 // - HAR 1.2 Telemetry & Microsecond Waterfall Timing
 // - Network Isolation Keys (NIK) State Partitioning
 
+// ----------------------------------------------------------------------------
+// 14. RFC 7838 Alt-Svc & H3 Promotion Engine
+// ----------------------------------------------------------------------------
 fn test_altsvc_and_h3_promotion(t: lit::T&) {
     t.run("1. RFC 7838 Alt-Svc Parsing & Format") { sub =>
         let raw = "h3=\":443\"; ma=86400; persist=1, h2=\"alt.example.com:8443\"; ma=3600";
@@ -1242,6 +1260,9 @@ fn test_altsvc_and_h3_promotion(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay
+// ----------------------------------------------------------------------------
 fn test_early_hints_and_replay_guard(t: lit::T&) {
     t.run("1. RFC 8297 103 Early Hints Link Preload / Preconnect") { sub =>
         let link_hdr = "</style.css>; rel=preload; as=style, <https://cdn.example.com>; rel=preconnect";
@@ -1283,6 +1304,9 @@ fn test_early_hints_and_replay_guard(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. W3C No-Vary-Search Cache Normalization
+// ----------------------------------------------------------------------------
 fn test_no_vary_search_cache(t: lit::T&) {
     t.run("1. W3C No-Vary-Search Header Parser") { sub =>
         let raw = "params, except=(\"id\" \"page\"), key-order";
@@ -1316,6 +1340,9 @@ fn test_no_vary_search_cache(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 17. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP
+// ----------------------------------------------------------------------------
 fn test_masque_capsules_and_datagrams(t: lit::T&) {
     t.run("1. RFC 9297 Capsule Codec") { sub =>
         var wire: u8[..256] = [];
@@ -1352,6 +1379,9 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 18. HAR 1.2 Telemetry Waterfall & Network Isolation Keys
+// ----------------------------------------------------------------------------
 fn test_har_telemetry_and_isolation(t: lit::T&) {
     t.run("1. HAR 1.2 Telemetry & Timing Waterfall Serializer") { sub =>
         let timings = wing::RequestTimings {
@@ -1410,7 +1440,7 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 22. Hardened Security Layer Invariants (Audit Findings)
+// 19. Hardened Security Layer Invariants (Audit Findings)
 // ----------------------------------------------------------------------------
 fn test_hardened_security_invariants(t: lit::T&) {
     t.run("Sharded GCRA Limiter Saturated Shard Fail-Closed Rejection") { sub =>
@@ -1517,7 +1547,7 @@ fn test_hardened_security_invariants(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 23. Security Audit Regression Suite (FIND-SEC-001 .. FIND-SEC-011)
+// 20. Security Audit Regression Suite (FIND-SEC-001 .. FIND-SEC-011)
 // ----------------------------------------------------------------------------
 fn test_security_audit_regressions(t: lit::T&) {
     t.run("FIND-SEC-001..004: CryptoJar Timestamp Overflow, Bounds, Key Revocation & Dead Code Integration") { sub =>
@@ -1774,6 +1804,90 @@ fn test_security_audit_regressions(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// F007: RFC 6797 HSTS Duplicate Directives & Valueless Invariants
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 21. F007 RFC 6797 HSTS Invariants
+// ----------------------------------------------------------------------------
+fn test_f007_hsts_rfc6797_invariants(t: lit::T&) {
+    t.run("parse_hsts_header rejects duplicate includeSubDomains directive") { sub =>
+        let dir, ok = wing::parse_hsts_header("max-age=31536000; includeSubDomains; includeSubDomains");
+        sub.assert_false(ok, "Duplicate includeSubDomains MUST be rejected per RFC 6797 §6.1");
+    };
+
+    t.run("parse_hsts_header rejects duplicate preload directive") { sub =>
+        let dir, ok = wing::parse_hsts_header("max-age=31536000; preload; preload");
+        sub.assert_false(ok, "Duplicate preload MUST be rejected per RFC 6797 §6.1");
+    };
+
+    t.run("parse_hsts_header rejects includeSubDomains with value") { sub =>
+        let dir, ok = wing::parse_hsts_header("max-age=31536000; includeSubDomains=true");
+        sub.assert_false(ok, "includeSubDomains directive with value MUST be rejected per RFC 6797 §6.1.2");
+    };
+
+    t.run("hsts_cache_update updates is_preload on existing cache entry") { sub =>
+        var cache = wing::HstsCache { .. };
+        let ok1 = wing::hsts_cache_update(cache, "example.com", "max-age=31536000", 1000);
+        sub.assert_true(ok1, "Initial HSTS entry stored without preload");
+
+        // Now update same host with preload directive
+        let ok2 = wing::hsts_cache_update(cache, "example.com", "max-age=31536000; preload", 2000);
+        sub.assert_true(ok2, "Update HSTS entry with preload succeeds");
+        sub.assert_true(cache.entries[0].is_preload, "Existing cache entry is_preload must be updated to true");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 22. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing
+// ----------------------------------------------------------------------------
+fn test_cors_wildcard_origin_smuggling_and_csrf_userinfo(t: lit::T&) {
+    t.run("match_cors_origin_pattern: reject path/query/userinfo suffix confusion") { sub =>
+        let pattern = "https://*.example.com";
+
+        // Path suffix confusion: evil.com/.example.com
+        let res_path = wing::match_cors_origin_pattern("https://evil.com/.example.com", pattern);
+        sub.assert_false(res_path, "evil.com/.example.com MUST NOT match *.example.com");
+
+        // Query suffix confusion: evil.com?.example.com
+        let res_query = wing::match_cors_origin_pattern("https://evil.com?.example.com", pattern);
+        sub.assert_false(res_query, "evil.com?.example.com MUST NOT match *.example.com");
+
+        // Hash suffix confusion: evil.com#.example.com
+        let res_hash = wing::match_cors_origin_pattern("https://evil.com#.example.com", pattern);
+        sub.assert_false(res_hash, "evil.com#.example.com MUST NOT match *.example.com");
+
+        // Userinfo suffix confusion: evil.com@.example.com
+        let res_user = wing::match_cors_origin_pattern("https://evil.com@.example.com", pattern);
+        sub.assert_false(res_user, "evil.com@.example.com MUST NOT match *.example.com");
+
+        // Empty subdomain: .example.com
+        let res_dot = wing::match_cors_origin_pattern("https://.example.com", pattern);
+        sub.assert_false(res_dot, ".example.com MUST NOT match *.example.com");
+
+        // Consecutive dots: sub..example.com
+        let res_ddot = wing::match_cors_origin_pattern("https://sub..example.com", pattern);
+        sub.assert_false(res_ddot, "sub..example.com MUST NOT match *.example.com");
+
+        // Valid subdomain match
+        let res_valid = wing::match_cors_origin_pattern("https://api.example.com", pattern);
+        sub.assert_true(res_valid, "valid subdomain api.example.com matches *.example.com");
+    };
+
+    t.run("extract_host_from_url: reject userinfo spoofing in Origin/Referer") { sub =>
+        // Attacker sends Origin/Referer with target host in userinfo:
+        // https://example.com@evil.com/path
+        // If userinfo is not stripped or rejected, host comparison might be confused
+        let spoofed = "https://example.com@evil.com/path";
+        let host = wing::extract_host_from_url(spoofed);
+        sub.assert_eq(host.len, 0, "URL with userinfo @ MUST return empty host to reject spoofing");
+
+        let valid_url = "https://valid.example.com:8080/path";
+        let valid_host = wing::extract_host_from_url(valid_url);
+        sub.assert_bytes_eq(valid_host, "valid.example.com:8080", "valid host extracted");
+    };
+}
+
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
     var runner = lit::new_runner(title, lit::Verbosity.Verbose);
@@ -1782,26 +1896,24 @@ fn main() {
     lit::run_case(runner, "2. W3C Fetch Metadata 9-Row Decision Matrix", test_fetch_metadata_decision_matrix);
     lit::run_case(runner, "3. Response Isolation Headers (Vary & HSTS)", test_isolation_headers_injection);
     lit::run_case(runner, "4. Protocol-Specific CORS Matching & Credentials Security", test_cors_policy_and_matching);
-    lit::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification",
-        test_csrf_constant_time_tokens);
-    lit::run_case(runner, "9. Edge Filter Lifecycle and Evaluation", test_edge_filter_lifecycle_and_evaluation);
-    lit::run_case(runner, "10. HSTS Header Directive Parsing", test_hsts_header_parsing);
-    lit::run_case(runner, "11. Chromium Static Preload List & .dev/.app Auto-Upgrade",
-        test_hsts_preload_list_auto_upgrade);
-    lit::run_case(runner, "12. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants",
-        test_dynamic_hsts_cache_lifecycle);
-    lit::run_case(runner, "13. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
-    lit::run_case(runner, "14. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
-    lit::run_case(runner, "15. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
-    lit::run_case(runner, "16. RFC 9116 security.txt Validation Matrix", test_security_txt_valid_matrix);
-    lit::run_case(runner, "17. RFC 7838 Alt-Svc & H3 Promotion Engine", test_altsvc_and_h3_promotion);
-    lit::run_case(runner, "18. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay", test_early_hints_and_replay_guard);
-    lit::run_case(runner, "19. W3C No-Vary-Search Cache Normalization", test_no_vary_search_cache);
-    lit::run_case(runner, "20. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP", test_masque_capsules_and_datagrams);
-    lit::run_case(runner, "21. HAR 1.2 Telemetry Waterfall & Network Isolation Keys",
-        test_har_telemetry_and_isolation);
-    lit::run_case(runner, "22. Hardened Security Layer Invariants", test_hardened_security_invariants);
-    lit::run_case(runner, "23. Security Audit Regressions (FIND-SEC-001..011)", test_security_audit_regressions);
+    lit::run_case(runner, "5. Constant-Time CSRF Token Validation & OTP Mask Verification", test_csrf_constant_time_tokens);
+    lit::run_case(runner, "6. Edge Filter Lifecycle and Evaluation", test_edge_filter_lifecycle_and_evaluation);
+    lit::run_case(runner, "7. HSTS Header Directive Parsing", test_hsts_header_parsing);
+    lit::run_case(runner, "8. Chromium Static Preload List & .dev/.app Auto-Upgrade", test_hsts_preload_list_auto_upgrade);
+    lit::run_case(runner, "9. Dynamic HSTS Cache Lifecycle, Subdomains & Security Invariants", test_dynamic_hsts_cache_lifecycle);
+    lit::run_case(runner, "10. IPv4-Mapped IPv6 SSRF Defense", test_ipv4_mapped_ipv6_ssrf);
+    lit::run_case(runner, "11. Scheme Downgrade Header Sanitization", test_scheme_downgrade_with_trusted_hosts);
+    lit::run_case(runner, "12. File URL Windows Drive Compliance", test_file_url_windows_drive_compliance);
+    lit::run_case(runner, "13. RFC 9116 security.txt Validation Matrix", test_security_txt_valid_matrix);
+    lit::run_case(runner, "14. RFC 7838 Alt-Svc & H3 Promotion Engine", test_altsvc_and_h3_promotion);
+    lit::run_case(runner, "15. RFC 8297 Early Hints & RFC 8470 0-RTT Anti-Replay", test_early_hints_and_replay_guard);
+    lit::run_case(runner, "16. W3C No-Vary-Search Cache Normalization", test_no_vary_search_cache);
+    lit::run_case(runner, "17. RFC 9297 HTTP Capsules & MASQUE CONNECT-UDP", test_masque_capsules_and_datagrams);
+    lit::run_case(runner, "18. HAR 1.2 Telemetry Waterfall & Network Isolation Keys", test_har_telemetry_and_isolation);
+    lit::run_case(runner, "19. Hardened Security Layer Invariants", test_hardened_security_invariants);
+    lit::run_case(runner, "20. Security Audit Regressions (FIND-SEC-001..011)", test_security_audit_regressions);
+    lit::run_case(runner, "21. F007 RFC 6797 HSTS Invariants", test_f007_hsts_rfc6797_invariants);
+    lit::run_case(runner, "22. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
 
     let ok = lit::finish(runner);
     assert(ok);

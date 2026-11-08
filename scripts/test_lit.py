@@ -79,7 +79,7 @@ def main() -> int:
     test_files = [
         f
         for f in sorted(lit_dir.rglob(glob_pat))
-        if f.suffix == ".goose" and f.name != "wire_kit.goose"
+        if f.suffix == ".goose" and f.name not in ("wire_kit.goose", "alloc_kit.goose")
     ]
 
     if not test_files:

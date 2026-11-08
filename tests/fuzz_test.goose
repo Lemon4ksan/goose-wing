@@ -11,6 +11,9 @@ import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 import fuzz.oss_fuzz;
 
+// ----------------------------------------------------------------------------
+// 1. FuzzedDataProvider & libFuzzer Mutator Invariants
+// ----------------------------------------------------------------------------
 fn test_oss_fuzz_fuzzed_data_provider_and_mutator(t: lit::T&) {
     t.run("FUZZ-ENGINE-01: FuzzedDataProvider deterministic consumption & bounds") { sub =>
         let raw: u8[16] = [
@@ -42,6 +45,9 @@ fn test_oss_fuzz_fuzzed_data_provider_and_mutator(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 2. 12 Protocol OSS-Fuzz Targets Corpus & Mutation Sweep
+// ----------------------------------------------------------------------------
 fn test_oss_fuzz_all_12_protocol_targets(t: lit::T&) {
     t.run("OSS-FUZZ-01: HTTP/1.1, HTTP/2 HPACK/Session, HTTP/3 QPACK/Conn (llhttp, nghttp2, nghttp3)") { sub =>
         var rng = new_fuzz_rng(0x1111222233334444);

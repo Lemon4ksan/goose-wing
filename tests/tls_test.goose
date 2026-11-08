@@ -2687,7 +2687,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     };
 }
 
-// 8. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
+// 9. Handshake Extension Bounds, Supported Versions, ECH & Anti-Splitting Conformance
 fn test_handshake_and_ech_security(t: lit::T&) {
     t.run("TLS-25: RFC 8446 §4.2 Duplicate Extension Rejection & Block Bounds") { sub =>
         // 1. Construct valid extensions block with distinct extension IDs
@@ -3085,7 +3085,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
     };
 }
 
-// 9. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM
+// 10. Round 2: State Machine Transitions, HRR Invariants, Downgrade & ECH FSM
 fn test_handshake_r2_invariants(t: lit::T&) {
     t.run("TLS-31: RFC 8446 §4 State Machine Transition Desync & Finished Bypass Prevention") { sub =>
         // 1. Finished before Certificate/CertificateVerify in full handshake MUST BE REJECTED
@@ -3459,6 +3459,9 @@ fn test_handshake_r2_invariants(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 11. NewSessionTicket, KeyUpdate, ClientAuth, 0-RTT Recovery & CertComp
+// ----------------------------------------------------------------------------
 fn test_handshake_r3_invariants(t: lit::T&) {
     // ------------------------------------------------------------------------
     // TLS-37: Post-Handshake NewSessionTicket (RFC 8446 §4.6.1 & §4.2.10)
@@ -3886,6 +3889,9 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 }
 
 // RFC 8879 Section 3: Negotiating Certificate Compression - Brotli certificate decompression
+// ----------------------------------------------------------------------------
+// 12. RFC 8879 Brotli Certificate Decompression & Bomb Defenses
+// ----------------------------------------------------------------------------
 fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
     t.run("1. RFC 8879 Algorithm Identifiers & Models") { sub =>
         sub.assert_eq(rfc::CERT_COMPRESSION_BROTLI, 2, "Brotli algorithm ID is 2");
@@ -4053,6 +4059,9 @@ fn test_remediation_post_quantum(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 14. X.509 Signatures & OCSP/CRL
+// ----------------------------------------------------------------------------
 fn test_remediation_x509_signatures(t: lit::T&) {
     t.run("CryptoShield: X.509 Signature & OCSP/CRL Verification") { sub =>
         let empty_cert = wing::ParsedCert {};
@@ -4070,6 +4079,9 @@ fn test_remediation_x509_signatures(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 15. Handshake PHA, Boundary & ECH
+// ----------------------------------------------------------------------------
 fn test_remediation_misc(t: lit::T&) {
     t.run("CryptoShield: Post-Handshake Auth, Boundary & ECH Public Name") { sub =>
         let st, ok_pha = wing::validate_client_handshake_transition(
@@ -4126,6 +4138,9 @@ fn test_remediation_misc(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 16. Record Unified AEAD Dispatch
+// ----------------------------------------------------------------------------
 fn test_remediation_record_aead(t: lit::T&) {
     t.run("CryptoShield: Unified AEAD Dispatch for AES-256-GCM and ChaCha20-Poly1305") { sub =>
         let key32: u8[32]      = [0x55; 32];
@@ -4308,6 +4323,97 @@ fn test_live_tls_transport_session(t: lit::T&) {
 }
 
 // Main TLS 1.3 & X.509 Conformance Runner
+
+// ----------------------------------------------------------------------------
+// 18. TLS 1.3 Cookie Extension Length Validation (RFC 8446 §4.2.2, OpenSSL #30868)
+// ----------------------------------------------------------------------------
+fn test_tls13_cookie_extension_validation(t: lit::T&) {
+    t.run("Cookie extension with zero-length vector (empty) MUST be rejected") { sub =>
+        // cookie<1..2^16-1>: vector length 0 is strictly forbidden by RFC 8446 Section 4.2.2
+        let empty_cookie: u8[2] = [0x00, 0x00];
+        var out: u8[..64] = [];
+        let ok = wing::parse_tls_cookie_extension(empty_cookie[..], out);
+        sub.assert_false(ok, "Zero-length cookie vector must be rejected");
+    };
+
+    t.run("Cookie extension with truncated payload MUST be rejected") { sub =>
+        // Advertises 4 bytes but only 2 present
+        let trunc_cookie: u8[4] = [0x00, 0x04, 0xAA, 0xBB];
+        var out: u8[..64] = [];
+        let ok = wing::parse_tls_cookie_extension(trunc_cookie[..], out);
+        sub.assert_false(ok, "Truncated cookie payload must be rejected");
+    };
+
+    t.run("Cookie extension with trailing bytes MUST be rejected") { sub =>
+        // Advertises 2 bytes but 3 bytes present in extension
+        let trailing_cookie: u8[5] = [0x00, 0x02, 0xAA, 0xBB, 0xFF];
+        var out: u8[..64] = [];
+        let ok = wing::parse_tls_cookie_extension(trailing_cookie[..], out);
+        sub.assert_false(ok, "Trailing bytes after cookie vector must be rejected");
+    };
+
+    t.run("Valid Cookie extension succeeds") { sub =>
+        let valid_cookie: u8[6] = [0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
+        var out: u8[..64] = [];
+        let ok = wing::parse_tls_cookie_extension(valid_cookie[..], out);
+        sub.assert_true(ok, "Valid cookie extension parsed successfully");
+        sub.assert_eq(out.len, 4, "Extracted 4-byte cookie");
+        let expected: u8[4] = [0x01, 0x02, 0x03, 0x04];
+        sub.assert_bytes_eq(out[..], expected[..], "Cookie contents match");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 19. TLS 1.3 CertificateRequest certificate_authorities Extension (RFC 8446 §4.2.4, OpenSSL #32211)
+// ----------------------------------------------------------------------------
+fn test_tls13_cert_authorities_extension_validation(t: lit::T&) {
+    t.run("certificate_authorities extension with empty vector (< 3 bytes) MUST be rejected") { sub =>
+        // authorities<3..2^16-1>: length 0 is strictly forbidden by RFC 8446 Section 4.2.4
+        let empty_ca: u8[2] = [0x00, 0x00];
+        let ok = wing::validate_certificate_authorities_extension(empty_ca[..]);
+        sub.assert_false(ok, "Empty authorities vector must be rejected");
+    };
+
+    t.run("certificate_authorities extension with vector length < 3 MUST be rejected") { sub =>
+        // authorities vector length 2 (less than lower bound 3)
+        let short_ca: u8[4] = [0x00, 0x02, 0x00, 0x00];
+        let ok = wing::validate_certificate_authorities_extension(short_ca[..]);
+        sub.assert_false(ok, "Authorities vector length < 3 must be rejected");
+    };
+
+    t.run("certificate_authorities extension with valid DN succeeds") { sub =>
+        // authorities vector length = 5: one DN with length = 3 ("ABC")
+        let valid_ca: u8[7] = [0x00, 0x05, 0x00, 0x03, 'A', 'B', 'C'];
+        let ok = wing::validate_certificate_authorities_extension(valid_ca[..]);
+        sub.assert_true(ok, "Valid authorities vector accepted");
+    };
+
+    t.run("CertificateRequest message with empty certificate_authorities MUST be rejected") { sub =>
+        // Build CertificateRequest:
+        // context_length: 0 (1B)
+        // extensions_length: 6 (2B)
+        // [ext 47 (2B: 0x00, 0x2F), ext_len 2 (2B: 0x00, 0x02), authorities_len 0 (2B: 0x00, 0x00)]
+        // + signature_algorithms (type 13, len 4: list_len 2, ecdsa_secp256r1_sha256 0x0403)
+        var msg: u8[..64] = [];
+        msg.push(0x00); // context len 0
+        // extensions length: 6 (CA) + 8 (sig_algs) = 14 (0x00, 0x0E)
+        msg.push(0x00); msg.push(0x0E);
+        // EXT_CERTIFICATE_AUTHORITIES (47 = 0x002F), ext_data_len 2, authorities_len 0
+        msg.push(0x00); msg.push(0x2F);
+        msg.push(0x00); msg.push(0x02);
+        msg.push(0x00); msg.push(0x00); // EMPTY authorities vector!
+        // EXT_SIGNATURE_ALGORITHMS (13 = 0x000D), ext_data_len 4, list_len 2, 0x0403
+        msg.push(0x00); msg.push(0x0D);
+        msg.push(0x00); msg.push(0x04);
+        msg.push(0x00); msg.push(0x02);
+        msg.push(0x04); msg.push(0x03);
+
+        var parsed = wing::CertificateRequestMsg { .. };
+        let ok = wing::parse_certificate_request(msg[..], false, parsed);
+        sub.assert_false(ok, "CertificateRequest with empty certificate_authorities MUST be rejected");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
 
@@ -4328,6 +4434,8 @@ fn main() {
     lit::run_case(runner, "15. Handshake PHA, Boundary & ECH", test_remediation_misc);
     lit::run_case(runner, "16. Record Unified AEAD Dispatch", test_remediation_record_aead);
     lit::run_case(runner, "17. Live TLS 1.3 Transport, Handshake Orchestration & Session Tickets", test_live_tls_transport_session);
+    lit::run_case(runner, "18. TLS 1.3 Cookie Extension Length Validation", test_tls13_cookie_extension_validation);
+    lit::run_case(runner, "19. TLS 1.3 CertificateRequest certificate_authorities Extension", test_tls13_cert_authorities_extension_validation);
 
     let ok = lit::finish(runner);
     assert(ok);
