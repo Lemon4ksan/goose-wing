@@ -15,17 +15,20 @@ import http.cache.cache_control;
 import http.cache.freshness;
 import http.cache.validators;
 import http.cache.cache_groups;
+import http.targeted_cache;
+import http.status_diagnostics;
 
 // ---- cache options ---------------------------------------------------------
 
 // Configuration options governing cache storage limits, heuristics, and sharing mode.
 struct CacheOptions {
-    shared:                bool = false,
-    cache_private:         bool = false,
-    heuristic_fraction:    i64  = 10,
-    immutable_min_ttl_sec: i64  = 31536000,
-    ignore_cargo_cult:     bool = true,
-    max_entry_size:        i64  = 4096,
+    shared:                bool     = false,
+    cache_private:         bool     = false,
+    heuristic_fraction:    i64      = 10,
+    immutable_min_ttl_sec: i64      = 31536000,
+    ignore_cargo_cult:     bool     = true,
+    max_entry_size:        i64      = 4096,
+    target_name:           u8[..48] = [],
 }
 
 // Constructs CacheOptions with RFC 9111 baseline defaults.
@@ -600,6 +603,16 @@ fn lookup(
         dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
         matched_entry.entry_to_response(cur_now, dec.cached_response);
         apply_cached_range_if_requested(matched_entry, req, dec.cached_response);
+        var cs_entry = CacheStatusEntry {
+            hit: true,
+            ttl: max(0, metrics.freshness_lifetime_sec - metrics.current_age_sec),
+            ..
+        };
+        let cname = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
+        cs_entry.cache_name.try_set(cname);
+        var cs_buf: u8[..256] = [];
+        format_cache_status(cs_entry, cs_buf);
+        dec.cached_response.set_header("Cache-Status", cs_buf[..]);
         return dec;
     }
 
@@ -671,8 +684,14 @@ fn freshen_cached_entry_304(
         entry.timestamps.now_mono = ts.response_mono;
         entry.timestamps.has_monotonic = true;
     }
-    entry.cc = parse_cache_control_headers(
+    let target_cc = if cache.options.shared {
+        if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "cdn" }
+    } else {
+        ""
+    };
+    entry.cc = parse_targeted_cache_control_headers(
         entry.headers,
+        target_cc,
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
 
@@ -690,6 +709,17 @@ fn freshen_cached_entry_304(
         cache.lru_touch(revalidate_entry_idx);
     }
     entry.entry_to_response(ts.response_time, dec.response);
+    var cs_304 = CacheStatusEntry {
+        hit:        true,
+        fwd_status: 304,
+        ..
+    };
+    let cname_304 = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
+    cs_304.cache_name.try_set(cname_304);
+    cs_304.fwd.try_set("uri-miss");
+    var cs_304_buf: u8[..256] = [];
+    format_cache_status(cs_304, cs_304_buf);
+    dec.response.set_header("Cache-Status", cs_304_buf[..]);
     dec.kind = ResponseDecisionKind.FreshenAndReturn;
     dec.entry_idx = revalidate_entry_idx;
     return dec;
@@ -861,8 +891,14 @@ fn on_response(
         CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
     let resp_headers = resp.response_headers_to_map();
-    let resp_cc = parse_cache_control_headers(
+    let target_cc = if cache.options.shared {
+        if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "cdn" }
+    } else {
+        ""
+    };
+    let resp_cc = parse_targeted_cache_control_headers(
         resp_headers,
+        target_cc,
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
 
@@ -928,6 +964,17 @@ fn on_response(
 
     let store_idx = cache.upsert_cache_entry(entry, req.headers);
     cache.total_stores++;
+    var cs_store = CacheStatusEntry {
+        stored:     true,
+        fwd_status: resp.status_code,
+        ..
+    };
+    let cname_st = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
+    cs_store.cache_name.try_set(cname_st);
+    cs_store.fwd.try_set("uri-miss");
+    var cs_store_buf: u8[..256] = [];
+    format_cache_status(cs_store, cs_store_buf);
+    dec.response.set_header("Cache-Status", cs_store_buf[..]);
     dec.kind = ResponseDecisionKind.StoreAndReturn;
     dec.entry_idx = store_idx;
     return dec;

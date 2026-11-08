@@ -9,6 +9,8 @@ import std;
 import json;
 import cookie.policy;
 import http.priority;
+import http.incremental;
+import http.trace;
 
 // ---- request & query item models -------------------------------------------
 
@@ -306,7 +308,7 @@ fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
 
 // ---- middleware & signers --------------------------------------------------
 
-// Sets RFC 9218 HTTP Priority header ("Priority: u=..., i").
+// Sets RFC 9218 HTTP Priority header ("Priority: u=..., i") and RFC 10036 Incremental header.
 // Urgency ranges from 0 (highest) to 7 (lowest), default is 3.
 fn set_priority(req: Request&, urgency: i32, incremental: bool = false) {
     let u: u8 = if urgency >= 0 && urgency <= 7 { urgency as u8 } else { rfc::PRIORITY_URGENCY_DEFAULT };
@@ -314,11 +316,30 @@ fn set_priority(req: Request&, urgency: i32, incremental: bool = false) {
     var wire_val: u8[..32] = [];
     serialize_http_priority(p, wire_val);
     set_header(req, "priority", wire_val[..]);
+    if incremental {
+        let _ = append_incremental_header(req.headers, true);
+    }
 }
 
-fn enrich_tracing(req: Request&, trace_id: const u8[:]) {
+fn enrich_tracing(req: Request&, trace_id: const u8[:], tracestate_raw: const u8[:] = "") {
     set_header(req, "X-Trace-Id", trace_id);
-    set_header(req, "X-B3-Sampled", "1");
+    let tp, ok_tp = parse_traceparent(trace_id);
+    if ok_tp {
+        var tp_wire: u8[..64] = [];
+        format_traceparent(tp, tp_wire);
+        set_header(req, "traceparent", tp_wire[..]);
+        set_header(req, "X-B3-Sampled", if traceparent_is_sampled(tp) { "1" } else { "0" });
+    } else {
+        set_header(req, "X-B3-Sampled", "1");
+    }
+    if tracestate_raw.len > 0 {
+        let ts, ok_ts = parse_tracestate(tracestate_raw);
+        if ok_ts {
+            var ts_wire: u8[..512] = [];
+            format_tracestate(ts, ts_wire);
+            set_header(req, "tracestate", ts_wire[..]);
+        }
+    }
 }
 
 // RFC 2104 Section 2: Definition of HMAC - Computes cryptographic HMAC-SHA256 signature

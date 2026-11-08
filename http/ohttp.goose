@@ -10,6 +10,7 @@ namespace wing;
 import std;
 import core from "..";
 import tls.hpke;
+import .bhttp;
 
 // ---- RFC 9458 constants ----------------------------------------------------
 
@@ -424,4 +425,58 @@ fn ohttp_open_response(
 
     out_len = out.len as i32;
     return true;
+}
+
+// Encodes a `BhttpRequest` (RFC 9292) and seals it into an Oblivious HTTP Encapsulated Request (RFC 9458 §4.1).
+fn ohttp_seal_bhttp_request(
+    cfg:          const OhttpKeyConfig&,
+    ephemeral_sk: const u8[32]&,
+    req:          const BhttpRequest&,
+    out:          u8[..8192]&,
+    out_len:      i32&,
+    session:      OhttpSession&,
+) -> bool {
+    var bhttp_buf: u8[..8192] = [];
+    let blen = bhttp_encode_request(req, bhttp_buf);
+    guard blen > 0 else { return false; }
+    return ohttp_seal_request(cfg, ephemeral_sk, bhttp_buf[..], out, out_len, session);
+}
+
+// Opens an Oblivious HTTP Encapsulated Request and decodes the inner `BhttpRequest` (RFC 9458 §4.3, RFC 9292).
+fn ohttp_open_bhttp_request(
+    skR:         const u8[:],
+    enc_request: const u8[:],
+    out_req:     BhttpRequest&,
+    session:     OhttpSession&,
+) -> bool {
+    var bhttp_buf: u8[..8192] = [];
+    var bhttp_len: i32        = 0;
+    guard ohttp_open_request(skR, enc_request, bhttp_buf, bhttp_len, session) else { return false; }
+    return bhttp_decode_request(bhttp_buf[..(bhttp_len as i64)], out_req);
+}
+
+// Encodes a `BhttpResponse` (RFC 9292) and seals it into an Oblivious HTTP Encapsulated Response (RFC 9458 §4.4).
+fn ohttp_seal_bhttp_response(
+    session:        const OhttpSession&,
+    response_nonce: const u8[:],
+    res:            const BhttpResponse&,
+    out:            u8[..8192]&,
+    out_len:        i32&,
+) -> bool {
+    var bhttp_buf: u8[..8192] = [];
+    let blen = bhttp_encode_response(res, bhttp_buf);
+    guard blen > 0 else { return false; }
+    return ohttp_seal_response(session, response_nonce, bhttp_buf[..], out, out_len);
+}
+
+// Opens an Oblivious HTTP Encapsulated Response and decodes the inner `BhttpResponse` (RFC 9458 §4.4, RFC 9292).
+fn ohttp_open_bhttp_response(
+    session:      const OhttpSession&,
+    enc_response: const u8[:],
+    out_res:      BhttpResponse&,
+) -> bool {
+    var bhttp_buf: u8[..8192] = [];
+    var bhttp_len: i32        = 0;
+    guard ohttp_open_response(session, enc_response, bhttp_buf, bhttp_len) else { return false; }
+    return bhttp_decode_response(bhttp_buf[..(bhttp_len as i64)], out_res);
 }

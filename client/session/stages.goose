@@ -22,11 +22,15 @@ import http.cache.validators;
 import http.cache.engine;
 import http.altsvc;
 import http.compression_dict;
+import http.digest_fields;
+import http.early_hints;
 import http.hsts;
 import auth.digest;
+import auth.dpop;
 import security.cors;
 import security.cross_origin_isolation;
 import security.privacypass;
+import client.replay_guard;
 import client.session.ssrf;
 import client.session.mock;
 import client.client;
@@ -287,9 +291,9 @@ fn stage_client_cookie_store<Jar>(
     return wire::StageVerdict.Continue;
 }
 
-// Ingests `Alt-Svc`, `Strict-Transport-Security`, and `Use-As-Dictionary` response headers.
+// Ingests `Alt-Svc`, `Strict-Transport-Security`, `Use-As-Dictionary`, and `Link` Early Hints response headers.
 fn stage_client_alt_svc(
-    resp:          const Response&,
+    resp:          Response&,
     current_url:   const core::Url&,
     is_https:      bool,
     origin_buf:    const u8[:],
@@ -302,6 +306,13 @@ fn stage_client_alt_svc(
     dict_cache:    DictionaryCache&,
     enable_dict:   bool,
 ) -> wire::StageVerdict {
+    let link_val = header(resp, "Link");
+    if link_val.len > 0 {
+        let eh, ok_eh = parse_early_hints(rfc::STATUS_EARLY_HINTS as! u16, link_val);
+        if ok_eh {
+            resp.early_hints = eh;
+        }
+    }
     if enable_altsvc && is_https {
         let alt_svc_val = header(resp, "Alt-Svc");
         if alt_svc_val.len > 0 {
@@ -321,16 +332,31 @@ fn stage_client_alt_svc(
     return wire::StageVerdict.Continue;
 }
 
-// Decodes `Content-Encoding` (`gzip`, `br`, `zstd`, `dcb`, `dcz`) on `resp` using `dict_cache`.
+// Decodes `Content-Encoding` (`gzip`, `br`, `zstd`, `dcb`, `dcz`) on `resp` using `dict_cache`
+// and verifies RFC 9530 `Content-Digest` / `Repr-Digest` integrity when enabled.
 fn stage_client_decompress(
     resp:        Response&,
     dict_cache:  const DictionaryCache&,
     strict_mode: bool = false,
 ) -> wire::StageVerdict {
+    let has_cd = header(resp, rfc::HEADER_CONTENT_DIGEST).len > 0;
+    let cd_ok_pre = if strict_mode && has_cd { verify_response_content_digest(resp) } else { true };
+
     let enc = header(resp, "Content-Encoding");
     if enc.len > 0 {
         let ok_dec = decode_body_with_dictionary(resp, dict_cache);
         if !ok_dec && strict_mode {
+            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+        }
+    }
+
+    if strict_mode && has_cd && !cd_ok_pre {
+        if !verify_response_content_digest(resp) {
+            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+        }
+    }
+    if strict_mode && header(resp, rfc::HEADER_REPR_DIGEST).len > 0 {
+        if !verify_response_repr_digest(resp) {
             return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
         }
     }
@@ -367,7 +393,61 @@ fn stage_client_cache_store<Cache>(
     return wire::StageVerdict.Continue;
 }
 
-// Evaluates 401 WWW-Authenticate challenges (RFC 7616 Digest, RFC 7617 Basic, RFC 9577 PrivateToken).
+fn try_handle_early_data_or_dpop_challenge(
+    session:       Client&,
+    ctx:           RequestExecutionContext&,
+    current_url:   const core::Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method:   bool,
+    resp:          const Response&,
+) -> bool {
+    guard !ctx.auth_retried else { return false; }
+    let was_early = find_header(ctx.headers, "Early-Data").len > 0;
+    let ed_dec = evaluate_early_data_response(resp.status_code as u16, was_early);
+    if ed_dec == EarlyDataDecision.RetryOn1Rtt {
+        ctx.auth_retried = true;
+        remove_header_by_name(ctx.headers, "Early-Data");
+        if ctx.body.len > 0 {
+            ctx.body.clear();
+            ctx.body.append(ctx.rewind_buf[..]);
+        }
+        ctx.body_consumed = false;
+        return true;
+    }
+
+    let is_dpop_status = resp.status_code == rfc::STATUS_UNAUTHORIZED || resp.status_code == rfc::STATUS_BAD_REQUEST;
+    guard session.has_dpop_key && is_dpop_status else { return false; }
+    guard extract_dpop_nonce(resp.headers, session.last_dpop_nonce) else { return false; }
+    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    var proof: u8[..2048] = [];
+    let ok_proof = create_dpop_proof(
+        session.dpop_private_key[..],
+        ctx.current_method[..],
+        current_url.href[..],
+        session.dpop_access_token[..],
+        session.last_dpop_nonce[..],
+        now_sec,
+        "",
+        proof,
+    );
+    guard ok_proof else { return false; }
+    ctx.auth_retried = true;
+    if ctx.body.len > 0 {
+        ctx.body.clear();
+        ctx.body.append(ctx.rewind_buf[..]);
+    }
+    ctx.body_consumed = false;
+    if session.enable_cookie_jar {
+        ingest_hop_response_cookies(session, ctx, current_url, samesite_eval, resp.headers);
+        remove_header_by_name(ctx.headers, "Cookie");
+        prepare_hop_cookie_header(session, ctx, current_url, samesite_eval, safe_method);
+    }
+    set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
+    return true;
+}
+
+// Evaluates 401 WWW-Authenticate challenges (RFC 7616 Digest, RFC 7617 Basic, RFC 9577 PrivateToken),
+// RFC 9449 DPoP-Nonce challenges, and RFC 8470 425 Too Early recovery.
 // When challenge credentials can be synthesized, prepares `ctx` for an auth retry hop
 // and returns `StageVerdict.RetryAuth`.
 fn stage_client_auth_challenge(
@@ -378,11 +458,14 @@ fn stage_client_auth_challenge(
     safe_method:   bool,
     resp:          Response&,
 ) -> wire::StageVerdict {
-    let has_auth_source = session.creds.has_credentials || session.private_token_cache.entries.len > 0;
-    guard has_auth_source && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
+    guard ctx.body.len == 0 || ctx.rewindable else {
         return wire::StageVerdict.Continue;
     }
-    guard ctx.body.len == 0 || ctx.rewindable else {
+    if try_handle_early_data_or_dpop_challenge(session, ctx, current_url, samesite_eval, safe_method, resp) {
+        return wire::StageVerdict.RetryAuth;
+    }
+    let has_auth_source = session.creds.has_credentials || session.private_token_cache.entries.len > 0;
+    guard has_auth_source && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
         return wire::StageVerdict.Continue;
     }
     var auth_header_val: u8[..4096] = [];
@@ -608,6 +691,38 @@ fn run_client_preflight_stages<UserStage>(
     return wire::StageVerdict.Continue;
 }
 
+inline fn apply_client_early_data_and_dpop_headers(
+    session:     const Client&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    now_sec:     i64,
+) {
+    if session.enable_early_data && !ctx.auth_retried {
+        if evaluate_early_data_request(ctx.current_method[..]) == EarlyDataDecision.Allow {
+            set_header(ctx.headers, "Early-Data", "1");
+        }
+    }
+    guard session.has_dpop_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
+    var proof: u8[..2048] = [];
+    guard create_dpop_proof(
+        session.dpop_private_key[..],
+        ctx.current_method[..],
+        current_url.href[..],
+        session.dpop_access_token[..],
+        session.last_dpop_nonce[..],
+        now_sec,
+        "",
+        proof,
+    ) else { return; }
+    set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
+    if session.dpop_access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
+        var auth_val: u8[..600] = [];
+        auth_val.append("DPoP ");
+        let _ = auth_val.try_append(session.dpop_access_token[..]);
+        set_header(ctx.headers, "Authorization", auth_val[..], true);
+    }
+}
+
 // Executes a single built-in client ingress stage by slot ID (`0..5`).
 fn dispatch_client_ingress_stage(
     stage_id:      u8,
@@ -671,6 +786,7 @@ fn dispatch_client_ingress_stage(
         );
     }
     if stage_id == wire::STAGE_ID_CLI_IN_INTERCEPTOR_AUTH {
+        apply_client_early_data_and_dpop_headers(session, ctx, current_url, now_sec);
         return stage_client_auth_header(
             session.pipeline,
             ctx.headers,
@@ -796,7 +912,11 @@ fn dispatch_client_egress_stage(
         );
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_DECOMPRESS {
-        let dec_v = stage_client_decompress(out_resp, session.dict_cache, session.strict_content_decoding);
+        let dec_v = stage_client_decompress(
+            out_resp,
+            session.dict_cache,
+            session.strict_content_decoding || session.verify_content_digest,
+        );
         match dec_v {
             Abort ab => {
                 out_err = make_error(ab.err_code, "protocol", "ERR_CONTENT_DECODING_FAILED: content-encoding decompression failed");

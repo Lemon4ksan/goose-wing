@@ -1709,6 +1709,40 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
             "Single-spend PrivateToken marked used after 401 redemption",
         );
     };
+
+    t.run("0-RTT Early-Data, DPoP Nonce Challenge, Content-Digest, Early-Hints, HAR Telemetry & Circuit Breaker") { sub =>
+        var cli = wing::new_client();
+        cli.enable_early_data = true;
+        cli.verify_content_digest = true;
+        cli.enable_har_telemetry = true;
+
+        cli.dpop_private_key = [0x42; 32];
+        cli.has_dpop_key = true;
+
+        let body_bytes = "verified-digest-payload";
+        var digest_hdr: u8[..128] = [];
+        sub.assert_true(
+            wing::format_digest_field_value("sha-256", body_bytes, digest_hdr),
+            "Computed SHA-256 Content-Digest",
+        );
+
+        cli.mock_route("GET", "https://edge.example.com/resource", 200, body_bytes);
+        cli.add_mock_header("Content-Digest", digest_hdr[..]);
+        cli.add_mock_header("Link", "</app.css>; rel=preload; as=style");
+        cli.add_mock_header("Retry-After", "120");
+
+        let res, err = cli.get("https://edge.example.com/resource");
+        sub.assert_true(wing::ok(err), "0-RTT + DPoP + Content-Digest request succeeded");
+        sub.assert_bytes_eq(wing::sent_header(res, "Early-Data"), "1", "Injected RFC 8470 Early-Data: 1 header");
+        sub.assert_true(wing::sent_header(res, "DPoP").len > 0, "Injected RFC 9449 DPoP proof JWT header");
+        sub.assert_true(res.early_hints.is_valid, "Parsed Link header into Response.early_hints");
+        sub.assert_true(cli.last_har_json.len > 0, "Populated HAR 1.2 telemetry JSON");
+
+        // Retry-After: 120s (> 60s max_retry_after_ms) tripped HostCircuitBreaker for edge.example.com
+        let res_cb, err_cb = cli.get("https://edge.example.com/resource");
+        sub.assert_false(wing::ok(err_cb), "Subsequent request blocked by HostCircuitBreaker");
+        sub.assert_eq(res_cb.status_code, 503, "Circuit breaker returned 503");
+    };
 }
 
 fn main() {

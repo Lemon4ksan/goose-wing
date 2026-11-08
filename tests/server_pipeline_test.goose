@@ -2413,6 +2413,45 @@ fn test_srv_reg3_r4_server_wire(t: lit::T&) {
         let pipe_wire = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\nHTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         sub.assert_true(wing::response_wire_has_connection_close(pipe_wire), "Connection: close in 2nd pipelined response detected");
     };
+
+    t.run("5. Integrated Server Pipeline: security.txt, Content-Digest + RFC 9457 ProblemDetails, DPoP & Ed25519 Signatures") { sub =>
+        var cfg = wing::new_default_server_pipeline_config("example.com");
+        cfg.enable_csrf_guard = false;
+        cfg.verify_request_digest = true;
+        cfg.emit_problem_details = true;
+        cfg.security_txt = wing::parse_security_txt(
+            "Contact: mailto:sec@example.com\nExpires: 2030-01-01T00:00:00Z\n",
+            1700000000,
+        );
+        wing::add_route(cfg.router, "POST", "/submit", 1);
+
+        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var fut = internal::InlineHandlerFuture { .. };
+
+        // 1. /.well-known/security.txt automatic serving
+        var req_sec = wing::new_request("GET", "/.well-known/security.txt");
+        var res_sec = wing::Response { .. };
+        let out_sec = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_sec, 1000000000, res_sec, fut);
+        sub.assert_true(out_sec == wing::PipelineOutcome.Handled, "security.txt request handled");
+        sub.assert_eq(res_sec.status_code, 200, "security.txt returned 200");
+        sub.assert_true(core::contains(res_sec.text(), "Contact: mailto:sec@example.com"), "security.txt formatted body");
+
+        // 2. Content-Digest mismatch emits RFC 9457 ProblemDetails 400 response
+        var req_bad_dig = wing::new_request("POST", "/submit");
+        req_bad_dig.body.append("tampered-body");
+        wing::set_header(req_bad_dig, "Content-Digest", "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+        var res_bad_dig = wing::Response { .. };
+        let _ = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_bad_dig, 2000000000, res_bad_dig, fut);
+        sub.assert_eq(res_bad_dig.status_code, 400, "Invalid Content-Digest rejected with 400");
+        sub.assert_true(core::contains(res_bad_dig.text(), "Content-Digest verification failed"), "RFC 9457 ProblemDetails body emitted");
+
+        // 3. Route Not Found emits RFC 9457 ProblemDetails 404 response
+        var req_404 = wing::new_request("GET", "/nonexistent");
+        var res_404 = wing::Response { .. };
+        let _ = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_404, 3000000000, res_404, fut);
+        sub.assert_eq(res_404.status_code, 404, "Missing route returned 404");
+        sub.assert_bytes_eq(res_404.header("Content-Type"), rfc::MIME_PROBLEM_JSON, "404 returned application/problem+json");
+    };
 }
 
 fn main() {

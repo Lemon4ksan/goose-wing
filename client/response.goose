@@ -8,6 +8,7 @@ import std;
 import json;
 import client.request;
 import http.compression_dict;
+import http.early_hints;
 import http.headers;
 
 // ---- error model & diagnostics ---------------------------------------------
@@ -74,17 +75,18 @@ const RES_PRESENCE_TRANSFER_ENCODING: u16 = 1 << 4;
 const RES_PRESENCE_SERVER:            u16 = 1 << 5;
 
 struct Response {
-    status_code:    i32             = 0,
-    effective_url:  u8[..2048]      = [],
-    headers:        HeaderMap       = HeaderMap { .. },
-    trailers:       HeaderMap       = HeaderMap { .. },
-    presence_mask:  u16             = 0,
-    redirect_count: i64             = 0,
-    url_chain:      u8[..256][..16] = [],
-    final_method:   u8[..16]        = "GET",
-    protocol:       u8[..16]        = "HTTP/1.1",
-    sent_headers:   HeaderMap       = HeaderMap { .. },
-    body:           u8[>..]         = [],
+    status_code:    i32                = 0,
+    effective_url:  u8[..2048]         = [],
+    headers:        HeaderMap          = HeaderMap { .. },
+    trailers:       HeaderMap          = HeaderMap { .. },
+    presence_mask:  u16                = 0,
+    redirect_count: i64                = 0,
+    url_chain:      u8[..256][..16]    = [],
+    final_method:   u8[..16]           = "GET",
+    protocol:       u8[..16]           = "HTTP/1.1",
+    sent_headers:   HeaderMap          = HeaderMap { .. },
+    early_hints:    EarlyHintsResponse = EarlyHintsResponse { .. },
+    body:           u8[>..]            = [],
 }
 
 fn reset_response(res: Response&) {
@@ -93,6 +95,7 @@ fn reset_response(res: Response&) {
     res.headers.clear();
     res.trailers.clear();
     res.presence_mask = 0;
+    res.early_hints = EarlyHintsResponse { .. };
     res.redirect_count = 0;
     res.url_chain.clear();
     res.final_method.clear();

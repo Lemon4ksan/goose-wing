@@ -11,6 +11,7 @@ namespace wing;
 import std;
 import client.request;
 import http.headers;
+import http.trace;
 
 // ---- Interceptor Bitmask Constants (64-bit register layout) --------------
 
@@ -281,17 +282,32 @@ fn find_retry_policy(pipeline: const InterceptorPipeline&, out_retries: i32&, ou
 // W3C TraceContext traceparent generator:
 // Format: 00-{32 hex trace_id}-{16 hex parent_id}-{2 hex flags}
 fn generate_traceparent<B>(counter: u64, clock_us: i64, flag: const u8[:], out: B&) {
-    out.append("00-");
-    core::format_u64_hex_fixed(clock_us as! u64, 16, out, false);
-    core::format_u64_hex_fixed(counter ^ 0xa5a5a5a5a5a5a5a5, 16, out, false);
-    out.append("-");
-    core::format_u64_hex_fixed(counter, 16, out, false);
-    out.append("-");
+    let hi = clock_us as! u64;
+    let lo = counter ^ 0xa5a5a5a5a5a5a5a5;
+    let trace_id: u8[16] = [
+        ((hi >> 56) & 0xFF) as u8, ((hi >> 48) & 0xFF) as u8,
+        ((hi >> 40) & 0xFF) as u8, ((hi >> 32) & 0xFF) as u8,
+        ((hi >> 24) & 0xFF) as u8, ((hi >> 16) & 0xFF) as u8,
+        ((hi >> 8) & 0xFF) as u8, (hi & 0xFF) as u8,
+        ((lo >> 56) & 0xFF) as u8, ((lo >> 48) & 0xFF) as u8,
+        ((lo >> 40) & 0xFF) as u8, ((lo >> 32) & 0xFF) as u8,
+        ((lo >> 24) & 0xFF) as u8, ((lo >> 16) & 0xFF) as u8,
+        ((lo >> 8) & 0xFF) as u8, (lo & 0xFF) as u8,
+    ];
+    let parent_id: u8[8] = [
+        ((counter >> 56) & 0xFF) as u8, ((counter >> 48) & 0xFF) as u8,
+        ((counter >> 40) & 0xFF) as u8, ((counter >> 32) & 0xFF) as u8,
+        ((counter >> 24) & 0xFF) as u8, ((counter >> 16) & 0xFF) as u8,
+        ((counter >> 8) & 0xFF) as u8, (counter & 0xFF) as u8,
+    ];
+    var tp = new_traceparent(trace_id, parent_id, flag != "00");
     if flag.len == 2 {
-        out.append(flag);
-    } else {
-        out.append("01");
+        let parsed_f, ok_f = parse_hex_u8(flag, 0);
+        if ok_f {
+            tp.trace_flags = parsed_f;
+        }
     }
+    format_traceparent(tp, out);
 }
 
 fn push_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {

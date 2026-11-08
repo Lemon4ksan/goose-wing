@@ -2351,6 +2351,13 @@ fn tls_flush_cork(fd: i64, slot_idx: u16, cork: core::CorkBuffer&) -> i32 {
     return sent;
 }
 
+inline fn verify_tls_slot_sni(server: const HttpServer&, slot_idx: i32) -> bool {
+    guard server.sni_registry.count > 0 else { return true; }
+    let sni_host = g_tls_cipher_slots[slot_idx as i64].server_name[..];
+    let _, ok_sni = resolve_sni_credentials(server, sni_host);
+    return ok_sni;
+}
+
 // Executes a live TLS 1.3 HTTPS accept and dispatch loop using PipeBuffer and TLS record AEAD.
 fn serve_tls(
     server:          HttpServer&,
@@ -2369,8 +2376,12 @@ fn serve_tls(
         if conn <= 0 { continue; }
 
         let slot_idx, ok_hs = tls_server_handshake(conn, tls_config);
-        if !ok_hs {
-            tcp_close(conn);
+        if !ok_hs || !verify_tls_slot_sni(server, slot_idx) {
+            if ok_hs {
+                tls_transport_close(conn, slot_idx);
+            } else {
+                tcp_close(conn);
+            }
             total_served++;
             continue;
         }

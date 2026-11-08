@@ -720,6 +720,56 @@ fn test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures(t: lit::T&) {
 
         sub.assert_false(wing::is_valid_tracestate_val("abc "), "Trailing space in tracestate value MUST be rejected per W3C §3.3.1.2");
     };
+
+    t.run("RFC 9458 + RFC 9292 Integrated BHTTP over OHTTP Pipeline") { sub =>
+        let skR = ohttp_test_keypair();
+        let pkR = core::x25519_base_scalarmult(skR);
+        var cfg = wing::OhttpKeyConfig { key_id: 1, public_key_len: 32, .. };
+        cfg.public_key.append(pkR[..]);
+
+        var b_req = wing::BhttpRequest { .. };
+        let _ = b_req.method.try_set("POST");
+        let _ = b_req.target.try_set("/oblivious-query");
+        let _ = b_req.body.try_set("secret-payload");
+        b_req.body_len = b_req.body.len as i32;
+
+        let eph = ohttp_test_ephemeral_sk();
+        var cli_sess = wing::OhttpSession { .. };
+        var sealed_req:     u8[..8192] = [];
+        var sealed_req_len: i32        = 0;
+        sub.assert_true(
+            wing::ohttp_seal_bhttp_request(cfg, eph, b_req, sealed_req, sealed_req_len, cli_sess),
+            "ohttp_seal_bhttp_request succeeded",
+        );
+
+        var gw_sess = wing::OhttpSession { .. };
+        var decoded_req = wing::BhttpRequest { .. };
+        sub.assert_true(
+            wing::ohttp_open_bhttp_request(skR, sealed_req[..sealed_req_len], decoded_req, gw_sess),
+            "ohttp_open_bhttp_request succeeded",
+        );
+        sub.assert_bytes_eq(decoded_req.target[..], "/oblivious-query", "Decoded BHTTP target matches");
+        sub.assert_bytes_eq(decoded_req.body[..], "secret-payload", "Decoded BHTTP body matches");
+
+        var b_resp = wing::BhttpResponse { status: 200, .. };
+        let _ = b_resp.body.try_set("oblivious-reply");
+        b_resp.body_len = b_resp.body.len as i32;
+        let resp_nonce: u8[16] = [0x11; 16];
+        var sealed_resp:     u8[..8192] = [];
+        var sealed_resp_len: i32        = 0;
+        sub.assert_true(
+            wing::ohttp_seal_bhttp_response(gw_sess, resp_nonce, b_resp, sealed_resp, sealed_resp_len),
+            "ohttp_seal_bhttp_response succeeded",
+        );
+
+        var decoded_resp = wing::BhttpResponse { .. };
+        sub.assert_true(
+            wing::ohttp_open_bhttp_response(cli_sess, sealed_resp[..sealed_resp_len], decoded_resp),
+            "ohttp_open_bhttp_response succeeded",
+        );
+        sub.assert_eq(decoded_resp.status as i64, 200, "Decoded BHTTP status 200");
+        sub.assert_bytes_eq(decoded_resp.body[..], "oblivious-reply", "Decoded BHTTP response body matches");
+    };
 }
 
 fn main() {

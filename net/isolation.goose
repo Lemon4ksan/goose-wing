@@ -10,6 +10,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .pool;
 
 // ---- Network Isolation Key (NIK) Model -----------------------------------
 
@@ -54,4 +55,15 @@ fn format_partitioned_key<B>(base_key: const u8[:], nik: const NetworkIsolationK
         let _ = out.try_append(nik.frame_site[..]);
         let _ = out.try_append("}");
     }
+}
+
+// Converts a `NetworkIsolationKey` into a `NetworkAnonymizationKey` for connection pool and cache partitioning.
+fn nik_to_anonymization_key(
+    nik:                const NetworkIsolationKey&,
+    had_cross_site_hop: bool = false,
+) -> NetworkAnonymizationKey {
+    if nik.is_empty {
+        return new_network_anonymization_key("", had_cross_site_hop);
+    }
+    return new_network_anonymization_key(nik.top_level_site[..], nik.is_cross_site || had_cross_site_hop);
 }

@@ -31,9 +31,13 @@ import client.stream;
 import client.session.ssrf;
 import client.session.mock;
 import net.pool;
+import net.retry;
 import wire.pipeline;
 import auth.digest;
+import auth.dpop;
 import security.privacypass;
+import client.replay_guard;
+import client.telemetry;
 
 // ---- client configuration and state ----------------------------------------
 
@@ -120,11 +124,22 @@ struct Client {
     pool:     StreamPool         = StreamPool { .. },
     af_cache: AddressFamilyCache = AddressFamilyCache { .. },
 
-    enable_cookie_jar:       bool             = true,
-    http2_prior_knowledge:   bool             = false,
-    strict_content_decoding: bool             = false,
-    trust_store:             TrustAnchorStore = TrustAnchorStore { .. },
-    insecure_skip_verify:    bool             = false,
+    enable_cookie_jar:       bool                = true,
+    http2_prior_knowledge:   bool                = false,
+    strict_content_decoding: bool                = false,
+    verify_content_digest:   bool                = false,
+    enable_early_data:       bool                = false,
+    enable_har_telemetry:    bool                = false,
+    last_har_json:           u8[..2048]          = [],
+    retry_budget:            AdaptiveRetryBudget = new_adaptive_retry_budget(),
+    circuit_breaker:         HostCircuitBreaker  = new_host_circuit_breaker(),
+    backoff_config:          BackoffConfig       = new_backoff_config(),
+    dpop_private_key:        u8[32]              = [0; 32],
+    dpop_access_token:       u8[..512]           = [],
+    has_dpop_key:            bool                = false,
+    last_dpop_nonce:         u8[..128]           = [],
+    trust_store:             TrustAnchorStore    = TrustAnchorStore { .. },
+    insecure_skip_verify:    bool                = false,
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },

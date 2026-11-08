@@ -14,6 +14,8 @@ import client.request;
 import client.response;
 import client.redirect;
 import client.interceptor;
+import client.telemetry;
+import client.replay_guard;
 import http.headers;
 import http.cache.cache_control;
 import http.cache.freshness;
@@ -33,6 +35,7 @@ import client.client;
 import client.session.cookie_bridge;
 import client.session.h1_exchange;
 import net.pool;
+import net.isolation;
 import net.proxy;
 import net.dns;
 import net.happy_eyeballs;
@@ -1357,12 +1360,13 @@ fn execute_live_network_hop(
     };
 
     let pool_scheme = if is_https { PoolScheme.Https } else { PoolScheme.Http };
+    let nik = new_network_isolation_key(site_site, site_site);
     let pool_key = new_pool_key(
         pool_scheme,
         host_str,
         port_num,
         proxy_chain,
-        new_network_anonymization_key(site_site, ctx.had_cross_site_hop),
+        nik_to_anonymization_key(nik, ctx.had_cross_site_hop),
         TlsAndDnsPolicy { .. },
     );
 
@@ -1696,6 +1700,47 @@ fn execute_request_inner(session: Client&, req: const Request&) -> Response, Err
     return execute_client_pipeline_with_stage(session, req, noop);
 }
 
+inline fn evaluate_response_retry_after(
+    session:  Client&,
+    host_str: const u8[:],
+    resp:     const Response&,
+    now_ns:   i64,
+) {
+    let ra_val = resp.header("Retry-After");
+    guard ra_val.len > 0 else { return; }
+    let now_ms = div_euclid(session.virtual_clock_us, 1000);
+    let wait_ms, ok_ra = parse_retry_after_ms(ra_val, now_ms);
+    if ok_ra {
+        let _ = trip_circuit_breaker_if_exceeded(session.circuit_breaker, host_str, wait_ms, now_ns);
+    }
+}
+
+inline fn record_client_har_telemetry(
+    session:      Client&,
+    req:          const Request&,
+    resp:         const Response&,
+    total_dur_us: i64,
+) {
+    guard session.enable_har_telemetry else { return; }
+    let status_u16 = (resp.status_code as u64) as! u16;
+    var entry = HarEntry {
+        status:         status_u16,
+        request_bytes:  req.body.len,
+        response_bytes: resp.body.len,
+        timings: RequestTimings {
+            wait_us: max(0, total_dur_us),
+            ..
+        },
+        ..
+    };
+    entry.started_iso8601.try_set("2026-01-01T00:00:00.000Z");
+    entry.method.try_set(req.method[..]);
+    entry.url.try_set(req.url[..]);
+    entry.http_version.try_set("HTTP/1.1");
+    session.last_har_json.clear();
+    serialize_har_entry_json(entry, session.last_har_json);
+}
+
 inline fn should_retry_request(
     status_code: i32,
     err:         Error,
@@ -1706,6 +1751,13 @@ inline fn should_retry_request(
     max_retries: i32,
     retry_5xx:   bool,
 ) -> bool {
+    if !ok(err) && attempts == 0 {
+        let tier1 = evaluate_tier1_retry(err.code, false, req, status_code > 0);
+        if tier1.retry_immediately {
+            return true;
+        }
+    }
+
     let is_idem = rfc::is_idempotent_method(method) || has_idempotency_key(req);
     let can_retry = is_idem && (req.body.len == 0 || req.rewindable);
     guard can_retry else { return false; }
@@ -1720,24 +1772,38 @@ inline fn should_retry_request(
 
 fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     let start_us = session.virtual_clock_us;
+    let now_ns = start_us * 1000;
+
+    let parsed_url, url_err = core::parse_url(req.url[..]);
+    let target_host = if url_err == core::UrlParseError.None { parsed_url.host() } else { "" };
+    if target_host.len > 0 && is_host_circuit_broken(session.circuit_breaker, target_host, now_ns) {
+        let err_cb = make_error(503, "circuit_breaker", "host circuit broken by Retry-After");
+        return Response { status_code: 503, .. }, err_cb;
+    }
+    record_primary_request(session.retry_budget, now_ns);
 
     var max_retries: i32  = 0;
     var retry_5xx:   bool = false;
     let has_retry = find_retry_policy(session.pipeline, max_retries, retry_5xx);
 
-    var attempts: i32 = 0;
+    var attempts:      i32 = 0;
+    var prev_sleep_ms: i64 = 0;
+    var rng_seed:      u64 = (start_us as u64) ^ 0x9E3779B97F4A7C15;
     loop {
         // Phase -1: Application Interceptors (Request Hook) per attempt
         var active_req = copy(req);
         apply_app_interceptors_request(session.pipeline, active_req, session.virtual_clock_us);
 
         let resp, err = execute_request_inner(session, active_req);
+        evaluate_response_retry_after(session, target_host, resp, now_ns);
 
         let retry = should_retry_request(
             resp.status_code, err, active_req.method[..], active_req,
             attempts, has_retry, max_retries, retry_5xx,
         );
-        if retry {
+        if retry && allow_retry_budget(session.retry_budget, now_ns) {
+            let sleep_ms = compute_backoff_jitter_ms(session.backoff_config, attempts, prev_sleep_ms, rng_seed);
+            session.virtual_clock_us += sleep_ms * 1000;
             attempts += 1;
             continue;
         }
@@ -1746,6 +1812,7 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
         var final_resp = resp;
         let total_dur_us = session.virtual_clock_us - start_us;
         apply_app_interceptors_response(session.pipeline, active_req, final_resp, err, total_dur_us);
+        record_client_har_telemetry(session, active_req, final_resp, total_dur_us);
         return copy(final_resp), err;
     }
     return Response { .. }, make_error(rfc::STATUS_INTERNAL_SERVER_ERROR, "client", "request execution failed");

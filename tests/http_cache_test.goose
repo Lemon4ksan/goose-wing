@@ -2469,6 +2469,34 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         sub.assert_bytes_eq(wing::get_header(stored, "Content-Location"), "/canonical-v1", "Content-Location protected on 304");
         sub.assert_bytes_eq(wing::get_header(stored, "Cache-Control"), "max-age=600", "Cache-Control updated on 304");
     };
+
+    t.run("RFC 9211 Cache-Status header emission and RFC 9213 Targeted Cache-Control in HttpCache") { sub =>
+        var opts = wing::CacheOptions { shared: true, .. };
+        opts.target_name.append("Fastly");
+        var cache = wing::HttpCache { options: opts, .. };
+
+        var req = wing::new_request("GET", "https://cdn.example.com/item");
+        var resp = wing::Response { status_code: 200, .. };
+        resp.set_header("Cache-Control", "public, max-age=10");
+        resp.set_header("Fastly-Cache-Control", "public, max-age=300");
+        resp.body.append("edge-cached-body");
+
+        let ts = wing::new_cache_timestamps(core::unix(1000, 0), core::unix(1000, 0), core::unix(1000, 0));
+        let store_dec = cache.on_response(req, resp, ts);
+        sub.assert_true(store_dec.kind == wing::ResponseDecisionKind.StoreAndReturn, "Stored targeted entry");
+        sub.assert_true(
+            core::contains_fold(store_dec.response.header("Cache-Status"), "Fastly; stored"),
+            "Cache-Status reports stored on on_response",
+        );
+
+        // At t=1050 (past standard max-age=10, within Fastly-Cache-Control max-age=300), must still HIT!
+        let hit_dec = cache.lookup(req, core::unix(1050, 0));
+        sub.assert_true(hit_dec.kind == wing::LookupResultKind.Hit, "Shared cache honors Fastly-Cache-Control max-age=300");
+        sub.assert_true(
+            core::contains_fold(hit_dec.cached_response.header("Cache-Status"), "Fastly; hit"),
+            "Cache-Status reports hit on lookup",
+        );
+    };
 }
 
 fn main() {

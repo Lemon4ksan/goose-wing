@@ -157,6 +157,13 @@ fn submit_to_cork(
     let data = cmd.buf[..];
     guard data.len > 0 else { return WireResult.Success; }
 
+    if cork.sock_fd > 0 {
+        let n_cork = wing::server_cork_write(cork, data);
+        guard n_cork >= 0 else { return WireResult.ErrorDeviceLost; }
+        q.bytes_sent = q.bytes_sent + (n_cork as u64);
+        return WireResult.Success;
+    }
+
     let avail = core::cork_available(cork.buffer);
     if data.len <= avail {
         let written, _ = core::cork_write(cork.buffer, data);

@@ -11,6 +11,9 @@ import core from "..";
 import http.headers;
 import http.client_cert;
 import http.early_hints;
+import http.forwarded;
+import http.status_diagnostics;
+import http.incremental;
 import net.tcp;
 import net.transport;
 import net.pool;
@@ -19,6 +22,7 @@ import client.response;
 import client.session.h1_exchange;
 import proxy.gcra;
 import proxy.load_balancer;
+import proxy.health_check;
 import wire.h1;
 
 const PROXY_TARGET_NONE: i32 = -1;
@@ -26,6 +30,7 @@ const PROXY_TARGET_NONE: i32 = -1;
 struct ProxyConfig {
     strip_hop_by_hop:            bool       = true,
     append_forwarded:            bool       = true,
+    emit_rfc7239_forwarded:      bool       = false,
     preserve_host:               bool       = false,
     trust_incoming_xff:          bool       = false,
     max_active_conns_per_target: i32        = 1024,
@@ -263,6 +268,14 @@ fn inject_forwarded_metadata(
     } else if orig_host.len > 0 && !config.preserve_host {
         guard append_header(out_headers, "X-Forwarded-Host", orig_host) else { return false; }
     }
+    if config.emit_rfc7239_forwarded {
+        var elem = ForwardedElement { .. };
+        elem.by.try_set(config.via_pseudonym[..]);
+        elem.for_node.try_set(client_ip);
+        elem.host.try_set(orig_host);
+        elem.proto.try_set(proto);
+        guard append_forwarded_header(out_headers, elem) else { return false; }
+    }
     return true;
 }
 
@@ -343,13 +356,14 @@ fn serialize_upstream_request<B>(
 
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.
 struct ReverseProxy {
-    cluster:            UpstreamCluster    = UpstreamCluster { .. },
-    config:             ProxyConfig        = ProxyConfig { .. },
-    rate_limiter:       GatewayRateLimiter = GatewayRateLimiter { .. },
-    total_forwarded:    u64                = 0,
-    total_dropped:      u64                = 0,
-    total_rate_limited: u64                = 0,
-    total_overloaded:   u64                = 0,
+    cluster:            UpstreamCluster      = UpstreamCluster { .. },
+    config:             ProxyConfig          = ProxyConfig { .. },
+    rate_limiter:       GatewayRateLimiter   = GatewayRateLimiter { .. },
+    health_checker:     ClusterHealthChecker = ClusterHealthChecker { .. },
+    total_forwarded:    u64                  = 0,
+    total_dropped:      u64                  = 0,
+    total_rate_limited: u64                  = 0,
+    total_overloaded:   u64                  = 0,
 }
 
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
@@ -399,6 +413,11 @@ fn finish_proxy_request(proxy: ReverseProxy&, target_idx: i32, success: bool) {
 fn complete_upstream_exchange(proxy: ReverseProxy&, target_idx: i32, status_code: i32, transport_ok: bool) {
     let ok = transport_ok && status_code >= 100 && status_code < 500;
     finish_proxy_request(proxy, target_idx, ok);
+    if ok {
+        let _ = on_probe_success(proxy.health_checker, proxy.cluster, target_idx, 1000);
+    } else {
+        let _ = on_probe_failure(proxy.health_checker, proxy.cluster, target_idx);
+    }
 }
 
 // Aborts an in-flight proxy request due to downstream stall, timeout, or network disconnect.
@@ -776,11 +795,12 @@ fn exchange_prepared_wire_on_conn_with_hints(
 // ---- Upstream `X-Accel-*` Control Headers, `Location` Rewriting & `103` Capture ----
 
 struct UpstreamAccelControl {
-    disable_buffering: bool      = false,
-    has_accel_expires: bool      = false,
-    accel_expires_sec: i64       = 0,
-    limit_rate_bps:    u64       = 0,
-    accel_redirect:    u8[..256] = [],
+    disable_buffering:     bool      = false,
+    incremental_preferred: bool      = false,
+    has_accel_expires:     bool      = false,
+    accel_expires_sec:     i64       = 0,
+    limit_rate_bps:        u64       = 0,
+    accel_redirect:        u8[..256] = [],
 }
 
 struct UpstreamResponse {
@@ -864,6 +884,10 @@ fn process_and_filter_upstream_response_headers(
 ) -> bool {
     out_headers.clear();
     accel = UpstreamAccelControl { .. };
+    if is_incremental_requested(in_headers) {
+        accel.incremental_preferred = true;
+        accel.disable_buffering = true;
+    }
     for &entry in in_headers.entries {
         let name = entry_name(in_headers, entry);
         let val = entry_value(in_headers, entry);
@@ -946,6 +970,17 @@ fn execute_proxy_exchange(
         pool.release_connection(conn_id, now_i64);
     } else {
         pool.close_pooled_connection(conn_id);
+    }
+    if ok_ex {
+        var ps_entry = ProxyStatusEntry {
+            received_status: out_resp.status_code,
+            ..
+        };
+        ps_entry.proxy_name.try_set(proxy.config.via_pseudonym[..]);
+        ps_entry.next_hop.try_set(target.host[..]);
+        var ps_buf: u8[..256] = [];
+        format_proxy_status(ps_entry, ps_buf);
+        out_resp.set_header("Proxy-Status", ps_buf[..]);
     }
     complete_upstream_exchange(proxy, target_idx, out_resp.status_code, ok_ex);
     return ok_ex;

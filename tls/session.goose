@@ -921,6 +921,7 @@ struct TlsClientHandshakeConfig {
     client_priv_seed:     u8[32]           = [0; 32],
     enable_pq_hybrid:     bool             = false,
     ech_config_list:      u8[..512]        = [],
+    crl_der:              u8[..4096]       = [],
 }
 
 struct TlsServerHandshakeConfig {
@@ -1277,6 +1278,20 @@ fn verify_stapled_ocsp_for_chain(
     return sig_alert == TlsAlert.CloseNotify;
 }
 
+fn verify_crl_for_chain(
+    crl_der:      const u8[:],
+    chain_parsed: const ParsedCert[..8]&,
+    chain_slices: const (const u8[:])[..8]&,
+) -> bool {
+    guard crl_der.len > 0 else { return true; }
+    var crl_parsed = ParsedCrl { .. };
+    guard parse_x509_crl(crl_der, crl_parsed) else { return false; }
+    let ser_bytes = span_slice(chain_slices[0], chain_parsed[0].serial_number);
+    let ser_u64, ok_ser = parse_asn1_serial_u64(ser_bytes);
+    guard ok_ser else { return false; }
+    return !crl_is_revoked(crl_parsed, ser_u64);
+}
+
 // Validates server Certificate and CertificateVerify against trust anchor store and transcript (RFC 8446 §4.4).
 fn verify_server_cert_and_signature(
     cert_body:          const u8[:],
@@ -1309,6 +1324,7 @@ fn verify_server_cert_and_signature(
         let alert = verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
         guard alert == TlsAlert.CloseNotify else { return false; }
         guard verify_stapled_ocsp_for_chain(leaf_ocsp, chain_parsed, chain_slices, eff_clock) else { return false; }
+        guard verify_crl_for_chain(config.crl_der[..], chain_parsed, chain_slices) else { return false; }
 
         if config.server_name.len > 0 {
             var sans: SanEntry[..16] = [];

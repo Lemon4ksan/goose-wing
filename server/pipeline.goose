@@ -13,6 +13,11 @@ import .pool;
 import .edge_filter;
 import .cache;
 import .profiler;
+import http.digest_fields;
+import http.signatures;
+import http.security_txt;
+import http.problem;
+import auth.dpop;
 import wire.pipeline;
 
 struct ServerPipelineConfig {
@@ -25,6 +30,13 @@ struct ServerPipelineConfig {
     route_cache:             HttpRouteCache           = HttpRouteCache { .. },
     jwks:                    Jwks                     = Jwks { .. },
     jwt_options:             JwtValidationOptions     = JwtValidationOptions { .. },
+    security_txt:            SecurityTxt              = SecurityTxt { .. },
+    dpop_replay_cache:       DPoPReplayCache          = DPoPReplayCache { .. },
+    dpop_public_key:         u8[..64]                 = [],
+    sig_key_id:              u8[..64]                 = [],
+    sig_public_key:          u8[..64]                 = [],
+    verify_request_digest:   bool                     = false,
+    emit_problem_details:    bool                     = false,
     wire_pipeline:           wire::WirePipeline       = wire::default_server_pipeline(),
     header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
     ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
@@ -1092,7 +1104,47 @@ fn dispatch_ingress_pipeline(
         };
     }
 
+    if !evaluate_server_integrity_and_crypto(cfg, req, now_ns, res) {
+        return PipelineOutcome.CsrfRejected, true;
+    }
+
     return PipelineOutcome.Handled, false;
+}
+
+fn evaluate_server_integrity_and_crypto(
+    cfg:    ServerPipelineConfig&,
+    req:    const Request&,
+    now_ns: u64,
+    res:    Response&,
+) -> bool {
+    if cfg.verify_request_digest && header(req, "Content-Digest").len > 0 {
+        if !verify_request_content_digest(req) {
+            if cfg.emit_problem_details {
+                respond_problem(res, 400, "Bad Request", "Content-Digest verification failed");
+            } else {
+                res.status_code = 400;
+            }
+            return false;
+        }
+    }
+    if cfg.dpop_public_key.len > 0 {
+        let dpop_jwt = header(req, "DPoP");
+        let now_sec = (now_ns / 1000000000) as i64;
+        let ok_dpop = dpop_jwt.len > 0 && verify_dpop_proof_with_replay_cache(
+            dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec, cfg.dpop_replay_cache,
+        );
+        if !ok_dpop {
+            res.status_code = 401;
+            return false;
+        }
+    }
+    if cfg.sig_public_key.len > 0 {
+        if !verify_request_ed25519(req, cfg.sig_key_id[..], cfg.sig_public_key[..]) {
+            res.status_code = 401;
+            return false;
+        }
+    }
+    return true;
 }
 
 // Executes post-handler egress stages matching the effective PSO or server egress mask.
@@ -1207,11 +1259,19 @@ fn dispatch_matched_route<UserStage>(
 ) -> PipelineOutcome {
     match match_res {
         NotFound => {
-            res.status_code = 404; // Not Found
+            if cfg.emit_problem_details {
+                respond_problem(res, 404, "Not Found", "The requested resource was not found");
+            } else {
+                res.status_code = 404; // Not Found
+            }
             return PipelineOutcome.RouteNotFound;
         },
         MethodNotAllowed mna => {
-            res.status_code = 405; // Method Not Allowed
+            if cfg.emit_problem_details {
+                respond_problem(res, 405, "Method Not Allowed", "The HTTP method is not allowed");
+            } else {
+                res.status_code = 405; // Method Not Allowed
+            }
             set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
             return PipelineOutcome.MethodNotAllowed;
         },
@@ -1441,6 +1501,16 @@ fn execute_server_pipeline_with_stage<UserStage>(
         },
         _ => {},
     };
+
+    if cfg.security_txt.is_valid && is_security_txt_path(req.url[..]) &&
+       (req.method[..] == "GET" || req.method[..] == "HEAD") {
+        res.status_code = 200;
+        set_header(res, "Content-Type", "text/plain; charset=utf-8");
+        res.body.clear();
+        format_security_txt(cfg.security_txt, res.body);
+        handle_head_method_suppression(req.method[..], res);
+        return PipelineOutcome.Handled;
+    }
 
     let _prof_rm = prof_enter("stage.route_match");
     let match_res = cfg.router.match_route(
