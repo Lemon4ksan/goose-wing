@@ -155,22 +155,21 @@ inline fn slice_has_percent(s: const u8[:]) -> bool {
 
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
-    var scan_idx = 0;
+    var scan_idx: i64 = 0;
     while scan_idx < input_bytes.len {
-        guard out.len < out.cap else { return false; }
-        let b = input_bytes[scan_idx];
-        if b == '%' && scan_idx + 2 < input_bytes.len {
-            let high_nibble = hex_digit_to_val(input_bytes[scan_idx + 1]);
-            let low_nibble = hex_digit_to_val(input_bytes[scan_idx + 2]);
-            if high_nibble >= 0 && low_nibble >= 0 {
-                let decoded_char = ((high_nibble << 4) | low_nibble) as u8;
-                out.push(decoded_char);
-                scan_idx += 3;
-                continue;
-            }
+        let idx1 = add_sat_i64(scan_idx, 1);
+        let idx2 = add_sat_i64(scan_idx, 2);
+        let has_hex = input_bytes[scan_idx] == '%' && idx2 < input_bytes.len;
+        let hi = if has_hex { hex_digit_to_val(input_bytes[idx1]) } else { -1 };
+        let lo = if has_hex { hex_digit_to_val(input_bytes[idx2]) } else { -1 };
+        let is_esc = hi >= 0 && lo >= 0;
+        let decoded_char = if is_esc { (((hi << 4) | lo) & 0xFF) as u8 } else { input_bytes[scan_idx] };
+        guard out.try_push(decoded_char) else {
+            out.clear();
+            return false;
         }
-        out.push(b);
-        scan_idx++;
+        let step: i64 = if is_esc { 3 } else { 1 };
+        scan_idx = add_sat_i64(scan_idx, step);
     }
     return true;
 }
@@ -182,12 +181,9 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
 //   returns: "foo=bar", base = 1
 inline fn sanitize_query_input(raw: const u8[:]) -> const u8[:], i64 {
     guard raw.len > 0 else { return "", 0; }
-    var input = raw;
-    var base: i64 = 0;
-    if input[0] == '?' {
-        input = input[1..];
-        base = 1;
-    }
+    let input_no_q, had_q = strip_prefix(raw, "?");
+    var input = input_no_q;
+    let base: i64 = if had_q { 1 } else { 0 };
     let hash_idx = core::index_of_byte(input, '#');
     if hash_idx >= 0 {
         input = input[..hash_idx];
@@ -212,7 +208,7 @@ inline fn extract_token_descriptor(
 
     if eq_pos < 0 {
         let is_over = (pair.len > MAX_URL_QUERY_KEY_LIMIT) || (pair.len > 0xFFFF);
-        let k_len = if pair.len > 0xFFFF { 0xFFFF } else { pair.len };
+        let k_len = min(pair.len, 0xFFFF);
         let tok = pack_query_token(base_offset + start, k_len, 0, flags | QUERY_TOKEN_FLAG_VALUELESS);
         return tok, is_over;
     }
@@ -223,8 +219,8 @@ inline fn extract_token_descriptor(
         (v_raw > MAX_URL_QUERY_VAL_LIMIT) ||
         (k_raw > 0xFFFF) ||
         (v_raw > 0xFFFF);
-    let k_len = if k_raw > 0xFFFF { 0xFFFF } else { k_raw };
-    let v_len = if v_raw > 0xFFFF { 0xFFFF } else { v_raw };
+    let k_len = min(k_raw, 0xFFFF);
+    let v_len = min(v_raw, 0xFFFF);
     let tok = pack_query_token(base_offset + start, k_len, v_len, flags);
     return tok, is_over;
 }
@@ -546,10 +542,9 @@ inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
     var temp: u8[..256] = [];
     var i:    i64       = 0;
     while i < src.len {
-        guard temp.len < temp.cap else { return false; }
         let b = src[i];
         if b == '+' {
-            temp.push(' ');
+            guard temp.try_push(' ') else { return false; }
             i = add_sat_i64(i, 1);
         } else if b == '%' {
             let i1 = add_sat_i64(i, 1);
@@ -559,12 +554,10 @@ inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
             let lo = FORM_HEX_NIBBLE_LUT[src[i2]];
             guard hi != 255 && lo <= 15 else { return false; }
             let decoded = hi | lo;
-            guard decoded != 0 else { return false; }
-            temp.push(decoded);
+            guard decoded != 0 && temp.try_push(decoded) else { return false; }
             i = add_sat_i64(i, 3);
         } else {
-            guard b != 0 else { return false; }
-            temp.push(b);
+            guard b != 0 && temp.try_push(b) else { return false; }
             i = add_sat_i64(i, 1);
         }
     }

@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import client.redirect;
 import client.response;
 import http.headers;
@@ -32,10 +33,9 @@ fn add_mock_header(route: MockExchange&, name: const u8[:], value: const u8[:]) 
 }
 
 fn add_mock_resolved_ip(route: MockExchange&, ip_str: const u8[:]) {
-    guard route.resolved_ips.len < route.resolved_ips.cap else { return; }
     var ip_buf: u8[..64] = [];
-    ip_buf.append(ip_str);
-    route.resolved_ips.push(ip_buf);
+    guard ip_buf.try_set(ip_str) else { return; }
+    let _ = route.resolved_ips.try_push(ip_buf);
 }
 
 fn set_mock_quic_blocked(route: MockExchange&, blocked: bool = true) {
@@ -43,8 +43,7 @@ fn set_mock_quic_blocked(route: MockExchange&, blocked: bool = true) {
 }
 
 fn set_mock_protocol(route: MockExchange&, proto: const u8[:]) {
-    route.protocol.clear();
-    route.protocol.append(proto);
+    let _ = route.protocol.try_set(proto);
 }
 
 // Validates resolved mock IPs against SSRF guard policy.
@@ -61,8 +60,8 @@ fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfG
 
 // Extracts origin string "host:port" from parsed Url.
 fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
-    let host = core::hostname(url_val);
-    let port = core::effective_port(url_val);
+    let host = url_val.hostname();
+    let port = url_val.effective_port();
     out.append(host);
     out.push(':');
     format(out, port);
@@ -96,8 +95,7 @@ fn build_mock_response(
         ..
     };
     if route.protocol.len > 0 {
-        resp.protocol.clear();
-        resp.protocol.append(route.protocol[..]);
+        let _ = resp.protocol.try_set(route.protocol[..]);
     }
     copy_headers(route.headers, resp.headers);
     for &e in resp.headers.entries {

@@ -59,10 +59,10 @@ fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
 
 // Appends 9 serialized header bytes to any buffer.
 fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
-    core::append_u24_be(out, hdr.length & 0x00FFFFFF);
+    out.append_u24_be(hdr.length & 0x00FFFFFF);
     out.push(hdr.frame_type);
     out.push(hdr.flags);
-    core::append_u32_be(out, hdr.stream_id & 0x7FFFFFFF);
+    out.append_u32_be(hdr.stream_id & 0x7FFFFFFF);
 }
 
 // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
@@ -193,10 +193,7 @@ fn extract_headers_frame_payload(
             return raw, rfc::H2_ERR_FRAME_SIZE_ERROR;
         }
         if !no_rfc7540_priorities {
-            let s0 = ((raw[0] & 0x7F) as u32) << 24;
-            let s1 = (raw[1] as u32) << 16;
-            let s2 = (raw[2] as u32) << 8;
-            let stream_dep = s0 | s1 | s2 | raw[3];
+            let stream_dep = core::read_be_u32(raw, 0) & 0x7FFFFFFF;
             // RFC 7540 / RFC 9113: stream cannot depend on itself
             if stream_dep == hdr.stream_id {
                 return raw, rfc::H2_ERR_PROTOCOL_ERROR;
@@ -266,7 +263,7 @@ fn parse_priority_update_payload(
     }
 
     let field_value = payload[4..];
-    if core::trim_ascii_space(field_value).len == 0 {
+    if field_value.trim_ascii_space().len == 0 {
         return prioritized_stream_id, p, rfc::H2_ERR_NO_ERROR;
     }
     let parsed, ok = wing::parse_http_priority(field_value, default_incremental);
@@ -278,12 +275,6 @@ fn parse_priority_update_payload(
 
 // Encodes PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
 fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const wing::PriorityParam&, out: B&) {
-    let id_bytes: u8[4] = [
-        ((prioritized_stream_id >> 24) & 0x7F) as u8,
-        ((prioritized_stream_id >> 16) & 0xFF) as u8,
-        ((prioritized_stream_id >> 8) & 0xFF) as u8,
-        (prioritized_stream_id & 0xFF) as u8,
-    ];
-    out.append(id_bytes[..]);
+    out.append_u32_be(prioritized_stream_id & 0x7FFFFFFF);
     wing::serialize_http_priority(prio, out);
 }

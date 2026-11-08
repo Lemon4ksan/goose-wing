@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import json;
 import cookie.policy;
 import http.priority;
@@ -68,8 +69,7 @@ fn write_json_field(out: u8[>..]&, val_bool: bool) {
 // ---- request factories -----------------------------------------------------
 
 fn reset_request(req: Request&) {
-    req.method.clear();
-    req.method.append("GET");
+    let _ = req.method.try_set("GET");
     req.url.clear();
     req.headers.clear();
     req.presence_mask = 0;
@@ -91,9 +91,8 @@ fn reset_request(req: Request&) {
 
 fn new_request(method: const u8[:], url: const u8[:]) -> Request {
     var req = Request { .. };
-    req.method.clear();
-    req.method.append(method);
-    req.url.append(url);
+    let _ = req.method.try_set(method);
+    let _ = req.url.try_set(url);
     return req;
 }
 
@@ -126,12 +125,7 @@ fn new_query(url: const u8[:], body: const u8[:], content_type: const u8[:]) -> 
     req.body.append(body);
     set_header(req, "Content-Type", content_type);
     req.rewind_buf.clear();
-    if body.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(body);
-        req.rewindable = true;
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = req.rewind_buf.try_set(body);
     req.body_consumed = false;
     return req;
 }
@@ -207,14 +201,11 @@ fn bearer(req: Request&, token: const u8[:]) {
 // Invariant 13: Strict capacity overflow error propagation.
 // Rejects when query parameters capacity is reached or key/value length exceeds bounds.
 fn query(req: Request&, key: const u8[:], value: const u8[:]) -> bool {
-    guard req.query_params.len < req.query_params.cap && key.len <= 64 && value.len <= 256 else {
+    var param_item = QueryItem { .. };
+    guard param_item.key.try_set(key) && param_item.value.try_set(value) else {
         return false;
     }
-    var param_item = QueryItem { .. };
-    param_item.key.append(key);
-    param_item.value.append(value);
-    req.query_params.push(param_item);
-    return true;
+    return req.query_params.try_push(param_item);
 }
 
 fn timeout_ms(req: Request&, ms: i64) {
@@ -230,12 +221,7 @@ fn text(req: Request&, body_str: const u8[:]) {
     req.body.clear();
     req.body.append(body_str);
     req.rewind_buf.clear();
-    if body_str.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(body_str);
-        req.rewindable = true;
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = req.rewind_buf.try_set(body_str);
     req.body_consumed = false;
 }
 
@@ -244,12 +230,7 @@ fn raw_json(req: Request&, json_str: const u8[:]) {
     req.body.clear();
     req.body.append(json_str);
     req.rewind_buf.clear();
-    if json_str.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(json_str);
-        req.rewindable = true;
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = req.rewind_buf.try_set(json_str);
     req.body_consumed = false;
 }
 
@@ -266,44 +247,21 @@ fn json<T>(req: Request&, payload: const T&) {
     }
     req.body.push('}');
     req.rewind_buf.clear();
-    if req.body.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(req.body[..]);
-        req.rewindable = true;
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = req.rewind_buf.try_set(req.body[..]);
     req.body_consumed = false;
-}
-
-fn set_json<T>(req: Request&, payload: const T&) {
-    json(req, payload);
 }
 
 fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = false) {
     req.body.clear();
     req.body.append(stream_bytes);
     req.rewind_buf.clear();
-    if rewindable && stream_bytes.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(stream_bytes);
-        req.rewindable = true;
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = rewindable && req.rewind_buf.try_set(stream_bytes);
     req.body_consumed = false;
 }
 
 fn set_initiator(req: Request&, orig: core::Origin) {
     req.initiator = copy(orig);
     req.has_initiator = true;
-}
-
-fn set_site_for_cookies(req: Request&, sfc: const SiteForCookies&) {
-    req.site_for_cookies = copy(sfc);
-    req.has_site_for_cookies = true;
-}
-
-fn set_first_party_policy(req: Request&, policy: FirstPartyURLPolicy) {
-    req.first_party_policy = policy;
 }
 
 // ---- middleware & signers --------------------------------------------------
@@ -350,7 +308,7 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
     let mac = core::hmac_sha256(secret_key, body_bytes);
     var sig_hex: u8[..64] = [];
     for b in mac {
-        core::format_u8_hex(b, sig_hex);
+        b.format_u8_hex(sig_hex);
     }
     set_header(req, "X-Signature-256", sig_hex[..]);
 }

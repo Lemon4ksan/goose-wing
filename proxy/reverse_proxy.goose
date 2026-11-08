@@ -46,12 +46,12 @@ struct ProxyConfig {
 
 // Helper to format chained X-Forwarded-For value without dynamic heap allocation.
 fn format_chained_xff(buf: u8[..1024]&, existing_xff: const u8[:], client_ip: const u8[:]) -> bool {
-    let needed = core::add_sat_u64(core::add_sat_u64(existing_xff.len as u64, 2), client_ip.len as u64);
-    guard needed <= (buf.cap as u64) else { return false; }
-    buf.clear();
-    buf.append(existing_xff);
-    buf.append(", ");
-    buf.append(client_ip);
+    var committed = false;
+    defer if !committed { buf.clear(); };
+    guard buf.try_set(existing_xff) else { return false; }
+    guard buf.try_append(", ") else { return false; }
+    guard buf.try_append(client_ip) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -73,16 +73,16 @@ fn append_forwarded_for(out_headers: HeaderMap&, existing_xff: const u8[:], clie
 // Identifies untrusted forwarding metadata headers to strip before re-injection.
 // RFC 9440 §2.4: incoming Client-Cert* fields MUST be removed or overwritten before forwarding.
 inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
-    if eq_ascii_fold(name, "x-forwarded-for") { return true; }
-    if eq_ascii_fold(name, "x-forwarded-proto") { return true; }
-    if eq_ascii_fold(name, "x-forwarded-host") { return true; }
-    if eq_ascii_fold(name, "x-forwarded-port") { return true; }
-    if eq_ascii_fold(name, "x-forwarded-server") { return true; }
-    if eq_ascii_fold(name, "x-forwarded-ssl") { return true; }
-    if eq_ascii_fold(name, "forwarded") { return true; }
-    if eq_ascii_fold(name, "client-cert") { return true; }
-    if eq_ascii_fold(name, "client-cert-chain") { return true; }
-    if eq_ascii_fold(name, "via") { return true; }
+    if name.eq_ascii_fold("x-forwarded-for") { return true; }
+    if name.eq_ascii_fold("x-forwarded-proto") { return true; }
+    if name.eq_ascii_fold("x-forwarded-host") { return true; }
+    if name.eq_ascii_fold("x-forwarded-port") { return true; }
+    if name.eq_ascii_fold("x-forwarded-server") { return true; }
+    if name.eq_ascii_fold("x-forwarded-ssl") { return true; }
+    if name.eq_ascii_fold("forwarded") { return true; }
+    if name.eq_ascii_fold("client-cert") { return true; }
+    if name.eq_ascii_fold("client-cert-chain") { return true; }
+    if name.eq_ascii_fold("via") { return true; }
     return false;
 }
 
@@ -93,7 +93,7 @@ fn should_forward_header(
     in_headers: const HeaderMap&,
     config:     const ProxyConfig&,
 ) -> bool {
-    if eq_ascii_fold(name, "host") {
+    if name.eq_ascii_fold("host") {
         return config.preserve_host;
     }
     if is_forwarded_metadata_header(name) {
@@ -101,14 +101,14 @@ fn should_forward_header(
     }
     // RFC 9112 Section 6.3: Transfer-Encoding overrides Content-Length.
     // An intermediary MUST remove Content-Length before forwarding if Transfer-Encoding is present.
-    if eq_ascii_fold(name, "content-length") && has_header(in_headers, "transfer-encoding") {
+    if name.eq_ascii_fold("content-length") && has_header(in_headers, "transfer-encoding") {
         return false;
     }
     guard config.strip_hop_by_hop else { return true; }
 
     if is_hop_by_hop_header_name(name) {
         // RFC 9110: TE may only be forwarded if the value is trailers
-        return eq_ascii_fold(name, "te") && eq_ascii_fold(core::trim_lws(val), "trailers");
+        return name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers");
     }
 
     if is_token_in_connection_header_map(in_headers, name) {
@@ -147,11 +147,11 @@ fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
         let entry = in_headers.entries[i];
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
 
-        if eq_ascii_fold(name, "content-length") {
+        if name.eq_ascii_fold("content-length") {
             let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
             guard check_cl_match(val, first_cl_found, first_cl_val) else { return false; }
         }
-        if eq_ascii_fold(name, "transfer-encoding") {
+        if name.eq_ascii_fold("transfer-encoding") {
             guard !has_te else { return false; }
             has_te = true;
         }
@@ -173,7 +173,7 @@ fn copy_filtered_headers(
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
         let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
 
-        if eq_ascii_fold(name, "content-length") && has_header(out_headers, "content-length") {
+        if name.eq_ascii_fold("content-length") && has_header(out_headers, "content-length") {
             continue;
         }
 
@@ -193,12 +193,12 @@ fn format_via(buf: u8[..64]&, pseudonym: const u8[:], http_version: const u8[:])
     } else {
         "1.1"
     };
-    let needed = core::add_sat_u64(core::add_sat_u64(ver_str.len as u64, 1), pseudonym.len as u64);
-    guard needed <= (buf.cap as u64) else { return false; }
-    buf.clear();
-    buf.append(ver_str);
-    buf.append(" ");
-    buf.append(pseudonym);
+    var committed = false;
+    defer if !committed { buf.clear(); };
+    guard buf.try_set(ver_str) else { return false; }
+    guard buf.try_append(" ") else { return false; }
+    guard buf.try_append(pseudonym) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -223,8 +223,7 @@ fn inject_via_header(
     guard combined.len > 0 else {
         return append_header(out_headers, "Via", via_buf[..]);
     }
-    combined.append(", ");
-    combined.append(via_buf[..]);
+    guard combined.try_append(", ") && combined.try_append(via_buf[..]) else { return false; }
     return append_header(out_headers, "Via", combined[..]);
 }
 
@@ -290,17 +289,15 @@ fn filter_and_forward_headers(
 ) -> bool {
     guard has_consistent_framing_headers(in_headers) else { return false; }
     reset_for_keep_alive(out_headers);
+    var committed = false;
+    defer if !committed { out_headers.clear(); };
 
     guard copy_filtered_headers(in_headers, out_headers, config) else { return false; }
 
     // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
     let cert_der_len = config.client_cert_der_len;
     let actual_der_len = config.client_cert_der.len as i32;
-    let eff_der_len = if cert_der_len > 0 && cert_der_len <= actual_der_len {
-        cert_der_len
-    } else {
-        actual_der_len
-    };
+    let eff_der_len = if cert_der_len > 0 { min(cert_der_len, actual_der_len) } else { actual_der_len };
     if config.forward_client_cert && eff_der_len > 0 && eff_der_len <= CLIENT_CERT_MAX_DER_LEN {
         var enc: u8[..8192] = [];
         let n = encode_client_cert(config.client_cert_der[..eff_der_len], enc);
@@ -329,6 +326,7 @@ fn filter_and_forward_headers(
         config.via_pseudonym[..],
         config.http_version[..],
     ) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -439,28 +437,24 @@ fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
 // bracketing bare IPv6 literals and avoiding duplicate :port suffixes.
 fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, out: u8[..128]&) -> bool {
     guard host.len > 0 && host.len <= 112 else { return false; }
-    out.clear();
-    let _, after_colon, has_colon = core::split_once_byte(host, ':');
+    var committed = false;
+    defer if !committed { out.clear(); };
+    let _, after_colon, has_colon = host.split_once_byte(':');
     let is_bracketed = starts_with(host, "[");
-    let is_bare_ipv6 = !is_bracketed && has_colon && find(after_colon, ":") >= 0;
+    let is_bare_ipv6 = !is_bracketed && has_colon && after_colon.contains_byte(':');
     if is_bare_ipv6 {
-        out.push('[');
-        out.append(host);
-        out.push(']');
+        guard out.try_set("[") else { return false; }
+        guard out.try_append(host) else { return false; }
+        guard out.try_push(']') else { return false; }
     } else {
-        out.append(host);
+        guard out.try_set(host) else { return false; }
     }
-    let has_port = if is_bare_ipv6 {
-        false
-    } else if is_bracketed {
-        find(host, "]:") >= 0
-    } else {
-        has_colon
-    };
+    let has_port = if is_bracketed { find(host, "]:") >= 0 } else { has_colon && !is_bare_ipv6 };
     if !preserve_host && !has_port && port != 80 && port != 443 && port > 0 {
-        out.append(":");
-        core::format_u64_dec(port, out);
+        guard out.try_append(":") else { return false; }
+        port.format_u64_dec(out);
     }
+    committed = true;
     return true;
 }
 
@@ -488,7 +482,7 @@ fn ensure_forwarded_body_framing(
     }
     guard body.len > 0 && !has_te else { return true; }
     var cl_buf: u8[..32] = [];
-    core::format_u64_dec(body.len as u64, cl_buf);
+    (body.len as u64).format_u64_dec(cl_buf);
     return append_header(forward_headers, "Content-Length", cl_buf[..]);
 }
 
@@ -523,13 +517,17 @@ fn prepare_proxy_request_at<B>(
         record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
+    var committed = false;
+    defer if !committed {
+        release_upstream_connection(proxy.cluster, target_idx);
+        record_proxy_dropped(proxy);
+        out_wire.clear();
+    };
 
     // 3. Concurrency ceiling defense against connection exhaustion
     let max_conns = proxy.config.max_active_conns_per_target;
     if is_target_concurrency_saturated(proxy.cluster.targets[target_idx], max_conns) {
-        release_upstream_connection(proxy.cluster, target_idx);
         record_proxy_overloaded(proxy);
-        record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
 
@@ -542,11 +540,10 @@ fn prepare_proxy_request_at<B>(
         && ensure_forwarded_body_framing(forward_headers, body, method)
         && serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
     guard ok_prep else {
-        release_upstream_connection(proxy.cluster, target_idx);
-        record_proxy_dropped(proxy);
         return PROXY_TARGET_NONE, false;
     }
 
+    committed = true;
     record_proxy_forwarded(proxy);
     return target_idx, true;
 }
@@ -629,19 +626,7 @@ fn advance_read(ring: ProxyStreamRing&, consumed: i64) -> bool {
 // Compacts unread tail to index 0 to reclaim contiguous tail capacity.
 fn compact_stream_ring(ring: ProxyStreamRing&) {
     guard ring.read_pos > 0 else { return; }
-    if ring.read_pos >= ring.buf.len {
-        ring.buf.clear();
-        ring.read_pos = 0;
-        return;
-    }
-    let active_len = core::sub_sat_u64(ring.buf.len as u64, ring.read_pos as u64) as i64;
-    for i in active_len {
-        let src_idx = core::add_sat_u64(ring.read_pos as u64, i as u64) as i64;
-        ring.buf[i] = ring.buf[src_idx];
-    }
-    while ring.buf.len > active_len {
-        ring.buf.pop();
-    }
+    ring.buf.compact_wire_buffer(ring.read_pos);
     ring.read_pos = 0;
 }
 
@@ -652,9 +637,7 @@ fn feed_stream_chunk(ring: ProxyStreamRing&, chunk: const u8[:]) -> bool {
     if needed > (ring.buf.cap as u64) {
         compact_stream_ring(ring);
     }
-    let post_needed = core::add_sat_u64(ring.buf.len as u64, chunk.len as u64);
-    guard post_needed <= (ring.buf.cap as u64) else { return false; }
-    ring.buf.append(chunk);
+    guard ring.buf.try_append(chunk) else { return false; }
     ring.total_read = core::add_sat_u64(ring.total_read, chunk.len as u64);
     return true;
 }
@@ -673,8 +656,6 @@ fn forward_userspace_stream_chunk(
     if needed > (dst.buf.cap as u64) {
         compact_stream_ring(dst);
     }
-    let post_needed = core::add_sat_u64(dst.buf.len as u64, view.len as u64);
-    guard post_needed <= (dst.buf.cap as u64) else { return 0, false; }
 
     if kind == ProxyTransportKind.WebSocket {
         // RFC 6455 Section 5.3: Client-to-Server Masking - Octet i of transformed data is XORed with masking-key octet i MOD 4.
@@ -684,9 +665,9 @@ fn forward_userspace_stream_chunk(
             let mask_idx = (core::add_sat_u64(base_offset, i as u64) & 3) as i64;
             masked.push(view[i] ^ ws_mask[mask_idx]);
         }
-        dst.buf.append(masked[..]);
+        guard dst.buf.try_append(masked[..]) else { return 0, false; }
     } else {
-        dst.buf.append(view);
+        guard dst.buf.try_append(view) else { return 0, false; }
     }
 
     let n = view.len;
@@ -733,9 +714,10 @@ fn read_and_parse_upstream_headers(
 ) -> i64, bool {
     let hdr_end_idx, ok_hdr = read_response_headers(conn, timeout_ms);
     let rx = conn.rx_buf[..];
-    guard ok_hdr && hdr_end_idx >= 0 && hdr_end_idx + 4 <= rx.len else { return -1, false; }
+    let body_start = core::add_sat_i64(hdr_end_idx, 4);
+    guard ok_hdr && hdr_end_idx >= 0 && body_start <= rx.len else { return -1, false; }
     guard parse_response_headers(rx[..hdr_end_idx], out_resp) else { return -1, false; }
-    return hdr_end_idx + 4, true;
+    return body_start, true;
 }
 
 fn exchange_prepared_wire_on_conn(
@@ -816,22 +798,22 @@ struct UpstreamResponse {
 //   name = "X-Accel-Buffering", val = "no"
 //   returns: true (is X-Accel header), accel.disable_buffering = true
 fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: UpstreamAccelControl&) -> bool {
-    let trimmed = core::trim_lws(val);
-    if eq_ascii_fold(name, "x-accel-buffering") {
-        if eq_ascii_fold(trimmed, "no") {
+    let trimmed = val.trim_lws();
+    if name.eq_ascii_fold("x-accel-buffering") {
+        if trimmed.eq_ascii_fold("no") {
             accel.disable_buffering = true;
-        } else if eq_ascii_fold(trimmed, "yes") {
+        } else if trimmed.eq_ascii_fold("yes") {
             accel.disable_buffering = false;
         }
         return true;
     }
-    if eq_ascii_fold(name, "x-accel-expires") {
-        if eq_ascii_fold(trimmed, "off") {
+    if name.eq_ascii_fold("x-accel-expires") {
+        if trimmed.eq_ascii_fold("off") {
             accel.has_accel_expires = true;
             accel.accel_expires_sec = 0;
         } else {
             let s_slice = if trimmed.len > 1 && trimmed[0] == '@' { trimmed[1..] } else { trimmed };
-            let secs, ok = core::parse_u64_dec(s_slice);
+            let secs, ok = s_slice.parse_u64_dec();
             if ok {
                 accel.has_accel_expires = true;
                 accel.accel_expires_sec = secs as i64;
@@ -839,18 +821,18 @@ fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: Upst
         }
         return true;
     }
-    if eq_ascii_fold(name, "x-accel-limit-rate") {
-        let rate, ok = core::parse_u64_dec(trimmed);
+    if name.eq_ascii_fold("x-accel-limit-rate") {
+        let rate, ok = trimmed.parse_u64_dec();
         if ok {
             accel.limit_rate_bps = rate;
         }
         return true;
     }
-    if eq_ascii_fold(name, "x-accel-redirect") {
+    if name.eq_ascii_fold("x-accel-redirect") {
         let _ = accel.accel_redirect.try_set(trimmed);
         return true;
     }
-    return starts_with_fold(name, "x-accel-");
+    return name.starts_with_fold("x-accel-");
 }
 
 // Rewrites an upstream `Location` header if it starts with `backend_url_prefix`.
@@ -864,11 +846,11 @@ fn rewrite_upstream_location_header(
         return loc_val;
     }
     let suffix = loc_val[backend_url_prefix.len..];
-    let needed = core::add_sat_u64(public_url_prefix.len as u64, suffix.len as u64);
-    guard needed <= (out_location_buf.cap as u64) else { return loc_val; }
-    out_location_buf.clear();
-    out_location_buf.append(public_url_prefix);
-    out_location_buf.append(suffix);
+    var committed = false;
+    defer if !committed { out_location_buf.clear(); };
+    guard out_location_buf.try_set(public_url_prefix) else { return loc_val; }
+    guard out_location_buf.try_append(suffix) else { return loc_val; }
+    committed = true;
     return out_location_buf[..];
 }
 
@@ -884,6 +866,12 @@ fn process_and_filter_upstream_response_headers(
 ) -> bool {
     out_headers.clear();
     accel = UpstreamAccelControl { .. };
+    var committed = false;
+    defer if !committed {
+        out_headers.clear();
+        out_location_buf.clear();
+        accel = UpstreamAccelControl { .. };
+    };
     if is_incremental_requested(in_headers) {
         accel.incremental_preferred = true;
         accel.disable_buffering = true;
@@ -897,7 +885,7 @@ fn process_and_filter_upstream_response_headers(
         if is_hop_by_hop_header_name(name) || is_token_in_connection_header_map(in_headers, name) {
             continue;
         }
-        if eq_ascii_fold(name, "location") {
+        if name.eq_ascii_fold("location") {
             let rewritten = rewrite_upstream_location_header(
                 val, backend_url_prefix, public_url_prefix, out_location_buf,
             );
@@ -906,6 +894,7 @@ fn process_and_filter_upstream_response_headers(
         }
         guard append_header(out_headers, name, val) else { return false; }
     }
+    committed = true;
     return true;
 }
 
@@ -914,7 +903,7 @@ fn capture_upstream_early_hints(in_resp: const Response&, out_upstream: Upstream
     guard in_resp.status_code == 103 else { return; }
     for &entry in in_resp.headers.entries {
         let name = entry_name(in_resp.headers, entry);
-        if eq_ascii_fold(name, "link") {
+        if name.eq_ascii_fold("link") {
             let val = entry_value(in_resp.headers, entry);
             if parse_link_header(val, out_upstream.early_hints.links) {
                 out_upstream.early_hints.is_valid = out_upstream.early_hints.links.len > 0;

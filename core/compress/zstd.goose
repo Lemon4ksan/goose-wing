@@ -164,9 +164,9 @@ fn zstd_peek_bits(r: ZstdBitReader&, n: i32) -> u32 {
     if r.cache_offset >= 0 && start_bit >= (r.cache_offset * 8) && bit_end <= ((r.cache_offset + 8) * 8) {
         chunk = r.cache_chunk;
     } else {
-        var new_offset = if byte_offset >= 4 { byte_offset - 4 } else { 0 };
+        var new_offset = max(0, byte_offset - 4);
         if new_offset + 8 > r.src.len {
-            new_offset = if r.src.len >= 8 { r.src.len - 8 } else { 0 };
+            new_offset = max(0, r.src.len - 8);
         }
         let rem = r.src.len - new_offset;
         chunk = read_le_u64_partial(r.src, new_offset, rem);
@@ -986,7 +986,7 @@ inline fn refill_huf_bit_container(
 ) {
     guard bits_consumed > 32 && ptr > 0 else { return; }
     let avail = (bits_consumed >> 3) as i64;
-    let shift_bytes = if ptr < avail { ptr } else { avail };
+    let shift_bytes = min(ptr, avail);
     ptr -= shift_bytes;
     bits_consumed -= (shift_bytes * 8) as u32;
     if ptr >= 0 && ptr <= r.src.len - 8 {
@@ -1080,7 +1080,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
         }
 
         let remaining_bits = if ptr == 0 {
-            if 64 >= bits_consumed { (64 - bits_consumed) as i64 } else { 0 }
+            max(0, 64 - (bits_consumed as i64))
         } else {
             ptr * 8 + (64 - (bits_consumed as i64))
         };
@@ -1107,7 +1107,7 @@ inline fn refill_huf_stream_container(
 ) {
     guard bits > 32 && ptr > 0 else { return; }
     let avail = (bits >> 3) as i64;
-    let s = if ptr < avail { ptr } else { avail };
+    let s = min(ptr, avail);
     ptr -= s;
     bits -= (s * 8) as u32;
     if ptr >= 0 && ptr <= src.len - 8 {
@@ -1185,7 +1185,7 @@ fn huf_decode_stream_tail(
     guard dec < cnt else { return; }
     var r = new_zstd_bit_reader(src);
     let rem = if ptr == 0 {
-        if 64 >= bits { (64 - bits) as i64 } else { 0 }
+        max(0, 64 - (bits as i64))
     } else {
         ptr * 8 + (64 - (bits as i64))
     };
@@ -1616,7 +1616,7 @@ fn apply_sequence_match<B>(
         while curr < m_len {
             let avail = curr + off;
             let rem = m_len - curr;
-            let step = if avail < rem { avail } else { rem };
+            let step = min(avail, rem);
             out_buf.append(out_buf[src_idx..src_idx + step]);
             curr += step;
         }
@@ -3185,7 +3185,7 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
         var offset: i64 = 0;
         while offset < total {
             let rem = total - offset;
-            let chunk_size = if rem < ZSTD_BLOCKSIZE_MAX { rem } else { ZSTD_BLOCKSIZE_MAX };
+            let chunk_size = min(rem, ZSTD_BLOCKSIZE_MAX);
             let is_last = (offset + chunk_size == total);
             let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
             let block_hdr = last_bit | (ZSTD_BLOCK_TYPE_RAW << 1) | ((chunk_size as u32) << 3);
@@ -3201,7 +3201,7 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
         var offset: i64    = 0;
         while offset < total {
             let rem = total - offset;
-            let chunk_sz = if rem < ZSTD_BLOCKSIZE_MAX { rem } else { ZSTD_BLOCKSIZE_MAX };
+            let chunk_sz = min(rem, ZSTD_BLOCKSIZE_MAX);
             let is_last = (offset + chunk_sz == total);
             compress_block(src[offset..offset + chunk_sz], rep, is_last, level, out_buf);
             offset += chunk_sz;

@@ -84,15 +84,15 @@ struct QuicPreferredAddress {
 // crap:trusted-bounds
 fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> bool {
     var cur = core::cursor_from(src);
-    let v4_slice, ok_v4 = core::read_bytes(cur, 4);
-    let v4_port, ok_p4 = core::read_u16(cur);
-    let v6_slice, ok_v6 = core::read_bytes(cur, 16);
-    let v6_port, ok_p6 = core::read_u16(cur);
+    let v4_slice, ok_v4 = cur.read_bytes(4);
+    let v4_port, ok_p4 = cur.read_u16();
+    let v6_slice, ok_v6 = cur.read_bytes(16);
+    let v6_port, ok_p6 = cur.read_u16();
     guard ok_v4 && ok_p4 && ok_v6 && ok_p6 else { return false; }
 
-    let cid_slice, ok_cid = core::read_u8_prefixed(cur);
+    let cid_slice, ok_cid = cur.read_u8_prefixed();
     guard ok_cid && cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
-    let tok_slice, ok_tok = core::read_bytes(cur, 16);
+    let tok_slice, ok_tok = cur.read_bytes(16);
     guard ok_tok && cur.buf.len == 0 else { return false; }
 
     var parsed = QuicPreferredAddress {

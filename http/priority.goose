@@ -80,7 +80,7 @@ fn apply_priority_i(dict_str: const u8[:], p: PriorityParam&) -> bool {
 //   returns: p with urgency=0, incremental=true, ok = true
 fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
     var p = priority_default(default_incremental);
-    let trimmed = core::trim_ascii_space(raw);
+    let trimmed = raw.trim_ascii_space();
     if trimmed.len == 0 {
         return p, false;
     }

@@ -59,7 +59,7 @@ fn reset_command_pool(pool: WireCommandPool&, flags: u32) -> WireResult {
     }
     pool.allocated_count = 0;
     pool.slot_mask = 0;
-    pool.generation = if next_gen == 0 { 1 } else { next_gen };
+    pool.generation = max(next_gen, 1);
     pool.arena.clear();
     let _ = flags;
     return WireResult.Success;

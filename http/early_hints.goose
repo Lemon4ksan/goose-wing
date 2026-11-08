@@ -36,7 +36,7 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
     if !has_eq {
         let p_name = param_str.trim_lws();
-        if eq_ascii_fold(p_name, "crossorigin") {
+        if p_name.eq_ascii_fold("crossorigin") {
             link.crossorigin = true;
         }
         return true;
@@ -45,15 +45,13 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     let p_name = p_name_raw.trim_lws();
     var p_val = p_val_raw.trim_lws().trim_byte('"');
 
-    if eq_ascii_fold(p_name, "rel") {
+    if p_name.eq_ascii_fold("rel") {
         guard link.rel.len == 0 else { return true; }
-        guard p_val.len <= link.rel.cap else { return false; }
-        link.rel.append(p_val);
-    } else if eq_ascii_fold(p_name, "as") {
+        guard link.rel.try_append(p_val) else { return false; }
+    } else if p_name.eq_ascii_fold("as") {
         guard link.as_type.len == 0 else { return true; }
-        guard p_val.len <= link.as_type.cap else { return false; }
-        link.as_type.append(p_val);
-    } else if eq_ascii_fold(p_name, "crossorigin") {
+        guard link.as_type.try_append(p_val) else { return false; }
+    } else if p_name.eq_ascii_fold("crossorigin") {
         link.crossorigin = true;
     }
     return true;
@@ -118,13 +116,12 @@ fn parse_link_params(params_str: const u8[:], link: EarlyHintLink&) -> bool {
 //   returns: true, link populated with uri="/style.css", rel="preload", as_type="style"
 fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
     guard entry_str.len > 2 && entry_str[0] == '<' else { return false; }
-    let rel_close = core::index_of_byte(entry_str[1..], '>');
+    let rel_close = entry_str[1..].index_of_byte('>');
     guard rel_close >= 0 else { return false; }
     let close_idx = 1 + rel_close;
     let uri_slice = entry_str[1..close_idx];
     // Reject empty URI (<>) and enforce capacity
-    guard uri_slice.len > 0 && uri_slice.len <= link.uri.cap else { return false; }
-    link.uri.append(uri_slice);
+    guard uri_slice.len > 0 && link.uri.try_append(uri_slice) else { return false; }
 
     let after_uri = entry_str[close_idx + 1..].trim_lws_start();
     if after_uri.len > 0 {
@@ -150,8 +147,7 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
 
         var link = EarlyHintLink { .. };
         guard parse_single_link(entry_str, link) else { return false; }
-        guard out_links.len < out_links.cap else { return false; }
-        out_links.push(link);
+        guard out_links.try_push(link) else { return false; }
     }
     return true;
 }
@@ -172,12 +168,12 @@ fn parse_early_hints(status: u16, raw_link_header: const u8[:]) -> EarlyHintsRes
 
 // Checks if link requests a preconnect action
 fn early_hint_is_preconnect(link: const EarlyHintLink&) -> bool {
-    return eq_ascii_fold(link.rel[..], "preconnect") || eq_ascii_fold(link.rel[..], "dns-prefetch");
+    return link.rel[..].eq_ascii_fold("preconnect") || link.rel[..].eq_ascii_fold("dns-prefetch");
 }
 
 // Checks if link requests asset preloading
 fn early_hint_is_preload(link: const EarlyHintLink&) -> bool {
-    return eq_ascii_fold(link.rel[..], "preload");
+    return link.rel[..].eq_ascii_fold("preload");
 }
 
 // ---- Server-Side 103 Early Hints Serializer & CASPer Cookie Digest --------
@@ -220,10 +216,7 @@ fn format_early_hints_http1<B>(
     for &link in hints.links {
         guard format_single_early_hint_link(link, scratch) else { return false; }
     }
-    guard core::add_sat_u64(scratch.len as u64, 2) <= (scratch.cap as u64) else { return false; }
-    scratch.append("\r\n");
-    guard core::add_sat_u64(out.len as u64, scratch.len as u64) <= (out.cap as u64) else { return false; }
-    out.append(scratch[..]);
+    guard scratch.try_append("\r\n") && out.try_append(scratch[..]) else { return false; }
     return true;
 }
 
@@ -273,8 +266,7 @@ fn casper_lookup_and_insert(set: CasperSet&, path: const u8[:], etag: const u8[:
     if found {
         return true;
     }
-    guard set.keys.len < set.keys.cap else { return false; }
-    set.keys.push(key);
+    guard set.keys.try_push(key) else { return false; }
     var pos: u64 = core::sub_sat_u64(set.keys.len as u64, 1);
     let target = ins_idx as u64;
     while pos > target {
@@ -290,9 +282,8 @@ inline fn append_casper_bit<B>(out: B&, cur_byte: u64&, bit_pos: u64&, bit: u64)
     cur_byte = ((cur_byte << 1) | (bit & 1)) & 0xFF;
     bit_pos = core::add_sat_u64(bit_pos, 1);
     if bit_pos == 8 {
-        guard out.len < out.cap else { return false; }
         let b_val: u8 = if cur_byte == 0 { 0 } else { (cur_byte & 0xFF) as u8 };
-        out.push(b_val);
+        guard out.try_push(b_val) else { return false; }
         cur_byte = 0;
         bit_pos = 0;
     }
@@ -334,8 +325,7 @@ fn encode_casper_cookie<B>(set: const CasperSet&, out_cookie: B&) -> bool {
     if bit_pos > 0 {
         let pad_shift = core::sub_sat_u64(8, bit_pos);
         let padded = (cur_byte << pad_shift) & 0xFF;
-        guard raw_bits.len < raw_bits.cap else { return false; }
-        raw_bits.push(padded as u8);
+        guard raw_bits.try_push(padded as u8) else { return false; }
     }
     out_cookie.clear();
     let enc_cap = core::add_sat_u64(raw_bits.len as u64, raw_bits.len as u64);

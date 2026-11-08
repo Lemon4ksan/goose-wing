@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import http.headers;
 
 // ---- cache-control bitmask flags -------------------------------------------
@@ -48,11 +49,6 @@ struct CacheControl {
 
 // Constructs a zero-initialized CacheControl structure with default unset values (-1).
 // ---- flag inspectors -------------------------------------------------------
-
-// Returns whether the specified bitmask flag is set.
-fn has_flag(cc: const CacheControl&, flag: u32) -> bool {
-    return (cc.flags & flag) == flag;
-}
 
 // Returns true if no-store directive is set.
 fn is_no_store(cc: const CacheControl&) -> bool {
@@ -144,7 +140,7 @@ fn is_private_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
     guard (cc.flags & CC_PRIVATE) != 0 else { return false; }
     if cc.private_overflow || cc.private_fields.len == 0 { return true; }
     for &f in cc.private_fields {
-        if eq_ascii_fold(f[..], field_name) {
+        if f[..].eq_ascii_fold(field_name) {
             return true;
         }
     }
@@ -156,7 +152,7 @@ fn is_no_cache_field(cc: const CacheControl&, field_name: const u8[:]) -> bool {
     guard (cc.flags & CC_NO_CACHE) != 0 else { return false; }
     if cc.no_cache_overflow || cc.no_cache_fields.len == 0 { return true; }
     for &f in cc.no_cache_fields {
-        if eq_ascii_fold(f[..], field_name) {
+        if f[..].eq_ascii_fold(field_name) {
             return true;
         }
     }
@@ -181,7 +177,7 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
             return 0, false;
         }
         let digit = (b - '0');
-        acc = core::ct_min_i64(acc * 10 + digit, rfc::MAX_DELTA_SECONDS);
+        acc = min(acc * 10 + digit, rfc::MAX_DELTA_SECONDS);
     }
     return acc as i32, true;
 }
@@ -201,11 +197,8 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow
         guard ok else { break; }
         let trimmed_name = name_tok.trim_lws();
         if trimmed_name.len > 0 {
-            if out_fields.len < out_fields.cap && trimmed_name.len <= 64 {
-                var buf: u8[..64] = [];
-                buf.append(trimmed_name);
-                out_fields.push(buf);
-            } else {
+            var buf: u8[..64] = [];
+            if !buf.try_set(trimmed_name) || !out_fields.try_push(buf) {
                 overflow = true;
             }
         }
@@ -216,13 +209,13 @@ fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow
 
 // Applies boolean or field-list Cache-Control directives.
 fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheControl&) -> bool {
-    if eq_ascii_fold(name, "no-store") {
+    if name.eq_ascii_fold("no-store") {
         if val != "?0" {
             cc.flags |= CC_NO_STORE;
         }
         return true;
     }
-    if eq_ascii_fold(name, "no-cache") {
+    if name.eq_ascii_fold("no-cache") {
         if val == "?0" { return true; }
         cc.flags |= CC_NO_CACHE;
         if val.len > 0 && val != "?1" {
@@ -242,23 +235,23 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
         }
         return true;
     }
-    if eq_ascii_fold(name, "must-revalidate") {
+    if name.eq_ascii_fold("must-revalidate") {
         if val != "?0" { cc.flags |= CC_MUST_REVALIDATE; }
         return true;
     }
-    if eq_ascii_fold(name, "proxy-revalidate") {
+    if name.eq_ascii_fold("proxy-revalidate") {
         if val != "?0" { cc.flags |= CC_PROXY_REVALIDATE; }
         return true;
     }
-    if eq_ascii_fold(name, "must-understand") {
+    if name.eq_ascii_fold("must-understand") {
         if val != "?0" { cc.flags |= CC_MUST_UNDERSTAND; }
         return true;
     }
-    if eq_ascii_fold(name, "public") {
+    if name.eq_ascii_fold("public") {
         if val != "?0" { cc.flags |= CC_PUBLIC; }
         return true;
     }
-    if eq_ascii_fold(name, "private") {
+    if name.eq_ascii_fold("private") {
         if val == "?0" { return true; }
         cc.flags |= CC_PRIVATE;
         if val.len > 0 && val != "?1" {
@@ -278,15 +271,15 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
         }
         return true;
     }
-    if eq_ascii_fold(name, "immutable") {
+    if name.eq_ascii_fold("immutable") {
         if val != "?0" { cc.flags |= CC_IMMUTABLE; }
         return true;
     }
-    if eq_ascii_fold(name, "only-if-cached") {
+    if name.eq_ascii_fold("only-if-cached") {
         if val != "?0" { cc.flags |= CC_ONLY_IF_CACHED; }
         return true;
     }
-    if eq_ascii_fold(name, "no-transform") {
+    if name.eq_ascii_fold("no-transform") {
         if val != "?0" { cc.flags |= CC_NO_TRANSFORM; }
         return true;
     }
@@ -295,19 +288,19 @@ fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheCon
 
 // Applies delta-seconds numeric Cache-Control directives.
 fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheControl&) -> bool {
-    if eq_ascii_fold(name, "max-age") {
+    if name.eq_ascii_fold("max-age") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_HAS_MAX_AGE; cc.max_age = secs; }
         else { cc.flags |= CC_INVALID_FRESHNESS; }
         return true;
     }
-    if eq_ascii_fold(name, "s-maxage") {
+    if name.eq_ascii_fold("s-maxage") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_HAS_S_MAXAGE; cc.s_maxage = secs; }
         else { cc.flags |= CC_INVALID_FRESHNESS; }
         return true;
     }
-    if eq_ascii_fold(name, "max-stale") {
+    if name.eq_ascii_fold("max-stale") {
         if val.len > 0 {
             let secs, ok = parse_delta_seconds(val);
             if ok {
@@ -320,18 +313,18 @@ fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheCon
         }
         return true;
     }
-    if eq_ascii_fold(name, "min-fresh") {
+    if name.eq_ascii_fold("min-fresh") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_HAS_MIN_FRESH; cc.min_fresh = secs; }
         else { cc.flags |= CC_INVALID_FRESHNESS; }
         return true;
     }
-    if eq_ascii_fold(name, "stale-while-revalidate") {
+    if name.eq_ascii_fold("stale-while-revalidate") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_STALE_WHILE_REVALIDATE; cc.stale_while_revalidate = secs; }
         return true;
     }
-    if eq_ascii_fold(name, "stale-if-error") {
+    if name.eq_ascii_fold("stale-if-error") {
         let secs, ok = parse_delta_seconds(val);
         if ok { cc.flags |= CC_STALE_IF_ERROR; cc.stale_if_error = secs; }
         return true;
@@ -343,7 +336,7 @@ fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheCon
 fn apply_directive(name: const u8[:], val: const u8[:], cc: CacheControl&, ignore_cargo_cult: bool) {
     if apply_cache_control_boolean(name, val, cc) { return; }
     if apply_cache_control_numeric(name, val, cc) { return; }
-    if ignore_cargo_cult && (eq_ascii_fold(name, "pre-check") || eq_ascii_fold(name, "post-check")) {
+    if ignore_cargo_cult && (name.eq_ascii_fold("pre-check") || name.eq_ascii_fold("post-check")) {
         // Legacy IE directives safely ignored
     }
 }
@@ -361,14 +354,14 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
 
     while cursor < len {
         let rem = raw[cursor..];
-        let trimmed_lead = core::trim_start_bytes(rem, " \t,");
+        let trimmed_lead = rem.trim_start_bytes(" \t,");
         cursor += rem.len - trimmed_lead.len;
         guard cursor < len else { break; }
 
         let rem_from_cursor = raw[cursor..];
         let token_end = cursor + rem_from_cursor.find_unquoted_byte(',');
 
-        let directive_slice = trim_lws(raw[cursor..token_end]);
+        let directive_slice = raw[cursor..token_end].trim_lws();
         cursor = token_end + 1;
         guard directive_slice.len > 0 else { continue; }
 
@@ -413,7 +406,7 @@ fn parse_cache_control_headers(
 
     for entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
-        if eq_ascii_fold(name, "cache-control") {
+        if name.eq_ascii_fold("cache-control") {
             has_cc_header = true;
             let val = map.raw_buf[entry.values_begin..entry.values_end];
             parse_cache_control_str(val, cc, opts.ignore_cargo_cult);

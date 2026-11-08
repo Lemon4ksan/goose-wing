@@ -32,13 +32,7 @@ fn new_tick_timer_wheel(idle_timeout_sec: u8 = 10) -> TickTimerWheel {
 }
 
 inline fn clamp_tick_delta(d: u8) -> u8 {
-    if d >= TICK_TIMER_MODULO {
-        return TICK_TIMER_MODULO - 1;
-    }
-    if d == 0 {
-        return 1;
-    }
-    return d;
+    return min(max(d, 1), TICK_TIMER_MODULO - 1);
 }
 
 // Arms a connection slot timeout for delay_sec seconds.

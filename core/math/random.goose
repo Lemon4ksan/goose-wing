@@ -43,13 +43,6 @@ inline fn next_u32(rng: WyRand&) -> u32 {
     return (next_u64(rng) >> 32) as! u32;
 }
 
-// 64-bit to 32-bit PRNG (w1rand).
-inline fn w1rand_next(state: u64&) -> u32 {
-    state += WYP0_V42;
-    let prod = wymum(state ^ WYP1_V42, state);
-    return (prod >> 32) as! u32;
-}
-
 // Xoroshiro64** generator for low-state 32-bit random streams.
 struct Xoroshiro64StarStar {
     s0: u32 = 0x9E3779BB,
@@ -70,22 +63,11 @@ fn new_xoroshiro64_star_star(seed: u64) -> Xoroshiro64StarStar {
 inline fn next_u32(rng: Xoroshiro64StarStar&) -> u32 {
     let s0 = rng.s0;
     var s1 = rng.s1;
-    let result = rotl32(s0 * 0x9E3779BB, 5) * 5;
+    let r5 = rotl32(s0 * 0x9E3779BB, 5);
+    let result = add_checked_u32(rotl32(r5, 2) & 0xFFFFFFFC, r5).value;
 
     s1 ^= s0;
-    rng.s0 = rotl32(s0, 26) ^ s1 ^ (s1 << 9);
-    rng.s1 = rotl32(s1, 13);
-    return result;
-}
-
-// Variant Xoroshiro64* for fast floating point generation.
-inline fn next_star_u32(rng: Xoroshiro64StarStar&) -> u32 {
-    let s0 = rng.s0;
-    var s1 = rng.s1;
-    let result = s0 * 0x9E3779BB;
-
-    s1 ^= s0;
-    rng.s0 = rotl32(s0, 26) ^ s1 ^ (s1 << 9);
+    rng.s0 = rotl32(s0, 26) ^ s1 ^ (rotl32(s1, 9) & 0xFFFFFE00);
     rng.s1 = rotl32(s1, 13);
     return result;
 }
@@ -119,21 +101,4 @@ fn fast_range_unbiased_u32(rng: WyRand&, range: u32) -> u32 {
         }
     }
     return (m >> 32) as! u32;
-}
-
-// Unbiased Lemire fast-range mapping (64-bit) with rejection sampling.
-fn fast_range_unbiased_u64(rng: WyRand&, range: u64) -> u64 {
-    if range <= 1 {
-        return 0;
-    }
-    var x = next_u64(rng);
-    var lo, hi = mul_wide_u64(x, range);
-    if lo < range {
-        let threshold = (0 - range) % range;
-        while lo < threshold {
-            x = next_u64(rng);
-            lo, hi = mul_wide_u64(x, range);
-        }
-    }
-    return hi;
 }

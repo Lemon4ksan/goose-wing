@@ -684,7 +684,7 @@ simd fn adler32_update(initial: u32, buf: const u8[:]) -> u32 {
 
     var rem = buf;
     while rem.len > 0 {
-        let chunk_len = if rem.len < ADLER_NMAX { rem.len } else { ADLER_NMAX };
+        let chunk_len = min(rem.len, ADLER_NMAX);
         var s = rem[..chunk_len];
         rem = rem[chunk_len..];
 

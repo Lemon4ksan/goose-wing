@@ -82,8 +82,8 @@ struct SecP384r1MLKEM1024ServerShare {
 // For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1184B).
 fn format_hybrid_key_share<B>(share: const PostQuantumKeyShare&, out: B&) {
     guard rfc::is_x25519_pq_group(share.group) else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::HYBRID_CLIENT_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::HYBRID_CLIENT_SHARE_LEN as u16);
     if share.group == rfc::GROUP_X25519_MLKEM768 {
         out.append(share.mlkem768_public[..]);
         out.append(share.x25519_public[..]);
@@ -125,8 +125,8 @@ fn parse_hybrid_key_share(share: PostQuantumKeyShare&, raw: const u8[:]) -> bool
 // For GROUP_X25519_KYBER768_DRAFT00 (0x6399): Classical (32B) || PQ (1088B).
 fn format_hybrid_server_key_share<B>(share: const PostQuantumServerShare&, out: B&) {
     guard rfc::is_x25519_pq_group(share.group) else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::HYBRID_SERVER_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::HYBRID_SERVER_SHARE_LEN as u16);
     if share.group == rfc::GROUP_X25519_MLKEM768 {
         out.append(share.mlkem768_ciphertext[..]);
         out.append(share.x25519_public[..]);
@@ -166,8 +166,8 @@ fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:
 // RFC 10024 Section 3: Key Exchange Messages - Formats SecP256r1+ML-KEM-768 Client KeyShareEntry
 fn format_secp256r1_mlkem768_key_share<B>(share: const SecP256r1MLKEM768KeyShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN as u16);
     out.append(share.secp256r1_public[..]);
     out.append(share.mlkem768_public[..]);
 }
@@ -197,8 +197,8 @@ fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: co
 // RFC 10024 Section 3: Key Exchange Messages - Formats SecP256r1+ML-KEM-768 Server KeyShareEntry
 fn format_secp256r1_mlkem768_server_share<B>(share: const SecP256r1MLKEM768ServerShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN as u16);
     out.append(share.secp256r1_public[..]);
     out.append(share.mlkem768_ciphertext[..]);
 }
@@ -228,8 +228,8 @@ fn parse_secp256r1_mlkem768_server_share(share: SecP256r1MLKEM768ServerShare&, r
 // RFC 10024 Section 3: Key Exchange Messages - Formats SecP384r1+ML-KEM-1024 Client KeyShareEntry
 fn format_secp384r1_mlkem1024_key_share<B>(share: const SecP384r1MLKEM1024KeyShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::SECP384R1_MLKEM1024_CLIENT_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::SECP384R1_MLKEM1024_CLIENT_SHARE_LEN as u16);
     out.append(share.secp384r1_public[..]);
     out.append(share.mlkem1024_public[..]);
 }
@@ -259,8 +259,8 @@ fn parse_secp384r1_mlkem1024_key_share(share: SecP384r1MLKEM1024KeyShare&, raw: 
 // RFC 10024 Section 3: Key Exchange Messages - Formats SecP384r1+ML-KEM-1024 Server KeyShareEntry
 fn format_secp384r1_mlkem1024_server_share<B>(share: const SecP384r1MLKEM1024ServerShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return; }
-    core::write_be_u16(out, share.group);
-    core::write_be_u16(out, rfc::SECP384R1_MLKEM1024_SERVER_SHARE_LEN as u16);
+    out.append_u16_be(share.group);
+    out.append_u16_be(rfc::SECP384R1_MLKEM1024_SERVER_SHARE_LEN as u16);
     out.append(share.secp384r1_public[..]);
     out.append(share.mlkem1024_ciphertext[..]);
 }
@@ -313,7 +313,7 @@ fn derive_secp384r1_mlkem1024_shared_secret(
     core::ct_copy_bytes(combined[0..48], classical_ss[..]);
     core::ct_copy_bytes(combined[48..80], pq_ss[..]);
     let res = core::sha384(combined[..]);
-    for i in 80 { combined[i] = 0; }
+    core::secure_zeroize_slice(combined[..]);
     return res;
 }
 

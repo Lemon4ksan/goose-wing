@@ -40,7 +40,10 @@ extern fn native_guarded_arena_read(
 
 extern fn native_guarded_arena_reset(handle: u64) -> i32 = "wing_guarded_arena_reset";
 
-extern fn native_guarded_arena_clear_zero(handle: u64, len: u64) -> i32 = "wing_guarded_arena_clear_zero";
+extern fn native_guarded_arena_clear_zero(
+    handle: u64,
+    len:    u64,
+) -> i32 = "wing_guarded_arena_clear_zero";
 
 extern fn native_page_lock(
     handle: u64,
@@ -175,21 +178,6 @@ fn guarded_arena_reset(arena: GuardedArena&) -> bool {
     }
 
     let rc = native_guarded_arena_reset(arena.handle);
-    guard rc == 0 else {
-        return false;
-    }
-
-    arena.used = 0;
-    return true;
-}
-
-// Clears arena memory to zero using standard synchronous memset.
-fn guarded_arena_clear_zero(arena: GuardedArena&) -> bool {
-    guard arena.handle != 0 else {
-        return false;
-    }
-
-    let rc = native_guarded_arena_clear_zero(arena.handle, arena.used);
     guard rc == 0 else {
         return false;
     }

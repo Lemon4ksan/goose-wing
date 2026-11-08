@@ -131,7 +131,7 @@ inline fn build_dpop_claims_json<B>(
     out.append("\",\"htu\":\"");
     out.append(norm_uri);
     out.append("\",\"iat\":");
-    core::format_i64_dec(now_sec, out);
+    now_sec.format_i64_dec(out);
 
     if nonce.len > 0 {
         out.append(",\"nonce\":\"");
@@ -207,7 +207,7 @@ fn parse_dpop_jwk_coord<B>(
 ) {
     if seen { valid = false; }
     seen = true;
-    if !core::read_json_string_into(reader, dst) || dst.len == 0 || core::index_of_byte(dst[..], '=') != -1 {
+    if !core::read_json_string_into(reader, dst) || dst.len == 0 || dst[..].index_of_byte('=') != -1 {
         dst.clear();
         valid = false;
     }
@@ -247,7 +247,7 @@ fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
                 info.valid = false;
             } else if is_supported {
                 let _ = info.kty.try_set(kty_val);
-            } else if core::eq_ascii_fold(kty_val, "oct") {
+            } else if kty_val.eq_ascii_fold("oct") {
                 info.has_private_key = true;
             }
         } else if jwk_key == "use" {
@@ -277,39 +277,6 @@ fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
     let params_ok = validate_dpop_jwk_params(info);
     info.valid = info.valid && seen_kty && info.kty_ok && params_ok && !info.has_private_key;
     return info.valid;
-}
-
-// Extracts and decodes the 32-byte Ed25519 public key from the DPoP JWS header 'jwk' object (RFC 9449 §4.3).
-//
-// Example:
-//   header_json = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"x\":\"...\"}}"
-//   returns: true, out_pub populated with 32-byte public key
-fn parse_dpop_header_jwk_pubkey(header_json: const u8[:], out_pub: u8[32]&) -> bool {
-    var reader = json::reader(header_json);
-    var jwk_info = DPoPJwkInfo { .. };
-    var seen_jwk = false;
-    var had_dup = false;
-    json::each_member(reader) { key =>
-        if key.contains('\\') {
-            had_dup = true;
-            json::skip(reader);
-        } else if key == "jwk" {
-            if seen_jwk { had_dup = true; }
-            seen_jwk = true;
-            verify_dpop_jwk(reader, jwk_info);
-        } else {
-            json::skip(reader);
-        }
-    };
-    let is_okp_valid = seen_jwk && jwk_info.valid && jwk_info.kty[..] == "OKP" && jwk_info.x.len > 0;
-    guard json::finish(reader) && !had_dup && is_okp_valid else {
-        return false;
-    }
-    var decoded_x: u8[..64] = [];
-    guard core::base64url_decode(jwk_info.x[..], decoded_x) else { return false; }
-    guard decoded_x.len == 32 else { return false; }
-    for i in 32 { out_pub[i] = decoded_x[i]; }
-    return true;
 }
 
 // Checks whether JOSE `alg` matches the embedded JWK `kty`, `crv`, and optional `alg` (RFC 9449 §4.3).
@@ -394,6 +361,7 @@ fn create_dpop_proof<B>(
     }
 
     var seed: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(seed);
     for i in 32 { seed[i] = key[i]; }
     let pub_key = core::ed25519_public_key(seed);
     var x_b64: u8[..64] = [];
@@ -416,7 +384,6 @@ fn create_dpop_proof<B>(
     signing_input.append(claims_b64[..]);
 
     let sig = core::ed25519_sign(seed, signing_input[..]);
-    core::secure_zeroize_32(seed);
     var sig_b64: u8[..128] = [];
     core::base64url_encode(sig[..], sig_b64);
 
@@ -559,8 +526,8 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
             var typ_buf: u8[..32] = [];
             let typ_ok = core::read_json_string_into(reader, typ_buf);
             let typ_val = typ_buf[..];
-            let is_dpop_typ = core::eq_ascii_fold(typ_val, "dpop+jwt") ||
-                core::eq_ascii_fold(typ_val, "application/dpop+jwt");
+            let is_dpop_typ = typ_val.eq_ascii_fold("dpop+jwt") ||
+                typ_val.eq_ascii_fold("application/dpop+jwt");
             if typ_ok && is_dpop_typ {
                 valid_typ = true;
             }
@@ -794,20 +761,6 @@ fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max
     return true;
 }
 
-fn verify_dpop_ath(claims_json: const u8[:], expected_ath: const u8[:]) -> bool {
-    var claims = DPoPClaims { .. };
-    guard parse_dpop_claims(claims_json, claims) else { return false; }
-    guard claims.ath.len > 0 && claims.ath.len == expected_ath.len else { return false; }
-    return core::ct_eq_bytes(claims.ath[..], expected_ath);
-}
-
-fn verify_dpop_nonce(claims_json: const u8[:], expected_nonce: const u8[:]) -> bool {
-    var claims = DPoPClaims { .. };
-    guard parse_dpop_claims(claims_json, claims) else { return false; }
-    guard claims.nonce.len > 0 && claims.nonce.len == expected_nonce.len else { return false; }
-    return core::ct_eq_bytes(claims.nonce[..], expected_nonce);
-}
-
 // RFC 9449 Section 6.1 / RFC 7638: Verifies JWK Thumbprint ('jkt') confirmation claim.
 fn verify_dpop_jkt(claims_json: const u8[:], expected_jkt: const u8[:]) -> bool {
     guard expected_jkt.len > 0 else { return false; }
@@ -973,9 +926,9 @@ fn verify_dpop_key_binding(key: const u8[:], alg: const u8[:], jwk_info: const D
         var jwk_pub: u8[..64] = [];
         guard core::base64url_decode(jwk_info.x[..], jwk_pub) && jwk_pub.len == 32 else { return false; }
         var key_seed: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key_seed);
         for i in 32 { key_seed[i] = key[i]; }
         let derived_pub = core::ed25519_public_key(key_seed);
-        core::secure_zeroize_32(key_seed);
         return core::ct_eq_bytes(jwk_pub[..], key) || core::ct_eq_bytes(jwk_pub[..], derived_pub[..]);
     } else if alg == "ES256" {
         var decoded_x: u8[..64] = [];
@@ -992,9 +945,9 @@ fn verify_dpop_key_binding(key: const u8[:], alg: const u8[:], jwk_info: const D
             return core::ct_eq_bytes(pub_pt[1..65], key);
         } else if key.len == 32 {
             var priv_arr: u8[32] = [0; 32];
+            defer core::secure_zeroize_32(priv_arr);
             for i in 32 { priv_arr[i] = key[i]; }
             let derived_pt = core::ecdsa_p256_public_key(priv_arr);
-            core::secure_zeroize_32(priv_arr);
             return core::ct_eq_bytes(pub_pt[..], derived_pt[..]);
         }
         return false;
@@ -1021,7 +974,7 @@ fn verify_dpop_proof(
     expected_jkt:    const u8[:] = "",
     expected_alg:    const u8[:] = "EdDSA",
 ) -> bool {
-    guard jwt.len > 0 && jwt.len <= MAX_DPOP_PROOF_LEN && core::index_of_byte(jwt, '=') == -1 else { return false; }
+    guard jwt.len > 0 && jwt.len <= MAX_DPOP_PROOF_LEN && jwt.index_of_byte('=') == -1 else { return false; }
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(jwt, dot1, dot2) else { return false; }
@@ -1096,7 +1049,7 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
 fn extract_dpop_nonce(headers: const HeaderMap&) -> const u8[:], bool {
     var found_idx: i64 = -1;
     for idx in headers.entries.len {
-        if core::eq_ascii_fold(entry_name(headers, headers.entries[idx]), rfc::DPOP_NONCE_HEADER) {
+        if entry_name(headers, headers.entries[idx]).eq_ascii_fold(rfc::DPOP_NONCE_HEADER) {
             if found_idx != -1 {
                 return "", false;
             }
@@ -1117,8 +1070,7 @@ fn extract_dpop_nonce(headers: const HeaderMap&) -> const u8[:], bool {
 fn extract_dpop_nonce<B>(headers: const HeaderMap&, out_nonce: B&) -> bool {
     let nonce, ok = extract_dpop_nonce(headers);
     guard ok else { return false; }
-    out_nonce.clear();
-    return out_nonce.try_append(nonce);
+    return out_nonce.try_set(nonce);
 }
 
 // ---- DPoP Replay Cache (RFC 9449 §4.3 Rule 4) ---------------------------
@@ -1162,23 +1114,14 @@ fn check_and_record_dpop_jti(
 
     if free_idx >= 0 {
         var slot = cache.entries[free_idx];
-        slot.jti.clear();
-        slot.jti.append(jti);
+        guard slot.jti.try_set(jti) else { return false; }
         slot.expires_at_sec = exp;
         cache.entries[free_idx] = slot;
         return true;
     }
 
-    if cache.entries.len < cache.entries.cap {
-        var new_entry = DPoPJtiEntry { .. };
-        new_entry.jti.append(jti);
-        new_entry.expires_at_sec = exp;
-        cache.entries.push(new_entry);
-        return true;
-    }
-
-    // Do NOT overwrite unexpired JTI if all slots are live
-    return false;
+    var new_entry = DPoPJtiEntry { expires_at_sec: exp, .. };
+    return new_entry.jti.try_set(jti) && cache.entries.try_push(new_entry);
 }
 
 // Verifies a DPoP Proof JWT and rejects replayed proofs via DPoPReplayCache.

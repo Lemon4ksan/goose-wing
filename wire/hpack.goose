@@ -102,27 +102,23 @@ fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const 
 //   src = [0x9A, 0x0A], offset = 0, initial_offset = 0, max_prefix = 127
 //   returns: val = 1461, ok = true, offset = 2
 fn decode_hpack_int_multibyte(src: const u8[:], offset: u64&, initial_offset: u64, max_prefix: u64) -> u64, bool {
+    var committed = false;
+    defer if !committed { offset = initial_offset; };
     var val: u64 = max_prefix;
     var m:   u64 = 0;
     while offset < (src.len as u64) {
         let nb = src[offset];
         offset += 1;
         let term = ((nb & 0x7F) as u64) << m;
-        guard val <= (0xFFFFFFFFFFFFFFFF - term) else {
-            offset = initial_offset;
-            return 0, false;
-        }
+        guard val <= (0xFFFFFFFFFFFFFFFF - term) else { return 0, false; }
         val += term;
         m += 7;
         if (nb & 0x80) == 0 {
+            committed = true;
             return val, true;
         }
-        guard m <= 56 else {
-            offset = initial_offset;
-            return 0, false;
-        }
+        guard m <= 56 else { return 0, false; }
     }
-    offset = initial_offset;
     return 0, false;
 }
 
@@ -154,39 +150,33 @@ fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, boo
 //   returns: ok = true, out = "test", offset = 5
 fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
     let initial_offset = offset;
+    var committed = false;
+    defer if !committed { offset = initial_offset; };
     guard offset < (src.len as u64) else { return false; }
     let is_huffman = (src[offset] & 0x80) != 0;
 
     let str_len, len_ok = hpack_decode_int(src, offset, 7);
     let rem = (src.len as u64) - offset;
-    guard len_ok && str_len <= rem else {
-        offset = initial_offset;
-        return false;
-    }
+    guard len_ok && str_len <= rem else { return false; }
     let end = offset + str_len;
     let raw_slice = src[offset..end];
     if is_huffman {
-        guard internal::huff_decode_bytes(raw_slice, out) else {
-            offset = initial_offset;
-            return false;
-        }
+        guard internal::huff_decode_bytes(raw_slice, out) else { return false; }
     } else {
-        guard out.try_append(raw_slice) else {
-            offset = initial_offset;
-            return false;
-        }
+        guard out.try_append(raw_slice) else { return false; }
     }
     offset = end;
+    committed = true;
     return true;
 }
 
 inline fn is_h2_skipped_header_name(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, "host")
-        || core::eq_ascii_fold(name, "connection")
-        || core::eq_ascii_fold(name, "keep-alive")
-        || core::eq_ascii_fold(name, "proxy-connection")
-        || core::eq_ascii_fold(name, "transfer-encoding")
-        || core::eq_ascii_fold(name, "upgrade");
+    return name.eq_ascii_fold("host")
+        || name.eq_ascii_fold("connection")
+        || name.eq_ascii_fold("keep-alive")
+        || name.eq_ascii_fold("proxy-connection")
+        || name.eq_ascii_fold("transfer-encoding")
+        || name.eq_ascii_fold("upgrade");
 }
 
 fn is_valid_h2_request_pseudo_fields(pseudo: const internal::H2PseudoHeaders&) -> bool {
@@ -229,7 +219,7 @@ fn encode_hpack_pseudo_fields<B>(
             return false;
         }
         var st_buf: u8[..16] = [];
-        core::format_u64_dec(pseudo.status as u64, st_buf);
+        (pseudo.status as u64).format_u64_dec(st_buf);
         return internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
     }
     guard is_valid_h2_request_pseudo_fields(pseudo) else { return false; }
@@ -272,7 +262,7 @@ inline fn should_skip_h2_entry(
     if is_h2_skipped_header_name(raw_name) || wing::is_token_in_connection_header_map(headers, raw_name) {
         return true;
     }
-    return core::eq_ascii_fold(raw_name, "te") && !core::eq_ascii_fold(core::trim_lws(val), "trailers");
+    return raw_name.eq_ascii_fold("te") && !val.trim_lws().eq_ascii_fold("trailers");
 }
 
 inline fn is_forbidden_h2_trailer_field(lower_name: const u8[:]) -> bool {
@@ -295,9 +285,7 @@ fn encode_single_hpack_map_entry<B>(
     }
     var lower_name: u8[..256] = [];
     guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
-    for b in raw_name {
-        lower_name.push(core::to_lower_ascii_byte(b));
-    }
+    raw_name.to_lower_ascii(lower_name);
     if is_trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
         return false;
     }
@@ -324,19 +312,19 @@ fn encode_hpack_from_map<B>(
 ) -> bool {
     let start_len = out.len;
     let saved_dt = dt;
-    guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else {
+    var committed = false;
+    defer if !committed {
         out.resize(start_len);
         dt = saved_dt;
-        return false;
-    }
+    };
+    guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else { return false; }
 
     for &e in headers.entries {
         guard encode_single_hpack_map_entry(dt, headers, e, pseudo.is_trailer, out, use_huffman) else {
-            out.resize(start_len);
-            dt = saved_dt;
             return false;
         }
     }
+    committed = true;
     return true;
 }
 

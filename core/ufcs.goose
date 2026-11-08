@@ -65,6 +65,21 @@ fn ::find_unquoted_byte(s: const u8[:], delim: u8) -> i64 {
 fn ::split_once_unquoted_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     return core::split_once_unquoted_byte(s, delim);
 }
+fn ::strip_prefix(s: const u8[:], prefix: const u8[:]) -> const u8[:], bool {
+    return core::strip_prefix(s, prefix);
+}
+fn ::strip_suffix(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool {
+    return core::strip_suffix(s, suffix);
+}
+fn ::strip_prefix_fold(s: const u8[:], prefix: const u8[:]) -> const u8[:], bool {
+    return core::strip_prefix_fold(s, prefix);
+}
+fn ::strip_suffix_fold(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool {
+    return core::strip_suffix_fold(s, suffix);
+}
+fn ::each_non_empty_token<F>(src: const u8[:], delim: u8) {
+    core::each_non_empty_token<F>(src, delim);
+}
 
 fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }
 fn ::parse_i64_dec(s: const u8[:]) -> i64, bool { return core::parse_i64_dec(s); }
@@ -124,6 +139,12 @@ fn ::try_append(arr: u8[>..]&, slice: const u8[:]) -> bool {
 
 fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
     guard slice.len <= arr.cap else { return false; }
+    arr.clear();
+    arr.append(slice);
+    return true;
+}
+
+fn ::try_set(arr: u8[>..]&, slice: const u8[:]) -> bool {
     arr.clear();
     arr.append(slice);
     return true;

@@ -8,6 +8,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import http.mime;
 import http.cache.engine;
 
@@ -49,13 +50,8 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_
         var ignored_params: SfvParam[..16] = [];
         guard parse_sfv_parameters(raw, cursor, ignored_params) else { return false; }
 
-        guard bare.text.len <= CACHE_GROUP_TAG_MAX else { return false; }
-        guard parsed.len < CACHE_GROUP_MAX_PER_ENTRY else { return false; }
-
-        var tag = CacheGroupTag { .. };
-        tag.name.append(bare.text[..]);
-        tag.len = bare.text.len as i32;
-        parsed.push(tag);
+        var tag = CacheGroupTag { len: bare.text.len as i32, .. };
+        guard tag.name.try_set(bare.text[..]) && parsed.try_push(tag) else { return false; }
 
         var has_more = false;
         guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
@@ -77,8 +73,7 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_
 //   returns: 18 ("\"scripts\", \"fonts\"")
 fn cache_group_list_wire_len(tags: const CacheGroupTag[..32]&, count: i32) -> i64 {
     var wire: u8[..2176] = [];
-    var limit = tags.len;
-    if count < tags.len { limit = count; }
+    let limit = min<i64>(count, tags.len);
     for slot in 0..limit {
         wire.append("\"");
         wire.append(tags[slot].name[..]);

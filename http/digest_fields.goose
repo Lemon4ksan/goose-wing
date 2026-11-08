@@ -34,10 +34,10 @@ inline fn compute_sha512_digest(data: const u8[:]) -> u8[..64] {
 //   data = "hello world", alg = "sha-256"
 //   returns: [185, 91, 154, ...], ok = true
 fn compute_digest_bytes(data: const u8[:], alg: const u8[:]) -> u8[..64], bool {
-    if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA256) {
+    if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA256) {
         return compute_sha256_digest(data), true;
     }
-    if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA512) {
+    if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) {
         return compute_sha512_digest(data), true;
     }
     var empty: u8[..64] = [];
@@ -54,7 +54,7 @@ fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) ->
     let hash_bytes, ok_hash = compute_digest_bytes(data, alg);
     guard ok_hash else { return false; }
 
-    out.append(if eq_ascii_fold(alg, rfc::DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
+    out.append(if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
     core::base64_encode(hash_bytes[..], out);
     out.push(':' as u8);
     return true;
@@ -78,11 +78,6 @@ fn set_repr_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool {
     return true;
 }
 
-// Formats an RFC 9530 Section 4 Want-Content-Digest or Want-Repr-Digest header value.
-fn format_want_digest_header<B>(out: B&, want_algorithms: const u8[:] = "sha-256=10") {
-    out.append(want_algorithms);
-}
-
 // Attaches RFC 9530 Want-Content-Digest header to Request.
 fn set_want_content_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10") {
     set_header(req, rfc::HEADER_WANT_CONTENT_DIGEST, want_algorithms);
@@ -98,14 +93,6 @@ fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> 
     var field_val: u8[..128] = [];
     guard format_digest_field_value(alg, res.body[..], field_val) else { return false; }
     res.set_header(rfc::HEADER_CONTENT_DIGEST, field_val[..]);
-    return true;
-}
-
-// Computes and attaches RFC 9530 Repr-Digest header to Response.
-fn set_response_repr_digest(res: Response&, alg: const u8[:] = "sha-256") -> bool {
-    var field_val: u8[..128] = [];
-    guard format_digest_field_value(alg, res.body[..], field_val) else { return false; }
-    res.set_header(rfc::HEADER_REPR_DIGEST, field_val[..]);
     return true;
 }
 
@@ -135,8 +122,8 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
 
     var matched_any = false;
     for &entry in entries {
-        let is_sha256 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA256);
-        let is_sha512 = eq_ascii_fold(entry.key[..], rfc::DIGEST_ALG_SHA512);
+        let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
+        let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
         if is_sha256 || is_sha512 {
             guard verify_single_digest_entry(entry, data) else { return false; }
             matched_any = true;

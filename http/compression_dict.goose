@@ -60,7 +60,7 @@ fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
     guard pattern[0] == '/' else { return false; }
 
     if pattern[pattern.len - 1] == '*' {
-        let prefix = pattern[..pattern.len - 1];
+        let prefix = pattern[..^1];
         return starts_with(path, prefix);
     }
     return path == pattern;
@@ -101,36 +101,30 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
     let k = k_raw.trim_lws();
     let v = v_raw.trim_lws().trim_byte('"');
 
-    if core::eq_ascii_fold(k, "match") {
-        guard v.len <= p.match_pattern.cap else {
+    if k.eq_ascii_fold("match") {
+        guard p.match_pattern.try_set(v) else {
             p.valid = false;
             return false;
         }
-        p.match_pattern.clear();
-        p.match_pattern.append(v);
         p.valid = (v.len > 0 && v[0] == '/');
-    } else if core::eq_ascii_fold(k, "id") {
-        guard v.len <= p.id.cap else {
+    } else if k.eq_ascii_fold("id") {
+        guard p.id.try_set(v) else {
             p.valid = false;
             return false;
         }
-        p.id.clear();
-        p.id.append(v);
-    } else if core::eq_ascii_fold(k, "ttl") {
+    } else if k.eq_ascii_fold("ttl") {
         let ttl_val, ttl_ok = v.parse_u32_dec();
         guard ttl_ok else {
             p.valid = false;
             return false;
         }
         p.ttl_sec = ttl_val;
-    } else if core::eq_ascii_fold(k, "type") {
-        guard v == "raw" && v.len <= p.dict_type.cap else {
+    } else if k.eq_ascii_fold("type") {
+        guard v == "raw" && p.dict_type.try_set(v) else {
             p.valid = false;
             return false;
         }
-        p.dict_type.clear();
-        p.dict_type.append(v);
-    } else if core::eq_ascii_fold(k, "match-dest") {
+    } else if k.eq_ascii_fold("match-dest") {
         return apply_dict_match_dest(p, v_raw.trim_lws());
     }
     return true;
@@ -356,19 +350,13 @@ fn populate_dict_entry(
     ttl_sec:       u32,
     now_sec:       i64,
 ) -> bool {
-    guard origin.len <= 128 && match_pattern.len <= 128 && id_str.len <= 64 && body.len <= 2048 else { return false; }
+    guard entry.origin.try_set(origin) &&
+          entry.match_pattern.try_set(match_pattern) &&
+          entry.id.try_set(id_str) &&
+          entry.sha256_base64.try_set(b64_hash) &&
+          entry.content.try_set(body) else { return false; }
     entry.valid = true;
-    entry.origin.clear();
-    entry.origin.append(origin);
-    entry.match_pattern.clear();
-    entry.match_pattern.append(match_pattern);
-    entry.id.clear();
-    entry.id.append(id_str);
     entry.sha256_hash = hash;
-    entry.sha256_base64.clear();
-    entry.sha256_base64.append(b64_hash);
-    entry.content.clear();
-    entry.content.append(body);
     entry.inserted_at_sec = now_sec;
     entry.ttl_sec = ttl_sec;
     return true;
@@ -452,9 +440,7 @@ fn dictionary_lookup_for_request(
         }
     }
     if best_idx >= 0 && best_idx < cache.entries.len {
-        out_base64_hash.clear();
-        out_base64_hash.append(cache.entries[best_idx].sha256_base64[..]);
-        return true;
+        return out_base64_hash.try_set(cache.entries[best_idx].sha256_base64[..]);
     }
     out_base64_hash.clear();
     return false;
@@ -584,7 +570,7 @@ fn accept_encoding_has_token(ae: const u8[:], target_token: const u8[:]) -> bool
             semi_idx = core::add_sat_i64(semi_idx, 1);
         }
         let coding = item[..semi_idx].trim_lws();
-        if coding.len > 0 && core::eq_ascii_fold(coding, target_token) && !is_zero_qvalue(item[semi_idx..]) {
+        if coding.len > 0 && coding.eq_ascii_fold(target_token) && !is_zero_qvalue(item[semi_idx..]) {
             return true;
         }
         cursor = core::add_sat_i64(comma_idx, 1);

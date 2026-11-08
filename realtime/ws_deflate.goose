@@ -97,34 +97,29 @@ fn ws_inflate_message<B>(
     out_plain.clear();
     let eff_limit = min(max_payload, ws_buf_cap(out_plain));
     guard compressed.len > 0 && eff_limit > 0 else { return false; }
-    shared.decompress_buf.clear();
+
+    var committed = false;
+    defer if !committed {
+        out_plain.clear();
+        if reset_window {
+            shared.decompress_buf.clear();
+            shared.compress_buf.clear();
+        }
+    };
 
     // RFC 7692 §7.2.2: Restore 4-byte sync-flush tail 0x00 0x00 0xFF 0xFF followed by a 2-byte
     // BFINAL=1 empty Fixed Huffman block (0x03 0x00) so BFINAL=0 sync-flush streams terminate cleanly.
-    guard core::add_sat_i64(compressed.len, 6) <= shared.decompress_buf.cap else { return false; }
-    shared.decompress_buf.append(compressed);
     let tail: u8[6] = [0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00];
-    shared.decompress_buf.append(tail[..]);
+    guard shared.decompress_buf.try_set(compressed) && shared.decompress_buf.try_append(tail[..]) else {
+        return false;
+    }
 
     let ok_d, err = core::inflate_with_limit(shared.decompress_buf[..], out_plain, eff_limit);
     if !ok_d {
         out_plain.clear();
-        if err == core::CompressError.OutputBufferOverflow {
-            if reset_window {
-                shared.decompress_buf.clear();
-                shared.compress_buf.clear();
-            }
-            return false;
-        }
+        guard err != core::CompressError.OutputBufferOverflow else { return false; }
         let ok_raw, _ = core::inflate_with_limit(compressed, out_plain, eff_limit);
-        if !ok_raw {
-            out_plain.clear();
-            if reset_window {
-                shared.decompress_buf.clear();
-                shared.compress_buf.clear();
-            }
-            return false;
-        }
+        guard ok_raw else { return false; }
     }
 
     shared.total_decompressed = core::add_sat_u64(shared.total_decompressed, out_plain.len as u64);
@@ -132,6 +127,7 @@ fn ws_inflate_message<B>(
         shared.decompress_buf.clear();
         shared.compress_buf.clear();
     }
+    committed = true;
     return true;
 }
 
@@ -163,8 +159,7 @@ fn update_dedicated_history(dedicated: DedicatedWsCompressor&, raw: const u8[:])
 
     if raw.len >= max_win {
         let tail_start = core::sub_sat_i64(raw.len, max_win);
-        dedicated.history.clear();
-        dedicated.history.append(raw[tail_start..]);
+        let _ = dedicated.history.try_set(raw[tail_start..]);
         return;
     }
 
@@ -189,19 +184,15 @@ fn deflate_message_dedicated<B>(
 ) -> bool {
     guard raw.len > 0 else { return false; }
     dedicated.compress_buf.clear();
+    var committed = false;
+    defer if !committed { dedicated.compress_buf.clear(); };
 
     let dict = if reset_window { "" } else { dedicated.history[..] };
     let ok = core::deflate_with_dict(raw, dedicated.compress_buf, 6, dict);
-    guard ok && dedicated.compress_buf.len > 0 else {
-        dedicated.compress_buf.clear();
-        return false;
-    }
+    guard ok && dedicated.compress_buf.len > 0 else { return false; }
 
     let eff_len = strip_pmd_sync_flush_tail(dedicated.compress_buf[..]);
-    guard core::add_sat_i64(out_wire.len, eff_len) <= ws_buf_cap(out_wire) else {
-        dedicated.compress_buf.clear();
-        return false;
-    }
+    guard core::add_sat_i64(out_wire.len, eff_len) <= ws_buf_cap(out_wire) else { return false; }
     out_wire.append(dedicated.compress_buf[..eff_len]);
     dedicated.total_compressed = core::add_sat_u64(dedicated.total_compressed, eff_len as u64);
     dedicated.total_uncompressed = core::add_sat_u64(dedicated.total_uncompressed, raw.len as u64);
@@ -212,6 +203,7 @@ fn deflate_message_dedicated<B>(
     } else {
         update_dedicated_history(dedicated, raw);
     }
+    committed = true;
     return true;
 }
 
@@ -225,27 +217,25 @@ fn inflate_message_dedicated<B>(
     out_plain.clear();
     let eff_limit = min(max_payload, ws_buf_cap(out_plain));
     guard compressed.len > 0 && eff_limit > 0 else { return false; }
-    dedicated.decompress_buf.clear();
 
-    guard core::add_sat_i64(compressed.len, 6) <= dedicated.decompress_buf.cap else { return false; }
-    dedicated.decompress_buf.append(compressed);
+    var committed = false;
+    defer if !committed {
+        out_plain.clear();
+        dedicated.decompress_buf.clear();
+    };
+
     let tail: u8[6] = [0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00];
-    dedicated.decompress_buf.append(tail[..]);
+    guard dedicated.decompress_buf.try_set(compressed) && dedicated.decompress_buf.try_append(tail[..]) else {
+        return false;
+    }
 
     let dict = if reset_window { "" } else { dedicated.history[..] };
     let ok_d, err = core::inflate_with_dict_limit(dedicated.decompress_buf[..], out_plain, dict, eff_limit);
     if !ok_d {
         out_plain.clear();
-        if err == core::CompressError.OutputBufferOverflow {
-            dedicated.decompress_buf.clear();
-            return false;
-        }
+        guard err != core::CompressError.OutputBufferOverflow else { return false; }
         let ok_raw, _ = core::inflate_with_dict_limit(compressed, out_plain, dict, eff_limit);
-        if !ok_raw {
-            out_plain.clear();
-            dedicated.decompress_buf.clear();
-            return false;
-        }
+        guard ok_raw else { return false; }
     }
 
     dedicated.total_decompressed = core::add_sat_u64(dedicated.total_decompressed, out_plain.len as u64);
@@ -255,6 +245,7 @@ fn inflate_message_dedicated<B>(
     } else {
         update_dedicated_history(dedicated, out_plain[..]);
     }
+    committed = true;
     return true;
 }
 
@@ -347,7 +338,7 @@ fn parse_pmd_window_bits(raw: const u8[:]) -> u8, bool {
     if val.len >= 2 {
         let last_idx = core::sub_sat_i64(val.len, 1);
         if val[0] == '"' && val[last_idx] == '"' {
-            val = val[1..last_idx];
+            val = val[1..^1];
         }
     }
     if val.len == 1 {
@@ -428,7 +419,7 @@ inline fn parse_single_pmd_offer(
     server_cfg: const PerMessageDeflateConfig&,
 ) -> PerMessageDeflateConfig, bool {
     let offer = offer_raw.trim_lws();
-    let ext_name, rest_params, has_params = core::split_once_unquoted_byte(offer, ';');
+    let ext_name, rest_params, has_params = offer.split_once_unquoted_byte(';');
     guard ext_name.trim_lws() == rfc::WS_PMD_EXTENSION_NAME else {
         return PerMessageDeflateConfig { .. }, false;
     }
@@ -444,10 +435,10 @@ inline fn parse_single_pmd_offer(
     var rem = rest_params;
     var more = has_params;
     while more {
-        let param_raw, next_rem, has_next = core::split_once_unquoted_byte(rem, ';');
+        let param_raw, next_rem, has_next = rem.split_once_unquoted_byte(';');
         let param = param_raw.trim_lws();
         guard param.len > 0 else { return PerMessageDeflateConfig { .. }, false; }
-        let k_raw, v_raw, has_eq = core::split_once_unquoted_byte(param, '=');
+        let k_raw, v_raw, has_eq = param.split_once_unquoted_byte('=');
         guard apply_pmd_param(k_raw.trim_lws(), v_raw.trim_lws(), has_eq, server_cfg, seen_mask, cfg) else {
             return PerMessageDeflateConfig { .. }, false;
         }
@@ -469,7 +460,7 @@ fn negotiate_permessage_deflate(
     var rem = hdr;
     var more = true;
     while more {
-        let offer_raw, next_rem, has_next = core::split_once_unquoted_byte(rem, ',');
+        let offer_raw, next_rem, has_next = rem.split_once_unquoted_byte(',');
         let cfg, ok = parse_single_pmd_offer(offer_raw, server_cfg);
         if ok {
             return cfg, true;

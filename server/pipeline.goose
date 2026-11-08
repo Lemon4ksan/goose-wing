@@ -197,9 +197,9 @@ fn validate_pipeline_expect_header(req: const Request&) -> bool {
         return true;
     }
     for &e in req.headers.entries {
-        if eq_ascii_fold(entry_name(req.headers, e), rfc::HEADER_EXPECT) {
+        if entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_EXPECT) {
             let exp_val = entry_value(req.headers, e);
-            if !eq_ascii_fold(exp_val, rfc::EXPECT_100_CONTINUE) {
+            if !exp_val.eq_ascii_fold(rfc::EXPECT_100_CONTINUE) {
                 return false;
             }
         }
@@ -402,9 +402,9 @@ fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
         if pos < cookie_hdr.len && cookie_hdr[pos] == ';' {
             pos++;
         }
-        let eq_idx = core::index_of_byte(pair, '=');
-        if eq_idx > 0 && core::trim_lws(pair[..eq_idx]) == "session" {
-            return core::trim_lws(pair[(eq_idx + 1)..]);
+        let eq_idx = pair.index_of_byte('=');
+        if eq_idx > 0 && pair[..eq_idx].trim_lws() == "session" {
+            return pair[(eq_idx + 1)..].trim_lws();
         }
     }
     return "";
@@ -424,7 +424,7 @@ fn stage_server_auth_cookie<Jar>(
     defer prof_leave(_prof);
     let now_sec = (now_ns / 1000000000) as i64;
     for &e in req.headers.entries {
-        guard eq_ascii_fold(entry_name(req.headers, e), rfc::HEADER_COOKIE) else { continue; }
+        guard entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_COOKIE) else { continue; }
         var rem = entry_value(req.headers, e);
         while rem.len > 0 {
             let session_val = extract_session_cookie_value(rem);
@@ -434,7 +434,7 @@ fn stage_server_auth_cookie<Jar>(
                 ext.populated_entries |= internal::ENTRY_COOKIES;
                 return wire::StageVerdict.Continue;
             }
-            let semi = core::index_of_byte(rem, ';');
+            let semi = rem.index_of_byte(';');
             guard semi >= 0 else { break; }
             rem = rem[core::add_sat_i64(semi, 1)..];
         }
@@ -448,10 +448,10 @@ fn stage_server_auth_cookie<Jar>(
 //   auth_hdr = "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig"
 //   returns: "eyJhbGciOiJIUzI1NiJ9.e30.sig"
 fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:] {
-    let trimmed = core::trim_lws(auth_hdr);
+    let trimmed = auth_hdr.trim_lws();
     guard trimmed.len > 7 else { return ""; }
-    guard eq_ascii_fold(trimmed[..7], "Bearer ") else { return ""; }
-    return core::trim_lws(trimmed[7..]);
+    guard trimmed[..7].eq_ascii_fold("Bearer ") else { return ""; }
+    return trimmed[7..].trim_lws();
 }
 
 // Stage 9 (Server Ingress): RFC 7519 / RFC 8725 JWT Bearer token verification against `Jwks`.
@@ -541,8 +541,7 @@ fn append_known_pipeline_header(
 
 inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&) -> wire::StageVerdict {
     res.status_code = 200;
-    res.body.clear();
-    res.body.append(cache.wire[..]);
+    let _ = res.body.try_set(cache.wire[..]);
     if cache.content_type.len > 0 {
         if !append_known_pipeline_header(
             res.headers,
@@ -621,7 +620,7 @@ inline fn populate_missing_response_etag(res: Response&) {
     }
     var etag_hdr: u8[..32] = [];
     etag_hdr.push('"');
-    core::format_u64_hex(core::xxh64(res.body[..], 0), etag_hdr);
+    core::xxh64(res.body[..], 0).format_u64_hex(etag_hdr);
     etag_hdr.push('"');
     if res.body.len <= 512 {
         let _ = g_etag_memo_src.try_set(res.body[..]);
@@ -664,26 +663,26 @@ fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict 
 
 fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool {
     guard accept_enc.len > 0 && token.len > 0 else { return false; }
-    if eq_ascii_fold(accept_enc, token) {
+    if accept_enc.eq_ascii_fold(token) {
         return true;
     }
     var pos: i64 = 0;
     while pos < accept_enc.len {
-        let comma = core::index_of_byte(accept_enc[pos..], ',');
+        let comma = accept_enc[pos..].index_of_byte(',');
         let item = if comma >= 0 {
             accept_enc[pos..pos + comma]
         } else {
             accept_enc[pos..]
         };
-        let trimmed = core::trim_lws(item);
-        let semi = core::index_of_byte(trimmed, ';');
+        let trimmed = item.trim_lws();
+        let semi = trimmed.index_of_byte(';');
         let coding = if semi >= 0 {
-            core::trim_lws(trimmed[..semi])
+            trimmed[..semi].trim_lws()
         } else {
             trimmed
         };
         let params = if semi >= 0 { trimmed[semi + 1..] } else { "" };
-        if eq_ascii_fold(coding, token) && !is_zero_qvalue(params) {
+        if coding.eq_ascii_fold(token) && !is_zero_qvalue(params) {
             return true;
         }
         if comma < 0 { break; }
@@ -724,7 +723,7 @@ inline fn append_vary_accept_encoding(res: Response&) {
         if !update_single_vary_value(res.headers, combined) {
             let _ = set_or_replace(res.headers, rfc::HEADER_VARY, combined, false);
         }
-    } else if !core::contains_fold(cur, rfc::HEADER_ACCEPT_ENCODING) {
+    } else if !cur.contains_fold(rfc::HEADER_ACCEPT_ENCODING) {
         var vbuf: u8[..128] = [];
         guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
         if !update_single_vary_value(res.headers, vbuf[..]) {
@@ -771,8 +770,7 @@ var g_compress_scratch: u8[..2048] = [];
 fn try_compress_zstd(res: Response&) -> bool {
     g_compress_scratch.clear();
     guard core::zstd_compress(res.body[..], g_compress_scratch) else { return false; }
-    res.body.clear();
-    res.body.append(g_compress_scratch[..]);
+    let _ = res.body.try_set(g_compress_scratch[..]);
     finalize_compressed_response(res, "zstd", "-zstd");
     return true;
 }
@@ -780,8 +778,7 @@ fn try_compress_zstd(res: Response&) -> bool {
 fn try_compress_brotli(res: Response&) -> bool {
     g_compress_scratch.clear();
     guard core::brotli_compress(res.body[..], g_compress_scratch, 1) else { return false; }
-    res.body.clear();
-    res.body.append(g_compress_scratch[..]);
+    let _ = res.body.try_set(g_compress_scratch[..]);
     finalize_compressed_response(res, "br", "-br");
     return true;
 }
@@ -794,8 +791,7 @@ fn compress_gzip_uncached(res: Response&) {
             let _ = g_gzip_memo_src.try_set(res.body[..]);
             let _ = g_gzip_memo_dst.try_set(g_compress_scratch[..]);
         }
-        res.body.clear();
-        res.body.append(g_compress_scratch[..]);
+        let _ = res.body.try_set(g_compress_scratch[..]);
         finalize_compressed_response(res, "gzip", "-gzip");
     }
 }
@@ -826,8 +822,7 @@ fn stage_server_compress(
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
         if res.body.len <= 512 && g_gzip_memo_src.len > 0 && res.body[..] == g_gzip_memo_src[..] {
-            res.body.clear();
-            res.body.append(g_gzip_memo_dst[..]);
+            let _ = res.body.try_set(g_gzip_memo_dst[..]);
             finalize_compressed_response(res, "gzip", "-gzip");
             return wire::StageVerdict.Continue;
         }
@@ -854,7 +849,7 @@ fn stage_server_cache_store(
         } else {
             var etag_buf: u8[..32] = [];
             etag_buf.push('"');
-            core::format_u64_hex(core::xxh64(res.body[..], 0), etag_buf);
+            core::xxh64(res.body[..], 0).format_u64_hex(etag_buf);
             etag_buf.push('"');
             if !append_known_pipeline_header(
                 res.headers,
@@ -915,7 +910,7 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
 
 fn has_custom_header_hash(map: const HeaderMap&, name: const u8[:], hname: u32) -> bool {
     for &e in map.entries {
-        if e.name_hash == hname && eq_ascii_fold(entry_name(map, e), name) {
+        if e.name_hash == hname && entry_name(map, e).eq_ascii_fold(name) {
             return true;
         }
     }
@@ -933,7 +928,7 @@ fn is_clean_header_bytes(src: const u8[:]) -> bool {
 
 fn append_matched_route_log_header(map: HeaderMap&, route_slice: const u8[:]) {
     if is_clean_header_bytes(route_slice) {
-        let has_comma = slice_contains_comma(route_slice);
+        let has_comma = route_slice.contains_byte(',');
         let flags = if has_comma { HEADER_FLAG_CONTAINS_COMMA } else { 0 };
         if !append_known_pipeline_header(
             map,
@@ -974,7 +969,7 @@ fn stage_server_metrics_log(
         };
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
-        core::format_u64_dec(dur_ns / 1000, timing_buf);
+        (dur_ns / 1000).format_u64_dec(timing_buf);
         if !append_known_pipeline_header(
             res.headers,
             rfc::HEADER_SERVER_TIMING,
@@ -1288,7 +1283,7 @@ fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
     guard req_method == rfc::METHOD_HEAD else { return; }
     if header(res, rfc::HEADER_CONTENT_LENGTH).len == 0 && res.body.len > 0 {
         var cl_buf: u8[..32] = [];
-        core::format_i64_dec(res.body.len, cl_buf);
+        res.body.len.format_i64_dec(cl_buf);
         set_header(res, rfc::HEADER_CONTENT_LENGTH, cl_buf[..]);
     }
     res.body.clear();
@@ -1302,19 +1297,19 @@ fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
 fn normalize_forwarded_ip(raw_val: const u8[:]) -> const u8[:] {
     var val = raw_val;
     if core::starts_with(val, "\"") && core::ends_with(val, "\"") && val.len >= 2 {
-        val = val[1..(val.len - 1)];
+        val = val[1..^1];
     }
     guard val.len > 0 else { return ""; }
 
     if core::starts_with(val, "[") {
-        let close_br = core::index_of_byte(val, ']');
+        let close_br = val.index_of_byte(']');
         guard close_br > 1 else { return ""; }
         return val[1..close_br];
     }
 
-    let col1 = core::index_of_byte(val, ':');
+    let col1 = val.index_of_byte(':');
     guard col1 > 0 else { return val; }
-    let col2 = core::index_of_byte(val[(col1 + 1)..], ':');
+    let col2 = val[(col1 + 1)..].index_of_byte(':');
     guard col2 < 0 else { return val; }
     return val[..col1];
 }
@@ -1325,12 +1320,12 @@ fn normalize_forwarded_ip(raw_val: const u8[:]) -> const u8[:] {
 //   pair = "for=\"192.0.2.60:4711\""
 //   returns: "192.0.2.60"
 fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
-    let trimmed = core::trim_lws(pair);
-    let eq_idx = core::index_of_byte(trimmed, '=');
+    let trimmed = pair.trim_lws();
+    let eq_idx = trimmed.index_of_byte('=');
     guard eq_idx > 0 else { return ""; }
-    let key = core::trim_lws(trimmed[..eq_idx]);
-    guard eq_ascii_fold(key, "for") else { return ""; }
-    return normalize_forwarded_ip(core::trim_lws(trimmed[(eq_idx + 1)..]));
+    let key = trimmed[..eq_idx].trim_lws();
+    guard key.eq_ascii_fold("for") else { return ""; }
+    return normalize_forwarded_ip(trimmed[(eq_idx + 1)..].trim_lws());
 }
 
 // Extracts the client IP from the first element of an RFC 7239 Forwarded header.
@@ -1341,13 +1336,13 @@ fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
 fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
     var rem = fwd;
     while rem.len > 0 {
-        let comma_idx = core::find_unquoted_byte(rem, ',');
+        let comma_idx = rem.find_unquoted_byte(',');
         let elem = rem[..comma_idx];
         rem = if comma_idx < rem.len { rem[core::add_sat_i64(comma_idx, 1)..] } else { "" };
 
         var elem_rem = elem;
         while elem_rem.len > 0 {
-            let sc = core::find_unquoted_byte(elem_rem, ';');
+            let sc = elem_rem.find_unquoted_byte(';');
             let pair = elem_rem[..sc];
             elem_rem = if sc < elem_rem.len { elem_rem[core::add_sat_i64(sc, 1)..] } else { "" };
 
@@ -1395,17 +1390,17 @@ fn extract_effective_client_ip(
             return fwd_ip;
         }
     }
-    let real_ip = normalize_forwarded_ip(core::trim_lws(header(req, rfc::HEADER_X_REAL_IP)));
+    let real_ip = normalize_forwarded_ip(header(req, rfc::HEADER_X_REAL_IP).trim_lws());
     if real_ip.len > 0 && real_ip.len <= 48 {
         return real_ip;
     }
     let xff = header(req, rfc::HEADER_X_FORWARDED_FOR);
     if xff.len > 0 {
-        let comma_idx = core::index_of_byte(xff, ',');
+        let comma_idx = xff.index_of_byte(',');
         let raw_first = if comma_idx >= 0 {
-            core::trim_lws(xff[..comma_idx])
+            xff[..comma_idx].trim_lws()
         } else {
-            core::trim_lws(xff)
+            xff.trim_lws()
         };
         let first_ip = normalize_forwarded_ip(raw_first);
         if first_ip.len > 0 && first_ip.len <= 48 {

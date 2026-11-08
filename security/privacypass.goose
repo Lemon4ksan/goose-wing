@@ -45,12 +45,12 @@ struct PrivateTokenCache {
 // token_type(2) + issuer_len(2) + issuer + ctx_len(1) + ctx + origin_len(2) + origin
 fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) {
     out.clear();
-    core::write_be_u16(out, challenge.token_type);
-    core::write_be_u16(out, challenge.issuer_name.len as u16);
+    out.append_u16_be(challenge.token_type);
+    out.append_u16_be(challenge.issuer_name.len as u16);
     out.append(challenge.issuer_name[..]);
     out.push(challenge.redemption_context.len as u8);
     out.append(challenge.redemption_context[..]);
-    core::write_be_u16(out, challenge.origin_info.len as u16);
+    out.append_u16_be(challenge.origin_info.len as u16);
     out.append(challenge.origin_info[..]);
 }
 
@@ -61,23 +61,21 @@ fn unmarshal_token_challenge(data: const u8[:], out: TokenChallenge&) -> bool {
     guard ok_tt else { return false; }
 
     let iss, ok_iss = core::read_u16_prefixed(cur);
-    guard ok_iss && iss.len > 0 && iss.len <= out.issuer_name.cap else { return false; }
+    guard ok_iss && iss.len > 0 else { return false; }
 
     let ctx, ok_ctx = core::read_u8_prefixed(cur);
-    guard ok_ctx && (ctx.len == 0 || ctx.len == 32) && ctx.len <= out.redemption_context.cap else {
-        return false;
-    }
+    guard ok_ctx && (ctx.len == 0 || ctx.len == 32) else { return false; }
 
     let orig, ok_orig = core::read_u16_prefixed(cur);
-    guard ok_orig && orig.len <= out.origin_info.cap && cur.buf.len == 0 else { return false; }
+    guard ok_orig && cur.buf.len == 0 else { return false; }
 
+    guard out.issuer_name.try_set(iss) &&
+        out.redemption_context.try_set(ctx) &&
+        out.origin_info.try_set(orig) else {
+        out = TokenChallenge { .. };
+        return false;
+    }
     out.token_type = token_type;
-    out.issuer_name.clear();
-    out.issuer_name.append(iss);
-    out.redemption_context.clear();
-    out.redemption_context.append(ctx);
-    out.origin_info.clear();
-    out.origin_info.append(orig);
     return true;
 }
 
@@ -92,7 +90,7 @@ fn compute_challenge_digest(challenge: const TokenChallenge&) -> u8[32] {
 // token_type(2) + nonce(32) + challenge_digest(32) + key_id(Nid) + authenticator(Nk)
 fn marshal_token<B>(token: const Token&, out: B&) {
     out.clear();
-    core::write_be_u16(out, token.token_type);
+    out.append_u16_be(token.token_type);
     out.append(token.nonce[..]);
     out.append(token.challenge_digest[..]);
     out.append(token.token_key_id[..]);
@@ -102,7 +100,6 @@ fn marshal_token<B>(token: const Token&, out: B&) {
 // Unmarshals Token from RFC 9577 §2.2.1 binary representation.
 fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token&) -> bool {
     guard key_id_len >= 0 && auth_len >= 0 else { return false; }
-    guard key_id_len <= out.token_key_id.cap && auth_len <= out.authenticator.cap else { return false; }
 
     var cur = core::cursor_from(data);
     let token_type, ok_tt = core::read_u16(cur);
@@ -113,16 +110,16 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
     let key_id_slice, ok_k = core::read_bytes(cur, key_id_len);
     let auth_slice, ok_a = core::read_bytes(cur, auth_len);
     guard ok_n && ok_d && ok_k && ok_a && cur.buf.len == 0 else { return false; }
+    guard out.token_key_id.try_set(key_id_slice) && out.authenticator.try_set(auth_slice) else {
+        out = Token { .. };
+        return false;
+    }
 
     out.token_type = token_type;
     for i in 32 {
         out.nonce[i] = nonce_slice[i];
         out.challenge_digest[i] = digest_slice[i];
     }
-    out.token_key_id.clear();
-    out.token_key_id.append(key_id_slice);
-    out.authenticator.clear();
-    out.authenticator.append(auth_slice);
     return true;
 }
 
@@ -135,32 +132,32 @@ fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64, out: Token
 //   rem = "= \"abc\", def", idx = 0
 //   returns: "abc", ok = true, idx = 7
 fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
-    var cur = idx;
-    while cur < rem.len && (rem[cur] == ' ' || rem[cur] == '\t') {
-        cur += 1;
-    }
-    guard cur < rem.len && rem[cur] == '=' else { return "", false; }
-    cur += 1;
-    while cur < rem.len && (rem[cur] == ' ' || rem[cur] == '\t') {
-        cur += 1;
-    }
-    guard cur < rem.len else { return "", false; }
-    if rem[cur] == '"' {
-        cur += 1;
-        let v_start = cur;
-        let rel_q = core::index_of_byte(rem[v_start..], '"');
+    guard idx >= 0 && idx <= rem.len else { return "", false; }
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
+
+    let after_key = rem[idx..].trim_lws_start();
+    guard after_key.len > 0 && after_key[0] == '=' else { return "", false; }
+    let after_eq = after_key[1..].trim_lws_start();
+    guard after_eq.len > 0 else { return "", false; }
+
+    let v_start = core::sub_sat_i64(rem.len, after_eq.len);
+    if after_eq[0] == '"' {
+        let quoted_body = after_eq[1..];
+        let rel_q = quoted_body.index_of_byte('"');
         guard rel_q >= 0 else { return "", false; }
-        let val = rem[v_start..v_start + rel_q];
-        idx = v_start + rel_q + 1;
+        let val = quoted_body[..rel_q];
+        idx = core::add_sat_i64(v_start, core::add_sat_i64(rel_q, 2));
+        committed = true;
         return val, true;
     }
-    let v_start = cur;
-    while cur < rem.len && rem[cur] != ',' && rem[cur] != ' ' && rem[cur] != '\t' {
-        cur += 1;
-    }
-    guard cur > v_start else { return "", false; }
-    idx = cur;
-    return rem[v_start..cur], true;
+    let delim = core::find_byteset(after_eq, ", \t");
+    let v_len = if delim >= 0 { delim } else { after_eq.len };
+    guard v_len > 0 else { return "", false; }
+    idx = core::add_sat_i64(v_start, v_len);
+    committed = true;
+    return after_eq[..v_len], true;
 }
 
 // Decodes base64url-encoded token-key parameter into buffer.
@@ -180,11 +177,8 @@ fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..512]&) -> bool 
 //   rem = "challenge=\"xyz\""
 //   returns: "challenge"
 fn read_param_key(rem: const u8[:]) -> const u8[:] {
-    var k_len: i64 = 0;
-    while k_len < rem.len && rem[k_len] != '=' && rem[k_len] != ',' && rem[k_len] != ' ' && rem[k_len] != '\t' {
-        k_len += 1;
-    }
-    return rem[..k_len];
+    let delim = core::find_byteset(rem, "=, \t");
+    return if delim >= 0 { rem[..delim] } else { rem };
 }
 
 // Parses comma-separated PrivateToken challenge parameters.
@@ -204,24 +198,24 @@ fn parse_challenge_params(
     var idx: i64 = 0;
     while idx < params_str.len {
         let rem = params_str[idx..].trim_start_bytes(" \t,");
-        idx = params_str.len - rem.len;
+        idx = core::sub_sat_i64(params_str.len, rem.len);
         guard idx < params_str.len else { break; }
 
         let key = read_param_key(rem);
         guard key.len > 0 else { return "", false; }
-        idx += key.len;
+        idx = core::add_sat_i64(idx, key.len);
 
         let val, ok_v = parse_param_val(params_str, idx);
         guard ok_v else { return "", false; }
 
-        if eq_ascii_fold(key, "challenge") {
+        if key.eq_ascii_fold("challenge") {
             guard !seen_challenge && val.len > 0 else { return "", false; }
             seen_challenge = true;
             challenge_slice = val;
-        } else if eq_ascii_fold(key, "token-key") {
+        } else if key.eq_ascii_fold("token-key") {
             guard !seen_token_key && decode_token_key_param(val, temp_token_key) else { return "", false; }
             seen_token_key = true;
-        } else if eq_ascii_fold(key, "max-age") {
+        } else if key.eq_ascii_fold("max-age") {
             guard !seen_max_age else { return "", false; }
             let secs, ok_sec = val.parse_i64_dec();
             guard ok_sec && secs >= 0 else { return "", false; }
@@ -247,17 +241,18 @@ fn parse_private_token_challenge<B>(
     out_token_key.clear();
     out_max_age_sec = 0;
 
-    let clean = trim_lws(header_val);
+    let clean = header_val.trim_lws();
     let scheme_len = rfc::SCHEME_PRIVATE_TOKEN.len;
     guard clean.len > scheme_len else { return false; }
-    guard eq_ascii_fold(clean[..scheme_len], rfc::SCHEME_PRIVATE_TOKEN) else { return false; }
+    guard clean[..scheme_len].eq_ascii_fold(rfc::SCHEME_PRIVATE_TOKEN) else { return false; }
     let sep = clean[scheme_len];
-    guard sep == ' ' || sep == '\t' else { return false; }
+    guard core::is_lws(sep) else { return false; }
 
     var temp_token_key: u8[..512] = [];
     var temp_max_age:   i64       = 0;
+    let params_start = core::add_sat_i64(scheme_len, 1);
     let challenge_slice, ok_params = parse_challenge_params(
-        clean[scheme_len + 1..].trim_lws(),
+        clean[params_start..].trim_lws(),
         temp_token_key,
         temp_max_age,
     );
@@ -326,20 +321,14 @@ fn put_private_token(
 
     if target_idx == -1 {
         target_idx = cache.entries.len;
-        cache.entries.push(CachedToken { .. });
+        guard cache.entries.try_push(CachedToken { .. }) else { return false; }
     }
 
     let entry = &cache.entries[target_idx];
+    guard entry.raw_token.try_set(raw_token) else { return false; }
     entry.challenge_digest = digest;
     entry.token = token;
-    entry.raw_token.clear();
-    entry.raw_token.append(raw_token);
-    if ttl_sec > 0 {
-        let sum_u = core::add_sat_u64(now_sec as u64, ttl_sec as u64);
-        entry.expires_at_sec = min(sum_u, 9223372036854775807) as! i64;
-    } else {
-        entry.expires_at_sec = 0;
-    }
+    entry.expires_at_sec = if ttl_sec > 0 { core::add_sat_i64(now_sec, ttl_sec) } else { 0 };
     entry.used = false;
 
     return true;
@@ -365,9 +354,8 @@ fn get_private_token(
     for i in cache.entries.len {
         let entry = &cache.entries[i];
         if entry_matches_challenge(entry, digest, now_sec) {
+            guard out_raw.try_set(entry.raw_token[..]) else { return false; }
             out_token = entry.token;
-            out_raw.clear();
-            out_raw.append(entry.raw_token[..]);
             cache.entries[i].used = true;
             return true;
         }
@@ -388,9 +376,7 @@ fn pop_private_token<B>(
     for i in cache.entries.len {
         let entry = &cache.entries[i];
         if entry_matches_challenge(entry, challenge_digest, now_sec) {
-            guard entry.raw_token.len <= out_raw_token.cap else { return false; }
-            out_raw_token.clear();
-            out_raw_token.append(entry.raw_token[..]);
+            guard out_raw_token.try_set(entry.raw_token[..]) else { return false; }
             cache.entries[i].used = true;
             return true;
         }
@@ -411,10 +397,10 @@ fn has_private_token_challenge<Res>(res: const Res&) -> bool {
     guard res.status_code == rfc::STATUS_UNAUTHORIZED else { return false; }
     let scheme_len = rfc::SCHEME_PRIVATE_TOKEN.len;
     for &e in res.headers.entries {
-        guard core::eq_ascii_fold(entry_name(res.headers, e), "WWW-Authenticate") else { continue; }
-        let val = trim_lws(entry_value(res.headers, e));
-        guard val.len >= scheme_len && eq_ascii_fold(val[..scheme_len], rfc::SCHEME_PRIVATE_TOKEN) else { continue; }
-        if val.len == scheme_len || val[scheme_len] == ' ' || val[scheme_len] == '\t' {
+        guard entry_name(res.headers, e).eq_ascii_fold("WWW-Authenticate") else { continue; }
+        let val = entry_value(res.headers, e).trim_lws();
+        guard val.len >= scheme_len && val[..scheme_len].eq_ascii_fold(rfc::SCHEME_PRIVATE_TOKEN) else { continue; }
+        if val.len == scheme_len || core::is_lws(val[scheme_len]) {
             return true;
         }
     }

@@ -264,7 +264,7 @@ struct RingQueueState {
 
 // Prepares and stages a multishot receive SQE with provided buffer selection (`IORING_RECV_MULTISHOT`).
 fn uring_prep_recv_multishot(ring: RingQueueState&, fd: i32, bgid: u16, user_data: u64) -> bool {
-    guard fd >= 0 && ring.staged_sqes.len < ring.staged_sqes.cap else { return false; }
+    guard fd >= 0 else { return false; }
     let sqe = UringSqe {
         opcode:    URING_OP_RECV,
         flags:     URING_SQE_BUFFER_SELECT,

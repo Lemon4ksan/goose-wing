@@ -90,7 +90,7 @@ fn sha256_update(ctx: Sha256Ctx&, data: const u8[:]) {
     while offset < data.len {
         let needed = 64 - ctx.buf_len;
         let available = data.len - offset;
-        let to_copy = if available < needed { available } else { needed };
+        let to_copy = min(available, needed);
         for i in to_copy {
             ctx.buf[ctx.buf_len + i] = data[offset + i];
         }
@@ -335,7 +335,7 @@ fn sha384_update(ctx: Sha384Ctx&, data: const u8[:]) {
     while offset < data.len {
         let needed = 128 - ctx.buf_len;
         let available = data.len - offset;
-        let to_copy = if available < needed { available } else { needed };
+        let to_copy = min(available, needed);
         for i in to_copy {
             ctx.buf[ctx.buf_len + i] = data[offset + i];
         }
@@ -407,7 +407,7 @@ fn sha512_update(ctx: Sha512Ctx&, data: const u8[:]) {
     while offset < data.len {
         let needed = 128 - ctx.buf_len;
         let available = data.len - offset;
-        let to_copy = if available < needed { available } else { needed };
+        let to_copy = min(available, needed);
         for i in to_copy {
             ctx.buf[ctx.buf_len + i] = data[offset + i];
         }
@@ -479,7 +479,7 @@ fn sha512_256_update(ctx: Sha512_256Ctx&, data: const u8[:]) {
     while offset < data.len {
         let needed = 128 - ctx.buf_len;
         let available = data.len - offset;
-        let to_copy = if available < needed { available } else { needed };
+        let to_copy = min(available, needed);
         for i in to_copy {
             ctx.buf[ctx.buf_len + i] = data[offset + i];
         }
@@ -658,7 +658,7 @@ fn hkdf_expand_bytes_256(prk: const u8[:], info: const u8[:], length: u16, out: 
         let ctr: u8[1] = [i as u8];
         let p1 = if i > 1 { t[..] } else { "" };
         t = hmac_sha256_parts(prk, p1, info, ctr[..]);
-        let to_copy = if len_i64 - out_off < 32 { len_i64 - out_off } else { 32 };
+        let to_copy = min(len_i64 - out_off, 32);
         for j in to_copy {
             out[out_off + j] = t[j];
         }
@@ -679,7 +679,7 @@ fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: 
         let ctr: u8[1] = [i as u8];
         let p1 = if i > 1 { t[..] } else { "" };
         t = hmac_sha384_parts(prk, p1, info, ctr[..]);
-        let to_copy = if len_i64 - out_off < 48 { len_i64 - out_off } else { 48 };
+        let to_copy = min(len_i64 - out_off, 48);
         for j in to_copy {
             out[out_off + j] = t[j];
         }

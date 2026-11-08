@@ -61,7 +61,7 @@ fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
     var p_val = v_trim;
     if v_trim[0] == '"' {
         guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return; }
-        p_val = v_trim[1..v_trim.len - 1];
+        p_val = v_trim[1..^1];
     } else {
         guard v_trim[v_trim.len - 1] != '"' else { return; }
     }
@@ -155,8 +155,7 @@ fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     guard has_colon && is_valid_altsvc_host(host_part) else { return false; }
 
     if host_part.len > 0 {
-        guard host_part.len <= ep.host.cap else { return false; }
-        ep.host.append(host_part);
+        guard ep.host.try_append(host_part) else { return false; }
     }
 
     let port_num, port_ok = port_part.parse_u32_dec();
@@ -209,7 +208,7 @@ fn read_next_altsvc_entry(rem: const u8[:]) -> const u8[:], const u8[:] {
 //   raw = "h3=\":443\"; ma=86400"
 //   returns: true, is_clear = false, endpoints pushed into out_endpoints
 fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
-    let trimmed = trim_lws(raw);
+    let trimmed = raw.trim_lws();
     if trimmed == "clear" {
         return true, true; // is_clear = true
     }
@@ -222,9 +221,7 @@ fn parse_altsvc_header<E>(raw: const u8[:], out_endpoints: E&) -> bool, bool {
 
         var ep = AltSvcEndpoint { .. };
         guard parse_single_altsvc_entry(entry_str, ep) else { continue; }
-        if out_endpoints.len < out_endpoints.cap {
-            out_endpoints.push(ep);
-        } else if ep.proto[..] == "h3" {
+        if !out_endpoints.try_push(ep) && ep.proto[..] == "h3" {
             for i in out_endpoints.len {
                 guard out_endpoints[i].proto[..] != "h3" else { continue; }
                 out_endpoints[i] = ep;
@@ -277,13 +274,10 @@ fn insert_new_altsvc_entry(
         valid:           true,
         ..
     };
-    guard origin.len <= entry.origin.cap else { return; }
-    entry.origin.append(origin);
+    guard entry.origin.try_set(origin) else { return; }
     for &ep in endpoints { entry.endpoints.push(ep); }
 
-    if cache.entries.len < cache.entries.cap {
-        cache.entries.push(entry);
-    } else {
+    if !cache.entries.try_push(entry) {
         let oldest_idx = find_oldest_altsvc_idx(cache);
         if oldest_idx >= 0 && oldest_idx < cache.entries.len {
             cache.entries[oldest_idx] = entry;
@@ -398,9 +392,9 @@ fn format_altsvc_header<B>(
 ) {
     out.append(proto);
     out.append("=\":");
-    core::format_u64_dec(port as u64, out);
+    (port as u64).format_u64_dec(out);
     out.append("\"; ma=");
-    core::format_u64_dec(max_age_sec as u64, out);
+    (max_age_sec as u64).format_u64_dec(out);
     if persist {
         out.append("; persist=1");
     }

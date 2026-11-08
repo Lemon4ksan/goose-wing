@@ -32,14 +32,27 @@ struct SoAConnTable {
 
 // Advances high-water mark for allocated connection slots.
 inline fn advance_high_water_mark(current_limit: i64, slot: i64) -> i64 {
-    let next_slot = slot + 1;
-    return if next_slot > current_limit { next_slot } else { current_limit };
+    let next_slot = core::add_sat_i64(slot, 1);
+    return max(next_slot, current_limit);
 }
 
 // Records an expired connection slot into output array and returns incremented count.
 inline fn record_expired_conn(dst: i64[:], current_count: i64, slot: i64) -> i64 {
     dst[current_count] = slot;
-    return current_count + 1;
+    return core::add_sat_i64(current_count, 1);
+}
+
+inline fn reset_soa_slot_fields(table: SoAConnTable&, slot: i64, fd: i64, timeout_tick: u8) {
+    table.fds[slot] = fd;
+    table.timeout_ticks[slot] = timeout_tick;
+    table.leftover_lens[slot] = 0;
+    table.is_h2[slot] = false;
+    table.h2_slot_map[slot] = -1;
+    table.has_tls[slot] = false;
+    table.tls_slots[slot] = 0xFFFF;
+    table.has_peer_ip[slot] = false;
+    table.peer_ip_hashes[slot] = 0;
+    table.peer_ips[slot].clear();
 }
 
 // Allocates an active connection slot in the SoA table.
@@ -47,16 +60,7 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
     guard fd > 0 else { return SOA_INVALID_FD; }
     for i in table.fds.len {
         if table.fds[i] < 0 {
-            table.fds[i] = fd;
-            table.timeout_ticks[i] = timeout_tick;
-            table.leftover_lens[i] = 0;
-            table.is_h2[i] = false;
-            table.h2_slot_map[i] = -1;
-            table.has_tls[i] = false;
-            table.tls_slots[i] = 0xFFFF;
-            table.has_peer_ip[i] = false;
-            table.peer_ip_hashes[i] = 0;
-            table.peer_ips[i].clear();
+            reset_soa_slot_fields(table, i, fd, timeout_tick);
             table.count = advance_high_water_mark(table.count, i);
             return i;
         }
@@ -66,7 +70,7 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
 
 inline fn trim_soa_high_water_mark(table: SoAConnTable&) {
     while table.count > 0 && table.count <= table.fds.len {
-        let last_idx = table.count - 1;
+        let last_idx = core::sub_sat_i64(table.count, 1);
         guard last_idx >= 0 && last_idx < table.fds.len && table.fds[last_idx] < 0 else {
             break;
         }
@@ -77,16 +81,7 @@ inline fn trim_soa_high_water_mark(table: SoAConnTable&) {
 // Releases a connection slot in the SoA table.
 fn soa_table_free(table: SoAConnTable&, slot: i64) {
     guard slot >= 0 && slot < table.fds.len else { return; }
-    table.fds[slot] = SOA_INVALID_FD;
-    table.timeout_ticks[slot] = SOA_INVALID_TICK;
-    table.leftover_lens[slot] = 0;
-    table.is_h2[slot] = false;
-    table.h2_slot_map[slot] = -1;
-    table.has_tls[slot] = false;
-    table.tls_slots[slot] = 0xFFFF;
-    table.has_peer_ip[slot] = false;
-    table.peer_ip_hashes[slot] = 0;
-    table.peer_ips[slot].clear();
+    reset_soa_slot_fields(table, slot, SOA_INVALID_FD, SOA_INVALID_TICK);
     trim_soa_high_water_mark(table);
 }
 

@@ -134,13 +134,12 @@ fn tcp_getsockname_port(fd: i64) -> u16 {
 
 // Retrieves the connected peer IPv4 address string for a socket (or "127.0.0.1" fallback).
 fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
-    out_ip.clear();
     var raw: u8[64] = [0; 64];
     let n = native_tcp_get_peer_ip(fd, raw[..]);
     if n > 0 && n <= 64 {
-        let _ = out_ip.try_append(raw[..n]);
+        let _ = out_ip.try_set(raw[..n]);
     } else {
-        let _ = out_ip.try_append("127.0.0.1");
+        let _ = out_ip.try_set("127.0.0.1");
     }
 }
 
@@ -179,33 +178,33 @@ fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
 }
 
 fn tcp_sendv_one(fd: i64, arr: core::IoVecArray&) -> i32 {
-    let chunk = core::iovec_get(arr, 0);
+    let chunk = arr.iovec_get(0);
     let sent = tcp_send(fd, chunk);
     if sent > 0 {
-        core::iovec_consume(arr, sent);
+        arr.iovec_consume(sent);
     }
     return sent;
 }
 
 fn tcp_sendv_two(fd: i64, arr: core::IoVecArray&) -> i32 {
-    let c0 = core::iovec_get(arr, 0);
-    let c1 = core::iovec_get(arr, 1);
+    let c0 = arr.iovec_get(0);
+    let c1 = arr.iovec_get(1);
     let sent = tcp_send2(fd, c0, c1);
     if sent > 0 {
-        core::iovec_consume(arr, sent);
+        arr.iovec_consume(sent);
     }
     return sent;
 }
 
 fn tcp_sendv_multi(fd: i64, arr: core::IoVecArray&) -> i32 {
     var total_sent: i32 = 0;
-    while !core::iovec_is_empty(arr) {
-        let c = core::iovec_get(arr, 0);
+    while !arr.iovec_is_empty() {
+        let c = arr.iovec_get(0);
         let sent = tcp_send(fd, c);
         guard sent > 0 else {
             return if total_sent > 0 { total_sent } else { sent };
         }
-        core::iovec_consume(arr, sent);
+        arr.iovec_consume(sent);
         total_sent = total_sent + sent;
     }
     return total_sent;
@@ -216,7 +215,7 @@ fn tcp_sendv_multi(fd: i64, arr: core::IoVecArray&) -> i32 {
 // Returns total bytes sent, 0 if empty/no-op, or -1 on error.
 fn tcp_sendv(fd: i64, arr: core::IoVecArray&) -> i32 {
     guard fd > 0 else { return 0; }
-    let count = core::iovec_count(arr);
+    let count = arr.iovec_count();
     guard count > 0 else { return 0; }
     if count == 1 { return tcp_sendv_one(fd, arr); }
     if count == 2 { return tcp_sendv_two(fd, arr); }
@@ -244,13 +243,7 @@ inline fn ensure_shared_buf_len(buf: u8[..65536]&, eff_max: i32) {
 // Returns (bytes_received, readable_slice).
 fn tcp_recv_shared(fd: i64, buf: u8[..65536]&, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
     guard fd > 0 else { return -1, ""; }
-    let eff_max = if max_len > RECV_BUFFER_CAP as i32 {
-        RECV_BUFFER_CAP as i32
-    } else if max_len < 1 {
-        1
-    } else {
-        max_len
-    };
+    let eff_max = min(RECV_BUFFER_CAP as i32, max(1, max_len));
     ensure_shared_buf_len(buf, eff_max);
     let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
@@ -470,13 +463,7 @@ fn backpressure_clear(bp: BackPressure&) {
 
 fn backpressure_compact(bp: BackPressure&) {
     guard bp.pending_removal > 0 else { return; }
-    let active_len = bp.data.len - bp.pending_removal;
-    for i in active_len {
-        bp.data[i] = bp.data[bp.pending_removal + i];
-    }
-    while bp.data.len > active_len {
-        bp.data.pop();
-    }
+    bp.data.compact_wire_buffer(bp.pending_removal);
     bp.pending_removal = 0;
 }
 
@@ -488,12 +475,11 @@ fn backpressure_append(bp: BackPressure&, bytes: const u8[:]) -> bool {
         backpressure_compact(bp);
     }
 
-    guard bp.data.len + bytes.len <= bp.data.cap else {
+    guard bp.data.try_append(bytes) else {
         bp.drop_count += 1;
         return false;
     }
 
-    bp.data.append(bytes);
     bp.total_buffered += bytes.len as u64;
     return true;
 }
@@ -546,19 +532,19 @@ fn async_write_spill_cork(
     data:       const u8[:],
     optionally: bool,
 ) -> bool, i32, bool {
-    guard core::cork_pending(cork) > 0 else { return false, 0, false; }
-    let cork_sent = tcp_send(fd, core::cork_as_slice(cork));
+    guard cork.cork_pending() > 0 else { return false, 0, false; }
+    let cork_sent = tcp_send(fd, cork.cork_as_slice());
     if cork_sent < 0 {
         return true, -1, false;
     }
     if cork_sent > 0 {
-        core::cork_consume(cork, cork_sent);
+        cork.cork_consume(cork_sent);
     }
-    guard core::cork_pending(cork) > 0 else { return false, 0, false; }
-    guard backpressure_append(bp, core::cork_as_slice(cork)) else {
+    guard cork.cork_pending() > 0 else { return false, 0, false; }
+    guard backpressure_append(bp, cork.cork_as_slice()) else {
         return true, 0, true;
     }
-    core::cork_reset(cork);
+    cork.cork_reset();
     if !optionally && data.len > 0 {
         guard backpressure_append(bp, data) else {
             return true, 0, true;
@@ -580,13 +566,12 @@ fn async_write_direct(
         return -1, false;
     }
     guard sent < (data.len as i32) else { return sent, false; }
+    let sent_clamped = max(sent, 0);
     if optionally {
-        let sent_clamped = if sent > 0 { sent } else { 0 };
         return sent_clamped, true;
     }
-    let unsent_offset = if sent > 0 { sent as i64 } else { 0 };
+    let unsent_offset = sent_clamped as i64;
     guard backpressure_append(bp, data[unsent_offset..]) else {
-        let sent_clamped = if sent > 0 { sent } else { 0 };
         return sent_clamped, true;
     }
     return data.len as i32, true;
@@ -615,8 +600,8 @@ fn async_socket_write(
 
     guard data.len > 0 else { return 0, false; }
 
-    if data.len <= core::cork_available(cork) {
-        core::cork_write_exact(cork, data);
+    if data.len <= cork.cork_available() {
+        cork.cork_write_exact(data);
         return data.len as i32, false;
     }
 
@@ -628,24 +613,24 @@ fn async_socket_write(
 
 // Spills remaining cork buffer into backpressure.
 fn uncork_spill_to_bp(cork: core::CorkBuffer&, bp: BackPressure&) {
-    guard core::cork_pending(cork) > 0 else { return; }
-    if backpressure_append(bp, core::cork_as_slice(cork)) {
-        core::cork_reset(cork);
+    guard cork.cork_pending() > 0 else { return; }
+    if backpressure_append(bp, cork.cork_as_slice()) {
+        cork.cork_reset();
     }
 }
 
 // Directly flushes cork buffer to wire, spilling to backpressure if partially sent.
 fn uncork_flush_direct(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
-    guard core::cork_pending(cork) > 0 else { return 0, false; }
-    let sent_cork = tcp_send(fd, core::cork_as_slice(cork));
+    guard cork.cork_pending() > 0 else { return 0, false; }
+    let sent_cork = tcp_send(fd, cork.cork_as_slice());
     if sent_cork > 0 {
-        core::cork_consume(cork, sent_cork);
+        cork.cork_consume(sent_cork);
     }
-    guard core::cork_pending(cork) > 0 else {
+    guard cork.cork_pending() > 0 else {
         return sent_cork, false;
     }
-    if backpressure_append(bp, core::cork_as_slice(cork)) {
-        core::cork_reset(cork);
+    if backpressure_append(bp, cork.cork_as_slice()) {
+        cork.cork_reset();
     }
     return sent_cork, true;
 }
@@ -737,16 +722,15 @@ fn async_socket_shutdown(fd: i64, bp: BackPressure&, cork: core::CorkBuffer&) ->
     guard fd > 0 else { return false, false; }
     guard !bp.write_shut else { return true, false; }
 
-    if core::cork_pending(cork) > 0 {
+    if cork.cork_pending() > 0 {
         async_socket_uncork(fd, cork, bp);
-        if core::cork_pending(cork) > 0 {
-            let rem = core::cork_as_slice(cork);
-            bp.pending_cork.clear();
+        if cork.cork_pending() > 0 {
+            let rem = cork.cork_as_slice();
             let copy_len = min(rem.len, bp.pending_cork.cap);
-            bp.pending_cork.append(rem[0..copy_len]);
-            core::cork_reset(cork);
+            let _ = bp.pending_cork.try_set(rem[0..copy_len]);
+            cork.cork_reset();
             if copy_len < rem.len {
-                core::cork_write(cork, rem[copy_len..]);
+                cork.cork_write(rem[copy_len..]);
             }
         }
     }
@@ -803,13 +787,13 @@ fn async_socket_close(fd: i64, bp: BackPressure&) -> bool {
 // Returns bytes read (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
 fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 else { return -1; }
-    let span, err = core::get_write_span(pipe, min_span);
+    let span, err = pipe.get_write_span(min_span);
     if err != core::IoError.None {
         return -1;
     }
     let recvd = native_tcp_recv(fd, span, timeout_ms);
     if recvd > 0 {
-        core::commit_write(pipe, recvd);
+        pipe.commit_write(recvd);
     }
     return recvd;
 }
@@ -940,7 +924,7 @@ struct FreeSlotStack {
 
 // Pre-populates the stack so slot 0 is popped first.
 fn init_free_slots(stack: FreeSlotStack&, count: i64) {
-    let n = if count < 0 { 0 } else if count > 1024 { 1024 } else { count };
+    let n = min(max(count, 0), 1024);
     stack.top = n;
     stack.capacity = n;
     for i in n {

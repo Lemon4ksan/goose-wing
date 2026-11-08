@@ -70,17 +70,11 @@ fn apply_security_txt_expires(val: const u8[:], now_epoch: i64, sec: SecurityTxt
         sec.status = SEC_TXT_ERR_DUPLICATE_EXPIRES;
         return false;
     }
-    guard val.len <= 64 else {
-        sec.status = SEC_TXT_ERR_INVALID_EXPIRES;
-        return false;
-    }
     let parsed_time, ok = core::parse_rfc3339(val);
-    guard ok else {
+    guard ok && sec.expires.try_set(val) else {
         sec.status = SEC_TXT_ERR_INVALID_EXPIRES;
         return false;
     }
-    sec.expires.clear();
-    sec.expires.append(val);
     sec.expires_unix = parsed_time.unix();
     sec.has_expires = true;
 
@@ -128,9 +122,7 @@ fn apply_security_txt_metadata(name: const u8[:], val: const u8[:], sec: Securit
         return true;
     }
     if name.eq_ascii_fold("preferred-languages") {
-        guard sec.preferred_languages.len == 0 && val.len > 0 && val.len <= 64 else { return false; }
-        sec.preferred_languages.append(val);
-        return true;
+        return sec.preferred_languages.len == 0 && val.len > 0 && sec.preferred_languages.try_append(val);
     }
     return true;
 }
@@ -183,14 +175,14 @@ fn validate_mandatory_security_fields(sec: SecurityTxt&) -> bool {
 //   line = "Contact: mailto:sec@example.com", now_epoch = 1700000000
 //   returns: true (Contact field populated)
 fn parse_security_txt_line(line: const u8[:], now_epoch: i64, sec: SecurityTxt&) -> bool {
-    let trimmed = core::trim_ascii_space(line);
+    let trimmed = line.trim_ascii_space();
     guard !is_security_txt_comment_or_pgp(trimmed) else { return true; }
 
-    let raw_name, raw_val, has_colon = core::split_once_byte(trimmed, ':');
+    let raw_name, raw_val, has_colon = trimmed.split_once_byte(':');
     guard has_colon else { return true; }
 
-    let name = core::trim_ascii_space(raw_name);
-    let val = core::trim_ascii_space(raw_val);
+    let name = raw_name.trim_ascii_space();
+    let val = raw_val.trim_ascii_space();
 
     return apply_security_txt_field(name, val, now_epoch, sec);
 }

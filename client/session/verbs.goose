@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import client.request;
 import client.response;
 import client.stream;
@@ -80,21 +81,9 @@ fn post<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Error
     return do(session, req);
 }
 
-fn post_json<T>(session: Session&, url: const u8[:], payload: const T&) -> Response, Error {
-    var req = new_request("POST", url);
-    json(req, payload);
-    return do(session, req);
-}
-
 fn put<F: fn(Request&)>(session: Session&, url: const u8[:]) -> Response, Error {
     var req = new_request("PUT", url);
     F(&req);
-    return do(session, req);
-}
-
-fn put_json<T>(session: Session&, url: const u8[:], payload: const T&) -> Response, Error {
-    var req = new_request("PUT", url);
-    json(req, payload);
     return do(session, req);
 }
 
@@ -137,27 +126,7 @@ fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Res
     var req = new_request("POST", url);
     set_header(req, "Transfer-Encoding", "chunked");
     req.body.append(writer.buffer[..]);
-    if writer.buffer.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(writer.buffer[..]);
-    } else {
-        req.rewindable = false;
-    }
-    return do(session, req);
-}
-
-fn put_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Response, Error {
-    var writer = ChunkWriter { .. };
-    F(&writer);
-    finish_chunk_writer(writer);
-
-    var req = new_request("PUT", url);
-    set_header(req, "Transfer-Encoding", "chunked");
-    req.body.append(writer.buffer[..]);
-    if writer.buffer.len <= req.rewind_buf.cap {
-        req.rewind_buf.append(writer.buffer[..]);
-    } else {
-        req.rewindable = false;
-    }
+    req.rewindable = req.rewind_buf.try_set(writer.buffer[..]);
     return do(session, req);
 }
 
@@ -203,10 +172,10 @@ fn download_stream<F: fn(const StreamProgress&)>(
 // Normalizes ws:// and wss:// into http:// and https:// for HTTP pipeline
 fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
     out.clear();
-    if starts_with_fold(url, "ws://") {
+    if url.starts_with_fold("ws://") {
         let _ = out.try_append("http://");
         let _ = out.try_append(url[5..]);
-    } else if starts_with_fold(url, "wss://") {
+    } else if url.starts_with_fold("wss://") {
         let _ = out.try_append("https://");
         let _ = out.try_append(url[6..]);
     } else {
@@ -222,10 +191,10 @@ fn normalize_realtime_url(url: const u8[:], out: u8[..2048]&) {
 fn header_has_token(hdr: const u8[:], token: const u8[:]) -> bool {
     var offset: i64 = 0;
     while offset < hdr.len {
-        let comma = core::index_of_byte(hdr[offset..], ',');
+        let comma = hdr[offset..].index_of_byte(',');
         let token_end = if comma >= 0 { offset + comma } else { hdr.len };
-        let tok = core::trim_lws(hdr[offset..token_end]);
-        if eq_ascii_fold(tok, token) {
+        let tok = hdr[offset..token_end].trim_lws();
+        if tok.eq_ascii_fold(token) {
             return true;
         }
         offset = token_end + 1;
@@ -287,9 +256,9 @@ fn ws_perform_handshake(
     if proto.len > 0 {
         let req_proto = header(req, "Sec-WebSocket-Protocol");
         let valid_proto = req_proto.len > 0 &&
-            !core::contains_byte(proto, ',') &&
+            !proto.contains_byte(',') &&
             has_subprotocol_token(req_proto, proto) &&
-            proto.len <= ws_sess.subprotocol.cap;
+            ws_sess.subprotocol.try_set(proto);
         if !valid_proto {
             return new_websocket_session(true), resp, make_error(
                 rfc::STATUS_BAD_REQUEST,
@@ -297,7 +266,6 @@ fn ws_perform_handshake(
                 "server returned Sec-WebSocket-Protocol not offered by client",
             );
         }
-        ws_sess.subprotocol.append(proto);
     }
 
     return ws_sess, resp, Error { .. };
@@ -316,11 +284,13 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     var nonce: u8[16] = [0; 16];
     let _ = native_crypto_random_bytes(nonce[..]);
     var seed: u64 = (session.virtual_clock_us as u64) ^ session.creds.nonce_counter ^ 0x5DEECE66D;
-    for i in 16 {
-        seed = seed * 6364136223846793005 + 1442695040888963407;
-        nonce[i] = nonce[i] ^ (((seed >> 33) & 0xFF) as u8);
+    for &b in nonce {
+        seed ^= core::shl_sat_u64(seed, 13);
+        seed ^= seed >> 7;
+        seed ^= core::shl_sat_u64(seed, 17);
+        b ^= (seed & 0xFF) as u8;
     }
-    session.creds.nonce_counter = (seed & 0xFFFFFFFF) as u32;
+    session.creds.nonce_counter = core::add_sat_u64(session.creds.nonce_counter, 1) as u32;
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
@@ -341,11 +311,13 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     var nonce: u8[16] = [0; 16];
     let _ = native_crypto_random_bytes(nonce[..]);
     var seed: u64 = (session.virtual_clock_us as u64) ^ (session.creds.nonce_counter as u64) ^ 0x5DEECE66D;
-    for i in 16 {
-        seed = seed * 6364136223846793005 + 1442695040888963407;
-        nonce[i] = nonce[i] ^ (((seed >> 33) & 0xFF) as u8);
+    for &b in nonce {
+        seed ^= core::shl_sat_u64(seed, 13);
+        seed ^= seed >> 7;
+        seed ^= core::shl_sat_u64(seed, 17);
+        b ^= (seed & 0xFF) as u8;
     }
-    session.creds.nonce_counter = (seed & 0xFFFFFFFF) as u32;
+    session.creds.nonce_counter = core::add_sat_u64(session.creds.nonce_counter, 1) as u32;
     var client_key: u8[..32] = [];
     generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
@@ -357,7 +329,7 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
 }
 
 fn is_sse_content_type(ct: const u8[:]) -> bool {
-    guard starts_with_fold(ct, "text/event-stream") else { return false; }
+    guard ct.starts_with_fold("text/event-stream") else { return false; }
     guard ct.len == 17 || ct[17] == ';' || ct[17] == ' ' || ct[17] == '\t' else { return false; }
     return true;
 }
@@ -458,7 +430,7 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 fn encode_masque_target_host(target_host: const u8[:], out_host: u8[..128]&) -> bool {
     out_host.clear();
     let has_brackets = target_host.len >= 2 && target_host[0] == '[' && target_host[target_host.len - 1] == ']';
-    let clean_host = if has_brackets { target_host[1..target_host.len - 1] } else { target_host };
+    let clean_host = if has_brackets { target_host[1..^1] } else { target_host };
     guard clean_host.len > 0 else { return false; }
     for b in clean_host {
         let ok_b = if b == ':' { out_host.try_append("%3A") } else { out_host.try_push(b) };

@@ -108,6 +108,7 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain"
 inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
     let max_raw = min(entropy.len, 96);
     var encoded: u8[..128] = [];
+    defer core::secure_zeroize_slice(encoded[..]);
     core::base64url_encode(entropy[..max_raw], encoded);
     guard out.try_set(encoded[..]) else { return false; }
     return is_valid_code_verifier(out[..]);
@@ -115,6 +116,7 @@ inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
 
 inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
     var buf: u8[..64] = [];
+    defer core::secure_zeroize_slice(buf[..]);
     buf.append(g_pkce_entropy_state[..]);
     var meta: u8[16] = [0; 16];
     core::write_le_u64_at(meta[..], 0, now_ns);
@@ -131,7 +133,8 @@ inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
 inline fn generate_derived_verifier<B>(out: B&) -> bool {
     guard out.cap >= 43 else { return false; }
     g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
-    let raw_entropy = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
+    var raw_entropy = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
+    defer core::secure_zeroize_32(raw_entropy);
     core::base64url_encode(raw_entropy[..], out);
     return is_valid_code_verifier(out[..]);
 }

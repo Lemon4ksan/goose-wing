@@ -70,6 +70,7 @@ fn seal_stateless_tls13_ticket<B>(
     guard out_ticket.cap >= STEK_TICKET_WIRE_LEN else { return false; }
 
     var pt: u8[..63] = [];
+    defer core::secure_zeroize_slice(pt[..]);
     pt.push(psk_len_u8);
     for i in 48 {
         if i < psk.len {
@@ -78,9 +79,9 @@ fn seal_stateless_tls13_ticket<B>(
             pt.push(0);
         }
     }
-    core::append_u16_be(pt, cipher_suite);
-    core::append_u64_be(pt, issued_u64);
-    core::append_u32_be(pt, stek.lifetime_sec);
+    pt.append_u16_be(cipher_suite);
+    pt.append_u64_be(issued_u64);
+    pt.append_u32_be(stek.lifetime_sec);
 
     var aad: u8[..16] = [];
     aad.append(stek.key_name[..]);
@@ -88,7 +89,6 @@ fn seal_stateless_tls13_ticket<B>(
 
     var ct: u8[63] = [0; 63];
     let tag, _, ok_seal = core::aes256_gcm_seal(stek.aead_key, nonce_iv, pt[..], aad[..], ct[..]);
-    core::secure_zeroize_slice(pt[..]);
     guard ok_seal else { return false; }
 
     out_ticket.append(aad[..]);
@@ -141,17 +141,13 @@ fn unpack_stateless_ticket_plaintext(
         is_stateless_ticket_within_lifetime(issued_ms, now_ms, lifetime) else {
         return false;
     }
+    let psk_slice = if psk_len == 32 { pt[1..33] } else { pt[1..49] };
+    guard out.psk.try_set(psk_slice) && out.ticket.try_set(raw_ticket) else { return false; }
     out.in_use = true;
-    out.psk.clear();
-    if psk_len == 32 {
-        out.psk.append(pt[1..33]);
-    } else {
-        out.psk.append(pt[1..49]);
-    }
     out.cipher_suite = cs;
     out.issued_at_ms = issued_ms;
     out.lifetime = lifetime;
-    return out.ticket.try_set(raw_ticket);
+    return true;
 }
 
 // Opens and authenticates a stateless TLS 1.3 session ticket across both active/previous STEK slots in `ring`.
@@ -177,6 +173,7 @@ fn open_stateless_tls13_ticket(
     core::ct_copy_bytes(tag[..], raw_ticket[79..95]);
 
     var pt: u8[..63] = [];
+    defer core::secure_zeroize_slice(pt[..]);
     let ok_open = core::aes256_gcm_open(
         stek.aead_key,
         iv,
@@ -186,11 +183,9 @@ fn open_stateless_tls13_ticket(
         pt,
     );
     guard ok_open && unpack_stateless_ticket_plaintext(pt[..], raw_ticket, now_ms, out) else {
-        core::secure_zeroize_slice(pt[..]);
         return out, false;
     }
 
-    core::secure_zeroize_slice(pt[..]);
     return out, true;
 }
 

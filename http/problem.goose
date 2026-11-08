@@ -33,7 +33,7 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
         out.append("\"about:blank\"");
     }
     out.append(",\"status\":");
-    core::format_i64_dec(problem.status as i64, out);
+    problem.status.format_i64_dec(out);
 
     if problem.title.len > 0 {
         out.append(",\"title\":");

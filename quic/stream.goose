@@ -229,8 +229,7 @@ inline fn record_stream_recv_range(s: QuicStream&, start: u64, end: u64) -> bool
         s.recv_ranges.remove_at(i);
     }
     if i == s.recv_ranges.len {
-        guard s.recv_ranges.len < s.recv_ranges.cap else { return false; }
-        s.recv_ranges.push(Interval { start: cur_s, end: cur_e });
+        guard s.recv_ranges.try_push(Interval { start: cur_s, end: cur_e }) else { return false; }
     }
     if s.recv_ranges.len > 0 && s.recv_ranges[0].start == 0 {
         s.contiguous_recv_bytes = s.recv_ranges[0].end;
@@ -375,22 +374,6 @@ fn quic_stream_on_app_read_reset(s: QuicStream&) -> bool {
     return false;
 }
 
-// ---- Stream Flow Control Updates (RFC 9000 Section 4) --------------------
-
-// Updates peer-advertised send window limit (MAX_STREAM_DATA cannot decrease).
-inline fn quic_stream_update_send_max(s: QuicStream&, limit: u64) {
-    if limit > s.send_max_data && limit <= rfc::QUIC_VARINT_MAX {
-        s.send_max_data = limit;
-    }
-}
-
-// Updates locally advertised recv window limit.
-inline fn quic_stream_update_recv_max(s: QuicStream&, limit: u64) {
-    if limit > s.recv_max_data && limit <= rfc::QUIC_VARINT_MAX {
-        s.recv_max_data = limit;
-    }
-}
-
 // ---- Terminal State Evaluation ------------------------------------------
 
 inline fn quic_stream_is_send_closed(s: const QuicStream&) -> bool {
@@ -447,11 +430,6 @@ fn quic_table_find_stream(tbl: const QuicStreamTable&, stream_id: u64) -> i32 {
     return -1;
 }
 
-// Helper to append a stream into bounded stream table.
-fn quic_table_push_stream(tbl: QuicStreamTable&, st: QuicStream) {
-    tbl.streams.push(st);
-}
-
 // Helper to determine if a stream was initiated by peer (RFC 9000 §2.1).
 inline fn is_peer_initiated_stream(stream_id: u64, role: QuicRole) -> bool {
     let init_bit = stream_id & 1;
@@ -479,7 +457,7 @@ inline fn quic_table_insert_stream(
 ) -> i32 {
     let new_idx = tbl.streams.len as i32;
     let st = new_quic_stream(stream_id, default_recv_flow);
-    quic_table_push_stream(tbl, st);
+    tbl.streams.push(st);
     return new_idx;
 }
 

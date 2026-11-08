@@ -143,9 +143,7 @@ fn add_param(
 ) -> bool {
     guard params.len < params.spans.len else { return false; }
     let idx = params.len;
-    guard name.len <= params.spans[idx].name.cap else { return false; }
-    params.spans[idx].name.clear();
-    params.spans[idx].name.append(name);
+    guard params.spans[idx].name.try_set(name) else { return false; }
     params.spans[idx].key_start = k_start;
     params.spans[idx].key_end = k_end;
     params.spans[idx].val_start = v_start;
@@ -255,9 +253,8 @@ fn new_radix_tree() -> RadixTree {
 
 // Allocates a new node in the arena pool
 fn alloc_node(tree: RadixTree&, n_type: NodeType) -> i32 {
-    guard tree.nodes.len < tree.nodes.cap else { return -1; }
     var n = RadixNode { node_type: n_type, .. };
-    tree.nodes.push(n);
+    guard tree.nodes.try_push(n) else { return -1; }
     return (tree.nodes.len - 1) as i32;
 }
 
@@ -274,7 +271,7 @@ fn update_param_suffix_flag(existing_type: NodeType, new_suffix: const u8[:]) ->
 // Searches the static indices array of a node for a child matching first_byte.
 fn find_child_by_byte(tree: const RadixTree&, cur_idx: i32, b: u8) -> i32 {
     let c_idx = cur_idx as i64;
-    let idx = core::index_of_byte(tree.nodes[c_idx].indices[..], b);
+    let idx = tree.nodes[c_idx].indices[..].index_of_byte(b);
     if idx >= 0 {
         return tree.nodes[c_idx].children[idx];
     }
@@ -307,11 +304,10 @@ fn split_radix_node(
     tree.nodes[s_idx].egress_mask = tree.nodes[c_idx].egress_mask;
     tree.nodes[s_idx].param_name.append(tree.nodes[c_idx].param_name[..]);
     tree.nodes[s_idx].static_suffix.append(tree.nodes[c_idx].static_suffix[..]);
-    tree.nodes[s_idx].priority = if tree.nodes[c_idx].priority > 0 { tree.nodes[c_idx].priority - 1 } else { 0 };
+    tree.nodes[s_idx].priority = max(tree.nodes[c_idx].priority, 1) - 1;
 
     let first_split_byte = tree.nodes[s_idx].prefix[0];
-    tree.nodes[c_idx].prefix.clear();
-    tree.nodes[c_idx].prefix.append(common_prefix);
+    let _ = tree.nodes[c_idx].prefix.try_set(common_prefix);
     tree.nodes[c_idx].indices.clear();
     tree.nodes[c_idx].indices.push(first_split_byte);
     tree.nodes[c_idx].children.clear();
@@ -653,9 +649,9 @@ fn strip_scheme_and_authority(path: const u8[:]) -> const u8[:] {
 // Tests if a segment is a dot-dot segment (RFC 3986 Section 5.2.4).
 fn is_dot_dot_segment(seg: const u8[:]) -> bool {
     return seg == ".." ||
-           eq_ascii_fold(seg, ".%2e") ||
-           eq_ascii_fold(seg, "%2e.") ||
-           eq_ascii_fold(seg, "%2e%2e");
+           seg.eq_ascii_fold(".%2e") ||
+           seg.eq_ascii_fold("%2e.") ||
+           seg.eq_ascii_fold("%2e%2e");
 }
 
 // Resolves dot-segments (. and ..), collapses duplicate slashes, and strips query strings and fragments.
@@ -686,7 +682,7 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
             scan_idx += 1;
         }
 
-        if seg == "." || eq_ascii_fold(seg, "%2e") {
+        if seg == "." || seg.eq_ascii_fold("%2e") {
             continue;
         }
 
@@ -700,12 +696,10 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
             continue;
         }
 
-        guard out.len + seg.len + 1 <= out.cap else {
+        guard out.try_push('/') && out.try_append(seg) else {
             out.clear();
             return false;
         }
-        out.push('/');
-        out.append(seg);
     }
 
     if out.len == 0 {
@@ -780,7 +774,7 @@ fn match_param_child(
         _ => false,
     };
 
-    let slash_idx = core::index_of_byte(rem, '/');
+    let slash_idx = rem.index_of_byte('/');
     let seg_end = if slash_idx >= 0 { slash_idx } else { rem.len };
     let val_end = if is_suffix {
         find_param_suffix_split(tree, p_idx, rem, seg_end)
@@ -952,8 +946,8 @@ inline fn push_wildcard_backtrack_if_any(
 ) {
     let has_wild = (!tried_param && tree.nodes[cur_idx as i64].param_child >= 0)
         || tree.nodes[cur_idx as i64].catch_all_child >= 0;
-    if has_wild && bt_stack.len < 8 {
-        bt_stack.push(RouteBacktrackEntry {
+    if has_wild {
+        let _ = bt_stack.try_push(RouteBacktrackEntry {
             node_idx:    cur_idx,
             cursor:      cursor,
             param_len:   param_len,
@@ -1056,7 +1050,7 @@ fn match_path(
 inline fn pack_word_lane(path: const u8[:], offset: i64) -> u64 {
     guard path.len > offset else { return 0; }
     let rem = path.len - offset;
-    let n = if rem < 8 { rem } else { 8 };
+    let n = min(rem, 8);
     var w: u64 = 0;
     for i in n {
         w |= (path[offset + i] as u64) << ((i as u64) * 8);
@@ -1303,7 +1297,7 @@ inline fn build_static_route_payload_frames(
     body:         const u8[:],
 ) {
     var cl_buf: u8[..32] = [];
-    core::format_i64_dec(body.len, cl_buf);
+    body.len.format_i64_dec(cl_buf);
 
     sp.payload_keep.clear();
     sp.payload_keep.append("Content-Length: ");
@@ -1343,7 +1337,6 @@ fn set_static_route_payload(
             return true;
         }
     }
-    guard router.static_payloads.len < router.static_payloads.cap else { return false; }
     var sp = StaticRoutePayload {
         handler_id:    handler_id,
         content_type:  [],
@@ -1353,8 +1346,7 @@ fn set_static_route_payload(
     };
     guard sp.content_type.try_set(content_type) && sp.body.try_set(body) else { return false; }
     build_static_route_payload_frames(sp, content_type, body);
-    router.static_payloads.push(sp);
-    return true;
+    return router.static_payloads.try_push(sp);
 }
 
 fn add_static_route(
@@ -1421,8 +1413,7 @@ fn get_static_route_payload(
             if router.static_payloads[idx].content_type.len > 0 {
                 set_static_response_content_type(res, router.static_payloads[idx].content_type[..]);
             }
-            res.body.clear();
-            res.body.append(router.static_payloads[idx].body[..]);
+            let _ = res.body.try_set(router.static_payloads[idx].body[..]);
             return true;
         }
     }

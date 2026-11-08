@@ -6,6 +6,7 @@
 namespace internal;
 
 import std;
+import core from "..";
 
 // ---- Frame Headers and Settings Structures -------------------------------
 
@@ -144,18 +145,12 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
 
 // Records a setting identifier into the seen list, ensuring uniqueness (RFC 9114 §7.2.4).
 fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
-    var i: i64 = 0;
-    while i < seen.len {
-        if seen[i] == id {
+    for s in seen {
+        if s == id {
             return false;
         }
-        i = i + 1;
     }
-    guard seen.len < seen.cap else {
-        return false;
-    }
-    seen.push(id);
-    return true;
+    return seen.try_push(id);
 }
 
 inline fn apply_parsed_h3_setting(id: u64, val: u64, out_settings: H3Settings&) -> bool {
@@ -206,6 +201,10 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
     guard payload.len <= H3_MAX_SETTINGS_PAYLOAD_SIZE else {
         return rfc::H3_ERR_EXCESSIVE_LOAD;
     }
+    let saved_settings = out_settings;
+    var committed = false;
+    defer if !committed { out_settings = saved_settings; };
+
     var offset: u64 = 0;
     let total = payload.len as u64;
     var seen_ids: u64[..64] = [];
@@ -226,6 +225,7 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
         }
     }
 
+    committed = true;
     return rfc::H3_ERR_NO_ERROR;
 }
 
@@ -319,7 +319,7 @@ fn parse_h3_priority_update_request(
     let stream_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    if core::trim_ascii_space(field_value).len == 0 {
+    if field_value.trim_ascii_space().len == 0 {
         return stream_id, prio, true;
     }
     let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
@@ -351,7 +351,7 @@ fn parse_h3_priority_update_push(
     let push_id, off, ok = quic_decode_varint(payload, 0);
     guard ok else { return 0, prio, false; }
     let field_value = payload[off..];
-    if core::trim_ascii_space(field_value).len == 0 {
+    if field_value.trim_ascii_space().len == 0 {
         return push_id, prio, true;
     }
     let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
@@ -369,7 +369,7 @@ fn encode_h3_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
         guard org.len > 0 && org.len <= 0xFFFF && core::sub_sat_i64(rem, 2) >= org.len else {
             return false;
         }
-        core::append_u16_be(payload, org.len as u16);
+        payload.append_u16_be(org.len as u16);
         payload.append(org);
     }
     var hdr: u8[..16] = [];
@@ -384,18 +384,24 @@ fn encode_h3_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
 //   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm']
 //   returns: true, out_origins = ["ex.com"]
 fn parse_h3_origin_frame(payload: const u8[:], out_origins: u8[..128][..16]&) -> bool {
+    let saved_len = out_origins.len;
+    var committed = false;
+    defer if !committed { out_origins.resize(saved_len); };
+
     var rem = payload;
     while rem.len > 0 {
         guard rem.len >= 2 else { return false; }
         let olen = core::read_be_u16(rem, 0) as i64;
         let after_hdr = rem[2..];
-        guard olen > 0 && olen <= 128 && olen <= after_hdr.len && out_origins.len < out_origins.cap else {
+        guard olen > 0 && olen <= 128 && olen <= after_hdr.len else {
             return false;
         }
         var entry: u8[..128] = [];
-        entry.append(after_hdr[..olen]);
-        out_origins.push(entry);
+        guard entry.try_set(after_hdr[..olen]) && out_origins.try_push(entry) else {
+            return false;
+        }
         rem = after_hdr[olen..];
     }
+    committed = true;
     return true;
 }

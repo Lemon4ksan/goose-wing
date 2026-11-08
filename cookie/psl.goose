@@ -39,6 +39,8 @@ fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bo
     guard !core::is_ip_address_literal(domain) else {
         return false;
     }
+    var committed = false;
+    defer if !committed { out.clear(); };
     var i: i64 = 0;
     var prev_was_dot = false;
     while i < domain.len {
@@ -54,12 +56,12 @@ fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bo
         } else {
             prev_was_dot = false;
         }
-        guard out.len < out.cap else {
+        guard out.try_push(core::to_lower_ascii_byte(b)) else {
             return false;
         }
-        out.push(core::to_lower_ascii_byte(b));
         i = core::add_sat_i64(i, 1);
     }
+    committed = true;
     return true;
 }
 
@@ -130,8 +132,7 @@ fn new_psl_rule(pattern: const u8[:], rule_type: PslRuleType, section: PslSectio
 }
 
 fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, section: PslSection) {
-    guard db.rules.len < db.rules.cap else { return; }
-    db.rules.push(new_psl_rule(pattern, rule_type, section));
+    let _ = db.rules.try_push(new_psl_rule(pattern, rule_type, section));
 }
 
 fn new_psl_database() -> PslDatabase {
@@ -143,7 +144,7 @@ fn new_psl_database() -> PslDatabase {
 //Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase or Punycode.
 fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
-    let trimmed = core::trim_byte(core::trim_byte(core::trim_byte(domain, '.'), '['), ']');
+    let trimmed = domain.trim_byte('.').trim_byte('[').trim_byte(']');
     guard trimmed.len > 0 && trimmed.len <= 256 else { return false; }
     var has_non_ascii = false;
     for b in trimmed {
@@ -170,21 +171,17 @@ fn psl_match_exception(rule: const PslRule&, norm: const u8[:]) -> const u8[:] {
     if norm != pat && !core::ends_with_dot_suffix(norm, pat) {
         return "";
     }
-    let first_dot = core::index_of_byte(pat, '.');
-    if first_dot < 0 {
+    let _, tail, has_dot = pat.split_once_byte('.');
+    if !has_dot || tail.len == 0 {
         return pat;
     }
-    let start = core::add_sat_i64(first_dot, 1);
-    if start >= pat.len {
-        return pat;
-    }
-    return pat[start..];
+    return tail;
 }
 
 fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_labels: i32&) -> bool {
     let pat_len = pat.len;
     let norm_len = norm.len;
-    let dots = core::count_byte(pat, '.');
+    let dots = pat.count_byte('.');
     let num_labels = core::add_sat_i64(dots, 1) as i32;
     if norm == pat {
         out_start = 0;
@@ -204,7 +201,7 @@ fn psl_match_normal(pat: const u8[:], norm: const u8[:], out_start: i64&, out_la
 }
 
 fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_labels: i32&) -> bool {
-    let dots = core::count_byte(pat, '.');
+    let dots = pat.count_byte('.');
     if norm == pat {
         out_start = 0;
         out_labels = core::add_sat_i64(dots, 1) as i32;
@@ -224,7 +221,7 @@ fn psl_match_wildcard(pat: const u8[:], norm: const u8[:], out_start: i64&, out_
         return false;
     }
     let prefix = norm[..prefix_len];
-    let last_dot = core::last_index_of_byte(prefix, '.');
+    let last_dot = prefix.last_index_of_byte('.');
     let next_dot = core::add_sat_i64(last_dot, 1);
     var start: i64 = 0;
     if last_dot >= 0 {
@@ -343,16 +340,14 @@ fn match_public_suffix(db: const PslDatabase&, domain: const u8[:]) -> PslMatch,
         m.is_icann = is_icann;
         m.is_private = !is_icann;
     } else {
-        let last_dot = core::last_index_of_byte(norm, '.');
-        let next_dot = core::add_sat_i64(last_dot, 1);
-        let tld_start = if last_dot >= 0 { next_dot } else { 0 };
-        let _ = m.suffix.try_set(norm[tld_start..]);
+        let _, tld, has_dot = norm.rsplit_once_byte('.');
+        let _ = m.suffix.try_set(if has_dot { tld } else { norm });
         m.is_known = false;
         m.is_icann = true;
         m.is_private = false;
     }
 
-    if norm.len > m.suffix.len && core::count_byte(norm, '.') > 0 {
+    if norm.len > m.suffix.len && norm.count_byte('.') > 0 {
         let reg_start = psl_find_registrable_start(norm, m.suffix.len);
         if reg_start >= 0 && reg_start <= norm.len {
             let _ = m.registrable_domain.try_set(norm[reg_start..]);
@@ -370,7 +365,7 @@ fn is_known_public_suffix(db: const PslDatabase&, domain: const u8[:]) -> bool {
     guard !core::is_ip_address_literal(norm) else { return false; }
     let m, ok = match_public_suffix(db, norm);
     guard ok && m.is_known && m.suffix.len > 0 else { return false; }
-    return eq_ascii_fold(norm, m.suffix[..]);
+    return norm.eq_ascii_fold(m.suffix[..]);
 }
 
 // Whether domain is itself a public suffix in the database.
@@ -389,7 +384,7 @@ fn is_public_suffix(db: const PslDatabase&, domain: const u8[:], is_icann_only: 
     }
     if is_icann_only && !is_icann { return false; }
 
-    return eq_ascii_fold(norm, suffix[..]);
+    return norm.eq_ascii_fold(suffix[..]);
 }
 
 fn psl_find_registrable_start(clean_host: const u8[:], suffix_len: i64) -> i64 {
@@ -403,7 +398,7 @@ fn psl_find_registrable_start(clean_host: const u8[:], suffix_len: i64) -> i64 {
         return 0;
     }
     let prefix = clean_host[..prefix_len];
-    let last_dot = core::last_index_of_byte(prefix, '.');
+    let last_dot = prefix.last_index_of_byte('.');
     let next_pos = core::add_sat_i64(last_dot, 1);
     if last_dot >= 0 {
         return next_pos;
@@ -422,7 +417,7 @@ fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) 
     guard psl_normalize_domain(host, norm_buf) else { return; }
     let clean_host = norm_buf[..];
 
-    let has_dot = core::count_byte(clean_host, '.') > 0;
+    let has_dot = clean_host.count_byte('.') > 0;
     guard has_dot && !core::is_ip_address_literal(clean_host) else {
         out.append(clean_host);
         return;
@@ -430,7 +425,7 @@ fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) 
 
     var suffix: u8[..256] = [];
     let ok, _ = find_public_suffix(db, clean_host, suffix);
-    guard ok && suffix.len > 0 && !eq_ascii_fold(clean_host, suffix[..]) else {
+    guard ok && suffix.len > 0 && !clean_host.eq_ascii_fold(suffix[..]) else {
         out.append(clean_host);
         return;
     }
@@ -453,7 +448,7 @@ fn psl_extract_etld_plus_one<B>(host: const u8[:], out: B&) {
 
 // Whether domain is a public suffix (cannot set domain cookies for it).
 fn is_public_suffix_domain(domain: const u8[:]) -> bool {
-    let clean_domain = core::trim_byte(domain, '.');
+    let clean_domain = domain.trim_byte('.');
     guard clean_domain.len > 0 else { return false; }
     return psl_is_public_suffix(clean_domain);
 }
@@ -462,10 +457,10 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
 fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
-    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
-    let clean_domain = core::trim_byte(core::trim_byte(core::trim_byte(cookie_domain, '.'), '['), ']');
+    let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
+    let clean_domain = cookie_domain.trim_byte('.').trim_byte('[').trim_byte(']');
 
-    if eq_ascii_fold(clean_host, clean_domain) {
+    if clean_host.eq_ascii_fold(clean_domain) {
         return true;
     }
     guard !core::is_ip_address_literal(clean_host) else { return false; }
@@ -486,17 +481,17 @@ fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&) {
         let _ = out.try_push('/');
         return;
     }
-    let last_slash_idx = core::last_index_of_byte(uri_path, '/');
-    if last_slash_idx <= 0 {
+    let dir_prefix, _, has_slash = uri_path.rsplit_once_byte('/');
+    if !has_slash || dir_prefix.len == 0 {
         let _ = out.try_push('/');
         return;
     }
-    let bounded_len = min(last_slash_idx, out.cap);
-    let prefix = if bounded_len < last_slash_idx {
-        let prev_slash = core::last_index_of_byte(uri_path[..bounded_len], '/');
-        if prev_slash > 0 { uri_path[..prev_slash] } else { "/" }
+    let bounded_len = min(dir_prefix.len, out.cap);
+    let prefix = if bounded_len < dir_prefix.len {
+        let trunc_dir, _, has_prev = uri_path[..bounded_len].rsplit_once_byte('/');
+        if has_prev && trunc_dir.len > 0 { trunc_dir } else { "/" }
     } else {
-        uri_path[..last_slash_idx]
+        dir_prefix
     };
     let _ = out.try_set(prefix);
 }
@@ -548,18 +543,20 @@ fn parse_psl_rule_line(line: const u8[:], sec: PslSection, out_rule: PslRule&) -
 // Ingests official Mozilla public suffix list format, preserving ICANN vs Private sections.
 fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
     var current_section = PslSection.Icann;
-
-    each_split(psl_text, '\n') { raw_line =>
-        let line = trim(raw_line);
+    var tok = core::make_byte_tokenizer(psl_text, '\n');
+    loop {
+        let raw_line, ok = core::token_next(tok);
+        guard ok else { break; }
+        let line = raw_line.trim_ascii_space();
         if core::starts_with(line, "// ===BEGIN ICANN DOMAINS===") {
             current_section = PslSection.Icann;
         } else if core::starts_with(line, "// ===BEGIN PRIVATE DOMAINS===") {
             current_section = PslSection.Private;
         } else {
             var rule = PslRule { .. };
-            if db.rules.len < db.rules.cap && parse_psl_rule_line(line, current_section, rule) {
-                db.rules.push(rule);
+            if parse_psl_rule_line(line, current_section, rule) {
+                let _ = db.rules.try_push(rule);
             }
         }
-    };
+    }
 }

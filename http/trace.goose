@@ -227,7 +227,7 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
 
     while cursor < raw.len {
         let rem = raw[cursor..];
-        let trimmed_lead = core::trim_lws_start(rem);
+        let trimmed_lead = rem.trim_lws_start();
         cursor += rem.len - trimmed_lead.len;
         if cursor == raw.len { break; }
         if raw[cursor] == ',' {
@@ -243,7 +243,7 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         guard eq_pos > cursor && eq_pos < entry_end else { return ts, false; }
 
         let k_raw = raw[cursor..eq_pos];
-        let v_raw = core::trim_lws_end(raw[eq_pos + 1..entry_end]);
+        let v_raw = raw[eq_pos + 1..entry_end].trim_lws_end();
 
         guard is_valid_tracestate_key(k_raw) else { return ts, false; }
         guard is_valid_tracestate_val(v_raw) else { return ts, false; }
@@ -252,11 +252,12 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
             guard m.key[..] != k_raw else { return ts, false; }
         }
 
-        guard ts.members.len < 32 else { return ts, false; }
         var member = TracestateMember { .. };
-        member.key.append(k_raw);
-        member.val.append(v_raw);
-        ts.members.push(member);
+        guard member.key.try_append(k_raw) &&
+              member.val.try_append(v_raw) &&
+              ts.members.try_push(member) else {
+            return ts, false;
+        }
 
         cursor = if comma_pos >= 0 { comma_pos + 1 } else { raw.len };
     }

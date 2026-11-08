@@ -23,7 +23,7 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
         if core::gzip_compress(payload, gz_buf, 6) {
             var hdr_c: u8[..8] = [];
             hdr_c.push(rfc::GRPC_FLAG_COMPRESSED);
-            core::write_be_u32(hdr_c, gz_buf.len as u32);
+            hdr_c.append_u32_be(gz_buf.len as u32);
             guard out.try_append(hdr_c[..]) else { return; }
             let _ = out.try_append(gz_buf[..]);
             return;
@@ -31,7 +31,7 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
     }
     var hdr_u: u8[..8] = [];
     hdr_u.push(0x00);
-    core::write_be_u32(hdr_u, payload.len as u32);
+    hdr_u.append_u32_be(payload.len as u32);
     guard out.try_append(hdr_u[..]) else { return; }
     let _ = out.try_append(payload);
 }
@@ -44,19 +44,20 @@ fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
 //   returns: payload = "hello", is_comp = false, consumed = 10, ok = true
 fn decode_grpc_lpm_slice(wire: const u8[:], offset: u32) -> const u8[:], bool, u32, bool {
     let off = offset as i64;
-    guard off >= 0 && off <= wire.len else { return "", false, 0, false; }
-    guard wire.len - off >= rfc::GRPC_LPM_HEADER_LEN else { return "", false, 0, false; }
+    let rem = core::sub_sat_i64(wire.len, off);
+    guard off >= 0 && rem >= rfc::GRPC_LPM_HEADER_LEN else { return "", false, 0, false; }
 
     let flag = wire[off];
     guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return "", false, 0, false; }
     let is_compressed = (flag & rfc::GRPC_FLAG_COMPRESSED) != 0;
 
-    let len_val_i64 = (core::read_be_u32(wire, off + 1)) as i64;
-    guard (wire.len - off - rfc::GRPC_LPM_HEADER_LEN) >= len_val_i64 else { return "", false, 0, false; }
+    let len_val_i64 = (core::read_be_u32(wire, core::add_sat_i64(off, 1))) as i64;
+    guard core::sub_sat_i64(rem, rfc::GRPC_LPM_HEADER_LEN) >= len_val_i64 else { return "", false, 0, false; }
 
-    let p_start = off + rfc::GRPC_LPM_HEADER_LEN;
-    let total_consumed = (rfc::GRPC_LPM_HEADER_LEN + len_val_i64) as u32;
-    return wire[p_start..p_start + len_val_i64], is_compressed, total_consumed, true;
+    let p_start = core::add_sat_i64(off, rfc::GRPC_LPM_HEADER_LEN);
+    let p_end = core::add_sat_i64(p_start, len_val_i64);
+    let total_consumed = core::add_sat_i64(rfc::GRPC_LPM_HEADER_LEN, len_val_i64) as u32;
+    return wire[p_start..p_end], is_compressed, total_consumed, true;
 }
 
 // Decodes a single LPM frame starting at offset in wire bytes.
@@ -106,7 +107,7 @@ fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
             p.buf.clear();
             p.read_pos = 0;
         } else if core::add_sat_u64(p.buf.len as u64, chunk.len as u64) > max_wire {
-            core::compact_wire_buffer(p.buf, p.read_pos);
+            p.buf.compact_wire_buffer(p.read_pos);
             p.read_pos = 0;
         }
     }
@@ -147,11 +148,11 @@ fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&)
 // reserved protocol control header).
 fn is_valid_grpc_custom_metadata(key: const u8[:], val: const u8[:]) -> bool {
     guard key.len > 0 && key[0] != ':' else { return false; }
-    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_STATUS) else { return false; }
-    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_MESSAGE) else { return false; }
-    guard !core::eq_ascii_fold(key, rfc::HEADER_GRPC_STATUS_DETAILS_BIN) else { return false; }
-    guard !core::eq_ascii_fold(key, "content-type") else { return false; }
-    guard !core::eq_ascii_fold(key, "te") else { return false; }
+    guard !key.eq_ascii_fold(rfc::HEADER_GRPC_STATUS) else { return false; }
+    guard !key.eq_ascii_fold(rfc::HEADER_GRPC_MESSAGE) else { return false; }
+    guard !key.eq_ascii_fold(rfc::HEADER_GRPC_STATUS_DETAILS_BIN) else { return false; }
+    guard !key.eq_ascii_fold("content-type") else { return false; }
+    guard !key.eq_ascii_fold("te") else { return false; }
     for b in key {
         guard core::is_tchar(b) else { return false; }
     }
@@ -171,18 +172,18 @@ fn encode_grpc_web_trailers_with_meta<B>(
 ) {
     var trailer_body: u8[..1024] = [];
     trailer_body.append("grpc-status: ");
-    core::format_i64_dec(grpc_status_to_code(status) as i64, trailer_body);
+    grpc_status_to_code(status).format_u32_dec(trailer_body);
     trailer_body.append("\r\n");
 
     if message.len > 0 {
         var enc_msg: u8[>..] = [];
         encode_grpc_message(message, enc_msg);
-        let max_msg_bytes = (trailer_body.cap - trailer_body.len - 18) as i64;
+        let max_msg_bytes = core::sub_sat_i64(core::sub_sat_i64(trailer_body.cap, trailer_body.len), 18);
         var take_len = min(enc_msg.len, max_msg_bytes);
-        if take_len < enc_msg.len && take_len >= 1 && enc_msg[take_len - 1] == '%' {
-            take_len -= 1;
-        } else if take_len < enc_msg.len && take_len >= 2 && enc_msg[take_len - 2] == '%' {
-            take_len -= 2;
+        if take_len < enc_msg.len && take_len >= 1 && enc_msg[core::sub_sat_i64(take_len, 1)] == '%' {
+            take_len = core::sub_sat_i64(take_len, 1);
+        } else if take_len < enc_msg.len && take_len >= 2 && enc_msg[core::sub_sat_i64(take_len, 2)] == '%' {
+            take_len = core::sub_sat_i64(take_len, 2);
         }
         if take_len > 0 {
             trailer_body.append("grpc-message: ");
@@ -204,7 +205,7 @@ fn encode_grpc_web_trailers_with_meta<B>(
 
     var tr_hdr: u8[..8] = [];
     tr_hdr.push(rfc::GRPC_WEB_FLAG_TRAILERS);
-    core::write_be_u32(tr_hdr, trailer_body.len as u32);
+    tr_hdr.append_u32_be(trailer_body.len as u32);
     guard out.try_append(tr_hdr[..]) else { return; }
     let _ = out.try_append(trailer_body[..]);
 }
@@ -257,11 +258,11 @@ fn parse_grpc_web_trailer_line(
     out_status:  GrpcStatusCode&,
     out_message: u8[..256]&,
 ) -> bool {
-    let name, raw_val, ok_split = core::split_once_byte(line, ':');
+    let name, raw_val, ok_split = line.split_once_byte(':');
     guard ok_split && name.len > 0 else { return false; }
-    let val = core::trim_lws(raw_val);
-    if core::eq_ascii_fold(name, "grpc-status") {
-        let status_int, ok_code = core::parse_u32_dec(val);
+    let val = raw_val.trim_lws();
+    if name.eq_ascii_fold("grpc-status") {
+        let status_int, ok_code = val.parse_u32_dec();
         if !ok_code {
             if val.len > 0 {
                 out_status = GrpcStatusCode.Unknown;
@@ -271,7 +272,7 @@ fn parse_grpc_web_trailer_line(
         out_status = grpc_status_from_code(status_int);
         return true;
     }
-    if core::eq_ascii_fold(name, "grpc-message") {
+    if name.eq_ascii_fold("grpc-message") {
         out_message.clear();
         decode_grpc_message(val, out_message);
     }
@@ -295,19 +296,19 @@ fn parse_grpc_web_trailers(
     var found_status = false;
 
     while cursor < trailer_bytes.len {
-        let rel_nl = core::index_of_byte(trailer_bytes[cursor..], '\n');
-        let line_end = if rel_nl >= 0 { cursor + rel_nl } else { trailer_bytes.len };
+        let rel_nl = trailer_bytes[cursor..].index_of_byte('\n');
+        let line_end = if rel_nl >= 0 { core::add_sat_i64(cursor, rel_nl) } else { trailer_bytes.len };
 
         var line = trailer_bytes[cursor..line_end];
         if core::ends_with(line, "\r") {
-            line = line[..(line.len - 1)];
+            line = line[..^1];
         }
 
         if parse_grpc_web_trailer_line(line, out_status, out_message) {
             found_status = true;
         }
 
-        cursor = line_end + 1;
+        cursor = core::add_sat_i64(line_end, 1);
     }
 
     return found_status;
@@ -328,9 +329,14 @@ fn encode_grpc_web_text<B>(binary_lpm: const u8[:], out: B&) {
 //   returns: true, out = [0, 0, 0, 0, 0]
 fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
     out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
     let total = b64_stream.len as u64;
     guard (total & 3) == 0 else { return false; }
-    guard total > 0 else { return true; }
+    guard total > 0 else {
+        committed = true;
+        return true;
+    }
 
     var seg_start: i64     = 0;
     var chunk_buf: u8[>..] = [];
@@ -343,13 +349,14 @@ fn decode_grpc_web_text<B>(b64_stream: const u8[:], out: B&) -> bool {
         if is_padded_end || q == total {
             let seg_end = q as i64;
             chunk_buf.clear();
-            if !core::base64_decode(b64_stream[seg_start..seg_end], chunk_buf) || !out.try_append(chunk_buf[..]) {
-                out.clear();
+            guard core::base64_decode(b64_stream[seg_start..seg_end], chunk_buf)
+                && out.try_append(chunk_buf[..]) else {
                 return false;
             }
             seg_start = seg_end;
         }
     }
+    committed = true;
     return true;
 }
 

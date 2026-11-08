@@ -8,6 +8,7 @@
 namespace internal;
 
 import std;
+import core from "..";
 
 // ---- integer math helpers & cube root ------------------------------------
 
@@ -49,7 +50,7 @@ fn new_pacer(initial_rate_bps: u64 = 10000000) -> Pacer {
 
 // Sets current pacing rate, enforcing a 64 kbps safety floor.
 fn pacer_set_rate(pacer: Pacer&, rate_bps: u64) {
-    pacer.pacing_rate_bps = if rate_bps >= 64000 { rate_bps } else { 64000 };
+    pacer.pacing_rate_bps = max(rate_bps, 64000);
 }
 
 // Queries whether pacer permits transmitting packet_bytes at now_us, updating token bucket.
@@ -337,12 +338,12 @@ fn cubic_on_ack(
     }
 
     // Reno-friendly region calculation: W_est(t) = W_max * 0.7 + (9/17) * (t / RTT)
-    let rtt_ms = if rtt_us >= 1000 { rtt_us / 1000 } else { 1 };
+    let rtt_ms = max(rtt_us / 1000, 1);
     let reno_inc = (9 * t_ms) / (17 * rtt_ms);
     let w_est = ((cubic.w_max_segments * 7) / 10) + reno_inc;
 
-    let target_segments = if w_cubic > w_est { w_cubic } else { w_est };
-    cubic.cwnd_segments = if target_segments > 2 { target_segments } else { 2 };
+    let target_segments = max(w_cubic, w_est);
+    cubic.cwnd_segments = max(target_segments, 2);
     cubic.last_update_us = now_us;
     return cubic.cwnd_segments * mss_bytes;
 }
@@ -350,10 +351,7 @@ fn cubic_on_ack(
 // Multiplicative decrease upon congestion signal (RFC 9438 Section 4.3).
 fn cubic_on_loss(cubic: CubicState&, now_us: u64) {
     cubic.w_max_segments = cubic.cwnd_segments;
-    cubic.cwnd_segments = (cubic.cwnd_segments * 7) / 10; // beta = 0.7
-    if cubic.cwnd_segments < 2 {
-        cubic.cwnd_segments = 2;
-    }
+    cubic.cwnd_segments = max((cubic.cwnd_segments * 7) / 10, 2); // beta = 0.7
     cubic.epoch_start_us = now_us;
     cubic.k_ms = cubic_compute_k(cubic.w_max_segments);
     cubic.last_update_us = now_us;

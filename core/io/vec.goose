@@ -51,7 +51,7 @@ fn iovec_is_empty(arr: const IoVecArray&) -> bool {
 
 fn iovec_count(arr: const IoVecArray&) -> i32 {
     let raw_count = (arr.entries.len as i32) - arr.head;
-    return if raw_count > 0 { raw_count } else { 0 };
+    return max(0, raw_count);
 }
 
 // ---- Compaction and Insertion --------------------------------------------
@@ -82,8 +82,7 @@ fn iovec_push(arr: IoVecArray&, chunk: const u8[:]) -> bool {
     if arr.entries.len >= 16 {
         iovec_compact(arr);
     }
-    guard arr.entries.len < 16 else { return false; }
-    arr.entries.push(IoVec { base: chunk });
+    guard arr.entries.try_push(IoVec { base: chunk }) else { return false; }
     arr.total_bytes += chunk.len;
     return true;
 }
@@ -126,7 +125,7 @@ fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
     while i < n && dst_off < dst.len {
         let chunk = iovec_get(arr, i);
         let rem_dst = dst.len - dst_off;
-        let to_copy = if chunk.len < rem_dst { chunk.len } else { rem_dst };
+        let to_copy = min(chunk.len, rem_dst);
         iovec_copy_chunk(chunk, to_copy, dst, dst_off);
         dst_off += to_copy;
         i += 1;

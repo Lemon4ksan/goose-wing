@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.request;
 import client.response;
 
@@ -75,10 +76,8 @@ fn format_upload_creation_request(
     first_chunk: const u8[:],
     is_complete: bool,
 ) {
-    req.method.clear();
-    req.method.append("POST");
-    req.url.clear();
-    req.url.append(endpoint);
+    let _ = req.method.try_set("POST");
+    let _ = req.url.try_set(endpoint);
 
     // Upload-Complete: ?0 or ?1
     set_header(req, rfc::HEADER_UPLOAD_COMPLETE, if is_complete { "?1" } else { "?0" });
@@ -101,14 +100,14 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
-        if eq_ascii_fold(name, "location") {
+        if name.eq_ascii_fold("location") {
             guard val.len > 0 && loc_buf.try_set(val) else { return false; }
             has_loc = true;
-        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
+        } else if name.eq_ascii_fold(rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             guard off_ok else { return false; }
             new_offset = off_val;
-        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
+        } else if name.eq_ascii_fold(rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             guard comp_ok else { return false; }
             new_complete = comp_val;
@@ -128,16 +127,14 @@ fn format_upload_chunk_request(
     chunk:       const u8[:],
     is_complete: bool,
 ) {
-    req.method.clear();
-    req.method.append("PATCH");
-    req.url.clear();
-    req.url.append(state.upload_url[..]);
+    let _ = req.method.try_set("PATCH");
+    let _ = req.url.try_set(state.upload_url[..]);
 
     set_header(req, "Content-Type", rfc::MIME_PARTIAL_UPLOAD);
 
     // Upload-Offset: <offset>
     var offset_str: u8[..32] = [];
-    core::format_i64_dec(state.offset, offset_str);
+    state.offset.format_i64_dec(offset_str);
     set_header(req, rfc::HEADER_UPLOAD_OFFSET, offset_str[..]);
 
     // Upload-Complete: ?0 or ?1
@@ -158,12 +155,12 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
-        if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
+        if name.eq_ascii_fold(rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             guard off_ok else { return false; }
             new_offset = off_val;
             found_offset = true;
-        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
+        } else if name.eq_ascii_fold(rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             guard comp_ok else { return false; }
             new_complete = comp_val;
@@ -177,10 +174,8 @@ fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> 
 
 // Formats a HEAD request to query the server's current offset after connection interruption
 fn format_upload_offset_query(req: Request&, upload_url: const u8[:]) {
-    req.method.clear();
-    req.method.append("HEAD");
-    req.url.clear();
-    req.url.append(upload_url);
+    let _ = req.method.try_set("HEAD");
+    let _ = req.url.try_set(upload_url);
 }
 
 // Handles response to HEAD offset query: restores state.offset
@@ -193,12 +188,12 @@ fn handle_offset_query_response(res: const Response&, state: ResumableUploadStat
     for &e in res.headers.entries {
         let name = entry_name(res.headers, e);
         let val = entry_value(res.headers, e);
-        if eq_ascii_fold(name, rfc::HEADER_UPLOAD_OFFSET) {
+        if name.eq_ascii_fold(rfc::HEADER_UPLOAD_OFFSET) {
             let off_val, off_ok = parse_upload_int(val);
             guard off_ok else { return false; }
             new_offset = off_val;
             found_offset = true;
-        } else if eq_ascii_fold(name, rfc::HEADER_UPLOAD_COMPLETE) {
+        } else if name.eq_ascii_fold(rfc::HEADER_UPLOAD_COMPLETE) {
             let comp_val, comp_ok = parse_upload_boolean(val);
             guard comp_ok else { return false; }
             new_complete = comp_val;

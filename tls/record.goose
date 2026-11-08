@@ -846,28 +846,25 @@ fn tls_record_seal_into(
     if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
         guard key.len == 16 else { return 0, TlsAlert.InternalError, false; }
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = key[i]; }
-        let n, alert, ok = tls_record_seal_aes128_gcm_into(key16, iv, seq_num, inner_type, plaintext, out_ciphertext);
-        core::secure_zeroize_16(key16);
-        return n, alert, ok;
+        return tls_record_seal_aes128_gcm_into(key16, iv, seq_num, inner_type, plaintext, out_ciphertext);
     }
     if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = key[i]; }
-        let n, alert, ok = tls_record_seal_aes256_gcm_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
-        core::secure_zeroize_32(key32);
-        return n, alert, ok;
+        return tls_record_seal_aes256_gcm_into(key32, iv, seq_num, inner_type, plaintext, out_ciphertext);
     }
     if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard key.len == 32 else { return 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = key[i]; }
-        let n, alert, ok = tls_record_seal_chacha20_poly1305_into(
+        return tls_record_seal_chacha20_poly1305_into(
             key32, iv, seq_num, inner_type, plaintext, out_ciphertext,
         );
-        core::secure_zeroize_32(key32);
-        return n, alert, ok;
     }
     return 0, TlsAlert.InternalError, false;
 }
@@ -884,28 +881,27 @@ fn tls_record_decrypt_into(
     if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
         guard key.len == 16 else { return 0, 0, TlsAlert.InternalError, false; }
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = key[i]; }
-        let n, inner, alert, ok = tls_record_decrypt_aes128_gcm_into(
+        return tls_record_decrypt_aes128_gcm_into(
             key16, iv, seq_num, record_header, record_payload, out_plaintext,
         );
-        core::secure_zeroize_16(key16);
-        return n, inner, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = key[i]; }
-        let n, inner, alert, ok = tls_record_decrypt_aes256_gcm_into(
+        return tls_record_decrypt_aes256_gcm_into(
             key32, iv, seq_num, record_header, record_payload, out_plaintext,
         );
-        core::secure_zeroize_32(key32);
-        return n, inner, alert, ok;
     }
     if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard key.len == 32 else { return 0, 0, TlsAlert.InternalError, false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = key[i]; }
-        let n, inner, alert, ok = tls_record_decrypt_chacha20_poly1305_into(
+        return tls_record_decrypt_chacha20_poly1305_into(
             key32,
             iv,
             seq_num,
@@ -913,8 +909,6 @@ fn tls_record_decrypt_into(
             record_payload,
             out_plaintext,
         );
-        core::secure_zeroize_32(key32);
-        return n, inner, alert, ok;
     }
     return 0, 0, TlsAlert.InternalError, false;
 }
@@ -967,10 +961,8 @@ inline fn encode_tls_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_
         return false;
     }
     out.push(content_type);
-    out.push(((rfc::TLS_LEGACY_VERSION_1_2 >> 8) & 0xFF) as u8);
-    out.push((rfc::TLS_LEGACY_VERSION_1_2 & 0xFF) as u8);
-    out.push(((ciphertext_len >> 8) & 0xFF) as u8);
-    out.push((ciphertext_len & 0xFF) as u8);
+    out.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    out.append_u16_be(ciphertext_len);
     return true;
 }
 
@@ -1174,12 +1166,9 @@ fn quic_crypto_stream_ingest(
     let new_data = data[skip..];
 
     // 5. Buffer quota check
-    let new_len = stream.buf.len + new_data.len;
-    guard new_len <= stream.buf.cap else {
+    guard stream.buf.try_append(new_data) else {
         return false, 0;
     }
-
-    stream.buf.append(new_data);
     stream.consumed_offset += (new_data.len as u64);
     return true, new_data.len;
 }

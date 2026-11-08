@@ -51,7 +51,7 @@ fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
 }
 
 fn origin_endpoint_equals(a: const OriginEndpoint&, b: const OriginEndpoint&) -> bool {
-    return a.port == b.port && eq_ascii_fold(a.host[..], b.host[..]);
+    return a.port == b.port && a.host[..].eq_ascii_fold(b.host[..]);
 }
 
 // Specification of a single proxy node.
@@ -69,7 +69,7 @@ fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u1
 }
 
 fn proxy_server_equals(a: const ProxyServer&, b: const ProxyServer&) -> bool {
-    return a.scheme == b.scheme && a.port == b.port && eq_ascii_fold(a.host[..], b.host[..]);
+    return a.scheme == b.scheme && a.port == b.port && a.host[..].eq_ascii_fold(b.host[..]);
 }
 
 // Ordered proxy chain (direct or multi-hop forwarding route).
@@ -133,7 +133,7 @@ fn network_anonymization_key_equals(a: const NetworkAnonymizationKey&, b: const 
     if a.is_cross_site != b.is_cross_site { return false; }
     if a.network_isolation_partition != b.network_isolation_partition { return false; }
     if a.worker_session_id != b.worker_session_id { return false; }
-    return eq_ascii_fold(a.top_frame_site[..], b.top_frame_site[..]);
+    return a.top_frame_site[..].eq_ascii_fold(b.top_frame_site[..]);
 }
 
 // Client privacy mode governing client certificates and credential isolation.
@@ -214,9 +214,8 @@ fn pool_scheme_to_u64(s: PoolScheme) -> u64 {
 inline fn wyhash64_ascii_fold(data: const u8[:], seed: u64) -> u64 {
     var folded: u8[..256] = [];
     for b in data {
-        guard folded.len < folded.cap else { break; }
         let ch = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-        folded.push(ch);
+        guard folded.try_push(ch) else { break; }
     }
     return core::wyhash64(folded[..], seed);
 }
@@ -292,16 +291,11 @@ inline fn compact_want_queue(q: WantQueue&) {
 
 // Appends a connection requirement to the tail slice.
 fn push_want(q: WantQueue&, item: WantConn) -> bool {
-    if q.tail.len < 32 {
-        q.tail.push(item);
+    if q.tail.try_push(item) {
         return true;
     }
     compact_want_queue(q);
-    if q.tail.len < 32 {
-        q.tail.push(item);
-        return true;
-    }
-    return false;
+    return q.tail.try_push(item);
 }
 
 // Pops the front item from the queue, promoting tail to head when head is exhausted.
@@ -439,23 +433,23 @@ fn is_connection_healthy(
 
 // Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
 fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
-    let pat = core::trim_end_byte(pattern, '.');
-    let host = core::trim_end_byte(target_host, '.');
-    guard pat.len > 0 && host.len > 0 && !core::contains_byte(host, '*') else { return false; }
+    let pat = pattern.trim_end_byte('.');
+    let host = target_host.trim_end_byte('.');
+    guard pat.len > 0 && host.len > 0 && !host.contains_byte('*') else { return false; }
 
-    if eq_ascii_fold(pat, host) {
+    if pat.eq_ascii_fold(host) {
         return true;
     }
     // Wildcard SAN check (*.example.com) per RFC 6125 §6.4.3
-    guard starts_with(pat, "*.") else { return false; }
+    guard pat.starts_with("*.") else { return false; }
     let suffix = pat[2..];
-    let label, host_suffix, has_dot = core::split_once_byte(host, '.');
-    let _, tld, _ = core::rsplit_once_byte(host, '.');
+    let label, host_suffix, has_dot = host.split_once_byte('.');
+    let _, tld, _ = host.rsplit_once_byte('.');
     let _, is_numeric_tld = core::parse_digits(tld);
-    guard has_dot && label.len > 0 && !is_numeric_tld && core::contains_byte(suffix, '.') else {
+    guard has_dot && label.len > 0 && !is_numeric_tld && suffix.contains_byte('.') else {
         return false;
     }
-    return eq_ascii_fold(suffix, host_suffix);
+    return suffix.eq_ascii_fold(host_suffix);
 }
 
 // HTTP/2 IP-based connection coalescing (JobController & AttemptManager parity).
@@ -477,7 +471,7 @@ fn can_coalesce_h2_connection(
     // IP addresses must match exactly
     guard conn.resolved_ip.len > 0 &&
           target_resolved_ip.len > 0 &&
-          eq_ascii_fold(conn.resolved_ip[..], target_resolved_ip) else {
+          conn.resolved_ip[..].eq_ascii_fold(target_resolved_ip) else {
         return false, false;
     }
 
@@ -561,14 +555,13 @@ fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
         return idx;
     }
     let kh = pool_key_hash(key);
-    if pool.groups.len < 32 {
-        var grp = ConnectionGroup {
-            key:        copy(key),
-            key_hash:   kh,
-            wait_queue: WantQueue { .. },
-            ..
-        };
-        pool.groups.push(grp);
+    let grp = ConnectionGroup {
+        key:        copy(key),
+        key_hash:   kh,
+        wait_queue: WantQueue { .. },
+        ..
+    };
+    if pool.groups.try_push(grp) {
         return (pool.groups.len - 1) as i32;
     }
     return -1;

@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import client.request;
 import client.response;
 import http.headers;
@@ -78,20 +79,17 @@ inline fn advance_monotonic_for_age(cur_ts: CacheTimestamps&, cur_now: core::Tim
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
 // Returns false if buffer capacities are exceeded (Invariant 13).
 fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) -> bool {
-    guard entry.url.len <= out_resp.effective_url.cap && entry.method.len <= out_resp.final_method.cap else {
+    guard out_resp.effective_url.try_set(entry.url[..]) &&
+          out_resp.final_method.try_set(entry.method[..]) else {
         return false;
     }
     out_resp.status_code = entry.status_code;
-    out_resp.effective_url.clear();
-    out_resp.effective_url.append(entry.url[..]);
-    out_resp.final_method.clear();
-    out_resp.final_method.append(entry.method[..]);
 
     out_resp.headers.clear();
     for &h_entry in entry.headers.entries {
         let h_name = entry.headers.raw_buf[h_entry.name_begin..h_entry.name_end];
         let h_val = entry.headers.raw_buf[h_entry.values_begin..h_entry.values_end];
-        if !eq_ascii_fold(h_name, "age") {
+        if !h_name.eq_ascii_fold("age") {
             guard append_header(out_resp.headers, h_name, h_val) else { return false; }
         }
     }
@@ -202,9 +200,7 @@ fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
     // Reuse any inactive slot without shifting existing flight indices
     for &flight, idx in writers.flights {
         if !flight.is_active {
-            flight.key.clear();
-            guard key.len <= flight.key.cap else { return false, -1; }
-            flight.key.append(key);
+            guard flight.key.try_set(key) else { return false, -1; }
             flight.is_active = true;
             flight.waiter_count = 0;
             flight.total_bytes = 0;
@@ -224,8 +220,7 @@ fn start_writer_or_join(writers: CacheWriters&, key: const u8[:]) -> bool, i64 {
         aborted:      false,
         ..
     };
-    guard key.len <= flight.key.cap else { return false, -1; }
-    flight.key.append(key);
+    guard flight.key.try_set(key) else { return false, -1; }
     writers.flights.push(flight);
     return true, writers.flights.len - 1;
 }
@@ -285,8 +280,7 @@ fn acquire_at(writers: CacheWriters&, hash: u64, now_ms: i64, age_timeout_ms: i6
             return true;
         }
     }
-    guard writers.slots.len < writers.slots.cap else { return false; }
-    writers.slots.push(WriterSlot {
+    return writers.slots.try_push(WriterSlot {
         key_hash:       hash,
         active:         true,
         acquired_at_ms: now_ms,
@@ -294,7 +288,6 @@ fn acquire_at(writers: CacheWriters&, hash: u64, now_ms: i64, age_timeout_ms: i6
         status:         CacheLockStatus.Waiting,
         stale_writer:   false,
     });
-    return true;
 }
 
 // Acquires a cache stampede write lock for `hash` with default age timeout.
@@ -432,7 +425,7 @@ fn find_matching_entry(
 }
 
 fn evaluate_suffix_byte_range(end_str: const u8[:], total_len: i64) -> i32, i64, i64 {
-    let suffix_len, ok_s = core::parse_i64_dec(trim_lws(end_str));
+    let suffix_len, ok_s = end_str.trim_lws().parse_i64_dec();
     guard ok_s && suffix_len >= 0 else { return 200, 0, 0; }
     if suffix_len == 0 || total_len <= 0 { return 416, 0, 0; }
     let eff_suffix = min(suffix_len, total_len);
@@ -442,9 +435,9 @@ fn evaluate_suffix_byte_range(end_str: const u8[:], total_len: i64) -> i32, i64,
 // Evaluates a single byte-range-spec (`bytes=first-last`, `bytes=first-`, `bytes=-suffix`)
 // against `total_len` (RFC 9110 §14.1.2). Returns (status_code: 200|206|416, first_pos, last_pos).
 fn evaluate_single_byte_range(raw_range: const u8[:], total_len: i64) -> i32, i64, i64 {
-    let trimmed = trim_lws(raw_range);
-    guard trimmed.len > 6 && starts_with_fold(trimmed, "bytes=") else { return 200, 0, 0; }
-    let spec = trim_lws(trimmed[6..]);
+    let trimmed = raw_range.trim_lws();
+    guard trimmed.len > 6 && trimmed.starts_with_fold("bytes=") else { return 200, 0, 0; }
+    let spec = trimmed[6..].trim_lws();
     guard !spec.contains_byte(',') else { return 200, 0, 0; }
     let start_str, end_str, has_dash = spec.split_once_byte('-');
     guard has_dash else { return 200, 0, 0; }
@@ -453,11 +446,11 @@ fn evaluate_single_byte_range(raw_range: const u8[:], total_len: i64) -> i32, i6
         return evaluate_suffix_byte_range(end_str, total_len);
     }
 
-    let first_pos, ok_f = core::parse_i64_dec(trim_lws(start_str));
+    let first_pos, ok_f = start_str.trim_lws().parse_i64_dec();
     guard ok_f && first_pos >= 0 else { return 200, 0, 0; }
     var last_pos = core::sub_sat_i64(total_len, 1);
     if end_str.len > 0 {
-        let parsed_last, ok_l = core::parse_i64_dec(trim_lws(end_str));
+        let parsed_last, ok_l = end_str.trim_lws().parse_i64_dec();
         guard ok_l && parsed_last >= first_pos else { return 200, 0, 0; }
         last_pos = parsed_last;
     }
@@ -476,19 +469,19 @@ fn populate_cached_206_response(entry: const CachedEntry&, first_pos: i64, last_
     resp.body.clear();
     resp.body.append(entry.body[first_pos..slice_end]);
     var cr_206: u8[..64] = "bytes ";
-    core::format_i64_dec(first_pos, cr_206);
+    first_pos.format_i64_dec(cr_206);
     cr_206.push('-');
-    core::format_i64_dec(last_pos, cr_206);
+    last_pos.format_i64_dec(cr_206);
     cr_206.push('/');
-    core::format_i64_dec(total_len, cr_206);
+    total_len.format_i64_dec(cr_206);
     resp.set_header("Content-Range", cr_206[..]);
     var cl_str: u8[..32] = [];
-    core::format_i64_dec(slice_len, cl_str);
+    slice_len.format_i64_dec(cl_str);
     resp.set_header("Content-Length", cl_str[..]);
 }
 
 fn apply_cached_range_if_requested(entry: const CachedEntry&, req: const Request&, resp: Response&) {
-    guard entry.status_code == 200 && eq_ascii_fold(req.method[..], "GET") else { return; }
+    guard entry.status_code == 200 && req.method[..].eq_ascii_fold("GET") else { return; }
     let range_hdr = req.headers.get_header("range");
     guard range_hdr.len > 0 else { return; }
 
@@ -503,7 +496,7 @@ fn apply_cached_range_if_requested(entry: const CachedEntry&, req: const Request
         resp.status_code = 416;
         resp.body.clear();
         var cr_416: u8[..64] = "bytes */";
-        core::format_i64_dec(total_len, cr_416);
+        total_len.format_i64_dec(cr_416);
         resp.set_header("Content-Range", cr_416[..]);
         resp.set_header("Content-Length", "0");
     } else if status == 206 {
@@ -539,8 +532,8 @@ fn lookup(
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
 
-    let is_get = eq_ascii_fold(req.method[..], "GET");
-    let is_head = eq_ascii_fold(req.method[..], "HEAD");
+    let is_get = req.method[..].eq_ascii_fold("GET");
+    let is_head = req.method[..].eq_ascii_fold("HEAD");
     guard is_get || is_head else {
         cache.total_misses++;
         dec.kind = LookupResultKind.Miss;
@@ -790,8 +783,7 @@ fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const 
         }
     }
 
-    if cache.entries.len < cache.entries.cap {
-        cache.entries.push(entry);
+    if cache.entries.try_push(entry) {
         let new_idx = (cache.entries.len - 1) as i32;
         cache.lru_push_front(new_idx);
         return new_idx;
@@ -818,11 +810,11 @@ fn on_response(
 ) -> ResponseDecision {
     var dec = ResponseDecision { response: copy(resp), .. };
 
-    let is_get = eq_ascii_fold(req.method[..], "GET");
-    let is_head = eq_ascii_fold(req.method[..], "HEAD");
+    let is_get = req.method[..].eq_ascii_fold("GET");
+    let is_head = req.method[..].eq_ascii_fold("HEAD");
     let m = req.method[..];
-    let is_unsafe = eq_ascii_fold(m, "POST") || eq_ascii_fold(m, "PUT") ||
-        eq_ascii_fold(m, "DELETE") || eq_ascii_fold(m, "PATCH");
+    let is_unsafe = m.eq_ascii_fold("POST") || m.eq_ascii_fold("PUT") ||
+        m.eq_ascii_fold("DELETE") || m.eq_ascii_fold("PATCH");
 
     if is_unsafe && resp.status_code >= 200 && resp.status_code < 400 {
         cache.check_invalidation(req, resp);

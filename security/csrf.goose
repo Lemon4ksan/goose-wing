@@ -84,12 +84,12 @@ struct FetchContext {
 //   val = "same-origin"
 //   returns: SecFetchSite.SameOrigin
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
-    let clean = trim_lws(val);
+    let clean = val.trim_lws();
     if clean.len == 0 { return SecFetchSite.Missing; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_SAME_ORIGIN) { return SecFetchSite.SameOrigin; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_SAME_SITE) { return SecFetchSite.SameSite; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_CROSS_SITE) { return SecFetchSite.CrossSite; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_SITE_NONE) { return SecFetchSite.None; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_SAME_ORIGIN) { return SecFetchSite.SameOrigin; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_SAME_SITE) { return SecFetchSite.SameSite; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_CROSS_SITE) { return SecFetchSite.CrossSite; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_SITE_NONE) { return SecFetchSite.None; }
     return SecFetchSite.Unknown;
 }
 
@@ -99,12 +99,12 @@ fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
 //   val = "navigate"
 //   returns: SecFetchMode.Navigate
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
-    let clean = trim_lws(val);
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_NAVIGATE) { return SecFetchMode.Navigate; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_SAME_ORIGIN) { return SecFetchMode.SameOrigin; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_CORS) { return SecFetchMode.Cors; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_NO_CORS) { return SecFetchMode.NoCors; }
-    if core::eq_ascii_fold(clean, rfc::SEC_FETCH_MODE_WEBSOCKET) { return SecFetchMode.WebSocket; }
+    let clean = val.trim_lws();
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_NAVIGATE) { return SecFetchMode.Navigate; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_SAME_ORIGIN) { return SecFetchMode.SameOrigin; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_CORS) { return SecFetchMode.Cors; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_NO_CORS) { return SecFetchMode.NoCors; }
+    if clean.eq_ascii_fold(rfc::SEC_FETCH_MODE_WEBSOCKET) { return SecFetchMode.WebSocket; }
     return SecFetchMode.Other;
 }
 
@@ -114,18 +114,18 @@ fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
 //   val = "document"
 //   returns: SecFetchDest.Document
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
-    let clean = trim_lws(val);
-    if core::eq_ascii_fold(clean, "document") { return SecFetchDest.Document; }
-    if core::eq_ascii_fold(clean, "nested-document") { return SecFetchDest.NestedDocument; }
-    if core::eq_ascii_fold(clean, "iframe") { return SecFetchDest.Iframe; }
-    if core::eq_ascii_fold(clean, "frame") { return SecFetchDest.Frame; }
-    if core::eq_ascii_fold(clean, "embed") { return SecFetchDest.Embed; }
-    if core::eq_ascii_fold(clean, "object") { return SecFetchDest.Object; }
-    if core::eq_ascii_fold(clean, "script") { return SecFetchDest.Script; }
-    if core::eq_ascii_fold(clean, "image") { return SecFetchDest.Image; }
-    if core::eq_ascii_fold(clean, "style") { return SecFetchDest.Style; }
-    if core::eq_ascii_fold(clean, "font") { return SecFetchDest.Font; }
-    if core::eq_ascii_fold(clean, "empty") { return SecFetchDest.Empty; }
+    let clean = val.trim_lws();
+    if clean.eq_ascii_fold("document") { return SecFetchDest.Document; }
+    if clean.eq_ascii_fold("nested-document") { return SecFetchDest.NestedDocument; }
+    if clean.eq_ascii_fold("iframe") { return SecFetchDest.Iframe; }
+    if clean.eq_ascii_fold("frame") { return SecFetchDest.Frame; }
+    if clean.eq_ascii_fold("embed") { return SecFetchDest.Embed; }
+    if clean.eq_ascii_fold("object") { return SecFetchDest.Object; }
+    if clean.eq_ascii_fold("script") { return SecFetchDest.Script; }
+    if clean.eq_ascii_fold("image") { return SecFetchDest.Image; }
+    if clean.eq_ascii_fold("style") { return SecFetchDest.Style; }
+    if clean.eq_ascii_fold("font") { return SecFetchDest.Font; }
+    if clean.eq_ascii_fold("empty") { return SecFetchDest.Empty; }
     return SecFetchDest.Other;
 }
 
@@ -170,23 +170,19 @@ struct CrossOriginGuard {
 }
 
 fn add_trusted_origin(guard_cfg: CrossOriginGuard&, origin_str: const u8[:]) -> bool {
-    guard guard_cfg.trusted_origins.len < guard_cfg.trusted_origins.cap else { return false; }
-    let trimmed = trim_lws(origin_str);
-    guard trimmed.len > 0 && trimmed.len <= 128 else { return false; }
+    let trimmed = origin_str.trim_lws();
+    guard trimmed.len > 0 else { return false; }
     var entry: u8[..128] = [];
-    entry.append(trimmed);
-    guard_cfg.trusted_origins.push(entry);
-    return true;
+    guard entry.try_set(trimmed) else { return false; }
+    return guard_cfg.trusted_origins.try_push(entry);
 }
 
 fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool {
-    guard guard_cfg.exempt_paths.len < guard_cfg.exempt_paths.cap else { return false; }
-    let trimmed = trim_lws(path_str);
-    guard trimmed.len > 0 && trimmed.len <= 128 && trimmed[0] == '/' else { return false; }
+    let trimmed = path_str.trim_lws();
+    guard trimmed.len > 0 && trimmed[0] == '/' else { return false; }
     var entry: u8[..128] = [];
-    entry.append(trimmed);
-    guard_cfg.exempt_paths.push(entry);
-    return true;
+    guard entry.try_set(trimmed) else { return false; }
+    return guard_cfg.exempt_paths.try_push(entry);
 }
 
 fn is_path_exempt(guard_cfg: const CrossOriginGuard&, path_str: const u8[:]) -> bool {
@@ -207,12 +203,11 @@ fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
     guard a.len == b.len else { return false; }
     var diff: u32 = 0;
     for i in a.len {
-        let ca = if a[i] >= 'A' && a[i] <= 'Z' { a[i] + 32 } else { a[i] };
-        let cb = if b[i] >= 'A' && b[i] <= 'Z' { b[i] + 32 } else { b[i] };
+        let ca = core::to_lower_ascii_byte(a[i]);
+        let cb = core::to_lower_ascii_byte(b[i]);
         diff |= (ca ^ cb);
     }
-    let non_zero = (diff | (0 - diff)) >> 31;
-    return non_zero == 0;
+    return diff == 0;
 }
 
 // Constant-time double-submit CSRF token validation.
@@ -224,9 +219,8 @@ fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) ->
 // Masks a CSRF token using a one-time pad XOR mask into out: [mask (N bytes) | masked_secret (N bytes)].
 fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bool {
     guard mask.len > 0 && mask.len == raw_secret.len else { return false; }
-    guard (mask.len * 2) <= out.cap else { return false; }
-    out.clear();
-    for b in mask { out.push(b); }
+    guard core::mul_sat_i64(mask.len, 2) <= out.cap else { return false; }
+    guard out.try_set(mask) else { return false; }
     for i in mask.len { out.push(raw_secret[i] ^ mask[i]); }
     return true;
 }
@@ -234,16 +228,15 @@ fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bo
 // Unmasks and validates a masked CSRF token against expected raw secret in constant time.
 fn verify_masked_csrf_token(masked_token: const u8[:], expected_unmasked: const u8[:]) -> bool {
     let n = expected_unmasked.len;
-    guard n > 0 && masked_token.len == n * 2 else { return false; }
+    guard n > 0 && masked_token.len == core::mul_sat_i64(n, 2) else { return false; }
     var diff: u32 = 0;
     for i in n {
         let mask_byte = masked_token[i];
-        let masked_secret_byte = masked_token[n + i];
+        let masked_secret_byte = masked_token[core::add_sat_i64(n, i)];
         let unmasked_byte = masked_secret_byte ^ mask_byte;
         diff |= (unmasked_byte ^ expected_unmasked[i]);
     }
-    let non_zero = (diff | (0 - diff)) >> 31;
-    return non_zero == 0;
+    return diff == 0;
 }
 
 fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]) -> bool {
@@ -263,29 +256,22 @@ fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]
 //   url_or_origin = "https://partner.example.com/checkout?id=1"
 //   returns: "https://partner.example.com"
 fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:] {
-    let s = trim_lws(url_or_origin);
-    var scheme_len: i64 = 0;
-    if starts_with_fold(s, "https://") {
-        scheme_len = 8;
-    } else if starts_with_fold(s, "http://") {
-        scheme_len = 7;
-    } else {
-        return s[..0];
-    }
+    let s = url_or_origin.trim_lws();
+    let scheme_len: i64 = block {
+        if s.starts_with_fold("https://") { break 8; }
+        if s.starts_with_fold("http://") { break 7; }
+        0
+    };
+    guard scheme_len > 0 else { return s[..0]; }
     let rest = s[scheme_len..];
-    var end_idx = rest.len;
-    let slash_idx = core::index_of_byte(rest, '/');
-    if slash_idx >= 0 && slash_idx < end_idx { end_idx = slash_idx; }
-    let query_idx = core::index_of_byte(rest, '?');
-    if query_idx >= 0 && query_idx < end_idx { end_idx = query_idx; }
-    let hash_idx = core::index_of_byte(rest, '#');
-    if hash_idx >= 0 && hash_idx < end_idx { end_idx = hash_idx; }
+    let delim = core::find_byteset(rest, "/?#");
+    let end_idx = if delim >= 0 { delim } else { rest.len };
 
     let host = rest[..end_idx];
-    if host.len == 0 || core::contains_byte(host, '@') || core::contains_byte(host, '\\') {
+    if host.len == 0 || host.contains_byte('@') || host.contains_byte('\\') {
         return s[..0];
     }
-    return s[..scheme_len + end_idx];
+    return s[..core::add_sat_i64(scheme_len, end_idx)];
 }
 
 // Extracts host from URL or Origin string (RFC 6454 / RFC 3986).
@@ -297,7 +283,7 @@ fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:] {
 fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     let origin = extract_origin_from_url(url_or_origin);
     guard origin.len > 0 else { return origin; }
-    if starts_with_fold(origin, "https://") {
+    if origin.starts_with_fold("https://") {
         return origin[8..];
     }
     return origin[7..];
@@ -350,9 +336,9 @@ fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const
     let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
     let candidate_origin = extract_origin_from_url(candidate);
     let candidate_host = extract_host_from_url(candidate);
-    let cand_scheme = if starts_with_fold(candidate_origin, "https://") {
+    let cand_scheme = if candidate_origin.starts_with_fold("https://") {
         "https"
-    } else if starts_with_fold(candidate_origin, "http://") {
+    } else if candidate_origin.starts_with_fold("http://") {
         "http"
     } else {
         ""
@@ -409,19 +395,19 @@ fn evaluate_fetch_metadata(guard_cfg: const CrossOriginGuard&, ctx: const FetchC
 //   raw = "https://example.com/api/webhook?foo=bar"
 //   returns: "/api/webhook"
 fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
-    var s = trim_lws(raw);
-    let query_idx = core::index_of_byte(s, '?');
+    var s = raw.trim_lws();
+    let query_idx = s.index_of_byte('?');
     if query_idx >= 0 { s = s[..query_idx]; }
-    let hash_idx = core::index_of_byte(s, '#');
+    let hash_idx = s.index_of_byte('#');
     if hash_idx >= 0 { s = s[..hash_idx]; }
 
-    if starts_with_fold(s, "https://") {
+    if s.starts_with_fold("https://") {
         s = s[8..];
-        let slash = core::index_of_byte(s, '/');
+        let slash = s.index_of_byte('/');
         s = if slash >= 0 { s[slash..] } else { "/" };
-    } else if starts_with_fold(s, "http://") {
+    } else if s.starts_with_fold("http://") {
         s = s[7..];
-        let slash = core::index_of_byte(s, '/');
+        let slash = s.index_of_byte('/');
         s = if slash >= 0 { s[slash..] } else { "/" };
     }
     return if s.len > 0 { s } else { "/" };
@@ -439,20 +425,17 @@ fn extract_fetch_context<Req>(
 ) -> FetchContext {
     var ctx = FetchContext { .. };
     ctx.is_sensitive_navigation_route = is_sensitive_nav;
-    ctx.method.clear();
     let m_len = min(req.method.len, ctx.method.cap);
-    ctx.method.append(req.method[..m_len]);
+    ctx.method.try_set(req.method[..m_len]);
 
     // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
     let m = req.method[..];
     ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
-    if starts_with_fold(req.url[..], "http://") {
-        ctx.target_scheme.clear();
-        ctx.target_scheme.append("http");
+    if req.url[..].starts_with_fold("http://") {
+        ctx.target_scheme.try_set("http");
     }
-    ctx.target_host.clear();
     let th_len = min(target_host.len, ctx.target_host.cap);
-    ctx.target_host.append(target_host[..th_len]);
+    ctx.target_host.try_set(target_host[..th_len]);
 
     let req_path = extract_path_from_url(req.url[..]);
     if !canonicalize_route_path(req_path, ctx.path) {
@@ -461,34 +444,34 @@ fn extract_fetch_context<Req>(
 
     for &e in req.headers.entries {
         let name = entry_name(req.headers, e);
-        let val = trim_lws(entry_value(req.headers, e));
+        let val = entry_value(req.headers, e).trim_lws();
 
-        if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_SITE) {
+        if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) {
             let parsed_site = parse_sec_fetch_site(val);
             if ctx.site == SecFetchSite.Missing {
                 ctx.site = parsed_site;
             } else if parsed_site != ctx.site {
                 ctx.site = SecFetchSite.CrossSite;
             }
-        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_MODE) {
+        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_MODE) {
             ctx.mode = parse_sec_fetch_mode(val);
-        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_DEST) {
+        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_DEST) {
             ctx.dest = parse_sec_fetch_dest(val);
-        } else if core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_USER) {
+        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_USER) {
             ctx.user_activated = (val == "?1");
-        } else if core::eq_ascii_fold(name, rfc::HEADER_ORIGIN) {
+        } else if name.eq_ascii_fold(rfc::HEADER_ORIGIN) {
             if !ctx.has_origin {
                 ctx.has_origin = true;
                 ctx.origin.try_set(val);
             }
-        } else if core::eq_ascii_fold(name, rfc::HEADER_REFERER) {
+        } else if name.eq_ascii_fold(rfc::HEADER_REFERER) {
             if !ctx.has_referer {
                 ctx.has_referer = true;
                 ctx.referer.try_set(val);
             }
-        } else if core::eq_ascii_fold(name, rfc::HEADER_COOKIE) {
+        } else if name.eq_ascii_fold(rfc::HEADER_COOKIE) {
             ctx.has_session_cookie = true;
-        } else if core::eq_ascii_fold(name, rfc::HEADER_AUTHORIZATION) || core::eq_ascii_fold(name, "X-API-Key") {
+        } else if name.eq_ascii_fold(rfc::HEADER_AUTHORIZATION) || name.eq_ascii_fold("X-API-Key") {
             ctx.has_explicit_auth = true;
         }
     }
@@ -515,8 +498,8 @@ fn scan_request_sec_fetch_site<Req>(req: const Req&) -> SecFetchSite {
     for &e in req.headers.entries {
         guard e.well_known_id == 0xFF else { continue; }
         let name = entry_name(req.headers, e);
-        guard name.len == 14 && core::eq_ascii_fold(name, rfc::HEADER_SEC_FETCH_SITE) else { continue; }
-        let parsed = parse_sec_fetch_site(trim_lws(entry_value(req.headers, e)));
+        guard name.len == 14 && name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) else { continue; }
+        let parsed = parse_sec_fetch_site(entry_value(req.headers, e).trim_lws());
         if site == SecFetchSite.Missing {
             site = parsed;
         } else if parsed != site {
@@ -596,13 +579,13 @@ fn apply_isolation_headers<Res>(res: Res&) {
     } else {
         let existing_vary = res.headers.find_header(rfc::HEADER_VARY);
         if existing_vary != rfc::FETCH_METADATA_VARY_VALUE &&
-            !header_list_has_token(existing_vary, rfc::HEADER_SEC_FETCH_SITE) &&
-            existing_vary.len + 2 + rfc::FETCH_METADATA_VARY_VALUE.len <= 2048 {
+            !header_list_has_token(existing_vary, rfc::HEADER_SEC_FETCH_SITE) {
             var merged: u8[..2048] = [];
-            merged.append(existing_vary);
-            merged.append(", ");
-            merged.append(rfc::FETCH_METADATA_VARY_VALUE);
-            set_header(res, rfc::HEADER_VARY, merged[..]);
+            if merged.try_set(existing_vary) &&
+                merged.try_append(", ") &&
+                merged.try_append(rfc::FETCH_METADATA_VARY_VALUE) {
+                set_header(res, rfc::HEADER_VARY, merged[..]);
+            }
         }
     }
 

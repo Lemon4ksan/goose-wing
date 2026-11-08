@@ -24,7 +24,7 @@ struct GcraQuota {
 fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
     let l = max(limit, 1);
-    let t_ns = max(p_ns / l, 1);
+    let t_ns = max(fast_div_u64(p_ns, l), 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst);
 
     return GcraQuota {
@@ -63,9 +63,9 @@ inline fn gcra_remaining_burst(tau: u64, t: u64, burst: u64, tat: u64, now_ns: u
     let t_safe = max(t, 1);
     let baseline = core::add_sat_u64(now_ns, t_safe);
     guard tat > baseline else { return burst; }
-    let diff = tat - baseline;
+    let diff = core::sub_sat_u64(tat, baseline);
     guard tau > diff else { return 0; }
-    let rem = (tau - diff) / t_safe;
+    let rem = fast_div_u64(core::sub_sat_u64(tau, diff), t_safe);
     return min(rem, burst);
 }
 
@@ -91,7 +91,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
 
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     if delta > limit_window {
-        let excess = delta - limit_window;
+        let excess = core::sub_sat_u64(delta, limit_window);
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
         return RateLimitDecision.Rejected {
             retry_after_ns:        core::add_sat_u64(base_wait, excess),
@@ -104,7 +104,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
 
     if now_ns < t_allow {
-        let retry_after = t_allow - now_ns;
+        let retry_after = core::sub_sat_u64(t_allow, now_ns);
         return RateLimitDecision.Rejected {
             retry_after_ns: retry_after,
             current_tat_ns: tat_old,
@@ -147,7 +147,7 @@ fn gcra_reserve_n(
 
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     if delta > core::add_sat_u64(limit_window, max_wait_ns) {
-        let excess = delta - limit_window;
+        let excess = core::sub_sat_u64(delta, limit_window);
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
         return RateLimitDecision.Rejected {
             retry_after_ns:        core::add_sat_u64(base_wait, excess),
@@ -171,7 +171,7 @@ fn gcra_reserve_n(
         };
     }
 
-    let wait_time = t_allow - now_ns;
+    let wait_time = core::sub_sat_u64(t_allow, now_ns);
     if wait_time <= max_wait_ns {
         // Reserve the slot ahead of concurrent lighter requests
         cell.tat_ns = tat_new;
@@ -208,20 +208,15 @@ fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter {
     return ShardedGcraLimiter { quota: quota, .. };
 }
 
-fn format_gcra_key(key_str: const u8[:], out: u8[..64]&) {
-    out.clear();
-    if key_str.len <= 64 {
-        out.append(key_str);
-    } else {
-        out.append(key_str[..48]);
-        let h = core::fnv1a_64(key_str);
-        for i in 16 {
-            let shift = (15 - i) * 4;
-            let nibble = ((h >> shift) & 0x0F) as u8;
-            let ch = if nibble < 10 { '0' + nibble } else { 'a' + (nibble - 10) };
-            out.push(ch);
-        }
+fn format_gcra_key(key_str: const u8[:]) -> u8[..64] {
+    var out: u8[..64] = [];
+    if out.try_set(key_str) {
+        return out;
     }
+    out.try_set(key_str[..48]);
+    let h = core::fnv1a_64(key_str);
+    core::format_u64_hex_fixed(h, 16, out, false);
+    return out;
 }
 
 inline fn find_existing_slot(slots: const KeyedGcraSlot[..16]&, key_str: const u8[:]) -> i32 {
@@ -240,9 +235,7 @@ fn allocate_shard_slot(shard: GcraShard&, now_ns: u64) -> i32 {
             return idx as i32;
         }
     }
-    if shard.slots.len < shard.slots.cap {
-        var new_slot = KeyedGcraSlot { active: false, .. };
-        shard.slots.push(new_slot);
+    if shard.slots.try_push(KeyedGcraSlot { active: false, .. }) {
         return (core::sub_sat_i64(shard.slots.len, 1)) as i32;
     }
     for idx in shard.slots.len {
@@ -263,8 +256,7 @@ fn admit_or_reject_new_rate_limit_slot(
 ) -> RateLimitDecision {
     let slot_idx = allocate_shard_slot(limiter.shards[shard_idx], now_ns);
     if slot_idx >= 0 {
-        limiter.shards[shard_idx].slots[slot_idx].key.clear();
-        limiter.shards[shard_idx].slots[slot_idx].key.append(eff_key);
+        limiter.shards[shard_idx].slots[slot_idx].key.try_set(eff_key);
         limiter.shards[shard_idx].slots[slot_idx].cell.tat_ns = now_ns;
         limiter.shards[shard_idx].slots[slot_idx].active = true;
         return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[slot_idx].cell, cost_n, now_ns);
@@ -272,10 +264,7 @@ fn admit_or_reject_new_rate_limit_slot(
     // Shard full fallback: all slots active with unexpired TAT -> reject (fail-closed)
     var min_tat: u64 = 0xFFFFFFFFFFFFFFFF;
     for idx in limiter.shards[shard_idx].slots.len {
-        let tat = limiter.shards[shard_idx].slots[idx].cell.tat_ns;
-        if tat < min_tat {
-            min_tat = tat;
-        }
+        min_tat = min(min_tat, limiter.shards[shard_idx].slots[idx].cell.tat_ns);
     }
     let retry_ns = core::sub_sat_u64(min_tat, now_ns);
     return RateLimitDecision.Rejected {
@@ -299,8 +288,7 @@ fn check_rate_limit(
         }
         return admit_or_reject_new_rate_limit_slot(limiter, shard_idx, key_str, cost_n, now_ns);
     }
-    var eff_key: u8[..64] = [];
-    format_gcra_key(key_str, eff_key);
+    let eff_key = format_gcra_key(key_str);
     let existing = find_existing_slot(limiter.shards[shard_idx].slots, eff_key[..]);
     if existing >= 0 {
         return gcra_check_n(limiter.quota, limiter.shards[shard_idx].slots[existing as i64].cell, cost_n, now_ns);
@@ -397,7 +385,7 @@ fn find_header_hash_entry_idx(map: const HeaderMap&, name: const u8[:], hname: u
     }
     for i in map.entries.len {
         let e = map.entries[i];
-        if e.name_hash == hname && eq_ascii_fold(entry_name(map, e), name) {
+        if e.name_hash == hname && entry_name(map, e).eq_ascii_fold(name) {
             return i;
         }
     }
@@ -431,7 +419,7 @@ fn set_ratelimit_u64_header(map: HeaderMap&, name: const u8[:], hname: u32, wk_i
         let n_begin = map.raw_buf.len as u16;
         map.raw_buf.append(name);
         let n_end = map.raw_buf.len as u16;
-        core::format_u64_dec(val, map.raw_buf);
+        val.format_u64_dec(map.raw_buf);
         let v_end = map.raw_buf.len as u16;
         let new_idx = map.entries.len as u8;
         if wk_id != 0xFF {
@@ -452,7 +440,7 @@ fn set_ratelimit_u64_header(map: HeaderMap&, name: const u8[:], hname: u32, wk_i
         return;
     }
     var val_str: u8[..24] = [];
-    core::format_u64_dec(val, val_str);
+    val.format_u64_dec(val_str);
     if try_overwrite_ratelimit_entry_same_len(map, idx, val_str[..]) {
         return;
     }

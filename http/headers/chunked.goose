@@ -250,7 +250,7 @@ fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> Chunked
 //   tr_line = "ETag: \"xyzzy\""
 //   returns: ChunkedDecodeError.None, trailer appended
 fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderMap&) -> ChunkedDecodeError {
-    let col_idx = core::index_of_byte(tr_line, ':');
+    let col_idx = tr_line.index_of_byte(':');
     guard col_idx > 0 else {
         return ChunkedDecodeError.DisallowedTrailer;
     }
@@ -261,7 +261,7 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderMap&) ->
     }
 
     let val_slice = tr_line[(col_idx + 1)..];
-    let trimmed_val = trim_lws(val_slice);
+    let trimmed_val = val_slice.trim_lws();
     guard is_valid_header_value(trimmed_val) && out_trailers.entries.len < 16 else {
         return ChunkedDecodeError.DisallowedTrailer;
     }
@@ -289,7 +289,7 @@ fn parse_chunked_trailers_with_out(
     var total_trailer_bytes: i64 = 0;
 
     while cursor < raw.len {
-        let rel_nl = core::index_of_byte(raw[cursor..], '\n');
+        let rel_nl = raw[cursor..].index_of_byte('\n');
         guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof; }
         let tr_end = cursor + rel_nl;
 
@@ -356,7 +356,7 @@ fn consume_chunk_data(raw: const u8[:], cursor: i64&, chunk_size: u64, out_body:
 }
 
 fn read_chunk_size_line(raw: const u8[:], cursor: i64&, out_size: u64&) -> ChunkedDecodeError {
-    let rel_nl = core::index_of_byte(raw[cursor..], '\n');
+    let rel_nl = raw[cursor..].index_of_byte('\n');
     guard rel_nl >= 0 else { return ChunkedDecodeError.UnexpectedEof; }
     let line_end = cursor + rel_nl;
 
@@ -388,6 +388,11 @@ fn decode_chunked_body_with_trailers(
     out_body.clear();
     out_trailers.clear();
     guard raw.len > 0 else { return ChunkedDecodeError.EmptyInput, 0; }
+    var committed = false;
+    defer if !committed {
+        out_body.clear();
+        out_trailers.clear();
+    };
 
     var cursor:         i64 = 0;
     var total_overhead: i64 = 0;
@@ -395,46 +400,29 @@ fn decode_chunked_body_with_trailers(
         let header_start = cursor;
         var chunk_size: u64 = 0;
         let line_err = read_chunk_size_line(raw, cursor, chunk_size);
-        guard line_err == ChunkedDecodeError.None else {
-            out_body.clear();
-            out_trailers.clear();
-            return line_err, 0;
-        }
+        guard line_err == ChunkedDecodeError.None else { return line_err, 0; }
         total_overhead = core::add_sat_i64(total_overhead, core::sub_sat_i64(cursor, header_start));
 
         if chunk_size == 0 {
             let tr_start = cursor;
             let tr_err = parse_chunked_trailers_with_out(raw, cursor, out_trailers);
-            guard tr_err == ChunkedDecodeError.None else {
-                out_body.clear();
-                out_trailers.clear();
-                return tr_err, 0;
-            }
+            guard tr_err == ChunkedDecodeError.None else { return tr_err, 0; }
             total_overhead = core::add_sat_i64(total_overhead, core::sub_sat_i64(cursor, tr_start));
             guard !is_chunk_overhead_excessive(cursor, total_overhead) else {
-                out_body.clear();
-                out_trailers.clear();
                 return ChunkedDecodeError.ExcessiveFramingOverhead, 0;
             }
+            committed = true;
             return ChunkedDecodeError.None, cursor;
         }
 
         let data_err = consume_chunk_data(raw, cursor, chunk_size, out_body);
-        guard data_err == ChunkedDecodeError.None else {
-            out_body.clear();
-            out_trailers.clear();
-            return data_err, 0;
-        }
+        guard data_err == ChunkedDecodeError.None else { return data_err, 0; }
         total_overhead = core::add_sat_i64(total_overhead, 2);
         if is_chunk_overhead_excessive(cursor, total_overhead) {
-            out_body.clear();
-            out_trailers.clear();
             return ChunkedDecodeError.ExcessiveFramingOverhead, 0;
         }
     }
 
-    out_body.clear();
-    out_trailers.clear();
     return ChunkedDecodeError.UnexpectedEof, 0;
 }
 

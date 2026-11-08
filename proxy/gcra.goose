@@ -22,11 +22,6 @@ struct GcraConfig {
     limit_window_ns:      u64 = 6000000, // tau + T (precalculated window)
 }
 
-inline fn clamp_pos_u64(x: u64) -> u64 {
-    guard x > 0 else { return 1; }
-    return x;
-}
-
 // Zero-allocation binary division without arithmetic overflow operator hazards.
 fn fast_div_u64(n: u64, d: u64) -> u64 {
     guard d > 0 else { return 0; }
@@ -58,9 +53,9 @@ fn fast_div_u64(n: u64, d: u64) -> u64 {
 
 // Configures GCRA quota from sustained requests per second and burst capacity.
 fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
-    let r = clamp_pos_u64(rate_per_sec);
+    let r = max(rate_per_sec, 1);
     let t_raw = fast_div_u64(1000000000, r);
-    let t_ns = clamp_pos_u64(t_raw);
+    let t_ns = max(t_raw, 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst_capacity);
     let win_ns = core::add_sat_u64(tau_ns, t_ns);
 
@@ -68,19 +63,6 @@ fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
         emission_interval_ns: t_ns,
         tau_ns:               tau_ns,
         max_burst:            burst_capacity,
-        limit_window_ns:      win_ns,
-    };
-}
-
-// Configures GCRA quota from explicit nanosecond interval and tau.
-fn new_gcra_config_interval(interval_ns: u64, tau_ns: u64, max_burst: u64) -> GcraConfig {
-    let t_ns = clamp_pos_u64(interval_ns);
-    let win_ns = core::add_sat_u64(tau_ns, t_ns);
-
-    return GcraConfig {
-        emission_interval_ns: t_ns,
-        tau_ns:               tau_ns,
-        max_burst:            max_burst,
         limit_window_ns:      win_ns,
     };
 }
@@ -117,7 +99,7 @@ fn calc_remaining_burst(tau_ns: u64, t_ns: u64, max_burst: u64, tat_new: u64, no
     guard tau_ns > diff else { return 0; }
     let rem_ns = core::sub_sat_u64(tau_ns, diff);
     let rem_cells = fast_div_u64(rem_ns, t_ns);
-    return if rem_cells < max_burst { rem_cells } else { max_burst };
+    return min(rem_cells, max_burst);
 }
 
 // Evaluates rate limit admission for cost units at now_ns and advances TAT on success.
@@ -294,9 +276,7 @@ fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> 
 }
 
 inline fn populate_entry(entry: GatewayClientEntry&, client_id: const u8[:], now_ns: u64) -> bool {
-    guard client_id.len <= 64 else { return false; }
-    entry.client_id.clear();
-    entry.client_id.append(client_id);
+    guard entry.client_id.try_set(client_id) else { return false; }
     entry.cell.tat_ns = now_ns;
     entry.last_seen_ns = now_ns;
     entry.consecutive_rejects = 0;
@@ -308,7 +288,7 @@ inline fn push_new_client_slot(limiter: GatewayRateLimiter&, client_id: const u8
     guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
     var new_entry = GatewayClientEntry { in_use: false, .. };
     guard populate_entry(new_entry, client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
-    limiter.entries.push(new_entry);
+    guard limiter.entries.try_push(new_entry) else { return GATEWAY_LIMITER_NONE; }
     let n = limiter.entries.len as i32;
     return (core::sub_sat_u64(n as u64, 1)) as i32;
 }

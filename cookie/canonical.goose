@@ -62,14 +62,12 @@ struct CanonicalCookie {
 // 4096 bytes and contain no control characters (RFC 6265bis Section 5.5).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
-    guard name.len <= new_cookie.name.cap else {
+    guard new_cookie.name.try_set(name) else {
         return new_cookie;
     }
-    new_cookie.name.append(name);
-    guard val.len <= new_cookie.value.cap else {
+    guard new_cookie.value.try_set(val) else {
         return new_cookie;
     }
-    new_cookie.value.append(val);
     return new_cookie;
 }
 
@@ -88,13 +86,13 @@ fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
 // unsafe top-level navigations (RFC 6265bis Lax-allowing-unsafe).
 fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
-    let elapsed_us = now_us - cookie_val.creation_utc;
+    let elapsed_us = core::sub_sat_i64(now_us, cookie_val.creation_utc);
     return elapsed_us >= 0 && elapsed_us <= internal::K_LAX_ALLOWING_UNSAFE_WINDOW_US;
 }
 
 // Combined size of name and value in bytes (RFC 6265bis Section 5.5).
 fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
-    return cookie_val.name.len + cookie_val.value.len;
+    return core::add_sat_i64(cookie_val.name.len, cookie_val.value.len);
 }
 
 // ---- fluent in-place builder methods (ufcs) --------------------------------
@@ -201,17 +199,17 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 
 // Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3 & RFC 6055).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
-    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
-    let clean_domain = core::trim_byte(core::trim_byte(core::trim_byte(cookie_val.domain[..], '.'), '['), ']');
+    let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
+    let clean_domain = cookie_val.domain[..].trim_byte('.').trim_byte('[').trim_byte(']');
 
     // RFC 6265 Section 5.1.3: If either host or cookie domain is an IP address,
     // domain-matching cannot be used; exact equality is required.
     if core::is_ip_address_literal(clean_host) || core::is_ip_address_literal(clean_domain) {
-        return eq_ascii_fold(clean_domain, clean_host);
+        return clean_domain.eq_ascii_fold(clean_host);
     }
 
     if cookie_val.host_only {
-        return eq_ascii_fold(clean_domain, clean_host);
+        return clean_domain.eq_ascii_fold(clean_host);
     }
     return cookie_domain_match(clean_host, clean_domain);
 }
@@ -291,9 +289,14 @@ fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
         jar.states[idx] = COOKIE_DELTA_ORIGINAL;
         return true;
     }
-    guard jar.cookies.len < jar.cookies.cap && jar.states.len < jar.states.cap else { return false; }
-    jar.cookies.push(c);
-    jar.states.push(COOKIE_DELTA_ORIGINAL);
+    let saved_len = jar.cookies.len;
+    var committed = false;
+    defer if !committed {
+        jar.cookies.resize(saved_len);
+        jar.states.resize(saved_len);
+    };
+    guard jar.cookies.try_push(c) && jar.states.try_push(COOKIE_DELTA_ORIGINAL) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -305,9 +308,14 @@ fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
         jar.states[idx] = COOKIE_DELTA_ADDED;
         return true;
     }
-    guard jar.cookies.len < jar.cookies.cap && jar.states.len < jar.states.cap else { return false; }
-    jar.cookies.push(c);
-    jar.states.push(COOKIE_DELTA_ADDED);
+    let saved_len = jar.cookies.len;
+    var committed = false;
+    defer if !committed {
+        jar.cookies.resize(saved_len);
+        jar.states.resize(saved_len);
+    };
+    guard jar.cookies.try_push(c) && jar.states.try_push(COOKIE_DELTA_ADDED) else { return false; }
+    committed = true;
     return true;
 }
 

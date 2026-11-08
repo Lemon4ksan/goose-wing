@@ -38,15 +38,13 @@ fn load_serve_rules(cfg: const CliConfig&, stage: ProgrammableServerStage&) -> i
     }
 
     for &line in cfg.inline_routes {
-        guard stage.rules.len < stage.rules.cap else {
-            write_stderr("wing serve: too many route rules (max 32)\n");
+        var r = RouteRule { .. };
+        guard parse_route_rule_line(line[..], r) else {
+            write_stderr(str("wing serve: invalid --route syntax: ", line[..], "\n"));
             return 2;
         }
-        var r = RouteRule { .. };
-        if parse_route_rule_line(line[..], r) {
-            stage.rules.push(r);
-        } else {
-            write_stderr(str("wing serve: invalid --route syntax: ", line[..], "\n"));
+        guard stage.rules.try_push(r) else {
+            write_stderr("wing serve: too many route rules (max 32)\n");
             return 2;
         }
     }
@@ -78,11 +76,11 @@ fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
     let _ = server.server_name.try_set("goose-wing-cli/1.0");
     server.pipeline.enable_csrf_guard = false;
     server.pipeline.enable_rate_limiter = false;
-    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+    server.add_static_get_route("/shutdown", "text/plain", "BYE\n", 99);
 
     var banner: u8[>..] = [];
     banner.append("READY_PORT:");
-    core::format_u64_dec(actual_port, banner);
+    actual_port.format_u64_dec(banner);
     banner.push('\n');
     write_stdout(banner);
 
@@ -90,9 +88,9 @@ fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
     info.append("[serve] listening on http://");
     info.append(cfg.bind_host[..]);
     info.push(':');
-    core::format_u64_dec(actual_port, info);
+    actual_port.format_u64_dec(info);
     info.append(" (httpbin + ");
-    core::format_i64_dec(stage.rules.len, info);
+    stage.rules.len.format_i64_dec(info);
     info.append(" custom rules)\n");
     write_stderr(info);
 

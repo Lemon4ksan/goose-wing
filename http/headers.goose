@@ -41,19 +41,19 @@ inline fn val_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
 // Whether name is a credential or session header that should be stripped on
 // cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
-    return eq_ascii_fold(name, "authorization") ||
-           eq_ascii_fold(name, "proxy-authorization") ||
-           eq_ascii_fold(name, "cookie") ||
-           eq_ascii_fold(name, "dpop") ||
-           eq_ascii_fold(name, "x-api-key") ||
-           eq_ascii_fold(name, "x-auth-token") ||
-           eq_ascii_fold(name, "x-access-token") ||
-           eq_ascii_fold(name, "x-signature-256") ||
-           eq_ascii_fold(name, "x-csrf-token") ||
-           eq_ascii_fold(name, "x-xsrf-token") ||
-           eq_ascii_fold(name, "www-authenticate") ||
-           eq_ascii_fold(name, "proxy-authenticate") ||
-           eq_ascii_fold(name, "x-amz-security-token");
+    return name.eq_ascii_fold("authorization") ||
+           name.eq_ascii_fold("proxy-authorization") ||
+           name.eq_ascii_fold("cookie") ||
+           name.eq_ascii_fold("dpop") ||
+           name.eq_ascii_fold("x-api-key") ||
+           name.eq_ascii_fold("x-auth-token") ||
+           name.eq_ascii_fold("x-access-token") ||
+           name.eq_ascii_fold("x-signature-256") ||
+           name.eq_ascii_fold("x-csrf-token") ||
+           name.eq_ascii_fold("x-xsrf-token") ||
+           name.eq_ascii_fold("www-authenticate") ||
+           name.eq_ascii_fold("proxy-authenticate") ||
+           name.eq_ascii_fold("x-amz-security-token");
 }
 
 // Appends src to out with CR, LF, and NUL bytes omitted, clamped to out.cap (RFC 9110 Section 5.5).
@@ -64,8 +64,7 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
 fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {
         if b != '\r' && b != '\n' && b != 0 {
-            guard out.len < out.cap else { return; }
-            out.push(b);
+            guard out.try_push(b) else { return; }
         }
     }
 }
@@ -79,14 +78,8 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
 fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
     for b in input {
         if b == '\r' || b == '\n' || b == '\t' {
-            guard out.len + 2 <= out.cap else { return; }
-            if b == '\r' {
-                out.append("\\r");
-            } else if b == '\n' {
-                out.append("\\n");
-            } else {
-                out.append("\\t");
-            }
+            let esc = if b == '\r' { "\\r" } else if b == '\n' { "\\n" } else { "\\t" };
+            guard out.try_append(esc) else { return; }
         } else if b < 0x20 || b >= 0x7F {
             guard out.len + 4 <= out.cap else { return; }
             out.append("\\x");
@@ -94,8 +87,7 @@ fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
             out.push(hex_chars[(b >> 4) & 0x0F]);
             out.push(hex_chars[b & 0x0F]);
         } else {
-            guard out.len < out.cap else { return; }
-            out.push(b);
+            guard out.try_push(b) else { return; }
         }
     }
 }
@@ -256,12 +248,8 @@ fn is_ok(err: HeaderParseError) -> bool {
 fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
     out.clear();
     for b in input {
-        guard out.len < out.cap else { return; }
-        if b >= 0x20 && b <= 0x7E && b != '\\' && b != '"' {
-            out.push(b);
-        } else {
-            out.push('?');
-        }
+        let ch: u8 = if b >= 0x20 && b <= 0x7E && b != '\\' && b != '"' { b } else { '?' };
+        guard out.try_push(ch) else { return; }
     }
 }
 
@@ -475,32 +463,32 @@ fn well_known_to_slot(id: WellKnownHeader) -> i64 {
 inline fn classify_cors_header(name: const u8[:], len: i64) -> WellKnownHeader {
     match len {
         22 => {
-            if eq_ascii_fold(name, "access-control-max-age") {
+            if name.eq_ascii_fold("access-control-max-age") {
                 return WellKnownHeader.AccessControlMaxAge;
             }
         },
         27 => {
-            if eq_ascii_fold(name, "access-control-allow-origin") { return WellKnownHeader.AccessControlAllowOrigin; }
-            if eq_ascii_fold(name, "access-control-allow-headers") { return WellKnownHeader.AccessControlAllowHeaders; }
-            if eq_ascii_fold(name, "access-control-allow-methods") { return WellKnownHeader.AccessControlAllowMethods; }
+            if name.eq_ascii_fold("access-control-allow-origin") { return WellKnownHeader.AccessControlAllowOrigin; }
+            if name.eq_ascii_fold("access-control-allow-headers") { return WellKnownHeader.AccessControlAllowHeaders; }
+            if name.eq_ascii_fold("access-control-allow-methods") { return WellKnownHeader.AccessControlAllowMethods; }
         },
         28 => {
-            if eq_ascii_fold(name, "access-control-expose-headers") {
+            if name.eq_ascii_fold("access-control-expose-headers") {
                 return WellKnownHeader.AccessControlExposeHeaders;
             }
         },
         29 => {
-            if eq_ascii_fold(name, "access-control-request-method") {
+            if name.eq_ascii_fold("access-control-request-method") {
                 return WellKnownHeader.AccessControlRequestMethod;
             }
         },
         30 => {
-            if eq_ascii_fold(name, "access-control-request-headers") {
+            if name.eq_ascii_fold("access-control-request-headers") {
                 return WellKnownHeader.AccessControlRequestHeaders;
             }
         },
         32 => {
-            if eq_ascii_fold(name, "access-control-allow-credentials") {
+            if name.eq_ascii_fold("access-control-allow-credentials") {
                 return WellKnownHeader.AccessControlAllowCredentials;
             }
         },
@@ -513,7 +501,7 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     let len = name.len;
     guard len >= 2 && len <= 32 else { return WellKnownHeader.Unknown; }
 
-    if starts_with_fold(name, "access-control-") {
+    if name.starts_with_fold("access-control-") {
         return classify_cors_header(name, len);
     }
 
@@ -574,14 +562,14 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             if w64 == 0x6b6f6f632d746573 && w16 == 0x6569 { return WellKnownHeader.SetCookie; }
         },
         11 => {
-            if eq_ascii_fold(name, "set-cookie2") { return WellKnownHeader.SetCookie2; }
-            if eq_ascii_fold(name, "retry-after") { return WellKnownHeader.RetryAfter; }
+            if name.eq_ascii_fold("set-cookie2") { return WellKnownHeader.SetCookie2; }
+            if name.eq_ascii_fold("retry-after") { return WellKnownHeader.RetryAfter; }
         },
         12 => {
             let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
             let w32 = core::read_le_u32(name, 8) | 0x20202020;
             if w64 == 0x2d746e65746e6f63 && w32 == 0x65707974 { return WellKnownHeader.ContentType; }
-            if eq_ascii_fold(name, "x-webkit-csp") { return WellKnownHeader.XWebkitCsp; }
+            if name.eq_ascii_fold("x-webkit-csp") { return WellKnownHeader.XWebkitCsp; }
         },
         13 => {
             let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
@@ -599,13 +587,13 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             let w32 = core::read_le_u32(name, 8) | 0x20202020;
             let w16 = (core::read_le_u16(name, 12) | 0x2020) as u32;
             if w64 == 0x2d746e65746e6f63 && w32 == 0x676e656c && w16 == 0x6874 { return WellKnownHeader.ContentLength; }
-            if eq_ascii_fold(name, "accept-charset") { return WellKnownHeader.AcceptCharset; }
+            if name.eq_ascii_fold("accept-charset") { return WellKnownHeader.AcceptCharset; }
         },
         15 => {
-            if eq_ascii_fold(name, "accept-encoding") { return WellKnownHeader.AcceptEncoding; }
-            if eq_ascii_fold(name, "accept-language") { return WellKnownHeader.AcceptLanguage; }
-            if eq_ascii_fold(name, "clear-site-data") { return WellKnownHeader.ClearSiteData; }
-            if eq_ascii_fold(name, "x-frame-options") { return WellKnownHeader.XFrameOptions; }
+            if name.eq_ascii_fold("accept-encoding") { return WellKnownHeader.AcceptEncoding; }
+            if name.eq_ascii_fold("accept-language") { return WellKnownHeader.AcceptLanguage; }
+            if name.eq_ascii_fold("clear-site-data") { return WellKnownHeader.ClearSiteData; }
+            if name.eq_ascii_fold("x-frame-options") { return WellKnownHeader.XFrameOptions; }
         },
         16 => {
             let w64_0 = core::read_le_u64(name, 0) | 0x2020202020202020;
@@ -618,25 +606,25 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
             }
         },
         17 => {
-            if eq_ascii_fold(name, "if-modified-since") { return WellKnownHeader.IfModifiedSince; }
-            if eq_ascii_fold(name, "transfer-encoding") { return WellKnownHeader.TransferEncoding; }
+            if name.eq_ascii_fold("if-modified-since") { return WellKnownHeader.IfModifiedSince; }
+            if name.eq_ascii_fold("transfer-encoding") { return WellKnownHeader.TransferEncoding; }
         },
         18 => {
-            if eq_ascii_fold(name, "proxy-authenticate") { return WellKnownHeader.ProxyAuthenticate; }
+            if name.eq_ascii_fold("proxy-authenticate") { return WellKnownHeader.ProxyAuthenticate; }
         },
         19 => {
-            if eq_ascii_fold(name, "if-unmodified-since") { return WellKnownHeader.IfUnmodifiedSince; }
-            if eq_ascii_fold(name, "proxy-authorization") { return WellKnownHeader.ProxyAuthorization; }
-            if eq_ascii_fold(name, "content-disposition") { return WellKnownHeader.ContentDisposition; }
+            if name.eq_ascii_fold("if-unmodified-since") { return WellKnownHeader.IfUnmodifiedSince; }
+            if name.eq_ascii_fold("proxy-authorization") { return WellKnownHeader.ProxyAuthorization; }
+            if name.eq_ascii_fold("content-disposition") { return WellKnownHeader.ContentDisposition; }
         },
         22 => {
-            if eq_ascii_fold(name, "x-content-type-options") { return WellKnownHeader.XContentTypeOptions; }
+            if name.eq_ascii_fold("x-content-type-options") { return WellKnownHeader.XContentTypeOptions; }
         },
         23 => {
-            if eq_ascii_fold(name, "content-security-policy") { return WellKnownHeader.ContentSecurityPolicy; }
+            if name.eq_ascii_fold("content-security-policy") { return WellKnownHeader.ContentSecurityPolicy; }
         },
         25 => {
-            if eq_ascii_fold(name, "strict-transport-security") { return WellKnownHeader.StrictTransportSecurity; }
+            if name.eq_ascii_fold("strict-transport-security") { return WellKnownHeader.StrictTransportSecurity; }
         },
         _ => {},
     }
@@ -673,9 +661,9 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
         id == WellKnownHeader.XWebkitCsp;
     if is_sec_id {
         flags |= HEADER_FLAG_SECURITY_STATE;
-    } else if name.len >= 10 && (starts_with_fold(name, "x-content-") || starts_with_fold(name, "x-webkit-")) {
+    } else if name.len >= 10 && (name.starts_with_fold("x-content-") || name.starts_with_fold("x-webkit-")) {
         flags |= HEADER_FLAG_SECURITY_STATE;
-    } else if eq_ascii_fold(name, "x-xss-protection") {
+    } else if name.eq_ascii_fold("x-xss-protection") {
         flags |= HEADER_FLAG_SECURITY_STATE;
     }
 
@@ -684,7 +672,7 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
        id == WellKnownHeader.TE || id == WellKnownHeader.Trailer || id == WellKnownHeader.Upgrade ||
        id == WellKnownHeader.ProxyAuthorization || id == WellKnownHeader.ProxyAuthenticate {
         flags |= HEADER_FLAG_NON_CACHEABLE;
-    } else if eq_ascii_fold(name, "proxy-connection") {
+    } else if name.eq_ascii_fold("proxy-connection") {
         flags |= HEADER_FLAG_NON_CACHEABLE;
     }
 
@@ -797,7 +785,7 @@ fn link_header_entry_stack(
         let pe = map.entries[prev_i];
         guard pe.name_hash == hname else { continue; }
         let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
-        guard eq_ascii_fold(prev_name, raw_name) else { continue; }
+        guard prev_name.eq_ascii_fold(raw_name) else { continue; }
 
         var cur = prev_i as u8;
         while map.entries[cur as i64].next_idx != 0xFF {
@@ -837,7 +825,7 @@ fn link_header_entry(
         let pe = map.entries[prev_i];
         guard pe.name_hash == hname else { continue; }
         let prev_name = resolve_entry_name(pe, map, arena);
-        guard eq_ascii_fold(prev_name, raw_name) else { continue; }
+        guard prev_name.eq_ascii_fold(raw_name) else { continue; }
 
         var cur = prev_i as u8;
         while map.entries[cur as i64].next_idx != 0xFF {
@@ -986,7 +974,7 @@ fn handle_obs_fold(
         return HeaderParseError.ObsFoldForbidden;
     }
 
-    let trimmed_continuation = trim_lws(line);
+    let trimmed_continuation = line.trim_lws();
     guard is_valid_header_value(trimmed_continuation) else {
         map.valid = false;
         return HeaderParseError.InvalidHeaderValue;
@@ -1062,13 +1050,6 @@ fn validate_header_framing_conflicts(
     return HeaderParseError.None;
 }
 
-inline fn slice_contains_comma(s: const u8[:]) -> bool {
-    for b in s {
-        if b == ',' { return true; }
-    }
-    return false;
-}
-
 enum H1ResponseParseMode {
     Strict,
     ClientCompat,
@@ -1094,7 +1075,7 @@ fn parse_single_header_line(
 
     var raw_name = line[..colon_pos];
     if mode == H1ResponseParseMode.ClientCompat {
-        raw_name = trim_lws_end(raw_name);
+        raw_name = raw_name.trim_lws_end();
     } else if raw_name.len > 0 && (raw_name[raw_name.len - 1] == ' ' || raw_name[raw_name.len - 1] == '\t') {
         map.valid = false;
         return HeaderParseError.InvalidHeaderName;
@@ -1105,7 +1086,7 @@ fn parse_single_header_line(
     }
 
     let raw_val = line[colon_pos + 1..];
-    let val_trimmed = trim_lws(raw_val);
+    let val_trimmed = raw_val.trim_lws();
     guard is_valid_header_value(val_trimmed) else {
         map.valid = false;
         return HeaderParseError.InvalidHeaderValue;
@@ -1124,14 +1105,14 @@ fn parse_single_header_line(
     let name_begin_off = cursor as u16;
     let name_end_off = (cursor + raw_name.len) as u16;
 
-    let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
+    let lws_lead = raw_val.len - raw_val.trim_lws_start().len;
     let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
     let val_end_off = (val_start_off + val_trimmed.len) as u16;
 
     let flags = well_known_header_flags(wk_id, raw_name);
     let hname = hash_header_name(raw_name);
 
-    let contains_comma = slice_contains_comma(val_trimmed);
+    let contains_comma = val_trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
 
     let new_entry = HeaderEntry {
@@ -1184,7 +1165,7 @@ fn parse_single_overflow_header_line(
     }
 
     let raw_val = line[colon_pos + 1..];
-    let val_trimmed = trim_lws(raw_val);
+    let val_trimmed = raw_val.trim_lws();
     guard is_valid_header_value(val_trimmed) else {
         map.valid = false;
         return HeaderParseError.InvalidHeaderValue;
@@ -1203,14 +1184,14 @@ fn parse_single_overflow_header_line(
     let name_begin_off = cursor as u16;
     let name_end_off = (cursor + colon_pos) as u16;
 
-    let lws_lead = raw_val.len - trim_lws_start(raw_val).len;
+    let lws_lead = raw_val.len - raw_val.trim_lws_start().len;
     let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
     let val_end_off = (val_start_off + val_trimmed.len) as u16;
 
     let flags = well_known_header_flags(wk_id, raw_name);
     let hname = hash_header_name(raw_name);
 
-    let contains_comma = slice_contains_comma(val_trimmed);
+    let contains_comma = val_trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
 
     let new_entry = HeaderEntry {
@@ -1295,11 +1276,10 @@ fn parse_headers(
     }
 
     reset_for_keep_alive(map);
-    guard raw_input.len <= 8192 else {
+    guard map.raw_buf.try_append(raw_input) else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
     }
-    map.raw_buf.append(raw_input);
 
     var cursor: i64 = 0;
     let buf_len = map.raw_buf.len;
@@ -1456,12 +1436,12 @@ fn parse_http_status_line(
     code:        i32&,
     mode:        H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
-    if mode == H1ResponseParseMode.ClientCompat && status_line.len >= 7 && eq_ascii_fold(status_line[..4], "ICY ") {
-        let sc_slice = trim_lws_start(status_line[4..]);
+    if mode == H1ResponseParseMode.ClientCompat && status_line.len >= 7 && status_line[..4].eq_ascii_fold("ICY ") {
+        let sc_slice = status_line[4..].trim_lws_start();
         guard sc_slice.len >= 3 && (sc_slice.len == 3 || sc_slice[3] == ' ') else {
             return HeaderParseError.MalformedStatusLine;
         }
-        let sc_val, ok_sc = core::parse_i32_dec(sc_slice[..3]);
+        let sc_val, ok_sc = sc_slice[..3].parse_i32_dec();
         guard ok_sc && sc_val >= 100 && sc_val <= 599 else {
             return HeaderParseError.MalformedStatusLine;
         }
@@ -1475,7 +1455,7 @@ fn parse_http_status_line(
         return HeaderParseError.MalformedStatusLine;
     }
 
-    guard eq_ascii_fold(status_line[..5], "HTTP/") else {
+    guard status_line[..5].eq_ascii_fold("HTTP/") else {
         return HeaderParseError.MalformedStatusLine;
     }
 
@@ -1702,7 +1682,7 @@ fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool {
     for &entry in map.entries {
         if entry.name_hash == hname {
             let ename = entry_name(map, entry);
-            if eq_ascii_fold(ename, name) {
+            if ename.eq_ascii_fold(name) {
                 return true;
             }
         }
@@ -1726,7 +1706,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     for &entry in map.entries {
         if entry.name_hash == hname {
             let ename = entry_name(map, entry);
-            if eq_ascii_fold(ename, name) {
+            if ename.eq_ascii_fold(name) {
                 return entry_value(map, entry);
             }
         }
@@ -1758,7 +1738,7 @@ fn find_entry_in_entries(
     for &entry in entries {
         if entry.name_hash == hname {
             let entry_name = resolve_entry_name(entry, map, arena);
-            if eq_ascii_fold(entry_name, name) {
+            if entry_name.eq_ascii_fold(name) {
                 return resolve_entry_value(entry, map, arena);
             }
         }
@@ -1795,12 +1775,12 @@ fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: co
     }
     let hname = hash_header_name(name);
     for &entry in map.entries {
-        if entry.name_hash == hname && eq_ascii_fold(resolve_entry_name(entry, map, arena), name) {
+        if entry.name_hash == hname && resolve_entry_name(entry, map, arena).eq_ascii_fold(name) {
             return true;
         }
     }
     for &entry in arena.spill_entries {
-        if entry.name_hash == hname && eq_ascii_fold(resolve_entry_name(entry, map, arena), name) {
+        if entry.name_hash == hname && resolve_entry_name(entry, map, arena).eq_ascii_fold(name) {
             return true;
         }
     }
@@ -1823,7 +1803,7 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     guard valid_name && is_valid_header_value(value) else { return false; }
     guard map.entries.len < 128 else { return false; }
 
-    let trimmed = trim_lws(value);
+    let trimmed = value.trim_lws();
     let needed = name.len + trimmed.len;
     guard (map.raw_buf.len + needed) <= 8192 else { return false; }
 
@@ -1839,10 +1819,7 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     let flags = well_known_header_flags(wk_id, name);
     let hname = hash_header_name(name);
 
-    var contains_comma = false;
-    for b in trimmed {
-        if b == ',' { contains_comma = true; break; }
-    }
+    let contains_comma = trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
 
     let new_idx = map.entries.len as u8;
@@ -1867,12 +1844,12 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
 fn calc_entry_match_bytes(raw: const u8[:], e: const HeaderEntry&, name: const u8[:]) -> i64 {
     guard e.reserved == HEADER_SRC_STACK && e.name_end <= raw.len as u16 else { return -1; }
     let ename = raw[e.name_begin..e.name_end];
-    guard eq_ascii_fold(ename, name) else { return -1; }
+    guard ename.eq_ascii_fold(name) else { return -1; }
     return (e.name_end - e.name_begin) + (e.values_end - e.values_begin);
 }
 
 fn can_insert_header(map: const HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
-    let trimmed = trim_lws(value);
+    let trimmed = value.trim_lws();
     let needed = name.len + trimmed.len;
     let hname = hash_header_name(name);
     var matching = 0;
@@ -1963,10 +1940,7 @@ fn try_overwrite_single_header_in_place(
     let new_val_end = old_val_begin + (trimmed.len as u16);
     map.entries[idx].values_end = new_val_end;
 
-    var contains_comma = false;
-    for b in trimmed {
-        if b == ',' { contains_comma = true; break; }
-    }
+    let contains_comma = trimmed.contains_byte(',');
     map.header_contains_comma[idx] = contains_comma;
     if contains_comma {
         map.entries[idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
@@ -1987,7 +1961,7 @@ fn try_overwrite_single_header_in_place(
 fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
     let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
     guard valid_name && is_valid_header_value(value) else { return false; }
-    let trimmed = trim_lws(value);
+    let trimmed = value.trim_lws();
     if try_overwrite_single_header_in_place(map, name, trimmed, false) {
         return true;
     }
@@ -2002,7 +1976,7 @@ fn insert_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
 fn set_or_replace(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> bool {
     let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
     guard valid_name && is_valid_header_value(value) else { return false; }
-    let trimmed = trim_lws(value);
+    let trimmed = value.trim_lws();
     if try_overwrite_single_header_in_place(map, name, trimmed, is_sensitive) {
         return true;
     }
@@ -2078,7 +2052,7 @@ fn rebuild_inline_slots_and_chains(map: HeaderMap&) {
         for prev_i in i {
             guard map.entries[prev_i].name_hash == hname else { continue; }
             let name_p = entry_name(map, map.entries[prev_i]);
-            let match_name = name_p.len > 0 && eq_ascii_fold(name_p, name_i);
+            let match_name = name_p.len > 0 && name_p.eq_ascii_fold(name_i);
             guard match_name else { continue; }
             var cur = prev_i as u8;
             while map.entries[cur as i64].next_idx != 0xFF {
@@ -2147,7 +2121,7 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
         let e = map.entries[read_i];
         var is_match = false;
         if e.reserved == HEADER_SRC_STACK && e.name_end <= map.raw_buf.len {
-            is_match = eq_ascii_fold(map.raw_buf[e.name_begin..e.name_end], name);
+            is_match = map.raw_buf[e.name_begin..e.name_end].eq_ascii_fold(name);
         }
         if is_match {
             found = true;
@@ -2235,7 +2209,7 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_le
     for entry in map.entries {
         guard entry.name_hash == hname else { continue; }
         let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-        guard eq_ascii_fold(entry_name, name) else { continue; }
+        guard entry_name.eq_ascii_fold(name) else { continue; }
         found = true;
         if !first {
             guard out.len + 2 <= max_out_len else { out.clear(); return false; }
@@ -2275,7 +2249,7 @@ fn find_first_header_index(
         } else {
             map.raw_buf[e.name_begin..e.name_end]
         };
-        if eq_ascii_fold(ename, name) {
+        if ename.eq_ascii_fold(name) {
             return i;
         }
     }
@@ -2354,10 +2328,10 @@ fn get_all_values(map: const HeaderMap&, name: const u8[:], out_values: u8[..256
     for &entry in map.entries {
         if entry.name_hash == hname {
             let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-            if eq_ascii_fold(entry_name, name) {
+            if entry_name.eq_ascii_fold(name) {
                 let val = map.raw_buf[entry.values_begin..entry.values_end];
                 var item: u8[..256] = [];
-                let v_len = core::ct_min_i64(val.len, item.cap);
+                let v_len = min(val.len, item.cap);
                 item.append(val[..v_len]);
                 out_values.push(item);
             }
@@ -2376,10 +2350,10 @@ fn get_all_values_spill(
     for &entry in map.entries {
         if entry.name_hash == hname {
             let entry_name = resolve_entry_name(entry, map, arena);
-            if eq_ascii_fold(entry_name, name) {
+            if entry_name.eq_ascii_fold(name) {
                 let val = resolve_entry_value(entry, map, arena);
                 var item: u8[..256] = [];
-                let v_len = core::ct_min_i64(val.len, item.cap);
+                let v_len = min(val.len, item.cap);
                 item.append(val[..v_len]);
                 out_values.push(item);
             }
@@ -2388,10 +2362,10 @@ fn get_all_values_spill(
     for &entry in arena.spill_entries {
         if entry.name_hash == hname {
             let entry_name = resolve_entry_name(entry, map, arena);
-            if eq_ascii_fold(entry_name, name) {
+            if entry_name.eq_ascii_fold(name) {
                 let val = resolve_entry_value(entry, map, arena);
                 var item: u8[..256] = [];
-                let v_len = core::ct_min_i64(val.len, item.cap);
+                let v_len = min(val.len, item.cap);
                 item.append(val[..v_len]);
                 out_values.push(item);
             }
@@ -2407,7 +2381,7 @@ fn get_set_cookie(map: const HeaderMap&, out_cookies: u8[..1024][>..]&) {
         let entry = map.entries[cur as i64];
         let val = map.raw_buf[entry.values_begin..entry.values_end];
         var cookie_str: u8[..1024] = [];
-        let copy_len = if val.len <= cookie_str.cap { val.len } else { cookie_str.cap };
+        let copy_len = min(val.len, cookie_str.cap);
         cookie_str.append(val[..copy_len]);
         out_cookies.push(cookie_str);
         cur = entry.next_idx;
@@ -2464,7 +2438,7 @@ fn append_folded_header_values(
         let other = map.entries[j];
         guard other.name_hash == entry.name_hash else { continue; }
         let other_name = map.raw_buf[other.name_begin..other.name_end];
-        guard eq_ascii_fold(other_name, name) else { continue; }
+        guard other_name.eq_ascii_fold(name) else { continue; }
         if !first {
             out.append(", ");
         }
@@ -2513,13 +2487,13 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
     if (entry_flags & blocked_flags) != 0 {
         return false;
     }
-    if eq_ascii_fold(name, "content-range") ||
-       eq_ascii_fold(name, "content-length") ||
-       eq_ascii_fold(name, "content-encoding") ||
-       eq_ascii_fold(name, "content-type") ||
-       eq_ascii_fold(name, "content-md5") ||
-       eq_ascii_fold(name, "content-language") ||
-       eq_ascii_fold(name, "content-location") {
+    if name.eq_ascii_fold("content-range") ||
+       name.eq_ascii_fold("content-length") ||
+       name.eq_ascii_fold("content-encoding") ||
+       name.eq_ascii_fold("content-type") ||
+       name.eq_ascii_fold("content-md5") ||
+       name.eq_ascii_fold("content-language") ||
+       name.eq_ascii_fold("content-location") {
         return false;
     }
     return true;
@@ -2579,7 +2553,7 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
        id == WellKnownHeader.ProxyAuthorization || id == WellKnownHeader.ProxyAuthenticate {
         return true;
     }
-    if eq_ascii_fold(name, "proxy-connection") {
+    if name.eq_ascii_fold("proxy-connection") {
         return true;
     }
     return false;
@@ -2588,25 +2562,20 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
 fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&) {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
-        guard eq_ascii_fold(name, "connection") else { continue; }
+        guard name.eq_ascii_fold("connection") else { continue; }
 
         let val = src.raw_buf[entry.values_begin..entry.values_end];
-        var cursor: i64 = 0;
-        while cursor < val.len {
-            var comma_idx = cursor;
-            while comma_idx < val.len && val[comma_idx] != ',' {
-                comma_idx++;
-            }
-            let token = trim_lws(val[cursor..comma_idx]);
-            cursor = comma_idx + 1;
+        var tok = core::make_byte_tokenizer(val, ',');
+        while true {
+            let raw_tok, ok = core::token_next(tok);
+            guard ok else { break; }
+            let token = raw_tok.trim_lws();
             let is_valid_token = token.len > 0 &&
                 !is_hop_by_hop_header_name(token) &&
-                !eq_ascii_fold(token, "close");
+                !token.eq_ascii_fold("close");
             guard is_valid_token else { continue; }
-            guard out_tokens.len < out_tokens.cap && token.len <= 64 else { continue; }
             var tok_buf: u8[..64] = [];
-            tok_buf.append(token);
-            out_tokens.push(tok_buf);
+            guard tok_buf.try_set(token) && out_tokens.try_push(tok_buf) else { continue; }
         }
     }
 }
@@ -2614,18 +2583,15 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&)
 fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u8[:]) -> bool {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
-        guard eq_ascii_fold(name, "connection") else { continue; }
+        guard name.eq_ascii_fold("connection") else { continue; }
 
         let val = src.raw_buf[entry.values_begin..entry.values_end];
-        var cursor: i64 = 0;
-        while cursor < val.len {
-            var comma_idx = cursor;
-            while comma_idx < val.len && val[comma_idx] != ',' {
-                comma_idx++;
-            }
-            let token = trim_lws(val[cursor..comma_idx]);
-            cursor = comma_idx + 1;
-            if token.len > 0 && eq_ascii_fold(token, target_name) {
+        var tok = core::make_byte_tokenizer(val, ',');
+        while true {
+            let raw_tok, ok = core::token_next(tok);
+            guard ok else { break; }
+            let token = raw_tok.trim_lws();
+            if token.len > 0 && token.eq_ascii_fold(target_name) {
                 return true;
             }
         }
@@ -2646,7 +2612,7 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
             // RFC 9110 §7.6.1, RFC 9113 §8.2.2 & Go #21096:
             // "An intermediary MUST remove any received TE header field prior to forwarding the message,
             // EXCEPT that the presence of the keyword 'trailers' MAY be forwarded (and is required by gRPC)."
-            if eq_ascii_fold(name, "te") && eq_ascii_fold(core::trim_lws(val), "trailers") {
+            if name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers") {
                 dst.append_header(name, val);
             }
             continue;
@@ -2678,7 +2644,7 @@ fn scan_http1_headers(raw: const u8[:], last_len: u32, cursor: i64&) -> i64, boo
         return 0, false;
     }
     let resume_pos: i64 = if last_len < 3 { 0 } else { last_len - 3 };
-    let start_pos:  i64 = if resume_pos > raw.len - 4 { raw.len - 4 } else { resume_pos };
+    let start_pos:  i64 = min(resume_pos, raw.len - 4);
     let rel = core::fast_find_crlfcrlf(raw[start_pos..]);
     if rel >= 0 {
         let end_offset = start_pos + rel + 4;

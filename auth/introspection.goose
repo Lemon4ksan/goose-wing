@@ -55,15 +55,11 @@ fn encode_token_endpoint_form<B>(token: const u8[:], hint: TokenTypeHint, out: B
 // Example:
 //   reader at "\"https://resource.example.org\""
 //   returns: ok = true, out.aud[0] = "https://resource.example.org"
-inline fn parse_introspection_aud(reader: json::Reader&, scratch: u8[>..]&, out: IntrospectionResponse&) -> bool {
+inline fn parse_introspection_aud(reader: json::Reader&, out: IntrospectionResponse&) -> bool {
     let p = json::peek(reader);
     if p == '"' {
-        let s = json::read_string(reader, scratch);
-        guard s.len > 0 && s.len <= 128 && out.aud.len < out.aud.cap else { return false; }
         var item: u8[..128] = [];
-        item.append(s);
-        out.aud.push(item);
-        return true;
+        return core::read_json_string_into(reader, item) && item.len > 0 && out.aud.try_push(item);
     }
     guard p == '[' else {
         json::skip(reader);
@@ -75,14 +71,9 @@ inline fn parse_introspection_aud(reader: json::Reader&, scratch: u8[>..]&, out:
             json::skip(reader);
             ok = false;
         } else {
-            scratch.clear();
-            let s = json::read_string(reader, scratch);
-            if s.len == 0 || s.len > 128 || out.aud.len >= out.aud.cap {
+            var item: u8[..128] = [];
+            if !core::read_json_string_into(reader, item) || item.len == 0 || !out.aud.try_push(item) {
                 ok = false;
-            } else {
-                var item: u8[..128] = [];
-                item.append(s);
-                out.aud.push(item);
             }
         }
     };
@@ -94,11 +85,11 @@ inline fn parse_introspection_aud(reader: json::Reader&, scratch: u8[>..]&, out:
 // Example:
 //   reader at "\"read write\""
 //   sets: dst = "read write", had_err = false
-inline fn parse_introspection_str_field<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, had_err: bool&) {
+inline fn parse_introspection_str_field<B>(reader: json::Reader&, dst: B&, had_err: bool&) {
     if json::peek(reader) != '"' {
         json::skip(reader);
         had_err = true;
-    } else if !dst.try_set(json::read_string(reader, scratch)) {
+    } else if !core::read_json_string_into(reader, dst) {
         had_err = true;
     }
 }
@@ -126,17 +117,16 @@ inline fn parse_introspection_int_field(reader: json::Reader&, dst: i64&, had_er
 inline fn parse_introspection_str_member(
     key:     const u8[:],
     reader:  json::Reader&,
-    scratch: u8[>..]&,
     out:     IntrospectionResponse&,
     had_err: bool&,
 ) -> bool {
-    if key == "scope" { parse_introspection_str_field(reader, scratch, out.scope, had_err); return true; }
-    if key == "client_id" { parse_introspection_str_field(reader, scratch, out.client_id, had_err); return true; }
-    if key == "username" { parse_introspection_str_field(reader, scratch, out.username, had_err); return true; }
-    if key == "token_type" { parse_introspection_str_field(reader, scratch, out.token_type, had_err); return true; }
-    if key == "sub" { parse_introspection_str_field(reader, scratch, out.sub, had_err); return true; }
-    if key == "iss" { parse_introspection_str_field(reader, scratch, out.iss, had_err); return true; }
-    if key == "jti" { parse_introspection_str_field(reader, scratch, out.jti, had_err); return true; }
+    if key == "scope" { parse_introspection_str_field(reader, out.scope, had_err); return true; }
+    if key == "client_id" { parse_introspection_str_field(reader, out.client_id, had_err); return true; }
+    if key == "username" { parse_introspection_str_field(reader, out.username, had_err); return true; }
+    if key == "token_type" { parse_introspection_str_field(reader, out.token_type, had_err); return true; }
+    if key == "sub" { parse_introspection_str_field(reader, out.sub, had_err); return true; }
+    if key == "iss" { parse_introspection_str_field(reader, out.iss, had_err); return true; }
+    if key == "jti" { parse_introspection_str_field(reader, out.jti, had_err); return true; }
     return false;
 }
 
@@ -148,7 +138,6 @@ inline fn parse_introspection_str_member(
 inline fn parse_introspection_field(
     key:         const u8[:],
     reader:      json::Reader&,
-    scratch:     u8[>..]&,
     out:         IntrospectionResponse&,
     seen_active: bool&,
     had_err:     bool&,
@@ -164,9 +153,9 @@ inline fn parse_introspection_field(
         }
         return;
     }
-    if parse_introspection_str_member(key, reader, scratch, out, had_err) { return; }
+    if parse_introspection_str_member(key, reader, out, had_err) { return; }
     if key == "aud" {
-        if !parse_introspection_aud(reader, scratch, out) { had_err = true; }
+        if !parse_introspection_aud(reader, out) { had_err = true; }
         return;
     }
     if key == "exp" { parse_introspection_int_field(reader, out.exp, had_err); return; }
@@ -186,12 +175,10 @@ fn parse_introspection_response(raw_json: const u8[:]) -> IntrospectionResponse,
     let empty = IntrospectionResponse { .. };
     guard raw_json.len > 0 && raw_json.len <= 4096 else { return empty, false; }
     var reader = json::reader(raw_json);
-    var scratch: u8[>..] = [];
     var seen_active = false;
     var had_err = false;
     json::each_member(reader) { key =>
-        scratch.clear();
-        parse_introspection_field(key, reader, scratch, out, seen_active, had_err);
+        parse_introspection_field(key, reader, out, seen_active, had_err);
     };
     guard json::finish(reader) && !had_err && seen_active else {
         return empty, false;
@@ -217,19 +204,18 @@ fn encode_oauth2_basic_auth<B>(
 ) -> bool {
     out_header_val.clear();
     guard client_id.len <= 256 && client_secret.len <= 256 else { return false; }
-    guard core::index_of_byte(client_id, 0) == -1 && core::index_of_byte(client_secret, 0) == -1 else {
+    guard client_id.index_of_byte(0) == -1 && client_secret.index_of_byte(0) == -1 else {
         return false;
     }
     var cred_buf: u8[..1024] = [];
+    defer core::secure_zeroize_slice(cred_buf[..]);
     guard core::append_form_urlencoded(client_id, cred_buf) else { return false; }
-    guard cred_buf.len < cred_buf.cap else { return false; }
-    cred_buf.push(':');
+    guard cred_buf.try_push(':') else { return false; }
     guard core::append_form_urlencoded(client_secret, cred_buf) else { return false; }
 
     var b64_buf: u8[..1536] = [];
     b64_buf.append("Basic ");
     core::base64_encode(cred_buf[..], b64_buf);
-    core::secure_zeroize_slice(cred_buf[..]);
     return out_header_val.try_set(b64_buf[..]);
 }
 
@@ -247,21 +233,17 @@ fn decode_oauth2_basic_auth(
     out_id.clear();
     out_secret.clear();
     guard header_val.len > 6 && header_val.len <= 2048 else { return false; }
-    guard core::starts_with_fold(header_val, "Basic ") else { return false; }
-    let b64_part = core::trim_lws(header_val[6..]);
+    guard header_val.starts_with_fold("Basic ") else { return false; }
+    let b64_part = header_val[6..].trim_lws();
     guard b64_part.len > 0 else { return false; }
 
     var raw_cred: u8[..1024] = [];
+    defer core::secure_zeroize_slice(raw_cred[..]);
     guard core::base64_decode(b64_part, raw_cred) else { return false; }
-    let colon = core::index_of_byte(raw_cred[..], ':');
-    guard colon >= 0 else {
-        core::secure_zeroize_slice(raw_cred[..]);
-        return false;
-    }
-    let sec_start = core::add_sat_i64(colon, 1);
-    let ok_id = core::decode_form_urlencoded(raw_cred[..colon], out_id);
-    let ok_sec = core::decode_form_urlencoded(raw_cred[sec_start..], out_secret);
-    core::secure_zeroize_slice(raw_cred[..]);
+    let id_part, sec_part, has_colon = raw_cred[..].split_once_byte(':');
+    guard has_colon else { return false; }
+    let ok_id = core::decode_form_urlencoded(id_part, out_id);
+    let ok_sec = core::decode_form_urlencoded(sec_part, out_secret);
     guard ok_id && ok_sec else {
         out_id.clear();
         out_secret.clear();

@@ -396,38 +396,25 @@ fn validate_display_string(raw_str: const u8[:]) -> bool {
 //   returns: true, out = "hello \"world\""
 fn sf_unescape_string<B>(raw: const u8[:], out: B&) -> bool {
     out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
     var i: i64 = 0;
     while i < raw.len {
         let ch = raw[i];
         if ch == '\\' {
             let next_i = core::add_sat_i64(i, 1);
-            guard next_i < raw.len else {
-                out.clear();
-                return false;
-            }
+            guard next_i < raw.len else { return false; }
             let esc = raw[next_i];
-            guard esc == '"' || esc == '\\' else {
-                out.clear();
-                return false;
-            }
-            guard out.len < out.cap else {
-                out.clear();
-                return false;
-            }
-            out.push(esc);
+            guard (esc == '"' || esc == '\\') && out.try_push(esc) else { return false; }
             i = core::add_sat_i64(i, 2);
         } else if ch == '"' || !core::is_ascii_printable(ch) {
-            out.clear();
             return false;
         } else {
-            guard out.len < out.cap else {
-                out.clear();
-                return false;
-            }
-            out.push(ch);
+            guard out.try_push(ch) else { return false; }
             i = core::add_sat_i64(i, 1);
         }
     }
+    committed = true;
     return true;
 }
 
@@ -438,6 +425,8 @@ fn sf_unescape_string<B>(raw: const u8[:], out: B&) -> bool {
 //   returns: true, out = "hello \xc3\xbc"
 fn sf_decode_display_string<B>(raw: const u8[:], out: B&) -> bool {
     out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
     var state: i64 = 0;
     var i:     i64 = 0;
     while i < raw.len {
@@ -447,35 +436,20 @@ fn sf_decode_display_string<B>(raw: const u8[:], out: B&) -> bool {
         if b == '%' {
             let i1 = core::add_sat_i64(i, 1);
             let i2 = core::add_sat_i64(i, 2);
-            guard i2 < raw.len else {
-                out.clear();
-                return false;
-            }
+            guard i2 < raw.len else { return false; }
             let pct_b, hex_ok = sf_decode_pct_hex(raw[i1], raw[i2]);
-            guard hex_ok else {
-                out.clear();
-                return false;
-            }
+            guard hex_ok else { return false; }
             dec_b = pct_b;
             step = 3;
         } else {
-            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else {
-                out.clear();
-                return false;
-            }
+            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
             dec_b = b;
         }
-        guard sf_step_utf8_dfa(dec_b, state) && out.len < out.cap else {
-            out.clear();
-            return false;
-        }
-        out.push(dec_b);
+        guard sf_step_utf8_dfa(dec_b, state) && out.try_push(dec_b) else { return false; }
         i = core::add_sat_i64(i, step);
     }
-    if state != 0 {
-        out.clear();
-        return false;
-    }
+    guard state == 0 else { return false; }
+    committed = true;
     return true;
 }
 
@@ -610,7 +584,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
 //   returns: result with item kind Integer, value 123, ok = true
 fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
     var result = SfParameterizedItem { .. };
-    let trimmed = core::trim_ascii_space(input);
+    let trimmed = input.trim_ascii_space();
     if trimmed.len == 0 {
         return result, false;
     }
@@ -729,6 +703,17 @@ fn sf_parse_single_dict_entry(src: const u8[:], pos: i64, entry: SfDictEntry&, o
     return true;
 }
 
+// RFC 8941 Section 3.2.2: Duplicate dictionary keys overwrite the existing member in place.
+fn upsert_sf_dict_entry(out_entries: SfDictEntry[..16]&, entry: SfDictEntry) -> bool {
+    for i in out_entries.len {
+        if out_entries[i].key == entry.key {
+            out_entries[i] = entry;
+            return true;
+        }
+    }
+    return out_entries.try_push(entry);
+}
+
 // Parses an RFC 8941 Dictionary (Section 3.2): key=val, key2, key3=(a b);param
 //
 // Example:
@@ -736,50 +721,29 @@ fn sf_parse_single_dict_entry(src: const u8[:], pos: i64, entry: SfDictEntry&, o
 //   returns: true, out_entries has 2 dictionary entries
 fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
     out_entries.clear();
-    let trimmed = core::trim_ascii_space(input);
+    let trimmed = input.trim_ascii_space();
     if trimmed.len == 0 {
         return true;
     }
+    var committed = false;
+    defer if !committed { out_entries.clear(); };
     var p: i64 = 0;
     while p < trimmed.len {
         var entry = SfDictEntry { .. };
         var entry_next: i64 = 0;
-        if !sf_parse_single_dict_entry(trimmed, p, entry, entry_next) {
-            out_entries.clear();
-            return false;
-        }
+        guard sf_parse_single_dict_entry(trimmed, p, entry, entry_next) else { return false; }
         p = entry_next;
 
-        var found_idx: i64 = -1;
-        for i in out_entries.len {
-            if out_entries[i].key == entry.key {
-                found_idx = i;
-                break;
-            }
-        }
-        if found_idx >= 0 {
-            out_entries[found_idx] = entry;
-        } else if out_entries.len < 16 {
-            out_entries.push(entry);
-        } else {
-            out_entries.clear();
-            return false;
-        }
+        guard upsert_sf_dict_entry(out_entries, entry) else { return false; }
 
         p = sf_skip_ws(trimmed, p);
         if p < trimmed.len {
-            if trimmed[p] != ',' {
-                out_entries.clear();
-                return false;
-            }
-            p = p + 1; // skip ','
-            p = sf_skip_ws(trimmed, p);
-            if p >= trimmed.len {
-                out_entries.clear();
-                return false;
-            }
+            guard trimmed[p] == ',' else { return false; }
+            p = sf_skip_ws(trimmed, core::add_sat_i64(p, 1));
+            guard p < trimmed.len else { return false; }
         }
     }
+    committed = true;
     return true;
 }
 
@@ -814,41 +778,29 @@ fn sf_parse_single_list_entry(src: const u8[:], pos: i64, p_item: SfParameterize
 //   returns: true, out_items has 3 elements
 fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> bool {
     out_items.clear();
-    let trimmed = core::trim_ascii_space(input);
+    let trimmed = input.trim_ascii_space();
     if trimmed.len == 0 {
         return true;
     }
+    var committed = false;
+    defer if !committed { out_items.clear(); };
     var p: i64 = 0;
     while p < trimmed.len {
         var p_item = SfParameterizedItem { .. };
         var item_next: i64 = 0;
-        if !sf_parse_single_list_entry(trimmed, p, p_item, item_next) {
-            out_items.clear();
-            return false;
-        }
+        guard sf_parse_single_list_entry(trimmed, p, p_item, item_next) else { return false; }
         p = item_next;
 
-        if out_items.len < 16 {
-            out_items.push(p_item);
-        } else {
-            out_items.clear();
-            return false;
-        }
+        guard out_items.try_push(p_item) else { return false; }
 
         p = sf_skip_ws(trimmed, p);
         if p < trimmed.len {
-            if trimmed[p] != ',' {
-                out_items.clear();
-                return false;
-            }
-            p = p + 1; // skip ','
-            p = sf_skip_ws(trimmed, p);
-            if p >= trimmed.len {
-                out_items.clear();
-                return false;
-            }
+            guard trimmed[p] == ',' else { return false; }
+            p = sf_skip_ws(trimmed, core::add_sat_i64(p, 1));
+            guard p < trimmed.len else { return false; }
         }
     }
+    committed = true;
     return true;
 }
 
@@ -918,23 +870,23 @@ fn sf_dict_has_key(dict_str: const u8[:], key: const u8[:]) -> bool {
 
 fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
     if item.kind == SfType.Integer {
-        core::format_i64_dec(item.int_val, out);
+        item.int_val.format_i64_dec(out);
     } else if item.kind == SfType.Decimal {
         let sign = if item.int_val < 0 { -1 } else { 1 };
         let abs_milli = if item.int_val < 0 { -item.int_val } else { item.int_val };
         if sign < 0 { out.push('-' as u8); }
-        core::format_i64_dec(abs_milli / 1000, out);
+        (abs_milli / 1000).format_i64_dec(out);
         out.push('.' as u8);
         var frac = abs_milli % 1000;
         if (frac % 100) == 0 {
-            core::format_i64_dec(frac / 100, out);
+            (frac / 100).format_i64_dec(out);
         } else if (frac % 10) == 0 {
             if frac < 100 { out.push('0' as u8); }
-            core::format_i64_dec(frac / 10, out);
+            (frac / 10).format_i64_dec(out);
         } else {
             if frac < 100 { out.push('0' as u8); }
             if frac < 10 { out.push('0' as u8); }
-            core::format_i64_dec(frac, out);
+            frac.format_i64_dec(out);
         }
     } else if item.kind == SfType.Boolean {
         out.append(if item.bool_val { "?1" } else { "?0" });
@@ -956,7 +908,7 @@ fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
         out.push(':' as u8);
     } else if item.kind == SfType.Date {
         out.push('@' as u8);
-        core::format_i64_dec(item.int_val, out);
+        item.int_val.format_i64_dec(out);
     } else if item.kind == SfType.DisplayString {
         out.append("%\"");
         out.append(item.str_val);

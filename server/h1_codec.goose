@@ -26,7 +26,7 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
         for b in host_val {
             guard b != '[' && b != ']' else { return false; }
         }
-        let col_idx = core::index_of_byte(host_val, ':');
+        let col_idx = host_val.index_of_byte(':');
         if col_idx < 0 {
             return true;
         }
@@ -36,10 +36,10 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
         for pb in port_slice {
             guard pb >= '0' && pb <= '9' else { return false; }
         }
-        let p_val, p_ok = core::parse_u64_dec(port_slice);
+        let p_val, p_ok = port_slice.parse_u64_dec();
         return p_ok && p_val >= 1 && p_val <= 65535;
     }
-    let close_idx = core::index_of_byte(host_val, ']');
+    let close_idx = host_val.index_of_byte(']');
     guard close_idx > 1 else { return false; }
     var comp_buf: u8[..64] = [];
     guard core::parse_and_compress_ipv6(host_val[1..close_idx], comp_buf) else {
@@ -54,7 +54,7 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
     for pb in port_part {
         guard pb >= '0' && pb <= '9' else { return false; }
     }
-    let p_num, p_ok = core::parse_u64_dec(port_part);
+    let p_num, p_ok = port_part.parse_u64_dec();
     return p_ok && p_num >= 1 && p_num <= 65535;
 }
 
@@ -66,15 +66,13 @@ fn append_te_header_value(te_buf: u8[..64]&, val: const u8[:]) -> bool {
         te_buf.append(val);
         return true;
     }
-    guard val.len <= te_buf.cap else { return false; }
-    te_buf.append(val);
-    return true;
+    return te_buf.try_append(val);
 }
 
 // Collects transfer-encoding headers into single buffer.
 fn collect_transfer_encoding_headers(headers: const HeaderMap&, out_te: u8[..64]&) -> bool {
     for &hdr in headers.entries {
-        if eq_ascii_fold(entry_name(headers, hdr), "transfer-encoding") {
+        if entry_name(headers, hdr).eq_ascii_fold("transfer-encoding") {
             guard append_te_header_value(out_te, entry_value(headers, hdr)) else { return false; }
         }
     }
@@ -157,7 +155,7 @@ inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
 inline fn validate_connect_authority(target: const u8[:]) -> bool {
     guard target.len >= 3 else { return false; }
     if target[0] == '[' {
-        let close_idx = core::index_of_byte(target, ']');
+        let close_idx = target.index_of_byte(']');
         guard close_idx > 1 && close_idx + 2 < target.len && target[close_idx + 1] == ':' else {
             return false;
         }
@@ -168,7 +166,7 @@ inline fn validate_connect_authority(target: const u8[:]) -> bool {
         let port_num, port_ok = core::parse_port_number(target[(close_idx + 2)..]);
         return port_ok && port_num > 0;
     }
-    let col = core::index_of_byte(target, ':');
+    let col = target.index_of_byte(':');
     guard col > 0 && col + 1 < target.len else { return false; }
     guard validate_host_header_chars(target[..col]) && validate_host_header_structure(target) else {
         return false;
@@ -197,8 +195,7 @@ fn parse_http1_request_line<Req>(
     var is_options: bool = false;
 
     if m_len > 0 {
-        out_req.method.clear();
-        out_req.method.append(m_slice);
+        let _ = out_req.method.try_set(m_slice);
         is_connect = (w0 == rfc::METHOD_CONNECT_U64);
         is_options = (w0 == rfc::METHOD_OPTIONS_U64);
     } else {
@@ -206,8 +203,7 @@ fn parse_http1_request_line<Req>(
         guard sp1 > 0 && sp1 <= out_req.method.cap else { return false; }
         let custom_method = req_line[..sp1];
         guard is_valid_header_name(custom_method) else { return false; }
-        out_req.method.clear();
-        out_req.method.append(custom_method);
+        let _ = out_req.method.try_set(custom_method);
         is_connect = (custom_method == "CONNECT");
         is_options = (custom_method == "OPTIONS");
     }
@@ -228,8 +224,7 @@ fn parse_http1_request_line<Req>(
         return false;
     }
 
-    out_req.url.clear();
-    out_req.url.append(path_slice);
+    let _ = out_req.url.try_set(path_slice);
 
     guard req_line.len - (sp2 + 1) == 8 else { return false; }
     let proto_u64 = core::read_le_u64(req_line, sp2 + 1);
@@ -470,11 +465,9 @@ inline fn save_cached_headers_stream<Req>(
     guard out_req.headers.header_contains_comma.len <= 32 else { return; }
     let _ = g_last_rest_headers.try_set(rest_headers);
     let _ = g_last_raw_buf.try_set(out_req.headers.raw_buf[..]);
-    g_last_entries.clear();
-    g_last_entries.append(out_req.headers.entries[..]);
+    let _ = g_last_entries.try_set(out_req.headers.entries[..]);
     g_last_inline_slots = out_req.headers.inline_slots;
-    g_last_contains_comma.clear();
-    g_last_contains_comma.append(out_req.headers.header_contains_comma[..]);
+    let _ = g_last_contains_comma.try_set(out_req.headers.header_contains_comma[..]);
     g_last_presence_mask = out_req.presence_mask;
     g_last_presence_tracker = presence_tracker;
 }
@@ -777,17 +770,16 @@ fn inspect_response_framing_headers(headers: const HeaderMap&) -> ResponseFramin
     for &e in headers.entries {
         let hname = entry_name(headers, e);
         let hval = entry_value(headers, e);
-        if eq_ascii_fold(hname, "transfer-encoding") {
+        if hname.eq_ascii_fold("transfer-encoding") {
             if info.has_te {
                 guard info.te_buf.len + 2 + hval.len <= info.te_buf.cap else { return info, false; }
                 info.te_buf.append(", ");
                 info.te_buf.append(hval);
             } else {
                 info.has_te = true;
-                guard hval.len <= info.te_buf.cap else { return info, false; }
-                info.te_buf.append(hval);
+                guard info.te_buf.try_set(hval) else { return info, false; }
             }
-        } else if eq_ascii_fold(hname, "content-length") {
+        } else if hname.eq_ascii_fold("content-length") {
             info.has_cl = true;
             cl_count++;
             var parsed_cl: i64 = 0;
@@ -836,8 +828,7 @@ fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) ->
     let c1 = status_line[10] - '0';
     let c2 = status_line[11] - '0';
     out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
-    out_res.protocol.clear();
-    out_res.protocol.append(status_line[..8]);
+    let _ = out_res.protocol.try_set(status_line[..8]);
     return true;
 }
 
@@ -931,7 +922,7 @@ fn serialize_status_line<B>(status_code: i32, out: B&) {
     if n > 0 {
         out.append(code_buf[..n]);
     } else {
-        core::format_i64_dec(status_code as i64, out);
+        (status_code as i64).format_i64_dec(out);
     }
     out.push(' ');
     out.append(rfc::status_phrase(status_code));
@@ -977,9 +968,9 @@ fn serialize_http1_chunked_response<Res, B>(
     for &e in res.headers.entries {
         let hname = entry_name(res.headers, e);
         let hval = entry_value(res.headers, e);
-        if eq_ascii_fold(hname, "content-length") { continue; }
-        if eq_ascii_fold(hname, "transfer-encoding") { continue; }
-        if eq_ascii_fold(hname, "trailer") && res.trailers.entries.len > 0 { continue; }
+        if hname.eq_ascii_fold("content-length") { continue; }
+        if hname.eq_ascii_fold("transfer-encoding") { continue; }
+        if hname.eq_ascii_fold("trailer") && res.trailers.entries.len > 0 { continue; }
 
         out_wire.append(hname);
         out_wire.append(": ");
@@ -1037,8 +1028,7 @@ fn update_server_cached_date(
 }
 
 fn format_local_http_date(out: u8[..64]&, now_sec: i64) {
-    out.clear();
-    out.append(get_cached_http_date_header(now_sec));
+    let _ = out.try_set(get_cached_http_date_header(now_sec));
 }
 
 var g_compat_date: CachedHttpDate = CachedHttpDate { .. };
@@ -1092,27 +1082,27 @@ fn detect_response_presence_mask(headers: const HeaderMap&) -> u16 {
         let hname = entry_name(headers, e);
         let nlen = hname.len;
         if nlen == 4 {
-            if (hname[0] == 'd' || hname[0] == 'D') && eq_ascii_fold(hname, "date") {
+            if (hname[0] == 'd' || hname[0] == 'D') && hname.eq_ascii_fold("date") {
                 mask = mask | RES_PRESENCE_DATE;
             }
         } else if nlen == 6 {
-            if (hname[0] == 's' || hname[0] == 'S') && eq_ascii_fold(hname, "server") {
+            if (hname[0] == 's' || hname[0] == 'S') && hname.eq_ascii_fold("server") {
                 mask = mask | RES_PRESENCE_SERVER;
             }
         } else if nlen == 10 {
-            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "connection") {
+            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("connection") {
                 mask = mask | RES_PRESENCE_CONNECTION;
             }
         } else if nlen == 12 {
-            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-type") {
+            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("content-type") {
                 mask = mask | RES_PRESENCE_CONTENT_TYPE;
             }
         } else if nlen == 14 {
-            if (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, "content-length") {
+            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("content-length") {
                 mask = mask | RES_PRESENCE_CONTENT_LENGTH;
             }
         } else if nlen == 17 {
-            if (hname[0] == 't' || hname[0] == 'T') && eq_ascii_fold(hname, "transfer-encoding") {
+            if (hname[0] == 't' || hname[0] == 'T') && hname.eq_ascii_fold("transfer-encoding") {
                 mask = mask | RES_PRESENCE_TRANSFER_ENCODING;
             }
         }
@@ -1128,14 +1118,14 @@ fn serialize_response_headers_list<B>(headers: const HeaderMap&, status_code: i3
         let hname = entry_name(headers, e);
         let hval = entry_value(headers, e);
         let nlen = hname.len;
-        if (forbid_wire_cl || has_te) && nlen == 14 && eq_ascii_fold(hname, "content-length") {
+        if (forbid_wire_cl || has_te) && nlen == 14 && hname.eq_ascii_fold("content-length") {
             continue;
         }
-        if is_no_te_status && nlen == 17 && eq_ascii_fold(hname, "transfer-encoding") {
+        if is_no_te_status && nlen == 17 && hname.eq_ascii_fold("transfer-encoding") {
             continue;
         }
 
-        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && eq_ascii_fold(hname, rfc::HEADER_CONTENT_TYPE) {
+        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold(rfc::HEADER_CONTENT_TYPE) {
             if hval == rfc::MIME_TEXT_PLAIN {
                 out.append(rfc::HTTP1_CT_TEXT_PLAIN);
                 continue;
@@ -1173,7 +1163,7 @@ fn serialize_http1_headers<Res, B>(
     let is_default_srv = server_name == "goose-wing" || server_name == "goose-wing/1.0";
     if res.status_code == 200 && is_default_srv {
         if mask == RES_PRESENCE_CONTENT_TYPE && res.headers.entries.len == 1 && res.trailers.entries.len == 0
-            && eq_ascii_fold(entry_name(res.headers, res.headers.entries[0]), "content-type")
+            && entry_name(res.headers, res.headers.entries[0]).eq_ascii_fold("content-type")
         {
             if server_name == "goose-wing" {
                 out_wire.append(g_compat_date.fast_prefix[..]);
@@ -1262,7 +1252,7 @@ fn serialize_http1_response<Res, B>(
         };
         if has_te {
             let te = header(res, "transfer-encoding");
-            if eq_ascii_fold(te, "chunked") {
+            if te.eq_ascii_fold("chunked") {
                 serialize_http1_chunked_response(res, server_name, 4096, out_wire);
                 return;
             }
@@ -1292,7 +1282,7 @@ fn send_http1_response<Res, B>(fd: i64, res: const Res&, server_name: const u8[:
         };
         if has_te || res.trailers.entries.len > 0 {
             let te = header(res, "transfer-encoding");
-            if eq_ascii_fold(te, "chunked") || res.trailers.entries.len > 0 {
+            if te.eq_ascii_fold("chunked") || res.trailers.entries.len > 0 {
                 serialize_http1_chunked_response(res, server_name, 4096, wire_headers);
                 return tcp_send(fd, wire_headers[..]);
             }
@@ -1316,31 +1306,31 @@ fn send_http1_response_iov<Res, B>(
     wire_headers: B&,
 ) -> i32 {
     wire_headers.clear();
-    let n = core::iovec_count(body_iov);
+    let n = body_iov.iovec_count();
     var iov_total: i64 = 0;
     for i in n {
-        let chunk = core::iovec_get(body_iov, i);
+        let chunk = body_iov.iovec_get(i);
         iov_total += chunk.len;
     }
     let ov_len = if res.body.len == 0 && iov_total > 0 { iov_total } else { -1 };
     serialize_http1_headers(res, server_name, wire_headers, 0, ov_len);
     guard fd > 0 else { return 0; }
     var arr = core::new_iovec_array();
-    core::iovec_push(arr, wire_headers[..]);
+    arr.iovec_push(wire_headers[..]);
     var total_sent: i32 = 0;
     for i in n {
-        let chunk = core::iovec_get(body_iov, i);
+        let chunk = body_iov.iovec_get(i);
         if chunk.len > 0 {
-            if core::iovec_count(arr) >= 16 {
+            if arr.iovec_count() >= 16 {
                 let sent = tcp_sendv(fd, arr);
                 guard sent >= 0 else { return sent; }
                 total_sent += sent;
                 arr = core::new_iovec_array();
             }
-            core::iovec_push(arr, chunk);
+            arr.iovec_push(chunk);
         }
     }
-    if core::iovec_count(arr) > 0 {
+    if arr.iovec_count() > 0 {
         let sent = tcp_sendv(fd, arr);
         guard sent >= 0 else { return sent; }
         total_sent += sent;
@@ -1360,7 +1350,7 @@ fn end_without_body<Res, B>(
 ) {
     if reported_content_length >= 0 {
         var len_buf: u8[..32] = [];
-        core::format_i64_dec(reported_content_length, len_buf);
+        reported_content_length.format_i64_dec(len_buf);
         set_header(res, "Content-Length", len_buf[..]);
     }
     if close_connection {

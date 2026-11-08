@@ -17,8 +17,8 @@ import .parser;
 
 // Whether host is a local loopback origin (localhost, 127.0.0.1, ::1, [::1]).
 fn is_trustworthy_non_crypto_host(host: const u8[:]) -> bool {
-    let clean_host = core::trim_byte(core::trim_byte(core::trim_byte(host, '.'), '['), ']');
-    return eq_ascii_fold(clean_host, "localhost") || clean_host == "127.0.0.1" || clean_host == "::1";
+    let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
+    return clean_host.eq_ascii_fold("localhost") || clean_host == "127.0.0.1" || clean_host == "::1";
 }
 
 // ---- origin-bound adjustment -----------------------------------------------
@@ -50,7 +50,7 @@ fn adjust_origin_bound_cookies_on_insert(
 // Validates cookie names accessed from non-HTTP script APIs to prevent
 // shadowing protected prefixes.
 fn validate_script_cookie_name(name: const u8[:]) -> bool {
-    if starts_with_fold(name, "__http-") || starts_with_fold(name, "__host-http-") {
+    if name.starts_with_fold("__http-") || name.starts_with_fold("__host-http-") {
         return false;
     }
     return true;
@@ -105,14 +105,14 @@ fn validate_canonical_cookie_security(
 // Schemeful Same-Site: compares two origins by (scheme, eTLD+1).
 // Transition between http://example.com and https://example.com is cross-site!
 fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
-    guard core::eq_ascii_fold(scheme1, scheme2) else { return false; }
+    guard scheme1.eq_ascii_fold(scheme2) else { return false; }
 
     var etld1: u8[..128] = [];
     var etld2: u8[..128] = [];
     psl_extract_etld_plus_one(host1, etld1);
     psl_extract_etld_plus_one(host2, etld2);
 
-    return core::eq_ascii_fold(etld1[..], etld2[..]);
+    return etld1[..].eq_ascii_fold(etld2[..]);
 }
 
 // ---- request sendability evaluation ----------------------------------------
@@ -159,7 +159,7 @@ fn is_cookie_sendable_for_obc(
 
     // Scheme check: Secure cookies require secure request scheme (or trustworthy non-crypto origin)
     if cookie_val.source_scheme == CookieSourceScheme.Secure
-        && !core::eq_ascii_fold(req_scheme, "https") && !is_trustworthy {
+        && !req_scheme.eq_ascii_fold("https") && !is_trustworthy {
         return false;
     }
 
@@ -186,34 +186,34 @@ fn validate_security_cookie_prefixes(
     // Nameless cookies cannot have values starting with security prefixes
     if cookie_name.len == 0 {
         let cookie_value = cookie_val.value[..];
-        if starts_with_fold(cookie_value, "__host-http-") ||
-           starts_with_fold(cookie_value, "__host-") ||
-           starts_with_fold(cookie_value, "__http-") ||
-           starts_with_fold(cookie_value, "__secure-") {
+        if cookie_value.starts_with_fold("__host-http-") ||
+           cookie_value.starts_with_fold("__host-") ||
+           cookie_value.starts_with_fold("__http-") ||
+           cookie_value.starts_with_fold("__secure-") {
             return false;
         }
     }
 
     // Prefix: __Host-Http- (draft-ietf-httpbis-layered-cookies, check before __Host- / __Http-)
-    if starts_with_fold(cookie_name, "__host-http-") {
+    if cookie_name.starts_with_fold("__host-http-") {
         if !opts.is_http_api { return false; }
         if !cookie_val.secure || !opts.url_is_secure || !cookie_val.httponly { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only
             || !cookie_val.has_path_attr || cookie_val.path[..] != "/" {
             return false;
         }
-    } else if starts_with_fold(cookie_name, "__host-") {
+    } else if cookie_name.starts_with_fold("__host-") {
         // Prefix: __Host-
         if !cookie_val.secure || !opts.url_is_secure { return false; }
         if cookie_val.has_domain_attr || !cookie_val.host_only
             || !cookie_val.has_path_attr || cookie_val.path[..] != "/" {
             return false;
         }
-    } else if starts_with_fold(cookie_name, "__http-") {
+    } else if cookie_name.starts_with_fold("__http-") {
         // Prefix: __Http- (draft-ietf-httpbis-layered-cookies)
         if !opts.is_http_api { return false; }
         if !cookie_val.secure || !opts.url_is_secure || !cookie_val.httponly { return false; }
-    } else if starts_with_fold(cookie_name, "__secure-") {
+    } else if cookie_name.starts_with_fold("__secure-") {
         // Prefix: __Secure-
         if !cookie_val.secure || !opts.url_is_secure { return false; }
     }
@@ -267,7 +267,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
     guard !site.is_null else { return; }
     let frame_site = site_for_cookies_from_url(frame_url);
 
-    if !core::eq_ascii_fold(site.registrable_domain[..], frame_site.registrable_domain[..]) {
+    if !site.registrable_domain[..].eq_ascii_fold(frame_site.registrable_domain[..]) {
         site.is_null = true;
         site.schemefully_same = false;
         site.scheme.clear();
@@ -275,7 +275,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
         return;
     }
 
-    if !core::eq_ascii_fold(site.scheme[..], frame_site.scheme[..]) {
+    if !site.scheme[..].eq_ascii_fold(frame_site.scheme[..]) {
         site.schemefully_same = false;
     }
 }
@@ -305,10 +305,10 @@ fn is_first_party(site: const SiteForCookies&, req_url: const u8[:], compute_sch
     if compute_schemefully && !site.schemefully_same { return false; }
 
     let req_site = site_for_cookies_from_url(req_url);
-    if !core::eq_ascii_fold(site.registrable_domain[..], req_site.registrable_domain[..]) {
+    if !site.registrable_domain[..].eq_ascii_fold(req_site.registrable_domain[..]) {
         return false;
     }
-    if compute_schemefully && !core::eq_ascii_fold(site.scheme[..], req_site.scheme[..]) {
+    if compute_schemefully && !site.scheme[..].eq_ascii_fold(req_site.scheme[..]) {
         return false;
     }
     return true;

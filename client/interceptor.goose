@@ -9,6 +9,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.request;
 import http.headers;
 import http.trace;
@@ -114,30 +115,21 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
             },
             AuthBearer => {
                 let raw_tok = entry.header_val[..];
-                let stripped = if starts_with_fold(raw_tok, "Bearer ") { raw_tok[7..] } else { raw_tok };
+                let stripped = if raw_tok.starts_with_fold("Bearer ") { raw_tok[7..] } else { raw_tok };
                 return add_bearer_auth(pipeline, stripped);
             },
             Header => {
-                guard entry.header_name.len <= pipeline.app_header_name.cap else { return false; }
-                guard entry.header_val.len <= pipeline.app_header_val.cap else { return false; }
-                pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
-                pipeline.app_header_name.clear();
-                pipeline.app_header_name.append(entry.header_name[..]);
-                pipeline.app_header_val.clear();
-                pipeline.app_header_val.append(entry.header_val[..]);
-                return true;
+                return add_header(pipeline, InterceptorScope.Application, entry.header_name[..], entry.header_val[..]);
             },
             RequestId => {
-                guard entry.prefix.len <= pipeline.req_id_prefix.cap else { return false; }
+                guard pipeline.req_id_prefix.try_set(entry.prefix[..]) else { return false; }
                 pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
-                pipeline.req_id_prefix.clear();
-                pipeline.req_id_prefix.append(entry.prefix[..]);
-                pipeline.req_id_counter = if entry.counter > 0 { entry.counter } else { 1 };
+                pipeline.req_id_counter = max(1, entry.counter);
                 return true;
             },
             Traceparent => {
                 guard add_traceparent(pipeline, entry.prefix[..]) else { return false; }
-                pipeline.traceparent_counter = if entry.counter > 0 { entry.counter } else { 1 };
+                pipeline.traceparent_counter = max(1, entry.counter);
                 return true;
             },
             RetryPolicy => {
@@ -157,14 +149,7 @@ fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> b
                 return true;
             },
             Header => {
-                guard entry.header_name.len <= pipeline.net_header_name.cap else { return false; }
-                guard entry.header_val.len <= pipeline.net_header_val.cap else { return false; }
-                pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
-                pipeline.net_header_name.clear();
-                pipeline.net_header_name.append(entry.header_name[..]);
-                pipeline.net_header_val.clear();
-                pipeline.net_header_val.append(entry.header_val[..]);
-                return true;
+                return add_header(pipeline, InterceptorScope.Network, entry.header_name[..], entry.header_val[..]);
             },
             Metrics => {
                 pipeline.active_mask |= INTERCEPTOR_NET_METRICS;
@@ -197,9 +182,8 @@ fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: L
 fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
     guard "Bearer ".len + token.len <= pipeline.bearer_token.cap else { return false; }
     pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
-    pipeline.bearer_token.clear();
-    pipeline.bearer_token.append("Bearer ");
-    pipeline.bearer_token.append(token);
+    let _ = pipeline.bearer_token.try_set("Bearer ");
+    let _ = pipeline.bearer_token.try_append(token);
     return true;
 }
 
@@ -207,26 +191,22 @@ fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: con
     match scope {
         Application => {
             guard name.len <= pipeline.app_header_name.cap
-                && val.len <= pipeline.app_header_val.cap else {
+                && val.len <= pipeline.app_header_val.cap
+                && pipeline.app_header_name.try_set(name)
+                && pipeline.app_header_val.try_set(val) else {
                 return false;
             }
             pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
-            pipeline.app_header_name.clear();
-            pipeline.app_header_name.append(name);
-            pipeline.app_header_val.clear();
-            pipeline.app_header_val.append(val);
             return true;
         },
         Network => {
             guard name.len <= pipeline.net_header_name.cap
-                && val.len <= pipeline.net_header_val.cap else {
+                && val.len <= pipeline.net_header_val.cap
+                && pipeline.net_header_name.try_set(name)
+                && pipeline.net_header_val.try_set(val) else {
                 return false;
             }
             pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
-            pipeline.net_header_name.clear();
-            pipeline.net_header_name.append(name);
-            pipeline.net_header_val.clear();
-            pipeline.net_header_val.append(val);
             return true;
         },
     };
@@ -234,10 +214,8 @@ fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: con
 }
 
 fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool {
-    guard prefix.len <= pipeline.req_id_prefix.cap else { return false; }
+    guard pipeline.req_id_prefix.try_set(prefix) else { return false; }
     pipeline.active_mask |= INTERCEPTOR_APP_REQUEST_ID;
-    pipeline.req_id_prefix.clear();
-    pipeline.req_id_prefix.append(prefix);
     pipeline.req_id_counter = 1;
     return true;
 }
@@ -245,12 +223,11 @@ fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") 
 fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool {
     guard sample_flag.len == 2
         && core::is_ascii_hexdigit(sample_flag[0])
-        && core::is_ascii_hexdigit(sample_flag[1]) else {
+        && core::is_ascii_hexdigit(sample_flag[1])
+        && pipeline.traceparent_flag.try_set(sample_flag) else {
         return false;
     }
     pipeline.active_mask |= INTERCEPTOR_APP_TRACEPARENT;
-    pipeline.traceparent_flag.clear();
-    pipeline.traceparent_flag.append(sample_flag);
     pipeline.traceparent_counter = 1;
     return true;
 }
@@ -311,11 +288,11 @@ fn generate_traceparent<B>(counter: u64, clock_us: i64, flag: const u8[:], out: 
 }
 
 fn push_log(pipeline: InterceptorPipeline&, msg: const u8[:]) {
-    guard pipeline.record_logs && pipeline.log_entries.len < pipeline.log_entries.cap else { return; }
+    guard pipeline.record_logs else { return; }
     var entry: u8[..128] = [];
     let n = min(msg.len, entry.cap);
-    entry.append(msg[..n]);
-    pipeline.log_entries.push(entry);
+    let _ = entry.try_set(msg[..n]);
+    let _ = pipeline.log_entries.try_push(entry);
 }
 
 fn log_interceptor_request(pipeline: InterceptorPipeline&, req: const Request&, lvl: LogLevel) {

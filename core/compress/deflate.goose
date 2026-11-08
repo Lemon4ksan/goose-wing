@@ -375,7 +375,7 @@ fn apply_deflate_match<B>(
         while curr < m_len {
             let avail = curr + dist_i64;
             let rem = m_len - curr;
-            let step = if avail < rem { avail } else { rem };
+            let step = min(avail, rem);
             out.append(out[back_idx..back_idx + step]);
             curr += step;
         }
@@ -479,7 +479,7 @@ fn decode_block_codes<B>(
     out_start_pos:    i64         = 0,
     max_output_bytes: i64         = 0,
 ) -> CompressError {
-    let d_len = if dict.len > 32768 { 32768 as i64 } else { dict.len };
+    let d_len = min(dict.len, 32768);
     loop {
         decode_huffman_fast_loop(r, lit_table, out, out_start_pos, max_output_bytes);
         // Fast path: tight inline decoding of consecutive 9-bit literals
@@ -1025,7 +1025,7 @@ fn rle_encode_lengths(lens: const i32[:], out: RleToken[>..]&) {
         }
         if cur == 0 {
             while run >= 11 {
-                let take = if run < 138 { run } else { 138 };
+                let take = min(run, 138);
                 out.push(RleToken { sym: 18, extra_val: (take - 11) as u32, extra_bits: 7 });
                 run -= take;
                 i += take;
@@ -1044,7 +1044,7 @@ fn rle_encode_lengths(lens: const i32[:], out: RleToken[>..]&) {
             i++;
             run--;
             while run >= 3 {
-                let take = if run < 6 { run } else { 6 };
+                let take = min(run, 6);
                 out.push(RleToken { sym: 16, extra_val: (take - 3) as u32, extra_bits: 2 });
                 run -= take;
                 i += take;
@@ -1129,7 +1129,7 @@ fn emit_stored_blocks<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: boo
     var offset: i64 = 0;
     while offset < src.len || (src.len == 0 && offset == 0) {
         let remaining = src.len - offset;
-        let block_size = if remaining < 65535 { remaining } else { 65535 };
+        let block_size = min(remaining, 65535);
         let is_last = is_final && (offset + block_size >= src.len);
         let bfinal_bit: u32 = if is_last { 1 } else { 0 };
 
@@ -1240,7 +1240,7 @@ fn match_len_at_offset(
 ) -> i32 {
     var l: i32 = 0;
     let rem = (total_len - pos) as i32;
-    let max_l = if rem < 258 { rem } else { 258 };
+    let max_l = min(rem, 258);
 
     let s_off = pos - dict_len;
     let c_off = cand - dict_len;
@@ -1810,7 +1810,7 @@ fn deflate_block<B>(
     var lit_count:  i32[288]     = [0; 288];
     var dist_count: i32[32]      = [0; 32];
 
-    let dict_slice = if dict.len > 32768 { dict[dict.len - 32768..] } else { dict };
+    let dict_slice = if dict.len > 32768 { dict[^32768..] } else { dict };
     let dict_len = dict_slice.len;
     let total_len = dict_len + src.len;
 

@@ -47,11 +47,10 @@ fn starts_with(s: const u8[:], prefix: const u8[:]) -> bool {
 // Checks whether s ends with suffix.
 fn ends_with(s: const u8[:], suffix: const u8[:]) -> bool {
     guard s.len >= suffix.len else { return false; }
-    let off = s.len - suffix.len;
     if suffix.len <= 32 {
-        return equal_short(s[off..], suffix);
+        return equal_short(s[^suffix.len..], suffix);
     }
-    return s[off..] == suffix;
+    return s[^suffix.len..] == suffix;
 }
 
 extern fn native_memchr(s: const u8[:], b: u8) -> i64 = "wing_memchr";
@@ -193,7 +192,7 @@ inline fn rare_pair(needle: const u8[:]) -> i64, i64 {
     var a: i64 = 0;
     var b: i64 = 1;
     if BYTE_RANK[needle[b]] < BYTE_RANK[needle[a]] { a = 1; b = 0; }
-    let limit = if needle.len < 255 { needle.len } else { 255 };
+    let limit = min(needle.len, 255);
     var i: i64 = 2;
     while i < limit {
         if BYTE_RANK[needle[i]] < BYTE_RANK[needle[a]] {
@@ -247,7 +246,7 @@ inline fn two_way_suffix(s: const u8[:], maximal: bool) -> i64, i64 {
 inline fn make_two_way(s: const u8[:]) -> TwoWay {
     let a, ap = two_way_suffix(s, false);
     let b, bp = two_way_suffix(s, true);
-    let critical = if a > b { a } else { b };
+    let critical = max(a, b);
     var period = if a > b { ap } else { bp };
     var small = critical * 2 < s.len;
     if small {
@@ -255,7 +254,7 @@ inline fn make_two_way(s: const u8[:]) -> TwoWay {
     }
     if !small {
         let diff = s.len - critical;
-        period = if critical > diff { critical } else { diff };
+        period = max(critical, diff);
     }
     var bits: u64 = 0;
     let rest = if small { s[..period] } else { s };
@@ -280,7 +279,7 @@ fn find_two_way_scan(haystack: const u8[:], needle: const u8[:], two: const TwoW
             memory = 0;
             continue;
         }
-        var i = if periodic { (if two.critical > memory { two.critical } else { memory }) } else { two.critical };
+        var i = if periodic { max(two.critical, memory) } else { two.critical };
         if i < needle.len && needle[i] != haystack[pos + i] {
             pos += i - two.critical + 1;
             memory = 0;

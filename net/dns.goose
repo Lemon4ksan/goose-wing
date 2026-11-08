@@ -40,6 +40,9 @@ struct DnsResponse {
 // Encodes a human-readable domain name (e.g. "example.com") into DNS label wire format.
 fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
     guard core::validate_idna_domain_bounds(domain) else { return false; }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
 
     var start = 0;
     while start < domain.len {
@@ -63,6 +66,7 @@ fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool {
     }
 
     out.push(0); // Zero root label
+    committed = true;
     return true;
 }
 
@@ -169,31 +173,31 @@ fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i
 // ---- Query Builder ------------------------------------------------------
 
 fn serialize_dns_header<B>(tx_id: u16, qd_count: u16, flags: u16, out: B&) {
-    out.push(((tx_id >> 8) & 0xFF) as u8);
-    out.push((tx_id & 0xFF) as u8);
-    out.push(((flags >> 8) & 0xFF) as u8);
-    out.push((flags & 0xFF) as u8);
-    out.push(((qd_count >> 8) & 0xFF) as u8);
-    out.push((qd_count & 0xFF) as u8);
-    out.push(0x00); out.push(0x00); // ANCOUNT = 0
-    out.push(0x00); out.push(0x00); // NSCOUNT = 0
-    out.push(0x00); out.push(0x00); // ARCOUNT = 0
+    out.append_u16_be(tx_id);
+    out.append_u16_be(flags);
+    out.append_u16_be(qd_count);
+    out.append_u16_be(0); // ANCOUNT = 0
+    out.append_u16_be(0); // NSCOUNT = 0
+    out.append_u16_be(0); // ARCOUNT = 0
 }
 
 fn serialize_dns_question<B>(domain: const u8[:], qtype: u16, qclass: u16, out: B&) -> bool {
     guard dns_encode_name(domain, out) else { return false; }
-    out.push(((qtype >> 8) & 0xFF) as u8);
-    out.push((qtype & 0xFF) as u8);
-    out.push(((qclass >> 8) & 0xFF) as u8);
-    out.push((qclass & 0xFF) as u8);
+    out.append_u16_be(qtype);
+    out.append_u16_be(qclass);
     return true;
 }
 
 // Builds a standard 12-byte header + question DNS query.
 fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool {
     guard core::validate_idna_domain_bounds(domain) else { return false; }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     serialize_dns_header(tx_id, 1, 0x0100, out);
-    return serialize_dns_question(domain, qtype, 1, out);
+    guard serialize_dns_question(domain, qtype, 1, out) else { return false; }
+    committed = true;
+    return true;
 }
 
 // ---- RFC 9460 HTTPS/SVCB RDATA Parser -----------------------------------
@@ -211,12 +215,8 @@ fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
         alpn_off += 1;
         guard slen > 0 && alpn_off + slen <= val.len else { return false; }
         let s = val[alpn_off..alpn_off + slen];
-        guard rec.alpns.len < rec.alpns.cap && s.len <= 16 else { return false; }
         var entry: u8[..16] = [];
-        for i in s.len {
-            entry.push(s[i]);
-        }
-        rec.alpns.push(entry);
+        guard entry.try_set(s) && rec.alpns.try_push(entry) else { return false; }
         alpn_off += slen;
     }
     return alpn_off == val.len;
@@ -256,10 +256,9 @@ fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
     guard val.len > 0 && (val.len % 4) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 4 <= val.len {
-        guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
         let hi = ((val[ip_off] as u32) << 24) | ((val[ip_off + 1] as u32) << 16);
         let lo = ((val[ip_off + 2] as u32) << 8) | val[ip_off + 3];
-        rec.ipv4_hints.push(hi | lo);
+        guard rec.ipv4_hints.try_push(hi | lo) else { return false; }
         ip_off += 4;
     }
     return true;
@@ -274,10 +273,9 @@ fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
     guard val.len > 0 && (val.len % 16) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 16 <= val.len {
-        guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
         var ip6: u8[16] = [0; 16];
         for i in 16 { ip6[i] = val[ip_off + i]; }
-        rec.ipv6_hints.push(ip6);
+        guard rec.ipv6_hints.try_push(ip6) else { return false; }
         ip_off += 16;
     }
     return true;
@@ -473,7 +471,7 @@ fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16
     var encoded_q: u8[..1024] = [];
     core::base64url_encode(raw_query[..], encoded_q);
 
-    let sep: const u8[:] = if !core::contains_byte(server_url, '?') {
+    let sep: const u8[:] = if !server_url.contains_byte('?') {
         "?dns="
     } else if server_url[server_url.len - 1] == '?' || server_url[server_url.len - 1] == '&' {
         "dns="
@@ -527,7 +525,7 @@ fn dns_cache_lookup(
     out_entry: DnsCacheEntry&,
 ) -> DnsCacheStatus {
     for &e in cache.entries {
-        if e.valid && e.qtype == qtype && core::eq_ascii_fold(e.domain[..], domain) {
+        if e.valid && e.qtype == qtype && e.domain[..].eq_ascii_fold(domain) {
             let elapsed = now_sec - e.inserted_at_sec;
             guard e.ttl_sec > 0 && elapsed >= 0 else { return DnsCacheStatus.Expired; }
             let ttl_i64:   i64 = e.ttl_sec;
@@ -552,7 +550,7 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
     for i in cache.entries.len {
         let is_match = cache.entries[i].valid &&
             cache.entries[i].qtype == entry.qtype &&
-            core::eq_ascii_fold(cache.entries[i].domain[..], entry.domain[..]);
+            cache.entries[i].domain[..].eq_ascii_fold(entry.domain[..]);
         if is_match {
             cache.entries[i] = entry;
             cache.entries[i].valid = true;
@@ -561,11 +559,9 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
     }
 
     // Insert new entry or overwrite oldest if full
-    if cache.entries.len < 64 {
-        var copy = entry;
-        copy.valid = true;
-        cache.entries.push(copy);
-    } else {
+    var copy = entry;
+    copy.valid = true;
+    if !cache.entries.try_push(copy) {
         // Evict entry with oldest inserted_at_sec
         var oldest_idx: i64 = 0;
         var oldest_time = cache.entries[0].inserted_at_sec;
@@ -575,8 +571,6 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
                 oldest_idx = i;
             }
         }
-        var copy = entry;
-        copy.valid = true;
         cache.entries[oldest_idx] = copy;
     }
 }

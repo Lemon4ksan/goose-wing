@@ -512,7 +512,7 @@ fn new_qpack_table(
     max_blocked:      u32 = 16,
     initial_capacity: u64 = 4096,
 ) -> QpackTable {
-    let eff_cap = if initial_capacity < max_capacity { initial_capacity } else { max_capacity };
+    let eff_cap = min(initial_capacity, max_capacity);
     return QpackTable {
         capacity_bytes:     eff_cap,
         max_capacity_bytes: max_capacity,
@@ -560,7 +560,7 @@ fn qpack_evict_until(tbl: QpackTable&, target_bytes: u64) -> bool {
             return false;
         }
         let cost = qpack_entry_cost(oldest.name_len, oldest.val_len);
-        tbl.used_bytes = if tbl.used_bytes >= cost { tbl.used_bytes - cost } else { 0 };
+        tbl.used_bytes = core::sub_sat_u64(tbl.used_bytes, cost);
         tbl.entries.remove_at(0);
     }
     tbl.draining_index = if tbl.entries.len > 0 { tbl.entries[0].abs_index } else { tbl.insert_count };
@@ -660,11 +660,8 @@ inline fn copy_arena_entry(
     let n_end = n_start + n_len;
     let v_start = v_off as i64;
     let v_end = v_start + v_len;
-    guard n_end <= 16384 else { return false; }
-    guard v_end <= 16384 else { return false; }
-    out_name.append(arena[n_start..n_end]);
-    out_val.append(arena[v_start..v_end]);
-    return true;
+    guard n_end <= 16384 && v_end <= 16384 else { return false; }
+    return out_name.try_set(arena[n_start..n_end]) && out_val.try_set(arena[v_start..v_end]);
 }
 
 // Looks up an entry by absolute index in dynamic table.
@@ -738,16 +735,12 @@ fn qpack_track_unacked_stream(tbl: QpackTable&, stream_id: u64, ric: u64) -> boo
             return true;
         }
     }
-    guard tbl.unacked_sections.len < tbl.unacked_sections.cap else {
-        return false;
-    }
-    var entry = UnackedSection {
+    let entry = UnackedSection {
         stream_id:   stream_id,
         ric:         ric,
         ref_entries: [],
     };
-    tbl.unacked_sections.push(entry);
-    return true;
+    return tbl.unacked_sections.try_push(entry);
 }
 
 // Associates a dynamic table entry reference with an unacknowledged stream (RFC 9204 §2.1.1, §4.4.2).
@@ -765,17 +758,16 @@ fn qpack_track_stream_ref(tbl: QpackTable&, stream_id: u64, abs_idx: u64) -> boo
             return true;
         }
     }
-    guard tbl.unacked_sections.len < tbl.unacked_sections.cap else {
-        qpack_unpin_entry(tbl, abs_idx);
-        return false;
-    }
     var entry = UnackedSection {
         stream_id:   stream_id,
         ric:         0,
         ref_entries: [],
     };
     entry.ref_entries.push(abs_idx);
-    tbl.unacked_sections.push(entry);
+    guard tbl.unacked_sections.try_push(entry) else {
+        qpack_unpin_entry(tbl, abs_idx);
+        return false;
+    }
     return true;
 }
 
@@ -814,10 +806,7 @@ fn qpack_ack_section(tbl: QpackTable&, stream_id: u64, ric: u64 = 0) -> QpackErr
     let found_idx = find_unacked_stream_idx(tbl, stream_id);
     var effective_ric = ric;
     if found_idx >= 0 {
-        let u_ric = tbl.unacked_sections[found_idx].ric;
-        if u_ric > effective_ric {
-            effective_ric = u_ric;
-        }
+        effective_ric = max(effective_ric, tbl.unacked_sections[found_idx].ric);
         release_section_refs(tbl, tbl.unacked_sections[found_idx].ref_entries[..]);
         tbl.unacked_sections.remove_at(found_idx as i32);
     } else {
@@ -826,9 +815,7 @@ fn qpack_ack_section(tbl: QpackTable&, stream_id: u64, ric: u64 = 0) -> QpackErr
         }
     }
 
-    if effective_ric > tbl.known_rcvd_count {
-        tbl.known_rcvd_count = effective_ric;
-    }
+    tbl.known_rcvd_count = max(tbl.known_rcvd_count, effective_ric);
 
     qpack_unblock_stream(tbl, stream_id);
     return QpackError.None;
@@ -854,7 +841,6 @@ fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
 // Records a blocked stream waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 §2.1.2).
 fn qpack_block_stream(tbl: QpackTable&, stream_id: u64, ric: u64, data: const u8[:]) -> bool {
     guard tbl.blocked_streams.len < tbl.max_blocked else { return false; }
-    guard tbl.blocked_streams.len < tbl.blocked_streams.cap else { return false; }
     for &b in tbl.blocked_streams {
         if b.stream_id == stream_id {
             return false;
@@ -865,10 +851,8 @@ fn qpack_block_stream(tbl: QpackTable&, stream_id: u64, ric: u64, data: const u8
         req_insert_count: ric,
         ..
     };
-    guard data.len <= entry.encoded_data.cap else { return false; }
-    entry.encoded_data.append(data);
-    tbl.blocked_streams.push(entry);
-    return true;
+    guard entry.encoded_data.try_set(data) else { return false; }
+    return tbl.blocked_streams.try_push(entry);
 }
 
 // Checks if a stream is currently recorded as blocked.
@@ -916,8 +900,7 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
         let ok_huff = internal::huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
-        guard out.len + raw_slice.len <= out.cap else { return offset, false; }
-        out.append(raw_slice);
+        guard out.try_append(raw_slice) else { return offset, false; }
     }
     return next_off + str_len, true;
 }
@@ -1036,10 +1019,7 @@ inline fn append_header_field<F>(
     never_index: bool,
 ) -> bool {
     var field = HeaderField { never_index: never_index, .. };
-    guard name.len <= field.name.cap else { return false; }
-    guard val.len <= field.value.cap else { return false; }
-    field.name.append(name);
-    field.value.append(val);
+    guard field.name.try_set(name) && field.value.try_set(val) else { return false; }
     out_fields.push(field);
     return true;
 }
@@ -1089,6 +1069,10 @@ fn decode_qpack_field_line<F>(
     max_dyn_abs_used: u64&,
     used_any_dyn:     bool&,
 ) -> QpackError {
+    let saved_off = offset;
+    var committed = false;
+    defer if !committed { offset = saved_off; };
+
     let b = src[offset];
 
     // Case A: Indexed Field Line: 1Txxxxxx (6-bit prefix)
@@ -1116,6 +1100,7 @@ fn decode_qpack_field_line<F>(
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1135,6 +1120,7 @@ fn decode_qpack_field_line<F>(
         guard err == QpackError.None else { return err; }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1148,8 +1134,7 @@ fn decode_qpack_field_line<F>(
         var n: u8[..256] = [];
         if is_static {
             let s_ent, s_ok = get_qpack_static_field(name_idx);
-            guard s_ok else { return QpackError.DecompressionFailed; }
-            n.append(s_ent.name);
+            guard s_ok && n.try_set(s_ent.name) else { return QpackError.DecompressionFailed; }
         } else {
             guard base > name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base - name_idx - 1;
@@ -1168,6 +1153,7 @@ fn decode_qpack_field_line<F>(
         let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1194,6 +1180,7 @@ fn decode_qpack_field_line<F>(
         let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1211,6 +1198,7 @@ fn decode_qpack_field_line<F>(
         let err = emit_field_checked(out_fields, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1337,7 +1325,7 @@ inline fn emit_qpack_field_to_map(
         }
         if name == ":status" {
             guard !out_pseudo.has_status && val.len == 3 else { return QpackError.MessageError; }
-            let sc, ok_sc = core::parse_i32_dec(val);
+            let sc, ok_sc = val.parse_i32_dec();
             guard ok_sc && sc >= 100 && sc <= 599 && sc != 101 else { return QpackError.MessageError; }
             out_pseudo.status = sc;
             out_pseudo.has_status = true;
@@ -1391,7 +1379,7 @@ inline fn emit_qpack_field_to_map(
     }
     if name == "host" {
         guard is_valid_authority_or_host(val) else { return QpackError.MessageError; }
-        if out_pseudo.has_authority && !eq_ascii_fold(out_pseudo.authority[..], val) {
+        if out_pseudo.has_authority && !out_pseudo.authority[..].eq_ascii_fold(val) {
             return QpackError.MessageError;
         }
     }
@@ -1399,8 +1387,8 @@ inline fn emit_qpack_field_to_map(
     out_pseudo.has_regular_header = true;
     if name == "content-length" {
         guard !out_pseudo.has_status || out_pseudo.status >= 200 else { return QpackError.MessageError; }
-        let cl, ok_cl = core::parse_i64_dec(val);
-        let _, ok_u = core::parse_u64_dec(val);
+        let cl, ok_cl = val.parse_i64_dec();
+        let _, ok_u = val.parse_u64_dec();
         guard ok_cl && ok_u else { return QpackError.MessageError; }
         if out_pseudo.content_length >= 0 && out_pseudo.content_length != cl {
             return QpackError.MessageError;
@@ -1436,6 +1424,10 @@ fn decode_qpack_field_line_to_map(
     max_dyn_abs_used: u64&,
     used_any_dyn:     bool&,
 ) -> QpackError {
+    let saved_off = offset;
+    var committed = false;
+    defer if !committed { offset = saved_off; };
+
     let b = src[offset];
 
     if (b & 0x80) != 0 {
@@ -1462,6 +1454,7 @@ fn decode_qpack_field_line_to_map(
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1480,6 +1473,7 @@ fn decode_qpack_field_line_to_map(
         guard err == QpackError.None else { return err; }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1492,8 +1486,7 @@ fn decode_qpack_field_line_to_map(
         var n: u8[..256] = [];
         if is_static {
             let s_ent, s_ok = get_qpack_static_field(name_idx);
-            guard s_ok else { return QpackError.DecompressionFailed; }
-            n.append(s_ent.name);
+            guard s_ok && n.try_set(s_ent.name) else { return QpackError.DecompressionFailed; }
         } else {
             guard base > name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base - name_idx - 1;
@@ -1512,6 +1505,7 @@ fn decode_qpack_field_line_to_map(
         let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1537,6 +1531,7 @@ fn decode_qpack_field_line_to_map(
         let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1553,6 +1548,7 @@ fn decode_qpack_field_line_to_map(
         let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
         guard err == QpackError.None else { return err; }
         offset = next_off;
+        committed = true;
         return QpackError.None;
     }
 
@@ -1664,13 +1660,14 @@ fn encode_qpack_field<B>(
     use_huffman: bool = true,
 ) {
     let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
+
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {
         // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else {
-            out.resize(start_len);
-            return;
-        }
+        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else { return; }
+        committed = true;
         return;
     }
 
@@ -1679,9 +1676,9 @@ fn encode_qpack_field<B>(
         // Literal with Static Name: 01NTxxxx (4-bit prefix, T=1)
         guard internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
               internal::encode_hpack_string_literal(out, val, use_huffman) else {
-            out.resize(start_len);
             return;
         }
+        committed = true;
         return;
     }
 
@@ -1692,18 +1689,18 @@ fn encode_qpack_field<B>(
             guard internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
                   internal::huff_encode_bytes(name, out) &&
                   internal::encode_hpack_string_literal(out, val, use_huffman) else {
-                out.resize(start_len);
                 return;
             }
+            committed = true;
             return;
         }
     }
     guard internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
           out.try_append(name) &&
           internal::encode_hpack_string_literal(out, val, use_huffman) else {
-        out.resize(start_len);
         return;
     }
+    committed = true;
 }
 
 // Searches the dynamic table for an entry matching `name` and `val` (or `name` only).
@@ -1758,14 +1755,10 @@ fn encode_qpack_dynamic_insert<B>(
         && name == QPACK_STATIC_TABLE[s_idx_name as i64].name;
 
     var ins_buf: u8[..4096] = [];
-    var ins_ok = false;
     if has_static_name {
         let enc_ok = internal::hpack_encode_int(ins_buf, s_idx_name, 6, 0xC0) &&
             internal::encode_hpack_string_literal(ins_buf, val, use_huffman);
         guard enc_ok else { return 0, false; }
-        guard (out_enc.len + ins_buf.len) <= out_enc.cap else { return 0, false; }
-        guard qpack_insert_named_static(tbl, s_idx_name, val) else { return 0, false; }
-        ins_ok = true;
     } else {
         let huff_len = if use_huffman { internal::huff_encoded_byte_len(name) } else { name.len as u64 };
         let is_huff = use_huffman && huff_len < (name.len as u64);
@@ -1780,12 +1773,18 @@ fn encode_qpack_dynamic_insert<B>(
         guard enc_ok && internal::encode_hpack_string_literal(ins_buf, val, use_huffman) else {
             return 0, false;
         }
-        guard (out_enc.len + ins_buf.len) <= out_enc.cap else { return 0, false; }
-        guard qpack_insert_literal(tbl, name, val) else { return 0, false; }
-        ins_ok = true;
     }
+    let saved_enc_len = out_enc.len;
+    var committed = false;
+    defer if !committed { out_enc.resize(saved_enc_len); };
+    guard out_enc.try_append(ins_buf[..]) else { return 0, false; }
+    let ins_ok = if has_static_name {
+        qpack_insert_named_static(tbl, s_idx_name, val)
+    } else {
+        qpack_insert_literal(tbl, name, val)
+    };
     guard ins_ok else { return 0, false; }
-    out_enc.append(ins_buf[..]);
+    committed = true;
     return tbl.insert_count - 1, true;
 }
 

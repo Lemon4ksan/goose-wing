@@ -9,6 +9,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.profile;
 import client.request;
 import client.response;
@@ -96,14 +97,16 @@ fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
     guard idx >= 0 && idx < wire.len else { return 0, false; }
     let first = wire[idx];
     let prefix = first >> 6;
-    let needed = (1 as i64) << prefix;
-    guard idx + needed <= wire.len else { return 0, false; }
+    let needed = ((1 as u64) << prefix) as i64;
+    let end_idx = core::add_sat_i64(idx, needed);
+    guard end_idx <= wire.len else { return 0, false; }
 
     var v = (first & 0x3F) as u64;
     for i in 1..needed {
-        v = (v << 8) | wire[idx + i];
+        let byte_idx = core::add_sat_i64(idx, i);
+        v = (v << 8) | wire[byte_idx];
     }
-    idx += needed;
+    idx = end_idx;
     return v, true;
 }
 
@@ -114,11 +117,9 @@ fn format_webtransport_connect_request(
     req:        Request&,
     url_target: const u8[:],
 ) {
-    req.method.clear();
-    req.method.append("CONNECT");
-    req.url.clear();
+    let _ = req.method.try_set("CONNECT");
     let copy_len = min(url_target.len, req.url.cap);
-    req.url.append(url_target[..copy_len]);
+    let _ = req.url.try_set(url_target[..copy_len]);
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
@@ -133,7 +134,7 @@ fn is_webtransport_connect_request(req: const Request&) -> bool {
     if req.header(":protocol") != rfc::WEBTRANSPORT_PROTOCOL { return false; }
     let view, err = core::parse_url_view(req.url[..]);
     if !core::is_ok(err) || !view.valid { return false; }
-    return core::eq_ascii_fold(view.scheme, "https") && view.host.len > 0 && view.pathname.len > 0;
+    return view.scheme.eq_ascii_fold("https") && view.host.len > 0 && view.pathname.len > 0;
 }
 
 // Formats an HTTP/3 response accepting a WebTransport session
@@ -232,7 +233,7 @@ fn encode_webtransport_datagram<B>(
     payload:    const u8[:],
     out:        B&,
 ) {
-    write_varint(out, session_id / 4);
+    write_varint(out, session_id >> 2);
     write_varint(out, 0);
     out.append(payload);
 }
@@ -251,11 +252,9 @@ fn decode_webtransport_datagram(
     guard ok1 && quarter_id <= 0x0FFFFFFFFFFFFFFF else { return false; }
     let ctx_id, ok2 = read_varint(wire, idx);
     guard ok2 && ctx_id == 0 else { return false; }
-    guard idx <= wire.len && (wire.len - idx) <= out.payload.cap else { return false; }
+    guard idx <= wire.len && out.payload.try_set(wire[idx..]) else { return false; }
 
-    out.session_id = quarter_id * 4;
-    out.payload.clear();
-    out.payload.append(wire[idx..]);
+    out.session_id = core::mul_sat_u64(quarter_id, 4);
     return true;
 }
 
@@ -333,14 +332,10 @@ fn encode_webtransport_close_session<B>(
     out:        B&,
 ) {
     write_varint(out, rfc::CAPSULE_CLOSE_WEBTRANSPORT);
-    let payload_len = 4 + reason.len;
+    let payload_len = core::add_sat_i64(4, reason.len);
     write_varint(out, payload_len as u64);
 
-    out.push(((error_code >> 24) & 0xFF) as u8);
-    out.push(((error_code >> 16) & 0xFF) as u8);
-    out.push(((error_code >> 8) & 0xFF) as u8);
-    out.push((error_code & 0xFF) as u8);
-
+    out.append_u32_be(error_code);
     out.append(reason);
 }
 
@@ -355,13 +350,10 @@ fn decode_webtransport_close_session(
 ) -> bool {
     guard payload.len >= 4 else { return false; }
     let reason = payload[4..];
-    guard reason.len <= out.reason.cap && core::validate_utf8(reason) else { return false; }
+    guard reason.validate_utf8() && out.reason.try_set(reason) else { return false; }
 
     let code = core::read_be_u32(payload, 0);
     out.error_code = code;
-
-    out.reason.clear();
-    out.reason.append(reason);
     return true;
 }
 
@@ -460,9 +452,8 @@ fn decode_webtransport_stop_sending(
 fn close_webtransport_session(session: WebTransportSession&, code: u32, reason: const u8[:]) {
     session.is_active = false;
     session.close_code = code;
-    session.close_reason.clear();
     let copy_len = min(reason.len, session.close_reason.cap);
-    session.close_reason.append(reason[..copy_len]);
+    let _ = session.close_reason.try_set(reason[..copy_len]);
 }
 
 fn drain_webtransport_session(session: WebTransportSession&) {
@@ -651,8 +642,7 @@ fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64)
             return true;
         }
     }
-    if demuxer.sessions.len < demuxer.sessions.cap {
-        demuxer.sessions.push(entry);
+    if demuxer.sessions.try_push(entry) {
         close_session_streams(demuxer, session_id);
         return true;
     }
@@ -709,9 +699,8 @@ fn close_webtransport_demuxer_session(
     guard has_s else { return false; }
     demuxer.sessions[s_idx].state = WebTransportSessionState.Closed;
     demuxer.sessions[s_idx].close_code = code;
-    demuxer.sessions[s_idx].close_reason.clear();
     let copy_len = min(reason.len, demuxer.sessions[s_idx].close_reason.cap);
-    demuxer.sessions[s_idx].close_reason.append(reason[..copy_len]);
+    let _ = demuxer.sessions[s_idx].close_reason.try_set(reason[..copy_len]);
     for i in demuxer.streams.len {
         if demuxer.streams[i].session_id == session_id {
             demuxer.streams[i].is_open = false;
@@ -745,9 +734,7 @@ fn record_new_stream_route(
             return true;
         }
     }
-    guard demuxer.streams.len < demuxer.streams.cap else { return false; }
-    demuxer.streams.push(route);
-    return true;
+    return demuxer.streams.try_push(route);
 }
 
 // Routes incoming data chunks to an existing open WebTransport stream.
@@ -763,16 +750,16 @@ fn route_existing_stream(
 
     let s_idx, has_session = find_session_entry_index(demuxer, sid);
     guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        demuxer.dropped_frames += 1;
+        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
         return false;
     }
 
     guard is_session_routable(demuxer.sessions[s_idx].state) else {
-        demuxer.dropped_frames += 1;
+        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
         return false;
     }
 
-    demuxer.sessions[s_idx].frames_received += 1;
+    demuxer.sessions[s_idx].frames_received = core::add_sat_u64(demuxer.sessions[s_idx].frames_received, 1);
     if fin {
         demuxer.streams[route_idx].is_open = false;
     }
@@ -783,9 +770,15 @@ fn route_existing_stream(
     out.payload = wire;
     out.fin = fin;
 
-    demuxer.sessions[s_idx].bytes_received += wire.len as u64;
-    demuxer.streams[route_idx].bytes_delivered += wire.len as u64;
-    demuxer.total_dispatched += 1;
+    demuxer.sessions[s_idx].bytes_received = core::add_sat_u64(
+        demuxer.sessions[s_idx].bytes_received,
+        wire.len as u64,
+    );
+    demuxer.streams[route_idx].bytes_delivered = core::add_sat_u64(
+        demuxer.streams[route_idx].bytes_delivered,
+        wire.len as u64,
+    );
+    demuxer.total_dispatched = core::add_sat_u64(demuxer.total_dispatched, 1);
     return true;
 }
 
@@ -800,18 +793,18 @@ fn route_new_stream(
     let is_bidi = (stream_id & 0x02) == 0;
     var hdr = WebTransportDemuxHeader { .. };
     guard demux_webtransport_stream_header(wire, is_bidi, hdr) else {
-        demuxer.dropped_frames += 1;
+        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
         return false;
     }
 
     let s_idx, has_session = find_session_entry_index(demuxer, hdr.session_id);
     guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        demuxer.dropped_frames += 1;
+        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
         return false;
     }
 
     guard demuxer.sessions[s_idx].state == WebTransportSessionState.Active else {
-        demuxer.dropped_frames += 1;
+        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
         return false;
     }
 
@@ -820,14 +813,17 @@ fn route_new_stream(
 
     if !fin {
         guard record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind, payload.len as u64) else {
-            demuxer.dropped_frames += 1;
+            demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
             return false;
         }
     }
 
-    demuxer.sessions[s_idx].streams_count += 1;
-    demuxer.sessions[s_idx].frames_received += 1;
-    demuxer.sessions[s_idx].bytes_received += payload.len as u64;
+    demuxer.sessions[s_idx].streams_count = core::add_sat_u32(demuxer.sessions[s_idx].streams_count, 1);
+    demuxer.sessions[s_idx].frames_received = core::add_sat_u64(demuxer.sessions[s_idx].frames_received, 1);
+    demuxer.sessions[s_idx].bytes_received = core::add_sat_u64(
+        demuxer.sessions[s_idx].bytes_received,
+        payload.len as u64,
+    );
 
     out.kind = hdr.kind;
     out.stream_id = stream_id;
@@ -835,7 +831,7 @@ fn route_new_stream(
     out.payload = payload;
     out.fin = fin;
 
-    demuxer.total_dispatched += 1;
+    demuxer.total_dispatched = core::add_sat_u64(demuxer.total_dispatched, 1);
     return true;
 }
 

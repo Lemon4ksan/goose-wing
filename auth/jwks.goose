@@ -24,8 +24,6 @@ fn add_ed25519_key(
     kid:     const u8[:],
     pub_key: const u8[32],
 ) -> bool {
-    guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 else { return false; }
     var key = JwksKey {
         kty:        JwkKeyType.OKP,
         crv:        "Ed25519",
@@ -35,9 +33,8 @@ fn add_ed25519_key(
         valid:      true,
         ..
     };
-    key.kid.append(kid);
-    jwks.keys.push(key);
-    return true;
+    guard key.kid.try_set(kid) else { return false; }
+    return jwks.keys.try_push(key);
 }
 
 // Registers an asymmetric ECDSA P-256 public key in the key set (RFC 7518 §6.2).
@@ -47,8 +44,7 @@ fn add_es256_key(
     x:    const u8[:],
     y:    const u8[:],
 ) -> bool {
-    guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 && is_valid_jwk_ec_p256_coords(x, y) else { return false; }
+    guard is_valid_jwk_ec_p256_coords(x, y) else { return false; }
     var key = JwksKey {
         kty:   JwkKeyType.EC,
         crv:   "P-256",
@@ -57,11 +53,8 @@ fn add_es256_key(
         valid: true,
         ..
     };
-    key.kid.append(kid);
-    key.ec_x.append(x);
-    key.ec_y.append(y);
-    jwks.keys.push(key);
-    return true;
+    guard key.kid.try_set(kid) && key.ec_x.try_set(x) && key.ec_y.try_set(y) else { return false; }
+    return jwks.keys.try_push(key);
 }
 
 // Registers an asymmetric RSA public key in the key set (RFC 7518 §6.3).
@@ -72,8 +65,7 @@ fn add_rsa_key(
     n_be: const u8[:],
     e_be: const u8[:],
 ) -> bool {
-    guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 && is_canonical_jwk_rsa_params(n_be, e_be) else { return false; }
+    guard is_canonical_jwk_rsa_params(n_be, e_be) else { return false; }
     guard alg == JwtAlg.Unspecified || alg == JwtAlg.RS256 || alg == JwtAlg.PS256 else { return false; }
     var key = JwksKey {
         kty:   JwkKeyType.RSA,
@@ -82,11 +74,8 @@ fn add_rsa_key(
         valid: true,
         ..
     };
-    key.kid.append(kid);
-    key.rsa_n.append(n_be);
-    key.rsa_e.append(e_be);
-    jwks.keys.push(key);
-    return true;
+    guard key.kid.try_set(kid) && key.rsa_n.try_set(n_be) && key.rsa_e.try_set(e_be) else { return false; }
+    return jwks.keys.try_push(key);
 }
 
 // Registers a symmetric HMAC secret key in the key set
@@ -96,8 +85,6 @@ fn add_symmetric_key(
     alg:        JwtAlg,
     secret_key: const u8[:],
 ) -> bool {
-    guard jwks.keys.len < jwks.keys.cap else { return false; }
-    guard kid.len <= 64 else { return false; }
     guard secret_key.len >= 16 && secret_key.len <= 64 else { return false; }
     guard alg == JwtAlg.Unspecified || alg == JwtAlg.HS256 || alg == JwtAlg.HS384 || alg == JwtAlg.HS512 else {
         return false;
@@ -110,10 +97,8 @@ fn add_symmetric_key(
         valid: true,
         ..
     };
-    key.kid.append(kid);
-    key.symmetric_key.append(secret_key);
-    jwks.keys.push(key);
-    return true;
+    guard key.kid.try_set(kid) && key.symmetric_key.try_set(secret_key) else { return false; }
+    return jwks.keys.try_push(key);
 }
 
 // Finds the index of a key by kid (-1 if not found)
@@ -151,22 +136,13 @@ fn parse_single_jwk_element(
     reader:   json::Reader&,
     out_jwks: Jwks&,
 ) -> bool {
-    guard out_jwks.keys.len < out_jwks.keys.cap else {
-        json::skip(reader);
-        return false;
-    }
-
     var key_item = JwksKey { .. };
     var mat = JwkRawMaterial { .. };
+    defer zeroize_jwks_key(key_item);
+    defer core::secure_zeroize_slice(mat.raw_k[..]);
 
     parse_jwk_key_fields(reader, mat, key_item);
-    let ok = finalize_jwk_key(mat, key_item);
-    if ok {
-        out_jwks.keys.push(key_item);
-    }
-    zeroize_jwks_key(key_item);
-    core::secure_zeroize_slice(mat.raw_k[..]);
-    return ok;
+    return finalize_jwk_key(mat, key_item) && out_jwks.keys.try_push(key_item);
 }
 
 // Parses an RFC 7517 JWKS JSON document into Jwks struct.
@@ -345,15 +321,8 @@ fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
     guard view.host.len > 0 && view.host.len <= 255 else { return false; }
 
     var norm_host: u8[..256] = [];
-    core::to_lower_ascii(view.host, norm_host);
-    while norm_host.len > 0 {
-        let last_idx = core::sub_sat_i64(norm_host.len, 1);
-        if norm_host[last_idx] == '.' {
-            norm_host.pop();
-        } else {
-            break;
-        }
-    }
-    guard norm_host.len > 0 else { return false; }
-    return !is_forbidden_internal_host(norm_host[..]);
+    view.host.to_lower_ascii(norm_host);
+    let trimmed_host = norm_host[..].trim_end_byte('.');
+    guard trimmed_host.len > 0 else { return false; }
+    return !is_forbidden_internal_host(trimmed_host);
 }

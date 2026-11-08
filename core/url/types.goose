@@ -159,13 +159,13 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
 
     var bracketed: u8[..256] = [];
     if contains_byte(host, ':') && (host.len < 2 || host[0] != '[' || host[host.len - 1] != ']') {
-        guard host.len + 2 <= bracketed.cap else { return new_opaque_origin(); }
-        bracketed.push('[');
-        bracketed.append(host);
-        bracketed.push(']');
+        guard bracketed.try_push('[') &&
+              bracketed.try_append(host) &&
+              bracketed.try_push(']') else {
+            return new_opaque_origin();
+        }
     } else {
-        guard host.len <= bracketed.cap else { return new_opaque_origin(); }
-        bracketed.append(host);
+        guard bracketed.try_set(host) else { return new_opaque_origin(); }
     }
     strip_ipv6_zone_id(bracketed[..], orig.host);
     to_lower(orig.host[..]);
@@ -248,7 +248,7 @@ fn hostname(url_val: const Url&) -> const u8[:] {
 
 fn host(url_val: const Url&) -> const u8[:] {
     guard url_val.valid && url_val.host_start >= 0 else { return ""; }
-    let end_pos = if url_val.port_end > url_val.host_end { url_val.port_end } else { url_val.host_end };
+    let end_pos = max(url_val.port_end, url_val.host_end);
     return url_val.href[url_val.host_start..end_pos];
 }
 
@@ -298,19 +298,6 @@ fn is_secure_scheme(url_val: const Url&) -> bool {
     guard url_val.valid else { return false; }
     let scheme_str = scheme(url_val);
     return scheme_str == "https" || scheme_str == "wss";
-}
-
-// Formats normalized URL without query (`?`) or fragment (`#`) into `out` (RFC 3986 §6.2.3 / RFC 9449 §4.2).
-fn format_url_without_query_or_hash<B>(url_val: const Url&, out: B&) -> bool {
-    guard url_val.valid else { return false; }
-    let end_idx: i64 = if url_val.search_start >= 0 {
-        url_val.search_start as i64
-    } else if url_val.hash_start >= 0 {
-        url_val.hash_start as i64
-    } else {
-        url_val.href.len
-    };
-    return out.try_set(url_val.href[..end_idx]);
 }
 
 // Scans URI delimiter boundaries up to `?` or `#`, rejecting backslashes, double quotes,

@@ -240,7 +240,7 @@ fn reactor_drain_worker_ring(
     guard ring.is_open && ring.handle != 0 else { return; }
     loop {
         var client_val: u64 = 0;
-        let popped = core::spsc_pop(ring, client_val);
+        let popped = ring.spsc_pop(client_val);
         if !popped { break; }
         let client_fd = client_val as i64;
         guard client_fd > 0 else { continue; }
@@ -542,7 +542,7 @@ fn reactor_dispatch_events<Stage>(
 // Computes dynamic epoll wait timeout depending on worker ring state.
 inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
     guard ring.is_open else { return 1000; }
-    return if core::spsc_count(ring) > 0 { 0 } else { 10 };
+    return if ring.spsc_count() > 0 { 0 } else { 10 };
 }
 
 // Cleans up all active connection slots when shutting down reactor loop.
@@ -569,7 +569,7 @@ inline fn reactor_poll_sweep(
 ) {
     if n > 0 && (turn & 511) != 0 && cached_sec > 0 { return; }
     let now_mono = core::monotonic_now();
-    cached_ns = core::as_nanos(now_mono);
+    cached_ns = now_mono.as_nanos();
     cached_sec = (cached_ns / 1000000000) as i64;
     if enable_timer {
         reactor_sweep_timeouts(
@@ -811,10 +811,7 @@ fn handle_h3_server_datagram<B>(
         let hdr_val = entry_value(res.headers, e);
         var lname: u8[..256] = [];
         guard hdr_name.len <= lname.cap else { continue; }
-        for b in hdr_name {
-            let c = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-            lname.push(c);
-        }
+        hdr_name.to_lower_ascii(lname);
         let _ = extra_map.append_header(lname[..], hdr_val);
     }
     return internal::send_response_headers_body_and_trailers(
@@ -870,7 +867,7 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
             if max_datagrams > 0 { break; }
             continue;
         }
-        let now_ns = core::as_nanos(core::monotonic_now());
+        let now_ns = core::monotonic_now().as_nanos();
         dispatch_h3_udp_datagram(
             server, udp_fd, h3_conn, served, peer_ip4, peer_port, rx_buf[..recvd], now_ns, tx_wire,
         );
@@ -978,12 +975,12 @@ fn handle_h3_endpoint_frame<B>(
 fn encode_quic_version_negotiation<B>(hdr: const internal::QuicHeader&, out_wire: B&) {
     out_wire.clear();
     out_wire.push(0xC0);
-    core::append_u32_be(out_wire, rfc::QUIC_VERSION_NEGOTIATION);
+    out_wire.append_u32_be(rfc::QUIC_VERSION_NEGOTIATION);
     out_wire.push(hdr.scid.len as u8);
     out_wire.append(hdr.scid[..]);
     out_wire.push(hdr.dcid.len as u8);
     out_wire.append(hdr.dcid[..]);
-    core::append_u32_be(out_wire, rfc::QUIC_VERSION_1);
+    out_wire.append_u32_be(rfc::QUIC_VERSION_1);
 }
 
 fn encode_quic_server_initial<B>(
@@ -993,7 +990,7 @@ fn encode_quic_server_initial<B>(
 ) {
     out_wire.clear();
     out_wire.push(0xC1);
-    core::append_u32_be(out_wire, rfc::QUIC_VERSION_1);
+    out_wire.append_u32_be(rfc::QUIC_VERSION_1);
     out_wire.push(hdr.scid.len as u8);
     out_wire.append(hdr.scid[..]);
     let srv_cid: const u8[:] = "\x01\x02\x03\x04\x05\x06\x07\x08";
@@ -1008,7 +1005,7 @@ fn encode_quic_server_initial<B>(
 
     let payload_len = (2 + h3_ctrl.len) as u64;
     internal::quic_encode_varint(out_wire, payload_len);
-    core::append_u16_be(out_wire, 1);
+    out_wire.append_u16_be(1);
     out_wire.append(h3_ctrl[..]);
 }
 

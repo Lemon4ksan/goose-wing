@@ -324,9 +324,7 @@ fn check_expired_timers(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64
     var fired_count: i32 = 0;
     for i in p.timers.len {
         guard p.timers[i].active && now_ns >= p.timers[i].deadline_ns else { continue; }
-        guard out_events.len < out_events.cap else { break; }
-
-        var ev = PollReadyEvent {
+        let ev = PollReadyEvent {
             tag:             p.timers[i].tag,
             fd:              -1,
             events:          POLL_TIMER,
@@ -334,7 +332,7 @@ fn check_expired_timers(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64
             is_eof:          false,
             is_timer:        true,
         };
-        out_events.push(ev);
+        guard out_events.try_push(ev) else { break; }
         fired_count += 1;
 
         if p.timers[i].interval_ns > 0 {
@@ -361,13 +359,7 @@ fn set_socket_timeout(p: Poller&, fd: i32, seconds: u32) -> bool {
     if seconds == 0 {
         p.registrations[idx].timeout = COARSE_TIMEOUT_DISABLED;
     } else {
-        var delta_ticks: u32 = (seconds + 3) >> 2;
-        if delta_ticks >= 240 {
-            delta_ticks = 239;
-        }
-        if delta_ticks == 0 {
-            delta_ticks = 1;
-        }
+        let delta_ticks: u32 = min(max((seconds + 3) >> 2, 1), 239);
         p.registrations[idx].timeout = ((p.global_coarse_tick + delta_ticks) % 240) as u8;
     }
     return true;
@@ -395,16 +387,15 @@ inline fn dispatch_expired_registration(
 ) -> bool {
     guard reg.in_use else { return false; }
     guard is_coarse_timeout_expired(reg.timeout, old_tick, elapsed_ticks) else { return false; }
-    guard out_events.len < out_events.cap else { return false; }
-    reg.timeout = COARSE_TIMEOUT_DISABLED;
-    out_events.push(PollReadyEvent {
+    guard out_events.try_push(PollReadyEvent {
         tag:             reg.tag,
         fd:              reg.fd,
         events:          POLL_TIMER,
         bytes_available: 0,
         is_eof:          false,
         is_timer:        true,
-    });
+    }) else { return false; }
+    reg.timeout = COARSE_TIMEOUT_DISABLED;
     return true;
 }
 
@@ -528,14 +519,13 @@ fn poll_events(
     out_events: PollReadyEvent[..64]&,
 ) -> i32 {
     out_events.clear();
-    p.total_polls += 1;
+    p.total_polls = core::add_sat_u64(p.total_polls, 1);
     poller_poll_native_drivers(p, timeout_ms, out_events);
     check_expired_timers(p, now_ns, out_events);
     check_coarse_timeouts(p, now_ns, out_events);
 
     for i in p.registrations.len {
         guard p.registrations[i].in_use else { continue; }
-        guard out_events.len < out_events.cap else { break; }
 
         let interest = p.registrations[i].interest;
         var ready = p.registrations[i].sim.ready;
@@ -555,7 +545,7 @@ fn poll_events(
         }
 
         if triggered != POLL_NONE {
-            var ev = PollReadyEvent {
+            let ev = PollReadyEvent {
                 tag:             p.registrations[i].tag,
                 fd:              p.registrations[i].fd,
                 events:          triggered,
@@ -563,8 +553,8 @@ fn poll_events(
                 is_eof:          p.registrations[i].sim.eof,
                 is_timer:        false,
             };
-            out_events.push(ev);
-            p.total_events_dispatched += 1;
+            guard out_events.try_push(ev) else { break; }
+            p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
 
             if p.registrations[i].trigger == PollTrigger.Edge {
                 p.registrations[i].sim.ready &= ~triggered;
@@ -653,6 +643,8 @@ fn bind_connection(
     trigger:  PollTrigger = PollTrigger.Level,
 ) -> bool {
     guard register_socket(ev_loop.poller, fd, tag, interest, trigger) else { return false; }
+    var committed = false;
+    defer if !committed { deregister_socket(ev_loop.poller, fd); };
 
     for i in ev_loop.buffers.len {
         if !ev_loop.buffers[i].in_use {
@@ -663,11 +655,11 @@ fn bind_connection(
             ev_loop.buffers[i].write_offset = 0;
             ev_loop.buffers[i].closed = false;
             ev_loop.buffers[i].in_use = true;
+            committed = true;
             return true;
         }
     }
 
-    deregister_socket(ev_loop.poller, fd);
     return false;
 }
 
@@ -695,10 +687,9 @@ fn set_connection_timeout(ev_loop: EventLoop&, tag: u64, seconds: u32) -> bool {
 fn queue_write(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return false; }
-    guard ev_loop.buffers[b_idx].write_buf.len + data.len <= ev_loop.buffers[b_idx].write_buf.cap else {
+    guard ev_loop.buffers[b_idx].write_buf.try_append(data) else {
         return false; // Buffer overflow
     }
-    ev_loop.buffers[b_idx].write_buf.append(data);
     simulate_write_ready(ev_loop.poller, ev_loop.buffers[b_idx].fd);
     return true;
 }
@@ -707,22 +698,11 @@ fn queue_write(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
 fn feed_read(ev_loop: EventLoop&, tag: u64, data: const u8[:]) -> bool {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return false; }
-    guard ev_loop.buffers[b_idx].read_buf.len + data.len <= ev_loop.buffers[b_idx].read_buf.cap else {
+    guard ev_loop.buffers[b_idx].read_buf.try_append(data) else {
         return false;
     }
-    ev_loop.buffers[b_idx].read_buf.append(data);
     simulate_read_ready(ev_loop.poller, ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].read_buf.len);
     return true;
-}
-
-inline fn shift_read_buffer(buf: u8[..4096]&, consumed: i64) {
-    let read_len = buf.len;
-    guard consumed > 0 && consumed <= read_len else { return; }
-    let remaining = read_len - consumed;
-    for i in remaining {
-        buf[i] = buf[consumed + i];
-    }
-    buf.resize(remaining);
 }
 
 // Reads available data from the connection buffer
@@ -734,7 +714,7 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     let to_copy = min(avail, space);
     if to_copy > 0 {
         out.append(ev_loop.buffers[b_idx].read_buf[..to_copy]);
-        shift_read_buffer(ev_loop.buffers[b_idx].read_buf, to_copy);
+        ev_loop.buffers[b_idx].read_buf.compact_wire_buffer(to_copy);
     }
 
     let remaining = ev_loop.buffers[b_idx].read_buf.len;
@@ -752,18 +732,6 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     return to_copy;
 }
 
-inline fn trim_write_buffer(buf: u8[..4096]&, sent: i64) {
-    let write_len = buf.len;
-    guard sent > 0 && sent <= write_len else { return; }
-    let remaining = write_len - sent;
-    for i in remaining {
-        buf[i] = buf[sent + i];
-    }
-    while buf.len > remaining {
-        buf.pop();
-    }
-}
-
 inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
     guard fd >= 0 else {
         let count = buf.len;
@@ -777,7 +745,7 @@ inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
         return count;
     }
     let sent_i64 = sent as i64;
-    trim_write_buffer(buf, sent_i64);
+    buf.compact_wire_buffer(sent_i64);
     return sent_i64;
 }
 

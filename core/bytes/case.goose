@@ -136,7 +136,7 @@ fn starts_with_fold(s: const u8[:], prefix: const u8[:]) -> bool {
 // Checks whether s ends with suffix using case-insensitive ASCII comparison.
 fn ends_with_fold(s: const u8[:], suffix: const u8[:]) -> bool {
     guard s.len >= suffix.len else { return false; }
-    return eq_ascii_fold(s[s.len - suffix.len..], suffix);
+    return eq_ascii_fold(s[^suffix.len..], suffix);
 }
 
 // Searches for needle in haystack using case-insensitive ASCII comparison.

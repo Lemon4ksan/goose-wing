@@ -87,7 +87,7 @@ fn ohttp_derive_response_aead(
 ) -> bool {
     let nk = session.ctx.key_len;
     let nn = session.ctx.nonce_len;
-    let exp_len = if nk > nn { nk } else { nn };
+    let exp_len = max(nk, nn);
     guard nk > 0 && nk <= 32 && nn > 0 && nn <= 12 else { return false; }
     guard response_nonce.len == exp_len else { return false; }
     guard session.enc_len == 32 && session.enc.len == 32 else { return false; }
@@ -165,8 +165,7 @@ fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
     out.kem_id = kem_id;
     out.kdf_id = kdf_id;
     out.aead_id = aead_id;
-    out.public_key.clear();
-    out.public_key.append(raw[3..35]);
+    let _ = out.public_key.try_set(raw[3..35]);
     out.public_key_len = 32;
     return true;
 }
@@ -182,37 +181,29 @@ fn parse_ohttp_key_configs(raw: const u8[:], out: OhttpKeyConfig[..4]&, out_coun
     out_count = 0;
     out.clear();
     guard raw.len >= 2 else { return false; }
+    var committed = false;
+    defer if !committed {
+        out.clear();
+        out_count = 0;
+    };
     var idx:   i64 = 0;
     var count: i64 = 0;
     while idx < raw.len {
-        guard (raw.len - idx) >= 2 else {
-            out.clear();
-            out_count = 0;
-            return false;
-        }
+        guard (raw.len - idx) >= 2 else { return false; }
         let elen = ((raw[idx] as i64) << 8) | raw[idx + 1];
         idx += 2;
-        guard elen > 0 && elen <= (raw.len - idx) else {
-            out.clear();
-            out_count = 0;
-            return false;
-        }
-        guard count < OHTTP_MAX_KEY_CONFIGS else {
-            out.clear();
-            out_count = 0;
+        guard elen > 0 && elen <= (raw.len - idx) && count < OHTTP_MAX_KEY_CONFIGS else {
             return false;
         }
         var elem = OhttpKeyConfig { .. };
-        guard parse_ohttp_key_config(raw[idx..idx + elen], elem) else {
-            out.clear();
-            out_count = 0;
+        guard parse_ohttp_key_config(raw[idx..idx + elen], elem) && out.try_push(elem) else {
             return false;
         }
-        out.push(elem);
         count += 1;
         idx += elen;
     }
     out_count = count as i32;
+    committed = true;
     return true;
 }
 
@@ -268,8 +259,7 @@ fn ohttp_seal_request(
         return false;
     }
 
-    session.enc.clear();
-    session.enc.append(enc[..]);
+    let _ = session.enc.try_set(enc[..]);
     session.enc_len = 32;
     out_len = out.len as i32;
     return true;
@@ -319,8 +309,7 @@ fn ohttp_open_request(
         session.ctx = HpkeContext { .. };
         return false;
     }
-    session.enc.clear();
-    session.enc.append(enc[..]);
+    let _ = session.enc.try_set(enc[..]);
     session.enc_len = 32;
     out_len = out.len as i32;
     return true;
@@ -392,7 +381,7 @@ fn ohttp_open_response(
 ) -> bool {
     let nk = session.ctx.key_len;
     let nn = session.ctx.nonce_len;
-    let exp_len = if nk > nn { nk } else { nn };
+    let exp_len = max(nk, nn);
     guard enc_response.len >= exp_len + rfc::OHTTP_AEAD_TAG_LEN else { return false; }
 
     let response_nonce = enc_response[..exp_len];
@@ -405,7 +394,7 @@ fn ohttp_open_response(
 
     var tag: u8[16] = [0; 16];
     for i in 16 { tag[i] = ct[ct.len - 16 + i]; }
-    let body = ct[..ct.len - 16];
+    let body = ct[..^16];
 
     out.clear();
     var open_ok = false;

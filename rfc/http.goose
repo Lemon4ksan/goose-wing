@@ -311,30 +311,36 @@ const HTTP_VERSION_1_0_U64: u64 = 0x302E312F50545448; // RFC 9112 Section 2.3 ("
 
 // RFC 9110 Section 9.2.1: Safe Methods - Checks whether an HTTP method is safe (GET, HEAD, OPTIONS, TRACE).
 inline fn is_safe_http_method(method: const u8[:]) -> bool {
-    return core::eq_ascii_fold(method, "GET") ||
-           core::eq_ascii_fold(method, "HEAD") ||
-           core::eq_ascii_fold(method, "OPTIONS") ||
-           core::eq_ascii_fold(method, "TRACE");
+    return match method.len {
+        3 => method.eq_ascii_fold("GET"),
+        4 => method.eq_ascii_fold("HEAD"),
+        5 => method.eq_ascii_fold("TRACE"),
+        7 => method.eq_ascii_fold("OPTIONS"),
+        _ => false,
+    };
 }
 
 // RFC 9110 Section 9.2.2: Idempotent Methods - Checks whether an HTTP method is semantically idempotent.
 inline fn is_idempotent_method(method: const u8[:]) -> bool {
-    return core::eq_ascii_fold(method, "GET") ||
-           core::eq_ascii_fold(method, "HEAD") ||
-           core::eq_ascii_fold(method, "PUT") ||
-           core::eq_ascii_fold(method, "DELETE") ||
-           core::eq_ascii_fold(method, "OPTIONS") ||
-           core::eq_ascii_fold(method, "TRACE") ||
-           core::eq_ascii_fold(method, "QUERY");
+    return match method.len {
+        3 => method.eq_ascii_fold("GET") || method.eq_ascii_fold("PUT"),
+        4 => method.eq_ascii_fold("HEAD"),
+        5 => method.eq_ascii_fold("TRACE") || method.eq_ascii_fold("QUERY"),
+        6 => method.eq_ascii_fold("DELETE"),
+        7 => method.eq_ascii_fold("OPTIONS"),
+        _ => false,
+    };
 }
 
 // RFC 8470 Section 5.2: Receiving Early Data - Determines if an HTTP method is safe for 0-RTT Early Data (RFC 10008 Section 2).
 inline fn is_safe_for_early_data(method: const u8[:]) -> bool {
-    return method == "GET" ||
-           method == "HEAD" ||
-           method == "OPTIONS" ||
-           method == "TRACE" ||
-           method == "QUERY";
+    return match method.len {
+        3 => method == "GET",
+        4 => method == "HEAD",
+        5 => method == "TRACE" || method == "QUERY",
+        7 => method == "OPTIONS",
+        _ => false,
+    };
 }
 
 // ---- Standard HTTP Header Field Names & Media Types ----------------------
@@ -395,37 +401,39 @@ const MIME_PARTIAL_UPLOAD:           const u8[:] = "application/partial-upload";
 
 // RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallowed framing, routing, connection, and auth trailer fields.
 inline fn is_disallowed_control_trailer(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, "content-length") ||
-           core::eq_ascii_fold(name, "transfer-encoding") ||
-           core::eq_ascii_fold(name, "trailer") ||
-           core::eq_ascii_fold(name, "host") ||
-           core::eq_ascii_fold(name, "connection") ||
-           core::eq_ascii_fold(name, "keep-alive") ||
-           core::eq_ascii_fold(name, "te") ||
-           core::eq_ascii_fold(name, "upgrade") ||
-           core::eq_ascii_fold(name, "proxy-connection") ||
-           core::eq_ascii_fold(name, "authorization") ||
-           core::eq_ascii_fold(name, "proxy-authorization");
+    return match name.len {
+        2 => name.eq_ascii_fold("te"),
+        4 => name.eq_ascii_fold("host"),
+        7 => name.eq_ascii_fold("trailer") || name.eq_ascii_fold("upgrade"),
+        10 => name.eq_ascii_fold("connection") || name.eq_ascii_fold("keep-alive"),
+        13 => name.eq_ascii_fold("authorization"),
+        14 => name.eq_ascii_fold("content-length"),
+        16 => name.eq_ascii_fold("proxy-connection"),
+        17 => name.eq_ascii_fold("transfer-encoding"),
+        19 => name.eq_ascii_fold("proxy-authorization"),
+        _ => false,
+    };
 }
 
 // RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallowed content negotiation, conditional, and cookie trailer fields.
 inline fn is_disallowed_content_or_cond_trailer(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, "set-cookie") ||
-           core::eq_ascii_fold(name, "cookie") ||
-           core::eq_ascii_fold(name, "content-range") ||
-           core::eq_ascii_fold(name, "content-type") ||
-           core::eq_ascii_fold(name, "content-encoding") ||
-           core::eq_ascii_fold(name, "if-match") ||
-           core::eq_ascii_fold(name, "if-none-match") ||
-           core::eq_ascii_fold(name, "if-modified-since") ||
-           core::eq_ascii_fold(name, "if-unmodified-since") ||
-           core::eq_ascii_fold(name, "if-range") ||
-           core::eq_ascii_fold(name, "range");
+    return match name.len {
+        5 => name.eq_ascii_fold("range"),
+        6 => name.eq_ascii_fold("cookie"),
+        8 => name.eq_ascii_fold("if-match") || name.eq_ascii_fold("if-range"),
+        10 => name.eq_ascii_fold("set-cookie"),
+        12 => name.eq_ascii_fold("content-type"),
+        13 => name.eq_ascii_fold("content-range") || name.eq_ascii_fold("if-none-match"),
+        16 => name.eq_ascii_fold("content-encoding"),
+        17 => name.eq_ascii_fold("if-modified-since"),
+        19 => name.eq_ascii_fold("if-unmodified-since"),
+        _ => false,
+    };
 }
 
 // RFC 9112 Section 7.1.2: Chunked Trailer Section - Validates whether a header field is prohibited in HTTP trailers.
 inline fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
-    let name = core::trim_lws(hname);
+    let name = hname.trim_lws();
     guard name.len > 0 else { return true; }
     // RFC 9113 Section 8.1: HTTP/2 and HTTP/3 pseudo-header fields are strictly forbidden in trailers
     if name[0] == ':' {
@@ -436,20 +444,20 @@ inline fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
 
 // RFC 9110 Section 15.4: Redirection 3xx - Identifies payload and conditional validator headers stripped when mutating redirect to GET.
 inline fn is_payload_or_conditional_header(hname: const u8[:]) -> bool {
-    return core::eq_ascii_fold(hname, "content-type") ||
-           core::eq_ascii_fold(hname, "content-length") ||
-           core::eq_ascii_fold(hname, "content-encoding") ||
-           core::eq_ascii_fold(hname, "content-language") ||
-           core::eq_ascii_fold(hname, "content-location") ||
-           core::eq_ascii_fold(hname, "transfer-encoding") ||
-           core::eq_ascii_fold(hname, "digest") ||
-           core::eq_ascii_fold(hname, "if-match") ||
-           core::eq_ascii_fold(hname, "if-none-match") ||
-           core::eq_ascii_fold(hname, "if-modified-since") ||
-           core::eq_ascii_fold(hname, "if-unmodified-since") ||
-           core::eq_ascii_fold(hname, "if-range") ||
-           core::eq_ascii_fold(hname, "expect") ||
-           core::eq_ascii_fold(hname, "te");
+    return hname.eq_ascii_fold("content-type") ||
+           hname.eq_ascii_fold("content-length") ||
+           hname.eq_ascii_fold("content-encoding") ||
+           hname.eq_ascii_fold("content-language") ||
+           hname.eq_ascii_fold("content-location") ||
+           hname.eq_ascii_fold("transfer-encoding") ||
+           hname.eq_ascii_fold("digest") ||
+           hname.eq_ascii_fold("if-match") ||
+           hname.eq_ascii_fold("if-none-match") ||
+           hname.eq_ascii_fold("if-modified-since") ||
+           hname.eq_ascii_fold("if-unmodified-since") ||
+           hname.eq_ascii_fold("if-range") ||
+           hname.eq_ascii_fold("expect") ||
+           hname.eq_ascii_fold("te");
 }
 
 // ---- Binary HTTP & Oblivious HTTP (RFC 9292, RFC 9458) -------------------
@@ -459,11 +467,12 @@ const BHTTP_FRAME_KNOWN_LEN_RESPONSE: u8 = 1; // RFC 9292 Section 3.3
 
 // RFC 9292 Section 3.6: Header and Trailer Field Lines - Rejects pseudo-fields reserved by HTTP semantics in bhttp field sections.
 inline fn bhttp_is_reserved_pseudo(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, ":method") ||
-           core::eq_ascii_fold(name, ":scheme") ||
-           core::eq_ascii_fold(name, ":authority") ||
-           core::eq_ascii_fold(name, ":path") ||
-           core::eq_ascii_fold(name, ":status");
+    return match name.len {
+        5 => name.eq_ascii_fold(":path"),
+        7 => name.eq_ascii_fold(":method") || name.eq_ascii_fold(":scheme") || name.eq_ascii_fold(":status"),
+        10 => name.eq_ascii_fold(":authority"),
+        _ => false,
+    };
 }
 
 const OHTTP_INFO_REQUEST:       const u8[:] = "message/bhttp request";  // RFC 9458 Section 4.1
@@ -544,19 +553,25 @@ const DIGEST_QOP_AUTH_INT:         const u8[:] = "auth-int";    // RFC 7616 Sect
 
 // RFC 7616 Section 3.4: The Authorization Request Header Field - Checks whether Digest algorithm is supported.
 inline fn is_supported_digest_algo(algo: const u8[:]) -> bool {
-    return core::eq_ascii_fold(algo, DIGEST_ALGO_MD5)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+    return match algo.len {
+        3 => algo.eq_ascii_fold(DIGEST_ALGO_MD5),
+        7 => algo.eq_ascii_fold(DIGEST_ALGO_SHA256),
+        8 => algo.eq_ascii_fold(DIGEST_ALGO_MD5_SESS),
+        11 => algo.eq_ascii_fold(DIGEST_ALGO_SHA512_256),
+        12 => algo.eq_ascii_fold(DIGEST_ALGO_SHA256_SESS),
+        16 => algo.eq_ascii_fold(DIGEST_ALGO_SHA512_256_SESS),
+        _ => false,
+    };
 }
 
 // RFC 7616 Section 3.4: The Authorization Request Header Field - Checks whether Digest algorithm uses session key (-sess).
 inline fn is_sess_digest_algo(algo: const u8[:]) -> bool {
-    return core::eq_ascii_fold(algo, DIGEST_ALGO_SHA256_SESS)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_MD5_SESS)
-        || core::eq_ascii_fold(algo, DIGEST_ALGO_SHA512_256_SESS);
+    return match algo.len {
+        8 => algo.eq_ascii_fold(DIGEST_ALGO_MD5_SESS),
+        12 => algo.eq_ascii_fold(DIGEST_ALGO_SHA256_SESS),
+        16 => algo.eq_ascii_fold(DIGEST_ALGO_SHA512_256_SESS),
+        _ => false,
+    };
 }
 
 const DPOP_HEADER:            const u8[:] = "DPoP";               // RFC 9449 Section 4.1

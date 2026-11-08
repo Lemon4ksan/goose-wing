@@ -290,7 +290,7 @@ inline fn serialize_and_init_ws_upgrade<B>(
     }
 
     let compress_active = route_behavior.compression != WS_COMPRESS_DISABLED
-        && core::contains_fold(pending.extensions[..], "permessage-deflate");
+        && pending.extensions[..].contains_fold("permessage-deflate");
     if compress_active {
         out_wire.append("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n");
         expected_add += 74;
@@ -363,9 +363,9 @@ fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool
     let req_conn = header(req, "connection");
     let res_conn = header(res, "connection");
     let wants_close = req.method[..] == "CONNECT" ||
-        core::contains_fold(req_conn, "close") ||
-        (req.is_http10 && !core::contains_fold(req_conn, "keep-alive")) ||
-        core::contains_fold(res_conn, "close");
+        req_conn.contains_fold("close") ||
+        (req.is_http10 && !req_conn.contains_fold("keep-alive")) ||
+        res_conn.contains_fold("close");
     if wants_close {
         set_header(res, "Connection", "close");
         return true;
@@ -397,7 +397,7 @@ fn complete_ws_upgrade<Req, B>(
         && !ws_has_broken_compression(ua_upg);
     if allow_comp {
         let client_ext = req.header("sec-websocket-extensions");
-        if core::contains_fold(client_ext, "permessage-deflate") {
+        if client_ext.contains_fold("permessage-deflate") {
             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
             enable_permessage_deflate(sess, entry.behavior.compression);
         }
@@ -426,8 +426,7 @@ inline fn strip_required_proxy_preface<B>(
         return wire_in, false;
     }
     if proxy_hdr.src_ip_str.len > 0 {
-        effective_ip.clear();
-        effective_ip.append(proxy_hdr.src_ip_str[..]);
+        let _ = effective_ip.try_set(proxy_hdr.src_ip_str[..]);
     }
     return stripped, true;
 }
@@ -488,13 +487,16 @@ fn finish_single_h1_wire_turn<Stage, B>(
     stage:        Stage&,
 ) -> PipelineOutcome {
     g_turn_in_use = true;
+    defer {
+        g_turn_req.body.clear();
+        g_turn_res.body.clear();
+        g_turn_in_use = false;
+    };
     if server.ws_route_count > 0
         && (g_turn_req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
         && is_websocket_upgrade_request(g_turn_req) {
         let ws_idx = find_ws_route(server, g_turn_req.url[..]);
         if ws_idx >= 0 && complete_ws_upgrade(server, g_turn_req, server.ws_routes[ws_idx as i64], wire_out) {
-            g_turn_req.body.clear();
-            g_turn_in_use = false;
             return PipelineOutcome.Handled;
         }
     }
@@ -513,9 +515,6 @@ fn finish_single_h1_wire_turn<Stage, B>(
     serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
-    g_turn_req.body.clear();
-    g_turn_res.body.clear();
-    g_turn_in_use = false;
     return out_outcome;
 }
 
@@ -670,7 +669,7 @@ fn check_pipelined_content_length<B>(
     out_keep:    bool&,
 ) -> bool {
     guard cl_str.len > 0 else { return false; }
-    let cl_val, cl_ok = core::parse_i64_dec(trim(cl_str));
+    let cl_val, cl_ok = trim(cl_str).parse_i64_dec();
     guard cl_ok && cl_val >= 0 else { return false; }
     if cl_val > MAX_SERVER_BODY_LIMIT {
         // RFC 9110 Section 15.5.14: Payload Too Large
@@ -764,7 +763,7 @@ fn handle_pipelined_parse_failure<B>(
             out_keep_stream = cl_handled_keep;
             return cl_handled_keep;
         }
-        if core::contains_fold(te_str, "chunked") {
+        if te_str.contains_fold("chunked") {
             return check_pipelined_chunked_head(stream, hdr_end, server_name, wire_out, out_keep_stream);
         }
     }
@@ -873,7 +872,7 @@ fn process_pipelined_pipe_step<Stage, B>(
     wire_out:      B&,
     stage:         Stage&,
 ) -> PipeStepResult {
-    let stream = core::readable_slice(pipe);
+    let stream = pipe.readable_slice();
     reset_server_request_fast(req);
     let ok_parse, consumed = parse_http1_wire_request(stream, req);
 
@@ -881,26 +880,26 @@ fn process_pipelined_pipe_step<Stage, B>(
         var keep = false;
         let _ = handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
         if keep {
-            core::advance_to(pipe, 0, pipe.readable_len());
+            pipe.advance_to(0, pipe.readable_len());
             return PipeStepResult.Stop;
         }
-        core::advance_to(pipe, 0, pipe.readable_len());
+        pipe.advance_to(0, pipe.readable_len());
         return PipeStepResult.Error;
     }
 
     if try_handle_pipelined_websocket(server, req, wire_out) {
         total_handled++;
-        core::advance_to(pipe, consumed, consumed);
-        core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+        pipe.advance_to(consumed, consumed);
+        pipe.advance_to(pipe.readable_len(), pipe.readable_len());
         return PipeStepResult.Stop;
     }
 
     let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
     total_handled++;
-    core::advance_to(pipe, consumed, consumed);
+    pipe.advance_to(consumed, consumed);
 
     if req.method[..] == "CONNECT" || wants_close {
-        core::advance_to(pipe, pipe.readable_len(), pipe.readable_len());
+        pipe.advance_to(pipe.readable_len(), pipe.readable_len());
         return PipeStepResult.Stop;
     }
     return PipeStepResult.Continue;
@@ -956,14 +955,14 @@ inline fn eval_fast_l0_known_header(
             true
         },
         Connection => {
-            if hval.len == 10 && eq_ascii_fold(hval, "keep-alive") {
+            if hval.len == 10 && hval.eq_ascii_fold("keep-alive") {
                 return true;
             }
-            if core::contains_fold(hval, "close") {
+            if hval.contains_fold("close") {
                 out_close = true;
                 return true;
             }
-            !core::contains_fold(hval, "upgrade")
+            !hval.contains_fold("upgrade")
         },
         ContentLength => false,
         TransferEncoding => false,
@@ -1415,9 +1414,12 @@ fn finish_single_pipeline_turn<Stage, B>(
 ) {
     total_handled = core::add_sat_i64(total_handled, 1);
     g_turn_in_use = true;
-    if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
+    defer {
         g_turn_req.body.clear();
+        g_turn_res.body.clear();
         g_turn_in_use = false;
+    };
+    if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
         return;
     }
 
@@ -1435,10 +1437,6 @@ fn finish_single_pipeline_turn<Stage, B>(
         conn_wants_close = true;
         if g_turn_req.method[..] == "CONNECT" { total_consumed = wire_in_len; }
     }
-
-    g_turn_req.body.clear();
-    g_turn_res.body.clear();
-    g_turn_in_use = false;
 }
 
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
@@ -1543,16 +1541,16 @@ inline fn handle_h2_pipe_ingress<Stage, B>(
     wire_out:   B&,
     stage:      Stage&,
 ) -> i64, bool {
-    let stream = core::readable_slice(pipe);
+    let stream = pipe.readable_slice();
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out, stage,
     );
     if ok_h2 {
-        core::advance_to(pipe, consumed_h2, consumed_h2);
+        pipe.advance_to(consumed_h2, consumed_h2);
         server.requests_processed++;
         return 1, true;
     }
-    core::advance_to(pipe, consumed_h2, unread_len);
+    pipe.advance_to(consumed_h2, unread_len);
     return 0, false;
 }
 
@@ -1579,13 +1577,13 @@ fn handle_connection_pipe<Stage, B>(
     }
 
     // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
-    if pipe.consumed == 0 && is_partial_h2_client_preface(core::readable_slice(pipe)) {
+    if pipe.consumed == 0 && is_partial_h2_client_preface(pipe.readable_slice()) {
         return 0, true;
     }
 
     // Check for HTTP/2 connection preface if at the very start of the stream
     if pipe.consumed == 0 && unread_len >= 24 {
-        let stream = core::readable_slice(pipe);
+        let stream = pipe.readable_slice();
         if is_h2_client_preface(stream) {
             return handle_h2_pipe_ingress(server, client_ip, pipe, h2_sess, now_ns, unread_len, wire_out, stage);
         }
@@ -1737,7 +1735,7 @@ inline fn step_h2_server_session_buf<InBuf, OutBuf>(
     guard ok else { return false; }
     if consumed > 0 {
         server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
-        core::compact_wire_buffer(h2_in, consumed);
+        h2_in.compact_wire_buffer(consumed);
     }
     return true;
 }
@@ -1819,7 +1817,7 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     let ua_upg = req.header("user-agent");
     if behavior.compression != WS_COMPRESS_DISABLED && !ws_has_broken_compression(ua_upg) {
         let client_ext = req.header("sec-websocket-extensions");
-        if core::contains_fold(client_ext, "permessage-deflate") {
+        if client_ext.contains_fold("permessage-deflate") {
             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
             enable_permessage_deflate(ws, behavior.compression);
         }
@@ -1828,7 +1826,7 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     serialize_http1_response(ws_res, server.server_name[..], out_wire);
     let _ = tcp_send(conn_fd, out_wire[..]);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
-    core::compact_wire_buffer(in_buf, consumed);
+    in_buf.compact_wire_buffer(consumed);
     serve_ws_session_buf(conn_fd, ws, stage, in_buf, ws_frag_buf, out_wire);
     return true;
 }
@@ -1852,13 +1850,13 @@ fn dispatch_http1_connection_turn<Stage, OutBuf>(
     out_wire: OutBuf&,
 ) -> bool {
     var res = Response { .. };
-    let now_ns = core::as_nanos(core::monotonic_now());
+    let now_ns = core::monotonic_now().as_nanos();
     let _ = dispatch_server_request_with_stage(server, peer_ip, req, now_ns, res, stage);
     if req.url[..] == "/shutdown" && res.status_code == 200 {
         server.is_running = false;
     }
     let conn_hdr = res.header("Connection");
-    let wants_ka = server.is_running && core::eq_ascii_fold(conn_hdr, "keep-alive");
+    let wants_ka = server.is_running && conn_hdr.eq_ascii_fold("keep-alive");
     if !wants_ka && conn_hdr.len == 0 {
         set_header(res, "Connection", "close");
     }
@@ -1926,7 +1924,7 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
         }
     }
     let wants_ka = dispatch_http1_connection_turn(conn_fd, server, peer_ip, req, stage, out_wire);
-    core::compact_wire_buffer(in_buf, consumed);
+    in_buf.compact_wire_buffer(consumed);
     ka_count = core::add_sat_i64(ka_count, 1);
     return wants_ka && ka_count < 4;
 }
@@ -2155,7 +2153,7 @@ fn serve_http_listener(
 }
 
 inline fn response_wire_has_connection_close(wire: const u8[:]) -> bool {
-    return core::contains_fold(wire, "\r\nconnection: close\r\n");
+    return wire.contains_fold("\r\nconnection: close\r\n");
 }
 
 // Binds and listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets app.listen(path) pattern).
@@ -2179,11 +2177,11 @@ inline fn step_page_ring_conn<Stage>(
     cork:    core::CorkBuffer&,
     stage:   Stage&,
 ) -> bool {
-    let recvd = core::page_ring_recv(ring, conn, 65536, 5000);
+    let recvd = ring.page_ring_recv(conn, 65536, 5000);
     guard recvd > 0 else { return false; }
-    let now_ns = core::as_nanos(core::monotonic_now());
+    let now_ns = core::monotonic_now().as_nanos();
     let _, ok_handle = handle_connection_page_ring(server, peer_ip, ring, now_ns, cork, stage);
-    let should_close = !ok_handle || response_wire_has_connection_close(core::cork_as_slice(cork));
+    let should_close = !ok_handle || response_wire_has_connection_close(cork.cork_as_slice());
     if !ok_handle {
         if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
         return false;
@@ -2214,7 +2212,7 @@ fn serve_page_ring_loop<Stage>(
         }
         defer tcp_close(conn);
 
-        core::page_ring_clear(ring);
+        ring.page_ring_clear();
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
 
@@ -2247,11 +2245,11 @@ inline fn step_pipe_loop_conn<Stage>(
 ) -> bool {
     let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
     guard recvd > 0 else { return false; }
-    let now_ns = core::as_nanos(core::monotonic_now());
+    let now_ns = core::monotonic_now().as_nanos();
     let _, ok = handle_connection_pipe(
         server, peer_ip, pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx], stage,
     );
-    let should_close = !ok || response_wire_has_connection_close(core::cork_as_slice(cork));
+    let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
     if !ok {
         if cork.cork_pending() > 0 { tcp_flush_cork(conn, cork); }
         return false;
@@ -2311,9 +2309,9 @@ fn serve_with_stage<Stage>(
     guard listener_fd > 0 else { return 0; }
 
     var ring = core::PageRingBuffer { .. };
-    let ok_ring = core::page_ring_init(ring, 65536);
+    let ok_ring = ring.page_ring_init(65536);
     if ok_ring {
-        defer core::page_ring_close(ring);
+        defer ring.page_ring_close();
         return serve_page_ring_loop(server, listener_fd, max_connections, ring, stage);
     }
 
@@ -2336,15 +2334,15 @@ fn tls_recv_pipe(
     timeout_ms: u32 = 5000,
 ) -> i32 {
     guard fd > 0 else { return -1; }
-    let span, err = core::get_write_span(pipe, min_span);
+    let span, err = pipe.get_write_span(min_span);
     if err != core::IoError.None { return -1; }
     let recvd = tls_transport_recv_slice(fd, slot_idx, span, timeout_ms);
-    if recvd > 0 { core::commit_write(pipe, recvd); }
+    if recvd > 0 { pipe.commit_write(recvd); }
     return recvd;
 }
 
 fn tls_flush_cork(fd: i64, slot_idx: u16, cork: core::CorkBuffer&) -> i32 {
-    let slice = core::cork_as_slice(cork);
+    let slice = cork.cork_as_slice();
     guard slice.len > 0 else { return 0; }
     let sent = tls_transport_send(fd, slot_idx, slice);
     cork.cork_reset();
@@ -2385,21 +2383,23 @@ fn serve_tls(
             total_served++;
             continue;
         }
+        defer tls_transport_close(conn, slot_idx);
 
         pipe.pipe_reset();
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
         let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+        defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
         loop {
             let recvd = tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
             if recvd <= 0 { break; }
 
-            let now_ns = core::as_nanos(core::monotonic_now());
+            let now_ns = core::monotonic_now().as_nanos();
             let _, ok = handle_connection_pipe(
                 server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx],
             );
-            let should_close = !ok || response_wire_has_connection_close(core::cork_as_slice(cork));
+            let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
             if !ok {
                 if cork.cork_pending() > 0 { tls_flush_cork(conn, slot_idx, cork); }
                 break;
@@ -2411,8 +2411,6 @@ fn serve_tls(
                 break;
             }
         }
-        free_reactor_h2_session(h2_idx as i16, server.pipeline);
-        tls_transport_close(conn, slot_idx);
         total_served++;
     }
     return total_served;
@@ -2461,11 +2459,11 @@ inline fn handle_page_ring_h2_preface<Stage, B>(
     out_done = true;
     out_ok = ok_h2;
     if ok_h2 {
-        core::page_ring_discard(ring, consumed_h2);
+        ring.page_ring_discard(consumed_h2);
         server.requests_processed++;
         return 1;
     }
-    core::page_ring_clear(ring);
+    ring.page_ring_clear();
     return 0;
 }
 
@@ -2483,7 +2481,7 @@ fn handle_connection_page_ring<Stage, B>(
     guard ring.count > 0 else { return 0, true; }
 
     g_reactor_chunk.len = 0;
-    let peek_n = core::page_ring_peek(ring, g_reactor_chunk.bytes[..]);
+    let peek_n = ring.page_ring_peek(g_reactor_chunk.bytes[..]);
     guard peek_n > 0 else { return 0, true; }
     let peek_slice = g_reactor_chunk.bytes[..peek_n];
 
@@ -2502,14 +2500,14 @@ fn handle_connection_page_ring<Stage, B>(
         server, client_ip, peek_slice, now_ns, wire_out, stage,
     );
     if !ok_pipe {
-        core::page_ring_clear(ring);
+        ring.page_ring_clear();
         return total_handled, false;
     }
     if total_consumed > 0 {
-        core::page_ring_discard(ring, total_consumed);
+        ring.page_ring_discard(total_consumed);
     }
     if wants_close {
-        core::page_ring_clear(ring);
+        ring.page_ring_clear();
     }
     return total_handled, true;
 }
@@ -2529,9 +2527,9 @@ fn handle_connection_page_ring<B>(
 fn serve_page_ring(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     guard listener_fd > 0 else { return 0; }
     var ring = core::PageRingBuffer { .. };
-    let ok = core::page_ring_init(ring, 65536);
+    let ok = ring.page_ring_init(65536);
     guard ok else { return 0; }
-    defer core::page_ring_close(ring);
+    defer ring.page_ring_close();
     return serve_page_ring_loop(server, listener_fd, max_connections, ring);
 }
 
@@ -2554,16 +2552,18 @@ fn serve_static_mmap_file<B>(
     guard content_type.len <= 384 else { return false; }
     var mf, ok = core::mmap_file_open(path);
     guard ok else { return false; }
-    defer core::mmap_file_close(mf);
+    defer mf.mmap_file_close();
 
     var hdr_buf: u8[..512] = [];
     hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
     hdr_buf.append(content_type);
     hdr_buf.append("\r\nContent-Length: ");
-    core::format_u64_dec(mf.size, hdr_buf);
+    mf.size.format_u64_dec(hdr_buf);
     hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
 
     let prev_len = wire_out.len;
+    var committed = false;
+    defer if !committed { wire_out.resize(prev_len); };
     wire_out.append(hdr_buf[..]);
 
     var chunk_buf: u8[4096] = [0; 4096];
@@ -2571,16 +2571,13 @@ fn serve_static_mmap_file<B>(
     while offset < mf.size {
         let rem = mf.size - offset;
         let ask = min(rem, 4096);
-        let n, r_ok = core::mmap_file_read(mf, offset, chunk_buf[..(ask as i64)]);
+        let n, r_ok = mf.mmap_file_read(offset, chunk_buf[..(ask as i64)]);
         guard r_ok && n > 0 else { break; }
         wire_out.append(chunk_buf[..n]);
         offset = offset + (n as u64);
     }
-    let ok_done = verify_mmap_transfer_complete(offset, mf.size, prev_len, hdr_buf.len, wire_out.len);
-    if !ok_done {
-        wire_out.resize(prev_len);
-    }
-    return ok_done;
+    committed = verify_mmap_transfer_complete(offset, mf.size, prev_len, hdr_buf.len, wire_out.len);
+    return committed;
 }
 
 // Sends a static file directly from kernel memory-mapped pages to a socket with zero user-space copying.
@@ -2592,20 +2589,20 @@ fn send_static_mmap_file(
     guard sock_fd > 0 && content_type.len <= 384 else { return false; }
     var mf, ok = core::mmap_file_open(path);
     guard ok else { return false; }
-    defer core::mmap_file_close(mf);
+    defer mf.mmap_file_close();
     guard mf.size <= 0x7FFFFFFF else { return false; }
 
     var hdr_buf: u8[..512] = [];
     hdr_buf.append("HTTP/1.1 200 OK\r\nContent-Type: ");
     hdr_buf.append(content_type);
     hdr_buf.append("\r\nContent-Length: ");
-    core::format_u64_dec(mf.size, hdr_buf);
+    mf.size.format_u64_dec(hdr_buf);
     hdr_buf.append("\r\nConnection: keep-alive\r\n\r\n");
 
     let sent_hdr = native_tcp_send(sock_fd, hdr_buf[..]);
     guard sent_hdr == (hdr_buf.len as i32) else { return false; }
 
     guard mf.size > 0 else { return true; }
-    let sent_body, body_ok = core::mmap_file_send(mf, 0, mf.size as u32, sock_fd);
+    let sent_body, body_ok = mf.mmap_file_send(0, mf.size as u32, sock_fd);
     return body_ok && (sent_body as u64) == mf.size;
 }

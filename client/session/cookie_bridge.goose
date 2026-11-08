@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -21,11 +22,11 @@ fn compute_hop_samesite_context(
 ) -> SameSiteCookieContext {
     var samesite_ctx_type = SameSiteContextType.CrossSite;
     let is_first_p = !ctx.site_for_cookies.is_null &&
-        is_first_party(ctx.site_for_cookies, core::href(current_url), true);
+        is_first_party(ctx.site_for_cookies, current_url.href[..], true);
     let init_same_site = !ctx.has_initiator || (
         ctx.initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
             ctx.initiator.scheme[..], ctx.initiator.host[..],
-            core::scheme(current_url), core::hostname(current_url),
+            current_url.scheme(), current_url.hostname(),
         )
     );
 
@@ -78,7 +79,7 @@ fn compute_hop_samesite_context_for_response(
 ) -> SameSiteCookieContext {
     var resp_ctx = copy(req_samesite_eval);
     if ctx.is_main_frame && !ctx.site_for_cookies.is_null {
-        let is_first_p = is_first_party(ctx.site_for_cookies, core::href(current_url), true);
+        let is_first_p = is_first_party(ctx.site_for_cookies, current_url.href[..], true);
         if is_first_p && resp_ctx.context_type == SameSiteContextType.CrossSite {
             resp_ctx.context_type = SameSiteContextType.SameSiteLax;
         }
@@ -165,7 +166,7 @@ fn ingest_hop_response_cookies(
     for i in resp_headers.entries.len {
         let e = resp_headers.entries[i];
         let ename = entry_name(resp_headers, e);
-        guard eq_ascii_fold(ename, "set-cookie") else { continue; }
+        guard ename.eq_ascii_fold("set-cookie") else { continue; }
         let set_cookie_str = entry_value(resp_headers, e);
         var def_path: u8[..256] = [];
         compute_default_cookie_path(current_url.pathname(), def_path);

@@ -61,9 +61,7 @@ fn compute_websocket_accept<B>(client_key: const u8[:], out: B&) {
 
     // Generic fallback for non-standard key lengths
     var combined: u8[..128] = [];
-    guard core::add_sat_i64(client_key.len, rfc::WS_HANDSHAKE_GUID.len) <= combined.cap else { return; }
-    combined.append(client_key);
-    combined.append(rfc::WS_HANDSHAKE_GUID);
+    guard combined.try_set(client_key) && combined.try_append(rfc::WS_HANDSHAKE_GUID) else { return; }
     let digest = core::sha1(combined[..]);
     core::base64_encode(digest[..], out);
 }
@@ -103,7 +101,7 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
     loop {
         let part, ok = tok.token_next();
         guard ok else { break; }
-        if core::eq_ascii_fold(part.trim_lws(), target) {
+        if part.trim_lws().eq_ascii_fold(target) {
             return true;
         }
     }
@@ -132,7 +130,7 @@ fn has_subprotocol_token(list: const u8[:], target: const u8[:]) -> bool {
 fn req_count_header(req: const Request&, header_name: const u8[:]) -> i64 {
     var count: i64 = 0;
     for &e in req.headers.entries {
-        if core::eq_ascii_fold(entry_name(req.headers, e), header_name) {
+        if entry_name(req.headers, e).eq_ascii_fold(header_name) {
             count = core::add_sat_i64(count, 1);
         }
     }
@@ -142,7 +140,7 @@ fn req_count_header(req: const Request&, header_name: const u8[:]) -> i64 {
 // Helper to search for a token inside a specified HTTP header across all matching lines.
 fn req_has_header_token(req: const Request&, header_name: const u8[:], token: const u8[:]) -> bool {
     for &e in req.headers.entries {
-        if core::eq_ascii_fold(entry_name(req.headers, e), header_name) {
+        if entry_name(req.headers, e).eq_ascii_fold(header_name) {
             if has_header_token_fold(entry_value(req.headers, e), token) {
                 return true;
             }
@@ -154,7 +152,7 @@ fn req_has_header_token(req: const Request&, header_name: const u8[:], token: co
 // Helper to determine if a subprotocol is requested by the client in Sec-WebSocket-Protocol.
 fn req_has_subprotocol(req: const Request&, subprotocol: const u8[:]) -> bool {
     for &e in req.headers.entries {
-        if core::eq_ascii_fold(entry_name(req.headers, e), "sec-websocket-protocol") {
+        if entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
             if has_subprotocol_token(entry_value(req.headers, e), subprotocol) {
                 return true;
             }
@@ -200,7 +198,7 @@ fn map_has_header_token(
     token:       const u8[:],
 ) -> bool {
     for &e in map.entries {
-        if core::eq_ascii_fold(resolve_hdr_entry_name(map, raw_buf, e), header_name) {
+        if resolve_hdr_entry_name(map, raw_buf, e).eq_ascii_fold(header_name) {
             if has_header_token_fold(resolve_hdr_entry_val(map, raw_buf, e), token) {
                 return true;
             }
@@ -223,7 +221,7 @@ fn map_extract_single_header(
     var count:     i64 = 0;
     for i in map.entries.len {
         let e = map.entries[i];
-        if core::eq_ascii_fold(resolve_hdr_entry_name(map, raw_buf, e), header_name) {
+        if resolve_hdr_entry_name(map, raw_buf, e).eq_ascii_fold(header_name) {
             count = core::add_sat_i64(count, 1);
             if count == 1 {
                 first_idx = i;
@@ -265,7 +263,7 @@ fn validate_client_upgrade_response(
         guard proto_val.len > 0 && offered_protocols.len > 0 else {
             return "", WsError.InvalidSubprotocol;
         }
-        guard core::index_of_byte(proto_val, ',') < 0 && has_subprotocol_token(offered_protocols, proto_val) else {
+        guard !proto_val.contains_byte(',') && has_subprotocol_token(offered_protocols, proto_val) else {
             return "", WsError.InvalidSubprotocol;
         }
         return proto_val, WsError.None;
@@ -281,7 +279,7 @@ inline fn req_has_ws_host_authority(req: const Request&) -> bool {
     }
     guard req.url.len > 0 else { return false; }
     let u = core::new_url(req.url[..]);
-    return u.valid && core::host(u).len > 0;
+    return u.valid && u.host().len > 0;
 }
 
 // Validates RFC 6455 §4.2.1 client upgrade headers (`Upgrade`, `Connection`,
@@ -349,7 +347,7 @@ fn ws_upgrade_request(
 
     if subprotocol.len > 0 && req_has_subprotocol(req, subprotocol) {
         out_resp.set_header("Sec-WebSocket-Protocol", subprotocol);
-        session.subprotocol.append(subprotocol);
+        let _ = session.subprotocol.try_set(subprotocol);
     }
 
     return session, true;
@@ -381,19 +379,19 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
 fn is_h2_websocket_request(req: const Request&) -> bool {
     guard req.method[..] == "CONNECT" else { return false; }
     let proto = req.headers.find_header(":protocol");
-    guard core::eq_ascii_fold(proto, "websocket") else { return false; }
+    guard proto.eq_ascii_fold("websocket") else { return false; }
     guard req_count_header(req, "sec-websocket-version") == 1 else { return false; }
     let ver = req.headers.find_header("sec-websocket-version");
     return ver == rfc::WS_RFC6455_VERSION;
 }
 
 inline fn is_forbidden_h2_ws_header(name: const u8[:]) -> bool {
-    return core::eq_ascii_fold(name, "connection") ||
-           core::eq_ascii_fold(name, "upgrade") ||
-           core::eq_ascii_fold(name, "keep-alive") ||
-           core::eq_ascii_fold(name, "transfer-encoding") ||
-           core::eq_ascii_fold(name, "proxy-connection") ||
-           core::eq_ascii_fold(name, "sec-websocket-key");
+    return name.eq_ascii_fold("connection") ||
+           name.eq_ascii_fold("upgrade") ||
+           name.eq_ascii_fold("keep-alive") ||
+           name.eq_ascii_fold("transfer-encoding") ||
+           name.eq_ascii_fold("proxy-connection") ||
+           name.eq_ascii_fold("sec-websocket-key");
 }
 
 // Validates an RFC 8441 WebSocket Extended CONNECT request according to strict protocol rules:
@@ -407,7 +405,7 @@ fn validate_h2_websocket_request(req: const Request&) -> bool {
     guard is_h2_websocket_request(req) else { return false; }
 
     let scheme = req.headers.find_header(":scheme");
-    guard core::eq_ascii_fold(scheme, "http") || core::eq_ascii_fold(scheme, "https") else { return false; }
+    guard scheme.eq_ascii_fold("http") || scheme.eq_ascii_fold("https") else { return false; }
     let path = req.headers.find_header(":path");
     guard path.len > 0 else { return false; }
     let auth = req.headers.find_header(":authority");
@@ -467,7 +465,7 @@ fn ws_h2_upgrade_request(
 
     if subprotocol.len > 0 && req_has_subprotocol(req, subprotocol) {
         out_resp.set_header("sec-websocket-protocol", subprotocol);
-        session.subprotocol.append(subprotocol);
+        let _ = session.subprotocol.try_set(subprotocol);
     }
 
     return session, true;

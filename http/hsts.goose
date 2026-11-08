@@ -35,7 +35,7 @@ fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
     var unquoted = val;
     if val[0] == '"' {
         guard val.len >= 2 && val[val.len - 1] == '"' else { return 0, false; }
-        unquoted = val[1..val.len - 1];
+        unquoted = val[1..^1];
     }
     guard unquoted.len > 0 && unquoted[0] >= '0' && unquoted[0] <= '9' else { return 0, false; }
     return unquoted.parse_i64_dec();
@@ -44,17 +44,17 @@ fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
 fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
     let name, val, has_val = trimmed.split_once_byte('=');
     let key = name.trim_lws();
-    if eq_ascii_fold(key, rfc::HSTS_DIR_INCLUDE_SUBDOMAINS) {
+    if key.eq_ascii_fold(rfc::HSTS_DIR_INCLUDE_SUBDOMAINS) {
         guard !has_val && !d.include_subdomains else { return false; }
         d.include_subdomains = true;
         return true;
     }
-    if eq_ascii_fold(key, rfc::HSTS_DIR_PRELOAD) {
+    if key.eq_ascii_fold(rfc::HSTS_DIR_PRELOAD) {
         guard !has_val && !d.preload else { return false; }
         d.preload = true;
         return true;
     }
-    if eq_ascii_fold(key, rfc::HSTS_DIR_MAX_AGE) {
+    if key.eq_ascii_fold(rfc::HSTS_DIR_MAX_AGE) {
         guard !d.valid && has_val else { return false; }
         let parsed_age, age_ok = parse_hsts_max_age(val.trim_lws());
         guard age_ok else { return false; }
@@ -140,15 +140,15 @@ const HSTS_PRELOAD_DOMAINS: const u8[:][64] = [
 ];
 
 fn host_matches_domain(sub: const u8[:], domain: const u8[:]) -> bool {
-    if eq_ascii_fold(sub, domain) { return true; }
+    if sub.eq_ascii_fold(domain) { return true; }
     guard sub.len > domain.len + 1 else { return false; }
-    guard ends_with_fold(sub, domain) else { return false; }
+    guard sub.ends_with_fold(domain) else { return false; }
     return sub[sub.len - domain.len - 1] == '.';
 }
 
 fn is_preloaded_tld(hostname: const u8[:]) -> bool {
     for tld in HSTS_PRELOAD_TLDS {
-        if ends_with_fold(hostname, tld) {
+        if hostname.ends_with_fold(tld) {
             return true;
         }
     }
@@ -175,13 +175,13 @@ fn is_static_preloaded_host(hostname: const u8[:]) -> bool, bool {
 // Checks if host is a subdomain of parent (e.g. "api.example.com" of "example.com")
 fn is_subdomain_of(sub: const u8[:], parent: const u8[:]) -> bool {
     guard sub.len > parent.len + 1 else { return false; }
-    guard ends_with_fold(sub, parent) else { return false; }
+    guard sub.ends_with_fold(parent) else { return false; }
     return sub[sub.len - parent.len - 1] == '.';
 }
 
 fn entry_matches_hsts(entry: const HstsEntry&, hostname: const u8[:], now_sec: i64) -> bool {
     guard entry.valid && entry.expiry_epoch_sec >= now_sec else { return false; }
-    if eq_ascii_fold(hostname, entry.host[..]) {
+    if hostname.eq_ascii_fold(entry.host[..]) {
         return true;
     }
     return entry.include_subdomains && is_subdomain_of(hostname, entry.host[..]);
@@ -190,7 +190,7 @@ fn entry_matches_hsts(entry: const HstsEntry&, hostname: const u8[:], now_sec: i
 // RFC 6797 / Chromium `transport_security_state.cc:266-268`: `localhost` and `*.localhost`
 // are exempt from HSTS upgrades so local development servers do not break plain HTTP localhost.
 inline fn is_localhost_hsts_exempt(clean: const u8[:]) -> bool {
-    return eq_ascii_fold(clean, "localhost") || ends_with_fold(clean, ".localhost");
+    return clean.eq_ascii_fold("localhost") || clean.ends_with_fold(".localhost");
 }
 
 // Queries if hostname is a Known HSTS Host
@@ -220,7 +220,7 @@ fn find_hsts_entry_index(cache: const HstsCache&, hostname: const u8[:]) -> i64 
     for i in cache.entries.len {
         guard i < cache.entries.len else { break; }
         let entry = &cache.entries[i];
-        if entry.valid && eq_ascii_fold(entry.host[..], hostname) {
+        if entry.valid && entry.host[..].eq_ascii_fold(hostname) {
             return i;
         }
     }
@@ -246,9 +246,7 @@ fn find_hsts_evict_index(cache: const HstsCache&, now_sec: i64) -> i64 {
 }
 
 fn store_hsts_entry(cache: HstsCache&, entry: const HstsEntry&, now_sec: i64) {
-    if cache.entries.len < cache.entries.cap {
-        cache.entries.push(entry);
-    } else {
+    if !cache.entries.try_push(entry) {
         let evict_idx = find_hsts_evict_index(cache, now_sec);
         if evict_idx >= 0 && evict_idx < cache.entries.len {
             cache.entries[evict_idx] = entry;
@@ -358,8 +356,8 @@ fn parse_hsts_cache_line(line: const u8[:], now_sec: i64) -> HstsEntry, bool {
 
     entry.host.append(clean);
     entry.expiry_epoch_sec = expiry;
-    entry.include_subdomains = (sub_part == "1" || eq_ascii_fold(sub_part, "true"));
-    entry.is_preload = ok_p && (pre_part == "1" || eq_ascii_fold(pre_part, "true"));
+    entry.include_subdomains = (sub_part == "1" || sub_part.eq_ascii_fold("true"));
+    entry.is_preload = ok_p && (pre_part == "1" || pre_part.eq_ascii_fold("true"));
     entry.valid = true;
     return entry, true;
 }
@@ -456,7 +454,7 @@ fn split_authority_components(auth: const u8[:]) -> const u8[:], const u8[:], co
 //   returns: host = "example.com", port = "8080", rem = "/api?q=1", ok = true
 fn split_http_url(raw_url: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
     guard raw_url.len >= 7 else { return "", "", "", false; }
-    guard starts_with_fold(raw_url, "http://") else { return "", "", "", false; }
+    guard raw_url.starts_with_fold("http://") else { return "", "", "", false; }
 
     let auth_end = find_authority_end(raw_url);
     let auth = raw_url[7..auth_end];
@@ -474,7 +472,7 @@ fn hsts_upgrade_url<B>(
     now_sec: i64,
     out_url: B&,
 ) -> bool {
-    guard raw_url.len >= 7 && starts_with_fold(raw_url, "http://") else { return false; }
+    guard raw_url.len >= 7 && raw_url.starts_with_fold("http://") else { return false; }
     guard raw_url.len + 1 <= out_url.cap else { return false; }
     let auth_end = find_authority_end(raw_url);
     let auth = raw_url[7..auth_end];

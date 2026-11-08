@@ -145,7 +145,7 @@ fn update_stream_sliding_window(s: ZStreamCompressor&, chunk: const u8[:]) {
         s.window_len = 32768;
     } else if chunk.len > 0 {
         let clen = chunk.len as i32;
-        let to_keep = if s.window_len + clen > 32768 { 32768 - clen } else { s.window_len };
+        let to_keep = min(s.window_len, 32768 - clen);
         let shift = s.window_len - to_keep;
         if shift > 0 {
             for i in to_keep {
@@ -303,7 +303,7 @@ fn update_sliding_window(d: ZStreamDecompressor&, temp_out: const u8[:]) {
     }
     guard temp_out.len > 0 else { return; }
     let nlen = temp_out.len as i32;
-    let to_keep = if d.window_len + nlen > 32768 { 32768 - nlen } else { d.window_len };
+    let to_keep = min(d.window_len, 32768 - nlen);
     let shift = d.window_len - to_keep;
     if shift > 0 {
         for i in to_keep {

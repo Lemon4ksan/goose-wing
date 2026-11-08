@@ -38,7 +38,7 @@ inline fn should_skip_h1_header(
 ) -> bool {
     guard filter_mode == H1HeaderFilterMode.StripHopByHop else { return false; }
     if wing::is_hop_by_hop_header_name(name) {
-        return !(core::eq_ascii_fold(name, "te") && core::eq_ascii_fold(core::trim_lws(val), "trailers"));
+        return !(name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers"));
     }
     return wing::is_token_in_connection_header_map(headers, name);
 }
@@ -52,16 +52,16 @@ struct H1HeaderScanFlags {
 }
 
 fn record_h1_framing_header(name: const u8[:], val: const u8[:], flags: H1HeaderScanFlags&) -> bool {
-    if core::eq_ascii_fold(name, "transfer-encoding") {
-        guard !flags.has_cl && core::trim_lws(val).len > 0 else { return false; }
+    if name.eq_ascii_fold("transfer-encoding") {
+        guard !flags.has_cl && val.trim_lws().len > 0 else { return false; }
         flags.has_te = true;
         return true;
     }
-    if core::eq_ascii_fold(name, "content-length") {
+    if name.eq_ascii_fold("content-length") {
         guard !flags.has_te else { return false; }
-        let trimmed_cl = core::trim_lws(val);
-        let parsed_cl, ok_cl = core::parse_i64_dec(trimmed_cl);
-        let _, ok_u = core::parse_u64_dec(trimmed_cl);
+        let trimmed_cl = val.trim_lws();
+        let parsed_cl, ok_cl = trimmed_cl.parse_i64_dec();
+        let _, ok_u = trimmed_cl.parse_u64_dec();
         guard ok_cl && ok_u && parsed_cl >= 0 else { return false; }
         if flags.has_cl && flags.cl_val != parsed_cl {
             return false;
@@ -81,11 +81,11 @@ fn check_and_record_h1_header_entry(
     guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
         return false;
     }
-    if is_request && core::eq_ascii_fold(name, "host") {
-        guard !flags.has_host && is_valid_h1_host_value(core::trim_lws(val)) else { return false; }
+    if is_request && name.eq_ascii_fold("host") {
+        guard !flags.has_host && is_valid_h1_host_value(val.trim_lws()) else { return false; }
         flags.has_host = true;
     }
-    if core::eq_ascii_fold(name, "server") {
+    if name.eq_ascii_fold("server") {
         flags.has_server = true;
     }
     return record_h1_framing_header(name, val, flags);
@@ -141,50 +141,42 @@ fn encode_h1_request<B>(
     }
 
     let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
+
     guard out.try_append(method) &&
           out.try_append(" ") &&
           out.try_append(eff_target) &&
           out.try_append(" ") &&
           out.try_append(eff_ver) &&
           out.try_append("\r\n") else {
-        out.resize(start_len);
         return false;
     }
 
     var flags = H1HeaderScanFlags { .. };
-    guard append_h1_request_headers(headers, filter_mode, flags, out) else {
-        out.resize(start_len);
-        return false;
-    }
-    if flags.has_cl && body.len > 0 && flags.cl_val != body.len {
-        out.resize(start_len);
-        return false;
-    }
+    guard append_h1_request_headers(headers, filter_mode, flags, out) else { return false; }
+    guard !(flags.has_cl && body.len > 0 && flags.cl_val != body.len) else { return false; }
 
     if !flags.has_host && host.len > 0 {
         guard out.try_append("Host: ") &&
               out.try_append(host) &&
               out.try_append("\r\n") else {
-            out.resize(start_len);
             return false;
         }
     }
 
     if !flags.has_cl && !flags.has_te && body.len > 0 {
         var cl_str: u8[..32] = [];
-        core::format_u64_dec(body.len as u64, cl_str);
+        (body.len as u64).format_u64_dec(cl_str);
         guard out.try_append("Content-Length: ") &&
               out.try_append(cl_str[..]) &&
               out.try_append("\r\n") else {
-            out.resize(start_len);
             return false;
         }
     }
 
-    guard out.try_append("\r\n") && out.try_append(body) else {
-        out.resize(start_len);
-        return false;
-    }
+    guard out.try_append("\r\n") && out.try_append(body) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -198,7 +190,7 @@ fn append_h1_response_headers<B>(
         let name = wing::entry_name(headers, e);
         let val = wing::entry_value(headers, e);
         if is_empty_status &&
-           (core::eq_ascii_fold(name, "content-length") || core::eq_ascii_fold(name, "transfer-encoding")) {
+           (name.eq_ascii_fold("content-length") || name.eq_ascii_fold("transfer-encoding")) {
             guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
                 return false;
             }
@@ -238,25 +230,23 @@ fn encode_h1_response<B>(
     }
 
     let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
+
     var sc_str: u8[..16] = [];
-    core::format_u64_dec(status_code as u64, sc_str);
+    (status_code as u64).format_u64_dec(sc_str);
     guard out.try_append("HTTP/1.1 ") &&
           out.try_append(sc_str[..]) &&
           out.try_append(" ") &&
           out.try_append(eff_reason) &&
           out.try_append("\r\n") else {
-        out.resize(start_len);
         return false;
     }
 
     let is_empty_status = rfc::is_empty_body_status(status_code as i32);
     var flags = H1HeaderScanFlags { .. };
-    guard append_h1_response_headers(headers, is_empty_status, flags, out) else {
-        out.resize(start_len);
-        return false;
-    }
-    if !is_head_request && !is_empty_status && flags.has_cl && body.len > 0 && flags.cl_val != body.len {
-        out.resize(start_len);
+    guard append_h1_response_headers(headers, is_empty_status, flags, out) else { return false; }
+    guard !(!is_head_request && !is_empty_status && flags.has_cl && body.len > 0 && flags.cl_val != body.len) else {
         return false;
     }
 
@@ -264,27 +254,23 @@ fn encode_h1_response<B>(
         guard out.try_append("Server: ") &&
               out.try_append(server_name) &&
               out.try_append("\r\n") else {
-            out.resize(start_len);
             return false;
         }
     }
 
     if !is_empty_status && !flags.has_cl && !flags.has_te {
         var cl_str: u8[..32] = [];
-        core::format_u64_dec(body.len as u64, cl_str);
+        (body.len as u64).format_u64_dec(cl_str);
         guard out.try_append("Content-Length: ") &&
               out.try_append(cl_str[..]) &&
               out.try_append("\r\n") else {
-            out.resize(start_len);
             return false;
         }
     }
 
     let body_to_emit = if !is_head_request && !is_empty_status { body } else { "" };
-    guard out.try_append("\r\n") && out.try_append(body_to_emit) else {
-        out.resize(start_len);
-        return false;
-    }
+    guard out.try_append("\r\n") && out.try_append(body_to_emit) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -328,13 +314,13 @@ fn scan_h1_wire_field_name(src: const u8[:]) -> i64, bool {
 //   returns: true, out_status = 200
 fn parse_h1_wire_status_line(line: const u8[:], out_status: u16&) -> bool {
     guard line.len >= 12 else { return false; }
-    let ver_str, rest, has_sp1 = core::split_once_byte(line, ' ');
+    let ver_str, rest, has_sp1 = line.split_once_byte(' ');
     guard has_sp1 && (ver_str == "HTTP/1.1" || ver_str == "HTTP/1.0") else { return false; }
 
-    let code_str, reason_str, has_sp2 = core::split_once_byte(rest, ' ');
+    let code_str, reason_str, has_sp2 = rest.split_once_byte(' ');
     let sc_part = if has_sp2 { code_str } else { rest };
     guard sc_part.len == 3 else { return false; }
-    let sc, ok_sc = core::parse_i32_dec(sc_part);
+    let sc, ok_sc = sc_part.parse_i32_dec();
     guard ok_sc && sc >= 100 && sc <= 599 else { return false; }
     if has_sp2 {
         guard is_valid_h1_reason_phrase(reason_str) else { return false; }
@@ -359,13 +345,13 @@ fn decode_h1_response_head(
     out_status = 0;
     out_headers.clear();
 
-    let head_no_end, _, has_crlfcrlf = core::split_once(raw, "\r\n\r\n");
+    let head_no_end, _, has_crlfcrlf = raw.split_once("\r\n\r\n");
     guard has_crlfcrlf else {
         return 0, wing::HeaderParseError.Incomplete;
     }
-    let body_offset = head_no_end.len + 4;
+    let body_offset = core::add_sat_i64(head_no_end.len, 4);
 
-    let status_line, headers_no_end, has_crlf = core::split_once(head_no_end, "\r\n");
+    let status_line, headers_no_end, has_crlf = head_no_end.split_once("\r\n");
     if !has_crlf {
         guard head_no_end.len >= 12 && parse_h1_wire_status_line(head_no_end, out_status) else {
             return 0, wing::HeaderParseError.MalformedStatusLine;

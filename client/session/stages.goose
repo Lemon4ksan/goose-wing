@@ -50,8 +50,7 @@ fn stage_client_url_hsts(
     if enable_hsts {
         var upgraded_url: u8[..2048] = [];
         if hsts_upgrade_url(hsts, url_buf[..], now_sec, upgraded_url) {
-            url_buf.clear();
-            url_buf.append(upgraded_url[..]);
+            let _ = url_buf.try_set(upgraded_url[..]);
         }
     }
     return wire::StageVerdict.Continue;
@@ -109,11 +108,9 @@ fn stage_client_cache_lookup<Cache>(
 ) -> wire::StageVerdict {
     guard enable_cache else { return wire::StageVerdict.Continue; }
     var lookup_req = copy(req);
-    lookup_req.url.clear();
-    lookup_req.url.append(eff_url);
+    let _ = lookup_req.url.try_set(eff_url);
     if method_override.len > 0 {
-        lookup_req.method.clear();
-        lookup_req.method.append(method_override);
+        let _ = lookup_req.method.try_set(method_override);
     }
     lookup_req.headers = copy(headers);
     let lookup_dec = cache.lookup(lookup_req, now_ts);
@@ -130,7 +127,7 @@ fn stage_client_cache_lookup<Cache>(
             status_code: rfc::STATUS_GATEWAY_TIMEOUT,
             ..
         };
-        out_resp.effective_url.append(eff_url);
+        let _ = out_resp.effective_url.try_set(eff_url);
         return wire::StageVerdict.Abort { err_code: rfc::STATUS_GATEWAY_TIMEOUT };
     }
     if lookup_dec.kind == LookupResultKind.Revalidate {
@@ -263,7 +260,7 @@ fn stage_client_cookie_store<Jar>(
     for i in resp_headers.entries.len {
         let e = resp_headers.entries[i];
         let ename = entry_name(resp_headers, e);
-        guard eq_ascii_fold(ename, "set-cookie") else { continue; }
+        guard ename.eq_ascii_fold("set-cookie") else { continue; }
         let set_cookie_str = entry_value(resp_headers, e);
         var def_path: u8[..256] = [];
         compute_default_cookie_path(current_url.pathname(), def_path);
@@ -322,7 +319,7 @@ fn stage_client_alt_svc(
     if enable_hsts && is_https {
         let hsts_val = header(resp, "Strict-Transport-Security");
         if hsts_val.len > 0 {
-            hsts_cache_update(hsts, core::hostname(current_url), hsts_val, now_sec);
+            hsts_cache_update(hsts, current_url.hostname(), hsts_val, now_sec);
         }
     }
     if enable_dict && is_https {
@@ -378,10 +375,8 @@ fn stage_client_cache_store<Cache>(
     guard enable_cache else { return wire::StageVerdict.Continue; }
     cache_ts.response_time = cache_ts.now;
     var hop_req = copy(req);
-    hop_req.url.clear();
-    hop_req.url.append(current_url.href[..]);
-    hop_req.method.clear();
-    hop_req.method.append(method);
+    let _ = hop_req.url.try_set(current_url.href[..]);
+    let _ = hop_req.method.try_set(method);
     hop_req.headers = copy(headers);
     let resp_dec = cache.on_response(hop_req, out_resp, cache_ts, revalidate_idx);
     if resp_dec.kind == ResponseDecisionKind.FreshenAndReturn {
@@ -490,7 +485,7 @@ fn validate_client_cors_and_corp_response(
     var target_orig_str: u8[..256] = [];
     core::serialize_origin(ctx.initiator, init_orig_str);
     core::serialize_origin(target_orig, target_orig_str);
-    guard !eq_ascii_fold(init_orig_str[..], target_orig_str[..]) || ctx.tainted_origin else {
+    guard !init_orig_str[..].eq_ascii_fold(target_orig_str[..]) || ctx.tainted_origin else {
         return true;
     }
 
@@ -774,7 +769,7 @@ fn dispatch_client_ingress_stage(
         var origin_buf: u8[..128] = [];
         format_url_origin(current_url, origin_buf);
         let is_https = current_url.is_secure_scheme();
-        let curr_path = core::pathname(current_url);
+        let curr_path = current_url.pathname();
         return stage_client_dict_negotiate(
             ctx.headers,
             session.dict_cache,
@@ -894,7 +889,7 @@ fn dispatch_client_egress_stage(
         let is_https = current_url.is_secure_scheme();
         var origin_buf: u8[..128] = [];
         format_url_origin(current_url, origin_buf);
-        let curr_path = core::pathname(current_url);
+        let curr_path = current_url.pathname();
         let now_sec = div_euclid(session.virtual_clock_us, 1000000);
         return stage_client_alt_svc(
             out_resp,

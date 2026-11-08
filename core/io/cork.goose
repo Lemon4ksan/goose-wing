@@ -35,8 +35,7 @@ inline fn cork_pending(cb: const CorkBuffer&) -> i64 {
 
 // Returns remaining available capacity in the cork buffer.
 inline fn cork_available(cb: const CorkBuffer&) -> i64 {
-    let rem = CORK_BUFFER_CAP - cb.len;
-    return if rem > 0 { rem } else { 0 };
+    return max(0, CORK_BUFFER_CAP - cb.len);
 }
 
 inline fn cork_is_empty(cb: const CorkBuffer&) -> bool {
@@ -91,17 +90,6 @@ fn cork_write_u8(cb: CorkBuffer&, b: u8) -> IoError {
     return IoError.None;
 }
 
-// Appends 16-bit integer in Big-Endian wire order.
-fn cork_write_u16_be(cb: CorkBuffer&, v: u16) -> IoError {
-    guard cork_available(cb) >= 2 else {
-        return IoError.BufferFull;
-    }
-    cb.storage[cb.len] = ((v >> 8) & 0xFF) as u8;
-    cb.storage[cb.len + 1] = (v & 0xFF) as u8;
-    cb.len += 2;
-    return IoError.None;
-}
-
 // Appends 24-bit integer in Big-Endian wire order (RFC 9113 HTTP/2 framing).
 fn cork_write_u24_be(cb: CorkBuffer&, v: u32) -> IoError {
     guard cork_available(cb) >= 3 else {
@@ -124,23 +112,6 @@ fn cork_write_u32_be(cb: CorkBuffer&, v: u32) -> IoError {
     cb.storage[cb.len + 2] = ((v >> 8) & 0xFF) as u8;
     cb.storage[cb.len + 3] = (v & 0xFF) as u8;
     cb.len += 4;
-    return IoError.None;
-}
-
-// Appends 64-bit integer in Big-Endian wire order.
-fn cork_write_u64_be(cb: CorkBuffer&, v: u64) -> IoError {
-    guard cork_available(cb) >= 8 else {
-        return IoError.BufferFull;
-    }
-    cb.storage[cb.len] = ((v >> 56) & 0xFF) as u8;
-    cb.storage[cb.len + 1] = ((v >> 48) & 0xFF) as u8;
-    cb.storage[cb.len + 2] = ((v >> 40) & 0xFF) as u8;
-    cb.storage[cb.len + 3] = ((v >> 32) & 0xFF) as u8;
-    cb.storage[cb.len + 4] = ((v >> 24) & 0xFF) as u8;
-    cb.storage[cb.len + 5] = ((v >> 16) & 0xFF) as u8;
-    cb.storage[cb.len + 6] = ((v >> 8) & 0xFF) as u8;
-    cb.storage[cb.len + 7] = (v & 0xFF) as u8;
-    cb.len += 8;
     return IoError.None;
 }
 

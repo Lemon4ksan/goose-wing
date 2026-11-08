@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 
 // Window size calculation type in p0f v3 SYN fingerprint.
 enum P0fWindowType {
@@ -169,49 +170,49 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..256] {
     }
     out.push(':');
 
-    format(out, sig.ttl as i64);
+    sig.ttl.format_u32_dec(out);
     if sig.has_ttl_minus {
         out.push('-');
     }
     out.push(':');
 
-    format(out, sig.ip_opt_len as i64);
+    sig.ip_opt_len.format_u32_dec(out);
     out.push(':');
 
     if sig.mss == -1 {
         out.push('*');
     } else {
-        format(out, sig.mss as i64);
+        sig.mss.format_i64_dec(out);
     }
     out.push(':');
 
     match sig.window_type {
         Any => {
             out.append("*,");
-            format(out, sig.window_scale as i64);
+            sig.window_scale.format_i64_dec(out);
         },
         Mss => {
             out.append("mss*");
-            format(out, sig.window_size as i64);
+            sig.window_size.format_i64_dec(out);
             out.push(',');
-            format(out, sig.window_scale as i64);
+            sig.window_scale.format_i64_dec(out);
         },
         Mtu => {
             out.append("mtu*");
-            format(out, sig.window_size as i64);
+            sig.window_size.format_i64_dec(out);
             out.push(',');
-            format(out, sig.window_scale as i64);
+            sig.window_scale.format_i64_dec(out);
         },
         Mod => {
             out.append("mod*");
-            format(out, sig.window_size as i64);
+            sig.window_size.format_i64_dec(out);
             out.push(',');
-            format(out, sig.window_scale as i64);
+            sig.window_scale.format_i64_dec(out);
         },
         Normal => {
-            format(out, sig.window_size as i64);
+            sig.window_size.format_i64_dec(out);
             out.push(',');
-            format(out, sig.window_scale as i64);
+            sig.window_scale.format_i64_dec(out);
         },
     }
     out.push(':');
@@ -252,13 +253,18 @@ fn format_p0f(sig: const P0fSignature&) -> u8[..256] {
 //   raw = "4:64:0:1460:mss*10,0:mss,sok:df:0"
 //   returns: ok = true, colons = [1, 4, 6, 11, 20, 28, 31]
 fn parse_p0f_colons(raw: const u8[:], colons: i64[..8]&) -> bool {
+    let saved_len = colons.len;
+    var committed = false;
+    defer if !committed { colons.resize(saved_len); };
+
     for i in raw.len {
         if raw[i] == ':' {
-            guard colons.len < colons.cap else { return false; }
-            colons.push(i);
+            guard colons.try_push(i) else { return false; }
         }
     }
-    return colons.len == 7;
+    guard colons.len == 7 else { return false; }
+    committed = true;
+    return true;
 }
 
 // Parses TCP window size and scale specifications (f4).
@@ -273,44 +279,35 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
         sig.window_scale = -1;
         return true;
     }
-    var comma_idx: i64 = -1;
-    for i in f4.len {
-        if f4[i] == ',' {
-            comma_idx = i;
-            break;
-        }
-    }
-    guard comma_idx >= 0 else { return false; }
-
-    let ws_str = f4[..comma_idx];
-    let scale_str = f4[comma_idx + 1..];
+    let ws_str, scale_str, has_comma = f4.split_once_byte(',');
+    guard has_comma else { return false; }
 
     if scale_str == "*" || scale_str == "-1" {
         sig.window_scale = -1;
     } else {
-        let sc_val, sc_ok = parse_int(scale_str);
+        let sc_val, sc_ok = scale_str.parse_i64_dec();
         guard sc_ok && sc_val >= -1 && sc_val <= 14 else { return false; }
         sig.window_scale = sc_val as i16;
     }
 
-    if starts_with(ws_str, "mss*") {
+    if core::starts_with(ws_str, "mss*") {
         sig.window_type = P0fWindowType.Mss;
-        let m_val, m_ok = parse_int(ws_str[4..]);
+        let m_val, m_ok = ws_str[4..].parse_i64_dec();
         guard m_ok && m_val >= 0 && m_val <= 65535 else { return false; }
         sig.window_size = m_val as i32;
-    } else if starts_with(ws_str, "mtu*") {
+    } else if core::starts_with(ws_str, "mtu*") {
         sig.window_type = P0fWindowType.Mtu;
-        let m_val, m_ok = parse_int(ws_str[4..]);
+        let m_val, m_ok = ws_str[4..].parse_i64_dec();
         guard m_ok && m_val >= 0 && m_val <= 65535 else { return false; }
         sig.window_size = m_val as i32;
-    } else if starts_with(ws_str, "mod*") {
+    } else if core::starts_with(ws_str, "mod*") {
         sig.window_type = P0fWindowType.Mod;
-        let m_val, m_ok = parse_int(ws_str[4..]);
+        let m_val, m_ok = ws_str[4..].parse_i64_dec();
         guard m_ok && m_val >= 1 && m_val <= 65535 else { return false; }
         sig.window_size = m_val as i32;
-    } else if starts_with(ws_str, "%") {
+    } else if core::starts_with(ws_str, "%") {
         sig.window_type = P0fWindowType.Mod;
-        let m_val, m_ok = parse_int(ws_str[1..]);
+        let m_val, m_ok = ws_str[1..].parse_i64_dec();
         guard m_ok && m_val >= 1 && m_val <= 65535 else { return false; }
         sig.window_size = m_val as i32;
     } else if ws_str == "*" {
@@ -318,7 +315,7 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
         sig.window_size = -1;
     } else {
         sig.window_type = P0fWindowType.Normal;
-        let w_val, w_ok = parse_int(ws_str);
+        let w_val, w_ok = ws_str.parse_i64_dec();
         guard w_ok && w_val >= 0 && w_val <= 65535 else { return false; }
         sig.window_size = w_val as i32;
     }
@@ -326,21 +323,28 @@ fn parse_p0f_window(f4: const u8[:], sig: P0fSignature&) -> bool {
 }
 
 fn push_parsed_option(sig: P0fSignature&, token: const u8[:]) -> bool {
-    guard token.len > 0 && sig.options.len < sig.options.cap else { return false; }
+    guard token.len > 0 else { return false; }
+    var opt = P0fTcpOption.Unknown;
     if token == "eol" {
-        sig.options.push(P0fTcpOption.Eol);
-    } else if starts_with(token, "eol+") {
-        let pad_val, pad_ok = parse_int(token[4..]);
+        opt = P0fTcpOption.Eol;
+    } else if core::starts_with(token, "eol+") {
+        let pad_val, pad_ok = token[4..].parse_i64_dec();
         guard pad_ok && pad_val >= 0 && pad_val <= 255 else { return false; }
-        sig.options.push(P0fTcpOption.Eol);
-    } else if token == "nop" { sig.options.push(P0fTcpOption.Nop); }
-    else if token == "mss" { sig.options.push(P0fTcpOption.Mss); }
-    else if token == "ws" { sig.options.push(P0fTcpOption.Ws); }
-    else if token == "sok" { sig.options.push(P0fTcpOption.Sok); }
-    else if token == "sack" { sig.options.push(P0fTcpOption.Sack); }
-    else if token == "ts" { sig.options.push(P0fTcpOption.Ts); }
-    else { sig.options.push(P0fTcpOption.Unknown); }
-    return true;
+        opt = P0fTcpOption.Eol;
+    } else if token == "nop" {
+        opt = P0fTcpOption.Nop;
+    } else if token == "mss" {
+        opt = P0fTcpOption.Mss;
+    } else if token == "ws" {
+        opt = P0fTcpOption.Ws;
+    } else if token == "sok" {
+        opt = P0fTcpOption.Sok;
+    } else if token == "sack" {
+        opt = P0fTcpOption.Sack;
+    } else if token == "ts" {
+        opt = P0fTcpOption.Ts;
+    }
+    return sig.options.try_push(opt);
 }
 
 // Parses comma-separated TCP options into signature option array (f5).
@@ -350,17 +354,18 @@ fn push_parsed_option(sig: P0fSignature&, token: const u8[:]) -> bool {
 //   populates sig.options with corresponding P0fOption entries
 fn parse_p0f_options_field(f5: const u8[:], sig: P0fSignature&) -> bool {
     guard f5.len > 0 else { return true; }
-    var start_idx: i64 = 0;
-    for i in f5.len {
-        if f5[i] == ',' {
-            let token = f5[start_idx..i];
-            guard push_parsed_option(sig, token) else { return false; }
-            start_idx = i + 1;
-        }
+    let saved_len = sig.options.len;
+    var committed = false;
+    defer if !committed { sig.options.resize(saved_len); };
+
+    var tok = core::make_byte_tokenizer(f5, ',');
+    while true {
+        let token, has_more = core::token_next(tok);
+        guard has_more else { break; }
+        guard push_parsed_option(sig, token) else { return false; }
     }
-    guard start_idx < f5.len else { return false; }
-    let token = f5[start_idx..];
-    return push_parsed_option(sig, token);
+    committed = true;
+    return true;
 }
 
 // Parses comma-separated TCP quirks into signature quirk bitflags (f6).
@@ -370,18 +375,18 @@ fn parse_p0f_options_field(f5: const u8[:], sig: P0fSignature&) -> bool {
 //   populates sig.quirks with bitflags for df and id+
 fn parse_p0f_quirks_field(f6: const u8[:], sig: P0fSignature&) -> bool {
     guard f6.len > 0 else { return true; }
-    var start_idx: i64 = 0;
-    for i in f6.len {
-        let next_idx = i + 1;
-        if f6[i] == ',' {
-            let token = f6[start_idx..i];
-            guard apply_parsed_quirk(sig, token) else { return false; }
-            start_idx = next_idx;
-        }
+    let saved_quirks = sig.quirks;
+    var committed = false;
+    defer if !committed { sig.quirks = saved_quirks; };
+
+    var tok = core::make_byte_tokenizer(f6, ',');
+    while true {
+        let token, has_more = core::token_next(tok);
+        guard has_more else { break; }
+        guard apply_parsed_quirk(sig, token) else { return false; }
     }
-    guard start_idx < f6.len else { return false; }
-    let token = f6[start_idx..];
-    return apply_parsed_quirk(sig, token);
+    committed = true;
+    return true;
 }
 
 // Parses an 8-field p0f v3 signature string without dynamic heap allocations.
@@ -397,13 +402,13 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     guard parse_p0f_colons(raw, colons) else { return dummy, false; }
 
     let f0 = raw[..colons[0]];
-    let f1 = raw[colons[0] + 1..colons[1]];
-    let f2 = raw[colons[1] + 1..colons[2]];
-    let f3 = raw[colons[2] + 1..colons[3]];
-    let f4 = raw[colons[3] + 1..colons[4]];
-    let f5 = raw[colons[4] + 1..colons[5]];
-    let f6 = raw[colons[5] + 1..colons[6]];
-    let f7 = raw[colons[6] + 1..];
+    let f1 = raw[core::add_sat_i64(colons[0], 1)..colons[1]];
+    let f2 = raw[core::add_sat_i64(colons[1], 1)..colons[2]];
+    let f3 = raw[core::add_sat_i64(colons[2], 1)..colons[3]];
+    let f4 = raw[core::add_sat_i64(colons[3], 1)..colons[4]];
+    let f5 = raw[core::add_sat_i64(colons[4], 1)..colons[5]];
+    let f6 = raw[core::add_sat_i64(colons[5], 1)..colons[6]];
+    let f7 = raw[core::add_sat_i64(colons[6], 1)..];
 
     var sig = P0fSignature {
         ip_version:    0,
@@ -430,23 +435,23 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     }
 
     var ttl_slice = f1;
-    if ends_with(ttl_slice, "-") {
+    if core::ends_with(ttl_slice, "-") {
         sig.has_ttl_minus = true;
-        ttl_slice = ttl_slice[..ttl_slice.len - 1];
+        ttl_slice = ttl_slice[..^1];
     }
-    let ttl_val, ttl_ok = parse_int(ttl_slice);
+    let ttl_val, ttl_ok = ttl_slice.parse_u32_dec();
     guard ttl_ok && ttl_val >= 1 && ttl_val <= 255 else { return dummy, false; }
     sig.ttl = ttl_val as u8;
 
-    let olen_val, olen_ok = parse_int(f2);
-    guard olen_ok && olen_val >= 0 && olen_val <= 255 else { return dummy, false; }
+    let olen_val, olen_ok = f2.parse_u32_dec();
+    guard olen_ok && olen_val <= 255 else { return dummy, false; }
     sig.ip_opt_len = olen_val as u8;
 
     if f3 == "*" {
         sig.mss = -1;
     } else {
-        let mss_val, mss_ok = parse_int(f3);
-        guard mss_ok && mss_val >= 0 && mss_val <= 65535 else { return dummy, false; }
+        let mss_val, mss_ok = f3.parse_u32_dec();
+        guard mss_ok && mss_val <= 65535 else { return dummy, false; }
         sig.mss = mss_val as i32;
     }
 
@@ -454,8 +459,7 @@ fn parse_p0f(raw: const u8[:]) -> P0fSignature, bool {
     guard parse_p0f_options_field(f5, sig) else { return dummy, false; }
     guard parse_p0f_quirks_field(f6, sig) else { return dummy, false; }
 
-    guard f7 == "0" || f7 == "+" || f7 == "*" else { return dummy, false; }
-    sig.payload.append(f7);
+    guard (f7 == "0" || f7 == "+" || f7 == "*") && sig.payload.try_set(f7) else { return dummy, false; }
 
     return sig, true;
 }
@@ -487,16 +491,18 @@ fn apply_parsed_quirk(sig: P0fSignature&, token: const u8[:]) -> bool {
 // Matches an observed TCP SYN signature against a target pattern signature.
 // Supports wildcards ('*', '64-', '*,-1', mss/mtu multipliers).
 fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
-    let hdr_len: i64 = if actual.ip_version == 6 { 60 } else { 40 };
-    let mss_prod = max(actual.mss, 0) * (target.window_size as i64);
-    let mtu_prod = (max(actual.mss, 0) + hdr_len) * target.window_size;
+    let hdr_len: u64 = if actual.ip_version == 6 { 60 } else { 40 };
+    let actual_mss = max(actual.mss, 0) as u64;
+    let target_ws = max(target.window_size, 0) as u64;
+    let mss_prod = core::mul_sat_u64(actual_mss, target_ws);
+    let mtu_prod = core::mul_sat_u64(core::add_sat_u64(actual_mss, hdr_len), target_ws);
 
     if target.ip_version != 0 && actual.ip_version != 0 {
         guard actual.ip_version == target.ip_version else { return false; }
     }
 
     if target.has_ttl_minus {
-        let min_ttl = if target.ttl > 35 { target.ttl - 35 } else { 1 };
+        let min_ttl = max(core::sub_sat_u64(target.ttl, 35), 1) as u8;
         guard actual.ttl <= target.ttl && actual.ttl >= min_ttl else { return false; }
     } else {
         guard actual.ttl == target.ttl else { return false; }
@@ -514,14 +520,14 @@ fn match_p0f(actual: const P0fSignature&, target: const P0fSignature&) -> bool {
             let is_mss_match = actual.window_type == P0fWindowType.Mss && actual.window_size == target.window_size;
             let is_norm_match = actual.window_type == P0fWindowType.Normal
                 && actual.mss > 0
-                && actual.window_size == mss_prod;
+                && actual.window_size == (mss_prod as i64);
             guard is_mss_match || is_norm_match else { return false; }
         },
         Mtu => {
             let is_mtu_match = actual.window_type == P0fWindowType.Mtu && actual.window_size == target.window_size;
             let is_norm_match = actual.window_type == P0fWindowType.Normal
                 && actual.mss > 0
-                && actual.window_size == mtu_prod;
+                && actual.window_size == (mtu_prod as i64);
             guard is_mtu_match || is_norm_match else { return false; }
         },
         Mod => {
@@ -577,8 +583,7 @@ fn match_p0f_options(actual: const P0fTcpOption[:], target: const P0fTcpOption[:
 
 // Adds a TCP option to the signature.
 fn p0f_push_option(sig: P0fSignature&, opt: P0fTcpOption) {
-    guard sig.options.len < sig.options.cap else { return; }
-    sig.options.push(opt);
+    let _ = sig.options.try_push(opt);
 }
 
 // Sets a quirk by token name.
@@ -639,14 +644,14 @@ fn p0f_to_socket_opts(sig: const P0fSignature&, base_mss: i32 = 1460) -> P0fSock
             }
         },
         Mss => {
-            let mss = (if sig.mss > 0 { sig.mss } else { max(base_mss, 0) }) as i64;
-            let prod = mss * max(sig.window_size as i64, 0);
+            let mss = (if sig.mss > 0 { sig.mss } else { max(base_mss, 0) }) as u64;
+            let prod = core::mul_sat_u64(mss, max(sig.window_size, 0) as u64);
             opts.receive_buffer_size = min(prod, 2147483647) as i32;
         },
         Mtu => {
-            let hdr_len: i64 = if sig.ip_version == 6 { 60 } else { 40 };
-            let mtu = max(base_mss, 0) + hdr_len;
-            let prod = mtu * max(sig.window_size as i64, 0);
+            let hdr_len: u64 = if sig.ip_version == 6 { 60 } else { 40 };
+            let mtu = core::add_sat_u64(max(base_mss, 0) as u64, hdr_len);
+            let prod = core::mul_sat_u64(mtu, max(sig.window_size, 0) as u64);
             opts.receive_buffer_size = min(prod, 2147483647) as i32;
         },
         _ => {},

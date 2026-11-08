@@ -20,7 +20,7 @@ struct ForwardedElement {
 
 // Appends an RFC 7239 node identifier with quotes if it contains IPv6 or non-token characters.
 fn append_quoted_node<B>(val: const u8[:], out: B&) {
-    let needs_quotes = core::contains(val, ":") || core::contains(val, "[") || core::contains(val, "]");
+    let needs_quotes = val.contains_byte(':') || val.contains_byte('[') || val.contains_byte(']');
     if needs_quotes && (val.len == 0 || val[0] != '"') {
         out.push('"');
         out.append(val);
@@ -77,24 +77,20 @@ fn apply_forwarded_param(param_str: const u8[:], out: ForwardedElement&) -> bool
     let key = key_raw.trim_lws();
     let val = val_raw.trim_lws().trim_byte('"');
 
-    if core::eq_ascii_fold(key, "by") {
-        guard out.by.len == 0 && val.len > 0 && val.len <= out.by.cap else { return false; }
-        out.by.append(val);
+    if key.eq_ascii_fold("by") {
+        guard out.by.len == 0 && val.len > 0 && out.by.try_append(val) else { return false; }
         return true;
     }
-    if core::eq_ascii_fold(key, "for") {
-        guard out.for_node.len == 0 && val.len > 0 && val.len <= out.for_node.cap else { return false; }
-        out.for_node.append(val);
+    if key.eq_ascii_fold("for") {
+        guard out.for_node.len == 0 && val.len > 0 && out.for_node.try_append(val) else { return false; }
         return true;
     }
-    if core::eq_ascii_fold(key, "host") {
-        guard out.host.len == 0 && val.len > 0 && val.len <= out.host.cap else { return false; }
-        out.host.append(val);
+    if key.eq_ascii_fold("host") {
+        guard out.host.len == 0 && val.len > 0 && out.host.try_append(val) else { return false; }
         return true;
     }
-    if core::eq_ascii_fold(key, "proto") {
-        guard out.proto.len == 0 && val.len > 0 && val.len <= out.proto.cap else { return false; }
-        out.proto.append(val);
+    if key.eq_ascii_fold("proto") {
+        guard out.proto.len == 0 && val.len > 0 && out.proto.try_append(val) else { return false; }
         return true;
     }
     return false;
@@ -110,6 +106,13 @@ fn parse_forwarded_element(raw: const u8[:], out: ForwardedElement&) -> bool {
     out.for_node.clear();
     out.host.clear();
     out.proto.clear();
+    var committed = false;
+    defer if !committed {
+        out.by.clear();
+        out.for_node.clear();
+        out.host.clear();
+        out.proto.clear();
+    };
 
     var rem = raw.trim_lws();
     while rem.len > 0 {
@@ -120,15 +123,11 @@ fn parse_forwarded_element(raw: const u8[:], out: ForwardedElement&) -> bool {
         let p_str = rem[..p_len].trim_lws();
         rem = rem[p_len..];
 
-        guard apply_forwarded_param(p_str, out) else {
-            out.by.clear();
-            out.for_node.clear();
-            out.host.clear();
-            out.proto.clear();
-            return false;
-        }
+        guard apply_forwarded_param(p_str, out) else { return false; }
     }
-    return out.by.len > 0 || out.for_node.len > 0 || out.host.len > 0 || out.proto.len > 0;
+    let has_any = out.by.len > 0 || out.for_node.len > 0 || out.host.len > 0 || out.proto.len > 0;
+    committed = has_any;
+    return has_any;
 }
 
 // Parses a complete RFC 7239 Forwarded header value into a list of elements.
@@ -138,6 +137,9 @@ fn parse_forwarded_element(raw: const u8[:], out: ForwardedElement&) -> bool {
 //   returns: 2 (stores 2 elements in out_elements)
 fn parse_forwarded_header(raw: const u8[:], out_elements: ForwardedElement[..8]&) -> i64 {
     out_elements.clear();
+    var committed = false;
+    defer if !committed { out_elements.clear(); };
+
     var rem = raw.trim_lws();
     while rem.len > 0 && out_elements.len < out_elements.cap {
         rem = rem.trim_start_bytes(" \t,");
@@ -148,11 +150,9 @@ fn parse_forwarded_header(raw: const u8[:], out_elements: ForwardedElement[..8]&
         rem = rem[elem_len..];
 
         var elem = ForwardedElement { .. };
-        guard parse_forwarded_element(elem_str, elem) else {
-            out_elements.clear();
-            return 0;
-        }
+        guard parse_forwarded_element(elem_str, elem) else { return 0; }
         out_elements.push(elem);
     }
+    committed = true;
     return out_elements.len;
 }

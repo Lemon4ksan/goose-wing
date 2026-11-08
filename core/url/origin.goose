@@ -66,10 +66,8 @@ fn origin_from_url(url_val: const Url&) -> Origin {
 // ---- public suffix & etld+1 extraction -------------------------------------
 
 fn ends_with_dot_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
-    if domain.len > suffix.len && domain[domain.len - suffix.len - 1] == '.' {
-        return eq_ascii_fold(domain[domain.len - suffix.len..], suffix);
-    }
-    return false;
+    let prefix, ok = strip_suffix_fold(domain, suffix);
+    return ok && prefix.len > 0 && prefix[prefix.len - 1] == '.';
 }
 
 inline fn has_domain_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
@@ -84,9 +82,9 @@ inline fn has_domain_suffix(domain: const u8[:], suffix: const u8[:]) -> bool {
 fn extract_wildcard_suffix<B>(domain: const u8[:], base_rule: const u8[:], out: B&) {
     let base_len = base_rule.len;
     if domain.len > base_len && domain[domain.len - base_len - 1] == '.' {
-        let prefix = domain[..domain.len - base_len - 1];
+        let prefix = domain[..^base_len - 1];
         let dot_before = last_index_of_byte(prefix, '.');
-        let start = if dot_before >= 0 { dot_before + 1 } else { 0 };
+        let start = max(0, dot_before + 1);
         out.append(domain[start..]);
     } else {
         out.append(domain);
@@ -336,9 +334,9 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
 
     let suffix_len = suffix.len;
     if clean_host.len > suffix_len && clean_host[clean_host.len - suffix_len - 1] == '.' {
-        let prefix = clean_host[..clean_host.len - suffix_len - 1];
+        let prefix = clean_host[..^suffix_len - 1];
         let last_dot_in_prefix = last_index_of_byte(prefix, '.');
-        let start_pos = if last_dot_in_prefix >= 0 { last_dot_in_prefix + 1 } else { 0 };
+        let start_pos = max(0, last_dot_in_prefix + 1);
         out.try_append(clean_host[start_pos..]);
         to_lower(out[..]);
         return;

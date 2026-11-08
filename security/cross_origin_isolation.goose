@@ -48,9 +48,9 @@ struct CrossOriginIsolationContext {
 // Extracts the primary token before any RFC 8941 structured field parameters (';').
 // Rejects unquoted commas (multi-item lists) and leading semicolons without a token.
 inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
-    guard core::find_unquoted_byte(val, ',') == val.len else { return ";"; }
-    let head, _, has_semi = split_once(val, ";");
-    let clean = trim_lws(head);
+    guard val.find_unquoted_byte(',') == val.len else { return ";"; }
+    let head, _, has_semi = val.split_once_byte(';');
+    let clean = head.trim_lws();
     if has_semi && clean.len == 0 {
         return ";";
     }
@@ -64,11 +64,11 @@ inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
 //   returns: CoopPolicy.SameOrigin
 fn parse_coop(val: const u8[:]) -> CoopPolicy {
     let clean = strip_sf_parameters(val);
-    if clean.len == 0 || eq_ascii_fold(clean, "unsafe-none") {
+    if clean.len == 0 || clean.eq_ascii_fold("unsafe-none") {
         return CoopPolicy.UnsafeNone;
-    } else if eq_ascii_fold(clean, "same-origin") {
+    } else if clean.eq_ascii_fold("same-origin") {
         return CoopPolicy.SameOrigin;
-    } else if eq_ascii_fold(clean, "same-origin-allow-popups") {
+    } else if clean.eq_ascii_fold("same-origin-allow-popups") {
         return CoopPolicy.SameOriginAllowPopups;
     }
     return CoopPolicy.Unknown;
@@ -81,11 +81,11 @@ fn parse_coop(val: const u8[:]) -> CoopPolicy {
 //   returns: CoepPolicy.RequireCorp
 fn parse_coep(val: const u8[:]) -> CoepPolicy {
     let clean = strip_sf_parameters(val);
-    if clean.len == 0 || eq_ascii_fold(clean, "unsafe-none") {
+    if clean.len == 0 || clean.eq_ascii_fold("unsafe-none") {
         return CoepPolicy.UnsafeNone;
-    } else if eq_ascii_fold(clean, "require-corp") {
+    } else if clean.eq_ascii_fold("require-corp") {
         return CoepPolicy.RequireCorp;
-    } else if eq_ascii_fold(clean, "credentialless") {
+    } else if clean.eq_ascii_fold("credentialless") {
         return CoepPolicy.Credentialless;
     }
     return CoepPolicy.Unknown;
@@ -100,11 +100,11 @@ fn parse_corp(val: const u8[:]) -> CorpPolicy {
     let clean = strip_sf_parameters(val);
     if clean.len == 0 {
         return CorpPolicy.None;
-    } else if eq_ascii_fold(clean, "same-origin") {
+    } else if clean.eq_ascii_fold("same-origin") {
         return CorpPolicy.SameOrigin;
-    } else if eq_ascii_fold(clean, "same-site") {
+    } else if clean.eq_ascii_fold("same-site") {
         return CorpPolicy.SameSite;
-    } else if eq_ascii_fold(clean, "cross-origin") {
+    } else if clean.eq_ascii_fold("cross-origin") {
         return CorpPolicy.CrossOrigin;
     }
     return CorpPolicy.Unknown;
@@ -116,25 +116,25 @@ fn parse_corp(val: const u8[:]) -> CorpPolicy {
 //   origin_or_url = "https://example.com:8080/path"
 //   returns: "example.com"
 fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
-    var s = trim_lws(origin_or_url);
-    if starts_with_fold(s, "https://") {
+    var s = origin_or_url.trim_lws();
+    if s.starts_with_fold("https://") {
         s = s[8..];
-    } else if starts_with_fold(s, "http://") {
+    } else if s.starts_with_fold("http://") {
         s = s[7..];
     } else {
         return "";
     }
     let delim = core::find_byteset(s, "/?#");
     let auth = if delim >= 0 { s[..delim] } else { s };
-    guard auth.len > 0 && !core::contains_byte(auth, '@') && !core::contains_byte(auth, '\\') else { return ""; }
+    guard auth.len > 0 && !auth.contains_byte('@') && !auth.contains_byte('\\') else { return ""; }
 
     if auth[0] == '[' {
-        let close_idx = core::index_of_byte(auth, ']');
+        let close_idx = auth.index_of_byte(']');
         let end_bracket = core::add_sat_i64(close_idx, 1);
         guard close_idx > 1 && (end_bracket == auth.len || auth[end_bracket] == ':') else { return ""; }
         return auth[..end_bracket];
     }
-    let colon_idx = core::index_of_byte(auth, ':');
+    let colon_idx = auth.index_of_byte(':');
     if colon_idx >= 0 {
         return auth[..colon_idx];
     }
@@ -150,11 +150,9 @@ fn update_isolation_context(
     coep_header:     const u8[:],
     document_origin: const u8[:],
 ) -> bool {
-    guard document_origin.len <= ctx.document_origin.cap else { return false; }
+    guard ctx.document_origin.try_set(document_origin) else { return false; }
     ctx.coop = parse_coop(coop_header);
     ctx.coep = parse_coep(coep_header);
-    ctx.document_origin.clear();
-    ctx.document_origin.append(document_origin);
 
     // Context is cross-origin isolated if:
     // COOP is same-origin AND COEP is require-corp or credentialless (W3C HTML §7.2)
@@ -180,11 +178,11 @@ fn is_subresource_allowed(
     subresource_origin:      const u8[:],
     subresource_corp_header: const u8[:],
 ) -> bool {
-    let doc_orig = trim_lws(ctx.document_origin[..]);
-    let sub_orig = trim_lws(subresource_origin);
-    let doc_valid = doc_orig.len > 0 && !eq_ascii_fold(doc_orig, "null");
-    let sub_valid = sub_orig.len > 0 && !eq_ascii_fold(sub_orig, "null");
-    let is_same_origin = doc_valid && sub_valid && eq_ascii_fold(doc_orig, sub_orig);
+    let doc_orig = ctx.document_origin[..].trim_lws();
+    let sub_orig = subresource_origin.trim_lws();
+    let doc_valid = doc_orig.len > 0 && !doc_orig.eq_ascii_fold("null");
+    let sub_valid = sub_orig.len > 0 && !sub_orig.eq_ascii_fold("null");
+    let is_same_origin = doc_valid && sub_valid && doc_orig.eq_ascii_fold(sub_orig);
     guard !is_same_origin else { return true; }
 
     let corp = parse_corp(subresource_corp_header);
@@ -193,10 +191,10 @@ fn is_subresource_allowed(
     if corp == CorpPolicy.SameSite {
         // WHATWG Fetch §4.5.7: Both origins must have a scheme, and if document_origin is https,
         // subresource must also be https.
-        let doc_is_https = core::starts_with_fold(doc_orig, "https://");
-        let doc_is_http = core::starts_with_fold(doc_orig, "http://");
-        let sub_is_https = core::starts_with_fold(sub_orig, "https://");
-        let sub_is_http = core::starts_with_fold(sub_orig, "http://");
+        let doc_is_https = doc_orig.starts_with_fold("https://");
+        let doc_is_http = doc_orig.starts_with_fold("http://");
+        let sub_is_https = sub_orig.starts_with_fold("https://");
+        let sub_is_http = sub_orig.starts_with_fold("http://");
         guard (doc_is_https || doc_is_http) && (sub_is_https || sub_is_http) else { return false; }
         guard !doc_is_https || sub_is_https else { return false; }
 
@@ -204,13 +202,13 @@ fn is_subresource_allowed(
         let sub_host = extract_hostname_from_origin(sub_orig);
         guard doc_host.len > 0 && sub_host.len > 0 else { return false; }
         if doc_host[0] == '[' || sub_host[0] == '[' {
-            return eq_ascii_fold(doc_host, sub_host);
+            return doc_host.eq_ascii_fold(sub_host);
         }
         var doc_etld: u8[..128] = [];
         var sub_etld: u8[..128] = [];
         core::extract_etld_plus_one(doc_host, doc_etld);
         core::extract_etld_plus_one(sub_host, sub_etld);
-        return doc_etld.len > 0 && sub_etld.len > 0 && eq_ascii_fold(doc_etld[..], sub_etld[..]);
+        return doc_etld.len > 0 && sub_etld.len > 0 && doc_etld[..].eq_ascii_fold(sub_etld[..]);
     }
 
     if ctx.coep == CoepPolicy.RequireCorp || ctx.coep == CoepPolicy.Credentialless {

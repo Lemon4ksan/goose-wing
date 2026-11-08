@@ -24,7 +24,7 @@ const TOPIC_TREE_MAX_SUBSCRIPTIONS: i64 = 4096;
 fn scan_topic_segment_end(raw: const u8[:], start: i64) -> i64 {
     var next = start;
     while next < raw.len && raw[next] != '/' {
-        next += 1;
+        next = core::add_sat_i64(next, 1);
     }
     return next;
 }
@@ -61,8 +61,8 @@ fn match_topic(pattern: const u8[:], topic: const u8[:]) -> bool {
             return pattern[p_next..] == "/#";
         }
         guard p_has_more else { return false; }
-        p_cur = p_next + 1;
-        t_cur = t_next + 1;
+        p_cur = core::add_sat_i64(p_next, 1);
+        t_cur = core::add_sat_i64(t_next, 1);
     }
     return false;
 }
@@ -136,18 +136,19 @@ struct TopicTree {
 inline fn is_valid_wildcard_char(pattern: const u8[:], i: i64, b: u8) -> bool {
     guard b != 0 else { return false; }
     if b == '#' {
-        guard i == pattern.len - 1 else { return false; }
+        guard i == core::sub_sat_i64(pattern.len, 1) else { return false; }
         if i > 0 {
-            guard pattern[i - 1] == '/' else { return false; }
+            guard pattern[core::sub_sat_i64(i, 1)] == '/' else { return false; }
         }
         return true;
     }
     if b == '+' {
         if i > 0 {
-            guard pattern[i - 1] == '/' else { return false; }
+            guard pattern[core::sub_sat_i64(i, 1)] == '/' else { return false; }
         }
-        if i + 1 < pattern.len {
-            guard pattern[i + 1] == '/' else { return false; }
+        let next_i = core::add_sat_i64(i, 1);
+        if next_i < pattern.len {
+            guard pattern[next_i] == '/' else { return false; }
         }
     }
     return true;
@@ -218,17 +219,16 @@ fn get_or_create_topic_bucket(tree: TopicTree&, pattern: const u8[:]) -> i32 {
     for i in tree.buckets.len {
         let in_use = tree.buckets[i].in_use;
         if !in_use {
-            tree.buckets[i].topic_pattern.clear();
-            tree.buckets[i].topic_pattern.append(pattern);
+            let _ = tree.buckets[i].topic_pattern.try_set(pattern);
             tree.buckets[i].pattern_hash = p_hash;
             tree.buckets[i].first_seg_hash = seg_hash;
             tree.buckets[i].head_sub = -1;
             tree.buckets[i].subscriber_count = 0;
-            let has_plus = core::index_of_byte(pattern, '+') >= 0;
-            let has_hash = core::index_of_byte(pattern, '#') >= 0;
+            let has_plus = pattern.contains_byte('+');
+            let has_hash = pattern.contains_byte('#');
             tree.buckets[i].has_wildcard = has_plus || has_hash;
             tree.buckets[i].in_use = true;
-            tree.active_buckets += 1;
+            tree.active_buckets = core::add_sat_i64(tree.active_buckets, 1) as i32;
             return i as i32;
         }
     }
@@ -262,18 +262,22 @@ fn subscribe_ex(
 
     let b_idx = get_or_create_topic_bucket(tree, pattern);
     guard b_idx >= 0 else { return false; }
+    let b = b_idx as i64;
+    var committed = false;
+    defer if !committed { reclaim_empty_bucket(tree, b); };
 
     // Check if already subscribed to this bucket
-    if is_subscribed_in_bucket(tree, b_idx, sock_fd) {
-        out_old = tree.buckets[b_idx as i64].subscriber_count;
-        out_new = tree.buckets[b_idx as i64].subscriber_count;
+    if is_subscribed_in_bucket(tree, b, sock_fd) {
+        out_old = tree.buckets[b].subscriber_count;
+        out_new = tree.buckets[b].subscriber_count;
+        committed = true;
         return true;
     }
 
     // Enforce bounded 512-subscriber limit per topic bucket (Invariant 13 fail-closed rejection)
-    guard tree.buckets[b_idx as i64].subscriber_count < TOPIC_MAX_SUBSCRIBERS_PER_BUCKET else {
-        out_old = tree.buckets[b_idx as i64].subscriber_count;
-        out_new = tree.buckets[b_idx as i64].subscriber_count;
+    guard tree.buckets[b].subscriber_count < TOPIC_MAX_SUBSCRIBERS_PER_BUCKET else {
+        out_old = tree.buckets[b].subscriber_count;
+        out_new = tree.buckets[b].subscriber_count;
         return false;
     }
 
@@ -281,25 +285,25 @@ fn subscribe_ex(
     for i in tree.nodes.len {
         if !tree.nodes[i].in_use {
             tree.nodes[i].sock_fd = sock_fd;
-            tree.nodes[i].next_sub = tree.buckets[b_idx as i64].head_sub;
+            tree.nodes[i].next_sub = tree.buckets[b].head_sub;
             tree.nodes[i].in_use = true;
             tree.nodes[i].num_message_indices = 0;
             tree.nodes[i].prev_drainable = -1;
             tree.nodes[i].next_drainable = -1;
 
-            let old_cnt = tree.buckets[b_idx as i64].subscriber_count;
+            let old_cnt = tree.buckets[b].subscriber_count;
             let new_cnt = old_cnt + 1;
-            tree.buckets[b_idx as i64].head_sub = i as i32;
-            tree.buckets[b_idx as i64].subscriber_count = new_cnt;
+            tree.buckets[b].head_sub = i as i32;
+            tree.buckets[b].subscriber_count = new_cnt;
             tree.active_subscriptions += 1;
 
             out_old = old_cnt;
             out_new = new_cnt;
+            committed = true;
             return true;
         }
     }
 
-    reclaim_empty_bucket(tree, b_idx);
     return false; // Subscription pool full
 }
 
@@ -567,10 +571,9 @@ fn get_socket_topics(
     guard sock_fd > 0 else { return 0; }
     for b in tree.buckets.len {
         if tree.buckets[b].in_use && is_subscribed_in_bucket(tree, b, sock_fd) {
-            guard out_topics.len < out_topics.cap else { break; }
             var pat: u8[..64] = [];
             pat.append(tree.buckets[b].topic_pattern[..]);
-            out_topics.push(pat);
+            guard out_topics.try_push(pat) else { break; }
         }
     }
     return out_topics.len as i32;
@@ -625,17 +628,15 @@ fn add_distinct_subscriber(out_fds: i64[..512]&, seen_mask: u64[4]&, fd: i64) ->
     let bit = (1 as u64) << (h & 63);
 
     if (seen_mask[word_idx] & bit) == 0 {
-        guard out_fds.len < out_fds.cap else { return out_fds.len as i32, false; }
+        guard out_fds.try_push(fd) else { return out_fds.len as i32, false; }
         seen_mask[word_idx] |= bit;
-        out_fds.push(fd);
         return out_fds.len as i32, true;
     }
 
     for d_fd in out_fds {
         if d_fd == fd { return out_fds.len as i32, true; }
     }
-    guard out_fds.len < out_fds.cap else { return out_fds.len as i32, false; }
-    out_fds.push(fd);
+    guard out_fds.try_push(fd) else { return out_fds.len as i32, false; }
     return out_fds.len as i32, true;
 }
 
@@ -906,9 +907,8 @@ fn check_and_mark_batch_seen(
     let bit = (1 as u64) << (h & 63);
 
     if (seen_mask[word_idx] & bit) == 0 {
-        guard seen_fds.len < seen_fds.cap else { return false, false; }
+        guard seen_fds.try_push(fd) else { return false, false; }
         seen_mask[word_idx] |= bit;
-        seen_fds.push(fd);
         return false, true;
     }
 
@@ -917,8 +917,7 @@ fn check_and_mark_batch_seen(
             return true, true;
         }
     }
-    guard seen_fds.len < seen_fds.cap else { return false, false; }
-    seen_fds.push(fd);
+    guard seen_fds.try_push(fd) else { return false, false; }
     return false, true;
 }
 

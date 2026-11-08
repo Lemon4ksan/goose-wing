@@ -102,7 +102,7 @@ fn chacha20_xor<B>(
         let blk = chacha20_block(key, cur_ctr, nonce12);
         cur_ctr += 1;
         let rem = input.len - offset;
-        let take = if rem < 64 { rem } else { 64 };
+        let take = min(rem, 64);
         for i in take {
             out.push(input[offset + i] ^ blk[i]);
         }
@@ -122,7 +122,7 @@ fn chacha20_xor_inplace(
         let blk = chacha20_block(key, cur_ctr, nonce12);
         cur_ctr += 1;
         let rem = in_out.len - offset;
-        let take = if rem < 64 { rem } else { 64 };
+        let take = min(rem, 64);
         for i in take {
             in_out[offset + i] ^= blk[i];
         }
@@ -144,7 +144,7 @@ fn chacha20_xor_into(
         let blk = chacha20_block(key, cur_ctr, nonce12);
         cur_ctr += 1;
         let rem = input.len - offset;
-        let take = if rem < 64 { rem } else { 64 };
+        let take = min(rem, 64);
         for i in take {
             dst[offset + i] = input[offset + i] ^ blk[i];
         }
@@ -251,7 +251,7 @@ fn poly1305_mac(key32: const u8[32]&, msg: const u8[:]) -> u8[16] {
     while offset < msg.len {
         var m: u8[17] = [0; 17];
         let rem = msg.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take { m[i] = msg[offset + i]; }
         m[take] = 1; // Pad byte 0x01
 

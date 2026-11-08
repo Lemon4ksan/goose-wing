@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -84,7 +85,7 @@ fn append_query_params_preserving_fragment(
 
     var hash_buf: u8[..2048] = [];
     if hash_pos >= 0 {
-        hash_buf.append(out[hash_pos..]);
+        let _ = hash_buf.try_set(out[hash_pos..]);
         out.resize(hash_pos);
     }
 
@@ -94,7 +95,7 @@ fn append_query_params_preserving_fragment(
     }
 
     if hash_buf.len > 0 {
-        out.try_append(hash_buf[..]);
+        let _ = out.try_append(hash_buf[..]);
     }
 }
 
@@ -110,15 +111,15 @@ fn build_effective_url(
     let parsed_base = core::new_url(base_url);
     if parsed_base.valid {
         let eff_url = parsed_base.resolve_endpoint(req_url);
-        out.try_append(core::href(eff_url));
-    } else if req_url.len >= 7 && (req_url[..7] == "http://" || (req_url.len >= 8 && req_url[..8] == "https://")) {
-        out.try_append(req_url);
+        let _ = out.try_append(eff_url.href[..]);
+    } else if req_url.starts_with_fold("http://") || req_url.starts_with_fold("https://") {
+        let _ = out.try_append(req_url);
     } else {
-        out.try_append(base_url);
+        let _ = out.try_append(base_url);
         if base_url.len > 0 && base_url[base_url.len - 1] != '/' && (req_url.len == 0 || req_url[0] != '/') {
-            out.try_push('/');
+            let _ = out.try_push('/');
         }
-        out.try_append(req_url);
+        let _ = out.try_append(req_url);
     }
 
     append_query_params_preserving_fragment(out, query_params);
@@ -166,16 +167,14 @@ fn validate_hop_prerequisites(session: const Session&, current_url: const core::
 
 fn finalize_success_response(ctx: const RequestExecutionContext&, resp: Response&) {
     resp.redirect_count = ctx.redirect_count;
-    resp.final_method.clear();
-    resp.final_method.append(ctx.current_method[..]);
+    let _ = resp.final_method.try_set(ctx.current_method[..]);
     resp.url_chain.clear();
     for &hop_u in ctx.url_chain {
-        guard resp.url_chain.len < resp.url_chain.cap else { break; }
         var u_str: u8[..256] = [];
-        let h = core::href(hop_u);
+        let h = hop_u.href[..];
         let n = min(h.len, u_str.cap);
-        u_str.append(h[..n]);
-        resp.url_chain.push(u_str);
+        let _ = u_str.try_set(h[..n]);
+        guard resp.url_chain.try_push(u_str) else { break; }
     }
 }
 
@@ -189,7 +188,7 @@ fn apply_redirect_transition(
     if ctx.cors_mode && redirect_info.is_cross_origin && last_hop_idx > 0 && last_hop_idx < ctx.url_chain.len {
         let init_url = ctx.url_chain[0];
         let prev_url = ctx.url_chain[last_hop_idx];
-        if !core::is_same_origin_url(init_url, prev_url) {
+        if !init_url.is_same_origin_url(prev_url) {
             ctx.tainted_origin = true;
         }
     }
@@ -198,10 +197,8 @@ fn apply_redirect_transition(
     }
     ctx.site_for_cookies = redirect_info.new_site_for_cookies;
     ctx.auth_retried = false;
-    ctx.current_method.clear();
-    ctx.current_method.append(redirect_info.new_method[..]);
-    ctx.current_referrer.clear();
-    ctx.current_referrer.append(redirect_info.new_referrer[..]);
+    let _ = ctx.current_method.try_set(redirect_info.new_method[..]);
+    let _ = ctx.current_referrer.try_set(redirect_info.new_referrer[..]);
     ctx.current_referrer_policy = redirect_info.new_referrer_policy;
 
     if redirect_info.clear_body {
@@ -281,14 +278,14 @@ fn init_execution_context(
 
     let req_ref = header(req, "Referer");
     if req_ref.len > 0 {
-        ctx.current_referrer.append(req_ref);
+        let _ = ctx.current_referrer.try_set(req_ref);
     }
 
     ctx.body.append(req.body[..]);
     if req.rewind_buf.len > 0 {
-        ctx.rewind_buf.append(req.rewind_buf[..]);
+        let _ = ctx.rewind_buf.try_set(req.rewind_buf[..]);
     } else if req.rewindable && req.body.len <= 4096 {
-        ctx.rewind_buf.append(req.body[..]);
+        let _ = ctx.rewind_buf.try_set(req.body[..]);
     } else if ctx.body.len > 0 {
         ctx.rewindable = false;
     }
@@ -313,7 +310,7 @@ fn init_execution_context(
 
     merge_session_and_request_headers(ctx.headers, session.default_headers, req.headers, session.profile);
     sanitize_initial_request_referrer(session, ctx, parsed_initial);
-    ctx.url_chain.push(parsed_initial);
+    let _ = ctx.url_chain.try_push(parsed_initial);
     return ctx;
 }
 
@@ -330,7 +327,7 @@ fn sanitize_initial_request_referrer(
     guard ctx.current_referrer.len > 0 else { return; }
     let parsed_ref = core::new_url(ctx.current_referrer[..]);
     guard parsed_ref.valid else { return; }
-    let ref_same = core::is_same_origin_url(parsed_ref, parsed_initial);
+    let ref_same = parsed_ref.is_same_origin_url(parsed_initial);
     let ref_down = (parsed_ref.scheme() == "https" && parsed_initial.scheme() == "http");
     var sanitized_ref: u8[..2048] = [];
     compute_new_referrer(
@@ -343,8 +340,7 @@ fn sanitize_initial_request_referrer(
         },
         sanitized_ref,
     );
-    ctx.current_referrer.clear();
-    ctx.current_referrer.append(sanitized_ref[..]);
+    let _ = ctx.current_referrer.try_set(sanitized_ref[..]);
     if session.enable_referer && sanitized_ref.len > 0 {
         set_header(ctx.headers, "Referer", sanitized_ref[..]);
     } else {
@@ -354,10 +350,10 @@ fn sanitize_initial_request_referrer(
 
 // RFC 9110 Section 15.4: Redirection 3xx - Checks whether response headers contain conflicting Location fields.
 fn has_conflicting_location_headers(headers: const HeaderMap&, loc_hdr: const u8[:]) -> bool {
-    let expected_loc = core::trim_lws(loc_hdr);
+    let expected_loc = loc_hdr.trim_lws();
     for &e in headers.entries {
-        guard eq_ascii_fold(entry_name(headers, e), "location") else { continue; }
-        if core::trim_lws(entry_value(headers, e)) != expected_loc {
+        guard entry_name(headers, e).eq_ascii_fold("location") else { continue; }
+        if entry_value(headers, e).trim_lws() != expected_loc {
             return true;
         }
     }
@@ -391,7 +387,7 @@ fn process_redirect_hop(
     var hsts_upgraded = false;
     let hsts_stage_on = wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_URL_HSTS);
     if session.enable_hsts && hsts_stage_on && loc_hdr.len > 0 {
-        let prelim_target, prelim_err = core::parse_url_with_base(core::trim_lws(loc_hdr), current_url);
+        let prelim_target, prelim_err = core::parse_url_with_base(loc_hdr.trim_lws(), current_url);
         if prelim_err == core::UrlParseError.None && prelim_target.valid && !prelim_target.is_secure_scheme() {
             let now_sec = div_euclid(session.virtual_clock_us, 1000000);
             hsts_upgraded = hsts_upgrade_url(session.hsts, prelim_target.href[..], now_sec, upgraded_loc_buf);
@@ -429,7 +425,7 @@ fn process_redirect_hop(
     let redirect_err = apply_redirect_transition(session, ctx, redirect_info);
     guard ok(redirect_err) else { return false, redirect_err; }
 
-    ctx.url_chain.push(redirect_info.new_url);
+    let _ = ctx.url_chain.try_push(redirect_info.new_url);
     ctx.redirect_count += 1;
     return true, Error { .. };
 }
@@ -443,9 +439,7 @@ fn append_available_dict_header(headers: HeaderMap&, dict_b64: const u8[:]) {
     }
     if !header_has_token(val, "dcb") {
         var new_ae: u8[..256] = [];
-        guard core::add_sat_i64(val.len, 10) <= new_ae.cap else { return; }
-        new_ae.append(val);
-        new_ae.append(", dcb, dcz");
+        guard new_ae.try_set(val) && new_ae.try_append(", dcb, dcz") else { return; }
         set_header(headers, "Accept-Encoding", new_ae[..]);
     }
 }
@@ -461,8 +455,7 @@ fn resolve_mock_protocol_racing(
 ) {
     if !has_h3 {
         if route.protocol.len > 0 {
-            resp.protocol.clear();
-            resp.protocol.append(route.protocol[..]);
+            let _ = resp.protocol.try_set(route.protocol[..]);
         }
         return;
     }
@@ -476,13 +469,11 @@ fn resolve_mock_protocol_racing(
     if race_eligible || session.enable_altsvc {
         if route.simulate_quic_blocked {
             record_failure(session.altsvc, origin_buf, now_sec);
-            resp.protocol.clear();
             let proto = if route.protocol.len > 0 { route.protocol[..] } else { "HTTP/1.1" };
-            resp.protocol.append(proto);
+            let _ = resp.protocol.try_set(proto);
         } else {
             record_success(session.altsvc, origin_buf);
-            resp.protocol.clear();
-            resp.protocol.append("h3");
+            let _ = resp.protocol.try_set("h3");
         }
     }
 }
@@ -560,12 +551,12 @@ fn try_match_mock_route(
     out_dns_err: RedirectError&,
     out_resp:    Response&,
 ) -> bool {
-    let curr_href = core::href(current_url);
+    let curr_href = current_url.href[..];
     let curr_method = ctx.current_method[..];
     let is_https = current_url.is_secure_scheme();
 
     for &route in session.mock_routes {
-        let method_match = route.method.len == 0 || eq_ascii_fold(route.method[..], curr_method);
+        let method_match = route.method.len == 0 || route.method[..].eq_ascii_fold(curr_method);
         let url_match = route.pattern_url[..] == curr_href || starts_with(curr_href, route.pattern_url[..]);
         guard method_match && url_match else { continue; }
 
@@ -602,9 +593,7 @@ fn try_match_mock_route(
 // Per-request timeout overrides session timeout when set > 0.
 inline fn calc_effective_timeout_ms(session_timeout: i64, req_timeout: i64) -> u32 {
     let raw = if req_timeout > 0 { req_timeout } else { session_timeout };
-    if raw <= 0 { return 1; }
-    if raw > 600000 { return 600000; }
-    return raw as u32;
+    return min(max(raw, 1), 600000) as u32;
 }
 
 fn dispatch_pooled_h1_hop(
@@ -623,9 +612,11 @@ fn dispatch_pooled_h1_hop(
     let c_idx = session.pool.find_connection_index(conn_id);
     guard c_idx >= 0 else { return false; }
 
+    var released = false;
+    defer if !released { session.pool.close_pooled_connection(conn_id); };
+
     var hop_req = Request { .. };
-    hop_req.method.clear();
-    hop_req.method.append(curr_method);
+    let _ = hop_req.method.try_set(curr_method);
     copy_headers(ctx.headers, hop_req.headers);
     hop_req.body.append(ctx.body[..]);
 
@@ -637,22 +628,16 @@ fn dispatch_pooled_h1_hop(
         resp,
         eff_timeout,
     );
-    guard ok_ex else {
-        session.pool.close_pooled_connection(conn_id);
-        return false;
-    }
+    guard ok_ex else { return false; }
 
     resp.effective_url = copy(current_url.href);
     copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(
         session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
     );
-    if resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
-        session.pool.close_pooled_connection(conn_id);
-    } else if keep_alive {
+    if keep_alive && resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
         session.pool.release_connection(conn_id, now_ns);
-    } else {
-        session.pool.close_pooled_connection(conn_id);
+        released = true;
     }
     return true;
 }
@@ -672,7 +657,7 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
     } else {
         ProxyScheme.Http
     };
-    let raw_port = core::effective_port(p_url);
+    let raw_port = p_url.effective_port();
     let p_port: u16 = if raw_port > 0 {
         raw_port as u16
     } else if p_scheme == ProxyScheme.Socks5 || p_scheme == ProxyScheme.Socks5h {
@@ -698,9 +683,7 @@ fn collect_ipv4_dns_candidates(
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
         }
-        if out_list.len < 8 {
-            out_list.push(new_dns_candidate(AddressFamily.IPv4, ip4_buf[..], port_num, L4Protocol.Tcp, 40));
-        }
+        let _ = out_list.try_push(new_dns_candidate(AddressFamily.IPv4, ip4_buf[..], port_num, L4Protocol.Tcp, 40));
     }
     return true;
 }
@@ -717,9 +700,7 @@ fn collect_ipv6_dns_candidates(
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
             guard !is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
         }
-        if out_list.len < 8 {
-            out_list.push(new_dns_candidate(AddressFamily.IPv6, ip6_buf[..], port_num, L4Protocol.Tcp, 50));
-        }
+        let _ = out_list.try_push(new_dns_candidate(AddressFamily.IPv6, ip6_buf[..], port_num, L4Protocol.Tcp, 50));
     }
     return true;
 }
@@ -735,9 +716,7 @@ fn append_svcb_hint_candidate(
     if ssrf_guard.enabled && ssrf_guard.deny_local_network {
         guard !is_private_or_reserved_ip(ip_str) else { return false; }
     }
-    if out_list.len < 8 {
-        out_list.push(new_dns_candidate(fam, ip_str, eff_port, L4Protocol.Tcp, priority));
-    }
+    let _ = out_list.try_push(new_dns_candidate(fam, ip_str, eff_port, L4Protocol.Tcp, priority));
     return true;
 }
 
@@ -779,7 +758,7 @@ fn resolve_https_svcb_record(
     task.metadata = meta;
     task.https_status = DnsQueryStatus.Success;
     if (session.enable_ech || session.auto_ech_discovery) && https_entry.https_records[0].has_ech {
-        out_ech_list.append(https_entry.https_records[0].ech_config_list[..]);
+        let _ = out_ech_list.try_set(https_entry.https_records[0].ech_config_list[..]);
     }
     return collect_https_svcb_hint_candidates(session.ssrf_guard, meta, eff_port, task);
 }
@@ -802,7 +781,7 @@ fn lookup_dns_https_h3_endpoint(
         persist:     false,
         ..
     };
-    out_ep.proto.append("h3");
+    let _ = out_ep.proto.try_set("h3");
     let target_h = if meta.target_name.len > 0 { meta.target_name[..] } else { host_str };
     let _ = out_ep.host.try_append(target_h);
     return true;
@@ -847,7 +826,7 @@ fn resolve_and_validate_live_host(
     let pref_fam, _ = lookup_preferred_family(session.af_cache, host_str, now_sec);
     interleave_candidates_by_preference(task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates);
     if out_candidates.len == 0 {
-        out_candidates.push(new_dns_candidate(AddressFamily.IPv4, host_str, port_num, L4Protocol.Tcp, 40));
+        let _ = out_candidates.try_push(new_dns_candidate(AddressFamily.IPv4, host_str, port_num, L4Protocol.Tcp, 40));
     }
     return Error { .. };
 }
@@ -867,15 +846,16 @@ fn dial_live_tcp_or_proxy(
         let ps = proxy_chain.servers[0];
         let sock = native_tcp_connect(ps.host[..], ps.port, eff_timeout);
         guard sock > 0 else { return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed"); }
+        var proxy_ready = false;
+        defer if !proxy_ready { native_tcp_close(sock); };
         let p_url = core::new_url(proxy_url);
-        let p_user = core::username(p_url);
-        let p_pass = core::password(p_url);
+        let p_user = p_url.username();
+        let p_pass = p_url.password();
         if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
             let use_ip = ps.scheme == ProxyScheme.Socks5 && candidates.len > 0;
             let t_host = if use_ip { candidates[0].ip[..] } else { host_str };
             let s_err = socks5_client_handshake(sock, ps.scheme, t_host, port_num, p_user, p_pass, eff_timeout);
-            if s_err != Socks5Error.None {
-                native_tcp_close(sock);
+            guard s_err == Socks5Error.None else {
                 return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
             }
         } else {
@@ -893,12 +873,12 @@ fn dial_live_tcp_or_proxy(
                 sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
             );
             core::secure_zeroize_slice(proxy_auth[..]);
-            if c_err != ConnectTunnelError.None {
-                native_tcp_close(sock);
+            guard c_err == ConnectTunnelError.None else {
                 return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
             }
         }
-        out_ip.append(ps.host[..]);
+        proxy_ready = true;
+        let _ = out_ip.try_set(ps.host[..]);
         return sock, Error { .. };
     }
     var mgr = new_attempt_manager();
@@ -909,7 +889,7 @@ fn dial_live_tcp_or_proxy(
             if mgr.attempts.len > 0 {
                 let _ = mgr.bind_winner_attempt(mgr.attempts[core::sub_sat_i64(mgr.attempts.len, 1)].attempt_id, false);
             }
-            out_ip.append(cand.ip[..]);
+            let _ = out_ip.try_set(cand.ip[..]);
             return sock, Error { .. };
         }
         let _ = mgr.tick_attempt_manager(core::add_sat_i64(now_ms, mgr.effective_cad_ms));
@@ -929,12 +909,12 @@ fn encode_h2_client_request<B>(
 ) -> bool {
     out_wire.clear();
     let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
-    let auth_str = core::host(current_url);
+    let auth_str = current_url.host();
     var path_buf: u8[..2048] = [];
-    let p_str = core::pathname(current_url);
-    if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
-    let q_str = core::search(current_url);
-    if q_str.len > 0 { path_buf.append(q_str); }
+    let p_str = current_url.pathname();
+    if p_str.len > 0 { let _ = path_buf.try_append(p_str); } else { let _ = path_buf.try_push('/'); }
+    let q_str = current_url.search();
+    if q_str.len > 0 { let _ = path_buf.try_append(q_str); }
     guard path_buf.len <= 1024 else { return false; }
 
     var pseudo = internal::H2PseudoHeaders {
@@ -944,14 +924,14 @@ fn encode_h2_client_request<B>(
         has_path:      true,
         ..
     };
-    pseudo.method.append(curr_method);
-    pseudo.scheme.append(scheme_str);
-    pseudo.authority.append(auth_str);
-    pseudo.path.append(path_buf[..]);
+    let _ = pseudo.method.try_set(curr_method);
+    let _ = pseudo.scheme.try_set(scheme_str);
+    let _ = pseudo.authority.try_set(auth_str);
+    let _ = pseudo.path.try_set(path_buf[..]);
     let proto_hdr = find_header(ctx.headers, ":protocol");
     if proto_hdr.len > 0 {
         pseudo.has_protocol = true;
-        pseudo.protocol.append(proto_hdr);
+        let _ = pseudo.protocol.try_set(proto_hdr);
     }
 
     if send_preface {
@@ -1004,7 +984,7 @@ inline fn record_h2_rst_stream_error(payload: const u8[:], resp: Response&) {
     guard payload.len >= 4 else { return; }
     let rst_code = core::read_be_u32(payload, 0);
     var rst_buf: u8[..16] = [];
-    core::format_u64_dec(rst_code, rst_buf);
+    rst_code.format_u64_dec(rst_buf);
     let _ = append_header(resp.trailers, "x-wing-h2-rst-code", rst_buf[..]);
 }
 
@@ -1070,18 +1050,6 @@ fn process_h2_response_frame<B>(
     return true, false;
 }
 
-fn shift_consumed_rx_bytes<B>(rx_accum: B&, consumed: i64) {
-    guard consumed > 0 && consumed <= rx_accum.len else { return; }
-    let tail = rx_accum[consumed..];
-    let rem = tail.len;
-    for b, i in tail {
-        rx_accum[i] = b;
-    }
-    while rx_accum.len > rem {
-        rx_accum.pop();
-    }
-}
-
 fn drain_h2_response_frames<B1, B2>(
     rx_accum:  B1&,
     stream_id: u32,
@@ -1092,6 +1060,7 @@ fn drain_h2_response_frames<B1, B2>(
     out_ctrl:  B2&,
 ) -> bool, bool {
     var consumed: i64 = 0;
+    defer rx_accum.compact_wire_buffer(consumed);
     while rx_accum.len - consumed >= 9 {
         let hdr, h_err = internal::parse_frame_header(rx_accum[consumed..], 16384);
         guard h_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
@@ -1103,15 +1072,12 @@ fn drain_h2_response_frames<B1, B2>(
             hdr, payload, stream_id, is_head, dec_dt, resp, got_hdrs, out_ctrl,
         );
         guard ok_f else {
-            shift_consumed_rx_bytes(rx_accum, consumed);
             return false, false;
         }
         if done {
-            shift_consumed_rx_bytes(rx_accum, consumed);
             return true, true;
         }
     }
-    shift_consumed_rx_bytes(rx_accum, consumed);
     return true, false;
 }
 
@@ -1170,6 +1136,9 @@ fn dispatch_pooled_h2_hop(
 ) -> bool {
     let c_idx = session.pool.find_connection_index(conn_id);
     guard c_idx >= 0 else { return false; }
+    var released = false;
+    defer if !released { session.pool.close_pooled_connection(conn_id); };
+
     let stream_id = session.pool.conns[c_idx].next_h2_stream_id;
     let send_preface = !session.pool.conns[c_idx].h2_preface_sent;
     var wire_out: u8[..65536] = [];
@@ -1183,18 +1152,15 @@ fn dispatch_pooled_h2_hop(
         send_preface,
         wire_out,
     ) else {
-        session.pool.close_pooled_connection(conn_id);
         return false;
     }
     guard send_all(session.pool.conns[c_idx].transport, wire_out[..]) else {
-        session.pool.close_pooled_connection(conn_id);
         return false;
     }
     session.pool.conns[c_idx].h2_preface_sent = true;
     session.pool.conns[c_idx].next_h2_stream_id += 2;
     reset_response(resp);
-    resp.protocol.clear();
-    resp.protocol.append("HTTP/2");
+    let _ = resp.protocol.try_set("HTTP/2");
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
     let is_head = curr_method == "HEAD";
     let got_hdrs = recv_h2_response_loop(
@@ -1205,11 +1171,12 @@ fn dispatch_pooled_h2_hop(
         eff_timeout,
         resp,
     );
-    guard got_hdrs else { session.pool.close_pooled_connection(conn_id); return false; }
+    guard got_hdrs else { return false; }
     resp.effective_url = copy(current_url.href);
     copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, resp);
     session.pool.release_connection(conn_id, now_ns);
+    released = true;
     return true;
 }
 
@@ -1222,15 +1189,15 @@ fn encode_h3_client_request<B>(
 ) -> bool {
     out_wire.clear();
     var path_buf: u8[..2048] = [];
-    let p_str = core::pathname(current_url);
-    if p_str.len > 0 { path_buf.append(p_str); } else { path_buf.push('/'); }
-    let q_str = core::search(current_url);
-    if q_str.len > 0 { path_buf.append(q_str); }
+    let p_str = current_url.pathname();
+    if p_str.len > 0 { let _ = path_buf.try_append(p_str); } else { let _ = path_buf.try_push('/'); }
+    let q_str = current_url.search();
+    if q_str.len > 0 { let _ = path_buf.try_append(q_str); }
     guard path_buf.len <= 1024 else { return false; }
 
     let has_body = ctx.body.len > 0;
     guard internal::send_request_headers(
-        h3_conn, sid, ctx.current_method[..], "https", core::host(current_url),
+        h3_conn, sid, ctx.current_method[..], "https", current_url.host(),
         path_buf[..], ctx.headers, !has_body, out_wire,
     ) else { return false; }
 
@@ -1251,39 +1218,30 @@ fn execute_live_h3_hop(
     now_sec:     i64,
     resp:        Response&,
 ) -> bool {
-    let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { core::hostname(current_url) };
-    let target_port = if h3_ep.port > 0 { h3_ep.port } else { core::effective_port(current_url) as u16 };
+    let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { current_url.hostname() };
+    let target_port = if h3_ep.port > 0 { h3_ep.port } else { current_url.effective_port() as u16 };
     if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network &&
         (is_private_or_reserved_ip(target_host) || is_dangerous_service_port(target_port)) {
         return false;
     }
     let udp_fd = udp_bind("0.0.0.0", 0);
     guard udp_fd > 0 else { return false; }
+    defer tcp_close(udp_fd);
 
     let h3_settings = H3Settings { .. };
     var h3_conn = internal::new_h3_client_connection(h3_settings);
     let sid, ok_s = internal::open_request_stream(h3_conn);
-    guard ok_s else {
-        tcp_close(udp_fd);
-        return false;
-    }
+    guard ok_s else { return false; }
     var req_wire: u8[..4096] = [];
-    guard encode_h3_client_request(h3_conn, sid, ctx, current_url, req_wire) else {
-        tcp_close(udp_fd);
-        return false;
-    }
-    let curr_path = core::pathname(current_url);
+    guard encode_h3_client_request(h3_conn, sid, ctx, current_url, req_wire) else { return false; }
+    let curr_path = current_url.pathname();
     let sent = native_udp_sendto(udp_fd, req_wire[..], target_host, target_port);
-    if sent <= 0 {
-        tcp_close(udp_fd);
-        return false;
-    }
+    guard sent > 0 else { return false; }
     var rx_buf:    u8[1472] = [0; 1472];
     var peer_ip4:  u32      = 0;
     var peer_port: u16      = 0;
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
     let recvd = native_udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
-    tcp_close(udp_fd);
     guard recvd > 0 else { return false; }
 
     let h_err = internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
@@ -1293,8 +1251,7 @@ fn execute_live_h3_hop(
 
     reset_response(resp);
     resp.status_code = sc;
-    resp.protocol.clear();
-    resp.protocol.append("HTTP/3");
+    let _ = resp.protocol.try_set("HTTP/3");
     let _ = internal::copy_stream_headers(h3_conn, sid, resp.headers);
     for &e in resp.headers.entries {
         update_response_presence(resp, entry_name(resp.headers, e));
@@ -1324,14 +1281,14 @@ fn execute_live_network_hop(
     let now_ns = session.virtual_clock_us * 1000;
     let now_sec = session.virtual_clock_us / 1000000;
     let now_ms = session.virtual_clock_us / 1000;
-    let host_str = core::hostname(current_url);
+    let host_str = current_url.hostname();
     if session.ssrf_guard.enabled {
         if is_private_or_reserved_ip(host_str) {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: private IP blocked");
         }
     }
 
-    let port_num = core::effective_port(current_url) as u16;
+    let port_num = current_url.effective_port() as u16;
     var dns_candidates: DnsCandidate[..32] = [];
     var ech_list:       u8[..512]          = [];
     let dns_err = resolve_and_validate_live_host(session, host_str, port_num, now_sec, dns_candidates, ech_list);
@@ -1381,7 +1338,7 @@ fn execute_live_network_hop(
         if !ok(dial_err) {
             return dial_err;
         }
-        let win_fam = if core::contains_byte(dialed_ip[..], ':') { AddressFamily.IPv6 } else { AddressFamily.IPv4 };
+        let win_fam = if dialed_ip[..].contains_byte(':') { AddressFamily.IPv6 } else { AddressFamily.IPv4 };
         record_preferred_family(session.af_cache, host_str, win_fam, now_sec);
         var t = Transport.Disconnected;
         var neg_proto = NegotiatedProtocol.Http11;
@@ -1390,13 +1347,13 @@ fn execute_live_network_hop(
             let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
 
             var tls_cfg = TlsClientHandshakeConfig { .. };
-            tls_cfg.server_name.append(host_str);
-            tls_cfg.alpn.append("h2,http/1.1");
+            let _ = tls_cfg.server_name.try_set(host_str);
+            let _ = tls_cfg.alpn.try_set("h2,http/1.1");
             tls_cfg.trust_store = session.trust_store;
             tls_cfg.insecure_skip_verify = effective_insecure_skip;
             tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
             if ech_list.len > 0 {
-                tls_cfg.ech_config_list.append(ech_list[..]);
+                let _ = tls_cfg.ech_config_list.try_set(ech_list[..]);
             }
 
             let slot_idx, ok_tls = tls_client_handshake(sock, tls_cfg);
@@ -1428,7 +1385,7 @@ fn execute_live_network_hop(
         has_pooled = true;
     }
 
-    let curr_path = core::pathname(current_url);
+    let curr_path = current_url.pathname();
     let c_idx = session.pool.find_connection_index(conn_id);
     if c_idx >= 0 && session.pool.conns[c_idx].protocol == NegotiatedProtocol.Http2 {
         let ok_h2 = dispatch_pooled_h2_hop(
@@ -1470,11 +1427,11 @@ fn execute_mock_or_echo_hop(
         has_h3 = lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
     }
     if !has_h3 && is_https && session.enable_protocol_racing {
-        let port_num = core::effective_port(current_url) as u16;
+        let port_num = current_url.effective_port() as u16;
         if !is_broken(session.altsvc, origin_buf[..], now_sec) {
             has_h3 = lookup_dns_https_h3_endpoint(
                 session.dns_cache,
-                core::hostname(current_url),
+                current_url.hostname(),
                 port_num,
                 now_sec,
                 candidate_h3_ep,
@@ -1482,7 +1439,7 @@ fn execute_mock_or_echo_hop(
         }
     }
 
-    let curr_path = core::pathname(current_url);
+    let curr_path = current_url.pathname();
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_DICT_NEGOTIATE) {
         let _ = stage_client_dict_negotiate(
             ctx.headers,
@@ -1533,8 +1490,8 @@ fn execute_mock_or_echo_hop(
 // RFC 9110 Section 11.1: Authentication Scheme - Checks that `hdr` begins with `scheme_tok`
 // followed by end-of-string or BWS/SP delimiter (`' '` or `'\t'`).
 inline fn has_auth_scheme_prefix(hdr: const u8[:], scheme_tok: const u8[:]) -> bool {
-    let s = core::trim_lws(hdr);
-    guard starts_with_fold(s, scheme_tok) else { return false; }
+    let s = hdr.trim_lws();
+    guard s.starts_with_fold(scheme_tok) else { return false; }
     return s.len == scheme_tok.len || s[scheme_tok.len] == ' ' || s[scheme_tok.len] == '\t';
 }
 
@@ -1550,20 +1507,20 @@ fn compute_401_auth_header(
         let chal, ok_c = parse_digest_challenge(www_auth);
         guard ok_c else { return false; }
         guard !ctx.auth_retried || chal.stale else { return false; }
-        let uri_path = core::pathname(current_url);
-        let uri_search = core::search(current_url);
+        let uri_path = current_url.pathname();
+        let uri_search = current_url.search();
         var uri_target: u8[..2048] = [];
         if uri_path.len > 0 {
-            uri_target.append(uri_path);
+            let _ = uri_target.try_append(uri_path);
         } else {
-            uri_target.push('/');
+            let _ = uri_target.try_push('/');
         }
         if uri_search.len > 0 {
-            uri_target.append(uri_search);
+            let _ = uri_target.try_append(uri_search);
         }
         var c_creds = DigestCredentials { .. };
-        c_creds.username.append(session.creds.username[..]);
-        c_creds.password.append(session.creds.password[..]);
+        let _ = c_creds.username.try_set(session.creds.username[..]);
+        let _ = c_creds.password.try_set(session.creds.password[..]);
 
         var active_chal = chal;
         if chal.stale && session.creds.last_digest.valid {
@@ -1609,7 +1566,7 @@ fn compute_401_auth_header(
     }
     if has_auth_scheme_prefix(www_auth, "Basic") {
         // RFC 7617 Section 2: The 'Basic' Authentication Scheme - user-id MUST NOT contain a colon.
-        guard core::index_of_byte(session.creds.username[..], ':') < 0 else { return false; }
+        guard !session.creds.username[..].contains_byte(':') else { return false; }
         var user_pass: u8[..260] = [];
         guard user_pass.try_append(session.creds.username[..])
             && user_pass.try_push(':')
@@ -1620,8 +1577,8 @@ fn compute_401_auth_header(
         var b64_user_pass: u8[..360] = [];
         core::base64_encode(user_pass[..], b64_user_pass);
         core::secure_zeroize_slice(user_pass[..]);
-        auth_header_val.append("Basic ");
-        auth_header_val.append(b64_user_pass[..]);
+        let _ = auth_header_val.try_append("Basic ");
+        let _ = auth_header_val.try_append(b64_user_pass[..]);
         core::secure_zeroize_slice(b64_user_pass[..]);
         return true;
     }
@@ -1639,7 +1596,7 @@ fn try_find_scheme_auth_header(
     for &e in resp.headers.entries {
         let h_name = entry_name(resp.headers, e);
         let h_val = entry_value(resp.headers, e);
-        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, scheme_prefix) {
+        if h_name.eq_ascii_fold("WWW-Authenticate") && has_auth_scheme_prefix(h_val, scheme_prefix) {
             if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
                 return true;
             }

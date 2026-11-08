@@ -104,10 +104,7 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
 
     let p_name = p_name_raw.trim_lws();
     let p_val_raw = p_val_raw.trim_lws();
-    guard is_valid_header_name(p_name) else { return false; }
-    guard p_name.len <= p_item.name.cap else { return false; }
-
-    p_item.name.append(p_name);
+    guard is_valid_header_name(p_name) && p_item.name.try_append(p_name) else { return false; }
     to_lower(p_item.name[..]);
 
     if p_val_raw.len > 0 && p_val_raw[0] == '"' {
@@ -117,8 +114,7 @@ fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> boo
         for b in p_val_raw {
             guard b != '"' && b != ' ' && b != '\t' else { return false; }
         }
-        guard p_val_raw.len <= p_item.value.cap else { return false; }
-        p_item.value.append(p_val_raw);
+        guard p_item.value.try_append(p_val_raw) else { return false; }
     }
     return true;
 }
@@ -134,7 +130,7 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
         let param_token, next_rem, _ = rem.split_once_unquoted_byte(';');
         rem = next_rem;
 
-        let p_trim = trim_lws(param_token);
+        let p_trim = param_token.trim_lws();
         if p_trim.len == 0 { continue; }
 
         var p_item = MediaTypeParam { .. };
@@ -150,8 +146,7 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
             return false;
         }
 
-        guard mt.params.len < mt.params.cap else { return false; }
-        mt.params.push(p_item);
+        guard mt.params.try_push(p_item) else { return false; }
     }
     return true;
 }
@@ -163,7 +158,7 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
 //   returns: MediaType { type_name: "text", subtype: "html", valid: true, .. }, true
 fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
-    let trimmed = trim_lws(raw);
+    let trimmed = raw.trim_lws();
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }
 
@@ -173,11 +168,9 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     let raw_type, raw_sub, has_slash = mime_part.split_once_byte('/');
     guard has_slash && raw_type.len > 0 && raw_sub.len > 0 else { return mt, false; }
     guard is_valid_header_name(raw_type) && is_valid_header_name(raw_sub) else { return mt, false; }
-    guard raw_type.len <= mt.type_name.cap && raw_sub.len <= mt.subtype.cap else { return mt, false; }
+    guard mt.type_name.try_append(raw_type) && mt.subtype.try_append(raw_sub) else { return mt, false; }
 
-    mt.type_name.append(raw_type);
     to_lower(mt.type_name[..]);
-    mt.subtype.append(raw_sub);
     to_lower(mt.subtype[..]);
 
     format(mt.mime_type, mt.type_name[..], "/", mt.subtype[..]);
@@ -199,16 +192,14 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
 //   returns: MediaType { type_name: "form-data", valid: true, .. }, true
 fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
-    let trimmed = trim_lws(raw);
+    let trimmed = raw.trim_lws();
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }
 
     let disp_part_raw, params_part, has_semi = trimmed.split_once_byte(';');
     let disp_part = disp_part_raw.trim_lws();
-    guard is_valid_header_name(disp_part) else { return mt, false; }
-    guard disp_part.len <= mt.type_name.cap else { return mt, false; }
+    guard is_valid_header_name(disp_part) && mt.type_name.try_append(disp_part) else { return mt, false; }
 
-    mt.type_name.append(disp_part);
     to_lower(mt.type_name[..]);
     mt.mime_type.append(mt.type_name[..]);
 
@@ -222,7 +213,7 @@ fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
 
 fn param(mt: const MediaType&, key: const u8[:]) -> const u8[:] {
     for &p in mt.params {
-        if eq_ascii_fold(p.name[..], key) {
+        if p.name[..].eq_ascii_fold(key) {
             return p.value[..];
         }
     }
@@ -231,7 +222,7 @@ fn param(mt: const MediaType&, key: const u8[:]) -> const u8[:] {
 
 fn has_param(mt: const MediaType&, key: const u8[:]) -> bool {
     for &p in mt.params {
-        if eq_ascii_fold(p.name[..], key) {
+        if p.name[..].eq_ascii_fold(key) {
             return true;
         }
     }
@@ -239,7 +230,7 @@ fn has_param(mt: const MediaType&, key: const u8[:]) -> bool {
 }
 
 fn is_multipart(mt: const MediaType&) -> bool {
-    return eq_ascii_fold(mt.type_name[..], "multipart");
+    return mt.type_name[..].eq_ascii_fold("multipart");
 }
 
 fn boundary(mt: const MediaType&) -> const u8[:] {
@@ -305,7 +296,7 @@ struct SfvDict {
 // Helper: skips optional ASCII whitespace SP and HTAB
 fn sfv_skip_ows(raw: const u8[:], cursor: i64&) {
     let rem = raw[cursor..];
-    let trimmed = core::trim_lws_start(rem);
+    let trimmed = rem.trim_lws_start();
     cursor += rem.len - trimmed.len;
 }
 
@@ -347,10 +338,7 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
     guard (first >= 'a' && first <= 'z') || first == '*' else { return false; }
 
     let k_len, ok = scan_sfv_key_len(rem);
-    guard ok && k_len <= out_key.cap else { return false; }
-
-    out_key.clear();
-    out_key.append(rem[..k_len]);
+    guard ok && out_key.try_set(rem[..k_len]) else { return false; }
     cursor += k_len;
     return true;
 }
@@ -488,8 +476,7 @@ fn parse_sfv_token(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bo
     while cursor < raw.len {
         let b = raw[cursor];
         if core::is_tchar(b) || b == ':' || b == '/' {
-            guard out_bare.text.len < out_bare.text.cap else { return false; }
-            out_bare.text.push(b);
+            guard out_bare.text.try_push(b) else { return false; }
             cursor++;
         } else {
             break;
@@ -515,9 +502,7 @@ fn parse_sfv_binary(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> b
     while cursor < raw.len && raw[cursor] != ':' {
         let b = raw[cursor];
         let is_b64 = core::is_ascii_alphanumeric(b) || b == '+' || b == '/' || b == '=';
-        guard is_b64 else { return false; }
-        guard b64_bytes.len < b64_bytes.cap else { return false; }
-        b64_bytes.push(b);
+        guard is_b64 && b64_bytes.try_push(b) else { return false; }
         cursor++;
     }
     guard cursor < raw.len && raw[cursor] == ':' else { return false; }
@@ -582,7 +567,7 @@ fn parse_sfv_display_string(raw: const u8[:], cursor: i64&, out_bare: SfvBareIte
         if b == '"' {
             cursor++; // consumed closing quote
             // Validate that decoded bytes are valid UTF-8
-            guard core::validate_utf8(out_bare.text[..]) else { return false; }
+            guard out_bare.text[..].validate_utf8() else { return false; }
             return true;
         } else if b == '%' {
             // Percent-encoded byte %xx: MUST use lowercase hex digits per RFC 9651 Section 3.3.8
@@ -665,9 +650,7 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
             }
         }
         if !found {
-            guard out_params.len < out_params.cap else { return false; }
-            var new_p = SfvParam { key: param_key, value: param_val };
-            out_params.push(new_p);
+            guard out_params.try_push(SfvParam { key: param_key, value: param_val }) else { return false; }
         }
     }
     return true;
@@ -717,8 +700,7 @@ fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> b
         var item = SfvItem { .. };
         guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
         guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
-        guard member.inner_list.len < member.inner_list.cap else { return false; }
-        member.inner_list.push(item);
+        guard member.inner_list.try_push(item) else { return false; }
         guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
     }
     guard closed else { return false; }
@@ -774,8 +756,7 @@ fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
             guard parse_sfv_member_item(raw, cursor, member) else { return false; }
         }
 
-        guard out.members.len < out.members.cap else { return false; }
-        out.members.push(member);
+        guard out.members.try_push(member) else { return false; }
 
         var has_more = false;
         guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
@@ -831,9 +812,7 @@ fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
             }
         }
         if !found {
-            guard out.entries.len < out.entries.cap else { return false; }
-            var new_entry = SfvDictEntry { key: key, member: member };
-            out.entries.push(new_entry);
+            guard out.entries.try_push(SfvDictEntry { key: key, member: member }) else { return false; }
         }
 
         var has_more = false;

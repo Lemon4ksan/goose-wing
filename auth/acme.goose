@@ -54,7 +54,7 @@ fn acme_key_authorization(
     out.clear();
     let token_valid = acme_validate_token(token);
     let thumb_valid = acme_validate_token(thumbprint_b64url);
-    let total = token.len + thumbprint_b64url.len;
+    let total = core::add_sat_i64(token.len, thumbprint_b64url.len);
     guard token_valid && thumb_valid && total < out.cap else { return -1; }
     out.append(token);
     out.push('.');
@@ -73,7 +73,7 @@ fn acme_key_authorization(
 fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
     out.clear();
     let token_valid = acme_validate_token(token);
-    let total = rfc::ACME_HTTP01_PREFIX.len + token.len;
+    let total = core::add_sat_i64(rfc::ACME_HTTP01_PREFIX.len, token.len);
     guard token_valid && total <= out.cap else { return -1; }
     out.append(rfc::ACME_HTTP01_PREFIX[..]);
     out.append(token);
@@ -86,7 +86,7 @@ fn acme_http01_path(token: const u8[:], out: u8[..128]&) -> i32 {
 // public prefix use early exits; the token suffix is compared with
 // core::ct_eq_bytes (constant-time-ish).
 fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool {
-    let expected_len = rfc::ACME_HTTP01_PREFIX.len + token.len;
+    let expected_len = core::add_sat_i64(rfc::ACME_HTTP01_PREFIX.len, token.len);
     guard acme_validate_token(token) else { return false; }
     guard path.len == expected_len else { return false; }
     for i in rfc::ACME_HTTP01_PREFIX.len {
@@ -121,10 +121,7 @@ fn acme_find_challenge(
 ) -> bool {
     for &ch in table {
         let matched = is_valid_acme_challenge_slot(ch) && acme_match_http01(path, ch.token[..]);
-        let fits = ch.key_auth_len <= out_body.cap;
-        if matched && fits {
-            out_body.clear();
-            out_body.append(ch.key_auth[..ch.key_auth_len]);
+        if matched && out_body.try_set(ch.key_auth[..ch.key_auth_len]) {
             out_len = ch.key_auth_len;
             return true;
         }

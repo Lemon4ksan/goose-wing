@@ -48,6 +48,31 @@ struct WsFrameHeader {
     header_len:  u16   = 0,
 }
 
+// RFC 6455 Section 5.2: Base Framing Protocol - Frame header bitmasks and length sentinels.
+const WS_FIN_BIT:          u8  = 0x80;
+const WS_RSV1_BIT:         u8  = 0x40;
+const WS_RSV2_BIT:         u8  = 0x20;
+const WS_RSV3_BIT:         u8  = 0x10;
+const WS_OPCODE_MASK:      u8  = 0x0F;
+const WS_MASK_BIT:         u8  = 0x80;
+const WS_PAYLOAD_LEN_MASK: u8  = 0x7F;
+const WS_LEN16_SENTINEL:   u64 = 126;
+const WS_MAX_CONTROL_LEN:  u64 = 125;
+
+// Packs the first byte of an RFC 6455 Section 5.2 frame header (`FIN | RSV1..3 | Opcode`).
+//
+// Example:
+//   hdr = WsFrameHeader { fin: true, opcode: 1, .. }, eff_fin = true
+//   returns: 0x81
+inline fn pack_ws_frame_b0(hdr: const WsFrameHeader&, eff_fin: bool) -> u8 {
+    var b0: u8 = hdr.opcode & WS_OPCODE_MASK;
+    if eff_fin { b0 |= WS_FIN_BIT; }
+    if hdr.rsv1 { b0 |= WS_RSV1_BIT; }
+    if hdr.rsv2 { b0 |= WS_RSV2_BIT; }
+    if hdr.rsv3 { b0 |= WS_RSV3_BIT; }
+    return b0;
+}
+
 // In-place SWAR 64-bit/32-bit XOR masking loop (RFC 6455 Section 5.3)
 // Vectorizes payload masking in pure Goose using 64-bit word iterations without heap allocations
 // or out-of-bounds reads.
@@ -66,23 +91,23 @@ fn apply_mask_in_place(data: u8[:], mask_key: const u8[4]&) {
     var i: i64 = 0;
 
     // 64-bit SWAR loop: process 8 bytes per iteration
-    while i + 8 <= n {
+    while core::add_sat_i64(i, 8) <= n {
         let w = core::read_be_u64(data, i);
         core::write_be_u64_at(data, i, w ^ m64_be);
-        i += 8;
+        i = core::add_sat_i64(i, 8);
     }
 
     // 32-bit SWAR tail: process remaining 4 bytes if present
-    if i + 4 <= n {
+    if core::add_sat_i64(i, 4) <= n {
         let w = core::read_be_u32(data, i);
         core::write_be_u32_at(data, i, w ^ (m32_be as u32));
-        i += 4;
+        i = core::add_sat_i64(i, 4);
     }
 
     // Scalar byte-by-byte tail (0..3 bytes)
     while i < n {
         data[i] = data[i] ^ mask_key[i % 4];
-        i++;
+        i = core::add_sat_i64(i, 1);
     }
 }
 
@@ -109,56 +134,61 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     let b0 = src[0];
     let b1 = src[1];
 
-    let fin = (b0 & 0x80) != 0;
-    let rsv1 = (b0 & 0x40) != 0;
-    let rsv2 = (b0 & 0x20) != 0;
-    let rsv3 = (b0 & 0x10) != 0;
-    let opcode = b0 & 0x0F;
+    let fin = (b0 & WS_FIN_BIT) != 0;
+    let rsv1 = (b0 & WS_RSV1_BIT) != 0;
+    let rsv2 = (b0 & WS_RSV2_BIT) != 0;
+    let rsv3 = (b0 & WS_RSV3_BIT) != 0;
+    let opcode = b0 & WS_OPCODE_MASK;
 
     guard rfc::is_valid_ws_opcode(opcode) else { return hdr, false; }
 
-    let masked = (b1 & 0x80) != 0;
-    let raw_len = (b1 & 0x7F) as u64;
+    let masked = (b1 & WS_MASK_BIT) != 0;
+    let raw_len = (b1 & WS_PAYLOAD_LEN_MASK) as u64;
 
     // Control frame invariants (RFC 6455 Section 5.5):
     // 1. MUST NOT be fragmented (FIN MUST be 1)
     // 2. Payload length MUST be <= 125 (extended length encodings 126/127 are forbidden)
     if rfc::is_ws_control_opcode(opcode) {
-        guard fin && raw_len <= 125 else { return hdr, false; }
+        guard fin && raw_len <= WS_MAX_CONTROL_LEN else { return hdr, false; }
     }
 
     var offset:      i64 = 2;
     var payload_len: u64 = 0;
 
-    if raw_len <= 125 {
+    if raw_len <= WS_MAX_CONTROL_LEN {
         payload_len = raw_len;
-    } else if raw_len == 126 {
-        guard src.len >= offset + 2 else { return hdr, false; }
+    } else if raw_len == WS_LEN16_SENTINEL {
+        guard src.len >= core::add_sat_i64(offset, 2) else { return hdr, false; }
         payload_len = core::read_be_u16(src, offset);
         // RFC 6455 Section 5.2: minimal encoding check (must be >= 126)
-        guard payload_len >= 126 else { return hdr, false; }
-        offset += 2;
+        guard payload_len >= WS_LEN16_SENTINEL else { return hdr, false; }
+        offset = core::add_sat_i64(offset, 2);
     } else {
         // raw_len == 127
-        guard src.len >= offset + 8 else { return hdr, false; }
+        guard src.len >= core::add_sat_i64(offset, 8) else { return hdr, false; }
         // High bit must be 0 per RFC 6455 Section 5.2
-        guard (src[offset] & 0x80) == 0 else { return hdr, false; }
+        guard (src[offset] & WS_FIN_BIT) == 0 else { return hdr, false; }
         payload_len = core::read_be_u64(src, offset);
         // Minimal encoding check (must be > 65535)
         guard payload_len > 65535 else { return hdr, false; }
-        offset += 8;
+        offset = core::add_sat_i64(offset, 8);
     }
 
     // Control frames payload length must not exceed 125 bytes
     if rfc::is_ws_control_opcode(opcode) {
-        guard payload_len <= 125 else { return hdr, false; }
+        guard payload_len <= WS_MAX_CONTROL_LEN else { return hdr, false; }
     }
 
     var mask_key: u8[4] = [0; 4];
     if masked {
-        guard src.len >= offset + 4 else { return hdr, false; }
-        mask_key = [src[offset], src[offset + 1], src[offset + 2], src[offset + 3]];
-        offset += 4;
+        guard src.len >= core::add_sat_i64(offset, 4) else { return hdr, false; }
+        mask_key = [
+            src[offset],
+            src[core::add_sat_i64(offset, 1)],
+            src[core::add_sat_i64(offset, 2)],
+            src[core::add_sat_i64(offset, 3)],
+        ];
+        offset = core::add_sat_i64(offset, 4);
     }
 
     hdr.fin = fin;
@@ -177,30 +207,25 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
 // Encodes RFC 6455 Frame Header
 fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
     let eff_fin = if rfc::is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
-    var b0: u8 = hdr.opcode & 0x0F;
-    if eff_fin { b0 |= 0x80; }
-    if hdr.rsv1 { b0 |= 0x40; }
-    if hdr.rsv2 { b0 |= 0x20; }
-    if hdr.rsv3 { b0 |= 0x10; }
-    out.push(b0);
+    out.push(pack_ws_frame_b0(hdr, eff_fin));
 
-    let mask_bit: u8 = if hdr.masked { 0x80 } else { 0x00 };
+    let mask_bit: u8 = if hdr.masked { WS_MASK_BIT } else { 0x00 };
 
     // RFC 6455 §5.5 & uWS #1407: Control frames MUST NOT exceed 125 bytes and MUST NEVER use extended length
-    let eff_len = if rfc::is_ws_control_opcode(hdr.opcode) && hdr.payload_len > 125 {
-        125 as u64
+    let eff_len = if rfc::is_ws_control_opcode(hdr.opcode) {
+        min(hdr.payload_len, WS_MAX_CONTROL_LEN)
     } else {
         hdr.payload_len
     };
 
-    if eff_len <= 125 {
+    if eff_len <= WS_MAX_CONTROL_LEN {
         out.push(mask_bit | (eff_len as u8));
     } else if eff_len <= 65535 {
         out.push(mask_bit | 126);
-        core::write_be_u16(out, eff_len as u16);
+        out.append_u16_be(eff_len as u16);
     } else {
         out.push(mask_bit | 127);
-        core::write_be_u64(out, eff_len);
+        out.append_u64_be(eff_len);
     }
 
     if hdr.masked {
@@ -249,16 +274,15 @@ fn calc_ws_frame_len(payload_len: u64, is_client: bool) -> u64 {
 
 // Encodes a Close frame payload (2-byte status code + optional UTF-8 reason)
 fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
-    core::write_be_u16(out, status_code);
+    out.append_u16_be(status_code);
     // RFC 6455 §5.5 & §5.5.1 / uWS #1407: Control frame payload must NOT exceed 125 bytes.
     // Close payload contains 2-byte status code, so reason is clamped to at most 123 bytes.
-    var eff_len = reason.len;
-    if eff_len > 123 {
-        eff_len = 123;
+    var eff_len = min(reason.len, 123);
+    if reason.len > 123 {
         // Avoid truncating in the middle of a multi-byte UTF-8 sequence:
         // A cut at eff_len splits a UTF-8 codepoint iff reason[eff_len] is a continuation byte (10xxxxxx).
         while eff_len > 0 && (reason[eff_len] & 0xC0) == 0x80 {
-            eff_len--;
+            eff_len = core::sub_sat_i64(eff_len, 1);
         }
     }
     out.append(reason[..eff_len]);
@@ -501,10 +525,7 @@ fn abort_with_hook<AbortFn: fn(i64, u64)>(pending: WsPendingUpgrade&) {
 }
 
 fn set_user_data(pending: WsPendingUpgrade&, data: const u8[:]) -> bool {
-    pending.user_data.clear();
-    guard data.len <= pending.user_data.cap else { return false; }
-    pending.user_data.append(data);
-    return true;
+    return pending.user_data.try_set(data);
 }
 
 fn set_user_tag(pending: WsPendingUpgrade&, tag: u64) {
@@ -513,10 +534,7 @@ fn set_user_tag(pending: WsPendingUpgrade&, tag: u64) {
 
 // Per-Socket UserData accessors (zero-alloc inline context)
 fn set_user_data(ws: WebSocketSession&, data: const u8[:]) -> bool {
-    ws.user_data.clear();
-    guard data.len <= ws.user_data.cap else { return false; }
-    ws.user_data.append(data);
-    return true;
+    return ws.user_data.try_set(data);
 }
 
 fn set_user_tag(ws: WebSocketSession&, tag: u64) {
@@ -767,7 +785,7 @@ fn close_at<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], now
     guard !ws.is_closed && !ws.close_sent else { return; }
     var payload: u8[..128] = [];
     if rfc::is_valid_ws_close_code(status_code) {
-        let eff_reason = if reason.len > 0 && core::validate_utf8(reason) { reason } else { "" };
+        let eff_reason = if reason.len > 0 && reason.validate_utf8() { reason } else { "" };
         encode_close_payload(payload, status_code, eff_reason);
     }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
@@ -794,7 +812,7 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
     // Invalid codes (<1000, >=5000, 1016..2999, 1004, 1015) MUST NOT be sent on the wire.
     if rfc::is_valid_ws_close_code(status_code) {
         // RFC 6455 §5.5.1: Close reason MUST be valid UTF-8
-        let eff_reason = if reason.len > 0 && core::validate_utf8(reason) { reason } else { "" };
+        let eff_reason = if reason.len > 0 && reason.validate_utf8() { reason } else { "" };
         encode_close_payload(payload, status_code, eff_reason);
     }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
@@ -992,7 +1010,7 @@ fn receive_view_into<B, F>(
     guard p_start_u <= wire_len && hdr.payload_len <= (wire_len - p_start_u) else { return false, out_view; }
     let p_start = hdr.header_len as i64;
     let p_len = hdr.payload_len as i64;
-    let payload = wire[p_start..(p_start + p_len)];
+    let payload = wire[p_start..core::add_sat_i64(p_start, p_len)];
 
     if hdr.masked {
         mask_websocket_payload(payload, hdr.mask_key);
@@ -1031,7 +1049,7 @@ fn receive_view_into<B, F>(
                 return true, out_view;
             }
             // RFC 6455 §5.5.1 / §8.1 / §7.4.1 / Autobahn 6.4.1: Close reason MUST be valid UTF-8
-            if reason.len > 0 && !core::validate_utf8(reason) {
+            if reason.len > 0 && !reason.validate_utf8() {
                 close(ws, rfc::WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in close reason", out_reply);
                 ws.is_closed = true;
                 ws.close_code = rfc::WS_STATUS_INVALID_PAYLOAD;
@@ -1085,7 +1103,7 @@ fn receive_view_into<B, F>(
             }
             // RFC 7692 Section 6.1: Compression - UTF-8 validation only applies to uncompressed plaintext payload
             let need_utf8 = hdr.opcode == rfc::WS_OPCODE_TEXT && !hdr.rsv1;
-            if need_utf8 && !core::validate_utf8(payload) {
+            if need_utf8 && !payload.validate_utf8() {
                 close(ws, rfc::WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in text frame", out_reply);
                 ws.is_closed = true;
                 ws.close_code = rfc::WS_STATUS_INVALID_PAYLOAD;
@@ -1105,11 +1123,7 @@ fn receive_view_into<B, F>(
         ws.utf8_dfa_state = 0;
         frag_buf.clear();
         let max_len_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
-        let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
-            max_len_i64
-        } else {
-            max_frag_cap
-        };
+        let eff_cap = if ws.max_payload_length > 0 { min(max_len_i64, max_frag_cap) } else { max_frag_cap };
         if eff_cap <= 0 || payload.len > eff_cap {
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "fragment exceeds capacity", out_reply);
             ws.is_closed = true;
@@ -1151,12 +1165,8 @@ fn receive_view_into<B, F>(
         }
 
         let max_len_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
-        let eff_cap = if ws.max_payload_length > 0 && max_len_i64 < max_frag_cap {
-            max_len_i64
-        } else {
-            max_frag_cap
-        };
-        if eff_cap <= 0 || payload.len > eff_cap - frag_buf.len {
+        let eff_cap = if ws.max_payload_length > 0 { min(max_len_i64, max_frag_cap) } else { max_frag_cap };
+        if eff_cap <= 0 || payload.len > core::sub_sat_i64(eff_cap, frag_buf.len) {
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "assembled payload exceeds capacity", out_reply);
             ws.is_closed = true;
             ws.close_code = rfc::WS_STATUS_MESSAGE_TOO_BIG;
@@ -1276,15 +1286,8 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
     out_msg.is_valid = view.is_valid;
     out_msg.opcode = view.opcode;
     out_msg.close_code = view.close_code;
-    out_msg.close_reason.clear();
-    guard view.close_reason.len <= out_msg.close_reason.cap else { return false; }
-    if view.close_reason.len > 0 {
-        out_msg.close_reason.append(view.close_reason);
-    }
-    out_msg.data.clear();
-    if view.payload.len > 0 {
-        out_msg.data.append(view.payload);
-    }
+    guard out_msg.close_reason.try_set(view.close_reason) else { return false; }
+    guard out_msg.data.try_set(view.payload) else { return false; }
     return true;
 }
 
@@ -1387,7 +1390,7 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
         if ws.is_closed {
             return;
         }
-        core::compact_wire_buffer(in_buf, consumed);
+        in_buf.compact_wire_buffer(consumed);
         chunk_buf.clear();
         let recvd = tcp_recv(conn_fd, chunk_buf, 100);
         if recvd < 0 {

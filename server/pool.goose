@@ -194,15 +194,6 @@ fn new_inline_handler_future(tag: u16 = 1) -> InlineHandlerFuture {
     return InlineHandlerFuture { vtable_tag: tag, state_len: 0, completed: false, inline_state: [0; 48] };
 }
 
-fn store_future_state(fut: InlineHandlerFuture&, bytes: const u8[:]) -> bool {
-    guard bytes.len <= 48 else { return false; }
-    for i in bytes.len {
-        fut.inline_state[i] = bytes[i];
-    }
-    fut.state_len = bytes.len as u8;
-    return true;
-}
-
 fn poll_future(fut: InlineHandlerFuture&) -> bool {
     fut.completed = true;
     return true;

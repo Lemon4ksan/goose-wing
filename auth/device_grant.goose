@@ -31,14 +31,13 @@ enum DevicePollStatus {
 // Example:
 //   reader at "\"WDJB-MJHT\""
 //   sets: dst = "WDJB-MJHT", had_err = false
-inline fn read_required_oauth_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, had_err: bool&) {
+inline fn read_required_oauth_str<B>(reader: json::Reader&, dst: B&, had_err: bool&) {
     if json::peek(reader) != '"' {
         json::skip(reader);
         had_err = true;
         return;
     }
-    let s = json::read_string(reader, scratch);
-    if s.len == 0 || !dst.try_set(s) {
+    if !core::read_json_string_into(reader, dst) || dst.len == 0 {
         had_err = true;
     }
 }
@@ -48,11 +47,11 @@ inline fn read_required_oauth_str<B>(reader: json::Reader&, scratch: u8[>..]&, d
 // Example:
 //   reader at "\"https://ex.com?code=1\""
 //   sets: dst = "https://ex.com?code=1", had_err = false
-inline fn read_nullable_oauth_str<B>(reader: json::Reader&, scratch: u8[>..]&, dst: B&, had_err: bool&) {
+inline fn read_nullable_oauth_str<B>(reader: json::Reader&, dst: B&, had_err: bool&) {
     let p = json::peek(reader);
     if p == 'n' {
         json::skip(reader);
-    } else if p != '"' || !dst.try_set(json::read_string(reader, scratch)) {
+    } else if p != '"' || !core::read_json_string_into(reader, dst) {
         had_err = true;
     }
 }
@@ -81,18 +80,17 @@ inline fn read_positive_oauth_int(reader: json::Reader&, dst: i64&, had_err: boo
 inline fn parse_device_auth_field(
     key:     const u8[:],
     reader:  json::Reader&,
-    scratch: u8[>..]&,
     out:     DeviceAuthResponse&,
     had_err: bool&,
 ) {
-    if key == "device_code" { read_required_oauth_str(reader, scratch, out.device_code, had_err); return; }
-    if key == "user_code" { read_required_oauth_str(reader, scratch, out.user_code, had_err); return; }
+    if key == "device_code" { read_required_oauth_str(reader, out.device_code, had_err); return; }
+    if key == "user_code" { read_required_oauth_str(reader, out.user_code, had_err); return; }
     if key == "verification_uri" || key == "verification_url" {
-        read_required_oauth_str(reader, scratch, out.verification_uri, had_err);
+        read_required_oauth_str(reader, out.verification_uri, had_err);
         return;
     }
     if key == "verification_uri_complete" {
-        read_nullable_oauth_str(reader, scratch, out.verification_uri_complete, had_err);
+        read_nullable_oauth_str(reader, out.verification_uri_complete, had_err);
         return;
     }
     if key == "expires_in" { read_positive_oauth_int(reader, out.expires_in_sec, had_err); return; }
@@ -122,11 +120,9 @@ fn parse_device_auth_response(raw_json: const u8[:]) -> DeviceAuthResponse, bool
     let empty = DeviceAuthResponse { .. };
     guard raw_json.len > 0 && raw_json.len <= 4096 else { return empty, false; }
     var reader = json::reader(raw_json);
-    var scratch: u8[>..] = [];
     var had_err = false;
     json::each_member(reader) { key =>
-        scratch.clear();
-        parse_device_auth_field(key, reader, scratch, out, had_err);
+        parse_device_auth_field(key, reader, out, had_err);
     };
     let complete = out.device_code.len > 0 && out.user_code.len > 0 &&
                    out.verification_uri.len > 0 && out.expires_in_sec > 0;

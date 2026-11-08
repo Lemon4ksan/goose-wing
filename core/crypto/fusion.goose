@@ -202,7 +202,7 @@ fn fused_aes_gcm_encrypt(
         inc_ctr32(ctr);
         let ek = aes128_encrypt_block(ks, ctr);
         let rem = plaintext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         var gblk: u8[16] = [0; 16];
         for i in take {
             let c_byte = plaintext[offset + i] ^ ek[i];
@@ -260,7 +260,7 @@ fn fused_aes_gcm_decrypt(
         inc_ctr32(ctr);
         let ek = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         var gblk: u8[16] = [0; 16];
         for i in take {
             let c_byte = ciphertext[offset + i];

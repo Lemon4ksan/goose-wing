@@ -10,6 +10,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.request;
 import client.response;
 
@@ -47,13 +48,9 @@ fn parse_sse_retry(field_val: const u8[:]) -> u32, bool {
     guard field_val.len > 0 else { return 0, false; }
     var num: u32 = 0;
     for b in field_val {
-        guard b >= '0' && b <= '9' else { return 0, false; }
-        let digit = (b - '0') as u32;
-        if num > (0xFFFFFFFF - digit) / 10 {
-            num = 0xFFFFFFFF;
-        } else {
-            num = num * 10 + digit;
-        }
+        guard core::is_ascii_digit(b) else { return 0, false; }
+        let digit = core::hex_digit_to_val(b) as u32;
+        num = core::add_sat_u32(core::mul_sat_u32(num, 10), digit);
     }
     return num, true;
 }
@@ -63,29 +60,23 @@ const SSE_MAX_LINE_LEN: i64 = 4112;
 
 fn sse_process_field(p: SseParser&, field_name: const u8[:], field_val: const u8[:]) {
     if field_name == "event" {
-        p.cur_event.clear();
         let copy_len = min(field_val.len, p.cur_event.cap);
-        p.cur_event.append(field_val[..copy_len]);
+        let _ = p.cur_event.try_set(field_val[..copy_len]);
     } else if field_name == "data" {
         if p.has_data && p.cur_data.len < SSE_MAX_DATA_LEN {
-            p.cur_data.push('\n');
+            let _ = p.cur_data.try_push('\n');
         }
         p.has_data = true;
         for b in field_val {
             if p.cur_data.len < SSE_MAX_DATA_LEN {
-                p.cur_data.push(b);
+                let _ = p.cur_data.try_push(b);
             }
         }
     } else if field_name == "id" {
         // Must not contain NUL byte (W3C EventSource §9.2.6)
-        var has_null = false;
-        for b in field_val {
-            if b == 0 { has_null = true; break; }
-        }
-        if !has_null {
-            p.pending_id.clear();
+        if !field_val.contains_byte(0) {
             let copy_len = min(field_val.len, p.pending_id.cap);
-            p.pending_id.append(field_val[..copy_len]);
+            let _ = p.pending_id.try_set(field_val[..copy_len]);
             p.has_pending_id = true;
         }
     } else if field_name == "retry" {
@@ -112,8 +103,7 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
     if line.len == 0 {
         // W3C §9.2.6 Step 1: Set the last event ID string of the event source to the value of the last event ID buffer
         if p.has_pending_id {
-            p.last_event_id.clear();
-            p.last_event_id.append(p.pending_id[..]);
+            let _ = p.last_event_id.try_set(p.pending_id[..]);
             p.has_pending_id = false;
         }
         if p.has_data {
@@ -135,8 +125,7 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
             p.cur_data.clear();
             p.has_data = false;
 
-            guard out_events.len < out_events.cap else { return; }
-            out_events.push(ev);
+            let _ = out_events.try_push(ev);
         } else {
             p.cur_event.clear();
         }
@@ -148,16 +137,11 @@ fn sse_process_line<E>(p: SseParser&, out_events: E&) {
         return;
     }
 
-    // Find colon separating field name from value
-    let colon_pos = core::index_of_byte(line, ':');
-    if colon_pos >= 0 {
-        let field_name = line[..colon_pos];
-        var val_start = colon_pos + 1;
+    // Split on first colon separating field name from value (W3C EventSource §9.2.6)
+    let field_name, raw_val, has_colon = line.split_once_byte(':');
+    if has_colon {
         // If character after colon is a single space, skip it per W3C spec
-        if val_start < line.len && line[val_start] == ' ' {
-            val_start++;
-        }
-        let field_val = line[val_start..];
+        let field_val = if raw_val.len > 0 && raw_val[0] == ' ' { raw_val[1..] } else { raw_val };
         sse_process_field(p, field_name, field_val);
     } else {
         // Line without colon: field name is the whole line with empty value
@@ -184,7 +168,7 @@ fn sse_feed<E>(p: SseParser&, chunk: const u8[:], out_events: E&) {
         } else {
             p.prev_was_cr = false;
             if p.line_buf.len < SSE_MAX_LINE_LEN {
-                p.line_buf.push(b);
+                let _ = p.line_buf.try_push(b);
             }
         }
     }
@@ -229,14 +213,15 @@ fn sse_format_data_lines<B>(out: B&, data: const u8[:]) {
             out.append("data: ");
             out.append(data[start..i]);
             out.push('\n');
-            if data[i] == '\r' && i + 1 < data.len && data[i + 1] == '\n' {
-                i += 2;
+            let next_i = core::add_sat_i64(i, 1);
+            if data[i] == '\r' && next_i < data.len && data[next_i] == '\n' {
+                i = core::add_sat_i64(i, 2);
             } else {
-                i += 1;
+                i = next_i;
             }
             start = i;
         } else {
-            i += 1;
+            i = core::add_sat_i64(i, 1);
         }
     }
     out.append("data: ");

@@ -110,6 +110,7 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
 
     out.clear();
     var buf: u8[..1024] = [];
+    defer core::secure_zeroize_slice(buf[..]);
     if is_okp {
         buf.append("{\"crv\":\"");
         buf.append(key.crv[..]);
@@ -121,9 +122,9 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
     } else if is_oct {
         buf.append("{\"k\":\"");
         var k_b64: u8[..128] = [];
+        defer core::secure_zeroize_slice(k_b64[..]);
         core::base64url_encode(key.symmetric_key[..], k_b64);
         buf.append(k_b64[..]);
-        core::secure_zeroize_slice(k_b64[..]);
         buf.append("\",\"kty\":\"oct\"}");
     } else if is_ec {
         buf.append("{\"crv\":\"");
@@ -148,9 +149,7 @@ fn compute_canonical_jwk<B>(key: const JwksKey&, out: B&) -> bool {
         buf.append(n_b64[..]);
         buf.append("\"}");
     }
-    let ok = out.try_set(buf[..]);
-    core::secure_zeroize_slice(buf[..]);
-    return ok;
+    return out.try_set(buf[..]);
 }
 
 // Computes the RFC 7638 JWK Thumbprint:
@@ -159,9 +158,9 @@ fn compute_jwk_thumbprint<B>(key: const JwksKey&, out: B&) -> bool {
     out.clear();
     guard out.cap >= 43 else { return false; }
     var canonical: u8[..1024] = [];
+    defer core::secure_zeroize_slice(canonical[..]);
     guard compute_canonical_jwk(key, canonical) else { return false; }
     let digest = core::sha256(canonical[..]);
-    core::secure_zeroize_slice(canonical[..]);
     core::base64url_encode(digest[..], out);
     return true;
 }
@@ -480,11 +479,8 @@ fn parse_jwk_key_fields(
         if field_key.contains('\\') || is_header_key_present(field_key, seen_keys[..]) {
             key_item.has_invalid_type = true;
         }
-        if seen_keys.len < seen_keys.cap && field_key.len <= 64 {
-            var item = SeenHeaderKey { .. };
-            item.name.append(field_key);
-            seen_keys.push(item);
-        } else {
+        var item = SeenHeaderKey { .. };
+        if !item.name.try_set(field_key) || !seen_keys.try_push(item) {
             key_item.has_invalid_type = true;
         }
         parse_jwk_key_field(field_key, reader, mat, key_item);
@@ -511,15 +507,13 @@ fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
           key_item.alg == JwtAlg.HS384 || key_item.alg == JwtAlg.HS512 else { return false; }
     guard raw_k.len > 0 else { return false; }
     var decoded_k: u8[..128] = [];
+    defer core::secure_zeroize_slice(decoded_k[..]);
     guard core::base64url_decode(raw_k, decoded_k) else { return false; }
     // RFC 8725 §3.6 & RFC 7518 §3.2: Reject weak symmetric keys (< 128 bits / 16 bytes)
     guard decoded_k.len >= 16 && decoded_k.len <= rfc::HMAC_SHA512_MAC_LEN else {
-        core::secure_zeroize_slice(decoded_k[..]);
         return false;
     }
-    key_item.symmetric_key.clear();
-    key_item.symmetric_key.append(decoded_k[..]);
-    core::secure_zeroize_slice(decoded_k[..]);
+    let _ = key_item.symmetric_key.try_set(decoded_k[..]);
     key_item.valid = true;
     return true;
 }
@@ -533,10 +527,7 @@ fn finalize_ec_key(raw_x: const u8[:], raw_y: const u8[:], key_item: JwksKey&) -
     var decoded_y: u8[..64] = [];
     guard core::base64url_decode(raw_x, decoded_x) && core::base64url_decode(raw_y, decoded_y) else { return false; }
     guard is_valid_jwk_ec_p256_coords(decoded_x[..], decoded_y[..]) else { return false; }
-    key_item.ec_x.clear();
-    key_item.ec_x.append(decoded_x[..]);
-    key_item.ec_y.clear();
-    key_item.ec_y.append(decoded_y[..]);
+    guard key_item.ec_x.try_set(decoded_x[..]) && key_item.ec_y.try_set(decoded_y[..]) else { return false; }
     key_item.valid = true;
     return true;
 }
@@ -551,10 +542,7 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) 
     var decoded_e: u8[..8]   = [];
     guard core::base64url_decode(raw_n, decoded_n) && core::base64url_decode(raw_e, decoded_e) else { return false; }
     guard is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]) else { return false; }
-    key_item.rsa_n.clear();
-    key_item.rsa_n.append(decoded_n[..]);
-    key_item.rsa_e.clear();
-    key_item.rsa_e.append(decoded_e[..]);
+    guard key_item.rsa_n.try_set(decoded_n[..]) && key_item.rsa_e.try_set(decoded_e[..]) else { return false; }
     key_item.valid = true;
     return true;
 }

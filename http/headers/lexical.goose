@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET:   ByteSet     = byte_set(CRLF_BYTES[..]);
@@ -337,14 +338,14 @@ fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
     for b in s {
         guard b >= '0' && b <= '9' else { return false; }
     }
-    let num, ok = core::parse_u64_dec(s);
+    let num, ok = s.parse_u64_dec();
     guard ok && num <= 9223372036854775807 else { return false; }
     out_val = num as! i64;
     return true;
 }
 
 fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
-    let trimmed = trim_lws(val);
+    let trimmed = val.trim_lws();
     guard trimmed.len > 0 else { return false; }
 
     var has_comma = false;
@@ -371,7 +372,7 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
             comma_idx++;
         }
 
-        let piece = trim_lws(trimmed[cursor..comma_idx]);
+        let piece = trimmed[cursor..comma_idx].trim_lws();
         guard piece.len > 0 else { return false; }
 
         var piece_num: i64 = 0;
@@ -395,7 +396,7 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
 // RFC 9112 Section 7: Validates a transfer-coding element (e.g. "chunked", "gzip", "identity", "gzip;q=1.0").
 // transfer-coding = token *( OWS ";" OWS transfer-parameter )
 fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
-    let trimmed = trim_lws(coding);
+    let trimmed = coding.trim_lws();
     guard trimmed.len > 0 else { return false; }
 
     var semi_idx: i64 = 0;
@@ -403,24 +404,24 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
         semi_idx++;
     }
 
-    let name = trim_lws(trimmed[..semi_idx]);
+    let name = trimmed[..semi_idx].trim_lws();
     guard name.len > 0 else { return false; }
     for b in name {
         guard is_tchar(b) else { return false; }
     }
 
     // RFC 9112 Section 6.1: Reject unrecognized transfer codings (must be chunked, gzip, deflate, compress, br, zstd, or identity)
-    let is_known = eq_ascii_fold(name, "chunked") ||
-                   eq_ascii_fold(name, "gzip") ||
-                   eq_ascii_fold(name, "deflate") ||
-                   eq_ascii_fold(name, "compress") ||
-                   eq_ascii_fold(name, "br") ||
-                   eq_ascii_fold(name, "zstd") ||
-                   eq_ascii_fold(name, "identity");
+    let is_known = name.eq_ascii_fold("chunked") ||
+                   name.eq_ascii_fold("gzip") ||
+                   name.eq_ascii_fold("deflate") ||
+                   name.eq_ascii_fold("compress") ||
+                   name.eq_ascii_fold("br") ||
+                   name.eq_ascii_fold("zstd") ||
+                   name.eq_ascii_fold("identity");
     guard is_known else { return false; }
 
     // RFC 9112 Section 7.1: chunked transfer-coding has no parameters
-    if eq_ascii_fold(name, "chunked") {
+    if name.eq_ascii_fold("chunked") {
         return semi_idx == trimmed.len;
     }
 
@@ -428,13 +429,13 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
     guard semi_idx < trimmed.len else { return true; }
     var rem = trimmed[semi_idx + 1..];
     while rem.len > 0 {
-        let p_end = core::find_unquoted_byte(rem, ';');
-        let p_str = trim_lws(rem[..p_end]);
+        let p_end = rem.find_unquoted_byte(';');
+        let p_str = rem[..p_end].trim_lws();
         guard p_str.len > 0 else { return false; }
-        let k_raw, v_raw, has_eq = core::split_once_byte(p_str, '=');
+        let k_raw, v_raw, has_eq = p_str.split_once_byte('=');
         guard has_eq else { return false; }
-        let k = trim_lws(k_raw);
-        let v = trim_lws(v_raw);
+        let k = k_raw.trim_lws();
+        let v = v_raw.trim_lws();
         guard k.len > 0 && v.len > 0 && is_valid_token_swar(k) else { return false; }
         if v[0] == '"' {
             guard v.len >= 2 && v[v.len - 1] == '"' else { return false; }
@@ -455,7 +456,7 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
 // Allows comma-separated list of transfer codings (e.g. gzip, identity, br, deflate),
 // but requires that 'chunked' (case-insensitive) be the final coding and appear exactly once.
 fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
-    let trimmed = trim_lws(val);
+    let trimmed = val.trim_lws();
     guard trimmed.len > 0 else { return false; }
     guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
 
@@ -470,7 +471,7 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
             comma_idx++;
         }
 
-        let piece = trim_lws(trimmed[cursor..comma_idx]);
+        let piece = trimmed[cursor..comma_idx].trim_lws();
         guard piece.len > 0 else { return false; }
         guard is_valid_transfer_coding(piece) else { return false; }
 
@@ -478,9 +479,9 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
         while semi_idx < piece.len && piece[semi_idx] != ';' {
             semi_idx++;
         }
-        let coding_name = trim_lws(piece[..semi_idx]);
+        let coding_name = piece[..semi_idx].trim_lws();
 
-        let is_chunked = eq_ascii_fold(coding_name, "chunked");
+        let is_chunked = coding_name.eq_ascii_fold("chunked");
         if is_chunked {
             chunked_count++;
             last_is_chunked = true;
@@ -630,11 +631,11 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
 fn is_zero_qvalue(params: const u8[:]) -> bool {
     var rem = params;
     while rem.len > 0 {
-        let seg, rest, has_semi = core::split_once_byte(rem, ';');
-        let item = core::trim_lws(if has_semi { seg } else { rem });
+        let seg, rest, has_semi = rem.split_once_byte(';');
+        let item = (if has_semi { seg } else { rem }).trim_lws();
         rem = if has_semi { rest } else { "" };
-        if core::starts_with_fold(item, "q=") {
-            let qv = core::trim_lws(item[2..]);
+        if item.starts_with_fold("q=") {
+            let qv = item[2..].trim_lws();
             if qv == "0" || qv == "0." || qv == "0.0" || qv == "0.00" || qv == "0.000" {
                 return true;
             }

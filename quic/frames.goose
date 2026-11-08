@@ -248,28 +248,21 @@ fn encode_stream_frame_explicit<B>(
     guard quic_valid_offset_len(offset, data.len as u64) else { return false; }
 
     let orig_len = out.len;
-    let ftype = build_stream_frame_type(flags);
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
 
+    let ftype = build_stream_frame_type(flags);
     guard quic_encode_varint(out, ftype) && quic_encode_varint(out, stream_id) else {
-        out.resize(orig_len, 0);
         return false;
     }
     if flags.with_offset {
-        guard quic_encode_varint(out, offset) else {
-            out.resize(orig_len, 0);
-            return false;
-        }
+        guard quic_encode_varint(out, offset) else { return false; }
     }
     if flags.with_len {
-        guard quic_encode_varint(out, data.len as u64) else {
-            out.resize(orig_len, 0);
-            return false;
-        }
+        guard quic_encode_varint(out, data.len as u64) else { return false; }
     }
-    guard out.try_append(data) else {
-        out.resize(orig_len, 0);
-        return false;
-    }
+    guard out.try_append(data) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -485,21 +478,20 @@ fn encode_connection_close_frame<B>(
 ) -> bool {
     guard error_code <= rfc::QUIC_VARINT_MAX else { return false; }
     let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
+
     let ftype = if is_app { rfc::QUIC_FRAME_CONNECTION_CLOSE_APP } else { rfc::QUIC_FRAME_CONNECTION_CLOSE };
     guard quic_encode_varint(out, ftype) && quic_encode_varint(out, error_code) else {
-        out.resize(orig_len, 0);
         return false;
     }
     if !is_app {
-        guard quic_encode_varint(out, frame_type) else {
-            out.resize(orig_len, 0);
-            return false;
-        }
+        guard quic_encode_varint(out, frame_type) else { return false; }
     }
     guard quic_encode_varint(out, reason.len as u64) && out.try_append(reason) else {
-        out.resize(orig_len, 0);
         return false;
     }
+    committed = true;
     return true;
 }
 
@@ -1374,11 +1366,11 @@ fn encode_tp_extensions<B>(out: B&, tp: const QuicTransportParams&) -> bool {
 fn encode_tp_version_info<B>(out: B&, tp: const QuicTransportParams&) -> bool {
     guard tp.chosen_version != 0 else { return true; }
     var vbuf: u8[..40] = [];
-    core::append_u32_be(vbuf, tp.chosen_version);
+    vbuf.append_u32_be(tp.chosen_version);
     for i in tp.available_versions.len {
         let av = tp.available_versions[i];
         guard av != 0 else { return false; }
-        core::append_u32_be(vbuf, av);
+        vbuf.append_u32_be(av);
     }
     return encode_tp_bytes(out, rfc::QUIC_TP_VERSION_INFORMATION, vbuf[..]);
 }
@@ -1419,24 +1411,21 @@ fn encode_quic_transport_params<B>(
     is_server: bool,
 ) -> bool {
     let orig_len = out.len;
-    guard encode_tp_cids_and_server(out, tp, is_server) else {
-        out.resize(orig_len, 0);
-        return false;
-    }
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
+
+    guard encode_tp_cids_and_server(out, tp, is_server) else { return false; }
     if tp.initial_source_connection_id.len > 0 {
         let id = rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID;
-        guard encode_tp_bytes(out, id, tp.initial_source_connection_id[..]) else {
-            out.resize(orig_len, 0);
-            return false;
-        }
+        guard encode_tp_bytes(out, id, tp.initial_source_connection_id[..]) else { return false; }
     }
     guard encode_tp_flow_data(out, tp)
         && encode_tp_streams_and_ack(out, tp)
         && encode_tp_extensions(out, tp)
         && encode_tp_version_info(out, tp) else {
-        out.resize(orig_len, 0);
         return false;
     }
+    committed = true;
     return true;
 }
 
@@ -1469,15 +1458,14 @@ inline fn mark_tp_seen(seen_mask: u64&, bit: u64) -> bool {
 inline fn decode_tp_version_info(val: const u8[:], tp: QuicTransportParams&) -> bool {
     guard val.len >= 4 && (val.len & 3) == 0 else { return false; }
     var cur = core::cursor_from(val);
-    let chosen, ok_c = core::read_u32(cur);
+    let chosen, ok_c = cur.read_u32();
     guard ok_c && chosen != 0 else { return false; }
     tp.chosen_version = chosen;
     tp.available_versions.clear();
     while cur.buf.len >= 4 {
-        let av, ok_a = core::read_u32(cur);
+        let av, ok_a = cur.read_u32();
         guard ok_a && av != 0 else { return false; }
-        guard tp.available_versions.len < tp.available_versions.cap else { return false; }
-        tp.available_versions.push(av);
+        guard tp.available_versions.try_push(av) else { return false; }
     }
     return true;
 }
@@ -1491,9 +1479,9 @@ inline fn decode_tp_version_info(val: const u8[:], tp: QuicTransportParams&) -> 
 // crap:trusted-bounds
 inline fn decode_tp_preferred_addr(val: const u8[:], tp: QuicTransportParams&) -> bool {
     var cur = core::cursor_from(val);
-    let _, ok_hdr = core::read_bytes(cur, 24);
-    let cid_slice, ok_cid = core::read_u8_prefixed(cur);
-    let _, ok_tok = core::read_bytes(cur, 16);
+    let _, ok_hdr = cur.read_bytes(24);
+    let cid_slice, ok_cid = cur.read_u8_prefixed();
+    let _, ok_tok = cur.read_bytes(16);
     guard ok_hdr && ok_cid && ok_tok && cur.buf.len == 0 else { return false; }
     guard cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
     return tp.preferred_address.try_set(val);
@@ -1722,7 +1710,7 @@ fn decode_quic_transport_params(
         let vlen, ok_len = quic_decode_varint_cursor(cur.buf, idx);
         guard ok_id && ok_len else { return false; }
         cur.buf = cur.buf[idx..];
-        let val, ok_val = core::read_bytes(cur, vlen as i64);
+        let val, ok_val = cur.read_bytes(vlen as i64);
         guard ok_val && decode_single_tp(id, val, is_server, tp) else { return false; }
     }
     if (tp.seen_mask & QUIC_TP_BIT_MIN_ACK_DELAY) != 0 {

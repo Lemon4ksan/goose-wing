@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.profile;
 import client.request;
 import client.response;
@@ -16,7 +17,7 @@ import http.headers.chunked_fsm;
 
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
 fn encode_chunk<B>(data: const u8[:], out: B&) {
-    core::format_u64_hex(data.len as! u64, out);
+    (data.len as! u64).format_u64_hex(out);
     out.push('\r');
     out.push('\n');
     out.append(data);
@@ -55,7 +56,7 @@ fn encode_chunked_payload<B>(
     if body.len > 0 {
         var offset: i64 = 0;
         while offset < body.len {
-            let end_off = if offset + step < body.len { offset + step } else { body.len };
+            let end_off = min(offset + step, body.len);
             encode_chunk(body[offset..end_off], out);
             offset = end_off;
         }
@@ -165,7 +166,7 @@ fn step_chunk_size_line(dec: ChunkedStreamDecoder&, b: u8) -> bool {
             dec.error_code = ChunkedDecodeError.BareLfInChunkSize;
             return false;
         }
-        let size_line = dec.line_buf[..(dec.line_buf.len - 1)];
+        let size_line = dec.line_buf[..^1];
         var csize: u64 = 0;
         let parse_err = parse_chunk_size_hex(size_line, csize);
         guard parse_err == ChunkedDecodeError.None else {
@@ -184,12 +185,11 @@ fn step_chunk_size_line(dec: ChunkedStreamDecoder&, b: u8) -> bool {
         }
         return true;
     }
-    guard dec.line_buf.len < dec.line_buf.cap else {
+    guard dec.line_buf.try_push(b) else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.InvalidChunkExtension;
         return false;
     }
-    dec.line_buf.push(b);
     return true;
 }
 
@@ -224,7 +224,7 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
         dec.error_code = ChunkedDecodeError.BareLfInTrailer;
         return false;
     }
-    let tr_line = dec.line_buf[..(dec.line_buf.len - 1)];
+    let tr_line = dec.line_buf[..^1];
 
     if tr_line.len == 0 {
         dec.state = ChunkedStreamState.Complete;
@@ -246,13 +246,7 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
         return false;
     }
 
-    var col_idx: i64 = -1;
-    for i in tr_line.len {
-        if tr_line[i] == ':' {
-            col_idx = i;
-            break;
-        }
-    }
+    let col_idx = tr_line.index_of_byte(':');
     guard col_idx > 0 else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
@@ -266,7 +260,7 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
         return false;
     }
 
-    let hval = trim_lws(tr_line[(col_idx + 1)..]);
+    let hval = tr_line[(col_idx + 1)..].trim_lws();
     guard append_trailer_item(dec.trailers, hname, hval) else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
@@ -281,12 +275,11 @@ fn step_chunk_trailer(dec: ChunkedStreamDecoder&, b: u8) -> bool {
     if b == '\n' {
         return process_trailer_line(dec);
     }
-    guard dec.line_buf.len < dec.line_buf.cap else {
+    guard dec.line_buf.try_push(b) else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
         return false;
     }
-    dec.line_buf.push(b);
     return true;
 }
 
@@ -319,11 +312,11 @@ fn feed_chunked_stream<B>(
         } else if dec.state == ChunkedStreamState.ChunkData {
             let avail = input.len - cursor;
             let needed = dec.chunk_bytes_remaining as i64;
-            var to_take = if avail < needed { avail } else { needed };
+            var to_take = min(avail, needed);
             if max_emit >= 0 {
                 let emitted = out_body.len - initial_out_len;
                 let cap_rem = max_emit - emitted;
-                to_take = if to_take < cap_rem { to_take } else { cap_rem };
+                to_take = min(to_take, cap_rem);
             }
 
             out_body.append(input[cursor..(cursor + to_take)]);
@@ -380,7 +373,7 @@ struct StreamReader {
 //   cl = "1024"
 //   returns: 1024, ok = true
 fn parse_content_length_value(cl: const u8[:]) -> i64, bool {
-    let clean = core::trim_lws(cl);
+    let clean = cl.trim_lws();
     guard clean.len > 0 else { return -1, false; }
     var num: i64 = 0;
     for b in clean {
@@ -458,7 +451,7 @@ fn read_chunk_chunked<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> Stre
 }
 
 fn read_chunk_identity<B>(reader: StreamReader&, max_bytes: i64, remaining: i64, out: B&) -> StreamReadStatus, bool {
-    let to_read = if max_bytes > 0 && remaining > max_bytes { max_bytes } else { remaining };
+    let to_read = if max_bytes > 0 { min(remaining, max_bytes) } else { remaining };
     out.append(reader.raw_data[reader.cursor..(reader.cursor + to_read)]);
     reader.cursor += to_read;
     reader.bytes_read += to_read as! u64;
@@ -495,7 +488,7 @@ fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> StreamReadSt
 // Reads all remaining data from the stream into out buffer
 fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
     guard !reader.finished else { return 0; }
-    let remaining = reader.raw_data.len - reader.cursor;
+    let remaining = core::sub_sat_i64(reader.raw_data.len, reader.cursor);
     guard remaining > 0 || (reader.is_chunked && !is_complete(reader.chunk_decoder)) else {
         reader.finished = true;
         return 0;
@@ -503,25 +496,25 @@ fn read_all<B>(reader: StreamReader&, out: B&) -> u64 {
 
     if reader.is_chunked {
         let prev_len = out.len;
+        var committed = false;
+        defer if !committed { out.resize(prev_len); };
         let ok_dec, consumed = feed_chunked_stream(reader.chunk_decoder, reader.raw_data[reader.cursor..], out, -1);
-        reader.cursor += consumed;
+        reader.cursor = core::add_sat_i64(reader.cursor, consumed);
         reader.finished = true;
         // RFC 9112 Section 7.1: Chunked Transfer Coding - Reject incomplete or malformed chunked stream and roll back out.
-        if !ok_dec || !is_complete(reader.chunk_decoder) {
+        guard ok_dec && is_complete(reader.chunk_decoder) else {
             reader.chunk_decoder.state = ChunkedStreamState.Error;
-            while out.len > prev_len {
-                out.pop();
-            }
             return 0;
         }
-        let emitted = (out.len - prev_len) as! u64;
-        reader.bytes_read += emitted;
+        committed = true;
+        let emitted = core::sub_sat_i64(out.len, prev_len) as! u64;
+        reader.bytes_read = core::add_sat_u64(reader.bytes_read, emitted);
         return emitted;
     }
 
     out.append(reader.raw_data[reader.cursor..]);
     reader.cursor = reader.raw_data.len;
-    reader.bytes_read += remaining as! u64;
+    reader.bytes_read = core::add_sat_u64(reader.bytes_read, remaining as! u64);
     reader.finished = true;
     return remaining as! u64;
 }
@@ -545,8 +538,7 @@ fn stream_progress(reader: const StreamReader&) -> StreamProgress {
         ..
     };
     if reader.content_length > 0 {
-        p.percent = (reader.bytes_read as! f64 / reader.content_length) * 100.0;
-        if p.percent > 100.0 { p.percent = 100.0; }
+        p.percent = min(100.0, (reader.bytes_read as! f64 / reader.content_length) * 100.0);
     }
     return p;
 }

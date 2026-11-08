@@ -94,7 +94,7 @@ fn punycode_extract_codepoints(utf8_label: const u8[:], cps: u64[..63]&, has_non
     var idx: i64 = 0;
     while idx < utf8_label.len {
         let cp, sz, ok = decode_utf8(utf8_label[idx..]);
-        guard ok && sz > 0 && cps.len < cps.cap else { return false; }
+        guard ok && sz > 0 else { return false; }
         var norm_cp = cp as u64;
         if norm_cp < 0x80 {
             let b = norm_cp as u8;
@@ -103,7 +103,7 @@ fn punycode_extract_codepoints(utf8_label: const u8[:], cps: u64[..63]&, has_non
         } else {
             has_non_ascii = true;
         }
-        cps.push(norm_cp);
+        guard cps.try_push(norm_cp) else { return false; }
         idx = add_sat_i64(idx, sz);
     }
     return cps.len > 0;
@@ -245,8 +245,9 @@ fn validate_punycode_label(label: const u8[:]) -> bool {
         guard is_valid else { return false; }
     }
     guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
-    guard starts_with_fold(label, "xn--") else { return false; }
-    return label[4] != '-' && !contains_byte(label[4..], '_');
+    let ace_body, is_xn = strip_prefix_fold(label, "xn--");
+    guard is_xn && ace_body.len > 0 else { return false; }
+    return ace_body[0] != '-' && !contains_byte(ace_body, '_');
 }
 
 // CVE-2026-97044 defense: Validates FQDN wire bounds for internationalized domain names.
@@ -269,24 +270,16 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
 // Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels that contain no
 // non-ASCII delta, and enforce RFC 1035 DNS label (<= 63B) and total domain (<= 253B) length limits.
 fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
-    let last_host_idx = sub_sat_i64(host_str.len, 1);
-    let trimmed = if host_str.len > 0 && host_str[last_host_idx] == '.' {
-        host_str[..last_host_idx]
-    } else {
-        host_str
-    };
+    let trimmed, _ = strip_suffix(host_str, ".");
     guard trimmed.len <= 253 else { return false; }
 
-    var cursor: i64 = 0;
-    while cursor < host_str.len {
-        let end = scan_domain_label_end(host_str, cursor);
-        let label = host_str[cursor..end];
+    each_non_empty_token(host_str, '.') { label =>
         guard label.len <= 63 else { return false; }
-        if label.len >= 4 && eq_ascii_fold(label[..4], "xn--") {
-            let last_lbl_idx = sub_sat_i64(label.len, 1);
-            guard label.len > 4 && label[last_lbl_idx] != '-' else { return false; }
+        let ace_body, is_xn = strip_prefix_fold(label, "xn--");
+        if is_xn {
+            let last_lbl_idx = sub_sat_i64(ace_body.len, 1);
+            guard ace_body.len > 0 && ace_body[last_lbl_idx] != '-' else { return false; }
         }
-        cursor = add_sat_i64(end, 1);
-    }
+    };
     return true;
 }

@@ -29,8 +29,9 @@ fn concat_kdf_sha256(
     apv:      const u8[:],
     key_bits: u32,
 ) -> u8[32] {
-    var kdf_in:   u8[..512] = [];
-    var round_be: u8[4]     = [0, 0, 0, 1];
+    var kdf_in: u8[..512] = [];
+    defer core::secure_zeroize_slice(kdf_in[..]);
+    var round_be: u8[4] = [0, 0, 0, 1];
     kdf_in.append(round_be[..]);
     kdf_in.append(z[..]);
     let _ = append_be32_prefixed_slice(kdf_in, alg_id);
@@ -38,12 +39,8 @@ fn concat_kdf_sha256(
     let _ = append_be32_prefixed_slice(kdf_in, apv);
     var bits_be: u8[4] = [0; 4];
     core::write_be_u32_at(bits_be[..], 0, key_bits);
-    if core::sub_sat_i64(kdf_in.cap, kdf_in.len) >= 4 {
-        kdf_in.append(bits_be[..]);
-    }
-    let out = core::sha256(kdf_in[..]);
-    core::secure_zeroize_slice(kdf_in[..]);
-    return out;
+    let _ = kdf_in.try_append(bits_be[..]);
+    return core::sha256(kdf_in[..]);
 }
 
 // Splits an RFC 7516 JWE Compact Serialization into its 4 dot positions (5 segments).
@@ -93,7 +90,7 @@ fn jwe_seal_dir_a256gcm<B>(
 ) -> bool {
     out_compact.clear();
     guard protected_b64.len > 0 && protected_b64.len <= MAX_JWT_HEADER_PART_LEN else { return false; }
-    guard core::index_of_byte(protected_b64, '=') == -1 && plaintext.len <= 4096 else { return false; }
+    guard protected_b64.index_of_byte('=') == -1 && plaintext.len <= 4096 else { return false; }
 
     var ct_buf: u8[4096] = [0; 4096];
     let tag, ct_len, ok = core::aes256_gcm_seal(cek, iv, plaintext, protected_b64, ct_buf[..]);
@@ -118,7 +115,7 @@ fn jwe_open_dir_a256gcm<B>(
     out_plaintext: B&,
 ) -> bool {
     out_plaintext.clear();
-    guard core::index_of_byte(compact_token, '=') == -1 else { return false; }
+    guard compact_token.index_of_byte('=') == -1 else { return false; }
     var d1: i64 = 0;
     var d2: i64 = 0;
     var d3: i64 = 0;

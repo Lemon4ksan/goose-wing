@@ -131,7 +131,7 @@ inline fn unpack_arena_to_datagram(
     port:    u16,
 ) -> UdpDatagram, bool {
     let base_off = slot * UDP_MAX_PAYLOAD_LEN;
-    let safe_len = core::ct_min_i64(UDP_MAX_PAYLOAD_LEN, core::ct_max_i64(0, pkt_len));
+    let safe_len = min(UDP_MAX_PAYLOAD_LEN, max(0, pkt_len as i64));
     let end_off = base_off + safe_len;
     guard end_off <= arena.len else {
         return UdpDatagram { .. }, false;

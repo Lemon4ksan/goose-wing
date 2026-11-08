@@ -34,33 +34,25 @@ inline fn pack_sct_timestamp_ms(ts_hi: u32, ts_lo: u32) -> u64 {
 fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
     guard raw.len >= rfc::SCT_V1_HEADER_MIN_LEN && raw.len <= 65535 else { return false; }
     var c = core::cursor_from(raw);
-    var ver: u8 = 0;
-    guard c.get_u8(ver) && ver == rfc::SCT_VERSION_V1 else { return false; }
+    let ver, ok_v = c.read_u8();
+    guard ok_v && ver == rfc::SCT_VERSION_V1 else { return false; }
 
-    var log_cursor = core::cursor_from(raw[..0]);
-    guard c.get_bytes(log_cursor, rfc::SCT_LOG_ID_LEN) else { return false; }
-
-    var ts_hi: u32 = 0;
-    var ts_lo: u32 = 0;
-    guard c.get_u32(ts_hi) && c.get_u32(ts_lo) else { return false; }
-
-    var ext_cursor = core::cursor_from(raw[..0]);
-    guard c.get_u16_length_prefixed(ext_cursor) else { return false; }
-
-    var hash_alg: u8 = 0;
-    var sig_alg:  u8 = 0;
-    guard c.get_u8(hash_alg) && c.get_u8(sig_alg) else { return false; }
-
-    var sig_cursor = core::cursor_from(raw[..0]);
-    guard c.get_u16_length_prefixed(sig_cursor) &&
-        sig_cursor.buf.len > 0 && c.cursor_len() == 0 else { return false; }
+    let log_id, ok_l = c.read_bytes(rfc::SCT_LOG_ID_LEN);
+    let ts_hi, ok_th = c.read_u32();
+    let ts_lo, ok_tl = c.read_u32();
+    let _, ok_ext = c.read_u16_prefixed();
+    let hash_alg, ok_h = c.read_u8();
+    let sig_alg, ok_s = c.read_u8();
+    let sig_bytes, ok_sig = c.read_u16_prefixed();
+    guard ok_l && ok_th && ok_tl && ok_ext && ok_h && ok_s &&
+        ok_sig && sig_bytes.len > 0 && c.buf.len == 0 else { return false; }
 
     out.version = ver;
-    core::ct_copy_bytes(out.log_id[..], log_cursor.buf);
+    core::ct_copy_bytes(out.log_id[..], log_id);
     out.timestamp_ms = pack_sct_timestamp_ms(ts_hi, ts_lo);
     out.hash_alg = hash_alg;
     out.sig_alg = sig_alg;
-    out.signature = make_span(raw, sig_cursor.buf);
+    out.signature = make_span(raw, sig_bytes);
     return true;
 }
 
@@ -72,17 +64,15 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
 fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
     out_scts.clear();
     var c = core::cursor_from(raw_list);
-    var list_cursor = core::cursor_from(raw_list[..0]);
-    guard c.get_u16_length_prefixed(list_cursor) &&
-        c.cursor_len() == 0 && list_cursor.cursor_len() > 0 else { return false; }
+    let list_bytes, ok_l = c.read_u16_prefixed();
+    guard ok_l && c.buf.len == 0 && list_bytes.len > 0 else { return false; }
 
-    while list_cursor.cursor_len() > 0 {
-        var sct_cursor = core::cursor_from(list_cursor.buf[..0]);
-        guard list_cursor.get_u16_length_prefixed(sct_cursor) &&
-            sct_cursor.buf.len > 0 && out_scts.len < out_scts.cap else { return false; }
+    var list_cursor = core::cursor_from(list_bytes);
+    while list_cursor.buf.len > 0 {
+        let sct_bytes, ok_s = list_cursor.read_u16_prefixed();
+        guard ok_s && sct_bytes.len > 0 else { return false; }
         var sct = ParsedSct { .. };
-        guard parse_sct_entry(sct_cursor.buf, sct) else { return false; }
-        out_scts.push(sct);
+        guard parse_sct_entry(sct_bytes, sct) && out_scts.try_push(sct) else { return false; }
     }
     return out_scts.len > 0;
 }

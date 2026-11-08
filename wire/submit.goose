@@ -78,7 +78,7 @@ fn drain_send_slice(fd: i64, data: const u8[:]) -> i64, bool {
         guard n > 0 else {
             return total_sent, false;
         }
-        total_sent += n;
+        total_sent = core::add_sat_i64(total_sent, n);
     }
     return total_sent, true;
 }
@@ -105,7 +105,7 @@ fn submit(q: WireQueue&, cmd: const WireCommandBuffer&) -> i64, bool {
     let sent, ok = dispatch_queue_send(q, data);
     guard ok else { return 0, false; }
 
-    q.bytes_sent = q.bytes_sent + (sent as u64);
+    q.bytes_sent = core::add_sat_u64(q.bytes_sent, sent as u64);
     return sent, true;
 }
 
@@ -125,7 +125,7 @@ fn submit_to_transport(q: WireQueue&, cmd: const WireCommandBuffer&, transport: 
         return WireResult.ErrorDeviceLost;
     }
 
-    q.bytes_sent = q.bytes_sent + (n as u64);
+    q.bytes_sent = core::add_sat_u64(q.bytes_sent, n as u64);
     return WireResult.Success;
 }
 
@@ -141,7 +141,7 @@ fn submit_to_cork(cmd: const WireCommandBuffer&, cork: core::CorkBuffer&) -> boo
     guard is_submittable_cmd(cmd) else { return false; }
     let data = cmd.buf[..];
     guard data.len > 0 else { return true; }
-    return core::cork_write_exact(cork, data) == core::IoError.None;
+    return cork.cork_write_exact(data) == core::IoError.None;
 }
 
 // Batches outgoing server frames through `wing::ServerCork` and flushes over `transport` if needed.
@@ -160,36 +160,36 @@ fn submit_to_cork(
     if cork.sock_fd > 0 {
         let n_cork = wing::server_cork_write(cork, data);
         guard n_cork >= 0 else { return WireResult.ErrorDeviceLost; }
-        q.bytes_sent = q.bytes_sent + (n_cork as u64);
+        q.bytes_sent = core::add_sat_u64(q.bytes_sent, n_cork as u64);
         return WireResult.Success;
     }
 
-    let avail = core::cork_available(cork.buffer);
+    let avail = cork.buffer.cork_available();
     if data.len <= avail {
-        let written, _ = core::cork_write(cork.buffer, data);
-        q.bytes_sent = q.bytes_sent + (written as u64);
+        let written, _ = cork.buffer.cork_write(data);
+        q.bytes_sent = core::add_sat_u64(q.bytes_sent, written as u64);
         return WireResult.Success;
     }
 
-    let pending = core::cork_as_slice(cork.buffer);
+    let pending = cork.buffer.cork_as_slice();
     if pending.len > 0 {
         let n_flush = transport.send(pending) as i64;
         if n_flush > 0 && n_flush < pending.len {
-            core::cork_consume(cork.buffer, n_flush);
+            cork.buffer.cork_consume(n_flush);
         }
         guard n_flush == pending.len else { return WireResult.ErrorDeviceLost; }
     }
-    core::cork_reset(cork.buffer);
+    cork.buffer.cork_reset();
 
     if data.len >= core::CORK_BUFFER_CAP {
         let n_direct = transport.send(data) as i64;
         guard n_direct == data.len else { return WireResult.ErrorDeviceLost; }
-        q.bytes_sent = q.bytes_sent + (n_direct as u64);
+        q.bytes_sent = core::add_sat_u64(q.bytes_sent, n_direct as u64);
         return WireResult.Success;
     }
 
-    let written, _ = core::cork_write(cork.buffer, data);
-    q.bytes_sent = q.bytes_sent + (written as u64);
+    let written, _ = cork.buffer.cork_write(data);
+    q.bytes_sent = core::add_sat_u64(q.bytes_sent, written as u64);
     return WireResult.Success;
 }
 
@@ -201,7 +201,7 @@ fn submit_slice(q: WireQueue&, data: const u8[:]) -> i64, bool {
     let sent, ok = dispatch_queue_send(q, data);
     guard ok else { return 0, false; }
 
-    q.bytes_sent = q.bytes_sent + (sent as u64);
+    q.bytes_sent = core::add_sat_u64(q.bytes_sent, sent as u64);
     return sent, true;
 }
 
@@ -239,8 +239,8 @@ fn queue_submit_batch(
         guard ok else {
             return total_batch_bytes, WireResult.ErrorCommandBufferLocked;
         }
-        total_batch_bytes += sent;
-        q.bytes_sent = q.bytes_sent + (sent as u64);
+        total_batch_bytes = core::add_sat_i64(total_batch_bytes, sent);
+        q.bytes_sent = core::add_sat_u64(q.bytes_sent, sent as u64);
     }
     signal_submit_fence(fence);
     return total_batch_bytes, WireResult.Success;
@@ -254,7 +254,7 @@ fn poll_recv(q: WireQueue&, out: u8[:], timeout_ms: u32 = 0) -> i64, bool {
     let recvd = wing::native_tcp_recv(q.fd, out, timeout_ms);
     guard recvd >= 0 else { return 0, false; }
 
-    q.bytes_received = q.bytes_received + (recvd as u64);
+    q.bytes_received = core::add_sat_u64(q.bytes_received, recvd as u64);
     return recvd, true;
 }
 

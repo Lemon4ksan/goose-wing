@@ -82,7 +82,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     guard !pseudo.is_trailer else { return true; }
     if pseudo.has_status {
         var st_buf: u8[..16] = [];
-        core::format_u64_dec(pseudo.status as u64, st_buf);
+        (pseudo.status as u64).format_u64_dec(st_buf);
         let prev_len = body_fields.len;
         internal::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":status", st_buf[..],
@@ -152,9 +152,7 @@ fn encode_single_h3_map_entry<B1, B2>(
     }
     var lower_name: u8[..256] = [];
     guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
-    for b in raw_name {
-        lower_name.push(core::to_lower_ascii_byte(b));
-    }
+    raw_name.to_lower_ascii(lower_name);
     if is_trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
         return false;
     }
@@ -188,6 +186,13 @@ fn encode_h3_headers_from_map<B1, B2>(
     let start_enc = out_enc_stream.len;
     let start_frame = out_frame.len;
     let saved_tbl = tbl;
+    var committed = false;
+    defer if !committed {
+        out_enc_stream.resize(start_enc);
+        out_frame.resize(start_frame);
+        tbl = saved_tbl;
+    };
+
     let base = tbl.insert_count;
     var max_dyn_abs: u64 = 0;
     var used_any_dyn = false;
@@ -197,9 +202,6 @@ fn encode_h3_headers_from_map<B1, B2>(
         tbl, stream_id, base, pseudo,
         body_fields, out_enc_stream, max_dyn_abs, used_any_dyn,
     ) else {
-        out_enc_stream.resize(start_enc);
-        out_frame.resize(start_frame);
-        tbl = saved_tbl;
         return false;
     }
 
@@ -208,9 +210,6 @@ fn encode_h3_headers_from_map<B1, B2>(
             tbl, stream_id, base, headers, e, pseudo.is_trailer,
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn,
         ) else {
-            out_enc_stream.resize(start_enc);
-            out_frame.resize(start_frame);
-            tbl = saved_tbl;
             return false;
         }
     }
@@ -219,11 +218,9 @@ fn encode_h3_headers_from_map<B1, B2>(
     internal::prepend_qpack_section_prefix(tbl, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload);
     guard qpack_payload.try_append(body_fields[..]) &&
           internal::encode_h3_headers_frame(out_frame, qpack_payload[..]) else {
-        out_enc_stream.resize(start_enc);
-        out_frame.resize(start_frame);
-        tbl = saved_tbl;
         return false;
     }
+    committed = true;
     return true;
 }
 

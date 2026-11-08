@@ -92,6 +92,8 @@ fn af_xdp_open_socket(
     if fd < 0 {
         return new_af_xdp_socket(), fd as i32;
     }
+    var committed = false;
+    defer if !committed { native_af_xdp_close(fd); };
 
     var umem = AfXdpUmem {
         addr:          umem_addr,
@@ -103,7 +105,6 @@ fn af_xdp_open_socket(
 
     let reg_err = native_af_xdp_register_umem(fd, umem_addr, umem_len, chunk_size, 0);
     if reg_err != 0 {
-        native_af_xdp_close(fd);
         return new_af_xdp_socket(), reg_err;
     }
     umem.is_registered = true;
@@ -120,10 +121,10 @@ fn af_xdp_open_socket(
     let bind_flags = if zero_copy { XDP_FLAGS_ZEROCOPY } else { XDP_FLAGS_COPY };
     let bind_err = native_af_xdp_bind(fd, ifindex, queue_id, bind_flags);
     if bind_err != 0 {
-        native_af_xdp_close(fd);
         return new_af_xdp_socket(), bind_err;
     }
 
+    committed = true;
     return AfXdpSocket {
         fd:             fd,
         ifindex:        ifindex,

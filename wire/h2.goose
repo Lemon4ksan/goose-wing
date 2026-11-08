@@ -16,17 +16,11 @@ fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
     guard hdr.length <= rfc::H2_MAX_FRAME_SIZE_LIMIT && hdr.stream_id <= 0x7FFFFFFF else {
         return false;
     }
-    let bytes: u8[9] = [
-        ((hdr.length >> 16) & 0xFF) as u8,
-        ((hdr.length >> 8) & 0xFF) as u8,
-        (hdr.length & 0xFF) as u8,
-        hdr.frame_type,
-        hdr.flags,
-        ((hdr.stream_id >> 24) & 0x7F) as u8,
-        ((hdr.stream_id >> 16) & 0xFF) as u8,
-        ((hdr.stream_id >> 8) & 0xFF) as u8,
-        (hdr.stream_id & 0xFF) as u8,
-    ];
+    var bytes: u8[..9] = [];
+    bytes.append_u24_be(hdr.length);
+    bytes.push(hdr.frame_type);
+    bytes.push(hdr.flags);
+    bytes.append_u32_be(hdr.stream_id & 0x7FFFFFFF);
     guard out.try_append(bytes[..]) else { return false; }
     return true;
 }
@@ -39,7 +33,7 @@ fn patch_frame_header_slice(
     flags:      u8,
     stream_id:  u32,
 ) -> bool {
-    let payload_start = offset + 9;
+    let payload_start = core::add_sat_i64(offset, 9);
     guard offset >= 0 && payload_start <= buf.len && stream_id <= 0x7FFFFFFF else {
         return false;
     }
@@ -48,17 +42,11 @@ fn patch_frame_header_slice(
     guard payload_len <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
         return false;
     }
-    let bytes: u8[9] = [
-        ((payload_len >> 16) & 0xFF) as u8,
-        ((payload_len >> 8) & 0xFF) as u8,
-        (payload_len & 0xFF) as u8,
-        frame_type,
-        flags,
-        ((stream_id >> 24) & 0x7F) as u8,
-        ((stream_id >> 16) & 0xFF) as u8,
-        ((stream_id >> 8) & 0xFF) as u8,
-        (stream_id & 0xFF) as u8,
-    ];
+    var bytes: u8[..9] = [];
+    bytes.append_u24_be(payload_len);
+    bytes.push(frame_type);
+    bytes.push(flags);
+    bytes.append_u32_be(stream_id & 0x7FFFFFFF);
     core::ct_copy_bytes(buf[offset..payload_start], bytes[..]);
     return true;
 }
@@ -116,14 +104,9 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     };
     guard encode_frame_header(hdr, out) else { return false; }
     for s in settings {
-        let entry: u8[6] = [
-            ((s.id >> 8) & 0xFF) as u8,
-            (s.id & 0xFF) as u8,
-            ((s.val >> 24) & 0xFF) as u8,
-            ((s.val >> 16) & 0xFF) as u8,
-            ((s.val >> 8) & 0xFF) as u8,
-            (s.val & 0xFF) as u8,
-        ];
+        var entry: u8[..6] = [];
+        entry.append_u16_be(s.id);
+        entry.append_u32_be(s.val);
         guard out.try_append(entry[..]) else {
             out.resize(start_len);
             return false;
@@ -145,13 +128,8 @@ fn encode_window_update_frame<B>(stream_id: u32, increment: u32, out: B&) -> boo
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    let inc = increment & 0x7FFFFFFF;
-    let bytes: u8[4] = [
-        ((inc >> 24) & 0x7F) as u8,
-        ((inc >> 16) & 0xFF) as u8,
-        ((inc >> 8) & 0xFF) as u8,
-        (inc & 0xFF) as u8,
-    ];
+    var bytes: u8[..4] = [];
+    bytes.append_u32_be(increment & 0x7FFFFFFF);
     guard out.try_append(bytes[..]) else {
         out.resize(start_len);
         return false;
@@ -193,13 +171,8 @@ fn encode_priority_update_frame<B>(prioritized_stream_id: u32, urgency: u8, incr
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    let psid = prioritized_stream_id & 0x7FFFFFFF;
-    let psid_bytes: u8[4] = [
-        ((psid >> 24) & 0x7F) as u8,
-        ((psid >> 16) & 0xFF) as u8,
-        ((psid >> 8) & 0xFF) as u8,
-        (psid & 0xFF) as u8,
-    ];
+    var psid_bytes: u8[..4] = [];
+    psid_bytes.append_u32_be(prioritized_stream_id & 0x7FFFFFFF);
     guard out.try_append(psid_bytes[..]) && out.try_append(p_val[..]) else {
         out.resize(start_len);
         return false;
@@ -218,12 +191,8 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool 
         stream_id:  stream_id,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    let err_bytes: u8[4] = [
-        ((error_code >> 24) & 0xFF) as u8,
-        ((error_code >> 16) & 0xFF) as u8,
-        ((error_code >> 8) & 0xFF) as u8,
-        (error_code & 0xFF) as u8,
-    ];
+    var err_bytes: u8[..4] = [];
+    err_bytes.append_u32_be(error_code);
     guard out.try_append(err_bytes[..]) else {
         out.resize(start_len);
         return false;
@@ -297,7 +266,7 @@ fn read_wire_h2_frame(raw: const u8[:], cursor: i64&) -> WireFrameHeader, const 
         return WireFrameHeader { .. }, "", false;
     }
     let payload = body[..flen];
-    cursor += flen + 9;
+    cursor = core::add_sat_i64(cursor, core::add_sat_i64(flen, 9));
     return hdr, payload, true;
 }
 
@@ -317,7 +286,7 @@ fn new_wire_h2_frame_reader(src: const u8[:]) -> WireH2FrameReader {
 
 // Checks if another 9-byte frame header can be read.
 fn has_next(r: const WireH2FrameReader&) -> bool {
-    return r.cursor >= 0 && (r.cursor + 9) <= r.src.len;
+    return r.cursor >= 0 && core::add_sat_i64(r.cursor, 9) <= r.src.len;
 }
 
 // Parses the next HTTP/2 frame and slices its payload without memory allocations.
@@ -355,17 +324,24 @@ fn encode_h2_headers_frame_from_map<B>(
         return false;
     }
     let saved_dt = dt;
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed {
+        out.resize(start_len);
+        dt = saved_dt;
+    };
+
     var hpack_buf: u8[..16384] = [];
     guard encode_hpack_from_map(dt, pseudo, headers, hpack_buf, true) else { return false; }
 
-    let start_len = out.len;
     let max_chunk = max_frame_size as i64;
     var offset: i64 = 0;
     var first = true;
     while first || offset < hpack_buf.len {
-        let rem = hpack_buf.len - offset;
+        let rem = core::sub_sat_i64(hpack_buf.len, offset);
         let chunk_len = min(rem, max_chunk);
-        let rem_after = rem - chunk_len;
+        let rem_after = core::sub_sat_i64(rem, chunk_len);
+        let next_off = core::add_sat_i64(offset, chunk_len);
         let f_type = if first { rfc::H2_FRAME_HEADERS } else { rfc::H2_FRAME_CONTINUATION };
         let hdr = WireFrameHeader {
             length:     chunk_len as u32,
@@ -373,14 +349,13 @@ fn encode_h2_headers_frame_from_map<B>(
             flags:      calc_h2_headers_chunk_flags(f_type, end_stream, rem_after),
             stream_id:  stream_id,
         };
-        guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..offset + chunk_len]) else {
-            out.resize(start_len);
-            dt = saved_dt;
+        guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..next_off]) else {
             return false;
         }
-        offset += chunk_len;
+        offset = next_off;
         first = false;
     }
+    committed = true;
     return true;
 }
 

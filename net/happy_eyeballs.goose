@@ -70,7 +70,7 @@ struct ConnectionEndpointMetadata {
 fn populate_svcb_alpn_flags(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
     for &alpn_tok in rec.alpns {
         let tok = alpn_tok[..];
-        if tok == "h3" || starts_with(tok, "h3-") {
+        if tok == "h3" || tok.starts_with("h3-") {
             meta.alpn_h3 = true;
         } else if tok == "h2" {
             meta.alpn_h2 = true;
@@ -81,15 +81,13 @@ fn populate_svcb_alpn_flags(rec: const HttpsRecord&, meta: ConnectionEndpointMet
 fn populate_svcb_ip_hints(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
     var ip6_buf: u8[..64] = [];
     for &ip6 in rec.ipv6_hints {
-        guard meta.ipv6_hints.len < 4 else { break; }
         core::format_ipv6_bytes(ip6, ip6_buf);
-        meta.ipv6_hints.push(ip6_buf);
+        guard meta.ipv6_hints.try_push(ip6_buf) else { break; }
     }
     var ip4_buf: u8[..64] = [];
     for ip4 in rec.ipv4_hints {
-        guard meta.ipv4_hints.len < 4 else { break; }
         core::format_ipv4_u32(ip4, ip4_buf);
-        meta.ipv4_hints.push(ip4_buf);
+        guard meta.ipv4_hints.try_push(ip4_buf) else { break; }
     }
 }
 
@@ -160,19 +158,19 @@ fn interleave_candidates_he(
     // First, emit first_family_count from preferred family (IPv6)
     var initial_count = 0;
     while idx6 < ipv6_list.len && initial_count < first_family_count {
-        if out.len < 32 { out.push(copy(ipv6_list[idx6])); }
+        let _ = out.try_push(copy(ipv6_list[idx6]));
         idx6++;
         initial_count++;
     }
 
     // Interleave remaining 1-by-1
     while (idx6 < ipv6_list.len || idx4 < ipv4_list.len) && out.len < 32 {
-        if idx4 < ipv4_list.len && out.len < 32 {
-            out.push(copy(ipv4_list[idx4]));
+        if idx4 < ipv4_list.len {
+            let _ = out.try_push(copy(ipv4_list[idx4]));
             idx4++;
         }
-        if idx6 < ipv6_list.len && out.len < 32 {
-            out.push(copy(ipv6_list[idx6]));
+        if idx6 < ipv6_list.len {
+            let _ = out.try_push(copy(ipv6_list[idx6]));
             idx6++;
         }
     }
@@ -198,17 +196,13 @@ fn interleave_protocols_hev3(candidates: const DnsCandidate[:], out: DnsCandidat
     out.clear();
     for &cand in candidates {
         // Emit QUIC attempt first
-        if out.len < 32 {
-            var quic_c = copy(cand);
-            quic_c.l4_proto = L4Protocol.QuicUdp;
-            out.push(quic_c);
-        }
+        var quic_c = copy(cand);
+        quic_c.l4_proto = L4Protocol.QuicUdp;
+        let _ = out.try_push(quic_c);
         // Emit TCP fallback attempt
-        if out.len < 32 {
-            var tcp_c = copy(cand);
-            tcp_c.l4_proto = L4Protocol.Tcp;
-            out.push(tcp_c);
-        }
+        var tcp_c = copy(cand);
+        tcp_c.l4_proto = L4Protocol.Tcp;
+        let _ = out.try_push(tcp_c);
     }
 }
 
@@ -243,10 +237,8 @@ fn on_dns_aaaa_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         task.aaaa_status = DnsQueryStatus.Success;
         task.ipv6_candidates.clear();
         for ip in ips {
-            if task.ipv6_candidates.len < 8 {
-                let cand = new_dns_candidate(AddressFamily.IPv6, ip, task.target_port, L4Protocol.Tcp, 50);
-                task.ipv6_candidates.push(cand);
-            }
+            let cand = new_dns_candidate(AddressFamily.IPv6, ip, task.target_port, L4Protocol.Tcp, 50);
+            guard task.ipv6_candidates.try_push(cand) else { break; }
         }
         // Asymmetric IPv6 Priority: cancel RD timer immediately
         task.rd_timer_armed = false;
@@ -267,10 +259,8 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         task.a_status = DnsQueryStatus.Success;
         task.ipv4_candidates.clear();
         for ip in ips {
-            if task.ipv4_candidates.len < 8 {
-                let cand = new_dns_candidate(AddressFamily.IPv4, ip, task.target_port, L4Protocol.Tcp, 40);
-                task.ipv4_candidates.push(cand);
-            }
+            let cand = new_dns_candidate(AddressFamily.IPv4, ip, task.target_port, L4Protocol.Tcp, 40);
+            guard task.ipv4_candidates.try_push(cand) else { break; }
         }
 
         // If AAAA already arrived, we are ready to connect
@@ -304,9 +294,7 @@ fn inject_late_dns_candidates(
     new_candidates: const DnsCandidate[:],
 ) {
     for &nc in new_candidates {
-        if pending_queue.len < 32 {
-            pending_queue.push(copy(nc));
-        }
+        guard pending_queue.try_push(copy(nc)) else { break; }
     }
 }
 
@@ -348,7 +336,7 @@ fn lookup_preferred_family(
     now_sec: i64,
 ) -> AddressFamily, bool {
     for &entry in cache.entries {
-        if entry.expires_at_sec > now_sec && eq_ascii_fold(entry.host[..], host) {
+        if entry.expires_at_sec > now_sec && entry.host[..].eq_ascii_fold(host) {
             return entry.preferred_family, true;
         }
     }
@@ -365,7 +353,7 @@ fn record_preferred_family(
     guard host.len > 0 && host.len <= 256 else { return; }
     let exp = core::add_sat_i64(now_sec, HE_ADDRESS_FAMILY_CACHE_TTL_SEC);
     for &entry in cache.entries {
-        if eq_ascii_fold(entry.host[..], host) {
+        if entry.host[..].eq_ascii_fold(host) {
             entry.preferred_family = family;
             entry.expires_at_sec = exp;
             return;
@@ -373,22 +361,19 @@ fn record_preferred_family(
     }
     for &entry in cache.entries {
         if entry.expires_at_sec <= now_sec {
-            entry.host.clear();
-            let _ = entry.host.try_append(host);
+            let _ = entry.host.try_set(host);
             entry.preferred_family = family;
             entry.expires_at_sec = exp;
             return;
         }
     }
-    if cache.entries.len < 16 {
-        var new_entry = AddressFamilyCacheEntry {
-            preferred_family: family,
-            expires_at_sec:   exp,
-            ..
-        };
-        let _ = new_entry.host.try_append(host);
-        cache.entries.push(new_entry);
-    }
+    var new_entry = AddressFamilyCacheEntry {
+        preferred_family: family,
+        expires_at_sec:   exp,
+        ..
+    };
+    let _ = new_entry.host.try_set(host);
+    let _ = cache.entries.try_push(new_entry);
 }
 
 struct AttemptManager {
@@ -418,9 +403,7 @@ fn start_attempt_race(manager: AttemptManager&, candidates: const DnsCandidate[:
     manager.attempts.clear();
     manager.pending_candidates.clear();
     for &c in candidates {
-        if manager.pending_candidates.len < 32 {
-            manager.pending_candidates.push(copy(c));
-        }
+        guard manager.pending_candidates.try_push(copy(c)) else { break; }
     }
     manager.current_attempt_idx = 0;
     manager.has_winner = false;
@@ -516,7 +499,7 @@ fn synthesize_nat64_candidate(manager: AttemptManager&) {
         v4_proto,
         v4_prec,
     );
-    manager.pending_candidates.push(nat64_cand);
+    let _ = manager.pending_candidates.try_push(nat64_cand);
 }
 
 // Advances the connection racing state machine on monotonic time ticks.

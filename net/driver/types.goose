@@ -6,6 +6,7 @@ namespace internal;
 
 import std;
 import os;
+import core from "../..";
 
 // ---- Driver Kinds & Capabilities ----------------------------------------
 
@@ -94,7 +95,7 @@ fn detect_target_platform() -> TargetPlatform {
     }
     g_env_buf.clear();
     if env("OSTYPE", g_env_buf) {
-        if g_env_buf.len >= 6 && g_env_buf[..6] == "darwin" {
+        if g_env_buf[..].starts_with("darwin") {
             return TargetPlatform.Darwin;
         }
     }

@@ -5,6 +5,7 @@
 namespace internal;
 
 import std;
+import core from "../..";
 import net.driver.types;
 import net.driver.rio;
 import net.driver.uring;
@@ -32,8 +33,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         res.available = true;
         res.capabilities = CAP_NONE;
         res.error_code = ERR_SUCCESS;
-        res.reason.clear();
-        res.reason.append("Standard OS socket driver (cross-platform zero-dependency)");
+        let _ = res.reason.try_set("Standard OS socket driver (cross-platform zero-dependency)");
         return res;
     }
 
@@ -50,19 +50,16 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             }
             if res.available {
                 res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_BATCH_IO;
-                res.reason.clear();
-                res.reason.append("Windows Registered I/O (RIO) active via mswsock.dll kernel-bypass");
+                let _ = res.reason.try_set("Windows Registered I/O (RIO) active via mswsock.dll kernel-bypass");
             } else {
                 res.capabilities = CAP_NONE;
-                res.reason.clear();
-                res.reason.append("Windows RIO probe failed via mswsock.dll");
+                let _ = res.reason.try_set("Windows RIO probe failed via mswsock.dll");
             }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
-            res.reason.clear();
-            res.reason.append("Windows RIO is only supported on Windows 8+ / Server 2012+ (mswsock.dll)");
+            let _ = res.reason.try_set("Windows RIO is only supported on Windows 8+ / Server 2012+ (mswsock.dll)");
         }
         return res;
     }
@@ -72,8 +69,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
-            res.reason.clear();
-            res.reason.append("io_uring requires Linux 6.1+ kernel (io_uring_queue_init)");
+            let _ = res.reason.try_set("io_uring requires Linux 6.1+ kernel (io_uring_queue_init)");
             return res;
         }
 
@@ -90,12 +86,10 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         if res.available {
             res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO |
                 CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
-            res.reason.clear();
-            res.reason.append("Linux io_uring active via kernel submission/completion ring queues");
+            let _ = res.reason.try_set("Linux io_uring active via kernel submission/completion ring queues");
         } else {
             res.capabilities = CAP_NONE;
-            res.reason.clear();
-            res.reason.append("Linux io_uring probe failed on current kernel");
+            let _ = res.reason.try_set("Linux io_uring probe failed on current kernel");
         }
         return res;
     }
@@ -113,19 +107,16 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             }
             if res.available {
                 res.capabilities = CAP_BATCH_IO | CAP_RING_COMPLETION | CAP_DIRECT_DESCRIPTORS | CAP_EXACT_BUF_METRICS;
-                res.reason.clear();
-                res.reason.append("macOS / Darwin kqueue event multiplexing active via kevent");
+                let _ = res.reason.try_set("macOS / Darwin kqueue event multiplexing active via kevent");
             } else {
                 res.capabilities = CAP_NONE;
-                res.reason.clear();
-                res.reason.append("macOS kqueue probe failed on current Darwin kernel");
+                let _ = res.reason.try_set("macOS kqueue probe failed on current Darwin kernel");
             }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
-            res.reason.clear();
-            res.reason.append("kqueue is only supported on macOS / BSD (sys/event.h)");
+            let _ = res.reason.try_set("kqueue is only supported on macOS / BSD (sys/event.h)");
         }
         return res;
     }
@@ -143,19 +134,16 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             }
             if res.available {
                 res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_PAGE_LOCKED_BUFFERS | CAP_AF_XDP_UMEM;
-                res.reason.clear();
-                res.reason.append("Linux AF_XDP (XSK) active via zero-copy UMEM ring buffer");
+                let _ = res.reason.try_set("Linux AF_XDP (XSK) active via zero-copy UMEM ring buffer");
             } else {
                 res.capabilities = CAP_NONE;
-                res.reason.clear();
-                res.reason.append("Linux AF_XDP probe failed on current kernel");
+                let _ = res.reason.try_set("Linux AF_XDP probe failed on current kernel");
             }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
-            res.reason.clear();
-            res.reason.append("AF_XDP is only supported on Linux 5.4+ (linux/if_xdp.h)");
+            let _ = res.reason.try_set("AF_XDP is only supported on Linux 5.4+ (linux/if_xdp.h)");
         }
         return res;
     }
@@ -164,8 +152,7 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         res.available = true;
         res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DPDK_PMD;
         res.error_code = ERR_SUCCESS;
-        res.reason.clear();
-        res.reason.append("DPDK Poll Mode Driver active via direct PCIe BAR mapping");
+        let _ = res.reason.try_set("DPDK Poll Mode Driver active via direct PCIe BAR mapping");
         return res;
     }
 
@@ -182,20 +169,17 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
             }
             if res.available {
                 res.capabilities = CAP_ZERO_COPY | CAP_NIC_TLS_OFFLOAD;
-                res.reason.clear();
-                res.reason.append("SmartNIC hardware kTLS offload active ");
-                res.reason.append("(Mellanox ConnectX / BlueField / Windows Chimney)");
+                let _ = res.reason.try_set("SmartNIC hardware kTLS offload active ");
+                let _ = res.reason.try_append("(Mellanox ConnectX / BlueField / Windows Chimney)");
             } else {
                 res.capabilities = CAP_NONE;
-                res.reason.clear();
-                res.reason.append("SmartNIC probe failed or no compatible hardware offload found");
+                let _ = res.reason.try_set("SmartNIC probe failed or no compatible hardware offload found");
             }
         } else {
             res.available = false;
             res.capabilities = CAP_NONE;
             res.error_code = ERR_ENOSYS;
-            res.reason.clear();
-            res.reason.append("SmartNIC kTLS offload is only supported on Linux 4.17+ / Windows Server");
+            let _ = res.reason.try_set("SmartNIC kTLS offload is only supported on Linux 4.17+ / Windows Server");
         }
         return res;
     }
@@ -221,15 +205,13 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
         if auto_probe.available {
             cfg.active_kind = auto_probe.kind;
             cfg.capabilities = auto_probe.capabilities;
-            cfg.status_message.clear();
-            cfg.status_message.append(auto_probe.reason[..]);
+            let _ = cfg.status_message.try_set(auto_probe.reason[..]);
             cfg.is_probed = true;
             return true;
         }
         cfg.active_kind = TransportDriverKind.Standard;
         cfg.capabilities = CAP_NONE;
-        cfg.status_message.clear();
-        cfg.status_message.append("Auto fell back to Standard sockets");
+        let _ = cfg.status_message.try_set("Auto fell back to Standard sockets");
         cfg.is_probed = true;
         return true;
     }
@@ -238,8 +220,7 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
     if probe.available {
         cfg.active_kind = cfg.preferred_kind;
         cfg.capabilities = probe.capabilities;
-        cfg.status_message.clear();
-        cfg.status_message.append(probe.reason[..]);
+        let _ = cfg.status_message.try_set(probe.reason[..]);
         cfg.is_probed = true;
         return true;
     }
@@ -250,8 +231,7 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
         if rio_probe.available {
             cfg.active_kind = TransportDriverKind.WindowsRIO;
             cfg.capabilities = rio_probe.capabilities;
-            cfg.status_message.clear();
-            cfg.status_message.append("io_uring unavailable on Windows; auto-selected Windows RIO");
+            let _ = cfg.status_message.try_set("io_uring unavailable on Windows; auto-selected Windows RIO");
             cfg.is_probed = true;
             return true;
         }
@@ -262,8 +242,7 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
         if uring_probe.available {
             cfg.active_kind = TransportDriverKind.IoUring;
             cfg.capabilities = uring_probe.capabilities;
-            cfg.status_message.clear();
-            cfg.status_message.append("Windows RIO unavailable on Linux; auto-selected io_uring");
+            let _ = cfg.status_message.try_set("Windows RIO unavailable on Linux; auto-selected io_uring");
             cfg.is_probed = true;
             return true;
         }
@@ -274,8 +253,7 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
         if kq_probe.available {
             cfg.active_kind = TransportDriverKind.Kqueue;
             cfg.capabilities = kq_probe.capabilities;
-            cfg.status_message.clear();
-            cfg.status_message.append("Requested driver unavailable on macOS; auto-selected kqueue");
+            let _ = cfg.status_message.try_set("Requested driver unavailable on macOS; auto-selected kqueue");
             cfg.is_probed = true;
             return true;
         }
@@ -284,8 +262,7 @@ fn init_transport_driver_with_platform(cfg: TransportDriverConfig&, plat: Target
     // Universal Standard sockets fallback
     cfg.active_kind = TransportDriverKind.Standard;
     cfg.capabilities = CAP_NONE;
-    cfg.status_message.clear();
-    cfg.status_message.append("Preferred driver unavailable; gracefully fell back to Standard sockets");
+    let _ = cfg.status_message.try_set("Preferred driver unavailable; gracefully fell back to Standard sockets");
     cfg.is_probed = true;
     return true;
 }
@@ -387,5 +364,5 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
 }
 
 fn format_driver_int<B>(out: B&, val: i64) {
-    core::format_i64_dec(val, out);
+    val.format_i64_dec(out);
 }

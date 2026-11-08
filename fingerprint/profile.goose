@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import client.profile;
 import fingerprint.ja4;
 import fingerprint.p0f;
@@ -166,10 +167,9 @@ fn new_client_profile(kind: Profile) -> ClientProfile {
 // ---- profile manipulation & builder functions -------------------------------
 
 fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {
-    guard header_name.len <= 32 && profile.header_order.len < profile.header_order.cap else { return; }
     var entry: u8[..32] = [];
-    entry.append(header_name);
-    profile.header_order.push(entry);
+    guard entry.try_set(header_name) else { return; }
+    let _ = profile.header_order.try_push(entry);
 }
 
 struct Ja4Options {
@@ -228,23 +228,23 @@ fn ja4h(
 
 // Adds or overrides a header in the profile.
 fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
-    if eq_ascii_fold(name, "user-agent") {
+    if name.eq_ascii_fold("user-agent") {
         set_user_agent(profile, value);
         return;
     }
-    if eq_ascii_fold(name, "accept") {
+    if name.eq_ascii_fold("accept") {
         set_accept(profile, value);
         return;
     }
-    if eq_ascii_fold(name, "accept-encoding") {
+    if name.eq_ascii_fold("accept-encoding") {
         set_accept_encoding(profile, value);
         return;
     }
-    if eq_ascii_fold(name, "accept-language") {
+    if name.eq_ascii_fold("accept-language") {
         set_accept_language(profile, value);
         return;
     }
-    if eq_ascii_fold(name, "upgrade-insecure-requests") {
+    if name.eq_ascii_fold("upgrade-insecure-requests") {
         let _ = profile.upgrade_insecure_requests.try_set(value);
         return;
     }

@@ -16,45 +16,12 @@ import .parser;
 import .policy;
 import .engine;
 
-// ---- chromium sqlite v24 schema & query generator --------------------------
-
-// Generates the official Chromium SQLite V24 schema DDL and indices.
-fn generate_sqlite_v24_schema<B>(out: B&) {
-    out.append("CREATE TABLE meta (key TEXT NOT NULL UNIQUE PRIMARY KEY, value INTEGER NOT NULL);\n");
-    out.append("INSERT INTO meta (key, value) VALUES ('version', 24);\n");
-    out.append("INSERT INTO meta (key, value) VALUES ('last_compatible_version', 24);\n\n");
-    out.append("CREATE TABLE cookies (\n");
-    out.append("    creation_utc INTEGER NOT NULL,\n");
-    out.append("    top_frame_site_key TEXT NOT NULL,\n");
-    out.append("    host_key TEXT NOT NULL,\n");
-    out.append("    name TEXT NOT NULL,\n");
-    out.append("    value TEXT NOT NULL,\n");
-    out.append("    encrypted_value BLOB DEFAULT '',\n");
-    out.append("    path TEXT NOT NULL,\n");
-    out.append("    expires_utc INTEGER NOT NULL,\n");
-    out.append("    is_secure INTEGER NOT NULL,\n");
-    out.append("    is_httponly INTEGER NOT NULL,\n");
-    out.append("    last_access_utc INTEGER NOT NULL,\n");
-    out.append("    has_expires INTEGER NOT NULL,\n");
-    out.append("    is_persistent INTEGER NOT NULL,\n");
-    out.append("    priority INTEGER NOT NULL,\n");
-    out.append("    samesite INTEGER NOT NULL,\n");
-    out.append("    source_scheme INTEGER NOT NULL,\n");
-    out.append("    source_port INTEGER NOT NULL,\n");
-    out.append("    last_update_utc INTEGER NOT NULL,\n");
-    out.append("    source_type INTEGER NOT NULL DEFAULT 0,\n");
-    out.append("    has_cross_site_ancestor INTEGER NOT NULL DEFAULT 0,\n");
-    out.append("    PRIMARY KEY (top_frame_site_key, host_key, name, path, source_scheme, source_port)\n");
-    out.append(");\n\n");
-    out.append("CREATE INDEX domain ON cookies(host_key);\n");
-    out.append("CREATE INDEX cookie_times ON cookies(creation_utc);\n");
-    out.append("CREATE INDEX is_transient ON cookies(is_persistent) WHERE is_persistent = 0;\n");
-}
+// ---- chromium sqlite v24 query generator -----------------------------------
 
 // Serializes a CanonicalCookie into a SQLite V24 INSERT OR REPLACE statement.
 fn generate_sqlite_insert_sql<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append("INSERT OR REPLACE INTO cookies (creation_utc, top_frame_site_key, host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (");
-    format(out, cookie_val.creation_utc);
+    cookie_val.creation_utc.format_i64_dec(out);
     out.append(", ");
     append_sql_escaped_string(out, cookie_val.partition_key[..]);
     out.append(", ");
@@ -66,7 +33,7 @@ fn generate_sqlite_insert_sql<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(", '', ");
     append_sql_escaped_string(out, cookie_val.path[..]);
     out.append(", ");
-    format(out, cookie_val.expires_utc);
+    cookie_val.expires_utc.format_i64_dec(out);
     append_sqlite_insert_tail(out, cookie_val);
 }
 
@@ -81,15 +48,12 @@ fn generate_sqlite_delete_sql<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(" AND path = ");
     append_sql_escaped_string(out, cookie_val.path[..]);
     out.append(" AND source_scheme = ");
-    format(out, source_scheme_sqlite_code(cookie_val.source_scheme));
+    let scheme_code = source_scheme_sqlite_code(cookie_val.source_scheme);
+    scheme_code.format_i64_dec(out);
     out.append(" AND source_port = ");
-    format(out, cookie_val.source_port as i64);
+    let port_i64 = cookie_val.source_port as i64;
+    port_i64.format_i64_dec(out);
     out.append(";\n");
-}
-
-// Generates session cookie cleanup SQL statement.
-fn generate_sqlite_session_cleanup_sql<B>(out: B&) {
-    out.append("DELETE FROM cookies WHERE is_persistent = 0;\n");
 }
 
 // ---- write-back mutation batcher -------------------------------------------
@@ -145,13 +109,8 @@ fn queue_store_mutation(
         }
     }
 
-    guard batcher.ops.len < batcher.ops.cap else { return false; }
-
-    var pending = PendingStoreOp { .. };
-    pending.op_type = operation_type;
-    pending.cookie = cookie_val;
-    batcher.ops.push(pending);
-    return true;
+    var pending = PendingStoreOp { op_type: operation_type, cookie: cookie_val };
+    return batcher.ops.try_push(pending);
 }
 
 fn queue_insert(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) -> bool {
@@ -162,45 +121,52 @@ fn queue_delete(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) 
     return queue_store_mutation(batcher, StoreOpType.Delete, cookie_val);
 }
 
-// Checks if the write-back batcher needs to commit based on batch size or time.
-fn should_commit_batch(batcher: const WriteBackBatcher&, now_ms: i64) -> bool {
-    if batcher.ops.len >= batcher.max_batch_size {
-        return true;
-    }
-    if batcher.ops.len > 0 && (now_ms - batcher.last_commit_ms) >= batcher.commit_interval_ms {
-        return true;
-    }
-    return false;
-}
-
-// Flushes pending operations into an atomic SQL transaction block and clears the queue.
-fn flush_store_batch<B>(
-    batcher: WriteBackBatcher&,
-    out_sql: B&,
-    now_ms:  i64,
-) -> i64 {
-    guard batcher.ops.len > 0 else { return 0; }
-
-    out_sql.append("BEGIN TRANSACTION;\n");
-    let total_operations = batcher.ops.len;
-
-    for op_idx in batcher.ops.len {
-        let pending_op = batcher.ops[op_idx];
-        if pending_op.op_type == StoreOpType.InsertOrUpdate {
-            generate_sqlite_insert_sql(out_sql, pending_op.cookie);
-        } else {
-            generate_sqlite_delete_sql(out_sql, pending_op.cookie);
-        }
-    }
-
-    out_sql.append("COMMIT;\n");
-    batcher.total_committed_ops += total_operations;
-    batcher.last_commit_ms = now_ms;
-    batcher.ops.clear();
-    return total_operations;
-}
-
 // ---- outgoing header value formatting & ingestion --------------------------
+
+const MAX_COOKIE_HEADER_LEN: i64 = 8192;
+
+fn try_append_cookie_pair(out: u8[>..]&, cookie_val: const CanonicalCookie&, with_delim: bool) -> bool {
+    let delim_len: i64 = if with_delim { 2 } else { 0 };
+    let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+    let pair_len = core::add_sat_i64(cookie_val.name.len, core::add_sat_i64(eq_len, cookie_val.value.len));
+    let needed = core::add_sat_i64(delim_len, pair_len);
+    guard core::add_sat_i64(out.len, needed) <= MAX_COOKIE_HEADER_LEN else {
+        return false;
+    }
+    if with_delim {
+        out.append("; ");
+    }
+    if cookie_val.name.len > 0 {
+        out.append(cookie_val.name[..]);
+        out.push('=');
+    }
+    out.append(cookie_val.value[..]);
+    return true;
+}
+
+fn try_append_cookie_pair<B>(out: B&, cookie_val: const CanonicalCookie&, with_delim: bool) -> bool {
+    let delim_len: i64 = if with_delim { 2 } else { 0 };
+    let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
+    let pair_len = core::add_sat_i64(cookie_val.name.len, core::add_sat_i64(eq_len, cookie_val.value.len));
+    let needed = core::add_sat_i64(delim_len, pair_len);
+    guard core::add_sat_i64(out.len, needed) <= MAX_COOKIE_HEADER_LEN else {
+        return false;
+    }
+
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    if with_delim {
+        guard out.try_append("; ") else { return false; }
+    }
+    if cookie_val.name.len > 0 {
+        guard out.try_append(cookie_val.name[..]) && out.try_push('=') else { return false; }
+    }
+    guard out.try_append(cookie_val.value[..]) else { return false; }
+    committed = true;
+    return true;
+}
 
 // Formats indexed cookies from jar into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
 // Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
@@ -209,25 +175,10 @@ fn format_cookie_header_from_indices(
     indices: const u16[:],
     out:     u8[>..]&,
 ) {
-    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for i in indices.len {
         let idx = indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        let cookie_val = jar.cookies[idx];
-        let delim_len: i64 = if i > 0 { 2 } else { 0 };
-        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
-        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
-        if out.len + needed > MAX_COOKIE_HEADER_LEN {
-            return;
-        }
-        if delim_len > 0 {
-            out.append("; ");
-        }
-        if cookie_val.name.len > 0 {
-            out.append(cookie_val.name[..]);
-            out.push('=');
-        }
-        out.append(cookie_val.value[..]);
+        guard try_append_cookie_pair(out, jar.cookies[idx], i > 0) else { return; }
     }
 }
 
@@ -237,70 +188,25 @@ fn format_cookie_header_from_indices<B>(
     indices: const u16[:],
     out:     B&,
 ) {
-    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for i in indices.len {
         let idx = indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        let cookie_val = jar.cookies[idx];
-        let delim_len: i64 = if i > 0 { 2 } else { 0 };
-        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
-        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
-        if out.len + needed > out.cap || out.len + needed > MAX_COOKIE_HEADER_LEN {
-            return;
-        }
-        if delim_len > 0 {
-            out.append("; ");
-        }
-        if cookie_val.name.len > 0 {
-            out.append(cookie_val.name[..]);
-            out.push('=');
-        }
-        out.append(cookie_val.value[..]);
+        guard try_append_cookie_pair(out, jar.cookies[idx], i > 0) else { return; }
     }
 }
 
 // Formats cookies into an outgoing HTTP request Cookie header value per RFC 6265 Section 5.4.
 // Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
 fn format_cookie_header_value(out: u8[>..]&, cookies: const CanonicalCookie[:]) {
-    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for cookie_idx in cookies.len {
-        let cookie_val = cookies[cookie_idx];
-        let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
-        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
-        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
-        if out.len + needed > MAX_COOKIE_HEADER_LEN {
-            return;
-        }
-        if delim_len > 0 {
-            out.append("; ");
-        }
-        if cookie_val.name.len > 0 {
-            out.append(cookie_val.name[..]);
-            out.push('=');
-        }
-        out.append(cookie_val.value[..]);
+        guard try_append_cookie_pair(out, cookies[cookie_idx], cookie_idx > 0) else { return; }
     }
 }
 
 // Formats cookies into bounded stack buffers, respecting both buffer capacity and 8192-byte limit.
 fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
-    const MAX_COOKIE_HEADER_LEN: i64 = 8192;
     for cookie_idx in cookies.len {
-        let cookie_val = cookies[cookie_idx];
-        let delim_len: i64 = if cookie_idx > 0 { 2 } else { 0 };
-        let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
-        let needed:    i64 = delim_len + cookie_val.name.len + eq_len + cookie_val.value.len;
-        if out.len + needed > out.cap || out.len + needed > MAX_COOKIE_HEADER_LEN {
-            return;
-        }
-        if delim_len > 0 {
-            out.append("; ");
-        }
-        if cookie_val.name.len > 0 {
-            out.append(cookie_val.name[..]);
-            out.push('=');
-        }
-        out.append(cookie_val.value[..]);
+        guard try_append_cookie_pair(out, cookies[cookie_idx], cookie_idx > 0) else { return; }
     }
 }
 
@@ -319,12 +225,15 @@ fn parse_server_cookie_header<C>(
 ) {
     guard raw_header.len > 0 else { return; }
 
-    each_split(raw_header, ';') { pair_slice =>
+    var tok = core::make_byte_tokenizer(raw_header, ';');
+    loop {
+        let pair_slice, ok = core::token_next(tok);
+        guard ok else { break; }
         if out.len >= max_cookies {
             return;
         }
         parse_single_server_cookie_pair(pair_slice, now_us, out);
-    };
+    }
 }
 
 // Parses an incoming Cookie: header on the server side with default now_us = 0.
@@ -362,7 +271,7 @@ fn export_netscape<B>(jar: const CanonicalCookieJar&, out: B&) {
         out.append(if cookie_val.secure { "TRUE" } else { "FALSE" });
         out.push('\t');
         let expires_sec = if cookie_val.persistent { cookie_val.expires_utc / 1000000 } else { 0 as i64 };
-        format(out, expires_sec);
+        expires_sec.format_i64_dec(out);
         out.push('\t');
         out.append(cookie_val.name[..]);
         out.push('\t');
@@ -378,11 +287,11 @@ inline fn is_netscape_eol(b: u8) -> bool {
 fn find_netscape_line_range(content: const u8[:], start: i64) -> i64, i64 {
     var line_end = start;
     while line_end < content.len && !is_netscape_eol(content[line_end]) {
-        line_end++;
+        line_end = core::add_sat_i64(line_end, 1);
     }
     var next_start = line_end;
     while next_start < content.len && is_netscape_eol(content[next_start]) {
-        next_start++;
+        next_start = core::add_sat_i64(next_start, 1);
     }
     return line_end, next_start;
 }
@@ -407,7 +316,7 @@ fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) 
 
         let line_end, next_start = find_netscape_line_range(content, line_start);
         if try_import_netscape_cookie(jar, content[line_start..line_end], now_us) {
-            imported_count += 1;
+            imported_count = core::add_sat_i64(imported_count, 1);
         }
 
         line_start = next_start;
@@ -462,11 +371,11 @@ fn export_json(jar: const CanonicalCookieJar&, out: u8[>..]&) {
 fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) -> i64 {
     guard json_text.len > 0 else { return 0; }
     var json_reader = json::reader(json_text);
-    var imported_count = 0;
+    var imported_count: i64 = 0;
 
     json::each_element(json_reader) {
         // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
-        guard (imported_count as i64) < internal::K_MAX_COOKIES else { return imported_count; }
+        guard imported_count < internal::K_MAX_COOKIES else { return imported_count; }
         var parsed_cookie = CanonicalCookie { .. };
         let read_ok = read_canonical_cookie_json_object(json_reader, parsed_cookie);
 
@@ -482,7 +391,7 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
         let is_valid = read_ok && !has_ctl && has_payload && !both_encrypted_and_plain;
         let src_opts = CookieSourceOptions { is_http_api: true, url_is_secure: parsed_cookie.secure };
         if is_valid && set_canonical_cookie(jar, parsed_cookie, src_opts, now_us) {
-            imported_count += 1;
+            imported_count = core::add_sat_i64(imported_count, 1);
         }
     };
 
@@ -511,26 +420,32 @@ fn source_scheme_sqlite_code(scheme: CookieSourceScheme) -> i64 {
 
 fn append_sqlite_insert_tail<B>(out: B&, cookie_val: const CanonicalCookie&) {
     out.append(", ");
-    format(out, if cookie_val.secure { 1 as i64 } else { 0 as i64 });
+    let sec_flag: i64 = if cookie_val.secure { 1 } else { 0 };
+    sec_flag.format_i64_dec(out);
     out.append(", ");
-    format(out, if cookie_val.httponly { 1 as i64 } else { 0 as i64 });
+    let http_flag: i64 = if cookie_val.httponly { 1 } else { 0 };
+    http_flag.format_i64_dec(out);
     out.append(", ");
-    format(out, cookie_val.last_access_utc);
+    cookie_val.last_access_utc.format_i64_dec(out);
     out.append(", ");
-    let persist_flag = if cookie_val.persistent { 1 as i64 } else { 0 as i64 };
-    format(out, persist_flag);
+    let persist_flag: i64 = if cookie_val.persistent { 1 } else { 0 };
+    persist_flag.format_i64_dec(out);
     out.append(", ");
-    format(out, persist_flag);
+    persist_flag.format_i64_dec(out);
     out.append(", ");
-    format(out, priority_rank(cookie_val.priority) as i64);
+    let prio_code = priority_rank(cookie_val.priority) as i64;
+    prio_code.format_i64_dec(out);
     out.append(", ");
-    format(out, same_site_sqlite_code(cookie_val.same_site));
+    let ss_code = same_site_sqlite_code(cookie_val.same_site);
+    ss_code.format_i64_dec(out);
     out.append(", ");
-    format(out, source_scheme_sqlite_code(cookie_val.source_scheme));
+    let sch_code = source_scheme_sqlite_code(cookie_val.source_scheme);
+    sch_code.format_i64_dec(out);
     out.append(", ");
-    format(out, cookie_val.source_port as i64);
+    let port_code = cookie_val.source_port as i64;
+    port_code.format_i64_dec(out);
     out.append(", ");
-    format(out, cookie_val.last_update_utc);
+    cookie_val.last_update_utc.format_i64_dec(out);
     out.append(", 0, 0);\n");
 }
 
@@ -574,22 +489,22 @@ fn coalesce_store_mutation(
         batcher.ops[op_idx].cookie = cookie_val;
         batcher.ops[op_idx].cookie.creation_utc = orig_creation;
         batcher.ops[op_idx].cookie.creation_seq = orig_seq;
-        batcher.total_coalesced_ops += 1;
+        batcher.total_coalesced_ops = core::add_sat_i64(batcher.total_coalesced_ops, 1);
         return true;
     }
     if existing_op == StoreOpType.InsertOrUpdate && operation_type == StoreOpType.Delete {
         remove_at(batcher.ops, op_idx);
-        batcher.total_coalesced_ops += 1;
+        batcher.total_coalesced_ops = core::add_sat_i64(batcher.total_coalesced_ops, 1);
         return true;
     }
     if existing_op == StoreOpType.Delete && operation_type == StoreOpType.InsertOrUpdate {
         batcher.ops[op_idx].op_type = StoreOpType.InsertOrUpdate;
         batcher.ops[op_idx].cookie = cookie_val;
-        batcher.total_coalesced_ops += 1;
+        batcher.total_coalesced_ops = core::add_sat_i64(batcher.total_coalesced_ops, 1);
         return true;
     }
     if existing_op == StoreOpType.Delete && operation_type == StoreOpType.Delete {
-        batcher.total_coalesced_ops += 1;
+        batcher.total_coalesced_ops = core::add_sat_i64(batcher.total_coalesced_ops, 1);
         return true;
     }
     return false;
@@ -631,10 +546,10 @@ fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const
     let scheme_match = cookie_a.source_scheme == CookieSourceScheme.Unset
         || cookie_b.source_scheme == CookieSourceScheme.Unset
         || cookie_a.source_scheme == cookie_b.source_scheme;
-    let clean_dom_a = core::trim_byte(cookie_a.domain[..], '.');
-    let clean_dom_b = core::trim_byte(cookie_b.domain[..], '.');
+    let clean_dom_a = cookie_a.domain[..].trim_byte('.');
+    let clean_dom_b = cookie_b.domain[..].trim_byte('.');
     return cookie_a.name[..] == cookie_b.name[..] &&
-           eq_ascii_fold(clean_dom_a, clean_dom_b) &&
+           clean_dom_a.eq_ascii_fold(clean_dom_b) &&
            cookie_a.path[..] == cookie_b.path[..] &&
            cookie_a.host_only == cookie_b.host_only &&
            cookie_a.partition_key[..] == cookie_b.partition_key[..] &&
@@ -647,16 +562,13 @@ fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const
 //   pair_slice = "user=alice"
 //   out = [CanonicalCookie{name="user", value="alice"}]
 fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out: C&) {
-    let clean_pair = trim(pair_slice);
+    let clean_pair = pair_slice.trim_ascii_space();
     guard clean_pair.len > 0 else { return; }
     if has_prohibited_cookie_ctl(clean_pair) { return; }
 
-    var eq_pos = -1;
-    for char_idx in clean_pair.len {
-        if clean_pair[char_idx] == '=' { eq_pos = char_idx; break; }
-    }
-    let cookie_name = if eq_pos >= 0 { trim(clean_pair[..eq_pos]) } else { clean_pair };
-    let cookie_val = if eq_pos >= 0 { trim(clean_pair[eq_pos + 1..]) } else { "" };
+    let lhs, rhs, has_eq = clean_pair.split_once_byte('=');
+    let cookie_name = if has_eq { lhs.trim_ascii_space() } else { clean_pair };
+    let cookie_val = if has_eq { rhs.trim_ascii_space() } else { "" };
     guard cookie_name.len > 0 else { return; }
 
     // RFC 6265bis Section 5.4: Preserves FIRST appearance
@@ -692,20 +604,17 @@ fn populate_netscape_cookie_fields(
     if path_val.len > 0 {
         cookie_ref.has_path_attr = true;
     }
-    cookie_ref.has_domain_attr = !eq_ascii_fold(subdom_flag, "false");
-    cookie_ref.host_only = eq_ascii_fold(subdom_flag, "false");
-    cookie_ref.secure = eq_ascii_fold(secure_flag, "true");
+    cookie_ref.has_domain_attr = !subdom_flag.eq_ascii_fold("false");
+    cookie_ref.host_only = subdom_flag.eq_ascii_fold("false");
+    cookie_ref.secure = secure_flag.eq_ascii_fold("true");
     cookie_ref.httponly = is_httponly;
     cookie_ref.source_scheme = if cookie_ref.secure { CookieSourceScheme.Secure } else { CookieSourceScheme.NonSecure };
     cookie_ref.source_port = if cookie_ref.secure { 443 } else { 80 };
 
-    let expires_sec, parse_ok = parse_int(expires_str);
+    let expires_sec, parse_ok = expires_str.parse_i64_dec();
     if parse_ok && expires_sec > 0 {
-        var safe_sec = expires_sec;
-        if safe_sec > 9000000000000 {
-            safe_sec = 9000000000000;
-        }
-        cookie_ref.expires_utc = safe_sec * 1000000;
+        let safe_sec = min(expires_sec, 9000000000000);
+        cookie_ref.expires_utc = core::mul_sat_i64(safe_sec, 1000000);
         cookie_ref.persistent = true;
     }
 }
@@ -727,30 +636,37 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     var tab_positions: i64[..8] = [];
     for char_idx in line.len {
         if line[char_idx] == '\t' {
-            guard tab_positions.len < tab_positions.cap else { return false; }
-            tab_positions.push(char_idx);
+            guard tab_positions.try_push(char_idx) else { return false; }
         }
     }
     guard tab_positions.len >= 6 else { return false; }
 
     let d_part = line[..tab_positions[0]];
-    let p_part = line[tab_positions[1] + 1..tab_positions[2]];
-    let n_part = line[tab_positions[4] + 1..tab_positions[5]];
-    let v_part = line[tab_positions[5] + 1..];
+    let subdom_part = line[core::add_sat_i64(tab_positions[0], 1)..tab_positions[1]];
+    let p_part = line[core::add_sat_i64(tab_positions[1], 1)..tab_positions[2]];
+    let sec_part = line[core::add_sat_i64(tab_positions[2], 1)..tab_positions[3]];
+    let exp_part = line[core::add_sat_i64(tab_positions[3], 1)..tab_positions[4]];
+    let n_part = line[core::add_sat_i64(tab_positions[4], 1)..tab_positions[5]];
+    let v_part = line[core::add_sat_i64(tab_positions[5], 1)..];
 
-    guard d_part.len <= cookie_ref.domain.cap else { return false; }
-    guard p_part.len <= cookie_ref.path.cap else { return false; }
-    guard n_part.len <= cookie_ref.name.cap else { return false; }
-    guard v_part.len <= cookie_ref.value.cap else { return false; }
-    guard n_part.len + v_part.len <= internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
+    var committed = false;
+    defer if !committed { cookie_ref = CanonicalCookie { .. }; };
+
+    guard core::add_sat_i64(n_part.len, v_part.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
+    guard cookie_ref.domain.try_set(d_part)
+        && cookie_ref.path.try_set(p_part)
+        && cookie_ref.name.try_set(n_part)
+        && cookie_ref.value.try_set(v_part) else {
+        return false;
+    }
 
     populate_netscape_cookie_fields(
         cookie_ref,
         d_part,
-        line[tab_positions[0] + 1..tab_positions[1]],
+        subdom_part,
         p_part,
-        line[tab_positions[2] + 1..tab_positions[3]],
-        line[tab_positions[3] + 1..tab_positions[4]],
+        sec_part,
+        exp_part,
         n_part,
         v_part,
         is_httponly,
@@ -759,9 +675,10 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {
         return false;
     }
-    if cookie_ref.name.len + cookie_ref.value.len > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+    if core::add_sat_i64(cookie_ref.name.len, cookie_ref.value.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return false;
     }
+    committed = true;
     return true;
 }
 

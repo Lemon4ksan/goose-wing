@@ -76,9 +76,9 @@ fn read_u16(c: ByteCursor&) -> u16, bool {
 //   c.buf = [0x00, 0x01, 0x02, 0xFF]
 //   returns: ok = true, out = 0x000102, c.buf = [0xFF]
 fn get_u24(c: ByteCursor&, out: u32&) -> bool {
-    guard c.buf.len >= 3 else { return false; }
-    out = ((c.buf[0] as u32) << 16) | ((c.buf[1] as u32) << 8) | c.buf[2];
-    c.buf = c.buf[3..];
+    let val, ok = read_u24(c);
+    guard ok else { return false; }
+    out = val;
     return true;
 }
 
@@ -89,7 +89,7 @@ fn get_u24(c: ByteCursor&, out: u32&) -> bool {
 //   returns: val = 0x000102, ok = true, c.buf = [0xFF]
 fn read_u24(c: ByteCursor&) -> u32, bool {
     guard c.buf.len >= 3 else { return 0, false; }
-    let val = ((c.buf[0] as u32) << 16) | ((c.buf[1] as u32) << 8) | c.buf[2];
+    let val = read_be_u24(c.buf, 0);
     c.buf = c.buf[3..];
     return val, true;
 }
@@ -258,7 +258,7 @@ fn get_last_u8(c: ByteCursor&, out: u8&) -> bool {
     let n = c.buf.len;
     guard n > 0 else { return false; }
     out = c.buf[n - 1];
-    c.buf = c.buf[..n - 1];
+    c.buf = c.buf[..^1];
     return true;
 }
 // Bounded dynamic byte buffer supporting up to 8 nested length-prefix frames.
@@ -305,8 +305,7 @@ fn put_bytes(b: ByteBuilder&, data: const u8[:]) {
 
 // Pushes an 8-bit length prefix placeholder onto the builder.
 fn start_u8_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len < b.offsets.cap else { return false; }
-    b.offsets.push(b.buf.len);
+    guard b.offsets.try_push(b.buf.len) else { return false; }
     b.buf.push(0);
     return true;
 }
@@ -329,8 +328,7 @@ fn finish_u8_prefix(b: ByteBuilder&) -> bool {
 
 // Pushes a 16-bit length prefix placeholder onto the builder.
 fn start_u16_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len < b.offsets.cap else { return false; }
-    b.offsets.push(b.buf.len);
+    guard b.offsets.try_push(b.buf.len) else { return false; }
     b.buf.push(0);
     b.buf.push(0);
     return true;
@@ -355,8 +353,7 @@ fn finish_u16_prefix(b: ByteBuilder&) -> bool {
 
 // Pushes a 24-bit length prefix placeholder onto the builder.
 fn start_u24_prefix(b: ByteBuilder&) -> bool {
-    guard b.offsets.len < b.offsets.cap else { return false; }
-    b.offsets.push(b.buf.len);
+    guard b.offsets.try_push(b.buf.len) else { return false; }
     b.buf.push(0);
     b.buf.push(0);
     b.buf.push(0);

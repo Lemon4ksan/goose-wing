@@ -93,15 +93,16 @@ fn quic_install_pn_space_keys(
     aead_iv:      const u8[:],
     cipher_suite: u16 = 0x1301,
 ) -> bool {
-    guard hp_key.len <= space.hp_key.cap else { return false; }
-    guard aead_key.len <= space.aead_key.cap else { return false; }
-    guard aead_iv.len <= space.aead_iv.cap else { return false; }
-    space.hp_key.clear();
-    space.hp_key.append(hp_key);
-    space.aead_key.clear();
-    space.aead_key.append(aead_key);
-    space.aead_iv.clear();
-    space.aead_iv.append(aead_iv);
+    guard hp_key.len <= space.hp_key.cap
+        && aead_key.len <= space.aead_key.cap
+        && aead_iv.len <= space.aead_iv.cap else {
+        return false;
+    }
+    guard space.hp_key.try_set(hp_key)
+        && space.aead_key.try_set(aead_key)
+        && space.aead_iv.try_set(aead_iv) else {
+        return false;
+    }
     space.cipher_suite = cipher_suite;
     space.keys_installed = true;
     return true;
@@ -121,20 +122,21 @@ struct RttState {
 // Encodes an ACK or ACK_ECN frame into wire VarInt format.
 fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
     let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
+
     let ftype = if ack.is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
     guard quic_encode_varint(out, ftype)
         && quic_encode_varint(out, ack.largest_acked)
         && quic_encode_varint(out, ack.ack_delay)
         && quic_encode_varint(out, ack.ranges.len as u64)
         && quic_encode_varint(out, ack.first_ack_range) else {
-        out.resize(orig_len, 0);
         return false;
     }
 
     for i in ack.ranges.len {
         guard quic_encode_varint(out, ack.ranges[i].gap)
             && quic_encode_varint(out, ack.ranges[i].ack_range) else {
-            out.resize(orig_len, 0);
             return false;
         }
     }
@@ -143,10 +145,10 @@ fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
         guard quic_encode_varint(out, ack.ect0_count)
             && quic_encode_varint(out, ack.ect1_count)
             && quic_encode_varint(out, ack.ecn_ce_count) else {
-            out.resize(orig_len, 0);
             return false;
         }
     }
+    committed = true;
     return true;
 }
 
@@ -179,8 +181,7 @@ fn decode_ack_ranges(
         guard cur_largest >= rlen else { return false; }
         cur_smallest = cur_largest - rlen;
 
-        guard ack.ranges.len < ack.ranges.cap else { return false; }
-        ack.ranges.push(AckRange { gap: gap, ack_range: rlen });
+        guard ack.ranges.try_push(AckRange { gap: gap, ack_range: rlen }) else { return false; }
         r_idx++;
     }
     return true;
@@ -298,8 +299,9 @@ fn parse_and_validate_ack<B>(
 
     out_intervals.clear();
     let first_smallest = ack.largest_acked - ack.first_ack_range;
-    guard out_intervals.len < out_intervals.cap else { return false; }
-    out_intervals.push(AckInterval { smallest: first_smallest, largest: ack.largest_acked });
+    guard out_intervals.try_push(AckInterval { smallest: first_smallest, largest: ack.largest_acked }) else {
+        return false;
+    }
 
     var cur_smallest = first_smallest;
     for i in ack.ranges.len {
@@ -315,11 +317,10 @@ fn parse_and_validate_ack<B>(
         }
         cur_smallest = cur_largest - r.ack_range;
 
-        guard out_intervals.len < out_intervals.cap else {
+        guard out_intervals.try_push(AckInterval { smallest: cur_smallest, largest: cur_largest }) else {
             out_intervals.clear();
             return false;
         }
-        out_intervals.push(AckInterval { smallest: cur_smallest, largest: cur_largest });
     }
     return true;
 }
@@ -536,16 +537,12 @@ fn get_earliest_loss_time(spaces: const PnSpaceState[3]&) -> u64, PnSpaceId {
 
 // Computes probe timeout duration with exponential backoff (RFC 9002 Sec 6.2.1).
 fn compute_pto_duration(rtt: const RttState&, pto_count: u32, is_app_data: bool) -> u64 {
-    let var4 = if 4 * rtt.rttvar_us > rfc::QUIC_TIMER_GRANULARITY_US {
-        4 * rtt.rttvar_us
-    } else {
-        rfc::QUIC_TIMER_GRANULARITY_US
-    };
+    let var4 = max(4 * rtt.rttvar_us, rfc::QUIC_TIMER_GRANULARITY_US);
     var dur = rtt.smoothed_rtt_us + var4;
     if is_app_data {
         dur += rtt.max_ack_delay_us;
     }
-    let shift = if pto_count < 16 { pto_count } else { 16 };
+    let shift = min(pto_count, 16);
     return dur * ((1 as u64) << shift);
 }
 

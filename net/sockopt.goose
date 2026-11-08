@@ -63,8 +63,7 @@ fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
         cfg.tcp_nodelay = false;
         cfg.mss = 1460;
         cfg.wscale = 7;
-        cfg.os_name.clear();
-        cfg.os_name.append("Raw/None NetStack");
+        let _ = cfg.os_name.try_set("Raw/None NetStack");
     } else if p == wing::Profile.Custom {
         // User-customized L4 socket configuration
         cfg.ttl = 64;
@@ -73,8 +72,7 @@ fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
         cfg.tcp_nodelay = true;
         cfg.mss = 1460;
         cfg.wscale = 8;
-        cfg.os_name.clear();
-        cfg.os_name.append("Custom NetStack");
+        let _ = cfg.os_name.try_set("Custom NetStack");
     } else {
         // Wing Authentic: TTL=64, Initial Window=65535, DF=1, WScale=8, TCP_NODELAY=1
         cfg.ttl = 64;
@@ -83,8 +81,7 @@ fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
         cfg.tcp_nodelay = true;
         cfg.mss = 1460;
         cfg.wscale = 8;
-        cfg.os_name.clear();
-        cfg.os_name.append("Wing/1.0 NetStack");
+        let _ = cfg.os_name.try_set("Wing/1.0 NetStack");
     }
 
     return cfg;
@@ -116,13 +113,13 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     out.append("OS: ");
     out.append(cfg.os_name[..]);
     out.append(" | TTL=");
-    core::format_i64_dec(cfg.ttl as i64, out);
+    (cfg.ttl as i64).format_i64_dec(out);
     out.append(" | Window=");
-    core::format_i64_dec(cfg.window_size as i64, out);
+    (cfg.window_size as i64).format_i64_dec(out);
     out.append(" | DF=");
     out.append(if cfg.has_dont_fragment { "1" } else { "0" });
     out.append(" | WScale=");
-    core::format_i64_dec(cfg.wscale as i64, out);
+    (cfg.wscale as i64).format_i64_dec(out);
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
 }

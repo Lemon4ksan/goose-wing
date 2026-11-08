@@ -55,17 +55,11 @@ fn parse_status_spec(
     pos:      i64&,
     out_rule: RouteRule&,
 ) -> bool {
-    var active = tok;
-    if core::ends_with(active, ",") {
-        let trim_len = core::sub_sat_i64(active.len, 1);
-        active = active[..trim_len];
-    }
-
-    let x_idx = core::index_of_byte(active, 'x');
-    if x_idx > 0 {
-        let next_x = core::add_sat_i64(x_idx, 1);
-        let f_code, ok1 = core::parse_u64_dec(active[..x_idx]);
-        let f_cnt, ok2 = core::parse_u64_dec(active[next_x..]);
+    let active = tok.trim_end_byte(',');
+    let f_code_str, f_cnt_str, has_x = active.split_once_byte('x');
+    if has_x && f_code_str.len > 0 {
+        let f_code, ok1 = f_code_str.parse_u64_dec();
+        let f_cnt, ok2 = f_cnt_str.parse_u64_dec();
         guard ok1 && ok2 && f_code >= 100 && f_code <= 599 else { return false; }
         out_rule.fail_status = f_code as i32;
         out_rule.fail_count = f_cnt as u32;
@@ -73,7 +67,7 @@ fn parse_status_spec(
         var peek_pos = pos;
         let next_tok = next_ws_token(rest, peek_pos);
         if next_tok.len > 0 {
-            let final_code, ok3 = core::parse_u64_dec(next_tok);
+            let final_code, ok3 = next_tok.parse_u64_dec();
             if ok3 && final_code >= 100 && final_code <= 599 {
                 pos = peek_pos;
                 out_rule.status_code = final_code as i32;
@@ -84,7 +78,7 @@ fn parse_status_spec(
         return true;
     }
 
-    let code, ok = core::parse_u64_dec(active);
+    let code, ok = active.parse_u64_dec();
     guard ok && code >= 100 && code <= 599 else { return false; }
     out_rule.status_code = code as i32;
     return true;
@@ -102,13 +96,13 @@ fn parse_route_modifiers(trimmed: const u8[:], pos: i64&, out_rule: RouteRule&) 
         }
         guard pos < trimmed.len else { break; }
         let rem = trimmed[pos..];
-        if core::starts_with_fold(rem, "location=") {
+        if rem.starts_with_fold("location=") {
             let tok = next_ws_token(trimmed, pos);
             let _ = out_rule.location.try_set(tok[9..]);
-        } else if core::starts_with_fold(rem, "cookie=") {
+        } else if rem.starts_with_fold("cookie=") {
             let tok = next_ws_token(trimmed, pos);
             let _ = out_rule.set_cookie.try_set(tok[7..]);
-        } else if core::starts_with_fold(rem, "type=") {
+        } else if rem.starts_with_fold("type=") {
             let tok = next_ws_token(trimmed, pos);
             let _ = out_rule.content_type.try_set(tok[5..]);
         } else {
@@ -127,8 +121,7 @@ fn parse_route_body_spec(body_raw: const u8[:], out_rule: RouteRule&) -> bool {
         let is_dquote = core::starts_with(body_raw, "\"") && core::ends_with(body_raw, "\"");
         let is_squote = core::starts_with(body_raw, "'") && core::ends_with(body_raw, "'");
         if is_dquote || is_squote {
-            let end_idx = core::sub_sat_i64(body_raw.len, 1);
-            guard out_rule.body.try_set(body_raw[1..end_idx]) else { return false; }
+            guard out_rule.body.try_set(body_raw[1..^1]) else { return false; }
             return true;
         }
     }
@@ -147,7 +140,7 @@ fn parse_route_body_spec(body_raw: const u8[:], out_rule: RouteRule&) -> bool {
 //   line = "GET /ping -> 200 \"PONG\""
 //   returns: true, out_rule = { method: "GET", path: "/ping", status_code: 200, body: "PONG" }
 fn parse_route_rule_line(line: const u8[:], out_rule: RouteRule&) -> bool {
-    let trimmed = core::trim_lws(line);
+    let trimmed = line.trim_lws();
     guard trimmed.len > 0 && trimmed[0] != '#' else { return false; }
 
     var pos: i64 = 0;
@@ -170,7 +163,7 @@ fn parse_route_rule_line(line: const u8[:], out_rule: RouteRule&) -> bool {
     guard parse_status_spec(status_tok, trimmed, pos, out_rule) else { return false; }
 
     parse_route_modifiers(trimmed, pos, out_rule);
-    guard parse_route_body_spec(core::trim_lws(trimmed[pos..]), out_rule) else { return false; }
+    guard parse_route_body_spec(trimmed[pos..].trim_lws(), out_rule) else { return false; }
     return true;
 }
 
@@ -178,19 +171,13 @@ fn load_scenario_text(text: const u8[:], stage: ProgrammableServerStage&) -> i64
     var added:  i64 = 0;
     var cursor: i64 = 0;
     while cursor < text.len {
-        let nl = core::index_of_byte(text[cursor..], '\n');
+        let nl = text[cursor..].index_of_byte('\n');
         let line_end = if nl >= 0 { core::add_sat_i64(cursor, nl) } else { text.len };
-        var line = text[cursor..line_end];
-        if core::ends_with(line, "\r") {
-            let trim_len = core::sub_sat_i64(line.len, 1);
-            line = line[..trim_len];
-        }
-        let trimmed = core::trim_lws(line);
+        let trimmed = text[cursor..line_end].trim_end_byte('\r').trim_lws();
         if trimmed.len > 0 && trimmed[0] != '#' {
-            guard stage.rules.len < stage.rules.cap else { break; }
             var r = RouteRule { .. };
             if parse_route_rule_line(trimmed, r) {
-                stage.rules.push(r);
+                guard stage.rules.try_push(r) else { break; }
                 added = core::add_sat_i64(added, 1);
             }
         }
@@ -200,8 +187,8 @@ fn load_scenario_text(text: const u8[:], stage: ProgrammableServerStage&) -> i64
 }
 
 fn strip_query_path(url: const u8[:]) -> const u8[:] {
-    let q = core::index_of_byte(url, '?');
-    return if q >= 0 { url[..q] } else { url };
+    let path, _, _ = url.split_once_byte('?');
+    return path;
 }
 
 // Extracts the query component following '?' in `url`, or empty slice if absent.
@@ -210,9 +197,8 @@ fn strip_query_path(url: const u8[:]) -> const u8[:] {
 //   url = "/cookies/set?session=xyz&theme=dark"
 //   returns: "session=xyz&theme=dark"
 fn extract_query_string(url: const u8[:]) -> const u8[:] {
-    let q = core::index_of_byte(url, '?');
-    let next_q = core::add_sat_i64(q, 1);
-    return if q >= 0 && next_q < url.len { url[next_q..] } else { "" };
+    let _, query, _ = url.split_once_byte('?');
+    return query;
 }
 
 fn append_json_escaped_bytes(src: const u8[:], out: u8[>..]&) {
@@ -248,8 +234,8 @@ fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:]
     let last_idx = core::sub_sat_i64(n_hdrs, 1);
     for i in n_hdrs {
         let e = req.headers.entries[i];
-        let h_name = wing::entry_name(req.headers, e);
-        let h_val = wing::entry_value(req.headers, e);
+        let h_name = req.headers.entry_name(e);
+        let h_val = req.headers.entry_value(e);
         out.append("    \"");
         append_json_escaped_bytes(h_name, out);
         out.append("\": \"");
@@ -273,9 +259,9 @@ fn build_httpbin_headers_json(req: const wing::Request&, out: u8[>..]&) {
     for i in n_hdrs {
         let e = req.headers.entries[i];
         out.append("    \"");
-        append_json_escaped_bytes(wing::entry_name(req.headers, e), out);
+        append_json_escaped_bytes(req.headers.entry_name(e), out);
         out.append("\": \"");
-        append_json_escaped_bytes(wing::entry_value(req.headers, e), out);
+        append_json_escaped_bytes(req.headers.entry_value(e), out);
         out.push('"');
         if i < last_idx { out.push(','); }
         out.push('\n');
@@ -285,10 +271,10 @@ fn build_httpbin_headers_json(req: const wing::Request&, out: u8[>..]&) {
 
 fn handle_httpbin_status_or_redirect(path: const u8[:], res: wing::Response&) -> bool {
     if core::starts_with(path, "/status/") && path.len > 8 {
-        let code_u64, ok = core::parse_u64_dec(path[8..]);
+        let code_u64, ok = path[8..].parse_u64_dec();
         guard ok && code_u64 >= 100 && code_u64 <= 599 else { return false; }
         res.status_code = code_u64 as i32;
-        wing::set_header(res, "Content-Type", "text/plain");
+        res.set_header("Content-Type", "text/plain");
         res.body.clear();
         if !rfc::is_empty_body_status(res.status_code) {
             res.body.append(rfc::status_phrase(res.status_code));
@@ -298,17 +284,17 @@ fn handle_httpbin_status_or_redirect(path: const u8[:], res: wing::Response&) ->
     }
 
     if core::starts_with(path, "/redirect/") && path.len > 10 {
-        let n_hops, ok = core::parse_u64_dec(path[10..]);
+        let n_hops, ok = path[10..].parse_u64_dec();
         guard ok else { return false; }
         res.status_code = 302;
         var loc: u8[..64] = [];
         if n_hops <= 1 {
-            loc.append("/get");
+            let _ = loc.try_set("/get");
         } else {
-            loc.append("/redirect/");
-            core::format_u64_dec(core::sub_sat_u64(n_hops, 1), loc);
+            let _ = loc.try_set("/redirect/");
+            core::sub_sat_u64(n_hops, 1).format_u64_dec(loc);
         }
-        wing::set_header(res, "Location", loc[..]);
+        res.set_header("Location", loc[..]);
         res.body.clear();
         res.body.append("Redirecting to ");
         res.body.append(loc[..]);
@@ -337,25 +323,25 @@ fn try_serve_range_slice(
     let total_len = full_buf.len;
     guard range_hdr.len > 0 else { return false; }
     let rs, r_err = wing::parse_range_header(range_hdr, total_len);
-    let is_bytes_unit = core::starts_with_fold(core::trim_lws(range_hdr), "bytes=");
+    let is_bytes_unit = range_hdr.trim_lws().starts_with_fold("bytes=");
     if r_err == wing::RangeError.Unsatisfiable || (total_len == 0 && is_bytes_unit) {
         res.status_code = 416;
         var cr_416: u8[..64] = [];
         wing::format_content_range(-1, -1, total_len, cr_416);
-        wing::set_header(res, "Content-Range", cr_416[..]);
-        wing::set_header(res, "Accept-Ranges", "bytes");
-        wing::set_header(res, "Content-Type", "application/octet-stream");
+        res.set_header("Content-Range", cr_416[..]);
+        res.set_header("Accept-Ranges", "bytes");
+        res.set_header("Content-Type", "application/octet-stream");
         res.body.clear();
         return true;
     }
-    guard wing::is_ok(r_err) && rs.is_satisfiable && rs.ranges.len > 0 else { return false; }
+    guard r_err.is_ok() && rs.is_satisfiable && rs.ranges.len > 0 else { return false; }
     let r0 = rs.ranges[0];
     res.status_code = 206;
     var cr_hdr: u8[..64] = [];
     wing::format_content_range(r0.start, r0.end_pos, total_len, cr_hdr);
-    wing::set_header(res, "Content-Range", cr_hdr[..]);
-    wing::set_header(res, "Accept-Ranges", "bytes");
-    wing::set_header(res, "Content-Type", "application/octet-stream");
+    res.set_header("Content-Range", cr_hdr[..]);
+    res.set_header("Accept-Ranges", "bytes");
+    res.set_header("Content-Type", "application/octet-stream");
     res.body.clear();
     let slice_end = min(total_len, core::add_sat_i64(r0.end_pos, 1));
     if r0.start >= 0 && r0.start < slice_end {
@@ -373,7 +359,7 @@ fn handle_httpbin_range_or_bytes(
     let is_range = core::starts_with(path, "/range/") && path.len > 7;
     guard is_bytes || is_range else { return false; }
 
-    let n_raw, ok = core::parse_u64_dec(path[7..]);
+    let n_raw, ok = path[7..].parse_u64_dec();
     guard ok && n_raw <= 65536 else { return false; }
     let total_len = n_raw as i64;
 
@@ -385,8 +371,8 @@ fn handle_httpbin_range_or_bytes(
     }
 
     res.status_code = 200;
-    wing::set_header(res, "Accept-Ranges", "bytes");
-    wing::set_header(res, "Content-Type", "application/octet-stream");
+    res.set_header("Accept-Ranges", "bytes");
+    res.set_header("Content-Type", "application/octet-stream");
     res.body.clear();
     res.body.append(full_buf[..]);
     return true;
@@ -399,33 +385,28 @@ fn handle_httpbin_auth_routes(
 ) -> bool {
     if path == "/bearer" {
         let auth = req.header("Authorization");
-        if core::starts_with_fold(auth, "Bearer ") && auth.len > 7 {
-            let tok = core::trim_lws(auth[7..]);
-            if tok.len > 0 {
-                res.status_code = 200;
-                wing::set_header(res, "Content-Type", "application/json");
-                res.body.clear();
-                res.body.append("{\"authenticated\": true, \"token\": \"");
-                append_json_escaped_bytes(tok, res.body);
-                res.body.append("\"}\n");
-                return true;
-            }
+        let tok = if auth.starts_with_fold("Bearer ") { auth[7..].trim_lws() } else { "" };
+        if tok.len > 0 {
+            res.status_code = 200;
+            res.set_header("Content-Type", "application/json");
+            res.body.clear();
+            res.body.append("{\"authenticated\": true, \"token\": \"");
+            append_json_escaped_bytes(tok, res.body);
+            res.body.append("\"}\n");
+            return true;
         }
         res.status_code = 401;
-        wing::set_header(res, "WWW-Authenticate", "Bearer");
+        res.set_header("WWW-Authenticate", "Bearer");
         res.body.clear();
         return true;
     }
 
     if core::starts_with(path, "/basic-auth/") && path.len > 12 {
-        let creds_part = path[12..];
-        let sl = core::index_of_byte(creds_part, '/');
-        guard sl > 0 && core::add_sat_i64(sl, 1) < creds_part.len else { return false; }
-        let exp_user = creds_part[..sl];
-        let exp_pass = creds_part[core::add_sat_i64(sl, 1)..];
+        let exp_user, exp_pass, has_sl = path[12..].split_once_byte('/');
+        guard has_sl && exp_user.len > 0 && exp_pass.len > 0 else { return false; }
 
         var raw_up: u8[..256] = [];
-        guard raw_up.try_append(exp_user) && raw_up.try_push(':') && raw_up.try_append(exp_pass) else {
+        guard raw_up.try_set(exp_user) && raw_up.try_push(':') && raw_up.try_append(exp_pass) else {
             return false;
         }
         var exp_b64: u8[..384] = [];
@@ -433,16 +414,13 @@ fn handle_httpbin_auth_routes(
         core::secure_zeroize_slice(raw_up[..]);
 
         let auth = req.header("Authorization");
-        var matched = false;
-        if core::starts_with_fold(auth, "Basic ") && auth.len > 6 {
-            let b64_part = core::trim_lws(auth[6..]);
-            matched = core::ct_eq_bytes(b64_part, exp_b64[..]);
-        }
+        let b64_part = if auth.starts_with_fold("Basic ") { auth[6..].trim_lws() } else { "" };
+        let matched = b64_part.len > 0 && core::ct_eq_bytes(b64_part, exp_b64[..]);
         core::secure_zeroize_slice(exp_b64[..]);
 
         if matched {
             res.status_code = 200;
-            wing::set_header(res, "Content-Type", "application/json");
+            res.set_header("Content-Type", "application/json");
             res.body.clear();
             res.body.append("{\"authenticated\": true, \"user\": \"");
             append_json_escaped_bytes(exp_user, res.body);
@@ -450,7 +428,7 @@ fn handle_httpbin_auth_routes(
             return true;
         }
         res.status_code = 401;
-        wing::set_header(res, "WWW-Authenticate", "Basic realm=\"Fake Realm\"");
+        res.set_header("WWW-Authenticate", "Basic realm=\"Fake Realm\"");
         res.body.clear();
         return true;
     }
@@ -478,34 +456,31 @@ fn handle_httpbin_dynamic_routes(
         res.status_code = 302;
         var ck_hdr: u8[..256] = [];
         let _ = ck_hdr.try_set(query);
-        let max_ck = ck_hdr.cap;
-        if core::add_sat_i64(ck_hdr.len, 8) <= max_ck {
-            ck_hdr.append("; Path=/");
-        }
-        wing::set_header(res, "Set-Cookie", ck_hdr[..]);
-        wing::set_header(res, "Location", "/cookies");
+        let _ = ck_hdr.try_append("; Path=/");
+        res.set_header("Set-Cookie", ck_hdr[..]);
+        res.set_header("Location", "/cookies");
         return true;
     }
 
     if core::starts_with(path, "/flaky/") && path.len > 7 {
-        let fails, ok = core::parse_u64_dec(path[7..]);
+        let fails, ok = path[7..].parse_u64_dec();
         guard ok && fails > 0 && fails <= 1000 else { return false; }
         stage.flaky_counter = core::add_sat_u64(stage.flaky_counter, 1);
         let attempt = stage.flaky_counter;
         if attempt <= fails {
             res.status_code = 503;
-            wing::set_header(res, "Content-Type", "text/plain");
+            res.set_header("Content-Type", "text/plain");
             res.body.clear();
             res.body.append("FLAKY_TEMP_503 (attempt ");
-            core::format_u64_dec(attempt, res.body);
+            attempt.format_u64_dec(res.body);
             res.body.push('/');
-            core::format_u64_dec(fails, res.body);
+            fails.format_u64_dec(res.body);
             res.body.append(")\n");
             return true;
         }
         stage.flaky_counter = 0;
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "text/plain");
+        res.set_header("Content-Type", "text/plain");
         res.body.clear();
         res.body.append("FLAKY_RECOVERED_200\n");
         return true;
@@ -526,21 +501,21 @@ fn handle_builtin_httpbin(
     if path == "/get" || path == "/post" || path == "/put" || path == "/delete" ||
        path == "/anything" || path == "/echo" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "application/json");
+        res.set_header("Content-Type", "application/json");
         build_httpbin_reflection_json(req, peer_ip, res.body);
         return true;
     }
 
     if path == "/headers" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "application/json");
+        res.set_header("Content-Type", "application/json");
         build_httpbin_headers_json(req, res.body);
         return true;
     }
 
     if path == "/ip" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "application/json");
+        res.set_header("Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"origin\": \"");
         append_json_escaped_bytes(if peer_ip.len > 0 { peer_ip } else { "127.0.0.1" }, res.body);
@@ -550,7 +525,7 @@ fn handle_builtin_httpbin(
 
     if path == "/user-agent" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "application/json");
+        res.set_header("Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"user-agent\": \"");
         append_json_escaped_bytes(req.header("User-Agent"), res.body);
@@ -560,7 +535,7 @@ fn handle_builtin_httpbin(
 
     if path == "/cookies" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "application/json");
+        res.set_header("Content-Type", "application/json");
         res.body.clear();
         res.body.append("{\"cookies\": \"");
         append_json_escaped_bytes(req.header("Cookie"), res.body);
@@ -570,9 +545,9 @@ fn handle_builtin_httpbin(
 
     if path == "/sse" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "text/event-stream");
-        wing::set_header(res, "Cache-Control", "no-cache");
-        wing::set_header(res, "Connection", "close");
+        res.set_header("Content-Type", "text/event-stream");
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("Connection", "close");
         res.body.clear();
         res.body.append("id: 1\nevent: ping\ndata: {\"msg\":\"hello from wing sse\"}\n\n");
         res.body.append("id: 2\nevent: done\ndata: {\"msg\":\"stream complete\"}\n\n");
@@ -588,32 +563,32 @@ fn apply_matched_scenario_rule(
     out_note: u8[..64]&,
 ) {
     r.calls = core::add_sat_u64(r.calls, 1);
-    wing::set_header(res, "Content-Type", r.content_type[..]);
+    res.set_header("Content-Type", r.content_type[..]);
 
     if r.fail_count > 0 && r.calls <= r.fail_count {
         res.status_code = r.fail_status;
         res.body.clear();
         res.body.append("SCENARIO_FAIL_");
-        core::format_i64_dec(r.fail_status, res.body);
+        r.fail_status.format_i64_dec(res.body);
         res.body.push('\n');
 
-        out_note.append("flaky ");
-        core::format_u64_dec(r.calls, out_note);
-        out_note.push('/');
-        core::format_u64_dec(r.fail_count, out_note);
+        let _ = out_note.try_set("flaky ");
+        r.calls.format_u64_dec(out_note);
+        let _ = out_note.try_push('/');
+        r.fail_count.format_u64_dec(out_note);
         return;
     }
 
     res.status_code = r.status_code;
     if r.location.len > 0 {
-        wing::set_header(res, "Location", r.location[..]);
+        res.set_header("Location", r.location[..]);
     }
     if r.set_cookie.len > 0 {
-        wing::set_header(res, "Set-Cookie", r.set_cookie[..]);
+        res.set_header("Set-Cookie", r.set_cookie[..]);
     }
     res.body.clear();
     res.body.append(r.body[..]);
-    out_note.append("rule");
+    let _ = out_note.try_set("rule");
 }
 
 fn finalize_programmable_response(
@@ -622,13 +597,13 @@ fn finalize_programmable_response(
     res:   wing::Response&,
 ) {
     if stage.max_reqs > 0 && stage.served_reqs >= stage.max_reqs {
-        wing::set_header(res, "Connection", "close");
+        res.set_header("Connection", "close");
     }
-    if core::eq_ascii_fold(req.method[..], "HEAD") {
+    if req.method[..].eq_ascii_fold("HEAD") {
         if !rfc::is_empty_body_status(res.status_code) && res.header("Content-Length").len == 0 {
             var cl_buf: u8[..32] = [];
-            core::format_i64_dec(res.body.len, cl_buf);
-            wing::set_header(res, "Content-Length", cl_buf[..]);
+            res.body.len.format_i64_dec(cl_buf);
+            res.set_header("Content-Length", cl_buf[..]);
         }
         res.body.clear();
     }
@@ -647,18 +622,18 @@ fn eval_programmable_server_stage(
     }
     let req_path = strip_query_path(req.url[..]);
     if req_path == "/shutdown" {
-        out_note.append("shutdown");
+        let _ = out_note.try_set("shutdown");
         return wire::StageVerdict.Continue;
     }
 
     stage.served_reqs = core::add_sat_u64(stage.served_reqs, 1);
-    let is_head = core::eq_ascii_fold(req.method[..], "HEAD");
+    let is_head = req.method[..].eq_ascii_fold("HEAD");
 
     for &r in stage.rules {
         let is_wildcard = r.method[..] == "*" || r.method[..] == "ANY";
         let method_ok = is_wildcard ||
-            core::eq_ascii_fold(r.method[..], req.method[..]) ||
-            (is_head && core::eq_ascii_fold(r.method[..], "GET"));
+            r.method[..].eq_ascii_fold(req.method[..]) ||
+            (is_head && r.method[..].eq_ascii_fold("GET"));
         if method_ok && r.path[..] == req_path {
             apply_matched_scenario_rule(r, res, out_note);
             finalize_programmable_response(stage, req, res);
@@ -667,14 +642,14 @@ fn eval_programmable_server_stage(
     }
 
     if handle_builtin_httpbin(stage, req, "127.0.0.1", res) {
-        out_note.append("httpbin");
+        let _ = out_note.try_set("httpbin");
         finalize_programmable_response(stage, req, res);
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
 
-    out_note.append("not found");
+    let _ = out_note.try_set("not found");
     res.status_code = 404;
-    wing::set_header(res, "Content-Type", "application/json");
+    res.set_header("Content-Type", "application/json");
     res.body.clear();
     res.body.append("{\"error\": \"route not found\", \"path\": \"");
     append_json_escaped_bytes(req_path, res.body);
@@ -698,15 +673,15 @@ fn seed_inline_cookies_to_jar(
     guard cookie_hdr.len > 0 && req_url.len > 0 else { return; }
     var pos: i64 = 0;
     while pos < cookie_hdr.len {
-        let rel_semi = core::index_of_byte(cookie_hdr[pos..], ';');
+        let rel_semi = cookie_hdr[pos..].index_of_byte(';');
         let end = if rel_semi >= 0 { core::add_sat_i64(pos, rel_semi) } else { cookie_hdr.len };
-        let pair = core::trim_lws(cookie_hdr[pos..end]);
+        let pair = cookie_hdr[pos..end].trim_lws();
         pos = core::add_sat_i64(end, 1);
-        let eq = core::index_of_byte(pair, '=');
-        guard eq > 0 else { continue; }
+        let key, _, has_eq = pair.split_once_byte('=');
+        guard has_eq && key.len > 0 else { continue; }
         var set_str: u8[..1024] = [];
         if set_str.try_set(pair) && set_str.try_append("; Path=/") {
-            let _ = wing::set_cookie_header(jar, req_url, set_str[..], now_us, "");
+            let _ = jar.set_cookie_header(req_url, set_str[..], now_us, "");
         }
     }
 }

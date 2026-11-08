@@ -153,11 +153,6 @@ inline fn ct_max_i32(a: i32, b: i32) -> i32 {
     return ((ub & (~mask)) | (ua & mask)) as! i32;
 }
 
-// Clamps signed 32-bit value into [low, high].
-inline fn clamp_i32(val: i32, low: i32, high: i32) -> i32 {
-    return ct_min_i32(ct_max_i32(val, low), high);
-}
-
 // Clamps unsigned 32-bit value into [low, high].
 inline fn clamp_u32(val: u32, low: u32, high: u32) -> u32 {
     return ct_min_u32(ct_max_u32(val, low), high);

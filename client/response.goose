@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import json;
 import client.request;
 import http.compression_dict;
@@ -34,15 +35,15 @@ struct Error {
 }
 
 fn error_stage_to_kind(stage: const u8[:]) -> ErrorKind {
-    if eq_ascii_fold(stage, "transport") { return ErrorKind.Transport; }
-    if eq_ascii_fold(stage, "tls") { return ErrorKind.Tls; }
-    if eq_ascii_fold(stage, "mock") { return ErrorKind.Mock; }
-    if eq_ascii_fold(stage, "ssrf_guard") { return ErrorKind.SsrfGuard; }
-    if eq_ascii_fold(stage, "protocol") { return ErrorKind.Protocol; }
-    if eq_ascii_fold(stage, "timeout") { return ErrorKind.Timeout; }
-    if eq_ascii_fold(stage, "stream") { return ErrorKind.Stream; }
-    if eq_ascii_fold(stage, "url") || eq_ascii_fold(stage, "invalid_url") { return ErrorKind.InvalidUrl; }
-    if eq_ascii_fold(stage, "redirect") { return ErrorKind.Redirect; }
+    if stage.eq_ascii_fold("transport") { return ErrorKind.Transport; }
+    if stage.eq_ascii_fold("tls") { return ErrorKind.Tls; }
+    if stage.eq_ascii_fold("mock") { return ErrorKind.Mock; }
+    if stage.eq_ascii_fold("ssrf_guard") { return ErrorKind.SsrfGuard; }
+    if stage.eq_ascii_fold("protocol") { return ErrorKind.Protocol; }
+    if stage.eq_ascii_fold("timeout") { return ErrorKind.Timeout; }
+    if stage.eq_ascii_fold("stream") { return ErrorKind.Stream; }
+    if stage.eq_ascii_fold("url") || stage.eq_ascii_fold("invalid_url") { return ErrorKind.InvalidUrl; }
+    if stage.eq_ascii_fold("redirect") { return ErrorKind.Redirect; }
     return ErrorKind.None;
 }
 
@@ -98,10 +99,8 @@ fn reset_response(res: Response&) {
     res.early_hints = EarlyHintsResponse { .. };
     res.redirect_count = 0;
     res.url_chain.clear();
-    res.final_method.clear();
-    res.final_method.append("GET");
-    res.protocol.clear();
-    res.protocol.append("HTTP/1.1");
+    let _ = res.final_method.try_set("GET");
+    let _ = res.protocol.try_set("HTTP/1.1");
     res.sent_headers.clear();
     res.body.clear();
 }
@@ -112,10 +111,6 @@ fn protocol(res: const Response&) -> const u8[:] {
 
 fn is_http3(res: const Response&) -> bool {
     return res.protocol[..] == "h3" || res.protocol[..] == "HTTP/3";
-}
-
-fn is_http2(res: const Response&) -> bool {
-    return res.protocol[..] == "h2" || res.protocol[..] == "HTTP/2";
 }
 
 fn is_http1(res: const Response&) -> bool {
@@ -160,17 +155,17 @@ fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
 }
 
 fn update_response_presence(res: Response&, name: const u8[:]) {
-    if core::eq_ascii_fold(name, "date") {
+    if name.eq_ascii_fold("date") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_DATE;
-    } else if core::eq_ascii_fold(name, "content-length") {
+    } else if name.eq_ascii_fold("content-length") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_LENGTH;
-    } else if core::eq_ascii_fold(name, "content-type") {
+    } else if name.eq_ascii_fold("content-type") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_TYPE;
-    } else if core::eq_ascii_fold(name, "connection") {
+    } else if name.eq_ascii_fold("connection") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_CONNECTION;
-    } else if core::eq_ascii_fold(name, "transfer-encoding") {
+    } else if name.eq_ascii_fold("transfer-encoding") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_TRANSFER_ENCODING;
-    } else if core::eq_ascii_fold(name, "server") {
+    } else if name.eq_ascii_fold("server") {
         res.presence_mask = res.presence_mask | RES_PRESENCE_SERVER;
     }
 }
@@ -185,17 +180,17 @@ fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
 fn remove_header(res: Response&, name: const u8[:]) -> bool {
     let removed = remove_header(res.headers, name);
     if removed {
-        if core::eq_ascii_fold(name, "date") {
+        if name.eq_ascii_fold("date") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_DATE);
-        } else if core::eq_ascii_fold(name, "content-length") {
+        } else if name.eq_ascii_fold("content-length") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
-        } else if core::eq_ascii_fold(name, "content-type") {
+        } else if name.eq_ascii_fold("content-type") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_TYPE);
-        } else if core::eq_ascii_fold(name, "connection") {
+        } else if name.eq_ascii_fold("connection") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONNECTION);
-        } else if core::eq_ascii_fold(name, "transfer-encoding") {
+        } else if name.eq_ascii_fold("transfer-encoding") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
-        } else if core::eq_ascii_fold(name, "server") {
+        } else if name.eq_ascii_fold("server") {
             res.presence_mask = res.presence_mask & (~RES_PRESENCE_SERVER);
         }
     }
@@ -230,17 +225,16 @@ fn parse_content_encoding_chain(
     out_tokens: u8[..16][..4]&,
 ) -> bool {
     out_tokens.clear();
-    var rem = core::trim_lws(enc_hdr);
+    var rem = enc_hdr.trim_lws();
     guard rem.len > 0 else { return true; }
     while rem.len > 0 {
-        let head, tail, has_comma = core::split_once_byte(rem, ',');
-        let tok = core::trim_lws(head);
-        guard tok.len > 0 && tok.len <= 16 && out_tokens.len < 4 else { return false; }
+        let head, tail, has_comma = rem.split_once_byte(',');
+        let tok = head.trim_lws();
+        guard tok.len > 0 else { return false; }
         var item: u8[..16] = [];
-        item.append(tok);
-        out_tokens.push(item);
+        guard item.try_set(tok) && out_tokens.try_push(item) else { return false; }
         if !has_comma { break; }
-        rem = core::trim_lws(tail);
+        rem = tail.trim_lws();
         guard rem.len > 0 else { return false; }
     }
     return true;
@@ -252,10 +246,10 @@ fn parse_content_encoding_chain(
 //   tok = "gzip", res.body = <gzipped "ok">
 //   returns: true, res.body = "ok"
 fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
-    if eq_ascii_fold(tok, "identity") {
+    if tok.eq_ascii_fold("identity") {
         return true;
     }
-    if eq_ascii_fold(tok, "zstd") {
+    if tok.eq_ascii_fold("zstd") {
         var uncompressed: u8[>..] = [];
         let ok_z, _ = core::zstd_decompress(res.body[..], uncompressed);
         guard ok_z else { return false; }
@@ -263,7 +257,7 @@ fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
         res.body.append(uncompressed[..]);
         return true;
     }
-    if eq_ascii_fold(tok, "gzip") || eq_ascii_fold(tok, "x-gzip") {
+    if tok.eq_ascii_fold("gzip") || tok.eq_ascii_fold("x-gzip") {
         var uncompressed: u8[>..] = [];
         let ok_d, _ = core::gzip_decompress(res.body[..], uncompressed);
         guard ok_d else { return false; }
@@ -271,7 +265,7 @@ fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
         res.body.append(uncompressed[..]);
         return true;
     }
-    if eq_ascii_fold(tok, "br") {
+    if tok.eq_ascii_fold("br") {
         var uncompressed: u8[>..] = [];
         let ok_b, _ = core::brotli_decompress(res.body[..], uncompressed);
         guard ok_b else { return false; }
@@ -279,7 +273,7 @@ fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
         res.body.append(uncompressed[..]);
         return true;
     }
-    if eq_ascii_fold(tok, "deflate") {
+    if tok.eq_ascii_fold("deflate") {
         var uncompressed: u8[>..] = [];
         let ok_z, _ = core::zlib_decompress(res.body[..], uncompressed);
         if ok_z {
@@ -319,7 +313,7 @@ fn decode_single_dict_encoding(
     res:        Response&,
     dict_cache: const DictionaryCache&,
 ) -> bool {
-    if eq_ascii_fold(tok, "dcz") {
+    if tok.eq_ascii_fold("dcz") {
         var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
@@ -331,7 +325,7 @@ fn decode_single_dict_encoding(
         res.body.append(decompressed[..]);
         return true;
     }
-    if eq_ascii_fold(tok, "dcb") {
+    if tok.eq_ascii_fold("dcb") {
         var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
@@ -429,7 +423,7 @@ fn read_json_field(reader: json::Reader&, dst) {
     reader.pos = core::add_sat_i64(end, 1);
     if !escaped {
         let raw = reader.text[start..end];
-        let n = core::ct_min_i64(raw.len, dst.cap);
+        let n = min(raw.len, dst.cap);
         dst.append(raw[..n]);
         return;
     }

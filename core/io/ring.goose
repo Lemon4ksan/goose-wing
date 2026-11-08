@@ -59,8 +59,8 @@ fn write(rb: RingBuffer&, src: const u8[:]) -> i64, IoError {
     if avail == 0 {
         return 0, IoError.BufferFull;
     }
-    let to_write = if src.len < avail { src.len } else { avail };
-    let first_chunk = if (4096 - rb.tail) < to_write { 4096 - rb.tail } else { to_write };
+    let to_write = min(src.len, avail);
+    let first_chunk = min(4096 - rb.tail, to_write);
     for i in first_chunk {
         rb.storage[rb.tail + i] = src[i];
     }
@@ -81,8 +81,8 @@ fn read(rb: RingBuffer&, dst: u8[:]) -> i64, IoError {
     if is_empty(rb) {
         return 0, IoError.Eof;
     }
-    let to_read = if dst.len < rb.count { dst.len } else { rb.count };
-    let first_chunk = if (4096 - rb.head) < to_read { 4096 - rb.head } else { to_read };
+    let to_read = min(dst.len, rb.count);
+    let first_chunk = min(4096 - rb.head, to_read);
     for i in first_chunk {
         dst[i] = rb.storage[rb.head + i];
     }
@@ -105,8 +105,8 @@ fn peek(rb: const RingBuffer&, dst: u8[:]) -> i64 {
     if is_empty(rb) {
         return 0;
     }
-    let to_peek = if dst.len < rb.count { dst.len } else { rb.count };
-    let first_chunk = if (4096 - rb.head) < to_peek { 4096 - rb.head } else { to_peek };
+    let to_peek = min(dst.len, rb.count);
+    let first_chunk = min(4096 - rb.head, to_peek);
     for i in first_chunk {
         dst[i] = rb.storage[rb.head + i];
     }
@@ -121,7 +121,7 @@ fn peek(rb: const RingBuffer&, dst: u8[:]) -> i64 {
 // Resets head and tail to 0 when count reaches 0 to avoid artificial fragmentation.
 fn discard(rb: RingBuffer&, n: i64) -> i64 {
     guard n > 0 else { return 0; }
-    let to_drop = if n < rb.count { n } else { rb.count };
+    let to_drop = min(n, rb.count);
     rb.head = (rb.head + to_drop) % 4096;
     rb.count -= to_drop;
     if rb.count == 0 {

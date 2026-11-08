@@ -26,13 +26,11 @@ fn new_network_isolation_key(top_level: const u8[:], frame: const u8[:]) -> Netw
     guard top_level.len > 0 || frame.len > 0 else {
         return empty_network_isolation_key();
     }
-    guard top_level.len <= 128 && frame.len <= 128 else {
+    var nik = NetworkIsolationKey { is_empty: false, .. };
+    guard nik.top_level_site.try_set(top_level) && nik.frame_site.try_set(frame) else {
         return empty_network_isolation_key();
     }
-    var nik = NetworkIsolationKey { is_empty: false, .. };
-    nik.top_level_site.append(top_level);
     to_lower(nik.top_level_site[..]);
-    nik.frame_site.append(frame);
     to_lower(nik.frame_site[..]);
     nik.is_cross_site = nik.top_level_site[..] != nik.frame_site[..];
     return nik;

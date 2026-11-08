@@ -68,6 +68,58 @@ fn split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[
     return s, "", false;
 }
 
+// Removes `prefix` from the start of `s` if present.
+// Returns `(s[prefix.len..], true)` when `s` starts with `prefix`, or `(s, false)` otherwise.
+//
+// Example:
+//   s = "https://example.com", prefix = "https://"
+//   returns: "example.com", ok = true
+fn strip_prefix(s: const u8[:], prefix: const u8[:]) -> const u8[:], bool {
+    if starts_with(s, prefix) {
+        return s[prefix.len..], true;
+    }
+    return s, false;
+}
+
+// Removes `suffix` from the end of `s` if present.
+// Returns `(s[..^suffix.len], true)` when `s` ends with `suffix`, or `(s, false)` otherwise.
+//
+// Example:
+//   s = "example.com.", suffix = "."
+//   returns: "example.com", ok = true
+fn strip_suffix(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool {
+    if ends_with(s, suffix) {
+        return s[..^suffix.len], true;
+    }
+    return s, false;
+}
+
+// Removes `prefix` from the start of `s` using ASCII case-insensitive comparison.
+// Returns `(s[prefix.len..], true)` when `s` starts with `prefix`, or `(s, false)` otherwise.
+//
+// Example:
+//   s = "Bearer token123", prefix = "bearer "
+//   returns: "token123", ok = true
+fn strip_prefix_fold(s: const u8[:], prefix: const u8[:]) -> const u8[:], bool {
+    if starts_with_fold(s, prefix) {
+        return s[prefix.len..], true;
+    }
+    return s, false;
+}
+
+// Removes `suffix` from the end of `s` using ASCII case-insensitive comparison.
+// Returns `(s[..^suffix.len], true)` when `s` ends with `suffix`, or `(s, false)` otherwise.
+//
+// Example:
+//   s = "Example.COM", suffix = ".com"
+//   returns: "Example", ok = true
+fn strip_suffix_fold(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool {
+    if ends_with_fold(s, suffix) {
+        return s[..^suffix.len], true;
+    }
+    return s, false;
+}
+
 // Zero-allocation byte tokenizer for iterating over delimiter-separated tokens.
 struct ByteTokenizer {
     src:       const u8[:],
@@ -86,34 +138,76 @@ fn make_byte_tokenizer(src: const u8[:], delim: u8) -> ByteTokenizer {
     };
 }
 
-// Advances the tokenizer and yields the next token.
-// Returns (token_slice, true) while tokens remain, or ("", false) when exhausted.
-fn token_next(tok: ByteTokenizer&) -> const u8[:], bool {
-    guard !tok.exhausted else { return "", false; }
+// Returns the unconsumed remainder slice of `tok.src` starting at `tok.cursor`,
+// or `""` when `tok.exhausted` is true or `tok.cursor >= tok.src.len`.
+//
+// Example:
+//   tok = make_byte_tokenizer("a,b,c", ',') (with tok.cursor = 2)
+//   returns: "b,c"
+fn token_rest(tok: const ByteTokenizer&) -> const u8[:] {
+    guard !tok.exhausted && tok.cursor >= 0 && tok.cursor < tok.src.len else {
+        return "";
+    }
+    return tok.src[tok.cursor..];
+}
 
+// Peeks at the next token without advancing `tok`.
+// Returns `(token_slice, true)` while tokens remain, or `("", false)` when exhausted.
+//
+// Example:
+//   tok = make_byte_tokenizer("a,b", ',')
+//   returns: "a", ok = true (tok.cursor remains 0)
+fn token_peek(tok: const ByteTokenizer&) -> const u8[:], bool {
+    guard !tok.exhausted else { return "", false; }
     if tok.cursor == tok.src.len {
-        tok.exhausted = true;
         if tok.cursor > 0 {
             return "", true;
         }
         return "", false;
     }
+    let rem = token_rest(tok);
+    guard rem.len > 0 else { return "", false; }
+    let rel_idx = index_of_byte(rem, tok.delim);
+    if rel_idx >= 0 {
+        return rem[..rel_idx], true;
+    }
+    return rem, true;
+}
 
-    guard tok.cursor < tok.src.len else {
+// Advances the tokenizer and yields the next token.
+// Returns (token_slice, true) while tokens remain, or ("", false) when exhausted.
+//
+// Example:
+//   tok = make_byte_tokenizer("a,b", ',')
+//   returns: "a", ok = true, tok.cursor = 2
+fn token_next(tok: ByteTokenizer&) -> const u8[:], bool {
+    let part, ok = token_peek(tok);
+    guard ok else {
         tok.exhausted = true;
         return "", false;
     }
-
-    let start = tok.cursor;
-    let rel_idx = index_of_byte(tok.src[start..], tok.delim);
-    if rel_idx >= 0 {
-        tok.cursor = start + rel_idx + 1;
-        return tok.src[start..start + rel_idx], true;
+    let next_cursor = add_sat_i64(tok.cursor, add_sat_i64(part.len, 1));
+    if next_cursor <= tok.src.len {
+        tok.cursor = next_cursor;
+    } else {
+        tok.cursor = tok.src.len;
+        tok.exhausted = true;
     }
+    return part, true;
+}
 
-    tok.cursor = tok.src.len;
-    tok.exhausted = true;
-    return tok.src[start..], true;
+// Iterates over `delim`-separated tokens in `src`, invoking `F(part)` on each non-empty token.
+fn each_non_empty_token<F>(src: const u8[:], delim: u8) {
+    var tok = make_byte_tokenizer(src, delim);
+    while true {
+        let part, ok = token_next(tok);
+        if !ok {
+            break;
+        }
+        if part.len > 0 {
+            F(part);
+        }
+    }
 }
 
 // Finds the 0-based index of the first occurrence of `delim` outside double quotes ("..."),

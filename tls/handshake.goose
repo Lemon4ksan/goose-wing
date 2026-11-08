@@ -528,21 +528,14 @@ fn validate_alpn_extension(alpn_ext_bytes: const u8[:]) -> bool {
         var proto_cursor = core::cursor_from(alpn_ext_bytes[..0]);
         guard list_cursor.get_u8_length_prefixed(proto_cursor) else { return false; }
         let proto = proto_cursor.buf;
-        guard proto.len >= 1 && proto.len <= 255 else { return false; }
-        for b in proto {
-            guard b != 0 else { return false; }
-        }
+        guard proto.len >= 1 && proto.len <= 255 && !proto.contains_byte(0) else { return false; }
         count++;
     }
     return count > 0 && list_cursor.cursor_len() == 0;
 }
 
 inline fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
-    guard proto.len >= 1 && proto.len <= 255 else { return false; }
-    for b in proto {
-        guard b != 0 else { return false; }
-    }
-    return true;
+    return proto.len >= 1 && proto.len <= 255 && !proto.contains_byte(0);
 }
 
 inline fn is_http11_name(proto: const u8[:]) -> bool {
@@ -632,15 +625,9 @@ fn parse_tls_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool
     // RFC 8446 Section 4.2.2 & OpenSSL #30868: cookie<1..2^16-1> forbids zero-length values.
     guard ext_bytes.len >= 3 else { return false; }
     var cursor = core::cursor_from(ext_bytes);
-    var cookie_len: u16 = 0;
-    guard cursor.get_u16(cookie_len) else { return false; }
-    guard cookie_len >= 1 else { return false; }
-    guard cursor.cursor_len() == (cookie_len as i64) else { return false; }
-    guard cookie_len <= out_cookie.cap else { return false; }
-    for i in cookie_len {
-        out_cookie.push(cursor.buf[i]);
-    }
-    return true;
+    let cookie, ok = cursor.read_u16_prefixed();
+    guard ok && cookie.len >= 1 && cursor.buf.len == 0 else { return false; }
+    return out_cookie.try_set(cookie);
 }
 
 // Serializes a TLS 1.3 Cookie extension (RFC 8446 Section 4.2.2) into `out`.
@@ -652,9 +639,9 @@ fn serialize_tls_cookie_extension<B>(out: B&, cookie: const u8[:]) -> bool {
     let cookie_len_u16 = (cookie.len & 0xFFFF) as u16;
     guard cookie.len >= 1 && cookie.len <= 65533 else { return false; }
     guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
-    core::append_u16_be(out, rfc::TLS_EXT_COOKIE);
-    core::append_u16_be(out, ext_len_u16);
-    core::append_u16_be(out, cookie_len_u16);
+    out.append_u16_be(rfc::TLS_EXT_COOKIE);
+    out.append_u16_be(ext_len_u16);
+    out.append_u16_be(cookie_len_u16);
     out.append(cookie);
     return true;
 }
@@ -695,12 +682,10 @@ fn check_and_add_extension(entries: TlsExtensionEntry[..32]&, ext_type: u16, dat
             return false;
         }
     }
-    guard entries.len < entries.cap else { return false; }
-    entries.push(TlsExtensionEntry {
+    return entries.try_push(TlsExtensionEntry {
         ext_type: ext_type,
         data:     data,
     });
-    return true;
 }
 
 // Parses extension block into static array of entries without heap allocation.
@@ -754,9 +739,7 @@ fn check_and_add_version(seen_versions: u16[..127]&, ver: u16) -> bool {
             return false;
         }
     }
-    guard seen_versions.len < seen_versions.cap else { return false; }
-    seen_versions.push(ver);
-    return true;
+    return seen_versions.try_push(ver);
 }
 
 // Parses and validates the ClientHello supported_versions extension (RFC 8446 Section 4.2.1).
@@ -824,18 +807,12 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
     // RFC 8879 Section 3: algorithms<2..2^8-2>, meaning 1 to 127 algorithms
     guard algorithms.len >= 1 && algorithms.len <= 127 else { return; }
 
-    out.push(((rfc::TLS_EXT_COMPRESS_CERTIFICATE >> 8) & 0xFF) as u8);
-    out.push((rfc::TLS_EXT_COMPRESS_CERTIFICATE & 0xFF) as u8);
-
-    let ext_len = 1 + algorithms.len * 2;
-    out.push(((ext_len >> 8) & 0xFF) as u8);
-    out.push((ext_len & 0xFF) as u8);
-
-    let list_len = (algorithms.len * 2) as u8;
-    out.push(list_len);
+    out.append_u16_be(rfc::TLS_EXT_COMPRESS_CERTIFICATE);
+    let ext_len = (1 + algorithms.len * 2) as u16;
+    out.append_u16_be(ext_len);
+    out.push((algorithms.len * 2) as u8);
     for algo in algorithms {
-        out.push(((algo >> 8) & 0xFF) as u8);
-        out.push((algo & 0xFF) as u8);
+        out.append_u16_be(algo);
     }
 }
 
@@ -846,16 +823,13 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
 //   returns: ok = true, out_algos = [2, 3]
 fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) -> bool {
     out_algos.clear();
-    guard ext_bytes.len >= 3 else { return false; }
-    let list_len = ext_bytes[0] as i64;
-    let expected_len = core::add_sat_i64(1, list_len);
-    guard list_len >= 2 && (list_len & 1) == 0 && ext_bytes.len == expected_len else { return false; }
-    let count = list_len >> 1;
-    guard count <= out_algos.cap else { return false; }
-    var offset: i64 = 1;
-    for i in count {
-        out_algos.push(core::read_be_u16(ext_bytes, offset));
-        offset = core::add_sat_i64(offset, 2);
+    var c = core::cursor_from(ext_bytes);
+    let list_bytes, ok_l = c.read_u8_prefixed();
+    guard ok_l && c.buf.len == 0 && list_bytes.len >= 2 && (list_bytes.len & 1) == 0 else { return false; }
+    var lc = core::cursor_from(list_bytes);
+    while lc.buf.len > 0 {
+        let algo, ok_a = lc.read_u16();
+        guard ok_a && out_algos.try_push(algo) else { return false; }
     }
     return true;
 }
@@ -866,24 +840,21 @@ fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) 
 //   returns: msg with algorithm = CERT_COMPRESS_ZSTD, uncompressed_len = 256, ok = true
 fn parse_compressed_certificate(payload: const u8[:]) -> CompressedCertMsg, bool {
     var msg = CompressedCertMsg { compressed_data: payload[..0], .. };
-    // RFC 8879 Section 4: algorithm (2B) + uncompressed_length (3B) + comp_len (3B) + compressed_data (>= 1B)
-    guard payload.len >= 9 else { return msg, false; }
-
-    let algo = core::read_be_u16(payload, 0);
+    var c = core::cursor_from(payload);
+    let algo, ok_a = c.read_u16();
+    var ulen: u32 = 0;
+    let ok_u = c.get_u24(ulen);
+    let comp_data, ok_c = c.read_u24_prefixed();
+    guard ok_a && ok_u && ok_c && c.buf.len == 0 else { return msg, false; }
     guard rfc::is_valid_compression_algorithm(algo) else { return msg, false; }
-
-    let ulen = core::read_be_u24(payload, 2);
     // RFC 8879 Section 4: uncompressed_length MUST NOT be 0 and MUST NOT exceed bounded buffer ceiling
     guard ulen > 0 && ulen <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return msg, false; }
-
-    let comp_len = core::read_be_u24(payload, 5);
-    guard comp_len >= 1 && (payload.len - 8) == comp_len else { return msg, false; }
-    // Decompression bomb ratio sanity check (reject expansion ratio > 1024x)
-    guard rfc::is_within_decompression_ratio(ulen, comp_len) else { return msg, false; }
+    let comp_len = comp_data.len as u32;
+    guard comp_len >= 1 && rfc::is_within_decompression_ratio(ulen, comp_len) else { return msg, false; }
 
     msg.algorithm = algo;
     msg.uncompressed_len = ulen;
-    msg.compressed_data = payload[8..];
+    msg.compressed_data = comp_data;
     return msg, true;
 }
 
@@ -894,15 +865,9 @@ fn encode_compressed_certificate_payload<B>(
     uncompressed_len: u32,
     compressed_data:  const u8[:],
 ) {
-    let comp_len = compressed_data.len as u32;
-    out.push(((algorithm >> 8) & 0xFF) as u8);
-    out.push((algorithm & 0xFF) as u8);
-    out.push(((uncompressed_len >> 16) & 0xFF) as u8);
-    out.push(((uncompressed_len >> 8) & 0xFF) as u8);
-    out.push((uncompressed_len & 0xFF) as u8);
-    out.push(((comp_len >> 16) & 0xFF) as u8);
-    out.push(((comp_len >> 8) & 0xFF) as u8);
-    out.push((comp_len & 0xFF) as u8);
+    out.append_u16_be(algorithm);
+    out.append_u24_be(uncompressed_len);
+    out.append_u24_be(compressed_data.len as u32);
     out.append(compressed_data);
 }
 
@@ -935,12 +900,12 @@ fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> boo
 // RFC 8446 Section 4.2.7: Supported Groups - Encodes supported_groups extension (type 10)
 fn encode_supported_groups_extension<B>(out: B&, groups: const u16[:]) {
     guard groups.len >= 1 && groups.len <= 127 else { return; }
-    core::write_be_u16(out, rfc::TLS_EXT_SUPPORTED_GROUPS);
+    out.append_u16_be(rfc::TLS_EXT_SUPPORTED_GROUPS);
     let list_len = (groups.len as u16) << 1;
-    core::write_be_u16(out, list_len + 2);
-    core::write_be_u16(out, list_len);
+    out.append_u16_be(list_len + 2);
+    out.append_u16_be(list_len);
     for g in groups {
-        core::write_be_u16(out, g);
+        out.append_u16_be(g);
     }
 }
 
@@ -953,16 +918,16 @@ fn parse_supported_groups_extension(
     data:       const u8[:],
     out_groups: u16[..32]&,
 ) -> bool {
-    guard data.len >= 4 else { return false; }
-    let list_len = core::read_be_u16(data, 0) as i64;
-    guard (list_len & 1) == 0 && data.len == 2 + list_len else { return false; }
-    let count = list_len >> 1;
+    var c = core::cursor_from(data);
+    let list_bytes, ok_l = c.read_u16_prefixed();
+    guard ok_l && c.buf.len == 0 && list_bytes.len >= 2 && (list_bytes.len & 1) == 0 else { return false; }
+    let count = list_bytes.len >> 1;
     guard count <= out_groups.cap else { return false; }
     out_groups.clear();
-    var offset: i64 = 2;
-    for i in count {
-        out_groups.push(core::read_be_u16(data, offset));
-        offset += 2;
+    var lc = core::cursor_from(list_bytes);
+    while lc.buf.len > 0 {
+        let g, ok_g = lc.read_u16();
+        guard ok_g && out_groups.try_push(g) else { return false; }
     }
     return true;
 }
@@ -970,10 +935,10 @@ fn parse_supported_groups_extension(
 // RFC 8446 Section 4.2.8: Key Share - Encodes ClientHello key_share extension (type 51)
 fn encode_key_share_client_extension<B>(out: B&, client_shares_raw: const u8[:]) {
     guard client_shares_raw.len >= 4 && client_shares_raw.len <= 65533 else { return; }
-    core::write_be_u16(out, rfc::TLS_EXT_KEY_SHARE);
+    out.append_u16_be(rfc::TLS_EXT_KEY_SHARE);
     let list_len = client_shares_raw.len as u16;
-    core::write_be_u16(out, list_len + 2);
-    core::write_be_u16(out, list_len);
+    out.append_u16_be(list_len + 2);
+    out.append_u16_be(list_len);
     out.append(client_shares_raw);
 }
 
@@ -986,23 +951,20 @@ fn parse_key_share_client_extension(
     data:       const u8[:],
     out_shares: u8[..4096]&,
 ) -> bool {
-    guard data.len >= 6 else { return false; }
-    let list_len = core::read_be_u16(data, 0) as i64;
-    guard list_len >= 4 && data.len == 2 + list_len else { return false; }
-    guard list_len <= out_shares.cap else { return false; }
-    out_shares.clear();
-    out_shares.append(data[2..]);
-    return true;
+    var c = core::cursor_from(data);
+    let shares, ok = c.read_u16_prefixed();
+    guard ok && c.buf.len == 0 && shares.len >= 4 else { return false; }
+    return out_shares.try_set(shares);
 }
 
 // RFC 8446 Section 4.2.8: Key Share - Encodes ServerHello key_share extension (type 51)
 fn encode_key_share_server_extension<B>(out: B&, group: u16, key_exchange: const u8[:]) {
     guard key_exchange.len >= 1 && key_exchange.len <= 65531 else { return; }
-    core::write_be_u16(out, rfc::TLS_EXT_KEY_SHARE);
+    out.append_u16_be(rfc::TLS_EXT_KEY_SHARE);
     let kex_len = key_exchange.len as u16;
-    core::write_be_u16(out, kex_len + 4);
-    core::write_be_u16(out, group);
-    core::write_be_u16(out, kex_len);
+    out.append_u16_be(kex_len + 4);
+    out.append_u16_be(group);
+    out.append_u16_be(kex_len);
     out.append(key_exchange);
 }
 
@@ -1016,13 +978,12 @@ fn parse_key_share_server_extension(
     out_group:        u16&,
     out_key_exchange: u8[..2048]&,
 ) -> bool {
-    guard data.len >= 5 else { return false; }
-    let kex_len = core::read_be_u16(data, 2) as i64;
-    guard kex_len >= 1 && data.len == 4 + kex_len else { return false; }
-    guard kex_len <= out_key_exchange.cap else { return false; }
-    out_group = core::read_be_u16(data, 0);
-    out_key_exchange.clear();
-    out_key_exchange.append(data[4..]);
+    var c = core::cursor_from(data);
+    let grp, ok_g = c.read_u16();
+    let kex, ok_k = c.read_u16_prefixed();
+    guard ok_g && ok_k && c.buf.len == 0 && kex.len >= 1 else { return false; }
+    guard out_key_exchange.try_set(kex) else { return false; }
+    out_group = grp;
     return true;
 }
 
@@ -1094,7 +1055,7 @@ fn read_server_hello_preamble(
     var bc = core::cursor_from(body);
     let ver, ok_v = bc.read_u16();
     guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 else { return "", false; }
-    let srv_rand, ok_r = core::read_bytes(bc, 32);
+    let srv_rand, ok_r = bc.read_bytes(32);
     guard ok_r else { return "", false; }
     core::ct_copy_bytes(rand_arr[..], srv_rand);
     out.is_hrr = is_hello_retry_request(rand_arr);
@@ -1161,16 +1122,14 @@ fn fragment_client_hello<B>(
 
     // Record 1: type 22 (handshake), legacy version 0x0301 (TLS 1.0)
     out_records.push(22);
-    out_records.push(0x03); out_records.push(0x01);
-    out_records.push(((first_record_len >> 8) & 0xFF) as u8);
-    out_records.push((first_record_len & 0xFF) as u8);
+    out_records.append_u16_be(0x0301);
+    out_records.append_u16_be(first_record_len as u16);
     out_records.append(raw_ch[..first_record_len]);
 
     // Record 2: type 22 (handshake), legacy version 0x0301 (TLS 1.0)
     out_records.push(22);
-    out_records.push(0x03); out_records.push(0x01);
-    out_records.push(((rem_len >> 8) & 0xFF) as u8);
-    out_records.push((rem_len & 0xFF) as u8);
+    out_records.append_u16_be(0x0301);
+    out_records.append_u16_be(rem_len as u16);
     out_records.append(raw_ch[first_record_len..]);
 
     return true;
@@ -1218,8 +1177,7 @@ fn read_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: Ne
 
         // RFC 8446 Section 4.2: Extensions MUST NOT contain duplicates
         guard !seen_types.contains(ext_type) else { return false; }
-        guard seen_types.len < seen_types.cap else { return false; }
-        seen_types.push(ext_type);
+        guard seen_types.try_push(ext_type) else { return false; }
 
         // RFC 8446 Section 4.2 Table 2: Extensions not permitted in NST MUST be rejected
         guard !rfc::is_forbidden_nst_extension(ext_type) else { return false; }
@@ -1232,25 +1190,15 @@ fn read_ticket_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: Ne
 }
 
 fn read_ticket_nonce(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
-    var nonce_cursor = core::cursor_from(c.buf[..0]);
-    guard c.get_u8_length_prefixed(nonce_cursor) else { return false; }
-    let nonce_len = nonce_cursor.cursor_len();
-    guard nonce_len <= 255 && nonce_len <= out.ticket_nonce.cap else { return false; }
-    for i in nonce_len {
-        out.ticket_nonce.push(nonce_cursor.buf[i]);
-    }
-    return true;
+    let nonce, ok = c.read_u8_prefixed();
+    guard ok else { return false; }
+    return out.ticket_nonce.try_set(nonce);
 }
 
 fn read_ticket_bytes(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
-    var ticket_cursor = core::cursor_from(c.buf[..0]);
-    guard c.get_u16_length_prefixed(ticket_cursor) else { return false; }
-    let ticket_len = ticket_cursor.cursor_len();
-    guard ticket_len > 0 && ticket_len <= out.ticket.cap else { return false; }
-    for i in ticket_len {
-        out.ticket.push(ticket_cursor.buf[i]);
-    }
-    return true;
+    let ticket, ok = c.read_u16_prefixed();
+    guard ok && ticket.len > 0 else { return false; }
+    return out.ticket.try_set(ticket);
 }
 
 // Parses and validates a NewSessionTicket handshake message payload (RFC 8446 Section 4.6.1).
@@ -1344,40 +1292,26 @@ fn encode_new_session_ticket<B>(
     let body_wire_len = core::add_sat_i64(21, core::add_sat_i64(ticket_nonce.len, ticket.len));
     guard core::add_sat_i64(out.len, body_wire_len) <= out.cap else { return false; }
 
-    // ticket_lifetime
-    out.push(((ticket_lifetime >> 24) & 0xFF) as u8);
-    out.push(((ticket_lifetime >> 16) & 0xFF) as u8);
-    out.push(((ticket_lifetime >> 8) & 0xFF) as u8);
-    out.push((ticket_lifetime & 0xFF) as u8);
-
-    // ticket_age_add
-    out.push(((ticket_age_add >> 24) & 0xFF) as u8);
-    out.push(((ticket_age_add >> 16) & 0xFF) as u8);
-    out.push(((ticket_age_add >> 8) & 0xFF) as u8);
-    out.push((ticket_age_add & 0xFF) as u8);
+    out.append_u32_be(ticket_lifetime);
+    out.append_u32_be(ticket_age_add);
 
     // ticket_nonce<0..255>
     out.push(ticket_nonce.len as u8);
     out.append(ticket_nonce);
 
     // ticket<1..2^16-1>
-    out.push(((ticket.len >> 8) & 0xFF) as u8);
-    out.push((ticket.len & 0xFF) as u8);
+    out.append_u16_be(ticket.len as u16);
     out.append(ticket);
 
     // extensions<0..2^16-2>
     if max_early_data_size > 0 {
         // extension_type: 42 (2B) + ext_len: 4 (2B) + max_early_data_size (4B) = 8 bytes
-        out.push(0x00); out.push(0x08); // extensions length = 8
-        out.push(((rfc::TLS_EXT_EARLY_DATA >> 8) & 0xFF) as u8);
-        out.push((rfc::TLS_EXT_EARLY_DATA & 0xFF) as u8);
-        out.push(0x00); out.push(0x04);
-        out.push(((max_early_data_size >> 24) & 0xFF) as u8);
-        out.push(((max_early_data_size >> 16) & 0xFF) as u8);
-        out.push(((max_early_data_size >> 8) & 0xFF) as u8);
-        out.push((max_early_data_size & 0xFF) as u8);
+        out.append_u16_be(8);
+        out.append_u16_be(rfc::TLS_EXT_EARLY_DATA);
+        out.append_u16_be(4);
+        out.append_u32_be(max_early_data_size);
     } else {
-        out.push(0x00); out.push(0x00); // 0 extensions length
+        out.append_u16_be(0); // 0 extensions length
     }
     return true;
 }
@@ -1444,9 +1378,7 @@ inline fn on_key_update_app_data(tracker: KeyUpdateTracker&) {
 fn encode_key_update<B>(out: B&, request_update: u8) -> bool {
     let is_valid = request_update == rfc::KEY_UPDATE_NOT_REQUESTED || request_update == rfc::KEY_UPDATE_REQUESTED;
     guard is_valid else { return false; }
-    guard core::add_sat_i64(out.len, 1) <= out.cap else { return false; }
-    out.push(request_update);
-    return true;
+    return out.try_push(request_update);
 }
 
 // ---- CertificateRequest & Client Authentication (RFC 8446 Section 4.3.2) -
@@ -1459,15 +1391,12 @@ struct CertificateRequestMsg {
 
 fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) -> bool {
     out.has_signature_algorithms = true;
-    var alg_cursor = core::cursor_from(ext_data.buf[..0]);
-    guard ext_data.get_u16_length_prefixed(alg_cursor) && ext_data.cursor_len() == 0 else { return false; }
-    let bytes_len = alg_cursor.cursor_len();
-    guard bytes_len >= 2 && (bytes_len % 2) == 0 else { return false; }
-    while alg_cursor.cursor_len() > 0 {
-        var alg: u16 = 0;
-        guard alg_cursor.get_u16(alg) else { return false; }
-        guard out.sig_algorithms.len < out.sig_algorithms.cap else { return false; }
-        out.sig_algorithms.push(alg);
+    let alg_bytes, ok_l = ext_data.read_u16_prefixed();
+    guard ok_l && ext_data.buf.len == 0 && alg_bytes.len >= 2 && (alg_bytes.len & 1) == 0 else { return false; }
+    var alg_cursor = core::cursor_from(alg_bytes);
+    while alg_cursor.buf.len > 0 {
+        let alg, ok_a = alg_cursor.read_u16();
+        guard ok_a && out.sig_algorithms.try_push(alg) else { return false; }
     }
     return true;
 }
@@ -1476,30 +1405,23 @@ fn read_cert_req_sig_algs(ext_data: ByteCursor&, out: CertificateRequestMsg&) ->
 // In initial handshake: context MUST be 0 length. In post-handshake: context MUST be non-empty and <= 32 bytes.
 // signature_algorithms extension is mandatory; absence MUST cause rejection.
 fn read_cert_req_context(c: ByteCursor&, is_post_handshake: bool, out: CertificateRequestMsg&) -> bool {
-    var ctx_cursor = core::cursor_from(c.buf[..0]);
-    guard c.get_u8_length_prefixed(ctx_cursor) else { return false; }
-
-    let ctx_len = ctx_cursor.cursor_len();
-    // RFC 8446 Section 4.3.2: context MUST be <= 32 bytes
-    guard ctx_len <= 32 && ctx_len <= out.context.cap else { return false; }
+    let ctx, ok = c.read_u8_prefixed();
+    guard ok else { return false; }
     if is_post_handshake {
         // RFC 8446 Section 4.3.2: A post-handshake CertificateRequest context MUST be non-empty
-        guard ctx_len > 0 else { return false; }
+        guard ctx.len > 0 else { return false; }
     } else {
         // RFC 8446 Section 4.3.2: In initial handshake, context MUST be 0 length
-        guard ctx_len == 0 else { return false; }
+        guard ctx.len == 0 else { return false; }
     }
-    for i in ctx_len {
-        out.context.push(ctx_cursor.buf[i]);
-    }
-    return true;
+    return out.context.try_set(ctx);
 }
 
 // Encodes the client's `post_handshake_auth` extension (RFC 8446 Section 4.2.6).
 // The extension_data field of the "post_handshake_auth" extension is zero length.
 fn encode_post_handshake_auth_extension<B>(out: B&) {
-    core::append_u16_be(out, rfc::TLS_EXT_POST_HANDSHAKE_AUTH);
-    core::append_u16_be(out, 0);
+    out.append_u16_be(rfc::TLS_EXT_POST_HANDSHAKE_AUTH);
+    out.append_u16_be(0);
 }
 
 fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: CertificateRequestMsg&) -> bool {
@@ -1514,8 +1436,7 @@ fn read_cert_req_extensions(ext_cursor: ByteCursor&, payload: const u8[:], out: 
         // RFC 8446 Section 4.2: Extensions - There MUST NOT be more than one extension
         // of the same type in a given extension block.
         guard !seen_types.contains(ext_type) else { return false; }
-        guard seen_types.len < seen_types.cap else { return false; }
-        seen_types.push(ext_type);
+        guard seen_types.try_push(ext_type) else { return false; }
 
         // RFC 8446 Section 4.2: Extensions - If an implementation receives a recognized extension
         // not specified for the message, it MUST abort with an "illegal_parameter" alert.
@@ -1568,16 +1489,10 @@ fn parse_certificate_request(
 //   returns: is_empty = true, ok = true
 fn parse_certificate_header_is_empty(payload: const u8[:]) -> bool, bool {
     var c = core::cursor_from(payload);
-    var ctx_cursor = core::cursor_from(payload[..0]);
-    guard c.get_u8_length_prefixed(ctx_cursor) else { return false, false; }
-    guard ctx_cursor.cursor_len() <= 32 else { return false, false; }
-
-    guard c.cursor_len() >= 3 else { return false, false; }
-    var b0: u8 = 0; var b1: u8 = 0; var b2: u8 = 0;
-    guard c.get_u8(b0) && c.get_u8(b1) && c.get_u8(b2) else { return false, false; }
-    let list_len = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2;
-    guard (c.cursor_len() as u32) == list_len else { return false, false; }
-    return list_len == 0, true;
+    let ctx, ok_ctx = c.read_u8_prefixed();
+    let list_bytes, ok_list = c.read_u24_prefixed();
+    guard ok_ctx && ctx.len <= 32 && ok_list && c.buf.len == 0 else { return false, false; }
+    return list_bytes.len == 0, true;
 }
 
 // ---- 0-RTT Early Data State Machine & Recovery (RFC 8446 Section 4.2.10) --
@@ -1648,12 +1563,12 @@ fn early_data_record_sent(ctrl: EarlyDataController&, record_len: u32) -> bool {
 
 fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
     guard sig_algorithms.len <= 64 else { return; }
-    core::append_u16_be(out, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
+    out.append_u16_be(rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
     let algs_bytes_len = (sig_algorithms.len * 2) as u16;
-    core::append_u16_be(out, algs_bytes_len + 2);
-    core::append_u16_be(out, algs_bytes_len);
+    out.append_u16_be(algs_bytes_len + 2);
+    out.append_u16_be(algs_bytes_len);
     for alg in sig_algorithms {
-        core::append_u16_be(out, alg);
+        out.append_u16_be(alg);
     }
 }
 
@@ -1668,7 +1583,7 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
 
     out.push(context.len as u8);
     out.append(context);
-    core::append_u16_be(out, ext_buf.len as u16);
+    out.append_u16_be(ext_buf.len as u16);
     out.append(ext_buf[..]);
     return true;
 }
@@ -1686,16 +1601,16 @@ fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: co
     out.push(cert_context.len as u8);
     out.append(cert_context);
     if cert_der.len == 0 {
-        core::append_u24_be(out, 0);
+        out.append_u24_be(0);
         return true;
     }
 
     // List length = 3 bytes cert_data len + cert_der.len + 2 bytes extensions len
     let list_len = (cert_der.len + 5) as u32;
-    core::append_u24_be(out, list_len);
-    core::append_u24_be(out, cert_der.len as u32);
+    out.append_u24_be(list_len);
+    out.append_u24_be(cert_der.len as u32);
     out.append(cert_der);
-    core::append_u16_be(out, 0); // 0 extensions for client cert entry
+    out.append_u16_be(0); // 0 extensions for client cert entry
     return true;
 }
 
@@ -1703,8 +1618,8 @@ fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: co
 fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool {
     guard signature.len > 0 && signature.len <= 512 else { return false; }
     guard core::add_sat_i64(out.len, core::add_sat_i64(4, signature.len)) <= out.cap else { return false; }
-    core::append_u16_be(out, sig_scheme);
-    core::append_u16_be(out, signature.len as u16);
+    out.append_u16_be(sig_scheme);
+    out.append_u16_be(signature.len as u16);
     out.append(signature);
     return true;
 }
@@ -1715,12 +1630,11 @@ fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: cons
 //   payload = [0x08, 0x07, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD]
 //   returns: sig_scheme = 0x0807, sig = [0xAA, 0xBB, 0xCC, 0xDD], ok = true
 fn parse_certificate_verify(payload: const u8[:]) -> u16, const u8[:], bool {
-    guard payload.len >= 4 else { return 0, "", false; }
-    let sig_scheme = ((payload[0] as u16) << 8) | payload[1];
-    let sig_len = (((payload[2] as u16) << 8) | payload[3]) as i64;
-    let expected_total = 4 + sig_len;
-    guard payload.len == expected_total else { return 0, "", false; }
-    return sig_scheme, payload[4..], true;
+    var c = core::cursor_from(payload);
+    let sig_scheme, ok_s = c.read_u16();
+    let sig, ok_sig = c.read_u16_prefixed();
+    guard ok_s && ok_sig && c.buf.len == 0 else { return 0, "", false; }
+    return sig_scheme, sig, true;
 }
 
 // Verifies a TLS 1.3 digital signature in CertificateVerify (RFC 8446 §4.4.3).

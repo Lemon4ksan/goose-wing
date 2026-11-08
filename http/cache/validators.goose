@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import http.headers;
 import http.cache.cache_control;
 
@@ -28,7 +29,7 @@ struct EntityTag {
 //   returns: etag with tag="xyzzy", is_weak=true, valid=true
 fn parse_etag(raw: const u8[:]) -> EntityTag {
     var etag = EntityTag { .. };
-    var s = trim_lws(raw);
+    var s = raw.trim_lws();
     guard s.len >= 2 else { return etag; }
 
     if s.len >= 4 && s[0] == 'W' && s[1] == '/' {
@@ -40,13 +41,12 @@ fn parse_etag(raw: const u8[:]) -> EntityTag {
         return etag;
     }
 
-    let inner_tag = s[1..s.len - 1];
-    guard inner_tag.len <= 128 else { return etag; }
+    let inner_tag = s[1..^1];
     for b in inner_tag {
         guard b > 0x20 && b != '"' && b != 0x7F else { return etag; }
     }
+    guard etag.tag.try_set(inner_tag) else { return etag; }
 
-    etag.tag.append(inner_tag);
     etag.valid = true;
     return etag;
 }
@@ -99,7 +99,7 @@ fn read_next_etag_token(s: const u8[:], cursor: i64&) -> const u8[:] {
 // Supports wildcard "*" and comma-separated lists of ETags using weak_eq.
 fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const EntityTag&) -> bool {
     guard cached_etag.valid else { return false; }
-    let s = trim_lws(raw_if_none_match);
+    let s = raw_if_none_match.trim_lws();
     if s == "*" { return true; }
 
     var cursor: i64 = 0;
@@ -116,7 +116,7 @@ fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const Entity
 // Checks if cached ETag matches an incoming If-Match header using strong_eq (RFC 9110 §13.1.1).
 fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> bool {
     guard cached_etag.valid else { return false; }
-    let s = trim_lws(raw_if_match);
+    let s = raw_if_match.trim_lws();
     if s == "*" { return true; }
 
     var cursor: i64 = 0;
@@ -136,7 +136,7 @@ fn evaluate_cache_if_range(
     cached_etag:          const EntityTag&,
     cached_last_modified: core::Time,
 ) -> bool {
-    var s = trim_lws(raw_if_range);
+    var s = raw_if_range.trim_lws();
     guard s.len > 0 else { return false; }
 
     if s[0] == '"' || (s.len >= 2 && s[0] == 'W' && s[1] == '/') {
@@ -170,7 +170,7 @@ struct VarySnapshot {
 // Checks if field_name already exists in recorded vary items.
 fn has_vary_field(items: const VaryItem[..16]&, field_name: const u8[:]) -> bool {
     for &item in items {
-        if eq_ascii_fold(item.name[..], field_name) { return true; }
+        if item.name[..].eq_ascii_fold(field_name) { return true; }
     }
     return false;
 }
@@ -193,13 +193,12 @@ fn extract_vary_value(
         is_oversized = true;
         return false;
     }
-    let raw = trim_lws(val_buf[..]);
+    let raw = val_buf[..].trim_lws();
 
-    if raw.len > out_val.cap {
+    guard out_val.try_append(raw) else {
         is_oversized = true;
         return false;
     }
-    out_val.append(raw);
     return true;
 }
 
@@ -207,14 +206,14 @@ fn extract_vary_value(
 // Defends against CVE-2026-93750 by marking has_star = true on "*", preventing subsequent matches.
 fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderMap&) -> VarySnapshot {
     var snap = VarySnapshot { .. };
-    var s = trim_lws(cached_vary_raw);
+    var s = cached_vary_raw.trim_lws();
     guard s.len > 0 else { return snap; }
 
     var cursor: i64 = 0;
     while cursor < s.len {
         var end_idx = cursor;
         while end_idx < s.len && s[end_idx] != ',' { end_idx++; }
-        let field_name = trim_lws(s[cursor..end_idx]);
+        let field_name = s[cursor..end_idx].trim_lws();
         cursor = end_idx + 1;
         guard field_name.len > 0 else { continue; }
 
@@ -224,19 +223,17 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
         }
 
         if !has_vary_field(snap.items, field_name) {
-            guard snap.items.len < snap.items.cap && field_name.len <= 64 else {
+            var item = VaryItem { .. };
+            guard item.name.try_set(field_name) else {
                 snap.valid = false;
                 return snap;
             }
-            var item = VaryItem { .. };
-            item.name.append(field_name);
             var is_oversized = false;
             item.is_absent = !extract_vary_value(req_headers, field_name, item.value, is_oversized);
-            if is_oversized {
+            if is_oversized || !snap.items.try_push(item) {
                 snap.valid = false;
                 return snap;
             }
-            snap.items.push(item);
         }
     }
 
@@ -263,9 +260,9 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
         incoming_buf.clear();
         let ok_c = get_combined(incoming_req_headers, field_name, incoming_buf, 512);
         guard ok_c else { return false; }
-        let incoming_val = trim_lws(incoming_buf[..]);
+        let incoming_val = incoming_buf[..].trim_lws();
 
-        if !eq_ascii_fold(incoming_val, item.value[..]) { return false; }
+        if !incoming_val.eq_ascii_fold(item.value[..]) { return false; }
     }
 
     return true;
@@ -276,32 +273,32 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
 // Checks whether a header must be stripped prior to storage in cache.
 fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc: const CacheControl&) -> bool {
     if (entry_flags & HEADER_FLAG_SECURITY_STATE) != 0 ||
-       eq_ascii_fold(name, "strict-transport-security") ||
-       eq_ascii_fold(name, "x-content-type-options") ||
-       eq_ascii_fold(name, "x-webkit-csp") ||
-       starts_with_fold(name, "x-content-") ||
-       starts_with_fold(name, "x-webkit-") {
+       name.eq_ascii_fold("strict-transport-security") ||
+       name.eq_ascii_fold("x-content-type-options") ||
+       name.eq_ascii_fold("x-webkit-csp") ||
+       name.starts_with_fold("x-content-") ||
+       name.starts_with_fold("x-webkit-") {
         return true;
     }
     if (entry_flags & HEADER_FLAG_CHALLENGE) != 0 ||
-       eq_ascii_fold(name, "www-authenticate") ||
-       eq_ascii_fold(name, "proxy-authenticate") {
+       name.eq_ascii_fold("www-authenticate") ||
+       name.eq_ascii_fold("proxy-authenticate") {
         return true;
     }
     if shared && ((entry_flags & HEADER_FLAG_COOKIE_STATE) != 0 ||
-       eq_ascii_fold(name, "set-cookie") ||
-       eq_ascii_fold(name, "set-cookie2") ||
-       eq_ascii_fold(name, "clear-site-data")) {
+       name.eq_ascii_fold("set-cookie") ||
+       name.eq_ascii_fold("set-cookie2") ||
+       name.eq_ascii_fold("clear-site-data")) {
         return true;
     }
     if shared && (cc.flags & CC_PRIVATE) != 0 {
         for &f in cc.private_fields {
-            if eq_ascii_fold(f[..], name) { return true; }
+            if f[..].eq_ascii_fold(name) { return true; }
         }
     }
     if (cc.flags & CC_NO_CACHE) != 0 {
         for &f in cc.no_cache_fields {
-            if eq_ascii_fold(f[..], name) { return true; }
+            if f[..].eq_ascii_fold(name) { return true; }
         }
     }
     return false;

@@ -40,8 +40,7 @@ fn clean_input_string<B>(raw: const u8[:], out: B&) -> bool {
     let trimmed = raw[start_idx..end_idx];
     guard trimmed.len <= out.cap else { return false; }
     if find_any(trimmed, URL_TAB_CRLF_SET) < 0 {
-        out.append(trimmed);
-        return true;
+        return out.try_set(trimmed);
     }
     for char_byte in trimmed {
         guard char_byte != 0x09 && char_byte != 0x0A && char_byte != 0x0D else { continue; }
@@ -204,10 +203,9 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
 
     if colon_idx > 0 {
         // Explicit scheme present
-        guard colon_idx <= scheme_str.cap else {
+        guard scheme_str.try_set(input_bytes[..colon_idx]) else {
             return out_url, UrlParseError.InvalidScheme;
         }
-        scheme_str.append(input_bytes[..colon_idx]);
         to_lower(scheme_str[..]);
         remainder_start = colon_idx + 1;
     } else {
@@ -799,11 +797,9 @@ fn extract_host_and_port_canonical<B>(
     guard validate_host_punycode_labels(host_str) else {
         return UrlParseError.InvalidHost;
     }
-    guard host_str.len <= host_out.cap else {
+    guard host_out.try_set(host_str) else {
         return UrlParseError.InvalidHost;
     }
-
-    host_out.append(host_str);
 
     if colon_idx >= 0 {
         let p_str = host_port[colon_idx + 1..];
@@ -1181,7 +1177,7 @@ fn resolve_relative_path_against_base(
 
     // Path resolution
     let base_href = href(base_url);
-    var auth_end = if base_url.port_end > base_url.host_end { base_url.port_end } else { base_url.host_end };
+    var auth_end = max(base_url.port_end, base_url.host_end);
     if auth_end < 0 {
         auth_end = base_url.scheme_end + 1;
     }

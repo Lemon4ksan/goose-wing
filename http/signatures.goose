@@ -29,10 +29,10 @@ struct HttpSignatureParams {
 
 fn is_default_port(scheme: const u8[:], port: i32) -> bool {
     if port <= 0 { return true; }
-    if eq_ascii_fold(scheme, "http") && port == 80 { return true; }
-    if eq_ascii_fold(scheme, "https") && port == 443 { return true; }
-    if eq_ascii_fold(scheme, "ws") && port == 80 { return true; }
-    if eq_ascii_fold(scheme, "wss") && port == 443 { return true; }
+    if scheme.eq_ascii_fold("http") && port == 80 { return true; }
+    if scheme.eq_ascii_fold("https") && port == 443 { return true; }
+    if scheme.eq_ascii_fold("ws") && port == 80 { return true; }
+    if scheme.eq_ascii_fold("wss") && port == 443 { return true; }
     return false;
 }
 
@@ -47,7 +47,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         out.clear();
         return false;
     }
-    if eq_ascii_fold(comp, "@authority") {
+    if comp.eq_ascii_fold("@authority") {
         guard view.host.len + 8 <= out.cap else {
             out.clear();
             return false;
@@ -57,11 +57,11 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         to_lower(out[..]);
         if view.port > 0 && !is_default_port(view.scheme, view.port) {
             out.push(':');
-            core::format_i64_dec(view.port, out);
+            view.port.format_i64_dec(out);
         }
         return true;
     }
-    if eq_ascii_fold(comp, "@path") {
+    if comp.eq_ascii_fold("@path") {
         let p = if view.pathname.len > 0 { view.pathname } else { "/" };
         guard out.try_set(p) else {
             out.clear();
@@ -69,7 +69,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if eq_ascii_fold(comp, "@query") {
+    if comp.eq_ascii_fold("@query") {
         let q = if view.search.len > 0 { view.search } else { "?" };
         guard out.try_set(q) else {
             out.clear();
@@ -77,7 +77,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if eq_ascii_fold(comp, "@request-target") {
+    if comp.eq_ascii_fold("@request-target") {
         let p = if view.pathname.len > 0 { view.pathname } else { "/" };
         guard p.len + view.search.len <= out.cap else {
             out.clear();
@@ -90,7 +90,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if eq_ascii_fold(comp, "@scheme") {
+    if comp.eq_ascii_fold("@scheme") {
         guard out.try_set(view.scheme) else {
             out.clear();
             return false;
@@ -114,11 +114,10 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
         if is_ws && prev_space {
             continue;
         }
-        guard out.len < out.cap else {
+        guard out.try_push(if is_ws { ' ' as u8 } else { ch }) else {
             out.clear();
             return false;
         }
-        out.push(if is_ws { ' ' as u8 } else { ch });
         prev_space = is_ws;
     }
     return true;
@@ -132,24 +131,22 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
 fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:], out: B&) -> bool {
     var found = false;
     for &e in headers.entries {
-        guard eq_ascii_fold(entry_name(headers, e), name) else { continue; }
+        guard entry_name(headers, e).eq_ascii_fold(name) else { continue; }
         var norm_buf: u8[..1024] = [];
         guard normalize_header_value(entry_value(headers, e), norm_buf) else {
             out.clear();
             return false;
         }
         if found {
-            guard out.len + 2 <= out.cap else {
+            guard out.try_append(", ") else {
                 out.clear();
                 return false;
             }
-            out.append(", ");
         }
-        guard out.len + norm_buf.len <= out.cap else {
+        guard out.try_append(norm_buf[..]) else {
             out.clear();
             return false;
         }
-        out.append(norm_buf[..]);
         found = true;
     }
     return found;
@@ -161,12 +158,11 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
 //   req has method "GET", comp = "@method"
 //   returns: true, out populated with "GET"
 fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
-    if eq_ascii_fold(comp, "@method") {
-        out.clear();
-        out.append(req.method[..]);
+    if comp.eq_ascii_fold("@method") {
+        let _ = out.try_set(req.method[..]);
         return true;
     }
-    if eq_ascii_fold(comp, "@target-uri") {
+    if comp.eq_ascii_fold("@target-uri") {
         guard out.try_set(req.url[..]) else {
             out.clear();
             return false;
@@ -181,10 +177,8 @@ fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..102
 }
 
 fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
-    guard comp.len > 4 else { return comp, false; }
-    let s0 = comp.len - 4;
-    guard comp[s0..] == ";req" else { return comp, false; }
-    return comp[..s0], true;
+    guard comp.len > 4 && comp[^4..] == ";req" else { return comp, false; }
+    return comp[..^4], true;
 }
 
 // Extracts component value from Response (RFC 9421 §2.2), supporting @status and ";req" parameters.
@@ -199,8 +193,8 @@ fn extract_response_component_value(
     out:  u8[..1024]&,
 ) -> bool {
     out.clear();
-    if eq_ascii_fold(comp, "@status") {
-        core::format_i64_dec(res.status_code, out);
+    if comp.eq_ascii_fold("@status") {
+        res.status_code.format_i64_dec(out);
         return true;
     }
     let req_comp, is_req = strip_req_component_suffix(comp);
@@ -234,11 +228,11 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
 
     if params.created > 0 {
         out.append(";created=");
-        core::format_i64_dec(params.created, out);
+        params.created.format_i64_dec(out);
     }
     if params.expires > 0 {
         out.append(";expires=");
-        core::format_i64_dec(params.expires, out);
+        params.expires.format_i64_dec(out);
     }
     if params.key_id.len > 0 {
         out.append(";keyid=\"");
@@ -618,11 +612,9 @@ fn verify_http_response_signature(
 fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u8[:]) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
-        guard key_id.len <= params.key_id.cap else { return false; }
-        params.key_id.append(key_id);
+        guard params.key_id.try_set(key_id) else { return false; }
     }
-    params.alg.clear();
-    params.alg.append(rfc::SIG_ALG_ED25519);
+    let _ = params.alg.try_set(rfc::SIG_ALG_ED25519);
     params.components.push("@method");
     params.components.push("@authority");
     params.components.push("@path");
@@ -634,11 +626,9 @@ fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u
 fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
-        guard key_id.len <= params.key_id.cap else { return false; }
-        params.key_id.append(key_id);
+        guard params.key_id.try_set(key_id) else { return false; }
     }
-    params.alg.clear();
-    params.alg.append(rfc::SIG_ALG_ED25519);
+    let _ = params.alg.try_set(rfc::SIG_ALG_ED25519);
     params.components.push("@method");
     params.components.push("@authority");
     params.components.push("@path");
@@ -656,11 +646,9 @@ fn sign_response_ed25519(
 ) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
-        guard key_id.len <= params.key_id.cap else { return false; }
-        params.key_id.append(key_id);
+        guard params.key_id.try_set(key_id) else { return false; }
     }
-    params.alg.clear();
-    params.alg.append(rfc::SIG_ALG_ED25519);
+    let _ = params.alg.try_set(rfc::SIG_ALG_ED25519);
     params.components.push("@status");
     params.components.push("content-type");
     return sign_http_response(res, req, params, private_key);
@@ -675,11 +663,9 @@ fn verify_response_ed25519(
 ) -> bool {
     var params = HttpSignatureParams { .. };
     if key_id.len > 0 {
-        guard key_id.len <= params.key_id.cap else { return false; }
-        params.key_id.append(key_id);
+        guard params.key_id.try_set(key_id) else { return false; }
     }
-    params.alg.clear();
-    params.alg.append(rfc::SIG_ALG_ED25519);
+    let _ = params.alg.try_set(rfc::SIG_ALG_ED25519);
     params.components.push("@status");
     params.components.push("content-type");
     return verify_http_response_signature(res, req, "sig1", params, public_key);

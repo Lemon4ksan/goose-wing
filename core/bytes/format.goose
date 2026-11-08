@@ -129,11 +129,11 @@ fn format_u64_hex_fixed<B>(val: u64, width: i64, out: B&, uppercase: bool = fals
         v = v >> 4;
         count++;
     }
-    let pad_count = if width > count { width - count } else { 0 };
+    let pad_count = max(0, width - count);
     for _ in pad_count {
         out.push('0');
     }
-    let take = if count > width { width } else { count };
+    let take = min(count, width);
     for i in take {
         out.push(digits[take - 1 - i]);
     }

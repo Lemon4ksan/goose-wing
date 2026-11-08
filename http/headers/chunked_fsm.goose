@@ -148,8 +148,8 @@ fn feed_chunk_trailer(
             if c == ':' {
                 guard !rfc::is_disallowed_trailer_field(dec.trailer_name[..]) else { return fail_chunk_trailer(dec); }
                 dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | 4;
-            } else if core::is_tchar(c) && dec.trailer_name.len < dec.trailer_name.cap {
-                dec.trailer_name.push(c);
+            } else if core::is_tchar(c) && dec.trailer_name.try_push(c) {
+                // trailer name byte appended
             } else {
                 return fail_chunk_trailer(dec);
             }

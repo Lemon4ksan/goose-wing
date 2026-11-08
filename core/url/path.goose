@@ -12,9 +12,7 @@ fn percent_decode<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
     guard input_bytes.len > 0 else { return true; }
     if index_of_byte(input_bytes, '%') < 0 {
-        guard input_bytes.len <= out.cap else { return false; }
-        out.append(input_bytes);
-        return true;
+        return out.try_set(input_bytes);
     }
     var scan_idx = 0;
     while scan_idx < input_bytes.len {
@@ -312,7 +310,7 @@ fn deleting_last_path_component(url_val: Url) -> Url {
         }
     }
 
-    let new_path_end = if last_slash_idx <= 0 { 1 } else { last_slash_idx + 1 };
+    let new_path_end = max(1, last_slash_idx + 1);
     let path_start = url_val.pathname_start as i64;
     let path_end = url_val.pathname_end as i64;
 
@@ -396,7 +394,7 @@ fn appending_path(url_val: Url, subpath: const u8[:]) -> Url {
 fn appending_path_extension(url_val: Url, ext: const u8[:]) -> Url {
     guard url_val.valid && ext.len > 0 else { return url_val; }
 
-    let clean_ext = if ext[0] == '.' { ext[1..] } else { ext };
+    let clean_ext, _ = strip_prefix(ext, ".");
     guard clean_ext.len > 0 else { return url_val; }
 
     let raw_path = pathname(url_val);

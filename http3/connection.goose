@@ -6,6 +6,7 @@
 namespace internal;
 
 import std;
+import core from "..";
 import http.headers;
 import quic.packet;
 import http3.qpack;
@@ -156,12 +157,23 @@ fn encode_client_preambles<B1, B2, B3>(
     out_qpack_enc: B2&,
     out_qpack_dec: B3&,
 ) -> bool {
+    let saved_ctrl = out_ctrl.len;
+    let saved_enc = out_qpack_enc.len;
+    let saved_dec = out_qpack_dec.len;
+    var committed = false;
+    defer if !committed {
+        out_ctrl.resize(saved_ctrl);
+        out_qpack_enc.resize(saved_enc);
+        out_qpack_dec.resize(saved_dec);
+    };
+
     guard quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL) else { return false; }
     guard encode_h3_settings_frame(out_ctrl, conn.local_settings) else { return false; }
     guard quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER) else { return false; }
     guard quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER) else { return false; }
 
     conn.local_settings_sent = true;
+    committed = true;
     return true;
 }
 
@@ -183,20 +195,17 @@ fn open_request_stream(conn: H3Connection&) -> u64, bool {
         return 0, false;
     }
 
+    let sid = conn.next_bidi_stream_id;
+    if conn.goaway_received && sid >= conn.goaway_max_stream_id {
+        return 0, false;
+    }
+
     var slot_idx: i32 = -1;
     for i in conn.streams.len {
         if conn.streams[i].state == H3StreamState.Closed {
             slot_idx = i as i32;
             break;
         }
-    }
-    if slot_idx < 0 {
-        guard conn.streams.len < conn.streams.cap else { return 0, false; }
-    }
-
-    let sid = conn.next_bidi_stream_id;
-    if conn.goaway_received && sid >= conn.goaway_max_stream_id {
-        return 0, false;
     }
 
     let ent = H3StreamEntry {
@@ -218,7 +227,7 @@ fn open_request_stream(conn: H3Connection&) -> u64, bool {
     if slot_idx >= 0 {
         conn.streams[slot_idx] = ent;
     } else {
-        conn.streams.push(ent);
+        guard conn.streams.try_push(ent) else { return 0, false; }
     }
 
     conn.next_bidi_stream_id += 4;
@@ -248,16 +257,14 @@ fn encode_h3_extra_headers<B1, B2>(
             if wire::is_h2_skipped_header_name(raw_name) {
                 continue;
             }
-            if core::eq_ascii_fold(raw_name, "te") && !core::eq_ascii_fold(core::trim_lws(val), "trailers") {
+            if raw_name.eq_ascii_fold("te") && !val.trim_lws().eq_ascii_fold("trailers") {
                 continue;
             }
             var lower_name: u8[..256] = [];
             if raw_name.len == 0 || raw_name.len > lower_name.cap {
                 continue;
             }
-            for b in raw_name {
-                lower_name.push(core::to_lower_ascii_byte(b));
-            }
+            raw_name.to_lower_ascii(lower_name);
             encode_qpack_field_dynamic(
                 tbl, stream_id, base, lower_name[..], val,
                 body_fields, enc_stream, max_dyn_abs, used_any_dyn, false,
@@ -607,12 +614,11 @@ fn handle_push_stream_open(
         return 0, rfc::H3_ERR_ID_ERROR;
     }
 
-    guard conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap else {
+    guard conn.ignored_uni_streams.try_push(stream_id) else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
         return 0, rfc::H3_ERR_EXCESSIVE_LOAD;
     }
-    conn.ignored_uni_streams.push(stream_id);
     return rem_off, rfc::H3_ERR_NO_ERROR;
 }
 
@@ -650,7 +656,7 @@ fn pop_ready_blocked_qpack_stream(tbl: QpackTable&) -> u64, u8[..4096], bool {
     for i in tbl.blocked_streams.len {
         if tbl.blocked_streams[i].req_insert_count <= tbl.insert_count {
             let out_sid = tbl.blocked_streams[i].stream_id;
-            out_sec.append(tbl.blocked_streams[i].encoded_data[..]);
+            let _ = out_sec.try_set(tbl.blocked_streams[i].encoded_data[..]);
             tbl.blocked_streams.remove_at(i as i32);
             return out_sid, out_sec, true;
         }
@@ -755,12 +761,11 @@ fn register_peer_uni_stream(
     }
 
     // Unknown unidirectional stream: ignore payload (RFC 9114 Section 6.2)
-    guard conn.ignored_uni_streams.len < conn.ignored_uni_streams.cap else {
+    guard conn.ignored_uni_streams.try_push(stream_id) else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
         return 0, rfc::H3_ERR_EXCESSIVE_LOAD;
     }
-    conn.ignored_uni_streams.push(stream_id);
     return 0, rfc::H3_ERR_NO_ERROR;
 }
 
@@ -873,10 +878,9 @@ fn get_or_create_bidi_stream(conn: H3Connection&, stream_id: u64) -> i32, u64 {
         conn.streams[reuse_slot] = ent;
         return reuse_slot, rfc::H3_ERR_NO_ERROR;
     }
-    guard conn.streams.len < conn.streams.cap else {
+    guard conn.streams.try_push(ent) else {
         return -1, rfc::H3_ERR_EXCESSIVE_LOAD;
     }
-    conn.streams.push(ent);
     return (conn.streams.len - 1) as i32, rfc::H3_ERR_NO_ERROR;
 }
 
@@ -900,14 +904,14 @@ fn has_ctl_chars(val: const u8[:]) -> bool {
 }
 
 fn is_forbidden_connection_header(name: const u8[:], value: const u8[:]) -> bool {
-    if eq_ascii_fold(name, "connection") ||
-       eq_ascii_fold(name, "keep-alive") ||
-       eq_ascii_fold(name, "proxy-connection") ||
-       eq_ascii_fold(name, "transfer-encoding") ||
-       eq_ascii_fold(name, "upgrade") {
+    if name.eq_ascii_fold("connection") ||
+       name.eq_ascii_fold("keep-alive") ||
+       name.eq_ascii_fold("proxy-connection") ||
+       name.eq_ascii_fold("transfer-encoding") ||
+       name.eq_ascii_fold("upgrade") {
         return true;
     }
-    if eq_ascii_fold(name, "te") && !eq_ascii_fold(value, "trailers") {
+    if name.eq_ascii_fold("te") && !value.eq_ascii_fold("trailers") {
         return true;
     }
     return false;
@@ -915,29 +919,31 @@ fn is_forbidden_connection_header(name: const u8[:], value: const u8[:]) -> bool
 
 fn validate_h3_trailers<F>(conn: H3Connection&, fields: const F&) -> u64 {
     for field in fields {
-        if field.name.len > 0 && field.name[0] == ':' {
+        let fname = field.name[..];
+        let fval = field.value[..];
+        if fname.len > 0 && fname[0] == ':' {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        if eq_ascii_fold(field.name[..], "content-length") ||
-           eq_ascii_fold(field.name[..], "host") ||
-           eq_ascii_fold(field.name[..], "trailer") ||
-           eq_ascii_fold(field.name[..], "transfer-encoding") ||
-           eq_ascii_fold(field.name[..], "connection") ||
-           eq_ascii_fold(field.name[..], "upgrade") ||
-           eq_ascii_fold(field.name[..], "keep-alive") ||
-           eq_ascii_fold(field.name[..], "proxy-connection") {
+        if fname.eq_ascii_fold("content-length") ||
+           fname.eq_ascii_fold("host") ||
+           fname.eq_ascii_fold("trailer") ||
+           fname.eq_ascii_fold("transfer-encoding") ||
+           fname.eq_ascii_fold("connection") ||
+           fname.eq_ascii_fold("upgrade") ||
+           fname.eq_ascii_fold("keep-alive") ||
+           fname.eq_ascii_fold("proxy-connection") {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        if has_ctl_chars(field.value[..]) {
+        if has_ctl_chars(fval) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        if is_forbidden_connection_header(field.name[..], field.value[..]) {
+        if is_forbidden_connection_header(fname, fval) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -949,7 +955,7 @@ fn validate_h3_trailers<F>(conn: H3Connection&, fields: const F&) -> u64 {
 fn validate_pseudo_status(field: const HeaderField&, counts: H3HeaderCounts&, out_sc: i32&) -> bool {
     counts.pseudo_status++;
     guard counts.pseudo_status == 1 && field.value.len == 3 else { return false; }
-    let sc, ok_sc = core::parse_i32_dec(field.value[..]);
+    let sc, ok_sc = field.value[..].parse_i32_dec();
     guard ok_sc && sc >= 100 && sc <= 599 && sc != 101 else { return false; }
     out_sc = sc;
     return true;
@@ -994,9 +1000,7 @@ fn validate_pseudo_scheme(field: const HeaderField&, counts: H3HeaderCounts&) ->
 fn validate_pseudo_authority(field: const HeaderField&, counts: H3HeaderCounts&, auth_val: u8[..256]&) -> bool {
     counts.pseudo_authority++;
     guard counts.pseudo_authority == 1 && is_valid_authority_or_host(field.value[..]) else { return false; }
-    auth_val.clear();
-    auth_val.append(field.value[..]);
-    return true;
+    return auth_val.try_set(field.value[..]);
 }
 
 fn validate_pseudo_path(field: const HeaderField&, counts: H3HeaderCounts&) -> bool {
@@ -1085,20 +1089,20 @@ fn process_h3_regular_field(
     counts:   H3HeaderCounts&,
     host_val: u8[..256]&,
 ) -> u64 {
-    if eq_ascii_fold(field.name[..], "host") {
+    let fname = field.name[..];
+    let fval = field.value[..];
+    if fname.eq_ascii_fold("host") {
         counts.host++;
-        guard counts.host == 1 && is_valid_authority_or_host(field.value[..]) else {
+        guard counts.host == 1 && is_valid_authority_or_host(fval) && host_val.try_set(fval) else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
         }
-        host_val.clear();
-        host_val.append(field.value[..]);
         return rfc::H3_ERR_NO_ERROR;
     }
-    if eq_ascii_fold(field.name[..], "content-length") {
-        let cl, ok_cl = core::parse_i64_dec(field.value[..]);
-        let _, ok_u = core::parse_u64_dec(field.value[..]);
+    if fname.eq_ascii_fold("content-length") {
+        let cl, ok_cl = fval.parse_i64_dec();
+        let _, ok_u = fval.parse_u64_dec();
         guard ok_cl && ok_u else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1112,9 +1116,9 @@ fn process_h3_regular_field(
         conn.streams[s_idx].content_length = cl;
         return rfc::H3_ERR_NO_ERROR;
     }
-    if eq_ascii_fold(field.name[..], "priority") {
+    if fname.eq_ascii_fold("priority") {
         if !conn.streams[s_idx].priority_updated {
-            let parsed_p, ok_p = wing::parse_http_priority(field.value[..]);
+            let parsed_p, ok_p = wing::parse_http_priority(fval);
             if ok_p {
                 conn.streams[s_idx].priority = parsed_p;
             }
@@ -1178,7 +1182,7 @@ fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> 
     }
 
     if counts.pseudo_authority > 0 && counts.host > 0 {
-        if !core::eq_ascii_fold(auth_val[..], host_val[..]) {
+        if !auth_val[..].eq_ascii_fold(host_val[..]) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1252,7 +1256,7 @@ fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
     if q_err == QpackError.None && decoded_fields.len > 0 {
         for &f in decoded_fields {
             if f.name[..] == ":status" || is_forbidden_connection_header(f.name[..], f.value[..]) ||
-               has_ctl_chars(f.value[..]) || eq_ascii_fold(f.name[..], "content-length") {
+               has_ctl_chars(f.value[..]) || f.name[..].eq_ascii_fold("content-length") {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
                 return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1348,11 +1352,9 @@ fn is_h3_data_allowed(stream: const H3StreamEntry&) -> bool {
 }
 
 fn append_stream_body(stream: H3StreamEntry&, payload: const u8[:]) -> u64 {
-    let avail = stream.received_body.cap - stream.received_body.len;
-    guard payload.len <= avail else {
+    guard stream.received_body.try_append(payload) else {
         return rfc::H3_ERR_EXCESSIVE_LOAD;
     }
-    stream.received_body.append(payload);
     stream.body_received_len += payload.len as u64;
 
     if stream.content_length >= 0 && stream.body_received_len > (stream.content_length as u64) {
@@ -1579,8 +1581,12 @@ fn send_response_headers_body_and_trailers<B>(
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found else { return false; }
 
+    let saved_out_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_out_len); };
+
     var sc_str: u8[..16] = [];
-    format(sc_str, status_code as i64);
+    (status_code as i64).format_i64_dec(sc_str);
 
     let base = conn.qpack_table.insert_count;
     var max_dyn_abs: u64 = 0;
@@ -1621,6 +1627,7 @@ fn send_response_headers_body_and_trailers<B>(
     }
     conn.streams[s_idx].fin_sent = true;
     conn.streams[s_idx].state = H3StreamState.Closed;
+    committed = true;
     return true;
 }
 

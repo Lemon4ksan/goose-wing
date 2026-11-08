@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import cookie.constants;
 import cookie.policy;
 
@@ -69,39 +70,26 @@ fn redirect_error_to_string(err: RedirectError) -> const u8[:] {
 fn parse_referrer_policy_with_fallback(val: const u8[:], fallback: ReferrerPolicy) -> ReferrerPolicy {
     var chosen = fallback;
     each_split(val, ',') { raw_token =>
-        let t = trim(raw_token);
-        if eq_ascii_fold(t, "no-referrer") {
+        let t = raw_token.trim_ascii_space();
+        if t.eq_ascii_fold("no-referrer") {
             chosen = ReferrerPolicy.NoReferrer;
-        } else if eq_ascii_fold(t, "no-referrer-when-downgrade") {
+        } else if t.eq_ascii_fold("no-referrer-when-downgrade") {
             chosen = ReferrerPolicy.NoReferrerWhenDowngrade;
-        } else if eq_ascii_fold(t, "origin") {
+        } else if t.eq_ascii_fold("origin") {
             chosen = ReferrerPolicy.Origin;
-        } else if eq_ascii_fold(t, "origin-when-cross-origin") {
+        } else if t.eq_ascii_fold("origin-when-cross-origin") {
             chosen = ReferrerPolicy.OriginWhenCrossOrigin;
-        } else if eq_ascii_fold(t, "same-origin") {
+        } else if t.eq_ascii_fold("same-origin") {
             chosen = ReferrerPolicy.SameOrigin;
-        } else if eq_ascii_fold(t, "strict-origin") {
+        } else if t.eq_ascii_fold("strict-origin") {
             chosen = ReferrerPolicy.StrictOrigin;
-        } else if eq_ascii_fold(t, "strict-origin-when-cross-origin") {
+        } else if t.eq_ascii_fold("strict-origin-when-cross-origin") {
             chosen = ReferrerPolicy.StrictOriginWhenCrossOrigin;
-        } else if eq_ascii_fold(t, "unsafe-url") {
+        } else if t.eq_ascii_fold("unsafe-url") {
             chosen = ReferrerPolicy.UnsafeUrl;
         }
     };
     return chosen;
-}
-
-fn referrer_policy_to_string(policy: ReferrerPolicy) -> const u8[:] {
-    return match policy {
-        NoReferrer => "no-referrer",
-        NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
-        Origin => "origin",
-        OriginWhenCrossOrigin => "origin-when-cross-origin",
-        SameOrigin => "same-origin",
-        StrictOrigin => "strict-origin",
-        StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
-        UnsafeUrl => "unsafe-url",
-    };
 }
 
 // ---- redirect info structure -----------------------------------------------
@@ -203,9 +191,9 @@ fn mutate_redirect_method<B>(
     }
 
     let should_rewrite = if status_code == rfc::STATUS_MOVED_PERMANENTLY || status_code == rfc::STATUS_FOUND {
-        eq_ascii_fold(current_method, "POST")
+        current_method.eq_ascii_fold("POST")
     } else if status_code == rfc::STATUS_SEE_OTHER {
-        !eq_ascii_fold(current_method, "GET") && !eq_ascii_fold(current_method, "HEAD")
+        !current_method.eq_ascii_fold("GET") && !current_method.eq_ascii_fold("HEAD")
     } else {
         false
     };
@@ -228,11 +216,11 @@ fn inherit_target_fragment(
     let curr_hash = current_url.hash();
     if target_hash.len == 0 && curr_hash.len > 0 {
         if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
-            guard target_url.href.len + curr_hash.len <= target_url.href.cap else {
+            let hash_start = target_url.href.len as i32;
+            guard target_url.href.try_append(curr_hash) else {
                 return;
             }
-            target_url.hash_start = target_url.href.len as i32;
-            target_url.href.append(curr_hash);
+            target_url.hash_start = hash_start;
             target_url.hash_end = target_url.href.len as i32;
         }
     }
@@ -248,19 +236,19 @@ fn compute_redirect_site_for_cookies(
     options:                  RedirectSiteOptions,
 ) -> SiteForCookies, bool {
     let same_site_step = is_schemeful_same_site(
-        current_url.scheme(), core::hostname(current_url),
-        core::scheme(new_url), core::hostname(new_url),
+        current_url.scheme(), current_url.hostname(),
+        new_url.scheme(), new_url.hostname(),
     );
     let initiator_ok = !options.has_initiator || (
         initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
             initiator.scheme[..], initiator.host[..],
-            core::scheme(new_url), core::hostname(new_url),
+            new_url.scheme(), new_url.hostname(),
         )
     );
 
     if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
         // Subresources / background requests: once tainted, remains null forever
-        let is_first_p = is_first_party(current_site_for_cookies, core::href(new_url), true);
+        let is_first_p = is_first_party(current_site_for_cookies, new_url.href[..], true);
 
         if options.had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
             return null_site_for_cookies(), true;
@@ -273,8 +261,8 @@ fn compute_redirect_site_for_cookies(
     var chain_tainted = options.had_cross_site_hop || !same_site_step || !initiator_ok;
     for &hop_url in url_chain {
         if !is_schemeful_same_site(
-            core::scheme(hop_url), core::hostname(hop_url),
-            core::scheme(new_url), core::hostname(new_url),
+            hop_url.scheme(), hop_url.hostname(),
+            new_url.scheme(), new_url.hostname(),
         ) {
             chain_tainted = true;
         }
@@ -287,7 +275,7 @@ fn validate_redirect_target(
     current_url:     const core::Url&,
     options:         RedirectOptions,
 ) -> core::Url, RedirectError {
-    let clean_loc = trim(location_header);
+    let clean_loc = location_header.trim_ascii_space();
     guard clean_loc.len > 0 else {
         return core::Url { .. }, RedirectError.MissingLocation;
     }
@@ -297,12 +285,12 @@ fn validate_redirect_target(
         return core::Url { .. }, RedirectError.InvalidLocationUrl;
     }
 
-    if !core::is_http_or_https(parsed_target) {
+    if !parsed_target.is_http_or_https() {
         return core::Url { .. }, RedirectError.ForbiddenRedirectScheme;
     }
 
-    if options.cors_mode && core::has_credentials(parsed_target) {
-        let same_orig = core::is_same_origin_url(current_url, parsed_target);
+    if options.cors_mode && parsed_target.has_credentials() {
+        let same_orig = current_url.is_same_origin_url(parsed_target);
         if !same_orig || options.tainted_origin {
             return core::Url { .. }, RedirectError.CorsCredentialsInRedirectUrl;
         }
@@ -318,7 +306,7 @@ fn classify_redirect_origin_relation(
     out_is_cross_origin: bool&,
     out_is_port_changed: bool&,
 ) {
-    let same_orig = core::is_same_origin_url(current_url, target_url);
+    let same_orig = current_url.is_same_origin_url(target_url);
     let is_downgrade = (current_url.scheme() == "https" && target_url.scheme() == "http");
     let port_changed = current_url.effective_port() != target_url.effective_port();
     out_is_downgrade = is_downgrade;
@@ -356,7 +344,8 @@ fn compute_redirect_info(
     }
 
     info.new_url = parsed_target;
-    inherit_target_fragment(info.new_url, current_url, trim(location_header), preserve_fragment_on_redirect_url);
+    let loc_trimmed = location_header.trim_ascii_space();
+    inherit_target_fragment(info.new_url, current_url, loc_trimmed, preserve_fragment_on_redirect_url);
     mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
 
     classify_redirect_origin_relation(
@@ -381,7 +370,7 @@ fn compute_redirect_info(
         let parsed_ref = core::new_url(current_referrer);
         if parsed_ref.valid {
             ref_source = parsed_ref;
-            let ref_same_orig = core::is_same_origin_url(parsed_ref, info.new_url);
+            let ref_same_orig = parsed_ref.is_same_origin_url(info.new_url);
             ref_is_downgrade = (parsed_ref.scheme() == "https" && info.new_url.scheme() == "http");
             ref_is_cross_origin = !ref_same_orig || ref_is_downgrade;
         }
@@ -513,7 +502,7 @@ fn remove_sec_headers_on_downgrade(headers: HeaderMap&, target_url: const core::
 
     for read_i in total_entries {
         let name = entry_name(headers, headers.entries[read_i]);
-        if starts_with_fold(name, "sec-fetch-") || starts_with_fold(name, "sec-ch-") {
+        if name.starts_with_fold("sec-fetch-") || name.starts_with_fold("sec-ch-") {
             found = true;
             continue;
         }

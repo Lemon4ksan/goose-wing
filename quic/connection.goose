@@ -127,9 +127,10 @@ fn quic_conn_close(conn: QuicConnection&, err_code: u64) {
 }
 
 fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
-    guard space.sent_packets.len < space.sent_packets.cap else { return; }
+    let was_empty = space.sent_packets.len == 0;
+    guard space.sent_packets.try_push(meta) else { return; }
     space.has_sent_packets = true;
-    if meta.pn > space.largest_sent_pn || space.sent_packets.len == 0 {
+    if meta.pn > space.largest_sent_pn || was_empty {
         space.largest_sent_pn = meta.pn;
     }
     if meta.ack_eliciting {
@@ -138,7 +139,6 @@ fn record_space_sent_packet(space: PnSpaceState&, meta: const SentPacketMeta&) {
     if meta.ecn_marked {
         space.tx_ect0_sent = core::add_sat_u64(space.tx_ect0_sent, 1);
     }
-    space.sent_packets.push(meta);
 }
 
 fn record_space_recv_packet(space: PnSpaceState&, pn: u64) {
@@ -961,16 +961,14 @@ fn quic_derive_initial_space_keys(
     guard prefix.len > 0 else { return false; }
 
     var initial_secret = core::hkdf_extract(salt, dcid);
+    defer core::secure_zeroize_32(initial_secret);
     var client_secret: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(client_secret);
     var server_secret: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(server_secret);
     let ok_c = hkdf_expand_label(HASH_SHA256, initial_secret[..], "client in", [], 32, client_secret[..]);
     let ok_s = hkdf_expand_label(HASH_SHA256, initial_secret[..], "server in", [], 32, server_secret[..]);
-    core::secure_zeroize_32(initial_secret);
-    guard ok_c && ok_s else {
-        core::secure_zeroize_32(client_secret);
-        core::secure_zeroize_32(server_secret);
-        return false;
-    }
+    guard ok_c && ok_s else { return false; }
 
     var lbl_key: u8[..16] = [];
     lbl_key.append(prefix);
@@ -980,49 +978,33 @@ fn quic_derive_initial_space_keys(
     lbl_iv.append("iv");
 
     var c_key: u8[16] = [0; 16];
-    var c_iv:  u8[12] = [0; 12];
-    var c_hp:  u8[16] = [0; 16];
+    defer core::secure_zeroize_16(c_key);
+    var c_iv: u8[12] = [0; 12];
+    var c_hp: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(c_hp);
     guard hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_key[..], [], 16, c_key[..])
         && hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_iv[..], [], 12, c_iv[..])
         && ks_derive_quic_hp_key(HASH_SHA256, client_secret[..], 16, c_hp[..], version) else {
-        core::secure_zeroize_16(c_key);
-        core::secure_zeroize_16(c_hp);
-        core::secure_zeroize_32(client_secret);
-        core::secure_zeroize_32(server_secret);
         return false;
     }
 
     var s_key: u8[16] = [0; 16];
-    var s_iv:  u8[12] = [0; 12];
-    var s_hp:  u8[16] = [0; 16];
+    defer core::secure_zeroize_16(s_key);
+    var s_iv: u8[12] = [0; 12];
+    var s_hp: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(s_hp);
     guard hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_key[..], [], 16, s_key[..])
         && hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_iv[..], [], 12, s_iv[..])
         && ks_derive_quic_hp_key(HASH_SHA256, server_secret[..], 16, s_hp[..], version) else {
-        core::secure_zeroize_16(c_key);
-        core::secure_zeroize_16(c_hp);
-        core::secure_zeroize_16(s_key);
-        core::secure_zeroize_16(s_hp);
-        core::secure_zeroize_32(client_secret);
-        core::secure_zeroize_32(server_secret);
         return false;
     }
 
-    core::secure_zeroize_32(client_secret);
-    core::secure_zeroize_32(server_secret);
-
-    var ok_install = false;
     if role == QuicRole.Client {
-        ok_install = quic_install_pn_space_keys(tx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
+        return quic_install_pn_space_keys(tx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
             && quic_install_pn_space_keys(rx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
-    } else {
-        ok_install = quic_install_pn_space_keys(rx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
-            && quic_install_pn_space_keys(tx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
     }
-    core::secure_zeroize_16(c_key);
-    core::secure_zeroize_16(c_hp);
-    core::secure_zeroize_16(s_key);
-    core::secure_zeroize_16(s_hp);
-    return ok_install;
+    return quic_install_pn_space_keys(rx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
+        && quic_install_pn_space_keys(tx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
 }
 
 fn quic_conn_install_initial_keys(
@@ -1041,26 +1023,23 @@ fn quic_compute_hp_mask(space: const PnSpaceState&, sample_slice: const u8[:]) -
     if space.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
         guard space.hp_key.len == 16 else { return [0; 5], false; }
         var hp16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(hp16);
         for i in 16 { hp16[i] = space.hp_key[i]; }
-        let mask = aes128_header_protect_mask(hp16, sample);
-        core::secure_zeroize_16(hp16);
-        return mask, true;
+        return aes128_header_protect_mask(hp16, sample), true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard space.hp_key.len == 32 else { return [0; 5], false; }
         var hp32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(hp32);
         for i in 32 { hp32[i] = space.hp_key[i]; }
-        let mask = aes256_header_protect_mask(hp32, sample);
-        core::secure_zeroize_32(hp32);
-        return mask, true;
+        return aes256_header_protect_mask(hp32, sample), true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard space.hp_key.len == 32 else { return [0; 5], false; }
         var hp32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(hp32);
         for i in 32 { hp32[i] = space.hp_key[i]; }
-        let mask = chacha20_header_protect_mask(hp32, sample);
-        core::secure_zeroize_32(hp32);
-        return mask, true;
+        return chacha20_header_protect_mask(hp32, sample), true;
     }
     return [0; 5], false;
 }
@@ -1090,27 +1069,27 @@ fn quic_aead_open_payload(
     if space.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
         guard space.aead_key.len == 16 else { out_plain.clear(); return false; }
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::fused_aes_gcm_decrypt(key16, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
-        core::secure_zeroize_16(key16);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         guard space.aead_key.len == 32 else { out_plain.clear(); return false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::aes256_gcm_open_into(key32, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
-        core::secure_zeroize_32(key32);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
     if space.cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard space.aead_key.len == 32 else { out_plain.clear(); return false; }
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = space.aead_key[i]; }
         let dec_len, ok_open = core::chacha20_poly1305_open_into(key32, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
-        core::secure_zeroize_32(key32);
         guard ok_open && dec_len == pt_len else { out_plain.clear(); return false; }
         return true;
     }
@@ -1126,24 +1105,21 @@ fn quic_aead_seal_payload_inplace(
 ) -> u8[16], bool {
     if space.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 && space.aead_key.len == 16 {
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = space.aead_key[i]; }
-        let tag, ok = core::aes128_gcm_seal_inplace(key16, nonce, ct, aad);
-        core::secure_zeroize_16(key16);
-        return tag, ok;
+        return core::aes128_gcm_seal_inplace(key16, nonce, ct, aad);
     }
     if space.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 && space.aead_key.len == 32 {
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = space.aead_key[i]; }
-        let tag, ok = core::aes256_gcm_seal_inplace(key32, nonce, ct, aad);
-        core::secure_zeroize_32(key32);
-        return tag, ok;
+        return core::aes256_gcm_seal_inplace(key32, nonce, ct, aad);
     }
     if space.cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 && space.aead_key.len == 32 {
         var key32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(key32);
         for i in 32 { key32[i] = space.aead_key[i]; }
-        let tag, ok = core::chacha20_poly1305_seal_inplace(key32, nonce, ct, aad);
-        core::secure_zeroize_32(key32);
-        return tag, ok;
+        return core::chacha20_poly1305_seal_inplace(key32, nonce, ct, aad);
     }
     return [0; 16], false;
 }
@@ -1255,8 +1231,7 @@ fn verify_and_decrypt_packet(
     };
 
     var work_pkt: u8[..16512] = [];
-    guard pkt_wire_len > 0 && pkt_wire_len <= work_pkt.cap else { return false; }
-    work_pkt.append(pkt_slice[..pkt_wire_len]);
+    guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return false; }
 
     let sample_slice, ok_samp = wing::quic_extract_hp_sample(work_pkt[..], hdr.pn_offset);
     guard ok_samp else { return false; }

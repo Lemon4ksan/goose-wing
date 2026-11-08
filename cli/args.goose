@@ -86,12 +86,10 @@ struct CliConfig {
 }
 
 fn set_cli_error(cfg: CliConfig&, msg: const u8[:], arg: const u8[:] = "") -> bool {
-    cfg.err_msg.clear();
     let _ = cfg.err_msg.try_set(msg);
-    let max_len = cfg.err_msg.cap;
-    if arg.len > 0 && core::add_sat_i64(core::add_sat_i64(cfg.err_msg.len, 2), arg.len) <= max_len {
-        cfg.err_msg.append(": ");
-        cfg.err_msg.append(arg);
+    let mark = cfg.err_msg.len;
+    if arg.len > 0 && !(cfg.err_msg.try_append(": ") && cfg.err_msg.try_append(arg)) {
+        cfg.err_msg.resize(mark);
     }
     return false;
 }
@@ -102,16 +100,12 @@ fn set_cli_error(cfg: CliConfig&, msg: const u8[:], arg: const u8[:] = "") -> bo
 //   raw = "Accept: application/json"
 //   returns: true, pushes HeaderPair { name: "Accept", value: "application/json" }
 fn parse_header_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
-    guard cfg.headers.len < cfg.headers.cap else {
-        return set_cli_error(cfg, "too many -H headers (max 16)");
-    }
-    let col = core::index_of_byte(raw, ':');
-    guard col > 0 else {
+    let raw_name, raw_val, has_col = raw.split_once_byte(':');
+    guard has_col && raw_name.len > 0 else {
         return set_cli_error(cfg, "invalid header format, expected 'Name: Value'", raw);
     }
-    let next_idx = core::add_sat_i64(col, 1);
-    let name = core::trim_lws(raw[..col]);
-    let val = core::trim_lws(raw[next_idx..]);
+    let name = raw_name.trim_lws();
+    let val = raw_val.trim_lws();
     guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
         return set_cli_error(cfg, "invalid header name or value", raw);
     }
@@ -119,20 +113,18 @@ fn parse_header_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     guard pair.name.try_set(name) && pair.value.try_set(val) else {
         return set_cli_error(cfg, "header name or value exceeds buffer capacity");
     }
-    cfg.headers.push(pair);
+    guard cfg.headers.try_push(pair) else {
+        return set_cli_error(cfg, "too many -H headers (max 16)");
+    }
     return true;
 }
 
 fn load_headers_from_text(content: const u8[:], cfg: CliConfig&) -> bool {
     var cursor: i64 = 0;
     while cursor < content.len {
-        let nl = core::index_of_byte(content[cursor..], '\n');
+        let nl = content[cursor..].index_of_byte('\n');
         let line_end = if nl >= 0 { core::add_sat_i64(cursor, nl) } else { content.len };
-        var line = content[cursor..line_end];
-        if core::ends_with(line, "\r") {
-            line = line[..core::sub_sat_i64(line.len, 1)];
-        }
-        let trimmed = core::trim_lws(line);
+        let trimmed = content[cursor..line_end].trim_end_byte('\r').trim_lws();
         if trimmed.len > 0 && trimmed[0] != '#' {
             guard parse_header_flag(trimmed, cfg) else { return false; }
         }
@@ -160,12 +152,11 @@ fn apply_header_or_file_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
 //   raw = "admin:secret123"
 //   returns: true, sets cfg.basic_user = "admin", cfg.basic_pass = "secret123"
 fn parse_user_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
-    let col = core::index_of_byte(raw, ':');
-    guard col > 0 else {
+    let user, pass, has_col = raw.split_once_byte(':');
+    guard has_col && user.len > 0 else {
         return set_cli_error(cfg, "invalid -u credentials, expected 'user:password'", raw);
     }
-    let next_idx = core::add_sat_i64(col, 1);
-    guard cfg.basic_user.try_set(raw[..col]) && cfg.basic_pass.try_set(raw[next_idx..]) else {
+    guard cfg.basic_user.try_set(user) && cfg.basic_pass.try_set(pass) else {
         return set_cli_error(cfg, "credentials exceed capacity");
     }
     return true;
@@ -182,15 +173,14 @@ fn parse_ipv4_be_u32(raw: const u8[:]) -> u32, bool {
     for part_idx in 4 {
         var part = rem;
         if part_idx < 3 {
-            let dot = core::index_of_byte(rem, '.');
-            guard dot > 0 else { return 0, false; }
-            let next_start = core::add_sat_i64(dot, 1);
-            part = rem[..dot];
-            rem = rem[next_start..];
+            let head, tail, has_dot = rem.split_once_byte('.');
+            guard has_dot && head.len > 0 else { return 0, false; }
+            part = head;
+            rem = tail;
         } else {
             rem = rem[rem.len..];
         }
-        let oct, ok = core::parse_u64_dec(part);
+        let oct, ok = part.parse_u64_dec();
         guard ok && oct <= 255 else { return 0, false; }
         acc = (core::shl_sat_u64(acc, 8) | oct) & 0xFFFFFFFF;
     }
@@ -198,37 +188,34 @@ fn parse_ipv4_be_u32(raw: const u8[:]) -> u32, bool {
 }
 
 fn normalize_noproxy_host(raw: const u8[:]) -> const u8[:] {
-    var h = core::trim_lws(raw);
+    var h = raw.trim_lws();
     if h.len >= 2 && h[0] == '[' {
-        let close_br = core::index_of_byte(h, ']');
+        let close_br = h.index_of_byte(']');
         if close_br > 1 {
             h = h[1..close_br];
         }
     } else {
-        let col = core::index_of_byte(h, ':');
-        if col > 0 && core::index_of_byte(h[core::add_sat_i64(col, 1)..], ':') < 0 {
-            h = h[..col];
+        let host_part, port_part, has_col = h.split_once_byte(':');
+        if has_col && host_part.len > 0 && !port_part.contains_byte(':') {
+            h = host_part;
         }
     }
-    while core::ends_with(h, ".") {
-        h = h[..core::sub_sat_i64(h.len, 1)];
-    }
-    return h;
+    return h.trim_end_byte('.');
 }
 
 fn host_matches_noproxy_token(host: const u8[:], token: const u8[:]) -> bool {
-    let clean = core::trim_lws(token);
+    let clean = token.trim_lws();
     guard clean.len > 0 else { return false; }
     if clean == "*" { return true; }
     let raw_dom = if clean[0] == '.' { clean[1..] } else { clean };
     let dom = normalize_noproxy_host(raw_dom);
     let norm_host = normalize_noproxy_host(host);
     guard dom.len > 0 && norm_host.len > 0 else { return false; }
-    if core::eq_ascii_fold(norm_host, dom) { return true; }
+    if norm_host.eq_ascii_fold(dom) { return true; }
     if norm_host.len > dom.len {
         let suffix_start = core::sub_sat_i64(norm_host.len, dom.len);
         let dot_pos = core::sub_sat_i64(suffix_start, 1);
-        if norm_host[dot_pos] == '.' && core::eq_ascii_fold(norm_host[suffix_start..], dom) {
+        if norm_host[dot_pos] == '.' && norm_host[suffix_start..].eq_ascii_fold(dom) {
             return true;
         }
     }
@@ -239,9 +226,8 @@ fn is_host_bypassed_by_no_proxy(host: const u8[:], no_proxy_list: const u8[:]) -
     guard host.len > 0 && no_proxy_list.len > 0 else { return false; }
     var rem = no_proxy_list;
     while rem.len > 0 {
-        let c_idx = core::index_of_byte(rem, ',');
-        let item = if c_idx >= 0 { rem[..c_idx] } else { rem };
-        rem = if c_idx >= 0 { rem[core::add_sat_i64(c_idx, 1)..] } else { rem[rem.len..] };
+        let item, tail, _ = rem.split_once_byte(',');
+        rem = tail;
         if host_matches_noproxy_token(host, item) {
             return true;
         }
@@ -255,24 +241,15 @@ fn is_host_bypassed_by_no_proxy(host: const u8[:], no_proxy_list: const u8[:]) -
 //   raw = "example.com:443:93.184.215.14"
 //   returns: true, pushes ResolveEntry { host: "example.com", port: 443, ip: "93.184.215.14" }
 fn parse_resolve_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
-    guard cfg.resolves.len < cfg.resolves.cap else {
-        return set_cli_error(cfg, "too many --resolve entries (max 8)");
-    }
-    let c1 = core::index_of_byte(raw, ':');
-    let next1 = core::add_sat_i64(c1, 1);
-    guard c1 > 0 && next1 < raw.len else {
+    let host_part, rest, has_c1 = raw.split_once_byte(':');
+    guard has_c1 && host_part.len > 0 && rest.len > 0 else {
         return set_cli_error(cfg, "invalid --resolve format, expected 'host:port:ip'", raw);
     }
-    let rest = raw[next1..];
-    let c2 = core::index_of_byte(rest, ':');
-    let next2 = core::add_sat_i64(c2, 1);
-    guard c2 > 0 && next2 < rest.len else {
+    let port_part, ip_part, has_c2 = rest.split_once_byte(':');
+    guard has_c2 && port_part.len > 0 && ip_part.len > 0 else {
         return set_cli_error(cfg, "invalid --resolve format, expected 'host:port:ip'", raw);
     }
-    let host_part = raw[..c1];
-    let port_part = rest[..c2];
-    let ip_part = rest[next2..];
-    let port_u64, ok_p = core::parse_u64_dec(port_part);
+    let port_u64, ok_p = port_part.parse_u64_dec();
     let _, ok_ip = parse_ipv4_be_u32(ip_part);
     guard ok_p && port_u64 > 0 && port_u64 <= 65535 && ok_ip else {
         return set_cli_error(cfg, "invalid port or IPv4 in --resolve", raw);
@@ -281,23 +258,24 @@ fn parse_resolve_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     guard entry.host.try_set(host_part) && entry.ip.try_set(ip_part) else {
         return set_cli_error(cfg, "--resolve host or IP exceeds capacity");
     }
-    cfg.resolves.push(entry);
+    guard cfg.resolves.try_push(entry) else {
+        return set_cli_error(cfg, "too many --resolve entries (max 8)");
+    }
     return true;
 }
 
 fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) -> bool {
     var rem_mod = modifiers;
     while rem_mod.len > 0 {
-        let s_idx = core::index_of_byte(rem_mod, ';');
-        let item = if s_idx >= 0 { rem_mod[..s_idx] } else { rem_mod };
-        rem_mod = if s_idx >= 0 { rem_mod[core::add_sat_i64(s_idx, 1)..] } else { rem_mod[rem_mod.len..] };
-        let trimmed = core::trim_lws(item);
-        if core::starts_with_fold(trimmed, "type=") {
+        let item, tail, _ = rem_mod.split_once_byte(';');
+        rem_mod = tail;
+        let trimmed = item.trim_lws();
+        if trimmed.starts_with_fold("type=") {
             let ct_val = trimmed[5..];
             guard wing::is_valid_header_value(ct_val) && field.content_type.try_set(ct_val) else {
                 return false;
             }
-        } else if core::starts_with_fold(trimmed, "filename=") {
+        } else if trimmed.starts_with_fold("filename=") {
             let fn_val = trimmed[9..];
             guard wing::is_valid_header_value(fn_val) && field.filename.try_set(fn_val) else {
                 return false;
@@ -313,24 +291,20 @@ fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) -> bool {
 //   raw = "avatar=@photo.png;type=image/png;filename=avatar.png"
 //   returns: true, pushes FormFieldSpec { name: "avatar", value: "photo.png", is_file: true, ... }
 fn parse_form_flag(raw: const u8[:], cfg: CliConfig&, literal_only: bool = false) -> bool {
-    guard cfg.form_fields.len < cfg.form_fields.cap else {
-        return set_cli_error(cfg, "too many -F form fields (max 16)");
-    }
-    let eq = core::index_of_byte(raw, '=');
-    let next_eq = core::add_sat_i64(eq, 1);
-    guard eq > 0 && next_eq <= raw.len else {
+    let name_part, rhs_raw, has_eq = raw.split_once_byte('=');
+    guard has_eq && name_part.len > 0 else {
         return set_cli_error(cfg, "invalid -F form field, expected 'name=value'", raw);
     }
 
     var field = FormFieldSpec { .. };
-    guard field.name.try_set(raw[..eq]) else {
+    guard field.name.try_set(name_part) else {
         return set_cli_error(cfg, "-F field name too long");
     }
 
-    var rhs = raw[next_eq..];
+    var rhs = rhs_raw;
     var modifiers = rhs[rhs.len..];
     if !literal_only {
-        let semi = core::index_of_byte(rhs, ';');
+        let semi = rhs.index_of_byte(';');
         if semi >= 0 {
             modifiers = rhs[core::add_sat_i64(semi, 1)..];
             rhs = rhs[..semi];
@@ -353,7 +327,9 @@ fn parse_form_flag(raw: const u8[:], cfg: CliConfig&, literal_only: bool = false
     guard apply_form_modifiers(modifiers, field) else {
         return set_cli_error(cfg, "invalid -F modifier");
     }
-    cfg.form_fields.push(field);
+    guard cfg.form_fields.try_push(field) else {
+        return set_cli_error(cfg, "too many -F form fields (max 16)");
+    }
     if !cfg.has_explicit_m {
         let _ = cfg.method.try_set("POST");
     }
@@ -397,7 +373,7 @@ fn append_percent_encoded_bytes<B>(src: const u8[:], out: B&) {
             out.push(b);
         } else {
             out.push('%');
-            core::format_u8_hex(b, out, true);
+            b.format_u8_hex(out, true);
         }
     }
 }
@@ -408,8 +384,8 @@ fn apply_data_urlencode_arg(raw: const u8[:], cfg: CliConfig&) -> bool {
     var source_part = raw;
     var is_file_ref = false;
 
-    let eq_idx = core::index_of_byte(raw, '=');
-    let at_idx = core::index_of_byte(raw, '@');
+    let eq_idx = raw.index_of_byte('=');
+    let at_idx = raw.index_of_byte('@');
 
     if eq_idx >= 0 && (at_idx < 0 || eq_idx < at_idx) {
         prefix_name = raw[..eq_idx];
@@ -464,20 +440,17 @@ fn extract_path_basename(clean: const u8[:]) -> const u8[:] {
 //   url = "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore?raw=1"
 //   returns: "Go.gitignore"
 fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
-    var clean = url;
-    let q_idx = core::index_of_byte(clean, '?');
-    if q_idx >= 0 { clean = clean[..q_idx]; }
-    let h_idx = core::index_of_byte(clean, '#');
-    if h_idx >= 0 { clean = clean[..h_idx]; }
+    let clean_q, _, _ = url.split_once_byte('?');
+    let clean_h, _, _ = clean_q.split_once_byte('#');
+    var clean = clean_h;
 
-    let scheme_end = core::find(clean, "://");
-    if scheme_end >= 0 {
-        let after_scheme = clean[core::add_sat_i64(scheme_end, 3)..];
-        let path_slash = core::index_of_byte(after_scheme, '/');
-        if path_slash < 0 {
+    let _, after_scheme, has_scheme = clean.split_once("://");
+    if has_scheme {
+        let _, path_part, has_slash = after_scheme.split_once_byte('/');
+        if !has_slash {
             return "index.html";
         }
-        clean = after_scheme[core::add_sat_i64(path_slash, 1)..];
+        clean = path_part;
     }
     return extract_path_basename(clean);
 }
@@ -561,7 +534,7 @@ fn apply_cli_boolean_flag(arg: const u8[:], cfg: CliConfig&) -> bool {
 }
 
 fn apply_cookie_arg(val: const u8[:], cfg: CliConfig&) -> bool {
-    if core::index_of_byte(val, '=') >= 0 {
+    if val.contains_byte('=') {
         if cfg.cookie_header.len > 0 {
             guard cfg.cookie_header.try_append("; ") else {
                 return set_cli_error(cfg, "cookie header string too long");
@@ -672,7 +645,7 @@ fn apply_cli_upload_or_route_opt(arg: const u8[:], val: const u8[:], cfg: CliCon
         return true, parse_form_flag(val, cfg, arg == "--form-string");
     }
     if arg == "-T" || arg == "--upload-file" {
-        let clean_val = if core::starts_with(val, "@") { val[1..] } else { val };
+        let clean_val = val.trim_start_byte('@');
         guard clean_val.len > 0 && cfg.upload_file.try_set(clean_val) else {
             return true, set_cli_error(cfg, "upload-file path invalid or too long");
         }
@@ -681,12 +654,11 @@ fn apply_cli_upload_or_route_opt(arg: const u8[:], val: const u8[:], cfg: CliCon
         return true, true;
     }
     if (arg == "-r" && cfg.mode == CliMode.Serve) || arg == "--route" {
-        guard cfg.inline_routes.len < cfg.inline_routes.cap else {
-            return true, set_cli_error(cfg, "too many --route definitions (max 32)");
-        }
         var r_buf: u8[..512] = [];
         guard r_buf.try_set(val) else { return true, set_cli_error(cfg, "route rule exceeds 512 chars"); }
-        cfg.inline_routes.push(r_buf);
+        guard cfg.inline_routes.try_push(r_buf) else {
+            return true, set_cli_error(cfg, "too many --route definitions (max 32)");
+        }
         return true, true;
     }
     return false, false;
@@ -704,7 +676,7 @@ fn apply_continue_at_opt(val: const u8[:], cfg: CliConfig&) -> bool {
         cfg.resume_from = 0;
         return true;
     }
-    let off, ok_o = core::parse_u64_dec(val);
+    let off, ok_o = val.parse_u64_dec();
     guard ok_o && off <= 0x7FFFFFFFFFFFFFFF else {
         return set_cli_error(cfg, "invalid -C offset", val);
     }
@@ -755,7 +727,7 @@ fn apply_cli_numeric_opt(arg: const u8[:], val: const u8[:], cfg: CliConfig&) ->
         return true, apply_continue_at_opt(val, cfg);
     }
     guard is_numeric_cli_flag(arg) else { return false, false; }
-    let num, ok = core::parse_u64_dec(val);
+    let num, ok = val.parse_u64_dec();
     guard ok else { return true, set_cli_error(cfg, "invalid numeric option", val); }
     return true, apply_parsed_numeric_val(arg, val, num, cfg);
 }
@@ -764,18 +736,12 @@ fn assign_positional_url(arg: const u8[:], cfg: CliConfig&) -> bool {
     guard cfg.url.len == 0 else {
         return set_cli_error(cfg, "unexpected positional argument", arg);
     }
-    let has_scheme = core::starts_with_fold(arg, "http://") || core::starts_with_fold(arg, "https://") ||
-        core::starts_with_fold(arg, "ws://") || core::starts_with_fold(arg, "wss://");
+    let has_scheme = arg.starts_with_fold("http://") || arg.starts_with_fold("https://") ||
+        arg.starts_with_fold("ws://") || arg.starts_with_fold("wss://");
     let prefix = if has_scheme { "" } else { "http://" };
-    let needed = core::add_sat_i64(prefix.len, arg.len);
-    guard needed <= cfg.url.cap else {
+    guard cfg.url.try_set(prefix) && cfg.url.try_append(arg) else {
         return set_cli_error(cfg, "URL exceeds maximum length");
     }
-    cfg.url.clear();
-    if prefix.len > 0 {
-        cfg.url.append(prefix);
-    }
-    cfg.url.append(arg);
     return true;
 }
 
@@ -833,19 +799,14 @@ fn finalize_get_query_mode(cfg: CliConfig&) -> bool {
         cfg.has_body = false;
         return true;
     }
-    let needed = core::add_sat_i64(core::add_sat_i64(cfg.url.len, 1), cfg.body.len);
-    guard needed <= cfg.url.cap else {
-        return set_cli_error(cfg, "URL + query string exceeds maximum length");
-    }
-    let h_idx = core::index_of_byte(cfg.url[..], '#');
+    let h_idx = cfg.url[..].index_of_byte('#');
     let base_end = if h_idx >= 0 { h_idx } else { cfg.url.len };
-    let sep: u8 = if core::index_of_byte(cfg.url[..base_end], '?') >= 0 { '&' } else { '?' };
+    let sep: u8 = if cfg.url[..base_end].contains_byte('?') { '&' } else { '?' };
+    let frag = if h_idx >= 0 { cfg.url[h_idx..] } else { "" };
     var rebuilt: u8[..2048] = [];
-    rebuilt.append(cfg.url[..base_end]);
-    rebuilt.push(sep);
-    rebuilt.append(cfg.body[..]);
-    if h_idx >= 0 {
-        rebuilt.append(cfg.url[h_idx..]);
+    guard rebuilt.try_set(cfg.url[..base_end]) && rebuilt.try_push(sep) &&
+        rebuilt.try_append(cfg.body[..]) && rebuilt.try_append(frag) else {
+        return set_cli_error(cfg, "URL + query string exceeds maximum length");
     }
     let _ = cfg.url.try_set(rebuilt[..]);
     cfg.body.clear();

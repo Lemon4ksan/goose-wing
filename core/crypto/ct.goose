@@ -85,10 +85,6 @@ fn secure_zeroize_16(buf: u8[16]&) {
     native_secure_zeroize(buf[..]);
 }
 
-fn secure_zeroize_24(buf: u8[24]&) {
-    native_secure_zeroize(buf[..]);
-}
-
 fn secure_zeroize_32(buf: u8[32]&) {
     native_secure_zeroize(buf[..]);
 }
@@ -103,11 +99,6 @@ fn secure_zeroize_64(buf: u8[64]&) {
 
 fn secure_zeroize_slice(buf: u8[:]) {
     native_secure_zeroize(buf);
-}
-
-fn secure_zeroize_vec(buf: u8[>..]&) {
-    native_secure_zeroize(buf[..]);
-    buf.clear();
 }
 
 // KeySlot encapsulates a 256-bit cryptographic master key with rotation metadata.
@@ -127,7 +118,7 @@ fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expi
         expires_at_sec: expires_at_sec,
         revoked:        false,
     };
-    let copy_len = if raw_key.len < 32 { raw_key.len } else { 32 };
+    let copy_len = min(raw_key.len, 32);
     for idx in copy_len {
         slot.master_key[idx] = raw_key[idx];
     }
@@ -197,7 +188,7 @@ fn dudect_push_sample(ctx: DudectContext&, class_idx: i32, elapsed_ns: f64) -> b
 // Approximate Newton-Raphson square root for Welch's t-statistic denominator.
 fn approx_sqrt(val: f64) -> f64 {
     if !(val > 0.0) { return 0.0; }
-    var x = if val < 1.0 { 1.0 } else { val };
+    var x = max(1.0, val);
     for iter in 64 {
         x = 0.5 * (x + val / x);
     }

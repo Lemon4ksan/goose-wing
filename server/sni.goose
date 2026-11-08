@@ -36,7 +36,7 @@ fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
     let p_norm = x509_strip_trailing_dot(pattern);
     let h_norm = x509_strip_trailing_dot(hostname);
     guard p_norm.len > 0 && h_norm.len > 0 else { return false; }
-    if eq_ascii_fold(p_norm, h_norm) {
+    if p_norm.eq_ascii_fold(h_norm) {
         return true;
     }
     if p_norm.len >= 3 && p_norm[0] == '*' && p_norm[1] == '.' {
@@ -62,7 +62,7 @@ fn add_server_name<S>(
     // Check if pattern already registered: update in place
     for i in server.sni_registry.entries.len {
         let entry_pat = x509_strip_trailing_dot(server.sni_registry.entries[i].pattern[..]);
-        if server.sni_registry.entries[i].in_use && eq_ascii_fold(entry_pat, p_norm) {
+        if server.sni_registry.entries[i].in_use && entry_pat.eq_ascii_fold(p_norm) {
             core::secure_zeroize_slice(server.sni_registry.entries[i].key_pem[..]);
             let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
             let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
@@ -91,7 +91,7 @@ fn remove_server_name<S>(server: S&, pattern: const u8[:]) -> bool {
     guard p_norm.len > 0 && server.sni_registry.count > 0 else { return false; }
     for i in server.sni_registry.entries.len {
         let entry = &server.sni_registry.entries[i];
-        if entry.in_use && eq_ascii_fold(x509_strip_trailing_dot(entry.pattern[..]), p_norm) {
+        if entry.in_use && x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(p_norm) {
             entry.in_use = false;
             entry.pattern.clear();
             entry.cert_pem.clear();
@@ -118,7 +118,7 @@ fn resolve_sni_credentials<S>(
     // Phase 1: Exact match priority
     for i in server.sni_registry.entries.len {
         let entry = &server.sni_registry.entries[i];
-        if entry.in_use && eq_ascii_fold(x509_strip_trailing_dot(entry.pattern[..]), h_norm) {
+        if entry.in_use && x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(h_norm) {
             return SniCredentials {
                 cert_pem: entry.cert_pem[..],
                 key_pem:  entry.key_pem[..],

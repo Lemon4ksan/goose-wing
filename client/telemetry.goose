@@ -24,15 +24,13 @@ struct RequestTimings {
 
 // Computes total roundtrip duration in microseconds
 fn compute_total_timing_us(t: const RequestTimings&) -> i64 {
-    var total: i64 = 0;
-    if t.blocked_us > 0 { total += t.blocked_us; }
-    if t.dns_us > 0 { total += t.dns_us; }
-    if t.connect_us > 0 { total += t.connect_us; }
-    if t.ssl_us > 0 { total += t.ssl_us; }
-    if t.send_us > 0 { total += t.send_us; }
-    if t.wait_us > 0 { total += t.wait_us; }
-    if t.receive_us > 0 { total += t.receive_us; }
-    return total;
+    return max(0, t.blocked_us) +
+        max(0, t.dns_us) +
+        max(0, t.connect_us) +
+        max(0, t.ssl_us) +
+        max(0, t.send_us) +
+        max(0, t.wait_us) +
+        max(0, t.receive_us);
 }
 
 // Converts microsecond duration to milliseconds with 2 fractional digits: e.g. 1520 us -> 1.52 ms
@@ -78,17 +76,17 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
     out.append(",\"httpVersion\":");
     core::format_json_string(out, entry.http_version[..]);
     out.append(",\"bodySize\":");
-    core::format_i64_dec(entry.request_bytes, out);
+    entry.request_bytes.format_i64_dec(out);
     out.append("}");
 
     out.append(",\"response\":{\"status\":");
-    core::format_u32_dec(entry.status as u32, out);
+    (entry.status as u32).format_u32_dec(out);
     out.append(",\"statusText\":");
     core::format_json_string(out, entry.status_text[..]);
     out.append(",\"httpVersion\":");
     core::format_json_string(out, entry.http_version[..]);
     out.append(",\"bodySize\":");
-    core::format_i64_dec(entry.response_bytes, out);
+    entry.response_bytes.format_i64_dec(out);
     out.append("}");
 
     // Timings object

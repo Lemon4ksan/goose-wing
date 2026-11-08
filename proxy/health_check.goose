@@ -108,12 +108,6 @@ fn enter_probing_state(health: UpstreamHealth&) -> bool {
     return true;
 }
 
-// Determines if a target is due for background probing.
-fn is_probe_due(health: const UpstreamHealth&, now_ms: u64, interval_ms: u64) -> bool {
-    let elapsed = core::sub_sat_u64(now_ms, health.last_probe_time_ms);
-    return elapsed >= interval_ms;
-}
-
 // Serializes HTTP/1.1 GET health probe request wire buffer.
 fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..]&) {
     out.clear();
@@ -137,7 +131,7 @@ fn parse_probe_status_code(wire: const u8[:]) -> u16, bool {
     let ok_delim = wire.len == 12 || wire[12] == ' ' || wire[12] == '\r' || wire[12] == '\n';
     guard ok_delim else { return 0, false; }
 
-    let status_u32, ok = core::parse_u32_dec(wire[9..12]);
+    let status_u32, ok = wire[9..12].parse_u32_dec();
     guard ok && status_u32 >= 100 && status_u32 <= 599 else { return 0, false; }
     return status_u32 as u16, true;
 }
@@ -194,60 +188,10 @@ fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) 
     guard target_idx >= 0 && target_idx < 16 else { return false; }
     let existing = find_probe_slot(checker, target_idx);
     guard existing == HEALTH_SLOT_NONE else { return true; }
-    guard checker.slots.len < checker.slots.cap else { return false; }
 
     var new_slot = TargetProbeSlot { .. };
     init_probe_slot(new_slot, target_idx);
-    checker.slots.push(new_slot);
-    return true;
-}
-
-inline fn inc_checks_dispatched(checker: ClusterHealthChecker&) {
-    checker.total_checks_dispatched = core::add_sat_u64(checker.total_checks_dispatched, 1);
-}
-
-// Prepares active probe request for target if probe is due and not in flight.
-inline fn try_dispatch_probe_slot(
-    slot:     TargetProbeSlot&,
-    checker:  ClusterHealthChecker&,
-    cluster:  const UpstreamCluster&,
-    now_ms:   u64,
-    out_wire: u8[>..]&,
-) -> bool {
-    let is_in_flight = slot.active_in_flight;
-    guard !is_in_flight && is_probe_due(slot.health, now_ms, checker.config.interval_ms) else {
-        return false;
-    }
-
-    slot.active_in_flight = true;
-    slot.probe_start_ms = now_ms;
-    slot.health.last_probe_time_ms = now_ms;
-    inc_checks_dispatched(checker);
-
-    let t_idx = slot.target_idx;
-    let host_slice = cluster.targets[t_idx].host[..];
-    let path_slice = checker.config.path[..];
-    format_health_probe_request(host_slice, path_slice, out_wire);
-    return true;
-}
-
-// Selects next target due for probing and prepares wire request.
-fn poll_next_probe(
-    checker:  ClusterHealthChecker&,
-    cluster:  const UpstreamCluster&,
-    now_ms:   u64,
-    out_wire: u8[>..]&,
-) -> i32, bool {
-    let n = checker.slots.len as i32;
-    for i in n {
-        let t_idx = checker.slots[i].target_idx;
-        guard t_idx >= 0 && t_idx < cluster.targets.len else { continue; }
-
-        if try_dispatch_probe_slot(checker.slots[i], checker, cluster, now_ms, out_wire) {
-            return t_idx, true;
-        }
-    }
-    return HEALTH_SLOT_NONE, false;
+    return checker.slots.try_push(new_slot);
 }
 
 inline fn clear_in_flight(slot: TargetProbeSlot&) {

@@ -86,14 +86,10 @@ fn cache_store(
         && etag.len <= c.etag.cap else {
         return false;
     }
-    c.wire.clear();
-    c.wire.append(wire_data);
-    c.content_type.clear();
-    c.content_type.append(content_type);
-    c.url_key.clear();
-    c.url_key.append(url_key);
-    c.etag.clear();
-    c.etag.append(etag);
+    let _ = c.wire.try_set(wire_data);
+    let _ = c.content_type.try_set(content_type);
+    let _ = c.url_key.try_set(url_key);
+    let _ = c.etag.try_set(etag);
     c.handler_id = handler_id;
     c.created_ms = now_ms;
     c.is_valid = true;

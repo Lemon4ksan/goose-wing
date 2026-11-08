@@ -311,7 +311,7 @@ fn decode_utf8(s: const u8[:]) -> i64, i64, bool {
 fn decode_last_utf8(s: const u8[:]) -> i64, i64, bool {
     guard s.len > 0 else { return 0xFFFD, 0, false; }
     var start = s.len - 1;
-    let limit = if s.len - 4 > 0 { s.len - 4 } else { 0 };
+    let limit = max(0, s.len - 4);
     while start > limit && s[start] >= 0x80 && s[start] <= 0xBF { start -= 1; }
     let cp, size, valid = decode_utf8(s[start..]);
     if start + size != s.len { return 0xFFFD, 1, false; }

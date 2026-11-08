@@ -199,7 +199,7 @@ fn parse_retry_after_ms(
     header_raw:  const u8[:],
     now_unix_ms: i64,
 ) -> i64, bool {
-    let clean = trim(header_raw);
+    let clean = header_raw.trim_ascii_space();
     guard clean.len > 0 else { return 0, false; }
 
     let sec_ms, ok_sec = try_parse_retry_after_seconds(clean);
@@ -239,33 +239,24 @@ fn trip_circuit_breaker_if_exceeded(
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
     guard host_str.len > 0 && host_str.len <= 256 else { return false; }
 
-    let block_dur_ns = if retry_after_ms > 9223372036854 {
-        9223372036854775807
-    } else {
-        retry_after_ms * 1000000
-    };
-    let unblock_at = if (9223372036854775807 - now_mono_ns) < block_dur_ns {
-        9223372036854775807
-    } else {
-        now_mono_ns + block_dur_ns
-    };
+    let block_dur_ns = min(retry_after_ms, 9223372036854) * 1000000;
+    let unblock_at = core::add_sat_i64(now_mono_ns, block_dur_ns);
 
     for &h in breaker.hosts {
-        if core::eq_ascii_fold(h.host[..], host_str) {
+        if h.host[..].eq_ascii_fold(host_str) {
             h.blocked_until_mono_ns = max(h.blocked_until_mono_ns, unblock_at);
             h.is_blocked = true;
             return true;
         }
     }
 
-    if breaker.hosts.len < 16 {
-        var entry = HostCircuitBreakerEntry {
-            blocked_until_mono_ns: unblock_at,
-            is_blocked:            true,
-            ..
-        };
-        entry.host.append(host_str);
-        breaker.hosts.push(entry);
+    var entry = HostCircuitBreakerEntry {
+        blocked_until_mono_ns: unblock_at,
+        is_blocked:            true,
+        ..
+    };
+    let _ = entry.host.try_set(host_str);
+    if breaker.hosts.try_push(entry) {
         return true;
     }
 
@@ -279,8 +270,7 @@ fn trip_circuit_breaker_if_exceeded(
             reclaim_idx = i;
         }
     }
-    breaker.hosts[reclaim_idx].host.clear();
-    breaker.hosts[reclaim_idx].host.append(host_str);
+    let _ = breaker.hosts[reclaim_idx].host.try_set(host_str);
     breaker.hosts[reclaim_idx].blocked_until_mono_ns = unblock_at;
     breaker.hosts[reclaim_idx].is_blocked = true;
     return true;
@@ -293,7 +283,7 @@ fn is_host_circuit_broken(
     now_mono_ns: i64,
 ) -> bool {
     for &h in breaker.hosts {
-        guard core::eq_ascii_fold(h.host[..], host_str) else { continue; }
+        guard h.host[..].eq_ascii_fold(host_str) else { continue; }
         guard h.is_blocked else { return false; }
         if now_mono_ns >= h.blocked_until_mono_ns {
             h.is_blocked = false;

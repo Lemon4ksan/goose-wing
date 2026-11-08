@@ -91,20 +91,6 @@ inline fn pool_slot_bit_for_offset(offset: i64) -> u8 {
     return 0;
 }
 
-// Carves a contiguous zero-copy slice of `req_bytes` directly from `pool.arena` (u8[..65536]).
-// Fails closed with `(false)` when `pool.arena` capacity (65536) is exceeded (Invariant 13).
-fn allocate_pool_arena_slice(pool: WireCommandPool&, req_bytes: i64) -> const u8[:], i64, bool {
-    let start_off = pool.arena.len;
-    let next_len = start_off + req_bytes;
-    guard pool.is_valid && req_bytes > 0 && next_len <= WIRE_POOL_ARENA_CAP else {
-        return "", -1, false;
-    }
-    pool.arena.resize(next_len, 0);
-    pool.allocated_count += 1;
-    let view = pool.arena[start_off..next_len];
-    return view, start_off, true;
-}
-
 inline fn is_valid_pool_slot_for_cmd(pool: const WireCommandPool&, cmd: const WireCommandBuffer&) -> bool {
     if cmd.pool_generation == 0 {
         return true;
@@ -120,7 +106,7 @@ fn commit_command_buffer_to_arena(
     pool: WireCommandPool&,
     cmd:  const WireCommandBuffer&,
 ) -> const u8[:], bool {
-    let end_off = cmd.arena_offset + cmd.buf.len;
+    let end_off = core::add_sat_i64(cmd.arena_offset, cmd.buf.len);
     guard pool.is_valid &&
           is_valid_pool_slot_for_cmd(pool, cmd) &&
           !cmd.has_error &&
@@ -135,19 +121,7 @@ fn commit_command_buffer_to_arena(
 }
 
 inline fn clear_pool_slot_bit(slot_mask: u8, offset: i64) -> u8 {
-    if offset == 0 {
-        return slot_mask & 0xFE;
-    }
-    if offset == 16384 {
-        return slot_mask & 0xFD;
-    }
-    if offset == 32768 {
-        return slot_mask & 0xFB;
-    }
-    if offset == 49152 {
-        return slot_mask & 0xF7;
-    }
-    return slot_mask;
+    return slot_mask & (~pool_slot_bit_for_offset(offset));
 }
 
 fn claim_pool_command_slot(pool: WireCommandPool&, next_len: i64, bit: u8) {
@@ -185,7 +159,7 @@ fn allocate_command_buffer(pool: WireCommandPool&) -> WireCommandBuffer, WireRes
 
 // Frees a command buffer back to its parent pool, reclaiming its arena region (VkFreeCommandBuffers).
 fn free_command_buffer(pool: WireCommandPool&, cmd: WireCommandBuffer&) {
-    let expected_end = cmd.arena_offset + cmd.arena_capacity;
+    let expected_end = core::add_sat_i64(cmd.arena_offset, cmd.arena_capacity);
     let prev_offset = cmd.arena_offset;
     let slot_valid = is_valid_pool_slot_for_cmd(pool, cmd);
     cmd.state = WireCommandBufferState.Invalid;
@@ -272,8 +246,8 @@ fn reset_command_buffer(cmd: WireCommandBuffer&, flags: u32) -> WireResult {
 
 // Returns remaining capacity in underlying buffer.
 inline fn available(cmd: const WireCommandBuffer&) -> i64 {
-    let rem = cmd.buf.cap - cmd.buf.len;
-    return if rem > 0 { rem } else { 0 };
+    let rem = core::sub_sat_i64(cmd.buf.cap, cmd.buf.len);
+    return max(rem, 0);
 }
 
 // Resets recording cursor to reuse buffer.
@@ -302,23 +276,6 @@ fn write_u8(cmd: WireCommandBuffer&, val: u8) -> bool {
     return true;
 }
 
-// Writes a 16-bit big-endian unsigned integer.
-fn write_u16_be(cmd: WireCommandBuffer&, val: u16) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
-        cmd.has_error = true;
-        return false;
-    }
-    let bytes: u8[2] = [
-        ((val >> 8) & 0xFF) as u8,
-        (val & 0xFF) as u8,
-    ];
-    guard cmd.buf.try_append(bytes[..]) else {
-        cmd.has_error = true;
-        return false;
-    }
-    return true;
-}
-
 // Writes a 24-bit big-endian unsigned integer (RFC 9113 Section 4.1).
 fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
     guard cmd.state == WireCommandBufferState.Recording else {
@@ -329,30 +286,8 @@ fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
         cmd.has_error = true;
         return false;
     }
-    let bytes: u8[3] = [
-        ((val >> 16) & 0xFF) as u8,
-        ((val >> 8) & 0xFF) as u8,
-        (val & 0xFF) as u8,
-    ];
-    guard cmd.buf.try_append(bytes[..]) else {
-        cmd.has_error = true;
-        return false;
-    }
-    return true;
-}
-
-// Writes a 32-bit big-endian unsigned integer.
-fn write_u32_be(cmd: WireCommandBuffer&, val: u32) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
-        cmd.has_error = true;
-        return false;
-    }
-    let bytes: u8[4] = [
-        ((val >> 24) & 0xFF) as u8,
-        ((val >> 16) & 0xFF) as u8,
-        ((val >> 8) & 0xFF) as u8,
-        (val & 0xFF) as u8,
-    ];
+    var bytes: u8[..3] = [];
+    bytes.append_u24_be(val);
     guard cmd.buf.try_append(bytes[..]) else {
         cmd.has_error = true;
         return false;
@@ -413,24 +348,6 @@ fn write_h2_window_update(cmd: WireCommandBuffer&, stream_id: u32, increment: u3
         return false;
     }
     guard encode_window_update_frame(stream_id, increment, cmd.buf) else {
-        cmd.has_error = true;
-        return false;
-    }
-    return true;
-}
-
-// Writes an RFC 9218 PRIORITY_UPDATE frame on stream 0 (RFC 9218 Section 7.1).
-fn write_h2_priority_update(
-    cmd:                   WireCommandBuffer&,
-    prioritized_stream_id: u32,
-    urgency:               u8,
-    incremental:           bool,
-) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
-        cmd.has_error = true;
-        return false;
-    }
-    guard encode_priority_update_frame(prioritized_stream_id, urgency, incremental, cmd.buf) else {
         cmd.has_error = true;
         return false;
     }
@@ -559,22 +476,19 @@ fn hpack_literal_never_indexed(cmd: WireCommandBuffer&, name: const u8[:], val: 
 
 // Completes active HEADERS block by backpatching the 9-byte frame header at `cmd.headers_frame_offset`.
 fn end_h2_headers(cmd: WireCommandBuffer&) -> bool {
-    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else {
-        rollback_headers_frame_on_error(cmd);
-        return false;
-    }
+    var committed = false;
+    defer if !committed { rollback_headers_frame_on_error(cmd); };
+    guard cmd.state == WireCommandBufferState.RecordingHeaders && !cmd.has_error else { return false; }
     guard patch_frame_header_slice(
         cmd.buf[..],
         cmd.headers_frame_offset,
         rfc::H2_FRAME_HEADERS,
         cmd.active_headers_flags,
         cmd.active_headers_stream,
-    ) else {
-        rollback_headers_frame_on_error(cmd);
-        return false;
-    }
+    ) else { return false; }
     cmd.headers_frame_offset = -1;
     cmd.state = WireCommandBufferState.Recording;
+    committed = true;
     return true;
 }
 
@@ -590,16 +504,15 @@ fn cmd_encode_h1_request(
     body:        const u8[:],
     filter_mode: H1HeaderFilterMode = H1HeaderFilterMode.PreserveAll,
 ) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
-        cmd.has_error = true;
-        return false;
-    }
     let start_len = cmd.buf.len;
-    guard encode_h1_request(method, target, host, headers, body, filter_mode, cmd.buf) else {
+    var committed = false;
+    defer if !committed {
         cmd.buf.resize(start_len);
         cmd.has_error = true;
-        return false;
-    }
+    };
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else { return false; }
+    guard encode_h1_request(method, target, host, headers, body, filter_mode, cmd.buf) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -613,16 +526,17 @@ fn cmd_encode_h1_response(
     body:            const u8[:],
     is_head_request: bool = false,
 ) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
-        cmd.has_error = true;
-        return false;
-    }
     let start_len = cmd.buf.len;
-    guard encode_h1_response(status_code, reason, server_name, headers, body, is_head_request, cmd.buf) else {
+    var committed = false;
+    defer if !committed {
         cmd.buf.resize(start_len);
         cmd.has_error = true;
+    };
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else { return false; }
+    guard encode_h1_response(status_code, reason, server_name, headers, body, is_head_request, cmd.buf) else {
         return false;
     }
+    committed = true;
     return true;
 }
 
@@ -636,16 +550,17 @@ fn cmd_encode_h2_headers_map(
     end_stream:     bool,
     max_frame_size: u32 = 16384,
 ) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
-        cmd.has_error = true;
-        return false;
-    }
     let start_len = cmd.buf.len;
-    guard encode_h2_headers_frame_from_map(dt, stream_id, pseudo, headers, end_stream, cmd.buf, max_frame_size) else {
+    var committed = false;
+    defer if !committed {
         cmd.buf.resize(start_len);
         cmd.has_error = true;
+    };
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else { return false; }
+    guard encode_h2_headers_frame_from_map(dt, stream_id, pseudo, headers, end_stream, cmd.buf, max_frame_size) else {
         return false;
     }
+    committed = true;
     return true;
 }
 
@@ -658,17 +573,18 @@ fn cmd_encode_h3_headers_map<B>(
     headers:        const wing::HeaderMap&,
     out_enc_stream: B&,
 ) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
-        cmd.has_error = true;
-        return false;
-    }
     let start_len = cmd.buf.len;
     let start_enc = out_enc_stream.len;
-    guard encode_h3_headers_from_map(tbl, stream_id, pseudo, headers, out_enc_stream, cmd.buf) else {
+    var committed = false;
+    defer if !committed {
         cmd.buf.resize(start_len);
         out_enc_stream.resize(start_enc);
         cmd.has_error = true;
+    };
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else { return false; }
+    guard encode_h3_headers_from_map(tbl, stream_id, pseudo, headers, out_enc_stream, cmd.buf) else {
         return false;
     }
+    committed = true;
     return true;
 }

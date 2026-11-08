@@ -196,13 +196,13 @@ fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
 // Formatting helpers, unit multipliers, and sub-parsers.
 
 inline fn append_2d<B>(out: B&, value: i64) {
-    let clamped_val = if value < 0 { 0 } else if value > 99 { 99 } else { value };
+    let clamped_val = min(max(0, value), 99);
     out.push(('0' as i64 + clamped_val / 10) as u8);
     out.push(('0' as i64 + clamped_val % 10) as u8);
 }
 
 inline fn append_4d<B>(out: B&, value: i64) {
-    let clamped_val = if value < 0 { 0 } else if value > 9999 { 9999 } else { value };
+    let clamped_val = min(max(0, value), 9999);
     out.push(('0' as i64 + (clamped_val / 1000) % 10) as u8);
     out.push(('0' as i64 + (clamped_val / 100) % 10) as u8);
     out.push(('0' as i64 + (clamped_val / 10) % 10) as u8);

@@ -253,7 +253,7 @@ fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
     let new_month = month_idx + 1;
 
     let max_day_in_month = days_in_month(new_year, new_month);
-    let clamped_day = if current_day > max_day_in_month { max_day_in_month } else { current_day };
+    let clamped_day = min(current_day, max_day_in_month);
     let base_days = civil_to_days(new_year, new_month, clamped_day);
     let total_secs = base_days * 86400 + hour_val * 3600 + min_val * 60 + sec_val - time_val.tz_offset;
     return Time {

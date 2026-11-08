@@ -273,7 +273,7 @@ fn ghash_update(h: const u8[16]&, y: u8[16]&, data: const u8[:]) {
     while offset < data.len {
         var gblk: u8[16] = [0; 16];
         let rem = data.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take { gblk[i] = data[offset + i]; }
         for i in 16 { y[i] ^= gblk[i]; }
         y = ghash_mul(y, h);
@@ -350,7 +350,7 @@ fn aes256_gcm_open_inplace(
         inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = in_out.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             in_out[offset + i] ^= enc_ctr[i];
         }
@@ -379,7 +379,7 @@ fn aes256_gcm_seal_inplace(
         inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = in_out.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             in_out[offset + i] ^= enc_ctr[i];
         }
@@ -421,7 +421,7 @@ fn aes256_gcm_open_into(
         inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             dst[offset + i] = ciphertext[offset + i] ^ enc_ctr[i];
         }
@@ -452,7 +452,7 @@ fn aes256_gcm_seal(
         inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = plaintext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             dst[offset + i] = plaintext[offset + i] ^ enc_ctr[i];
         }
@@ -492,7 +492,7 @@ fn aes256_gcm_open<B>(
         inc_ctr32(ctr);
         let enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             out_plaintext.push(ciphertext[offset + i] ^ enc_ctr[i]);
         }
@@ -534,7 +534,7 @@ fn aes128_gcm_open_inplace(
         inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = in_out.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             in_out[offset + i] ^= enc_ctr[i];
         }
@@ -563,7 +563,7 @@ fn aes128_gcm_seal_inplace(
         inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = in_out.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             in_out[offset + i] ^= enc_ctr[i];
         }
@@ -605,7 +605,7 @@ fn aes128_gcm_open_into(
         inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             dst[offset + i] = ciphertext[offset + i] ^ enc_ctr[i];
         }
@@ -636,7 +636,7 @@ fn aes128_gcm_seal(
         inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = plaintext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             dst[offset + i] = plaintext[offset + i] ^ enc_ctr[i];
         }
@@ -676,7 +676,7 @@ fn aes128_gcm_open<B>(
         inc_ctr32(ctr);
         let enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
-        let take = if rem < 16 { rem } else { 16 };
+        let take = min(rem, 16);
         for i in take {
             out_plaintext.push(ciphertext[offset + i] ^ enc_ctr[i]);
         }

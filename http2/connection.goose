@@ -51,7 +51,7 @@ fn consume_token(tb: TokenBucket&, now_ms: u64) -> bool {
             let added = (elapsed_ms * tb.rate_per_sec) / 1000;
             if added > 0 {
                 let next_tokens = tb.tokens + added;
-                tb.tokens = if next_tokens > tb.burst { tb.burst } else { next_tokens };
+                tb.tokens = min(next_tokens, tb.burst);
                 tb.last_refill_ms = now_ms;
             }
         }
@@ -260,8 +260,7 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         }
     }
     if !placed {
-        guard s.streams.len < s.streams.cap else { return; }
-        s.streams.push(new_stream);
+        guard s.streams.try_push(new_stream) else { return; }
     }
     s.active_stream_count++;
 }
@@ -686,7 +685,7 @@ fn compute_stream_send_quota(s: const H2Connection&, stream_id: u32) -> i64 {
     if st_win <= 0 {
         return 0;
     }
-    return if s.conn_send_window < st_win { s.conn_send_window } else { st_win };
+    return min(s.conn_send_window, st_win);
 }
 
 // Updates receive windows upon processing incoming DATA frame (including padding).
@@ -902,16 +901,17 @@ inline fn commit_stream_send_quota(
     let quota = compute_stream_send_quota(s, target_stream_id);
     guard quota > 0 else { return 0, 0, false; }
 
-    var send_len = s.streams[chosen_idx].pending_send_bytes;
-    if send_len > quota {
-        send_len = quota as u32;
-    }
-    if send_len > max_frame_len {
-        send_len = max_frame_len;
-    }
-    if send_len > s.peer_max_frame_size {
-        send_len = s.peer_max_frame_size;
-    }
+    let stream_pending = s.streams[chosen_idx].pending_send_bytes;
+    let quota_u32 = quota as u32;
+    let quota_cap = min(
+        stream_pending,
+        quota_u32,
+    );
+    let frame_cap = min(
+        max_frame_len,
+        s.peer_max_frame_size,
+    );
+    let send_len = min(quota_cap, frame_cap);
 
     // Deduct from pending and windows
     s.streams[chosen_idx].pending_send_bytes -= send_len;

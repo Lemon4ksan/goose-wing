@@ -37,39 +37,20 @@ fn readable_slice(p: const PipeBuffer&) -> const u8[:] {
     return p.storage[p.consumed..p.written];
 }
 
-// Yields the contiguous slice of unexamined bytes (from examined to written).
-fn unexamined_slice(p: const PipeBuffer&) -> const u8[:] {
-    let start = if p.examined > p.consumed { p.examined } else { p.consumed };
-    if start >= p.written {
-        return "";
-    }
-    return p.storage[start..p.written];
-}
-
 // Returns the number of readable unconsumed bytes currently available.
 fn readable_len(p: const PipeBuffer&) -> i64 {
-    let rem = p.written - p.consumed;
-    return if rem > 0 { rem } else { 0 };
-}
-
-// Returns the number of unexamined bytes awaiting protocol inspection.
-fn unexamined_len(p: const PipeBuffer&) -> i64 {
-    let start = if p.examined > p.consumed { p.examined } else { p.consumed };
-    let rem = p.written - start;
-    return if rem > 0 { rem } else { 0 };
+    return max(0, p.written - p.consumed);
 }
 
 // Returns remaining tail capacity without compacting.
 fn write_space(p: const PipeBuffer&) -> i64 {
-    let rem = PIPE_BUFFER_CAP - p.written;
-    return if rem > 0 { rem } else { 0 };
+    return max(0, PIPE_BUFFER_CAP - p.written);
 }
 
 // Returns total capacity available if unconsumed bytes are compacted.
 fn total_available(p: const PipeBuffer&) -> i64 {
-    let used = if p.written > p.consumed { p.written - p.consumed } else { 0 };
-    let avail = PIPE_BUFFER_CAP - used;
-    return if avail > 0 { avail } else { 0 };
+    let used = max(0, p.written - p.consumed);
+    return max(0, PIPE_BUFFER_CAP - used);
 }
 
 // Compacts the buffer by sliding unconsumed bytes to the front of storage.
@@ -108,7 +89,7 @@ fn advance_to(p: PipeBuffer&, consumed_delta: i64, examined_delta: i64) -> IoErr
     let target_examined = p.consumed + examined_delta;
 
     // Enforce monotonicity of examined cursor
-    p.examined = if target_examined > p.examined { target_examined } else { p.examined };
+    p.examined = max(target_examined, p.examined);
     p.consumed = target_consumed;
 
     // Ensure examined is at least consumed
@@ -188,7 +169,7 @@ fn read(p: PipeBuffer&, dst: u8[:]) -> i64, IoError {
     if avail == 0 {
         return 0, if p.is_completed { IoError.Eof } else { IoError.None };
     }
-    let to_read = if dst.len < avail { dst.len } else { avail };
+    let to_read = min(dst.len, avail);
     for i in to_read {
         dst[i] = p.storage[p.consumed + i];
     }
@@ -201,7 +182,7 @@ fn peek(p: const PipeBuffer&, dst: u8[:]) -> i64 {
     guard dst.len > 0 else { return 0; }
     let avail = readable_len(p);
     if avail == 0 { return 0; }
-    let to_peek = if dst.len < avail { dst.len } else { avail };
+    let to_peek = min(dst.len, avail);
     for i in to_peek {
         dst[i] = p.storage[p.consumed + i];
     }

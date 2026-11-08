@@ -570,15 +570,13 @@ struct TrustAnchorStore {
 }
 
 fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw: const u8[:]) -> bool {
-    guard store.anchors.len < store.anchors.cap else { return false; }
     let s_hash = core::sha256(subject_raw);
     let spki_hash = core::sha256(spki_raw);
-    store.anchors.push(TrustAnchor {
+    return store.anchors.try_push(TrustAnchor {
         subject_dn_sha256: s_hash,
         spki_sha256:       spki_hash,
         is_valid:          true,
     });
-    return true;
 }
 
 // Parses a DER-encoded X.509 certificate and adds its Subject DN and SPKI to the trust anchor store.
@@ -664,7 +662,7 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
 // - Case-insensitive comparison.
 fn x509_strip_trailing_dot(s: const u8[:]) -> const u8[:] {
     if s.len > 1 && s[s.len - 1] == '.' {
-        return s[..s.len - 1];
+        return s[..^1];
     }
     return s;
 }
@@ -677,25 +675,19 @@ inline fn x509_is_ip_literal(host: const u8[:]) -> bool {
             break;
         }
     }
-    return is_ip && core::contains_byte(host, '.');
+    return is_ip && host.contains_byte('.');
 }
 
 fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
     guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { return false; }
     let suffix = pat[2..];
-    guard !core::contains_byte(suffix, '*') && core::contains_byte(suffix, '.') else { return false; }
+    guard !suffix.contains_byte('*') && suffix.contains_byte('.') else { return false; }
     guard !x509_is_ip_literal(host) else { return false; }
 
-    var dot_idx = -1;
-    for i in host.len {
-        if host[i] == '.' {
-            dot_idx = i;
-            break;
-        }
-    }
+    let dot_idx = host.index_of_byte('.');
     guard dot_idx > 0 else { return false; }
     let host_remainder = host[dot_idx + 1..];
-    return eq_ascii_fold(host_remainder, suffix);
+    return host_remainder.eq_ascii_fold(suffix);
 }
 
 // Matches a single DNS hostname against a SAN entry (RFC 6125 Section 6.4.3).
@@ -707,13 +699,13 @@ fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
 // - Case-insensitive comparison.
 fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
     guard san_pattern.len > 0 && host.len > 0 else { return false; }
-    guard !core::contains_byte(san_pattern, 0) && !core::contains_byte(host, 0) else { return false; }
+    guard !san_pattern.contains_byte(0) && !host.contains_byte(0) else { return false; }
 
     let pat = x509_strip_trailing_dot(san_pattern);
     let h = x509_strip_trailing_dot(host);
     guard pat.len > 0 && h.len > 0 else { return false; }
 
-    if eq_ascii_fold(pat, h) {
+    if pat.eq_ascii_fold(h) {
         return true;
     }
 
@@ -724,13 +716,13 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
 // - IPv6 zone IDs (%zone) inside URIs MUST NOT bypass URI name constraints and must be rejected.
 // - Embedded NUL bytes MUST be rejected.
 fn match_uri_san(san_uri_host: const u8[:], request_host: const u8[:]) -> bool {
-    if core::contains_byte(san_uri_host, '%') || core::contains_byte(request_host, '%') {
+    if san_uri_host.contains_byte('%') || request_host.contains_byte('%') {
         return false;
     }
-    if core::contains_byte(san_uri_host, 0) || core::contains_byte(request_host, 0) {
+    if san_uri_host.contains_byte(0) || request_host.contains_byte(0) {
         return false;
     }
-    return eq_ascii_fold(san_uri_host, request_host);
+    return san_uri_host.eq_ascii_fold(request_host);
 }
 
 enum SanType {
@@ -833,7 +825,7 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
 
 inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
     if tag_num == 1 { // rfc822Name [1] IA5String
-        guard elem_buf.len > 0 && !core::contains_byte(elem_buf, 0) else { return false; }
+        guard elem_buf.len > 0 && !elem_buf.contains_byte(0) else { return false; }
         out_type = SanType.Email;
         return true;
     }
@@ -849,7 +841,7 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
     }
     if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
         guard elem_buf.len > 0 else { return false; }
-        guard !core::contains_byte(elem_buf, '%') && !core::contains_byte(elem_buf, 0) else { return false; }
+        guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
         out_type = SanType.Uri;
         return true;
     }
@@ -874,12 +866,10 @@ fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> b
     var st = SanType.Other;
     guard x509_classify_san_element(tag_num, elem.buf, st) else { return false; }
 
-    guard out_sans.len < out_sans.cap else { return false; }
-    out_sans.push(SanEntry {
+    return out_sans.try_push(SanEntry {
         san_type: st,
         val:      elem.buf,
     });
-    return true;
 }
 
 // Example:
@@ -984,20 +974,20 @@ fn validate_cidr_mask(mask: const u8[:]) -> bool {
 inline fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
     guard cand.len > 0 else { return false; }
     guard cand[0] != '.' else { return false; }
-    guard !core::contains_byte(cand, 0) else { return false; }
+    guard !cand.contains_byte(0) else { return false; }
     return find(cand, "..") < 0;
 }
 
 inline fn x509_match_dns_dotted_constraint(cand: const u8[:], cons: const u8[:]) -> bool {
     guard cons.len > 1 else { return false; }
     guard cand.len > cons.len else { return false; }
-    return core::ends_with_fold(cand, cons);
+    return cand.ends_with_fold(cons);
 }
 
 fn x509_match_dns_subdomain(cand: const u8[:], cons: const u8[:]) -> bool {
     guard cons.len > 0 else { return false; }
     guard cand.len > cons.len else { return false; }
-    guard core::ends_with_fold(cand, cons) else { return false; }
+    guard cand.ends_with_fold(cons) else { return false; }
     var idx = cand.len - cons.len;
     idx--;
     guard idx >= 0 else { return false; }
@@ -1010,7 +1000,7 @@ fn x509_match_dns_subdomain(cand: const u8[:], cons: const u8[:]) -> bool {
 // Rejects embedded NUL bytes (CVE-2021-3712 / OpenSSL #31686).
 fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_dns.len > 0 && constraint.len > 0 else { return false; }
-    guard !core::contains_byte(constraint, 0) else { return false; }
+    guard !constraint.contains_byte(0) else { return false; }
 
     let cand = x509_strip_trailing_dot(candidate_dns);
     let cons = x509_strip_trailing_dot(constraint);
@@ -1020,7 +1010,7 @@ fn match_dns_name_constraint(candidate_dns: const u8[:], constraint: const u8[:]
     if cons[0] == '.' {
         return x509_match_dns_dotted_constraint(cand, cons);
     }
-    if eq_ascii_fold(cand, cons) {
+    if cand.eq_ascii_fold(cons) {
         return true;
     }
     return x509_match_dns_subdomain(cand, cons);
@@ -1060,21 +1050,21 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     }
 
     var auth_end = s.len;
-    let slash_idx = core::index_of_byte(s, '/');
+    let slash_idx = s.index_of_byte('/');
     if slash_idx >= 0 && slash_idx < auth_end { auth_end = slash_idx; }
-    let q_idx = core::index_of_byte(s, '?');
+    let q_idx = s.index_of_byte('?');
     if q_idx >= 0 && q_idx < auth_end { auth_end = q_idx; }
-    let h_idx = core::index_of_byte(s, '#');
+    let h_idx = s.index_of_byte('#');
     if h_idx >= 0 && h_idx < auth_end { auth_end = h_idx; }
     return s[..auth_end];
 }
 
 fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:]) -> bool {
-    let close_bracket = core::index_of_byte(host_part, ']');
+    let close_bracket = host_part.index_of_byte(']');
     guard close_bracket > 1 else { return false; }
     var inner_ip = host_part[1..close_bracket];
 
-    let pct_idx = core::index_of_byte(inner_ip, '%');
+    let pct_idx = inner_ip.index_of_byte('%');
     if pct_idx >= 0 {
         inner_ip = inner_ip[..pct_idx];
     }
@@ -1082,9 +1072,9 @@ fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:
 
     var cons_cmp = constraint;
     if cons_cmp.len > 2 && cons_cmp[0] == '[' && cons_cmp[cons_cmp.len - 1] == ']' {
-        cons_cmp = cons_cmp[1..cons_cmp.len - 1];
+        cons_cmp = cons_cmp[1..^1];
     }
-    return eq_ascii_fold(inner_ip, cons_cmp);
+    return inner_ip.eq_ascii_fold(cons_cmp);
 }
 
 inline fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
@@ -1102,19 +1092,19 @@ inline fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
 // Rejects candidate URIs with userinfo, path/query @ smuggling, or IPv4 literals for dNSName constraints.
 fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_uri.len > 0 && constraint.len > 0 else { return false; }
-    guard !core::contains_byte(candidate_uri, 0) && !core::contains_byte(constraint, 0) else { return false; }
+    guard !candidate_uri.contains_byte(0) && !constraint.contains_byte(0) else { return false; }
 
     var host_part = x509_extract_uri_authority(candidate_uri);
     guard host_part.len > 0 else { return false; }
 
     // RFC 5280 §4.2.1.10: URI authority cannot contain userinfo (@) to satisfy DNS name constraint
-    guard !core::contains_byte(host_part, '@') else { return false; }
+    guard !host_part.contains_byte('@') else { return false; }
 
     if host_part[0] == '[' {
         return x509_match_ipv6_uri_constraint(host_part, constraint);
     }
 
-    let colon_idx = core::index_of_byte(host_part, ':');
+    let colon_idx = host_part.index_of_byte(':');
     if colon_idx >= 0 {
         host_part = host_part[..colon_idx];
     }
@@ -1131,22 +1121,22 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
 // - Otherwise: candidate host after `@` matches `constraint` case-insensitively.
 fn match_email_name_constraint(candidate_email: const u8[:], constraint: const u8[:]) -> bool {
     guard candidate_email.len > 0 && constraint.len > 0 else { return false; }
-    guard !core::contains_byte(candidate_email, 0) && !core::contains_byte(constraint, 0) else { return false; }
+    guard !candidate_email.contains_byte(0) && !constraint.contains_byte(0) else { return false; }
 
-    let cand_local, cand_host, has_cand_at = core::split_once_byte(candidate_email, '@');
+    let cand_local, cand_host, has_cand_at = candidate_email.split_once_byte('@');
     guard has_cand_at && cand_local.len > 0 && cand_host.len > 0 else { return false; }
-    guard !core::contains_byte(cand_host, '@') else { return false; }
+    guard !cand_host.contains_byte('@') else { return false; }
 
-    let cons_local, cons_host, has_cons_at = core::split_once_byte(constraint, '@');
+    let cons_local, cons_host, has_cons_at = constraint.split_once_byte('@');
     if has_cons_at {
         guard cons_local.len > 0 && cons_host.len > 0 else { return false; }
-        return cand_local == cons_local && eq_ascii_fold(cand_host, cons_host);
+        return cand_local == cons_local && cand_host.eq_ascii_fold(cons_host);
     }
 
     if core::starts_with(constraint, ".") {
         return x509_match_dns_dotted_constraint(cand_host, constraint);
     }
-    return eq_ascii_fold(cand_host, constraint);
+    return cand_host.eq_ascii_fold(constraint);
 }
 
 fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out_val: ByteCursor&) -> bool {
@@ -1155,10 +1145,10 @@ fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out
     let tag_num = base_tag & 0x1F;
     if tag_num == 1 { // rfc822Name [1]
         out_type = SanType.Email;
-        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
+        guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }
     } else if tag_num == 2 { // dNSName
         out_type = SanType.Dns;
-        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
+        guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }
     } else if tag_num == 7 { // iPAddress
         out_type = SanType.Ip;
         guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }
@@ -1166,7 +1156,7 @@ fn x509_parse_general_subtree_base(subtree: ByteCursor&, out_type: SanType&, out
         guard validate_cidr_mask(out_val.buf[half..]) else { return false; }
     } else if tag_num == 6 { // uniformResourceIdentifier [6]
         out_type = SanType.Uri;
-        guard out_val.buf.len > 0 && !core::contains_byte(out_val.buf, 0) else { return false; }
+        guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }
     } else {
         out_type = SanType.Other;
     }
@@ -1203,14 +1193,12 @@ fn x509_parse_general_subtree(
     guard x509_parse_general_subtree_base(subtree, st, base_elem) else { return false; }
     guard x509_parse_general_subtree_bounds(subtree) else { return false; }
 
-    guard out_constraints.len < out_constraints.cap else { return false; }
     let span = make_span(nc_der, base_elem.buf);
-    out_constraints.push(NameConstraintEntry {
+    return out_constraints.try_push(NameConstraintEntry {
         san_type:    st,
         is_excluded: is_excluded,
         val:         span_slice(nc_der, span),
     });
-    return true;
 }
 
 fn x509_parse_subtrees_sequence(

@@ -128,8 +128,8 @@ fn decode_connect_get_payload(
     }
 
     let comp = params.compression[..];
-    guard comp.len > 0 && !core::eq_ascii_fold(comp, "identity") else { return GrpcStatusCode.Ok; }
-    guard core::eq_ascii_fold(comp, "gzip") else { return GrpcStatusCode.Unimplemented; }
+    guard comp.len > 0 && !comp.eq_ascii_fold("identity") else { return GrpcStatusCode.Ok; }
+    guard comp.eq_ascii_fold("gzip") else { return GrpcStatusCode.Unimplemented; }
     var decomp_buf: u8[>..] = [];
     let ok_gz, gz_err = core::gzip_decompress_with_limit(
         out_payload[..], decomp_buf, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
@@ -158,10 +158,10 @@ fn scan_connect_query_pairs(
 ) -> bool {
     var rem = rem_in;
     while rem.len > 0 {
-        let pair, rest, has_amp = core::split_once_byte(rem, '&');
+        let pair, rest, has_amp = rem.split_once_byte('&');
         let item = if has_amp { pair } else { rem };
         rem = if has_amp { rest } else { "" };
-        let k, v, ok_eq = core::split_once_byte(item, '=');
+        let k, v, ok_eq = item.split_once_byte('=');
         if ok_eq {
             guard apply_connect_query_param(k, v, out_params, out_raw_msg) else { return false; }
         }
@@ -214,11 +214,16 @@ fn append_connect_json_byte<B>(b: u8, out: B&) -> bool {
 
 // Appends a JSON-escaped string (`"..."`) into `out`.
 fn append_connect_json_quoted<B>(raw: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     guard out.try_push('"') else { return false; }
     for b in raw {
         guard append_connect_json_byte(b, out) else { return false; }
     }
-    return out.try_push('"');
+    guard out.try_push('"') else { return false; }
+    committed = true;
+    return true;
 }
 
 // Appends `"metadata":{...}` entries from `trailers` into `json_buf`.
@@ -270,6 +275,9 @@ fn encode_connect_end_stream<B>(
     trailers: const HeaderMap&,
     out:      B&,
 ) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     var json_buf: u8[..2048] = [];
     guard json_buf.try_push('{') else { return false; }
     let has_err = code != GrpcStatusCode.Ok;
@@ -285,8 +293,10 @@ fn encode_connect_end_stream<B>(
     guard json_buf.try_push('}') else { return false; }
     var hdr: u8[..8] = [];
     hdr.push(CONNECT_FLAG_END_STREAM);
-    core::write_be_u32(hdr, json_buf.len as u32);
-    return out.try_append(hdr[..]) && out.try_append(json_buf[..]);
+    hdr.append_u32_be(json_buf.len as u32);
+    guard out.try_append(hdr[..]) && out.try_append(json_buf[..]) else { return false; }
+    committed = true;
+    return true;
 }
 
 // Translates a single JSON escape char following `\` in a Connect JSON string.
@@ -308,13 +318,16 @@ fn decode_connect_json_escape(esc: u8) -> u8 {
 //   returns: true, out = "invalid_argument", pos = 19
 fn scan_connect_json_string<B>(s: const u8[:], pos: i64&, out: B&) -> bool {
     out.clear();
-    let q_rel = core::index_of_byte(s[pos..], '"');
+    var committed = false;
+    defer if !committed { out.clear(); };
+    let q_rel = s[pos..].index_of_byte('"');
     guard q_rel >= 0 else { return false; }
     var idx = core::add_sat_i64(pos, core::add_sat_i64(q_rel, 1));
     while idx < s.len {
         let b = s[idx];
         if b == '"' {
             pos = core::add_sat_i64(idx, 1);
+            committed = true;
             return true;
         }
         if b == '\\' {
@@ -342,7 +355,7 @@ fn parse_connect_metadata_values(
     key:          const u8[:],
     out_trailers: HeaderMap&,
 ) -> bool {
-    let br_rel = core::index_of_byte(meta_slice[pos..], '[');
+    let br_rel = meta_slice[pos..].index_of_byte('[');
     guard br_rel >= 0 else { return false; }
     pos = core::add_sat_i64(pos, core::add_sat_i64(br_rel, 1));
     var val_buf: u8[..256] = [];
@@ -405,7 +418,14 @@ fn parse_connect_error_object(
     out_status: GrpcStatusCode&,
     out_msg:    u8[..256]&,
 ) -> bool {
-    let br_rel = core::index_of_byte(s[pos..], '{');
+    let saved_pos = pos;
+    var committed = false;
+    defer if !committed {
+        pos = saved_pos;
+        out_status = GrpcStatusCode.Unknown;
+        out_msg.clear();
+    };
+    let br_rel = s[pos..].index_of_byte('{');
     guard br_rel >= 0 else { return false; }
     pos = core::add_sat_i64(pos, core::add_sat_i64(br_rel, 1));
     out_status = GrpcStatusCode.Unknown;
@@ -425,6 +445,7 @@ fn parse_connect_error_object(
         }
         apply_connect_error_field(key_buf[..], val_buf[..], out_status, out_msg);
     }
+    committed = true;
     return true;
 }
 
@@ -441,7 +462,7 @@ fn dispatch_connect_end_stream_key(
         return parse_connect_error_object(trimmed, pos, out_status, out_msg);
     }
     if key == "metadata" {
-        let br_rel = core::index_of_byte(trimmed[pos..], '{');
+        let br_rel = trimmed[pos..].index_of_byte('{');
         guard br_rel >= 0 else { return false; }
         pos = core::add_sat_i64(pos, core::add_sat_i64(br_rel, 1));
         guard parse_connect_metadata_object(trimmed[pos..], out_trailers) else { return false; }
@@ -464,8 +485,8 @@ fn parse_connect_end_stream(
 ) -> bool {
     out_status = GrpcStatusCode.Ok;
     out_message.clear();
-    let trimmed = core::trim_lws(json_bytes);
-    guard trimmed.len >= 2 && trimmed[0] == '{' && trimmed[core::sub_sat_i64(trimmed.len, 1)] == '}' else {
+    let trimmed = json_bytes.trim_lws();
+    guard trimmed.len >= 2 && trimmed[0] == '{' && trimmed[^1..] == "}" else {
         return false;
     }
 
@@ -493,8 +514,8 @@ fn parse_connect_end_stream(
 
 // Returns true if `req` is a Connect Protocol unary HTTP GET request (`connect=v1` in query).
 fn is_connect_get_request(req: const Request&) -> bool {
-    guard eq_ascii_fold(req.method[..], "GET") else { return false; }
-    let q_idx = core::index_of_byte(req.url[..], '?');
+    guard req.method[..].eq_ascii_fold("GET") else { return false; }
+    let q_idx = req.url[..].index_of_byte('?');
     guard q_idx >= 0 else { return false; }
     let query = req.url[core::add_sat_i64(q_idx, 1)..];
     return core::find(query, "connect=v1") >= 0 || core::find(query, "connect=") >= 0;

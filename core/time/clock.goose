@@ -16,11 +16,7 @@ struct MonotonicInstant {
 
 fn monotonic_now() -> MonotonicInstant {
     let raw_ns = clock_ns();
-    return MonotonicInstant { nanos: if raw_ns > 0 { raw_ns as u64 } else { 0 } };
-}
-
-fn new_monotonic_instant(nanos_val: u64) -> MonotonicInstant {
-    return MonotonicInstant { nanos: nanos_val };
+    return MonotonicInstant { nanos: max(0, raw_ns) as u64 };
 }
 
 fn as_nanos(inst: MonotonicInstant) -> u64 {
@@ -33,7 +29,7 @@ fn duration_since(now_inst: MonotonicInstant, anchor: MonotonicInstant) -> Durat
     }
     let diff = now_inst.nanos - anchor.nanos;
     let max_i64 = 9223372036854775807 as u64;
-    let clamped = if diff > max_i64 { max_i64 } else { diff };
+    let clamped = min(diff, max_i64);
     return Duration { nanos: clamped as i64 };
 }
 
@@ -86,7 +82,7 @@ fn is_expired(deadline_val: const Deadline&) -> bool {
 fn remaining(deadline_val: const Deadline&) -> Duration {
     if !deadline_val.has_deadline { return Duration { nanos: 9223372036854775807 }; }
     let diff_ns = deadline_val.target_mono_ns - clock_ns();
-    return Duration { nanos: if diff_ns > 0 { diff_ns } else { 0 } };
+    return Duration { nanos: max(0, diff_ns) };
 }
 
 fn sleep(dur: Duration) {

@@ -148,7 +148,7 @@ fn build_socks5_connect_request(
     }
 
     // DST.PORT (2 bytes, big-endian)
-    core::write_be_u16(out, port);
+    out.append_u16_be(port);
 
     return Socks5Error.None;
 }
@@ -183,7 +183,7 @@ fn build_socks5_connect_request_v6(
         return Socks5Error.AddressTypeNotSupported;
     }
 
-    core::write_be_u16(out, port);
+    out.append_u16_be(port);
     return Socks5Error.None;
 }
 
@@ -278,7 +278,7 @@ inline fn has_crlf_or_null(s: const u8[:]) -> bool {
 }
 
 fn append_connect_line(out: u8[..1024]&, host: const u8[:], port: u16) {
-    if host.len > 0 && !has_crlf_or_null(host) && !core::contains_byte(host, ' ') && !core::contains_byte(host, '\t') {
+    if host.len > 0 && !has_crlf_or_null(host) && !host.contains_byte(' ') && !host.contains_byte('\t') {
         format(out, "CONNECT ", host, ":", port, " HTTP/1.1\r\n");
         format(out, "Host: ", host, ":", port, "\r\n");
     }
@@ -311,12 +311,12 @@ fn build_http_connect_request(
 fn is_token_in_connection_headers(headers: const HeaderMap&, target_name: const u8[:]) -> bool {
     for idx in 0..headers.entries.len {
         let e = headers.entries[idx];
-        guard eq_ascii_fold(entry_name(headers, e), "connection") else { continue; }
+        guard entry_name(headers, e).eq_ascii_fold("connection") else { continue; }
         var rest: const u8[:] = entry_value(headers, e);
         while rest.len > 0 {
-            let token_raw, remaining, has_comma = core::split_once_byte(rest, ',');
-            let token = trim_lws(token_raw);
-            if token.len > 0 && eq_ascii_fold(token, target_name) {
+            let token_raw, remaining, has_comma = rest.split_once_byte(',');
+            let token = token_raw.trim_lws();
+            if token.len > 0 && token.eq_ascii_fold(target_name) {
                 return true;
             }
             if !has_comma { break; }
@@ -356,7 +356,7 @@ fn verify_connect_tunnel_response(
     sink_buffered_bytes: i64 = 0,
 ) -> ConnectTunnelError {
     guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
-    guard starts_with(raw_response, "HTTP/1.") else { return ConnectTunnelError.InvalidStatusLine; }
+    guard raw_response.starts_with("HTTP/1.") else { return ConnectTunnelError.InvalidStatusLine; }
 
     // Find \r\n\r\n boundary separating headers from potential smuggled body bytes
     let delim_idx = find(raw_response, "\r\n\r\n");
@@ -416,13 +416,13 @@ fn parse_socks5_ipv4_literal(raw: const u8[:]) -> u8[4], bool {
     var out: u8[4] = [0; 4];
     var rest = raw;
     for i in 4 {
-        let part, rem, has_dot = core::split_once_byte(rest, '.');
+        let part, rem, has_dot = rest.split_once_byte('.');
         if i < 3 {
             guard has_dot else { return out, false; }
         } else {
             guard !has_dot else { return out, false; }
         }
-        let val, ok_v = core::parse_u32_dec(part);
+        let val, ok_v = part.parse_u32_dec();
         guard ok_v && val <= 255 else { return out, false; }
         out[i] = val as u8;
         rest = rem;
@@ -570,15 +570,15 @@ inline fn detect_header_end_across_chunks(reader: HeaderReader&, chunk: const u8
     var combined: u8[..6] = [];
     combined.append(reader.tail_bytes[..]);
     if chunk.len >= 3 {
-        combined.clear();
-        combined.append(chunk[chunk.len - 3..]);
+        let _ = combined.try_set(chunk[^3..]);
     } else if chunk.len > 0 {
         combined.append(chunk);
     }
-    reader.tail_bytes.clear();
     let keep = min(combined.len, 3);
     if keep > 0 {
-        reader.tail_bytes.append(combined[combined.len - keep..]);
+        let _ = reader.tail_bytes.try_set(combined[^keep..]);
+    } else {
+        reader.tail_bytes.clear();
     }
     return false;
 }
@@ -618,7 +618,7 @@ fn feed_header_bytes(
     }
 
     // Count header lines and enforce ceiling
-    let newlines = core::count_byte(chunk, '\n') as i32;
+    let newlines = chunk.count_byte('\n') as i32;
     if newlines > 0 {
         reader.header_lines_count += newlines;
         if reader.header_lines_count > reader.config.max_header_count {

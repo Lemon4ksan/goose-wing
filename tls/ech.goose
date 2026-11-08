@@ -61,8 +61,7 @@ fn read_ech_cipher_suites(contents: ByteCursor&, out: EchConfig&) -> bool {
         var kdf:  u16 = 0;
         var aead: u16 = 0;
         guard cs_cursor.get_u16(kdf) && cs_cursor.get_u16(aead) else { return false; }
-        guard out.cipher_suites.len < out.cipher_suites.cap else { return false; }
-        out.cipher_suites.push(EchCipherSuite { kdf_id: kdf, aead_id: aead });
+        guard out.cipher_suites.try_push(EchCipherSuite { kdf_id: kdf, aead_id: aead }) else { return false; }
     }
     guard cs_cursor.cursor_len() == 0 else { return false; }
     return out.cipher_suites.len > 0;
@@ -113,15 +112,11 @@ fn read_ech_public_name(contents: ByteCursor&, out: EchConfig&) -> bool {
     var pub_cursor = ByteCursor { buf: contents.buf[..0] };
     guard contents.get_u8_length_prefixed(pub_cursor) else { return false; }
     let pub_len = pub_cursor.cursor_len();
-    guard pub_len >= 1 && pub_len <= 255 && pub_len <= out.public_name.cap else { return false; }
+    guard pub_len >= 1 && pub_len <= 255 else { return false; }
 
     guard validate_ech_public_name_bytes(pub_cursor.buf) else { return false; }
 
-    out.public_name.clear();
-    for i in pub_len {
-        out.public_name.push(pub_cursor.buf[i]);
-    }
-    return true;
+    return out.public_name.try_set(pub_cursor.buf);
 }
 
 // Reads key config from ECH contents cursor.
@@ -137,13 +132,6 @@ fn read_ech_key_config(contents: ByteCursor&, out: EchConfig&) -> bool {
     return read_ech_cipher_suites(contents, out);
 }
 
-fn copy_ech_raw_bytes(raw: const u8[:], total_len: i64, out: EchConfig&) {
-    out.raw_bytes.clear();
-    for i in total_len {
-        out.raw_bytes.push(raw[i]);
-    }
-}
-
 // Parses a single ECHConfig from raw wire bytes.
 //
 // Example:
@@ -157,9 +145,7 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
     guard c.get_u16(out.length) && out.length <= c.cursor_len() else { return false; }
 
     let total_len = 4 + (out.length as i64);
-    guard total_len <= raw.len && total_len <= out.raw_bytes.cap else { return false; }
-
-    copy_ech_raw_bytes(raw, total_len, out);
+    guard total_len <= raw.len && out.raw_bytes.try_set(raw[..total_len]) else { return false; }
 
     var contents = ByteCursor { buf: raw[..0] };
     guard c.get_bytes(contents, out.length) else { return false; }
@@ -191,8 +177,7 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
     if ver == rfc::ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
         guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
-        guard out.configs.len < out.configs.cap else { return false; }
-        out.configs.push(cfg);
+        guard out.configs.try_push(cfg) else { return false; }
     }
     list_cursor.buf = list_cursor.buf[total_entry..];
     return true;
@@ -347,11 +332,11 @@ fn encode_ech_outer_extensions<B>(out: B&, ext_types: const u16[:]) -> bool {
     let total_needed = core::add_sat_i64(5, vec_bytes);
     guard core::add_sat_i64(out.len, total_needed) <= out.cap else { return false; }
 
-    core::append_u16_be(out, rfc::TLS_EXT_ECH_OUTER_EXTENSIONS);
-    core::append_u16_be(out, core::add_sat_i64(1, vec_bytes) as u16);
+    out.append_u16_be(rfc::TLS_EXT_ECH_OUTER_EXTENSIONS);
+    out.append_u16_be(core::add_sat_i64(1, vec_bytes) as u16);
     out.push(vec_bytes as u8);
     for t in ext_types {
-        core::append_u16_be(out, t);
+        out.append_u16_be(t);
     }
     return true;
 }
@@ -360,19 +345,19 @@ fn append_ech_inner_sni_and_alpn<B>(ext_buf: B&, inner_sni: const u8[:], inner_a
     if inner_sni.len > 0 {
         guard inner_sni.len <= 255 else { return false; }
         let sni_entry_len = core::add_sat_i64(inner_sni.len, 3) as u16;
-        core::append_u16_be(ext_buf, rfc::TLS_EXT_SERVER_NAME);
-        core::append_u16_be(ext_buf, core::add_sat_i64(inner_sni.len, 5) as u16);
-        core::append_u16_be(ext_buf, sni_entry_len);
+        ext_buf.append_u16_be(rfc::TLS_EXT_SERVER_NAME);
+        ext_buf.append_u16_be(core::add_sat_i64(inner_sni.len, 5) as u16);
+        ext_buf.append_u16_be(sni_entry_len);
         ext_buf.push(0);
-        core::append_u16_be(ext_buf, inner_sni.len as u16);
+        ext_buf.append_u16_be(inner_sni.len as u16);
         ext_buf.append(inner_sni);
     }
     if inner_alpn.len > 0 {
         guard inner_alpn.len <= 255 else { return false; }
         let alpn_list_len = core::add_sat_i64(inner_alpn.len, 1) as u16;
-        core::append_u16_be(ext_buf, rfc::TLS_EXT_ALPN);
-        core::append_u16_be(ext_buf, core::add_sat_i64(inner_alpn.len, 3) as u16);
-        core::append_u16_be(ext_buf, alpn_list_len);
+        ext_buf.append_u16_be(rfc::TLS_EXT_ALPN);
+        ext_buf.append_u16_be(core::add_sat_i64(inner_alpn.len, 3) as u16);
+        ext_buf.append_u16_be(alpn_list_len);
         ext_buf.push(inner_alpn.len as u8);
         ext_buf.append(inner_alpn);
     }
@@ -397,14 +382,14 @@ fn build_encoded_client_hello_inner<B>(
     guard append_ech_inner_sni_and_alpn(ext_buf, inner_sni, inner_alpn) else { return false; }
 
     // supported_versions (0x002B): strictly TLS 1.3 (0x0304) in ClientHelloInner (RFC 9849 §5.1)
-    core::append_u16_be(ext_buf, rfc::TLS_EXT_SUPPORTED_VERSIONS);
-    core::append_u16_be(ext_buf, 3);
+    ext_buf.append_u16_be(rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    ext_buf.append_u16_be(3);
     ext_buf.push(2);
-    core::append_u16_be(ext_buf, rfc::TLS_VERSION_1_3);
+    ext_buf.append_u16_be(rfc::TLS_VERSION_1_3);
 
     // encrypted_client_hello (0xFE0D): inner marker (type = 1)
-    core::append_u16_be(ext_buf, rfc::EXT_ENCRYPTED_CLIENT_HELLO);
-    core::append_u16_be(ext_buf, 1);
+    ext_buf.append_u16_be(rfc::EXT_ENCRYPTED_CLIENT_HELLO);
+    ext_buf.append_u16_be(1);
     build_ech_inner_extension(ext_buf);
 
     if outer_ext_types.len > 0 {
@@ -412,16 +397,16 @@ fn build_encoded_client_hello_inner<B>(
     }
 
     var raw_inner: u8[..1024] = [];
-    core::append_u16_be(raw_inner, rfc::TLS_LEGACY_VERSION_1_2);
+    raw_inner.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
     raw_inner.append(inner_random[..]);
     raw_inner.push(0); // legacy_session_id MUST be empty in EncodedClientHelloInner (RFC 9849 §5.1)
-    core::append_u16_be(raw_inner, 6);
-    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_AES_128_GCM_SHA256);
-    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_AES_256_GCM_SHA384);
-    core::append_u16_be(raw_inner, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256);
+    raw_inner.append_u16_be(6);
+    raw_inner.append_u16_be(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    raw_inner.append_u16_be(rfc::TLS_CIPHER_AES_256_GCM_SHA384);
+    raw_inner.append_u16_be(rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256);
     raw_inner.push(1);
     raw_inner.push(0);
-    core::append_u16_be(raw_inner, ext_buf.len as u16);
+    raw_inner.append_u16_be(ext_buf.len as u16);
     raw_inner.append(ext_buf[..]);
 
     return pad_ech_inner(raw_inner[..], max_name_len, inner_sni.len, out);
@@ -458,6 +443,7 @@ fn compute_ech_accept_confirmation(
 
     let zero_salt: u8[32] = [0; 32];
     var prk = core::hkdf_extract(zero_salt[..], inner_random[..]);
+    defer core::secure_zeroize_32(prk);
     let label = if is_hrr { "hrr ech accept confirmation" } else { "ech accept confirmation" };
     let ok = internal::hkdf_expand_label(
         internal::HASH_SHA256,
@@ -467,7 +453,6 @@ fn compute_ech_accept_confirmation(
         rfc::ECH_ACCEPT_CONFIRM_LEN,
         confirm[..],
     );
-    core::secure_zeroize_32(prk);
     return confirm, ok;
 }
 
@@ -483,10 +468,9 @@ fn seal_ech_inner<B>(
     out_ct:       B&,
 ) -> bool {
     var info: u8[..600] = [];
-    guard 8 + config.raw_bytes.len <= info.cap else { return false; }
     info.append("tls ech");
     info.push(0x00);
-    info.append(config.raw_bytes[..]);
+    guard info.try_append(config.raw_bytes[..]) else { return false; }
 
     return hpke_seal_base(
         config.public_key,
@@ -524,9 +508,7 @@ fn parse_ech_hrr_retry_configs(ext_data: const u8[:], out_configs: u8[>..]&) -> 
     guard ext_data.len >= 4 else { return false; }
     var parsed_list = EchConfigList { .. };
     guard parse_ech_config_list(ext_data, parsed_list) else { return false; }
-    out_configs.clear();
-    out_configs.append(ext_data);
-    return true;
+    return out_configs.try_set(ext_data);
 }
 
 // Verifies the 8-byte ECH acceptance confirmation in ServerHello (RFC 9849 Section 7.2).
@@ -536,11 +518,7 @@ fn verify_ech_acceptance_confirmation(
     expected_confirmation: const u8[8]&,
 ) -> bool {
     guard ext_data.len == 8 else { return false; }
-    var diff: u8 = 0;
-    for i in 8 {
-        diff |= ext_data[i] ^ expected_confirmation[i];
-    }
-    return diff == 0;
+    return core::ct_eq_bytes(ext_data, expected_confirmation[..]);
 }
 
 enum EchHandshakeMode {

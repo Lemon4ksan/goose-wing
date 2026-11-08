@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 
 enum KnownHeaderId {
     Unknown,
@@ -49,28 +50,6 @@ inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
     };
 }
 
-// Converts a KnownHeaderId to a compact 1-byte integer tag.
-inline fn header_id_to_u8(id: KnownHeaderId) -> u8 {
-    return match id {
-        Host => 1,
-        Date => 2,
-        Accept => 3,
-        Cookie => 4,
-        Origin => 5,
-        Server => 6,
-        Connection => 7,
-        UserAgent => 8,
-        ContentType => 9,
-        ContentLength => 10,
-        Authorization => 11,
-        TransferEncoding => 12,
-        SecWebSocketKey => 13,
-        Upgrade => 14,
-        Expect => 15,
-        _ => 0,
-    };
-}
-
 // Converts an uppercase ASCII character to lowercase.
 inline fn ascii_lower(b: u8) -> u8 {
     guard b >= 'A' && b <= 'Z' else { return b; }
@@ -78,7 +57,7 @@ inline fn ascii_lower(b: u8) -> u8 {
 }
 
 inline fn check_header(name: const u8[:], expected: const u8[:], id: KnownHeaderId) -> KnownHeaderId {
-    return if core::eq_ascii_fold(name, expected) { id } else { KnownHeaderId.Unknown };
+    return if name.eq_ascii_fold(expected) { id } else { KnownHeaderId.Unknown };
 }
 
 // Identifies well-known HTTP header in O(1) time without linear search.

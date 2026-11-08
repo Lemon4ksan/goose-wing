@@ -116,11 +116,9 @@ fn build_grpc_http_request(
     serialized_msg: const u8[:],
     out_req:        Request&,
 ) {
-    out_req.method.clear();
-    out_req.method.append("POST");
+    let _ = out_req.method.try_set("POST");
 
-    out_req.url.clear();
-    let _ = out_req.url.try_append(base_url);
+    let _ = out_req.url.try_set(base_url);
     let last_idx = core::sub_sat_i64(out_req.url.len, 1);
     if out_req.url.len == 0 || out_req.url[last_idx] != '/' {
         let _ = out_req.url.try_push('/');
@@ -223,7 +221,7 @@ fn parse_grpc_web_unary_body(
 ) -> bool {
     var wire_bytes: u8[>..] = [];
     let content_type = get_header(res_headers, "content-type");
-    if starts_with_fold(content_type, rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
+    if content_type.starts_with_fold(rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
         guard decode_grpc_web_text(body, wire_bytes) else { return false; }
     } else {
         wire_bytes.append(body);
@@ -245,7 +243,7 @@ fn parse_grpc_web_unary_body(
         } else {
             guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
         }
-        offset += consumed;
+        offset = core::add_sat_u32(offset, consumed);
     }
 
     if !found_trailer {
@@ -330,9 +328,9 @@ fn parse_grpc_unary_response(
 //   status_val = "0"
 //   returns: 0
 fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
-    let trimmed = trim_lws(status_val);
+    let trimmed = status_val.trim_lws();
     guard trimmed.len > 0 else { return 2; }
-    let status_int, ok_code = core::parse_u32_dec(trimmed);
+    let status_int, ok_code = trimmed.parse_u32_dec();
     if ok_code {
         return status_int;
     }
@@ -342,7 +340,7 @@ fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
 // Processes incoming gRPC-Web response body and trailers.
 fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcResponse&) -> bool {
     var wire_bytes: u8[>..] = [];
-    if starts_with_fold(ct, rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
+    if ct.starts_with_fold(rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
         guard decode_grpc_web_text(body, wire_bytes) else { return false; }
     } else {
         wire_bytes.append(body);
@@ -363,7 +361,7 @@ fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcR
             out_resp.payload.clear();
             guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
         }
-        offset += consumed;
+        offset = core::add_sat_u32(offset, consumed);
     }
     return true;
 }
@@ -390,19 +388,19 @@ fn grpc_unary_call(
     guard ok(err) else {
         let rst_hdr = trailer(res, "x-wing-h2-rst-code");
         if rst_hdr.len > 0 {
-            let rst_code, ok_rst = core::parse_u32_dec(rst_hdr);
+            let rst_code, ok_rst = rst_hdr.parse_u32_dec();
             out_resp.status = if ok_rst { h2_error_to_grpc_status(rst_code) } else { GrpcStatusCode.Unavailable };
         } else {
             out_resp.status = GrpcStatusCode.Unavailable;
         }
         let take_err = min(err.message.len, out_resp.message.cap);
-        out_resp.message.append(err.message[..take_err]);
+        let _ = out_resp.message.try_set(err.message[..take_err]);
         return false;
     }
 
     let rst_after = trailer(res, "x-wing-h2-rst-code");
     if rst_after.len > 0 {
-        let rst_code, ok_rst = core::parse_u32_dec(rst_after);
+        let rst_code, ok_rst = rst_after.parse_u32_dec();
         out_resp.status = if ok_rst { h2_error_to_grpc_status(rst_code) } else { GrpcStatusCode.Internal };
         return false;
     }

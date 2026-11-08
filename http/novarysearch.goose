@@ -207,11 +207,8 @@ fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
         let str, has_item, ok = read_next_quoted_string(inner_list, cursor);
         guard ok else { return false; }
         guard has_item else { break; }
-        guard str.len <= 64 && out.len < out.cap else { return false; }
-
         var item: u8[..64] = [];
-        item.append(str);
-        out.push(item);
+        guard item.try_set(str) && out.try_push(item) else { return false; }
     }
     return true;
 }
@@ -242,7 +239,7 @@ fn is_param_ignored(nvs: const NoVarySearch&, key: const u8[:]) -> bool {
 }
 
 fn bytes_less_than(a: const u8[:], b: const u8[:]) -> bool {
-    let min_len = if a.len < b.len { a.len } else { b.len };
+    let min_len = min(a.len, b.len);
     for i in min_len {
         if a[i] < b[i] { return true; }
         if a[i] > b[i] { return false; }
@@ -257,11 +254,9 @@ fn bytes_less_than(a: const u8[:], b: const u8[:]) -> bool {
 //   returns: true, p.key="key", p.val="value"
 fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
     let k, v, has_eq = pair.split_once_byte('=');
-    guard k.len <= p.key.cap else { return false; }
-    p.key.append(k);
+    guard p.key.try_append(k) else { return false; }
     if has_eq {
-        guard v.len <= p.val.cap else { return false; }
-        p.val.append(v);
+        guard p.val.try_append(v) else { return false; }
     }
     return true;
 }
@@ -286,9 +281,7 @@ fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch
         }
 
         var p = QueryParam { .. };
-        guard parse_single_query_param(pair, p) else { return false; }
-        guard params.len < params.cap else { return false; }
-        params.push(p);
+        guard parse_single_query_param(pair, p) && params.try_push(p) else { return false; }
     }
     return true;
 }

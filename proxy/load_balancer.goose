@@ -74,17 +74,16 @@ fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 =
 }
 
 fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
-    guard cluster.targets.len < cluster.targets.cap else { return false; }
-    guard host.len > 0 && host.len <= 64 else { return false; }
+    guard host.len > 0 else { return false; }
 
     var target = UpstreamTarget {
         port:       port,
-        weight:     if weight > 0 { weight } else { 1 },
+        weight:     max(weight, 1),
         is_healthy: true,
         ..
     };
-    target.host.append(host);
-    cluster.targets.push(target);
+    guard target.host.try_set(host) else { return false; }
+    guard cluster.targets.try_push(target) else { return false; }
     if cluster.policy == LbPolicy.ConsistentHash {
         build_ketama_ring(cluster, cluster.ketama_ring);
     }
@@ -136,8 +135,8 @@ fn select_round_robin(cluster: UpstreamCluster&, n: i32) -> i32, bool {
 }
 
 inline fn evaluate_two_choice(target1: const UpstreamTarget&, r1: i32, target2: const UpstreamTarget&, r2: i32) -> i32 {
-    let w1 = if target1.weight > 0 { target1.weight as u64 } else { 1 };
-    let w2 = if target2.weight > 0 { target2.weight as u64 } else { 1 };
+    let w1 = max(target1.weight as u64, 1);
+    let w2 = max(target2.weight as u64, 1);
     let load1 = core::mul_sat_u64(target1.active_conns as u64, w2);
     let load2 = core::mul_sat_u64(target2.active_conns as u64, w1);
     return if load1 <= load2 { r1 } else { r2 };
@@ -321,11 +320,7 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
     cluster.targets[target_idx].fails = 0;
     let s = inc_target_successes(cluster.targets[target_idx]);
 
-    let healthy_thresh = if cluster.targets[target_idx].healthy_threshold > 0 {
-        cluster.targets[target_idx].healthy_threshold
-    } else {
-        1
-    };
+    let healthy_thresh = max(cluster.targets[target_idx].healthy_threshold, 1);
 
     if cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
         if s >= healthy_thresh {
@@ -403,8 +398,8 @@ fn set_target_health_thresholds(
     unhealthy_thresh: i32,
 ) -> bool {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
-    cluster.targets[target_idx].healthy_threshold = if healthy_thresh > 0 { healthy_thresh } else { 1 };
-    cluster.targets[target_idx].unhealthy_threshold = if unhealthy_thresh > 0 { unhealthy_thresh } else { 1 };
+    cluster.targets[target_idx].healthy_threshold = max(healthy_thresh, 1);
+    cluster.targets[target_idx].unhealthy_threshold = max(unhealthy_thresh, 1);
     return true;
 }
 
@@ -436,8 +431,7 @@ fn insert_ketama_point(ring: KetamaRing&, pt: KetamaPoint) {
             hi = mid;
         }
     }
-    guard ring.points.len < ring.points.cap else { return; }
-    ring.points.push(pt);
+    guard ring.points.try_push(pt) else { return; }
     var pos: u64 = core::sub_sat_u64(ring.points.len as u64, 1);
     while pos > lo {
         let prev = core::sub_sat_u64(pos, 1);
@@ -452,12 +446,12 @@ fn build_ketama_ring(pool: const UpstreamCluster&, ring: KetamaRing&) {
     ring.points.clear();
     for idx in pool.targets.len {
         let target = pool.targets[idx];
-        let w = if target.weight > 0 { target.weight as u32 } else { 1 };
+        let w = max(target.weight as u32, 1);
         let num_pts = core::mul_sat_u64(w, KETAMA_POINTS_PER_WEIGHT) as i64;
         var base_key: u8[..96] = [];
         base_key.append(target.host[..]);
         base_key.push(0);
-        core::format_u64_dec(target.port, base_key);
+        target.port.format_u64_dec(base_key);
         let base_crc = core::crc32(base_key[..]);
         var prev_hash: u32 = 0;
         for _ in num_pts {

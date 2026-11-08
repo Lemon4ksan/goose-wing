@@ -35,7 +35,7 @@ fn parse_named_cache_control(
     var found = false;
     for entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
-        if eq_ascii_fold(name, header_name) {
+        if name.eq_ascii_fold(header_name) {
             let val = map.raw_buf[entry.values_begin..entry.values_end];
             if !is_empty_or_whitespace_value(val) {
                 found = true;
@@ -60,9 +60,7 @@ fn check_target_cache_control(
     guard target_name.len > 0 && !target_name.eq_ascii_fold("cdn") else { return false; }
     guard target_name.len <= 48 else { return false; }
     var target_hdr: u8[..64] = [];
-    guard target_hdr.len + target_name.len + 14 <= target_hdr.cap else { return false; }
-    target_hdr.append(target_name);
-    target_hdr.append("-cache-control");
+    guard target_hdr.try_append(target_name) && target_hdr.try_append("-cache-control") else { return false; }
     return parse_named_cache_control(map, target_hdr[..], cc, ignore_cargo_cult);
 }
 

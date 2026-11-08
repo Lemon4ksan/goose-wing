@@ -182,7 +182,7 @@ inline fn brotli_read_bits(r: BrotliBitReader&, n: u32) -> u32 {
     let mask = if n >= 32 { 0xFFFFFFFF as u64 } else { ((1 as u64) << n) - 1 };
     let val = (r.bit_buf & mask) as u32;
     r.bit_buf >>= n;
-    r.bit_count = if r.bit_count >= n { r.bit_count - n } else { 0 };
+    r.bit_count = sub_sat_u32(r.bit_count, n);
     return val;
 }
 
@@ -202,15 +202,7 @@ inline fn brotli_drop_bits(r: BrotliBitReader&, n: u32) {
         }
     }
     r.bit_buf >>= n;
-    r.bit_count = if r.bit_count >= n { r.bit_count - n } else { 0 };
-}
-
-inline fn brotli_byte_align(r: BrotliBitReader&) {
-    let rem = r.bit_count & 7;
-    if rem > 0 {
-        r.bit_buf >>= (rem as u64);
-        r.bit_count -= rem;
-    }
+    r.bit_count = sub_sat_u32(r.bit_count, n);
 }
 
 struct BrotliBitWriter {
@@ -645,17 +637,17 @@ fn decode_brotli_distance(
         else if dcode == 1 { dist = d1; }
         else if dcode == 2 { dist = d2; }
         else if dcode == 3 { dist = d3; }
-        else if dcode == 4 { dist = if d0 > 1 { d0 - 1 } else { 0 }; }
+        else if dcode == 4 { dist = sub_sat_u32(d0, 1); }
         else if dcode == 5 { dist = d0 + 1; }
-        else if dcode == 6 { dist = if d0 > 2 { d0 - 2 } else { 0 }; }
+        else if dcode == 6 { dist = sub_sat_u32(d0, 2); }
         else if dcode == 7 { dist = d0 + 2; }
-        else if dcode == 8 { dist = if d0 > 3 { d0 - 3 } else { 0 }; }
+        else if dcode == 8 { dist = sub_sat_u32(d0, 3); }
         else if dcode == 9 { dist = d0 + 3; }
-        else if dcode == 10 { dist = if d1 > 1 { d1 - 1 } else { 0 }; }
+        else if dcode == 10 { dist = sub_sat_u32(d1, 1); }
         else if dcode == 11 { dist = d1 + 1; }
-        else if dcode == 12 { dist = if d1 > 2 { d1 - 2 } else { 0 }; }
+        else if dcode == 12 { dist = sub_sat_u32(d1, 2); }
         else if dcode == 13 { dist = d1 + 2; }
-        else if dcode == 14 { dist = if d1 > 3 { d1 - 3 } else { 0 }; }
+        else if dcode == 14 { dist = sub_sat_u32(d1, 3); }
         else if dcode == 15 { dist = d1 + 3; }
 
         if dist == 0 {

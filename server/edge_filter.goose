@@ -34,9 +34,7 @@ struct EdgeFilter {
 
 fn add_edge_filter_rule(filter: EdgeFilter&, rule: EdgeFilterRule) -> bool {
     guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
-    guard filter.rules.len < filter.rules.cap else { return false; }
-    filter.rules.push(rule);
-    return true;
+    return filter.rules.try_push(rule);
 }
 
 fn make_edge_filter_rule(
@@ -62,7 +60,7 @@ fn make_edge_filter_rule(
 
 fn has_non_empty_header_value(headers: const HeaderMap&, req_name: const u8[:]) -> bool {
     for &e in headers.entries {
-        if eq_ascii_fold(entry_name(headers, e), req_name) && core::trim_lws(entry_value(headers, e)).len > 0 {
+        if entry_name(headers, e).eq_ascii_fold(req_name) && entry_value(headers, e).trim_lws().len > 0 {
             return true;
         }
     }
@@ -81,7 +79,7 @@ fn edge_rule_matches(
     }
     let raw_pfx = rule.path_prefix[..];
     let pfx = if raw_pfx.len > 1 && raw_pfx[raw_pfx.len - 1] == '/' {
-        raw_pfx[..raw_pfx.len - 1]
+        raw_pfx[..^1]
     } else {
         raw_pfx
     };

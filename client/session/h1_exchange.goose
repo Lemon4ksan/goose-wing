@@ -66,7 +66,7 @@ fn serialize_h1_request(
     var hdrs = req.headers;
     if !has_cl && !has_te && req.body.len > 0 {
         var cl_buf: u8[..32] = [];
-        core::format_u64_dec(req.body.len as u64, cl_buf);
+        (req.body.len as u64).format_u64_dec(cl_buf);
         guard append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
     return wire::encode_h1_request(
@@ -89,7 +89,7 @@ fn serialize_h1_request(
 //   returns: 200
 fn parse_h1_status_code(status_str: const u8[:]) -> i32 {
     guard status_str.len == 3 else { return 0; }
-    let val, ok = core::parse_u32_dec(status_str);
+    let val, ok = status_str.parse_u32_dec();
     guard ok && val >= 100 && val <= 599 else { return 0; }
     return val as i32;
 }
@@ -107,8 +107,7 @@ fn parse_h1_status_line(
     guard starts_with(line, "HTTP/1.1 ") || starts_with(line, "HTTP/1.0 ") else { return false; }
     guard line.len >= 12 else { return false; }
 
-    resp.protocol.clear();
-    resp.protocol.append(line[..8]);
+    let _ = resp.protocol.try_set(line[..8]);
 
     let code = parse_h1_status_code(line[9..12]);
     guard code >= 100 && code <= 599 else { return false; }
@@ -141,28 +140,28 @@ fn parse_h1_header_block(
 
     var offset: i64 = 0;
     while offset < header_bytes.len {
-        let rel_nl = core::index_of_byte(header_bytes[offset..], '\n');
+        let rel_nl = header_bytes[offset..].index_of_byte('\n');
         let line_end = if rel_nl >= 0 { offset + rel_nl } else { header_bytes.len };
         let line_raw = header_bytes[offset..line_end];
-        let line = core::trim_end_byte(line_raw, '\r');
+        let line = line_raw.trim_end_byte('\r');
         offset = line_end + 1;
 
         guard line.len > 0 else { continue; }
-        let col = core::index_of_byte(line, ':');
+        let col = line.index_of_byte(':');
         guard col > 0 else { return false; }
 
         let hname = line[..col];
         let raw_val = line[(col + 1)..];
-        let v_lead = core::trim_lws_start(raw_val);
-        let v_trim = core::trim_lws_end(v_lead);
+        let v_lead = raw_val.trim_lws_start();
+        let v_trim = v_lead.trim_lws_end();
         let lead_spaces = raw_val.len - v_lead.len;
         let v_start = col + 1 + lead_spaces;
         let v_len = v_trim.len;
         let hval = line[v_start..(v_start + v_len)];
 
         guard is_valid_header_name(hname) && is_valid_header_value(hval) else { return false; }
-        if eq_ascii_fold(hname, "content-length") {
-            let _, cl_ok = core::parse_u64_dec(hval);
+        if hname.eq_ascii_fold("content-length") {
+            let _, cl_ok = hval.parse_u64_dec();
             let prev_cl = header(resp, "Content-Length");
             guard cl_ok && (prev_cl.len == 0 || prev_cl == hval) else { return false; }
         }
@@ -179,9 +178,9 @@ fn parse_h1_header_block(
 //   header_block = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
 //   returns: ok = true, resp.status_code = 200
 fn parse_response_headers(header_block: const u8[:], resp: Response&) -> bool {
-    let first_line_end = core::index_of_byte(header_block, '\n');
+    let first_line_end = header_block.index_of_byte('\n');
     if first_line_end < 0 {
-        let status_only = core::trim_end_byte(header_block, '\r');
+        let status_only = header_block.trim_end_byte('\r');
         resp.headers.clear();
         resp.presence_mask = 0;
         return parse_h1_status_line(status_only, resp);
@@ -189,7 +188,7 @@ fn parse_response_headers(header_block: const u8[:], resp: Response&) -> bool {
     guard first_line_end > 0 else { return false; }
 
     let status_raw = header_block[..first_line_end];
-    let status_line = core::trim_end_byte(status_raw, '\r');
+    let status_line = status_raw.trim_end_byte('\r');
     guard parse_h1_status_line(status_line, resp) else { return false; }
 
     let headers_part = header_block[(first_line_end + 1)..];
@@ -207,7 +206,7 @@ fn pump_h1_fixed_body(
     var raw_chunk: u8[4096] = [0; 4096];
     while bytes_left > 0 {
         let chunk_cap: u64 = 4096;
-        let to_read_u64 = if bytes_left > chunk_cap { chunk_cap } else { bytes_left };
+        let to_read_u64 = min(bytes_left, chunk_cap);
         let to_read = to_read_u64 as i64;
         let recvd = conn.transport.recv_slice(raw_chunk[..to_read], timeout_ms);
         guard recvd > 0 else { return false; }
@@ -243,7 +242,7 @@ fn feed_chunk_slice(
         if is_tr {
             guard record_chunk_trailers(true, consumed, remaining, trailer_buf) else { return true, false; }
         } else if (dec.state & 0x1000000000000000) != 0 || st == internal::ChunkFsmStatus.Complete {
-            let nl = core::index_of_byte(remaining[..consumed], '\n');
+            let nl = remaining[..consumed].index_of_byte('\n');
             if nl >= 0 && (nl + 1) < consumed {
                 let tr_slice = remaining[(nl + 1)..consumed];
                 guard record_chunk_trailers(true, tr_slice.len, tr_slice, trailer_buf) else { return true, false; }
@@ -358,9 +357,8 @@ fn drain_rx_buf(rx_buf: u8[..8192]&, consumed: i64) {
         return;
     }
     var rem: u8[..8192] = [];
-    rem.append(rx_buf[consumed..]);
-    rx_buf.clear();
-    rx_buf.append(rem[..]);
+    let _ = rem.try_set(rx_buf[consumed..]);
+    let _ = rx_buf.try_set(rem[..]);
 }
 
 fn pump_cl_body(
@@ -370,10 +368,10 @@ fn pump_cl_body(
     cl_str:     const u8[:],
     timeout_ms: u32,
 ) -> bool {
-    let cl_val, ok_cl = core::parse_u64_dec(cl_str);
+    let cl_val, ok_cl = cl_str.parse_u64_dec();
     guard ok_cl else { return false; }
 
-    let init_bytes = if (leftover.len as u64) > cl_val { cl_val as i64 } else { leftover.len };
+    let init_bytes = min(leftover.len, cl_val as i64);
     if init_bytes > 0 {
         resp.body.append(leftover[..init_bytes]);
     }

@@ -18,18 +18,5 @@ enum IoError {
     InvalidArgument,  // Parameter out of range (e.g. negative length, null slice)
 }
 
-fn io_error_name(err: IoError) -> const u8[:] {
-    return match err {
-        None => "None",
-        Eof => "EOF",
-        UnexpectedEof => "UnexpectedEOF",
-        BufferFull => "BufferFull",
-        LimitExceeded => "LimitExceeded",
-        ShortWrite => "ShortWrite",
-        Closed => "Closed",
-        InvalidArgument => "InvalidArgument",
-    };
-}
-
 // Default capacity for fixed zero-heap circular buffers (4KB page-sized)
 const DEFAULT_RING_BUFFER_CAP: i64 = 4096;

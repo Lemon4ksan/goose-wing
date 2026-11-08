@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import client.redirect;
 
 // ---- ssrf guard policy and 3-tier checks -----------------------------------
@@ -97,15 +98,13 @@ fn parse_flexible_ipv4(clean_ip: const u8[:], octets: u8[4]&) -> bool {
     var cur:   u8[..32]      = [];
     for b in clean_ip {
         if b == '.' {
-            guard parts.len < 4 && cur.len > 0 else { return false; }
-            parts.push(copy(cur));
+            guard cur.len > 0 && parts.try_push(copy(cur)) else { return false; }
             cur.clear();
         } else {
-            if cur.len < 32 { cur.push(b); } else { return false; }
+            guard cur.try_push(b) else { return false; }
         }
     }
-    guard parts.len < 4 && cur.len > 0 else { return false; }
-    parts.push(copy(cur));
+    guard cur.len > 0 && parts.try_push(copy(cur)) else { return false; }
 
     let n = parts.len;
     guard n >= 1 && n <= 4 else { return false; }
@@ -146,14 +145,14 @@ fn is_private_ipv4(clean_ip: const u8[:]) -> bool {
 }
 
 fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
-    let colon_idx = core::index_of_byte(suffix, ':');
+    let colon_idx = suffix.index_of_byte(':');
     if colon_idx < 0 {
         let val_low = parse_hex_u16(suffix);
         guard val_low >= 0 else { return false; }
         return is_private_ipv4_4octets(0, 0, (val_low >> 8) & 0xFF, val_low & 0xFF);
     }
     guard colon_idx > 0 && colon_idx + 1 < suffix.len else { return false; }
-    if core::last_index_of_byte(suffix, ':') != colon_idx { return false; }
+    if suffix.last_index_of_byte(':') != colon_idx { return false; }
 
     let part1 = suffix[..colon_idx];
     let part2 = suffix[colon_idx + 1..];
@@ -172,10 +171,10 @@ fn is_private_ipv4_mapped_hex(suffix: const u8[:]) -> bool {
 
 // Whether host is localhost or a subdomain of localhost (RFC 6761 Section 6.3).
 fn is_localhost_name(host: const u8[:]) -> bool {
-    if eq_ascii_fold(host, "localhost") || eq_ascii_fold(host, "localhost.") {
+    if host.eq_ascii_fold("localhost") || host.eq_ascii_fold("localhost.") {
         return true;
     }
-    if ends_with_fold(host, ".localhost") || ends_with_fold(host, ".localhost.") {
+    if host.ends_with_fold(".localhost") || host.ends_with_fold(".localhost.") {
         return true;
     }
     return false;
@@ -202,7 +201,7 @@ fn parse_hex_u16(s: const u8[:]) -> i32 {
 fn is_private_6to4_prefix(eff_ip: const u8[:]) -> bool {
     guard starts_with(eff_ip, "2002:") else { return false; }
     let rem = eff_ip[5..];
-    let colon_idx = core::index_of_byte(rem, ':');
+    let colon_idx = rem.index_of_byte(':');
     let p1 = if colon_idx > 0 { rem[..colon_idx] } else { rem };
     let hex_val1 = parse_hex_u16(p1);
     guard hex_val1 >= 0 else { return true; }
@@ -217,7 +216,7 @@ fn is_private_6to4_prefix(eff_ip: const u8[:]) -> bool {
     if rem2.len > 0 && rem2[0] == ':' {
         o2 = 0;
     } else {
-        let colon_idx2 = core::index_of_byte(rem2, ':');
+        let colon_idx2 = rem2.index_of_byte(':');
         let p2 = if colon_idx2 > 0 { rem2[..colon_idx2] } else { rem2 };
         let hex_val2 = parse_hex_u16(p2);
         guard hex_val2 >= 0 else { return true; }
@@ -252,8 +251,8 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
     }
 
     // Trailing dotted-quad IPv4 in any IPv6 scope (RFC 4291 / CVE-2024-24790)
-    if core::contains_byte(eff_ip, '.') {
-        let last_colon = core::last_index_of_byte(eff_ip, ':');
+    if eff_ip.contains_byte('.') {
+        let last_colon = eff_ip.last_index_of_byte(':');
         if last_colon >= 0 && last_colon + 1 < eff_ip.len {
             let last_part = eff_ip[last_colon + 1..];
             if is_private_ipv4(last_part) {
@@ -323,29 +322,28 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         return true;
     }
     var clean_ip = if ip_str.len > 2 && ip_str[0] == '[' && ip_str[ip_str.len - 1] == ']' {
-        ip_str[1..ip_str.len - 1]
+        ip_str[1..^1]
     } else {
         ip_str
     };
 
-    let pct_idx = core::index_of_byte(clean_ip, '%');
+    let pct_idx = clean_ip.index_of_byte('%');
     if pct_idx >= 0 {
         clean_ip = clean_ip[..pct_idx];
     }
 
-    clean_ip = core::trim_end_byte(clean_ip, '.');
+    clean_ip = clean_ip.trim_end_byte('.');
     guard clean_ip.len <= 256 else { return true; }
 
     var lower_buf: u8[..256] = [];
-    lower_buf.append(clean_ip);
-    to_lower(lower_buf[..]);
+    clean_ip.to_lower_ascii(lower_buf);
     let norm_ip = lower_buf[..];
 
     if is_localhost_name(norm_ip) || norm_ip == "::1" || norm_ip == "::" {
         return true;
     }
 
-    if core::contains_byte(norm_ip, ':') {
+    if norm_ip.contains_byte(':') {
         var comp_buf: u8[..64] = [];
         let ipv6_ok = core::parse_and_compress_ipv6(norm_ip, comp_buf);
         let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };
@@ -356,9 +354,8 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
 }
 
 inline fn is_forbidden_ipv6(host: const u8[:]) -> bool {
-    let last_idx = core::sub_sat_i64(host.len, 1);
     let h = if core::starts_with(host, "[") && core::ends_with(host, "]") && host.len >= 2 {
-        host[1..last_idx]
+        host[1..^1]
     } else {
         host
     };

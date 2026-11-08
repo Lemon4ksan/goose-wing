@@ -703,19 +703,19 @@ fn huff_decode_step(
 //   returns: ok = true, out = "www"
 fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     let start_len = out.len;
+    var committed = false;
+    defer if !committed { rollback_hpack_out(out, start_len); };
     var state: u8  = 0;
     var flags: u8  = HUFF_ACCEPTED;
     var i:     u64 = 0;
     let src_len = src.len as u64;
     var last_sym_byte: u64 = 0;
-
     while i < src_len {
         let c = src[i];
         let next_i = core::add_sat_u64(i, 1);
         let s1, _, ok1 = huff_apply_nibble(state, c >> 4, next_i, last_sym_byte, out);
         let s2, f2, ok2 = huff_apply_nibble(s1, c & 0x0F, next_i, last_sym_byte, out);
         if !ok1 || !ok2 {
-            rollback_hpack_out(out, start_len);
             return false;
         }
         state = s2;
@@ -723,10 +723,10 @@ fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
         i = next_i;
     }
 
-    if (flags & HUFF_ACCEPTED) == 0 || (src_len > 0 && last_sym_byte != src_len) {
-        rollback_hpack_out(out, start_len);
+    guard (flags & HUFF_ACCEPTED) != 0 && (src_len == 0 || last_sym_byte == src_len) else {
         return false;
     }
+    committed = true;
     return true;
 }
 
@@ -1104,7 +1104,7 @@ inline fn next_hpack_generation(dt: DynamicTable&) -> u8 {
     let g = dt.next_generation;
     let next_g: u8 = if g == 255 { 1 } else { g + 1 };
     dt.next_generation = next_g;
-    return if g == 0 { 1 } else { g };
+    return max(g, 1);
 }
 
 // Invalidates any hash table slot pointing to an evicted ring index & generation.
@@ -1314,13 +1314,8 @@ fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], 
 // Buffers are cleared only if the entry is successfully resolved.
 fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, out_val: B2&) -> bool {
     let name_slice, val_slice, ok = get_indexed_header_slices(dt, idx);
-    guard ok else { return false; }
-    guard name_slice.len <= out_name.cap && val_slice.len <= out_val.cap else { return false; }
-    out_name.clear();
-    out_val.clear();
-    out_name.append(name_slice);
-    out_val.append(val_slice);
-    return true;
+    guard ok && val_slice.len <= out_val.cap else { return false; }
+    return out_name.try_set(name_slice) && out_val.try_set(val_slice);
 }
 
 // Fetches indexed header name slice directly without buffer copying.
@@ -1344,10 +1339,7 @@ fn get_indexed_header_name_slice(dt: const DynamicTable&, idx: u64) -> const u8[
 fn get_indexed_header_name<B>(dt: const DynamicTable&, idx: u64, out_name: B&) -> bool {
     let name_slice, ok = get_indexed_header_name_slice(dt, idx);
     guard ok else { return false; }
-    guard name_slice.len <= out_name.cap else { return false; }
-    out_name.clear();
-    out_name.append(name_slice);
-    return true;
+    return out_name.try_set(name_slice);
 }
 
 // Updates dynamic table maximum size per HPACK instruction (001xxxxx).
@@ -1456,8 +1448,7 @@ fn decode_hpack_string<B>(src: const u8[:], offset: u64, out: B&) -> u64, bool {
         let ok_huff = huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
-        guard out.len + raw_slice.len <= out.cap else { return offset, false; }
-        out.append(raw_slice);
+        guard out.try_append(raw_slice) else { return offset, false; }
     }
 
     return next_off + str_len, true;
@@ -1503,7 +1494,7 @@ fn is_valid_h2_path(val: const u8[:]) -> bool {
 }
 
 fn validate_h2_pseudo_status_code(pseudo: const H2PseudoHeaders&, val: const u8[:], out_code: i32&) -> u32 {
-    let sc, ok_sc = core::parse_i32_dec(val);
+    let sc, ok_sc = val.parse_i32_dec();
     guard val.len == 3 && ok_sc && sc >= 100 && sc <= 599 && sc != 101 else {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
@@ -1558,7 +1549,7 @@ fn validate_and_record_pseudo_header(
             guard err == rfc::H2_ERR_NO_ERROR else { return err; }
             pseudo.status = code;
         } else {
-            let parsed, ok_p = core::parse_u32_dec(val);
+            let parsed, ok_p = val.parse_u32_dec();
             if ok_p { pseudo.status = parsed as i32; }
         }
         pseudo.has_status = true;
@@ -1671,7 +1662,7 @@ fn validate_regular_header_to_map(
         }
         guard !wing::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         if pseudo.has_authority {
-            guard core::eq_ascii_fold(pseudo.authority[..], val) else {
+            guard pseudo.authority[..].eq_ascii_fold(val) else {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
         }
@@ -1753,6 +1744,10 @@ fn decode_literal_field_slices(
     name_buf:    u8[..256]&,
     val_buf:     u8[..8192]&,
 ) -> u64, u32 {
+    let name_mark = name_buf.len;
+    let val_mark = val_buf.len;
+    var committed = false;
+    defer if !committed { name_buf.resize(name_mark); val_buf.resize(val_mark); };
     let name_idx, init_off, ok_idx = hpack_decode_int(src, offset, prefix_bits);
     guard ok_idx else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
     var mut_off = init_off;
@@ -1768,6 +1763,7 @@ fn decode_literal_field_slices(
 
     let val_next_off, ok_val = decode_hpack_string(src, mut_off, val_buf);
     guard ok_val else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
+    committed = true;
     return val_next_off, rfc::H2_ERR_NO_ERROR;
 }
 
@@ -1980,6 +1976,8 @@ fn encode_hpack_field<B>(
     use_huffman: bool          = true,
 ) -> bool {
     let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
     let is_never = (indexing == HpackIndexing.NeverIndexed);
     let is_inc = (indexing == HpackIndexing.Incremental);
 
@@ -1988,30 +1986,24 @@ fn encode_hpack_field<B>(
         let s_idx, exact_s = find_hpack_static_field(name, val);
         if s_idx > 0 && exact_s {
             // Indexed field (1xxxxxxx)
-            guard hpack_encode_int(out, s_idx, 7, 0x80) else {
-                out.resize(start_len);
-                return false;
-            }
+            guard hpack_encode_int(out, s_idx, 7, 0x80) else { return false; }
+            committed = true;
             return true;
         }
 
         // 2. Check for O(1) direct-mapped hash hit in dynamic table
         let fast_idx, fast_ok = hpack_hash_lookup(dt, name, val);
         if fast_ok && fast_idx >= 62 {
-            guard hpack_encode_int(out, fast_idx as u64, 7, 0x80) else {
-                out.resize(start_len);
-                return false;
-            }
+            guard hpack_encode_int(out, fast_idx as u64, 7, 0x80) else { return false; }
+            committed = true;
             return true;
         }
 
         // 3. Fallback scan for name-only match or collision resolution in dynamic table
         let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
         if d_exact {
-            guard hpack_encode_int(out, d_match_idx, 7, 0x80) else {
-                out.resize(start_len);
-                return false;
-            }
+            guard hpack_encode_int(out, d_match_idx, 7, 0x80) else { return false; }
+            committed = true;
             return true;
         }
     }
@@ -2029,26 +2021,20 @@ fn encode_hpack_field<B>(
 
     let name_ref_idx = if s_idx > 0 { s_idx } else { d_match_idx };
     if name_ref_idx > 0 {
-        guard hpack_encode_int(out, name_ref_idx, prefix_bits, prefix_mask) else {
-            out.resize(start_len);
-            return false;
-        }
+        guard hpack_encode_int(out, name_ref_idx, prefix_bits, prefix_mask) else { return false; }
     } else {
         guard hpack_encode_int(out, 0, prefix_bits, prefix_mask) &&
               encode_hpack_string_literal(out, name, use_huffman) else {
-            out.resize(start_len);
             return false;
         }
     }
 
-    guard encode_hpack_string_literal(out, val, use_huffman) else {
-        out.resize(start_len);
-        return false;
-    }
+    guard encode_hpack_string_literal(out, val, use_huffman) else { return false; }
 
     if is_inc {
         insert_header(dt, name, val, false);
     }
+    committed = true;
     return true;
 }
 
@@ -2075,23 +2061,23 @@ inline fn huff_apply_nibble<B>(
 }
 
 inline fn is_hpack_volatile_header(name: const u8[:]) -> bool {
-    return eq_ascii_fold(name, ":path") ||
-           eq_ascii_fold(name, "age") ||
-           eq_ascii_fold(name, "content-length") ||
-           eq_ascii_fold(name, "etag") ||
-           eq_ascii_fold(name, "if-modified-since") ||
-           eq_ascii_fold(name, "if-none-match") ||
-           eq_ascii_fold(name, "location") ||
-           eq_ascii_fold(name, "set-cookie");
+    return name.eq_ascii_fold(":path") ||
+           name.eq_ascii_fold("age") ||
+           name.eq_ascii_fold("content-length") ||
+           name.eq_ascii_fold("etag") ||
+           name.eq_ascii_fold("if-modified-since") ||
+           name.eq_ascii_fold("if-none-match") ||
+           name.eq_ascii_fold("location") ||
+           name.eq_ascii_fold("set-cookie");
 }
 
 // Selects the HPACK indexing representation for a header field (RFC 7541 §7.1).
 // Protects sensitive credentials with NeverIndexed and omits volatile or oversized entries from the dynamic table.
 fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i64) -> HpackIndexing {
-    if eq_ascii_fold(name, "authorization") || eq_ascii_fold(name, "proxy-authorization") {
+    if name.eq_ascii_fold("authorization") || name.eq_ascii_fold("proxy-authorization") {
         return HpackIndexing.NeverIndexed;
     }
-    if eq_ascii_fold(name, "cookie") && val.len < 20 {
+    if name.eq_ascii_fold("cookie") && val.len < 20 {
         return HpackIndexing.NeverIndexed;
     }
     let entry_size = core::add_sat_i64(core::add_sat_i64(name.len, val.len), 32);
@@ -2105,15 +2091,17 @@ fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i6
 
 inline fn try_encode_hpack_huffman_short<B>(out: B&, raw: const u8[:]) -> bool, bool {
     let hdr_idx = out.len;
+    var committed = false;
+    defer if !committed { rollback_hpack_out(out, hdr_idx); };
     guard out.try_push(0 as u8) else { return false, true; }
     if huff_encode_bytes(raw, out) {
         let enc_len = core::sub_sat_i64(core::sub_sat_i64(out.len, hdr_idx), 1);
         if enc_len < raw.len && hdr_idx >= 0 && hdr_idx < out.len {
             out[hdr_idx] = 0x80 | (enc_len as u8);
+            committed = true;
             return true, true;
         }
     }
-    rollback_hpack_out(out, hdr_idx);
     return false, false;
 }
 

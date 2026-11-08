@@ -67,19 +67,19 @@ fn quic_encode_varint<B>(out: B&, val: u64) -> bool {
     if val <= 16383 {
         guard out.cap - out.len >= 2 else { return false; }
         let masked = (0x4000 | val) as u16;
-        core::append_u16_be(out, masked);
+        out.append_u16_be(masked);
         return true;
     }
     if val <= 1073741823 {
         guard out.cap - out.len >= 4 else { return false; }
         let masked = (0x80000000 | val) as u32;
-        core::append_u32_be(out, masked);
+        out.append_u32_be(masked);
         return true;
     }
 
     guard out.cap - out.len >= 8 else { return false; }
     let masked = 0xC000000000000000 | val;
-    core::append_u64_be(out, masked);
+    out.append_u64_be(masked);
     return true;
 }
 
@@ -236,14 +236,11 @@ fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> b
     let tok_len, ok_tok = quic_decode_varint_cursor(src, idx);
     let itok = tok_len as i64;
     let tok_end = idx + itok;
-    guard ok_tok && tok_end <= src.len && tok_len <= (token.cap as u64) else {
+    guard ok_tok && itok >= 0 && tok_end <= src.len && token.try_append(src[idx..tok_end]) else {
         idx = initial_idx;
         return false;
     }
-    if itok > 0 {
-        token.append(src[idx..tok_end]);
-        idx = tok_end;
-    }
+    idx = tok_end;
     return true;
 }
 
@@ -440,7 +437,7 @@ fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bi
     let min_fixed = 7 + hdr.dcid.len + hdr.scid.len;
     guard out.cap - out.len >= min_fixed else { return false; }
     out.push(b0);
-    core::append_u32_be(out, hdr.version);
+    out.append_u32_be(hdr.version);
 
     out.push(hdr.dcid.len as u8);
     out.append(hdr.dcid[..]);
@@ -540,9 +537,9 @@ inline fn compute_batch_aes128_masks(
 ) -> i64 {
     guard hp_key.len == 16 else { return 0; }
     var k16: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(k16);
     for i in 16 { k16[i] = hp_key[i]; }
     let ks = core::aes128_key_schedule(k16);
-    core::secure_zeroize_16(k16);
     for b in n {
         let enc = core::aes128_encrypt_block(ks, samples[b]);
         out_masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
@@ -558,9 +555,9 @@ inline fn compute_batch_aes256_masks(
 ) -> i64 {
     guard hp_key.len == 32 else { return 0; }
     var k32: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(k32);
     for i in 32 { k32[i] = hp_key[i]; }
     let ks = core::aes256_key_schedule(k32);
-    core::secure_zeroize_32(k32);
     for b in n {
         let enc = core::aes_encrypt_block(ks, samples[b]);
         out_masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
@@ -586,9 +583,9 @@ fn compute_quic_hp_masks_batch(
     if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
         guard hp_key.len == 32 else { return 0; }
         var k32: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(k32);
         for i in 32 { k32[i] = hp_key[i]; }
         for b in n { out_masks[b] = chacha20_header_protect_mask(k32, samples[b]); }
-        core::secure_zeroize_32(k32);
         return n;
     }
     return 0;
@@ -858,14 +855,12 @@ fn merge_reassembly_interval(intervals: Interval[..64]&, new_start: u64, new_end
             i = i + 1;
             continue;
         }
-        cur_s = if cur_s < it.start { cur_s } else { it.start };
-        cur_e = if cur_e > it.end { cur_e } else { it.end };
+        cur_s = min(cur_s, it.start);
+        cur_e = max(cur_e, it.end);
         intervals.remove_at(i);
     }
 
-    guard intervals.len < intervals.cap else { return false; }
-    intervals.push(Interval { start: cur_s, end: cur_e });
-    return true;
+    return intervals.try_push(Interval { start: cur_s, end: cur_e });
 }
 
 fn validate_fin_constraints(buf: const ReassemblyBuffer&, frag_end: u64) -> bool {
@@ -925,7 +920,7 @@ fn insert_fragment(
         return true; // Duplicate of already consumed stream data
     }
 
-    let eff_start = if offset < buf.consumed_offset { buf.consumed_offset } else { offset };
+    let eff_start = max(offset, buf.consumed_offset);
     let payload_skip = (eff_start - offset) as i64;
     let needed_len = frag_end - buf.consumed_offset;
 
@@ -981,19 +976,19 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&, max_bytes: i64 = -1) -> u
 // If with_length is false, encodes frame type 0x30 consuming remainder of packet.
 fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
     let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
+
     if with_length {
         guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN)
             && quic_encode_varint(out, payload.len as u64) else {
-            out.resize(orig_len, 0);
             return false;
         }
     } else {
         guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM) else { return false; }
     }
-    guard out.try_append(payload) else {
-        out.resize(orig_len, 0);
-        return false;
-    }
+    guard out.try_append(payload) else { return false; }
+    committed = true;
     return true;
 }
 

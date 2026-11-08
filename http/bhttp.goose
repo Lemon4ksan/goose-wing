@@ -214,10 +214,8 @@ fn bhttp_decode_tail(
     if scan < raw.len {
         let clen, ok = internal::quic_decode_varint_cursor(raw, scan);
         guard ok && clen <= ((raw.len - scan) as u64) else { return false; }
-        guard clen <= 4096 else { return false; }
         let cend = scan + (clen as i64);
-        body.clear();
-        body.append(raw[scan..cend]);
+        guard body.try_set(raw[scan..cend]) else { return false; }
         body_len = clen as i32;
         scan = cend;
     }

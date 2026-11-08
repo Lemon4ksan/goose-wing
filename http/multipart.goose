@@ -55,7 +55,7 @@ struct MultipartMessage {
 // are u16 so jump offsets up to 65535 bytes do not overflow to zero.
 fn build_bmh_shift_table(needle: const u8[:], table: u16[256]&) {
     let needle_len = needle.len;
-    let default_shift = core::ct_min_i64(needle_len, 65535) as u16;
+    let default_shift = min(needle_len, 65535) as u16;
 
     for i in 256 {
         table[i] = default_shift;
@@ -87,7 +87,7 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
         let last_b = haystack[i] as i64;
         let shift = table[last_b] as i64;
         // Shift at least one byte on mismatch.
-        i += if shift > 0 { shift } else { 1 };
+        i += max(shift, 1);
     }
     return -1;
 }
@@ -134,12 +134,12 @@ fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
     guard pos <= body.len else { return false; }
     let rem = body[pos..];
     if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
-        let after_close = core::trim_lws_start(rem[2..]);
+        let after_close = rem[2..].trim_lws_start();
         return after_close.len == 0 ||
                (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
                (after_close.len >= 1 && after_close[0] == '\n');
     }
-    let after_pad = core::trim_lws_start(rem);
+    let after_pad = rem.trim_lws_start();
     return (after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n') ||
            (after_pad.len >= 1 && after_pad[0] == '\n');
 }
@@ -147,7 +147,7 @@ fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
 fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
     let rem = body[cursor..];
     if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
-        let after_close = core::trim_lws_start(rem[2..]);
+        let after_close = rem[2..].trim_lws_start();
         return after_close.len == 0 ||
                (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
                (after_close.len >= 1 && after_close[0] == '\n');
@@ -197,11 +197,7 @@ fn resolve_part_header_end(body: const u8[:], cursor: i64, max_header_bytes: i64
         delim_len = 1;
         return cursor;
     }
-    let max_h_scan = if cursor + max_header_bytes < body.len {
-        cursor + max_header_bytes
-    } else {
-        body.len
-    };
+    let max_h_scan = min(cursor + max_header_bytes, body.len);
     return find_header_end(body, cursor, max_h_scan, delim_len);
 }
 
@@ -230,17 +226,14 @@ fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) 
     let disp_raw = get_header(part_headers, "content-disposition");
     if disp_raw.len > 0 {
         let mt, mt_ok = parse_content_disposition(disp_raw);
-        guard mt_ok && eq_ascii_fold(mt.type_name[..], "form-data") else { return false; }
+        guard mt_ok && mt.type_name[..].eq_ascii_fold("form-data") else { return false; }
         let p_name = param(mt, "name");
-        guard p_name.len <= part.name.cap else { return false; }
-        part.name.append(p_name);
         let p_fn = param(mt, "filename");
-        guard p_fn.len <= part.filename.cap else { return false; }
-        part.filename.append(p_fn);
+        guard part.name.try_append(p_name) && part.filename.try_append(p_fn) else { return false; }
     }
     let ct_raw = get_header(part_headers, "content-type");
     if ct_raw.len > 0 {
-        let ct_len = core::ct_min_i64(ct_raw.len, part.content_type.cap);
+        let ct_len = min(ct_raw.len, part.content_type.cap);
         part.content_type.append(ct_raw[..ct_len]);
     }
     return true;
@@ -438,7 +431,7 @@ fn parse_multipart(
         }
 
         let rem = body[cursor..];
-        let after_pad = core::trim_lws_start(rem);
+        let after_pad = rem.trim_lws_start();
         cursor += rem.len - after_pad.len;
 
         let p_err = parse_multipart_part(
@@ -510,7 +503,7 @@ fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     for b in s {
         guard b >= '0' && b <= '9' else { return 0, false; }
     }
-    let val, ok = core::parse_u64_dec(s);
+    let val, ok = s.parse_u64_dec();
     guard ok && val <= 9223372036854775807 else { return 0, false; }
     return val as! i64, true;
 }
@@ -561,7 +554,7 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
         Explicit => {
             if spec.start < resource_len {
                 norm.start = spec.start;
-                norm.end_pos = if spec.end_pos < resource_len { spec.end_pos } else { resource_len - 1 };
+                norm.end_pos = min(spec.end_pos, resource_len - 1);
                 has_norm = true;
             }
         },
@@ -575,7 +568,7 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
         Suffix => {
             let suf = spec.start;
             if suf > 0 {
-                norm.start = core::ct_max_i64(0, resource_len - suf);
+                norm.start = max(0, resource_len - suf);
                 norm.end_pos = resource_len - 1;
                 has_norm = true;
             }
@@ -603,17 +596,13 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
         let can_merge = next_r.start <= merged.end_pos ||
             (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1);
         if can_merge {
-            merged.end_pos = core::ct_max_i64(merged.end_pos, next_r.end_pos);
+            merged.end_pos = max(merged.end_pos, next_r.end_pos);
         } else {
-            if out_ranges.len < 16 {
-                out_ranges.push(merged);
-            }
+            let _ = out_ranges.try_push(merged);
             merged = next_r;
         }
     }
-    if out_ranges.len < 16 {
-        out_ranges.push(merged);
-    }
+    let _ = out_ranges.try_push(merged);
 }
 
 // Parses a comma-separated list of range specifications.
@@ -636,7 +625,7 @@ fn parse_range_spec_list(
             comma_pos++;
         }
 
-        let item = trim_lws(spec_list[cursor..comma_pos]);
+        let item = spec_list[cursor..comma_pos].trim_lws();
         cursor = comma_pos + 1;
 
         if item.len == 0 {
@@ -671,12 +660,12 @@ fn parse_range_header(
     max_ranges:    i32  = 16,
 ) -> RangeSet, RangeError {
     var rs = RangeSet { resource_length: resource_len, is_satisfiable: true, coalesced: false, .. };
-    let trimmed = trim_lws(header_val);
+    let trimmed = header_val.trim_lws();
     guard trimmed.len > 0 else { return rs, RangeError.EmptyRange; }
     // CVE-2026-78667: Limit maximum size of parsed Range header to prevent CPU exhaustion DoS
     guard trimmed.len <= 1024 else { return rs, RangeError.ExceededMaxRanges; }
 
-    guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes=") else {
+    guard trimmed.len >= 6 && trimmed[..6].eq_ascii_fold("bytes=") else {
         return rs, RangeError.InvalidUnit;
     }
 
@@ -707,9 +696,7 @@ fn parse_range_header(
         rs.coalesced = true;
     } else {
         for r in raw_ranges {
-            if rs.ranges.len < 16 {
-                rs.ranges.push(r);
-            }
+            let _ = rs.ranges.try_push(r);
         }
         rs.coalesced = false;
     }
@@ -742,12 +729,12 @@ fn evaluate_if_range(
     etag:            const u8[:],
     mod_time:        core::Time,
 ) -> bool {
-    let trimmed = trim_lws(if_range_header);
+    let trimmed = if_range_header.trim_lws();
     guard trimmed.len > 0 else { return false; }
 
     // RFC 9110 Section 13.1.5: Weak ETags are strictly forbidden in If-Range
-    guard !starts_with_fold(trimmed, "w/") else { return false; }
-    guard !starts_with_fold(etag, "w/") else { return false; }
+    guard !trimmed.starts_with_fold("w/") else { return false; }
+    guard !etag.starts_with_fold("w/") else { return false; }
 
     // If strong ETag (starts with '"' and ends with '"')
     if trimmed[0] == '"' && trimmed[trimmed.len - 1] == '"' {
@@ -768,8 +755,8 @@ fn evaluate_if_range(
 // Syntax: bytes <first-byte-pos>-<last-byte-pos>/(<complete-length> | "*")
 fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i64, i64, bool {
     guard body_len >= 0 else { return 0, 0, false; }
-    let trimmed = trim_lws(content_range_val);
-    guard trimmed.len >= 6 && eq_ascii_fold(trimmed[..6], "bytes ") else {
+    let trimmed = content_range_val.trim_lws();
+    guard trimmed.len >= 6 && trimmed[..6].eq_ascii_fold("bytes ") else {
         return 0, 0, false;
     }
 
@@ -777,16 +764,10 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
     // Unsatisfied form "bytes */1000" or wildcard range "bytes */*" is an explicit syntax error in PATCH
     guard rem.len > 0 && rem[0] != '*' else { return 0, 0, false; }
 
-    var slash_pos: i64 = -1;
-    for i in rem.len {
-        if rem[i] == '/' {
-            slash_pos = i;
-            break;
-        }
-    }
-    guard slash_pos > 0 else { return 0, 0, false; }
+    let range_raw, total_raw, has_slash = rem.split_once_byte('/');
+    guard has_slash && range_raw.len > 0 else { return 0, 0, false; }
 
-    let range_part = rem[..slash_pos].trim_lws();
+    let range_part = range_raw.trim_lws();
     guard range_part.len > 0 && range_part != "*" else { return 0, 0, false; }
 
     let start_raw, end_raw, has_dash = range_part.split_once_byte('-');
@@ -798,7 +779,7 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
         return 0, 0, false;
     }
 
-    let total_part = rem[slash_pos + 1..].trim_lws();
+    let total_part = total_raw.trim_lws();
     guard total_part.len > 0 else { return 0, 0, false; }
     if total_part != "*" {
         let total_val, t_ok = parse_i64_slice(total_part);

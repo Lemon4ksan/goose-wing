@@ -30,22 +30,22 @@ fn new_server_cork(fd: i64) -> ServerCork {
 // If the buffer would overflow, pending data is flushed first, then data is buffered or sent directly.
 fn server_cork_write(sc: ServerCork&, data: const u8[:]) -> i32 {
     guard sc.sock_fd > 0 && data.len > 0 else { return 0; }
-    let avail = core::cork_available(sc.buffer);
+    let avail = sc.buffer.cork_available();
     if data.len <= avail {
-        let written, _ = core::cork_write(sc.buffer, data);
+        let written, _ = sc.buffer.cork_write(data);
         return written as i32;
     }
 
     // Buffer would overflow: flush current pending bytes first
     let flushed = server_cork_flush(sc);
-    guard flushed >= 0 && core::cork_is_empty(sc.buffer) else { return -1; }
+    guard flushed >= 0 && sc.buffer.cork_is_empty() else { return -1; }
 
     if data.len >= core::CORK_BUFFER_CAP {
         // Larger than cork buffer: send directly via TCP
         return tcp_send(sc.sock_fd, data);
     }
 
-    let written, _ = core::cork_write(sc.buffer, data);
+    let written, _ = sc.buffer.cork_write(data);
     return written as i32;
 }
 
@@ -56,15 +56,15 @@ fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> 
     let total_len = core::add_sat_i64(head.len, body.len);
     guard total_len > 0 else { return 0; }
 
-    let avail = core::cork_available(sc.buffer);
+    let avail = sc.buffer.cork_available();
     if total_len <= avail {
-        let _ = core::cork_write(sc.buffer, head);
-        let _ = core::cork_write(sc.buffer, body);
+        let _ = sc.buffer.cork_write(head);
+        let _ = sc.buffer.cork_write(body);
         return total_len as i32;
     }
 
     let flushed = server_cork_flush(sc);
-    guard flushed >= 0 && core::cork_is_empty(sc.buffer) else { return -1; }
+    guard flushed >= 0 && sc.buffer.cork_is_empty() else { return -1; }
 
     if total_len >= core::CORK_BUFFER_CAP {
         if head.len > 0 && body.len > 0 {
@@ -76,8 +76,8 @@ fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> 
         return tcp_send(sc.sock_fd, body);
     }
 
-    let _ = core::cork_write(sc.buffer, head);
-    let _ = core::cork_write(sc.buffer, body);
+    let _ = sc.buffer.cork_write(head);
+    let _ = sc.buffer.cork_write(body);
     return total_len as i32;
 }
 
@@ -106,7 +106,7 @@ fn write_cork_chunked_response_stream<Res>(sc: ServerCork&, res: const Res&, ser
     while off < res.body.len {
         let chunk_n = min(core::sub_sat_i64(res.body.len, off), 4096);
         var chunk_hdr: u8[..32] = [];
-        core::format_u64_hex(chunk_n as u64, chunk_hdr);
+        (chunk_n as u64).format_u64_hex(chunk_hdr);
         chunk_hdr.append("\r\n");
         let chunk_end = core::add_sat_i64(off, chunk_n);
         let w1 = server_cork_write2(sc, chunk_hdr[..], res.body[off..chunk_end]);
@@ -129,7 +129,7 @@ fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name
     guard sc.sock_fd > 0 else { return 0; }
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     let te = header(res, "transfer-encoding");
-    if !is_empty_status && (eq_ascii_fold(te, "chunked") || res.trailers.entries.len > 0) {
+    if !is_empty_status && (te.eq_ascii_fold("chunked") || res.trailers.entries.len > 0) {
         return write_cork_chunked_response_stream(sc, res, server_name);
     }
 
@@ -143,6 +143,6 @@ fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name
 
 // Flushes all pending data in the cork buffer to the socket in a single syscall.
 fn server_cork_flush(sc: ServerCork&) -> i32 {
-    guard sc.sock_fd > 0 && !core::cork_is_empty(sc.buffer) else { return 0; }
+    guard sc.sock_fd > 0 && !sc.buffer.cork_is_empty() else { return 0; }
     return tcp_flush_cork(sc.sock_fd, sc.buffer);
 }

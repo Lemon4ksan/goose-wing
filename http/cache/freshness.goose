@@ -7,6 +7,7 @@
 namespace wing;
 
 import std;
+import core from "../..";
 import http.headers;
 import http.cache.cache_control;
 
@@ -73,7 +74,7 @@ struct FreshnessMetrics {
 //   raw_age = "120"
 //   returns: 120
 fn parse_age_header(raw_age: const u8[:]) -> i64 {
-    var s = trim_lws(raw_age);
+    var s = raw_age.trim_lws();
     guard s.len > 0 else { return 0; }
 
     var comma_idx: i64 = -1;
@@ -84,7 +85,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
         }
     }
     if comma_idx >= 0 {
-        s = trim_lws(s[..comma_idx]);
+        s = s[..comma_idx].trim_lws();
     }
     guard s.len > 0 else { return 0; }
 
@@ -93,7 +94,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
         guard b >= '0' && b <= '9' else {
             return 0;
         }
-        val = core::ct_min_i64(val * 10 + (b - '0'), rfc::MAX_DELTA_SECONDS);
+        val = min(val * 10 + (b - '0'), rfc::MAX_DELTA_SECONDS);
     }
     return val;
 }
@@ -103,7 +104,7 @@ fn parse_age_header(raw_age: const u8[:]) -> i64 {
 // Computes apparent_age = max(0, response_time - date_value).
 fn compute_apparent_age(response_time: core::Time, date_value: core::Time) -> i64 {
     let diff = core::unix(response_time) - core::unix(date_value);
-    return core::ct_max_i64(0, diff);
+    return max(0, diff);
 }
 
 // Computes response_delay = max(0, response_time - request_time).
@@ -111,15 +112,15 @@ fn compute_apparent_age(response_time: core::Time, date_value: core::Time) -> i6
 fn compute_response_delay(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = core::duration_since(ts.response_mono, ts.request_mono);
-        return core::ct_max_i64(0, dur.as_secs());
+        return max(0, dur.as_secs());
     }
     let diff = core::unix(ts.response_time) - core::unix(ts.request_time);
-    return core::ct_max_i64(0, diff);
+    return max(0, diff);
 }
 
 // Computes corrected_initial_age = max(apparent_age, age_hdr + response_delay).
 fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay: i64) -> i64 {
-    return core::ct_max_i64(apparent_age, core::add_sat_i64(age_hdr, response_delay));
+    return max(apparent_age, core::add_sat_i64(age_hdr, response_delay));
 }
 
 // Computes resident_time = max(0, now - response_time).
@@ -127,10 +128,10 @@ fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay
 fn compute_resident_time(ts: const CacheTimestamps&) -> i64 {
     if ts.has_monotonic {
         let dur = core::duration_since(ts.now_mono, ts.response_mono);
-        return core::ct_max_i64(0, dur.as_secs());
+        return max(0, dur.as_secs());
     }
     let diff = core::unix(ts.now) - core::unix(ts.response_time);
-    return core::ct_max_i64(0, diff);
+    return max(0, diff);
 }
 
 // Computes current_age = corrected_initial_age + resident_time.
@@ -138,7 +139,7 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
     let delay = compute_response_delay(ts);
     let initial_age = compute_corrected_initial_age(apparent_age, age_hdr, delay);
     let resident = compute_resident_time(ts);
-    return core::ct_min_i64(core::add_sat_i64(initial_age, resident), rfc::MAX_DELTA_SECONDS);
+    return min(core::add_sat_i64(initial_age, resident), rfc::MAX_DELTA_SECONDS);
 }
 
 // ---- freshness lifetime helpers --------------------------------------------
@@ -147,7 +148,7 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
 // If Expires is "0" or invalid date format, lifetime is 0 and immediately stale (RFC 9111 §5.3 & §4.2.2).
 fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: core::Time) -> i64, bool {
     let expires_raw = get_header(resp_headers, "expires");
-    let trimmed = trim_lws(expires_raw);
+    let trimmed = expires_raw.trim_lws();
     guard trimmed.len > 0 else { return 0, false; }
 
     let exp_time, ok_exp = core::parse_http_date(trimmed);
@@ -163,7 +164,7 @@ fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_time: core::Time
     }
 
     let diff = core::unix(exp_time) - core::unix(base_time);
-    return core::ct_max_i64(0, diff), true;
+    return max(0, diff), true;
 }
 
 // Computes heuristic freshness lifetime (default 10% of Date - Last-Modified) (RFC 9111 §4.2.2).
@@ -191,7 +192,7 @@ fn compute_last_modified_heuristic(
     guard delta > 0 else { return 0; }
 
     let heuristic = (delta * heuristic_fraction) / 100;
-    return core::ct_max_i64(0, heuristic);
+    return max(0, heuristic);
 }
 
 // Computes freshness lifetime according to RFC 9111 priority hierarchy.

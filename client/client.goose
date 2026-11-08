@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -416,9 +417,7 @@ fn lookup_cached_ech_config(
     if cache_status == DnsCacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
-                out_ech.clear();
-                out_ech.append(rec.ech_config_list[..]);
-                return true;
+                return out_ech.try_set(rec.ech_config_list[..]);
             }
         }
     }
@@ -450,13 +449,9 @@ fn discover_and_cache_ech_config(
 
     var found_ech = false;
     for &rec in dns_resp.https_records {
-        if cache_entry.https_records.len < 4 {
-            cache_entry.https_records.push(rec);
-        }
+        let _ = cache_entry.https_records.try_push(rec);
         if rec.has_ech && rec.ech_config_list.len > 0 && !found_ech {
-            out_ech.clear();
-            out_ech.append(rec.ech_config_list[..]);
-            found_ech = true;
+            found_ech = out_ech.try_set(rec.ech_config_list[..]);
         }
     }
 
@@ -485,8 +480,7 @@ fn resolve_ech_config(
     if stale_status == DnsCacheStatus.Fresh || stale_status == DnsCacheStatus.Stale {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
-                out_ech.append(rec.ech_config_list[..]);
-                return true;
+                return out_ech.try_set(rec.ech_config_list[..]);
             }
         }
     }
@@ -532,9 +526,9 @@ fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool 
     var path_buf: u8[..256] = [];
     let parsed, err = core::parse_url(target_url);
     if parsed.valid {
-        path_buf.append(core::pathname(parsed));
+        let _ = path_buf.try_set(parsed.pathname());
     } else {
-        path_buf.append("/");
+        let _ = path_buf.try_set("/");
     }
     let now_sec = session.virtual_clock_us / 1000000;
     var dummy_hash: u8[..64] = [];
@@ -589,31 +583,18 @@ fn set_credentials(session: Session&, username: const u8[:], password: const u8[
     guard username.len <= session.creds.username.cap && password.len <= session.creds.password.cap else {
         return false;
     }
-    session.creds.username.clear();
-    session.creds.username.append(username);
-    session.creds.password.clear();
-    session.creds.password.append(password);
+    guard session.creds.username.try_set(username) && session.creds.password.try_set(password) else {
+        return false;
+    }
     session.creds.has_credentials = true;
     session.creds.nonce_counter = 1;
     return true;
-}
-
-fn clear_credentials(session: Session&) {
-    session.creds.has_credentials = false;
-    session.creds.username.clear();
-    core::secure_zeroize_slice(session.creds.password[..]);
-    session.creds.password.clear();
-    session.creds.nonce_counter = 1;
 }
 
 // ---- hsts configuration (rfc 6797 strict transport security) ---------------
 
 fn enable_hsts(session: Session&, enabled: bool = true) {
     session.enable_hsts = enabled;
-}
-
-fn enable_hsts_preload(session: Session&, enabled: bool = true) {
-    session.hsts.enable_preload_list = enabled;
 }
 
 fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
@@ -633,20 +614,12 @@ fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
 
 fn allow_port(session: Session&, port_num: i32) -> bool {
     guard !session.ssrf_guard.allowed_ports.contains(port_num) else { return true; }
-    guard session.ssrf_guard.allowed_ports.len < session.ssrf_guard.allowed_ports.cap else {
-        return false;
-    }
-    session.ssrf_guard.allowed_ports.push(port_num);
-    return true;
+    return session.ssrf_guard.allowed_ports.try_push(port_num);
 }
 
 fn deny_port(session: Session&, port_num: i32) -> bool {
     guard !session.ssrf_guard.denied_ports.contains(port_num) else { return true; }
-    guard session.ssrf_guard.denied_ports.len < session.ssrf_guard.denied_ports.cap else {
-        return false;
-    }
-    session.ssrf_guard.denied_ports.push(port_num);
-    return true;
+    return session.ssrf_guard.denied_ports.try_push(port_num);
 }
 
 fn set_clock_us(session: Session&, now_us: i64) {
@@ -656,18 +629,13 @@ fn set_clock_us(session: Session&, now_us: i64) {
 fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
     guard host_name.len > 0 && host_name.len <= 128 else { return false; }
     guard !is_trusted_location_host(session, host_name) else { return true; }
-    guard session.trusted_location_hosts.len < session.trusted_location_hosts.cap else {
-        return false;
-    }
     var host_buf: u8[..128] = [];
-    host_buf.append(host_name);
-    to_lower(host_buf[..]);
-    session.trusted_location_hosts.push(host_buf);
-    return true;
+    host_name.to_lower_ascii(host_buf);
+    return session.trusted_location_hosts.try_push(host_buf);
 }
 
 fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
-    return session.trusted_location_hosts.any() { eq_ascii_fold(it[..], host_name) };
+    return session.trusted_location_hosts.any() { it[..].eq_ascii_fold(host_name) };
 }
 
 // ---- mock route registration methods ---------------------------------------
@@ -723,48 +691,41 @@ fn set_mock_protocol(session: Session&, proto: const u8[:]) {
 }
 
 fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
-    guard session.mock_routes.len < session.mock_routes.cap else { return; }
     var route = MockExchange {
         status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
         ..
     };
-    route.method.append("GET");
-    route.pattern_url.append(url_pattern);
+    guard route.method.try_set("GET") && route.pattern_url.try_set(url_pattern) else { return; }
     set_header(route.headers, "Upgrade", "websocket");
     set_header(route.headers, "Connection", "Upgrade");
     if subprotocol.len > 0 {
         set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
     }
-    session.mock_routes.push(route);
+    let _ = session.mock_routes.try_push(route);
 }
 
 fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
-    guard session.mock_routes.len < session.mock_routes.cap else { return; }
     var route = MockExchange {
         status_code: rfc::STATUS_OK,
         ..
     };
-    guard sample_events.len <= route.body.cap && url_pattern.len <= route.pattern_url.cap else { return; }
-    route.method.append("GET");
-    route.pattern_url.append(url_pattern);
+    guard route.method.try_set("GET")
+        && route.pattern_url.try_set(url_pattern)
+        && route.body.try_set(sample_events) else { return; }
     set_header(route.headers, "Content-Type", "text/event-stream");
     set_header(route.headers, "Cache-Control", "no-cache");
     set_header(route.headers, "Connection", "keep-alive");
-    if sample_events.len > 0 {
-        route.body.append(sample_events);
-    }
-    session.mock_routes.push(route);
+    let _ = session.mock_routes.try_push(route);
 }
 
 // ---- cookie & default header helpers ---------------------------------------
 
 fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
     var raw_hdr: u8[..4128] = [];
-    guard name.len + 1 + value.len + 8 <= raw_hdr.cap else { return; }
-    raw_hdr.append(name);
-    raw_hdr.push('=');
-    raw_hdr.append(value);
-    raw_hdr.append("; Path=/");
+    guard raw_hdr.try_append(name)
+        && raw_hdr.try_push('=')
+        && raw_hdr.try_append(value)
+        && raw_hdr.try_append("; Path=/") else { return; }
     if session.base_url.len > 0 {
         session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], session.virtual_clock_us);
     } else {
@@ -837,7 +798,7 @@ fn process_dictionary_response<B>(
     out_decoded:      B&,
 ) -> bool {
     let prev_len = out_decoded.len;
-    if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCZ) {
+    if content_encoding.eq_ascii_fold(rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcz_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -851,7 +812,7 @@ fn process_dictionary_response<B>(
         guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
             return false;
         }
-    } else if core::eq_ascii_fold(content_encoding, rfc::ENCODING_DCB) {
+    } else if content_encoding.eq_ascii_fold(rfc::ENCODING_DCB) {
         var dict_hash: u8[32] = [0; 32];
         let comp_payload, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -866,8 +827,7 @@ fn process_dictionary_response<B>(
             return false;
         }
     } else {
-        guard out_decoded.len + raw_body.len <= out_decoded.cap else { return false; }
-        out_decoded.append(raw_body);
+        guard out_decoded.try_append(raw_body) else { return false; }
     }
 
     if session.enable_compression_dict && use_as_dict_hdr.len > 0 {

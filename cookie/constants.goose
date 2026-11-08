@@ -36,10 +36,10 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
 //   raw_val = "Strict"
 //   returns: CookieSameSite.Strict
 fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
-    if core::eq_ascii_fold(raw_val, "strict") { return CookieSameSite.Strict; }
-    if core::eq_ascii_fold(raw_val, "lax") { return CookieSameSite.Lax; }
-    if core::eq_ascii_fold(raw_val, "none") { return CookieSameSite.None; }
-    if core::eq_ascii_fold(raw_val, "default") { return CookieSameSite.Default; }
+    if raw_val.eq_ascii_fold("strict") { return CookieSameSite.Strict; }
+    if raw_val.eq_ascii_fold("lax") { return CookieSameSite.Lax; }
+    if raw_val.eq_ascii_fold("none") { return CookieSameSite.None; }
+    if raw_val.eq_ascii_fold("default") { return CookieSameSite.Default; }
     return CookieSameSite.Unknown;
 }
 
@@ -70,9 +70,9 @@ fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
 //   raw_val = "high"
 //   returns: CookiePriority.High
 fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
-    if core::eq_ascii_fold(raw_val, "low") { return CookiePriority.Low; }
-    if core::eq_ascii_fold(raw_val, "medium") { return CookiePriority.Medium; }
-    if core::eq_ascii_fold(raw_val, "high") { return CookiePriority.High; }
+    if raw_val.eq_ascii_fold("low") { return CookiePriority.Low; }
+    if raw_val.eq_ascii_fold("medium") { return CookiePriority.Medium; }
+    if raw_val.eq_ascii_fold("high") { return CookiePriority.High; }
     return CookiePriority.Unknown;
 }
 
@@ -102,9 +102,9 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
 //   raw_val = "secure"
 //   returns: CookieSourceScheme.Secure
 fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
-    if core::eq_ascii_fold(raw_val, "secure") { return CookieSourceScheme.Secure; }
-    if core::eq_ascii_fold(raw_val, "nonsecure") { return CookieSourceScheme.NonSecure; }
-    if core::eq_ascii_fold(raw_val, "unset") { return CookieSourceScheme.Unset; }
+    if raw_val.eq_ascii_fold("secure") { return CookieSourceScheme.Secure; }
+    if raw_val.eq_ascii_fold("nonsecure") { return CookieSourceScheme.NonSecure; }
+    if raw_val.eq_ascii_fold("unset") { return CookieSourceScheme.Unset; }
     return CookieSourceScheme.Unknown;
 }
 

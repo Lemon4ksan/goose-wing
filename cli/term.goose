@@ -106,12 +106,12 @@ fn print_client_verbose_request(
 ) {
     var out: u8[>..] = [];
     let nc = cfg.no_color;
-    let ja4_fp = wing::ja4(sess);
-    let ak_hash = wing::akamai_hash(sess);
+    let ja4_fp = sess.ja4();
+    let ak_hash = sess.akamai_hash();
 
     out.append(c_seq(ANSI_DIM, nc));
     out.append("* Profile: ");
-    out.append(wing::profile_name(sess.profile));
+    out.append(sess.profile.profile_name());
     out.append(" | JA4: ");
     out.append(ja4_fp[..]);
     out.append(" | Akamai-H2: ");
@@ -124,9 +124,9 @@ fn print_client_verbose_request(
     out.push('\n');
     for &e in req.headers.entries {
         out.append("> ");
-        out.append(wing::entry_name(req.headers, e));
+        out.append(req.headers.entry_name(e));
         out.append(": ");
-        out.append(wing::entry_value(req.headers, e));
+        out.append(req.headers.entry_value(e));
         out.push('\n');
     }
     out.append(c_seq(ANSI_RESET, nc));
@@ -141,19 +141,19 @@ fn append_write_out_numeric_var<B>(
     out:        B&,
 ) {
     if var_name == "http_code" || var_name == "response_code" {
-        core::format_i64_dec(res.status_code, out);
+        res.status_code.format_i64_dec(out);
     } else if var_name == "size_download" {
-        core::format_i64_dec(res.body.len, out);
+        res.body.len.format_i64_dec(out);
     } else if var_name == "size_upload" {
-        core::format_i64_dec(req.body.len, out);
+        req.body.len.format_i64_dec(out);
     } else if var_name == "size_header" {
-        core::format_i64_dec(res.headers.raw_buf.len, out);
+        res.headers.raw_buf.len.format_i64_dec(out);
     } else if var_name == "num_redirects" {
-        core::format_i64_dec(res.redirect_count, out);
+        res.redirect_count.format_i64_dec(out);
     } else if var_name == "num_headers" {
-        core::format_i64_dec(res.headers.entries.len, out);
+        res.headers.entries.len.format_i64_dec(out);
     } else if core::starts_with(var_name, "time_") {
-        core::format_u64_dec(elapsed_ms, out);
+        elapsed_ms.format_u64_dec(out);
         out.append("ms");
     }
 }
@@ -174,14 +174,14 @@ fn append_write_out_var<B>(
     if var_name == "url_effective" {
         out.append(res.effective_url[..]);
     } else if var_name == "redirect_url" {
-        out.append(wing::header(res, "location"));
+        out.append(res.header("location"));
     } else if var_name == "http_version" {
         out.append(res.protocol[..]);
     } else if var_name == "content_type" {
-        out.append(wing::header(res, "content-type"));
+        out.append(res.header("content-type"));
     } else if var_name == "scheme" {
         let pu, _ = core::parse_url(res.effective_url[..]);
-        out.append(core::scheme(pu));
+        out.append(pu.scheme());
     }
 }
 
@@ -205,12 +205,10 @@ fn format_write_out<B>(
             continue;
         }
         if core::starts_with(rem, "%{") {
-            let tail = rem[2..];
-            let close_rel = core::index_of_byte(tail, '}');
-            if close_rel > 0 {
-                let next_idx = core::add_sat_i64(close_rel, 1);
-                append_write_out_var(tail[..close_rel], req, res, elapsed_ms, out);
-                rem = tail[next_idx..];
+            let var_name, after_brace, has_close = rem[2..].split_once_byte('}');
+            if has_close && var_name.len > 0 {
+                append_write_out_var(var_name, req, res, elapsed_ms, out);
+                rem = after_brace;
                 continue;
             }
         }
@@ -234,7 +232,7 @@ fn print_client_response(
         out.append(res.protocol[..]);
         out.push(' ');
         out.append(sc_col);
-        core::format_i64_dec(res.status_code, out);
+        res.status_code.format_i64_dec(out);
         out.push(' ');
         out.append(rfc::status_phrase(res.status_code));
         out.append(c_seq(ANSI_RESET, nc));
@@ -242,13 +240,13 @@ fn print_client_response(
         if cfg.verbose {
             out.append(c_seq(ANSI_DIM, nc));
             out.append(" (");
-            core::format_u64_dec(elapsed_ms, out);
+            elapsed_ms.format_u64_dec(out);
             out.append(" ms, ");
-            core::format_i64_dec(res.body.len, out);
+            res.body.len.format_i64_dec(out);
             out.append(" B");
             if res.redirect_count > 0 {
                 out.append(", redirects: ");
-                core::format_i64_dec(res.redirect_count, out);
+                res.redirect_count.format_i64_dec(out);
             }
             out.push(')');
             out.append(c_seq(ANSI_RESET, nc));
@@ -257,10 +255,10 @@ fn print_client_response(
 
         for &e in res.headers.entries {
             out.append(c_seq(ANSI_CYAN, nc));
-            out.append(wing::entry_name(res.headers, e));
+            out.append(res.headers.entry_name(e));
             out.append(c_seq(ANSI_RESET, nc));
             out.append(": ");
-            out.append(wing::entry_value(res.headers, e));
+            out.append(res.headers.entry_value(e));
             out.push('\n');
         }
         out.push('\n');
@@ -293,7 +291,7 @@ fn log_server_exchange(
     out.append(url);
     out.append(" -> ");
     out.append(status_color(status, no_color));
-    core::format_i64_dec(status, out);
+    status.format_i64_dec(out);
     out.push(' ');
     out.append(rfc::status_phrase(status));
     out.append(c_seq(ANSI_RESET, no_color));

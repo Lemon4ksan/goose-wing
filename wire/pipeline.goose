@@ -5,6 +5,7 @@
 namespace wire;
 
 import std;
+import core from "..";
 import .result;
 import .types;
 import .cmd;
@@ -232,43 +233,86 @@ struct WirePipeline {
     is_valid:       bool                  = true,
 }
 
-inline fn contains_stage_id(stages: const u8[:], stage_id: u8) -> bool {
-    for id in stages {
-        if id == stage_id {
-            return true;
-        }
-    }
-    return false;
+const VALID_STAGE_MASK: u64 = ((1 as u64) << 24) - 1;
+
+const DEFAULT_CLI_IN_STAGES: const u8[6] = [
+    STAGE_ID_CLI_IN_URL_HSTS,
+    STAGE_ID_CLI_IN_SSRF_GUARD,
+    STAGE_ID_CLI_IN_CACHE_LOOKUP,
+    STAGE_ID_CLI_IN_COOKIE_LOAD,
+    STAGE_ID_CLI_IN_DICT_NEGOTIATE,
+    STAGE_ID_CLI_IN_INTERCEPTOR_AUTH,
+];
+
+const DEFAULT_CLI_OUT_STAGES: const u8[6] = [
+    STAGE_ID_CLI_OUT_ALT_SVC,
+    STAGE_ID_CLI_OUT_DECOMPRESS,
+    STAGE_ID_CLI_OUT_AUTH_CHALLENGE,
+    STAGE_ID_CLI_OUT_COOKIE_STORE,
+    STAGE_ID_CLI_OUT_CACHE_STORE,
+    STAGE_ID_CLI_OUT_REDIRECT,
+];
+
+const DEFAULT_SRV_IN_STAGES: const u8[12] = [
+    STAGE_ID_SRV_IN_SLOWLORIS,
+    STAGE_ID_SRV_IN_EXPECT_100,
+    STAGE_ID_SRV_IN_EDGE_FILTER,
+    STAGE_ID_SRV_IN_RATELIMIT_IP,
+    STAGE_ID_SRV_IN_ROUTE_MATCH,
+    STAGE_ID_SRV_IN_RATELIMIT_ROUTE,
+    STAGE_ID_SRV_IN_CORS,
+    STAGE_ID_SRV_IN_CSRF,
+    STAGE_ID_SRV_IN_AUTH_COOKIE,
+    STAGE_ID_SRV_IN_AUTH_JWT,
+    STAGE_ID_SRV_IN_CACHE_LOOKUP,
+    STAGE_ID_SRV_IN_DECOMPRESS,
+];
+
+const DEFAULT_SRV_OUT_STAGES: const u8[9] = [
+    STAGE_ID_SRV_OUT_ETAG,
+    STAGE_ID_SRV_OUT_COMPRESS_GZIP,
+    STAGE_ID_SRV_OUT_COMPRESS_BR,
+    STAGE_ID_SRV_OUT_COMPRESS_ZSTD,
+    STAGE_ID_SRV_OUT_CACHE_STORE,
+    STAGE_ID_SRV_OUT_SECURITY_HEADERS,
+    STAGE_ID_SRV_OUT_ALT_SVC,
+    STAGE_ID_SRV_OUT_METRICS,
+    STAGE_ID_SRV_OUT_ACCESS_LOG,
+];
+
+// Validates that `mask` contains only defined stage slot bits within `VALID_STAGE_MASK` (`FlagBoundary.STRICT`).
+inline fn is_valid_stage_mask(mask: u64) -> bool {
+    return (mask & (~VALID_STAGE_MASK)) == 0;
 }
 
 // Appends a stage slot ID to `pipe.ingress_stages` and enables its corresponding bit in `pipe.ingress_mask`.
 fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
-    guard pipe.ingress_stages.len < pipe.ingress_stages.cap && stage_id < 64 else { return false; }
-    if !contains_stage_id(pipe.ingress_stages[..], stage_id) {
-        pipe.ingress_stages.push(stage_id);
+    guard stage_id < 64 else { return false; }
+    if !pipe.ingress_stages[..].contains_byte(stage_id) {
+        guard pipe.ingress_stages.try_push(stage_id) else { return false; }
     }
-    pipe.ingress_mask = pipe.ingress_mask | ((1 as u64) << stage_id);
+    pipe.ingress_mask = pipe.ingress_mask | core::shl_sat_u64(1, stage_id);
     return true;
 }
 
 // Appends a stage slot ID to `pipe.egress_stages` and enables its corresponding bit in `pipe.egress_mask`.
 fn add_egress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
-    guard pipe.egress_stages.len < pipe.egress_stages.cap && stage_id < 64 else { return false; }
-    if !contains_stage_id(pipe.egress_stages[..], stage_id) {
-        pipe.egress_stages.push(stage_id);
+    guard stage_id < 64 else { return false; }
+    if !pipe.egress_stages[..].contains_byte(stage_id) {
+        guard pipe.egress_stages.try_push(stage_id) else { return false; }
     }
-    pipe.egress_mask = pipe.egress_mask | ((1 as u64) << stage_id);
+    pipe.egress_mask = pipe.egress_mask | core::shl_sat_u64(1, stage_id);
     return true;
 }
 
 inline fn is_ingress_stage_enabled(pipe: const WirePipeline&, stage_id: u8) -> bool {
     guard stage_id < 64 else { return false; }
-    return (pipe.ingress_mask & ((1 as u64) << stage_id)) != 0;
+    return (pipe.ingress_mask & core::shl_sat_u64(1, stage_id)) != 0;
 }
 
 inline fn is_egress_stage_enabled(pipe: const WirePipeline&, stage_id: u8) -> bool {
     guard stage_id < 64 else { return false; }
-    return (pipe.egress_mask & ((1 as u64) << stage_id)) != 0;
+    return (pipe.egress_mask & core::shl_sat_u64(1, stage_id)) != 0;
 }
 
 inline fn enable_ingress_stage(pipe: WirePipeline&, mask_bit: u64) {
@@ -297,19 +341,8 @@ fn default_client_pipeline() -> WirePipeline {
         is_valid:     true,
         ..
     };
-    p.ingress_stages.push(STAGE_ID_CLI_IN_URL_HSTS);
-    p.ingress_stages.push(STAGE_ID_CLI_IN_SSRF_GUARD);
-    p.ingress_stages.push(STAGE_ID_CLI_IN_CACHE_LOOKUP);
-    p.ingress_stages.push(STAGE_ID_CLI_IN_COOKIE_LOAD);
-    p.ingress_stages.push(STAGE_ID_CLI_IN_DICT_NEGOTIATE);
-    p.ingress_stages.push(STAGE_ID_CLI_IN_INTERCEPTOR_AUTH);
-
-    p.egress_stages.push(STAGE_ID_CLI_OUT_ALT_SVC);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_DECOMPRESS);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_AUTH_CHALLENGE);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_COOKIE_STORE);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_CACHE_STORE);
-    p.egress_stages.push(STAGE_ID_CLI_OUT_REDIRECT);
+    let _ = p.ingress_stages.try_set(DEFAULT_CLI_IN_STAGES[..]);
+    let _ = p.egress_stages.try_set(DEFAULT_CLI_OUT_STAGES[..]);
     return p;
 }
 
@@ -323,28 +356,8 @@ fn default_server_pipeline() -> WirePipeline {
         is_valid:     true,
         ..
     };
-    p.ingress_stages.push(STAGE_ID_SRV_IN_SLOWLORIS);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_EXPECT_100);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_EDGE_FILTER);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_RATELIMIT_IP);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_ROUTE_MATCH);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_RATELIMIT_ROUTE);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_CORS);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_CSRF);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_AUTH_COOKIE);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_AUTH_JWT);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_CACHE_LOOKUP);
-    p.ingress_stages.push(STAGE_ID_SRV_IN_DECOMPRESS);
-
-    p.egress_stages.push(STAGE_ID_SRV_OUT_ETAG);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_COMPRESS_GZIP);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_COMPRESS_BR);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_COMPRESS_ZSTD);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_CACHE_STORE);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_SECURITY_HEADERS);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_ALT_SVC);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_METRICS);
-    p.egress_stages.push(STAGE_ID_SRV_OUT_ACCESS_LOG);
+    let _ = p.ingress_stages.try_set(DEFAULT_SRV_IN_STAGES[..]);
+    let _ = p.egress_stages.try_set(DEFAULT_SRV_OUT_STAGES[..]);
     return p;
 }
 
@@ -353,7 +366,7 @@ fn create_wire_pipeline(
     dev:  const WireDevice&,
     info: const WirePipelineCreateInfo&,
 ) -> WirePipeline, WireResult {
-    guard dev.is_active else {
+    guard dev.is_active && is_valid_stage_mask(info.ingress_mask) && is_valid_stage_mask(info.egress_mask) else {
         return WirePipeline { is_valid: false, .. }, WireResult.ErrorInitializationFailed;
     }
     var pipe = if info.role == PipelineRole.Server {

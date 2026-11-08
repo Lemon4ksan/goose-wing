@@ -25,10 +25,8 @@ fn grpc_error(code: GrpcStatusCode, message: const u8[:]) -> GrpcStatus {
         code:    code,
         message: [],
     };
-    let take_len = min(message.len, 256);
-    if take_len > 0 {
-        status.message.append(message[..take_len]);
-    }
+    let take_len = min(message.len, status.message.cap);
+    let _ = status.message.try_set(message[..take_len]);
     return status;
 }
 
@@ -139,7 +137,7 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
     let max_val: u64 = 99999999;
     let hours = grpc_div_u64(timeout_ms, 3600000);
     if hours <= max_val && core::mul_sat_u64(hours, 3600000) == timeout_ms {
-        core::format_u64_dec(hours, tmp);
+        hours.format_u64_dec(tmp);
         tmp.push('H');
         let _ = out.try_append(tmp[..]);
         return;
@@ -147,7 +145,7 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
 
     let mins = grpc_div_u64(timeout_ms, 60000);
     if mins <= max_val && core::mul_sat_u64(mins, 60000) == timeout_ms {
-        core::format_u64_dec(mins, tmp);
+        mins.format_u64_dec(tmp);
         tmp.push('M');
         let _ = out.try_append(tmp[..]);
         return;
@@ -155,14 +153,14 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
 
     let secs = grpc_div_u64(timeout_ms, 1000);
     if secs <= max_val && core::mul_sat_u64(secs, 1000) == timeout_ms {
-        core::format_u64_dec(secs, tmp);
+        secs.format_u64_dec(tmp);
         tmp.push('S');
         let _ = out.try_append(tmp[..]);
         return;
     }
 
     if timeout_ms <= max_val {
-        core::format_u64_dec(timeout_ms, tmp);
+        timeout_ms.format_u64_dec(tmp);
         tmp.push('m');
         let _ = out.try_append(tmp[..]);
         return;
@@ -170,7 +168,7 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
 
     let ceil_secs = grpc_div_u64(core::add_sat_u64(timeout_ms, 999), 1000);
     if ceil_secs <= max_val {
-        core::format_u64_dec(ceil_secs, tmp);
+        ceil_secs.format_u64_dec(tmp);
         tmp.push('S');
         let _ = out.try_append(tmp[..]);
         return;
@@ -178,14 +176,14 @@ fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
 
     let ceil_mins = grpc_div_u64(core::add_sat_u64(timeout_ms, 59999), 60000);
     if ceil_mins <= max_val {
-        core::format_u64_dec(ceil_mins, tmp);
+        ceil_mins.format_u64_dec(tmp);
         tmp.push('M');
         let _ = out.try_append(tmp[..]);
         return;
     }
 
     let ceil_hours = min(grpc_div_u64(core::add_sat_u64(timeout_ms, 3599999), 3600000), max_val);
-    core::format_u64_dec(ceil_hours, tmp);
+    ceil_hours.format_u64_dec(tmp);
     tmp.push('H');
     let _ = out.try_append(tmp[..]);
 }
@@ -214,15 +212,15 @@ inline fn convert_grpc_timeout_unit(num: u64, unit: u8) -> u64, bool {
 //   val = "100m"
 //   returns: 100, true
 fn parse_grpc_timeout(val: const u8[:]) -> u64, bool {
-    let trimmed = trim_lws(val);
+    let trimmed = val.trim_lws();
     guard trimmed.len >= 2 else { return 0, false; }
 
     let last_idx = (core::sub_sat_u64(trimmed.len as u64, 1)) as i64;
     let unit = trimmed[last_idx];
-    let num_slice = trimmed[..last_idx];
+    let num_slice = trimmed[..^1];
 
     guard num_slice.len <= 8 else { return 0, false; } // gRPC spec max 8 digits
-    let num, ok_num = core::parse_u64_dec(num_slice);
+    let num, ok_num = num_slice.parse_u64_dec();
     guard ok_num else { return 0, false; }
 
     return convert_grpc_timeout_unit(num, unit);
@@ -234,9 +232,9 @@ inline fn resolve_effective_http_status(headers: const HeaderMap&) -> i32 {
     if headers.status_code != 200 {
         return headers.status_code as u16;
     }
-    let pseudo_st = trim_lws(get_header(headers, ":status"));
+    let pseudo_st = get_header(headers, ":status").trim_lws();
     if pseudo_st.len > 0 {
-        let code_u32, ok_st = core::parse_u32_dec(pseudo_st);
+        let code_u32, ok_st = pseudo_st.parse_u32_dec();
         if ok_st && code_u32 >= 100 && code_u32 <= 599 {
             return code_u32 as i32;
         }
@@ -264,7 +262,7 @@ fn extract_grpc_status(
     // 1. Check trailers first
     let trailer_status = get_header(trailers, rfc::HEADER_GRPC_STATUS);
     if trailer_status.len > 0 || has_header(trailers, rfc::HEADER_GRPC_STATUS) {
-        let code_int, ok_code = core::parse_u32_dec(trim_lws(trailer_status));
+        let code_int, ok_code = trailer_status.trim_lws().parse_u32_dec();
         if ok_code {
             out_status = grpc_status_from_code(code_int);
         } else {
@@ -284,7 +282,7 @@ fn extract_grpc_status(
     // 2. Check headers (Trailers-Only response)
     let header_status = get_header(headers, rfc::HEADER_GRPC_STATUS);
     if header_status.len > 0 || has_header(headers, rfc::HEADER_GRPC_STATUS) {
-        let code_int, ok_code = core::parse_u32_dec(trim_lws(header_status));
+        let code_int, ok_code = header_status.trim_lws().parse_u32_dec();
         if ok_code {
             out_status = grpc_status_from_code(code_int);
         } else {
@@ -379,6 +377,11 @@ fn build_grpc_status_details(code: i32, msg: const u8[:], dst: u8[:]) -> i32, bo
 fn decode_grpc_any_detail(wire: const u8[:], out_detail: GrpcErrorDetail&) -> bool {
     out_detail.type_url.clear();
     out_detail.value.clear();
+    var committed = false;
+    defer if !committed {
+        out_detail.type_url.clear();
+        out_detail.value.clear();
+    };
     let type_slice, ok_type = pb_read_bytes_field(wire, 1);
     if ok_type {
         guard out_detail.type_url.try_set(type_slice) else { return false; }
@@ -387,7 +390,9 @@ fn decode_grpc_any_detail(wire: const u8[:], out_detail: GrpcErrorDetail&) -> bo
     if ok_val {
         guard out_detail.value.try_set(val_slice) else { return false; }
     }
-    return ok_type || ok_val;
+    guard ok_type || ok_val else { return false; }
+    committed = true;
+    return true;
 }
 
 // Parses a single wire field from a `google.rpc.Status` protobuf payload.
@@ -402,6 +407,9 @@ fn parse_grpc_status_proto_field(
     out_msg:     u8[..256]&,
     out_details: GrpcErrorDetail[..4]&,
 ) -> bool {
+    let saved_pos = pos;
+    var committed = false;
+    defer if !committed { pos = saved_pos; };
     let tag, ok_tag = pb_read_varint(wire, pos);
     let raw_fnum = tag >> 3;
     guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return false; }
@@ -411,10 +419,13 @@ fn parse_grpc_status_proto_field(
         let v, ok_v = pb_read_varint(wire, pos);
         guard ok_v else { return false; }
         out_code = v as u32;
+        committed = true;
         return true;
     }
     guard (fnum == 2 || fnum == 3) && wtype == PB_WIRE_LEN else {
-        return pb_skip_field(wire, pos, wtype);
+        guard pb_skip_field(wire, pos, wtype) else { return false; }
+        committed = true;
+        return true;
     }
     let len_u64, ok_l = pb_read_varint(wire, pos);
     let rem = core::sub_sat_i64(wire.len, pos);
@@ -422,16 +433,16 @@ fn parse_grpc_status_proto_field(
     let end_pos = core::add_sat_i64(pos, len_u64 as i64);
     let slice = wire[pos..end_pos];
     pos = end_pos;
+    committed = true;
     if fnum == 2 {
-        out_msg.clear();
         let take_len = min(slice.len, out_msg.cap);
-        out_msg.append(slice[..take_len]);
+        let _ = out_msg.try_set(slice[..take_len]);
         return true;
     }
     guard out_details.len < out_details.cap else { return true; }
     var detail = GrpcErrorDetail { .. };
     if decode_grpc_any_detail(slice, detail) {
-        out_details.push(detail);
+        let _ = out_details.try_push(detail);
     }
     return true;
 }
@@ -450,7 +461,7 @@ fn decode_grpc_status_details(
     out_msg:       u8[..256]&,
     out_details:   GrpcErrorDetail[..4]&,
 ) -> bool {
-    let trimmed = trim_lws(b64_val);
+    let trimmed = b64_val.trim_lws();
     guard trimmed.len > 0 else { return false; }
     var raw_pb: u8[..1024] = [];
     var ok_b64 = core::base64_decode(trimmed, raw_pb);
