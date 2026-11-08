@@ -7,6 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .dns;
 
 // ---- RFC 8305 and HEv3 normative constants ------------------------------
 
@@ -64,6 +65,56 @@ struct ConnectionEndpointMetadata {
     ech_config_present: bool          = false,
     ipv6_hints:         u8[..64][..4] = [],
     ipv4_hints:         u8[..64][..4] = [],
+}
+
+fn populate_svcb_alpn_flags(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
+    for &alpn_tok in rec.alpns {
+        let tok = alpn_tok[..];
+        if tok == "h3" || starts_with(tok, "h3-") {
+            meta.alpn_h3 = true;
+        } else if tok == "h2" {
+            meta.alpn_h2 = true;
+        }
+    }
+}
+
+fn populate_svcb_ip_hints(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
+    var ip6_buf: u8[..64] = [];
+    for &ip6 in rec.ipv6_hints {
+        guard meta.ipv6_hints.len < 4 else { break; }
+        core::format_ipv6_bytes(ip6, ip6_buf);
+        meta.ipv6_hints.push(ip6_buf);
+    }
+    var ip4_buf: u8[..64] = [];
+    for ip4 in rec.ipv4_hints {
+        guard meta.ipv4_hints.len < 4 else { break; }
+        core::format_ipv4_u32(ip4, ip4_buf);
+        meta.ipv4_hints.push(ip4_buf);
+    }
+}
+
+// Extracts Happy Eyeballs v3 endpoint metadata and effective port from an RFC 9460 HTTPS/SVCB record.
+//
+// Example:
+//   rec = HttpsRecord { priority: 1, port: 8443, alpns: ["h3", "h2"], has_ech: true, .. }, default_port = 443
+//   returns: meta = { mode: ServiceMode, alpn_h3: true, alpn_h2: true, ech_config_present: true, .. }, eff_port = 8443
+fn extract_https_svcb_metadata(
+    rec:          const HttpsRecord&,
+    default_port: u16 = 443,
+) -> ConnectionEndpointMetadata, u16 {
+    var meta = ConnectionEndpointMetadata { .. };
+    if rec.priority == 0 {
+        meta.mode = SvcbMode.AliasMode;
+        let _ = meta.alias_target.try_append(rec.target_name[..]);
+        return meta, default_port;
+    }
+    meta.mode = SvcbMode.ServiceMode;
+    let _ = meta.target_name.try_append(rec.target_name[..]);
+    meta.ech_config_present = rec.has_ech && rec.ech_config_list.len > 0;
+    populate_svcb_alpn_flags(rec, meta);
+    populate_svcb_ip_hints(rec, meta);
+    let eff_port: u16 = if rec.port > 0 { rec.port } else { default_port };
+    return meta, eff_port;
 }
 
 struct DnsCandidate {
@@ -125,6 +176,21 @@ fn interleave_candidates_he(
             idx6++;
         }
     }
+}
+
+// Interleaves candidate addresses honoring a cached winning address family (RFC 8305 §5).
+fn interleave_candidates_by_preference(
+    ipv6_list:          const DnsCandidate[:],
+    ipv4_list:          const DnsCandidate[:],
+    preferred_family:   AddressFamily,
+    out:                DnsCandidate[..32]&,
+    first_family_count: i32 = rfc::HE_FIRST_ADDRESS_FAMILY_COUNT,
+) {
+    if preferred_family == AddressFamily.IPv4 {
+        interleave_candidates_he(ipv4_list, ipv6_list, out, first_family_count);
+        return;
+    }
+    interleave_candidates_he(ipv6_list, ipv4_list, out, first_family_count);
 }
 
 // Interleaves transport protocols (HEv3 QUIC/UDP vs TCP) so UDP firewalls do not block TCP.
@@ -262,11 +328,67 @@ struct ConnectionAttempt {
     state:         AttemptState = AttemptState.Queued,
 }
 
-// Winner address family cache (TTL = 600s)
+// Winner address family cache (TTL = 600s, RFC 8305 §5)
+const HE_ADDRESS_FAMILY_CACHE_TTL_SEC: i64 = 600;
+
 struct AddressFamilyCacheEntry {
     host:             u8[..256]     = [],
     preferred_family: AddressFamily = AddressFamily.IPv6,
     expires_at_sec:   i64           = 0,
+}
+
+struct AddressFamilyCache {
+    entries: AddressFamilyCacheEntry[..16] = [],
+}
+
+// Looks up a fresh cached preferred address family for `host` (RFC 8305 §5).
+fn lookup_preferred_family(
+    cache:   const AddressFamilyCache&,
+    host:    const u8[:],
+    now_sec: i64,
+) -> AddressFamily, bool {
+    for &entry in cache.entries {
+        if entry.expires_at_sec > now_sec && eq_ascii_fold(entry.host[..], host) {
+            return entry.preferred_family, true;
+        }
+    }
+    return AddressFamily.IPv6, false;
+}
+
+// Records the winning address family for `host` with a 600-second TTL (RFC 8305 §5).
+fn record_preferred_family(
+    cache:   AddressFamilyCache&,
+    host:    const u8[:],
+    family:  AddressFamily,
+    now_sec: i64,
+) {
+    guard host.len > 0 && host.len <= 256 else { return; }
+    let exp = core::add_sat_i64(now_sec, HE_ADDRESS_FAMILY_CACHE_TTL_SEC);
+    for &entry in cache.entries {
+        if eq_ascii_fold(entry.host[..], host) {
+            entry.preferred_family = family;
+            entry.expires_at_sec = exp;
+            return;
+        }
+    }
+    for &entry in cache.entries {
+        if entry.expires_at_sec <= now_sec {
+            entry.host.clear();
+            let _ = entry.host.try_append(host);
+            entry.preferred_family = family;
+            entry.expires_at_sec = exp;
+            return;
+        }
+    }
+    if cache.entries.len < 16 {
+        var new_entry = AddressFamilyCacheEntry {
+            preferred_family: family,
+            expires_at_sec:   exp,
+            ..
+        };
+        let _ = new_entry.host.try_append(host);
+        cache.entries.push(new_entry);
+    }
 }
 
 struct AttemptManager {

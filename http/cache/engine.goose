@@ -10,6 +10,7 @@ import std;
 import client.request;
 import client.response;
 import http.headers;
+import http.novarysearch;
 import http.cache.cache_control;
 import http.cache.freshness;
 import http.cache.validators;
@@ -42,6 +43,7 @@ struct CachedEntry {
     last_modified:   core::Time      = core::Time { .. },
     timestamps:      CacheTimestamps = CacheTimestamps { .. },
     vary:            VarySnapshot    = VarySnapshot { .. },
+    nvs:             NoVarySearch    = NoVarySearch { .. },
     body:            u8[..4096]      = [],
     head_only:       bool            = false,
     security_zeroed: bool            = false,
@@ -406,7 +408,8 @@ fn find_matching_entry(
 
     for &entry, idx in cache.entries {
         if !entry.is_valid || entry.security_zeroed { continue; }
-        if entry.url_hash != req_hash || entry.url[..] != req_url { continue; }
+        let exact_match = entry.url_hash == req_hash && entry.url[..] == req_url;
+        if !exact_match && !are_urls_nvs_equivalent(entry.url[..], req_url, entry.nvs) { continue; }
         if is_get && entry.head_only { continue; }
         if entry.vary.has_star { continue; }
         if !entry.vary.matches_vary(req_headers) { continue; }
@@ -423,6 +426,86 @@ fn find_matching_entry(
         }
     }
     return matched_idx;
+}
+
+fn evaluate_suffix_byte_range(end_str: const u8[:], total_len: i64) -> i32, i64, i64 {
+    let suffix_len, ok_s = core::parse_i64_dec(trim_lws(end_str));
+    guard ok_s && suffix_len >= 0 else { return 200, 0, 0; }
+    if suffix_len == 0 || total_len <= 0 { return 416, 0, 0; }
+    let eff_suffix = min(suffix_len, total_len);
+    return 206, core::sub_sat_i64(total_len, eff_suffix), core::sub_sat_i64(total_len, 1);
+}
+
+// Evaluates a single byte-range-spec (`bytes=first-last`, `bytes=first-`, `bytes=-suffix`)
+// against `total_len` (RFC 9110 §14.1.2). Returns (status_code: 200|206|416, first_pos, last_pos).
+fn evaluate_single_byte_range(raw_range: const u8[:], total_len: i64) -> i32, i64, i64 {
+    let trimmed = trim_lws(raw_range);
+    guard trimmed.len > 6 && starts_with_fold(trimmed, "bytes=") else { return 200, 0, 0; }
+    let spec = trim_lws(trimmed[6..]);
+    guard !spec.contains_byte(',') else { return 200, 0, 0; }
+    let start_str, end_str, has_dash = spec.split_once_byte('-');
+    guard has_dash else { return 200, 0, 0; }
+
+    if start_str.len == 0 {
+        return evaluate_suffix_byte_range(end_str, total_len);
+    }
+
+    let first_pos, ok_f = core::parse_i64_dec(trim_lws(start_str));
+    guard ok_f && first_pos >= 0 else { return 200, 0, 0; }
+    var last_pos = core::sub_sat_i64(total_len, 1);
+    if end_str.len > 0 {
+        let parsed_last, ok_l = core::parse_i64_dec(trim_lws(end_str));
+        guard ok_l && parsed_last >= first_pos else { return 200, 0, 0; }
+        last_pos = parsed_last;
+    }
+    if total_len <= 0 || first_pos >= total_len {
+        return 416, 0, 0;
+    }
+    return 206, first_pos, min(last_pos, core::sub_sat_i64(total_len, 1));
+}
+
+fn populate_cached_206_response(entry: const CachedEntry&, first_pos: i64, last_pos: i64, resp: Response&) {
+    let total_len = entry.body.len;
+    let slice_end = core::add_sat_i64(last_pos, 1);
+    guard first_pos >= 0 && slice_end >= first_pos && slice_end <= total_len else { return; }
+    let slice_len = core::sub_sat_i64(slice_end, first_pos);
+    resp.status_code = 206;
+    resp.body.clear();
+    resp.body.append(entry.body[first_pos..slice_end]);
+    var cr_206: u8[..64] = "bytes ";
+    core::format_i64_dec(first_pos, cr_206);
+    cr_206.push('-');
+    core::format_i64_dec(last_pos, cr_206);
+    cr_206.push('/');
+    core::format_i64_dec(total_len, cr_206);
+    resp.set_header("Content-Range", cr_206[..]);
+    var cl_str: u8[..32] = [];
+    core::format_i64_dec(slice_len, cl_str);
+    resp.set_header("Content-Length", cl_str[..]);
+}
+
+fn apply_cached_range_if_requested(entry: const CachedEntry&, req: const Request&, resp: Response&) {
+    guard entry.status_code == 200 && eq_ascii_fold(req.method[..], "GET") else { return; }
+    let range_hdr = req.headers.get_header("range");
+    guard range_hdr.len > 0 else { return; }
+
+    let if_range_hdr = req.headers.get_header("if-range");
+    if if_range_hdr.len > 0 && !evaluate_cache_if_range(if_range_hdr, entry.etag, entry.last_modified) {
+        return;
+    }
+
+    let total_len = entry.body.len;
+    let status, first_pos, last_pos = evaluate_single_byte_range(range_hdr, total_len);
+    if status == 416 {
+        resp.status_code = 416;
+        resp.body.clear();
+        var cr_416: u8[..64] = "bytes */";
+        core::format_i64_dec(total_len, cr_416);
+        resp.set_header("Content-Range", cr_416[..]);
+        resp.set_header("Content-Length", "0");
+    } else if status == 206 {
+        populate_cached_206_response(entry, first_pos, last_pos, resp);
+    }
 }
 
 // Builds conditional request headers (If-None-Match and If-Modified-Since) for revalidation.
@@ -516,6 +599,7 @@ fn lookup(
         dec.entry_idx = matched_idx;
         dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
         matched_entry.entry_to_response(cur_now, dec.cached_response);
+        apply_cached_range_if_requested(matched_entry, req, dec.cached_response);
         return dec;
     }
 
@@ -534,6 +618,21 @@ fn lookup(
 }
 
 // ---- on_response helpers ---------------------------------------------------
+
+fn refresh_entry_vary_and_nvs(entry: CachedEntry&, req_headers: const HeaderMap&) -> bool {
+    if entry.headers.has_header("vary") {
+        var vary_combined: u8[..512] = [];
+        guard get_combined(entry.headers, "vary", vary_combined, 512) else { return false; }
+        entry.vary = record_vary_snapshot(vary_combined[..], req_headers);
+        guard !entry.vary.has_star && entry.vary.valid else { return false; }
+    }
+    let nvs_raw = entry.headers.get_header("no-vary-search");
+    if nvs_raw.len > 0 {
+        let parsed_nvs, ok_nvs = parse_no_vary_search(nvs_raw);
+        entry.nvs = if ok_nvs { parsed_nvs } else { NoVarySearch { .. } };
+    }
+    return true;
+}
 
 // Handles 304 Not Modified response by merging fresh headers into cached entry.
 fn freshen_cached_entry_304(
@@ -558,9 +657,9 @@ fn freshen_cached_entry_304(
     }
     let resp_304_headers = resp.response_headers_to_map();
     entry.headers.merge_cached_headers_304(resp_304_headers);
-    let vary_raw = entry.headers.get_header("vary");
-    if vary_raw.len > 0 && req_headers.entries.len > 0 {
-        entry.vary = record_vary_snapshot(vary_raw, req_headers);
+    if !refresh_entry_vary_and_nvs(entry, req_headers) {
+        entry.is_valid = false;
+        cache.lru_detach(revalidate_entry_idx as i32);
     }
 
     entry.timestamps.request_time = ts.request_time;
@@ -587,7 +686,9 @@ fn freshen_cached_entry_304(
         if ok_d { entry.last_modified = d_val; }
     }
 
-    cache.lru_touch(revalidate_entry_idx);
+    if entry.is_valid {
+        cache.lru_touch(revalidate_entry_idx);
+    }
     entry.entry_to_response(ts.response_time, dec.response);
     dec.kind = ResponseDecisionKind.FreshenAndReturn;
     dec.entry_idx = revalidate_entry_idx;
@@ -602,6 +703,7 @@ fn is_response_cacheable(
     resp:        const Response&,
     resp_cc:     const CacheControl&,
 ) -> bool {
+    if resp.status_code == 206 { return false; }
     if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
     if resp_cc.is_must_understand() && !rfc::is_heuristically_cacheable_status(resp.status_code) { return false; }
 
@@ -632,9 +734,10 @@ fn is_response_cacheable(
 // Stores or updates a cached entry using O(1) LRU insertion and eviction.
 fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const HeaderMap&) -> i64 {
     for &existing, idx in cache.entries {
-        if existing.url_hash == entry.url_hash &&
-           existing.url[..] == entry.url[..] &&
-           existing.vary.matches_vary(req_headers) {
+        let exact_match = existing.url_hash == entry.url_hash && existing.url[..] == entry.url[..];
+        let nvs_match = are_urls_nvs_equivalent(existing.url[..], entry.url[..], existing.nvs) ||
+            are_urls_nvs_equivalent(existing.url[..], entry.url[..], entry.nvs);
+        if (exact_match || nvs_match) && existing.vary.matches_vary(req_headers) {
             if existing.is_valid && !existing.head_only && entry.head_only {
                 cache.lru_touch(idx);
                 return idx;
@@ -787,6 +890,13 @@ fn on_response(
         }
     }
 
+    var nvs_snap = NoVarySearch { .. };
+    let nvs_raw = resp_headers.get_header("no-vary-search");
+    if nvs_raw.len > 0 {
+        let parsed_nvs, ok_nvs = parse_no_vary_search(nvs_raw);
+        if ok_nvs { nvs_snap = parsed_nvs; }
+    }
+
     var sanitized = HeaderMap { .. };
     resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
 
@@ -806,6 +916,7 @@ fn on_response(
         last_modified:   lm_time,
         timestamps:      ts,
         vary:            vary_snap,
+        nvs:             nvs_snap,
         head_only:       is_head,
         security_zeroed: false,
         is_valid:        true,

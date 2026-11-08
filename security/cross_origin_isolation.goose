@@ -48,7 +48,7 @@ struct CrossOriginIsolationContext {
 // Extracts the primary token before any RFC 8941 structured field parameters (';').
 // Rejects unquoted commas (multi-item lists) and leading semicolons without a token.
 inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
-    guard core::find_unquoted_byte(val, ',') < 0 else { return ";"; }
+    guard core::find_unquoted_byte(val, ',') == val.len else { return ";"; }
     let head, _, has_semi = split_once(val, ";");
     let clean = trim_lws(head);
     if has_semi && clean.len == 0 {

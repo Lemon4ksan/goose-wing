@@ -100,7 +100,8 @@ fn apply_nvs_item(nvs: NoVarySearch&, token: const u8[:], has_val: bool, val: co
     if token == "key-order" {
         return apply_nvs_key_order(nvs, has_val, val);
     }
-    return false;
+    // RFC 9440 Section 2.2: Unknown dictionary keys MUST be ignored.
+    return true;
 }
 
 fn read_nvs_token(raw: const u8[:], cursor: i64&) -> const u8[:] {
@@ -305,17 +306,36 @@ fn serialize_normalized_query<B>(params: const QueryParam[:], out: B&) {
     }
 }
 
-// Normalizes a raw query string (e.g. `utm_source=tw&id=10&utm_medium=web`)
-// into a canonical sorted string without ignored parameters (`id=10`)
-fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) {
+fn try_normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) -> bool {
     out.clear();
     var params: QueryParam[..128] = [];
-    guard parse_and_filter_query_params(raw_query, nvs, params) else { return; }
+    guard parse_and_filter_query_params(raw_query, nvs, params) else { return false; }
 
-    // If key-order does not matter (default), sort parameters alphabetically by key
+    // If key-order does not matter, sort parameters alphabetically by key
     if !nvs.key_order_matters && params.len > 1 {
         sort(params) { a, b => bytes_less_than(a.key[..], b.key[..]) };
     }
 
     serialize_normalized_query(params[..], out);
+    return true;
+}
+
+// Normalizes a raw query string (e.g. `utm_source=tw&id=10&utm_medium=web`)
+// into a canonical sorted string without ignored parameters (`id=10`)
+fn normalize_query_for_cache<B>(raw_query: const u8[:], nvs: const NoVarySearch&, out: B&) {
+    let _ = try_normalize_query_for_cache(raw_query, nvs, out);
+}
+
+// Evaluates whether two URLs are cache-equivalent under a W3C No-Vary-Search policy.
+fn are_urls_nvs_equivalent(url_a: const u8[:], url_b: const u8[:], nvs: const NoVarySearch&) -> bool {
+    if url_a == url_b { return true; }
+    guard nvs.is_valid else { return false; }
+    let base_a, query_a, _ = url_a.split_once_byte('?');
+    let base_b, query_b, _ = url_b.split_once_byte('?');
+    guard base_a == base_b else { return false; }
+    var norm_a: u8[..1024] = [];
+    var norm_b: u8[..1024] = [];
+    guard try_normalize_query_for_cache(query_a, nvs, norm_a) else { return false; }
+    guard try_normalize_query_for_cache(query_b, nvs, norm_b) else { return false; }
+    return norm_a[..] == norm_b[..];
 }

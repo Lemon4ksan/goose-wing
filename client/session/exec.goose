@@ -23,6 +23,9 @@ import http.altsvc;
 import http.compression_dict;
 import http.hsts;
 import auth.digest;
+import security.cors;
+import security.cross_origin_isolation;
+import security.privacypass;
 import realtime.websocket;
 import client.session.ssrf;
 import client.session.mock;
@@ -179,6 +182,17 @@ fn apply_redirect_transition(
     redirect_info: const RedirectInfo&,
 ) -> Error {
     ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
+    let last_hop_idx = core::sub_sat_i64(ctx.url_chain.len, 1);
+    if ctx.cors_mode && redirect_info.is_cross_origin && last_hop_idx > 0 && last_hop_idx < ctx.url_chain.len {
+        let init_url = ctx.url_chain[0];
+        let prev_url = ctx.url_chain[last_hop_idx];
+        if !core::is_same_origin_url(init_url, prev_url) {
+            ctx.tainted_origin = true;
+        }
+    }
+    if ctx.is_main_frame && ctx.first_party_policy == FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT {
+        ctx.top_frame_origin = core::origin_from_url(redirect_info.new_url);
+    }
     ctx.site_for_cookies = redirect_info.new_site_for_cookies;
     ctx.auth_retried = false;
     ctx.current_method.clear();
@@ -284,6 +298,10 @@ fn init_execution_context(
         ctx.has_initiator = true;
     }
 
+    if ctx.top_frame_origin.host.len == 0 {
+        ctx.top_frame_origin = core::origin_from_url(parsed_initial);
+    }
+
     if req.has_site_for_cookies {
         ctx.site_for_cookies = copy(req.site_for_cookies);
     } else {
@@ -291,9 +309,44 @@ fn init_execution_context(
     }
 
     merge_session_and_request_headers(ctx.headers, session.default_headers, req.headers, session.profile);
-
+    sanitize_initial_request_referrer(session, ctx, parsed_initial);
     ctx.url_chain.push(parsed_initial);
     return ctx;
+}
+
+// Sanitizes the Hop-0 request `Referer` header and `ctx.current_referrer` according to `ctx.current_referrer_policy`.
+//
+// Example:
+//   ctx.current_referrer = "https://a.example/secret?k=1", parsed_initial = "https://b.example/api", policy = StrictOriginWhenCrossOrigin
+//   sets ctx.current_referrer = "https://a.example/" and Referer header = "https://a.example/"
+fn sanitize_initial_request_referrer(
+    session:        const Session&,
+    ctx:            RequestExecutionContext&,
+    parsed_initial: const core::Url&,
+) {
+    guard ctx.current_referrer.len > 0 else { return; }
+    let parsed_ref = core::new_url(ctx.current_referrer[..]);
+    guard parsed_ref.valid else { return; }
+    let ref_same = core::is_same_origin_url(parsed_ref, parsed_initial);
+    let ref_down = (parsed_ref.scheme() == "https" && parsed_initial.scheme() == "http");
+    var sanitized_ref: u8[..2048] = [];
+    compute_new_referrer(
+        parsed_ref,
+        parsed_initial,
+        ctx.current_referrer_policy,
+        RedirectReferrerOptions {
+            is_cross_origin: !ref_same || ref_down,
+            is_downgrade:    ref_down,
+        },
+        sanitized_ref,
+    );
+    ctx.current_referrer.clear();
+    ctx.current_referrer.append(sanitized_ref[..]);
+    if session.enable_referer && sanitized_ref.len > 0 {
+        set_header(ctx.headers, "Referer", sanitized_ref[..]);
+    } else {
+        remove_header_by_name(ctx.headers, "Referer");
+    }
 }
 
 // RFC 9110 Section 15.4: Redirection 3xx - Checks whether response headers contain conflicting Location fields.
@@ -381,10 +434,13 @@ fn process_redirect_hop(
 fn append_available_dict_header(headers: HeaderMap&, dict_b64: const u8[:]) {
     set_header(headers, "Available-Dictionary", dict_b64);
     let val = find_header(headers, "accept-encoding");
-    guard val.len > 0 else { return; }
+    if val.len == 0 {
+        set_header(headers, "Accept-Encoding", "dcb, dcz");
+        return;
+    }
     if !header_has_token(val, "dcb") {
         var new_ae: u8[..256] = [];
-        guard val.len + 10 <= new_ae.cap else { return; }
+        guard core::add_sat_i64(val.len, 10) <= new_ae.cap else { return; }
         new_ae.append(val);
         new_ae.append(", dcb, dcz");
         set_header(headers, "Accept-Encoding", new_ae[..]);
@@ -665,6 +721,90 @@ fn collect_ipv6_dns_candidates(
     return true;
 }
 
+fn append_svcb_hint_candidate(
+    ssrf_guard: const SsrfGuardPolicy&,
+    ip_str:     const u8[:],
+    fam:        AddressFamily,
+    eff_port:   u16,
+    priority:   u8,
+    out_list:   DnsCandidate[..8]&,
+) -> bool {
+    if ssrf_guard.enabled && ssrf_guard.deny_local_network {
+        guard !is_private_or_reserved_ip(ip_str) else { return false; }
+    }
+    if out_list.len < 8 {
+        out_list.push(new_dns_candidate(fam, ip_str, eff_port, L4Protocol.Tcp, priority));
+    }
+    return true;
+}
+
+fn collect_https_svcb_hint_candidates(
+    ssrf_guard: const SsrfGuardPolicy&,
+    meta:       const ConnectionEndpointMetadata&,
+    eff_port:   u16,
+    task:       DnsRaceTask&,
+) -> bool {
+    if task.ipv6_candidates.len == 0 {
+        for &ip6_str in meta.ipv6_hints {
+            guard append_svcb_hint_candidate(
+                ssrf_guard, ip6_str[..], AddressFamily.IPv6, eff_port, 50, task.ipv6_candidates,
+            ) else { return false; }
+        }
+    }
+    if task.ipv4_candidates.len == 0 {
+        for &ip4_str in meta.ipv4_hints {
+            guard append_svcb_hint_candidate(
+                ssrf_guard, ip4_str[..], AddressFamily.IPv4, eff_port, 40, task.ipv4_candidates,
+            ) else { return false; }
+        }
+    }
+    return true;
+}
+
+fn resolve_https_svcb_record(
+    session:      Session&,
+    host_str:     const u8[:],
+    port_num:     u16,
+    now_sec:      i64,
+    task:         DnsRaceTask&,
+    out_ech_list: u8[..512]&,
+) -> bool {
+    var https_entry = DnsCacheEntry { .. };
+    let h_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
+    guard h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 else { return true; }
+    let meta, eff_port = extract_https_svcb_metadata(https_entry.https_records[0], port_num);
+    task.metadata = meta;
+    task.https_status = DnsQueryStatus.Success;
+    if (session.enable_ech || session.auto_ech_discovery) && https_entry.https_records[0].has_ech {
+        out_ech_list.append(https_entry.https_records[0].ech_config_list[..]);
+    }
+    return collect_https_svcb_hint_candidates(session.ssrf_guard, meta, eff_port, task);
+}
+
+fn lookup_dns_https_h3_endpoint(
+    dns_cache:    const DnsCache&,
+    host_str:     const u8[:],
+    default_port: u16,
+    now_sec:      i64,
+    out_ep:       AltSvcEndpoint&,
+) -> bool {
+    var https_entry = DnsCacheEntry { .. };
+    let h_stat = dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
+    guard h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 else { return false; }
+    let meta, eff_port = extract_https_svcb_metadata(https_entry.https_records[0], default_port);
+    guard meta.alpn_h3 else { return false; }
+    out_ep = AltSvcEndpoint {
+        port:        eff_port,
+        max_age_sec: 86400,
+        persist:     false,
+        ..
+    };
+    out_ep.proto.append("h3");
+    let target_h = if meta.target_name.len > 0 { meta.target_name[..] } else { host_str };
+    let _ = out_ep.host.try_append(target_h);
+    return true;
+}
+
 fn resolve_and_validate_live_host(
     session:        Session&,
     host_str:       const u8[:],
@@ -675,7 +815,7 @@ fn resolve_and_validate_live_host(
 ) -> Error {
     out_candidates.clear();
     out_ech_list.clear();
-    let now_ms = now_sec * 1000;
+    let now_ms = core::mul_sat_i64(now_sec, 1000);
     var task = new_dns_race_task(port_num);
 
     var a_entry = DnsCacheEntry { .. };
@@ -696,18 +836,13 @@ fn resolve_and_validate_live_host(
         task.aaaa_status = DnsQueryStatus.Success;
     }
 
-    if session.enable_ech || session.auto_ech_discovery {
-        var https_entry = DnsCacheEntry { .. };
-        let h_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
-        if h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 {
-            if https_entry.https_records[0].has_ech {
-                out_ech_list.append(https_entry.https_records[0].ech_config_list[..]);
-            }
-        }
+    guard resolve_https_svcb_record(session, host_str, port_num, now_sec, task, out_ech_list) else {
+        return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: HTTPS SVCB hint to private IP blocked");
     }
 
-    let _ = task.check_dns_resolution_delay_tick(now_ms + rfc::HE_RESOLUTION_DELAY_MS);
-    interleave_candidates_he(task.ipv6_candidates[..], task.ipv4_candidates[..], out_candidates);
+    let _ = task.check_dns_resolution_delay_tick(core::add_sat_i64(now_ms, rfc::HE_RESOLUTION_DELAY_MS));
+    let pref_fam, _ = lookup_preferred_family(session.af_cache, host_str, now_sec);
+    interleave_candidates_by_preference(task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates);
     if out_candidates.len == 0 {
         out_candidates.push(new_dns_candidate(AddressFamily.IPv4, host_str, port_num, L4Protocol.Tcp, 40));
     }
@@ -744,14 +879,11 @@ fn dial_live_tcp_or_proxy(
             var proxy_auth: u8[..256] = [];
             if p_user.len > 0 {
                 var cred_raw: u8[..160] = [];
-                cred_raw.try_append(p_user);
-                cred_raw.try_push(':');
-                cred_raw.try_append(p_pass);
+                format(cred_raw, p_user, ":", p_pass);
                 var cred_b64: u8[..224] = [];
                 core::base64_encode(cred_raw[..], cred_b64);
                 core::secure_zeroize_slice(cred_raw[..]);
-                proxy_auth.append("Basic ");
-                proxy_auth.append(cred_b64[..]);
+                format(proxy_auth, "Basic ", cred_b64[..]);
                 core::secure_zeroize_slice(cred_b64[..]);
             }
             let c_err = http_connect_client_handshake(
@@ -771,11 +903,13 @@ fn dial_live_tcp_or_proxy(
     for &cand in candidates {
         let sock = native_tcp_connect(cand.ip[..], cand.port, eff_timeout);
         if sock > 0 {
-            if mgr.attempts.len > 0 { let _ = mgr.bind_winner_attempt(mgr.attempts[0].attempt_id, false); }
+            if mgr.attempts.len > 0 {
+                let _ = mgr.bind_winner_attempt(mgr.attempts[core::sub_sat_i64(mgr.attempts.len, 1)].attempt_id, false);
+            }
             out_ip.append(cand.ip[..]);
             return sock, Error { .. };
         }
-        let _ = mgr.tick_attempt_manager(now_ms + mgr.effective_cad_ms);
+        let _ = mgr.tick_attempt_manager(core::add_sat_i64(now_ms, mgr.effective_cad_ms));
     }
     return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
 }
@@ -1243,6 +1377,8 @@ fn execute_live_network_hop(
         if !ok(dial_err) {
             return dial_err;
         }
+        let win_fam = if core::contains_byte(dialed_ip[..], ':') { AddressFamily.IPv6 } else { AddressFamily.IPv4 };
+        record_preferred_family(session.af_cache, host_str, win_fam, now_sec);
         var t = Transport.Disconnected;
         var neg_proto = NegotiatedProtocol.Http11;
         if is_https {
@@ -1329,6 +1465,18 @@ fn execute_mock_or_echo_hop(
     if session.enable_altsvc && is_https {
         has_h3 = lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
     }
+    if !has_h3 && is_https && session.enable_protocol_racing {
+        let port_num = core::effective_port(current_url) as u16;
+        if !is_broken(session.altsvc, origin_buf[..], now_sec) {
+            has_h3 = lookup_dns_https_h3_endpoint(
+                session.dns_cache,
+                core::hostname(current_url),
+                port_num,
+                now_sec,
+                candidate_h3_ep,
+            );
+        }
+    }
 
     let curr_path = core::pathname(current_url);
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_DICT_NEGOTIATE) {
@@ -1397,6 +1545,7 @@ fn compute_401_auth_header(
     if has_auth_scheme_prefix(www_auth, "Digest") {
         let chal, ok_c = parse_digest_challenge(www_auth);
         guard ok_c else { return false; }
+        guard !ctx.auth_retried || chal.stale else { return false; }
         let uri_path = core::pathname(current_url);
         let uri_search = core::search(current_url);
         var uri_target: u8[..2048] = [];
@@ -1412,8 +1561,21 @@ fn compute_401_auth_header(
         c_creds.username.append(session.creds.username[..]);
         c_creds.password.append(session.creds.password[..]);
 
+        var active_chal = chal;
+        if chal.stale && session.creds.last_digest.valid {
+            let _ = sync_digest_stale_challenge(
+                session.creds.last_digest,
+                chal,
+                c_creds,
+                session.creds.nonce_counter,
+            );
+            active_chal = session.creds.last_digest;
+        } else {
+            session.creds.last_digest = chal;
+        }
+
         let ok_d = compute_digest_response(
-            chal,
+            active_chal,
             c_creds,
             ctx.current_method[..],
             uri_target[..],
@@ -1425,6 +1587,20 @@ fn compute_401_auth_header(
         core::secure_zeroize_slice(c_creds.password[..]);
         guard ok_d else { return false; }
         session.creds.nonce_counter += 1;
+        return true;
+    }
+    if has_auth_scheme_prefix(www_auth, rfc::SCHEME_PRIVATE_TOKEN) {
+        var chal = TokenChallenge { .. };
+        var tok_key: u8[..512] = [];
+        var max_age: i64       = 0;
+        guard parse_private_token_challenge(www_auth, chal, tok_key, max_age) else { return false; }
+        var popped_tok = Token { .. };
+        var raw_tok: u8[..512] = [];
+        let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+        guard get_private_token(session.private_token_cache, chal, now_sec, popped_tok, raw_tok) else {
+            return false;
+        }
+        format_private_token_authorization(raw_tok[..], auth_header_val);
         return true;
     }
     if has_auth_scheme_prefix(www_auth, "Basic") {
@@ -1448,6 +1624,26 @@ fn compute_401_auth_header(
     return false;
 }
 
+fn try_find_scheme_auth_header(
+    session:         Client&,
+    ctx:             RequestExecutionContext&,
+    current_url:     const core::Url&,
+    resp:            const Response&,
+    scheme_prefix:   const u8[:],
+    auth_header_val: u8[..4096]&,
+) -> bool {
+    for &e in resp.headers.entries {
+        let h_name = entry_name(resp.headers, e);
+        let h_val = entry_value(resp.headers, e);
+        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, scheme_prefix) {
+            if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn find_auth_header_from_response(
     session:         Client&,
     ctx:             RequestExecutionContext&,
@@ -1455,24 +1651,19 @@ fn find_auth_header_from_response(
     resp:            const Response&,
     auth_header_val: u8[..4096]&,
 ) -> bool {
-    // Scan all WWW-Authenticate headers, prioritizing Digest over Basic
-    for &e in resp.headers.entries {
-        let h_name = entry_name(resp.headers, e);
-        let h_val = entry_value(resp.headers, e);
-        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, "Digest") {
-            if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
-                return true;
-            }
+    // Scan all WWW-Authenticate headers, prioritizing PrivateToken -> Digest -> Basic
+    if !ctx.auth_retried && session.private_token_cache.entries.len > 0 {
+        let p_scheme = rfc::SCHEME_PRIVATE_TOKEN;
+        if try_find_scheme_auth_header(session, ctx, current_url, resp, p_scheme, auth_header_val) {
+            return true;
         }
     }
-    for &e in resp.headers.entries {
-        let h_name = entry_name(resp.headers, e);
-        let h_val = entry_value(resp.headers, e);
-        if eq_ascii_fold(h_name, "WWW-Authenticate") && has_auth_scheme_prefix(h_val, "Basic") {
-            if compute_401_auth_header(session, ctx, current_url, h_val, auth_header_val) {
-                return true;
-            }
-        }
+    guard session.creds.has_credentials else { return false; }
+    if try_find_scheme_auth_header(session, ctx, current_url, resp, "Digest", auth_header_val) {
+        return true;
+    }
+    if !ctx.auth_retried {
+        return try_find_scheme_auth_header(session, ctx, current_url, resp, "Basic", auth_header_val);
     }
     return false;
 }

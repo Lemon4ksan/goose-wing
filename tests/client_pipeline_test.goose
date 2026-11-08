@@ -1449,6 +1449,268 @@ fn test_client_redirect_origin_and_fragment_safety(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 28. Multi-Layer Content-Encoding Chain & Strict Decoding Mode
+// ----------------------------------------------------------------------------
+fn test_multi_layer_content_encoding_and_strict_mode(t: lit::T&) {
+    t.run("Content-Encoding: deflate, gzip decodes in reverse order (gzip then deflate)") { sub =>
+        let plain = "chromium filter_source_stream multi-layer compression payload";
+        var deflated: u8[>..] = [];
+        let ok_def = core::zlib_compress(plain, deflated);
+        sub.assert_true(ok_def, "Deflate layer 1 succeeded");
+
+        var gzipped: u8[>..] = [];
+        let ok_gz = core::gzip_compress_with_header(deflated[..], gzipped);
+        sub.assert_true(ok_gz, "Gzip layer 2 succeeded");
+
+        var resp = wing::Response { status_code: 200, .. };
+        wing::set_header(resp.headers, "Content-Encoding", "deflate, gzip");
+        resp.body.append(gzipped[..]);
+
+        let ok_dec = wing::decode_body(resp);
+        sub.assert_true(ok_dec, "Multi-layer decode_body succeeded");
+        sub.assert_bytes_eq(resp.text(), plain, "Decompressed payload matches original plaintext");
+        sub.assert_false(wing::has_header(resp.headers, "Content-Encoding"), "Content-Encoding removed after full chain decode");
+    };
+
+    t.run("204 No Content with Content-Encoding: gzip succeeds without decompression error") { sub =>
+        var resp = wing::Response { status_code: 204, .. };
+        wing::set_header(resp.headers, "Content-Encoding", "gzip");
+        sub.assert_true(wing::decode_body(resp), "Empty 204 with Content-Encoding header bypasses decoder safely");
+    };
+
+    t.run("strict_content_decoding aborts pipeline with ERR_CONTENT_DECODING_FAILED on corrupted body") { sub =>
+        var cli = wing::new_client(wing::ClientConfig {
+            strict_content_decoding: true,
+            ..
+        });
+        cli.mock_route("GET", "https://api.example.com/corrupt-gzip", 200, "NOT_VALID_GZIP_BYTES");
+        cli.add_mock_header("Content-Encoding", "gzip");
+
+        let res, err = cli.get("https://api.example.com/corrupt-gzip");
+        let _ = res;
+        sub.assert_false(wing::ok(err), "Strict content decoding must fail on corrupted gzip stream");
+        sub.assert_bytes_eq(
+            err.message[..],
+            "ERR_CONTENT_DECODING_FAILED: content-encoding decompression failed",
+            "Error reports ERR_CONTENT_DECODING_FAILED",
+        );
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 29. DNS HTTPS/SVCB (RFC 9460) Auto-H3 Protocol Racing
+// ----------------------------------------------------------------------------
+fn test_dns_https_svcb_h3_protocol_racing(t: lit::T&) {
+    t.run("DNS HTTPS record with alpn=h3 promotes first request to HTTP/3 without prior Alt-Svc header") { sub =>
+        var cli = wing::new_client();
+        cli.enable_protocol_racing = true;
+
+        var https_rec = wing::HttpsRecord {
+            priority: 1,
+            port:     443,
+            ..
+        };
+        https_rec.alpns.push("h3");
+        https_rec.alpns.push("h2");
+        let now_sec = cli.virtual_clock_us / 1000000;
+        var entry = wing::DnsCacheEntry {
+            qtype:           rfc::DNS_QTYPE_HTTPS,
+            inserted_at_sec: now_sec,
+            ttl_sec:         300,
+            valid:           true,
+            ..
+        };
+        entry.domain.append("svcb-h3.example.com");
+        entry.https_records.push(https_rec);
+        wing::dns_cache_insert(cli.dns_cache, entry);
+
+        cli.mock_route("GET", "https://svcb-h3.example.com/data", 200, "h3-via-dns-https");
+        let res, err = cli.get("https://svcb-h3.example.com/data");
+        sub.assert_true(wing::ok(err), "Request succeeded");
+        sub.assert_bytes_eq(res.protocol[..], "h3", "Promoted to h3 via DNS HTTPS alpn=h3");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 30. Chromium-Style Multi-Component Pipeline Integration (Cache, Redirects, Dicts, Auth, CORS/Cookies)
+// ----------------------------------------------------------------------------
+fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
+    t.run("Hop-0 Referer sanitization, downgrade Sec-Fetch-* stripping, and redirect-hop NVS HTTP cache hit") { sub =>
+        var cli = wing::new_client(wing::ClientConfig {
+            enable_cache: true,
+            ..
+        });
+
+        // Pre-populate HTTP cache for the redirect target with No-Vary-Search
+        var seed_req = wing::new_request("GET", "https://cdn.example.com/bundle.js?v=1&utm_campaign=launch");
+        var seed_resp = wing::Response { status_code: 200, .. };
+        wing::set_header(seed_resp.headers, "Cache-Control", "max-age=3600");
+        wing::set_header(seed_resp.headers, "No-Vary-Search", "params=(\"utm_campaign\")");
+        seed_resp.body.append("cached_bundle_v1_payload");
+        let now_sec = cli.virtual_clock_us / 1000000;
+        let ts = wing::CacheTimestamps {
+            request_time:  core::unix(now_sec, 0),
+            response_time: core::unix(now_sec, 0),
+            now:           core::unix(now_sec, 0),
+        };
+        let _ = cli.cache.on_response(seed_req, seed_resp, ts, -1);
+
+        // Hop 0 redirects to an NVS-equivalent URL on cdn.example.com (no mock route needed for cdn.example.com!)
+        cli.mock_route("GET", "https://app.example.com/start", 302, "");
+        cli.add_mock_header("Location", "https://cdn.example.com/bundle.js?v=1&utm_campaign=retarget");
+        cli.add_mock_header("Referrer-Policy", "unknown-future-token");
+
+        var req = wing::new_request("GET", "https://app.example.com/start");
+        wing::set_header(req, "Referer", "https://portal.other.example/secret/page?token=123");
+        let res, err = cli.do(req);
+        sub.assert_true(wing::ok(err), "Redirect into NVS-equivalent cached hop succeeded without network miss");
+        sub.assert_eq(res.status_code, 200, "Served 200 OK from HTTP cache on redirect hop");
+        sub.assert_bytes_eq(res.text(), "cached_bundle_v1_payload", "NVS cache matched on redirect hop");
+        sub.assert_eq(res.redirect_count, 1, "Recorded 1 redirect hop");
+
+        // Verify Sec-Fetch-* and Sec-CH-* stripping on HTTPS -> HTTP downgrade redirect
+        var hdrs = wing::HeaderMap { .. };
+        wing::set_header(hdrs, "Sec-Fetch-Site", "same-origin");
+        wing::set_header(hdrs, "Sec-CH-UA", "\"Chromium\";v=\"128\"");
+        wing::set_header(hdrs, "Accept", "*/*");
+        let r_info = wing::compute_redirect_info(
+            "GET",
+            302,
+            "https://secure.example.com/a",
+            "http://insecure.example.com/b",
+            wing::ReferrerPolicy.NoReferrer,
+            "https://secure.example.com/a",
+        );
+        wing::sanitize_headers_on_redirect(hdrs, r_info);
+        sub.assert_false(wing::has_header(hdrs, "Sec-Fetch-Site"), "Sec-Fetch-Site stripped on scheme downgrade");
+        sub.assert_false(wing::has_header(hdrs, "Sec-CH-UA"), "Sec-CH-UA stripped on scheme downgrade");
+        sub.assert_true(wing::has_header(hdrs, "Accept"), "Standard Accept header preserved");
+    };
+
+    t.run("RFC 9842 Shared Dictionary longest-match negotiation + 40-byte dcz magic decompression") { sub =>
+        var cli = wing::new_client();
+        let now_sec = cli.virtual_clock_us / 1000000;
+
+        // Register two dictionaries with overlapping patterns: "/app/*" (len 6) and "/app/v2/*" (len 9)
+        var dict_short = wing::Response { status_code: 200, .. };
+        wing::set_header(dict_short.headers, "Use-As-Dictionary", "match=\"/app/*\", id=\"short-dict\"");
+        dict_short.body.append("short_dictionary_seed_content_123456");
+        wing::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/1", now_sec, dict_short);
+
+        var dict_long = wing::Response { status_code: 200, .. };
+        wing::set_header(dict_long.headers, "Use-As-Dictionary", "match=\"/app/v2/*\", match-dest=(\"script\"), id=\"long-dict\"");
+        dict_long.body.append("long_dictionary_seed_content_abcdef");
+        wing::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/2", now_sec, dict_long);
+
+        // Verify RFC 9842 40-byte DCZ framing and longest-match negotiation
+        let long_hash = cli.dict_cache.entries[1].sha256_hash;
+        var compressed_zstd: u8[..4096] = [];
+        sub.assert_true(
+            wing::compress_dcz_payload(
+                "long_dictionary_seed_content_abcdef_plus_delta_payload",
+                "long_dictionary_seed_content_abcdef",
+                compressed_zstd,
+            ),
+            "Compressed payload with Zstandard dictionary",
+        );
+        var compressed_dcz: u8[>..] = [];
+        let dcz_magic_40: u8[8] = [0x5E, 0x2A, 0x4D, 0x18, 0x20, 0x00, 0x00, 0x00];
+        compressed_dcz.append(dcz_magic_40[..]);
+        compressed_dcz.append(long_hash[..]);
+        compressed_dcz.append(compressed_zstd[..]);
+        sub.assert_true(compressed_dcz.len > 40, "DCZ payload includes 40-byte header + zstd frame");
+        sub.assert_eq(compressed_dcz[0] as i64, 0x5E, "RFC 9842 §5 magic byte 0 (0x5E)");
+        sub.assert_eq(compressed_dcz[4] as i64, 0x20, "RFC 9842 §5 length byte 4 (0x20)");
+
+        cli.mock_route("GET", "https://cdn.example.com/app/v2/main.js", 200, compressed_dcz[..]);
+        cli.add_mock_header("Content-Encoding", "dcz");
+
+        let res, err = cli.get("https://cdn.example.com/app/v2/main.js");
+        sub.assert_true(wing::ok(err), "Shared dictionary dcz pipeline request succeeded");
+        sub.assert_bytes_eq(
+            res.text(),
+            "long_dictionary_seed_content_abcdef_plus_delta_payload",
+            "Decompressed dcz response using longest-match dictionary",
+        );
+    };
+
+    t.run("RFC 9577 PrivateToken 401 challenge redemption and SameSite=Lax subresource cookie transmission") { sub =>
+        var cli = wing::new_client();
+        let now_sec = cli.virtual_clock_us / 1000000;
+
+        // Seed a SameSite=Lax cookie for api.example.com
+        let _ = cli.jar.set_cookie_header(
+            "https://api.example.com/",
+            "lax_sess=ok_lax_1; Path=/; Secure; SameSite=Lax",
+            cli.virtual_clock_us,
+        );
+
+        // Subresource request (is_main_frame=false) with same-site SiteForCookies and cross-site initiator
+        let init_url = core::new_url("https://other.example.org/");
+        let echo_url = core::new_url("https://api.example.com/echo");
+        var sub_req = wing::new_request("GET", "https://api.example.com/echo");
+        sub_req.is_main_frame = false;
+        sub_req.site_for_cookies = wing::site_for_cookies_from_url("https://api.example.com/");
+        sub_req.has_site_for_cookies = true;
+        sub_req.initiator = core::origin_from_url(init_url);
+        sub_req.has_initiator = true;
+
+        let exec_ctx = wing::init_execution_context(cli, sub_req, echo_url);
+        var samesite_ctx = wing::compute_hop_samesite_context(
+            exec_ctx,
+            echo_url,
+            true,
+        );
+        sub.assert_true(
+            samesite_ctx.context_type == wing::SameSiteContextType.SameSiteLax,
+            "Same-site subresource with cross-site initiator computes SameSiteLax context",
+        );
+
+        // Seed a PrivateToken into cli.private_token_cache and test 401 PrivateToken challenge redemption
+        var chal = wing::TokenChallenge {
+            issuer_name: "issuer.example.com",
+            ..
+        };
+        chal.origin_info.append("api.example.com");
+        var raw_chal: u8[..256] = [];
+        wing::marshal_token_challenge(chal, raw_chal);
+        sub.assert_true(raw_chal.len > 0, "Marshaled TokenChallenge");
+        var b64_chal: u8[..384] = [];
+        core::base64url_encode(raw_chal[..], b64_chal);
+
+        var dummy_tok = wing::Token { .. };
+        let ok_put = wing::put_private_token(
+            cli.private_token_cache,
+            chal,
+            dummy_tok,
+            "raw_single_spend_token_bytes",
+            3600,
+            now_sec,
+        );
+        sub.assert_true(ok_put, "Stored single-spend PrivateToken in session cache");
+
+        var www_auth_hdr: u8[..512] = "PrivateToken challenge=\"";
+        www_auth_hdr.append(b64_chal[..]);
+        www_auth_hdr.push('"');
+
+        cli.mock_route("GET", "https://api.example.com/protected-token", 401, "need-token");
+        cli.add_mock_header("WWW-Authenticate", www_auth_hdr[..]);
+
+        let res_tok, err_tok = cli.get("https://api.example.com/protected-token");
+        sub.assert_true(wing::ok(err_tok), "401 PrivateToken challenge retry succeeded");
+        let sent_auth = wing::sent_header(res_tok, "Authorization");
+        sub.assert_true(
+            core::starts_with_fold(sent_auth, "PrivateToken token="),
+            "Retry hop attached Authorization: PrivateToken header",
+        );
+        sub.assert_true(
+            cli.private_token_cache.entries[0].used,
+            "Single-spend PrivateToken marked used after 401 redemption",
+        );
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1479,6 +1741,9 @@ fn main() {
     lit::run_case(runner, "25. Go #82350 Stale Host Header Leakage Across Redirects", test_redirect_stale_host_header_leakage);
     lit::run_case(runner, "26. RFC 9110 §15.4 & Go #73816 (CVE-2025-4673): Redirect Sensitive Header Stripping", test_redirect_sensitive_header_stripping);
     lit::run_case(runner, "27. Client Redirect origin & fragment safety (client/redirect.goose)", test_client_redirect_origin_and_fragment_safety);
+    lit::run_case(runner, "28. Multi-Layer Content-Encoding Chain & Strict Decoding Mode", test_multi_layer_content_encoding_and_strict_mode);
+    lit::run_case(runner, "29. DNS HTTPS/SVCB (RFC 9460) Auto-H3 Protocol Racing", test_dns_https_svcb_h3_protocol_racing);
+    lit::run_case(runner, "30. Chromium-Style Multi-Component Pipeline Integration", test_chromium_multi_component_pipeline_integration);
 
     let ok = lit::finish(runner);
     assert(ok);

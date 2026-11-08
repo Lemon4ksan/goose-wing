@@ -666,13 +666,16 @@ fn well_known_header_flags(id: WellKnownHeader, name: const u8[:]) -> u8 {
         flags |= HEADER_FLAG_SENSITIVE;
     }
 
-    // Security state & prefix matching (Strict-Transport-Security, x-content-*, x-webkit-*)
+    // Security state & prefix matching (Strict-Transport-Security, X-Frame-Options, x-content-*, x-webkit-*)
     let is_sec_id = id == WellKnownHeader.StrictTransportSecurity ||
         id == WellKnownHeader.XContentTypeOptions ||
+        id == WellKnownHeader.XFrameOptions ||
         id == WellKnownHeader.XWebkitCsp;
     if is_sec_id {
         flags |= HEADER_FLAG_SECURITY_STATE;
     } else if name.len >= 10 && (starts_with_fold(name, "x-content-") || starts_with_fold(name, "x-webkit-")) {
+        flags |= HEADER_FLAG_SECURITY_STATE;
+    } else if eq_ascii_fold(name, "x-xss-protection") {
         flags |= HEADER_FLAG_SECURITY_STATE;
     }
 
@@ -2515,7 +2518,8 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
        eq_ascii_fold(name, "content-encoding") ||
        eq_ascii_fold(name, "content-type") ||
        eq_ascii_fold(name, "content-md5") ||
-       eq_ascii_fold(name, "content-language") {
+       eq_ascii_fold(name, "content-language") ||
+       eq_ascii_fold(name, "content-location") {
         return false;
     }
     return true;

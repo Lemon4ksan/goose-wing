@@ -585,8 +585,8 @@ fn garbage_collect_global(jar: CanonicalCookieJar&, now_us: i64) -> i64 {
     return total_evicted;
 }
 
-// Enforces CHIPS Partition memory quota (10 KB per partition-domain pair).
-// Evicts oldest partitioned cookies by LRA until total memory <= 10240 bytes.
+// Enforces CHIPS Partition memory and count quota (10 KB or 180 cookies per partition-domain pair).
+// Evicts oldest partitioned cookies by LRA until total memory <= 10240 bytes and count <= max_cookies_per_domain.
 fn enforce_chips_quota(
     jar:           CanonicalCookieJar&,
     partition_key: const u8[:],
@@ -599,7 +599,11 @@ fn enforce_chips_quota(
     var total_bytes:       i64        = 0;
     jar.gather_chips_candidates(partition_key, etld_plus_one, candidate_indices, total_bytes);
 
-    guard total_bytes > internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES else { return 0; }
+    var rem_count = candidate_indices.len;
+    let max_part_bytes = internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES;
+    guard total_bytes > max_part_bytes || rem_count > jar.max_cookies_per_domain else {
+        return 0;
+    }
 
     candidate_indices.stable_sort() { idx_a, idx_b =>
         jar.cookies[idx_a as i64].chips_lra_candidate_less(jar.cookies[idx_b as i64])
@@ -609,11 +613,14 @@ fn enforce_chips_quota(
     var evicted_count:  i64        = 0;
 
     for i in candidate_indices.len {
-        if total_bytes <= internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES { break; }
+        if total_bytes <= max_part_bytes && rem_count <= jar.max_cookies_per_domain {
+            break;
+        }
         let idx = candidate_indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
         let candidate_cookie = jar.cookies[idx];
         total_bytes = core::sub_sat_i64(total_bytes, candidate_cookie.payload_size());
+        rem_count = core::sub_sat_i64(rem_count, 1);
         guard to_delete_seqs.len < to_delete_seqs.cap else { break; }
         to_delete_seqs.push(candidate_cookie.creation_seq);
         evicted_count = core::add_sat_i64(evicted_count, 1);
@@ -1023,8 +1030,8 @@ fn evict_global_lru_fallback_cookies(jar: CanonicalCookieJar&, need_to_evict: i6
             candidate_indices.push(idx as i32);
         }
     }
-    // Hard ceiling breach: must evict even secure/medium cookies to prevent memory breach
-    if candidate_indices.len == 0 && jar.cookies.len > jar.max_cookies_global {
+    // Hard ceiling breach (K_MAX_COOKIES = 3300): must evict even secure/medium cookies to prevent memory breach
+    if candidate_indices.len == 0 && jar.cookies.len >= internal::K_MAX_COOKIES {
         for &cookie_val, idx in jar.cookies {
             guard candidate_indices.len < candidate_indices.cap else { break; }
             candidate_indices.push(idx as i32);

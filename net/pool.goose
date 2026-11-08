@@ -668,6 +668,102 @@ fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
     return false;
 }
 
+// Evicts the oldest idle connection belonging to a specific PoolKey group.
+fn evict_oldest_idle_in_group(pool: StreamPool&, key: const PoolKey&) -> bool {
+    var oldest_idx = -1;
+    var oldest_idle_ns: i64 = 0;
+
+    for &c, idx in pool.conns {
+        if !c.closed && c.active_allocations == 0 && c.key.pool_key_equals(key) {
+            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
+                oldest_idx = idx as i32;
+                oldest_idle_ns = c.idle_at_ns;
+            }
+        }
+    }
+
+    guard oldest_idx >= 0 else { return false; }
+    group_record_closed(pool, pool.conns[oldest_idx].key, false);
+    pool.conns[oldest_idx].transport.close();
+    pool.conns[oldest_idx].rx_buf.clear();
+    pool.conns[oldest_idx].closed = true;
+    pool.conns[oldest_idx].no_new_exchanges = true;
+    return true;
+}
+
+// Counts active and idle sockets currently open across a given proxy chain.
+fn count_proxy_chain_sockets(pool: const StreamPool&, proxy_chain: const ProxyChain&) -> i64, i64 {
+    var active: i64 = 0;
+    var idle:   i64 = 0;
+    for &c in pool.conns {
+        if !c.closed && c.key.proxy_chain.proxy_chain_equals(proxy_chain) {
+            if c.active_allocations > 0 {
+                active = core::add_sat_i64(active, 1);
+            } else {
+                idle = core::add_sat_i64(idle, 1);
+            }
+        }
+    }
+    return active, idle;
+}
+
+// Evicts the oldest idle connection sharing the specified proxy chain.
+fn evict_oldest_idle_for_proxy(pool: StreamPool&, proxy_chain: const ProxyChain&) -> bool {
+    var oldest_idx = -1;
+    var oldest_idle_ns: i64 = 0;
+
+    for &c, idx in pool.conns {
+        if !c.closed && c.active_allocations == 0 && c.key.proxy_chain.proxy_chain_equals(proxy_chain) {
+            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
+                oldest_idx = idx as i32;
+                oldest_idle_ns = c.idle_at_ns;
+            }
+        }
+    }
+
+    guard oldest_idx >= 0 else { return false; }
+    group_record_closed(pool, pool.conns[oldest_idx].key, false);
+    pool.conns[oldest_idx].transport.close();
+    pool.conns[oldest_idx].rx_buf.clear();
+    pool.conns[oldest_idx].closed = true;
+    pool.conns[oldest_idx].no_new_exchanges = true;
+    return true;
+}
+
+fn enforce_group_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
+    let grp_idx = pool.find_group_index(key);
+    guard grp_idx >= 0 && pool.max_sockets_per_group > 0 else { return true; }
+    let total_grp = core::add_sat_i64(pool.groups[grp_idx].active_conns, pool.groups[grp_idx].idle_conns);
+    guard total_grp >= pool.max_sockets_per_group else { return true; }
+    if pool.groups[grp_idx].idle_conns > 0 {
+        let _ = evict_oldest_idle_in_group(pool, key);
+    }
+    return pool.groups[grp_idx].active_conns < pool.max_sockets_per_group;
+}
+
+fn enforce_proxy_chain_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
+    guard !key.proxy_chain.is_direct && pool.max_sockets_per_proxy > 0 else { return true; }
+    let p_active, p_idle = count_proxy_chain_sockets(pool, key.proxy_chain);
+    let total_proxy = core::add_sat_i64(p_active, p_idle);
+    guard total_proxy >= pool.max_sockets_per_proxy else { return true; }
+    if p_idle > 0 {
+        let _ = evict_oldest_idle_for_proxy(pool, key.proxy_chain);
+    }
+    return p_active < pool.max_sockets_per_proxy;
+}
+
+// Verifies per-group (`max_sockets_per_group`) and per-proxy (`max_sockets_per_proxy`) limits,
+// evicting idle sockets in the group or proxy chain before rejecting saturated active groups.
+fn can_allocate_group_socket(
+    pool:           StreamPool&,
+    key:            const PoolKey&,
+    respect_limits: RespectLimits = RespectLimits.Enabled,
+) -> bool {
+    guard respect_limits == RespectLimits.Enabled else { return true; }
+    guard enforce_group_socket_quota(pool, key) else { return false; }
+    return enforce_proxy_chain_socket_quota(pool, key);
+}
+
 // Closes and evicts all connections from the stream pool, resetting buffers.
 fn drain_stream_pool(pool: StreamPool&) {
     for i in pool.conns.len {
@@ -805,6 +901,7 @@ fn register_connection(
     now_ns:         i64,
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
+    guard can_allocate_group_socket(pool, key, respect_limits) else { return -1; }
     if respect_limits == RespectLimits.Enabled && pool.conns.len >= pool.socket_soft_cap {
         pool.evict_oldest_idle_connection(now_ns);
     }
@@ -813,7 +910,7 @@ fn register_connection(
     guard slot_idx != -2 else { return -1; }
 
     let cid = pool.next_conn_id;
-    pool.next_conn_id += 1;
+    pool.next_conn_id = core::add_sat_i64(cid, 1) as i32;
 
     var conn = PooledConnection {
         conn_id:                cid,
@@ -837,7 +934,7 @@ fn register_connection(
 
     let grp_idx = pool.find_or_create_group(key);
     if grp_idx >= 0 {
-        pool.groups[grp_idx].active_conns += 1;
+        pool.groups[grp_idx].active_conns = core::add_sat_i64(pool.groups[grp_idx].active_conns, 1) as i32;
     }
 
     return cid;
@@ -879,20 +976,69 @@ fn register_connection(
     return cid;
 }
 
-// Releases an active allocation back to the pool, transitioning to idle when count reaches 0.
-fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
+// Enqueues a waiter into the ConnectionGroup's `WantQueue` when per-group socket limits are reached.
+fn enqueue_group_waiter(pool: StreamPool&, key: const PoolKey&, req_id: u64) -> bool {
+    let grp_idx = pool.find_or_create_group(key);
+    guard grp_idx >= 0 else { return false; }
+    let w = WantConn {
+        req_id:           req_id,
+        ready:            false,
+        cancelled:        false,
+        assigned_conn_id: -1,
+        reused:           false,
+        err_code:         0,
+    };
+    return push_want(pool.groups[grp_idx].wait_queue, w);
+}
+
+fn try_handoff_to_group_waiter(
+    pool:       StreamPool&,
+    c:          PooledConnection&,
+    out_waiter: WantConn&,
+) -> bool {
+    let grp_idx = pool.find_group_index(c.key);
+    guard grp_idx >= 0 && !is_queue_empty(pool.groups[grp_idx].wait_queue) else { return false; }
+    let w_item, ok_w = pop_want(pool.groups[grp_idx].wait_queue);
+    guard ok_w else { return false; }
+    c.use_count = core::add_sat_i64(c.use_count, 1);
+    out_waiter = w_item;
+    out_waiter.ready = true;
+    out_waiter.assigned_conn_id = c.conn_id;
+    out_waiter.reused = true;
+    return true;
+}
+
+// Releases an active allocation back to the pool, or immediately hands the connection off
+// to the next queued `WantConn` waiter in the group if one is pending.
+fn release_connection_or_handoff(
+    pool:       StreamPool&,
+    conn_id:    i32,
+    now_ns:     i64,
+    out_waiter: WantConn&,
+) -> bool, bool {
+    out_waiter = WantConn { .. };
     for &c in pool.conns {
         if c.conn_id == conn_id && !c.closed {
-            guard c.active_allocations > 0 else { return false; }
-            c.active_allocations -= 1;
+            guard c.active_allocations > 0 else { return false, false; }
+            if try_handoff_to_group_waiter(pool, c, out_waiter) {
+                return true, true;
+            }
+            c.active_allocations = core::sub_sat_i64(c.active_allocations, 1) as i32;
             if c.active_allocations == 0 {
                 c.idle_at_ns = now_ns;
                 group_record_released(pool, c.key);
             }
-            return true;
+            return true, false;
         }
     }
-    return false;
+    return false, false;
+}
+
+// Releases an active allocation back to the pool, transitioning to idle when count reaches 0.
+fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
+    var dummy_waiter = WantConn { .. };
+    let ok_rel, _ = release_connection_or_handoff(pool, conn_id, now_ns, dummy_waiter);
+    return ok_rel;
 }
 
 // ---- Warm Upstream Connection Pool with NIK Isolation & EPOLLRDHUP Eviction --

@@ -32,6 +32,8 @@ import client.session.ssrf;
 import client.session.mock;
 import net.pool;
 import wire.pipeline;
+import auth.digest;
+import security.privacypass;
 
 // ---- client configuration and state ----------------------------------------
 
@@ -48,17 +50,19 @@ struct ClientConfig {
     enable_protocol_racing:  bool         = true,
     quic_race_delay_ms:      i64          = 200,
     enable_compression_dict: bool         = true,
+    strict_content_decoding: bool         = false,
     insecure_skip_verify:    bool         = false,
 }
 
 type SessionConfig = ClientConfig;
 
 struct ClientCredentials {
-    username:        u8[..128] = [],
-    password:        u8[..128] = [],
-    has_credentials: bool      = false,
-    nonce_counter:   u32       = 1,
-    cnonce:          u8[..32]  = "f2/IZUnWe0rEzWeA",
+    username:        u8[..128]       = [],
+    password:        u8[..128]       = [],
+    has_credentials: bool            = false,
+    nonce_counter:   u32             = 1,
+    cnonce:          u8[..32]        = "f2/IZUnWe0rEzWeA",
+    last_digest:     DigestChallenge = DigestChallenge { .. },
 }
 
 struct Client {
@@ -105,19 +109,22 @@ struct Client {
     wire_pipeline: wire::WirePipeline  = wire::default_client_pipeline(),
 
     // RFC 7616 Digest & RFC 7617 Basic Authenticator
-    creds: ClientCredentials = ClientCredentials { .. },
+    creds:               ClientCredentials = ClientCredentials { .. },
+    private_token_cache: PrivateTokenCache = PrivateTokenCache { .. },
 
     // RFC 6797 HTTP Strict Transport Security (HSTS)
     hsts:        HstsCache = HstsCache { .. },
     enable_hsts: bool      = true,
 
     // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
-    pool: StreamPool = StreamPool { .. },
+    pool:     StreamPool         = StreamPool { .. },
+    af_cache: AddressFamilyCache = AddressFamilyCache { .. },
 
-    enable_cookie_jar:     bool             = true,
-    http2_prior_knowledge: bool             = false,
-    trust_store:           TrustAnchorStore = TrustAnchorStore { .. },
-    insecure_skip_verify:  bool             = false,
+    enable_cookie_jar:       bool             = true,
+    http2_prior_knowledge:   bool             = false,
+    strict_content_decoding: bool             = false,
+    trust_store:             TrustAnchorStore = TrustAnchorStore { .. },
+    insecure_skip_verify:    bool             = false,
 
     // Resizable field must be final
     jar: CanonicalCookieJar = CanonicalCookieJar { .. },
@@ -174,6 +181,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         enable_hsts:             true,
         pool:                    new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
+        strict_content_decoding: cfg.strict_content_decoding,
         insecure_skip_verify:    cfg.insecure_skip_verify,
         jar:                     CanonicalCookieJar { .. },
         ..

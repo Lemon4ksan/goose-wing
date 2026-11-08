@@ -334,7 +334,7 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         pgcra.rng_state = 0x853c49e6748fea9b;
     }
     pgcra.rng_state ^= pgcra.rng_state >> 12;
-    pgcra.rng_state ^= pgcra.rng_state & 0x7FFFFFFFFFFFFFFF;
+    pgcra.rng_state ^= pgcra.rng_state << 25;
     pgcra.rng_state ^= pgcra.rng_state >> 27;
 
     let t = max(pgcra.quota.emission_interval_ns, 1);

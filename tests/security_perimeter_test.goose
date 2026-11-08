@@ -1888,6 +1888,75 @@ fn test_cors_wildcard_origin_smuggling_and_csrf_userinfo(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 23. CORS Preflight Method/Header Validation, Client CORS & HSTS Localhost Exemption
+// ----------------------------------------------------------------------------
+fn test_cors_preflight_validation_and_hsts_localhost(t: lit::T&) {
+    t.run("evaluate_cors rejects disallowed preflight method and headers while accepting simple headers") { sub =>
+        var policy = wing::CorsPolicy {
+            allowed_methods: "GET, POST",
+            allowed_headers: "X-Custom-Token",
+            ..
+        };
+        let _ = wing::add_allowed_origin(policy, "*");
+
+        var req_bad_method = wing::new_request("OPTIONS", "https://api.example.com/resource");
+        wing::set_header(req_bad_method, "Origin", "https://app.example.com");
+        wing::set_header(req_bad_method, "Access-Control-Request-Method", "DELETE");
+        var resp_bad_m = wing::Response { .. };
+        let dec_bad_m = wing::evaluate_cors(policy, req_bad_method, resp_bad_m);
+        sub.assert_true(dec_bad_m == wing::CorsResult.RejectedPreflightMethod, "Disallowed DELETE preflight method rejected");
+
+        var req_bad_hdr = wing::new_request("OPTIONS", "https://api.example.com/resource");
+        wing::set_header(req_bad_hdr, "Origin", "https://app.example.com");
+        wing::set_header(req_bad_hdr, "Access-Control-Request-Method", "POST");
+        wing::set_header(req_bad_hdr, "Access-Control-Request-Headers", "X-Custom-Token, X-Forbidden-Header");
+        var resp_bad_h = wing::Response { .. };
+        let dec_bad_h = wing::evaluate_cors(policy, req_bad_hdr, resp_bad_h);
+        sub.assert_true(dec_bad_h == wing::CorsResult.RejectedPreflightHeaders, "Disallowed preflight header rejected");
+
+        var req_ok = wing::new_request("OPTIONS", "https://api.example.com/resource");
+        wing::set_header(req_ok, "Origin", "https://app.example.com");
+        wing::set_header(req_ok, "Access-Control-Request-Method", "POST");
+        wing::set_header(req_ok, "Access-Control-Request-Headers", "Accept, Content-Language, X-Custom-Token");
+        var resp_ok = wing::Response { .. };
+        let dec_ok = wing::evaluate_cors(policy, req_ok, resp_ok);
+        sub.assert_true(dec_ok == wing::CorsResult.AllowedPreflight, "Valid preflight method and headers accepted");
+    };
+
+    t.run("verify_client_cors_response enforces ACAO, ACAC, and tainted origin rules") { sub =>
+        var hdrs = wing::HeaderMap { .. };
+        wing::set_header(hdrs, "Access-Control-Allow-Origin", "*");
+        sub.assert_true(
+            wing::verify_client_cors_response(hdrs, "https://app.example.com"),
+            "Uncredentialed wildcard ACAO passes",
+        );
+        let cred_opts = wing::ClientCorsVerifyOptions { include_credentials: true, .. };
+        sub.assert_false(
+            wing::verify_client_cors_response(hdrs, "https://app.example.com", cred_opts),
+            "Credentialed wildcard ACAO rejected per Fetch spec",
+        );
+
+        wing::set_header(hdrs, "Access-Control-Allow-Origin", "null");
+        wing::set_header(hdrs, "Access-Control-Allow-Credentials", "true");
+        let tainted_cred_opts = wing::ClientCorsVerifyOptions {
+            tainted_origin:      true,
+            include_credentials: true,
+        };
+        sub.assert_true(
+            wing::verify_client_cors_response(hdrs, "https://app.example.com", tainted_cred_opts),
+            "Tainted origin matches ACAO: null with ACAC: true",
+        );
+    };
+
+    t.run("HSTS exempts localhost and .localhost from upgrades even if dynamic entry was inserted") { sub =>
+        var cache = wing::HstsCache { .. };
+        let _ = wing::hsts_cache_update(cache, "localhost", "max-age=31536000; includeSubDomains", 1000);
+        sub.assert_false(wing::is_hsts_host(cache, "localhost", 1010), "localhost is exempt from HSTS upgrades");
+        sub.assert_false(wing::is_hsts_host(cache, "sub.localhost", 1010), "sub.localhost is exempt from HSTS upgrades");
+    };
+}
+
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
     var runner = lit::new_runner(title, lit::Verbosity.Verbose);
@@ -1914,6 +1983,7 @@ fn main() {
     lit::run_case(runner, "20. Security Audit Regressions (FIND-SEC-001..011)", test_security_audit_regressions);
     lit::run_case(runner, "21. F007 RFC 6797 HSTS Invariants", test_f007_hsts_rfc6797_invariants);
     lit::run_case(runner, "22. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
+    lit::run_case(runner, "23. CORS Preflight Validation, Client CORS & HSTS Localhost Exemption", test_cors_preflight_validation_and_hsts_localhost);
 
     let ok = lit::finish(runner);
     assert(ok);

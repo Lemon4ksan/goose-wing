@@ -2151,6 +2151,116 @@ fn test_dns_name_length_overflow(t: lit::T&) {
     t.assert_false(ok, "Truncated DNS packet must return false without panic");
 }
 
+// ----------------------------------------------------------------------------
+// 35. Per-Group & Per-Proxy Socket Quotas + WantQueue Handoff
+// ----------------------------------------------------------------------------
+fn test_group_and_proxy_quotas_with_waiter_handoff(t: lit::T&) {
+    t.run("max_sockets_per_group evicts group idle or rejects when all active, and hands off to WantQueue waiter") { sub =>
+        var pool = wing::new_stream_pool();
+        pool.max_sockets_per_group = 2;
+        pool.max_sockets_per_proxy = 3;
+
+        var proxy = wing::ProxyChain { .. };
+        proxy.is_direct = false;
+        proxy.servers.push(wing::new_proxy_server(wing::ProxyScheme.Http, "proxy.corp.local", 8080));
+
+        let nak = wing::NetworkAnonymizationKey { .. };
+        let pol = wing::TlsAndDnsPolicy { .. };
+        let key_a = wing::new_pool_key(wing::PoolScheme.Https, "a.example.com", 443, proxy, nak, pol);
+        let key_b = wing::new_pool_key(wing::PoolScheme.Https, "b.example.com", 443, proxy, nak, pol);
+
+        sub.assert_true(wing::can_allocate_group_socket(pool, key_a), "Initial group quota available");
+
+        let id1 = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1000);
+        let id2 = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1001);
+        sub.assert_gt(id1, 0, "Conn 1 allocated");
+        sub.assert_gt(id2, 0, "Conn 2 allocated");
+        sub.assert_false(wing::can_allocate_group_socket(pool, key_a), "Group quota full with 2 active connections");
+
+        // 3rd active connection in same group MUST be rejected (-1)
+        let id3_blocked = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1002);
+        sub.assert_eq(id3_blocked, -1, "3rd active connection in group rejected by max_sockets_per_group");
+
+        // Enqueue a waiter for group A and release id1 -> direct handoff to waiter!
+        let enq_ok = wing::enqueue_group_waiter(pool, key_a, 9001);
+        sub.assert_true(enq_ok, "Waiter enqueued in group WantQueue");
+        var handed_waiter = wing::WantConn { .. };
+        let rel_ok1, handed_off = wing::release_connection_or_handoff(pool, id1, 1004, handed_waiter);
+        sub.assert_true(rel_ok1 && handed_off, "Released connection handed off directly to queued waiter");
+        sub.assert_eq(handed_waiter.req_id, 9001 as u64, "Handed off waiter req_id matches");
+
+        // Release id1 again with no waiters -> becomes Idle
+        var dummy_waiter = wing::WantConn { .. };
+        let rel_ok2, handed_off2 = wing::release_connection_or_handoff(pool, id1, 1005, dummy_waiter);
+        sub.assert_true(rel_ok2 && !handed_off2, "Released connection parks as Idle when WantQueue is empty");
+        sub.assert_true(wing::can_allocate_group_socket(pool, key_a), "Group quota available by evicting idle connection");
+
+        // Allocating new connection in group A evicts idle id1 and succeeds
+        let id3_ok = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1006);
+        sub.assert_gt(id3_ok, 0, "New connection in group A succeeds after evicting oldest idle in group");
+
+        // Group B shares the same proxy (max_sockets_per_proxy = 3, currently 2 active in group A)
+        let id_b1 = wing::register_connection(pool, key_b, wing::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1007);
+        sub.assert_gt(id_b1, 0, "3rd proxy connection across group B allowed");
+        let id_b2_blocked = wing::register_connection(pool, key_b, wing::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1008);
+        sub.assert_eq(id_b2_blocked, -1, "4th active connection on same proxy rejected by max_sockets_per_proxy=3");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 36. HEv3 HTTPS/SVCB Metadata Extraction & AddressFamilyCache
+// ----------------------------------------------------------------------------
+fn test_hev3_https_svcb_and_address_family_cache(t: lit::T&) {
+    t.run("extract_https_svcb_metadata extracts ALPN, ECH, port override, and IPv4/IPv6 hints") { sub =>
+        var rec = wing::HttpsRecord {
+            priority: 1,
+            port:     8443,
+            has_ech:  true,
+            ..
+        };
+        rec.target_name.append("svc.example.com");
+        rec.ech_config_list.append("ech-wire-bytes");
+        rec.alpns.push("h3");
+        rec.alpns.push("h2");
+        rec.ipv4_hints.push(0x5DB8D822);
+        rec.ipv6_hints.push([0x26, 0x06, 0x28, 0x00, 0x02, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x48]);
+
+        let meta, eff_port = wing::extract_https_svcb_metadata(rec, 443);
+        sub.assert_eq(eff_port, 8443, "SVCB port override applied");
+        sub.assert_true(meta.alpn_h3, "alpn_h3 extracted");
+        sub.assert_true(meta.alpn_h2, "alpn_h2 extracted");
+        sub.assert_true(meta.ech_config_present, "ech_config_present extracted");
+        sub.assert_eq(meta.ipv4_hints.len, 1, "1 IPv4 hint extracted");
+        sub.assert_bytes_eq(meta.ipv4_hints[0][..], "93.184.216.34", "IPv4 hint formatted");
+        sub.assert_eq(meta.ipv6_hints.len, 1, "1 IPv6 hint extracted");
+    };
+
+    t.run("AddressFamilyCache records preferred winner family and reorders interleave") { sub =>
+        var af_cache = wing::AddressFamilyCache { .. };
+        let _, found0 = wing::lookup_preferred_family(af_cache, "dual.example.com", 100);
+        sub.assert_false(found0, "Empty cache returns false");
+
+        wing::record_preferred_family(af_cache, "dual.example.com", wing::AddressFamily.IPv4, 100);
+        let pref, found1 = wing::lookup_preferred_family(af_cache, "dual.example.com", 200);
+        sub.assert_true(found1, "Cache hit within TTL");
+        sub.assert_true(pref == wing::AddressFamily.IPv4, "Preferred family is IPv4");
+
+        let _, found_exp = wing::lookup_preferred_family(af_cache, "dual.example.com", 800);
+        sub.assert_false(found_exp, "Cache entry expires after 600s TTL");
+
+        var v6: wing::DnsCandidate[..2] = [];
+        v6.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443, wing::L4Protocol.Tcp, 50));
+        var v4: wing::DnsCandidate[..2] = [];
+        v4.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443, wing::L4Protocol.Tcp, 40));
+
+        var out: wing::DnsCandidate[..32] = [];
+        wing::interleave_candidates_by_preference(v6[..], v4[..], wing::AddressFamily.IPv4, out);
+        sub.assert_eq(out.len, 2, "2 candidates interleaved");
+        sub.assert_true(out[0].family == wing::AddressFamily.IPv4, "IPv4 placed first when preferred");
+        sub.assert_true(out[1].family == wing::AddressFamily.IPv6, "IPv6 placed second");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Network Transport Drivers, Connection Pool, and Poller Suite", lit::Verbosity.Verbose);
 
@@ -2188,6 +2298,8 @@ fn main() {
     lit::run_case(runner, "32. RFC 1035 §2.3.4 & §4.1.4: DNS Wire Decoding Label Bounds", test_dns_decode_label_length_and_reserved_bits);
     lit::run_case(runner, "33. CVE-2026-94441 & Go #81656: Scheme Isolation in Connection Pool Keys", test_h2c_vs_https_connection_pool_isolation);
     lit::run_case(runner, "34. DNS Name Decoding Length Overflow", test_dns_name_length_overflow);
+    lit::run_case(runner, "35. Per-Group & Per-Proxy Socket Quotas + WantQueue Handoff", test_group_and_proxy_quotas_with_waiter_handoff);
+    lit::run_case(runner, "36. HEv3 HTTPS/SVCB Metadata Extraction & AddressFamilyCache", test_hev3_https_svcb_and_address_family_cache);
 
     let ok = lit::finish(runner);
     assert(ok);

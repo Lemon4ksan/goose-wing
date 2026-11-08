@@ -13,6 +13,8 @@ enum CorsResult {
     AllowedActual,
     AllowedPreflight,
     RejectedOrigin,
+    RejectedPreflightMethod,
+    RejectedPreflightHeaders,
     InvalidConfig,
 }
 
@@ -195,6 +197,53 @@ fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
     res.status_code = rfc::STATUS_NO_CONTENT;
 }
 
+// Checks whether all comma-separated tokens in `requested_list` are present in `allowed_list` (WHATWG Fetch §3.2.3).
+fn are_cors_request_headers_allowed(allowed_list: const u8[:], requested_list: const u8[:]) -> bool {
+    var rest = requested_list;
+    while rest.len > 0 {
+        let item, after, has_comma = split_once(rest, ",");
+        let tok = trim_lws(item);
+        if tok.len > 0 {
+            let safelisted = eq_ascii_fold(tok, "accept") ||
+                eq_ascii_fold(tok, "accept-language") ||
+                eq_ascii_fold(tok, "content-language");
+            if !safelisted && !header_list_has_token(allowed_list, tok) {
+                return false;
+            }
+        }
+        if !has_comma { break; }
+        rest = after;
+    }
+    return true;
+}
+
+struct ClientCorsVerifyOptions {
+    tainted_origin:      bool = false,
+    include_credentials: bool = false,
+}
+
+// Validates an inbound HTTP response against WHATWG Fetch §4.9 CORS protocol check on the client side.
+fn verify_client_cors_response<H>(
+    resp_headers:   const H&,
+    request_origin: const u8[:],
+    opts:           ClientCorsVerifyOptions = ClientCorsVerifyOptions { .. },
+) -> bool {
+    let acao = trim_lws(resp_headers.find_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN));
+    guard acao.len > 0 else { return false; }
+    let expected_origin = if opts.tainted_origin { "null" } else { trim_lws(request_origin) };
+
+    if opts.include_credentials {
+        guard acao != "*" && eq_ascii_fold(acao, expected_origin) else { return false; }
+        let acac = trim_lws(resp_headers.find_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS));
+        return acac == "true";
+    }
+
+    if acao == "*" {
+        return true;
+    }
+    return eq_ascii_fold(acao, expected_origin);
+}
+
 // Evaluates CORS rules against request Origin and populates response headers.
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
@@ -213,6 +262,18 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         return CorsResult.RejectedOrigin;
     }
 
+    let req_method_hdr = trim_lws(req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD));
+    let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0;
+    if is_preflight {
+        guard header_list_has_token(policy.allowed_methods[..], req_method_hdr) else {
+            return CorsResult.RejectedPreflightMethod;
+        }
+        let req_hdrs = trim_lws(req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS));
+        if req_hdrs.len > 0 && !are_cors_request_headers_allowed(policy.allowed_headers[..], req_hdrs) {
+            return CorsResult.RejectedPreflightHeaders;
+        }
+    }
+
     let is_wildcard_allow = !policy.allow_credentials && has_wildcard_origin(policy);
     let allow_origin_val = if is_wildcard_allow { "*" } else { origin };
     res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin_val);
@@ -225,8 +286,7 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS, "true");
     }
 
-    let req_method_hdr = trim_lws(req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD));
-    if req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0 {
+    if is_preflight {
         apply_cors_preflight_headers(policy, res);
         return CorsResult.AllowedPreflight;
     }

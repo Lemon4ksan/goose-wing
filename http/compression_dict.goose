@@ -14,6 +14,7 @@ import std;
 import core from "..";
 import rfc.http;
 import http.headers;
+import http.novarysearch;
 import client.request;
 import client.response;
 
@@ -24,11 +25,12 @@ import client.response;
 // DCB: 0xFF, 'D', 'C', 'B' (0xFF, 0x44, 0x43, 0x42)
 
 struct DictionaryParams {
-    match_pattern: u8[..128] = [],
-    id:            u8[..64]  = [],
-    ttl_sec:       u32       = 86400,
-    dict_type:     u8[..16]  = "raw",
-    valid:         bool      = false,
+    match_pattern: u8[..128]      = [],
+    match_dest:    u8[..64][..16] = [],
+    id:            u8[..64]       = [],
+    ttl_sec:       u32            = 86400,
+    dict_type:     u8[..16]       = "raw",
+    valid:         bool           = false,
 }
 
 struct DictionaryEntry {
@@ -79,6 +81,20 @@ fn find_dict_item_end(s: const u8[:]) -> i64 {
     return s.len;
 }
 
+fn apply_dict_match_dest(p: DictionaryParams&, raw_list: const u8[:]) -> bool {
+    let last_idx = core::sub_sat_i64(raw_list.len, 1);
+    guard raw_list.len >= 2 && raw_list[0] == '(' && raw_list[last_idx] == ')' else {
+        p.valid = false;
+        return false;
+    }
+    p.match_dest.clear();
+    guard parse_inner_string_list(raw_list, p.match_dest) else {
+        p.valid = false;
+        return false;
+    }
+    return true;
+}
+
 fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
     let k_raw, v_raw, has_eq = item.split_once_byte('=');
     guard has_eq else { return false; }
@@ -114,6 +130,8 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
         }
         p.dict_type.clear();
         p.dict_type.append(v);
+    } else if core::eq_ascii_fold(k, "match-dest") {
+        return apply_dict_match_dest(p, v_raw.trim_lws());
     }
     return true;
 }
@@ -238,21 +256,38 @@ fn encode_dcb_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload:
     return true;
 }
 
+inline fn is_dcz_rfc9842_magic(wire: const u8[:]) -> bool {
+    guard wire.len >= 40 else { return false; }
+    return wire[0] == 0x5E && wire[1] == 0x2A && wire[2] == 0x4D && wire[3] == 0x18 &&
+           wire[4] == 0x20 && wire[5] == 0x00 && wire[6] == 0x00 && wire[7] == 0x00;
+}
+
+inline fn is_dcz_legacy_magic(wire: const u8[:]) -> bool {
+    guard wire.len >= 36 else { return false; }
+    return wire[0] == rfc::DCZ_MAGIC_BYTE0 && wire[1] == rfc::DCZ_MAGIC_BYTE1 &&
+           wire[2] == rfc::DCZ_MAGIC_BYTE2 && wire[3] == rfc::DCZ_MAGIC_BYTE3;
+}
+
 // Decodes a DCZ header from wire bytes:
-// Verifies 4-byte magic, extracts 32-byte dict hash and returns the compressed payload slice.
+// Verifies 8-byte RFC 9842 §5 magic (or 4-byte draft magic), extracts 32-byte dict hash
+// and returns the compressed payload slice.
 //
 // Example:
 //   wire = [0xFF, 'D', 'C', 'Z', ...32 hash bytes..., ...payload...]
 //   returns: payload slice, out_hash populated, ok = true
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
-    guard wire.len >= 36 else { return wire[..0], false; }
-    guard wire[0] == rfc::DCZ_MAGIC_BYTE0 && wire[1] == rfc::DCZ_MAGIC_BYTE1 &&
-          wire[2] == rfc::DCZ_MAGIC_BYTE2 && wire[3] == rfc::DCZ_MAGIC_BYTE3 else {
-        return wire[..0], false;
+    if is_dcz_rfc9842_magic(wire) {
+        let hash_slice = wire[8..40];
+        for b, idx in hash_slice {
+            out_hash[idx] = b;
+        }
+        return wire[40..], true;
     }
+    guard is_dcz_legacy_magic(wire) else { return wire[..0], false; }
 
-    for idx in 32 {
-        out_hash[idx] = wire[4 + idx];
+    let hash_slice = wire[4..36];
+    for b, idx in hash_slice {
+        out_hash[idx] = b;
     }
     return wire[36..], true;
 }
@@ -446,6 +481,11 @@ fn decompress_dcz_payload<B>(
     dictionary_content: const u8[:],
     out_buf:            B&,
 ) -> bool {
+    if out_buf.len == 0 {
+        let ok_z, _ = core::zstd_decompress_with_dict(compressed_payload, dictionary_content, out_buf, 10485760);
+        if !ok_z { out_buf.clear(); }
+        return ok_z;
+    }
     var decompressed: u8[..16384] = [];
     let ok_z, _ = core::zstd_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_z else { return false; }
@@ -481,6 +521,11 @@ fn decompress_dcb_payload<B>(
     dictionary_content: const u8[:],
     out_buf:            B&,
 ) -> bool {
+    if out_buf.len == 0 {
+        let ok_b, _ = core::brotli_decompress_with_dict(compressed_payload, dictionary_content, out_buf, 10485760);
+        if !ok_b { out_buf.clear(); }
+        return ok_b;
+    }
     var decompressed: u8[..16384] = [];
     let ok_b, _ = core::brotli_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_b else { return false; }

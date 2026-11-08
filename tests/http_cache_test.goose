@@ -2379,6 +2379,98 @@ fn test_cache_control_and_vary_poisoning_rfc9111(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 37. No-Vary-Search (RFC 9440), Range/206 Cache Slicing & 304 Security Headers
+// ----------------------------------------------------------------------------
+fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
+    t.run("HttpCache matches No-Vary-Search equivalent query URLs and ignores unknown NVS keys") { sub =>
+        let nvs_unk, ok_unk = wing::parse_no_vary_search("params=(\"utm_source\"), unknown-future-key=?1");
+        sub.assert_true(ok_unk, "RFC 9440 Section 2.2 ignores unknown dictionary keys");
+        sub.assert_true(nvs_unk.is_valid, "NVS with unknown key remains valid");
+
+        var cache = wing::new_http_cache();
+        var req1 = wing::new_request("GET", "https://cdn.example.com/item?id=42&utm_source=email");
+        var resp1 = wing::Response { status_code: 200, .. };
+        wing::set_header(resp1.headers, "Cache-Control", "max-age=3600");
+        wing::set_header(resp1.headers, "No-Vary-Search", "params=(\"utm_source\")");
+        resp1.body.append("cached-item-42");
+
+        let ts = wing::CacheTimestamps {
+            request_time:  core::unix(1000, 0),
+            response_time: core::unix(1000, 0),
+            now:           core::unix(1000, 0),
+        };
+        let _ = cache.on_response(req1, resp1, ts, -1);
+
+        var req2 = wing::new_request("GET", "https://cdn.example.com/item?id=42&utm_source=social");
+        let dec = cache.lookup(req2, core::unix(1010, 0));
+        sub.assert_true(dec.kind == wing::LookupResultKind.Hit, "NVS equivalent URL hits fresh cache entry");
+        sub.assert_bytes_eq(dec.cached_response.text(), "cached-item-42", "Returned cached body across differing utm_source");
+    };
+
+    t.run("HttpCache serves 206 Partial Content and 416 on Range/If-Range against cached 200 OK") { sub =>
+        var cache = wing::new_http_cache();
+        var req_full = wing::new_request("GET", "https://cdn.example.com/video.mp4");
+        var resp_full = wing::Response { status_code: 200, .. };
+        wing::set_header(resp_full.headers, "Cache-Control", "max-age=3600");
+        wing::set_header(resp_full.headers, "ETag", "\"v1-strong\"");
+        resp_full.body.append("0123456789ABCDEF");
+
+        let ts = wing::CacheTimestamps {
+            request_time:  core::unix(2000, 0),
+            response_time: core::unix(2000, 0),
+            now:           core::unix(2000, 0),
+        };
+        let _ = cache.on_response(req_full, resp_full, ts, -1);
+
+        // 1. Valid Range + matching If-Range -> 206 Partial Content
+        var req_range = wing::new_request("GET", "https://cdn.example.com/video.mp4");
+        wing::set_header(req_range, "Range", "bytes=4-9");
+        wing::set_header(req_range, "If-Range", "\"v1-strong\"");
+        let dec_206 = cache.lookup(req_range, core::unix(2010, 0));
+        sub.assert_true(dec_206.kind == wing::LookupResultKind.Hit, "Range hit served from cache");
+        sub.assert_eq(dec_206.cached_response.status_code, 206, "Synthesized 206 Partial Content");
+        sub.assert_bytes_eq(dec_206.cached_response.text(), "456789", "Sliced bytes 4..=9");
+        sub.assert_bytes_eq(dec_206.cached_response.header("Content-Range"), "bytes 4-9/16", "Formatted Content-Range");
+
+        // 2. Unsatisfiable Range -> 416 Range Not Satisfiable
+        var req_416 = wing::new_request("GET", "https://cdn.example.com/video.mp4");
+        wing::set_header(req_416, "Range", "bytes=50-60");
+        let dec_416 = cache.lookup(req_416, core::unix(2010, 0));
+        sub.assert_eq(dec_416.cached_response.status_code, 416, "Synthesized 416 on out-of-bounds range");
+        sub.assert_bytes_eq(dec_416.cached_response.header("Content-Range"), "bytes */16", "416 Content-Range");
+
+        // 3. Mismatched If-Range -> returns full 200 OK representation without slicing (RFC 9110 §13.1.5)
+        var req_miss = wing::new_request("GET", "https://cdn.example.com/video.mp4");
+        wing::set_header(req_miss, "Range", "bytes=0-3");
+        wing::set_header(req_miss, "If-Range", "\"v2-other\"");
+        let dec_miss = cache.lookup(req_miss, core::unix(2010, 0));
+        sub.assert_true(dec_miss.kind == wing::LookupResultKind.Hit, "If-Range mismatch serves full cached entry");
+        sub.assert_eq(dec_miss.cached_response.status_code, 200, "If-Range mismatch preserves 200 OK status");
+        sub.assert_bytes_eq(dec_miss.cached_response.text(), "0123456789ABCDEF", "If-Range mismatch returns full body");
+    };
+
+    t.run("304 merge preserves X-Frame-Options, X-XSS-Protection, and Content-Location") { sub =>
+        var stored = wing::HeaderMap { .. };
+        wing::set_header(stored, "X-Frame-Options", "DENY");
+        wing::set_header(stored, "X-XSS-Protection", "1; mode=block");
+        wing::set_header(stored, "Content-Location", "/canonical-v1");
+        wing::set_header(stored, "Cache-Control", "max-age=60");
+
+        var incoming_304 = wing::HeaderMap { .. };
+        wing::set_header(incoming_304, "X-Frame-Options", "ALLOWALL");
+        wing::set_header(incoming_304, "X-XSS-Protection", "0");
+        wing::set_header(incoming_304, "Content-Location", "/evil-override");
+        wing::set_header(incoming_304, "Cache-Control", "max-age=600");
+
+        wing::merge_cached_headers_304(stored, incoming_304);
+        sub.assert_bytes_eq(wing::get_header(stored, "X-Frame-Options"), "DENY", "X-Frame-Options protected on 304");
+        sub.assert_bytes_eq(wing::get_header(stored, "X-XSS-Protection"), "1; mode=block", "X-XSS-Protection protected on 304");
+        sub.assert_bytes_eq(wing::get_header(stored, "Content-Location"), "/canonical-v1", "Content-Location protected on 304");
+        sub.assert_bytes_eq(wing::get_header(stored, "Cache-Control"), "max-age=600", "Cache-Control updated on 304");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Caching (RFC 9111), Structured Fields, and Metadata Suite", lit::Verbosity.Verbose);
 
@@ -2418,6 +2510,7 @@ fn main() {
     lit::run_case(runner, "34. No-Vary-Search capacity safety (http/novarysearch.goose)", test_novarysearch_capacity_safety);
     lit::run_case(runner, "35. NoVarySearch truncation and bounds (http/novarysearch.goose)", test_novarysearch_truncation_and_bounds);
     lit::run_case(runner, "36. Cache-Control & Vary RFC 9111 (http/cache/*)", test_cache_control_and_vary_poisoning_rfc9111);
+    lit::run_case(runner, "37. No-Vary-Search, Range/206 Cache Slicing & 304 Security Headers", test_nvs_cache_equivalence_range_and_304_security);
 
     let ok = lit::finish(runner);
     assert(ok);

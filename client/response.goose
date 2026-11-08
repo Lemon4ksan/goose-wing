@@ -217,119 +217,180 @@ fn clear_decompressed_headers(res: Response&) {
     res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 
-// Automatically decompresses response.body if Content-Encoding is gzip or deflate.
+// Parses a comma-separated Content-Encoding header into up to 4 ordered tokens (RFC 9110 §8.4).
+//
+// Example:
+//   enc_hdr = "deflate, gzip"
+//   returns: ok = true, out_tokens = ["deflate", "gzip"]
+fn parse_content_encoding_chain(
+    enc_hdr:    const u8[:],
+    out_tokens: u8[..16][..4]&,
+) -> bool {
+    out_tokens.clear();
+    var rem = core::trim_lws(enc_hdr);
+    guard rem.len > 0 else { return true; }
+    while rem.len > 0 {
+        let head, tail, has_comma = core::split_once_byte(rem, ',');
+        let tok = core::trim_lws(head);
+        guard tok.len > 0 && tok.len <= 16 && out_tokens.len < 4 else { return false; }
+        var item: u8[..16] = [];
+        item.append(tok);
+        out_tokens.push(item);
+        if !has_comma { break; }
+        rem = core::trim_lws(tail);
+        guard rem.len > 0 else { return false; }
+    }
+    return true;
+}
+
+// Decodes a single standard Content-Encoding layer (`identity`, `zstd`, `gzip`, `br`, `deflate`) in place.
+//
+// Example:
+//   tok = "gzip", res.body = <gzipped "ok">
+//   returns: true, res.body = "ok"
+fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
+    if eq_ascii_fold(tok, "identity") {
+        return true;
+    }
+    if eq_ascii_fold(tok, "zstd") {
+        var uncompressed: u8[>..] = [];
+        let ok_z, _ = core::zstd_decompress(res.body[..], uncompressed);
+        guard ok_z else { return false; }
+        res.body.clear();
+        res.body.append(uncompressed[..]);
+        return true;
+    }
+    if eq_ascii_fold(tok, "gzip") || eq_ascii_fold(tok, "x-gzip") {
+        var uncompressed: u8[>..] = [];
+        let ok_d, _ = core::gzip_decompress(res.body[..], uncompressed);
+        guard ok_d else { return false; }
+        res.body.clear();
+        res.body.append(uncompressed[..]);
+        return true;
+    }
+    if eq_ascii_fold(tok, "br") {
+        var uncompressed: u8[>..] = [];
+        let ok_b, _ = core::brotli_decompress(res.body[..], uncompressed);
+        guard ok_b else { return false; }
+        res.body.clear();
+        res.body.append(uncompressed[..]);
+        return true;
+    }
+    if eq_ascii_fold(tok, "deflate") {
+        var uncompressed: u8[>..] = [];
+        let ok_z, _ = core::zlib_decompress(res.body[..], uncompressed);
+        if ok_z {
+            res.body.clear();
+            res.body.append(uncompressed[..]);
+            return true;
+        }
+        uncompressed.clear();
+        let ok_d, _ = core::inflate(res.body[..], uncompressed);
+        guard ok_d else { return false; }
+        res.body.clear();
+        res.body.append(uncompressed[..]);
+        return true;
+    }
+    return true;
+}
+
+fn find_matching_dict_entry(
+    dict_cache: const DictionaryCache&,
+    dict_hash:  const u8[:],
+) -> i64 {
+    for &entry, idx in dict_cache.entries {
+        if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash) {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+// Decodes a single RFC 9842 shared-dictionary Content-Encoding layer (`dcz` or `dcb`) in place.
+//
+// Example:
+//   tok = "dcz", res.body = <40-byte DCZ header + zstd frame>
+//   returns: true, res.body = <decompressed payload>
+fn decode_single_dict_encoding(
+    tok:        const u8[:],
+    res:        Response&,
+    dict_cache: const DictionaryCache&,
+) -> bool {
+    if eq_ascii_fold(tok, "dcz") {
+        var dict_hash: u8[32] = [0; 32];
+        let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
+        guard ok_hdr else { return false; }
+        let idx = find_matching_dict_entry(dict_cache, dict_hash[..]);
+        guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
+        var decompressed: u8[>..] = [];
+        guard decompress_dcz_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
+        res.body.clear();
+        res.body.append(decompressed[..]);
+        return true;
+    }
+    if eq_ascii_fold(tok, "dcb") {
+        var dict_hash: u8[32] = [0; 32];
+        let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
+        guard ok_hdr else { return false; }
+        let idx = find_matching_dict_entry(dict_cache, dict_hash[..]);
+        guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
+        var decompressed: u8[>..] = [];
+        guard decompress_dcb_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
+        res.body.clear();
+        res.body.append(decompressed[..]);
+        return true;
+    }
+    return decode_single_standard_encoding(tok, res);
+}
+
+// Automatically decompresses response.body across single or multi-token Content-Encoding chains
+// in reverse application order (RFC 9110 §8.4: gzip, x-gzip, deflate, br, zstd, identity).
 // Replaces res.body in-place with decompressed bytes and clears the Content-Encoding header.
-// Returns true if body was successfully decompressed or if uncompressed; false on corrupted stream.
 //
 // Example:
 //   res.headers = [("content-encoding", "gzip")], res.body = <gzip_bytes>
 //   returns: true, res.body = <decompressed_bytes>
 fn decode_body(res: Response&) -> bool {
     let enc = header(res, "content-encoding");
-    if eq_ascii_fold(enc, "zstd") {
-        var uncompressed: u8[>..] = [];
-        let ok_z, err_z = core::zstd_decompress(res.body[..], uncompressed);
-        if ok_z {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            clear_decompressed_headers(res);
-            return true;
-        }
-        return false;
-    } else if eq_ascii_fold(enc, "gzip") {
-        var uncompressed: u8[>..] = [];
-        let ok_d, err = core::gzip_decompress(res.body[..], uncompressed);
-        if ok_d {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            clear_decompressed_headers(res);
-            return true;
-        }
-        return false;
-    } else if eq_ascii_fold(enc, "br") {
-        var uncompressed: u8[>..] = [];
-        let ok_b, err_b = core::brotli_decompress(res.body[..], uncompressed);
-        if ok_b {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            clear_decompressed_headers(res);
-            return true;
-        }
-        return false;
-    } else if eq_ascii_fold(enc, "deflate") {
-        var uncompressed: u8[>..] = [];
-        let ok_z, err_z = core::zlib_decompress(res.body[..], uncompressed);
-        if ok_z {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            clear_decompressed_headers(res);
-            return true;
-        }
-        uncompressed.clear();
-        let ok_d, err_d = core::inflate(res.body[..], uncompressed);
-        if ok_d {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            clear_decompressed_headers(res);
-            return true;
-        }
-        return false;
+    guard enc.len > 0 else { return true; }
+    if res.body.len == 0 && rfc::is_empty_body_status(res.status_code) {
+        clear_decompressed_headers(res);
+        return true;
     }
+    var tokens: u8[..16][..4] = [];
+    guard parse_content_encoding_chain(enc, tokens) else { return false; }
+    var rev_idx = tokens.len;
+    while rev_idx > 0 {
+        rev_idx = core::sub_sat_i64(rev_idx, 1);
+        guard decode_single_standard_encoding(tokens[rev_idx][..], res) else { return false; }
+    }
+    clear_decompressed_headers(res);
     return true;
 }
 
-// Automatically decompresses response.body, supporting standard encodings (gzip, deflate, zstd)
-// as well as Chrome 123+ shared dictionary compression (dcz) using the client's dictionary cache.
+// Automatically decompresses response.body across single or multi-token Content-Encoding chains,
+// supporting standard encodings (gzip, deflate, br, zstd) and Chrome 123+ shared dictionary
+// encodings (dcz, dcb) in reverse application order (RFC 9110 §8.4, RFC 9842).
 //
 // Example:
 //   res.headers = [("content-encoding", "dcz")], res.body = <dcz_payload>
 //   returns: true, res.body = <decompressed_bytes>
 fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache&) -> bool {
     let enc = header(res, "content-encoding");
-    if eq_ascii_fold(enc, "dcz") {
-        var dict_hash: u8[32] = [0; 32];
-        let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
-        guard ok_hdr else { return false; }
-
-        var found = false;
-        var decompressed: u8[>..] = [];
-        for &entry in dict_cache.entries {
-            if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash[..]) {
-                let ok_dec = decompress_dcz_payload(p_slice, entry.content[..], decompressed);
-                guard ok_dec else { return false; }
-                found = true;
-                break;
-            }
-        }
-        guard found else { return false; }
-
-        res.body.clear();
-        res.body.append(decompressed[..]);
-        clear_decompressed_headers(res);
-        return true;
-    } else if eq_ascii_fold(enc, "dcb") {
-        var dict_hash: u8[32] = [0; 32];
-        let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
-        guard ok_hdr else { return false; }
-
-        var found = false;
-        var decompressed: u8[>..] = [];
-        for &entry in dict_cache.entries {
-            if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash[..]) {
-                let ok_dec = decompress_dcb_payload(p_slice, entry.content[..], decompressed);
-                guard ok_dec else { return false; }
-                found = true;
-                break;
-            }
-        }
-        guard found else { return false; }
-
-        res.body.clear();
-        res.body.append(decompressed[..]);
+    guard enc.len > 0 else { return true; }
+    if res.body.len == 0 && rfc::is_empty_body_status(res.status_code) {
         clear_decompressed_headers(res);
         return true;
     }
-    return decode_body(res);
+    var tokens: u8[..16][..4] = [];
+    guard parse_content_encoding_chain(enc, tokens) else { return false; }
+    var rev_idx = tokens.len;
+    while rev_idx > 0 {
+        rev_idx = core::sub_sat_i64(rev_idx, 1);
+        guard decode_single_dict_encoding(tokens[rev_idx][..], res, dict_cache) else { return false; }
+    }
+    clear_decompressed_headers(res);
+    return true;
 }
 
 // ---- json reflection readers -----------------------------------------------
@@ -339,7 +400,7 @@ fn read_json_field(reader: json::Reader&, dst: i64&) {
 }
 
 fn read_json_field(reader: json::Reader&, dst: i32&) {
-    dst = core::clamp_i64(json::read_int(reader), -2147483648, 2147483647) as! i32;
+    dst = core::clamp_i64(json::read_int(reader), -2147483648, 2147483647) as i32;
 }
 
 fn read_json_field(reader: json::Reader&, dst: f64&) {

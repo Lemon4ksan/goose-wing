@@ -24,6 +24,9 @@ import http.altsvc;
 import http.compression_dict;
 import http.hsts;
 import auth.digest;
+import security.cors;
+import security.cross_origin_isolation;
+import security.privacypass;
 import client.session.ssrf;
 import client.session.mock;
 import client.client;
@@ -90,19 +93,24 @@ fn stage_client_ssrf_guard(
 // Returns `StageVerdict.ShortCircuit { status_code: 200 }` on fresh cache hit,
 // `StageVerdict.Abort { err_code: 504 }` on `only-if-cached` miss, or `StageVerdict.Continue`.
 fn stage_client_cache_lookup<Cache>(
-    req:           const Request&,
-    eff_url:       const u8[:],
-    now_ts:        core::Time,
-    headers:       HeaderMap&,
-    out_resp:      Response&,
-    out_reval_idx: i64&,
-    cache:         Cache&,
-    enable_cache:  bool,
+    req:             const Request&,
+    eff_url:         const u8[:],
+    now_ts:          core::Time,
+    headers:         HeaderMap&,
+    out_resp:        Response&,
+    out_reval_idx:   i64&,
+    cache:           Cache&,
+    enable_cache:    bool,
+    method_override: const u8[:] = "",
 ) -> wire::StageVerdict {
     guard enable_cache else { return wire::StageVerdict.Continue; }
     var lookup_req = copy(req);
     lookup_req.url.clear();
     lookup_req.url.append(eff_url);
+    if method_override.len > 0 {
+        lookup_req.method.clear();
+        lookup_req.method.append(method_override);
+    }
     lookup_req.headers = copy(headers);
     let lookup_dec = cache.lookup(lookup_req, now_ts);
     if lookup_dec.kind == LookupResultKind.Hit {
@@ -125,14 +133,20 @@ fn stage_client_cache_lookup<Cache>(
         out_reval_idx = lookup_dec.entry_idx;
         if out_reval_idx >= 0 && out_reval_idx < cache.entries.len {
             let cond_map = cache.entries[out_reval_idx].build_revalidation_headers();
-            for &c_entry in cond_map.entries {
-                let c_name = entry_name(cond_map, c_entry);
-                let c_val = entry_value(cond_map, c_entry);
-                set_header(headers, c_name, c_val);
-            }
+            apply_cache_revalidation_headers(cond_map, headers);
         }
     }
     return wire::StageVerdict.Continue;
+}
+
+fn apply_cache_revalidation_headers(cond_map: const HeaderMap&, headers: HeaderMap&) {
+    for &c_entry in cond_map.entries {
+        let c_name = entry_name(cond_map, c_entry);
+        let c_val = entry_value(cond_map, c_entry);
+        if !has_header(headers, c_name) {
+            set_header(headers, c_name, c_val);
+        }
+    }
 }
 
 // Loads matching cookies from `jar: Jar&` into `headers` via UFCS `jar.encode_cookie_header_to_map(...)`.
@@ -169,6 +183,28 @@ fn stage_client_cookie_load<Jar>(
     return wire::StageVerdict.Continue;
 }
 
+fn find_best_matching_dict_idx(
+    dict_cache: const DictionaryCache&,
+    origin_buf: const u8[:],
+    curr_path:  const u8[:],
+    now_sec:    i64,
+) -> i64 {
+    var best_idx:  i64 = -1;
+    var best_len:  i64 = -1;
+    var best_time: i64 = -1;
+    for &entry, idx in dict_cache.entries {
+        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
+            let pat_len = entry.match_pattern.len;
+            if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
+                best_idx = idx;
+                best_len = pat_len;
+                best_time = entry.inserted_at_sec;
+            }
+        }
+    }
+    return best_idx;
+}
+
 // Negotiates compression dictionary transport (`Available-Dictionary` and `Dictionary-ID`).
 fn stage_client_dict_negotiate(
     headers:     HeaderMap&,
@@ -182,16 +218,14 @@ fn stage_client_dict_negotiate(
     remove_header_by_name(headers, "Available-Dictionary");
     remove_header_by_name(headers, "Dictionary-ID");
     guard enable_dict && is_https else { return wire::StageVerdict.Continue; }
-    for &entry in dict_cache.entries {
-        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
-            append_available_dict_header(headers, entry.sha256_base64[..]);
-            // RFC 9842 Section 2.3: Dictionary-ID - Send Dictionary-ID when stored dictionary has an id parameter.
-            if entry.id.len > 0 {
-                var id_hdr: u8[..128] = [];
-                format_dictionary_id_header(id_hdr, entry.id[..]);
-                set_header(headers, "Dictionary-ID", id_hdr[..]);
-            }
-            break;
+    let best_idx = find_best_matching_dict_idx(dict_cache, origin_buf, curr_path, now_sec);
+    if best_idx >= 0 && best_idx < dict_cache.entries.len {
+        let entry = dict_cache.entries[best_idx];
+        append_available_dict_header(headers, entry.sha256_base64[..]);
+        if entry.id.len > 0 {
+            var id_hdr: u8[..128] = [];
+            format_dictionary_id_header(id_hdr, entry.id[..]);
+            set_header(headers, "Dictionary-ID", id_hdr[..]);
         }
     }
     return wire::StageVerdict.Continue;
@@ -289,12 +323,16 @@ fn stage_client_alt_svc(
 
 // Decodes `Content-Encoding` (`gzip`, `br`, `zstd`, `dcb`, `dcz`) on `resp` using `dict_cache`.
 fn stage_client_decompress(
-    resp:       Response&,
-    dict_cache: const DictionaryCache&,
+    resp:        Response&,
+    dict_cache:  const DictionaryCache&,
+    strict_mode: bool = false,
 ) -> wire::StageVerdict {
     let enc = header(resp, "Content-Encoding");
     if enc.len > 0 {
-        decode_body_with_dictionary(resp, dict_cache);
+        let ok_dec = decode_body_with_dictionary(resp, dict_cache);
+        if !ok_dec && strict_mode {
+            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+        }
     }
     return wire::StageVerdict.Continue;
 }
@@ -329,7 +367,7 @@ fn stage_client_cache_store<Cache>(
     return wire::StageVerdict.Continue;
 }
 
-// Evaluates 401 WWW-Authenticate challenges (RFC 7616 Digest & RFC 7617 Basic).
+// Evaluates 401 WWW-Authenticate challenges (RFC 7616 Digest, RFC 7617 Basic, RFC 9577 PrivateToken).
 // When challenge credentials can be synthesized, prepares `ctx` for an auth retry hop
 // and returns `StageVerdict.RetryAuth`.
 fn stage_client_auth_challenge(
@@ -340,7 +378,8 @@ fn stage_client_auth_challenge(
     safe_method:   bool,
     resp:          Response&,
 ) -> wire::StageVerdict {
-    guard !ctx.auth_retried && session.creds.has_credentials && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
+    let has_auth_source = session.creds.has_credentials || session.private_token_cache.entries.len > 0;
+    guard has_auth_source && resp.status_code == rfc::STATUS_UNAUTHORIZED else {
         return wire::StageVerdict.Continue;
     }
     guard ctx.body.len == 0 || ctx.rewindable else {
@@ -354,6 +393,52 @@ fn stage_client_auth_challenge(
     return wire::StageVerdict.RetryAuth;
 }
 
+// Validates client-side CORS (`Access-Control-Allow-Origin`) and CORP (`Cross-Origin-Resource-Policy`)
+// on cross-origin responses when `ctx.cors_mode` or `Cross-Origin-Resource-Policy` is present.
+fn validate_client_cors_and_corp_response(
+    ctx:         const RequestExecutionContext&,
+    current_url: const core::Url&,
+    resp:        const Response&,
+    out_err:     Error&,
+) -> bool {
+    guard ctx.has_initiator && ctx.initiator.kind != core::OriginKind.Opaque else { return true; }
+    let target_orig = core::origin_from_url(current_url);
+    var init_orig_str:   u8[..256] = [];
+    var target_orig_str: u8[..256] = [];
+    core::serialize_origin(ctx.initiator, init_orig_str);
+    core::serialize_origin(target_orig, target_orig_str);
+    guard !eq_ascii_fold(init_orig_str[..], target_orig_str[..]) || ctx.tainted_origin else {
+        return true;
+    }
+
+    let corp_hdr = header(resp, "Cross-Origin-Resource-Policy");
+    if corp_hdr.len > 0 {
+        var iso_ctx = CrossOriginIsolationContext { .. };
+        let _ = iso_ctx.document_origin.try_set(init_orig_str[..]);
+        if !is_subresource_allowed(iso_ctx, target_orig_str[..], corp_hdr) {
+            out_err = make_error(rfc::STATUS_FORBIDDEN, "corp", "ERR_BLOCKED_BY_RESPONSE: CORP violation");
+            return false;
+        }
+    }
+
+    if ctx.cors_mode {
+        let req_orig = find_header(ctx.headers, "Origin");
+        if req_orig.len > 0 {
+            let include_creds = find_header(ctx.headers, "Cookie").len > 0 ||
+                find_header(ctx.headers, "Authorization").len > 0;
+            let cors_opts = ClientCorsVerifyOptions {
+                tainted_origin:      ctx.tainted_origin,
+                include_credentials: include_creds,
+            };
+            if !verify_client_cors_response(resp.headers, req_orig, cors_opts) {
+                out_err = make_error(rfc::STATUS_FORBIDDEN, "cors", "ERR_FAILED: CORS response check failed");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // Evaluates 3xx redirect responses (RFC 9110 §15.4).
 // Returns `StageVerdict.FollowRedirect` when a redirect transition is prepared on `ctx`,
 // `StageVerdict.Continue` when the response is final or `RedirectMode.Manual`,
@@ -365,6 +450,9 @@ fn stage_client_redirect(
     current_url: const core::Url&,
     out_err:     Error&,
 ) -> wire::StageVerdict {
+    if !validate_client_cors_and_corp_response(ctx, current_url, resp, out_err) {
+        return wire::StageVerdict.Abort { err_code: out_err.code };
+    }
     let loc_hdr = header(resp, "Location");
     let is_red = is_redirect(resp);
     if !is_red {
@@ -674,10 +762,11 @@ fn dispatch_client_egress_stage(
     if stage_id == wire::STAGE_ID_CLI_OUT_COOKIE_STORE {
         var part_key: u8[..256] = [];
         compute_hop_partition_key(ctx, current_url, part_key);
+        let resp_samesite = compute_hop_samesite_context_for_response(ctx, current_url, samesite_eval);
         return stage_client_cookie_store(
             out_resp.headers,
             current_url,
-            samesite_eval,
+            resp_samesite,
             ctx.is_main_frame,
             part_key[..],
             session.virtual_clock_us,
@@ -701,16 +790,22 @@ fn dispatch_client_egress_stage(
             session.altsvc,
             session.enable_altsvc,
             session.hsts,
-            session.enable_hsts,
+            session.enable_hsts && !session.insecure_skip_verify,
             session.dict_cache,
             session.enable_compression_dict,
         );
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_DECOMPRESS {
-        return stage_client_decompress(out_resp, session.dict_cache);
+        let dec_v = stage_client_decompress(out_resp, session.dict_cache, session.strict_content_decoding);
+        match dec_v {
+            Abort ab => {
+                out_err = make_error(ab.err_code, "protocol", "ERR_CONTENT_DECODING_FAILED: content-encoding decompression failed");
+            },
+            _ => {},
+        };
+        return dec_v;
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_CACHE_STORE {
-        let eff_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
         return stage_client_cache_store(
             req,
             ctx.headers,
@@ -718,7 +813,7 @@ fn dispatch_client_egress_stage(
             ctx.current_method[..],
             out_resp,
             cache_ts,
-            eff_reval_idx,
+            cache_revalidate_idx,
             session.cache,
             session.enable_cache,
         );
@@ -866,6 +961,42 @@ fn resolve_client_verdict_outcome(
     };
 }
 
+fn run_client_auth_retry_loop<UserStage>(
+    session:       Client&,
+    ctx:           RequestExecutionContext&,
+    req:           const Request&,
+    current_url:   const core::Url&,
+    samesite_eval: const SameSiteCookieContext&,
+    safe_method:   bool,
+    cache_ts:      CacheTimestamps&,
+    hop_reval_idx: i64,
+    resp:          Response&,
+    hop_err:       Error&,
+    user_stage:    UserStage&,
+    post_v:        wire::StageVerdict&,
+) -> bool {
+    for _ in 2 {
+        let is_retry_auth = match post_v { RetryAuth => true, _ => false };
+        guard is_retry_auth else { break; }
+        let next_v, retry_ok = execute_client_auth_retry_hop(
+            session,
+            ctx,
+            req,
+            current_url,
+            samesite_eval,
+            safe_method,
+            cache_ts,
+            hop_reval_idx,
+            resp,
+            hop_err,
+            user_stage,
+        );
+        guard retry_ok else { return false; }
+        post_v = next_v;
+    }
+    return true;
+}
+
 fn execute_single_client_hop_iteration<UserStage>(
     session:              Client&,
     ctx:                  RequestExecutionContext&,
@@ -904,6 +1035,28 @@ fn execute_single_client_hop_iteration<UserStage>(
         return true;
     }
 
+    var hop_reval_idx = if ctx.redirect_count == 0 { cache_revalidate_idx } else { -1 };
+    let cache_lookup_on = wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_CACHE_LOOKUP);
+    if ctx.redirect_count > 0 && cache_lookup_on {
+        let v_redir_cache = stage_client_cache_lookup(
+            req,
+            current_url.href[..],
+            cache_ts.now,
+            ctx.headers,
+            resp,
+            hop_reval_idx,
+            session.cache,
+            session.enable_cache,
+            ctx.current_method[..],
+        );
+        if !pre_p.step(v_redir_cache) {
+            finalize_success_response(ctx, resp);
+            var done = true;
+            resolve_client_verdict_outcome(v_redir_cache, resp, hop_err, "504 Gateway Timeout (only-if-cached miss)", done);
+            return true;
+        }
+    }
+
     let hop_start_us = session.virtual_clock_us;
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     guard ok(hop_err) else { return true; }
@@ -919,29 +1072,26 @@ fn execute_single_client_hop_iteration<UserStage>(
         samesite_eval,
         safe_method,
         cache_ts,
-        cache_revalidate_idx,
+        hop_reval_idx,
         resp,
         hop_err,
         user_stage,
     );
-
-    let is_retry_auth = match post_v { RetryAuth => true, _ => false };
-    if is_retry_auth {
-        let next_v, retry_ok = execute_client_auth_retry_hop(
-            session,
-            ctx,
-            req,
-            current_url,
-            samesite_eval,
-            safe_method,
-            cache_ts,
-            cache_revalidate_idx,
-            resp,
-            hop_err,
-            user_stage,
-        );
-        guard retry_ok else { return true; }
-        post_v = next_v;
+    guard run_client_auth_retry_loop(
+        session,
+        ctx,
+        req,
+        current_url,
+        samesite_eval,
+        safe_method,
+        cache_ts,
+        hop_reval_idx,
+        resp,
+        hop_err,
+        user_stage,
+        post_v,
+    ) else {
+        return true;
     }
 
     var done = true;

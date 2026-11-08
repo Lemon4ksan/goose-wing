@@ -187,12 +187,18 @@ fn entry_matches_hsts(entry: const HstsEntry&, hostname: const u8[:], now_sec: i
     return entry.include_subdomains && is_subdomain_of(hostname, entry.host[..]);
 }
 
+// RFC 6797 / Chromium `transport_security_state.cc:266-268`: `localhost` and `*.localhost`
+// are exempt from HSTS upgrades so local development servers do not break plain HTTP localhost.
+inline fn is_localhost_hsts_exempt(clean: const u8[:]) -> bool {
+    return eq_ascii_fold(clean, "localhost") || ends_with_fold(clean, ".localhost");
+}
+
 // Queries if hostname is a Known HSTS Host
 fn is_hsts_host(cache: const HstsCache&, hostname: const u8[:], now_sec: i64) -> bool {
     let clean = hostname.trim_end_byte('.');
     guard clean.len > 0 else { return false; }
     // RFC 6797 Section 8.1.1: An HSTS Host MUST NOT be an IP address literal
-    guard !core::is_ip_address_literal(clean) else { return false; }
+    guard !core::is_ip_address_literal(clean) && !is_localhost_hsts_exempt(clean) else { return false; }
 
     // 1. Check dynamic cache
     for &entry in cache.entries {

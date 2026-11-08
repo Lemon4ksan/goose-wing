@@ -61,12 +61,13 @@ fn redirect_error_to_string(err: RedirectError) -> const u8[:] {
 }
 
 // Parses a Referrer-Policy header value, supporting comma-separated tokens (RFC 9110 Section 15.4).
+// Preserves `fallback` when the header contains only unrecognized or empty tokens.
 //
 // Example:
-//   val = "no-referrer-when-downgrade, strict-origin-when-cross-origin"
+//   val = "no-referrer-when-downgrade, strict-origin-when-cross-origin", fallback = ReferrerPolicy.NoReferrer
 //   returns: ReferrerPolicy.StrictOriginWhenCrossOrigin
-fn parse_referrer_policy(val: const u8[:]) -> ReferrerPolicy {
-    var chosen = ReferrerPolicy.StrictOriginWhenCrossOrigin;
+fn parse_referrer_policy_with_fallback(val: const u8[:], fallback: ReferrerPolicy) -> ReferrerPolicy {
+    var chosen = fallback;
     each_split(val, ',') { raw_token =>
         let t = trim(raw_token);
         if eq_ascii_fold(t, "no-referrer") {
@@ -367,16 +368,32 @@ fn compute_redirect_info(
     );
 
     if response_referrer_policy_header.len > 0 {
-        info.new_referrer_policy = parse_referrer_policy(response_referrer_policy_header);
+        info.new_referrer_policy = parse_referrer_policy_with_fallback(
+            response_referrer_policy_header,
+            current_referrer_policy,
+        );
+    }
+
+    var ref_source = current_url;
+    var ref_is_cross_origin = info.is_cross_origin;
+    var ref_is_downgrade = info.is_scheme_downgrade;
+    if current_referrer.len > 0 {
+        let parsed_ref = core::new_url(current_referrer);
+        if parsed_ref.valid {
+            ref_source = parsed_ref;
+            let ref_same_orig = core::is_same_origin_url(parsed_ref, info.new_url);
+            ref_is_downgrade = (parsed_ref.scheme() == "https" && info.new_url.scheme() == "http");
+            ref_is_cross_origin = !ref_same_orig || ref_is_downgrade;
+        }
     }
 
     compute_new_referrer(
-        current_url,
+        ref_source,
         info.new_url,
         info.new_referrer_policy,
         RedirectReferrerOptions {
-            is_cross_origin: info.is_cross_origin,
-            is_downgrade:    info.is_scheme_downgrade,
+            is_cross_origin: ref_is_cross_origin,
+            is_downgrade:    ref_is_downgrade,
         },
         info.new_referrer,
     );
@@ -483,6 +500,30 @@ fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
     }
 }
 
+// Strips `Sec-Fetch-*` and `Sec-CH-*` headers when redirecting onto an untrustworthy HTTP origin
+// (Chromium `MaybeRemoveSecHeaders`, `sec_header_helpers.cc:310-331`).
+fn remove_sec_headers_on_downgrade(headers: HeaderMap&, target_url: const core::Url&) {
+    if is_trustworthy_non_crypto_host(target_url.hostname()) {
+        return;
+    }
+    var found = false;
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    let total_entries = headers.entries.len;
+
+    for read_i in total_entries {
+        let name = entry_name(headers, headers.entries[read_i]);
+        if starts_with_fold(name, "sec-fetch-") || starts_with_fold(name, "sec-ch-") {
+            found = true;
+            continue;
+        }
+        compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
+    }
+    if found {
+        finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
+    }
+}
+
 // Sanitizes or drops Origin header on cross-origin redirect hops (WHATWG Fetch Section 4.4).
 //
 // Example:
@@ -525,6 +566,9 @@ fn sanitize_headers_on_redirect(
         (redirect_info.is_cross_origin && (!options.trusted_location_forwarding || redirect_info.is_port_changed));
     if strip_auth {
         remove_sensitive_headers(headers);
+    }
+    if redirect_info.is_scheme_downgrade {
+        remove_sec_headers_on_downgrade(headers, redirect_info.new_url);
     }
 
     // Strip payload and representation headers when mutating to GET.

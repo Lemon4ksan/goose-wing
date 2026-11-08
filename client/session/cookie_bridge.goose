@@ -48,10 +48,14 @@ fn compute_hop_samesite_context(
             samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
         }
     } else {
-        if ctx.had_cross_site_hop || !is_first_p || !init_same_site {
+        if ctx.had_cross_site_hop || !is_first_p {
             samesite_ctx_type = SameSiteContextType.CrossSite;
-        } else {
+        } else if init_same_site {
             samesite_ctx_type = SameSiteContextType.SameSiteStrict;
+        } else if safe_method {
+            samesite_ctx_type = SameSiteContextType.SameSiteLax;
+        } else {
+            samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
         }
     }
 
@@ -61,6 +65,25 @@ fn compute_hop_samesite_context(
         is_reload:          ctx.is_reload,
         had_cross_site_hop: ctx.had_cross_site_hop,
     };
+}
+
+// Computes the SameSite cookie context for Set-Cookie response ingestion
+// (Chromium `net::cookie_util::ComputeSameSiteContextForResponse` / `MakeInclusiveForSet`,
+// `cookie_util.cc:992-1047`): main-frame navigations whose target URL is first-party
+// relative to `site_for_cookies` can set `SameSite=Lax` and `SameSite=Strict` cookies.
+fn compute_hop_samesite_context_for_response(
+    ctx:               const RequestExecutionContext&,
+    current_url:       const core::Url&,
+    req_samesite_eval: const SameSiteCookieContext&,
+) -> SameSiteCookieContext {
+    var resp_ctx = copy(req_samesite_eval);
+    if ctx.is_main_frame && !ctx.site_for_cookies.is_null {
+        let is_first_p = is_first_party(ctx.site_for_cookies, core::href(current_url), true);
+        if is_first_p && resp_ctx.context_type == SameSiteContextType.CrossSite {
+            resp_ctx.context_type = SameSiteContextType.SameSiteLax;
+        }
+    }
+    return resp_ctx;
 }
 
 // Derives the top-level site partition key for CHIPS cookies (RFC 6265bis).
@@ -108,7 +131,9 @@ fn prepare_hop_cookie_header(
     let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
-    let is_top_nav = ctx.is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite;
+    let allow_lax = (ctx.is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite) ||
+        samesite_eval.context_type == SameSiteContextType.SameSiteLax ||
+        samesite_eval.context_type == SameSiteContextType.SameSiteLaxMethodUnsafe;
     let _ = encode_cookie_header_to_map(
         session.jar,
         current_url.hostname(),
@@ -120,7 +145,7 @@ fn prepare_hop_cookie_header(
         session.virtual_clock_us,
         CookieAccessOptions {
             is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
-            is_top_level_navigation: is_top_nav,
+            is_top_level_navigation: allow_lax,
             is_safe_method:          safe_method,
             had_cross_site_hop:      samesite_eval.had_cross_site_hop,
         },
@@ -136,6 +161,7 @@ fn ingest_hop_response_cookies(
     samesite_eval: const SameSiteCookieContext&,
     resp_headers:  const HeaderMap&,
 ) {
+    let resp_samesite = compute_hop_samesite_context_for_response(ctx, current_url, samesite_eval);
     for i in resp_headers.entries.len {
         let e = resp_headers.entries[i];
         let ename = entry_name(resp_headers, e);
@@ -160,7 +186,7 @@ fn ingest_hop_response_cookies(
         };
         let can_write, code = can_set_canonical_cookie_for_context(
             parsed_cookie,
-            samesite_eval,
+            resp_samesite,
             opts,
         );
         guard can_write else {
