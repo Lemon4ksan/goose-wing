@@ -419,7 +419,9 @@ fn reactor_handle_ingress<Stage>(
 ) {
     let conn = table.fds[slot];
     let prev_len = table.leftover_lens[slot] as i64;
-    table.soa_table_touch(slot, tick_timer_arm(timer_wheel, 15));
+    if server.pipeline.enable_slowloris_timer {
+        table.soa_table_touch(slot, tick_timer_arm(timer_wheel, 15));
+    }
 
     chunk.len = 0;
     reactor_load_leftover(table, leftovers[slot], slot, chunk);
@@ -448,10 +450,16 @@ fn reactor_handle_ingress<Stage>(
     }
 
     var peer_ip: u8[..64] = [];
-    tcp_get_peer_ip(conn, peer_ip);
+    let need_peer_ip = server.pipeline.enable_rate_limiter
+        || server.trust_proxy_headers
+        || server.pipeline.trust_proxy_headers;
+    if need_peer_ip {
+        tcp_get_peer_ip(conn, peer_ip);
+    }
+    let client_ip_slice: const u8[:] = if need_peer_ip { peer_ip[..] } else { "127.0.0.1" };
     cork_wire.clear();
     let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
-        server, peer_ip[..], chunk.bytes[..chunk.len], now_ns, cork_wire, stage,
+        server, client_ip_slice, chunk.bytes[..chunk.len], now_ns, cork_wire, stage,
     );
 
     let should_close = !ok || wants_close;
@@ -545,14 +553,17 @@ inline fn reactor_poll_sweep(
     total_served:   i64&,
     cached_ns:      u64&,
     cached_sec:     i64&,
+    enable_timer:   bool,
 ) {
     if n > 0 && (turn & 511) != 0 && cached_sec > 0 { return; }
     let now_mono = core::monotonic_now();
     cached_ns = core::as_nanos(now_mono);
     cached_sec = (cached_ns / 1000000000) as i64;
-    reactor_sweep_timeouts(
-        epfd, table, free_slots, timer_wheel, cached_sec, last_sweep_sec, total_served,
-    );
+    if enable_timer {
+        reactor_sweep_timeouts(
+            epfd, table, free_slots, timer_wheel, cached_sec, last_sweep_sec, total_served,
+        );
+    }
 }
 
 // Executes a share-nothing reactor loop with epoll and a custom `<Stage>` hook.
@@ -573,7 +584,7 @@ fn serve_reactor_with_stage<Stage>(
         epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
     }
 
-    var ready_fds:    i64[1024] = [0; 1024];
+    var empty_fds:    i64[0]    = [];
     var ready_udata:  u64[1024] = [0; 1024];
     var total_served: i64       = 0;
 
@@ -595,12 +606,13 @@ fn serve_reactor_with_stage<Stage>(
         }
 
         let epoll_timeout = reactor_epoll_timeout(server.worker_ring);
-        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], epoll_timeout);
+        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], epoll_timeout);
 
         turn_counter++;
         reactor_poll_sweep(
             epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, n, turn_counter,
             last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
+            server.pipeline.enable_slowloris_timer,
         );
 
         if n > 0 {
@@ -705,7 +717,7 @@ fn serve_reactor_tls(
     tcp_set_nonblocking(listener_fd, true);
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
-    var ready_fds:    i64[1024] = [0; 1024];
+    var empty_fds:    i64[0]    = [];
     var ready_udata:  u64[1024] = [0; 1024];
     var total_served: i64       = 0;
     g_reactor_table = SoAConnTable { .. };
@@ -719,11 +731,12 @@ fn serve_reactor_tls(
     var cached_now_sec: i64 = 0;
 
     while max_connections == 0 || total_served < max_connections {
-        let n = epoll_wait_direct(epfd, ready_fds[..], ready_udata[..], 10);
+        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], 10);
         turn_counter++;
         reactor_poll_sweep(
             epfd, g_reactor_table, g_reactor_free_slots, timer_wheel, n, turn_counter,
             last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
+            server.pipeline.enable_slowloris_timer,
         );
         if n > 0 {
             reactor_dispatch_tls_events(

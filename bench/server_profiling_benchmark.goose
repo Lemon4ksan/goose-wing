@@ -1,246 +1,215 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Server Pipeline Hardware Cycle Profiling Benchmark
-// Measures serialized RDTSC clock cycles across each individual stage of HTTP request processing.
+// Server Pipeline Hardware Cycle & Memory Watermark Profiling Benchmark
+// Measures serialized RDTSC clock cycles, p50/p99 tail latency, and three-channel
+// Goose memory watermarks across HTTP/1.1 framing and L7 pipeline stages.
 //
-// RUN: goose build -o %t.exe %s
+// RUN: goose build --include shim/prof_hook.h -o %t.exe %s
 // RUN: %t.exe
 import std;
 import core from "..";
 import wing from "..";
 
-fn test_wire_req_plaintext() -> const u8[:] {
+fn wire_req_plaintext() -> const u8[:] {
     return "GET /plaintext HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: goose-client/1.0\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n";
 }
 
-fn test_wire_req_api() -> const u8[:] {
-    return "GET /api/v1/users/42 HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: Bearer 7a8b9c0d1e2f3a4b5c6d7e8f\r\nAccept: application/json\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nConnection: keep-alive\r\n\r\n";
+fn wire_req_api() -> const u8[:] {
+    return "GET /api/v1/users/42 HTTP/1.1\r\nHost: example.com\r\nAccept: application/json\r\nUser-Agent: goose-bench/1.0\r\nConnection: keep-alive\r\n\r\n";
 }
 
-fn test_wire_req_heavy() -> const u8[:] {
-    return "POST /submit HTTP/1.1\r\nHost: service.internal:8443\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 27\r\nUser-Agent: custom-agent/2.1.0\r\nAccept: text/html,application/xhtml+xml\r\nAccept-Encoding: gzip, deflate, br\r\nAccept-Language: en-US,en;q=0.9\r\nSec-Fetch-Mode: navigate\r\nConnection: keep-alive\r\n\r\nfield1=alpha&field2=bravo42";
+fn wire_req_gzip() -> const u8[:] {
+    return "GET /metrics HTTP/1.1\r\nHost: example.com\r\nAccept-Encoding: gzip\r\nUser-Agent: goose-bench/1.0\r\nConnection: keep-alive\r\n\r\n";
 }
 
-fn setup_profiled_server() -> wing::HttpServer {
+fn setup_l0_server() -> wing::HttpServer {
     var server = wing::new_http_server("127.0.0.1", 8080);
-    server.pipeline.enable_rate_limiter = true;
-    server.pipeline.limiter = wing::new_sharded_limiter(
-        wing::new_gcra_quota(1000000, core::secs(1), 100000),
-    );
+    server.pipeline.enable_rate_limiter = false;
     server.pipeline.enable_csrf_guard = false;
     server.pipeline.enable_cors = false;
-
-    // Route 1: /plaintext
-    wing::add_route(server.pipeline.router, "GET", "/plaintext", 1, 0);
-
-    // Route 2: /api/v1/users/{id}
-    wing::add_route(server.pipeline.router, "GET", "/api/v1/users/{id}", 2, 0);
-
-    // Route 3: /submit
-    wing::add_route(server.pipeline.router, "POST", "/submit", 3, 0);
-
+    server.pipeline.enable_slowloris_timer = false;
+    let _ = wing::add_static_route(
+        server.pipeline.router,
+        "GET",
+        "/plaintext",
+        "text/plain",
+        "Hello, World!",
+        1001,
+    );
     return server;
 }
 
-fn profile_isolated_stages(server: wing::HttpServer&, req_wire: const u8[:], iters: i64) {
-    var req = wing::new_request("GET", "");
-    var res = wing::Response { .. };
-    var tracker = wing::HeaderPresenceTracker { .. };
-    var params = wing::ZeroAllocParams { .. };
-    var canon_url: u8[..256]  = [];
-    var out_wire:  u8[..2048] = [];
-    var cork = core::new_cork_buffer();
+fn setup_full_pipeline_server() -> wing::HttpServer {
+    var server = wing::new_http_server("127.0.0.1", 8080);
+    server.pipeline.enable_rate_limiter = true;
+    server.pipeline.limiter = wing::new_sharded_limiter(
+        wing::new_gcra_quota(100000000, core::secs(1), 10000000),
+    );
+    server.pipeline.enable_csrf_guard = true;
+    server.pipeline.enable_cors = true;
+    server.pipeline.enable_slowloris_timer = true;
 
-    let crlf_pos = core::fast_find_crlfcrlf(req_wire);
-    let first_line_end = find(req_wire, "\r\n");
-    let req_line = req_wire[..first_line_end];
-    let headers_part = req_wire[(first_line_end + 2)..];
+    let in_mask = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
+    let out_mask = wire::STAGE_SRV_OUT_CACHE_STORE
+        | wire::STAGE_SRV_OUT_ETAG
+        | wire::STAGE_SRV_OUT_SECURITY_HEADERS
+        | wire::STAGE_SRV_OUT_METRICS;
+    let _ = wing::add_route_pso(
+        server.pipeline.router,
+        "GET",
+        "/api/v1/users/{id}",
+        1002,
+        in_mask,
+        out_mask,
+    );
 
-    // Warmup 1000 iterations
-    for _ in 1000 {
-        let _ = core::fast_find_crlfcrlf(req_wire);
-    }
-
-    // Stage 0: CRLFCRLF Framing
-    for _ in iters {
-        let t0 = wing::prof_rdtsc();
-        let pos = core::fast_find_crlfcrlf(req_wire);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_FRAMING, t1 - t0);
-    }
-
-    // Stage 1: Request Line Parse
-    for _ in iters {
-        wing::reset_request(req);
-        let t0 = wing::prof_rdtsc();
-        let ok = wing::parse_http1_request_line(req_line, req);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_REQ_LINE, t1 - t0);
-    }
-
-    // Stage 2: Headers Block Tokenize & Parse
-    for _ in iters {
-        wing::reset_request(req);
-        tracker = wing::HeaderPresenceTracker { .. };
-        let t0 = wing::prof_rdtsc();
-        let ok = wing::parse_http1_headers_stream(headers_part, req, tracker);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_HEADERS, t1 - t0);
-    }
-
-    // Stage 3: Host Header & RFC Validation
-    let host_val: const u8[:] = "localhost:8080";
-    for _ in iters {
-        let t0 = wing::prof_rdtsc();
-        let ok = wing::validate_host_header_structure(host_val);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_HOST_VAL, t1 - t0);
-    }
-
-    // Stage 4: GCRA Rate Limiter
-    var now_ns: u64 = 1000000000;
-    for i in iters {
-        let t0 = wing::prof_rdtsc();
-        let decision = wing::check_rate_limit(server.pipeline.limiter, "127.0.0.1", 1, now_ns);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_PIPELINE, t1 - t0);
-        now_ns += 1000;
-    }
-
-    // Stage 5: Radix Router Path Matching
-    for _ in iters {
-        wing::clear(params);
-        canon_url.clear();
-        let t0 = wing::prof_rdtsc();
-        let match_res = wing::match_route(server.pipeline.router, "GET", "/plaintext", params, canon_url);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_ROUTER, t1 - t0);
-    }
-
-    // Stage 6: Handler Execution & Response Setup
-    for _ in iters {
-        wing::reset_response(res);
-        let t0 = wing::prof_rdtsc();
-        res.status_code = 200;
-        res.body.clear();
-        res.body.append("Hello, World!");
-        wing::append_header(res.headers, "Content-Type", "text/plain");
-        res.presence_mask |= wing::RES_PRESENCE_CONTENT_TYPE;
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_HANDLER, t1 - t0);
-    }
-
-    // Stage 7: HTTP/1.1 Response Serialization
-    for _ in iters {
-        out_wire.clear();
-        let t0 = wing::prof_rdtsc();
-        wing::serialize_http1_response(res, "goose-wing", out_wire);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_RESP_SER, t1 - t0);
-    }
-
-    // Stage 8: Output Buffer / Cork Append
-    for _ in iters {
-        cork.cork_reset();
-        let t0 = wing::prof_rdtsc();
-        cork.cork_write(out_wire[..]);
-        let t1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_OUT_COPY, t1 - t0);
-    }
-}
-
-fn profile_live_tcp_roundtrip(server: wing::HttpServer&, req_wire: const u8[:], iters: i64) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-    guard listener > 0 else { return; }
-    let srv_port = wing::tcp_getsockname_port(listener);
-    guard srv_port > 0 else {
-        wing::tcp_close(listener);
-        return;
-    }
-
-    let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
-    guard client > 0 else {
-        wing::tcp_close(listener);
-        return;
-    }
-
-    let server_conn = wing::tcp_accept(listener, 2000);
-    guard server_conn > 0 else {
-        wing::tcp_close(client);
-        wing::tcp_close(listener);
-        return;
-    }
-
-    var srv_buf:   u8[..2048] = [];
-    var cli_buf:   u8[..2048] = [];
-    var resp_wire: u8[..2048] = [];
-    var req = wing::new_request("GET", "");
-    var res = wing::Response { .. };
-
-    for _ in iters {
-        // 1. Client send
-        wing::tcp_send(client, req_wire);
-
-        // 2. Server recv syscall
-        srv_buf.clear();
-        let t_recv0 = wing::prof_rdtsc();
-        let recvd = wing::tcp_recv(server_conn, srv_buf, 2048, 2000);
-        let t_recv1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_SOCK_RECV, t_recv1 - t_recv0);
-
-        // 3. Server pipeline dispatch
-        resp_wire.clear();
-        let now_ns: u64 = 1000000000;
-        let count, _, ok, _ = wing::handle_connection_wire_pipelined_stream(
-            server, "127.0.0.1", srv_buf[..recvd as i64], now_ns, resp_wire,
-        );
-
-        // 4. Server send syscall
-        let t_send0 = wing::prof_rdtsc();
-        wing::tcp_send(server_conn, resp_wire[..]);
-        let t_send1 = wing::prof_rdtsc();
-        wing::prof_record(wing::PROF_STAGE_SOCK_SEND, t_send1 - t_send0);
-
-        // 5. Client recv drain
-        cli_buf.clear();
-        wing::tcp_recv(client, cli_buf, 2048, 2000);
-    }
-
-    wing::tcp_close(client);
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    let gz_in_mask = wire::STAGE_SRV_IN_DEFAULT_MASK;
+    let gz_out_mask = wire::STAGE_SRV_OUT_COMPRESS_GZIP
+        | wire::STAGE_SRV_OUT_ETAG
+        | wire::STAGE_SRV_OUT_SECURITY_HEADERS;
+    let _ = wing::add_route_pso(
+        server.pipeline.router,
+        "GET",
+        "/metrics",
+        1003,
+        gz_in_mask,
+        gz_out_mask,
+    );
+    return server;
 }
 
 fn main() {
-    print("========================================================================\n");
-    print("     Goose-Wing Server Pipeline Profiler & CPU Clock Cycle Analysis     \n");
-    print("========================================================================\n");
+    var suite = wing::new_bench_suite("Goose-Wing L7 Server Stage Profiling Suite", 25);
 
-    var server = setup_profiled_server();
-    let iters: i64 = 50000;
+    suite.bench("L0_Plaintext_GET") { b =>
+        var server = setup_l0_server();
+        let req_wire = wire_req_plaintext();
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+    };
 
-    // 1. Plaintext GET request (5 headers)
-    print("\n--- [PROFILE 1] Plaintext GET Request (50,000 samples) ---\n");
-    wing::prof_reset();
-    profile_isolated_stages(server, test_wire_req_plaintext(), iters);
-    wing::prof_print_summary();
+    suite.bench("Full_Pipeline_Auth_Cache_Hit") { b =>
+        var server = setup_full_pipeline_server();
+        let req_wire = wire_req_api();
+        var resp_wire: u8[..2048] = [];
+        let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+            server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+        );
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+    };
 
-    // 2. Dynamic API GET request with param (/api/v1/users/42)
-    print("\n--- [PROFILE 2] Parameterized JSON API Request (50,000 samples) ---\n");
-    wing::prof_reset();
-    profile_isolated_stages(server, test_wire_req_api(), iters);
-    wing::prof_print_summary();
+    suite.bench("Full_Pipeline_Auth_Cache_Miss") { b =>
+        var server = setup_full_pipeline_server();
+        let req_wire = wire_req_api();
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            wing::cache_invalidate(server.pipeline.route_cache);
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+    };
 
-    // 3. Heavy POST request (10 headers + body)
-    print("\n--- [PROFILE 3] Heavy 10-Header POST Request (50,000 samples) ---\n");
-    wing::prof_reset();
-    profile_isolated_stages(server, test_wire_req_heavy(), iters);
-    wing::prof_print_summary();
+    suite.bench("Full_Pipeline_Gzip_Compress") { b =>
+        var server = setup_full_pipeline_server();
+        let req_wire = wire_req_gzip();
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+    };
 
-    // 4. Live TCP network roundtrip (Kernel Winsock syscalls vs in-memory)
-    print("\n--- [PROFILE 4] Live Loopback TCP Syscall Overhead (2,000 roundtrips) ---\n");
-    wing::prof_reset();
-    profile_live_tcp_roundtrip(server, test_wire_req_plaintext(), 2000);
-    wing::prof_print_summary();
+    suite.bench("HTTP1_Pipelined_16x") { b =>
+        var server = setup_l0_server();
+        let single_req = wire_req_plaintext();
+        var batch_wire: u8[..4096] = [];
+        for _ in 16 {
+            batch_wire.append(single_req);
+        }
+        var resp_wire: u8[..8192] = [];
+        b.set_bytes(batch_wire.len);
+        b.report_metric(16.0, "reqs/op");
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", batch_wire[..], 1000000000, resp_wire,
+            );
+        }
+    };
+
+    suite.bench("Live_TCP_Roundtrip") { b =>
+        var server = setup_l0_server();
+        let req_wire = wire_req_plaintext();
+        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        guard listener > 0 else { return; }
+        let srv_port = wing::tcp_getsockname_port(listener);
+        guard srv_port > 0 else {
+            wing::tcp_close(listener);
+            return;
+        }
+        let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
+        guard client > 0 else {
+            wing::tcp_close(listener);
+            return;
+        }
+        let server_conn = wing::tcp_accept(listener, 2000);
+        guard server_conn > 0 else {
+            wing::tcp_close(client);
+            wing::tcp_close(listener);
+            return;
+        }
+
+        var srv_buf:   u8[..2048] = [];
+        var cli_buf:   u8[..2048] = [];
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+
+        for _ in b.n {
+            let _ = wing::tcp_send(client, req_wire);
+
+            srv_buf.clear();
+            let tok_r = wing::prof_enter("net.tcp_recv");
+            let recvd = wing::tcp_recv(server_conn, srv_buf, 2048, 2000);
+            wing::prof_leave(tok_r);
+
+            resp_wire.clear();
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", srv_buf[..max(recvd as i64, 0)], 1000000000, resp_wire,
+            );
+
+            let tok_s = wing::prof_enter("net.tcp_send");
+            let _ = wing::tcp_send(server_conn, resp_wire[..]);
+            wing::prof_leave(tok_s);
+
+            cli_buf.clear();
+            let _ = wing::tcp_recv(client, cli_buf, 2048, 2000);
+        }
+
+        b.stop_timer();
+        wing::tcp_close(client);
+        wing::tcp_close(server_conn);
+        wing::tcp_close(listener);
+    };
+
+    suite.finish_suite();
 }

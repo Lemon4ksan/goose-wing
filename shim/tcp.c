@@ -160,6 +160,7 @@ void wing_tcp_cleanup(void) {
 
 uint16_t wing_get_env_port(uint16_t default_port) {
     const char *p = getenv("WING_PORT");
+    if (!p || !*p) p = getenv("GW_PORT");
     if (p && *p) {
         int val = atoi(p);
         if (val > 0 && val < 65536) return (uint16_t)val;
@@ -579,6 +580,7 @@ void wing_tcp_cleanup(void) {
 // Reads port from WING_PORT environment variable, or returns default_port
 uint16_t wing_get_env_port(uint16_t default_port) {
     const char *p = getenv("WING_PORT");
+    if (!p || !*p) p = getenv("GW_PORT");
     if (p && *p) {
         int val = atoi(p);
         if (val > 0 && val < 65536) return (uint16_t)val;
@@ -1680,7 +1682,7 @@ int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
 #ifndef SO_INCOMING_CPU
 #define SO_INCOMING_CPU 49
 #endif
-    if (getenv("WING_NO_INCOMING_CPU")) return 0;
+    if (!getenv("WING_INCOMING_CPU")) return 0;
     long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
     int target_cpu = (int)cpu_id;
     if (total_cpus > 1) {

@@ -523,9 +523,9 @@ int32_t wing_fast_u64toa(uint64_t value, wing_bytes_rw dst) {
     if ((int64_t)ret > dst.len) return 0;
 
     uint8_t *out = dst.data;
-    do {
-        *out++ = (uint8_t)*--p;
-    } while (p != temp);
+    for (int32_t i = 0; i < ret; i++) {
+        out[i] = (uint8_t)temp[ret - 1 - i];
+    }
 
     return ret;
 }
@@ -544,9 +544,9 @@ int32_t wing_fast_u32toa_hex(uint32_t value, wing_bytes_rw dst) {
     if ((int64_t)ret > dst.len) return 0;
 
     uint8_t *out = dst.data;
-    do {
-        *out++ = (uint8_t)*--p;
-    } while (p != temp);
+    for (int32_t i = 0; i < ret; i++) {
+        out[i] = (uint8_t)temp[ret - 1 - i];
+    }
 
     return ret;
 }

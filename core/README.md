@@ -197,7 +197,7 @@ fn page_ring_close(rb: PageRingBuffer&)
 fn page_ring_available(rb: const PageRingBuffer&) -> i64
 fn page_ring_write(rb: PageRingBuffer&, src: const u8[:]) -> i64
 fn page_ring_read(rb: PageRingBuffer&, dst: u8[:]) -> i64
-fn page_ring_peek(rb: const PageRingBuffer&) -> const u8[:]
+fn page_ring_peek(rb: const PageRingBuffer&, dst: u8[:]) -> i64
 fn page_ring_discard(rb: PageRingBuffer&, n: i64)
 fn page_ring_recv(rb: PageRingBuffer&, fd: i64) -> i64
 fn page_ring_send(rb: PageRingBuffer&, fd: i64) -> i64

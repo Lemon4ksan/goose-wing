@@ -54,6 +54,7 @@ typedef BOOL(WINAPI *pfnVirtualFreeEx)(HANDLE, PVOID, SIZE_T, ULONG);
 typedef PVOID(WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
 
 #elif defined(__APPLE__)
+#include <stdio.h>
 #include <mach/mach.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
@@ -61,6 +62,7 @@ typedef PVOID(WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T,
 #include <unistd.h>
 #else
 // Linux / POSIX
+#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>

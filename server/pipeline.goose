@@ -11,6 +11,7 @@ import .router;
 import .pool;
 import .edge_filter;
 import .cache;
+import .profiler;
 import wire.pipeline;
 
 struct ServerPipelineConfig {
@@ -203,6 +204,8 @@ fn stage_server_slowloris(
     res:     Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.slowloris");
+    defer prof_leave(_prof);
     guard internal::check_connection_tick(timer, now_ns) else {
         res.status_code = 408; // Request Timeout
         return wire::StageVerdict.Abort { err_code: 408 };
@@ -213,6 +216,8 @@ fn stage_server_slowloris(
 
 // Stage 1 (Server Ingress): RFC 9110 §10.1.1 `Expect: 100-continue` validation.
 fn stage_server_expect_100(req: const Request&, res: Response&) -> wire::StageVerdict {
+    let _prof = prof_enter("stage.expect_100");
+    defer prof_leave(_prof);
     guard validate_pipeline_expect_header(req) else {
         res.status_code = 417; // Expectation Failed
         return wire::StageVerdict.ShortCircuit { status_code: 417 };
@@ -227,6 +232,8 @@ fn stage_server_edge_filter(
     res:    Response&,
 ) -> wire::StageVerdict {
     guard filter.enabled && filter.rules.len > 0 else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.edge_filter");
+    defer prof_leave(_prof);
     let verdict = evaluate_edge_filter(filter, req.method[..], req.url[..], req.headers);
     return match verdict {
         Pass => wire::StageVerdict.Continue,
@@ -254,6 +261,8 @@ fn stage_server_ratelimit_ip<Limiter>(
     res:     Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.ratelimit_ip");
+    defer prof_leave(_prof);
     let rl_decision = limiter.check_rate_limit(peer_ip, 1, now_ns);
     apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard is_allowed(rl_decision) else {
@@ -270,6 +279,8 @@ fn stage_server_route_match<Router>(
     out_match: RouteMatchResult&,
     res:       Response&,
 ) -> wire::StageVerdict {
+    let _prof = prof_enter("stage.route_match");
+    defer prof_leave(_prof);
     out_match = router.match_route(req.method[..], req.url[..], ext.params, ext.canon_url);
     return match out_match {
         NotFound => {
@@ -298,6 +309,8 @@ fn stage_server_ratelimit_route<Limiter>(
     res:        Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.ratelimit_route");
+    defer prof_leave(_prof);
     var composite_key: u8[..128] = [];
     composite_key.append(peer_ip[..min(peer_ip.len, 48)]);
     composite_key.push(':');
@@ -318,6 +331,8 @@ fn stage_server_cors(
     res:         Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.cors");
+    defer prof_leave(_prof);
     let cors_res = evaluate_cors(cors_policy, req, res);
     if cors_res == CorsResult.AllowedPreflight {
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
@@ -341,6 +356,8 @@ fn stage_server_csrf(
     res:         Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.csrf");
+    defer prof_leave(_prof);
     let fetch_ctx = extract_fetch_context(req, target_host);
     let csrf_res = evaluate_fetch_metadata(csrf_guard, fetch_ctx);
     apply_isolation_headers(res);
@@ -390,6 +407,8 @@ fn stage_server_auth_cookie<Jar>(
     if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_COOKIE) == 0 {
         return wire::StageVerdict.Continue;
     }
+    let _prof = prof_enter("stage.auth_cookie");
+    defer prof_leave(_prof);
     let now_sec = (now_ns / 1000000000) as i64;
     for &e in req.headers.entries {
         guard eq_ascii_fold(entry_name(req.headers, e), "Cookie") else { continue; }
@@ -432,6 +451,8 @@ fn stage_server_auth_jwt(
     res:         Response&,
 ) -> wire::StageVerdict {
     guard jwks.keys.len > 0 else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.auth_jwt");
+    defer prof_leave(_prof);
     let auth_val = header(req, "Authorization");
     let token = extract_bearer_token(auth_val);
     guard token.len > 0 else {
@@ -475,6 +496,8 @@ fn stage_server_cache_lookup(
     guard req.method[..] == "GET" || req.method[..] == "HEAD" else {
         return wire::StageVerdict.Continue;
     }
+    let _prof = prof_enter("stage.cache_lookup");
+    defer prof_leave(_prof);
     let lookup = cache.cache_lookup(now_ms, handler_id, req.url[..]);
     return match lookup {
         HitFresh => populate_cached_response(cache, res),
@@ -493,6 +516,8 @@ fn stage_server_cache_lookup(
 // Stage 0 (Server Egress): RFC 9110 §8.8.3 ETag generation & §13.1.2 `If-None-Match` 304 evaluation.
 fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict {
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.etag");
+    defer prof_leave(_prof);
     var etag_hdr: u8[..64] = [];
     let existing_etag = header(res, "ETag");
     if existing_etag.len > 0 {
@@ -605,6 +630,8 @@ fn stage_server_compress(
     }
     let accept_enc = header(req, "Accept-Encoding");
     guard accept_enc.len > 0 else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.compress");
+    defer prof_leave(_prof);
 
     let allow_zstd = (mask & (STAGE_EGRESS_COMPRESS_ZSTD | wire::STAGE_SRV_OUT_COMPRESS_ZSTD)) != 0;
     let allow_br = (mask & (STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
@@ -648,6 +675,8 @@ fn stage_server_cache_store(
     handler_id: i32         = -1,
     url_key:    const u8[:] = "",
 ) -> wire::StageVerdict {
+    let _prof = prof_enter("stage.cache_store");
+    defer prof_leave(_prof);
     if res.status_code == 200 && res.body.len > 0 {
         let _ = cache.cache_store(now_ms, res.body[..], handler_id, header(res, "content-type"), url_key);
     } else {
@@ -658,6 +687,8 @@ fn stage_server_cache_store(
 
 // Stage 5 (Server Egress): Cross-origin isolation and HSTS security headers.
 fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
+    let _prof = prof_enter("stage.security_headers");
+    defer prof_leave(_prof);
     apply_isolation_headers(res);
     return wire::StageVerdict.Continue;
 }
@@ -669,6 +700,8 @@ fn stage_server_metrics_log(
     mask:   u64,
     now_ns: u64,
 ) -> wire::StageVerdict {
+    let _prof = prof_enter("stage.metrics_log");
+    defer prof_leave(_prof);
     let want_metrics = (mask & (STAGE_EGRESS_METRICS | wire::STAGE_SRV_OUT_METRICS)) != 0;
     let want_log = (mask & (STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
     if want_metrics && header(res, "Server-Timing").len == 0 {
@@ -866,6 +899,7 @@ fn execute_found_route_handler<UserStage>(
         }
     }
 
+    let _prof_h = prof_enter("stage.handler");
     out_future = internal::new_inline_handler_future(f.handler_id as u16);
     internal::poll_future(out_future);
 
@@ -878,6 +912,7 @@ fn execute_found_route_handler<UserStage>(
             }
         },
         Abort _ => {
+            prof_leave(_prof_h);
             cfg.route_cache.is_updating = false;
             return PipelineOutcome.CsrfRejected;
         },
@@ -888,6 +923,7 @@ fn execute_found_route_handler<UserStage>(
         res.status_code = 200;
         apply_route_payload(cfg, f.handler_id, res);
     }
+    prof_leave(_prof_h);
     if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 {
         let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id, req.url[..]);
     } else {
@@ -1134,6 +1170,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
         _ => {},
     };
 
+    let _prof_rm = prof_enter("stage.route_match");
     let match_res = cfg.router.match_route(
         req.method[..],
         req.url[..],
@@ -1148,6 +1185,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
         _ => {},
     };
     sync_stage_ctx_with_route(sctx, match_res);
+    prof_leave(_prof_rm);
 
     let effective_pso = resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);
     cfg.ext_pool.slots[e_idx].effective_pso = effective_pso;

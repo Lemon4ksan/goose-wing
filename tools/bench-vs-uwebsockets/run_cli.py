@@ -47,14 +47,38 @@ def format_row(metric, gw_val, uws_val, diff, unit=""):
     return f"| {metric:<28} | {gw_str:>18} | {uws_str:>18} | {diff:>16} |"
 
 
+ACTIVE_PROCS = []
+
+
 def stop_servers():
+    global ACTIVE_PROCS
+    for p in ACTIVE_PROCS:
+        try:
+            p.kill()
+            p.wait(timeout=1.0)
+        except Exception:
+            pass
+    ACTIVE_PROCS.clear()
     subprocess.run(
         ["pkill", "-9", "-f", "server_goose_wing"], check=False, stderr=subprocess.DEVNULL
     )
     subprocess.run(
         ["pkill", "-9", "-f", "server_uwebsockets"], check=False, stderr=subprocess.DEVNULL
     )
-    time.sleep(0.4)
+    for _ in range(25):
+        still_open = False
+        for p in (GW_PORT, UWS_PORT):
+            try:
+                s = socket.create_connection(("127.0.0.1", p), timeout=0.05)
+                s.close()
+                still_open = True
+                break
+            except Exception:
+                pass
+        if not still_open:
+            break
+        time.sleep(0.05)
+    time.sleep(0.1)
 
 
 def wait_for_ports(ports, timeout=8.0):
@@ -92,8 +116,11 @@ def start_servers(workers=1):
     p_uws = subprocess.Popen(
         [uws_bin], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+    ACTIVE_PROCS.extend([p_gw, p_uws])
     if not wait_for_ports([GW_PORT, UWS_PORT]):
         print(f"[warning] Timed out waiting for servers to listen on ports {GW_PORT}, {UWS_PORT}")
+    if workers > 1:
+        time.sleep(0.15)
     return p_gw, p_uws
 
 
@@ -457,7 +484,7 @@ def main():
         if can_restart:
             p_gw, p_uws = start_servers(workers=6)
         gw, uws = run_suite_burst(
-            "UNBOUNDED LINE-RATE BURST: 6 Workers (Dedicated C Load Generator, 512 Conns)",
+            "Unbounded Burst: 6 Workers (Dedicated C Load Generator, 512 Conns)",
             threads=6,
             conns=512,
             pipeline=64,
@@ -688,14 +715,14 @@ def main():
 
         if os.path.exists(BURST_BIN):
             run_suite_burst(
-                "UNBOUNDED LINE-RATE BURST: 6 Workers (Dedicated C Load Generator)",
+                "Unbounded Burst: 6 Workers (Dedicated C Load Generator)",
                 threads=6,
                 conns=384,
                 pipeline=64,
                 duration=4,
             )
             run_suite_burst(
-                "UNBOUNDED LINE-RATE BURST: 6 Workers (Dedicated C Load Generator, 512 Conns)",
+                "Unbounded Burst: 6 Workers (Dedicated C Load Generator, 512 Conns)",
                 threads=6,
                 conns=512,
                 pipeline=64,
@@ -741,7 +768,7 @@ def main():
 
         # Scale-Out Comparison Summary
         print("=" * 97)
-        print(" FULL MULTI-CORE SCALING PROGRESSION (1 -> 4 -> 6 -> 8 Cores Pipelined)")
+        print(" Full Multi-Core Scaling Progression (1 -> 4 -> 6 -> 8 Cores Pipelined)")
         print("=" * 97)
         print(
             f"| {'Engine':<18} | {'1 Worker':>12} | {'4 Workers':>12} | {'6 Workers':>12} | {'8 Workers':>12} | {'Max Speedup':>12} |"

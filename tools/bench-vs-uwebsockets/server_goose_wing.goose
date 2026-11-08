@@ -15,16 +15,14 @@ struct WorkerContext {
 
 fn run_server_reactor(port: u16, worker_id: i64) {
     wing::set_cpu_affinity(worker_id);
-    let listener = wing::tcp_listen("0.0.0.0", port, 8192);
-    guard listener > 0 else {
-        print("FATAL: goose-wing failed to bind on 0.0.0.0:", port);
-        return;
-    }
-    wing::tcp_set_incoming_cpu(listener, worker_id);
 
     var app = wing::new_http_server("0.0.0.0", port);
     app.server_name.clear();
     app.server_name.append("goose-wing");
+    app.pipeline.enable_rate_limiter = false;
+    app.pipeline.enable_csrf_guard = false;
+    app.pipeline.enable_cors = false;
+    app.pipeline.enable_slowloris_timer = false;
 
     wing::add_static_get_route(app, "/plaintext", "text/plain", "Hello, World!", 1001);
     wing::add_static_get_route(app, "/json", "application/json", "{\"message\":\"Hello, World!\"}", 1002);
@@ -38,6 +36,13 @@ fn run_server_reactor(port: u16, worker_id: i64) {
 
     var ws_b = wing::new_ws_behavior(1004);
     wing::add_ws_route(app, "/ws", ws_b);
+
+    let listener = wing::tcp_listen("0.0.0.0", port, 8192);
+    guard listener > 0 else {
+        print("FATAL: goose-wing failed to bind on 0.0.0.0:", port);
+        return;
+    }
+    wing::tcp_set_incoming_cpu(listener, worker_id);
 
     wing::serve_reactor(app, listener, 0);
 }

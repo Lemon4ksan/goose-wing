@@ -40,6 +40,7 @@ done
 
 if [ "$1" = "--cli" ]; then
     echo "[entrypoint] Running automated CLI benchmark..."
+    cleanup
     shift
     python3 /app/run_cli.py "$@"
     exit 0

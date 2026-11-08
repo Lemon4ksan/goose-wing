@@ -14,6 +14,7 @@ const CORK_BUFFER_CAP: i64 = 16384; // 16 KB standard cork buffer size
 struct CorkBuffer {
     storage:   u8[16384] = [0; 16384],
     len:       i64       = 0,
+    cap:       i64       = 16384,
     is_corked: bool      = true,
 }
 
@@ -21,6 +22,7 @@ fn new_cork_buffer() -> CorkBuffer {
     return CorkBuffer {
         storage:   [0; 16384],
         len:       0,
+        cap:       16384,
         is_corked: true,
     };
 }

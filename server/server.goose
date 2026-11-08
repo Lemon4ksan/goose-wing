@@ -10,6 +10,7 @@ import core from "..";
 import .router;
 import .pool;
 import .pipeline;
+import .profiler;
 import .h2_multiplexer;
 import .soa_timer;
 import realtime.topic_tree;
@@ -184,6 +185,8 @@ fn parse_http1_request_line<Req>(
     req_line: const u8[:],
     out_req:  Req&,
 ) -> bool {
+    let _prof = prof_enter("http1.req_line");
+    defer prof_leave(_prof);
     guard req_line.len >= 14 else { return false; }
 
     let w0 = core::read_le_u64(req_line, 0);
@@ -423,6 +426,8 @@ fn parse_http1_headers_stream<Req>(
     presence_tracker: HeaderPresenceTracker&,
     base_offset:      i64 = 0,
 ) -> bool {
+    let _prof = prof_enter("http1.headers");
+    defer prof_leave(_prof);
     var cursor: i64 = 0;
     while cursor < rest_headers.len {
         // Empty line reached (RFC 9112 Section 2.1)
@@ -469,7 +474,9 @@ fn parse_http1_request_headers<Req>(
     let active_wire = wire[req_offset..];
 
     // Find end of headers (\r\n\r\n) via AVX2 / 32-bit fast scanner
+    let _pf = prof_enter("http1.framing");
     let hdr_end = core::fast_find_crlfcrlf(active_wire);
+    prof_leave(_pf);
     // RFC 9112 Section 2.1 & uWS #1658: Total header block must not exceed 8192 bytes
     if hdr_end > 8192 || (hdr_end < 0 && active_wire.len > 8192) {
         return false;
@@ -498,7 +505,10 @@ fn parse_http1_request_headers<Req>(
     out_req.body.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
-    guard validate_request_host_presence(out_req, presence_tracker) else {
+    let _phv = prof_enter("http1.host_val");
+    let ok_host = validate_request_host_presence(out_req, presence_tracker);
+    prof_leave(_phv);
+    guard ok_host else {
         clear_request_headers_state(out_req);
         return false;
     }
@@ -545,6 +555,8 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     }
 
     if has_te {
+        let _pbf = prof_enter("http1.body_framing");
+        defer prof_leave(_pbf);
         guard validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
             clear_request_headers_state(out_req);
             return false, 0;
@@ -577,7 +589,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     let total_consumed = body_start_idx + cl_len;
 
     if cl_len > 0 {
+        let _pbf = prof_enter("http1.body_framing");
         out_req.body.append(wire[body_start_idx..total_consumed]);
+        prof_leave(_pbf);
     }
 
     return true, total_consumed;
@@ -888,10 +902,11 @@ struct CachedHttpDate {
 }
 
 fn update_server_cached_date(date: CachedHttpDate&, now_sec: i64) {
-    let wall_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
-    if date.header_str.len == 0 || date.last_sec != wall_sec {
-        date.last_sec = wall_sec;
+    let tick_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
+    if date.header_str.len == 0 || date.last_sec != tick_sec {
+        date.last_sec = tick_sec;
         date.last_tsc = prof_rdtsc();
+        let wall_sec = if now_sec >= 1577836800 { now_sec } else { core::now().wall_sec };
         date.header_str.clear();
         date.header_str.append("Date: ");
         core::format_http(date.header_str, core::unix(wall_sec, 0));
@@ -1105,6 +1120,8 @@ fn serialize_http1_response<Res, B>(
     out_wire:    B&,
     now_sec:     i64 = 0,
 ) {
+    let _prof = prof_enter("http1.resp_serialize");
+    defer prof_leave(_prof);
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if res.trailers.entries.len > 0 {
@@ -2552,6 +2569,295 @@ fn process_pipelined_pipe_step<Stage, B>(
     return PipeStepResult.Continue;
 }
 
+inline fn is_noop_server_stage(stage: const wire::NoOpStage&) -> bool {
+    return true;
+}
+
+inline fn is_noop_server_stage<Stage>(stage: const Stage&) -> bool {
+    return false;
+}
+
+inline fn can_try_fast_l0_static<Stage>(server: const HttpServer&, stage: const Stage&) -> bool {
+    guard is_noop_server_stage(stage) else { return false; }
+    guard server.pipeline.router.l0_table.count > 0 && server.pipeline.router.static_payloads.len > 0 else {
+        return false;
+    }
+    return !server.pipeline.enable_rate_limiter
+        && !server.pipeline.enable_csrf_guard
+        && !server.pipeline.enable_cors
+        && server.pipeline.edge_filter.rules.len == 0
+        && !server.pipeline.route_cache.is_valid;
+}
+
+// Validates a `Host` header slice, memoizing the last valid value on `pipeline`.
+fn validate_fast_host_slice(pipeline: ServerPipelineConfig&, host_val: const u8[:]) -> bool {
+    guard host_val.len > 0 else { return false; }
+    if pipeline.has_valid_host && host_val == pipeline.last_valid_host[..] {
+        return true;
+    }
+    guard validate_host_header_chars(host_val) && validate_host_header_structure(host_val) else {
+        return false;
+    }
+    if pipeline.last_valid_host.try_set(host_val) {
+        pipeline.has_valid_host = true;
+    }
+    return true;
+}
+
+// Evaluates a known header inside a fast L0 static GET header block.
+inline fn eval_fast_l0_known_header(
+    pipeline:  ServerPipelineConfig&,
+    known_id:  KnownHeaderId,
+    hval:      const u8[:],
+    has_host:  bool&,
+    out_close: bool&,
+) -> bool {
+    return match known_id {
+        Host => {
+            guard !has_host && validate_fast_host_slice(pipeline, hval) else { return false; }
+            has_host = true;
+            true
+        },
+        Connection => {
+            if core::contains_fold(hval, "close") {
+                out_close = true;
+                return true;
+            }
+            !core::contains_fold(hval, "upgrade")
+        },
+        ContentLength => false,
+        TransferEncoding => false,
+        Upgrade => false,
+        Expect => false,
+        SecWebSocketKey => false,
+        _ => true,
+    };
+}
+
+// Scans a single HTTP/1.1 header line for a zero-body static GET request without allocating a `HeaderMap`.
+//
+// Example:
+//   rest = "Host: localhost\r\n\r\n", cursor = 0
+//   returns: true, cursor = 17, has_host = true
+fn scan_fast_l0_static_header_line(
+    pipeline:  ServerPipelineConfig&,
+    rest:      const u8[:],
+    cursor:    i64&,
+    has_host:  bool&,
+    out_close: bool&,
+) -> bool {
+    let cur_slice = rest[cursor..];
+    let name_len, ok_name = scan_header_field_name_swar(cur_slice);
+    guard ok_name && name_len > 0 && name_len <= 256 else { return false; }
+    let hname = cur_slice[..name_len];
+
+    let val_start = core::add_sat_i64(name_len, 1);
+    let val_slice = cur_slice[val_start..];
+    let val_len, crlf_len, ok_val = scan_header_field_value_swar(val_slice);
+    guard ok_val && crlf_len == 2 && val_len <= 4096 else { return false; }
+    let lead_ws, end_ws = trim_header_value_bounds(val_slice[..val_len]);
+    let hval = val_slice[lead_ws..end_ws];
+
+    let known_id = identify_known_header(hname);
+    guard eval_fast_l0_known_header(pipeline, known_id, hval, has_host, out_close) else {
+        return false;
+    }
+
+    advance_header_cursor(cursor, name_len, val_len, crlf_len);
+    return true;
+}
+
+// Scans HTTP/1.1 request headers for a zero-body static GET request without allocating a `HeaderMap`.
+//
+// Example:
+//   rest = "Host: localhost\r\nConnection: keep-alive\r\n\r\n"
+//   returns: true, out_close = false
+fn scan_fast_l0_static_headers(
+    pipeline:  ServerPipelineConfig&,
+    rest:      const u8[:],
+    out_close: bool&,
+) -> bool {
+    var cursor:   i64  = 0;
+    var has_host: bool = false;
+    out_close = false;
+
+    while cursor < rest.len {
+        let rem = rest[cursor..];
+        if rem.len >= 2 && rem[0] == '\r' && rem[1] == '\n' {
+            return has_host && verify_headers_terminator_consumed(cursor, rest.len);
+        }
+        guard scan_fast_l0_static_header_line(pipeline, rest, cursor, has_host, out_close) else {
+            return false;
+        }
+    }
+    return false;
+}
+
+// Appends the status line, Server header, Date header, and pre-rendered static payload frame.
+inline fn append_fast_l0_static_response<B>(
+    server:      HttpServer&,
+    sp:          const StaticRoutePayload&,
+    now_sec:     i64,
+    wants_close: bool,
+    wire_out:    B&,
+) {
+    refresh_http_server_date(server, now_sec);
+    if server.server_name[..] == "goose-wing" {
+        wire_out.append(server.cached_date.fast_prefix[..]);
+    } else if server.server_name[..] == "goose-wing/1.0" {
+        wire_out.append("HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n");
+        wire_out.append(server.cached_date.header_str[..]);
+    } else {
+        wire_out.append("HTTP/1.1 200 OK\r\n");
+        serialize_server_header(server.server_name[..], wire_out);
+        wire_out.append(server.cached_date.header_str[..]);
+    }
+    if wants_close {
+        wire_out.append(sp.payload_close[..]);
+    } else {
+        wire_out.append(sp.payload_keep[..]);
+    }
+}
+
+inline fn is_valid_fast_static_path(path: const u8[:]) -> bool {
+    guard path.len >= 1 && path.len <= 16 && path[0] == '/' else { return false; }
+    for b in path {
+        guard b >= 0x21 && b <= 0x7E && b != '?' && b != '#' else { return false; }
+    }
+    return true;
+}
+
+// Extracts the request path and header block start from a `GET <path> HTTP/1.1\r\n` request line.
+//
+// Example:
+//   header_bytes = "GET /plaintext HTTP/1.1\r\nHost: a\r\n\r\n"
+//   returns: "/plaintext", rest_offset = 25, ok = true
+fn parse_fast_l0_get_request_line(header_bytes: const u8[:]) -> const u8[:], i64, bool {
+    guard core::read_le_u32(header_bytes, 0) == rfc::METHOD_GET_U32 else { return "", 0, false; }
+    let line_end = find(header_bytes, "\r\n");
+    guard line_end >= 14 && line_end <= 29 else { return "", 0, false; }
+
+    let sp2 = core::sub_sat_i64(line_end, 9);
+    let ver_pos = core::add_sat_i64(sp2, 1);
+    guard sp2 > 4 && header_bytes[sp2] == ' ' else { return "", 0, false; }
+    guard core::read_le_u64(header_bytes, ver_pos) == rfc::HTTP_VERSION_1_1_U64 else { return "", 0, false; }
+
+    let path = header_bytes[4..sp2];
+    guard is_valid_fast_static_path(path) else { return "", 0, false; }
+    return path, core::add_sat_i64(line_end, 2), true;
+}
+
+// Matches `path` in `server.pipeline.router.l0_table` and returns the static payload index if eligible.
+fn match_fast_l0_static_payload(server: const HttpServer&, path: const u8[:]) -> i32 {
+    let l0_slot = match_l0(path, 0, server.pipeline.router.l0_table);
+    guard l0_slot >= 0 else { return -1; }
+    let slot_idx = l0_slot as i64;
+    let slot_pso = server.pipeline.router.l0_table.pso_mask[slot_idx] & server.pipeline.server_pso_capabilities;
+    let heavy_pso = STAGE_EGRESS_ALL | STAGE_INGRESS_AUTH_JWT | STAGE_INGRESS_ROUTE_RATELIMIT;
+    guard (slot_pso & heavy_pso) == 0 else { return -1; }
+    let handler_id = server.pipeline.router.l0_table.handler_id[slot_idx];
+    return find_static_payload_index(server.pipeline.router, handler_id);
+}
+
+// Attempts to serve a single HTTP/1.1 static GET request from the L0 register table
+// without allocating `Request` or `Response`.
+//
+// Example:
+//   stream = "GET /plaintext HTTP/1.1\r\nHost: localhost\r\n\r\n"
+//   returns: true, out_consumed = 44, out_close = false
+fn try_fast_l0_static_turn<B>(
+    server:       HttpServer&,
+    stream:       const u8[:],
+    hdr_end:      i64,
+    now_sec:      i64,
+    wire_out:     B&,
+    out_consumed: i64&,
+    out_close:    bool&,
+) -> bool {
+    let header_end_idx = core::add_sat_i64(hdr_end, 4);
+    guard hdr_end >= 14 && header_end_idx <= 8192 else { return false; }
+    guard core::add_sat_i64(wire_out.len, 768) <= wire_out.cap else { return false; }
+
+    let header_bytes = stream[..header_end_idx];
+    let path, rest_offset, ok_line = parse_fast_l0_get_request_line(header_bytes);
+    guard ok_line else { return false; }
+
+    let sp_idx = match_fast_l0_static_payload(server, path);
+    guard sp_idx >= 0 else { return false; }
+
+    guard scan_fast_l0_static_headers(server.pipeline, header_bytes[rest_offset..], out_close) else {
+        return false;
+    }
+
+    if path == "/shutdown" {
+        server.is_running = false;
+    }
+    append_fast_l0_static_response(
+        server,
+        server.pipeline.router.static_payloads[sp_idx as i64],
+        now_sec,
+        out_close,
+        wire_out,
+    );
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+    out_consumed = header_end_idx;
+    return true;
+}
+
+// Converts monotonic nanoseconds to seconds for HTTP Date header caching.
+inline fn nanos_to_http_date_sec(now_ns: u64) -> i64 {
+    return (now_ns >> 30) as i64;
+}
+
+// Runs the zero-allocation L0 static GET fast loop over `stream_in`, returning `(rem_stream, done)`.
+//
+// Example:
+//   stream_in = "GET /plaintext HTTP/1.1\r\nHost: localhost\r\n\r\n"
+//   returns: "", done = true, total_handled = 1
+fn drain_fast_l0_static_stream<B>(
+    server:           HttpServer&,
+    stream_in:        const u8[:],
+    now_ns:           u64,
+    wire_out:         B&,
+    total_handled:    i64&,
+    total_consumed:   i64&,
+    conn_wants_close: bool&,
+) -> const u8[:], bool {
+    var stream = stream_in;
+    let now_sec = nanos_to_http_date_sec(now_ns);
+    while stream.len > 0 {
+        stream = strip_pipelined_crlf(stream, total_consumed);
+        if stream.len == 0 {
+            return stream, true;
+        }
+        let _pf = prof_enter("http1.framing");
+        let hdr_end = core::fast_find_crlfcrlf(stream);
+        prof_leave(_pf);
+        if hdr_end < 0 {
+            if stream.len <= 8192 && is_possible_http_method_prefix(stream) {
+                return stream, true;
+            }
+            return stream, false;
+        }
+        var fast_step:  i64  = 0;
+        var fast_close: bool = false;
+        let _pl0 = prof_enter("http1.l0_turn");
+        let ok_l0 = try_fast_l0_static_turn(server, stream, hdr_end, now_sec, wire_out, fast_step, fast_close);
+        prof_leave(_pl0);
+        guard ok_l0 else {
+            return stream, false;
+        }
+        total_handled = core::add_sat_i64(total_handled, 1);
+        total_consumed = core::add_sat_i64(total_consumed, fast_step);
+        stream = stream[fast_step..];
+        if fast_close {
+            conn_wants_close = true;
+            return stream, true;
+        }
+    }
+    return stream, true;
+}
+
 enum StreamTurnResult {
     Continue,
     Stop,
@@ -2621,6 +2927,16 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
     var total_handled:    i64  = 0;
     var total_consumed:   i64  = 0;
     var conn_wants_close: bool = false;
+
+    if can_try_fast_l0_static(server, stage) {
+        let rem_stream, fast_done = drain_fast_l0_static_stream(
+            server, stream, now_ns, wire_out, total_handled, total_consumed, conn_wants_close,
+        );
+        if fast_done {
+            return total_handled, total_consumed, true, conn_wants_close;
+        }
+        stream = rem_stream;
+    }
 
     var req = new_request("GET", "");
     var res = Response { .. };
@@ -3598,47 +3914,6 @@ inline fn handle_page_ring_h2_preface<Stage, B>(
     return 0;
 }
 
-inline fn process_page_ring_step<Stage, B>(
-    server:        HttpServer&,
-    client_ip:     const u8[:],
-    ring:          core::PageRingBuffer&,
-    peek_slice:    const u8[:],
-    req:           Request&,
-    res:           Response&,
-    now_ns:        u64,
-    total_handled: i64&,
-    wire_out:      B&,
-    stage:         Stage&,
-) -> PipeStepResult {
-    reset_server_request_fast(req);
-    let ok_parse, consumed = parse_http1_wire_request(peek_slice, req);
-    if !ok_parse || consumed <= 0 {
-        var keep = false;
-        let _ = handle_pipelined_parse_failure(server.server_name[..], peek_slice, req, wire_out, keep);
-        if keep {
-            return PipeStepResult.Stop;
-        }
-        core::page_ring_clear(ring);
-        return PipeStepResult.Error;
-    }
-
-    if try_handle_pipelined_websocket(server, req, wire_out) {
-        total_handled = core::add_sat_i64(total_handled, 1);
-        core::page_ring_clear(ring);
-        return PipeStepResult.Stop;
-    }
-
-    let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
-    total_handled = core::add_sat_i64(total_handled, 1);
-    core::page_ring_discard(ring, consumed);
-
-    if req.method[..] == "CONNECT" || wants_close {
-        core::page_ring_clear(ring);
-        return PipeStepResult.Stop;
-    }
-    return PipeStepResult.Continue;
-}
-
 fn handle_connection_page_ring<Stage, B>(
     server:    HttpServer&,
     client_ip: const u8[:],
@@ -3652,36 +3927,35 @@ fn handle_connection_page_ring<Stage, B>(
     }
     guard ring.count > 0 else { return 0, true; }
 
-    var peek_buf: u8[65536] = [0; 65536];
-    var req = new_request("GET", "");
-    var res = Response { .. };
-    var total_handled: i64 = 0;
+    g_reactor_chunk.len = 0;
+    let peek_n = core::page_ring_peek(ring, g_reactor_chunk.bytes[..]);
+    guard peek_n > 0 else { return 0, true; }
+    let peek_slice = g_reactor_chunk.bytes[..peek_n];
 
-    while ring.count > 0 {
-        let peek_n = core::page_ring_peek(ring, peek_buf[..]);
-        guard peek_n > 0 else { break; }
-
-        if total_handled == 0 {
-            var h2_done = false;
-            var h2_ok = true;
-            let h2_cnt = handle_page_ring_h2_preface(
-                server, client_ip, ring, peek_buf[..peek_n], now_ns, wire_out, h2_done, h2_ok, stage,
-            );
-            if h2_done {
-                return h2_cnt, h2_ok;
-            }
-        }
-
-        let step_res = process_page_ring_step(
-            server, client_ip, ring, peek_buf[..peek_n], req, res, now_ns, total_handled, wire_out, stage,
+    if is_partial_h2_client_preface(peek_slice) || is_h2_client_preface(peek_slice) {
+        var h2_done = false;
+        var h2_ok = true;
+        let h2_cnt = handle_page_ring_h2_preface(
+            server, client_ip, ring, peek_slice, now_ns, wire_out, h2_done, h2_ok, stage,
         );
-        if step_res == PipeStepResult.Error {
-            return total_handled, false;
-        } else if step_res == PipeStepResult.Stop {
-            break;
+        if h2_done {
+            return h2_cnt, h2_ok;
         }
     }
 
+    let total_handled, total_consumed, ok_pipe, wants_close = handle_connection_wire_pipelined_stream(
+        server, client_ip, peek_slice, now_ns, wire_out, stage,
+    );
+    if !ok_pipe {
+        core::page_ring_clear(ring);
+        return total_handled, false;
+    }
+    if total_consumed > 0 {
+        core::page_ring_discard(ring, total_consumed);
+    }
+    if wants_close {
+        core::page_ring_clear(ring);
+    }
     return total_handled, true;
 }
 

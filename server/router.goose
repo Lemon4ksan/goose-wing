@@ -1147,9 +1147,11 @@ struct MethodTree {
 }
 
 struct StaticRoutePayload {
-    handler_id:   i32       = 0,
-    content_type: u8[..64]  = [],
-    body:         u8[..512] = [],
+    handler_id:    i32       = 0,
+    content_type:  u8[..64]  = [],
+    body:          u8[..512] = [],
+    payload_keep:  u8[..640] = [],
+    payload_close: u8[..640] = [],
 }
 
 const DEFAULT_METRICS_PAYLOAD: const u8[:] =
@@ -1257,6 +1259,35 @@ fn add_route_pso(
     return add_route_masks(router, method, path, handler_id, 0, pso_mask, ingress_mask, egress_mask);
 }
 
+inline fn build_static_route_payload_frames(
+    sp:           StaticRoutePayload&,
+    content_type: const u8[:],
+    body:         const u8[:],
+) {
+    var cl_buf: u8[..32] = [];
+    core::format_i64_dec(body.len, cl_buf);
+
+    sp.payload_keep.clear();
+    sp.payload_keep.append("Content-Length: ");
+    sp.payload_keep.append(cl_buf[..]);
+    if content_type.len > 0 {
+        sp.payload_keep.append("\r\nContent-Type: ");
+        sp.payload_keep.append(content_type);
+    }
+    sp.payload_keep.append("\r\nConnection: keep-alive\r\n\r\n");
+    sp.payload_keep.append(body);
+
+    sp.payload_close.clear();
+    sp.payload_close.append("Content-Length: ");
+    sp.payload_close.append(cl_buf[..]);
+    if content_type.len > 0 {
+        sp.payload_close.append("\r\nContent-Type: ");
+        sp.payload_close.append(content_type);
+    }
+    sp.payload_close.append("\r\nConnection: close\r\n\r\n");
+    sp.payload_close.append(body);
+}
+
 // Attaches or updates a static payload for a given `handler_id` in `router.static_payloads`.
 fn set_static_route_payload(
     router:       RadixRouter&,
@@ -1270,16 +1301,20 @@ fn set_static_route_payload(
                 && router.static_payloads[idx].body.try_set(body) else {
                 return false;
             }
+            build_static_route_payload_frames(router.static_payloads[idx], content_type, body);
             return true;
         }
     }
     guard router.static_payloads.len < router.static_payloads.cap else { return false; }
     var sp = StaticRoutePayload {
-        handler_id:   handler_id,
-        content_type: [],
-        body:         [],
+        handler_id:    handler_id,
+        content_type:  [],
+        body:          [],
+        payload_keep:  [],
+        payload_close: [],
     };
     guard sp.content_type.try_set(content_type) && sp.body.try_set(body) else { return false; }
+    build_static_route_payload_frames(sp, content_type, body);
     router.static_payloads.push(sp);
     return true;
 }
@@ -1322,6 +1357,15 @@ fn get_static_route_payload(
         }
     }
     return false;
+}
+
+inline fn find_static_payload_index(router: const RadixRouter&, handler_id: i32) -> i32 {
+    for idx in router.static_payloads.len {
+        if router.static_payloads[idx].handler_id == handler_id {
+            return idx as i32;
+        }
+    }
+    return -1;
 }
 
 inline fn method_tree_has_routes(tree: const RadixTree&) -> bool {
@@ -1423,6 +1467,33 @@ inline fn try_match_l0_slot<B>(
     };
 }
 
+inline fn find_router_method_tree_index(router: const RadixRouter&, method: const u8[:]) -> i32 {
+    let idx = resolve_method_tree_index(method);
+    if idx >= 0 && idx < router.trees.len {
+        return idx;
+    }
+    for i in router.trees.len {
+        if router.trees[i].method[..] == method {
+            return i as i32;
+        }
+    }
+    return -1;
+}
+
+inline fn match_tree_with_l0<B>(
+    router:         const RadixRouter&,
+    tree_idx:       i32,
+    clean_path:     const u8[:],
+    params:         ZeroAllocParams&,
+    out_canon_path: B&,
+) -> RouteMatchResult {
+    let fast_res = try_match_l0_slot(router.l0_table, tree_idx as u8, clean_path, params, out_canon_path);
+    if is_match_found(fast_res) {
+        return fast_res;
+    }
+    return match_path(router.trees[tree_idx as i64].tree, clean_path, params, out_canon_path);
+}
+
 // Matches a request method and path against registered routes.
 // Automatically canonicalizes path before matching.
 // Automatic HEAD routing: if a route matches GET, HEAD requests route to GET handler (RFC 9110 §9.3.2).
@@ -1436,43 +1507,18 @@ fn match_route<B>(
 ) -> RouteMatchResult {
     guard router.trees.len > 0 else { return RouteMatchResult.NotFound; }
     let clean_path = strip_query_and_fragment(path);
-    var target_tree_idx: i32 = resolve_method_tree_index(method);
-    if target_tree_idx < 0 || (target_tree_idx as i64) >= router.trees.len {
-        target_tree_idx = -1;
-        for idx in router.trees.len {
-            if router.trees[idx].method[..] == method {
-                target_tree_idx = idx as i32;
-                break;
-            }
-        }
-    }
+    let target_tree_idx = find_router_method_tree_index(router, method);
 
     if target_tree_idx >= 0 && clean_path != "*" {
-        let fast_res = try_match_l0_slot(router.l0_table, target_tree_idx as u8, clean_path, params, out_canon_path);
-        if match fast_res { Found _ => true, _ => false } {
-            return fast_res;
-        }
-
-        let res = match_path(router.trees[target_tree_idx as i64].tree, clean_path, params, out_canon_path);
-        match res {
-            Found _ => { return res; },
-            _ => {},
-        };
+        let res = match_tree_with_l0(router, target_tree_idx, clean_path, params, out_canon_path);
+        if is_match_found(res) { return res; }
     }
 
     // Automatic HEAD routing: if method is HEAD and no explicit HEAD route matched,
     // route to GET handler if a GET route matches (RFC 9110 §9.3.2).
     if method == "HEAD" && clean_path != "*" && router.trees[0].method[..] == "GET" {
-        let fast_head = try_match_l0_slot(router.l0_table, 0, clean_path, params, out_canon_path);
-        if match fast_head { Found _ => true, _ => false } {
-            return fast_head;
-        }
-
-        let res_get = match_path(router.trees[0].tree, clean_path, params, out_canon_path);
-        match res_get {
-            Found _ => { return res_get; },
-            _ => {},
-        };
+        let res_get = match_tree_with_l0(router, 0, clean_path, params, out_canon_path);
+        if is_match_found(res_get) { return res_get; }
     }
 
     var allow_buf: u8[..64] = [];
