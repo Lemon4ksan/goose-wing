@@ -65,6 +65,7 @@ inline fn step(p: PipelineState&, next: StageVerdict) -> bool {
 enum ServerHookPhase {
     PreRoute,
     PostAuth,
+    BodyChunk,
     RouteHandler,
     PreSerialize,
 }
@@ -97,32 +98,36 @@ inline fn chain_stages<First, Next>(first: First, next: Next) -> StageChain<Firs
 
 // ---- Built-In Stage Slot Identifiers (0..47) and Bitmasks -------------------
 
-// Server Ingress Stage Slot IDs (0..11) and Bitmasks
-const STAGE_ID_SRV_IN_SLOWLORIS:       u8 = 0;
-const STAGE_ID_SRV_IN_EXPECT_100:      u8 = 1;
-const STAGE_ID_SRV_IN_EDGE_FILTER:     u8 = 2;
-const STAGE_ID_SRV_IN_RATELIMIT_IP:    u8 = 3;
-const STAGE_ID_SRV_IN_ROUTE_MATCH:     u8 = 4;
-const STAGE_ID_SRV_IN_RATELIMIT_ROUTE: u8 = 5;
-const STAGE_ID_SRV_IN_CORS:            u8 = 6;
-const STAGE_ID_SRV_IN_CSRF:            u8 = 7;
-const STAGE_ID_SRV_IN_AUTH_COOKIE:     u8 = 8;
-const STAGE_ID_SRV_IN_AUTH_JWT:        u8 = 9;
-const STAGE_ID_SRV_IN_CACHE_LOOKUP:    u8 = 10;
-const STAGE_ID_SRV_IN_DECOMPRESS:      u8 = 11;
+// Server Ingress Stage Slot IDs (0..13) and Bitmasks
+const STAGE_ID_SRV_IN_SLOWLORIS:         u8 = 0;
+const STAGE_ID_SRV_IN_EXPECT_100:        u8 = 1;
+const STAGE_ID_SRV_IN_EDGE_FILTER:       u8 = 2;
+const STAGE_ID_SRV_IN_RATELIMIT_IP:      u8 = 3;
+const STAGE_ID_SRV_IN_ROUTE_MATCH:       u8 = 4;
+const STAGE_ID_SRV_IN_RATELIMIT_ROUTE:   u8 = 5;
+const STAGE_ID_SRV_IN_CORS:              u8 = 6;
+const STAGE_ID_SRV_IN_CSRF:              u8 = 7;
+const STAGE_ID_SRV_IN_AUTH_COOKIE:       u8 = 8;
+const STAGE_ID_SRV_IN_AUTH_JWT:          u8 = 9;
+const STAGE_ID_SRV_IN_CACHE_LOOKUP:      u8 = 10;
+const STAGE_ID_SRV_IN_DECOMPRESS:        u8 = 11;
+const STAGE_ID_SRV_IN_CONTENT_DIGEST:    u8 = 12;
+const STAGE_ID_SRV_IN_RATELIMIT_SUBJECT: u8 = 13;
 
-const STAGE_SRV_IN_SLOWLORIS:       u64 = (1 as u64) << 0;
-const STAGE_SRV_IN_EXPECT_100:      u64 = (1 as u64) << 1;
-const STAGE_SRV_IN_EDGE_FILTER:     u64 = (1 as u64) << 2;
-const STAGE_SRV_IN_RATELIMIT_IP:    u64 = (1 as u64) << 3;
-const STAGE_SRV_IN_ROUTE_MATCH:     u64 = (1 as u64) << 4;
-const STAGE_SRV_IN_RATELIMIT_ROUTE: u64 = (1 as u64) << 5;
-const STAGE_SRV_IN_CORS:            u64 = (1 as u64) << 6;
-const STAGE_SRV_IN_CSRF:            u64 = (1 as u64) << 7;
-const STAGE_SRV_IN_AUTH_COOKIE:     u64 = (1 as u64) << 8;
-const STAGE_SRV_IN_AUTH_JWT:        u64 = (1 as u64) << 9;
-const STAGE_SRV_IN_CACHE_LOOKUP:    u64 = (1 as u64) << 10;
-const STAGE_SRV_IN_DECOMPRESS:      u64 = (1 as u64) << 11;
+const STAGE_SRV_IN_SLOWLORIS:         u64 = (1 as u64) << 0;
+const STAGE_SRV_IN_EXPECT_100:        u64 = (1 as u64) << 1;
+const STAGE_SRV_IN_EDGE_FILTER:       u64 = (1 as u64) << 2;
+const STAGE_SRV_IN_RATELIMIT_IP:      u64 = (1 as u64) << 3;
+const STAGE_SRV_IN_ROUTE_MATCH:       u64 = (1 as u64) << 4;
+const STAGE_SRV_IN_RATELIMIT_ROUTE:   u64 = (1 as u64) << 5;
+const STAGE_SRV_IN_CORS:              u64 = (1 as u64) << 6;
+const STAGE_SRV_IN_CSRF:              u64 = (1 as u64) << 7;
+const STAGE_SRV_IN_AUTH_COOKIE:       u64 = (1 as u64) << 8;
+const STAGE_SRV_IN_AUTH_JWT:          u64 = (1 as u64) << 9;
+const STAGE_SRV_IN_CACHE_LOOKUP:      u64 = (1 as u64) << 10;
+const STAGE_SRV_IN_DECOMPRESS:        u64 = (1 as u64) << 11;
+const STAGE_SRV_IN_CONTENT_DIGEST:    u64 = (1 as u64) << 12;
+const STAGE_SRV_IN_RATELIMIT_SUBJECT: u64 = (1 as u64) << 13;
 
 const STAGE_SRV_IN_DEFAULT_MASK: u64 =
     STAGE_SRV_IN_SLOWLORIS |
@@ -221,16 +226,24 @@ struct WirePipelineCreateInfo {
     flags:        u32                   = 0,
 }
 
+// Vulkan-style descriptor slot binding associating a pipeline stage ID with a parameter slot (0..3).
+struct StageBinding {
+    stage_id:   u8 = 0,
+    param_slot: u8 = 0,
+}
+
 // Declarative Pipeline State Object (VkPipeline) and Programmable Stage Conveyor.
 struct WirePipeline {
-    bind_point:     WirePipelineBindPoint = WirePipelineBindPoint.Transmit,
-    role:           PipelineRole          = PipelineRole.Client,
-    layout:         WirePipelineLayout    = WirePipelineLayout { .. },
-    ingress_stages: u8[..24]              = [],
-    egress_stages:  u8[..24]              = [],
-    ingress_mask:   u64                   = STAGE_CLI_IN_DEFAULT_MASK,
-    egress_mask:    u64                   = STAGE_CLI_OUT_DEFAULT_MASK,
-    is_valid:       bool                  = true,
+    bind_point:       WirePipelineBindPoint = WirePipelineBindPoint.Transmit,
+    role:             PipelineRole          = PipelineRole.Client,
+    layout:           WirePipelineLayout    = WirePipelineLayout { .. },
+    ingress_stages:   u8[..24]              = [],
+    egress_stages:    u8[..24]              = [],
+    custom_bindings:  StageBinding[..24]    = [],
+    ingress_mask:     u64                   = STAGE_CLI_IN_DEFAULT_MASK,
+    egress_mask:      u64                   = STAGE_CLI_OUT_DEFAULT_MASK,
+    has_custom_order: bool                  = false,
+    is_valid:         bool                  = true,
 }
 
 const VALID_STAGE_MASK: u64 = ((1 as u64) << 24) - 1;
@@ -321,6 +334,51 @@ fn add_egress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
         guard pipe.egress_stages.try_push(stage_id) else { return false; }
     }
     pipe.egress_mask = pipe.egress_mask | core::shl_sat_u64(1, stage_id);
+    return true;
+}
+
+// Appends a parameterized stage binding to `pipe.custom_bindings` and enables `pipe.has_custom_order`.
+fn add_stage_binding(pipe: WirePipeline&, stage_id: u8, param_slot: u8 = 0) -> bool {
+    guard stage_id < 64 && param_slot < 4 else { return false; }
+    guard pipe.custom_bindings.try_push(StageBinding {
+        stage_id:   stage_id,
+        param_slot: param_slot,
+    }) else {
+        return false;
+    }
+    pipe.has_custom_order = true;
+    pipe.ingress_mask = pipe.ingress_mask | core::shl_sat_u64(1, stage_id);
+    return true;
+}
+
+// Clears custom stage bindings and restores bitmask-driven stage ordering.
+fn clear_stage_bindings(pipe: WirePipeline&) {
+    pipe.custom_bindings.clear();
+    pipe.has_custom_order = false;
+}
+
+// Transactionally replaces `pipe.custom_bindings` and `pipe.ingress_mask` for runtime xDS / control-plane updates.
+fn replace_ingress_bindings(pipe: WirePipeline&, bindings: const StageBinding[:]) -> bool {
+    guard bindings.len <= 24 else { return false; }
+    let saved_bindings = pipe.custom_bindings;
+    let saved_mask = pipe.ingress_mask;
+    let saved_custom = pipe.has_custom_order;
+    var committed = false;
+    defer if !committed {
+        pipe.custom_bindings = saved_bindings;
+        pipe.ingress_mask = saved_mask;
+        pipe.has_custom_order = saved_custom;
+    };
+    pipe.custom_bindings.clear();
+    var new_mask: u64 = 0;
+    for &b in bindings {
+        guard b.stage_id < 64 && b.param_slot < 4 else { return false; }
+        guard pipe.custom_bindings.try_push(b) else { return false; }
+        new_mask = new_mask | core::shl_sat_u64(1, b.stage_id);
+    }
+    pipe.ingress_mask = new_mask;
+    pipe.has_custom_order = bindings.len > 0;
+    committed = true;
     return true;
 }
 

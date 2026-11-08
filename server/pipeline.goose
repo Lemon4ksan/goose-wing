@@ -22,6 +22,7 @@ import wire.pipeline;
 
 struct ServerPipelineConfig {
     limiter:                 ShardedGcraLimiter       = ShardedGcraLimiter { .. },
+    tier_limiters:           ShardedGcraLimiter[..4]  = [],
     csrf_guard:              CrossOriginGuard         = CrossOriginGuard { .. },
     cors_policy:             CorsPolicy               = CorsPolicy { .. },
     router:                  RadixRouter              = RadixRouter { .. },
@@ -81,6 +82,16 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
 
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig {
     return new_server_pipeline_config(target_host, new_gcra_quota(1000, core::secs(1), 100));
+}
+
+// Configures or updates a parameter-slot GCRA rate limiter (slot 0..3) in `cfg.tier_limiters`.
+fn configure_tier_limiter(cfg: ServerPipelineConfig&, slot: u8, quota: GcraQuota) -> bool {
+    guard slot < 4 else { return false; }
+    while cfg.tier_limiters.len <= slot {
+        guard cfg.tier_limiters.try_push(ShardedGcraLimiter { .. }) else { return false; }
+    }
+    cfg.tier_limiters[slot] = new_sharded_limiter(quota);
+    return true;
 }
 
 enum PipelineOutcome {
@@ -328,6 +339,28 @@ fn stage_server_ratelimit_route<Limiter>(
     composite_key.append(peer_ip[..min(peer_ip.len, 48)]);
     composite_key.push(':');
     composite_key.append(route_path[..min(route_path.len, 64)]);
+    let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
+    apply_rate_limit_headers(res, limiter.quota, rl_decision);
+    guard is_allowed(rl_decision) else {
+        return wire::StageVerdict.ShortCircuit { status_code: 429 };
+    }
+    return wire::StageVerdict.Continue;
+}
+
+// Stage 13 (Server Ingress): Post-auth GCRA rate limiting keyed on verified JWT `sub:<subject>`.
+fn stage_server_ratelimit_subject<Limiter>(
+    limiter: Limiter&,
+    enabled: bool,
+    subject: const u8[:],
+    now_ns:  u64,
+    res:     Response&,
+) -> wire::StageVerdict {
+    guard enabled && subject.len > 0 else { return wire::StageVerdict.Continue; }
+    let _prof = prof_enter("stage.ratelimit_subject");
+    defer prof_leave(_prof);
+    var composite_key: u8[..128] = [];
+    composite_key.append("sub:");
+    composite_key.append(subject[..min(subject.len, 96)]);
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
     apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard is_allowed(rl_decision) else {
@@ -620,7 +653,8 @@ inline fn populate_missing_response_etag(res: Response&) {
     }
     var etag_hdr: u8[..32] = [];
     etag_hdr.push('"');
-    core::xxh64(res.body[..], 0).format_u64_hex(etag_hdr);
+    let body_hash = core::xxh64(res.body[..], 0);
+    body_hash.format_u64_hex(etag_hdr);
     etag_hdr.push('"');
     if res.body.len <= 512 {
         let _ = g_etag_memo_src.try_set(res.body[..]);
@@ -849,7 +883,8 @@ fn stage_server_cache_store(
         } else {
             var etag_buf: u8[..32] = [];
             etag_buf.push('"');
-            core::xxh64(res.body[..], 0).format_u64_hex(etag_buf);
+            let body_hash = core::xxh64(res.body[..], 0);
+            body_hash.format_u64_hex(etag_buf);
             etag_buf.push('"');
             if !append_known_pipeline_header(
                 res.headers,
@@ -969,7 +1004,8 @@ fn stage_server_metrics_log(
         };
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
-        (dur_ns / 1000).format_u64_dec(timing_buf);
+        let dur_us = dur_ns / 1000;
+        dur_us.format_u64_dec(timing_buf);
         if !append_known_pipeline_header(
             res.headers,
             rfc::HEADER_SERVER_TIMING,
@@ -1026,6 +1062,91 @@ fn evaluate_pipeline_cors_and_csrf(
     return PipelineOutcome.Handled, false;
 }
 
+inline fn select_stage_limiter(cfg: ServerPipelineConfig&, param_slot: u8) -> ShardedGcraLimiter& {
+    if param_slot < cfg.tier_limiters.len {
+        return cfg.tier_limiters[param_slot];
+    }
+    return cfg.limiter;
+}
+
+fn execute_bound_ingress_stage_verdict(
+    cfg:    ServerPipelineConfig&,
+    b:      const wire::StageBinding&,
+    req:    const Request&,
+    res:    Response&,
+    ext:    internal::RequestExtensions&,
+    now_ns: u64,
+) -> wire::StageVerdict {
+    if b.stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
+        return stage_server_expect_100(req, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_EDGE_FILTER {
+        return stage_server_edge_filter(cfg.edge_filter, req, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_IP {
+        let lim .= select_stage_limiter(cfg, b.param_slot);
+        return stage_server_ratelimit_ip(lim, cfg.enable_rate_limiter, ext.peer_ip[..], now_ns, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_ROUTE {
+        let lim .= select_stage_limiter(cfg, b.param_slot);
+        let rpath = if ext.canon_url.len > 0 { ext.canon_url[..] } else { req.url[..] };
+        return stage_server_ratelimit_route(lim, cfg.enable_rate_limiter, ext.peer_ip[..], rpath, now_ns, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_CORS {
+        return stage_server_cors(cfg.cors_policy, cfg.enable_cors, req, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_CSRF {
+        return stage_server_csrf(cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_AUTH_COOKIE {
+        return stage_server_auth_cookie(cfg.private_jar, req, ext, now_ns);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_AUTH_JWT {
+        return stage_server_auth_jwt(cfg.jwks, cfg.jwt_options, req, ext, now_ns, res);
+    }
+    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_SUBJECT {
+        let lim .= select_stage_limiter(cfg, b.param_slot);
+        return stage_server_ratelimit_subject(lim, cfg.enable_rate_limiter, ext.auth_subject[..], now_ns, res);
+    }
+    return wire::StageVerdict.Continue;
+}
+
+inline fn map_bound_stage_verdict(stage_id: u8, v: wire::StageVerdict) -> PipelineOutcome, bool {
+    match v {
+        Continue => { return PipelineOutcome.Handled, false; },
+        ShortCircuit sc => {
+            if stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
+                return PipelineOutcome.ExpectationFailed, true;
+            }
+            if stage_id == wire::STAGE_ID_SRV_IN_CORS {
+                return cors_short_circuit_outcome(sc.status_code), true;
+            }
+            if sc.status_code == 429 {
+                return PipelineOutcome.RateLimited, true;
+            }
+            return PipelineOutcome.CsrfRejected, true;
+        },
+        _ => { return PipelineOutcome.CsrfRejected, true; },
+    };
+}
+
+// Executes ordered `StageBinding` entries in `cfg.wire_pipeline.custom_bindings`.
+// Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
+fn dispatch_custom_stage_bindings(
+    cfg:    ServerPipelineConfig&,
+    req:    const Request&,
+    res:    Response&,
+    ext:    internal::RequestExtensions&,
+    now_ns: u64,
+) -> PipelineOutcome, bool {
+    for &b in cfg.wire_pipeline.custom_bindings {
+        let v = execute_bound_ingress_stage_verdict(cfg, b, req, res, ext, now_ns);
+        let outcome, is_term = map_bound_stage_verdict(b.stage_id, v);
+        guard !is_term else { return outcome, true; }
+    }
+    return PipelineOutcome.Handled, false;
+}
+
 // Executes pre-handler ingress stages matching the effective PSO or server ingress mask.
 // Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
 fn dispatch_ingress_pipeline(
@@ -1036,6 +1157,15 @@ fn dispatch_ingress_pipeline(
     mask:   u64,
     now_ns: u64,
 ) -> PipelineOutcome, bool {
+    if cfg.wire_pipeline.has_custom_order {
+        let custom_out, is_term = dispatch_custom_stage_bindings(cfg, req, res, ext, now_ns);
+        guard !is_term else { return custom_out, true; }
+        if !evaluate_server_integrity_and_crypto(cfg, req, now_ns, res) {
+            return PipelineOutcome.CsrfRejected, true;
+        }
+        return PipelineOutcome.Handled, false;
+    }
+
     // Stage: Expect 100-continue validation (RFC 9110 Section 10.1.1)
     if (mask & STAGE_INGRESS_EXPECT_100) != 0 {
         match stage_server_expect_100(req, res) {
@@ -1595,4 +1725,149 @@ fn execute_pipeline(
 ) -> PipelineOutcome {
     var noop = wire::NoOpStage {};
     return execute_server_pipeline_with_stage(cfg, conn_timer, client_ip, req, now_ns, res, out_future, noop);
+}
+
+// ---- Streaming L7 Body Chunk Pipeline ---------------------------------------
+
+struct ServerBodyStreamState {
+    sha256_ctx:      core::Sha256Ctx = core::Sha256Ctx { .. },
+    expected_sha256: u8[..32]        = [],
+    verify_digest:   bool            = false,
+    decompress_gzip: bool            = false,
+    decompress_zstd: bool            = false,
+    bytes_processed: u64             = 0,
+    has_error:       bool            = false,
+}
+
+// Extracts and decodes the 32-byte SHA-256 digest from an RFC 9530 Content-Digest header.
+//
+// Example:
+//   hdr = "sha-256=:uU0nuZNNPgilLlLX2n2r+sSE7+N6U4DukIj3rOLvzek=:"
+//   returns: [185, 77, 39, 185, ...], true
+fn extract_sha256_content_digest(hdr: const u8[:]) -> u8[..32], bool {
+    var out_sha256: u8[..32]          = [];
+    var entries:    SfDictEntry[..16] = [];
+    guard parse_sf_dict(hdr, entries) else { return out_sha256, false; }
+    for &e in entries {
+        guard e.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256) else { continue; }
+        guard e.item.kind == SfType.Binary else { return out_sha256, false; }
+        guard core::base64_decode(e.item.str_val[..], out_sha256) && out_sha256.len == 32 else {
+            out_sha256.clear();
+            return out_sha256, false;
+        }
+        return out_sha256, true;
+    }
+    return out_sha256, false;
+}
+
+// Initializes streaming body verification (`Content-Digest`) and decompression (`Content-Encoding`) state.
+fn begin_server_body_stream(req: const Request&, ingress_mask: u64) -> ServerBodyStreamState, bool {
+    var state = ServerBodyStreamState { .. };
+    if (ingress_mask & wire::STAGE_SRV_IN_CONTENT_DIGEST) != 0 {
+        let cd_hdr = header(req, rfc::HEADER_CONTENT_DIGEST);
+        if cd_hdr.len > 0 {
+            let dig, ok_dig = extract_sha256_content_digest(cd_hdr);
+            guard ok_dig else {
+                state.has_error = true;
+                return state, false;
+            }
+            state.expected_sha256 = dig;
+            state.verify_digest = true;
+        }
+    }
+    if (ingress_mask & wire::STAGE_SRV_IN_DECOMPRESS) != 0 {
+        let ce_hdr = header(req, rfc::HEADER_CONTENT_ENCODING).trim_lws();
+        if ce_hdr.len > 0 {
+            if ce_hdr.eq_ascii_fold("gzip") || ce_hdr.eq_ascii_fold("x-gzip") {
+                state.decompress_gzip = true;
+            } else if ce_hdr.eq_ascii_fold("zstd") {
+                state.decompress_zstd = true;
+            } else if !ce_hdr.eq_ascii_fold("identity") {
+                state.has_error = true;
+                return state, false;
+            }
+        }
+    }
+    return state, true;
+}
+
+// Default zero-cost no-op streaming body chunk hook for `wire::NoOpStage`.
+inline fn on_server_body_chunk(
+    _stage:   wire::NoOpStage&,
+    _cfg:     ServerPipelineConfig&,
+    _req:     const Request&,
+    _ctx:     ServerStageCtx&,
+    _chunk:   const u8[:],
+    _is_last: bool,
+    _res:     Response&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
+}
+
+// Composes two independent server stages `<First, Next>` sequentially on each streaming body chunk.
+inline fn on_server_body_chunk<First, Next>(
+    chain:   wire::StageChain<First, Next>&,
+    cfg:     ServerPipelineConfig&,
+    req:     const Request&,
+    ctx:     ServerStageCtx&,
+    chunk:   const u8[:],
+    is_last: bool,
+    res:     Response&,
+) -> wire::StageVerdict {
+    var p = wire::begin_pipeline();
+    if p.step(chain.first.on_server_body_chunk(cfg, req, ctx, chunk, is_last, res)) {
+        let _ = p.step(chain.next.on_server_body_chunk(cfg, req, ctx, chunk, is_last, res));
+    }
+    return p.verdict;
+}
+
+// Processes a streaming body chunk through decompression, SHA-256 digest verification, and `<UserStage>`.
+fn feed_server_body_chunk_with_stage<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    state:      ServerBodyStreamState&,
+    req:        const Request&,
+    sctx:       ServerStageCtx&,
+    chunk:      const u8[:],
+    is_last:    bool,
+    res:        Response&,
+    user_stage: UserStage&,
+) -> wire::StageVerdict {
+    guard !state.has_error else {
+        res.status_code = 400;
+        return wire::StageVerdict.ShortCircuit { status_code: 400 };
+    }
+    var decoded: u8[..16384] = [];
+    if state.decompress_zstd && chunk.len > 0 {
+        let ok_z, _ = core::zstd_decompress_with_limit(chunk, decoded, 16384);
+        guard ok_z else {
+            state.has_error = true;
+            res.status_code = 400;
+            return wire::StageVerdict.ShortCircuit { status_code: 400 };
+        }
+    } else if state.decompress_gzip && chunk.len > 0 {
+        let ok_g, _ = core::gzip_decompress_with_limit(chunk, decoded, 16384);
+        guard ok_g else {
+            state.has_error = true;
+            res.status_code = 400;
+            return wire::StageVerdict.ShortCircuit { status_code: 400 };
+        }
+    }
+    let active_chunk = if (state.decompress_zstd || state.decompress_gzip) && chunk.len > 0 {
+        decoded[..]
+    } else {
+        chunk
+    };
+    state.bytes_processed = core::add_sat_u64(state.bytes_processed, active_chunk.len as u64);
+    if state.verify_digest {
+        core::sha256_update(state.sha256_ctx, active_chunk);
+        if is_last {
+            let actual = core::sha256_final(state.sha256_ctx);
+            guard core::ct_eq_bytes(actual[..], state.expected_sha256[..]) else {
+                state.has_error = true;
+                res.status_code = 400;
+                return wire::StageVerdict.ShortCircuit { status_code: 400 };
+            }
+        }
+    }
+    return user_stage.on_server_body_chunk(cfg, req, sctx, active_chunk, is_last, res);
 }

@@ -304,53 +304,124 @@ fn build_response_signature_base<B>(
 
 // ---- Cryptographic Engine (HMAC-SHA256, Ed25519, ECDSA-P256, RSA) --------
 
+// Default in-memory key wrapper for UFCS `<Signer>` and `<Verifier>` injection.
+struct MemoryKeySigner {
+    key: u8[..64] = [],
+}
+
+// Constructs a `MemoryKeySigner` with bounded key material (`<= 64` bytes).
+fn new_memory_key_signer(raw_key: const u8[:]) -> MemoryKeySigner, bool {
+    var s = MemoryKeySigner { .. };
+    guard raw_key.len > 0 && s.key.try_set(raw_key) else {
+        return s, false;
+    }
+    return s, true;
+}
+
+// Zeroizes and clears secret key bytes in `MemoryKeySigner`.
+fn clear_memory_key_signer(s: MemoryKeySigner&) {
+    core::secure_zeroize_slice(s.key[..]);
+    s.key.clear();
+}
+
+fn compute_rsa_raw_signature(
+    alg:        const u8[:],
+    secret_key: const u8[:],
+    sig_base:   const u8[:],
+    out_sig:    u8[..512]&,
+) -> bool {
+    out_sig.clear();
+    let klen = secret_key.len;
+    guard klen > 0 && (klen & 1) == 0 else { return false; }
+    let half = klen >> 1;
+    if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
+        guard klen >= 128 &&
+              core::rsa_pkcs1_sha256_sign(secret_key[..half], secret_key[half..], sig_base, out_sig) else {
+            out_sig.clear();
+            return false;
+        }
+        return true;
+    }
+    if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
+        let salt64 = core::sha512(sig_base);
+        guard klen >= 256 &&
+              core::rsa_pss_sha512_sign(secret_key[..half], secret_key[half..], salt64[..], sig_base, out_sig) else {
+            out_sig.clear();
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Computes raw binary signature bytes for RFC 9421 `alg` over `sig_base`.
+fn compute_raw_signature(
+    alg:        const u8[:],
+    secret_key: const u8[:],
+    sig_base:   const u8[:],
+    out_sig:    u8[..512]&,
+) -> bool {
+    out_sig.clear();
+    let klen = secret_key.len;
+    if alg == rfc::SIG_ALG_ED25519 {
+        guard klen == 32 else { return false; }
+        var seed_arr: u8[32] = [0; 32];
+        for i in 32 { seed_arr[i] = secret_key[i]; }
+        let ed_sig = core::ed25519_sign(seed_arr, sig_base);
+        core::secure_zeroize_32(seed_arr);
+        return out_sig.try_set(ed_sig[..]);
+    } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
+        guard klen == 32 else { return false; }
+        var priv_arr: u8[32] = [0; 32];
+        for i in 32 { priv_arr[i] = secret_key[i]; }
+        let ec_sig = core::ecdsa_p256_sign(priv_arr, sig_base);
+        core::secure_zeroize_32(priv_arr);
+        return out_sig.try_set(ec_sig[..]);
+    } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
+        let hmac_sig = core::hmac_sha256(secret_key, sig_base);
+        return out_sig.try_set(hmac_sig[..]);
+    }
+    return compute_rsa_raw_signature(alg, secret_key, sig_base, out_sig);
+}
+
+// UFCS `<Signer>` implementation for `MemoryKeySigner`.
+fn sign_message(
+    signer:  const MemoryKeySigner&,
+    alg:     const u8[:],
+    tbs:     const u8[:],
+    out_sig: u8[..512]&,
+) -> bool {
+    guard signer.key.len > 0 else {
+        out_sig.clear();
+        return false;
+    }
+    return compute_raw_signature(alg, signer.key[..], tbs, out_sig);
+}
+
+// UFCS `<Verifier>` implementation for `MemoryKeySigner`.
+fn verify_message(
+    signer:       const MemoryKeySigner&,
+    alg:          const u8[:],
+    tbs:          const u8[:],
+    received_sig: const u8[:],
+) -> bool {
+    guard signer.key.len > 0 else { return false; }
+    return verify_crypto_signature(alg, signer.key[..], tbs, received_sig);
+}
+
 fn compute_signature_b64(
     alg:        const u8[:],
     secret_key: const u8[:],
     sig_base:   const u8[:],
     out:        u8[..1024]&,
 ) -> bool {
-    if alg == rfc::SIG_ALG_ED25519 {
-        guard secret_key.len == 32 else { return false; }
-        var seed_arr: u8[32] = [0; 32];
-        for i in 32 { seed_arr[i] = secret_key[i]; }
-        let ed_sig = core::ed25519_sign(seed_arr, sig_base);
-        core::secure_zeroize_32(seed_arr);
-        core::base64_encode(ed_sig[..], out);
-        return true;
-    } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
-        guard secret_key.len == 32 else { return false; }
-        var priv_arr: u8[32] = [0; 32];
-        for i in 32 { priv_arr[i] = secret_key[i]; }
-        let ec_sig = core::ecdsa_p256_sign(priv_arr, sig_base);
-        core::secure_zeroize_32(priv_arr);
-        core::base64_encode(ec_sig[..], out);
-        return true;
-    } else if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
-        guard secret_key.len >= 128 && (secret_key.len % 2) == 0 else { return false; }
-        let half = secret_key.len / 2;
-        var rsa_sig: u8[..512] = [];
-        guard core::rsa_pkcs1_sha256_sign(secret_key[..half], secret_key[half..], sig_base, rsa_sig) else {
-            return false;
-        }
-        core::base64_encode(rsa_sig[..], out);
-        return true;
-    } else if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
-        guard secret_key.len >= 256 && (secret_key.len % 2) == 0 else { return false; }
-        let half = secret_key.len / 2;
-        let salt64 = core::sha512(sig_base);
-        var pss_sig: u8[..512] = [];
-        guard core::rsa_pss_sha512_sign(secret_key[..half], secret_key[half..], salt64[..], sig_base, pss_sig) else {
-            return false;
-        }
-        core::base64_encode(pss_sig[..], out);
-        return true;
-    } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
-        let hmac_sig = core::hmac_sha256(secret_key, sig_base);
-        core::base64_encode(hmac_sig[..], out);
-        return true;
+    var raw_sig: u8[..512] = [];
+    guard compute_raw_signature(alg, secret_key, sig_base, raw_sig) else {
+        out.clear();
+        return false;
     }
-    return false;
+    core::base64_encode(raw_sig[..], out);
+    return true;
 }
 
 fn verify_crypto_signature(
@@ -461,6 +532,28 @@ fn attach_response_signature_headers(res: Response&, params: const HttpSignature
 
 // ---- Request Signing & Verification --------------------------------------
 
+// Signs an HTTP request using an injected UFCS `<Signer>` (HSM / PKCS#11 / CloudKMS).
+fn sign_http_request_with<Signer>(
+    req:    Request&,
+    params: const HttpSignatureParams&,
+    signer: Signer&,
+) -> bool {
+    var sig_base: u8[..2048] = [];
+    guard build_signature_base(req, params, sig_base) else {
+        return false;
+    }
+
+    var raw_sig: u8[..512] = [];
+    guard signer.sign_message(params.alg[..], sig_base[..], raw_sig) else {
+        return false;
+    }
+
+    var b64_sig: u8[..1024] = [];
+    core::base64_encode(raw_sig[..], b64_sig);
+    attach_request_signature_headers(req, params, b64_sig[..]);
+    return true;
+}
+
 // Signs an HTTP request according to RFC 9421 and attaches Signature-Input and Signature headers.
 fn sign_http_request(
     req:        Request&,
@@ -517,6 +610,57 @@ fn verify_signature_input_label(
     return false;
 }
 
+fn validate_and_decode_signature_headers(
+    headers: const HeaderMap&,
+    label:   const u8[:],
+    params:  const HttpSignatureParams&,
+    out_sig: u8[..512]&,
+) -> bool {
+    out_sig.clear();
+    var comb_in: u8[..1024] = [];
+    let ok_in = headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
+    let sig_input_val = if ok_in { comb_in[..] } else { headers.get_header(rfc::HEADER_SIGNATURE_INPUT) };
+    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else {
+        return false;
+    }
+
+    var comb_sig: u8[..1024] = [];
+    let ok_sig = headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
+    let sig_header_val = if ok_sig { comb_sig[..] } else { headers.get_header(rfc::HEADER_SIGNATURE) };
+    guard sig_header_val.len > 0 else { return false; }
+
+    let received_b64, ok = extract_signature_value(sig_header_val, label);
+    guard ok else { return false; }
+
+    guard core::base64_decode(received_b64, out_sig) else {
+        out_sig.clear();
+        return false;
+    }
+    return true;
+}
+
+// Verifies an RFC 9421 signature on a Request using an injected UFCS `<Verifier>`.
+fn verify_http_signature_with<Verifier>(
+    req:      const Request&,
+    label:    const u8[:],
+    params:   const HttpSignatureParams&,
+    verifier: Verifier&,
+    now_sec:  i64 = 0,
+) -> bool {
+    guard label == params.label else { return false; }
+    guard validate_signature_timestamps(params, now_sec) else { return false; }
+
+    var sig_base: u8[..2048] = [];
+    guard build_signature_base(req, params, sig_base) else { return false; }
+
+    var received_sig: u8[..512] = [];
+    guard validate_and_decode_signature_headers(req.headers, label, params, received_sig) else {
+        return false;
+    }
+
+    return verifier.verify_message(params.alg[..], sig_base[..], received_sig[..]);
+}
+
 // Verifies an RFC 9421 signature on a Request.
 fn verify_http_signature(
     req:       const Request&,
@@ -531,26 +675,38 @@ fn verify_http_signature(
     var sig_base: u8[..2048] = [];
     guard build_signature_base(req, params, sig_base) else { return false; }
 
-    var comb_in: u8[..1024] = [];
-    let ok_in = req.headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
-    let sig_input_val = if ok_in { comb_in[..] } else { req.header(rfc::HEADER_SIGNATURE_INPUT) };
-    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
-
-    var comb_sig: u8[..1024] = [];
-    let ok_sig = req.headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
-    let sig_header_val = if ok_sig { comb_sig[..] } else { req.header(rfc::HEADER_SIGNATURE) };
-    guard sig_header_val.len > 0 else { return false; }
-
-    let received_b64, ok = extract_signature_value(sig_header_val, label);
-    guard ok else { return false; }
-
     var received_sig: u8[..512] = [];
-    guard core::base64_decode(received_b64, received_sig) else { return false; }
+    guard validate_and_decode_signature_headers(req.headers, label, params, received_sig) else {
+        return false;
+    }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
 }
 
 // ---- Response Signing & Verification -------------------------------------
+
+// Signs an HTTP response using an injected UFCS `<Signer>` (HSM / PKCS#11 / CloudKMS).
+fn sign_http_response_with<Signer>(
+    res:    Response&,
+    req:    const Request&,
+    params: const HttpSignatureParams&,
+    signer: Signer&,
+) -> bool {
+    var sig_base: u8[..2048] = [];
+    guard build_response_signature_base(res, req, params, sig_base) else {
+        return false;
+    }
+
+    var raw_sig: u8[..512] = [];
+    guard signer.sign_message(params.alg[..], sig_base[..], raw_sig) else {
+        return false;
+    }
+
+    var b64_sig: u8[..1024] = [];
+    core::base64_encode(raw_sig[..], b64_sig);
+    attach_response_signature_headers(res, params, b64_sig[..]);
+    return true;
+}
 
 // Signs an HTTP response according to RFC 9421.
 fn sign_http_response(
@@ -571,6 +727,29 @@ fn sign_http_response(
     return true;
 }
 
+// Verifies an RFC 9421 signature on a Response using an injected UFCS `<Verifier>`.
+fn verify_http_response_signature_with<Verifier>(
+    res:      const Response&,
+    req:      const Request&,
+    label:    const u8[:],
+    params:   const HttpSignatureParams&,
+    verifier: Verifier&,
+    now_sec:  i64 = 0,
+) -> bool {
+    guard label == params.label else { return false; }
+    guard validate_signature_timestamps(params, now_sec) else { return false; }
+
+    var sig_base: u8[..2048] = [];
+    guard build_response_signature_base(res, req, params, sig_base) else { return false; }
+
+    var received_sig: u8[..512] = [];
+    guard validate_and_decode_signature_headers(res.headers, label, params, received_sig) else {
+        return false;
+    }
+
+    return verifier.verify_message(params.alg[..], sig_base[..], received_sig[..]);
+}
+
 // Verifies an RFC 9421 signature on a Response.
 fn verify_http_response_signature(
     res:       const Response&,
@@ -586,21 +765,10 @@ fn verify_http_response_signature(
     var sig_base: u8[..2048] = [];
     guard build_response_signature_base(res, req, params, sig_base) else { return false; }
 
-    var comb_in: u8[..1024] = [];
-    let ok_in = res.headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
-    let sig_input_val = if ok_in { comb_in[..] } else { res.header(rfc::HEADER_SIGNATURE_INPUT) };
-    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else { return false; }
-
-    var comb_sig: u8[..1024] = [];
-    let ok_sig = res.headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
-    let sig_header_val = if ok_sig { comb_sig[..] } else { res.header(rfc::HEADER_SIGNATURE) };
-    guard sig_header_val.len > 0 else { return false; }
-
-    let received_b64, ok = extract_signature_value(sig_header_val, label);
-    guard ok else { return false; }
-
     var received_sig: u8[..512] = [];
-    guard core::base64_decode(received_b64, received_sig) else { return false; }
+    guard validate_and_decode_signature_headers(res.headers, label, params, received_sig) else {
+        return false;
+    }
 
     return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
 }

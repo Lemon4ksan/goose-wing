@@ -10,6 +10,20 @@ import std;
 import core from "..";
 import .tcp;
 
+const VIRTUAL_FD_TAG:       i64 = 0x40000000;
+const VIRTUAL_FD_B_END_BIT: i64 = 0x20000000;
+const MAX_VIRTUAL_PIPES:    i64 = 32;
+
+struct VirtualPipeSlot {
+    a_to_b:   core::RingBuffer = core::RingBuffer { .. },
+    b_to_a:   core::RingBuffer = core::RingBuffer { .. },
+    closed_a: bool             = false,
+    closed_b: bool             = false,
+    in_use:   bool             = false,
+}
+
+var g_virtual_pipes: VirtualPipeSlot[32] = [VirtualPipeSlot { .. }; 32];
+
 extern fn native_udp_bind(host: const u8[:], port: u16) -> i64 = "wing_udp_bind";
 extern fn native_udp_sendto(sock_fd: i64, data: const u8[:], host: const u8[:], port: u16) -> i32 = "wing_udp_sendto";
 extern fn native_udp_sendto_ip4(
@@ -53,6 +67,141 @@ enum Transport {
     Tls { fd: i64, record_seq_rx: u64, record_seq_tx: u64, cipher_slot: u16 },
     Udp { fd: i64, peer_ip4: u32, peer_port: u16 },
     Mock { route_idx: u16, cursor: u32 },
+    Virtual { pipe_slot: u16, is_b_end: bool },
+}
+
+// ---- In-Memory Duplex Virtual Pipe Lifecycle & Descriptors -----------------
+
+fn alloc_virtual_pipe_slot() -> u16, bool {
+    for i in MAX_VIRTUAL_PIPES {
+        let slot .= g_virtual_pipes[i];
+        if !slot.in_use {
+            core::clear(slot.a_to_b);
+            core::clear(slot.b_to_a);
+            slot.closed_a = false;
+            slot.closed_b = false;
+            slot.in_use = true;
+            return i as u16, true;
+        }
+    }
+    return 0xFFFF, false;
+}
+
+fn free_virtual_pipe_slot(pipe_slot: u16) {
+    let idx = pipe_slot as i64;
+    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES else { return; }
+    let slot .= g_virtual_pipes[idx];
+    core::clear(slot.a_to_b);
+    core::clear(slot.b_to_a);
+    slot.closed_a = true;
+    slot.closed_b = true;
+    slot.in_use = false;
+}
+
+fn open_virtual_pipe_pair() -> Transport, Transport, bool {
+    let slot_idx, ok = alloc_virtual_pipe_slot();
+    guard ok else {
+        return Transport.Disconnected, Transport.Disconnected, false;
+    }
+    let end_a = Transport.Virtual { pipe_slot: slot_idx, is_b_end: false };
+    let end_b = Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
+    return end_a, end_b, true;
+}
+
+fn with_virtual_pipe_pair<F>() -> bool {
+    let slot_idx, ok = alloc_virtual_pipe_slot();
+    guard ok else { return false; }
+    defer free_virtual_pipe_slot(slot_idx);
+    var end_a = Transport.Virtual { pipe_slot: slot_idx, is_b_end: false };
+    var end_b = Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
+    F(end_a, end_b);
+    return true;
+}
+
+inline fn virtual_pipe_to_fd(pipe_slot: u16, is_b_end: bool) -> i64 {
+    let slot_i64 = (pipe_slot as i64) & 0xFFFF;
+    let end_bit = if is_b_end { VIRTUAL_FD_B_END_BIT } else { 0 };
+    return VIRTUAL_FD_TAG | end_bit | slot_i64;
+}
+
+inline fn is_virtual_pipe_fd(fd: i64) -> bool {
+    return fd > 0 && (fd & VIRTUAL_FD_TAG) != 0;
+}
+
+// Decodes a tagged virtual pipe descriptor into `(pipe_slot, is_b_end, ok)`.
+//
+// Example:
+//   fd = 0x60000003
+//   returns: 3, true, true
+fn decode_virtual_pipe_fd(fd: i64) -> u16, bool, bool {
+    guard is_virtual_pipe_fd(fd) else { return 0xFFFF, false, false; }
+    let slot_i64 = fd & 0xFFFF;
+    guard slot_i64 >= 0 && slot_i64 < MAX_VIRTUAL_PIPES else { return 0xFFFF, false, false; }
+    let is_b_end = (fd & VIRTUAL_FD_B_END_BIT) != 0;
+    return slot_i64 as u16, is_b_end, true;
+}
+
+fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
+    let idx = pipe_slot as i64;
+    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && data.len > 0 else { return 0; }
+    let slot .= g_virtual_pipes[idx];
+    guard slot.in_use && !slot.closed_a && !slot.closed_b else { return -1; }
+    if is_b_end {
+        let written, _ = core::write(slot.b_to_a, data);
+        guard written > 0 else { return -1; }
+        return (written & 0x7FFFFFFF) as i32;
+    }
+    let written, _ = core::write(slot.a_to_b, data);
+    guard written > 0 else { return -1; }
+    return (written & 0x7FFFFFFF) as i32;
+}
+
+fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
+    let idx = pipe_slot as i64;
+    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && dst.len > 0 else { return 0; }
+    let slot .= g_virtual_pipes[idx];
+    guard slot.in_use else { return -1; }
+    if is_b_end {
+        guard !slot.closed_b else { return 0; }
+        let n_read, _ = core::read(slot.a_to_b, dst);
+        return (n_read & 0x7FFFFFFF) as i32;
+    }
+    guard !slot.closed_a else { return 0; }
+    let n_read, _ = core::read(slot.b_to_a, dst);
+    return (n_read & 0x7FFFFFFF) as i32;
+}
+
+fn virtual_pipe_close(pipe_slot: u16, is_b_end: bool) {
+    let idx = pipe_slot as i64;
+    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES else { return; }
+    let slot .= g_virtual_pipes[idx];
+    guard slot.in_use else { return; }
+    if is_b_end {
+        slot.closed_b = true;
+    } else {
+        slot.closed_a = true;
+    }
+    if slot.closed_a && slot.closed_b {
+        free_virtual_pipe_slot(pipe_slot);
+    }
+}
+
+fn virtual_fd_send(fd: i64, data: const u8[:]) -> i32 {
+    let pipe_slot, is_b_end, ok = decode_virtual_pipe_fd(fd);
+    guard ok else { return -1; }
+    return virtual_pipe_send(pipe_slot, is_b_end, data);
+}
+
+fn virtual_fd_recv(fd: i64, dst: u8[:]) -> i32 {
+    let pipe_slot, is_b_end, ok = decode_virtual_pipe_fd(fd);
+    guard ok else { return -1; }
+    return virtual_pipe_recv(pipe_slot, is_b_end, dst);
+}
+
+fn virtual_fd_close(fd: i64) {
+    let pipe_slot, is_b_end, ok = decode_virtual_pipe_fd(fd);
+    guard ok else { return; }
+    virtual_pipe_close(pipe_slot, is_b_end);
 }
 
 // ---- Transport Status & Predicates -----------------------------------------
@@ -94,6 +243,10 @@ fn send(t: Transport.Mock, data: const u8[:]) -> i32 {
     return data.len as i32;
 }
 
+fn send(t: Transport.Virtual, data: const u8[:]) -> i32 {
+    return virtual_pipe_send(t.pipe_slot, t.is_b_end, data);
+}
+
 // Polymorphic dispatch via CPU branch prediction without vtable
 fn send(t: Transport, data: const u8[:]) -> i32 {
     return match t {
@@ -103,6 +256,7 @@ fn send(t: Transport, data: const u8[:]) -> i32 {
         Tls tls => tls.send(data),
         Udp udp => udp.send(data),
         Mock m => m.send(data),
+        Virtual v => v.send(data),
     };
 }
 
@@ -138,6 +292,10 @@ fn recv_slice(t: Transport.Mock, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     return 0;
 }
 
+fn recv_slice(t: Transport.Virtual, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    return virtual_pipe_recv(t.pipe_slot, t.is_b_end, dst);
+}
+
 // Polymorphic dispatch via CPU branch prediction without vtable
 fn recv_slice(t: Transport, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     return match t {
@@ -147,6 +305,7 @@ fn recv_slice(t: Transport, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
         Tls tls => tls.recv_slice(dst, timeout_ms),
         Udp udp => udp.recv_slice(dst, timeout_ms),
         Mock m => m.recv_slice(dst, timeout_ms),
+        Virtual v => v.recv_slice(dst, timeout_ms),
     };
 }
 
@@ -180,6 +339,10 @@ fn close(t: Transport.Udp) {
 fn close(t: Transport.Mock) {
 }
 
+fn close(t: Transport.Virtual) {
+    virtual_pipe_close(t.pipe_slot, t.is_b_end);
+}
+
 // Polymorphic close and state reset
 fn close(t: Transport&) {
     match t {
@@ -189,6 +352,21 @@ fn close(t: Transport&) {
         Tls tls => tls.close(),
         Udp udp => udp.close(),
         Mock m => m.close(),
+        Virtual v => v.close(),
     };
     t = Transport.Disconnected;
+}
+
+// ---- Generic UFCS Stream Adapters (<Io>) -----------------------------------
+
+inline fn stream_send<Io>(io: Io&, data: const u8[:]) -> i32 {
+    return io.send(data);
+}
+
+inline fn stream_recv<Io>(io: Io&, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    return io.recv_slice(dst, timeout_ms);
+}
+
+inline fn stream_close<Io>(io: Io&) {
+    io.close();
 }

@@ -393,7 +393,7 @@ fn is_same_origin_url(target_url: const u8[:], base_url_raw: const u8[:]) -> boo
 // Searches cache entries for matching URL and valid Vary variant.
 // Returns entry index or -1 on miss.
 fn find_matching_entry(
-    cache:       const HttpCache&,
+    entries:     const CachedEntry[:],
     req_url:     const u8[:],
     req_hash:    u32,
     req_headers: const HeaderMap&,
@@ -402,7 +402,7 @@ fn find_matching_entry(
     var matched_idx:      i64 = -1;
     var newest_date_unix: i64 = -1;
 
-    for &entry, idx in cache.entries {
+    for &entry, idx in entries {
         if !entry.is_valid || entry.security_zeroed { continue; }
         let exact_match = entry.url_hash == req_hash && entry.url[..] == req_url;
         if !exact_match && !are_urls_nvs_equivalent(entry.url[..], req_url, entry.nvs) { continue; }
@@ -522,6 +522,67 @@ fn build_revalidation_headers(entry: const CachedEntry&) -> HeaderMap {
     return cond;
 }
 
+fn evaluate_matched_cache_entry(
+    matched_entry: const CachedEntry&,
+    options:       const CacheOptions&,
+    req:           const Request&,
+    req_cc:        const CacheControl&,
+    matched_idx:   i64,
+    cur_now:       core::Time,
+    cur_mono:      core::MonotonicInstant,
+) -> LookupDecision {
+    var dec = LookupDecision { .. };
+    var ts = matched_entry.timestamps;
+    ts.now = cur_now;
+    if cur_mono.nanos > 0 {
+        ts.now_mono = cur_mono;
+        ts.has_monotonic = true;
+    } else {
+        advance_monotonic_for_age(ts, cur_now, matched_entry.timestamps.now);
+    }
+
+    let metrics = evaluate_freshness(
+        matched_entry.cc,
+        req_cc,
+        matched_entry.headers,
+        ts,
+        FreshnessPolicy { shared: options.shared, security_zeroed: matched_entry.security_zeroed },
+        options.heuristic_fraction,
+        options.immutable_min_ttl_sec,
+    );
+
+    let can_serve = (metrics.is_fresh || metrics.stale_allowed) && !metrics.requires_revalidation;
+    if can_serve {
+        dec.kind = LookupResultKind.Hit;
+        dec.entry_idx = matched_idx;
+        dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
+        matched_entry.entry_to_response(cur_now, dec.cached_response);
+        apply_cached_range_if_requested(matched_entry, req, dec.cached_response);
+        var cs_entry = CacheStatusEntry {
+            hit: true,
+            ttl: max(0, core::sub_sat_i64(metrics.freshness_lifetime_sec, metrics.current_age_sec)),
+            ..
+        };
+        let cname = if options.target_name.len > 0 { options.target_name[..] } else { "GooseCache" };
+        cs_entry.cache_name.try_set(cname);
+        var cs_buf: u8[..256] = [];
+        format_cache_status(cs_entry, cs_buf);
+        dec.cached_response.set_header("Cache-Status", cs_buf[..]);
+        return dec;
+    }
+
+    if req_cc.is_only_if_cached() {
+        dec.kind = LookupResultKind.Fail504;
+        dec.status_code = 504;
+        return dec;
+    }
+
+    dec.kind = LookupResultKind.Revalidate;
+    dec.entry_idx = matched_idx;
+    dec.conditional_headers = matched_entry.build_revalidation_headers();
+    return dec;
+}
+
 // Performs cache lookup for an incoming request (RFC 9111 Section 4).
 // Evaluates freshness, Vary matching, and returns Hit, Revalidate, Miss, or Fail504.
 fn lookup(
@@ -552,7 +613,7 @@ fn lookup(
     }
 
     let req_hash = hash_fnv1a(req.url[..]);
-    let matched_idx = cache.find_matching_entry(req.url[..], req_hash, req.headers, is_get);
+    let matched_idx = find_matching_entry(cache.entries[..], req.url[..], req_hash, req.headers, is_get);
 
     if matched_idx < 0 {
         cache.total_misses++;
@@ -568,59 +629,24 @@ fn lookup(
     // Touch LRU on access
     cache.lru_touch(matched_idx);
 
-    let matched_entry = &cache.entries[matched_idx];
-    var ts = matched_entry.timestamps;
-    ts.now = cur_now;
-    if cur_mono.nanos > 0 {
-        ts.now_mono = cur_mono;
-        ts.has_monotonic = true;
-    } else {
-        advance_monotonic_for_age(ts, cur_now, matched_entry.timestamps.now);
-    }
-
-    let metrics = evaluate_freshness(
-        matched_entry.cc,
+    let matched_entry .= cache.entries[matched_idx];
+    let eval_dec = evaluate_matched_cache_entry(
+        matched_entry,
+        cache.options,
+        req,
         req_cc,
-        matched_entry.headers,
-        ts,
-        FreshnessPolicy { shared: cache.options.shared, security_zeroed: matched_entry.security_zeroed },
-        cache.options.heuristic_fraction,
-        cache.options.immutable_min_ttl_sec,
+        matched_idx,
+        cur_now,
+        cur_mono,
     );
-
-    let can_serve = (metrics.is_fresh || metrics.stale_allowed) && !metrics.requires_revalidation;
-    if can_serve {
+    if eval_dec.kind == LookupResultKind.Hit {
         cache.total_hits++;
-        dec.kind = LookupResultKind.Hit;
-        dec.entry_idx = matched_idx;
-        dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
-        matched_entry.entry_to_response(cur_now, dec.cached_response);
-        apply_cached_range_if_requested(matched_entry, req, dec.cached_response);
-        var cs_entry = CacheStatusEntry {
-            hit: true,
-            ttl: max(0, metrics.freshness_lifetime_sec - metrics.current_age_sec),
-            ..
-        };
-        let cname = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
-        cs_entry.cache_name.try_set(cname);
-        var cs_buf: u8[..256] = [];
-        format_cache_status(cs_entry, cs_buf);
-        dec.cached_response.set_header("Cache-Status", cs_buf[..]);
-        return dec;
-    }
-
-    if req_cc.is_only_if_cached() {
+    } else if eval_dec.kind == LookupResultKind.Revalidate {
+        cache.total_revalidations++;
+    } else {
         cache.total_misses++;
-        dec.kind = LookupResultKind.Fail504;
-        dec.status_code = 504;
-        return dec;
     }
-
-    cache.total_revalidations++;
-    dec.kind = LookupResultKind.Revalidate;
-    dec.entry_idx = matched_idx;
-    dec.conditional_headers = matched_entry.build_revalidation_headers();
-    return dec;
+    return eval_dec;
 }
 
 // ---- on_response helpers ---------------------------------------------------
@@ -720,7 +746,7 @@ fn freshen_cached_entry_304(
 
 // Evaluates whether a network response is permissible for storage under RFC 9111 rules.
 fn is_response_cacheable(
-    cache:       const HttpCache&,
+    options:     const CacheOptions&,
     req_cc:      const CacheControl&,
     req_headers: const HeaderMap&,
     resp:        const Response&,
@@ -737,10 +763,10 @@ fn is_response_cacheable(
         if !has_explicit { return false; }
     }
 
-    if cache.options.shared {
+    if options.shared {
         let priv_blocked = resp_cc.is_private() &&
             (resp_cc.private_overflow || resp_cc.private_fields.len == 0) &&
-            !cache.options.cache_private;
+            !options.cache_private;
         if priv_blocked {
             return false;
         }
@@ -751,7 +777,7 @@ fn is_response_cacheable(
     }
 
     guard resp.body.len <= 4096 else { return false; }
-    return resp.body.len <= cache.options.max_entry_size;
+    return resp.body.len <= options.max_entry_size;
 }
 
 // Stores or updates a cached entry using O(1) LRU insertion and eviction.
@@ -899,7 +925,7 @@ fn on_response(
         return dec;
     }
 
-    guard cache.is_response_cacheable(req_cc, req.headers, resp, resp_cc) else {
+    guard is_response_cacheable(cache.options, req_cc, req.headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
@@ -1031,4 +1057,251 @@ fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Respon
 
     cache.total_invalidations += count;
     return count;
+}
+
+// ---- scalable data-stack http cache (root struct) --------------------------
+
+// Dynamically sized HTTP cache engine on Goose's data stack for CDN and edge deployments.
+root struct ScalableHttpCache {
+    options:      CacheOptions     = CacheOptions { .. },
+    entries:      CachedEntry[>..] = [],
+    max_entries:  i64              = 64,
+    max_body_cap: i64              = 4096,
+    lru_head:     i32              = -1,
+    lru_tail:     i32              = -1,
+}
+
+// Initializes a `ScalableHttpCache` with dynamic entry capacity and body cap.
+fn init_scalable_http_cache(cache: ScalableHttpCache&, max_entries: i64, max_body_cap: i64 = 4096) {
+    let eff_max = if max_entries > 0 { max_entries } else { 64 };
+    let eff_body = if max_body_cap > 0 { min(max_body_cap, 4096) } else { 4096 };
+    cache.max_entries = eff_max;
+    cache.max_body_cap = eff_body;
+    cache.options.max_entry_size = eff_body;
+    cache.entries.clear();
+    cache.lru_head = -1;
+    cache.lru_tail = -1;
+}
+
+// Detaches entry at `idx` from `ScalableHttpCache` intrusive O(1) LRU list in-place.
+fn detach_scalable_lru(cache: ScalableHttpCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    let node .= cache.entries[idx as i64];
+    let p = node.prev_lru;
+    let n = node.next_lru;
+    if p >= 0 && p < cache.entries.len {
+        cache.entries[p as i64].next_lru = n;
+    } else if cache.lru_head == idx {
+        cache.lru_head = n;
+    }
+    if n >= 0 && n < cache.entries.len {
+        cache.entries[n as i64].prev_lru = p;
+    } else if cache.lru_tail == idx {
+        cache.lru_tail = p;
+    }
+    node.prev_lru = -1;
+    node.next_lru = -1;
+}
+
+// Attaches entry at `idx` to the MRU tail of `ScalableHttpCache` intrusive O(1) LRU list.
+fn attach_scalable_lru_tail(cache: ScalableHttpCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    let tail = cache.lru_tail;
+    let node .= cache.entries[idx as i64];
+    node.prev_lru = tail;
+    node.next_lru = -1;
+    if tail >= 0 && tail < cache.entries.len {
+        cache.entries[tail as i64].next_lru = idx;
+    } else {
+        cache.lru_head = idx;
+    }
+    cache.lru_tail = idx;
+}
+
+// Promotes accessed entry at `idx` to the MRU tail of `ScalableHttpCache` in O(1).
+fn touch_scalable_lru(cache: ScalableHttpCache&, idx: i32) {
+    guard idx >= 0 && idx < cache.entries.len else { return; }
+    if cache.lru_tail == idx {
+        return;
+    }
+    detach_scalable_lru(cache, idx);
+    attach_scalable_lru_tail(cache, idx);
+}
+
+// Performs RFC 9111 cache lookup on `ScalableHttpCache` (compatible with `stage_client_cache_lookup<Cache>`).
+fn lookup(
+    cache:  ScalableHttpCache&,
+    req:    const Request&,
+    now_ts: core::Time,
+) -> LookupDecision {
+    var dec = LookupDecision { .. };
+    let is_get = req.method[..].eq_ascii_fold("GET");
+    let is_head = req.method[..].eq_ascii_fold("HEAD");
+    guard is_get || is_head else {
+        dec.kind = LookupResultKind.Miss;
+        return dec;
+    }
+
+    let req_cc = parse_cache_control_headers(
+        req.headers,
+        CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
+    if req_cc.is_no_store() {
+        dec.kind = LookupResultKind.Miss;
+        return dec;
+    }
+
+    let req_hash = hash_fnv1a(req.url[..]);
+    let matched_idx = find_matching_entry(cache.entries[..], req.url[..], req_hash, req.headers, is_get);
+    if matched_idx < 0 {
+        if req_cc.is_only_if_cached() {
+            dec.kind = LookupResultKind.Fail504;
+            dec.status_code = 504;
+        }
+        return dec;
+    }
+
+    touch_scalable_lru(cache, matched_idx as i32);
+    let matched_entry .= cache.entries[matched_idx];
+    return evaluate_matched_cache_entry(
+        matched_entry,
+        cache.options,
+        req,
+        req_cc,
+        matched_idx,
+        now_ts,
+        core::MonotonicInstant { .. },
+    );
+}
+
+fn try_update_existing_scalable_entry(
+    cache:       ScalableHttpCache&,
+    entry:       const CachedEntry&,
+    req_headers: const HeaderMap&,
+) -> bool {
+    for i in cache.entries.len {
+        let existing .= cache.entries[i];
+        let exact_match = existing.url_hash == entry.url_hash && existing.url[..] == entry.url[..];
+        let nvs_match = are_urls_nvs_equivalent(existing.url[..], entry.url[..], existing.nvs) ||
+            are_urls_nvs_equivalent(existing.url[..], entry.url[..], entry.nvs);
+        if (exact_match || nvs_match) && existing.vary.matches_vary(req_headers) {
+            if existing.is_valid && !existing.head_only && entry.head_only {
+                touch_scalable_lru(cache, i as i32);
+                return true;
+            }
+            if existing.is_valid {
+                detach_scalable_lru(cache, i as i32);
+            }
+            existing = copy(entry);
+            attach_scalable_lru_tail(cache, i as i32);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn upsert_scalable_cache_entry(
+    cache:       ScalableHttpCache&,
+    entry:       const CachedEntry&,
+    req_headers: const HeaderMap&,
+) -> bool {
+    if try_update_existing_scalable_entry(cache, entry, req_headers) {
+        return true;
+    }
+    for i in cache.entries.len {
+        let slot .= cache.entries[i];
+        if !slot.is_valid {
+            slot = copy(entry);
+            attach_scalable_lru_tail(cache, i as i32);
+            return true;
+        }
+    }
+    let eff_max = if cache.max_entries > 0 { cache.max_entries } else { 64 };
+    if cache.entries.len < eff_max {
+        let new_idx = cache.entries.len as i32;
+        cache.entries.push(copy(entry));
+        attach_scalable_lru_tail(cache, new_idx);
+        return true;
+    }
+    let victim_idx = cache.lru_head;
+    guard victim_idx >= 0 && victim_idx < cache.entries.len else { return false; }
+    detach_scalable_lru(cache, victim_idx);
+    let victim .= cache.entries[victim_idx as i64];
+    victim = copy(entry);
+    attach_scalable_lru_tail(cache, victim_idx);
+    return true;
+}
+
+fn populate_entry_validators(entry: CachedEntry&) {
+    let etag_raw = entry.headers.get_header("etag");
+    if etag_raw.len > 0 {
+        entry.etag = parse_etag(etag_raw);
+    }
+    let lm_raw = entry.headers.get_header("last-modified");
+    if lm_raw.len > 0 {
+        let d_val, ok_d = core::parse_http_date(lm_raw);
+        if ok_d { entry.last_modified = d_val; }
+    }
+}
+
+fn resolve_target_cache_name(options: const CacheOptions&) -> const u8[:] {
+    guard options.shared else { return ""; }
+    if options.target_name.len > 0 {
+        return options.target_name[..];
+    }
+    return "cdn";
+}
+
+// Stores a cacheable HTTP response in `ScalableHttpCache` with O(1) LRU eviction at `max_entries`.
+fn store_response(
+    cache:  ScalableHttpCache&,
+    req:    const Request&,
+    resp:   const Response&,
+    now_ts: core::Time,
+) -> bool {
+    let is_get = req.method[..].eq_ascii_fold("GET");
+    let is_head = req.method[..].eq_ascii_fold("HEAD");
+    guard is_get || is_head else { return false; }
+    guard resp.body.len <= cache.max_body_cap else { return false; }
+    guard req.url.len <= 2048 && req.method.len <= 16 else { return false; }
+
+    let req_cc = parse_cache_control_headers(
+        req.headers,
+        CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
+    let resp_headers = resp.response_headers_to_map();
+    let resp_cc = parse_targeted_cache_control_headers(
+        resp_headers,
+        resolve_target_cache_name(cache.options),
+        CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
+    guard is_response_cacheable(cache.options, req_cc, req.headers, resp, resp_cc) else {
+        return false;
+    }
+
+    var sanitized = HeaderMap { .. };
+    resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
+    let ts = CacheTimestamps {
+        request_time:  now_ts,
+        response_time: now_ts,
+        now:           now_ts,
+        ..
+    };
+    var entry = CachedEntry {
+        url_hash:        hash_fnv1a(req.url[..]),
+        status_code:     resp.status_code,
+        headers:         sanitized,
+        cc:              resp_cc,
+        timestamps:      ts,
+        head_only:       is_head,
+        security_zeroed: false,
+        is_valid:        true,
+        ..
+    };
+    guard refresh_entry_vary_and_nvs(entry, req.headers) else { return false; }
+    populate_entry_validators(entry);
+    entry.url.append(req.url[..]);
+    entry.method.append(req.method[..]);
+    entry.body.append(resp.body[..]);
+    return upsert_scalable_cache_entry(cache, entry, req.headers);
 }

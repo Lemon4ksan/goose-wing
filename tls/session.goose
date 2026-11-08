@@ -20,6 +20,7 @@ import .post_quantum;
 import .cert_compression;
 import .ech;
 import net.tcp;
+import net.transport;
 
 // ---- Streaming TLS 1.3 Transcript Hash Context (RFC 8446 §4.4.1) ----------
 
@@ -245,9 +246,13 @@ fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
     guard fd > 0 && dst.len > 0 else { return false; }
     var total_read: i64 = 0;
     while total_read < dst.len {
-        let recvd = tcp_recv_slice(fd, dst[total_read..], timeout_ms);
+        let recvd = if is_virtual_pipe_fd(fd) {
+            virtual_fd_recv(fd, dst[total_read..])
+        } else {
+            tcp_recv_slice(fd, dst[total_read..], timeout_ms)
+        };
         guard recvd > 0 else { return false; }
-        total_read += recvd;
+        total_read = core::add_sat_i64(total_read, recvd);
     }
     return true;
 }
@@ -257,9 +262,13 @@ fn tls_write_all(fd: i64, data: const u8[:]) -> bool {
     guard fd > 0 && data.len > 0 else { return false; }
     var total_sent: i64 = 0;
     while total_sent < data.len {
-        let sent = tcp_send(fd, data[total_sent..]);
+        let sent = if is_virtual_pipe_fd(fd) {
+            virtual_fd_send(fd, data[total_sent..])
+        } else {
+            tcp_send(fd, data[total_sent..])
+        };
         guard sent > 0 else { return false; }
-        total_sent += sent;
+        total_sent = core::add_sat_i64(total_sent, sent);
     }
     return true;
 }
@@ -609,7 +618,11 @@ fn tls_transport_close(fd: i64, slot_idx: u16) {
             let alert_data: u8[2] = [1, 0];
             tls_send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_ALERT, alert_data[..]);
         }
-        tcp_close(fd);
+        if is_virtual_pipe_fd(fd) {
+            virtual_fd_close(fd);
+        } else {
+            tcp_close(fd);
+        }
     }
     free_tls_cipher_slot(slot_idx);
 }

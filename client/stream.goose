@@ -10,6 +10,7 @@ import core from "..";
 import client.profile;
 import client.request;
 import client.response;
+import http.digest_fields;
 import http.headers;
 import http.headers.chunked_fsm;
 
@@ -17,7 +18,8 @@ import http.headers.chunked_fsm;
 
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
 fn encode_chunk<B>(data: const u8[:], out: B&) {
-    (data.len as! u64).format_u64_hex(out);
+    let chunk_len = data.len as! u64;
+    chunk_len.format_u64_hex(out);
     out.push('\r');
     out.push('\n');
     out.append(data);
@@ -541,42 +543,4 @@ fn stream_progress(reader: const StreamReader&) -> StreamProgress {
         p.percent = min(100.0, (reader.bytes_read as! f64 / reader.content_length) * 100.0);
     }
     return p;
-}
-
-// ---- 4. Push-Streaming Sinks & Monomorphized Decorators ---------------------
-
-// Zero-allocation push sink appending directly into caller-owned byte buffer.
-struct ArenaSink {
-    max_bytes: i64 = 16777216,
-}
-
-inline fn emit<B>(sink: ArenaSink, chunk: const u8[:], out: B&) -> bool {
-    guard out.len + chunk.len <= sink.max_bytes else { return false; }
-    out.append(chunk);
-    return true;
-}
-
-// Feeds incoming wire slice through 64-bit ChunkFsmDecoder and emits clean slices into sink.
-fn pump_chunk_fsm<Sink, B>(
-    dec:  internal::ChunkFsmDecoder&,
-    wire: const u8[:],
-    sink: Sink,
-    out:  B&,
-) -> internal::ChunkFsmStatus, i64 {
-    var total_consumed: i64 = 0;
-    var cursor:         i64 = 0;
-    while cursor < wire.len {
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
-        cursor += consumed;
-        total_consumed += consumed;
-        if chunk.len > 0 {
-            guard sink.emit(chunk, out) else {
-                return internal::ChunkFsmStatus.Error, total_consumed;
-            }
-        }
-        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
-            return st, total_consumed;
-        }
-    }
-    return internal::ChunkFsmStatus.NeedMore, total_consumed;
 }

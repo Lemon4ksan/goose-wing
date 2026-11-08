@@ -228,3 +228,4 @@ import wire.cmd;
 import wire.pipeline;
 import wire.sync;
 import wire.submit;
+import wire.service;

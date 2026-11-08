@@ -10,6 +10,7 @@ import std;
 import core from "..";
 import client.request;
 import client.response;
+import http.headers.chunked_fsm;
 import .sfv;
 
 // ---- RFC 9530 Constants --------------------------------------------------
@@ -166,4 +167,190 @@ fn verify_response_repr_digest(res: const Response&) -> bool {
     let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_REPR_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
+}
+
+// ---- Incremental Streaming Digest Verification (RFC 9530) ----------------
+
+enum StreamingDigestAlgo {
+    None,
+    Sha256,
+    Sha512,
+}
+
+struct StreamingDigestVerifier {
+    algo:          StreamingDigestAlgo = StreamingDigestAlgo.None,
+    sha256_ctx:    core::Sha256Ctx     = core::Sha256Ctx { .. },
+    sha512_ctx:    core::Sha512Ctx     = core::Sha512Ctx { .. },
+    expected_hash: u8[..64]            = [],
+    bytes_fed:     u64                 = 0,
+    is_valid_init: bool                = false,
+}
+
+inline fn apply_streaming_digest_entry(v: StreamingDigestVerifier&, entry: const SfDictEntry&) -> bool {
+    let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
+    let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
+    guard is_sha256 || is_sha512 else { return true; }
+    guard entry.item.kind == SfType.Binary else { return false; }
+
+    var decoded: u8[..64] = [];
+    guard core::base64_decode(entry.item.str_val[..], decoded) else { return false; }
+    let req_len: i64 = if is_sha512 { 64 } else { 32 };
+    guard decoded.len == req_len else { return false; }
+
+    if !v.is_valid_init || is_sha512 {
+        v.algo = if is_sha512 { StreamingDigestAlgo.Sha512 } else { StreamingDigestAlgo.Sha256 };
+        v.expected_hash.clear();
+        v.expected_hash.append(decoded[..]);
+        v.is_valid_init = true;
+    }
+    return true;
+}
+
+// Parses an RFC 9530 Content-Digest or Repr-Digest dictionary field and initializes
+// an incremental SHA-256 or SHA-512 streaming verifier.
+fn begin_streaming_digest(header_val: const u8[:]) -> StreamingDigestVerifier, bool {
+    var v = StreamingDigestVerifier { .. };
+    guard header_val.len > 0 else { return v, false; }
+
+    var entries: SfDictEntry[..16] = [];
+    guard parse_sf_dict(header_val, entries) else { return v, false; }
+
+    for &entry in entries {
+        guard apply_streaming_digest_entry(v, entry) else { return v, false; }
+    }
+    guard v.is_valid_init else { return v, false; }
+    return v, true;
+}
+
+// Feeds a payload chunk into the incremental RFC 9530 digest verifier.
+fn update_streaming_digest(v: StreamingDigestVerifier&, chunk: const u8[:]) -> bool {
+    guard v.is_valid_init else { return false; }
+    if v.algo == StreamingDigestAlgo.Sha256 {
+        core::sha256_update(v.sha256_ctx, chunk);
+        v.bytes_fed = core::add_sat_u64(v.bytes_fed, chunk.len as u64);
+        return true;
+    }
+    if v.algo == StreamingDigestAlgo.Sha512 {
+        core::sha512_update(v.sha512_ctx, chunk);
+        v.bytes_fed = core::add_sat_u64(v.bytes_fed, chunk.len as u64);
+        return true;
+    }
+    return false;
+}
+
+// Finalizes the incremental digest and verifies it in constant time against expected_hash.
+fn finish_streaming_digest(v: StreamingDigestVerifier&) -> bool {
+    guard v.is_valid_init else { return false; }
+    v.is_valid_init = false;
+    if v.algo == StreamingDigestAlgo.Sha256 {
+        guard v.expected_hash.len == 32 else { return false; }
+        let computed = core::sha256_final(v.sha256_ctx);
+        return core::ct_eq_bytes(computed[..], v.expected_hash[..]);
+    }
+    if v.algo == StreamingDigestAlgo.Sha512 {
+        guard v.expected_hash.len == 64 else { return false; }
+        let computed = core::sha512_final(v.sha512_ctx);
+        return core::ct_eq_bytes(computed[..], v.expected_hash[..]);
+    }
+    return false;
+}
+
+// Initializes an incremental RFC 9530 streaming digest verifier from a Request's Content-Digest or Repr-Digest header.
+fn begin_request_streaming_digest(req: const Request&) -> StreamingDigestVerifier, bool {
+    var combined: u8[..512] = [];
+    let ok_cd = req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
+    let cd_hdr = if ok_cd { combined[..] } else { req.header(rfc::HEADER_CONTENT_DIGEST) };
+    if cd_hdr.len > 0 {
+        return begin_streaming_digest(cd_hdr);
+    }
+    let ok_rd = req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
+    let rd_hdr = if ok_rd { combined[..] } else { req.header(rfc::HEADER_REPR_DIGEST) };
+    return begin_streaming_digest(rd_hdr);
+}
+
+// ---- Push-Streaming Sinks & Monomorphized Decorators ---------------------
+
+// Zero-allocation push sink appending directly into caller-owned byte buffer.
+struct ArenaSink {
+    max_bytes: i64 = 16777216,
+}
+
+inline fn emit<B>(sink: ArenaSink, chunk: const u8[:], out: B&) -> bool {
+    guard core::add_sat_i64(out.len, chunk.len) <= sink.max_bytes else { return false; }
+    out.append(chunk);
+    return true;
+}
+
+// Composable push-streaming sink decorator that computes an incremental SHA-256 digest
+// across all emitted chunks while forwarding payload slices to the inner sink.
+struct HashingSink<Inner> {
+    inner:      Inner,
+    sha256_ctx: core::Sha256Ctx = core::Sha256Ctx { .. },
+    total_len:  u64             = 0,
+}
+
+fn new_hashing_sink<Inner>(inner: Inner) -> HashingSink<Inner> {
+    return HashingSink<Inner> {
+        inner:      inner,
+        sha256_ctx: core::Sha256Ctx { .. },
+        total_len:  0,
+    };
+}
+
+inline fn emit<Inner, B>(sink: HashingSink<Inner>&, chunk: const u8[:], out: B&) -> bool {
+    guard sink.inner.emit(chunk, out) else { return false; }
+    core::sha256_update(sink.sha256_ctx, chunk);
+    sink.total_len = core::add_sat_u64(sink.total_len, chunk.len as u64);
+    return true;
+}
+
+fn finish_hashing_sink<Inner>(sink: HashingSink<Inner>&) -> u8[32] {
+    return core::sha256_final(sink.sha256_ctx);
+}
+
+// Feeds incoming wire slice through 64-bit ChunkFsmDecoder and emits clean slices into sink.
+fn pump_chunk_fsm<Sink, B>(
+    dec:  internal::ChunkFsmDecoder&,
+    wire: const u8[:],
+    sink: Sink&,
+    out:  B&,
+) -> internal::ChunkFsmStatus, i64 {
+    var total_consumed: i64 = 0;
+    var cursor:         i64 = 0;
+    while cursor < wire.len {
+        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
+        cursor = core::add_sat_i64(cursor, consumed);
+        total_consumed = core::add_sat_i64(total_consumed, consumed);
+        if chunk.len > 0 {
+            guard sink.emit(chunk, out) else {
+                return internal::ChunkFsmStatus.Error, total_consumed;
+            }
+        }
+        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
+            return st, total_consumed;
+        }
+    }
+    return internal::ChunkFsmStatus.NeedMore, total_consumed;
+}
+
+// Feeds incoming wire slice through 64-bit ChunkFsmDecoder and invokes callback F(chunk)
+// on each zero-copy decoded slice in constant stack RAM without growing an output buffer.
+fn pump_chunk_fsm_streaming<F>(
+    dec:  internal::ChunkFsmDecoder&,
+    wire: const u8[:],
+) -> internal::ChunkFsmStatus, i64 {
+    var total_consumed: i64 = 0;
+    var cursor:         i64 = 0;
+    while cursor < wire.len {
+        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
+        cursor = core::add_sat_i64(cursor, consumed);
+        total_consumed = core::add_sat_i64(total_consumed, consumed);
+        if chunk.len > 0 {
+            F(chunk);
+        }
+        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
+            return st, total_consumed;
+        }
+    }
+    return internal::ChunkFsmStatus.NeedMore, total_consumed;
 }
