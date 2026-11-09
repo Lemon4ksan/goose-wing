@@ -183,7 +183,7 @@ fn test_wing_profile_and_session(t: lit::T&) {
         session.set_user_agent("CustomGooseBot/2.4 (Internal Systems)");
         sub.assert_bytes_eq(wing::user_agent(session), "CustomGooseBot/2.4 (Internal Systems)", "Custom user agent applied cleanly");
 
-        // Caller can configure a completely custom BrowserProfile
+        // Caller can configure a completely custom ClientProfile
         var custom = wing::custom_profile();
         custom.set_user_agent("WingCustomWorker/3.1");
         custom.set_accept("application/json");
@@ -205,52 +205,63 @@ fn test_wing_profile_and_session(t: lit::T&) {
     };
 }
 
-// Verification suite for Akamai HTTP/2 Passive Fingerprinting & Active Matching Engine:
-// 1. Presets formatting (Chrome, Firefox, Safari, Wing, cURL) and MD5 hash generation
+// Verification suite for Akamai HTTP/2 Fingerprinting & Matching Engine:
+// 1. Wing preset and custom builder formatting and MD5 hash generation
 // 2. Parsing and bidirectional round-trip deserialization
-// 3. Signature matching and client family identification
-// 4. Passive anomaly detection (Anti-Bot spoofing detection)
+// 3. Signature matching across Wing and custom profiles
+// 4. Anomaly detection against expected profiles
 // 5. Binary HTTP/2 wire framing round-trip (ingress extractor & egress generator)
 // 6. Pseudo-header canonical ordering
-// 7. High-level BrowserProfile and Session integration
+// 7. High-level ClientProfile and Session integration
 
 // ----------------------------------------------------------------------------
-// 4. Akamai: Presets and MD5 Hash Generation
+// 4. Akamai: Wing Preset, Custom Builders, and MD5 Hash Generation
 // ----------------------------------------------------------------------------
 fn test_akamai_presets_and_hashes(t: lit::T&) {
-    t.run("Verify standard Akamai fingerprint presets and MD5 hashes") { sub =>
-        // 1. Chrome 124+ Preset
-        let chrome_fp = wing::akamai_chrome_preset();
-        let chrome_str = wing::akamai_fingerprint_to_string(chrome_fp);
-        sub.assert_eq(chrome_str[..], "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p", "Chrome fingerprint string format");
-
-        let chrome_hash = wing::akamai_fingerprint_hash(chrome_fp);
-        sub.assert_eq(chrome_hash.len, 32, "Chrome Akamai MD5 hash is 32 hex chars");
-
-        // Verify hash determinism
-        var chrome_hash2: u8[..32] = [];
-        wing::compute_akamai_hash(chrome_fp, chrome_hash2);
-        sub.assert_eq(chrome_hash[..], chrome_hash2[..], "Akamai hash is 100% deterministic");
-
-        // 2. Firefox 124+ Preset
-        let ff_fp = wing::akamai_firefox_preset();
-        let ff_str = wing::akamai_fingerprint_to_string(ff_fp);
-        sub.assert_eq(ff_str[..], "1:65536;4:131072;5:16384|12517377|0|m,p,a,s", "Firefox fingerprint string format");
-
-        // 3. Safari 17+ Preset
-        let saf_fp = wing::akamai_safari_preset();
-        let saf_str = wing::akamai_fingerprint_to_string(saf_fp);
-        sub.assert_eq(saf_str[..], "2:0;3:100;4:2097152|10485760|0|m,s,a,p", "Safari fingerprint string format");
-
-        // 4. Wing Default Systems Engine Preset
+    t.run("Verify Wing Akamai fingerprint preset, custom builders, and MD5 hashes") { sub =>
+        // 1. Wing Default Systems Engine Preset
         let wing_fp = wing::akamai_wing_preset();
         let wing_str = wing::akamai_fingerprint_to_string(wing_fp);
         sub.assert_eq(wing_str[..], "1:65536;2:0;3:100;4:6291456;6:262144|15663105|0|m,a,s,p", "Wing fingerprint string format");
 
-        // 5. cURL Preset
-        let curl_fp = wing::akamai_curl_preset();
-        let curl_str = wing::akamai_fingerprint_to_string(curl_fp);
-        sub.assert_eq(curl_str[..], "1:4096;2:0;3:100;4:65535|0|0|m,a,p,s", "cURL fingerprint string format");
+        let wing_hash = wing::akamai_fingerprint_hash(wing_fp);
+        sub.assert_eq(wing_hash.len, 32, "Wing Akamai MD5 hash is 32 hex chars");
+
+        // Verify hash determinism
+        var wing_hash2: u8[..32] = [];
+        wing::compute_akamai_hash(wing_fp, wing_hash2);
+        sub.assert_eq(wing_hash[..], wing_hash2[..], "Akamai hash is 100% deterministic");
+
+        // 2. Custom Akamai Fingerprint Builder
+        var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        sub.assert_true(wing::akamai_push_setting(custom_fp, 1, 65536), "Push setting 1");
+        sub.assert_true(wing::akamai_push_setting(custom_fp, 4, 131072), "Push setting 4");
+        sub.assert_true(wing::akamai_push_setting(custom_fp, 5, 16384), "Push setting 5");
+        let custom_str = wing::akamai_fingerprint_to_string(custom_fp);
+        sub.assert_eq(custom_str[..], "1:65536;4:131072;5:16384|12517377|0|m,p,a,s", "Custom fingerprint string format");
+
+        // 3. Custom Akamai Fingerprint with Priority & Updated Setting
+        var prio_fp = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        sub.assert_true(wing::akamai_push_setting(prio_fp, 2, 1), "Push setting 2");
+        sub.assert_true(wing::akamai_push_setting(prio_fp, 2, 0), "Update setting 2 in place");
+        sub.assert_true(wing::akamai_push_setting(prio_fp, 3, 100), "Push setting 3");
+        sub.assert_true(wing::akamai_push_setting(prio_fp, 4, 2097152), "Push setting 4");
+        sub.assert_true(wing::akamai_push_priority(prio_fp, 3, 0, 0, 201), "Push priority frame");
+        sub.assert_false(wing::akamai_push_priority(prio_fp, 0, 0, 0, 201), "Reject priority stream 0");
+        sub.assert_false(wing::akamai_push_priority(prio_fp, 3, 0, 3, 201), "Reject priority self-dep");
+        let prio_str = wing::akamai_fingerprint_to_string(prio_fp);
+        sub.assert_eq(prio_str[..], "2:0;3:100;4:2097152|10485760|3:0:0:201|m,s,a,p", "Custom priority fingerprint format");
+
+        // 4. Pseudo-header update via akamai_set_pseudo_headers
+        var minimal_fp = wing::custom_akamai_fingerprint(0, "m,a,s,p");
+        sub.assert_true(wing::akamai_push_setting(minimal_fp, 1, 4096), "Push setting 1");
+        sub.assert_true(wing::akamai_push_setting(minimal_fp, 2, 0), "Push setting 2");
+        sub.assert_true(wing::akamai_push_setting(minimal_fp, 3, 100), "Push setting 3");
+        sub.assert_true(wing::akamai_push_setting(minimal_fp, 4, 65535), "Push setting 4");
+        sub.assert_true(wing::akamai_set_pseudo_headers(minimal_fp, "m,a,p,s"), "Set pseudo-headers to m,a,p,s");
+        sub.assert_false(wing::akamai_set_pseudo_headers(minimal_fp, "m,m,a,s"), "Reject duplicate pseudo-headers");
+        let min_str = wing::akamai_fingerprint_to_string(minimal_fp);
+        sub.assert_eq(min_str[..], "1:4096;2:0;3:100;4:65535|0|0|m,a,p,s", "Minimal custom fingerprint string format");
     };
 }
 
@@ -321,75 +332,59 @@ fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. Akamai: Fingerprint Matching and Family Classification
+// 6. Akamai: Fingerprint Matching
 // ----------------------------------------------------------------------------
 fn test_akamai_matching_and_family(t: lit::T&) {
-    t.run("Verify Akamai matching logic and family classification") { sub =>
-        let chrome1 = wing::akamai_chrome_preset();
-        let chrome2 = wing::akamai_chrome_preset();
-        let ff = wing::akamai_firefox_preset();
-        let saf = wing::akamai_safari_preset();
-        let wing_preset = wing::akamai_wing_preset();
-        let curl_preset = wing::akamai_curl_preset();
+    t.run("Verify Akamai matching logic across Wing and custom fingerprints") { sub =>
+        let wing1 = wing::akamai_wing_preset();
+        let wing2 = wing::akamai_wing_preset();
+        var custom_mpas = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        let _ = wing::akamai_push_setting(custom_mpas, 1, 65536);
+        let _ = wing::akamai_push_setting(custom_mpas, 4, 131072);
 
-        sub.assert_true(wing::match_akamai_fingerprints(chrome1, chrome2), "Identical Chrome presets match");
-        sub.assert_false(wing::match_akamai_fingerprints(chrome1, ff), "Chrome does not match Firefox");
-        sub.assert_false(wing::match_akamai_fingerprints(chrome1, saf), "Chrome does not match Safari");
+        var custom_msap = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        let _ = wing::akamai_push_setting(custom_msap, 2, 0);
+        let _ = wing::akamai_push_setting(custom_msap, 3, 100);
 
-        // Family classification
-        let f_chrome = wing::identify_akamai_family(chrome1);
-        sub.assert_true(f_chrome == wing::AkamaiBrowserFamily.Chrome, "Identified Chrome");
-
-        let f_ff = wing::identify_akamai_family(ff);
-        sub.assert_true(f_ff == wing::AkamaiBrowserFamily.Firefox, "Identified Firefox");
-
-        let f_saf = wing::identify_akamai_family(saf);
-        sub.assert_true(f_saf == wing::AkamaiBrowserFamily.Safari, "Identified Safari");
-
-        let f_wing = wing::identify_akamai_family(wing_preset);
-        sub.assert_true(f_wing == wing::AkamaiBrowserFamily.Wing, "Identified Wing");
-
-        let f_curl = wing::identify_akamai_family(curl_preset);
-        sub.assert_true(f_curl == wing::AkamaiBrowserFamily.Curl, "Identified Curl");
+        sub.assert_true(wing::match_akamai_fingerprints(wing1, wing2), "Identical Wing presets match");
+        sub.assert_false(wing::match_akamai_fingerprints(wing1, custom_mpas), "Wing does not match custom m,p,a,s profile");
+        sub.assert_false(wing::match_akamai_fingerprints(wing1, custom_msap), "Wing does not match custom m,s,a,p profile");
     };
 }
 
 // ----------------------------------------------------------------------------
-// 7. Akamai: Passive Anomaly Detection
+// 7. Akamai: Anomaly Detection Against Expected Profile
 // ----------------------------------------------------------------------------
 fn test_akamai_anomaly_detection(t: lit::T&) {
-    t.run("Passive anomaly detection: detect spoofed User-Agents and bot signatures") { sub =>
-        let chrome_fp = wing::akamai_chrome_preset();
-        let ff_fp = wing::akamai_firefox_preset();
-        let curl_fp = wing::akamai_curl_preset();
+    t.run("Detect structural and profile anomalies against expected reference fingerprint") { sub =>
+        let wing_fp = wing::akamai_wing_preset();
 
-        // 1. Legitimate Chrome: UA matches HTTP/2 signature
-        let ua_chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36";
-        let a1, _ = wing::detect_akamai_anomaly(ua_chrome, chrome_fp);
-        sub.assert_true(a1 == wing::AkamaiAnomaly.None, "Legitimate Chrome passes");
+        // 1. Authentic Wing fingerprint matches expected Wing preset
+        let a1, _ = wing::detect_akamai_anomaly(wing_fp, wing_fp);
+        sub.assert_true(a1 == wing::AkamaiAnomaly.None, "Authentic Wing profile passes");
 
-        // 2. Spoofing attempt: UA claims to be Chrome, but HTTP/2 stack sends Firefox pseudo-headers (m,p,a,s)
-        let a2, _ = wing::detect_akamai_anomaly(ua_chrome, ff_fp);
-        sub.assert_true(a2 == wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Detects pseudo-header order spoofing");
+        // 2. Pseudo-header order mismatch against expected profile
+        var custom_order = wing::akamai_wing_preset();
+        let _ = wing::akamai_set_pseudo_headers(custom_order, "m,p,a,s");
+        let a2, _ = wing::detect_akamai_anomaly(custom_order, wing_fp);
+        sub.assert_true(a2 == wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Detects pseudo-header order mismatch");
 
-        // 3. Spoofing attempt: UA claims Chrome, but client omitted WINDOW_UPDATE (e.g. curl/custom python bot)
-        var bot_fp = wing::akamai_chrome_preset();
-        bot_fp.window_update = 0; // Omitted window update
-        let a3, _ = wing::detect_akamai_anomaly(ua_chrome, bot_fp);
-        sub.assert_true(a3 == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Detects omitted window update bot pattern");
+        // 3. Window update mismatch against expected profile
+        var zero_wu = wing::akamai_wing_preset();
+        zero_wu.window_update = 0;
+        let a3, _ = wing::detect_akamai_anomaly(zero_wu, wing_fp);
+        sub.assert_true(a3 == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Detects omitted window update");
 
-        // 4. Legitimate Firefox passes
-        let ua_firefox = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
-        let a4, _ = wing::detect_akamai_anomaly(ua_firefox, ff_fp);
-        sub.assert_true(a4 == wing::AkamaiAnomaly.None, "Legitimate Firefox passes");
+        // 4. Settings mismatch against expected profile
+        var bad_settings = wing::akamai_wing_preset();
+        let _ = wing::akamai_push_setting(bad_settings, 4, 131072);
+        let a4, _ = wing::detect_akamai_anomaly(bad_settings, wing_fp);
+        sub.assert_true(a4 == wing::AkamaiAnomaly.SettingsMismatch, "Detects modified SETTINGS parameter value");
 
-        // 5. Firefox UA with Chrome ordering
-        let a5, _ = wing::detect_akamai_anomaly(ua_firefox, chrome_fp);
-        sub.assert_true(a5 == wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Detects non-Gecko ordering for Firefox UA");
-
-        // 6. Legitimate Curl passes
-        let a6, _ = wing::detect_akamai_anomaly("curl/8.6.0", curl_fp);
-        sub.assert_true(a6 == wing::AkamaiAnomaly.None, "Legitimate Curl passes");
+        // 5. Missing pseudo-headers
+        var incomplete = wing::AkamaiFingerprint { .. };
+        let a5, _ = wing::detect_akamai_anomaly(incomplete, wing_fp);
+        sub.assert_true(a5 == wing::AkamaiAnomaly.MissingPseudoHeaders, "Detects missing pseudo-headers");
     };
 }
 
@@ -398,27 +393,27 @@ fn test_akamai_anomaly_detection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
     t.run("HTTP/2 binary framing: serialize to wire bytes and parse back identically") { sub =>
-        let chrome_fp = wing::akamai_chrome_preset();
+        let wing_fp = wing::akamai_wing_preset();
 
         // 1. Serialize wire frames
         var wire_buf: u8[>..] = [];
         // Add HTTP/2 preface first
         wire_buf.append(rfc::H2_CLIENT_PREFACE[..]);
         // Encode handshake frames: SETTINGS + WINDOW_UPDATE
-        wing::encode_akamai_handshake_frames(chrome_fp, wire_buf);
+        wing::encode_akamai_handshake_frames(wing_fp, wire_buf);
 
-        // Verify total length: 24 (preface) + 9 (SETTINGS hdr) + 24 (4*6 payload) + 9 (WU hdr) + 4 (payload) = 70 bytes
-        sub.assert_eq(wire_buf.len, 70, "70 bytes wire frame stream");
+        // Verify total length: 24 (preface) + 9 (SETTINGS hdr) + 30 (5*6 payload) + 9 (WU hdr) + 4 (payload) = 76 bytes
+        sub.assert_eq(wire_buf.len, 76, "76 bytes wire frame stream");
 
         // 2. Extract Akamai fingerprint from wire bytes
         let pseudos = "m,a,s,p";
         let extracted_fp, ok = wing::extract_akamai_from_wire(wire_buf[..], pseudos);
         sub.assert_true(ok, "Extracted fingerprint from raw HTTP/2 wire frames");
 
-        // 3. Verify extracted fingerprint matches original Chrome preset 100%
-        sub.assert_true(wing::match_akamai_fingerprints(extracted_fp, chrome_fp), "Extracted wire fingerprint matches Chrome preset exactly");
+        // 3. Verify extracted fingerprint matches original Wing preset 100%
+        sub.assert_true(wing::match_akamai_fingerprints(extracted_fp, wing_fp), "Extracted wire fingerprint matches Wing preset exactly");
         sub.assert_eq(extracted_fp.window_update, 15663105, "Extracted window update is 15663105");
-        sub.assert_eq(extracted_fp.settings.len, 4, "Extracted 4 settings");
+        sub.assert_eq(extracted_fp.settings.len, 5, "Extracted 5 settings");
 
         // 4. Reject garbage / non-HTTP/2 input (e.g. plain HTTP/1.1 request)
         let http1_req = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -431,39 +426,39 @@ fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
 // 9. Akamai: Pseudo-header Canonical Ordering
 // ----------------------------------------------------------------------------
 fn test_akamai_pseudo_header_ordering(t: lit::T&) {
-    t.run("Order pseudo headers according to browser specification") { sub =>
-        let chrome_fp = wing::akamai_chrome_preset();
-        var chrome_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(chrome_fp, "GET", "api.example.com", "https", "/v1/data", chrome_ordered);
+    t.run("Order pseudo headers according to custom profile specification") { sub =>
+        let wing_fp = wing::akamai_wing_preset();
+        var wing_ordered = wing::HeaderMap { .. };
+        wing::order_pseudo_headers(wing_fp, "GET", "api.example.com", "https", "/v1/data", wing_ordered);
 
-        sub.assert_eq(chrome_ordered.entries.len, 4, "4 ordered headers");
-        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[0]), ":method", "Chrome 0 is :method");
-        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[1]), ":authority", "Chrome 1 is :authority");
-        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[2]), ":scheme", "Chrome 2 is :scheme");
-        sub.assert_eq(wing::entry_name(chrome_ordered, chrome_ordered.entries[3]), ":path", "Chrome 3 is :path");
+        sub.assert_eq(wing_ordered.entries.len, 4, "4 ordered headers");
+        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[0]), ":method", "Wing 0 is :method");
+        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[1]), ":authority", "Wing 1 is :authority");
+        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[2]), ":scheme", "Wing 2 is :scheme");
+        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[3]), ":path", "Wing 3 is :path");
 
-        let ff_fp = wing::akamai_firefox_preset();
-        var ff_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(ff_fp, "GET", "api.example.com", "https", "/v1/data", ff_ordered);
+        let mpas_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        var mpas_ordered = wing::HeaderMap { .. };
+        wing::order_pseudo_headers(mpas_fp, "GET", "api.example.com", "https", "/v1/data", mpas_ordered);
 
-        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[0]), ":method", "Firefox 0 is :method");
-        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[1]), ":path", "Firefox 1 is :path");
-        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[2]), ":authority", "Firefox 2 is :authority");
-        sub.assert_eq(wing::entry_name(ff_ordered, ff_ordered.entries[3]), ":scheme", "Firefox 3 is :scheme");
+        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[0]), ":method", "Custom m,p,a,s 0 is :method");
+        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[1]), ":path", "Custom m,p,a,s 1 is :path");
+        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[2]), ":authority", "Custom m,p,a,s 2 is :authority");
+        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[3]), ":scheme", "Custom m,p,a,s 3 is :scheme");
 
-        let saf_fp = wing::akamai_safari_preset();
-        var saf_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(saf_fp, "GET", "api.example.com", "https", "/v1/data", saf_ordered);
+        let msap_fp = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        var msap_ordered = wing::HeaderMap { .. };
+        wing::order_pseudo_headers(msap_fp, "GET", "api.example.com", "https", "/v1/data", msap_ordered);
 
-        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[0]), ":method", "Safari 0 is :method");
-        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[1]), ":scheme", "Safari 1 is :scheme");
-        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[2]), ":authority", "Safari 2 is :authority");
-        sub.assert_eq(wing::entry_name(saf_ordered, saf_ordered.entries[3]), ":path", "Safari 3 is :path");
+        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[0]), ":method", "Custom m,s,a,p 0 is :method");
+        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[1]), ":scheme", "Custom m,s,a,p 1 is :scheme");
+        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[2]), ":authority", "Custom m,s,a,p 2 is :authority");
+        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[3]), ":path", "Custom m,s,a,p 3 is :path");
     };
 }
 
 // ----------------------------------------------------------------------------
-// 10. Akamai: BrowserProfile and Session Integration
+// 10. Akamai: ClientProfile and Session Integration
 // ----------------------------------------------------------------------------
 fn test_akamai_browser_profiles(t: lit::T&) {
     t.run("ClientProfile exports authentic Wing Akamai fingerprint") { sub =>
@@ -726,19 +721,20 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         sub.assert_false(bad_pseudo, "Must reject invalid pseudo-header characters");
     };
 
-    t.run("3. Akamai Curl pseudo-header anomaly detection") { sub =>
-        var spoofed_curl = wing::akamai_chrome_preset();
-        spoofed_curl.window_update = 0;
-        let anomaly, _ = wing::detect_akamai_anomaly("curl/8.6.0", spoofed_curl);
-        sub.assert_eq(anomaly, wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Must detect Curl claiming Chrome pseudo-headers");
+    t.run("3. Akamai pseudo-header order anomaly detection") { sub =>
+        let expected_wing = wing::akamai_wing_preset();
+        var mismatched_fp = wing::akamai_wing_preset();
+        let _ = wing::akamai_set_pseudo_headers(mismatched_fp, "m,a,p,s");
+        let anomaly, _ = wing::detect_akamai_anomaly(mismatched_fp, expected_wing);
+        sub.assert_eq(anomaly, wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Must detect pseudo-header mismatch against Wing profile");
     };
 
-    t.run("4. Akamai family classification for Curl") { sub =>
-        var curl_custom = wing::akamai_curl_preset();
-        curl_custom.settings.clear();
-        curl_custom.settings.push(wing::AkamaiSetting { id: 1, val: 8192 });
-        let fam = wing::identify_akamai_family(curl_custom);
-        sub.assert_eq(fam, wing::AkamaiBrowserFamily.Curl, "Must identify Curl family by pseudo-headers maps");
+    t.run("4. Akamai custom settings builder & match") { sub =>
+        var custom1 = wing::custom_akamai_fingerprint(0, "m,a,p,s");
+        let _ = wing::akamai_push_setting(custom1, 1, 8192);
+        let parsed, ok_p = wing::parse_akamai_fingerprint("1:8192|0|0|m,a,p,s");
+        sub.assert_true(ok_p, "Parsed custom Akamai fingerprint");
+        sub.assert_true(wing::match_akamai_fingerprints(custom1, parsed), "Custom builder matches parsed string");
     };
 
     t.run("5. p0f options length and syntax validation") { sub =>
@@ -852,10 +848,11 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         let _, ok8 = wing::parse_akamai_fingerprint("1:65536|0|0|,,,");
         sub.assert_false(ok8, "Empty pseudo-header tokens must fail");
 
-        var bad_safari = wing::akamai_safari_preset();
-        bad_safari.window_update = 0;
-        let anom, _ = wing::detect_akamai_anomaly("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) Version/17.4 Safari/605.1.15", bad_safari);
-        sub.assert_true(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Safari with 0 window_update must trigger anomaly");
+        let expected_wing = wing::akamai_wing_preset();
+        var bad_wu = wing::akamai_wing_preset();
+        bad_wu.window_update = 0;
+        let anom, _ = wing::detect_akamai_anomaly(bad_wu, expected_wing);
+        sub.assert_true(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Wing profile with 0 window_update must trigger anomaly");
     };
 
     t.run("10. JA4/JA4H & Profile cross-component protocol/language/pseudo-header invariants") { sub =>
@@ -873,9 +870,12 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         sub.assert_bytes_eq(ja4h_res[..12], "ge20cn02en00", "JA4H maps h2->20, sets cookie flag, strips :pseudo, and stops language at ';'");
 
         var prof = wing::new_client_profile(wing::Profile.Wing);
-        let ff_fp = wing::akamai_firefox_preset();
-        wing::set_akamai(prof, ff_fp);
-        sub.assert_eq(prof.h2.initial_window_size as i64, 131072, "set_akamai syncs BrowserProfile.h2 settings");
+        var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        let _ = wing::akamai_push_setting(custom_fp, 1, 65536);
+        let _ = wing::akamai_push_setting(custom_fp, 4, 131072);
+        let _ = wing::akamai_push_setting(custom_fp, 5, 16384);
+        wing::set_akamai(prof, custom_fp);
+        sub.assert_eq(prof.h2.initial_window_size as i64, 131072, "set_akamai syncs ClientProfile.h2 settings");
     };
 
     t.run("11. p0f wildcard scale round-trip, MTU match, and integer overflow defense") { sub =>

@@ -2,10 +2,9 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Akamai HTTP/2 Passive Fingerprinting & Active Matching Engine.
-// Models Akamai Bot Manager, Cloudflare, and Datadome passive client fingerprinting:
 // Format: SETTINGS|WINDOW_UPDATE|PRIORITY|PSEUDO_HEADERS
 // Computes canonical Akamai fingerprint string and 32-character MD5 hash.
-// Supports frame extraction, signature matching, preset profiles, and anomaly detection.
+// Supports frame extraction, signature matching, Wing & custom profiles, and anomaly detection.
 namespace wing;
 
 import std;
@@ -37,24 +36,13 @@ struct AkamaiFingerprint {
     pseudo_headers:  u8[..8]                  = [], // Initial chars: e.g. ['m', 'a', 's', 'p']
 }
 
-// Recognized browser and client families.
-enum AkamaiBrowserFamily {
-    Unknown,
-    Chrome,
-    Firefox,
-    Safari,
-    Wing,
-    Curl,
-}
-
-// Classification of fingerprint anomalies detected against client declarations.
+// Classification of fingerprint anomalies detected against an expected HTTP/2 profile.
 enum AkamaiAnomaly {
     None,
     MissingPseudoHeaders,
     PseudoHeaderOrderMismatch,
     WindowUpdateAnomaly,
     SettingsMismatch,
-    BotPattern,
 }
 
 // ---- Formatting & Serialization ------------------------------------------
@@ -139,71 +127,7 @@ fn akamai_fingerprint_hash(fp: const AkamaiFingerprint&) -> u8[..32] {
     return out;
 }
 
-// ---- Standard Presets ----------------------------------------------------
-
-// Chrome 124+ / Chromium / Edge preset:
-// Settings: 1:65536;2:0;4:6291456;6:262144
-// Window Update: 15663105
-// Priority: 0
-// Pseudo Headers: m,a,s,p
-fn akamai_chrome_preset() -> AkamaiFingerprint {
-    var fp = AkamaiFingerprint {
-        window_update: 15663105,
-        ..
-    };
-    fp.settings.push(AkamaiSetting { id: 1, val: 65536 });
-    fp.settings.push(AkamaiSetting { id: 2, val: 0 });
-    fp.settings.push(AkamaiSetting { id: 4, val: 6291456 });
-    fp.settings.push(AkamaiSetting { id: 6, val: 262144 });
-
-    fp.pseudo_headers.push('m');
-    fp.pseudo_headers.push('a');
-    fp.pseudo_headers.push('s');
-    fp.pseudo_headers.push('p');
-    return fp;
-}
-
-// Firefox 124+ preset:
-// Settings: 1:65536;4:131072;5:16384
-// Window Update: 12517377
-// Priority: 0
-// Pseudo Headers: m,p,a,s
-fn akamai_firefox_preset() -> AkamaiFingerprint {
-    var fp = AkamaiFingerprint {
-        window_update: 12517377,
-        ..
-    };
-    fp.settings.push(AkamaiSetting { id: 1, val: 65536 });
-    fp.settings.push(AkamaiSetting { id: 4, val: 131072 });
-    fp.settings.push(AkamaiSetting { id: 5, val: 16384 });
-
-    fp.pseudo_headers.push('m');
-    fp.pseudo_headers.push('p');
-    fp.pseudo_headers.push('a');
-    fp.pseudo_headers.push('s');
-    return fp;
-}
-
-// Safari 17+ / WebKit / iOS preset:
-// Settings: 2:0;3:100;4:2097152
-// Window Update: 10485760
-// Priority: 0
-// Pseudo Headers: m,s,a,p
-fn akamai_safari_preset() -> AkamaiFingerprint {
-    var fp = AkamaiFingerprint {
-        window_update: 10485760,
-        ..
-    };
-    fp.settings.push(AkamaiSetting { id: 2, val: 0 });
-    fp.settings.push(AkamaiSetting { id: 3, val: 100 });
-    fp.settings.push(AkamaiSetting { id: 4, val: 2097152 });
-
-    fp.pseudo_headers.push('m');
-    fp.pseudo_headers.push('s');
-    fp.pseudo_headers.push('a');
-    fp.pseudo_headers.push('p');
-    return fp;
-}
+// ---- Authentic Wing Preset & Custom Builders -----------------------------
 
 // Wing client preset:
 // Settings: 1:65536;2:0;3:100;4:6291456;6:262144
@@ -228,26 +152,55 @@ fn akamai_wing_preset() -> AkamaiFingerprint {
     return fp;
 }
 
-// Standard curl / automated tooling preset:
-// Settings: 1:4096;2:0;3:100;4:65535
-// Window Update: 0
-// Priority: 0
-// Pseudo Headers: m,a,p,s
-fn akamai_curl_preset() -> AkamaiFingerprint {
+// Constructs a custom Akamai HTTP/2 fingerprint with configurable window increment and pseudo-header order.
+fn custom_akamai_fingerprint(
+    window_update:  u32         = 0,
+    pseudo_headers: const u8[:] = "m,a,s,p",
+) -> AkamaiFingerprint {
     var fp = AkamaiFingerprint {
-        window_update: 0,
+        window_update: window_update & H2_MAX_STREAM_ID,
         ..
     };
-    fp.settings.push(AkamaiSetting { id: 1, val: 4096 });
-    fp.settings.push(AkamaiSetting { id: 2, val: 0 });
-    fp.settings.push(AkamaiSetting { id: 3, val: 100 });
-    fp.settings.push(AkamaiSetting { id: 4, val: 65535 });
-
-    fp.pseudo_headers.push('m');
-    fp.pseudo_headers.push('a');
-    fp.pseudo_headers.push('p');
-    fp.pseudo_headers.push('s');
+    let _ = parse_akamai_pseudo_headers(pseudo_headers, fp);
     return fp;
+}
+
+// Appends or updates an HTTP/2 SETTINGS parameter (id: val) in `fp`.
+fn akamai_push_setting(fp: AkamaiFingerprint&, id: u16, val: u32) -> bool {
+    for &s in fp.settings {
+        if s.id == id {
+            s.val = val;
+            return true;
+        }
+    }
+    return fp.settings.try_push(AkamaiSetting { id: id, val: val });
+}
+
+// Appends a validated RFC 9113 stream PRIORITY frame entry to `fp`.
+fn akamai_push_priority(
+    fp:            AkamaiFingerprint&,
+    stream_id:     u32,
+    exclusive:     u8,
+    dep_stream_id: u32,
+    weight:        u16,
+) -> bool {
+    guard stream_id > 0 && stream_id <= H2_MAX_STREAM_ID else { return false; }
+    guard dep_stream_id <= H2_MAX_STREAM_ID && dep_stream_id != stream_id else { return false; }
+    guard exclusive <= 1 && weight >= 1 && weight <= 256 else { return false; }
+    return fp.priority_frames.try_push(AkamaiPriorityFrame {
+        stream_id:     stream_id,
+        exclusive:     exclusive,
+        dep_stream_id: dep_stream_id,
+        weight:        weight,
+    });
+}
+
+// Sets the HTTP/2 pseudo-header ordering (e.g., "m,a,s,p" or "m,p,a,s") on `fp`.
+fn akamai_set_pseudo_headers(fp: AkamaiFingerprint&, order: const u8[:]) -> bool {
+    var tmp = AkamaiFingerprint { .. };
+    guard parse_akamai_pseudo_headers(order, tmp) else { return false; }
+    fp.pseudo_headers = tmp.pseudo_headers;
+    return true;
 }
 
 // ---- Fingerprint Parsing -------------------------------------------------
@@ -445,48 +398,6 @@ fn match_akamai_fingerprints(a: const AkamaiFingerprint&, b: const AkamaiFingerp
     return true;
 }
 
-// Identifies the client family from an Akamai fingerprint.
-fn identify_akamai_family(fp: const AkamaiFingerprint&) -> AkamaiBrowserFamily {
-    let chrome = akamai_chrome_preset();
-    if match_akamai_fingerprints(fp, chrome) {
-        return AkamaiBrowserFamily.Chrome;
-    }
-    let ff = akamai_firefox_preset();
-    if match_akamai_fingerprints(fp, ff) {
-        return AkamaiBrowserFamily.Firefox;
-    }
-    let saf = akamai_safari_preset();
-    if match_akamai_fingerprints(fp, saf) {
-        return AkamaiBrowserFamily.Safari;
-    }
-    let w = akamai_wing_preset();
-    if match_akamai_fingerprints(fp, w) {
-        return AkamaiBrowserFamily.Wing;
-    }
-    let c = akamai_curl_preset();
-    if match_akamai_fingerprints(fp, c) {
-        return AkamaiBrowserFamily.Curl;
-    }
-
-    // Heuristic categorization based on pseudo headers and window update
-    if fp.pseudo_headers.len == 4 {
-        if fp.pseudo_headers[..] == "masp" {
-            return AkamaiBrowserFamily.Chrome;
-        }
-        if fp.pseudo_headers[..] == "mpas" {
-            return AkamaiBrowserFamily.Firefox;
-        }
-        if fp.pseudo_headers[..] == "msap" {
-            return AkamaiBrowserFamily.Safari;
-        }
-        if fp.pseudo_headers[..] == "maps" {
-            return AkamaiBrowserFamily.Curl;
-        }
-    }
-
-    return AkamaiBrowserFamily.Unknown;
-}
-
 inline fn has_setting_value(settings: const AkamaiSetting[:], id: u16, val: u32) -> bool {
     for &s in settings {
         if s.id == id && s.val == val {
@@ -508,77 +419,33 @@ inline fn has_all_four_pseudo_headers(pseudos: const u8[:]) -> bool {
     return mask == 0x0F;
 }
 
-// Detects passive fingerprint anomalies between User-Agent declarations and HTTP/2 wire profile.
-fn detect_akamai_anomaly(user_agent: const u8[:], fp: const AkamaiFingerprint&) -> AkamaiAnomaly, const u8[:] {
-    guard has_all_four_pseudo_headers(fp.pseudo_headers[..]) else {
+// Detects structural or profile anomalies between an observed HTTP/2 fingerprint
+// and an expected reference fingerprint.
+fn detect_akamai_anomaly(
+    actual:   const AkamaiFingerprint&,
+    expected: const AkamaiFingerprint&,
+) -> AkamaiAnomaly, const u8[:] {
+    guard has_all_four_pseudo_headers(actual.pseudo_headers[..]) else {
         return AkamaiAnomaly.MissingPseudoHeaders, "Missing or incomplete HTTP/2 pseudo-headers";
     }
-
-    let is_chrome = user_agent.contains_fold("chrome")
-        || user_agent.contains_fold("chromium")
-        || user_agent.contains_fold("edg");
-    let is_firefox = user_agent.contains_fold("firefox");
-    let is_safari = user_agent.contains_fold("safari") && !is_chrome;
-    let is_curl = user_agent.contains_fold("curl");
-
-    // Chrome validation rules:
-    if is_chrome {
-        // Pseudo header ordering: must be m,a,s,p
-        if fp.pseudo_headers[..] != "masp" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
-                "User-Agent claims Chrome but pseudo-headers exhibit non-Chromium ordering";
-        }
-        // Window update: Chrome always sends window update 15663105
-        if fp.window_update == 0 {
-            return AkamaiAnomaly.WindowUpdateAnomaly,
-                "User-Agent claims Chrome but connection WINDOW_UPDATE is omitted (bot signature)";
-        }
-        // Settings: Chrome requires initial window size 6291456
-        if !has_setting_value(fp.settings[..], 4, 6291456) {
+    if expected.pseudo_headers.len == 4 && actual.pseudo_headers[..] != expected.pseudo_headers[..] {
+        return AkamaiAnomaly.PseudoHeaderOrderMismatch,
+            "HTTP/2 pseudo-header order does not match expected profile";
+    }
+    if actual.window_update != expected.window_update {
+        return AkamaiAnomaly.WindowUpdateAnomaly,
+            "HTTP/2 connection WINDOW_UPDATE does not match expected profile";
+    }
+    if actual.settings.len != expected.settings.len {
+        return AkamaiAnomaly.SettingsMismatch,
+            "HTTP/2 SETTINGS parameter count does not match expected profile";
+    }
+    for &s in expected.settings {
+        if !has_setting_value(actual.settings[..], s.id, s.val) {
             return AkamaiAnomaly.SettingsMismatch,
-                "User-Agent claims Chrome but SETTINGS_INITIAL_WINDOW_SIZE does not match 6291456";
+                "HTTP/2 SETTINGS parameter value does not match expected profile";
         }
-        return AkamaiAnomaly.None, "Authentic Chrome profile";
     }
-
-    // Firefox validation rules:
-    if is_firefox {
-        if fp.pseudo_headers[..] != "mpas" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
-                "User-Agent claims Firefox but pseudo-headers exhibit non-Gecko ordering";
-        }
-        if fp.window_update == 0 {
-            return AkamaiAnomaly.WindowUpdateAnomaly,
-                "User-Agent claims Firefox but connection WINDOW_UPDATE is omitted";
-        }
-        return AkamaiAnomaly.None, "Authentic Firefox profile";
-    }
-
-    // Safari validation rules:
-    if is_safari {
-        if fp.pseudo_headers[..] != "msap" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
-                "User-Agent claims Safari but pseudo-headers exhibit non-WebKit ordering";
-        }
-        if fp.window_update == 0 {
-            return AkamaiAnomaly.WindowUpdateAnomaly,
-                "User-Agent claims Safari but connection WINDOW_UPDATE is omitted";
-        }
-        return AkamaiAnomaly.None, "Authentic Safari profile";
-    }
-
-    // Curl validation rules:
-    if is_curl {
-        if fp.pseudo_headers[..] != "maps" {
-            return AkamaiAnomaly.PseudoHeaderOrderMismatch,
-                "User-Agent claims curl but pseudo-headers exhibit non-curl ordering";
-        }
-        if fp.window_update != 0 {
-            return AkamaiAnomaly.BotPattern, "User-Agent claims curl but connection sent browser-like WINDOW_UPDATE";
-        }
-        return AkamaiAnomaly.None, "Authentic Curl profile";
-    }
-
     return AkamaiAnomaly.None, "Consistent profile";
 }
 

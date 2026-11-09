@@ -11,22 +11,22 @@ import std;
 import core from "..";
 import net.tick_timer;
 
-const SOA_TABLE_CAP:    i64 = 1024;
+const SOA_TABLE_CAP:    i64 = 4096;
 const SOA_INVALID_FD:   i64 = -1;
 const SOA_INVALID_TICK: u8  = 255;
 
 // Structure-of-Arrays connection state table.
 struct SoAConnTable {
-    fds:            i64[1024]      = [-1; 1024],
-    timeout_ticks:  u8[1024]       = [255; 1024],
-    leftover_lens:  u16[1024]      = [0; 1024],
-    is_h2:          bool[1024]     = [false; 1024],
-    h2_slot_map:    i16[1024]      = [-1; 1024],
-    has_tls:        bool[1024]     = [false; 1024],
-    tls_slots:      u16[1024]      = [0xFFFF; 1024],
-    has_peer_ip:    bool[1024]     = [false; 1024],
-    peer_ip_hashes: u64[1024]      = [0; 1024],
-    peer_ips:       u8[..64][1024] = [[]; 1024],
+    fds:            i64[4096]      = [-1; 4096],
+    timeout_ticks:  u8[4096]       = [255; 4096],
+    leftover_lens:  u16[4096]      = [0; 4096],
+    is_h2:          bool[4096]     = [false; 4096],
+    h2_slot_map:    i16[4096]      = [-1; 4096],
+    has_tls:        bool[4096]     = [false; 4096],
+    tls_slots:      u16[4096]      = [0xFFFF; 4096],
+    has_peer_ip:    bool[4096]     = [false; 4096],
+    peer_ip_hashes: u64[4096]      = [0; 4096],
+    peer_ips:       u8[..46][4096] = [[]; 4096],
     count:          i64            = 0,
 }
 
@@ -42,7 +42,7 @@ inline fn record_expired_conn(dst: i64[:], current_count: i64, slot: i64) -> i64
     return core::add_sat_i64(current_count, 1);
 }
 
-inline fn reset_soa_column_slot<T>(col: T[1024]&, slot: i64) {
+inline fn reset_soa_column_slot<T>(col: T[4096]&, slot: i64) {
     col[slot] = default<T>();
 }
 
@@ -60,6 +60,14 @@ inline fn reset_soa_slot_fields(table: SoAConnTable&, slot: i64, fd: i64, timeou
     table.timeout_ticks[slot] = timeout_tick;
     table.h2_slot_map[slot] = -1;
     table.tls_slots[slot] = 0xFFFF;
+}
+
+// Resets an entire SoAConnTable in place without allocating a temporary table on the stack.
+fn reset_soa_table_inplace(table: SoAConnTable&) {
+    for i in SOA_TABLE_CAP {
+        reset_soa_slot_fields(table, i, SOA_INVALID_FD, SOA_INVALID_TICK);
+    }
+    table.count = 0;
 }
 
 // Allocates an active connection slot in the SoA table.

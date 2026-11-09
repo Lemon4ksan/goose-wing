@@ -84,7 +84,7 @@ struct ClientDpopState {
 struct Client {
     base_url:                u8[..256]         = [],
     profile:                 Profile           = Profile.Wing,
-    profile_spec:            BrowserProfile    = BrowserProfile { .. },
+    profile_spec:            ClientProfile     = ClientProfile { .. },
     proxy_url:               u8[..256]         = [],
     timeout_ms:              i64               = 15000,
     follow_redirects:        bool              = true,
@@ -110,13 +110,13 @@ struct Client {
     auto_ech_discovery: bool        = false,
     dns_cache:          DnsCache    = DnsCache { .. },
 
-    // RFC 7838 Alt-Svc & Chromium Protocol Racing
+    // RFC 7838 Alt-Svc & Protocol Racing
     altsvc:                 AltSvcCache = AltSvcCache { .. },
     enable_altsvc:          bool        = true,
     enable_protocol_racing: bool        = true,
     quic_race_delay_ms:     i64         = 200,
 
-    // Compression Dictionary Transport (Chrome 123+ dcz/dcb)
+    // Compression Dictionary Transport (RFC 9842 dcz/dcb)
     dict_cache:              DictionaryCache = DictionaryCache { .. },
     enable_compression_dict: bool            = true,
 
@@ -264,7 +264,7 @@ fn set_base_url(session: Session&, url: const u8[:]) {
     session.base_url.append(url[..n]);
 }
 
-fn apply_profile(client: Client&, profile: const BrowserProfile&) {
+fn apply_profile(client: Client&, profile: const ClientProfile&) {
     client.profile = profile.kind;
     client.profile_spec = profile;
     client.default_headers.clear();
@@ -310,7 +310,7 @@ fn set_profile(session: Session&, profile: Profile) {
     }
 }
 
-fn set_profile(session: Session&, profile: const BrowserProfile&) {
+fn set_profile(session: Session&, profile: const ClientProfile&) {
     apply_profile(session, profile);
 }
 

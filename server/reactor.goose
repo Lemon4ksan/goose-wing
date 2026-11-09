@@ -16,7 +16,8 @@ import .h2_multiplexer;
 import .soa_timer;
 import .server;
 
-const REACTOR_LEFTOVER_CAP: i64 = 8192;
+const REACTOR_LEFTOVER_CAP:    i64 = 8192;
+const REACTOR_MAX_H2_SESSIONS: i64 = 128;
 
 struct ReactorLeftoverBuf {
     bytes: u8[8192] = [0; 8192],
@@ -28,9 +29,9 @@ struct ReactorIngressBuf {
 }
 
 struct ReactorState {
-    h2_sessions: internal::H2ServerSession[8]    = [internal::H2ServerSession { .. }; 8],
-    h2_in_use:   bool[8]                         = [false; 8],
-    leftovers:   ReactorLeftoverBuf[1024]        = [ReactorLeftoverBuf { .. }; 1024],
+    h2_sessions: internal::H2ServerSession[128]  = [internal::H2ServerSession { .. }; 128],
+    h2_in_use:   bool[128]                       = [false; 128],
+    leftovers:   ReactorLeftoverBuf[4096]        = [ReactorLeftoverBuf { .. }; 4096],
     table:       SoAConnTable                    = SoAConnTable { .. },
     chunk:       ReactorIngressBuf               = ReactorIngressBuf { .. },
     cork:        u8[..65536]                     = [],
@@ -45,7 +46,7 @@ fn alloc_reactor_h2_session(
     server_name: const u8[:],
     now_ms:      u64,
 ) -> i16 {
-    for i in 8 {
+    for i in REACTOR_MAX_H2_SESSIONS {
         if !g_default_reactor.h2_in_use[i] {
             internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[i], pipeline);
             g_default_reactor.h2_in_use[i] = true;
@@ -53,15 +54,12 @@ fn alloc_reactor_h2_session(
             return i as i16;
         }
     }
-    internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[0], pipeline);
-    g_default_reactor.h2_in_use[0] = true;
-    internal::reset_h2_server_session_inplace(g_default_reactor.h2_sessions[0], server_name, now_ms);
-    return 0;
+    return -1;
 }
 
 fn free_reactor_h2_session(h2_idx: i16, pipeline: ServerPipelineConfig&) {
     let idx = h2_idx as i64;
-    guard idx >= 0 && idx < 8 && g_default_reactor.h2_in_use[idx] else { return; }
+    guard idx >= 0 && idx < REACTOR_MAX_H2_SESSIONS && g_default_reactor.h2_in_use[idx] else { return; }
     internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[idx], pipeline);
     g_default_reactor.h2_in_use[idx] = false;
 }
@@ -75,17 +73,20 @@ fn ensure_h2_session(
     now_ms:      u64,
 ) -> i64 {
     var h2_idx = table.h2_slot_map[slot];
-    if !table.is_h2[slot] || h2_idx < 0 || h2_idx >= 8 {
+    if !table.is_h2[slot] || h2_idx < 0 || h2_idx >= REACTOR_MAX_H2_SESSIONS {
         h2_idx = alloc_reactor_h2_session(pipeline, server_name, now_ms);
+        if h2_idx < 0 {
+            return -1;
+        }
         table.h2_slot_map[slot] = h2_idx;
         table.is_h2[slot] = true;
     }
-    return clamp(h2_idx as i64, 0, 7);
+    return h2_idx;
 }
 
 // Encapsulated UFCS method on SoAConnTable: detaches and cleans up any H2ServerSession bound to `slot`.
 fn release_h2_session(table: SoAConnTable&, slot: i64, pipeline: ServerPipelineConfig&) {
-    guard slot >= 0 && slot < 1024 else { return; }
+    guard slot >= 0 && slot < SOA_TABLE_CAP else { return; }
     if table.h2_slot_map[slot] >= 0 {
         free_reactor_h2_session(table.h2_slot_map[slot], pipeline);
         table.h2_slot_map[slot] = -1;
@@ -123,7 +124,7 @@ fn reactor_cleanup_slot(
         tr.close();
         if table.h2_slot_map[slot_idx] >= 0 {
             let h2_i = table.h2_slot_map[slot_idx] as i64;
-            if h2_i >= 0 && h2_i < 8 {
+            if h2_i >= 0 && h2_i < REACTOR_MAX_H2_SESSIONS {
                 g_default_reactor.h2_in_use[h2_i] = false;
             }
         }
@@ -149,7 +150,7 @@ fn reactor_sweep_timeouts(
     last_sweep_sec = now_sec;
     tick_timer_advance(timer_wheel, elapsed);
 
-    var expired: i64[1024] = [0; 1024];
+    var expired: i64[4096] = [0; 4096];
     let n_expired = table.soa_table_sweep_expired(timer_wheel, expired[..]);
     for i in n_expired {
         let slot = expired[i];
@@ -370,6 +371,7 @@ fn reactor_handle_h2_ingress<Stage>(
         server.pipeline.trust_proxy_headers = true;
     }
     let h2_idx = table.ensure_h2_session(slot, server.pipeline, server.server_name[..], now_ms);
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return false; }
     let peer_ip_slice = reactor_resolve_slot_peer_ip(table, slot, conn);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         g_default_reactor.h2_sessions[h2_idx], server.pipeline, server.timer,
@@ -525,7 +527,7 @@ fn reactor_dispatch_events<Stage>(
         }
 
         let slot = udata as i64;
-        if slot < 0 || slot >= 1024 || table.fds[slot] <= 0 {
+        if slot < 0 || slot >= SOA_TABLE_CAP || table.fds[slot] <= 0 {
             continue;
         }
 
@@ -554,7 +556,7 @@ inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
 
 // Cleans up all active connection slots when shutting down reactor loop.
 fn reactor_cleanup_all(epfd: i64, table: SoAConnTable&, free_slots: FreeSlotStack&) {
-    for s in 1024 {
+    for s in SOA_TABLE_CAP {
         if table.fds[s] > 0 {
             reactor_cleanup_slot(epfd, table, s, free_slots);
         }
@@ -586,11 +588,11 @@ inline fn reactor_poll_sweep(
 }
 
 inline fn reset_reactor_state(state: ReactorState&) {
-    state.table = SoAConnTable { .. };
-    state.conn_pool = internal::ReactorConnectionPool { .. };
+    reset_soa_table_inplace(state.table);
+    internal::reset_connection_pool_inplace(state.conn_pool);
     state.cork.clear();
     state.chunk.len = 0;
-    init_free_slots(state.free_slots, 1024);
+    init_free_slots(state.free_slots, SOA_TABLE_CAP);
 }
 
 // Executes a share-nothing reactor loop with epoll and a custom `<Stage>` hook.
@@ -612,7 +614,7 @@ fn serve_reactor_with_stage<Stage>(
     }
 
     var empty_fds:    i64[0]    = [];
-    var ready_udata:  u64[1024] = [0; 1024];
+    var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
 
     reset_reactor_state(g_default_reactor);
@@ -718,7 +720,7 @@ fn reactor_dispatch_tls_events(
             continue;
         }
         let slot = udata as i64;
-        if slot >= 0 && slot < 1024 && table.fds[slot] > 0 {
+        if slot >= 0 && slot < SOA_TABLE_CAP && table.fds[slot] > 0 {
             var noop = wire::NoOpStage {};
             reactor_handle_ingress(
                 server, epfd, table, leftovers, slot, free_slots,
@@ -744,7 +746,7 @@ fn serve_reactor_tls(
     epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
 
     var empty_fds:    i64[0]    = [];
-    var ready_udata:  u64[1024] = [0; 1024];
+    var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
     reset_reactor_state(g_default_reactor);
     var timer_wheel = new_tick_timer_wheel(15);
@@ -865,7 +867,10 @@ inline fn dispatch_h3_udp_datagram(
     };
 }
 
-// Executes a UDP HTTP/3 datagram server loop (Section 4.3).
+// Executes an Unencrypted H3 over UDP (Datagram Direct) server loop (RFC 9114 framing + QPACK).
+// Demultiplexes direct HTTP/3 `HEADERS`/`DATA`/`SETTINGS` frames carried in raw UDP datagrams
+// for zero-handshake internal/loopback hops; for encrypted RFC 9000 + RFC 9001 TLS 1.3 QUIC v1
+// packets, use `QuicConnection` (`quic/connection.goose`) + `H3Connection` (`http3/connection.goose`).
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
     let h3_settings = H3Settings { .. };
@@ -1025,6 +1030,8 @@ fn encode_quic_server_initial<B>(
 }
 
 // Processes an incoming QUIC / HTTP/3 UDP datagram through `H3ServerEndpoint` and `server.pipeline`.
+// Supports both Unencrypted H3 over UDP (Datagram Direct, `(datagram[0] & 0xC0) == 0`) and
+// QUIC v1 Version Negotiation / Initial packet demultiplexing (RFC 9000 Section 17.2).
 // Populates `out_wire` with the serialized QUIC or HTTP/3 response datagram when `true` is returned.
 fn handle_h3_quic_datagram<B>(
     server:    HttpServer&,

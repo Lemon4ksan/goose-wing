@@ -62,9 +62,6 @@ struct ClientProfile {
     akamai:                    AkamaiFingerprint  = AkamaiFingerprint { .. },
 }
 
-// Backward-compatible alias for existing callers
-type BrowserProfile = ClientProfile;
-
 // ---- authentic wing default profile ----------------------------------------
 
 // Constructs the authentic Wing profile. It doesn't impersonate any existing
@@ -166,7 +163,7 @@ fn new_client_profile(kind: Profile) -> ClientProfile {
 
 // ---- profile manipulation & builder functions -------------------------------
 
-fn push_header_order(profile: BrowserProfile&, header_name: const u8[:]) {
+fn push_header_order(profile: ClientProfile&, header_name: const u8[:]) {
     var entry: u8[..32] = [];
     guard entry.try_set(header_name) else { return; }
     let _ = profile.header_order.try_push(entry);
@@ -178,7 +175,7 @@ struct Ja4Options {
 }
 
 // Computes the FoxIO JA4 TLS fingerprint for this profile.
-fn ja4(profile: const BrowserProfile&, opts: Ja4Options = Ja4Options { .. }) -> u8[..64] {
+fn ja4(profile: const ClientProfile&, opts: Ja4Options = Ja4Options { .. }) -> u8[..64] {
     return compute_ja4(
         profile.tls.ciphers[..],
         profile.tls.extensions[..],
@@ -197,7 +194,7 @@ struct Ja4hOptions {
 
 // Computes the FoxIO JA4H HTTP client fingerprint for this profile under given method and parameters.
 fn ja4h(
-    profile:       const BrowserProfile&,
+    profile:       const ClientProfile&,
     method:        const u8[:],
     proto:         const u8[:],
     opts:          Ja4hOptions    = Ja4hOptions { .. },
@@ -227,7 +224,7 @@ fn ja4h(
 }
 
 // Adds or overrides a header in the profile.
-fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
+fn set_header(profile: ClientProfile&, name: const u8[:], value: const u8[:]) {
     if name.eq_ascii_fold("user-agent") {
         set_user_agent(profile, value);
         return;
@@ -252,37 +249,37 @@ fn set_header(profile: BrowserProfile&, name: const u8[:], value: const u8[:]) {
 }
 
 // Sets a custom User-Agent in the profile.
-fn set_user_agent(profile: BrowserProfile&, ua: const u8[:]) {
+fn set_user_agent(profile: ClientProfile&, ua: const u8[:]) {
     let _ = profile.user_agent.try_set(ua);
 }
 
 // Sets Accept header in the profile.
-fn set_accept(profile: BrowserProfile&, accept_str: const u8[:]) {
+fn set_accept(profile: ClientProfile&, accept_str: const u8[:]) {
     let _ = profile.accept.try_set(accept_str);
 }
 
 // Sets Accept-Encoding header in the profile.
-fn set_accept_encoding(profile: BrowserProfile&, enc: const u8[:]) {
+fn set_accept_encoding(profile: ClientProfile&, enc: const u8[:]) {
     let _ = profile.accept_encoding.try_set(enc);
 }
 
 // Sets Accept-Language header in the profile.
-fn set_accept_language(profile: BrowserProfile&, lang: const u8[:]) {
+fn set_accept_language(profile: ClientProfile&, lang: const u8[:]) {
     let _ = profile.accept_language.try_set(lang);
 }
 
 // Configures the p0f TCP SYN signature for this profile.
-fn set_p0f(profile: BrowserProfile&, sig: const P0fSignature&) {
+fn set_p0f(profile: ClientProfile&, sig: const P0fSignature&) {
     profile.p0f = sig;
 }
 
 // Computes the p0f v3 format string for this profile.
-fn p0f(profile: const BrowserProfile&) -> u8[..256] {
+fn p0f(profile: const ClientProfile&) -> u8[..256] {
     return format_p0f(profile.p0f);
 }
 
 // Configures the Akamai HTTP/2 fingerprint for this profile and synchronizes H2Settings.
-fn set_akamai(profile: BrowserProfile&, fp: const AkamaiFingerprint&) {
+fn set_akamai(profile: ClientProfile&, fp: const AkamaiFingerprint&) {
     profile.akamai = fp;
     for &s in fp.settings {
         if s.id == 1 { profile.h2.header_table_size = s.val; }
@@ -295,11 +292,11 @@ fn set_akamai(profile: BrowserProfile&, fp: const AkamaiFingerprint&) {
 }
 
 // Formats the Akamai HTTP/2 fingerprint string for this profile.
-fn akamai(profile: const BrowserProfile&) -> u8[..640] {
+fn akamai(profile: const ClientProfile&) -> u8[..640] {
     return akamai_fingerprint_to_string(profile.akamai);
 }
 
 // Computes the 32-character hexadecimal MD5 Akamai hash for this profile.
-fn akamai_hash(profile: const BrowserProfile&) -> u8[..32] {
+fn akamai_hash(profile: const ClientProfile&) -> u8[..32] {
     return akamai_fingerprint_hash(profile.akamai);
 }

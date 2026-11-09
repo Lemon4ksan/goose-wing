@@ -2,12 +2,13 @@
 
 Package `client` provides the zero-allocation HTTP client models, content
 decompression (`gzip`, `deflate`, `br`, `zstd`, `dcb`, `dcz`), two-tier
-application and network interceptor pipelines, browser TLS/HTTP2 profiles, 0-RTT
-replay guards (RFC 8470), and HAR 1.2 telemetry export for `goose-wing`.
+application and network interceptor pipelines, configurable TLS/HTTP2 client
+profiles, 0-RTT replay guards (RFC 8470), and HAR 1.2 telemetry export for
+`goose-wing`.
 
 ```goose
 var c = new_client("https://example.com");
-set_profile(c, Profile.Chrome120);
+set_profile(c, Profile.Wing);
 var req = new_get("/index.html");
 set_header(req, "Accept", "text/html");
 ```
@@ -17,7 +18,7 @@ set_header(req, "Accept", "text/html");
 ### 1. Configuration & Lifecycle (`client/client.goose`, `client/profile.goose`)
 
 ```goose
-enum Profile { Default, Chrome120, Firefox121, Safari17, Curl }
+enum Profile { Wing, Custom, None }
 struct ClientConfig {
     base_url: u8[..512], user_agent: u8[..256], timeout_ms: i64,
     follow_redirects: bool, max_redirects: i32, verify_tls: bool,
@@ -33,6 +34,7 @@ fn new_client() -> Client
 fn new_client(cfg: ClientConfig) -> Client
 fn new_client(base_url: const u8[:]) -> Client
 fn set_profile(session: Session&, profile: Profile)
+fn set_profile(session: Session&, profile: const ClientProfile&)
 fn set_timeout_ms(session: Session&, ms: i64)
 fn set_proxy(session: Session&, proxy_url: const u8[:])
 fn set_redirect_mode(session: Session&, mode: RedirectMode)
@@ -48,8 +50,14 @@ fn close(session: Session&)
 `Alt-Svc` table, and RFC 9842 compression dictionary store. `set_profile` aligns
 the `User-Agent`, TLS 1.3 cipher/extension order (JA3/JA4), HTTP/2 `SETTINGS`,
 and pseudo-header ordering (`:method`, `:authority`, `:scheme`, `:path`) with
-the selected `Profile`. `close` is idempotent and drains all pooled transport
-descriptors.
+the selected `Profile` (`Profile.Wing` for the canonical `goose-wing` wire
+signature or `Profile.Custom` with a caller-constructed `ClientProfile`). When
+`enable_protocol_racing` is active against a direct HTTP/3 UDP endpoint
+(`serve_h3`), `execute_live_h3_hop` does an **Unencrypted H3 over UDP (Datagram
+Direct)** exchange using RFC 9114 framing and QPACK; full encrypted QUIC v1 +
+TLS 1.3 sessions use `QuicConnection` (`quic/connection.goose`) and
+`H3Connection` (`http3/connection.goose`). `close` is idempotent and drains all
+pooled transport descriptors.
 
 ### 2. Request Model (`client/request.goose`, RFC 9110)
 

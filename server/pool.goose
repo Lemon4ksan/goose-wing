@@ -235,7 +235,17 @@ struct ReactorConnectionSlot {
 }
 
 struct ReactorConnectionPool {
-    slots: ReactorConnectionSlot[..16] = [ReactorConnectionSlot { .. }; 16],
+    slots: ReactorConnectionSlot[..4096] = [ReactorConnectionSlot { .. }; 4096],
+}
+
+// Resets all slots in `pool` in place without allocating a temporary pool on the stack.
+fn reset_connection_pool_inplace(pool: ReactorConnectionPool&) {
+    for idx in pool.slots.len {
+        pool.slots[idx].fd = -1;
+        pool.slots[idx].connected_at_ns = 0;
+        pool.slots[idx].timer = ConnectionTimer { .. };
+        pool.slots[idx].in_use = false;
+    }
 }
 
 // Allocates a connection slot from `pool` for `fd` at `now_ns`, returning the slot index or -1.

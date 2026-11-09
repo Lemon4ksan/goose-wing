@@ -30,16 +30,22 @@ for CI/CD):
 docker compose run --rm benchmark --cli
 ```
 
-## 2. Benchmark Scenarios
+## 2. Four Core Benchmark Disciplines
 
-| Scenario | Focus Area | Workload Characteristics |
+To prevent synthetic benchmark conflation, the harness and
+`bench/server_profiling_benchmark.goose` separate server workloads into four
+explicit disciplines, with Keep-Alive header memoization
+(`enable_header_memoization`) **disabled by default (`false`)** so every single
+request executes full 64-bit SWAR header parsing:
+
+| Discipline | Focus Area | Workload & Configuration |
 | :--- | :--- | :--- |
-| **HTTP/1.1 Pipelined Batch** | Wire throughput & Corking | 32 pipelined requests per batch. Tests `CorkBuffer` vectored write efficiency (`tcp_send2` / `writev`). |
-| **HTTP/1.1 Plaintext Ping-Pong** | Roundtrip latency & SWAR | Single request/response roundtrips measuring baseline CPU instruction count and 64-bit SWAR header parsing. |
-| **HTTP/1.1 JSON Serialization** | Structured payload encoding | Bounded-stack JSON generation without dynamic heap allocation. |
+| **1. HTTP/1.1 Pipelined (depth 16 / 32)** | Wire throughput, Corking & Memoization comparison | Measured in two explicit modes: **(a) Without Memoization (`enable_header_memoization = false`, default)**: full SWAR parsing of every pipelined request; and **(b) With Keep-Alive Memoization (`set_header_memoization(server, true)`)**: opt-in Keep-Alive header block memoization (`g_h1_parse_cache` and pipelined batch draining). |
+| **2. HTTP/1.1 Non-Pipelined (depth 1)** | Roundtrip latency & SWAR | 1 request per socket read/write turn (`L0_Plaintext_GET`, `Live_TCP_Roundtrip`, `wrk` depth 1). Measures per-turn syscall, framing, and 64-bit SWAR header scanner overhead without pipelined cork batching. |
+| **3. Dynamic Route (`/users/:id`) + JSON Serialization** | Radix trie parameter extraction & `const for` JSON | Parameterized route matching (`/api/v1/users/{id}` via `RadixRouter` + `ZeroAllocParams`) and compile-time `const for` struct-to-JSON serialization into stack buffers (`Dynamic_Route_JSON_Serialize`). |
+| **4. HTTP/2 (`h2load`)** | Multiplexed streams & HPACK | Concurrent stream multiplexing (`H2ServerSession`, 128-slot reactor pool `REACTOR_MAX_H2_SESSIONS = 128` across 4096-slot `SoAConnTable`), HPACK decoding, and flow-control window management. |
 | **WebSocket Echo** | RFC 6455 64-bit Masking | In-place XOR payload unmasking via unrolled 64-bit SIMD/SWAR loop vs scalar C++ loop. |
-| **High Concurrency** | Scale & Allocator Contention | 1,000 persistent keep-alive connections measuring allocator lock contention and kernel event dispatching. |
-| **Zero-Heap Memory Stress** | Memory stability & RSS | 50,000 continuous requests measuring resident set size (RSS) drift and arena fragmentation. |
+| **High Concurrency (1,000+ conns)** | Scale & 4096-slot `SoAConnTable` | 1,000+ persistent keep-alive connections across the 4096-slot `SoAConnTable` (`SOA_TABLE_CAP = 4096`) and 1-second tick timer wheel. |
 
 ## 3. Empirical Reference Benchmarks
 

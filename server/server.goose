@@ -30,26 +30,42 @@ struct WsRouteEntry {
 }
 
 struct HttpServer {
-    pipeline:              ServerPipelineConfig      = ServerPipelineConfig { .. },
-    host:                  u8[..256]                 = "127.0.0.1",
-    port:                  u16                       = 8080,
-    server_name:           u8[..64]                  = "goose-wing/1.0",
-    timer:                 internal::ConnectionTimer = internal::ConnectionTimer { .. },
-    is_running:            bool                      = false,
-    requests_processed:    u64                       = 0,
-    accept_proxy_protocol: bool                      = false,
-    trust_proxy_headers:   bool                      = false,
-    topic_tree:            TopicTree                 = TopicTree { .. },
-    ws_routes:             WsRouteEntry[..16]        = [WsRouteEntry { .. }; 16],
-    ws_route_count:        i32                       = 0,
-    shared_compressor:     SharedWsCompressor        = SharedWsCompressor { .. },
-    sni_registry:          SniRegistry               = SniRegistry { .. },
-    worker_ring:           core::SpscRing            = core::SpscRing { .. },
-    cached_date:           CachedHttpDate            = CachedHttpDate { .. },
-    fast_l0_last_headers:  u8[..256]                 = [],
-    fast_l0_last_host:     u8[..128]                 = [],
-    fast_l0_last_close:    bool                      = false,
-    turn_in_use:           bool                      = false,
+    pipeline:                  ServerPipelineConfig      = ServerPipelineConfig { .. },
+    host:                      u8[..256]                 = "127.0.0.1",
+    port:                      u16                       = 8080,
+    server_name:               u8[..64]                  = "goose-wing/1.0",
+    timer:                     internal::ConnectionTimer = internal::ConnectionTimer { .. },
+    is_running:                bool                      = false,
+    requests_processed:        u64                       = 0,
+    accept_proxy_protocol:     bool                      = false,
+    trust_proxy_headers:       bool                      = false,
+    topic_tree:                TopicTree                 = TopicTree { .. },
+    ws_routes:                 WsRouteEntry[..16]        = [WsRouteEntry { .. }; 16],
+    ws_route_count:            i32                       = 0,
+    shared_compressor:         SharedWsCompressor        = SharedWsCompressor { .. },
+    sni_registry:              SniRegistry               = SniRegistry { .. },
+    worker_ring:               core::SpscRing            = core::SpscRing { .. },
+    cached_date:               CachedHttpDate            = CachedHttpDate { .. },
+    fast_l0_last_headers:      u8[..256]                 = [],
+    fast_l0_last_host:         u8[..128]                 = [],
+    fast_l0_last_close:        bool                      = false,
+    enable_header_memoization: bool                      = false,
+    turn_in_use:               bool                      = false,
+}
+
+// Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,
+// `try_match_cached_l0_headers`, and `drain_identical_l0_pipelined_batch`).
+// Disabled by default (`false`) so every request executes full SWAR header scanning.
+fn set_header_memoization(server: HttpServer&, enabled: bool) {
+    server.enable_header_memoization = enabled;
+    g_h1_parse_cache.enabled = enabled;
+    if !enabled {
+        g_h1_parse_cache.rest_headers.clear();
+        g_h1_parse_cache.has_valid_host = false;
+        server.fast_l0_last_headers.clear();
+        server.fast_l0_last_host.clear();
+        server.pipeline.has_valid_host = false;
+    }
 }
 
 inline fn refresh_http_server_date(server: HttpServer&, now_sec: i64) {
@@ -606,6 +622,7 @@ fn handle_connection_wire<Stage, B>(
     wire_out:  B&,
     stage:     Stage&,
 ) -> PipelineOutcome, bool {
+    g_h1_parse_cache.enabled = server.enable_header_memoization;
     wire_out.clear();
 
     var effective_ip: u8[..64] = [];
@@ -963,16 +980,20 @@ inline fn can_try_fast_l0_static<Stage>(server: const HttpServer&, stage: const 
         && !server.pipeline.route_cache.is_valid;
 }
 
-// Validates a `Host` header slice, memoizing the last valid value on `pipeline`.
-fn validate_fast_host_slice(pipeline: ServerPipelineConfig&, host_val: const u8[:]) -> bool {
+// Validates a `Host` header slice, optionally memoizing the last valid value on `pipeline`.
+fn validate_fast_host_slice(
+    pipeline: ServerPipelineConfig&,
+    host_val: const u8[:],
+    memoize:  bool = false,
+) -> bool {
     guard host_val.len > 0 else { return false; }
-    if pipeline.has_valid_host && host_val == pipeline.last_valid_host[..] {
+    if memoize && pipeline.has_valid_host && host_val == pipeline.last_valid_host[..] {
         return true;
     }
     guard validate_host_header_chars(host_val) && validate_host_header_structure(host_val) else {
         return false;
     }
-    if pipeline.last_valid_host.try_set(host_val) {
+    if memoize && pipeline.last_valid_host.try_set(host_val) {
         pipeline.has_valid_host = true;
     }
     return true;
@@ -980,7 +1001,7 @@ fn validate_fast_host_slice(pipeline: ServerPipelineConfig&, host_val: const u8[
 
 // Evaluates a known header inside a fast L0 static GET header block.
 inline fn eval_fast_l0_known_header(
-    pipeline:  ServerPipelineConfig&,
+    server:    HttpServer&,
     known_id:  KnownHeaderId,
     hval:      const u8[:],
     has_host:  bool&,
@@ -988,7 +1009,10 @@ inline fn eval_fast_l0_known_header(
 ) -> bool {
     return match known_id {
         Host => {
-            guard !has_host && validate_fast_host_slice(pipeline, hval) else { return false; }
+            guard !has_host
+                && validate_fast_host_slice(server.pipeline, hval, server.enable_header_memoization) else {
+                return false;
+            }
             has_host = true;
             true
         },
@@ -1017,7 +1041,7 @@ inline fn eval_fast_l0_known_header(
 //   rest = "Host: localhost\r\n\r\n", cursor = 0
 //   returns: true, cursor = 17, has_host = true
 fn scan_fast_l0_static_header_line(
-    pipeline:  ServerPipelineConfig&,
+    server:    HttpServer&,
     rest:      const u8[:],
     cursor:    i64&,
     has_host:  bool&,
@@ -1036,7 +1060,7 @@ fn scan_fast_l0_static_header_line(
     let hval = val_slice[lead_ws..end_ws];
 
     let known_id = identify_known_header(hname);
-    guard eval_fast_l0_known_header(pipeline, known_id, hval, has_host, out_close) else {
+    guard eval_fast_l0_known_header(server, known_id, hval, has_host, out_close) else {
         return false;
     }
 
@@ -1049,7 +1073,9 @@ inline fn try_match_cached_l0_headers(
     rest:      const u8[:],
     out_close: bool&,
 ) -> bool {
-    guard server.fast_l0_last_headers.len > 0 && rest == server.fast_l0_last_headers[..] else {
+    guard server.enable_header_memoization
+        && server.fast_l0_last_headers.len > 0
+        && rest == server.fast_l0_last_headers[..] else {
         return false;
     }
     if !server.pipeline.has_valid_host && server.fast_l0_last_host.len > 0 {
@@ -1065,6 +1091,7 @@ inline fn record_cached_l0_headers(
     rest:      const u8[:],
     out_close: bool,
 ) {
+    guard server.enable_header_memoization else { return; }
     if rest.len <= 256 && server.fast_l0_last_headers.try_set(rest) {
         let _ = server.fast_l0_last_host.try_set(server.pipeline.last_valid_host[..]);
         server.fast_l0_last_close = out_close;
@@ -1097,7 +1124,7 @@ fn scan_fast_l0_static_headers(
             record_cached_l0_headers(server, rest, out_close);
             return true;
         }
-        guard scan_fast_l0_static_header_line(server.pipeline, rest, cursor, has_host, out_close) else {
+        guard scan_fast_l0_static_header_line(server, rest, cursor, has_host, out_close) else {
             return false;
         }
     }
@@ -1208,7 +1235,8 @@ fn try_fast_l0_static_turn<B>(
     return true;
 }
 
-// Batches consecutive identical pipelined L0 static GET requests already in `stream_in` into `wire_out`.
+// Batches consecutive identical pipelined L0 static GET requests already in `stream_in` into `wire_out`
+// when Keep-Alive header memoization (`server.enable_header_memoization`) is explicitly enabled.
 fn drain_identical_l0_pipelined_batch<B>(
     server:         HttpServer&,
     prev_req:       const u8[:],
@@ -1221,7 +1249,13 @@ fn drain_identical_l0_pipelined_batch<B>(
 ) -> const u8[:] {
     var stream = stream_in;
     let step = prev_req.len;
-    guard !fast_close && step > 0 && sp_idx >= 0 && server.is_running else { return stream; }
+    guard server.enable_header_memoization
+        && !fast_close
+        && step > 0
+        && sp_idx >= 0
+        && server.is_running else {
+        return stream;
+    }
     let sp_i64 = sp_idx as i64;
     while stream.len >= step && core::add_sat_i64(wire_out.len, 768) <= wire_out.cap {
         guard stream[..step] == prev_req else { break; }
@@ -1479,6 +1513,7 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
     wire_out:  B&,
     stage:     Stage&,
 ) -> i64, i64, bool, bool {
+    g_h1_parse_cache.enabled = server.enable_header_memoization;
     if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
     let wire_in_len = wire_in.len;
@@ -1598,6 +1633,7 @@ fn handle_connection_pipe<Stage, B>(
     h2_sess:   internal::H2ServerSession&,
     stage:     Stage&,
 ) -> i64, bool {
+    g_h1_parse_cache.enabled = server.enable_header_memoization;
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
@@ -1661,8 +1697,7 @@ inline fn alloc_temp_h2_session(
     server_name: const u8[:],
     now_ns:      u64,
 ) -> i64 {
-    let idx = alloc_reactor_h2_session(pipeline, server_name, now_ns / 1000000) as i64;
-    return clamp(idx, 0, 7);
+    return alloc_reactor_h2_session(pipeline, server_name, now_ns / 1000000);
 }
 
 fn handle_connection_pipe_with_stage<Stage, B>(
@@ -1674,6 +1709,7 @@ fn handle_connection_pipe_with_stage<Stage, B>(
     stage:     Stage&,
 ) -> i64, bool {
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return 0, false; }
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
     return handle_connection_pipe(
         server, client_ip, pipe, now_ns, wire_out, g_default_reactor.h2_sessions[h2_idx], stage,
@@ -1802,6 +1838,7 @@ fn serve_h2_connection_buf<InBuf>(
     guard conn_fd > 0 else { return false; }
     server.pipeline.trust_proxy_headers = server.pipeline.trust_proxy_headers || server.trust_proxy_headers;
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 1000000000);
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return false; }
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
     var peer_ip: u8[..64] = [];
@@ -1951,7 +1988,6 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
     in_buf:      InBuf&,
     ws_frag_buf: FragBuf&,
     out_wire:    OutBuf&,
-    ka_count:    i64&,
 ) -> bool {
     var req = new_request("GET", "");
     let ok_req, consumed = parse_http1_wire_request(in_buf[..], req);
@@ -1969,8 +2005,7 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
     }
     let wants_ka = dispatch_http1_connection_turn(conn_fd, server, peer_ip, req, stage, out_wire);
     in_buf.compact_wire_buffer(consumed);
-    ka_count = core::add_sat_i64(ka_count, 1);
-    return wants_ka && ka_count < 4;
+    return wants_ka;
 }
 
 // Checks whether `in_buf` contains a complete HTTP/1.1 request ready for dispatch (when not an H2 preface).
@@ -2046,11 +2081,11 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
     recv_timeout_ms: u32 = 500,
 ) -> bool {
     guard conn_fd > 0 else { return server.is_running; }
+    g_h1_parse_cache.enabled = server.enable_header_memoization;
     in_buf.clear();
     out_wire.clear();
     var peer_ip:    u8[..64] = [];
     var idle_ticks: u64      = 0;
-    var ka_count:   i64      = 0;
     server.pipeline.hdr_scan_cursor = 0;
     let need_peer_ip = server.pipeline.enable_rate_limiter
         || server.trust_proxy_headers
@@ -2066,7 +2101,7 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
         if has_ready_http1_request(in_buf[..], server.pipeline.hdr_scan_cursor) {
             idle_ticks = 0;
             if process_ready_http1_connection_buf(
-                conn_fd, server, peer_ip[..], stage, in_buf, ws_frag_buf, out_wire, ka_count,
+                conn_fd, server, peer_ip[..], stage, in_buf, ws_frag_buf, out_wire,
             ) {
                 server.pipeline.hdr_scan_cursor = 0;
                 continue;
@@ -2328,6 +2363,10 @@ fn serve_pipe_loop<Stage>(
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
         let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+        if h2_idx < 0 || h2_idx >= REACTOR_MAX_H2_SESSIONS {
+            total_served = core::add_sat_i64(total_served, 1);
+            continue;
+        }
         defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
         while step_pipe_loop_conn(server, conn, peer_ip[..], pipe, cork, h2_idx, stage) {}
@@ -2400,6 +2439,34 @@ inline fn verify_tls_slot_sni(server: const HttpServer&, slot_idx: i32) -> bool 
     return ok_sni;
 }
 
+inline fn step_tls_loop_conn(
+    server:   HttpServer&,
+    conn:     i64,
+    slot_idx: u16,
+    peer_ip:  const u8[:],
+    pipe:     core::PipeBuffer&,
+    cork:     core::CorkBuffer&,
+    h2_idx:   i64,
+) -> bool {
+    let recvd = tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
+    guard recvd > 0 else { return false; }
+
+    let now_ns = core::monotonic_now().as_nanos();
+    let _, ok = handle_connection_pipe(
+        server, peer_ip, pipe, now_ns, cork, g_default_reactor.h2_sessions[h2_idx],
+    );
+    let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
+    if !ok {
+        if cork.cork_pending() > 0 { tls_flush_cork(conn, slot_idx, cork); }
+        return false;
+    }
+    if cork.cork_pending() > 0 {
+        let sent = tls_flush_cork(conn, slot_idx, cork);
+        return sent > 0 && !should_close;
+    }
+    return !should_close;
+}
+
 // Executes a live TLS 1.3 HTTPS accept and dispatch loop using PipeBuffer and TLS record AEAD.
 fn serve_tls(
     server:          HttpServer&,
@@ -2424,7 +2491,7 @@ fn serve_tls(
             } else {
                 tcp_close(conn);
             }
-            total_served++;
+            total_served = core::add_sat_i64(total_served, 1);
             continue;
         }
         defer tls_transport_close(conn, slot_idx);
@@ -2433,29 +2500,14 @@ fn serve_tls(
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
         let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+        if h2_idx < 0 || h2_idx >= REACTOR_MAX_H2_SESSIONS {
+            total_served = core::add_sat_i64(total_served, 1);
+            continue;
+        }
         defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
-        loop {
-            let recvd = tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
-            if recvd <= 0 { break; }
-
-            let now_ns = core::monotonic_now().as_nanos();
-            let _, ok = handle_connection_pipe(
-                server, peer_ip[..], pipe, now_ns, cork, g_default_reactor.h2_sessions[h2_idx],
-            );
-            let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
-            if !ok {
-                if cork.cork_pending() > 0 { tls_flush_cork(conn, slot_idx, cork); }
-                break;
-            }
-            if cork.cork_pending() > 0 {
-                let sent = tls_flush_cork(conn, slot_idx, cork);
-                if sent <= 0 || should_close { break; }
-            } else if should_close {
-                break;
-            }
-        }
-        total_served++;
+        while step_tls_loop_conn(server, conn, slot_idx, peer_ip[..], pipe, cork, h2_idx) {}
+        total_served = core::add_sat_i64(total_served, 1);
     }
     return total_served;
 }
@@ -2486,6 +2538,12 @@ inline fn handle_page_ring_h2_preface<Stage, B>(
         return 0;
     }
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else {
+        out_done = true;
+        out_ok = false;
+        ring.page_ring_clear();
+        return 0;
+    }
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
         g_default_reactor.h2_sessions[h2_idx],

@@ -1739,8 +1739,8 @@ fn test_akamai_regressions() {
     let _, ok8 = wing::parse_akamai_fingerprint("1:65536|0|0|,,,");
     assert(!ok8);
 
-    // F003: order_pseudo_headers deduplication & Safari window_update=0 anomaly
-    var dup_fp = wing::akamai_chrome_preset();
+    // F003: order_pseudo_headers deduplication & window_update=0 anomaly
+    var dup_fp = wing::akamai_wing_preset();
     dup_fp.pseudo_headers.clear();
     dup_fp.pseudo_headers.append("mmasp");
     var hmap = wing::HeaderMap { .. };
@@ -1748,9 +1748,10 @@ fn test_akamai_regressions() {
     assert(hmap.entries.len == 4);
     assert(wing::get_header(hmap, ":path") == "/index");
 
-    var bad_safari = wing::akamai_safari_preset();
-    bad_safari.window_update = 0;
-    let anom, _ = wing::detect_akamai_anomaly("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) Version/17.4 Safari/605.1.15", bad_safari);
+    let expected_wing = wing::akamai_wing_preset();
+    var bad_wu = wing::akamai_wing_preset();
+    bad_wu.window_update = 0;
+    let anom, _ = wing::detect_akamai_anomaly(bad_wu, expected_wing);
     assert(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly);
     print("AKAMAI_OK");
 }
@@ -1777,10 +1778,13 @@ fn test_ja4_and_profile_regressions() {
     wing::compute_ja4h("GET", "h2", hdrs[..], wing::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..], reusable_ja4h);
     assert(reusable_ja4h[..12] == "ge20cn02en00");
 
-    // F007: set_akamai syncs BrowserProfile.h2
+    // F007: set_akamai syncs ClientProfile.h2
     var prof = wing::new_client_profile(wing::Profile.Wing);
-    let ff_fp = wing::akamai_firefox_preset();
-    wing::set_akamai(prof, ff_fp);
+    var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+    let _ = wing::akamai_push_setting(custom_fp, 1, 65536);
+    let _ = wing::akamai_push_setting(custom_fp, 4, 131072);
+    let _ = wing::akamai_push_setting(custom_fp, 5, 16384);
+    wing::set_akamai(prof, custom_fp);
     assert(prof.h2.initial_window_size == 131072);
     assert(prof.h2.max_frame_size == 16384);
     print("JA4_PROFILE_OK");

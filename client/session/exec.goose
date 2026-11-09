@@ -1212,6 +1212,9 @@ fn encode_h3_client_request<B>(
     return true;
 }
 
+// Executes an Unencrypted H3 over UDP (Datagram Direct) client hop (RFC 9114 framing + QPACK)
+// when racing against a direct HTTP/3 UDP endpoint (`serve_h3` / `handle_h3_server_datagram`).
+// For encrypted RFC 9000 + RFC 9001 TLS 1.3 QUIC v1 sessions, use `QuicConnection` + `H3Connection`.
 fn execute_live_h3_hop(
     session:     Session&,
     ctx:         RequestExecutionContext&,

@@ -331,6 +331,7 @@ inline fn has_smuggling_conflict(mask: u32) -> bool {
 }
 
 struct H1HeaderParseCache {
+    enabled:          bool                  = false,
     valid_host:       u8[..128]             = [],
     has_valid_host:   bool                  = false,
     rest_headers:     u8[..1024]            = [],
@@ -353,13 +354,19 @@ fn validate_request_host_presence<Req>(
         guard has_host else { return false; }
     }
     if has_host {
-        guard validate_span_host_header_memoized(
-            out_req.headers,
-            presence_tracker.host_idx,
-            g_h1_parse_cache.valid_host,
-            g_h1_parse_cache.has_valid_host,
-        ) else {
-            return false;
+        if g_h1_parse_cache.enabled {
+            guard validate_span_host_header_memoized(
+                out_req.headers,
+                presence_tracker.host_idx,
+                g_h1_parse_cache.valid_host,
+                g_h1_parse_cache.has_valid_host,
+            ) else {
+                return false;
+            }
+        } else {
+            guard validate_span_host_header(out_req.headers, presence_tracker.host_idx) else {
+                return false;
+            }
         }
     }
     return true;
@@ -444,7 +451,9 @@ inline fn try_restore_cached_headers_stream<Req>(
     out_req:          Req&,
     presence_tracker: HeaderPresenceTracker&,
 ) -> bool {
-    guard g_h1_parse_cache.rest_headers.len > 0 && rest_headers == g_h1_parse_cache.rest_headers[..] else {
+    guard g_h1_parse_cache.enabled
+        && g_h1_parse_cache.rest_headers.len > 0
+        && rest_headers == g_h1_parse_cache.rest_headers[..] else {
         return false;
     }
     if is_headers_cache_already_loaded(out_req) {
@@ -466,7 +475,7 @@ inline fn save_cached_headers_stream<Req>(
     out_req:          const Req&,
     presence_tracker: const HeaderPresenceTracker&,
 ) {
-    guard rest_headers.len > 0 && rest_headers.len <= 1024 else { return; }
+    guard g_h1_parse_cache.enabled && rest_headers.len > 0 && rest_headers.len <= 1024 else { return; }
     guard out_req.headers.raw_buf.len <= 1024 && out_req.headers.entries.len <= 32 else { return; }
     guard out_req.headers.header_contains_comma.len <= 32 else { return; }
     let _ = g_h1_parse_cache.rest_headers.try_set(rest_headers);

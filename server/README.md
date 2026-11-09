@@ -20,9 +20,11 @@ struct HttpServer {
     server_name: u8[..64], timer: internal::ConnectionTimer,
     topic_tree: TopicTree, ws_routes: WsRouteEntry[..16],
     shared_compressor: SharedWsCompressor, sni_registry: SniRegistry,
-    worker_ring: core::SpscRing, cached_date: CachedHttpDate, ...
+    worker_ring: core::SpscRing, cached_date: CachedHttpDate,
+    enable_header_memoization: bool = false, ...
 }
 fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, core::secs(1), 100)) -> HttpServer
+fn set_header_memoization(server: HttpServer&, enabled: bool)
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64
 fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
@@ -38,16 +40,22 @@ fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[
 
 `HttpServer` combines synchronous serving loops (`serve`, `serve_with_stage`,
 and TLS 1.3 `serve_tls` with `h2` / `http/1.1` ALPN and SNI certificate
-selection) with a Sans-IO wire processor (`handle_connection_wire`). Routing and
-middleware state live inside `server.pipeline` (`server.pipeline.router`,
-`server.pipeline.edge_filter`, `server.pipeline.route_cache`). Built-in
-WebSocket pub/sub routes messages across `server.topic_tree` using MQTT wildcard
-patterns (`+` and `#`), collecting up to 512 matching socket descriptors
-(`i64[..512]`) in `find_subscribers`.
+selection) with a Sans-IO wire processor (`handle_connection_wire`). By default,
+`enable_header_memoization` is `false` so every HTTP/1.1 request executes full
+64-bit SWAR header scanning without reusing cached Keep-Alive header blocks;
+call `set_header_memoization(server, true)` to opt in to Keep-Alive header
+memoization (`g_h1_parse_cache` and pipelined identical-request batching).
+Routing and middleware state live inside `server.pipeline`
+(`server.pipeline.router`, `server.pipeline.edge_filter`,
+`server.pipeline.route_cache`). Built-in WebSocket pub/sub routes messages
+across `server.topic_tree` using MQTT wildcard patterns (`+` and `#`),
+collecting up to 512 matching socket descriptors (`i64[..512]`) in
+`find_subscribers`.
 
 ### 2. Reactor Event Loop & HTTP/3 Server Endpoint (`server/reactor.goose`)
 
 ```goose
+const REACTOR_MAX_H2_SESSIONS: i64 = 128;
 struct H3ServerEndpoint {
     conn: internal::H3Connection
 }
@@ -61,12 +69,23 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64
 ```
 
 `serve_reactor`, `serve_reactor_with_stage`, and `serve_reactor_tls` drive a
-single-threaded non-blocking event loop over `Poller`, a 1024-slot
-`SoAConnTable`, and per-connection `ReactorLeftoverBuf` / `PageRingBuffer`
-arenas. `H3ServerEndpoint` wraps `conn: internal::H3Connection` and
-demultiplexes QUIC packets (`handle_h3_quic_datagram`), HTTP/3 request streams
-(`handle_h3_server_datagram`), WebTransport sessions, and MASQUE tunnels over
-UDP (`serve_h3`).
+single-threaded non-blocking event loop over `Poller`, a 4096-slot
+`SoAConnTable` (`SOA_TABLE_CAP = 4096`), a 128-slot `H2ServerSession` pool
+(`REACTOR_MAX_H2_SESSIONS = 128`, returning `-1` on saturation instead of
+overwriting active sessions), and per-connection `ReactorLeftoverBuf` /
+`PageRingBuffer` arenas. `H3ServerEndpoint` supports two distinct UDP transport
+modes:
+
+1. **Unencrypted H3 over UDP (Datagram Direct)**: `serve_h3` and
+   `handle_h3_server_datagram` demultiplex direct RFC 9114 HTTP/3 frames
+   (`SETTINGS`, `HEADERS`, `DATA` with QPACK compression,
+   `(datagram[0] & 0xC0) == 0`) carried over raw UDP datagrams for
+   zero-handshake internal/loopback hops.
+2. **Full QUIC v1 (RFC 9000 + RFC 9001 TLS 1.3)**: `QuicConnection`
+   (`quic/connection.goose`, `quic/tls_quic.goose`) paired with `H3Connection`
+   (`http3/connection.goose`) handles encrypted Initial, Handshake, and 1-RTT
+   short-header packets (`(datagram[0] & 0x80) != 0`), AEAD packet protection,
+   header protection, and loss/congestion control.
 
 ### 3. Radix Tree & Flat Register Routing (`server/router.goose`)
 
@@ -262,11 +281,12 @@ fn new_connection_timer(now_ns: u64, header_timeout_ns: u64 = 5000000000, min_ra
 fn check_connection_tick(timer: ConnectionTimer&, now_ns: u64, bytes_received: u64, headers_complete: bool) -> bool
 
 // SoA Connection Sweep Table (server/soa_timer.goose)
+const SOA_TABLE_CAP: i64 = 4096;
 struct SoAConnTable { ... }
-fn soa_table_alloc(table: SoAConnTable&, fd: i32, now_ms: u64) -> i32
-fn soa_table_free(table: SoAConnTable&, slot: i32)
-fn soa_table_touch(table: SoAConnTable&, slot: i32, now_ms: u64)
-fn soa_table_sweep_expired(table: SoAConnTable&, now_ms: u64, idle_timeout_ms: u64, out_expired_fds: i32[..1024]&) -> i32
+fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64
+fn soa_table_free(table: SoAConnTable&, slot: i64)
+fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8)
+fn soa_table_sweep_expired(table: SoAConnTable&, wheel: const TickTimerWheel&, out_expired: i64[:]) -> i64
 
 // RDTSC Cycle Profiler (server/profiler.goose)
 const PROF_STAGE_FRAMING: i32 = 0;
@@ -282,8 +302,8 @@ fn prof_avg_cycles(stage: i32) -> u64
 fn prof_print_summary()
 ```
 
-`SoAConnTable` packs 1024 connection timestamps, file descriptors, and states
-into parallel arrays so `soa_table_sweep_expired` scans all 1024 slots in a
-linear pass and outputs expired descriptors into `out_expired_fds`
-(`i32[..1024]`). `server/profiler.goose` records hardware RDTSC cycle counts
-across 8 pipeline stages (`PROF_STAGE_FRAMING` through `PROF_STAGE_MISC`).
+`SoAConnTable` packs 4096 connection timestamps, file descriptors, and states
+into parallel arrays so `soa_table_sweep_expired` scans all 4096 slots in a
+linear L1D-friendly pass and outputs expired slot indices into `out_expired`
+(`i64[:]`). `server/profiler.goose` records hardware RDTSC cycle counts across 8
+pipeline stages (`PROF_STAGE_FRAMING` through `PROF_STAGE_MISC`).

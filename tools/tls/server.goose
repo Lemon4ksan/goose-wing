@@ -136,6 +136,10 @@ fn serve_live_tls13_session(
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
     let h2_idx = wing::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+    guard h2_idx >= 0 && h2_idx < wing::REACTOR_MAX_H2_SESSIONS else {
+        wing::free_tls_cipher_slot(slot_idx);
+        return;
+    }
 
     loop {
         let recvd = wing::tls_recv_pipe(conn, slot_idx, pipe, 4096, 2000);

@@ -277,6 +277,26 @@ fn test_server_time_methods_h2_and_memo() {
     assert(cfg_b.memo.etag_src[..] == "beta-memo-payload");
     assert(cfg_a.memo.etag_val[..] != cfg_b.memo.etag_val[..]);
 
+    // 2e. 4096-slot SoAConnTable, 128-slot H2 session pool (no slot 0 overwrite!), and opt-in header memoization
+    assert(wing::SOA_TABLE_CAP == 4096);
+    assert(wing::REACTOR_MAX_H2_SESSIONS == 128);
+    var srv_opt = wing::new_http_server("127.0.0.1", 8080);
+    assert(!srv_opt.enable_header_memoization);
+    assert(!wing::g_h1_parse_cache.enabled);
+    wing::set_header_memoization(srv_opt, true);
+    assert(srv_opt.enable_header_memoization && wing::g_h1_parse_cache.enabled);
+    wing::set_header_memoization(srv_opt, false);
+    assert(!srv_opt.enable_header_memoization && !wing::g_h1_parse_cache.enabled);
+
+    for i in wing::REACTOR_MAX_H2_SESSIONS {
+        let idx = wing::alloc_reactor_h2_session(srv_opt.pipeline, "example.com", 1000);
+        assert((idx as i64) == i);
+    }
+    assert(wing::alloc_reactor_h2_session(srv_opt.pipeline, "example.com", 1000) == -1);
+    for i in wing::REACTOR_MAX_H2_SESSIONS {
+        wing::free_reactor_h2_session(i as i16, srv_opt.pipeline);
+    }
+
     print(
         "GROUP2_SERVER_FIXES: OK date_sec=",
         sec_1700m,

@@ -95,6 +95,39 @@ fn main() {
         }
     };
 
+    suite.bench("L0_Plaintext_GET_Memoized") { b =>
+        var server = setup_l0_server();
+        wing::set_header_memoization(server, true);
+        let req_wire = wire_req_plaintext();
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+        wing::set_header_memoization(server, false);
+    };
+
+    suite.bench("Dynamic_Route_JSON_Serialize") { b =>
+        var server = setup_full_pipeline_server();
+        server.pipeline.enable_rate_limiter = false;
+        server.pipeline.enable_csrf_guard = false;
+        server.pipeline.enable_cors = false;
+        server.pipeline.enable_slowloris_timer = false;
+        let req_wire = wire_req_api();
+        var resp_wire: u8[..2048] = [];
+        b.set_bytes(req_wire.len);
+        b.reset_timer();
+        for _ in b.n {
+            wing::cache_invalidate(server.pipeline.route_cache);
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", req_wire, 1000000000, resp_wire,
+            );
+        }
+    };
+
     suite.bench("Full_Pipeline_Auth_Cache_Hit") { b =>
         var server = setup_full_pipeline_server();
         let req_wire = wire_req_api();
@@ -154,6 +187,26 @@ fn main() {
                 server, "127.0.0.1", batch_wire[..], 1000000000, resp_wire,
             );
         }
+    };
+
+    suite.bench("HTTP1_Pipelined_16x_Memoized") { b =>
+        var server = setup_l0_server();
+        wing::set_header_memoization(server, true);
+        let single_req = wire_req_plaintext();
+        var batch_wire: u8[..4096] = [];
+        for _ in 16 {
+            batch_wire.append(single_req);
+        }
+        var resp_wire: u8[..8192] = [];
+        b.set_bytes(batch_wire.len);
+        b.report_metric(16.0, "reqs/op");
+        b.reset_timer();
+        for _ in b.n {
+            let _, _, _, _ = wing::handle_connection_wire_pipelined_stream(
+                server, "127.0.0.1", batch_wire[..], 1000000000, resp_wire,
+            );
+        }
+        wing::set_header_memoization(server, false);
     };
 
     suite.bench("Live_TCP_Roundtrip") { b =>

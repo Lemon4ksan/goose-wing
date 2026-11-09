@@ -12,13 +12,13 @@ import wing from "../..";
 fn verify_soa_conn_table_churn() {
     var table = wing::SoAConnTable { .. };
     var wheel = wing::new_tick_timer_wheel(10);
-    var expired: i64[1024] = [0; 1024];
+    var expired: i64[4096] = [0; 4096];
 
     for wave in 10 {
         let short_tick = wing::tick_timer_arm(wheel, 5);
         let long_tick = wing::tick_timer_arm(wheel, 20);
 
-        for i in 1024 {
+        for i in 4096 {
             let fd = (wave + 1) * 10000 + i + 1;
             let tick = if (i & 1) == 0 { short_tick } else { long_tick };
             let slot = wing::soa_table_alloc(table, fd, tick);
@@ -26,21 +26,21 @@ fn verify_soa_conn_table_churn() {
             wing::soa_table_set_peer_ip(table, slot, "198.51.100.42");
             assert(wing::soa_table_get_peer_ip(table, slot) == "198.51.100.42");
         }
-        assert(table.count == 1024);
+        assert(table.count == 4096);
 
-        // 1025th slot allocation under saturation must fail closed with SOA_INVALID_FD (-1)
+        // 4097th slot allocation under saturation must fail closed with SOA_INVALID_FD (-1)
         assert(wing::soa_table_alloc(table, 999999, short_tick) == wing::SOA_INVALID_FD);
 
-        // Advance tick wheel by 6 seconds: all 512 short_tick (5s) Slowloris slots must expire
+        // Advance tick wheel by 6 seconds: all 2048 short_tick (5s) Slowloris slots must expire
         let _ = wing::tick_timer_advance(wheel, 6);
         let n_exp = wing::soa_table_sweep_expired(table, wheel, expired[..]);
-        assert(n_exp == 512);
+        assert(n_exp == 2048);
         for k in n_exp {
             wing::soa_table_free(table, expired[k]);
         }
 
-        // Release remaining 512 active slots in reverse order to exercise high-water mark trimming
-        var rev: i64 = 1023;
+        // Release remaining 2048 active slots in reverse order to exercise high-water mark trimming
+        var rev: i64 = 4095;
         while rev >= 0 {
             if table.fds[rev] > 0 {
                 wing::soa_table_free(table, rev);
