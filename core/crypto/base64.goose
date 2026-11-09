@@ -75,6 +75,17 @@ checkfree inline fn base64url_val(ch: u8) -> i32 {
     return BASE64_URL_DECODE_LUT[ch];
 }
 
+inline fn try_push_b64_byte<A>(arr: A&, b: u8) -> bool {
+    guard arr.len < arr.cap else { return false; }
+    arr.push(b);
+    return true;
+}
+
+inline fn try_push_b64_byte(arr: u8[>..]&, b: u8) -> bool {
+    arr.push(b);
+    return true;
+}
+
 fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
     guard encoded.len > 0 else { return true; }
     var buf:  u32 = 0;
@@ -105,9 +116,8 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
-            let prev_len = out.len;
-            out.push(((buf >> bits) & 0xFF) as u8);
-            guard out.len > prev_len else { out.clear(); return false; }
+            let dec_b = ((buf >> bits) & 0xFF) as u8;
+            guard try_push_b64_byte(out, dec_b) else { out.clear(); return false; }
         }
         idx++;
     }
@@ -257,9 +267,8 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
-            let prev_len = out.len;
-            out.push(((buf >> bits) & 0xFF) as u8);
-            guard out.len > prev_len else { out.clear(); return false; }
+            let dec_b = ((buf >> bits) & 0xFF) as u8;
+            guard try_push_b64_byte(out, dec_b) else { out.clear(); return false; }
         }
         idx++;
     }

@@ -135,15 +135,16 @@ fn parse_port_decimal(str: const u8[:], out_port: u16&) -> bool {
 //   str = "192.168.0.1"
 //   returns: ok = true, out_ip = [192, 168, 0, 1]
 fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
-    var octet_idx: i64 = 0;
-    var current:   u32 = 0;
-    var digits:    i64 = 0;
+    var tmp:       u8[4] = [0; 4];
+    var octet_idx: i64   = 0;
+    var current:   u32   = 0;
+    var digits:    i64   = 0;
 
     for i in str.len {
         let b = str[i];
         if b == '.' {
             guard digits > 0 && current <= 255 && octet_idx < 3 else { return false; }
-            out_ip[octet_idx] = current as u8;
+            tmp[octet_idx] = current as u8;
             octet_idx++;
             current = 0;
             digits = 0;
@@ -160,7 +161,8 @@ fn parse_ipv4_decimal(str: const u8[:], out_ip: u8[4]&) -> bool {
     }
 
     guard digits > 0 && current <= 255 && octet_idx == 3 else { return false; }
-    out_ip[3] = current as u8;
+    tmp[3] = current as u8;
+    out_ip = tmp;
     return true;
 }
 
@@ -588,6 +590,9 @@ fn parse_proxy_v2_addresses(
 //   val = "\x01\x00\x00\x00\x00\x21\x00\x07TLSv1.3"
 //   returns: ok = true, ssl.has_ssl = true, ssl.version = "TLSv1.3"
 fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
+    let saved_ssl = ssl;
+    var committed = false;
+    defer if !committed { ssl = saved_ssl; };
     guard val.len >= 5 else { return false; }
     ssl.has_ssl = true;
     ssl.client_flags = val[0];
@@ -616,7 +621,8 @@ fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
         }
         sub_offset = sub_end;
     }
-    return sub_offset == val.len;
+    committed = sub_offset == val.len;
+    return committed;
 }
 
 // Updates a CRC32c (Castagnoli, reflected polynomial 0x82F63B78) accumulator over `slice`.

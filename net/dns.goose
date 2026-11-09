@@ -208,6 +208,9 @@ fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> b
 //   val = "\x02h2\x05h3-29"
 //   returns: ok = true, rec.alpns contains ["h2", "h3-29"]
 fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
+    let saved_len = rec.alpns.len;
+    var committed = false;
+    defer if !committed { rec.alpns.resize(saved_len); };
     guard val.len > 0 else { return false; }
     var alpn_off: i64 = 0;
     while alpn_off < val.len {
@@ -219,7 +222,8 @@ fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
         guard entry.try_set(s) && rec.alpns.try_push(entry) else { return false; }
         alpn_off += slen;
     }
-    return alpn_off == val.len;
+    committed = alpn_off == val.len;
+    return committed;
 }
 
 // Parses mandatory SvcParamKeys list (RFC 9460 §8).
@@ -253,6 +257,9 @@ fn parse_mandatory_svc_param(val: const u8[:]) -> u32, bool {
 //   val = [192, 0, 2, 1]
 //   returns: true
 fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
+    let saved_len = rec.ipv4_hints.len;
+    var committed = false;
+    defer if !committed { rec.ipv4_hints.resize(saved_len); };
     guard val.len > 0 && (val.len % 4) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 4 <= val.len {
@@ -261,6 +268,7 @@ fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
         guard rec.ipv4_hints.try_push(hi | lo) else { return false; }
         ip_off += 4;
     }
+    committed = true;
     return true;
 }
 
@@ -270,6 +278,9 @@ fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
 //   val = [0x20, 0x01, ..., 0x01] (16 bytes)
 //   returns: true
 fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
+    let saved_len = rec.ipv6_hints.len;
+    var committed = false;
+    defer if !committed { rec.ipv6_hints.resize(saved_len); };
     guard val.len > 0 && (val.len % 16) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 16 <= val.len {
@@ -278,6 +289,7 @@ fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
         guard rec.ipv6_hints.try_push(ip6) else { return false; }
         ip_off += 16;
     }
+    committed = true;
     return true;
 }
 
@@ -288,6 +300,9 @@ fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool {
 //   rdata = "\x00\x01\x00\x03\x02h2"
 //   returns: ok = true, rec.alpns = ["h2"]
 fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
+    let saved_rec = rec;
+    var committed = false;
+    defer if !committed { rec = saved_rec; };
     var off:            i64 = 0;
     var last_key:       i32 = -1;
     var mandatory_mask: u32 = 0;
@@ -338,6 +353,7 @@ fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool {
     guard (mandatory_mask & seen_mask) == mandatory_mask else { return false; }
     // RFC 9460 §7.1.1 & §2.4.3: no-default-alpn requires alpn to be present
     guard !rec.no_default_alpn || rec.alpns.len > 0 else { return false; }
+    committed = true;
     return true;
 }
 
@@ -435,6 +451,8 @@ fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool {
 //   returns: ok = true, out.rcode = 0, out.answer_count = 1
 fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
     out = DnsResponse { .. };
+    var committed = false;
+    defer if !committed { out = DnsResponse { .. }; };
     guard raw.len >= 12 else { return false; }
 
     out.tx_id = ((raw[0] as u16) << 8) | raw[1];
@@ -448,11 +466,15 @@ fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool {
     out.question_count = ((raw[4] as u16) << 8) | raw[5];
     out.answer_count = ((raw[6] as u16) << 8) | raw[7];
 
-    guard out.rcode == rfc::DNS_RCODE_NOERROR else { return true; }
+    if out.rcode != rfc::DNS_RCODE_NOERROR {
+        committed = true;
+        return true;
+    }
 
     var off: i64 = 12;
     guard skip_dns_questions(raw, off, out.question_count) else { return false; }
     guard parse_dns_answers(raw, off, out) else { return false; }
+    committed = true;
     return true;
 }
 

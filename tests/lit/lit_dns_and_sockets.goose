@@ -1306,6 +1306,39 @@ fn test_r008_poller_timer_tcp_and_drivers() {
     print("R008_REACTOR_DRV: 1");
 }
 
+fn test_r009_goose2rfc_net_audit_regressions() {
+    // NET1_C01 & NET1_C02: RFC 9484 §4.7.1 & §4.7.2 request_id != 0 and zero host bits
+    let raw_req_zero: const u8[7] = [0x00, 4, 10, 0, 0, 1, 32];
+    let _, ok_req_zero = wing::decode_address_request_capsule(raw_req_zero[..]);
+    assert(!ok_req_zero);
+    let raw_assign_host: const u8[7] = [0x01, 4, 192, 168, 1, 100, 24];
+    let _, ok_assign_host = wing::decode_address_assign_capsule(raw_assign_host[..]);
+    assert(!ok_assign_host);
+
+    // NET1_C03: RFC 9484 §4.7.3 multi-entry ROUTE_ADVERTISEMENT validates all entries
+    let two_routes_inv: const u8[20] = [
+        4, 10, 0, 0, 0, 10, 0, 0, 255, 0,
+        4, 10, 0, 1, 255, 10, 0, 1, 0, 0,
+    ];
+    let _, ok_two_routes = wing::decode_route_advertisement_capsule(two_routes_inv[..]);
+    assert(!ok_two_routes);
+
+    // NET2_C03: StreamPool release_connection_or_handoff closes draining connection
+    var sp = wing::new_stream_pool(6, 32, 4);
+    var pk = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    pk.origin_endpoint.host.append("api.example.com");
+    pk.origin_endpoint.port = 443;
+    let cid = wing::register_connection(sp, pk, wing::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
+    assert(wing::enqueue_group_waiter(sp, pk, 777));
+    sp.conns[0].no_new_exchanges = true;
+    var waiter_out = wing::WantConn { .. };
+    let rel_ok, handed_off = wing::release_connection_or_handoff(sp, cid, 2000, waiter_out);
+    assert(rel_ok && !handed_off);
+    let g_idx = wing::find_group_index(sp, pk);
+    assert(sp.groups[g_idx].active_conns == 0 && sp.groups[g_idx].idle_conns == 0);
+    print("GOOSE2RFC_NET_AUDIT_REGRESSIONS: OK");
+}
+
 fn run_06_verify_net_rfc_seams() {
     test_r001_dns_rfc_edge_cases();
     test_r002_happy_eyeballs_seams();
@@ -1315,6 +1348,7 @@ fn run_06_verify_net_rfc_seams() {
     test_r006_pool_h2_coalescing_and_queues();
     test_r007_isolation_and_retry_rfc();
     test_r008_poller_timer_tcp_and_drivers();
+    test_r009_goose2rfc_net_audit_regressions();
 }
 
 // CHECK: R001_DNS_RFC: 1
@@ -1325,6 +1359,7 @@ fn run_06_verify_net_rfc_seams() {
 // CHECK: R006_POOL_SEAMS: 1
 // CHECK: R007_ISO_RETRY: 1
 // CHECK: R008_REACTOR_DRV: 1
+// CHECK: GOOSE2RFC_NET_AUDIT_REGRESSIONS: OK
 
 fn main() {
     print("\n=== [1/6] verify_dns_https_svcb ===\n");

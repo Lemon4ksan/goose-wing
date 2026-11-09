@@ -1010,6 +1010,7 @@ fn try_handoff_to_group_waiter(
     c:          PooledConnection&,
     out_waiter: WantConn&,
 ) -> bool {
+    guard !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted else { return false; }
     let grp_idx = pool.find_group_index(c.key);
     guard grp_idx >= 0 && !pool.groups[grp_idx].wait_queue.is_queue_empty() else { return false; }
     let w_item, ok_w = pool.groups[grp_idx].wait_queue.pop_want();
@@ -1020,6 +1021,19 @@ fn try_handoff_to_group_waiter(
     out_waiter.assigned_conn_id = c.conn_id;
     out_waiter.reused = true;
     return true;
+}
+
+fn finalize_idle_or_draining_conn(pool: StreamPool&, c: PooledConnection&, now_ns: i64) {
+    if c.no_new_exchanges || c.remote_rst || c.source_exhausted {
+        group_record_closed(pool, c.key, true);
+        c.transport.close();
+        c.rx_buf.clear();
+        c.closed = true;
+        c.no_new_exchanges = true;
+        return;
+    }
+    c.idle_at_ns = now_ns;
+    group_record_released(pool, c.key);
 }
 
 // Releases an active allocation back to the pool, or immediately hands the connection off
@@ -1039,8 +1053,7 @@ fn release_connection_or_handoff(
             }
             c.active_allocations = core::sub_sat_i64(c.active_allocations, 1) as i32;
             if c.active_allocations == 0 {
-                c.idle_at_ns = now_ns;
-                group_record_released(pool, c.key);
+                finalize_idle_or_draining_conn(pool, c, now_ns);
             }
             return true, false;
         }

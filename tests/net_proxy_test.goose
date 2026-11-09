@@ -1641,7 +1641,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
             prefix_len: 24,
             ..
         };
-        assign.assigned_ip.append([192, 168, 1, 100]);
+        assign.assigned_ip.append([192, 168, 1, 0]);
 
         var assign_wire: u8[..256] = [];
         let assign_enc_ok = wing::encode_address_assign_capsule(assign_wire, assign);
@@ -1655,7 +1655,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         sub.assert_true(dec_assign_ok, "decode_address_assign_capsule ok");
         sub.assert_eq(dec_assign.request_id, 1, "Request ID matches (1)");
         sub.assert_eq(dec_assign.prefix_len, 24, "Prefix len 24");
-        sub.assert_bytes_eq(dec_assign.assigned_ip[..], [192, 168, 1, 100], "Assigned IP matches 192.168.1.100");
+        sub.assert_bytes_eq(dec_assign.assigned_ip[..], [192, 168, 1, 0], "Assigned IP matches 192.168.1.0/24");
     };
 
     t.run("ROUTE_ADVERTISEMENT Capsule") { sub =>
@@ -1735,7 +1735,7 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
         var assign = wing::IpAddressAssign {
             request_id: 10,
             ip_version: 4,
-            prefix_len: 24,
+            prefix_len: 32,
             ..
         };
         assign.assigned_ip.append([10, 8, 0, 5]);
@@ -1747,7 +1747,7 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
         let recv_ok = wing::receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
         sub.assert_true(recv_ok, "ADDRESS_ASSIGN capsule ingested");
         sub.assert_bytes_eq(tunnel_mut.assigned_ip[..], [10, 8, 0, 5], "Tunnel assigned IP is 10.8.0.5");
-        sub.assert_eq(tunnel_mut.assigned_prefix_len, 24, "Tunnel prefix length is /24");
+        sub.assert_eq(tunnel_mut.assigned_prefix_len, 32, "Tunnel prefix length is /32");
     };
 
     t.run("Proxy Rejection (Missing Capsule-Protocol Header)") { sub =>
@@ -2618,6 +2618,73 @@ fn test_masque_address_capsule_bounds(t: lit::T&) {
     t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");
 }
 
+// ----------------------------------------------------------------------------
+// 42. goose2rfc net/ RFC Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
+    // NET1_C01: RFC 9484 §4.7.2 ADDRESS_REQUEST rejects request_id == 0 and non-zero host bits
+    var req_zero_id = wing::IpAddressRequest { request_id: 0, ip_version: 4, prefix_len: 32, .. };
+    req_zero_id.requested_ip.append([10, 0, 0, 1]);
+    var out_wire: u8[..64] = [];
+    t.assert_false(wing::encode_address_request_capsule(out_wire, req_zero_id), "request_id == 0 rejected");
+    let raw_req_zero: const u8[7] = [0x00, 4, 10, 0, 0, 1, 32];
+    let _, ok_req_zero = wing::decode_address_request_capsule(raw_req_zero[..]);
+    t.assert_false(ok_req_zero, "decode ADDRESS_REQUEST with request_id == 0 rejected");
+
+    let raw_req_host_bits: const u8[7] = [0x01, 4, 10, 0, 0, 1, 24];
+    let _, ok_req_host = wing::decode_address_request_capsule(raw_req_host_bits[..]);
+    t.assert_false(ok_req_host, "decode ADDRESS_REQUEST with non-zero host bits under /24 rejected");
+
+    // NET1_C02: RFC 9484 §4.7.1 ADDRESS_ASSIGN rejects non-zero host bits outside prefix_len
+    var bad_assign = wing::IpAddressAssign { request_id: 1, ip_version: 4, prefix_len: 24, .. };
+    bad_assign.assigned_ip.append([192, 168, 1, 100]);
+    t.assert_false(wing::encode_address_assign_capsule(out_wire, bad_assign), "encode ADDRESS_ASSIGN non-zero host bits rejected");
+    let raw_assign_host_bits: const u8[7] = [0x01, 4, 192, 168, 1, 100, 24];
+    let _, ok_assign_host = wing::decode_address_assign_capsule(raw_assign_host_bits[..]);
+    t.assert_false(ok_assign_host, "decode ADDRESS_ASSIGN non-zero host bits rejected");
+
+    // NET1_C03: RFC 9484 §4.7.3 decode_route_entry validates start_ip <= end_ip on every entry
+    let two_routes_second_inv: const u8[20] = [
+        4, 10, 0, 0, 0, 10, 0, 0, 255, 0,
+        4, 10, 0, 1, 255, 10, 0, 1, 0, 0,
+    ];
+    let _, ok_two_routes = wing::decode_route_advertisement_capsule(two_routes_second_inv[..]);
+    t.assert_false(ok_two_routes, "multi-entry ROUTE_ADVERTISEMENT with inverted 2nd entry rejected");
+
+    // NET1_C05: RFC 9298 §5 Context ID 0 UDP Proxying Payload > 65527 bytes rejected
+    var huge_dgram: u8[>..] = [];
+    huge_dgram.push(0x00); // Context ID = 0
+    for _ in 65528 { huge_dgram.push(0x42); }
+    let _, _, ok_huge_dgram = wing::parse_connect_udp_datagram(huge_dgram[..]);
+    t.assert_false(ok_huge_dgram, "Context ID 0 UDP payload > 65527 bytes rejected");
+
+    // NET1_C08 & NET1_C10: Transactional rollback on parse_https_svc_params and parse_proxy_v2_ssl_tlv
+    let bad_svc_rdata: const u8[10] = [0x00, 0x01, 0x00, 0x03, 0x02, 'h', '2', 0x00, 0x03, 0x00];
+    var svc_rec = wing::HttpsRecord { .. };
+    t.assert_false(wing::parse_https_svc_params(bad_svc_rdata[..], svc_rec), "truncated SvcParams rejected");
+    t.assert_eq(svc_rec.alpns.len, 0, "HttpsRecord.alpns rolled back on error");
+
+    let bad_ssl_tlv: const u8[7] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00];
+    var ssl_info = wing::ProxySslInfo { .. };
+    t.assert_false(wing::parse_proxy_v2_ssl_tlv(bad_ssl_tlv[..], ssl_info), "truncated SSL TLV rejected");
+    t.assert_false(ssl_info.has_ssl, "ProxySslInfo rolled back on error");
+
+    // NET2_C03: StreamPool release_connection_or_handoff does not hand off or idle-pool draining connections
+    var sp = wing::new_stream_pool(6, 32, 4);
+    var pk = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    pk.origin_endpoint.host.append("api.example.com");
+    pk.origin_endpoint.port = 443;
+    let cid = wing::register_connection(sp, pk, wing::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
+    t.assert_true(wing::enqueue_group_waiter(sp, pk, 777), "waiter enqueued");
+    sp.conns[0].no_new_exchanges = true;
+    var waiter_out = wing::WantConn { .. };
+    let rel_ok, handed_off = wing::release_connection_or_handoff(sp, cid, 2000, waiter_out);
+    t.assert_true(rel_ok && !handed_off, "draining connection not handed off to waiter");
+    let g_idx = wing::find_group_index(sp, pk);
+    t.assert_eq(sp.groups[g_idx].active_conns, 0, "active_conns decremented to 0");
+    t.assert_eq(sp.groups[g_idx].idle_conns, 0, "draining connection closed rather than added to idle_conns");
+}
+
 fn main() {
     var runner = lit::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", lit::Verbosity.Verbose);
 
@@ -2662,6 +2729,7 @@ fn main() {
     lit::run_case(runner, "39. Pool & Proxy SAN invariants (net/pool.goose, net/proxy.goose)", test_pool_and_proxy_san_invariants);
     lit::run_case(runner, "40. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
     lit::run_case(runner, "41. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
+    lit::run_case(runner, "42. goose2rfc net/ RFC Audit Regressions", test_goose2rfc_net_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);
