@@ -161,9 +161,7 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 
 // ---- ufcs request mutators -------------------------------------------------
 
-// Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
-fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
-    set_header(req.headers, name, value, true);
+fn sync_request_header_presence(req: Request&, name: const u8[:]) {
     if has_header(req.headers, name) {
         let known_id = identify_known_header(name);
         if known_id != KnownHeaderId.Unknown {
@@ -172,16 +170,17 @@ fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
     }
 }
 
+// Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
+fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
+    set_header(req.headers, name, value, true);
+    sync_request_header_presence(req, name);
+}
+
 // Sets a header on the request. Matches existing headers case-insensitively,
 // drops control characters, and marks credential headers sensitive.
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     set_header(req.headers, name, value, false);
-    if has_header(req.headers, name) {
-        let known_id = identify_known_header(name);
-        if known_id != KnownHeaderId.Unknown {
-            req.presence_mask |= header_id_to_bit(known_id);
-        }
-    }
+    sync_request_header_presence(req, name);
 }
 
 fn remove_header(req: Request&, name: const u8[:]) -> bool {

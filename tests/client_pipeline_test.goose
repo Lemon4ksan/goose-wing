@@ -1716,8 +1716,8 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         cli.verify_content_digest = true;
         cli.enable_har_telemetry = true;
 
-        cli.dpop_private_key = [0x42; 32];
-        cli.has_dpop_key = true;
+        var dpop_key: u8[32] = [0x42; 32];
+        sub.assert_true(cli.set_dpop_credentials(dpop_key), "Configured DPoP private key via set_dpop_credentials");
 
         let body_bytes = "verified-digest-payload";
         var digest_hdr: u8[..128] = [];
@@ -1726,10 +1726,11 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
             "Computed SHA-256 Content-Digest",
         );
 
-        cli.mock_route("GET", "https://edge.example.com/resource", 200, body_bytes);
-        cli.add_mock_header("Content-Digest", digest_hdr[..]);
-        cli.add_mock_header("Link", "</app.css>; rel=preload; as=style");
-        cli.add_mock_header("Retry-After", "120");
+        let _ = cli.mock_route("GET", "https://edge.example.com/resource", 200, body_bytes) { route =>
+            route.add_mock_header("Content-Digest", digest_hdr[..]);
+            route.add_mock_header("Link", "</app.css>; rel=preload; as=style");
+            route.add_mock_header("Retry-After", "120");
+        };
 
         let res, err = cli.get("https://edge.example.com/resource");
         sub.assert_true(wing::ok(err), "0-RTT + DPoP + Content-Digest request succeeded");

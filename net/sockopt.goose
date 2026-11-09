@@ -113,13 +113,13 @@ fn format_socket_p0f_summary<B>(cfg: const SocketP0fProfile&, out: B&) {
     out.append("OS: ");
     out.append(cfg.os_name[..]);
     out.append(" | TTL=");
-    (cfg.ttl as i64).format_i64_dec(out);
+    cfg.ttl.format_i64_dec(out);
     out.append(" | Window=");
-    (cfg.window_size as i64).format_i64_dec(out);
+    cfg.window_size.format_i64_dec(out);
     out.append(" | DF=");
     out.append(if cfg.has_dont_fragment { "1" } else { "0" });
     out.append(" | WScale=");
-    (cfg.wscale as i64).format_i64_dec(out);
+    cfg.wscale.format_i64_dec(out);
     out.append(" | TCP_NODELAY=");
     out.append(if cfg.tcp_nodelay { "1" } else { "0" });
 }

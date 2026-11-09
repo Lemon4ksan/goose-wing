@@ -77,7 +77,7 @@ fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&) {
     out.append("}");
 
     out.append(",\"response\":{\"status\":");
-    (entry.status as u32).format_u32_dec(out);
+    entry.status.format_i64_dec(out);
     out.append(",\"statusText\":");
     core::format_json_string(out, entry.status_text[..]);
     out.append(",\"httpVersion\":");

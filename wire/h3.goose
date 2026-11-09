@@ -82,7 +82,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     guard !pseudo.is_trailer else { return true; }
     if pseudo.has_status {
         var st_buf: u8[..16] = [];
-        (pseudo.status as u64).format_u64_dec(st_buf);
+        pseudo.status.format_i64_dec(st_buf);
         let prev_len = body_fields.len;
         internal::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":status", st_buf[..],

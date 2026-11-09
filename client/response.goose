@@ -105,16 +105,46 @@ fn reset_response(res: Response&) {
     res.body.clear();
 }
 
+enum HttpVersion {
+    Unknown,
+    Http10,
+    Http11,
+    Http2,
+    Http3,
+}
+
+// Parses a wire HTTP protocol token or ALPN identifier into a typed HttpVersion enum.
+//
+// Example:
+//   proto = "HTTP/2.0"
+//   returns: HttpVersion.Http2
+fn parse_http_version(proto: const u8[:]) -> HttpVersion {
+    if proto == "HTTP/1.0" { return HttpVersion.Http10; }
+    if proto == "HTTP/1.1" || proto == "h1" { return HttpVersion.Http11; }
+    if proto == "HTTP/2" || proto == "HTTP/2.0" || proto == "h2" || proto == "h2c" {
+        return HttpVersion.Http2;
+    }
+    if proto == "HTTP/3" || proto == "HTTP/3.0" || proto == "h3" {
+        return HttpVersion.Http3;
+    }
+    return HttpVersion.Unknown;
+}
+
 fn protocol(res: const Response&) -> const u8[:] {
     return res.protocol[..];
 }
 
+fn http_version(res: const Response&) -> HttpVersion {
+    return parse_http_version(res.protocol[..]);
+}
+
 fn is_http3(res: const Response&) -> bool {
-    return res.protocol[..] == "h3" || res.protocol[..] == "HTTP/3";
+    return res.http_version() == HttpVersion.Http3;
 }
 
 fn is_http1(res: const Response&) -> bool {
-    return res.protocol[..] == "HTTP/1.1" || res.protocol[..] == "HTTP/1.0" || res.protocol[..] == "h1";
+    let ver = res.http_version();
+    return ver == HttpVersion.Http10 || ver == HttpVersion.Http11;
 }
 
 // Returns true if the HTTP response status code is within the 2xx Successful range [200, 299] (RFC 9110 Section 15.3).
@@ -154,19 +184,20 @@ fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.trailers, name, value, false);
 }
 
+fn classify_response_presence_bit(name: const u8[:]) -> u16 {
+    if name.eq_ascii_fold("date") { return RES_PRESENCE_DATE; }
+    if name.eq_ascii_fold("content-length") { return RES_PRESENCE_CONTENT_LENGTH; }
+    if name.eq_ascii_fold("content-type") { return RES_PRESENCE_CONTENT_TYPE; }
+    if name.eq_ascii_fold("connection") { return RES_PRESENCE_CONNECTION; }
+    if name.eq_ascii_fold("transfer-encoding") { return RES_PRESENCE_TRANSFER_ENCODING; }
+    if name.eq_ascii_fold("server") { return RES_PRESENCE_SERVER; }
+    return 0;
+}
+
 fn update_response_presence(res: Response&, name: const u8[:]) {
-    if name.eq_ascii_fold("date") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_DATE;
-    } else if name.eq_ascii_fold("content-length") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_LENGTH;
-    } else if name.eq_ascii_fold("content-type") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_CONTENT_TYPE;
-    } else if name.eq_ascii_fold("connection") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_CONNECTION;
-    } else if name.eq_ascii_fold("transfer-encoding") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_TRANSFER_ENCODING;
-    } else if name.eq_ascii_fold("server") {
-        res.presence_mask = res.presence_mask | RES_PRESENCE_SERVER;
+    let bit = classify_response_presence_bit(name);
+    if bit != 0 {
+        res.presence_mask = res.presence_mask | bit;
     }
 }
 
@@ -180,18 +211,9 @@ fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
 fn remove_header(res: Response&, name: const u8[:]) -> bool {
     let removed = remove_header(res.headers, name);
     if removed {
-        if name.eq_ascii_fold("date") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_DATE);
-        } else if name.eq_ascii_fold("content-length") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
-        } else if name.eq_ascii_fold("content-type") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_TYPE);
-        } else if name.eq_ascii_fold("connection") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONNECTION);
-        } else if name.eq_ascii_fold("transfer-encoding") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
-        } else if name.eq_ascii_fold("server") {
-            res.presence_mask = res.presence_mask & (~RES_PRESENCE_SERVER);
+        let bit = classify_response_presence_bit(name);
+        if bit != 0 {
+            res.presence_mask = res.presence_mask & (~bit);
         }
     }
     return removed;

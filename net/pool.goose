@@ -43,10 +43,16 @@ struct OriginEndpoint {
     port: u16       = 80,
 }
 
+// Copies and normalizes an ASCII hostname or site identifier to lowercase in-place.
+inline fn set_canonical_host<B>(dst: B&, raw_host: const u8[:]) -> bool {
+    guard dst.try_set(raw_host) else { return false; }
+    to_lower(dst[..]);
+    return true;
+}
+
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
     var ep = OriginEndpoint { port: port_num, .. };
-    guard ep.host.try_append(host_str) else { return ep; }
-    to_lower(ep.host[..]);
+    let _ = ep.host.set_canonical_host(host_str);
     return ep;
 }
 
@@ -63,8 +69,7 @@ struct ProxyServer {
 
 fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u16) -> ProxyServer {
     var ps = ProxyServer { scheme: scheme_val, port: port_num, .. };
-    guard ps.host.try_append(host_str) else { return ps; }
-    to_lower(ps.host[..]);
+    let _ = ps.host.set_canonical_host(host_str);
     return ps;
 }
 
@@ -123,8 +128,7 @@ fn new_network_anonymization_key(
         worker_session_id:           worker_id,
         ..
     };
-    guard nak.top_frame_site.try_append(top_site) else { return nak; }
-    to_lower(nak.top_frame_site[..]);
+    let _ = nak.top_frame_site.set_canonical_host(top_site);
     return nak;
 }
 
@@ -262,7 +266,7 @@ fn queue_len(q: const WantQueue&) -> i64 {
 }
 
 fn is_queue_empty(q: const WantQueue&) -> bool {
-    return queue_len(q) == 0;
+    return q.queue_len() == 0;
 }
 
 inline fn compact_want_queue(q: WantQueue&) {
@@ -294,7 +298,7 @@ fn push_want(q: WantQueue&, item: WantConn) -> bool {
     if q.tail.try_push(item) {
         return true;
     }
-    compact_want_queue(q);
+    q.compact_want_queue();
     return q.tail.try_push(item);
 }
 
@@ -333,14 +337,14 @@ fn cancel_want(q: WantQueue&, req_id: u64) -> bool {
     for &item in q.head[q.head_pos..] {
         if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
-            compact_want_queue(q);
+            q.compact_want_queue();
             return true;
         }
     }
     for &item in q.tail {
         if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
-            compact_want_queue(q);
+            q.compact_want_queue();
             return true;
         }
     }
@@ -990,7 +994,7 @@ fn enqueue_group_waiter(pool: StreamPool&, key: const PoolKey&, req_id: u64) -> 
         reused:           false,
         err_code:         0,
     };
-    return push_want(pool.groups[grp_idx].wait_queue, w);
+    return pool.groups[grp_idx].wait_queue.push_want(w);
 }
 
 fn try_handoff_to_group_waiter(
@@ -999,8 +1003,8 @@ fn try_handoff_to_group_waiter(
     out_waiter: WantConn&,
 ) -> bool {
     let grp_idx = pool.find_group_index(c.key);
-    guard grp_idx >= 0 && !is_queue_empty(pool.groups[grp_idx].wait_queue) else { return false; }
-    let w_item, ok_w = pop_want(pool.groups[grp_idx].wait_queue);
+    guard grp_idx >= 0 && !pool.groups[grp_idx].wait_queue.is_queue_empty() else { return false; }
+    let w_item, ok_w = pool.groups[grp_idx].wait_queue.pop_want();
     guard ok_w else { return false; }
     c.use_count = core::add_sat_i64(c.use_count, 1);
     out_waiter = w_item;

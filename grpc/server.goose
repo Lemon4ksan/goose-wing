@@ -340,7 +340,8 @@ fn build_grpc_trailers_only_response(
         let _ = append_header(out_res.headers, rfc::HEADER_GRPC_ACCEPT_ENCODING, "identity,gzip");
 
         var st_val: u8[..32] = [];
-        grpc_status_to_code(status).format_u32_dec(st_val);
+        let code = grpc_status_to_code(status);
+        code.format_u32_dec(st_val);
         let _ = append_header(out_res.headers, rfc::HEADER_GRPC_STATUS, st_val[..]);
 
         if message.len > 0 {
@@ -399,7 +400,8 @@ fn build_grpc_wire_response(
 
         // Trailers
         var st_val: u8[..32] = [];
-        grpc_status_to_code(status).format_u32_dec(st_val);
+        let code = grpc_status_to_code(status);
+        code.format_u32_dec(st_val);
         let _ = append_header(out_res.trailers, rfc::HEADER_GRPC_STATUS, st_val[..]);
 
         if message.len > 0 {

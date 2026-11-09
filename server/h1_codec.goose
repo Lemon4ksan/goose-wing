@@ -922,7 +922,7 @@ fn serialize_status_line<B>(status_code: i32, out: B&) {
     if n > 0 {
         out.append(code_buf[..n]);
     } else {
-        (status_code as i64).format_i64_dec(out);
+        status_code.format_i64_dec(out);
     }
     out.push(' ');
     out.append(rfc::status_phrase(status_code));

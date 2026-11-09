@@ -172,7 +172,8 @@ fn encode_grpc_web_trailers_with_meta<B>(
 ) {
     var trailer_body: u8[..1024] = [];
     trailer_body.append("grpc-status: ");
-    grpc_status_to_code(status).format_u32_dec(trailer_body);
+    let code = grpc_status_to_code(status);
+    code.format_u32_dec(trailer_body);
     trailer_body.append("\r\n");
 
     if message.len > 0 {

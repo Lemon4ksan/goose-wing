@@ -83,6 +83,11 @@ inline fn is_transient_service_verdict(verdict: StageVerdict) -> bool {
     };
 }
 
+// Returns true when the retry token bucket holds enough tokens to fund a retry attempt.
+inline fn can_afford_retry(cfg: const RetryConfig&) -> bool {
+    return cfg.budget_tokens >= cfg.token_cost;
+}
+
 // Replenishes the retry token budget upon a `Continue` verdict, clamped to `budget_max`.
 inline fn replenish_retry_budget(cfg: RetryConfig&) {
     let replenished = core::add_sat_i64(cfg.budget_tokens, cfg.reward_tokens);
@@ -92,7 +97,7 @@ inline fn replenish_retry_budget(cfg: RetryConfig&) {
 
 // Deducts `token_cost` from the retry budget when capacity permits, or increments `budget_exhausted_count`.
 inline fn consume_retry_budget<Inner>(svc: RetryService<Inner>&) -> bool {
-    guard svc.config.budget_tokens >= svc.config.token_cost else {
+    guard svc.config.can_afford_retry() else {
         svc.budget_exhausted_count = core::add_sat_u64(svc.budget_exhausted_count, 1);
         return false;
     }
@@ -197,6 +202,18 @@ fn new_circuit_breaker_service<Inner>(
     };
 }
 
+// Returns true when the circuit breaker is actively open inside its cooldown window.
+inline fn is_breaker_open<Inner>(svc: const CircuitBreakerService<Inner>&) -> bool {
+    return svc.state == BreakerState.Open && svc.now_ms < svc.open_until_ms;
+}
+
+// Resets the circuit breaker state machine and failure counters back to `Closed`.
+fn reset_breaker<Inner>(svc: CircuitBreakerService<Inner>&) {
+    svc.state = BreakerState.Closed;
+    svc.consecutive_failures = 0;
+    svc.open_until_ms = 0;
+}
+
 // Advances the circuit breaker monotonic clock to `now_ms` and transitions `Open` to `HalfOpen` after cooldown.
 fn advance_breaker_clock<Inner>(svc: CircuitBreakerService<Inner>&, now_ms: u64) {
     svc.now_ms = now_ms;
@@ -226,10 +243,10 @@ inline fn record_breaker_outcome<Inner>(svc: CircuitBreakerService<Inner>&, verd
 
 // Short-circuits with 503 when `Open` before `open_until_ms`, probes in `HalfOpen`, and trips on `Abort`.
 fn exchange<Inner, Req, Res>(svc: CircuitBreakerService<Inner>&, req: const Req&, res: Res&) -> StageVerdict {
+    if svc.is_breaker_open() {
+        return StageVerdict.ShortCircuit { status_code: SERVICE_STATUS_UNAVAILABLE };
+    }
     if svc.state == BreakerState.Open {
-        if svc.now_ms < svc.open_until_ms {
-            return StageVerdict.ShortCircuit { status_code: SERVICE_STATUS_UNAVAILABLE };
-        }
         svc.state = BreakerState.HalfOpen;
     }
     let verdict = svc.inner.exchange(req, res);

@@ -631,9 +631,9 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
 fn is_zero_qvalue(params: const u8[:]) -> bool {
     var rem = params;
     while rem.len > 0 {
-        let seg, rest, has_semi = rem.split_once_byte(';');
-        let item = (if has_semi { seg } else { rem }).trim_lws();
-        rem = if has_semi { rest } else { "" };
+        let head, _, tail = rem.partition_byte(';');
+        rem = tail;
+        let item = head.trim_lws();
         if item.starts_with_fold("q=") {
             let qv = item[2..].trim_lws();
             if qv == "0" || qv == "0." || qv == "0.0" || qv == "0.00" || qv == "0.000" {

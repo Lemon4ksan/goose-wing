@@ -70,6 +70,13 @@ struct ClientCredentials {
     last_digest:     DigestChallenge = DigestChallenge { .. },
 }
 
+struct ClientDpopState {
+    private_key:  u8[32]     = [0; 32],
+    access_token: u8[..2048] = [],
+    has_key:      bool       = false,
+    last_nonce:   u8[..128]  = [],
+}
+
 struct Client {
     base_url:                u8[..256]         = [],
     profile:                 Profile           = Profile.Wing,
@@ -135,10 +142,7 @@ struct Client {
     retry_budget:            AdaptiveRetryBudget = new_adaptive_retry_budget(),
     circuit_breaker:         HostCircuitBreaker  = new_host_circuit_breaker(),
     backoff_config:          BackoffConfig       = new_backoff_config(),
-    dpop_private_key:        u8[32]              = [0; 32],
-    dpop_access_token:       u8[..512]           = [],
-    has_dpop_key:            bool                = false,
-    last_dpop_nonce:         u8[..128]           = [],
+    dpop:                    ClientDpopState     = ClientDpopState { .. },
     trust_store:             TrustAnchorStore    = TrustAnchorStore { .. },
     insecure_skip_verify:    bool                = false,
 
@@ -365,6 +369,21 @@ fn enable_ech(session: Session&, auto_discover: bool = true) {
     }
 }
 
+// Creates an isolated `Client` copying only transport, TLS verification, SSRF policy,
+// virtual clock, and mock routes so application credentials, cookies, and interceptors
+// do not leak across internal sub-requests (such as RFC 8484 DoH queries).
+fn clone_isolated_transport_client(session: const Session&) -> Client {
+    var isolated = new_client();
+    isolated.virtual_clock_us = session.virtual_clock_us;
+    isolated.proxy_url.append(session.proxy_url[..]);
+    isolated.timeout_ms = session.timeout_ms;
+    isolated.trust_store = copy(session.trust_store);
+    isolated.insecure_skip_verify = session.insecure_skip_verify;
+    isolated.ssrf_guard = copy(session.ssrf_guard);
+    isolated.mock_routes = copy(session.mock_routes);
+    return isolated;
+}
+
 // Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport
 // to ensure application credentials, custom headers, and interceptors do not leak to public resolvers.
 fn doh_query(
@@ -388,15 +407,7 @@ fn doh_query(
         set_header(req, "accept", "application/dns-message");
     }
 
-    var doh_client = new_client();
-    doh_client.virtual_clock_us = session.virtual_clock_us;
-    doh_client.proxy_url.append(session.proxy_url[..]);
-    doh_client.timeout_ms = session.timeout_ms;
-    doh_client.trust_store = copy(session.trust_store);
-    doh_client.insecure_skip_verify = session.insecure_skip_verify;
-    doh_client.ssrf_guard = copy(session.ssrf_guard);
-    doh_client.mock_routes = copy(session.mock_routes);
-
+    var doh_client = clone_isolated_transport_client(session);
     let res, err = do(doh_client, req);
     guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
 
@@ -591,6 +602,14 @@ fn set_credentials(session: Session&, username: const u8[:], password: const u8[
     return true;
 }
 
+fn set_dpop_credentials(session: Session&, private_key: const u8[32]&, token: const u8[:] = "") -> bool {
+    guard session.dpop.access_token.try_set(token) else { return false; }
+    session.dpop.private_key = private_key;
+    session.dpop.has_key = true;
+    session.dpop.last_nonce.clear();
+    return true;
+}
+
 // ---- hsts configuration (rfc 6797 strict transport security) ---------------
 
 fn enable_hsts(session: Session&, enabled: bool = true) {
@@ -658,6 +677,18 @@ fn mock_route(
     route.pattern_url.append(pattern_url);
     route.body.append(body_str);
     return session.mock_routes.push(route);
+}
+
+fn mock_route<F: fn(MockExchange&)>(
+    session:     Session&,
+    method:      const u8[:],
+    pattern_url: const u8[:],
+    status_code: i32,
+    body_str:    const u8[:],
+) -> MockExchange& {
+    let route .= mock_route(session, method, pattern_url, status_code, body_str);
+    F(route);
+    return route;
 }
 
 fn add_mock_set_cookie(session: Session&, set_cookie_raw: const u8[:]) {

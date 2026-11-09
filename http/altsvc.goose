@@ -392,9 +392,9 @@ fn format_altsvc_header<B>(
 ) {
     out.append(proto);
     out.append("=\":");
-    (port as u64).format_u64_dec(out);
+    port.format_u64_dec(out);
     out.append("\"; ma=");
-    (max_age_sec as u64).format_u64_dec(out);
+    max_age_sec.format_u64_dec(out);
     if persist {
         out.append("; persist=1");
     }

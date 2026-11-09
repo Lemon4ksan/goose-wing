@@ -521,63 +521,11 @@ fn stage_server_auth_jwt(
     return wire::StageVerdict.Continue;
 }
 
-const SLOT_CONTENT_TYPE:     u8 = 1;  // WellKnownHeader.ContentType
-const SLOT_CONTENT_ENCODING: u8 = 4;  // WellKnownHeader.ContentEncoding
-const SLOT_ETAG:             u8 = 25; // WellKnownHeader.ETag
-const SLOT_VARY:             u8 = 34; // WellKnownHeader.Vary
-const SLOT_HSTS:             u8 = 46; // WellKnownHeader.StrictTransportSecurity
-
-const HASH_HDR_CONTENT_ENCODING: u32 = 0x03E2ED88; // "content-encoding"
-const HASH_HDR_ETAG:             u32 = 0x06C857C0; // "etag"
-const HASH_HDR_SERVER_TIMING:    u32 = 0x9BBE871F; // "server-timing"
-const HASH_HDR_X_MATCHED_ROUTE:  u32 = 0x40F015F2; // "x-matched-route"
-
-fn append_known_pipeline_header(
-    map:            HeaderMap&,
-    name:           const u8[:],
-    val:            const u8[:],
-    slot:           u8,
-    flags:          u8,
-    hname:          u32,
-    contains_comma: bool,
-) -> bool {
-    let needed = core::add_sat_i64(name.len, val.len);
-    guard map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else {
-        return false;
-    }
-    if slot < 64 && map.inline_slots[slot as i64] != 0xFF {
-        return false;
-    }
-    let n_begin = map.raw_buf.len as u16;
-    map.raw_buf.append(name);
-    let n_end = map.raw_buf.len as u16;
-    map.raw_buf.append(val);
-    let v_end = map.raw_buf.len as u16;
-    let new_idx = map.entries.len as u8;
-    if slot < 64 {
-        map.inline_slots[slot as i64] = new_idx;
-    }
-    map.entries.push(HeaderEntry {
-        name_begin:    n_begin,
-        name_end:      n_end,
-        values_begin:  n_end,
-        values_end:    v_end,
-        next_idx:      0xFF,
-        flags:         flags,
-        well_known_id: slot,
-        reserved:      0,
-        name_hash:     hname,
-    });
-    map.header_contains_comma.push(contains_comma);
-    return true;
-}
-
 inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&) -> wire::StageVerdict {
     res.status_code = 200;
     let _ = res.body.try_set(cache.wire[..]);
     if cache.content_type.len > 0 {
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_CONTENT_TYPE,
             cache.content_type[..],
             SLOT_CONTENT_TYPE,
@@ -590,8 +538,7 @@ inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&)
         res.presence_mask |= RES_PRESENCE_CONTENT_TYPE;
     }
     if cache.etag.len > 0 {
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_ETAG,
             cache.etag[..],
             SLOT_ETAG,
@@ -633,21 +580,27 @@ fn stage_server_cache_lookup(
     };
 }
 
-var g_etag_memo_src: u8[..512] = [];
-var g_etag_memo_val: u8[..32]  = [];
+struct ServerCompressAndEtagMemo {
+    etag_src:         u8[..512]  = [],
+    etag_val:         u8[..32]   = [],
+    gzip_src:         u8[..512]  = [],
+    gzip_dst:         u8[..512]  = [],
+    compress_scratch: u8[..2048] = [],
+}
+
+var g_server_memo: ServerCompressAndEtagMemo = ServerCompressAndEtagMemo { .. };
 
 inline fn populate_missing_response_etag(res: Response&) {
-    if res.body.len <= 512 && g_etag_memo_src.len > 0 && res.body[..] == g_etag_memo_src[..] {
-        if !append_known_pipeline_header(
-            res.headers,
+    if res.body.len <= 512 && g_server_memo.etag_src.len > 0 && res.body[..] == g_server_memo.etag_src[..] {
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_ETAG,
-            g_etag_memo_val[..],
+            g_server_memo.etag_val[..],
             SLOT_ETAG,
             0,
             HASH_HDR_ETAG,
             false,
         ) {
-            let _ = append_header(res.headers, rfc::HEADER_ETAG, g_etag_memo_val[..]);
+            let _ = append_header(res.headers, rfc::HEADER_ETAG, g_server_memo.etag_val[..]);
         }
         return;
     }
@@ -657,11 +610,10 @@ inline fn populate_missing_response_etag(res: Response&) {
     body_hash.format_u64_hex(etag_hdr);
     etag_hdr.push('"');
     if res.body.len <= 512 {
-        let _ = g_etag_memo_src.try_set(res.body[..]);
-        let _ = g_etag_memo_val.try_set(etag_hdr[..]);
+        let _ = g_server_memo.etag_src.try_set(res.body[..]);
+        let _ = g_server_memo.etag_val.try_set(etag_hdr[..]);
     }
-    if !append_known_pipeline_header(
-        res.headers,
+    if !res.headers.append_known_pipeline_header(
         rfc::HEADER_ETAG,
         etag_hdr[..],
         SLOT_ETAG,
@@ -725,24 +677,10 @@ fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool 
     return false;
 }
 
-inline fn update_single_vary_value(map: HeaderMap&, new_val: const u8[:]) -> bool {
-    let v_idx = map.inline_slots[SLOT_VARY as i64] as i64;
-    guard v_idx < map.entries.len && map.entries[v_idx].next_idx == 0xFF else { return false; }
-    guard core::add_sat_i64(map.raw_buf.len, new_val.len) <= 8192 else { return false; }
-    let new_v_begin = map.raw_buf.len as u16;
-    map.raw_buf.append(new_val);
-    map.entries[v_idx].values_begin = new_v_begin;
-    map.entries[v_idx].values_end = map.raw_buf.len as u16;
-    map.entries[v_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
-    map.header_contains_comma[v_idx] = true;
-    return true;
-}
-
 inline fn append_vary_accept_encoding(res: Response&) {
     let cur = get_inline(res.headers, WellKnownHeader.Vary);
     if cur.len == 0 {
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_VARY,
             rfc::HEADER_ACCEPT_ENCODING,
             SLOT_VARY,
@@ -754,21 +692,20 @@ inline fn append_vary_accept_encoding(res: Response&) {
         }
     } else if cur == rfc::FETCH_METADATA_VARY_VALUE {
         let combined = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin, Accept-Encoding";
-        if !update_single_vary_value(res.headers, combined) {
+        if !res.headers.update_single_vary_value(combined) {
             let _ = set_or_replace(res.headers, rfc::HEADER_VARY, combined, false);
         }
     } else if !cur.contains_fold(rfc::HEADER_ACCEPT_ENCODING) {
         var vbuf: u8[..128] = [];
         guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
-        if !update_single_vary_value(res.headers, vbuf[..]) {
+        if !res.headers.update_single_vary_value(vbuf[..]) {
             let _ = set_or_replace(res.headers, rfc::HEADER_VARY, vbuf[..], false);
         }
     }
 }
 
 inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], suffix: const u8[:]) {
-    if !append_known_pipeline_header(
-        res.headers,
+    if !res.headers.append_known_pipeline_header(
         rfc::HEADER_CONTENT_ENCODING,
         encoding,
         SLOT_CONTENT_ENCODING,
@@ -797,35 +734,31 @@ inline fn select_dynamic_gzip_level(body_len: i64) -> i32 {
     return if body_len < 128 { 0 } else { 6 };
 }
 
-var g_gzip_memo_src:    u8[..512]  = [];
-var g_gzip_memo_dst:    u8[..512]  = [];
-var g_compress_scratch: u8[..2048] = [];
-
 fn try_compress_zstd(res: Response&) -> bool {
-    g_compress_scratch.clear();
-    guard core::zstd_compress(res.body[..], g_compress_scratch) else { return false; }
-    let _ = res.body.try_set(g_compress_scratch[..]);
+    g_server_memo.compress_scratch.clear();
+    guard core::zstd_compress(res.body[..], g_server_memo.compress_scratch) else { return false; }
+    let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
     finalize_compressed_response(res, "zstd", "-zstd");
     return true;
 }
 
 fn try_compress_brotli(res: Response&) -> bool {
-    g_compress_scratch.clear();
-    guard core::brotli_compress(res.body[..], g_compress_scratch, 1) else { return false; }
-    let _ = res.body.try_set(g_compress_scratch[..]);
+    g_server_memo.compress_scratch.clear();
+    guard core::brotli_compress(res.body[..], g_server_memo.compress_scratch, 1) else { return false; }
+    let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
     finalize_compressed_response(res, "br", "-br");
     return true;
 }
 
 fn compress_gzip_uncached(res: Response&) {
-    g_compress_scratch.clear();
+    g_server_memo.compress_scratch.clear();
     let gz_level = select_dynamic_gzip_level(res.body.len);
-    if core::gzip_compress(res.body[..], g_compress_scratch, gz_level) {
-        if res.body.len <= 512 && g_compress_scratch.len <= 512 {
-            let _ = g_gzip_memo_src.try_set(res.body[..]);
-            let _ = g_gzip_memo_dst.try_set(g_compress_scratch[..]);
+    if core::gzip_compress(res.body[..], g_server_memo.compress_scratch, gz_level) {
+        if res.body.len <= 512 && g_server_memo.compress_scratch.len <= 512 {
+            let _ = g_server_memo.gzip_src.try_set(res.body[..]);
+            let _ = g_server_memo.gzip_dst.try_set(g_server_memo.compress_scratch[..]);
         }
-        let _ = res.body.try_set(g_compress_scratch[..]);
+        let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
         finalize_compressed_response(res, "gzip", "-gzip");
     }
 }
@@ -855,8 +788,8 @@ fn stage_server_compress(
         return wire::StageVerdict.Continue;
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
-        if res.body.len <= 512 && g_gzip_memo_src.len > 0 && res.body[..] == g_gzip_memo_src[..] {
-            let _ = res.body.try_set(g_gzip_memo_dst[..]);
+        if res.body.len <= 512 && g_server_memo.gzip_src.len > 0 && res.body[..] == g_server_memo.gzip_src[..] {
+            let _ = res.body.try_set(g_server_memo.gzip_dst[..]);
             finalize_compressed_response(res, "gzip", "-gzip");
             return wire::StageVerdict.Continue;
         }
@@ -886,8 +819,7 @@ fn stage_server_cache_store(
             let body_hash = core::xxh64(res.body[..], 0);
             body_hash.format_u64_hex(etag_buf);
             etag_buf.push('"');
-            if !append_known_pipeline_header(
-                res.headers,
+            if !res.headers.append_known_pipeline_header(
                 rfc::HEADER_ETAG,
                 etag_buf[..],
                 SLOT_ETAG,
@@ -915,8 +847,7 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
         return wire::StageVerdict.Continue;
     }
     if existing_vary.len == 0 && existing_hsts.len == 0 {
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_VARY,
             rfc::FETCH_METADATA_VARY_VALUE,
             SLOT_VARY,
@@ -926,8 +857,7 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
         ) {
             let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
         }
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_STRICT_TRANSPORT_SECURITY,
             rfc::HSTS_DEFAULT_VALUE,
             SLOT_HSTS,
@@ -965,8 +895,7 @@ fn append_matched_route_log_header(map: HeaderMap&, route_slice: const u8[:]) {
     if is_clean_header_bytes(route_slice) {
         let has_comma = route_slice.contains_byte(',');
         let flags = if has_comma { HEADER_FLAG_CONTAINS_COMMA } else { 0 };
-        if !append_known_pipeline_header(
-            map,
+        if !map.append_known_pipeline_header(
             "X-Matched-Route",
             route_slice,
             0xFF,
@@ -1006,8 +935,7 @@ fn stage_server_metrics_log(
         timing_buf.append("wing;dur=");
         let dur_us = dur_ns / 1000;
         dur_us.format_u64_dec(timing_buf);
-        if !append_known_pipeline_header(
-            res.headers,
+        if !res.headers.append_known_pipeline_header(
             rfc::HEADER_SERVER_TIMING,
             timing_buf[..],
             0xFF,

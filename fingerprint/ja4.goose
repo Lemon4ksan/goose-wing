@@ -36,8 +36,10 @@ fn sort_u16(arr: u16[>..]&) {
 // ---- formatting helpers ----------------------------------------------------
 
 fn append_hex4<B>(val: u16, out: B&) {
-    ((val >> 8) as u8).format_u8_hex(out, false);
-    ((val & 0xFF) as u8).format_u8_hex(out, false);
+    let hi = (val >> 8) as u8;
+    let lo = (val & 0xFF) as u8;
+    hi.format_u8_hex(out, false);
+    lo.format_u8_hex(out, false);
 }
 
 fn append_two_digits<B>(n: i64, out: B&) {

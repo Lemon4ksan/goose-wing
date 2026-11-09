@@ -167,7 +167,7 @@ fn encode_h1_request<B>(
 
     if !flags.has_cl && !flags.has_te && body.len > 0 {
         var cl_str: u8[..32] = [];
-        (body.len as u64).format_u64_dec(cl_str);
+        body.len.format_i64_dec(cl_str);
         guard out.try_append("Content-Length: ") &&
               out.try_append(cl_str[..]) &&
               out.try_append("\r\n") else {
@@ -234,7 +234,7 @@ fn encode_h1_response<B>(
     defer if !committed { out.resize(start_len); };
 
     var sc_str: u8[..16] = [];
-    (status_code as u64).format_u64_dec(sc_str);
+    status_code.format_u64_dec(sc_str);
     guard out.try_append("HTTP/1.1 ") &&
           out.try_append(sc_str[..]) &&
           out.try_append(" ") &&
@@ -260,7 +260,7 @@ fn encode_h1_response<B>(
 
     if !is_empty_status && !flags.has_cl && !flags.has_te {
         var cl_str: u8[..32] = [];
-        (body.len as u64).format_u64_dec(cl_str);
+        body.len.format_i64_dec(cl_str);
         guard out.try_append("Content-Length: ") &&
               out.try_append(cl_str[..]) &&
               out.try_append("\r\n") else {

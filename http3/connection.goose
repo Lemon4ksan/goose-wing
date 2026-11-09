@@ -1586,7 +1586,7 @@ fn send_response_headers_body_and_trailers<B>(
     defer if !committed { out.resize(saved_out_len); };
 
     var sc_str: u8[..16] = [];
-    (status_code as i64).format_i64_dec(sc_str);
+    status_code.format_i64_dec(sc_str);
 
     let base = conn.qpack_table.insert_count;
     var max_dyn_abs: u64 = 0;

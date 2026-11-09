@@ -879,18 +879,16 @@ inline fn sf_serialize_item<B>(kind: SfType.Decimal, item: const SfItem&, out: B
         item.int_val as u64
     };
     if item.int_val < 0 { out.push('-' as u8); }
-    (abs_milli / 1000).format_u64_dec(out);
+    let int_part = abs_milli / 1000;
+    int_part.format_u64_dec(out);
     out.push('.' as u8);
-    let frac: u64 = abs_milli % 1000;
-    if (frac % 100) == 0 {
-        (frac / 100).format_u64_dec(out);
-    } else if (frac % 10) == 0 {
-        if frac < 100 { out.push('0' as u8); }
-        (frac / 10).format_u64_dec(out);
-    } else {
-        if frac < 100 { out.push('0' as u8); }
-        if frac < 10 { out.push('0' as u8); }
-        frac.format_u64_dec(out);
+    let frac = abs_milli % 1000;
+    out.push(core::add_sat_u64('0', frac / 100) as u8);
+    if (frac % 100) != 0 {
+        out.push(core::add_sat_u64('0', (frac / 10) % 10) as u8);
+    }
+    if (frac % 10) != 0 {
+        out.push(core::add_sat_u64('0', frac % 10) as u8);
     }
 }
 

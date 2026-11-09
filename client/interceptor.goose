@@ -80,26 +80,29 @@ struct NetworkMetrics {
     last_hop_duration_us:     i64 = 0,
 }
 
+struct InterceptorHeader {
+    name: u8[..64]   = [],
+    val:  u8[..4096] = [],
+}
+
 // Compact InterceptorPipeline with 64-bit register dispatch.
 // Replaces 3.5 KB entry array on the stack with a 64-bit bitmask and flat parameters.
 struct InterceptorPipeline {
-    active_mask:         u64            = 0,
-    bearer_token:        u8[..4096]     = [],
-    app_header_name:     u8[..64]       = [],
-    app_header_val:      u8[..4096]     = [],
-    net_header_name:     u8[..64]       = [],
-    net_header_val:      u8[..4096]     = [],
-    req_id_prefix:       u8[..32]       = [],
-    req_id_counter:      u64            = 1,
-    traceparent_flag:    u8[..2]        = [],
-    traceparent_counter: u64            = 1,
-    app_log_level:       LogLevel       = LogLevel.Basic,
-    net_log_level:       LogLevel       = LogLevel.Basic,
-    max_retries:         i32            = 0,
-    retry_on_5xx:        bool           = true,
-    metrics:             NetworkMetrics = NetworkMetrics { .. },
-    log_entries:         u8[..128][..8] = [],
-    record_logs:         bool           = true,
+    active_mask:         u64                    = 0,
+    bearer_token:        u8[..4096]             = [],
+    app_headers:         InterceptorHeader[..4] = [],
+    net_headers:         InterceptorHeader[..4] = [],
+    req_id_prefix:       u8[..32]               = [],
+    req_id_counter:      u64                    = 1,
+    traceparent_flag:    u8[..2]                = [],
+    traceparent_counter: u64                    = 1,
+    app_log_level:       LogLevel               = LogLevel.Basic,
+    net_log_level:       LogLevel               = LogLevel.Basic,
+    max_retries:         i32                    = 0,
+    retry_on_5xx:        bool                   = true,
+    metrics:             NetworkMetrics         = NetworkMetrics { .. },
+    log_entries:         u8[..128][..8]         = [],
+    record_logs:         bool                   = true,
 }
 
 // ---- Pipeline Builders ---------------------------------------------------
@@ -187,23 +190,28 @@ fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
     return true;
 }
 
+fn upsert_interceptor_header(list: InterceptorHeader[..4]&, name: const u8[:], val: const u8[:]) -> bool {
+    var item = InterceptorHeader { .. };
+    guard item.name.try_set(name) && item.val.try_set(val) else { return false; }
+    for &entry in list {
+        if entry.name[..].eq_ascii_fold(name) {
+            return entry.val.try_set(val);
+        }
+    }
+    return list.try_push(item);
+}
+
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
     match scope {
         Application => {
-            guard name.len <= pipeline.app_header_name.cap
-                && val.len <= pipeline.app_header_val.cap
-                && pipeline.app_header_name.try_set(name)
-                && pipeline.app_header_val.try_set(val) else {
+            guard upsert_interceptor_header(pipeline.app_headers, name, val) else {
                 return false;
             }
             pipeline.active_mask |= INTERCEPTOR_APP_HEADER;
             return true;
         },
         Network => {
-            guard name.len <= pipeline.net_header_name.cap
-                && val.len <= pipeline.net_header_val.cap
-                && pipeline.net_header_name.try_set(name)
-                && pipeline.net_header_val.try_set(val) else {
+            guard upsert_interceptor_header(pipeline.net_headers, name, val) else {
                 return false;
             }
             pipeline.active_mask |= INTERCEPTOR_NET_HEADER;
@@ -409,9 +417,10 @@ fn apply_app_interceptors_request(
         }
     }
     if (mask & INTERCEPTOR_APP_HEADER) != 0 {
-        let h_name = pipeline.app_header_name[..];
-        if header(req, h_name).len == 0 {
-            set_header(req, h_name, pipeline.app_header_val[..]);
+        for &hdr in pipeline.app_headers {
+            if header(req, hdr.name[..]).len == 0 {
+                set_header(req, hdr.name[..], hdr.val[..]);
+            }
         }
     }
     if (mask & INTERCEPTOR_APP_REQUEST_ID) != 0 {
@@ -471,9 +480,10 @@ fn apply_network_interceptors_request(
     }
 
     if (mask & INTERCEPTOR_NET_HEADER) != 0 {
-        let h_name = pipeline.net_header_name[..];
-        if !has_header(headers, h_name) {
-            set_header(headers, h_name, pipeline.net_header_val[..]);
+        for &hdr in pipeline.net_headers {
+            if !has_header(headers, hdr.name[..]) {
+                set_header(headers, hdr.name[..], hdr.val[..]);
+            }
         }
     }
     if (mask & INTERCEPTOR_NET_LOGGING) != 0 {

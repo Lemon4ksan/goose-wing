@@ -9,6 +9,9 @@ import std;
 import core from "../..";
 import wing from "../..";
 import wing.wire.service;
+import wing.client.interceptor;
+import wing.client.request;
+import wing.http.headers;
 
 // Custom non-HTTP binary RPC request frame.
 struct BinaryRpcRequest {
@@ -161,7 +164,9 @@ fn test_retry_service_and_budget() {
     assert(retry_svc.retries_executed == 3);
 
     // Exhaust retry budget: set budget_tokens below token_cost (10)
+    assert(retry_svc.config.can_afford_retry());
     retry_svc.config.budget_tokens = 5;
+    assert(!retry_svc.config.can_afford_retry());
     retry_svc.inner.transient_failures_remaining = 1;
     let v_exhausted = retry_svc.exchange(req, res);
     assert(is_abort_code(v_exhausted, -502));
@@ -209,6 +214,7 @@ fn test_circuit_breaker_service() {
     assert(cb_svc.open_until_ms == 5000);
 
     // While Open before cooldown_ms, short-circuits with 503 without calling inner backend
+    assert(cb_svc.is_breaker_open());
     let calls_before = cb_svc.inner.call_count;
     wire::advance_breaker_clock(cb_svc, 2500);
     let v_open = cb_svc.exchange(req, res);
@@ -217,6 +223,7 @@ fn test_circuit_breaker_service() {
 
     // Advance clock past cooldown_ms (5000) -> transitions to HalfOpen
     wire::advance_breaker_clock(cb_svc, 5000);
+    assert(!cb_svc.is_breaker_open());
     assert(cb_svc.state == wire::BreakerState.HalfOpen);
 
     // Backend recovers -> probe succeeds and closes breaker
@@ -225,6 +232,17 @@ fn test_circuit_breaker_service() {
     assert(v_probe == wire::StageVerdict.Continue);
     assert(cb_svc.state == wire::BreakerState.Closed);
     assert(cb_svc.consecutive_failures == 0);
+
+    // Verify UFCS reset_breaker clears tripped state and failure counters
+    cb_svc.state = wire::BreakerState.Open;
+    cb_svc.consecutive_failures = 3;
+    cb_svc.open_until_ms = 9000;
+    assert(cb_svc.is_breaker_open());
+    cb_svc.reset_breaker();
+    assert(!cb_svc.is_breaker_open());
+    assert(cb_svc.state == wire::BreakerState.Closed);
+    assert(cb_svc.consecutive_failures == 0);
+    assert(cb_svc.open_until_ms == 0);
     print("CIRCUIT_BREAKER_FSM: OK");
 }
 
@@ -296,6 +314,25 @@ fn test_composed_stack_zero_alloc() {
     print("COMPOSED_STACK_ZERO_ALLOC: OK");
 }
 
+fn test_interceptor_multi_header_composition() {
+    var pipeline = wing::InterceptorPipeline { .. };
+    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "X-A", "1"));
+    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "X-B", "2"));
+    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "x-a", "updated-1"));
+    assert(wing::add_header(pipeline, wing::InterceptorScope.Network, "X-Net-1", "n1"));
+    assert(wing::add_header(pipeline, wing::InterceptorScope.Network, "X-Net-2", "n2"));
+
+    var req = wing::new_request("GET", "https://example.com/api");
+    wing::apply_app_interceptors_request(pipeline, req, 1000);
+    assert(wing::header(req, "X-A") == "updated-1");
+    assert(wing::header(req, "X-B") == "2");
+
+    var wire_hdrs = wing::HeaderMap { .. };
+    wing::apply_network_interceptors_request(pipeline, wire_hdrs, "https://example.com/api", "GET", 0, 1);
+    assert(wing::get_header(wire_hdrs, "X-Net-1") == "n1");
+    assert(wing::get_header(wire_hdrs, "X-Net-2") == "n2");
+}
+
 fn ::main() {
     print("=== VERIFY WIRE SERVICE LAYERS ===");
     wire::test_retry_service_and_budget();
@@ -303,6 +340,7 @@ fn ::main() {
     wire::test_circuit_breaker_service();
     wire::test_singleflight_service();
     wire::test_composed_stack_zero_alloc();
+    wire::test_interceptor_multi_header_composition();
     print("ALL WIRE SERVICE LAYER CHECKS PASSED");
 }
 

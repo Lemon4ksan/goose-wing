@@ -118,7 +118,7 @@ fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u1
         }
     }
     out.push('/');
-    (target_port as u64).format_u64_dec(out);
+    target_port.format_u64_dec(out);
     out.push('/');
 }
 
@@ -575,7 +575,7 @@ fn build_masque_connect_request(
         let _ = auth_buf.try_append(view.host);
         if view.port > 0 && auth_buf.len <= 249 {
             auth_buf.push(':');
-            (view.port as u64).format_u64_dec(auth_buf);
+            view.port.format_i64_dec(auth_buf);
         }
     } else if tunnel.config.proxy_url.len > 0 {
         let _ = auth_buf.try_append(tunnel.config.proxy_url[..]);

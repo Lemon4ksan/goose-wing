@@ -431,10 +431,6 @@ inline fn strip_required_proxy_preface<B>(
     return stripped, true;
 }
 
-var g_turn_req:    Request  = Request { .. };
-var g_turn_res:    Response = Response { .. };
-var g_turn_in_use: bool     = false;
-
 inline fn reset_server_response_fixed(res: Response&) {
     res.status_code = 200;
     res.presence_mask = 0;
@@ -450,8 +446,23 @@ inline fn reset_server_request_fixed(req: Request&) {
     req.is_http10 = false;
 }
 
+var g_turn_req:    Request  = Request { .. };
+var g_turn_res:    Response = Response { .. };
+var g_turn_in_use: bool     = false;
+
 inline fn is_turn_scratch_ready() -> bool {
     return !g_turn_in_use && g_turn_req.body.len == 0 && g_turn_res.body.len == 0;
+}
+
+inline fn acquire_turn_scratch() {
+    g_turn_in_use = true;
+    reset_server_response_fixed(g_turn_res);
+}
+
+inline fn release_turn_scratch() {
+    g_turn_req.body.clear();
+    g_turn_res.body.clear();
+    g_turn_in_use = false;
 }
 
 fn try_prepare_single_h1_wire_turn(raw_stream: const u8[:]) -> bool {
@@ -486,12 +497,8 @@ fn finish_single_h1_wire_turn<Stage, B>(
     wire_out:     B&,
     stage:        Stage&,
 ) -> PipelineOutcome {
-    g_turn_in_use = true;
-    defer {
-        g_turn_req.body.clear();
-        g_turn_res.body.clear();
-        g_turn_in_use = false;
-    };
+    acquire_turn_scratch();
+    defer release_turn_scratch();
     if server.ws_route_count > 0
         && (g_turn_req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
         && is_websocket_upgrade_request(g_turn_req) {
@@ -505,7 +512,6 @@ fn finish_single_h1_wire_turn<Stage, B>(
         server.pipeline.trust_proxy_headers = true;
     }
 
-    reset_server_response_fixed(g_turn_res);
     var future = internal::new_inline_handler_future(0);
     let out_outcome = execute_server_pipeline_with_stage(
         server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future, stage,
@@ -669,7 +675,7 @@ fn check_pipelined_content_length<B>(
     out_keep:    bool&,
 ) -> bool {
     guard cl_str.len > 0 else { return false; }
-    let cl_val, cl_ok = trim(cl_str).parse_i64_dec();
+    let cl_val, cl_ok = cl_str.trim_lws().parse_i64_dec();
     guard cl_ok && cl_val >= 0 else { return false; }
     if cl_val > MAX_SERVER_BODY_LIMIT {
         // RFC 9110 Section 15.5.14: Payload Too Large
@@ -1413,17 +1419,12 @@ fn finish_single_pipeline_turn<Stage, B>(
     stage:            Stage&,
 ) {
     total_handled = core::add_sat_i64(total_handled, 1);
-    g_turn_in_use = true;
-    defer {
-        g_turn_req.body.clear();
-        g_turn_res.body.clear();
-        g_turn_in_use = false;
-    };
+    acquire_turn_scratch();
+    defer release_turn_scratch();
     if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
         return;
     }
 
-    reset_server_response_fixed(g_turn_res);
     var future = internal::new_inline_handler_future(0);
     let _ = execute_server_pipeline_with_stage(
         server.pipeline, server.timer, local_ip, g_turn_req, now_ns, g_turn_res, future, stage,

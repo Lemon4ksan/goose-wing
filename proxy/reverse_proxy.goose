@@ -482,7 +482,7 @@ fn ensure_forwarded_body_framing(
     }
     guard body.len > 0 && !has_te else { return true; }
     var cl_buf: u8[..32] = [];
-    (body.len as u64).format_u64_dec(cl_buf);
+    body.len.format_i64_dec(cl_buf);
     return append_header(forward_headers, "Content-Length", cl_buf[..]);
 }
 

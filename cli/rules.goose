@@ -292,7 +292,8 @@ fn handle_httpbin_status_or_redirect(path: const u8[:], res: wing::Response&) ->
             let _ = loc.try_set("/get");
         } else {
             let _ = loc.try_set("/redirect/");
-            core::sub_sat_u64(n_hops, 1).format_u64_dec(loc);
+            let rem_hops = core::sub_sat_u64(n_hops, 1);
+            rem_hops.format_u64_dec(loc);
         }
         res.set_header("Location", loc[..]);
         res.body.clear();

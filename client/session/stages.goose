@@ -411,16 +411,16 @@ fn try_handle_early_data_or_dpop_challenge(
     }
 
     let is_dpop_status = resp.status_code == rfc::STATUS_UNAUTHORIZED || resp.status_code == rfc::STATUS_BAD_REQUEST;
-    guard session.has_dpop_key && is_dpop_status else { return false; }
-    guard extract_dpop_nonce(resp.headers, session.last_dpop_nonce) else { return false; }
+    guard session.dpop.has_key && is_dpop_status else { return false; }
+    guard extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
     let now_sec = div_euclid(session.virtual_clock_us, 1000000);
     var proof: u8[..2048] = [];
     let ok_proof = create_dpop_proof(
-        session.dpop_private_key[..],
+        session.dpop.private_key[..],
         ctx.current_method[..],
         current_url.href[..],
-        session.dpop_access_token[..],
-        session.last_dpop_nonce[..],
+        session.dpop.access_token[..],
+        session.dpop.last_nonce[..],
         now_sec,
         "",
         proof,
@@ -697,23 +697,23 @@ inline fn apply_client_early_data_and_dpop_headers(
             set_header(ctx.headers, "Early-Data", "1");
         }
     }
-    guard session.has_dpop_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
+    guard session.dpop.has_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
     var proof: u8[..2048] = [];
     guard create_dpop_proof(
-        session.dpop_private_key[..],
+        session.dpop.private_key[..],
         ctx.current_method[..],
         current_url.href[..],
-        session.dpop_access_token[..],
-        session.last_dpop_nonce[..],
+        session.dpop.access_token[..],
+        session.dpop.last_nonce[..],
         now_sec,
         "",
         proof,
     ) else { return; }
     set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
-    if session.dpop_access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
-        var auth_val: u8[..600] = [];
+    if session.dpop.access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
+        var auth_val: u8[..4096] = [];
         auth_val.append("DPoP ");
-        let _ = auth_val.try_append(session.dpop_access_token[..]);
+        let _ = auth_val.try_append(session.dpop.access_token[..]);
         set_header(ctx.headers, "Authorization", auth_val[..], true);
     }
 }

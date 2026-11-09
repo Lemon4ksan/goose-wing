@@ -75,10 +75,20 @@ fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
     return SOA_INVALID_FD;
 }
 
+// Returns whether `slot` is within the bounds of the SoA connection table.
+inline fn is_valid_slot(table: const SoAConnTable&, slot: i64) -> bool {
+    return slot >= 0 && slot < table.fds.len;
+}
+
+// Returns whether `slot` is in bounds and currently holds an active file descriptor.
+inline fn is_active_slot(table: const SoAConnTable&, slot: i64) -> bool {
+    return table.is_valid_slot(slot) && table.fds[slot] > 0;
+}
+
 inline fn trim_soa_high_water_mark(table: SoAConnTable&) {
     while table.count > 0 && table.count <= table.fds.len {
         let last_idx = core::sub_sat_i64(table.count, 1);
-        guard last_idx >= 0 && last_idx < table.fds.len && table.fds[last_idx] < 0 else {
+        guard table.is_valid_slot(last_idx) && table.fds[last_idx] < 0 else {
             break;
         }
         table.count = last_idx;
@@ -87,14 +97,14 @@ inline fn trim_soa_high_water_mark(table: SoAConnTable&) {
 
 // Releases a connection slot in the SoA table.
 fn soa_table_free(table: SoAConnTable&, slot: i64) {
-    guard slot >= 0 && slot < table.fds.len else { return; }
+    guard table.is_valid_slot(slot) else { return; }
     reset_soa_slot_fields(table, slot, SOA_INVALID_FD, SOA_INVALID_TICK);
     trim_soa_high_water_mark(table);
 }
 
 // Caches per-connection peer IP and its 64-bit FNV-1a hash in the SoA slot.
 fn soa_table_set_peer_ip(table: SoAConnTable&, slot: i64, ip: const u8[:]) {
-    guard slot >= 0 && slot < table.fds.len else { return; }
+    guard table.is_valid_slot(slot) else { return; }
     let resolved_ip = if ip.len > 0 { ip } else { "0.0.0.0" };
     let _ = table.peer_ips[slot].try_set(resolved_ip);
     table.peer_ip_hashes[slot] = core::fnv1a_64(resolved_ip);
@@ -103,13 +113,13 @@ fn soa_table_set_peer_ip(table: SoAConnTable&, slot: i64, ip: const u8[:]) {
 
 // Returns cached peer IP slice for an active SoA slot, or empty slice if unpopulated.
 inline fn soa_table_get_peer_ip(table: const SoAConnTable&, slot: i64) -> const u8[:] {
-    guard slot >= 0 && slot < table.fds.len && table.has_peer_ip[slot] else { return ""; }
+    guard table.is_valid_slot(slot) && table.has_peer_ip[slot] else { return ""; }
     return table.peer_ips[slot][..];
 }
 
 // Updates the timeout tick for an active connection slot (activity refresh).
 inline fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8) {
-    guard slot >= 0 && slot < table.fds.len else { return; }
+    guard table.is_valid_slot(slot) else { return; }
     table.timeout_ticks[slot] = new_tick;
 }
 
@@ -126,7 +136,7 @@ fn soa_table_sweep_expired(
     for s in limit {
         let tick = table.timeout_ticks[s];
         guard tick != SOA_INVALID_TICK && tick_timer_is_expired(timer_wheel, tick) else { continue; }
-        guard table.fds[s] > 0 else { continue; }
+        guard table.is_active_slot(s) else { continue; }
         guard expired_n < out_expired.len else { break; }
         expired_n = record_expired_conn(out_expired, expired_n, s);
     }

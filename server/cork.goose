@@ -105,8 +105,9 @@ fn write_cork_chunked_response_stream<Res>(sc: ServerCork&, res: const Res&, ser
     var off:           i64 = 0;
     while off < res.body.len {
         let chunk_n = min(core::sub_sat_i64(res.body.len, off), 4096);
+        let chunk_u64 = chunk_n as u64;
         var chunk_hdr: u8[..32] = [];
-        (chunk_n as u64).format_u64_hex(chunk_hdr);
+        chunk_u64.format_u64_hex(chunk_hdr);
         chunk_hdr.append("\r\n");
         let chunk_end = core::add_sat_i64(off, chunk_n);
         let w1 = server_cork_write2(sc, chunk_hdr[..], res.body[off..chunk_end]);

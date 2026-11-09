@@ -65,7 +65,7 @@ fn format_akamai_settings<B>(settings: const AkamaiSetting[:], out: B&) {
         if i > 0 {
             out.push(';');
         }
-        (settings[i].id as u32).format_u32_dec(out);
+        settings[i].id.format_u32_dec(out);
         out.push(':');
         settings[i].val.format_u32_dec(out);
     }
@@ -83,11 +83,11 @@ fn format_akamai_priority<B>(priority: const AkamaiPriorityFrame[:], out: B&) {
         }
         priority[i].stream_id.format_u32_dec(out);
         out.push(':');
-        (priority[i].exclusive as u32).format_u32_dec(out);
+        priority[i].exclusive.format_u32_dec(out);
         out.push(':');
         priority[i].dep_stream_id.format_u32_dec(out);
         out.push(':');
-        (priority[i].weight as u32).format_u32_dec(out);
+        priority[i].weight.format_u32_dec(out);
     }
 }
 

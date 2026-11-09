@@ -137,14 +137,14 @@ fn verify_dudect_welch_t_test() {
             if core::ct_eq_tag32(ref_tag, cls0_tag) { acc += 1; }
         }
         let t1 = core::monotonic_now().nanos;
-        let _ = core::dudect_push_sample(emp_ctx, 0, (core::sub_sat_u64(t1, t0)) as f64);
+        let _ = core::dudect_push_sample(emp_ctx, 0, (core::sub_sat_u64(t1, t0)));
 
         let t2 = core::monotonic_now().nanos;
         for _ in 64 {
             if core::ct_eq_tag32(ref_tag, cls1_tag) { acc += 1; }
         }
         let t3 = core::monotonic_now().nanos;
-        let _ = core::dudect_push_sample(emp_ctx, 1, (core::sub_sat_u64(t3, t2)) as f64);
+        let _ = core::dudect_push_sample(emp_ctx, 1, (core::sub_sat_u64(t3, t2)));
         if iter < 0 { acc += 1; }
     }
     assert(acc == 0);

@@ -1841,6 +1841,70 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     return true;
 }
 
+const SLOT_CONTENT_TYPE:     u8 = 1;  // WellKnownHeader.ContentType
+const SLOT_CONTENT_ENCODING: u8 = 4;  // WellKnownHeader.ContentEncoding
+const SLOT_ETAG:             u8 = 25; // WellKnownHeader.ETag
+const SLOT_VARY:             u8 = 34; // WellKnownHeader.Vary
+const SLOT_HSTS:             u8 = 46; // WellKnownHeader.StrictTransportSecurity
+
+const HASH_HDR_CONTENT_ENCODING: u32 = 0x03E2ED88; // "content-encoding"
+const HASH_HDR_ETAG:             u32 = 0x06C857C0; // "etag"
+const HASH_HDR_SERVER_TIMING:    u32 = 0x9BBE871F; // "server-timing"
+const HASH_HDR_X_MATCHED_ROUTE:  u32 = 0x40F015F2; // "x-matched-route"
+
+fn append_known_pipeline_header(
+    map:            HeaderMap&,
+    name:           const u8[:],
+    val:            const u8[:],
+    slot:           u8,
+    flags:          u8,
+    hname:          u32,
+    contains_comma: bool,
+) -> bool {
+    let needed = core::add_sat_i64(name.len, val.len);
+    guard map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else {
+        return false;
+    }
+    if slot < 64 && map.inline_slots[slot as i64] != 0xFF {
+        return false;
+    }
+    let n_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(name);
+    let n_end = map.raw_buf.len as u16;
+    map.raw_buf.append(val);
+    let v_end = map.raw_buf.len as u16;
+    let new_idx = map.entries.len as u8;
+    if slot < 64 {
+        map.inline_slots[slot as i64] = new_idx;
+    }
+    map.entries.push(HeaderEntry {
+        name_begin:    n_begin,
+        name_end:      n_end,
+        values_begin:  n_end,
+        values_end:    v_end,
+        next_idx:      0xFF,
+        flags:         flags,
+        well_known_id: slot,
+        reserved:      0,
+        name_hash:     hname,
+    });
+    map.header_contains_comma.push(contains_comma);
+    return true;
+}
+
+inline fn update_single_vary_value(map: HeaderMap&, new_val: const u8[:]) -> bool {
+    let v_idx = map.inline_slots[SLOT_VARY as i64] as i64;
+    guard v_idx < map.entries.len && map.entries[v_idx].next_idx == 0xFF else { return false; }
+    guard core::add_sat_i64(map.raw_buf.len, new_val.len) <= 8192 else { return false; }
+    let new_v_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(new_val);
+    map.entries[v_idx].values_begin = new_v_begin;
+    map.entries[v_idx].values_end = map.raw_buf.len as u16;
+    map.entries[v_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+    map.header_contains_comma[v_idx] = true;
+    return true;
+}
+
 fn calc_entry_match_bytes(raw: const u8[:], e: const HeaderEntry&, name: const u8[:]) -> i64 {
     guard e.reserved == HEADER_SRC_STACK && e.name_end <= raw.len as u16 else { return -1; }
     let ename = raw[e.name_begin..e.name_end];

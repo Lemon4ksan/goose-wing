@@ -219,7 +219,7 @@ fn encode_hpack_pseudo_fields<B>(
             return false;
         }
         var st_buf: u8[..16] = [];
-        (pseudo.status as u64).format_u64_dec(st_buf);
+        pseudo.status.format_i64_dec(st_buf);
         return internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
     }
     guard is_valid_h2_request_pseudo_fields(pseudo) else { return false; }

@@ -66,7 +66,7 @@ fn serialize_h1_request(
     var hdrs = req.headers;
     if !has_cl && !has_te && req.body.len > 0 {
         var cl_buf: u8[..32] = [];
-        (req.body.len as u64).format_u64_dec(cl_buf);
+        req.body.len.format_i64_dec(cl_buf);
         guard append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
     return wire::encode_h1_request(
