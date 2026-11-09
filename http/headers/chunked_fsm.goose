@@ -9,6 +9,7 @@ namespace internal;
 
 import std;
 import core from "../..";
+import http.headers.chunked;
 
 const CHUNK_STATE_HAS_SIZE:               u64 = 0x8000000000000000;
 const CHUNK_STATE_IS_CHUNKED:             u64 = 0x4000000000000000;
@@ -73,13 +74,6 @@ fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.trailer_name.clear();
 }
 
-const CHUNK_FSM_OVERHEAD_MIN_BYTES: i64 = 102400;
-
-inline fn is_chunk_overhead_excessive(total_read: i64, total_overhead: i64) -> bool {
-    return total_overhead >= CHUNK_FSM_OVERHEAD_MIN_BYTES &&
-           core::sub_sat_i64(total_read, total_overhead) < (total_read >> 2);
-}
-
 inline fn record_chunk_fsm_overhead(
     dec:          ChunkFsmDecoder&,
     st:           ChunkFsmStatus,
@@ -91,7 +85,7 @@ inline fn record_chunk_fsm_overhead(
     let ovh_add = core::sub_sat_i64(read_add, max(0, payload_len));
     dec.total_read = core::add_sat_i64(dec.total_read, read_add);
     dec.total_overhead = core::add_sat_i64(dec.total_overhead, ovh_add);
-    if is_chunk_overhead_excessive(dec.total_read, dec.total_overhead) {
+    if wing::is_chunk_overhead_excessive(dec.total_read, dec.total_overhead) {
         dec.state = CHUNK_STATE_IS_ERROR;
         return ChunkFsmStatus.Error;
     }

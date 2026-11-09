@@ -25,6 +25,7 @@ import http.compression_dict;
 import http.digest_fields;
 import http.early_hints;
 import http.hsts;
+import http.signatures;
 import auth.digest;
 import auth.dpop;
 import security.cors;
@@ -38,7 +39,7 @@ import client.session.cookie_bridge;
 import client.session.exec;
 import wire.pipeline;
 
-// ---- Narrow-Input Autonomous Client Stage Bricks ----------------------------
+// ---- 1. Narrow-Input Autonomous Client Stage Bricks -------------------------
 
 // Upgrades an HTTP URL buffer in-place to HTTPS when the target host is in `hsts` (RFC 6797 §8.3).
 fn stage_client_url_hsts(
@@ -184,28 +185,6 @@ fn stage_client_cookie_load<Jar>(
     return wire::StageVerdict.Continue;
 }
 
-fn find_best_matching_dict_idx(
-    dict_cache: const DictionaryCache&,
-    origin_buf: const u8[:],
-    curr_path:  const u8[:],
-    now_sec:    i64,
-) -> i64 {
-    var best_idx:  i64 = -1;
-    var best_len:  i64 = -1;
-    var best_time: i64 = -1;
-    for &entry, idx in dict_cache.entries {
-        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
-            let pat_len = entry.match_pattern.len;
-            if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
-                best_idx = idx;
-                best_len = pat_len;
-                best_time = entry.inserted_at_sec;
-            }
-        }
-    }
-    return best_idx;
-}
-
 // Negotiates compression dictionary transport (`Available-Dictionary` and `Dictionary-ID`).
 fn stage_client_dict_negotiate(
     headers:     HeaderMap&,
@@ -329,6 +308,28 @@ fn stage_client_alt_svc(
     return wire::StageVerdict.Continue;
 }
 
+fn verify_dict_encoding_precheck(
+    raw_body:   const u8[:],
+    enc:        const u8[:],
+    dict_cache: const DictionaryCache&,
+) -> bool {
+    let is_dcz = enc.eq_ascii_fold(rfc::ENCODING_DCZ);
+    let is_dcb = enc.eq_ascii_fold(rfc::ENCODING_DCB);
+    guard is_dcz || is_dcb else { return true; }
+    var dict_hash: u8[32] = [0; 32];
+    if is_dcz {
+        let _, ok_hdr = decode_dcz_header(raw_body, dict_hash);
+        guard ok_hdr else { return false; }
+    } else {
+        let _, ok_hdr = decode_dcb_header(raw_body, dict_hash);
+        guard ok_hdr else { return false; }
+    }
+    var dict_entry = DictionaryEntry { .. };
+    guard dictionary_lookup_by_hash(dict_cache, dict_hash, dict_entry) else { return false; }
+    let _, ok_magic = verify_dcz_dcb_magic(raw_body, is_dcz, dict_entry.sha256_hash);
+    return ok_magic;
+}
+
 // Decodes `Content-Encoding` (`gzip`, `br`, `zstd`, `dcb`, `dcz`) on `resp` using `dict_cache`
 // and verifies RFC 9530 `Content-Digest` / `Repr-Digest` integrity when enabled.
 fn stage_client_decompress(
@@ -341,7 +342,8 @@ fn stage_client_decompress(
 
     let enc = header(resp, "Content-Encoding");
     if enc.len > 0 {
-        let ok_dec = decode_body_with_dictionary(resp, dict_cache);
+        let ok_magic = verify_dict_encoding_precheck(resp.body[..], enc, dict_cache);
+        let ok_dec = ok_magic && decode_body_with_dictionary(resp, dict_cache);
         if !ok_dec && strict_mode {
             return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
         }
@@ -549,7 +551,7 @@ fn stage_client_redirect(
     return wire::StageVerdict.Continue;
 }
 
-// ---- Programmable Client Stage Context & User Hooks -------------------------
+// ---- 2. Programmable Client Stage Context & User Hooks ----------------------
 
 // Context passed to user-injected client stages (`on_client_stage`).
 struct ClientStageCtx {
@@ -587,6 +589,99 @@ inline fn on_client_stage<First, Next>(
     }
     return p.verdict;
 }
+
+// ---- 3. Hop Security, Signature & Dictionary Stage Helpers ------------------
+
+inline fn apply_client_early_data_and_dpop_headers(
+    session:     const Client&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    now_sec:     i64,
+) {
+    if session.enable_early_data && !ctx.auth_retried {
+        if evaluate_early_data_request(ctx.current_method[..]) == EarlyDataDecision.Allow {
+            set_header(ctx.headers, "Early-Data", "1");
+        }
+    }
+    guard session.dpop.has_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
+    var proof: u8[..2048] = [];
+    guard create_dpop_proof(
+        session.dpop.private_key[..],
+        ctx.current_method[..],
+        current_url.href[..],
+        session.dpop.access_token[..],
+        session.dpop.last_nonce[..],
+        now_sec,
+        "",
+        proof,
+    ) else { return; }
+    set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
+    if session.dpop.access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
+        var auth_val: u8[..4096] = [];
+        auth_val.append("DPoP ");
+        let _ = auth_val.try_append(session.dpop.access_token[..]);
+        set_header(ctx.headers, "Authorization", auth_val[..], true);
+    }
+}
+
+fn apply_client_request_signature(
+    session:     const Client&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+) {
+    guard session.sig_private_key.len == 32 else { return; }
+    var sig_req = Request {
+        method:  copy(ctx.current_method),
+        url:     copy(current_url.href),
+        headers: copy(ctx.headers),
+        ..
+    };
+    if sign_request_ed25519(sig_req, session.sig_key_id[..], session.sig_private_key[..]) {
+        ctx.headers = copy(sig_req.headers);
+    }
+}
+
+fn verify_client_response_signature(
+    session:     const Client&,
+    req:         const Request&,
+    current_url: const core::Url&,
+    method:      const u8[:],
+    headers:     const HeaderMap&,
+    resp:        const Response&,
+) -> bool {
+    guard session.sig_public_key.len == 32 else { return true; }
+    let has_sig = has_header(resp, rfc::HEADER_SIGNATURE) || has_header(resp, rfc::HEADER_SIGNATURE_INPUT);
+    guard has_sig else { return true; }
+    var hop_req = copy(req);
+    let _ = hop_req.method.try_set(method);
+    let _ = hop_req.url.try_set(current_url.href[..]);
+    hop_req.headers = copy(headers);
+    return verify_response_ed25519(resp, hop_req, session.sig_key_id[..], session.sig_public_key[..]);
+}
+
+fn ingest_session_dictionary_response(
+    session:    Client&,
+    is_https:   bool,
+    origin_buf: const u8[:],
+    resp:       const Response&,
+) {
+    let use_dict_hdr = header(resp, "Use-As-Dictionary");
+    guard session.enable_compression_dict && is_https && use_dict_hdr.len > 0 && resp.body.len <= 2048 else {
+        return;
+    }
+    var decoded_dict: u8[..2048] = [];
+    let enc_hdr = header(resp, "Content-Encoding");
+    let _ = process_dictionary_response(
+        session,
+        origin_buf,
+        use_dict_hdr,
+        enc_hdr,
+        resp.body[..],
+        decoded_dict,
+    );
+}
+
+// ---- 4. Preflight, Pre-Hop Ingress & Post-Hop Egress Dispatchers ------------
 
 // Runs pre-flight client stages (HSTS URL upgrade, initial URL parse, and HTTP cache lookup).
 fn run_client_preflight_stages<UserStage>(
@@ -686,38 +781,6 @@ fn run_client_preflight_stages<UserStage>(
     return wire::StageVerdict.Continue;
 }
 
-inline fn apply_client_early_data_and_dpop_headers(
-    session:     const Client&,
-    ctx:         RequestExecutionContext&,
-    current_url: const core::Url&,
-    now_sec:     i64,
-) {
-    if session.enable_early_data && !ctx.auth_retried {
-        if evaluate_early_data_request(ctx.current_method[..]) == EarlyDataDecision.Allow {
-            set_header(ctx.headers, "Early-Data", "1");
-        }
-    }
-    guard session.dpop.has_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
-    var proof: u8[..2048] = [];
-    guard create_dpop_proof(
-        session.dpop.private_key[..],
-        ctx.current_method[..],
-        current_url.href[..],
-        session.dpop.access_token[..],
-        session.dpop.last_nonce[..],
-        now_sec,
-        "",
-        proof,
-    ) else { return; }
-    set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
-    if session.dpop.access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
-        var auth_val: u8[..4096] = [];
-        auth_val.append("DPoP ");
-        let _ = auth_val.try_append(session.dpop.access_token[..]);
-        set_header(ctx.headers, "Authorization", auth_val[..], true);
-    }
-}
-
 // Executes a single built-in client ingress stage by slot ID (`0..5`).
 fn dispatch_client_ingress_stage(
     stage_id:      u8,
@@ -770,6 +833,12 @@ fn dispatch_client_ingress_stage(
         format_url_origin(current_url, origin_buf);
         let is_https = current_url.is_secure_scheme();
         let curr_path = current_url.pathname();
+        if is_https && session.enable_compression_dict {
+            var dict_req = Request { headers: copy(ctx.headers), .. };
+            if attach_dictionary_request_headers(session, origin_buf[..], curr_path, dict_req) {
+                ctx.headers = copy(dict_req.headers);
+            }
+        }
         return stage_client_dict_negotiate(
             ctx.headers,
             session.dict_cache,
@@ -782,7 +851,7 @@ fn dispatch_client_ingress_stage(
     }
     if stage_id == wire::STAGE_ID_CLI_IN_INTERCEPTOR_AUTH {
         apply_client_early_data_and_dpop_headers(session, ctx, current_url, now_sec);
-        return stage_client_auth_header(
+        let v_auth = stage_client_auth_header(
             session.pipeline,
             ctx.headers,
             current_url.href[..],
@@ -790,6 +859,8 @@ fn dispatch_client_ingress_stage(
             ctx.body.len,
             ctx.redirect_count,
         );
+        apply_client_request_signature(session, ctx, current_url);
+        return v_auth;
     }
     return wire::StageVerdict.Continue;
 }
@@ -891,6 +962,7 @@ fn dispatch_client_egress_stage(
         format_url_origin(current_url, origin_buf);
         let curr_path = current_url.pathname();
         let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+        ingest_session_dictionary_response(session, is_https, origin_buf[..], out_resp);
         return stage_client_alt_svc(
             out_resp,
             current_url,
@@ -907,6 +979,21 @@ fn dispatch_client_egress_stage(
         );
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_DECOMPRESS {
+        if !verify_client_response_signature(
+            session,
+            req,
+            current_url,
+            ctx.current_method[..],
+            ctx.headers,
+            out_resp,
+        ) {
+            out_err = make_error(
+                rfc::STATUS_BAD_GATEWAY,
+                "protocol",
+                "ERR_SIGNATURE_VERIFICATION_FAILED: HTTP response signature verification failed",
+            );
+            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+        }
         let dec_v = stage_client_decompress(
             out_resp,
             session.dict_cache,
@@ -1000,6 +1087,8 @@ fn run_client_post_hop_stages<UserStage>(
     return wire::StageVerdict.Continue;
 }
 
+// ---- 5. Hop Retry Loop & Top-Level Client Pipeline Entrypoint ---------------
+
 fn execute_client_auth_retry_hop<UserStage>(
     session:              Client&,
     ctx:                  RequestExecutionContext&,
@@ -1023,6 +1112,7 @@ fn execute_client_auth_retry_hop<UserStage>(
             ctx.body.len,
             ctx.redirect_count,
         );
+        apply_client_request_signature(session, ctx, current_url);
     }
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     let retry_dur_us = session.virtual_clock_us - retry_start_us;

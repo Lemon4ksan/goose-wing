@@ -27,6 +27,7 @@ import http.altsvc;
 import net.happy_eyeballs;
 import http.compression_dict;
 import http.hsts;
+import http.signatures;
 import client.interceptor;
 import client.stream;
 import client.session.ssrf;
@@ -40,7 +41,7 @@ import security.privacypass;
 import client.replay_guard;
 import client.telemetry;
 
-// ---- client configuration and state ----------------------------------------
+// ---- 1. Configuration & State Structs --------------------------------------
 
 struct ClientConfig {
     base_url:                const u8[:]  = "",
@@ -57,6 +58,9 @@ struct ClientConfig {
     enable_compression_dict: bool         = true,
     strict_content_decoding: bool         = false,
     insecure_skip_verify:    bool         = false,
+    sig_key_id:              const u8[:]  = "",
+    sig_private_key:         const u8[:]  = "",
+    sig_public_key:          const u8[:]  = "",
 }
 
 type SessionConfig = ClientConfig;
@@ -143,6 +147,9 @@ struct Client {
     circuit_breaker:         HostCircuitBreaker  = new_host_circuit_breaker(),
     backoff_config:          BackoffConfig       = new_backoff_config(),
     dpop:                    ClientDpopState     = ClientDpopState { .. },
+    sig_key_id:              u8[..64]            = [],
+    sig_private_key:         u8[..64]            = [],
+    sig_public_key:          u8[..64]            = [],
     trust_store:             TrustAnchorStore    = TrustAnchorStore { .. },
     insecure_skip_verify:    bool                = false,
 
@@ -152,7 +159,7 @@ struct Client {
 
 type Session = Client;
 
-// ---- client factories ------------------------------------------------------
+// ---- 2. Client & Session Factories -----------------------------------------
 
 fn new_client() -> Client {
     var c = Client {
@@ -211,6 +218,9 @@ fn new_client(cfg: ClientConfig) -> Client {
     if cfg.profile != Profile.None {
         set_profile(client, cfg.profile);
     }
+    if cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0 {
+        let _ = set_http_signature_keys(client, cfg.sig_key_id, cfg.sig_private_key, cfg.sig_public_key);
+    }
     return client;
 }
 
@@ -246,7 +256,7 @@ fn new_session<F: fn(Client&)>() -> Client {
     return client;
 }
 
-// ---- ufcs session mutators & configuration ---------------------------------
+// ---- 3. Core Session Mutators & Fingerprint Accessors ----------------------
 
 fn set_base_url(session: Session&, url: const u8[:]) {
     session.base_url.clear();
@@ -351,7 +361,7 @@ fn set_redirect_mode(session: Session&, mode: RedirectMode) {
     session.follow_redirects = (mode == RedirectMode.Follow);
 }
 
-// ---- dns-over-https & automated ech discovery (rfc 8484, rfc 9460) ----------
+// ---- 4. Protocol, Interceptor, Auth, HSTS, Cookie & Mock Route Configurators
 
 fn enable_doh(session: Session&, endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) {
     session.enable_doh = true;
@@ -368,6 +378,301 @@ fn enable_ech(session: Session&, auto_discover: bool = true) {
         session.enable_doh = true;
     }
 }
+
+fn enable_altsvc(session: Session&, enabled: bool = true) {
+    session.enable_altsvc = enabled;
+}
+
+fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms: i64 = 200) {
+    session.enable_protocol_racing = enabled;
+    session.quic_race_delay_ms = quic_delay_ms;
+}
+
+fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target, origin_buf);
+    let now_sec = session.virtual_clock_us / 1000000;
+    var ep = AltSvcEndpoint { .. };
+    return lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
+}
+
+fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target, origin_buf);
+    let now_sec = session.virtual_clock_us / 1000000;
+    return is_broken(session.altsvc, origin_buf[..], now_sec);
+}
+
+// ---- compression dictionary transport configuration (chrome 123+ dcz/dcb) --
+
+fn enable_compression_dict(session: Session&, enabled: bool = true) {
+    session.enable_compression_dict = enabled;
+}
+
+fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool {
+    var origin_buf: u8[..128] = [];
+    resolve_target_origin(target_url, origin_buf);
+    var path_buf: u8[..256] = [];
+    let parsed, err = core::parse_url(target_url);
+    if parsed.valid {
+        let _ = path_buf.try_set(parsed.pathname());
+    } else {
+        let _ = path_buf.try_set("/");
+    }
+    let now_sec = session.virtual_clock_us / 1000000;
+    var dummy_hash: u8[..64] = [];
+    return dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec, dummy_hash);
+}
+
+// ---- interceptor pipeline configuration (okhttp/tower-style) ---------------
+
+fn add_app_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
+    return add_logging(session.pipeline, InterceptorScope.Application, level);
+}
+
+fn add_network_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
+    return add_logging(session.pipeline, InterceptorScope.Network, level);
+}
+
+fn add_app_bearer_auth(session: Session&, token: const u8[:]) -> bool {
+    return add_bearer_auth(session.pipeline, token);
+}
+
+fn add_app_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return add_header(session.pipeline, InterceptorScope.Application, name, val);
+}
+
+fn add_network_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
+    return add_header(session.pipeline, InterceptorScope.Network, name, val);
+}
+
+fn add_app_request_id(session: Session&, prefix: const u8[:] = "req-") -> bool {
+    return add_request_id(session.pipeline, prefix);
+}
+
+fn add_app_traceparent(session: Session&, sample_flag: const u8[:] = "01") -> bool {
+    return add_traceparent(session.pipeline, sample_flag);
+}
+
+fn add_app_retry(session: Session&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
+    return add_retry(session.pipeline, max_retries, retry_on_5xx);
+}
+
+fn add_network_metrics(session: Session&) -> bool {
+    return add_metrics(session.pipeline);
+}
+
+fn clear_pipeline_logs(session: Session&) {
+    session.pipeline.log_entries.clear();
+}
+
+// ---- authentication credentials configuration (rfc 7616 digest & basic) ----
+
+fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) -> bool {
+    guard username.len <= session.creds.username.cap && password.len <= session.creds.password.cap else {
+        return false;
+    }
+    guard session.creds.username.try_set(username) && session.creds.password.try_set(password) else {
+        return false;
+    }
+    session.creds.has_credentials = true;
+    session.creds.nonce_counter = 1;
+    return true;
+}
+
+fn set_dpop_credentials(session: Session&, private_key: const u8[32]&, token: const u8[:] = "") -> bool {
+    guard session.dpop.access_token.try_set(token) else { return false; }
+    session.dpop.private_key = private_key;
+    session.dpop.has_key = true;
+    session.dpop.last_nonce.clear();
+    return true;
+}
+
+// Configures RFC 9421 Ed25519 HTTP Message Signature keys on `session` for automatic
+// request signing (`sig_private_key.len == 32`) and response verification (`sig_public_key.len == 32`).
+fn set_http_signature_keys(
+    session:     Session&,
+    key_id:      const u8[:],
+    private_key: const u8[:],
+    public_key:  const u8[:] = "",
+) -> bool {
+    guard key_id.len <= session.sig_key_id.cap
+        && (private_key.len == 0 || private_key.len == 32)
+        && (public_key.len == 0 || public_key.len == 32) else {
+        return false;
+    }
+    core::secure_zeroize_slice(session.sig_private_key[..]);
+    guard session.sig_key_id.try_set(key_id)
+        && session.sig_private_key.try_set(private_key)
+        && session.sig_public_key.try_set(public_key) else {
+        return false;
+    }
+    return true;
+}
+
+// ---- hsts configuration (rfc 6797 strict transport security) ---------------
+
+fn enable_hsts(session: Session&, enabled: bool = true) {
+    session.enable_hsts = enabled;
+}
+
+fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return is_hsts_host(session.hsts, hostname, now_sec);
+}
+
+fn export_hsts<B>(session: const Session&, out: B&) -> i64 {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return save_hsts_cache(session.hsts, now_sec, out);
+}
+
+fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
+    let now_sec = session.virtual_clock_us / 1000000;
+    return load_hsts_cache(session.hsts, data, now_sec);
+}
+
+fn allow_port(session: Session&, port_num: i32) -> bool {
+    guard !session.ssrf_guard.allowed_ports.contains(port_num) else { return true; }
+    return session.ssrf_guard.allowed_ports.try_push(port_num);
+}
+
+fn deny_port(session: Session&, port_num: i32) -> bool {
+    guard !session.ssrf_guard.denied_ports.contains(port_num) else { return true; }
+    return session.ssrf_guard.denied_ports.try_push(port_num);
+}
+
+fn set_clock_us(session: Session&, now_us: i64) {
+    session.virtual_clock_us = now_us;
+}
+
+fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
+    guard host_name.len > 0 && host_name.len <= 128 else { return false; }
+    guard !is_trusted_location_host(session, host_name) else { return true; }
+    var host_buf: u8[..128] = [];
+    host_name.to_lower_ascii(host_buf);
+    return session.trusted_location_hosts.try_push(host_buf);
+}
+
+fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
+    return session.trusted_location_hosts.any() { it[..].eq_ascii_fold(host_name) };
+}
+
+// ---- mock route registration methods ---------------------------------------
+
+fn mock_route(
+    session:     Session&,
+    method:      const u8[:],
+    pattern_url: const u8[:],
+    status_code: i32,
+    body_str:    const u8[:],
+) -> MockExchange& {
+    if session.mock_routes.len < session.mock_routes.cap {
+        var route = MockExchange {
+            status_code: status_code,
+            ..
+        };
+        route.method.append(method);
+        route.pattern_url.append(pattern_url);
+        route.body.append(body_str);
+        return session.mock_routes.push(route);
+    }
+    return session.mock_routes[0];
+}
+
+fn mock_route<F: fn(MockExchange&)>(
+    session:     Session&,
+    method:      const u8[:],
+    pattern_url: const u8[:],
+    status_code: i32,
+    body_str:    const u8[:],
+) -> MockExchange& {
+    let route .= mock_route(session, method, pattern_url, status_code, body_str);
+    F(route);
+    return route;
+}
+
+fn add_mock_set_cookie(session: Session&, set_cookie_raw: const u8[:]) {
+    if session.mock_routes.len > 0 {
+        add_mock_set_cookie(session.mock_routes[session.mock_routes.len - 1], set_cookie_raw);
+    }
+}
+
+fn add_mock_header(session: Session&, name: const u8[:], value: const u8[:]) {
+    if session.mock_routes.len > 0 {
+        add_mock_header(session.mock_routes[session.mock_routes.len - 1], name, value);
+    }
+}
+
+fn add_mock_resolved_ip(session: Session&, ip_str: const u8[:]) {
+    if session.mock_routes.len > 0 {
+        add_mock_resolved_ip(session.mock_routes[session.mock_routes.len - 1], ip_str);
+    }
+}
+
+fn set_mock_quic_blocked(session: Session&, blocked: bool = true) {
+    if session.mock_routes.len > 0 {
+        set_mock_quic_blocked(session.mock_routes[session.mock_routes.len - 1], blocked);
+    }
+}
+
+fn set_mock_protocol(session: Session&, proto: const u8[:]) {
+    if session.mock_routes.len > 0 {
+        set_mock_protocol(session.mock_routes[session.mock_routes.len - 1], proto);
+    }
+}
+
+fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
+    var route = MockExchange {
+        status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
+        ..
+    };
+    guard route.method.try_set("GET") && route.pattern_url.try_set(url_pattern) else { return; }
+    set_header(route.headers, "Upgrade", "websocket");
+    set_header(route.headers, "Connection", "Upgrade");
+    if subprotocol.len > 0 {
+        set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
+    }
+    let _ = session.mock_routes.try_push(route);
+}
+
+fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
+    var route = MockExchange {
+        status_code: rfc::STATUS_OK,
+        ..
+    };
+    guard route.method.try_set("GET")
+        && route.pattern_url.try_set(url_pattern)
+        && route.body.try_set(sample_events) else { return; }
+    set_header(route.headers, "Content-Type", "text/event-stream");
+    set_header(route.headers, "Cache-Control", "no-cache");
+    set_header(route.headers, "Connection", "keep-alive");
+    let _ = session.mock_routes.try_push(route);
+}
+
+// ---- cookie & default header helpers ---------------------------------------
+
+fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
+    var raw_hdr: u8[..4128] = [];
+    guard raw_hdr.try_append(name)
+        && raw_hdr.try_push('=')
+        && raw_hdr.try_append(value)
+        && raw_hdr.try_append("; Path=/") else { return; }
+    if session.base_url.len > 0 {
+        session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], session.virtual_clock_us);
+    } else {
+        session.jar.set_cookie_header("https://example.com/", raw_hdr[..], session.virtual_clock_us);
+    }
+}
+
+fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
+    return session.jar.get(name);
+}
+
+fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
+    set_header(session.default_headers, name, value);
+}
+
+// ---- 5. Session Protocol Helpers (DoH, ECH Discovery & RFC 9842 Dictionary) -
 
 // Creates an isolated `Client` copying only transport, TLS verification, SSRF policy,
 // virtual clock, and mock routes so application credentials, cookies, and interceptors
@@ -499,281 +804,6 @@ fn resolve_ech_config(
     return false;
 }
 
-// ---- alt-svc & protocol racing configuration (rfc 7838, rfc 8305) ----------
-
-fn enable_altsvc(session: Session&, enabled: bool = true) {
-    session.enable_altsvc = enabled;
-}
-
-fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms: i64 = 200) {
-    session.enable_protocol_racing = enabled;
-    session.quic_race_delay_ms = quic_delay_ms;
-}
-
-fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
-    var origin_buf: u8[..128] = [];
-    resolve_target_origin(target, origin_buf);
-    let now_sec = session.virtual_clock_us / 1000000;
-    var ep = AltSvcEndpoint { .. };
-    return lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
-}
-
-fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
-    var origin_buf: u8[..128] = [];
-    resolve_target_origin(target, origin_buf);
-    let now_sec = session.virtual_clock_us / 1000000;
-    return is_broken(session.altsvc, origin_buf[..], now_sec);
-}
-
-// ---- compression dictionary transport configuration (chrome 123+ dcz/dcb) --
-
-fn enable_compression_dict(session: Session&, enabled: bool = true) {
-    session.enable_compression_dict = enabled;
-}
-
-fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool {
-    var origin_buf: u8[..128] = [];
-    resolve_target_origin(target_url, origin_buf);
-    var path_buf: u8[..256] = [];
-    let parsed, err = core::parse_url(target_url);
-    if parsed.valid {
-        let _ = path_buf.try_set(parsed.pathname());
-    } else {
-        let _ = path_buf.try_set("/");
-    }
-    let now_sec = session.virtual_clock_us / 1000000;
-    var dummy_hash: u8[..64] = [];
-    return dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec, dummy_hash);
-}
-
-// ---- interceptor pipeline configuration (okhttp/tower-style) ---------------
-
-fn add_app_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
-    return add_logging(session.pipeline, InterceptorScope.Application, level);
-}
-
-fn add_network_logging(session: Session&, level: LogLevel = LogLevel.Basic) -> bool {
-    return add_logging(session.pipeline, InterceptorScope.Network, level);
-}
-
-fn add_app_bearer_auth(session: Session&, token: const u8[:]) -> bool {
-    return add_bearer_auth(session.pipeline, token);
-}
-
-fn add_app_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
-    return add_header(session.pipeline, InterceptorScope.Application, name, val);
-}
-
-fn add_network_header(session: Session&, name: const u8[:], val: const u8[:]) -> bool {
-    return add_header(session.pipeline, InterceptorScope.Network, name, val);
-}
-
-fn add_app_request_id(session: Session&, prefix: const u8[:] = "req-") -> bool {
-    return add_request_id(session.pipeline, prefix);
-}
-
-fn add_app_traceparent(session: Session&, sample_flag: const u8[:] = "01") -> bool {
-    return add_traceparent(session.pipeline, sample_flag);
-}
-
-fn add_app_retry(session: Session&, max_retries: i32, retry_on_5xx: bool = true) -> bool {
-    return add_retry(session.pipeline, max_retries, retry_on_5xx);
-}
-
-fn add_network_metrics(session: Session&) -> bool {
-    return add_metrics(session.pipeline);
-}
-
-fn clear_pipeline_logs(session: Session&) {
-    session.pipeline.log_entries.clear();
-}
-
-// ---- authentication credentials configuration (rfc 7616 digest & basic) ----
-
-fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) -> bool {
-    guard username.len <= session.creds.username.cap && password.len <= session.creds.password.cap else {
-        return false;
-    }
-    guard session.creds.username.try_set(username) && session.creds.password.try_set(password) else {
-        return false;
-    }
-    session.creds.has_credentials = true;
-    session.creds.nonce_counter = 1;
-    return true;
-}
-
-fn set_dpop_credentials(session: Session&, private_key: const u8[32]&, token: const u8[:] = "") -> bool {
-    guard session.dpop.access_token.try_set(token) else { return false; }
-    session.dpop.private_key = private_key;
-    session.dpop.has_key = true;
-    session.dpop.last_nonce.clear();
-    return true;
-}
-
-// ---- hsts configuration (rfc 6797 strict transport security) ---------------
-
-fn enable_hsts(session: Session&, enabled: bool = true) {
-    session.enable_hsts = enabled;
-}
-
-fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
-    let now_sec = session.virtual_clock_us / 1000000;
-    return is_hsts_host(session.hsts, hostname, now_sec);
-}
-
-fn export_hsts<B>(session: const Session&, out: B&) -> i64 {
-    let now_sec = session.virtual_clock_us / 1000000;
-    return save_hsts_cache(session.hsts, now_sec, out);
-}
-
-fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
-    let now_sec = session.virtual_clock_us / 1000000;
-    return load_hsts_cache(session.hsts, data, now_sec);
-}
-
-fn allow_port(session: Session&, port_num: i32) -> bool {
-    guard !session.ssrf_guard.allowed_ports.contains(port_num) else { return true; }
-    return session.ssrf_guard.allowed_ports.try_push(port_num);
-}
-
-fn deny_port(session: Session&, port_num: i32) -> bool {
-    guard !session.ssrf_guard.denied_ports.contains(port_num) else { return true; }
-    return session.ssrf_guard.denied_ports.try_push(port_num);
-}
-
-fn set_clock_us(session: Session&, now_us: i64) {
-    session.virtual_clock_us = now_us;
-}
-
-fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
-    guard host_name.len > 0 && host_name.len <= 128 else { return false; }
-    guard !is_trusted_location_host(session, host_name) else { return true; }
-    var host_buf: u8[..128] = [];
-    host_name.to_lower_ascii(host_buf);
-    return session.trusted_location_hosts.try_push(host_buf);
-}
-
-fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
-    return session.trusted_location_hosts.any() { it[..].eq_ascii_fold(host_name) };
-}
-
-// ---- mock route registration methods ---------------------------------------
-
-fn mock_route(
-    session:     Session&,
-    method:      const u8[:],
-    pattern_url: const u8[:],
-    status_code: i32,
-    body_str:    const u8[:],
-) -> MockExchange& {
-    guard session.mock_routes.len < session.mock_routes.cap else {
-        return session.mock_routes[session.mock_routes.len - 1];
-    }
-    var route = MockExchange {
-        status_code: status_code,
-        ..
-    };
-    route.method.append(method);
-    route.pattern_url.append(pattern_url);
-    route.body.append(body_str);
-    return session.mock_routes.push(route);
-}
-
-fn mock_route<F: fn(MockExchange&)>(
-    session:     Session&,
-    method:      const u8[:],
-    pattern_url: const u8[:],
-    status_code: i32,
-    body_str:    const u8[:],
-) -> MockExchange& {
-    let route .= mock_route(session, method, pattern_url, status_code, body_str);
-    F(route);
-    return route;
-}
-
-fn add_mock_set_cookie(session: Session&, set_cookie_raw: const u8[:]) {
-    if session.mock_routes.len > 0 {
-        add_mock_set_cookie(session.mock_routes[session.mock_routes.len - 1], set_cookie_raw);
-    }
-}
-
-fn add_mock_header(session: Session&, name: const u8[:], value: const u8[:]) {
-    if session.mock_routes.len > 0 {
-        add_mock_header(session.mock_routes[session.mock_routes.len - 1], name, value);
-    }
-}
-
-fn add_mock_resolved_ip(session: Session&, ip_str: const u8[:]) {
-    if session.mock_routes.len > 0 {
-        add_mock_resolved_ip(session.mock_routes[session.mock_routes.len - 1], ip_str);
-    }
-}
-
-fn set_mock_quic_blocked(session: Session&, blocked: bool = true) {
-    if session.mock_routes.len > 0 {
-        set_mock_quic_blocked(session.mock_routes[session.mock_routes.len - 1], blocked);
-    }
-}
-
-fn set_mock_protocol(session: Session&, proto: const u8[:]) {
-    if session.mock_routes.len > 0 {
-        set_mock_protocol(session.mock_routes[session.mock_routes.len - 1], proto);
-    }
-}
-
-fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
-    var route = MockExchange {
-        status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
-        ..
-    };
-    guard route.method.try_set("GET") && route.pattern_url.try_set(url_pattern) else { return; }
-    set_header(route.headers, "Upgrade", "websocket");
-    set_header(route.headers, "Connection", "Upgrade");
-    if subprotocol.len > 0 {
-        set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
-    }
-    let _ = session.mock_routes.try_push(route);
-}
-
-fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: const u8[:] = "") {
-    var route = MockExchange {
-        status_code: rfc::STATUS_OK,
-        ..
-    };
-    guard route.method.try_set("GET")
-        && route.pattern_url.try_set(url_pattern)
-        && route.body.try_set(sample_events) else { return; }
-    set_header(route.headers, "Content-Type", "text/event-stream");
-    set_header(route.headers, "Cache-Control", "no-cache");
-    set_header(route.headers, "Connection", "keep-alive");
-    let _ = session.mock_routes.try_push(route);
-}
-
-// ---- cookie & default header helpers ---------------------------------------
-
-fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
-    var raw_hdr: u8[..4128] = [];
-    guard raw_hdr.try_append(name)
-        && raw_hdr.try_push('=')
-        && raw_hdr.try_append(value)
-        && raw_hdr.try_append("; Path=/") else { return; }
-    if session.base_url.len > 0 {
-        session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], session.virtual_clock_us);
-    } else {
-        session.jar.set_cookie_header("https://example.com/", raw_hdr[..], session.virtual_clock_us);
-    }
-}
-
-fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
-    return session.jar.get(name);
-}
-
-fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
-    set_header(session.default_headers, name, value);
-}
-
-// ---- rfc 9842 compression dictionary transport helpers ---------------------
-
 // RFC 9842 Section 2.2: Available-Dictionary - Attaches `Available-Dictionary` and `Dictionary-ID`
 // request headers when a valid dictionary in `session.dict_cache` matches `(origin, url_path)`.
 fn attach_dictionary_request_headers(
@@ -784,38 +814,16 @@ fn attach_dictionary_request_headers(
 ) -> bool {
     guard session.enable_compression_dict else { return false; }
     let now_sec = session.virtual_clock_us / 1000000;
-    for &entry in session.dict_cache.entries {
-        if dict_entry_matches_request(entry, origin, url_path, now_sec) {
-            set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
-            if entry.id.len > 0 {
-                var id_hdr: u8[..128] = [];
-                format_dictionary_id_header(id_hdr, entry.id[..]);
-                set_header(req, "Dictionary-ID", id_hdr[..]);
-            }
-            return true;
-        }
+    let best_idx = find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
+    guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
+    let entry = session.dict_cache.entries[best_idx];
+    set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
+    if entry.id.len > 0 {
+        var id_hdr: u8[..128] = [];
+        format_dictionary_id_header(id_hdr, entry.id[..]);
+        set_header(req, "Dictionary-ID", id_hdr[..]);
     }
-    return false;
-}
-
-// RFC 9842 Section 4 & Section 5: Verifies the 4-byte DCZ (`\xFFDCZ`) or DCB (`\xFFDCB`) magic header
-// and validates that the 32-byte SHA-256 dictionary hash matches `expected_hash` in constant time.
-fn verify_dcz_dcb_magic(wire: const u8[:], is_dcz: bool, expected_hash: const u8[32]&) -> const u8[:], bool {
-    var actual_hash: u8[32] = [0; 32];
-    if is_dcz {
-        let payload, ok = decode_dcz_header(wire, actual_hash);
-        guard ok else { return wire[..0], false; }
-        guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
-            return wire[..0], false;
-        }
-        return payload, true;
-    }
-    let payload, ok = decode_dcb_header(wire, actual_hash);
-    guard ok else { return wire[..0], false; }
-    guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
-        return wire[..0], false;
-    }
-    return payload, true;
+    return true;
 }
 
 // RFC 9842 Section 2.1: Use-As-Dictionary - Registers a response body in `session.dict_cache` when
@@ -831,29 +839,27 @@ fn process_dictionary_response<B>(
     let prev_len = out_decoded.len;
     if content_encoding.eq_ascii_fold(rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
-        let comp_payload, ok_hdr = decode_dcz_header(raw_body, dict_hash);
+        let _, ok_hdr = decode_dcz_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
         var dict_entry = DictionaryEntry { .. };
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
-        guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
-            return false;
-        }
+        let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, true, dict_entry.sha256_hash);
+        guard ok_magic else { return false; }
         guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
             return false;
         }
     } else if content_encoding.eq_ascii_fold(rfc::ENCODING_DCB) {
         var dict_hash: u8[32] = [0; 32];
-        let comp_payload, ok_hdr = decode_dcb_header(raw_body, dict_hash);
+        let _, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
         var dict_entry = DictionaryEntry { .. };
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
-        guard core::ct_eq_bytes(dict_entry.sha256_hash[..], dict_hash[..]) else {
-            return false;
-        }
+        let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, false, dict_entry.sha256_hash);
+        guard ok_magic else { return false; }
         guard decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded) else {
             return false;
         }

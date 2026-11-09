@@ -393,35 +393,32 @@ fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAle
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
 
-    var inner_type:  u8  = 0;
-    var content_len: i64 = 0;
-    var found = false;
+    var non_zero_len: i64 = 0;
 
-    // Backward scan to find the last non-zero byte (inner ContentType)
+    // Backward scan to strip trailing zero padding without early breaks
     for i in decrypted.len {
-        let idx = decrypted.len - 1 - i;
-        let b = decrypted[idx];
-        if !found && b != 0x00 {
-            inner_type = b;
-            content_len = idx;
-            found = true;
+        let idx = core::sub_sat_i64(core::sub_sat_i64(decrypted.len, 1), i);
+        if non_zero_len == 0 && decrypted[idx] != 0x00 {
+            non_zero_len = core::add_sat_i64(idx, 1);
         }
     }
 
-    guard found else {
+    var c = core::cursor_from(decrypted[..non_zero_len]);
+    var content_type: u8 = 0;
+    guard core::get_last_u8(c, content_type) else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-    guard inner_type >= rfc::TLS_CONTENT_ALERT && inner_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
+    guard content_type >= rfc::TLS_CONTENT_ALERT && content_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
-    guard content_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
+    guard c.buf.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return decrypted[..0], 0, TlsAlert.RecordOverflow;
     }
-    guard content_len > 0 || inner_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
+    guard c.buf.len > 0 || content_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, TlsAlert.UnexpectedMessage;
     }
 
-    return decrypted[..content_len], inner_type, TlsAlert.CloseNotify;
+    return c.buf, content_type, TlsAlert.CloseNotify;
 }
 
 // Compares two 16-byte authentication tags in constant time (RFC 8446 §5.2).
@@ -1051,20 +1048,13 @@ fn check_change_cipher_spec_record(
 
 // ---- QUIC Crypto Gateway & Header Protection (RFC 9001) ------------------
 
+const MAX_QUIC_CRYPTO_BUFFER_LEN: i64 = 16384; // 16KB max handshake flight per encryption level
+
 enum QuicEncryptionLevel {
     Initial,     // ssl_encryption_initial (0)
     EarlyData,   // ssl_encryption_early_data (1)
     Handshake,   // ssl_encryption_handshake (2)
     Application, // ssl_encryption_application (3)
-}
-
-inline fn quic_encryption_level_to_u8(level: QuicEncryptionLevel) -> u8 {
-    return match level {
-        Initial => 0,
-        EarlyData => 1,
-        Handshake => 2,
-        Application => 3,
-    };
 }
 
 enum QuicOutputEvent {
@@ -1074,6 +1064,27 @@ enum QuicOutputEvent {
     AddHandshakeData { level: QuicEncryptionLevel, data: const u8[:] = [] },
     FlushFlight,
     SendAlert { level: QuicEncryptionLevel, alert: TlsAlert },
+}
+
+// Connection container for QUIC Crypto state machine isolation.
+struct QuicCryptoConn {
+    read_level:  QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    write_level: QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    events:      QuicOutputEvent[..8] = [],
+}
+
+struct QuicCryptoStream {
+    consumed_offset: u64         = 0,
+    buf:             u8[..16384] = [],
+}
+
+inline fn quic_encryption_level_to_u8(level: QuicEncryptionLevel) -> u8 {
+    return match level {
+        Initial => 0,
+        EarlyData => 1,
+        Handshake => 2,
+        Application => 3,
+    };
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
@@ -1086,13 +1097,6 @@ inline fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:
         return pkt[..0], false;
     }
     return pkt[sample_offset..sample_offset + 16], true;
-}
-
-// Connection container for QUIC Crypto state machine isolation.
-struct QuicCryptoConn {
-    read_level:  QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
-    write_level: QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
-    events:      QuicOutputEvent[..8] = [],
 }
 
 fn new_quic_crypto_conn() -> QuicCryptoConn {
@@ -1118,13 +1122,6 @@ fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: co
         return TlsAlert.RecordOverflow;
     }
     return TlsAlert.CloseNotify;
-}
-
-const MAX_QUIC_CRYPTO_BUFFER_LEN: i64 = 16384; // 16KB max handshake flight per encryption level
-
-struct QuicCryptoStream {
-    consumed_offset: u64         = 0,
-    buf:             u8[..16384] = [],
 }
 
 fn new_quic_crypto_stream() -> QuicCryptoStream {

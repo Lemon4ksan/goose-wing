@@ -921,6 +921,58 @@ inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> QuicFrame, b
     }, true;
 }
 
+// ---- Unreliable Datagram Extension Frames (RFC 9221) -----------------------
+
+// Encodes an RFC 9221 QUIC DATAGRAM frame into buffer.
+// If with_length is true (default), encodes frame type 0x31 with VarInt length prefix.
+// If with_length is false, encodes frame type 0x30 consuming remainder of packet.
+fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
+    let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len, 0); };
+
+    if with_length {
+        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN)
+            && quic_encode_varint(out, payload.len as u64) else {
+            return false;
+        }
+    } else {
+        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM) else { return false; }
+    }
+    guard out.try_append(payload) else { return false; }
+    committed = true;
+    return true;
+}
+
+// Decodes an RFC 9221 QUIC DATAGRAM frame from wire slice.
+//
+// Example:
+//   src = [0x31, 0x04, 't', 'e', 's', 't'], offset = 0
+//   returns: payload = "test", next_offset = 6, ok = true
+fn decode_quic_datagram_frame(
+    src:        const u8[:],
+    offset:     u64,
+    packet_end: u64 = 0,
+) -> const u8[:], u64, bool {
+    let total_len = src.len as u64;
+    guard offset < total_len else { return "", offset, false; }
+    if packet_end > 0 {
+        guard packet_end <= total_len && offset < packet_end else { return "", offset, false; }
+    }
+    let limit = if packet_end > 0 { packet_end } else { total_len };
+    let ftype, off1, ok1 = quic_decode_varint(src, offset);
+    guard ok1 && off1 <= limit else { return "", offset, false; }
+
+    if ftype == rfc::QUIC_FRAME_DATAGRAM {
+        return src[(off1 as i64)..(limit as i64)], limit, true;
+    }
+    guard ftype == rfc::QUIC_FRAME_DATAGRAM_LEN else { return "", offset, false; }
+    let dlen, off2, ok2 = quic_decode_varint(src, off1);
+    let eff_end = core::add_sat_u64(off2, dlen);
+    guard ok2 && eff_end <= limit else { return "", offset, false; }
+    return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
+}
+
 // ---- Frame Demuxer Dispatch Subroutines ----------------------------------
 
 // Demuxes MAX_DATA (0x10) or MAX_STREAM_DATA (0x11) frame.

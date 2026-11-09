@@ -21,7 +21,7 @@ import .cork;
 import .stream_consumer;
 import .sni;
 
-// ---- HttpServer Container and Session Coordinator -----------------------
+// ---- 1. HttpServer Container and Route Registration -------------------------
 
 struct WsRouteEntry {
     path:     u8[..128]  = [],
@@ -150,7 +150,7 @@ fn find_ws_route(server: const HttpServer&, path: const u8[:]) -> i32 {
     return -1;
 }
 
-// ---- Server Pub/Sub Broadcast Engine (uWebSockets TopicTree pattern) --------
+// ---- 2. Server Pub/Sub Broadcast Engine (uWebSockets TopicTree) -------------
 
 fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = rfc::WS_OPCODE_TEXT) -> i64 {
     return publish(server.topic_tree, topic, message, opcode);
@@ -231,6 +231,8 @@ fn get_socket_topics(server: const HttpServer&, sock_fd: i64, out_topics: u8[..6
 fn iterate_socket_topics<IterFn: fn(const u8[:])>(server: const HttpServer&, sock_fd: i64) -> i32 {
     return iterate_socket_topics<IterFn>(server.topic_tree, sock_fd);
 }
+
+// ---- 3. WebSocket Upgrade Handshake & Framing -------------------------------
 
 // Asynchronous WebSocket Upgrade helpers (uWebSockets res->onAborted & res->upgrade pattern)
 fn defer_ws_upgrade(
@@ -351,28 +353,6 @@ fn complete_ws_upgrade<B>(
     return serialize_and_init_ws_upgrade(route_behavior, pending, subproto, out_wire);
 }
 
-// Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
-// Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
-fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
-    guard res.status_code != 101 else { return false; }
-    let has_conn_hdr = has_header(req, "connection") ||
-        (res.presence_mask & RES_PRESENCE_CONNECTION) != 0;
-    if !has_conn_hdr && !req.is_http10 && req.method[0] != 'C' {
-        return false;
-    }
-    let req_conn = header(req, "connection");
-    let res_conn = header(res, "connection");
-    let wants_close = req.method[..] == "CONNECT" ||
-        req_conn.contains_fold("close") ||
-        (req.is_http10 && !req_conn.contains_fold("keep-alive")) ||
-        res_conn.contains_fold("close");
-    if wants_close {
-        set_header(res, "Connection", "close");
-        return true;
-    }
-    return false;
-}
-
 fn complete_ws_upgrade<Req, B>(
     server:   HttpServer&,
     req:      const Req&,
@@ -407,6 +387,8 @@ fn complete_ws_upgrade<Req, B>(
     return true;
 }
 
+// ---- 4. Single-Turn & Pipelined HTTP/1.1 Wire Execution ---------------------
+
 inline fn strip_required_proxy_preface<B>(
     server:       const HttpServer&,
     wire_in:      const u8[:],
@@ -429,6 +411,28 @@ inline fn strip_required_proxy_preface<B>(
         let _ = effective_ip.try_set(proxy_hdr.src_ip_str[..]);
     }
     return stripped, true;
+}
+
+// Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
+// Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
+fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
+    guard res.status_code != 101 else { return false; }
+    let has_conn_hdr = has_header(req, "connection") ||
+        (res.presence_mask & RES_PRESENCE_CONNECTION) != 0;
+    if !has_conn_hdr && !req.is_http10 && req.method[0] != 'C' {
+        return false;
+    }
+    let req_conn = header(req, "connection");
+    let res_conn = header(res, "connection");
+    let wants_close = req.method[..] == "CONNECT" ||
+        req_conn.contains_fold("close") ||
+        (req.is_http10 && !req_conn.contains_fold("keep-alive")) ||
+        res_conn.contains_fold("close");
+    if wants_close {
+        set_header(res, "Connection", "close");
+        return true;
+    }
+    return false;
 }
 
 inline fn reset_server_response_fixed(res: Response&) {
@@ -513,9 +517,13 @@ fn finish_single_h1_wire_turn<Stage, B>(
     }
 
     var future = internal::new_inline_handler_future(0);
-    let out_outcome = execute_server_pipeline_with_stage(
-        server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future, stage,
-    );
+    let out_outcome = if is_noop_server_stage(stage) {
+        execute_pipeline(server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future)
+    } else {
+        execute_server_pipeline_with_stage(
+            server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future, stage,
+        )
+    };
 
     check_and_apply_connection_close(g_turn_req, g_turn_res);
     serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
@@ -557,9 +565,13 @@ fn execute_single_h1_wire_turn<Stage, B>(
 
     reset_server_response_fast(res);
     var future = internal::new_inline_handler_future(0);
-    let outcome = execute_server_pipeline_with_stage(
-        server.pipeline, server.timer, effective_ip, req, now_ns, res, future, stage,
-    );
+    let outcome = if is_noop_server_stage(stage) {
+        execute_pipeline(server.pipeline, server.timer, effective_ip, req, now_ns, res, future)
+    } else {
+        execute_server_pipeline_with_stage(
+            server.pipeline, server.timer, effective_ip, req, now_ns, res, future, stage,
+        )
+    };
 
     check_and_apply_connection_close(req, res);
 
@@ -910,6 +922,8 @@ fn process_pipelined_pipe_step<Stage, B>(
     }
     return PipeStepResult.Continue;
 }
+
+// ---- 5. Fast L0 Static Route Scanner & Batch Drainer ------------------------
 
 inline fn is_noop_server_stage(stage: const wire::NoOpStage&) -> bool {
     return true;
@@ -1532,6 +1546,8 @@ fn handle_connection_wire_pipelined<B>(
     return count, ok;
 }
 
+// ---- 6. HTTP/2 & Duplex Pipe Connection Handlers ----------------------------
+
 inline fn handle_h2_pipe_ingress<Stage, B>(
     server:     HttpServer&,
     client_ip:  const u8[:],
@@ -1675,6 +1691,8 @@ fn dispatch_server_request_with_stage<UserStage>(
     server.requests_processed++;
     return outcome;
 }
+
+// ---- 7. Socket Listener Loops, TLS & Page-Ring Execution --------------------
 
 // Probes buffered HTTP/1.1 wire bytes after `\r\n\r\n` (`hdr_end`) to check if the full request body has arrived.
 // Returns true immediately on header parse errors or smuggling conflicts so the main parser emits 400 Bad Request.
@@ -2417,9 +2435,7 @@ fn serve_tls(
     return total_served;
 }
 
-// ---------------------------------------------------------------------------
-// Hardware Virtual Memory Page Pipeline Handlers
-// ---------------------------------------------------------------------------
+// ---- 8. Page-Ring Zero-Copy & Static Mmap Transfers -------------------------
 
 // Incremental Sans-IO pipeline handler using hardware page-mirrored ring buffer (PageRingBuffer) and `<Stage>`.
 // Eliminates buffer wraparound splitting and memmove compaction during streaming request processing.

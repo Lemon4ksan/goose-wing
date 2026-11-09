@@ -135,7 +135,7 @@ fn protocol(res: const Response&) -> const u8[:] {
 }
 
 fn http_version(res: const Response&) -> HttpVersion {
-    return parse_http_version(res.protocol[..]);
+    return parse_http_version(protocol(res));
 }
 
 fn is_http3(res: const Response&) -> bool {
@@ -607,6 +607,9 @@ fn respond_no_content(res: Response&) {
     res.body.clear();
     let _ = remove_header(res, "Content-Type");
     let _ = remove_header(res, "Content-Length");
+    if res.is_http1() {
+        let _ = remove_header(res, "Transfer-Encoding");
+    }
 }
 
 // Populates a `404 Not Found` plain-text HTTP response.

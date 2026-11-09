@@ -112,20 +112,13 @@ inline fn is_empty(bf: const HeaderBloomFilter&) -> bool {
     return bf.bits[0] == 0 && bf.bits[1] == 0 && bf.bits[2] == 0 && bf.bits[3] == 0;
 }
 
-fn to_lower_ascii_byte(b: u8) -> u32 {
-    if b >= 'A' && b <= 'Z' {
-        return (b + 32);
-    }
-    return b;
-}
-
 fn bloom_hash(key: const u8[:]) -> u32 {
     let len = key.len;
     guard len >= 2 else { return 0; }
-    let b0 = to_lower_ascii_byte(key[0]);
-    let b1 = to_lower_ascii_byte(key[len - 1]);
-    let b2 = to_lower_ascii_byte(key[len - 2]);
-    let b3 = to_lower_ascii_byte(key[len >> 1]);
+    let b0 = core::to_lower_ascii_byte(key[0]) as u32;
+    let b1 = core::to_lower_ascii_byte(key[len - 1]) as u32;
+    let b2 = core::to_lower_ascii_byte(key[len - 2]) as u32;
+    let b3 = core::to_lower_ascii_byte(key[len >> 1]) as u32;
     let features: u32 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     return features * 1843993368;
 }

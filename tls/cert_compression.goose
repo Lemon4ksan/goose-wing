@@ -31,22 +31,16 @@ fn encode_compressed_certificate<B>(
         && msg.compressed_certificate_message.len <= (rfc::MAX_UNCOMPRESSED_CERT_SIZE as i64) else {
         return false;
     }
-    let comp_len = msg.compressed_certificate_message.len as u32;
     guard rfc::is_valid_compression_algorithm(msg.algorithm) else { return false; }
-    let needed = core::add_sat_i64(8, msg.compressed_certificate_message.len);
-    guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
 
-    out.push(((msg.algorithm >> 8) & 0xFF) as u8);
-    out.push((msg.algorithm & 0xFF) as u8);
-    out.push(((msg.uncompressed_length >> 16) & 0xFF) as u8);
-    out.push(((msg.uncompressed_length >> 8) & 0xFF) as u8);
-    out.push((msg.uncompressed_length & 0xFF) as u8);
+    var b = core::builder_init();
+    b.put_u16(msg.algorithm);
+    b.put_u24(msg.uncompressed_length);
     // RFC 8879 §4 / RFC 8446 §3.4: opaque compressed_certificate_message<1..2^24-1>
-    out.push(((comp_len >> 16) & 0xFF) as u8);
-    out.push(((comp_len >> 8) & 0xFF) as u8);
-    out.push((comp_len & 0xFF) as u8);
-    out.append(msg.compressed_certificate_message);
-    return true;
+    guard b.start_u24_prefix() else { return false; }
+    b.put_bytes(msg.compressed_certificate_message);
+    guard b.finish_u24_prefix() else { return false; }
+    return out.try_append(b.buf[..]);
 }
 
 // RFC 8879 Section 4: Compressed Certificate Handshake Message - Parser
@@ -58,24 +52,21 @@ fn parse_compressed_certificate_msg(
     raw: const u8[:],
     out: CompressedCertificate&,
 ) -> bool {
-    guard raw.len >= 8 else { return false; }
-
-    let algo = core::read_be_u16(raw, 0);
+    var c = core::cursor_from(raw);
+    let algo, ok_a = c.read_u16();
+    var ulen: u32 = 0;
+    let ok_u = c.get_u24(ulen);
+    let comp_cursor, ok_c = c.read_u24_sub_cursor();
+    guard ok_a && ok_u && ok_c && c.buf.len == 0 else { return false; }
     guard rfc::is_valid_compression_algorithm(algo) else { return false; }
-
-    let ulen = core::read_be_u24(raw, 2);
     guard ulen > 0 && ulen <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
 
-    let comp_len = core::read_be_u24(raw, 5);
-    guard comp_len >= 1 else { return false; }
-    guard (raw.len - 8) == comp_len else { return false; }
-
-    let comp_data = raw[8..8 + (comp_len as i64)];
-    guard rfc::is_within_decompression_ratio(ulen, comp_len) else { return false; }
+    let comp_len = comp_cursor.buf.len as u32;
+    guard comp_len >= 1 && rfc::is_within_decompression_ratio(ulen, comp_len) else { return false; }
 
     out.algorithm = algo;
     out.uncompressed_length = ulen;
-    out.compressed_certificate_message = comp_data;
+    out.compressed_certificate_message = comp_cursor.buf;
     return true;
 }
 

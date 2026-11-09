@@ -251,7 +251,7 @@ fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
 // RFC 9110 Section 5.6.2: Tokens - Validates an 8-byte SWAR chunk of tchar bytes.
 inline fn is_valid_token_word_swar(src: const u8[:], i: i64) -> bool {
     let w = core::read_le_u64(src, i);
-    guard !swar_has_ctl_or_del(w) && !swar_has_byte(w, ' ') && !swar_has_byte(w, ':') else {
+    guard !core::swar_has_ctl_or_del(w) && !core::swar_has_byte(w, ' ') && !core::swar_has_byte(w, ':') else {
         return false;
     }
     guard is_tchar(src[i]) && is_tchar(src[i + 1]) && is_tchar(src[i + 2]) && is_tchar(src[i + 3]) else {
@@ -505,26 +505,6 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
     return true;
 }
 
-// 64-bit SWAR zero byte check
-inline fn swar_has_zero_byte(w: u64) -> bool {
-    return ((w - 0x0101010101010101) & (~w) & 0x8080808080808080) != 0;
-}
-
-// 64-bit SWAR byte search
-inline fn swar_has_byte(w: u64, b: u8) -> bool {
-    let mask = 0x0101010101010101 * (b as u64);
-    return swar_has_zero_byte(w ^ mask);
-}
-
-// 64-bit SWAR control character check (< 0x20 or == 0x7F)
-inline fn swar_has_ctl_or_del(w: u64) -> bool {
-    // Check if any byte is < 0x20
-    let sub = w - 0x2020202020202020;
-    let has_under_20 = (sub & (~w) & 0x8080808080808080) != 0;
-    let has_del = swar_has_byte(w, 0x7F);
-    return has_under_20 || has_del;
-}
-
 // Fast header name hash (FNV-1a 32-bit case-folded)
 fn hash_header_name(name: const u8[:]) -> u32 {
     var h: u32 = core::FNV1A_32_OFFSET;
@@ -603,7 +583,7 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     var i: i64 = 0;
     while i + 8 <= src.len {
         let w = core::read_le_u64(src, i);
-        if swar_has_ctl_or_del(w) || swar_has_byte(w, '\r') || swar_has_byte(w, '\n') {
+        if core::swar_has_ctl_or_del(w) || core::swar_has_byte(w, '\r') || core::swar_has_byte(w, '\n') {
             break;
         }
         i += 8;

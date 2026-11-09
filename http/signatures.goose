@@ -306,10 +306,10 @@ fn build_response_signature_base<B>(
 
 // Default in-memory key wrapper for UFCS `<Signer>` and `<Verifier>` injection.
 struct MemoryKeySigner {
-    key: u8[..64] = [],
+    key: u8[..1024] = [],
 }
 
-// Constructs a `MemoryKeySigner` with bounded key material (`<= 64` bytes).
+// Constructs a `MemoryKeySigner` with bounded key material (`<= 1024` bytes).
 fn new_memory_key_signer(raw_key: const u8[:]) -> MemoryKeySigner, bool {
     var s = MemoryKeySigner { .. };
     guard raw_key.len > 0 && s.key.try_set(raw_key) else {
@@ -407,21 +407,6 @@ fn verify_message(
 ) -> bool {
     guard signer.key.len > 0 else { return false; }
     return verify_crypto_signature(alg, signer.key[..], tbs, received_sig);
-}
-
-fn compute_signature_b64(
-    alg:        const u8[:],
-    secret_key: const u8[:],
-    sig_base:   const u8[:],
-    out:        u8[..1024]&,
-) -> bool {
-    var raw_sig: u8[..512] = [];
-    guard compute_raw_signature(alg, secret_key, sig_base, raw_sig) else {
-        out.clear();
-        return false;
-    }
-    core::base64_encode(raw_sig[..], out);
-    return true;
 }
 
 fn verify_crypto_signature(
@@ -560,16 +545,10 @@ fn sign_http_request(
     params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
-    var sig_base: u8[..2048] = [];
-    guard build_signature_base(req, params, sig_base) else {
-        return false;
-    }
-
-    var b64_sig: u8[..1024] = [];
-    guard compute_signature_b64(params.alg[..], secret_key, sig_base[..], b64_sig) else { return false; }
-
-    attach_request_signature_headers(req, params, b64_sig[..]);
-    return true;
+    var signer, ok_s = new_memory_key_signer(secret_key);
+    guard ok_s else { return false; }
+    defer clear_memory_key_signer(signer);
+    return sign_http_request_with(req, params, signer);
 }
 
 fn verify_signature_input_label(
@@ -669,18 +648,10 @@ fn verify_http_signature(
     key_bytes: const u8[:],
     now_sec:   i64 = 0,
 ) -> bool {
-    guard label == params.label else { return false; }
-    guard validate_signature_timestamps(params, now_sec) else { return false; }
-
-    var sig_base: u8[..2048] = [];
-    guard build_signature_base(req, params, sig_base) else { return false; }
-
-    var received_sig: u8[..512] = [];
-    guard validate_and_decode_signature_headers(req.headers, label, params, received_sig) else {
-        return false;
-    }
-
-    return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
+    var verifier, ok_v = new_memory_key_signer(key_bytes);
+    guard ok_v else { return false; }
+    defer clear_memory_key_signer(verifier);
+    return verify_http_signature_with(req, label, params, verifier, now_sec);
 }
 
 // ---- Response Signing & Verification -------------------------------------
@@ -715,16 +686,10 @@ fn sign_http_response(
     params:     const HttpSignatureParams&,
     secret_key: const u8[:],
 ) -> bool {
-    var sig_base: u8[..2048] = [];
-    guard build_response_signature_base(res, req, params, sig_base) else {
-        return false;
-    }
-
-    var b64_sig: u8[..1024] = [];
-    guard compute_signature_b64(params.alg[..], secret_key, sig_base[..], b64_sig) else { return false; }
-
-    attach_response_signature_headers(res, params, b64_sig[..]);
-    return true;
+    var signer, ok_s = new_memory_key_signer(secret_key);
+    guard ok_s else { return false; }
+    defer clear_memory_key_signer(signer);
+    return sign_http_response_with(res, req, params, signer);
 }
 
 // Verifies an RFC 9421 signature on a Response using an injected UFCS `<Verifier>`.
@@ -759,18 +724,10 @@ fn verify_http_response_signature(
     key_bytes: const u8[:],
     now_sec:   i64 = 0,
 ) -> bool {
-    guard label == params.label else { return false; }
-    guard validate_signature_timestamps(params, now_sec) else { return false; }
-
-    var sig_base: u8[..2048] = [];
-    guard build_response_signature_base(res, req, params, sig_base) else { return false; }
-
-    var received_sig: u8[..512] = [];
-    guard validate_and_decode_signature_headers(res.headers, label, params, received_sig) else {
-        return false;
-    }
-
-    return verify_crypto_signature(params.alg[..], key_bytes, sig_base[..], received_sig[..]);
+    var verifier, ok_v = new_memory_key_signer(key_bytes);
+    guard ok_v else { return false; }
+    defer clear_memory_key_signer(verifier);
+    return verify_http_response_signature_with(res, req, label, params, verifier, now_sec);
 }
 
 // ---- High-Level Convenience Helpers --------------------------------------

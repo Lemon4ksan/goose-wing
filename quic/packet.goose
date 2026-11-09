@@ -9,7 +9,7 @@ namespace internal;
 import std;
 import core from "..";
 
-// ---- initial salts and HKDF label prefixes (RFC 9001 §5.2, RFC 9369 §3.3) --
+// ---- Initial Salts & HKDF Label Prefixes (RFC 9001 §5.2, RFC 9369 §3.3) --
 
 // Selects the Initial salt for a QUIC version; empty for unknown versions.
 //
@@ -30,7 +30,7 @@ fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
     return "";
 }
 
-// ---- variable-length integer codec (rfc 9000 section 16) ----------------
+// ---- Variable-Length Integer Codec (RFC 9000 Section 16) -----------------
 
 // Returns the wire byte length (1, 2, 4, or 8) of a QUIC Variable-Length Integer from its first byte.
 inline fn quic_varint_len(first_byte: u8) -> u8 {
@@ -134,7 +134,7 @@ inline fn quic_is_server_stream(id: u64) -> bool { return (id & 0x01) != 0; }
 inline fn quic_is_bidi_stream(id: u64) -> bool { return (id & 0x02) == 0; }
 inline fn quic_is_uni_stream(id: u64) -> bool { return (id & 0x02) != 0; }
 
-// ---- packet header parsing & formatting (rfc 9000 section 17) ------------
+// ---- Packet Header Parsing & Formatting (RFC 9000 Section 17) ------------
 
 enum QuicHeaderType {
     Initial,
@@ -504,7 +504,7 @@ fn encode_stateless_reset_packet<B>(
     return true;
 }
 
-// ---- header protection (aes / chacha20) (rfc 9001 section 5.4) -----------
+// ---- Header Protection (AES / ChaCha20) (RFC 9001 Section 5.4) -----------
 
 // Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
 fn aes128_header_protect_mask(hp_key: const u8[16]&, sample: const u8[16]&) -> u8[5] {
@@ -714,7 +714,7 @@ fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) ->
     return pn;
 }
 
-// ---- path state and anti-amplification 3x limit (rfc 9000 section 8.1) ---
+// ---- Path State & Anti-Amplification 3x Limit (RFC 9000 Section 8.1) -----
 
 struct PathState {
     remote_ip:      u8[16] = [0; 16],
@@ -761,7 +761,7 @@ fn validate_path(path: PathState&) {
     path.is_validated = true;
 }
 
-// ---- stream / crypto interval reassembly buffer --------------------------
+// ---- Stream & Crypto Interval Reassembly Buffer --------------------------
 
 struct Interval {
     start: u64 = 0,
@@ -967,60 +967,4 @@ fn read_contiguous<B>(buf: ReassemblyBuffer&, out: B&, max_bytes: i64 = -1) -> u
 
     arena_consume_front(buf.arena, take_bytes);
     return take_bytes as u64;
-}
-
-// ---- unreliable datagram extension (rfc 9221) ----------------------------
-
-// Encodes an RFC 9221 QUIC DATAGRAM frame into buffer.
-// If with_length is true (default), encodes frame type 0x31 with VarInt length prefix.
-// If with_length is false, encodes frame type 0x30 consuming remainder of packet.
-fn encode_quic_datagram_frame<B>(out: B&, payload: const u8[:], with_length: bool = true) -> bool {
-    let orig_len = out.len;
-    var committed = false;
-    defer if !committed { out.resize(orig_len, 0); };
-
-    if with_length {
-        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN)
-            && quic_encode_varint(out, payload.len as u64) else {
-            return false;
-        }
-    } else {
-        guard quic_encode_varint(out, rfc::QUIC_FRAME_DATAGRAM) else { return false; }
-    }
-    guard out.try_append(payload) else { return false; }
-    committed = true;
-    return true;
-}
-
-// Decodes an RFC 9221 QUIC DATAGRAM frame from wire slice.
-//
-// Example:
-//   src = [0x31, 0x04, 't', 'e', 's', 't'], offset = 0
-//   returns: payload = "test", next_offset = 6, ok = true
-fn decode_quic_datagram_frame(
-    src:        const u8[:],
-    offset:     u64,
-    packet_end: u64 = 0,
-) -> const u8[:], u64, bool {
-    let total_len = src.len as u64;
-    guard offset < total_len else { return "", offset, false; }
-    if packet_end > 0 {
-        guard packet_end <= total_len && offset < packet_end else { return "", offset, false; }
-    }
-    let limit = if packet_end > 0 { packet_end } else { total_len };
-    let ftype, off1, ok1 = quic_decode_varint(src, offset);
-    guard ok1 && off1 <= limit else { return "", offset, false; }
-
-    if ftype == rfc::QUIC_FRAME_DATAGRAM {
-        guard off1 <= limit else { return "", offset, false; }
-        return src[(off1 as i64)..(limit as i64)], limit, true;
-    } else if ftype == rfc::QUIC_FRAME_DATAGRAM_LEN {
-        let dlen, off2, ok2 = quic_decode_varint(src, off1);
-        guard ok2 else { return "", offset, false; }
-        guard 0xFFFFFFFFFFFFFFFF - off2 >= dlen else { return "", offset, false; }
-        let eff_end = off2 + dlen;
-        guard eff_end <= limit else { return "", offset, false; }
-        return src[(off2 as i64)..(eff_end as i64)], eff_end, true;
-    }
-    return "", offset, false;
 }

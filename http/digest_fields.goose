@@ -97,6 +97,28 @@ fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> 
     return true;
 }
 
+// Computes and attaches RFC 9530 Content-Digest, Repr-Digest, and Want-*-Digest headers to Request.
+fn apply_request_digest_headers(
+    req:             Request&,
+    alg:             const u8[:],
+    include_repr:    bool,
+    want_algorithms: const u8[:] = "sha-256=10",
+) -> bool {
+    guard set_content_digest(req, alg) else { return false; }
+    if include_repr {
+        guard set_repr_digest(req, alg) else { return false; }
+    }
+    if want_algorithms.len > 0 {
+        set_want_content_digest(req, want_algorithms);
+        set_want_repr_digest(req, want_algorithms);
+    }
+    return true;
+}
+
+fn apply_request_digest_headers(req: Request&, alg: const u8[:] = "sha-256") -> bool {
+    return apply_request_digest_headers(req, alg, true, "sha-256=10");
+}
+
 // ---- Verification Logic --------------------------------------------------
 
 fn check_digest_match(expected_b64: const u8[:], alg: const u8[:], data: const u8[:]) -> bool {
@@ -167,6 +189,32 @@ fn verify_response_repr_digest(res: const Response&) -> bool {
     let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_REPR_DIGEST) };
     guard hdr.len > 0 else { return false; }
     return verify_digest_field(hdr, res.body[..]);
+}
+
+// Verifies request Repr-Digest if present and attaches Response Content-Digest when requested via Want-*-Digest.
+fn apply_response_digest_if_wanted(
+    req:         const Request&,
+    res:         Response&,
+    default_alg: const u8[:],
+) -> bool {
+    if req.header(rfc::HEADER_REPR_DIGEST).len > 0 {
+        guard verify_request_repr_digest(req) else { return false; }
+    }
+    let want_cd = req.header(rfc::HEADER_WANT_CONTENT_DIGEST);
+    let want_rd = req.header(rfc::HEADER_WANT_REPR_DIGEST);
+    if want_cd.len == 0 && want_rd.len == 0 {
+        return true;
+    }
+    let alg = if want_cd.contains_fold(rfc::DIGEST_ALG_SHA512) || want_rd.contains_fold(rfc::DIGEST_ALG_SHA512) {
+        rfc::DIGEST_ALG_SHA512
+    } else {
+        default_alg
+    };
+    return set_response_content_digest(res, alg);
+}
+
+fn apply_response_digest_if_wanted(req: const Request&, res: Response&) -> bool {
+    return apply_response_digest_if_wanted(req, res, rfc::DIGEST_ALG_SHA256);
 }
 
 // ---- Incremental Streaming Digest Verification (RFC 9530) ----------------
@@ -353,4 +401,53 @@ fn pump_chunk_fsm_streaming<F>(
         }
     }
     return internal::ChunkFsmStatus.NeedMore, total_consumed;
+}
+
+// Decodes an HTTP/1.1 chunked body from wire bytes into `out_body` while verifying
+// the request's RFC 9530 Content-Digest or Repr-Digest header.
+fn verify_chunked_wire_digest<B>(
+    req:         const Request&,
+    wire_chunks: const u8[:],
+    out_body:    B&,
+    max_bytes:   i64,
+) -> bool {
+    out_body.clear();
+    var ver, ok_v = begin_request_streaming_digest(req);
+    guard ok_v else { return false; }
+
+    var dec_stream = internal::new_chunk_fsm_decoder();
+    var feed_ok = true;
+    let st_stream, consumed_stream = pump_chunk_fsm_streaming(dec_stream, wire_chunks) { chunk =>
+        if !update_streaming_digest(ver, chunk) {
+            feed_ok = false;
+        }
+    };
+    guard feed_ok && st_stream == internal::ChunkFsmStatus.Complete && consumed_stream == wire_chunks.len else {
+        return false;
+    }
+    guard finish_streaming_digest(ver) else { return false; }
+
+    var dec = internal::new_chunk_fsm_decoder();
+    var hsink = new_hashing_sink(ArenaSink { max_bytes: max_bytes });
+    let st, consumed = pump_chunk_fsm(dec, wire_chunks, hsink, out_body);
+    guard st == internal::ChunkFsmStatus.Complete && consumed == wire_chunks.len else {
+        out_body.clear();
+        return false;
+    }
+    let sink_hash = finish_hashing_sink(hsink);
+    if ver.algo == StreamingDigestAlgo.Sha256 {
+        guard core::ct_eq_bytes(sink_hash[..], ver.expected_hash[..]) else {
+            out_body.clear();
+            return false;
+        }
+    }
+    return true;
+}
+
+fn verify_chunked_wire_digest<B>(
+    req:         const Request&,
+    wire_chunks: const u8[:],
+    out_body:    B&,
+) -> bool {
+    return verify_chunked_wire_digest(req, wire_chunks, out_body, 16777216);
 }

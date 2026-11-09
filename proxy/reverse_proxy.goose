@@ -23,7 +23,10 @@ import client.session.h1_exchange;
 import proxy.gcra;
 import proxy.load_balancer;
 import proxy.health_check;
+import rfc.http;
 import wire.h1;
+import wire.pipeline;
+import wire.service;
 
 const PROXY_TARGET_NONE: i32 = -1;
 
@@ -973,4 +976,155 @@ fn execute_proxy_exchange(
     }
     complete_upstream_exchange(proxy, target_idx, out_resp.status_code, ok_ex);
     return ok_ex;
+}
+
+// ---- Resilient Upstream Proxy Service Layer (`wire/service.goose` Integration) ----
+
+// Zero-allocation upstream proxy service stage binding `ReverseProxy` and `StreamPool` to `wire::exchange`.
+struct UpstreamProxyService {
+    proxy:      ReverseProxy = ReverseProxy { .. },
+    pool:       StreamPool   = StreamPool { .. },
+    client_ip:  u8[..64]     = [],
+    proto:      u8[..8]      = "http",
+    timeout_ms: u32          = 5000,
+    now_ns:     u64          = 0,
+}
+
+// Outer request-hygiene guard stage composed via `wire::stack_service` ahead of resilience layers.
+struct ProxyRequestGuard {
+    require_consistent_framing: bool = true,
+}
+
+// Validates framing consistency before entering the upstream retry/singleflight/breaker stack.
+fn exchange(stage: const ProxyRequestGuard&, req: const Request&, res: Response&) -> wire::StageVerdict {
+    if stage.require_consistent_framing && !has_consistent_framing_headers(req.headers) {
+        res.status_code = rfc::STATUS_BAD_REQUEST;
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_BAD_REQUEST as u16 };
+    }
+    return wire::StageVerdict.Continue;
+}
+
+// Returns true when `req` uses an idempotent HTTP method eligible for retry (RFC 9110 Section 9.2.2).
+inline fn is_retryable_request(req: const Request&) -> bool {
+    return rfc::is_idempotent_method(req.method[..]);
+}
+
+// Returns the canonical service routing and singleflight key for an HTTP `Request`.
+inline fn service_key(req: const Request&) -> const u8[:] {
+    if req.url.len > 0 {
+        return req.url[..];
+    }
+    return req.header("Host");
+}
+
+// Evaluates GCRA rate-limit allowance for `key` at `now_ns` (UFCS hook for `wire::RateLimitService`).
+fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64) -> bool {
+    guard key.len > 0 && now_ns > 0 else { return true; }
+    let dec = check_gateway_rate_limit(limiter, key, 1, now_ns);
+    return dec.allowed;
+}
+
+// Executes a single upstream proxy attempt and maps transport or 502/503 failures to `StageVerdict.Abort`.
+fn exchange(svc: UpstreamProxyService&, req: const Request&, res: Response&) -> wire::StageVerdict {
+    let ok = execute_proxy_exchange(
+        svc.proxy,
+        svc.pool,
+        req.method[..],
+        req.url[..],
+        req.headers,
+        svc.client_ip[..],
+        svc.proto[..],
+        req.body[..],
+        res,
+        svc.timeout_ms,
+        svc.now_ns,
+    );
+    guard ok else {
+        if res.status_code == 0 {
+            res.status_code = rfc::STATUS_BAD_GATEWAY;
+        }
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+    }
+    if res.status_code == rfc::STATUS_BAD_GATEWAY || res.status_code == rfc::STATUS_SERVICE_UNAVAILABLE {
+        return wire::StageVerdict.Abort { err_code: res.status_code };
+    }
+    return wire::StageVerdict.Continue;
+}
+
+// Executes an HTTP `Request` through the full zero-allocation `wire/service.goose` resilience stack
+// (request framing guard, GCRA rate limiter, token-bucket retry, circuit breaker, and singleflight).
+fn execute_resilient_proxy_exchange(
+    proxy:        ReverseProxy&,
+    pool:         StreamPool&,
+    req:          const Request&,
+    client_ip:    const u8[:],
+    proto:        const u8[:],
+    out_resp:     Response&,
+    max_attempts: i32 = 3,
+    timeout_ms:   u32 = 5000,
+    now_ns:       u64 = 0,
+) -> wire::StageVerdict {
+    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
+    var base = UpstreamProxyService {
+        proxy:      proxy,
+        pool:       pool,
+        timeout_ms: timeout_ms,
+        now_ns:     effective_now,
+        ..
+    };
+    let _ = base.client_ip.try_set(client_ip);
+    let _ = base.proto.try_set(if proto.len > 0 { proto } else { "http" });
+
+    var sf_svc = wire::new_singleflight_service(base);
+    let fail_thresh = max(proxy.health_checker.config.unhealthy_threshold, 1);
+    let cooldown_ms = max(proxy.health_checker.config.interval_ms, 1000);
+    var cb_svc = wire::new_circuit_breaker_service(sf_svc, fail_thresh, cooldown_ms);
+    if !proxy.cluster.circuit_open {
+        wire::reset_breaker(cb_svc);
+    }
+    wire::advance_breaker_clock(cb_svc, effective_now >> 20);
+
+    var retry_svc = wire::new_retry_service(cb_svc, max_attempts);
+    var rl_svc = wire::new_rate_limit_service(retry_svc, proxy.rate_limiter, effective_now);
+    var pipeline = wire::stack_service(ProxyRequestGuard { .. }, rl_svc);
+    let verdict = pipeline.exchange(req, out_resp);
+
+    proxy = pipeline.inner.inner.inner.inner.inner.proxy;
+    pool = pipeline.inner.inner.inner.inner.inner.pool;
+    if proxy.config.enable_rate_limiting {
+        proxy.rate_limiter = pipeline.inner.limiter;
+    }
+    return verdict;
+}
+
+// Convenience overload building a `Request` from raw components and invoking `execute_resilient_proxy_exchange`.
+fn execute_resilient_proxy_exchange(
+    proxy:        ReverseProxy&,
+    pool:         StreamPool&,
+    method:       const u8[:],
+    uri:          const u8[:],
+    in_headers:   const HeaderMap&,
+    client_ip:    const u8[:],
+    proto:        const u8[:],
+    body:         const u8[:],
+    out_resp:     Response&,
+    max_attempts: i32 = 3,
+    timeout_ms:   u32 = 5000,
+    now_ns:       u64 = 0,
+) -> bool {
+    var req = new_request(method, uri);
+    req.headers = in_headers;
+    guard req.body.try_set(body) else { return false; }
+    let verdict = execute_resilient_proxy_exchange(
+        proxy,
+        pool,
+        req,
+        client_ip,
+        proto,
+        out_resp,
+        max_attempts,
+        timeout_ms,
+        now_ns,
+    );
+    return verdict == wire::StageVerdict.Continue;
 }

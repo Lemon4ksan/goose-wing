@@ -304,6 +304,30 @@ fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool 
     return wire[36..], true;
 }
 
+// RFC 9842 Section 4 & Section 5: Verifies the 4-byte DCZ (`\xFFDCZ`) or DCB (`\xFFDCB`) magic header
+// and validates that the 32-byte SHA-256 dictionary hash matches `expected_hash` in constant time.
+//
+// Example:
+//   wire = [0xFF, 'D', 'C', 'Z', ...32-byte expected_hash..., ...payload...], is_dcz = true
+//   returns: payload slice, ok = true
+fn verify_dcz_dcb_magic(wire: const u8[:], is_dcz: bool, expected_hash: const u8[32]&) -> const u8[:], bool {
+    var actual_hash: u8[32] = [0; 32];
+    if is_dcz {
+        let payload, ok = decode_dcz_header(wire, actual_hash);
+        guard ok else { return wire[..0], false; }
+        guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
+            return wire[..0], false;
+        }
+        return payload, true;
+    }
+    let payload, ok = decode_dcb_header(wire, actual_hash);
+    guard ok else { return wire[..0], false; }
+    guard core::ct_eq_bytes(actual_hash[..], expected_hash[..]) else {
+        return wire[..0], false;
+    }
+    return payload, true;
+}
+
 // ---- Dictionary Cache Operations -----------------------------------------
 
 fn find_matching_dict_entry_index(
@@ -417,6 +441,28 @@ fn dict_entry_matches_request(
     return url_path_matches_pattern(url_path, entry.match_pattern[..]);
 }
 
+fn find_best_matching_dict_idx(
+    dict_cache: const DictionaryCache&,
+    origin_buf: const u8[:],
+    curr_path:  const u8[:],
+    now_sec:    i64,
+) -> i64 {
+    var best_idx:  i64 = -1;
+    var best_len:  i64 = -1;
+    var best_time: i64 = -1;
+    for &entry, idx in dict_cache.entries {
+        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
+            let pat_len = entry.match_pattern.len;
+            if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
+                best_idx = idx;
+                best_len = pat_len;
+                best_time = entry.inserted_at_sec;
+            }
+        }
+    }
+    return best_idx;
+}
+
 // Queries dictionary cache for a matching entry for outgoing request
 fn dictionary_lookup_for_request(
     cache:           const DictionaryCache&,
@@ -425,20 +471,7 @@ fn dictionary_lookup_for_request(
     now_sec:         i64,
     out_base64_hash: u8[..64]&,
 ) -> bool {
-    var best_idx:  i64 = -1;
-    var best_len:  i64 = -1;
-    var best_time: i64 = -1;
-    for i in cache.entries.len {
-        let entry = &cache.entries[i];
-        if dict_entry_matches_request(entry, origin, url_path, now_sec) {
-            let pat_len = entry.match_pattern.len;
-            if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
-                best_idx = i;
-                best_len = pat_len;
-                best_time = entry.inserted_at_sec;
-            }
-        }
-    }
+    let best_idx = find_best_matching_dict_idx(cache, origin, url_path, now_sec);
     if best_idx >= 0 && best_idx < cache.entries.len {
         return out_base64_hash.try_set(cache.entries[best_idx].sha256_base64[..]);
     }

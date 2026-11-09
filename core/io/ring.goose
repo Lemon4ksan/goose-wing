@@ -114,8 +114,7 @@ fn write(rb: RingBuffer&, src: const u8[:]) -> i64, IoError {
         let src_idx = core::add_sat_i64(first_chunk, i);
         rb.storage[i] = src[src_idx];
     }
-    rb.tail = core::add_sat_i64(rb.tail, to_write) & 4095;
-    rb.count = core::add_sat_i64(rb.count, to_write);
+    let _ = commit_written(rb, to_write);
     return to_write, if to_write < src.len { IoError.ShortWrite } else { IoError.None };
 }
 
@@ -127,44 +126,26 @@ fn read(rb: RingBuffer&, dst: u8[:]) -> i64, IoError {
     if is_empty(rb) {
         return 0, IoError.Eof;
     }
-    let to_read = min(dst.len, rb.count);
-    let first_chunk = min(core::sub_sat_i64(4096, rb.head), to_read);
-    for i in first_chunk {
-        let src_idx = core::add_sat_i64(rb.head, i);
-        dst[i] = rb.storage[src_idx];
-    }
-    let second_chunk = core::sub_sat_i64(to_read, first_chunk);
-    for i in second_chunk {
-        let dst_idx = core::add_sat_i64(first_chunk, i);
-        dst[dst_idx] = rb.storage[i];
-    }
-    rb.head = core::add_sat_i64(rb.head, to_read) & 4095;
-    rb.count = core::sub_sat_i64(rb.count, to_read);
-    if rb.count == 0 {
-        rb.head = 0;
-        rb.tail = 0;
-    }
+    let to_read = peek(rb, dst);
+    let _ = discard(rb, to_read);
     return to_read, IoError.None;
 }
 
 // Peeks at bytes without advancing head.
 fn peek(rb: const RingBuffer&, dst: u8[:]) -> i64 {
-    guard dst.len > 0 else { return 0; }
-    if is_empty(rb) {
-        return 0;
-    }
-    let to_peek = min(dst.len, rb.count);
-    let first_chunk = min(core::sub_sat_i64(4096, rb.head), to_peek);
+    guard dst.len > 0 && !is_empty(rb) else { return 0; }
+    let s1, s2 = read_slices(rb);
+    let first_chunk = min(s1.len, dst.len);
     for i in first_chunk {
-        let src_idx = core::add_sat_i64(rb.head, i);
-        dst[i] = rb.storage[src_idx];
+        dst[i] = s1[i];
     }
-    let second_chunk = core::sub_sat_i64(to_peek, first_chunk);
+    let rem = core::sub_sat_i64(dst.len, first_chunk);
+    let second_chunk = min(s2.len, rem);
     for i in second_chunk {
         let dst_idx = core::add_sat_i64(first_chunk, i);
-        dst[dst_idx] = rb.storage[i];
+        dst[dst_idx] = s2[i];
     }
-    return to_peek;
+    return core::add_sat_i64(first_chunk, second_chunk);
 }
 
 // Discards n bytes from the front of the ring buffer.

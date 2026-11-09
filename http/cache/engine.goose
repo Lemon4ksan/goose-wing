@@ -306,6 +306,42 @@ fn release_with_status(writers: CacheWriters&, hash: u64, status: CacheLockStatu
     }
 }
 
+fn find_active_writer_flight(writers: const CacheWriters&, key: const u8[:]) -> i64 {
+    for &flight, idx in writers.flights {
+        if flight.is_active && flight.key[..] == key {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+fn finalize_inflight_cache_writer(
+    writers:             CacheWriters&,
+    method:              const u8[:],
+    url:                 const u8[:],
+    stored_or_freshened: bool,
+    status_code:         i32,
+) {
+    guard method.eq_ascii_fold("GET") || method.eq_ascii_fold("HEAD") else { return; }
+    let flight_idx = find_active_writer_flight(writers, url);
+    if flight_idx >= 0 {
+        if stored_or_freshened {
+            writers.finish_writer(flight_idx);
+        } else {
+            writers.abort_writer(flight_idx);
+        }
+    }
+    let is_5xx = status_code >= 500 && status_code < 600;
+    let lock_status = if is_5xx && !stored_or_freshened {
+        CacheLockStatus.TransientError
+    } else if stored_or_freshened {
+        CacheLockStatus.Done
+    } else {
+        CacheLockStatus.GiveUp
+    };
+    writers.release_with_status(hash_fnv1a(url), lock_status);
+}
+
 // ---- http cache engine container -------------------------------------------
 
 // HTTP cache coordinator with intrusive O(1) LRU list.
@@ -596,7 +632,7 @@ fn lookup(
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
     guard is_get || is_head else {
-        cache.total_misses++;
+        cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
@@ -607,7 +643,7 @@ fn lookup(
     );
 
     if req_cc.is_no_store() {
-        cache.total_misses++;
+        cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
@@ -616,12 +652,14 @@ fn lookup(
     let matched_idx = find_matching_entry(cache.entries[..], req.url[..], req_hash, req.headers, is_get);
 
     if matched_idx < 0 {
-        cache.total_misses++;
+        cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
         if req_cc.is_only_if_cached() {
             dec.kind = LookupResultKind.Fail504;
             dec.status_code = 504;
             return dec;
         }
+        let _, _ = cache.writers.start_writer_or_join(req.url[..]);
+        let _ = cache.writers.acquire(req_hash);
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
@@ -640,11 +678,13 @@ fn lookup(
         cur_mono,
     );
     if eval_dec.kind == LookupResultKind.Hit {
-        cache.total_hits++;
+        cache.total_hits = core::add_sat_i64(cache.total_hits, 1);
     } else if eval_dec.kind == LookupResultKind.Revalidate {
-        cache.total_revalidations++;
+        cache.total_revalidations = core::add_sat_i64(cache.total_revalidations, 1);
+        let _, _ = cache.writers.start_writer_or_join(req.url[..]);
+        let _ = cache.writers.acquire(req_hash);
     } else {
-        cache.total_misses++;
+        cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
     }
     return eval_dec;
 }
@@ -835,6 +875,14 @@ fn on_response(
     revalidate_entry_idx: i64 = -1,
 ) -> ResponseDecision {
     var dec = ResponseDecision { response: copy(resp), .. };
+    var writer_stored = false;
+    defer finalize_inflight_cache_writer(
+        cache.writers,
+        req.method[..],
+        req.url[..],
+        writer_stored,
+        resp.status_code,
+    );
 
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
@@ -849,7 +897,9 @@ fn on_response(
     }
 
     if resp.status_code == 304 {
-        return cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req.headers);
+        dec = cache.freshen_cached_entry_304(revalidate_entry_idx, resp, ts, req.headers);
+        writer_stored = dec.kind == ResponseDecisionKind.FreshenAndReturn;
+        return dec;
     }
 
     // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error (500, 502, 503, 504)
@@ -891,6 +941,7 @@ fn on_response(
                 FreshnessPolicy { shared: cache.options.shared, security_zeroed: entry.security_zeroed },
             );
             if can_stale_err {
+                writer_stored = true;
                 dec.kind = ResponseDecisionKind.FreshenAndReturn;
                 dec.entry_idx = revalidate_entry_idx;
                 entry.entry_to_response(ts.response_time, dec.response);
@@ -993,6 +1044,7 @@ fn on_response(
     var cs_store_buf: u8[..256] = [];
     format_cache_status(cs_store, cs_store_buf);
     dec.response.set_header("Cache-Status", cs_store_buf[..]);
+    writer_stored = true;
     dec.kind = ResponseDecisionKind.StoreAndReturn;
     dec.entry_idx = store_idx;
     return dec;
@@ -1304,4 +1356,37 @@ fn store_response(
     entry.method.append(req.method[..]);
     entry.body.append(resp.body[..]);
     return upsert_scalable_cache_entry(cache, entry, req.headers);
+}
+
+// Coordinates post-network response caching on `ScalableHttpCache` (compatible with `stage_client_cache_store<Cache>`).
+fn on_response(
+    cache:                ScalableHttpCache&,
+    req:                  const Request&,
+    resp:                 const Response&,
+    ts:                   const CacheTimestamps&,
+    revalidate_entry_idx: i64 = -1,
+) -> ResponseDecision {
+    var dec = ResponseDecision { response: copy(resp), .. };
+    if cache.max_entries <= 0 || cache.max_body_cap <= 0 {
+        init_scalable_http_cache(cache, cache.max_entries, cache.max_body_cap);
+    }
+    if resp.status_code == 304 && revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len {
+        let entry .= cache.entries[revalidate_entry_idx];
+        if entry.is_valid && !entry.security_zeroed {
+            let resp_304_headers = resp.response_headers_to_map();
+            entry.headers.merge_cached_headers_304(resp_304_headers);
+            entry.timestamps = ts;
+            populate_entry_validators(entry);
+            touch_scalable_lru(cache, revalidate_entry_idx as i32);
+            entry.entry_to_response(ts.response_time, dec.response);
+            dec.kind = ResponseDecisionKind.FreshenAndReturn;
+            dec.entry_idx = revalidate_entry_idx;
+            return dec;
+        }
+    }
+    if cache.store_response(req, resp, ts.response_time) {
+        dec.kind = ResponseDecisionKind.StoreAndReturn;
+        dec.entry_idx = cache.lru_tail;
+    }
+    return dec;
 }

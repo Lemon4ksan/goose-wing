@@ -637,7 +637,7 @@ fn dispatch_pooled_h1_hop(
     ingest_transport_response_headers(
         session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
     );
-    if keep_alive && resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
+    if keep_alive && resp.is_http1() && resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
         session.pool.release_connection(conn_id, now_ns);
         released = true;
     }
@@ -1244,7 +1244,7 @@ fn execute_live_h3_hop(
     var peer_ip4:  u32      = 0;
     var peer_port: u16      = 0;
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
-    let recvd = native_udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
+    let recvd = udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
     guard recvd > 0 else { return false; }
 
     let h_err = internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
@@ -1696,7 +1696,14 @@ inline fn record_client_har_telemetry(
     entry.started_iso8601.try_set("2026-01-01T00:00:00.000Z");
     entry.method.try_set(req.method[..]);
     entry.url.try_set(req.url[..]);
-    entry.http_version.try_set("HTTP/1.1");
+    let har_ver = if resp.is_http3() {
+        "HTTP/3"
+    } else if resp.is_http1() || protocol(resp).len == 0 {
+        "HTTP/1.1"
+    } else {
+        protocol(resp)
+    };
+    entry.http_version.try_set(har_ver);
     session.last_har_json.clear();
     serialize_har_entry_json(entry, session.last_har_json);
 }

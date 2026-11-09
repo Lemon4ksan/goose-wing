@@ -146,12 +146,20 @@ fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
     guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && data.len > 0 else { return 0; }
     let slot .= g_virtual_pipes[idx];
     guard slot.in_use && !slot.closed_a && !slot.closed_b else { return -1; }
+    var rb .= slot.a_to_b;
     if is_b_end {
-        let written, _ = core::write(slot.b_to_a, data);
-        guard written > 0 else { return -1; }
-        return (written & 0x7FFFFFFF) as i32;
+        rb .= slot.b_to_a;
     }
-    let written, _ = core::write(slot.a_to_b, data);
+    let span1, _ = core::write_slices(rb);
+    guard span1.len > 0 else { return -1; }
+    if data.len <= span1.len {
+        for i in data.len {
+            span1[i] = data[i];
+        }
+        guard core::commit_written(rb, data.len) == core::IoError.None else { return -1; }
+        return (data.len & 0x7FFFFFFF) as i32;
+    }
+    let written, _ = core::write(rb, data);
     guard written > 0 else { return -1; }
     return (written & 0x7FFFFFFF) as i32;
 }
@@ -161,13 +169,23 @@ fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
     guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && dst.len > 0 else { return 0; }
     let slot .= g_virtual_pipes[idx];
     guard slot.in_use else { return -1; }
+    var rb .= slot.b_to_a;
     if is_b_end {
         guard !slot.closed_b else { return 0; }
-        let n_read, _ = core::read(slot.a_to_b, dst);
-        return (n_read & 0x7FFFFFFF) as i32;
+        rb .= slot.a_to_b;
+    } else {
+        guard !slot.closed_a else { return 0; }
     }
-    guard !slot.closed_a else { return 0; }
-    let n_read, _ = core::read(slot.b_to_a, dst);
+    let readable = core::contiguous_readable_slice(rb);
+    guard readable.len > 0 else { return 0; }
+    if dst.len <= readable.len {
+        for i in dst.len {
+            dst[i] = readable[i];
+        }
+        let consumed = core::discard(rb, dst.len);
+        return (consumed & 0x7FFFFFFF) as i32;
+    }
+    let n_read, _ = core::read(rb, dst);
     return (n_read & 0x7FFFFFFF) as i32;
 }
 
@@ -285,7 +303,7 @@ fn recv_slice(t: Transport.Udp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard t.fd > 0 else { return 0; }
     var peer_ip4:  u32 = 0;
     var peer_port: u16 = 0;
-    return native_udp_recvfrom(t.fd, dst, timeout_ms, peer_ip4, peer_port);
+    return udp_recvfrom(t.fd, dst, timeout_ms, peer_ip4, peer_port);
 }
 
 fn recv_slice(t: Transport.Mock, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
