@@ -109,7 +109,7 @@ struct KeyStore {
 // Appends a KeySlot to the store if capacity permits and key_id is not already active.
 // Derives domain-separated signing and encryption subkeys via HKDF-SHA256.
 fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
-    guard store.keys.len < store.keys.cap else { return false; }
+    guard !slot.revoked && store.keys.len < store.keys.cap else { return false; }
     for idx in store.keys.len {
         if store.keys[idx].key_id == slot.key_id && !store.keys[idx].revoked {
             return false;
@@ -124,7 +124,9 @@ fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
         expires_at_sec: slot.expires_at_sec,
         revoked:        slot.revoked,
     };
-    return store.keys.try_push(derived);
+    let ok = store.keys.try_push(derived);
+    zeroize_jar_key_slot(derived);
+    return ok;
 }
 
 // Returns the currently active, non-revoked KeySlot.
@@ -374,9 +376,13 @@ fn open_binary_xchacha20<B>(
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack);
     guard core::xchacha20_poly1305_open(slot.encryption_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
+        core::secure_zeroize_slice(out_plaintext[..]);
+        out_plaintext.clear();
         return false;
     }
     guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
+        core::secure_zeroize_slice(out_plaintext[..]);
+        out_plaintext.clear();
         return false;
     }
     committed = true;
@@ -417,9 +423,13 @@ fn open_binary_hkdf_aes<B>(
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack);
     guard core::hkdf_aes256_gcm_open(slot.encryption_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
+        core::secure_zeroize_slice(out_plaintext[..]);
+        out_plaintext.clear();
         return false;
     }
     guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
+        core::secure_zeroize_slice(out_plaintext[..]);
+        out_plaintext.clear();
         return false;
     }
     committed = true;

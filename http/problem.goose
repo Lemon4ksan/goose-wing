@@ -167,3 +167,155 @@ fn respond_problem(
     let _ = prob.type_uri.try_set(type_uri);
     write_problem_response(res, prob);
 }
+
+// ---- RFC 9457 structured field validation problems -------------------------
+
+enum ValidationLocation {
+    Unknown,
+    Query,
+    Header,
+    PathParam,
+    Cookie,
+    Body,
+    Response,
+}
+
+// Returns the lowercase wire token for a validation error location.
+fn location_wire_name(loc: ValidationLocation) -> const u8[:] {
+    if loc == ValidationLocation.Query { return "query"; }
+    if loc == ValidationLocation.Header { return "header"; }
+    if loc == ValidationLocation.PathParam { return "path"; }
+    if loc == ValidationLocation.Cookie { return "cookie"; }
+    if loc == ValidationLocation.Body { return "body"; }
+    if loc == ValidationLocation.Response { return "response"; }
+    return "unknown";
+}
+
+struct FieldValidationError {
+    on:       ValidationLocation = ValidationLocation.Unknown,
+    property: u8[..64]           = [],
+    code:     u8[..32]           = [],
+    summary:  u8[..160]          = [],
+}
+
+struct ValidationProblem {
+    problem:     ProblemDetails             = ProblemDetails { status: 422, .. },
+    errors:      FieldValidationError[..16] = [],
+    abort_early: bool                       = false,
+    overflowed:  bool                       = false,
+}
+
+enum ValidationDetailMode {
+    Detailed,
+    Redacted,
+}
+
+// Appends a sanitized field-level validation failure to `vp.errors`.
+// Sets `vp.overflowed = true` and returns `false` if the bounded 16-entry error array is full.
+fn record_field_error(
+    vp:       ValidationProblem&,
+    on:       ValidationLocation,
+    property: const u8[:],
+    summary:  const u8[:],
+    code:     const u8[:] = "invalid_field",
+) -> bool {
+    var item = FieldValidationError { on: on, .. };
+    sanitize_untrusted_for_error(property, item.property);
+    let code_len = min(code.len, item.code.cap);
+    item.code.append(code[..code_len]);
+    let sum_len = min(summary.len, item.summary.cap);
+    item.summary.append(summary[..sum_len]);
+    guard vp.errors.try_push(item) else {
+        vp.overflowed = true;
+        return false;
+    }
+    return true;
+}
+
+// Evaluates predicate `ok`; when `false`, records a field error in `vp` and returns `false`.
+fn check_field(
+    vp:       ValidationProblem&,
+    ok:       bool,
+    on:       ValidationLocation,
+    property: const u8[:],
+    code:     const u8[:],
+    summary:  const u8[:],
+) -> bool {
+    if ok { return true; }
+    let _ = record_field_error(vp, on, property, summary, code);
+    return false;
+}
+
+// Returns `true` when zero field validation errors have been recorded and `vp` has not overflowed.
+fn is_valid_problem(vp: const ValidationProblem&) -> bool {
+    return vp.errors.len == 0 && !vp.overflowed;
+}
+
+// Serializes `vp` as an RFC 9457 JSON document with an `"errors"` extension member in `Detailed` mode,
+// or omits `"detail"` and `"errors"` in `Redacted` production mode.
+//
+// Example:
+//   vp = ValidationProblem { .. } (with 1 query error on "page")
+//   mode = ValidationDetailMode.Redacted
+//   out = {"type":"about:blank","status":422,"title":"Validation Failed"}
+fn serialize_validation_problem<B>(
+    vp:   const ValidationProblem&,
+    out:  B&,
+    mode: ValidationDetailMode = ValidationDetailMode.Detailed,
+) {
+    out.append("{\"type\":");
+    if vp.problem.type_uri.len > 0 {
+        core::format_json_string(out, vp.problem.type_uri[..]);
+    } else {
+        out.append("\"about:blank\"");
+    }
+    out.append(",\"status\":");
+    let st = if vp.problem.status > 0 { vp.problem.status } else { 422 };
+    st.format_i64_dec(out);
+    out.append(",\"title\":");
+    if vp.problem.title.len > 0 {
+        core::format_json_string(out, vp.problem.title[..]);
+    } else {
+        out.append("\"Validation Failed\"");
+    }
+    if mode == ValidationDetailMode.Detailed && vp.problem.detail.len > 0 {
+        out.append(",\"detail\":");
+        core::format_json_string(out, vp.problem.detail[..]);
+    }
+    if vp.problem.instance.len > 0 {
+        out.append(",\"instance\":");
+        core::format_json_string(out, vp.problem.instance[..]);
+    }
+    if mode == ValidationDetailMode.Detailed {
+        out.append(",\"errors\":[");
+        for &err, idx in vp.errors {
+            if idx > 0 { out.push(','); }
+            out.append("{\"on\":\"");
+            out.append(location_wire_name(err.on));
+            out.append("\",\"property\":");
+            core::format_json_string(out, err.property[..]);
+            out.append(",\"code\":");
+            core::format_json_string(out, err.code[..]);
+            out.append(",\"summary\":");
+            core::format_json_string(out, err.summary[..]);
+            out.push('}');
+        }
+        out.push(']');
+        if vp.overflowed {
+            out.append(",\"overflowed\":true");
+        }
+    }
+    out.push('}');
+}
+
+// Populates `res` in-place with an RFC 9457 `application/problem+json` validation error response.
+fn write_validation_problem_response(
+    res:  Response&,
+    vp:   const ValidationProblem&,
+    mode: ValidationDetailMode = ValidationDetailMode.Detailed,
+) {
+    res.status_code = if vp.problem.status > 0 { vp.problem.status } else { 422 };
+    set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
+    res.body.clear();
+    serialize_validation_problem(vp, res.body, mode);
+}

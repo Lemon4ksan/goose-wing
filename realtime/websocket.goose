@@ -446,8 +446,8 @@ fn check_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) -> WsHea
     if ws.timeout_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.timeout_slot) {
         return WsHeartbeatAction.CloseIdle;
     }
-    if !ws.close_received && ws.send_pings_automatically && ws.ping_slot != TICK_TIMER_DISARMED &&
-        tick_timer_is_expired(wheel, ws.ping_slot) {
+    if !ws.close_received && !ws.close_sent && ws.send_pings_automatically &&
+        ws.ping_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.ping_slot) {
         return WsHeartbeatAction.SendPing;
     }
     return WsHeartbeatAction.None;
@@ -1271,6 +1271,11 @@ fn consume_frame_view<B>(ws: WebSocketSession&, wire: u8[:], out_view: WsMessage
 // answers Close with Close echo, reassembles multi-frame fragmented messages (RFC 6455 §5.4),
 // validates strict UTF-8 on text and close frames, and populates out_msg upon message completion.
 fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply: B&) -> bool {
+    out_msg.is_valid = false;
+    out_msg.close_code = 0;
+    out_msg.close_reason.clear();
+    out_msg.data.clear();
+
     var view = WsMessageView { .. };
     let ok = receive_view(ws, wire, view, out_reply);
     guard ok else { return false; }
@@ -1352,7 +1357,8 @@ fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
     var reply:  u8[..1024] = [];
     while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
         reply.clear();
-        let eff_frag_cap = min(ws_buf_cap(frag_buf), ws.max_payload_length as i64);
+        let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
+        let eff_frag_cap = if max_pay_i64 > 0 { min(ws_buf_cap(frag_buf), max_pay_i64) } else { ws_buf_cap(frag_buf) };
         let consumed, handled, view = consume_frame_view_into(
             ws, in_slice[cursor..], frag_buf, eff_frag_cap, reply,
         );
@@ -1400,7 +1406,12 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
         if recvd == 0 {
             continue;
         }
-        let max_wire_cap = min(ws_buf_cap(in_buf), core::add_sat_i64(ws.max_payload_length as i64, 65536));
+        let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
+        let max_wire_cap = if max_pay_i64 > 0 {
+            min(ws_buf_cap(in_buf), core::add_sat_i64(max_pay_i64, 65536))
+        } else {
+            ws_buf_cap(in_buf)
+        };
         guard core::add_sat_i64(in_buf.len, recvd) <= max_wire_cap else {
             close_reply.clear();
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "frame exceeds wire buffer capacity", close_reply);

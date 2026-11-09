@@ -152,17 +152,25 @@ fn validate_cors_policy(policy: const CorsPolicy&) -> bool {
 }
 
 // Checks whether a comma-separated HTTP header value contains a specific token (case-insensitive, RFC 9110 §5.6.1).
-inline fn header_list_has_token(header_val: const u8[:], token: const u8[:]) -> bool {
+inline fn header_list_has_token(header_val: const u8[:], token: const u8[:], allow_wildcard: bool = true) -> bool {
     var tok_iter = core::make_byte_tokenizer(header_val, ',');
     loop {
         let item, ok = core::token_next(tok_iter);
         guard ok else { break; }
         let trimmed = item.trim_lws();
-        if trimmed == "*" || trimmed.eq_ascii_fold(token) {
+        if (allow_wildcard && trimmed == "*") || trimmed.eq_ascii_fold(token) {
             return true;
         }
     }
     return false;
+}
+
+inline fn is_valid_cors_token(tok: const u8[:]) -> bool {
+    guard tok.len > 0 else { return false; }
+    for b in tok {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
 }
 
 // Injects Vary: Origin header on dynamic CORS responses (RFC 9111 / WHATWG Fetch §3.2.4).
@@ -195,22 +203,28 @@ fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
 }
 
 // Checks whether all comma-separated tokens in `requested_list` are present in `allowed_list` (WHATWG Fetch §3.2.3).
-fn are_cors_request_headers_allowed(allowed_list: const u8[:], requested_list: const u8[:]) -> bool {
+fn are_cors_request_headers_allowed(
+    allowed_list:   const u8[:],
+    requested_list: const u8[:],
+    allow_wildcard: bool = true,
+) -> bool {
+    var saw_token = false;
     var tok_iter = core::make_byte_tokenizer(requested_list, ',');
     loop {
         let item, ok = core::token_next(tok_iter);
         guard ok else { break; }
         let tok = item.trim_lws();
-        if tok.len > 0 {
-            let safelisted = tok.eq_ascii_fold("accept") ||
-                tok.eq_ascii_fold("accept-language") ||
-                tok.eq_ascii_fold("content-language");
-            if !safelisted && !header_list_has_token(allowed_list, tok) {
-                return false;
-            }
+        guard is_valid_cors_token(tok) else { return false; }
+        saw_token = true;
+        let safelisted = tok.eq_ascii_fold("accept") ||
+            tok.eq_ascii_fold("accept-language") ||
+            tok.eq_ascii_fold("content-language");
+        let can_use_wildcard = allow_wildcard && !tok.eq_ascii_fold("authorization");
+        if !safelisted && !header_list_has_token(allowed_list, tok, can_use_wildcard) {
+            return false;
         }
     }
-    return true;
+    return saw_token;
 }
 
 struct ClientCorsVerifyOptions {
@@ -261,11 +275,14 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
     let req_method_hdr = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).trim_lws();
     let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0;
     if is_preflight {
-        guard header_list_has_token(policy.allowed_methods[..], req_method_hdr) else {
+        let allow_wild = !policy.allow_credentials;
+        guard is_valid_cors_token(req_method_hdr) &&
+            header_list_has_token(policy.allowed_methods[..], req_method_hdr, allow_wild) else {
             return CorsResult.RejectedPreflightMethod;
         }
-        let req_hdrs = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS).trim_lws();
-        if req_hdrs.len > 0 && !are_cors_request_headers_allowed(policy.allowed_headers[..], req_hdrs) {
+        let req_hdrs_raw = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS);
+        if req_hdrs_raw.len > 0 &&
+            !are_cors_request_headers_allowed(policy.allowed_headers[..], req_hdrs_raw, allow_wild) {
             return CorsResult.RejectedPreflightHeaders;
         }
     }

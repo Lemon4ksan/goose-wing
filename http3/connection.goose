@@ -651,28 +651,43 @@ fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_off
     return rfc::H3_ERR_NO_ERROR;
 }
 
-fn pop_ready_blocked_qpack_stream(tbl: QpackTable&) -> u64, u8[..4096], bool {
-    var out_sec: u8[..4096] = [];
+fn pop_ready_blocked_qpack_stream(tbl: QpackTable&) -> BlockedStreamEntry, bool {
     for i in tbl.blocked_streams.len {
         if tbl.blocked_streams[i].req_insert_count <= tbl.insert_count {
-            let out_sid = tbl.blocked_streams[i].stream_id;
-            let _ = out_sec.try_set(tbl.blocked_streams[i].encoded_data[..]);
+            let entry = tbl.blocked_streams[i];
             tbl.blocked_streams.remove_at(i as i32);
-            return out_sid, out_sec, true;
+            return entry, true;
         }
     }
-    return 0, out_sec, false;
+    return BlockedStreamEntry { .. }, false;
 }
 
 fn resume_unblocked_qpack_streams(conn: H3Connection&) -> u64 {
     for _ in 128 {
-        let b_sid, raw_sec, ok_pop = pop_ready_blocked_qpack_stream(conn.qpack_table);
+        let entry, ok_pop = pop_ready_blocked_qpack_stream(conn.qpack_table);
         guard ok_pop else {
             return rfc::H3_ERR_NO_ERROR;
         }
-        let s_idx, found = find_h3_stream_idx(conn, b_sid);
+        if entry.is_push_promise {
+            var pp_fields: HeaderField[..64] = [];
+            let q_err = decode_qpack_section(
+                conn.qpack_table,
+                entry.encoded_data[..],
+                pp_fields,
+                conn.local_settings.max_field_section_size,
+            );
+            if q_err != QpackError.None {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
+                return rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
+            }
+            let pp_err = validate_h3_push_promise_fields(conn, pp_fields);
+            guard pp_err == rfc::H3_ERR_NO_ERROR else { return pp_err; }
+            continue;
+        }
+        let s_idx, found = find_h3_stream_idx(conn, entry.stream_id);
         if found && s_idx >= 0 && s_idx < conn.streams.len {
-            let h_err = handle_bidi_headers(conn, s_idx, raw_sec[..]);
+            let h_err = handle_bidi_headers(conn, s_idx, entry.encoded_data[..]);
             guard h_err == rfc::H3_ERR_NO_ERROR else { return h_err; }
         }
     }
@@ -1215,14 +1230,39 @@ fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> 
     return rfc::H3_ERR_NO_ERROR;
 }
 
-fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
+fn validate_h3_push_promise_fields(
+    conn:           H3Connection&,
+    decoded_fields: const HeaderField[..64]&,
+) -> u64 {
+    var seen_regular = false;
+    for &f in decoded_fields {
+        let fname = f.name[..];
+        let fval = f.value[..];
+        let is_pseudo = fname.len > 0 && fname[0] == ':';
+        let bad_pseudo = is_pseudo && (seen_regular || fname == ":status" || fname == ":protocol" ||
+            (fname == ":method" && fval == "CONNECT"));
+        if !is_pseudo {
+            seen_regular = true;
+        }
+        if bad_pseudo || !wing::is_valid_header_name_h2(fname) ||
+           is_forbidden_connection_header(fname, fval) || has_ctl_chars(fval) ||
+           fname.eq_ascii_fold("content-length") {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
+            return rfc::H3_ERR_GENERAL_PROTOCOL;
+        }
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
+
+fn handle_bidi_push_promise(conn: H3Connection&, s_idx: i32, payload: const u8[:]) -> u64 {
     // Clients MUST NOT send PUSH_PROMISE frames to servers
     if conn.role == H3ConnRole.Server {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
         return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
-    guard payload.len > 0 else {
+    guard payload.len > 0 && s_idx >= 0 && s_idx < conn.streams.len else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_FRAME_ERROR;
         return rfc::H3_ERR_FRAME_ERROR;
@@ -1243,10 +1283,11 @@ fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
     var decoded_fields: HeaderField[..64] = [];
     let q_err = decode_or_block_qpack_section(
         conn.qpack_table,
-        push_id,
+        conn.streams[s_idx].stream_id,
         qpack_data,
         decoded_fields,
         conn.local_settings.max_field_section_size,
+        true,
     );
     if q_err != QpackError.None && q_err != QpackError.StreamBlocked {
         conn.state = H3ConnState.Closed;
@@ -1254,15 +1295,13 @@ fn handle_bidi_push_promise(conn: H3Connection&, payload: const u8[:]) -> u64 {
         return rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
     }
     if q_err == QpackError.None && decoded_fields.len > 0 {
-        for &f in decoded_fields {
-            if f.name[..] == ":status" || is_forbidden_connection_header(f.name[..], f.value[..]) ||
-               has_ctl_chars(f.value[..]) || f.name[..].eq_ascii_fold("content-length") {
-                conn.state = H3ConnState.Closed;
-                conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
-                return rfc::H3_ERR_GENERAL_PROTOCOL;
-            }
-        }
+        let v_err = validate_h3_push_promise_fields(conn, decoded_fields);
+        guard v_err == rfc::H3_ERR_NO_ERROR else { return v_err; }
     }
+    if !conn.has_promised_push_id || push_id > conn.max_promised_push_id {
+        conn.max_promised_push_id = push_id;
+    }
+    conn.has_promised_push_id = true;
     return rfc::H3_ERR_NO_ERROR;
 }
 
@@ -1430,7 +1469,7 @@ fn handle_bidi_stream_frames(
         }
 
         if hdr.frame_type == rfc::H3_FRAME_PUSH_PROMISE {
-            let p_err = handle_bidi_push_promise(conn, payload);
+            let p_err = handle_bidi_push_promise(conn, s_idx, payload);
             guard p_err == rfc::H3_ERR_NO_ERROR else { return p_err; }
             continue;
         }

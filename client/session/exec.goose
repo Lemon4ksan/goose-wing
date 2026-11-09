@@ -518,7 +518,9 @@ fn ingest_transport_response_headers(
     now_sec:     i64,
     resp:        Response&,
 ) {
-    if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
+    let defer_to_strict_stage = session.strict_content_decoding || session.verify_content_digest;
+    if !defer_to_strict_stage &&
+        wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
         let _ = stage_client_decompress(resp, session.dict_cache);
     }
 

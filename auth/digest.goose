@@ -325,16 +325,23 @@ fn calculate_digest_ha1(
     var ha1 = digest_hash_hex(algo, a1[..]);
 
     if rfc::is_sess_digest_algo(algo) {
-        guard nonce.len > 0 && cnonce.len > 0 else { return empty_res; }
+        guard nonce.len > 0 && cnonce.len > 0 else {
+            core::secure_zeroize_slice(ha1[..]);
+            return empty_res;
+        }
         var a1_sess: u8[..512] = [];
         defer core::secure_zeroize_slice(a1_sess[..]);
         let need_sess = core::add_sat_i64(core::add_sat_i64(ha1.len, nonce.len), cnonce.len);
-        guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else { return empty_res; }
+        guard core::add_sat_i64(need_sess, 2) <= a1_sess.cap else {
+            core::secure_zeroize_slice(ha1[..]);
+            return empty_res;
+        }
         a1_sess.append(ha1[..]);
         a1_sess.push(':');
         a1_sess.append(nonce);
         a1_sess.push(':');
         a1_sess.append(cnonce);
+        core::secure_zeroize_slice(ha1[..]);
         ha1 = digest_hash_hex(algo, a1_sess[..]);
     }
     return ha1;
@@ -387,6 +394,7 @@ fn calculate_digest_response(
 ) -> u8[..64] {
     var a3:        u8[..1024] = [];
     var empty_res: u8[..64]   = [];
+    defer core::secure_zeroize_slice(a3[..]);
     guard ha1_hex.len > 0 && ha2_hex.len > 0 && nonce.len > 0 else { return empty_res; }
     if active_qop.len > 0 {
         guard nc_str.len > 0 && cnonce.len > 0 else { return empty_res; }
@@ -528,8 +536,6 @@ fn serialize_digest_auth<B>(
     sink:           B&,
 ) -> bool {
     sink.clear();
-    var committed = false;
-    defer if !committed { sink.clear(); };
     guard serialize_digest_core_kv(
         sink,
         effective_user,
@@ -539,6 +545,7 @@ fn serialize_digest_auth<B>(
         algo,
         response_hex,
     ) else {
+        sink.clear();
         return false;
     }
     guard serialize_digest_opt_kv(
@@ -549,9 +556,9 @@ fn serialize_digest_auth<B>(
         opaque,
         userhash,
     ) else {
+        sink.clear();
         return false;
     }
-    committed = true;
     return true;
 }
 
@@ -720,6 +727,7 @@ fn compute_digest_response<B>(
     body:       const u8[:],
     out_header: B&,
 ) -> bool {
+    out_header.clear();
     guard challenge.valid && creds.username.len > 0 else { return false; }
 
     let algo = challenge.algorithm[..];
@@ -740,7 +748,7 @@ fn compute_digest_response<B>(
     let effective_user = resolve_digest_user(creds.username[..], challenge.realm[..], challenge.userhash, algo);
     guard effective_user.len > 0 else { return false; }
 
-    let ha1_hex = calculate_digest_ha1(
+    var ha1_hex = calculate_digest_ha1(
         algo,
         creds.username[..],
         challenge.realm[..],
@@ -748,6 +756,7 @@ fn compute_digest_response<B>(
         challenge.nonce[..],
         cnonce,
     );
+    defer core::secure_zeroize_slice(ha1_hex[..]);
 
     let ha2_hex = calculate_digest_ha2(algo, method, uri, is_auth_int, body);
     guard ha1_hex.len > 0 && ha2_hex.len > 0 else { return false; }

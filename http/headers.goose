@@ -908,20 +908,33 @@ fn handle_obs_fold_arena(
     let new_end = arena.spill_raw.len as u16;
 
     let prev_wk: u8 = if in_spill {
-        arena.spill_entries[arena.spill_entries.len - 1].values_begin = new_begin;
-        arena.spill_entries[arena.spill_entries.len - 1].values_end = new_end;
-        arena.spill_entries[arena.spill_entries.len - 1].reserved = HEADER_SRC_ARENA;
         arena.spill_entries[arena.spill_entries.len - 1].well_known_id
     } else {
-        map.entries[map.entries.len - 1].values_begin = new_begin;
-        map.entries[map.entries.len - 1].values_end = new_end;
-        map.entries[map.entries.len - 1].reserved = HEADER_SRC_ARENA;
         map.entries[map.entries.len - 1].well_known_id
     };
-
     guard validate_folded_framing(arena.spill_raw[..], new_begin, new_end, prev_wk) else {
         map.valid = false;
         return HeaderParseError.InvalidContentLength;
+    }
+
+    let cont_has_comma = trimmed_continuation.contains_byte(',');
+    if in_spill {
+        let s_idx = arena.spill_entries.len - 1;
+        arena.spill_entries[s_idx].values_begin = new_begin;
+        arena.spill_entries[s_idx].values_end = new_end;
+        arena.spill_entries[s_idx].reserved = HEADER_SRC_ARENA;
+        if cont_has_comma {
+            arena.spill_entries[s_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+        }
+    } else {
+        let m_idx = map.entries.len - 1;
+        map.entries[m_idx].values_begin = new_begin;
+        map.entries[m_idx].values_end = new_end;
+        map.entries[m_idx].reserved = HEADER_SRC_ARENA;
+        if cont_has_comma {
+            map.entries[m_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+            map.header_contains_comma[m_idx] = true;
+        }
     }
     return HeaderParseError.None;
 }
@@ -947,13 +960,17 @@ fn handle_obs_fold_stack(
     map.raw_buf.append(trimmed_continuation);
     let new_end = map.raw_buf.len as u16;
 
-    map.entries[prev_idx].values_begin = new_begin;
-    map.entries[prev_idx].values_end = new_end;
-
     let prev_wk = map.entries[prev_idx].well_known_id;
     guard validate_folded_framing(map.raw_buf[..], new_begin, new_end, prev_wk) else {
         map.valid = false;
         return HeaderParseError.InvalidContentLength;
+    }
+
+    map.entries[prev_idx].values_begin = new_begin;
+    map.entries[prev_idx].values_end = new_end;
+    if trimmed_continuation.contains_byte(',') {
+        map.entries[prev_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
+        map.header_contains_comma[prev_idx] = true;
     }
     return HeaderParseError.None;
 }
@@ -1269,13 +1286,16 @@ fn parse_headers(
     allow_obs_fold: bool                = false,
     mode:           H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    reset_for_keep_alive(map);
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
-    reset_for_keep_alive(map);
     guard map.raw_buf.try_append(raw_input) else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
@@ -1399,7 +1419,12 @@ fn parse_headers_with_overflow(
     arena:          OverflowArena&,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    reset_for_keep_alive(map);
+    reset_overflow_arena(arena);
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     guard raw_input.len <= 65535 else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
@@ -1408,9 +1433,6 @@ fn parse_headers_with_overflow(
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
-
-    reset_for_keep_alive(map);
-    reset_overflow_arena(arena);
 
     let use_arena_buf = raw_input.len > 8192;
     if use_arena_buf {
@@ -1502,7 +1524,10 @@ fn parse_response_headers_with_mode(
     mode:           H1ResponseParseMode,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
@@ -1555,7 +1580,10 @@ fn parse_response_headers_with_overflow(
     arena:          OverflowArena&,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
@@ -1609,7 +1637,10 @@ inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
 //   raw_input = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n", map = HeaderMap { .. }
 //   returns: HeaderParseError.None, populates map.entries
 fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;
@@ -1645,7 +1676,10 @@ fn parse_request_headers_with_overflow(
     arena:          OverflowArena&,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
-    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    guard raw_input.len > 0 else {
+        map.valid = false;
+        return HeaderParseError.EmptyInput;
+    }
     if has_embedded_nulls(raw_input) {
         map.valid = false;
         return HeaderParseError.EmbeddedNull;

@@ -507,13 +507,21 @@ enum RespectLimits {
     Disabled,
 }
 
+enum ProbeGateState {
+    Unprobed,
+    Probing { probe_conn_id: i32 },
+    ResolvedHttp11,
+    ResolvedHttp2,
+}
+
 struct ConnectionGroup {
-    key:               PoolKey   = PoolKey { .. },
-    key_hash:          u64       = 0,
-    active_conns:      i32       = 0,
-    idle_conns:        i32       = 0,
-    dials_in_progress: i32       = 0,
-    wait_queue:        WantQueue = WantQueue { .. },
+    key:               PoolKey        = PoolKey { .. },
+    key_hash:          u64            = 0,
+    active_conns:      i32            = 0,
+    idle_conns:        i32            = 0,
+    dials_in_progress: i32            = 0,
+    probe_gate:        ProbeGateState = ProbeGateState.Unprobed,
+    wait_queue:        WantQueue      = WantQueue { .. },
 }
 
 struct StreamPool {
@@ -1188,4 +1196,114 @@ fn release_upstream_conn(pool: UpstreamPool&, fd: i32, events: u32 = 0) -> bool 
         }
     }
     return false;
+}
+
+// ---- HTTPS ALPN Probe Gate & Connection Lifecycle Guards -------------------
+
+// Evaluates whether a new parallel dial to an HTTPS origin should wait in `WantQueue`
+// until the first TLS + ALPN handshake resolves `h2` vs `http/1.1`.
+fn should_hold_for_alpn_probe(
+    scheme:            PoolScheme,
+    allow_h2:          bool,
+    gate:              ProbeGateState,
+    dials_in_progress: i32,
+) -> bool {
+    guard allow_h2 && is_cryptographic_scheme(scheme) else { return false; }
+    return match gate {
+        Probing _ => dials_in_progress > 0,
+        _ => false,
+    };
+}
+
+// Updates `ProbeGateState` when a probe connection finishes TLS handshake or fails.
+fn settle_alpn_probe(
+    gate:       ProbeGateState&,
+    conn_id:    i32,
+    succeeded:  bool,
+    negotiated: NegotiatedProtocol,
+) {
+    let is_current_probe = match gate {
+        Probing p => p.probe_conn_id == conn_id,
+        _ => false,
+    };
+    guard is_current_probe else { return; }
+    if !succeeded {
+        gate = ProbeGateState.Unprobed;
+        return;
+    }
+    gate = match negotiated {
+        Http2 => ProbeGateState.ResolvedHttp2,
+        _ => ProbeGateState.ResolvedHttp11,
+    };
+}
+
+struct ConnLifecyclePolicy {
+    max_requests_per_conn: i64 = 0,
+    max_conn_ttl_ns:       i64 = 0,
+    max_pipelining:        i32 = 1,
+}
+
+enum H1RequestSafety {
+    SafeIdempotent,
+    NonIdempotent,
+    UpgradeOrConnect,
+    StreamingUnrewindableBody,
+}
+
+// RFC 9112 Section 9.3.2: Pipelining - only idempotent requests may be pipelined over HTTP/1.1.
+fn can_dispatch_on_h1_conn(
+    active_allocations: i32,
+    policy:             const ConnLifecyclePolicy&,
+    safety:             H1RequestSafety,
+) -> bool {
+    let limit = max(policy.max_pipelining, 1);
+    guard active_allocations < limit else { return false; }
+    if active_allocations <= 0 {
+        return true;
+    }
+    return safety == H1RequestSafety.SafeIdempotent;
+}
+
+// Evaluates whether a connection reached its request cap or age ceiling and should retire.
+fn should_retire_connection(
+    use_count:     i64,
+    created_at_ns: i64,
+    now_ns:        i64,
+    policy:        const ConnLifecyclePolicy&,
+) -> bool {
+    if policy.max_requests_per_conn > 0 && use_count >= policy.max_requests_per_conn {
+        return true;
+    }
+    if policy.max_conn_ttl_ns > 0 {
+        let age_ns = core::sub_sat_i64(now_ns, created_at_ns);
+        if age_ns >= policy.max_conn_ttl_ns {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline fn is_origin_group_unused(grp: const ConnectionGroup&) -> bool {
+    return grp.active_conns <= 0 &&
+           grp.idle_conns <= 0 &&
+           grp.dials_in_progress <= 0 &&
+           grp.wait_queue.is_queue_empty();
+}
+
+// Evicts unused ConnectionGroup entries (zero active/idle/dialing sockets and empty WantQueue)
+// so multi-origin dispatchers do not exhaust the fixed group table ceiling.
+fn reclaim_idle_origin_groups(pool: StreamPool&) -> i32 {
+    var kept:      ConnectionGroup[..32] = [];
+    var reclaimed: i64                   = 0;
+    for &grp in pool.groups {
+        if is_origin_group_unused(grp) {
+            reclaimed = core::add_sat_i64(reclaimed, 1);
+        } else {
+            let _ = kept.try_push(copy(grp));
+        }
+    }
+    if reclaimed > 0 {
+        pool.groups = kept;
+    }
+    return reclaimed as i32;
 }

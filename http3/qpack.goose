@@ -92,6 +92,7 @@ struct DynamicEntry {
 struct BlockedStreamEntry {
     stream_id:        u64        = 0,
     req_insert_count: u64        = 0,
+    is_push_promise:  bool       = false,
     encoded_data:     u8[..4096] = [],
 }
 
@@ -839,16 +840,23 @@ fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
 }
 
 // Records a blocked stream waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 §2.1.2).
-fn qpack_block_stream(tbl: QpackTable&, stream_id: u64, ric: u64, data: const u8[:]) -> bool {
+fn qpack_block_stream(
+    tbl:             QpackTable&,
+    stream_id:       u64,
+    ric:             u64,
+    data:            const u8[:],
+    is_push_promise: bool = false,
+) -> bool {
     guard tbl.blocked_streams.len < tbl.max_blocked else { return false; }
     for &b in tbl.blocked_streams {
-        if b.stream_id == stream_id {
+        if b.stream_id == stream_id && b.is_push_promise == is_push_promise {
             return false;
         }
     }
     var entry = BlockedStreamEntry {
         stream_id:        stream_id,
         req_insert_count: ric,
+        is_push_promise:  is_push_promise,
         ..
     };
     guard entry.encoded_data.try_set(data) else { return false; }
@@ -1262,12 +1270,16 @@ fn decode_qpack_section<F>(
             max_dyn_abs_used,
             used_any_dyn,
         );
-        guard f_err == QpackError.None else { return f_err; }
+        guard f_err == QpackError.None else {
+            out_fields.clear();
+            return f_err;
+        }
     }
 
     // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be >= min required insert count and <= insert_count.
     let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
     guard ric >= min_ric && ric <= tbl.insert_count else {
+        out_fields.clear();
         return QpackError.DecompressionFailed;
     }
 
@@ -1284,7 +1296,8 @@ fn decode_or_block_qpack_section<F>(
     stream_id:         u64,
     src:               const u8[:],
     out_fields:        F&,
-    max_field_section: u64 = 16384,
+    max_field_section: u64  = 16384,
+    is_push_promise:   bool = false,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
     let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
@@ -1296,7 +1309,7 @@ fn decode_or_block_qpack_section<F>(
         guard qpack_can_block_stream(tbl) else {
             return QpackError.BlockedStreamsExhausted;
         }
-        guard qpack_block_stream(tbl, stream_id, ric, src) else {
+        guard qpack_block_stream(tbl, stream_id, ric, src, is_push_promise) else {
             return QpackError.BlockedStreamsExhausted;
         }
         return QpackError.StreamBlocked;
@@ -1608,11 +1621,17 @@ fn decode_qpack_to_map(
             max_dyn_abs_used,
             used_any_dyn,
         );
-        guard f_err == QpackError.None else { return f_err; }
+        guard f_err == QpackError.None else {
+            clear_h3_pseudo_headers(out_pseudo, true);
+            out_headers.clear();
+            return f_err;
+        }
     }
 
     let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
     guard ric >= min_ric && ric <= tbl.insert_count else {
+        clear_h3_pseudo_headers(out_pseudo, true);
+        out_headers.clear();
         return QpackError.DecompressionFailed;
     }
 
@@ -1736,8 +1755,16 @@ fn find_qpack_dynamic_field(
 // Emits a Set Dynamic Table Capacity instruction (001xxxxx, 5-bit prefix) onto `out_enc`
 // and updates `tbl.capacity_bytes` (RFC 9204 §4.3.1).
 fn encode_qpack_set_capacity<B>(tbl: QpackTable&, new_cap: u64, out_enc: B&) -> bool {
+    guard new_cap <= tbl.max_capacity_bytes else { return false; }
+    var enc_buf: u8[..16] = [];
+    guard internal::hpack_encode_int(enc_buf, new_cap, 5, 0x20) else { return false; }
+    let saved_len = out_enc.len;
+    var committed = false;
+    defer if !committed { out_enc.resize(saved_len); };
+    guard out_enc.try_append(enc_buf[..]) else { return false; }
     guard qpack_set_capacity(tbl, new_cap) else { return false; }
-    return internal::hpack_encode_int(out_enc, new_cap, 5, 0x20);
+    committed = true;
+    return true;
 }
 
 // Emits an Encoder Stream insertion instruction (Insert with Static Name Reference 11xxxxxx

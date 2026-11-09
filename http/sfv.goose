@@ -532,12 +532,11 @@ fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
 fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&, out_next: i64&) -> bool {
     var p = pos;
     while p < src.len {
-        p = sf_skip_ws(src, p);
-        if p >= src.len || src[p] != ';' {
+        let ws_p = sf_skip_ws(src, p);
+        if ws_p >= src.len || src[ws_p] != ';' {
             break;
         }
-        p = p + 1; // skip ';'
-        p = sf_skip_ws(src, p);
+        p = sf_skip_ws(src, ws_p + 1); // skip ';' and OWS
 
         let key, k_next, ok_k = sf_parse_key(src, p);
         if !ok_k {
@@ -640,10 +639,7 @@ fn sf_parse_inner_list_items(
                 inner_item.str_val = src[core::add_sat_i64(item_start, 1)..req_end];
             }
         }
-        p = in_next;
-        while p < params_next && src[p] != ' ' && src[p] != ')' {
-            p = core::add_sat_i64(p, 1);
-        }
+        p = params_next;
         inner_items.push(inner_item);
         guard p < src.len && (src[p] == ' ' || src[p] == ')') else { return false; }
     }

@@ -72,29 +72,64 @@ inline fn read_positive_oauth_int(reader: json::Reader&, dst: i64&, had_err: boo
     }
 }
 
+inline fn is_valid_device_verification_uri(uri: const u8[:]) -> bool {
+    let parsed, err = core::parse_url(uri);
+    guard err == core::UrlParseError.None && parsed.hostname().len > 0 else { return false; }
+    let scheme = parsed.scheme();
+    return scheme.eq_ascii_fold("https") || scheme.eq_ascii_fold("http");
+}
+
+inline fn mark_device_auth_key_seen(seen_mask: u32&, bit: u32, had_err: bool&) {
+    if (seen_mask & bit) != 0 {
+        had_err = true;
+    }
+    seen_mask = seen_mask | bit;
+}
+
 // Parses a single field of an RFC 8628 §3.2 Device Authorization Response JSON object.
 //
 // Example:
 //   key = "user_code", reader at "\"WDJB-MJHT\""
 //   sets: out.user_code = "WDJB-MJHT", had_err = false
 inline fn parse_device_auth_field(
-    key:     const u8[:],
-    reader:  json::Reader&,
-    out:     DeviceAuthResponse&,
-    had_err: bool&,
+    key:       const u8[:],
+    reader:    json::Reader&,
+    out:       DeviceAuthResponse&,
+    seen_mask: u32&,
+    had_err:   bool&,
 ) {
-    if key == "device_code" { read_required_oauth_str(reader, out.device_code, had_err); return; }
-    if key == "user_code" { read_required_oauth_str(reader, out.user_code, had_err); return; }
+    if key.contains('\\') {
+        had_err = true;
+        json::skip(reader);
+        return;
+    }
+    if key == "device_code" {
+        mark_device_auth_key_seen(seen_mask, 1, had_err);
+        read_required_oauth_str(reader, out.device_code, had_err);
+        return;
+    }
+    if key == "user_code" {
+        mark_device_auth_key_seen(seen_mask, 2, had_err);
+        read_required_oauth_str(reader, out.user_code, had_err);
+        return;
+    }
     if key == "verification_uri" || key == "verification_url" {
+        mark_device_auth_key_seen(seen_mask, 4, had_err);
         read_required_oauth_str(reader, out.verification_uri, had_err);
         return;
     }
     if key == "verification_uri_complete" {
+        mark_device_auth_key_seen(seen_mask, 8, had_err);
         read_nullable_oauth_str(reader, out.verification_uri_complete, had_err);
         return;
     }
-    if key == "expires_in" { read_positive_oauth_int(reader, out.expires_in_sec, had_err); return; }
+    if key == "expires_in" {
+        mark_device_auth_key_seen(seen_mask, 16, had_err);
+        read_positive_oauth_int(reader, out.expires_in_sec, had_err);
+        return;
+    }
     if key == "interval" {
+        mark_device_auth_key_seen(seen_mask, 32, had_err);
         let p = json::peek(reader);
         if p == 'n' {
             json::skip(reader);
@@ -118,14 +153,19 @@ inline fn parse_device_auth_field(
 fn parse_device_auth_response(raw_json: const u8[:]) -> DeviceAuthResponse, bool {
     var out = DeviceAuthResponse { .. };
     let empty = DeviceAuthResponse { .. };
-    guard raw_json.len > 0 && raw_json.len <= 4096 else { return empty, false; }
+    guard raw_json.len > 0 && raw_json.len <= 4096 && raw_json.validate_utf8() else { return empty, false; }
     var reader = json::reader(raw_json);
+    guard json::peek(reader) == '{' else { return empty, false; }
+    var seen_mask: u32 = 0;
     var had_err = false;
     json::each_member(reader) { key =>
-        parse_device_auth_field(key, reader, out, had_err);
+        parse_device_auth_field(key, reader, out, seen_mask, had_err);
     };
+    let complete_uri_ok = out.verification_uri_complete.len == 0 ||
+        is_valid_device_verification_uri(out.verification_uri_complete[..]);
     let complete = out.device_code.len > 0 && out.user_code.len > 0 &&
-                   out.verification_uri.len > 0 && out.expires_in_sec > 0;
+        is_valid_device_verification_uri(out.verification_uri[..]) &&
+        complete_uri_ok && out.expires_in_sec > 0;
     guard json::finish(reader) && !had_err && complete else {
         return empty, false;
     }

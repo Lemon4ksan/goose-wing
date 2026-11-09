@@ -417,7 +417,7 @@ fn parse_grpc_status_proto_field(
     let wtype = (tag & 0x07) as u32;
     if fnum == 1 && wtype == PB_WIRE_VARINT {
         let v, ok_v = pb_read_varint(wire, pos);
-        guard ok_v else { return false; }
+        guard ok_v && v <= 16 else { return false; }
         out_code = v as u32;
         committed = true;
         return true;

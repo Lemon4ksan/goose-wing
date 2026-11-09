@@ -68,6 +68,8 @@ enum ServerHookPhase {
     BodyChunk,
     RouteHandler,
     PreSerialize,
+    OnError,
+    AfterResponse,
 }
 
 // Fixed compile-time generic hook phases for Client pipelines.

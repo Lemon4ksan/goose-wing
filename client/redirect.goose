@@ -582,3 +582,47 @@ fn sanitize_headers_on_redirect(
         set_header(headers, "Referer", redirect_info.new_referrer[..]);
     }
 }
+
+// ---- redirect hop cache taint & custom header strip policy -----------------
+
+struct RedirectHopCacheTaint {
+    saw_no_store: bool = false,
+    saw_private:  bool = false,
+}
+
+// Aggregates `no-store` and `private` Cache-Control directives across intermediate redirect hops
+// so outer caches do not store a final 200 response under an uncacheable initial redirect key.
+fn record_redirect_hop_cache_headers(taint: RedirectHopCacheTaint&, hop_headers: const HeaderMap&) {
+    let cc = get_header(hop_headers, "Cache-Control");
+    guard cc.len > 0 else { return; }
+    each_split(cc, ',') { raw_dir =>
+        let d_name, _, _ = raw_dir.trim_lws().split_once_byte('=');
+        let token = d_name.trim_lws();
+        if token.eq_ascii_fold("no-store") {
+            taint.saw_no_store = true;
+        } else if token.eq_ascii_fold("private") {
+            taint.saw_private = true;
+        }
+    };
+}
+
+struct CustomRedirectStripPolicy {
+    always_strip:       u8[..64][..8] = [],
+    cross_origin_strip: u8[..64][..8] = [],
+}
+
+// Strips caller-configured unconditional and cross-origin header names across a redirect hop.
+fn apply_custom_redirect_strip(
+    headers:         HeaderMap&,
+    is_cross_origin: bool,
+    policy:          const CustomRedirectStripPolicy&,
+) {
+    for &name in policy.always_strip {
+        remove_header_by_name(headers, name[..]);
+    }
+    if is_cross_origin {
+        for &name in policy.cross_origin_strip {
+            remove_header_by_name(headers, name[..]);
+        }
+    }
+}

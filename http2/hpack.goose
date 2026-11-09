@@ -748,6 +748,7 @@ fn huff_encoded_byte_len(src: const u8[:]) -> u64 {
 
 // Encodes uncompressed bytes using canonical RFC 7541 Huffman code into out.
 fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
     var acc:   u64 = 0;
     var nbits: u32 = 0;
 
@@ -759,7 +760,10 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
 
         while nbits >= 8 {
             nbits -= 8;
-            guard out.try_push(((acc >> nbits) & 0xFF) as u8) else { return false; }
+            if !out.try_push(((acc >> nbits) & 0xFF) as u8) {
+                rollback_hpack_out(out, saved_len);
+                return false;
+            }
         }
     }
 
@@ -767,7 +771,10 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
     if nbits > 0 {
         let pad_bits = 8 - nbits;
         acc = (acc << pad_bits) | (((1 as u64) << pad_bits) - 1);
-        guard out.try_push((acc & 0xFF) as u8) else { return false; }
+        if !out.try_push((acc & 0xFF) as u8) {
+            rollback_hpack_out(out, saved_len);
+            return false;
+        }
     }
     return true;
 }
@@ -832,14 +839,15 @@ fn hpack_encode_int<B>(out: B&, val: u64, prefix_bits: u8, prefix_mask: u8) -> b
         return out.try_push(prefix_mask | (val as u8));
     }
 
+    var tmp: u8[..12] = [];
+    tmp.push(prefix_mask | (max_prefix as u8));
     var rem = val - max_prefix;
-    guard out.try_push(prefix_mask | (max_prefix as u8)) else { return false; }
-
     while rem >= 128 {
-        guard out.try_push((0x80 | (rem & 0x7F)) as u8) else { return false; }
+        guard tmp.try_push((0x80 | (rem & 0x7F)) as u8) else { return false; }
         rem = rem >> 7;
     }
-    return out.try_push((rem & 0x7F) as u8);
+    guard tmp.try_push((rem & 0x7F) as u8) else { return false; }
+    return out.try_append(tmp[..]);
 }
 
 // ---- static table (rfc 7541 appendix a) ---------------------------------
@@ -1256,16 +1264,16 @@ fn hpack_hash_lookup(dt: const DynamicTable&, name: const u8[:], val: const u8[:
     let slot_gen = dt.hash_table.generations[slot];
     guard entry_ref > 0 && slot_gen > 0 else { return 0, false; }
 
-    let ring_idx = (entry_ref - 1) as u64;
+    let ring_idx = core::sub_sat_u64(entry_ref, 1);
     guard ring_idx < HPACK_MAX_RING_ENTRIES else { return 0, false; }
-    let dist = (ring_idx + HPACK_MAX_RING_ENTRIES - dt.head) & HPACK_RING_MASK;
+    let dist = core::sub_sat_u64(core::add_sat_u64(ring_idx, HPACK_MAX_RING_ENTRIES), dt.head) & HPACK_RING_MASK;
     guard dist < dt.count else { return 0, false; }
 
     let entry = dt.entries[ring_idx];
     guard entry.generation == slot_gen && !entry.never_index else { return 0, false; }
 
-    let n_end = entry.name_off + entry.name_len;
-    let v_end = entry.val_off + entry.val_len;
+    let n_end = core::add_sat_u64(entry.name_off, entry.name_len);
+    let v_end = core::add_sat_u64(entry.val_off, entry.val_len);
     let entry_name = dt.arena[entry.name_off..n_end];
     let entry_val = dt.arena[entry.val_off..v_end];
 
@@ -1273,8 +1281,8 @@ fn hpack_hash_lookup(dt: const DynamicTable&, name: const u8[:], val: const u8[:
         return 0, false;
     }
 
-    let offset_from_newest = (dt.count - 1) - dist;
-    return (62 + offset_from_newest) as u16, true;
+    let offset_from_newest = core::sub_sat_u64(core::sub_sat_u64(dt.count, 1), dist);
+    return core::add_sat_u64(62, offset_from_newest) as u16, true;
 }
 
 // Looks up an external dynamic index (idx >= 62).
@@ -1917,9 +1925,14 @@ fn decode_hpack_to_map(
     var updates_allowed = true;
     var update_count: u32 = 0;
     var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
+    var committed = false;
 
     clear_h2_pseudo_headers(out_pseudo, true);
     out_headers.clear();
+    defer if !committed {
+        clear_h2_pseudo_headers(out_pseudo, true);
+        out_headers.clear();
+    };
 
     while offset < src_len {
         let next_off, err = decode_hpack_field_step_to_map(
@@ -1949,6 +1962,7 @@ fn decode_hpack_to_map(
         guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
     }
 
+    committed = true;
     return rfc::H2_ERR_NO_ERROR;
 }
 
@@ -2101,36 +2115,22 @@ fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i6
     return HpackIndexing.Incremental;
 }
 
-inline fn try_encode_hpack_huffman_short<B>(out: B&, raw: const u8[:]) -> bool, bool {
-    let hdr_idx = out.len;
-    var committed = false;
-    defer if !committed { rollback_hpack_out(out, hdr_idx); };
-    guard out.try_push(0 as u8) else { return false, true; }
-    if huff_encode_bytes(raw, out) {
-        let enc_len = core::sub_sat_i64(core::sub_sat_i64(out.len, hdr_idx), 1);
-        if enc_len < raw.len && hdr_idx >= 0 && hdr_idx < out.len {
-            out[hdr_idx] = 0x80 | (enc_len as u8);
-            committed = true;
-            return true, true;
-        }
-    }
-    return false, false;
-}
-
 fn encode_hpack_string_literal<B>(out: B&, raw: const u8[:], use_huffman: bool) -> bool {
-    if use_huffman && raw.len > 0 && raw.len < 127 {
-        let ok_short, handled = try_encode_hpack_huffman_short(out, raw);
-        if handled {
-            return ok_short;
-        }
-        return hpack_encode_int(out, raw.len as u64, 7, 0x00) && out.try_append(raw);
-    }
+    let saved_len = out.len;
     if use_huffman {
         let huff_len = huff_encoded_byte_len(raw);
         if huff_len < (raw.len as u64) {
-            return hpack_encode_int(out, huff_len, 7, 0x80) && huff_encode_bytes(raw, out);
+            if hpack_encode_int(out, huff_len, 7, 0x80) && huff_encode_bytes(raw, out) {
+                return true;
+            }
+            rollback_hpack_out(out, saved_len);
+            return false;
         }
     }
     // Raw octets
-    return hpack_encode_int(out, raw.len as u64, 7, 0x00) && out.try_append(raw);
+    if hpack_encode_int(out, raw.len as u64, 7, 0x00) && out.try_append(raw) {
+        return true;
+    }
+    rollback_hpack_out(out, saved_len);
+    return false;
 }

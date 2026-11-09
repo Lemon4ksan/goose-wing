@@ -310,7 +310,7 @@ fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
         res.body.append(uncompressed[..]);
         return true;
     }
-    return true;
+    return false;
 }
 
 fn find_matching_dict_entry(
@@ -378,11 +378,15 @@ fn decode_body(res: Response&) -> bool {
     }
     var tokens: u8[..16][..4] = [];
     guard parse_content_encoding_chain(enc, tokens) else { return false; }
+    let saved_body = copy(res.body);
+    var committed = false;
+    defer if !committed { res.body = copy(saved_body); };
     var rev_idx = tokens.len;
     while rev_idx > 0 {
         rev_idx = core::sub_sat_i64(rev_idx, 1);
         guard decode_single_standard_encoding(tokens[rev_idx][..], res) else { return false; }
     }
+    committed = true;
     clear_decompressed_headers(res);
     return true;
 }
@@ -403,12 +407,43 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
     }
     var tokens: u8[..16][..4] = [];
     guard parse_content_encoding_chain(enc, tokens) else { return false; }
+    let saved_body = copy(res.body);
+    var committed = false;
+    defer if !committed { res.body = copy(saved_body); };
     var rev_idx = tokens.len;
     while rev_idx > 0 {
         rev_idx = core::sub_sat_i64(rev_idx, 1);
         guard decode_single_dict_encoding(tokens[rev_idx][..], res, dict_cache) else { return false; }
     }
+    committed = true;
     clear_decompressed_headers(res);
+    return true;
+}
+
+enum ErrorBodyDecompressMode {
+    Skip4xxAnd5xx,
+    DecompressAll,
+}
+
+struct DecompressGuardPolicy {
+    max_decompressed_bytes: u64                     = 16777216,
+    error_mode:             ErrorBodyDecompressMode = ErrorBodyDecompressMode.Skip4xxAnd5xx,
+}
+
+// Determines whether a client HTTP response body should be automatically decompressed (RFC 9110 Section 8.4).
+// Skips decompression for `HEAD` requests, status codes without a message body (`1xx`, `204`, `304`),
+// and `4xx`/`5xx` error responses when `policy.error_mode == ErrorBodyDecompressMode.Skip4xxAnd5xx`.
+fn should_auto_decompress(
+    method: const u8[:],
+    status: i32,
+    policy: const DecompressGuardPolicy&,
+) -> bool {
+    guard policy.max_decompressed_bytes > 0 else { return false; }
+    guard !method.eq_ascii_fold("HEAD") else { return false; }
+    guard status >= rfc::STATUS_OK && !rfc::is_empty_body_status(status) else { return false; }
+    if policy.error_mode == ErrorBodyDecompressMode.Skip4xxAnd5xx && status >= rfc::STATUS_BAD_REQUEST {
+        return false;
+    }
     return true;
 }
 
@@ -416,6 +451,10 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
 
 fn read_json_field(reader: json::Reader&, dst: i64&) {
     dst = json::read_int(reader);
+}
+
+fn read_json_field(reader: json::Reader&, dst: u64&) {
+    dst = max(json::read_int(reader), 0) as u64;
 }
 
 fn read_json_field(reader: json::Reader&, dst: i32&) {
@@ -430,7 +469,14 @@ fn read_json_field(reader: json::Reader&, dst: bool&) {
     dst = json::read_bool(reader);
 }
 
-fn read_json_field(reader: json::Reader&, dst) {
+fn read_json_field(reader: json::Reader&, dst: u8[>..]&) {
+    dst.clear();
+    var scratch: u8[>..] = [];
+    let val = json::read_string(reader, scratch);
+    dst.append(val);
+}
+
+fn read_json_field<B>(reader: json::Reader&, dst: B&) {
     dst.clear();
     guard json::peek(reader) == '"' else {
         json::fail(reader, "expected a string");
@@ -445,25 +491,35 @@ fn read_json_field(reader: json::Reader&, dst) {
     reader.pos = core::add_sat_i64(end, 1);
     if !escaped {
         let raw = reader.text[start..end];
-        let n = min(raw.len, dst.cap);
-        dst.append(raw[..n]);
+        guard raw.len <= dst.cap else {
+            json::fail(reader, "string exceeds capacity");
+            return;
+        }
+        dst.append(raw);
         return;
     }
-    if !core::decode_json_string_into(reader.text, start, end, dst) && !json::valid_escapes(reader.text, start, end) {
+    if !core::decode_json_string_into(reader.text, start, end, dst) {
         reader.pos = core::sub_sat_i64(start, 1);
-        json::fail(reader, "bad escape");
+        if !json::valid_escapes(reader.text, start, end) {
+            json::fail(reader, "bad escape");
+        } else {
+            json::fail(reader, "string exceeds capacity");
+        }
     }
 }
 
 // ---- json response decoding -------------------------------------------------
 
 fn json<T>(res: const Response&, out: T&) -> Error {
+    let saved = copy(out);
+    var committed = false;
+    defer if !committed { out = copy(saved); };
     var reader = json::reader(res.body[..]);
     json::each_member(reader) { key =>
         var matched = false;
         const for <Name, Acc> in fields<T> {
             if !matched && key == Name {
-                read_json_field(reader, &out.Acc);
+                read_json_field(reader, out.Acc);
                 matched = true;
             }
         }
@@ -475,6 +531,7 @@ fn json<T>(res: const Response&, out: T&) -> Error {
         let msg = json::message(reader);
         return make_error(rfc::STATUS_UNPROCESSABLE_CONTENT, "json_decode", msg[..]);
     }
+    committed = true;
     return Error { .. };
 }
 
@@ -521,4 +578,92 @@ fn respond_json<T>(res: Response&, status_code: i32, payload: const T&) {
         write_json_field(res.body, payload.Acc);
     }
     res.body.push('}');
+}
+
+// Populates an HTTP response with an HTML body and `text/html; charset=utf-8` Content-Type header.
+fn respond_html(res: Response&, status_code: i32, html_str: const u8[:]) {
+    res.status_code = status_code;
+    set_header(res, "Content-Type", "text/html; charset=utf-8");
+    res.body.clear();
+    res.body.append(html_str);
+}
+
+// Populates an HTTP response with a binary payload and `Content-Type` header.
+fn respond_bytes(
+    res:          Response&,
+    status_code:  i32,
+    raw_bytes:    const u8[:],
+    content_type: const u8[:] = "application/octet-stream",
+) {
+    res.status_code = status_code;
+    set_header(res, "Content-Type", content_type);
+    res.body.clear();
+    res.body.append(raw_bytes);
+}
+
+// Populates a `204 No Content` HTTP response with an empty body (RFC 9110 Section 15.3.5).
+fn respond_no_content(res: Response&) {
+    res.status_code = rfc::STATUS_NO_CONTENT;
+    res.body.clear();
+    let _ = remove_header(res, "Content-Type");
+    let _ = remove_header(res, "Content-Length");
+}
+
+// Populates a `404 Not Found` plain-text HTTP response.
+fn respond_not_found(res: Response&, message: const u8[:] = "Not Found") {
+    respond_text(res, rfc::STATUS_NOT_FOUND, message);
+}
+
+// Populates `res` as an HTTP redirect (`301`, `302`, `303`, `307`, `308`) with a CRLF-validated `Location` header.
+fn respond_redirect(
+    res:         Response&,
+    location:    const u8[:],
+    status_code: i32 = rfc::STATUS_FOUND,
+) -> bool {
+    guard rfc::is_redirect_status(status_code) && location.len > 0 else { return false; }
+    for b in location {
+        guard b >= 0x20 && b != 0x7F else { return false; }
+    }
+    res.status_code = status_code;
+    set_header(res, "Location", location);
+    res.body.clear();
+    return true;
+}
+
+inline fn vary_list_contains_token(existing: const u8[:], needle: const u8[:]) -> bool {
+    var tok = core::make_byte_tokenizer(existing, ',');
+    while true {
+        let item, ok = core::token_next(tok);
+        if !ok { return false; }
+        if item.trim_lws().eq_ascii_fold(needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Appends `field_name` to the `Vary` response header without duplicating
+// existing case-insensitive tokens (RFC 9110 Section 12.5.5).
+fn append_vary(res: Response&, field_name: const u8[:]) -> bool {
+    let clean = field_name.trim_lws();
+    guard clean.len > 0 else { return false; }
+    if clean != "*" {
+        for b in clean {
+            guard core::is_tchar(b) else { return false; }
+        }
+    }
+    let existing = header(res, "Vary").trim_lws();
+    if existing == "*" || vary_list_contains_token(existing, clean) {
+        return true;
+    }
+    if clean == "*" || existing.len == 0 {
+        set_header(res, "Vary", clean);
+        return true;
+    }
+    var combined: u8[..256] = [];
+    guard combined.try_append(existing) && combined.try_append(", ") && combined.try_append(clean) else {
+        return false;
+    }
+    set_header(res, "Vary", combined[..]);
+    return true;
 }

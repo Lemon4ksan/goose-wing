@@ -13,6 +13,7 @@ import core.time;
 import core.url;
 import core.sync;
 import core.bytes;
+import core.crypto;
 
 // ---- io stream ufcs bridges (generic buffer <B>) ---------------------------
 
@@ -171,3 +172,41 @@ fn compact_wire_buffer<B>(arr: B&, consumed: i64) {
 }
 
 fn ::compact_wire_buffer<B>(arr: B&, consumed: i64) { core::compact_wire_buffer(arr, consumed); }
+
+// ---- scalar range & clamping ufcs bridges -----------------------------------
+
+fn ::in_range_i64(val: i64, lo: i64, hi: i64) -> bool {
+    return val >= lo && val <= hi;
+}
+
+fn ::in_range_u64(val: u64, lo: u64, hi: u64) -> bool {
+    return val >= lo && val <= hi;
+}
+
+fn ::clamp_i64(val: i64, lo: i64, hi: i64) -> i64 {
+    return min(max(val, lo), hi);
+}
+
+fn ::clamp_u64(val: u64, lo: u64, hi: u64) -> u64 {
+    return min(max(val, lo), hi);
+}
+
+// ---- lexical & base64 validation ufcs bridges (const u8[:]) -----------------
+
+fn ::has_len_between(s: const u8[:], min_len: i64, max_len: i64) -> bool {
+    return s.len >= min_len && s.len <= max_len;
+}
+
+fn ::is_valid_uuid(s: const u8[:]) -> bool { return core::is_valid_uuid(s); }
+fn ::is_valid_uuid_v4(s: const u8[:]) -> bool { return core::is_valid_uuid_v4(s); }
+fn ::is_valid_uuid_v7(s: const u8[:]) -> bool { return core::is_valid_uuid_v7(s); }
+fn ::is_valid_ulid(s: const u8[:]) -> bool { return core::is_valid_ulid(s); }
+fn ::is_valid_email_addr_spec(s: const u8[:]) -> bool { return core::is_valid_email_addr_spec(s); }
+fn ::is_valid_slug(s: const u8[:]) -> bool { return core::is_valid_slug(s); }
+fn ::is_valid_luhn(s: const u8[:]) -> bool { return core::is_valid_luhn(s); }
+fn ::is_all_digits(s: const u8[:]) -> bool { return core::is_all_digits(s); }
+fn ::is_all_hex(s: const u8[:]) -> bool { return core::is_all_hex(s); }
+fn ::is_all_alphanumeric(s: const u8[:]) -> bool { return core::is_all_alphanumeric(s); }
+fn ::is_all_printable_ascii(s: const u8[:]) -> bool { return core::is_all_printable_ascii(s); }
+fn ::is_valid_base64(s: const u8[:]) -> bool { return core::is_valid_base64(s); }
+fn ::is_valid_base64url(s: const u8[:]) -> bool { return core::is_valid_base64url(s); }

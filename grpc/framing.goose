@@ -18,22 +18,27 @@ import http.mime;
 // [1-byte Flag] [4-byte Big-Endian Length] [Payload]
 // When `compressed` is true, `payload` is Gzip-compressed before framing.
 fn encode_grpc_lpm<B>(payload: const u8[:], out: B&, compressed: bool = false) {
+    let orig_len = out.len;
     if compressed {
         var gz_buf: u8[>..] = [];
         if core::gzip_compress(payload, gz_buf, 6) {
             var hdr_c: u8[..8] = [];
             hdr_c.push(rfc::GRPC_FLAG_COMPRESSED);
             hdr_c.append_u32_be(gz_buf.len as u32);
-            guard out.try_append(hdr_c[..]) else { return; }
-            let _ = out.try_append(gz_buf[..]);
+            guard out.try_append(hdr_c[..]) && out.try_append(gz_buf[..]) else {
+                out.resize(orig_len, 0);
+                return;
+            }
             return;
         }
     }
     var hdr_u: u8[..8] = [];
     hdr_u.push(0x00);
     hdr_u.append_u32_be(payload.len as u32);
-    guard out.try_append(hdr_u[..]) else { return; }
-    let _ = out.try_append(payload);
+    guard out.try_append(hdr_u[..]) && out.try_append(payload) else {
+        out.resize(orig_len, 0);
+        return;
+    }
 }
 
 // Decodes a single LPM frame starting at offset in wire bytes without buffer copying.
@@ -204,11 +209,14 @@ fn encode_grpc_web_trailers_with_meta<B>(
         }
     }
 
+    let orig_len = out.len;
     var tr_hdr: u8[..8] = [];
     tr_hdr.push(rfc::GRPC_WEB_FLAG_TRAILERS);
     tr_hdr.append_u32_be(trailer_body.len as u32);
-    guard out.try_append(tr_hdr[..]) else { return; }
-    let _ = out.try_append(trailer_body[..]);
+    guard out.try_append(tr_hdr[..]) && out.try_append(trailer_body[..]) else {
+        out.resize(orig_len, 0);
+        return;
+    }
 }
 
 fn encode_grpc_web_trailers<B>(status: GrpcStatusCode, message: const u8[:], out: B&) {
@@ -306,7 +314,14 @@ fn parse_grpc_web_trailers(
         }
 
         if parse_grpc_web_trailer_line(line, out_status, out_message) {
+            if found_status {
+                out_status = GrpcStatusCode.Unknown;
+                return false;
+            }
             found_status = true;
+        } else if found_status && line.starts_with_fold("grpc-status:") {
+            out_status = GrpcStatusCode.Unknown;
+            return false;
         }
 
         cursor = core::add_sat_i64(line_end, 1);

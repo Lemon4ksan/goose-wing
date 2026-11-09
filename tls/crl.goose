@@ -162,12 +162,18 @@ fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool 
     return true;
 }
 
-fn x509_crl_read_outer_sig(crl_seq: ByteCursor&, raw_crl: const u8[:], out: ParsedCrl&) -> bool {
+fn x509_crl_read_outer_sig(
+    crl_seq:       ByteCursor&,
+    raw_crl:       const u8[:],
+    inner_sig_oid: const u8[:],
+    out:           ParsedCrl&,
+) -> bool {
     guard crl_seq.cursor_len() > 0 else { return false; }
     var outer_sig_alg = core::cursor_from(crl_seq.buf[..0]);
     guard get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) else { return false; }
     var outer_sig_oid = core::cursor_from(outer_sig_alg.buf[..0]);
     guard get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) else { return false; }
+    guard outer_sig_oid.buf == inner_sig_oid else { return false; }
     out.sig_alg_oid = make_span(raw_crl, outer_sig_oid.buf);
 
     guard crl_seq.cursor_len() > 0 else { return false; }
@@ -224,6 +230,8 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
 
     var sig_alg = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, sig_alg) else { return false; }
+    var inner_sig_oid = core::cursor_from(sig_alg.buf[..0]);
+    guard get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, inner_sig_oid) else { return false; }
 
     var issuer_seq = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, issuer_seq) else { return false; }
@@ -243,7 +251,7 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         }
     }
 
-    return x509_crl_read_outer_sig(crl_seq, raw_crl, out);
+    return x509_crl_read_outer_sig(crl_seq, raw_crl, inner_sig_oid.buf, out);
 }
 
 // Verifies cryptographic signature on an X.509 CRL against issuer's certificate.

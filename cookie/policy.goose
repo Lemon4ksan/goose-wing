@@ -102,15 +102,29 @@ fn validate_canonical_cookie_security(
 
 // ---- schemeful same-site engine --------------------------------------------
 
+// Extracts a non-public-suffix site domain (registrable domain, IP literal, or local host) into `out`.
+// Rejects empty/invalid hosts and bare known public suffixes (RFC 6265bis Section 5.2.1).
+//
+// Example:
+//   host = "app.example.co.uk", out = []
+//   returns: true, out = "example.co.uk"
+fn extract_cookie_site_domain<B>(host: const u8[:], out: B&) -> bool {
+    out.clear();
+    let db = PslDatabase { use_dafsa: true, .. };
+    guard !is_known_public_suffix(db, host) else { return false; }
+    extract_etld_plus_one(db, host, out);
+    return out.len > 0;
+}
+
 // Schemeful Same-Site: compares two origins by (scheme, eTLD+1).
 // Transition between http://example.com and https://example.com is cross-site!
 fn is_schemeful_same_site(scheme1: const u8[:], host1: const u8[:], scheme2: const u8[:], host2: const u8[:]) -> bool {
-    guard scheme1.eq_ascii_fold(scheme2) else { return false; }
+    guard scheme1.len > 0 && scheme1.eq_ascii_fold(scheme2) else { return false; }
 
-    var etld1: u8[..128] = [];
-    var etld2: u8[..128] = [];
-    psl_extract_etld_plus_one(host1, etld1);
-    psl_extract_etld_plus_one(host2, etld2);
+    var etld1: u8[..256] = [];
+    var etld2: u8[..256] = [];
+    guard extract_cookie_site_domain(host1, etld1) else { return false; }
+    guard extract_cookie_site_domain(host2, etld2) else { return false; }
 
     return etld1[..].eq_ascii_fold(etld2[..]);
 }
@@ -225,7 +239,7 @@ fn validate_security_cookie_prefixes(
 
 struct SiteForCookies {
     scheme:             u8[..16]  = [],
-    registrable_domain: u8[..128] = [],
+    registrable_domain: u8[..256] = [],
     schemefully_same:   bool      = true,
     is_null:            bool      = false,
 }
@@ -233,15 +247,24 @@ struct SiteForCookies {
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    let _ = site.scheme.try_set(parsed.scheme[..]);
-    psl_extract_etld_plus_one(parsed.host[..], site.registrable_domain);
+    guard parsed.scheme.len > 0 && site.scheme.try_set(parsed.scheme[..]) else {
+        return null_site_for_cookies();
+    }
+    guard extract_cookie_site_domain(parsed.host[..], site.registrable_domain) else {
+        return null_site_for_cookies();
+    }
     return site;
 }
 
 fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> SiteForCookies {
     var site = SiteForCookies { schemefully_same: true, is_null: false, .. };
-    let _ = site.scheme.try_set(url_val.scheme());
-    psl_extract_etld_plus_one(url_val.hostname(), site.registrable_domain);
+    let scheme_slice = url_val.scheme();
+    guard scheme_slice.len > 0 && site.scheme.try_set(scheme_slice) else {
+        return null_site_for_cookies();
+    }
+    guard extract_cookie_site_domain(url_val.hostname(), site.registrable_domain) else {
+        return null_site_for_cookies();
+    }
     return site;
 }
 
@@ -267,7 +290,7 @@ fn compare_with_frame_tree_site_and_revise(site: SiteForCookies&, frame_url: con
     guard !site.is_null else { return; }
     let frame_site = site_for_cookies_from_url(frame_url);
 
-    if !site.registrable_domain[..].eq_ascii_fold(frame_site.registrable_domain[..]) {
+    if frame_site.is_null || !site.registrable_domain[..].eq_ascii_fold(frame_site.registrable_domain[..]) {
         site.is_null = true;
         site.schemefully_same = false;
         site.scheme.clear();
@@ -286,11 +309,16 @@ fn compute_site_for_cookies_with_ancestors(
     ancestor_urls: const u8[:][:],
     is_sandboxed:  bool = false,
 ) -> SiteForCookies {
-    if is_sandboxed || starts_with(top_url, "data:") || starts_with(top_url, "about:") {
+    if is_sandboxed ||
+       top_url.starts_with_fold("data:") ||
+       top_url.starts_with_fold("about:") ||
+       top_url.starts_with_fold("javascript:") ||
+       top_url.starts_with_fold("blob:") {
         return null_site_for_cookies();
     }
 
     var top_site = site_for_cookies_from_url(top_url);
+    guard !top_site.is_null else { return null_site_for_cookies(); }
     for a_url in ancestor_urls {
         compare_with_frame_tree_site_and_revise(top_site, a_url);
         if top_site.is_null {
@@ -305,6 +333,7 @@ fn is_first_party(site: const SiteForCookies&, req_url: const u8[:], compute_sch
     if compute_schemefully && !site.schemefully_same { return false; }
 
     let req_site = site_for_cookies_from_url(req_url);
+    guard !req_site.is_null else { return false; }
     if !site.registrable_domain[..].eq_ascii_fold(req_site.registrable_domain[..]) {
         return false;
     }

@@ -285,8 +285,10 @@ fn psl_find_custom_exception(db: const PslDatabase&, norm: const u8[:]) -> const
 fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -> bool, bool {
     out.clear();
     let res, ok = match_public_suffix(db, domain);
-    guard ok else { return false, false; }
-    out.append(res.suffix[..]);
+    guard ok && out.try_append(res.suffix[..]) else {
+        out.clear();
+        return false, false;
+    }
     return true, res.is_icann;
 }
 
@@ -419,23 +421,23 @@ fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) 
 
     let has_dot = clean_host.count_byte('.') > 0;
     guard has_dot && !core::is_ip_address_literal(clean_host) else {
-        out.append(clean_host);
+        let _ = out.try_append(clean_host);
         return;
     }
 
     var suffix: u8[..256] = [];
     let ok, _ = find_public_suffix(db, clean_host, suffix);
     guard ok && suffix.len > 0 && !clean_host.eq_ascii_fold(suffix[..]) else {
-        out.append(clean_host);
+        let _ = out.try_append(clean_host);
         return;
     }
 
     let start_pos = psl_find_registrable_start(clean_host, suffix.len);
     guard start_pos >= 0 && start_pos <= clean_host.len else {
-        out.append(clean_host);
+        let _ = out.try_append(clean_host);
         return;
     }
-    out.append(clean_host[start_pos..]);
+    let _ = out.try_append(clean_host[start_pos..]);
 }
 
 // Extracts eTLD+1 from host using the full compiled DAFSA automaton.

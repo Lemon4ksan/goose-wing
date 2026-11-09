@@ -265,6 +265,13 @@ fn bhttp_encode_request(req: const BhttpRequest&, out: u8[..8192]&) -> i32 {
     return out.len as i32;
 }
 
+inline fn is_valid_bhttp_uri_part(s: const u8[:]) -> bool {
+    for b in s {
+        guard b > 0x20 && b < 0x7F else { return false; }
+    }
+    return true;
+}
+
 // Decodes a known-length binary HTTP request; rejects framing indicators other
 // than 0 (RFC 9292 Sections 3.3, 4). Truncated trailing sections decode as
 // empty (Section 3.8). Leaves `out` reset on failure.
@@ -284,14 +291,16 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
     guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST else { return false; }
 
     let method, ok1 = bhttp_read_len_bytes(raw, idx);
-    guard ok1 && method.len >= 1 && method.len <= 16 else { return false; }
+    guard ok1 && method.len >= 1 && method.len <= 16 && is_valid_token_swar(method) else {
+        return false;
+    }
 
     let scheme, ok2 = bhttp_read_len_bytes(raw, idx);
-    guard ok2 else { return false; }
+    guard ok2 && is_valid_bhttp_uri_part(scheme) else { return false; }
     let authority, ok3 = bhttp_read_len_bytes(raw, idx);
-    guard ok3 else { return false; }
+    guard ok3 && is_valid_bhttp_uri_part(authority) else { return false; }
     let path, ok4 = bhttp_read_len_bytes(raw, idx);
-    guard ok4 && path.len <= 2048 else {
+    guard ok4 && path.len <= 2048 && is_valid_bhttp_uri_part(path) else {
         return false;
     }
     out.method.append(method);

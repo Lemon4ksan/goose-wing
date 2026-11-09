@@ -17,6 +17,8 @@ import http.digest_fields;
 import http.signatures;
 import http.security_txt;
 import http.problem;
+import http.negotiate;
+import http.server_timing;
 import auth.dpop;
 import wire.pipeline;
 
@@ -199,6 +201,36 @@ inline fn on_server_stage<First, Next>(
         let _ = p.step(chain.next.on_server_stage(phase, cfg, req, ctx, res));
     }
     return p.verdict;
+}
+
+// Opt-in error-mapping stage wrapper (`onError` equivalent) that formats
+// unhandled 4xx/5xx `ShortCircuit` or `OnError` responses into RFC 9457 `ProblemDetails` JSON.
+struct ProblemErrorGuardStage<Inner> {
+    inner: Inner,
+}
+
+inline fn on_server_stage<Inner>(
+    guard_stage: ProblemErrorGuardStage<Inner>&,
+    phase:       wire::ServerHookPhase,
+    cfg:         ServerPipelineConfig&,
+    req:         const Request&,
+    ctx:         ServerStageCtx&,
+    res:         Response&,
+) -> wire::StageVerdict {
+    let v = guard_stage.inner.on_server_stage(phase, cfg, req, ctx, res);
+    match v {
+        ShortCircuit sc => {
+            if sc.status_code >= 400 && res.body.len == 0 {
+                respond_problem(res, sc.status_code as i32, "Request Rejected");
+            }
+        },
+        _ => {
+            if phase == wire::ServerHookPhase.OnError && res.status_code >= 400 && res.body.len == 0 {
+                respond_problem(res, res.status_code, "Request Rejected");
+            }
+        },
+    };
+    return v;
 }
 
 // Validates Expect header compliance per RFC 9110 Section 10.1.1.
@@ -763,13 +795,41 @@ fn compress_gzip_uncached(res: Response&) {
     }
 }
 
+// RFC 9111 Section 5.2.2.6: no-transform - Returns true if Cache-Control contains the no-transform directive.
+fn has_cache_no_transform(headers: const HeaderMap&) -> bool {
+    let cc = get_inline(headers, WellKnownHeader.CacheControl);
+    guard cc.len > 0 else { return false; }
+    var tok = core::make_byte_tokenizer(cc, ',');
+    while true {
+        let dir, ok = core::token_next(tok);
+        if !ok { break; }
+        let name, _, _ = dir.trim_lws().split_once_byte('=');
+        if name.trim_lws().eq_ascii_fold("no-transform") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Guard predicate for `stage_server_compress` before invoking zstd/brotli/gzip encoders.
+inline fn is_compressible_response(res: const Response&, min_bytes: i64 = 1) -> bool {
+    guard res.body.len >= min_bytes else { return false; }
+    guard res.status_code != 204 && res.status_code != 206 && res.status_code != 304 else {
+        return false;
+    }
+    guard get_inline(res.headers, WellKnownHeader.ContentEncoding).len == 0 else {
+        return false;
+    }
+    return !has_cache_no_transform(res.headers);
+}
+
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
 fn stage_server_compress(
     req:  const Request&,
     res:  Response&,
     mask: u64,
 ) -> wire::StageVerdict {
-    guard res.body.len > 0 && get_inline(res.headers, WellKnownHeader.ContentEncoding).len == 0 else {
+    guard is_compressible_response(res) else {
         return wire::StageVerdict.Continue;
     }
     let accept_enc = get_inline(req.headers, WellKnownHeader.AcceptEncoding);
@@ -927,14 +987,13 @@ fn stage_server_metrics_log(
     let want_log = (mask & (STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
     if want_metrics && !has_custom_header_hash(res.headers, rfc::HEADER_SERVER_TIMING, HASH_HDR_SERVER_TIMING) {
         let dur_ns = if now_ns >= ext.start_time_ns && ext.start_time_ns > 0 {
-            now_ns - ext.start_time_ns
+            core::sub_sat_u64(now_ns, ext.start_time_ns)
         } else {
             0
         };
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
-        let dur_us = dur_ns / 1000;
-        dur_us.format_u64_dec(timing_buf);
+        let _ = format_dur_ms_tenths(dur_ns, timing_buf);
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_SERVER_TIMING,
             timing_buf[..],
@@ -1496,6 +1555,68 @@ inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: internal::Connec
     }
 }
 
+fn finalize_post_auth_and_egress<UserStage>(
+    cfg:           ServerPipelineConfig&,
+    req:           const Request&,
+    now_ns:        u64,
+    res:           Response&,
+    out_future:    internal::InlineHandlerFuture&,
+    match_res:     RouteMatchResult,
+    ext_slot_idx:  i32,
+    effective_pso: u64,
+    sctx:          ServerStageCtx&,
+    user_stage:    UserStage&,
+) -> PipelineOutcome {
+    var outcome = PipelineOutcome.Handled;
+    var skip_route = false;
+    let user_in_v = user_stage.on_server_stage(wire::ServerHookPhase.PostAuth, cfg, req, sctx, res);
+    match user_in_v {
+        ShortCircuit sc => {
+            if res.status_code == 0 {
+                res.status_code = sc.status_code as i32;
+            }
+            skip_route = true;
+        },
+        Abort _ => {
+            outcome = PipelineOutcome.CsrfRejected;
+            skip_route = true;
+        },
+        _ => {},
+    };
+
+    if !skip_route {
+        outcome = dispatch_matched_route(
+            cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, sctx, user_stage,
+        );
+    }
+    sctx.outcome = outcome;
+
+    if outcome != PipelineOutcome.Handled || res.status_code >= 400 {
+        let err_v = user_stage.on_server_stage(wire::ServerHookPhase.OnError, cfg, req, sctx, res);
+        match err_v {
+            ShortCircuit sc => {
+                res.status_code = if res.status_code != 0 { res.status_code } else { sc.status_code as i32 };
+            },
+            _ => {},
+        };
+    }
+
+    if outcome == PipelineOutcome.Handled {
+        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
+        let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
+        match user_out_v {
+            ShortCircuit sc => {
+                res.status_code = sc.status_code as i32;
+            },
+            _ => {},
+        };
+    }
+
+    handle_head_method_suppression(req.method[..], res);
+    let _ = user_stage.on_server_stage(wire::ServerHookPhase.AfterResponse, cfg, req, sctx, res);
+    return outcome;
+}
+
 // Executes an incoming request through the configured pipeline stages with a compile-time `<UserStage>` hook.
 fn execute_server_pipeline_with_stage<UserStage>(
     cfg:        ServerPipelineConfig&,
@@ -1600,38 +1721,9 @@ fn execute_server_pipeline_with_stage<UserStage>(
         }
     }
 
-    let user_in_v = user_stage.on_server_stage(wire::ServerHookPhase.PostAuth, cfg, req, sctx, res);
-    match user_in_v {
-        ShortCircuit sc => {
-            if res.status_code == 0 {
-                res.status_code = sc.status_code as i32;
-            }
-            return PipelineOutcome.Handled;
-        },
-        Abort _ => {
-            return PipelineOutcome.CsrfRejected;
-        },
-        _ => {},
-    };
-
-    let outcome = dispatch_matched_route(
-        cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, sctx, user_stage,
+    return finalize_post_auth_and_egress(
+        cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, effective_pso, sctx, user_stage,
     );
-    sctx.outcome = outcome;
-
-    if outcome == PipelineOutcome.Handled {
-        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
-        let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
-        match user_out_v {
-            ShortCircuit sc => {
-                res.status_code = sc.status_code as i32;
-            },
-            _ => {},
-        };
-    }
-
-    handle_head_method_suppression(req.method[..], res);
-    return outcome;
 }
 
 // Executes an incoming request through the configured pipeline stages.

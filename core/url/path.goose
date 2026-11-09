@@ -523,11 +523,8 @@ fn parse_endpoint(base_url: const Url&, endpoint: const u8[:]) -> Url, UrlParseE
 
     // If endpoint is an absolute URL (e.g. https://... or custom://...), it overrides base completely
     let colon_pos = find_scheme_colon(ep_str);
-    if colon_pos > 0 {
-        let abs_url, abs_err = parse_url(ep_str);
-        if abs_url.valid {
-            return abs_url, UrlParseError.None;
-        }
+    if colon_pos > 0 && is_valid_scheme_slice(ep_str[..colon_pos]) {
+        return parse_url(ep_str);
     }
 
     // Protocol-relative (//...) inherits scheme from base

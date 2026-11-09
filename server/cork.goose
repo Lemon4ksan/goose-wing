@@ -12,6 +12,7 @@ import rfc.http;
 import http.headers;
 import net.tcp;
 import client.response;
+import realtime.sse;
 import .h1_codec;
 
 struct ServerCork {
@@ -146,4 +147,81 @@ fn server_cork_write_response<Res>(sc: ServerCork&, res: const Res&, server_name
 fn server_cork_flush(sc: ServerCork&) -> i32 {
     guard sc.sock_fd > 0 && !sc.buffer.cork_is_empty() else { return 0; }
     return tcp_flush_cork(sc.sock_fd, sc.buffer);
+}
+
+// Configures an HTTP response for progressive UTF-8 text streaming with MIME-sniffing disabled.
+fn init_text_stream_response(res: Response&) {
+    res.status_code = rfc::STATUS_OK;
+    set_header(res, rfc::HEADER_CONTENT_TYPE, "text/plain; charset=utf-8");
+    set_header(res, "X-Content-Type-Options", "nosniff");
+    set_header(res, "Cache-Control", "no-cache");
+    set_header(res, rfc::HEADER_TRANSFER_ENCODING, "chunked");
+    remove_header(res, rfc::HEADER_CONTENT_LENGTH);
+    res.body.clear();
+}
+
+// Writes response status + headers for an open HTTP/1.1 chunked stream into `sc`
+// without writing the terminating `0\r\n\r\n` chunk.
+fn cork_begin_http1_chunked(
+    sc:          ServerCork&,
+    res:         Response&,
+    server_name: const u8[:],
+) -> i32 {
+    guard sc.sock_fd > 0 else { return -1; }
+    set_header(res, rfc::HEADER_TRANSFER_ENCODING, "chunked");
+    remove_header(res, rfc::HEADER_CONTENT_LENGTH);
+    var hdr_wire: u8[..8192] = [];
+    serialize_http1_chunked_response(res, server_name, 4096, hdr_wire);
+    let term_idx = core::fast_find_crlfcrlf(hdr_wire[..]);
+    guard term_idx >= 0 else { return -1; }
+    let hdr_end = core::add_sat_i64(term_idx, 4);
+    return server_cork_write(sc, hdr_wire[..hdr_end]);
+}
+
+// RFC 9112 Section 7.1: Chunked Transfer Coding - writes `<hex>\r\n<payload>\r\n` into `sc`.
+// Empty `payload` is a no-op so callers cannot accidentally emit the terminal chunk early.
+fn cork_write_http1_chunk(sc: ServerCork&, payload: const u8[:]) -> i32 {
+    guard sc.sock_fd > 0 else { return -1; }
+    guard payload.len > 0 else { return 0; }
+    var chunk_hdr: u8[..24] = [];
+    (payload.len as u64).format_u64_hex(chunk_hdr, false);
+    chunk_hdr.append("\r\n");
+    let w1 = server_cork_write2(sc, chunk_hdr[..], payload);
+    guard w1 >= 0 else { return -1; }
+    let w2 = server_cork_write(sc, "\r\n");
+    guard w2 >= 0 else { return -1; }
+    return core::add_sat_i64(w1, w2) as i32;
+}
+
+// RFC 9112 Section 7.1: Chunked Transfer Coding - writes terminating `0\r\n\r\n` and flushes `sc`.
+fn cork_end_http1_chunked(sc: ServerCork&, flush_now: bool = true) -> i32 {
+    let w = server_cork_write(sc, "0\r\n\r\n");
+    guard w >= 0 else { return -1; }
+    if flush_now {
+        let flushed = server_cork_flush(sc);
+        guard flushed >= 0 else { return -1; }
+    }
+    return w;
+}
+
+// Formats a W3C SSE frame on the stack via `sse_format_event` and writes it as an
+// HTTP/1.1 chunk into `sc`, flushing immediately for real-time delivery.
+fn cork_write_sse_chunk(
+    sc:         ServerCork&,
+    event_type: const u8[:],
+    data:       const u8[:],
+    id:         const u8[:] = "",
+    retry_ms:   u32         = 0,
+    flush_now:  bool        = true,
+) -> i32 {
+    var frame: u8[..4096] = [];
+    sse_format_event(frame, event_type, data, id, retry_ms);
+    guard frame.len > 0 else { return 0; }
+    let written = cork_write_http1_chunk(sc, frame[..]);
+    guard written >= 0 else { return -1; }
+    if flush_now {
+        let flushed = server_cork_flush(sc);
+        guard flushed >= 0 else { return -1; }
+    }
+    return written;
 }

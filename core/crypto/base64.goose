@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.math;
 
 // ---- base64url codec (rfc 4648 section 5, unpadded) ------------------------
 
@@ -117,6 +118,42 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
         let pad_mask = (((1 as u32) << bits) - 1);
         guard (buf & pad_mask) == 0 else { out.clear(); return false; }
     }
+    return true;
+}
+
+inline fn is_valid_padded_base64url(src: const u8[:]) -> bool {
+    guard (src.len & 3) == 0 else { return false; }
+    let body_end = core::sub_sat_i64(src.len, 2);
+    var idx: i64 = 0;
+    while idx < body_end {
+        guard base64url_val(src[idx]) >= 0 else { return false; }
+        idx = core::add_sat_i64(idx, 1);
+    }
+    let c1_val = base64url_val(src[core::sub_sat_i64(body_end, 1)]);
+    let c2 = src[body_end];
+    if c2 == '=' {
+        return (c1_val & 0x0F) == 0;
+    }
+    let c2_val = base64url_val(c2);
+    return c2_val >= 0 && (c2_val & 0x03) == 0;
+}
+
+// Validates Base64URL text (RFC 4648 Section 5, padded or unpadded) and canonical zero pad bits
+// (RFC 4648 Section 3.5) in a single pass with zero destination buffer allocation.
+fn is_valid_base64url(src: const u8[:]) -> bool {
+    if src.len == 0 { return true; }
+    let last_idx = core::sub_sat_i64(src.len, 1);
+    if src[last_idx] == '=' {
+        return is_valid_padded_base64url(src);
+    }
+    let rem = src.len & 3;
+    guard rem != 1 else { return false; }
+    for b in src {
+        guard base64url_val(b) >= 0 else { return false; }
+    }
+    let last_val = base64url_val(src[last_idx]);
+    if rem == 2 { return (last_val & 0x0F) == 0; }
+    if rem == 3 { return (last_val & 0x03) == 0; }
     return true;
 }
 
@@ -234,4 +271,30 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         guard (buf & pad_mask) == 0 else { out.clear(); return false; }
     }
     return true;
+}
+
+// Validates standard padded Base64 text (RFC 4648 Section 4) and canonical zero pad bits
+// (RFC 4648 Section 3.5) in a single pass with zero destination buffer allocation.
+fn is_valid_base64(src: const u8[:]) -> bool {
+    if src.len == 0 { return true; }
+    guard (src.len & 3) == 0 else { return false; }
+    let body_end = core::sub_sat_i64(src.len, 2);
+    var idx: i64 = 0;
+    while idx < body_end {
+        guard base64_val(src[idx]) >= 0 else { return false; }
+        idx = core::add_sat_i64(idx, 1);
+    }
+
+    let c1_val = base64_val(src[core::sub_sat_i64(body_end, 1)]);
+    let c2 = src[body_end];
+    let c3 = src[core::add_sat_i64(body_end, 1)];
+    if c2 == '=' {
+        return c3 == '=' && (c1_val & 0x0F) == 0;
+    }
+    let c2_val = base64_val(c2);
+    guard c2_val >= 0 else { return false; }
+    if c3 == '=' {
+        return (c2_val & 0x03) == 0;
+    }
+    return base64_val(c3) >= 0;
 }

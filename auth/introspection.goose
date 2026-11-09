@@ -38,14 +38,23 @@ struct IntrospectionResponse {
 //   returns: ok = true, out = "token=sec%2Fret%2B1&token_type_hint=access_token"
 fn encode_token_endpoint_form<B>(token: const u8[:], hint: TokenTypeHint, out: B&) -> bool {
     out.clear();
-    guard token.len > 0 && token.len <= 256 else { return false; }
-    var buf: u8[..1024] = [];
+    guard token.len > 0 && token.len <= 4096 else { return false; }
+    var buf:   u8[..8192] = [];
+    var chunk: u8[..1024] = [];
     buf.append("token=");
-    guard core::append_form_urlencoded(token, buf) else { return false; }
+    var off: i64 = 0;
+    while off < token.len {
+        let end = min(core::add_sat_i64(off, 256), token.len);
+        chunk.clear();
+        guard core::append_form_urlencoded(token[off..end], chunk) && buf.try_append(chunk[..]) else {
+            return false;
+        }
+        off = end;
+    }
     if hint == TokenTypeHint.AccessToken {
-        buf.append("&token_type_hint=access_token");
+        guard buf.try_append("&token_type_hint=access_token") else { return false; }
     } else if hint == TokenTypeHint.RefreshToken {
-        buf.append("&token_type_hint=refresh_token");
+        guard buf.try_append("&token_type_hint=refresh_token") else { return false; }
     }
     return out.try_set(buf[..]);
 }

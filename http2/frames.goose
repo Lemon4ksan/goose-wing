@@ -39,23 +39,31 @@ inline fn decode_origin_slice(rem: const u8[:]) -> const u8[:], i64, bool {
 
 // RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Parses ORIGIN frame payload
 // Validates stream 0 requirement and populates out_entries.
+//
+// Example:
+//   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm'], stream_id = 0
+//   returns: count = 1, H2_ERR_NO_ERROR, out_entries = ["ex.com"]
 fn parse_origin_frame(
     payload:     const u8[:],
     stream_id:   u32,
     out_entries: const u8[:][..16]&,
 ) -> u32, u32 {
+    let saved_len = out_entries.len;
+    var committed = false;
+    defer if !committed { out_entries.resize(saved_len); };
     guard stream_id == 0 else {
         return 0, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     var idx: i64 = 0;
     while idx < payload.len {
         let entry, total, ok = decode_origin_slice(payload[idx..]);
-        guard ok else { return out_entries.len as u32, rfc::H2_ERR_FRAME_SIZE_ERROR; }
+        guard ok else { return saved_len as u32, rfc::H2_ERR_FRAME_SIZE_ERROR; }
         guard out_entries.try_push(entry) else {
-            return out_entries.len as u32, rfc::H2_ERR_PROTOCOL_ERROR;
+            return saved_len as u32, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         idx += total;
     }
+    committed = true;
     return out_entries.len as u32, rfc::H2_ERR_NO_ERROR;
 }
 
@@ -66,9 +74,9 @@ fn parse_origin_frame(
 //   out: appends 16-bit length (19) followed by "https://example.com"
 fn encode_origin_entry<B>(out: B&, origin: const u8[:]) -> bool {
     guard origin.len <= 0xFFFF else { return false; }
-    out.append_u16_be(origin.len as u16);
-    out.append(origin);
-    return true;
+    var len_be: u8[..2] = [];
+    len_be.append_u16_be(origin.len as u16);
+    return out.try_append(len_be[..]) && out.try_append(origin);
 }
 
 inline fn sum_origins_payload_len(origins: const u8[:][..16]&) -> u32, bool {
@@ -86,14 +94,16 @@ fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool {
     guard ok else { return false; }
     let start_len = out.len;
     var committed = false;
+    defer if !committed { out.resize(start_len); };
     let hdr = FrameHeader {
         length:     payload_len,
         frame_type: rfc::H2_FRAME_ORIGIN,
         flags:      0,
         stream_id:  0,
     };
-    encode_frame_header_to(hdr, out);
-    defer if !committed { out.resize(start_len); };
+    var raw_hdr: u8[9] = [0; 9];
+    encode_frame_header(hdr, raw_hdr);
+    guard out.try_append(raw_hdr[..]) else { return false; }
     for org in origins {
         guard encode_origin_entry(out, org) else {
             return false;
@@ -139,15 +149,16 @@ fn encode_altsvc_payload<B>(
     alt_svc_val: const u8[:],
     stream_id:   u32,
 ) -> bool {
+    var len_be: u8[..2] = [];
     if stream_id == 0 {
         guard origin.len > 0 && origin.len <= 0xFFFF else { return false; }
-        out.append_u16_be(origin.len as u16);
-        out.append(origin);
+        len_be.append_u16_be(origin.len as u16);
+        guard out.try_append(len_be[..]) && out.try_append(origin) else { return false; }
     } else {
-        out.append_u16_be(0 as u16);
+        len_be.append_u16_be(0 as u16);
+        guard out.try_append(len_be[..]) else { return false; }
     }
-    out.append(alt_svc_val);
-    return true;
+    return out.try_append(alt_svc_val);
 }
 
 inline fn calc_altsvc_payload_len(origin_len: i64, alt_svc_len: i64, stream_id: u32) -> u32, bool {
@@ -172,14 +183,16 @@ fn encode_altsvc_frame<B>(
 
     let start_len = out.len;
     var committed = false;
+    defer if !committed { out.resize(start_len); };
     let hdr = FrameHeader {
         length:     payload_len,
         frame_type: rfc::H2_FRAME_ALTSVC,
         flags:      0,
         stream_id:  stream_id,
     };
-    encode_frame_header_to(hdr, out);
-    defer if !committed { out.resize(start_len); };
+    var raw_hdr: u8[9] = [0; 9];
+    encode_frame_header(hdr, raw_hdr);
+    guard out.try_append(raw_hdr[..]) else { return false; }
     guard encode_altsvc_payload(out, origin, alt_svc_val, stream_id) else { return false; }
     committed = true;
     return true;

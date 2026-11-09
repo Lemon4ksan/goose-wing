@@ -215,9 +215,11 @@ fn parse_dpop_jwk_coord<B>(
 
 fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
     guard json::peek(reader) == '{' else {
+        info.valid = false;
         json::skip(reader);
         return false;
     }
+    info = DPoPJwkInfo { .. };
     var seen_kty = false;
     var seen_use = false;
     var seen_alg = false;
@@ -302,6 +304,7 @@ fn is_dpop_alg_jwk_compatible(alg: const u8[:], info: const DPoPJwkInfo&) -> boo
 //   returns: true, out_alg = "ES256", out_jwk populated
 fn parse_dpop_header_jwk_info(header_json: const u8[:], out_alg: u8[..16]&, out_jwk: DPoPJwkInfo&) -> bool {
     out_alg.clear();
+    out_jwk = DPoPJwkInfo { valid: false, .. };
     var reader = json::reader(header_json);
     var seen_jwk = false;
     var seen_alg = false;
@@ -319,13 +322,20 @@ fn parse_dpop_header_jwk_info(header_json: const u8[:], out_alg: u8[..16]&, out_
         } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
-            verify_dpop_jwk(reader, out_jwk);
+            if !verify_dpop_jwk(reader, out_jwk) {
+                had_dup = true;
+            }
         } else {
             json::skip(reader);
         }
     };
     let ok_base = json::finish(reader) && !had_dup && seen_alg && seen_jwk && out_jwk.valid;
-    return ok_base && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk);
+    let ok = ok_base && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk);
+    if !ok {
+        out_alg.clear();
+        out_jwk.valid = false;
+    }
+    return ok;
 }
 
 // Creates an RFC 9449 signed DPoP Proof JWT using an asymmetric key pair (EdDSA / Ed25519).
@@ -540,7 +550,9 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
         } else if key == "jwk" {
             if seen_jwk { had_dup = true; }
             seen_jwk = true;
-            verify_dpop_jwk(reader, jwk_info);
+            if !verify_dpop_jwk(reader, jwk_info) {
+                had_dup = true;
+            }
         } else {
             json::skip(reader);
         }
@@ -1024,16 +1036,16 @@ fn verify_dpop_proof(
 
 // Attaches DPoP proof and optional Authorization: DPoP <token> header to a Request.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
-    guard proof.len > 0 && proof.len <= 2048 else { return; }
+    guard proof.len > 0 && proof.len <= MAX_DPOP_PROOF_LEN else { return; }
     for b in proof {
         guard core::is_ascii_vchar(b) else { return; }
     }
     if access_token.len > 0 {
-        guard access_token.len <= 2040 else { return; }
+        guard access_token.len <= MAX_DPOP_PROOF_LEN else { return; }
         for b in access_token {
             guard core::is_ascii_vchar(b) else { return; }
         }
-        var auth_val: u8[..2048] = [];
+        var auth_val: u8[..4104] = [];
         auth_val.append("DPoP ");
         auth_val.append(access_token);
         set_header(req, "Authorization", auth_val[..]);

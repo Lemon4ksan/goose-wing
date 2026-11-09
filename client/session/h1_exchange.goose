@@ -383,6 +383,20 @@ fn pump_cl_body(
     return pump_h1_fixed_body(conn, remaining_cl, resp, timeout_ms);
 }
 
+// RFC 9112 Section 6.3: Message Body Length - 204 and 304 responses are always terminated by the
+// first empty line after headers; if a non-HEAD 204/304 carries non-zero Content-Length or
+// Transfer-Encoding, the connection MUST NOT be reused to prevent response smuggling.
+fn has_rogue_empty_status_framing(method: const u8[:], status: i32, headers: const HeaderMap&) -> bool {
+    guard !method.eq_ascii_fold("HEAD") && (status == 204 || status == 304) else { return false; }
+    if has_header(headers, "Transfer-Encoding") {
+        return true;
+    }
+    let cl = get_header(headers, "Content-Length").trim_lws();
+    guard cl.len > 0 else { return false; }
+    let cl_val, ok_cl = cl.parse_u64_dec();
+    return !ok_cl || cl_val > 0;
+}
+
 fn pump_response_body(
     conn:       PooledConnection&,
     req:        const Request&,
@@ -397,6 +411,14 @@ fn pump_response_body(
 
     let is_upgrade = resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS;
     if req.method == "HEAD" || is_upgrade || rfc::is_empty_body_status(resp.status_code) {
+        let status = resp.status_code;
+        if status == 204 || status == 304 {
+            let allow_ka = keep_alive && !has_rogue_empty_status_framing(req.method[..], status, resp.headers);
+            if allow_ka && leftover.len > 0 {
+                let _ = conn.rx_buf.try_append(leftover);
+            }
+            return true, allow_ka;
+        }
         if (keep_alive || is_upgrade) && leftover.len > 0 {
             let _ = conn.rx_buf.try_append(leftover);
         }
@@ -467,4 +489,199 @@ fn execute_h1_exchange(
         return pump_response_body(conn, req, resp, leftover[..], timeout_ms);
     }
     return false, false;
+}
+
+// ---- 6. 4-Phase Timeouts & Keep-Alive Header Synchronization ---------------
+
+struct ExchangeTimeouts {
+    connect_timeout_ms:             u32 = 10000,
+    headers_timeout_ms:             u32 = 30000,
+    body_chunk_timeout_ms:          u32 = 30000,
+    keep_alive_default_ns:          i64 = 4000000000,
+    keep_alive_max_ns:              i64 = 600000000000,
+    keep_alive_threshold_margin_ns: i64 = 1000000000,
+}
+
+struct KeepAliveHints {
+    has_timeout:  bool = false,
+    timeout_sec:  u64  = 0,
+    has_max_reqs: bool = false,
+    max_reqs:     u64  = 0,
+}
+
+// Parses `Keep-Alive` header parameters `timeout=<delta-seconds>` and `max=<uint>`.
+// Ignores unknown extension parameters and quoted values safely without allocation.
+//
+// Example:
+//   raw = "timeout=5, max=100"
+//   returns: KeepAliveHints { has_timeout: true, timeout_sec: 5, has_max_reqs: true, max_reqs: 100 }
+fn parse_keep_alive_header(raw: const u8[:]) -> KeepAliveHints {
+    var hints = KeepAliveHints { .. };
+    var rem = raw.trim_lws();
+    while rem.len > 0 {
+        let param, rest, has_comma = rem.split_once_unquoted_byte(',');
+        rem = if has_comma { rest.trim_lws() } else { "" };
+        let clean_param = param.trim_lws();
+        guard clean_param.len > 0 else { continue; }
+
+        let k_raw, v_raw, has_eq = clean_param.split_once_byte('=');
+        guard has_eq else { continue; }
+        let key = k_raw.trim_lws();
+        let val = v_raw.trim_lws().trim_byte('"');
+        if key.eq_ascii_fold("timeout") {
+            let secs, ok_s = val.parse_u64_dec();
+            if ok_s {
+                hints.has_timeout = true;
+                hints.timeout_sec = secs;
+            }
+        } else if key.eq_ascii_fold("max") {
+            let max_v, ok_m = val.parse_u64_dec();
+            if ok_m {
+                hints.has_max_reqs = true;
+                hints.max_reqs = max_v;
+            }
+        }
+    }
+    return hints;
+}
+
+// Computes the effective per-connection idle timeout in nanoseconds and whether the socket
+// can be kept alive after applying `keep_alive_threshold_margin_ns` and `max_reqs`.
+//
+// Example:
+//   hints = { has_timeout: true, timeout_sec: 5, has_max_reqs: true, max_reqs: 100 }, use_count = 1
+//   cfg = ExchangeTimeouts { keep_alive_threshold_margin_ns: 1000000000, .. }
+//   returns: 4000000000, true
+fn resolve_peer_keep_alive_budget(
+    hints:     const KeepAliveHints&,
+    use_count: i64,
+    cfg:       const ExchangeTimeouts&,
+) -> i64, bool {
+    if hints.has_max_reqs {
+        if hints.max_reqs == 0 || (use_count >= 0 && (use_count as u64) >= hints.max_reqs) {
+            return 0, false;
+        }
+    }
+    if !hints.has_timeout {
+        let def_ns = min(max(cfg.keep_alive_default_ns, 0), max(cfg.keep_alive_max_ns, 0));
+        return def_ns, def_ns > 0;
+    }
+    let raw_ns_u64 = core::mul_sat_u64(hints.timeout_sec, 1000000000);
+    let clamped_u64 = min(raw_ns_u64, 9223372036854775807);
+    let adjusted_ns = core::sub_sat_i64(clamped_u64 as i64, max(cfg.keep_alive_threshold_margin_ns, 0));
+    guard adjusted_ns > 0 else { return 0, false; }
+    let capped_ns = min(adjusted_ns, max(cfg.keep_alive_max_ns, 0));
+    return capped_ns, capped_ns > 0;
+}
+
+// Computes remaining header read budget in milliseconds from a monotonic deadline,
+// preventing 1-byte Slowloris server drips from extending `headers_timeout_ms`.
+fn remaining_deadline_ms(deadline_mono_ns: i64, now_mono_ns: i64) -> u32, bool {
+    guard deadline_mono_ns > now_mono_ns else { return 0, false; }
+    let diff_ns = core::sub_sat_i64(deadline_mono_ns, now_mono_ns) as u64;
+    let rounded_ns = core::add_sat_u64(diff_ns, 999999);
+    let _, hi = core::mul_wide_u64(rounded_ns >> 6, 9671406556917033398);
+    let ms_u64 = hi >> 13;
+    let clamped = min(max(ms_u64, 1), 4294967295);
+    return clamped as u32, true;
+}
+
+// ---- 7. Zero-Copy Streaming Sink & Bounded Body Drain ----------------------
+
+enum StreamSinkVerdict {
+    Continue,
+    AbortExchange,
+}
+
+struct ResponseHead {
+    status_code: i32       = 0,
+    protocol:    u8[..16]  = "HTTP/1.1",
+    headers:     HeaderMap = HeaderMap { .. },
+}
+
+// Built-in sink adapter that appends into `Response` while enforcing an optional `max_response_bytes` cap.
+struct BufferedBodySink {
+    resp:               Response&,
+    max_response_bytes: u64 = 0,
+}
+
+fn on_headers(sink: BufferedBodySink&, head: const ResponseHead&) -> StreamSinkVerdict {
+    sink.resp.status_code = head.status_code;
+    let _ = sink.resp.protocol.try_set(head.protocol[..]);
+    sink.resp.headers = head.headers;
+    if sink.max_response_bytes > 0 {
+        let cl_str = get_header(head.headers, "Content-Length").trim_lws();
+        if cl_str.len > 0 {
+            let cl_val, ok_cl = cl_str.parse_u64_dec();
+            if !ok_cl || cl_val > sink.max_response_bytes {
+                return StreamSinkVerdict.AbortExchange;
+            }
+        }
+    }
+    return StreamSinkVerdict.Continue;
+}
+
+fn on_data(sink: BufferedBodySink&, chunk: const u8[:]) -> StreamSinkVerdict {
+    if sink.max_response_bytes > 0 {
+        let next_len = core::add_sat_u64(sink.resp.body.len as u64, chunk.len as u64);
+        guard next_len <= sink.max_response_bytes else {
+            return StreamSinkVerdict.AbortExchange;
+        }
+    }
+    sink.resp.body.append(chunk);
+    return StreamSinkVerdict.Continue;
+}
+
+fn on_complete(sink: BufferedBodySink&, trailers: const HeaderMap&) {
+    sink.resp.trailers = trailers;
+}
+
+// Pumps an exact `Content-Length` body directly into `sink.on_data(chunk)` using a 4 KB stack array.
+fn stream_h1_fixed_body<Sink>(
+    conn:           PooledConnection&,
+    content_length: u64,
+    leftover:       const u8[:],
+    body_timeout:   u32,
+    sink:           Sink&,
+) -> bool {
+    let init_len = min(leftover.len as u64, content_length) as i64;
+    if init_len > 0 {
+        guard sink.on_data(leftover[..init_len]) == StreamSinkVerdict.Continue else { return false; }
+    }
+    if leftover.len > init_len {
+        guard conn.rx_buf.try_append(leftover[init_len..]) else { return false; }
+    }
+    var remaining = core::sub_sat_u64(content_length, init_len as u64);
+    var raw_chunk: u8[4096] = [0; 4096];
+    while remaining > 0 {
+        let to_read = min(remaining, 4096) as i64;
+        let recvd = conn.transport.recv_slice(raw_chunk[..to_read], body_timeout);
+        guard recvd > 0 else { return false; }
+        guard sink.on_data(raw_chunk[..recvd]) == StreamSinkVerdict.Continue else { return false; }
+        remaining = core::sub_sat_u64(remaining, recvd as u64);
+    }
+    var empty_trailers = HeaderMap { .. };
+    sink.on_complete(empty_trailers);
+    return true;
+}
+
+// Drains and discards at most `max_drain_bytes` of a fixed-length unread HTTP/1.1 body
+// so redirect hops and auth challenges can recycle the keep-alive socket instead of closing it.
+fn drain_h1_fixed_body_bounded(
+    conn:            PooledConnection&,
+    content_length:  u64,
+    leftover_len:    u64,
+    max_drain_bytes: u64,
+    timeout_ms:      u32,
+) -> bool {
+    guard content_length <= max_drain_bytes else { return false; }
+    var remaining = core::sub_sat_u64(content_length, leftover_len);
+    var scratch: u8[4096] = [0; 4096];
+    while remaining > 0 {
+        let step = min(remaining, 4096) as i64;
+        let recvd = conn.transport.recv_slice(scratch[..step], timeout_ms);
+        guard recvd > 0 else { return false; }
+        remaining = core::sub_sat_u64(remaining, recvd as u64);
+    }
+    return true;
 }

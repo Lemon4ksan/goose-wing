@@ -1827,6 +1827,8 @@ fn handle_h2_server_ingress<Stage, B>(
     stage:     Stage&,
 ) -> i64, bool {
     var offset: i64 = 0;
+    var ok_conn = false;
+    defer if !ok_conn { cleanup_h2_server_session(sess, pipeline); };
     guard check_ingress_preface(sess, wire, offset, out_wire) else { return 0, false; }
 
     var cancelled_streams: u32[..128] = [];
@@ -1871,6 +1873,7 @@ fn handle_h2_server_ingress<Stage, B>(
 
     dispatch_ready_server_streams(sess, pipeline, timer, client_ip, now_ms, out_wire, stage);
     flush_server_control_frames(sess);
+    ok_conn = true;
     return offset, true;
 }
 

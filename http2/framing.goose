@@ -59,10 +59,9 @@ fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
 
 // Appends 9 serialized header bytes to any buffer.
 fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
-    out.append_u24_be(hdr.length & 0x00FFFFFF);
-    out.push(hdr.frame_type);
-    out.push(hdr.flags);
-    out.append_u32_be(hdr.stream_id & 0x7FFFFFFF);
+    var raw: u8[9] = [0; 9];
+    encode_frame_header(hdr, raw);
+    let _ = out.try_append(raw[..]);
 }
 
 // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.

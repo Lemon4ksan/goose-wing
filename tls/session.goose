@@ -1284,8 +1284,16 @@ fn verify_crl_for_chain(
     chain_slices: const (const u8[:])[..8]&,
 ) -> bool {
     guard crl_der.len > 0 else { return true; }
+    guard chain_parsed.len > 0 && chain_slices.len == chain_parsed.len else { return false; }
     var crl_parsed = ParsedCrl { .. };
     guard parse_x509_crl(crl_der, crl_parsed) else { return false; }
+    let leaf_issuer = span_slice(chain_slices[0], chain_parsed[0].issuer_raw);
+    guard crl_parsed.issuer == leaf_issuer else { return false; }
+    let issuer_idx: i64 = if chain_parsed.len >= 2 { 1 } else { 0 };
+    let sig_alert = x509_verify_crl_signature(
+        crl_parsed, crl_der, chain_parsed[issuer_idx], chain_slices[issuer_idx],
+    );
+    guard sig_alert == TlsAlert.CloseNotify else { return false; }
     let ser_bytes = span_slice(chain_slices[0], chain_parsed[0].serial_number);
     let ser_u64, ok_ser = parse_asn1_serial_u64(ser_bytes);
     guard ok_ser else { return false; }

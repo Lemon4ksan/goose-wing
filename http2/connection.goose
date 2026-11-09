@@ -595,7 +595,7 @@ fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u6
 // Computes signed delta = int64(new_init_win) - int64(old_init_win).
 // Enforces MAX_INITIAL_WINDOW_SIZE ceiling and allows negative stream windows.
 fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> u32 {
-    s.initial_window_update_count++;
+    s.initial_window_update_count = core::add_sat_u32(s.initial_window_update_count, 1);
     // CVE-2026-78669 defense: prevent excessive CPU consumption from repeated initial window changes
     if s.initial_window_update_count > 16 {
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
@@ -606,18 +606,20 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
         return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
-    let delta = new_win_i64 - s.peer_initial_window_size;
-    s.peer_initial_window_size = new_win_i64;
-
+    let delta = core::sub_sat_i64(new_win_i64, s.peer_initial_window_size);
     for &stream in s.streams {
         if stream.active && stream.state != H2StreamState.Closed {
-            let next_win = stream.send_window + delta;
-            // Overflows beyond 2^31 - 1 trigger flow control error
-            if next_win > rfc::H2_MAX_WINDOW_SIZE {
+            if core::add_sat_i64(stream.send_window, delta) > rfc::H2_MAX_WINDOW_SIZE {
                 return rfc::H2_ERR_FLOW_CONTROL_ERROR;
             }
+        }
+    }
+
+    s.peer_initial_window_size = new_win_i64;
+    for &stream in s.streams {
+        if stream.active && stream.state != H2StreamState.Closed {
             // Stream window may become negative if peer shrank initial window size
-            stream.send_window = next_win;
+            stream.send_window = core::add_sat_i64(stream.send_window, delta);
         }
     }
 
@@ -631,8 +633,12 @@ fn apply_goaway(s: H2Connection&, last_stream_id: u32, error_code: u32) -> u32 {
     guard rfc::validate_goaway_last_stream_id(last_stream_id, sender_is_client) else {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
+    let clean_last_id = last_stream_id & 0x7FFFFFFF;
+    if s.goaway_received && clean_last_id > s.goaway_last_stream_id {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     s.goaway_received = true;
-    s.goaway_last_stream_id = last_stream_id & 0x7FFFFFFF;
+    s.goaway_last_stream_id = clean_last_id;
     s.goaway_error_code = error_code;
     return rfc::H2_ERR_NO_ERROR;
 }

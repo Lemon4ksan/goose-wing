@@ -9,6 +9,7 @@ import core from "..";
 import .limits;
 import .constants;
 import .policy;
+import http.headers;
 
 // ---- canonical cookie model ------------------------------------------------
 
@@ -339,5 +340,22 @@ fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
     }
     let _ = jar.cookies.pop();
     let _ = jar.states.pop();
+    return true;
+}
+
+// Emits `Set-Cookie` headers into `headers` exclusively for `COOKIE_DELTA_ADDED`
+// and `COOKIE_DELTA_REMOVED` entries in `jar`.
+fn flush_cookie_deltas(jar: const ServerCookieDeltaJar&, headers: HeaderMap&) -> bool {
+    let n = min(jar.cookies.len, jar.states.len);
+    for idx in n {
+        let state = jar.states[idx];
+        if state == COOKIE_DELTA_ADDED || state == COOKIE_DELTA_REMOVED {
+            var cookie_line: u8[..4096] = [];
+            format(cookie_line, jar.cookies[idx]);
+            guard append_header(headers, "Set-Cookie", cookie_line[..]) else {
+                return false;
+            }
+        }
+    }
     return true;
 }

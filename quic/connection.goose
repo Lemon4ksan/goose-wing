@@ -746,7 +746,9 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
     if frame.frame_type == QuicFrameType.DataBlocked
         || frame.frame_type == QuicFrameType.StreamsBlockedBidi
         || frame.frame_type == QuicFrameType.StreamsBlockedUni
-        || frame.frame_type == QuicFrameType.Datagram {
+        || frame.frame_type == QuicFrameType.Datagram
+        || frame.frame_type == QuicFrameType.ImmediateAck
+        || frame.frame_type == QuicFrameType.AckFrequency {
         return true, true;
     }
     quic_conn_close(conn, rfc::QUIC_ERR_FRAME_ENCODING);
@@ -850,7 +852,9 @@ inline fn quic_is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeade
             || ftype == QuicFrameType.PathResponse
             || ftype == QuicFrameType.RetireConnectionId
             || ftype == QuicFrameType.ConnectionClose
-            || ftype == QuicFrameType.ConnectionCloseApp {
+            || ftype == QuicFrameType.ConnectionCloseApp
+            || ftype == QuicFrameType.ImmediateAck
+            || ftype == QuicFrameType.AckFrequency {
             return false;
         }
         return true;

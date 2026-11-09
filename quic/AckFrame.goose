@@ -479,6 +479,15 @@ inline fn update_space_next_loss_time(space: PnSpaceState&, pkt: const SentPacke
     }
 }
 
+inline fn compact_remaining_sent_packets(space: PnSpaceState&, start_idx: i64, write_idx: u64) {
+    var w = write_idx;
+    for rem_i in start_idx..space.sent_packets.len {
+        space.sent_packets[w as i64] = space.sent_packets[rem_i];
+        w = core::add_sat_u64(w, 1);
+    }
+    space.sent_packets.resize(w as i64, SentPacketMeta { .. });
+}
+
 // Detects and removes lost packets in pn_space using packet and time thresholds in a single pass.
 fn detect_lost_packets<B>(
     space:    PnSpaceState&,
@@ -496,7 +505,10 @@ fn detect_lost_packets<B>(
     for i in space.sent_packets.len {
         let pkt = space.sent_packets[i];
         if is_sent_packet_lost(pkt, space.largest_acked_pn, lost_send_time) {
-            guard out_lost.try_push(pkt) else { return false; }
+            if !out_lost.try_push(pkt) {
+                compact_remaining_sent_packets(space, i, write_idx);
+                return false;
+            }
         } else {
             update_space_next_loss_time(space, pkt, loss_delay);
             space.sent_packets[write_idx as i64] = pkt;

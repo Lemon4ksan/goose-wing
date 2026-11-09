@@ -501,7 +501,7 @@ fn resolve_bracketed_ipv6_host(view: UrlView&, host_port_slice: const u8[:]) -> 
         let port_str = host_port_slice[close_bracket + 2..];
         if port_str.len > 0 {
             let port_num, port_ok = parse_port_number(port_str);
-            guard port_ok else { return UrlParseError.InvalidPort; }
+            guard port_ok && !eq_ascii_fold(view.scheme, "file") else { return UrlParseError.InvalidPort; }
             view.port = port_num;
         } else {
             view.port = -1;
@@ -520,7 +520,7 @@ fn resolve_regular_host_port(view: UrlView&, host_port_slice: const u8[:]) -> Ur
         let port_str = host_port_slice[host_colon + 1..];
         if port_str.len > 0 {
             let port_num, port_ok = parse_port_number(port_str);
-            guard port_ok else { return UrlParseError.InvalidPort; }
+            guard port_ok && !eq_ascii_fold(view.scheme, "file") else { return UrlParseError.InvalidPort; }
             view.port = port_num;
         } else {
             view.port = -1;
@@ -541,24 +541,18 @@ fn resolve_regular_host_port(view: UrlView&, host_port_slice: const u8[:]) -> Ur
 }
 
 fn resolve_url_view_authority(view: UrlView&, authority: const u8[:]) -> UrlParseError {
-    var at_idx = -1;
-    for scan_idx in authority.len {
-        if authority[scan_idx] == '@' { at_idx = scan_idx; }
-    }
-
+    let at_idx = last_index_of_byte(authority, '@');
     var host_port_slice = authority;
     if at_idx >= 0 {
-        let userinfo = authority[..at_idx];
-        host_port_slice = authority[at_idx + 1..];
-        var user_colon = -1;
-        for scan_idx in userinfo.len {
-            if userinfo[scan_idx] == ':' { user_colon = scan_idx; break; }
+        guard !eq_ascii_fold(view.scheme, "file") else {
+            return UrlParseError.ForbiddenHostCodePoint;
         }
-        if user_colon >= 0 {
-            view.username = userinfo[..user_colon];
-            view.password = userinfo[user_colon + 1..];
-        } else {
-            view.username = userinfo;
+        let userinfo = authority[..at_idx];
+        host_port_slice = authority[add_sat_i64(at_idx, 1)..];
+        let u_part, p_part, has_colon = split_once_byte(userinfo, ':');
+        view.username = if has_colon { u_part } else { userinfo };
+        if has_colon {
+            view.password = p_part;
         }
     }
 
@@ -602,7 +596,7 @@ inline fn split_url_view_path_query_hash(view: UrlView&, rest: const u8[:]) {
 
 inline fn has_unencoded_control_byte(s: const u8[:]) -> bool {
     for b in s {
-        if b == '\r' || b == '\n' || b == 0 { return true; }
+        if b <= 0x20 || b == 0x7F { return true; }
     }
     return false;
 }

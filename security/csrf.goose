@@ -92,7 +92,7 @@ inline fn wire_token(v: SecFetchSite.Missing) -> const u8[:] { return ""; }
 //   returns: SecFetchSite.SameOrigin
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
     let clean = val.trim_lws();
-    if clean.len == 0 { return SecFetchSite.Missing; }
+    guard clean.len > 0 else { return SecFetchSite.Unknown; }
     const for <N, V> in variants<SecFetchSite> {
         let v = default<V>();
         let tok = wire_token(v);
@@ -317,10 +317,17 @@ fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:] {
 }
 
 fn evaluate_samesite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
-    if ctx.method_is_safe {
+    if guard_cfg.allow_same_site || (ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..])) {
         return CsrfDecision.Allow;
     }
-    if guard_cfg.allow_same_site || (ctx.has_origin && is_origin_trusted(guard_cfg, ctx.origin[..])) {
+    if ctx.method_is_safe {
+        if ctx.is_sensitive_navigation_route && guard_cfg.require_user_activation_on_sensitive_nav &&
+            !ctx.user_activated {
+            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.MissingUserActivationOnSensitiveNav };
+        }
+        if is_embedding_dest(ctx.dest) {
+            return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteFramingOrXssi };
+        }
         return CsrfDecision.Allow;
     }
     return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.DisallowedSameSiteSubdomain };
@@ -487,15 +494,11 @@ fn extract_fetch_context<Req>(
         } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_USER) {
             ctx.user_activated = (val == "?1");
         } else if name.eq_ascii_fold(rfc::HEADER_ORIGIN) {
-            if !ctx.has_origin {
-                ctx.has_origin = true;
-                ctx.origin.try_set(val);
-            }
+            if ctx.has_origin || !ctx.origin.try_set(val) { ctx.origin.clear(); }
+            ctx.has_origin = true;
         } else if name.eq_ascii_fold(rfc::HEADER_REFERER) {
-            if !ctx.has_referer {
-                ctx.has_referer = true;
-                ctx.referer.try_set(val);
-            }
+            if ctx.has_referer || !ctx.referer.try_set(val) { ctx.referer.clear(); }
+            ctx.has_referer = true;
         } else if name.eq_ascii_fold(rfc::HEADER_COOKIE) {
             ctx.has_session_cookie = true;
         } else if name.eq_ascii_fold(rfc::HEADER_AUTHORIZATION) || name.eq_ascii_fold("X-API-Key") {
@@ -544,9 +547,9 @@ fn evaluate_request_csrf<Req>(
     target_host:      const u8[:],
     is_sensitive_nav: bool = false,
 ) -> CsrfDecision {
-    if guard_cfg.exempt_paths.len == 0 && is_csrf_safe_method(req.method[..]) {
+    if !is_sensitive_nav && guard_cfg.exempt_paths.len == 0 && is_csrf_safe_method(req.method[..]) {
         let site = scan_request_sec_fetch_site(req);
-        if site != SecFetchSite.CrossSite && site != SecFetchSite.Unknown {
+        if site == SecFetchSite.SameOrigin || site == SecFetchSite.None || site == SecFetchSite.Missing {
             return CsrfDecision.Allow;
         }
     }

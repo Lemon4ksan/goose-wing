@@ -113,6 +113,8 @@ fn decode_connect_get_payload(
     params:      const ConnectUnaryGetParams&,
     out_payload: u8[>..]&,
 ) -> GrpcStatusCode {
+    var committed = false;
+    defer if !committed { out_payload.clear(); };
     if raw_msg.len > 0 && params.base64 {
         var raw_msg_copy: u8[..4096] = [];
         guard raw_msg_copy.try_set(raw_msg) else { return GrpcStatusCode.InvalidArgument; }
@@ -128,7 +130,10 @@ fn decode_connect_get_payload(
     }
 
     let comp = params.compression[..];
-    guard comp.len > 0 && !comp.eq_ascii_fold("identity") else { return GrpcStatusCode.Ok; }
+    if comp.len == 0 || comp.eq_ascii_fold("identity") {
+        committed = true;
+        return GrpcStatusCode.Ok;
+    }
     guard comp.eq_ascii_fold("gzip") else { return GrpcStatusCode.Unimplemented; }
     var decomp_buf: u8[>..] = [];
     let ok_gz, gz_err = core::gzip_decompress_with_limit(
@@ -143,6 +148,7 @@ fn decode_connect_get_payload(
     }
     out_payload.clear();
     out_payload.append(decomp_buf[..]);
+    committed = true;
     return GrpcStatusCode.Ok;
 }
 
@@ -367,29 +373,44 @@ fn parse_connect_metadata_values(
             pos = core::add_sat_i64(pos, 1);
         }
     }
-    if pos < meta_slice.len { pos = core::add_sat_i64(pos, 1); }
+    guard pos < meta_slice.len && meta_slice[pos] == ']' else { return false; }
+    pos = core::add_sat_i64(pos, 1);
     return true;
 }
 
-// Parses Connect `"metadata":{...}` object entries into `out_trailers`.
+// Parses Connect `"metadata":{...}` object entries starting after `"metadata"`, advancing `pos`.
 //
 // Example:
-//   meta_slice = "{\"x-custom\":[\"val1\"]}"
-//   returns: true, out_trailers["x-custom"] = "val1"
-fn parse_connect_metadata_object(meta_slice: const u8[:], out_trailers: HeaderMap&) -> bool {
-    var pos:     i64      = 0;
+//   s = ":{\"x-custom\":[\"val1\"]}}", pos = 0
+//   returns: true, pos = 22, out_trailers["x-custom"] = "val1"
+fn parse_connect_metadata_object(
+    s:            const u8[:],
+    pos:          i64&,
+    out_trailers: HeaderMap&,
+) -> bool {
+    let saved_pos = pos;
+    var committed = false;
+    defer if !committed { pos = saved_pos; };
+    let br_rel = s[pos..].index_of_byte('{');
+    guard br_rel >= 0 else { return false; }
+    pos = core::add_sat_i64(pos, core::add_sat_i64(br_rel, 1));
     var key_buf: u8[..64] = [];
-    while pos < meta_slice.len {
-        while pos < meta_slice.len && meta_slice[pos] != '"' && meta_slice[pos] != '}' {
+    while pos < s.len {
+        while pos < s.len && s[pos] != '"' && s[pos] != '}' {
             pos = core::add_sat_i64(pos, 1);
         }
-        if pos >= meta_slice.len || meta_slice[pos] == '}' { break; }
-        guard scan_connect_json_string(meta_slice, pos, key_buf)
-            && parse_connect_metadata_values(meta_slice, pos, key_buf[..], out_trailers) else {
+        if pos < s.len && s[pos] == '}' {
+            pos = core::add_sat_i64(pos, 1);
+            committed = true;
+            return true;
+        }
+        guard pos < s.len
+            && scan_connect_json_string(s, pos, key_buf)
+            && parse_connect_metadata_values(s, pos, key_buf[..], out_trailers) else {
             return false;
         }
     }
-    return true;
+    return false;
 }
 
 // Applies a single key/value pair from a Connect `"error":{...}` object.
@@ -462,11 +483,7 @@ fn dispatch_connect_end_stream_key(
         return parse_connect_error_object(trimmed, pos, out_status, out_msg);
     }
     if key == "metadata" {
-        let br_rel = trimmed[pos..].index_of_byte('{');
-        guard br_rel >= 0 else { return false; }
-        pos = core::add_sat_i64(pos, core::add_sat_i64(br_rel, 1));
-        guard parse_connect_metadata_object(trimmed[pos..], out_trailers) else { return false; }
-        pos = trimmed.len;
+        return parse_connect_metadata_object(trimmed, pos, out_trailers);
     }
     return true;
 }
@@ -485,6 +502,9 @@ fn parse_connect_end_stream(
 ) -> bool {
     out_status = GrpcStatusCode.Ok;
     out_message.clear();
+    out_trailers.clear();
+    var committed = false;
+    defer if !committed { out_trailers.clear(); };
     let trimmed = json_bytes.trim_lws();
     guard trimmed.len >= 2 && trimmed[0] == '{' && trimmed[^1..] == "}" else {
         return false;
@@ -505,6 +525,7 @@ fn parse_connect_end_stream(
         }
     }
 
+    committed = true;
     out_status = tmp_status;
     let _ = out_message.try_set(tmp_msg[..]);
     return true;

@@ -55,7 +55,8 @@ fn seal_stateless_tls13_ticket<B>(
 ) -> bool {
     out_ticket.clear();
     let idx = (ring.current_idx & 1) as i64;
-    let stek = ring.keys[idx];
+    var stek = ring.keys[idx];
+    defer core::secure_zeroize_32(stek.aead_key);
     let psk_len_u8 = (psk.len & 0xFF) as u8;
     let issued_u64 = (issued_at_ms & 0x7FFFFFFFFFFFFFFF) as u64;
     let valid_stek = stek.active &&
@@ -164,7 +165,8 @@ fn open_stateless_tls13_ticket(
     var out = Tls13CachedSessionTicket { .. };
     guard raw_ticket.len == STEK_TICKET_WIRE_LEN else { return out, false; }
 
-    let stek, found = select_matching_stek(ring, raw_ticket[0..4]);
+    var stek, found = select_matching_stek(ring, raw_ticket[0..4]);
+    defer core::secure_zeroize_32(stek.aead_key);
     guard found else { return out, false; }
 
     var iv:  u8[12] = [0; 12];
@@ -199,10 +201,14 @@ fn store_tls13_session_ticket(
     cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
-    guard ticket.len > 0 && ticket.len <= 256 && lifetime > 0 else { return; }
+    guard ticket.len > 0 && ticket.len <= 256 &&
+        lifetime > 0 && lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else {
+        return;
+    }
     guard psk.len == 32 || psk.len == 48 else { return; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
+            core::secure_zeroize_slice(g_tls13_tickets[i].psk[..]);
             let _ = g_tls13_tickets[i].ticket.try_set(ticket);
             let _ = g_tls13_tickets[i].psk.try_set(psk);
             g_tls13_tickets[i].age_add = age_add;
@@ -223,6 +229,7 @@ fn store_tls13_session_ticket(
             return;
         }
     }
+    core::secure_zeroize_slice(g_tls13_tickets[0].psk[..]);
     let _ = g_tls13_tickets[0].server_name.try_set(server_name);
     let _ = g_tls13_tickets[0].ticket.try_set(ticket);
     let _ = g_tls13_tickets[0].psk.try_set(psk);
@@ -239,11 +246,17 @@ fn lookup_tls13_session_ticket_full(
     out_age_add:      u32&,
     out_cipher_suite: u16&,
 ) -> bool {
+    out_ticket.clear();
+    out_psk.clear();
+    out_age_add = 0;
+    out_cipher_suite = 0;
     guard server_name.len > 0 else { return false; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
             guard out_ticket.try_set(g_tls13_tickets[i].ticket[..]) &&
                 out_psk.try_set(g_tls13_tickets[i].psk[..]) else {
+                out_ticket.clear();
+                out_psk.clear();
                 return false;
             }
             out_age_add = g_tls13_tickets[i].age_add;
@@ -261,6 +274,9 @@ fn lookup_tls13_session_ticket(
     out_psk:     u8[32]&,
     out_age_add: u32&,
 ) -> bool {
+    out_ticket.clear();
+    core::secure_zeroize_32(out_psk);
+    out_age_add = 0;
     guard server_name.len > 0 else { return false; }
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {

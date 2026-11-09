@@ -5,6 +5,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import wire.pipeline;
 
 // ---- pipeline stage bitmask constants (64-bit register layout) --------------
@@ -121,7 +122,7 @@ fn add_param(
     v_start: u16,
     v_end:   u16,
 ) -> bool {
-    guard params.len < params.spans.len else { return false; }
+    guard params.len >= 0 && params.len < params.spans.len else { return false; }
     params.spans[params.len] = ParamSpan {
         name:      [],
         key_start: k_start,
@@ -129,7 +130,7 @@ fn add_param(
         val_start: v_start,
         val_end:   v_end,
     };
-    params.len += 1;
+    params.len = core::add_sat_i64(params.len, 1);
     return true;
 }
 
@@ -141,14 +142,14 @@ fn add_param(
     v_start: u16,
     v_end:   u16,
 ) -> bool {
-    guard params.len < params.spans.len else { return false; }
+    guard params.len >= 0 && params.len < params.spans.len else { return false; }
     let idx = params.len;
     guard params.spans[idx].name.try_set(name) else { return false; }
     params.spans[idx].key_start = k_start;
     params.spans[idx].key_end = k_end;
     params.spans[idx].val_start = v_start;
     params.spans[idx].val_end = v_end;
-    params.len += 1;
+    params.len = core::add_sat_i64(params.len, 1);
     return true;
 }
 
@@ -729,6 +730,14 @@ fn is_match_found(res: const RouteMatchResult&) -> bool {
     };
 }
 
+inline fn is_valid_suffix_segment_end(tree: const RadixTree&, node_idx: i32) -> bool {
+    let n = tree.nodes[node_idx as i64];
+    return n.handler_id >= 0 ||
+        find_child_by_byte(tree, node_idx, '/') >= 0 ||
+        n.param_child >= 0 ||
+        n.catch_all_child >= 0;
+}
+
 // Verifies that `rem_seg` matches a chain of static children starting at `child_idx`.
 fn matches_static_suffix_chain(tree: const RadixTree&, child_idx: i32, rem_seg: const u8[:]) -> bool {
     var cur = child_idx;
@@ -736,15 +745,18 @@ fn matches_static_suffix_chain(tree: const RadixTree&, child_idx: i32, rem_seg: 
     while off < rem_seg.len && cur >= 0 {
         let pfx = tree.nodes[cur as i64].prefix[..];
         let tail = rem_seg[off..];
-        if tail.len <= pfx.len {
-            return pfx[..tail.len] == tail;
+        if tail.len < pfx.len {
+            return pfx[..tail.len] == tail && pfx[tail.len] == '/';
+        }
+        if tail.len == pfx.len {
+            return pfx == tail && is_valid_suffix_segment_end(tree, cur);
         }
         guard tail[..pfx.len] == pfx else { return false; }
         off = core::add_sat_i64(off, pfx.len);
         guard off < rem_seg.len else { break; }
         cur = find_child_by_byte(tree, cur, rem_seg[off]);
     }
-    return off >= rem_seg.len;
+    return off >= rem_seg.len && cur >= 0 && is_valid_suffix_segment_end(tree, cur);
 }
 
 // Scans current path segment for a static child suffix attached to `p_idx`.
@@ -1606,4 +1618,217 @@ fn match_route(
 ) -> RouteMatchResult {
     var canon_path: u8[..2048] = [];
     return match_route(router, method, path, params, canon_path);
+}
+
+// ---- Elysia sucrose comptime PSO inference & Hono route groups --------------
+
+const ROUTE_ENTRY_CONN:     u32 = 1 << 0;
+const ROUTE_ENTRY_PARAMS:   u32 = 1 << 1;
+const ROUTE_ENTRY_COOKIES:  u32 = 1 << 2;
+const ROUTE_ENTRY_SECURITY: u32 = 1 << 3;
+
+struct InferredRouteMasks {
+    entries_mask: u32 = 0,
+    pso_mask:     u64 = 0,
+    ingress_mask: u64 = 0,
+    egress_mask:  u64 = 0,
+}
+
+// Inspects fields of a user-defined request contract struct `T` at compile time
+// (e.g. `params`, `cookies`, `session`, `claims`, `jwt`, `peer_ip`, `etag`) and
+// computes narrow extractor (`entries_mask`) and PSO (`pso_mask`) bitmasks.
+fn infer_contract_masks<T>(base_pso: u64 = DEFAULT_ROUTE_PSO_MASK) -> InferredRouteMasks {
+    var entries: u32 = 0;
+    var pso:     u64 = base_pso & ~(STAGE_INGRESS_AUTH_COOKIE | STAGE_INGRESS_AUTH_JWT);
+
+    const for <Name, Acc> in fields<T> {
+        if Name == "params" {
+            entries |= ROUTE_ENTRY_PARAMS;
+        } else if Name == "cookies" || Name == "session" {
+            entries |= ROUTE_ENTRY_COOKIES;
+            pso |= STAGE_INGRESS_AUTH_COOKIE;
+        } else if Name == "claims" || Name == "jwt" {
+            entries |= ROUTE_ENTRY_SECURITY;
+            pso |= STAGE_INGRESS_AUTH_JWT;
+        } else if Name == "peer_ip" {
+            entries |= ROUTE_ENTRY_CONN;
+        } else if Name == "etag" {
+            pso |= STAGE_EGRESS_ETAG;
+        }
+    }
+
+    let in_mask = pso_mask_to_srv_ingress(pso);
+    let out_mask = pso_mask_to_srv_egress(pso);
+    return InferredRouteMasks {
+        entries_mask: entries,
+        pso_mask:     pso,
+        ingress_mask: in_mask,
+        egress_mask:  out_mask,
+    };
+}
+
+// Opt-in router registration overload combining inferred masks with explicit overrides.
+fn add_route_for_contract<Contract>(
+    router:     RadixRouter&,
+    method:     const u8[:],
+    path:       const u8[:],
+    handler_id: i32,
+    extra_pso:  u64 = 0,
+) -> bool {
+    let inferred = infer_contract_masks<Contract>();
+    let merged_pso = inferred.pso_mask | extra_pso;
+    return add_route(
+        router,
+        method,
+        path,
+        handler_id,
+        inferred.entries_mask,
+        merged_pso,
+    );
+}
+
+// Lightweight, non-owning route registration group sharing a URL prefix and PSO stage masks.
+struct RouteGroup {
+    prefix:       u8[..128] = [],
+    entries_mask: u32       = 0,
+    pso_mask:     u64       = DEFAULT_ROUTE_PSO_MASK,
+}
+
+fn make_route_group(
+    prefix:       const u8[:],
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+    entries_mask: u32 = 0,
+) -> RouteGroup, bool {
+    var grp = RouteGroup { entries_mask: entries_mask, pso_mask: pso_mask, .. };
+    guard canonicalize_route_path(prefix, grp.prefix) else { return grp, false; }
+    return grp, true;
+}
+
+// Joins a canonical group prefix ("/api/v1") and sub-path ("/users/:id") into `out`.
+//
+// Example:
+//   prefix = "/api/v1", sub_path = "/users", out = []
+//   out becomes "/api/v1/users", returns true
+fn join_route_prefix<B>(prefix: const u8[:], sub_path: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    let last_idx = core::sub_sat_i64(prefix.len, 1);
+    let pfx = if prefix.len > 1 && prefix[last_idx] == '/' {
+        prefix[..^1]
+    } else {
+        prefix
+    };
+    if pfx.len > 0 && pfx != "/" {
+        guard out.try_append(pfx) else { out.resize(saved_len); return false; }
+    }
+    if sub_path.len == 0 || sub_path == "/" {
+        if out.len == saved_len {
+            guard out.try_push('/') else { out.resize(saved_len); return false; }
+        }
+        return true;
+    }
+    if sub_path[0] != '/' {
+        guard out.try_push('/') else { out.resize(saved_len); return false; }
+    }
+    guard out.try_append(sub_path) else { out.resize(saved_len); return false; }
+    return true;
+}
+
+// Expands a trailing optional parameter ("/users/:id?" or "/users/{id?}") into
+// its base path ("/users") and required-param path ("/users/:id").
+//
+// Example:
+//   pattern = "/api/animals/:type?"
+//   base_out = "/api/animals", full_out = "/api/animals/:type", returns true
+fn split_trailing_optional_param<B>(
+    pattern:  const u8[:],
+    base_out: B&,
+    full_out: B&,
+) -> bool {
+    let saved_base = base_out.len;
+    let saved_full = full_out.len;
+    let slash_idx = pattern.last_index_of_byte('/');
+    guard slash_idx >= 0 && core::add_sat_i64(slash_idx, 2) < pattern.len else { return false; }
+    let seg_start = core::add_sat_i64(slash_idx, 1);
+    let seg = pattern[seg_start..];
+    let seg_last = core::sub_sat_i64(seg.len, 1);
+    let base_slice = if slash_idx == 0 { "/" } else { pattern[..slash_idx] };
+    if seg[0] == ':' && seg.len >= 3 && seg[seg_last] == '?' {
+        guard base_out.try_append(base_slice) && full_out.try_append(pattern[..^1]) else {
+            base_out.resize(saved_base);
+            full_out.resize(saved_full);
+            return false;
+        }
+        return true;
+    }
+    let seg_penult = core::sub_sat_i64(seg.len, 2);
+    if seg[0] == '{' && seg.len >= 4 && seg[seg_penult] == '?' && seg[seg_last] == '}' {
+        guard base_out.try_append(base_slice)
+            && full_out.try_append(pattern[..^2])
+            && full_out.try_push('}') else {
+            base_out.resize(saved_base);
+            full_out.resize(saved_full);
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Registers a route supporting an optional trailing parameter (`:param?` or `{param?}`).
+fn add_optional_route(
+    router:       RadixRouter&,
+    method:       const u8[:],
+    pattern:      const u8[:],
+    handler_id:   i32,
+    entries_mask: u32 = 0,
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+) -> bool {
+    var base_path: u8[..512] = [];
+    var full_path: u8[..512] = [];
+    if split_trailing_optional_param(pattern, base_path, full_path) {
+        guard base_path.len > 0 && full_path.len > 0 else { return false; }
+        guard add_route(router, method, base_path[..], handler_id, entries_mask, pso_mask) else {
+            return false;
+        }
+        return add_route(router, method, full_path[..], handler_id, entries_mask, pso_mask);
+    }
+    return add_route(router, method, pattern, handler_id, entries_mask, pso_mask);
+}
+
+// Registers a route within `group`, inheriting its prefix, `entries_mask`, and `pso_mask`.
+fn add_group_route(
+    router:     RadixRouter&,
+    group:      const RouteGroup&,
+    method:     const u8[:],
+    sub_path:   const u8[:],
+    handler_id: i32,
+) -> bool {
+    var merged: u8[..512] = [];
+    guard join_route_prefix(group.prefix[..], sub_path, merged) else { return false; }
+    return add_optional_route(
+        router,
+        method,
+        merged[..],
+        handler_id,
+        group.entries_mask,
+        group.pso_mask,
+    );
+}
+
+// Registers `pattern` across an explicit list of HTTP methods (Hono `app.on(methods, path)`).
+fn add_route_methods(
+    router:       RadixRouter&,
+    methods:      const (const u8[:])[:],
+    pattern:      const u8[:],
+    handler_id:   i32,
+    entries_mask: u32 = 0,
+    pso_mask:     u64 = DEFAULT_ROUTE_PSO_MASK,
+) -> bool {
+    guard methods.len > 0 else { return false; }
+    for m in methods {
+        guard add_optional_route(router, m, pattern, handler_id, entries_mask, pso_mask) else {
+            return false;
+        }
+    }
+    return true;
 }

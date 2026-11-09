@@ -8,6 +8,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import http.headers;
 
 // ---- Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 
@@ -348,4 +349,72 @@ fn allow_retry_budget(budget: AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
     }
 
     return false;
+}
+
+// ---- Conditional Mid-Stream Range + Strong ETag Resumption -----------------
+
+struct RangeResumeTracker {
+    etag:           u8[..256] = [],
+    bytes_received: u64       = 0,
+    total_length:   i64       = -1,
+    resumable:      bool      = false,
+}
+
+// RFC 9110 Section 8.8.3: ETag - validates non-empty strong entity-tag (`"..."`),
+// rejecting weak `W/` validators prohibited in byte-range `If-Match` preconditions.
+//
+// Example:
+//   etag = "\"abc123\""
+//   returns: true
+fn is_strong_etag_validator(etag: const u8[:]) -> bool {
+    let clean = etag.trim_lws();
+    guard clean.len >= 2 else { return false; }
+    guard !clean.starts_with_fold("w/") else { return false; }
+    return clean.starts_with("\"") && clean.ends_with("\"");
+}
+
+// Captures strong ETag and total byte length from an initial 200 OK GET response.
+fn arm_range_resume(
+    tracker: RangeResumeTracker&,
+    method:  const u8[:],
+    status:  i32,
+    headers: const HeaderMap&,
+) {
+    tracker = RangeResumeTracker { .. };
+    guard method == "GET" && status == 200 else { return; }
+    let etag = get_header(headers, "ETag").trim_lws();
+    guard is_strong_etag_validator(etag) else { return; }
+    guard !has_header(headers, "Content-Encoding") else { return; }
+    guard tracker.etag.try_set(etag) else { return; }
+
+    let cl_raw = get_header(headers, "Content-Length").trim_lws();
+    if cl_raw.len > 0 {
+        let cl_val, ok_cl = cl_raw.parse_u64_dec();
+        guard ok_cl && cl_val <= 9223372036854775807 else { return; }
+        tracker.total_length = cl_val as i64;
+    }
+    tracker.resumable = true;
+}
+
+// Formats `Range: bytes=<start>-<end>` and `If-Match: <etag>` into `req_headers` after a mid-body drop.
+//
+// Example:
+//   tracker = RangeResumeTracker { etag: "\"v1\"", bytes_received: 4096, total_length: 8192, resumable: true }
+//   returns: true (sets Range: "bytes=4096-8191" and If-Match: "\"v1\"")
+fn build_range_resume_headers(tracker: const RangeResumeTracker&, req_headers: HeaderMap&) -> bool {
+    guard tracker.resumable && tracker.bytes_received > 0 else { return false; }
+    if tracker.total_length >= 0 && (tracker.bytes_received as i64) >= tracker.total_length {
+        return false;
+    }
+    var range_val: u8[..64] = [];
+    guard range_val.try_append("bytes=") else { return false; }
+    tracker.bytes_received.format_u64_dec(range_val);
+    guard range_val.try_push('-') else { return false; }
+    if tracker.total_length > 0 {
+        let end_byte = core::sub_sat_u64(tracker.total_length as u64, 1);
+        end_byte.format_u64_dec(range_val);
+    }
+    set_header(req_headers, "Range", range_val[..]);
+    set_header(req_headers, "If-Match", tracker.etag[..]);
+    return true;
 }

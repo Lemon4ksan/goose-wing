@@ -50,6 +50,8 @@ import http.priority;
 import http.incremental;
 import http.forwarded;
 import http.problem;
+import http.negotiate;
+import http.server_timing;
 
 // ---- tls 1.3 & x.509 pki -------------------------------------------------
 
@@ -175,6 +177,8 @@ import auth.acme;
 // ---- server primitives -----------------------------------------------------
 
 import server.router;
+import http.bind;
+import client.contract;
 import server.pool;
 import server.edge_filter;
 import server.cache;

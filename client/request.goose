@@ -12,6 +12,7 @@ import cookie.policy;
 import http.priority;
 import http.incremental;
 import http.trace;
+import client.response;
 
 // ---- request & query item models -------------------------------------------
 
@@ -310,4 +311,114 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
         b.format_u8_hex(sig_hex);
     }
     set_header(req, "X-Signature-256", sig_hex[..]);
+}
+
+// ---- ergonomic request inspectors & decoders -------------------------------
+
+// Extracts the zero-copy path component from an origin-form or absolute-form request URL.
+//
+// Example:
+//   raw_url = "https://api.example.com/v1/users?page=2#top"
+//   returns: "/v1/users"
+fn extract_request_path(raw_url: const u8[:]) -> const u8[:] {
+    let before_frag, _, _ = raw_url.partition_byte('#');
+    let before_query, _, _ = before_frag.partition_byte('?');
+    let _, after_scheme, has_scheme = before_query.split_once("://");
+    if has_scheme {
+        let slash_idx = after_scheme.index_of_byte('/');
+        if slash_idx < 0 { return "/"; }
+        return after_scheme[slash_idx..];
+    }
+    if before_query.len == 0 { return "/"; }
+    return before_query;
+}
+
+// Extracts the raw query component (excluding `?` and `#fragment`) from a request URL.
+//
+// Example:
+//   raw_url = "/v1/users?page=2&limit=10#top"
+//   returns: "page=2&limit=10"
+fn extract_request_query(raw_url: const u8[:]) -> const u8[:] {
+    let before_frag, _, _ = raw_url.partition_byte('#');
+    let _, query_part, has_q = before_frag.split_once_byte('?');
+    if !has_q { return ""; }
+    return query_part;
+}
+
+// Returns the zero-copy path slice of `req.url`.
+fn path_slice(req: const Request&) -> const u8[:] {
+    return extract_request_path(req.url[..]);
+}
+
+// Looks up query parameter `key` in `req.query_params` or the URL query string of `req.url` into `out`.
+// Rolls back `out` on missing key or capacity overflow.
+fn query_param<B>(req: const Request&, key: const u8[:], out: B&) -> bool {
+    let saved = copy(out);
+    var committed = false;
+    defer if !committed { out = copy(saved); };
+    guard key.len > 0 else { return false; }
+    for &item in req.query_params {
+        if item.key[..] == key {
+            out.clear();
+            guard out.try_append(item.value[..]) else { return false; }
+            committed = true;
+            return true;
+        }
+    }
+    let raw_q = extract_request_query(req.url[..]);
+    guard raw_q.len > 0 else { return false; }
+    out.clear();
+    guard raw_q.get_query_param_fast(key, out) else { return false; }
+    committed = true;
+    return true;
+}
+
+// Returns `true` if `key` is present in `req.query_params` or the URL query string of `req.url`.
+fn has_query_param(req: const Request&, key: const u8[:]) -> bool {
+    guard key.len > 0 else { return false; }
+    for &item in req.query_params {
+        if item.key[..] == key { return true; }
+    }
+    let raw_q = extract_request_query(req.url[..]);
+    return raw_q.has_query_param_fast(key);
+}
+
+// Extracts the Bearer credential token from the `Authorization` request header (RFC 6750 Section 2.1).
+fn bearer_token(req: const Request&) -> const u8[:] {
+    let tok, ok = header(req, "Authorization").trim_lws().strip_prefix_fold("Bearer ");
+    if !ok { return ""; }
+    return tok.trim_lws();
+}
+
+// Decodes a JSON request body into `out` via `const for` reflection, rolling back `out` on error.
+//
+// Example:
+//   req.body = "{\"id\":42}"
+//   returns: err.code = 0, out.id = 42
+fn decode_json_body<T>(req: const Request&, out: T&) -> Error {
+    let saved = copy(out);
+    var committed = false;
+    defer if !committed { out = copy(saved); };
+    guard req.body.len > 0 else {
+        return make_error(rfc::STATUS_BAD_REQUEST, "json_decode", "empty request body");
+    }
+    var reader = json::reader(req.body[..]);
+    json::each_member(reader) { key =>
+        var matched = false;
+        const for <Name, Acc> in fields<T> {
+            if !matched && key == Name {
+                read_json_field(reader, out.Acc);
+                matched = true;
+            }
+        }
+        if !matched {
+            json::skip(reader);
+        }
+    };
+    if !json::finish(reader) {
+        let msg = json::message(reader);
+        return make_error(rfc::STATUS_UNPROCESSABLE_CONTENT, "json_decode", msg[..]);
+    }
+    committed = true;
+    return Error { .. };
 }

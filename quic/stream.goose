@@ -496,6 +496,9 @@ fn quic_table_get_or_open_stream(
     if existing >= 0 {
         return existing, true;
     }
+    guard !quic_table_is_evicted_closed_stream(tbl, stream_id) else {
+        return 0, false;
+    }
     // RFC 9000 §3.1: Ingress frames cannot open uncreated locally-initiated streams
     guard is_peer_initiated_stream(stream_id, tbl.role) else {
         return 0, false;

@@ -200,20 +200,32 @@ inline fn clear_in_flight(slot: TargetProbeSlot&) {
 }
 
 // Synchronizes target health with UpstreamCluster
-inline fn sync_cluster_target_health(cluster: UpstreamCluster&, target_idx: i32, new_state: HealthState) {
+inline fn sync_cluster_target_health(
+    cluster:    UpstreamCluster&,
+    target_idx: i32,
+    health:     const UpstreamHealth&,
+    new_state:  HealthState,
+) {
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return; }
     let is_up = (new_state == HealthState.Up);
     cluster.targets[target_idx].is_healthy = is_up;
     if is_up {
-        cluster.targets[target_idx].fails = 0;
+        if health.consecutive_failures == 0 {
+            cluster.targets[target_idx].fails = 0;
+        } else {
+            cluster.targets[target_idx].fails = max(
+                cluster.targets[target_idx].fails,
+                health.consecutive_failures as i32,
+            );
+        }
         cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
         cluster.circuit_open = false;
     } else if new_state == HealthState.Probing {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
-        cluster.targets[target_idx].successes = 1;
+        cluster.targets[target_idx].successes = max(health.consecutive_successes as i32, 1);
         cluster.circuit_open = false;
     } else {
-        cluster.targets[target_idx].fails = cluster.max_fails;
+        cluster.targets[target_idx].fails = max(cluster.max_fails, health.consecutive_failures as i32);
         cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
         update_cluster_circuit_state(cluster);
     }
@@ -252,7 +264,7 @@ fn on_probe_success(
     sync_slot_from_cluster(checker.slots[slot_idx], cluster.targets[target_idx].health_state);
     clear_in_flight(checker.slots[slot_idx]);
     let new_state = record_probe_success(checker.slots[slot_idx].health, rtt_us, checker.config);
-    sync_cluster_target_health(cluster, target_idx, new_state);
+    sync_cluster_target_health(cluster, target_idx, checker.slots[slot_idx].health, new_state);
     return new_state;
 }
 
@@ -273,7 +285,7 @@ fn on_probe_failure(
     sync_slot_from_cluster(checker.slots[slot_idx], cluster.targets[target_idx].health_state);
     clear_in_flight(checker.slots[slot_idx]);
     let new_state = record_probe_failure(checker.slots[slot_idx].health, checker.config);
-    sync_cluster_target_health(cluster, target_idx, new_state);
+    sync_cluster_target_health(cluster, target_idx, checker.slots[slot_idx].health, new_state);
     return new_state;
 }
 
@@ -302,7 +314,7 @@ fn check_probe_timeouts(
         sync_slot_from_cluster(checker.slots[i], cluster.targets[t_idx].health_state);
         clear_in_flight(checker.slots[i]);
         let new_state = record_probe_failure(checker.slots[i].health, checker.config);
-        sync_cluster_target_health(cluster, t_idx, new_state);
+        sync_cluster_target_health(cluster, t_idx, checker.slots[i].health, new_state);
         inc_timeouts_count(timed_out_count);
     }
     return timed_out_count;

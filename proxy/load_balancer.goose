@@ -226,7 +226,10 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
     if cluster.policy == LbPolicy.LeastConnections {
         return select_least_connections(cluster, n);
     }
-    if cluster.policy == LbPolicy.ConsistentHash && cluster.ketama_ring.points.len > 0 {
+    if cluster.policy == LbPolicy.ConsistentHash {
+        if cluster.ketama_ring.points.len == 0 {
+            build_ketama_ring(cluster, cluster.ketama_ring);
+        }
         let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, "default", 0);
         if ok_ch {
             return idx64 as i32, true;
@@ -387,6 +390,7 @@ fn set_upstream_probing(cluster: UpstreamCluster&, target_idx: i32) -> bool {
     guard cluster.targets[target_idx].health_state == UpstreamHealthState.Down else { return false; }
     cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
     cluster.targets[target_idx].successes = 0;
+    cluster.circuit_open = false;
     return true;
 }
 
@@ -488,7 +492,7 @@ fn find_ketama_start_idx(ring: const KetamaRing&, key_hash: u32) -> i64 {
 }
 
 // Selects a routable backend from `pool` via Ketama consistent hashing over `key`,
-// stepping clockwise up to 32 probes on the ring if the primary node is unhealthy or ejected.
+// stepping clockwise on the ring if the primary node is unhealthy or ejected.
 fn select_consistent_backend(
     pool:   UpstreamCluster&,
     ring:   const KetamaRing&,
@@ -501,8 +505,7 @@ fn select_consistent_backend(
     let key_hash = core::crc32(key);
     let ring_len = ring.points.len as u64;
     var ring_idx = find_ketama_start_idx(ring, key_hash) as u64;
-    let max_probes = min(ring_len, 32);
-    for _ in (max_probes as i64) {
+    for _ in (ring_len as i64) {
         let b_idx = ring.points[ring_idx as i64].backend_idx as i64;
         if b_idx >= 0 && b_idx < pool.targets.len {
             if is_backend_routable(pool.targets[b_idx], now_ms) {
@@ -514,4 +517,105 @@ fn select_consistent_backend(
         ring_idx = if next_idx >= ring_len { 0 } else { next_idx };
     }
     return NO_UPSTREAM_TARGET, false;
+}
+
+// ---- Dynamic Error-Penalty Weighted Balancer (Smooth GCD WRR) --------------
+
+struct DynamicWeightEntry {
+    effective_weight: i32  = 100,
+    active_inflight:  i32  = 0,
+    need_drain:       bool = false,
+}
+
+struct DynamicWeightBalancer {
+    entries:               DynamicWeightEntry[..16] = [],
+    max_weight_per_server: i32                      = 100,
+    error_penalty:         i32                      = 15,
+    current_index:         i32                      = -1,
+    current_weight:        i32                      = 0,
+    max_effective_weight:  i32                      = 100,
+    weight_gcd:            i32                      = 100,
+}
+
+fn gcd_positive_i32(a_in: i32, b_in: i32) -> i32 {
+    var a = max(a_in, 1);
+    var b = max(b_in, 1);
+    while a != b {
+        if a > b {
+            a = core::sub_sat_i64(a, b) as i32;
+        } else {
+            b = core::sub_sat_i64(b, a) as i32;
+        }
+    }
+    return max(a, 1);
+}
+
+fn recompute_balancer_ratios(bal: DynamicWeightBalancer&) {
+    guard bal.entries.len > 0 else {
+        bal.max_effective_weight = 0;
+        bal.weight_gcd = 1;
+        return;
+    }
+    var g: i32 = 0;
+    var m: i32 = 0;
+    for &e in bal.entries {
+        if !e.need_drain {
+            let w = max(e.effective_weight, 1);
+            g = if g == 0 { w } else { gcd_positive_i32(g, w) };
+            m = max(m, w);
+        }
+    }
+    bal.weight_gcd = max(g, 1);
+    bal.max_effective_weight = m;
+    if bal.current_weight > m {
+        bal.current_weight = m;
+    }
+}
+
+// Penalizes an upstream on socket or connect error without abruptly dropping weight to 0.
+fn penalize_upstream_weight(bal: DynamicWeightBalancer&, idx: i64) {
+    guard idx >= 0 && idx < bal.entries.len else { return; }
+    let penalty = max(bal.error_penalty, 1);
+    let reduced = core::sub_sat_i64(bal.entries[idx].effective_weight, penalty);
+    bal.entries[idx].effective_weight = max(reduced as i32, 1);
+    recompute_balancer_ratios(bal);
+}
+
+// Restores upstream weight incrementally upon a healthy connection or exchange.
+fn reward_upstream_weight(bal: DynamicWeightBalancer&, idx: i64) {
+    guard idx >= 0 && idx < bal.entries.len else { return; }
+    let step = max(bal.error_penalty, 1);
+    let cap = max(bal.max_weight_per_server, 1);
+    let raised = core::add_sat_i64(bal.entries[idx].effective_weight, step);
+    bal.entries[idx].effective_weight = min(raised as i32, cap);
+    recompute_balancer_ratios(bal);
+}
+
+inline fn step_weighted_round_robin(bal: DynamicWeightBalancer&, n: i32) -> i64 {
+    let next_idx = core::add_sat_i64(bal.current_index, 1) as i32;
+    bal.current_index = if next_idx >= n || next_idx < 0 { 0 } else { next_idx };
+    if bal.current_index == 0 {
+        bal.current_weight = core::sub_sat_i64(bal.current_weight, bal.weight_gcd) as i32;
+        if bal.current_weight <= 0 {
+            bal.current_weight = bal.max_effective_weight;
+        }
+    }
+    return bal.current_index;
+}
+
+// Selects the next non-draining upstream index via GCD weighted round-robin.
+fn select_weighted_upstream(bal: DynamicWeightBalancer&) -> i64, bool {
+    recompute_balancer_ratios(bal);
+    let n = bal.entries.len;
+    guard n > 0 && bal.max_effective_weight > 0 else { return -1, false; }
+    let max_iters = core::add_sat_u64(core::mul_sat_u64(n as u64, bal.max_effective_weight as u64), n as u64) as i64;
+    for _ in max_iters {
+        let idx = step_weighted_round_robin(bal, n as i32);
+        guard idx >= 0 && idx < bal.entries.len else { return -1, false; }
+        let cand .= bal.entries[idx];
+        if cand.effective_weight >= bal.current_weight && !cand.need_drain {
+            return idx, true;
+        }
+    }
+    return -1, false;
 }

@@ -229,26 +229,48 @@ fn parse_grpc_web_unary_body(
 
     var offset: u32 = 0;
     var found_trailer = false;
+    var found_data = false;
     var frame_payload: u8[>..] = [];
     while offset < (wire_bytes.len as u32) {
+        guard !found_trailer else {
+            out_resp.payload.clear();
+            return false;
+        }
         frame_payload.clear();
         var is_trailers = false;
         var is_comp = false;
         let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-        guard ok_frame else { return false; }
+        guard ok_frame else {
+            out_resp.payload.clear();
+            return false;
+        }
 
         if is_trailers {
-            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else { return false; }
+            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else {
+                out_resp.payload.clear();
+                return false;
+            }
             found_trailer = true;
         } else {
-            guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
+            guard !found_data && append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else {
+                out_resp.payload.clear();
+                return false;
+            }
+            found_data = true;
         }
         offset = core::add_sat_u32(offset, consumed);
     }
 
     if !found_trailer {
-        extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
-    } else if resolve_effective_http_status(res_headers) != 200 && out_resp.status == GrpcStatusCode.Ok {
+        let has_hdr_status = extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
+        guard !found_data && has_hdr_status else {
+            out_resp.payload.clear();
+            return false;
+        }
+        out_resp.is_trailers_only = true;
+        return true;
+    }
+    if resolve_effective_http_status(res_headers) != 200 && out_resp.status == GrpcStatusCode.Ok {
         out_resp.status = grpc_status_from_http(resolve_effective_http_status(res_headers));
     }
     return true;
@@ -290,12 +312,16 @@ fn parse_grpc_unary_response(
     if body.len >= 5 {
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(body, 0, out_resp.payload, comp);
-        guard ok_lpm && consumed == body.len else { return false; }
+        guard ok_lpm && consumed == body.len else {
+            out_resp.payload.clear();
+            return false;
+        }
         out_resp.is_compressed = comp;
         let enc_hdr = get_header(res_headers, rfc::HEADER_GRPC_ENCODING);
         let comp_st = validate_recv_compression(comp, enc_hdr, false);
         if comp_st != GrpcStatusCode.Ok {
             out_resp.status = comp_st;
+            out_resp.payload.clear();
             return false;
         }
         if comp {
@@ -303,11 +329,17 @@ fn parse_grpc_unary_response(
             let ok_gz, _ = core::gzip_decompress_with_limit(
                 out_resp.payload[..], decomp_buf, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
             );
-            guard ok_gz else { return false; }
+            guard ok_gz else {
+                out_resp.payload.clear();
+                return false;
+            }
             out_resp.payload.clear();
             out_resp.payload.append(decomp_buf[..]);
         } else {
-            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
+            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else {
+                out_resp.payload.clear();
+                return false;
+            }
         }
         return true;
     }
@@ -347,19 +379,35 @@ fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcR
     }
 
     var offset:        u32     = 0;
+    var found_trailer: bool    = false;
+    var found_data:    bool    = false;
     var frame_payload: u8[>..] = [];
     while offset < (wire_bytes.len as u32) {
+        guard !found_trailer else {
+            out_resp.payload.clear();
+            return false;
+        }
         frame_payload.clear();
         var is_trailers = false;
         var is_comp = false;
         let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-        guard ok_frame else { return false; }
+        guard ok_frame else {
+            out_resp.payload.clear();
+            return false;
+        }
 
         if is_trailers {
-            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else { return false; }
+            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else {
+                out_resp.payload.clear();
+                return false;
+            }
+            found_trailer = true;
         } else {
-            out_resp.payload.clear();
-            guard append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else { return false; }
+            guard !found_data && append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else {
+                out_resp.payload.clear();
+                return false;
+            }
+            found_data = true;
         }
         offset = core::add_sat_u32(offset, consumed);
     }
@@ -438,19 +486,27 @@ fn grpc_unary_call(
 
     if cfg.is_web || cfg.is_web_text {
         let ct = header(res, "content-type");
-        return process_grpc_web_response(res.body[..], ct, out_resp);
+        let ok_web = process_grpc_web_response(res.body[..], ct, out_resp);
+        if res.status_code != 200 && out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = grpc_status_from_http(res.status_code);
+        }
+        return ok_web;
     }
 
     // Native gRPC body
     if res.body.len >= 5 {
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
-        guard ok_lpm && consumed == res.body.len else { return false; }
+        guard ok_lpm && consumed == res.body.len else {
+            out_resp.payload.clear();
+            return false;
+        }
         out_resp.is_compressed = comp;
         let enc_hdr = header(res, rfc::HEADER_GRPC_ENCODING);
         let comp_st = validate_recv_compression(comp, enc_hdr, false);
         if comp_st != GrpcStatusCode.Ok {
             out_resp.status = comp_st;
+            out_resp.payload.clear();
             return false;
         }
         if comp {
@@ -458,11 +514,17 @@ fn grpc_unary_call(
             let ok_gz, _ = core::gzip_decompress_with_limit(
                 out_resp.payload[..], decomp_buf, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
             );
-            guard ok_gz else { return false; }
+            guard ok_gz else {
+                out_resp.payload.clear();
+                return false;
+            }
             out_resp.payload.clear();
             out_resp.payload.append(decomp_buf[..]);
         } else {
-            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
+            guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else {
+                out_resp.payload.clear();
+                return false;
+            }
         }
         return true;
     }
