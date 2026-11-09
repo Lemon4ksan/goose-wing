@@ -67,31 +67,25 @@ fn read_ech_cipher_suites(contents: ByteCursor&, out: EchConfig&) -> bool {
     return out.cipher_suites.len > 0;
 }
 
-inline fn is_digit_or_dot(b: u8) -> bool {
-    return (b >= '0' && b <= '9') || b == '.';
-}
-
 inline fn is_valid_dns_char(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '.';
 }
 
 fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
     guard pub_raw.len >= 1 && pub_raw.len <= 253 else { return false; }
-    var all_digits_dots = true;
-    var first_b:   u8  = 0;
-    var last_b:    u8  = 0;
-    var label_len: i64 = 0;
+    var first_b:          u8  = 0;
+    var last_b:           u8  = 0;
+    var last_label_first: u8  = 0;
+    var label_len:        i64 = 0;
     for b in pub_raw {
         if first_b == 0 { first_b = b; }
         guard is_valid_dns_char(b) else { return false; }
-        if !is_digit_or_dot(b) {
-            all_digits_dots = false;
-        }
         if b == '.' {
             guard last_b != '.' && last_b != '-' else { return false; }
             label_len = 0;
         } else {
             guard b != '-' || last_b != '.' else { return false; }
+            if label_len == 0 { last_label_first = b; }
             label_len = core::add_sat_i64(label_len, 1);
             guard label_len <= 63 else { return false; }
         }
@@ -99,7 +93,7 @@ fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
     }
     guard first_b != '.' && first_b != '-' else { return false; }
     guard last_b != '.' && last_b != '-' else { return false; }
-    guard !all_digits_dots else { return false; }
+    guard !core::is_ascii_digit(last_label_first) else { return false; }
     return true;
 }
 
@@ -127,9 +121,28 @@ fn read_ech_public_name(contents: ByteCursor&, out: EchConfig&) -> bool {
 fn read_ech_key_config(contents: ByteCursor&, out: EchConfig&) -> bool {
     guard contents.get_u8(out.config_id) && contents.get_u16(out.kem_id) else { return false; }
     var pk_cursor = ByteCursor { buf: contents.buf[..0] };
-    guard contents.get_u16_length_prefixed(pk_cursor) && pk_cursor.cursor_len() == 32 else { return false; }
-    for i in 32 { out.public_key[i] = pk_cursor.buf[i]; }
+    guard contents.get_u16_length_prefixed(pk_cursor) && pk_cursor.cursor_len() >= 1 else { return false; }
+    if out.kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 {
+        guard pk_cursor.cursor_len() == 32 else { return false; }
+        for i in 32 { out.public_key[i] = pk_cursor.buf[i]; }
+    } else {
+        core::secure_zeroize_32(out.public_key);
+    }
     return read_ech_cipher_suites(contents, out);
+}
+
+fn validate_ech_config_extensions(ext_cursor: ByteCursor&) -> bool {
+    var seen_types: u16[..16] = [];
+    while ext_cursor.cursor_len() > 0 {
+        var ext_type: u16 = 0;
+        var ext_data = ByteCursor { buf: ext_cursor.buf[..0] };
+        guard ext_cursor.get_u16(ext_type) && ext_cursor.get_u16_length_prefixed(ext_data) else {
+            return false;
+        }
+        guard (ext_type & 0x8000) == 0 && !seen_types.contains(ext_type) else { return false; }
+        guard seen_types.try_push(ext_type) else { return false; }
+    }
+    return true;
 }
 
 // Parses a single ECHConfig from raw wire bytes.
@@ -156,7 +169,7 @@ fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
 
     var ext_cursor = ByteCursor { buf: raw[..0] };
     guard contents.get_u16_length_prefixed(ext_cursor) && contents.cursor_len() == 0 else { return false; }
-    return true;
+    return validate_ech_config_extensions(ext_cursor);
 }
 
 // Reads a single ECHConfig entry from list cursor.

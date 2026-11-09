@@ -1002,9 +1002,18 @@ fn parse_tls_record_header_at(
         cursor = saved;
         return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
-    if length > rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN {
+    let max_len = if content_type == rfc::TLS_CONTENT_APPLICATION_DATA {
+        rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN
+    } else {
+        rfc::TLS_MAX_RECORD_PLAINTEXT_LEN
+    };
+    if length > max_len {
         cursor = saved;
         return content_type, version, length, TlsAlert.RecordOverflow, false;
+    }
+    if length == 0 && content_type != rfc::TLS_CONTENT_APPLICATION_DATA {
+        cursor = saved;
+        return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
     return content_type, version, length, TlsAlert.CloseNotify, true;
 }

@@ -1223,11 +1223,16 @@ fn x509_parse_subtrees_sequence(
     out_constraints: NameConstraintEntry[..16]&,
     count:           i64&,
 ) -> bool {
-    var subtrees_seq = core::cursor_from(subtrees_elem.buf[..0]);
+    var subtrees_seq = subtrees_elem;
     if subtrees_elem.cursor_len() > 0 && subtrees_elem.buf[0] == rfc::ASN1_TAG_SEQUENCE {
-        if !get_asn1_element(subtrees_elem, rfc::ASN1_TAG_SEQUENCE, subtrees_seq) { return false; }
-    } else {
-        subtrees_seq = subtrees_elem;
+        var probe = subtrees_elem;
+        var inner = core::cursor_from(subtrees_elem.buf[..0]);
+        if get_asn1_element(probe, rfc::ASN1_TAG_SEQUENCE, inner) &&
+            probe.cursor_len() == 0 &&
+            inner.cursor_len() > 0 &&
+            inner.buf[0] == rfc::ASN1_TAG_SEQUENCE {
+            subtrees_seq = inner;
+        }
     }
     guard subtrees_seq.cursor_len() > 0 else { return false; }
 
@@ -1246,13 +1251,17 @@ fn x509_parse_subtrees_sequence(
 //   nc_der = 0x30 ... (DER encoded NameConstraints sequence)
 //   returns: ok = true, out_constraints filled with permitted/excluded subtrees
 fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEntry[..16]&) -> bool {
+    out_constraints.clear();
+    var committed = false;
+    defer if !committed { out_constraints.clear(); };
     var c = core::cursor_from(nc_der);
     var nc_seq = core::cursor_from(nc_der[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, nc_seq) { return false; }
-    guard c.cursor_len() == 0 else { return false; }
-    guard nc_seq.cursor_len() > 0 else { return false; } // RFC 5280: empty NameConstraints is forbidden!
+    guard c.cursor_len() == 0 && nc_seq.cursor_len() > 0 else { return false; }
 
     var count: i64 = 0;
+    var seen_permitted = false;
+    var seen_excluded = false;
     while nc_seq.cursor_len() > 0 {
         var tag: u8 = 0;
         var subtrees_elem = core::cursor_from(nc_seq.buf[..0]);
@@ -1260,13 +1269,18 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
 
         let is_excluded = (tag == 0xA1);
         let is_permitted = (tag == 0xA0);
-        guard is_excluded || is_permitted else { return false; }
+        guard (is_permitted && !seen_permitted && !seen_excluded) ||
+            (is_excluded && !seen_excluded) else { return false; }
+        if is_permitted { seen_permitted = true; }
+        if is_excluded { seen_excluded = true; }
 
         guard x509_parse_subtrees_sequence(
             nc_der, subtrees_elem, is_excluded, out_constraints, count,
         ) else { return false; }
     }
-    return count > 0;
+    guard count > 0 else { return false; }
+    committed = true;
+    return true;
 }
 
 inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {

@@ -982,14 +982,16 @@ fn parse_tls13_certificate_chain_and_ocsp(
     payload:   const u8[:],
     out_certs: const u8[:][..8]&,
 ) -> const u8[:], bool {
+    out_certs.clear();
+    var committed = false;
+    defer if !committed { out_certs.clear(); };
     var out_leaf_ocsp = payload[..0];
     var c = core::cursor_from(payload);
-    let _, ok_ctx = c.read_u8_prefixed();
-    guard ok_ctx else { return "", false; }
+    let ctx, ok_ctx = c.read_u8_prefixed();
+    guard ok_ctx && ctx.len == 0 else { return "", false; }
     let list_bytes, ok_list = c.read_u24_prefixed();
     guard ok_list && c.buf.len == 0 else { return "", false; }
 
-    out_certs.clear();
     var lc = core::cursor_from(list_bytes);
     while lc.buf.len > 0 {
         let cert_bytes, ok_cert = lc.read_u24_prefixed();
@@ -1003,7 +1005,9 @@ fn parse_tls13_certificate_chain_and_ocsp(
         }
         guard out_certs.try_push(cert_bytes) else { return "", false; }
     }
-    return out_leaf_ocsp, out_certs.len > 0;
+    guard out_certs.len > 0 else { return "", false; }
+    committed = true;
+    return out_leaf_ocsp, true;
 }
 
 // Encodes an ALPN extension (RFC 7301 §3.1) supporting single or comma-separated protocol names (e.g. "h2,http/1.1").
@@ -2072,6 +2076,9 @@ fn verify_client_hello_psk_binder(
     psk_ext: const u8[:],
     out_psk: u8[32]&,
 ) -> bool {
+    core::secure_zeroize_32(out_psk);
+    var committed = false;
+    defer if !committed { core::secure_zeroize_32(out_psk); };
     var c = core::cursor_from(psk_ext);
     let ids_bytes, ok_ids = c.read_u16_prefixed();
     guard ok_ids && ids_bytes.len >= 7 else { return false; }
@@ -2082,7 +2089,7 @@ fn verify_client_hello_psk_binder(
     let ticket_id, ok_t = ic.read_u16_prefixed();
     guard ok_t && ticket_id.len > 0 else { return false; }
     let _, ok_age = ic.read_u32();
-    guard ok_age else { return false; }
+    guard ok_age && ic.buf.len == 0 else { return false; }
 
     var bc = core::cursor_from(binders_bytes);
     let binder_slice, ok_bs = bc.read_u8_prefixed();
@@ -2098,8 +2105,24 @@ fn verify_client_hello_psk_binder(
     let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, 33);
     guard ok_tr else { return false; }
     var exp_binder: u8[32] = [0; 32];
-    guard compute_tls13_psk_binder(b_key, trunc_ch, exp_binder) else { return false; }
-    return core::ct_eq_bytes(exp_binder[..], binder_slice);
+    guard compute_tls13_psk_binder(b_key, trunc_ch, exp_binder) &&
+        core::ct_eq_bytes(exp_binder[..], binder_slice) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+fn has_valid_psk_dhe_ke_mode(modes_ext: const u8[:]) -> bool {
+    var c = core::cursor_from(modes_ext);
+    let modes, ok = c.read_u8_prefixed();
+    guard ok && c.buf.len == 0 && modes.len >= 1 else { return false; }
+    var has_dhe = false;
+    for m in modes {
+        guard m == 0 || m == 1 else { return false; }
+        if m == 1 { has_dhe = true; }
+    }
+    return has_dhe;
 }
 
 fn verify_client_hello_psk_entry(
@@ -2112,6 +2135,8 @@ fn verify_client_hello_psk_entry(
     var last_type: u16 = 0;
     for e in entries { last_type = e.ext_type; }
     guard last_type == rfc::TLS_EXT_PRE_SHARED_KEY else { return false; }
+    let modes_ext, has_modes = find_extension(entries, rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
+    guard has_modes && has_valid_psk_dhe_ke_mode(modes_ext) else { return false; }
     guard verify_client_hello_psk_binder(payload, psk_ext, out_psk) else {
         core::secure_zeroize_32(out_psk);
         return false;
@@ -2125,18 +2150,20 @@ fn verify_client_hello_psk_entry(
 //   shares = [0x00, 0x1D, 0x00, 0x20, ...32 bytes...]
 //   returns: true, out_client_pub = [32 bytes]
 fn extract_x25519_client_share(shares: const u8[:], out_client_pub: u8[32]&) -> bool {
+    guard validate_client_key_share_entries(shares) else { return false; }
     var sc = core::cursor_from(shares);
+    var found = false;
     while sc.buf.len > 0 {
         let group, ok_g = sc.read_u16();
-        guard ok_g else { return false; }
         let kex_bytes, ok_k = sc.read_u16_prefixed();
-        guard ok_k else { return false; }
-        if group == rfc::GROUP_X25519 && kex_bytes.len == 32 {
+        guard ok_g && ok_k else { return false; }
+        if group == rfc::GROUP_X25519 {
+            guard kex_bytes.len == 32 else { return false; }
             for i in 32 { out_client_pub[i] = kex_bytes[i]; }
-            return true;
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 fn ch_cipher_suites_slice(raw: const u8[:]) -> const u8[:] {

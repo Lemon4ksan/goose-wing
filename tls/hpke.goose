@@ -109,15 +109,21 @@ fn dhkem_x25519_encap(
     out_enc:           u8[32]&,
     out_shared_secret: u8[32]&,
 ) -> bool {
-    out_enc = core::x25519_base_scalarmult(ephemeral_sk);
     var dh = core::x25519_scalarmult(ephemeral_sk, pkR);
     defer core::secure_zeroize_32(dh);
     var zero: u8[32] = [0; 32];
     guard !core::ct_eq_bytes(dh[..], zero[..]) else {
+        core::secure_zeroize_32(out_enc);
         return false;
     }
+    let enc_local = core::x25519_base_scalarmult(ephemeral_sk);
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20]; // "KEM" || 0x0020
-    return derive_kem_shared_secret(kem_suite_id[..], dh, out_enc, pkR, out_shared_secret);
+    guard derive_kem_shared_secret(kem_suite_id[..], dh, enc_local, pkR, out_shared_secret) else {
+        core::secure_zeroize_32(out_enc);
+        return false;
+    }
+    out_enc = enc_local;
+    return true;
 }
 
 // Performs DHKEM Key Decapsulation: reconstructs shared_secret from enc using recipient skR.

@@ -1553,7 +1553,45 @@ fn test_tlsc05_email_name_constraints() {
     var nc_list: wing::NameConstraintEntry[..16] = [];
     assert(wing::parse_name_constraints(nc_permitted_der[..], nc_list));
     assert(wing::check_name_constraints(nc_list, sans[0]));
+
+    let nc_implicit_der: u8[15] = [
+        0x30, 0x0D, 0xA0, 0x0B, 0x30, 0x09,
+        0x81, 0x07, '.', 'o', 'r', 'g', '.', 'u', 'k',
+    ];
+    var nc_imp: wing::NameConstraintEntry[..16] = [];
+    assert(wing::parse_name_constraints(nc_implicit_der[..], nc_imp));
+    assert(nc_imp.len == 1 && wing::check_name_constraints(nc_imp, sans[0]));
     print("TLSC05_EMAIL_NAME_CONSTRAINTS: OK");
+}
+
+fn test_goose2rfc_tls_audit_regressions() {
+    let hs_ovf: u8[5] = [0x16, 0x03, 0x03, 0x40, 0x01];
+    let _, _, _, al_ovf, ok_ovf = wing::parse_tls_record_header(hs_ovf[..]);
+    assert(!ok_ovf && al_ovf == wing::TlsAlert.RecordOverflow);
+    let hs_zero: u8[5] = [0x16, 0x03, 0x03, 0x00, 0x00];
+    let _, _, _, al_z, ok_z = wing::parse_tls_record_header(hs_zero[..]);
+    assert(!ok_z && al_z == wing::TlsAlert.UnexpectedMessage);
+
+    assert(!wing::validate_ech_public_name_bytes("example.123"));
+    assert(!wing::validate_ech_public_name_bytes("example.0x1a"));
+    var ext_mand: u8[6] = [0x80, 0x01, 0x00, 0x02, 0xAA, 0xBB];
+    var cur_mand = core::cursor_from(ext_mand[..]);
+    assert(!wing::validate_ech_config_extensions(cur_mand));
+
+    var dup_ks: u8[..80] = [0x00, 0x48];
+    for _ in 2 {
+        dup_ks.push(0x00); dup_ks.push(0x1D);
+        dup_ks.push(0x00); dup_ks.push(0x20);
+        for _ in 32 { dup_ks.push(0x42); }
+    }
+    var out_shares: u8[..4096] = [];
+    assert(!wing::parse_key_share_client_extension(dup_ks[..], out_shares));
+
+    let bad_cert_msg: u8[10] = [0x01, 0xAA, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0xFF, 0x00];
+    var certs_out: const u8[:][..8] = [];
+    let _, ok_cert = wing::parse_tls13_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
+    assert(!ok_cert);
+    print("GOOSE2RFC_TLS_AUDIT_REGRESSIONS: OK");
 }
 
 fn run_05_rfc_repro_tls_cross_rfc() {
@@ -1566,6 +1604,7 @@ fn run_05_rfc_repro_tls_cross_rfc() {
     test_tlsc02_sct_list_parsing();
     test_tlsc04_eku_parsing_and_enforcement();
     test_tlsc05_email_name_constraints();
+    test_goose2rfc_tls_audit_regressions();
 }
 
 // CHECK: BUG1_X509_EMPTY_SIG_REJECTED: OK
@@ -1581,6 +1620,7 @@ fn run_05_rfc_repro_tls_cross_rfc() {
 // CHECK: TLSC02_SCT_LIST_PARSED: OK
 // CHECK: TLSC04_EKU_ENFORCED: OK
 // CHECK: TLSC05_EMAIL_NAME_CONSTRAINTS: OK
+// CHECK: GOOSE2RFC_TLS_AUDIT_REGRESSIONS: OK
 
 // ============================================================================
 // 6. rfc_repro_auth_tls_wire_edge (6/7)

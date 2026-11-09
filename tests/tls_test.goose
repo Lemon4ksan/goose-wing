@@ -4414,6 +4414,84 @@ fn test_tls13_cert_authorities_extension_validation(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 20. RFC Conformance Audit Regressions (goose2rfc TLS-1..TLS-3)
+// ----------------------------------------------------------------------------
+fn check_goose2rfc_pki_and_ech_regressions(t: lit::T&) {
+    t.run("TLS3_C09: RFC 5280 IMPLICIT NameConstraints without extra outer SEQUENCE") { sub =>
+        let implicit_nc: u8[15] = [
+            0x30, 0x0D, 0xA0, 0x0B, 0x30, 0x09,
+            0x82, 0x07, '.', 'e', 'x', '.', 'c', 'o', 'm',
+        ];
+        var nc_out: wing::NameConstraintEntry[..16] = [];
+        sub.assert_true(wing::parse_name_constraints(implicit_nc[..], nc_out), "IMPLICIT NameConstraints parsed");
+        sub.assert_eq(nc_out.len, 1, "1 permitted DNS subtree");
+    };
+
+    t.run("TLS3_C01 & TLS3_C03: RFC 6962 SCT algorithm validation and list rollback") { sub =>
+        var bad_sct: u8[..64] = [0x00];
+        for _ in 32 { bad_sct.push(0xAA); }
+        let tail_bad_hash: u8[16] = [0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0x02, 0x03, 0, 2, 0xDE, 0xAD];
+        bad_sct.append(tail_bad_hash[..]);
+        var sct_out = wing::ParsedSct { .. };
+        sub.assert_false(wing::parse_sct_entry(bad_sct[..], sct_out), "SCT with non-SHA256 hash_alg rejected");
+    };
+
+    t.run("TLS2_C08 & TLS2_C09: RFC 9849 ECH mandatory extensions and final numeric label") { sub =>
+        sub.assert_false(wing::validate_ech_public_name_bytes("example.123"), "numeric TLD rejected");
+        sub.assert_false(wing::validate_ech_public_name_bytes("example.0x1a"), "hex-prefixed TLD rejected");
+        sub.assert_true(wing::validate_ech_public_name_bytes("123.example.com"), "numeric non-final label allowed");
+
+        var ext_mand: u8[6] = [0x80, 0x01, 0x00, 0x02, 0xAA, 0xBB];
+        var cur_mand = core::cursor_from(ext_mand[..]);
+        sub.assert_false(wing::validate_ech_config_extensions(cur_mand), "mandatory unknown ECH ext rejected");
+
+        var ext_dup: u8[8] = [0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
+        var cur_dup = core::cursor_from(ext_dup[..]);
+        sub.assert_false(wing::validate_ech_config_extensions(cur_dup), "duplicate ECH ext rejected");
+    };
+}
+
+fn check_goose2rfc_handshake_and_session_regressions(t: lit::T&) {
+    t.run("TLS1_C09: RFC 8446 Section 5.1 plaintext record overflow (> 16384) and zero-length rejection") { sub =>
+        let hs_overflow: u8[5] = [0x16, 0x03, 0x03, 0x40, 0x01]; // 16385 > 16384 for plaintext Handshake
+        let _, _, _, al_ovf, ok_ovf = wing::parse_tls_record_header(hs_overflow[..]);
+        sub.assert_false(ok_ovf, "plaintext Handshake > 16384 rejected");
+        sub.assert_eq(al_ovf.tls_alert_to_u8(), wing::TlsAlert.RecordOverflow.tls_alert_to_u8(), "RecordOverflow");
+
+        let hs_zero: u8[5] = [0x16, 0x03, 0x03, 0x00, 0x00];
+        let _, _, _, al_z, ok_z = wing::parse_tls_record_header(hs_zero[..]);
+        sub.assert_false(ok_z, "0-length Handshake record rejected");
+        sub.assert_eq(al_z.tls_alert_to_u8(), wing::TlsAlert.UnexpectedMessage.tls_alert_to_u8(), "UnexpectedMessage");
+    };
+
+    t.run("TLS1_C04 & TLS2_C04: RFC 8446 Section 4.2.8 duplicate KeyShareEntry rejection") { sub =>
+        var dup_ks: u8[..80] = [0x00, 0x48]; // 72 bytes = two 36-byte X25519 shares
+        for _ in 2 {
+            dup_ks.push(0x00); dup_ks.push(0x1D);
+            dup_ks.push(0x00); dup_ks.push(0x20);
+            for _ in 32 { dup_ks.push(0x42); }
+        }
+        var out_shares: u8[..4096] = [];
+        sub.assert_false(wing::parse_key_share_client_extension(dup_ks[..], out_shares), "duplicate X25519 share rejected");
+    };
+
+    t.run("TLS2_C01, TLS2_C03 & TLS2_C05: Server Certificate context, PSK modes, and ticket expiry") { sub =>
+        let bad_cert_msg: u8[10] = [0x01, 0xAA, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0xFF, 0x00];
+        var certs_out: const u8[:][..8] = [];
+        let _, ok_cert = wing::parse_tls13_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
+        sub.assert_false(ok_cert, "non-empty server certificate_request_context rejected");
+
+        let psk32: u8[32] = [0x33; 32];
+        wing::store_tls13_session_ticket("exp.example.com", "t-exp", psk32[..], 1, 10, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 1000);
+        var out_t: u8[..256] = [];
+        var out_p: u8[32]    = [0; 32];
+        var out_a: u32       = 0;
+        sub.assert_true(wing::lookup_tls13_session_ticket("exp.example.com", out_t, out_p, out_a, 5000), "fresh at +4s");
+        sub.assert_false(wing::lookup_tls13_session_ticket("exp.example.com", out_t, out_p, out_a, 12000), "expired at +11s");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
 
@@ -4436,6 +4514,8 @@ fn main() {
     lit::run_case(runner, "17. Live TLS 1.3 Transport, Handshake Orchestration & Session Tickets", test_live_tls_transport_session);
     lit::run_case(runner, "18. TLS 1.3 Cookie Extension Length Validation", test_tls13_cookie_extension_validation);
     lit::run_case(runner, "19. TLS 1.3 CertificateRequest certificate_authorities Extension", test_tls13_cert_authorities_extension_validation);
+    lit::run_case(runner, "20a. RFC Audit Regressions: PKI, SCT, and ECH", check_goose2rfc_pki_and_ech_regressions);
+    lit::run_case(runner, "20b. RFC Audit Regressions: Record, KeyShare, PSK & Tickets", check_goose2rfc_handshake_and_session_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

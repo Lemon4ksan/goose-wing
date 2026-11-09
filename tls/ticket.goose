@@ -191,6 +191,35 @@ fn open_stateless_tls13_ticket(
     return out, true;
 }
 
+inline fn is_cached_ticket_fresh(entry: const Tls13CachedSessionTicket&, now_ms: i64) -> bool {
+    guard entry.lifetime > 0 && entry.lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else { return false; }
+    if entry.issued_at_ms > 0 && now_ms > 0 {
+        return is_stateless_ticket_within_lifetime(entry.issued_at_ms, now_ms, entry.lifetime);
+    }
+    return true;
+}
+
+inline fn populate_cached_ticket_slot(
+    slot:         Tls13CachedSessionTicket&,
+    server_name:  const u8[:],
+    ticket:       const u8[:],
+    psk:          const u8[:],
+    age_add:      u32,
+    lifetime:     u32,
+    cipher_suite: u16,
+    stamp_ms:     i64,
+) {
+    core::secure_zeroize_slice(slot.psk[..]);
+    slot.in_use = true;
+    let _ = slot.server_name.try_set(server_name);
+    let _ = slot.ticket.try_set(ticket);
+    let _ = slot.psk.try_set(psk);
+    slot.age_add = age_add;
+    slot.lifetime = lifetime;
+    slot.cipher_suite = cipher_suite;
+    slot.issued_at_ms = stamp_ms;
+}
+
 // Stores a derived TLS 1.3 resumption PSK (32 or 48 bytes) and ticket identity for a server hostname.
 fn store_tls13_session_ticket(
     server_name:  const u8[:],
@@ -199,6 +228,7 @@ fn store_tls13_session_ticket(
     age_add:      u32,
     lifetime:     u32,
     cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    issued_at_ms: i64 = 0,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
     guard ticket.len > 0 && ticket.len <= 256 &&
@@ -206,36 +236,26 @@ fn store_tls13_session_ticket(
         return;
     }
     guard psk.len == 32 || psk.len == 48 else { return; }
+    let stamp_ms = if issued_at_ms > 0 { issued_at_ms } else { core::unix_milli(core::now()) };
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
-            core::secure_zeroize_slice(g_tls13_tickets[i].psk[..]);
-            let _ = g_tls13_tickets[i].ticket.try_set(ticket);
-            let _ = g_tls13_tickets[i].psk.try_set(psk);
-            g_tls13_tickets[i].age_add = age_add;
-            g_tls13_tickets[i].lifetime = lifetime;
-            g_tls13_tickets[i].cipher_suite = cipher_suite;
+            populate_cached_ticket_slot(
+                g_tls13_tickets[i], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+            );
             return;
         }
     }
     for i in 16 {
         if !g_tls13_tickets[i].in_use {
-            g_tls13_tickets[i].in_use = true;
-            let _ = g_tls13_tickets[i].server_name.try_set(server_name);
-            let _ = g_tls13_tickets[i].ticket.try_set(ticket);
-            let _ = g_tls13_tickets[i].psk.try_set(psk);
-            g_tls13_tickets[i].age_add = age_add;
-            g_tls13_tickets[i].lifetime = lifetime;
-            g_tls13_tickets[i].cipher_suite = cipher_suite;
+            populate_cached_ticket_slot(
+                g_tls13_tickets[i], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+            );
             return;
         }
     }
-    core::secure_zeroize_slice(g_tls13_tickets[0].psk[..]);
-    let _ = g_tls13_tickets[0].server_name.try_set(server_name);
-    let _ = g_tls13_tickets[0].ticket.try_set(ticket);
-    let _ = g_tls13_tickets[0].psk.try_set(psk);
-    g_tls13_tickets[0].age_add = age_add;
-    g_tls13_tickets[0].lifetime = lifetime;
-    g_tls13_tickets[0].cipher_suite = cipher_suite;
+    populate_cached_ticket_slot(
+        g_tls13_tickets[0], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+    );
 }
 
 // Looks up a cached TLS 1.3 session ticket by server hostname, returning the full PSK and cipher suite.
@@ -245,15 +265,18 @@ fn lookup_tls13_session_ticket_full(
     out_psk:          u8[..48]&,
     out_age_add:      u32&,
     out_cipher_suite: u16&,
+    now_ms:           i64 = 0,
 ) -> bool {
     out_ticket.clear();
     out_psk.clear();
     out_age_add = 0;
     out_cipher_suite = 0;
     guard server_name.len > 0 else { return false; }
+    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
-            guard out_ticket.try_set(g_tls13_tickets[i].ticket[..]) &&
+            guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
+                out_ticket.try_set(g_tls13_tickets[i].ticket[..]) &&
                 out_psk.try_set(g_tls13_tickets[i].psk[..]) else {
                 out_ticket.clear();
                 out_psk.clear();
@@ -273,14 +296,17 @@ fn lookup_tls13_session_ticket(
     out_ticket:  u8[..256]&,
     out_psk:     u8[32]&,
     out_age_add: u32&,
+    now_ms:      i64 = 0,
 ) -> bool {
     out_ticket.clear();
     core::secure_zeroize_32(out_psk);
     out_age_add = 0;
     guard server_name.len > 0 else { return false; }
+    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     for i in 16 {
         if g_tls13_tickets[i].in_use && g_tls13_tickets[i].server_name[..] == server_name {
-            guard g_tls13_tickets[i].psk.len >= 32 &&
+            guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
+                g_tls13_tickets[i].psk.len >= 32 &&
                 out_ticket.try_set(g_tls13_tickets[i].ticket[..]) else {
                 return false;
             }
@@ -296,11 +322,15 @@ fn lookup_tls13_session_ticket(
 fn lookup_tls13_ticket_by_identity(
     ticket_id: const u8[:],
     out_psk:   u8[32]&,
+    now_ms:    i64 = 0,
 ) -> bool {
+    core::secure_zeroize_32(out_psk);
     guard ticket_id.len > 0 else { return false; }
+    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     for i in 16 {
         if g_tls13_tickets[i].in_use && core::ct_eq_bytes(g_tls13_tickets[i].ticket[..], ticket_id) {
-            guard g_tls13_tickets[i].psk.len >= 32 else { return false; }
+            guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
+                g_tls13_tickets[i].psk.len >= 32 else { return false; }
             core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             return true;
         }

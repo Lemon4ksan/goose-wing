@@ -900,6 +900,19 @@ fn encode_key_share_client_extension<B>(out: B&, client_shares_raw: const u8[:])
     out.append(client_shares_raw);
 }
 
+fn validate_client_key_share_entries(shares: const u8[:]) -> bool {
+    guard shares.len >= 5 else { return false; }
+    var sc = core::cursor_from(shares);
+    var seen_groups: u16[..32] = [];
+    while sc.buf.len > 0 {
+        let grp, ok_g = sc.read_u16();
+        let kex, ok_k = sc.read_u16_prefixed();
+        guard ok_g && ok_k && kex.len >= 1 else { return false; }
+        guard !seen_groups.contains(grp) && seen_groups.try_push(grp) else { return false; }
+    }
+    return true;
+}
+
 // RFC 8446 Section 4.2.8: Key Share - Parses ClientHello key_share extension payload
 //
 // Example:
@@ -909,9 +922,12 @@ fn parse_key_share_client_extension(
     data:       const u8[:],
     out_shares: u8[..4096]&,
 ) -> bool {
+    out_shares.clear();
     var c = core::cursor_from(data);
     let shares_c, ok = c.read_u16_sub_cursor();
-    guard ok && c.buf.len == 0 && shares_c.buf.len >= 4 else { return false; }
+    guard ok && c.buf.len == 0 && validate_client_key_share_entries(shares_c.buf) else {
+        return false;
+    }
     return out_shares.try_set(shares_c.buf);
 }
 
@@ -1036,30 +1052,30 @@ fn read_server_hello_preamble(
 //   payload = [0x02, 0x00, 0x00, 0x46, 0x03, 0x03, ...32B random..., 0x00, 0x13, 0x01, 0x00, ...]
 //   returns: ok = true, out.cipher_suite = 0x1301, out.is_hrr = false
 fn parse_live_server_hello(payload: const u8[:], out: ParsedServerHello&) -> bool {
-    out.cipher_suite = 0;
-    out.is_hrr = false;
-    out.selected_group = 0;
-    out.server_share.clear();
-    out.hrr_cookie.clear();
-    out.psk_resumed = false;
+    out = ParsedServerHello { .. };
+    var tmp = ParsedServerHello { .. };
 
     var rand_arr: u8[32] = [0; 32];
-    let ext_bytes, ok_pre = read_server_hello_preamble(payload, rand_arr, out);
+    let ext_bytes, ok_pre = read_server_hello_preamble(payload, rand_arr, tmp);
     guard ok_pre else { return false; }
 
     var entries: TlsExtensionEntry[..32] = [];
     guard parse_extensions_block(ext_bytes, entries) else { return false; }
-    guard validate_sh_or_hrr_extensions(entries, out.is_hrr) else { return false; }
+    guard validate_sh_or_hrr_extensions(entries, tmp.is_hrr) else { return false; }
 
     let ver_data, has_ver = find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
     guard has_ver else { return false; }
     let negotiated_ver, ok_ver = parse_server_supported_versions(ver_data);
     guard ok_ver && negotiated_ver == rfc::TLS_VERSION_1_3 else { return false; }
 
-    if out.is_hrr {
-        return apply_hrr_server_hello_exts(entries, out);
-    }
-    return apply_regular_server_hello_exts(entries, rand_arr, out);
+    let ok_ext = if tmp.is_hrr {
+        apply_hrr_server_hello_exts(entries, tmp)
+    } else {
+        apply_regular_server_hello_exts(entries, rand_arr, tmp)
+    };
+    guard ok_ext else { return false; }
+    out = tmp;
+    return true;
 }
 
 // ---- ClientHello Record Fragmentation (RFC 8446 Section 5.1) -------------
@@ -1575,7 +1591,10 @@ fn parse_certificate_verify(payload: const u8[:]) -> u16, const u8[:], bool {
     var c = core::cursor_from(payload);
     let sig_scheme, ok_s = c.read_u16();
     let sig, ok_sig = c.read_u16_prefixed();
-    guard ok_s && ok_sig && c.buf.len == 0 else { return 0, "", false; }
+    guard ok_s && ok_sig && sig.len > 0 &&
+        !rfc::is_forbidden_tls13_sig_scheme(sig_scheme) && c.buf.len == 0 else {
+        return 0, "", false;
+    }
     return sig_scheme, sig, true;
 }
 

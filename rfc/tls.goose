@@ -468,8 +468,11 @@ const OCSP_STATUS_SIG_REQUIRED:   u8 = 5;
 const OCSP_STATUS_UNAUTHORIZED:   u8 = 6;
 
 const SCT_VERSION_V1:        u8  = 0;  // RFC 6962 Section 3.2
-const SCT_V1_HEADER_MIN_LEN: i64 = 43; // RFC 6962 Section 3.2: version(1) + log_id(32) + timestamp(8) + ext_len(2)
-const SCT_LOG_ID_LEN:        i64 = 32; // RFC 6962 Section 3.2: SHA-256 log ID
+const SCT_V1_HEADER_MIN_LEN: i64 = 43; // RFC 6962 Section 3.2
+const SCT_LOG_ID_LEN:        i64 = 32; // RFC 6962 Section 3.2
+const SCT_HASH_ALG_SHA256:   u8  = 4;  // RFC 6962 Section 3.2
+const SCT_SIG_ALG_RSA:       u8  = 1;  // RFC 6962 Section 3.2
+const SCT_SIG_ALG_ECDSA:     u8  = 3;  // RFC 6962 Section 3.2
 
 // ---- TLS GREASE (RFC 8701 Section 2) -------------------------------------
 
