@@ -22,12 +22,22 @@ enum SfType {
     DisplayString,
 }
 
+struct SfItemParam {
+    key:      u8[..32] = [],
+    kind:     SfType   = SfType.Boolean,
+    int_val:  i64      = 0,
+    dec_val:  f64      = 0.0,
+    str_val:  u8[..64] = [],
+    bool_val: bool     = true,
+}
+
 struct SfItem {
-    kind:     SfType      = SfType.Token,
-    int_val:  i64         = 0,
-    dec_val:  f64         = 0.0,
-    str_val:  const u8[:] = "",
-    bool_val: bool        = false,
+    kind:     SfType           = SfType.Token,
+    int_val:  i64              = 0,
+    dec_val:  f64              = 0.0,
+    str_val:  const u8[:]      = "",
+    bool_val: bool             = false,
+    params:   SfItemParam[..4] = [],
 }
 
 struct SfParameter {
@@ -48,6 +58,56 @@ struct SfDictEntry {
     item:          SfItem           = SfItem { .. },
     params:        SfParameter[..8] = [],
     inner_items:   SfItem[..8]      = [],
+}
+
+enum SfvType {
+    Integer,
+    Decimal,
+    String,
+    Token,
+    ByteSequence,
+    Boolean,
+    Date,
+    DisplayString,
+}
+
+struct SfvBareItem {
+    kind:     SfvType    = SfvType.Boolean,
+    int_val:  i64        = 0,       // For Integer, Date, and Decimal (scaled * 1000 in milliths)
+    bool_val: bool       = false,   // For Boolean
+    text:     u8[..1088] = [],      // For String, Token, ByteSequence, DisplayString (>= 1024 bytes per RFC 8941)
+}
+
+struct SfvParam {
+    key:   u8[..64]    = [],
+    value: SfvBareItem = SfvBareItem { .. },
+}
+
+struct SfvItem {
+    bare:   SfvBareItem    = SfvBareItem { .. },
+    params: SfvParam[..16] = [],
+}
+
+struct SfvMember {
+    is_inner_list: bool           = false,
+    item:          SfvItem        = SfvItem { .. },
+    inner_list:    SfvItem[..32]  = [],
+    inner_params:  SfvParam[..16] = [],
+}
+
+struct SfvList {
+    members: SfvMember[..64] = [],
+    valid:   bool            = true,
+}
+
+struct SfvDictEntry {
+    key:    u8[..64]  = [],
+    member: SfvMember = SfvMember { .. },
+}
+
+struct SfvDict {
+    entries: SfvDictEntry[..64] = [],
+    valid:   bool               = true,
 }
 
 // ---- Whitespace & Index Scanners -----------------------------------------
@@ -162,6 +222,20 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
         p = core::add_sat_i64(p, 1);
     }
     return false;
+}
+
+// Decodes the Base64 payload of an RFC 8941/9651 Binary (`SfType.Binary`) item into `out`.
+//
+// Example:
+//   item = SfItem { kind: SfType.Binary, str_val: "aGVsbG8=" }, out = []
+//   returns: true, out = "hello"
+fn sf_decode_byte_sequence<B>(item: const SfItem&, out: B&) -> bool {
+    out.clear();
+    guard item.kind == SfType.Binary && core::base64_decode(item.str_val, out) else {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // Parses an RFC 8941 Token: starts with alpha or *, followed by tchar, :, /
@@ -525,6 +599,9 @@ fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
     while p < src.len && is_sf_key_char(src[p]) {
         p = p + 1;
     }
+    if p < src.len && src[p] >= 'A' && src[p] <= 'Z' {
+        return "", pos, false;
+    }
     return src[start..p], p, true;
 }
 
@@ -607,6 +684,34 @@ fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
     return result, true;
 }
 
+// Returns true when `item.params` contains a boolean-true flag parameter named `key`.
+fn sf_item_has_flag_param(item: const SfItem&, key: const u8[:]) -> bool {
+    for &p in item.params {
+        if p.key[..] == key && p.kind == SfType.Boolean && p.bool_val {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn copy_inner_item_params(src: const SfParameter[..8]&, dst: SfItemParam[..4]&) -> bool {
+    dst.clear();
+    for &ip in src {
+        var p = SfItemParam {
+            kind:     ip.item.kind,
+            int_val:  ip.item.int_val,
+            dec_val:  ip.item.dec_val,
+            bool_val: ip.item.bool_val,
+        };
+        guard p.key.try_set(ip.key) &&
+              p.str_val.try_set(ip.item.str_val) &&
+              dst.try_push(p) else {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Helper: parses inner list contents (item1 item2 ...) per RFC 8941 §4.2.1.2
 fn sf_parse_inner_list_items(
     src:         const u8[:],
@@ -623,24 +728,18 @@ fn sf_parse_inner_list_items(
             out_next = core::add_sat_i64(p, 1);
             return true;
         }
-        let item_start = p;
         var inner_item = SfItem { .. };
         var in_next:     i64              = 0;
         var item_params: SfParameter[..8] = [];
         var params_next: i64              = 0;
         guard sf_parse_bare_item(src, p, inner_item, in_next) &&
               sf_parse_parameters(src, in_next, item_params, params_next) &&
+              copy_inner_item_params(item_params, inner_item.params) &&
               inner_items.len < 8 else {
             return false;
         }
-        if item_params.len == 1 && item_params[0].key == "req" && src[item_start] == '"' {
-            let req_end = core::add_sat_i64(in_next, 4);
-            if req_end <= src.len && src[in_next..req_end] == ";req" {
-                inner_item.str_val = src[core::add_sat_i64(item_start, 1)..req_end];
-            }
-        }
-        p = params_next;
         inner_items.push(inner_item);
+        p = params_next;
         guard p < src.len && (src[p] == ' ' || src[p] == ')') else { return false; }
     }
     return false;
@@ -800,6 +899,282 @@ fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> b
     return true;
 }
 
+// ---- Owned Decoded SFV Parsers (SfvItem, SfvList, SfvDict) ---------------
+
+// RFC 8941 Section 3.1.2: Dictionary key parser
+// key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
+//
+// Example:
+//   raw = "key_name=123", cursor = 0, out_key = []
+//   returns: true, cursor = 8, out_key = "key_name"
+fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
+    let key_slice, next_pos, ok = sf_parse_key(raw, cursor);
+    guard ok && out_key.try_set(key_slice) else { return false; }
+    cursor = next_pos;
+    return true;
+}
+
+fn sf_item_to_sfv_bare(item: const SfItem&, out_bare: SfvBareItem&) -> bool {
+    out_bare.text.clear();
+    if item.kind == SfType.Integer {
+        out_bare.kind = SfvType.Integer;
+        out_bare.int_val = item.int_val;
+        return true;
+    }
+    if item.kind == SfType.Decimal {
+        out_bare.kind = SfvType.Decimal;
+        out_bare.int_val = item.int_val;
+        return true;
+    }
+    if item.kind == SfType.Boolean {
+        out_bare.kind = SfvType.Boolean;
+        out_bare.bool_val = item.bool_val;
+        return true;
+    }
+    if item.kind == SfType.Date {
+        out_bare.kind = SfvType.Date;
+        out_bare.int_val = item.int_val;
+        return true;
+    }
+    if item.kind == SfType.Token {
+        out_bare.kind = SfvType.Token;
+        return out_bare.text.try_set(item.str_val);
+    }
+    if item.kind == SfType.String {
+        out_bare.kind = SfvType.String;
+        return sf_unescape_string(item.str_val, out_bare.text);
+    }
+    if item.kind == SfType.Binary {
+        out_bare.kind = SfvType.ByteSequence;
+        return item.str_val.len <= 1088 && sf_decode_byte_sequence(item, out_bare.text);
+    }
+    if item.kind == SfType.DisplayString {
+        out_bare.kind = SfvType.DisplayString;
+        return sf_decode_display_string(item.str_val, out_bare.text);
+    }
+    return false;
+}
+
+// RFC 8941 Section 3.3: Bare item dispatcher
+//
+// Example:
+//   raw = "123; param", cursor = 0
+//   returns: true, out_bare.kind = SfvType.Integer, out_bare.int_val = 123
+fn parse_sfv_bare_item(raw: const u8[:], cursor: i64&, out_bare: SfvBareItem&) -> bool {
+    var item = SfItem { .. };
+    var next_pos: i64 = 0;
+    guard sf_parse_bare_item(raw, cursor, item, next_pos) else { return false; }
+    guard sf_item_to_sfv_bare(item, out_bare) else { return false; }
+    cursor = next_pos;
+    return true;
+}
+
+fn upsert_sfv_param(out_params: SfvParam[..16]&, param_key: const u8[..64]&, param_val: const SfvBareItem&) -> bool {
+    for &p in out_params {
+        if p.key[..] == param_key[..] {
+            p.value = param_val;
+            return true;
+        }
+    }
+    return out_params.try_push(SfvParam { key: param_key, value: param_val });
+}
+
+// RFC 8941 Section 3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
+//
+// Example:
+//   raw = "; q=0.5; v=?1", cursor = 0, out_params = []
+//   returns: true, cursor advances past parameters
+fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..16]&) -> bool {
+    while cursor < raw.len && raw[cursor] == ';' {
+        cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1)); // skip ';' and OWS
+
+        var param_key: u8[..64] = [];
+        guard parse_sfv_key(raw, cursor, param_key) else { return false; }
+
+        var param_val = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
+        if cursor < raw.len && raw[cursor] == '=' {
+            cursor = core::add_sat_i64(cursor, 1); // skip '='
+            guard parse_sfv_bare_item(raw, cursor, param_val) else { return false; }
+        }
+
+        guard upsert_sfv_param(out_params, param_key, param_val) else { return false; }
+    }
+    return true;
+}
+
+// RFC 8941 Section 3.3: Item parser
+//
+// Example:
+//   raw = "123; q=1", out = SfvItem { .. }
+//   returns: true, out.bare.int_val = 123
+fn parse_sfv_item(raw: const u8[:], out: SfvItem&) -> bool {
+    var cursor = sf_skip_ws(raw, 0);
+    guard cursor < raw.len else { return false; }
+
+    var bare = SfvBareItem { .. };
+    guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
+
+    var params: SfvParam[..16] = [];
+    guard parse_sfv_parameters(raw, cursor, params) else { return false; }
+
+    cursor = sf_skip_ws(raw, cursor);
+    guard cursor == raw.len else { return false; } // Strict atomicity: no trailing junk!
+
+    out.bare = bare;
+    out.params.clear();
+    for &p in params { out.params.push(p); }
+    return true;
+}
+
+// RFC 8941 Section 3.1.1: Inner list parser
+//
+// Example:
+//   raw = "(1 2 3); q=0.5", cursor = 0, member = SfvMember { .. }
+//   returns: true, cursor advances past inner list
+fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
+    member.is_inner_list = true;
+    cursor = core::add_sat_i64(cursor, 1); // skip '('
+    var closed = false;
+    while cursor < raw.len {
+        cursor = sf_skip_ws(raw, cursor);
+        if cursor < raw.len && raw[cursor] == ')' {
+            cursor = core::add_sat_i64(cursor, 1);
+            closed = true;
+            break;
+        }
+        var item = SfvItem { .. };
+        guard parse_sfv_bare_item(raw, cursor, item.bare) else { return false; }
+        guard parse_sfv_parameters(raw, cursor, item.params) else { return false; }
+        guard member.inner_list.try_push(item) else { return false; }
+        guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
+    }
+    guard closed else { return false; }
+    return parse_sfv_parameters(raw, cursor, member.inner_params);
+}
+
+// Parses a single member item within an SFV list or dict.
+//
+// Example:
+//   raw = "token; q=1", cursor = 0, member = SfvMember { .. }
+//   returns: true, cursor advances past member
+fn parse_sfv_member_item(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
+    member.is_inner_list = false;
+    guard parse_sfv_bare_item(raw, cursor, member.item.bare) else { return false; }
+    return parse_sfv_parameters(raw, cursor, member.item.params);
+}
+
+// Advances cursor across OWS and an optional comma separator between SFV members.
+//
+// Example:
+//   raw = ", next", cursor = 0, has_more = false
+//   returns: true, cursor = 2, has_more = true
+fn sfv_advance_comma(raw: const u8[:], cursor: i64&, has_more: bool&) -> bool {
+    has_more = false;
+    cursor = sf_skip_ws(raw, cursor);
+    if cursor == raw.len {
+        return true;
+    }
+    guard raw[cursor] == ',' else { return false; }
+    cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1)); // skip ',' and OWS
+    guard cursor < raw.len else { return false; } // Trailing comma without following member
+    has_more = true;
+    return true;
+}
+
+// RFC 8941 Section 3.1: List parser (supports items and inner lists)
+//
+// Example:
+//   raw = "a, b, (c d)", out = SfvList { .. }
+//   returns: true, out.members has parsed elements
+fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
+    out.members.clear();
+    out.valid = false;
+
+    var cursor = sf_skip_ws(raw, 0);
+    if cursor == raw.len {
+        out.valid = true;
+        return true; // Empty list is valid
+    }
+
+    while cursor < raw.len {
+        var member = SfvMember { .. };
+        if raw[cursor] == '(' {
+            guard parse_sfv_inner_list(raw, cursor, member) else { return false; }
+        } else {
+            guard parse_sfv_member_item(raw, cursor, member) else { return false; }
+        }
+
+        guard out.members.try_push(member) else { return false; }
+
+        var has_more = false;
+        guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
+        if !has_more { break; }
+    }
+
+    out.valid = true;
+    return true;
+}
+
+fn upsert_sfv_dict_entry(entries: SfvDictEntry[..64]&, key: const u8[..64]&, member: const SfvMember&) -> bool {
+    for &entry in entries {
+        if entry.key[..] == key[..] {
+            entry.member = member;
+            return true;
+        }
+    }
+    return entries.try_push(SfvDictEntry { key: key, member: member });
+}
+
+// Parses a dictionary entry member value (after key) and its parameters.
+//
+// Example:
+//   raw = "=123; a=1", cursor = 0, member = SfvMember { .. }
+//   returns: true, cursor = 9
+fn parse_sfv_dict_entry_member(raw: const u8[:], cursor: i64&, member: SfvMember&) -> bool {
+    if cursor < raw.len && raw[cursor] == '=' {
+        cursor = core::add_sat_i64(cursor, 1); // skip '='
+        if cursor < raw.len && raw[cursor] == '(' {
+            return parse_sfv_inner_list(raw, cursor, member);
+        }
+        return parse_sfv_member_item(raw, cursor, member);
+    }
+    member.is_inner_list = false;
+    member.item.bare = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
+    return parse_sfv_parameters(raw, cursor, member.item.params);
+}
+
+// RFC 8941 Section 3.2: Dictionary parser
+//
+// Example:
+//   raw = "en=\"English\", de=\"German\"", out = SfvDict { .. }
+//   returns: true, out.entries has dictionary entries
+fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
+    out.entries.clear();
+    out.valid = false;
+
+    var cursor = sf_skip_ws(raw, 0);
+    if cursor == raw.len {
+        out.valid = true;
+        return true; // Empty dictionary is valid
+    }
+
+    while cursor < raw.len {
+        var key: u8[..64] = [];
+        guard parse_sfv_key(raw, cursor, key) else { return false; }
+
+        var member = SfvMember { .. };
+        guard parse_sfv_dict_entry_member(raw, cursor, member) else { return false; }
+        guard upsert_sfv_dict_entry(out.entries, key, member) else { return false; }
+
+        var has_more = false;
+        guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
+        if !has_more { break; }
+    }
+
+    out.valid = true;
+    return true;
+}
+
 // ---- Zero-Alloc Fast Dictionary Accessors --------------------------------
 
 // Extracts integer value for key from an RFC 8941 dictionary without heap allocations.
@@ -864,28 +1239,44 @@ fn sf_dict_has_key(dict_str: const u8[:], key: const u8[:]) -> bool {
 
 // ---- Serialization Helpers -----------------------------------------------
 
+// Decimal serialization per RFC 8941 Section 4.1.5
+fn serialize_sfv_decimal<B>(scaled_milli: i64, out: B&) {
+    if scaled_milli < 0 {
+        out.push('-');
+    }
+    let abs_milli = if scaled_milli < 0 {
+        core::sub_sat_i64(0, scaled_milli)
+    } else {
+        scaled_milli
+    };
+    var raw_digits: u8[..24] = [];
+    abs_milli.format_i64_dec(raw_digits);
+
+    var padded: u8[..28] = [];
+    if raw_digits.len == 1 {
+        padded.append("000");
+    } else if raw_digits.len == 2 {
+        padded.append("00");
+    } else if raw_digits.len == 3 {
+        padded.append("0");
+    }
+    padded.append(raw_digits[..]);
+
+    let split_idx = core::sub_sat_i64(padded.len, 3);
+    out.append(padded[..split_idx]);
+    out.push('.');
+    let frac_full = padded[split_idx..];
+    let frac_t1, _ = frac_full.strip_suffix("0");
+    let frac_t2, _ = frac_t1.strip_suffix("0");
+    out.append(frac_t2);
+}
+
 inline fn sf_serialize_item<B>(kind: SfType.Integer, item: const SfItem&, out: B&) {
     item.int_val.format_i64_dec(out);
 }
 
 inline fn sf_serialize_item<B>(kind: SfType.Decimal, item: const SfItem&, out: B&) {
-    let abs_milli: u64 = if item.int_val < 0 {
-        core::sub_sat_i64(0, item.int_val) as u64
-    } else {
-        item.int_val as u64
-    };
-    if item.int_val < 0 { out.push('-' as u8); }
-    let int_part = abs_milli / 1000;
-    int_part.format_u64_dec(out);
-    out.push('.' as u8);
-    let frac = abs_milli % 1000;
-    out.push(core::add_sat_u64('0', frac / 100) as u8);
-    if (frac % 100) != 0 {
-        out.push(core::add_sat_u64('0', (frac / 10) % 10) as u8);
-    }
-    if (frac % 10) != 0 {
-        out.push(core::add_sat_u64('0', frac % 10) as u8);
-    }
+    serialize_sfv_decimal(item.int_val, out);
 }
 
 inline fn sf_serialize_item<B>(kind: SfType.Boolean, item: const SfItem&, out: B&) {
@@ -942,6 +1333,25 @@ fn sf_serialize_parameters<B>(params: const SfParameter[:], out: B&) {
     }
 }
 
+fn sf_serialize_item_params<B>(params: const SfItemParam[:], out: B&) {
+    for &p in params {
+        out.push(';' as u8);
+        out.append(p.key[..]);
+        if p.kind == SfType.Boolean && p.bool_val {
+            continue;
+        }
+        out.push('=' as u8);
+        let tmp = SfItem {
+            kind:     p.kind,
+            int_val:  p.int_val,
+            dec_val:  p.dec_val,
+            str_val:  p.str_val[..],
+            bool_val: p.bool_val,
+        };
+        sf_serialize_item(tmp, out);
+    }
+}
+
 fn sf_serialize_dict_entry<B>(entry: const SfDictEntry&, out: B&) {
     out.append(entry.key);
     if entry.is_inner_list {
@@ -951,6 +1361,7 @@ fn sf_serialize_dict_entry<B>(entry: const SfDictEntry&, out: B&) {
                 out.push(' ' as u8);
             }
             sf_serialize_item(entry.inner_items[idx], out);
+            sf_serialize_item_params(entry.inner_items[idx].params[..], out);
         }
         out.push(')' as u8);
     } else if entry.item.kind == SfType.Boolean && entry.item.bool_val {

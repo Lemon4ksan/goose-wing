@@ -148,19 +148,19 @@ fn test_scalable_http_cache_and_stage_polymorphism() {
         assert(cache.store_response(req, resp, now_ts));
     }
     assert(cache.entries.len == 128);
-    assert(cache.lru_head == 0);
-    assert(cache.lru_tail == 127);
+    assert(cache.lru_head == 127);
+    assert(cache.lru_tail == 0);
 
-    // Touch entry 0 via lookup so entry 0 becomes MRU tail and entry 1 becomes LRU head
+    // Touch entry 0 via lookup so entry 0 becomes MRU head and entry 1 becomes LRU tail
     var url0: u8[..256] = [];
     make_item_url(0, url0);
     let req0 = wing::new_request("GET", url0[..]);
     let hit0 = cache.lookup(req0, now_ts);
     assert(hit0.kind == wing::LookupResultKind.Hit);
-    assert(cache.lru_tail == 0);
-    assert(cache.lru_head == 1);
+    assert(cache.lru_head == 0);
+    assert(cache.lru_tail == 1);
 
-    // Store entry 128 when at capacity (128); must evict LRU head (entry 1) in O(1)
+    // Store entry 128 when at capacity (128); must evict LRU tail (entry 1) in O(1)
     var url128: u8[..256] = [];
     make_item_url(128, url128);
     let req128 = wing::new_request("GET", url128[..]);

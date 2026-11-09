@@ -3,7 +3,7 @@
 
 // RFC 9110 & RFC 9111 Section 4.1: Conditional request validators and Vary matching engine.
 // Implements EntityTag (ETag) weak/strong comparisons, Last-Modified revalidation,
-// RFC 9111 §4.1 Vary normalization with CVE-2026-93750 defense, and 304 merge filtering.
+// RFC 9111 Section 4.1 Vary-star poisoning defense, and 304 merge filtering.
 namespace wing;
 
 import std;
@@ -150,7 +150,7 @@ fn evaluate_cache_if_range(
     return false;
 }
 
-// ---- vary matching & cve-2026-93750 defense --------------------------------
+// ---- vary matching & rfc 9111 section 4.1 vary-star poisoning defense ------
 
 // Single request header field recorded in a Vary snapshot.
 struct VaryItem {
@@ -203,7 +203,7 @@ fn extract_vary_value(
 }
 
 // Records the request headers specified in the response's Vary header.
-// Defends against CVE-2026-93750 by marking has_star = true on "*", preventing subsequent matches.
+// RFC 9111 Section 4.1 Vary-star poisoning defense: marks has_star = true on "*", preventing subsequent matches.
 fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderMap&) -> VarySnapshot {
     var snap = VarySnapshot { .. };
     var s = cached_vary_raw.trim_lws();
@@ -339,25 +339,6 @@ fn sanitize_for_storage(
 // Updates cached headers with new values from a 304 response (RFC 9111 §3.2).
 // Strictly protects Content-Type, Content-Encoding, Content-Range, cookies, and security state headers.
 fn merge_cached_headers_304(cached: HeaderMap&, resp_304: const HeaderMap&) {
-    for entry in resp_304.entries {
-        let name = resp_304.raw_buf[entry.name_begin..entry.name_end];
-        let val = resp_304.raw_buf[entry.values_begin..entry.values_end];
-        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
-            continue;
-        }
-        if should_update_header_304(entry.flags, name) {
-            remove_header(cached, name);
-        }
-    }
-    for entry in resp_304.entries {
-        let name = resp_304.raw_buf[entry.name_begin..entry.name_end];
-        let val = resp_304.raw_buf[entry.values_begin..entry.values_end];
-
-        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
-            continue;
-        }
-        if should_update_header_304(entry.flags, name) {
-            append_header(cached, name, val);
-        }
-    }
+    guard cached.valid && resp_304.valid else { return; }
+    cached.merge_with_headers_304(resp_304);
 }

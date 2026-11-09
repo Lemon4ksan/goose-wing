@@ -14,7 +14,7 @@ import std;
 import core from "..";
 import rfc.http;
 import http.headers;
-import http.novarysearch;
+import http.sfv;
 import client.request;
 import client.response;
 
@@ -68,64 +68,82 @@ fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
 
 // ---- Header Parsers & Serializers ---------------------------------------
 
-fn find_dict_item_end(s: const u8[:]) -> i64 {
-    var in_quotes = false;
-    for i in s.len {
-        let b = s[i];
-        if b == '"' {
-            in_quotes = !in_quotes;
-        } else if !in_quotes && (b == ',' || b == ';') {
-            return i;
-        }
-    }
-    return s.len;
-}
-
-fn apply_dict_match_dest(p: DictionaryParams&, raw_list: const u8[:]) -> bool {
-    let last_idx = core::sub_sat_i64(raw_list.len, 1);
-    guard raw_list.len >= 2 && raw_list[0] == '(' && raw_list[last_idx] == ')' else {
+fn apply_dict_match_dest(p: DictionaryParams&, entry: const SfDictEntry&) -> bool {
+    guard entry.is_inner_list else {
         p.valid = false;
         return false;
     }
     p.match_dest.clear();
-    guard parse_inner_string_list(raw_list, p.match_dest) else {
+    for &inner in entry.inner_items {
+        guard inner.kind == SfType.String else {
+            p.valid = false;
+            return false;
+        }
+        var dest: u8[..64] = [];
+        guard sf_unescape_string(inner.str_val, dest) && p.match_dest.try_push(dest) else {
+            p.valid = false;
+            return false;
+        }
+    }
+    return true;
+}
+
+fn apply_dict_ttl(p: DictionaryParams&, item: const SfItem&) -> bool {
+    guard item.kind == SfType.Integer && item.int_val >= 0 && item.int_val <= 4294967295 else {
+        p.valid = false;
+        return false;
+    }
+    p.ttl_sec = item.int_val as u32;
+    return true;
+}
+
+fn apply_dict_type(p: DictionaryParams&, item: const SfItem&) -> bool {
+    let is_str_or_tok = item.kind == SfType.Token || item.kind == SfType.String;
+    guard is_str_or_tok && item.str_val == "raw" && p.dict_type.try_set(item.str_val) else {
         p.valid = false;
         return false;
     }
     return true;
 }
 
-fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
-    let k_raw, v_raw, has_eq = item.split_once_byte('=');
-    guard has_eq else { return false; }
-    let k = k_raw.trim_lws();
-    let v = v_raw.trim_lws().trim_byte('"');
+fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfItem&) -> bool {
+    if key == "match" {
+        guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.match_pattern) else {
+            p.valid = false;
+            return false;
+        }
+        guard p.match_pattern.len > 0 && p.match_pattern[0] == '/' else {
+            p.valid = false;
+            return false;
+        }
+        p.valid = true;
+    } else if key == "id" {
+        guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.id) else {
+            p.valid = false;
+            return false;
+        }
+    } else if key == "ttl" {
+        return apply_dict_ttl(p, item);
+    } else if key == "type" {
+        return apply_dict_type(p, item);
+    }
+    return true;
+}
 
-    if k.eq_ascii_fold("match") {
-        guard p.match_pattern.try_set(v) else {
+fn apply_dictionary_entry(p: DictionaryParams&, entry: const SfDictEntry&) -> bool {
+    if entry.key == "match-dest" {
+        guard apply_dict_match_dest(p, entry) else { return false; }
+    } else {
+        guard !entry.is_inner_list && apply_dictionary_kv(p, entry.key, entry.item) else {
             p.valid = false;
             return false;
         }
-        p.valid = (v.len > 0 && v[0] == '/');
-    } else if k.eq_ascii_fold("id") {
-        guard p.id.try_set(v) else {
+    }
+    for &param in entry.params {
+        guard apply_dictionary_kv(p, param.key, param.item) else {
             p.valid = false;
             return false;
         }
-    } else if k.eq_ascii_fold("ttl") {
-        let ttl_val, ttl_ok = v.parse_u32_dec();
-        guard ttl_ok else {
-            p.valid = false;
-            return false;
-        }
-        p.ttl_sec = ttl_val;
-    } else if k.eq_ascii_fold("type") {
-        guard v == "raw" && p.dict_type.try_set(v) else {
-            p.valid = false;
-            return false;
-        }
-    } else if k.eq_ascii_fold("match-dest") {
-        return apply_dict_match_dest(p, v_raw.trim_lws());
     }
     return true;
 }
@@ -137,18 +155,13 @@ fn apply_dictionary_param(p: DictionaryParams&, item: const u8[:]) -> bool {
 //   returns: p with match_pattern="/assets/*", id="v1", ok = true
 fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, bool {
     var p = DictionaryParams { .. };
-    var rem = header_val.trim_lws();
-    guard rem.len > 0 else { return p, false; }
+    var entries: SfDictEntry[..16] = [];
+    guard header_val.trim_lws().len > 0 && parse_sf_dict(header_val, entries) else {
+        return p, false;
+    }
 
-    while rem.len > 0 {
-        rem = rem.trim_start_bytes(" \t,;");
-        guard rem.len > 0 else { break; }
-
-        let item_len = find_dict_item_end(rem);
-        let item = rem[..item_len].trim_lws();
-        rem = rem[item_len..];
-
-        guard apply_dictionary_param(p, item) else {
+    for &entry in entries {
+        guard apply_dictionary_entry(p, entry) else {
             p.valid = false;
             return p, false;
         }
@@ -552,14 +565,101 @@ fn decompress_dcb_payload<B>(
     return true;
 }
 
+// Scans `raw_content` against `dict` with a 4096-entry greedy hash table and records LZ77 commands into `cmds`.
+//
+// Example:
+//   dict = "shared_prefix_data", raw_content = "shared_prefix_data_tail", cmds = []
+//   returns: 18
+fn scan_dcb_dict_commands(
+    dict:        const u8[:],
+    raw_content: const u8[:],
+    cmds:        core::BrotliLz77Cmd[..512]&,
+) -> i64 {
+    cmds.clear();
+    let d_len = min(dict.len, 16384);
+    let d_slice = dict[core::sub_sat_i64(dict.len, d_len)..];
+    var combined: u8[..32768] = [];
+    guard combined.try_append(d_slice) && combined.try_append(raw_content) else { return 0; }
+
+    var htable: i32[4096] = [-1; 4096];
+    var d_pos:  i64       = 0;
+    while core::add_sat_i64(d_pos, 4) <= d_len {
+        let h = core::hash4_brotli(combined[..], d_pos);
+        htable[h] = d_pos as i32;
+        d_pos = core::add_sat_i64(d_pos, 1);
+    }
+
+    var pos:           i64 = 0;
+    var lit_start:     i64 = 0;
+    var matched_bytes: i64 = 0;
+    while core::add_sat_i64(pos, 4) <= raw_content.len {
+        let c_pos = core::add_sat_i64(d_len, pos);
+        let h = core::hash4_brotli(combined[..], c_pos);
+        let cand = htable[h] as i64;
+        let mlen = core::measure_lz77_match(combined[..], cand, c_pos);
+        if mlen >= 4 {
+            let cmd = core::BrotliLz77Cmd {
+                ins_start: lit_start as u32,
+                ins_len:   core::sub_sat_i64(pos, lit_start) as u32,
+                copy_len:  mlen as u32,
+                distance:  core::sub_sat_i64(c_pos, cand) as u32,
+            };
+            guard cmds.try_push(cmd) else { break; }
+            htable[h] = c_pos as i32;
+            matched_bytes = core::add_sat_i64(matched_bytes, mlen);
+            pos = core::add_sat_i64(pos, mlen);
+            lit_start = pos;
+            continue;
+        }
+        htable[h] = c_pos as i32;
+        pos = core::add_sat_i64(pos, 1);
+    }
+
+    if lit_start < raw_content.len && cmds.len > 0 {
+        let tail_cmd = core::BrotliLz77Cmd {
+            ins_start: lit_start as u32,
+            ins_len:   core::sub_sat_i64(raw_content.len, lit_start) as u32,
+            copy_len:  2,
+            distance:  1,
+        };
+        guard cmds.try_push(tail_cmd) else { return 0; }
+    }
+    return matched_bytes;
+}
+
+// Compresses a payload with Brotli using `dictionary_content` for RFC 9842 `dcb` encoding.
+fn compress_dcb_payload<B>(
+    raw_content:        const u8[:],
+    dictionary_content: const u8[:],
+    out_buf:            B&,
+    level:              i32 = 1,
+) -> bool {
+    if dictionary_content.len < 4 || raw_content.len < 4 || raw_content.len > 16384 || level <= 0 {
+        return core::brotli_compress(raw_content, out_buf, level);
+    }
+    var cmds: core::BrotliLz77Cmd[..512] = [];
+    let matched = scan_dcb_dict_commands(dictionary_content, raw_content, cmds);
+    if cmds.len == 0 || matched < 4 {
+        return core::brotli_compress(raw_content, out_buf, 0);
+    }
+    var w = core::new_brotli_bit_writer();
+    var dist_ring: u32[4] = [4, 11, 15, 16];
+    core::emit_brotli_stream_header(w, out_buf);
+    core::emit_brotli_compressed_chunk(w, raw_content, cmds[..], dist_ring, out_buf);
+    core::emit_brotli_final_empty_metablock(w, out_buf);
+    return true;
+}
+
 // High-level helper to encode a test server response with DCB
 fn encode_dcb_response<B>(
-    out:         B&,
-    dict_hash:   const u8[32]&,
-    raw_content: const u8[:],
+    out:                B&,
+    dict_hash:          const u8[32]&,
+    raw_content:        const u8[:],
+    dictionary_content: const u8[:] = "",
 ) -> bool {
     var compressed_brotli: u8[..16384] = [];
-    guard core::brotli_compress(raw_content, compressed_brotli, 0) else { return false; }
+    let level: i32 = if dictionary_content.len > 0 { 1 } else { 0 };
+    guard compress_dcb_payload(raw_content, dictionary_content, compressed_brotli, level) else { return false; }
     return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
 }
 
@@ -654,18 +754,19 @@ fn negotiate_compression_dictionary(
 // RFC 9842 Section 4 & Section 5: Encodes a server `Response` body using `dcz` (`\xFFDCZ` + 32-byte SHA-256)
 // or `dcb` (`\xFFDCB` + 32-byte SHA-256) when negotiated by `negotiate_compression_dictionary`.
 fn apply_negotiated_dictionary_response(
-    req:         const Request&,
-    res:         Response&,
-    dict_hash:   const u8[32]&,
-    raw_content: const u8[:],
-    expected_id: const u8[:] = "",
+    req:                const Request&,
+    res:                Response&,
+    dict_hash:          const u8[32]&,
+    raw_content:        const u8[:],
+    expected_id:        const u8[:] = "",
+    dictionary_content: const u8[:] = "",
 ) -> bool {
     let enc, ok = negotiate_compression_dictionary(req, dict_hash, expected_id);
     guard ok && raw_content.len <= 16300 else { return false; }
 
     var encoded_body: u8[..16420] = [];
     if enc == rfc::ENCODING_DCZ {
-        guard encode_dcz_response(encoded_body, dict_hash, raw_content) else { return false; }
+        guard encode_dcz_response(encoded_body, dict_hash, raw_content, dictionary_content) else { return false; }
         res.body.clear();
         res.body.append(encoded_body[..]);
         set_header(res, "Content-Encoding", rfc::ENCODING_DCZ);
@@ -673,7 +774,7 @@ fn apply_negotiated_dictionary_response(
         return true;
     }
     if enc == rfc::ENCODING_DCB {
-        guard encode_dcb_response(encoded_body, dict_hash, raw_content) else { return false; }
+        guard encode_dcb_response(encoded_body, dict_hash, raw_content, dictionary_content) else { return false; }
         res.body.clear();
         res.body.append(encoded_body[..]);
         set_header(res, "Content-Encoding", rfc::ENCODING_DCB);

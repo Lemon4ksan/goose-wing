@@ -9,6 +9,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import .sfv;
 
 // ---- No-Vary-Search Model -----------------------------------------------
 
@@ -27,118 +28,55 @@ struct QueryParam {
 
 // ---- Header Parser ------------------------------------------------------
 
-// Reads a Structured Field item or inner list value for No-Vary-Search.
-// Advances `cursor` past the consumed value slice.
-//
-// Example:
-//   raw = "params=(\"a\" \"b\")", cursor = 7
-//   returns: "(\"a\" \"b\")", ok = true, cursor = 16
-fn read_nvs_value(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
-    while cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == '\t') { cursor++; }
-    guard cursor < raw.len else { return "", false; }
-
-    if raw[cursor] == '(' {
-        let rel_close = raw[cursor..].find_unquoted_byte(')');
-        guard rel_close < raw[cursor..].len else { return "", false; }
-        let list_end = cursor + rel_close + 1;
-        let val_slice = raw[cursor..list_end];
-        cursor = list_end;
-        return val_slice, true;
+fn copy_sfv_inner_string_list(items: const SfvItem[:], out: u8[..64][..16]&) -> bool {
+    out.clear();
+    for &item in items {
+        guard item.bare.kind == SfvType.String else { return false; }
+        var name: u8[..64] = [];
+        guard name.try_set(item.bare.text[..]) && out.try_push(name) else { return false; }
     }
-    if cursor + 2 <= raw.len && raw[cursor] == '?' {
-        let val_slice = raw[cursor..cursor + 2];
-        cursor += 2;
-        return val_slice, true;
-    }
-    return "", false;
-}
-
-fn apply_nvs_params(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    if !has_val || val == "?1" {
-        nvs.ignore_all_params = true;
-        nvs.params.clear();
-        return true;
-    }
-    if val.len >= 2 && val[0] == '(' {
-        nvs.ignore_all_params = false;
-        nvs.params.clear();
-        return parse_inner_string_list(val, nvs.params);
-    }
-    if val == "?0" {
-        nvs.ignore_all_params = false;
-        nvs.params.clear();
-        return true;
-    }
-    return false;
-}
-
-fn apply_nvs_except(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    guard nvs.ignore_all_params && has_val && val.len >= 2 && val[0] == '(' else { return false; }
-    nvs.except_params.clear();
-    return parse_inner_string_list(val, nvs.except_params);
-}
-
-fn apply_nvs_key_order(nvs: NoVarySearch&, has_val: bool, val: const u8[:]) -> bool {
-    if !has_val || val == "?1" {
-        nvs.key_order_matters = false;
-        return true;
-    }
-    if val == "?0" {
-        nvs.key_order_matters = true;
-        return true;
-    }
-    return false;
-}
-
-fn apply_nvs_item(nvs: NoVarySearch&, token: const u8[:], has_val: bool, val: const u8[:]) -> bool {
-    if token == "params" {
-        return apply_nvs_params(nvs, has_val, val);
-    }
-    if token == "except" {
-        return apply_nvs_except(nvs, has_val, val);
-    }
-    if token == "key-order" {
-        return apply_nvs_key_order(nvs, has_val, val);
-    }
-    // RFC 9440 Section 2.2: Unknown dictionary keys MUST be ignored.
     return true;
 }
 
-fn read_nvs_token(raw: const u8[:], cursor: i64&) -> const u8[:] {
-    let rem = raw[cursor..].trim_start_bytes(" \t,");
-    cursor = raw.len - rem.len;
-    guard rem.len > 0 else { return ""; }
-
-    var tok_len: i64 = 0;
-    while tok_len < rem.len && rem[tok_len] != '=' && rem[tok_len] != ',' &&
-          rem[tok_len] != ' ' && rem[tok_len] != '\t' {
-        tok_len++;
+fn apply_nvs_params(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
+    if member.is_inner_list {
+        nvs.ignore_all_params = false;
+        nvs.except_params.clear();
+        return copy_sfv_inner_string_list(member.inner_list[..], nvs.params);
     }
-    let token = rem[..tok_len];
-    let post = rem[tok_len..].trim_start_bytes(" \t");
-    cursor = raw.len - post.len;
-    return token;
+    guard member.item.bare.kind == SfvType.Boolean else { return false; }
+    nvs.ignore_all_params = member.item.bare.bool_val;
+    nvs.params.clear();
+    if !nvs.ignore_all_params {
+        nvs.except_params.clear();
+    }
+    return true;
 }
 
-// Reads next directive name, value presence, and raw value slice.
-//
-// Example:
-//   raw = "params, key-order", cursor = 0
-//   returns: token = "params", has_val = false, val = "", ok = true
-fn read_next_nvs_directive(raw: const u8[:], cursor: i64&) -> const u8[:], bool, const u8[:], bool {
-    let token = read_nvs_token(raw, cursor);
-    guard token.len > 0 else { return "", false, "", true; }
+fn apply_nvs_except(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
+    guard nvs.ignore_all_params && member.is_inner_list else { return false; }
+    return copy_sfv_inner_string_list(member.inner_list[..], nvs.except_params);
+}
 
-    var has_val = false;
-    var val_slice: const u8[:] = raw[..0];
-    if cursor < raw.len && raw[cursor] == '=' {
-        cursor++;
-        let v, ok_v = read_nvs_value(raw, cursor);
-        guard ok_v else { return "", false, "", false; }
-        val_slice = v;
-        has_val = true;
+fn apply_nvs_key_order(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
+    guard !member.is_inner_list && member.item.bare.kind == SfvType.Boolean else { return false; }
+    nvs.key_order_matters = !member.item.bare.bool_val;
+    return true;
+}
+
+fn apply_nvs_entry(nvs: NoVarySearch&, entry: const SfvDictEntry&) -> bool {
+    let key = entry.key[..];
+    if key == "params" {
+        return apply_nvs_params(nvs, entry.member);
     }
-    return token, has_val, val_slice, true;
+    if key == "except" {
+        return apply_nvs_except(nvs, entry.member);
+    }
+    if key == "key-order" {
+        return apply_nvs_key_order(nvs, entry.member);
+    }
+    // RFC 9440 Section 2.2: Unknown dictionary keys MUST be ignored.
+    return true;
 }
 
 // Parses `No-Vary-Search: params, except=("id"), key-order`
@@ -147,70 +85,17 @@ fn read_next_nvs_directive(raw: const u8[:], cursor: i64&) -> const u8[:], bool,
 //   raw = "params, key-order"
 //   returns: nvs with ignore_all_params=true, key_order_matters=false, ok = true
 fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
+    var dict = SfvDict { .. };
+    guard parse_sfv_dict(raw, dict) else {
+        return NoVarySearch { .. }, false;
+    }
     var nvs = NoVarySearch { is_valid: true, .. };
-    var cursor: i64 = 0;
-
-    while cursor < raw.len {
-        let token, has_val, val_slice, ok = read_next_nvs_directive(raw, cursor);
-        guard ok else { return NoVarySearch { .. }, false; }
-        guard token.len > 0 else { break; }
-
-        guard apply_nvs_item(nvs, token, has_val, val_slice) else {
+    for &entry in dict.entries {
+        guard apply_nvs_entry(nvs, entry) else {
             return NoVarySearch { .. }, false;
         }
     }
-
     return nvs, true;
-}
-
-// Reads the next double-quoted string from an inner list slice.
-// Advances cursor past the closing quote.
-//
-// Example:
-//   s = "(\"a\" \"b\")", cursor = 1
-//   returns: "a", has_item = true, ok = true, cursor = 4
-fn read_next_quoted_string(s: const u8[:], cursor: i64&) -> const u8[:], bool, bool {
-    while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t' || s[cursor] == '(') {
-        cursor++;
-    }
-    if cursor >= s.len || s[cursor] == ')' {
-        return "", false, true;
-    }
-    guard s[cursor] == '"' else { return "", false, false; }
-    let start = cursor + 1;
-    var p = cursor + 1;
-    var escaped = false;
-    while p < s.len {
-        let b = s[p];
-        if escaped {
-            escaped = false;
-        } else if b == '\\' {
-            escaped = true;
-        } else if b == '"' {
-            break;
-        }
-        p += 1;
-    }
-    guard p < s.len && s[p] == '"' && !escaped else { return "", false, false; }
-    cursor = p + 1;
-    return s[start..p], true, true;
-}
-
-// Parses space-separated quoted strings enclosed in parentheses.
-//
-// Example:
-//   inner_list = "(\"a\" \"b\")"
-//   returns: true, out populated with "a" and "b"
-fn parse_inner_string_list<E>(inner_list: const u8[:], out: E&) -> bool {
-    var cursor: i64 = 0;
-    while cursor < inner_list.len {
-        let str, has_item, ok = read_next_quoted_string(inner_list, cursor);
-        guard ok else { return false; }
-        guard has_item else { break; }
-        var item: u8[..64] = [];
-        guard item.try_set(str) && out.try_push(item) else { return false; }
-    }
-    return true;
 }
 
 // ---- Query Parameter Filter & Normalizer --------------------------------

@@ -220,9 +220,13 @@ fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
         if idx > 0 {
             out.push(' ' as u8);
         }
+        let base_comp, has_req = strip_req_component_suffix(params.components[idx][..]);
         out.push('"' as u8);
-        out.append(params.components[idx][..]);
+        out.append(base_comp);
         out.push('"' as u8);
+        if has_req {
+            out.append(";req");
+        }
     }
     out.push(')' as u8);
 
@@ -290,9 +294,14 @@ fn build_response_signature_base<B>(
         guard extract_response_component_value(res, req, comp, val) else {
             return false;
         }
+        let base_comp, has_req = strip_req_component_suffix(comp);
         out.push('"' as u8);
-        out.append(comp);
-        out.append("\": ");
+        out.append(base_comp);
+        out.push('"' as u8);
+        if has_req {
+            out.append(";req");
+        }
+        out.append(": ");
         out.append(val[..]);
         out.push('\n' as u8);
     }
@@ -551,6 +560,16 @@ fn sign_http_request(
     return sign_http_request_with(req, params, signer);
 }
 
+fn matches_signature_component(item: const SfItem&, exp_comp: const u8[:]) -> bool {
+    guard item.kind == SfType.String else { return false; }
+    let has_req_param = sf_item_has_flag_param(item, "req");
+    if !has_req_param && item.str_val == exp_comp {
+        return true;
+    }
+    let base_comp, exp_has_req = strip_req_component_suffix(exp_comp);
+    return has_req_param && exp_has_req && item.str_val == base_comp;
+}
+
 fn verify_signature_input_label(
     sig_input_val: const u8[:],
     label:         const u8[:],
@@ -562,13 +581,8 @@ fn verify_signature_input_label(
         guard entry.key == label && entry.is_inner_list else { continue; }
         guard entry.inner_items.len == params.components.len else { return false; }
         for i in params.components.len {
-            let item = entry.inner_items[i];
-            let exp_comp = params.components[i][..];
-            if item.str_val == exp_comp {
-                guard item.kind == SfType.String else { return false; }
-            } else {
-                let base_comp, has_req = strip_req_component_suffix(item.str_val);
-                guard has_req && item.kind == SfType.String && item.str_val == exp_comp else { return false; }
+            guard matches_signature_component(entry.inner_items[i], params.components[i][..]) else {
+                return false;
             }
         }
         for &p in entry.params {

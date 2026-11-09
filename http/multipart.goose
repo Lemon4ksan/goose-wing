@@ -318,7 +318,7 @@ fn parse_multipart_part(
     }
 
     let raw_part_headers = body[cursor..header_end];
-    // Go #81741 / CVE-2026-94440 & Go #65383: Account for header memory to prevent limit bypass
+    // Go #81741 & Go #65383 multipart header memory accounting: prevent memory limit bypass
     guard options.max_memory_bytes - total_memory_used >= raw_part_headers.len else {
         return MultipartError.ExceededMaxMemory;
     }
@@ -662,7 +662,7 @@ fn parse_range_header(
     var rs = RangeSet { resource_length: resource_len, is_satisfiable: true, coalesced: false, .. };
     let trimmed = header_val.trim_lws();
     guard trimmed.len > 0 else { return rs, RangeError.EmptyRange; }
-    // CVE-2026-78667: Limit maximum size of parsed Range header to prevent CPU exhaustion DoS
+    // RFC 9110 Section 14.1.2 & Go #81508 / #81858 Range header DoS defense: Limit maximum size of parsed Range header
     guard trimmed.len <= 1024 else { return rs, RangeError.ExceededMaxRanges; }
 
     guard trimmed.len >= 6 && trimmed[..6].eq_ascii_fold("bytes=") else {
@@ -827,7 +827,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     // Parse and coalesce ranges
     let rs, r_err = parse_range_header(req_range_header, resource_len, true, 16);
     if r_err == RangeError.InvalidUnit || r_err == RangeError.ExceededMaxRanges {
-        // RFC 9110 §14.1.2 & Go #81508 / #81858 (CVE-2026-78667): Unrecognized unit or excessive ranges (>16) must be ignored and served with 200 OK
+        // RFC 9110 Section 14.1.2 & Go #81508 / #81858 Range header DoS defense: Unrecognized unit or excessive ranges (>16) must be ignored and served with 200 OK
         out_status = 200;
         insert_header(out_headers, "content-type", content_type);
         var len_str: u8[..32] = [];

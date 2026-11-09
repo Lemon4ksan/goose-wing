@@ -69,8 +69,8 @@ fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     }
 }
 
-// CVE-2026-42507 & Go #79346: Escapes control characters (< 0x20 and >= 0x7F) in untrusted
-// header and protocol tokens for safe diagnostic logging without CRLF injection.
+// Go #79346 log/error control-char injection defense: Escapes control characters (< 0x20 and >= 0x7F)
+// in untrusted header and protocol tokens for safe diagnostic logging without CRLF injection.
 //
 // Example:
 //   input = "foo\r\nbar\x01", out = []
@@ -185,7 +185,7 @@ root struct OverflowArena {
     spill_url:     u8[>..]          = [],
 }
 
-var dummy_arena: OverflowArena = OverflowArena { .. };
+let EMPTY_OVERFLOW_ARENA: OverflowArena = OverflowArena { .. };
 
 fn reset_overflow_arena(arena: OverflowArena&) {
     arena.spill_raw.clear();
@@ -232,7 +232,8 @@ fn is_ok(err: HeaderParseError) -> bool {
     return err == HeaderParseError.None;
 }
 
-// CVE-2026-42507 defense: Sanitize untrusted user input before formatting into error strings or logs.
+// Go #79346 log/error control-char injection defense: Sanitize untrusted user input
+// before formatting into error strings or logs.
 // Replaces control characters (< 0x20, CR, LF, DEL) and non-printable bytes with safe visual representation '?'.
 //
 // Example:
@@ -795,7 +796,7 @@ fn link_header_entry(
     raw_name: const u8[:],
     hname:    u32,
     new_idx:  u8,
-    arena:    const OverflowArena& = dummy_arena,
+    arena:    const OverflowArena& = EMPTY_OVERFLOW_ARENA,
 ) {
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
@@ -972,10 +973,8 @@ fn handle_obs_fold(
     line:   const u8[:],
     policy: ObsFoldPolicy,
     map:    HeaderMap&,
-    arena:  OverflowArena& = dummy_arena,
 ) -> HeaderParseError {
-    let total_entries = map.entries.len + arena.spill_entries.len;
-    if policy.is_first_header || total_entries == 0 {
+    if policy.is_first_header || map.entries.len == 0 {
         map.valid = false;
         return HeaderParseError.LeadingWhitespaceOnFirstHeader;
     }
@@ -989,15 +988,36 @@ fn handle_obs_fold(
         map.valid = false;
         return HeaderParseError.InvalidHeaderValue;
     }
+    return handle_obs_fold_stack(trimmed_continuation, map);
+}
 
+fn handle_obs_fold(
+    line:   const u8[:],
+    policy: ObsFoldPolicy,
+    map:    HeaderMap&,
+    arena:  OverflowArena&,
+) -> HeaderParseError {
     let in_spill = arena.spill_entries.len > 0;
     let prev_in_arena = in_spill
         || (map.entries.len > 0 && map.entries[map.entries.len - 1].reserved == HEADER_SRC_ARENA);
-
-    if prev_in_arena {
-        return handle_obs_fold_arena(trimmed_continuation, map, arena, in_spill);
+    if !prev_in_arena {
+        return handle_obs_fold(line, policy, map);
     }
-    return handle_obs_fold_stack(trimmed_continuation, map);
+    if policy.is_first_header {
+        map.valid = false;
+        return HeaderParseError.LeadingWhitespaceOnFirstHeader;
+    }
+    guard policy.allow_obs_fold else {
+        map.valid = false;
+        return HeaderParseError.ObsFoldForbidden;
+    }
+
+    let trimmed_continuation = line.trim_lws();
+    guard is_valid_header_value(trimmed_continuation) else {
+        map.valid = false;
+        return HeaderParseError.InvalidHeaderValue;
+    }
+    return handle_obs_fold_arena(trimmed_continuation, map, arena, in_spill);
 }
 
 fn validate_header_framing_conflicts(
@@ -1005,7 +1025,7 @@ fn validate_header_framing_conflicts(
     wk_id:       WellKnownHeader,
     val_trimmed: const u8[:],
     is_dup_cl:   bool&,
-    arena:       const OverflowArena& = dummy_arena,
+    arena:       const OverflowArena& = EMPTY_OVERFLOW_ARENA,
 ) -> HeaderParseError {
     is_dup_cl = false;
     if wk_id == WellKnownHeader.ContentLength {
@@ -2594,14 +2614,21 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
 fn merge_with_headers_304(cached_headers: HeaderMap&, response_304: const HeaderMap&) {
     for &entry in response_304.entries {
         let name = response_304.raw_buf[entry.name_begin..entry.name_end];
+        let val = response_304.raw_buf[entry.values_begin..entry.values_end];
+        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
+            continue;
+        }
         if should_update_header_304(entry.flags, name) && cached_headers.has_header(name) {
             cached_headers.remove_header(name);
         }
     }
     for &entry in response_304.entries {
         let name = response_304.raw_buf[entry.name_begin..entry.name_end];
+        let val = response_304.raw_buf[entry.values_begin..entry.values_end];
+        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
+            continue;
+        }
         if should_update_header_304(entry.flags, name) {
-            let val = response_304.raw_buf[entry.values_begin..entry.values_end];
             cached_headers.append_header(name, val);
         }
     }

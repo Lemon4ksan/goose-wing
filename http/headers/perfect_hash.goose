@@ -50,56 +50,31 @@ inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
     };
 }
 
-// Converts an uppercase ASCII character to lowercase.
-inline fn ascii_lower(b: u8) -> u8 {
-    guard b >= 'A' && b <= 'Z' else { return b; }
-    return b | 0x20;
-}
-
-inline fn check_header(name: const u8[:], expected: const u8[:], id: KnownHeaderId) -> KnownHeaderId {
-    return if name.eq_ascii_fold(expected) { id } else { KnownHeaderId.Unknown };
-}
-
 // Identifies well-known HTTP header in O(1) time without linear search.
 //
 // Example:
 //   name = "Content-Length"
 //   returns: KnownHeaderId.ContentLength
 fn identify_known_header(name: const u8[:]) -> KnownHeaderId {
-    guard name.len >= 4 && name.len <= 21 else {
-        return KnownHeaderId.Unknown;
-    }
-
-    let first = ascii_lower(name[0]);
-
-    return match name.len {
-        4 => match first {
-            'h' => check_header(name, "host", KnownHeaderId.Host),
-            'd' => check_header(name, "date", KnownHeaderId.Date),
-            _ => KnownHeaderId.Unknown,
+    return match classify_well_known_header(name) {
+        Host => KnownHeaderId.Host,
+        Date => KnownHeaderId.Date,
+        Accept => KnownHeaderId.Accept,
+        Cookie => KnownHeaderId.Cookie,
+        OriginHeader => KnownHeaderId.Origin,
+        Server => KnownHeaderId.Server,
+        Connection => KnownHeaderId.Connection,
+        UserAgent => KnownHeaderId.UserAgent,
+        ContentType => KnownHeaderId.ContentType,
+        ContentLength => KnownHeaderId.ContentLength,
+        Authorization => KnownHeaderId.Authorization,
+        TransferEncoding => KnownHeaderId.TransferEncoding,
+        Upgrade => KnownHeaderId.Upgrade,
+        Expect => KnownHeaderId.Expect,
+        _ => if name.eq_ascii_fold("sec-websocket-key") {
+            KnownHeaderId.SecWebSocketKey
+        } else {
+            KnownHeaderId.Unknown
         },
-        6 => match first {
-            'a' => check_header(name, "accept", KnownHeaderId.Accept),
-            'c' => check_header(name, "cookie", KnownHeaderId.Cookie),
-            'e' => check_header(name, "expect", KnownHeaderId.Expect),
-            'o' => check_header(name, "origin", KnownHeaderId.Origin),
-            's' => check_header(name, "server", KnownHeaderId.Server),
-            _ => KnownHeaderId.Unknown,
-        },
-        7 => check_header(name, "upgrade", KnownHeaderId.Upgrade),
-        10 => match first {
-            'c' => check_header(name, "connection", KnownHeaderId.Connection),
-            'u' => check_header(name, "user-agent", KnownHeaderId.UserAgent),
-            _ => KnownHeaderId.Unknown,
-        },
-        12 => check_header(name, "content-type", KnownHeaderId.ContentType),
-        13 => check_header(name, "authorization", KnownHeaderId.Authorization),
-        14 => check_header(name, "content-length", KnownHeaderId.ContentLength),
-        17 => match first {
-            't' => check_header(name, "transfer-encoding", KnownHeaderId.TransferEncoding),
-            's' => check_header(name, "sec-websocket-key", KnownHeaderId.SecWebSocketKey),
-            _ => KnownHeaderId.Unknown,
-        },
-        _ => KnownHeaderId.Unknown,
     };
 }

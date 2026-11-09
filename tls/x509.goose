@@ -240,7 +240,8 @@ fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
 
     var subject = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, subject) { return false; }
-    out.subject_raw = make_span(raw_cert, subject.buf);
+    let subj_hint = core::add_sat_i64(out.issuer_raw.offset, out.issuer_raw.length);
+    out.subject_raw = make_span(raw_cert, subject.buf, subj_hint);
 
     if !read_tbs_spki(raw_cert, tbs_seq, out) { return false; }
     return read_tbs_extensions(raw_cert, tbs_seq, out);

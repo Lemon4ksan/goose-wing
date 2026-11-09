@@ -330,8 +330,19 @@ inline fn has_smuggling_conflict(mask: u32) -> bool {
     return (mask & both) == both;
 }
 
-var g_last_valid_host: u8[..128] = [];
-var g_has_valid_host:  bool      = false;
+struct H1HeaderParseCache {
+    valid_host:       u8[..128]             = [],
+    has_valid_host:   bool                  = false,
+    rest_headers:     u8[..1024]            = [],
+    raw_buf:          u8[..1024]            = [],
+    entries:          HeaderEntry[..32]     = [],
+    inline_slots:     u8[64]                = [0xFF; 64],
+    contains_comma:   bool[..32]            = [],
+    presence_mask:    u32                   = 0,
+    presence_tracker: HeaderPresenceTracker = HeaderPresenceTracker { .. },
+}
+
+var g_h1_parse_cache: H1HeaderParseCache = H1HeaderParseCache { .. };
 
 fn validate_request_host_presence<Req>(
     out_req:          const Req&,
@@ -343,7 +354,10 @@ fn validate_request_host_presence<Req>(
     }
     if has_host {
         guard validate_span_host_header_memoized(
-            out_req.headers, presence_tracker.host_idx, g_last_valid_host, g_has_valid_host,
+            out_req.headers,
+            presence_tracker.host_idx,
+            g_h1_parse_cache.valid_host,
+            g_h1_parse_cache.has_valid_host,
         ) else {
             return false;
         }
@@ -415,22 +429,14 @@ inline fn verify_headers_terminator_consumed(cursor: i64, total_len: i64) -> boo
     return cursor + 2 == total_len;
 }
 
-var g_last_rest_headers:     u8[..1024]            = [];
-var g_last_raw_buf:          u8[..1024]            = [];
-var g_last_entries:          HeaderEntry[..32]     = [];
-var g_last_inline_slots:     u8[64]                = [0xFF; 64];
-var g_last_contains_comma:   bool[..32]            = [];
-var g_last_presence_mask:    u32                   = 0;
-var g_last_presence_tracker: HeaderPresenceTracker = HeaderPresenceTracker { .. };
-
 inline fn is_headers_cache_already_loaded<Req>(out_req: const Req&) -> bool {
     guard out_req.headers.valid
-        && out_req.headers.entries.len == g_last_entries.len
-        && out_req.headers.raw_buf.len == g_last_raw_buf.len
-        && out_req.presence_mask == g_last_presence_mask else {
+        && out_req.headers.entries.len == g_h1_parse_cache.entries.len
+        && out_req.headers.raw_buf.len == g_h1_parse_cache.raw_buf.len
+        && out_req.presence_mask == g_h1_parse_cache.presence_mask else {
         return false;
     }
-    return out_req.headers.raw_buf[..] == g_last_raw_buf[..];
+    return out_req.headers.raw_buf[..] == g_h1_parse_cache.raw_buf[..];
 }
 
 inline fn try_restore_cached_headers_stream<Req>(
@@ -438,20 +444,20 @@ inline fn try_restore_cached_headers_stream<Req>(
     out_req:          Req&,
     presence_tracker: HeaderPresenceTracker&,
 ) -> bool {
-    guard g_last_rest_headers.len > 0 && rest_headers == g_last_rest_headers[..] else {
+    guard g_h1_parse_cache.rest_headers.len > 0 && rest_headers == g_h1_parse_cache.rest_headers[..] else {
         return false;
     }
     if is_headers_cache_already_loaded(out_req) {
-        presence_tracker = g_last_presence_tracker;
+        presence_tracker = g_h1_parse_cache.presence_tracker;
         return true;
     }
     clear_request_headers_state(out_req);
-    out_req.headers.raw_buf.append(g_last_raw_buf[..]);
-    out_req.headers.entries.append(g_last_entries[..]);
-    out_req.headers.inline_slots = g_last_inline_slots;
-    out_req.headers.header_contains_comma.append(g_last_contains_comma[..]);
-    out_req.presence_mask = g_last_presence_mask;
-    presence_tracker = g_last_presence_tracker;
+    out_req.headers.raw_buf.append(g_h1_parse_cache.raw_buf[..]);
+    out_req.headers.entries.append(g_h1_parse_cache.entries[..]);
+    out_req.headers.inline_slots = g_h1_parse_cache.inline_slots;
+    out_req.headers.header_contains_comma.append(g_h1_parse_cache.contains_comma[..]);
+    out_req.presence_mask = g_h1_parse_cache.presence_mask;
+    presence_tracker = g_h1_parse_cache.presence_tracker;
     return true;
 }
 
@@ -463,13 +469,13 @@ inline fn save_cached_headers_stream<Req>(
     guard rest_headers.len > 0 && rest_headers.len <= 1024 else { return; }
     guard out_req.headers.raw_buf.len <= 1024 && out_req.headers.entries.len <= 32 else { return; }
     guard out_req.headers.header_contains_comma.len <= 32 else { return; }
-    let _ = g_last_rest_headers.try_set(rest_headers);
-    let _ = g_last_raw_buf.try_set(out_req.headers.raw_buf[..]);
-    let _ = g_last_entries.try_set(out_req.headers.entries[..]);
-    g_last_inline_slots = out_req.headers.inline_slots;
-    let _ = g_last_contains_comma.try_set(out_req.headers.header_contains_comma[..]);
-    g_last_presence_mask = out_req.presence_mask;
-    g_last_presence_tracker = presence_tracker;
+    let _ = g_h1_parse_cache.rest_headers.try_set(rest_headers);
+    let _ = g_h1_parse_cache.raw_buf.try_set(out_req.headers.raw_buf[..]);
+    let _ = g_h1_parse_cache.entries.try_set(out_req.headers.entries[..]);
+    g_h1_parse_cache.inline_slots = out_req.headers.inline_slots;
+    let _ = g_h1_parse_cache.contains_comma.try_set(out_req.headers.header_contains_comma[..]);
+    g_h1_parse_cache.presence_mask = out_req.presence_mask;
+    g_h1_parse_cache.presence_tracker = presence_tracker;
 }
 
 // Parses raw HTTP/1.x header lines into HeaderItem entries and tracks presence bitmask.
@@ -1044,14 +1050,6 @@ const CL_HEADER_PREFIX: const u8[:] = "Content-Length: ";
 fn serialize_content_length_header<B>(body_len: i64, out: B&) {
     if body_len <= 0 {
         out.append("Content-Length: 0\r\n");
-        return;
-    }
-    if body_len == 13 {
-        out.append("Content-Length: 13\r\n");
-        return;
-    }
-    if body_len == 27 {
-        out.append("Content-Length: 27\r\n");
         return;
     }
     var buf: u8[48] = [0; 48];

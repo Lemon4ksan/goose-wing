@@ -143,7 +143,7 @@ fn serve_live_tls13_session(
 
         let now_ns = core::as_nanos(core::monotonic_now());
         let _, ok = wing::handle_connection_pipe(
-            server, "127.0.0.1", pipe, now_ns, cork, wing::g_reactor_h2_sessions[h2_idx],
+            server, "127.0.0.1", pipe, now_ns, cork, wing::g_default_reactor.h2_sessions[h2_idx],
         );
         let should_close = !ok || wing::response_wire_has_connection_close(core::cork_as_slice(cork));
         if !ok {

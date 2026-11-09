@@ -14,8 +14,16 @@ import .pipeline;
 
 // ---- Server Stream Descriptor --------------------------------------------
 
+enum H2StreamPhase {
+    Idle,
+    Open,
+    HalfClosedRemote,
+    Closed,
+}
+
 struct H2ServerStream {
     stream_id:               u32             = 0,
+    phase:                   H2StreamPhase   = H2StreamPhase.Idle,
     active:                  bool            = false,
     headers_received:        bool            = false,
     body_received:           bool            = false,
@@ -37,6 +45,7 @@ struct H2ServerStream {
 
 fn reset_server_stream(st: H2ServerStream&) {
     st.stream_id = 0;
+    st.phase = H2StreamPhase.Idle;
     st.active = false;
     st.headers_received = false;
     st.body_received = false;
@@ -221,6 +230,7 @@ fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
         if !sess.streams[i].active {
             reset_server_stream(sess.streams[i]);
             sess.streams[i].stream_id = stream_id;
+            sess.streams[i].phase = H2StreamPhase.Open;
             sess.streams[i].active = true;
             return i as i32, true;
         }
@@ -228,6 +238,7 @@ fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
 
     var new_st = H2ServerStream {
         stream_id: stream_id,
+        phase:     H2StreamPhase.Open,
         active:    true,
         ..
     };
@@ -584,6 +595,7 @@ fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const H2PseudoHea
         }
     }
     st.headers_received = true;
+    st.phase = H2StreamPhase.Open;
     return true;
 }
 
@@ -917,6 +929,7 @@ fn process_ingress_headers<B>(
             }
             wing::append_all_headers(dec_headers, sess.streams[s_exist_idx].trailers);
             sess.streams[s_exist_idx].body_received = true;
+            sess.streams[s_exist_idx].phase = H2StreamPhase.HalfClosedRemote;
             let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
             if c_found {
                 sess.conn.streams[c_idx].trailers_received = true;
@@ -962,6 +975,7 @@ fn process_ingress_headers<B>(
     }
     if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
         sess.streams[s_idx].body_received = true;
+        sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
     }
     return true;
 }
@@ -1025,6 +1039,7 @@ fn process_ingress_continuation<B>(
         }
         wing::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
         sess.streams[s_idx].body_received = true;
+        sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].trailers_received = true;
@@ -1073,9 +1088,13 @@ fn process_ingress_continuation<B>(
     }
     if sess.header_accum_end_stream {
         sess.streams[s_idx].body_received = true;
+        sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
     }
     return true;
 }
+
+// RFC 9113 Section 6.9: WINDOW_UPDATE - Window credit increment when promoting 8 KiB inline body to 64 KiB spill slab
+const H2_SLAB_WINDOW_INCREMENT: u32 = 57344;
 
 // RFC 9113 Section 6.1: DATA - Reassembles ingress stream payload with dynamic slab promotion.
 // If payload exceeds inline 8 KiB capacity, leases a 64 KiB slab from the worker pool.
@@ -1117,7 +1136,7 @@ fn process_stream_data_ingress<B>(
         pool.slabs[slab_slot].data.append(sess.streams[st_idx].body[..]);
         sess.streams[st_idx].body.clear();
         // RFC 9113 Section 6.9: WINDOW_UPDATE - Grant remaining credit up to 64 KiB
-        emit_window_update(stream_id, 57344, out_wire);
+        emit_window_update(stream_id, H2_SLAB_WINDOW_INCREMENT, out_wire);
     }
 
     // 3. Bounds Check Elimination (BCE) guarded append with lease deadline check
@@ -1253,7 +1272,7 @@ fn process_ingress_data<B>(
         let c_idx, c_found = find_session_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].recv_window = core::add_sat_i64(
-                sess.conn.streams[c_idx].recv_window, 57344,
+                sess.conn.streams[c_idx].recv_window, H2_SLAB_WINDOW_INCREMENT as i64,
             );
         }
     }
@@ -1318,6 +1337,7 @@ fn process_ingress_data<B>(
             return true;
         }
         sess.streams[s_idx].body_received = true;
+        sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
     }
     return true;
 }
@@ -1483,6 +1503,7 @@ inline fn complete_server_stream_response(
     target_stream_id: u32,
 ) {
     sess.streams[stream_idx].response_sent = true;
+    sess.streams[stream_idx].phase = H2StreamPhase.Closed;
     sess.streams[stream_idx].active = false;
 
     let c_idx, c_found = find_session_stream_idx(sess.conn, target_stream_id);

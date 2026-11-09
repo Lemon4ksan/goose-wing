@@ -10,6 +10,7 @@ import std;
 import core from "..";
 import client.request;
 import client.response;
+import .sfv;
 
 // ---- Resumable Uploads Constants (draft-14) -------------------------------
 
@@ -40,9 +41,9 @@ fn init_resumable_upload(total_size: i64, chunk_size: i64 = 65536) -> ResumableU
 //   val = " 1048576 "
 //   returns: 1048576, ok = true
 fn parse_upload_int(val: const u8[:]) -> i64, bool {
-    let num, ok = val.trim_lws().parse_i64_dec();
-    guard ok && num >= 0 else { return 0, false; }
-    return num, true;
+    let parsed, ok = parse_sf_item(val);
+    guard ok && parsed.item.kind == SfType.Integer && parsed.item.int_val >= 0 else { return 0, false; }
+    return parsed.item.int_val, true;
 }
 
 // Parses RFC 8941 Structured Field boolean: ?1 = true, ?0 = false.
@@ -51,20 +52,9 @@ fn parse_upload_int(val: const u8[:]) -> i64, bool {
 //   val = "?1"
 //   returns: true, ok = true
 fn parse_upload_boolean(val: const u8[:]) -> bool, bool {
-    let trimmed = val.trim_lws();
-    if trimmed == "?1" {
-        return true, true;
-    }
-    if trimmed == "?0" {
-        return false, true;
-    }
-    if starts_with(trimmed, "?1;") || starts_with(trimmed, "?1,") {
-        return true, true;
-    }
-    if starts_with(trimmed, "?0;") || starts_with(trimmed, "?0,") {
-        return false, true;
-    }
-    return false, false;
+    let parsed, ok = parse_sf_item(val);
+    guard ok && parsed.item.kind == SfType.Boolean else { return false, false; }
+    return parsed.item.bool_val, true;
 }
 
 // ---- Request Formatting (draft-ietf-httpbis-resumable-upload-14) ---------

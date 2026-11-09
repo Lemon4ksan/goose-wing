@@ -1198,27 +1198,35 @@ struct StaticRoutePayload {
     payload_close: u8[..640] = [],
 }
 
-const DEFAULT_METRICS_PAYLOAD: const u8[:] =
+const DEFAULT_PLAINTEXT_PAYLOAD: const u8[:] = "Hello, World!";
+const DEFAULT_JSON_PAYLOAD:      const u8[:] = "{\"message\":\"Hello, World!\"}";
+const DEFAULT_METRICS_PAYLOAD:   const u8[:] =
     "{\"engine\":\"goose-wing\",\"memory_allocations\":0,\"heap_bytes\":0,\"architecture\":\"zero_alloc_stack\"}";
 
 struct RadixRouter {
-    trees:           MethodTree[..8]          = [],
+    trees:           MethodTree[..9]          = [],
     l0_table:        L0RegisterTable          = L0RegisterTable { .. },
     static_payloads: StaticRoutePayload[..32] = [],
 }
 
+// Populates standard built-in static payload slots (handler IDs 1001..1003) for
+// health/plaintext checks, JSON probes, and zero-allocation engine telemetry metrics.
+fn init_default_static_payloads(r: RadixRouter&) {
+    let _ = set_static_route_payload(r, 1001, "text/plain", DEFAULT_PLAINTEXT_PAYLOAD);
+    let _ = set_static_route_payload(r, 1002, "application/json", DEFAULT_JSON_PAYLOAD);
+    let _ = set_static_route_payload(r, 1003, "application/json", DEFAULT_METRICS_PAYLOAD);
+}
+
 fn new_radix_router() -> RadixRouter {
     var r = RadixRouter { .. };
-    // RFC 9110 Section 9.3 & RFC 10008 Section 2 standard HTTP methods
-    let methods: const u8[:][8] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "QUERY"];
+    // RFC 9110 Section 9.3 & RFC 10008 Section 2 standard HTTP methods + slot 8 custom extension bucket
+    let methods: const u8[:][9] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "QUERY", "*"];
     for m in methods {
         var mt = MethodTree { method: [], tree: new_radix_tree() };
         mt.method.append(m);
         r.trees.push(mt);
     }
-    let _ = set_static_route_payload(r, 1001, "text/plain", "Hello, World!");
-    let _ = set_static_route_payload(r, 1002, "application/json", "{\"message\":\"Hello, World!\"}");
-    let _ = set_static_route_payload(r, 1003, "application/json", DEFAULT_METRICS_PAYLOAD);
+    init_default_static_payloads(r);
     return r;
 }
 
@@ -1238,6 +1246,15 @@ fn add_route(
     return add_route_masks(router, method, path, handler_id, entries_mask, pso_mask, in_mask, out_mask);
 }
 
+inline fn build_custom_method_route_key(
+    method:     const u8[:],
+    canon_path: const u8[:],
+    out_key:    u8[..544]&,
+) -> bool {
+    out_key.clear();
+    return out_key.try_push('/') && out_key.try_append(method) && out_key.try_append(canon_path);
+}
+
 // Registers a route pattern with explicit role-scoped ingress_mask and egress_mask.
 fn add_route_masks(
     router:       RadixRouter&,
@@ -1251,10 +1268,35 @@ fn add_route_masks(
 ) -> bool {
     var canon_path: u8[..512] = [];
     guard canonicalize_route_path(path, canon_path) else { return false; }
-    for idx in router.trees.len {
-        guard router.trees[idx].method[..] == method else { continue; }
-        let ok = insert_route(
-            router.trees[idx].tree,
+    let idx = find_router_method_tree_index(router, method);
+    guard idx >= 0 else { return false; }
+    let tree_i = idx as i64;
+    if idx == 8 {
+        var custom_key: u8[..544] = [];
+        guard build_custom_method_route_key(method, canon_path[..], custom_key) else { return false; }
+        return insert_route(
+            router.trees[tree_i].tree,
+            custom_key[..],
+            handler_id,
+            entries_mask,
+            pso_mask,
+            ingress_mask,
+            egress_mask,
+        );
+    }
+    let ok = insert_route(
+        router.trees[tree_i].tree,
+        canon_path[..],
+        handler_id,
+        entries_mask,
+        pso_mask,
+        ingress_mask,
+        egress_mask,
+    );
+    if ok {
+        register_l0_route(
+            router.l0_table,
+            idx as u8,
             canon_path[..],
             handler_id,
             entries_mask,
@@ -1262,21 +1304,8 @@ fn add_route_masks(
             ingress_mask,
             egress_mask,
         );
-        if ok {
-            register_l0_route(
-                router.l0_table,
-                idx as u8,
-                canon_path[..],
-                handler_id,
-                entries_mask,
-                pso_mask,
-                ingress_mask,
-                egress_mask,
-            );
-        }
-        return ok;
     }
-    return false;
+    return ok;
 }
 
 // Registers a route pattern with an explicit Pre-Baked Pipeline State Object (PSO) mask.
@@ -1462,8 +1491,9 @@ fn build_allow_header(
     var has_head = false;
     var has_options = false;
 
+    let std_trees = min(router.trees.len, 8);
     if path == "*" {
-        for idx in router.trees.len {
+        for idx in std_trees {
             if method_tree_has_routes(router.trees[idx].tree) {
                 let m = router.trees[idx].method[..];
                 if m == "GET" { has_get = true; }
@@ -1475,7 +1505,7 @@ fn build_allow_header(
             }
         }
     } else {
-        for idx in router.trees.len {
+        for idx in std_trees {
             guard (idx as i32) != target_tree_idx else { continue; }
             let res_other = match_path(router.trees[idx].tree, path, dummy_params, dummy_canon);
             guard is_match_found(res_other) else { continue; }
@@ -1503,17 +1533,32 @@ fn build_allow_header(
     return matched_other;
 }
 
+inline fn is_valid_method_token(method: const u8[:]) -> bool {
+    guard method.len > 0 else { return false; }
+    for b in method {
+        if !core::is_tchar(b) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline fn resolve_method_tree_index(method: const u8[:]) -> i32 {
-    guard method.len >= 3 else { return -1; }
-    return match method[0] {
-        'G' => if method == "GET" { 0 } else { -1 },
-        'P' => if method == "POST" { 1 } else if method == "PUT" { 2 } else if method == "PATCH" { 4 } else { -1 },
-        'D' => if method == "DELETE" { 3 } else { -1 },
-        'H' => if method == "HEAD" { 5 } else { -1 },
-        'O' => if method == "OPTIONS" { 6 } else { -1 },
-        'Q' => if method == "QUERY" { 7 } else { -1 },
-        _ => -1,
-    };
+    if method.len >= 3 {
+        let std_idx: i32 = match method[0] {
+            'G' => if method == "GET" { 0 } else { -1 },
+            'P' => if method == "POST" { 1 } else if method == "PUT" { 2 } else if method == "PATCH" { 4 } else { -1 },
+            'D' => if method == "DELETE" { 3 } else { -1 },
+            'H' => if method == "HEAD" { 5 } else { -1 },
+            'O' => if method == "OPTIONS" { 6 } else { -1 },
+            'Q' => if method == "QUERY" { 7 } else { -1 },
+            _ => -1,
+        };
+        if std_idx >= 0 {
+            return std_idx;
+        }
+    }
+    return if is_valid_method_token(method) { 8 } else { -1 };
 }
 
 // Matches an HTTP request path against the L0 Register Table and returns RouteMatchResult if found.
@@ -1551,6 +1596,23 @@ inline fn find_router_method_tree_index(router: const RadixRouter&, method: cons
         }
     }
     return -1;
+}
+
+inline fn match_custom_method_tree<B>(
+    router:         const RadixRouter&,
+    method:         const u8[:],
+    clean_path:     const u8[:],
+    params:         ZeroAllocParams&,
+    out_canon_path: B&,
+) -> RouteMatchResult {
+    let eff_path, ok_path = resolve_effective_route_path(clean_path, out_canon_path);
+    guard ok_path && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
+    var custom_key:  u8[..544] = [];
+    var dummy_canon: u8[..544] = [];
+    guard build_custom_method_route_key(method, eff_path, custom_key) else {
+        return RouteMatchResult.NotFound;
+    }
+    return match_path(router.trees[8].tree, custom_key[..], params, dummy_canon);
 }
 
 inline fn match_tree_with_l0<B>(
@@ -1596,7 +1658,11 @@ fn match_route<B>(
     let target_tree_idx = find_router_method_tree_index(router, method);
 
     if target_tree_idx >= 0 && clean_path != "*" {
-        let res = match_tree_with_l0(router, target_tree_idx, clean_path, params, out_canon_path);
+        let res = if target_tree_idx == 8 {
+            match_custom_method_tree(router, method, clean_path, params, out_canon_path)
+        } else {
+            match_tree_with_l0(router, target_tree_idx, clean_path, params, out_canon_path)
+        };
         if is_match_found(res) { return res; }
     }
 

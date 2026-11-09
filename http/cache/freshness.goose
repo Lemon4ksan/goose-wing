@@ -232,7 +232,8 @@ struct FreshnessPolicy {
     security_zeroed: bool = false,
 }
 
-// Checks whether max-stale serving is strictly prohibited by RFC 9111 or CVE-2026-93748 defense.
+// Checks whether max-stale serving is strictly prohibited
+// (RFC 9111 Section 5.2.2.1 max-stale prohibition under must-revalidate).
 fn is_max_stale_blocked(resp_cc: const CacheControl&, policy: FreshnessPolicy) -> bool {
     if is_must_revalidate(resp_cc) { return true; }
     if policy.shared && is_proxy_revalidate(resp_cc) { return true; }
@@ -300,7 +301,7 @@ fn evaluate_stale_if_error(
 }
 
 // Evaluates whether cached response satisfies request freshness constraints or requires revalidation.
-// Enforces max-age, min-fresh, and max-stale with CVE-2026-93748 defense.
+// Enforces max-age, min-fresh, and RFC 9111 Section 5.2.2.1 max-stale prohibition under must-revalidate.
 fn evaluate_freshness(
     resp_cc:               const CacheControl&,
     req_cc:                const CacheControl&,

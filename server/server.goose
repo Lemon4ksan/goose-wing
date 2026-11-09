@@ -46,6 +46,10 @@ struct HttpServer {
     sni_registry:          SniRegistry               = SniRegistry { .. },
     worker_ring:           core::SpscRing            = core::SpscRing { .. },
     cached_date:           CachedHttpDate            = CachedHttpDate { .. },
+    fast_l0_last_headers:  u8[..256]                 = [],
+    fast_l0_last_host:     u8[..128]                 = [],
+    fast_l0_last_close:    bool                      = false,
+    turn_in_use:           bool                      = false,
 }
 
 inline fn refresh_http_server_date(server: HttpServer&, now_sec: i64) {
@@ -261,6 +265,11 @@ fn defer_ws_upgrade(
     return pending, true;
 }
 
+const WS_UPGRADE_PREFIX:         const u8[:] = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ";
+const WS_SUBPROTO_PREFIX:        const u8[:] = "Sec-WebSocket-Protocol: ";
+const WS_PERMESSAGE_DEFLATE_HDR: const u8[:] = "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n";
+const WS_HDR_CRLF:               const u8[:] = "\r\n";
+
 inline fn serialize_and_init_ws_upgrade<B>(
     route_behavior: const WsBehavior&,
     pending:        WsPendingUpgrade&,
@@ -276,31 +285,35 @@ inline fn serialize_and_init_ws_upgrade<B>(
     compute_websocket_accept(pending.client_key[..], accept_key);
 
     let prev_out_len = out_wire.len;
-    out_wire.append("HTTP/1.1 101 Switching Protocols\r\n");
-    out_wire.append("Upgrade: websocket\r\n");
-    out_wire.append("Connection: Upgrade\r\n");
-    out_wire.append("Sec-WebSocket-Accept: ");
+    out_wire.append(WS_UPGRADE_PREFIX);
     out_wire.append(accept_key[..]);
-    out_wire.append("\r\n");
-    var expected_add: i64 = 97 + accept_key.len;
+    out_wire.append(WS_HDR_CRLF);
+    var expected_add = core::add_sat_i64(
+        WS_UPGRADE_PREFIX.len,
+        core::add_sat_i64(accept_key.len, WS_HDR_CRLF.len),
+    );
 
     if subproto.len > 0 {
-        out_wire.append("Sec-WebSocket-Protocol: ");
+        out_wire.append(WS_SUBPROTO_PREFIX);
         out_wire.append(subproto);
-        out_wire.append("\r\n");
-        expected_add += 26 + subproto.len;
+        out_wire.append(WS_HDR_CRLF);
+        let sub_add = core::add_sat_i64(
+            WS_SUBPROTO_PREFIX.len,
+            core::add_sat_i64(subproto.len, WS_HDR_CRLF.len),
+        );
+        expected_add = core::add_sat_i64(expected_add, sub_add);
     }
 
     let compress_active = route_behavior.compression != WS_COMPRESS_DISABLED
         && pending.extensions[..].contains_fold("permessage-deflate");
     if compress_active {
-        out_wire.append("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n");
-        expected_add += 74;
+        out_wire.append(WS_PERMESSAGE_DEFLATE_HDR);
+        expected_add = core::add_sat_i64(expected_add, WS_PERMESSAGE_DEFLATE_HDR.len);
     }
 
-    out_wire.append("\r\n");
-    expected_add += 2;
-    guard out_wire.len == prev_out_len + expected_add else {
+    out_wire.append(WS_HDR_CRLF);
+    expected_add = core::add_sat_i64(expected_add, WS_HDR_CRLF.len);
+    guard out_wire.len == core::add_sat_i64(prev_out_len, expected_add) else {
         return WebSocketSession { .. }, false;
     }
 
@@ -450,27 +463,29 @@ inline fn reset_server_request_fixed(req: Request&) {
     req.is_http10 = false;
 }
 
-var g_turn_req:    Request  = Request { .. };
-var g_turn_res:    Response = Response { .. };
-var g_turn_in_use: bool     = false;
+var g_turn_req: Request  = Request { .. };
+var g_turn_res: Response = Response { .. };
 
-inline fn is_turn_scratch_ready() -> bool {
-    return !g_turn_in_use && g_turn_req.body.len == 0 && g_turn_res.body.len == 0;
+inline fn is_turn_scratch_ready(server: const HttpServer&) -> bool {
+    return !server.turn_in_use && g_turn_req.body.len == 0 && g_turn_res.body.len == 0;
 }
 
-inline fn acquire_turn_scratch() {
-    g_turn_in_use = true;
+inline fn acquire_turn_scratch(server: HttpServer&) {
+    server.turn_in_use = true;
     reset_server_response_fixed(g_turn_res);
 }
 
-inline fn release_turn_scratch() {
+inline fn release_turn_scratch(server: HttpServer&) {
     g_turn_req.body.clear();
     g_turn_res.body.clear();
-    g_turn_in_use = false;
+    server.turn_in_use = false;
 }
 
-fn try_prepare_single_h1_wire_turn(raw_stream: const u8[:]) -> bool {
-    guard is_turn_scratch_ready() else { return false; }
+fn try_prepare_single_h1_wire_turn(
+    server:     const HttpServer&,
+    raw_stream: const u8[:],
+) -> bool {
+    guard is_turn_scratch_ready(server) else { return false; }
 
     reset_server_request_fixed(g_turn_req);
     var presence_tracker = HeaderPresenceTracker { .. };
@@ -501,8 +516,8 @@ fn finish_single_h1_wire_turn<Stage, B>(
     wire_out:     B&,
     stage:        Stage&,
 ) -> PipelineOutcome {
-    acquire_turn_scratch();
-    defer release_turn_scratch();
+    acquire_turn_scratch(server);
+    defer release_turn_scratch(server);
     if server.ws_route_count > 0
         && (g_turn_req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
         && is_websocket_upgrade_request(g_turn_req) {
@@ -609,10 +624,11 @@ fn handle_connection_wire<Stage, B>(
         if server.trust_proxy_headers {
             server.pipeline.trust_proxy_headers = true;
         }
-        var sess = internal::new_h2_server_session(server.server_name[..], now_ns);
+        let now_ms = div_euclid(now_ns, 1000000);
+        var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
         defer internal::cleanup_h2_server_session(sess, server.pipeline);
         let _, ok_h2 = internal::handle_h2_server_ingress(
-            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ns, wire_out, stage,
+            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out, stage,
         );
         if ok_h2 {
             server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
@@ -621,7 +637,7 @@ fn handle_connection_wire<Stage, B>(
         return PipelineOutcome.Handled, false;
     }
 
-    let is_fast = try_prepare_single_h1_wire_turn(raw_stream);
+    let is_fast = try_prepare_single_h1_wire_turn(server, raw_stream);
     if !is_fast {
         var req = new_request("GET", "");
         var res = Response { .. };
@@ -629,7 +645,9 @@ fn handle_connection_wire<Stage, B>(
             server, effective_ip[..], raw_stream, now_ns, req, res, wire_out, stage,
         );
     }
-    let fast_outcome = finish_single_h1_wire_turn(server, effective_ip[..], now_ns, wire_out, stage);
+    let fast_outcome = finish_single_h1_wire_turn(
+        server, effective_ip[..], now_ns, wire_out, stage,
+    );
     return fast_outcome, true;
 }
 
@@ -1026,34 +1044,30 @@ fn scan_fast_l0_static_header_line(
     return true;
 }
 
-var g_fast_l0_last_headers: u8[..256] = [];
-var g_fast_l0_last_host:    u8[..128] = [];
-var g_fast_l0_last_close:   bool      = false;
-
 inline fn try_match_cached_l0_headers(
-    pipeline:  ServerPipelineConfig&,
+    server:    HttpServer&,
     rest:      const u8[:],
     out_close: bool&,
 ) -> bool {
-    guard g_fast_l0_last_headers.len > 0 && rest == g_fast_l0_last_headers[..] else {
+    guard server.fast_l0_last_headers.len > 0 && rest == server.fast_l0_last_headers[..] else {
         return false;
     }
-    if !pipeline.has_valid_host && g_fast_l0_last_host.len > 0 {
-        let _ = pipeline.last_valid_host.try_set(g_fast_l0_last_host[..]);
-        pipeline.has_valid_host = true;
+    if !server.pipeline.has_valid_host && server.fast_l0_last_host.len > 0 {
+        let _ = server.pipeline.last_valid_host.try_set(server.fast_l0_last_host[..]);
+        server.pipeline.has_valid_host = true;
     }
-    out_close = g_fast_l0_last_close;
+    out_close = server.fast_l0_last_close;
     return true;
 }
 
 inline fn record_cached_l0_headers(
-    pipeline:  const ServerPipelineConfig&,
+    server:    HttpServer&,
     rest:      const u8[:],
     out_close: bool,
 ) {
-    if rest.len <= 256 && g_fast_l0_last_headers.try_set(rest) {
-        let _ = g_fast_l0_last_host.try_set(pipeline.last_valid_host[..]);
-        g_fast_l0_last_close = out_close;
+    if rest.len <= 256 && server.fast_l0_last_headers.try_set(rest) {
+        let _ = server.fast_l0_last_host.try_set(server.pipeline.last_valid_host[..]);
+        server.fast_l0_last_close = out_close;
     }
 }
 
@@ -1063,11 +1077,11 @@ inline fn record_cached_l0_headers(
 //   rest = "Host: localhost\r\nConnection: keep-alive\r\n\r\n"
 //   returns: true, out_close = false
 fn scan_fast_l0_static_headers(
-    pipeline:  ServerPipelineConfig&,
+    server:    HttpServer&,
     rest:      const u8[:],
     out_close: bool&,
 ) -> bool {
-    if try_match_cached_l0_headers(pipeline, rest, out_close) {
+    if try_match_cached_l0_headers(server, rest, out_close) {
         return true;
     }
     var cursor:   i64  = 0;
@@ -1080,10 +1094,10 @@ fn scan_fast_l0_static_headers(
             guard has_host && verify_headers_terminator_consumed(cursor, rest.len) else {
                 return false;
             }
-            record_cached_l0_headers(pipeline, rest, out_close);
+            record_cached_l0_headers(server, rest, out_close);
             return true;
         }
-        guard scan_fast_l0_static_header_line(pipeline, rest, cursor, has_host, out_close) else {
+        guard scan_fast_l0_static_header_line(server.pipeline, rest, cursor, has_host, out_close) else {
             return false;
         }
     }
@@ -1174,7 +1188,7 @@ fn try_fast_l0_static_turn<B>(
     let sp_idx = match_fast_l0_static_payload(server, path);
     guard sp_idx >= 0 else { return false; }
 
-    guard scan_fast_l0_static_headers(server.pipeline, header_bytes[rest_offset..], out_close) else {
+    guard scan_fast_l0_static_headers(server, header_bytes[rest_offset..], out_close) else {
         return false;
     }
 
@@ -1223,7 +1237,7 @@ fn drain_identical_l0_pipelined_batch<B>(
 
 // Converts monotonic nanoseconds to seconds for HTTP Date header caching.
 inline fn nanos_to_http_date_sec(now_ns: u64) -> i64 {
-    return (now_ns >> 30) as i64;
+    return div_euclid(now_ns, 1000000000) as i64;
 }
 
 // Runs the zero-allocation L0 static GET fast loop over `stream_in`, returning `(rem_stream, done)`.
@@ -1377,12 +1391,13 @@ fn drain_pipelined_stream_turns<Stage, B>(
 }
 
 fn try_prepare_single_pipeline_turn<B>(
+    server:         const HttpServer&,
     stream_in:      const u8[:],
     wire_out:       const B&,
     total_consumed: i64&,
     out_has_req:    bool&,
 ) -> bool {
-    guard is_turn_scratch_ready() && core::add_sat_i64(wire_out.len, 256) <= wire_out.cap else {
+    guard is_turn_scratch_ready(server) && core::add_sat_i64(wire_out.len, 256) <= wire_out.cap else {
         return false;
     }
 
@@ -1433,8 +1448,8 @@ fn finish_single_pipeline_turn<Stage, B>(
     stage:            Stage&,
 ) {
     total_handled = core::add_sat_i64(total_handled, 1);
-    acquire_turn_scratch();
-    defer release_turn_scratch();
+    acquire_turn_scratch(server);
+    defer release_turn_scratch(server);
     if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
         return;
     }
@@ -1483,7 +1498,9 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
     }
 
     var has_fast_req = false;
-    let is_fast = try_prepare_single_pipeline_turn(stream, wire_out, total_consumed, has_fast_req);
+    let is_fast = try_prepare_single_pipeline_turn(
+        server, stream, wire_out, total_consumed, has_fast_req,
+    );
     var local_ip: u8[..64] = [];
     let _ = local_ip.try_set(client_ip[..min(client_ip.len, 64)]);
     if !is_fast {
@@ -1553,18 +1570,18 @@ inline fn handle_h2_pipe_ingress<Stage, B>(
     client_ip:  const u8[:],
     pipe:       core::PipeBuffer&,
     h2_sess:    internal::H2ServerSession&,
-    now_ms:     u64,
+    now_ns:     u64,
     unread_len: i64,
     wire_out:   B&,
     stage:      Stage&,
 ) -> i64, bool {
     let stream = pipe.readable_slice();
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
-        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ms, wire_out, stage,
+        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ns / 1000000, wire_out, stage,
     );
     if ok_h2 {
         pipe.advance_to(consumed_h2, consumed_h2);
-        server.requests_processed++;
+        server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
         return 1, true;
     }
     pipe.advance_to(consumed_h2, unread_len);
@@ -1658,7 +1675,9 @@ fn handle_connection_pipe_with_stage<Stage, B>(
 ) -> i64, bool {
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
-    return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, g_reactor_h2_sessions[h2_idx], stage);
+    return handle_connection_pipe(
+        server, client_ip, pipe, now_ns, wire_out, g_default_reactor.h2_sessions[h2_idx], stage,
+    );
 }
 
 fn handle_connection_pipe<B>(
@@ -1741,12 +1760,18 @@ inline fn step_h2_server_session_buf<InBuf, OutBuf>(
     h2_idx:   i64,
     peer_ip:  const u8[:],
     h2_in:    InBuf&,
-    now_ms:   u64,
+    now_ns:   u64,
     out_wire: OutBuf&,
 ) -> bool {
     out_wire.clear();
     let consumed, ok = internal::handle_h2_server_ingress(
-        g_reactor_h2_sessions[h2_idx], server.pipeline, server.timer, peer_ip, h2_in[..], now_ms, out_wire,
+        g_default_reactor.h2_sessions[h2_idx],
+        server.pipeline,
+        server.timer,
+        peer_ip,
+        h2_in[..],
+        div_euclid(now_ns, 1000000),
+        out_wire,
     );
     if out_wire.len > 0 {
         let _ = tcp_send(conn_fd, out_wire[..]);
@@ -1784,10 +1809,10 @@ fn serve_h2_connection_buf<InBuf>(
 
     var out_wire:   u8[..65536] = [];
     var chunk:      u8[..4096]  = [];
-    var now_ms:     u64         = 1000;
+    var now_ns:     u64         = 1000000000;
     var idle_ticks: u64         = 0;
     loop {
-        if !step_h2_server_session_buf(conn_fd, server, h2_idx, peer_ip[..], h2_in, now_ms, out_wire) {
+        if !step_h2_server_session_buf(conn_fd, server, h2_idx, peer_ip[..], h2_in, now_ns, out_wire) {
             chunk.clear();
             let _ = tcp_recv(conn_fd, chunk, 4096, 10);
             return false;
@@ -1803,7 +1828,7 @@ fn serve_h2_connection_buf<InBuf>(
             break;
         }
         idle_ticks = 0;
-        now_ms = core::add_sat_u64(now_ms, 10);
+        now_ns = core::add_sat_u64(now_ns, 10000000);
     }
     return true;
 }
@@ -2266,7 +2291,7 @@ inline fn step_pipe_loop_conn<Stage>(
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
     let _, ok = handle_connection_pipe(
-        server, peer_ip, pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx], stage,
+        server, peer_ip, pipe, now_ns, cork, g_default_reactor.h2_sessions[h2_idx], stage,
     );
     let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
     if !ok {
@@ -2416,7 +2441,7 @@ fn serve_tls(
 
             let now_ns = core::monotonic_now().as_nanos();
             let _, ok = handle_connection_pipe(
-                server, peer_ip[..], pipe, now_ns, cork, g_reactor_h2_sessions[h2_idx],
+                server, peer_ip[..], pipe, now_ns, cork, g_default_reactor.h2_sessions[h2_idx],
             );
             let should_close = !ok || response_wire_has_connection_close(cork.cork_as_slice());
             if !ok {
@@ -2460,16 +2485,15 @@ inline fn handle_page_ring_h2_preface<Stage, B>(
         out_ok = true;
         return 0;
     }
-    let now_ms = (now_ns / 1000000) as u64;
     let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
     let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
-        g_reactor_h2_sessions[h2_idx],
+        g_default_reactor.h2_sessions[h2_idx],
         server.pipeline,
         server.timer,
         client_ip,
         peek_slice,
-        now_ms,
+        now_ns / 1000000,
         wire_out,
         stage,
     );
@@ -2497,10 +2521,10 @@ fn handle_connection_page_ring<Stage, B>(
     }
     guard ring.count > 0 else { return 0, true; }
 
-    g_reactor_chunk.len = 0;
-    let peek_n = ring.page_ring_peek(g_reactor_chunk.bytes[..]);
+    g_default_reactor.chunk.len = 0;
+    let peek_n = ring.page_ring_peek(g_default_reactor.chunk.bytes[..]);
     guard peek_n > 0 else { return 0, true; }
-    let peek_slice = g_reactor_chunk.bytes[..peek_n];
+    let peek_slice = g_default_reactor.chunk.bytes[..peek_n];
 
     if is_partial_h2_client_preface(peek_slice) || is_h2_client_preface(peek_slice) {
         var h2_done = false;

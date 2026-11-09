@@ -455,6 +455,208 @@ fn mlkem768_decapsulate_with_implicit_rejection(
     return is_zero == 1, true;
 }
 
+// ---- FIPS 202 Keccak-f[1600], SHA-3 & SHAKE XOF Primitives (FIPS 203 §4.1) --
+
+const KECCAK_RC: u64[24] = [
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000,
+    0x000000000000808B, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+    0x000000000000008A, 0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+    0x000000008000808B, 0x800000000000008B, 0x8000000000008089, 0x8000000000008003,
+    0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
+    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+];
+
+const KECCAK_ROTC: u32[24] = [
+    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
+    27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
+];
+
+const KECCAK_PI: u64[24] = [
+    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
+    15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
+];
+
+inline fn keccak_chi_row(state: u64[25]&, r0: u64, r1: u64, r2: u64, r3: u64, r4: u64) {
+    let s0 = state[r0];
+    let s1 = state[r1];
+    let s2 = state[r2];
+    let s3 = state[r3];
+    let s4 = state[r4];
+    state[r0] = s0 ^ ((~s1) & s2);
+    state[r1] = s1 ^ ((~s2) & s3);
+    state[r2] = s2 ^ ((~s3) & s4);
+    state[r3] = s3 ^ ((~s4) & s0);
+    state[r4] = s4 ^ ((~s0) & s1);
+}
+
+inline fn keccak_theta_col(state: u64[25]&, c0: u64, c1: u64, c2: u64, c3: u64, c4: u64, t: u64) {
+    state[c0] ^= t;
+    state[c1] ^= t;
+    state[c2] ^= t;
+    state[c3] ^= t;
+    state[c4] ^= t;
+}
+
+inline fn keccak_round(state: u64[25]&, rc: u64) {
+    let bc0 = state[0] ^ state[5] ^ state[10] ^ state[15] ^ state[20];
+    let bc1 = state[1] ^ state[6] ^ state[11] ^ state[16] ^ state[21];
+    let bc2 = state[2] ^ state[7] ^ state[12] ^ state[17] ^ state[22];
+    let bc3 = state[3] ^ state[8] ^ state[13] ^ state[18] ^ state[23];
+    let bc4 = state[4] ^ state[9] ^ state[14] ^ state[19] ^ state[24];
+
+    keccak_theta_col(state, 0, 5, 10, 15, 20, bc4 ^ core::rotl64(bc1, 1));
+    keccak_theta_col(state, 1, 6, 11, 16, 21, bc0 ^ core::rotl64(bc2, 1));
+    keccak_theta_col(state, 2, 7, 12, 17, 22, bc1 ^ core::rotl64(bc3, 1));
+    keccak_theta_col(state, 3, 8, 13, 18, 23, bc2 ^ core::rotl64(bc4, 1));
+    keccak_theta_col(state, 4, 9, 14, 19, 24, bc3 ^ core::rotl64(bc0, 1));
+
+    var t = state[1];
+    for i in 24 {
+        let u = i as u64;
+        let j = KECCAK_PI[u];
+        let tmp = state[j];
+        state[j] = core::rotl64(t, KECCAK_ROTC[u]);
+        t = tmp;
+    }
+
+    keccak_chi_row(state, 0, 1, 2, 3, 4);
+    keccak_chi_row(state, 5, 6, 7, 8, 9);
+    keccak_chi_row(state, 10, 11, 12, 13, 14);
+    keccak_chi_row(state, 15, 16, 17, 18, 19);
+    keccak_chi_row(state, 20, 21, 22, 23, 24);
+    state[0] ^= rc;
+}
+
+// FIPS 202 Section 3.3: Keccak-f[1600] 24-round sponge permutation.
+fn keccak_f1600(state: u64[25]&) {
+    for r in 24 {
+        keccak_round(state, KECCAK_RC[r as u64]);
+    }
+}
+
+inline fn keccak_xor_bytes(state: u64[25]&, blk: const u8[:]) {
+    for i in blk.len {
+        let u = i as u64;
+        let lane = u >> 3;
+        let shift = core::shl_sat_u64(u & 7, 3) as u32;
+        state[lane] ^= core::shl_sat_u64(blk[u], shift);
+    }
+}
+
+fn keccak_absorb(state: u64[25]&, data: const u8[:], rate: u64, domain: u8) {
+    let data_len = data.len as u64;
+    var off: u64 = 0;
+    while core::add_sat_u64(off, rate) <= data_len {
+        let next_off = core::add_sat_u64(off, rate);
+        keccak_xor_bytes(state, data[off..next_off]);
+        keccak_f1600(state);
+        off = next_off;
+    }
+    let rem = core::sub_sat_u64(data_len, off);
+    if rem > 0 {
+        keccak_xor_bytes(state, data[off..data_len]);
+    }
+    let rem_shift = core::shl_sat_u64(rem & 7, 3) as u32;
+    state[rem >> 3] ^= core::shl_sat_u64(domain, rem_shift);
+    let last = core::sub_sat_u64(rate, 1);
+    let last_shift = core::shl_sat_u64(last & 7, 3) as u32;
+    state[last >> 3] ^= core::shl_sat_u64(0x80, last_shift);
+    keccak_f1600(state);
+}
+
+fn keccak_squeeze(state: u64[25]&, rate: u64, out: u8[:]) {
+    let out_len = out.len as u64;
+    var out_pos:  u64 = 0;
+    var lane_pos: u64 = 0;
+    while out_pos < out_len {
+        if lane_pos == rate {
+            keccak_f1600(state);
+            lane_pos = 0;
+        }
+        let w = state[lane_pos >> 3];
+        let shift = core::shl_sat_u64(lane_pos & 7, 3);
+        out[out_pos] = ((w >> shift) & 0xFF) as u8;
+        out_pos = core::add_sat_u64(out_pos, 1);
+        lane_pos = core::add_sat_u64(lane_pos, 1);
+    }
+}
+
+// FIPS 202 Section 6.1: SHA3-256 cryptographic hash function (rate = 136, domain = 0x06).
+fn sha3_256(data: const u8[:]) -> u8[32] {
+    var state: u64[25] = [0; 25];
+    var out:   u8[32]  = [0; 32];
+    keccak_absorb(state, data, 136, 0x06);
+    keccak_squeeze(state, 136, out[..]);
+    return out;
+}
+
+// FIPS 202 Section 6.1: SHA3-512 cryptographic hash function (rate = 72, domain = 0x06).
+fn sha3_512(data: const u8[:]) -> u8[64] {
+    var state: u64[25] = [0; 25];
+    var out:   u8[64]  = [0; 64];
+    keccak_absorb(state, data, 72, 0x06);
+    keccak_squeeze(state, 72, out[..]);
+    return out;
+}
+
+// FIPS 202 Section 6.2: SHAKE128 extendable-output function (rate = 168, domain = 0x1F).
+fn shake128_squeeze(data: const u8[:], out: u8[:]) {
+    var state: u64[25] = [0; 25];
+    keccak_absorb(state, data, 168, 0x1F);
+    keccak_squeeze(state, 168, out);
+}
+
+// FIPS 202 Section 6.2: SHAKE256 extendable-output function (rate = 136, domain = 0x1F).
+fn shake256_squeeze(data: const u8[:], out: u8[:]) {
+    var state: u64[25] = [0; 25];
+    keccak_absorb(state, data, 136, 0x1F);
+    keccak_squeeze(state, 136, out);
+}
+
+// FIPS 203 Section 4.1: Hash function H(s) = SHA3-256(s).
+fn ml_kem_h(data: const u8[:]) -> u8[32] {
+    guard data.len > 0 else { return sha3_256(""); }
+    return sha3_256(data);
+}
+
+// FIPS 203 Section 4.1: Hash function G(a || b) = SHA3-512(a || b).
+fn ml_kem_g(first: const u8[:], second: const u8[:]) -> u8[64] {
+    var buf: u8[96] = [0; 96];
+    let n1 = min(first.len as u64, 32);
+    let n2 = min(second.len as u64, 64);
+    let total = core::add_sat_u64(n1, n2);
+    core::ct_copy_bytes(buf[0..n1], first[0..n1]);
+    core::ct_copy_bytes(buf[n1..total], second[0..n2]);
+    let out = sha3_512(buf[0..total]);
+    core::secure_zeroize_slice(buf[..]);
+    return out;
+}
+
+// FIPS 203 Section 4.1: Implicit rejection KDF J(z || ct) = SHAKE256(z || ct, 32).
+fn ml_kem_j(z: const u8[:], ct: const u8[:]) -> u8[32] {
+    var buf: u8[1120] = [0; 1120];
+    var out: u8[32]   = [0; 32];
+    let z_len = min(z.len as u64, 32);
+    let ct_len = min(ct.len as u64, 1088);
+    let total = core::add_sat_u64(z_len, ct_len);
+    core::ct_copy_bytes(buf[0..z_len], z[0..z_len]);
+    core::ct_copy_bytes(buf[z_len..total], ct[0..ct_len]);
+    shake256_squeeze(buf[0..total], out[..]);
+    core::secure_zeroize_slice(buf[0..z_len]);
+    return out;
+}
+
+// FIPS 203 Section 4.1: Pseudorandom function PRF_2(sigma, b) = SHAKE256(sigma || b, 128).
+fn ml_kem_prf(sigma: const u8[32]&, b_nonce: u8) -> u8[128] {
+    var prf_in: u8[33]  = [0; 33];
+    var out:    u8[128] = [0; 128];
+    core::ct_copy_bytes(prf_in[0..32], sigma[..]);
+    prf_in[32] = b_nonce;
+    shake256_squeeze(prf_in[..], out[..]);
+    core::secure_zeroize_slice(prf_in[..]);
+    return out;
+}
+
 // Performs wire-level ML-KEM-768 decapsulation (FIPS 203 Section 7.3) with constant-time
 // Fujisaki-Okamoto implicit rejection via `core::ct_eq_bytes` and `core::ct_select_u8`.
 // Enforces:
@@ -485,10 +687,7 @@ fn mlkem768_decapsulate(
 
     // K-PKE polynomial ring decryption check (FIPS 203 Section 6.3 & 7.3)
     var pke_m = fips203_kpke_decrypt_poly(dk_pke, ct);
-    var g_pke_in: u8[64] = [0; 64];
-    core::ct_copy_bytes(g_pke_in[0..32], pke_m[..]);
-    core::ct_copy_bytes(g_pke_in[32..64], h_ek);
-    var g_pke_out = core::sha512(g_pke_in[..]);
+    var g_pke_out = ml_kem_g(pke_m[..], h_ek);
     var r_coins: u8[32] = [0; 32];
     core::ct_copy_bytes(r_coins[..], g_pke_out[32..64]);
     var ek_arr: u8[1184] = [0; 1184];
@@ -508,20 +707,25 @@ fn mlkem768_decapsulate(
     let tag_bit:   u8 = core::ct_select_u8(if tag_matches { 1 } else { 0 }, is_all_zero ^ 1, 0);
     let valid_bit: u8 = pke_bit | tag_bit;
 
-    var k_bar = core::hmac_sha256(z, ct);
+    let h_ek_calc = ml_kem_h(ek);
+    let is_fips_dk = core::ct_eq_bytes(h_ek, h_ek_calc[..]);
+    let fips_bit: u8 = if is_fips_dk { 1 } else { 0 };
+    var k_bar_j = ml_kem_j(z, ct);
+    var k_bar_hmac = core::hmac_sha256(z, ct);
     for i in 32 {
         let valid_k = core::ct_select_u8(pke_bit, g_pke_out[i], k_cand[i]);
-        shared_secret[i] = core::ct_select_u8(valid_bit, valid_k, k_bar[i]);
+        let k_bar_i = core::ct_select_u8(fips_bit, k_bar_j[i], k_bar_hmac[i]);
+        shared_secret[i] = core::ct_select_u8(valid_bit, valid_k, k_bar_i);
     }
     core::secure_zeroize_32(pke_m);
-    core::secure_zeroize_64(g_pke_in);
     core::secure_zeroize_64(g_pke_out);
     core::secure_zeroize_32(r_coins);
     core::secure_zeroize_32(m_prime);
     core::secure_zeroize_64(g_in);
     core::secure_zeroize_32(k_cand);
     core::secure_zeroize_32(expected_tag);
-    core::secure_zeroize_32(k_bar);
+    core::secure_zeroize_32(k_bar_j);
+    core::secure_zeroize_32(k_bar_hmac);
     return true;
 }
 
@@ -674,21 +878,7 @@ fn poly_basemul_acc(acc: Poly256&, a: const Poly256&, b: const Poly256&) {
 // FIPS 203 Section 4.2.2: Algorithm 8 SamplePolyCBD_2 (centered binomial distribution eta = 2).
 // crap:ignore
 fn poly_cbd2(sigma: const u8[32]&, nonce: u8) -> Poly256 {
-    var prf_in0: u8[34] = [0; 34];
-    var prf_in1: u8[34] = [0; 34];
-    core::ct_copy_bytes(prf_in0[0..32], sigma[..]);
-    prf_in0[32] = nonce;
-    prf_in0[33] = 0;
-    core::ct_copy_bytes(prf_in1[0..32], sigma[..]);
-    prf_in1[32] = nonce;
-    prf_in1[33] = 1;
-
-    let blk0 = core::sha512(prf_in0[..]);
-    let blk1 = core::sha512(prf_in1[..]);
-    var buf: u8[128] = [0; 128];
-    core::ct_copy_bytes(buf[0..64], blk0[..]);
-    core::ct_copy_bytes(buf[64..128], blk1[..]);
-
+    var buf = ml_kem_prf(sigma, nonce);
     var f = Poly256 { .. };
     var i: u64 = 0;
     while i < 128 {
@@ -702,41 +892,39 @@ fn poly_cbd2(sigma: const u8[32]&, nonce: u8) -> Poly256 {
         f.coeffs[idx0 | 1] = ((x1 + 3329 - y1) % 3329) as i32;
         i += 1;
     }
+    core::secure_zeroize_slice(buf[..]);
     return f;
 }
 
-// FIPS 203 Section 4.2.2: Algorithm 7 SampleNTT(B) - uniform rejection sampling in R_q.
+// FIPS 203 Section 4.2.2: Algorithm 7 SampleNTT(B) - uniform rejection sampling in R_q via SHAKE128.
 // crap:ignore
 fn sample_ntt(rho: const u8[32]&, j_idx: u8, i_idx: u8) -> Poly256 {
     var a_hat = Poly256 { .. };
-    var count:     u64    = 0;
-    var block_ctr: u8     = 0;
-    var seed_in:   u8[35] = [0; 35];
+    var seed_in: u8[34] = [0; 34];
     core::ct_copy_bytes(seed_in[0..32], rho[..]);
     seed_in[32] = j_idx;
     seed_in[33] = i_idx;
 
-    while count < 256 {
-        seed_in[34] = block_ctr;
-        block_ctr += 1;
-        let stream_blk = core::sha512(seed_in[..]);
-        var pos: u64 = 0;
-        while pos + 2 < 63 && count < 256 {
-            let b0 = stream_blk[pos] as u32;
-            let b1 = stream_blk[pos + 1] as u32;
-            let b2 = stream_blk[pos + 2] as u32;
-            let d1 = b0 | ((b1 & 0x0F) << 8);
-            let d2 = (b1 >> 4) | (b2 << 4);
-            if d1 < 3329 {
-                a_hat.coeffs[count] = d1 as i32;
-                count += 1;
-            }
-            if d2 < 3329 && count < 256 {
-                a_hat.coeffs[count] = d2 as i32;
-                count += 1;
-            }
-            pos += 3;
+    var stream: u8[840] = [0; 840];
+    shake128_squeeze(seed_in[..], stream[..]);
+
+    var count: u64 = 0;
+    var pos:   u64 = 0;
+    while pos + 2 < 840 && count < 256 {
+        let b0 = stream[pos] as u32;
+        let b1 = stream[pos + 1] as u32;
+        let b2 = stream[pos + 2] as u32;
+        let d1 = b0 | ((b1 & 0x0F) << 8);
+        let d2 = (b1 >> 4) | (b2 << 4);
+        if d1 < 3329 {
+            a_hat.coeffs[count] = d1 as i32;
+            count += 1;
         }
+        if d2 < 3329 && count < 256 {
+            a_hat.coeffs[count] = d2 as i32;
+            count += 1;
+        }
+        pos += 3;
     }
     return a_hat;
 }
@@ -974,10 +1162,8 @@ fn compute_kpke_keygen_row(
 // FIPS 203 Section 6.1 & 7.1 Algorithms 13 & 16: ML-KEM-768 Key Generation (ML-KEM.KeyGen_internal).
 // Generates 1184-byte encapsulation key `ek` and 2400-byte decapsulation key `dk` from seeds `d` and `z`.
 fn mlkem768_keygen(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8[2400] {
-    var g_in: u8[33] = [0; 33];
-    core::ct_copy_bytes(g_in[0..32], d_seed[..]);
-    g_in[32] = 3; // k = 3 for ML-KEM-768
-    var g_out = core::sha512(g_in[..]);
+    let k_param: u8[1] = [3]; // k = 3 for ML-KEM-768
+    var g_out = ml_kem_g(d_seed[..], k_param[..]);
 
     var rho:   u8[32] = [0; 32];
     var sigma: u8[32] = [0; 32];
@@ -1010,7 +1196,7 @@ fn mlkem768_keygen(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8
     byte_encode_12(s_hat[0], dk[0..384]);
     byte_encode_12(s_hat[1], dk[384..768]);
     byte_encode_12(s_hat[2], dk[768..1152]);
-    let h_ek = core::sha256(ek[..]);
+    let h_ek = ml_kem_h(ek[..]);
     core::ct_copy_bytes(dk[1152..2336], ek[..]);
     core::ct_copy_bytes(dk[2336..2368], h_ek[..]);
     core::ct_copy_bytes(dk[2368..2400], z_seed[..]);
@@ -1039,11 +1225,8 @@ fn mlkem768_encapsulate(ek: const u8[1184]&, m_rand: const u8[32]&) -> u8[1088],
         return ct_zero, ss_zero, false;
     }
 
-    let h_ek = core::sha256(ek[..]);
-    var g_in: u8[64] = [0; 64];
-    core::ct_copy_bytes(g_in[0..32], m_rand[..]);
-    core::ct_copy_bytes(g_in[32..64], h_ek[..]);
-    var g_out = core::sha512(g_in[..]);
+    let h_ek = ml_kem_h(ek[..]);
+    var g_out = ml_kem_g(m_rand[..], h_ek[..]);
 
     var k_shared: u8[32] = [0; 32];
     var r_coins:  u8[32] = [0; 32];
@@ -1051,7 +1234,6 @@ fn mlkem768_encapsulate(ek: const u8[1184]&, m_rand: const u8[32]&) -> u8[1088],
     core::ct_copy_bytes(r_coins[..], g_out[32..64]);
 
     let ct = k_pke_encrypt(ek, m_rand, r_coins);
-    core::secure_zeroize_64(g_in);
     core::secure_zeroize_64(g_out);
     core::secure_zeroize_32(r_coins);
     return ct, k_shared, true;

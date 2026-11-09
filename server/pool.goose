@@ -276,12 +276,6 @@ inline fn with_connection_slot<F>(
 }
 
 fn new_connection_timer(deadline_ns: u64, now_ns: u64) -> ConnectionTimer {
-    if deadline_ns == 1 {
-        var cpool = ReactorConnectionPool { .. };
-        let _ = with_connection_slot(cpool, 1, 0) { slot =>
-            slot.timer.missed_ticks = 0;
-        };
-    }
     let half_ns = if deadline_ns == 0 { 15000000000 } else { deadline_ns >> 1 };
     return ConnectionTimer {
         active_req_seq:    0,

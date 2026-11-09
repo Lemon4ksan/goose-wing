@@ -7,7 +7,7 @@ edge filter, and an event-loop reactor.
 
 ```goose
 var srv = new_http_server("127.0.0.1", 8080);
-add_static_route(srv.router, "GET", "/healthz", "text/plain", "ok");
+add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
 ```
 
 ## Public API Reference
@@ -16,14 +16,16 @@ add_static_route(srv.router, "GET", "/healthz", "text/plain", "ok");
 
 ```goose
 struct HttpServer {
-    pipeline_cfg: ServerPipelineConfig, router: RadixRouter,
-    topic_tree: TopicTree, ws_behaviors: WsBehaviorTable,
-    tls_config: ServerTlsConfig, cork_buffers: ServerCork[..1024],
-    wire_pipeline: wire::WirePipeline, edge_filter: EdgeFilter
+    pipeline: ServerPipelineConfig, host: u8[..256], port: u16,
+    server_name: u8[..64], timer: internal::ConnectionTimer,
+    topic_tree: TopicTree, ws_routes: WsRouteEntry[..16],
+    shared_compressor: SharedWsCompressor, sni_registry: SniRegistry,
+    worker_ring: core::SpscRing, cached_date: CachedHttpDate, ...
 }
-fn new_http_server(host: const u8[:] = "127.0.0.1", port: u16 = 8080) -> HttpServer
+fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, core::secs(1), 100)) -> HttpServer
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
-fn serve_tls(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
+fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64
+fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
 fn handle_connection_wire<B>(server: HttpServer&, client_ip: const u8[:], wire_in: const u8[:], now_ns: u64, wire_out: B&) -> PipelineOutcome, bool
 fn subscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
 fn unsubscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
@@ -31,64 +33,77 @@ fn unsubscribe_all(server: HttpServer&, sock_fd: i64) -> i32
 fn publish(server: HttpServer&, topic: const u8[:], payload: const u8[:], opcode: u8 = rfc::WS_OPCODE_TEXT) -> i64
 fn publish_text(server: HttpServer&, topic: const u8[:], text: const u8[:]) -> i64
 fn publish_binary(server: HttpServer&, topic: const u8[:], data: const u8[:]) -> i64
-fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[..256]&) -> i64
+fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[..512]&) -> i64
 ```
 
-`HttpServer` combines synchronous serving loops (`serve` and TLS 1.3 `serve_tls`
-with `h2` / `http/1.1` ALPN and 0-RTT early data) with a Sans-IO wire processor
-(`handle_connection_wire`). Built-in WebSocket pub/sub routes messages across
-`server.topic_tree` using MQTT wildcard patterns (`+` and `#`), collecting up to
-256 matching socket descriptors (`i64[..256]`) in `find_subscribers`.
+`HttpServer` combines synchronous serving loops (`serve`, `serve_with_stage`,
+and TLS 1.3 `serve_tls` with `h2` / `http/1.1` ALPN and SNI certificate
+selection) with a Sans-IO wire processor (`handle_connection_wire`). Routing and
+middleware state live inside `server.pipeline` (`server.pipeline.router`,
+`server.pipeline.edge_filter`, `server.pipeline.route_cache`). Built-in
+WebSocket pub/sub routes messages across `server.topic_tree` using MQTT wildcard
+patterns (`+` and `#`), collecting up to 512 matching socket descriptors
+(`i64[..512]`) in `find_subscribers`.
 
 ### 2. Reactor Event Loop & HTTP/3 Server Endpoint (`server/reactor.goose`)
 
 ```goose
 struct H3ServerEndpoint {
-    local_cid: u8[..20], quic_tp: QuicTransportParams,
-    h3_conn: H3Connection, wt_demuxer: WebTransportDemuxer,
-    masque_tunnels: MasqueTunnelSession[..16]
+    conn: internal::H3Connection
 }
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
-fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, max_requests: i64, user_stage: UserStage&) -> i64
-fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
-fn new_h3_server_endpoint(server_cid: const u8[:] = "\x88\x77\x66\x55\x44\x33\x22\x11") -> H3ServerEndpoint
-fn handle_h3_quic_datagram(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], raw_udp: const u8[:], now_ns: u64, out_udp: u8[>..]&) -> bool
-fn handle_h3_server_datagram(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], stream_id: u64, h3_wire: const u8[:], now_ns: u64, out_h3_wire: u8[>..]&) -> bool
+fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_requests: i64 = 0) -> i64
+fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
+fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint
+fn handle_h3_quic_datagram<B>(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], datagram: const u8[:], now_ns: u64, out_wire: B&) -> bool
+fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: internal::H3Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64
 ```
 
 `serve_reactor`, `serve_reactor_with_stage`, and `serve_reactor_tls` drive a
 single-threaded non-blocking event loop over `Poller`, a 1024-slot
-`SoAConnTable`, and per-slot `PageRingBuffer` arenas. `H3ServerEndpoint`
-demultiplexes QUIC packets (`handle_h3_quic_datagram`), HTTP/3 request streams,
-WebTransport sessions, and up to 16 MASQUE tunnels (`MasqueTunnelSession[..16]`)
-over UDP (`serve_h3`).
+`SoAConnTable`, and per-connection `ReactorLeftoverBuf` / `PageRingBuffer`
+arenas. `H3ServerEndpoint` wraps `conn: internal::H3Connection` and
+demultiplexes QUIC packets (`handle_h3_quic_datagram`), HTTP/3 request streams
+(`handle_h3_server_datagram`), WebTransport sessions, and MASQUE tunnels over
+UDP (`serve_h3`).
 
 ### 3. Radix Tree & Flat Register Routing (`server/router.goose`)
 
 ```goose
 struct L0RegisterTable { ... }
-enum RouteMatchResult { Found, NotFound, MethodNotAllowed }
-struct ZeroAllocParams {
-    entries: ParamSpan[..8], matched_handler_id: i32,
-    matched_pso_mask: u64, allowed_methods_mask: u16
+enum RouteMatchResult {
+    Found { handler_id: i32, entries_mask: u32, pso_mask: u64, ingress_mask: u64, egress_mask: u64 },
+    NotFound,
+    MethodNotAllowed { allow_header: u8[..64] }
 }
-struct RadixRouter { ... }
+struct ZeroAllocParams { spans: ParamSpan[8], len: i64 }
+struct RadixRouter {
+    trees: MethodTree[..9],
+    l0_table: L0RegisterTable,
+    static_payloads: StaticRoutePayload[..32]
+}
 fn new_radix_router() -> RadixRouter
+fn init_default_static_payloads(r: RadixRouter&)
 fn add_route(router: RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, entries_mask: u32 = 0, pso_mask: u64 = DEFAULT_ROUTE_PSO_MASK) -> bool
 fn add_route_pso(router: RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, pso_mask: u64) -> bool
 fn add_static_route(router: RadixRouter&, method: const u8[:], path: const u8[:], content_type: const u8[:], body: const u8[:], handler_id: i32 = 0) -> bool
 fn match_route(router: const RadixRouter&, method: const u8[:], path: const u8[:], params: ZeroAllocParams&) -> RouteMatchResult
 fn param_val(params: const ZeroAllocParams&, idx: i64, req_path: const u8[:]) -> const u8[:]
-fn param_by_name(params: const ZeroAllocParams&, name: const u8[:], req_path: const u8[:]) -> const u8[:]
+fn param_by_name(params: const ZeroAllocParams&, name: const u8[:], req_path: const u8[:]) -> const u8[:], bool
 ```
 
 `RadixRouter` pairs a Tier 0 `L0RegisterTable` (matching exact paths up to 16
 bytes across 16 slots via two 64-bit word comparisons) with a Tier 1
-method-isolated compressed radix trie for parameterized (`:id`) and wildcard
-(`*filepath`) routes. `ZeroAllocParams` records up to 8 parameter byte spans
-(`ParamSpan[..8]`) into `req_path` alongside the route's pre-baked 64-bit PSO
-stage mask (`matched_pso_mask`).
+method-segregated compressed radix trie (`MethodTree[..9]`: 8 standard HTTP
+methods plus slot 8 as an extension bucket for valid RFC 9110 `tchar` custom or
+WebDAV methods such as `PROPFIND`, `MKCOL`, `REPORT`, `LOCK`, and `UNLOCK`) for
+parameterized (`:id` / `{id}`) and wildcard (`*filepath` / `{*filepath}`)
+routes. `init_default_static_payloads` populates standard built-in static
+payload slots `1001..1003` (`DEFAULT_PLAINTEXT_PAYLOAD`, `DEFAULT_JSON_PAYLOAD`,
+`DEFAULT_METRICS_PAYLOAD`). Each route stores a pre-baked 64-bit `pso_mask`
+(`STAGE_INGRESS_*` in bits `0..31`, `STAGE_EGRESS_*` in bits `32..63`) alongside
+role-scoped `ingress_mask` and `egress_mask`.
 
 ### 4. Server Pipeline & Composable Stage Bricks (`server/pipeline.goose`)
 
@@ -97,7 +112,23 @@ enum PipelineOutcome {
     Handled, RateLimited, CsrfRejected, CorsPreflight, MethodNotAllowed,
     RouteNotFound, SlowlorisClosed, ExpectationFailed
 }
-struct ServerPipelineConfig { ... }
+struct ServerCompressAndEtagMemo {
+    etag_src: u8[..512], etag_val: u8[..32],
+    gzip_src: u8[..512], gzip_dst: u8[..512],
+    compress_scratch: u8[..2048]
+}
+struct ServerPipelineConfig {
+    limiter: ShardedGcraLimiter, tier_limiters: ShardedGcraLimiter[..4],
+    csrf_guard: CrossOriginGuard, cors_policy: CorsPolicy,
+    router: RadixRouter, private_jar: PrivateJar,
+    edge_filter: EdgeFilter, route_cache: HttpRouteCache,
+    jwks: Jwks, jwt_options: JwtValidationOptions,
+    security_txt: SecurityTxt, dpop_replay_cache: DPoPReplayCache,
+    wire_pipeline: wire::WirePipeline, header_pool: internal::HeaderMapPool,
+    ext_pool: internal::ExtensionsPool, slab_pool: internal::SpillSlabPool,
+    memo: ServerCompressAndEtagMemo, target_host: u8[..256],
+    server_pso_capabilities: u64, ...
+}
 struct ServerStageCtx {
     ext_slot_idx: i32, handler_id: i32, entries_mask: u32, pso_mask: u64,
     ingress_mask: u64, egress_mask: u64, now_ns: u64, outcome: PipelineOutcome, ...
@@ -105,7 +136,9 @@ struct ServerStageCtx {
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig
 fn validate_pipeline_expect_header(req: const Request&) -> bool
 fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: internal::InlineHandlerFuture&) -> PipelineOutcome
-fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, edge_filter: EdgeFilter&, wire_pipe: const wire::WirePipeline&, conn_timer: internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
+fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
+fn on_server_stage<First, Next>(chain: wire::StageChain<First, Next>&, phase: wire::ServerHookPhase, cfg: ServerPipelineConfig&, req: const Request&, ctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
+fn on_server_custom_slot<First, Next>(chain: wire::StageChain<First, Next>&, slot_id: u8, param_slot: u8, cfg: ServerPipelineConfig&, req: const Request&, sctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
 fn stage_server_slowloris(timer: internal::ConnectionTimer&, enabled: bool, now_ns: u64, res: Response&) -> wire::StageVerdict
 fn stage_server_expect_100(req: const Request&, res: Response&) -> wire::StageVerdict
 fn stage_server_edge_filter(filter: EdgeFilter&, req: const Request&, res: Response&) -> wire::StageVerdict
@@ -117,39 +150,47 @@ fn stage_server_csrf(csrf_guard: const CrossOriginGuard&, enabled: bool, target_
 fn stage_server_auth_cookie<Jar>(jar: const Jar&, req: const Request&, ext: internal::RequestExtensions&, now_ns: u64) -> wire::StageVerdict
 fn stage_server_auth_jwt(jwks: const Jwks&, jwt_options: const JwtValidationOptions&, req: const Request&, ext: internal::RequestExtensions&, now_ns: u64, res: Response&) -> wire::StageVerdict
 fn stage_server_cache_lookup(cache: HttpRouteCache&, req: const Request&, now_ms: u64, res: Response&, handler_id: i32 = -1) -> wire::StageVerdict
-fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict
-fn stage_server_compress(req: const Request&, res: Response&, mask: u64) -> wire::StageVerdict
-fn stage_server_cache_store(cache: HttpRouteCache&, now_ms: u64, res: const Response&, handler_id: i32 = -1, url_key: const u8[:] = "") -> wire::StageVerdict
+fn stage_server_etag(req: const Request&, res: Response&, memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. }) -> wire::StageVerdict
+fn stage_server_compress(req: const Request&, res: Response&, mask: u64, memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. }) -> wire::StageVerdict
+fn stage_server_cache_store(cache: HttpRouteCache&, now_ms: u64, res: Response&, handler_id: i32 = -1, url_key: const u8[:] = "") -> wire::StageVerdict
 fn stage_server_security_headers(res: Response&) -> wire::StageVerdict
 fn stage_server_metrics_log(ext: const internal::RequestExtensions&, res: Response&, mask: u64, now_ns: u64) -> wire::StageVerdict
 ```
 
-`execute_pipeline` and `execute_server_pipeline_with_stage` intersect the
-server's global `wire::WirePipeline` mask with each route's `matched_pso_mask`
-so static or public routes bypass unused CSRF, JWT, or rate-limit stages in zero
-branches.
+`execute_pipeline` and `execute_server_pipeline_with_stage` intersect
+`cfg.server_pso_capabilities` with each matched route's `pso_mask` so static or
+public routes bypass unused CSRF, JWT, or rate-limit stages.
+`ServerPipelineConfig` owns per-instance `memo: ServerCompressAndEtagMemo`
+scratch state for ETag and compression memoization. User stages hook into
+lifecycle phases via `on_server_stage` (`wire::ServerHookPhase`: `PreRoute`,
+`PostAuth`, `BodyChunk`, `RouteHandler`, `PreSerialize`, `AfterResponse`,
+`OnError`) and into programmable custom stage bindings (`STAGE_ID_USER_0..3`,
+stage IDs `16..19` in `cfg.wire_pipeline.custom_bindings`) via
+`on_server_custom_slot`.
 
 ### 5. L7 WAF Edge Filter (`server/edge_filter.goose`)
 
 ```goose
 enum EdgeFilterVerdict {
-    Allow, BlockIp, BlockMethod, BlockPathPrefix, BlockUserAgent,
-    BlockHeaderTooLarge, BlockQueryTooLarge, BlockSuspiciousPayload
+    Pass, BlockForbidden, ThrottleRate, DropConnection
 }
 struct EdgeFilterRule {
-    match_ip: u8[..64], match_path_prefix: u8[..128],
-    match_user_agent: u8[..128], status_code: u16, active: bool
+    name: u8[..64], path_prefix: u8[..64],
+    required_header: u8[..64], verdict: EdgeFilterVerdict, enabled: bool
 }
-struct EdgeFilter { total_inspected: u64, total_blocked: u64, rules: EdgeFilterRule[..16] }
-fn make_edge_filter_rule(ip: const u8[:], path_prefix: const u8[:], ua: const u8[:], status: u16 = 403) -> EdgeFilterRule
-fn add_edge_filter_rule(f: EdgeFilter&, ip: const u8[:], path_prefix: const u8[:], ua: const u8[:], status: u16 = 403) -> bool
-fn evaluate_edge_filter(f: EdgeFilter&, client_ip: const u8[:], req: const Request&, res: Response&) -> EdgeFilterVerdict
+struct EdgeFilter {
+    rules: EdgeFilterRule[..16], total_inspected: u64,
+    total_blocked: u64, max_payload_bytes: i64, enabled: bool
+}
+fn make_edge_filter_rule(name: const u8[:], path_prefix: const u8[:], verdict: EdgeFilterVerdict) -> EdgeFilterRule
+fn add_edge_filter_rule(filter: EdgeFilter&, rule: EdgeFilterRule) -> bool
+fn evaluate_edge_filter(filter: EdgeFilter&, method: const u8[:], path: const u8[:], headers: const HeaderMap&) -> EdgeFilterVerdict
 ```
 
-`EdgeFilter` inspects requests before routing against up to 16 custom blocking
-rules (`EdgeFilterRule[..16]`), header and query size limits, path traversal
-sequences (`..`), and SQLi/XSS token signatures, writing the HTTP rejection
-status into `res` when blocked.
+`EdgeFilter` inspects requests before routing against up to 16 L7 rules
+(`EdgeFilterRule[..16]`), matching `path_prefix` and optional `required_header`
+constraints to return an `EdgeFilterVerdict` (`EdgeVerdict`: `Pass`,
+`BlockForbidden`, `ThrottleRate`, or `DropConnection`).
 
 ### 6. HTTP/2 Server Multiplexer (`server/h2_multiplexer.goose`, RFC 9113)
 
@@ -178,17 +219,29 @@ protocol errors.
 ### 7. Route Caching (`server/cache.goose`)
 
 ```goose
-enum CacheLookup { Hit, Miss }
-struct HttpRouteCache { payload: u8[..4096], valid: bool, ... }
-fn new_http_route_cache(lower_expiry_ms: u64 = 1000, upper_expiry_ms: u64 = 5000) -> HttpRouteCache
-fn cache_lookup(c: const HttpRouteCache&, now_ms: u64) -> CacheLookup
-fn cache_store(c: HttpRouteCache&, now_ms: u64, wire_data: const u8[:]) -> bool
+enum CacheLookup { HitFresh, HitStaleNeedsUpdate, Miss }
+struct CacheEntry {
+    wire: u8[..16384], content_type: u8[..64], etag: u8[..64],
+    url_key: u8[..256], url_hash: u64, created_ms: u64,
+    handler_id: i32, prev_lru: i32, next_lru: i32, valid: bool
+}
+struct HttpRouteCache {
+    wire: u8[..16384], content_type: u8[..64], etag: u8[..64],
+    entries: CacheEntry[..8], lower_expiry_ms: u64, upper_expiry_ms: u64,
+    created_ms: u64, handler_id: i32, lru_head: i32, lru_tail: i32,
+    valid: bool, is_updating: bool
+}
+fn new_http_route_cache(lower_ms: u64 = 1000, upper_ms: u64 = 5000) -> HttpRouteCache
+fn cache_lookup(c: HttpRouteCache&, now_ms: u64, req_handler_id: i32 = -1, url_key: const u8[:] = "") -> CacheLookup
+fn cache_store(c: HttpRouteCache&, now_ms: u64, data: const u8[:], handler_id: i32 = -1, content_type: const u8[:] = "", url_key: const u8[:] = "", etag: const u8[:] = "") -> bool
 fn cache_invalidate(c: HttpRouteCache&)
 ```
 
-`HttpRouteCache` stores pre-serialized response payloads up to 4096 bytes
-(`u8[..4096]`) with lower and upper TTL bounds; `cache_store` returns `false` if
-`wire_data.len > 4096`.
+`HttpRouteCache` maintains 8 associative cache slots (`CacheEntry[..8]`) ordered
+by an O(1) intrusive doubly-linked LRU list (`lru_head`, `lru_tail`, `prev_lru`,
+`next_lru`), storing pre-serialized response bodies up to 16 KB (`u8[..16384]`)
+with Stale-While-Revalidate semantics (`HitFresh`, `HitStaleNeedsUpdate`,
+`Miss`) across `lower_expiry_ms` and `upper_expiry_ms`.
 
 ### 8. Server Object Pools, SoA Timers & RDTSC Profiler (`server/pool.goose`, `server/soa_timer.goose`, `server/profiler.goose`)
 

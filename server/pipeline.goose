@@ -24,39 +24,48 @@ import wire.pipeline;
 
 // ---- 1. Pipeline Configuration, Outcomes & Stage Context --------------------
 
+struct ServerCompressAndEtagMemo {
+    etag_src:         u8[..512]  = [],
+    etag_val:         u8[..32]   = [],
+    gzip_src:         u8[..512]  = [],
+    gzip_dst:         u8[..512]  = [],
+    compress_scratch: u8[..2048] = [],
+}
+
 struct ServerPipelineConfig {
-    limiter:                 ShardedGcraLimiter       = ShardedGcraLimiter { .. },
-    tier_limiters:           ShardedGcraLimiter[..4]  = [],
-    csrf_guard:              CrossOriginGuard         = CrossOriginGuard { .. },
-    cors_policy:             CorsPolicy               = CorsPolicy { .. },
-    router:                  RadixRouter              = RadixRouter { .. },
-    private_jar:             PrivateJar               = PrivateJar { .. },
-    edge_filter:             EdgeFilter               = EdgeFilter { .. },
-    route_cache:             HttpRouteCache           = HttpRouteCache { .. },
-    jwks:                    Jwks                     = Jwks { .. },
-    jwt_options:             JwtValidationOptions     = JwtValidationOptions { .. },
-    security_txt:            SecurityTxt              = SecurityTxt { .. },
-    dpop_replay_cache:       DPoPReplayCache          = DPoPReplayCache { .. },
-    dpop_public_key:         u8[..64]                 = [],
-    sig_key_id:              u8[..64]                 = [],
-    sig_public_key:          u8[..64]                 = [],
-    verify_request_digest:   bool                     = false,
-    emit_problem_details:    bool                     = false,
-    wire_pipeline:           wire::WirePipeline       = wire::default_server_pipeline(),
-    header_pool:             internal::HeaderMapPool  = internal::HeaderMapPool { .. },
-    ext_pool:                internal::ExtensionsPool = internal::ExtensionsPool { .. },
-    slab_pool:               internal::SpillSlabPool  = internal::SpillSlabPool { .. },
-    target_host:             u8[..256]                = "example.com",
-    deadline_ns:             u64                      = 30000000000, // 30s
-    enable_rate_limiter:     bool                     = true,
-    enable_csrf_guard:       bool                     = true,
-    enable_cors:             bool                     = true,
-    enable_slowloris_timer:  bool                     = true,
-    trust_proxy_headers:     bool                     = false,
-    server_pso_capabilities: u64                      = 0xFFFFFFFFFFFFFFFF,
-    hdr_scan_cursor:         i64                      = 0,
-    last_valid_host:         u8[..128]                = [],
-    has_valid_host:          bool                     = false,
+    limiter:                 ShardedGcraLimiter        = ShardedGcraLimiter { .. },
+    tier_limiters:           ShardedGcraLimiter[..4]   = [],
+    csrf_guard:              CrossOriginGuard          = CrossOriginGuard { .. },
+    cors_policy:             CorsPolicy                = CorsPolicy { .. },
+    router:                  RadixRouter               = RadixRouter { .. },
+    private_jar:             PrivateJar                = PrivateJar { .. },
+    edge_filter:             EdgeFilter                = EdgeFilter { .. },
+    route_cache:             HttpRouteCache            = HttpRouteCache { .. },
+    jwks:                    Jwks                      = Jwks { .. },
+    jwt_options:             JwtValidationOptions      = JwtValidationOptions { .. },
+    security_txt:            SecurityTxt               = SecurityTxt { .. },
+    dpop_replay_cache:       DPoPReplayCache           = DPoPReplayCache { .. },
+    dpop_public_key:         u8[..64]                  = [],
+    sig_key_id:              u8[..64]                  = [],
+    sig_public_key:          u8[..64]                  = [],
+    verify_request_digest:   bool                      = false,
+    emit_problem_details:    bool                      = false,
+    wire_pipeline:           wire::WirePipeline        = wire::default_server_pipeline(),
+    header_pool:             internal::HeaderMapPool   = internal::HeaderMapPool { .. },
+    ext_pool:                internal::ExtensionsPool  = internal::ExtensionsPool { .. },
+    slab_pool:               internal::SpillSlabPool   = internal::SpillSlabPool { .. },
+    memo:                    ServerCompressAndEtagMemo = ServerCompressAndEtagMemo { .. },
+    target_host:             u8[..256]                 = "example.com",
+    deadline_ns:             u64                       = 30000000000, // 30s
+    enable_rate_limiter:     bool                      = true,
+    enable_csrf_guard:       bool                      = true,
+    enable_cors:             bool                      = true,
+    enable_slowloris_timer:  bool                      = true,
+    trust_proxy_headers:     bool                      = false,
+    server_pso_capabilities: u64                       = 0xFFFFFFFFFFFFFFFF,
+    hdr_scan_cursor:         i64                       = 0,
+    last_valid_host:         u8[..128]                 = [],
+    has_valid_host:          bool                      = false,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
@@ -174,6 +183,55 @@ fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> 
 fn session_data(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:] {
     guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else { return ""; }
     return cfg.ext_pool.slots[ctx.ext_slot_idx].session_data[..];
+}
+
+// Programmable user stage slot identifiers (slots 16..19 in `WirePipeline.custom_bindings`).
+const STAGE_ID_USER_0: u8 = 16;
+const STAGE_ID_USER_1: u8 = 17;
+const STAGE_ID_USER_2: u8 = 18;
+const STAGE_ID_USER_3: u8 = 19;
+
+// Default zero-cost no-op custom slot hook implementation for `wire::NoOpStage`.
+inline fn on_server_custom_slot(
+    _stage:      wire::NoOpStage&,
+    _slot_id:    u8,
+    _param_slot: u8,
+    _cfg:        ServerPipelineConfig&,
+    _req:        const Request&,
+    _sctx:       ServerStageCtx&,
+    _res:        Response&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
+}
+
+// Composes two independent server stages `<First, Next>` sequentially at a custom stage slot (`STAGE_ID_USER_0..3`).
+inline fn on_server_custom_slot<First, Next>(
+    chain:      wire::StageChain<First, Next>&,
+    slot_id:    u8,
+    param_slot: u8,
+    cfg:        ServerPipelineConfig&,
+    req:        const Request&,
+    sctx:       ServerStageCtx&,
+    res:        Response&,
+) -> wire::StageVerdict {
+    var p = wire::begin_pipeline();
+    if p.step(chain.first.on_server_custom_slot(slot_id, param_slot, cfg, req, sctx, res)) {
+        let _ = p.step(chain.next.on_server_custom_slot(slot_id, param_slot, cfg, req, sctx, res));
+    }
+    return p.verdict;
+}
+
+// Default zero-cost no-op custom slot hook fallback for stages that only implement `on_server_stage`.
+inline fn on_server_custom_slot<Stage>(
+    _stage:      Stage&,
+    _slot_id:    i64,
+    _param_slot: u8,
+    _cfg:        ServerPipelineConfig&,
+    _req:        const Request&,
+    _sctx:       ServerStageCtx&,
+    _res:        Response&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
 }
 
 // Default zero-cost no-op server hook implementation for `wire::NoOpStage` by `ServerHookPhase`.
@@ -737,27 +795,17 @@ fn stage_server_cache_lookup(
     };
 }
 
-struct ServerCompressAndEtagMemo {
-    etag_src:         u8[..512]  = [],
-    etag_val:         u8[..32]   = [],
-    gzip_src:         u8[..512]  = [],
-    gzip_dst:         u8[..512]  = [],
-    compress_scratch: u8[..2048] = [],
-}
-
-var g_server_memo: ServerCompressAndEtagMemo = ServerCompressAndEtagMemo { .. };
-
-inline fn populate_missing_response_etag(res: Response&) {
-    if res.body.len <= 512 && g_server_memo.etag_src.len > 0 && res.body[..] == g_server_memo.etag_src[..] {
+inline fn populate_missing_response_etag(res: Response&, memo: ServerCompressAndEtagMemo&) {
+    if res.body.len <= 512 && memo.etag_src.len > 0 && res.body[..] == memo.etag_src[..] {
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_ETAG,
-            g_server_memo.etag_val[..],
+            memo.etag_val[..],
             SLOT_ETAG,
             0,
             HASH_HDR_ETAG,
             false,
         ) {
-            let _ = append_header(res.headers, rfc::HEADER_ETAG, g_server_memo.etag_val[..]);
+            let _ = append_header(res.headers, rfc::HEADER_ETAG, memo.etag_val[..]);
         }
         return;
     }
@@ -767,8 +815,8 @@ inline fn populate_missing_response_etag(res: Response&) {
     body_hash.format_u64_hex(etag_hdr);
     etag_hdr.push('"');
     if res.body.len <= 512 {
-        let _ = g_server_memo.etag_src.try_set(res.body[..]);
-        let _ = g_server_memo.etag_val.try_set(etag_hdr[..]);
+        let _ = memo.etag_src.try_set(res.body[..]);
+        let _ = memo.etag_val.try_set(etag_hdr[..]);
     }
     if !res.headers.append_known_pipeline_header(
         rfc::HEADER_ETAG,
@@ -783,12 +831,16 @@ inline fn populate_missing_response_etag(res: Response&) {
 }
 
 // Stage 0 (Server Egress): RFC 9110 §8.8.3 ETag generation & §13.1.2 `If-None-Match` 304 evaluation.
-fn stage_server_etag(req: const Request&, res: Response&) -> wire::StageVerdict {
+fn stage_server_etag(
+    req:  const Request&,
+    res:  Response&,
+    memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
+) -> wire::StageVerdict {
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.etag");
     defer prof_leave(_prof);
     if get_inline(res.headers, WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
-        populate_missing_response_etag(res);
+        populate_missing_response_etag(res, memo);
     }
     let etag_slice = get_inline(res.headers, WellKnownHeader.ETag);
     guard etag_slice.len > 0 else { return wire::StageVerdict.Continue; }
@@ -891,31 +943,31 @@ inline fn select_dynamic_gzip_level(body_len: i64) -> i32 {
     return if body_len < 128 { 0 } else { 6 };
 }
 
-fn try_compress_zstd(res: Response&) -> bool {
-    g_server_memo.compress_scratch.clear();
-    guard core::zstd_compress(res.body[..], g_server_memo.compress_scratch) else { return false; }
-    let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
+fn try_compress_zstd(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
+    memo.compress_scratch.clear();
+    guard core::zstd_compress(res.body[..], memo.compress_scratch) else { return false; }
+    let _ = res.body.try_set(memo.compress_scratch[..]);
     finalize_compressed_response(res, "zstd", "-zstd");
     return true;
 }
 
-fn try_compress_brotli(res: Response&) -> bool {
-    g_server_memo.compress_scratch.clear();
-    guard core::brotli_compress(res.body[..], g_server_memo.compress_scratch, 1) else { return false; }
-    let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
+fn try_compress_brotli(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
+    memo.compress_scratch.clear();
+    guard core::brotli_compress(res.body[..], memo.compress_scratch, 1) else { return false; }
+    let _ = res.body.try_set(memo.compress_scratch[..]);
     finalize_compressed_response(res, "br", "-br");
     return true;
 }
 
-fn compress_gzip_uncached(res: Response&) {
-    g_server_memo.compress_scratch.clear();
+fn compress_gzip_uncached(res: Response&, memo: ServerCompressAndEtagMemo&) {
+    memo.compress_scratch.clear();
     let gz_level = select_dynamic_gzip_level(res.body.len);
-    if core::gzip_compress(res.body[..], g_server_memo.compress_scratch, gz_level) {
-        if res.body.len <= 512 && g_server_memo.compress_scratch.len <= 512 {
-            let _ = g_server_memo.gzip_src.try_set(res.body[..]);
-            let _ = g_server_memo.gzip_dst.try_set(g_server_memo.compress_scratch[..]);
+    if core::gzip_compress(res.body[..], memo.compress_scratch, gz_level) {
+        if res.body.len <= 512 && memo.compress_scratch.len <= 512 {
+            let _ = memo.gzip_src.try_set(res.body[..]);
+            let _ = memo.gzip_dst.try_set(memo.compress_scratch[..]);
         }
-        let _ = res.body.try_set(g_server_memo.compress_scratch[..]);
+        let _ = res.body.try_set(memo.compress_scratch[..]);
         finalize_compressed_response(res, "gzip", "-gzip");
     }
 }
@@ -953,6 +1005,7 @@ fn stage_server_compress(
     req:  const Request&,
     res:  Response&,
     mask: u64,
+    memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
 ) -> wire::StageVerdict {
     guard is_compressible_response(res) else {
         return wire::StageVerdict.Continue;
@@ -966,19 +1019,19 @@ fn stage_server_compress(
     let allow_br = (mask & (STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
     let allow_gzip = (mask & (STAGE_EGRESS_COMPRESS_GZIP | wire::STAGE_SRV_OUT_COMPRESS_GZIP)) != 0;
 
-    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") && try_compress_zstd(res) {
+    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") && try_compress_zstd(res, memo) {
         return wire::StageVerdict.Continue;
     }
-    if allow_br && client_accepts_encoding(accept_enc, "br") && try_compress_brotli(res) {
+    if allow_br && client_accepts_encoding(accept_enc, "br") && try_compress_brotli(res, memo) {
         return wire::StageVerdict.Continue;
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
-        if res.body.len <= 512 && g_server_memo.gzip_src.len > 0 && res.body[..] == g_server_memo.gzip_src[..] {
-            let _ = res.body.try_set(g_server_memo.gzip_dst[..]);
+        if res.body.len <= 512 && memo.gzip_src.len > 0 && res.body[..] == memo.gzip_src[..] {
+            let _ = res.body.try_set(memo.gzip_dst[..]);
             finalize_compressed_response(res, "gzip", "-gzip");
             return wire::StageVerdict.Continue;
         }
-        compress_gzip_uncached(res);
+        compress_gzip_uncached(res, memo);
     }
     return wire::StageVerdict.Continue;
 }
@@ -1342,14 +1395,19 @@ inline fn select_stage_limiter(cfg: ServerPipelineConfig&, param_slot: u8) -> Sh
     return cfg.limiter;
 }
 
-fn execute_bound_ingress_stage_verdict(
-    cfg:    ServerPipelineConfig&,
-    b:      const wire::StageBinding&,
-    req:    const Request&,
-    res:    Response&,
-    ext:    internal::RequestExtensions&,
-    now_ns: u64,
+fn execute_bound_ingress_stage_verdict<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    b:          const wire::StageBinding&,
+    req:        const Request&,
+    res:        Response&,
+    ext:        internal::RequestExtensions&,
+    now_ns:     u64,
+    sctx:       ServerStageCtx&,
+    user_stage: UserStage&,
 ) -> wire::StageVerdict {
+    if b.stage_id >= STAGE_ID_USER_0 && b.stage_id <= STAGE_ID_USER_3 {
+        return user_stage.on_server_custom_slot(b.stage_id, b.param_slot, cfg, req, sctx, res);
+    }
     if b.stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
         return stage_server_expect_100(req, res);
     }
@@ -1388,10 +1446,13 @@ fn execute_bound_ingress_stage_verdict(
     return wire::StageVerdict.Continue;
 }
 
-inline fn map_bound_stage_verdict(stage_id: u8, v: wire::StageVerdict) -> PipelineOutcome, bool {
+inline fn map_bound_stage_verdict(stage_id: u8, v: wire::StageVerdict, res: Response&) -> PipelineOutcome, bool {
     match v {
         Continue => { return PipelineOutcome.Handled, false; },
         ShortCircuit sc => {
+            if res.status_code == 0 || (res.status_code == 200 && sc.status_code != 200) {
+                res.status_code = sc.status_code;
+            }
             if stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
                 return PipelineOutcome.ExpectationFailed, true;
             }
@@ -1415,16 +1476,18 @@ inline fn map_bound_stage_verdict(stage_id: u8, v: wire::StageVerdict) -> Pipeli
 
 // Executes ordered `StageBinding` entries in `cfg.wire_pipeline.custom_bindings`.
 // Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
-fn dispatch_custom_stage_bindings(
-    cfg:    ServerPipelineConfig&,
-    req:    const Request&,
-    res:    Response&,
-    ext:    internal::RequestExtensions&,
-    now_ns: u64,
+fn dispatch_custom_stage_bindings<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    req:        const Request&,
+    res:        Response&,
+    ext:        internal::RequestExtensions&,
+    now_ns:     u64,
+    sctx:       ServerStageCtx&,
+    user_stage: UserStage&,
 ) -> PipelineOutcome, bool {
     for &b in cfg.wire_pipeline.custom_bindings {
-        let v = execute_bound_ingress_stage_verdict(cfg, b, req, res, ext, now_ns);
-        let outcome, is_term = map_bound_stage_verdict(b.stage_id, v);
+        let v = execute_bound_ingress_stage_verdict(cfg, b, req, res, ext, now_ns, sctx, user_stage);
+        let outcome, is_term = map_bound_stage_verdict(b.stage_id, v, res);
         guard !is_term else { return outcome, true; }
     }
     return PipelineOutcome.Handled, false;
@@ -1478,16 +1541,20 @@ fn evaluate_server_integrity_and_crypto(
 
 // Executes pre-handler ingress stages matching the effective PSO or server ingress mask.
 // Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
-fn dispatch_ingress_pipeline(
-    cfg:    ServerPipelineConfig&,
-    req:    const Request&,
-    res:    Response&,
-    ext:    internal::RequestExtensions&,
-    mask:   u64,
-    now_ns: u64,
+fn dispatch_ingress_pipeline<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    req:        const Request&,
+    res:        Response&,
+    ext:        internal::RequestExtensions&,
+    mask:       u64,
+    now_ns:     u64,
+    sctx:       ServerStageCtx&,
+    user_stage: UserStage&,
 ) -> PipelineOutcome, bool {
     if cfg.wire_pipeline.has_custom_order {
-        let custom_out, is_term = dispatch_custom_stage_bindings(cfg, req, res, ext, now_ns);
+        let custom_out, is_term = dispatch_custom_stage_bindings(
+            cfg, req, res, ext, now_ns, sctx, user_stage,
+        );
         guard !is_term else { return custom_out, true; }
         if !evaluate_server_integrity_and_crypto(cfg, req, now_ns, res) {
             return PipelineOutcome.CsrfRejected, true;
@@ -1577,13 +1644,13 @@ fn dispatch_egress_pipeline(
     let egress_mask = mask & 0xFFFFFFFF00000000;
     let compress_bits = STAGE_EGRESS_COMPRESS_GZIP | STAGE_EGRESS_COMPRESS_BROTLI | STAGE_EGRESS_COMPRESS_ZSTD;
     if (egress_mask & compress_bits) != 0 {
-        let _ = stage_server_compress(req, res, egress_mask);
+        let _ = stage_server_compress(req, res, egress_mask, cfg.memo);
     }
     if header(req, rfc::HEADER_WANT_CONTENT_DIGEST).len > 0 && res.body.len > 0 {
         let _ = set_response_content_digest(res);
     }
     if (egress_mask & STAGE_EGRESS_ETAG) != 0 {
-        let _ = stage_server_etag(req, res);
+        let _ = stage_server_etag(req, res, cfg.memo);
     }
     if (egress_mask & STAGE_EGRESS_SECURITY_HEADERS) != 0 {
         let _ = stage_server_security_headers(res);
@@ -1955,6 +2022,8 @@ fn execute_server_pipeline_with_stage<UserStage>(
             cfg.ext_pool.slots[e_idx],
             effective_pso,
             now_ns,
+            sctx,
+            user_stage,
         );
         if is_terminal {
             return ingress_outcome;

@@ -212,6 +212,25 @@ const STAGE_CLI_OUT_DEFAULT_MASK: u64 =
     STAGE_CLI_OUT_AUTH_CHALLENGE |
     STAGE_CLI_OUT_REDIRECT;
 
+// Programmable User Stage Slot IDs (16..19) and Bitmasks
+const STAGE_ID_USER_0: u8 = 16;
+const STAGE_ID_USER_1: u8 = 17;
+const STAGE_ID_USER_2: u8 = 18;
+const STAGE_ID_USER_3: u8 = 19;
+
+const STAGE_USER_0: u64 = (1 as u64) << 16;
+const STAGE_USER_1: u64 = (1 as u64) << 17;
+const STAGE_USER_2: u64 = (1 as u64) << 18;
+const STAGE_USER_3: u64 = (1 as u64) << 19;
+
+inline fn is_user_stage_slot(stage_id: u8) -> bool {
+    return stage_id >= STAGE_ID_USER_0 && stage_id <= STAGE_ID_USER_3;
+}
+
+inline fn is_valid_stage_id(stage_id: u8) -> bool {
+    return stage_id < 64;
+}
+
 // Pipeline layout defining static protocol limits and push constants (VkPipelineLayout).
 struct WirePipelineLayout {
     max_frame_size: u32      = 16384,
@@ -239,16 +258,17 @@ struct WirePipeline {
     bind_point:       WirePipelineBindPoint = WirePipelineBindPoint.Transmit,
     role:             PipelineRole          = PipelineRole.Client,
     layout:           WirePipelineLayout    = WirePipelineLayout { .. },
-    ingress_stages:   u8[..24]              = [],
-    egress_stages:    u8[..24]              = [],
-    custom_bindings:  StageBinding[..24]    = [],
+    ingress_stages:   u8[..64]              = [],
+    egress_stages:    u8[..64]              = [],
+    custom_bindings:  StageBinding[..64]    = [],
     ingress_mask:     u64                   = STAGE_CLI_IN_DEFAULT_MASK,
     egress_mask:      u64                   = STAGE_CLI_OUT_DEFAULT_MASK,
     has_custom_order: bool                  = false,
     is_valid:         bool                  = true,
 }
 
-const VALID_STAGE_MASK: u64 = ((1 as u64) << 24) - 1;
+const MAX_PIPELINE_STAGES: i64 = 64;
+const VALID_STAGE_MASK:    u64 = 0xFFFFFFFFFFFFFFFF;
 
 const DEFAULT_CLI_IN_STAGES: const u8[6] = [
     STAGE_ID_CLI_IN_URL_HSTS,
@@ -316,12 +336,12 @@ inline fn each_enabled_stage<F>(var mask: u64) {
 
 // Validates that `mask` contains only defined stage slot bits within `VALID_STAGE_MASK` (`FlagBoundary.STRICT`).
 inline fn is_valid_stage_mask(mask: u64) -> bool {
-    return stage_mask_subset_of(mask, VALID_STAGE_MASK) && count_enabled_stages(mask) <= 24;
+    return stage_mask_subset_of(mask, VALID_STAGE_MASK) && count_enabled_stages(mask) <= MAX_PIPELINE_STAGES;
 }
 
 // Appends a stage slot ID to `pipe.ingress_stages` and enables its corresponding bit in `pipe.ingress_mask`.
 fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
-    guard stage_id < 64 else { return false; }
+    guard is_valid_stage_id(stage_id) else { return false; }
     if !pipe.ingress_stages[..].contains_byte(stage_id) {
         guard pipe.ingress_stages.try_push(stage_id) else { return false; }
     }
@@ -331,7 +351,7 @@ fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
 
 // Appends a stage slot ID to `pipe.egress_stages` and enables its corresponding bit in `pipe.egress_mask`.
 fn add_egress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
-    guard stage_id < 64 else { return false; }
+    guard is_valid_stage_id(stage_id) else { return false; }
     if !pipe.egress_stages[..].contains_byte(stage_id) {
         guard pipe.egress_stages.try_push(stage_id) else { return false; }
     }
@@ -341,7 +361,7 @@ fn add_egress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
 
 // Appends a parameterized stage binding to `pipe.custom_bindings` and enables `pipe.has_custom_order`.
 fn add_stage_binding(pipe: WirePipeline&, stage_id: u8, param_slot: u8 = 0) -> bool {
-    guard stage_id < 64 && param_slot < 4 else { return false; }
+    guard is_valid_stage_id(stage_id) && param_slot < 4 else { return false; }
     guard pipe.custom_bindings.try_push(StageBinding {
         stage_id:   stage_id,
         param_slot: param_slot,
@@ -361,7 +381,7 @@ fn clear_stage_bindings(pipe: WirePipeline&) {
 
 // Transactionally replaces `pipe.custom_bindings` and `pipe.ingress_mask` for runtime xDS / control-plane updates.
 fn replace_ingress_bindings(pipe: WirePipeline&, bindings: const StageBinding[:]) -> bool {
-    guard bindings.len <= 24 else { return false; }
+    guard bindings.len <= MAX_PIPELINE_STAGES else { return false; }
     let saved_bindings = pipe.custom_bindings;
     let saved_mask = pipe.ingress_mask;
     let saved_custom = pipe.has_custom_order;
@@ -374,7 +394,7 @@ fn replace_ingress_bindings(pipe: WirePipeline&, bindings: const StageBinding[:]
     pipe.custom_bindings.clear();
     var new_mask: u64 = 0;
     for &b in bindings {
-        guard b.stage_id < 64 && b.param_slot < 4 else { return false; }
+        guard is_valid_stage_id(b.stage_id) && b.param_slot < 4 else { return false; }
         guard pipe.custom_bindings.try_push(b) else { return false; }
         new_mask = new_mask | core::shl_sat_u64(1, b.stage_id);
     }
@@ -385,12 +405,12 @@ fn replace_ingress_bindings(pipe: WirePipeline&, bindings: const StageBinding[:]
 }
 
 inline fn is_ingress_stage_enabled(pipe: const WirePipeline&, stage_id: u8) -> bool {
-    guard stage_id < 64 else { return false; }
+    guard is_valid_stage_id(stage_id) else { return false; }
     return (pipe.ingress_mask & core::shl_sat_u64(1, stage_id)) != 0;
 }
 
 inline fn is_egress_stage_enabled(pipe: const WirePipeline&, stage_id: u8) -> bool {
-    guard stage_id < 64 else { return false; }
+    guard is_valid_stage_id(stage_id) else { return false; }
     return (pipe.egress_mask & core::shl_sat_u64(1, stage_id)) != 0;
 }
 

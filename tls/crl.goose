@@ -77,31 +77,6 @@ fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool {
     return found;
 }
 
-// Decodes a positive ASN.1 DER INTEGER (1..8 significant bytes) into a `u64` serial number.
-//
-// Example:
-//   serial_bytes = [0x01, 0x02]
-//   returns: val = 0x0102, ok = true
-fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
-    guard validate_asn1_integer(serial_bytes, true) else {
-        return 0, false;
-    }
-    var start: i64 = 0;
-    if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
-        start = 1;
-    }
-    let sig_len = core::sub_sat_i64(serial_bytes.len, start);
-    guard sig_len > 0 && sig_len <= 8 else {
-        return 0, false;
-    }
-    var val: u64 = 0;
-    for i in sig_len {
-        let b = serial_bytes[core::add_sat_i64(start, i)] as u64;
-        val = core::mul_sat_u64(val, 256) | b;
-    }
-    return val, true;
-}
-
 inline fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
     guard validate_asn1_integer(serial_bytes, true) else { return false; }
     var start: i64 = 0;
@@ -112,13 +87,39 @@ inline fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
     return sig_len > 0 && sig_len <= 20;
 }
 
+// Decodes a positive ASN.1 DER INTEGER (1..20 significant bytes, RFC 5280 Section 4.1.2.2) into a
+// canonical `u64` serial identifier: exact big-endian value for 1..8 significant bytes, or a 64-bit
+// FNV-1a digest (with high bit set) for 9..20 significant bytes.
+//
+// Example:
+//   serial_bytes = [0x01, 0x02]
+//   returns: val = 0x0102, ok = true
+fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
+    guard validate_crl_serial_length(serial_bytes) else {
+        return 0, false;
+    }
+    var start: i64 = 0;
+    if serial_bytes.len > 1 && serial_bytes[0] == 0x00 {
+        start = 1;
+    }
+    let sig_len = core::sub_sat_i64(serial_bytes.len, start);
+    if sig_len <= 8 {
+        var val: u64 = 0;
+        for i in sig_len {
+            let b = serial_bytes[core::add_sat_i64(start, i)] as u64;
+            val = core::mul_sat_u64(val, 256) | b;
+        }
+        return val, true;
+    }
+    return core::fnv1a_64(serial_bytes[start..]) | 0x8000000000000000, true;
+}
+
 // Parses an ASN.1 INTEGER serial from a revoked certificate entry (RFC 5280 §5.1.2.6).
 //
 // Example:
 //   serial_bytes = [0x01, 0x02], out = ParsedCrl { .. }
 //   returns: true
 fn parse_crl_entry_serial(serial_bytes: const u8[:], out: ParsedCrl&) -> bool {
-    guard validate_crl_serial_length(serial_bytes) else { return false; }
     let serial_u64, ok_ser = parse_asn1_serial_u64(serial_bytes);
     guard ok_ser else { return false; }
     return crl_insert_serial(out, serial_u64);

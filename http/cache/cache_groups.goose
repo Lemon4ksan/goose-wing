@@ -9,7 +9,7 @@ namespace wing;
 
 import std;
 import core from "../..";
-import http.mime;
+import http.sfv;
 import http.cache.engine;
 
 // ---- RFC 9875 group limits -------------------------------------------------
@@ -39,8 +39,7 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_
     out_count = 0;
     var parsed: CacheGroupTag[..32] = [];
 
-    var cursor: i64 = 0;
-    sfv_skip_ows(raw, cursor);
+    var cursor = sf_skip_ws(raw, 0);
 
     while cursor < raw.len {
         var bare = SfvBareItem { .. };
@@ -72,16 +71,13 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_
 //   tags = ["scripts", "fonts"], count = 2
 //   returns: 18 ("\"scripts\", \"fonts\"")
 fn cache_group_list_wire_len(tags: const CacheGroupTag[..32]&, count: i32) -> i64 {
-    var wire: u8[..2176] = [];
     let limit = min<i64>(count, tags.len);
+    guard limit > 0 else { return 0; }
+    var total: i64 = 0;
     for slot in 0..limit {
-        wire.append("\"");
-        wire.append(tags[slot].name[..]);
-        wire.append("\", ");
+        total = core::add_sat_i64(total, core::add_sat_i64(tags[slot].name.len, 4));
     }
-    var trailing: i64 = 0;
-    if count > 0 { trailing = 2; }
-    return wire.len - trailing;
+    return core::sub_sat_i64(total, 2);
 }
 
 // Byte delta appended to the caller-owned buffer during this serialization.

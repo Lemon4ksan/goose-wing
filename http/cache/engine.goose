@@ -1155,29 +1155,29 @@ fn detach_scalable_lru(cache: ScalableHttpCache&, idx: i32) {
     node.next_lru = -1;
 }
 
-// Attaches entry at `idx` to the MRU tail of `ScalableHttpCache` intrusive O(1) LRU list.
-fn attach_scalable_lru_tail(cache: ScalableHttpCache&, idx: i32) {
+// Attaches entry at `idx` to the MRU head of `ScalableHttpCache` intrusive O(1) LRU list.
+fn attach_scalable_lru_head(cache: ScalableHttpCache&, idx: i32) {
     guard idx >= 0 && idx < cache.entries.len else { return; }
-    let tail = cache.lru_tail;
+    let head = cache.lru_head;
     let node .= cache.entries[idx as i64];
-    node.prev_lru = tail;
-    node.next_lru = -1;
-    if tail >= 0 && tail < cache.entries.len {
-        cache.entries[tail as i64].next_lru = idx;
+    node.next_lru = head;
+    node.prev_lru = -1;
+    if head >= 0 && head < cache.entries.len {
+        cache.entries[head as i64].prev_lru = idx;
     } else {
-        cache.lru_head = idx;
+        cache.lru_tail = idx;
     }
-    cache.lru_tail = idx;
+    cache.lru_head = idx;
 }
 
-// Promotes accessed entry at `idx` to the MRU tail of `ScalableHttpCache` in O(1).
+// Promotes accessed entry at `idx` to the MRU head of `ScalableHttpCache` in O(1).
 fn touch_scalable_lru(cache: ScalableHttpCache&, idx: i32) {
     guard idx >= 0 && idx < cache.entries.len else { return; }
-    if cache.lru_tail == idx {
+    if cache.lru_head == idx {
         return;
     }
     detach_scalable_lru(cache, idx);
-    attach_scalable_lru_tail(cache, idx);
+    attach_scalable_lru_head(cache, idx);
 }
 
 // Performs RFC 9111 cache lookup on `ScalableHttpCache` (compatible with `stage_client_cache_lookup<Cache>`).
@@ -1245,7 +1245,7 @@ fn try_update_existing_scalable_entry(
                 detach_scalable_lru(cache, i as i32);
             }
             existing = copy(entry);
-            attach_scalable_lru_tail(cache, i as i32);
+            attach_scalable_lru_head(cache, i as i32);
             return true;
         }
     }
@@ -1264,7 +1264,7 @@ fn upsert_scalable_cache_entry(
         let slot .= cache.entries[i];
         if !slot.is_valid {
             slot = copy(entry);
-            attach_scalable_lru_tail(cache, i as i32);
+            attach_scalable_lru_head(cache, i as i32);
             return true;
         }
     }
@@ -1272,15 +1272,15 @@ fn upsert_scalable_cache_entry(
     if cache.entries.len < eff_max {
         let new_idx = cache.entries.len as i32;
         cache.entries.push(copy(entry));
-        attach_scalable_lru_tail(cache, new_idx);
+        attach_scalable_lru_head(cache, new_idx);
         return true;
     }
-    let victim_idx = cache.lru_head;
+    let victim_idx = cache.lru_tail;
     guard victim_idx >= 0 && victim_idx < cache.entries.len else { return false; }
     detach_scalable_lru(cache, victim_idx);
     let victim .= cache.entries[victim_idx as i64];
     victim = copy(entry);
-    attach_scalable_lru_tail(cache, victim_idx);
+    attach_scalable_lru_head(cache, victim_idx);
     return true;
 }
 
@@ -1386,7 +1386,7 @@ fn on_response(
     }
     if cache.store_response(req, resp, ts.response_time) {
         dec.kind = ResponseDecisionKind.StoreAndReturn;
-        dec.entry_idx = cache.lru_tail;
+        dec.entry_idx = cache.lru_head;
     }
     return dec;
 }

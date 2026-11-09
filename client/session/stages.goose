@@ -567,6 +567,16 @@ struct ClientStageCtx {
     resp: Response = Response { .. },
 }
 
+// Default no-op check for `wire::NoOpStage` to skip `HeaderMap` / `Response` stack copies on the default path.
+inline fn is_noop_client_stage(_stage: const wire::NoOpStage&) -> bool {
+    return true;
+}
+
+// Generic fallback returning false for any custom `<Stage>` implementation.
+inline fn is_noop_client_stage<Stage>(_stage: const Stage&) -> bool {
+    return false;
+}
+
 // Default no-op hook for `wire::NoOpStage` by `ClientHookPhase`.
 inline fn on_client_stage(
     _stage: wire::NoOpStage&,
@@ -576,18 +586,75 @@ inline fn on_client_stage(
     return wire::StageVerdict.Continue;
 }
 
+// Default no-op fallback for custom client stages that only implement `on_client_custom_slot`.
+inline fn on_client_stage<Stage>(
+    _stage: Stage&,
+    _phase: wire::ClientHookPhase,
+    _ctx:   ClientStageCtx&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
+}
+
 // Composes two independent client stages `<First, Next>` sequentially at each `ClientHookPhase`.
 // Short-circuits, retries, or aborts immediately if `chain.first` does not return `StageVerdict.Continue`.
-inline fn on_client_stage<First, Next>(
+inline fn invoke_client_stage_hook<First, Next>(
     chain: wire::StageChain<First, Next>&,
+    tag:   u8,
     phase: wire::ClientHookPhase,
     ctx:   ClientStageCtx&,
 ) -> wire::StageVerdict {
     var p = wire::begin_pipeline();
-    if p.step(chain.first.on_client_stage(phase, ctx)) {
-        let _ = p.step(chain.next.on_client_stage(phase, ctx));
+    if p.step(invoke_client_stage_hook(chain.first, tag, phase, ctx)) {
+        let _ = p.step(invoke_client_stage_hook(chain.next, tag, phase, ctx));
     }
     return p.verdict;
+}
+
+// Invokes `on_client_stage` on a single leaf client `<Stage>` (`_tag: i64` ranks below `tag: u8` for `StageChain`).
+inline fn invoke_client_stage_hook<Stage>(
+    stage: Stage&,
+    _tag:  i64,
+    phase: wire::ClientHookPhase,
+    ctx:   ClientStageCtx&,
+) -> wire::StageVerdict {
+    return stage.on_client_stage(phase, ctx);
+}
+
+// Default no-op custom slot hook for `wire::NoOpStage`.
+inline fn on_client_custom_slot(
+    _stage:    wire::NoOpStage&,
+    _slot_id:  u8,
+    _ctx:      ClientStageCtx&,
+    _headers:  HeaderMap&,
+    _out_resp: Response&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
+}
+
+// Composes two independent client stages `<First, Next>` sequentially at a custom stage slot (`STAGE_ID_USER_0..3`).
+inline fn on_client_custom_slot<First, Next>(
+    chain:    wire::StageChain<First, Next>&,
+    slot_id:  u8,
+    ctx:      ClientStageCtx&,
+    headers:  HeaderMap&,
+    out_resp: Response&,
+) -> wire::StageVerdict {
+    var p = wire::begin_pipeline();
+    if p.step(chain.first.on_client_custom_slot(slot_id, ctx, headers, out_resp)) {
+        let _ = p.step(chain.next.on_client_custom_slot(slot_id, ctx, headers, out_resp));
+    }
+    return p.verdict;
+}
+
+// Default no-op fallback for custom client stages that only implement `on_client_stage`.
+inline fn on_client_custom_slot<Stage>(
+    _stage:    Stage&,
+    _slot_id:  i64,
+    _ctx:      ClientStageCtx&,
+    _headers:  HeaderMap&,
+    _out_resp: Response&,
+) -> wire::StageVerdict {
+    return wire::StageVerdict.Continue;
 }
 
 // ---- 3. Hop Security, Signature & Dictionary Stage Helpers ------------------
@@ -747,6 +814,7 @@ fn run_client_preflight_stages<UserStage>(
         };
     }
 
+    guard !is_noop_client_stage(user_stage) else { return wire::StageVerdict.Continue; }
     var s_ctx = ClientStageCtx {
         current_url:    parsed_initial,
         current_method: copy(ctx.current_method),
@@ -758,7 +826,7 @@ fn run_client_preflight_stages<UserStage>(
         last_error:     out_err,
         resp:           copy(out_resp),
     };
-    let u_verdict = user_stage.on_client_stage(wire::ClientHookPhase.PreFlight, s_ctx);
+    let u_verdict = invoke_client_stage_hook(user_stage, 0 as u8, wire::ClientHookPhase.PreFlight, s_ctx);
     ctx.headers = copy(s_ctx.headers);
     match u_verdict {
         ShortCircuit sc => {
@@ -779,6 +847,33 @@ fn run_client_preflight_stages<UserStage>(
         _ => {},
     };
     return wire::StageVerdict.Continue;
+}
+
+fn invoke_client_custom_slot<UserStage>(
+    user_stage:  UserStage&,
+    slot_id:     u8,
+    session:     const Client&,
+    ctx:         RequestExecutionContext&,
+    current_url: const core::Url&,
+    out_resp:    Response&,
+    out_err:     Error&,
+) -> wire::StageVerdict {
+    guard !is_noop_client_stage(user_stage) else { return wire::StageVerdict.Continue; }
+    var s_ctx = ClientStageCtx {
+        current_url:    current_url,
+        current_method: copy(ctx.current_method),
+        pipeline:       session.wire_pipeline,
+        redirect_count: ctx.redirect_count as i32,
+        auth_retried:   ctx.auth_retried,
+        now_us:         session.virtual_clock_us,
+        last_error:     out_err,
+        ..
+    };
+    let v = user_stage.on_client_custom_slot(slot_id, s_ctx, ctx.headers, out_resp);
+    if !ok(s_ctx.last_error) {
+        out_err = s_ctx.last_error;
+    }
+    return v;
 }
 
 // Executes a single built-in client ingress stage by slot ID (`0..5`).
@@ -882,40 +977,46 @@ fn run_client_pre_hop_stages<UserStage>(
     for i in session.wire_pipeline.ingress_stages.len {
         let stage_id = session.wire_pipeline.ingress_stages[i];
         guard wire::is_ingress_stage_enabled(session.wire_pipeline, stage_id) else { continue; }
-        let v = dispatch_client_ingress_stage(
-            stage_id,
-            session,
-            ctx,
-            current_url,
-            samesite_eval,
-            safe_method,
-            now_sec,
-            out_err,
-        );
+        let v = if wire::is_user_stage_slot(stage_id) {
+            invoke_client_custom_slot(user_stage, stage_id, session, ctx, current_url, out_resp, out_err)
+        } else {
+            dispatch_client_ingress_stage(
+                stage_id,
+                session,
+                ctx,
+                current_url,
+                samesite_eval,
+                safe_method,
+                now_sec,
+                out_err,
+            )
+        };
         if !p.step(v) {
             return p.verdict;
         }
     }
 
-    var s_ctx = ClientStageCtx {
-        current_url:    current_url,
-        current_method: copy(ctx.current_method),
-        headers:        copy(ctx.headers),
-        pipeline:       session.wire_pipeline,
-        redirect_count: ctx.redirect_count as i32,
-        auth_retried:   ctx.auth_retried,
-        now_us:         session.virtual_clock_us,
-        last_error:     out_err,
-        resp:           copy(out_resp),
-    };
-    let hook_v = user_stage.on_client_stage(wire::ClientHookPhase.PreWireHop, s_ctx);
-    ctx.headers = copy(s_ctx.headers);
-    if !p.step(hook_v) {
-        out_resp = copy(s_ctx.resp);
-        if !ok(s_ctx.last_error) {
-            out_err = s_ctx.last_error;
+    if !is_noop_client_stage(user_stage) {
+        var s_ctx = ClientStageCtx {
+            current_url:    current_url,
+            current_method: copy(ctx.current_method),
+            headers:        copy(ctx.headers),
+            pipeline:       session.wire_pipeline,
+            redirect_count: ctx.redirect_count as i32,
+            auth_retried:   ctx.auth_retried,
+            now_us:         session.virtual_clock_us,
+            last_error:     out_err,
+            resp:           copy(out_resp),
+        };
+        let hook_v = invoke_client_stage_hook(user_stage, 0 as u8, wire::ClientHookPhase.PreWireHop, s_ctx);
+        ctx.headers = copy(s_ctx.headers);
+        if !p.step(hook_v) {
+            out_resp = copy(s_ctx.resp);
+            if !ok(s_ctx.last_error) {
+                out_err = s_ctx.last_error;
+            }
+            return p.verdict;
         }
-        return p.verdict;
     }
     return wire::StageVerdict.Continue;
 }
@@ -1041,47 +1142,51 @@ fn run_client_post_hop_stages<UserStage>(
     user_stage:           UserStage&,
 ) -> wire::StageVerdict {
     var p = wire::begin_pipeline();
-    var s_ctx = ClientStageCtx {
-        current_url:    current_url,
-        current_method: copy(ctx.current_method),
-        headers:        copy(ctx.headers),
-        pipeline:       session.wire_pipeline,
-        redirect_count: ctx.redirect_count as i32,
-        auth_retried:   ctx.auth_retried,
-        now_us:         session.virtual_clock_us,
-        last_error:     out_err,
-        resp:           copy(out_resp),
-    };
-    let hook_v = user_stage.on_client_stage(wire::ClientHookPhase.PostWireHop, s_ctx);
-    out_resp = copy(s_ctx.resp);
-    if !p.step(hook_v) {
-        if !ok(s_ctx.last_error) {
-            out_err = s_ctx.last_error;
+    if !is_noop_client_stage(user_stage) {
+        var s_ctx = ClientStageCtx {
+            current_url:    current_url,
+            current_method: copy(ctx.current_method),
+            headers:        copy(ctx.headers),
+            pipeline:       session.wire_pipeline,
+            redirect_count: ctx.redirect_count as i32,
+            auth_retried:   ctx.auth_retried,
+            now_us:         session.virtual_clock_us,
+            last_error:     out_err,
+            resp:           copy(out_resp),
+        };
+        let hook_v = invoke_client_stage_hook(user_stage, 0 as u8, wire::ClientHookPhase.PostWireHop, s_ctx);
+        out_resp = copy(s_ctx.resp);
+        if !p.step(hook_v) {
+            if !ok(s_ctx.last_error) {
+                out_err = s_ctx.last_error;
+            }
+            return p.verdict;
         }
-        return p.verdict;
     }
-
     for i in session.wire_pipeline.egress_stages.len {
         let stage_id = session.wire_pipeline.egress_stages[i];
         guard wire::is_egress_stage_enabled(session.wire_pipeline, stage_id) else { continue; }
-        let v = dispatch_client_egress_stage(
-            stage_id,
-            session,
-            ctx,
-            req,
-            current_url,
-            samesite_eval,
-            safe_method,
-            cache_ts,
-            cache_revalidate_idx,
-            out_resp,
-            out_err,
-        );
+        let v = if wire::is_user_stage_slot(stage_id) {
+            invoke_client_custom_slot(user_stage, stage_id, session, ctx, current_url, out_resp, out_err)
+        } else {
+            dispatch_client_egress_stage(
+                stage_id,
+                session,
+                ctx,
+                req,
+                current_url,
+                samesite_eval,
+                safe_method,
+                cache_ts,
+                cache_revalidate_idx,
+                out_resp,
+                out_err,
+            )
+        };
         if !p.step(v) {
             return p.verdict;
         }
     }
-
     ctx.body_consumed = true;
     finalize_success_response(ctx, out_resp);
     return wire::StageVerdict.Continue;

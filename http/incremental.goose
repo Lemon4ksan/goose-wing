@@ -9,6 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 import .headers;
+import .sfv;
 import client.response;
 
 // ---- RFC 10036 Constants --------------------------------------------------
@@ -23,18 +24,9 @@ import client.response;
 //   val = "?1"
 //   returns: true, ok = true
 fn parse_incremental_header(val: const u8[:]) -> bool, bool {
-    let s = val.trim_lws();
-    guard s.len >= 2 && s[0] == '?' else { return false, false; }
-    let b = s[1];
-    guard b == '1' || b == '0' else { return false, false; }
-
-    // If parameters exist after semicolon, ignore them per RFC 10036 Section 2
-    if s.len > 2 {
-        let rem = s[2..].trim_lws();
-        guard rem.len == 0 || rem[0] == ';' else { return false, false; }
-    }
-
-    return b == '1', true;
+    let parsed, ok = parse_sf_item(val);
+    guard ok && parsed.item.kind == SfType.Boolean else { return false, false; }
+    return parsed.item.bool_val, true;
 }
 
 // Inspects a HeaderMap to determine whether incremental forwarding was requested.

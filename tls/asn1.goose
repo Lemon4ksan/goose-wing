@@ -290,13 +290,13 @@ fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
     return raw[start..end];
 }
 
-fn make_span(base: const u8[:], target: const u8[:]) -> Span16 {
+fn make_span(base: const u8[:], target: const u8[:], start_hint: i64 = 0) -> Span16 {
     let target_len = target.len;
     guard target_len > 0 && target_len <= 65535 else { return Span16 { offset: 0, length: 0 }; }
     let base_len = base.len;
     guard base_len >= target_len && base_len <= 65536 else { return Span16 { offset: 0, length: 0 }; }
     let max_idx = core::sub_sat_i64(base_len, target_len);
-    var i: i64 = 0;
+    var i: i64 = max(0, start_hint);
     while i <= max_idx {
         let end_idx = core::add_sat_i64(i, target_len);
         if base[i..end_idx] == target {
