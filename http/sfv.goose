@@ -1089,6 +1089,7 @@ fn sfv_advance_comma(raw: const u8[:], cursor: i64&, has_more: bool&) -> bool {
 fn parse_sfv_list(raw: const u8[:], out: SfvList&) -> bool {
     out.members.clear();
     out.valid = false;
+    defer if !out.valid { out.members.clear(); };
 
     var cursor = sf_skip_ws(raw, 0);
     if cursor == raw.len {
@@ -1151,6 +1152,7 @@ fn parse_sfv_dict_entry_member(raw: const u8[:], cursor: i64&, member: SfvMember
 fn parse_sfv_dict(raw: const u8[:], out: SfvDict&) -> bool {
     out.entries.clear();
     out.valid = false;
+    defer if !out.valid { out.entries.clear(); };
 
     var cursor = sf_skip_ws(raw, 0);
     if cursor == raw.len {

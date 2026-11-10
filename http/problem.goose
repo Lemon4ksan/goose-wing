@@ -50,6 +50,17 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
     out.push('}');
 }
 
+// RFC 9457 Section 3.1: Members of a Problem Details Object - Ignore members whose JSON type does not match.
+fn read_problem_string_member<B>(reader: json::Reader&, dst: B&, out_err: bool&) {
+    if json::peek(reader) != '"' {
+        json::skip(reader);
+        return;
+    }
+    if !core::read_json_string_into(reader, dst) {
+        out_err = true;
+    }
+}
+
 // Parses core status and type fields from JSON reader (RFC 9457 Section 3.1).
 //
 // Example:
@@ -62,13 +73,16 @@ fn parse_problem_core_fields(
     out_err: bool&,
 ) -> bool {
     if key == "status" {
-        out.status = json::read_int(reader) as i32;
+        let ch = json::peek(reader);
+        if (ch >= '0' && ch <= '9') || ch == '-' {
+            out.status = json::read_int(reader) as i32;
+        } else {
+            json::skip(reader);
+        }
         return true;
     }
     if key == "type" {
-        if !core::read_json_string_into(reader, out.type_uri) {
-            out_err = true;
-        }
+        read_problem_string_member(reader, out.type_uri, out_err);
         return true;
     }
     return false;
@@ -86,21 +100,15 @@ fn parse_problem_descriptive_fields(
     out_err: bool&,
 ) -> bool {
     if key == "title" {
-        if !core::read_json_string_into(reader, out.title) {
-            out_err = true;
-        }
+        read_problem_string_member(reader, out.title, out_err);
         return true;
     }
     if key == "detail" {
-        if !core::read_json_string_into(reader, out.detail) {
-            out_err = true;
-        }
+        read_problem_string_member(reader, out.detail, out_err);
         return true;
     }
     if key == "instance" {
-        if !core::read_json_string_into(reader, out.instance) {
-            out_err = true;
-        }
+        read_problem_string_member(reader, out.instance, out_err);
         return true;
     }
     return false;
@@ -113,11 +121,9 @@ fn parse_problem_descriptive_fields(
 //   raw = "{\"type\":\"https://example.com/probs/out-of-credit\",\"title\":\"Out of Credit\",\"status\":403}"
 //   returns: true, out.status = 403, out.title = "Out of Credit"
 fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
-    out.status = 0;
-    out.type_uri.clear();
-    out.title.clear();
-    out.detail.clear();
-    out.instance.clear();
+    out = ProblemDetails { .. };
+    var committed = false;
+    defer if !committed { out = ProblemDetails { .. }; };
 
     guard json_src.len > 0 else { return false; }
     var reader = json::reader(json_src);
@@ -134,6 +140,7 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
     if out.type_uri.len == 0 {
         out.type_uri.append("about:blank");
     }
+    committed = true;
     return true;
 }
 

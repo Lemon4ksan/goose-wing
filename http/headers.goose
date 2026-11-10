@@ -493,7 +493,7 @@ inline fn classify_cors_header(name: const u8[:], len: i64) -> WellKnownHeader {
 
 fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     let len = name.len;
-    guard len >= 2 && len <= 32 else { return WellKnownHeader.Unknown; }
+    guard len >= 2 && len <= 32 && is_valid_header_name(name) else { return WellKnownHeader.Unknown; }
 
     if name.starts_with_fold("access-control-") {
         return classify_cors_header(name, len);
@@ -882,17 +882,13 @@ fn handle_obs_fold_arena(
         return HeaderParseError.CapacityExceeded;
     }
 
+    let saved_spill_len = arena.spill_raw.len;
+    var n_begin: u16 = 0;
+    var n_end:   u16 = 0;
     if migrate_name {
-        let n_begin = arena.spill_raw.len as u16;
+        n_begin = arena.spill_raw.len as u16;
         arena.spill_raw.append(orig_name);
-        let n_end = arena.spill_raw.len as u16;
-        if in_spill {
-            arena.spill_entries[arena.spill_entries.len - 1].name_begin = n_begin;
-            arena.spill_entries[arena.spill_entries.len - 1].name_end = n_end;
-        } else {
-            map.entries[map.entries.len - 1].name_begin = n_begin;
-            map.entries[map.entries.len - 1].name_end = n_end;
-        }
+        n_end = arena.spill_raw.len as u16;
     }
 
     let new_begin = arena.spill_raw.len as u16;
@@ -907,8 +903,19 @@ fn handle_obs_fold_arena(
         map.entries[map.entries.len - 1].well_known_id
     };
     guard validate_folded_framing(arena.spill_raw[..], new_begin, new_end, prev_wk) else {
+        arena.spill_raw.resize(saved_spill_len);
         map.valid = false;
         return HeaderParseError.InvalidContentLength;
+    }
+
+    if migrate_name {
+        if in_spill {
+            arena.spill_entries[arena.spill_entries.len - 1].name_begin = n_begin;
+            arena.spill_entries[arena.spill_entries.len - 1].name_end = n_end;
+        } else {
+            map.entries[map.entries.len - 1].name_begin = n_begin;
+            map.entries[map.entries.len - 1].name_end = n_end;
+        }
     }
 
     let cont_has_comma = trimmed_continuation.contains_byte(',');
@@ -1300,17 +1307,19 @@ fn parse_headers(
     mode:           H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
-    guard raw_input.len > 0 else {
+    map.valid = false;
+    defer if !map.valid {
+        reset_for_keep_alive(map);
         map.valid = false;
+    };
+    guard raw_input.len > 0 else {
         return HeaderParseError.EmptyInput;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
     guard map.raw_buf.try_append(raw_input) else {
-        map.valid = false;
         return HeaderParseError.CapacityExceeded;
     }
 
@@ -1434,16 +1443,19 @@ fn parse_headers_with_overflow(
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
     reset_overflow_arena(arena);
-    guard raw_input.len > 0 else {
+    map.valid = false;
+    defer if !map.valid {
+        reset_for_keep_alive(map);
+        reset_overflow_arena(arena);
         map.valid = false;
+    };
+    guard raw_input.len > 0 else {
         return HeaderParseError.EmptyInput;
     }
     guard raw_input.len <= 65535 else {
-        map.valid = false;
         return HeaderParseError.CapacityExceeded;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
@@ -1454,9 +1466,8 @@ fn parse_headers_with_overflow(
         map.raw_buf.append(raw_input);
     }
 
-    let src_type:   u8          = if use_arena_buf { HEADER_SRC_ARENA } else { HEADER_SRC_STACK };
-    let active_buf: const u8[:] = if use_arena_buf { arena.spill_raw[..] } else { map.raw_buf[..] };
-    return parse_overflow_headers_loop(active_buf, src_type, map, arena, allow_obs_fold);
+    let src_type: u8 = if use_arena_buf { HEADER_SRC_ARENA } else { HEADER_SRC_STACK };
+    return parse_overflow_headers_loop(raw_input, src_type, map, arena, allow_obs_fold);
 }
 
 // Parses an HTTP status line into major/minor versions and status code.
@@ -1490,7 +1501,8 @@ fn parse_http_status_line(
         return HeaderParseError.MalformedStatusLine;
     }
 
-    guard status_line[..5].eq_ascii_fold("HTTP/") else {
+    // RFC 9112 Section 2.3: HTTP Version - HTTP-name is case-sensitive "HTTP".
+    guard status_line[..5] == "HTTP/" else {
         return HeaderParseError.MalformedStatusLine;
     }
 
@@ -1537,12 +1549,12 @@ fn parse_response_headers_with_mode(
     mode:           H1ResponseParseMode,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
+    reset_for_keep_alive(map);
+    map.valid = false;
     guard raw_input.len > 0 else {
-        map.valid = false;
         return HeaderParseError.EmptyInput;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
@@ -1556,21 +1568,20 @@ fn parse_response_headers_with_mode(
     var code:  i32 = 0;
     let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code, mode);
     guard is_ok(st_err) else {
-        map.valid = false;
         return st_err;
     }
 
     var header_start = line_end;
     guard advance_crlf(raw_input, header_start, line_end) else {
-        map.valid = false;
         return HeaderParseError.MalformedStatusLine;
     }
 
     let err = parse_headers(raw_input[header_start..], map, allow_obs_fold, mode);
+    guard is_ok(err) else { return err; }
     map.status_code = code;
     map.http_major = major;
     map.http_minor = minor;
-    return err;
+    return HeaderParseError.None;
 }
 
 // Parses full HTTP/1.1 response status line and header block
@@ -1593,12 +1604,13 @@ fn parse_response_headers_with_overflow(
     arena:          OverflowArena&,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
+    reset_for_keep_alive(map);
+    reset_overflow_arena(arena);
+    map.valid = false;
     guard raw_input.len > 0 else {
-        map.valid = false;
         return HeaderParseError.EmptyInput;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
@@ -1612,14 +1624,12 @@ fn parse_response_headers_with_overflow(
     var code:  i32 = 0;
     let st_err = parse_http_status_line(raw_input[..line_end], major, minor, code);
     guard is_ok(st_err) else {
-        map.valid = false;
         return st_err;
     }
 
     var header_start = line_end;
     if header_start < raw_input.len && raw_input[header_start] == '\r' {
         guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            map.valid = false;
             return HeaderParseError.MalformedStatusLine;
         }
         header_start += 2;
@@ -1628,10 +1638,11 @@ fn parse_response_headers_with_overflow(
     }
 
     let err = parse_headers_with_overflow(raw_input[header_start..], map, arena, allow_obs_fold);
+    guard is_ok(err) else { return err; }
     map.status_code = code;
     map.http_major = major;
     map.http_minor = minor;
-    return err;
+    return HeaderParseError.None;
 }
 
 inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
@@ -1650,12 +1661,12 @@ inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
 //   raw_input = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n", map = HeaderMap { .. }
 //   returns: HeaderParseError.None, populates map.entries
 fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
+    reset_for_keep_alive(map);
+    map.valid = false;
     guard raw_input.len > 0 else {
-        map.valid = false;
         return HeaderParseError.EmptyInput;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
@@ -1667,7 +1678,6 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
     var header_start = line_end;
     if header_start < raw_input.len && raw_input[header_start] == '\r' {
         guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            map.valid = false;
             return HeaderParseError.MalformedStatusLine;
         }
         header_start += 2;
@@ -1689,12 +1699,13 @@ fn parse_request_headers_with_overflow(
     arena:          OverflowArena&,
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
+    reset_for_keep_alive(map);
+    reset_overflow_arena(arena);
+    map.valid = false;
     guard raw_input.len > 0 else {
-        map.valid = false;
         return HeaderParseError.EmptyInput;
     }
     if has_embedded_nulls(raw_input) {
-        map.valid = false;
         return HeaderParseError.EmbeddedNull;
     }
 
@@ -1706,7 +1717,6 @@ fn parse_request_headers_with_overflow(
     var header_start = line_end;
     if header_start < raw_input.len && raw_input[header_start] == '\r' {
         guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            map.valid = false;
             return HeaderParseError.MalformedStatusLine;
         }
         header_start += 2;

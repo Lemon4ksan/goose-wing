@@ -116,11 +116,11 @@ fn track_known_header_presence(
             true
         },
         TransferEncoding => {
-            guard validate_transfer_encoding_value(val) else { return false; }
             if (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
                 tracker.has_duplicate_te = true;
                 return false;
             }
+            guard validate_transfer_encoding_value(val) else { return false; }
             tracker.mask |= HDR_PRESENCE_TRANSFER_ENCODING;
             tracker.te_idx = hdr_idx;
             if (tracker.mask & HDR_PRESENCE_SMUGGLING_MASK) == HDR_PRESENCE_SMUGGLING_MASK {

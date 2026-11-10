@@ -9,6 +9,7 @@ namespace wing;
 import std;
 import core from "..";
 import .headers;
+import .mime;
 
 // RFC 7239 Section 4: A single forwarded-element item.
 struct ForwardedElement {
@@ -70,27 +71,27 @@ fn append_forwarded_header(out_headers: HeaderMap&, elem: const ForwardedElement
     return append_header(out_headers, rfc::HEADER_FORWARDED, buf[..]);
 }
 
-// Applies a parsed parameter key-value pair to a ForwardedElement.
+// Applies a parsed parameter key-value pair to a ForwardedElement (RFC 7239 Section 4).
 fn apply_forwarded_param(param_str: const u8[:], out: ForwardedElement&) -> bool {
-    let key_raw, val_raw, has_eq = param_str.split_once_byte('=');
-    guard has_eq else { return false; }
-    let key = key_raw.trim_lws();
-    let val = val_raw.trim_lws().trim_byte('"');
+    let key, val_raw, has_eq = param_str.split_once_byte('=');
+    guard has_eq && is_valid_header_name(key) else { return false; }
+    var val: u8[..128] = [];
+    guard decode_token_or_quoted_param(val_raw, val, 128) && val.len > 0 else { return false; }
 
     if key.eq_ascii_fold("by") {
-        guard out.by.len == 0 && val.len > 0 && out.by.try_append(val) else { return false; }
+        guard out.by.len == 0 && out.by.try_append(val[..]) else { return false; }
         return true;
     }
     if key.eq_ascii_fold("for") {
-        guard out.for_node.len == 0 && val.len > 0 && out.for_node.try_append(val) else { return false; }
+        guard out.for_node.len == 0 && out.for_node.try_append(val[..]) else { return false; }
         return true;
     }
     if key.eq_ascii_fold("host") {
-        guard out.host.len == 0 && val.len > 0 && out.host.try_append(val) else { return false; }
+        guard out.host.len == 0 && out.host.try_append(val[..]) else { return false; }
         return true;
     }
     if key.eq_ascii_fold("proto") {
-        guard out.proto.len == 0 && val.len > 0 && out.proto.try_append(val) else { return false; }
+        guard out.proto.len == 0 && out.proto.try_append(val[..]) else { return false; }
         return true;
     }
     return false;

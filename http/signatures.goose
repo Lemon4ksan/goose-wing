@@ -36,18 +36,59 @@ fn is_default_port(scheme: const u8[:], port: i32) -> bool {
     return false;
 }
 
+// RFC 9421 Section 2.1: HTTP Fields - Component names MUST be lowercased and MUST NOT be @signature-params.
+fn is_valid_component_name(comp: const u8[:]) -> bool {
+    guard comp.len > 0 && comp != "@signature-params" && comp != "@signature-params;req" else {
+        return false;
+    }
+    for b in comp {
+        if b >= 'A' && b <= 'Z' {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn has_duplicate_component_before(
+    components: const u8[..32][..16]&,
+    limit:      i64,
+    comp:       const u8[:],
+) -> bool {
+    for j in limit {
+        if components[j][..] == comp {
+            return true;
+        }
+    }
+    return false;
+}
+
+// RFC 9421 Section 2.5: Creating the Signature Base - Component identifiers MUST be unique and lowercase.
+fn has_valid_unique_components(components: const u8[..32][..16]&) -> bool {
+    for i in components.len {
+        let comp = components[i][..];
+        guard is_valid_component_name(comp) && !has_duplicate_component_before(components, i, comp) else {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Extracts special URL components (@authority, @path, @query, @scheme) per RFC 9421 §2.2.6.
 //
 // Example:
 //   url_str = "https://example.com/foo?bar=1", comp = "@authority"
 //   returns: true, out populated with "example.com"
 fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024]&) -> bool {
+    guard is_valid_component_name(comp) else {
+        out.clear();
+        return false;
+    }
     let view, err = core::parse_url_view(url_str);
     guard view.valid else {
         out.clear();
         return false;
     }
-    if comp.eq_ascii_fold("@authority") {
+    if comp == "@authority" {
         guard view.host.len + 8 <= out.cap else {
             out.clear();
             return false;
@@ -61,7 +102,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if comp.eq_ascii_fold("@path") {
+    if comp == "@path" {
         let p = if view.pathname.len > 0 { view.pathname } else { "/" };
         guard out.try_set(p) else {
             out.clear();
@@ -69,7 +110,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if comp.eq_ascii_fold("@query") {
+    if comp == "@query" {
         let q = if view.search.len > 0 { view.search } else { "?" };
         guard out.try_set(q) else {
             out.clear();
@@ -77,7 +118,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if comp.eq_ascii_fold("@request-target") {
+    if comp == "@request-target" {
         let p = if view.pathname.len > 0 { view.pathname } else { "/" };
         guard p.len + view.search.len <= out.cap else {
             out.clear();
@@ -90,7 +131,7 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         }
         return true;
     }
-    if comp.eq_ascii_fold("@scheme") {
+    if comp == "@scheme" {
         guard out.try_set(view.scheme) else {
             out.clear();
             return false;
@@ -129,6 +170,10 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
 //   headers = [{"date", "Tue, 20 Apr 2021"}], name = "date"
 //   returns: true, out = "Tue, 20 Apr 2021"
 fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:], out: B&) -> bool {
+    guard is_valid_component_name(name) else {
+        out.clear();
+        return false;
+    }
     var found = false;
     for &e in headers.entries {
         guard entry_name(headers, e).eq_ascii_fold(name) else { continue; }
@@ -158,11 +203,15 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
 //   req has method "GET", comp = "@method"
 //   returns: true, out populated with "GET"
 fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
-    if comp.eq_ascii_fold("@method") {
+    guard is_valid_component_name(comp) else {
+        out.clear();
+        return false;
+    }
+    if comp == "@method" {
         let _ = out.try_set(req.method[..]);
         return true;
     }
-    if comp.eq_ascii_fold("@target-uri") {
+    if comp == "@target-uri" {
         guard out.try_set(req.url[..]) else {
             out.clear();
             return false;
@@ -193,7 +242,8 @@ fn extract_response_component_value(
     out:  u8[..1024]&,
 ) -> bool {
     out.clear();
-    if comp.eq_ascii_fold("@status") {
+    guard is_valid_component_name(comp) else { return false; }
+    if comp == "@status" {
         res.status_code.format_i64_dec(out);
         return true;
     }
@@ -263,6 +313,9 @@ fn build_signature_base<B>(
     out:    B&,
 ) -> bool {
     out.clear();
+    guard has_valid_unique_components(params.components) else { return false; }
+    var committed = false;
+    defer if !committed { out.clear(); };
     for idx in params.components.len {
         let comp = params.components[idx][..];
         var val: u8[..1024] = [];
@@ -278,6 +331,7 @@ fn build_signature_base<B>(
 
     out.append("\"@signature-params\": ");
     format_signature_params(params, out);
+    committed = true;
     return true;
 }
 
@@ -288,6 +342,9 @@ fn build_response_signature_base<B>(
     out:    B&,
 ) -> bool {
     out.clear();
+    guard has_valid_unique_components(params.components) else { return false; }
+    var committed = false;
+    defer if !committed { out.clear(); };
     for idx in params.components.len {
         let comp = params.components[idx][..];
         var val: u8[..1024] = [];
@@ -308,6 +365,7 @@ fn build_response_signature_base<B>(
 
     out.append("\"@signature-params\": ");
     format_signature_params(params, out);
+    committed = true;
     return true;
 }
 
@@ -575,6 +633,7 @@ fn verify_signature_input_label(
     label:         const u8[:],
     params:        const HttpSignatureParams&,
 ) -> bool {
+    guard has_valid_unique_components(params.components) else { return false; }
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(sig_input_val, entries) else { return false; }
     for &entry in entries {

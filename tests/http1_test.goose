@@ -2880,6 +2880,56 @@ fn test_chunk_fsm_trailer_flood_defense(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 54. goose2rfc HTTP/1.1, Forwarded, Early Hints & Status Diagnostics Regressions
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_http1_audit_regressions(t: lit::T&) {
+    t.run("RFC 9112 §2.3 & §5.1: Case-sensitive HTTP-name and clean HeaderMap rollback on error") { sub =>
+        var map = wing::HeaderMap { .. };
+        let err_case = wing::parse_response_headers("http/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", map);
+        sub.assert_eq(err_case, wing::HeaderParseError.MalformedStatusLine, "Lowercase http/1.1 MUST be rejected per RFC 9112 §2.3");
+
+        let err_partial = wing::parse_response_headers("HTTP/1.1 201 Created\r\nX-Valid: 1\r\nBad Header: 2\r\n\r\n", map);
+        sub.assert_eq(err_partial, wing::HeaderParseError.InvalidHeaderName, "Invalid second header rejected");
+        sub.assert_eq(map.entries.len, 0, "HeaderMap entries MUST be cleared on parse failure");
+        sub.assert_eq(map.status_code, 200, "HeaderMap status_code MUST not retain uncommitted status on failure");
+        sub.assert_false(map.valid, "HeaderMap valid flag is false on failure");
+    };
+
+    t.run("Invariant 5: parse_chunk_ext_quoted_val rolls back cursor on unclosed quote") { sub =>
+        var cur: i64 = 4;
+        let ok = wing::parse_chunk_ext_quoted_val("ext=\"unclosed", cur);
+        sub.assert_false(ok, "Unclosed quoted chunk-ext value rejected");
+        sub.assert_eq(cur, 4, "Cursor rolled back to initial offset 4 on error");
+    };
+
+    t.run("RFC 7239 §4 & RFC 8288 §3: Forwarded and Link parameter grammar & quote balance") { sub =>
+        var elem = wing::ForwardedElement { .. };
+        sub.assert_false(wing::parse_forwarded_element("for = 192.0.2.60", elem), "Whitespace around '=' in Forwarded MUST be rejected");
+        sub.assert_false(wing::parse_forwarded_element("for=\"192.0.2.60", elem), "Unbalanced quote in Forwarded MUST be rejected");
+        sub.assert_false(wing::parse_forwarded_element("for=[2001:db8::1]", elem), "Unquoted IPv6 brackets in Forwarded MUST be rejected");
+        sub.assert_true(wing::parse_forwarded_element("for=\"[2001:db8::1]\"", elem), "Quoted IPv6 in Forwarded accepted");
+
+        var links: wing::EarlyHintLink[..8] = [];
+        sub.assert_false(wing::parse_link_header("</a.css>; rel=\"preload", links), "Unbalanced quote in Link rel MUST be rejected");
+        sub.assert_eq(links.len, 0, "out_links cleared on Link parse failure");
+    };
+
+    t.run("RFC 9211 & RFC 9209: Cache-Status and Proxy-Status single entry cursor/entry rollback") { sub =>
+        var idx: i64 = 0;
+        var cs = wing::CacheStatusEntry { .. };
+        sub.assert_false(wing::parse_single_cache_status_entry("OriginCache; ttl=bad", idx, cs), "Invalid ttl fails CacheStatusEntry");
+        sub.assert_eq(idx, 0, "Cache-Status cursor rolled back to 0");
+        sub.assert_eq(cs.cache_name.len, 0, "CacheStatusEntry rolled back on error");
+
+        var p_idx: i64 = 0;
+        var ps = wing::ProxyStatusEntry { .. };
+        sub.assert_false(wing::parse_single_proxy_status_entry("edge1; received-status=bad", p_idx, ps), "Invalid received-status fails ProxyStatusEntry");
+        sub.assert_eq(p_idx, 0, "Proxy-Status cursor rolled back to 0");
+        sub.assert_eq(ps.proxy_name.len, 0, "ProxyStatusEntry rolled back on error");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/1.1 Framing, Chunked Transfer, and Smuggling Defense Suite", lit::Verbosity.Verbose);
 
@@ -2936,6 +2986,7 @@ fn main() {
     lit::run_case(runner, "51. HTTP/1.1 Response Serializer Empty-Status Chunked Bodyless Enforcement", test_http1_response_serialization_empty_status);
     lit::run_case(runner, "52. Chunk Extension Length Overhead Defense", test_chunk_fsm_extension_length_defense);
     lit::run_case(runner, "53. Chunk Trailer Length Flood Defense", test_chunk_fsm_trailer_flood_defense);
+    lit::run_case(runner, "54. goose2rfc HTTP/1.1, Forwarded, Early Hints & Status Diagnostics Regressions", test_goose2rfc_http1_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

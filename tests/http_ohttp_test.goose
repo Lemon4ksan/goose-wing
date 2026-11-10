@@ -772,6 +772,79 @@ fn test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 13. goose2rfc RFC 9421, 9651, 9457, 9110, 6797 & 7838 Conformance Regressions
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_http_audit_regressions(t: lit::T&) {
+    t.run("RFC 9421 §2.1, §2.3 & §2.5: Lowercase component names, no duplicates, and no @signature-params") { sub =>
+        var req = wing::new_request("GET", "https://example.com/orders");
+        wing::set_header(req, "Content-Type", "application/json");
+        var sig_base: u8[..1024] = [];
+
+        var p_upper = wing::HttpSignatureParams { label: "sig1", .. };
+        p_upper.components.push("@METHOD");
+        sub.assert_false(wing::build_signature_base(req, p_upper, sig_base), "Uppercase @METHOD MUST be rejected per RFC 9421 §2.1");
+
+        var p_hdr_upper = wing::HttpSignatureParams { label: "sig1", .. };
+        p_hdr_upper.components.push("Content-Type");
+        sub.assert_false(wing::build_signature_base(req, p_hdr_upper, sig_base), "Uppercase Content-Type component MUST be rejected");
+
+        var p_dup = wing::HttpSignatureParams { label: "sig1", .. };
+        p_dup.components.push("@method");
+        p_dup.components.push("@method");
+        sub.assert_false(wing::build_signature_base(req, p_dup, sig_base), "Duplicate @method component MUST be rejected per RFC 9421 §2.5");
+
+        var p_sp = wing::HttpSignatureParams { label: "sig1", .. };
+        p_sp.components.push("@signature-params");
+        sub.assert_false(wing::build_signature_base(req, p_sp, sig_base), "@signature-params in components MUST be rejected per RFC 9421 §2.3");
+    };
+
+    t.run("RFC 9651 §4.2 & RFC 9457 §3.1: SFV rollback and ProblemDetails mismatched member types") { sub =>
+        var sfv_l = wing::SfvList { .. };
+        sub.assert_false(wing::parse_sfv_list("a, @invalid", sfv_l), "Invalid 2nd list item fails parse_sfv_list");
+        sub.assert_eq(sfv_l.members.len, 0, "SfvList.members cleared on error");
+
+        var sfv_d = wing::SfvDict { .. };
+        sub.assert_false(wing::parse_sfv_dict("a=1, @invalid", sfv_d), "Invalid 2nd dict entry fails parse_sfv_dict");
+        sub.assert_eq(sfv_d.entries.len, 0, "SfvDict.entries cleared on error");
+
+        var prob = wing::ProblemDetails { .. };
+        let ok_prob = wing::parse_problem_details(
+            "{\"type\":\"https://example.com/p\",\"status\":\"400\",\"title\":123,\"detail\":\"Valid detail\"}",
+            prob,
+        );
+        sub.assert_true(ok_prob, "Mismatched JSON types for status/title MUST be ignored per RFC 9457 §3.1");
+        sub.assert_eq(prob.status as i64, 0, "String status ignored");
+        sub.assert_eq(prob.title.len, 0, "Numeric title ignored");
+        sub.assert_bytes_eq(prob.detail[..], "Valid detail", "Valid detail member preserved");
+
+        sub.assert_false(wing::parse_problem_details("{\"detail\":\"unclosed\"", prob), "Truncated JSON fails");
+        sub.assert_eq(prob.detail.len, 0, "ProblemDetails cleared on syntax failure");
+    };
+
+    t.run("RFC 9110 §5.6.6, RFC 6797 §6.1, Dictionary, NVS & Alt-Svc hygiene") { sub =>
+        let _, ok_ws = wing::parse_media_type("text/plain; charset = utf-8");
+        sub.assert_false(ok_ws, "Whitespace around '=' in media type parameter MUST be rejected per RFC 9110 §5.6.6");
+        let _, ok_slash = wing::parse_media_type("text/plain; param=foo/bar");
+        sub.assert_false(ok_slash, "Slash in unquoted media type parameter value MUST be rejected");
+
+        let _, ok_hsts = wing::parse_hsts_header("max-age=31536000; custom-ext=1; CUSTOM-EXT=2");
+        sub.assert_false(ok_hsts, "Duplicate extension directive in HSTS MUST be rejected per RFC 6797 §6.1");
+
+        let dict_p, ok_dict = wing::parse_use_as_dictionary_header("match=\"assets/*\"");
+        sub.assert_false(ok_dict, "Relative match pattern without leading '/' rejected");
+        sub.assert_eq(dict_p.match_pattern.len, 0, "DictionaryParams.match_pattern cleared on failure");
+
+        let nvs, ok_nvs = wing::parse_no_vary_search("params=(\"a\" 123)");
+        sub.assert_false(ok_nvs, "Non-string item in NVS params inner-list rejected");
+        sub.assert_eq(nvs.params.len, 0, "NoVarySearch.params cleared on failure");
+
+        var ep = wing::AltSvcEndpoint { .. };
+        sub.assert_false(wing::parse_altsvc_authority("alt.example.com:99999", ep), "Port > 65535 rejected");
+        sub.assert_eq(ep.host.len, 0, "AltSvcEndpoint.host not dirtied on invalid port");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Binary HTTP (RFC 9292) and Oblivious HTTP (RFC 9458) Suite", lit::Verbosity.Verbose);
 
@@ -787,6 +860,7 @@ fn main() {
     lit::run_case(runner, "10. F012 Binary HTTP (RFC 9292) Varint & Trailer Safety", test_f012_bhttp_bounds_and_validation);
     lit::run_case(runner, "11. F024-F028 HSTS, Alt-Svc, Early Hints, BHTTP, Dict & Digest", test_f024_f028_hsts_altsvc_bhttp_dict_digest);
     lit::run_case(runner, "12. F032-F037 OHTTP, NVS, MIME, Problem, SFV, Signatures & Status", test_f032_f037_ohttp_nvs_mime_problem_sfv_signatures);
+    lit::run_case(runner, "13. goose2rfc RFC 9421, 9651, 9457, 9110, 6797 & 7838 Conformance Regressions", test_goose2rfc_http_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

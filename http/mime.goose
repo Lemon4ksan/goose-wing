@@ -93,30 +93,34 @@ struct MediaType {
     valid:     bool                 = false,
 }
 
-// Parses a single MIME media parameter (RFC 9110 Section 8.3).
+// RFC 9110 Section 5.6.6: Parameters - Decodes a parameter-value (token / quoted-string) into out.
+//
+// Example:
+//   raw_val = "\"utf-8\"", out = []
+//   returns: true, out = "utf-8"
+fn decode_token_or_quoted_param<B>(raw_val: const u8[:], out: B&, max_len: i64 = 256) -> bool {
+    guard raw_val.len > 0 else { return false; }
+    if raw_val[0] == '"' {
+        return strict_unquote(raw_val, out, max_len);
+    }
+    guard raw_val.len <= max_len && is_valid_header_name(raw_val) && out.try_append(raw_val) else {
+        return false;
+    }
+    return true;
+}
+
+// Parses a single MIME media parameter (RFC 9110 Section 5.6.6 & Section 8.3).
 //
 // Example:
 //   p_trim = "charset=\"utf-8\"", p_item = MediaTypeParam { .. }
 //   returns: true, p_item.name = "charset", p_item.value = "utf-8"
 fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> bool {
-    let p_name_raw, p_val_raw, ok = p_trim.split_once_byte('=');
-    guard ok && p_name_raw.len > 0 else { return false; }
-
-    let p_name = p_name_raw.trim_lws();
-    let p_val_raw = p_val_raw.trim_lws();
-    guard is_valid_header_name(p_name) && p_item.name.try_append(p_name) else { return false; }
-    to_lower(p_item.name[..]);
-
-    if p_val_raw.len > 0 && p_val_raw[0] == '"' {
-        guard strict_unquote(p_val_raw, p_item.value, 256) else { return false; }
-    } else {
-        guard p_val_raw.len > 0 && is_valid_header_value(p_val_raw) else { return false; }
-        for b in p_val_raw {
-            guard b != '"' && b != ' ' && b != '\t' else { return false; }
-        }
-        guard p_item.value.try_append(p_val_raw) else { return false; }
+    let p_name, p_val_raw, ok = p_trim.split_once_byte('=');
+    guard ok && is_valid_header_name(p_name) && p_item.name.try_append(p_name) else {
+        return false;
     }
-    return true;
+    to_lower(p_item.name[..]);
+    return decode_token_or_quoted_param(p_val_raw, p_item.value, 256);
 }
 
 // Parses semicolon-separated MIME parameters (RFC 9110 Section 8.3).
@@ -158,6 +162,7 @@ fn parse_media_parameters(rem_in: const u8[:], mt: MediaType&) -> bool {
 //   returns: MediaType { type_name: "text", subtype: "html", valid: true, .. }, true
 fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
+    defer if !mt.valid { mt = MediaType { .. }; };
     let trimmed = raw.trim_lws();
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }
@@ -192,6 +197,7 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool {
 //   returns: MediaType { type_name: "form-data", valid: true, .. }, true
 fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool {
     var mt = MediaType { .. };
+    defer if !mt.valid { mt = MediaType { .. }; };
     let trimmed = raw.trim_lws();
     guard trimmed.len > 0 else { return mt, false; }
     if has_embedded_nulls(trimmed) { return mt, false; }

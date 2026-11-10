@@ -154,12 +154,12 @@ fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
     guard has_colon && is_valid_altsvc_host(host_part) else { return false; }
 
+    let port_num, port_ok = port_part.parse_u32_dec();
+    guard port_ok && port_num > 0 && port_num <= 65535 else { return false; }
+
     if host_part.len > 0 {
         guard ep.host.try_append(host_part) else { return false; }
     }
-
-    let port_num, port_ok = port_part.parse_u32_dec();
-    guard port_ok && port_num > 0 && port_num <= 65535 else { return false; }
     ep.port = port_num as! u16;
     return true;
 }

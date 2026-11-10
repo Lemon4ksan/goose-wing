@@ -30,19 +30,23 @@ struct QueryParam {
 
 fn copy_sfv_inner_string_list(items: const SfvItem[:], out: u8[..64][..16]&) -> bool {
     out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
     for &item in items {
         guard item.bare.kind == SfvType.String else { return false; }
         var name: u8[..64] = [];
         guard name.try_set(item.bare.text[..]) && out.try_push(name) else { return false; }
     }
+    committed = true;
     return true;
 }
 
 fn apply_nvs_params(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
     if member.is_inner_list {
+        guard copy_sfv_inner_string_list(member.inner_list[..], nvs.params) else { return false; }
         nvs.ignore_all_params = false;
         nvs.except_params.clear();
-        return copy_sfv_inner_string_list(member.inner_list[..], nvs.params);
+        return true;
     }
     guard member.item.bare.kind == SfvType.Boolean else { return false; }
     nvs.ignore_all_params = member.item.bare.bool_val;

@@ -41,7 +41,18 @@ fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
     return unquoted.parse_i64_dec();
 }
 
-fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
+// RFC 6797 Section 6.1: Strict-Transport-Security Header Field - Every directive MUST appear at most once.
+fn record_unique_hsts_ext(seen_ext: u8[..64][..8]&, key: const u8[:]) -> bool {
+    for &ext in seen_ext {
+        if ext[..].eq_ascii_fold(key) {
+            return false;
+        }
+    }
+    var name_buf: u8[..64] = [];
+    return name_buf.try_set(key) && seen_ext.try_push(name_buf);
+}
+
+fn apply_hsts_directive(d: HstsDirective&, seen_ext: u8[..64][..8]&, trimmed: const u8[:]) -> bool {
     let name, val, has_val = trimmed.split_once_byte('=');
     let key = name.trim_lws();
     if key.eq_ascii_fold(rfc::HSTS_DIR_INCLUDE_SUBDOMAINS) {
@@ -73,7 +84,7 @@ fn apply_hsts_directive(d: HstsDirective&, trimmed: const u8[:]) -> bool {
             guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return false; }
         }
     }
-    return true;
+    return record_unique_hsts_ext(seen_ext, key);
 }
 
 // Parses `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`
@@ -85,16 +96,20 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     var d = HstsDirective { .. };
     guard raw.len > 0 else { return d, false; }
 
+    var seen_ext: u8[..64][..8] = [];
     var rem = raw;
     while rem.len > 0 {
         let semi_idx = rem.find_unquoted_byte(';');
         let part = rem[..semi_idx].trim_lws();
         rem = if semi_idx < rem.len { rem[semi_idx + 1..] } else { rem[..0] };
         guard part.len > 0 else { continue; }
-        guard apply_hsts_directive(d, part) else { return d, false; }
+        guard apply_hsts_directive(d, seen_ext, part) else {
+            return HstsDirective { .. }, false;
+        }
     }
 
-    return d, d.valid;
+    guard d.valid else { return HstsDirective { .. }, false; }
+    return d, true;
 }
 
 // ---- HSTS Cache & Preload List -------------------------------------------

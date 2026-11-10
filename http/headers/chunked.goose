@@ -43,6 +43,9 @@ fn skip_bws(s: const u8[:], cursor: i64&) {
 //   s = "\";foo=\\\"bar\\\"\"", cursor = 5
 //   returns: true, cursor advances past quote
 fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
+    let saved_cursor = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
     cursor++; // skip opening quote
     while cursor < s.len {
         let qc = s[cursor];
@@ -55,6 +58,7 @@ fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
         }
         if qc == '"' {
             cursor++;
+            committed = true;
             return true;
         }
         cursor++;

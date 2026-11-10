@@ -109,16 +109,19 @@ fn apply_dict_type(p: DictionaryParams&, item: const SfItem&) -> bool {
 fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfItem&) -> bool {
     if key == "match" {
         guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.match_pattern) else {
+            p.match_pattern.clear();
             p.valid = false;
             return false;
         }
         guard p.match_pattern.len > 0 && p.match_pattern[0] == '/' else {
+            p.match_pattern.clear();
             p.valid = false;
             return false;
         }
         p.valid = true;
     } else if key == "id" {
         guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.id) else {
+            p.id.clear();
             p.valid = false;
             return false;
         }

@@ -239,6 +239,12 @@ fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: co
 //   raw = "OriginCache; hit; ttl=120", idx = 0
 //   returns: true, out_entry populated, idx points to end
 fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: CacheStatusEntry&) -> bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed {
+        idx = saved_idx;
+        out_entry = CacheStatusEntry { .. };
+    };
     skip_status_list_delims(raw, idx);
     guard idx < raw.len else { return false; }
 
@@ -251,6 +257,7 @@ fn parse_single_cache_status_entry(raw: const u8[:], idx: i64&, out_entry: Cache
         guard ok else { return false; }
         guard apply_cache_status_param(out_entry, p_name, p_val) else { return false; }
     }
+    committed = true;
     return true;
 }
 
@@ -346,6 +353,12 @@ fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: co
 //   raw = "edge1; error=connection_refused", idx = 0
 //   returns: true, out_entry populated, idx points to end
 fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: ProxyStatusEntry&) -> bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed {
+        idx = saved_idx;
+        out_entry = ProxyStatusEntry { .. };
+    };
     skip_status_list_delims(raw, idx);
     guard idx < raw.len else { return false; }
 
@@ -358,6 +371,7 @@ fn parse_single_proxy_status_entry(raw: const u8[:], idx: i64&, out_entry: Proxy
         guard ok else { return false; }
         guard apply_proxy_status_param(out_entry, p_name, p_val) else { return false; }
     }
+    committed = true;
     return true;
 }
 

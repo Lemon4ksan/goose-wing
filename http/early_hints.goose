@@ -10,6 +10,8 @@ namespace wing;
 
 import std;
 import core from "..";
+import .headers;
+import .mime;
 
 // ---- Early Hints Models -------------------------------------------------
 
@@ -36,6 +38,7 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     let p_name_raw, p_val_raw, has_eq = param_str.split_once_byte('=');
     if !has_eq {
         let p_name = param_str.trim_lws();
+        guard is_valid_header_name(p_name) else { return false; }
         if p_name.eq_ascii_fold("crossorigin") {
             link.crossorigin = true;
         }
@@ -43,14 +46,17 @@ fn parse_link_param(param_str: const u8[:], link: EarlyHintLink&) -> bool {
     }
 
     let p_name = p_name_raw.trim_lws();
-    var p_val = p_val_raw.trim_lws().trim_byte('"');
+    let p_val_trim = p_val_raw.trim_lws();
+    guard is_valid_header_name(p_name) else { return false; }
+    var p_val: u8[..256] = [];
+    guard decode_token_or_quoted_param(p_val_trim, p_val, 256) else { return false; }
 
     if p_name.eq_ascii_fold("rel") {
         guard link.rel.len == 0 else { return true; }
-        guard link.rel.try_append(p_val) else { return false; }
+        guard link.rel.try_append(p_val[..]) else { return false; }
     } else if p_name.eq_ascii_fold("as") {
         guard link.as_type.len == 0 else { return true; }
-        guard link.as_type.try_append(p_val) else { return false; }
+        guard link.as_type.try_append(p_val[..]) else { return false; }
     } else if p_name.eq_ascii_fold("crossorigin") {
         link.crossorigin = true;
     }
@@ -136,6 +142,9 @@ fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
 //   raw = "</style.css>; rel=preload, </app.js>; rel=preload"
 //   returns: true, out_links has 2 entries
 fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
+    out_links.clear();
+    var committed = false;
+    defer if !committed { out_links.clear(); };
     var rem = raw;
     while rem.len > 0 {
         rem = rem.trim_start_bytes(" \t,");
@@ -149,6 +158,7 @@ fn parse_link_header<E>(raw: const u8[:], out_links: E&) -> bool {
         guard parse_single_link(entry_str, link) else { return false; }
         guard out_links.try_push(link) else { return false; }
     }
+    committed = true;
     return true;
 }
 
