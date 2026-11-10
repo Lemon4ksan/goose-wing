@@ -491,15 +491,18 @@ fn encode_cookie_header_to_map(
     get_canonical_cookies_for_request(
         jar, host, path, scheme, port, source, partition_key, now_us, matched_indices, access,
     );
-    let _ = remove_header(headers, "Cookie");
-    guard matched_indices.len > 0 else { return true; }
+    if matched_indices.len == 0 {
+        let _ = remove_header(headers, "Cookie");
+        return true;
+    }
 
     var cookie_hdr_val: u8[..8192] = [];
     for i in matched_indices.len {
         let idx = matched_indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
         let cookie_val = jar.cookies[idx];
-        if i > 0 {
+        guard cookie_val.name.len > 0 || cookie_val.value.len > 0 else { continue; }
+        if cookie_hdr_val.len > 0 {
             guard cookie_hdr_val.try_append("; ") else { return false; }
         }
         if cookie_val.name.len > 0 {
@@ -509,7 +512,10 @@ fn encode_cookie_header_to_map(
         }
         guard cookie_hdr_val.try_append(cookie_val.value[..]) else { return false; }
     }
-    guard cookie_hdr_val.len > 0 else { return true; }
+    if cookie_hdr_val.len == 0 {
+        let _ = remove_header(headers, "Cookie");
+        return true;
+    }
     return set_or_replace(headers, "Cookie", cookie_hdr_val[..], true);
 }
 

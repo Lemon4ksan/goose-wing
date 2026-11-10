@@ -242,11 +242,13 @@ fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
     if cookie_val.httponly { out.append("; HttpOnly"); }
     if cookie_val.partitioned { out.append("; Partitioned"); }
 
-    if cookie_val.same_site != CookieSameSite.Default {
+    if cookie_val.same_site != CookieSameSite.Default
+        && cookie_val.same_site != CookieSameSite.Unknown {
         out.append("; SameSite=");
         out.append(same_site_to_string(cookie_val.same_site));
     }
-    if cookie_val.priority != CookiePriority.Medium {
+    if cookie_val.priority != CookiePriority.Medium
+        && cookie_val.priority != CookiePriority.Unknown {
         out.append("; Priority=");
         out.append(priority_to_string(cookie_val.priority));
     }
@@ -346,16 +348,22 @@ fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
 // Emits `Set-Cookie` headers into `headers` exclusively for `COOKIE_DELTA_ADDED`
 // and `COOKIE_DELTA_REMOVED` entries in `jar`.
 fn flush_cookie_deltas(jar: const ServerCookieDeltaJar&, headers: HeaderMap&) -> bool {
+    let saved_headers = headers;
+    var committed = false;
+    defer if !committed {
+        headers = saved_headers;
+    };
     let n = min(jar.cookies.len, jar.states.len);
     for idx in n {
         let state = jar.states[idx];
         if state == COOKIE_DELTA_ADDED || state == COOKIE_DELTA_REMOVED {
-            var cookie_line: u8[..4096] = [];
+            var cookie_line: u8[..4800] = [];
             format(cookie_line, jar.cookies[idx]);
             guard append_header(headers, "Set-Cookie", cookie_line[..]) else {
                 return false;
             }
         }
     }
+    committed = true;
     return true;
 }

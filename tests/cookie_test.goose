@@ -2619,6 +2619,78 @@ fn test_cookie_import_cap_defense(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 44. goose2rfc Cookie & PSL Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_cookie_audit_regressions(t: lit::T&) {
+    let now_us: i64 = 1700000000000000;
+
+    t.run("COOKIE1_C01: Max-Age leading '+' sign ignored per RFC 6265 Section 5.2.2") { sub =>
+        let c, _, ok = wing::parse_canonical_set_cookie("sid=val; Max-Age=+100", "example.com", "/", now_us);
+        sub.assert_true(ok);
+        sub.assert_false(c.persistent, "Max-Age=+100 must be ignored, leaving cookie as session cookie");
+    };
+
+    t.run("COOKIE1_C02: Domain attribute with consecutive dots or whitespace rejected") { sub =>
+        let _, _, ok_dots = wing::parse_canonical_set_cookie("sid=val; Domain=sub..example.com", "a.sub..example.com", "/", now_us);
+        sub.assert_false(ok_dots, "Domain with empty label '..' must be rejected");
+
+        let _, _, ok_space = wing::parse_canonical_set_cookie("sid=val; Domain=a b.example.com", "a b.example.com", "/", now_us);
+        sub.assert_false(ok_space, "Domain with internal space must be rejected");
+    };
+
+    t.run("COOKIE1_C03: CanonicalCookie format omits Unknown SameSite/Priority and flush_cookie_deltas rolls back on overflow") { sub =>
+        let c, _, ok = wing::parse_canonical_set_cookie(
+            "sid=val; SameSite=Bogus; Priority=Bogus; Path=/",
+            "example.com",
+            "/",
+            now_us,
+        );
+        sub.assert_true(ok);
+        sub.assert_eq(c.same_site, wing::CookieSameSite.Unknown);
+        sub.assert_eq(c.priority, wing::CookiePriority.Unknown);
+
+        var line: u8[..256] = [];
+        wing::format(line, c);
+        sub.assert_bytes_eq(line[..], "sid=val; Path=/", "Unknown SameSite/Priority must not be serialized onto wire");
+
+        // Verify 4096-byte name+value with attributes fits in flush_cookie_deltas
+        var big_val: u8[..4096] = [];
+        for i in 4090 { big_val.push('a'); }
+        var big_cookie = wing::new_canonical_cookie("bigkey", big_val[..]);
+        big_cookie.with_domain("example.com", false).with_path("/").with_secure(true).with_http_only(true);
+        var djar = wing::ServerCookieDeltaJar { .. };
+        sub.assert_true(wing::add(djar, big_cookie));
+        var hmap = wing::HeaderMap { .. };
+        sub.assert_true(wing::flush_cookie_deltas(djar, hmap), "4096B payload + attributes must fit in flush_cookie_deltas");
+    };
+
+    t.run("COOKIE1_C04: parse_cookie_kv_span trims outer LWS on direct slice bounds") { sub =>
+        let raw = "  sid = xyz  ";
+        let span = wing::parse_cookie_kv_span(raw, 0, raw.len);
+        sub.assert_bytes_eq(wing::cookie_name(raw, span), "sid");
+        sub.assert_bytes_eq(wing::cookie_value(raw, span), "xyz");
+    };
+
+    t.run("COOKIE2_C02: parse_server_cookie_header rejects valueless tokens without '=' and invalid token chars") { sub =>
+        let parsed = wing::parse_server_cookie_header("bareflag; bad name=1; badval=a,b; good=ok");
+        sub.assert_eq(parsed.len, 1, "Only valid cookie-pair must be accepted");
+        sub.assert_bytes_eq(wing::get_server_cookie(parsed[..], "good"), "ok");
+    };
+
+    t.run("COOKIE2_C07 & COOKIE2_C08: PSL rule parser strips inline comments/whitespace and rejects malformed domains") { sub =>
+        var rule = wing::PslRule { .. };
+        sub.assert_false(wing::parse_psl_rule_line("!", wing::PslSection.Icann, rule), "Bare '!' must be rejected");
+        sub.assert_false(wing::parse_psl_rule_line("*.", wing::PslSection.Icann, rule), "Bare '*.' must be rejected");
+        sub.assert_true(wing::parse_psl_rule_line("example.org // inline comment", wing::PslSection.Icann, rule));
+        sub.assert_bytes_eq(rule.pattern[..], "example.org", "Inline comment and whitespace must be stripped");
+
+        var norm: u8[..256] = [];
+        sub.assert_false(wing::psl_normalize_domain("sub..example.com", norm), "Consecutive dots must be rejected");
+        sub.assert_false(wing::psl_normalize_domain("bad host.com", norm), "Internal space must be rejected");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Cookie Engine, PSL, and Security Verification Suite", lit::Verbosity.Verbose);
 
@@ -2665,6 +2737,7 @@ fn main() {
     lit::run_case(runner, "41. RFC 6265bis §5.1.4: Cookie URL Fallback Path and Fragment", test_cookie_url_fallback_path_fragment);
     lit::run_case(runner, "42. RFC 6265bis §5.4 & Go #82389: Cookie Relative Path Attribute Ignored", test_cookie_relative_path_ignored);
     lit::run_case(runner, "43. Cookie Ingestion Quota Enforcement in Netscape Import", test_cookie_import_cap_defense);
+    lit::run_case(runner, "44. goose2rfc Cookie & PSL Audit Regressions", test_goose2rfc_cookie_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

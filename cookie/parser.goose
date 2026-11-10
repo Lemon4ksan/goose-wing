@@ -586,6 +586,8 @@ fn apply_parsed_max_age_attribute(
     has_max_age: bool&,
     now_us:      i64,
 ) {
+    // RFC 6265 Section 5.2.2: The Max-Age Attribute - ignore if first char is not DIGIT or '-'
+    guard attr_val.len > 0 && attr_val[0] != '+' else { return; }
     let max_age_val, max_age_ok = attr_val.parse_i64_dec();
     guard max_age_ok else { return; }
 
@@ -624,10 +626,15 @@ inline fn try_fallback_exact_host_only(cookie_ref: CanonicalCookie&, default_dom
 }
 
 inline fn is_domain_syntax_invalid(domain: const u8[:]) -> bool {
-    if domain.len == 0 || domain[core::sub_sat_i64(domain.len, 1)] == '.' {
+    if domain.len == 0 || domain[core::sub_sat_i64(domain.len, 1)] == '.' || core::contains(domain, "..") {
         return true;
     }
-    return domain.contains_byte('/') || domain.contains_byte(':');
+    for b in domain {
+        if b <= 0x20 || b >= 0x7F || b == '/' || b == ':' || b == '?' || b == '#' {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
@@ -676,15 +683,20 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
         return CookieSpan { .. };
     }
 
-    let pair_slice = raw[pair_start..pair_end];
+    let raw_pair = raw[pair_start..pair_end];
+    let no_lead = raw_pair.trim_lws_start();
+    let start = core::sub_sat_i64(pair_end, no_lead.len);
+    let pair_slice = no_lead.trim_lws_end();
+    let end = core::add_sat_i64(start, pair_slice.len);
+
     let name_raw, val_raw, has_eq = pair_slice.split_once_byte('=');
     if has_eq {
         let name_clean = name_raw.trim_lws_end();
         let val_clean = val_raw.trim_lws_start();
-        let val_start = core::sub_sat_i64(pair_end, val_clean.len);
+        let val_start = core::sub_sat_i64(end, val_clean.len);
 
         return CookieSpan {
-            name_pos: pair_start as u16,
+            name_pos: start as u16,
             name_len: name_clean.len as u16,
             val_pos:  val_start as u16,
             val_len:  val_clean.len as u16,
@@ -692,9 +704,9 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
     }
 
     return CookieSpan {
-        name_pos: pair_start as u16,
+        name_pos: start as u16,
         name_len: pair_slice.len as u16,
-        val_pos:  pair_end as u16,
+        val_pos:  end as u16,
         val_len:  0,
     };
 }

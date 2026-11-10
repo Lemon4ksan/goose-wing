@@ -141,11 +141,26 @@ fn new_psl_database() -> PslDatabase {
 
 // ---- public suffix query and matching engine -------------------------------
 
+fn is_invalid_psl_domain_syntax(trimmed: const u8[:]) -> bool {
+    if !core::is_ip_address_literal(trimmed)
+        && (core::contains(trimmed, "..") || trimmed.contains_byte(':')) {
+        return true;
+    }
+    for b in trimmed {
+        if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' {
+            return true;
+        }
+    }
+    return false;
+}
+
 //Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase or Punycode.
 fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
     let trimmed = domain.trim_byte('.').trim_byte('[').trim_byte(']');
-    guard trimmed.len > 0 && trimmed.len <= 256 else { return false; }
+    guard trimmed.len > 0 && trimmed.len <= 256 && !is_invalid_psl_domain_syntax(trimmed) else {
+        return false;
+    }
     var has_non_ascii = false;
     for b in trimmed {
         if b >= 0x80 {
@@ -511,16 +526,27 @@ fn cookie_path_match(req_path: const u8[:], cookie_path: const u8[:]) -> bool {
 
 // ---- runtime updatable psl database ----------------------------------------
 
+fn strip_psl_line_comment_or_space(line: const u8[:]) -> const u8[:] {
+    let before_comment, _, _ = line.split_once("//");
+    for i in before_comment.len {
+        if core::is_ascii_space(before_comment[i]) {
+            return before_comment[..i];
+        }
+    }
+    return before_comment;
+}
+
 // Parses a Public Suffix List rule line into a PslRule.
 //
 // Example:
 //   line = "*.co.uk", sec = PslSection.Icann
 //   returns: true, out_rule.pattern = "co.uk"
 fn parse_psl_rule_line(line: const u8[:], sec: PslSection, out_rule: PslRule&) -> bool {
-    guard line.len > 0 && !(line.len >= 2 && line[0] == '/' && line[1] == '/') else { return false; }
+    let clean = strip_psl_line_comment_or_space(line.trim_ascii_space());
+    guard clean.len > 0 else { return false; }
     var is_exc = false;
     var is_wild = false;
-    var pat = line;
+    var pat = clean;
 
     if starts_with(pat, "!") {
         is_exc = true;
@@ -528,6 +554,9 @@ fn parse_psl_rule_line(line: const u8[:], sec: PslSection, out_rule: PslRule&) -
     } else if starts_with(pat, "*.") {
         is_wild = true;
         pat = pat[2..];
+    }
+    guard pat.len > 0 && pat.len <= 64 && !is_invalid_psl_domain_syntax(pat) else {
+        return false;
     }
 
     let r_type = if is_exc {
@@ -538,7 +567,9 @@ fn parse_psl_rule_line(line: const u8[:], sec: PslSection, out_rule: PslRule&) -
         PslRuleType.Normal
     };
 
-    out_rule = new_psl_rule(pat, r_type, sec);
+    let rule = new_psl_rule(pat, r_type, sec);
+    guard rule.pattern.len > 0 else { return false; }
+    out_rule = rule;
     return true;
 }
 

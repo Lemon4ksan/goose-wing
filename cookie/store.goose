@@ -567,9 +567,14 @@ fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out:
     if has_prohibited_cookie_ctl(clean_pair) { return; }
 
     let lhs, rhs, has_eq = clean_pair.split_once_byte('=');
-    let cookie_name = if has_eq { lhs.trim_ascii_space() } else { clean_pair };
-    let cookie_val = if has_eq { rhs.trim_ascii_space() } else { "" };
+    guard has_eq else { return; }
+    let cookie_name = lhs.trim_ascii_space();
+    let cookie_val = rhs.trim_ascii_space();
     guard cookie_name.len > 0 else { return; }
+    if core::add_sat_i64(cookie_name.len, cookie_val.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+        return;
+    }
+    guard validate_cookie_name(cookie_name) && is_valid_cookie_value(cookie_val) else { return; }
 
     // RFC 6265bis Section 5.4: Preserves FIRST appearance
     for existing_idx in out.len {
