@@ -70,16 +70,14 @@ fn allow(limiter: RateLimiter&, now_mono: i64) -> bool {
         return false;
     }
     let elapsed_sec = (now_mono - limiter.last_update_mono_ns) as f64 / 1000000000.0;
+    var new_tokens = limiter.tokens + elapsed_sec * limiter.rate_per_sec;
+    if !(new_tokens <= limiter.burst_capacity) {
+        new_tokens = limiter.burst_capacity;
+    }
+    guard new_tokens >= 1.0 else { return false; }
     limiter.last_update_mono_ns = now_mono;
-    limiter.tokens += elapsed_sec * limiter.rate_per_sec;
-    if !(limiter.tokens <= limiter.burst_capacity) {
-        limiter.tokens = limiter.burst_capacity;
-    }
-    if limiter.tokens >= 1.0 {
-        limiter.tokens -= 1.0;
-        return true;
-    }
-    return false;
+    limiter.tokens = new_tokens - 1.0;
+    return true;
 }
 
 // Attempts to consume one token using the current monotonic system clock.

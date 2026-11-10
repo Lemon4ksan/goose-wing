@@ -1746,6 +1746,94 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
     };
 }
 
+fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
+    t.run("CLIENT1_C01: parse_content_encoding_chain clears out_tokens on failure") { sub =>
+        var tokens: u8[..16][..4] = [];
+        let ok = wing::parse_content_encoding_chain("gzip, ", tokens);
+        sub.assert_false(ok, "trailing comma in Content-Encoding rejected");
+        sub.assert_eq(tokens.len, 0, "out_tokens rolled back on parse failure");
+    };
+
+    t.run("CLIENT1_C03..C05: chunked framing and trailer validation (RFC 9112 Section 7.1)") { sub =>
+        var chunk_buf: u8[..64] = [];
+        wing::encode_chunk("", chunk_buf);
+        sub.assert_eq(chunk_buf.len, 0, "encode_chunk ignores empty data instead of emitting 0-chunk");
+
+        wing::encode_chunk_trailer("X-Bad\r\nName", "val", chunk_buf);
+        wing::encode_chunk_trailer("X-Custom", "bad\r\nval", chunk_buf);
+        sub.assert_eq(chunk_buf.len, 0, "encode_chunk_trailer rejects CRLF in name or value");
+
+        var dec = wing::ChunkedStreamDecoder { .. };
+        var body_out: u8[..64] = [];
+        let ok_tr, _ = wing::feed_chunked_stream(dec, "0\r\nX-Custom: val\x00bad\r\n\r\n", body_out);
+        sub.assert_false(ok_tr, "ChunkedStreamDecoder rejects NUL/CTL in trailer value");
+    };
+
+    t.run("CLIENT1_C08: process_dictionary_response enforces same-origin dictionary isolation (RFC 9842 Section 6)") { sub =>
+        var cli = wing::new_client();
+        let dict_bytes = "shared-dictionary-seed-content-1234567890";
+        wing::dictionary_cache_insert(
+            cli.dict_cache,
+            "https://origin-a.example.com",
+            "/api/*",
+            "dict-1",
+            dict_bytes,
+            3600,
+            1000,
+        );
+        let dict_hash = cli.dict_cache.entries[0].sha256_hash;
+        var dcz_wire: u8[..256] = [];
+        sub.assert_true(
+            wing::encode_dcz_response(dcz_wire, dict_hash, "secret-payload", dict_bytes),
+            "built dcz payload",
+        );
+
+        var decoded: u8[..256] = "prefix:";
+        let ok_cross = wing::process_dictionary_response(
+            cli,
+            "https://origin-b.example.com",
+            "",
+            "dcz",
+            dcz_wire[..],
+            decoded,
+        );
+        sub.assert_false(ok_cross, "cross-origin dictionary lookup by hash rejected");
+        sub.assert_bytes_eq(decoded[..], "prefix:", "out_decoded preserved on failure");
+
+        let ok_same = wing::process_dictionary_response(
+            cli,
+            "https://origin-a.example.com",
+            "",
+            "dcz",
+            dcz_wire[..],
+            decoded,
+        );
+        sub.assert_true(ok_same, "same-origin dictionary decompression succeeded");
+        sub.assert_bytes_eq(decoded[..], "prefix:secret-payload", "decompressed payload appended");
+    };
+
+    t.run("CLIENT2_C01 & C04: RateLimiter transactional allow and Referrer-Policy OWS trimming") { sub =>
+        var lim = wing::RateLimiter {
+            rate_per_sec:        1.0,
+            burst_capacity:      1.0,
+            tokens:              0.2,
+            last_update_mono_ns: 1000000000,
+        };
+        let ok_allow = wing::allow(lim, 1500000000);
+        sub.assert_false(ok_allow, "insufficient tokens rejected");
+        sub.assert_eq(lim.last_update_mono_ns, 1000000000, "last_update_mono_ns untouched on false");
+
+        let pol = wing::parse_referrer_policy_with_fallback(
+            "unsafe-url\x0b",
+            wing::ReferrerPolicy.StrictOrigin,
+        );
+        sub.assert_true(
+            pol == wing::ReferrerPolicy.StrictOrigin,
+            "VT control char not stripped as OWS in Referrer-Policy",
+        );
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1779,6 +1867,7 @@ fn main() {
     lit::run_case(runner, "28. Multi-Layer Content-Encoding Chain & Strict Decoding Mode", test_multi_layer_content_encoding_and_strict_mode);
     lit::run_case(runner, "29. DNS HTTPS/SVCB (RFC 9460) Auto-H3 Protocol Racing", test_dns_https_svcb_h3_protocol_racing);
     lit::run_case(runner, "30. Chromium-Style Multi-Component Pipeline Integration", test_chromium_multi_component_pipeline_integration);
+    lit::run_case(runner, "31. goose2rfc Client Pipeline Audit Regressions", test_goose2rfc_client_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

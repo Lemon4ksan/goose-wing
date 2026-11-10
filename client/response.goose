@@ -180,7 +180,9 @@ fn has_trailer(res: const Response&, name: const u8[:]) -> bool {
 }
 
 fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
-    guard !rfc::is_disallowed_trailer_field(name) else { return; }
+    guard is_valid_header_name(name) && is_valid_header_value(value) && !rfc::is_disallowed_trailer_field(name) else {
+        return;
+    }
     set_header(res.trailers, name, value, false);
 }
 
@@ -247,8 +249,13 @@ fn parse_content_encoding_chain(
     out_tokens: u8[..16][..4]&,
 ) -> bool {
     out_tokens.clear();
+    var committed = false;
+    defer if !committed { out_tokens.clear(); };
     var rem = enc_hdr.trim_lws();
-    guard rem.len > 0 else { return true; }
+    if rem.len == 0 {
+        committed = true;
+        return true;
+    }
     while rem.len > 0 {
         let head, tail, has_comma = rem.split_once_byte(',');
         let tok = head.trim_lws();
@@ -259,6 +266,7 @@ fn parse_content_encoding_chain(
         rem = tail.trim_lws();
         guard rem.len > 0 else { return false; }
     }
+    committed = true;
     return true;
 }
 

@@ -423,8 +423,15 @@ fn test_cl_parsing() {
 }
 
 fn test_json_decode_bounds() {
+    var res_overflow = wing::Response { .. };
+    res_overflow.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name_exceeding_capacity\"}");
+    let item_overflow, err_overflow = wing::decode_json<JsonItemModel>(res_overflow);
+    assert(!wing::ok(err_overflow));
+    assert(item_overflow.id == 0);
+    assert(item_overflow.name.len == 0);
+
     var res = wing::Response { .. };
-    res.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name_exceeding_capacity\"}");
+    res.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name\"}");
     let item, err = wing::decode_json<JsonItemModel>(res);
     assert(wing::ok(err));
     assert(item.id == 2147483647);

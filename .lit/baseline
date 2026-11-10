@@ -565,7 +565,7 @@ client/response.goose 613 wing::respond_not_found 0.00 0 0.85
 client/response.goose 618 wing::respond_redirect 0.08 0 0.85
 client/response.goose 633 wing::vary_list_contains_token 0.08 0 0.85
 client/response.goose 647 wing::append_vary 0.41 0 0.85
-client/stream.goose 20 wing::encode_chunk 30.00 0 0.85
+client/stream.goose 20 wing::encode_chunk 60.00 0 0.85
 client/stream.goose 31 wing::encode_chunk_end 0.00 0 0.85
 client/stream.goose 40 wing::encode_chunk_trailer 0.00 0 0.85
 client/stream.goose 51 wing::encode_chunked_payload 45.27 0 0.85

@@ -70,7 +70,7 @@ fn redirect_error_to_string(err: RedirectError) -> const u8[:] {
 fn parse_referrer_policy_with_fallback(val: const u8[:], fallback: ReferrerPolicy) -> ReferrerPolicy {
     var chosen = fallback;
     each_split(val, ',') { raw_token =>
-        let t = raw_token.trim_ascii_space();
+        let t = raw_token.trim_lws();
         if t.eq_ascii_fold("no-referrer") {
             chosen = ReferrerPolicy.NoReferrer;
         } else if t.eq_ascii_fold("no-referrer-when-downgrade") {

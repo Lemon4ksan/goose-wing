@@ -837,6 +837,8 @@ fn process_dictionary_response<B>(
     out_decoded:      B&,
 ) -> bool {
     let prev_len = out_decoded.len;
+    var committed = false;
+    defer if !committed { out_decoded.resize(prev_len); };
     if content_encoding.eq_ascii_fold(rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
         let _, ok_hdr = decode_dcz_header(raw_body, dict_hash);
@@ -845,6 +847,7 @@ fn process_dictionary_response<B>(
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
+        guard origin.len == 0 || dict_entry.origin[..].eq_ascii_fold(origin) else { return false; }
         let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, true, dict_entry.sha256_hash);
         guard ok_magic else { return false; }
         guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
@@ -858,6 +861,7 @@ fn process_dictionary_response<B>(
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
+        guard origin.len == 0 || dict_entry.origin[..].eq_ascii_fold(origin) else { return false; }
         let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, false, dict_entry.sha256_hash);
         guard ok_magic else { return false; }
         guard decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded) else {
@@ -882,5 +886,6 @@ fn process_dictionary_response<B>(
             );
         }
     }
+    committed = true;
     return true;
 }

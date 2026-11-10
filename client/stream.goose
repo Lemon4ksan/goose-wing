@@ -18,6 +18,7 @@ import http.headers.chunked_fsm;
 
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
 fn encode_chunk<B>(data: const u8[:], out: B&) {
+    guard data.len > 0 else { return; }
     let chunk_len = data.len as! u64;
     chunk_len.format_u64_hex(out);
     out.push('\r');
@@ -38,7 +39,9 @@ fn encode_chunk_end<B>(out: B&) {
 
 // Encodes trailer header: `<name>: <value>\r\n` (RFC 9112 §7.1.2)
 fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) {
-    guard !rfc::is_disallowed_trailer_field(name) else { return; }
+    guard is_valid_header_name(name) && is_valid_header_value(val) && !rfc::is_disallowed_trailer_field(name) else {
+        return;
+    }
     out.append(name);
     out.push(':');
     out.push(' ');
@@ -92,7 +95,9 @@ fn write_chunk(writer: ChunkWriter&, data: const u8[:]) {
 }
 
 fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) -> bool {
-    guard !writer.finished && !rfc::is_disallowed_trailer_field(name) else { return false; }
+    guard !writer.finished && is_valid_header_name(name) && !rfc::is_disallowed_trailer_field(name) else {
+        return false;
+    }
     guard writer.trailers.entries.len < 16 else { return false; }
     return append_header(writer.trailers, name, val);
 }
@@ -144,15 +149,6 @@ fn is_complete(dec: const ChunkedStreamDecoder&) -> bool {
 
 fn has_error(dec: const ChunkedStreamDecoder&) -> bool {
     return dec.state == ChunkedStreamState.Error;
-}
-
-fn has_header_whitespace(s: const u8[:]) -> bool {
-    for b in s {
-        if b == ' ' || b == '\t' || b == '\r' {
-            return true;
-        }
-    }
-    return false;
 }
 
 fn append_trailer_item(trailers: HeaderMap&, name: const u8[:], val: const u8[:]) -> bool {
@@ -256,13 +252,13 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
     }
 
     let hname = tr_line[..col_idx];
-    if has_header_whitespace(hname) || rfc::is_disallowed_trailer_field(hname) {
+    let hval = tr_line[(col_idx + 1)..].trim_lws();
+    if !is_valid_header_name(hname) || !is_valid_header_value(hval) || rfc::is_disallowed_trailer_field(hname) {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
         return false;
     }
 
-    let hval = tr_line[(col_idx + 1)..].trim_lws();
     guard append_trailer_item(dec.trailers, hname, hval) else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;

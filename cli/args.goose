@@ -740,6 +740,7 @@ fn assign_positional_url(arg: const u8[:], cfg: CliConfig&) -> bool {
         arg.starts_with_fold("ws://") || arg.starts_with_fold("wss://");
     let prefix = if has_scheme { "" } else { "http://" };
     guard cfg.url.try_set(prefix) && cfg.url.try_append(arg) else {
+        cfg.url.clear();
         return set_cli_error(cfg, "URL exceeds maximum length");
     }
     return true;
