@@ -1471,6 +1471,14 @@ inline fn is_forbidden_path_byte(b: u8) -> bool {
         || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}';
 }
 
+fn is_valid_h2_token(val: const u8[:]) -> bool {
+    guard val.len > 0 else { return false; }
+    for b in val {
+        guard wing::is_tchar(b) else { return false; }
+    }
+    return true;
+}
+
 fn is_valid_h2_scheme(val: const u8[:]) -> bool {
     guard val.len > 0 else { return false; }
     let b0 = val[0];
@@ -1566,7 +1574,7 @@ fn validate_and_record_pseudo_header(
 
     if name == ":method" {
         if validate_http2_rules {
-            guard !pseudo.has_method && !pseudo.has_status && val.len > 0 else {
+            guard !pseudo.has_method && !pseudo.has_status && is_valid_h2_token(val) else {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
             if val != "OPTIONS" && pseudo.has_path && pseudo.path[..] == "*" {
@@ -1580,7 +1588,7 @@ fn validate_and_record_pseudo_header(
 
     if name == ":scheme" {
         if validate_http2_rules {
-            guard !pseudo.has_scheme && !pseudo.has_status && val.len > 0 else {
+            guard !pseudo.has_scheme && !pseudo.has_status && is_valid_h2_scheme(val) else {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
         }
@@ -1617,7 +1625,7 @@ fn validate_and_record_pseudo_header(
 
     if name == ":protocol" {
         if validate_http2_rules {
-            guard !pseudo.has_protocol && !pseudo.has_status && val.len > 0 else {
+            guard !pseudo.has_protocol && !pseudo.has_status && is_valid_h2_token(val) else {
                 return rfc::H2_ERR_PROTOCOL_ERROR;
             }
         }
@@ -1653,14 +1661,12 @@ fn validate_regular_header_to_map(
     name:        const u8[:],
     val:         const u8[:],
 ) -> u32 {
-    pseudo.has_regular_header = true;
-
     if pseudo.is_trailer {
         let is_forbidden_trailer = name == "content-length" || name == "transfer-encoding"
             || name == "host" || name == "connection" || name == "keep-alive"
-            || name == "upgrade" || name == "trailer" || rfc::is_disallowed_trailer_field(name);
+            || name == "upgrade" || name == "trailer" || name == "te"
+            || rfc::is_disallowed_trailer_field(name);
         guard !is_forbidden_trailer else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        guard name != "te" || val == "trailers" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
 
     if name == "host" {
@@ -1676,17 +1682,20 @@ fn validate_regular_header_to_map(
         }
     }
 
+    let is_forbidden_conn = name == "connection" || name == "keep-alive"
+        || name == "proxy-connection" || name == "transfer-encoding"
+        || name == "upgrade";
+    guard !is_forbidden_conn else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard name != "te" || (!pseudo.has_status && val == "trailers") else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
+
     if name == "content-length" {
         let v_cl = validate_content_length_pseudo(pseudo, val);
         guard v_cl == rfc::H2_ERR_NO_ERROR else { return v_cl; }
     }
 
-    let is_forbidden_conn = name == "connection" || name == "keep-alive"
-        || name == "proxy-connection" || name == "transfer-encoding"
-        || name == "upgrade";
-    guard !is_forbidden_conn else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-    guard name != "te" || val == "trailers" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-
+    pseudo.has_regular_header = true;
     return rfc::H2_ERR_NO_ERROR;
 }
 
@@ -1698,6 +1707,10 @@ fn validate_header_ordering_and_rules(
     val:                  const u8[:],
     validate_http2_rules: bool = true,
 ) -> u32 {
+    let saved_pseudo = out_pseudo;
+    var committed = false;
+    defer if !committed { out_pseudo = saved_pseudo; };
+
     if validate_http2_rules {
         guard validate_h2_field_syntax(name, val) else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -1713,6 +1726,7 @@ fn validate_header_ordering_and_rules(
            out_pseudo.has_method && out_pseudo.method[..] == "CONNECT" && !out_pseudo.has_protocol {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
+        committed = true;
         return rfc::H2_ERR_NO_ERROR;
     }
 
@@ -1726,6 +1740,7 @@ fn validate_header_ordering_and_rules(
     guard wing::append_header(out_headers, name, val) else {
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
+    committed = true;
     return rfc::H2_ERR_NO_ERROR;
 }
 

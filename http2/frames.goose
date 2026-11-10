@@ -74,9 +74,14 @@ fn parse_origin_frame(
 //   out: appends 16-bit length (19) followed by "https://example.com"
 fn encode_origin_entry<B>(out: B&, origin: const u8[:]) -> bool {
     guard origin.len <= 0xFFFF else { return false; }
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
     var len_be: u8[..2] = [];
     len_be.append_u16_be(origin.len as u16);
-    return out.try_append(len_be[..]) && out.try_append(origin);
+    guard out.try_append(len_be[..]) && out.try_append(origin) else { return false; }
+    committed = true;
+    return true;
 }
 
 inline fn sum_origins_payload_len(origins: const u8[:][..16]&) -> u32, bool {
@@ -128,8 +133,8 @@ fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u3
         return H2AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
     let valid_origin = if stream_id == 0 { origin_len > 0 } else { origin_len == 0 };
-    guard valid_origin else {
-        // RFC 7838 §4: An ALTSVC frame with invalid origin information MUST be ignored
+    guard valid_origin && origin_end < payload.len else {
+        // RFC 7838 §4: An ALTSVC frame with invalid origin or empty field value MUST be ignored
         return H2AltSvcFrame { .. }, rfc::H2_ERR_NO_ERROR;
     }
     return H2AltSvcFrame {
@@ -149,16 +154,23 @@ fn encode_altsvc_payload<B>(
     alt_svc_val: const u8[:],
     stream_id:   u32,
 ) -> bool {
+    guard alt_svc_val.len > 0 else { return false; }
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
     var len_be: u8[..2] = [];
     if stream_id == 0 {
         guard origin.len > 0 && origin.len <= 0xFFFF else { return false; }
         len_be.append_u16_be(origin.len as u16);
         guard out.try_append(len_be[..]) && out.try_append(origin) else { return false; }
     } else {
+        guard origin.len == 0 else { return false; }
         len_be.append_u16_be(0 as u16);
         guard out.try_append(len_be[..]) else { return false; }
     }
-    return out.try_append(alt_svc_val);
+    guard out.try_append(alt_svc_val) else { return false; }
+    committed = true;
+    return true;
 }
 
 inline fn calc_altsvc_payload_len(origin_len: i64, alt_svc_len: i64, stream_id: u32) -> u32, bool {
@@ -175,8 +187,11 @@ fn encode_altsvc_frame<B>(
     alt_svc_val: const u8[:],
     stream_id:   u32,
 ) -> bool {
+    guard alt_svc_val.len > 0 else { return false; }
     if stream_id == 0 {
         guard origin.len > 0 else { return false; }
+    } else {
+        guard origin.len == 0 else { return false; }
     }
     let payload_len, ok = calc_altsvc_payload_len(origin.len, alt_svc_val.len, stream_id);
     guard ok else { return false; }

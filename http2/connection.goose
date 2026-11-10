@@ -230,6 +230,11 @@ fn find_closed_h2_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, boo
     return -1, false;
 }
 
+inline fn is_closed_peer_stream_id(s: const H2Connection&, stream_id: u32) -> bool {
+    let _, closed_slot = find_closed_h2_stream_idx(s, stream_id);
+    return closed_slot || ((stream_id & 1) == 1 && stream_id <= s.last_peer_stream_id);
+}
+
 // ---- frame ingress coordinator & anti-dos barriers -----------------------
 
 // Opens a new stream descriptor with default RFC 9218 priority.
@@ -331,14 +336,14 @@ fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now
             }
         }
 
-        s.continuation_frames_cnt++;
-        if s.continuation_frames_cnt > MAX_CONT_FRAMES_LIMIT {
+        let next_cnt = core::add_sat_u32(s.continuation_frames_cnt, 1);
+        if next_cnt > MAX_CONT_FRAMES_LIMIT {
             return rfc::H2_ERR_ENHANCE_YOUR_CALM, true;
         }
 
-        s.accumulated_header_size += hdr.length;
-        if s.accumulated_header_size > s.max_header_list_size
-            || s.accumulated_header_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
+        let next_size = core::add_sat_u32(s.accumulated_header_size, hdr.length);
+        if next_size > s.max_header_list_size
+            || next_size > MAX_HEADER_BLOCK_SIZE_LIMIT {
             return rfc::H2_ERR_ENHANCE_YOUR_CALM, true;
         }
 
@@ -346,6 +351,9 @@ fn validate_h2_continuation_state(s: H2Connection&, hdr: const FrameHeader&, now
             s.continuation_stream_id = 0;
             s.continuation_frames_cnt = 0;
             s.accumulated_header_size = 0;
+        } else {
+            s.continuation_frames_cnt = next_cnt;
+            s.accumulated_header_size = next_size;
         }
         return rfc::H2_ERR_NO_ERROR, true;
     }
@@ -393,7 +401,7 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
     }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
-    if !found && hdr.stream_id > s.last_peer_stream_id {
+    if !found && !is_closed_peer_stream_id(s, hdr.stream_id) {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
@@ -529,7 +537,16 @@ fn handle_h2_push_promise_frame_header(s: H2Connection&, hdr: const FrameHeader&
     guard rule_err == rfc::H2_ERR_NO_ERROR else { return rule_err; }
 
     guard !s.is_server && s.enable_push else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-    guard hdr.stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard hdr.stream_id != 0 && (hdr.stream_id & 1) == 1 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    let _, is_closed = find_closed_h2_stream_idx(s, hdr.stream_id);
+    guard !is_closed else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
+    if found {
+        let st = s.streams[s_idx].state;
+        guard st == H2StreamState.Open || st == H2StreamState.HalfClosedLocal else {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+    }
 
     let hpack_len = calc_push_promise_hpack_len(hdr);
     if hpack_len > s.max_header_list_size || hpack_len > MAX_HEADER_BLOCK_SIZE_LIMIT {
@@ -663,15 +680,19 @@ fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 
     // Stream-level window
     let s_idx, found = find_session_stream_idx(s, stream_id);
     guard found else {
-        // If stream ID is unknown but <= last seen, ignore update on closed stream
-        if stream_id <= s.last_peer_stream_id {
+        // If stream ID is unknown but closed peer stream, ignore update on closed stream
+        if is_closed_peer_stream_id(s, stream_id) {
             return rfc::H2_ERR_NO_ERROR;
         }
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams
+    // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams,
+    // and reject WINDOW_UPDATE on idle or reserved (remote) streams with PROTOCOL_ERROR.
     let st .= s.streams[s_idx];
+    if st.state == H2StreamState.Idle || st.state == H2StreamState.ReservedRemote {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     if st.state == H2StreamState.Closed {
         return rfc::H2_ERR_NO_ERROR;
     }
@@ -715,7 +736,7 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     guard found else {
-        if hdr.stream_id <= s.last_peer_stream_id {
+        if is_closed_peer_stream_id(s, hdr.stream_id) {
             return rfc::H2_ERR_STREAM_CLOSED;
         }
         return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -877,9 +898,17 @@ fn enqueue_stream_send_bytes(s: H2Connection&, stream_id: u32, bytes: u32) -> bo
 
 // Applies dynamic priority update (from PRIORITY_UPDATE frame or Priority header).
 fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
-    s.client_sent_priority = true;
+    guard prioritized_stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
-    guard found else { return rfc::H2_ERR_NO_ERROR; }
+    if !found {
+        if (prioritized_stream_id & 1) == 0 {
+            let _, closed = find_closed_h2_stream_idx(s, prioritized_stream_id);
+            guard closed else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+        }
+        s.client_sent_priority = true;
+        return rfc::H2_ERR_NO_ERROR;
+    }
+    s.client_sent_priority = true;
 
     let stream .= s.streams[s_idx];
     let old_u = stream.priority.urgency;

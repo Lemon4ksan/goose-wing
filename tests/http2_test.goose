@@ -4510,6 +4510,106 @@ fn test_h2_data_frame_after_trailers_rejection(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 58. goose2rfc HTTP/2 & HPACK Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_h2_goose2rfc_audit_regressions(t: lit::T&) {
+    t.run("H2_1_C01: PUSH_PROMISE requires odd Open/HalfClosedLocal parent stream (RFC 9113 §6.6)") { sub =>
+        var conn = internal::new_h2_connection(0);
+        conn.is_server = false;
+        conn.enable_push = true;
+        internal::open_new_session_stream(conn, 1, true);
+
+        let h_pp = internal::FrameHeader {
+            length:     12,
+            frame_type: rfc::H2_FRAME_PUSH_PROMISE,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  1,
+        };
+        let err_pp = internal::on_ingress_frame_header(conn, h_pp, 0);
+        sub.assert_eq(err_pp, rfc::H2_ERR_PROTOCOL_ERROR, "PUSH_PROMISE on HalfClosedRemote stream rejected");
+
+        let h_pp_even = internal::FrameHeader {
+            length:     12,
+            frame_type: rfc::H2_FRAME_PUSH_PROMISE,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  2,
+        };
+        let err_even = internal::on_ingress_frame_header(conn, h_pp_even, 0);
+        sub.assert_eq(err_even, rfc::H2_ERR_PROTOCOL_ERROR, "PUSH_PROMISE on even stream ID rejected");
+    };
+
+    t.run("H2_1_C03 & H2_1_C05: PRIORITY_UPDATE on stream 0/even and closed stream monotonicity") { sub =>
+        var conn = internal::new_h2_connection(0);
+        let p = wing::PriorityParam { urgency: 1, incremental: true };
+        let err_zero = internal::apply_priority_update(conn, 0, p);
+        sub.assert_eq(err_zero, rfc::H2_ERR_PROTOCOL_ERROR, "PRIORITY_UPDATE prioritized_stream_id=0 rejected");
+        sub.assert_true(!conn.client_sent_priority, "client_sent_priority not dirtied on error");
+
+        let err_even = internal::apply_priority_update(conn, 4, p);
+        sub.assert_eq(err_even, rfc::H2_ERR_PROTOCOL_ERROR, "PRIORITY_UPDATE on idle even push stream rejected");
+
+        // Open stream 5 -> stream 3 is implicitly closed (RFC 9113 §5.1.1)
+        let h_open5 = internal::FrameHeader {
+            length:     10,
+            frame_type: rfc::H2_FRAME_HEADERS,
+            flags:      rfc::H2_FLAG_END_HEADERS,
+            stream_id:  5,
+        };
+        sub.assert_eq(internal::on_ingress_frame_header(conn, h_open5, 0), rfc::H2_ERR_NO_ERROR, "open stream 5");
+
+        let h_rst3 = internal::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_RST_STREAM,
+            flags:      0,
+            stream_id:  3,
+        };
+        sub.assert_eq(internal::on_ingress_frame_header(conn, h_rst3, 0), rfc::H2_ERR_NO_ERROR, "RST_STREAM on implicitly closed stream 3 allowed");
+
+        let err_win7 = internal::apply_window_update(conn, 7, 1024);
+        sub.assert_eq(err_win7, rfc::H2_ERR_PROTOCOL_ERROR, "WINDOW_UPDATE on idle stream 7 > last_peer_stream_id rejected");
+
+        let err_win3 = internal::apply_window_update(conn, 3, 1024);
+        sub.assert_eq(err_win3, rfc::H2_ERR_NO_ERROR, "WINDOW_UPDATE on implicitly closed stream 3 ignored per §6.9");
+    };
+
+    t.run("H2_1_C08: ALTSVC origin/stream validation & transactional rollback (RFC 7838 §4)") { sub =>
+        var out: u8[..64] = [];
+        out.append("KEEP");
+        let ok_both = internal::encode_altsvc_frame(out, "https://example.com", "h2=\":443\"", 1);
+        sub.assert_true(!ok_both, "ALTSVC with non-zero stream_id and non-empty origin rejected");
+        sub.assert_eq(out.len, 4, "out rolled back on invalid ALTSVC");
+
+        let ok_empty_val = internal::encode_altsvc_frame(out, "", "", 1);
+        sub.assert_true(!ok_empty_val, "ALTSVC with empty Alt-Svc-Field-Value rejected");
+        sub.assert_eq(out.len, 4, "out untouched on empty alt_svc_val");
+
+        var raw_empty: u8[..16] = [];
+        raw_empty.push(0);
+        raw_empty.push(4);
+        raw_empty.append("test");
+        let parsed, err_parse = internal::parse_altsvc_frame(raw_empty[..], 0);
+        sub.assert_eq(err_parse, rfc::H2_ERR_NO_ERROR, "ALTSVC frame with empty value ignored without connection error");
+        sub.assert_eq(parsed.alt_svc_value.len, 0, "ALTSVC frame with empty value ignored");
+    };
+
+    t.run("H2_2_C03, H2_2_C05, H2_2_C06: HPACK pseudo-header syntax, TE in trailers, and rollback") { sub =>
+        var pseudo = internal::H2PseudoHeaders { .. };
+        var headers = wing::HeaderMap { .. };
+        let err_m = internal::validate_and_record_pseudo_header(pseudo, ":method", "GET /Evil", true);
+        sub.assert_eq(err_m, rfc::H2_ERR_PROTOCOL_ERROR, ":method with space rejected");
+
+        var pseudo_s = internal::H2PseudoHeaders { .. };
+        let err_s = internal::validate_and_record_pseudo_header(pseudo_s, ":scheme", "1http", true);
+        sub.assert_eq(err_s, rfc::H2_ERR_PROTOCOL_ERROR, ":scheme starting with digit rejected");
+
+        var pseudo_tr = internal::H2PseudoHeaders { is_trailer: true, .. };
+        let err_te = internal::validate_header_ordering_and_rules(pseudo_tr, headers, "te", "trailers");
+        sub.assert_eq(err_te, rfc::H2_ERR_PROTOCOL_ERROR, "TE header in trailers rejected (RFC 9113 §8.1.2)");
+        sub.assert_true(!pseudo_tr.has_regular_header, "pseudo_tr rolled back on rejected trailer header");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP/2 Protocol, Multiplexing, HPACK, and RFC Invariants Suite", lit::Verbosity.Verbose);
 
@@ -4570,6 +4670,7 @@ fn main() {
     lit::run_case(runner, "55. HTTP/2 Connection Frame Coordinator Trailer END_STREAM Enforcement", test_h2_connection_trailers_end_stream_requirement);
     lit::run_case(runner, "56. HTTP/2 :status Pseudo-Header Validation & 101 Prohibition", test_h2_status_pseudo_header_validation);
     lit::run_case(runner, "57. HTTP/2 DATA Frame Rejection on Streams with Trailers Received", test_h2_data_frame_after_trailers_rejection);
+    lit::run_case(runner, "58. goose2rfc HTTP/2 & HPACK Audit Regressions", test_h2_goose2rfc_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);
