@@ -233,7 +233,7 @@ fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool {
 //   returns: mask = 2, ok = true
 fn parse_mandatory_svc_param(val: const u8[:]) -> u32, bool {
     // RFC 9460 §8: Mandatory list of 2-octet SvcParamKeys in ascending order
-    guard val.len > 0 && (val.len % 2) == 0 else { return 0, false; }
+    guard val.len > 0 && (val.len & 1) == 0 else { return 0, false; }
     var m_off:      i64 = 0;
     var last_m_key: i32 = -1;
     var mask:       u32 = 0;

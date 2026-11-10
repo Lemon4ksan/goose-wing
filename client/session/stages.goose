@@ -313,8 +313,12 @@ fn verify_dict_encoding_precheck(
     enc:        const u8[:],
     dict_cache: const DictionaryCache&,
 ) -> bool {
-    let is_dcz = enc.eq_ascii_fold(rfc::ENCODING_DCZ);
-    let is_dcb = enc.eq_ascii_fold(rfc::ENCODING_DCB);
+    var tokens: u8[..16][..4] = [];
+    guard parse_content_encoding_chain(enc, tokens) else { return false; }
+    guard tokens.len > 0 else { return true; }
+    let outer_enc = tokens[core::sub_sat_i64(tokens.len, 1)][..];
+    let is_dcz = outer_enc.eq_ascii_fold(rfc::ENCODING_DCZ);
+    let is_dcb = outer_enc.eq_ascii_fold(rfc::ENCODING_DCB);
     guard is_dcz || is_dcb else { return true; }
     var dict_hash: u8[32] = [0; 32];
     if is_dcz {
@@ -416,11 +420,13 @@ fn try_handle_early_data_or_dpop_challenge(
     guard session.dpop.has_key && is_dpop_status else { return false; }
     guard extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
     let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
+    let htu_clean, _, _ = htu_no_q.partition_byte('#');
     var proof: u8[..2048] = [];
     let ok_proof = create_dpop_proof(
         session.dpop.private_key[..],
         ctx.current_method[..],
-        current_url.href[..],
+        htu_clean,
         session.dpop.access_token[..],
         session.dpop.last_nonce[..],
         now_sec,
@@ -481,13 +487,15 @@ fn validate_client_cors_and_corp_response(
     resp:        const Response&,
     out_err:     Error&,
 ) -> bool {
-    guard ctx.has_initiator && ctx.initiator.kind != core::OriginKind.Opaque else { return true; }
+    guard ctx.has_initiator else { return true; }
+    let is_opaque = ctx.initiator.kind == core::OriginKind.Opaque;
+    let is_tainted = ctx.tainted_origin || is_opaque;
     let target_orig = core::origin_from_url(current_url);
     var init_orig_str:   u8[..256] = [];
     var target_orig_str: u8[..256] = [];
     core::serialize_origin(ctx.initiator, init_orig_str);
     core::serialize_origin(target_orig, target_orig_str);
-    guard !init_orig_str[..].eq_ascii_fold(target_orig_str[..]) || ctx.tainted_origin else {
+    guard !init_orig_str[..].eq_ascii_fold(target_orig_str[..]) || is_tainted else {
         return true;
     }
 
@@ -502,12 +510,13 @@ fn validate_client_cors_and_corp_response(
     }
 
     if ctx.cors_mode {
-        let req_orig = find_header(ctx.headers, "Origin");
+        let raw_orig = find_header(ctx.headers, "Origin");
+        let req_orig = if raw_orig.len > 0 { raw_orig } else if is_tainted { "null" } else { "" };
         if req_orig.len > 0 {
             let include_creds = find_header(ctx.headers, "Cookie").len > 0 ||
                 find_header(ctx.headers, "Authorization").len > 0;
             let cors_opts = ClientCorsVerifyOptions {
-                tainted_origin:      ctx.tainted_origin,
+                tainted_origin:      is_tainted,
                 include_credentials: include_creds,
             };
             if !verify_client_cors_response(resp.headers, req_orig, cors_opts) {
@@ -670,12 +679,14 @@ inline fn apply_client_early_data_and_dpop_headers(
             set_header(ctx.headers, "Early-Data", "1");
         }
     }
-    guard session.dpop.has_key && find_header(ctx.headers, rfc::DPOP_HEADER).len == 0 else { return; }
+    guard session.dpop.has_key else { return; }
+    let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
+    let htu_clean, _, _ = htu_no_q.partition_byte('#');
     var proof: u8[..2048] = [];
     guard create_dpop_proof(
         session.dpop.private_key[..],
         ctx.current_method[..],
-        current_url.href[..],
+        htu_clean,
         session.dpop.access_token[..],
         session.dpop.last_nonce[..],
         now_sec,
@@ -717,8 +728,8 @@ fn verify_client_response_signature(
     resp:        const Response&,
 ) -> bool {
     guard session.sig_public_key.len == 32 else { return true; }
-    let has_sig = has_header(resp, rfc::HEADER_SIGNATURE) || has_header(resp, rfc::HEADER_SIGNATURE_INPUT);
-    guard has_sig else { return true; }
+    let has_sig = has_header(resp, rfc::HEADER_SIGNATURE) && has_header(resp, rfc::HEADER_SIGNATURE_INPUT);
+    guard has_sig else { return false; }
     var hop_req = copy(req);
     let _ = hop_req.method.try_set(method);
     let _ = hop_req.url.try_set(current_url.href[..]);

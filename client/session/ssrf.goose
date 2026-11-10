@@ -77,11 +77,9 @@ fn parse_ipv4_part(part: const u8[:]) -> u64, bool {
         let b = part[i];
         let hex = core::hex_digit_to_val(b);
         guard hex >= 0 else { return 0, false; }
-        let digit = hex as u64;
-        if digit >= base { return 0, false; }
-        guard val <= 0xFFFFFFFF / base else { return 0, false; }
-        val = val * base + digit;
-        if val > 0xFFFFFFFF { return 0, false; }
+        let digit = hex as! u64;
+        val = core::add_sat_u64(core::mul_sat_u64(val, base), digit);
+        guard digit < base && val <= 0xFFFFFFFF else { return 0, false; }
     }
     return val, true;
 }
@@ -460,6 +458,14 @@ fn is_dangerous_service_port(port_num: i32) -> bool {
            port_num == 28017;    // MongoDB Web Status
 }
 
+fn is_cloud_metadata_or_reserved_ip(ip_str: const u8[:]) -> bool {
+    var octets: u8[4] = [0, 0, 0, 0];
+    if parse_flexible_ipv4(ip_str, octets) {
+        return octets[0] == 0 || (octets[0] == 169 && octets[1] == 254) || octets[0] >= 224;
+    }
+    return ip_str == "::" || ip_str == "[::]";
+}
+
 fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
 
@@ -485,15 +491,22 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
         if is_private_or_reserved_ip(host_str) {
             return RedirectError.SsrfBlockedIp;
         }
+    } else if is_cloud_metadata_or_reserved_ip(host_str) {
+        return RedirectError.SsrfBlockedIp;
     }
 
     return RedirectError.None;
 }
 
 fn validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const SsrfGuardPolicy&) -> RedirectError {
-    guard policy.enabled && policy.deny_local_network else { return RedirectError.None; }
+    guard policy.enabled else { return RedirectError.None; }
     for ip in ips {
-        if is_private_or_reserved_ip(ip) {
+        let blocked = if policy.deny_local_network {
+            is_private_or_reserved_ip(ip)
+        } else {
+            is_cloud_metadata_or_reserved_ip(ip)
+        };
+        if blocked {
             return RedirectError.SsrfBlockedIp;
         }
     }

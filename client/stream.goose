@@ -230,22 +230,10 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
         return true;
     }
 
-    dec.trailer_count++;
-    guard dec.trailer_count <= 16 else {
-        dec.state = ChunkedStreamState.Error;
-        dec.error_code = ChunkedDecodeError.DisallowedTrailer;
-        return false;
-    }
-
-    dec.total_trailer_bytes += tr_line.len;
-    guard dec.total_trailer_bytes <= 4096 else {
-        dec.state = ChunkedStreamState.Error;
-        dec.error_code = ChunkedDecodeError.DisallowedTrailer;
-        return false;
-    }
-
+    let next_count = dec.trailer_count + 1;
+    let next_bytes = core::add_sat_i64(dec.total_trailer_bytes, tr_line.len);
     let col_idx = tr_line.index_of_byte(':');
-    guard col_idx > 0 else {
+    guard next_count <= 16 && next_bytes <= 4096 && col_idx > 0 else {
         dec.state = ChunkedStreamState.Error;
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
         return false;
@@ -264,6 +252,8 @@ fn process_trailer_line(dec: ChunkedStreamDecoder&) -> bool {
         dec.error_code = ChunkedDecodeError.DisallowedTrailer;
         return false;
     }
+    dec.trailer_count = next_count;
+    dec.total_trailer_bytes = next_bytes;
     dec.line_buf.clear();
     return true;
 }

@@ -730,7 +730,7 @@ fn parse_client_supported_versions(ext_bytes: const u8[:]) -> bool, bool {
 
     let list_len = list_cursor.cursor_len();
     // RFC 8446 Section 4.2.1: versions<2..254>, must be even length
-    guard list_len >= 2 && list_len <= 254 && (list_len % 2) == 0 else { return false, false; }
+    guard list_len >= 2 && list_len <= 254 && (list_len & 1) == 0 else { return false, false; }
 
     var seen_versions: u16[..127] = [];
     var has_tls13 = false;

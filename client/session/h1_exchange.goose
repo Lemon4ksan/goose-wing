@@ -58,18 +58,22 @@ fn serialize_h1_request(
     url_val: const core::Url&,
     out:     u8[..4096]&,
 ) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     out.clear();
     var target_buf: u8[..4096] = [];
     guard format_request_target(req, url_val, target_buf) else { return false; }
     let has_cl = req.header("Content-Length").len > 0;
     let has_te = req.header("Transfer-Encoding").len > 0;
+    let needs_zero_cl = req.method[..].eq_ascii_fold(rfc::METHOD_POST) || req.method[..].eq_ascii_fold(rfc::METHOD_PUT);
     var hdrs = req.headers;
-    if !has_cl && !has_te && req.body.len > 0 {
+    if !has_cl && !has_te && (req.body.len > 0 || needs_zero_cl) {
         var cl_buf: u8[..32] = [];
         req.body.len.format_i64_dec(cl_buf);
         guard append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
-    return wire::encode_h1_request(
+    guard wire::encode_h1_request(
         req.method[..],
         target_buf[..],
         url_val.host(),
@@ -77,7 +81,9 @@ fn serialize_h1_request(
         "",
         wire::H1HeaderFilterMode.PreserveAll,
         out,
-    );
+    ) else { return false; }
+    committed = true;
+    return true;
 }
 
 // ---- 3. Response Status and Header Parsing ----------------------------------
@@ -633,7 +639,7 @@ fn on_data(sink: BufferedBodySink&, chunk: const u8[:]) -> StreamSinkVerdict {
 }
 
 fn on_complete(sink: BufferedBodySink&, trailers: const HeaderMap&) {
-    sink.resp.trailers = trailers;
+    copy_headers(trailers, sink.resp.trailers);
 }
 
 // Pumps an exact `Content-Length` body directly into `sink.on_data(chunk)` using a 4 KB stack array.

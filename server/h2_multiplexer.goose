@@ -679,7 +679,7 @@ fn process_ingress_window_update<B>(
     guard frame_payload.len == 4 else { return true; }
     let raw_inc = core::read_be_u32(frame_payload, 0);
     let inc = raw_inc & 0x7FFFFFFF;
-    if hdr.stream_id != 0 && ((hdr.stream_id % 2) == 0 || hdr.stream_id > sess.conn.last_peer_stream_id) {
+    if hdr.stream_id != 0 && ((hdr.stream_id & 1) == 0 || hdr.stream_id > sess.conn.last_peer_stream_id) {
         // RFC 9113 §5.1: Frame other than HEADERS or PRIORITY on idle stream is connection error PROTOCOL_ERROR
         // RFC 9113 §6.4: RST_STREAM frames MUST NOT be sent for an idle stream
         emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
@@ -1237,7 +1237,7 @@ fn process_ingress_data<B>(
 
     let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
     if !found {
-        if (hdr.stream_id % 2) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
+        if (hdr.stream_id & 1) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
             // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
             return replenish_closed_stream_conn_window(sess, hdr.length, out_wire);
@@ -1452,7 +1452,7 @@ fn dispatch_ingress_frame<B>(
         return process_ingress_priority(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {
         let prio_stream_id, prio_param, prio_err = parse_priority_update_payload(frame_payload, false);
-        if prio_err != rfc::H2_ERR_NO_ERROR || (prio_stream_id % 2) == 0 {
+        if prio_err != rfc::H2_ERR_NO_ERROR || (prio_stream_id & 1) == 0 {
             let final_err = if prio_err != rfc::H2_ERR_NO_ERROR { prio_err } else { rfc::H2_ERR_PROTOCOL_ERROR };
             emit_goaway(sess.conn.last_peer_stream_id, final_err, out_wire);
             return false;

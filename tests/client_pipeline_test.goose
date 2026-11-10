@@ -1341,7 +1341,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
         let u = core::new_url("https://ad.tracker.com/track");
         var part_key: u8[..256] = [];
         wing::compute_hop_partition_key(ctx, u, part_key);
-        sub.assert_bytes_eq(part_key[..], "https://publisher.example.com", "top frame origin used as partition key");
+        sub.assert_bytes_eq(part_key[..], "https://example.com", "top frame site eTLD+1 used as CHIPS partition key");
     };
 }
 
@@ -1830,6 +1830,52 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         sub.assert_true(
             pol == wing::ReferrerPolicy.StrictOrigin,
             "VT control char not stripped as OWS in Referrer-Policy",
+        );
+    };
+
+    t.run("Opaque origin CORS/CORP enforcement, POST Content-Length: 0, and missing Signature rejection") { sub =>
+        var ctx = wing::RequestExecutionContext {
+            has_initiator: true,
+            cors_mode:     true,
+            ..
+        };
+        ctx.initiator.kind = core::OriginKind.Opaque;
+        let target_url = core::new_url("https://api.example.com/data");
+        var cors_err = wing::Error { .. };
+        var resp_no_cors = wing::Response { status_code: 200, .. };
+        sub.assert_false(
+            wing::validate_client_cors_and_corp_response(ctx, target_url, resp_no_cors, cors_err),
+            "Opaque initiator must not bypass CORS check",
+        );
+        wing::set_header(resp_no_cors.headers, "Access-Control-Allow-Origin", "*");
+        wing::set_header(resp_no_cors.headers, "Cross-Origin-Resource-Policy", "same-origin");
+        sub.assert_false(
+            wing::validate_client_cors_and_corp_response(ctx, target_url, resp_no_cors, cors_err),
+            "Opaque initiator must be treated as cross-origin/cross-site for CORP",
+        );
+
+        let post_req = wing::new_post("https://api.example.com/empty");
+        var raw_h1: u8[..4096] = [];
+        let _ = wing::serialize_h1_request(post_req, target_url, raw_h1);
+        sub.assert_true(
+            core::contains(raw_h1[..], "Content-Length: 0\r\n"),
+            "Empty POST emits Content-Length: 0 in HTTP/1.1",
+        );
+
+        var sess = wing::new_client();
+        let pk: u8[32] = [0x11; 32];
+        sess.sig_public_key.append(pk[..]);
+        let unsigned_resp = wing::Response { status_code: 200, .. };
+        sub.assert_false(
+            wing::verify_client_response_signature(
+                sess,
+                post_req,
+                target_url,
+                "POST",
+                post_req.headers,
+                unsigned_resp,
+            ),
+            "Missing Signature/Signature-Input rejected when sig_public_key is configured",
         );
     };
 }

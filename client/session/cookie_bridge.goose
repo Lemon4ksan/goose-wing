@@ -99,13 +99,19 @@ fn compute_hop_partition_key<B>(
 ) {
     out.clear();
     if ctx.top_frame_origin.host.len > 0 {
-        let sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { "https" };
-        let _ = out.try_append(sch);
+        let top_sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { "https" };
+        let _ = out.try_append(top_sch);
         let _ = out.try_append("://");
-        let _ = out.try_append(ctx.top_frame_origin.host[..]);
+        var top_etld: u8[..128] = [];
+        psl_extract_etld_plus_one(ctx.top_frame_origin.host[..], top_etld);
+        if top_etld.len > 0 {
+            let _ = out.try_append(top_etld[..]);
+        } else {
+            let _ = out.try_append(ctx.top_frame_origin.host[..]);
+        }
     } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
-        let sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { "https" };
-        let _ = out.try_append(sch);
+        let sfc_sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { "https" };
+        let _ = out.try_append(sfc_sch);
         let _ = out.try_append("://");
         let _ = out.try_append(ctx.site_for_cookies.registrable_domain[..]);
     } else {

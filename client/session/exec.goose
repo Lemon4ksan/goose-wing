@@ -184,11 +184,10 @@ fn apply_redirect_transition(
     redirect_info: const RedirectInfo&,
 ) -> Error {
     ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
-    let last_hop_idx = core::sub_sat_i64(ctx.url_chain.len, 1);
-    if ctx.cors_mode && redirect_info.is_cross_origin && last_hop_idx > 0 && last_hop_idx < ctx.url_chain.len {
-        let init_url = ctx.url_chain[0];
-        let prev_url = ctx.url_chain[last_hop_idx];
-        if !init_url.is_same_origin_url(prev_url) {
+    if ctx.cors_mode && redirect_info.is_cross_origin && ctx.url_chain.len > 0 {
+        let prev_idx = core::sub_sat_i64(ctx.url_chain.len, 1);
+        let prev_orig = core::origin_from_url(ctx.url_chain[prev_idx]);
+        if !ctx.has_initiator || !core::is_same_origin(ctx.initiator, prev_orig) {
             ctx.tainted_origin = true;
         }
     }
@@ -909,6 +908,9 @@ fn encode_h2_client_request<B>(
     send_preface: bool,
     out_wire:     B&,
 ) -> bool {
+    let saved_len = out_wire.len;
+    var committed = false;
+    defer if !committed { out_wire.resize(saved_len); };
     out_wire.clear();
     let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
     let auth_str = current_url.host();
@@ -920,11 +922,7 @@ fn encode_h2_client_request<B>(
     guard path_buf.len <= 1024 else { return false; }
 
     var pseudo = internal::H2PseudoHeaders {
-        has_method:    true,
-        has_scheme:    true,
-        has_authority: true,
-        has_path:      true,
-        ..
+        has_method: true, has_scheme: true, has_authority: true, has_path: true, ..
     };
     let _ = pseudo.method.try_set(curr_method);
     let _ = pseudo.scheme.try_set(scheme_str);
@@ -935,33 +933,23 @@ fn encode_h2_client_request<B>(
         pseudo.has_protocol = true;
         let _ = pseudo.protocol.try_set(proto_hdr);
     }
-
     if send_preface {
         guard out_wire.try_append(rfc::H2_CLIENT_PREFACE) else { return false; }
         let empty_settings: wire::WireSetting[..1] = [];
         guard wire::encode_settings_frame(empty_settings[..], out_wire) else { return false; }
     }
-
-    let has_body = ctx.body.len > 0;
     guard wire::encode_h2_headers_frame_from_map(
-        enc_dt,
-        stream_id,
-        pseudo,
-        ctx.headers,
-        !has_body,
-        out_wire,
-        16384,
+        enc_dt, stream_id, pseudo, ctx.headers, ctx.body.len == 0, out_wire, 16384,
     ) else { return false; }
-
     var rem = ctx.body[..];
     while rem.len > 0 {
         let chunk_len = min(rem.len, rfc::H2_DEFAULT_MAX_FRAME_SIZE as i64);
-        let is_last = chunk_len >= rem.len;
-        guard wire::encode_data_frame(stream_id, rem[..chunk_len], is_last, out_wire) else {
+        guard wire::encode_data_frame(stream_id, rem[..chunk_len], chunk_len >= rem.len, out_wire) else {
             return false;
         }
         rem = rem[chunk_len..];
     }
+    committed = true;
     return true;
 }
 
@@ -1010,6 +998,10 @@ fn process_h2_response_frame<B>(
     }
     if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return false, false; }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
+    let saved_resp = copy(resp);
+    let saved_got = got_hdrs;
+    var committed = false;
+    defer if !committed { resp = copy(saved_resp); got_hdrs = saved_got; };
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
         let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
         guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
@@ -1018,9 +1010,7 @@ fn process_h2_response_frame<B>(
             let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
             guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
             if pseudo.status > 0 { resp.status_code = pseudo.status; }
-            for &e in resp.headers.entries {
-                update_response_presence(resp, entry_name(resp.headers, e));
-            }
+            for &e in resp.headers.entries { update_response_presence(resp, entry_name(resp.headers, e)); }
             if pseudo.status >= 100 && pseudo.status < 200 {
                 guard (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 else { return false, false; }
                 resp.headers.clear();
@@ -1034,21 +1024,23 @@ fn process_h2_response_frame<B>(
             let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
             guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
         }
-        let end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
+        let end_s = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
             (got_hdrs && (is_head || rfc::is_empty_body_status(resp.status_code)));
-        return true, end_stream;
+        committed = true;
+        return true, end_s;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
         if hdr.length > 0 {
-            let inc = hdr.length;
-            let _ = wire::encode_window_update_frame(0, inc, out_ctrl);
-            let _ = wire::encode_window_update_frame(stream_id, inc, out_ctrl);
+            let _ = wire::encode_window_update_frame(0, hdr.length, out_ctrl);
+            let _ = wire::encode_window_update_frame(stream_id, hdr.length, out_ctrl);
         }
+        committed = true;
         return true, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
     }
+    committed = true;
     return true, false;
 }
 

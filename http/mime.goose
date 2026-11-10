@@ -25,7 +25,7 @@ fn strict_unquote<B>(input: const u8[:], out: B&, max_out_len: i64 = 65536) -> b
         idx--;
     }
     // If odd number of slashes precedes terminal quote, the terminal quote is escaped!
-    guard (slash_count % 2) == 0 else { return false; }
+    guard (slash_count & 1) == 0 else { return false; }
 
     var i: i64 = 1;
     let end_idx = input.len - 1;

@@ -428,14 +428,18 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 //   target_host = "[2001:db8::1]"
 //   returns: out_host = "2001%3Adb8%3A%3A1", ok = true
 fn encode_masque_target_host(target_host: const u8[:], out_host: u8[..128]&) -> bool {
-    out_host.clear();
     let has_brackets = target_host.len >= 2 && target_host[0] == '[' && target_host[target_host.len - 1] == ']';
     let clean_host = if has_brackets { target_host[1..^1] } else { target_host };
     guard clean_host.len > 0 else { return false; }
+    let saved_len = out_host.len;
+    var committed = false;
+    defer if !committed { out_host.resize(saved_len); };
+    out_host.clear();
     for b in clean_host {
         let ok_b = if b == ':' { out_host.try_append("%3A") } else { out_host.try_push(b) };
         guard ok_b else { return false; }
     }
+    committed = true;
     return true;
 }
 

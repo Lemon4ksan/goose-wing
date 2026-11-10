@@ -1281,7 +1281,7 @@ fn test_two_pointer_ack_sweep_and_loss_compaction() {
             size_bytes:    1000,
             ack_eliciting: true,
             in_flight:     true,
-            ecn_marked:    (pn % 2) == 0,
+            ecn_marked:    (pn & 1) == 0,
         };
         internal::record_space_sent_packet(space, pkt);
     }

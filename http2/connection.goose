@@ -478,7 +478,7 @@ fn handle_h2_headers_frame_header(s: H2Connection&, hdr: const FrameHeader&, now
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
-    if (hdr.stream_id % 2) == 0 {
+    if (hdr.stream_id & 1) == 0 {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
