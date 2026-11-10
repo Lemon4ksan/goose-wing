@@ -82,13 +82,18 @@ inline fn try_consume_quoted_char<B>(s: const u8[:], pos: i64&, out_val: B&) -> 
 //   s = "\"hello \\\"world\\\"\", next=1"
 //   returns: consumed = 17, ok = true, out_val = "hello \"world\""
 fn parse_quoted_param<B>(s: const u8[:], out_val: B&) -> i64, bool {
+    out_val.clear();
     var pos: i64 = 1;
     while pos < s.len {
         if s[pos] == '"' {
             return core::add_sat_i64(pos, 1), true;
         }
-        guard try_consume_quoted_char(s, pos, out_val) else { return 0, false; }
+        guard try_consume_quoted_char(s, pos, out_val) else {
+            out_val.clear();
+            return 0, false;
+        }
     }
+    out_val.clear();
     return 0, false;
 }
 
@@ -155,17 +160,21 @@ fn apply_digest_core_param(
     seen_mask: u32&,
 ) -> bool, bool {
     if key.eq_ascii_fold("realm") {
-        return true, try_mark_digest_param(seen_mask, 1) && chal.realm.try_set(val);
+        return true, (seen_mask & 1) == 0 && chal.realm.try_set(val) && try_mark_digest_param(seen_mask, 1);
     }
     if key.eq_ascii_fold("nonce") {
-        return true, try_mark_digest_param(seen_mask, 2) && chal.nonce.try_set(val);
+        return true, (seen_mask & 2) == 0 && chal.nonce.try_set(val) && try_mark_digest_param(seen_mask, 2);
     }
     if key.eq_ascii_fold("algorithm") {
+        guard (seen_mask & 4) == 0 && chal.algorithm.try_set(val) && try_mark_digest_param(seen_mask, 4) else {
+            return true, false;
+        }
         chal.has_explicit_algo = true;
-        return true, try_mark_digest_param(seen_mask, 4) && chal.algorithm.try_set(val);
+        return true, true;
     }
     if key.eq_ascii_fold("qop") {
-        return true, try_mark_digest_param(seen_mask, 8) && val.len > 0 && chal.qop.try_set(val);
+        let qop_ok = (seen_mask & 8) == 0 && val.len > 0 && chal.qop.try_set(val);
+        return true, qop_ok && try_mark_digest_param(seen_mask, 8);
     }
     return false, true;
 }
@@ -178,10 +187,10 @@ fn apply_digest_opt_param(
     seen_mask: u32&,
 ) -> bool {
     if key.eq_ascii_fold("opaque") {
-        return try_mark_digest_param(seen_mask, 16) && chal.opaque.try_set(val);
+        return (seen_mask & 16) == 0 && chal.opaque.try_set(val) && try_mark_digest_param(seen_mask, 16);
     }
     if key.eq_ascii_fold("domain") {
-        return try_mark_digest_param(seen_mask, 32) && chal.domain.try_set(val);
+        return (seen_mask & 32) == 0 && chal.domain.try_set(val) && try_mark_digest_param(seen_mask, 32);
     }
     if key.eq_ascii_fold("stale") {
         guard try_mark_digest_param(seen_mask, 64) else { return false; }
@@ -190,13 +199,14 @@ fn apply_digest_opt_param(
     }
     if key.eq_ascii_fold("userhash") {
         let is_true = val.eq_ascii_fold("true");
-        guard try_mark_digest_param(seen_mask, 128) && (is_true || val.eq_ascii_fold("false")) else { return false; }
+        guard (is_true || val.eq_ascii_fold("false")) && try_mark_digest_param(seen_mask, 128) else { return false; }
         chal.userhash = is_true;
         return true;
     }
     if key.eq_ascii_fold("charset") {
-        return try_mark_digest_param(seen_mask, 256) && val.eq_ascii_fold("UTF-8");
+        return val.eq_ascii_fold("UTF-8") && try_mark_digest_param(seen_mask, 256);
     }
+    seen_mask = seen_mask | 512;
     return true;
 }
 
@@ -250,8 +260,12 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
     skip_digest_scheme(raw_header, idx);
 
     while idx < raw_header.len {
+        let pre_sep_idx = idx;
         skip_whitespace_and_commas(raw_header, idx);
         guard idx < raw_header.len else { break; }
+        guard seen_mask == 0 || raw_header[pre_sep_idx..idx].contains_byte(',') else {
+            return DigestChallenge { .. }, false;
+        }
 
         let key, key_ok = parse_digest_param_key(raw_header, idx);
         guard key_ok else { return DigestChallenge { .. }, false; }
@@ -262,7 +276,9 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         guard apply_digest_param(chal, key, val[..], seen_mask) else { return DigestChallenge { .. }, false; }
     }
 
-    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 && rfc::is_supported_digest_algo(chal.algorithm[..]));
+    let qop_ok = chal.qop.len == 0 || resolve_active_qop(chal.qop[..]).len > 0;
+    chal.valid = (chal.realm.len > 0 && chal.nonce.len > 0 &&
+                  rfc::is_supported_digest_algo(chal.algorithm[..]) && qop_ok);
     return chal, chal.valid;
 }
 

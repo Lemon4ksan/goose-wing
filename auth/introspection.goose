@@ -86,7 +86,18 @@ inline fn parse_introspection_aud(reader: json::Reader&, out: IntrospectionRespo
             }
         }
     };
-    return ok;
+    guard ok && out.aud.len > 0 else {
+        out.aud.clear();
+        return false;
+    }
+    return true;
+}
+
+inline fn mark_introspection_key_seen(seen_mask: u32&, bit: u32, had_err: bool&) {
+    if (seen_mask & bit) != 0 {
+        had_err = true;
+    }
+    seen_mask = seen_mask | bit;
 }
 
 // Reads a JSON string member into `dst` for RFC 7662 introspection metadata.
@@ -123,19 +134,48 @@ inline fn parse_introspection_int_field(reader: json::Reader&, dst: i64&, had_er
 // Example:
 //   key = "client_id", reader at "\"l23\""
 //   sets: out.client_id = "l23", returns: true
-inline fn parse_introspection_str_member(
-    key:     const u8[:],
-    reader:  json::Reader&,
-    out:     IntrospectionResponse&,
-    had_err: bool&,
+inline fn read_unique_introspection_str<B>(
+    reader:    json::Reader&,
+    dst:       B&,
+    seen_mask: u32&,
+    bit:       u32,
+    had_err:   bool&,
 ) -> bool {
-    if key == "scope" { parse_introspection_str_field(reader, out.scope, had_err); return true; }
-    if key == "client_id" { parse_introspection_str_field(reader, out.client_id, had_err); return true; }
-    if key == "username" { parse_introspection_str_field(reader, out.username, had_err); return true; }
-    if key == "token_type" { parse_introspection_str_field(reader, out.token_type, had_err); return true; }
-    if key == "sub" { parse_introspection_str_field(reader, out.sub, had_err); return true; }
-    if key == "iss" { parse_introspection_str_field(reader, out.iss, had_err); return true; }
-    if key == "jti" { parse_introspection_str_field(reader, out.jti, had_err); return true; }
+    mark_introspection_key_seen(seen_mask, bit, had_err);
+    parse_introspection_str_field(reader, dst, had_err);
+    return true;
+}
+
+inline fn read_unique_introspection_int(
+    reader:    json::Reader&,
+    dst:       i64&,
+    seen_mask: u32&,
+    bit:       u32,
+    had_err:   bool&,
+) {
+    mark_introspection_key_seen(seen_mask, bit, had_err);
+    parse_introspection_int_field(reader, dst, had_err);
+}
+
+// Parses string metadata fields of an RFC 7662 Token Introspection Response JSON object.
+//
+// Example:
+//   key = "client_id", reader at "\"l23\""
+//   sets: out.client_id = "l23", returns: true
+inline fn parse_introspection_str_member(
+    key:       const u8[:],
+    reader:    json::Reader&,
+    out:       IntrospectionResponse&,
+    seen_mask: u32&,
+    had_err:   bool&,
+) -> bool {
+    if key == "scope" { return read_unique_introspection_str(reader, out.scope, seen_mask, 2, had_err); }
+    if key == "client_id" { return read_unique_introspection_str(reader, out.client_id, seen_mask, 4, had_err); }
+    if key == "username" { return read_unique_introspection_str(reader, out.username, seen_mask, 8, had_err); }
+    if key == "token_type" { return read_unique_introspection_str(reader, out.token_type, seen_mask, 16, had_err); }
+    if key == "sub" { return read_unique_introspection_str(reader, out.sub, seen_mask, 32, had_err); }
+    if key == "iss" { return read_unique_introspection_str(reader, out.iss, seen_mask, 64, had_err); }
+    if key == "jti" { return read_unique_introspection_str(reader, out.jti, seen_mask, 128, had_err); }
     return false;
 }
 
@@ -143,33 +183,39 @@ inline fn parse_introspection_str_member(
 //
 // Example:
 //   key = "active", reader at "true"
-//   sets: out.active = true, seen_active = true
+//   sets: out.active = true, seen_mask |= 1
 inline fn parse_introspection_field(
-    key:         const u8[:],
-    reader:      json::Reader&,
-    out:         IntrospectionResponse&,
-    seen_active: bool&,
-    had_err:     bool&,
+    key:       const u8[:],
+    reader:    json::Reader&,
+    out:       IntrospectionResponse&,
+    seen_mask: u32&,
+    had_err:   bool&,
 ) {
+    if key.contains('\\') {
+        json::skip(reader);
+        had_err = true;
+        return;
+    }
     if key == "active" {
         let p = json::peek(reader);
-        if seen_active || (p != 't' && p != 'f') {
+        if (seen_mask & 1) != 0 || (p != 't' && p != 'f') {
             json::skip(reader);
             had_err = true;
         } else {
             out.active = json::read_bool(reader);
-            seen_active = true;
+            seen_mask = seen_mask | 1;
         }
         return;
     }
-    if parse_introspection_str_member(key, reader, out, had_err) { return; }
+    if parse_introspection_str_member(key, reader, out, seen_mask, had_err) { return; }
     if key == "aud" {
+        mark_introspection_key_seen(seen_mask, 256, had_err);
         if !parse_introspection_aud(reader, out) { had_err = true; }
         return;
     }
-    if key == "exp" { parse_introspection_int_field(reader, out.exp, had_err); return; }
-    if key == "iat" { parse_introspection_int_field(reader, out.iat, had_err); return; }
-    if key == "nbf" { parse_introspection_int_field(reader, out.nbf, had_err); return; }
+    if key == "exp" { read_unique_introspection_int(reader, out.exp, seen_mask, 512, had_err); return; }
+    if key == "iat" { read_unique_introspection_int(reader, out.iat, seen_mask, 1024, had_err); return; }
+    if key == "nbf" { read_unique_introspection_int(reader, out.nbf, seen_mask, 2048, had_err); return; }
     json::skip(reader);
 }
 
@@ -182,14 +228,15 @@ inline fn parse_introspection_field(
 fn parse_introspection_response(raw_json: const u8[:]) -> IntrospectionResponse, bool {
     var out = IntrospectionResponse { .. };
     let empty = IntrospectionResponse { .. };
-    guard raw_json.len > 0 && raw_json.len <= 4096 else { return empty, false; }
+    guard raw_json.len > 0 && raw_json.len <= 4096 && raw_json.validate_utf8() else { return empty, false; }
     var reader = json::reader(raw_json);
-    var seen_active = false;
+    guard json::peek(reader) == '{' else { return empty, false; }
+    var seen_mask: u32 = 0;
     var had_err = false;
     json::each_member(reader) { key =>
-        parse_introspection_field(key, reader, out, seen_active, had_err);
+        parse_introspection_field(key, reader, out, seen_mask, had_err);
     };
-    guard json::finish(reader) && !had_err && seen_active else {
+    guard json::finish(reader) && !had_err && (seen_mask & 1) != 0 else {
         return empty, false;
     }
     if !out.active {
@@ -199,6 +246,11 @@ fn parse_introspection_response(raw_json: const u8[:]) -> IntrospectionResponse,
 }
 
 // ---- RFC 6749 §2.3.1 OAuth 2.0 `client_secret_basic` Credentials ---------
+
+// RFC 7617 Section 2: User-id and password MUST NOT contain ASCII control characters (0x00..0x1F, 0x7F) and MUST be valid UTF-8.
+inline fn is_valid_basic_auth_credential(s: const u8[:]) -> bool {
+    return core::swar_find_ctl(s) == s.len && s.validate_utf8();
+}
 
 // Encodes `client_id` and `client_secret` into an RFC 6749 §2.3.1 `Authorization: Basic ...` header value
 // by applying `application/x-www-form-urlencoded` to each component before joining with `':'` and Base64-encoding.
@@ -213,7 +265,7 @@ fn encode_oauth2_basic_auth<B>(
 ) -> bool {
     out_header_val.clear();
     guard client_id.len <= 256 && client_secret.len <= 256 else { return false; }
-    guard client_id.index_of_byte(0) == -1 && client_secret.index_of_byte(0) == -1 else {
+    guard is_valid_basic_auth_credential(client_id) && is_valid_basic_auth_credential(client_secret) else {
         return false;
     }
     var cred_buf: u8[..1024] = [];
@@ -253,7 +305,8 @@ fn decode_oauth2_basic_auth(
     guard has_colon else { return false; }
     let ok_id = core::decode_form_urlencoded(id_part, out_id);
     let ok_sec = core::decode_form_urlencoded(sec_part, out_secret);
-    guard ok_id && ok_sec else {
+    let ok_ctl = is_valid_basic_auth_credential(out_id[..]) && is_valid_basic_auth_credential(out_secret[..]);
+    guard ok_id && ok_sec && ok_ctl else {
         out_id.clear();
         out_secret.clear();
         return false;

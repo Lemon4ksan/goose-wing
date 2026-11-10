@@ -104,6 +104,7 @@ inline fn build_dpop_claims_json<B>(
     jti:          const u8[:],
     out:          B&,
 ) -> bool {
+    out.clear();
     guard now_sec > 0 && method.len > 0 else { return false; }
     for b in method { guard core::is_tchar(b) else { return false; } }
     if jti.len > 0 { guard rfc::is_valid_dpop_nonce(jti) else { return false; } }
@@ -113,9 +114,8 @@ inline fn build_dpop_claims_json<B>(
     let nonce_len: i64 = if nonce.len > 0 { core::add_sat_i64(nonce.len, 12) } else { 0 };
     let n1 = core::add_sat_i64(core::add_sat_i64(eff_jti_len, method.len), norm_uri.len);
     let needed = core::add_sat_i64(core::add_sat_i64(n1, nonce_len), ath_len);
-    guard core::add_sat_i64(out.len, core::add_sat_i64(needed, 60)) <= out.cap else { return false; }
+    guard core::add_sat_i64(needed, 60) <= out.cap else { return false; }
 
-    out.clear();
     out.append("{\"jti\":\"");
     if jti.len > 0 {
         out.append(jti);
@@ -213,15 +213,69 @@ fn parse_dpop_jwk_coord<B>(
     }
 }
 
+// Parses and validates the JWK `"key_ops"` array for a DPoP public verification key (RFC 7517 §4.3).
+//
+// Example:
+//   reader at "[\"verify\"]", seen = false, valid = true
+//   sets: seen = true, valid = true
+inline fn parse_dpop_jwk_key_ops(reader: json::Reader&, seen: bool&, valid: bool&) {
+    if seen || json::peek(reader) != '[' {
+        valid = false;
+        json::skip(reader);
+        return;
+    }
+    seen = true;
+    var count: i64 = 0;
+    json::each_element(reader) {
+        count = core::add_sat_i64(count, 1);
+        if json::peek(reader) != '"' {
+            valid = false;
+            json::skip(reader);
+        } else {
+            var op_buf: u8[..16] = [];
+            if count > 1 || !core::read_json_string_into(reader, op_buf) || op_buf[..] != "verify" {
+                valid = false;
+            }
+        }
+    };
+    if count != 1 { valid = false; }
+}
+
+// Dispatches a DPoP JWK coordinate or parameter member (`alg`, `crv`, `x`, `y`, `n`, `e`) to `parse_dpop_jwk_coord`.
+//
+// Example:
+//   jwk_key = "crv", reader at "\"Ed25519\""
+//   populates info.crv = "Ed25519", returns: true
+inline fn parse_dpop_jwk_param_field(
+    jwk_key:  const u8[:],
+    reader:   json::Reader&,
+    info:     DPoPJwkInfo&,
+    seen_alg: bool&,
+    seen_crv: bool&,
+    seen_x:   bool&,
+    seen_y:   bool&,
+    seen_n:   bool&,
+    seen_e:   bool&,
+) -> bool {
+    if jwk_key == "alg" { parse_dpop_jwk_coord(reader, seen_alg, info.alg, info.valid); return true; }
+    if jwk_key == "crv" { parse_dpop_jwk_coord(reader, seen_crv, info.crv, info.valid); return true; }
+    if jwk_key == "x" { parse_dpop_jwk_coord(reader, seen_x, info.x, info.valid); return true; }
+    if jwk_key == "y" { parse_dpop_jwk_coord(reader, seen_y, info.y, info.valid); return true; }
+    if jwk_key == "n" { parse_dpop_jwk_coord(reader, seen_n, info.n, info.valid); return true; }
+    if jwk_key == "e" { parse_dpop_jwk_coord(reader, seen_e, info.e, info.valid); return true; }
+    return false;
+}
+
 fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
+    info = DPoPJwkInfo { valid: false, .. };
     guard json::peek(reader) == '{' else {
-        info.valid = false;
         json::skip(reader);
         return false;
     }
-    info = DPoPJwkInfo { .. };
+    info.valid = true;
     var seen_kty = false;
     var seen_use = false;
+    var seen_ops = false;
     var seen_alg = false;
     var seen_crv = false;
     var seen_x = false;
@@ -259,26 +313,22 @@ fn verify_dpop_jwk(reader: json::Reader&, info: DPoPJwkInfo&) -> bool {
             if !core::read_json_string_into(reader, use_buf) || use_buf[..] != "sig" {
                 info.valid = false;
             }
-        } else if jwk_key == "alg" {
-            parse_dpop_jwk_coord(reader, seen_alg, info.alg, info.valid);
-        } else if jwk_key == "crv" {
-            parse_dpop_jwk_coord(reader, seen_crv, info.crv, info.valid);
-        } else if jwk_key == "x" {
-            parse_dpop_jwk_coord(reader, seen_x, info.x, info.valid);
-        } else if jwk_key == "y" {
-            parse_dpop_jwk_coord(reader, seen_y, info.y, info.valid);
-        } else if jwk_key == "n" {
-            parse_dpop_jwk_coord(reader, seen_n, info.n, info.valid);
-        } else if jwk_key == "e" {
-            parse_dpop_jwk_coord(reader, seen_e, info.e, info.valid);
-        } else {
+        } else if jwk_key == "key_ops" {
+            parse_dpop_jwk_key_ops(reader, seen_ops, info.valid);
+        } else if !parse_dpop_jwk_param_field(
+            jwk_key, reader, info,
+            seen_alg, seen_crv, seen_x, seen_y, seen_n, seen_e,
+        ) {
             json::skip(reader);
         }
     };
 
     let params_ok = validate_dpop_jwk_params(info);
-    info.valid = info.valid && seen_kty && info.kty_ok && params_ok && !info.has_private_key;
-    return info.valid;
+    let ok = info.valid && seen_kty && info.kty_ok && params_ok && !info.has_private_key;
+    if !ok {
+        info = DPoPJwkInfo { valid: false, .. };
+    }
+    return ok;
 }
 
 // Checks whether JOSE `alg` matches the embedded JWK `kty`, `crv`, and optional `alg` (RFC 9449 §4.3).
@@ -333,7 +383,7 @@ fn parse_dpop_header_jwk_info(header_json: const u8[:], out_alg: u8[..16]&, out_
     let ok = ok_base && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk);
     if !ok {
         out_alg.clear();
-        out_jwk.valid = false;
+        out_jwk = DPoPJwkInfo { valid: false, .. };
     }
     return ok;
 }

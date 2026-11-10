@@ -277,6 +277,19 @@ fn parse_jwk_key_core_type(
     return false;
 }
 
+// Maps an RFC 7517 §4.3 `key_ops` value to `(unique_op_bit, role_bit)`.
+inline fn classify_jwk_key_op(op: const u8[:]) -> u8, u8 {
+    if op == "sign" { return 1, JWK_OP_SIGN; }
+    if op == "verify" { return 2, JWK_OP_VERIFY; }
+    if op == "encrypt" { return 4, JWK_OP_ENCRYPT; }
+    if op == "decrypt" { return 8, JWK_OP_ENCRYPT; }
+    if op == "wrapKey" { return 16, JWK_OP_ENCRYPT; }
+    if op == "unwrapKey" { return 32, JWK_OP_ENCRYPT; }
+    if op == "deriveKey" { return 64, JWK_OP_ENCRYPT; }
+    if op == "deriveBits" { return 128, JWK_OP_ENCRYPT; }
+    return 0, 0;
+}
+
 // Parses JWK "key_ops" array into key_item.key_ops bitmask (RFC 7517 §4.3).
 //
 // Example:
@@ -288,7 +301,8 @@ inline fn parse_jwk_key_ops_array(reader: json::Reader&, key_item: JwksKey&) {
         key_item.has_invalid_type = true;
         return;
     }
-    var count: i64 = 0;
+    var count:    i64 = 0;
+    var seen_ops: u8  = 0;
     json::each_element(reader) {
         count = core::add_sat_i64(count, 1);
         guard json::peek(reader) == '"' else {
@@ -301,16 +315,12 @@ inline fn parse_jwk_key_ops_array(reader: json::Reader&, key_item: JwksKey&) {
             key_item.has_invalid_type = true;
             return;
         }
-        let op = op_buf[..];
-        if op == "sign" {
-            key_item.key_ops = key_item.key_ops | JWK_OP_SIGN;
-        } else if op == "verify" {
-            key_item.key_ops = key_item.key_ops | JWK_OP_VERIFY;
-        } else if op == "encrypt" || op == "decrypt" || op == "wrapKey" || op == "unwrapKey" ||
-                  op == "deriveKey" || op == "deriveBits" {
-            key_item.key_ops = key_item.key_ops | JWK_OP_ENCRYPT;
-        } else {
+        let spec_bit, role_bit = classify_jwk_key_op(op_buf[..]);
+        if spec_bit == 0 || (seen_ops & spec_bit) != 0 {
             key_item.has_invalid_type = true;
+        } else {
+            seen_ops = seen_ops | spec_bit;
+            key_item.key_ops = key_item.key_ops | role_bit;
         }
     };
     if count == 0 {
@@ -357,16 +367,12 @@ struct JwkRawMaterial {
     has_x5c:      bool       = false,
 }
 
-// Validates a non-empty JSON string token in `reader` without copying its contents.
-inline fn skip_nonempty_json_string(reader: json::Reader&) -> bool {
-    let start = core::add_sat_i64(reader.pos, 1);
-    let end, escaped = json::scan_string(reader.text, start);
-    guard end > start && (!escaped || json::valid_escapes(reader.text, start, end)) else {
-        json::fail(reader, "bad string");
-        return false;
-    }
-    reader.pos = core::add_sat_i64(end, 1);
-    return true;
+// Validates a non-empty Base64 certificate string token in `reader` (RFC 7517 §4.7).
+inline fn read_valid_x5c_cert_b64(reader: json::Reader&) -> bool {
+    var b64_buf: u8[..2048] = [];
+    var der_buf: u8[..2048] = [];
+    return core::read_json_string_into(reader, b64_buf) && b64_buf.len > 0 &&
+           core::base64_decode(b64_buf[..], der_buf) && der_buf.len > 0;
 }
 
 // Parses JWK "x5c" certificate chain array and extracts the leaf DER Base64 string (RFC 7517 §4.7).
@@ -394,7 +400,7 @@ inline fn parse_jwk_x5c_array(
             if !core::read_json_string_into(reader, mat.raw_x5c_leaf) || mat.raw_x5c_leaf.len == 0 {
                 key_item.has_invalid_type = true;
             }
-        } else if !skip_nonempty_json_string(reader) {
+        } else if !read_valid_x5c_cert_b64(reader) {
             key_item.has_invalid_type = true;
         }
         idx = core::add_sat_i64(idx, 1);

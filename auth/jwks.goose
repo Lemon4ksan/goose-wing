@@ -145,6 +145,29 @@ fn parse_single_jwk_element(
     return finalize_jwk_key(mat, key_item) && out_jwks.keys.try_push(key_item);
 }
 
+// Parses the top-level `"keys"` JSON array of an RFC 7517 §5 JWK Set document.
+//
+// Example:
+//   reader at "[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}]"
+//   sets: seen_keys_root = true, appends parsed keys to out_jwks.keys
+inline fn parse_jwks_keys_array(
+    reader:         json::Reader&,
+    out_jwks:       Jwks&,
+    seen_keys_root: bool&,
+    had_error:      bool&,
+) {
+    if seen_keys_root || json::peek(reader) != '[' {
+        had_error = true;
+        json::skip(reader);
+        return;
+    }
+    seen_keys_root = true;
+    json::each_element(reader) {
+        let elem_ok = parse_single_jwk_element(reader, out_jwks);
+        had_error = had_error || !elem_ok;
+    };
+}
+
 // Parses an RFC 7517 JWKS JSON document into Jwks struct.
 //
 // Example:
@@ -152,22 +175,26 @@ fn parse_single_jwk_element(
 //   returns: true, out_jwks.keys.len = 1
 fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
     out_jwks.keys.clear();
+    guard json_bytes.validate_utf8() else {
+        zeroize_jwks(out_jwks);
+        return false;
+    }
     var reader = json::reader(json_bytes);
     var seen_keys_root = false;
+    var seen_root_keys: SeenHeaderKey[..8] = [];
     var had_error = false;
 
     json::each_member(reader) { root_key =>
-        if root_key.contains('\\') {
+        if root_key.contains('\\') || is_header_key_present(root_key, seen_root_keys[..]) {
             had_error = true;
             json::skip(reader);
-        } else if root_key == "keys" && !seen_keys_root && json::peek(reader) == '[' {
-            seen_keys_root = true;
-            json::each_element(reader) {
-                let elem_ok = parse_single_jwk_element(reader, out_jwks);
-                had_error = had_error || !elem_ok;
-            };
+        } else if root_key == "keys" {
+            parse_jwks_keys_array(reader, out_jwks, seen_keys_root, had_error);
         } else {
-            if root_key == "keys" { had_error = true; }
+            var item = SeenHeaderKey { .. };
+            if !item.name.try_set(root_key) || !seen_root_keys.try_push(item) {
+                had_error = true;
+            }
             json::skip(reader);
         }
     };

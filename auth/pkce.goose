@@ -106,12 +106,17 @@ fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain"
 
 // Encodes caller-provided entropy bytes into a base64url PKCE verifier (RFC 7636 §4.1).
 inline fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool {
+    out.clear();
+    guard entropy.len >= 32 else { return false; }
     let max_raw = min(entropy.len, 96);
     var encoded: u8[..128] = [];
     defer core::secure_zeroize_slice(encoded[..]);
     core::base64url_encode(entropy[..max_raw], encoded);
-    guard out.try_set(encoded[..]) else { return false; }
-    return is_valid_code_verifier(out[..]);
+    guard is_valid_code_verifier(encoded[..]) && out.try_set(encoded[..]) else {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {

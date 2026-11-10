@@ -2576,10 +2576,12 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
     };
 
     t.run("RS256 & PS256 JWT Sign, Verify, and JWKS Integration") { sub =>
-        // 1024-bit test RSA modulus (e=1, d=1 with odd modulus > message for deterministic fast check)
+        // 1024-bit test RSA modulus n = 2^1024 - 179 (e=3, d=(2n-1)/3)
         var rsa_n: u8[128] = [0xFF; 128];
-        let rsa_e: u8[1] = [0x01];
-        let rsa_d: u8[1] = [0x01];
+        rsa_n[127] = 0x4D;
+        let rsa_e: u8[1] = [0x03];
+        var rsa_d: u8[128] = [0xAA; 128];
+        rsa_d[127] = 0x33;
 
         var hdr_rs = wing::new_jwt_header(wing::JwtAlg.RS256, "rsa-key-1");
         var clm_rs = wing::JwtClaims { .. };
@@ -2863,6 +2865,96 @@ fn test_jwt_exp_overflow(t: lit::T&) {
     t.assert_eq(err, wing::JwtError.None, "Far future exp must not overflow to expired");
 }
 
+// ----------------------------------------------------------------------------
+// 33. goose2rfc Auth Package Audit Regressions (AUTH-1, AUTH-2, AUTH-3)
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
+    t.run("AUTH1-C08: decode_jwt_header/claims reject '=' padding & invalid UTF-8 JSON") { sub =>
+        var hdr = wing::JwtHeader { alg: wing::JwtAlg.HS256, kid: "dirty", .. };
+        let err_h = wing::decode_jwt_header("eyJhbGciOiJIUzI1NiJ9=", hdr);
+        sub.assert_eq(err_h, wing::JwtError.InvalidBase64, "padded header b64 rejected");
+        sub.assert_eq(hdr.kid.len, 0, "hdr cleared on InvalidBase64");
+
+        var clm = wing::JwtClaims { sub: "dirty", .. };
+        let err_c = wing::decode_jwt_claims("eyJzdWIiOiJ1MSJ9=", clm);
+        sub.assert_eq(err_c, wing::JwtError.InvalidBase64, "padded claims b64 rejected");
+        sub.assert_eq(clm.sub.len, 0, "claims cleared on InvalidBase64");
+
+        let bad_utf8_hdr = "{\"alg\":\"HS256\",\"kid\":\"\xff\xfe\"}";
+        sub.assert_false(wing::parse_jwt_header_json(bad_utf8_hdr, hdr), "invalid UTF-8 header JSON rejected");
+        let bad_utf8_clm = "{\"sub\":\"\xff\xfe\"}";
+        sub.assert_false(wing::parse_jwt_claims_json(bad_utf8_clm, clm), "invalid UTF-8 claims JSON rejected");
+    };
+
+    t.run("AUTH1-C06/C07/C09: JWKS duplicate key_ops, x5c[1] Base64, and duplicate root member") { sub =>
+        var jwks = wing::Jwks { .. };
+        let dup_ops = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"key_ops\":[\"verify\",\"verify\"]}]}";
+        sub.assert_false(wing::parse_jwks_json(dup_ops, jwks), "duplicate key_ops rejected per RFC 7517 §4.3");
+
+        let bad_x5c_ca = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"x5c\":[\"MDEyMzQ1Njc4OWFiY2RlZg==\",\"!!!not_base64!!!\"]}]}";
+        sub.assert_false(wing::parse_jwks_json(bad_x5c_ca, jwks), "invalid Base64 in x5c[1] rejected per RFC 7517 §4.7");
+
+        let dup_root = "{\"meta\":1,\"meta\":2,\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}";
+        sub.assert_false(wing::parse_jwks_json(dup_root, jwks), "duplicate top-level JWKS member rejected per RFC 7517 §5");
+    };
+
+    t.run("AUTH2-C07/C08/C09: DPoP buffer reuse, JWK hygiene, and key_ops validation") { sub =>
+        var claims_buf: u8[..256] = [];
+        for i in 220 { claims_buf.push('x'); }
+        let ok_reuse = wing::build_dpop_claims_json("GET", "https://example.com/res", "", "", 1700000000, "jti-1", claims_buf);
+        sub.assert_true(ok_reuse, "build_dpop_claims_json reuses pre-filled out buffer after clear");
+
+        let bad_ops_hdr = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"key_ops\":[\"sign\"],\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
+        sub.assert_false(wing::verify_dpop_header(bad_ops_hdr, "EdDSA"), "DPoP JWK with private key_ops=['sign'] rejected");
+
+        let good_ops_hdr = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"key_ops\":[\"verify\"],\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
+        sub.assert_true(wing::verify_dpop_header(good_ops_hdr, "EdDSA"), "DPoP JWK with key_ops=['verify'] accepted");
+
+        var out_alg: u8[..16] = [];
+        var out_jwk = wing::DPoPJwkInfo { .. };
+        sub.assert_false(wing::parse_dpop_header_jwk_info(bad_ops_hdr, out_alg, out_jwk), "invalid DPoP JWK rejected");
+        sub.assert_eq(out_jwk.kty.len, 0, "out_jwk cleared on error");
+    };
+
+    t.run("AUTH3-C01/C03: Digest comma delimiter, unsupported qop, and parse_quoted_param hygiene") { sub =>
+        let _, ok_no_comma = wing::parse_digest_challenge("Digest realm=\"api\" nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\"");
+        sub.assert_false(ok_no_comma, "missing comma between Digest parameters rejected per RFC 7616 §3.3");
+
+        let _, ok_bad_qop = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"unsupported\"");
+        sub.assert_false(ok_bad_qop, "Digest challenge with only unrecognized qop options rejected");
+
+        var q_out: u8[..64] = "stale";
+        let _, ok_q = wing::parse_quoted_param("\"unclosed", q_out);
+        sub.assert_false(ok_q, "unclosed quoted param rejected");
+        sub.assert_eq(q_out.len, 0, "parse_quoted_param clears out_val on error");
+    };
+
+    t.run("AUTH3-C04/C05/C06/C09/C10: Introspection, Basic Auth CTL, PKCE, and Device Grant interval") { sub =>
+        let _, ok_dup_intro = wing::parse_introspection_response("{\"active\":true,\"sub\":\"u1\",\"sub\":\"u2\"}");
+        sub.assert_false(ok_dup_intro, "duplicate introspection claim rejected");
+
+        let _, ok_empty_aud = wing::parse_introspection_response("{\"active\":true,\"aud\":[]}");
+        sub.assert_false(ok_empty_aud, "empty introspection aud array rejected");
+
+        var b_hdr: u8[..256] = [];
+        sub.assert_false(wing::encode_oauth2_basic_auth("id\x07", "sec", b_hdr), "CTL in encode_oauth2_basic_auth rejected");
+        // "id%07:sec" in Base64 is "aWQlMDc6c2Vj"
+        var out_id:  u8[..256] = [];
+        var out_sec: u8[..256] = [];
+        sub.assert_false(wing::decode_oauth2_basic_auth("Basic aWQlMDc6c2Vj", out_id, out_sec), "CTL %07 in decode_oauth2_basic_auth rejected");
+        sub.assert_eq(out_id.len, 0, "out_id cleared on CTL failure");
+
+        var pkce_buf: u8[..128] = "dirty";
+        sub.assert_false(wing::encode_external_entropy("too_short", pkce_buf), "short entropy rejected");
+        sub.assert_eq(pkce_buf.len, 0, "pkce_buf cleared on error");
+
+        let _, ok_dev_zero = wing::parse_device_auth_response(
+            "{\"device_code\":\"dc\",\"user_code\":\"uc\",\"verification_uri\":\"https://ex.com/dev\",\"expires_in\":600,\"interval\":0}",
+        );
+        sub.assert_false(ok_dev_zero, "interval=0 in device auth response rejected");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Authentication, Cryptographic Tokens, and Invariants Suite", lit::Verbosity.Verbose);
 
@@ -2898,6 +2990,7 @@ fn main() {
     lit::run_case(runner, "30. Signatures, HSTS, Trace Context (http/*)", test_http_extensions_signatures_hsts_trace);
     lit::run_case(runner, "31. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)", test_auth_dpop_digest_privacypass);
     lit::run_case(runner, "32. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
+    lit::run_case(runner, "33. goose2rfc Auth Package Audit Regressions", test_goose2rfc_auth_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

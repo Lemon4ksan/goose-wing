@@ -130,14 +130,10 @@ inline fn parse_device_auth_field(
     }
     if key == "interval" {
         mark_device_auth_key_seen(seen_mask, 32, had_err);
-        let p = json::peek(reader);
-        if p == 'n' {
+        if json::peek(reader) == 'n' {
             json::skip(reader);
-        } else if p >= '0' && p <= '9' {
-            out.interval_sec = max(json::read_int(reader), rfc::DEFAULT_DEVICE_POLL_INTERVAL_SEC);
         } else {
-            json::skip(reader);
-            had_err = true;
+            read_positive_oauth_int(reader, out.interval_sec, had_err);
         }
         return;
     }

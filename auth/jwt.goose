@@ -288,6 +288,10 @@ inline fn parse_jwt_header_member(
 //   json_bytes = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
 //   returns: ok = true, out_header.alg = JwtAlg.HS256
 fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> bool {
+    guard json_bytes.validate_utf8() else {
+        out_header = JwtHeader { .. };
+        return false;
+    }
     var reader = json::reader(json_bytes);
     out_header.kid.clear();
     out_header.cty.clear();
@@ -754,6 +758,10 @@ inline fn record_custom_claim(
 //   json_bytes = "{\"sub\":\"user123\",\"exp\":1700000000}"
 //   returns: ok = true, out_claims.sub = "user123"
 fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> bool {
+    guard json_bytes.validate_utf8() else {
+        out_claims = JwtClaims { .. };
+        return false;
+    }
     var reader = json::reader(json_bytes);
     out_claims.iss.clear();
     out_claims.sub.clear();
@@ -1193,7 +1201,9 @@ fn validate_jwt_claims_rules(
 //   returns: JwtError.None, out_header.alg = JwtAlg.HS256
 fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
     var hdr_json: u8[..1024] = [];
-    guard core::base64url_decode(hdr_b64, hdr_json) else {
+    guard hdr_b64.len > 0 && hdr_b64.index_of_byte('=') == -1 &&
+          core::base64url_decode(hdr_b64, hdr_json) else {
+        out_header = JwtHeader { .. };
         return JwtError.InvalidBase64;
     }
     guard parse_jwt_header_json(hdr_json[..], out_header) else {
@@ -1209,7 +1219,9 @@ fn decode_jwt_header(hdr_b64: const u8[:], out_header: JwtHeader&) -> JwtError {
 //   returns: JwtError.None, out_claims.sub = "1234567890"
 fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
     var clm_json: u8[..4096] = [];
-    guard core::base64url_decode(clm_b64, clm_json) else {
+    guard clm_b64.len > 0 && clm_b64.index_of_byte('=') == -1 &&
+          core::base64url_decode(clm_b64, clm_json) else {
+        out_claims = JwtClaims { .. };
         return JwtError.InvalidBase64;
     }
     guard parse_jwt_claims_json(clm_json[..], out_claims) else {
