@@ -2454,6 +2454,111 @@ fn test_srv_reg3_r4_server_wire(t: lit::T&) {
     };
 }
 
+fn test_goose2rfc_server_audit_regressions(t: lit::T&) {
+    t.run("1. SERVER1_C01: H2 GOAWAY 0x7FFFFFFF graceful shutdown & non-increasing last_stream_id (RFC 9113 §6.8)") { sub =>
+        var sess = internal::H2ServerSession { .. };
+        sess.conn.is_server = true;
+        var out_wire: u8[..256] = [];
+        let ga_hdr = internal::FrameHeader {
+            length:     8,
+            frame_type: rfc::H2_FRAME_GOAWAY,
+            flags:      0,
+            stream_id:  0,
+        };
+        var payload_max: u8[8] = [0x7F, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00];
+        let ok_max = internal::process_ingress_goaway(sess, ga_hdr, payload_max[..], out_wire);
+        sub.assert_true(ok_max, "Client graceful-shutdown GOAWAY with last_stream_id=0x7FFFFFFF accepted");
+        sub.assert_eq(sess.conn.goaway_last_stream_id, 0x7FFFFFFF, "goaway_last_stream_id recorded as 0x7FFFFFFF");
+
+        var payload_even: u8[8] = [0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00];
+        let ok_even = internal::process_ingress_goaway(sess, ga_hdr, payload_even[..], out_wire);
+        sub.assert_true(ok_even, "Subsequent GOAWAY with lower even stream ID 2 accepted");
+        sub.assert_eq(sess.conn.goaway_last_stream_id, 2, "goaway_last_stream_id decreased to 2");
+
+        var payload_inc: u8[8] = [0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00];
+        let ok_inc = internal::process_ingress_goaway(sess, ga_hdr, payload_inc[..], out_wire);
+        sub.assert_false(ok_inc, "Subsequent GOAWAY increasing last_stream_id from 2 to 4 rejected");
+        sub.assert_true(out_wire.len > 0, "PROTOCOL_ERROR GOAWAY emitted on increasing last_stream_id");
+    };
+
+    t.run("2. SERVER1_C02..C05: Host empty port (RFC 9110 §7.2) & H1 parser transactional rollback") { sub =>
+        sub.assert_true(wing::validate_host_header_structure("example.com:"), "Host with empty port after colon is valid per RFC 9110 §7.2");
+        sub.assert_true(wing::validate_host_header_structure("[::1]:"), "IPv6 Host with empty port after colon is valid per RFC 9110 §7.2");
+
+        var req = wing::Request { .. };
+        req.method.clear();
+        let ok_rl = wing::parse_http1_request_line("POST /valid HTTP/9.9", req);
+        sub.assert_false(ok_rl, "Unsupported HTTP version rejected");
+        sub.assert_eq(req.method.len, 0, "out_req.method untouched on parse_http1_request_line failure");
+        sub.assert_eq(req.url.len, 0, "out_req.url untouched on parse_http1_request_line failure");
+
+        var tracker = wing::HeaderPresenceTracker { .. };
+        let ok_hdrs = wing::parse_http1_headers_stream(
+            "Host: example.com\r\nBad Header: val\r\n\r\n",
+            req,
+            tracker,
+        );
+        sub.assert_false(ok_hdrs, "Invalid second header rejected");
+        sub.assert_eq(req.headers.entries.len, 0, "out_req.headers rolled back on parse_http1_headers_stream failure");
+        sub.assert_eq(req.presence_mask, 0, "out_req.presence_mask rolled back on failure");
+        sub.assert_eq(tracker.mask, 0, "presence_tracker rolled back on failure");
+
+        var res = wing::Response { .. };
+        let ok_res, consumed_res = wing::parse_http1_wire_response(
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort",
+            res,
+        );
+        sub.assert_false(ok_res, "Truncated Content-Length response rejected");
+        sub.assert_eq(consumed_res, 0, "Consumed bytes 0 on failed response parse");
+        sub.assert_eq(res.status_code, 0, "out_res.status_code rolled back on failure");
+        sub.assert_eq(res.headers.entries.len, 0, "out_res.headers rolled back on failure");
+    };
+
+    t.run("3. SERVER2_C01, C02, C06..C08: SNI IP literal rejection, H1.0 TE stream guard, Cork 204 & SoA active slot") { sub =>
+        var srv = wing::HttpServer { .. };
+        sub.assert_false(wing::add_server_name(srv, "127.0.0.1", "CERT", "KEY"), "IPv4 literal rejected in add_server_name (RFC 6066 §3)");
+        sub.assert_false(wing::add_server_name(srv, "*", "CERT", "KEY"), "Bare wildcard '*' rejected in add_server_name (RFC 6125 §6.4.3)");
+        sub.assert_false(wing::sni_pattern_matches("127.0.0.1", "127.0.0.1"), "IPv4 literal rejected in sni_pattern_matches");
+        sub.assert_true(wing::add_server_name(srv, "*.example.com.", "CERT", "KEY"), "Trailing-dot wildcard DNS pattern accepted");
+        let _, ok_ip_resolve = wing::resolve_sni_credentials(srv, "127.0.0.1");
+        sub.assert_false(ok_ip_resolve, "IPv4 literal rejected in resolve_sni_credentials");
+
+        var req_h10 = wing::Request { .. };
+        var consumer = wing::HttpStreamConsumer { .. };
+        let ok_h10, _ = wing::begin_http_stream_request(
+            "POST /upload HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n",
+            req_h10,
+            consumer,
+        );
+        sub.assert_false(ok_h10, "Transfer-Encoding on HTTP/1.0 stream request rejected (RFC 9112 §6.1)");
+        sub.assert_eq(consumer.header_end_idx, 0, "consumer.header_end_idx rolled back on failure");
+        sub.assert_eq(req_h10.method.len, 0, "req_h10.method rolled back on failure");
+
+        var req_chk = wing::Request { .. };
+        var consumer2 = wing::HttpStreamConsumer { .. };
+        let ok_chk, _ = wing::begin_http_stream_request(
+            "POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n",
+            req_chk,
+            consumer2,
+        );
+        sub.assert_true(ok_chk, "Valid HTTP/1.1 chunked stream request started");
+        let _, _, ok_bad_frame = wing::feed_http_stream_chunk(consumer2, "ZZZ\r\n", srv_reg3_on_stream_chunk);
+        sub.assert_false(ok_bad_frame, "Malformed chunk size rejected");
+        let _, _, ok_after_err = wing::feed_http_stream_chunk(consumer2, "0\r\n\r\n", srv_reg3_on_stream_chunk);
+        sub.assert_false(ok_after_err, "Consumer stays in terminal error state after malformed chunk");
+
+        var sc = wing::new_server_cork(1);
+        var res_204 = wing::Response { status_code: 204, .. };
+        sub.assert_eq(wing::cork_begin_http1_chunked(sc, res_204, "goose"), -1, "cork_begin_http1_chunked rejects 204 No Content (RFC 9112 §6.1)");
+
+        var table = wing::SoAConnTable { .. };
+        wing::soa_table_set_peer_ip(table, 0, "10.0.0.1");
+        sub.assert_bytes_eq(wing::soa_table_get_peer_ip(table, 0), "", "Inactive SoA slot rejects peer IP mutation");
+        wing::soa_table_touch(table, 0, 42);
+        sub.assert_eq(table.timeout_ticks[0], wing::SOA_INVALID_TICK, "Inactive SoA slot rejects timeout tick touch");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", lit::Verbosity.Verbose);
 
@@ -2491,6 +2596,7 @@ fn main() {
     lit::run_case(runner, "32. Pipeline & Pool", test_srv_reg3_r2_pipeline_and_pool);
     lit::run_case(runner, "33. H2 & Router", test_srv_reg3_r3_h2_and_router);
     lit::run_case(runner, "34. Server Wire", test_srv_reg3_r4_server_wire);
+    lit::run_case(runner, "35. goose2rfc Server Audit Regressions", test_goose2rfc_server_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

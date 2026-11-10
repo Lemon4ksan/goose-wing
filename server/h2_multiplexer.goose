@@ -1384,11 +1384,12 @@ fn process_ingress_goaway<B>(
     }
     let last_stream_id = core::read_be_u32(frame_payload, 0) & 0x7FFFFFFF;
     let err_code = core::read_be_u32(frame_payload, 4);
-    guard last_stream_id == 0 || (last_stream_id % 2) == 0 else {
-        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+    sess.conn.is_server = true;
+    let ga_err = apply_goaway(sess.conn, last_stream_id, err_code);
+    guard ga_err == rfc::H2_ERR_NO_ERROR else {
+        emit_goaway(sess.conn.last_peer_stream_id, ga_err, out_wire);
         return false;
     }
-    apply_goaway(sess.conn, last_stream_id, err_code);
     return true;
 }
 

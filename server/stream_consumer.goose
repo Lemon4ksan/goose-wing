@@ -29,9 +29,15 @@ fn begin_http_stream_request<Req>(
     out_req:  Req&,
     consumer: HttpStreamConsumer&,
 ) -> bool, i64 {
-    consumer.is_headers_parsed = false;
-    consumer.is_finished = false;
-    consumer.bytes_received = 0;
+    consumer = HttpStreamConsumer { .. };
+    var committed = false;
+    defer if !committed {
+        consumer = HttpStreamConsumer { .. };
+        clear_request_headers_state(out_req);
+        out_req.method.clear();
+        out_req.url.clear();
+        out_req.is_http10 = false;
+    };
 
     var tracker = HeaderPresenceTracker { .. };
     var body_start_idx: i64 = 0;
@@ -46,17 +52,14 @@ fn begin_http_stream_request<Req>(
     let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     if has_te {
-        guard validate_span_te_header(out_req.headers, tracker.te_idx) else {
-            consumer.is_headers_parsed = false;
-            clear_request_headers_state(out_req);
+        // RFC 9112 Section 6.1: A server MUST NOT apply Transfer-Encoding to an HTTP/1.0 request
+        guard !out_req.is_http10 && validate_span_te_header(out_req.headers, tracker.te_idx) else {
             return false, 0;
         }
         consumer.is_chunked = true;
         consumer.content_length = -1;
     } else if has_cl {
         guard tracker.parsed_cl >= 0 && tracker.parsed_cl <= MAX_SERVER_BODY_LIMIT else {
-            consumer.is_headers_parsed = false;
-            clear_request_headers_state(out_req);
             return false, 0;
         }
         consumer.is_chunked = false;
@@ -70,6 +73,7 @@ fn begin_http_stream_request<Req>(
         consumer.is_finished = true;
     }
 
+    committed = true;
     return true, body_start_idx;
 }
 
@@ -194,7 +198,11 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
     var cursor: i64 = 0;
     while cursor < incoming.len {
         let data_slice, has_data, is_last, ok = step_chunked_http_stream_frame(consumer, incoming, cursor);
-        guard ok else { return cursor, false, false; }
+        guard ok else {
+            consumer.is_headers_parsed = false;
+            consumer.is_finished = true;
+            return cursor, false, false;
+        }
         guard has_data || is_last else { return cursor, false, true; }
         Callback(data_slice, is_last);
         if is_last {

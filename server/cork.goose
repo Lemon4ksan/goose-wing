@@ -167,7 +167,7 @@ fn cork_begin_http1_chunked(
     res:         Response&,
     server_name: const u8[:],
 ) -> i32 {
-    guard sc.sock_fd > 0 else { return -1; }
+    guard sc.sock_fd > 0 && !rfc::is_empty_body_status(res.status_code) else { return -1; }
     set_header(res, rfc::HEADER_TRANSFER_ENCODING, "chunked");
     remove_header(res, rfc::HEADER_CONTENT_LENGTH);
     var hdr_wire: u8[..8192] = [];

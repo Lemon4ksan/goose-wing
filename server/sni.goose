@@ -29,13 +29,30 @@ struct SniCredentials {
     key_pem:  const u8[:] = "",
 }
 
+inline fn is_valid_sni_pattern(p_norm: const u8[:]) -> bool {
+    guard p_norm.len > 0 && p_norm.len <= 128 && p_norm != "*" else { return false; }
+    guard !x509_is_ip_literal(p_norm) && !p_norm.contains_byte(':') else { return false; }
+    if p_norm[0] == '*' {
+        guard p_norm.len >= 3 && p_norm[1] == '.' && p_norm[2..].contains_byte('.') else {
+            return false;
+        }
+    }
+    return validate_san_dns_name(p_norm);
+}
+
+inline fn is_valid_sni_hostname(h_norm: const u8[:]) -> bool {
+    guard h_norm.len > 0 && !h_norm.contains_byte('*') else { return false; }
+    guard !x509_is_ip_literal(h_norm) && !h_norm.contains_byte(':') else { return false; }
+    return validate_san_dns_name(h_norm);
+}
+
 // Matches a hostname against an SNI domain pattern (RFC 6125 §6.4.3 & uWebSockets pattern).
 // Supports exact domains ("example.com") and wildcard patterns ("*.example.com").
 // Case-insensitive.
 fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
     let p_norm = x509_strip_trailing_dot(pattern);
     let h_norm = x509_strip_trailing_dot(hostname);
-    guard p_norm.len > 0 && h_norm.len > 0 else { return false; }
+    guard is_valid_sni_pattern(p_norm) && is_valid_sni_hostname(h_norm) else { return false; }
     if p_norm.eq_ascii_fold(h_norm) {
         return true;
     }
@@ -54,7 +71,7 @@ fn add_server_name<S>(
     key_pem:  const u8[:],
 ) -> bool {
     let p_norm = x509_strip_trailing_dot(pattern);
-    guard p_norm.len > 0 && p_norm.len <= 128 else { return false; }
+    guard is_valid_sni_pattern(p_norm) else { return false; }
     guard cert_pem.len > 0 && cert_pem.len <= 4096 && key_pem.len > 0 && key_pem.len <= 4096 else {
         return false;
     }
@@ -111,7 +128,7 @@ fn resolve_sni_credentials<S>(
     sni_hostname: const u8[:],
 ) -> SniCredentials, bool {
     let h_norm = x509_strip_trailing_dot(sni_hostname);
-    guard server.sni_registry.count > 0 && h_norm.len > 0 else {
+    guard server.sni_registry.count > 0 && is_valid_sni_hostname(h_norm) else {
         return SniCredentials { .. }, false;
     }
 

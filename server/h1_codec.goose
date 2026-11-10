@@ -32,7 +32,10 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
         }
         guard col_idx > 0 else { return false; }
         let port_slice = host_val[(col_idx + 1)..];
-        guard port_slice.len > 0 && port_slice.len <= 5 else { return false; }
+        if port_slice.len == 0 {
+            return true;
+        }
+        guard port_slice.len <= 5 else { return false; }
         for pb in port_slice {
             guard pb >= '0' && pb <= '9' else { return false; }
         }
@@ -50,7 +53,10 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
     }
     guard host_val[close_idx + 1] == ':' else { return false; }
     let port_part = host_val[close_idx + 2..];
-    guard port_part.len > 0 && port_part.len <= 5 else { return false; }
+    if port_part.len == 0 {
+        return true;
+    }
+    guard port_part.len <= 5 else { return false; }
     for pb in port_part {
         guard pb >= '0' && pb <= '9' else { return false; }
     }
@@ -189,13 +195,12 @@ fn parse_http1_request_line<Req>(
     guard req_line.len >= 14 else { return false; }
 
     let w0 = core::read_le_u64(req_line, 0);
-    let m_len, m_slice = match_swar_method(w0);
+    let m_len, _ = match_swar_method(w0);
     var sp1:        i64  = m_len;
     var is_connect: bool = false;
     var is_options: bool = false;
 
     if m_len > 0 {
-        let _ = out_req.method.try_set(m_slice);
         is_connect = (w0 == rfc::METHOD_CONNECT_U64);
         is_options = (w0 == rfc::METHOD_OPTIONS_U64);
     } else {
@@ -203,7 +208,6 @@ fn parse_http1_request_line<Req>(
         guard sp1 > 0 && sp1 <= out_req.method.cap else { return false; }
         let custom_method = req_line[..sp1];
         guard is_valid_header_name(custom_method) else { return false; }
-        let _ = out_req.method.try_set(custom_method);
         is_connect = (custom_method == "CONNECT");
         is_options = (custom_method == "OPTIONS");
     }
@@ -224,11 +228,11 @@ fn parse_http1_request_line<Req>(
         return false;
     }
 
-    let _ = out_req.url.try_set(path_slice);
-
     guard req_line.len - (sp2 + 1) == 8 else { return false; }
     let proto_u64 = core::read_le_u64(req_line, sp2 + 1);
     guard proto_u64 == rfc::HTTP_VERSION_1_1_U64 || proto_u64 == rfc::HTTP_VERSION_1_0_U64 else { return false; }
+    let _ = out_req.method.try_set(req_line[..sp1]);
+    let _ = out_req.url.try_set(path_slice);
     out_req.is_http10 = (proto_u64 == rfc::HTTP_VERSION_1_0_U64);
     return true;
 }
@@ -418,6 +422,8 @@ fn parse_http1_wire_header_line<Req>(
     // O(1) Header Presence & Duplicate/Smuggling Verification (uWebSockets bitmask pattern)
     let cur_hdr_idx = out_req.headers.entries.len as i16;
     let known_id = identify_known_header(hname);
+    let saved_tracker = presence_tracker;
+    let saved_mask = out_req.presence_mask;
     guard track_known_header_presence(presence_tracker, known_id, hval, cur_hdr_idx) else {
         return false;
     }
@@ -425,6 +431,8 @@ fn parse_http1_wire_header_line<Req>(
     out_req.presence_mask |= header_id_to_bit(known_id);
 
     guard store_parsed_header_item(out_req, hname, hval) else {
+        presence_tracker = saved_tracker;
+        out_req.presence_mask = saved_mask;
         return false;
     }
 
@@ -513,10 +521,14 @@ fn parse_http1_headers_stream<Req>(
         }
 
         guard parse_http1_wire_header_line(rest_headers, cursor, presence_tracker, out_req, base_offset) else {
+            clear_request_headers_state(out_req);
+            presence_tracker = HeaderPresenceTracker { .. };
             return false;
         }
     }
     guard verify_headers_terminator_consumed(cursor, rest_headers.len) else {
+        clear_request_headers_state(out_req);
+        presence_tracker = HeaderPresenceTracker { .. };
         return false;
     }
     save_cached_headers_stream(rest_headers, out_req, presence_tracker);
@@ -847,6 +859,15 @@ fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) ->
     return true;
 }
 
+inline fn clear_parsed_wire_response<Res>(out_res: Res&) {
+    out_res.status_code = 0;
+    out_res.protocol.clear();
+    out_res.headers.clear();
+    out_res.trailers.clear();
+    out_res.body.clear();
+    out_res.presence_mask = 0;
+}
+
 // Parses an incoming raw HTTP/1.1 response wire stream into a Response model.
 // Supports Content-Length and RFC 9112 Chunked Transfer Coding with Trailers.
 // Returns (ok, total_bytes_consumed).
@@ -865,6 +886,10 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     let line_end = find(header_bytes, "\r\n");
     guard line_end > 0 else { return false, 0; }
     guard parse_http1_wire_status_line(header_bytes[..line_end], out_res) else { return false, 0; }
+    var committed = false;
+    defer if !committed {
+        clear_parsed_wire_response(out_res);
+    };
 
     // Parse headers
     let rest_headers = header_bytes[(line_end + 2)..];
@@ -889,6 +914,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         }
         // RFC 9112 §6.3 Rule 1: 1xx, 204, and 304 responses NEVER have a message body
         if is_empty_status {
+            committed = true;
             return true, header_end_idx;
         }
         let dec_err, chunked_consumed = decode_chunked_body_with_trailers(
@@ -897,11 +923,13 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
             out_res.trailers,
         );
         guard dec_err == ChunkedDecodeError.None else { return false, 0; }
+        committed = true;
         return true, header_end_idx + chunked_consumed;
     }
 
     // Status 204 No Content, 304 Not Modified, or 1xx: MUST NOT include message body
     if is_empty_status {
+        committed = true;
         return true, header_end_idx;
     }
 
@@ -912,6 +940,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         if framing.cl_len > 0 {
             out_res.body.append(wire[header_end_idx..(header_end_idx + framing.cl_len)]);
         }
+        committed = true;
         return true, header_end_idx + framing.cl_len;
     }
 
@@ -919,6 +948,7 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     if wire.len > header_end_idx {
         out_res.body.append(wire[header_end_idx..]);
     }
+    committed = true;
     return true, wire.len;
 }
 

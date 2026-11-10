@@ -112,7 +112,7 @@ fn soa_table_free(table: SoAConnTable&, slot: i64) {
 
 // Caches per-connection peer IP and its 64-bit FNV-1a hash in the SoA slot.
 fn soa_table_set_peer_ip(table: SoAConnTable&, slot: i64, ip: const u8[:]) {
-    guard table.is_valid_slot(slot) else { return; }
+    guard table.is_active_slot(slot) else { return; }
     let resolved_ip = if ip.len > 0 { ip } else { "0.0.0.0" };
     let _ = table.peer_ips[slot].try_set(resolved_ip);
     table.peer_ip_hashes[slot] = core::fnv1a_64(resolved_ip);
@@ -121,13 +121,13 @@ fn soa_table_set_peer_ip(table: SoAConnTable&, slot: i64, ip: const u8[:]) {
 
 // Returns cached peer IP slice for an active SoA slot, or empty slice if unpopulated.
 inline fn soa_table_get_peer_ip(table: const SoAConnTable&, slot: i64) -> const u8[:] {
-    guard table.is_valid_slot(slot) && table.has_peer_ip[slot] else { return ""; }
+    guard table.is_active_slot(slot) && table.has_peer_ip[slot] else { return ""; }
     return table.peer_ips[slot][..];
 }
 
 // Updates the timeout tick for an active connection slot (activity refresh).
 inline fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8) {
-    guard table.is_valid_slot(slot) else { return; }
+    guard table.is_active_slot(slot) else { return; }
     table.timeout_ticks[slot] = new_tick;
 }
 
