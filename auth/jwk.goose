@@ -411,7 +411,7 @@ inline fn parse_jwk_x5c_array(
 }
 
 inline fn read_jwk_material_field<B>(reader: json::Reader&, dst: B&, key_item: JwksKey&) -> bool {
-    if !core::read_json_string_into(reader, dst) {
+    if !core::read_json_string_into(reader, dst) || dst[..].index_of_byte('=') != -1 {
         dst.clear();
         key_item.has_invalid_type = true;
     }

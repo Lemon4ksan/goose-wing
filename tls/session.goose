@@ -406,8 +406,10 @@ fn tls_send_new_session_ticket(
             resumption_secret: g_tls_cipher_slots[idx].resumption_secret,
             ..
         };
+        defer internal::ks_zeroize(ks_res);
         let h_len = g_tls_cipher_slots[idx].hash_len as i64;
         var psk_full: u8[48] = [0; 48];
+        defer core::secure_zeroize_48(psk_full);
         if (h_len == 32 || h_len == 48) &&
             internal::ks_derive_resumption_psk(ks_res, ticket_nonce, psk_full[..h_len]) {
             let sni = if g_tls_cipher_slots[idx].server_name.len > 0 {
@@ -490,8 +492,10 @@ fn tls_process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
         resumption_secret: g_tls_cipher_slots[idx].resumption_secret,
         ..
     };
+    defer internal::ks_zeroize(ks_res);
     let h_len = g_tls_cipher_slots[idx].hash_len as i64;
     var psk_full: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(psk_full);
     if (h_len == 32 || h_len == 48) &&
         internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
         store_tls13_session_ticket(
@@ -1675,8 +1679,10 @@ fn tls_setup_client_cipher_slot(
 fn patch_client_hello_psk_binder<B>(ch_msg: B&, psk_secret: const u8[32]&) {
     guard ch_msg.len > 35 else { return; }
     var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    defer internal::ks_zeroize(ks_early);
     guard ok_kse && internal::ks_init_early_secret(ks_early, psk_secret[..]) else { return; }
     var b_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(b_key);
     for i in 32 { b_key[i] = ks_early.binder_key[i]; }
     let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], 33);
     var binder: u8[32] = [0; 32];
@@ -1706,7 +1712,8 @@ fn prepare_ech_outer_extension(config: const TlsClientHandshakeConfig&, out: u8[
     guard build_encoded_client_hello_inner(
         inner_padded, inner_random, inner_sni, "h2", outer_exts[..], ech_cfg.maximum_name_length,
     ) else { return; }
-    let eph_sk = tls_random_bytes_32();
+    var eph_sk = tls_random_bytes_32();
+    defer core::secure_zeroize_32(eph_sk);
     var ech_enc: u8[32]    = [0; 32];
     var ech_ct:  u8[..448] = [];
     let outer_aad = ech_cfg.public_name[..];
@@ -1733,9 +1740,12 @@ fn regenerate_client_hrr_keyshare(
     }
     client_priv = tls_random_bytes_32();
     client_pub = core::x25519_base_scalarmult(client_priv);
-    let pq_d = tls_random_bytes_32();
-    let pq_z = tls_random_bytes_32();
-    let ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+    var pq_d = tls_random_bytes_32();
+    var pq_z = tls_random_bytes_32();
+    defer core::secure_zeroize_32(pq_d);
+    defer core::secure_zeroize_32(pq_z);
+    var ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+    defer core::secure_zeroize_slice(dk[..]);
     pq_priv = dk;
     pq_pub = ek;
     return true, true;
@@ -1814,21 +1824,27 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
 
     let client_random = tls_random_bytes_32();
     var client_priv = tls_random_bytes_32();
+    defer core::secure_zeroize_32(client_priv);
     var client_pub = core::x25519_base_scalarmult(client_priv);
 
     var pq_priv: u8[2400] = [0; 2400];
-    var pq_pub:  u8[1184] = [0; 1184];
+    defer core::secure_zeroize_slice(pq_priv[..]);
+    var pq_pub: u8[1184] = [0; 1184];
     if config.enable_pq_hybrid {
-        let pq_d = tls_random_bytes_32();
-        let pq_z = tls_random_bytes_32();
-        let ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+        var pq_d = tls_random_bytes_32();
+        var pq_z = tls_random_bytes_32();
+        defer core::secure_zeroize_32(pq_d);
+        defer core::secure_zeroize_32(pq_z);
+        var ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+        defer core::secure_zeroize_slice(dk[..]);
         pq_priv = dk;
         pq_pub = ek;
     }
 
-    var psk_ticket:  u8[..256] = [];
-    var psk_secret:  u8[32]    = [0; 32];
-    var psk_age_add: u32       = 0;
+    var psk_ticket: u8[..256] = [];
+    var psk_secret: u8[32]    = [0; 32];
+    defer core::secure_zeroize_32(psk_secret);
+    var psk_age_add: u32 = 0;
     let has_ticket = lookup_tls13_session_ticket(
         config.server_name[..], psk_ticket, psk_secret, psk_age_add,
     );
@@ -1898,6 +1914,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     }
 
     var ecdhe_secret: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(ecdhe_secret);
     if srv_group == rfc::GROUP_X25519_MLKEM768 {
         var srv_share_raw: u8[..2048] = [];
         srv_share_raw.append_u16_be(srv_group);
@@ -1908,12 +1925,14 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        let classic_ss, ok_c = core::x25519_shared_secret(client_priv, srv_pq_share.x25519_public);
+        var classic_ss, ok_c = core::x25519_shared_secret(client_priv, srv_pq_share.x25519_public);
+        defer core::secure_zeroize_32(classic_ss);
         guard ok_c else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
         var pq_ss: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(pq_ss);
         guard internal::mlkem768_decapsulate(srv_pq_share.mlkem768_ciphertext[..], pq_priv[..], pq_ss[..]) else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
@@ -1925,7 +1944,8 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     } else if srv_group == rfc::GROUP_X25519 && srv_share.len == 32 {
         var srv_pub: u8[32] = [0; 32];
         core::ct_copy_bytes(srv_pub[..], srv_share[..]);
-        let ss, ok_ss = core::x25519_shared_secret(client_priv, srv_pub);
+        var ss, ok_ss = core::x25519_shared_secret(client_priv, srv_pub);
+        defer core::secure_zeroize_32(ss);
         guard ok_ss else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
@@ -1937,6 +1957,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     }
 
     var ks, ok_ks = internal::ks_init(cipher_suite);
+    defer internal::ks_zeroize(ks);
     let early_ikm = if psk_resumed { psk_secret[..] } else { "" };
     let ok_ks_adv = ok_ks &&
         internal::ks_init_early_secret(ks, early_ikm) &&
@@ -1954,9 +1975,11 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     }
 
     var client_hs_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(client_hs_key);
     var client_hs_iv:  u8[12] = [0; 12];
     var server_hs_key: u8[32] = [0; 32];
-    var server_hs_iv:  u8[12] = [0; 12];
+    defer core::secure_zeroize_32(server_hs_key);
+    var server_hs_iv: u8[12] = [0; 12];
     let key_len_u16 = rfc::tls13_cipher_suite_key_len(cipher_suite);
     let klen = key_len_u16 as i64;
     let hlen = ks.hash_len as i64;
@@ -2011,9 +2034,11 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(client_ap_key);
     var client_ap_iv:  u8[12] = [0; 12];
     var server_ap_key: u8[32] = [0; 32];
-    var server_ap_iv:  u8[12] = [0; 12];
+    defer core::secure_zeroize_32(server_ap_key);
+    var server_ap_iv: u8[12] = [0; 12];
     let ok_c_ap = internal::ks_derive_key_iv(
         ks.hash_id, ks.client_ap_traffic[..hlen], key_len_u16,
         client_ap_key[..klen], client_ap_iv,
@@ -2098,9 +2123,11 @@ fn verify_client_hello_psk_binder(
     guard lookup_tls13_ticket_by_identity(ticket_id, out_psk) else { return false; }
 
     var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    defer internal::ks_zeroize(ks_early);
     guard ok_kse && internal::ks_init_early_secret(ks_early, out_psk[..]) else { return false; }
 
     var b_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(b_key);
     for i in 32 { b_key[i] = ks_early.binder_key[i]; }
     let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, 33);
     guard ok_tr else { return false; }
@@ -2578,6 +2605,7 @@ fn tls_server_handshake_with_ch(
     var client_sni:  u8[..255] = [];
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
+    defer core::secure_zeroize_32(psk_secret);
     guard parse_client_hello_for_server_sni(
         ch_msg, config.alpn[..], session_id, client_pub,
         neg_alpn, client_sni, psk_resumed, psk_secret,
@@ -2588,10 +2616,12 @@ fn tls_server_handshake_with_ch(
     let _ = g_tls_cipher_slots[idx].server_name.try_set(client_sni[..]);
 
     let server_random = tls_random_bytes_32();
-    let server_priv = tls_random_bytes_32();
+    var server_priv = tls_random_bytes_32();
+    defer core::secure_zeroize_32(server_priv);
     let server_pub = core::x25519_base_scalarmult(server_priv);
 
-    let ecdhe_secret, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
+    var ecdhe_secret, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
+    defer core::secure_zeroize_32(ecdhe_secret);
     guard ok_ecdhe else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -2621,6 +2651,7 @@ fn tls_server_handshake_with_ch(
     transcript_update(transcript, sh_msg[..]);
 
     var ks, ok_ks = internal::ks_init(cipher_suite);
+    defer internal::ks_zeroize(ks);
     let early_ikm = if psk_resumed { psk_secret[..] } else { "" };
     let ok_ks_adv = ok_ks &&
         internal::ks_init_early_secret(ks, early_ikm) &&
@@ -2641,9 +2672,11 @@ fn tls_server_handshake_with_ch(
     let klen = key_len_u16 as i64;
     let hlen = ks.hash_len as i64;
     var client_hs_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(client_hs_key);
     var client_hs_iv:  u8[12] = [0; 12];
     var server_hs_key: u8[32] = [0; 32];
-    var server_hs_iv:  u8[12] = [0; 12];
+    defer core::secure_zeroize_32(server_hs_key);
+    var server_hs_iv: u8[12] = [0; 12];
     let ok_c_hs = internal::ks_derive_key_iv(
         ks.hash_id, ks.client_hs_traffic[..hlen], key_len_u16,
         client_hs_key[..klen], client_hs_iv,
@@ -2713,9 +2746,11 @@ fn tls_server_handshake_with_ch(
     internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(client_ap_key);
     var client_ap_iv:  u8[12] = [0; 12];
     var server_ap_key: u8[32] = [0; 32];
-    var server_ap_iv:  u8[12] = [0; 12];
+    defer core::secure_zeroize_32(server_ap_key);
+    var server_ap_iv: u8[12] = [0; 12];
     let ok_c_ap = internal::ks_derive_key_iv(
         ks.hash_id, ks.client_ap_traffic[..hlen], key_len_u16,
         client_ap_key[..klen], client_ap_iv,

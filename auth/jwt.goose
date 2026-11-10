@@ -1229,6 +1229,10 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError {
 }
 
 // Decodes and parses header only without signature verification (RFC 7519).
+//
+// Example:
+//   token = "eyJhbGciOiJIUzI1NiJ9.e30.sig"
+//   returns: JwtError.None, out_header.alg = JwtAlg.HS256
 fn parse_jwt_header_only(
     token:      const u8[:],
     out_header: JwtHeader&,
@@ -1566,7 +1570,10 @@ fn verify_jwt_rsa_signature(
     signing_input: const u8[:],
     sig_bytes:     const u8[:],
 ) -> bool {
-    guard n_be.len >= 256 && n_be.len <= 512 else { return false; }
+    guard n_be.len >= 256 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
+    let n_last = core::sub_sat_i64(n_be.len, 1);
+    guard (n_be[0] & 0x80) != 0 && (n_be[n_last] & 1) == 1 else { return false; }
+    guard e_be[0] != 0 && core::is_valid_rsa_public_exponent(e_be, n_be) else { return false; }
     if alg == JwtAlg.RS256 {
         return core::rsa_pkcs1_sha256_verify(n_be, e_be, signing_input, sig_bytes);
     } else if alg == JwtAlg.PS256 {

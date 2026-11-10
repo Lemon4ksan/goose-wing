@@ -79,7 +79,7 @@ struct DeviceAuthResponse {
     interval_sec:              i64       = 5,
 }
 
-enum DevicePollStatus { Issued, AuthorizationPending, SlowDown, AccessDenied, ExpiredToken, Error }
+enum DevicePollStatus { Granted, AuthorizationPending, SlowDown, AccessDenied, ExpiredToken, TransportError }
 enum TokenTypeHint { None, AccessToken, RefreshToken }
 
 struct IntrospectionResponse {
@@ -128,57 +128,57 @@ clears all metadata when `active` is `false`. `encode_oauth2_basic_auth` and
 
 ```goose
 struct DPoPConfig {
-    max_age_sec:    i64       = 300,
-    max_skew_sec:   i64       = 60,
-    expected_nonce: u8[..128] = [],
-    expected_jkt:   u8[..64]  = [],
+    key:     u8[..64]  = [],
+    nonce:   u8[..128] = [],
+    alg:     u8[..16]  = "EdDSA",
+    enabled: bool      = false,
 }
 
 struct DPoPJwkInfo {
-    kty:   u8[..8]  = [],
-    crv:   u8[..16] = [],
-    alg:   u8[..16] = [],
-    okp_x: u8[..64] = [],
-    ec_x:  u8[..64] = [],
-    ec_y:  u8[..64] = [],
+    kty: u8[..8]   = [],
+    crv: u8[..16]  = [],
+    x:   u8[..64]  = [],
+    y:   u8[..64]  = [],
+    n:   u8[..768] = [],
+    e:   u8[..16]  = [],
 }
 
 struct DPoPClaims {
-    jti:   u8[..128] = [],
-    htm:   u8[..16]  = [],
-    htu:   u8[..256] = [],
-    iat:   i64       = -1,
-    nonce: u8[..128] = [],
-    ath:   u8[..64]  = [],
-    jkt:   u8[..64]  = [],
+    jti:     u8[..128] = [],
+    htm:     u8[..16]  = [],
+    htu:     u8[..256] = [],
+    iat:     i64       = -1,
+    nonce:   u8[..128] = [],
+    ath:     u8[..64]  = [],
+    jkt:     u8[..64]  = [],
+    has_iat: bool      = false,
 }
 
 struct DPoPJtiEntry {
-    jti_hash: u8[32] = [0; 32],
-    iat:      i64    = 0,
-    active:   bool   = false,
+    jti:            u8[..128] = [],
+    expires_at_sec: i64       = 0,
 }
 
 struct DPoPReplayCache {
-    entries: DPoPJtiEntry[64] = [DPoPJtiEntry { .. }; 64],
-    cursor:  i64              = 0,
+    entries: DPoPJtiEntry[..128] = [],
 }
 
-fn normalize_dpop_target_uri<B>(uri: const u8[:], out: B&) -> bool
-fn compute_dpop_ath<B>(access_token: const u8[:], out_b64: B&)
-fn generate_dpop_jti<B>(seed_a: u64, seed_b: u64, out: B&)
-fn create_dpop_proof<B>(key: const u8[:], method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
-fn create_dpop_proof_es256<B>(private_key: const u8[32]&, public_xy: const u8[64]&, method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
-fn verify_dpop_header(header_json: const u8[:], expected_key: const u8[:], expected_alg: const u8[:], out_jwk: DPoPJwkInfo&) -> bool
+fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool
+fn compute_dpop_ath<B>(access_token: const u8[:], out: B&)
+fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "")
+fn create_dpop_proof<B>(key: const u8[:], method: const u8[:], target_uri: const u8[:], access_token: const u8[:] = "", nonce: const u8[:] = "", now_sec: i64 = 0, jti: const u8[:] = "", out: B&) -> bool
+fn create_dpop_proof_es256<B>(priv_key: const u8[32]&, method: const u8[:], target_uri: const u8[:], access_token: const u8[:] = "", nonce: const u8[:] = "", now_sec: i64 = 0, jti: const u8[:] = "", out: B&) -> bool
+fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:], out_alg: u8[..16]&, out_jwk: DPoPJwkInfo&) -> bool
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], key: const u8[:]) -> bool
-fn verify_dpop_signature_with_jwk(signing_input: const u8[:], sig_b64: const u8[:], jwk: const DPoPJwkInfo&) -> bool
-fn parse_dpop_claims(payload_json: const u8[:], out: DPoPClaims&) -> bool
-fn verify_dpop_claims(claims: const DPoPClaims&, expected_method: const u8[:], expected_uri: const u8[:], access_token: const u8[:], expected_nonce: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool
-fn verify_dpop_key_binding(jwk: const DPoPJwkInfo&, expected_jkt: const u8[:]) -> bool
+fn verify_dpop_signature_with_jwk(signing_input: const u8[:], sig_b64: const u8[:], alg: const u8[:], jwk_info: const DPoPJwkInfo&) -> bool
+fn parse_dpop_claims(claims_json: const u8[:], out: DPoPClaims&) -> bool
+fn verify_dpop_claims(claims: const DPoPClaims&, expected_method: const u8[:], expected_uri: const u8[:], access_token: const u8[:] = "", expected_nonce: const u8[:] = "", now_sec: i64 = 0, max_age_sec: i64 = 300, max_skew_sec: i64 = 60, expected_jkt: const u8[:] = "") -> bool
+fn verify_dpop_key_binding(key: const u8[:], expected_jkt: const u8[:], alg: const u8[:], jwk_info: const DPoPJwkInfo&) -> bool
 fn verify_dpop_proof(jwt: const u8[:], key: const u8[:], expected_method: const u8[:], expected_uri: const u8[:], access_token: const u8[:] = "", expected_nonce: const u8[:] = "", now_sec: i64 = 0, max_age_sec: i64 = 300, max_skew_sec: i64 = 60, expected_jkt: const u8[:] = "", expected_alg: const u8[:] = "EdDSA") -> bool
 fn verify_dpop_proof_with_replay_cache(jwt: const u8[:], key: const u8[:], expected_method: const u8[:], expected_uri: const u8[:], now_sec: i64, cache: DPoPReplayCache&, access_token: const u8[:] = "", expected_nonce: const u8[:] = "", max_age_sec: i64 = 300, max_skew_sec: i64 = 60, expected_jkt: const u8[:] = "", expected_alg: const u8[:] = "EdDSA") -> bool
-fn check_and_record_dpop_jti(cache: DPoPReplayCache&, jti: const u8[:], now_sec: i64, max_window_sec: i64) -> bool
-fn extract_dpop_nonce<R, B>(resp: const R&, out: B&) -> bool
+fn check_and_record_dpop_jti(cache: DPoPReplayCache&, jti: const u8[:], now_sec: i64, ttl_sec: i64 = 300, max_skew_sec: i64 = 60) -> bool
+fn extract_dpop_nonce(headers: const HeaderMap&) -> const u8[:], bool
+fn extract_dpop_nonce<B>(headers: const HeaderMap&, out_nonce: B&) -> bool
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "")
 ```
 
@@ -268,25 +268,25 @@ constant-time suffix comparison.
 ### JSON Web Tokens & JWE (`auth/jwt.goose`, RFC 7515, RFC 7516, RFC 7519, RFC 8725)
 
 ```goose
-enum JwtAlg { HS256, HS384, HS512, EdDSA, ES256, RS256, PS256, None, Unknown }
+enum JwtAlg { Unspecified, None, HS256, HS384, HS512, EdDSA, ES256, RS256, PS256, Unknown }
 
 enum JwtError {
-    Ok, MalformedToken, InvalidBase64, InvalidHeaderJson, InvalidClaimsJson,
-    UnsupportedAlg, AlgMismatch, InvalidSignature, TokenExpired, TokenNotYetValid,
-    TokenIssuedInFuture, IssuerMismatch, SubjectMismatch, AudienceMismatch,
-    MissingRequiredClaim, KeyNotFound, TypMismatch, UnsupportedCritHeader,
-    InvalidCritSyntax, WeakHmacKey, InvalidKeyUse,
+    None, MalformedToken, InvalidBase64, InvalidHeaderJson, InvalidClaimsJson,
+    UnsupportedAlgorithm, AlgorithmMismatch, SignatureInvalid, TokenExpired,
+    TokenNotYetValid, IssuerMismatch, AudienceMismatch, SubjectMismatch,
+    KeyNotFound, CriticalHeaderUnsupported, TypeMismatch,
 }
 
 struct CritParam { name: u8[..32] = [] }
 
 struct JwtHeader {
-    alg:       JwtAlg         = JwtAlg.HS256,
-    typ:       u8[..32]       = "JWT",
-    kid:       u8[..64]       = [],
-    crit:      CritParam[..8] = [],
-    b64:       bool           = true,
-    has_b64:   bool           = false,
+    alg:     JwtAlg         = JwtAlg.HS256,
+    typ:     u8[..32]       = "JWT",
+    kid:     u8[..64]       = [],
+    cty:     u8[..32]       = [],
+    crit:    CritParam[..8] = [],
+    b64:     bool           = true,
+    has_b64: bool           = false,
 }
 
 struct JwtClaimItem {

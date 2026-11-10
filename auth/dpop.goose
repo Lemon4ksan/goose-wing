@@ -171,12 +171,13 @@ fn validate_dpop_jwk_params(info: const DPoPJwkInfo&) -> bool {
     let is_ec_shape = info.crv[..] == "P-256" && info.x.len > 0 && info.y.len > 0 && no_rsa;
     let is_rsa_shape = info.crv.len == 0 && info.n.len > 0 && info.e.len > 0 && info.x.len == 0 && info.y.len == 0;
     if info.kty[..] == "OKP" {
-        guard is_okp_shape else { return false; }
+        guard is_okp_shape && info.x[..].index_of_byte('=') == -1 else { return false; }
         var decoded_x: u8[..64] = [];
         return core::base64url_decode(info.x[..], decoded_x) && decoded_x.len == 32;
     }
     if info.kty[..] == "EC" {
         guard is_ec_shape else { return false; }
+        guard info.x[..].index_of_byte('=') == -1 && info.y[..].index_of_byte('=') == -1 else { return false; }
         var decoded_x: u8[..64] = [];
         var decoded_y: u8[..64] = [];
         guard core::base64url_decode(info.x[..], decoded_x) else { return false; }
@@ -185,6 +186,7 @@ fn validate_dpop_jwk_params(info: const DPoPJwkInfo&) -> bool {
     }
     if info.kty[..] == "RSA" {
         guard is_rsa_shape else { return false; }
+        guard info.n[..].index_of_byte('=') == -1 && info.e[..].index_of_byte('=') == -1 else { return false; }
         var decoded_n: u8[..512] = [];
         var decoded_e: u8[..8]   = [];
         guard core::base64url_decode(info.n[..], decoded_n) else { return false; }
@@ -912,8 +914,8 @@ fn verify_dpop_claims(
         guard claims.nonce.len > 0 && claims.nonce.len == expected_nonce.len else { return false; }
         guard core::ct_eq_bytes(claims.nonce[..], expected_nonce) else { return false; }
     }
-    if expected_jkt.len > 0 {
-        guard claims.jkt.len > 0 && claims.jkt.len == expected_jkt.len else { return false; }
+    if expected_jkt.len > 0 && claims.jkt.len > 0 {
+        guard claims.jkt.len == expected_jkt.len else { return false; }
         guard core::ct_eq_bytes(claims.jkt[..], expected_jkt) else { return false; }
     }
 
@@ -1026,7 +1028,10 @@ fn verify_dpop_key_binding(
     alg:          const u8[:],
     jwk_info:     const DPoPJwkInfo&,
 ) -> bool {
-    guard key.len > 0 else { return expected_jkt.len > 0; }
+    guard key.len > 0 || expected_jkt.len > 0 else { return false; }
+    if key.len == 0 {
+        return true;
+    }
     if alg == "EdDSA" {
         guard key.len == 32 else { return false; }
         var jwk_pub: u8[..64] = [];
@@ -1063,6 +1068,11 @@ fn verify_dpop_key_binding(
         guard core::base64url_decode(jwk_info.n[..], decoded_n) else { return false; }
         guard core::base64url_decode(jwk_info.e[..], decoded_e) else { return false; }
         guard is_canonical_jwk_rsa_params(decoded_n[..], decoded_e[..]) else { return false; }
+        let exp_len = core::add_sat_i64(decoded_n.len, decoded_e.len);
+        if key.len == exp_len {
+            let n_ok = core::ct_eq_bytes(decoded_n[..], key[..decoded_n.len]);
+            return n_ok && core::ct_eq_bytes(decoded_e[..], key[decoded_n.len..]);
+        }
         return core::ct_eq_bytes(decoded_n[..], key);
     }
     return false;
@@ -1231,9 +1241,10 @@ fn check_and_record_dpop_jti(
     ttl_sec:      i64 = 300,
     max_skew_sec: i64 = 60,
 ) -> bool {
-    // RFC 9449 Section 11.1: DPoP Proof Replay - As long as the jti value is tracked and duplicates are rejected for the lifetime of the nonce, there is no additional risk of token replay.
+    // RFC 9449 Section 11.1: DPoP Proof Replay - As long as the jti value is tracked and duplicates
+    // are rejected for the lifetime of the nonce, there is no additional risk of token replay.
     guard jti.len > 0 && jti.len <= 128 else { return false; }
-    guard now_sec >= 0 && ttl_sec > 0 && max_skew_sec >= 0 else { return false; }
+    guard now_sec >= 0 && ttl_sec >= 0 && max_skew_sec >= 0 else { return false; }
 
     var free_idx: i64 = -1;
     for i in cache.entries.len {
@@ -1247,7 +1258,7 @@ fn check_and_record_dpop_jti(
         }
     }
 
-    let total_ttl = core::add_sat_i64(ttl_sec, max_skew_sec);
+    let total_ttl = max(core::add_sat_i64(ttl_sec, max_skew_sec), 1);
     let exp = core::add_sat_i64(now_sec, total_ttl);
 
     if free_idx >= 0 {
